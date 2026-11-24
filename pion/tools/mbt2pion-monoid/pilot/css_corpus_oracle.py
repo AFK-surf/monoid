@@ -26,6 +26,8 @@ import time
 TIMEOUT_S = 180
 EXPECTED_CALLSITES = 2096
 EXPECTED_DISTINCT = 1237
+FIXED_AFIRSTLINE_PROBE = "row w=Full gap=SPx align=AFirstLine"
+FIXED_AFIRSTLINE_OFFSET = FIXED_AFIRSTLINE_PROBE.index("AFirstLine") + len("AFirstLine")
 
 MOON_DRIVER = r'''
 fn dbits(d : Double) -> String {
@@ -387,6 +389,11 @@ fn main {
     println("A css_corpus.entry." + i.to_string())
   }
   println("A css_corpus.total." + xs.length().to_string())
+  match @ui.css_read("row w=Full gap=SPx align=AFirstLine") {
+    Ok(st) => println("P AFIRSTLINE OK:" + ser_style(st))
+    Err(e) => println("P AFIRSTLINE ERR:" + e)
+  }
+  println("A css_corpus.probe.afirstline")
 }
 '''
 
@@ -756,6 +763,11 @@ pub fn main(world : World) -> Int {
     i = i + 1
   }
   io_println(world, "A css_corpus.total." + xs.length().to_string())
+  match sf::css_read("row w=Full gap=SPx align=AFirstLine") {
+    Ok(st) => io_println(world, "P AFIRSTLINE OK:" + ser_style(st))
+    Err(e) => io_println(world, "P AFIRSTLINE ERR:" + e)
+  }
+  io_println(world, "A css_corpus.probe.afirstline")
   0
 }
 '''
@@ -797,6 +809,7 @@ def run_cmd(cmd, cwd=None):
 
 def parse_engine_output(out):
     records = {}
+    probes = {}
     asserts = []
     junk = []
     for line in out.splitlines():
@@ -806,37 +819,67 @@ def parse_engine_output(out):
                 records[int(parts[1])] = parts[2]
             else:
                 junk.append(line)
+        elif line.startswith("P "):
+            parts = line.split(" ", 2)
+            if len(parts) == 3:
+                probes[parts[1]] = parts[2]
+            else:
+                junk.append(line)
         elif line.startswith("A "):
             asserts.append(line[2:])
         elif line.strip():
             junk.append(line)
-    return records, asserts, junk
+    return records, probes, asserts, junk
 
 
-def compare_engine_outputs(strings, moon_out, nat_out, wasm_out):
-    """Compare all 3 engine outputs across all distinct CSS strings. Returns list of error strings."""
+def compare_engine_outputs(strings, moon_out, nat_out, wasm_out, require_corpus_afirstline=True):
+    """Compare all 3 engine outputs across all distinct CSS strings + fixed AFirstLine contract probe."""
     errs = []
     n = len(strings)
-    expected_asserts = [f"css_corpus.entry.{i}" for i in range(n)] + [f"css_corpus.total.{n}"]
+    expected_asserts = (
+        [f"css_corpus.entry.{i}" for i in range(n)]
+        + [f"css_corpus.total.{n}", "css_corpus.probe.afirstline"]
+    )
 
-    m_rec, m_ass, m_junk = parse_engine_output(moon_out)
-    n_rec, n_ass, n_junk = parse_engine_output(nat_out)
-    w_rec, w_ass, w_junk = parse_engine_output(wasm_out)
+    m_rec, m_probes, m_ass, m_junk = parse_engine_output(moon_out)
+    n_rec, n_probes, n_ass, n_junk = parse_engine_output(nat_out)
+    w_rec, w_probes, w_ass, w_junk = parse_engine_output(wasm_out)
 
-    for label, rec, ass, junk in [
-        ("moon", m_rec, m_ass, m_junk),
-        ("pion-native", n_rec, n_ass, n_junk),
-        ("pion-wasm32", w_rec, w_ass, w_junk),
+    for label, rec, probes, ass, junk in [
+        ("moon", m_rec, m_probes, m_ass, m_junk),
+        ("pion-native", n_rec, n_probes, n_ass, n_junk),
+        ("pion-wasm32", w_rec, w_probes, w_ass, w_junk),
     ]:
         if junk:
             errs.append(f"{label}: unexpected stdout lines: {junk[:3]!r}")
         if len(rec) != n:
             errs.append(f"{label}: record count {len(rec)} != expected {n}")
+        if "AFIRSTLINE" not in probes:
+            errs.append(f"{label}: missing fixed AFIRSTLINE contract probe output")
         if ass != expected_asserts:
             errs.append(f"{label}: assertion IDs mismatch (got {len(ass)}, expected {len(expected_asserts)})")
 
     if errs:
         return errs
+
+    # Always verify fixed AFirstLine contract probe independently of production corpus strings
+    mp = m_probes["AFIRSTLINE"]
+    np = n_probes["AFIRSTLINE"]
+    wp = w_probes["AFIRSTLINE"]
+    if np != wp:
+        errs.append(f"[probe:AFIRSTLINE] pion-native != pion-wasm32: native={np!r} wasm32={wp!r}")
+    if not (mp.startswith("OK:") and "align=FirstLine" in mp):
+        errs.append(f"[probe:AFIRSTLINE] moon expected OK with align=FirstLine, got {mp!r}")
+    expected_probe_err = (
+        f'ERR:css: unsupported Align AFirstLine (missing in invar ui::Align) '
+        f'at {FIXED_AFIRSTLINE_OFFSET} in "{FIXED_AFIRSTLINE_PROBE}"'
+    )
+    if np != expected_probe_err:
+        errs.append(
+            f"[probe:AFIRSTLINE] pion error mismatch:\n"
+            f"  expected={expected_probe_err}\n"
+            f"  actual  ={np}"
+        )
 
     afirstline_checked = 0
     for i, css_text in enumerate(strings):
@@ -869,7 +912,7 @@ def compare_engine_outputs(strings, moon_out, nat_out, wasm_out):
                 if len(errs) >= 10:
                     break
 
-    if afirstline_checked == 0:
+    if require_corpus_afirstline and afirstline_checked == 0:
         errs.append("expected at least 1 AFirstLine production corpus string to be verified fail-loud")
 
     return errs
@@ -987,7 +1030,9 @@ def main():
 
         print(f"[css-corpus] batch run timings: moon={m_s:.2f}s pion-native={n_s:.2f}s pion-wasm32={w_s:.2f}s")
 
-        errs = compare_engine_outputs(strings, m_out, n_out, w_out)
+        errs = compare_engine_outputs(
+            strings, m_out, n_out, w_out, require_corpus_afirstline=not args.live
+        )
         if errs:
             for e in errs:
                 print(f"ERROR: {e}", file=sys.stderr)
@@ -995,12 +1040,49 @@ def main():
 
         print(
             f"[css-corpus] PASS: 100% 3-engine parity across {callsites_total} production callsites / "
-            f"{len(strings)} distinct decoded CSS strings (32 fields x 8 patches + Double bits + exact AFirstLine offset)"
+            f"{len(strings)} distinct decoded CSS strings (32 fields x 8 patches + Double bits + fixed AFirstLine probe offset {FIXED_AFIRSTLINE_OFFSET})"
         )
 
-        # 4. Real source-code mutation negative check: mutate `sf/src/style_css.pion` state branch,
-        #    recompile & execute `css_batch_native_mut`, and assert compare_engine_outputs FAILS!
+        # 4. Real source-code mutation negative check + live-mode AFirstLine decoupling check
         if args.verify_negative:
+            # 4a. Verify `--live` decoupling: removing all AFirstLine entries from corpus still passes
+            #     via fixed contract probe, and mutating the fixed probe offset FAILS.
+            def filter_out_afirstline(raw_out):
+                rec, probes, _, _ = parse_engine_output(raw_out)
+                lines = []
+                new_i = 0
+                for old_i, css_text in enumerate(strings):
+                    if "AFirstLine" in css_text:
+                        continue
+                    lines.append(f"R {new_i} {rec[old_i]}")
+                    lines.append(f"A css_corpus.entry.{new_i}")
+                    new_i += 1
+                lines.append(f"A css_corpus.total.{new_i}")
+                lines.append(f"P AFIRSTLINE {probes['AFIRSTLINE']}")
+                lines.append("A css_corpus.probe.afirstline")
+                return "\n".join(lines) + "\n"
+
+            no_af_strings = [s for s in strings if "AFirstLine" not in s]
+            m_no_af = filter_out_afirstline(m_out)
+            n_no_af = filter_out_afirstline(n_out)
+            w_no_af = filter_out_afirstline(w_out)
+            live_errs = compare_engine_outputs(
+                no_af_strings, m_no_af, n_no_af, w_no_af, require_corpus_afirstline=False
+            )
+            if live_errs:
+                print(f"FAIL (live-no-afirstline): live mode with 0 AFirstLine corpus strings failed: {live_errs[0]}", file=sys.stderr)
+                return 1
+            bad_probe_out = n_no_af.replace(f"at {FIXED_AFIRSTLINE_OFFSET} ", "at 9999 ", 1)
+            probe_neg_errs = compare_engine_outputs(
+                no_af_strings, m_no_af, bad_probe_out, bad_probe_out, require_corpus_afirstline=False
+            )
+            if not probe_neg_errs:
+                print("FAIL (neg-probe-offset): mutating fixed AFirstLine probe offset was NOT caught!", file=sys.stderr)
+                return 1
+            print(f"[css-corpus] PASS (live-probe-decoupled): 0-AFirstLine live corpus passes; fixed probe offset mutation caught")
+
+            # 4b. Real source-code mutation: mutate `sf/src/style_css.pion` state branch,
+            #     recompile & execute `css_batch_native_mut`, and assert compare_engine_outputs FAILS!
             sf_mut = os.path.join(work, "sf_mut")
             shutil.copytree(sf_orig, sf_mut)
             css_pion = os.path.join(sf_mut, "src/style_css.pion")
@@ -1021,7 +1103,9 @@ def main():
             if rc != 0:
                 print(f"SETUP FAILED (neg-mutate-src): run mutated sf failed (rc={rc})\n{err[-1000:]}", file=sys.stderr)
                 return 2
-            neg_errs = compare_engine_outputs(strings, m_out, mut_out, mut_out)
+            neg_errs = compare_engine_outputs(
+                strings, m_out, mut_out, mut_out, require_corpus_afirstline=not args.live
+            )
             if not neg_errs:
                 print("FAIL (neg-mutate-src): real style_css.pion state-branch mutation was NOT caught!", file=sys.stderr)
                 return 1

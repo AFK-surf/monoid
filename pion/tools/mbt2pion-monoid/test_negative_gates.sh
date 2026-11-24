@@ -686,7 +686,8 @@ if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_p
   exit 1
 fi
 
-# (e2e) Positive control: local non-invar package inside pion/ named 'invar_local_helper' MUST pass (rc=0)
+# (e2e) Positive control: local non-invar package inside pion/ named 'invar_local_helper'
+#       explicitly added to manifest.toml allowed_local_path_targets MUST pass (rc=0)
 PIN_PATH_POS="$WORK/pin_path_pos"
 setup_pin_tmp "$PIN_PATH_POS"
 mkdir -p "$PIN_PATH_POS/pion/ui/packages/invar_local_helper"
@@ -703,7 +704,70 @@ version = "0.1.0"
 [dependencies]
 invar_local_helper = { path = "../invar_local_helper" }
 EOF
+python3 - "$PIN_PATH_POS/pion/tools/mbt2pion-monoid/manifest.toml" << 'PY'
+import sys
+p = sys.argv[1]
+txt = open(p).read()
+needle = 'allowed_local_path_targets = [\n'
+assert needle in txt, "expected allowed_local_path_targets in manifest.toml"
+open(p, "w").write(txt.replace(needle, needle + '  "pion/ui/packages/invar_local_helper",\n', 1))
+PY
 sh "$PIN_PATH_POS/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/pos_pin_path.log" 2>&1
+
+# (e2f) In-repo vendored real invar package `runfs` (`name = "runfs"`, no .git/repository) MUST be rejected (rc=1)
+PIN_PATH_E2F="$WORK/pin_path_e2f"
+setup_pin_tmp "$PIN_PATH_E2F"
+mkdir -p "$PIN_PATH_E2F/pion/vendor/runfs"
+cat > "$PIN_PATH_E2F/pion/vendor/runfs/pion.toml" << 'EOF'
+[package]
+name = "runfs"
+version = "0.1.0"
+EOF
+cat > "$PIN_PATH_E2F/pion/ui/packages/sf/pion.toml" << 'EOF'
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+rfs = { path = "../../../vendor/runfs" }
+EOF
+set +e
+sh "$PIN_PATH_E2F/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2f.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2f.log" || ! grep -q "local path invar bypass forbidden" "$WORK/neg_pin_e2f.log"; then
+  echo "FAIL (pin-e2f): expected rc=1 + exact path + 'local path invar bypass forbidden' for vendored runfs (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2f.log" >&2
+  exit 1
+fi
+
+# (e2g) In-repo vendored & renamed invar copy `pion/vendor/tdx` (`name = "tdx"`, `dep_name = "tdx"`)
+#       MUST be rejected by explicit allowed_local_path_targets allowlist (rc=1)
+PIN_PATH_E2G="$WORK/pin_path_e2g"
+setup_pin_tmp "$PIN_PATH_E2G"
+mkdir -p "$PIN_PATH_E2G/pion/vendor/tdx"
+cat > "$PIN_PATH_E2G/pion/vendor/tdx/pion.toml" << 'EOF'
+[package]
+name = "tdx"
+version = "0.1.0"
+EOF
+cat > "$PIN_PATH_E2G/pion/ui/packages/sf/pion.toml" << 'EOF'
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+tdx = { path = "../../../vendor/tdx" }
+EOF
+set +e
+sh "$PIN_PATH_E2G/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2g.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2g.log" || ! grep -q "local path target not in allowed_local_path_targets" "$WORK/neg_pin_e2g.log"; then
+  echo "FAIL (pin-e2g): expected rc=1 + exact path + 'local path target not in allowed_local_path_targets' for vendored tdx (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2g.log" >&2
+  exit 1
+fi
 
 # (e3) Non-`rev:` lock ref (`ref = "branch:main"`) MUST be rejected (rc=1)
 PIN_BRANCH="$WORK/pin_branch_ref"

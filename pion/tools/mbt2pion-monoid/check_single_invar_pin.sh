@@ -298,6 +298,58 @@ for root, _dirs, files in os.walk(pion_dir):
             all_lock_files.append((full, rel))
 
 invar_pkg_names = set(KNOWN_INVAR_PKGS)
+allowed_local_path_targets = set()
+
+
+def load_manifest_allowlist(path):
+    """Load [local_path_allowlist] allowed_local_path_targets and invar_workspace_packages."""
+    if not os.path.isfile(path):
+        return set(), set()
+    txt = open(path, "r", encoding="utf-8").read()
+    doc = parse_toml_doc(txt)
+    if doc is not None:
+        sec = doc.get("local_path_allowlist")
+        if isinstance(sec, dict):
+            allowed = {str(x) for x in (sec.get("allowed_local_path_targets") or [])}
+            inv_pkgs = {str(x) for x in (sec.get("invar_workspace_packages") or [])}
+            return allowed, inv_pkgs
+        return set(), set()
+    # Python 3.9 fallback parser for multi-line string arrays in [local_path_allowlist]
+    allowed, inv_pkgs = set(), set()
+    in_sec = False
+    cur_key = None
+    for raw_l in txt.splitlines():
+        l = strip_toml_comment(raw_l).strip()
+        if not l:
+            continue
+        if l.startswith("[") and l.endswith("]"):
+            in_sec = l[1:-1].strip() == "local_path_allowlist"
+            cur_key = None
+            continue
+        if not in_sec:
+            continue
+        for k in ("allowed_local_path_targets", "invar_workspace_packages"):
+            if re.match(rf"^{k}\s*=\s*\[", l):
+                cur_key = k
+                for item in re.findall(r'"([^"]+)"', l):
+                    (allowed if cur_key == "allowed_local_path_targets" else inv_pkgs).add(item)
+                if "]" in l:
+                    cur_key = None
+                break
+        else:
+            if cur_key is not None:
+                for item in re.findall(r'"([^"]+)"', l):
+                    (allowed if cur_key == "allowed_local_path_targets" else inv_pkgs).add(item)
+                if "]" in l:
+                    cur_key = None
+    return allowed, inv_pkgs
+
+
+manifest_allowed, manifest_invar_pkgs = load_manifest_allowlist(manifest_path)
+allowed_local_path_targets.update(manifest_allowed)
+invar_pkg_names.update(manifest_invar_pkgs)
+if not allowed_local_path_targets:
+    errors.append(f"{os.path.relpath(manifest_path, repo_root)}: missing non-empty [local_path_allowlist].allowed_local_path_targets")
 
 for full, rel in all_lock_files:
     txt = open(full, "r", encoding="utf-8").read()
@@ -440,6 +492,17 @@ def check_local_path_dep(rel, lineno, dep_name, dep_path, toml_full):
         if parent == cur:
             break
         cur = parent
+
+
+    # Defense 3 (explicit allowlist): canonical relative target path MUST be listed in
+    # manifest.toml [local_path_allowlist].allowed_local_path_targets (blocks arbitrary
+    # vendored/renamed invar copies such as pion/vendor/tdx with name="tdx", dep_name="tdx").
+    rel_target = os.path.relpath(real_target, repo_root).replace(os.sep, "/")
+    if allowed_local_path_targets and rel_target not in allowed_local_path_targets:
+        errors.append(
+            f"{rel}:{lineno}: local path dependency {dep_name!r} ({dep_path!r} -> {rel_target}) local path target not in allowed_local_path_targets (forbidden)"
+        )
+        return
 
 
 # Pass 2: inspect all pion/**/pion.toml

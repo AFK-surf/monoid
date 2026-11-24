@@ -283,7 +283,7 @@ export function parseFnSig(sig) {
         modifier: m[2] || '',
         type: m[3].trim(),
         has_default: Boolean(m[4]),
-        default_expr: m[4] ? m[4].trim().replace(/\s+/g, ' ') : null,
+        default_expr: m[4] ? m[4].trim() : null,
       };
     }
     return { index: idx, name: `arg${idx}`, modifier: '', type: p.trim(), has_default: false, default_expr: null };
@@ -376,11 +376,97 @@ export function normalizeTypePreservingScope(raw, pkgAliases = PKG_ALIASES_DEFAU
   return s;
 }
 
+// Tokenize a default-value expression while preserving string/char literals verbatim
+// (NEVER collapsing whitespace inside quotes) and rejecting unprovable/opaque placeholders
+// such as `<expr>`, `_`, `..`, `...`.
+export function normalizeDefaultExprTokens(expr) {
+  const s = String(expr ?? '').trim();
+  if (!s) {
+    throw new Error(`Rejected unprovable/opaque default expression: empty`);
+  }
+  const tokens = [];
+  let i = 0;
+  const n = s.length;
+  while (i < n) {
+    const c = s[i];
+    if (/\s/.test(c)) {
+      i++;
+      continue;
+    }
+    // Preserve double-quoted string literal verbatim (including internal spaces!)
+    if (c === '"' || (c === 'b' && s[i + 1] === '"')) {
+      const start = i;
+      if (c === 'b') i++;
+      i++;
+      while (i < n) {
+        if (s[i] === '\\') { i += 2; continue; }
+        if (s[i] === '"') { i++; break; }
+        i++;
+      }
+      tokens.push(s.slice(start, i));
+      continue;
+    }
+    // Preserve char literal verbatim
+    if (c === '\'') {
+      const start = i;
+      i++;
+      while (i < n) {
+        if (s[i] === '\\') { i += 2; continue; }
+        if (s[i] === '\'') { i++; break; }
+        i++;
+      }
+      tokens.push(s.slice(start, i));
+      continue;
+    }
+    // Reject angle-bracket opaque placeholders like `<expr>`
+    if (c === '<') {
+      const endAngle = s.indexOf('>', i + 1);
+      if (endAngle > i + 1 && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(s.slice(i + 1, endAngle))) {
+        throw new Error(`Rejected unprovable/opaque default expression: ${s}`);
+      }
+    }
+    // Multi-char dots `...` / `..` -> opaque placeholder
+    if (c === '.' && s[i + 1] === '.') {
+      throw new Error(`Rejected unprovable/opaque default expression: ${s}`);
+    }
+    // Identifier / keyword
+    if (/[A-Za-z_]/.test(c)) {
+      const start = i;
+      while (i < n && /[A-Za-z0-9_]/.test(s[i])) i++;
+      const tok = s.slice(start, i);
+      if (tok === '_') {
+        throw new Error(`Rejected unprovable/opaque default expression: ${s}`);
+      }
+      tokens.push(tok);
+      continue;
+    }
+    // Number literal
+    if (/[0-9]/.test(c)) {
+      const start = i;
+      while (i < n && /[0-9A-Za-z._]/.test(s[i])) i++;
+      tokens.push(s.slice(start, i));
+      continue;
+    }
+    // Multi-char operators (`::`, `==`, `!=`, `<=`, `>=`, `&&`, `||`, `->`)
+    const two = s.slice(i, i + 2);
+    if (['::', '==', '!=', '<=', '>=', '&&', '||', '->'].includes(two)) {
+      tokens.push(two);
+      i += 2;
+      continue;
+    }
+    tokens.push(c);
+    i++;
+  }
+  if (tokens.length === 0) {
+    throw new Error(`Rejected unprovable/opaque default expression: ${s}`);
+  }
+  return tokens;
+}
+
 // Strict parameter-rename rule validator: any future parameter rename MUST match on
 // scope-preserving normalized type, optionality (`?` vs `~` vs positional),
-// default-value presence, AND normalized default-value expression.
-// Rejects erroneous renames such as `w? : Len` -> `weight? : Weight`,
-// `Bool = false` -> `Bool = true`, and `@one.Int32` -> `two::Int32`.
+// default-value presence, AND token-level default-value expression (preserving string
+// content verbatim and rejecting opaque placeholders like `<expr>`, `_`, `..`, `...`).
 export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLoc = false, pkgAliases = PKG_ALIASES_DEFAULT) {
   if (!rule || !rule.from || !rule.to) {
     throw new Error(`Invalid param_rename rule: missing 'from' or 'to' (${JSON.stringify(rule)})`);
@@ -414,10 +500,14 @@ export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLo
       `Rejected param_rename ${rule.from} -> ${rule.to}: default-value mismatch (source=${Boolean(srcParam.has_default)} vs target=${Boolean(dstParam.has_default)})`
     );
   }
-  if (srcParam.default_expr !== dstParam.default_expr) {
-    throw new Error(
-      `Rejected param_rename ${rule.from} -> ${rule.to}: default-value expression mismatch (source=${JSON.stringify(srcParam.default_expr)} vs target=${JSON.stringify(dstParam.default_expr)})`
-    );
+  if (srcParam.has_default) {
+    const srcToks = normalizeDefaultExprTokens(srcParam.default_expr);
+    const dstToks = normalizeDefaultExprTokens(dstParam.default_expr);
+    if (srcToks.length !== dstToks.length || srcToks.some((t, idx) => t !== dstToks[idx])) {
+      throw new Error(
+        `Rejected param_rename ${rule.from} -> ${rule.to}: default-value expression mismatch (source=${JSON.stringify(srcParam.default_expr)} vs target=${JSON.stringify(dstParam.default_expr)})`
+      );
+    }
   }
   return true;
 }
@@ -1436,6 +1526,42 @@ function main() {
     .update(`pionc=0.1.0\nmoon=0.1.20261117\ninvar=${INVAR_SHA}\n`)
     .digest('hex');
 
+  // Collect allowed local path targets across pion/**/pion.toml and full invar workspace packages
+  const allowedLocalTargets = new Set();
+  const walkPionTomls = dir => {
+    if (!fs.existsSync(dir)) return;
+    for (const ent of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (ent.name === 'target' || ent.name === '_build' || ent.name === '.pion') continue;
+        walkPionTomls(full);
+      } else if (ent.isFile() && ent.name === 'pion.toml') {
+        const txt = fs.readFileSync(full, 'utf8');
+        for (const m of txt.matchAll(/path\s*=\s*"([^"]+)"/g)) {
+          const resolved = fs.realpathSync(path.resolve(path.dirname(full), m[1]));
+          const rel = path.relative(REPO_ROOT, resolved).split(path.sep).join('/');
+          allowedLocalTargets.add(rel);
+        }
+      }
+    }
+  };
+  walkPionTomls(path.join(REPO_ROOT, 'pion'));
+  const sortedLocalTargets = [...allowedLocalTargets].sort();
+
+  const invarWorkspacePkgs = new Set();
+  if (args['invar'] && fs.existsSync(path.join(args['invar'], 'packages'))) {
+    const pkgsDir = path.join(args['invar'], 'packages');
+    for (const ent of fs.readdirSync(pkgsDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!ent.isDirectory()) continue;
+      const pt = path.join(pkgsDir, ent.name, 'pion.toml');
+      if (fs.existsSync(pt)) {
+        const m = fs.readFileSync(pt, 'utf8').match(/^name\s*=\s*"([^"]+)"/m);
+        if (m) invarWorkspacePkgs.add(m[1]);
+      }
+    }
+  }
+  const sortedInvarPkgs = [...invarWorkspacePkgs].sort();
+
   // Build manifest.toml
   const lines = [];
   lines.push('# Machine-generated Wave M1 manifest for AFK-surf/monoid (`libs/ui/src/controls` -> `pion/ui/packages/sf`)');
@@ -1450,6 +1576,18 @@ function main() {
   lines.push(`api_map_sha256 = "${apiMapSha}"`);
   lines.push(`recipes_sha256 = "${recipesSha}"`);
   lines.push(`blockers_sha256 = "${blockersSha}"`);
+  lines.push('');
+  lines.push('[local_path_allowlist]');
+  lines.push('allowed_local_path_targets = [');
+  for (const t of sortedLocalTargets) {
+    lines.push(`  "${t}",`);
+  }
+  lines.push(']');
+  lines.push('invar_workspace_packages = [');
+  for (const p of sortedInvarPkgs) {
+    lines.push(`  "${p}",`);
+  }
+  lines.push(']');
   lines.push('');
   lines.push('[toolchain.versions]');
   lines.push(`pionc = "0.1.0"`);

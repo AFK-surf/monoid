@@ -184,6 +184,23 @@ def _extract_range(src, start_idx, end_idx, start_line, file_label, calls, stop_
             while i < end_idx and src[i] != "\n":
                 i += 1
             continue
+        # Interpolated raw string lines `$|...` (ignore literal text, recursively scan `\{ ... }`)
+        if c == "$" and i + 1 < end_idx and src[i + 1] == "|":
+            i += 2
+            while i < end_idx and src[i] != "\n":
+                if src[i] == "\\":
+                    if i + 1 < end_idx and src[i + 1] == "{":
+                        i, line_no = _extract_range(
+                            src, i + 2, end_idx, line_no, file_label, calls, stop_at_rbrace=True
+                        )
+                        continue
+                    if i + 1 < end_idx and src[i + 1] != "\n":
+                        i += 2
+                    else:
+                        i += 1
+                    continue
+                i += 1
+            continue
         # Byte string literal b"..." (no interpolation)
         if c == "b" and i + 1 < end_idx and src[i + 1] == '"':
             i += 2
@@ -235,7 +252,11 @@ def _extract_range(src, start_idx, end_idx, start_line, file_label, calls, stop_
         # Match MoonBit token sequence: `@ui` <ws/comment>* `.` <ws/comment>* `css` <ws/comment>* `(`
         if src.startswith("@ui", i):
             after_ui = i + 3
-            if after_ui < end_idx and (src[after_ui].isalnum() or src[after_ui] == "_" or src[after_ui] == "/"):
+            if after_ui < end_idx and (
+                src[after_ui].isalnum()
+                or src[after_ui] == "_"
+                or (src[after_ui] == "/" and not (after_ui + 1 < end_idx and src[after_ui + 1] == "/"))
+            ):
                 i = after_ui
                 continue
             j = skip_ws_and_comments(src, after_ui)
@@ -410,7 +431,28 @@ def run_self_test():
         err = check_manifest_raw_bytes(p_crlf, sample)
         assert err is not None and "CRLF" in err, f"expected CRLF rejection, got {err!r}"
 
-    print("OK: extract_css_corpus.py self-tests passed (EOF, raw #|, trailing comma, @ui .css(v), string interp \\{@ui.css(v)}, CRLF raw-byte check)")
+    # 10. Comment between `@ui` and `.css` (`@ui//comment\n.css(v)`) MUST be caught and fail loud!
+    failed_cmt = False
+    try:
+        extract_from_source("let x = 1\nlet s = @ui//comment\n.css(v)\n", "comment_token.mbt")
+    except ValueError as e:
+        assert "comment_token.mbt:2" in str(e) and "non-static" in str(e)
+        failed_cmt = True
+    assert failed_cmt, "expected '@ui//comment\\n.css(v)' to raise ValueError"
+
+    # 11. `$|literal @ui.css(v)` raw interpolated string literal text MUST be ignored
+    assert extract_from_source("let s =\n  $|literal @ui.css(v)\n", "dollar_lit.mbt") == []
+
+    # 12. `$|a \{@ui.css(v)}` inside `$|` interpolation MUST be caught and fail loud!
+    failed_dollar_interp = False
+    try:
+        extract_from_source("let a = 1\nlet s =\n  $|a \\{@ui.css(v)}\n", "dollar_interp.mbt")
+    except ValueError as e:
+        assert "dollar_interp.mbt:3" in str(e) and "non-static" in str(e)
+        failed_dollar_interp = True
+    assert failed_dollar_interp, "expected '$|a \\{@ui.css(v)}' to raise ValueError"
+
+    print("OK: extract_css_corpus.py self-tests passed (EOF, raw #|, trailing comma, @ui .css(v), @ui//comment, $| interp, string interp, CRLF raw-byte check)")
 
 
 def main():

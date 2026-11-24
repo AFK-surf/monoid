@@ -84,6 +84,30 @@ assert.throws(
 assert.equal(validateParamRenameRule({ from: 'a', to: 'a_new' }, fnSrcOpt, fnDstValid), true);
 assert.equal(validateParamRenameRule({ from: 'b', to: 'b_new' }, fnSrcOpt, fnDstValid), true);
 
+// 2b. Token-level default expression checks: preserve string internal whitespace & reject opaque placeholders
+const fnStrSpace2 = parseFnSig('pub fn pad(sep~ : String = "  ", n~ : Int32 = 1 + 2) -> Unit');
+const fnStrSpace1 = parseFnSig('fn pad(sep_new~ : String = " ", n_new~ : Int = 1+2) -> Unit');
+const fnStrSpace2Match = parseFnSig('fn pad(sep_new~ : String = "  ", n_new~ : Int = 1+2) -> Unit');
+assert.throws(
+  () => validateParamRenameRule({ from: 'sep', to: 'sep_new' }, fnStrSpace2, fnStrSpace1),
+  /default-value expression mismatch/
+);
+assert.equal(validateParamRenameRule({ from: 'sep', to: 'sep_new' }, fnStrSpace2, fnStrSpace2Match), true);
+assert.equal(validateParamRenameRule({ from: 'n', to: 'n_new' }, fnStrSpace2, fnStrSpace2Match), true);
+
+const fnOpaqueAngle1 = parseFnSig('pub fn opq(x~ : Int32 = <expr>) -> Unit');
+const fnOpaqueAngle2 = parseFnSig('fn opq(x_new~ : Int = <expr>) -> Unit');
+assert.throws(
+  () => validateParamRenameRule({ from: 'x', to: 'x_new' }, fnOpaqueAngle1, fnOpaqueAngle2),
+  /unprovable\/opaque default expression/
+);
+const fnOpaqueWild1 = parseFnSig('pub fn opq2(x~ : Int32 = _) -> Unit');
+const fnOpaqueWild2 = parseFnSig('fn opq2(x_new~ : Int = _) -> Unit');
+assert.throws(
+  () => validateParamRenameRule({ from: 'x', to: 'x_new' }, fnOpaqueWild1, fnOpaqueWild2),
+  /unprovable\/opaque default expression/
+);
+
 // 3. Dynamic AFirstLine scan separation
 const af = scanAFirstLine(REPO_ROOT);
 assert.ok(af.definition_locations.length >= 1, 'expected AFirstLine definitions in libs/ui/src/ui');
