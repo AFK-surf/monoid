@@ -965,6 +965,7 @@ export class MbActor {
         return (instructions as Json)[name];
       case "nameUntitled": return instructions.nameUntitled(args[0]);
       case "waitOver": return instructions.waitOver(args[0]);
+      case "silentProgress": return instructions.silentProgress(args[0]);
       case "shownLimitOf": {
         const model = shownLimitOf(args[0] ?? null);
         return model === undefined ? null : { model };

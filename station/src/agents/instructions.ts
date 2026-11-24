@@ -98,7 +98,7 @@ Answering:
 - Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.
 - A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.
 - Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on.
-- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end.
+- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end, and post brief progress updates during long multi-step waits.
 - Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.
 - Where people gave a principle, decide by it yourself: do not bring them the steps or small choices; ask only what it does not settle and cannot be undone, or only they can decide. Anything that makes someone wait is a decision: ask it plainly.
 - Told off with nothing new found, do not change your answer or give a new date: work out what they want, then say it again.
@@ -195,6 +195,9 @@ export const waitOver = (seconds: number) => `You said you were waiting on work 
 - If it is done: pick up its results and carry on. If nothing was watching it (you would have been told when it ended), start a watch the next time instead of waiting on a guessed duration.
 - If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then chat_state "waiting" again. If it truly cannot be watched, wait the shortest it could still take.
 - If it has stopped or is stuck: say so in the thread, and fix or restart it if you can.`;
+
+/// The session has cycled through waiting turns without posting in the chat for this many minutes.
+export const silentProgress = (minutes: number) => `You have not posted in the chat for ${minutes} minutes. Before you wait again or start another step, post a brief progress update with chat_post.`;
 
 /// The first turn in still.fail of a session begun in a terminal: from now on it works as still.fail's sessions do.
 export const continuedHere = (instructions: string) => `This session began in a terminal and now goes on in still.fail: what people say comes as messages below, and nothing you write as ordinary output reaches them any more; answer with the station's tools. How still.fail works, from now on:

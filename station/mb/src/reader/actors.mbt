@@ -25,6 +25,8 @@ priv struct Turn {
   started_at : Double
   mut first_live_at : Double?
   mut tools_count : Int
+  mut last_tool_at : Double
+  mut wait_watch : Bool
 }
 
 ///|
@@ -142,6 +144,17 @@ priv struct Actor {
   mut waits : Int
   mut waiting_until : Double
   mut waiting_seconds : Double
+  /// Mid-turn wait timer armed while a turn declared `waiting` has not ended yet (e.g. a runtime keeping the prompt open for background work).
+  mut mid_waiting : Int?
+  mut mid_waits : Int
+  mut mid_waiting_until : Double
+  mut mid_waiting_seconds : Double
+  /// Timestamp of the last `chat_post` observed by this actor (0.0 if none in this actor's lifetime).
+  mut last_post_at : Double
+  /// When the current continuous waiting chain last posted (or started waiting); None outside a waiting chain.
+  mut silent_waiting_since : Double?
+  /// Timestamp of the last periodic progress reminder injected during this silent stretch (0.0 if none).
+  mut progress_reminded_at : Double
   mut refill : Int?
   mut refills : Int
   mut refill_at : Double
@@ -397,6 +410,13 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         waits: 0,
         waiting_until: 0.0,
         waiting_seconds: 0.0,
+        mid_waiting: None,
+        mid_waits: 0,
+        mid_waiting_until: 0.0,
+        mid_waiting_seconds: 0.0,
+        last_post_at: 0.0,
+        silent_waiting_since: None,
+        progress_reminded_at: 0.0,
         refill: None,
         refills: 0,
         refill_at: 0.0,
