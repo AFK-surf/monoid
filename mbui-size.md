@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [060b36f41](https://github.com/AFK-surf/monoid/commit/060b36f410a29857fa1fff1514dcebc50f50c540) fix(replica): break pass_rows/scan_transcripts liv | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 | [c40f9ebb2](https://github.com/AFK-surf/monoid/commit/c40f9ebb2253b462b1ae310e5079e91942f0efeb) fix(ci): offload stable Android deltas and feed to | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 | [34b7fe8e8](https://github.com/AFK-surf/monoid/commit/34b7fe8e851786f06a93e7502764b137123361f9) perf(replica): D72a 256-bucket transcriptManifest  | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 | [f8da05ca1](https://github.com/AFK-surf/monoid/commit/f8da05ca18dfab6cbf6de9e287f016f9a9813135) feat(ui): replace player sliders with thumb-free f | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [07d6c4d48](https://github.com/AFK-surf/monoid/commit/07d6c4d484427466d8fcbe6178d1fb4df398602e) fix(client): stop sending traces when usage report | 2.8 | 3.77 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 | [f768891b3](https://github.com/AFK-surf/monoid/commit/f768891b3d8346033f89f8a658e10ae49e864337) fix(station): keep Antigravity CLI profiles on fil | 2.8 | 3.77 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 | [6818dc010](https://github.com/AFK-surf/monoid/commit/6818dc010cb2cb2f155294a0fbe9427aad5df4ff) perf(ui): fix Android frame pacing, cross-platform | 2.8 | 3.76 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
-| [61be50e9d](https://github.com/AFK-surf/monoid/commit/61be50e9d4645f0e1d96e747240527f41b1bca82) fix(station): make the station's memory limits fro | 2.8 | 3.76 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [060b36f41](https://github.com/AFK-surf/monoid/commit/060b36f410a29857fa1fff1514dcebc50f50c540) fix(replica): break pass_rows/scan_transcripts liv | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.57 |
 | [c40f9ebb2](https://github.com/AFK-surf/monoid/commit/c40f9ebb2253b462b1ae310e5079e91942f0efeb) fix(ci): offload stable Android deltas and feed to | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 58.03 |
 | [34b7fe8e8](https://github.com/AFK-surf/monoid/commit/34b7fe8e851786f06a93e7502764b137123361f9) perf(replica): D72a 256-bucket transcriptManifest  | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.21 |
 | [f8da05ca1](https://github.com/AFK-surf/monoid/commit/f8da05ca18dfab6cbf6de9e287f016f9a9813135) feat(ui): replace player sliders with thumb-free f | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [07d6c4d48](https://github.com/AFK-surf/monoid/commit/07d6c4d484427466d8fcbe6178d1fb4df398602e) fix(client): stop sending traces when usage report | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.38 |
 | [f768891b3](https://github.com/AFK-surf/monoid/commit/f768891b3d8346033f89f8a658e10ae49e864337) fix(station): keep Antigravity CLI profiles on fil | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.36 |
 | [6818dc010](https://github.com/AFK-surf/monoid/commit/6818dc010cb2cb2f155294a0fbe9427aad5df4ff) perf(ui): fix Android frame pacing, cross-platform | 0.56 | 0.73 | 2.85 | 3.87 | 7.09 | 2.1 | 5.86 | 57.69 |
-| [61be50e9d](https://github.com/AFK-surf/monoid/commit/61be50e9d4645f0e1d96e747240527f41b1bca82) fix(station): make the station's memory limits fro | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.21 |
