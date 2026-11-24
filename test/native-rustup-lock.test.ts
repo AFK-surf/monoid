@@ -77,10 +77,11 @@ if (args[0] === "toolchain" && args[1] === "install") {
   chmodSync(fakeRustup, 0o755);
 }
 
-function spawnRustTarget(triple: string, env: Record<string, string>) {
+function spawnRustTarget(triple: string | undefined, env: Record<string, string>) {
+  const call = triple === undefined ? "rustTarget();" : `rustTarget(${JSON.stringify(triple)});`;
   const child = spawn(
     process.execPath,
-    ["--input-type=module", "-e", `import { rustTarget } from ${JSON.stringify(nativeModule)}; rustTarget(${JSON.stringify(triple)});`],
+    ["--input-type=module", "-e", `import { rustTarget } from ${JSON.stringify(nativeModule)}; ${call}`],
     { env: { ...process.env, ...env } },
   );
   let stderr = "";
@@ -93,7 +94,12 @@ function spawnRustTarget(triple: string, env: Record<string, string>) {
     if (stderr.includes("waiting for another process")) onWaiting?.();
   });
   const done = once(child, "exit").then(([code]) => ({ code: code ?? 1, stderr }));
-  return { waiting, done };
+  const waitOrFail = (label: string) =>
+    Promise.race([
+      waiting,
+      done.then((r) => assert.fail(`${label} exited (${r.code}) before waiting on lock:\n${r.stderr}`)),
+    ]);
+  return { waitOrFail, done };
 }
 
 test("parallel rustTarget calls serialize rustup install and target add without racing", async (t) => {
@@ -135,12 +141,15 @@ test("parallel rustTarget calls serialize rustup install and target add without 
 
   // Start worker 1 and pause it deterministically inside `rustup toolchain install`.
   const w1 = spawnRustTarget("aarch64-apple-darwin", env);
-  await enteredInstall;
+  await Promise.race([
+    enteredInstall,
+    w1.done.then((r) => assert.fail(`worker 1 exited (${r.code}) before entering install:\n${r.stderr}`)),
+  ]);
 
   // Start workers 2 and 3 while worker 1 holds `.rustup.lock`, and verify both queue on the lock.
   const w2 = spawnRustTarget("aarch64-apple-ios", env);
   const w3 = spawnRustTarget("aarch64-apple-ios-sim", env);
-  await Promise.all([w2.waiting, w3.waiting]);
+  await Promise.all([w2.waitOrFail("worker 2"), w3.waitOrFail("worker 3")]);
 
   // Release worker 1's install; all three must finish cleanly without overlapping rustup calls.
   holdSocket!.end();
@@ -181,7 +190,7 @@ test("rustTarget releases the lock when rustup fails so later callers proceed", 
   assert.notEqual(first.code, 0);
   assert.ok(!existsSync(join(cache, ".rustup.lock")), "lock directory should be released on error");
 
-  const second = await spawnRustTarget("aarch64-apple-darwin", env).done;
+  const second = await spawnRustTarget(undefined, env).done;
   assert.equal(second.code, 0, second.stderr);
   assert.deepEqual(readFileSync(logFile, "utf8").trim().split("\n"), ["install:1.95.0", "install:1.95.0"]);
 });

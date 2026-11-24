@@ -803,6 +803,7 @@ const LLVM = "/opt/homebrew/opt/llvm/bin";
 function xwinEnv(): { XWIN_CACHE_DIR: string; PATH: string } {
   const tools = join(BUILD(), "tools");
   const env = { XWIN_CACHE_DIR: join(BUILD(), "xwin"), PATH: [join(tools, "bin"), join(homedir(), ".cargo/bin"), LLVM, "/opt/homebrew/bin", process.env.PATH].join(delimiter) };
+  rustTarget();
   if (!existsSync(join(tools, "bin", "cargo-xwin"))) {
     if (!existsSync(join(LLVM, "clang-cl"))) throw new Error("cross-building for Windows needs Homebrew's llvm and lld (brew install llvm lld)");
     run("cargo", ["install", "--locked", "--root", tools, "cargo-xwin", "--version", XWIN], { env: rustEnv(env) });
@@ -1590,19 +1591,23 @@ function rustEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     ...extra,
   };
 }
-/// The toolchain and the target, installed when missing (rustup does it once per machine).
-export function rustTarget(triple: string) {
+/// The toolchain and (when given) the target, installed when missing (serialized behind a lock so parallel builds do
+/// not race in rustup).
+export function rustTarget(triple?: string) {
   const env = rustEnv();
   // `ensure` runs up to 3 builds in parallel; rustup mutates shared ~/.rustup downloads and toolchain dirs in place,
-  // so concurrent installs corrupt the toolchain on fresh runners (45460250774, 45461499107).
+  // so concurrent installs corrupt the toolchain on fresh runners (45460250774, 45461499107). The lock lives in CACHE
+  // (one per user/runner by default; separate STILLFAIL_NATIVE_CACHE dirs on one host do not share it).
   const release = acquire(join(CACHE, ".rustup"));
   try {
     let installed = spawnSync("rustup", ["target", "list", "--installed", "--toolchain", TOOLCHAIN], { env, encoding: "utf8" });
     if (installed.status !== 0) {
       run("rustup", ["toolchain", "install", TOOLCHAIN, "--profile", "minimal"], { env });
-      installed = spawnSync("rustup", ["target", "list", "--installed", "--toolchain", TOOLCHAIN], { env, encoding: "utf8" });
+      if (triple) installed = spawnSync("rustup", ["target", "list", "--installed", "--toolchain", TOOLCHAIN], { env, encoding: "utf8" });
     }
-    if (!(installed.stdout ?? "").split(/\r?\n/).includes(triple)) run("rustup", ["target", "add", "--toolchain", TOOLCHAIN, triple], { env });
+    if (triple && !(installed.stdout ?? "").split(/\r?\n/).includes(triple)) {
+      run("rustup", ["target", "add", "--toolchain", TOOLCHAIN, triple], { env });
+    }
   } finally {
     release();
   }
