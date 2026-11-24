@@ -457,11 +457,26 @@ fn Exporter::read_head(self : Exporter, dir : String) -> Option[js_json::JValue]
   match self.files.read(self.files.join([dir, "head.json"])) {
     Ok(Some(t)) => {
       match js_json::parse(t) {
-        Ok(v) => Some(v)
-        Err(_) => None
+        Ok(js_json::JValue::Obj(es)) => Some(js_json::JValue::Obj(es))
+        _ => None
       }
     }
     _ => None
+  }
+}
+
+fn Exporter::read_head_checked(self : Exporter, dir : String) -> Result[Option[js_json::JValue], String] {
+  let path = self.files.join([dir, "head.json"])
+  match self.files.read(path) {
+    Ok(None) => Ok(None)
+    Err(e) => Err("failed to read " + path + ": " + e)
+    Ok(Some(t)) => {
+      match js_json::parse(t) {
+        Ok(js_json::JValue::Obj(es)) => Ok(Some(js_json::JValue::Obj(es)))
+        Ok(_) => Err("corrupted " + path + ": expected JSON object")
+        Err(e) => Err("corrupted " + path + ": " + e)
+      }
+    }
   }
 }
 
@@ -556,6 +571,8 @@ pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json
       )
     }
   }
+  let prev_known = self.known
+  let prev_transcripts_pending = self.transcripts_pending
   let passed = match self.state.tx_err(
     fn(_st : sql_db::Db) -> Result[js_json::JValue, String] {
       self.pass_in(told, home)
@@ -564,6 +581,8 @@ pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json
   ) {
     Ok(p) => p
     Err(e) => {
+      self.known = prev_known
+      self.transcripts_pending = prev_transcripts_pending
       self.tf_cache = Map::new()
       return Err(e)
     }
@@ -592,9 +611,10 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       Err(e) => return Err(e)
     }
     let dir = self.gen_dir(ws, gen)
-    let head = match self.read_head(dir) {
-      Some(h) => h
-      None =>
+    let head = match self.read_head_checked(dir) {
+      Ok(Some(h)) => h
+      Err(e) => return Err(e)
+      Ok(None) =>
       jval_obj([
         ("v", jval_num(REPLICA_VERSION.to_double())),
         ("origin", jval_str(self.origin)),
@@ -2367,7 +2387,8 @@ fn Exporter::export_transcripts(
         let actual = if self.files.exists(path) { path } else { path + ".zst" }
         add_path(actual)
         if kind == "claude" {
-          let sep_b = (self.files.sep.to_bytes()[0].to_int() & 0xFF)
+          let sep_bytes = self.files.sep.to_bytes()
+          let sep_b = if sep_bytes.length() > 0 { sep_bytes[0].to_int() & 0xFF } else { 47 }
           let cut = match str_rev_find_byte(path, sep_b) {
             Some(i) => i + 1
             None => 0

@@ -784,7 +784,8 @@ fn carry_gather_in(
     }
   }
   let finder = locate::Finder::new(files.client, files.sep)
-  let sep_b = files.sep.to_bytes()[0].to_int() & 0xFF
+  let sep_bytes = files.sep.to_bytes()
+  let sep_b = if sep_bytes.length() > 0 { sep_bytes[0].to_int() & 0xFF } else { 47 }
   for si in 0..<rows.length() {
     let s = rows[si]
     let key = field_text(s, "key")
@@ -1160,7 +1161,8 @@ fn carry_sizes_in_db(
     Ok(rs) => rs
     Err(e) => return Err(e.message)
   }
-  let sep_b = files.sep.to_bytes()[0].to_int() & 0xFF
+  let sep_bytes = files.sep.to_bytes()
+  let sep_b = if sep_bytes.length() > 0 { sep_bytes[0].to_int() & 0xFF } else { 47 }
   for si in 0..<rows.length() {
     let s = rows[si]
     let key = field_text(s, "key")

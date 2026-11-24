@@ -13,6 +13,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   rmSync,
@@ -89,8 +90,11 @@ function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; 
   }
   assert.notEqual(realpathSync(realMb), realpathSync(realPion), "MB and Pion binaries must be distinct files");
   const ver = execFileSync(realPion, ["--version"], { encoding: "utf8" });
+  const m = ver.match(/modes:([^\s]+)/);
+  assert.ok(m !== null, `Pion --version must include modes: list: ${ver}`);
+  const advertised = new Set(m[1]!.split(","));
   for (const mode of ["replica-export", "replica-restore", "replica-carry"]) {
-    assert.match(ver, new RegExp(`modes:[^\\n]*${mode}`), `Pion --version must advertise ${mode}: ${ver}`);
+    assert.ok(advertised.has(mode), `Pion --version must advertise exact mode ${mode}: ${ver}`);
   }
   return { mb: realMb, pion: realPion };
 }
@@ -263,7 +267,7 @@ test("bidirectional MB export -> Pion restore and Pion export -> MB restore prod
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
-  const { made } = makeRichStation();
+  const { made, attPath } = makeRichStation();
   const repMb = join(made.data, "replica-mb");
   const repPion = join(made.data, "replica-pion");
 
@@ -305,11 +309,31 @@ test("bidirectional MB export -> Pion restore and Pion export -> MB restore prod
   const resB = await takeBackSoon(destB, dbB, NOW + 100, bins.mb);
   assert.ok(resB !== null);
 
-  for (const tbl of ["threads", "sessions", "thread_sessions", "entries", "letters", "runtime_sessions"]) {
-    const rowsA = dumpTableRows(dbA, tbl).map((r) => JSON.stringify(r).replaceAll(destA, "<DATA>"));
-    const rowsB = dumpTableRows(dbB, tbl).map((r) => JSON.stringify(r).replaceAll(destB, "<DATA>"));
+  assert.ok(Object.keys(headPion.transcriptFiles ?? {}).length >= 1, "headPion.transcriptFiles must be non-empty");
+
+  for (const tbl of [
+    "threads",
+    "sessions",
+    "thread_sessions",
+    "entries",
+    "letters",
+    "runtime_sessions",
+    "turns",
+    "reads",
+    "pins",
+    "closed_cards",
+    "opened_chats",
+    "replica_restored",
+  ]) {
+    const rowsA = dumpTableRows(dbA, tbl).map((r) => JSON.stringify(r).replaceAll(destA, "<DATA>").replaceAll(headMb.gen, "<GEN>"));
+    const rowsB = dumpTableRows(dbB, tbl).map((r) => JSON.stringify(r).replaceAll(destB, "<DATA>").replaceAll(headPion.gen, "<GEN>"));
     assert.deepEqual(rowsA, rowsB, `table ${tbl} must match 0-diff between MB->Pion and Pion->MB`);
   }
+
+  // Regular attachment content must also be restored identically on both sides.
+  const attRel = attPath.slice(made.data.length + 1);
+  assert.equal(readFileSync(join(destA, attRel), "utf8"), "attachment-bytes-12345\n");
+  assert.equal(readFileSync(join(destB, attRel), "utf8"), "attachment-bytes-12345\n");
 
   const trA = join(destA, "transcripts", "agy", "rt-agy-1.jsonl");
   const trB = join(destB, "transcripts", "agy", "rt-agy-1.jsonl");
@@ -428,7 +452,7 @@ test("forced head write failure rolls back export.db cleanly and retries on next
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
-  const { made } = makeRichStation();
+  const { made, attPath } = makeRichStation();
   const rep = join(made.data, "replica-fault");
   const exp = new ExportClient(bins.pion, made.db, rep, made.data);
   await exp.ask({ type: "places", places: PLACES });
@@ -446,7 +470,7 @@ test("forced head write failure rolls back export.db cleanly and retries on next
   rmSync(headPath);
   mkdirSync(headPath);
 
-  await assert.rejects(() => exp.ask({ type: "pass", told }), /EISDIR|Is a directory|error|directory/i);
+  await assert.rejects(() => exp.ask({ type: "pass", told }), /EISDIR|Is a directory/i);
 
   // Restore head.json and retry pass: because export.db rolled back, the new entry is still exported cleanly.
   rmSync(headPath, { recursive: true });
@@ -454,13 +478,65 @@ test("forced head write failure rolls back export.db cleanly and retries on next
   const p2 = await exp.ask({ type: "pass", told });
   assert.ok(p2.wrote >= 1, "retry pass after head write failure must write the rolled-back entry");
   await exp.close();
+
+  // Cold-start first pass head write failure -> fix path -> same-process retry must NOT lose source DB changes (both MB & Pion).
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const { made: m2 } = makeRichStation();
+    const rep2 = join(m2.data, `replica-cold-fault-${label}`);
+    // Run pass 1, capture gen, then start a brand-new cold process where head.json is replaced by a directory on its FIRST pass.
+    const seed = new ExportClient(bin, m2.db, rep2, m2.data);
+    await seed.ask({ type: "places", places: PLACES });
+    const sp1 = await seed.ask({ type: "pass", told: nothingTold() });
+    const g2 = sp1.heads[HOME].gen as string;
+    const h2Path = join(rep2, "own", HOME, g2, "head.json");
+    const h2Saved = readFileSync(h2Path, "utf8");
+    const logDir2 = join(rep2, "own", HOME, g2, "log");
+    await seed.close();
+
+    // Modify source DB while cold exporter is stopped, then block head.json with a directory.
+    const th2 = m2.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
+    m2.store.insertMessage({ thread: th2.id, ts: "r2.coldfault", authorKind: "person", author: "p@x", text: `cold-fault-msg-${label}` });
+    rmSync(h2Path);
+    mkdirSync(h2Path);
+
+    const cold = new ExportClient(bin, m2.db, rep2, m2.data);
+    cold.now = NOW + 2000;
+    await cold.ask({ type: "places", places: PLACES });
+    await assert.rejects(() => cold.ask({ type: "pass", told: nothingTold() }), /EISDIR|Is a directory/i);
+
+    // Fix head.json path and retry IN THE SAME PROCESS (without restarting): must write the rolled-back change!
+    rmSync(h2Path, { recursive: true });
+    writeFileSync(h2Path, h2Saved);
+    const retry = await cold.ask({ type: "pass", told: nothingTold() });
+    assert.ok(retry.wrote >= 1, `${label}: same-process retry after cold-start head failure must write >= 1`);
+    const retryHead = retry.heads[HOME];
+    const onDiskBatches = readdirSync(logDir2).sort();
+    assert.deepEqual(onDiskBatches, [...(retryHead.batches as string[])].sort(), `${label}: orphan batches must be cleaned after retry`);
+    const hashes2 = [...Object.keys(retryHead.files ?? {}), ...Object.keys(retryHead.transcriptFiles ?? {})];
+    const sources2 = await cold.ask({ type: "sources", hashes: hashes2 });
+    await cold.close();
+
+    const dest2 = tempDir(`w6b-cold-fault-dest-${label}-`);
+    const destDb2 = join(dest2, "stillfail.db");
+    Store.open(destDb2).close();
+    stageRestoreCopy(rep2, m2.data, HOME, g2, dest2, sources2);
+    await takeBackSoon(dest2, destDb2, NOW + 3000, bin);
+    const entries2 = dumpTableRows(destDb2, "entries");
+    assert.ok(
+      entries2.some((e) => JSON.stringify(e).includes(`cold-fault-msg-${label}`)),
+      `${label}: restored DB must include message exported on same-process retry`,
+    );
+  }
 });
 
 test("FilesPending after DB commit resumes cleanly across engines (Pion -> MB and MB -> Pion)", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
-  const { made } = makeRichStation();
+  const { made, attPath } = makeRichStation();
   const rep = join(made.data, "replica-pending");
   const exp = new ExportClient(bins.pion, made.db, rep, made.data);
   await exp.ask({ type: "places", places: PLACES });
@@ -490,6 +566,17 @@ test("FilesPending after DB commit resumes cleanly across engines (Pion -> MB an
     assert.ok(out1.left >= 1, `${firstName} must report remaining files`);
     assert.equal(existsSync(join(dest, "restore", "ready.json")), true, "restore dir must stay when pending");
     assert.deepEqual(JSON.parse(readFileSync(join(dest, "replica", "formerly.json"), "utf8")), [ORIGIN]);
+    // Before engine swap, verify DB rows, replica_restored marker, and pending file rows are already committed.
+    assert.ok(dumpTableRows(dbPath, "threads").length >= 1, `${firstName} must commit threads before FilesPending`);
+    const restoredMarkers = dumpTableRows(dbPath, "replica_restored") as Array<{ origin: string; gen: string }>;
+    assert.ok(
+      restoredMarkers.some((m) => m.origin === ORIGIN && m.gen === head.gen),
+      `${firstName} must record replica_restored(origin, gen) before FilesPending`,
+    );
+    const pendingTotal =
+      dumpTableRows(dbPath, "replica_restore_files").length +
+      dumpTableRows(dbPath, "replica_restore_transcripts").length;
+    assert.ok(pendingTotal >= 1, `${firstName} must leave pending file rows before resume`);
 
     // Remove blocker and resume with the OTHER engine!
     rmSync(blocker);
@@ -511,7 +598,7 @@ test("export.db cross-engine handover: MB pass 1 -> Pion pass 2 -> restore", asy
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
-  const { made } = makeRichStation();
+  const { made, attPath } = makeRichStation();
   const rep = join(made.data, "replica-handover");
 
   // Pass 1 with MB
@@ -633,7 +720,7 @@ test("production entrypoints (ProgramRunner, takeBackSoon, carry) cold-start wit
       setPionProbeRunnerForTest(() => probePromise);
 
       try {
-        const { made } = makeRichStation();
+        const { made, attPath } = makeRichStation();
         const repDir = join(made.data, "replica-prod");
         const runner = new ProgramRunner({
           db: made.db,
@@ -672,14 +759,27 @@ test("production entrypoints (ProgramRunner, takeBackSoon, carry) cold-start wit
         const sources = await runner.sources(hashes);
         await runner.close();
 
-        // takeBackSoon with readers config -> Pion wrapper
+        // takeBackSoon with independent reset + pending probe -> must wait on probe & hit Pion wrapper on first spawn!
+        resetReaderSelectionStateForTest();
+        let releaseRestoreProbe!: (modes: Set<string>) => void;
+        const restoreProbePromise = new Promise<Set<string>>((resolve) => {
+          releaseRestoreProbe = resolve;
+        });
+        setPionProbeRunnerForTest(() => restoreProbePromise);
+
         const dest = tempDir("w6b-prod-restore-");
         const destDb = join(dest, "stillfail.db");
         Store.open(destDb).close();
         stageRestoreCopy(repDir, made.data, HOME, head.gen, dest, sources);
-        const restored = await takeBackSoon(dest, destDb, NOW + 900, undefined, {
+        const restoreP = takeBackSoon(dest, destDb, NOW + 900, undefined, {
           readers: { readers: { "replica-restore": "pion" } },
         });
+        await Promise.resolve();
+        assert.equal(countBuilderSpawns(mbLog, "replica-restore"), 0, "takeBackSoon must wait on pending probe, not spawn MB");
+        assert.equal(countBuilderSpawns(pionLog, "replica-restore"), 0, "takeBackSoon must not spawn before probe resolves");
+
+        releaseRestoreProbe(new Set(["footprint", "packed", "memory", "live-locator", "replica-export", "replica-restore", "replica-carry"]));
+        const restored = await restoreP;
         assert.ok(restored !== null);
         assert.equal(countBuilderSpawns(pionLog, "replica-restore"), 1, "takeBackSoon must hit Pion wrapper");
         assert.equal(countBuilderSpawns(mbLog, "replica-restore"), 0);
@@ -688,4 +788,126 @@ test("production entrypoints (ProgramRunner, takeBackSoon, carry) cold-start wit
       }
     },
   );
+});
+
+test("corrupted head.json on existing generation aborts pass and preserves all historical batches (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const made = station();
+    cleanupDirs.push(made.data);
+    // Ensure two distinct sessions exist (`chat:a` unchanged, `chat:b` updated later).
+    const thA = made.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
+    made.store.insertMessage({ thread: thA.id, ts: "u.1", authorKind: "person", author: "p@x", text: "unchanged-session-msg" });
+
+    const rep = join(made.data, `replica-corrupt-head-${label}`);
+    const exp = new ExportClient(bin, made.db, rep, made.data);
+    await exp.ask({ type: "places", places: PLACES });
+    const p1 = await exp.ask({ type: "pass", told: nothingTold() });
+    const gen = p1.heads[HOME].gen as string;
+    const genDirPath = join(rep, "own", HOME, gen);
+    const headPath = join(genDirPath, "head.json");
+    const logDir = join(genDirPath, "log");
+    const savedHead = readFileSync(headPath, "utf8");
+    const savedBatches = readdirSync(logDir).sort();
+    assert.ok(savedBatches.length >= 1);
+
+    // Corrupt head.json, update second session/message, and run pass -> MUST fail & keep all historical batches!
+    writeFileSync(headPath, "{corrupted-json");
+    made.store.insertMessage({ thread: thA.id, ts: "x.2", authorKind: "person", author: "p@x", text: "updated-after-corrupt" });
+    await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /corrupt|json|head/i);
+    assert.deepEqual(
+      readdirSync(logDir).sort(),
+      savedBatches,
+      `${label}: historical batches must NEVER be deleted when head.json is corrupted`,
+    );
+
+    // Restore valid head.json -> next pass succeeds and full restore retains BOTH unchanged and updated messages!
+    writeFileSync(headPath, savedHead);
+    const p2 = await exp.ask({ type: "pass", told: nothingTold() });
+    assert.ok(p2.wrote >= 1);
+    const hashes = [...Object.keys(p2.heads[HOME].files ?? {}), ...Object.keys(p2.heads[HOME].transcriptFiles ?? {})];
+    const sources = await exp.ask({ type: "sources", hashes });
+    await exp.close();
+
+    const dest = tempDir(`w6b-corrupt-dest-${label}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, HOME, gen, dest, sources);
+    await takeBackSoon(dest, destDb, NOW + 4000, bin);
+    const restoredSessions = dumpTableRows(destDb, "sessions");
+    assert.ok(restoredSessions.length >= 2, `${label}: both sessions must survive after head.json corruption recovery`);
+    const restoredEntries = dumpTableRows(destDb, "entries");
+    assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("unchanged-session-msg")), `${label}: unchanged message preserved`);
+    assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("updated-after-corrupt")), `${label}: updated message preserved`);
+  }
+});
+
+test("CLI numeric flag parity: --batch-bytes 4294967296 falls back to default and --now +1 parses as 1 (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const made = station();
+    cleanupDirs.push(made.data);
+    const rep = join(made.data, `replica-cli-num-${label}`);
+    const p = new MbProcess(bin, [
+      "--builder",
+      "replica-export",
+      "--db",
+      made.db,
+      "--replica",
+      rep,
+      "--data-dir",
+      made.data,
+      "--origin",
+      ORIGIN,
+      "--sep",
+      sep,
+      "--batch-bytes",
+      "4294967296",
+    ]);
+    const ask = (req: Record<string, unknown>) =>
+      new Promise<any>((resolve, reject) => {
+        const onMsg = (m: { answer?: unknown; error?: string }) => {
+          p.off("message", onMsg);
+          if (m.error !== undefined) reject(new Error(m.error));
+          else resolve(m.answer);
+        };
+        p.on("message", onMsg);
+        p.postMessage({ id: 1, now: NOW, ...req });
+      });
+    try {
+      await ask({ type: "places", places: PLACES });
+      const passed = await ask({ type: "pass", told: nothingTold() });
+      assert.ok(passed.wrote >= 1, `${label}: --batch-bytes 4294967296 must fall back to default, not 0`);
+      const head = passed.heads[HOME];
+      const hashes = [...Object.keys(head.files ?? {}), ...Object.keys(head.transcriptFiles ?? {})];
+      const sources = await ask({ type: "sources", hashes });
+      await ask({ type: "close" });
+
+      // Test --now +1 on replica-restore
+      const dest = tempDir(`w6b-now-plus1-${label}-`);
+      const destDb = join(dest, "stillfail.db");
+      Store.open(destDb).close();
+      stageRestoreCopy(rep, made.data, HOME, head.gen, dest, sources);
+      const rp = new MbProcess(bin, ["--builder", "replica-restore", "--db", destDb, "--data", dest, "--now", "+1", "--sep", sep]);
+      const rmsg = await new Promise<{ ready?: unknown; error?: string }>((resolve, reject) => {
+        rp.once("message", resolve);
+        rp.once("error", reject);
+      });
+      assert.equal(rmsg.error, undefined);
+      const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8"));
+      assert.equal(outcome.at, 1, `${label}: --now +1 must parse as 1`);
+    } finally {
+      p.kill();
+    }
+  }
 });

@@ -115,10 +115,17 @@ test "utf16 sorting puts non-BMP emoji before BMP U+E000" {
   expect_str(xs[3], "\u{E000}.txt")
 }
 
-test "parse_int_flag and parse_double_flag fall back on invalid" {
+test "parse_int_flag and parse_double_flag fall back on invalid or out-of-range" {
   expect_int(parse_int_flag(Some("42"), 7), 42)
+  expect_int(parse_int_flag(Some("2147483647"), 7), 2147483647)
+  expect_int(parse_int_flag(Some("4294967296"), 7), 7)
+  expect_int(parse_int_flag(Some("-2147483649"), 7), 7)
   expect_int(parse_int_flag(Some("nope"), 7), 7)
   expect_int(parse_int_flag(None, 7), 7)
   expect_double(parse_double_flag(Some("12.5"), 1.0), 12.5)
+  expect_double(parse_double_flag(Some("+1"), 0.0), 1.0)
+  expect_double(parse_double_flag(Some("5."), 0.0), 5.0)
+  expect_double(parse_double_flag(Some(".5"), 0.0), 0.5)
+  expect_double(parse_double_flag(Some(" -2.5e1 "), 0.0), -25.0)
   expect_double(parse_double_flag(Some("bad"), 1.0), 1.0)
 }

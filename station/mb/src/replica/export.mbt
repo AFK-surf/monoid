@@ -309,8 +309,25 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
   let text = (try { self.files.read(self.files.join([dir, "head.json"])) } catch { _ => None })
   match text {
-    Some(t) => Some(@jsjson.parse(t)) catch { _ => None }
+    Some(t) =>
+      match (@jsjson.parse(t) catch { _ => Null }) {
+        Obj(_) as v => Some(v)
+        _ => None
+      }
     None => None
+  }
+}
+
+///|
+fn Exporter::read_head_checked(self : Exporter, dir : String) -> JValue? raise {
+  let path = self.files.join([dir, "head.json"])
+  match self.files.read(path) {
+    None => None
+    Some(t) =>
+      match (@jsjson.parse(t) catch { e => fail("corrupted \{path}: \{e}") }) {
+        Obj(_) as v => Some(v)
+        _ => fail("corrupted \{path}: expected JSON object")
+      }
   }
 }
 
@@ -383,12 +400,16 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
       ("empty", Bool(self.empty())),
     ])
   }
+  let prev_known = self.known
+  let prev_transcripts_pending = self.transcripts_pending
   self.state.exec("BEGIN IMMEDIATE")
   let passed = self.pass_in(told, home) catch {
     e => {
       self.state.exec("ROLLBACK") catch {
         _ => ()
       }
+      self.known = prev_known
+      self.transcripts_pending = prev_transcripts_pending
       self.tf_cache.clear()
       raise e
     }
@@ -417,7 +438,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     let ws = w.0
     let gen = self.gen_of(ws)
     let dir = self.gen_dir(ws, gen)
-    let head = match self.read_head(dir) {
+    let head = match self.read_head_checked(dir) {
       Some(h) => h
       None =>
         Obj([

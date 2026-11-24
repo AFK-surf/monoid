@@ -83,13 +83,19 @@ int main(void) {
     REQUIRE(lstat(p_file, &st) == 0);
     REQUIRE(st.st_size == 2);
 
-    // 2. sfc_utimes: sub-second precision.
+    // 2. sfc_utimes: sub-second precision (both seconds and nanoseconds).
     REQUIRE(sfc_utimes(p_file, 1700000123.456) == 0);
     REQUIRE(lstat(p_file, &st) == 0);
     REQUIRE((int64_t)st.st_mtime == 1700000123LL);
+#if defined(__APPLE__)
+    long nsec = st.st_mtimespec.tv_nsec;
+#else
+    long nsec = st.st_mtim.tv_nsec;
+#endif
+    REQUIRE(nsec >= 455000000L && nsec <= 457000000L);
     REQUIRE(sfc_utimes(p_missing, 1700000000.0) == -1);
 
-    // 3. sfc_nlink and sfc_link (0 on success, 2 on EEXIST and ENOENT).
+    // 3. sfc_nlink and sfc_link (0 on success, 1 on EPERM/EXDEV fallback, 2 on EEXIST and ENOENT).
     REQUIRE(sfc_nlink(p_file) == 1);
     REQUIRE(sfc_nlink(p_missing) == -1);
     REQUIRE(sfc_link(p_file, p_link) == 0);
@@ -107,8 +113,11 @@ int main(void) {
     REQUIRE(sfc_missing(p_dangling, 0) == 0); // link itself exists
     REQUIRE(sfc_missing(p_dangling, 1) == 1); // target is missing
 
-    // 5. sfc_dir_missing and sfc_dir_readable.
+    // 5. sfc_dir_missing, sfc_dir_readable, and deterministic sfc_link == 1 (EPERM on directory hardlink).
     REQUIRE(mkdir(p_sub, 0755) == 0);
+    char p_dir_link[512];
+    snprintf(p_dir_link, sizeof(p_dir_link), "%s/sub_hardlink", root);
+    REQUIRE(sfc_link(p_sub, p_dir_link) == 1); // EPERM on directory hardlink -> fallback-to-copy (1)
     REQUIRE(sfc_dir_missing(p_sub) == 0);
     REQUIRE(sfc_dir_missing(p_missing) == 1);
     REQUIRE(sfc_dir_missing(p_file) == 1); // regular file is ENOTDIR -> missing as dir

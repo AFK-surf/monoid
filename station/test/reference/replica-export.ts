@@ -125,10 +125,27 @@ export function writeWhole(path: string, bytes: Uint8Array | string, sync = true
 
 export function readHead(dir: string): Head | null {
   try {
-    return JSON.parse(readFileSync(headFile(dir), "utf8")) as Head; // sync: in the export's own thread (worker.ts)
+    const parsed = JSON.parse(readFileSync(headFile(dir), "utf8")); // sync: in the export's own thread (worker.ts)
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Head) : null;
   } catch {
     return null;
   }
+}
+
+export function readHeadChecked(dir: string): Head | null {
+  const path = headFile(dir);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8"); // sync: in the export's own thread (worker.ts)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw e;
+  }
+  const parsed = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`corrupted ${path}: expected JSON object`);
+  }
+  return parsed as Head;
 }
 
 const STATE = `
@@ -356,6 +373,8 @@ export class Exporter {
   pass(told: Told): Passed {
     const { home, workspaces } = this.#places;
     if (home === null || workspaces.length === 0) return { heads: {}, more: false, wrote: 0, read: 0 };
+    const prevKnown = this.#known;
+    const prevTranscriptsPending = this.#transcriptsPending;
     this.#state.exec("BEGIN IMMEDIATE");
     try {
       const passed = this.#pass(told, home, workspaces);
@@ -363,6 +382,8 @@ export class Exporter {
       return passed;
     } catch (e) {
       this.#state.exec("ROLLBACK");
+      this.#known = prevKnown;
+      this.#transcriptsPending = prevTranscriptsPending;
       this.#tfCache.clear();
       throw e;
     }
@@ -376,7 +397,7 @@ export class Exporter {
     for (const ws of names.keys()) {
       const gen = this.#genOf(ws);
       const dir = genDir(this.#root(), ws, gen);
-      const head: Head = readHead(dir) ?? {
+      const head: Head = readHeadChecked(dir) ?? {
         v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
         batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
       };

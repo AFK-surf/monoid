@@ -54,7 +54,11 @@ static HANDLE sfc_opened(const char *path, DWORD access) {
         OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
         NULL);
+    DWORD err = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
     free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        SetLastError(err);
+    }
     return h;
 }
 #else
@@ -298,11 +302,11 @@ int32_t sfc_dir_missing(const char *path) {
         return 0;
     }
     DWORD attr = GetFileAttributesW(w);
+    DWORD e = (attr == INVALID_FILE_ATTRIBUTES) ? GetLastError() : 0;
     free(w);
     if (attr != INVALID_FILE_ATTRIBUTES) {
         return (attr & FILE_ATTRIBUTE_DIRECTORY) ? 0 : 1;
     }
-    DWORD e = GetLastError();
     return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
 #else
     DIR *d = opendir(path);

@@ -830,10 +830,12 @@ jobs:
           pnpm --dir station install --frozen-lockfile --prefer-offline
 
           echo "BIN_PION=$BIN_PION"
-          "$BIN_PION" --version
-          "$BIN_PION" --version | grep -q 'replica-export'
-          "$BIN_PION" --version | grep -q 'replica-restore'
-          "$BIN_PION" --version | grep -q 'replica-carry'
+          VER_OUT="$("$BIN_PION" --version)"
+          printf '%s\n' "$VER_OUT"
+          MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          for m in replica-export replica-restore replica-carry; do
+            printf ',%s,\n' "$MODES_CSV" | grep -Fq ",$m," || { echo "FAIL: missing exact mode $m in $MODES_CSV" >&2; exit 1; }
+          done
 
           for suite in \
             station/test/mb-replica.test.ts \
@@ -841,24 +843,44 @@ jobs:
             station/test/replica-transcript.test.ts \
             station/test/carry-walk-bounded.test.ts; do
             echo "=== Forced Pion suite: $suite ==="
-            OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap "$suite")"
+            if ! OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap "$suite" 2>&1)"; then
+              printf '%s\n' "$OUT"
+              exit 1
+            fi
             printf '%s\n' "$OUT"
             printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
             printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
           done
 
           echo "=== Pion replica-carry in Retire suite: station/test/replica-retire.test.ts ==="
-          # replica-retire.test.ts test 10 also starts the MoonBit session program (W7), so keep BIN_MB for non-replica modes
-          # while forcing Pion for all implemented modes (including replica-carry) via STILLFAIL_PION_READER + STILLFAIL_READER_ENGINE=pion.
-          RET_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_READER_ENGINE=pion \
-            node --test --test-reporter=tap station/test/replica-retire.test.ts)"
+          # Wrap BIN_PION to prove replica-carry spawns genuinely executed Pion (never silently fell back to MB).
+          RETIRE_LOG="$RUNNER_TEMP/retire-pion-spawns.log"
+          RETIRE_PION_WRAP="$RUNNER_TEMP/retire-pion-wrap.sh"
+          rm -f "$RETIRE_LOG"
+          cat > "$RETIRE_PION_WRAP" <<EOF
+          #!/bin/sh
+          printf '%s\n' "\$*" >> "$RETIRE_LOG"
+          exec "$BIN_PION" "\$@"
+          EOF
+          chmod +x "$RETIRE_PION_WRAP"
+          if ! RET_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$RETIRE_PION_WRAP" STILLFAIL_READER_ENGINE=pion \
+            node --test --test-reporter=tap station/test/replica-retire.test.ts 2>&1)"; then
+            printf '%s\n' "$RET_OUT"
+            exit 1
+          fi
           printf '%s\n' "$RET_OUT"
           printf '%s\n' "$RET_OUT" | grep -qE '^# tests [1-9]'
           printf '%s\n' "$RET_OUT" | grep -qE '^# skipped 0$'
+          CARRY_SPAWNS="$(grep -c -- '--builder replica-carry' "$RETIRE_LOG" || true)"
+          echo "replica-retire Pion replica-carry spawns: $CARRY_SPAWNS"
+          test "${CARRY_SPAWNS:-0}" -gt 0
 
           echo "=== Dual-engine switch suite: station/test/builders-replica-pion-switch.test.ts ==="
-          SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
-            node --test --test-reporter=tap station/test/builders-replica-pion-switch.test.ts)"
+          if ! SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-replica-pion-switch.test.ts 2>&1)"; then
+            printf '%s\n' "$SW_OUT"
+            exit 1
+          fi
           printf '%s\n' "$SW_OUT"
           printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
           printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
