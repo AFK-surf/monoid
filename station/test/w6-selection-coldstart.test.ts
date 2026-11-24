@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { withBytes } from "../src/mesh/bus.ts";
 import { Moves } from "../src/move/station.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import {
@@ -19,7 +21,6 @@ import {
 } from "../src/read/mb-reader.ts";
 import { type ReaderSelectConfig, setReaderModeImplementedForTest } from "../src/read/reader-select.ts";
 import { gatherSoon, inProgram, placeSoon, previewSoon } from "../src/replica/carry.ts";
-import { Handover } from "../src/replica/handover.ts";
 import { readyFile, takeBackSoon } from "../src/replica/restore.ts";
 import { Retire } from "../src/replica/retire.ts";
 import { ProgramRunner } from "../src/replica/runner.ts";
@@ -533,98 +534,162 @@ test("dual-station MB vs Pion DI through real Retire (default & fallback preview
       const cfgMb: ReaderSelectConfig = { readers: { "replica-carry": "mb" } };
       const cfgPion: ReaderSelectConfig = { readers: { "replica-carry": "pion" } };
 
-      // 1. Real Retire (default preview + fallback preview without work.preview) for Station 1 (MB) vs Station 2 (Pion)
-      const makeRetire = (data: string, store: Store, fibers: Fibers, readers: () => ReaderSelectConfig, work?: { gather: typeof gatherSoon; place: typeof placeSoon }) =>
+      const wsId = "01J00000000000000000000000";
+      const hereId = "a".repeat(64);
+      const peerId = "b".repeat(64);
+      const emptyCarryBuf = Buffer.from(JSON.stringify({ v: 2, dataDir: "/from", sessions: [], gits: [], skipped: [], jobs: [], bundles: {}, files: 0, bytes: 0 }));
+      const emptyCarryHash = createHash("sha256").update(emptyCarryBuf).digest("hex");
+      const asBytes = (b: Buffer) => (async function* () { yield b; })();
+
+      // 1. Real Retire (default preview, fallback preview, gather, AND place) for Station 1 (MB) vs Station 2 (Pion)
+      const makeRetire = (
+        data: string,
+        fibers: Fibers,
+        readers: () => ReaderSelectConfig,
+        hooks?: { onAfterGather?: () => void; onAfterPlace?: () => void },
+        work?: { gather: typeof gatherSoon; place: typeof placeSoon },
+      ) =>
         new Retire({
           data,
-          here: () => "st-id",
-          home: () => "w",
-          name: () => "st",
-          roster: () => [],
-          ask: async () => ({}),
+          here: () => hereId,
+          home: () => wsId,
+          roster: () => [{ id: peerId, name: "peer" }],
+          ask: async (_to: string, req: any) => {
+            if (req.method === "retire.begin") return { ok: true, free: 10e9, clones: true };
+            hooks?.onAfterGather?.();
+            throw new Error("stop-after-gather");
+          },
+          askItself: async () => ({ ok: true }),
           fibers,
-          store,
-          hub: { quiet: async () => [], unquiet: () => {}, wakeMoved: async () => {}, has: () => false, tellDriver: async () => {} } as any,
-          jobs: { up: () => [], stop: async () => {}, start: async () => {} } as any,
-          copies: { bringTo: async () => ({}) } as any,
-          connects: null,
-          accounts: { own: () => [] },
+          changed: () => {},
+          copies: {
+            settleExport: async () => {},
+            bringTo: async () => "g1",
+            takeOver: async () => {
+              hooks?.onAfterPlace?.();
+              throw new Error("stop-after-place");
+            },
+            formerly: () => [],
+            restored: () => null,
+          },
+          quiet: async () => [],
+          unquiet: () => {},
+          retired: () => {},
+          accounts: { own: () => [], move: async () => ({ id: "p1" }) },
+          connectsOf: () => [],
+          bindingsOf: () => ({}),
+          moveConnects: async () => {},
+          took: () => {},
+          reposDir: join(data, "repos"),
           connectsNamed: () => [],
           jobsIn: () => [],
-          profiles: () => [],
-          moveProfile: async () => ({ ok: true }),
-          restart: () => {},
           readers,
           ...(work ? { work } : {}),
         } as any);
 
-      const r1 = makeRetire(st1Dir, st1Store, fibers1, () => cfgMb);
-      const r2 = makeRetire(st2Dir, st2Store, fibers2, () => cfgPion);
-      const r2Fallback = makeRetire(st2Dir, st2Store, fibers2, () => cfgPion, { gather: gatherSoon, place: placeSoon });
-      await r1.preview("w");
+      let r1Gathered!: () => void;
+      const r1GatherDone = new Promise<void>((res) => { r1Gathered = res; });
+      let r1Placed!: () => void;
+      const r1PlaceDone = new Promise<void>((res) => { r1Placed = res; });
+      let r2Gathered!: () => void;
+      const r2GatherDone = new Promise<void>((res) => { r2Gathered = res; });
+      let r2Placed!: () => void;
+      const r2PlaceDone = new Promise<void>((res) => { r2Placed = res; });
+      const r1 = makeRetire(st1Dir, fibers1, () => cfgMb, { onAfterGather: r1Gathered, onAfterPlace: r1Placed });
+      const r2 = makeRetire(st2Dir, fibers2, () => cfgPion, { onAfterGather: r2Gathered, onAfterPlace: r2Placed });
+      const r2Fallback = makeRetire(st2Dir, fibers2, () => cfgPion, undefined, { gather: gatherSoon, place: placeSoon });
+      // (a) Retire.preview (default & fallback)
+      await r1.preview(wsId);
       assert.equal(countBuilder(mbLog, "replica-carry"), 1, "Station 1 Retire.preview must spawn MB wrapper");
       assert.equal(countBuilder(pionLog, "replica-carry"), 0);
-      await r2.preview("w");
+      await r2.preview(wsId);
       assert.equal(countBuilder(pionLog, "replica-carry"), 1, "Station 2 Retire.preview (default) must spawn Pion wrapper");
-      await r2Fallback.preview("w");
+      await r2Fallback.preview(wsId);
       assert.equal(countBuilder(pionLog, "replica-carry"), 2, "Station 2 Retire.preview (fallback) must spawn Pion wrapper");
 
-      // 2. Real Moves (`move/station.ts` standalone `sizesSoon` via `move.sizes`) for Station 1 (MB) vs Station 2 (Pion)
+      // (b) Retire.gather (Station 1 -> MB, Station 2 -> Pion)
+      await r1.retire(wsId, peerId, "me");
+      await r1GatherDone;
+      assert.equal(countBuilder(mbLog, "replica-carry"), 2, "Station 1 Retire gather must spawn MB wrapper");
+      await r2.retire(wsId, peerId, "me");
+      await r2GatherDone;
+      assert.equal(countBuilder(pionLog, "replica-carry"), 3, "Station 2 Retire gather must spawn Pion wrapper");
+
+      // (c) Retire.place (Station 1 -> MB, Station 2 -> Pion)
+      const r1Ans = r1.answers(() => true);
+      await r1Ans(peerId, { method: "retire.begin", workspace: wsId, origin: peerId, name: "peer" }, wsId);
+      await r1Ans(peerId, withBytes({ method: "retire.put", workspace: wsId, origin: peerId, name: emptyCarryHash }, asBytes(emptyCarryBuf)), wsId);
+      await r1Ans(peerId, { method: "retire.take", workspace: wsId, origin: peerId, carry: emptyCarryHash, gen: "g1-01234567", name: "peer", home: false, connects: {}, jobs: [] }, wsId);
+      await r1PlaceDone;
+      assert.equal(countBuilder(mbLog, "replica-carry"), 3, "Station 1 Retire place must spawn MB wrapper");
+
+      const r2Ans = r2.answers(() => true);
+      await r2Ans(peerId, { method: "retire.begin", workspace: wsId, origin: peerId, name: "peer" }, wsId);
+      await r2Ans(peerId, withBytes({ method: "retire.put", workspace: wsId, origin: peerId, name: emptyCarryHash }, asBytes(emptyCarryBuf)), wsId);
+      await r2Ans(peerId, { method: "retire.take", workspace: wsId, origin: peerId, carry: emptyCarryHash, gen: "g1-01234567", name: "peer", home: false, connects: {}, jobs: [] }, wsId);
+      await r2PlaceDone;
+      assert.equal(countBuilder(pionLog, "replica-carry"), 4, "Station 2 Retire place must spawn Pion wrapper");
+      await r1.close();
+      await r2.close();
+
+      // 2. Real Moves (`move/station.ts`) driving:
+      //    (a) standalone `sizesSoon` (`move.sizes`),
+      //    (b) internally assembled `Moves.handover` `gather` (`handOver`),
+      //    (c) internally assembled `Moves.handover` `place` (`handover.place`)!
+      st1Store.insertSession({ key: "ho-1", connect: "ember", runtime: "agy", profile: "p1", workspace: join(st1Dir, "sessions", "ho-1"), token: "t1", createdAt: 1, lastActiveAt: 1, ws: wsId });
+      st2Store.insertSession({ key: "ho-2", connect: "ember", runtime: "agy", profile: "p1", workspace: join(st2Dir, "sessions", "ho-2"), token: "t2", createdAt: 1, lastActiveAt: 1, ws: wsId });
       const makeMoves = (data: string, store: Store, fibers: Fibers, readers: () => ReaderSelectConfig) =>
         new Moves({
           data,
-          here: () => "st-id",
-          home: () => "w",
-          roster: () => [],
-          ask: async () => ({}),
+          here: () => hereId,
+          home: () => wsId,
+          roster: () => [{ id: peerId, name: "peer" }],
+          ask: async (_to: string, req: any) => {
+            if (req.method === "handover.begin") return { ok: true, id: req.id, free: 10e9, total: 10e9, git: true };
+            throw new Error("stop-after-gather");
+          },
           fibers,
           store,
-          hub: {} as any,
+          hub: { wsOf: () => wsId, busy: () => false, holdChat: async () => {}, releaseChat: () => true, wakeChat: () => {}, turnEnded: async () => {}, drained: async () => {} },
           connects: null,
           jobs: { up: () => [], stop: async () => {}, start: async () => {}, stopNamed: async () => {} },
-          profiles: () => [],
+          profiles: () => [{ id: "p1", runtime: "agy" }],
+          moveProfile: async () => ({ ok: true }),
+          sessionsIn: () => ({ rows: [], more: false }),
+          reposDir: join(data, "repos"),
+          changed: () => {},
           readers,
         } as any);
 
       const m1 = makeMoves(st1Dir, st1Store, fibers1, () => cfgMb);
       const m2 = makeMoves(st2Dir, st2Store, fibers2, () => cfgPion);
-      await m1.answers(() => true)("peer", { method: "move.sizes", workspace: "w", fromData: st1Dir, places: [] }, "w");
-      assert.equal(countBuilder(mbLog, "replica-carry"), 2, "Station 1 Moves move.sizes must spawn MB wrapper");
-      await m2.answers(() => true)("peer", { method: "move.sizes", workspace: "w", fromData: st2Dir, places: [] }, "w");
-      assert.equal(countBuilder(pionLog, "replica-carry"), 3, "Station 2 Moves move.sizes must spawn Pion wrapper");
+      const m1Ans = m1.answers(() => true);
+      const m2Ans = m2.answers(() => true);
 
-      // 3. Real Handover (`this.#work.gather`) for Station 1 (MB) vs Station 2 (Pion)
-      const wsId = "01J00000000000000000000000";
-      const hereId = "a".repeat(64);
-      const peerId = "b".repeat(64);
-      st1Store.insertSession({ key: "ho-1", connect: "ember", runtime: "agy", profile: "p1", workspace: join(st1Dir, "sessions", "ho-1"), token: "t1", createdAt: 1, lastActiveAt: 1, ws: wsId });
-      st2Store.insertSession({ key: "ho-2", connect: "ember", runtime: "agy", profile: "p1", workspace: join(st2Dir, "sessions", "ho-2"), token: "t2", createdAt: 1, lastActiveAt: 1, ws: wsId });
-      const makeHandover = (data: string, store: Store, fibers: Fibers, readers: () => ReaderSelectConfig) =>
-        new Handover({
-          data,
-          here: () => hereId,
-          home: () => wsId,
-          roster: () => [{ id: peerId, name: "peer", workspaces: [wsId], online: true }],
-          ask: async (_to: string, req: any) => {
-            if (req.method === "handover.begin") return { ok: true, id: req.id, free: 10e9, total: 10e9 };
-            throw new Error("stop-after-gather");
-          },
-          fibers,
-          store,
-          hub: { wsOf: () => wsId, busy: () => false, holdChat: async () => () => {}, unholdChat: () => {} } as any,
-          connects: null,
-          accounts: { of: () => null, present: () => true },
-          jobs: { up: () => [], stop: async () => {}, start: async () => {} } as any,
-          profiles: () => [{ id: "p1", runtime: "agy" }],
-          readers,
-        } as any);
+      // (a) Moves standalone `sizesSoon`
+      await m1Ans(peerId, { method: "move.sizes", workspace: wsId, fromData: st1Dir, places: [] }, wsId);
+      assert.equal(countBuilder(mbLog, "replica-carry"), 4, "Station 1 Moves move.sizes must spawn MB wrapper");
+      await m2Ans(peerId, { method: "move.sizes", workspace: wsId, fromData: st2Dir, places: [] }, wsId);
+      assert.equal(countBuilder(pionLog, "replica-carry"), 5, "Station 2 Moves move.sizes must spawn Pion wrapper");
 
-      const h1 = makeHandover(st1Dir, st1Store, fibers1, () => cfgMb);
-      const h2 = makeHandover(st2Dir, st2Store, fibers2, () => cfgPion);
-      await h1.handOver("ho-1", peerId).catch(() => {});
-      assert.equal(countBuilder(mbLog, "replica-carry"), 3, "Station 1 Handover gather must spawn MB wrapper");
-      await h2.handOver("ho-2", peerId).catch(() => {});
-      assert.equal(countBuilder(pionLog, "replica-carry"), 4, "Station 2 Handover gather must spawn Pion wrapper");
+      // (b) Moves-assembled `handover.handOver` (`gather`)
+      await m1.handover.handOver("ho-1", peerId).catch(() => {});
+      assert.equal(countBuilder(mbLog, "replica-carry"), 5, "Station 1 Moves.handover gather must spawn MB wrapper");
+      await m2.handover.handOver("ho-2", peerId).catch(() => {});
+      assert.equal(countBuilder(pionLog, "replica-carry"), 6, "Station 2 Moves.handover gather must spawn Pion wrapper");
+
+      // (c) Moves-assembled `handover.place` (`place`)
+      const hoIn1 = "ho-in-1";
+      await m1Ans(peerId, { method: "handover.begin", workspace: wsId, origin: peerId, id: hoIn1, keys: ["ho-x"], ws: wsId, dataDir: "/from", accounts: {}, nowhere: [], connects: {}, described: [], stoppedFor: null, bindings: {} }, wsId);
+      await m1Ans(peerId, withBytes({ method: "handover.put", workspace: wsId, origin: peerId, id: hoIn1, name: emptyCarryHash }, asBytes(emptyCarryBuf)), wsId);
+      await m1Ans(peerId, { method: "handover.place", workspace: wsId, origin: peerId, id: hoIn1, carry: emptyCarryHash, held: false }, wsId);
+      assert.equal(countBuilder(mbLog, "replica-carry"), 6, "Station 1 Moves.handover place must spawn MB wrapper");
+
+      const hoIn2 = "ho-in-2";
+      await m2Ans(peerId, { method: "handover.begin", workspace: wsId, origin: peerId, id: hoIn2, keys: ["ho-y"], ws: wsId, dataDir: "/from", accounts: {}, nowhere: [], connects: {}, described: [], stoppedFor: null, bindings: {} }, wsId);
+      await m2Ans(peerId, withBytes({ method: "handover.put", workspace: wsId, origin: peerId, id: hoIn2, name: emptyCarryHash }, asBytes(emptyCarryBuf)), wsId);
+      await m2Ans(peerId, { method: "handover.place", workspace: wsId, origin: peerId, id: hoIn2, carry: emptyCarryHash, held: false }, wsId);
+      assert.equal(countBuilder(pionLog, "replica-carry"), 7, "Station 2 Moves.handover place must spawn Pion wrapper");
 
       // 4. Cold restore (`takeBackSoon`) via production `restoreReaderConfig(raw)` helper: MB -> Pion switch!
       const rData = join(dir, "restore-station");

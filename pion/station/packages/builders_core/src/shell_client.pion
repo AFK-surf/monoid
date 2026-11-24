@@ -15,66 +15,372 @@ pub fn shell_error(msg : String) -> ShellError {
   ShellError::{ message: msg }
 }
 
-fn format_mb_json_error(raw : String, err : String) -> String {
-  if err == "unexpected end of JSON" {
-    return "Unexpected end of file"
+struct JsonErrScanner {
+  raw : Bytes
+  n : Int
+  mut pos : Int
+  mut line : Int
+  mut col : Int
+}
+
+fn JsonErrScanner::new(s : String) -> JsonErrScanner {
+  let b = s.to_bytes()
+  JsonErrScanner::{ raw: b, n: b.length(), pos: 0, line: 1, col: 0 }
+}
+
+fn JsonErrScanner::decode_at(self : JsonErrScanner, i : Int) -> (Int, Int) {
+  let b0 = self.raw[i].to_int() & 0xFF
+  if b0 < 0x80 {
+    return (b0, i + 1)
   }
-  let b = raw.to_bytes()
-  let n = b.length()
-  let mut i = 0
-  let mut line = 1
-  let mut col = 1
-  while i < n {
-    let c = b[i].to_int() & 0xFF
-    if c == 32 || c == 9 || c == 13 {
-      i = i + 1
-      col = col + 1
-    } else if c == 10 {
-      i = i + 1
-      line = line + 1
-      col = 1
+  if b0 >= 0xC2 && b0 <= 0xDF && i + 1 < self.n {
+    let b1 = self.raw[i + 1].to_int() & 0xFF
+    if (b1 & 0xC0) == 0x80 {
+      return (((b0 & 0x1F) << 6) | (b1 & 0x3F), i + 2)
+    }
+  }
+  if b0 >= 0xE0 && b0 <= 0xEF && i + 2 < self.n {
+    let b1 = self.raw[i + 1].to_int() & 0xFF
+    let b2 = self.raw[i + 2].to_int() & 0xFF
+    if (b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 {
+      return (((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F), i + 3)
+    }
+  }
+  if b0 >= 0xF0 && b0 <= 0xF4 && i + 3 < self.n {
+    let b1 = self.raw[i + 1].to_int() & 0xFF
+    let b2 = self.raw[i + 2].to_int() & 0xFF
+    let b3 = self.raw[i + 3].to_int() & 0xFF
+    if (b1 & 0xC0) == 0x80 && (b2 & 0xC0) == 0x80 && (b3 & 0xC0) == 0x80 {
+      let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+      return (cp, i + 4)
+    }
+  }
+  (0xFFFD, i + 1)
+}
+
+fn JsonErrScanner::advance_byte(self : JsonErrScanner) -> Unit {
+  if self.pos < self.n {
+    let b = self.raw[self.pos].to_int() & 0xFF
+    self.pos = self.pos + 1
+    if b == 10 {
+      self.line = self.line + 1
+      self.col = 0
+    } else {
+      self.col = self.col + 1
+    }
+  }
+}
+
+fn JsonErrScanner::advance_cp(self : JsonErrScanner) -> Int {
+  let (cp, next) = self.decode_at(self.pos)
+  self.pos = next
+  if cp == 10 {
+    self.line = self.line + 1
+    self.col = 0
+  } else if cp >= 0x10000 {
+    self.col = self.col + 2
+  } else {
+    self.col = self.col + 1
+  }
+  cp
+}
+
+fn JsonErrScanner::skip_ws(self : JsonErrScanner) -> Unit {
+  while self.pos < self.n {
+    let b = self.raw[self.pos].to_int() & 0xFF
+    if b == 32 || b == 9 || b == 13 || b == 10 {
+      self.advance_byte()
     } else {
       break
     }
   }
-  if i >= n {
+}
+
+fn write_cp_utf8(sb : StringBuilder, cp : Int) -> Unit {
+  if cp < 0x80 {
+    sb.write_byte(cp as Byte)
+  } else if cp < 0x800 {
+    sb.write_byte((0xC0 | (cp >> 6)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else if cp < 0x10000 {
+    sb.write_byte((0xE0 | (cp >> 12)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else {
+    sb.write_byte((0xF0 | (cp >> 18)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 12) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  }
+}
+
+fn hex_char_lower(v : Int) -> Byte {
+  if v < 10 { (48 + v) as Byte } else { (87 + v) as Byte }
+}
+
+fn JsonErrScanner::invalid_here(self : JsonErrScanner) -> String {
+  if self.pos >= self.n {
     return "Unexpected end of file"
   }
-  let kw : String = if err == "expected null" {
-    "null"
-  } else if err == "expected true" {
-    "true"
-  } else if err == "expected false" {
-    "false"
+  let (cp, _) = self.decode_at(self.pos)
+  let sb = StringBuilder::new()
+  sb.write_string("Invalid character '")
+  if cp == 39 {
+    sb.write_string("\\'")
+  } else if cp == 92 {
+    sb.write_string("\\\\")
+  } else if cp == 10 {
+    sb.write_string("\\n")
+  } else if cp == 13 {
+    sb.write_string("\\r")
+  } else if cp == 9 {
+    sb.write_string("\\t")
+  } else if cp == 8 {
+    sb.write_string("\\b")
+  } else if cp == 12 {
+    sb.write_string("\\f")
+  } else if cp < 0x20 || cp == 0x7F {
+    sb.write_string("\\x")
+    sb.write_byte(hex_char_lower((cp >> 4) & 0xF))
+    sb.write_byte(hex_char_lower(cp & 0xF))
   } else {
-    ""
+    write_cp_utf8(sb, cp)
   }
-  if kw.length() > 0 {
-    let kb = kw.to_bytes()
-    for k in 0..<kb.length() {
-      if i + k >= n {
-        return "Unexpected end of file"
+  sb.write_string("' at line ")
+  sb.write_string(self.line.to_string())
+  sb.write_string(", column ")
+  sb.write_string(self.col.to_string())
+  sb.to_string()
+}
+
+fn JsonErrScanner::expect_kw(self : JsonErrScanner, kw : String) -> Option[String] {
+  let kb = kw.to_bytes()
+  for i in 0..<kb.length() {
+    if self.pos >= self.n {
+      return Some("Unexpected end of file")
+    }
+    if self.raw[self.pos] != kb[i] {
+      return Some(self.invalid_here())
+    }
+    self.advance_byte()
+  }
+  None
+}
+
+fn JsonErrScanner::check_string(self : JsonErrScanner) -> Option[String] {
+  if self.pos >= self.n {
+    return Some("Unexpected end of file")
+  }
+  if (self.raw[self.pos].to_int() & 0xFF) != 34 {
+    return Some(self.invalid_here())
+  }
+  self.advance_byte()
+  while self.pos < self.n {
+    let b = self.raw[self.pos].to_int() & 0xFF
+    if b == 34 {
+      self.advance_byte()
+      return None
+    }
+    if b < 0x20 {
+      return Some(self.invalid_here())
+    }
+    if b == 92 {
+      self.advance_byte()
+      if self.pos >= self.n {
+        return Some("Unexpected end of file")
       }
-      if b[i + k] != kb[k] {
-        let sb = StringBuilder::new()
-        sb.write_string("Invalid char '")
-        sb.write_byte(b[i + k])
-        sb.write_string("' at line ")
-        sb.write_string(line.to_string())
-        sb.write_string(", column ")
-        sb.write_string((col + k).to_string())
-        return sb.to_string()
+      let esc = self.raw[self.pos].to_int() & 0xFF
+      if esc == 34 || esc == 92 || esc == 47 || esc == 98 || esc == 102 || esc == 110 || esc == 114 || esc == 116 {
+        self.advance_byte()
+      } else if esc == 117 {
+        self.advance_byte()
+        for _ in 0..<4 {
+          if self.pos >= self.n {
+            return Some("Unexpected end of file")
+          }
+          match base_codec::hex_digit(self.raw[self.pos].to_int() & 0xFF) {
+            Some(_) => self.advance_byte()
+            None => return Some(self.invalid_here())
+          }
+        }
+      } else {
+        return Some(self.invalid_here())
+      }
+    } else {
+      let _ = self.advance_cp()
+    }
+  }
+  Some("Unexpected end of file")
+}
+
+fn is_ascii_digit(b : Int) -> Bool {
+  b >= 48 && b <= 57
+}
+
+fn JsonErrScanner::check_number(self : JsonErrScanner) -> Option[String] {
+  if self.pos < self.n && (self.raw[self.pos].to_int() & 0xFF) == 45 {
+    self.advance_byte()
+  }
+  if self.pos >= self.n {
+    return Some("Unexpected end of file")
+  }
+  let first = self.raw[self.pos].to_int() & 0xFF
+  if first == 48 {
+    self.advance_byte()
+  } else if first >= 49 && first <= 57 {
+    self.advance_byte()
+    while self.pos < self.n && is_ascii_digit(self.raw[self.pos].to_int() & 0xFF) {
+      self.advance_byte()
+    }
+  } else {
+    return Some(self.invalid_here())
+  }
+  if self.pos < self.n && (self.raw[self.pos].to_int() & 0xFF) == 46 {
+    self.advance_byte()
+    if self.pos >= self.n {
+      return Some("Unexpected end of file")
+    }
+    if !is_ascii_digit(self.raw[self.pos].to_int() & 0xFF) {
+      return Some(self.invalid_here())
+    }
+    while self.pos < self.n && is_ascii_digit(self.raw[self.pos].to_int() & 0xFF) {
+      self.advance_byte()
+    }
+  }
+  if self.pos < self.n {
+    let e = self.raw[self.pos].to_int() & 0xFF
+    if e == 101 || e == 69 {
+      self.advance_byte()
+      if self.pos < self.n {
+        let sgn = self.raw[self.pos].to_int() & 0xFF
+        if sgn == 43 || sgn == 45 {
+          self.advance_byte()
+        }
+      }
+      if self.pos >= self.n {
+        return Some("Unexpected end of file")
+      }
+      if !is_ascii_digit(self.raw[self.pos].to_int() & 0xFF) {
+        return Some(self.invalid_here())
+      }
+      while self.pos < self.n && is_ascii_digit(self.raw[self.pos].to_int() & 0xFF) {
+        self.advance_byte()
       }
     }
   }
-  let sb = StringBuilder::new()
-  sb.write_string("Invalid char '")
-  sb.write_byte(b[i])
-  sb.write_string("' at line ")
-  sb.write_string(line.to_string())
-  sb.write_string(", column ")
-  sb.write_string(col.to_string())
-  sb.to_string()
+  None
+}
+
+fn JsonErrScanner::check_value(self : JsonErrScanner) -> Option[String] {
+  self.skip_ws()
+  if self.pos >= self.n {
+    return Some("Unexpected end of file")
+  }
+  let b = self.raw[self.pos].to_int() & 0xFF
+  if b == 110 {
+    return self.expect_kw("null")
+  }
+  if b == 116 {
+    return self.expect_kw("true")
+  }
+  if b == 102 {
+    return self.expect_kw("false")
+  }
+  if b == 34 {
+    return self.check_string()
+  }
+  if b == 45 || is_ascii_digit(b) {
+    return self.check_number()
+  }
+  if b == 91 {
+    self.advance_byte()
+    self.skip_ws()
+    if self.pos >= self.n {
+      return Some("Unexpected end of file")
+    }
+    if (self.raw[self.pos].to_int() & 0xFF) == 93 {
+      self.advance_byte()
+      return None
+    }
+    while true {
+      match self.check_value() {
+        Some(e) => return Some(e)
+        None => ()
+      }
+      self.skip_ws()
+      if self.pos >= self.n {
+        return Some("Unexpected end of file")
+      }
+      let next = self.raw[self.pos].to_int() & 0xFF
+      if next == 44 {
+        self.advance_byte()
+      } else if next == 93 {
+        self.advance_byte()
+        return None
+      } else {
+        return Some(self.invalid_here())
+      }
+    }
+    return None
+  }
+  if b == 123 {
+    self.advance_byte()
+    self.skip_ws()
+    if self.pos >= self.n {
+      return Some("Unexpected end of file")
+    }
+    if (self.raw[self.pos].to_int() & 0xFF) == 125 {
+      self.advance_byte()
+      return None
+    }
+    while true {
+      self.skip_ws()
+      match self.check_string() {
+        Some(e) => return Some(e)
+        None => ()
+      }
+      self.skip_ws()
+      if self.pos >= self.n {
+        return Some("Unexpected end of file")
+      }
+      if (self.raw[self.pos].to_int() & 0xFF) != 58 {
+        return Some(self.invalid_here())
+      }
+      self.advance_byte()
+      match self.check_value() {
+        Some(e) => return Some(e)
+        None => ()
+      }
+      self.skip_ws()
+      if self.pos >= self.n {
+        return Some("Unexpected end of file")
+      }
+      let next = self.raw[self.pos].to_int() & 0xFF
+      if next == 44 {
+        self.advance_byte()
+      } else if next == 125 {
+        self.advance_byte()
+        return None
+      } else {
+        return Some(self.invalid_here())
+      }
+    }
+    return None
+  }
+  Some(self.invalid_here())
+}
+
+fn format_mb_json_error(raw : String, fallback : String) -> String {
+  let sc = JsonErrScanner::new(raw)
+  match sc.check_value() {
+    Some(e) => return e
+    None => ()
+  }
+  sc.skip_ws()
+  if sc.pos < sc.n {
+    return sc.invalid_here()
+  }
+  fallback
 }
 
 /// Parse a synchronous `sth_shell_sync` JSON envelope, 1:1 aligned with `wire/wire.mbt:115-123`:

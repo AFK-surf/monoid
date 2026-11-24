@@ -356,12 +356,12 @@ export function makeReaderConfigSnapshot(config: ConfigFile): { get: () => Reade
   return { get: () => snapshot, stop };
 }
 
-/// Live in-memory getter of `config.json`'s `readers` engine overrides for every reader/builder spawn.
 /// Extract the `ReaderSelectConfig` shape passed to cold `takeBackSoon` from `settings.raw()` (`main.ts:236`).
 export function restoreReaderConfig(raw: { readonly readers?: Readonly<Record<string, unknown>> | null } | null | undefined): ReaderSelectConfig {
   return raw?.readers ? { readers: raw.readers } : undefined;
 }
 
+/// Live in-memory getter of `config.json`'s `readers` engine overrides for every reader/builder spawn.
 export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSelectConfig>()("stillfail/ReaderConfig") {
   static readonly layer = Layer.effect(
     ReaderConfig,

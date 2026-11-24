@@ -402,31 +402,52 @@ test("production LiveLocator switches cleanly between real MB and real Pion wrap
       () => ({ readers: { "live-locator": modeCfg } }),
     );
     try {
-      // 1. Default / mb + IN-FLIGHT hot-switch:
-      //    Start locate #1 on MB, flip `modeCfg = "pion"` mid-flight inside `profiles()` (before locate #1 finishes),
-      //    verify locate #1 completes cleanly on the existing MB worker without interruption (0 Pion spawns yet),
+      // 1. Default / mb + TRUE IN-FLIGHT hot-switch:
+      //    Start locate #1 on real MB, hold the first `{ type: "hints" }` ACK reply to MB mid-flight
+      //    (proving locate #1 is still active and has NOT received `done`), flip `modeCfg = "pion"`,
+      //    release the held ACK, verify locate #1 completes cleanly on the old MB worker (0 Pion spawns),
       //    then trimIdle() and issue locate #2 -> verify locate #2 spawns Pion wrapper!
       assert.equal(resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "mb" } } }).primaryBinary, mbWrap);
-      let flippedInFlight = false;
       const inFlightLocator = new LiveLocator(
         fx.dir,
         (k) => fx.store.getSession(k),
-        () => {
-          if (!flippedInFlight && readSpawns(mbLog).some((l) => l.includes("--builder live-locator"))) {
-            flippedInFlight = true;
-            modeCfg = "pion";
-          }
-          return profiles;
-        },
+        () => profiles,
         undefined,
         undefined,
         () => ({ readers: { "live-locator": modeCfg } }),
       );
+      let releaseHintsAck!: () => void;
+      const hintsAckHeld = new Promise<void>((res) => {
+        const origPost = MbProcess.prototype.postMessage;
+        let held = false;
+        MbProcess.prototype.postMessage = function (this: MbProcess, msg: unknown) {
+          if (!held && typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "hints") {
+            held = true;
+            MbProcess.prototype.postMessage = origPost;
+            const self = this;
+            releaseHintsAck = () => origPost.call(self, msg);
+            res();
+            return;
+          }
+          return origPost.call(this, msg);
+        };
+      });
       try {
-        const resMb = await inFlightLocator.locate("ses-a");
+        let locate1Settled = false;
+        const locate1P = inFlightLocator.locate("ses-a").then((v) => {
+          locate1Settled = true;
+          return v;
+        });
+        await hintsAckHeld;
+        assert.equal(locate1Settled, false, "locate #1 must still be in-flight at hints ACK (not done)");
+        assert.equal(readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length, 1, "MB wrapper must be running for locate #1");
+        assert.equal(readSpawns(pionLog).length, 0, "0 Pion spawns before hot-reload");
+
+        // Hot-reload config to pion while locate #1 is paused mid-flight!
+        modeCfg = "pion";
+        releaseHintsAck();
+        const resMb = await locate1P;
         assert.ok(resMb !== null && resMb.paths.length === 2);
-        assert.equal(flippedInFlight, true, "config must have hot-reloaded to pion while locate #1 was in-flight");
-        assert.equal(readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length, 1, "MB wrapper must be spawned for locate #1");
         assert.equal(readSpawns(pionLog).length, 0, "in-flight locate #1 must finish on old MB worker without spawning/probing Pion");
 
         // 2. Shadow forbidden -> falls back to mb
