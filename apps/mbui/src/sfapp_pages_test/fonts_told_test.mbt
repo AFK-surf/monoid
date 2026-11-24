@@ -1,4 +1,4 @@
-// 字体's inline 本机字体 / 精选字体 source switch on 大屏 (V5 unified picker card, zero obstructing popover).
+// 字体's inline 本机字体 / 精选字体 source switch on 大屏 (V6 in-place role drawer, zero obstructing popover).
 
 ///|
 fn fonts_tester() -> @ui.Tester {
@@ -14,6 +14,13 @@ fn fonts_tester() -> @ui.Tester {
 test "大屏: 精选字体 / 本机字体 inline source switch toggles local_open without any obstructing popover" {
   let t = fonts_tester()
   assert_false(@sfpages.local_open.untracked())
+  // Expand 界面 row via sticky preview zone so the in-place drawer opens
+  t.click(Button, label="界面")
+  t.run_for(@ui.move_most_ms)
+  t.wheel(700.0, 520.0, 320.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("精选字体") is Some(_))
+  assert_true(t.find("本机字体") is Some(_))
   t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
   assert_true(@sfpages.local_open.untracked())

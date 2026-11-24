@@ -463,7 +463,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-add-people": (711, 482, 80),
   "phone settings-workspace-mark": (855, 588, 71),
   // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 2x2 style cards & 3x2 matrix)
-  "phone settings-local-fonts": (544, 704, 172),
+  // (2026-11-24: settings-local-fonts opens row 0 inline local font drawer on mount while settings-fonts starts collapsed and lighter)
+  "phone settings-local-fonts": (662, 836, 182),
   "phone settings-policy": (474, 298, 47),
   "phone settings-policy-text": (520, 339, 52),
   "phone settings-policy-option": (525, 339, 51),
@@ -495,7 +496,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone place-stations-devices": (499, 377, 86),
   "phone settings-station-devices": (572, 399, 68),
   // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 2x2 style cards & 3x2 matrix)
-  "phone settings-fonts": (544, 704, 172),
+  "phone settings-fonts": (544, 677, 142),
   "phone settings-fonts-code": (560, 691, 152),
   "phone settings-decisions": (369, 261, 33),
   "phone settings-completion": (376, 245, 32),
@@ -890,7 +891,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-add-people": (869, 653, 125),
   "wide settings-workspace-mark": (998, 747, 116),
   // (2026-11-24: font settings v4 sticky preview + 5-zone conversation order + equal-width 4-col style cards & 3x2 matrix)
-  "wide settings-local-fonts": (692, 885, 244),
+  // (2026-11-24: settings-local-fonts opens row 0 inline local font drawer on mount while settings-fonts starts collapsed)
+  "wide settings-local-fonts": (779, 1010, 278),
   "wide settings-policy": (580, 455, 73),
   "wide settings-policy-text": (626, 496, 79),
   "wide settings-policy-option": (631, 496, 78),

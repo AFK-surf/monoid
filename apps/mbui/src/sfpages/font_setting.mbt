@@ -5,6 +5,7 @@ fn font_setting_reset() -> Unit {
   fonts_trying.set("")
   preset_trying.set(-1)
   local_try_given.val = ""
+  font_picker_open.set(-1)
   local_open.set(false)
   fx_local_up.val = false
   advanced_open.set(false)
@@ -25,7 +26,13 @@ let fonts_trying : @signals.Signal[String] = @signals.signal("", same=fn(a, b) {
 let preset_trying : @signals.Signal[Int] = @signals.signal(-1, same=fn(a, b) { a == b })
 
 ///|
-/// Whether the collapsible "排版与字号细节" section is expanded (collapsed by default).
+/// Which role row in the 字体搭配 accordion is currently expanded (-1 = all collapsed, 0 = ui, 1 = text, 2 = code).
+// kept across runs: said by the accordion; font_setting_reset puts it back
+pub let font_picker_open : @signals.Signal[Int] = @signals.signal(-1, same=fn(a, b) { a == b })
+
+///|
+/// Whether the collapsible "更多排版细节" section is expanded (collapsed by default).
+// kept across runs: said by the disclosure; font_setting_reset puts it back
 pub let advanced_open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
@@ -126,35 +133,6 @@ fn font_preset_matches(p : FontPreset, chosen_of : (String) -> String) -> Bool {
 }
 
 ///|
-fn preset_needed_bytes(
-  p : FontPreset,
-  all : Array[Json],
-  kept : Array[Json],
-  face_here : (String) -> Bool,
-) -> Double {
-  let ids : Array[String] = []
-  for opt in [p.ui, p.ui_cjk, p.text, p.text_cjk, p.code, p.code_cjk] {
-    match opt {
-      Some(id) if id != "" && !ids.contains(id) => ids.push(id)
-      _ => ()
-    }
-  }
-  let mut total = 0.0
-  for id in ids {
-    if face_here(id) || kept.contains(ToJson::to_json(id)) {
-      continue
-    }
-    for entry in all {
-      if text(Some(entry), "id") == id {
-        total = total + number(Some(entry), "bytes")
-        break
-      }
-    }
-  }
-  total
-}
-
-///|
 fn font_typo_num(typo : Json?, key : String, fallback : Double) -> Double {
   match field(typo, key) {
     Some(Number(n, ..)) => n
@@ -202,7 +180,33 @@ fn font_typo_custom_count(typo : Json?) -> Int {
   if !font_typo_bool(typo, "cjkAutoSpace", true) {
     n = n + 1
   }
-  if !font_typo_bool(typo, "codeLigatures", true) {
+  if @ui.platform() != 4 && !font_typo_bool(typo, "codeLigatures", true) {
+    n = n + 1
+  }
+  for k in ["uiCjkScale", "textCjkScale", "codeCjkScale"] {
+    if font_typo_num(typo, k, 100.0).round().to_int() != 100 {
+      n = n + 1
+    }
+  }
+  for k in ["uiCjkWeight", "textCjkWeight", "codeCjkWeight"] {
+    if font_typo_num(typo, k, 0.0).round().to_int() != 0 {
+      n = n + 1
+    }
+  }
+  n
+}
+
+///|
+/// Number of customized controls inside the collapsible "更多排版细节" drawer (excludes top-level textSize/lineHeight).
+fn font_advanced_custom_count(typo : Json?) -> Int {
+  let mut n = 0
+  if font_typo_num(typo, "codeScale", 100.0).round().to_int() != 100 {
+    n = n + 1
+  }
+  if !font_typo_bool(typo, "cjkAutoSpace", true) {
+    n = n + 1
+  }
+  if @ui.platform() != 4 && !font_typo_bool(typo, "codeLigatures", true) {
     n = n + 1
   }
   for k in ["uiCjkScale", "textCjkScale", "codeCjkScale"] {
@@ -300,6 +304,74 @@ fn FontPageCtx::name_of_id(self : FontPageCtx, id : String) -> String {
     }
   }
   id
+}
+
+///|
+/// Human-readable one-line summary for a role row (`默认` / `跟随界面` / `Inter` / `思源宋体` / `Inter + 思源黑体`),
+/// or active download progress when a chosen face for this role is currently fetching.
+fn FontPageCtx::role_summary(self : FontPageCtx, role_key : String) -> (String, Bool) {
+  let lat = self.chosen_of(role_key)
+  let cjk = self.chosen_of(font_cjk_slot_of(role_key))
+  let fetching = field(self.files_state(), "fetching")
+  for id in [lat, cjk] {
+    if id != "" && id != "none" {
+      match field(fetching, id) {
+        Some(Number(p, ..)) =>
+          return (@sf.t("android-settings.fonts.downloading", args=[("percent", (p * 100.0).to_int().to_string())]), true)
+        _ => ()
+      }
+    }
+  }
+  if lat == "" && cjk == "" {
+    let key = if role_key == "text" { "web-pages.appearance.fonts.followUi" } else { "web-pages.appearance.fonts.default" }
+    return (@sf.t(key), false)
+  }
+  if lat != "" && (cjk == "" || cjk == "none") {
+    return (self.name_of_id(lat), false)
+  }
+  if lat == "" && cjk == "none" {
+    return (@sf.t("web-pages.appearance.fonts.cjkNone"), false)
+  }
+  if lat == "" {
+    return (self.name_of_id(cjk), false)
+  }
+  if lat == cjk {
+    return (self.name_of_id(lat), false)
+  }
+  (self.name_of_id(lat) + " + " + self.name_of_id(cjk), false)
+}
+
+///|
+/// Real Latin preview face for a curated style card's `Aa 字` specimen (0 fetches, bypasses custom `face_ui`).
+fn FontPageCtx::preset_sample_latin(self : FontPageCtx, p : FontPreset) -> Int {
+  let id = match p.text {
+    Some(s) => Some(s)
+    None => p.ui
+  }
+  match id {
+    Some(s) if s != "" =>
+      match self.shown_in(s) {
+        0 => @hostapi.face_sys_default
+        f => f
+      }
+    _ => @hostapi.face_sys_default
+  }
+}
+
+///|
+/// Real CJK preview override for a curated style card's `Aa 字` specimen (shows true Sans / Serif / Kai strokes).
+fn FontPageCtx::preset_sample_cjk(self : FontPageCtx, p : FontPreset) -> @view.CjkOverride? {
+  let id = match p.text_cjk {
+    Some(s) => Some(s)
+    None => p.ui_cjk
+  }
+  match id {
+    Some(s) if s != "" => {
+      let f = self.cjk_host_face(s)
+      if f > 0 { Some({ face: f, scale: 1.0, weight_off: 0 }) } else { Some({ face: 0, scale: 1.0, weight_off: 0 }) }
+    }
+    _ => Some({ face: 0, scale: 1.0, weight_off: 0 })
+  }
 }
 
 ///|

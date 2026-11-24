@@ -19,7 +19,9 @@ test "外观's 字体 row: the faces at a glance, opening the page: the places, 
   // the chat as the faces set it: their message, the agent's under its name
   assert_true(t.find("登录页在 Safari 上点了没反应") is Some(_))
   assert_true(t.find("Claude") is Some(_))
-  // scroll past style cards & pairing matrix into the contextual font picker
+  // open 界面 row to inspect its curated faces and sizes
+  tap_place(t, "界面")
+  t.draw()
   t.wheel(200.0, 620.0, 520.0)
   t.run_for(@ui.move_most_ms)
   // the interface's faces, each with how big it is to fetch (in thousands, as Android says it)
@@ -33,6 +35,7 @@ test "外观's 字体 row: the faces at a glance, opening the page: the places, 
   // code's: click 代码 zone in sticky preview -> code faces, 默认 in the app's own (JetBrains Mono)
   tap_place(t, "代码")
   t.draw()
+  let _ = picker_row_center(t, "Fira Code")
   assert_true(t.query(Button, label="Fira Code") is Some(_))
   assert_true(t.find("91 kB") is Some(_))
   assert_true(t.query(Button, label="思源黑体") is None)
@@ -66,6 +69,8 @@ test "a face picked: kept as the device's, fetched, unzipped and checked, and wh
 ///|
 test "a face being fetched: how far said on its row, the app's own standing in until it is here" {
   let t = settings_tester("fonts", mode="settings-fonts-coming", shows="settings-fonts-coming")
+  tap_place(t, "界面")
+  t.draw()
   t.wheel(200.0, 620.0, 520.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("正在下载 42%") is Some(_))
@@ -215,19 +220,40 @@ fn tap_picker_row(t : @ui.Tester, name : String) -> Unit raise {
 }
 
 ///|
-/// Tap a role zone in the sticky preview card (works at any scroll position because the preview is sticky).
+/// Tap a role zone in the live preview card (scrolls back to top on narrow viewports where the preview is not sticky).
 fn tap_place(t : @ui.Tester, place : String) -> Unit raise {
+  for _ in 0..<6 {
+    match t.query(Button, label=place) {
+      Some(s) if s.rect.1 + s.rect.3 / 2.0 >= 40.0 => {
+        t.tap(s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
+        return
+      }
+      _ => {
+        t.wheel(200.0, 480.0, -360.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
   guard t.query(Button, label=place) is Some(s) else { fail("no role button: " + place) }
   t.tap(s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
 }
 
 ///|
-/// Switch role and script in the V5 unified font picker (`role_idx`: 0=ui, 1=text, 2=code; `is_cjk`: false=primary, true=cjk).
+/// Switch role and script in the V6 in-place role drawer (`role_idx`: 0=ui, 1=text, 2=code; `is_cjk`: false=primary, true=cjk).
 fn tap_matrix_slot(t : @ui.Tester, role_idx : Int, is_cjk : Bool) -> Unit raise {
   let roles = ["界面", "正文", "代码"]
   tap_place(t, roles[role_idx])
   t.draw()
   let script_label = if is_cjk { "中文" } else if role_idx == 2 { "等宽" } else { "西文" }
+  for _ in 0..<6 {
+    match t.find(script_label) {
+      Some((_, y)) if y >= 220.0 && y <= 760.0 => break
+      _ => {
+        t.wheel(700.0, 520.0, 240.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
   t.tap_text(script_label)
 }
 
@@ -243,10 +269,8 @@ fn preview_width(t : @ui.Tester, words : String) -> Double raise {
 test "pointing at an interface or text face tries it on the whole message, keeping inline code in its own face" {
   for place in ["界面", "正文"] {
     let t = wide_fonts_tester()
-    if place == "正文" {
-      tap_place(t, place)
-      t.draw()
-    }
+    tap_place(t, place)
+    t.draw()
     // Distinguish the preview face without making the chat wrap and move the row out from under the pointer.
     t.face_wider(preview_faces_from + 2, 0.01)
     t.draw()
@@ -308,6 +332,8 @@ fn wide_fonts_tester() -> @ui.Tester {
 test "pointing at 跟随界面 previews the interface face even when a different text face is chosen" {
   let t = wide_fonts_tester()
   t.ui_face_wider(0.05)
+  tap_place(t, "界面")
+  t.draw()
   tap_picker_row(t, "思源黑体")
   t.draw()
   tap_place(t, "正文")
@@ -353,6 +379,8 @@ test "pointing at an interface face leaves a separately chosen text face alone" 
 ///|
 test "a face pointed at tried in the chat above them: the chat held at its tallest while the pointer is on the faces, nothing under it shaking" {
   let t = wide_fonts_tester()
+  tap_place(t, "界面")
+  t.draw()
   // 思源黑体 set wide enough that their message wraps once more in it, 思源宋体 a little
   t.face_wider(preview_faces_from + 1, 0.6)
   t.face_wider(preview_faces_from + 2, 0.3)
@@ -545,27 +573,29 @@ test "collapsible advanced typography section: expand, toggle autospace & ligatu
   t.host_says_finger(Some(false))
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
-  // Scroll down to collapsible section; collapsed by default so inner controls are not visible
-  t.wheel(900.0, 520.0, 750.0)
-  t.run_for(@ui.move_most_ms)
-  assert_true(t.find("阅读与排版") is Some(_))
-  assert_true(t.find("正文阅读字号") is None)
-  // Expand
-  t.tap_text("阅读与排版")
-  t.run_for(@ui.move_most_ms)
-  t.wheel(900.0, 520.0, 600.0)
-  t.run_for(@ui.move_most_ms)
+  // Top-level reading controls (正文阅读字号 & 正文行距) are immediately visible without expanding
   assert_true(t.find("正文阅读字号") is Some(_))
   assert_true(t.find("正文行距") is Some(_))
-  assert_true(t.find("中西文自动留白") is Some(_))
-  assert_true(t.find("正文 Abc") is Some(_))
-  assert_true(t.find("代码连字") is Some(_))
-  // Pick 舒展 line height card -> updates prose_line_scale and bumps typography_version
+  // Pick 舒展 line height right on the main page -> updates prose_line_scale and bumps typography_version
   let ver_before = typography_version()
   t.tap_text("舒展")
   t.draw()
   assert_true(prose_line_scale() > 1.13)
   assert_true(typography_version() > ver_before)
+  // Scroll down so the collapsed advanced toggle is in the viewport
+  t.wheel(700.0, 520.0, 320.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("阅读与排版") is Some(_))
+  assert_true(t.find("代码相对字号") is None)
+  // Expand advanced drawer
+  t.tap_text("阅读与排版")
+  t.run_for(@ui.move_most_ms)
+  t.wheel(700.0, 520.0, 360.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("代码相对字号") is Some(_))
+  assert_true(t.find("中西文自动留白") is Some(_))
+  assert_true(t.find("正文 Abc") is Some(_))
+  assert_true(t.find("代码连字") is Some(_))
   // Toggle 中西文自动留白 off
   assert_true(@ui.cjk_autospace())
   guard t.query(Switch, label="中西文自动留白") is Some(sw) else { fail("no 中西文自动留白 switch") }
@@ -577,7 +607,7 @@ test "collapsible advanced typography section: expand, toggle autospace & ligatu
     if t.words().any(fn(w) { w.0 == "恢复默认排版" && w.5 > 0.5 }) {
       break
     }
-    t.wheel(700.0, 520.0, 400.0)
+    t.wheel(700.0, 520.0, -240.0)
     t.run_for(@ui.move_most_ms)
   }
   let resets = t.words().filter(fn(w) { w.0 == "恢复默认排版" && w.5 > 0.5 })
@@ -707,7 +737,11 @@ test "local hover triggers 0 words_forgotten; hovering Classic Default after loc
   t.run_for(@ui.move_most_ms)
   t.ui_face_wider(0.35)
   t.draw()
-  // Open inline local font tab and hover two consecutive families -> 0 global words_forgotten
+  // Open 界面 row and switch to inline local font tab, hover two consecutive families -> 0 global words_forgotten
+  tap_place(t, "界面")
+  t.draw()
+  t.wheel(700.0, 520.0, 320.0)
+  t.run_for(@ui.move_most_ms)
   t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
   let forgotten0 = @ui.words_forgotten_count()
@@ -766,7 +800,20 @@ test "short viewport 390x300 scrolls to and selects style cards and font rows; r
   t.tap(sx + 4.0, sy + 4.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(text(field(src.topic("prefs", {}).get().value, "fonts"), "ui"), "inter")
-  // Scroll further to font picker and select 思源黑体 (by semantic Button label so we don't hit style card subtitles)
+  // Expand 界面 row and scroll to select 思源黑体 (by semantic Button label so we don't hit style card subtitles)
+  for _ in 0..<10 {
+    match t.query(Button, label="界面 · 标题与按钮") {
+      Some(s) if s.rect.1 + s.rect.3 / 2.0 >= 40.0 && s.rect.1 + s.rect.3 / 2.0 <= 260.0 => {
+        t.tap(s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
+        t.run_for(@ui.move_most_ms)
+        break
+      }
+      _ => {
+        t.wheel(195.0, 150.0, 140.0)
+        t.run_for(@ui.move_most_ms)
+      }
+    }
+  }
   for _ in 0..<12 {
     match t.query(Button, label="思源黑体") {
       Some(s) if s.rect.1 + s.rect.3 / 2.0 >= 72.0 && s.rect.1 + s.rect.3 / 2.0 <= 260.0 => break
@@ -805,6 +852,7 @@ test "cross-breakpoint resize 1280 -> 390 -> 1280 preserves slot selection and r
   t.run_for(@ui.move_most_ms)
   @settings.fonts_at.set(1)
   @settings.fonts_script_at.set(1)
+  @sfpages.font_picker_open.set(1)
   t.draw()
   t.wheel(700.0, 520.0, 420.0)
   t.run_for(@ui.move_most_ms)
@@ -815,11 +863,13 @@ test "cross-breakpoint resize 1280 -> 390 -> 1280 preserves slot selection and r
   t.run_for(@ui.move_most_ms)
   assert_eq(@settings.fonts_at.untracked(), 1)
   assert_eq(@settings.fonts_script_at.untracked(), 1)
+  assert_eq(@sfpages.font_picker_open.untracked(), 1)
   assert_true(@sfpages.local_open.untracked())
   t.resize(1280.0, 820.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(@settings.fonts_at.untracked(), 1)
   assert_eq(@settings.fonts_script_at.untracked(), 1)
+  assert_eq(@sfpages.font_picker_open.untracked(), 1)
   assert_true(@sfpages.local_open.untracked())
 }
 
@@ -866,7 +916,7 @@ test "undo_reset emits core-ts typographyPut-safe payload (no *Own keys, preserv
 }
 
 ///|
-test "preview markdown_node scales prose and inline code synchronously when textSize changes" {
+test "preview markdown_node and code block scale synchronously when textSize changes" {
   new_run()
   let src = fixture("settings")
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=820.0, platform=0)
@@ -874,10 +924,38 @@ test "preview markdown_node scales prose and inline code synchronously when text
   t.run_for(@ui.move_most_ms)
   let prose_before = preview_width(t, "按钮的点击在表单提交之前被")
   let inline_before = preview_width(t, "preventDefault")
+  let block_before = preview_width(t, "form.onsubmit")
   (src.call)("prefs.set", { "typography": { "textSize": 125 } }, fn(_) {  })
   t.run_for(@ui.move_most_ms)
   let prose_after = preview_width(t, "按钮的点击在表单提交之前被")
   let inline_after = preview_width(t, "preventDefault")
+  let block_after = preview_width(t, "form.onsubmit")
   assert_true(prose_after > prose_before + 10.0, msg="prose_before=\{prose_before} prose_after=\{prose_after}")
   assert_true(inline_after > inline_before + 5.0, msg="inline_before=\{inline_before} inline_after=\{inline_after}")
+  assert_true(block_after > block_before + 5.0, msg="block_before=\{block_before} block_after=\{block_after}")
+}
+
+///|
+test "Web platform (platform=4) hides 代码连字 switch; codeScale max=110% and cjkScale max=115% match core-ts bounds" {
+  new_run()
+  let src = fixture("settings")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=820.0, platform=4)
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("阅读与排版")
+  t.run_for(@ui.move_most_ms)
+  t.wheel(700.0, 520.0, 480.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("中西文自动留白") is Some(_))
+  assert_true(t.find("代码连字") is None)
+  assert_true(t.query(Switch, label="代码连字") is None)
+  // Verify slider max bounds by tapping the right edge of 代码相对字号 and 中文相对大小 sliders
+  guard t.query(Slider, label="代码相对字号") is Some(cs) else { fail("no 代码相对字号 slider") }
+  t.tap(cs.rect.0 + cs.rect.2 - 2.0, cs.rect.1 + cs.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(number(field(src.topic("prefs", {}).get().value, "typography"), "codeScale").round().to_int(), 110)
+  guard t.query(Slider, label="中文相对大小") is Some(cks) else { fail("no 中文相对大小 slider") }
+  t.tap(cks.rect.0 + cks.rect.2 - 2.0, cks.rect.1 + cks.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(number(field(src.topic("prefs", {}).get().value, "typography"), "uiCjkScale").round().to_int(), 115)
 }
