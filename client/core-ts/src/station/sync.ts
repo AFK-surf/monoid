@@ -260,7 +260,7 @@ export class StationsSync {
       now: () => core.host.monotonicMs(),
       firstWaiting: () => core.store.firstValuesPending(),
       turn: () => core.store.turn(),
-      answered: (channel, error, nothing, last) => this.#channelAnswered(channel, error, nothing, last ?? null),
+      answered: (channel, error, nothing, answer) => this.#channelAnswered(channel, error, nothing, answer),
     });
   }
 
@@ -1674,14 +1674,14 @@ export class StationsSync {
 
   /// A read of a channel made in the background answered. A thread's: one that is gone goes with what is held of it; one
   /// not to be read (no longer this viewer's) says so while nothing of it is held.
-  #channelAnswered(channel: Channel, error: CoreError | null, nothing: boolean, last: number | null = null): void {
+  #channelAnswered(channel: Channel, error: CoreError | null, nothing: boolean, answer?: unknown): void {
     const link = this.#links.get(channel.station);
     if (!link) return;
     // A transcript read: what the station has of it is known (a history with nothing in it is not still loading). One
     // that failed is said, and asked again while it is shown: nothing else would ask (a stream that follows the sessions
     // at work tells nothing of one at rest, and it stays open).
     if (channel.kind === TRANSCRIPT) {
-      if (error === null) this.#transcriptKnown(link, channel.id, last === null ? null : last + 1);
+      if (error === null) this.#transcriptKnown(link, channel.id, u64(get(answer, "end")));
       else this.#transcriptFailed(link, channel.id, error);
       return;
     }
@@ -2846,10 +2846,13 @@ export class StationsSync {
     this.#transcriptMisses.delete(`${link.address}\u0001${key}`);
     // Read, it goes no further than the station said it goes now, whatever its stream said before (written anew
     // shorter, a stream says nothing till it gains): the steps that ended past it have no record to wait there.
-    const shorter = end !== null && view.told !== undefined && view.told > end;
+    // (not below what is held: a read the station answered before its stream said more may come after that)
+    const span = this.#core.data.logSpan("transcript", link.address, key);
+    const goes = end === null ? null : Math.max(end, span ? span.max + 1 : 0);
+    const shorter = goes !== null && view.told !== undefined && view.told > goes;
     if (shorter) {
-      view.told = end;
-      view.steps = view.steps.filter((s) => !(get(s, "ended") === true && typeof get(s, "held") === "number" && (get(s, "held") as number) > end!));
+      view.told = goes;
+      view.steps = view.steps.filter((s) => !(get(s, "ended") === true && typeof get(s, "held") === "number" && (get(s, "held") as number) > goes!));
     }
     if (view.loaded && view.failed === undefined && !shorter) return;
     view.loaded = true;

@@ -90,8 +90,8 @@ export type Reach = {
   firstWaiting(): boolean;
   turn(): Effect.Effect<void>;
   /// A read made in the background answered, well (`error` null) or not; `nothing`: none of the channel is held;
-  /// `last`: the number of its last item as the answer says it goes (none: it does not say).
-  answered(channel: Channel, error: CoreError | null, nothing: boolean, last?: number | null): void;
+  /// `answer`: what it answered, when it answered well.
+  answered(channel: Channel, error: CoreError | null, nothing: boolean, answer?: unknown): void;
 };
 
 const keyOf = (c: Channel) => `${c.kind.name}\u0001${c.station}\u0001${c.id}`;
@@ -256,10 +256,10 @@ export class Channels {
       this.#reach.answered(c, answer.failure, nothing);
       return 0;
     }
-    const last = c.kind.last(answer.success);
-    this.#reach.answered(c, null, nothing, last);
+    this.#reach.answered(c, null, nothing, answer.success);
     const items = c.kind.items(answer.success, read);
     this.#put(c, items);
+    const last = c.kind.last(answer.success);
     if (last !== null && last > this.#held.head(c)) this.goesTo(c, last);
     return items.length;
   }

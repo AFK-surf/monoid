@@ -3753,6 +3753,25 @@ test("a_history_held_short_of_where_its_stream_says_keeps_its_steps_in_flight_an
   core.close();
 });
 
+test("a_history_whose_stream_said_it_has_entries_and_whose_read_says_none_is_loaded_and_empty", async () => {
+  const answers: J = base();
+  answers["GET /sessions/k1/timeline?before=1000000000000000&limit=200&brief=1"] = { start: 0, entries: [], end: 0 };
+  const s = await ui(answers, (st) => (st.gate.follows = true));
+  const { host, core, read } = s;
+  const push = (m: J) => s.push("live", { key: "k1", ...m });
+  push({ type: "timeline", start: 3, entries: [], usage: {} });
+  push({ type: "steps", steps: [], phase: null });
+  await read();
+  assert.equal(core.inner.stations.link(ST)?.lives.get("k1")?.told, 3);
+  core.receive(1, { kind: "subscribe", id: 1, subscribe: liveK });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  await read();
+  await read();
+  const x = liveOf(core);
+  assert.deepEqual([x.loaded, x.timeline, x.failed], [true, [], undefined]);
+  core.close();
+});
+
 test("a_bad_station_and_a_stations_no_are_errors_a_passing_failure_keeps_loading", async () => {
   const answers: J = { ...base(), "GET /sessions": status(404, { error: "没有" }), "GET /threads": status(502, { error: "坏了" }) };
   const { host, core } = await started(answers);
