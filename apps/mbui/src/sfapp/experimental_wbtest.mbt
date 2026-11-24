@@ -80,8 +80,8 @@ test "实验性功能's page: its switches, each off by default and on and off a
     for label in ["Farview 原生标签页渲染", "对话列表看板视图", "戳一下", "按住 ⌘/Ctrl 点击引用文本"] {
       assert_true(t.query(Switch, label~) is Some(_), msg="\{at}: \{label}")
     }
-    // (those three alone: the new chat page, its composer and the new-chat page are the only ones, no switch of their own)
-    assert_eq(t.all(Switch).length(), 3, msg="\{at}: \{Repr(t.all(Switch).map(fn(n) { n.label }))}")
+    // (those four alone: the new chat page, its composer and the new-chat page are the only ones, no switch of their own)
+    assert_eq(t.all(Switch).length(), 4, msg="\{at}: \{Repr(t.all(Switch).map(fn(n) { n.label }))}")
     assert_true(t.query(Switch, label="试用新对话页") is None, msg="\{at}: no 试用新对话页")
     assert_true(t.query(Switch, label="试用新输入框") is None, msg="\{at}: no 试用新输入框")
     assert_true(!kept("farviewNative") && !kept("board") && !kept("selectionIntent") && !kept("cmdQuote"), msg="\{at}: all off by default")

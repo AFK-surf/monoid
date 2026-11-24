@@ -341,7 +341,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone screen-trackpad-command": (804, 532, 62),
   "phone settings-home": (984, 635, 78),
   "phone settings-appearance": (514, 359, 51),
-  "phone settings-experimental": (408, 286, 35),
+  "phone settings-experimental": (444, 314, 41),
   "phone settings-me": (472, 329, 47),
   "phone settings-me-reading": (497, 346, 51),
   "phone settings-workspace": (605, 402, 66),
