@@ -237,6 +237,7 @@ export class MbProcess extends EventEmitter {
   /// (a bigint said as its digits)
   /// One that has left more than its `stdinMost` unread is ended (STDIN_MOST), what is posted after dropped.
   postMessage(message: unknown) {
+    if (this.#stalled || this.#exited) return;
     this.postLine(JSON.stringify(message, (_, v) => typeof v === "bigint" ? v.toString() : v));
   }
 
