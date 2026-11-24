@@ -69,7 +69,7 @@ pub fn drawable_vector(name : String) -> @pixels.Vector? {
 /// Marks drawn in one colour, the page's ink; the others in
 /// their own.
 let mono_makers : Array[String] = [
-  "anthropic", "openai", "kimi", "xai", "mistral", "xiaomi", "ant-ling", "openrouter",
+  "anthropic", "openai", "kimi", "xai", "mistral", "xiaomi", "ant-ling", "openrouter", "command-code", "open-design",
   "vercel", "cloudflare", "azure", "groq", "together", "fireworks", "cerebras", "huggingface",
   "nvidia", "baseten", "dsh", "cursor", "devin", "hermes", "pi", "meta", "stepfun", "tencent",
   "meituan",
