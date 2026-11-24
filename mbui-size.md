@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e7300722f](https://github.com/AFK-surf/monoid/commit/e7300722fca7dc951cb3f09c5856262895cd61df) feat(mbui,station): allow cancelling sign-in cards | 2.77 | 3.73 | 15.11 | 37.3 | 57.49 | 32.66 | 66.47 | 100.55 | 127.16 |
 | [bc4226870](https://github.com/AFK-surf/monoid/commit/bc42268704fc17d0fa3fad77b4d0a0135168a560) ci: bound TCP SYN retries before checkout on remai | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
 | [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.58 | 66.24 | 100.27 | 131.27 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [75f27a56e](https://github.com/AFK-surf/monoid/commit/75f27a56e9bcf2e5051976d9d7614f913ba213a0) ci: pass read-only GH_TOKEN to native-consuming jo | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [6d01358d6](https://github.com/AFK-surf/monoid/commit/6d01358d615fe146cd58a43a09095fbeb5cc2d68) perf(pion-rules): eliminate wasm-to-js boundary an | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [2ffb45884](https://github.com/AFK-surf/monoid/commit/2ffb45884ea1350138fb869aa6315722d9987e3e) feat(pion-core): W27e pion-packages crypto-v0.4.1/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
-| [539a932fd](https://github.com/AFK-surf/monoid/commit/539a932fd288b0c2149ab25ca8866dceb0c7924a) fix(station): guard replica handover removal again | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e7300722f](https://github.com/AFK-surf/monoid/commit/e7300722fca7dc951cb3f09c5856262895cd61df) feat(mbui,station): allow cancelling sign-in cards | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.35 |
 | [bc4226870](https://github.com/AFK-surf/monoid/commit/bc42268704fc17d0fa3fad77b4d0a0135168a560) ci: bound TCP SYN retries before checkout on remai | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.62 |
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [75f27a56e](https://github.com/AFK-surf/monoid/commit/75f27a56e9bcf2e5051976d9d7614f913ba213a0) ci: pass read-only GH_TOKEN to native-consuming jo | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.46 |
 | [6d01358d6](https://github.com/AFK-surf/monoid/commit/6d01358d615fe146cd58a43a09095fbeb5cc2d68) perf(pion-rules): eliminate wasm-to-js boundary an | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.41 |
 | [2ffb45884](https://github.com/AFK-surf/monoid/commit/2ffb45884ea1350138fb869aa6315722d9987e3e) feat(pion-core): W27e pion-packages crypto-v0.4.1/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
-| [539a932fd](https://github.com/AFK-surf/monoid/commit/539a932fd288b0c2149ab25ca8866dceb0c7924a) fix(station): guard replica handover removal again | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.41 |
