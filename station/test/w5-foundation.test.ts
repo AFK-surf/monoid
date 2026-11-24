@@ -213,18 +213,24 @@ test("Permit interleaving boundaries (10 cases) against real MB stillfail-reader
     }
   }
 
-  // Case 3: {"permit":"bad"} without closing stdin -> immediately rejected, no hang, subsequent request answered cleanly.
-  {
-    const { path, store } = seedTurnCountsDb(dir, "case3");
+  // Case 3: empty line "", malformed JSON "{bad", foreign object {"foo":1}, and {"permit":"bad"}
+  //         while stdin stays open -> each consumes once and immediately rejects without hanging,
+  //         followed by a valid request answered cleanly with no extra error frame.
+  for (const badReply of ["", "{bad", '{"foo":1}', '{"permit":"bad"}']) {
+    const { path, store } = seedTurnCountsDb(dir, `case3-${badReply.replace(/[^a-z0-9]/gi, "_")}`);
     const proc = new RawLineProc(realMb, ["--builder", "turn-counts", "--db", path]);
     try {
       await startActiveScanA(proc, store.db);
       proc.writeRaw('{"session":"A","cancel":true}\n');
       assert.deepStrictEqual(await proc.nextJson(), { take: true });
-      proc.writeRaw('{"permit":"bad"}\n{"session":"empty"}\n');
-      // Immediately rejects permit without waiting for EOF, emits no give, answers empty cleanly.
-      assert.deepStrictEqual(await proc.nextJson(), { done: true }, "case3: bad permit rejected immediately and next ask answered");
-      assert.equal(guardCount(store.db, "A"), 1, "case3: guard untouched on bad permit");
+      proc.writeRaw(`${badReply}\n{"session":"empty"}\n`);
+      // Immediately rejects permit without closing stdin, emits no give and no extra error frame, then answers empty.
+      assert.deepStrictEqual(
+        await proc.nextJson(),
+        { done: true },
+        `case3(${JSON.stringify(badReply)}): rejected immediately and next ask answered cleanly`,
+      );
+      assert.equal(guardCount(store.db, "A"), 1, `case3(${JSON.stringify(badReply)}): guard untouched`);
       const exit = await proc.finish();
       assert.equal(exit.code, 0);
     } finally {
@@ -233,16 +239,18 @@ test("Permit interleaving boundaries (10 cases) against real MB stillfail-reader
     }
   }
 
-  // Case 4: malformed request line deferred while waiting for permit -> main loop replies invalid after cancel completes.
+  // Case 4: mode-keyed invalid request ({"session":null}) interleaved after cancel(A) while waiting for permit ->
+  //         deferred into FIFO, late {"permit":true} still grants & deletes A guard, then main loop replies invalid.
   {
     const { path, store } = seedTurnCountsDb(dir, "case4");
     const proc = new RawLineProc(realMb, ["--builder", "turn-counts", "--db", path]);
     try {
       await startActiveScanA(proc, store.db);
-      proc.writeRaw('{"session":"A","cancel":true}\n{not-json\n');
+      proc.writeRaw('{"session":"A","cancel":true}\n{"session":null}\n');
       assert.deepStrictEqual(await proc.nextJson(), { take: true });
       proc.writeRaw('{"permit":true}\n');
       assert.deepStrictEqual(await proc.nextJson(), { give: true }, "case4: cancel(A) gives permit");
+      assert.equal(guardCount(store.db, "A"), 0, "case4: A guard deleted");
       const invalid = await proc.nextJson();
       assert.equal(invalid.done, false);
       assert.equal(invalid.error, "invalid old turn counts preparation request");
@@ -275,14 +283,14 @@ test("Permit interleaving boundaries (10 cases) against real MB stillfail-reader
     }
   }
 
-  // Cases 6, 7, 8, 9, 10:
-  // - Case 6: holding permit -> repeat take does not emit second take (verified by B completing a write step with 1 take)
+  // Cases 7, 8, 9, 10 (Note: repeat take while holding is verified in Pion `builders_core_test.pion`,
+  // since MB `turns.step` calls `may_write` at most once per step):
   // - Case 7: cancel with no active scan -> emits nothing (no take, no response)
   // - Case 8: cancel with active scan -> emits no business answer (only take + give)
-  // - Case 9: same chunk {"permit":true}\n<ask(C)>\n -> permit consumed, C processed
+  // - Case 9: same chunk {"permit":true}\n<ask(empty)>\n -> permit consumed, empty processed
   // - Case 10: cross-chunk line assembly + EOF trailing half-line discarded
   {
-    const { path, store } = seedTurnCountsDb(dir, "case6_10");
+    const { path, store } = seedTurnCountsDb(dir, "case7_10");
     const proc = new RawLineProc(realMb, ["--builder", "turn-counts", "--db", path]);
     try {
       // Case 7: cancel with no active scan -> no take, no output; followed by empty ask -> only {"done":true}
@@ -303,6 +311,95 @@ test("Permit interleaving boundaries (10 cases) against real MB stillfail-reader
       assert.deepStrictEqual(await proc.nextJson(), { done: true }, "case10: cross-chunk line assembled");
       proc.endStdin();
       assert.equal(await proc.nextLine(), null, "case10: trailing half-line discarded on EOF");
+      const exit = await proc.finish();
+      assert.equal(exit.code, 0);
+    } finally {
+      await proc.kill();
+      store.close();
+    }
+  }
+});
+
+function seedSaidDb(dir: string, label: string): { path: string; store: Store; longThread: number; readyThread: number } {
+  const path = join(dir, `${label}.db`);
+  const store = Store.open(path, join(dir, `${label}-archive`));
+  store.insertSession({
+    key: "s0",
+    connect: "ember",
+    runtime: "claude",
+    profile: "cc",
+    workspace: "/w/s0",
+    token: "s0",
+    createdAt: 1,
+    lastActiveAt: 1,
+  });
+  const longThread = store.openThread("ember", "CHAT", `${label}-long`, null, null).id;
+  const readyThread = store.openThread("ember", "CHAT", `${label}-ready`, null, null).id;
+  store.joinThread(longThread, "s0", "ember");
+  store.joinThread(readyThread, "s0", "ember");
+  const put = store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,ts,at) VALUES (?,?,'message',?,?,?,?)");
+  store.db.exec("BEGIN");
+  put.run(longThread, 1, "agent", "s0", "first-long", 1);
+  for (let n = 2; n <= 300; n++) put.run(longThread, n, "person", "me", `l-${n}`, n);
+  put.run(readyThread, 1, "agent", "s0", "first-ready", 1);
+  store.db.exec("COMMIT");
+  store.db.prepare("UPDATE thread_state SET said_other_known=0 WHERE thread=?").run(longThread);
+  store.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  return { path, store, longThread, readyThread };
+}
+
+test("Permit classification on real MB stillfail-reader --builder said (empty/malformed/foreign immediate reject + mode-keyed null deferred)", async (t) => {
+  const realMb = mbReaderBinary();
+  if (realMb === null) {
+    if (process.env.CI) assert.fail("stillfail-reader binary is required in CI");
+    t.skip("stillfail-reader not built here");
+    return;
+  }
+  const dir = freshDir("permit-said-mb-");
+
+  // 1. Empty line, bad JSON, foreign object {"foo":1} while stdin stays open -> immediate reject, no extra frame, readyThread answered.
+  for (const badReply of ["", "{bad", '{"foo":1}']) {
+    const { path, store, longThread, readyThread } = seedSaidDb(dir, `said-bad-${badReply.replace(/[^a-z0-9]/gi, "_")}`);
+    const proc = new RawLineProc(realMb, ["--builder", "said", "--db", path]);
+    try {
+      proc.writeRaw(`${JSON.stringify({ thread: longThread })}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw('{"permit":true}\n');
+      assert.deepStrictEqual(await proc.nextJson(), { done: false });
+
+      proc.writeRaw(`${JSON.stringify({ thread: longThread, cancel: true })}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw(`${badReply}\n${JSON.stringify({ thread: readyThread })}\n`);
+      assert.deepStrictEqual(
+        await proc.nextJson(),
+        { done: true },
+        `said(${JSON.stringify(badReply)}): rejected immediately and readyThread answered cleanly`,
+      );
+      const exit = await proc.finish();
+      assert.equal(exit.code, 0);
+    } finally {
+      await proc.kill();
+      store.close();
+    }
+  }
+
+  // 2. Mode-keyed invalid request {"thread":null} interleaved after cancel -> deferred, permit still grants, main loop replies invalid.
+  {
+    const { path, store, longThread } = seedSaidDb(dir, "said-deferred-null");
+    const proc = new RawLineProc(realMb, ["--builder", "said", "--db", path]);
+    try {
+      proc.writeRaw(`${JSON.stringify({ thread: longThread })}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw('{"permit":true}\n');
+      assert.deepStrictEqual(await proc.nextJson(), { done: false });
+
+      proc.writeRaw(`${JSON.stringify({ thread: longThread, cancel: true })}\n{"thread":null}\n`);
+      assert.deepStrictEqual(await proc.nextJson(), { take: true });
+      proc.writeRaw('{"permit":true}\n');
+      assert.deepStrictEqual(await proc.nextJson(), { give: true }, "said: cancel gives permit");
+      const invalid = await proc.nextJson();
+      assert.equal(invalid.done, false);
+      assert.equal(invalid.error, "invalid sidebar said state preparation request");
       const exit = await proc.finish();
       assert.equal(exit.code, 0);
     } finally {
@@ -521,38 +618,111 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
         continue;
       }
       if (!forbiddenHeads.has(tok.upper)) continue;
+      // SQLite `SAVEPOINT <name>` / `RELEASE [SAVEPOINT] <name>` always take a savepoint identifier;
+      // ignore standalone non-SQL literals like Cargo's `"release"` directory name.
+      if ((tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") && tokens[t + 1]?.kind !== "word") continue;
       violations.push(`${filename}:${expr.line}: forbidden raw transaction SQL "${tok.upper}" in literal ${JSON.stringify(expr.value)}`);
     }
   }
   return violations;
 }
 
-test("zero-exception static SQLite transaction guard across all pion/station builders (only sql_db.pion allowed)", () => {
-  const pkgsDir = resolve(fileURLToPath(new URL("../../pion/station/packages", import.meta.url)));
-  assert.ok(existsSync(pkgsDir), `expected ${pkgsDir} to exist`);
-  const checkedPackages = ["builders_core", "builders_index", "builders_stateful"];
-  const scannedFiles: string[] = [];
-  for (const pkg of checkedPackages) {
-    const srcDir = join(pkgsDir, pkg, "src");
-    const files = readdirSync(srcDir).filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion")).sort();
-    for (const file of files) {
-      const rel = `${pkg}/src/${file}`;
-      scannedFiles.push(rel);
-      const content = readFileSync(join(srcDir, file), "utf8");
-      assert.deepStrictEqual(
-        findRawTxControlViolations(rel, content),
-        [],
-        `${rel} must contain zero raw transaction SQL (only sql_db.pion is allowed)`,
-      );
+function collectPionSources(rootDir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(rootDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    const full = join(rootDir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...collectPionSources(full, rel));
+    } else if (entry.name.endsWith(".pion") && !entry.name.endsWith("_test.pion")) {
+      out.push(rel);
     }
   }
-  assert.ok(scannedFiles.includes("builders_core/src/builder_loop.pion"), "must scan builder_loop.pion");
-  assert.ok(scannedFiles.includes("builders_stateful/src/page_letters.pion"), "must scan page_letters.pion");
+  return out;
+}
 
-  // Mutation self-check: injecting raw transaction SQL into builder_loop.pion must be caught 100%.
+/// Strip ONLY the body of `fn run_smoke_sqlite(...)` from `smoke/src/main.pion` so low-level
+/// `sqlite_ffi` smoke tests (`BEGIN;` / `COMMIT;`) are exempted while the rest of `main.pion` stays guarded.
+function stripRunSmokeSqlite(source: string): string {
+  const marker = "fn run_smoke_sqlite(";
+  const start = source.indexOf(marker);
+  assert.ok(start >= 0, "expected fn run_smoke_sqlite in smoke/src/main.pion");
+  const openBrace = source.indexOf("{", start);
+  assert.ok(openBrace >= 0, "expected opening brace for run_smoke_sqlite");
+  let depth = 0;
+  let i = openBrace;
+  let inStr = false;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (inStr) {
+      if (ch === "\\") { i += 2; continue; }
+      if (ch === '"') inStr = false;
+      i++;
+      continue;
+    }
+    if (ch === '"') { inStr = true; i++; continue; }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return source.slice(0, start) + source.slice(i + 1);
+      }
+    }
+    i++;
+  }
+  assert.fail("unterminated run_smoke_sqlite function");
+}
+
+test("recursive zero-exception static SQLite transaction guard across ALL SQLite-linked pion/station/packages/**/*.pion", () => {
+  const pkgsDir = resolve(fileURLToPath(new URL("../../pion/station/packages", import.meta.url)));
+  assert.ok(existsSync(pkgsDir), `expected ${pkgsDir} to exist`);
+  const allFiles = collectPionSources(pkgsDir);
+  // Automatically include every package whose pion.toml depends on `sql_db` or `sqlite_ffi`
+  // (plus `sql_db` itself), so any future SQLite builder package is guarded without hardcoding names.
+  const sqlPackages = new Set<string>();
+  for (const entry of readdirSync(pkgsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const manifestPath = join(pkgsDir, entry.name, "pion.toml");
+    if (!existsSync(manifestPath)) continue;
+    const manifest = readFileSync(manifestPath, "utf8");
+    if (entry.name === "sql_db" || /^\s*(sql_db|sqlite_ffi)\s*=/m.test(manifest)) {
+      sqlPackages.add(entry.name);
+    }
+  }
+  const checkedFiles = allFiles.filter((rel) => sqlPackages.has(rel.split("/")[0]!));
+  assert.ok(checkedFiles.includes("sql_db/src/sql_db.pion"), "must discover sql_db.pion");
+  assert.ok(checkedFiles.includes("builders_core/src/builder_loop.pion"), "must discover builder_loop.pion");
+  assert.ok(checkedFiles.includes("builders_stateful/src/page_letters.pion"), "must discover page_letters.pion");
+  assert.ok(checkedFiles.includes("smoke/src/main.pion"), "must discover smoke/src/main.pion");
+
+  for (const rel of checkedFiles) {
+    if (rel === "sql_db/src/sql_db.pion") continue;
+    const raw = readFileSync(join(pkgsDir, rel), "utf8");
+    const content = rel === "smoke/src/main.pion" ? stripRunSmokeSqlite(raw) : raw;
+    assert.deepStrictEqual(
+      findRawTxControlViolations(rel, content),
+      [],
+      `${rel} must contain zero raw transaction SQL (only sql_db.pion and run_smoke_sqlite are exempted)`,
+    );
+  }
+
+  // In-closure real-file mutation checks: inject directly inside real business function/closure bodies.
+  const archiveMarksSrc = readFileSync(join(pkgsDir, "builders_core/src/archive_marks.pion"), "utf8");
+  const txClosureRe = /(fn\(tx_db : sql_db::Db\) -> [^\n{]+\{\n)/;
+  assert.match(archiveMarksSrc, txClosureRe, "expected db.tx_err closure in archive_marks.pion");
+  for (const stmt of ['let _ = tx_db.exec("COMMIT")', 'let _ = tx_db.exec("SAVEPOINT sp")', 'let _ = tx_db.exec("ROLL" + "BACK")']) {
+    const mutated = archiveMarksSrc.replace(txClosureRe, `$1      ${stmt}\n`);
+    assert.notEqual(mutated, archiveMarksSrc);
+    const hits = findRawTxControlViolations("archive_marks.pion", mutated);
+    assert.equal(hits.length, 1, `in-closure mutation ${stmt} in archive_marks.pion must be detected`);
+  }
+
   const loopSrc = readFileSync(join(pkgsDir, "builders_core/src/builder_loop.pion"), "utf8");
-  for (const stmt of ['"BEGIN IMMEDIATE"', '"COMMIT"', '"ROLL" + "BACK"', '"SAVEPOINT sp"', '"RELEASE sp"']) {
-    const hits = findRawTxControlViolations("builder_loop.pion", `${loopSrc}\nlet _ = db.exec(${stmt})\n`);
-    assert.equal(hits.length, 1, `mutation ${stmt} must be detected`);
+  const loopAnchor = "let res = step(db, ask)\n";
+  assert.ok(loopSrc.includes(loopAnchor), "expected step(db, ask) inside builder_loop.pion");
+  for (const stmt of ['let _ = db.exec("BEGIN IMMEDIATE")', 'let _ = db.exec("COMMIT")', 'let _ = db.exec("ROLL" + "BACK")', 'let _ = db.exec("SAVEPOINT sp")', 'let _ = db.exec("RELEASE sp")']) {
+    const mutated = loopSrc.replace(loopAnchor, `${loopAnchor}          ${stmt}\n`);
+    const hits = findRawTxControlViolations("builder_loop.pion", mutated);
+    assert.equal(hits.length, 1, `in-body mutation ${stmt} in builder_loop.pion must be detected`);
   }
 });

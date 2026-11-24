@@ -114,10 +114,19 @@ struct MockIo {
   out : Array[String]
 }
 
-test "Permit handles deferred requests, bad permit values, EOF draining, and repeat take" {
-  // 1. Interleaved business ask + malformed line + empty line before permit grant
+fn is_turn_req(obj : base_codec::Json) -> Bool {
+  json_has_key(obj, "session") || json_has_key(obj, "cancel")
+}
+
+fn is_said_req(obj : base_codec::Json) -> Bool {
+  json_has_key(obj, "thread") || json_has_key(obj, "cancel")
+}
+
+test "Permit handles mode-request deferral, malformed/empty/foreign rejection, lone-surrogate permit, EOF draining, and repeat take" {
+  // 1. Mode requests (including null-valued mode key) deferred FIFO while waiting for permit;
+  //    permit object with lone surrogate in an unrelated field still parses and grants.
   let io1 = MockIo::{
-    lines: ["", "{\"session\":\"B\"}", "{bad", "{\"permit\":true}", "{\"session\":\"C\"}"],
+    lines: ["{\"session\":\"B\"}", "{\"session\":null}", "{\"permit\":true,\"note\":\"\\uD800\"}", "{\"session\":\"C\"}"],
     idx: 0,
     out: [],
   }
@@ -134,8 +143,8 @@ test "Permit handles deferred requests, bad permit values, EOF draining, and rep
     io1.out.push(s)
     true
   }
-  let p1 = Permit::new(LineQueue::new())
-  expect(p1.take_with(read1, write1), "grant after deferred lines")
+  let p1 = Permit::new(LineQueue::new(), is_turn_req)
+  expect(p1.take_with(read1, write1), "grant after deferred mode requests")
   expect(p1.is_holding(), "holding after grant")
   // Repeat take while holding does not send another take
   expect(p1.take_with(read1, write1), "repeat take returns true")
@@ -149,41 +158,45 @@ test "Permit handles deferred requests, bad permit values, EOF draining, and rep
     None => panic("expected B")
   }
   match p1.next_line_with(read1) {
-    Some(l) => expect(l == "{bad", "deferred 2")
-    None => panic("expected {bad")
+    Some(l) => expect(l == "{\"session\":null}", "deferred 2")
+    None => panic("expected session:null")
   }
   match p1.next_line_with(read1) {
     Some(l) => expect(l == "{\"session\":\"C\"}", "stdin C")
     None => panic("expected C")
   }
 
-  // 2. Non-boolean permit value ("bad") rejects immediately without waiting for EOF
-  let io2 = MockIo::{
-    lines: ["{\"permit\":\"bad\"}", "{\"session\":\"after\"}"],
-    idx: 0,
-    out: [],
-  }
-  let read2 = fn() -> Option[String] {
-    if io2.idx < io2.lines.length() {
-      let l = io2.lines[io2.idx]
-      io2.idx = io2.idx + 1
-      Some(l)
-    } else {
-      None
+  // 2. Empty line, malformed JSON, non-object JSON, foreign object {"foo":1}, and bad permit value
+  //    each consume once and immediately reject without hanging or replaying.
+  let bad_replies = ["", "{bad", "123", "null", "{\"foo\":1}", "{\"permit\":\"bad\"}"]
+  for i in 0..<bad_replies.length() {
+    let io2 = MockIo::{
+      lines: [bad_replies[i], "{\"thread\":42}"],
+      idx: 0,
+      out: [],
     }
-  }
-  let write2 = fn(s : String) -> Bool {
-    io2.out.push(s)
-    true
-  }
-  let p2 = Permit::new(LineQueue::new())
-  expect(!p2.take_with(read2, write2), "bad permit rejects immediately")
-  expect(!p2.is_holding() && !p2.is_eof(), "not holding, not eof")
-  p2.give_with(write2) // no-op when not holding
-  expect(io2.out.length() == 1, "no give emitted when denied")
-  match p2.next_line_with(read2) {
-    Some(l) => expect(l == "{\"session\":\"after\"}", "next line still intact")
-    None => panic("expected after")
+    let read2 = fn() -> Option[String] {
+      if io2.idx < io2.lines.length() {
+        let l = io2.lines[io2.idx]
+        io2.idx = io2.idx + 1
+        Some(l)
+      } else {
+        None
+      }
+    }
+    let write2 = fn(s : String) -> Bool {
+      io2.out.push(s)
+      true
+    }
+    let p2 = Permit::new(LineQueue::new(), is_said_req)
+    expect(!p2.take_with(read2, write2), "bad reply must reject immediately: " + bad_replies[i])
+    expect(!p2.is_holding() && !p2.is_eof(), "not holding, not eof")
+    p2.give_with(write2) // no-op when not holding
+    expect(io2.out.length() == 1, "no give emitted when denied")
+    match p2.next_line_with(read2) {
+      Some(l) => expect(l == "{\"thread\":42}", "next line intact without replaying bad reply")
+      None => panic("expected next line")
+    }
   }
 
   // 3. Deferred request followed by EOF: take returns false, eof=true, deferred still drained,
@@ -202,7 +215,7 @@ test "Permit handles deferred requests, bad permit values, EOF draining, and rep
     io3.out.push(s)
     true
   }
-  let p3 = Permit::new(LineQueue::new())
+  let p3 = Permit::new(LineQueue::new(), is_turn_req)
   expect(!p3.take_with(read3, write3), "EOF rejects take")
   expect(p3.is_eof() && !p3.is_holding(), "eof set")
   match p3.next_line_with(read3) {

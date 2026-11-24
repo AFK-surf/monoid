@@ -115,9 +115,45 @@ test "nesting depth limit 1024 and UTF-16 code-unit error offset" {
     Ok(_) => panic("expected syntax error")
     Err(e) => expect(e == "unexpected input at 6", "UTF-16 error offset mismatch: " + e)
   }
+  // Illegal escape after astral char: "\"🚀\\q\"" -> '"'(0) hi(1) lo(2) '\\'(3) 'q'(4) => fails after reading 'q' at 5
+  match parse("\"🚀\\q\"") {
+    Ok(_) => panic("expected illegal escape error")
+    Err(e) => expect(e == "unexpected input at 5", "illegal escape offset mismatch: " + e)
+  }
+  // Unescaped control char (0x01) after astral char: "\"🚀\u{0001}\"" -> fails at offset 3
+  match parse("\"🚀\u{0001}\"") {
+    Ok(_) => panic("expected control char error")
+    Err(e) => expect(e == "unexpected input at 3", "control char offset mismatch: " + e)
+  }
+  // Invalid UTF-8 byte replaced by single U+FFFD (1 UTF-16 unit) before error: ["<0xFF>",!]
+  let bad_utf8 = Bytes::new(8)
+  bad_utf8[0] = 0x5B as Byte // '['
+  bad_utf8[1] = 0x22 as Byte // '"'
+  bad_utf8[2] = 0xFF as Byte // invalid -> 1 U+FFFD at unit 2
+  bad_utf8[3] = 0x22 as Byte // '"' (unit 3)
+  bad_utf8[4] = 0x2C as Byte // ',' (unit 4)
+  bad_utf8[5] = 0x21 as Byte // '!' (unit 5)
+  bad_utf8[6] = 0x5D as Byte // ']'
+  bad_utf8[7] = 0x20 as Byte
+  let sb_bad = StringBuilder::new()
+  for i in 0..<bad_utf8.length() {
+    sb_bad.write_byte(bad_utf8[i])
+  }
+  match parse(sb_bad.to_string()) {
+    Ok(_) => panic("expected invalid utf8 json error")
+    Err(e) => expect(e == "unexpected input at 5", "invalid utf8 offset mismatch: " + e)
+  }
 }
 
-test "numbers: overflow, underflow, -0, 5e-324, 1e21, 1e-7, +-(2^53+1), NaN/Inf -> null" {
+test "numbers: overflow, underflow, 0e999999, -0, 5e-324, 1e21, 1e-7, +-(2^53+1), NaN/Inf -> null" {
+  match parse("0e999999") {
+    Ok(JValue::Num(d)) => expect(d == 0.0 && !is_nan_or_inf(d), "0e999999 -> 0")
+    _ => panic("0e999999")
+  }
+  match parse("-0e999999") {
+    Ok(JValue::Num(d)) => expect(d == 0.0 && !is_nan_or_inf(d), "-0e999999 -> -0")
+    _ => panic("-0e999999")
+  }
   match parse("1e400") {
     Ok(JValue::Num(d)) => expect(is_nan_or_inf(d) && d > 0.0, "1e400 -> +Inf")
     _ => panic("1e400")
@@ -175,6 +211,14 @@ test "UTF-16 helpers: utf16_len, utf16_slice, utf16_find_from, utf8_bytes, is_sa
   match utf16_find_from("abab", "ab", 1) {
     Some(2) => ()
     _ => panic("find ab from 1 -> 2")
+  }
+  match utf16_find_from(s, "", 99) {
+    Some(5) => ()
+    _ => panic("empty needle from > len clamps to len (5)")
+  }
+  match utf16_find_from(s, "", -3) {
+    Some(0) => ()
+    _ => panic("empty needle from < 0 clamps to 0")
   }
   expect(utf8_bytes(s).length() == 9, "utf8_bytes len == 9")
   expect(is_safe_integer(0.0), "0 safe")

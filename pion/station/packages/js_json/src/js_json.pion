@@ -208,13 +208,14 @@ pub fn utf16_slice(s : String, start : Int, end : Int) -> String {
   sanitize_str(slice)
 }
 
-/// Find the first occurrence of `needle` in `haystack` starting at UTF-16 code-unit index `from_units`.
+/// Find the first occurrence of `needle` in `haystack` starting at UTF-16 code-unit index `from_units`
+/// (matching JS `String.prototype.indexOf`: empty needle clamps `from_units` to `[0, len]`).
 pub fn utf16_find_from(haystack : String, needle : String, from_units : Int) -> Option[Int] {
   let h = utf16_units(haystack)
   let nd = utf16_units(needle)
   let start = if from_units < 0 { 0 } else { from_units }
   if nd.length() == 0 {
-    return if start <= h.length() { Some(start) } else { None }
+    return Some(if start > h.length() { h.length() } else { start })
   }
   if start + nd.length() > h.length() {
     return None

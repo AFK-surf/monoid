@@ -234,6 +234,7 @@ fn message(e : Error) -> String {
 /// answering (an answer gives it back as well).
 struct Permit {
   host : @host.Host
+  is_mode_request : (Map[String, Json]) -> Bool
   mut holding : Bool
   deferred : Array[String]
   mut deferred_head : Int
@@ -241,8 +242,8 @@ struct Permit {
 }
 
 ///|
-fn Permit::new(host : @host.Host) -> Permit {
-  { host, holding: false, deferred: [], deferred_head: 0, eof: false }
+fn Permit::new(host : @host.Host, is_mode_request : (Map[String, Json]) -> Bool) -> Permit {
+  { host, is_mode_request, holding: false, deferred: [], deferred_head: 0, eof: false }
 }
 
 ///|
@@ -306,7 +307,8 @@ async fn Permit::take(self : Permit) -> Bool {
       return false
     }
     if line == "" {
-      continue
+      self.holding = false
+      return false
     }
     let reply : Json = @json.parse(line) catch { _ => Json::null() }
     match reply {
@@ -314,10 +316,17 @@ async fn Permit::take(self : Permit) -> Bool {
         if map.get("permit") is Some(v) {
           self.holding = v is True
           return self.holding
+        } else if (self.is_mode_request)(map) {
+          self.deferred.push(line)
+        } else {
+          self.holding = false
+          return false
         }
-      _ => ()
+      _ => {
+        self.holding = false
+        return false
+      }
     }
-    self.deferred.push(line)
   }
   false
 }
@@ -337,7 +346,7 @@ fn Permit::give(self : Permit) -> Unit {
 async fn turn_builder(host : @host.Host, db_path : String) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
   db.exec("PRAGMA synchronous = NORMAL")
-  let permit = Permit::new(host)
+  let permit = Permit::new(host, map => map.contains("session") || map.contains("cancel"))
   let counts : Map[String, @turns.Scan] = Map([])
   let tokens = Ref(0)
   let token = () => {
@@ -393,7 +402,7 @@ async fn turn_builder(host : @host.Host, db_path : String) -> Unit {
 async fn said_builder(host : @host.Host, db_path : String) -> Unit {
   let db = @sql.Db::attach(host, db_path, wait=250)
   db.exec("PRAGMA synchronous = NORMAL")
-  let permit = Permit::new(host)
+  let permit = Permit::new(host, map => map.contains("thread") || map.contains("cancel"))
   let scans : Map[Int64, @said.Scan] = Map([])
   let tokens = Ref(0)
   let token = () => {

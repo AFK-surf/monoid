@@ -287,16 +287,32 @@ pub fn format_step_response(
 
 // ── Shared Permit state machine with deferred FIFO queue (matches MB `Permit`) ──
 
+/// Whether a parsed JSON object has key `key` (existence only, regardless of value).
+pub fn json_has_key(j : base_codec::Json, key : String) -> Bool {
+  match json_get_last(j, key) {
+    Some(_) => true
+    None => false
+  }
+}
+
 pub struct Permit {
   queue : LineQueue
+  is_mode_request : (base_codec::Json) -> Bool
   mut holding : Bool
   mut deferred : Array[String]
   mut deferred_head : Int
   mut eof : Bool
 }
 
-pub fn Permit::new(queue : LineQueue) -> Permit {
-  Permit::{ queue: queue, holding: false, deferred: [], deferred_head: 0, eof: false }
+pub fn Permit::new(queue : LineQueue, is_mode_request : (base_codec::Json) -> Bool) -> Permit {
+  Permit::{
+    queue: queue,
+    is_mode_request: is_mode_request,
+    holding: false,
+    deferred: [],
+    deferred_head: 0,
+    eof: false,
+  }
 }
 
 pub fn Permit::is_holding(self : Permit) -> Bool {
@@ -369,9 +385,13 @@ pub fn Permit::next_line_with(self : Permit, read_line : () -> Option[String]) -
   }
 }
 
-/// Testable permit acquisition: skips empty lines, resolves immediately on any JSON object with a
-/// `"permit"` key (only literal `true` grants), defers all other non-empty lines into `deferred` FIFO,
-/// and marks `eof = true` on EOF without losing deferred lines.
+/// Testable permit acquisition:
+/// 1. JSON object with `"permit"` key (parsed via `sql_db::parse_json`, without lone-surrogate rejection):
+///    only literal `true` grants; any other value rejects immediately.
+/// 2. JSON object matching `is_mode_request(obj)`: deferred into FIFO queue while continuing to wait.
+/// 3. Any other line (empty `""`, unparseable JSON, non-object JSON, or object lacking `"permit"` and
+///    mode keys): consumed once and immediately rejected without hanging or replaying.
+/// 4. EOF: sets `eof = true` and rejects without dropping already-deferred complete requests.
 pub fn Permit::take_with(
   self : Permit,
   read_line : () -> Option[String],
@@ -393,19 +413,38 @@ pub fn Permit::take_with(
       }
       Some(line) => {
         if line.length() == 0 {
-          continue
+          self.holding = false
+          return false
         }
-        let reply = parse_ask_line(line)
-        match json_get_last(reply, "permit") {
-          Some(base_codec::Json::Bool(true)) => {
-            self.holding = true
-            return true
+        let reply = match sql_db::parse_json(line) {
+          base_codec::JsonParseResult::Ok(j) => j
+          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+        }
+        match reply {
+          base_codec::Json::Obj(_) => {
+            match json_get_last(reply, "permit") {
+              Some(base_codec::Json::Bool(true)) => {
+                self.holding = true
+                return true
+              }
+              Some(_) => {
+                self.holding = false
+                return false
+              }
+              None => {
+                if (self.is_mode_request)(reply) {
+                  self.deferred.push(line)
+                } else {
+                  self.holding = false
+                  return false
+                }
+              }
+            }
           }
-          Some(_) => {
+          _ => {
             self.holding = false
             return false
           }
-          None => self.deferred.push(line)
         }
       }
     }
