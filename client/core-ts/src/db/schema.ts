@@ -217,12 +217,12 @@ export const overviewRowOf = (j: string) => `CASE WHEN json_type(${j}) = 'object
 /// are not in it: each agent's own profile is read alone (overviewProfilesOf).
 export const overviewChatOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('connects', 'disk', 'slackUsers', 'updates', 'feedback', 'context', 'features')))
+      WHERE o.key IN ('connects', 'disk', 'slackUsers', 'updates', 'feedback', 'context', 'features', 'move')))
     END`;
 
 /// The fields of an overview a chat's page reads (overviewChatOf), for where it is made of an overview in the core (one
 /// shown with what is being done to it here: data.ts overviewChat).
-export const OVERVIEW_CHAT = ["connects", "disk", "slackUsers", "updates", "feedback", "context", "features"] as const;
+export const OVERVIEW_CHAT = ["connects", "disk", "slackUsers", "updates", "feedback", "context", "features", "move"] as const;
 
 /// An overview's profiles (the JSON `j`), each whole, by its id, as SQL: what a chat's agent reads of the one it runs
 /// on, read by its key (account.ts overviewProfile: `profiles -> '$."<id>"'`, SQLite taking that one of them), never

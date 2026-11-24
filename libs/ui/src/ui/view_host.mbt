@@ -1766,6 +1766,21 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
   // (lifted nodes currently dissolving/reassembling as particles: @view.Tree::lift_particle_of, ParticleAt)
   let has_particles = dr.mode != mode_hits && tree.has_particle_flights()
   let particling : Array[ParticleAt] = []
+  let fast_fade_scopes : Array[(Int, @view.NodeId, Int)] = []
+  let close_fast_fade = fn(next : @view.NodeId?) {
+    while fast_fade_scopes.length() > 0 {
+      let (p_idx, nid, fk0) = fast_fade_scopes[fast_fade_scopes.length() - 1]
+      match next {
+        Some(nx) if tree.holds_in_order(nid, nx) => break
+        _ => {
+          fast_fade_scopes.pop() |> ignore
+          if p_idx < particling.length() && self.ninst > fk0 {
+            particling[p_idx].fast_fade.push((fk0, self.ninst))
+          }
+        }
+      }
+    }
+  }
   // (adaptive liquid glass ink scopes active during the tree walk, innermost last: saved prior (ink_x, ink_y, ink_r))
   let ink_stack : Array[(@view.NodeId, Double, Double, Double)] = []
   // (covered beside pages clipped horizontally during parallax push/pop: (pv_id, cut_left, cut_right, runs0))
@@ -1978,6 +1993,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       _ => ()
     }
     close_to(Some(c.id))
+    close_fast_fade(Some(c.id))
     while particling.length() > 0 && !tree.holds_in_order(particling[particling.length() - 1].id, c.id) {
       let at = particling.pop().unwrap()
       self.particle_apply(at, at.k0, self.ninst)
@@ -2140,6 +2156,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       ride_spoil()
       nav_scope_stack.clear()
       close_to(None)
+      close_fast_fade(None)
       while particling.length() > 0 {
         let at = particling.pop().unwrap()
         self.particle_apply(at, at.k0, self.ninst)
@@ -2182,7 +2199,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
           }
           let ck = clip_top()
           let outer_clip = FixedArray::makei(24, fn(j) { clip_stack[ck + j] })
-          particling.push({ id: c.id, pf, k0: self.ninst, outer_clip, base_x: x, base_y: y, base_s: s })
+          particling.push({ id: c.id, pf, k0: self.ninst, outer_clip, base_x: x, base_y: y, base_s: s, fast_fade: [] })
         }
         None => ()
       }
@@ -2254,6 +2271,14 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       nav_scope_stack.push((c.id, nav_scope_gen))
     }
     let k0 = self.ninst
+    if particling.length() > 0 {
+      let p_idx = particling.length() - 1
+      let top = particling[p_idx]
+      let in_fade = fast_fade_scopes.length() > 0 && fast_fade_scopes[fast_fade_scopes.length() - 1].0 == p_idx
+      if !in_fade && top.pf.old && tree.flies_fade_at(c.id) {
+        fast_fade_scopes.push((p_idx, c.id, k0))
+      }
+    }
     let k = clip_top()
     // (what it draws itself, and where its edge was composed among the frame's instances (-1: none), drawn after what it
     // holds, composed as the rest of it was (moved, turned, faded, cut, its own): taken out where it was drawn, held till
@@ -2342,6 +2367,18 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       -1
     } else {
       let r_at = self.view_drawn(tree, c, x, y, a, s, ux, uy, turn, ground_drawn)
+      if particling.length() > 0 {
+        let p_idx = particling.length() - 1
+        let top = particling[p_idx]
+        let in_fade = fast_fade_scopes.length() > 0 && fast_fade_scopes[fast_fade_scopes.length() - 1].0 == p_idx
+        if !in_fade && top.pf.old && !tree_fields.is_empty() {
+          match tree_fields.get(c.id) {
+            Some(tf) if tf.st.text == "" && tf.st.marked == "" && self.ninst > k0 =>
+              top.fast_fade.push((k0, self.ninst))
+            _ => ()
+          }
+        }
+      }
       if !glass_paint.solid {
         match view_blocks.get(c.id) {
           Some(b) if b.glass_layer > 0 && b.glass_at >= 0 => {
@@ -2615,6 +2652,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     glass_paint.ink_r = or_
   }
   close_to(None)
+  close_fast_fade(None)
   while particling.length() > 0 {
     let at = particling.pop().unwrap()
     self.particle_apply(at, at.k0, self.ninst)

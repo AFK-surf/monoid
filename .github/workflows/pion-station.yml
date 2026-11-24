@@ -48,6 +48,7 @@ on:
       - "station/src/read/mb-reader.ts"
       - "station/src/read/pool.ts"
       - "station/src/read/reader-select.ts"
+      - "station/src/read/recent-chat-builder.ts"
       - "station/src/read/requested-builder.ts"
       - "station/src/read/said-builder.ts"
       - "station/src/read/session-bindings-builder.ts"
@@ -73,6 +74,7 @@ on:
       - "station/src/store/archive-mark-index.ts"
       - "station/src/store/backfill.ts"
       - "station/src/store/card-post-index.ts"
+      - "station/src/store/chat-list.ts"
       - "station/src/store/legacy-said-builder.ts"
       - "station/src/store/post-blocks.ts"
       - "station/src/store/session-bindings-index.ts"
@@ -95,6 +97,7 @@ on:
       - "station/test/autoarchive-last-bounded.test.ts"
       - "station/test/builders-core-pion-switch.test.ts"
       - "station/test/builders-index-pion-switch.test.ts"
+      - "station/test/builders-recent-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
       - "station/test/builders-vault-pion-switch.test.ts"
       - "station/test/footprint-mounts.ts"
@@ -110,6 +113,7 @@ on:
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
+      - "station/test/mb-recent-chat.test.ts"
       - "station/test/mb-said.test.ts"
       - "station/test/mb-search-scope.test.ts"
       - "station/test/mb-session-bindings.test.ts"
@@ -150,6 +154,7 @@ on:
       - "station/test/reference/backfill/usage-retire.ts"
       - "station/test/reference/backfill/widget-sources.ts"
       - "station/test/reference/backfill/workspace-up-jobs.ts"
+      - "station/test/reference/chat-list/**"
       - "station/test/reference/memory-merge.ts"
       - "station/test/reference/packed.ts"
       - "station/test/reference/search-scope-prepare.ts"
@@ -617,10 +622,12 @@ jobs:
 
           STILLFAIL_MB_READER="$BIN_PION" node --test \
             station/test/mb-vault-uses.test.ts \
-            station/test/vault-use-ambiguity.test.ts
+            station/test/vault-use-ambiguity.test.ts \
+            station/test/mb-recent-chat.test.ts
 
-          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test station/test/builders-vault-pion-switch.test.ts
+          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" node --test \
+            station/test/builders-vault-pion-switch.test.ts \
+            station/test/builders-recent-pion-switch.test.ts
 
   verify-linux:
     runs-on: ubuntu-24.04
