@@ -18,18 +18,104 @@ fn ui_fault_category(said : String) -> String {
   if said == "presented beside a node of the tree, drawn by the old frame: a kind of panel panel_node does not take yet" {
     return "panel cannot be presented"
   }
-  // (which step of a chat's list lost what was sent from here: its flags alone, as sfpages' chat_sent_unseen_said says
-  // them; anything else after the same words is no category of these)
-  if said.has_prefix(chat_sent_unseen) {
-    let flags = said[chat_sent_unseen.length():].to_owned()
-    if flags.iter().all(fn(c) { "listedrowagdhn=01 ".contains_char(c) }) {
-      return said
-    }
+  if said == "chat sent unseen: listed=0 row=0 staged=0 held=0 sending=0" {
+    return "chat sent unseen: listed=0 row=0 staged=0 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=0 held=0 sending=1" {
+    return "chat sent unseen: listed=0 row=0 staged=0 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=0 held=1 sending=0" {
+    return "chat sent unseen: listed=0 row=0 staged=0 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=0 held=1 sending=1" {
+    return "chat sent unseen: listed=0 row=0 staged=0 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=1 held=0 sending=0" {
+    return "chat sent unseen: listed=0 row=0 staged=1 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=1 held=0 sending=1" {
+    return "chat sent unseen: listed=0 row=0 staged=1 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=1 held=1 sending=0" {
+    return "chat sent unseen: listed=0 row=0 staged=1 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=0 staged=1 held=1 sending=1" {
+    return "chat sent unseen: listed=0 row=0 staged=1 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=0 held=0 sending=0" {
+    return "chat sent unseen: listed=0 row=1 staged=0 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=0 held=0 sending=1" {
+    return "chat sent unseen: listed=0 row=1 staged=0 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=0 held=1 sending=0" {
+    return "chat sent unseen: listed=0 row=1 staged=0 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=0 held=1 sending=1" {
+    return "chat sent unseen: listed=0 row=1 staged=0 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=1 held=0 sending=0" {
+    return "chat sent unseen: listed=0 row=1 staged=1 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=1 held=0 sending=1" {
+    return "chat sent unseen: listed=0 row=1 staged=1 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=1 held=1 sending=0" {
+    return "chat sent unseen: listed=0 row=1 staged=1 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=0 row=1 staged=1 held=1 sending=1" {
+    return "chat sent unseen: listed=0 row=1 staged=1 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=0 held=0 sending=0" {
+    return "chat sent unseen: listed=1 row=0 staged=0 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=0 held=0 sending=1" {
+    return "chat sent unseen: listed=1 row=0 staged=0 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=0 held=1 sending=0" {
+    return "chat sent unseen: listed=1 row=0 staged=0 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=0 held=1 sending=1" {
+    return "chat sent unseen: listed=1 row=0 staged=0 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=1 held=0 sending=0" {
+    return "chat sent unseen: listed=1 row=0 staged=1 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=1 held=0 sending=1" {
+    return "chat sent unseen: listed=1 row=0 staged=1 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=1 held=1 sending=0" {
+    return "chat sent unseen: listed=1 row=0 staged=1 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=0 staged=1 held=1 sending=1" {
+    return "chat sent unseen: listed=1 row=0 staged=1 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=0 held=0 sending=0" {
+    return "chat sent unseen: listed=1 row=1 staged=0 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=0 held=0 sending=1" {
+    return "chat sent unseen: listed=1 row=1 staged=0 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=0 held=1 sending=0" {
+    return "chat sent unseen: listed=1 row=1 staged=0 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=0 held=1 sending=1" {
+    return "chat sent unseen: listed=1 row=1 staged=0 held=1 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=1 held=0 sending=0" {
+    return "chat sent unseen: listed=1 row=1 staged=1 held=0 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=1 held=0 sending=1" {
+    return "chat sent unseen: listed=1 row=1 staged=1 held=0 sending=1"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=1 held=1 sending=0" {
+    return "chat sent unseen: listed=1 row=1 staged=1 held=1 sending=0"
+  }
+  if said == "chat sent unseen: listed=1 row=1 staged=1 held=1 sending=1" {
+    return "chat sent unseen: listed=1 row=1 staged=1 held=1 sending=1"
+  }
+  if said.has_prefix("chat sent unseen: ") {
     return "chat sent unseen"
   }
   "UI fault"
 }
-
-///|
-/// What sfpages' chat_sent_unseen_said begins with.
-let chat_sent_unseen : String = "chat sent unseen: "

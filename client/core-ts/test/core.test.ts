@@ -635,6 +635,8 @@ test("UI fault spans never include an arbitrary fault message", async () => {
     call(core, ui, 6, "client.error", { source: "ui_fault", message: "tree field reused" });
     call(core, ui, 7, "client.error", { source: "ui_fault", message: "scene layer conflict" });
     call(core, ui, 8, "client.error", { source: "ui_fault", message: "panel cannot be presented" });
+    call(core, ui, 9, "client.error", { source: "ui_fault", message: "chat sent unseen: listed=1 row=0 staged=1 held=0 sending=0" });
+    call(core, ui, 10, "client.error", { source: "ui_fault", message: "chat sent unseen: listed=1 /another-secret" });
     await host.time.pass(0);
     core.inner.tracer.flush();
     await host.time.pass(0);
@@ -646,6 +648,8 @@ test("UI fault spans never include an arbitrary fault message", async () => {
       ["ui_fault", "tree field reused"],
       ["ui_fault", "scene layer conflict"],
       ["ui_fault", "panel cannot be presented"],
+      ["ui_fault", "chat sent unseen: listed=1 row=0 staged=1 held=0 sending=0"],
+      ["ui_fault", "UI fault"],
     ]);
     assert.ok([...core.inner.reported.keys()].every((key) => !key.includes("sentinel-private-folder") && !key.includes("another-secret")));
   } finally { core.close(); }
