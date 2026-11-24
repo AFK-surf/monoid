@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [674707c85](https://github.com/AFK-surf/monoid/commit/674707c850553d39ee4ba9c1ea2f1aba344e55e9) fix(app): drop the 屏幕 menu headings when no agent  | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [8f98e134a](https://github.com/AFK-surf/monoid/commit/8f98e134af1708e573fdb5714339079d0972d885) fix(station): bound the task list a station answer | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
 | [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ab0bba783](https://github.com/AFK-surf/monoid/commit/ab0bba7835eb64a94cb65870b45a89eabee784fc) feat(pion-station): add Pion memory worker, mb/pio | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 132.16 |
 | [4efe50b6b](https://github.com/AFK-surf/monoid/commit/4efe50b6b75751b3fae0a3150dfb4ed06af0f7d9) ci(preview): keep the iOS device's engine by its i | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.68 | 66.54 | 100.47 | 132.16 |
 | [d7b42d970](https://github.com/AFK-surf/monoid/commit/d7b42d970192b854013e713d801b1d49d0e6fb9c) fix(mb): refill a moon-include directory CI's clea | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.68 | 66.54 | 100.47 | 129.98 |
-| [1b5405d50](https://github.com/AFK-surf/monoid/commit/1b5405d50c3cdf70d15d847a73b86c81907432c7) feat(mbui): pick and note words of a Markdown file | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.66 | 66.47 | 100.93 | 123.45 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [674707c85](https://github.com/AFK-surf/monoid/commit/674707c850553d39ee4ba9c1ea2f1aba344e55e9) fix(app): drop the 屏幕 menu headings when no agent  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.43 |
 | [8f98e134a](https://github.com/AFK-surf/monoid/commit/8f98e134af1708e573fdb5714339079d0972d885) fix(station): bound the task list a station answer | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.16 |
 | [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.87 |
 | [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ab0bba783](https://github.com/AFK-surf/monoid/commit/ab0bba7835eb64a94cb65870b45a89eabee784fc) feat(pion-station): add Pion memory worker, mb/pio | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.48 |
 | [4efe50b6b](https://github.com/AFK-surf/monoid/commit/4efe50b6b75751b3fae0a3150dfb4ed06af0f7d9) ci(preview): keep the iOS device's engine by its i | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.48 |
 | [d7b42d970](https://github.com/AFK-surf/monoid/commit/d7b42d970192b854013e713d801b1d49d0e6fb9c) fix(mb): refill a moon-include directory CI's clea | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.62 |
-| [1b5405d50](https://github.com/AFK-surf/monoid/commit/1b5405d50c3cdf70d15d847a73b86c81907432c7) feat(mbui): pick and note words of a Markdown file | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.75 |
