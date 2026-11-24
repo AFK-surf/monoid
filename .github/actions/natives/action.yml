@@ -3,6 +3,10 @@
 # before the release. On main those jobs have published what was missing, and native.ts downloads it from the release.
 name: natives
 description: The native parts a branch's natives jobs built, for scripts/native.ts
+inputs:
+  artifact-prefix:
+    description: Artifact name before the commit SHA, or a glob for several native producers
+    default: 'natives*'
 runs:
   using: composite
   steps:
@@ -12,7 +16,7 @@ runs:
       uses: actions/download-artifact@v4
       continue-on-error: true # none when the release had every part already
       with:
-        pattern: natives*-${{ github.sha }}
+        pattern: ${{ inputs.artifact-prefix }}-${{ github.sha }}
         merge-multiple: true
         path: ${{ runner.temp }}/natives
     - if: github.ref != 'refs/heads/main'

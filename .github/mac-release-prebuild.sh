@@ -81,6 +81,8 @@ case "${1:-}" in
     export MACOSX_DEPLOYMENT_TARGET=12.0
     export CARGO_TARGET_DIR="$A/out/core-target-macos$MACOSX_DEPLOYMENT_TARGET"
     bash "$A/scripts/core.sh" apple-native aarch64-apple-darwin
+    # (made: the app's mac.sh does not make them again, and says itself whether the app is linked again)
+    export MBUI_APPLE_NATIVE_READY=1
     while [ ! -f "$dir/ready" ]; do sleep 1; done
     # What was built for another macOS (moon's and mbc's objects) goes, as mac-app.sh would have it go, and the marker is
     # written so that it does not: the core just built for this one (out/core/aarch64-apple-darwin) is kept. Left to
@@ -92,8 +94,6 @@ case "${1:-}" in
       mkdir -p "$A/_build"
       echo "$MACOSX_DEPLOYMENT_TARGET" > "$A/_build/.macos-min"
     fi
-    exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
-    [ ! -f "$exe" ] || [ ! "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || touch "$A/src/stillfail/core_engine.m"
     export MOON_HOME="$RUNNER_TOOL_CACHE/moon-ci"
     export PATH="$MOON_HOME/bin:$PATH" APP=stillfail MODE=release MBUI_PACKAGES_PENDING="$dir/packages-pending"
     . apps/mbui/scripts/env.sh
