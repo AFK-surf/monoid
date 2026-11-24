@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { open as openAsync, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { test } from "node:test";
@@ -111,6 +112,15 @@ class RawLineClient {
     this.child.stdin!.write(`${JSON.stringify(obj)}\n`);
   }
 
+  sendAndFlush(obj: unknown): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.child.stdin!.write(`${JSON.stringify(obj)}\n`, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  }
+
   nextLine(): Promise<string> {
     if (this.#lines.length > 0) return Promise.resolve(this.#lines.shift()!);
     return new Promise((resolve, reject) => {
@@ -189,9 +199,11 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     writeFileSync(path, text);
   };
 
-  // Real ~34.5 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> ~5 chunks across 4 P11 yields!)
+  // Real >8 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> 2 chunks across P11!).
+  // Combined with the single-writeRaw POSIX FIFO MEMORY.md kernel barrier, A and B are mathematically
+  // guaranteed to pause at P11 in Round 3 right before qGate blocks the event loop in kernel `read(fifo)`.
   const chunkLine = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(4000) } })}\n`;
-  const repeats = opts.multiChunkHistory ? 8500 : 80; // 8500 * ~4060B ≈ 34.5 MiB -> 5 x 8 MiB chunks
+  const repeats = opts.multiChunkHistory ? 2200 : 80; // 2200 * ~4060B ≈ 8.93 MiB -> 2 x 8 MiB chunks
 
   // Isolate h-a (WA) and h-b (WB) into distinct workspaces so query A ONLY scans ha1.jsonl
   // and query B ONLY scans hb1.jsonl during dual-handle P11 concurrency verification.
@@ -245,10 +257,20 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     ].join("\n"),
   );
 
+  // POSIX FIFO barrier at `<data>/agent/workspaces/WG/MEMORY.md` for zero-race P11 interception on Linux/macOS.
+  let fifoPath: string | null = null;
+  if (opts.multiChunkHistory && process.platform !== "win32") {
+    const wgDir = join(dir, "agent", "workspaces", "WG");
+    mkdirSync(wgDir, { recursive: true });
+    fifoPath = join(wgDir, "MEMORY.md");
+    execFileSync("mkfifo", [fifoPath]);
+  }
+
   return {
     dir,
     dbPath,
     store,
+    fifoPath,
     close: () => {
       store.close();
       rmSync(dir, { recursive: true, force: true });
@@ -271,15 +293,52 @@ function openFdCount(pid: number): number | null {
   return readdirSync(`/proc/${pid}/fd`).length;
 }
 
-test("deterministic no-sleep concurrency: fast query B overtakes slow A; SIGSTOP-frozen dual-FD P11 interleaved cancel A preserves B with strict 0 FD leak", async (t) => {
+test("deterministic no-sleep concurrency: fast query B overtakes slow A; POSIX FIFO MEMORY.md barrier dual-FD P11 interleaved cancel A preserves B with strict 0 FD leak", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   const fx = makeFixture({ multiChunkHistory: true });
   const asker = { workspace: "W1", home: true, scopes: [] };
   const askerA = { workspace: "WA", home: false, scopes: [] };
   const askerB = { workspace: "WB", home: false, scopes: [] };
+  const askerG = { workspace: "WG", home: true, scopes: [] };
   const client = new RawLineClient(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
   const pid = client.child.pid!;
+
+  /// Run `body()` while the Pion event loop is strictly kernel-blocked inside `std::fs::read(fifoPath)`.
+  /// `qGate` (`kinds: ["chat", "memory"]`, `askerG` with `home: true`) is written in the SAME single chunk
+  /// right behind the history queries so there is ZERO parent-wakeup scheduling race:
+  ///   Round 1: history queries yield P9; qGate finishes the 1-thread page and yields P3 (`ThreadsAfterPage`).
+  ///   Round 2: history queries yield P12; qGate scans `home` (`None`) memory and yields P7 (`MemoryWalk`).
+  ///   Round 3: history queries open their >8 MiB transcripts and yield P11 (holding open FDs!);
+  ///            qGate opens `agent/workspaces/WG/MEMORY.md` (FIFO) -> unlocks `gateEntered` and
+  ///            blocks the entire single-threaded Pion event loop in kernel `read(fifo)` until `gateFh.close()`!
+  const withFifoBarrier = async (prefixLines: string, gateId: number, body: () => Promise<void>) => {
+    assert.ok(fx.fifoPath !== null, "POSIX FIFO barrier requires POSIX platform");
+    let gateFh: FileHandle | null = null;
+    const gateEntered = openAsync(fx.fifoPath, "w");
+    try {
+      const qGate = JSON.stringify({ type: "query", id: gateId, query: "gateunused", asker: askerG, kinds: ["chat", "memory"] });
+      client.writeRaw(`${prefixLines}${qGate}\n`);
+      gateFh = await gateEntered;
+      await body();
+    } finally {
+      if (gateFh !== null) {
+        const fh = gateFh;
+        gateFh = null;
+        await fh.close();
+      } else if (fx.fifoPath !== null) {
+        // Unblock any pending libuv O_WRONLY open on early error exit so the test never hangs.
+        try {
+          const fd = openSync(fx.fifoPath, constants.O_RDONLY | constants.O_NONBLOCK);
+          closeSync(fd);
+        } catch {
+          // ignore
+        }
+        await gateEntered.then((fh) => fh.close()).catch(() => {});
+      }
+    }
+  };
+
   try {
     // 1. Slow message scan (A, id=1) + fast profile query (B, id=2) sent back-to-back in one write:
     //    B finishes in 2 steps (ProfileRun -> FinalPause), while A yields >= 7 times across P1 message batches.
@@ -298,51 +357,43 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; SIGSTOP
     assert.equal(replies1[1].id, 1);
     assert.equal(replies1[1].groups[0].kind, "message");
 
-    // 2. Real ~34.5 MiB (5 x 8 MiB chunks) isolated-workspace dual-FD P11 interleaving:
+    // 2. Real >8 MiB isolated-workspace dual-FD P11 interleaving with single-writeRaw POSIX FIFO kernel barrier:
     //    Query A (askerA -> WA) ONLY scans ha1.jsonl; Query B (askerB -> WB) ONLY scans hb1.jsonl.
-    //    Probe 1 (id=12) advances A & B to P12; Probe 2 (id=13) advances A & B into P11 with open FDs.
-    //    Immediately freeze the child via SIGSTOP so /proc/<pid>/fd inspection and cancel delivery
-    //    are 100% race-free, strictly asserting BOTH ha1.jsonl AND hb1.jsonl are simultaneously open!
+    //    Written in ONE chunk with qGate(13) -> Round 3 freezes Pion in kernel `read(fifo)` right after A & B enter P11!
     const fdBase = openFdCount(pid);
     const qHistA = JSON.stringify({ type: "query", id: 10, query: "alphaonlytoken", asker: askerA, kinds: ["history"] });
     const qHistB = JSON.stringify({ type: "query", id: 11, query: "betafirstchunk betaonlytoken overlapcheck", asker: askerB, kinds: ["history"] });
-    const qProbe1 = JSON.stringify({ type: "query", id: 12, query: "FastProfileHit", asker, kinds: ["profile"] });
-    client.writeRaw(`${qHistA}\n${qHistB}\n${qProbe1}\n`);
-    assert.equal((await client.nextJson()).id, 12, "probe 1 advances 10 & 11 to P12");
 
-    client.send({ type: "query", id: 13, query: "FastProfileHit", asker, kinds: ["profile"] });
-    assert.equal((await client.nextJson()).id, 13, "probe 2 advances 10 & 11 into P11 with open FDs");
-
-    if (process.platform === "linux") {
-      process.kill(pid, "SIGSTOP");
-      try {
-        const midP11Targets = openFdTargets(pid)!;
-        assert.ok(
-          midP11Targets.some((t) => t.endsWith("ha1.jsonl")),
-          `expected ha1.jsonl open in /proc/${pid}/fd while SIGSTOP-frozen at P11; got ${JSON.stringify(midP11Targets)}`,
-        );
-        assert.ok(
-          midP11Targets.some((t) => t.endsWith("hb1.jsonl")),
-          `expected hb1.jsonl open in /proc/${pid}/fd while SIGSTOP-frozen at P11; got ${JSON.stringify(midP11Targets)}`,
-        );
-        // Queue cancel A into stdin pipe while child is STILL frozen so it arrives before A's next step!
-        client.send({ type: "cancel", id: 10 });
-      } finally {
-        try {
-          process.kill(pid, "SIGCONT");
-        } catch {
-          // ignore if child already exited
+    if (fx.fifoPath !== null) {
+      await withFifoBarrier(`${qHistA}\n${qHistB}\n`, 13, async () => {
+        if (process.platform === "linux") {
+          const midP11Targets = openFdTargets(pid)!;
+          assert.ok(
+            midP11Targets.some((t) => t.endsWith("ha1.jsonl")),
+            `expected ha1.jsonl open in /proc/${pid}/fd while kernel-blocked at FIFO P11 barrier; got ${JSON.stringify(midP11Targets)}`,
+          );
+          assert.ok(
+            midP11Targets.some((t) => t.endsWith("hb1.jsonl")),
+            `expected hb1.jsonl open in /proc/${pid}/fd while kernel-blocked at FIFO P11 barrier; got ${JSON.stringify(midP11Targets)}`,
+          );
         }
-      }
+        // Flush cancel A into stdin pipe while Pion is STILL kernel-blocked in read(fifo)!
+        await client.sendAndFlush({ type: "cancel", id: 10 });
+      });
     } else {
-      client.send({ type: "cancel", id: 10 });
+      client.writeRaw(`${qHistA}\n${qHistB}\n`);
+      await client.sendAndFlush({ type: "cancel", id: 10 });
     }
 
+    const expectedIds = fx.fifoPath !== null ? 3 : 2;
     const histReplies = new Map<number, any>();
-    while (histReplies.size < 2) {
+    while (histReplies.size < expectedIds) {
       const m = await client.nextJson();
       if ("scopePending" in m || "sessionListPending" in m) continue;
       histReplies.set(m.id, m);
+    }
+    if (fx.fifoPath !== null) {
+      assert.equal(histReplies.get(13)?.error, undefined, "FIFO memory gate query must finish cleanly");
     }
     assert.equal(histReplies.get(10)?.error, "the search took too long");
     assert.equal(histReplies.get(11)?.error, undefined);
@@ -351,51 +402,43 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; SIGSTOP
     assert.equal(histReplies.get(11)?.groups[0].hits.length, 1);
     assert.ok(histReplies.get(11)?.groups[0].hits[0].text.includes("betaonlytoken"));
 
-    // 3. Repeated SIGSTOP-verified mid-P11 cancellations across 4 ~34.5 MiB history queries -> STRICT 0 FD leak.
+    // 3. Repeated FIFO-barrier-verified mid-P11 cancellations across 4 >8 MiB history queries -> STRICT 0 FD leak.
     for (let i = 0; i < 4; i++) {
-      const qid = 100 + i * 3;
-      const p1 = 101 + i * 3;
-      const p2 = 102 + i * 3;
-      client.writeRaw(
-        `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker: askerA, kinds: ["history"] })}\n` +
-        `${JSON.stringify({ type: "query", id: p1, query: "FastProfileHit", asker, kinds: ["profile"] })}\n`,
-      );
-      assert.equal((await client.nextJson()).id, p1);
-      client.send({ type: "query", id: p2, query: "FastProfileHit", asker, kinds: ["profile"] });
-      assert.equal((await client.nextJson()).id, p2);
-      if (process.platform === "linux") {
-        process.kill(pid, "SIGSTOP");
-        try {
-          const targets = openFdTargets(pid)!;
-          assert.ok(
-            targets.some((t) => t.endsWith("ha1.jsonl")),
-            `iteration ${i}: expected ha1.jsonl open in /proc/${pid}/fd before cancel; got ${JSON.stringify(targets)}`,
-          );
-          client.send({ type: "cancel", id: qid });
-        } finally {
-          try {
-            process.kill(pid, "SIGCONT");
-          } catch {
-            // ignore
+      const qid = 100 + i * 2;
+      const gid = 101 + i * 2;
+      const qLine = `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker: askerA, kinds: ["history"] })}\n`;
+      if (fx.fifoPath !== null) {
+        await withFifoBarrier(qLine, gid, async () => {
+          if (process.platform === "linux") {
+            const targets = openFdTargets(pid)!;
+            assert.ok(
+              targets.some((t) => t.endsWith("ha1.jsonl")),
+              `iteration ${i}: expected ha1.jsonl open in /proc/${pid}/fd at FIFO barrier; got ${JSON.stringify(targets)}`,
+            );
           }
+          await client.sendAndFlush({ type: "cancel", id: qid });
+        });
+        const pair = new Map<number, any>();
+        while (pair.size < 2) {
+          const m = await client.nextJson();
+          if ("scopePending" in m || "sessionListPending" in m) continue;
+          pair.set(m.id, m);
         }
+        assert.equal(pair.get(gid)?.error, undefined);
+        assert.equal(pair.get(qid)?.error, "the search took too long");
       } else {
-        client.send({ type: "cancel", id: qid });
+        client.writeRaw(qLine);
+        await client.sendAndFlush({ type: "cancel", id: qid });
+        const ans = await client.nextJson();
+        assert.equal(ans.id, qid);
+        assert.equal(ans.error, "the search took too long");
       }
-      const ans = await client.nextJson();
-      assert.equal(ans.id, qid);
-      assert.equal(ans.error, "the search took too long");
     }
     const fdAfter = openFdCount(pid);
     if (fdBase !== null && fdAfter !== null) {
-      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across SIGSTOP-verified >34 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
+      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across FIFO-barrier >8 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
     }
   } finally {
-    try {
-      process.kill(pid, "SIGCONT");
-    } catch {
-      // ignore
-    }
     await client.close();
     fx.close();
   }

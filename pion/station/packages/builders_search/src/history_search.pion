@@ -124,25 +124,23 @@ fn concat_utf16_units(a : Array[Int], b : Array[Int]) -> Array[Int] {
   out
 }
 
-/// Compute the next `max_units` UTF-16 overlap tail in O(max_units) time & memory instead of
-/// converting an entire 8 MiB chunk to UTF-16 code units.
+/// Compute the next `max_units` UTF-16 overlap tail in true O(max_units) time & memory with
+/// zero whole-chunk byte copying (no `text.to_bytes()` / `str_slice_bytes` on 8 MiB chunks).
 /// Because every UTF-16 code unit encodes to at most 3 UTF-8 bytes (BMP <= 3 bytes, astral = 4 bytes / 2 units),
-/// taking at most `4 * max_units` trailing bytes (stepping forward past UTF-8 continuation bytes)
-/// leaves >= 4093 bytes for `max_units = 1024`, which always covers >= 1024 UTF-16 code units.
+/// scanning at most `4 * max_units` trailing UTF-8 bytes via `text.length()` + `text.code_unit_at(i)`
+/// (stepping forward past UTF-8 continuation bytes `0x80..0xBF`) always covers >= `max_units` UTF-16 units.
 fn next_tail_utf16_units(prev_tail : Array[Int], text : String, max_units : Int) -> Array[Int] {
-  let raw = text.to_bytes()
-  let n = raw.length()
+  let n = text.length()
   let max_bytes = 4 * max_units
-  let slice = if n > max_bytes {
-    let mut start = n - max_bytes
-    while start < n && ((raw[start].to_int() & 0xC0) == 0x80) {
-      start = start + 1
-    }
-    str_slice_bytes(text, start, n)
-  } else {
-    text
+  let mut start = if n > max_bytes { n - max_bytes } else { 0 }
+  while start < n && ((text.code_unit_at(start) & 0xC0) == 0x80) {
+    start = start + 1
   }
-  let text_u = js_json::utf16_units(slice)
+  let sb = StringBuilder::new()
+  for i in start..<n {
+    sb.write_byte(text.code_unit_at(i) as Byte)
+  }
+  let text_u = js_json::utf16_units(sb.to_string())
   if text_u.length() >= max_units {
     tail_utf16_units(text_u, max_units)
   } else {
