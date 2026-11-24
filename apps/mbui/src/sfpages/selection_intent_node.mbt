@@ -1,5 +1,5 @@
-// Experimental selection intent inference panel: shows the selected passage, the lightweight model's inferred intent,
-// and its direct reply, with actions to copy the reply or quote the passage into the composer draft.
+// Experimental selection intent inference panel and pinned reply cards:
+// shows only the inferred reply directly ("I'm feeling lucky" style), with Pin and Copy actions.
 
 ///|
 fn open_selection_intent(
@@ -15,11 +15,11 @@ fn open_selection_intent(
 ) -> Unit {
   @sfbase.selection_intent_ask(src, r.station, thread, draft, selection, message_ts, author, role)
   @sf.panel_nodes(
-    @sf.t("web-main.chat.inferIntent.title"),
+    "",
     fn(v, _) { selection_intent_body(v, src) },
     from~,
-    live=fn() { (@sf.t("web-main.chat.inferIntent.title"), "", "") },
-    foot=fn(v, close) { selection_intent_foot(v, src, close) },
+    heads_itself=true,
+    foot=fn(v, close) { selection_intent_foot(v, close) },
     gone=fn() { @sfbase.selection_intent_reset() },
   )
 }
@@ -35,108 +35,67 @@ priv enum IntentViewKind {
 ///|
 fn selection_intent_body(v : @view.View, src : Source) -> Unit {
   let s = @sfbase.selection_intent
-  v.box(fn(col) {
-    @sf.style_node(col, fn() { intent_column })
-    // Selected passage preview
-    col.box(fn(q) {
-      @sf.style_node(q, fn() { intent_quote_box })
-      @sf.words_node(q, fn() { s.selection.get() }, fn() { intent_quote_words }) |> ignore
-    })
-    |> ignore
-    // Result area: loading / error / inferred intent + reply
-    col.pick(
-      fn() {
-        if s.loading.get() {
-          IntentViewKind::Loading
-        } else if s.error.get() != "" {
-          IntentViewKind::Failed
-        } else {
-          IntentViewKind::Ready
+  v.pick(
+    fn() {
+      if s.loading.get() {
+        IntentViewKind::Loading
+      } else if s.error.get() != "" {
+        IntentViewKind::Failed
+      } else {
+        IntentViewKind::Ready
+      }
+    },
+    fn(area, kind) {
+      @sf.style_node(area, fn() { intent_column })
+      match kind {
+        Loading =>
+          area.box(fn(row) {
+            @sf.style_node(row, fn() { intent_loading_row })
+            @sf.spinner_node(row, size=14.0) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-main.chat.inferIntent.loading") }, fn() { intent_meta_words })
+            |> ignore
+          })
+          |> ignore
+        Failed => {
+          @sf.words_node(area, fn() { s.error.get() }, fn() { intent_error_words }) |> ignore
+          area.box(fn(row) {
+            @sf.style_node(row, fn() { intent_retry_row })
+            @sf.button_node(
+              row,
+              fn() { @sf.t("web-main.chat.inferIntent.retry") },
+              fn() { @sfbase.selection_intent_retry(src) },
+              tone=Ghost,
+            )
+            |> ignore
+          })
+          |> ignore
         }
-      },
-      fn(area, kind) {
-        @sf.style_node(area, fn() { intent_column })
-        match kind {
-          Loading =>
-            area.box(fn(row) {
-              @sf.style_node(row, fn() { intent_loading_row })
-              @sf.spinner_node(row, size=14.0) |> ignore
-              @sf.words_node(row, fn() { @sf.t("web-main.chat.inferIntent.loading") }, fn() { intent_meta_words })
-              |> ignore
-            })
-            |> ignore
-          Failed => {
-            @sf.words_node(area, fn() { s.error.get() }, fn() { intent_error_words }) |> ignore
-            area.box(fn(row) {
-              @sf.style_node(row, fn() { intent_retry_row })
-              @sf.button_node(
-                row,
-                fn() { @sf.t("web-main.chat.inferIntent.retry") },
-                fn() { @sfbase.selection_intent_retry(src) },
-                tone=Ghost,
-              )
-              |> ignore
-            })
-            |> ignore
-          }
-          Ready => {
-            area.show(fn() { s.intent.get() != "" }, at_once=true, fn(box) {
-              @sf.style_node(box, fn() { intent_section })
-              @sf.words_node(box, fn() { @sf.t("web-main.chat.inferIntent.intentLabel") }, fn() { intent_label_words })
-              |> ignore
-              @sf.words_node(box, fn() { s.intent.get() }, fn() { intent_summary_words }) |> ignore
-            })
-            area.box(fn(box) {
-              @sf.style_node(box, fn() { intent_section })
-              @sf.words_node(box, fn() { @sf.t("web-main.chat.inferIntent.replyLabel") }, fn() { intent_label_words })
-              |> ignore
-              @sf.words_node(box, fn() { s.reply.get() }, fn() { intent_reply_words }) |> ignore
-            })
-            |> ignore
-            area.show(fn() { s.model.get() != "" }, at_once=true, fn(m) {
-              @sf.words_node(
-                m,
-                fn() { @sf.t("web-main.chat.inferIntent.model", args=[("model", s.model.get())]) },
-                fn() { intent_meta_words },
-              )
-              |> ignore
-            })
-          }
-        }
-      },
-    )
-  })
-  |> ignore
+        Ready => @sf.words_node(area, fn() { s.reply.get() }, fn() { intent_reply_words }) |> ignore
+      }
+    },
+  )
 }
 
 ///|
-fn selection_intent_foot(v : @view.View, src : Source, close : () -> Unit) -> Unit {
+fn selection_intent_foot(v : @view.View, close : () -> Unit) -> Unit {
   let s = @sfbase.selection_intent
   @sf.button_node(
     v,
-    fn() { @sf.t("web-main.chat.inferIntent.quoteToDraft") },
+    fn() { @sf.t("web-main.chat.inferIntent.pin") },
     fn() {
-      let text = @signals.untracked(fn() { s.selection.get() })
-      let draft = @signals.untracked(fn() { s.draft.get() })
-      let author = @signals.untracked(fn() { s.author.get() })
-      let ts = @signals.untracked(fn() { s.message_ts.get() })
-      let role = @signals.untracked(fn() { s.role.get() })
-      if text != "" && draft != "" {
-        @sfbase.writing_quote(src, @sfbase.writing(src, draft), {
-          "author": Json::string(author),
-          "text": Json::string(text),
-          "ts": Json::string(ts),
-          "role": Json::string(role),
-        })
+      if @sfbase.selection_intent_pin() {
+        @sfbase.toast_later(@sf.t("web-main.chat.inferIntent.pinned"))
+        close()
       }
-      close()
     },
     tone=Ghost,
+    icon="pin",
+    disabled=fn() { s.loading.get() || s.reply.get() == "" },
   )
   |> ignore
   @sf.button_node(
     v,
-    fn() { @sf.t("web-main.chat.inferIntent.copyReply") },
+    fn() { @sf.t("common.copy") },
     fn() {
       let reply = @signals.untracked(fn() { s.reply.get() })
       if reply != "" {
@@ -150,36 +109,80 @@ fn selection_intent_foot(v : @view.View, src : Source, close : () -> Unit) -> Un
 }
 
 ///|
-// kept across runs: a value (no field of it changes)
-let intent_column : @ui.Style = @ui.css("w=Full gap=S3")
+/// Floating stack of pinned selection-intent reply cards in chat `draft`.
+fn pinned_intents_node(v : @view.View, _src : Source, draft : String) -> Unit {
+  v.show(
+    fn() { @sfbase.selection_intent_feature.get() && @sfbase.pinned_intents_for(draft).length() > 0 },
+    at_once=true,
+    fn(layer) {
+      layer.over(Is(true)) |> ignore
+      @sf.style_node(layer, fn() { intent_pins_layer })
+      layer.pick(fn() { @sfbase.pinned_intents_for(draft) }, fn(stack, list) {
+        @sf.style_node(stack, fn() { intent_pins_stack })
+        for p in list {
+          pinned_intent_card(stack, p)
+        }
+      })
+    },
+  )
+}
+
+///|
+fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
+  let id = p.id
+  parent.box(fn(card) {
+    @sf.style_node(card, fn() { intent_pin_card })
+    card.box(fn(head) {
+      @sf.style_node(head, fn() { intent_pin_head })
+      @sf.icon_node(head, "pin", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      head.box(fn(t) {
+        @sf.style_node(t, fn() { intent_pin_title_wrap }, in_row=true)
+        if p.collapsed {
+          @sf.words_node(t, fn() { p.reply }, fn() { intent_pin_preview }) |> ignore
+        }
+      })
+      |> ignore
+      @sf.icon_button_node(
+        head,
+        if p.collapsed { "chevron-down" } else { "chevron-up" },
+        fn() { @sf.t(if p.collapsed { "web-main.chat.inferIntent.expand" } else { "web-main.chat.inferIntent.collapse" }) },
+        fn() { @sfbase.selection_intent_toggle_collapse(id) },
+      )
+      |> ignore
+      @sf.icon_button_node(
+        head,
+        "copy",
+        fn() { @sf.t("common.copy") },
+        fn() { @sfbase.copy_out(p.reply, said=@sf.t("common.copied")) },
+      )
+      |> ignore
+      @sf.icon_button_node(
+        head,
+        "close",
+        fn() { @sf.t("web-main.chat.inferIntent.unpin") },
+        fn() { @sfbase.selection_intent_unpin(id) },
+      )
+      |> ignore
+    })
+    |> ignore
+    if !p.collapsed {
+      @sf.words_node(card, fn() { p.reply }, fn() { intent_reply_words }) |> ignore
+    }
+  })
+  |> ignore
+}
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_section : @ui.Style = @ui.css("w=Full gap=S1")
+let intent_column : @ui.Style = @ui.css("w=Full gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_quote_box : @ui.Style = @ui.css("w=Full px=S3 py=S2 radius=Md bg=Neutral border=B1 border_color=Line")
-
-///|
-// kept across runs: a value (no field of it changes)
-let intent_quote_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let intent_loading_row : @ui.Style = @ui.css("row w=Full gap=S2 py=S2 align=ACenter")
+let intent_loading_row : @ui.Style = @ui.css("row w=Full gap=S2 py=S1 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
 let intent_retry_row : @ui.Style = @ui.css("row w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let intent_label_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Medium, color=Muted, w=Full)
-
-///|
-// kept across runs: a value (no field of it changes)
-let intent_summary_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Fg, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -192,3 +195,27 @@ let intent_meta_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted
 ///|
 // kept across runs: a value (no field of it changes)
 let intent_error_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, w=Full)
+
+///|
+// kept across runs: a value (no field of it changes)
+let intent_pins_layer : @ui.Style = @ui.css("w=Full px=S4 pt=S14 align=AEnd")
+
+///|
+// kept across runs: a value (no field of it changes)
+let intent_pins_stack : @ui.Style = @ui.css("gap=S2 align=AEnd")
+
+///|
+// kept across runs: a value (no field of it changes)
+let intent_pin_card : @ui.Style = @ui.style(w=Fixed(@sf.panel_w), p=S3, gap=S2, radius=Lg, bg=Bg, border=B1, border_color=Line)
+
+///|
+// kept across runs: a value (no field of it changes)
+let intent_pin_head : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let intent_pin_title_wrap : @ui.Style = @ui.style(w=@sf.grow)
+
+///|
+// kept across runs: a value (no field of it changes)
+let intent_pin_preview : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Full)

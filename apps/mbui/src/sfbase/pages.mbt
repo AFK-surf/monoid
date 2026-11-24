@@ -1694,6 +1694,7 @@ pub fn reset() -> Unit {
   board_feature.set(false)
   selection_intent_feature.set(false)
   selection_intent_reset()
+  selection_intent_pins_reset()
   // a chat's messages out of avatars (emit.mbt)
   emits.clear()
   chat_foot_dropped.set(None)

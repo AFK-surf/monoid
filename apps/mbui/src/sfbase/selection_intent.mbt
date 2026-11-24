@@ -125,3 +125,71 @@ pub fn selection_intent_ask(
 pub fn selection_intent_retry(src : Source) -> Unit {
   selection_intent_run(src)
 }
+
+///|
+/// A pinned selection-intent reply kept floating in its chat until unpinned.
+#derive(Eq)
+pub(all) struct PinnedIntent {
+  id : Int
+  draft : String
+  selection : String
+  intent : String
+  reply : String
+  model : String
+  collapsed : Bool
+}
+
+///|
+// kept across runs: reset by selection_intent_pins_reset()
+pub let pinned_intents : @signals.Signal[Array[PinnedIntent]] = @signals.signal([], same=fn(a, b) { a == b })
+
+///|
+// kept across runs: only counts on
+let pinned_intent_serial : Ref[Int] = Ref(0)
+
+///|
+pub fn selection_intent_pins_reset() -> Unit {
+  pinned_intents.set([])
+}
+
+///|
+/// Pins the current inferred reply into its chat (deduplicating identical selection+reply in the same chat).
+pub fn selection_intent_pin() -> Bool {
+  let draft = @signals.untracked(fn() { selection_intent.draft.get() })
+  let selection = @signals.untracked(fn() { selection_intent.selection.get() })
+  let intent = @signals.untracked(fn() { selection_intent.intent.get() })
+  let reply = @signals.untracked(fn() { selection_intent.reply.get() })
+  let model = @signals.untracked(fn() { selection_intent.model.get() })
+  guard draft != "" && reply != "" else { return false }
+  let cur = @signals.untracked(fn() { pinned_intents.get() })
+  if cur.iter().any(fn(p) { p.draft == draft && p.selection == selection && p.reply == reply }) {
+    return true
+  }
+  pinned_intent_serial.val = pinned_intent_serial.val + 1
+  let next = cur.copy()
+  next.push({ id: pinned_intent_serial.val, draft, selection, intent, reply, model, collapsed: false })
+  pinned_intents.set(next)
+  true
+}
+
+///|
+/// Removes a pinned reply by its id.
+pub fn selection_intent_unpin(id : Int) -> Unit {
+  let cur = @signals.untracked(fn() { pinned_intents.get() })
+  pinned_intents.set(cur.filter(fn(p) { p.id != id }))
+}
+
+///|
+/// Toggles collapsed/expanded state of a pinned reply card.
+pub fn selection_intent_toggle_collapse(id : Int) -> Unit {
+  let cur = @signals.untracked(fn() { pinned_intents.get() })
+  pinned_intents.set(
+    cur.map(fn(p) { if p.id == id { { ..p, collapsed: !p.collapsed } } else { p } }),
+  )
+}
+
+///|
+/// All pinned intent replies belonging to chat `draft`.
+pub fn pinned_intents_for(draft : String) -> Array[PinnedIntent] {
+  pinned_intents.get().filter(fn(p) { p.draft == draft })
+}

@@ -55,17 +55,25 @@ test "选中文本自动推测意图: off by default; when enabled, finger selec
   t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.run_for(@ui.move_most_ms)
 
-  // 4. `chat.selectionIntent` was called and the panel shows the inferred intent and direct reply.
+  // 4. `chat.selectionIntent` was called and the panel shows the direct reply with Pin and Copy actions.
   let asked = calls.filter(fn(c) { c.0 == "chat.selectionIntent" })
   assert_eq(asked.length(), 1, msg="expected one chat.selectionIntent call")
-  assert_true(t.find("解释选中内容在当前对话里的含义") is Some(_), msg="inferred intent not shown")
-  assert_true(t.find("claude-haiku-4-5") is Some(_), msg="model caption not shown")
-  assert_true(t.query(Button, label="复制回复") is Some(_))
-  assert_true(t.query(Button, label="引用到输入框") is Some(_))
+  assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="reply not shown")
+  assert_true(t.query(Button, label="固定") is Some(_))
+  assert_true(t.query(Button, label="复制") is Some(_))
 
-  // 5. Clicking 引用到输入框 quotes the passage into the composer draft.
-  t.click(Button, label="引用到输入框")
+  // 5. Clicking 固定 pins the reply into the chat, closes the panel, and supports collapse/unpin.
+  t.click(Button, label="固定")
   t.run_for(@ui.move_most_ms)
-  let quoted = calls.filter(fn(c) { c.0 == "composer.quote" })
-  assert_eq(quoted.length(), 1, msg="expected passage quoted into draft")
+  assert_eq(@sfbase.pinned_intents_for("ws1/st1:s-c1").length(), 1)
+  assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="pinned card not visible in chat")
+  t.click(Button, label="收起")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.pinned_intents_for("ws1/st1:s-c1")[0].collapsed)
+  t.click(Button, label="展开")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.pinned_intents_for("ws1/st1:s-c1")[0].collapsed)
+  t.click(Button, label="取消固定")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.pinned_intents_for("ws1/st1:s-c1").length(), 0)
 }
