@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
 | [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
 | [79d825178](https://github.com/AFK-surf/monoid/commit/79d82517845e64708bf4e75dce2f23d4893f2670) fix(mbui): use Meta text size in Poke popover and  | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 | [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d7b42d970](https://github.com/AFK-surf/monoid/commit/d7b42d970192b854013e713d801b1d49d0e6fb9c) fix(mb): refill a moon-include directory CI's clea | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.68 | 66.54 | 100.47 | 129.98 |
 | [1b5405d50](https://github.com/AFK-surf/monoid/commit/1b5405d50c3cdf70d15d847a73b86c81907432c7) feat(mbui): pick and note words of a Markdown file | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.66 | 66.47 | 100.93 | 123.45 |
 | [c2e84024c](https://github.com/AFK-surf/monoid/commit/c2e84024ce63b1aed5ad3ecefe4d34425b8dc73f) feat(chat): add experimental Poke selection reply  | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.66 | 66.47 | 100.93 | 123.45 |
-| [c4f5373cd](https://github.com/AFK-surf/monoid/commit/c4f5373cd81bd5a2e72f893ede3f1d41c08856a4) perf(mbc): add content-addressed core_obj fast pat | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.87 |
 | [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.53 |
 | [79d825178](https://github.com/AFK-surf/monoid/commit/79d82517845e64708bf4e75dce2f23d4893f2670) fix(mbui): use Meta text size in Poke popover and  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.54 |
 | [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 65.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d7b42d970](https://github.com/AFK-surf/monoid/commit/d7b42d970192b854013e713d801b1d49d0e6fb9c) fix(mb): refill a moon-include directory CI's clea | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.62 |
 | [1b5405d50](https://github.com/AFK-surf/monoid/commit/1b5405d50c3cdf70d15d847a73b86c81907432c7) feat(mbui): pick and note words of a Markdown file | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.75 |
 | [c2e84024c](https://github.com/AFK-surf/monoid/commit/c2e84024ce63b1aed5ad3ecefe4d34425b8dc73f) feat(chat): add experimental Poke selection reply  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.36 |
-| [c4f5373cd](https://github.com/AFK-surf/monoid/commit/c4f5373cd81bd5a2e72f893ede3f1d41c08856a4) perf(mbc): add content-addressed core_obj fast pat | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.33 |
