@@ -1187,7 +1187,7 @@ fn composer_box_node(
           said = true
         }
         if qn != qn_was && quotes_room.val is Some(qr) && qr.was_placed() {
-          qr.resizes(uncut=true) |> ignore
+          qr.resizes(open_top=true) |> ignore
           said = true
         }
         if fn_ != fn_was && files_room.val is Some(fr) && fr.was_placed() {
@@ -1393,17 +1393,23 @@ fn composer_box_node(
       sent_at.val = at
       extras_mounted.set(false)
       // (words or quotes going: files alone leave it where it is, as the old flight's, flight_hint_away)
+      let has_quotes = @signals.untracked(fn() { w.quotes.get().length() > 0 })
       let words_go = @signals.untracked(fn() {
-        w.text.get().trim(chars=" \n\t") != "" || w.quotes.get().length() > 0
-      })
+        w.text.get().trim(chars=" \n\t") != ""
+      }) || has_quotes
       if words_go {
         @sfbase.sent_out_told(draft, at)
-        away_until.val = at + @sfbase.sent_out_away_ms()
+        let away_ms = if has_quotes {
+          @sf.dmax(@sfbase.sent_out_away_ms(), @sfbase.sent_out_hold_ms + @sfbase.sent_down_ms)
+        } else {
+          @sfbase.sent_out_away_ms()
+        }
+        away_until.val = at + away_ms
         away_said.set(away_said.untracked() + 1)
         hint_in.put(0.0)
         // (back as at rest without the cursor once they are half way out, said now: nothing set off at that moment)
         if !@signals.untracked(hint_hidden) {
-          hint_in.go(foot, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=@sfbase.sent_out_away_ms()))
+          hint_in.go(foot, 1.0, @motion.tween(@sf.hint_back_ms, ease=Out, delay=away_ms))
         }
       }
       // (as tall as it is at this moment, all it held still in it, and as fast as its height went on a way then (View::
@@ -1760,7 +1766,11 @@ fn composer_box_node(
           fn() { hint_in.shown(words) },
           fn() {
             away_said.get() |> ignore
-            words.drawn_while(fn(t) { t < away_until.val }) < away_until.val
+            if w.field.text() != "" || w.field.composing() {
+              false
+            } else {
+              words.drawn_while(fn(t) { t < away_until.val }) < away_until.val
+            }
           },
           spec, submit, fn(on) {
           if on {
@@ -2592,6 +2602,16 @@ fn composer_extras_node(
       if fill_across {
         wrap.fills_across(Is(true)) |> ignore
       }
+      let room_scale = fn(s : Double) {
+        if fill_across {
+          0.96 + 0.04 * s
+        } else {
+          s
+        }
+      }
+      let enter_fill_alpha = fn(s : Double) {
+        @ui.Ease::Out.at(@sf.dclamp((s - 0.25) / 0.75, 0.0, 1.0))
+      }
       wrap
       .takes_unseen(By(fn() { !item.leaving() }))
       .scale(
@@ -2599,23 +2619,25 @@ fn composer_extras_node(
           let s = room.come_share_of(item)
           if item.leaving() {
             if s < 0.999 {
-              s
+              room_scale(s)
+            } else if fill_across {
+              1.0 - 0.04 * leave_ease(item.going())
             } else {
               1.0 - 0.1 * leave_ease(item.going())
             }
           } else {
             match from_room.get() {
-              Some(true) => s
+              Some(true) => room_scale(s)
               Some(false) =>
                 match enter {
-                  Some(e) => 0.92 + 0.08 * e()
+                  Some(e) => if fill_across { 0.96 + 0.04 * e() } else { 0.92 + 0.08 * e() }
                   None => 1.0
                 }
-              None => s
+              None => room_scale(s)
             }
           }
         }),
-        about=At(0.0, 0.0),
+        about=if fill_across { At(0.5, 0.0) } else { At(0.0, 0.0) },
       )
       .alpha(
         By(fn() {
@@ -2628,7 +2650,12 @@ fn composer_extras_node(
             }
           } else {
             match from_room.get() {
-              Some(true) => @ui.Ease::Out.at(@sf.seen_at(s))
+              Some(true) =>
+                if fill_across {
+                  enter_fill_alpha(s)
+                } else {
+                  @ui.Ease::Out.at(@sf.seen_at(s))
+                }
               Some(false) =>
                 match enter {
                   Some(e) => e()
@@ -2710,7 +2737,7 @@ fn composer_extras_node(
       })
       |> ignore
       if q_any {
-        qs_room.resizes(uncut=true) |> ignore
+        qs_room.resizes(open_top=true) |> ignore
       }
       let q_moves : Ref[@motion.Moves?] = Ref(None)
       let q_first : Array[@view.View] = []
