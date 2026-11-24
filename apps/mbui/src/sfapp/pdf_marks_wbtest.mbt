@@ -109,13 +109,17 @@ test "a note kept on the page goes into the draft with its words, its file and i
 }
 
 ///|
+/// Long enough for a finger's fling over the pages to come to rest.
+let pdf_fling_over_ms : Double = 3000.0
+
+///|
 test "a finger that moves scrolls the pages; one held picks the word under it" {
   let (t, v, x, y, w, h) = pdf_marks_tester(platform=2)
   let (px, py) = (x + 130.0 / 600.0 * w, y + 100.0 / 800.0 * h)
   t.drag(px, py + 120.0, px, py - 40.0)
   assert_true(v.pdf_marks.picked.get() is None, msg="a finger that moved picked nothing")
   // (its fling over: the second page's line, where it is now)
-  t.run_for(3000.0)
+  t.run_for(pdf_fling_over_ms)
   let second = t.drawn_images()[1]
   assert_true(second[1] < y + h, msg="it scrolled")
   let held_y = second[1] + 100.0 / 800.0 * second[3]
