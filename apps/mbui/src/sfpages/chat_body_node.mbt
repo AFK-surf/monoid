@@ -2193,17 +2193,12 @@ fn chat_body_row(
     // chat_body_bands)
     let flash = chat_flash_way(p, whole_key, jump)
     let flash_lit = chat_passage_lit(p, whole_key, jump, flash)
-    // (its words a 戳一下 was asked of lit as they are kept, its note beside them in the margin at its right; a quote's
-    // flash over them while it shows: intent_note_lit, intent_notes_node)
-    let lit = fn() {
-      let l = flash_lit()
-      if l.0 != "" {
-        l
-      } else {
-        intent_note_lit(notes_of, whole_key())
-      }
-    }
+    let lit = flash_lit
+    // (the words each 戳一下 of it was asked of lit as they are kept, all of them, its notes beside them in the margin at
+    // its right: intent_note_lits, as what its words' nodes mark of what they are in (md_lits), intent_notes_node; made
+    // so only in a chat with notes)
     if with_notes {
+      p.lends(@sf.md_lits, fn() { intent_note_lits(notes_of, whole_key()) }) |> ignore
       let note_room = fn() { intent_note_room(notes_of, (here.width)()) }
       p.padding(By(fn() { (0.0, 0.0, note_room(), 0.0) })) |> ignore
       intent_notes_node(p, src, notes_of, fn() { if slice() > 0 { "" } else { whole_key() } }, note_room, top, stick_top?)

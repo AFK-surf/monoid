@@ -353,13 +353,11 @@ fn intent_note_room(draft : String, w : Double) -> Double {
 }
 
 ///|
-/// The words of the message of row `row` of chat `draft` its last note is of, lit as they are kept (a quote's flash's
-/// ground at its full), where it has one.
-fn intent_note_lit(draft : String, row : String) -> (String, Int64) {
-  match @sfbase.intent_notes_on(draft, row).last() {
-    Some(n) => (n.selection, @sf.alpha(@sf.theme().p.accent, @sfbase.picked_alpha))
-    None => ("", 0L)
-  }
+/// The words of the message of row `row` of chat `draft` its notes are of, each lit as it is kept (a quote's flash's
+/// ground at its full).
+fn intent_note_lits(draft : String, row : String) -> Array[(String, Int64)] {
+  let ground = @sf.alpha(@sf.theme().p.accent, @sfbase.picked_alpha)
+  @sfbase.intent_notes_on(draft, row).map(fn(n) { (n.selection, ground) })
 }
 
 ///|
