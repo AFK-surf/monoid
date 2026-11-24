@@ -35,7 +35,6 @@ export PATH="$HOME/.pion/bin:$HOME/.moon/bin:$PATH"
 if [ -d /opt/homebrew/bin ]; then
   export PATH="/opt/homebrew/bin:$PATH"
 fi
-PIONC="${PIONC:-$(command -v pionc)}"
 
 SRC_DIR="$SCRIPT_DIR/pilot/mbt_transpile_src"
 OUT_DIR=""
@@ -116,6 +115,8 @@ if [ -z "$OUT_DIR" ]; then
   echo "regen.sh: --out <dir> is required" >&2
   exit 64
 fi
+
+PIONC="${PIONC:-$(command -v pionc)}"
 
 # 3. Resolve mbt2pion binary
 TMP_BIN_DIR=""
