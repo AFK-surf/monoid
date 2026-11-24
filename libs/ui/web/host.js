@@ -4823,7 +4823,6 @@
     const gen = faceCancelGen.get(face) || 0;
     const cjk = cjkFiles.get(face);
     const files = [...(faceFiles.get(face) || []), ...(cjk || [])];
-    let added = false;
     Promise.all(files.map(([src, weight, desc]) => {
       const d = desc ? { ...desc } : faceDescriptors(face, weight);
       d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
@@ -4831,22 +4830,19 @@
       // (a CJK companion's (setCjkFace) kept with it, gone as it goes; one of its files the system has not: the rest
       // narrow as they are)
       return ff.load().then(() => {
+        if ((faceCancelGen.get(face) || 0) !== gen) return;
         if (desc) {
           if (cjkFiles.get(face) !== cjk) return;
           cjkLoaded.get(face).push(ff);
-        } else if ((faceCancelGen.get(face) || 0) !== gen) {
-          return;
         }
         document.fonts.add(ff);
-        added = true;
       }, () => {});
     })).then(() => {
-      if (!added && (faceCancelGen.get(face) || 0) !== gen) return;
-      if (narrowFaces.get(face) === false) narrowFaces.set(face, true);
-      if (added || narrowFaces.get(face) === true) {
-        textChanged();
-        H.requestFrame();
-      }
+      if ((faceCancelGen.get(face) || 0) !== gen) return;
+      if (narrowFaces.get(face) !== false) return;
+      narrowFaces.set(face, true);
+      textChanged();
+      H.requestFrame();
     }, () => {});
     return false;
   };
@@ -4897,7 +4893,6 @@
   }
   const faceCancelGen = new Map();
   const faceKeyGen = new Map();
-  const faceNoLig = new Set();
   const nextFaceCancelGen = (face) => {
     const g = (faceCancelGen.get(face) || 0) + 1;
     faceCancelGen.set(face, g);
@@ -4911,15 +4906,10 @@
   };
   // a face's descriptors: its weight (0: variable, all of them); the words' faces (1, 2) with Inter's single-storey a and
   // open digits, as the Mac's host sets them (apple_text.m face_font: cv11, ss01; a face without them is as it is)
-  const faceDescriptors = (face, weight) => {
-    const feats = [];
-    if (face === 1 || face === 2) feats.push('"cv11" 1, "ss01" 1');
-    if (faceNoLig.has(face)) feats.push('"calt" 0, "liga" 0, "clig" 0');
-    return {
-      weight: weight ? String(weight) : '1 1000',
-      ...(feats.length ? { featureSettings: feats.join(', ') } : {}),
-    };
-  };
+  const faceDescriptors = (face, weight) => ({
+    weight: weight ? String(weight) : '1 1000',
+    ...(face === 1 || face === 2 ? { featureSettings: '"cv11" 1, "ss01" 1' } : {}),
+  });
   // a face's file (a URL), for a weight (0: variable, all of them): drawn in once the page has loaded it
   H.faceAdd = (face, url, weight) => {
     if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
@@ -4953,13 +4943,9 @@
     return true;
   };
   // Web Canvas 2D renders cluster-by-cluster via fillText so cross-character programming ligatures are not shown on
-  // web; keep faceNoLig for subsequent faceAdd/faceAddBytes descriptors without deleting or reloading already-loaded
-  // FontFaces (avoids flicker and preserves document.fonts order relative to CJK unicode-range companions).
-  H.faceSetLigatures = (face, on) => {
-    if (!(face > 0 && face < 32)) return;
-    if (on) faceNoLig.delete(face);
-    else faceNoLig.add(face);
-  };
+  // web; keeping faceSetLigatures a clean no-op ensures identical measureText advances before/after load and preserves
+  // document.fonts order relative to CJK unicode-range companions.
+  H.faceSetLigatures = () => {};
   H.setHostAutospace = () => {};
   H.localFontInfo = () => '';
   // A face's CJK companion (@webpage.set_cjk_face): the system's CJK faces drawn, within the face's family, for the
@@ -5035,7 +5021,6 @@
   H.faceClear = (face) => {
     nextFaceCancelGen(face);
     nextFaceKeyGen(face);
-    faceNoLig.delete(face);
     faceFiles.delete(face);
     cjkForget(face);
     narrowFaces.delete(face);

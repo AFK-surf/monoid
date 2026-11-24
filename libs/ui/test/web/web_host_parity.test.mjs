@@ -300,14 +300,24 @@ test('a face\'s CJK companion narrow among Latin letters as its face is (pwid), 
     'the one before gone, the new narrow too');
 });
 
-test('faceSetLigatures(face, false) applies calt/liga/clig off to subsequent faceAdd/faceAddBytes descriptors', async () => {
-  const b = browser();
+test('faceSetLigatures is a clean no-op on web: descriptors, document.fonts, and CJK companions stay identical before or after load', async () => {
+  const b1 = browser();
   await task();
-  b.H.faceSetLigatures(3, false);
-  b.H.faceAddBytes(3, new Uint8Array(4), 400);
+  b1.H.faceSetLigatures(3, false);
+  b1.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
-  assert.match(fontOf(b, 3 << 8), /"mbface3"/, 'face 3 active after faceAddBytes');
-  assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && f.featureSettings === '"calt" 0, "liga" 0, "clig" 0'));
+  const b2 = browser();
+  await task();
+  b2.H.faceAddBytes(3, new Uint8Array(4), 400);
+  await task();
+  b2.H.faceSetLigatures(3, false);
+  await task();
+  assert.deepEqual(
+    [...b1.fonts].map((f) => [f.family, f.weight, f.featureSettings]),
+    [...b2.fonts].map((f) => [f.family, f.weight, f.featureSettings]),
+    'before-load and after-load faceSetLigatures produce identical FontFace descriptors',
+  );
+  assert.equal([...b1.fonts][0].featureSettings, undefined, 'no calt/liga override injected on web');
 });
 
 test('style_serif | style_words stays serif even when face_text (slot 2) is loaded', async () => {
@@ -371,4 +381,28 @@ test('faceSetLigatures preserves document.fonts order and CJK companions, and in
   b.H.faceSetLigatures(3, false);
   await task();
   assert.deepEqual([...b.fonts], snapshotBefore, 'document.fonts entries and order unchanged by faceSetLigatures');
+});
+
+test('stale multi-weight narrowFace batch cancelled by faceClear does not bump atlasGeneration or pollute narrowFaces', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  b.H.faceAddBytes(7, new Uint8Array(4), 400);
+  b.H.faceAddBytes(7, new Uint8Array(4), 700);
+  b.pending[0]();
+  b.pending[1]();
+  await task();
+  // Trigger narrow load for both weights (400 and 700): pending[2] and pending[3].
+  fontOf(b, (7 << 8) | 64);
+  assert.equal(b.pending.length, 4);
+  // Resolve weight 400 first, then faceClear(7) before weight 700 resolves.
+  b.pending[2]();
+  await task();
+  b.H.faceClear(7);
+  const genAfterClear = b.H.atlasGeneration();
+  // Now resolve stale weight 700 from the cancelled narrowFace batch.
+  b.pending[3]();
+  await task();
+  await task();
+  assert.equal(b.H.atlasGeneration(), genAfterClear, 'cancelled narrowFace batch must not bump atlasGeneration');
+  assert.equal([...b.fonts].some((f) => f.family === 'mbface7n'), false, 'no stale narrow FontFace left in document.fonts');
 });
