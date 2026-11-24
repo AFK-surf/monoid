@@ -675,6 +675,10 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     None => @replica.chunk_gc_grace_ms
   }
   let fold = !@host.args().contains("--no-fold")
+  let test_faults = match flag("--test-faults") {
+    Some(raw) => @replica.TestFaults::from_json(raw)
+    None => None
+  }
   let exporter = @replica.Exporter::new(
     host,
     sep,
@@ -690,6 +694,7 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
     transcript_pass_deletes~,
     chunk_gc_grace_ms~,
     fold~,
+    test_faults~,
   ) catch {
     e => {
       let failed : Json = { "failed": Json::string(message(e)) }
@@ -717,6 +722,10 @@ async fn replica_export(host : @host.Host, db : String, replica : String, data_d
       match kind {
         "places" => {
           exporter.set_places(ask.get("places").unwrap_or(Null))
+          Ok(Null)
+        }
+        "testFaults" => {
+          exporter.set_test_faults(match ask.get("faults") { Some(v) => @replica.TestFaults::from_jvalue(v); None => None })
           Ok(Null)
         }
         "pass" => Ok(exporter.pass(ask.get("told").unwrap_or(Null)))

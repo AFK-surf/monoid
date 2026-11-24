@@ -65,6 +65,7 @@ class MockS3Server {
   readonly singleDeletes: string[] = [];
   readonly batchDeletes: string[][] = [];
   readonly failDeleteKeys = new Map<string, { code: string; message: string }>();
+  readonly omitDeleteKeys = new Set<string>();
   maxListKeys = 1000;
   failPartNumber: number | null = null;
   requireAuth = true;
@@ -249,6 +250,7 @@ class MockS3Server {
       const deletedXml: string[] = [];
       const errorXml: string[] = [];
       for (const k of keys) {
+        if (this.omitDeleteKeys.has(k)) continue;
         const fail = this.failDeleteKeys.get(k);
         if (fail !== undefined) {
           errorXml.push(`<Error><Key>${escapeXml(k)}</Key><Code>${escapeXml(fail.code)}</Code><Message>${escapeXml(fail.message)}</Message></Error>`);
@@ -1080,4 +1082,100 @@ test("D71: S3Client.deleteObjects batches >1000 keys with Content-MD5/SigV4, han
   assert.equal(s3.objects.has(liveKey), true, "live referenced file preserved");
   assert.equal(s3.batchDeletes.length, 1, "orphans reclaimed via DeleteObjects batch");
   assert.equal(s3.singleDeletes.length, 0);
+
+  // 4. R1 fix: crash-recovery orphan + local missing > 0 -> new head references pre-uploaded H; pruneOrphans MUST NOT delete H!
+  const hPreUploaded = sid("6");
+  const preKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hPreUploaded)}.enc`;
+  await place.putFile(HOME, origin, hPreUploaded, Buffer.from("only-copy-on-s3"));
+  const headWithPre = { ...head, to: 2, made: 2000, files: { [hLive]: 4, [hPreUploaded]: 15 } };
+  const placeMissing = new S3Place(target);
+  const resMissing = await level(placeMissing, HOME, {
+    head: headWithPre,
+    batch: async () => Buffer.alloc(0),
+    sources: async () => new Map(), // local copy of hPreUploaded is missing!
+  });
+  assert.equal(resMissing.behind, false);
+  assert.equal(resMissing.missing, 1);
+  assert.equal(s3.objects.has(preKey), true, "pre-uploaded file referenced by new head MUST NOT be pruned when local source is missing");
+
+  // 5. R1 fix: pruneOrphans AccessDenied -> level() succeeds (best-effort) and keeps orphan for retry
+  const hOrphanDenied = sid("7");
+  const orphanDeniedKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hOrphanDenied)}.enc`;
+  await place.putFile(HOME, origin, hOrphanDenied, Buffer.from("orphan-denied"));
+  s3.failDeleteKeys.set(orphanDeniedKey, { code: "AccessDenied", message: "object-lock" });
+  const placeBestEffort = new S3Place(target);
+  const resBestEffort = await level(placeBestEffort, HOME, {
+    head: headWithPre,
+    batch: async () => Buffer.alloc(0),
+    sources: async () => new Map(),
+  });
+  assert.equal(resBestEffort.behind, false, "level() succeeds even when pruneOrphans hits AccessDenied");
+  assert.equal(s3.objects.has(orphanDeniedKey), true, "denied orphan stays in bucket");
+  // Direct pruneOrphans still throws on AccessDenied, then succeeds once cleared
+  await assert.rejects(() => placeBestEffort.pruneOrphans(HOME, origin), /AccessDenied/);
+  s3.failDeleteKeys.clear();
+  await placeBestEffort.pruneOrphans(HOME, origin);
+  assert.equal(s3.objects.has(orphanDeniedKey), false, "orphan reclaimed on retry once AccessDenied clears");
+
+  // 6. R1 fix: multi-gen includeTranscripts:false + corrupted head protects old-gen transcripts & files in normal drop()
+  const gen2 = "3000-cccccccc";
+  const hOldTr = sid("8");
+  const oldTrKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hOldTr)}.enc`;
+  await place.putFile(HOME, origin, hOldTr, Buffer.from("old-gen-transcript"));
+  const headGen1WithTr = { ...headWithPre, to: 3, made: 3000, transcriptFiles: { [hOldTr]: 18 } };
+  await place.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(headGen1WithTr)));
+  const headGen2 = { ...head, gen: gen2, to: 1, made: 4000, files: { [hLive]: 4 }, transcriptFiles: { [hOldTr]: 18 } };
+  const placeMultiGen = new S3Place(target);
+  const resMultiGen = await level(
+    placeMultiGen,
+    HOME,
+    { head: headGen2, batch: async () => Buffer.alloc(0), sources: async () => new Map() },
+    null,
+    { includeTranscripts: false },
+  );
+  assert.equal(resMultiGen.behind, false);
+  assert.equal(s3.objects.has(oldTrKey), true, "includeTranscripts:false MUST NOT delete transcript referenced by older generation");
+
+  // Corrupted head present -> normal level() and direct S3Place.drop() skip file deletion
+  const hExtra = sid("9");
+  const extraKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hExtra)}.enc`;
+  await place.putFile(HOME, origin, hExtra, Buffer.from("extra"));
+  s3.objects.set(corruptHeadKey, Buffer.from("corrupted-head"));
+  const placeCorruptDrop = new S3Place(target);
+  await placeCorruptDrop.held(HOME, origin);
+  await placeCorruptDrop.drop(HOME, origin, gen2, [], [hExtra]);
+  assert.equal(s3.objects.has(extraKey), true, "S3Place.drop() MUST NOT delete files when an unverified head exists");
+  s3.objects.delete(corruptHeadKey);
+
+  // 7. R1 fix: DeleteObjects 200 response omits key B -> MissingFromResponse error, B stays in k.files
+  const kA = "stillfail-backup/omit-a.enc";
+  const kB = "stillfail-backup/omit-b.enc";
+  s3.objects.set(kA, Buffer.from("a"));
+  s3.objects.set(kB, Buffer.from("b"));
+  s3.omitDeleteKeys.add(kB);
+  const omitRes = await client.deleteObjects([kA, kB]);
+  assert.deepEqual(omitRes.deleted, [kA]);
+  assert.equal(omitRes.errors.length, 1);
+  assert.equal(omitRes.errors[0]!.key, kB);
+  assert.equal(omitRes.errors[0]!.code, "MissingFromResponse");
+  // Via level(): omitted file hash stays in known.files
+  const hOmit = sid("b");
+  const hOmitKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hOmit)}.enc`;
+  await place.putFile(HOME, origin, hOmit, Buffer.from("omit-me"));
+  s3.omitDeleteKeys.add(hOmitKey);
+  const placeOmit = new S3Place(target);
+  const knownOmit = {
+    gen: gen2,
+    batches: new Set<string>(),
+    files: new Set([hLive, hOmit]),
+    others: new Set([hPreUploaded, hOldTr]),
+    to: 1,
+    made: 4000,
+  };
+  await assert.rejects(
+    () => level(placeOmit, HOME, { head: headGen2, batch: async () => Buffer.alloc(0), sources: async () => new Map() }, knownOmit, { includeTranscripts: false }),
+    /MissingFromResponse/,
+  );
+  assert.equal(knownOmit.files.has(hOmit), true, "omitted key stays in known.files for retry");
+  s3.omitDeleteKeys.clear();
 });

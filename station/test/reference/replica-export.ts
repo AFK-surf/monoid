@@ -50,6 +50,28 @@ function isPrunedBrainRel(relParts: readonly string[]): boolean {
   );
 }
 
+function isPrunedBrainPath(dataDir: string, p: string): boolean {
+  const rel = relative(dataDir, p);
+  if (rel === "" || rel.startsWith("..")) return false;
+  const parts = rel.split(/[\\/]/);
+  if (
+    parts.length < 8 ||
+    parts[0] !== "homes" ||
+    !ONE_SEGMENT.test(parts[1]!) ||
+    parts[2] !== "agy" ||
+    parts[3] !== ".gemini" ||
+    parts[4] !== "antigravity-cli" ||
+    parts[5] !== "brain" ||
+    !ONE_SEGMENT.test(parts[6]!)
+  ) {
+    return false;
+  }
+  if (parts[7] === "scratch") return true;
+  if (parts.length >= 9 && parts[7] === ".system_generated" && parts[8] === "steps") return true;
+  if (parts.length >= 10 && parts[7] === ".system_generated" && parts[8] === "logs" && parts[9] === "chunks") return true;
+  return false;
+}
+
 function pathUnderAnyDir(p: string, dirs: Set<string>): boolean {
   for (const d of dirs) {
     const prefix = d.endsWith(sep) ? d : d + sep;
@@ -197,7 +219,7 @@ export type ExporterOptions = {
   fold?: boolean;
   /// Optional test-only hooks to inject deterministic filesystem faults (works even when running as root).
   testFaults?: {
-    statError?: (path: string) => NodeJS.ErrnoException | null;
+    onReaddir?: (dir: string) => void;
     readdirError?: (path: string) => NodeJS.ErrnoException | null;
     lstatError?: (path: string) => NodeJS.ErrnoException | null;
     readShort?: (path: string, offset: number) => boolean;
@@ -837,32 +859,43 @@ export class Exporter {
     return null;
   }
 
-  #statDir(dir: string) {
-    const err = this.#o.testFaults?.statError?.(dir);
-    if (err) throw err;
-    return statSync(dir); // sync: in the export's own thread (worker.ts)
-  }
-
   #lstatPath(p: string) {
     const err = this.#o.testFaults?.lstatError?.(p);
     if (err) throw err;
     return lstatSync(p, { bigint: true }); // sync: in the export's own thread (worker.ts)
   }
 
-  #walkTranscriptDir(dir: string, add: (path: string) => void, onError: (dir: string) => void = () => {}): void {
+  #readdirEntries(dir: string) {
+    this.#o.testFaults?.onReaddir?.(dir);
+    const err = this.#o.testFaults?.readdirError?.(dir);
+    if (err) throw err;
+    return readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
+  }
+
+  #walkTranscriptDir(
+    dir: string,
+    add: (path: string) => void,
+    onError: (dir: string) => void = () => {},
+    onUnreadablePath: (path: string) => void = () => {},
+  ): void {
     let entries;
     try {
-      const err = this.#o.testFaults?.readdirError?.(dir);
-      if (err) throw err;
-      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
+      entries = this.#readdirEntries(dir);
     } catch (e) {
       if (!isMissingError(e)) onError(dir);
       return;
     }
     for (const e of entries) {
       const p = join(dir, e.name);
-      if (e.isDirectory()) this.#walkTranscriptDir(p, add, onError);
+      if (e.isDirectory()) this.#walkTranscriptDir(p, add, onError, onUnreadablePath);
       else if (e.isFile()) add(p);
+      else if (!e.isSymbolicLink()) {
+        try {
+          this.#lstatPath(p);
+        } catch (err) {
+          if (!isMissingError(err)) onUnreadablePath(p);
+        }
+      }
     }
   }
 
@@ -872,13 +905,12 @@ export class Exporter {
     relParts: string[],
     add: (path: string) => void,
     onError: (dir: string) => void,
+    onUnreadablePath: (path: string) => void,
   ): void {
     if (isPrunedBrainRel(relParts)) return;
     let entries;
     try {
-      const err = this.#o.testFaults?.readdirError?.(dir);
-      if (err) throw err;
-      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
+      entries = this.#readdirEntries(dir);
     } catch (e) {
       if (!isMissingError(e)) onError(dir);
       return;
@@ -888,9 +920,15 @@ export class Exporter {
       if (e.isDirectory()) {
         const nextRel = [...relParts, e.name];
         if (isPrunedBrainRel(nextRel)) continue;
-        this.#walkBrainDir(brainRoot, p, nextRel, add, onError);
+        this.#walkBrainDir(brainRoot, p, nextRel, add, onError, onUnreadablePath);
       } else if (e.isFile()) {
         add(p);
+      } else if (!e.isSymbolicLink()) {
+        try {
+          this.#lstatPath(p);
+        } catch (err) {
+          if (!isMissingError(err)) onUnreadablePath(p);
+        }
       }
     }
   }
@@ -904,17 +942,23 @@ export class Exporter {
   ): boolean {
     const byWs = new Map<string, Map<string, string | null>>();
     const unreadableDirsByWs = new Map<string, Set<string>>();
+    const unreadablePathsByWs = new Map<string, Set<string>>();
     for (const ws of outs.keys()) {
       byWs.set(ws, new Map());
       unreadableDirsByWs.set(ws, new Set());
+      unreadablePathsByWs.set(ws, new Set());
     }
     for (const sess of sessRows) {
       const ws = wsOfSession(sess.ws);
       const foundMap = byWs.get(ws);
       if (foundMap === undefined) continue;
       const unreadableDirs = unreadableDirsByWs.get(ws)!;
+      const unreadablePathsWs = unreadablePathsByWs.get(ws)!;
       const addUnreadableDir = (d: string) => {
         unreadableDirs.add(d);
+      };
+      const addUnreadablePath = (p: string) => {
+        unreadablePathsWs.add(p);
       };
       const key = typeof sess.key === "string" ? sess.key : "";
       const sRuntime = typeof sess.runtime === "string" ? sess.runtime : "";
@@ -954,7 +998,7 @@ export class Exporter {
             const id = t.path.slice(t.path.lastIndexOf(sep) + 1).replace(/\.jsonl$/, "");
             const sub = join(dirname(t.path), id);
             try {
-              if (this.#statDir(sub).isDirectory()) this.#walkTranscriptDir(sub, addPath, addUnreadableDir);
+              if (this.#lstatPath(sub).isDirectory()) this.#walkTranscriptDir(sub, addPath, addUnreadableDir, addUnreadablePath);
             } catch (e) {
               if (!isMissingError(e)) addUnreadableDir(sub);
             }
@@ -969,7 +1013,7 @@ export class Exporter {
         addPath(join(cli, "annotations", `${r.id}.pbtxt`));
         const brain = join(cli, "brain", r.id);
         try {
-          if (this.#statDir(brain).isDirectory()) this.#walkBrainDir(brain, brain, [], addPath, addUnreadableDir);
+          if (this.#lstatPath(brain).isDirectory()) this.#walkBrainDir(brain, brain, [], addPath, addUnreadableDir, addUnreadablePath);
         } catch (e) {
           if (!isMissingError(e)) addUnreadableDir(brain);
         }
@@ -984,10 +1028,11 @@ export class Exporter {
     let doneBytes = 0;
     let doneDeletes = 0;
     let truncated = false;
+    const parentUnreadableCache = new Map<string, boolean>();
     for (const [ws, foundMap] of byWs) {
       if (truncated) break;
       const unreadableDirs = unreadableDirsByWs.get(ws)!;
-      const unreadablePaths = new Set<string>();
+      const unreadablePaths = unreadablePathsByWs.get(ws)!;
       const paths = [...foundMap.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       const active = new Set<string>();
       let wsTruncated = false;
@@ -1065,6 +1110,29 @@ export class Exporter {
         let deletedInWs = false;
         for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
           if (active.has(row.path) || unreadablePaths.has(row.path) || pathUnderAnyDir(row.path, unreadableDirs)) continue;
+          if (!isPrunedBrainPath(this.#o.dataDir, row.path)) {
+            let existsOnDisk = false;
+            try {
+              this.#lstatPath(row.path);
+              existsOnDisk = true;
+            } catch (e) {
+              if (!isMissingError(e)) continue;
+            }
+            if (existsOnDisk) {
+              const parent = dirname(row.path);
+              let parentUnreadable = parentUnreadableCache.get(parent);
+              if (parentUnreadable === undefined) {
+                parentUnreadable = false;
+                try {
+                  this.#readdirEntries(parent);
+                } catch (e) {
+                  if (!isMissingError(e)) parentUnreadable = true;
+                }
+                parentUnreadableCache.set(parent, parentUnreadable);
+              }
+              if (parentUnreadable) continue;
+            }
+          }
           if (doneDeletes >= maxDeletes) {
             truncated = true;
             break;

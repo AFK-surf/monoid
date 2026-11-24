@@ -181,14 +181,25 @@ int sfc_denied(moonbit_bytes_t path, int dir) {
 /// Windows) rather than unreadable (EACCES / EIO / other). `follow`: stat vs lstat.
 int sfc_missing(moonbit_bytes_t path, int follow) {
 #ifdef _WIN32
-  (void)follow;
   wchar_t *w = wide((const char *)path);
   if (w == NULL) return 0;
   DWORD attr = GetFileAttributesW(w);
+  if (attr == INVALID_FILE_ATTRIBUTES) {
+    DWORD e = GetLastError();
+    free(w);
+    return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+  }
+  if (follow && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                           FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD e = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    free(w);
+    if (h != INVALID_HANDLE_VALUE) return 0;
+    return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+  }
   free(w);
-  if (attr != INVALID_FILE_ATTRIBUTES) return 0;
-  DWORD e = GetLastError();
-  return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+  return 0;
 #else
   struct stat st;
   int rc = follow ? stat((const char *)path, &st) : lstat((const char *)path, &st);

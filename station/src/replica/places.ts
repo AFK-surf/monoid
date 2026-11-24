@@ -396,7 +396,15 @@ export type Own = { head: Head; batch(name: string): Promise<Buffer>; sources(ha
 /// generation there): the batches, the files, the files the place's other generations name, how far its head went. Kept
 /// between levellings, so that one after a batch sends that batch and the head alone; the place is asked what it holds
 /// only as this station starts, as the place comes back, after a failure and on a handover.
-export type Known = { gen: string; batches: Set<string>; files: Set<string>; others: Set<string>; to: number; made: number };
+export type Known = {
+  gen: string;
+  batches: Set<string>;
+  files: Set<string>;
+  others: Set<string>;
+  hasUnverifiedHead?: boolean;
+  to: number;
+  made: number;
+};
 
 /// What bringing a place level found: `behind` where the place holds what this station's own copy does not (this
 /// station's data was rolled back: a new generation is begun, and the place keeps both), else how far the place goes
@@ -453,14 +461,27 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     if (behind(own.head, held)) return { behind: true };
     const holding = held.gens.find((g) => g.gen === own.head.gen);
     const others = new Set<string>();
+    let hasUnverifiedHead = false;
     for (const g of held.gens) {
-      if (g.gen === own.head.gen || g.head === null) continue;
+      if (g.gen === own.head.gen) continue;
+      if (g.head === null) {
+        hasUnverifiedHead = true;
+        continue;
+      }
       for (const h in g.head.files) if (Object.hasOwn(g.head.files, h)) others.add(h);
-      if (includeTranscripts && g.head.transcriptFiles !== undefined) {
+      if (g.head.transcriptFiles !== undefined) {
         for (const h in g.head.transcriptFiles) if (Object.hasOwn(g.head.transcriptFiles, h)) others.add(h);
       }
     }
-    k = { gen: own.head.gen, batches: new Set(holding?.batches ?? []), files: new Set(held.files), others, to: holding?.head?.to ?? -1, made: holding?.head?.partial === true ? -1 : (holding?.head?.made ?? -1) };
+    k = {
+      gen: own.head.gen,
+      batches: new Set(holding?.batches ?? []),
+      files: new Set(held.files),
+      others,
+      ...(hasUnverifiedHead ? { hasUnverifiedHead: true } : {}),
+      to: holding?.head?.to ?? -1,
+      made: holding?.head?.partial === true ? -1 : (holding?.head?.made ?? -1),
+    };
   }
   for (const b of own.head.batches) {
     if (k.batches.has(b)) continue;
@@ -528,7 +549,7 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
   }
   const oldBatches = [...k.batches].filter((b) => !own.head.batches.includes(b));
   const oldFiles: string[] = [];
-  if (k.files.size > wantedCount - missing) {
+  if (!k.hasUnverifiedHead && k.files.size > wantedCount - missing) {
     for (const f of k.files) {
       if (!Object.hasOwn(ownFiles, f) && !(ownTf !== undefined && Object.hasOwn(ownTf, f)) && !k.others.has(f)) {
         oldFiles.push(f);
@@ -551,7 +572,13 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
       }
     }
   }
-  await place.pruneOrphans?.(ws, origin);
+  if (missing === 0 && !k.hasUnverifiedHead) {
+    try {
+      await place.pruneOrphans?.(ws, origin);
+    } catch {
+      // best-effort: head and drop already succeeded; retain remaining orphans for next sync
+    }
+  }
   return { behind: false, to: own.head.to, missing, known: k };
 }
 

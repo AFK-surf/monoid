@@ -55,7 +55,8 @@ export function escapeXml(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
+    .replace(/'/g, "&apos;")
+    .replace(/\r/g, "&#13;");
 }
 
 export function unescapeXml(s: string): string {
@@ -373,20 +374,31 @@ export class S3Client {
       if (!res.ok) {
         throw new S3HttpError(res.status, `S3 DeleteObjects failed (${res.status}): ${extractXmlTag(text, "Message") ?? text.slice(0, 200)}`);
       }
+      const batchAccounted = new Set<string>();
       const deletedRe = /<(?:[A-Za-z0-9_.-]+:)?Deleted(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?Deleted>/g;
       let m: RegExpExecArray | null;
       while ((m = deletedRe.exec(text)) !== null) {
         const k = extractXmlTag(m[1]!, "Key");
-        if (k !== null) deleted.push(k);
+        if (k !== null) {
+          deleted.push(k);
+          batchAccounted.add(k);
+        }
       }
       const errorRe = /<(?:[A-Za-z0-9_.-]+:)?Error(?:\s[^>]*)?>([\s\S]*?)<\/(?:[A-Za-z0-9_.-]+:)?Error>/g;
       while ((m = errorRe.exec(text)) !== null) {
         const block = m[1]!;
+        const k = extractXmlTag(block, "Key") ?? "";
         errors.push({
-          key: extractXmlTag(block, "Key") ?? "",
+          key: k,
           code: extractXmlTag(block, "Code") ?? "UnknownError",
           message: extractXmlTag(block, "Message") ?? "",
         });
+        if (k !== "") batchAccounted.add(k);
+      }
+      for (const k of batch) {
+        if (!batchAccounted.has(k)) {
+          errors.push({ key: k, code: "MissingFromResponse", message: "key omitted from S3 DeleteObjects response" });
+        }
       }
     }
     return { deleted, errors };
@@ -420,6 +432,10 @@ export class S3Place implements Place {
   readonly #presentFileTags = new Map<string, Set<string>>();
   /// Orphan `fileTag`s (`fileTags \ referencedTags`) discovered by `held()` ONLY when every listed head was verified.
   readonly #orphanFileTags = new Map<string, Set<string>>();
+  /// Per `${ws}\n${origin}` set of `gen`s whose `head/<gen>.enc` failed verification in `held()`.
+  readonly #unverifiedGens = new Map<string, Set<string>>();
+  /// Per `${ws}\n${origin}` -> `gen` -> referenced `fileTag`s (built in `held()`, updated in `put("head")`).
+  readonly #genRefTags = new Map<string, Map<string, Set<string>>>();
 
   constructor(target: NormalizedS3Target, opts: S3ClientOptions = {}) {
     this.target = target;
@@ -514,25 +530,37 @@ export class S3Place implements Place {
     const gens: Holding[] = [];
     const presentHashes = new Set<string>();
     const referencedTags = new Set<string>();
-    const allHeadsVerified = headGens.every((gen) => headMap.get(gen) !== null);
+    const unverified = new Set<string>();
+    for (const gen of headGens) {
+      if (headMap.get(gen) === null) unverified.add(gen);
+    }
+    const allHeadsVerified = unverified.size === 0;
+    const byGen = new Map<string, Set<string>>();
     for (const gen of allGens) {
       const head = headMap.get(gen) ?? null;
       const batches = (batchesByGen.get(gen) ?? []).sort();
       gens.push({ gen, head, batches });
       if (head !== null) {
+        const genTags = new Set<string>();
         for (const h of Object.keys(head.files)) {
           const tag = this.fileTag(h);
+          genTags.add(tag);
           referencedTags.add(tag);
           if (fileTags.has(tag)) presentHashes.add(h);
         }
         for (const h of Object.keys(head.transcriptFiles ?? {})) {
           const tag = this.fileTag(h);
+          genTags.add(tag);
           referencedTags.add(tag);
           if (fileTags.has(tag)) presentHashes.add(h);
         }
+        byGen.set(gen, genTags);
       }
     }
     const scopeKey = `${ws}\n${origin}`;
+    if (unverified.size > 0) this.#unverifiedGens.set(scopeKey, unverified);
+    else this.#unverifiedGens.delete(scopeKey);
+    this.#genRefTags.set(scopeKey, byGen);
     if (allHeadsVerified) {
       const orphans = new Set<string>();
       for (const tag of fileTags) {
@@ -554,9 +582,29 @@ export class S3Place implements Place {
       const enc = sfb1Seal(this.#key, { ws, origin, logicalPath: `log/${gen}/${name}` }, bytes);
       await this.client.putObject(this.#batchKey(ws, origin, gen, name), enc);
     } else {
+      const parsed = asHead(JSON.parse(bytes.toString("utf8")));
       const ot = this.originTag(origin);
       const enc = sfb1Seal(this.#key, { ws, origin: ot, logicalPath: `head/${gen}` }, bytes);
       await this.client.putObject(this.#headKey(ws, origin, gen), enc);
+      const scopeKey = `${ws}\n${origin}`;
+      const unverified = this.#unverifiedGens.get(scopeKey);
+      if (unverified !== undefined) {
+        unverified.delete(gen);
+        if (unverified.size === 0) this.#unverifiedGens.delete(scopeKey);
+      }
+      if (parsed !== null) {
+        const refTags = new Set<string>();
+        for (const h of Object.keys(parsed.files)) refTags.add(this.fileTag(h));
+        for (const h of Object.keys(parsed.transcriptFiles ?? {})) refTags.add(this.fileTag(h));
+        let byGen = this.#genRefTags.get(scopeKey);
+        if (byGen === undefined) this.#genRefTags.set(scopeKey, (byGen = new Map()));
+        byGen.set(gen, refTags);
+        const orphans = this.#orphanFileTags.get(scopeKey);
+        if (orphans !== undefined) {
+          for (const tag of refTags) orphans.delete(tag);
+          if (orphans.size === 0) this.#orphanFileTags.delete(scopeKey);
+        }
+      }
     }
   }
 
@@ -573,21 +621,34 @@ export class S3Place implements Place {
 
   async drop(ws: string, origin: string, gen: string, batches: string[], files: string[]): Promise<void> {
     if (!WORKSPACE.test(ws) || !STATION.test(origin) || !GEN.test(gen)) throw new Error("not a copy's name");
+    const scopeKey = `${ws}\n${origin}`;
+    const unverified = this.#unverifiedGens.get(scopeKey);
+    const allVerified = unverified === undefined || unverified.size === 0;
+    const byGen = this.#genRefTags.get(scopeKey);
+    const isReferencedByAnyGen = (tag: string): boolean => {
+      if (byGen === undefined) return false;
+      for (const genTags of byGen.values()) {
+        if (genTags.has(tag)) return true;
+      }
+      return false;
+    };
     const keys: string[] = [];
     const fileKeyToTag = new Map<string, string>();
     for (const b of batches) {
       if (BATCH.test(b)) keys.push(this.#batchKey(ws, origin, gen, b));
     }
-    for (const f of files) {
-      if (HASH.test(f)) {
+    if (allVerified) {
+      for (const f of files) {
+        if (!HASH.test(f)) continue;
+        const tag = this.fileTag(f);
+        if (isReferencedByAnyGen(tag)) continue;
         const k = this.#fileKey(ws, origin, f);
         keys.push(k);
-        fileKeyToTag.set(k, this.fileTag(f));
+        fileKeyToTag.set(k, tag);
       }
     }
     if (keys.length === 0) return;
     const { deleted, errors } = await this.client.deleteObjects(keys);
-    const scopeKey = `${ws}\n${origin}`;
     const tags = this.#presentFileTags.get(scopeKey);
     const orphans = this.#orphanFileTags.get(scopeKey);
     for (const k of deleted) {
