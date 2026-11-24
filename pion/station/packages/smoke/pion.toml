@@ -15,6 +15,7 @@ builders_stateful = { workspace = true }
 builders_legacy = { workspace = true }
 builders_recent = { workspace = true }
 builders_vault = { workspace = true }
+builders_usage = { workspace = true }
 footprint = { workspace = true }
 locate = { workspace = true }
 memory = { workspace = true }

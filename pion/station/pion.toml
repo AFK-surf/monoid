@@ -16,6 +16,7 @@ members = [
   "packages/builders_legacy",
   "packages/builders_recent",
   "packages/builders_vault",
+  "packages/builders_usage",
   "packages/footprint",
   "packages/memory",
   "packages/packed",
@@ -43,6 +44,7 @@ builders_stateful = { path = "packages/builders_stateful" }
 builders_legacy = { path = "packages/builders_legacy" }
 builders_recent = { path = "packages/builders_recent" }
 builders_vault = { path = "packages/builders_vault" }
+builders_usage = { path = "packages/builders_usage" }
 footprint = { path = "packages/footprint" }
 memory = { path = "packages/memory" }
 packed = { path = "packages/packed" }

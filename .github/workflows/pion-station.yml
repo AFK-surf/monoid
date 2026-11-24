@@ -126,6 +126,7 @@ on:
       - "station/test/builders-recent-pion-switch.test.ts"
       - "station/test/builders-requested-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
+      - "station/test/builders-usage-pion-switch.test.ts"
       - "station/test/builders-vault-pion-switch.test.ts"
       - "station/test/carry-reference.ts"
       - "station/test/footprint-mounts.ts"
@@ -164,6 +165,7 @@ on:
       - "station/test/mb-signin-save.test.ts"
       - "station/test/mb-turn-counts.test.ts"
       - "station/test/mb-usage-check.test.ts"
+      - "station/test/mb-usage-counter.test.ts"
       - "station/test/mb-usage-retire.test.ts"
       - "station/test/mb-vault-uses.test.ts"
       - "station/test/mb-widget-sources.test.ts"
@@ -176,6 +178,9 @@ on:
       - "station/test/reader-contract-memory.test.ts"
       - "station/test/reader-contract-packed.test.ts"
       - "station/test/reader-contract-select.test.ts"
+      - "station/test/usage-counter-reference.ts"
+      - "station/test/usage-counter.test.ts"
+      - "station/test/usage-timing-bounded.test.ts"
       - "station/test/vault-use-ambiguity.test.ts"
       - "station/test/w5-foundation.test.ts"
       - "station/test/w6-selection-coldstart.test.ts"
@@ -761,7 +766,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 6 DI and cold-start/hot-reload selection gates
+      - name: Run Wave 6 usage-counter and cold-start/hot-reload selection gates
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
@@ -776,6 +781,36 @@ jobs:
           printf '%s\n' "$COLD_OUT"
           printf '%s\n' "$COLD_OUT" | grep -qE '^# tests [1-9]'
           printf '%s\n' "$COLD_OUT" | grep -qE '^# skipped 0$'
+
+          MB_USAGE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/mb-usage-counter.test.ts)"
+          printf '%s\n' "$MB_USAGE_OUT"
+          printf '%s\n' "$MB_USAGE_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$MB_USAGE_OUT" | grep -qE '^# skipped 0$'
+
+          TIMING_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/usage-timing-bounded.test.ts)"
+          printf '%s\n' "$TIMING_OUT"
+          printf '%s\n' "$TIMING_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$TIMING_OUT" | grep -qE '^# skipped 0$'
+
+          # Deterministic subset of usage-counter.test.ts: only the local snapshot test (`no /tmp/usage-work/transcripts`) may skip.
+          USAGE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/usage-counter.test.ts)"
+          printf '%s\n' "$USAGE_OUT"
+          printf '%s\n' "$USAGE_OUT" | grep -qE '^# pass [1-9]'
+          printf '%s\n' "$USAGE_OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$USAGE_OUT" | grep -qE '^# skipped [01]$'
+          if printf '%s\n' "$USAGE_OUT" | grep '# SKIP' | grep -qv 'no /tmp/usage-work/transcripts'; then
+            echo "FAIL: unexpected skip in usage-counter.test.ts" >&2
+            exit 1
+          fi
+
+          SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-usage-pion-switch.test.ts)"
+          printf '%s\n' "$SW_OUT"
+          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
 
   gate-w6-replica:
     runs-on: ubuntu-24.04

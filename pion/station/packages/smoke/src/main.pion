@@ -14,6 +14,7 @@ import "builders_legacy"
 import "builders_recent"
 import "builders_requested"
 import "builders_stateful"
+import "builders_usage"
 import "builders_vault"
 import "footprint"
 import "host_shim"
@@ -102,6 +103,7 @@ fn advertised_modes() -> Array[String] {
     "cc-index",
     "usage-check",
     "live-locator",
+    "usage-counter",
   ]
 }
 
@@ -1278,6 +1280,18 @@ fn main(world : World) -> Unit {
             host_shim::exit_process(locate::run_live_locator(db_path, data_dir, sep))
           }
           _ => usage_exit()
+        }
+      }
+      Some("usage-counter") => {
+        match flag_value(argv, "--db") {
+          Some(db_path) => {
+            let sep = match flag_value(argv, "--sep") {
+              Some(s) => s
+              None => "/"
+            }
+            host_shim::exit_process(builders_usage::run_usage_counter(db_path, sep))
+          }
+          None => usage_exit()
         }
       }
       _ => usage_exit()
