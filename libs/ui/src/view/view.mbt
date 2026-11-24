@@ -1000,6 +1000,8 @@ pub struct Tree {
   mut in_events : Int
   /// what the changes of the moment its logic is at owe of what is under the pointer, owed (Tree::withins_settled)
   mut withins_owed : Bool
+  /// whether an immediate layout inside advance_loop restored the drawn clock and deferred withins_restored until it ends
+  mut withins_restore_due : Bool
   moment_passes : Array[(Double, Int)]
   /// how many runs through `bindings_due` are under way (Tree::laid_out, Tree::measured_now): while one is, a room's
   /// layout come of a binding it ran leaves the queue as it stands (Tree::room_bindings_run)
@@ -1661,6 +1663,7 @@ pub fn Tree::new(
     event_passes_most: 0,
     in_events: 0,
     withins_owed: false,
+    withins_restore_due: false,
     moment_passes: [],
     draining: 0,
     bindings: 0,
@@ -7655,7 +7658,11 @@ fn Tree::withins_settled(self : Tree) -> Unit {
 /// clock back told is the next frame's).
 fn Tree::withins_laid(self : Tree) -> Unit {
   if self.laid_now(via=if self.advancing { 6 } else { 5 }) {
-    self.withins_restored()
+    if self.advancing {
+      self.withins_restore_due = true
+    } else {
+      self.withins_restored()
+    }
   }
 }
 
@@ -12702,7 +12709,11 @@ fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
   self.standing = false
   self.clear_unsettled()
   if self.work.passes > passes_was {
-    self.withins_restored()
+    if self.advancing {
+      self.withins_restore_due = true
+    } else {
+      self.withins_restored()
+    }
   }
   // (what the bindings it ran asked for, a change told outside every event so ending: Tree::change_ended)
   self.change_ended()
@@ -12861,6 +12872,10 @@ fn Tree::advance_logic(self : Tree, upto : Double) -> Unit {
   // at no moment before it)
   if upto > self.logic {
     self.logic = upto
+  }
+  if self.withins_restore_due {
+    self.withins_restore_due = false
+    self.withins_restored()
   }
 }
 
