@@ -803,6 +803,9 @@ struct Node {
   /// on its way whole (a page's list's key said `comes_whole`, View::scrolls_window): not cut to its room as it makes
   /// its way, nor what it holds; cut as what holds it cuts it
   mut come_uncut : Bool
+  /// on its way down its column, cut at its animated foot alone and open across and above its top (View::resizes'
+  /// `open_top`: a quote room whose ✕ hangs above its top edge)
+  mut come_open_top : Bool
   // (on a way its list's page said of its key, View::scrolls_window `comes_way`: a flight in to it goes with it,
   // shared.mbt's Tree::rides_said_way; let go with the way)
   mut list_key_way : Bool
@@ -2218,6 +2221,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.clips_said = false
       n.clips_down = false
       n.come_uncut = false
+      n.come_open_top = false
       n.list_key_way = false
       n.inert = false
       n.takes_unseen = false
@@ -2413,6 +2417,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         clips_said: false,
         clips_down: false,
         come_uncut: false,
+        come_open_top: false,
         list_key_way: false,
         inert: false,
         takes_unseen: false,
@@ -8300,7 +8305,8 @@ pub fn View::on_wheel_moves(self : View, f : (Wheel) -> Bool) -> View {
 ///|
 /// A wheel that nothing in it moves goes on to what is drawn under it, not to what holds it: a card floating over a page
 /// (in a layer of the window, so the page is none of what holds it) leaves the page to scroll under the pointer. What is
-/// kept from input (a modal layer over the page) is not asked, as ever.
+/// kept from input by a modal layer over the page is not asked, unless that layer (the topmost) is this one: then the
+/// page under it scrolls by the wheel while presses and keys stay the layer's (Tree::wheelless_at).
 pub fn View::wheel_passes(self : View) -> View {
   guard self.live() is Some(n) else { return self }
   n.wheel_passes = true
@@ -8360,7 +8366,7 @@ pub fn Tree::wheel_at(
     let hits : Array[NodeId] = []
     let now = self.logic_said()
     self.each_drawn_scaled(fn(c, cx, cy, _, s) {
-      if self.finger_on(c, cx, cy, s, x, y, now, tracked=false) {
+      if self.finger_on(c, cx, cy, s, x, y, now, tracked=false, wheel=true) {
         let n = self.nodes[c.id.at]
         if n.on_wheel is Some(_) ||
           n.on_drag is Some(_) ||
@@ -8410,7 +8416,7 @@ pub fn Tree::wheel_at(
         let (id, hosted, said) = e
         guard self.nodes[0].live else { break }
         let n = self.nodes[id.at]
-        guard n.live && n.gen == id.gen && !self.pressless_at(id.at) else { continue }
+        guard n.live && n.gen == id.gen && !self.wheelless_at(id.at) else { continue }
         if hosted && n.hosted {
           theirs.val = true
           if @signals.untracked(fn() { old(id) }) {
@@ -11331,6 +11337,7 @@ fn View::comes(
   foot? : Bool = false,
   anew? : Bool = false,
   uncut? : Bool = false,
+  open_top? : Bool = false,
 ) -> Bool {
   let tree = self.tree
   // (in a block of a page's list said `flips`: there at once, the list setting it out with the rest of its column)
@@ -11364,7 +11371,7 @@ fn View::comes(
     // (in what is laid out nowhere (a page under the one on top): there at once, as it is shown again (Tree::nowhere_at))
     !tree.nowhere_at(self.at) &&
     tree.makes_way(v.at) &&
-    !tree.holds_shared(v.at, stays_ok=uncut) &&
+    !tree.holds_shared(v.at, stays_ok=uncut || open_top) &&
     // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
     // way a cause set it on, turned back by an answer (a show's shown again as it closes), turns back on that way as
     // it would for a cause: that way is the cause's still, and stopped dead or done at once it jumps)
@@ -11448,6 +11455,7 @@ fn View::comes(
   if uncut {
     n.come_uncut = true
   }
+  n.come_open_top = open_top
   n.look.clips = n.clips_said || !n.come_uncut
   (n.come_off)()
   n.come_off = fn() {  }
@@ -11523,7 +11531,7 @@ fn View::comes(
     @signals.after_flush(fn() {
       guard v.live() is Some(m) && m.coming && st.come_at == at && st.come_to >= 1.0 else { return }
       tree.measured_now()
-      if m.come_uncut {
+      if m.come_uncut || m.come_open_top {
         match m.come_said {
           Some(s) => s.set(s.untracked() + 1)
           None => ()
@@ -11842,7 +11850,7 @@ fn Tree::come_group_settle(
       // (leaving as long as the group's way: let go as it ends)
       m.span = dmax(st.come_ends - m.left_at, 0.0)
     }
-    if m.come_uncut {
+    if m.come_uncut || m.come_open_top {
       match m.come_said {
         Some(s) => s.set(s.untracked() + 1)
         None => ()
@@ -11868,8 +11876,9 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   if m.structure_box {
     tree.structure_row_sync_one(v.at)
   }
-  let was_uncut = m.come_uncut
+  let was_uncut = m.come_uncut || m.come_open_top
   m.come_uncut = false
+  m.come_open_top = false
   m.list_key_way = false
   st.come_grid = 0.0
   st.come_foot = false
@@ -12198,6 +12207,27 @@ pub fn View::leaving_now(self : View) -> Bool {
 fn Tree::pressless_at(self : Tree, at : Int) -> Bool {
   // (under the topmost modal layer, not in it: none)
   !self.allows_at(at) || self.pressless_own_at(at)
+}
+
+///|
+/// Whether a wheel turned over node `at` is kept from it: as a press is (Tree::pressless_at), but under the topmost
+/// modal layer where that layer lets the wheel through (View::wheel_passes): a popover that leaves the page under it to
+/// scroll while it stays open, its presses outside it and its keys still its own. An old frame's modal layer over it
+/// keeps it as ever.
+fn Tree::wheelless_at(self : Tree, at : Int) -> Bool {
+  if self.pressless_own_at(at) {
+    return true
+  }
+  if self.allows_at(at) {
+    return false
+  }
+  match self.modal_top() {
+    Some(m) if self.nodes[m.at].wheel_passes => {
+      let under = self.held_under_now()
+      under > -2 && self.stack_at(at) <= under
+    }
+    _ => true
+  }
 }
 
 ///|
@@ -14526,6 +14556,8 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
       }
     } else if self.along_row_at(at) {
       2
+    } else if n.come_open_top {
+      3
     } else {
       1
     },
@@ -16095,8 +16127,11 @@ fn Tree::finger_on(
   y : Double,
   at : Double,
   tracked~ : Bool,
+  wheel? : Bool = false,
 ) -> Bool {
-  if x < cx || y < cy || x >= cx + c.w * s || y >= cy + c.h * s || self.pressless_at(c.id.at) {
+  // (a wheel's: as a press's, but on under a modal layer that lets the wheel through, Tree::wheelless_at)
+  let kept = if wheel { self.wheelless_at(c.id.at) } else { self.pressless_at(c.id.at) }
+  if x < cx || y < cy || x >= cx + c.w * s || y >= cy + c.h * s || kept {
     return false
   }
   // (within what holds it bounds it to: View::bounds_input)

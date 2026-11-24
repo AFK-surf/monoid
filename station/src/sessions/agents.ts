@@ -304,6 +304,7 @@ export const AgentsLive = (control: Control) =>
       const meshSide = yield* MeshSide;
       const hub = new Hub({
         config: settings,
+        readers: readerConfig,
         siteInstructions,
         taking: () => control.taking(),
         store,
@@ -348,7 +349,7 @@ export const AgentsLive = (control: Control) =>
         traces: () => meshSide.traces ?? null,
       });
       const workspaceActivity = yield* Effect.acquireRelease(
-        Effect.sync(() => buildWorkspaceActivity(store, previous)),
+        Effect.sync(() => buildWorkspaceActivity(store, previous, undefined, readerConfig)),
         (builder) => Effect.promise(() => builder.close()),
       );
       hub.waitForWorkspaceActivity = () => workspaceActivity.ready;
@@ -515,7 +516,7 @@ export const AgentsLive = (control: Control) =>
       remote.setInbox(inbox);
       // Chats shared with other workspaces, and theirs shared with this one: their stations are
       // asked and heard through it, for those chats only.
-      const shareIndex = new ChatShareIndexBuilder(store, previous);
+      const shareIndex = new ChatShareIndexBuilder(store, previous, undefined, readerConfig);
       yield* Effect.addFinalizer(() => Effect.promise(() => shareIndex.close()));
       const xshare = new ChatShares({
         data, store, cloud,

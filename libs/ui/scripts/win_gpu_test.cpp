@@ -727,6 +727,31 @@ static void test_v8_v9_droplet_roi_gates(void) {
     free(px_icon);
   }
 
+  // V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt)
+  {
+    double tg[3 * MB_INST];
+    fill_p0_rect(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 1.0, 0);
+    fill_p0_rect(tg + MB_INST, 41.5, 8.0, 2.0, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 1.0, 0);
+    fill_p0_rect(tg + 2 * MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, 0.0, -565.0);
+    tg[2 * MB_INST + 4] = 31.75; tg[2 * MB_INST + 6] = 1.0; tg[2 * MB_INST + 7] = -64.0;
+    tg[2 * MB_INST + 12] = 1.0; tg[2 * MB_INST + 13] = 9.0; tg[2 * MB_INST + 15] = 1.0; tg[2 * MB_INST + 21] = 9.0;
+    uint8_t *pxg = render_rgba_pixels_of(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
+    CHECK(pxg != NULL);
+    if (pxg) {
+      uint8_t *co = W_PX(pxg, AW3, 127, 120);
+      double l_orig = 0.2126 * co[0] + 0.7152 * co[1] + 0.0722 * co[2];
+      double min_l = 1e9;
+      for (int px_i = 132; px_i <= 136; px_i++) {
+        uint8_t *cr = W_PX(pxg, AW3, px_i, 120);
+        double lr = 0.2126 * cr[0] + 0.7152 * cr[1] + 0.0722 * cr[2];
+        if (lr < min_l) min_l = lr;
+      }
+      printf("win_gpu: v9_tab_no_ghost orig_L=%.1f refr_min_L=%.1f\n", l_orig, min_l);
+      CHECK(l_orig > 220.0 && min_l < 170.0);
+      free(pxg);
+    }
+  }
+
   // V9a2: Switch ON @ 2x phase-shifted integrated green mass
   {
     const int AW2 = VW * 2, AH2 = VH * 2;
@@ -790,7 +815,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
       }
       printf("win_gpu: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
       CHECK(max_d2 <= 14.0);
-      CHECK(side_lmin >= 190.0 && side_lmin <= 215.0);
+      CHECK(side_lmin >= 212.0 && side_lmin <= 232.0);
       free(px);
     }
     double rgd[2 * MB_INST];
@@ -993,6 +1018,83 @@ static void test_v8_v9_droplet_roi_gates(void) {
         }
       }
     }
+  }
+  // V9h: Switch ON held glassFrost C0 continuity (0 -> eps, 0.108->0.110 veil, 0.127->0.129 blur, 0.60 frosted)
+  {
+    static const double frosts[8] = { 0.0, 0.0001, 0.00011, 0.108, 0.110, 0.127, 0.129, 0.60 };
+    int aw = VW * 3, ah = VH * 3;
+    uint8_t *px0 = NULL, *px_prev = NULL;
+    int max_d_eps = 0, max_d_veil = 0, max_d_blur = 0;
+    int c0_r = 0, c0_g = 0, c60_r = 0, c60_g = 0;
+    for (int fi = 0; fi < 8; fi++) {
+      double fr = frosts[fi];
+      double alpha = 0.0, slot7 = -32.0, refr = 9.0;
+      if (fr > 0.0001) {
+        double a_frac = 0.94 * fr;
+        alpha = round(a_frac * 255.0) / 255.0;
+        double bl = (a_frac <= 0.12) ? 0.0 : 14.0 * ((a_frac - 0.12) / 0.88) * 0.5;
+        slot7 = (bl <= 0.0) ? -32.0 : bl;
+        refr = 9.0 * (1.0 - 0.55 * fr);
+      }
+      double sw[3 * MB_INST];
+      fill_p0_rect(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 1.0, 0);
+      fill_p0_rect(sw + MB_INST, 40.0, 26.0, 63.0, 28.0, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 1.0, 0);
+      sw[MB_INST + 4] = 14.0;
+      sw[MB_INST + 36] = 14.0; sw[MB_INST + 37] = 14.0; sw[MB_INST + 38] = 14.0; sw[MB_INST + 39] = 14.0;
+      fill_p0_rect(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, alpha, (double)(-90 - fi));
+      sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = slot7;
+      sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0; sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = refr;
+      uint8_t *px = render_rgba_pixels_of(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, aw, ah);
+      CHECK(px != NULL);
+      if (!px) continue;
+      if (fi == 0) {
+        px0 = px;
+        uint8_t *c = W_PX(px, aw, 82 * 3, 40 * 3);
+        c0_r = c[0]; c0_g = c[1];
+      } else {
+        if (fi == 2 && px0) {
+          for (int py = 21 * 3; py <= 59 * 3; py++) {
+            for (int xpx = 53 * 3; xpx <= 112 * 3; xpx++) {
+              uint8_t *a = W_PX(px0, aw, xpx, py);
+              uint8_t *b = W_PX(px, aw, xpx, py);
+              for (int ch = 0; ch < 3; ch++) {
+                int d = abs((int)a[ch] - (int)b[ch]);
+                if (d > max_d_eps) max_d_eps = d;
+              }
+            }
+          }
+        } else if (fi == 3 || fi == 5) {
+          free(px_prev);
+          px_prev = px;
+          px = NULL;
+        } else if ((fi == 4 || fi == 6) && px_prev) {
+          int md = 0;
+          for (int py = 21 * 3; py <= 59 * 3; py++) {
+            for (int xpx = 53 * 3; xpx <= 112 * 3; xpx++) {
+              uint8_t *a = W_PX(px_prev, aw, xpx, py);
+              uint8_t *b = W_PX(px, aw, xpx, py);
+              for (int ch = 0; ch < 3; ch++) {
+                int d = abs((int)a[ch] - (int)b[ch]);
+                if (d > md) md = d;
+              }
+            }
+          }
+          if (fi == 4) max_d_veil = md; else max_d_blur = md;
+        } else if (fi == 7) {
+          uint8_t *c = W_PX(px, aw, 82 * 3, 40 * 3);
+          c60_r = c[0]; c60_g = c[1];
+        }
+        free(px);
+      }
+    }
+    free(px0);
+    free(px_prev);
+    printf("win_gpu: v9_switch_frost_continuity max_d_eps=%d max_d_veil=%d max_d_blur=%d ctr0=(%d,%d) ctr60=(%d,%d)\n",
+           max_d_eps, max_d_veil, max_d_blur, c0_r, c0_g, c60_r, c60_g);
+    CHECK(max_d_eps <= 2);
+    CHECK(max_d_veil <= 10);
+    CHECK(max_d_blur <= 10);
+    CHECK(c60_r > c0_r + 25 && (c60_g - c60_r) < (c0_g - c0_r) - 20);
   }
   #undef W_PX
 }

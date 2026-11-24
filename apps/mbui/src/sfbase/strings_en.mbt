@@ -867,6 +867,8 @@ let en : Map[String, String] = {
   "web-main.chat.agentCard.plan": "Checklist",
   "web-main.chat.archive": "Archive",
   "web-main.chat.hide": "Hide",
+  "web-main.chat.moveStarted": "Moving to “{station}”",
+  "web-main.chat.movingTo": "Moving to {station}",
   "web-main.chat.unhide": "Unhide",
   "web-main.chat.hiddenNotice": "Hidden; work continues",
   "web-main.chat.unhiddenNotice": "Chat unhidden",
