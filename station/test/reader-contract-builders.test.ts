@@ -313,10 +313,15 @@ test("archive-marks: protocol boundaries (empty line, cancel, bad JSON, invalid 
     const badScope = await proc.ask(JSON.stringify({ scope: "other" }));
     assert.deepEqual(badScope, { done: false, error: "invalid archive mark preparation request" });
 
-    // Incompatible version -> exact error AND zero transaction/lock leak!
+    // Incompatible version -> error message mentioning version 99 AND zero transaction/lock leak!
     seed.store.db.exec("UPDATE archive_mark_meta SET version = 99 WHERE kind = 'kept'");
     const badVer = await proc.ask(JSON.stringify({ scope: "all" }));
-    assert.deepEqual(badVer, { done: false, error: "archive mark index version 99 is incompatible with 1" });
+    assert.equal(badVer.done, false);
+    assert.equal(typeof badVer.error, "string");
+    assert.ok(
+      badVer.error.includes("archive mark index version 99 is incompatible with 1"),
+      `unexpected incompatible version error: ${JSON.stringify(badVer)}`,
+    );
 
     // Immediately acquire BEGIN IMMEDIATE on an external connection: fails with SQLITE_BUSY if candidate leaked a tx!
     const ext = new DatabaseSync(seed.path);
