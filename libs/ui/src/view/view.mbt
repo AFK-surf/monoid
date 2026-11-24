@@ -1389,6 +1389,8 @@ pub struct Tree {
   mut moves_causes : Int
   /// latest change moment deferred by lazy moves_for settlement (-1.0: none pending)
   mut unsettled_at : Double
+  /// latest change moment whose `settle_now` was skipped by a mid-batch (`more=true`) event (-1.0: none pending)
+  mut batch_owed_at : Double
   /// whether no new non-standing/non-laying mutations have dirtied the tree since mark_unsettled
   mut unsettled_clean : Bool
   /// true while Tree::brought is laying out deferred lazy moves_for changes so derived bindings stay answered
@@ -1860,6 +1862,7 @@ pub fn Tree::new(
     before_causes: 0,
     moves_causes: 0,
     unsettled_at: -1.0,
+    batch_owed_at: -1.0,
     unsettled_clean: false,
     settling_unsettled: false,
     answer_unsettled: false,
@@ -2904,6 +2907,7 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   }
   self.drain_parked_garbage()
   self.unsettled_at = -1.0
+  self.batch_owed_at = -1.0
   self.unsettled_clean = false
   self.answer_unsettled = false
   if node_rests.length() > 0 {
@@ -12406,6 +12410,11 @@ pub fn Tree::input(self : Tree, at : Double, f : () -> Unit) -> Unit {
 }
 
 ///|
+/// The tree whose outer `Tree::event_said` is currently executing (None outside `event_said`).
+// kept across runs: saved and restored around Tree::event_said
+let active_event_tree : Ref[Tree?] = Ref(None)
+
+///|
 /// One event at `at` whose own facts (`said`: what it came by, as a host says it) are so as of its moment: what was due
 /// by then done first (seeing what was so before it), then `said` committed and told (what follows it brought to it,
 /// the event's moment their cause), then `f` taken as Tree::event takes it, finding things as they are with it. Inside
@@ -12416,7 +12425,12 @@ pub fn Tree::input(self : Tree, at : Double, f : () -> Unit) -> Unit {
 /// (a list's slots set, read by bindings through what is worked out of them) is told and laid out in it, not marked in
 /// `f`'s batch and left there while `f` finds what it reaches (a row 120 lower than drawn, an input 88 ms after the
 /// last frame, 2026-11-12). A key and words typed bring nothing of their own (press_stays_ways_test's Page Down).
-pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> Unit, brings? : Bool = false) -> Unit {
+///
+/// `more`: true for intermediate samples of a coalesced touch/pointer move batch. Commits modal eligibility and records
+/// `sight_owe(at)` (and `batch_owed_at` if motion causes are active), while deferring `withins_settled`, `settle_now`,
+/// `hand_now`, `sights_now`, and trailing `withins_owed_now` until the final sample (`more=false`), a mid-batch
+/// `@view.transition`, or the next frame.
+pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> Unit, brings? : Bool = false, more? : Bool = false) -> Unit {
   // (in an event already: its moment, settled as it began)
   if self.cause_at >= 0.0 {
     @signals.start_batch()
@@ -12425,6 +12439,8 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
     @signals.end_batch()
     return
   }
+  let prev_active = active_event_tree.val
+  active_event_tree.val = Some(self)
   let passes_was = self.work.passes
   self.in_events += 1
   // (what the changes before it at its moment owe, settled before it finds anything)
@@ -12444,7 +12460,7 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
   @signals.untracked(f)
   @signals.end_batch()
   self.committing -= 1
-  self.modals_settled()
+  self.modals_settled(withins=!more)
   // (what waits for it committed whole, each a change of its own of this moment, in order)
   while self.afters.length() > 0 {
     let next = self.afters.remove(0)
@@ -12453,7 +12469,7 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
     @signals.untracked(next)
     @signals.end_batch()
     self.committing -= 1
-    self.modals_settled()
+    self.modals_settled(withins=!more)
   }
   self.afters.release_unused(placeholder=run_gone)
   // (what was let go of and made in it with one id paired, as it is committed whole: shared.mbt)
@@ -12464,18 +12480,27 @@ pub fn Tree::event_said(self : Tree, at : Double, said : () -> Unit, f : () -> U
   self.change_ended()
   // (where things stand once it is told whole, for the next change: Tree::settle_after_change)
   if was < 0.0 {
-    self.settle_now(at)
-    self.hand_now()
+    if !more {
+      self.settle_now(at)
+      self.hand_now()
+    } else if self.moves_causes > 0 || self.before_causes > 0 {
+      self.batch_owed_at = at
+    }
     // (what the page's lists have in sight owed as of this change, an input's or data's: not a binding's the clock or a
     // frame's laying out told (Tree::at_cause's), nor the one that tells it)
     if !self.sights_telling {
       self.sight_owe(at)
     }
-    self.sights_now()
+    if !more {
+      self.sights_now()
+    }
   }
   // (and what a change told in it as it was laid out left owed, as it ends: what follows finds it settled)
-  self.withins_owed_now()
+  if !more {
+    self.withins_owed_now()
+  }
   self.in_events -= 1
+  active_event_tree.val = prev_active
   if was < 0.0 {
     self.event_passes_counted(self.work.passes - passes_was)
   }
@@ -12517,6 +12542,7 @@ fn Tree::clear_unsettled(self : Tree) -> Unit {
   self.unsettled_clean = false
   self.answer_unsettled = false
   self.unsettled_at = -1.0
+  self.batch_owed_at = -1.0
 }
 
 ///|
@@ -12686,6 +12712,7 @@ fn Tree::settle_after_change(self : Tree, at : Double) -> Unit {
 /// Where things stand as of `at` laid out and placed now, where something asks (View::laid_before_causes): what was told
 /// worked out, laid out and placed as a frame would, nothing drawn.
 fn Tree::settle_now(self : Tree, at : Double) -> Unit {
+  self.batch_owed_at = -1.0
   if self.standing || self.last_w <= 0.0 {
     return
   }
@@ -12703,6 +12730,7 @@ fn Tree::settle_now(self : Tree, at : Double) -> Unit {
 /// property bindings (`bindings_due` / `pulls_marked` / `after_bindings`) without touching `clock`/`beat` or running
 /// `@flex.compute` / text measurement / `Tree::place`, then marks the tree unsettled if layout or placing remains due.
 fn Tree::settle_bindings_at(self : Tree, at : Double) -> Unit {
+  self.batch_owed_at = -1.0
   if self.standing || self.last_w <= 0.0 {
     return
   }
@@ -12753,6 +12781,7 @@ fn Tree::settle_bindings_at(self : Tree, at : Double) -> Unit {
 
 ///|
 fn Tree::settle_layout_at(self : Tree, at : Double) -> Unit {
+  self.batch_owed_at = -1.0
   if self.standing || self.last_w <= 0.0 {
     return
   }
@@ -13010,6 +13039,13 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
         self.sights_now()
       }
       return
+    }
+    if self.batch_owed_at >= 0.0 {
+      let batch_at = self.batch_owed_at
+      self.batch_owed_at = -1.0
+      self.settle_now(batch_at)
+      // (what settling ran may have scheduled or called off timeline work: re-select from the updated timeline)
+      continue
     }
     let d = self.timeline[next]
     match d {
@@ -13275,11 +13311,13 @@ pub fn Tree::frame(self : Tree, w : Double, h : Double, now? : Double) -> Bool {
 /// the tree has a size (its first frame).
 pub fn Tree::bring_to(self : Tree, at : Double) -> Unit {
   if self.nodes.length() == 0 || !self.nodes[0].live {
+    self.batch_owed_at = -1.0
     return
   }
   // (its logic first, to the moment, then what it draws drawn as of it (a frame to be shown later drawn ahead of it:
   // drawn again as of now, for where a press finds things), then what it marked)
   self.advance(at)
+  self.batch_owed_at = -1.0
   self.clock_to(at)
   // (what the change under way set so far, and the clock, pulled into its properties: an input in a change's batch
   // finds things where they are then, nothing else told before the change ends)
