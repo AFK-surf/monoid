@@ -138,8 +138,8 @@ static int face_id(int style) {
   int f = (style >> 8) & 31;
   if (f > 0) return faces[f].has ? f : 0;
   if (style & 2) return faces[3].has ? 3 : 0;
-  if ((style & 16) && faces[2].has) return 2;
   if (style & 4) return 0;
+  if ((style & 16) && faces[2].has) return 2;
   return faces[1].has ? 1 : 0;
 }
 
@@ -265,31 +265,35 @@ int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
 
 static int name_order(const void *a, const void *b) { return g_utf8_collate(*(char *const *)a, *(char *const *)b); }
 
-// The families installed here as a JSON array of their names, in the order of the user's language.
+static char *local_families_cache;
+
+// The families installed here as a JSON array of their names, in the order of the user's language (cached once).
 moonbit_string_t mb_host_local_font_families(void) {
   init();
-  PangoFontFamily **fams = NULL;
-  int n = 0;
-  pango_font_map_list_families(fontmap, &fams, &n);
-  const char **names = calloc((size_t)(n ? n : 1), sizeof(char *));
-  for (int i = 0; i < n; i++) names[i] = pango_font_family_get_name(fams[i]);
-  qsort(names, (size_t)n, sizeof(char *), name_order);
-  GString *out = g_string_new("[");
-  for (int i = 0; i < n; i++) {
-    if (i) g_string_append_c(out, ',');
-    g_string_append_c(out, '"');
-    for (const char *c = names[i]; *c; c++) {
-      if (*c == '"' || *c == '\\') g_string_append_c(out, '\\');
-      g_string_append_c(out, (unsigned char)*c < 0x20 ? ' ' : *c);
+  if (!local_families_cache) {
+    PangoFontFamily **fams = NULL;
+    int n = 0;
+    pango_font_map_list_families(fontmap, &fams, &n);
+    const char **names = calloc((size_t)(n ? n : 1), sizeof(char *));
+    for (int i = 0; i < n; i++) names[i] = pango_font_family_get_name(fams[i]);
+    qsort(names, (size_t)n, sizeof(char *), name_order);
+    GString *out = g_string_new("[");
+    for (int i = 0; i < n; i++) {
+      if (i) g_string_append_c(out, ',');
+      g_string_append_c(out, '"');
+      for (const char *c = names[i]; *c; c++) {
+        if (*c == '"' || *c == '\\') g_string_append_c(out, '\\');
+        g_string_append_c(out, (unsigned char)*c < 0x20 ? ' ' : *c);
+      }
+      g_string_append_c(out, '"');
     }
-    g_string_append_c(out, '"');
+    g_string_append_c(out, ']');
+    free(names);
+    g_free(fams);
+    local_families_cache = g_string_free(out, FALSE);
   }
-  g_string_append_c(out, ']');
-  free(names);
-  g_free(fams);
   glong len = 0;
-  gunichar2 *u = g_utf8_to_utf16(out->str, -1, NULL, &len, NULL);
-  g_string_free(out, TRUE);
+  gunichar2 *u = g_utf8_to_utf16(local_families_cache, -1, NULL, &len, NULL);
   moonbit_string_t s = moonbit_make_string_raw((int32_t)len);
   if (len) memcpy(s, u, (size_t)len * 2);
   g_free(u);
@@ -321,6 +325,13 @@ typedef struct {
   int serif;
   int cjk;
 } LinuxFontMeta;
+
+static gint ptr_str_order(gconstpointer a, gconstpointer b) {
+  const char *sa = *(const char *const *)a;
+  const char *sb = *(const char *const *)b;
+  int c = g_ascii_strcasecmp(sa, sb);
+  return c != 0 ? c : strcmp(sa, sb);
+}
 
 static void *local_font_info_worker(void *arg) {
   (void)arg;
@@ -367,6 +378,7 @@ static void *local_font_info_worker(void *arg) {
   }
   FcObjectSetDestroy(os);
   FcPatternDestroy(pat);
+  g_ptr_array_sort(order, ptr_str_order);
   GString *out = g_string_new("[");
   for (guint i = 0; i < order->len; i++) {
     const char *name = (const char *)g_ptr_array_index(order, i);

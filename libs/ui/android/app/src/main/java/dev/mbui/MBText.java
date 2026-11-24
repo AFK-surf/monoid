@@ -248,8 +248,8 @@ final class MBText {
         int f = (style >> 8) & 31;
         if (f > 0) return given(f) ? f : 0;
         if ((style & 2) != 0) return given(3) ? 3 : 0;
-        if ((style & 16) != 0 && given(2)) return 2;
         if ((style & 4) != 0) return 0;
+        if ((style & 16) != 0 && given(2)) return 2;
         return given(1) ? 1 : 0;
     }
 

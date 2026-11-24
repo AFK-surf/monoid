@@ -4618,8 +4618,8 @@
     const f = (style >> 8) & 31;
     if (f) return faces.has(f) ? f : 0;
     if (style & 2) return faces.has(3) ? 3 : 0;
-    if (style & 16 && faces.has(2)) return 2;
     if (style & 4) return 0;
+    if (style & 16 && faces.has(2)) return 2;
     return faces.has(1) ? 1 : 0;
   };
   // style: 1 slanted, 2 the code face; 64 a CJK face's marks narrow among Latin letters (style.mbt

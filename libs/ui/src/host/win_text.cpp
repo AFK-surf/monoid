@@ -265,8 +265,8 @@ static int face_id(int style) {
   int f = (style >> 8) & 31;
   if (f > 0) return face_has(f) ? f : 0;
   if (style & 2) return face_has(3) ? 3 : 0;
-  if ((style & 16) && face_has(2)) return 2;
   if (style & 4) return 0;
+  if ((style & 16) && face_has(2)) return 2;
   return face_has(1) ? 1 : 0;
 }
 
@@ -417,59 +417,65 @@ static int name_order(const void *a, const void *b) {
                          *(const WCHAR *const *)b, -1, NULL, NULL, 0) - CSTR_EQUAL;
 }
 
+static WCHAR *local_families_cache;
+static size_t local_families_cache_len;
+
 extern "C" moonbit_string_t mb_host_local_font_families(void) {
   init();
-  IDWriteFontCollection *fc = NULL;
-  if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return moonbit_make_string_raw(0);
-  if (!GetUserDefaultLocaleName(names_locale, LOCALE_NAME_MAX_LENGTH)) names_locale[0] = 0;
-  UINT32 count = fc->GetFontFamilyCount();
-  WCHAR **all = (WCHAR **)calloc(count ? count : 1, sizeof(WCHAR *));
-  UINT32 had = 0;
-  for (UINT32 i = 0; i < count; i++) {
-    IDWriteFontFamily *fam = NULL;
-    IDWriteLocalizedStrings *names = NULL;
-    WCHAR name[256];
-    name[0] = 0;
-    if (SUCCEEDED(fc->GetFontFamily(i, &fam)) && SUCCEEDED(fam->GetFamilyNames(&names))) {
-      UINT32 at = 0;
-      BOOL there = FALSE;
-      if (names_locale[0]) names->FindLocaleName(names_locale, &at, &there);
-      if (!there) at = 0;
-      UINT32 len = 0;
-      if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, name, 256);
+  if (!local_families_cache) {
+    IDWriteFontCollection *fc = NULL;
+    if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return moonbit_make_string_raw(0);
+    if (!GetUserDefaultLocaleName(names_locale, LOCALE_NAME_MAX_LENGTH)) names_locale[0] = 0;
+    UINT32 count = fc->GetFontFamilyCount();
+    WCHAR **all = (WCHAR **)calloc(count ? count : 1, sizeof(WCHAR *));
+    UINT32 had = 0;
+    for (UINT32 i = 0; i < count; i++) {
+      IDWriteFontFamily *fam = NULL;
+      IDWriteLocalizedStrings *names = NULL;
+      WCHAR name[256];
+      name[0] = 0;
+      if (SUCCEEDED(fc->GetFontFamily(i, &fam)) && SUCCEEDED(fam->GetFamilyNames(&names))) {
+        UINT32 at = 0;
+        BOOL there = FALSE;
+        if (names_locale[0]) names->FindLocaleName(names_locale, &at, &there);
+        if (!there) at = 0;
+        UINT32 len = 0;
+        if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, name, 256);
+      }
+      if (names) names->Release();
+      if (fam) fam->Release();
+      if (name[0]) all[had++] = _wcsdup(name);
     }
-    if (names) names->Release();
-    if (fam) fam->Release();
-    if (name[0]) all[had++] = _wcsdup(name);
+    fc->Release();
+    // in the order of the user's language, as the web's localeCompare
+    qsort(all, had, sizeof(WCHAR *), name_order);
+    size_t cap = 4096, n = 0;
+    WCHAR *out = (WCHAR *)malloc(sizeof(WCHAR) * cap);
+    out[n++] = L'[';
+    for (UINT32 i = 0; i < had; i++) {
+      const WCHAR *name = all[i];
+      size_t len = wcslen(name);
+      // its name as a JSON string: a quote and a backslash escaped, the rest as it is
+      if (n + 2 * len + 4 >= cap) {
+        cap = (n + 2 * len + 4) * 2;
+        out = (WCHAR *)realloc(out, sizeof(WCHAR) * cap);
+      }
+      if (n > 1) out[n++] = L',';
+      out[n++] = L'"';
+      for (size_t k = 0; k < len; k++) {
+        if (name[k] == L'"' || name[k] == L'\\') out[n++] = L'\\';
+        out[n++] = name[k] < 0x20 ? L' ' : name[k];
+      }
+      out[n++] = L'"';
+      free(all[i]);
+    }
+    free(all);
+    out[n++] = L']';
+    local_families_cache = out;
+    local_families_cache_len = n;
   }
-  fc->Release();
-  // in the order of the user's language, as the web's localeCompare
-  qsort(all, had, sizeof(WCHAR *), name_order);
-  size_t cap = 4096, n = 0;
-  WCHAR *out = (WCHAR *)malloc(sizeof(WCHAR) * cap);
-  out[n++] = L'[';
-  for (UINT32 i = 0; i < had; i++) {
-    const WCHAR *name = all[i];
-    size_t len = wcslen(name);
-    // its name as a JSON string: a quote and a backslash escaped, the rest as it is
-    if (n + 2 * len + 4 >= cap) {
-      cap = (n + 2 * len + 4) * 2;
-      out = (WCHAR *)realloc(out, sizeof(WCHAR) * cap);
-    }
-    if (n > 1) out[n++] = L',';
-    out[n++] = L'"';
-    for (size_t k = 0; k < len; k++) {
-      if (name[k] == L'"' || name[k] == L'\\') out[n++] = L'\\';
-      out[n++] = name[k] < 0x20 ? L' ' : name[k];
-    }
-    out[n++] = L'"';
-    free(all[i]);
-  }
-  free(all);
-  out[n++] = L']';
-  moonbit_string_t s = moonbit_make_string_raw((int32_t)n);
-  memcpy(s, out, sizeof(WCHAR) * n);
-  free(out);
+  moonbit_string_t s = moonbit_make_string_raw((int32_t)local_families_cache_len);
+  memcpy(s, local_families_cache, sizeof(WCHAR) * local_families_cache_len);
   return s;
 }
 
@@ -500,8 +506,11 @@ static void wbuf_append_json_str(WCHAR **buf, size_t *n, size_t *cap, const WCHA
 }
 
 extern "C" void mb_host_request_frame(void);
+extern "C" void mb_app_call(void (*fn)(void *), void *arg);
 
 static volatile LONG local_font_info_started = 0;
+
+static void local_font_info_wake(void *) { mb_host_request_frame(); }
 
 static DWORD WINAPI local_font_info_worker(LPVOID) {
   IDWriteFactory *factory = NULL;
@@ -580,7 +589,7 @@ static DWORD WINAPI local_font_info_worker(LPVOID) {
   out[n++] = L']';
   local_font_info_cache_len = n;
   InterlockedExchangePointer((PVOID *)&local_font_info_cache, out);
-  mb_host_request_frame();
+  mb_app_call(local_font_info_wake, NULL);
   return 0;
 }
 

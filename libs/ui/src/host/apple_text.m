@@ -81,8 +81,8 @@ static int face_id(int style) {
   int f = (style >> 8) & 31;
   if (f > 0) return face_descs[f].count ? f : 0;
   if (style & 2) return face_descs[3].count ? 3 : 0;
-  if ((style & 16) && face_descs[2].count) return 2;
   if (style & 4) return 0;
+  if ((style & 16) && face_descs[2].count) return 2;
   return face_descs[1].count ? 1 : 0;
 }
 
@@ -261,16 +261,20 @@ int32_t mb_host_face_add_family(int32_t face, moonbit_string_t family) {
 // left out); "" on iOS (no list of them to the app).
 moonbit_string_t mb_host_local_font_families(void) {
 #if TARGET_OS_OSX
-  @autoreleasepool {
-    NSArray<NSString *> *names = (__bridge_transfer NSArray *)CTFontManagerCopyAvailableFontFamilyNames();
-    NSMutableArray<NSString *> *shown = [NSMutableArray new];
-    for (NSString *n in names) {
-      if (![n hasPrefix:@"."]) [shown addObject:n];
+  static NSString *cached = nil;
+  if (!cached) {
+    @autoreleasepool {
+      NSArray<NSString *> *names = (__bridge_transfer NSArray *)CTFontManagerCopyAvailableFontFamilyNames();
+      NSMutableArray<NSString *> *shown = [NSMutableArray new];
+      for (NSString *n in names) {
+        if (![n hasPrefix:@"."]) [shown addObject:n];
+      }
+      [shown sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+      NSData *json = [NSJSONSerialization dataWithJSONObject:shown options:0 error:nil];
+      cached = json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"";
     }
-    [shown sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-    NSData *json = [NSJSONSerialization dataWithJSONObject:shown options:0 error:nil];
-    return mb_string_from_ns(json ? [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding] : @"");
   }
+  return mb_string_from_ns(cached);
 #else
   return mb_string_from_ns(@"");
 #endif

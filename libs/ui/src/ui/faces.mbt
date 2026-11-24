@@ -97,18 +97,9 @@ pub fn face_add_family(face : Int, family : String) -> Bool {
 }
 
 ///|
-/// Switch a local-font preview slot (`face`, e.g. `local_try_face`) to `family` without triggering a global
-/// `words_forgotten()` invalidation: clears only cached shapes and metrics referencing `face`.
-pub fn face_set_local_preview(face : Int, family : String) -> Bool {
-  if face <= 0 || face >= @hostapi.faces_most {
-    return false
-  }
-  h_face_clear(face)
-  faces_no_lig[face] = false
-  let ok = h_face_add_family(face, family)
-  faces_given[face] = ok
-  purge_face_cache(face)
-  ok
+/// Cheap capability check for whether this host supports enumerating locally installed font families (no sync scan).
+pub fn can_list_local_fonts() -> Bool {
+  @hostapi.has_local_fonts()
 }
 
 ///|
@@ -138,14 +129,8 @@ pub fn local_font_info_signal() -> String {
   if cur != "" {
     return cur
   }
-  if !local_font_info_asked.val {
-    local_font_info_asked.val = true
-    let info = @signals.untracked(fn() { h_local_font_info() })
-    if info != "" {
-      return info
-    }
-  }
-  ""
+  local_font_info_asked.val = true
+  @signals.untracked(fn() { h_local_font_info() })
 }
 
 ///|

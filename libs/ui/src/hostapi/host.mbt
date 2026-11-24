@@ -69,6 +69,7 @@ pub(open) trait Host {
   face_add_bytes(Self, Int, Bytes, Int) -> Bool = _
   face_clear(Self, Int) -> Unit = _
   face_add_family(Self, Int, String) -> Bool = _
+  has_local_fonts(Self) -> Bool = _
   local_font_families(Self) -> String = _
   atlas_generation(Self) -> Int = _
   present(Self, FixedArray[Double], Int, Double, Double, Double) -> Unit = _
@@ -644,6 +645,11 @@ impl Host with face_clear(_, _) {
 
 ///|
 impl Host with face_add_family(_, _, _) {
+  false
+}
+
+///|
+impl Host with has_local_fonts(_) {
   false
 }
 
@@ -2175,6 +2181,13 @@ pub fn atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> B
 /// the system's. False where the host has none of that name (or no way to it).
 pub fn face_add_family(face : Int, family : String) -> Bool {
   current.val.face_add_family(face, family)
+}
+
+///|
+/// Cheap capability check for whether this host can enumerate locally installed font families without triggering a
+/// synchronous scan.
+pub fn has_local_fonts() -> Bool {
+  current.val.has_local_fonts()
 }
 
 ///|

@@ -1035,7 +1035,7 @@ fn face_rows_node(
     },
   )
   // a face of this machine's own, where the host lists them (keyboard and mouse's)
-  rows.show(fn() { @ui.local_font_families() != "" }, fn(l) {
+  rows.show(fn() { @ui.can_list_local_fonts() }, fn(l) {
     local_face_row_node(l, core, slot, place, is_cjk, chosen)
   })
 }
@@ -1481,13 +1481,17 @@ fn font_preview_node(
             @sf.t("web-pages.appearance.fonts.sampleText") + "\n\n" + fp_sample_code + "\n\n" + @sf.t("web-pages.appearance.fonts.sampleAfter")
           },
           size=fn() { body_size * prose_scale() },
-          prose_scale~,
           text_face~,
           code_face~,
-          code_scale~,
-          line_scale~,
-          text_cjk~,
-          code_cjk~,
+          typography=fn() {
+            {
+              prose_scale: prose_scale(),
+              code_scale: code_scale(),
+              line_scale: line_scale(),
+              text_cjk: text_cjk(),
+              code_cjk: code_cjk(),
+            }
+          },
         )
         |> ignore
       })
@@ -1680,7 +1684,8 @@ pub let fx_local_up : Ref[Bool] = Ref(false)
 fn local_tried(family : String) -> Int {
   let slot = @sfbase.local_try_face
   if local_try_given.val != family {
-    local_try_given.val = if @ui.face_set_local_preview(slot, family) { family } else { "" }
+    @ui.face_clear(slot)
+    local_try_given.val = if @ui.face_add_family(slot, family) { family } else { "" }
   }
   if local_try_given.val == family {
     slot

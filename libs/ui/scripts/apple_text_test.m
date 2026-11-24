@@ -585,6 +585,11 @@ int main(int argc, char **argv) {
     ahead_page();
     shape_parity();
     keys_bounded();
+    // style_serif (4) | style_words (16) must stay serif (face_id == 0) even when face_text (slot 2) is registered
+    CHECK(mb_host_face_add_family(2, mb_string_from_ns(@"Menlo")), "register Menlo in slot 2");
+    CHECK(face_id(4 | 16) == 0, "style_serif | style_words must exempt reader serif from face_text");
+    CHECK(face_id(16) == 2, "style_words without style_serif still uses face_text");
+    mb_host_face_clear(2);
   }
   if (failed) return 1;
   printf("apple_text_test: ok\n");

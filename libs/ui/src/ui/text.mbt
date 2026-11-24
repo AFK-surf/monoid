@@ -328,36 +328,6 @@ fn zoomed_keys(
 }
 
 ///|
-/// Purge cached shaped strings and metrics belonging to `face` alone (used by `face_set_local_preview` to avoid
-/// triggering a global `words_forgotten()` invalidation).
-fn purge_face_cache(face : Int) -> Unit {
-  let kept : Array[FontShapes] = []
-  let mut shaped = 0
-  for f in text_cache.fonts {
-    if @hostapi.face_of_style(f.style) == face || f.cjk_slot == face {
-      continue
-    }
-    shaped = shaped + f.map.length()
-    kept.push(f)
-  }
-  text_cache.fonts.clear()
-  for f in kept {
-    text_cache.fonts.push(f)
-  }
-  text_cache.shaped = shaped
-  let drop_metrics : Array[Int64] = []
-  text_cache.metrics.each(fn(k, _) {
-    let style = (k & 8191L).to_int()
-    if @hostapi.face_of_style(style) == face {
-      drop_metrics.push(k)
-    }
-  })
-  for k in drop_metrics {
-    text_cache.metrics.remove(k)
-  }
-}
-
-///|
 /// Ascent, descent and line height of the system font at this size (its
 /// code face, slanted, its serif face: `style`, @hostapi.style_mono, style_italic, style_serif).
 fn font_metrics(
@@ -2142,6 +2112,10 @@ fn layout_text(
   } else {
     line_metrics(size, weight, cjk)
   }
+  let cjk_enlarged = match effective_cjk(style, cjk_override) {
+    Some((_, sc, _)) => sc > 1.0
+    None => false
+  }
   let (line_h, ascent, extra) = set_line(
     if line > 0.0 {
       line
@@ -2153,7 +2127,7 @@ fn layout_text(
     g().scale,
     whole_pixel_lines(size, weight),
     trim~,
-    cjk_fit=has_cjk_comp && cjk,
+    cjk_fit=cjk && cjk_enlarged,
   )
   // right to left: each line's clusters in their visual order
   let lv = match s.bidi {

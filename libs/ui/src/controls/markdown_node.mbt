@@ -6,6 +6,32 @@
 // of another kind made again in its place.
 
 ///|
+/// Grouped typography scaling & CJK companion overrides for `markdown_node` (paragraphs, code blocks, and tables).
+#derive(Eq)
+pub(all) struct MdTypography {
+  prose_scale : Double
+  code_scale : Double
+  line_scale : Double
+  text_cjk : @view.CjkOverride?
+  code_cjk : @view.CjkOverride?
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+pub let md_typography_default : MdTypography = {
+  prose_scale: 1.0,
+  code_scale: 1.0,
+  line_scale: 1.0,
+  text_cjk: None,
+  code_cjk: None,
+}
+
+///|
+pub fn MdTypography::default() -> MdTypography {
+  md_typography_default
+}
+
+///|
 /// `text` as Markdown in `parent` (markdown's): `tree`, its reading where it is told one (a message's `md`: nothing
 /// asked of the core); `size` its words', as it changes (0: the theme's body), on lines `line` times it high, as it
 /// changes (0: Md::lh's); `apart`: a part after another (a reader's block after the one over it), its first block as far
@@ -63,11 +89,7 @@ pub fn markdown_node(
   tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
-  prose_scale? : () -> Double = fn() { 1.0 },
-  code_scale? : () -> Double = fn() { 1.0 },
-  line_scale? : () -> Double = fn() { 1.0 },
-  text_cjk? : () -> @view.CjkOverride? = fn() { None },
-  code_cjk? : () -> @view.CjkOverride? = fn() { None },
+  typography? : () -> MdTypography = fn() { md_typography_default },
   serif? : () -> Bool = fn() { false },
   nodes? : () -> Array[Json],
   loc~ : SourceLoc,
@@ -131,11 +153,7 @@ pub fn markdown_node(
       tracks_of,
       text_face,
       code_face,
-      prose_scale,
-      code_scale,
-      line_scale,
-      text_cjk,
-      code_cjk,
+      typography,
       serif,
     }
     // (where its nodes are told (`nodes`: a reader's block of a book the core read, its own nodes of the whole
@@ -373,11 +391,7 @@ priv struct MdNode {
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
   code_face : () -> Int?
-  prose_scale : () -> Double
-  code_scale : () -> Double
-  line_scale : () -> Double
-  text_cjk : () -> @view.CjkOverride?
-  code_cjk : () -> @view.CjkOverride?
+  typography : () -> MdTypography
   /// its words in the serif face (a reader's layout: code stays in the code face), as it is now
   serif : () -> Bool
 }
@@ -770,7 +784,10 @@ fn md_block_node(
           Some(CodeBlock(_, _, colours)) => colours
           _ => None
         }
-      }, face=md.code_face, scale=fn() { (md.prose_scale)() * (md.code_scale)() }, code_cjk=md.code_cjk)
+      }, face=md.code_face, scale=fn() {
+        let t = (md.typography)()
+        t.prose_scale * t.code_scale
+      }, code_cjk=fn() { (md.typography)().code_cjk })
     }
     // (drawn another way, as its language says: a chart, its code as it changes; another language's made again)
     8 => {
@@ -840,11 +857,11 @@ fn md_block_node(
           md_inlines_runs(md, cell, 0, block_ink=Some(if head { web().muted } else { theme().p.text }))
         },
         line_share=md.line,
-        prose_scale=Some(md.prose_scale),
-        code_scale=Some(md.code_scale),
-        line_scale=Some(md.line_scale),
-        text_cjk=Some(md.text_cjk),
-        code_cjk=Some(md.code_cjk),
+        prose_scale=Some(fn() { (md.typography)().prose_scale }),
+        code_scale=Some(fn() { (md.typography)().code_scale }),
+        line_scale=Some(fn() { (md.typography)().line_scale }),
+        text_cjk=Some(fn() { (md.typography)().text_cjk }),
+        code_cjk=Some(fn() { (md.typography)().code_cjk }),
         link_cards=md.link_cards,
         on_link_shown=md.on_link_shown,
       )
@@ -1025,7 +1042,7 @@ fn md_words_node(
     // (a line said as a share of the size (`line`): that share of the words as they are drawn, the system's size of
     // words applied first, as the old view's paragraph's line_em; else Md::lh's points)
     let share = (md.line)()
-    let ls = (md.line_scale)()
+    let ls = (md.typography)().line_scale
     let line = if share > 0.0 { -(share * ls) } else { md_line(md, size) }
     let wrap = match one_line {
       Some(f) => !f()
@@ -1038,9 +1055,10 @@ fn md_words_node(
     w
     .words_runs(By(runs))
     .sets_together(fn() {
-      let cs = (md.code_scale)()
-      let tc = (md.text_cjk)()
-      let cc = (md.code_cjk)()
+      let ty = (md.typography)()
+      let cs = ty.code_scale
+      let tc = ty.text_cjk
+      let cc = ty.code_cjk
       let rl = table_runs_look()
       let rl = if cs == 1.0 && tc is None && cc is None {
         rl
@@ -1160,7 +1178,7 @@ pub fn words_links_node(
 ///|
 /// A line of `size`'s words (Md::lh's).
 fn md_line(md : MdNode, size : Double) -> Double {
-  let ls = (md.line_scale)()
+  let ls = (md.typography)().line_scale
   let share = (md.line)()
   if share > 0.0 {
     return (size * share * ls).round()

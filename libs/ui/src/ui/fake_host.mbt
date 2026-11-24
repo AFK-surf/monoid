@@ -689,6 +689,11 @@ impl @hostapi.Host for FakeHost with face_add_family(self, face, family) {
 }
 
 ///|
+impl @hostapi.Host for FakeHost with has_local_fonts(self) {
+  self.local_fonts != ""
+}
+
+///|
 /// The font families installed as it says them (Tester::set_local_fonts).
 impl @hostapi.Host for FakeHost with local_font_families(self) {
   self.local_fonts

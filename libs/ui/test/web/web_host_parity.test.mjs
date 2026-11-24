@@ -314,3 +314,12 @@ test('same-frame faceAddBytes + faceSetLigatures(face, false) registers face onc
   assert.match(fontOf(b, 3 << 8), /"mbface3"/, 'face 3 active after faceSetLigatures reload');
   assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && /"calt" 0/.test(f.featureSettings || '')));
 });
+
+test('style_serif | style_words stays serif even when face_text (slot 2) is loaded', async () => {
+  const b = browser();
+  await task();
+  b.H.faceAddBytes(2, new Uint8Array(4), 400);
+  await task();
+  assert.match(fontOf(b, 16), /"mbface2"/, 'style_words alone uses face_text');
+  assert.equal(fontOf(b, 4 | 16).includes('mbface2'), false, 'style_serif | style_words exempt from face_text');
+});

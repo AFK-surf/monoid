@@ -363,6 +363,12 @@ impl @hostapi.Host for Native with face_add_family(_, face, family) {
 }
 
 ///|
+impl @hostapi.Host for Native with has_local_fonts(_) {
+  let p = platform()
+  p == 0 || p == 3 || p == 5
+}
+
+///|
 impl @hostapi.Host for Native with local_font_families(_) {
   local_font_families()
 }

@@ -350,12 +350,46 @@ test "font_v2: rich_zoomed_keys at 2x preserves local CjkOverride glyph keys" {
 }
 
 ///|
-test "font_v2: face_set_local_preview switches slot 7 without incrementing words_forgotten" {
+test "font_v2: web_lines=true Rich 115% CJK fits final line without clipping; 100%/0 has zero height regression" {
   let t = Tester::new(fn(c) { c.text("x") |> ignore })
   ignore(t)
-  let gen0 = words_forgotten_count()
-  assert_true(face_set_local_preview(7, "PingFang SC"))
-  assert_eq(words_forgotten_count(), gen0)
-  assert_true(face_set_local_preview(7, "Menlo"))
-  assert_eq(words_forgotten_count(), gen0)
+  set_web_lines(true)
+  assert_true(face_add(@hostapi.face_ui_cjk, "/fonts/cjk.ttf"))
+  let make_rich = fn(line : Double) -> Rich {
+    {
+      runs: [@text.span("hello\n中文")],
+      size: 20.0,
+      weight: 400,
+      color: 0xFFFFFFFFL,
+      line,
+      trim: false,
+      wrap: true,
+      link_color: 0L,
+      pressed_bg: 0L,
+      code_color: 0L,
+      code_bg: 0L,
+      code_scale: 1.0,
+      spacing: 0.0,
+      base: 0,
+      select: false,
+      max_lines: 0,
+      faces: 0,
+      shaped_in: words_shaped_in.untracked(),
+      cjk_override: None,
+      code_cjk_override: None,
+    }
+  }
+  // (b) 100%/0 default companion with tight line=18 must match no-companion height identically (zero-pixel regression)
+  let plain_none = layout_text("hello\n中文", 20.0, 400, 200.0, true, line=18.0)
+  let rich_none = layout_rich(make_rich(18.0), 200.0)
+  face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=1.0, weight_off=0)
+  let plain_100 = layout_text("hello\n中文", 20.0, 400, 200.0, true, line=18.0)
+  let rich_100 = layout_rich(make_rich(18.0), 200.0)
+  assert_eq(plain_100.h, plain_none.h)
+  assert_eq(rich_100.h, rich_none.h)
+  // (a) 115% enlarged companion in Rich with line=20 must accommodate final line ca + cd without clipping
+  face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=1.15, weight_off=0)
+  let (ca, cd) = line_metrics(20.0, 400, true)
+  let rich_115 = layout_rich(make_rich(20.0), 200.0)
+  assert_true(rich_115.h >= 20.0 + ca + cd)
 }
