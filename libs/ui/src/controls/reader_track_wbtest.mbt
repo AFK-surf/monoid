@@ -110,3 +110,78 @@ test "on 小屏 a panel open keeps no room of the text's: the column as wide und
   assert_true(was > 200.0 && line() == was, msg="as wide: \{was}, then \{line()}")
   reader_let_go("track-panel")
 }
+
+///|
+let reader_slider_hold_ms : Double = 250.0
+
+///|
+let reader_slider_drag_ms : Double = 200.0
+
+///|
+let reader_slider_settle_ms : Double = 600.0
+
+///|
+test "phone reader position slider emits zero extra liquid glass instances while held, dragged, and releasing" {
+  let words = "小说正文".repeat(120)
+  let (t, _) = track_tester("track-no-lens", track_book(6, "Book", [words]))
+  let rest_glass = t.drawn_glass().length()
+  let (x, y, w, h) = t.get(Slider).rect
+  let cy = y + h / 2.0
+  t.press_at(x + w * 0.25, cy)
+  t.run_for(reader_slider_hold_ms)
+  assert_eq(t.drawn_glass().length(), rest_glass, msg="held phone position slider must not add a second glass layer")
+  t.move_to(x + w * 0.65, cy)
+  t.run_for(reader_slider_drag_ms)
+  assert_eq(t.drawn_glass().length(), rest_glass, msg="dragging phone position slider must not add a second glass layer")
+  t.release(x + w * 0.65, cy)
+  t.run_for(reader_slider_settle_ms)
+  assert_eq(t.drawn_glass().length(), rest_glass, msg="releasing phone position slider must not add a second glass layer")
+  reader_let_go("track-no-lens")
+}
+
+///|
+test "reader layout sliders: Tab focus + arrow keys update value and focus ring follows thumb" {
+  let tr = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=900.0, h=700.0, platform=0)
+  set_viewer_host(viewer_host_default())
+  (viewer_host().set_reader_style)(Line(1.7))
+  @ui.set_view_app(
+    fn(root) {
+      reader_layout_docked(root, fn() {  })
+    },
+    theme=ui_theme_now,
+  )
+  tr.draw()
+  let line_label = t("web-pages.drive.reader.lines")
+  // Tab until the line-spacing slider has keyboard focus (focus_shown == true)
+  let mut reached = false
+  for _ in 0..<20 {
+    tr.tab()
+    if tr.focused().map(fn(s) { s.label }) == Some(line_label) {
+      reached = true
+      break
+    }
+  }
+  assert_true(reached, msg="Tab must reach line-spacing slider")
+  let ring_x = fn() -> Double raise {
+    let sl_rect = tr.get(Slider, label=line_label).rect
+    let mut best = -1.0
+    for inst in tr.drawn_instances() {
+      // Focus ring is a 28x28 rounded rect (thumb 22 + 6) around the slider y band
+      if inst[5] == 0.0 && (inst[2] - 28.0).abs() < 0.5 && (inst[3] - 28.0).abs() < 0.5 && inst[1] >= sl_rect.1 - 4.0 && inst[1] <= sl_rect.1 + sl_rect.3 {
+        best = inst[0]
+      }
+    }
+    best
+  }
+  let x0 = ring_x()
+  assert_true(x0 > 0.0, msg="focused line-spacing slider must draw 28x28 focus ring")
+  tr.key(@ui.key_code_right)
+  tr.key(@ui.key_code_right)
+  tr.key(@ui.key_code_right)
+  tr.key(@ui.key_code_right)
+  tr.run_for(reader_slider_settle_ms)
+  let x1 = ring_x()
+  assert_true(x1 > x0 + 4.0, msg="focus ring must move right with thumb after Right arrow keys: \{x0} -> \{x1}")
+  assert_true((viewer_host().reader_style)().line > 1.7, msg="Right arrow must increase line spacing")
+  (viewer_host().set_reader_style)(Line(reader_style_default.line))
+}

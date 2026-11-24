@@ -131,13 +131,87 @@ test "liquid_slider_node: crisp 6pt track while held/dragged with laid == 0" {
   let held_cy = held_tr.1 + held_tr.3 / 2.0
   assert_true((held_cy - rest_cy).abs() < 0.1, msg="thickened track must stay vertically centered (\{held_cy} vs \{rest_cy})")
 
-  // 3. Release and settle: track and fill return to 6.0pt.
+  // 3. Release and settle: track and fill return to 6.0pt with laid == 0 on release.
+  t.tree_frames_from_now()
   t.release(x1, y)
   t.run_for(glass_springs_out)
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="liquid_slider_node release must not trigger relayout: \{Repr(f)}")
+  }
   let done_tr = track_rect()
   let done_fl = fill_rect()
   assert_true((done_tr.3 - 6.0).abs() < 0.05, msg="settled track height must return to 6pt, got \{done_tr.3}")
   assert_true((done_fl.3 - 6.0).abs() < 0.05, msg="settled fill height must return to 6pt, got \{done_fl.3}")
+  set_dark(None)
+}
+
+///|
+test "liquid_slider_look: travel_inset, buffered layer, lens_enabled=false zero glass & solid scale, focus_shown follows thumb" {
+  // 1. lens_enabled=false with travel_inset=Some(11.0), buffered, and focus_shown
+  let dd = DampedDrag::new(0.25, lo=0.0, hi=1.0, held_scale=slider_thumb_held_scale)
+  let focused = @signals.signal(true)
+  let buf = @signals.signal(0.6)
+  let thumb_col = 0xE05A2BFFL
+  let buf_col = 0x88888866L
+  let t = glass_case(false, false, fn(page) {
+    page.box(fn(host) {
+      dd.attach(host)
+      host.width(Is(Some(222.0))).height(Is(Some(22.0))) |> ignore
+      let look = SliderLook::new(
+        track_h=3.0,
+        track_inset=11.0,
+        travel_inset=Some(11.0),
+        thumb_w=22.0,
+        thumb_h=22.0,
+        track_color=fn() { 0x00000028L },
+        fill_color=Some(fn() { 0xE05A2BFFL }),
+        buffered=Some(fn() { buf.get() }),
+        buffered_color=Some(fn() { buf_col }),
+        thumb_color=Some(fn() { thumb_col }),
+        thumb_edge=Some(fn() { (3.0, 0xF4F1EAFFL) }),
+        focus_shown=Some(fn() { focused.get() }),
+        lens_enabled=false,
+      )
+      liquid_slider_look(host, fn(n) { dd.progress(n) }, fn(n) { dd.pressed(n) }, look, velocity=fn(n) { dd.velocity(n) })
+    })
+    |> ignore
+  })
+  t.run_for(glass_springs_out)
+  // At rest: 0 glass instances, buffered bar rendered, thumb center at 11 + 200 * 0.25 = 61 (host x=24 -> 85)
+  assert_eq(t.drawn_glass().length(), 0, msg="lens_enabled=false rest must emit 0 glass")
+  let buf_rects = t.drawn_rects().filter(fn(r) { r.4 == buf_col && r.3 > 2.5 && r.3 < 3.5 })
+  assert_eq(buf_rects.length(), 1, msg="expected 1 buffered rect")
+  assert_true((buf_rects[0].2 - 120.0).abs() < 0.5, msg="buffered width at 0.6 of 200pt span should be ~120pt, got \{buf_rects[0].2}")
+  let thumb_rects_rest = t.drawn_rects().filter(fn(r) { r.4 == thumb_col && r.3 >= 21.5 && r.3 <= 22.5 })
+  assert_eq(thumb_rects_rest.length(), 1, msg="expected 1 solid thumb rect at rest")
+  let rest_cx = thumb_rects_rest[0].0 + thumb_rects_rest[0].2 / 2.0
+  assert_true((rest_cx - (24.0 + 11.0 + 200.0 * 0.25)).abs() < 0.5, msg="thumb center at 0.25: \{rest_cx}")
+
+  // Press and move to 0.75: still 0 glass instances, solid thumb scales up (~1.2x -> ~26.4pt), laid == 0
+  t.tree_frames_from_now()
+  t.by_hand(fn() {
+    dd.press()
+    dd.update_value(0.75)
+  })
+  t.run_for(glass_ctrl_hold_ms)
+  assert_eq(t.drawn_glass().length(), 0, msg="lens_enabled=false held must emit 0 glass")
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="lens_enabled=false drag must not relayout: \{Repr(f)}")
+  }
+  let thumb_rects_held = t.drawn_rects().filter(fn(r) { r.4 == thumb_col && r.3 > 24.0 })
+  assert_eq(thumb_rects_held.length(), 1, msg="lens_enabled=false held must scale solid thumb > 24pt")
+  let held_cx = thumb_rects_held[0].0 + thumb_rects_held[0].2 / 2.0
+  assert_true((held_cx - (24.0 + 11.0 + 200.0 * 0.75)).abs() < 1.0, msg="thumb center moved to 0.75: \{held_cx}")
+
+  // Release: 0 glass instances, laid == 0, returns to 22pt
+  t.tree_frames_from_now()
+  t.by_hand(fn() { dd.release() })
+  t.run_for(glass_springs_out)
+  assert_eq(t.drawn_glass().length(), 0, msg="lens_enabled=false release must emit 0 glass")
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="lens_enabled=false release must not relayout: \{Repr(f)}")
+  }
+  assert_eq(t.audit(), [])
   set_dark(None)
 }
 

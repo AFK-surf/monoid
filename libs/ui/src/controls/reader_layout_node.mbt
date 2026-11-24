@@ -377,10 +377,10 @@ fn layout_slider_row(
     row.box(fn(g) {
       style_node(g, fn() { desk_grow }, in_row=true)
       slider_node(g, name, now, min, max, step, p, fn(v) { draft.set(Some(v)) }, fn(v) {
-        draft.set(None)
         if v != @signals.untracked(value) {
           keep(v)
         }
+        draft.set(None)
       })
     })
     |> ignore
@@ -394,13 +394,14 @@ fn layout_slider_row(
 }
 
 ///|
-/// A slider in `parent` as nodes (the library's slider, @kit.slider's in still.fail's look: slider_look_of's): a line
-/// 2 high on 16% of the ink, the part up to the knob in the accent, the knob 22 across in it ringed 3 in the paper's
-/// ground (4 more while held), 28 high; its knob's middle from half a knob in to as far from the end. At `now()`
-/// between `min` and `max`, on steps of `step`. Held and dragged along (a press first jumping it there), `moved` told
-/// the value under the hand at each step, `let_go` the value as it is let go; with the keyboard's focus on it the arrows
-/// a step (→ and ↑ more), Page Up and Down ten, Home and End its ends, and a screen reader's step, each `moved` and
-/// let go at once. Read out a slider named `label`, its value as @kit.slider says it.
+/// A slider in `parent` as nodes (@headless.slider + @glass.liquid_slider_look, themed strictly by `ReaderPaper` `p`):
+/// a line 3 high on 16% of the paper's ink, the part up to the knob in the paper's accent, the knob 22 across in it
+/// ringed 3 in the paper's ground; its knob's middle from half a knob in to as far from the end. At `now()` between
+/// `min` and `max`, on steps of `step`. Held and dragged along (a press first jumping it there), `moved` told the
+/// value under the hand at each step, `let_go` the value as it is let go; with the keyboard's focus on it the arrows a
+/// step (→ and ↑ more), Page Up and Down ten, Home and End its ends, and a screen reader's step, each `moved` and let
+/// go at once. `lens_enabled=false` keeps a solid capsule scale feedback without mounting a glass droplet (used inside
+/// glass panels like the phone reader footer to prevent glass-on-glass).
 #callsite(autofill(loc))
 fn slider_node(
   parent : @view.View,
@@ -412,8 +413,47 @@ fn slider_node(
   p : () -> ReaderPaper,
   moved : (Double) -> Unit,
   let_go : (Double) -> Unit,
+  lens_enabled? : Bool = true,
   loc~ : SourceLoc,
 ) -> Unit {
+  let dd = @glass.DampedDrag::new(
+    @signals.untracked(now),
+    lo=min,
+    hi=max,
+    held_scale=@glass.slider_thumb_held_scale,
+  )
+  let drag = fn(d : @view.Drag) {
+    if d.w <= slider_thumb_room {
+      return
+    }
+    match d.kind {
+      Down => {
+        dd.press()
+        let frac = dclamp((d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room), 0.0, 1.0)
+        let next = @headless.slider_snap(min + frac * (max - min), min, max, step)
+        dd.update_value(next)
+        if next != @headless.slider_snap(@signals.untracked(now), min, max, step) {
+          moved(next)
+        }
+      }
+      Moved => {
+        let frac = dclamp((d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room), 0.0, 1.0)
+        let next = @headless.slider_snap(min + frac * (max - min), min, max, step)
+        if next != dd.target() {
+          dd.update_value(next)
+        }
+        if next != @headless.slider_snap(@signals.untracked(now), min, max, step) {
+          moved(next)
+        }
+      }
+      Up | Off => dd.release()
+    }
+  }
+  let outer_h = if lens_enabled {
+    dmax(slider_thumb_d + slider_room, slider_thumb_d + 2.0 * @glass.slider_held_reach(slider_thumb_d))
+  } else {
+    slider_thumb_d + slider_room
+  }
   @headless.slider(
     parent,
     label,
@@ -423,63 +463,44 @@ fn slider_node(
     step~,
     moved,
     fn(s, sl) {
-      let at = fn() { sl.part() }
+      dd.attach(s)
+      s.reacts(at_start=false, now, fn(v) {
+        if dd.target() != v {
+          dd.update_value(v)
+        }
+      })
       s
-      .height(Is(Some(slider_thumb_d + slider_room)))
+      .height(Is(Some(outer_h)))
       .lies_along(Is(Middle))
       |> ignore
-      // its line: the accent up to the knob, the ink at 16% after it
-      s.box(fn(line) {
-        line
-        .row(Is(true))
-        .height(Is(Some(slider_track_h)))
-        .margin(Is((slider_thumb_d / 2.0, 0.0, slider_thumb_d / 2.0, 0.0)))
-        |> ignore
-        line.box(fn(f) {
-          f.grow(By(at)).basis(Is(Some(0.0))).ground(By(fn() { p().accent })) |> ignore
-        })
-        |> ignore
-        line.box(fn(f) {
-          f.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))).ground(By(fn() { alpha(p().ink, slider_rest) })) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      // its knob, over the line where the value is along it
-      s.box(fn(o) {
-        o.over(Is(true)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        o.box(fn(b) { b.grow(By(at)).basis(Is(Some(0.0))) |> ignore }) |> ignore
-        o.box(fn(k) {
-          k.width(Is(Some(slider_thumb_d))).height(Is(Some(slider_thumb_d))).lines_up(Is(Some(Middle))).lies_along(Is(Middle))
-          |> ignore
-          let side = fn() { if sl.pressed() { slider_thumb_d + slider_held_more } else { slider_thumb_d } }
-          k.box(fn(dot) {
-            dot
-            .width(By(fn() { Some(side()) }))
-            .height(By(fn() { Some(side()) }))
-            .radius(By(fn() { side() / 2.0 }))
-            .ground(By(fn() { p().accent }))
-            .edge(By(fn() { (slider_ring, p().ground) }))
-            .ring(
-              By(fn() {
-                if sl.focus_shown() {
-                  let t = @ui.tree_theme()
-                  (t.focus_w, t.focus_gap, t.focus)
-                } else {
-                  (0.0, 0.0, 0L)
-                }
-              }),
-            )
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-        o.box(fn(b) { b.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))) |> ignore }) |> ignore
+      let look = @glass.SliderLook::new(
+        track_h=slider_track_h,
+        track_inset=slider_thumb_d / 2.0,
+        travel_inset=Some(slider_thumb_d / 2.0),
+        thumb_w=slider_thumb_d,
+        thumb_h=slider_thumb_d,
+        track_color=fn() { alpha(p().ink, slider_rest) },
+        fill_color=Some(fn() { p().accent }),
+        thumb_color=Some(fn() { p().accent }),
+        thumb_edge=Some(fn() { (slider_ring, p().ground) }),
+        focus_shown=Some(fn() { sl.focus_shown() }),
+        lens_enabled~,
+      )
+      s.box(fn(slot) {
+        slot.height(Is(Some(slider_thumb_d))) |> ignore
+        @glass.liquid_slider_look(
+          slot,
+          fn(n) { dd.progress(n) },
+          fn(n) { dd.pressed(n) },
+          look,
+          velocity=fn(n) { dd.velocity(n) },
+          loc~,
+        )
       })
       |> ignore
     },
     thumb_room=slider_thumb_room,
+    drag~,
     on_commit=let_go,
     focus_on_press=true,
     made_for=loc,
@@ -489,22 +510,19 @@ fn slider_node(
 }
 
 ///|
-/// The slider's sizes (@kit.slider_look_of's): the knob 22 across, 6 more of room round it, 4 more while held, its ring
-/// 3; the line 2 high, the ink at 16% after the knob; how much of its width the knob's middle does not run along
-/// (@kit.slider's thumb_room).
+/// The slider's sizes (@kit.slider_look_of's): the knob 22 across, 6 more of room round it, its ring 3; the line 3
+/// high, the ink at 16% after the knob; how much of its width the knob's middle does not run along (@kit.slider's
+/// thumb_room).
 let slider_thumb_d : Double = 22.0
 
 ///|
 let slider_room : Double = 6.0
 
 ///|
-let slider_held_more : Double = 4.0
-
-///|
 let slider_ring : Double = 3.0
 
 ///|
-let slider_track_h : Double = 2.0
+let slider_track_h : Double = 3.0
 
 ///|
 let slider_rest : Double = 0.16

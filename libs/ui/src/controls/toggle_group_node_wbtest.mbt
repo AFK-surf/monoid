@@ -161,3 +161,28 @@ test "toggle_group_node: 1.0x keeps exact height, Regular keeps 28pt at 1.3x, 2.
     }
   }
 }
+
+///|
+test "toggle_group_node: smooth NodeWay highlight transition with laid == 0 and clean empty fade-out" {
+  let k = tog2(kind=Single)
+  k.t.run_for(@ui.move_most_ms)
+  k.t.tree_frames_from_now()
+  k.t.click(Button, label="分栏")
+  // Mid-transition (~70ms of 140ms): zero relayout, audit clean
+  k.t.run_for(dur_ms / 2.0)
+  for f in k.t.tree_frames() {
+    assert_eq(f.laid, 0, msg="toggle_group_node selection fade must not relayout: \{Repr(f)}")
+  }
+  assert_eq(k.t.audit(), [])
+  k.t.run_for(@ui.move_most_ms)
+  assert_eq(tog2_on(k.t), ["分栏"])
+  // Deselect to empty in Single mode: smooth fade-out with laid == 0
+  k.t.tree_frames_from_now()
+  k.t.click(Button, label="分栏")
+  k.t.run_for(@ui.move_most_ms)
+  for f in k.t.tree_frames() {
+    assert_eq(f.laid, 0, msg="toggle_group_node empty fade-out must not relayout: \{Repr(f)}")
+  }
+  assert_eq(tog2_on(k.t), [])
+  assert_eq(k.t.audit(), [])
+}
