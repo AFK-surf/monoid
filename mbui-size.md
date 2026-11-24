@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [9160e1497](https://github.com/AFK-surf/monoid/commit/9160e1497a87565145751f7f63019b3c1cd73bc2) feat(mbui): add line numbers and pick/note annotat | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [bbb59ac01](https://github.com/AFK-surf/monoid/commit/bbb59ac011c72633c1fb031f9609cf8f7e6fb234) fix(station): arm waiting timer mid-turn and remin | 2.78 | 3.74 | 15.16 | 37.37 | 57.71 | 32.72 | 66.65 | 100.6 | 116.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
 | [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
 | [a36442026](https://github.com/AFK-surf/monoid/commit/a3644202602ce7a3f5220f22546dc7e69c24a564) feat(pion-station): add pinned pionc toolchain, ho | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
-| [98a6b07ba](https://github.com/AFK-surf/monoid/commit/98a6b07ba2be5599e3479b1da6e6d60c88e0fe51) fix(cloud): hold credential devices in memory and  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.59 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.39 |
 | [9160e1497](https://github.com/AFK-surf/monoid/commit/9160e1497a87565145751f7f63019b3c1cd73bc2) feat(mbui): add line numbers and pick/note annotat | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.33 |
 | [bbb59ac01](https://github.com/AFK-surf/monoid/commit/bbb59ac011c72633c1fb031f9609cf8f7e6fb234) fix(station): arm waiting timer mid-turn and remin | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
 | [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.61 |
 | [a36442026](https://github.com/AFK-surf/monoid/commit/a3644202602ce7a3f5220f22546dc7e69c24a564) feat(pion-station): add pinned pionc toolchain, ho | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
-| [98a6b07ba](https://github.com/AFK-surf/monoid/commit/98a6b07ba2be5599e3479b1da6e6d60c88e0fe51) fix(cloud): hold credential devices in memory and  | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.48 |
