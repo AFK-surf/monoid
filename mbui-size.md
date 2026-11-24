@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9dac38d35](https://github.com/AFK-surf/monoid/commit/9dac38d35b3e1576e055c7c393fa40fb314caf99) feat(pion-station): add Pion packed worker, mb/pio | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
 | [d82f3621c](https://github.com/AFK-surf/monoid/commit/d82f3621c6416dcccdc1dd097e5abdb89885061f) ci(desktop-build): keep the Mac core's engine and  | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
 | [6ba8edd27](https://github.com/AFK-surf/monoid/commit/6ba8edd27633eeb3e7bf6ad1c0da9024688d6484) fix(station): keep footprint off mounts and refuse | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.93 | 121.52 |
 | [161c998db](https://github.com/AFK-surf/monoid/commit/161c998dbd4aa80f7c7614497057e2dc35fce660) fix(ui): open the paste bar on a tap at a field's  | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.55 | 117.96 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [73d9f3d25](https://github.com/AFK-surf/monoid/commit/73d9f3d257d00e5206e3ef176e7df6c4f5f72b0f) fix(station): run Node's admin CLI before the Moon | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [546e938ea](https://github.com/AFK-surf/monoid/commit/546e938ea59163bea3e380e00fd0c670add3fbb2) fix(ui,mbui): clear chat/composer motion exemption | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [e1dbcc2c0](https://github.com/AFK-surf/monoid/commit/e1dbcc2c02c889de1943876155f8b73771150fa5) ci: trigger station/core checks and beta release o | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
-| [d35704a0b](https://github.com/AFK-surf/monoid/commit/d35704a0bdb6f0b65f5979c4d94897174d21c646) test(station): pick an unbound usualPort in adb po | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9dac38d35](https://github.com/AFK-surf/monoid/commit/9dac38d35b3e1576e055c7c393fa40fb314caf99) feat(pion-station): add Pion packed worker, mb/pio | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.33 |
 | [d82f3621c](https://github.com/AFK-surf/monoid/commit/d82f3621c6416dcccdc1dd097e5abdb89885061f) ci(desktop-build): keep the Mac core's engine and  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.59 |
 | [6ba8edd27](https://github.com/AFK-surf/monoid/commit/6ba8edd27633eeb3e7bf6ad1c0da9024688d6484) fix(station): keep footprint off mounts and refuse | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.56 |
 | [161c998db](https://github.com/AFK-surf/monoid/commit/161c998dbd4aa80f7c7614497057e2dc35fce660) fix(ui): open the paste bar on a tap at a field's  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [73d9f3d25](https://github.com/AFK-surf/monoid/commit/73d9f3d257d00e5206e3ef176e7df6c4f5f72b0f) fix(station): run Node's admin CLI before the Moon | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.33 |
 | [546e938ea](https://github.com/AFK-surf/monoid/commit/546e938ea59163bea3e380e00fd0c670add3fbb2) fix(ui,mbui): clear chat/composer motion exemption | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.49 |
 | [e1dbcc2c0](https://github.com/AFK-surf/monoid/commit/e1dbcc2c02c889de1943876155f8b73771150fa5) ci: trigger station/core checks and beta release o | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
-| [d35704a0b](https://github.com/AFK-surf/monoid/commit/d35704a0bdb6f0b65f5979c4d94897174d21c646) test(station): pick an unbound usualPort in adb po | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
