@@ -102,7 +102,7 @@ function usualRequest(at, init, usualMs) {
  * Redirects are refused, as fetch's redirect: "error".
  */
 export async function fetchHandoff(at, init = {}, options = {}) {
-  const { dnsMs = 5_000, routeMs = 25_000, idleMs = 10_000, usualMs = 60_000 } = options;
+  const { dnsMs = 5_000, routeMs = 15_000, idleMs = 8_000, usualMs = 120_000 } = options;
   const url = new URL(at), dns = directDns(url);
   if (!dns) return fetch(at, init);
   const method = init.method ?? "GET";
@@ -195,7 +195,7 @@ async function put(dir, manifest) {
     if (!asset.test(name)) throw new Error("Unexpected native archive name: " + name);
     const chunks = [];
     const hash = createHash("sha256");
-    for await (const bytes of createReadStream(join(dir, name), { highWaterMark: 8 * 1024 * 1024 })) {
+    for await (const bytes of createReadStream(join(dir, name), { highWaterMark: 4 * 1024 * 1024 })) {
       hash.update(bytes);
       // A 401 can be the Worker's clock behind GitHub's or a token run out over a long upload: a new token, twice.
       let part;
