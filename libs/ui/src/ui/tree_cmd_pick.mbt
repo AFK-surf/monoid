@@ -80,7 +80,11 @@ fn cmd_sel_underline_set(next : (@view.NodeId, Int64)?) -> Unit {
   if cmd_sel_underline.val == next {
     return
   }
-  cmd_sel_underline.val = next
+  // (a value, said as one: the pick's underline now, or none)
+  match next {
+    Some(u) => cmd_sel_underline.val = Some(u)
+    None => cmd_sel_underline.val = None
+  }
   match view_app.val {
     Some(tree) =>
       picked.spans.each(fn(k, sp) {
