@@ -1018,10 +1018,10 @@ fn chat_body_node(
           due_at.val = None
           due_cancel.val = None
           if stage.barrier_until() <= next_at {
-            for k, hb in held_by {
+            for k, _ in held_by {
               match (stage.held_plan(k), out_plans.get(k)) {
-                (Some(hp), Some(plan)) if hp.release_at <= next_at && plan.folds =>
-                  plan.face_at.val = Some(agent_face_at(hb.0))
+                (Some(hp), Some(plan)) if hp.release_at <= next_at =>
+                  plan.face_at.val = Some((plan.from)())
                 _ => ()
               }
             }

@@ -16,10 +16,10 @@ let cam_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发
 let cam_base_msg : String = "基准参考消息"
 
 ///|
-let cam_progress_msg : String = "第一阶段进度汇报"
+let cam_progress_msg : String = "下一条：好的，接着看"
 
 ///|
-let cam_ending_msg : String = "全部检查已完成"
+let cam_ending_msg : String = "再下一条：都改完了"
 
 ///|
 fn cam_is_chat(name : String, params : Map[String, Json]) -> Bool {
@@ -309,7 +309,7 @@ fn cam_open_card_msg_json(seq : Int) -> Json {
     seq,
     "agent",
     @sffixture.by_agent("anthropic", "claude", "s-c1"),
-    "请确认是否继续执行。",
+    "好的，我来处理。",
     "刚刚",
     {
       "ts": Json::string("17954265\{seq}.000000"),

@@ -476,8 +476,9 @@ priv struct AgentOutPlan {
   float_ms : Double
   spit_end : Double
   from : () -> (Double, Double, Double, Double)
-  /// where the line's picture was as the message came into the list (its plan's Float: the list's held keys let it in,
-  /// the line going in that change): what it flies from, whatever becomes of the line after
+  /// where the departure picture was just before the message came into the list (its plan's Float: the list's held keys
+  /// let it in, both for the activity line's picture when folding and for the prior message's picture when dropping on):
+  /// snapshotted before the list lays out and flips for the new row, so it flies from its true on-screen origin
   face_at : Ref[(Double, Double, Double, Double)?]
   av : Ref[@view.View?]
   has_face : Bool
