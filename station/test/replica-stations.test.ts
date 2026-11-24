@@ -1301,26 +1301,27 @@ test("FolderPlace handles corrupted head.json in drop, enforces LRU cap on #head
   assert.equal(headReads.get(origin0Head), 1, "oldest entry was evicted by LRU cap and re-read on drop");
   assert.equal(existsSync(join(place.dir(HOME, origins[0]!), "files", fOrphan)), false, "unreferenced file unlinked on evicted origin");
 
-  // 2. Corrupted head.json on disk: drop() must not throw and still unlinks unreferenced files.
+  // 2. Corrupted head.json on disk: fail-closed drop() MUST reject and preserve all files without unlinking.
   const corruptGen = "9999-cccccccc";
   const corruptDir = join(place.dir(HOME, origin), corruptGen);
   mkdirSync(corruptDir, { recursive: true });
   writeFileSync(join(corruptDir, "head.json"), "{corrupted-json");
   const fOrphan2 = id("e");
   await place.putFile(HOME, origin, fOrphan2, Buffer.from("orphan2"));
-  await place.drop(HOME, origin, corruptGen, [], [fOrphan2]);
-  assert.equal(existsSync(join(place.dir(HOME, origin), "files", fOrphan2)), false, "drop succeeds despite corrupted head.json");
+  await assert.rejects(() => place.drop(HOME, origin, corruptGen, [], [fOrphan2]), /corrupted head\.json/);
+  assert.equal(existsSync(join(place.dir(HOME, origin), "files", fOrphan2)), true, "fail-closed drop preserves files on corrupted head.json");
 
   // 3. forget(ws, origin) and forget(ws) clear cache so subsequent put/drop re-reads disk cleanly.
   const origin8Head = join(place.dir(HOME, origins[8]!), gen, "head.json");
+  const origin8Payload = Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, { [id("8")]: 1 }), origin: origins[8]! }));
   headReads.clear();
   place.forget(HOME, origins[8]!);
-  await place.put(HOME, origins[8]!, gen, "head", "head.json", Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, {}), origin: origins[8]! })));
+  await place.put(HOME, origins[8]!, gen, "head", "head.json", origin8Payload);
   assert.equal(headReads.get(origin8Head), 1, "forget(ws, origin) evicted cache entry");
 
   headReads.clear();
   place.forget(HOME);
-  await place.put(HOME, origins[8]!, gen, "head", "head.json", Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, {}), origin: origins[8]! })));
+  await place.put(HOME, origins[8]!, gen, "head", "head.json", origin8Payload);
   assert.equal(headReads.get(origin8Head), 1, "forget(ws) evicted cache entry");
 });
 

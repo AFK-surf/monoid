@@ -35,6 +35,8 @@ export type Head = {
   batches: string[];
   files: Record<string, number>;
   transcriptFiles?: Record<string, number>;
+  /// Content-addressed 2-level 256-bucket transcript manifest root hash (64-char lowercase hex SHA-256).
+  transcriptManifest?: string;
   /// Put before the transcripts it lacks were sent (places.ts `partialHead`): naming only those the place held then.
   partial?: true;
   chats: number;
@@ -77,6 +79,7 @@ export function asHead(v: unknown): Head | null {
   if (!Number.isSafeInteger(h.to) || !Array.isArray(h.batches) || h.batches.some((b) => typeof b !== "string" || !BATCH.test(b))) return null;
   if (h.files === null || typeof h.files !== "object" || Array.isArray(h.files) || !allHex64Keys(h.files)) return null;
   if (h.transcriptFiles !== undefined && (h.transcriptFiles === null || typeof h.transcriptFiles !== "object" || Array.isArray(h.transcriptFiles) || !allHex64Keys(h.transcriptFiles))) return null;
+  if (h.transcriptManifest !== undefined && (typeof h.transcriptManifest !== "string" || !isHex64(h.transcriptManifest))) return null;
   if (!Array.isArray(h.runs)) return null;
   return h;
 }

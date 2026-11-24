@@ -51,7 +51,7 @@ type Thread = {
 
 /// The work in the MoonBit/Pion program (`--builder replica-export`).
 export function exportThread(o: RunnerOptions, binary?: string): Thread {
-  const args = ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep];
+  const args = ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep, "--compact-heads"];
   if (o.chunkBytes !== undefined) args.push("--chunk-bytes", String(o.chunkBytes));
   if (o.transcriptPassFiles !== undefined) args.push("--transcript-pass-files", String(o.transcriptPassFiles));
   if (o.transcriptPassBytes !== undefined) args.push("--transcript-pass-bytes", String(o.transcriptPassBytes));
