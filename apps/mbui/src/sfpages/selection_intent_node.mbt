@@ -132,9 +132,10 @@ fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
   let id = p.id
   parent.box(fn(card) {
     @sf.style_node(card, fn() { intent_pin_card })
+    @sf.glass_capsule_node(card, radius=Some(@sf.card_corner), panel=true) |> ignore
     card.box(fn(head) {
       @sf.style_node(head, fn() { intent_pin_head })
-      @sf.icon_node(head, "pin", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      @sf.icon_node(head, "pin", intent_pin_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
       head.box(fn(t) {
         @sf.style_node(t, fn() { intent_pin_title_wrap }, in_row=true)
         if p.collapsed {
@@ -147,6 +148,8 @@ fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
         if p.collapsed { "chevron-down" } else { "chevron-up" },
         fn() { @sf.t(if p.collapsed { "web-main.chat.inferIntent.expand" } else { "web-main.chat.inferIntent.collapse" }) },
         fn() { @sfbase.selection_intent_toggle_collapse(id) },
+        size=intent_pin_btn,
+        icon_size=intent_pin_icon,
       )
       |> ignore
       @sf.icon_button_node(
@@ -154,6 +157,8 @@ fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
         "copy",
         fn() { @sf.t("common.copy") },
         fn() { @sfbase.copy_out(p.reply, said=@sf.t("common.copied")) },
+        size=intent_pin_btn,
+        icon_size=intent_pin_icon,
       )
       |> ignore
       @sf.icon_button_node(
@@ -161,6 +166,8 @@ fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
         "close",
         fn() { @sf.t("web-main.chat.inferIntent.unpin") },
         fn() { @sfbase.selection_intent_unpin(id) },
+        size=intent_pin_btn,
+        icon_size=intent_pin_icon,
       )
       |> ignore
     })
@@ -174,7 +181,7 @@ fn pinned_intent_card(parent : @view.View, p : @sfbase.PinnedIntent) -> Unit {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_column : @ui.Style = @ui.css("w=Full gap=S2")
+let intent_column : @ui.Style = @ui.css("w=Full pt=S2 pb=S1 gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -186,7 +193,7 @@ let intent_retry_row : @ui.Style = @ui.css("row w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_reply_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, w=Full)
+let intent_reply_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, leading=L5, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -198,15 +205,15 @@ let intent_error_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger,
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_pins_layer : @ui.Style = @ui.css("w=Full px=S4 pt=S14 align=AEnd")
+let intent_pins_layer : @ui.Style = @ui.css("w=Full px=S5 pt=S16 align=AEnd")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_pins_stack : @ui.Style = @ui.css("gap=S2 align=AEnd")
+let intent_pins_stack : @ui.Style = @ui.css("gap=S2_5 align=AEnd")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_pin_card : @ui.Style = @ui.style(w=Fixed(@sf.panel_w), p=S3, gap=S2, radius=Lg, bg=Bg, border=B1, border_color=Line)
+let intent_pin_card : @ui.Style = @ui.style(w=Fixed(@sf.panel_w), px=S4, py=S3_5, gap=S2, radius=Xl)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -219,3 +226,9 @@ let intent_pin_title_wrap : @ui.Style = @ui.style(w=@sf.grow)
 ///|
 // kept across runs: a value (no field of it changes)
 let intent_pin_preview : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false, w=Full)
+
+///|
+let intent_pin_btn : Double = 26.0
+
+///|
+let intent_pin_icon : Double = 14.0

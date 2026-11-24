@@ -37,7 +37,7 @@ test "选中文本自动推测意图: off by default; when enabled, finger selec
   t.release(px + 6.0, py + ph / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="引用") is Some(_))
-  assert_true(t.query(Button, label="推测意图") is None)
+  assert_true(t.query(Button, label="手气不错") is None)
   @ui.picked_let_go()
   t.run_for(@ui.move_most_ms)
 
@@ -45,12 +45,12 @@ test "选中文本自动推测意图: off by default; when enabled, finger selec
   exp_set(t, src, ["selectionIntent"], true)
   assert_true(@sfbase.selection_intent_feature.get())
 
-  // 3. Long-press again: 推测意图 appears beside 引用.
+  // 3. Long-press again: 手气不错 appears beside 引用.
   t.press_at(px + 6.0, py + ph / 2.0)
   t.run_for(@ui.long_press_ms)
   t.release(px + 6.0, py + ph / 2.0)
   t.run_for(@ui.move_most_ms)
-  guard t.query(Button, label="推测意图") is Some(btn) else { fail("no 推测意图 button when feature is enabled") }
+  guard t.query(Button, label="手气不错") is Some(btn) else { fail("no 手气不错 button when feature is enabled") }
   let (bx, by, bw, bh) = btn.rect
   t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.run_for(@ui.move_most_ms)

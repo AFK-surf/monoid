@@ -77,7 +77,7 @@ test "实验性功能's page: its switches, each off by default and on and off a
     let (t, src) = exp_at("settings-experimental", w, h, platform~)
     let at = "\{w}"
     let kept = fn(id : String) { field(field(src.topic("prefs", {}).get().value, "experimental"), id) is Some(True) }
-    for label in ["Farview 原生标签页渲染", "对话列表看板视图", "选中文本自动推测意图"] {
+    for label in ["Farview 原生标签页渲染", "对话列表看板视图", "手气不错"] {
       assert_true(t.query(Switch, label~) is Some(_), msg="\{at}: \{label}")
     }
     // (those three alone: the new chat page, its composer and the new-chat page are the only ones, no switch of their own)
