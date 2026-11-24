@@ -40,6 +40,7 @@ import { type Capability, discover as discoverDecisions, fingerprint, resolvedMo
 import { type ProfileHealth, serves, usable } from "../sessions/pool.ts";
 import type { Store } from "../store/store.ts";
 import { paceView, type PaceView } from "./pace.ts";
+import { HOUR_MS, PACE_HOURS, SPEED_QUARTER_HOURS, type QuotaHour, type SpeedQuarter, type SpendHour } from "../store/profile-hours.ts";
 import { joinPath } from "../ops/paths.ts";
 import { modelName } from "../ops/model-name.ts";
 import { titleOf } from "../read/views.ts";
@@ -59,6 +60,14 @@ import { checkQuota, codexUsage, lentCodexUsage, machineUsage } from "./quota.ts
 import { claudeResetWith } from "./claude-reset.ts";
 import { DEFAULT_SERVICES, serviceOf, type ServiceRegistry } from "./services.ts";
 import { Refused as Refusal } from "../api/request.ts";
+
+/// How long GET /profiles/pace goes on the last two hours' spending read again each minute before it reads all
+/// PACE_HOURS again: what lands in an older hour (the calls from before taken in, usagefill; a home workspace's moved,
+/// usage-15m.ts moveUsage15m; a call written late) shows by then.
+const SPEND_FULL_REFRESH_MS = 15 * 60_000;
+/// By profile, then hour, as the store's reads give them (store/profile-hours.ts); a stable sort keeps each hour's in theirs.
+const byProfileHour = (a: { profile: string; hour: number }, b: { profile: string; hour: number }): number =>
+  (a.profile < b.profile ? -1 : a.profile > b.profile ? 1 : 0) || a.hour - b.hour;
 
 export { checkConfig } from "./check.ts";
 export { LOGIN_BROWSER_FILE };
@@ -774,7 +783,7 @@ export class Accounts {
   /// An allowance read kept, and as its hour's (store.ts setProfileQuota).
   #keepQuota(id: string, quota: Json): void {
     this.deps.store.setProfileQuota(id, quota);
-    this.#paceRev++;
+    this.#dirtyQuotaProfiles.add(id);
   }
 
   /// DELETE /profiles/:id. Its home stays. Taken even while sessions or connects use it (the pages say so first): its
@@ -787,7 +796,7 @@ export class Accounts {
       raw.profiles = list.filter((p) => p?.id !== id);
     });
     this.deps.store.forgetProfileHours(id);
-    this.#paceRev++;
+    this.#dirtyQuotaProfiles.add(id);
     this.deps.hub?.profileGone?.(id).catch((error) => log.warn("accounts", "moving sessions off a deleted profile failed", { profile: id, error: (error as Error).message }));
   }
 
@@ -2217,24 +2226,84 @@ export class Accounts {
     return views.map((v) => ({ ...v, usedBy: v.usedBy.filter((c: string) => connects.has(c)) }));
   }
 
-  /// GET /profiles/pace: the hours of the accounts the viewer's workspace may run on (as `serves` says in profilesView),
-  /// read again once a minute at most or as an allowance is read (`#paceAt`).
+  /// GET /profiles/pace: the hours of the accounts the viewer's workspace may run on (as `serves` says in profilesView).
+  /// What it read is kept (`#paceRead`): an allowance kept or a profile deleted reads that profile's hours again alone;
+  /// the calls' are read again once a minute at most, the last two hours of them (what is still written to), and all
+  /// PACE_HOURS every SPEND_FULL_REFRESH_MS or when the clock jumps.
   paceView(viewer?: Viewer): PaceView {
     const now = this.deps.store.now();
     const minute = Math.floor(now / 60_000);
-    if (this.#paceRead === null || this.#paceRead.minute !== minute || this.#paceRead.rev !== this.#paceRev) {
-      this.#paceRead = { minute, rev: this.#paceRev, now, read: this.deps.store.profileHours(Math.floor(now / 3_600_000)) };
+    const nowHour = Math.floor(now / HOUR_MS);
+    const fromHour = nowHour - PACE_HOURS;
+    const read = this.#paceRead;
+    if (read === null) {
+      this.#dirtyQuotaProfiles.clear();
+      const { quotas, spend, speed } = this.deps.store.profileHours(nowHour);
+      this.#paceRead = { now, quotaHour: nowHour, quotas, spendMinute: minute, spendHour: nowHour, spendFullAt: now, spend, speed };
+    } else {
+      let updated = false;
+      if (nowHour < read.quotaHour) {
+        // (the clock gone back: the hours kept are read again, all of them)
+        this.#dirtyQuotaProfiles.clear();
+        read.quotas = this.deps.store.profileQuotaHours(fromHour);
+        read.quotaHour = nowHour;
+        updated = true;
+      } else {
+        if (nowHour > read.quotaHour) {
+          read.quotas = read.quotas.filter((q) => q.hour >= fromHour);
+          read.quotaHour = nowHour;
+          updated = true;
+        }
+        if (this.#dirtyQuotaProfiles.size > 0) {
+          const dirty = new Set(this.#dirtyQuotaProfiles);
+          this.#dirtyQuotaProfiles.clear();
+          const fresh = [...dirty].flatMap((id) => this.deps.store.profileQuotaHoursFor(id, fromHour));
+          read.quotas = [...read.quotas.filter((q) => !dirty.has(q.profile)), ...fresh].sort(byProfileHour);
+          updated = true;
+        }
+      }
+      if (read.spendMinute !== minute) {
+        const full = now - read.spendFullAt >= SPEND_FULL_REFRESH_MS || now < read.spendFullAt
+          || nowHour < read.spendHour || nowHour - read.spendHour >= 2;
+        if (full) {
+          read.spend = this.deps.store.profileSpendHours(fromHour);
+          read.spendFullAt = now;
+        } else {
+          // (the hours before the last two as read, those that are still in PACE_HOURS; the last two read again)
+          const tailFrom = Math.max(fromHour, nowHour - 1);
+          const tail = this.deps.store.profileSpendHours(tailFrom);
+          read.spend = [...read.spend.filter((s) => s.hour >= fromHour && s.hour < tailFrom), ...tail].sort(byProfileHour);
+        }
+        read.speed = this.deps.store.profileSpeedQuarters((nowHour - SPEED_QUARTER_HOURS) * 4);
+        read.spendMinute = minute;
+        read.spendHour = nowHour;
+        updated = true;
+      }
+      if (updated) read.now = now;
     }
     const joined = viewer !== undefined && viewer.home === false ? viewer.workspace : null;
     const home = this.deps.workspaces?.()[0] ?? null;
     const config = this.settings();
     const serves = new Set(config.profiles.filter((p) => allowedIn(p, joined, home)).map((p) => p.id as string));
-    return paceView(this.#paceRead.now, this.#paceRead.read, (id) => serves.has(id));
+    const kept = this.#paceRead!;
+    return paceView(kept.now, kept, (id) => serves.has(id));
   }
 
-  /// What the last GET /profiles/pace read of the store, and in which minute; `#paceRev` counts the allowances kept since.
-  #paceRead: { minute: number; rev: number; now: number; read: ReturnType<Store["profileHours"]> } | null = null;
-  #paceRev = 0;
+  /// What GET /profiles/pace last read of the store: the allowances' hours as of `quotaHour`, the calls' as of the
+  /// minute `spendMinute` (in the hour `spendHour`; all PACE_HOURS of them read at `spendFullAt`), and `now`, when it
+  /// last changed.
+  #paceRead: {
+    now: number;
+    quotaHour: number;
+    quotas: QuotaHour[];
+    spendMinute: number;
+    spendHour: number;
+    spendFullAt: number;
+    spend: SpendHour[];
+    speed: SpeedQuarter[];
+  } | null = null;
+  /// The profiles whose allowances' hours were kept or forgotten since GET /profiles/pace read them.
+  #dirtyQuotaProfiles = new Set<string>();
   /// The outdated models' last unchecking, its config.json edit waited for as the accounts close.
   #unchecking: Promise<void> = Promise.resolve();
 

@@ -14,7 +14,7 @@ import { routes } from "../src/api/routes/accounts.ts";
 import type { Request } from "../src/api/request.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { Store } from "../src/store/store.ts";
-import { HOUR_MS, PACE_HOURS } from "../src/store/profile-hours.ts";
+import { HOUR_MS, PACE_HOURS, SPEED_QUARTER_HOURS } from "../src/store/profile-hours.ts";
 import { fingerprint } from "../src/sessions/decision.ts";
 import { temp } from "./accounts-fakes.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -23,7 +23,7 @@ import { testClock } from "./hub-fakes.ts";
 function storeAt(start: number) {
   const time = { now: start };
   const clock = { ...testClock().clock, currentTimeMillisUnsafe: () => time.now };
-  return { store: Store.open(":memory:", null, clock), time };
+  return { store: Store.open(":memory:", null, clock), time, clock };
 }
 
 const quota = (at: number, used: number, fable = 10) => ({
@@ -205,6 +205,128 @@ describe("an account's last hours", () => {
       assert.deepEqual((await get(home)).profiles.cx.spend, [{ hour: start / HOUR_MS - 1, scope: "", weight: 5 }]);
       time.now = start + 60_000;
       assert.deepEqual((await get(home)).profiles.cx.spend, [{ hour: start / HOUR_MS - 1, scope: "", weight: 10 }]);
+    } finally {
+      accounts.close();
+      store.close();
+    }
+  });
+
+  test("GET /profiles/pace reads again only what changed: an allowance kept its profile's hours, each minute the calls' last two hours, every 15 minutes all", async () => {
+    const data = temp("pace-cache");
+    writeFileSync(join(data, "config.json"), JSON.stringify({
+      profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }, { id: "cx", runtime: "codex", home: "homes/cx" }],
+      connects: [],
+    }));
+    const config = new ConfigFile(data);
+    config.check = checkConfig;
+    const H = 810_000;
+    const t0 = H * HOUR_MS + 50 * 60_000;
+    const { store, time, clock } = storeAt(t0);
+    const used = { cc: 40 };
+    const accounts = new Accounts({
+      data, store, config, loginCommands: { claude: "/bin/false", codex: "/bin/false" } as never, machine: null, checkOnStart: false, clock,
+      check: async () => ({ state: "ok", detail: "", models: [], checkedAt: 0 }),
+      quota: async () => quota(time.now, used.cc) as never,
+      discover: async (profile) => ({ state: "unsupported", detail: "", model: null, provider: null, models: [], fingerprint: fingerprint(profile) }),
+      workspaces: () => ["W1"],
+    });
+    accounts.start();
+    // What the accounts asked of the store, while `record` says so.
+    const asked: [string, ...unknown[]][] = [];
+    let record = true;
+    for (const name of ["profileHours", "profileQuotaHours", "profileQuotaHoursFor", "profileSpendHours", "profileSpeedQuarters"] as const) {
+      const real = (store[name] as (...a: unknown[]) => unknown).bind(store);
+      (store as any)[name] = (...args: unknown[]) => { if (record) asked.push([name, ...args]); return real(...args); };
+    }
+    const table = routes({ accounts, overview: () => ({}) });
+    const home = { sub: "s", email: "o@example.com", name: "", role: "owner", workspace: "W1", device: "d" } as Request["viewer"];
+    const get = async (): Promise<any> => {
+      asked.length = 0;
+      const r: Request = { method: "GET", path: "/profiles/pace", query: [], headers: {}, body: Buffer.from(""), viewer: home, lang: "zh" };
+      for (const route of table) {
+        const found = route.method === "GET" ? route.pattern.exec(r.path) : null;
+        if (found) return JSON.parse(String((await route.handle(r, found.slice(1))).body));
+      }
+      throw new Error("no route");
+    };
+    // What a read of all of it now gives.
+    const fresh = () => {
+      record = false;
+      try { return JSON.parse(JSON.stringify(paceView(time.now, store.profileHours(Math.floor(time.now / HOUR_MS)), () => true))); }
+      finally { record = true; }
+    };
+    const spendHours = (view: any, profile: string) => view.profiles[profile].spend.filter((s: any) => s.scope === "").map((s: any) => [s.hour - H, s.weight]);
+    try {
+      // (an allowance's hour that leaves PACE_HOURS as the next hour comes, and calls of an old hour and the last two)
+      store.setProfileQuota("cc", quota((H - PACE_HOURS) * HOUR_MS + 1, 5));
+      store.setProfileQuota("cx", quota(t0 - HOUR_MS, 10));
+      call(store, (H - PACE_HOURS) * HOUR_MS + 1, "cc", "claude", "claude-opus-5-5", { output: 1_000_000 });
+      call(store, (H - 5) * HOUR_MS + 1, "cc", "claude", "claude-opus-5-5", { output: 1_000_000 });
+      call(store, (H - 1) * HOUR_MS + 1, "cx", "codex", "gpt-6.1-terra", { output: 1_000_000 });
+      let seen = await get();
+      assert.deepEqual(asked.map((a) => a[0]), ["profileHours", "profileQuotaHours", "profileSpendHours", "profileSpeedQuarters"]);
+      assert.deepEqual(seen, fresh());
+
+      // The same minute, an allowance kept: that profile's hours read again alone, and the calls' not at all.
+      time.now = t0 + 1_000;
+      used.cc = 60;
+      await accounts.refreshQuota("cc");
+      seen = await get();
+      assert.deepEqual(asked, [["profileQuotaHoursFor", "cc", H - PACE_HOURS]]);
+      assert.deepEqual(seen.profiles.cc.quotas.map((q: any) => [q.hour - H, q.windows[1].usedPercent]), [[-PACE_HOURS, 5], [0, 60]]);
+      assert.equal(seen.nowAt, time.now);
+      assert.deepEqual(seen, fresh());
+
+      // The next minute: the calls' last two hours read again, those before as they were read.
+      time.now = t0 + 60_000;
+      call(store, H * HOUR_MS + 2, "cc", "claude", "claude-opus-5-5", { output: 1_000_000 });
+      call(store, (H - 1) * HOUR_MS + 2, "cx", "codex", "gpt-6.1-terra", { output: 1_000_000 });
+      seen = await get();
+      assert.deepEqual(asked, [["profileSpendHours", H - 1], ["profileSpeedQuarters", (H - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(spendHours(seen, "cc"), [[-PACE_HOURS, 20], [-5, 20], [0, 20]]);
+      assert.deepEqual(spendHours(seen, "cx"), [[-1, 10]]);
+      assert.deepEqual(seen, fresh());
+
+      // Into the next hour, 11 minutes on: the hour that left PACE_HOURS let go of the allowances' and the calls' alike.
+      time.now = (H + 1) * HOUR_MS + 60_000;
+      seen = await get();
+      assert.deepEqual(asked, [["profileSpendHours", H], ["profileSpeedQuarters", (H + 1 - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(seen.profiles.cc.quotas.map((q: any) => q.hour - H), [0]);
+      assert.deepEqual(spendHours(seen, "cc"), [[-5, 20], [0, 20]]);
+      assert.deepEqual(seen, fresh());
+
+      // A call taken in late in an hour three before (the calls from before, usagefill): not read the next minute...
+      call(store, (H - 3) * HOUR_MS + 1, "cc", "claude", "claude-opus-5-5", { output: 1_000_000 });
+      time.now = (H + 1) * HOUR_MS + 2 * 60_000;
+      seen = await get();
+      assert.deepEqual(asked.map((a) => a.slice(0, 2)), [["profileSpendHours", H], ["profileSpeedQuarters", (H + 1 - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(spendHours(seen, "cc"), [[-5, 20], [0, 20]]);
+      // ...and read once 15 minutes have gone since all of them were.
+      time.now = t0 + 15 * 60_000;
+      seen = await get();
+      assert.deepEqual(asked, [["profileSpendHours", H + 1 - PACE_HOURS], ["profileSpeedQuarters", (H + 1 - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(spendHours(seen, "cc"), [[-5, 20], [-3, 20], [0, 20]]);
+      assert.deepEqual(seen, fresh());
+
+      // The clock two hours on: all of the calls' read again.
+      time.now += 2 * HOUR_MS + 60_000;
+      seen = await get();
+      assert.deepEqual(asked.map((a) => a[0]), ["profileSpendHours", "profileSpeedQuarters"]);
+      assert.equal(asked[0]![1], Math.floor(time.now / HOUR_MS) - PACE_HOURS);
+      assert.deepEqual(seen, fresh());
+      // Gone back three hours: the allowances' hours and the calls' all read again.
+      time.now -= 3 * HOUR_MS;
+      seen = await get();
+      const back = Math.floor(time.now / HOUR_MS) - PACE_HOURS;
+      assert.deepEqual(asked, [["profileQuotaHours", back], ["profileSpendHours", back], ["profileSpeedQuarters", (back + PACE_HOURS - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(seen, fresh());
+
+      // A profile deleted, in the same minute: its hours read again alone (none), the calls' not at all.
+      time.now += 1_000;
+      await accounts.deleteProfile("cx", home!);
+      seen = await get();
+      assert.deepEqual(asked, [["profileQuotaHoursFor", "cx", back]]);
+      assert.equal(seen.profiles.cx, undefined);
     } finally {
       accounts.close();
       store.close();

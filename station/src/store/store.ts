@@ -40,7 +40,7 @@ import * as usage from "./usage.ts";
 import { timed } from "./timed.ts";
 import * as handover from "./handover.ts";
 import { installIncrementalUsageTotals, usageTotalsComplete } from "./usage-totals-source.ts";
-import { HOUR_MS, hourWindows, installProfileHours, PACE_HOURS, QUOTA_HOURS_READ, SPEED_QUARTER_HOURS, SPEED_QUARTERS_READ, SPEND_HOURS_READ, type HourWindow, type SpeedQuarter, type SpendHour } from "./profile-hours.ts";
+import { HOUR_MS, hourWindows, installProfileHours, PACE_HOURS, QUOTA_HOURS_FOR_PROFILE_READ, QUOTA_HOURS_READ, SPEED_QUARTER_HOURS, SPEED_QUARTERS_READ, SPEND_HOURS_READ, type HourWindow, type QuotaHour, type SpeedQuarter, type SpendHour } from "./profile-hours.ts";
 import { installUsageSpan } from "./usage-span.ts";
 import { installUsageChatStats } from "./usage-chat-stats.ts";
 import { installUsage15m, installUsage15mGen, moveUsage15m } from "./usage-15m.ts";
@@ -81,6 +81,9 @@ import { ensureCardScanGuard } from "./card-scan-guard.ts";
 import { completeCardOutcome, saveWithCardOutcome, type CardEditScan, type CardOutcome } from "./card-outbox.ts";
 import { type ChatListFilter, type RecentChatList, recentChatIds, searchChats } from "./chat-list.ts";
 import { dueChatShareRows, lapsedChatShareWorkspaces, liveChatShareRows } from "./chat-share-index.ts";
+
+/// A profile_quota_hours row as profileHours gives it.
+const quotaHourOf = (r: Json): QuotaHour => ({ profile: r.profile, hour: r.hour, at: r.at, windows: (parsed(r.windows_json) ?? []) as HourWindow[] });
 
 /// One transcript's part for `recordUsageAll`: as `recordUsage` takes it.
 export type UsageWrite = { path: string; file: usage.UsageFile; runtime: string; calls: [usage.UsageCall, usage.UsageFor][]; options?: usage.UsageWriteOptions };
@@ -4319,19 +4322,35 @@ export class Store {
   /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET
   /// /profiles/pace): by the hour's index and usage_15m's quarters' (`from * 4`, the hour's first quarter), so a read
   /// takes those hours' rows alone.
-  profileHours(nowHour: number): { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[]; speed: SpeedQuarter[] } {
+  profileHours(nowHour: number): { quotas: QuotaHour[]; spend: SpendHour[]; speed: SpeedQuarter[] } {
     const from = nowHour - PACE_HOURS;
-    const quotas = this.#all(QUOTA_HOURS_READ, from)
-      .map((r) => ({ profile: r.profile as string, hour: r.hour as number, at: r.at as number, windows: (parsed(r.windows_json) ?? []) as HourWindow[] }));
-    const spend = this.#all(SPEND_HOURS_READ, from * 4).map((r): SpendHour => ({
+    return { quotas: this.profileQuotaHours(from), spend: this.profileSpendHours(from), speed: this.profileSpeedQuarters((nowHour - SPEED_QUARTER_HOURS) * 4) };
+  }
+
+  /// Every profile's allowances' hours from `fromHour` on, by profile and hour.
+  profileQuotaHours(fromHour: number): QuotaHour[] {
+    return this.#all(QUOTA_HOURS_READ, fromHour).map(quotaHourOf);
+  }
+
+  /// One profile's allowances' hours from `fromHour` on, by hour: what an allowance of it kept changed alone.
+  profileQuotaHoursFor(profile: string, fromHour: number): QuotaHour[] {
+    return this.#all(QUOTA_HOURS_FOR_PROFILE_READ, profile, fromHour).map(quotaHourOf);
+  }
+
+  /// The calls' spending from the hour `fromHour` on, by profile and hour (SPEND_HOURS_READ).
+  profileSpendHours(fromHour: number): SpendHour[] {
+    return this.#all(SPEND_HOURS_READ, fromHour * 4).map((r): SpendHour => ({
       hour: r.hour, profile: r.profile, runtime: r.runtime, model: r.model === "" ? null : r.model, fast: r.fast === 1, calls: r.calls,
       input: r.input, cacheRead: r.cache_read, cacheWrite: r.cache_write, cacheWriteLong: r.cache_write_long, output: r.output,
       genMs: r.gen_ms, genOutput: r.gen_output,
     }));
-    const speed = this.#all(SPEED_QUARTERS_READ, (nowHour - SPEED_QUARTER_HOURS) * 4).map((r): SpeedQuarter => ({
+  }
+
+  /// The calls' times from the quarter `fromQuarter` on, by quarter, profile and model (SPEED_QUARTERS_READ).
+  profileSpeedQuarters(fromQuarter: number): SpeedQuarter[] {
+    return this.#all(SPEED_QUARTERS_READ, fromQuarter).map((r): SpeedQuarter => ({
       quarter: r.quarter, profile: r.profile, model: r.model, genMs: r.gen_ms, genOutput: r.gen_output,
     }));
-    return { quotas, spend, speed };
   }
 
   /// A profile deleted: its hours go with it.
