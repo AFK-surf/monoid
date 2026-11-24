@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [41601bf57](https://github.com/AFK-surf/monoid/commit/41601bf576e9798f57b9853ef390bd4b52aa9953) fix(ui): space stop slider ends evenly and keep th | 2.79 | 3.76 | 15.22 | 37.41 | 57.82 | 32.79 | 66.84 | 100.86 | 132.14 |
 | [40408f70c](https://github.com/AFK-surf/monoid/commit/40408f70c1100971cbaf09c07c102a987c6c8dfb) feat(pion-station): add Wave 5 foundation primitiv | 2.79 | 3.76 | 15.22 | 37.41 | 57.82 | 32.79 | 66.84 | 100.86 | 132.14 |
 | [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [8eaa7eeb3](https://github.com/AFK-surf/monoid/commit/8eaa7eeb3b0c312dd4fc5b773e992e2d97b93810) fix(ui): fix Role 4 Tab bevelGate ghosting, slim L | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61c98f1de](https://github.com/AFK-surf/monoid/commit/61c98f1de8298a5b6a8e940f35f96778d6bc9b60) feat(providers): add Command Code and Open Design  | 2.78 | 3.74 | 15.15 | 37.35 | 57.65 | 32.7 | 66.59 | 100.57 | 125.67 |
 | [eb460cf48](https://github.com/AFK-surf/monoid/commit/eb460cf482d57905c0b02b24c1b39bb375ac96fd) fix(ui,mbui): hide the quote pill while its words  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.59 | 100.57 | 129.4 |
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.6 | 122.68 |
-| [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 130.05 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [41601bf57](https://github.com/AFK-surf/monoid/commit/41601bf576e9798f57b9853ef390bd4b52aa9953) fix(ui): space stop slider ends evenly and keep th | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.21 |
 | [40408f70c](https://github.com/AFK-surf/monoid/commit/40408f70c1100971cbaf09c07c102a987c6c8dfb) feat(pion-station): add Wave 5 foundation primitiv | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.1 | 5.84 | 57.38 |
 | [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.44 |
 | [8eaa7eeb3](https://github.com/AFK-surf/monoid/commit/8eaa7eeb3b0c312dd4fc5b773e992e2d97b93810) fix(ui): fix Role 4 Tab bevelGate ghosting, slim L | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.1 | 5.84 | 57.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61c98f1de](https://github.com/AFK-surf/monoid/commit/61c98f1de8298a5b6a8e940f35f96778d6bc9b60) feat(providers): add Command Code and Open Design  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.46 |
 | [eb460cf48](https://github.com/AFK-surf/monoid/commit/eb460cf482d57905c0b02b24c1b39bb375ac96fd) fix(ui,mbui): hide the quote pill while its words  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.41 |
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
-| [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
