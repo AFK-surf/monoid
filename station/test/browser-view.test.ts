@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { createServer, type Socket } from "node:net";
 import { test } from "node:test";
-import type { Frame } from "../screens/source.ts";
-import type { Cdp, CdpEvent } from "./cdp.ts";
-import { FarviewScreen } from "./farview-screen.ts";
-import type { BrowserVideoEncoder } from "./video-encode.ts";
+import type { Frame } from "../src/screens/source.ts";
+import type { Cdp, CdpEvent } from "../src/browser/cdp.ts";
+import { FarviewScreen } from "../src/browser/farview-screen.ts";
+import type { BrowserVideoEncoder } from "../src/browser/video-encode.ts";
 import {
   H264_AUTO_MAX_HEIGHT,
   H264_AUTO_MAX_WIDTH,
@@ -15,7 +15,7 @@ import {
   QUALITY,
   TabView,
   screencastBase,
-} from "./view.ts";
+} from "../src/browser/view.ts";
 
 class FakeCdp implements Cdp {
   sent: { method: string; params: any; sessionId?: string }[] = [];

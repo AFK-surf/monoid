@@ -4,8 +4,8 @@ import { createServer, connect, type Socket } from "node:net";
 import { PassThrough } from "node:stream";
 import { test } from "node:test";
 import type { ChildProcess } from "node:child_process";
-import type { HelperApp } from "../helper/app.ts";
-import type { Frame, ScreenView } from "../screens/source.ts";
+import type { HelperApp } from "../src/helper/app.ts";
+import type { Frame, ScreenView } from "../src/screens/source.ts";
 import {
   AnnexBParser,
   type BrowserVideoEncoder,
@@ -18,7 +18,7 @@ import {
   createBrowserVideoEncoder,
   packAvccNalus,
   setFfmpegProbeForTest,
-} from "./video-encode.ts";
+} from "../src/browser/video-encode.ts";
 
 function fakeJpeg(width: number, height: number, fill = 0): Uint8Array {
   const app0 = [0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00];
