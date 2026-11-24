@@ -294,6 +294,8 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
     fn(c) {
       c.box(fn(b) {
         @sf.style_node(b, fn() { go_field_box })
+        // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+        @ui.field_backdrop(b, go.field)
         let f = @ui.field(
           b,
           go.field,

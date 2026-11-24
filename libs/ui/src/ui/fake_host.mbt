@@ -2863,6 +2863,11 @@ impl @hostapi.Host for FakeHost with script_step(self, step, arg) {
       self.wants = true
       ""
     }
+    // (what the clipboard holds as the app next reads it: Tester::clipboard_gives)
+    "clip" => {
+      fake_clip_give(self, { text: arg, picture: NoPicture, files: [] })
+      ""
+    }
     "picks" => {
       self.picks.clear()
       for part in arg.split(" ") {

@@ -288,6 +288,8 @@ pub fn login_paste_node(
     @sf.style_node(b, fn() { login_paste.then(login_inner_round) })
     b.box(fn(w) {
       @sf.style_node(w, fn() { login_paste_words }, in_row=true)
+      // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+      @ui.field_backdrop(w, field, enabled=fn() { !busy() })
       @ui.field(
         w,
         field,
@@ -307,6 +309,7 @@ pub fn login_paste_node(
           }
         },
       )
+      .grow(Is(1.0))
       |> ignore
     })
     |> ignore

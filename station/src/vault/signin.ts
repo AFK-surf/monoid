@@ -30,8 +30,8 @@ CREATE INDEX IF NOT EXISTS signin_asks_by_session ON signin_asks (session, statu
 
 /// Where an ask is: waiting for the person (`pending`), being filled (`filling`), waiting for a code (`code`), given to
 /// the person on its screen (`person`), the page past its sign-in for the agent to look at (`left`), signed in
-/// (`done`), refused (`denied`), or let go (`expired`: a day undecided; `ended`: its chat archived).
-export type Status = "pending" | "filling" | "code" | "person" | "left" | "done" | "denied" | "expired" | "ended";
+/// (`done`), refused (`denied`), taken back by the agent (`withdrawn`), or let go (`expired`: a day undecided; `ended`: its chat archived).
+export type Status = "pending" | "filling" | "code" | "person" | "left" | "done" | "denied" | "withdrawn" | "expired" | "ended";
 const OPEN: Status[] = ["pending", "filling", "code", "person", "left"];
 
 export type SignInAsk = {
@@ -174,15 +174,21 @@ export class SignIns {
   /// sign_in: the site signed in to in this session's chat's browser. A sign-in granted already, said; one the vault
   /// keeps, asked for (secret_use); none (or `again`: the one kept ran out), a card asks the person to sign in on the
   /// chat's tab on the site (`tab`, else the last one there). `done`: the agent looked and it is signed in; `stuck`: it
-  /// is not, and what is left (given to the person on the tab's screen).
-  async ask(session: string, a: { site: string; reason?: string; tab?: string; again?: boolean; reask?: boolean; done?: boolean; stuck?: string; name?: string; about?: string }, signal?: AbortSignal): Promise<string> {
+  /// is not, and what is left (given to the person on the tab's screen); `cancel`: withdraw the open sign-in request.
+  async ask(session: string, a: { site: string; reason?: string; tab?: string; again?: boolean; reask?: boolean; done?: boolean; stuck?: string; cancel?: boolean; name?: string; about?: string }, signal?: AbortSignal): Promise<string> {
     signal?.throwIfAborted();
     const site = siteOf(a.site);
     if (site === "" || !site.includes(".")) throw new Refused("site is the site's host, e.g. github.com");
     const open = this.#bySession(session).filter((x) => x.site === site && OPEN.includes(x.status)).at(-1);
     if (open?.status === "pending" && open.at + PENDING_SECS < this.#secs()) {
       this.#end(open, "expired");
+      if (a.cancel) return `The sign-in to ${site} (${open.id}) had already expired; its card is closed.`;
       throw new Refused(`The sign-in to ${site} expired. Ask for a new sign-in if it is still needed.`);
+    }
+    if (a.cancel) {
+      if (open === undefined) throw new Refused(`No sign-in to ${site} is under way in this chat: nothing to withdraw.`);
+      this.#end(open, "withdrawn");
+      return `Withdrew sign-in to ${site} (${open.id}): its card is closed and ${open.owner} no longer sees it waiting.`;
     }
     if (a.done || a.stuck !== undefined) {
       if (open === undefined) throw new Refused(`No sign-in to ${site} is under way in this chat: sign_in {site, reason} asks for one.`);
@@ -355,7 +361,7 @@ export class SignIns {
   }
 
   /// Its card no longer waits on anyone: withdrawn, but while its sign-in's keeping waits for the app to approve it.
-  #end(x: SignInAsk, status: "done" | "denied" | "expired" | "ended") {
+  #end(x: SignInAsk, status: "done" | "denied" | "withdrawn" | "expired" | "ended") {
     const close = !(status === "done" && x.save !== undefined && (x.kept ?? "pending") === "pending");
     this.#set(x, status, undefined, close);
     this.#forget(x.id);

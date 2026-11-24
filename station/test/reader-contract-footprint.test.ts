@@ -16,6 +16,7 @@ import { platform } from "../src/platform/index.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { CARGO_TAG, MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, measured, rebuildableSoon, type Room } from "../src/sessions/footprint.ts";
 import { measureRoomReference, measuredReference, measuredUpToReference, rebuildableKind } from "./footprint-reference.ts";
+import { measuredMounted, noMounts } from "./footprint-mounts.ts";
 
 const CHILD_TIMEOUT_MS = 15_000;
 
@@ -500,6 +501,31 @@ test("cancellation and termination: pre-aborted AbortSignal, stdin EOF, and idle
   assert.equal(sigtermIdle.stdout, "");
   assert.equal(sigtermIdle.signal, "SIGTERM");
   assertProcessGone(sigtermIdle.pid);
+});
+
+test("a file system really mounted in a room, whatever its name, is counted as itself, never looked into nor found, as the TS oracle", { skip: noMounts() }, () => {
+  const root = freshDir();
+  writeSized(join(root, "web/node_modules/y.js"), 3_000);
+  const { got, reference, visible } = measuredMounted(root, CANDIDATE);
+  assert.deepEqual(got, reference);
+  assert.deepEqual(got.rebuild.map(([p]) => p.slice(root.length + 1)), [join("web", "node_modules")]);
+  assert.equal(got.bytes, visible);
+  assert.equal(got.complete, true);
+});
+
+test("a path or a base with a NUL in it is refused EINVAL, never measured as the path before the NUL", async () => {
+  const root = freshDir();
+  writeSized(join(root, "node_modules/pkg/index.js"), 16_384);
+  // (a bad path with a good base too: refused for the path itself, not for a base taken from it)
+  for (const ask of [{ path: `${root}\0${sep}none` }, { path: `${root}\0${sep}none`, base: root }, { path: root, base: `${root}\0x` }]) {
+    for (const finding of [true, false]) {
+      const inv = await invokeFootprintRaw(`${JSON.stringify({ ...ask, finding, strict: !finding })}\n`);
+      assert.equal(inv.exitCode, 0, `footprint exited with ${inv.exitCode} (stderr: ${inv.stderr})`);
+      assert.equal(inv.messages.length, 1);
+      const [said] = inv.messages as FootprintRawResponse[];
+      assert.deepEqual(said, { error: "path must not contain NUL bytes", code: "EINVAL" });
+    }
+  }
 });
 
 test("invalid CLI arguments, malformed JSON requests, and missing paths follow error contract", async () => {

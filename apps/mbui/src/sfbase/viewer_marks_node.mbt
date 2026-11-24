@@ -384,6 +384,8 @@ fn note_box_node(w : @view.View) -> Unit {
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
         |> ignore
+        // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+        @ui.field_backdrop(f, marking.note_field)
         @ui.field(
           f,
           marking.note_field,
@@ -914,6 +916,8 @@ fn marks_writing_node(h : @view.View, vw : Viewer) -> Unit {
     }))
     .width(By(fn() { Some(dmax(size() * 6.0, 120.0)) }))
     |> ignore
+    // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+    @ui.field_backdrop(b, marking.write_field)
     @ui.field(
       b,
       marking.write_field,

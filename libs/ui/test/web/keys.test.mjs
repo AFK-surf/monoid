@@ -119,6 +119,19 @@ for (const [platform, key, flag, bit] of [['MacIntel', 'Meta', 'metaKey', 8], ['
   });
 }
 
+test('a clipboard whose read() refuses gives its words by readText() (a paste in a WebView)', async () => {
+  const b = browser('Win32', {
+    read: async () => { throw new Error('NotAllowedError'); },
+    readText: async () => '粘贴的字',
+  });
+  const answered = new Promise((resolve) => b.host.setOutside((kind, id, state) => resolve([kind, id, state])));
+  const id = b.host.clipRead();
+  assert.deepEqual(await answered, [9, id, 1]);
+  assert.equal(b.host.clipText(id), '粘贴的字');
+  assert.equal(b.host.clipPicture(id), 0);
+  b.host.clipEnd(id);
+});
+
 test('a clipboard PNG over 8 MiB is read as an attachment; the file bound still applies', async () => {
   const bytes = new Uint8Array(9 << 20);
   bytes[0] = 137;

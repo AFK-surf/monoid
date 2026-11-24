@@ -151,7 +151,14 @@ fn tree_field_menu_dismiss_if_outside(tree : @view.Tree, x : Double, y : Double)
     return
   }
   match (tree.target_at(x, y), st.tree_node) {
-    (Pressed(id), Some(fid)) if id == fid => return
+    (Pressed(id), Some(fid)) if tree_field_target_of(id) == Some(fid) => return
+    // (an old view's editor pressed itself: its own tap shows or puts away its menu, app.mbt's editor_tap)
+    (Hosted(_), None) => {
+      let k = hit_at(c.hit_ids, c.hit_rects, c.hit_clips, x, y)
+      if k >= 0 && c.hit_ids[k] == c.focus {
+        return
+      }
+    }
     _ => ()
   }
   st.menu = false

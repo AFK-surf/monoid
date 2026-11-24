@@ -6704,7 +6704,15 @@
           r.text = await cl.readText();
         }
       } catch (e) {
-        // not allowed (no permission, the page not focused): read as empty
+        // not allowed (no permission, the page not focused): read as empty; a browser whose read() refuses what its
+        // readText() gives (a WebView's, Firefox's before 127) asked for the words alone
+        if (!held && !r.text && !r.picture && cl && cl.readText) {
+          try {
+            r.text = await cl.readText();
+          } catch (e2) {
+            // not allowed either: read as empty
+          }
+        }
       }
       r.state = 1;
       tell(OUTSIDE_CLIP, id, 1);

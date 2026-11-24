@@ -106,6 +106,8 @@ fn preset_find_node(
       }
     })
     |> ignore
+    // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+    @ui.field_backdrop(f, field)
     @sf.icon_node(f, "search", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
     let inp = @ui.field(
       f,

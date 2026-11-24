@@ -31,6 +31,9 @@ priv struct TreeField {
   /// where the press on it now went down (the window's terms), none held; whether it took it as it went down (the
   /// caret put there, what is picked dragged on from there); whether a finger waiting for a tap went past the slop
   mut down : (Double, Double)?
+  /// the node the press now held went down on: the field's own, or a ground round it that takes its presses
+  /// (field_backdrop, field_menu_on); none held
+  mut pressed_node : @view.NodeId?
   mut editing : Bool
   mut strayed : Bool
   /// the node it is (what times a finger's hold on it: View::at_moment), what calls that hold's moment off
@@ -267,6 +270,7 @@ pub fn field(
       pasted,
       files,
       down: None,
+      pressed_node: None,
       editing: false,
       strayed: false,
       view: f,
@@ -568,18 +572,69 @@ pub fn field_has_focus() -> Bool {
 }
 
 ///|
-/// Nodes whose `on_menu` opens a field's desktop editing menu (e.g. a composer's I-beam backdrop beside its field):
-/// skipped by Android/touch long press (tree_finger_menu) just as tree_fields are.
+/// Nodes round a field that are its own to a press (e.g. a composer's I-beam backdrop beside its field, a framed
+/// field's padding), with the field and whether they are now: a primary press on one goes to the field as a press on
+/// it does (tree_field_target_of: a tap, a long press, a mouse's caret), its secondary press the field's editing menu;
+/// skipped by the words picked on a page by a long press (tree_finger_menu) just as tree_fields are.
 // kept across runs: cleared by view_forget; each entry removed as its node is let go
-let tree_field_menu_areas : Map[@view.NodeId, Unit] = Map([])
+let tree_field_menu_areas : Map[@view.NodeId, (Field, () -> Bool)] = Map([])
 
 ///|
-/// Connects secondary-button menu presses on `v` (an I-beam backdrop beside `field`) to `field.open_menu`, while
-/// skipping touch long-press so mobile fingers never open a desktop editing menu or trigger long-press haptics there.
+/// The field of the tree's a primary press on node `id` is: the field itself, or the one a ground round it given its
+/// presses (field_menu_on) stands for while that is on and the field can take the focus; none for anything else.
+fn tree_field_target_of(id : @view.NodeId) -> @view.NodeId? {
+  if tree_fields.contains(id) {
+    return Some(id)
+  }
+  match tree_field_menu_areas.get(id) {
+    Some((field, enabled)) if @signals.untracked(enabled) =>
+      match field.st.tree_node {
+        Some(fid) if tree_fields.contains(fid) && view_app.val.map_or(false, fn(t) { t.can_focus(fid) }) => Some(fid)
+        _ => None
+      }
+    _ => None
+  }
+}
+
+///|
+/// The field of the tree's whose press went down on node `id` (the field itself, or a ground round it given its
+/// presses: tree_field_down's `pressed_node`), else `id`: what a press held on `id` moves, lets go or calls off.
+fn tree_field_pressing(id : @view.NodeId) -> @view.NodeId {
+  if tree_fields.contains(id) {
+    return id
+  }
+  for fid, tf in tree_fields {
+    if tf.pressed_node == Some(id) {
+      return fid
+    }
+  }
+  id
+}
+
+///|
+/// A ground round field `field` (its frame's padding, a composer's room beside it) made its own to a press while
+/// `enabled`: a tap there is a tap on the field (the focus and the caret, its menu shown or put away as a tap on its
+/// caret), a long press there its caret and menu (粘贴), a mouse's press its caret, the secondary button its editing
+/// menu, the pointer an I-beam over it. Adds no node: `v`, made a ground (View::as_ground), takes no press from what
+/// it holds nor counts as a button of its own.
+pub fn field_backdrop(v : @view.View, field : Field, enabled? : () -> Bool = fn() { true }) -> Unit {
+  v
+  .presses(By(enabled))
+  .on_press(fn() {  })
+  .cursor(By(fn() { if enabled() { Some(IBeam) } else { None } }))
+  .as_ground()
+  |> ignore
+  field_menu_on(v, field, enabled~)
+}
+
+///|
+/// Connects secondary-button menu presses on `v` (an I-beam backdrop beside `field`) to `field.open_menu`, and makes a
+/// primary press on it the field's (tree_field_target_of) while `enabled`: where `v` takes presses, a tap there the
+/// field's tap, a long press the field's (its caret and 粘贴, never the page's words).
 pub fn field_menu_on(v : @view.View, field : Field, enabled? : () -> Bool = fn() { true }) -> Unit {
   let id = v.id()
-  tree_field_menu_areas[id] = ()
-  v.owns(fn() { tree_field_menu_areas.remove(id) }) |> ignore
+  in_tree_window(v.tree, fn() { tree_field_menu_areas[id] = (field, enabled) })
+  v.owns(fn() { in_tree_window(v.tree, fn() { tree_field_menu_areas.remove(id) }) }) |> ignore
   v.on_menu(fn(m) {
     if enabled() {
       field.open_menu(m.wx, m.wy)
@@ -737,10 +792,17 @@ fn tree_field_gone(id : @view.NodeId) -> Unit {
 /// (Compose's); elsewhere at once: the focus its, the caret put there (Shift held: what is picked widened to there; a
 /// double click's second the word there, a triple's third the paragraph), what is picked dragged on from there, the
 /// press its own (what holds it takes nothing over). Whether it took it so. Nothing for what is no field.
-fn tree_field_down(id : @view.NodeId, x : Double, y : Double, at : Double) -> Bool {
+fn tree_field_down(
+  id : @view.NodeId,
+  x : Double,
+  y : Double,
+  at : Double,
+  pressed_node? : @view.NodeId,
+) -> Bool {
   guard tree_fields.get(id) is Some(tf) else { return false }
   (tf.hold_off)()
   tf.down = Some((x, y))
+  tf.pressed_node = Some(pressed_node.unwrap_or(id))
   tf.strayed = false
   tf.editing = false
   tf.word_drag = false
@@ -754,7 +816,7 @@ fn tree_field_down(id : @view.NodeId, x : Double, y : Double, at : Double) -> Bo
   // (its words flung on: stopped where they are, as an old view's field's are as a finger goes down, sideways_down)
   sideways_down(tree_said_id(id))
   let st = tf.st
-  if h_feel() == 2 {
+  if field_touch_feel() {
     // (held still long_press_ms where it went down: at that moment, on the tree's timeline, whatever frames come)
     tf.hold_off = tf.view.at_moment(at + long_press_ms, fn() { pointed_edits(fn() { tree_field_held(id) }) })
     return false
@@ -768,9 +830,12 @@ fn tree_field_down(id : @view.NodeId, x : Double, y : Double, at : Double) -> Bo
   }
   tf.run = (tf.clicks, at, x, y)
   tf.shifted = (mods_held() & mod_shift_key) != 0
+  let to_end = tree_field_to_end(tf, id, x, y)
   g().focus_moved(tree_said_id(id))
   if tf.shifted {
     st.widen_by_pointer(x, y, at)
+  } else if to_end {
+    caret_at_end(st, at)
   } else {
     place_caret_at(st, x, y, at)
     if tf.clicks > 1 {
@@ -783,6 +848,29 @@ fn tree_field_down(id : @view.NodeId, x : Double, y : Double, at : Double) -> Bo
 }
 
 ///|
+/// Whether the press now held on field node `id` went down on a ground round it (field_backdrop: a label or an icon
+/// laid before its words, its padding) while it had not the focus, before where its words start: a press to write on
+/// in it, its caret at its words' end as a focus given it leaves it, never before the first of them.
+fn tree_field_to_end(tf : TreeField, id : @view.NodeId, x : Double, y : Double) -> Bool {
+  guard tf.pressed_node is Some(pid) && pid != id && g().focus != tree_said_id(id) else { return false }
+  match tf.st.local_point(x, y) {
+    Some((lx, _)) => lx < tf.st.ox
+    None => false
+  }
+}
+
+///|
+/// The caret put at the end of field `st`'s words, nothing picked, its blinking from `t`.
+fn caret_at_end(st : EditorState, t : Double) -> Unit {
+  st.blink0 = t
+  st.menu = false
+  st.sel_handles = false
+  st.caret = st.text.length()
+  st.anchor = st.caret
+  st.upstream = -1
+}
+
+///|
 /// A finger held still on field node `id` long_press_ms where it went down (Android's long press): the focus its, the
 /// word there picked, its handles and the floating menu as it is let go, felt; the finger sliding on from there widens
 /// it by words, the press its own from here (what holds it takes nothing over).
@@ -790,7 +878,11 @@ fn tree_field_held(id : @view.NodeId) -> Unit {
   guard tree_fields.get(id) is Some(tf) else { return }
   // (the press still its: the tree's hold on its node, none called off since however it was (the window behind, a
   // second finger, taken over, its node taking no press); else nothing of it kept)
-  guard tf.view.pressed() else {
+  let still_pressed = match tf.pressed_node {
+    Some(pid) if pid != id => tf.view.tree.view_of(pid).map_or(false, fn(pv) { pv.pressed() })
+    _ => tf.view.pressed()
+  }
+  guard still_pressed else {
     tree_field_let_go(id, 0.0, 0.0, false)
     return
   }
@@ -927,7 +1019,9 @@ fn tree_field_tapped(id : @view.NodeId) -> Unit {
   (tf.hold_off)()
   let c = g()
   let said = tree_said_id(id)
-  if c.focus == said {
+  let was_focused = c.focus == said
+  let to_end = tree_field_to_end(tf, id, x, y)
+  if was_focused {
     c.ime_sig = "tap"
   }
   c.focus_moved(said)
@@ -941,8 +1035,12 @@ fn tree_field_tapped(id : @view.NodeId) -> Unit {
     }
     tf.last_tap = (-1.0e9, 0.0, 0.0)
   } else {
-    place_caret_at(st, x, y, t)
-    st.handle = st.text.length() > 0
+    if to_end {
+      caret_at_end(st, t)
+      st.handle = st.text.length() > 0
+    } else {
+      st.tap_caret_at(was_focused, x, y, t)
+    }
     tf.last_tap = (t, x, y)
   }
   tree_field_redraw()
@@ -994,6 +1092,7 @@ fn tree_field_let_go(id : @view.NodeId, x : Double, y : Double, up : Bool) -> Un
     c.bar_let_go()
   }
   tf.down = None
+  tf.pressed_node = None
   tf.editing = false
   tf.strayed = false
   tf.word_drag = false

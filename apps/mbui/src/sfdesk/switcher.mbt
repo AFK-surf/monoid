@@ -121,6 +121,8 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
           @sf.style_node(b, fn() { switcher_search_box })
           b.alpha(By(words_in)) |> ignore
           combo.val = Some(@sfpages.finder_combobox_node(b, fn() { @sf.t("web-main.switcher.search") }, close))
+          // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+          @ui.field_backdrop(b, @sfpages.finder_field())
           let f = @ui.field(
             b,
             @sfpages.finder_field(),
