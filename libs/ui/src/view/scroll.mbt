@@ -1413,10 +1413,11 @@ pub fn View::scrolls(
     last_whole.val = natural
     let seen_now = Some(if across { (shown, h) } else { (w, shown) })
     let reach_now = Some(whole - shown)
-    let exact_now = s.tuck_at.untracked() is Some(_) &&
-      (if across { wm is Exactly } else { hm is Exactly }) &&
+    let exact_now = (if across { wm is Exactly } else { hm is Exactly }) &&
       (adaptive_gen.val != @flex.computes() || tree.nodes[me].flex.style.grow > 0.0)
-    let changed = @signals.untracked(fn() { s.seen.get() != seen_now || reach.get() != reach_now || s.tuck_exact.get() != exact_now })
+    let changed = @signals.untracked(fn() {
+      s.seen.get() != seen_now || reach.get() != reach_now || (s.tuck_in is Some(_) && s.tuck_exact.get() != exact_now)
+    })
     // (told as one: where its fill puts it, how big it shows and how far it can go, so what follows where it is
     // scrolled to reads them together, never the one told and the other as it was (a list brought to an entry 969 down
     // read at its top, how far it could go none yet, and asked for the page before; a page come in over what shows
