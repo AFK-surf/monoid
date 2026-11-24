@@ -867,7 +867,9 @@ pub fn seg_head_node(
 /// A choice of a few on a page made once (segmented's), by how the page is laid out (look_node), in `slot`, which it
 /// lays out: narrow, Seg (seg_fill_node) sharing its line, the slot growing from none to what the line leaves it, or
 /// at a head's end (`head`) as wide as its options (seg_head_node); wide, the web's Segmented (seg_node), as wide as
-/// its options, the slot as wide as it. `labels`, `chosen`, `choose`, `said`: theirs.
+/// its options, the slot as wide as it. Inside a pushed narrow page's floating liquid glass top bar (`back_bar_lent`),
+/// `head=true` is omitted from the bar and must be paired with `narrow_bar_choice_node` at the top of the page body.
+/// `labels`, `chosen`, `choose`, `said`: theirs.
 #callsite(autofill(loc))
 pub fn segmented_node(
   slot : @view.View,
@@ -880,7 +882,10 @@ pub fn segmented_node(
 ) -> Unit {
   match look_node(slot) {
     Wide => seg_node(loc~, slot, labels, chosen, choose, said~) |> ignore
-    Narrow if head => seg_head_node(slot, labels, chosen, choose, said~) |> ignore
+    Narrow if head =>
+      if !slot.lent(back_bar_lent).unwrap_or(false) {
+        seg_head_node(slot, labels, chosen, choose, said~) |> ignore
+      }
     Narrow => {
       slot.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
       seg_fill_node(slot, labels, chosen, choose, said~) |> ignore

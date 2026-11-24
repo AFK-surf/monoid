@@ -1477,9 +1477,18 @@ pub fn profiles_overview_node(
   }
   let label = fn() { @sf.t("android-misc.bar.action.profiles") }
   let has_pools = @signals.computed(fn(_) { !pools().is_empty() })
+  let share_avail = profile_share_available(core, here, has_pools=fn() { has_pools.get() })
+  let share_shown = fn() { !frame().named && share_avail.get() }
   let add_actions = fn(l : @view.View) {
-    profile_share_node(l, core, here, fn() { !frame().named }, tips, has_pools=fn() { has_pools.get() })
-    l.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
+    @sf.bar_actions_pill_node(
+      l,
+      fn() { share_shown() || (add() && !frame().named) },
+      count=fn() { (if share_shown() { 1 } else { 0 }) + (if add() && !frame().named { 1 } else { 0 }) },
+      fn(g) {
+        profile_share_node(g, core, here, fn() { !frame().named }, tips, has_pools=fn() { has_pools.get() })
+        g.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
+      },
+    )
   }
   match bar_actions {
     Some(f) =>

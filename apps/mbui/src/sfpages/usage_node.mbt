@@ -1274,42 +1274,40 @@ pub fn usage_node(
     })
   }
   let choice : UsagePress = { pressed, press }
-  // (at its title's line's end; where a frame's bar names it, in that bar, as tall as its days' choice stands there)
+  let range_labels = fn() {
+    [
+      @sf.t("web-main.usage.days", args=[("n", "7")]),
+      @sf.t("web-main.usage.days", args=[("n", "30")]),
+      @sf.t("web-main.usage.allTime"),
+    ]
+  }
+  let range_chosen = fn() {
+    if usage_pick.summary.get() {
+      2
+    } else {
+      let days = match pressed.get() {
+        Some((d, _)) => d
+        None => usage_pick.days.get()
+      }
+      if days == 30 { 1 } else { 0 }
+    }
+  }
+  let range_choose = fn(k : Int) {
+    if k == 2 {
+      usage_pick.summary.set(true)
+    } else {
+      usage_pick.summary.set(false)
+      press(usage_days_choices[k], usage_pick.split.untracked())
+    }
+  }
+  // (at its title's line's end; where a frame's bar names it, in that bar, as tall as its days' choice stands there;
+  // on a pushed narrow sub-page, the floating glass top bar holds share alone and the range selector sits full-width above the cards)
   let actions = fn(l : @view.View) {
     // (the card to share of the agents' week, once something was spent, before the days)
     l.show(fn() { value() is Some(_) && !flag(value(), "empty") }, fn(s) {
       @sf.icon_button_node(s, "share", fn() { @sf.t("web-main.stations.shareCard") }, fn() { (core.share_card)() }, tips~) |> ignore
     })
-    @sf.segmented_node(
-      l,
-      head=true,
-      fn() {
-        [
-          @sf.t("web-main.usage.days", args=[("n", "7")]),
-          @sf.t("web-main.usage.days", args=[("n", "30")]),
-          @sf.t("web-main.usage.allTime"),
-        ]
-      },
-      fn() {
-        if usage_pick.summary.get() {
-          2
-        } else {
-          let days = match pressed.get() {
-            Some((d, _)) => d
-            None => usage_pick.days.get()
-          }
-          if days == 30 { 1 } else { 0 }
-        }
-      },
-      fn(k) {
-        if k == 2 {
-          usage_pick.summary.set(true)
-        } else {
-          usage_pick.summary.set(false)
-          press(usage_days_choices[k], usage_pick.split.untracked())
-        }
-      },
-    )
+    @sf.segmented_node(l, head=true, range_labels, range_chosen, range_choose)
   }
   match bar_actions {
     Some(f) => f(actions, @sf.segmented_node_height)
@@ -1320,6 +1318,7 @@ pub fn usage_node(
     fn() { @sf.t("web-pages.settings.usage.title") },
     fn() { ["body"] },
     fn(b, _) {
+      @sf.narrow_bar_choice_node(b, range_labels, range_chosen, range_choose)
       b.pick(
         fn() {
           match (chart(), chart_read().error) {

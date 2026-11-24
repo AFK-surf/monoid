@@ -990,6 +990,162 @@ test "narrow page_node with back renders floating liquid glass back pill and pro
 }
 
 ///|
+test "narrow page_node with back places title inline centered with circular glass back, groups trailing icon actions into one glass capsule, and avoids overlap with wide trailing actions" {
+  // 1. Grouped trailing icon actions (like Profile's share + add) share one glass pill; hidden when shown() is false
+  let actions_on = @signals.signal(true)
+  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(390.0))).height(Is(Some(844.0))) |> ignore
+        page_node(
+          b,
+          fn() { "Profile" },
+          fn() { ["b0"] },
+          fn(v, _) { v.box(fn(w) { w.height(Is(Some(60.0))).words(Is("body")) |> ignore }) |> ignore },
+          on_back=fn() {  },
+          frame=fn() { { back: Some("设置"), top: 32.0, foot: 0.0, named: false } },
+          actions=fn(a) {
+            bar_actions_pill_node(a, fn() { actions_on.get() }, count=fn() { 2 }, fn(g) {
+              icon_button_node(g, "share", fn() { "分享" }, fn() {  }) |> ignore
+              icon_button_node(g, "plus", fn() { "新建" }, fn() {  }) |> ignore
+            })
+          },
+        )
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.run_for(@ui.move_most_ms)
+  let pills = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+  assert_eq(pills.length(), 2, msg="1 circular back pill + 1 grouped trailing pill: \{Repr(pills)}")
+  // Left back pill is 40x40 circle; right grouped pill is 40pt tall and wider than 40pt
+  let left_pill = pills.filter(fn(g) { g.0 < 100.0 })[0]
+  let right_pill = pills.filter(fn(g) { g.0 > 200.0 })[0]
+  assert_true((left_pill.2 - 40.0).abs() < 0.5 && (left_pill.3 - 40.0).abs() < 0.5, msg="circular back: \{Repr(left_pill)}")
+  assert_true(right_pill.2 > 70.0 && (right_pill.3 - 40.0).abs() < 0.5, msg="grouped trailing pill: \{Repr(right_pill)}")
+  // Title is centered inline on the same row as the glass pills, with zero second-row duplicate
+  let titles = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "Profile" })
+  assert_eq(titles.length(), 1, msg="title drawn once inline")
+  let title_mid_x = titles[0].x + titles[0].w / 2.0
+  let title_mid_y = titles[0].y + titles[0].h / 2.0
+  let pill_mid_y = left_pill.1 + left_pill.3 / 2.0
+  assert_true((title_mid_x - 195.0).abs() <= 1.0, msg="title dead-centered: \{title_mid_x}")
+  assert_true((title_mid_y - pill_mid_y).abs() <= 2.0, msg="title inline with pills: \{title_mid_y} vs \{pill_mid_y}")
+  assert_eq(t.audit(), [], msg="audit with grouped trailing glass pill")
+  // Hiding grouped actions removes the trailing glass capsule (zero empty glass capsule)
+  actions_on.set(false)
+  t.run_for(@ui.move_most_ms)
+  let pills_hidden = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+  assert_eq(pills_hidden.length(), 1, msg="zero empty trailing glass pill: \{Repr(pills_hidden)}")
+  // 2. Pushed narrow page with segmented_node(head=true) + narrow_bar_choice_node keeps top bar symmetric
+  // (centered title + 40pt glass back + 40pt glass share) and puts the range selector full-width below the bar
+  let at = @signals.signal(0)
+  let t2 = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=600.0, platform=2)
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(390.0))).height(Is(Some(600.0))) |> ignore
+        let labels = fn() { ["7 天", "30 天", "总计"] }
+        let chosen = fn() { at.get() }
+        let choose = fn(k) { at.set(k) }
+        page_node(
+          b,
+          fn() { "用量" },
+          fn() { ["b0"] },
+          fn(v, _) {
+            narrow_bar_choice_node(v, labels, chosen, choose)
+            v.box(fn(w) { w.height(Is(Some(60.0))).words(Is("body")) |> ignore }) |> ignore
+          },
+          on_back=fn() {  },
+          frame=fn() { { back: Some("设置"), top: 32.0, foot: 0.0, named: false } },
+          actions=fn(a) {
+            icon_button_node(a, "share", fn() { "分享卡片" }, fn() {  }) |> ignore
+            segmented_node(a, head=true, labels, chosen, choose)
+          },
+        )
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t2.run_for(@ui.move_most_ms)
+  let pills2 = t2.drawn_glass().filter(fn(g) { g.4 == 6 })
+  assert_eq(pills2.length(), 2, msg="back circle + standalone share glass circle: \{Repr(pills2)}")
+  let title2 = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "用量" })[0]
+  assert_true(((title2.x + title2.w / 2.0) - 195.0).abs() <= 1.0, msg="用量 dead-centered: \{title2.x + title2.w / 2.0}")
+  let seg_word = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "7 天" })[0]
+  let bar_bottom2 = pills2[0].1 + pills2[0].3
+  assert_true(seg_word.y > bar_bottom2, msg="range selector below top bar: \{seg_word.y} > \{bar_bottom2}")
+  assert_eq(t2.audit(), [], msg="audit with narrow_bar_choice_node")
+  // 3. Narrow 320pt at 2.0x English ("Usage" + share + ["7 days", "30 days", "All time"]): zero squeeze or audit faults
+  let t3 = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=320.0, h=600.0, platform=2)
+  t3.set_font_scale(2.0)
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(320.0))).height(Is(Some(600.0))) |> ignore
+        let labels = fn() { ["7 days", "30 days", "All time"] }
+        let chosen = fn() { at.get() }
+        let choose = fn(k) { at.set(k) }
+        page_node(
+          b,
+          fn() { "Usage" },
+          fn() { ["b0"] },
+          fn(v, _) {
+            narrow_bar_choice_node(v, labels, chosen, choose)
+            v.box(fn(w) { w.height(Is(Some(60.0))).words(Is("body")) |> ignore }) |> ignore
+          },
+          on_back=fn() {  },
+          frame=fn() { { back: Some("Settings"), top: 0.0, foot: 0.0, named: false } },
+          actions=fn(a) {
+            icon_button_node(a, "share", fn() { "Share" }, fn() {  }) |> ignore
+            segmented_node(a, head=true, labels, chosen, choose)
+          },
+        )
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t3.run_for(@ui.move_most_ms)
+  assert_eq(t3.squeeze_faults(), [], msg="320pt 2.0x EN squeeze faults")
+  assert_eq(t3.audit(), [], msg="320pt 2.0x EN audit")
+  // 4. 2.0x font scale with small subtitle: Top clearance grows with text so first block clears floating top bar
+  let t4 = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0, platform=2)
+  t4.set_font_scale(2.0)
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.box(fn(b) {
+        b.width(Is(Some(390.0))).height(Is(Some(844.0))) |> ignore
+        page_node(
+          b,
+          fn() { "文件" },
+          fn() { ["b0"] },
+          fn(v, _) { v.box(fn(w) { w.height(Is(Some(60.0))).words(Is("first block")) |> ignore }) |> ignore },
+          on_back=fn() {  },
+          frame=fn() { { back: Some("设置"), top: 32.0, foot: 0.0, named: false } },
+          small=fn() { "Willow" },
+        )
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t4.run_for(@ui.move_most_ms)
+  let drawn4 = @ui.view_tree().unwrap().drawn()
+  let sub4 = drawn4.filter(fn(d) { d.words == "Willow" })[0]
+  let body4 = drawn4.filter(fn(d) { d.words == "first block" })[0]
+  assert_true(body4.y >= sub4.y + sub4.h + 4.0, msg="2.0x + small first block clears bar: body=\{body4.y}, sub_end=\{sub4.y + sub4.h}")
+  assert_eq(t4.audit(), [], msg="2.0x + small audit")
+}
+
+///|
 test "a page its frame names, its blocks told in place of what it showed waiting: at its top, narrow and wide" {
   // (no head, title or lead over its blocks: the room at its foot an item of its list, alone in it as its blocks
   // were told, held what showed, and they came in over it, the page at its end)

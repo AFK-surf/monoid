@@ -85,7 +85,9 @@ fn button_by(
     Some(f) => Some(f)
     None => if tone == Primary { Some(fn() { true }) } else { None }
   }
-  let height = button_height()
+  let in_back_bar = parent.lent(back_bar_lent).unwrap_or(false)
+  let glass_pill = in_back_bar && !solid && !on_night && !@glass.in_liquid_pill(parent)
+  let height = if in_back_bar { pg_back_pill_h } else { button_height() }
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by
   // its label, pressed and focused only while not disabled, Enter and Space pressing it. At work is disabled to all of
   // those, and told apart by the eye alone: said to the component as disabled, its spinner this look's. Here, its look)
@@ -187,9 +189,23 @@ fn button_by(
     .min_height(Is(Some(height)))
     .lines_up(Is(Some(Middle)))
     .radius(Is(height / 2.0))
-    .ground(By(fn() { looks().0 }))
     .alpha(By(fn() { seen.shown(v) }))
     |> ignore
+    if glass_pill {
+      glass_capsule_node(v, min_height=Some(height), radius=Some(height / 2.0), sharing=true, interactive=true) |> ignore
+      hover_ground_node(
+        v,
+        color=fn() {
+          if b.pressed() {
+            bar_pill_press_ink(solid=v.glass_solid())
+          } else {
+            @glass.liquid_pill_hover_ink(solid=v.glass_solid())
+          }
+        },
+      )
+    } else {
+      v.ground(By(fn() { looks().0 })) |> ignore
+    }
     // (its ends giving way alike where what holds it is narrower than its words and their ends: across, or in a row
     // that lends it ends_give_lent)
     let ends_give = across || v.lent(ends_give_lent).unwrap_or(false)

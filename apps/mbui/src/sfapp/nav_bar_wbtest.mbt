@@ -46,14 +46,15 @@ test "nav bar: back, title and what is at its end on one line (settings' pages)"
     let said = mids.map(fn(m) { m.0 + "@" + m.1.to_string() }).join(", ")
     println("nav bar \{mode}: \{said}")
     match standard_head(mode) {
-      // the standard head: back on the line (and what is at its end, as one), the large title under the line
+      // the standard head: single-row floating bar with circular back, centered inline title, and trailing glass actions on one line
       Some(title) => {
         if mids.length() < 1 || hi - lo > 0.25 || !mids.iter().any(fn(m) { m.0.contains("设置") }) {
           fail("\{mode}: the head's line holds \{said}")
         }
-        match t.find(title) {
-          Some((_, y)) if y > hi + 16.0 => ()
-          at => fail("\{mode}: its title \{title} at \{Repr(at)}, the head's line at \{hi}")
+        let drawn = @ui.view_tree().unwrap().drawn()
+        match drawn.search_by(fn(d) { d.words == title }) {
+          Some(i) if (drawn[i].y + drawn[i].h / 2.0 - hi).abs() <= 2.0 => ()
+          at => fail("\{mode}: its inline title \{title} at \{Repr(at)}, the head's line at \{hi}")
         }
       }
       None =>

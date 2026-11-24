@@ -524,7 +524,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-station-devices stationNet/sample": 6,
   "phone settings-station-devices resources/sample": 6,
   "phone settings-decisions settings/off": 6,
-  "phone settings-completion stationPart part=automaticDecisions/off": 76,
+  "phone settings-completion stationPart part=automaticDecisions/off": 6,
   "phone settings-completion stationPart part=automaticDecisions/decided": 8,
   "phone settings-changelog changelog/release": 49,
   "phone settings-notify-off profiles/down": 12,

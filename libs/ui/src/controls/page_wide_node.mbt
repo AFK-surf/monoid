@@ -1011,6 +1011,26 @@ pub fn narrow_about_node(parent : @view.View, about : () -> String, tips : TipLa
 }
 
 ///|
+/// Full-width segmented control rendered at the top of a pushed narrow `page_node`'s body when its header `segmented_node(head=true)`
+/// is omitted from the 40pt floating liquid glass top bar (so the bar stays symmetric with a centered title and matching 40pt glass
+/// actions, while wide pages and frame-named place bars keep their header segmented control unchanged).
+#callsite(autofill(loc))
+pub fn narrow_bar_choice_node(
+  parent : @view.View,
+  labels : () -> Array[String],
+  chosen : () -> Int,
+  choose : (Int) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  if part_of(parent).look is Narrow {
+    let pushed = parent.lent(pushed_narrow_lent).unwrap_or(fn() { false })
+    parent.show(pushed, at_once=true, fn(slot) {
+      page_choice_node(loc~, slot, labels, chosen, choose)
+    })
+  }
+}
+
+///|
 /// A wide page's trailing section gap (`section_foot`) placed dynamically when `shown` holds; nothing when narrow.
 #callsite(autofill(loc))
 pub fn section_foot_when_node(parent : @view.View, shown : () -> Bool, loc~ : SourceLoc) -> Unit {

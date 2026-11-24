@@ -252,12 +252,58 @@ fn skeleton_page_head(
   })
   match look {
     Narrow => {
-      parent.show(fn() { frame().back is Some(_) }, at_once=true, fn(b) {
-        b.row(Is(true)).padding(Is((pg_back_pill_x, pg_back_top, pg_back_pill_x, pg_back_foot))).lines_up(Is(Some(Middle)))
+      parent.show(fn() { frame().back is Some(_) && !frame().named }, at_once=true, fn(b) {
+        b
+        .row(Is(true))
+        .gap(Is(8.0))
+        .padding(Is((pg_back_pill_x, pg_back_top, pg_back_pill_x, pg_back_foot + pg_back_content_gap)))
+        .lines_up(Is(Some(Middle)))
         |> ignore
-        nav_back_pill_node(b, fn() { frame().back.unwrap_or("") }, on_back)
+        let left_extra : @signals.Signal[Double] = @signals.signal(0.0)
+        let balance_owner : Ref[Int] = Ref(0)
+        b.box(fn(left) {
+          left.row(Is(true)).lies_along(Is(Start)).lines_up(Is(Some(Middle))) |> ignore
+          nav_back_circle_node(left, fn() { frame().back.unwrap_or("") }, on_back)
+          left.box(fn(bal) { bal.width(By(fn() { Some(left_extra.get()) })) |> ignore }) |> ignore
+        })
+        |> ignore
+        b.box(fn(mid) {
+          mid
+          .grow(Is(1.0))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(pg_title_least)))
+          .lines_up(Is(Some(Middle)))
+          .lies_along(Is(Middle))
+          |> ignore
+          mid.box(fn(w) {
+            styled_words(w, title, fn() { nav_title_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        b.box(fn(right) {
+          right
+          .row(Is(true))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(pg_back_pill_h)))
+          .lies_along(Is(End))
+          .lines_up(Is(Some(Middle)))
+          |> ignore
+          match actions {
+            Some(f) =>
+              right.box(fn(a) {
+                a.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)) |> ignore
+                a.lends(back_bar_lent, true) |> ignore
+                a.lends(back_bar_balance, (left_extra, balance_owner)) |> ignore
+                f(a)
+              })
+              |> ignore
+            None => ()
+          }
+        })
+        |> ignore
       })
-      parent.show(fn() { !frame().named }, at_once=true, fn(s) {
+      parent.show(fn() { frame().back is None && !frame().named }, at_once=true, fn(s) {
         s
         .padding(By(fn() {
           let f = frame()

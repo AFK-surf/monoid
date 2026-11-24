@@ -66,19 +66,8 @@ pub fn workspace_node(
     // adding people, by email or from Slack: its managers'
     actions=fn(a) {
       a.show(manager, fn(s) {
-        @sf.action_box_node(s, fn() { @sf.t("web-pages.settings.members.add") }, fn(k) {
+        @sf.icon_action_opens_node(s, "user-plus", fn() { @sf.t("web-pages.settings.members.add") }, fn(k) {
           open_add_people(core, @signals.untracked(here), @signals.untracked(view), from=Node(k))
-        }, fn(k) {
-          k
-          .width(Is(Some(ws_add_side)))
-          .height(Is(Some(ws_add_side)))
-          // (round by its shape: the old view's radius=Full)
-          .radius(Is(1.0e6))
-          .lines_up(Is(Some(Middle)))
-          .lies_along(Is(Middle))
-          |> ignore
-          @sf.hover_ground_node(k)
-          @sf.icon_node(k, "user-plus", ws_add_icon, By(fn() { @sf.link_ink() })) |> ignore
         })
         |> ignore
       })
@@ -1019,13 +1008,6 @@ let ws_doing_mark : Double = 14.0
 
 ///|
 let ws_tail_gap : Double = 12.0
-
-///|
-/// 添加成员 at the title's end: 40 round (w=S10 h=S10), its icon 20 in the link's ink.
-let ws_add_side : Double = 40.0
-
-///|
-let ws_add_icon : Double = 20.0
 
 ///|
 pub let ws_more_icon : Double = 16.0

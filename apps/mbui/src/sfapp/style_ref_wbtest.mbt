@@ -165,16 +165,17 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // Whole-pixel View::shift lets ride_kept_for hit across the narrow page slide, moving cached segment coordinates by 1 ULP (2e-14 px).
   // Adaptive liquid-glass back button icon bands encode center-relative offsets in slots 6-7 (+16 bytes on narrow screens).
   // iOS 27 pressed-lens calibration updated resting Switch shadow/track and Segmented track ground on wide station pages.
+  // Narrow pushed page_node screens now use a single-row floating liquid glass top bar (circular < + inline title + glass trailing actions).
   inspect(out.to_string(), content=(
-    #|settings narrow 102220:72854e83
-    #|station narrow 97639:5d9b51f
-    #|me-reading narrow 31622:782d9e95
+    #|settings narrow 101822:68cb371a
+    #|station narrow 97456:dd9a2107
+    #|me-reading narrow 31221:8154947e
     #|settings wide 204457:ab771352
     #|station wide 275577:348fb345
     #|me-reading wide 199176:3c1c9ea
-    #|settings-dark narrow 102484:974ec115
-    #|station-dark narrow 97531:3f89b703
-    #|me-reading-dark narrow 31755:f66fc5f2
+    #|settings-dark narrow 102090:c0590db8
+    #|station-dark narrow 97349:db566496
+    #|me-reading-dark narrow 31358:593d2ca5
     #|settings-dark wide 204349:32841efe
     #|station-dark wide 275167:12aaf9fc
     #|me-reading-dark wide 199134:f5de9219

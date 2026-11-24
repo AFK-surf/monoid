@@ -227,12 +227,7 @@ fn icon_action_by(
   loc~ : SourceLoc,
 ) -> @view.View {
   if parent.lent(back_bar_lent).unwrap_or(false) {
-    let btn_v : Ref[@view.View?] = Ref(None)
-    bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=3.0, gap=0.0, fn(pill) {
-      btn_v.val = Some(icon_button_by(loc~, pill, icon, label, press, tips, 34.0, 18.0, None, disabled))
-    })
-    |> ignore
-    btn_v.val.unwrap()
+    icon_button_by(loc~, parent, icon, label, press, tips, 34.0, 20.0, None, disabled)
   } else if native_input() is Finger {
     icon_button_by(loc~, parent, icon, label, press, tips, touch_target, touch_glyph, None, disabled)
   } else {
@@ -314,9 +309,22 @@ pub fn head_actions_node(
         row.pick(busy, fn(p, busy) {
           p.row(Is(true)).gap(Is(head_actions_narrow_gap)).lines_up(Is(Some(Middle))) |> ignore
           if busy {
-            spinner_node(p, size=spinner_inline) |> ignore
+            if p.lent(back_bar_lent).unwrap_or(false) && !@glass.in_liquid_pill(p) {
+              bar_pill_group_node(loc~, p, height=pg_back_pill_h, pad=3.0, gap=0.0, fn(pill) {
+                pill.box(fn(c) {
+                  c.width(Is(Some(34.0))).height(Is(Some(34.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+                  spinner_node(c, size=spinner_inline) |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+            } else {
+              spinner_node(p, size=spinner_inline) |> ignore
+            }
           } else {
-            p.each_of(fn() { actions }, fn(e, a) { icon_action_node(e, a.0, a.1, a.2) |> ignore })
+            bar_actions_pill_node(loc~, p, fn() { !actions.is_empty() }, count=fn() { actions.length() }, fn(g) {
+              g.each_of(fn() { actions }, fn(e, a) { icon_action_node(e, a.0, a.1, a.2) |> ignore })
+            })
           }
         })
     }

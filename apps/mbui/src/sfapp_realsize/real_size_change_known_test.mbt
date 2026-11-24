@@ -1483,7 +1483,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone settings-decisions settings/off": (0, 0, 11, 4, 0, 0),
   "phone settings-decisions profiles/down": (0, 0, 7, 0, 0, 0),
   "phone settings-completion settings/off": (0, 0, 7, 0, 0, 0),
-  "phone settings-completion stationPart part=automaticDecisions/off": (76, 13, 74, 14, 0, 0),
+  "phone settings-completion stationPart part=automaticDecisions/off": (0, 12, 23, 0, 0, 0),
   "phone settings-completion stationPart part=automaticDecisions/decided": (0, 0, 12, 3, 0, 0),
   "phone settings-bars connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-bars vaults/item": (0, 0, 0, 0, 0, 0),

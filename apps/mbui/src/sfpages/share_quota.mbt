@@ -163,6 +163,17 @@ pub fn accounts_shareable(core : Core, scope : String) -> Bool {
 }
 
 ///|
+/// Whether Profile's header share button has any shareable quota picture (pool overview or per-account quotas).
+fn profile_share_available(
+  core : Core,
+  here : () -> Here,
+  has_pools? : () -> Bool = fn() { false },
+) -> @signals.Computed[Bool] {
+  let scope = fn() { here().workspace }
+  @signals.computed(fn(_) { has_pools() || accounts_shareable(core, scope()) })
+}
+
+///|
 /// Profile's header shares the available pictures. The accounts list opens its own picture directly.
 fn profile_share_node(
   l : @view.View,
@@ -175,7 +186,8 @@ fn profile_share_node(
 ) -> Unit {
   let scope = fn() { here().workspace }
   let accounts = @signals.computed(fn(_) { accounts_shareable(core, scope()) })
-  l.show(fn() { shown() && (has_pools() || accounts.get()) }, fn(s) {
+  let available = profile_share_available(core, here, has_pools~)
+  l.show(fn() { shown() && available.get() }, fn(s) {
     let label = fn() {
       if !has_pools() {
         @sf.t("web-main.share.accounts")

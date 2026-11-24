@@ -96,7 +96,7 @@ pub fn completion_node(
   }
   // 重新发现模型: every online station's models read again
   let actions = fn(l : @view.View) {
-    @sf.button_node(l, fn() { @sf.t("web-pages.automaticDecisions.refresh") }, fn() {
+    @sf.page_action_node(l, "refresh", fn() { @sf.t("web-pages.automaticDecisions.refresh") }, fn() {
       for st in @signals.untracked(stations) {
         if flag(Some(st), "online") {
           @settings.act(
@@ -108,7 +108,7 @@ pub fn completion_node(
           )
         }
       }
-    }, tone=Ghost, icon="refresh")
+    })
     |> ignore
   }
   match bar_actions {

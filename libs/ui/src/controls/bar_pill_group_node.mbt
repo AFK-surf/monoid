@@ -64,6 +64,54 @@ pub fn bar_pill_group_node(
 }
 
 ///|
+/// Groups multiple narrow top-bar icon actions into one floating 40pt liquid glass capsule when placed in a pushed
+/// narrow page's floating top bar (`back_bar_lent`), gated on `shown` so no empty glass capsule is ever painted.
+/// `count` reports how many 34pt icon buttons are currently visible inside the capsule so the bar can balance its
+/// opposite side and keep the inline title dead-centered. Outside that floating bar, renders `body` directly.
+#callsite(autofill(loc))
+pub fn bar_actions_pill_node(
+  parent : @view.View,
+  shown : () -> Bool,
+  body : (@view.View) -> Unit,
+  count? : () -> Int = fn() { 1 },
+  loc~ : SourceLoc,
+) -> Unit {
+  if parent.lent(back_bar_lent).unwrap_or(false) && !@glass.in_liquid_pill(parent) {
+    match parent.lent(back_bar_balance) {
+      Some((bal, owner_ref)) => {
+        let my_owner = owner_ref.val + 1
+        owner_ref.val = my_owner
+        let step = pg_bar_pill_key + pg_bar_pill_gap
+        parent.reacts(fn() {
+          if shown() {
+            let n = count()
+            if n > 1 { (n - 1).to_double() * step } else { 0.0 }
+          } else {
+            0.0
+          }
+        }, fn(extra) {
+          if owner_ref.val == my_owner {
+            bal.set(extra)
+          }
+        })
+        parent.owns(fn() {
+          if owner_ref.val == my_owner {
+            bal.set(0.0)
+          }
+        })
+        |> ignore
+      }
+      None => ()
+    }
+    parent.show(shown, at_once=true, fn(slot) {
+      bar_pill_group_node(loc~, slot, height=pg_back_pill_h, pad=pg_bar_pill_pad, gap=pg_bar_pill_gap, body) |> ignore
+    })
+  } else {
+    body(parent)
+  }
+}
+
+///|
 /// bar_pill_group_node's pill, its glass `tint()` where said (`window_keys_node`), else delegates to neutral `bar_pill_group_node`.
 #callsite(autofill(loc))
 fn bar_pill_group_with(

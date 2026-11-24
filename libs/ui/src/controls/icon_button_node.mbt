@@ -70,6 +70,37 @@ fn icon_button_by(
   lit? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
+  let in_back_bar = parent.lent(back_bar_lent).unwrap_or(false)
+  if in_back_bar && !@glass.in_liquid_pill(parent) {
+    let btn_v : Ref[@view.View?] = Ref(None)
+    bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=3.0, gap=0.0, fn(pill) {
+      btn_v.val = Some(
+        icon_button_by(
+          loc~,
+          pill,
+          icon,
+          label,
+          press,
+          tips,
+          34.0,
+          20.0,
+          icon_now,
+          disabled,
+          linked?=linked,
+          shortcut~,
+          ink?,
+          hover_bg?,
+          grounded~,
+          on~,
+          lit~,
+        ),
+      )
+    })
+    |> ignore
+    return btn_v.val.unwrap()
+  }
+  let size = if in_back_bar { 34.0 } else { size }
+  let icon_size = if in_back_bar { 20.0 } else { icon_size }
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by
   // its label, pressed and focused only while not disabled, its tip held up by a finger's long press via Hold. Here,
   // its look)
@@ -190,7 +221,8 @@ fn icon_button_by(
         }
       }))
       |> ignore
-      icon_node(v, icon, icon_size, By(fn() { if on() || hand.shown(v) > 0.5 { lit_ink() } else { theme().p.muted } }), name_now?=icon_now, weighed=true)
+      let rest_ink = if in_back_bar { lit_ink } else { fn() { theme().p.muted } }
+      icon_node(v, icon, icon_size, By(fn() { if on() || hand.shown(v) > 0.5 { lit_ink() } else { rest_ink() } }), name_now?=icon_now, weighed=true)
       |> ignore
       tip.val = match tips {
         Some(t) => Some(tip_node(t, v, label, side=Bottom, shortcut~))
