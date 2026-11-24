@@ -101,6 +101,7 @@ pub fn turn_step(update : J?) -> Bool {
 /// said goes into, and how many were made; where the turn stands.
 pub(all) struct Live {
   open : Array[String]
+  background : Array[String]
   mut said : String?
   mut n : Int
   mut phase : String?
@@ -108,7 +109,7 @@ pub(all) struct Live {
 
 ///|
 pub fn Live::new() -> Live {
-  { open: [], said: None, n: 0, phase: None }
+  { open: [], background: [], said: None, n: 0, phase: None }
 }
 
 ///|
@@ -119,6 +120,13 @@ pub fn Live::of_state(state : J?) -> Live {
     for id in ids {
       if id is Str(s) && !live.open.contains(s) {
         live.open.push(s)
+      }
+    }
+  }
+  if field(state, "background") is Some(Arr(ids)) {
+    for id in ids {
+      if id is Str(s) && live.open.contains(s) && !live.background.contains(s) {
+        live.background.push(s)
       }
     }
   }
@@ -136,12 +144,16 @@ pub fn Live::of_state(state : J?) -> Live {
 
 ///|
 pub fn Live::state(self : Live) -> J {
-  obj([
+  let fields : Array[(String, J)] = [
     ("open", Arr(self.open.map(id => J::Str(id)))),
     ("said", match self.said { Some(s) => Str(s); None => Null }),
     ("n", Num(self.n.to_double())),
     ("phase", match self.phase { Some(p) => jstr(p); None => Null }),
-  ])
+  ]
+  if self.background.length() > 0 {
+    fields.push(("background", Arr(self.background.map(id => J::Str(id)))))
+  }
+  obj(fields)
 }
 
 ///|
@@ -156,6 +168,21 @@ fn Live::to(self : Live, next : String, out : Array[J]) -> Unit {
 fn Live::close(self : Live, id : String) -> Unit {
   if self.open.search(id) is Some(i) {
     ignore(self.open.remove(i))
+  }
+  if self.background.search(id) is Some(i) {
+    ignore(self.background.remove(i))
+  }
+}
+
+///|
+/// Marks every still-open tool call as running in the background so it does not keep later tool completions from
+/// moving the phase back to `requesting` (Antigravity CLI keeps a backgrounded `run_command` `in_progress` while
+/// the model goes on thinking, answering, and calling other tools).
+fn Live::background_open(self : Live) -> Unit {
+  for id in self.open {
+    if has_prefix(id, "call:") && !self.background.contains(id) {
+      self.background.push(id)
+    }
   }
 }
 
@@ -199,6 +226,7 @@ pub fn Live::feed(self : Live, update : J?) -> Array[J] {
     if text.length() == 0 {
       return out
     }
+    self.background_open()
     self.to("responding", out)
     let tail = "/" + step
     let same = match self.said {
@@ -249,7 +277,7 @@ fn Live::result(self : Live, id : String, update : J?, out : Array[J]) -> Unit {
   }
   self.close(id)
   out.push(end_event(id))
-  if !self.open.iter().any(o => has_prefix(o, "call:")) {
+  if !self.open.iter().any(o => has_prefix(o, "call:") && !self.background.contains(o)) {
     self.to("requesting", out)
   }
 }
@@ -259,6 +287,7 @@ fn Live::result(self : Live, id : String, update : J?, out : Array[J]) -> Unit {
 pub fn Live::ended(self : Live) -> Array[J] {
   let out = self.open.map(end_event)
   self.open.clear()
+  self.background.clear()
   self.said = None
   self.phase = None
   out
@@ -701,6 +730,9 @@ pub fn Session::line(self : Session, message : J, now : () -> Double) -> Said {
   // ends the turn running now.
   if self.turn.steering.search(answered) is Some(i) {
     ignore(self.turn.steering.remove(i))
+    if self.turn.busy {
+      self.live.background_open()
+    }
     events.push(obj([("type", jstr("answered")), ("id", Str(answered)), ("answer", message)]))
     return { events, node: false }
   }

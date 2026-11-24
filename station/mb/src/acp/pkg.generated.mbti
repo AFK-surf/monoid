@@ -40,6 +40,7 @@ pub(all) struct Child {
 
 pub(all) struct Live {
   open : Array[String]
+  background : Array[String]
   mut said : String?
   mut n : Int32
   mut phase : String?
@@ -74,6 +75,9 @@ pub(all) struct Session {
   kept : Bool
   mut session : String
   mut loading : Bool
+  mut load_replay_guard : Bool
+  mut guard_started_at : Double?
+  staged_kept : Array[@jsjson.JValue]
   turn : Turn
   mut live : Live
   calls : Array[(String, Call)]
@@ -82,11 +86,14 @@ pub(all) struct Session {
   children : Array[(String, Child)]
 }
 pub fn Session::cut_short(Self) -> Array[@jsjson.JValue]
+pub fn Session::flush_staged_events(Self) -> Array[@jsjson.JValue]
 pub fn Session::injected(Self, String, Bool, String) -> Array[@jsjson.JValue]
 pub fn Session::line(Self, @jsjson.JValue, () -> Double) -> Said
 pub fn Session::new(String, kept~ : Bool) -> Self
 pub fn Session::of_state(String, kept~ : Bool, @jsjson.JValue?, @jsjson.JValue?) -> Self
-pub fn Session::prompted(Self, String, String) -> Array[@jsjson.JValue]
+pub fn Session::opened(Self, resumed? : Bool) -> Unit
+pub fn Session::prompted(Self, String, String, now? : () -> Double) -> Array[@jsjson.JValue]
+pub fn Session::resent(Self, String) -> Array[@jsjson.JValue]
 pub fn Session::state(Self) -> @jsjson.JValue
 
 pub(all) struct Turn {

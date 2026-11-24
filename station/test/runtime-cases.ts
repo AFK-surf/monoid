@@ -314,6 +314,25 @@ ACP.push(
   update("s-agy-resumed", text("agent_message_chunk", "fresh real answer")),
   answer("prompt:r2", { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 20 } }),
 );
+// agy backgrounded tool call stays in_progress while model keeps thinking, steering, and finishing later tool calls:
+// later tool completions must still emit phase: "requesting" so steered unread messages clear.
+ACP.push(
+  { $new: { flavor: "agy", kept: true } },
+  { $session: "s-agy-bg" },
+  { $opened: { resumed: false } },
+  { $prompt: { owner: "prompt:b1", text: "run slow command" } },
+  update("s-agy-bg", { sessionUpdate: "tool_call", toolCallId: "bg1", title: "sleep 60", status: "in_progress", rawInput: {} }),
+  update("s-agy-bg", text("agent_thought_chunk", "command moved to background")),
+  update("s-agy-bg", { sessionUpdate: "tool_call", toolCallId: "fg1", title: "Run mcp_stillfail_chat_state", status: "in_progress", rawInput: { kind: "waiting" } }),
+  update("s-agy-bg", { sessionUpdate: "tool_call_update", toolCallId: "fg1", status: "completed", content: [] }),
+  update("s-agy-bg", text("agent_message_chunk", "waiting")),
+  { $inject: { id: "steer:b2", takeOver: true, text: "second question" } },
+  answer("prompt:b1", { stopReason: "end_turn", usage: { inputTokens: 50, outputTokens: 10 } }),
+  update("s-agy-bg", { sessionUpdate: "tool_call", toolCallId: "fg2", title: "Run mcp_stillfail_chat_post", status: "in_progress", rawInput: { text: "done" } }),
+  update("s-agy-bg", { sessionUpdate: "tool_call_update", toolCallId: "fg2", status: "completed", content: [] }),
+  update("s-agy-bg", { sessionUpdate: "tool_call_update", toolCallId: "bg1", status: "completed", content: [{ type: "content", content: { type: "text", text: "finished" } }] }),
+  answer("steer:b2", { stopReason: "end_turn", usage: { inputTokens: 80, outputTokens: 20 } }),
+);
 
 /// What a crash reads again of an output: the lines, and what the session it read is new with.
 export const DSH_REPLAYS: Json[][] = [

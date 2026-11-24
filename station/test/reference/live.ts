@@ -261,7 +261,7 @@ export class LiveFromDsh {
   }
 }
 
-export type AcpLiveState = { open: string[]; said: string | null; n: number; phase: Phase | null };
+export type AcpLiveState = { open: string[]; said: string | null; n: number; phase: Phase | null; background?: string[] };
 
 /// What a content block of an ACP update says (its text; anything else nothing).
 const acpText = (content: Json): string => {
@@ -289,6 +289,7 @@ export const acpNamed = (update: Json): [string, Json] =>
 /// its output.
 export class LiveFromAcp {
   private open = new Set<string>();
+  private background = new Set<string>();
   /// The step what is being said goes into (text or thinking), and how many steps were made.
   private said: string | null = null;
   private n = 0;
@@ -297,6 +298,7 @@ export class LiveFromAcp {
   constructor(state?: AcpLiveState) {
     if (state) {
       this.open = new Set(state.open);
+      this.background = new Set((state.background ?? []).filter((id) => this.open.has(id)));
       this.said = state.said;
       this.n = state.n;
       this.phase = state.phase;
@@ -304,7 +306,19 @@ export class LiveFromAcp {
   }
 
   state(): AcpLiveState {
-    return { open: [...this.open], said: this.said, n: this.n, phase: this.phase };
+    return {
+      open: [...this.open],
+      said: this.said,
+      n: this.n,
+      phase: this.phase,
+      ...(this.background.size > 0 ? { background: [...this.background] } : {}),
+    };
+  }
+
+  backgroundOpen() {
+    for (const id of this.open) {
+      if (id.startsWith("call:")) this.background.add(id);
+    }
   }
 
   private to(next: Phase, out: LiveEvent[]) {
@@ -341,6 +355,7 @@ export class LiveFromAcp {
       const step: Step = kind === "agent_message_chunk" ? "text" : "thinking";
       const text = acpText(update.content);
       if (text === "") return out;
+      this.backgroundOpen();
       this.to("responding", out);
       if (this.said === null || !this.said.endsWith(`/${step}`)) {
         this.endSaid(out);
@@ -375,14 +390,16 @@ export class LiveFromAcp {
     const output = (Array.isArray(update.content) ? update.content : []).map(acpText).filter((t: string) => t !== "").join("\n");
     if (output !== "") out.push({ kind: "delta", id, field: "output", text: chars(output, INPUT_MOST) });
     this.open.delete(id);
+    this.background.delete(id);
     out.push({ kind: "end", id });
-    if (![...this.open].some((o) => o.startsWith("call:"))) this.to("requesting", out);
+    if (![...this.open].some((o) => o.startsWith("call:") && !this.background.has(o))) this.to("requesting", out);
   }
 
   /// The turn ended: whatever is still open ends with it.
   ended(): LiveEvent[] {
     const out: LiveEvent[] = [...this.open].map((id) => ({ kind: "end", id }) as LiveEvent);
     this.open.clear();
+    this.background.clear();
     this.said = null;
     this.phase = null;
     return out;
@@ -849,6 +866,7 @@ export class AcpReference {
     const at = this.turn.steering.indexOf(id);
     if (at >= 0) {
       this.turn.steering.splice(at, 1);
+      if (this.turn.busy) this.live.backgroundOpen();
       events.push({ type: "answered", id, answer: message });
       return { events, node: false };
     }

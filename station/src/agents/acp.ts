@@ -74,7 +74,7 @@ export type Call = { name: string; input: Json; startedAt?: number };
 export type Said = { type: "assistant" | "thinking"; text: string };
 
 /// Its live steps as the program keeps them (mb/src/acp `Live::state`).
-export type AcpLiveState = { open: string[]; said: string | null; n: number; phase: string | null };
+export type AcpLiveState = { open: string[]; said: string | null; n: number; phase: string | null; background?: string[] };
 
 /// A session as a next station takes it up. What a station before this one's handed over may lack.
 export type AcpSnapshot = ProcessSnapshot & {

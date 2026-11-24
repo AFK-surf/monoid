@@ -427,7 +427,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p1","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding"},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding","background":["call:k-c1"]},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -444,7 +444,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p1","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding"},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding","background":["call:k-c1"]},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -461,7 +461,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p1","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding"},"parent":"call:c2"}],["k2",{"live":{"open":[],"said":null,"n":0,"phase":null},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding","background":["call:k-c1"]},"parent":"call:c2"}],["k2",{"live":{"open":[],"said":null,"n":0,"phase":null},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -478,7 +478,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"prompt:p1","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding"},"parent":"call:c2"}],["k2",{"live":{"open":["said:1/thinking"],"said":"said:1/thinking","n":1,"phase":"responding"},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
+      #|{"live":{"open":["call:c2"],"said":null,"n":2,"phase":"working"},"said":null,"calls":[["c2",{"name":"mcp__stillfail__chat_state","input":{"state":"all_done"},"startedAt":1700000000000}]],"saidLast":"","children":[["k1",{"live":{"open":["call:k-c1","said:1/text"],"said":"said:1/text","n":1,"phase":"responding","background":["call:k-c1"]},"parent":"call:c2"}],["k2",{"live":{"open":["said:1/thinking"],"said":"said:1/thinking","n":1,"phase":"responding"},"parent":"call:c2"}]],"loading":false,"session":"s-grok"}
     ),
   ),
   (
@@ -6922,6 +6922,261 @@ let steps_said : Array[(String, String, String, String, String)] = [
     ),
     (
       #|{"live":{"open":[],"said":null,"n":2,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy-resumed"}
+    ),
+  ),
+  (
+    (
+      #|{"$new":{"flavor":"agy","kept":true}}
+    ),
+    (
+      #|[]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":0,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":true,"session":""}
+    ),
+  ),
+  (
+    (
+      #|{"$session":"s-agy-bg"}
+    ),
+    (
+      #|[]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":0,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":true,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"$opened":{"resumed":false}}
+    ),
+    (
+      #|[]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":0,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"$prompt":{"owner":"prompt:b1","text":"run slow command"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"user","text":"run slow command"}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:b1","steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":0,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"tool_call","toolCallId":"bg1","title":"sleep 60","status":"in_progress","rawInput":{}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:bg1","step":"tool","tool":"sleep 60","input":"{}"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:b1","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1"],"said":null,"n":0,"phase":"working"},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"command moved to background"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:1/thinking","step":"thinking"}},{"type":"live","event":{"kind":"delta","id":"said:1/thinking","field":"text","text":"command moved to background"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:b1","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1","said:1/thinking"],"said":"said:1/thinking","n":1,"phase":"responding","background":["call:bg1"]},"said":{"type":"thinking","text":"command moved to background"},"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"tool_call","toolCallId":"fg1","title":"Run mcp_stillfail_chat_state","status":"in_progress","rawInput":{"kind":"waiting"}}}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"thinking","text":"command moved to background"}},{"type":"live","event":{"kind":"end","id":"said:1/thinking"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:fg1","step":"tool","tool":"mcp__stillfail__chat_state","input":"{\n  \"kind\": \"waiting\"\n}"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:b1","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1","call:fg1"],"said":null,"n":1,"phase":"working","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}],["fg1",{"name":"mcp__stillfail__chat_state","input":{"kind":"waiting"},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"tool_call_update","toolCallId":"fg1","status":"completed","content":[]}}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"tool","id":"fg1","name":"mcp__stillfail__chat_state","status":"completed","startedAt":1700000000000,"args":{"kind":"waiting"},"result":""}},{"type":"live","event":{"kind":"end","id":"call:fg1"}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:b1","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1"],"said":null,"n":1,"phase":"requesting","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"waiting"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"start","id":"said:2/text","step":"text"}},{"type":"live","event":{"kind":"delta","id":"said:2/text","field":"text","text":"waiting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"prompt:b1","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"responding","background":["call:bg1"]},"said":{"type":"assistant","text":"waiting"},"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"$inject":{"id":"steer:b2","takeOver":true,"text":"second question"}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"assistant","text":"waiting"}},{"type":"kept","line":{"type":"user","text":"second question","steered":true}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":["prompt:b1"]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"responding","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","id":"prompt:b1","result":{"stopReason":"end_turn","usage":{"inputTokens":50,"outputTokens":10}}}
+    ),
+    (
+      #|[{"type":"answered","id":"prompt:b1","answer":{"jsonrpc":"2.0","id":"prompt:b1","result":{"stopReason":"end_turn","usage":{"inputTokens":50,"outputTokens":10}}}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"responding","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"tool_call","toolCallId":"fg2","title":"Run mcp_stillfail_chat_post","status":"in_progress","rawInput":{"text":"done"}}}}
+    ),
+    (
+      #|[{"type":"live","event":{"kind":"end","id":"said:2/text"}},{"type":"live","event":{"kind":"phase","phase":"working"}},{"type":"live","event":{"kind":"start","id":"call:fg2","step":"tool","tool":"mcp__stillfail__chat_post","input":"{\n  \"text\": \"done\"\n}"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1","call:fg2"],"said":null,"n":2,"phase":"working","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}],["fg2",{"name":"mcp__stillfail__chat_post","input":{"text":"done"},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"tool_call_update","toolCallId":"fg2","status":"completed","content":[]}}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"tool","id":"fg2","name":"mcp__stillfail__chat_post","status":"completed","startedAt":1700000000000,"args":{"text":"done"},"result":""}},{"type":"live","event":{"kind":"end","id":"call:fg2"}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":[]}
+    ),
+    (
+      #|{"live":{"open":["call:bg1"],"said":null,"n":2,"phase":"requesting","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy-bg","update":{"sessionUpdate":"tool_call_update","toolCallId":"bg1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"finished"}}]}}}
+    ),
+    (
+      #|[{"type":"kept","line":{"type":"tool","id":"bg1","name":"sleep 60","status":"completed","startedAt":1700000000000,"args":{},"result":"finished"}},{"type":"live","event":{"kind":"delta","id":"call:bg1","field":"output","text":"finished"}},{"type":"live","event":{"kind":"end","id":"call:bg1"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":2,"phase":"requesting"},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
+    ),
+  ),
+  (
+    (
+      #|{"jsonrpc":"2.0","id":"steer:b2","result":{"stopReason":"end_turn","usage":{"inputTokens":80,"outputTokens":20}}}
+    ),
+    (
+      #|[{"type":"answered","id":"steer:b2","answer":{"jsonrpc":"2.0","id":"steer:b2","result":{"stopReason":"end_turn","usage":{"inputTokens":80,"outputTokens":20}}},"outcome":{"kind":"completed"}},{"type":"kept","line":{"type":"end","status":"finished"}},{"type":"turnEnded","outcome":{"kind":"completed"}}]
+    ),
+    (
+      #|false
+    ),
+    (
+      #|{"busy":false,"aborting":false,"owner":null,"steering":[]}
+    ),
+    (
+      #|{"live":{"open":[],"said":null,"n":2,"phase":null},"said":null,"calls":[],"saidLast":"","children":[],"loading":false,"session":"s-agy-bg"}
     ),
   ),
 ]
