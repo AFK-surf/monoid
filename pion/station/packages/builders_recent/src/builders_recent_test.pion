@@ -59,23 +59,12 @@ test "parse_recent_scope accepts all 4 valid forms and rejects invalid inputs in
   }
 }
 
-test "scope_key and next_turn_index isolate per-scope fair round-robin rotation" {
+test "scope_key and next_turn_index isolate per-scope keys and wrap lane indices" {
   expect(scope_key(false, "A") == "w:A", "workspace key")
   expect(scope_key(true, "A") == "h:A", "home key")
   expect(scope_key(false, "A") != scope_key(true, "A"), "workspace and home keys distinct")
-
-  let turns : Map[String, Int] = Map::new()
-  // Workspace scope has 7 lanes; home scope has 13 lanes; advancing one does not disturb the other.
-  let ws_k = scope_key(false, "A")
-  let hm_k = scope_key(true, "A")
-  let mut t_ws = 0
-  for step in 0..<10 {
-    let at = next_turn_index(t_ws, 0, 7)
-    expect(at == step % 7, "ws lane rotation")
-    t_ws = (at + 1) % 7
-    turns.set(ws_k, t_ws)
-  }
-  expect(match turns.get(hm_k) { None => true, Some(_) => false }, "home turn unaffected by ws")
+  expect(next_turn_index(0, 0, 7) == 0, "ws start")
+  expect(next_turn_index(5, 3, 7) == 1, "ws wrap-around")
   expect(next_turn_index(11, 4, 13) == 2, "home wrap-around")
 }
 

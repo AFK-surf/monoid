@@ -74,6 +74,7 @@ on:
       - "station/src/store/archive-mark-index.ts"
       - "station/src/store/backfill.ts"
       - "station/src/store/card-post-index.ts"
+      - "station/src/store/chat-list.ts"
       - "station/src/store/legacy-said-builder.ts"
       - "station/src/store/post-blocks.ts"
       - "station/src/store/session-bindings-index.ts"

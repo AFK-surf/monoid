@@ -307,10 +307,11 @@ pub fn run_recent_chat(db_path : String) -> Int {
 }
 
 /// Real-SQLite self-test (invoked from `stillfail-pion --smoke-sql-db`) verifying:
-/// 1. Nested `contribution` (`savepoint_err`) partial rollback inside an outer `tx_err`
-///    rolls back only the failing contribution while preserving earlier writes in the outer tx.
-/// 2. `installed()` returns `Ok(false)` when `recent_chat_versions` is missing and component is absent,
-///    and errors when component exists without `recent_chat_versions`.
+/// 1. `installed()` returns `Ok(false)` when `recent_chat_versions` and component are absent,
+///    and errors when a component table exists without `recent_chat_versions`.
+/// 2. Nested `contribution` (`savepoint_err`) partial rollback inside an outer `tx_err`
+///    rolls back partial writes (`recent_scope_sources` + `recent_scope_rows`) from a failing
+///    contribution while preserving earlier writes and letting subsequent writes in the outer tx commit.
 pub fn run_recent_selftest() -> Result[Unit, String] {
   let db = match sql_db::Db::create(":memory:", wait_ms=250) {
     Ok(d) => d
@@ -324,7 +325,7 @@ pub fn run_recent_selftest() -> Result[Unit, String] {
       return Err("recent selftest setup failed: " + e.message)
     }
   }
-  // 1. Missing recent_chat_versions + missing component -> Ok(false)
+  // 1a. Missing recent_chat_versions + missing component -> Ok(false)
   match installed(db, "scope") {
     Ok(false) => ()
     Ok(true) => {
@@ -336,7 +337,23 @@ pub fn run_recent_selftest() -> Result[Unit, String] {
       return Err("expected installed(scope) to return Ok(false) when versions table missing")
     }
   }
-  // 2. Install scope, track "W1", seed thread 1 & 2, verify nested savepoint rollback preserves thread 1.
+  // 1b. Component table present without recent_chat_versions -> incompatible/missing version error
+  let _ = db.exec("CREATE TABLE recent_chat_meta (id INTEGER PRIMARY KEY);")
+  match installed(db, "global") {
+    Err(builders_core::StepError::App(msg)) => {
+      if msg != "recent chat global index has an incompatible or missing version" {
+        db.close()
+        return Err("unexpected missing-versions error: " + msg)
+      }
+    }
+    _ => {
+      db.close()
+      return Err("expected missing-versions error when component exists without recent_chat_versions")
+    }
+  }
+  let _ = db.exec("DROP TABLE recent_chat_meta;")
+  // 2. Install scope, track W1 & W2, and install a trigger that aborts W2's total update AFTER
+  //    put_source(W2, ...) has already inserted into recent_scope_sources and recent_scope_rows.
   match install_scope(db) {
     Ok(_) => ()
     Err(_) => {
@@ -351,46 +368,120 @@ pub fn run_recent_selftest() -> Result[Unit, String] {
       return Err("track(W1) failed")
     }
   }
-  let _ = db.exec("INSERT INTO threads(id, surface, channel, thread_ts, home, created_at) VALUES (1, 'web', 'c', 't1', NULL, 100), (2, 'web', 'c', 't2', NULL, 200);")
+  match track(db, 1, "W2") {
+    Ok(_) => ()
+    Err(_) => {
+      db.close()
+      return Err("track(W2) failed")
+    }
+  }
+  match db.exec(
+    "CREATE TRIGGER test_fail_w2 BEFORE UPDATE OF total ON recent_scope_tracked WHEN NEW.ws = 'W2' BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("create test_fail_w2 trigger failed: " + e.message)
+    }
+  }
+  let _ = db.exec(
+    "INSERT INTO threads(id, surface, channel, thread_ts, home, created_at) VALUES (1, 'web', 'c', 't1', NULL, 100), (2, 'web', 'c', 't2', NULL, 200), (3, 'web', 'c', 't3', NULL, 300);",
+  )
   let tx_res = db.tx_err(
     fn(tx_db : sql_db::Db) -> Result[Unit, builders_core::StepError] {
       match put_source(tx_db, text("W1"), text("1"), text("s1")) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
-      // Untracked workspace "W_MISSING" fails inside nested `contribution` savepoint;
-      // catch it inside the outer tx and verify outer tx stays intact and commits thread 1.
-      let inner = put_source(tx_db, text("W_MISSING"), text("2"), text("s2"))
+      // put_source(W2, 2, s2) inserts into recent_scope_sources and recent_scope_rows,
+      // then fails on UPDATE recent_scope_tracked via test_fail_w2 (RAISE(ABORT, 'boom')).
+      let inner = put_source(tx_db, text("W2"), text("2"), text("s2"))
       match inner {
-        Err(builders_core::StepError::App(msg)) => {
-          if msg != "recent scope is not tracked" {
-            return Err(builders_core::StepError::App("unexpected inner error: " + msg))
+        Err(builders_core::StepError::Sql(e)) => {
+          if !str_contains(e.message, "boom") {
+            return Err(builders_core::StepError::App("unexpected inner sql error: " + e.message))
           }
         }
-        _ => return Err(builders_core::StepError::App("expected untracked scope error"))
+        _ => return Err(builders_core::StepError::App("expected Sql(boom) from W2 contribution"))
       }
-      Ok(())
+      // Verify W2's two INSERTs were rolled back by the nested savepoint while W1 stayed intact.
+      let w2_src = match exists(tx_db, "SELECT 1 FROM recent_scope_sources WHERE ws = 'W2'", []) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let w2_row = match exists(tx_db, "SELECT 1 FROM recent_scope_rows WHERE ws = 'W2'", []) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let w2_tot_row = match one(tx_db, "SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = 'W2'", []) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      if w2_src || w2_row || sql_db::row_int(w2_tot_row, "total") != 0 {
+        return Err(
+          builders_core::StepError::App("W2 partial writes leaked past nested savepoint rollback"),
+        )
+      }
+      let w1_src = match exists(tx_db, "SELECT 1 FROM recent_scope_sources WHERE ws = 'W1' AND thread = 1", []) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let w1_row = match exists(tx_db, "SELECT 1 FROM recent_scope_rows WHERE ws = 'W1' AND thread = 1", []) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let w1_tot_row = match one(tx_db, "SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = 'W1'", []) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      if !w1_src || !w1_row || sql_db::row_int(w1_tot_row, "total") != 1 {
+        return Err(
+          builders_core::StepError::App("W1 writes were not preserved inside outer tx"),
+        )
+      }
+      // Outer tx remains usable: write a second W1 contribution and commit cleanly.
+      put_source(tx_db, text("W1"), text("3"), text("s3"))
     },
     map_sql,
   )
   match tx_res {
     Ok(_) => ()
-    Err(_) => {
+    Err(builders_core::StepError::App(msg)) => {
       db.close()
-      return Err("outer tx failed after caught nested savepoint rollback")
+      return Err(msg)
+    }
+    Err(builders_core::StepError::Sql(e)) => {
+      db.close()
+      return Err("outer tx sql error: " + e.message)
+    }
+    Err(builders_core::StepError::Fallback) => {
+      db.close()
+      return Err("outer tx unexpected fallback")
     }
   }
-  let kept = match exists(db, "SELECT 1 FROM recent_scope_rows WHERE ws = 'W1' AND thread = 1", []) {
-    Ok(b) => b
-    Err(_) => false
+  let w1_cnt = match one(db, "SELECT COUNT(*) AS n FROM recent_scope_rows WHERE ws = 'W1'", []) {
+    Ok(r) => sql_db::row_int(r, "n")
+    Err(_) => -1
   }
-  let leaked = match exists(db, "SELECT 1 FROM recent_scope_rows WHERE ws = 'W_MISSING'", []) {
+  let w1_total = match one(db, "SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = 'W1'", []) {
+    Ok(r) => sql_db::row_int(r, "total")
+    Err(_) => -1
+  }
+  let w2_src_after = match exists(db, "SELECT 1 FROM recent_scope_sources WHERE ws = 'W2'", []) {
     Ok(b) => b
     Err(_) => true
   }
+  let w2_row_after = match exists(db, "SELECT 1 FROM recent_scope_rows WHERE ws = 'W2'", []) {
+    Ok(b) => b
+    Err(_) => true
+  }
+  let w2_total = match one(db, "SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = 'W2'", []) {
+    Ok(r) => sql_db::row_int(r, "total")
+    Err(_) => -1
+  }
   db.close()
-  if !kept || leaked {
-    return Err("nested savepoint partial rollback invariant violated")
+  if w1_cnt != 2 || w1_total != 2 || w2_src_after || w2_row_after || w2_total != 0 {
+    return Err("post-commit nested savepoint partial rollback invariant violated")
   }
   Ok(())
 }

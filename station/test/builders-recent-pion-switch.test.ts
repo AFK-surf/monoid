@@ -511,10 +511,32 @@ test("builders_recent: invalid scope (missing, non-string, malformed JSON, lone 
 
     // 3. Valid surrogate pair inside scope string is accepted and installs cleanly after fresh missing-table check.
     const emojiReq = JSON.stringify({ scope: '["\\uD83D\\uDE80",null]' });
+    let emojiDone = false;
     for (let step = 0; step < 30; step++) {
       const [m, p] = await Promise.all([mbProc.ask(emojiReq), pionProc.ask(emojiReq)]);
+      assert.equal(m.error, undefined, `MB valid surrogate scope step ${step} error: ${JSON.stringify(m)}`);
+      assert.equal(p.error, undefined, `Pion valid surrogate scope step ${step} error: ${JSON.stringify(p)}`);
       assert.deepStrictEqual(p, m, `valid surrogate scope step ${step}`);
-      if (m.done === true) break;
+      if (m.done === true) {
+        emojiDone = true;
+        break;
+      }
+    }
+    assert.equal(emojiDone, true, "valid surrogate scope must converge to done=true");
+    for (const [label, dbPath] of [["mb", mbDb], ["pion", pionDb]] as const) {
+      const db = new DatabaseSync(dbPath);
+      try {
+        const row = db.prepare(
+          "SELECT ws, complete, scan_done FROM recent_scope_tracked WHERE kind = 1 AND ws = ?",
+        ).get("🚀") as { ws: string; complete: number; scan_done: number } | undefined;
+        assert.deepStrictEqual(
+          row ? { ...row } : undefined,
+          { ws: "🚀", complete: 1, scan_done: 1 },
+          `${label}: surrogate-pair workspace 🚀 must be tracked and complete`,
+        );
+      } finally {
+        db.close();
+      }
     }
     assert.equal(snapshotRecent(pionDb), snapshotRecent(mbDb), "valid surrogate scope 0-diff");
   } finally {
@@ -568,7 +590,115 @@ test("builders_recent: nested savepoint_err partial rollback preserves outer tx 
   assert.ok(parsed.suite?.includes("builders_recent"), `expected builders_recent in smoke-sql-db suite, got ${out}`);
 });
 
-test("builders_recent: cross-scope fair round-robin rotation, concurrent writes, >64 fanout, and mid-flight SIGKILL restart 0-diff against MB", async (t) => {
+test("builders_recent: Int64 >2^53 thread IDs stay distinct, ordered, and 0-diff against MB", async (t) => {
+  const bins = resolveBinaries(t);
+  if (!bins) return;
+  const dir = freshDir("builders-recent-i64-");
+  const seedPath = join(dir, "i64-seed.db");
+  const store = Store.open(seedPath, join(dir, "i64-archive"));
+  try {
+    addSession(store, "a", "A");
+    addSession(store, "h", null);
+    const db = store.db;
+    db.exec("BEGIN");
+    // Adjacent >2^53 integers: 9007199254740992 (2^53) and 9007199254740993 (2^53 + 1), which
+    // collapse if rounded through IEEE-754 double without CAST(... AS TEXT).
+    db.exec(
+      "INSERT INTO threads(id, surface, channel, thread_ts, title, created_by, home, created_at) VALUES " +
+      "(9007199254740992, 'ember', 'CHAT', 'i64-0', 't0', 'ann@x', 'a', 1000), " +
+      "(9007199254740993, 'ember', 'CHAT', 'i64-1', 't1', 'ann@x', 'a', 1000), " +
+      "(9007199254740994, 'ember', 'CHAT', 'i64-2', 't2', 'ann@x', 'h', 1000);",
+    );
+    db.exec(
+      "INSERT INTO entries(thread, n, kind, author_kind, author, text, at) VALUES " +
+      "(9007199254740992, 1, 'message', 'person', 'ann@x', 'm0', 5000), " +
+      "(9007199254740993, 1, 'message', 'person', 'ann@x', 'm1', 5000), " +
+      "(9007199254740994, 1, 'message', 'person', 'ann@x', 'm2', 5000);",
+    );
+    db.exec("COMMIT");
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
+  }
+
+  const mbDb = join(dir, "i64-mb.db");
+  const pionDb = join(dir, "i64-pion.db");
+  copyFileSync(seedPath, mbDb);
+  copyFileSync(seedPath, pionDb);
+
+  const mbProc = new BuilderProc(bins.realMb, mbDb);
+  const pionProc = new BuilderProc(bins.realPion, pionDb);
+  try {
+    for (const scope of [
+      { ws: null, home: null },
+      { ws: "A", home: null },
+      { ws: "A", home: "A" },
+    ] as const) {
+      const req = JSON.stringify({ scope: JSON.stringify([scope.ws, scope.home]) });
+      let done = false;
+      for (let step = 0; step < 30; step++) {
+        const [m, p] = await Promise.all([mbProc.ask(req), pionProc.ask(req)]);
+        assert.deepStrictEqual(p, m, `i64 scope ${JSON.stringify(scope)} step ${step}`);
+        if (m.done === true) {
+          done = true;
+          break;
+        }
+      }
+      assert.equal(done, true, `i64 scope ${JSON.stringify(scope)} must converge`);
+    }
+  } finally {
+    await Promise.all([mbProc.end(), pionProc.end()]);
+  }
+
+  const readExact = (dbPath: string) => {
+    const db = new DatabaseSync(dbPath);
+    try {
+      return {
+        globalRows: db.prepare(
+          "SELECT CAST(thread AS TEXT) AS tid, CAST(at AS TEXT) AS at, CAST(said_at AS TEXT) AS said_at, CAST(created_at AS TEXT) AS created_at FROM recent_chat_rows ORDER BY at DESC, said_at DESC, created_at DESC, thread DESC",
+        ).all().map((r) => ({ ...r })),
+        globalMeta: db.prepare(
+          "SELECT CAST(cursor AS TEXT) AS cursor, CAST(through AS TEXT) AS through, total, complete FROM recent_chat_meta WHERE id = 1",
+        ).all().map((r) => ({ ...r })),
+        scopeRows: db.prepare(
+          "SELECT ws, CAST(thread AS TEXT) AS tid, CAST(at AS TEXT) AS at, CAST(said_at AS TEXT) AS said_at, CAST(created_at AS TEXT) AS created_at FROM recent_scope_rows ORDER BY ws, at DESC, said_at DESC, created_at DESC, thread DESC",
+        ).all().map((r) => ({ ...r })),
+        homeRows: db.prepare(
+          "SELECT CAST(thread AS TEXT) AS tid, CAST(at AS TEXT) AS at, CAST(said_at AS TEXT) AS said_at, CAST(created_at AS TEXT) AS created_at FROM recent_home_rows ORDER BY at DESC, said_at DESC, created_at DESC, thread DESC",
+        ).all().map((r) => ({ ...r })),
+        homeMeta: db.prepare(
+          "SELECT CAST(cursor AS TEXT) AS cursor, CAST(through AS TEXT) AS through, scan_done, total FROM recent_home_meta WHERE id = 1",
+        ).all().map((r) => ({ ...r })),
+      };
+    } finally {
+      db.close();
+    }
+  };
+
+  const mbExact = readExact(mbDb);
+  const pionExact = readExact(pionDb);
+  assert.deepStrictEqual(pionExact, mbExact, "Int64 >2^53 exact CAST(... AS TEXT) state 0-diff");
+  assert.deepStrictEqual(
+    pionExact.globalRows.map((r) => r.tid),
+    ["9007199254740994", "9007199254740993", "9007199254740992"],
+    "adjacent >2^53 IDs must stay distinct and ordered descending by integer id",
+  );
+  assert.deepStrictEqual(
+    pionExact.scopeRows.map((r) => r.tid),
+    ["9007199254740993", "9007199254740992"],
+    "workspace A must preserve both adjacent >2^53 IDs without collapsing",
+  );
+  assert.deepStrictEqual(
+    pionExact.homeRows.map((r) => r.tid),
+    ["9007199254740994"],
+  );
+  assert.equal(pionExact.globalMeta[0]?.cursor, "9007199254740994");
+  assert.equal(pionExact.globalMeta[0]?.through, "9007199254740994");
+  assert.equal(pionExact.homeMeta[0]?.cursor, "9007199254740994");
+  assert.equal(pionExact.homeMeta[0]?.through, "9007199254740994");
+});
+
+test("builders_recent: cross-scope fair round-robin rotation (including w:A vs h:A), concurrent writes, >64 fanout, and SIGKILL restart while unfinished 0-diff against MB", async (t) => {
   const bins = resolveBinaries(t);
   if (!bins) return;
   const dir = freshDir("builders-recent-fair-");
@@ -581,6 +711,7 @@ test("builders_recent: cross-scope fair round-robin rotation, concurrent writes,
 
   const scopes: RecentChatScope[] = [
     { ws: null, home: "A" },
+    { ws: "A", home: null },
     { ws: "B", home: "A" },
     { ws: "A", home: "A" },
   ];
@@ -619,7 +750,7 @@ test("builders_recent: cross-scope fair round-robin rotation, concurrent writes,
       assert.equal(snapshotRecent(pionDb), snapshotRecent(mbDb), `tables 0-diff after round ${round}`);
       open = next;
 
-      // Mid-flight SIGKILL + restart after round 3 while work is still in flight.
+      // SIGKILL + restart after round 3 while unfinished scopes still remain.
       if (round === 3 && !killed && open.length > 0) {
         killed = true;
         await Promise.all([mbProc.sigkill(), pionProc.sigkill()]);
@@ -628,7 +759,7 @@ test("builders_recent: cross-scope fair round-robin rotation, concurrent writes,
       }
     }
     assert.equal(open.length, 0, "all scopes must converge to done=true");
-    assert.equal(killed, true, "SIGKILL restart must have exercised mid-flight");
+    assert.equal(killed, true, "SIGKILL restart must have exercised while unfinished");
 
     // Verify >64 connections triggered scan_rowids = 1 on both engines.
     for (const [label, p] of [["mb", mbDb], ["pion", pionDb]] as const) {
