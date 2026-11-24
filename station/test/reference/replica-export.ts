@@ -1456,31 +1456,31 @@ export class Exporter {
       }
     }
     this.#manifestLive = live;
-    const onDisk = new Set<string>();
+    let names: string[];
     try {
-      for (const name of readdirSync(manifestsDir)) { // sync: in the export's own thread (worker.ts)
-        onDisk.add(name);
-        if (live.has(name)) continue;
+      const faultErr = this.#o.testFaults?.readdirError?.(manifestsDir);
+      if (faultErr) throw faultErr;
+      names = readdirSync(manifestsDir); // sync: in the export's own thread (worker.ts)
+    } catch {
+      return;
+    }
+    const onDisk = new Set<string>();
+    for (const name of names) {
+      onDisk.add(name);
+      if (live.has(name)) continue;
+      const supersededAt = this.#manifestSupersededAt.get(name);
+      if (supersededAt === undefined) {
+        // First time this process observes an unreferenced file on disk (e.g. after restart):
+        // record `now` and grant a full 10-minute grace period before reclaiming.
+        this.#manifestSupersededAt.set(name, now);
+      } else if (now - supersededAt >= MANIFEST_GC_GRACE_MS) {
         const p = join(manifestsDir, name);
-        const supersededAt = this.#manifestSupersededAt.get(name);
-        let expired = false;
-        if (supersededAt !== undefined) {
-          expired = now - supersededAt >= MANIFEST_GC_GRACE_MS;
-        } else {
-          try {
-            const st = statSync(p, { bigint: true }); // sync: in the export's own thread (worker.ts)
-            const mtimeMs = Number(st.mtimeNs / 1_000_000n);
-            expired = now - mtimeMs >= MANIFEST_GC_GRACE_MS;
-          } catch {}
-        }
-        if (expired) {
-          try {
-            rmSync(p, { force: true }); // sync: in the export's own thread (worker.ts)
-          } catch {}
-          this.#manifestSupersededAt.delete(name);
-        }
+        try {
+          rmSync(p, { force: true }); // sync: in the export's own thread (worker.ts)
+        } catch {}
+        this.#manifestSupersededAt.delete(name);
       }
-    } catch {}
+    }
     for (const k of [...this.#manifestSupersededAt.keys()]) {
       if (!onDisk.has(k)) this.#manifestSupersededAt.delete(k);
     }

@@ -2066,30 +2066,26 @@ fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out]) -> Unit rais
   }
   self.manifest_live = live
   let on_disk : Set[String] = Set([])
-  match self.files.names(manifests_dir) {
-    Some(names) =>
-      for name in names {
-        on_disk.add(name)
-        if live.contains(name) {
-          continue
-        }
-        let p = self.files.join([manifests_dir, name])
-        let expired = match self.manifest_superseded_at.get(name) {
-          Some(superseded_at) => now - superseded_at >= manifest_gc_grace_ms
-          None =>
-            match self.files.meta(p) {
-              Some((_, mtime_ms)) => now - mtime_ms >= manifest_gc_grace_ms
-              None => false
-            }
-        }
-        if expired {
+  guard self.files.names(manifests_dir) is Some(names) else { return }
+  for name in names {
+    on_disk.add(name)
+    if live.contains(name) {
+      continue
+    }
+    match self.manifest_superseded_at.get(name) {
+      Some(superseded_at) =>
+        if now - superseded_at >= manifest_gc_grace_ms {
+          let p = self.files.join([manifests_dir, name])
           self.files.remove(p) catch {
             _ => ()
           }
           self.manifest_superseded_at.remove(name)
         }
-      }
-    None => ()
+      None =>
+        // First time this process observes an unreferenced file on disk (e.g. after restart):
+        // record `now` and grant a full 10-minute grace period before reclaiming.
+        self.manifest_superseded_at[name] = now
+    }
   }
   let stale_keys : Array[String] = []
   for k, _ in self.manifest_superseded_at {

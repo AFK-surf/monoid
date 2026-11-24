@@ -81,6 +81,7 @@ class StrictJsonParser {
   readonly #maxDepth1Entries: number;
   readonly #depth1LimitError: string;
   #at = 0;
+  #depth1Entries = 0;
 
   constructor(s: string, maxDepth1Entries: number, depth1LimitError: string) {
     this.#s = s;
@@ -140,7 +141,7 @@ class StrictJsonParser {
       if (depth === 0 && count > 2) {
         throw new Error("manifest JSON top-level object has too many keys");
       }
-      if (depth === 1 && count > this.#maxDepth1Entries) {
+      if (depth === 1 && ++this.#depth1Entries > this.#maxDepth1Entries) {
         throw new Error(this.#depth1LimitError);
       }
       this.#skip();

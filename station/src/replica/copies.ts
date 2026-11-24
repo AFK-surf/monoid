@@ -1154,7 +1154,17 @@ export class Copies {
           continue;
         }
         const seqBefore = this.#writeSeq.get(key) ?? 0;
-        const mine = await this.kept.held(ws, origin);
+        let mine: Held;
+        try {
+          mine = await this.kept.heldStrict(ws, origin);
+        } catch {
+          left = true;
+          continue;
+        }
+        if (mine.hasUnverifiedHead === true) {
+          left = true;
+          continue;
+        }
         let all = should.length > 0;
         for (const peer of should) {
           try {
@@ -1165,15 +1175,15 @@ export class Copies {
         }
         if (all) {
           // (each of them holds as much as this one did: asked again just before it goes)
-          const readMine = (hash: string) => this.kept.read(ws, origin, null, hash);
+          const readMine = (hash: string, maxBytes: number) => this.kept.readBounded(ws, origin, null, hash, maxBytes);
           const still = await Promise.all(
             should.map(async (p) => {
               const peerPlace = new PeerPlace(p, this.#d.ask);
               try {
                 const h = await peerPlace.held(ws, origin);
-                const readTheirs = async (hash: string) => {
+                const readTheirs = async (hash: string, maxBytes: number) => {
                   try {
-                    return await readBytes(await peerPlace.read(ws, origin, null, hash), MOST);
+                    return await readBytes(await peerPlace.read(ws, origin, null, hash), Math.min(MOST, maxBytes));
                   } catch {
                     return null;
                   }

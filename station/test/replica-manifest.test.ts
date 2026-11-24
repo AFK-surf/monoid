@@ -1243,17 +1243,248 @@ test("17. R1: mid-flight configChanged() switching includeTranscripts does not w
   releaseFirstHead!();
   await firstHeadPaused;
 
-  // Wait for Copies to finish both the in-flight sync and the automatic re-sync under includeTranscripts=true
+  // Wait deterministically for Copies to finish both the in-flight sync and the automatic re-sync under includeTranscripts=true
+  await copies.settle();
   const s3Verify = new S3Place(makeTarget());
-  let uploadedTranscripts = false;
-  for (let i = 0; i < 60; i++) {
-    await new Promise((r) => setTimeout(r, 50));
-    const held = await s3Verify.held(HOME, origin);
-    const h = held.gens[0]?.head;
-    if (h !== null && h !== undefined && Object.keys(h.transcriptFiles ?? {}).length > 0 && held.files.length >= Object.keys(h.transcriptFiles!).length) {
-      uploadedTranscripts = true;
-      break;
-    }
+  const held = await s3Verify.held(HOME, origin);
+  assert.equal(held.gens.length, 1);
+  const h = held.gens[0]!.head!;
+  const diskHeadPath = join(s.data, "replica", "own", HOME, h.gen, "head.json");
+  const expectedTf = (JSON.parse(readFileSync(diskHeadPath, "utf8")) as Head).transcriptFiles ?? {};
+  const expectedHashes = Object.keys(expectedTf);
+  assert.ok(expectedHashes.length > 0, "expected at least one transcript chunk");
+  const heldFiles = new Set(held.files);
+  for (const hash of expectedHashes) {
+    assert.ok(heldFiles.has(hash), `expected transcript chunk ${hash} uploaded to S3 after includeTranscripts=true toggle`);
   }
-  assert.equal(uploadedTranscripts, true, "after mid-flight includeTranscripts=true toggle, Copies re-synced and uploaded transcripts without keeping stale Known");
+});
+
+test("18. R2: handOver refuses and preserves source copy on source readdir EIO or corrupted head.json", async () => {
+  const srcRoot = dataDir("d72a-r2-ho-err-src");
+  const dstRoot = dataDir("d72a-r2-ho-err-dst");
+  const srcSeed = new FolderPlace(srcRoot);
+  const dstPlace = new FolderPlace(dstRoot);
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const c1 = hex64("11", "1");
+
+  await srcSeed.put(HOME, origin, gen, "batch", batch, Buffer.from("b1"));
+  await srcSeed.putFile(HOME, origin, c1, Buffer.from("c1"));
+  const validHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [c1]: 10 }, to: 1, made: 1000 });
+  await srcSeed.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(validHead)));
+
+  // 18a. Source readdir EIO -> handOver returns false, source directory and batch remain intact
+  const eioFs = {
+    ...direct,
+    names: async (dir: string) => {
+      if (dir === srcSeed.dir(HOME, origin)) {
+        throw Object.assign(new Error("EIO: simulated source readdir failure"), { code: "EIO" });
+      }
+      return direct.names(dir);
+    },
+  };
+  const eioSrc = new FolderPlace(srcRoot, eioFs);
+  assert.equal(await handOver(eioSrc, dstPlace, HOME, origin), false, "handOver must return false on source readdir EIO");
+  assert.ok(existsSync(join(srcSeed.dir(HOME, origin), gen, "log", batch)), "source batch preserved after EIO");
+  assert.ok(existsSync(join(srcSeed.dir(HOME, origin), "files", c1)), "source file preserved after EIO");
+
+  // 18b. Corrupted source head.json -> heldStrict marks hasUnverifiedHead, handOver returns false and preserves source
+  writeFileSync(join(srcSeed.dir(HOME, origin), gen, "head.json"), "{corrupted-json");
+  const strictHeld = await srcSeed.heldStrict(HOME, origin);
+  assert.equal(strictHeld.hasUnverifiedHead, true, "heldStrict marks corrupted head.json as unverified");
+  assert.equal(await handOver(srcSeed, dstPlace, HOME, origin), false, "handOver must refuse corrupted source head.json");
+  assert.ok(existsSync(join(srcSeed.dir(HOME, origin), gen, "log", batch)), "source batch preserved on corrupted head.json");
+});
+
+test("19. R2: same-to conflicting full heads do not overwrite destination + dual-field handOver preserves union", async () => {
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const cMine = hex64("11", "1");
+  const cTheirs = hex64("22", "2");
+  const cInline = hex64("33", "3");
+
+  // 19a. Conflicting full heads at same `to=2` (each has a unique chunk) -> handOver must NOT overwrite destination and returns false
+  const fromA = new FolderPlace(dataDir("d72a-r2-conflict-from"));
+  const toA = new FolderPlace(dataDir("d72a-r2-conflict-to"));
+  await fromA.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await fromA.putFile(HOME, origin, cMine, Buffer.from("mine"));
+  const headMine = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cMine]: 4 }, to: 2, made: 2000 });
+  await fromA.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(headMine)));
+
+  await toA.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await toA.putFile(HOME, origin, cTheirs, Buffer.from("theirs"));
+  const headTheirs = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cTheirs]: 6 }, to: 2, made: 2001 });
+  await toA.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(headTheirs)));
+
+  assert.equal(await handOver(fromA, toA, HOME, origin), false, "conflicting same-to full heads must return false to protect source");
+  const toHeldAfter = await toA.held(HOME, origin);
+  assert.deepEqual(toHeldAfter.gens[0]!.head!.transcriptFiles, { [cTheirs]: 6 }, "destination full head was NOT overwritten");
+
+  // Also direct FolderPlace.put('head') with same-to full head must NOT overwrite existing full head
+  await toA.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(headMine)));
+  assert.deepEqual((await toA.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cTheirs]: 6 });
+
+  // 19b. Dual-field source head (transcriptManifest + extra inline-only transcriptFiles) -> handOver emits inline union!
+  const fromB = new FolderPlace(dataDir("d72a-r2-dual-from"));
+  const toB = new FolderPlace(dataDir("d72a-r2-dual-to"));
+  const enc = encodeTranscriptManifest({ [cMine]: 4 });
+  await fromB.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await fromB.putFile(HOME, origin, cMine, Buffer.from("mine"));
+  await fromB.putFile(HOME, origin, cInline, Buffer.from("inline"));
+  await fromB.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) await fromB.putFile(HOME, origin, lh, bytes);
+  const dualHead = makeHead({
+    origin,
+    gen,
+    batches: [batch],
+    transcriptManifest: enc.rootHash,
+    transcriptFiles: { [cInline]: 6 },
+    to: 2,
+    made: 2000,
+  });
+  await fromB.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dualHead)));
+
+  assert.equal(await handOver(fromB, toB, HOME, origin), true);
+  const dstHead = (await toB.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(dstHead.transcriptManifest, undefined, "handOver wire head is inline");
+  assert.deepEqual(dstHead.transcriptFiles, { [cMine]: 4, [cInline]: 6 }, "dual-field handOver preserves union of manifest and inline-only refs");
+});
+
+test("20. R2: gc_manifests preserves grace state across readdir errors and grants full 10-min grace to old-mtime orphans after restart", () => {
+  const s = makeTranscriptStation("d72a-r2-gc-restart");
+  const replica = join(s.data, "replica");
+  let now = 1_700_000_000_000;
+  let injectReaddirErr = false;
+  const manifestsDir = join(replica, "manifests");
+
+  const exp1 = new Exporter({
+    db: s.db,
+    replica,
+    dataDir: s.data,
+    origin: sid("a"),
+    now: () => now,
+    chunkBytes: 1024,
+    compactHeads: true,
+    testFaults: {
+      readdirError: (p) => (injectReaddirErr && p === manifestsDir ? Object.assign(new Error("EIO"), { code: "EIO" }) : null),
+    },
+  });
+  closing.push(() => exp1.close());
+  exp1.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+
+  const p1 = exp1.pass(nothingTold());
+  const oldRoot = p1.heads[HOME]!.transcriptManifest!;
+  // Modify transcript so oldRoot is superseded at `now`
+  now += 60_000;
+  writeFileSync(s.trPath, "updated-" + "z".repeat(2000));
+  utimesSync(s.trPath, new Date(now), new Date(now));
+  const p2 = exp1.pass({ ...nothingTold(), transcripts: true });
+  assert.notEqual(p2.heads[HOME]!.transcriptManifest, oldRoot);
+
+  // Inject readdir error halfway through grace -> must NOT clear superseded record!
+  now += 5 * 60_000;
+  injectReaddirErr = true;
+  exp1.pass({ ...nothingTold(), transcripts: true });
+  assert.ok(existsSync(join(manifestsDir, oldRoot)));
+
+  // Clear readdir error and advance remaining 5 minutes -> oldRoot is GC'd right on schedule (proving grace record was preserved)!
+  injectReaddirErr = false;
+  now += 5 * 60_000;
+  exp1.pass({ ...nothingTold(), transcripts: true });
+  assert.ok(!existsSync(join(manifestsDir, oldRoot)), "grace record survived readdir error and expired at 10 min");
+  exp1.close();
+
+  // Restart: plant an old-mtime orphan manifest file (mtime = 1 hour ago) and start a fresh Exporter!
+  const orphanHash = hex64("de", "a");
+  const orphanPath = join(manifestsDir, orphanHash);
+  writeFileSync(orphanPath, "{}");
+  const oneHourAgo = new Date(now - 60 * 60_000);
+  utimesSync(orphanPath, oneHourAgo, oneHourAgo);
+
+  const exp2 = new Exporter({ db: s.db, replica, dataDir: s.data, origin: sid("a"), now: () => now, chunkBytes: 1024, compactHeads: true });
+  closing.push(() => exp2.close());
+  exp2.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+
+  // Pass 1 after restart: old-mtime orphan is observed for the first time -> MUST NOT be deleted immediately!
+  exp2.pass(nothingTold());
+  assert.ok(existsSync(orphanPath), "after restart, old-mtime orphan gets full 10-min grace from first observation");
+
+  // 9 min later -> still kept!
+  now += MANIFEST_GC_GRACE_MS - 60_000;
+  exp2.pass(nothingTold());
+  assert.ok(existsSync(orphanPath), "after restart, orphan still kept at 9 min");
+
+  // 10 min after first observation -> deleted!
+  now += 60_000;
+  exp2.pass(nothingTold());
+  assert.ok(!existsSync(orphanPath), "after restart, orphan GC'd after full 10-min grace");
+});
+
+test("21. R2: local restore aborts on real EACCES/EIO instead of swallowing into missing", async () => {
+  const s = makeTranscriptStation("d72a-r2-restore-eio");
+  const replica = join(s.data, "replica");
+  const origin = sid("a");
+  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin, now: () => 1_700_000_000_000, chunkBytes: 1024, compactHeads: true });
+  closing.push(() => exp.close());
+  exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+  const p = exp.pass(nothingTold());
+  const compactHead = p.heads[HOME]!;
+  const tf = await loadLocalTranscriptFiles(replica, compactHead);
+  const enc = encodeTranscriptManifest(tf);
+  const genDirPath = join(replica, "own", HOME, compactHead.gen);
+  const targetChunk = Object.keys(tf)[0]!;
+
+  const targetData = dataDir("d72a-r2-restore-eio-dst");
+  const clock = testClock();
+  Store.open(join(targetData, "stillfail.db"), join(targetData, "archive"), clock.clock).close();
+  const fibers = new Fibers("eio-restore");
+  closing.push(() => fibers.close());
+  const runner = new InlineRunner({ db: join(targetData, "stillfail.db"), replica: join(targetData, "replica"), dataDir: targetData, origin: sid("b"), now: () => 1 });
+  closing.push(() => runner.close());
+  const copies = new Copies({
+    data: targetData,
+    here: () => sid("b"),
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "dst" }] }),
+    roster: () => [{ id: sid("b"), name: "dst" }],
+    ask: async () => { throw new Error("unused"); },
+    runner,
+    fibers,
+    restart: async () => null,
+    changed: () => {},
+  });
+  closing.push(() => copies.close());
+
+  for (const b of compactHead.batches) {
+    await copies.kept.put(HOME, origin, compactHead.gen, "batch", b, readFileSync(join(genDirPath, "log", b)));
+  }
+  for (const h of Object.keys(compactHead.files)) {
+    await copies.kept.putFile(HOME, origin, h, exp.sourceOf(h)!);
+  }
+  for (const h of Object.keys(tf)) {
+    await copies.kept.putFile(HOME, origin, h, exp.sourceOf(h)!);
+  }
+  await copies.kept.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) await copies.kept.putFile(HOME, origin, lh, bytes);
+  await copies.kept.put(HOME, origin, compactHead.gen, "head", "head.json", Buffer.from(JSON.stringify(compactHead)));
+
+  // Wrap copies.kept.fs.read to throw EACCES on targetChunk -> stream() must preserve EACCES and abort restore!
+  const origFsRead = copies.kept.fs.read.bind(copies.kept.fs);
+  const badPath = join(copies.kept.dir(HOME, origin), "files", targetChunk);
+  (copies.kept as unknown as { fs: typeof direct }).fs = {
+    ...copies.kept.fs,
+    read: async (path, offset, length) => {
+      if (path === badPath) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return origFsRead(path, offset, length);
+    },
+  };
+
+  await copies.placesChanged();
+  await copies.settle();
+  await assert.rejects(
+    () => copies.restore(HOME, origin, compactHead.gen, { station: sid("b") }),
+    /EACCES/,
+    "restore must abort on EACCES instead of swallowing it as ENOENT missingChunk",
+  );
 });

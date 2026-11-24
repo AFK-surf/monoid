@@ -157,6 +157,7 @@ pub fn encode_transcript_manifest(entries : Array[(String, Double)]) -> EncodedM
 priv struct StrictManifestParser {
   text : String
   mut at : Int
+  mut depth1_entries : Int
   max_depth1_entries : Int
   depth1_limit_msg : String
 }
@@ -333,8 +334,11 @@ fn StrictManifestParser::value(self : StrictManifestParser, depth : Int) -> MVal
       if depth == 0 && count > 2 {
         fail("manifest JSON top-level object has too many keys")
       }
-      if depth == 1 && count > self.max_depth1_entries {
-        fail(self.depth1_limit_msg)
+      if depth == 1 {
+        self.depth1_entries += 1
+        if self.depth1_entries > self.max_depth1_entries {
+          fail(self.depth1_limit_msg)
+        }
       }
       self.skip()
       if self.peek() != 0x3a {
@@ -372,7 +376,7 @@ fn parse_strict_manifest_obj(
   depth1_limit_msg : String,
 ) -> Array[(String, MVal)] raise {
   let text = @utf8.decode(bytes[:]) catch { _ => fail("invalid UTF-8 in manifest") }
-  let p : StrictManifestParser = { text, at: 0, max_depth1_entries, depth1_limit_msg }
+  let p : StrictManifestParser = { text, at: 0, depth1_entries: 0, max_depth1_entries, depth1_limit_msg }
   let v = p.value(0)
   p.skip()
   if p.at != p.text.length() {
