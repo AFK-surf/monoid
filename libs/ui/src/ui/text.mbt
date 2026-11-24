@@ -14,6 +14,15 @@
 // caret and hit testing following them.
 
 ///|
+priv struct KeptTextLay {
+  lay : TextLayout
+  mut ahead_known : Bool
+  mut ahead_ox : Double
+  mut ahead_zoomed : Bool
+  mut ahead_moves : Int
+}
+
+///|
 struct Shaped {
   starts : Array[Int]
   lens : Array[Int]
@@ -32,7 +41,7 @@ struct Shaped {
   pad : Double
   // the last layout made of it (with no indent), for the next one asked
   // for with the same line height and wrapping, in a width it fits
-  mut lay : TextLayout?
+  mut lay : KeptTextLay?
   mut lay_max : Double
   mut lay_line : Double
   mut lay_trim : Bool
@@ -1353,17 +1362,31 @@ fn glyph_drawn_any_sub(k : Int) -> Bool {
 }
 
 ///|
+/// Whether two horizontal origins `a` and `b` (points) are guaranteed to preserve every glyph's quarter-pixel phase at
+/// scale `sc`. Uses zero tolerance (`a == b` or exact integer device-pixel delta `d == d.round()`): any non-zero
+/// epsilon could straddle `glyph_qf`'s shifted 1/8 px boundary and skip a phase change.
+fn ahead_origin_same(a : Double, b : Double, sc : Double) -> Bool {
+  if a == b {
+    return true
+  }
+  let d = (a - b) * sc
+  d == d.round()
+}
+
+///|
 /// The glyphs of words just laid out (layout_text, layout_rich) not drawn yet, each with the quarter-pixel phase it is
 /// drawn at (glyph_sub_at) where what holds the words stands on a whole pixel, its pen `x(c)` points into its line: for
 /// the host to draw first at that phase (glyphs_ahead). Most words stand so (a list's rows, a page's columns); one that
 /// does not (centred, or at a padding of no whole pixels) has its glyphs at another phase, drawn on the frame's thread
-/// as before.
-fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
+/// as before. Returns `true` when every cluster was processed without hitting the `glyphs_ahead_most` truncation cap.
+fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Bool {
   let sc = g().scale
   let z = words_zoom.val
   let ox = measuring_origin_x.val
+  let mut complete = true
   for c in 0..<keys.length() {
     if glyphs_laid.length() >= glyphs_ahead_most {
+      complete = false
       break
     }
     let k = keys[c]
@@ -1377,6 +1400,7 @@ fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
   if glyphs_laid.length() >= glyphs_ahead_batch {
     glyphs_laid_flush()
   }
+  complete
 }
 
 ///|
@@ -1518,6 +1542,12 @@ let glyph_origin_x : Ref[Double] = Ref(0.0)
 let measuring_origin_x : Ref[Double] = Ref(0.0)
 
 ///|
+/// Whether `measuring_origin_x` holds a real estimated origin (`true` inside `View::words` measure callbacks and
+/// `words_ahead`; `false` for unpositioned measurements or outside measure).
+// kept across runs: set and put back around measure callbacks and reset in Tester::new
+let measuring_origin_known : Ref[Bool] = Ref(false)
+
+///|
 /// How far (device pixels) a glyph drawn at horizontal subpixel phase `sub` (bits 26..27 of its key: glyph_sub_at) is
 /// drawn right of the whole pixel column its quad is put on: 0, +1/4, -1/2, -1/4. Every host draws a phase so
 /// (win_text.cpp, apple_text.m, MBText.java, linux_text.c, the web's host.js: their `sub_dx`).
@@ -1648,6 +1678,74 @@ fn glyph_other_scale(g : Glyph, sc : Double) -> Bool {
 let glyph_scale_told : Ref[Bool] = Ref(false)
 
 ///|
+/// Milliseconds spent on foreground `glyph()` cache misses during `frame_paint` (covering taking prewarmed background
+/// results, synchronous rasterization, atlas placement, and upload; excluding direct `h_glyph` calls such as halo or
+/// punctuation probes). Reset at paint start and in `journal_reset`, flushed to journal notes as `"paint glyphs"` before
+/// paint ends.
+// kept across runs: reset in `frame_paint` and `journal_reset`
+let paint_glyph_ms : Ref[Double] = Ref(0.0)
+
+///|
+fn paint_glyph_reset() -> Unit {
+  paint_glyph_ms.val = 0.0
+}
+
+///|
+fn paint_glyph_flush() -> Unit {
+  let ms = paint_glyph_ms.val
+  if ms > 0.0 {
+    paint_glyph_ms.val = 0.0
+    @hostapi.work_took("paint glyphs", ms)
+  }
+}
+
+///|
+fn glyph_miss(key : Int, sc : Double) -> Glyph {
+  let o = text_cache.gbuf
+  h_glyph(key, o)
+  let color = o[6] > 0.5
+  let (a, across) = atlas_for(color)
+  let w = (o[2] * sc).round().to_int()
+  let h = (o[3] * sc).round().to_int()
+  if !a.holds(w, h) {
+    text_cache.glyphs[key] = no_glyph
+    return no_glyph
+  }
+  match a.place(key, w, h, fn(k) {
+    text_cache.glyphs.remove(k)
+    glyphs_lost.val = true
+    glyph_moves.val += 1
+  }) {
+    Some((plot, x, y)) => {
+      h_glyph_put(key, x + across, y)
+      let g = {
+        u: (x + across).to_double(),
+        v: y.to_double(),
+        gw: o[2],
+        gh: o[3],
+        ox: o[4],
+        oy: o[5],
+        color,
+        plot,
+        in_colour: across > 0,
+        sc,
+      }
+      text_cache.glyphs[key] = g
+      glyph_kept(key, g)
+      g
+    }
+    // (no room while this frame is drawn: what is made to be kept made again once there is, glyphs_still)
+    None => {
+      text_cache.short = true
+      glyphs_lost.val = true
+      glyph_moves.val += 1
+      glyph_kept(key, { ..no_glyph, u: -1.0, v: -1.0 })
+      no_glyph
+    }
+  }
+}
+
+///|
 /// Glyph `key` as it is drawn at `sc` pixels a point: where it is in the atlas, drawn from in this frame. One not in it
 /// is drawn by the host and put there (its pixels its size at `sc`), in place of the glyphs drawn from longest ago where
 /// it is full (@hostapi.Atlas); with no room while this frame is drawn, it is not drawn in it (none_short, for the
@@ -1671,48 +1769,15 @@ fn glyph(key : Int, sc : Double) -> Glyph {
       g
     }
     None => {
-      let o = text_cache.gbuf
-      h_glyph(key, o)
-      let color = o[6] > 0.5
-      let (a, across) = atlas_for(color)
-      let w = (o[2] * sc).round().to_int()
-      let h = (o[3] * sc).round().to_int()
-      if !a.holds(w, h) {
-        text_cache.glyphs[key] = no_glyph
-        return no_glyph
-      }
-      match a.place(key, w, h, fn(k) {
-        text_cache.glyphs.remove(k)
-        glyphs_lost.val = true
-        glyph_moves.val += 1
-      }) {
-        Some((plot, x, y)) => {
-          h_glyph_put(key, x + across, y)
-          let g = {
-            u: (x + across).to_double(),
-            v: y.to_double(),
-            gw: o[2],
-            gh: o[3],
-            ox: o[4],
-            oy: o[5],
-            color,
-            plot,
-            in_colour: across > 0,
-            sc,
-          }
-          text_cache.glyphs[key] = g
-          glyph_kept(key, g)
-          g
-        }
-        // (no room while this frame is drawn: what is made to be kept made again once there is, glyphs_still)
-        None => {
-          text_cache.short = true
-          glyphs_lost.val = true
-          glyph_moves.val += 1
-          glyph_kept(key, { ..no_glyph, u: -1.0, v: -1.0 })
-          no_glyph
+      let t0 = if paint_phase.val == 1 { @hostapi.work_began() } else { -1.0 }
+      let res = glyph_miss(key, sc)
+      if t0 >= 0.0 {
+        let t1 = @hostapi.work_began()
+        if t1 > t0 {
+          paint_glyph_ms.val += t1 - t0
         }
       }
+      res
     }
   }
 }
@@ -1799,10 +1864,27 @@ fn layout_text(
   // line up to the one they were made in (as Node::text_layout)
   if indent == 0.0 {
     match s.lay {
-      Some(tl) if s.lay_line == line &&
+      Some(kept) if s.lay_line == line &&
         s.lay_trim == trim &&
         s.lay_wrap == wrap &&
-        (!wrap || (tl.w <= max_w + 0.01 && max_w <= s.lay_max)) => return tl
+        (!wrap || (kept.lay.w <= max_w + 0.01 && max_w <= s.lay_max)) => {
+        if measuring_origin_known.val && paint_phase.val != 1 {
+          let zoomed = words_zoom.val != 1.0
+          if !kept.ahead_known ||
+            kept.ahead_moves != glyph_moves.val ||
+            kept.ahead_zoomed != zoomed ||
+            (!zoomed && !ahead_origin_same(measuring_origin_x.val, kept.ahead_ox, g().scale)) {
+            let tl = kept.lay
+            if laid_ahead(s.keys, fn(c) { tl.xs[c] + s.pad }) {
+              kept.ahead_known = true
+              kept.ahead_ox = measuring_origin_x.val
+              kept.ahead_zoomed = zoomed
+              kept.ahead_moves = glyph_moves.val
+            }
+          }
+        }
+        return kept.lay
+      }
       _ => ()
     }
   }
@@ -1930,9 +2012,15 @@ fn layout_text(
     lv,
   }
   // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, glyphs_ahead)
-  laid_ahead(s.keys, fn(c) { xs[c] + s.pad })
+  let complete = laid_ahead(s.keys, fn(c) { xs[c] + s.pad })
   if indent == 0.0 {
-    s.lay = Some(tl)
+    s.lay = Some({
+      lay: tl,
+      ahead_known: complete && measuring_origin_known.val && paint_phase.val != 1,
+      ahead_ox: measuring_origin_x.val,
+      ahead_zoomed: words_zoom.val != 1.0,
+      ahead_moves: glyph_moves.val,
+    })
     s.lay_max = max_w
     s.lay_line = line
     s.lay_trim = trim

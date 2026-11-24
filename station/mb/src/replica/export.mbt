@@ -98,6 +98,8 @@ priv struct Out {
   lines : Array[String]
   mut bytes : Int
   files : Array[(String, Double)]
+  /// Where each hash is in `files`.
+  file_at : Map[String, Int]
   mut gone : Bool
   mut messages : Double
 }
@@ -437,7 +439,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
           ("runs", Arr([])),
         ])
     }
-    outs[ws] = { head, lines: [], bytes: 0, files: [], gone: false, messages: 0.0 }
+    outs[ws] = { head, lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
   }
   if self.meta("entries") is None {
     for k in ["entries", "letters", "turns"] {
@@ -457,9 +459,12 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     if get(rec, "file") is Some(Str(f)) {
       let h = @jsjson.sanitize_str(f)
       let size = num(get(rec, "size"))
-      match out.files.search_by(e => e.0 == h) {
+      match out.file_at.get(h) {
         Some(i) => out.files[i] = (h, size)
-        None => out.files.push((h, size))
+        None => {
+          out.file_at[h] = out.files.length()
+          out.files.push((h, size))
+        }
       }
     }
   }
@@ -1004,10 +1009,7 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
     runs_list
   }
   let kept = if runs_list.length() > runs_kept { runs_list[runs_list.length() - runs_kept:].to_array() } else { runs_list }
-  let mut files = get(head, "files").unwrap_or(Obj([]))
-  for f in out.files {
-    files = set(files, f.0, Num(f.1))
-  }
+  let files = set_all(get(head, "files").unwrap_or(Obj([])), out.files.map(f => (f.0, Num(f.1))))
   let chats = match self.state.all("SELECT COUNT(*) AS n FROM threads WHERE ws = ?", [s(ws)]) {
     [r, ..] => field_num(r, "n")
     _ => 0.0
@@ -1195,31 +1197,52 @@ pub fn Exporter::empty(self : Exporter) -> Bool raise {
 }
 
 ///|
-/// Where the files of `hashes` are now on this station, for a place that lacks them (`sources`).
+/// Above this many hashes, `sources` reads the files table once instead of once a hash.
+const SOURCES_POINT_MOST = 32
+
+///|
+/// Where the files of `hashes` are now on this station, for a place that lacks them (`sources`). A level of a first copy
+/// asks it of every chunk of every transcript (246k on a real station): each hash is looked at once, the files table
+/// read once for many, and each candidate stat'ed here rather than through the shell.
 pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> JValue raise {
+  let by_hash : Map[String, Array[String]]? = if hashes.length() > SOURCES_POINT_MOST {
+    // (the table's rows are read whole, once; only the paths of the hashes asked are kept past it)
+    let m : Map[String, Array[String]] = Map([])
+    for h in hashes {
+      m[h] = []
+    }
+    for r in self.state.all("SELECT hash, path FROM files ORDER BY path", []) {
+      if m.get(field_text(r, "hash")) is Some(paths) {
+        paths.push(field_text(r, "path"))
+      }
+    }
+    Some(m)
+  } else {
+    None
+  }
   let out : Array[(String, JValue)] = []
+  let seen : Set[String] = Set([])
   for h in hashes {
+    if seen.contains(h) {
+      continue
+    }
+    seen.add(h)
+    let paths = match by_hash {
+      Some(m) => m.get(h).unwrap_or([])
+      None => self.state.all("SELECT path FROM files WHERE hash = ? ORDER BY path", [s(h)]).map(r => field_text(r, "path"))
+    }
     let mut found = false
-    for r in self.state.all("SELECT path FROM files WHERE hash = ?", [s(h)]) {
-      let path = field_text(r, "path")
-      if self.files.kind(path) is Some("file") {
-        let key = h
-        match out.search_by(e => e.0 == key) {
-          Some(i) => out[i] = (key, str(path))
-          None => out.push((key, str(path)))
-        }
+    for path in paths {
+      if self.files.is_regular_file(path) {
+        out.push((h, str(path)))
         found = true
         break
       }
     }
     if !found {
       let chunk = self.files.join([self.replica, "chunks", h])
-      if self.files.kind(chunk) is Some("file") {
-        let key = h
-        match out.search_by(e => e.0 == key) {
-          Some(i) => out[i] = (key, str(chunk))
-          None => out.push((key, str(chunk)))
-        }
+      if self.files.is_regular_file(chunk) {
+        out.push((h, str(chunk)))
       }
     }
   }
@@ -1251,6 +1274,21 @@ extern "C" fn dir_missing_ffi(path : Bytes) -> Int = "sfc_dir_missing"
 ///|
 #borrow(path)
 extern "C" fn dir_readable_ffi(path : Bytes) -> Int = "sfc_dir_readable"
+
+///|
+#borrow(path)
+extern "C" fn is_file_ffi(path : Bytes) -> Int = "sfc_is_file"
+
+///|
+/// Whether `path` is a regular file, links followed (`kind(path) is Some("file")`), asked of the shell only where the
+/// system's answer here may differ from its (a long Windows path).
+fn Files::is_regular_file(self : Files, path : String) -> Bool {
+  match is_file_ffi(c_path(path)) {
+    1 => true
+    0 => false
+    _ => self.kind(path) is Some("file")
+  }
+}
 
 ///|
 fn Files::is_missing(self : Files, path : String, follow? : Bool = true) -> Bool {

@@ -1488,6 +1488,18 @@ static IDWriteTextLayout *layout_with(const WCHAR *s, int len, IDWriteTextFormat
   return l;
 }
 
+static bool ahead_begin_phase(Ahead *a, int s) {
+  uint8_t bit = (uint8_t)(1 << s);
+  EnterCriticalSection(&ahead_lock);
+  bool drop_now = a->dropped || (a->skip_mask & bit) != 0;
+  if (drop_now) {
+    a->drawing_mask &= (uint8_t)~bit;
+    a->skip_mask &= (uint8_t)~bit;
+  }
+  LeaveCriticalSection(&ahead_lock);
+  return !drop_now;
+}
+
 static void ahead_finish_phase(Ahead *a, int s, bool built, Drawn d) {
   uint8_t bit = (uint8_t)(1 << s);
   EnterCriticalSection(&ahead_lock);
@@ -1551,11 +1563,9 @@ static DWORD WINAPI ahead_thread(void *) {
     for (int s = 0; s < SUB_COUNT; s++) {
       uint8_t bit = (uint8_t)(1 << s);
       if (!(claim & bit)) continue;
-      EnterCriticalSection(&ahead_lock);
-      bool drop_now = a->dropped || (a->skip_mask & bit) != 0;
-      LeaveCriticalSection(&ahead_lock);
+      if (!ahead_begin_phase(a, s)) continue;
       Drawn d = {};
-      bool built = l && !drop_now;
+      bool built = l != NULL;
       if (built) draw_cluster(l, &cb, a->scale, sub_dx(s) / a->scale, a->size, a->weight, &t, &d);
       ahead_finish_phase(a, s, built, d);
     }
@@ -1750,6 +1760,10 @@ static bool ahead_enqueue_phases(int k, uint8_t mask, uint8_t first) {
     bool queued = false;
     EnterCriticalSection(&ahead_lock);
     if (!a->dropped && a->scale == text_scale) {
+      uint8_t unskip = (uint8_t)(mask & a->drawing_mask & a->skip_mask);
+      if (unskip) {
+        a->skip_mask &= (uint8_t)~unskip;
+      }
       uint8_t add = (uint8_t)(mask & ~(a->want_mask | a->drawing_mask | a->have_mask));
       if (add) {
         a->want_mask |= add;
@@ -1793,21 +1807,8 @@ extern "C" void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
     uint8_t bit = (uint8_t)(1 << sub);
     uint8_t prev = entries[k].subs_queued;
     bool moved = prev != 0 && (prev & bit) == 0;
-    uint8_t want = moved ? (uint8_t)(SUB_ALL & ~prev) : (uint8_t)(bit & ~prev);
-    if (want) {
-      if (ahead_enqueue_phases(k, want, (uint8_t)(want & bit))) asked++;
-    } else {
-      Ahead *a = ahead_started && k < ahead_of_cap ? ahead_of[k] : NULL;
-      if (a) {
-        EnterCriticalSection(&ahead_lock);
-        if ((a->want_mask & bit) && !(a->first_mask & bit) && !a->dropped) {
-          a->first_mask |= bit;
-          queue_push(&ahead_first, a);
-          asked++;
-        }
-        LeaveCriticalSection(&ahead_lock);
-      }
-    }
+    uint8_t want = moved ? (uint8_t)(SUB_ALL & ~prev) : bit;
+    if (ahead_enqueue_phases(k, want, bit)) asked++;
   }
   if (asked) WakeAllConditionVariable(&ahead_more);
 }

@@ -373,22 +373,33 @@ pub fn set_view_app(make : (@view.View) -> Unit, around? : (Ctx) -> Unit, theme?
 }
 
 ///|
-/// Run a `(Double, Double)` measure callback with `measuring_origin_x` set to `origin_x` and restored afterward.
-fn with_measuring_origin_pair(origin_x : Double, f : () -> (Double, Double)) -> (Double, Double) {
-  let prev = measuring_origin_x.val
+/// Run a `(Double, Double)` measure callback with `measuring_origin_x` and `measuring_origin_known` set and restored
+/// afterward.
+fn with_measuring_origin_pair(
+  origin_x : Double,
+  known : Bool,
+  f : () -> (Double, Double),
+) -> (Double, Double) {
+  let prev_x = measuring_origin_x.val
+  let prev_known = measuring_origin_known.val
   measuring_origin_x.val = origin_x
+  measuring_origin_known.val = known
   let r = f()
-  measuring_origin_x.val = prev
+  measuring_origin_x.val = prev_x
+  measuring_origin_known.val = prev_known
   r
 }
 
 ///|
-/// Run a `Double` measure callback with `measuring_origin_x` set to `origin_x` and restored afterward.
-fn with_measuring_origin_double(origin_x : Double, f : () -> Double) -> Double {
-  let prev = measuring_origin_x.val
+/// Run a `Double` measure callback with `measuring_origin_x` and `measuring_origin_known` set and restored afterward.
+fn with_measuring_origin_double(origin_x : Double, known : Bool, f : () -> Double) -> Double {
+  let prev_x = measuring_origin_x.val
+  let prev_known = measuring_origin_known.val
   measuring_origin_x.val = origin_x
+  measuring_origin_known.val = known
   let r = f()
-  measuring_origin_x.val = prev
+  measuring_origin_x.val = prev_x
+  measuring_origin_known.val = prev_known
   r
 }
 
@@ -409,6 +420,12 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
     match made.val {
       Some(tree) => tree.measuring_origin_x()
       None => 0.0
+    }
+  }
+  let measuring_ox_known = fn() {
+    match made.val {
+      Some(tree) => tree.measuring_origin_known()
+      None => false
     }
   }
   let t = @view.Tree::new(
@@ -439,32 +456,32 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
       })
     },
     measure=fn(words, look, width, scale) {
-      with_measuring_origin_pair(measuring_ox(), fn() {
+      with_measuring_origin_pair(measuring_ox(), measuring_ox_known(), fn() {
         view_words_measure(words, look, width, scale, tabular=measuring_tab())
       })
     },
     measure_runs=fn(runs, look, set, width, scale) {
-      with_measuring_origin_pair(measuring_ox(), fn() {
+      with_measuring_origin_pair(measuring_ox(), measuring_ox_known(), fn() {
         view_runs_measure(runs, look, set, width, scale, tabular=measuring_tab())
       })
     },
     measure_kept=fn(words, look, width, scale) {
-      with_measuring_origin_pair(measuring_ox(), fn() {
+      with_measuring_origin_pair(measuring_ox(), measuring_ox_known(), fn() {
         view_words_measure_kept(words, look, width, scale, tabular=measuring_tab())
       })
     },
     measure_runs_kept=fn(runs, look, set, width, scale) {
-      with_measuring_origin_pair(measuring_ox(), fn() {
+      with_measuring_origin_pair(measuring_ox(), measuring_ox_known(), fn() {
         view_runs_measure_kept(runs, look, set, width, scale, tabular=measuring_tab())
       })
     },
     measure_runs_least=fn(runs, look, set, scale) {
-      with_measuring_origin_double(measuring_ox(), fn() {
+      with_measuring_origin_double(measuring_ox(), measuring_ox_known(), fn() {
         view_runs_least(runs, look, set, scale, tabular=measuring_tab())
       })
     },
     measure_shorter=fn(words, shorter, look, width, scale) {
-      with_measuring_origin_double(measuring_ox(), fn() {
+      with_measuring_origin_double(measuring_ox(), measuring_ox_known(), fn() {
         view_shorter_measure(words, shorter, look, width, scale, tabular=measuring_tab())
       })
     },
@@ -858,7 +875,7 @@ pub fn words_ahead(
     return 0.0
   }
   let text = view_words_set(words, look, kept)
-  with_measuring_origin_double(origin_x, fn() {
+  with_measuring_origin_double(origin_x, true, fn() {
     let (size, line, style, spacing) = (
       view_sp(scale, look.size),
       view_line(scale, look),
@@ -885,9 +902,9 @@ pub fn words_ahead(
     } else {
       tl
     }
-    // Re-queue laid phases even when layout_text hit `s.lay` at a prior origin_x;
-    // identical (key, phase) pairs are deduplicated by `glyphs_ahead_laid_keys`.
-    laid_ahead(tl.shaped.keys, fn(c) { tl.xs[c] + tl.shaped.pad })
+    // Explicitly re-enqueue laid phases even when layout_text hit its memo at the same origin_x, so callers can retry
+    // after host backpressure/eviction (`AHEAD_MOST`) that does not bump `glyph_moves`.
+    laid_ahead(tl.shaped.keys, fn(c) { tl.xs[c] + tl.shaped.pad }) |> ignore
     tl.w
   })
 }

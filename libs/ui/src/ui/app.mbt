@@ -754,6 +754,7 @@ fn frame_body(c : Ctx, w : Double, h : Double, scale : Double, t : Double, tell?
 /// focus) is as it left it.
 fn frame_paint(c : Ctx, root : Int, alone? : Bool = false) -> Unit {
   paint_phase.val = 1
+  paint_glyph_reset()
   paint_base.wake = -1.0
   paint_clock_at.val = ""
   // what is placed by the clock placed where it is now (Ctx::moved_by: a page sliding), read as it is painted
@@ -876,6 +877,7 @@ fn frame_paint(c : Ctx, root : Int, alone? : Bool = false) -> Unit {
   c.sync_text_menu()
   c.sync_edit_can()
   frame_hook_told(c)
+  paint_glyph_flush()
   paint_phase.val = 2
 }
 

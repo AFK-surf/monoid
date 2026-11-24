@@ -1,7 +1,7 @@
 // `Core`: takes messages from connected UIs, answers calls, keeps subscriptions (core.rs for the
 // protocol). Construction opens the signed-in accounts' databases (data.ts), wires the modules together and starts the
 // sync (sync/), which keeps everything the core holds current by itself; subscriptions only read what is held.
-import { Cause, Effect, type Clock, type Fiber } from "effect";
+import { Cause, Deferred, Effect, type Clock, type Fiber } from "effect";
 import type { AccountView } from "./accounts.ts";
 import { type AccountProvider, type AccountProviderFactory, type AccountSessions, stillfailAccountProvider } from "./account-provider.ts";
 import * as brand from "./brand.ts";
@@ -39,7 +39,7 @@ import { Priority, Scheduler } from "./sync/scheduler.ts";
 import { Kind, SAMPLE, Tracer, service } from "./trace.ts";
 import { UseCounts, builtSink, type UsageSink } from "./use-counts.ts";
 import { ownBuild } from "./station/oldest.ts";
-import { spentClock } from "./spent.ts";
+import { spent, spentClock, spentSince } from "./spent.ts";
 import { checkWith, keepVerified } from "./vault/verified.ts";
 import { Wakes, WakingHost } from "./wake.ts";
 import { Workspaces } from "./workspace.ts";
@@ -140,6 +140,9 @@ export class Inner {
   host!: Host;
   runner!: Runner;
   tracer!: Tracer;
+  /// What a start reads of this device's keys once (`signer`: views/lock.ts `install`; `box`: views/vault.ts `install`),
+  /// told as each is read: the start's span (`startTrace`).
+  startRead: (what: "signer" | "box") => void = () => {};
   /// What people use, counted for still.fail's PostHog project where the app says so (use-counts.ts).
   useCounts!: UseCounts;
   /// What app the UI said it is (`client.device`'s `app`): the counts' `app`.
@@ -204,6 +207,56 @@ export class Inner {
   shownAccounts: AccountView[] = [];
 }
 
+/// The start's span (`core.start`): each step's ms as it ends (`step`); then, once the person's own lock of every account
+/// and this device's keys are read from the device, or `START_TOLD_MS` passed, or the core stopped first, how long each
+/// took from the start (`ownLock`) with what the core's parts spent meanwhile. (The time before `Core.make`, the bundle
+/// loading, is not in it: the core does not know when its process started.)
+function startTrace(inner: Inner): { step: (name: string) => void; ownLock: () => void } {
+  const span = inner.tracer.root("core.start", Kind.Internal);
+  const t0 = inner.host.monotonicMs();
+  const spentFrom = { ...spent };
+  const since = () => Math.round(inner.host.monotonicMs() - t0);
+  const keys = { signer: Deferred.makeUnsafe<void>(), box: Deferred.makeUnsafe<void>() };
+  inner.startRead = (what) => {
+    if (Deferred.isDoneUnsafe(keys[what])) return;
+    span.set(`stillfail.${what}_ms`, since());
+    Deferred.doneUnsafe(keys[what], Effect.void);
+  };
+  let at = t0;
+  return {
+    step: (name) => {
+      const now = inner.host.monotonicMs();
+      span.set(`stillfail.ms.${name}`, Math.round(now - at));
+      at = now;
+    },
+    ownLock: () => {
+      const subs = inner.accounts.list().map((a) => a.sub);
+      span.set("stillfail.accounts", subs.length);
+      const personal = inner.adb.personal();
+      const own = Effect.tap(Effect.forEach(subs, (sub) => personal.whenLoaded(sub), { discard: true, concurrency: "unbounded" }), () =>
+        Effect.sync(() => span.set("stillfail.own_lock_ms", since())));
+      const all = Effect.all([own, Deferred.await(keys.signer), Deferred.await(keys.box)], { discard: true, concurrency: "unbounded" });
+      const told = (read: boolean) => {
+        span.set("stillfail.own_lock_read", read);
+        span.set("stillfail.start_ms", since());
+        for (const [part, ms] of spentSince(spentFrom)) span.set(`stillfail.part.${part}`, Math.round(ms));
+        span.end();
+      };
+      inner.runner.fork(
+        Effect.onInterrupt(
+          Effect.andThen(
+            Effect.timeoutOption(all, START_TOLD_MS), // timer: a deadline, the start told though a read never ends
+            (done) => Effect.sync(() => told(done._tag === "Some")),
+          ),
+          // (the core stopped first, the app quit soon: told all the same, or the starts told would be those that lasted)
+          () => Effect.sync(() => told(false)),
+        ),
+      );
+    },
+  };
+}
+const START_TOLD_MS = 30_000;
+
 export class Core {
   readonly inner: Inner;
   #nextClient = 1;
@@ -242,6 +295,9 @@ export class Core {
       prefs.setCounted(inner.useCounts.sends);
       prefs.setTraced((options.sample ?? SAMPLE) > 0);
       spentClock(() => inner.host.monotonicMs());
+      // How long this start took, by step, and till what the person's own lock is read from the device (the vaults'
+      // pages and cards wait on it, views/vault.ts `lockRead`): a start grown slow says which step grew.
+      const start = startTrace(inner);
       // A failure let go of is a span of its own: Cloud Trace has it though nothing waited on it.
       inner.runner.onIgnored = (what, error) => {
         const span = inner.tracer.root("ignored", Kind.Internal);
@@ -253,6 +309,7 @@ export class Core {
       inner.status = new Status(inner.host, inner.runner, inner.waited);
       inner.provider = yield* (options.account ?? stillfailAccountProvider)({ host: inner.host, tracer: inner.tracer, status: inner.status });
       inner.accounts = inner.provider.accounts;
+      start.step("accounts");
       inner.workspaces = new Workspaces(inner.host, inner.runner, inner.waited);
       inner.store = new Store(inner.host, inner.runner, inner.tracer);
       const store = inner.store;
@@ -272,6 +329,7 @@ export class Core {
       inner.data.onNote = () => inner.status.setDb(inner.data.notes);
       inner.data.onRoomAgain = (kept) => inner.stations?.roomAgain(kept);
       yield* inner.data.open(inner.accounts.list().map((a) => a.sub));
+      start.step("db");
       // (signatures checked once on this device, kept with its own values: vault/verified.ts)
       keepVerified({ get: (k) => inner.data.device.get("verified", k), put: (k, ok) => void inner.data.device.put("verified", k, ok) });
       // (checked by the host's own, where it has one: a native app's shell, libcrux)
@@ -340,7 +398,9 @@ export class Core {
       browseCalls.install(inner);
       downloads.install(inner);
       fill.install(inner);
+      start.step("install");
       inner.attention = new Attention(inner, yield* Attend.load(inner.host));
+      start.step("attend");
       inner.router.owners.push(inner.attention);
       inner.router.after = (topic, value) => inner.attention.attended(topic, value);
       inner.router.attends = (topic) => topic.topic === "chat";
@@ -586,6 +646,8 @@ export class Core {
       inner.viewCalls.resume();
       inner.downloads.resume();
       inner.fill.start();
+      start.step("rest");
+      start.ownLock();
       // What changed in still.fail: read now, and again each time an account's events socket opens (a release missed
       // while it was closed too).
       inner.scheduler.enqueue("cloud", "changelog", Priority.background, inner.changelog.read());
