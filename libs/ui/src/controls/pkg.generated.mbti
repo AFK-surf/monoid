@@ -2223,8 +2223,6 @@ pub fn quote_card_node(@view.View, TipLayer, () -> String, () -> String, () -> S
 
 pub let quote_picture_corner : Double
 
-pub let quote_pop_h : @ui.Len
-
 pub let r_field : Double
 
 pub let r_menu : Double

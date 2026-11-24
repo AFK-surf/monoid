@@ -371,7 +371,7 @@ fn chat_quote_node(
         pill.owns(unkept) |> ignore
         end.on_reused(gone)
         @ui.keeps_picked(pill)
-        .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p), while_seen=true)
+        .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
         |> ignore
       },
     )
