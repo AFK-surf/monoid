@@ -1701,6 +1701,34 @@ export interface ReaderPrefs {
 	paper: ReaderPaper;
 }
 
+/** Lines of what people and agents wrote: closer, as the app sets them, or further apart. */
+export type LineHeightPreset = "compact" | "normal" | "relaxed";
+
+/** How text is set on this device (`prefs.set {typography: {…}}`, one setting or several; null: back to its default). */
+export interface TypographyPrefs {
+	/** What people and agents wrote, its size as a percent: 85 to 130 by 5 (100). */
+	textSize: number;
+	/** Code's size as a percent of the text around it: 85 to 110 by 5 (100). */
+	codeScale: number;
+	lineHeight: LineHeightPreset;
+	/** `ui`'s CJK face's size as a percent of its own face's: 85 to 115 by 5 (100). */
+	uiCjkScale: number;
+	/** `text`'s CJK face's size, as `uiCjkScale` (none chosen while `text`'s CJK face is `ui`'s: `uiCjkScale`). */
+	textCjkScale: number;
+	/** `code`'s CJK face's size, as `uiCjkScale`. */
+	codeCjkScale: number;
+	/** `ui`'s CJK face a step lighter (-100), as it is (0), or a step heavier (100). */
+	uiCjkWeight: number;
+	/** `text`'s CJK face's weight, as `uiCjkWeight` (none chosen while `text`'s CJK face is `ui`'s: `uiCjkWeight`). */
+	textCjkWeight: number;
+	/** `code`'s CJK face's weight, as `uiCjkWeight`. */
+	codeCjkWeight: number;
+	/** Room between CJK characters and Latin letters or digits beside them (on). */
+	cjkAutoSpace: boolean;
+	/** Code's faces join characters such as `=>` (on). */
+	codeLigatures: boolean;
+}
+
 /**
  * A phone's bottom bars (web/src/mobile/Bar.tsx, the Android app's ui/Bar.kt): several bars of up to four places,
  * one of them in view; with more than one, a swipe up on the bar shows the others.
@@ -1723,6 +1751,12 @@ export interface FontChoices {
 	text?: string;
 	/** Code; none: the app's own (the Android app's JetBrains Mono, the system's monospace on a page). */
 	code?: string;
+	/** The CJK characters of `ui` (a face's id or `local:<family>`); none: `ui`'s face sets them. */
+	uiCjk?: string;
+	/** The CJK characters of `text` (a face's id, `local:<family>`, or `none`: `text`'s face sets them); none: as `uiCjk`. */
+	textCjk?: string;
+	/** The CJK characters of `code` (a face's id or `local:<family>`); none: `code`'s face sets them. */
+	codeCjk?: string;
 }
 
 /** A face's file for the Android app. */
@@ -1749,6 +1783,8 @@ export interface FontFace {
 	name: string;
 	/** Its characters are all one width: a face for code. */
 	mono: boolean;
+	/** It has the CJK characters: a face to set a place's CJK characters in. */
+	hasCjk?: boolean;
 	/** The family a page sets it by (its stylesheet's, or the one installed); empty: the app's own. */
 	family: string;
 	/** A page's stylesheet for it: its slices, fetched as their characters are shown. */
@@ -1768,6 +1804,17 @@ export interface FontsView {
 	code: FontFace;
 	/** The faces there are to choose, beside the app's own and those installed on the device. */
 	list: FontFace[];
+	/** The face `ui`'s CJK characters are set in, by id (`local:<family>` for one installed); empty: none, `ui`'s face sets them. */
+	uiCjk?: string;
+	/** The face `text`'s CJK characters are set in (`uiCjk`'s where none is chosen; empty: none, `text`'s face sets them). */
+	textCjk?: string;
+	/** The face `code`'s CJK characters are set in; empty: none, `code`'s face sets them. */
+	codeCjk?: string;
+	/**
+	 * Where this device keeps the files of the CJK faces, by hash (as `FontFile.path`): only those no place's
+	 * face's `files` say already.
+	 */
+	cjkPaths?: Record<string, string>;
 }
 
 /**
@@ -2055,6 +2102,8 @@ export interface PrefsView {
 	product?: string;
 	/** How the drive's reader lays text out (always whole: the core fills in what is not kept). */
 	reader?: ReaderPrefs;
+	/** How text is set on this device (always whole: the core fills in what is not kept). */
+	typography?: TypographyPrefs;
 	/**
 	 * What the wide screen's rail shows, in its order (rail.ts RAIL_PLACES: chats, mine, watching, archive,
 	 * attention, files, stations, profiles, connects, usage); none: its default ones. `railView` says it as drawn.
