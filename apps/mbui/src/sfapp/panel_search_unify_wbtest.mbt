@@ -5,7 +5,7 @@
 
 ///|
 fn panel_search_clear_label() -> String {
-  @sf.t("android-misc.drive.pick.filterClear")
+  @sf.t("web-pages.drive.pickClear")
 }
 
 ///|
@@ -27,6 +27,22 @@ fn panel_search_lang_src(base : Source, lang : @signals.Signal[String]) -> Sourc
       { ..got, value: Some(Json::object(o)) }
     },
   }
+}
+
+///|
+/// Whether the button named `label` currently has a visible hover/highlight background fill covering its rect.
+fn panel_row_highlighted(t : @ui.Tester, label : String) -> Bool raise {
+  let (rx, ry, rw, rh) = t.get(Button, label~).rect
+  t
+  .drawn_rects()
+  .iter()
+  .any(fn(r) {
+    (r.4 & 0xFFL) > 0L &&
+    (r.0 - rx).abs() < 2.0 &&
+    (r.1 - ry).abs() < 2.0 &&
+    (r.2 - rw).abs() < 2.0 &&
+    (r.3 - rh).abs() < 2.0
+  })
 }
 
 ///|
@@ -96,35 +112,45 @@ test "station_picker panel search: live language switch, navigated reset on edit
   t.stepped()
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(TextField, label=zh_wide) is Some(_), msg=t.semantics_dump())
-  // Step down with arrow -> navigated=true, search_at=1; then type -> resets search_at=0 & navigated=false
+  // Initially empty & not navigated: neither Willow (row 0) nor Maple (row 1) has keyboard highlight
+  assert_false(panel_row_highlighted(t, "Willow"), msg="row 0 unhighlighted before navigation")
+  assert_false(panel_row_highlighted(t, "Maple"), msg="row 1 unhighlighted before navigation")
+  // Step down with arrow -> navigated=true, search_at=1 -> Maple becomes highlighted
   t.click(TextField, label=zh_wide)
   t.key(@ui.key_code_down)
+  t.run_for(@ui.move_most_ms)
+  assert_true(panel_row_highlighted(t, "Maple"), msg="Down arrow must highlight row 1 (Maple)")
+  // Type query -> edited resets search_at=0 & navigated=false; step down inside filtered results, then Escape clears
+  // query and resets navigated=false so empty-query highlight disappears
+  t.type_text("station")
   t.draw()
-  t.type_text("hkg")
-  t.draw()
-  // Step down inside filtered results, then Escape clears query and resets search_at=0 & navigated=false
   t.key(@ui.key_code_down)
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="non-empty Escape keeps station picker open")
   assert_eq(t.get(TextField, label=zh_wide).value, "")
+  assert_false(panel_row_highlighted(t, "Willow"), msg="Escape clear must reset navigated and remove row 0 highlight")
+  assert_false(panel_row_highlighted(t, "Maple"), msg="Escape clear must reset navigated and remove row 1 highlight")
   // Type again, step down, then click clear button -> clears query and resets search_at=0 & navigated=false
   t.type_text("station")
   t.draw()
   t.key(@ui.key_code_down)
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   let (cx, cy, cw, ch) = t.get(Button, label=panel_search_clear_label()).rect
   t.tap(cx + cw / 2.0, cy + ch / 2.0)
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   assert_eq(t.get(TextField, label=zh_wide).value, "")
   assert_true(t.query(Button, label=panel_search_clear_label()) is None)
-  // Pressing Enter now picks index 0 (first station, proving search_at was reset to 0) exactly once and closes
+  assert_false(panel_row_highlighted(t, "Willow"), msg="clear button must reset navigated and remove row 0 highlight")
+  assert_false(panel_row_highlighted(t, "Maple"), msg="clear button must reset navigated and remove row 1 highlight")
+  // Pressing Enter now picks index 0 (unfiltered first station "st1") exactly once and closes
   let picks_before = named(calls, "newChat.pick").length()
   t.key(@ui.key_code_enter)
   t.run_for(@ui.move_most_ms)
   let picks = named(calls, "newChat.pick")
   assert_eq(picks.length() - picks_before, 1, msg="Enter must submit station pick exactly once")
+  assert_eq(text(Some(picks.last().unwrap().params), "station"), "st1")
   assert_true(t.query(@ui.Role::Dialog) is None, msg="Enter closes station picker")
   // Empty Escape closes station picker
   new_run()
@@ -166,15 +192,19 @@ test "model_triple panel search: live language switch, empty vs non-empty arrows
   t.stepped()
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(TextField, label="搜索模型") is Some(_))
-  // Empty search: Down is NOT consumed by search (step_can is false), panel stays on first level
+  // Empty search: finder.down / finder.up are NOT consumed (step_can is false)
   t.click(TextField, label="搜索模型")
-  t.key(@ui.key_code_down)
+  assert_false(@ui.view_action("finder.down"), msg="empty model search must not consume finder.down")
+  assert_false(@ui.view_action("finder.up"), msg="empty model search must not consume finder.up")
   t.draw()
   assert_true(t.query(Button, label="全部模型") is Some(_))
-  // Non-empty search: clear button empties once, non-empty Escape clears once
+  // Non-empty search: finder.down / finder.up ARE consumed (step_can is true); clear button empties once
   t.type_text("openai")
   t.draw()
   assert_true(t.query(Button, label="GPT-6 Astra") is Some(_) && t.query(Button, label="gpt-oss 2") is Some(_))
+  assert_true(@ui.view_action("finder.down"), msg="non-empty model search must consume finder.down")
+  assert_true(@ui.view_action("finder.up"), msg="non-empty model search must consume finder.up")
+  t.draw()
   let (cx, cy, cw, ch) = t.get(Button, label=panel_search_clear_label()).rect
   t.tap(cx + cw / 2.0, cy + ch / 2.0)
   t.draw()

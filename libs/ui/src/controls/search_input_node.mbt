@@ -32,7 +32,11 @@ fn search_input_body(
     match escape {
       Some(f) =>
         g.on_key(fn(k) {
-          if k.code == @ui.key_escape && k.mods == 0 {
+          let matched = match kind {
+            ListTop(_) => k.code == @ui.key_escape && k.mods == 0
+            Panel => k.code == @ui.key_escape
+          }
+          if matched {
             f()
           } else {
             false
@@ -139,7 +143,7 @@ fn search_input_body(
           icon_button_node(
             cl,
             "close",
-            fn() { t("android-misc.drive.pick.filterClear") },
+            fn() { t("web-pages.drive.pickClear") },
             fn() {
               field.set("")
               cleared()

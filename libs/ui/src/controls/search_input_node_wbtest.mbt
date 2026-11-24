@@ -36,6 +36,12 @@ fn search_clear_label() -> String {
 }
 
 ///|
+/// The panel search clear key's name (`web-pages.drive.pickClear`), distinct from `search_clear_label`.
+fn panel_search_clear_label() -> String {
+  t("web-pages.drive.pickClear")
+}
+
+///|
 test "search_input_node: typed, its words told as they change; the clear key only while it holds words" {
   let f = @ui.Field::new()
   let told = []
@@ -115,7 +121,9 @@ test "panel_search_input_node: rebinding finder.down distinguishes Finder contex
   let (px, py, pw, ph) = t1.get(TextField, label="面板搜索").rect
   t1.tap(px + pw / 2.0, py + ph / 2.0)
   t1.key(@ui.key_code_down)
+  assert_eq(panel_steps, [])
   t1.key(@ui.key_code_page_down)
+  assert_eq(panel_steps, [1])
   // 2. search_input_node responds to combobox's Down, not Finder's rebound PageDown
   let combo_f = @ui.Field::new()
   let combo_steps : Array[Int] = []
@@ -137,8 +145,9 @@ test "panel_search_input_node: rebinding finder.down distinguishes Finder contex
   let (cx, cy, cw, ch) = t2.get(TextField, label="列表搜索").rect
   t2.tap(cx + cw / 2.0, cy + ch / 2.0)
   t2.key(@ui.key_code_page_down)
+  assert_eq(combo_steps, [])
   t2.key(@ui.key_code_down)
-  assert_eq((panel_steps, combo_steps), ([1], [1]))
+  assert_eq(combo_steps, [1])
 }
 
 ///|
@@ -207,15 +216,25 @@ test "panel_search_input_node: step_can gates arrows; Escape clears once then bu
   // Empty again: Escape bubbles to outer
   t.key(@ui.key_escape)
   assert_eq((outer_escapes.val, edited.length() - edits_before_esc), (2, 1))
-  // Clear button empties once and notifies edited("") once
+  // Shift+Escape also clears non-empty text and consumes (matching original panel search behavior)
+  t.type_text("gemini")
+  t.draw()
+  let edits_before_shift_esc = edited.length()
+  t.key(@ui.key_escape, mods=@ui.mod_shift_key)
+  t.draw()
+  assert_eq((f.text(), edited.length() - edits_before_shift_esc, edited.last(), outer_escapes.val), ("", 1, Some(""), 2))
+  // Clear button uses panel-specific label ("清除"), empties once and notifies edited("") once
+  assert_true(panel_search_clear_label() != search_clear_label())
   t.type_text("claude")
   t.draw()
+  assert_true(t.query(Button, label=panel_search_clear_label()) is Some(_))
+  assert_true(t.query(Button, label=search_clear_label()) is None)
   let edits_before_clear = edited.length()
-  let (bx, by, bw, bh) = t.get(Button, label=search_clear_label()).rect
+  let (bx, by, bw, bh) = t.get(Button, label=panel_search_clear_label()).rect
   t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.draw()
   assert_eq((f.text(), edited.length() - edits_before_clear, edited.last()), ("", 1, Some("")))
-  assert_true(t.query(Button, label=search_clear_label()) is None)
+  assert_true(t.query(Button, label=panel_search_clear_label()) is None)
 }
 
 ///|
@@ -233,7 +252,7 @@ test "panel_search_input_node: touch clear button empties field without forcing 
   })
   t.draw()
   assert_false(t.ime().0, msg="IME closed initially")
-  let (bx, by, bw, bh) = t.get(Button, label=search_clear_label()).rect
+  let (bx, by, bw, bh) = t.get(Button, label=panel_search_clear_label()).rect
   t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.draw()
   assert_eq((f.text(), edited), ("", [""]))
