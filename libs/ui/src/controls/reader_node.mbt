@@ -1534,6 +1534,12 @@ fn reader_narrow_chrome(
                 }
                 r.draft.set(-1.0)
               },
+              disabled=fn() {
+                match r.book.get() {
+                  Some(b) => b.length <= 0
+                  None => true
+                }
+              },
               lens_enabled=false,
             )
           })

@@ -185,3 +185,95 @@ test "reader layout sliders: Tab focus + arrow keys update value and focus ring 
   assert_true((viewer_host().reader_style)().line > 1.7, msg="Right arrow must increase line spacing")
   (viewer_host().set_reader_style)(Line(reader_style_default.line))
 }
+
+///|
+test "phone reader position slider: disabled while book == None keeps thumb, percent, and a11y at 0%; works after book loads" {
+  let words = "小说正文".repeat(120)
+  let book = track_book(7, "Loaded", [words])
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=390.0, h=844.0, platform=2)
+  let r = reading_for("track-loading")
+  r.asked = true
+  r.chrome.set(true)
+  let file = blob_file(@utf8.encode(book.text), "book.txt", book.length.to_double(), save=fn() {  })
+  @ui.set_view_app(fn(root) {
+    reader_node(root, "track-loading", file, markdown=false, back_label=fn() { "返回" }, on_back=fn() {  }) |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  // 1. Loading (book == None): slider is disabled; press/drag/release leaves thumb, pct, and a11y at 0%
+  let sl_loading = t.get(Slider)
+  assert_true(sl_loading.disabled, msg="phone position slider must be disabled while book == None")
+  let (x, y, w, h) = sl_loading.rect
+  let cy = y + h / 2.0
+  t.press_at(x + w * 0.5, cy)
+  t.run_for(reader_slider_hold_ms)
+  t.move_to(x + w * 0.8, cy)
+  t.run_for(reader_slider_drag_ms)
+  t.release(x + w * 0.8, cy)
+  t.run_for(reader_slider_settle_ms)
+  assert_eq(t.get(Slider).value, "0", msg="a11y value must stay 0 while loading")
+  assert_true(t.words().any(fn(wd) { wd.0 == "0%" }), msg="percentage must stay 0% while loading")
+  // 2. Book loads: slider becomes enabled; drag updates preview and commits with 0 extra glass
+  @ui.view_tree().unwrap().event(t.time(), fn() { r.book.set(Some(book)) })
+  t.draw()
+  assert_true(!t.get(Slider).disabled, msg="phone position slider must enable once book loads")
+  let rest_glass = t.drawn_glass().length()
+  t.press_at(x + w * 0.45, cy)
+  t.run_for(reader_slider_hold_ms)
+  assert_eq(t.drawn_glass().length(), rest_glass, msg="held after load must add 0 glass")
+  t.release(x + w * 0.45, cy)
+  t.run_for(reader_slider_settle_ms)
+  assert_eq(t.drawn_glass().length(), rest_glass, msg="released after load must add 0 glass")
+  assert_true(r.jump.get() is Some(_), msg="release after book loads must commit jump")
+  reader_let_go("track-loading")
+}
+
+///|
+test "reader slider_node: rejected value keeps thumb synced to model value and narrowing during drag still releases lens" {
+  let model = @signals.signal(20.0)
+  let box_w = @signals.signal(240.0)
+  let t = w2_case(w=600.0, fn(root) {
+    root.box(fn(wrap) {
+      wrap.width(By(fn() { Some(box_w.get()) })) |> ignore
+      slider_node(
+        wrap,
+        fn() { "受限滑块" },
+        fn() { model.get() },
+        0.0,
+        100.0,
+        1.0,
+        fn() { reader_paper("white") },
+        fn(v) {
+          // Reject values above 40.0 (clamp model to <= 40.0)
+          model.set(if v > 40.0 { 40.0 } else { v })
+        },
+        fn(_) {  },
+        lens_enabled=true,
+      )
+    })
+    |> ignore
+  })
+  t.run_for(@ui.move_most_ms)
+  let sl = t.get(Slider, label="受限滑块").rect
+  let cy = sl.1 + sl.3 / 2.0
+  // Press and drag to 90% -> model clamps to 40.0
+  t.press_at(sl.0 + sl.2 * 0.9, cy)
+  t.run_for(reader_slider_hold_ms)
+  assert_eq(model.untracked(), 40.0)
+  // Shrink container width <= slider_thumb_room while still pressed, then release -> lens must release to 0 glass
+  @ui.view_tree().unwrap().event(t.time(), fn() { box_w.set(16.0) })
+  t.draw()
+  t.release(sl.0 + sl.2 * 0.9, cy)
+  t.run_for(reader_slider_settle_ms)
+  assert_eq(t.drawn_glass().length(), 0, msg="releasing after narrowing <= thumb_room must still release liquid lens")
+  // Restore width and verify thumb aligns with clamped model value (40%)
+  @ui.view_tree().unwrap().event(t.time(), fn() { box_w.set(240.0) })
+  t.draw()
+  let sl2 = t.get(Slider, label="受限滑块").rect
+  let accent_col = reader_paper("white").accent
+  let knobs = t.drawn_rects().filter(fn(r) { r.4 == accent_col && r.3 >= 21.0 && r.3 <= 23.0 })
+  assert_eq(knobs.length(), 1, msg="expected 1 thumb rect after restore")
+  let cx = knobs[0].0 + knobs[0].2 / 2.0
+  let expected_cx = sl2.0 + slider_thumb_d / 2.0 + (sl2.2 - slider_thumb_d) * 0.4
+  assert_true((cx - expected_cx).abs() < 1.0, msg="thumb center \{cx} must align with clamped model 40% (\{expected_cx})")
+}

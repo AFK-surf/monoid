@@ -216,6 +216,54 @@ test "liquid_slider_look: travel_inset, buffered layer, lens_enabled=false zero 
 }
 
 ///|
+test "liquid_slider_look: fill and buffered stay clamped within [track_inset, w - track_inset] when track_inset != travel_inset" {
+  let fill_col = 0x2288EEFFL
+  let buf_col = 0x99999988L
+  let cases : Array[(Double, Double, Double)] = [
+    (72.0, 10.0, 0.0),
+    (120.0, 4.0, 16.0),
+  ]
+  for c in cases {
+    let (w, track_in, travel_in) = c
+    let prog = @signals.signal(0.0)
+    let buf = @signals.signal(0.0)
+    let t = glass_case(false, false, fn(page) {
+      page.box(fn(host) {
+        host.width(Is(Some(w))).height(Is(Some(22.0))) |> ignore
+        let look = SliderLook::new(
+          track_h=4.0,
+          track_inset=track_in,
+          travel_inset=Some(travel_in),
+          thumb_w=18.0,
+          thumb_h=18.0,
+          track_color=fn() { 0x00000022L },
+          fill_color=Some(fn() { fill_col }),
+          buffered=Some(fn() { buf.get() }),
+          buffered_color=Some(fn() { buf_col }),
+          lens_enabled=false,
+        )
+        liquid_slider_look(host, fn(_) { prog.get() }, fn(_) { 0.0 }, look)
+      })
+      |> ignore
+    })
+    let lo = 24.0 + track_in
+    let hi = 24.0 + w - track_in
+    for at in [0.0, 0.5, 1.0] {
+      prog.set(at)
+      buf.set(at)
+      t.draw()
+      for col in [fill_col, buf_col] {
+        for r in t.drawn_rects().filter(fn(r) { r.4 == col }) {
+          assert_true(r.0 >= lo - 0.05, msg="w=\{w} ti=\{track_in} tr=\{travel_in} at=\{at}: left \{r.0} < \{lo}")
+          assert_true(r.0 + r.2 <= hi + 0.05, msg="w=\{w} ti=\{track_in} tr=\{travel_in} at=\{at}: right \{r.0 + r.2} > \{hi}")
+        }
+      }
+    }
+  }
+  set_dark(None)
+}
+
+///|
 test "built-in droplet recipes assign exact unscaled droplet_role IDs (1..4) and public knob stays 0" {
   assert_eq(slider_glass(1.0).droplet_role, 1)
   assert_eq(slider_glass(1.0).at_strength(0.5).droplet_role, 1)

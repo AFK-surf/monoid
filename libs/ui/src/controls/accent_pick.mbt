@@ -174,32 +174,39 @@ fn hue_slider_node(
     held_scale=@glass.slider_thumb_held_scale,
   )
   let drag = fn(d : @view.Drag) {
-    if d.w <= hue_thumb_room {
-      return
-    }
     match d.kind {
       Down => {
         dd.press()
-        let frac = dclamp((d.x - hue_thumb_room / 2.0) / (d.w - hue_thumb_room), 0.0, 1.0)
-        let snapped = @headless.slider_snap(frac * custom_hue_most, 0.0, custom_hue_most, custom_hue_step)
-        dd.update_value(snapped)
-        let h = snapped.round().to_int()
-        if h != @signals.untracked(now) {
-          step_to(h)
+        if d.w > hue_thumb_room {
+          let frac = dclamp((d.x - hue_thumb_room / 2.0) / (d.w - hue_thumb_room), 0.0, 1.0)
+          let snapped = @headless.slider_snap(frac * custom_hue_most, 0.0, custom_hue_most, custom_hue_step)
+          let h = snapped.round().to_int()
+          if h != @signals.untracked(now) {
+            step_to(h)
+          }
+          dd.update_value(@signals.untracked(fn() { now().to_double() }))
         }
       }
-      Moved => {
-        let frac = dclamp((d.x - hue_thumb_room / 2.0) / (d.w - hue_thumb_room), 0.0, 1.0)
-        let snapped = @headless.slider_snap(frac * custom_hue_most, 0.0, custom_hue_most, custom_hue_step)
-        if snapped != dd.target() {
-          dd.update_value(snapped)
+      Moved =>
+        if d.w > hue_thumb_room {
+          let frac = dclamp((d.x - hue_thumb_room / 2.0) / (d.w - hue_thumb_room), 0.0, 1.0)
+          let snapped = @headless.slider_snap(frac * custom_hue_most, 0.0, custom_hue_most, custom_hue_step)
+          let h = snapped.round().to_int()
+          if h != @signals.untracked(now) {
+            step_to(h)
+          }
+          let actual = @signals.untracked(fn() { now().to_double() })
+          if actual != dd.target() {
+            dd.update_value(actual)
+          }
         }
-        let h = snapped.round().to_int()
-        if h != @signals.untracked(now) {
-          step_to(h)
+      Up | Off => {
+        let actual = @signals.untracked(fn() { now().to_double() })
+        if actual != dd.target() {
+          dd.update_value(actual)
         }
+        dd.release()
       }
-      Up | Off => dd.release()
     }
   }
   let outer_h = dmax(hue_slider_h, hue_knob_d + 2.0 * @glass.slider_held_reach(hue_knob_d))
@@ -238,6 +245,7 @@ fn hue_slider_node(
         thumb_color=Some(fn() { ink_of_hue(now()) }),
         thumb_edge=Some(fn() { (2.0, theme().p.canvas) }),
         focus_shown=Some(fn() { sl.focus_shown() }),
+        focus_color=Some(fn() { @ui.tree_theme().focus }),
         lens_enabled=true,
       )
       s.box(fn(slot) {

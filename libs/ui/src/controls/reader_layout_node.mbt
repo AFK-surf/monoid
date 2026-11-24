@@ -413,6 +413,7 @@ fn slider_node(
   p : () -> ReaderPaper,
   moved : (Double) -> Unit,
   let_go : (Double) -> Unit,
+  disabled? : () -> Bool = fn() { false },
   lens_enabled? : Bool = true,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -422,31 +423,38 @@ fn slider_node(
     hi=max,
     held_scale=@glass.slider_thumb_held_scale,
   )
-  let drag = fn(d : @view.Drag) {
-    if d.w <= slider_thumb_room {
-      return
+  let sync_dd = fn() {
+    let actual = @signals.untracked(now)
+    if actual != dd.target() {
+      dd.update_value(actual)
     }
+  }
+  let drag = fn(d : @view.Drag) {
     match d.kind {
       Down => {
         dd.press()
-        let frac = dclamp((d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room), 0.0, 1.0)
-        let next = @headless.slider_snap(min + frac * (max - min), min, max, step)
-        dd.update_value(next)
-        if next != @headless.slider_snap(@signals.untracked(now), min, max, step) {
-          moved(next)
+        if d.w > slider_thumb_room {
+          let frac = dclamp((d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room), 0.0, 1.0)
+          let next = @headless.slider_snap(min + frac * (max - min), min, max, step)
+          if next != @headless.slider_snap(@signals.untracked(now), min, max, step) {
+            moved(next)
+          }
+          dd.update_value(@signals.untracked(now))
         }
       }
-      Moved => {
-        let frac = dclamp((d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room), 0.0, 1.0)
-        let next = @headless.slider_snap(min + frac * (max - min), min, max, step)
-        if next != dd.target() {
-          dd.update_value(next)
+      Moved =>
+        if d.w > slider_thumb_room {
+          let frac = dclamp((d.x - slider_thumb_room / 2.0) / (d.w - slider_thumb_room), 0.0, 1.0)
+          let next = @headless.slider_snap(min + frac * (max - min), min, max, step)
+          if next != @headless.slider_snap(@signals.untracked(now), min, max, step) {
+            moved(next)
+          }
+          sync_dd()
         }
-        if next != @headless.slider_snap(@signals.untracked(now), min, max, step) {
-          moved(next)
-        }
+      Up | Off => {
+        sync_dd()
+        dd.release()
       }
-      Up | Off => dd.release()
     }
   }
   let outer_h = if lens_enabled {
@@ -484,7 +492,9 @@ fn slider_node(
         thumb_color=Some(fn() { p().accent }),
         thumb_edge=Some(fn() { (slider_ring, p().ground) }),
         focus_shown=Some(fn() { sl.focus_shown() }),
+        focus_color=Some(fn() { @ui.tree_theme().focus }),
         lens_enabled~,
+        disabled=fn() { sl.disabled() },
       )
       s.box(fn(slot) {
         slot.height(Is(Some(slider_thumb_d))) |> ignore
@@ -500,8 +510,12 @@ fn slider_node(
       |> ignore
     },
     thumb_room=slider_thumb_room,
+    disabled~,
     drag~,
-    on_commit=let_go,
+    on_commit=fn(v) {
+      let_go(v)
+      sync_dd()
+    },
     focus_on_press=true,
     made_for=loc,
     loc~,

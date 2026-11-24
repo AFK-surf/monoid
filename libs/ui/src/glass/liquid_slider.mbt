@@ -88,6 +88,7 @@ pub(all) struct SliderLook {
   thumb_color : (() -> Int64)?
   thumb_edge : (() -> (Double, Int64))?
   focus_shown : (() -> Bool)?
+  focus_color : (() -> Int64)?
   lens_enabled : Bool
   disabled : () -> Bool
 }
@@ -110,6 +111,7 @@ pub fn SliderLook::new(
   thumb_color? : (() -> Int64)? = None,
   thumb_edge? : (() -> (Double, Int64))? = None,
   focus_shown? : (() -> Bool)? = None,
+  focus_color? : (() -> Int64)? = None,
   lens_enabled? : Bool = true,
   disabled? : () -> Bool = fn() { false },
 ) -> SliderLook {
@@ -129,6 +131,7 @@ pub fn SliderLook::new(
     thumb_color,
     thumb_edge,
     focus_shown,
+    focus_color,
     lens_enabled,
     disabled,
   }
@@ -162,7 +165,6 @@ fn liquid_slider_look_core(
   velocity? : (@view.View) -> Double,
   thumb_w_dyn? : (@view.View, () -> Double) -> Double,
   pressing? : () -> Bool,
-  focus_color? : () -> Int64,
   between_fill_and_thumb? : (@view.View, (Double) -> Double) -> Unit,
   in_thumb? : (@view.View, () -> Double, (Double, Double) -> Double) -> Unit,
   after_thumb? : (@view.View, () -> Double, (Double, Double) -> Double) -> Unit,
@@ -206,15 +208,16 @@ fn liquid_slider_look_core(
     let along = fn() { dmax(0.0, w() - 2.0 * ends) }
     let span_at = fn(raw_at : Double) -> Double {
       let at = clamp(raw_at, 0.0, 1.0)
-      match look.travel_inset {
-        Some(_) => dmax(0.0, middle_at(at) - ends)
+      let raw = match look.travel_inset {
+        Some(_) => middle_at(at) - ends
         None =>
           if look.flush {
-            dmax(0.0, middle_at(at) - eff_tw() / 2.0 * (1.0 - at) - ends)
+            middle_at(at) - eff_tw() / 2.0 * (1.0 - at) - ends
           } else {
-            middle_at(at)
+            middle_at(at) - ends
           }
       }
+      clamp(raw, 0.0, along())
     }
     // 1. Track (with optional track_image, e.g. hue rainbow strip)
     inner.box(fn(track) {
@@ -433,17 +436,9 @@ fn liquid_slider_look_core(
           .radius(Is(look.thumb_h / 2.0 + 3.0))
           .offset(By(fn() { (thumb_x(eff_tw(), progress(ring)) - 3.0, -3.0) }))
           .edge(By(fn() {
-            let col = match focus_color {
+            let col = match look.focus_color {
               Some(f) => f()
-              None =>
-                match look.thumb_color {
-                  Some(tc) =>
-                    match look.fill_color {
-                      Some(fc) => fc()
-                      None => tc()
-                    }
-                  None => colors().accent
-                }
+              None => colors().accent
             }
             (2.0, col)
           }))
@@ -729,7 +724,6 @@ pub fn liquid_slider_node(
           thumb_w_at(w(), live_val())
         },
         pressing=fn() { dd.pressing() },
-        focus_color=fn() { colors().accent },
         between_fill_and_thumb=fn(inner, middle_at) {
           // Interior detent markers for discrete stops mode
           if has_stops {

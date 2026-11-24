@@ -65,3 +65,36 @@ test "hue_slider_node: lazy droplet loupe (slot 7 == -16), laid == 0 on drag/rel
   assert_true(custom_hue(chosen.untracked()).unwrap_or(-1) > 240, msg="drag to 80% should move hue > 240")
   assert_eq(t.audit(), [], msg="hue slider audit must be empty")
 }
+
+///|
+test "hue_slider_node: rejected hue keeps thumb aligned with model value" {
+  let fixed = @signals.signal("custom:120")
+  let t = w2_case(w=600.0, fn(root) {
+    accent_pick_node(
+      root,
+      fn() { ["橙色", "蓝色", "青色", "紫色", "粉色"] },
+      fn() { "五彩色" },
+      fn() { "自定义" },
+      fn() { "色相" },
+      fn() { fixed.get() },
+      fn(_) { () },
+    )
+  })
+  t.run_for(@ui.move_most_ms)
+  let sl = t.get(Slider, label="色相").rect
+  let cy = sl.1 + sl.3 / 2.0
+  let knob_col = ink_of_hue(120)
+  let knob_cx = fn() -> Double raise {
+    let ks = t.drawn_rects().filter(fn(r) { r.4 == knob_col && r.3 >= 23.0 && r.3 <= 25.0 && r.1 >= sl.1 - 2.0 })
+    assert_eq(ks.length(), 1, msg="expected 1 hue knob rect")
+    ks[0].0 + ks[0].2 / 2.0
+  }
+  let cx0 = knob_cx()
+  t.press_at(sl.0 + sl.2 * 0.85, cy)
+  t.run_for(hue_hold_ms)
+  t.release(sl.0 + sl.2 * 0.85, cy)
+  t.run_for(hue_settle_ms)
+  assert_eq(t.drawn_glass().length(), 0, msg="released rejected hue slider must emit 0 glass")
+  let cx1 = knob_cx()
+  assert_true((cx1 - cx0).abs() < 0.5, msg="rejected hue drag must keep thumb at model value: \{cx0} vs \{cx1}")
+}
