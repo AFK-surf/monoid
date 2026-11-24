@@ -50,8 +50,22 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
     .sort();
   assert.deepEqual(
     pionImplemented,
-    ["footprint", "memory", "packed"],
-    "only footprint, memory, and packed are currently enabled in Pion",
+    [
+      "archive-marks",
+      "card-posts",
+      "closed-cards",
+      "footprint",
+      "memory",
+      "packed",
+      "people-since",
+      "post-blocks",
+      "session-bindings",
+      "session-counts",
+      "signin-save",
+      "usage-retire",
+      "widget-sources",
+    ],
+    "only the implemented baseline + builders_core modes are currently enabled in Pion",
   );
 
   assert.equal(readerModeEnvKey("footprint"), "STILLFAIL_READER_FOOTPRINT");
@@ -350,7 +364,21 @@ test("STILLFAIL_READER_ENGINE acts as global env fallback below config.readers a
 test("every mode with pionImplemented: true is explicitly wired to resolveReaderSelection (exact allowlist guard)", () => {
   // Modes whose spawn sites are wired through resolveReaderSelection AND backed by Pion implementations.
   // Adding a mode here requires wiring its actual spawn site and updating the capability gate.
-  const WIRED_PION_MODES = new Set<ReaderMode>(["footprint", "memory", "packed"]);
+  const WIRED_PION_MODES = new Set<ReaderMode>([
+    "archive-marks",
+    "card-posts",
+    "closed-cards",
+    "footprint",
+    "memory",
+    "packed",
+    "people-since",
+    "post-blocks",
+    "session-bindings",
+    "session-counts",
+    "signin-save",
+    "usage-retire",
+    "widget-sources",
+  ]);
   const enabled = (Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][])
     .filter(([, meta]) => meta.pionImplemented)
     .map(([mode]) => mode)

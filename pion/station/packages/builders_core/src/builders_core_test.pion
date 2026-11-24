@@ -115,3 +115,29 @@ test "archive_marks_part and archive_marks_complete" {
   m.set("complete", base_codec::json_int(0))
   expect(!archive_marks_complete(m), "complete 0")
 }
+
+test "usage_retire quote_sql_ident, double_floor, and double_ceil" {
+  expect(quote_sql_ident("usage_detail") == "\"usage_detail\"", "plain ident")
+  expect(quote_sql_ident("a\"b") == "\"a\"\"b\"", "escaped quote")
+  expect(double_floor(3.0) == 3.0, "floor exact")
+  expect(double_floor(3.7) == 3.0, "floor pos")
+  expect(double_floor(-3.2) == -4.0, "floor neg")
+  expect(double_floor(-3.0) == -3.0, "floor neg exact")
+  expect(double_ceil(3.0) == 3.0, "ceil exact")
+  expect(double_ceil(3.2) == 4.0, "ceil pos")
+  expect(double_ceil(-3.7) == -3.0, "ceil neg")
+  expect(double_ceil(-3.0) == -3.0, "ceil neg exact")
+}
+
+test "post_block_expr and positions_query SQL alignment" {
+  expect(
+    post_block_expr("e.n") == "(e.n / 64 - CASE WHEN e.n < 0 AND e.n % 64 != 0 THEN 1 ELSE 0 END)",
+    "post block expr",
+  )
+  let c0 = card_positions_query(Some("card"), false)
+  expect(c0 == "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries INDEXED BY entries_cards WHERE thread=?1 AND n<=CAST(?2 AS INTEGER) AND card IS NOT NULL ORDER BY n LIMIT ?3)", "card query 0")
+  let c1 = card_positions_query(Some("options"), true)
+  expect(c1 == "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries INDEXED BY entries_options WHERE thread=?1 AND n>CAST(?2 AS INTEGER) AND n<=CAST(?3 AS INTEGER) AND options IS NOT NULL ORDER BY n LIMIT ?4)", "card query 1")
+  let c3 = card_positions_query(None, false)
+  expect(c3 == "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries WHERE thread=?1 AND n<=CAST(?2 AS INTEGER) ORDER BY n LIMIT ?3)", "card query 3")
+}

@@ -5,31 +5,64 @@ on:
     paths:
       - "pion/station/**"
       - "pion/base/**"
+      - "station/mb/src/bindings/**"
+      - "station/mb/src/cards/**"
+      - "station/mb/src/counts/**"
       - "station/mb/src/footprint/**"
       - "station/mb/src/host/**"
+      - "station/mb/src/lookups/**"
       - "station/mb/src/marks/**"
       - "station/mb/src/memory/**"
       - "station/mb/src/packed/**"
+      - "station/mb/src/posts/**"
       - "station/mb/src/reader/main.mbt"
+      - "station/mb/src/signin/**"
       - "station/mb/src/sql/**"
+      - "station/mb/src/usagefill/**"
+      - "station/mb/src/widgets/**"
       - "station/mb/src/wire/**"
       - "station/src/sessions/footprint.ts"
       - "station/src/sessions/packed-mb.ts"
+      - "station/src/sessions/post-block-builder.ts"
+      - "station/src/sessions/session-count-builder.ts"
       - "station/src/share/memory-mb.ts"
       - "station/src/share/memory.ts"
       - "station/src/ops/paths.ts"
       - "station/src/read/archive-mark-builder.ts"
+      - "station/src/read/card-posts-builder.ts"
       - "station/src/read/mb-reader.ts"
       - "station/src/read/pool.ts"
       - "station/src/read/reader-select.ts"
       - "station/src/read/requested-builder.ts"
+      - "station/src/read/session-bindings-builder.ts"
+      - "station/src/read/widget-sources-builder.ts"
       - "station/src/rig/main.ts"
       - "station/src/services.ts"
       - "station/src/store/archive-mark-index.ts"
+      - "station/src/store/card-post-index.ts"
+      - "station/src/store/post-blocks.ts"
+      - "station/src/store/session-bindings-index.ts"
+      - "station/src/store/session-counts.ts"
+      - "station/src/store/usage-15m.ts"
+      - "station/src/store/usage-compact.ts"
+      - "station/src/store/usage-retire.ts"
+      - "station/src/store/widget-sources.ts"
+      - "station/src/usage/module.ts"
+      - "station/src/vault/signin-save-builder.ts"
+      - "station/src/vault/signin-save-index.ts"
+      - "station/test/builders-core-pion-switch.test.ts"
       - "station/test/footprint-reference.ts"
       - "station/test/mb-archive-marks.test.ts"
+      - "station/test/mb-card-posts.test.ts"
       - "station/test/mb-footprint.test.ts"
+      - "station/test/mb-lookups.test.ts"
       - "station/test/mb-packed.test.ts"
+      - "station/test/mb-post-blocks.test.ts"
+      - "station/test/mb-session-bindings.test.ts"
+      - "station/test/mb-session-counts.test.ts"
+      - "station/test/mb-signin-save.test.ts"
+      - "station/test/mb-usage-retire.test.ts"
+      - "station/test/mb-widget-sources.test.ts"
       - "station/test/reader-contract-builders.test.ts"
       - "station/test/reader-contract-footprint.test.ts"
       - "station/test/reader-contract-packed.test.ts"
@@ -44,6 +77,15 @@ on:
       - "station/test/memory-program.ts"
       - "station/test/packed-pion-switch.test.ts"
       - "station/test/reference/backfill/archive-mark-index.ts"
+      - "station/test/reference/backfill/card-post-index.ts"
+      - "station/test/reference/backfill/legacy-closed-cards.ts"
+      - "station/test/reference/backfill/legacy-people-since.ts"
+      - "station/test/reference/backfill/post-blocks.ts"
+      - "station/test/reference/backfill/session-bindings-index.ts"
+      - "station/test/reference/backfill/session-counts.ts"
+      - "station/test/reference/backfill/signin-save-index.ts"
+      - "station/test/reference/backfill/usage-retire.ts"
+      - "station/test/reference/backfill/widget-sources.ts"
       - "station/test/reference/memory-merge.ts"
       - "station/test/reference/share-skills.ts"
       - "station/test/reference/packed.ts"
@@ -315,10 +357,20 @@ jobs:
           STILLFAIL_MB_READER="$BIN" node --test station/test/mb-packed.test.ts
           PATH="$RUNNER_TEMP/zig-bin:$PATH" MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/packed-pion-switch.test.ts
 
-          # Black-box 0-diff contract gate for SQLite builders (`--builder archive-marks`).
+          # Black-box 0-diff contract gate for all 10 `builders_core` SQLite builders + real dual-engine production switch.
           STILLFAIL_MB_READER="$BIN" node -e 'import { resolve } from "node:path"; import { mbReaderBinary } from "./station/src/read/mb-reader.ts"; const got = mbReaderBinary(); const want = resolve(process.env.STILLFAIL_MB_READER); if (got !== want) { console.error("mbReaderBinary mismatch:", { got, want }); process.exit(1); }'
           PATH="$RUNNER_TEMP/zig-bin:$PATH" MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- env STILLFAIL_READER_CANDIDATE="$BIN" STILLFAIL_REQUIRE_DUAL_READER=1 node --test station/test/reader-contract-builders.test.ts
-          STILLFAIL_MB_READER="$BIN" node --test station/test/mb-archive-marks.test.ts
+          STILLFAIL_MB_READER="$BIN" node --test \
+            station/test/mb-archive-marks.test.ts \
+            station/test/mb-session-bindings.test.ts \
+            station/test/mb-session-counts.test.ts \
+            station/test/mb-signin-save.test.ts \
+            station/test/mb-post-blocks.test.ts \
+            station/test/mb-usage-retire.test.ts \
+            station/test/mb-widget-sources.test.ts \
+            station/test/mb-card-posts.test.ts \
+            station/test/mb-lookups.test.ts
+          PATH="$RUNNER_TEMP/zig-bin:$PATH" MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/builders-core-pion-switch.test.ts
 
       - name: Save Zig cache
         if: always() && steps.zig-cache.outputs.cache-hit != 'true'
