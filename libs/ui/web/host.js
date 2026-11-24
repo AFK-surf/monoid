@@ -1451,6 +1451,8 @@
       float darkMixSaved = 0.0;
       float lightExtra = 0.0;
       bool hasLightEm = false;
+      float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
+      float applePanelGate = smoothstep(0.005, 0.02, abs(v_pad.z)) * (1.0 - smoothstep(0.035, 0.05, abs(v_pad.z))) * (1.0 - smoothstep(0.04, 0.08, colChroma));
       if (is_clear) {
         // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens
         // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)
@@ -1510,7 +1512,8 @@
         emission = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), extra);
         transmittance = mix(0.50, 0.0, extra);
         lift = mix(0.24, 0.0, extra);
-        chromaGain = mix(1.05, 0.0, extra);
+        float darkChromaFloor = 0.45 * (1.0 - smoothstep(0.72, 0.84, col.a)) * applePanelGate;
+        chromaGain = mix(1.05, darkChromaFloor, extra);
         contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       } else {
@@ -1544,6 +1547,18 @@
         refractColor = mix(refractColor, lowC, dampW);
       }
       if (hasLightEm) {
+        if (!is_adaptive && lightExtra > 0.001) {
+          float brightRelax = smoothstep(0.55, 1.00, luma(lowC)) * (1.0 - smoothstep(0.80, 0.95, col.a)) * applePanelGate;
+          if (brightRelax > 0.001) {
+            float effExtra = lightExtra * mix(1.0, 0.45, brightRelax);
+            float effDens = 0.30 + 0.70 * effExtra;
+            lightEmSaved = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * effDens;
+            lightExtra = effExtra;
+            transmittance = mix(0.70, 0.0, effExtra);
+            lift = mix(0.16, 0.0, effExtra);
+            chromaGain = mix(1.18, 0.0, effExtra);
+          }
+        }
         float bgChroma = max(lowC.r, max(lowC.g, lowC.b)) - min(lowC.r, min(lowC.g, lowC.b));
         float lightVeilScale = mix(1.0, 0.65, smoothstep(0.08, 0.40, bgChroma) * regMix * (1.0 - lightExtra));
         emission = mix(lightEmSaved * lightVeilScale, darkEmSaved, darkMixSaved);
@@ -1591,7 +1606,6 @@
         baseColor = mix(legacyBase, regProjected, regMix);
       }
       // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass
-      float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
       if (colChroma > 0.08 && col.a > 0.001) {
         float tintW = col.a <= 0.45
           ? col.a * 0.5
@@ -1673,6 +1687,13 @@
           float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.020 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;
           vec3 rimTarget = clamp(vec3(1.0) + (refractColor - vec3(Y)) * 1.0, 0.0, 1.0);
           result = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));
+          float panelRimGate = smoothstep(0.48, 0.65, col.a) * (1.0 - smoothstep(0.85, 0.98, col.a)) * applePanelGate;
+          if (panelRimGate > 0.001) {
+            float cushionEnv = smoothstep(0.55, 1.35, inward) * exp(-max(0.0, inward - 1.0) / 3.0);
+            float cushionLobe = max(regLobe, 0.42);
+            float cushionStr = (is_dark ? 0.06 : 0.62) * cushionLobe * cushionEnv * panelRimGate * regMix;
+            result = mix(result, vec3(1.0), clamp(cushionStr, 0.0, 1.0));
+          }
         }
         if (regHairline > 0.001) {
           float regShade = (is_dark ? 0.0 : 0.13) * regShadeMask;

@@ -122,6 +122,7 @@ pub struct Exporter {
   priv mut places : Places
   priv mut known : Bool
   priv mut transcripts_pending : Bool
+  priv tf_cache : Map[String, Array[(String, JValue)]]
   /// This run of the exporter.
   run : String
   priv mut read : Int
@@ -167,6 +168,7 @@ pub fn Exporter::new(
     places: { home: None, workspaces: [] },
     known: false,
     transcripts_pending: false,
+    tf_cache: Map([]),
     run: files.random(4),
     read: 0,
   }
@@ -212,6 +214,7 @@ fn Exporter::forget(self : Exporter) -> Unit raise {
   self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;")
   self.known = false
   self.transcripts_pending = false
+  self.tf_cache.clear()
 }
 
 ///|
@@ -290,6 +293,7 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
     ignore(self.state.run("DELETE FROM \{t} WHERE ws = ?", [s(ws)]))
   }
+  self.tf_cache.remove(ws)
   gen
 }
 
@@ -329,6 +333,7 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
       self.state.exec("ROLLBACK") catch {
         _ => ()
       }
+      self.tf_cache.clear()
       raise e
     }
   }
@@ -957,7 +962,14 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
   next = set(next, "batches", strs(strings_of(get(head, "batches")) + names))
   next = set(next, "runs", Arr(kept))
   next = set(next, "files", files)
-  let tf_entries = self.transcript_files_map(ws)
+  let tf_entries = match self.tf_cache.get(ws) {
+    Some(cached) => cached
+    None => {
+      let entries = self.transcript_files_map(ws)
+      self.tf_cache[ws] = entries
+      entries
+    }
+  }
   if tf_entries.length() > 0 {
     next = set(next, "transcriptFiles", Obj(tf_entries))
   } else {
@@ -1035,11 +1047,14 @@ fn Exporter::fold_gen(self : Exporter, dir : String, head : JValue, everything :
       next = set(next, "batches", strs(bs[0:bs.length() - take.length()].to_array() + names))
       if whole {
         let files : Array[(String, JValue)] = []
+        let file_idx : Map[String, Int] = Map([])
         folded.each_named_file((_, hash, sz) => {
-          let key = hash
-          match files.search_by(e => e.0 == key) {
-            Some(i) => files[i] = (key, Num(sz))
-            None => files.push((key, Num(sz)))
+          match file_idx.get(hash) {
+            Some(i) => files[i] = (hash, Num(sz))
+            None => {
+              file_idx[hash] = files.length()
+              files.push((hash, Num(sz)))
+            }
           }
         })
         next = set(next, "files", Obj(files))
@@ -1373,6 +1388,7 @@ async fn Exporter::export_transcripts(
           s(chunks_json),
         ]),
       )
+      self.tf_cache.remove(ws)
       say(
         ws,
         Obj([
@@ -1392,6 +1408,7 @@ async fn Exporter::export_transcripts(
         let old_path = field_text(row, "path")
         if !active.contains(old_path) {
           ignore(self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(old_path)]))
+          self.tf_cache.remove(ws)
           say(ws, Obj([("tr_del", str(old_path))]))
         }
       }
@@ -1402,16 +1419,27 @@ async fn Exporter::export_transcripts(
 
 ///|
 fn Exporter::transcript_files_map(self : Exporter, ws : String) -> Array[(String, JValue)] raise {
+  let rows = self.state.all("SELECT chunks_json FROM transcript_files WHERE ws = ?", [s(ws)])
+  if rows.length() == 0 {
+    return []
+  }
+  let chunk_sizes : Map[String, Double] = Map([])
+  for r in self.state.all("SELECT chunk_hash, comp_size FROM transcript_chunks", []) {
+    let ch = field_text(r, "chunk_hash")
+    if !chunk_sizes.contains(ch) {
+      chunk_sizes[ch] = field_num(r, "comp_size")
+    }
+  }
   let sizes : Map[String, Double] = Map([])
-  for row in self.state.all("SELECT chunks_json FROM transcript_files WHERE ws = ?", [s(ws)]) {
+  for row in rows {
     let parsed = @jsjson.parse(field_text(row, "chunks_json")) catch { _ => Arr([]) }
     for ch in strings_of(Some(parsed)) {
       if sizes.contains(ch) {
         continue
       }
-      let sz = match self.state.all("SELECT comp_size FROM transcript_chunks WHERE chunk_hash = ? LIMIT 1", [s(ch)]) {
-        [r, ..] => field_num(r, "comp_size")
-        _ =>
+      let sz = match chunk_sizes.get(ch) {
+        Some(s) => s
+        None =>
           match self.files.meta(self.files.join([self.replica, "chunks", ch])) {
             Some((size, _)) => size
             None => 0.0

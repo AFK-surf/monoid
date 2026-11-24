@@ -182,6 +182,7 @@ export class Exporter {
   #known = false;
   /// Whether a transcript scan was deferred or truncated by budget and must continue in the next pass.
   #transcriptsPending = false;
+  readonly #tfCache = new Map<string, Record<string, number>>();
   #closed = false;
   /// This run of the exporter: a generation's head lists the runs that wrote it (a copy that holds a run this station's
   /// own does not know was written by one rolled back).
@@ -243,6 +244,7 @@ export class Exporter {
     this.#state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;");
     this.#known = false;
     this.#transcriptsPending = false;
+    this.#tfCache.clear();
   }
 
   setPlaces(places: Places): void {
@@ -273,6 +275,7 @@ export class Exporter {
     this.#state.prepare("DELETE FROM sent WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM entering WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM transcript_files WHERE ws = ?").run(ws);
+    this.#tfCache.delete(ws);
     return gen;
   }
 
@@ -302,6 +305,7 @@ export class Exporter {
       return passed;
     } catch (e) {
       this.#state.exec("ROLLBACK");
+      this.#tfCache.clear();
       throw e;
     }
   }
@@ -680,13 +684,22 @@ export class Exporter {
     }
     const runs = [...head.runs];
     if (runs.length === 0 || runs[runs.length - 1]!.run !== this.run) runs.push({ run: this.run, from: first });
-    const tf = this.#transcriptFilesMap(ws);
+    let tf = this.#tfCache.get(ws);
+    if (tf === undefined) {
+      tf = this.#transcriptFilesMap(ws);
+      this.#tfCache.set(ws, tf);
+    }
     const next: Head = {
       ...head, made, to: n, batches: [...head.batches, ...names], runs: runs.slice(-RUNS_KEPT), files: { ...head.files, ...out.files },
       chats: (this.#state.prepare("SELECT COUNT(*) AS n FROM threads WHERE ws = ?").get(ws) as { n: number }).n,
       messages: head.messages + out.messages,
     };
-    if (Object.keys(tf).length > 0) next.transcriptFiles = tf;
+    let hasTf = false;
+    for (const _ in tf) {
+      hasTf = true;
+      break;
+    }
+    if (hasTf) next.transcriptFiles = tf;
     else delete next.transcriptFiles;
     out.head = this.#fold(dir, next, out.gone);
   }
@@ -934,6 +947,7 @@ export class Exporter {
           closeSync(fd); // sync: in the export's own thread (worker.ts)
         }
         this.#state.prepare("INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)").run(ws, path, room, size, mtime, mode, JSON.stringify(chunks));
+        this.#tfCache.delete(ws);
         say(ws, { tr: path, room, size, mtime, mode, chunks });
         doneFiles++;
         doneBytes += readBytes;
@@ -942,6 +956,7 @@ export class Exporter {
         for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
           if (!active.has(row.path)) {
             this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
+            this.#tfCache.delete(ws);
             say(ws, { tr_del: row.path });
           }
         }
@@ -951,14 +966,20 @@ export class Exporter {
   }
 
   #transcriptFilesMap(ws: string): Record<string, number> {
+    const rows = this.#state.prepare("SELECT chunks_json FROM transcript_files WHERE ws = ?").all(ws) as { chunks_json: string }[];
+    if (rows.length === 0) return {};
+    const chunkSizes = new Map<string, number>();
+    for (const r of this.#state.prepare("SELECT chunk_hash, comp_size FROM transcript_chunks").all() as { chunk_hash: string; comp_size: number }[]) {
+      if (!chunkSizes.has(r.chunk_hash)) chunkSizes.set(r.chunk_hash, num(r.comp_size));
+    }
     const sizes = new Map<string, number>();
-    for (const row of this.#state.prepare("SELECT chunks_json FROM transcript_files WHERE ws = ?").all(ws) as { chunks_json: string }[]) {
+    for (const row of rows) {
       const chunks = JSON.parse(row.chunks_json) as string[];
       for (const ch of chunks) {
         if (sizes.has(ch)) continue;
-        const r = this.#state.prepare("SELECT comp_size FROM transcript_chunks WHERE chunk_hash = ? LIMIT 1").get(ch) as { comp_size: number } | undefined;
-        let sz = r?.comp_size ?? 0;
-        if (r === undefined) {
+        let sz = chunkSizes.get(ch);
+        if (sz === undefined) {
+          sz = 0;
           try {
             sz = statSync(join(this.#o.replica, "chunks", ch)).size; // sync: in the export's own thread (worker.ts)
           } catch {}

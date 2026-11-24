@@ -1446,7 +1446,7 @@ pub fn marks_actions_node(@view.View, () -> MarksActionsSaid, () -> ViewerInk, @
 
 pub fn md_links_to(String, @json.Json?) -> Map[String, LinkTo]
 
-pub let md_lits : @view.Lent[() -> Array[(String, Int64)]]
+pub let md_lits : @view.Lent[() -> Array[(String, Int64, String?)]]
 
 pub fn md_node_at(@json.Json) -> Int32
 
@@ -1960,7 +1960,7 @@ pub let paragraph : @ui.TextStyle
 
 pub fn parts_reset() -> Unit
 
-pub fn passage_marks(Array[@text.Run], (String, Int64), starts? : Bool, ends? : Bool) -> Array[@view.RunsMark]
+pub fn passage_marks(Array[@text.Run], (String, Int64), starts? : Bool, ends? : Bool, before? : String) -> Array[@view.RunsMark]
 
 pub fn path_link(String, Int32?) -> String
 

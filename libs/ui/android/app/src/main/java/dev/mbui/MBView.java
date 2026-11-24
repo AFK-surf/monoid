@@ -144,6 +144,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void surfaceDestroyed(android.view.SurfaceHolder holder) {
         glAlive = false;
+        glSettling = false;
+        postToApp(pacer::surfaceReset);
         StreamLayer.parentGone(this);
         super.surfaceDestroyed(holder);
     }
@@ -152,6 +154,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     @Override
     public void onPause() {
         paused = true;
+        glSettling = false;
         lastSettleNs = 0L;
         if (settleScheduled.getAndSet(false)) {
             Host.main.post(() -> Choreographer.getInstance().removeFrameCallback(settleVsync));
@@ -172,6 +175,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     public void onResume() {
         super.onResume();
         paused = false;
+        glWorked = 0;
         if (!ONE && logic != null) {
             logic.post(this::wakeHints);
         } else {
@@ -186,12 +190,19 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      * paused, the GL thread lets its surface go and nothing is current (the context, kept, keeps them till then).
      */
     void trim() {
+        glSettling = false;
         queueEvent(() -> {
             if (android.opengl.EGL14.eglGetCurrentContext() != android.opengl.EGL14.EGL_NO_CONTEXT) Native.trim();
         });
     }
 
     // ---- the app's thread ----
+
+    /** {@code r} run on this view's drawing thread (logic thread when !ONE, else this view's GL thread). */
+    private void postToApp(Runnable r) {
+        if (!ONE && logic != null) logic.post(r);
+        else queueEvent(r);
+    }
 
     /** {@code r} run on the app's thread (MoonBit's), after what is there now: the GL thread's with ONE. */
     static void onApp(Runnable r) {
@@ -295,6 +306,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         mine = ++setUp;
         glAlive = true;
         if (ONE) {
+            systemFrameNeeded = true;
             MBText.reset();
             if (!started) {
                 started = true;
@@ -345,10 +357,11 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         Native.resize(w, h);
         // (a new surface, told after it is made, or the same at another size: whatever was said of the rate, nothing said)
         if (ONE) {
+            systemFrameNeeded = true;
             pacer.sayRate(false);
             return;
         }
-        logic.post(() -> pacer.sayRate(false));
+        postToApp(() -> pacer.sayRate(false));
         // (the frame of the new size waited for a while: the one the surface shows next is the app's at that size)
         fresh = Math.max(fresh, 100);
         wantFrame();
@@ -361,6 +374,23 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      */
     private int fresh;
 
+    /** GL adaptive glass settling state (written on GL thread, read on drawing thread via nonPacedActive). */
+    private volatile boolean glSettling;
+    /** Timestamp (ns) of the last native-view picture redraw (read on drawing thread via nonPacedActive). */
+    private volatile long lastPictureRedrawNs;
+    /** Coalesces paced-rate lift posts from GL/main threads to the drawing thread. */
+    private final java.util.concurrent.atomic.AtomicBoolean liftPending = new java.util.concurrent.atomic.AtomicBoolean();
+
+    private void notePictureActivity() {
+        lastPictureRedrawNs = System.nanoTime();
+        if (pacer.isPacedActive() && liftPending.compareAndSet(false, true)) {
+            postToApp(() -> {
+                liftPending.set(false);
+                pacer.recheckRate();
+            });
+        }
+    }
+
     /** Which vsync the next frame is made for, and the rate the surface says of the display (FramePacer). */
     private final FramePacer pacer = new FramePacer(new FramePacer.Platform() {
         @Override public long nanoTime() { return System.nanoTime(); }
@@ -372,7 +402,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         @Override public void postVsync() { postVsync.run(); }
 
         @Override public void atNextVsyncOnDrawing(Runnable r) {
-            Host.main.post(() -> Choreographer.getInstance().postFrameCallback(t -> onApp(r)));
+            Host.main.post(() -> Choreographer.getInstance().postFrameCallback(t -> postToApp(r)));
         }
 
         @Override public void requestRender() { makeFrame(); }
@@ -380,10 +410,26 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         @Override public boolean setRate(float rate) { return surfaceRate(rate); }
 
         @Override public boolean typing() { return MBView.typing(); }
+
+        @Override public boolean glSettling() {
+            if (!glSettling) return false;
+            if (!Native.adaptiveSettling()) {
+                glSettling = false;
+                return false;
+            }
+            return true;
+        }
+
+        @Override public boolean pictureActive() {
+            long pns = lastPictureRedrawNs;
+            return pns != 0L && System.nanoTime() - pns < 150_000_000L;
+        }
     });
 
     /** A frame made as soon as the app's thread can (FramePacer's requestRender): drawn on the GL thread with ONE. */
     private final java.util.concurrent.atomic.AtomicBoolean making = new java.util.concurrent.atomic.AtomicBoolean();
+    /** ONE-mode marker: set on onSurfaceCreated/onSurfaceChanged so the next onDrawFrame builds an app frame. */
+    private volatile boolean systemFrameNeeded;
 
     private void makeFrame() {
         if (ONE) {
@@ -464,7 +510,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             return;
         }
         Latency.frameBegins();
-        boolean app = pacer.appWanted.getAndSet(false), pictured = pacer.picturesOnly.getAndSet(false);
+        FramePacer.Taken tk = pacer.takeRender();
+        boolean app = tk.app, pictured = tk.pictured;
+        boolean sys = systemFrameNeeded;
+        systemFrameNeeded = false;
         // another view set the drawing up in its own context since this one did (an OverActivity came and went): set
         // up again here, at this view's size
         if (mine != setUp) {
@@ -472,6 +521,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             MBText.reset();
             Native.resize(getWidth(), getHeight());
             mine = ++setUp;
+            sys = true;
             app = true;
         }
         // the native views' pictures come since the last frame, for this one to draw where it shows them
@@ -483,31 +533,34 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             shotFrame(w, h);
             return;
         }
-        // only a view's picture changed (pictureFrame): the last frame drawn again with it, the app not asked; a frame
-        // the app or the system asked for is the app's
-        long[] at = pacer.vsyncAt();
-        if (pictured && !app) {
+        // no app frame or system rebuild needed (picture-only redraw, expose, or already-consumed pacer request):
+        // redraw the kept frame so GLSurfaceView's unconditional eglSwapBuffers always presents valid content
+        long[] at = tk.vsyncAt;
+        if (!app && !sys) {
             Native.redraw();
+            glSettling = Native.adaptiveSettling();
+            if (pictured) notePictureActivity();
             showAt(at[1]);
             NativeViews.framed(false);
-            pacer.redrawn();
+            if (pictured) pacer.redrawn();
             Latency.frameEnds(Latency.frameBuilt());
             return;
         }
         long began = System.nanoTime();
-        FramePacer.Begun b = pacer.begin(at, began);
+        FramePacer.Begun b = pacer.begin(at, began, tk.external);
         // the system's back said before this frame's vsync (back(), below); what was said after it, the next frame's
         boolean later = takeBacks(b.vsync != 0 ? b.vsync : began);
         // (what it waits for said again by the frame, if it still does: Host.wakeAfter, from its time)
-        wakeFor = -1;
+        pacer.clearWake();
         buildingFor = b.now;
         pacedRate = 0;
         boolean more = Native.frame(w, h, density, b.now, b.late);
         buildingFor = -1;
+        glSettling = Native.adaptiveSettling();
         // (a stream's frame shown in it whose view did not move: put on its layer now, StreamLayer.show)
         StreamLayer.frameEnded();
         showAt(b.shows);
-        pacer.ended(more, later, b.following, pacedRate);
+        pacer.ended(more, later, b.following, pacedRate, b.externalDemand);
         // (the native views moved in it: their frames follow once they rest)
         NativeViews.framed(more || later);
         Script.frameDrawn();
@@ -524,21 +577,24 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private void frameOnApp() {
         making.set(false);
         if (Host.view != this || paused) return;
+        FramePacer.Taken tk = pacer.takeRender();
+        boolean app = tk.app, pictured = tk.pictured;
+        if (!app && !pictured) return;
         Latency.frameBegins();
-        boolean app = pacer.appWanted.getAndSet(false), pictured = pacer.picturesOnly.getAndSet(false);
         final int imeUsed = Host.imeBottom;
         float w = getWidth() / density, h = Math.max(1, getHeight() - imeUsed) / density;
-        long[] at = pacer.vsyncAt();
+        long[] at = tk.vsyncAt;
         if (pictured && !app) {
+            notePictureActivity();
             if (mail.redrawAsked(at[1])) requestRender();
             NativeViews.framed(false);
             pacer.redrawn();
             return;
         }
         long began = System.nanoTime();
-        FramePacer.Begun b = pacer.begin(at, began);
+        FramePacer.Begun b = pacer.begin(at, began, tk.external);
         boolean later = takeBacks(b.vsync != 0 ? b.vsync : began);
-        wakeFor = -1;
+        pacer.clearWake();
         buildingFor = b.now;
         pacedRate = 0;
         boolean more = Native.frame(w, h, density, b.now, b.late);
@@ -546,11 +602,11 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         // (a stream's frame shown in it whose view did not move: put on its layer now, StreamLayer.show)
         StreamLayer.frameEnded();
         handOver(b.shows);
-        pacer.ended(more, later, b.following, pacedRate);
+        pacer.ended(more, later, b.following, pacedRate, b.externalDemand);
         NativeViews.framed(more || later);
         frameWorked(System.nanoTime() - began, glWorked);
         if (Host.imeBottom != imeUsed && Host.view == this && !paused) {
-            pacer.appWanted.set(true);
+            pacer.wantImmediateFrame();
             makeFrame();
         }
     }
@@ -659,7 +715,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         } else {
             Native.redraw();
         }
-        if (Native.adaptiveSettling()) {
+        boolean settlingNow = Native.adaptiveSettling();
+        glSettling = settlingNow;
+        if (settlingNow && pacer.isPacedActive() && liftPending.compareAndSet(false, true)) {
+            postToApp(() -> {
+                liftPending.set(false);
+                pacer.recheckRate();
+            });
+        }
+        if (settlingNow) {
             if (t.took) lastSettleNs = System.nanoTime();
             scheduleAdaptiveSettle();
         }
@@ -999,6 +1063,23 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             }
             Choreographer.getInstance().postVsyncCallback((Choreographer.VsyncCallback) v.vsyncTimed);
         }
+
+        static void postWake(MBView v, FramePacer.WakeReq req) {
+            Choreographer.getInstance().postVsyncCallback(new Choreographer.VsyncCallback() {
+                @Override
+                public void onVsync(Choreographer.FrameData d) {
+                    if (v.shotTaken) return;
+                    long shows = d.getPreferredFrameTimeline().getExpectedPresentationTimeNanos();
+                    Choreographer.FrameTimeline[] tl = d.getFrameTimelines();
+                    long period = tl.length > 1
+                            ? tl[1].getExpectedPresentationTimeNanos() - tl[0].getExpectedPresentationTimeNanos() : 0;
+                    if (period > 0 && Math.abs(period - v.pacer.framePeriod) * 16 > v.pacer.framePeriod) v.pacer.framePeriod = period;
+                    if (v.pacer.fireWake(req, d.getFrameTimeNanos(), shows) == 1) {
+                        Choreographer.getInstance().postVsyncCallback(this);
+                    }
+                }
+            });
+        }
     }
 
     /**
@@ -1029,19 +1110,20 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         pacer.frameNow();
     }
 
-    /**
-     * The frame the app waits for (Host.wakeAfter: a resident cycle's next step), by its time (ms, System.nanoTime's
-     * clock as the vsyncs'), or -1; and the time of the frame being built (GL thread), what a wait counts from.
-     */
-    volatile double wakeFor = -1;
+    /** The time of the frame being built (ms, System.nanoTime's clock), what a wait counts from, or -1. */
     volatile double buildingFor = -1;
 
     /** The rate the frame being built said what moves on by the clock needs (framesPaced; 0: none), GL thread. */
     private float pacedRate;
 
+    /** Atomically schedules or upgrades a timed wake request in FramePacer (posted by Host.scheduleWake). */
+    FramePacer.WakeReq scheduleWakeReq(double at, boolean pacedOnly) {
+        return pacer.scheduleWake(at, pacedOnly);
+    }
+
     /**
      * A frame for what moves on by the clock that needs only {@code hz} frames a second (Host.framesPaced, GL thread, in
-     * the frame being built): woken for (Host.wakeAfter) at the vsync a whole number of the display's fastest frames on,
+     * the frame being built): woken for (Host.scheduleWake) at the vsync a whole number of the display's fastest frames on,
      * as near {@code hz} as they come, the vsyncs between drawing nothing, and that rate said of the display as the
      * frame ends (FramePacer.ended); false where that is every vsync (the display no faster than it), the next asked.
      */
@@ -1051,28 +1133,27 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (every <= 1 || buildingFor < 0) return false;
         pacedRate = top / every;
         // (half a display frame short of it: the vsync at it, whatever its time's rounding)
-        Host.wakeAfter((every - 0.5) * 1000.0 / top);
+        Host.scheduleWake(this, (every - 0.5) * 1000.0 / top, true);
         return true;
     }
 
     /**
-     * The frame for time `at` drawn (main thread, a little before it): asked for at the vsync before the first at or past
-     * it, so drawn for that one, the vsyncs before it drawing nothing (not the vsync after a timer happens to fire: a step a frame or two late by as much as that
-     * falls, a resident cycle's steps unevenly apart).
+     * The frame for {@code req} drawn (main thread, a little before it): evaluated via FramePacer.fireWake so fixed-rate
+     * screens request the next vsync and LTPO screens at low cadence deliver on the due vsync directly (with timelines on API 33+).
      */
-    void wakeAt(double at) {
-        if (wakeFor != at) return;
+    void wakeAt(FramePacer.WakeReq req) {
+        if (shotTaken || !pacer.isWakeCurrent(req)) return;
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            Timelines.postWake(this, req);
+            return;
+        }
         Choreographer.getInstance().postFrameCallback(new Choreographer.FrameCallback() {
             @Override
             public void doFrame(long t) {
-                if (wakeFor != at) return;
-                // (the vsync after this one is the frame's: asked for as any other, with its timelines)
-                if ((t + pacer.framePeriod) / 1e6 < at - 0.5) {
+                if (shotTaken) return;
+                if (pacer.fireWake(req, t, 0) == 1) {
                     Choreographer.getInstance().postFrameCallback(this);
-                    return;
                 }
-                wakeFor = -1;
-                wantFrame();
             }
         });
     }
@@ -1089,6 +1170,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      */
     void pictureFrame() {
         if (shotTaken) return;
+        notePictureActivity();
         pacer.pictureFrame();
     }
 

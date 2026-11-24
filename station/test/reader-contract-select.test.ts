@@ -57,6 +57,8 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "cc-index",
       "closed-cards",
       "footprint",
+      "legacy-edits",
+      "legacy-said",
       "memory",
       "outflow-chats",
       "packed",
@@ -66,6 +68,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "recent-chat",
       "said",
       "search-scope",
+      "session-backfill",
       "session-bindings",
       "session-counts",
       "session-list",
@@ -78,7 +81,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "widget-sources",
       "workspace-up-jobs",
     ],
-    "only the implemented baseline + builders_core + builders_index + builders_stateful + builders_recent + builders_vault + builders_requested modes are currently enabled in Pion",
+    "only the implemented baseline + builders_core + builders_index + builders_stateful + builders_legacy + builders_recent + builders_vault + builders_requested modes are currently enabled in Pion",
   );
 
   assert.equal(readerModeEnvKey("footprint"), "STILLFAIL_READER_FOOTPRINT");
@@ -384,6 +387,8 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "cc-index",
     "closed-cards",
     "footprint",
+    "legacy-edits",
+    "legacy-said",
     "memory",
     "outflow-chats",
     "packed",
@@ -393,6 +398,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "recent-chat",
     "said",
     "search-scope",
+    "session-backfill",
     "session-bindings",
     "session-counts",
     "session-list",

@@ -181,13 +181,13 @@ export const READER_MODES = {
   },
   "legacy-edits": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Legacy edits migration builder (--builder legacy-edits)",
   },
   "legacy-said": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Legacy said migration builder (--builder legacy-said)",
   },
@@ -199,7 +199,7 @@ export const READER_MODES = {
   },
   "session-backfill": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Session activity/recovery backfill builder (--builder session-backfill)",
   },

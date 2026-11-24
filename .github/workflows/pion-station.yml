@@ -73,15 +73,22 @@ on:
       - "station/src/share/memory-mb.ts"
       - "station/src/share/memory.ts"
       - "station/src/store/archive-mark-index.ts"
+      - "station/src/store/archive-policy-index.ts"
       - "station/src/store/backfill.ts"
       - "station/src/store/card-post-index.ts"
       - "station/src/store/cc-thread-index.ts"
       - "station/src/store/chat-list.ts"
       - "station/src/store/latest-thread-index.ts"
+      - "station/src/store/legacy-agent-build.ts"
+      - "station/src/store/legacy-decision-session.ts"
+      - "station/src/store/legacy-decision-time.ts"
+      - "station/src/store/legacy-edits-build.ts"
+      - "station/src/store/legacy-login-cards.ts"
       - "station/src/store/legacy-said-build.ts"
       - "station/src/store/legacy-said-builder.ts"
       - "station/src/store/post-blocks.ts"
       - "station/src/store/said-state.ts"
+      - "station/src/store/schema.ts"
       - "station/src/store/session-bindings-index.ts"
       - "station/src/store/session-chat-index.ts"
       - "station/src/store/session-counts.ts"
@@ -105,6 +112,7 @@ on:
       - "station/test/autoarchive-last-bounded.test.ts"
       - "station/test/builders-core-pion-switch.test.ts"
       - "station/test/builders-index-pion-switch.test.ts"
+      - "station/test/builders-legacy-pion-switch.test.ts"
       - "station/test/builders-recent-pion-switch.test.ts"
       - "station/test/builders-requested-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
@@ -117,15 +125,21 @@ on:
       - "station/test/mb-card-posts.test.ts"
       - "station/test/mb-cc-index.test.ts"
       - "station/test/mb-footprint.test.ts"
+      - "station/test/mb-legacy-ids.test.ts"
+      - "station/test/mb-legacy-rest.test.ts"
+      - "station/test/mb-legacy.test.ts"
       - "station/test/mb-lookups.test.ts"
       - "station/test/mb-memory-merge.test.ts"
       - "station/test/mb-outflow-chats.test.ts"
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
+      - "station/test/mb-process-jobs.test.ts"
       - "station/test/mb-recent-chat.test.ts"
       - "station/test/mb-said.test.ts"
+      - "station/test/mb-sandbox-names.test.ts"
       - "station/test/mb-search-scope.test.ts"
+      - "station/test/mb-session-backfill.test.ts"
       - "station/test/mb-session-bindings.test.ts"
       - "station/test/mb-session-counts.test.ts"
       - "station/test/mb-session-list.test.ts"
@@ -150,11 +164,16 @@ on:
       - "station/test/w5-foundation.test.ts"
       - "station/test/reference/backfill/archive-last.ts"
       - "station/test/reference/backfill/archive-mark-index.ts"
+      - "station/test/reference/backfill/archive-policy-index.ts"
       - "station/test/reference/backfill/card-post-index.ts"
       - "station/test/reference/backfill/cc-thread-index.ts"
       - "station/test/reference/backfill/job-name-first.ts"
       - "station/test/reference/backfill/latest-thread-index.ts"
+      - "station/test/reference/backfill/legacy-agent-build.ts"
       - "station/test/reference/backfill/legacy-closed-cards.ts"
+      - "station/test/reference/backfill/legacy-decision-session.ts"
+      - "station/test/reference/backfill/legacy-decision-time.ts"
+      - "station/test/reference/backfill/legacy-login-cards.ts"
       - "station/test/reference/backfill/legacy-people-since.ts"
       - "station/test/reference/backfill/legacy-said-build.ts"
       - "station/test/reference/backfill/outflow-index.ts"
@@ -644,11 +663,18 @@ jobs:
             station/test/mb-usage-check.test.ts \
             station/test/mb-vault-uses.test.ts \
             station/test/vault-use-ambiguity.test.ts \
+            station/test/mb-legacy.test.ts \
+            station/test/mb-legacy-ids.test.ts \
+            station/test/mb-legacy-rest.test.ts \
+            station/test/mb-process-jobs.test.ts \
+            station/test/mb-sandbox-names.test.ts \
+            station/test/mb-session-backfill.test.ts \
             station/test/mb-recent-chat.test.ts
 
           STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" node --test \
             station/test/builders-requested-pion-switch.test.ts \
             station/test/builders-vault-pion-switch.test.ts \
+            station/test/builders-legacy-pion-switch.test.ts \
             station/test/builders-recent-pion-switch.test.ts
 
   verify-linux:

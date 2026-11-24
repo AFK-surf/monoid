@@ -698,7 +698,7 @@ test("default mb does zero pionBinary() probe and explicit binary override alway
   });
 });
 
-test("vault-uses UseIndex (file-backed DB) and session-backfill builders resolve ReaderConfig lazily and fall back to mb when Pion stub lacks mode or is unimplemented", { skip: skipPosixStubs }, async () => {
+test("vault-uses UseIndex (file-backed DB) and session-backfill builders resolve ReaderConfig lazily and fall back to mb when Pion stub lacks mode", { skip: skipPosixStubs }, async () => {
   resetReaderSelectionStateForTest();
   const dir = freshDir("w5-di-");
   const spawnLog = join(dir, "spawns.log");
@@ -807,7 +807,7 @@ rl.on("line", (line) => {
       assert.ok(legacyConfigReads >= 1, "buildLegacyEntryLookups must read readers() lazily on spawn");
       assert.deepEqual(legacyBins, [vaultStub], "buildLegacyEntryLookups must select vaultStub via resolveReaderSelection");
 
-      // Verify both modes fell back to mbStub (vault-uses via capability gate, session-backfill via pionImplemented: false) and spawned real processes.
+      // Verify both modes fell back to mbStub (both vault-uses and session-backfill are enabled and fall back on the legacy pionStub via capability gate) and spawned real processes.
       const spawns = readFileSync(spawnLog, "utf8").trim().split("\n").filter(Boolean);
       assert.ok(spawns.some((l) => l.includes("--builder vault-uses")), `expected vault-uses spawn, got ${JSON.stringify(spawns)}`);
       assert.ok(spawns.some((l) => l.includes("--builder session-backfill")), `expected session-backfill spawn, got ${JSON.stringify(spawns)}`);
@@ -817,7 +817,7 @@ rl.on("line", (line) => {
       assert.equal(vSel.selection.reason, "pion-binary-unsupported-mode");
       const sSel = resolveReaderSelection("session-backfill", { config: { readers: { "session-backfill": "pion" } }, env: {} });
       assert.equal(sSel.engine, "mb");
-      assert.equal(sSel.selection.reason, "pion-mode-unimplemented");
+      assert.equal(sSel.selection.reason, "pion-binary-unsupported-mode");
     });
   } finally {
     hearLines(null);
