@@ -210,3 +210,38 @@ test "a gesture held by a node, a modal layer over it that lets a gesture under 
   assert_eq((moved, after, next == Some(a)), (true, false, false))
   assert_eq(told.copy(), ["A Began(0, 10)", "A Moved(40, 20)", "A CalledOff"])
 }
+
+///|
+test "forward: takes_forward and follows_forward respect when, z-order, modals, and CalledOff" {
+  let told : Array[String] = []
+  let can_fwd = @signals.signal(false)
+  let modal = @signals.signal(false)
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(a) {
+        a.follows_forward(when=fn() { can_fwd.get() }, fn(s) { told.push("A \{s}") }) |> ignore
+      })
+      |> ignore
+      root.show(fn() { modal.get() }, fn(m) {
+        m.over(Is(true)).modal(Is(true)) |> ignore
+      })
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(390.0, 844.0) |> ignore
+  assert_eq(t.forward_taker(), None)
+  can_fwd.set(true)
+  let a = t.forward_taker().unwrap()
+  assert_true(t.forward_step(a, Began(10.0, 10.0), 10.0))
+  assert_true(t.forward_step(a, Moved(50.0, 20.0), 20.0))
+  t.event(25.0, fn() { modal.set(true) })
+  assert_eq(t.forward_taker(), None)
+  assert_false(t.forward_step(a, Moved(80.0, 30.0), 30.0))
+  assert_false(t.forward_step(a, LetGo(80.0, 40.0), 40.0))
+  assert_eq(told.copy(), ["A Began(10, 10)", "A Moved(50, 20)", "A CalledOff"])
+  t.event(50.0, fn() { modal.set(false) })
+  let a2 = t.forward_taker().unwrap()
+  assert_true(t.forward_step(a2, Began(0.0, 60.0), 60.0))
+  assert_true(t.forward_step(a2, LetGo(70.0, 70.0), 70.0))
+  assert_eq(told[3:].to_owned(), ["A Began(0, 60)", "A LetGo(70, 70)"])
+}

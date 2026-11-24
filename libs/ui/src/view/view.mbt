@@ -495,6 +495,12 @@ struct Node {
   mut on_back : (() -> Unit)?
   mut on_back_step : ((BackStep) -> Unit)?
   mut back_said : Int
+  /// what forward does to it, once done (View::takes_forward) or step by step (View::follows_forward), and how many
+  /// times it was said (a gesture held by one saying of it goes to that one alone: Tree::forward_step)
+  mut on_forward : (() -> Unit)?
+  mut on_forward_step : ((BackStep) -> Unit)?
+  mut forward_when : (() -> Bool)?
+  mut forward_said : Int
   /// whether it is held, and pointed at, as what reads it reads it (View::pressed, View::pointed): made as first read,
   /// let go with it
   mut pressed_cell : @signals.Signal[Bool]?
@@ -1128,6 +1134,9 @@ pub struct Tree {
   /// the living nodes that take back (View::takes_back, View::follows_back): which takes it asked of those alone
   /// (Tree::back_taker), no walk of the tree
   backs : Array[Int]
+  /// the living nodes that take forward (View::takes_forward, View::follows_forward): which takes it asked of those
+  /// alone (Tree::forward_taker), no walk of the tree
+  forwards : Array[Int]
   /// how deep in a change being committed (Tree::at_cause, an event) it is now, and whether what a modal layer said is to
   /// be told as all of it is committed (Tree::modals_told): what a change does in between (a row put after the rest,
   /// then put in its place) never seen half done
@@ -1230,6 +1239,9 @@ pub struct Tree {
   /// the node a back gesture is held by, as it said it then (Tree::back_step): from its start till it is let go,
   /// called off or the node goes
   mut backing : (NodeId, Int)?
+  /// the node a forward gesture is held by, as it said it then (Tree::forward_step): from its start till it is let go,
+  /// called off or the node goes
+  mut forwarding : (NodeId, Int)?
   mut focused : NodeId?
   mut focus_visible : Bool
   /// the page's list (View::scrolls_window) one of whose rows holds the node with the focus (none: in no row, a list's
@@ -1738,6 +1750,7 @@ pub fn Tree::new(
     held_under_of: None,
     modals: [],
     backs: [],
+    forwards: [],
     committing: 0,
     afters: [],
     modals_due: false,
@@ -1777,6 +1790,7 @@ pub fn Tree::new(
     drawn_marks: [],
     bars_due: false,
     backing: None,
+    forwarding: None,
     focused: None,
     focus_row_list: None,
     focus_row_n: 0,
@@ -2101,6 +2115,9 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.on_key = None
       n.on_back = None
       n.on_back_step = None
+      n.on_forward = None
+      n.on_forward_step = None
+      n.forward_when = None
       n.pressed_cell = None
       n.pointed_cell = None
       n.ground_read = 0
@@ -2254,6 +2271,10 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         on_back: None,
         on_back_step: None,
         back_said: 0,
+        on_forward: None,
+        on_forward_step: None,
+        forward_when: None,
+        forward_said: 0,
         pressed_cell: None,
         pointed_cell: None,
         ground_read: 0,
@@ -2914,6 +2935,9 @@ pub fn Tree::dispose(self : Tree) -> Unit {
   self.hosting = -1
   self.modals.clear()
   self.backs.clear()
+  self.forwards.clear()
+  self.backing = None
+  self.forwarding = None
   // (its nodes but the root and what they keep dropped, their room given back: the tree itself may never be let go of,
   // held by what its arrays were emptied of (moonc's native backend, moonbitlang/core#4611), each Tester's left with
   // all it held; its root kept, holding nothing and let go, for what is asked of it after: it answers none)
@@ -7291,6 +7315,7 @@ pub fn View::presses(self : View, on : Live[Bool]) -> View {
       self.tree.hold_lost_in(self.at)
       self.tree.focus_lost_in(self.at)
       self.tree.back_lost_in(self.at)
+      self.tree.forward_lost_in(self.at)
     }
     // (what hosts it holds in it told, at this cause, once the change is committed whole: Tree::on_modals)
     self.tree.modals_told(within=self.at)
@@ -7746,6 +7771,10 @@ fn Tree::modals_now(self : Tree) -> Unit {
     match self.backing {
       // (one the topmost modal layer over it lets go on: View::held_back_goes_on)
       Some((b, _)) if !self.allows(b) && !(self.modal_top_lets_back() && self.presses_here(b)) => self.back_lost_in(0)
+      _ => ()
+    }
+    match self.forwarding {
+      Some((f, _)) if !self.allows(f) => self.forward_lost_in(0)
       _ => ()
     }
   }
@@ -9688,6 +9717,12 @@ fn View::let_go(self : View) -> Unit {
       None => ()
     }
   }
+  if n.on_forward is Some(_) || n.on_forward_step is Some(_) {
+    match self.tree.forwards.search(self.at) {
+      Some(i) => self.tree.forwards.remove(i) |> ignore
+      None => ()
+    }
+  }
   // (a modal layer let go: what it kept from taking input, wherever it is held, told anew, as its being said off does)
   match self.tree.modals.search(self.at) {
     Some(i) => {
@@ -9744,9 +9779,16 @@ fn View::let_go(self : View) -> Unit {
   n.on_key = None
   n.on_back = None
   n.on_back_step = None
+  n.on_forward = None
+  n.on_forward_step = None
+  n.forward_when = None
   // (a back gesture it held: let go of with it, nothing more told it)
   match self.tree.backing {
     Some((b, _)) if b.at == self.at && b.gen == self.gen => self.tree.backing = None
+    _ => ()
+  }
+  match self.tree.forwarding {
+    Some((f, _)) if f.at == self.at && f.gen == self.gen => self.tree.forwarding = None
     _ => ()
   }
   n.said = None
@@ -9874,6 +9916,12 @@ fn View::retire_parked(self : View) -> Unit {
       None => ()
     }
   }
+  if n.on_forward is Some(_) || n.on_forward_step is Some(_) {
+    match self.tree.forwards.search(self.at) {
+      Some(i) => self.tree.forwards.remove(i) |> ignore
+      None => ()
+    }
+  }
   match self.tree.modals.search(self.at) {
     Some(i) => {
       self.tree.modals.remove(i) |> ignore
@@ -9906,6 +9954,10 @@ fn View::retire_parked(self : View) -> Unit {
   }
   match self.tree.backing {
     Some((b, _)) if b.at == self.at && b.gen == self.gen => self.tree.backing = None
+    _ => ()
+  }
+  match self.tree.forwarding {
+    Some((f, _)) if f.at == self.at && f.gen == self.gen => self.tree.forwarding = None
     _ => ()
   }
   if n.behind {
@@ -10277,6 +10329,7 @@ fn View::park(self : View, v : View, rest? : Bool = true) -> () -> Unit {
   self.tree.hold_lost_in(v.at)
   self.tree.focus_lost_in(v.at)
   self.tree.back_lost_in(v.at)
+  self.tree.forward_lost_in(v.at)
   match n.kids.search(v.at) {
     Some(i) => n.kids.remove(i) |> ignore
     None => ()
@@ -11205,6 +11258,7 @@ fn View::leave(self : View, v : View, ms : Double) -> Unit {
   self.tree.hold_lost_in(v.at)
   self.tree.focus_lost_in(v.at)
   self.tree.back_lost_in(v.at)
+  self.tree.forward_lost_in(v.at)
   self.tree.modals_told(within=v.at)
   self.tree.due_leaving(v.id())
   // (one of an id in it: what may fly from it as the change is committed whole, shared.mbt)
@@ -12536,6 +12590,9 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     n.on_key = None
     n.on_back = None
     n.on_back_step = None
+    n.on_forward = None
+    n.on_forward_step = None
+    n.forward_when = None
     n.said = None
     n.said_hidden = false
     n.bone_whole = false
@@ -13818,6 +13875,7 @@ fn Tree::outs_told(self : Tree) -> Unit {
       self.hold_lost_in(at)
       self.focus_lost_in(at)
       self.back_lost_in(at)
+      self.forward_lost_in(at)
     }
   }
   // (laid out again, what had the focus as it went nowhere, where nothing took it meanwhile: given it back)

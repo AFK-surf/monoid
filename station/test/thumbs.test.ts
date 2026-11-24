@@ -1,8 +1,6 @@
-// Thumbnails and ThumbHashes (src/drive/thumbs.ts, the addon's native/mesh/src/thumbs.rs): thumbs.rs's tests, and
-// the same answers as the Rust station: GET /sessions/:key/files?thumb=1 gives the very bytes the Rust gives, and a
-// message keeps the same ThumbHashes. What the Rust gives is test/fixtures/thumbs/golden.json, written by the Rust
-// station's own code (the Rust station's thumbs_golden.rs, which also wrote the JPEG and WebP fixtures; the PNGs are made
-// here with the same pixels).
+// Thumbnails and ThumbHashes (src/drive/thumbs.ts, the addon's native/mesh/src/thumbs.rs): tests for thumbnail
+// sizing, caching, ThumbHashes, and GET /sessions/:key/files?thumb=1 against test/fixtures/thumbs/golden.json
+// (the JPEG and WebP fixtures live beside it; the PNGs are generated deterministically here).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -355,5 +353,139 @@ test("the files route and a message give what the Rust station gives", async () 
     readers.close();
     store.close();
     rmSync(data, { recursive: true, force: true });
+  }
+});
+
+/// Fast striped PNG for tall or wide test images (level 0 stored deflate keeps encoding fast and larger than JPEG).
+function fastStripedPng(w: number, h: number, alpha = false): Buffer {
+  const channels = alpha ? 4 : 3;
+  const rowLen = 1 + w * channels;
+  const rowA = Buffer.alloc(rowLen);
+  const rowB = Buffer.alloc(rowLen);
+  for (let x = 0; x < w; x++) {
+    const o = 1 + x * channels;
+    rowA[o] = (x * 17) & 255;
+    rowA[o + 1] = (x * 31) & 255;
+    rowA[o + 2] = (x * 53) & 255;
+    if (alpha) rowA[o + 3] = x < w / 2 ? 0 : 255;
+    rowB[o] = (x * 43 + 90) & 255;
+    rowB[o + 1] = (x * 19 + 40) & 255;
+    rowB[o + 2] = (x * 7 + 120) & 255;
+    if (alpha) rowB[o + 3] = 255;
+  }
+  const raw = Buffer.allocUnsafe(h * rowLen);
+  for (let y = 0; y < h; y++) {
+    const src = (y & 7) < 4 ? rowA : rowB;
+    src.copy(raw, y * rowLen);
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, "latin1");
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = alpha ? 6 : 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 0 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/// Extract the EXIF APP1 segment (orientation 6: 90 deg CW) from fixtures/photo-small.jpg and splice it after SOI.
+function withOrientation6(jpeg: Buffer): Buffer {
+  const sample = readFileSync(join(fixtures, "photo-small.jpg"));
+  assert.equal(sample[0], 0xff);
+  assert.equal(sample[1], 0xd8);
+  let pos = 2;
+  let app1: Buffer | null = null;
+  while (pos + 4 <= sample.length && sample[pos] === 0xff) {
+    const marker = sample[pos + 1]!;
+    if (marker === 0xda) break;
+    const len = sample.readUInt16BE(pos + 2);
+    if (marker === 0xe1) {
+      app1 = sample.subarray(pos, pos + 2 + len);
+      break;
+    }
+    pos += 2 + len;
+  }
+  assert.ok(app1, "photo-small.jpg should contain EXIF APP1");
+  return Buffer.concat([jpeg.subarray(0, 2), app1, jpeg.subarray(2)]);
+}
+
+test("preserves short side for extreme tall and wide thumbnails without upscaling", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "thumbs-extreme-"));
+  try {
+    const thumbs = join(tmp, "thumbs");
+    const cases: Array<[string, number, number, [number, number]]> = [
+      ["tall15.png", 500, 7500, [320, 4800]],
+      ["tall30.png", 400, 12000, [273, 8192]],
+      ["narrow.png", 200, 3000, [200, 3000]],
+      ["wide15.png", 7500, 500, [4800, 320]],
+      // Around 1.875 / 2.25 thresholds: below threshold fits 720x600; above preserves 320px short side.
+      ["below-tall.png", 500, 900, [333, 600]],
+      ["above-tall.png", 500, 1000, [320, 640]],
+      ["at-wide.png", 1350, 600, [720, 320]],
+      ["above-wide.png", 1500, 600, [800, 320]],
+      // Ultra-thin 1x50000: width stays >= 1, height capped at 8192.
+      ["thin.png", 1, 50000, [1, 8192]],
+    ];
+    for (const [name, w, h, want] of cases) {
+      const src = join(tmp, name);
+      writeFileSync(src, fastStripedPng(w, h));
+      const made = await thumbnail(src, thumbs, codecs);
+      assert.ok(made, `${name}: expected thumbnail`);
+      assert.equal(made.type, "image/jpeg", name);
+      assert.deepEqual(sizeOf(readFileSync(made.path)), want, name);
+    }
+
+    // Transparent tall PNG keeps alpha and emits image/png with 320px short side.
+    const alphaSrc = join(tmp, "tall-alpha.png");
+    writeFileSync(alphaSrc, fastStripedPng(500, 1500, true));
+    const alphaMade = await thumbnail(alphaSrc, thumbs, codecs);
+    assert.ok(alphaMade);
+    assert.equal(alphaMade.type, "image/png");
+    const alphaBytes = readFileSync(alphaMade.path);
+    assert.equal(alphaBytes[25], 6);
+    assert.deepEqual(sizeOf(alphaBytes), [320, 960]);
+
+    // boxed=true strictly fits 720x600 (keeps link-preview inline thumbnails under 192 KiB),
+    // and uses the `.b` cache suffix so default THUMB in the same directory is never poisoned.
+    const boxedSrc = join(tmp, "tall-boxed.png");
+    writeFileSync(boxedSrc, noisy(500, 1500));
+    const sameDir = join(tmp, "shared-thumbs");
+    const boxedMade = await thumbnail(boxedSrc, sameDir, codecs, undefined, true);
+    assert.ok(boxedMade);
+    assert.equal(boxedMade.type, "image/jpeg");
+    const boxedBytes = readFileSync(boxedMade.path);
+    assert.deepEqual(sizeOf(boxedBytes), [200, 600]);
+    assert.ok(boxedBytes.length < 192 * 1024, `boxed tall.png should stay under 192 KiB, got ${boxedBytes.length}`);
+    const unboxedMade = await thumbnail(boxedSrc, sameDir, codecs);
+    assert.ok(unboxedMade);
+    assert.equal(unboxedMade.type, "image/jpeg");
+    assert.notEqual(unboxedMade.path, boxedMade.path, "boxed and default thumbnails must use distinct cache paths");
+    assert.deepEqual(sizeOf(readFileSync(unboxedMade.path)), [320, 960]);
+
+    // EXIF-rotated tall JPEG (stored 1800x600 with orientation 6 -> seen as 600x1800 -> thumbnail 320x960).
+    const rawWide = join(tmp, "raw-wide.png");
+    writeFileSync(rawWide, png(1800, 600, (x, y) => [(x >> 3) + (y & 7), (y >> 2) + (x & 7), ((x * y) >> 10) & 255], 0));
+    const baseJpegMade = await preview(rawWide, join(tmp, "rot-base"), codecs);
+    assert.ok(baseJpegMade && baseJpegMade.type === "image/jpeg");
+    const rotSrc = join(tmp, "exif-tall.jpg");
+    const rotBytes = withOrientation6(readFileSync(baseJpegMade.path));
+    writeFileSync(rotSrc, Buffer.concat([rotBytes, Buffer.alloc(200 * 1024)]));
+    const rotMade = await thumbnail(rotSrc, thumbs, codecs);
+    assert.ok(rotMade, "EXIF-rotated tall JPEG should produce thumbnail");
+    assert.equal(rotMade.type, "image/jpeg");
+    assert.deepEqual(sizeOf(readFileSync(rotMade.path)), [320, 960]);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });

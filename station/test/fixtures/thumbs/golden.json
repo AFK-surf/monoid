@@ -14,10 +14,10 @@
     "size": 1923887,
     "thumbnail": {
       "type": "image/jpeg",
-      "sha256": "2e6d087fedf50cb0935f444f30872f906a2312b1b512b6f5b414a13c05710352",
-      "bytes": 118084,
-      "width": 200,
-      "height": 600
+      "sha256": "1099e524ae1ee6e922e1e891fddbbc42bbdbcab07401eee92d4c4d7b0a9b46e9",
+      "bytes": 300256,
+      "width": 320,
+      "height": 960
     },
     "thumbhash": "HwgCAgBzBnd0Bkd2iAi4iI8="
   },
@@ -82,10 +82,10 @@
     "size": 154864,
     "thumbnail": {
       "type": "image/jpeg",
-      "sha256": "4d608d8ffc325eb45a498e10be3b338434dae82f373ee0f6afe41e40df40e4c0",
-      "bytes": 23725,
-      "width": 720,
-      "height": 284
+      "sha256": "dcb60c548c53961ddec800c0b298dbe9281d13ed3dc790a695cda7cbf612e3da",
+      "bytes": 25913,
+      "width": 760,
+      "height": 300
     },
     "thumbhash": "4AcKQ5pxeIpweIiIcHEH93c="
   }

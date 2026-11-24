@@ -4,8 +4,8 @@ import http, { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
-import { brotliCompressSync } from "node:zlib";
-import { bodyUpTo, getAt, headOf, htmlText, isPublic, linkPreview, oembedOf } from "../src/links/preview.ts";
+import { brotliCompressSync, crc32, deflateSync } from "node:zlib";
+import { bodyUpTo, getAt, headOf, htmlText, inlinePicture, isPublic, linkPreview, oembedOf } from "../src/links/preview.ts";
 
 test("a page's head: og first, else its title; its icon, else /favicon.ico", () => {
   const base = new URL("https://ex.am/docs/page");
@@ -121,4 +121,52 @@ test("a page's body is read as sent, from the address checked; one in any encodi
     server.close();
     server.closeAllConnections();
   }
+});
+
+test("inlinePicture boxes tall images so link-preview thumbnails stay within 192 KiB", async () => {
+  // 500x2000 noisy PNG: unboxed 320x1280 JPEG exceeds 192 KiB, while boxed 150x600 stays well under 192 KiB.
+  const w = 500;
+  const h = 2000;
+  const rowLen = 1 + w * 3;
+  const raw = Buffer.allocUnsafe(h * rowLen);
+  let state = 0x12345678;
+  for (let y = 0; y < h; y++) {
+    const base = y * rowLen;
+    raw[base] = 0;
+    for (let x = 0; x < w; x++) {
+      state ^= state << 13;
+      state ^= state >>> 17;
+      state ^= state << 5;
+      const o = base + 1 + x * 3;
+      raw[o] = state & 255;
+      raw[o + 1] = (state >>> 8) & 255;
+      raw[o + 2] = (state >>> 16) & 255;
+    }
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, "latin1");
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const bytes = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 0 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+  assert.ok(bytes.length > 192 * 1024);
+
+  const url = await inlinePicture({ type: "image/png", bytes });
+  assert.ok(url !== null, "expected inlinePicture to box tall image instead of dropping it");
+  assert.ok(url.startsWith("data:image/jpeg;base64,"), `expected JPEG data URL, got ${url.slice(0, 40)}`);
+  const decoded = Buffer.from(url.slice("data:image/jpeg;base64,".length), "base64");
+  assert.ok(decoded.length > 0 && decoded.length <= 192 * 1024, `expected <= 192 KiB, got ${decoded.length}`);
 });

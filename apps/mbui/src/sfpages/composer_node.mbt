@@ -2918,6 +2918,21 @@ fn composer_extras_node(
 }
 
 ///|
+/// Where a square tile crops picture `key`: tall or wide strips matching `image_cropped_from_start`
+/// (`oh/ow > box_most_h/image_min_side` = 1.875, or `ow/oh > box_most_w/image_min_side` = 2.25) start at their
+/// top/left `(0.0, 0.0)`, while ordinary aspect ratios return `None` to keep centered `FitCover`.
+fn tile_start_crop(key : String) -> (Double, Double)? {
+  if key == "" || key == "!" {
+    return None
+  }
+  match @ui.image_natural(key) {
+    Some((ow, oh)) if ow > 0.0 && oh > 0.0 && (oh * image_min_side > ow * box_most_h || ow * image_min_side > oh * box_most_w) =>
+      Some((0.0, 0.0))
+    _ => None
+  }
+}
+
+///|
 /// A picture or a video's still waiting in the composer in `parent` (the library's waiting_tile_node): picture `key()`
 /// covering it (a video's still on the words' ink; none yet, the neutral ground), decoded for as many of the device's
 /// pixels as it is drawn at; going up, failed and a video's mark as the library's tile draws them. The tile's node.
@@ -2939,21 +2954,26 @@ fn waiting_tile_of(
       p
       .sets_together(
         fn() {
-          (
-            key(),
-            @ui.tree_theme().color(if video() { @sf.video_ground } else { Neutral }),
-            (@sf.waiting_tile_side * p.pixel_scale()).ceil().to_int(),
-          )
+          let k = key()
+          let v = video()
+          let crop = if v { None } else { tile_start_crop(k) }
+          let cap = if crop is Some(_) {
+            image_px_most.to_int()
+          } else {
+            (@sf.waiting_tile_side * p.pixel_scale()).ceil().to_int()
+          }
+          (k, @ui.tree_theme().color(if v { @sf.video_ground } else { Neutral }), crop, cap)
         },
         fn(state) {
-          let (k, ground, px) = state
+          let (k, ground, crop, cap) = state
           match k {
-            "" | "!" => p.ground(Is(ground)).image(Is(None)).image_in(Is(None)) |> ignore
+            "" | "!" => p.ground(Is(ground)).image(Is(None)).image_in(Is(None)).image_covers_at(Is(None)) |> ignore
             _ =>
               p
               .ground(Is(0L))
-              .image(Is(Some((k, "", px))))
+              .image(Is(Some((k, "", cap))))
               .image_in(Is(Some(((0.0, 0.0, @sf.waiting_tile_side, @sf.waiting_tile_side), ground))))
+              .image_covers_at(Is(crop))
               |> ignore
           }
         },
@@ -3096,6 +3116,7 @@ fn composer_file_node(
           // thumbnail is (message_media_node))
           tile
           .image_covers(Is(true))
+          .image_covers_at(By(fn() { if file_kind(name()) == "video" { None } else { tile_start_crop(picture()) } }))
           .shared(
             By(fn() {
               // (one the viewer cannot open yet, a video whose first frame is still being made: the id it will open by

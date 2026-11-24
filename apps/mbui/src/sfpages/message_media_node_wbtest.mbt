@@ -223,3 +223,49 @@ test "a picture of a message that offers itself, right clicked or held by a fing
   }
 }
 
+///|
+test "message_image_node decodes tall attachment directly at 8192 on first request while 1170x2532 phone screenshot stays at baseline" {
+  for pair in [("tall.png", 1000, 15000, [8192]), ("phone.png", 1170, 2532, [1024])] {
+    let (name, nw, nh, want) = pair
+    @sfbase.file_viewer_reset()
+    let images = @sfbase.ChatImages::new()
+    let asks : Array[((Json) -> Unit, (Result[(Json, Bytes?), Json]) -> Unit)] = []
+    let src : Source = {
+      ..files_src(),
+      file: fn(station, key, fname) {
+        images.get(station, @sfbase.file_image_id(station, key, fname), "mem:media/" + fname, fn(heard, done) {
+          asks.push((heard, done))
+        })
+      },
+      images,
+    }
+    let att = files_one(name, width=nw.to_double(), height=nh.to_double())
+    let t = @ui.Tester::new(
+      fn(c) {
+        @sf.begin(c) |> ignore
+        c.with_theme(@sf.ui_theme(), fn() {
+          @ui.old_views_here(c)
+          @sf.presented(c)
+        })
+      },
+      tree=fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
+        let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+        let tips = @sf.TipLayer::new(fn() { Some(popup) })
+        message_files_node(col, src, tips, files_place(), fn() { [att] }, fn() { false }, fn() { None }, fn() { "" })
+        @sf.presented_nodes(root)
+      },
+      w=430.0,
+      h=400.0,
+      platform=0,
+      images=[("mem:media/" + name, nw, nh)],
+    )
+    t.draw()
+    (asks[0].1)(Ok((Json::object({}), Some(media_bytes()))))
+    t.run_for(@sf.reveal_ms + media_test_hair)
+    let asked = t.image_loads().filter(fn(l) { l.0 == "bytes:\{media_bytes().length()}" }).map(fn(l) { l.1 })
+    assert_eq(asked, want, msg="\{name} (\{nw}x\{nh}): expected \{Repr(want)}, got \{Repr(asked)}")
+  }
+}
+

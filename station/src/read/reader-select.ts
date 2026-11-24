@@ -145,13 +145,13 @@ export const READER_MODES = {
   },
   "session-up-jobs": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Session up-jobs index builder (--builder session-up-jobs)",
   },
   "workspace-up-jobs": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Workspace up-jobs index builder (--builder workspace-up-jobs)",
   },
@@ -217,13 +217,13 @@ export const READER_MODES = {
   },
   "search-scope": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Search scope preparation builder (--builder search-scope)",
   },
   "outflow-chats": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Outflow chats index builder (--builder outflow-chats)",
   },
@@ -259,7 +259,7 @@ export const READER_MODES = {
   },
   "session-list": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Session list index builder (--builder session-list)",
   },

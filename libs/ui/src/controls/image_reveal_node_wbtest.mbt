@@ -216,3 +216,61 @@ test "a picture that does not come (of a message said before it was shown): wait
   assert_eq(reveal_held_now(), held_now)
   assert_eq(t.audit(), [])
 }
+
+///|
+test "a tall picture with decoded_for decodes once directly at 8192 on the first frame" {
+  let src = @signals.signal("tall15.png")
+  let shown = @signals.signal(true)
+  let (w, h) = (160.0, 300.0)
+  let t = @ui.Tester::new(
+    fn(c) { @ui.old_views_here(c) },
+    tree=fn(root) {
+      root.show(fn() { shown.get() }, fn(v) {
+        image_reveal_node(
+          v,
+          fn() { src.get() },
+          fn() { "" },
+          fn() { w },
+          fn() { h },
+          decoded_for=fn() { (160.0, 2400.0) },
+          start_crop=fn() { true },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    w=300.0,
+    h=400.0,
+    platform=0,
+    images=[("tall15.png", 1000, 15000)],
+  )
+  t.draw()
+  t.run_for(reveal_ms)
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall15.png" }).map(fn(l) { l.1 })
+  assert_eq(asked, [8192], msg="expected single direct 8192 decode with decoded_for=(160, 2400), got \{Repr(asked)}")
+}
+
+///|
+test "without decoded_for, cover upgrades extreme tall images to 8192 while normal 4:3 stays at baseline" {
+  let tall_src = @signals.signal("tall15.png")
+  let normal_src = @signals.signal("normal43.png")
+  let (w, h) = (160.0, 300.0)
+  let t = @ui.Tester::new(
+    fn(c) { @ui.old_views_here(c) },
+    tree=fn(root) {
+      image_reveal_node(root, fn() { tall_src.get() }, fn() { "" }, fn() { w }, fn() { h }, cover=true, start_crop=fn() { true }) |> ignore
+      image_reveal_node(root, fn() { normal_src.get() }, fn() { "" }, fn() { w }, fn() { h }, cover=true) |> ignore
+    },
+    w=300.0,
+    h=700.0,
+    platform=0,
+    images=[("tall15.png", 1000, 15000), ("normal43.png", 800, 600)],
+  )
+  t.draw()
+  t.run_for(reveal_ms)
+  let tall_asked = t.image_loads().filter(fn(l) { l.0 == "tall15.png" }).map(fn(l) { l.1 })
+  let normal_asked = t.image_loads().filter(fn(l) { l.0 == "normal43.png" }).map(fn(l) { l.1 })
+  assert_true(tall_asked.length() > 0 && tall_asked[tall_asked.length() - 1] == 8192, msg="expected cover tall image to upgrade to 8192, got \{Repr(tall_asked)}")
+  assert_eq(normal_asked, [1024], msg="expected 4:3 image to stay at baseline 1024 without upgrading, got \{Repr(normal_asked)}")
+  assert_eq(t.audit(), [])
+}

@@ -57,6 +57,10 @@ test("words_as_the_clients_had_them", () => {
   assert.equal(plain("![](shot.png) [](/tmp/a.pdf) [报告](report.pdf)"), "[图片] [文件] 报告");
   assert.equal(plain("## 结论\n- 一\n1. 二\n> 三\n| a | b |\n|---|---|\n```ts\nlet x_y = 1\n```"), "结论 一 二 三 a b let x_y = 1");
   assert.equal(plain("`**不动**` snake_case_name 2*3*4"), "**不动** snake_case_name 2*3*4");
+  // A mark around code still pairs.
+  assert.equal(plain("1. **Perf-41（触控批处理 + `Chat` `on_sight` 优化）**：已跑通 `ui/view`"), "Perf-41（触控批处理 + Chat on_sight 优化）：已跑通 ui/view");
+  assert.equal(plain("*`x`* __a `b` c__ ~~`d`~~ [`e`](https://x.dev)"), "x a b c d e");
+  assert.equal(plain("\uE000 `c` \uE001"), "\uE000 c \uE001");
   assert.deepEqual(f.splitThread("C0OPS/1727.0001"), ["C0OPS", "1727.0001"]);
   assert.equal(f.splitThread("nope"), null);
   assert.equal(f.refillsIn(now + 185 * MINUTE, now), "3 小时 5 分钟后刷新");

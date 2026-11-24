@@ -344,7 +344,17 @@ fn recent_photo_node(
         .height(Is(Some(recent_tile_h)))
         .radius(Is(corner))
         .clips(Is(true))
-        .image(By(fn() { Some((src(), "", (recent_tile_h * i.pixel_scale()).ceil().to_int())) }))
+        .image(
+          By(fn() {
+            let k = src()
+            let cap = if !p.get().1 && tile_start_crop(k) is Some(_) {
+              image_px_most.to_int()
+            } else {
+              (recent_tile_h * i.pixel_scale()).ceil().to_int()
+            }
+            Some((k, "", cap))
+          }),
+        )
         .image_covers(Is(true))
         |> ignore
       })
