@@ -614,3 +614,119 @@ test "real slider, segmented, and tab lens controls emit exact drawlist slot 7 (
   }
   set_dark(None)
 }
+
+///|
+test "fluid_scrubber_look: 5pt/7.5pt/10pt swell with laid == 0, live capsule SDF clip at low progress, full-width buffered, 0 glass, focus ring" {
+  let prog = @signals.signal(0.0)
+  let buf = @signals.signal(0.0)
+  let swell = @signals.signal(0.0)
+  let focused = @signals.signal(false)
+  let track_col = 0xFFFFFF33L
+  let buf_col = 0xFFFFFF55L
+  let fill_col = 0xFFFFFFFFL
+  let w = 200.0
+  let t = glass_case(false, false, fn(page) {
+    page.box(fn(host) {
+      host.width(Is(Some(w))).height(Is(Some(22.0))) |> ignore
+      let look = ScrubberLook::new(
+        track_color=fn() { track_col },
+        fill_color=fn() { fill_col },
+        buffered=Some(fn() { buf.get() }),
+        buffered_color=Some(fn() { buf_col }),
+        focus_shown=Some(fn() { focused.get() }),
+      )
+      fluid_scrubber_look(host, fn(_) { prog.get() }, fn(_) { swell.get() }, look)
+    })
+    |> ignore
+  })
+  t.draw()
+  // 0% progress & 0% buffered: 0 fill rects, 0 buffered rects, 0 glass, 5pt track
+  assert_eq(t.drawn_glass().length(), 0)
+  assert_eq(t.drawn_rects().filter(fn(r) { r.4 == fill_col }).length(), 0)
+  assert_eq(t.drawn_rects().filter(fn(r) { r.4 == buf_col }).length(), 0)
+  let tr0 = t.drawn_rects().filter(fn(r) { r.4 == track_col })
+  assert_eq(tr0.length(), 1)
+  assert_true((tr0[0].3 - 5.0).abs() < 0.1, msg="rest track h=\{tr0[0].3}")
+  // Swell 0.5 -> 7.5pt, 1.0 -> 10.0pt with laid == 0 and 0 glass
+  t.tree_frames_from_now()
+  swell.set(0.5)
+  t.draw()
+  let tr_hov = t.drawn_rects().filter(fn(r) { r.4 == track_col })
+  assert_true((tr_hov[0].3 - 7.5).abs() < 0.1, msg="hover track h=\{tr_hov[0].3}")
+  swell.set(1.0)
+  t.draw()
+  let tr_act = t.drawn_rects().filter(fn(r) { r.4 == track_col })
+  assert_true((tr_act[0].3 - 10.0).abs() < 0.1, msg="active track h=\{tr_act[0].3}")
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="swell change must not relayout: \{Repr(f)}")
+  }
+  assert_eq(t.drawn_glass().length(), 0)
+  // Low progress (1% = 2.0pt and 3.75% = 7.5pt on 200pt track at active h=10pt):
+  // fill & buffered keep exact geometric right edge (tr.0 + 2.0 / tr.0 + 7.5) and carry the live
+  // capsule SDF clip matching track bounds (tr.0, tr.1, tr.0+tr.2, tr.1+tr.3) with corner radius h/2 = 5.0.
+  fn assert_clipped_to_track(
+    tr : (Double, Double, Double, Double, Int64),
+    expected_w : Double,
+    alpha_target : Double,
+    tag : String,
+  ) raise {
+    let matches = t
+      .drawn_instances()
+      .filter(fn(inst) {
+        inst[5] == 0.0 &&
+        (inst[0] - tr.0).abs() < 0.1 &&
+        (inst[2] - expected_w).abs() < 0.1 &&
+        (inst[3] - tr.3).abs() < 0.1 &&
+        (inst[11] - alpha_target).abs() < 0.02
+      })
+    assert_eq(matches.length(), 1, msg="\{tag}: expected 1 matching instance, got \{matches.length()}")
+    let inst = matches[0]
+    let r_exp = tr.3 / 2.0
+    assert_true((inst[16] - tr.0).abs() < 0.1, msg="\{tag} clip x0=\{inst[16]} vs \{tr.0}")
+    assert_true((inst[17] - tr.1).abs() < 0.1, msg="\{tag} clip y0=\{inst[17]} vs \{tr.1}")
+    assert_true((inst[18] - (tr.0 + tr.2)).abs() < 0.1, msg="\{tag} clip x1=\{inst[18]} vs \{tr.0 + tr.2}")
+    assert_true((inst[19] - (tr.1 + tr.3)).abs() < 0.1, msg="\{tag} clip y1=\{inst[19]} vs \{tr.1 + tr.3}")
+    for ci in 24..<=27 {
+      assert_true((inst[ci] - r_exp).abs() < 0.1, msg="\{tag} clip corner[\{ci}]=\{inst[ci]} vs \{r_exp}")
+    }
+  }
+  for pair in [(0.01, 2.0), (0.0375, 7.5)] {
+    let (p, exp_w) = pair
+    prog.set(p)
+    buf.set(p)
+    t.draw()
+    let tr = t.drawn_rects().filter(fn(r) { r.4 == track_col })[0]
+    let fl = t.drawn_rects().filter(fn(r) { r.4 == fill_col })
+    let br = t.drawn_rects().filter(fn(r) { r.4 == buf_col })
+    assert_eq(fl.length(), 1, msg="p=\{p} fill count")
+    assert_eq(br.length(), 1, msg="p=\{p} buffered count")
+    assert_true((fl[0].0 + fl[0].2 - (tr.0 + exp_w)).abs() < 0.1, msg="p=\{p} fill right=\{fl[0].0 + fl[0].2} vs \{tr.0 + exp_w}")
+    assert_true((br[0].0 + br[0].2 - (tr.0 + exp_w)).abs() < 0.1, msg="p=\{p} buffered right=\{br[0].0 + br[0].2} vs \{tr.0 + exp_w}")
+    assert_clipped_to_track(tr, exp_w, 1.0, "fill p=\{p}")
+    assert_clipped_to_track(tr, exp_w, 85.0 / 255.0, "buf p=\{p}")
+  }
+  // Mid progress (50% = 100pt): exact width
+  prog.set(0.5)
+  t.draw()
+  let fl_mid = t.drawn_rects().filter(fn(r) { r.4 == fill_col })
+  assert_eq(fl_mid.length(), 1)
+  assert_true((fl_mid[0].2 - 100.0).abs() < 0.2, msg="50% fill w=\{fl_mid[0].2}")
+  // Full 100% & 150% buffered: right edge == 24.0 + 200.0 = 224.0
+  for b in [1.0, 1.5] {
+    buf.set(b)
+    t.draw()
+    let br = t.drawn_rects().filter(fn(r) { r.4 == buf_col })
+    assert_eq(br.length(), 1)
+    assert_true((br[0].0 + br[0].2 - (24.0 + w)).abs() <= 0.5, msg="buffered \{b} right=\{br[0].0 + br[0].2}")
+  }
+  // Focus ring shown: outset 2pt (w=204, h=14 at active 10pt) and NOT clipped by track
+  focused.set(true)
+  t.draw()
+  assert_true(
+    t.drawn_instances().iter().any(fn(inst) {
+      inst[5] == 0.0 && (inst[2] - (w + 4.0)).abs() < 0.5 && (inst[3] - 14.0).abs() < 0.5 && inst[17] < tr_act[0].1
+    }),
+    msg="focus ring must follow 10pt active track height (14pt) unclipped by track",
+  )
+  set_dark(None)
+}
