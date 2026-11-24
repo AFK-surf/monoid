@@ -35,6 +35,7 @@ import { type UpkeepState, readUpkeepState as defaultReadUpkeepState } from "../
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces } from "../read/transcript.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
+import { titleOf } from "../read/views.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
 import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
@@ -1245,7 +1246,10 @@ export class Hub {
       count: rows.length,
       items: rows.slice(0, 20).map((row) => {
         const latest = this.store.latestThread(row.key);
-        return { key: row.key, thread: latest?.thread.id ?? null, title: row.title || latest?.thread.title || "" };
+        // Called as the chat list calls it (read/views.ts titleOf): a chat its agent named has only `auto_title`.
+        const chat = this.store.sessionChat(row.key);
+        const title = chat ? titleOf(chat.thread, chat.firstText, null) : (row.title ?? "");
+        return { key: row.key, thread: latest?.thread.id ?? null, title };
       }),
     };
   }

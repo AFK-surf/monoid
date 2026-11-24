@@ -118,6 +118,9 @@ test "restart interrupted card updates reactively, dispatches resume/dismiss, an
 
     // 5. Click 全部拉起 -> dispatches station.resumeInterrupted and optimistically hides card
     t.click(Button, label="全部拉起")
+    // (it leaves by its way, drawn as it goes, not emptied at once: rows under it never jump up)
+    t.run_for(60.0)
+    assert_true(t.find(summary_4) is Some(_), msg=at + ": card vanished at once instead of leaving by its way")
     t.run_for(@ui.move_most_ms)
     assert_true(
       calls.iter().any(fn(c) {

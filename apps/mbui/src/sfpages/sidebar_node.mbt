@@ -596,7 +596,9 @@ fn chats_pane_node(
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
     // RowsMotion says which)
     comes=fn(k) { motion.comes(k) },
-    goes=fn(k) { motion.goes(k) },
+    // (and a part at its top taken away while it is watched (a restart's card let go of): closing its room as it goes,
+    // the rows under it not jumping up into it)
+    goes=fn(k) { motion.goes(k) || (motion.watched && k.has_prefix("part/")) },
     reorders=fn(k) { motion.moves(k) },
     // scrolled to within a screen of its foot while the core has more of its rows: its window a step more, the rows
     // added coming into the list it holds. A screen, not a screen and a half: its first window is what its room shows
