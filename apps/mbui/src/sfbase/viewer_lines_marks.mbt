@@ -352,17 +352,16 @@ pub fn Viewer::lines_row_marks(
       let a = starts[lo]
       let b = ends[hi]
       if b > a {
-        let dark = @sf.theme().dark
-        // (light: faint enough that code's own colours keep 4.5:1 on it, its orange the least: 0.24 left it 4.43:1)
-        let alpha = if x.id == open {
-          if dark { 0.45 } else { 0.16 }
-        } else if dark {
-          0.28
+        // (light: a ground faint enough that code's own colours keep 4.5:1 on it, its orange the least: 0.24 left it
+        // 4.43:1; dark: any yellow under code's mid-tone colours takes them under 4.5:1, so a line under them instead)
+        let mark : @view.RunsMark = if @sf.theme().dark {
+          let line_w = if x.id == open { 2.5 } else { 1.5 }
+          { from: a, to: b, ground: 0L, line: md_mark_ground, line_w, round: 0.0, starts: true, ends: true }
         } else {
-          0.1
+          let ground = @sf.alpha(md_mark_ground, if x.id == open { 0.16 } else { 0.1 })
+          { from: a, to: b, ground, line: 0L, line_w: 0.0, round: 3.0, starts: x.lines.0 >= from + 1, ends: x.lines.1 <= to }
         }
-        let ground = @sf.alpha(md_mark_ground, alpha)
-        out.push({ from: a, to: b, ground, line: 0L, line_w: 0.0, round: 3.0, starts: x.lines.0 >= from + 1, ends: x.lines.1 <= to })
+        out.push(mark)
       }
     }
   }
