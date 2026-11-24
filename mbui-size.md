@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9a29a9fd0](https://github.com/AFK-surf/monoid/commit/9a29a9fd057e6c16844aef7a764f2e68e6ca88a0) fix(ui): isolate selection scopes and improve tabl | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.53 | 66.11 | 100.68 | 128.12 |
 | [e683562a0](https://github.com/AFK-surf/monoid/commit/e683562a0c7e088714c49ed04dbb48204f8626c2) fix(cloud): keep hints and repeat openings off the | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 | [3971c9513](https://github.com/AFK-surf/monoid/commit/3971c951323986b7ec7f063e25ef32defab56794) test(e2e): emit requesting status frame in fake cl | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 | [da1df4b8a](https://github.com/AFK-surf/monoid/commit/da1df4b8a3582f9373b19c5dfa89b72b5d449812) fix(station): never block on a CACHEDIR.TAG that i | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [95f976d6c](https://github.com/AFK-surf/monoid/commit/95f976d6c3688024ab1db21177b5246a5bd461d6) fix(ui): keep a flying container's shadow drawn on | 2.74 | 3.69 | 14.95 | 37.14 | 56.93 | 32.51 | 66.04 | 101.09 | 118.55 |
 | [714c5b362](https://github.com/AFK-surf/monoid/commit/714c5b362fa652cdab0dc3e615011a3a0de050c0) fix(ci): rebalance rules-fork and replica-retire s | 2.74 | 3.69 | 14.95 | 37.13 | 56.92 | 32.51 | 66.04 | 100.96 | 117.5 |
 | [10a0c2b8f](https://github.com/AFK-surf/monoid/commit/10a0c2b8fce2642bdf8ae2f8295396bec0914be3) feat(ui,mbui): Phase 3B explicit StageOrigin, clea | 2.74 | 3.69 | 14.95 | 37.13 | 56.92 | 32.51 | 66.04 | 100.96 | 117.5 |
-| [e038a5c0b](https://github.com/AFK-surf/monoid/commit/e038a5c0b698b0b6a3394a6e2da695bef8f89b83) feat(station): cap default remote browser screenca | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.04 | 101.22 | 120.35 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9a29a9fd0](https://github.com/AFK-surf/monoid/commit/9a29a9fd057e6c16844aef7a764f2e68e6ca88a0) fix(ui): isolate selection scopes and improve tabl | 0.55 | 0.72 | 2.82 | 3.83 | 6.99 | 2.07 | 5.74 | 57.51 |
 | [e683562a0](https://github.com/AFK-surf/monoid/commit/e683562a0c7e088714c49ed04dbb48204f8626c2) fix(cloud): keep hints and repeat openings off the | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.71 |
 | [3971c9513](https://github.com/AFK-surf/monoid/commit/3971c951323986b7ec7f063e25ef32defab56794) test(e2e): emit requesting status frame in fake cl | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.28 |
 | [da1df4b8a](https://github.com/AFK-surf/monoid/commit/da1df4b8a3582f9373b19c5dfa89b72b5d449812) fix(station): never block on a CACHEDIR.TAG that i | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [95f976d6c](https://github.com/AFK-surf/monoid/commit/95f976d6c3688024ab1db21177b5246a5bd461d6) fix(ui): keep a flying container's shadow drawn on | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.61 |
 | [714c5b362](https://github.com/AFK-surf/monoid/commit/714c5b362fa652cdab0dc3e615011a3a0de050c0) fix(ci): rebalance rules-fork and replica-retire s | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.79 |
 | [10a0c2b8f](https://github.com/AFK-surf/monoid/commit/10a0c2b8fce2642bdf8ae2f8295396bec0914be3) feat(ui,mbui): Phase 3B explicit StageOrigin, clea | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.9 |
-| [e038a5c0b](https://github.com/AFK-surf/monoid/commit/e038a5c0b698b0b6a3394a6e2da695bef8f89b83) feat(station): cap default remote browser screenca | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.9 |
