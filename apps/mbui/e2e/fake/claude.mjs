@@ -101,15 +101,20 @@ async function tool(name, args) {
   return answer.result?.content?.[0]?.text ?? JSON.stringify(answer.error ?? answer);
 }
 
+// The model asking again, having read what it was written (a steer included): the one frame that clears what the station
+// counts as unread and takes back the state the step before declared (station/mb/src/reader/actor_run.mbt `requesting`),
+// as still.fail's fake says it as each turn begins. A message of its own clears nothing.
+const requesting = () => say({ type: "system", subtype: "status", status: "requesting", session_id: sessionId });
+
 // A post the station holds back because a message steered into the turn came first ("Held as held-N", station/src/sessions/
-// conversations.ts): as the real one does, it reads them (a message of its own, which clears what it had not read) and
-// sends the held post as written by its id, with the state it ended with.
+// conversations.ts): as the real one does, it reads them (`requesting`, which clears what it had not read) and sends the
+// held post as written by its id, with the state it ended with.
 async function post(to, args) {
   let answer = await tool("chat_post", { to, ...args });
-  for (let tries = 0; tries < 3; tries++) {
+  for (let tries = 0; tries < 5; tries++) {
     const held = /Held as (held-\d+)/.exec(answer);
     if (!held) return answer;
-    message("reading");
+    requesting();
     await new Promise((r) => setTimeout(r, 50));
     const state = Object.fromEntries(["kind", "done", "need", "about"].filter((k) => args[k] !== undefined).map((k) => [k, args[k]]));
     answer = await tool("chat_post", { to, send: held[1], ...state });
@@ -138,6 +143,9 @@ async function turn(first) {
     let last = "";
     for (let cur = first; cur !== undefined; cur = steered.shift()) {
       if (!ours(cur)) continue;
+      // (each message read, the first and each steered in after it, as the real one asks again having read it: a steer
+      // that came during the step before is no longer unread, and that step's state is taken back)
+      requesting();
       last = await handle(cur);
       message(last);
     }
