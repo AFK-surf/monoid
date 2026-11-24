@@ -660,6 +660,9 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
         // is, the words under it the hold's)
         Some(Dragging(id)) if words is Some(_) && tree.hold_goes_through(id) =>
           tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore
+        // (a ground's press (View::as_ground: the page a tap on brings its bars, a reader's on 小屏) under words picked
+        // with the pointer: the hold the words', the ground's press called off, no tap as it is let go)
+        Some(Node(id)) if words is Some(_) && tree.is_ground(id) => tree.hold_lost_in(id.at)
         // (a node's own press, its own hold: its)
         _ => return
       }

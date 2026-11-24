@@ -245,6 +245,7 @@ export function messageForAgent(m: MessageRow): string {
         : `a web page shown in the chat's preview (${q.author}), marked with its number in the attached screenshot`;
     } else if (q.role === "image") whose = `an image marked in the chat (${q.author}), its number pinned on the marked image attached`;
     else if (q.role === "pdf") whose = `a PDF shown in the chat's preview (${q.author})`;
+    else if (q.role === "file") whose = `a file shown in the chat's preview (${q.author}), its lines and heading in the file's own text`;
     else whose = `a message from ${q.author}`;
     let which = q.ts !== null && q.ts !== undefined ? `${whose} ${q.ts} in this conversation` : whose;
     // A file of that message quoted (an image or a video held in the chat): the message carries it again for the chat to

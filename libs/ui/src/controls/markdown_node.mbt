@@ -102,6 +102,10 @@ pub fn markdown_node(
       found,
       found_at,
       lit,
+      lits: match parent.lent(md_lits) {
+        Some(f) => f
+        None => fn() { [] }
+      },
       before: fn() { 0 },
       on_link,
       on_link_hold,
@@ -328,6 +332,8 @@ priv struct MdNode {
   found_at : () -> Int?
   /// a passage lit where a paragraph's words have it, and its ground now (markdown_node's `lit`)
   lit : () -> (String, Int64)
+  /// passages kept marked where a paragraph's words have them, each with its ground (md_lits: a reader's notes)
+  lits : () -> Array[(String, Int64)]
   before : () -> Int
   on_link : (String) -> Unit
   on_link_hold : ((String, (Double, Double, Double, Double)) -> Unit)?
@@ -1015,10 +1021,13 @@ fn md_words_node(
     // (no find and no passage lit, as nearly always: none, their words not read for it)
     w.runs_marks(By(fn() {
       let lit = (md.lit)()
-      if (md.found_at)() is None && lit.0 == "" {
+      let lits = (md.lits)()
+      if (md.found_at)() is None && lit.0 == "" && lits.is_empty() {
         []
       } else {
-        found() + passage_marks(runs(), lit)
+        let now = runs()
+        let kept = lits.map(fn(l) { passage_marks(now, l) }).flatten()
+        found() + kept + passage_marks(now, lit)
       }
     }))
     |> ignore
@@ -1768,3 +1777,9 @@ fn md_image_rows_node(p : @view.View, md : MdNode, images : () -> Array[(String,
   })
   |> ignore
 }
+
+///|
+/// Passages what holds a Markdown text marks on its paragraphs where they have them, each with its ground (a reader's
+/// notes kept on its words: reader_marks), read as a paragraph's marks are drawn.
+// kept across runs: what each node lends (View::lends), let go with it
+let md_lits : @view.Lent[() -> Array[(String, Int64)]] = @view.Lent::new()

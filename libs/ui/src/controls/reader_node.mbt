@@ -561,7 +561,14 @@ fn reader_chunk_node(
       None
     }
   })
+  let marks = row.lent(reader_marks_lent)
   reader_sides(row, r, ems, wide, style, fn(m) {
+    // (its words said of this block for what is picked of them; the passages a page marks on it lent to its paragraphs)
+    @ui.picked_of(m, reader_block_key(k)) |> ignore
+    match marks {
+      Some(ms) => m.lends(md_lits, fn() { (ms.lits)(k) }) |> ignore
+      None => ()
+    }
     let words = if book.markdown {
       markdown_node(
         m,

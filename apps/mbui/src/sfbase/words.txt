@@ -185,6 +185,10 @@ android-chat.new.sub
 android-chat.new.title
 android-chat.new.unchanged
 android-chat.newChat
+android-chat.md.note.line
+android-chat.md.note.lines
+android-chat.md.quote.line
+android-chat.md.quote.lines
 android-chat.pdf.mark
 android-chat.pdf.marks.clear
 android-chat.pdf.marks.send
