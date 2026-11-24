@@ -22,6 +22,7 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { FakeFeishu } from "./feishu-fake.ts";
 import { Rig, message, settle } from "./hub-fakes.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
+import { stationLang, tr } from "../src/ops/i18n.ts";
 
 type Json = any;
 
@@ -600,6 +601,36 @@ async function feishuHub(r: Awaited<ReturnType<typeof surfaceRig>>) {
   rig.claude.last().reads();
   return { rig, key: "fs:oc_g:om_a" };
 }
+
+test("hub: a chat opened from a Feishu thread is said there as a Markdown link Feishu shows, not Slack's <link|title> (FB-47)", async () => {
+  const r = await surfaceRig();
+  const rig = new Rig();
+  try {
+    rig.edit((raw) => raw.connects.push({ id: "fs", kind: "feishu", feishu: { appId: "cli_test", appSecret: "s" }, bind: { runtime: "claude" } }));
+    await rig.hub.shutdown();
+    rig.hub = rig.newHub({ chats: (id) => (id === "fs" ? r.surface : undefined), link: true });
+    await rig.accept({ channel: "oc_g", threadTs: "om_a", ts: "om_a", user: "ou_ada", text: "@Bot 开个对话", addressed: true }, "fs");
+    await settle();
+    const key = "fs:oc_g:om_a";
+    rig.claude.last().reads();
+    await rig.call(key, "chat_create", { for: "me", key: "android", text: "build the android app", title: "安卓构建" });
+    const child = rig.store.openedBy(key)[0]!.child;
+    const link = `https://ember.test/o/ws/st/${child.replaceAll(":", "%3A")}`;
+    const said = tr(stationLang(), "station.session.opened", { chat: `[安卓构建](${link})` });
+    // Kept in the opener's thread as said there, and sent to Feishu as a rich-text post's Markdown.
+    const thread = rig.store.threadAt("feishu:fs", "oc_g", "om_a")!;
+    const notice = rig.said(thread.id).at(-1)!;
+    assert.deepEqual([notice.authorKind, notice.text], ["station", said]);
+    const posts = r.fake.calls("POST", "/open-apis/im/v1/messages").filter((c) => c.body.msg_type === "post");
+    const md = JSON.parse(posts.at(-1)!.body.content).zh_cn.content[0][0];
+    assert.equal(md.tag, "md");
+    assert.ok(md.text.startsWith(said), md.text);
+    assert.ok(!md.text.includes(`<${link}|`), md.text);
+  } finally {
+    await r.close();
+    await rig.close();
+  }
+});
 
 /// What the surface heard last, given to the hub as the connect gives it.
 async function heardLast(rig: Rig, r: Awaited<ReturnType<typeof surfaceRig>>, count: number) {
