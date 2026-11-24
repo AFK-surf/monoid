@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0cf2e4fb3](https://github.com/AFK-surf/monoid/commit/0cf2e4fb3ceaeb12f2a57a9c2031a94abe63c9e3) fix(ci): make a push's Windows core below the app  | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [f18896872](https://github.com/AFK-surf/monoid/commit/f188968720696eec671ecaf65cd7a75ba879d8aa) chore(ci): remove FARVIEW_DEPLOY_KEY and farview a | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 | [3a33268d0](https://github.com/AFK-surf/monoid/commit/3a33268d0aa51d46ecefdda2a74244ad0a3f3ad5) fix(ci): set STILLFAIL_DIRECT_DNS in self-hosted d | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d4d7cf079](https://github.com/AFK-surf/monoid/commit/d4d7cf079cc732d783dd55d9978be5758c34e56e) fix(core-ts,ui,mbui): eliminate chat activity moti | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.45 | 130.12 |
 | [04d026f01](https://github.com/AFK-surf/monoid/commit/04d026f016facd8321e7926397e7dd2df40d49dc) test(core-ts): report the hung test when CI stops  | 2.78 | 3.75 | 15.18 | 37.39 | 57.76 | 32.74 | 66.69 | 100.52 | 128.91 |
 | [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.74 | 66.69 | 100.52 | 128.91 |
-| [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0cf2e4fb3](https://github.com/AFK-surf/monoid/commit/0cf2e4fb3ceaeb12f2a57a9c2031a94abe63c9e3) fix(ci): make a push's Windows core below the app  | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.8 |
 | [f18896872](https://github.com/AFK-surf/monoid/commit/f188968720696eec671ecaf65cd7a75ba879d8aa) chore(ci): remove FARVIEW_DEPLOY_KEY and farview a | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.56 |
 | [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.49 |
 | [3a33268d0](https://github.com/AFK-surf/monoid/commit/3a33268d0aa51d46ecefdda2a74244ad0a3f3ad5) fix(ci): set STILLFAIL_DIRECT_DNS in self-hosted d | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d4d7cf079](https://github.com/AFK-surf/monoid/commit/d4d7cf079cc732d783dd55d9978be5758c34e56e) fix(core-ts,ui,mbui): eliminate chat activity moti | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.49 |
 | [04d026f01](https://github.com/AFK-surf/monoid/commit/04d026f016facd8321e7926397e7dd2df40d49dc) test(core-ts): report the hung test when CI stops  | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.62 |
 | [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.62 |
-| [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.59 |
