@@ -1,17 +1,21 @@
 // Black-box contract tests for `--builder memory` against any reader binary, spoken to over its stdio alone.
 //
-// By default this runs against the shipped MoonBit `stillfail-reader` (`mbReaderBinary()`), and skips (saying so) where
-// it is not built. Set `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary with zero edits
-// to this suite: a candidate named but missing or not executable fails every test, never skips.
+// By default this runs against the shipped MoonBit `stillfail-reader` (`mbReaderBinary()`). Set
+// `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary with zero edits to this suite: a
+// candidate named but empty, missing or not executable fails every test, never skips. With no candidate named and no
+// reader built, the tests skip saying so, except under CI (`CI` set), where they fail.
 //
 // The protocol (station/mb/src/memory/answer.mbt, station/src/share/memory-mb.ts): a line of JSON an ask `{id, op, …}`,
-// answered by one line `{id, …}` or `{id, error}`, one at a time; an empty line is passed over; a line that is no JSON
+// answered by one line `{id, …}` or `{id, error}`, in order; an empty line is passed over; a line that is no JSON
 // object is answered `{id: null, error}`. Content goes as hex both ways (what is no UTF-8 arrives as it is), a shared
 // skill's files as base64. Every op of answer.mbt is asked here (`scan`, `decide`, `have`, `hash`, `asides`,
 // `alikeKept`, `tags`, `skillRead`, `skillWrite`, `skillConflict`, `isText`, `matches`, `merge3`, `union`, `alike`,
 // `conflictPath`), each answer held to the TypeScript it replaced (test/reference/memory-merge.ts,
-// test/reference/share-skills.ts) or to the contract's own fixed output. Each test keeps one process and its stdin open
-// across all its asks (as `MemoryProgram` does) and ends it only by closing stdin: it must exit 0 with nothing more said.
+// test/reference/share-skills.ts) or to the contract's own fixed output, with the arguments the station sends
+// (share/memory.ts, share/index.ts). The station sends asks back to back without waiting (`MemoryProgram.ask`), so asks
+// are pipelined here too, written in one write and split across writes, lines past 1 MiB among them. Each test keeps
+// one process and its stdin open across all its asks, and ends it only by closing stdin: it must exit 0 having said
+// nothing more. Error words are the program's own except a shared skill's refused path, which is the reference's.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -34,7 +38,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { after, test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../src/sessions/agent-home.ts";
@@ -43,37 +47,39 @@ import { memoryPath, SKIPPED } from "../src/share/memory.ts";
 import { alike, conflictPath, decide, isText, matches, merge3, readMemory, stationTag, unionLines } from "./reference/memory-merge.ts";
 import { encodeFiles, MAX_SKILL_BYTES, MAX_SKILL_FILES, readSkill, safePath, skillHash, TooLarge, writeConflict, writeSkill } from "./reference/share-skills.ts";
 
-/// The longest any one ask may take before the process is killed and the test fails (a bound, never a wait).
+/// The longest any one ask (or the exit after stdin's end) may take before the process is killed and the test fails: a
+/// bound, never a wait.
 const ASK_TIMEOUT_MS = 30_000;
+const unix = process.platform !== "win32";
 
 type Json = any;
 
-/// The binary under test, or why there is none: `fail` for a named candidate that is not there, `skip` for a default
-/// reader not built here.
+/// The binary under test, or why there is none.
 function resolveCandidate(): { binary: string } | { fail: string } | { skip: string } {
-  const injected = process.env.STILLFAIL_READER_CANDIDATE?.trim();
-  if (injected !== undefined && injected !== "") {
-    if (!existsSync(injected)) return { fail: `STILLFAIL_READER_CANDIDATE does not exist: ${injected}` };
+  const raw = process.env.STILLFAIL_READER_CANDIDATE;
+  if (raw !== undefined) {
+    if (raw.trim() === "") return { fail: "STILLFAIL_READER_CANDIDATE is set but empty" };
+    // (checked and spawned at the one absolute path: never a PATH lookup, never another working directory's)
+    const binary = resolve(raw);
+    if (!existsSync(binary)) return { fail: `STILLFAIL_READER_CANDIDATE does not exist: ${binary}` };
     try {
-      if (!statSync(injected).isFile()) return { fail: `STILLFAIL_READER_CANDIDATE is not a file: ${injected}` };
-      accessSync(injected, fsConstants.X_OK);
+      if (!statSync(binary).isFile()) return { fail: `STILLFAIL_READER_CANDIDATE is not a file: ${binary}` };
+      accessSync(binary, fsConstants.X_OK);
     } catch {
-      return { fail: `STILLFAIL_READER_CANDIDATE is not executable: ${injected}` };
+      return { fail: `STILLFAIL_READER_CANDIDATE is not executable: ${binary}` };
     }
-    return { binary: injected };
+    return { binary };
   }
   const binary = mbReaderBinary();
-  if (binary === null) {
-    return { skip: "stillfail-reader is not built here; set STILLFAIL_READER_CANDIDATE or run via `node ../scripts/native.ts run reader -- ...`" };
-  }
-  return { binary };
+  if (binary !== null) return { binary: resolve(binary) };
+  const why = "stillfail-reader is not built here; set STILLFAIL_READER_CANDIDATE or run via `node ../scripts/native.ts run reader -- ...`";
+  return process.env.CI ? { fail: why } : { skip: why };
 }
 
 const RESOLVED = resolveCandidate();
 const skip = "skip" in RESOLVED ? RESOLVED.skip : false;
-const unixOnly = skip || (process.platform === "win32" && "modes and links are Unix's");
 
-/// The candidate's path; a named candidate that is not there fails the test that asks.
+/// The candidate's path; one that is not there fails the test that asks.
 function candidate(): string {
   if ("fail" in RESOLVED) assert.fail(RESOLVED.fail);
   if ("skip" in RESOLVED) assert.fail(RESOLVED.skip);
@@ -90,14 +96,18 @@ const fresh = (prefix = "memory-contract-") => {
   return dir;
 };
 
-/// One `--builder memory` process, its stdin kept open: each ask written as a line and answered by the next line it
-/// says, in order; any line said with no ask waiting, any non-JSON line, or a line cut short at its end fails it.
+type Waiter = { resolve: (j: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+
+/// One `--builder memory` process, its stdin kept open: each ask answered by the next line it says, in order. What the
+/// protocol forbids (a line no ask waits for, a line that is no JSON, the process ending before its stdin did, an ask
+/// unanswered in time) is kept as its `protocolError`, which fails every ask after it and `end()`, whatever else.
 class MemoryProcess {
   readonly #child: ChildProcess;
-  readonly #waiting: { resolve: (j: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }[] = [];
-  #carry = "";
+  readonly #waiting: Waiter[] = [];
+  #carry: Buffer = Buffer.alloc(0);
   #stderr = "";
-  #broken: Error | null = null;
+  #protocolError: Error | null = null;
+  #ending = false;
   readonly #closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   #next = 0;
 
@@ -109,68 +119,86 @@ class MemoryProcess {
     this.#child = child;
     child.stdin!.on("error", () => {});
     child.stderr!.on("data", (c: Buffer) => { this.#stderr += c.toString("utf8"); });
-    child.stdout!.on("data", (c: Buffer) => this.#heard(c.toString("utf8")));
-    this.#closed = new Promise((resolve, reject) => {
-      child.on("error", (e) => { this.#break(e); reject(e); });
-      child.on("close", (code, signal) => {
-        this.#break(new Error(`the memory process ended (code ${code}, signal ${signal}) with an ask unanswered; stderr: ${this.#stderr}`));
-        resolve({ code, signal });
+    child.stdout!.on("data", (c: Buffer) => this.#heard(c));
+    this.#closed = new Promise((done) => {
+      let ended = false;
+      const end = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (ended) return;
+        ended = true;
+        if (!this.#ending) this.#forbid(`the process ended before its stdin did (code ${code}, signal ${signal}); stderr: ${this.#stderr}`);
+        this.#rejectAll(new Error(`the process ended (code ${code}, signal ${signal}) with an ask unanswered; stderr: ${this.#stderr}`));
+        done({ code, signal });
+      };
+      child.on("error", (e) => {
+        this.#forbid(`the process failed: ${e.message}`);
+        // (a process that never started says no close of its own)
+        if (child.pid === undefined) end(null, null);
       });
+      child.on("close", (code, signal) => end(code, signal));
     });
-    this.#closed.catch(() => {});
   }
 
-  #break(e: Error) {
-    this.#broken ??= e;
+  #rejectAll(e: Error) {
     for (const w of this.#waiting.splice(0)) {
       clearTimeout(w.timer);
       w.reject(e);
     }
   }
 
-  #heard(text: string) {
-    this.#carry += text;
-    for (let nl = this.#carry.indexOf("\n"); nl >= 0; nl = this.#carry.indexOf("\n")) {
-      const line = this.#carry.slice(0, nl);
-      this.#carry = this.#carry.slice(nl + 1);
+  #forbid(message: string) {
+    if (this.#protocolError === null) this.#protocolError = new Error(message);
+    this.#rejectAll(this.#protocolError);
+    this.#child.kill("SIGKILL");
+  }
+
+  /// Lines cut at their `\n` bytes, each decoded whole (a character split between two reads stays one).
+  #heard(chunk: Buffer) {
+    this.#carry = this.#carry.length === 0 ? chunk : Buffer.concat([this.#carry, chunk]);
+    for (let nl = this.#carry.indexOf(0x0a); nl >= 0; nl = this.#carry.indexOf(0x0a)) {
+      const line = this.#carry.subarray(0, nl).toString("utf8");
+      this.#carry = this.#carry.subarray(nl + 1);
       let parsed: Json;
       try {
         parsed = JSON.parse(line);
       } catch {
-        this.#child.kill("SIGKILL");
-        return this.#break(new Error(`stdout said a line that is no JSON: ${JSON.stringify(line)}`));
+        return this.#forbid(`stdout said a line that is no JSON: ${JSON.stringify(line.slice(0, 300))}`);
       }
       const w = this.#waiting.shift();
-      if (w === undefined) {
-        this.#child.kill("SIGKILL");
-        return this.#break(new Error(`stdout said a line with no ask waiting: ${line}`));
-      }
+      if (w === undefined) return this.#forbid(`stdout said a line no ask waits for: ${line.slice(0, 300)}`);
       clearTimeout(w.timer);
       w.resolve(parsed);
     }
   }
 
-  /// The answer to one raw line (written with its `\n`), as the process says it.
-  raw(line: string): Promise<Json> {
-    if (this.#broken !== null) return Promise.reject(this.#broken);
+  /// The next answer, whatever writes ask for it.
+  expect(): Promise<Json> {
+    if (this.#protocolError !== null) return Promise.reject(this.#protocolError);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#child.kill("SIGKILL");
-        this.#break(new Error(`no answer to ${line.slice(0, 200)} within ${ASK_TIMEOUT_MS} ms; stderr: ${this.#stderr}`));
-      }, ASK_TIMEOUT_MS);
+      const timer = setTimeout(() => this.#forbid(`an ask unanswered within ${ASK_TIMEOUT_MS} ms; stderr: ${this.#stderr}`), ASK_TIMEOUT_MS);
       this.#waiting.push({ resolve, reject, timer });
-      this.#child.stdin!.write(`${line}\n`);
     });
   }
 
-  /// Writes a line that must be answered by nothing (an empty one): the next ask's answer is then its own.
-  silent(line: string) {
-    this.#child.stdin!.write(`${line}\n`);
+  /// Bytes written to stdin as they are, once they are handed on.
+  write(bytes: string | Buffer): Promise<void> {
+    return new Promise((resolve, reject) => this.#child.stdin!.write(bytes, (e) => (e ? reject(e) : resolve())));
+  }
+
+  /// The answer to one raw line (written with its `\n`).
+  raw(line: string): Promise<Json> {
+    const answer = this.expect();
+    void this.write(`${line}\n`).catch(() => {});
+    return answer;
+  }
+
+  /// A fresh id for an ask.
+  id(): number {
+    return ++this.#next;
   }
 
   /// What `op` with `args` is answered, its `id` checked as the one sent and taken off.
   async ask(op: string, args: Record<string, unknown> = {}): Promise<Json> {
-    const id = ++this.#next;
+    const id = this.id();
     const answer = await this.raw(JSON.stringify({ ...args, id, op }));
     assert.ok(answer !== null && typeof answer === "object" && !Array.isArray(answer), `an object answers ${op}`);
     assert.equal(answer.id, id, `${op}: the id sent comes back`);
@@ -185,43 +213,68 @@ class MemoryProcess {
     return answer;
   }
 
-  /// An ask that must fail: its error, the only thing said.
+  /// An ask that must fail: its error (words of its own, not empty), the only thing said.
   async fails(op: string, args: Record<string, unknown> = {}): Promise<string> {
     const answer = await this.ask(op, args);
-    assert.equal(typeof answer.error, "string", `${op} ${JSON.stringify(args).slice(0, 200)} fails, answered ${JSON.stringify(answer)}`);
+    assert.ok(typeof answer.error === "string" && answer.error.length > 0, `${op} ${JSON.stringify(args).slice(0, 200)} fails, answered ${JSON.stringify(answer).slice(0, 300)}`);
     assert.deepEqual(Object.keys(answer), ["error"], `${op}: nothing but its error`);
     return answer.error;
   }
 
-  /// Its end by stdin's alone: exit 0, no signal, nothing more said, no line cut short.
+  /// Its end by stdin's alone: no protocol error before or after, no ask left, exit 0 with no signal, no line cut short.
   async end(): Promise<void> {
-    assert.equal(this.#waiting.length, 0, "no ask left unanswered");
-    this.#child.stdin!.end();
-    const timer = setTimeout(() => this.#child.kill("SIGKILL"), ASK_TIMEOUT_MS);
-    const { code, signal } = await this.#closed;
+    this.#ending = true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      if (this.#protocolError !== null) throw this.#protocolError;
+      assert.equal(this.#waiting.length, 0, "no ask left unanswered");
+      this.#child.stdin!.end();
+      const { code, signal } = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`no exit within ${ASK_TIMEOUT_MS} ms of stdin's end; stderr: ${this.#stderr}`)), ASK_TIMEOUT_MS);
+        void this.#closed.then(resolve);
+      });
+      // (a line said after the last answer, however soon the process exited after it)
+      if (this.#protocolError !== null) throw this.#protocolError;
+      assert.equal(signal, null, `ended by a signal; stderr: ${this.#stderr}`);
+      assert.equal(code, 0, `exit ${code}; stderr: ${this.#stderr}`);
+      assert.equal(this.#carry.length, 0, `stdout ended with a line cut short: ${JSON.stringify(this.#carry.toString("utf8").slice(0, 300))}`);
+    } finally {
+      clearTimeout(timer);
+      this.#rejectAll(new Error("the test ended"));
+      if (this.#child.exitCode === null && this.#child.signalCode === null) this.#child.kill("SIGKILL");
+    }
+  }
+
+  /// Ended at once after a failure: killed, its stdin closed, no timer left.
+  async kill(): Promise<void> {
+    this.#ending = true;
+    this.#rejectAll(new Error("the test failed"));
+    this.#child.stdin!.destroy();
+    this.#child.kill("SIGKILL");
+    let timer: NodeJS.Timeout | undefined;
+    await new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ASK_TIMEOUT_MS);
+      void this.#closed.then(() => resolve());
+    });
     clearTimeout(timer);
-    assert.equal(signal, null, `ended by a signal; stderr: ${this.#stderr}`);
-    assert.equal(code, 0, `exit ${code}; stderr: ${this.#stderr}`);
-    assert.equal(this.#carry, "", "nothing cut short on stdout");
   }
 }
 
-/// A test's process, ended (stdin's EOF, exit 0) when it is done.
+/// A test's process, ended by stdin's EOF once the test is done (the end checked), killed if the test failed first.
 async function withMemory(f: (p: MemoryProcess) => Promise<void>): Promise<void> {
   const p = new MemoryProcess();
-  let ok = false;
+  let failed = true;
   try {
     await f(p);
-    ok = true;
+    failed = false;
   } finally {
-    if (ok) await p.end();
-    else await p.end().catch(() => {});
+    if (failed) await p.kill();
   }
+  await p.end();
 }
 
 const sha = (b: Buffer | string) => createHash("sha256").update(b).digest("hex");
 const hex = (s: string | Buffer) => (typeof s === "string" ? Buffer.from(s, "utf8") : s).toString("hex");
-const unhex = (h: string) => Buffer.from(h, "hex");
 const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
 
 /// The same seeded stream of numbers on every machine.
@@ -235,6 +288,11 @@ function rng(seed: number) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+/// Bytes from a seed (every value, so most of them no UTF-8).
+const bytesOf = (seed: number, n: number) => {
+  const r = rng(seed);
+  return Buffer.from(Array.from({ length: n }, () => Math.floor(r() * 256)));
+};
 const WORDS = ["", "a", "b", "- x", "- [ccvm] x", "- y", "# h", "---", "  1. one", "* [Studio] s", "中文", "é", "😀", "x\r", "[a] b"];
 function randomText(r: () => number, most: number): string {
   const n = Math.floor(r() * most);
@@ -266,8 +324,6 @@ test("text ops: hex in and out (multi-byte UTF-8, bytes that are no UTF-8), each
     for (const b of bytes) {
       const buf = Buffer.from(b);
       assert.deepEqual(await p.ok("isText", { bytes: hex(buf) }), { value: isText(buf) }, buf.toString("hex"));
-      // Upper-case hex is the same bytes.
-      assert.deepEqual(await p.ok("isText", { bytes: hex(buf).toUpperCase() }), { value: isText(buf) }, buf.toString("hex"));
     }
 
     // matches: the same pairs, ties broken alike.
@@ -291,8 +347,9 @@ test("text ops: hex in and out (multi-byte UTF-8, bytes that are no UTF-8), each
       const want = merge3(base, newer, older);
       const got = await p.ok("merge3", { base: hex(base), newer: hex(newer), older: hex(older) });
       assert.deepEqual(got, { value: want === null ? null : hex(want) }, JSON.stringify([base.slice(0, 40), newer.slice(0, 40), older.slice(0, 40)]));
-      // The same version merged with itself is itself.
-      assert.deepEqual(await p.ok("merge3", { base: hex(base), newer: hex(newer), older: hex(newer) }), { value: merge3(base, newer, newer) === null ? null : hex(merge3(base, newer, newer)!) });
+      // The same version merged with itself is the reference's of it too.
+      const same = merge3(base, newer, newer);
+      assert.deepEqual(await p.ok("merge3", { base: hex(base), newer: hex(newer), older: hex(newer) }), { value: same === null ? null : hex(same) });
     }
 
     // union: each line once, marked with the stations' names as the reference marks them.
@@ -318,22 +375,68 @@ test("text ops: hex in and out (multi-byte UTF-8, bytes that are no UTF-8), each
   });
 });
 
+test("pipelined asks: sent back to back, several in one write, one split across writes (inside a character)", { skip }, async () => {
+  await withMemory(async (p) => {
+    const names = ["中文 站点", "😀 emoji 😀", "Studio's Mac", "é"];
+    // Sent as the station sends them, none waiting for the one before: each answered by its own id, in order.
+    await Promise.all(Array.from({ length: 60 }, (_, i) => {
+      const name = `${names[i % names.length]} ${i}`;
+      const text = `- ${name}\n`;
+      return i % 3 === 0 ? p.ok("tags", { names: [name] }).then((a) => assert.deepEqual(a, { tags: [stationTag(name)] }))
+        : i % 3 === 1 ? p.ok("isText", { bytes: hex(text) }).then((a) => assert.deepEqual(a, { value: true }))
+        : p.ok("conflictPath", { path: "MEMORY.md", station: name }).then((a) => assert.deepEqual(a, { value: conflictPath("MEMORY.md", name) }));
+    }));
+
+    // Several lines in one write, an empty one and one that is no JSON among them: every line answered (the empty one
+    // passed over), none left in the buffer.
+    const ids = [p.id(), p.id(), p.id()];
+    const answers = [p.expect(), p.expect(), p.expect(), p.expect()];
+    await p.write([
+      JSON.stringify({ id: ids[0], op: "tags", names: ["a b"] }),
+      "",
+      "{not json",
+      JSON.stringify({ id: ids[1], op: "isText", bytes: "00" }),
+      JSON.stringify({ id: ids[2], op: "tags", names: ["中文 站点"] }),
+      "",
+    ].join("\n"));
+    const [a, bad, b, c] = await Promise.all(answers);
+    assert.deepEqual(a, { id: ids[0], tags: ["a-b"] });
+    assert.equal(bad.id, null);
+    assert.ok(typeof bad.error === "string" && bad.error.length > 0);
+    assert.deepEqual(b, { id: ids[1], value: false });
+    assert.deepEqual(c, { id: ids[2], tags: [stationTag("中文 站点")] });
+
+    // One ask written a byte or two at a time, cut inside its multi-byte characters: answered once, whole.
+    const id = p.id();
+    const name = "中文😀é 站点";
+    const line = Buffer.from(`${JSON.stringify({ id, op: "tags", names: [name] })}\n`);
+    const answer = p.expect();
+    for (let at = 0; at < line.length; at += 2) await p.write(line.subarray(at, Math.min(line.length, at + 2)));
+    assert.deepEqual(await answer, { id, tags: [stationTag(name)] });
+  });
+});
+
 const A = "a".repeat(64);
 const B = "b".repeat(64);
 const NAMES: Record<string, string> = { [A]: "ccvm", [B]: "Mini 1" };
 const nameOf = (s: string) => NAMES[s] ?? s.slice(0, 8);
+/// share/memory.ts PREV_MOST, what the station sends.
+const PREV_MOST = 16;
 
-test("decide: the reference's outcome, record and merged content (three-way, conflicts kept, alike once, deleted, binary)", { skip }, async () => {
+test("decide: the reference's outcome, record and merged content (three-way, conflicts kept, alike once, deleted, binary, versions before trimmed)", { skip }, async () => {
   await withMemory(async (p) => {
+    const ask = (path: string, mine: Rec | undefined, theirs: Rec, contents: Map<string, Buffer>, blobs: string, prevMost = PREV_MOST) => {
+      const given: Record<string, string> = {};
+      for (const [h, b] of contents) given[h] = b.toString("hex");
+      const names: Record<string, string> = { [theirs.by]: nameOf(theirs.by), ...(mine ? { [mine.by]: nameOf(mine.by) } : {}) };
+      return p.ok("decide", { path, mine: mine ?? null, theirs, names, given, blobs, prevMost });
+    };
     const both = async (path: string, mine: Rec | undefined, theirs: Rec, contents: Map<string, Buffer>, kept: Map<string, Buffer>) => {
       const blobs = fresh("memory-blobs-");
       for (const [h, b] of kept) writeFileSync(join(blobs, h), b);
       const all = new Map([...kept, ...contents]);
       const want = decide(path, mine, theirs, (h) => all.get(h) ?? null, nameOf);
-      const given: Record<string, string> = {};
-      for (const [h, b] of contents) given[h] = b.toString("hex");
-      const names: Record<string, string> = { [theirs.by]: nameOf(theirs.by), ...(mine ? { [mine.by]: nameOf(mine.by) } : {}) };
-      const got = await p.ok("decide", { path, mine: mine ?? null, theirs, names, given, blobs, prevMost: 16 });
+      const got = await ask(path, mine, theirs, contents, blobs);
       const label = `decide(${path}, ${JSON.stringify(mine)}, ${JSON.stringify(theirs)})`;
       assert.equal(got.kind, want.kind, label);
       if (want.kind === "keep") assert.deepEqual(got, { kind: "keep" }, label);
@@ -343,27 +446,25 @@ test("decide: the reference's outcome, record and merged content (three-way, con
         assert.deepEqual(got.rec, want.rec, label);
         const content = all.get(got.rec.hash) ?? readFileSync(join(blobs, got.rec.hash));
         assert.deepEqual(content, want.content, label);
-        if (!all.has(got.rec.hash) && process.platform !== "win32") assert.equal(statSync(join(blobs, got.rec.hash)).mode & 0o777, 0o600, label);
+        if (!all.has(got.rec.hash) && unix) assert.equal(statSync(join(blobs, got.rec.hash)).mode & 0o777, 0o600, label);
         if (want.beside === null) assert.ok(got.beside === null || !memoryPath(got.beside.path), label);
         else assert.deepEqual(got.beside, { path: want.beside.path, rec: want.beside.rec }, label);
       }
-      return got;
+      return { got, want };
     };
     const rec = (text: string | null, by: string, at: number, prev: string[] = [], extra: Partial<Rec> = {}): Rec => ({ hash: text === null ? "" : sha(text), at, by, prev, size: text === null ? 0 : Buffer.byteLength(text), mode: 0o644, ...extra });
     const c = (...texts: string[]) => new Map(texts.map((t) => [sha(t), Buffer.from(t)] as [string, Buffer]));
     const base = "- one\n- two\n";
     const mine = "- one\n- two\n- mine\n";
     const theirs = "- zero\n- one\n- two\n";
-    // Theirs only; the same content both sides (kept, idempotent); one after the other.
-    assert.equal((await both("MEMORY.md", undefined, rec(theirs, B, 2), c(theirs), new Map())).kind, "take");
+    // Theirs only; the same content both sides; one after the other; the very same record (kept as it is).
+    assert.equal((await both("MEMORY.md", undefined, rec(theirs, B, 2), c(theirs), new Map())).got.kind, "take");
     await both("MEMORY.md", rec(mine, A, 2), rec(mine, B, 3), new Map(), c(mine));
-    // The very same record on both sides: kept as it is.
-    assert.equal((await both("MEMORY.md", rec(mine, A, 2), rec(mine, A, 2), new Map(), c(mine))).kind, "keep");
     await both("MEMORY.md", rec(mine, B, 3), rec(mine, A, 2), new Map(), c(mine));
+    assert.equal((await both("MEMORY.md", rec(mine, A, 2), rec(mine, A, 2), new Map(), c(mine))).got.kind, "keep");
     await both("MEMORY.md", rec(mine, A, 2, [sha(base)]), rec(theirs, B, 3, [sha(mine)]), c(theirs), c(mine));
     // Three-way from one base, without a conflict: both changes in.
-    const merged = await both("MEMORY.md", rec(mine, A, 2, [sha(base)]), rec(theirs, B, 3, [sha(base)]), c(theirs), c(mine, base));
-    assert.equal(merged.kind, "merge");
+    assert.equal((await both("MEMORY.md", rec(mine, A, 2, [sha(base)]), rec(theirs, B, 3, [sha(base)]), c(theirs), c(mine, base))).got.kind, "merge");
     // A conflict on one line: both kept.
     await both("MEMORY.md", rec("- one\n- MINE\n", A, 2, [sha(base)]), rec("- one\n- THEIRS\n", B, 3, [sha(base)]), c("- one\n- THEIRS\n"), c("- one\n- MINE\n", base));
     // A skill both kept apart with no base: alike merged, not alike kept beside (`.conflict-<station>`).
@@ -384,6 +485,24 @@ test("decide: the reference's outcome, record and merged content (three-way, con
     await both("skills/p/blob", hb(bin, A, 2, [sha(base)]), hb(bin2, B, 3, [sha(base)]), new Map([[sha(bin2), bin2]]), new Map([[sha(bin), bin], [sha(base), Buffer.from(base)]]));
     // A version not here: kept.
     await both("MEMORY.md", rec(mine, A, 2, [sha(base)]), rec(theirs, B, 3, [sha(base)]), new Map(), c(mine));
+
+    // The versions before, trimmed: 1 + 16 on each side past PREV_MOST * 2, the record's `prev` the reference's (its
+    // first 32); asked to keep fewer (`prevMost`), the first PREV_MOST * 2 of them as the reference orders them.
+    const older = (side: string) => Array.from({ length: PREV_MOST - 1 }, (_, i) => sha(`${side} v${i}`));
+    const mineRec = rec(mine, A, 2, [sha(base), ...older("mine")]);
+    const theirsRec = rec(theirs, B, 3, [sha(base), ...older("theirs")]);
+    const trimmed = await both("MEMORY.md", mineRec, theirsRec, c(theirs), c(mine, base));
+    assert.equal(trimmed.got.kind, "merge");
+    assert.equal(trimmed.got.rec.prev.length, PREV_MOST * 2);
+    for (const most of [1, 2, 5]) {
+      const blobs = fresh("memory-blobs-");
+      for (const t of [mine, base]) writeFileSync(join(blobs, sha(t)), t);
+      const got = await ask("MEMORY.md", mineRec, theirsRec, c(theirs), blobs, most);
+      assert.equal(got.kind, "merge");
+      const want = trimmed.want as Extract<typeof trimmed.want, { kind: "merge" }>;
+      assert.deepEqual(got.rec, { ...want.rec, prev: want.rec.prev.slice(0, most * 2) }, `prevMost ${most}`);
+    }
+
     // Random histories.
     const r = rng(23);
     for (let i = 0; i < 60; i++) {
@@ -408,13 +527,15 @@ test("decide: the reference's outcome, record and merged content (three-way, con
   });
 });
 
-test("files: scan, hash, have and asides read a memory's tree as the reference, what changed kept in blobs/ privately", { skip: unixOnly }, async () => {
+const SCAN = { builtin: [...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS], skipped: [...SKIPPED], fileMost: 512 * 1024, skillMost: 4 * 1024 * 1024, skillFiles: 200 };
+
+test("files: scan, hash, have and asides read a memory's tree as the reference, what changed kept in blobs/ privately", { skip }, async () => {
   await withMemory(async (p) => {
     const dir = fresh("memory-home-");
     const put = (path: string, text: string | Buffer, mode = 0o644) => {
       mkdirSync(join(dir, path, ".."), { recursive: true });
       writeFileSync(join(dir, path), text);
-      chmodSync(join(dir, path), mode);
+      if (unix) chmodSync(join(dir, path), mode);
     };
     put("MEMORY.md", "# 全局记忆\n- 一条。\n");
     utimesSync(join(dir, "MEMORY.md"), 1_700_000_000.4567, 1_700_000_000.4567);
@@ -424,17 +545,18 @@ test("files: scan, hash, have and asides read a memory's tree as the reference, 
     put("skills/proj/b/c/d.txt", "deep\n");
     put("skills/proj/node_modules/x.js", "x\n");
     put("skills/proj/bin", Buffer.from([0, 1, 2, 255]));
-    symlinkSync(join(dir, "skills/proj/b/c/d.txt"), join(dir, "skills/proj/link.txt"));
     put(`skills/${BUILTIN_SKILLS[0]}/SKILL.md`, "built in\n");
     put("skills/__pycache__/SKILL.md", "x\n");
-    symlinkSync(join(dir, "skills/proj"), join(dir, "skills/linked"));
     put("skills/中文技能/SKILL.md", "---\nname: 中文技能\n---\n- 中\n");
     put("skills/large/SKILL.md", "---\nname: large\n---\n");
     put("skills/large/big", Buffer.alloc(512 * 1024 + 1, 0x61));
+    if (unix) {
+      symlinkSync(join(dir, "skills/proj/b/c/d.txt"), join(dir, "skills/proj/link.txt"));
+      symlinkSync(join(dir, "skills/proj"), join(dir, "skills/linked"));
+    }
 
     const want = await readMemory(dir);
-    const scan = (blobs: string, kept: Record<string, string>) =>
-      p.ok("scan", { dir, blobs, kept, builtin: [...BUILTIN_SKILLS, FEEDBACK_SKILL, ...RETIRED_SKILLS], skipped: [...SKIPPED], fileMost: 512 * 1024, skillMost: 4 * 1024 * 1024, skillFiles: 200 });
+    const scan = (blobs: string, kept: Record<string, string>) => p.ok("scan", { dir, blobs, kept, ...SCAN });
     const blobs = fresh("memory-blobs-");
     const got = await scan(blobs, {});
     assert.deepEqual(got.files.map((f: Json) => f.path), [...want.files.keys()]);
@@ -443,7 +565,7 @@ test("files: scan, hash, have and asides read a memory's tree as the reference, 
       const w = want.files.get(f.path)!;
       assert.deepEqual({ hash: f.hash, size: f.size, mode: f.mode, mtime: f.mtime }, { hash: sha(w.bytes), size: w.bytes.length, mode: w.mode, mtime: w.mtime }, f.path);
       assert.deepEqual(readFileSync(join(blobs, f.hash)), w.bytes, f.path);
-      assert.equal(statSync(join(blobs, f.hash)).mode & 0o777, 0o600, f.path);
+      if (unix) assert.equal(statSync(join(blobs, f.hash)).mode & 0o777, 0o600, f.path);
       // `hash` of the file on the disk is its scan's.
       assert.deepEqual(await p.ok("hash", { path: join(dir, f.path) }), { hash: f.hash }, f.path);
     }
@@ -485,11 +607,27 @@ test("files: scan, hash, have and asides read a memory's tree as the reference, 
     });
     assert.deepEqual(asides, { asides: [{ skill: "p-ccvm", base: "p", tag: "ccvm", author: stationTag("Mini 1"), body: "body line\n" }] });
     assert.deepEqual(await p.ok("asides", { blobs }), { asides: [] });
+
+    // A MEMORY.md of nothing yet: told `empty`, no blob kept; one with a line: not told so, kept; one the station keeps a
+    // record of already: told as any other.
+    for (const [text, empty] of [["# still.fail memory\n", true], ["\ufeff  # ember memory \n\n", true], ["", true], ["# still.fail memory\n- one\n", false], [Buffer.from([0x23, 0xff]), false]] as [string | Buffer, boolean][]) {
+      const home = fresh("memory-home-");
+      writeFileSync(join(home, "MEMORY.md"), text);
+      const b = fresh("memory-blobs-");
+      const first = await p.ok("scan", { dir: home, blobs: b, kept: {}, ...SCAN });
+      assert.equal(first.files.length, 1, JSON.stringify(text));
+      if (empty) assert.equal(first.files[0].empty, true, JSON.stringify(text));
+      else assert.equal("empty" in first.files[0], false, JSON.stringify(text));
+      assert.deepEqual(readdirSync(b), empty ? [] : [first.files[0].hash], JSON.stringify(text));
+      const known = await p.ok("scan", { dir: home, blobs: b, kept: { "MEMORY.md": "0".repeat(64) }, ...SCAN });
+      assert.equal("empty" in known.files[0], false, JSON.stringify(text));
+    }
   });
 });
 
 /// A tree as it is on the disk: each path's kind and content (a link's target), in order.
 function tree(dir: string): string[] {
+  if (!existsSync(dir)) return [];
   const out: string[] = [];
   const walk = (at: string, rel: string) => {
     for (const name of readdirSync(at).sort()) {
@@ -500,7 +638,7 @@ function tree(dir: string): string[] {
       else if (meta.isDirectory()) {
         out.push(`${r}/`);
         walk(path, r);
-      } else out.push(`${r} = ${readFileSync(path).toString("hex")}`);
+      } else out.push(`${r} = ${sha(readFileSync(path))}`);
     }
   };
   walk(dir, "");
@@ -515,7 +653,7 @@ function make(dir: string, files: Record<string, Buffer | string>) {
   }
 }
 
-test("shared skills: base64 read and written as the reference, a path leading out of the skill refused with nothing changed", { skip: unixOnly }, async () => {
+test("shared skills: base64 read and written as the reference, a path leading out of the skill refused with nothing changed", { skip }, async () => {
   await withMemory(async (p) => {
     const root = fresh("memory-skills-");
     const read = async (dir: string, bytes: boolean) => {
@@ -544,7 +682,7 @@ test("shared skills: base64 read and written as the reference, a path leading ou
       "SKILL.conflict-0123456789ab.md": "kept beside",
     });
     mkdirSync(join(skill, "empty-dir"));
-    symlinkSync(join(skill, "SKILL.md"), join(skill, "link.md"));
+    if (unix) symlinkSync(join(skill, "SKILL.md"), join(skill, "link.md"));
     await same(skill, "the tree");
     const files = (await read(skill, true)).files;
     // Bytes that are no UTF-8 come back as they were.
@@ -559,13 +697,17 @@ test("shared skills: base64 read and written as the reference, a path leading ou
     make(join(root, "max1"), { "SKILL.md": "ab", "big.bin": Buffer.alloc(MAX_SKILL_BYTES - 1, 7) });
     await same(join(root, "max1"), "512 KiB and a byte");
 
-    // Written: the same tree as the reference writes, the one before replaced; then read back, the same hash.
+    // Written: the same tree as the reference writes, the one before replaced; then read back, the same hash. Refused:
+    // the reference's words, the skill and everything beside it (its parent's listing) as they were.
     let n = 0;
     const write = async (before: Record<string, string> | null, given: Record<string, string>, label: string) => {
       const at = join(root, `w${n++}`);
       const refDir = join(at, "ref", "skill");
       const mbDir = join(at, "mb", "skill");
+      mkdirSync(join(at, "ref"), { recursive: true });
+      mkdirSync(join(at, "mb"), { recursive: true });
       for (const d of [refDir, mbDir]) if (before !== null) make(d, before);
+      const parentBefore = tree(join(at, "mb"));
       let refError: string | null = null;
       try {
         writeSkill(refDir, given);
@@ -579,8 +721,7 @@ test("shared skills: base64 read and written as the reference, a path leading ou
         assert.deepEqual(tree(join(at, "mb")), tree(join(at, "ref")), `${label}: the same tree`);
         await same(mbDir, `${label}: read back`);
       } else {
-        assert.deepEqual(before === null ? [] : tree(mbDir), before === null ? [] : tree(refDir), `${label}: the skill as it was`);
-        assert.deepEqual(readdirSync(join(at, "mb")).filter((x) => x.includes(".tmp-")), [], `${label}: no temporary left`);
+        assert.deepEqual(tree(join(at, "mb")), parentBefore, `${label}: the skill and what is beside it as they were`);
       }
     };
     const before = { "SKILL.md": "old", "old/gone.md": "gone", "SKILL.conflict-x.md": "c" };
@@ -591,8 +732,62 @@ test("shared skills: base64 read and written as the reference, a path leading ou
     for (const bad of ["../escape", "/abs", "a/../b", "a//b", "./x", "a/", "", "..", "C:\\x", "a\\..\\b"]) {
       await write(before, { "SKILL.md": b64("new"), [bad]: b64("x") }, `the path ${JSON.stringify(bad)} (${safePath(bad) ? "safe" : "refused"} here)`);
     }
-    // Nothing written outside the skill by any of them.
-    assert.equal(existsSync(join(root, "escape")), false);
+
+    // As the station writes an edit (share/index.ts `takeEditNow`): `most` the decoded bytes in all, `check` only
+    // checking. Refused or only checked, the skill and what is beside it stay as they were.
+    const skillAt = (files: Record<string, string>) => {
+      const at = join(root, `e${n++}`);
+      make(join(at, "skill"), files);
+      return { at, dir: join(at, "skill") };
+    };
+    const kept = { "SKILL.md": "kept\n", "a.md": "a" };
+    const exact = Buffer.alloc(MAX_SKILL_BYTES - 5, 0x61);
+    for (const [label, files, most, check, expect] of [
+      ["checked only", { "SKILL.md": b64("new\n"), "b.md": b64("b") }, MAX_SKILL_BYTES, true, "written"],
+      ["exactly `most` decoded bytes, checked", { "SKILL.md": b64("12345"), "big": b64(exact) }, MAX_SKILL_BYTES, true, "written"],
+      ["base64 past `most`, decoded within it", { "big": b64(bytesOf(3, 400 * 1024)) }, 450 * 1024, true, "written"],
+      ["a byte past `most`", { "SKILL.md": b64("123456"), "big": b64(exact) }, MAX_SKILL_BYTES, false, "refused"],
+      ["a byte past `most`, checked", { "SKILL.md": b64("123456"), "big": b64(exact) }, MAX_SKILL_BYTES, true, "refused"],
+      ["a file not given as text", { "SKILL.md": b64("new"), "n": 5 }, MAX_SKILL_BYTES, false, "refused"],
+      ["a file given as null", { "SKILL.md": b64("new"), "n": null }, MAX_SKILL_BYTES, false, "refused"],
+      ["a path out, checked", { "SKILL.md": b64("new"), "../escape": b64("x") }, MAX_SKILL_BYTES, true, "refused"],
+    ] as [string, Record<string, unknown>, number, boolean, "written" | "refused"][]) {
+      const { at, dir } = skillAt(kept);
+      const was = tree(at);
+      const answer = await p.ask("skillWrite", { dir, files, most, ...(check ? { check: true } : {}) });
+      if (expect === "written") assert.deepEqual(answer, { written: true }, label);
+      else assert.ok(typeof answer.error === "string" && answer.error.length > 0, `${label}: refused, answered ${JSON.stringify(answer).slice(0, 200)}`);
+      assert.deepEqual(tree(at), was, `${label}: the skill and what is beside it as they were`);
+    }
+    // Within `most`, not only checked: written as the reference writes it.
+    {
+      const { at, dir } = skillAt(kept);
+      const given = { "SKILL.md": b64("new\n"), "big": b64(exact.subarray(0, 1000)) };
+      assert.deepEqual(await p.ok("skillWrite", { dir, files: given, most: MAX_SKILL_BYTES }), { written: true });
+      const ref = join(at, "ref");
+      make(ref, kept);
+      writeSkill(ref, given);
+      assert.deepEqual(tree(dir), tree(ref));
+    }
+
+    // Lines past 1 MiB each way: a skill of 800 KB of bytes written (its ask 1.07 MB of base64) and read back whole.
+    {
+      const big = { "SKILL.md": Buffer.from("---\nname: big\n---\n"), "one.bin": bytesOf(5, 400 * 1024), "two.bin": bytesOf(6, 400 * 1024) };
+      const given = Object.fromEntries(Object.entries(big).map(([k, v]) => [k, v.toString("base64")]));
+      assert.ok(JSON.stringify(given).length > 1 << 20);
+      const at = join(root, `big${n++}`);
+      const dir = join(at, "skill");
+      mkdirSync(at);
+      assert.deepEqual(await p.ok("skillWrite", { dir, files: given }), { written: true });
+      const ref = join(at, "ref");
+      writeSkill(ref, given);
+      assert.deepEqual(tree(dir), tree(ref));
+      const back = await p.ok("skillRead", { dir, maxBytes: 2 << 20, maxFiles: MAX_SKILL_FILES, bytes: true });
+      assert.ok(JSON.stringify(back).length > 1 << 20);
+      assert.deepEqual(back, { hash: skillHash(big), hasSkillMd: true, files: given });
+      // Past the station's own limit: too large, as the reference says.
+      assert.deepEqual(await p.ok("skillRead", { dir, maxBytes: MAX_SKILL_BYTES, maxFiles: MAX_SKILL_FILES, bytes: true }), { tooLarge: true });
+    }
 
     // An edit on an older copy, kept beside the skill as the reference keeps it.
     for (const [peer, content] of [["0123456789abcdef0123", Buffer.from("late\n")], ["ab", Buffer.from([0, 1, 255])], ["中文站点名字很长很长很长很长", Buffer.from("")]] as const) {
@@ -608,72 +803,73 @@ test("shared skills: base64 read and written as the reference, a path leading ou
 
 test("malformed lines, unknown ops and missing fields are answered `{id, error}` and the process goes on", { skip }, async () => {
   await withMemory(async (p) => {
-    const tagsOk = async () => assert.deepEqual(await p.ok("tags", { names: ["a b"] }), { tags: ["a-b"] });
+    const alive = async () => assert.deepEqual(await p.ok("tags", { names: ["a b"] }), { tags: ["a-b"] });
+    const failed = (answer: Json, id: unknown, what: string) => {
+      assert.deepEqual(Object.keys(answer).sort(), ["error", "id"], what);
+      assert.deepEqual(answer.id, id, what);
+      assert.ok(typeof answer.error === "string" && answer.error.length > 0, what);
+    };
     for (const line of ["{not valid json", "[1,2,3]", "42", "\"op\"", "null", "{\"op\": \"tags\""]) {
-      assert.deepEqual(await p.raw(line), { id: null, error: "unknown memory op " }, JSON.stringify(line));
-      await tagsOk();
+      failed(await p.raw(line), null, JSON.stringify(line));
+      await alive();
     }
-    p.silent("");
-    await tagsOk();
+    await p.write("\n");
+    await alive();
     // Any JSON id comes back as it was sent.
     for (const id of ["s", 0, 2 ** 40, true, null, [1, "x"], { deep: { x: [1] } }, "中文😀"]) {
       assert.deepEqual(await p.raw(JSON.stringify({ id, op: "tags", names: ["x"] })), { id, tags: ["x"] });
     }
     assert.deepEqual(await p.raw(JSON.stringify({ op: "tags", names: [] })), { id: null, tags: [] });
-    assert.deepEqual(await p.raw(JSON.stringify({ id: 9 })), { id: 9, error: "unknown memory op " });
-    assert.deepEqual(await p.raw(JSON.stringify({ id: 10, op: 5 })), { id: 10, error: "unknown memory op " });
-    assert.equal(await p.fails("nothing"), "unknown memory op nothing");
-    assert.equal(await p.fails("Scan"), "unknown memory op Scan");
-    await tagsOk();
+    failed(await p.raw(JSON.stringify({ id: 9 })), 9, "no op");
+    failed(await p.raw(JSON.stringify({ id: 10, op: 5 })), 10, "an op not a string");
+    await p.fails("nothing");
+    await p.fails("Scan");
+    await alive();
+
+    // Each ask with everything it needs but one field (or that one not of its kind): refused, nothing written.
     const dir = fresh();
+    const skill = join(dir, "skill");
+    make(skill, { "SKILL.md": "s" });
+    const blobs = join(dir, "blobs");
+    mkdirSync(blobs);
     const theirs = { hash: "a".repeat(64), at: 1, by: "b".repeat(64), prev: [], size: 1, mode: 0o644 };
-    const missing: [string, Record<string, unknown>, string | null][] = [
-      ["scan", {}, "no dir"],
-      ["decide", {}, "no record"],
-      ["decide", { path: "MEMORY.md", theirs: "x" }, "no record"],
-      ["decide", { theirs }, "no path"],
-      ["skillRead", {}, "no dir"],
-      ["skillWrite", {}, "no dir"],
-      ["skillConflict", {}, "no dir"],
-      ["skillConflict", { dir }, "no peer"],
-      ["skillConflict", { dir, peer: "x" }, "no content"],
-      ["isText", {}, "no bytes"],
-      ["isText", { bytes: 5 }, "no bytes"],
-      ["merge3", { newer: "", older: "" }, "no base"],
-      ["merge3", { base: "", older: "" }, "no newer"],
-      ["merge3", { base: "", newer: "" }, "no older"],
-      ["union", { older: "" }, "no newer"],
-      ["union", { newer: "" }, "no older"],
-      ["alike", { b: "" }, "no a"],
-      ["alike", { a: "" }, "no b"],
-      ["conflictPath", { station: "x" }, "no path"],
-      ["conflictPath", { path: "MEMORY.md" }, "no station"],
-      // Hex that is no hex: refused (its words the program's own).
-      ["isText", { bytes: "zz" }, null],
-      ["isText", { bytes: "abc" }, null],
-      ["merge3", { base: "0g", newer: "", older: "" }, null],
+    const missing: [string, Record<string, unknown>][] = [
+      ["scan", { blobs, kept: {}, ...SCAN }],
+      ["decide", { path: "MEMORY.md", blobs, prevMost: PREV_MOST }],
+      ["decide", { path: "MEMORY.md", theirs: "x", blobs, prevMost: PREV_MOST }],
+      ["decide", { theirs, blobs, prevMost: PREV_MOST }],
+      ["hash", {}],
+      ["skillRead", { maxBytes: MAX_SKILL_BYTES, maxFiles: MAX_SKILL_FILES }],
+      ["skillWrite", { files: { "SKILL.md": b64("x") } }],
+      ["skillConflict", { peer: "p", content: b64("x") }],
+      ["skillConflict", { dir: skill, content: b64("x") }],
+      ["skillConflict", { dir: skill, peer: "p" }],
+      ["isText", {}],
+      ["isText", { bytes: 5 }],
+      ["merge3", { newer: "", older: "" }],
+      ["merge3", { base: "", older: "" }],
+      ["merge3", { base: "", newer: "" }],
+      ["union", { older: "" }],
+      ["union", { newer: "" }],
+      ["alike", { b: "" }],
+      ["alike", { a: "" }],
+      ["conflictPath", { station: "x" }],
+      ["conflictPath", { path: "MEMORY.md" }],
+      // Hex that is no hex.
+      ["isText", { bytes: "zz" }],
+      ["isText", { bytes: "abc" }],
+      ["merge3", { base: "0g", newer: "", older: "" }],
     ];
-    for (const [op, args, error] of missing) {
-      const said = await p.fails(op, args);
-      if (error !== null) assert.equal(said, error, `${op} ${JSON.stringify(args)}`);
-      await tagsOk();
+    const listing = () => tree(dir);
+    const before = listing();
+    for (const [op, args] of missing) {
+      await p.fails(op, args);
+      await alive();
     }
-    assert.deepEqual(readdirSync(dir), [], "nothing written by a refused ask");
+    assert.deepEqual(listing(), before, "nothing written by a refused ask");
   });
 });
 
 test("stdin closed with nothing asked: exit 0, nothing said", { skip }, async () => {
-  const child = spawn(candidate(), ["--builder", "memory", "--sep", sep, "--shell-dir", fresh("memory-shell-")], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-  let stdout = "";
-  let stderr = "";
-  child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
-  child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
-  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`no exit within ${ASK_TIMEOUT_MS} ms`)); }, ASK_TIMEOUT_MS);
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
-  });
-  child.stdin!.end();
-  assert.deepEqual(await closed, { code: 0, signal: null }, stderr);
-  assert.equal(stdout, "");
+  await withMemory(async () => {});
 });

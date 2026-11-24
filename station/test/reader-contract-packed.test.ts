@@ -1,14 +1,18 @@
 // Black-box contract tests for `--builder packed` against any reader binary, spoken to over its stdio alone.
 //
-// By default this runs against the shipped MoonBit `stillfail-reader` (`mbReaderBinary()`), and skips (saying so) where
-// it is not built. Set `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary with zero edits
-// to this suite: a candidate named but missing or not executable fails every test, never skips.
+// By default this runs against the shipped MoonBit `stillfail-reader` (`mbReaderBinary()`). Set
+// `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary with zero edits to this suite: a
+// candidate named but empty, missing or not executable fails every test, never skips. With no candidate named and no
+// reader built, the tests skip saying so, except under CI (`CI` set), where they fail.
 //
 // The protocol (station/mb/src/packed/answer.mbt, station/src/sessions/packed-mb.ts): a line of JSON an ask `{id, op, …}`,
-// answered by one line `{id, …}` or `{id, error}`, one at a time, nothing kept between asks; an empty line is passed over;
-// a line that is no JSON object is answered `{id: null, error}`. Each test keeps one process and its stdin open across
-// all its asks (as `PackedProgram` does), and ends it only by closing stdin: it must exit 0 with nothing more said.
-// What it makes is held to the TypeScript it replaced (test/reference/packed.ts, test/reference/workspace-archive.ts).
+// answered by one line `{id, …}` or `{id, error}`, in order, nothing kept between asks; an empty line is passed over; a
+// line that is no JSON object is answered `{id: null, error}`. The station sends asks back to back without waiting
+// (`PackedProgram.ask`), so asks are pipelined here too, written in one write and split across writes. Each test keeps
+// one process and its stdin open across all its asks, and ends it only by closing stdin: it must exit 0 having said
+// nothing more (a line said after the last answer fails the test however fast the process exits). What it makes is held
+// to the TypeScript it replaced (test/reference/packed.ts, test/reference/workspace-archive.ts). Error words are the
+// program's own (no caller reads them): only that an ask failed, and that the process goes on, is held.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -18,6 +22,7 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -32,44 +37,46 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { after, test } from "node:test";
 import { constants, zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { framesOf, readSegments, SEGMENT, seekTable, segmented, segmentedBytes, unpackedWhole } from "./reference/packed.ts";
 import { fileOf, gnuHeader, packTree, padding, tarOfHeaders, unpackArchive } from "./reference/workspace-archive.ts";
 
-/// The longest any one ask may take before the process is killed and the test fails (a bound, never a wait).
+/// The longest any one ask (or the exit after stdin's end) may take before the process is killed and the test fails: a
+/// bound, never a wait.
 const ASK_TIMEOUT_MS = 60_000;
+const unix = process.platform !== "win32";
 
 type Json = any;
 
-/// The binary under test, or why there is none: `fail` for a named candidate that is not there, `skip` for a default
-/// reader not built here.
+/// The binary under test, or why there is none.
 function resolveCandidate(): { binary: string } | { fail: string } | { skip: string } {
-  const injected = process.env.STILLFAIL_READER_CANDIDATE?.trim();
-  if (injected !== undefined && injected !== "") {
-    if (!existsSync(injected)) return { fail: `STILLFAIL_READER_CANDIDATE does not exist: ${injected}` };
+  const raw = process.env.STILLFAIL_READER_CANDIDATE;
+  if (raw !== undefined) {
+    if (raw.trim() === "") return { fail: "STILLFAIL_READER_CANDIDATE is set but empty" };
+    // (checked and spawned at the one absolute path: never a PATH lookup, never another working directory's)
+    const binary = resolve(raw);
+    if (!existsSync(binary)) return { fail: `STILLFAIL_READER_CANDIDATE does not exist: ${binary}` };
     try {
-      if (!statSync(injected).isFile()) return { fail: `STILLFAIL_READER_CANDIDATE is not a file: ${injected}` };
-      accessSync(injected, fsConstants.X_OK);
+      if (!statSync(binary).isFile()) return { fail: `STILLFAIL_READER_CANDIDATE is not a file: ${binary}` };
+      accessSync(binary, fsConstants.X_OK);
     } catch {
-      return { fail: `STILLFAIL_READER_CANDIDATE is not executable: ${injected}` };
+      return { fail: `STILLFAIL_READER_CANDIDATE is not executable: ${binary}` };
     }
-    return { binary: injected };
+    return { binary };
   }
   const binary = mbReaderBinary();
-  if (binary === null) {
-    return { skip: "stillfail-reader is not built here; set STILLFAIL_READER_CANDIDATE or run via `node ../scripts/native.ts run reader -- ...`" };
-  }
-  return { binary };
+  if (binary !== null) return { binary: resolve(binary) };
+  const why = "stillfail-reader is not built here; set STILLFAIL_READER_CANDIDATE or run via `node ../scripts/native.ts run reader -- ...`";
+  return process.env.CI ? { fail: why } : { skip: why };
 }
 
 const RESOLVED = resolveCandidate();
 const skip = "skip" in RESOLVED ? RESOLVED.skip : false;
-const unixOnly = skip || (process.platform === "win32" && "pipes, modes and links are Unix's");
 
-/// The candidate's path; a named candidate that is not there fails the test that asks.
+/// The candidate's path; one that is not there fails the test that asks.
 function candidate(): string {
   if ("fail" in RESOLVED) assert.fail(RESOLVED.fail);
   if ("skip" in RESOLVED) assert.fail(RESOLVED.skip);
@@ -83,7 +90,7 @@ after(() => {
     const writable = (p: string) => {
       try {
         const meta = lstatSync(p);
-        if (meta.isDirectory() && !meta.isSymbolicLink()) {
+        if (meta.isDirectory()) {
           chmodSync(p, 0o755);
           for (const n of readdirSync(p)) writable(join(p, n));
         }
@@ -99,14 +106,18 @@ const fresh = (prefix = "packed-contract-") => {
   return dir;
 };
 
-/// One `--builder packed` process, its stdin kept open: each ask written as a line and answered by the next line it
-/// says, in order; any line said with no ask waiting, any non-JSON line, or a line cut short at its end fails it.
+type Waiter = { resolve: (j: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+
+/// One `--builder packed` process, its stdin kept open: each ask answered by the next line it says, in order. What the
+/// protocol forbids (a line no ask waits for, a line that is no JSON, the process ending before its stdin did, an ask
+/// unanswered in time) is kept as its `protocolError`, which fails every ask after it and `end()`, whatever else.
 class PackedProcess {
   readonly #child: ChildProcess;
-  readonly #waiting: { resolve: (j: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }[] = [];
-  #carry = "";
+  readonly #waiting: Waiter[] = [];
+  #carry: Buffer = Buffer.alloc(0);
   #stderr = "";
-  #broken: Error | null = null;
+  #protocolError: Error | null = null;
+  #ending = false;
   readonly #closed: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   #next = 0;
 
@@ -118,68 +129,86 @@ class PackedProcess {
     this.#child = child;
     child.stdin!.on("error", () => {});
     child.stderr!.on("data", (c: Buffer) => { this.#stderr += c.toString("utf8"); });
-    child.stdout!.on("data", (c: Buffer) => this.#heard(c.toString("utf8")));
-    this.#closed = new Promise((resolve, reject) => {
-      child.on("error", (e) => { this.#break(e); reject(e); });
-      child.on("close", (code, signal) => {
-        this.#break(new Error(`the packed process ended (code ${code}, signal ${signal}) with an ask unanswered; stderr: ${this.#stderr}`));
-        resolve({ code, signal });
+    child.stdout!.on("data", (c: Buffer) => this.#heard(c));
+    this.#closed = new Promise((done) => {
+      let ended = false;
+      const end = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (ended) return;
+        ended = true;
+        if (!this.#ending) this.#forbid(`the process ended before its stdin did (code ${code}, signal ${signal}); stderr: ${this.#stderr}`);
+        this.#rejectAll(new Error(`the process ended (code ${code}, signal ${signal}) with an ask unanswered; stderr: ${this.#stderr}`));
+        done({ code, signal });
+      };
+      child.on("error", (e) => {
+        this.#forbid(`the process failed: ${e.message}`);
+        // (a process that never started says no close of its own)
+        if (child.pid === undefined) end(null, null);
       });
+      child.on("close", (code, signal) => end(code, signal));
     });
-    this.#closed.catch(() => {});
   }
 
-  #break(e: Error) {
-    this.#broken ??= e;
+  #rejectAll(e: Error) {
     for (const w of this.#waiting.splice(0)) {
       clearTimeout(w.timer);
       w.reject(e);
     }
   }
 
-  #heard(text: string) {
-    this.#carry += text;
-    for (let nl = this.#carry.indexOf("\n"); nl >= 0; nl = this.#carry.indexOf("\n")) {
-      const line = this.#carry.slice(0, nl);
-      this.#carry = this.#carry.slice(nl + 1);
+  #forbid(message: string) {
+    if (this.#protocolError === null) this.#protocolError = new Error(message);
+    this.#rejectAll(this.#protocolError);
+    this.#child.kill("SIGKILL");
+  }
+
+  /// Lines cut at their `\n` bytes, each decoded whole (a character split between two reads stays one).
+  #heard(chunk: Buffer) {
+    this.#carry = this.#carry.length === 0 ? chunk : Buffer.concat([this.#carry, chunk]);
+    for (let nl = this.#carry.indexOf(0x0a); nl >= 0; nl = this.#carry.indexOf(0x0a)) {
+      const line = this.#carry.subarray(0, nl).toString("utf8");
+      this.#carry = this.#carry.subarray(nl + 1);
       let parsed: Json;
       try {
         parsed = JSON.parse(line);
       } catch {
-        this.#child.kill("SIGKILL");
-        return this.#break(new Error(`stdout said a line that is no JSON: ${JSON.stringify(line)}`));
+        return this.#forbid(`stdout said a line that is no JSON: ${JSON.stringify(line.slice(0, 300))}`);
       }
       const w = this.#waiting.shift();
-      if (w === undefined) {
-        this.#child.kill("SIGKILL");
-        return this.#break(new Error(`stdout said a line with no ask waiting: ${line}`));
-      }
+      if (w === undefined) return this.#forbid(`stdout said a line no ask waits for: ${line.slice(0, 300)}`);
       clearTimeout(w.timer);
       w.resolve(parsed);
     }
   }
 
-  /// The answer to one raw line (written with its `\n`), as the process says it.
-  raw(line: string): Promise<Json> {
-    if (this.#broken !== null) return Promise.reject(this.#broken);
+  /// The next answer, whatever writes ask for it.
+  expect(): Promise<Json> {
+    if (this.#protocolError !== null) return Promise.reject(this.#protocolError);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.#child.kill("SIGKILL");
-        this.#break(new Error(`no answer to ${line.slice(0, 200)} within ${ASK_TIMEOUT_MS} ms; stderr: ${this.#stderr}`));
-      }, ASK_TIMEOUT_MS);
+      const timer = setTimeout(() => this.#forbid(`an ask unanswered within ${ASK_TIMEOUT_MS} ms; stderr: ${this.#stderr}`), ASK_TIMEOUT_MS);
       this.#waiting.push({ resolve, reject, timer });
-      this.#child.stdin!.write(`${line}\n`);
     });
   }
 
-  /// Writes a line that must be answered by nothing (an empty one): the next ask's answer is then its own.
-  silent(line: string) {
-    this.#child.stdin!.write(`${line}\n`);
+  /// Bytes written to stdin as they are, once they are handed on.
+  write(bytes: string | Buffer): Promise<void> {
+    return new Promise((resolve, reject) => this.#child.stdin!.write(bytes, (e) => (e ? reject(e) : resolve())));
+  }
+
+  /// The answer to one raw line (written with its `\n`).
+  raw(line: string): Promise<Json> {
+    const answer = this.expect();
+    void this.write(`${line}\n`).catch(() => {});
+    return answer;
+  }
+
+  /// A fresh id for an ask.
+  id(): number {
+    return ++this.#next;
   }
 
   /// What `op` with `args` is answered, its `id` checked as the one sent and taken off.
   async ask(op: string, args: Record<string, unknown> = {}): Promise<Json> {
-    const id = ++this.#next;
+    const id = this.id();
     const answer = await this.raw(JSON.stringify({ ...args, id, op }));
     assert.ok(answer !== null && typeof answer === "object" && !Array.isArray(answer), `an object answers ${op}`);
     assert.equal(answer.id, id, `${op}: the id sent comes back`);
@@ -194,38 +223,64 @@ class PackedProcess {
     return answer;
   }
 
-  /// An ask that must fail: its error, the only thing said.
+  /// An ask that must fail: its error (words of its own, not empty), the only thing said.
   async fails(op: string, args: Record<string, unknown> = {}): Promise<string> {
     const answer = await this.ask(op, args);
-    assert.equal(typeof answer.error, "string", `${op} ${JSON.stringify(args).slice(0, 200)} fails, answered ${JSON.stringify(answer)}`);
+    assert.ok(typeof answer.error === "string" && answer.error.length > 0, `${op} ${JSON.stringify(args).slice(0, 200)} fails, answered ${JSON.stringify(answer).slice(0, 300)}`);
     assert.deepEqual(Object.keys(answer), ["error"], `${op}: nothing but its error`);
     return answer.error;
   }
 
-  /// Its end by stdin's alone: exit 0, no signal, nothing more said, no line cut short.
+  /// Its end by stdin's alone: no protocol error before or after, no ask left, exit 0 with no signal, no line cut short.
   async end(): Promise<void> {
-    assert.equal(this.#waiting.length, 0, "no ask left unanswered");
-    this.#child.stdin!.end();
-    const timer = setTimeout(() => this.#child.kill("SIGKILL"), ASK_TIMEOUT_MS);
-    const { code, signal } = await this.#closed;
+    this.#ending = true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      if (this.#protocolError !== null) throw this.#protocolError;
+      assert.equal(this.#waiting.length, 0, "no ask left unanswered");
+      this.#child.stdin!.end();
+      const { code, signal } = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`no exit within ${ASK_TIMEOUT_MS} ms of stdin's end; stderr: ${this.#stderr}`)), ASK_TIMEOUT_MS);
+        void this.#closed.then(resolve);
+      });
+      // (a line said after the last answer, however soon the process exited after it)
+      if (this.#protocolError !== null) throw this.#protocolError;
+      assert.equal(signal, null, `ended by a signal; stderr: ${this.#stderr}`);
+      assert.equal(code, 0, `exit ${code}; stderr: ${this.#stderr}`);
+      assert.equal(this.#carry.length, 0, `stdout ended with a line cut short: ${JSON.stringify(this.#carry.toString("utf8").slice(0, 300))}`);
+    } finally {
+      clearTimeout(timer);
+      this.#rejectAll(new Error("the test ended"));
+      if (this.#child.exitCode === null && this.#child.signalCode === null) this.#child.kill("SIGKILL");
+    }
+  }
+
+  /// Ended at once after a failure: killed, its stdin closed, no timer left.
+  async kill(): Promise<void> {
+    this.#ending = true;
+    this.#rejectAll(new Error("the test failed"));
+    this.#child.stdin!.destroy();
+    this.#child.kill("SIGKILL");
+    let timer: NodeJS.Timeout | undefined;
+    await new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ASK_TIMEOUT_MS);
+      void this.#closed.then(() => resolve());
+    });
     clearTimeout(timer);
-    assert.equal(signal, null, `ended by a signal; stderr: ${this.#stderr}`);
-    assert.equal(code, 0, `exit ${code}; stderr: ${this.#stderr}`);
-    assert.equal(this.#carry, "", "nothing cut short on stdout");
   }
 }
 
-/// A test's process, ended (stdin's EOF, exit 0) when it is done, killed if it failed first.
+/// A test's process, ended by stdin's EOF once the test is done (the end checked), killed if the test failed first.
 async function withPacked(f: (p: PackedProcess) => Promise<void>): Promise<void> {
   const p = new PackedProcess();
-  let ok = false;
+  let failed = true;
   try {
     await f(p);
-    ok = true;
+    failed = false;
   } finally {
-    if (ok) await p.end();
-    else await p.end().catch(() => {});
+    if (failed) await p.kill();
   }
+  await p.end();
 }
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
@@ -277,18 +332,20 @@ function readByReference(path: string): Buffer {
   return whole;
 }
 
+const tableHex = (frames: { packed: number; size: number }[]) => seekTable(frames).toString("hex");
+
 test("one process answers many asks in order, each with its own id, nothing kept from one to the next", { skip }, async () => {
   await withPacked(async (p) => {
     const lists: { packed: number; size: number }[][] = [[], [{ packed: 9, size: 0 }], [{ packed: 0xffffffff, size: 0 }, { packed: 1, size: 0xfffffffe }]];
     for (let i = 1; i < 30; i++) lists.push(Array.from({ length: i % 7 }, (_, k) => ({ packed: (i * 7919 + k * 104729) % 2 ** 32, size: (i * k * 15485863) % 2 ** 32 })));
     for (const frames of lists) {
-      assert.deepEqual(await p.ok("table", { frames: frames.map((f) => [f.packed, f.size]) }), { table: seekTable(frames).toString("hex") });
+      assert.deepEqual(await p.ok("table", { frames: frames.map((f) => [f.packed, f.size]) }), { table: tableHex(frames) });
     }
     // No frames given: the empty table.
-    assert.deepEqual(await p.ok("table"), { table: seekTable([]).toString("hex") });
+    assert.deepEqual(await p.ok("table"), { table: tableHex([]) });
     // Any JSON id comes back as it was sent.
     for (const id of ["a-string", 0, -1, 2 ** 40, 1.5, true, null, [1, "x"], { nested: { deep: [1] } }, "中文😀"]) {
-      assert.deepEqual(await p.raw(JSON.stringify({ id, op: "table", frames: [] })), { id, table: seekTable([]).toString("hex") });
+      assert.deepEqual(await p.raw(JSON.stringify({ id, op: "table", frames: [] })), { id, table: tableHex([]) });
     }
 
     const dir = fresh();
@@ -317,11 +374,64 @@ test("one process answers many asks in order, each with its own id, nothing kept
     // A file not there: `segmented` false, `frames` an error; the next ask answered as ever.
     assert.deepEqual(await p.ok("segmented", { path: join(dir, "none.zst") }), { segmented: false });
     await p.fails("frames", { path: join(dir, "none.zst") });
-    assert.deepEqual(await p.ok("table", { frames: [[1, 2]] }), { table: seekTable([{ packed: 1, size: 2 }]).toString("hex") });
+    assert.deepEqual(await p.ok("table", { frames: [[1, 2]] }), { table: tableHex([{ packed: 1, size: 2 }]) });
   });
 });
 
-test("transcripts: put away in the reference's segments, checked, written back byte for byte, a damaged one refused", { skip }, async () => {
+test("pipelined asks: sent back to back, several in one write, one split across writes (inside a character), lines past 1 MiB", { skip }, async () => {
+  await withPacked(async (p) => {
+    const dir = fresh();
+    const named = join(dir, "中文 😀 é.zst");
+    writeFileSync(named, segmentedBytes(Buffer.from("一行\n")));
+    const plain = join(dir, "plain.zst");
+    writeFileSync(plain, zstdCompressSync(Buffer.from("no table\n")));
+
+    // Sent as the station sends them, none waiting for the one before: each answered by its own id, in order.
+    const asks = Array.from({ length: 40 }, (_, i) =>
+      i % 3 === 0 ? p.ok("table", { frames: [[i, i + 1]] }).then((a) => assert.deepEqual(a, { table: tableHex([{ packed: i, size: i + 1 }]) }))
+      : i % 3 === 1 ? p.ok("segmented", { path: i % 2 ? named : plain }).then((a) => assert.deepEqual(a, { segmented: i % 2 === 1 }))
+      : p.ok("frames", { path: named }).then((a) => assert.deepEqual(a, { frames: framesFile(named)!.map((f) => [f.at, f.packed, f.from, f.size]) })));
+    await Promise.all(asks);
+
+    // Several lines in one write, an empty one and one that is no JSON among them: every line answered (the empty one
+    // passed over), none left in the buffer.
+    const ids = [p.id(), p.id(), p.id()];
+    const answers = [p.expect(), p.expect(), p.expect(), p.expect()];
+    await p.write([
+      JSON.stringify({ id: ids[0], op: "table", frames: [[7, 8]] }),
+      "",
+      "{not json",
+      JSON.stringify({ id: ids[1], op: "segmented", path: named }),
+      JSON.stringify({ id: ids[2], op: "table" }),
+      "",
+    ].join("\n"));
+    const [a, bad, b, c] = await Promise.all(answers);
+    assert.deepEqual(a, { id: ids[0], table: tableHex([{ packed: 7, size: 8 }]) });
+    assert.equal(bad.id, null);
+    assert.ok(typeof bad.error === "string" && bad.error.length > 0);
+    assert.deepEqual(b, { id: ids[1], segmented: true });
+    assert.deepEqual(c, { id: ids[2], table: tableHex([]) });
+
+    // One ask written a few bytes at a time, cut inside its path's multi-byte characters: answered once, whole.
+    const id = p.id();
+    const line = Buffer.from(`${JSON.stringify({ id, op: "segmented", path: named })}\n`);
+    const answer = p.expect();
+    for (let at = 0; at < line.length; at += 3) await p.write(line.subarray(at, Math.min(line.length, at + 3)));
+    assert.deepEqual(await answer, { id, segmented: true });
+
+    // A line past 1 MiB each way: 100 000 frames asked, their table (1.6 MB of hex) answered byte for byte.
+    const many = Array.from({ length: 100_000 }, (_, i) => ({ packed: (i * 2654435761) % 2 ** 32, size: (i * 40503) % 2 ** 32 }));
+    const ask = JSON.stringify({ frames: many.map((f) => [f.packed, f.size]) });
+    assert.ok(ask.length > 1 << 20, `the ask is ${ask.length} bytes`);
+    const big = await p.ok("table", { frames: many.map((f) => [f.packed, f.size]) });
+    assert.ok(big.table.length > 1 << 20);
+    assert.equal(big.table, tableHex(many));
+    // And the next small ask after it.
+    assert.deepEqual(await p.ok("table", { frames: [[1, 1]] }), { table: tableHex([{ packed: 1, size: 1 }]) });
+  });
+});
+
+test("transcripts: put away in the reference's segments, checked, written back byte for byte", { skip }, async () => {
   await withPacked(async (p) => {
     const dir = fresh();
     const line = (n: number) => Buffer.concat([Buffer.alloc(n - 1, 0x7a), Buffer.from("\n")]);
@@ -443,8 +553,9 @@ test("transcripts of before (one frame, several, a segment stored as it is) are 
 
 // ── workspaces (`workspace.pack`, `workspace.unpack`, `workspace.file`) ──
 
-/// Everything under `dir` as a line each: its kind, mode and contents (a file's hash and mtime, a link's target).
-function manifest(dir: string, rel = ""): string[] {
+/// Everything under `dir` as a line each: its kind, mode and contents (a file's hash and mtime, its hard links' count
+/// where `links`, a link's target).
+function manifest(dir: string, links = true, rel = ""): string[] {
   const out: string[] = [];
   for (const name of readdirSync(join(dir, rel)).sort()) {
     const path = join(dir, rel, name);
@@ -452,9 +563,9 @@ function manifest(dir: string, rel = ""): string[] {
     const meta = lstatSync(path);
     if (meta.isSymbolicLink()) out.push(`${r} link ${readlinkSync(path)}`);
     else if (meta.isDirectory()) {
-      out.push(`${r} dir ${(meta.mode & 0o7777).toString(8)}`);
-      out.push(...manifest(dir, r));
-    } else out.push(`${r} file ${(meta.mode & 0o7777).toString(8)} ${meta.size} ${sha(readFileSync(path)).slice(0, 16)} ${Math.floor(meta.mtimeMs / 1000)}`);
+      out.push(`${r} dir ${unix ? (meta.mode & 0o7777).toString(8) : ""}`);
+      out.push(...manifest(dir, links, r));
+    } else out.push(`${r} file ${unix ? (meta.mode & 0o7777).toString(8) : ""} ${meta.size} ${sha(readFileSync(path)).slice(0, 16)} ${Math.floor(meta.mtimeMs / 1000)}${links ? ` ${meta.nlink}` : ""}`);
   }
   return out;
 }
@@ -466,13 +577,13 @@ const put = (path: string, bytes: string | Buffer) => {
 const UPLOAD = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3, 0xff]);
 const DEEP = `${"长路径-".repeat(12)}/${"名字".repeat(30)}.md`;
 
-test("workspaces: packed into the reference's tar, unpacked (whole, only uploads) and a file read as the reference does", { skip: unixOnly }, async () => {
+test("workspaces: packed into the reference's tar, unpacked (whole, only uploads) and a file read as the reference does", { skip }, async () => {
   await withPacked(async (p) => {
     const dir = fresh();
     const ws = join(dir, "workspace");
     put(join(ws, "project/src/main.rs"), "fn main() {}\n");
     put(join(ws, "script.sh"), "#!/bin/sh\ntrue\n");
-    chmodSync(join(ws, "script.sh"), 0o751);
+    if (unix) chmodSync(join(ws, "script.sh"), 0o751);
     put(join(ws, "uploads/截图 1.png"), UPLOAD);
     put(join(ws, "uploads/notes.txt"), "a note\n");
     put(join(ws, DEEP), "deep and long");
@@ -480,10 +591,18 @@ test("workspaces: packed into the reference's tar, unpacked (whole, only uploads
     mkdirSync(join(ws, "an/empty/dir"), { recursive: true });
     mkdirSync(join(ws, "uploads/empty-upload-dir"), { recursive: true });
     put(join(ws, "random.bin"), Buffer.from(Array.from({ length: 1 << 20 }, (_, i) => (i * 2654435761) >>> 24)));
-    symlinkSync("project/src/main.rs", join(ws, "relative-link"));
-    symlinkSync(`${"远处/".repeat(30)}target`, join(ws, "long-link"));
-    symlinkSync("/nonexistent/absolute", join(ws, "dangling"));
+    // A hard link inside the workspace: packed (by the shell and the reference alike) as two files of the same bytes.
+    put(join(ws, "a"), "hard linked");
+    linkSync(join(ws, "a"), join(ws, "b"));
+    if (unix) {
+      symlinkSync("project/src/main.rs", join(ws, "relative-link"));
+      symlinkSync(`${"远处/".repeat(30)}target`, join(ws, "long-link"));
+      symlinkSync("/nonexistent/absolute", join(ws, "dangling"));
+      // (a link among the uploads, which unpacking only the uploads leaves out, as the reference does)
+      symlinkSync("notes.txt", join(ws, "uploads/link-to-notes"));
+    }
     const before = manifest(ws);
+    const beforeFiles = manifest(ws, false);
 
     const theirs = join(dir, "reference.tar.zst");
     await packTree(ws, theirs);
@@ -500,24 +619,26 @@ test("workspaces: packed into the reference's tar, unpacked (whole, only uploads
     for (const archive of [mine, theirs]) {
       const out = fresh("packed-unpack-");
       assert.deepEqual(await p.ok("workspace.unpack", { path: archive, dest: out }), { refused: [] });
-      assert.deepEqual(manifest(out), before, archive);
+      assert.deepEqual(manifest(out, false), beforeFiles, archive);
+      assert.deepEqual(readFileSync(join(out, "b")), readFileSync(join(out, "a")), archive);
       const byReference = fresh("packed-unpack-ref-");
       assert.deepEqual(await unpackArchive(archive, byReference), new Map());
       assert.deepEqual(manifest(out), manifest(byReference), archive);
-      // Only its uploads (a `prefix` of null as none given).
+      // Only its uploads' files and directories (a `prefix` of null as none given).
       const uploads = fresh("packed-uploads-");
       assert.deepEqual(await p.ok("workspace.unpack", { path: archive, dest: uploads, prefix: "uploads" }), { refused: [] });
       const uploadsRef = fresh("packed-uploads-ref-");
       await unpackArchive(archive, uploadsRef, "uploads");
       assert.deepEqual(manifest(uploads), manifest(uploadsRef), archive);
       assert.deepEqual(readdirSync(uploads), ["uploads"]);
+      assert.equal(existsSync(join(uploads, "uploads/link-to-notes")), false, `${archive}: no link among only the uploads`);
       const nullPrefix = fresh("packed-null-prefix-");
       assert.deepEqual(await p.ok("workspace.unpack", { path: archive, dest: nullPrefix, prefix: null }), { refused: [] });
-      assert.deepEqual(manifest(nullPrefix), before, archive);
+      assert.deepEqual(manifest(nullPrefix), manifest(out), archive);
     }
 
     // A file by its path's components, as the reference finds it; none for a directory, a link or what is not there.
-    for (const wanted of [["uploads", "截图 1.png"], ["uploads", "notes.txt"], DEEP.split("/"), ["empty"], ["random.bin"], ["uploads"], ["an", "empty"], ["relative-link"], ["missing"], ["uploads", "missing"], []]) {
+    for (const wanted of [["uploads", "截图 1.png"], ["uploads", "notes.txt"], DEEP.split("/"), ["empty"], ["random.bin"], ["a"], ["b"], ["uploads"], ["an", "empty"], ["relative-link"], ["missing"], ["uploads", "missing"], []]) {
       const out = join(dir, "file.out");
       rmSync(out, { force: true });
       const want = await fileOf(mine, wanted);
@@ -527,7 +648,7 @@ test("workspaces: packed into the reference's tar, unpacked (whole, only uploads
   });
 });
 
-test("workspaces: an archive cut short, with bytes after it, not zstd, or leading out of its destination is refused as by the reference", { skip: unixOnly }, async () => {
+test("workspaces: an archive cut short, with bytes after it or not zstd is refused, as by the reference", { skip }, async () => {
   await withPacked(async (p) => {
     const dir = fresh();
     const ws = join(dir, "workspace");
@@ -556,116 +677,145 @@ test("workspaces: an archive cut short, with bytes after it, not zstd, or leadin
     }
     await p.fails("workspace.unpack", { path: join(dir, "none.tar.zst"), dest: fresh("packed-none-") });
     await p.fails("workspace.file", { path: join(dir, "none.tar.zst"), wanted: ["a"], out: join(dir, "none.out") });
+  });
+});
 
-    // Leading out: `..` passed over, a link made first then written through, a hard link up, a device.
+test("workspaces: an archive leading out of its destination writes nothing outside it, refused or passed over as by the reference", { skip }, async () => {
+  await withPacked(async (p) => {
     const outside = fresh("packed-outside-");
+    // A real file outside, which no hard link may reach (its link count and bytes stay).
+    const secret = join(outside, "secret");
+    writeFileSync(secret, "outside");
     const meta = (size: number) => ({ mode: 0o100644, uid: 0, gid: 0, mtime: 1_600_000_000, size });
     const entry = (name: string, kind: string, bytes = Buffer.alloc(0), link?: string) => [
       gnuHeader(Buffer.from(name), kind, meta(bytes.length), link === undefined ? undefined : Buffer.from(link)),
       bytes,
       padding(bytes.length),
     ];
-    const cases: [string, Buffer[], boolean][] = [
-      ["`..` passed over", [...entry("../escaped", "0", Buffer.from("no")), ...entry("a/../../escaped2", "0", Buffer.from("no")), ...entry("ok", "0", Buffer.from("yes"))], false],
-      ["through a link out", [...entry("out", "2", Buffer.alloc(0), outside), ...entry("out/escaped", "0", Buffer.from("no"))], true],
-      ["a hard link up", entry("h", "1", Buffer.alloc(0), "../escaped"), true],
-      ["a device", entry("tty", "3"), true],
+    const cases: [string, (room: string) => Buffer[], boolean][] = [
+      ["`..` components passed over", () => [...entry("../escaped", "0", Buffer.from("no")), ...entry("a/../../escaped2", "0", Buffer.from("no")), ...entry("ok", "0", Buffer.from("yes"))], true],
+      ["an absolute name, made inside", () => [...entry(`${outside}/abs-escaped`, "0", Buffer.from("no")), ...entry("/rooted/x", "0", Buffer.from("in"))], true],
+      ["a hard link up to a file that is there", (room) => entry("h", "1", Buffer.alloc(0), relative(join(room, "dest"), secret).split(sep).join("/")), true],
+      ["a hard link by an absolute path to a file that is there", () => entry("h", "1", Buffer.alloc(0), secret), true],
+      ["a hard link inside", () => [...entry("first", "0", Buffer.from("same")), ...entry("second", "1", Buffer.alloc(0), "first")], true],
+      ["a device", () => entry("tty", "3"), true],
+      ["through an absolute link out", () => [...entry("out", "2", Buffer.alloc(0), outside), ...entry("out/escaped", "0", Buffer.from("no"))], unix],
+      ["through a relative link up", () => [...entry("up", "2", Buffer.alloc(0), ".."), ...entry("up/escaped", "0", Buffer.from("no"))], unix],
+      ["through a relative link two up", () => [...entry("d/", "5"), ...entry("d/up", "2", Buffer.alloc(0), "../.."), ...entry("d/up/escaped", "0", Buffer.from("no"))], unix],
     ];
-    for (const [what, blocks, refused] of cases) {
+    for (const [what, blocks, runs] of cases) {
+      if (!runs) continue;
       const room = fresh("packed-escape-");
       const bad = join(room, "escape.tar.zst");
-      await tarOfHeaders(bad, blocks);
+      await tarOfHeaders(bad, blocks(room));
       const dest = join(room, "dest");
       const reference = join(room, "by-reference");
       mkdirSync(dest);
       mkdirSync(reference);
-      if (refused) {
-        await assert.rejects(unpackArchive(bad, reference), `${what} (the reference)`);
-        await p.fails("workspace.unpack", { path: bad, dest });
-      } else {
-        await unpackArchive(bad, reference);
+      // Whatever the reference does, the program does: refuses, or makes the same tree.
+      const refused = await unpackArchive(bad, reference).then(() => false, () => true);
+      if (refused) await p.fails("workspace.unpack", { path: bad, dest });
+      else {
         assert.deepEqual(await p.ok("workspace.unpack", { path: bad, dest }), { refused: [] }, what);
         assert.deepEqual(manifest(dest), manifest(reference), what);
       }
       for (const name of ["escaped", "escaped2"]) {
-        assert.equal(existsSync(join(room, name)), false, `${what}: nothing written outside`);
-        assert.equal(existsSync(join(outside, name)), false, `${what}: nothing written through the link`);
+        assert.equal(existsSync(join(room, name)), false, `${what}: nothing written beside the destination`);
+        assert.equal(existsSync(join(dirname(room), name)), false, `${what}: nothing written above it`);
       }
-      assert.deepEqual(readdirSync(outside), [], what);
+      assert.deepEqual(readdirSync(outside), ["secret"], `${what}: nothing written outside`);
+      assert.equal(statSync(secret).nlink, 1, `${what}: no hard link to the file outside`);
+      assert.equal(readFileSync(secret, "utf8"), "outside", what);
+      if (what === "an absolute name, made inside") {
+        assert.equal(refused, false);
+        assert.equal(readFileSync(join(dest, "rooted/x"), "utf8"), "in");
+        assert.equal(existsSync("/rooted/x"), false);
+      }
+      if (what === "a hard link inside") assert.equal(statSync(join(dest, "first")).ino, statSync(join(dest, "second")).ino);
+      if (what === "`..` components passed over") assert.equal(refused, false);
+      if (what === "a device" || what.startsWith("through")) assert.equal(refused, true, what);
     }
   });
 });
 
 test("malformed lines, unknown ops and missing fields are answered `{id, error}` and the process goes on", { skip }, async () => {
   await withPacked(async (p) => {
-    const tableOk = async () => assert.deepEqual(await p.ok("table", { frames: [[3, 4]] }), { table: seekTable([{ packed: 3, size: 4 }]).toString("hex") });
+    const alive = async () => assert.deepEqual(await p.ok("table", { frames: [[3, 4]] }), { table: tableHex([{ packed: 3, size: 4 }]) });
+    const failed = (answer: Json, id: unknown, what: string) => {
+      assert.deepEqual(Object.keys(answer).sort(), ["error", "id"], what);
+      assert.deepEqual(answer.id, id, what);
+      assert.ok(typeof answer.error === "string" && answer.error.length > 0, what);
+    };
     // Lines that are no JSON object: id null.
     for (const line of ["{not valid json", "[1,2,3]", "42", "\"op\"", "null", "{\"op\": \"table\"", "\u0000"]) {
-      assert.deepEqual(await p.raw(line), { id: null, error: "no such ask" }, JSON.stringify(line));
-      await tableOk();
+      failed(await p.raw(line), null, JSON.stringify(line));
+      await alive();
     }
     // An empty line is passed over: the next answer is the next ask's.
-    p.silent("");
-    await tableOk();
+    await p.write("\n");
+    await alive();
     // No op, an op not a string, an op unknown: the id kept.
-    assert.deepEqual(await p.raw(JSON.stringify({ id: 7 })), { id: 7, error: "no such ask" });
-    assert.deepEqual(await p.raw(JSON.stringify({ op: "table" })), { id: null, table: seekTable([]).toString("hex") });
-    assert.equal(await p.fails("nope"), "no such ask");
-    assert.equal(await p.fails(""), "no such ask");
-    assert.deepEqual(await p.raw(JSON.stringify({ id: "x", op: 5 })), { id: "x", error: "no such ask" });
-    assert.deepEqual(await p.raw(JSON.stringify({ id: "y", op: ["pack"] })), { id: "y", error: "no such ask" });
-    await tableOk();
-    // Each op missing what it needs (or given it as no string), said by name; `a` a transcript put away, so that what
-    // is read of a source before its temporary is asked for reads.
+    failed(await p.raw(JSON.stringify({ id: 7 })), 7, "no op");
+    failed(await p.raw(JSON.stringify({ id: "x", op: 5 })), "x", "an op not a string");
+    failed(await p.raw(JSON.stringify({ id: "y", op: ["pack"] })), "y", "an op not a string");
+    await p.fails("nope");
+    await p.fails("");
+    // No id: answered with a null one.
+    assert.deepEqual(await p.raw(JSON.stringify({ op: "table" })), { id: null, table: tableHex([]) });
+    await alive();
+
+    // Each ask with everything it needs but one field (or that one given as no string): refused, nothing written.
     const dir = fresh();
-    writeFileSync(join(dir, "a"), segmentedBytes(Buffer.from("a line\n")));
-    const missing: [string, Record<string, unknown>, string][] = [
-      ["pack", {}, "no path"],
-      ["pack", { path: join(dir, "a") }, "no temp"],
-      ["pack", { path: 5, temp: join(dir, "t") }, "no path"],
-      ["check", {}, "no path"],
-      ["segment", {}, "no source"],
-      ["restore", {}, "no source"],
-      ["restore", { source: join(dir, "a") }, "no temp"],
-      ["segmented", {}, "no path"],
-      ["frames", {}, "no path"],
-      ["frames", { path: null }, "no path"],
-      ["table", { frames: [[1]] }, "bad frame"],
-      ["table", { frames: [["1", 2]] }, "bad frame"],
-      ["table", { frames: [5] }, "bad frame"],
-      ["workspace.pack", {}, "no dir"],
-      ["workspace.pack", { dir }, "no out"],
-      ["workspace.unpack", {}, "no path"],
-      ["workspace.unpack", { path: join(dir, "a") }, "no dest"],
-      ["workspace.unpack", { path: join(dir, "a"), dest: dir, prefix: 5 }, "no prefix"],
-      ["workspace.unpack", { path: join(dir, "a"), dest: dir, prefix: ["uploads"] }, "no prefix"],
-      ["workspace.file", { path: join(dir, "a"), out: join(dir, "o") }, "no wanted"],
-      ["workspace.file", { path: join(dir, "a"), wanted: ["a", 1], out: join(dir, "o") }, "no wanted"],
-      ["workspace.file", { path: join(dir, "a"), wanted: "a", out: join(dir, "o") }, "no wanted"],
-      ["workspace.file", { wanted: ["a"], out: join(dir, "o") }, "no path"],
-      ["workspace.file", { path: join(dir, "a"), wanted: ["a"] }, "no out"],
+    const transcript = join(dir, "t.jsonl");
+    writeFileSync(transcript, "a line\n");
+    const putAway = join(dir, "put-away.zst");
+    writeFileSync(putAway, segmentedBytes(Buffer.from("a line\n")));
+    const old = join(dir, "old.zst");
+    writeFileSync(old, zstdCompressSync(Buffer.from("a line\n")));
+    const ws = join(dir, "ws");
+    put(join(ws, "f"), "f");
+    const archive = join(dir, "ws.tar.zst");
+    assert.deepEqual(await p.ok("workspace.pack", { dir: ws, out: archive }), {});
+    const dest = join(dir, "dest");
+    mkdirSync(dest);
+    const listing = () => readdirSync(dir).sort();
+    const before = listing();
+    const missing: [string, Record<string, unknown>][] = [
+      ["pack", { temp: join(dir, "t.writing") }],
+      ["pack", { path: transcript }],
+      ["pack", { path: 5, temp: join(dir, "t.writing") }],
+      ["check", {}],
+      ["segment", { path: old, temp: join(dir, "s.writing") }],
+      ["segment", { path: old, source: old }],
+      ["restore", { temp: join(dir, "r.restoring") }],
+      ["restore", { source: putAway }],
+      ["segmented", {}],
+      ["frames", {}],
+      ["frames", { path: null }],
+      ["table", { frames: [[1]] }],
+      ["table", { frames: [["1", 2]] }],
+      ["table", { frames: [5] }],
+      ["workspace.pack", { out: join(dir, "p.tar.zst") }],
+      ["workspace.pack", { dir: ws }],
+      ["workspace.unpack", { dest }],
+      ["workspace.unpack", { path: archive }],
+      ["workspace.unpack", { path: archive, dest, prefix: 5 }],
+      ["workspace.unpack", { path: archive, dest, prefix: ["uploads"] }],
+      ["workspace.file", { wanted: ["f"], out: join(dir, "o") }],
+      ["workspace.file", { path: archive, out: join(dir, "o") }],
+      ["workspace.file", { path: archive, wanted: ["f"] }],
+      ["workspace.file", { path: archive, wanted: ["f", 1], out: join(dir, "o") }],
+      ["workspace.file", { path: archive, wanted: "f", out: join(dir, "o") }],
     ];
-    for (const [op, args, error] of missing) {
-      assert.equal(await p.fails(op, args), error, `${op} ${JSON.stringify(args)}`);
-      await tableOk();
+    for (const [op, args] of missing) {
+      await p.fails(op, args);
+      await alive();
     }
-    // Nothing was made by any of them.
-    assert.deepEqual(readdirSync(dir), ["a"]);
+    assert.deepEqual(listing(), before, "nothing written by a refused ask");
+    assert.deepEqual(readdirSync(dest), []);
   });
 });
 
 test("stdin closed with nothing asked: exit 0, nothing said", { skip }, async () => {
-  const child = spawn(candidate(), ["--builder", "packed", "--shell-dir", fresh("packed-shell-")], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-  let stdout = "";
-  let stderr = "";
-  child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
-  child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
-  const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
-    const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`no exit within ${ASK_TIMEOUT_MS} ms`)); }, ASK_TIMEOUT_MS);
-    child.on("error", (e) => { clearTimeout(timer); reject(e); });
-    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal }); });
-  });
-  child.stdin!.end();
-  assert.deepEqual(await closed, { code: 0, signal: null }, stderr);
-  assert.equal(stdout, "");
+  await withPacked(async () => {});
 });
