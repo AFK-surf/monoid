@@ -2,18 +2,40 @@
 // `author_names_preloaded` / `original_runtime` prefetch (station/mb/src/readops/shared.mbt, shared_sql.mbt,
 // chatparts.mbt, people.mbt).
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { digest } from "../../client/core-ts/src/digest.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
+import { repairMergedEditLookup } from "../src/store/schema.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
+import { installLegacyEdits, legacyEditStep } from "./reference/backfill/legacy-edits-build.ts";
 
 const binary = mbReaderBinary();
+const here = dirname(fileURLToPath(import.meta.url));
+const sharedSqlPath = join(here, "..", "mb", "src", "readops", "shared_sql.mbt");
+
+function parseSharedSqlConst(name: string): string {
+  const src = readFileSync(sharedSqlPath, "utf8");
+  const lines = src.split(/\r?\n/);
+  const header = `let ${name} : String =`;
+  const idx = lines.findIndex((l) => l.trim() === header || l.trim() === `pub ${header}`);
+  assert.ok(idx >= 0, `could not find ${name} in shared_sql.mbt`);
+  const parts: string[] = [];
+  for (let i = idx + 1; i < lines.length; i++) {
+    const m = lines[i].match(/^\s*#\|(.*)$/);
+    if (!m) break;
+    parts.push(m[1]);
+  }
+  assert.ok(parts.length > 0, `empty SQL body for ${name}`);
+  return parts.join("\n");
+}
 
 test("D68 bulk readops matches TS reference 0-diff across all edge cases", { skip: binary === null ? "the MoonBit program is not built here" : false }, async () => {
   const data = mkdtempSync(join(tmpdir(), "mb-reader-d68-parity-"));
@@ -55,6 +77,12 @@ test("D68 bulk readops matches TS reference 0-diff across all edge cases", { ski
   session("arch-quote", { lastActiveAt: 7800, createdBy: "p@x" });
   session("arch-space200", { lastActiveAt: 7700, createdBy: "p@x" });
   session("arch-nostate", { lastActiveAt: 7600, createdBy: "p@x" });
+  // Unicode White_Space vs U+FEFF BOM edge cases
+  session("arch-bom-hi", { lastActiveAt: 7550, createdBy: "p@x" });
+  session("arch-bom-quote", { lastActiveAt: 7540, createdBy: "p@x" });
+  session("arch-emspace-quote", { lastActiveAt: 7530, createdBy: "p@x" });
+  session("arch-emspace-lead", { lastActiveAt: 7520, createdBy: "p@x" });
+  session("arch-emspace-trail", { lastActiveAt: 7510, createdBy: "p@x" });
 
   db.prepare("UPDATE sessions SET original_runtime = 'claude' WHERE key = 'hist-orig'").run();
   db.prepare("UPDATE sessions SET original_runtime = NULL WHERE key IN ('hist-rs', 'hist-fallback')").run();
@@ -146,6 +174,22 @@ test("D68 bulk readops matches TS reference 0-diff across all edge cases", { ski
   say(tNoState, "person", "p@x", "bye");
   db.prepare("DELETE FROM thread_state WHERE thread = ?").run(tNoState);
 
+  // 5 Unicode White_Space / U+FEFF BOM parity cases (exact @jscase.is_white_space alignment)
+  const tBomHi = chat("arch-bom-hi", "BOM Hi", ["arch-bom-hi"], true);
+  say(tBomHi, "person", "p@x", "\uFEFFhi");
+
+  const tBomQuote = chat("arch-bom-quote", "BOM Quote", ["arch-bom-quote"], true);
+  say(tBomQuote, "person", "p@x", "\uFEFF", { quotes: [{ author: "p@x", text: "q", comment: "" }] });
+
+  const tEmQuote = chat("arch-emspace-quote", "EmSpace Quote", ["arch-emspace-quote"], true);
+  say(tEmQuote, "person", "p@x", "\u2003", { quotes: [{ author: "p@x", text: "q", comment: "" }] });
+
+  const tEmLead = chat("arch-emspace-lead", "EmSpace Lead", ["arch-emspace-lead"], true);
+  say(tEmLead, "person", "p@x", "\u2003\u2003" + "a".repeat(199));
+
+  const tEmTrail = chat("arch-emspace-trail", "EmSpace Trail", ["arch-emspace-trail"], true);
+  say(tEmTrail, "person", "p@x", "a".repeat(199) + "\u2003\u2003");
+
   const readers = (mb: string | null) => {
     const r = readersOf(data, mb);
     r.names.set("p@x", "Pat");
@@ -171,7 +215,6 @@ test("D68 bulk readops matches TS reference 0-diff across all edge cases", { ski
       const want = await read(worker, op, args, "en");
       assert.deepEqual(got, want, `mismatch on ${op} ${JSON.stringify(args)}`);
     }
-    // changed for chats (archived=true & false) and sharedChats with held digests
     for (const [op, args] of [
       ["chats", { viewer, archived: false }],
       ["chats", { viewer, archived: true }],
@@ -213,6 +256,14 @@ test("D68 bulk readops matches TS reference 0-diff across all edge cases", { ski
     assert.equal(archById.get("arch-quote")?.last?.quotedOnly, true);
     assert.equal([...archById.get("arch-emoji")!.last.text].length, 200);
     assert.equal(archById.get("arch-space200")?.last?.text, "a".repeat(199) + " ");
+    // Explicit assertions for all 5 White_Space / BOM cases:
+    assert.equal(archById.get("arch-bom-hi")?.last?.text, "\uFEFFhi");
+    assert.equal(archById.get("arch-bom-quote")?.last?.text, "\uFEFF");
+    assert.equal(archById.get("arch-bom-quote")?.last?.quotedOnly, undefined);
+    assert.equal(archById.get("arch-emspace-quote")?.last?.text, "");
+    assert.equal(archById.get("arch-emspace-quote")?.last?.quotedOnly, true);
+    assert.equal(archById.get("arch-emspace-lead")?.last?.text, "a".repeat(199));
+    assert.equal(archById.get("arch-emspace-trail")?.last?.text, "a".repeat(199));
 
     // said_other_known = 0 fallback (bounded scan)
     db.exec("UPDATE thread_state SET said_other_known = 0; DELETE FROM said_state_guard");
@@ -230,8 +281,19 @@ test("D68 bulk readops matches TS reference 0-diff across all edge cases", { ski
 
     // Restore said_other_known for remaining checks
     db.prepare("UPDATE thread_state SET said_other_known = 1, said_other_n = 1 WHERE thread = ?").run(tNoWait);
-    // merged_read_ready = false fallback
-    db.exec("DROP INDEX IF EXISTS entries_edits");
+
+    // legacy-edits store (merged view uses legacy_edit_meta with scanned=1, no entries_edits index):
+    // merged_read_ready is true and CROSS JOIN merged must stay 0-diff and bounded.
+    db.exec("DROP INDEX IF EXISTS entries_edits; DROP INDEX IF EXISTS entries_target");
+    installLegacyEdits(db);
+    repairMergedEditLookup(db);
+    while (!legacyEditStep(db, 64).ready) { /* finish scan */ }
+    assert.equal((db.prepare("SELECT scanned FROM legacy_edit_meta WHERE id=1").get() as { scanned: number })?.scanned, 1);
+    assert.match(String((db.prepare("SELECT sql FROM sqlite_master WHERE type='view' AND name='merged'").get() as { sql: string })?.sql), /legacy_edit_meta/);
+    await compareAll();
+
+    // Unprepared legacy-edits store (scanned=0 -> merged_read_ready = false fallback)
+    db.exec("UPDATE legacy_edit_meta SET scanned = 0 WHERE id = 1");
     await compareAll();
   } finally {
     worker.close();
@@ -241,61 +303,56 @@ test("D68 bulk readops matches TS reference 0-diff across all edge cases", { ski
   }
 });
 
-test("D68 bulk SQL plans avoid full table scans on entries", () => {
+test("D68 bulk SQL constants from shared_sql.mbt avoid full entries scans on standard and legacy-edits stores", () => {
   const data = mkdtempSync(join(tmpdir(), "mb-reader-d68-plan-"));
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const db = store.db;
-  try {
-    const plans: [string, string, unknown[]][] = [
-      [
-        "listed_last_said_all",
-        `SELECT t.thread, m.n FROM thread_state t
-          CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.said_n AND m.kind = 'message'
-          LEFT JOIN entries e ON e.thread = m.thread
-            AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)`,
-        [],
-      ],
-      [
-        "listed_last_said_of",
-        `SELECT t.thread, m.n FROM json_each(?1) req
-          CROSS JOIN thread_state t ON t.thread = req.value
-          CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.said_n AND m.kind = 'message'
-          LEFT JOIN entries e ON e.thread = m.thread
-            AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)`,
-        ["[1,2]"],
-      ],
-      [
-        "listed_first_text_all",
-        `SELECT t.thread, substr(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, 1, 300) AS t
-          FROM thread_state t
-          CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.person_n AND m.kind = 'message'
-          LEFT JOIN entries e ON e.thread = m.thread
-            AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)`,
-        [],
-      ],
-      [
-        "said_batch",
-        `SELECT t.value AS thread, e.n, s.said_n, g.ready
-          FROM json_each(?1) t
-          LEFT JOIN entries e ON e.thread = t.value
-            AND e.n = (SELECT MAX(n) FROM entries INDEXED BY entries_said WHERE thread = t.value AND kind = 'message' AND letter IS NULL)
-          LEFT JOIN thread_state s ON s.thread = t.value
-          LEFT JOIN said_state_guard g ON g.thread = t.value`,
-        ["[1,2]"],
-      ],
-    ];
-    for (const [name, sql, params] of plans) {
+  const queries: [string, string, unknown[]][] = [
+    ["listed_last_said_all_sql", parseSharedSqlConst("listed_last_said_all_sql"), []],
+    ["listed_last_said_of_sql", parseSharedSqlConst("listed_last_said_of_sql"), ["[1,2]"]],
+    ["listed_first_text_all_sql", parseSharedSqlConst("listed_first_text_all_sql"), []],
+    ["listed_first_text_of_sql", parseSharedSqlConst("listed_first_text_of_sql"), ["[1,2]"]],
+    ["said_batch_sql", parseSharedSqlConst("said_batch_sql"), ["[1,2]"]],
+  ];
+  const checkPlans = (label: "standard" | "legacy-edits") => {
+    for (const [name, sql, params] of queries) {
       const rows = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as [])) as { detail: string }[];
       const details = rows.map((r) => r.detail).join("\n");
-      assert.ok(!/\bSCAN\s+entries\b/i.test(details), `${name} must not full-scan entries:\n${details}`);
+      assert.ok(!/\bSCAN\s+entries\b/i.test(details), `[${label}] ${name} must not full-scan entries:\n${details}`);
+      if (label === "standard") {
+        assert.ok(
+          !/\bSEARCH\s+\S+\s+USING\s+(?:COVERING\s+)?INDEX\s+sqlite_autoindex_entries_1\s*\(thread=\?\)/i.test(details),
+          `[${label}] ${name} must not scan a whole thread via sqlite_autoindex_entries_1 (thread=?):\n${details}`,
+        );
+      } else if (name.startsWith("listed_")) {
+        // Legacy-edits merged view keeps a CASE WHEN scanned=0 fallback branch in its static plan, while runtime
+        // (scanned=1) routes through legacy_edit_meta + legacy_edit_build (SEARCH s USING PRIMARY KEY (thread=? AND target=?)).
+        assert.ok(details.includes("legacy_edit_meta"), `[${label}] ${name} must route through legacy-edits merged view:\n${details}`);
+        assert.ok(
+          /\bSEARCH\s+s\s+USING\s+PRIMARY\s+KEY\s*\(thread=\?\s+AND\s+target=\?\)/i.test(details),
+          `[${label}] ${name} must use bounded legacy_edit_build PK lookup:\n${details}`,
+        );
+      }
     }
+  };
+  try {
+    checkPlans("standard");
+
+    // Legacy-edits store (scanned=1, no entries_edits index): CROSS JOIN merged must use legacy_edit_build,
+    // never scanning entries or scanning an entire thread.
+    db.exec("DROP INDEX IF EXISTS entries_edits; DROP INDEX IF EXISTS entries_target");
+    installLegacyEdits(db);
+    repairMergedEditLookup(db);
+    while (!legacyEditStep(db, 64).ready) { /* finish scan */ }
+    assert.equal((db.prepare("SELECT scanned FROM legacy_edit_meta WHERE id=1").get() as { scanned: number })?.scanned, 1);
+    checkPlans("legacy-edits");
   } finally {
     store.close();
     rmSync(data, { recursive: true, force: true });
   }
 });
 
-test("D68 medium-scale (500 archived + 100 live) parity and millisecond timings", { skip: binary === null ? "the MoonBit program is not built here" : false }, async () => {
+test("D68 medium-scale (500 archived + 100 live) parity and millisecond diagnostics", { skip: binary === null ? "the MoonBit program is not built here" : false }, async (t) => {
   const data = mkdtempSync(join(tmpdir(), "mb-reader-d68-scale-"));
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const db = store.db;
@@ -331,21 +388,29 @@ test("D68 medium-scale (500 archived + 100 live) parity and millisecond timings"
   const worker = readersOf(data, null);
   const program = readersOf(data, binary);
   try {
+    const t0 = performance.now();
     const gotArch = JSON.parse(await program.read("chats", { viewer, archived: true }, "en")) as Record<string, unknown>[];
+    const archMs = Math.round(performance.now() - t0);
     const wantArch = JSON.parse(await worker.read("chats", { viewer, archived: true }, "en")) as Record<string, unknown>[];
     assert.equal(gotArch.length, 500);
     assert.deepEqual(gotArch, wantArch);
 
+    const t1 = performance.now();
     const gotLive = JSON.parse(await program.read("sharedChats", { viewer, sessions: null, threads: null }, "en")) as Record<string, unknown>[];
+    const liveMs = Math.round(performance.now() - t1);
     const wantLive = JSON.parse(await worker.read("sharedChats", { viewer, sessions: null, threads: null }, "en")) as Record<string, unknown>[];
     assert.equal(gotLive.length, 100);
     assert.deepEqual(gotLive, wantLive);
 
     const held: Record<string, string> = {};
     for (const row of gotArch) held[String(row.id)] = digest(row);
+    const t2 = performance.now();
     const gotChanged = JSON.parse(await program.read("changed", { op: "chats", args: { viewer, archived: true }, id: "id", held }, "en"));
+    const changedMs = Math.round(performance.now() - t2);
     assert.equal(gotChanged.rows.length, 0);
     assert.equal(gotChanged.order.length, 500);
+
+    t.diagnostic(`D68 scale (500 archived + 100 live): chats(archived=true)=${archMs}ms sharedChats=${liveMs}ms changed(archived=true,held=ALL)=${changedMs}ms`);
   } finally {
     worker.close();
     program.close();

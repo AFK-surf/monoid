@@ -267,7 +267,7 @@ let shown_sessions_sql : String =
   #|SELECT * FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC
 
 ///|
-/// store/card-kinds.ts WAITS_ON_JOB (batched for shared_rows).
+/// store/card-kinds.ts WAITS_ON_JOB (batched for shared_rows; unpaginated full-list path replacing per-row N+1).
 let waiting_jobs_all_sql : String =
   #|SELECT DISTINCT session_key FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND watch = 0
 
@@ -277,7 +277,7 @@ let waiting_jobs_of_sql : String =
   #|  AND session_key IN (SELECT value FROM json_each(?1))
 
 ///|
-/// store/card-kinds.ts WAITS_ON_LED (batched for shared_rows).
+/// store/card-kinds.ts WAITS_ON_LED (batched for shared_rows; unpaginated full-list path replacing per-row N+1).
 let waiting_led_all_sql : String =
   #|SELECT DISTINCT o.parent FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child
   #|  WHERE o.parent_station = '' AND o.led = 1 AND c.archived_at IS NULL
@@ -304,68 +304,63 @@ let said_batch_sql : String =
   #|  LEFT JOIN said_state_guard g ON g.thread = t.value
 
 ///|
-/// Batched `last_said` for `listed_threads` (`merged_read_ready == true`): CROSS JOIN forces thread_state -> entries PK.
-/// Trims and bounds `text` (keeping a trailing sentinel when > 200 chars so `trim_white` + `take_chars(200)` stays 0-diff),
-/// omits `attachments` (unused by `shared_rows`), and only fetches `quotes` when trimmed text is empty.
+/// Batched `last_said` for `listed_threads` (`merged_read_ready == true`; unpaginated full-list path replacing per-row N+1).
+/// CROSS JOIN merged forces thread_state -> entries PK while preserving legacy-edits view lookup on old stores.
+/// Trims using the exact 25 Unicode White_Space code points of `@jscase.is_white_space` (excluding U+FEFF BOM) and
+/// appends a trailing sentinel when > 200 chars so `trim_white` + `take_chars(200)` stays 0-diff, omits unused
+/// `attachments`, and only fetches `quotes` when trimmed text is empty.
 let listed_last_said_all_sql : String =
   #|SELECT t.thread, m.n, m.ts, m.author_kind, m.author,
   #|    CASE
-  #|      WHEN (CASE WHEN e.n IS NULL THEN m.text ELSE e.text END) IS NULL THEN NULL
-  #|      WHEN length(trim(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, char(9,10,11,12,13,32,160,12288,65279))) > 200
-  #|        THEN substr(trim(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, char(9,10,11,12,13,32,160,12288,65279)), 1, 200) || 'x'
-  #|      ELSE trim(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, char(9,10,11,12,13,32,160,12288,65279))
+  #|      WHEN m.text IS NULL THEN NULL
+  #|      WHEN length(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))) > 200
+  #|        THEN substr(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)), 1, 200) || 'x'
+  #|      ELSE trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))
   #|    END AS text,
   #|    NULL AS attachments,
   #|    CASE
-  #|      WHEN trim(COALESCE(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, ''), char(9,10,11,12,13,32,160,12288,65279)) = ''
-  #|        THEN (CASE WHEN e.n IS NULL THEN m.quotes ELSE e.quotes END)
+  #|      WHEN trim(COALESCE(m.text, ''), char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)) = ''
+  #|        THEN m.quotes
   #|      ELSE NULL
   #|    END AS quotes,
-  #|    m.declared, m.client, m.agent_identity, m.at AS created_at, e.at AS edited_at, m.letter
+  #|    m.declared, m.client, m.agent_identity, m.created_at, m.edited_at, m.letter
   #|  FROM thread_state t
-  #|  CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.said_n AND m.kind = 'message'
-  #|  LEFT JOIN entries e ON e.thread = m.thread
-  #|    AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)
+  #|  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.said_n
 
 ///|
 let listed_last_said_of_sql : String =
   #|SELECT t.thread, m.n, m.ts, m.author_kind, m.author,
   #|    CASE
-  #|      WHEN (CASE WHEN e.n IS NULL THEN m.text ELSE e.text END) IS NULL THEN NULL
-  #|      WHEN length(trim(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, char(9,10,11,12,13,32,160,12288,65279))) > 200
-  #|        THEN substr(trim(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, char(9,10,11,12,13,32,160,12288,65279)), 1, 200) || 'x'
-  #|      ELSE trim(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, char(9,10,11,12,13,32,160,12288,65279))
+  #|      WHEN m.text IS NULL THEN NULL
+  #|      WHEN length(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))) > 200
+  #|        THEN substr(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)), 1, 200) || 'x'
+  #|      ELSE trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))
   #|    END AS text,
   #|    NULL AS attachments,
   #|    CASE
-  #|      WHEN trim(COALESCE(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, ''), char(9,10,11,12,13,32,160,12288,65279)) = ''
-  #|        THEN (CASE WHEN e.n IS NULL THEN m.quotes ELSE e.quotes END)
+  #|      WHEN trim(COALESCE(m.text, ''), char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)) = ''
+  #|        THEN m.quotes
   #|      ELSE NULL
   #|    END AS quotes,
-  #|    m.declared, m.client, m.agent_identity, m.at AS created_at, e.at AS edited_at, m.letter
+  #|    m.declared, m.client, m.agent_identity, m.created_at, m.edited_at, m.letter
   #|  FROM json_each(?1) req
   #|  CROSS JOIN thread_state t ON t.thread = req.value
-  #|  CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.said_n AND m.kind = 'message'
-  #|  LEFT JOIN entries e ON e.thread = m.thread
-  #|    AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)
+  #|  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.said_n
 
 ///|
-/// Batched `first_text` for `listed_threads` (`merged_read_ready == true`): CROSS JOIN forces thread_state -> entries PK.
+/// Batched `first_text` for `listed_threads` (`merged_read_ready == true`; unpaginated full-list path replacing per-row N+1).
+/// CROSS JOIN merged forces thread_state -> entries PK while preserving legacy-edits view lookup on old stores.
 let listed_first_text_all_sql : String =
-  #|SELECT t.thread, substr(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, 1, 300) AS t
+  #|SELECT t.thread, substr(m.text, 1, 300) AS t
   #|  FROM thread_state t
-  #|  CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.person_n AND m.kind = 'message'
-  #|  LEFT JOIN entries e ON e.thread = m.thread
-  #|    AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)
+  #|  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.person_n
 
 ///|
 let listed_first_text_of_sql : String =
-  #|SELECT t.thread, substr(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END, 1, 300) AS t
+  #|SELECT t.thread, substr(m.text, 1, 300) AS t
   #|  FROM json_each(?1) req
   #|  CROSS JOIN thread_state t ON t.thread = req.value
-  #|  CROSS JOIN entries m ON m.thread = t.thread AND m.n = t.person_n AND m.kind = 'message'
-  #|  LEFT JOIN entries e ON e.thread = m.thread
-  #|    AND e.n = (SELECT MAX(x.n) FROM entries x WHERE x.thread = m.thread AND x.target = m.n)
+  #|  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.person_n
 
 ///|
 /// store/card-kinds.ts ASKER_BEFORE.
