@@ -30,7 +30,7 @@ import { platform } from "../platform/index.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { PackAborted, type PackedProgram, packedProgram, runPackedOnce } from "./packed-mb.ts";
 
-export type ArchiveReaderOpts = { readers?: () => ReaderSelectConfig; program?: PackedProgram };
+export type ArchiveProgramOpts = { program?: PackedProgram };
 
 // ── paths ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -179,9 +179,9 @@ async function ownerWritable(path: string): Promise<void> {
 
 /// Compress a transcript in place, leaving its filename discoverable as <original>.zst. Retry after a crash safely: an
 /// original still there always wins over the old compressed copy.
-export const packFile = (path: string, opts?: ArchiveReaderOpts) => packFileIf(path, () => true, opts);
+export const packFile = (path: string, opts?: ArchiveProgramOpts) => packFileIf(path, () => true, opts);
 
-export async function packFileIf(path: string, ready: () => boolean, opts?: ArchiveReaderOpts): Promise<void> {
+export async function packFileIf(path: string, ready: () => boolean, opts?: ArchiveProgramOpts): Promise<void> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     const program = opts?.program ?? packedProgram();
@@ -209,7 +209,7 @@ export async function packFileIf(path: string, ready: () => boolean, opts?: Arch
 
 /// A transcript put away before it was in segments, or with its last segment stored as it is, put away again as
 /// `packFile` puts one away now: whether it was (not where it is in segments already).
-export async function segmentFile(path: string, opts?: ArchiveReaderOpts): Promise<boolean> {
+export async function segmentFile(path: string, opts?: ArchiveProgramOpts): Promise<boolean> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     const source = packed(path);
@@ -230,7 +230,7 @@ export async function segmentFile(path: string, opts?: ArchiveReaderOpts): Promi
   }
 }
 
-export async function restoreFile(path: string, opts?: ArchiveReaderOpts): Promise<void> {
+export async function restoreFile(path: string, opts?: ArchiveProgramOpts): Promise<void> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     const source = packed(path);
@@ -498,7 +498,7 @@ async function overlayEntries(source: string, dest: string, refused: Refused): P
 
 const isDir = async (path: string) => (await stat(path).catch(() => null))?.isDirectory() ?? false;
 
-export async function restoreWorkspace(room: string, opts?: ArchiveReaderOpts): Promise<void> {
+export async function restoreWorkspace(room: string, opts?: ArchiveProgramOpts): Promise<void> {
   const archive = workspaceArchive(room);
   if (!(await exists(archive))) return unlockWorktrees(room);
   const stage = join(room, "workspace.restoring");
@@ -541,7 +541,7 @@ export async function restoreWorkspace(room: string, opts?: ArchiveReaderOpts): 
 /// of its archive and on the disk again; the rest of it is removed, packed or not, and its worktrees are let go (`git
 /// worktree prune` cleans them up). The caller holds the room's lock. The archive goes only once the uploads are out of
 /// it: one interrupted is done again from the start.
-export async function emptyWorkspace(room: string, opts?: ArchiveReaderOpts): Promise<void> {
+export async function emptyWorkspace(room: string, opts?: ArchiveProgramOpts): Promise<void> {
   const workspace = join(room, "workspace");
   const archive = workspaceArchive(room);
   const rawRoom = clean(room);
@@ -594,7 +594,7 @@ export async function holdsMore(room: string): Promise<boolean> {
 
 /// An archived attachment is read directly from the tar stream, without inflating the whole workspace on disk.
 /// `relative`: its path in the workspace.
-export async function workspaceFile(room: string, relative: string, opts?: ArchiveReaderOpts): Promise<Buffer | null> {
+export async function workspaceFile(room: string, relative: string, opts?: ArchiveProgramOpts): Promise<Buffer | null> {
   const archive = workspaceArchive(room);
   if (!(await exists(archive))) return null;
   // The archive's names are `/`-separated; a path from Windows has `\` too.

@@ -346,3 +346,20 @@ test("STILLFAIL_READER_ENGINE acts as global env fallback below config.readers a
   assert.equal(blockedShadow.fallback, true);
   assert.equal(blockedShadow.reason, "shadow-forbidden");
 });
+
+test("every mode with pionImplemented: true is explicitly wired to resolveReaderSelection (exact allowlist guard)", () => {
+  // Modes whose spawn sites are wired through resolveReaderSelection AND backed by Pion implementations.
+  // Adding a mode here requires wiring its actual spawn site and updating the capability gate.
+  const WIRED_PION_MODES = new Set<ReaderMode>(["footprint", "memory", "packed"]);
+  const enabled = (Object.entries(READER_MODES) as [ReaderMode, (typeof READER_MODES)[ReaderMode]][])
+    .filter(([, meta]) => meta.pionImplemented)
+    .map(([mode]) => mode)
+    .sort();
+  for (const mode of enabled) {
+    assert.ok(
+      WIRED_PION_MODES.has(mode),
+      `mode "${mode}" has pionImplemented: true in READER_MODES but is not in WIRED_PION_MODES`,
+    );
+  }
+  assert.deepEqual(enabled, [...WIRED_PION_MODES].sort());
+});

@@ -6,6 +6,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { Effect } from "effect";
 import { checkConfig } from "../src/accounts/check.ts";
 import type { Jobs } from "../src/jobs/jobs.ts";
 import { Remote } from "../src/jobs/remote.ts";
@@ -24,10 +25,12 @@ import {
 import { resolveReaderEngine } from "../src/read/reader-select.ts";
 import { RequestedBuilder } from "../src/read/requested-builder.ts";
 import { makeReaderConfigSnapshot } from "../src/services.ts";
+import { workspaceFile } from "../src/sessions/archive.ts";
 import { measureRoom } from "../src/sessions/footprint.ts";
 import { PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
 import { MemoryProgram } from "../src/share/memory-mb.ts";
 import { Store } from "../src/store/store.ts";
+import { retireAfterPrevious } from "../src/usage/module.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -89,8 +92,8 @@ function withEnvSync<T>(overrides: Record<string, string | undefined>, fn: () =>
 
 function versionAndTagStubBody(versionLine: string, tag: string, recordFile?: string): string {
   const recordSnippet = recordFile
-    ? `import { appendFileSync } from "node:fs";\n`
-    : "";
+    ? `import { appendFileSync, writeFileSync } from "node:fs";\n`
+    : `import { writeFileSync } from "node:fs";\n`;
   const appendOnLine = recordFile
     ? `appendFileSync(${JSON.stringify(recordFile)}, ${JSON.stringify(`${tag}\n`)});\n`
     : "";
@@ -104,7 +107,10 @@ const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   if (!line) return;
   const ask = JSON.parse(line);
-  ${appendOnLine}if (ask.op) {
+  ${appendOnLine}if (ask.op === "workspace.file") {
+    writeFileSync(ask.out, ${JSON.stringify(tag)}, "utf8");
+    process.stdout.write(JSON.stringify({ id: ask.id, found: true }) + "\\n");
+  } else if (ask.op) {
     process.stdout.write(JSON.stringify({ id: ask.id, tag: ${JSON.stringify(tag)}, tags: [${JSON.stringify(tag)}] }) + "\\n");
   } else if ("path" in ask) {
     process.stdout.write(JSON.stringify({ size: ${tag === "pion" ? 2048 : 1024}, complete: true, rebuild: [] }) + "\\n");
@@ -401,7 +407,7 @@ test("real ArchiveMarkBuilder wires config.readers (unimplemented fallback warn)
   }
 });
 
-test("rig Remote wires live ReaderConfig into workspaceReader footprint measurements (Astra P1-2)", { skip: skipPosixStubs }, async () => {
+test("Remote passes readers config to WorkspaceReader footprint measurements (Astra P1-2)", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("rig-remote-");
   const dataDir = join(dir, "data");
   const wsDir = freshDir("rig-ws-");
@@ -430,20 +436,60 @@ test("rig Remote wires live ReaderConfig into workspaceReader footprint measurem
       });
       // Kick off measurement on workspaceReader (async queue, returns null first then caches size=2048 from pionStub).
       assert.equal(remote.workspaceReader.size(wsDir, 10_000), null);
-      let reading: { bytes: number; complete: boolean } | null = null;
-      const deadline = Date.now() + 5_000;
-      while (reading === null && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 20));
-        reading = remote.workspaceReader.size(wsDir, 10_000);
-      }
-      assert.ok(reading !== null, "expected rig Remote workspaceReader to complete footprint measurement");
-      assert.equal(reading.bytes, 2048, "expected rig Remote workspaceReader to route footprint to Pion via ReaderConfig");
+      await remote.workspaceReader.idle();
+      const reading = remote.workspaceReader.size(wsDir, 10_000);
+      assert.ok(reading !== null, "expected Remote workspaceReader to complete footprint measurement");
+      assert.equal(reading.bytes, 2048, "expected Remote workspaceReader to route footprint to Pion via ReaderConfig");
     } finally {
       await remote.close();
       store.close();
       snap.stop();
     }
   });
+});
+
+test("workspaceFile routes through the passed PackedProgram readers config (mb vs pion)", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("workspace-file-");
+  const room = freshDir("workspace-room-");
+  writeFileSync(join(room, "workspace.tar.zst"), "stub-archive", "utf8");
+  const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb", "mb"));
+  const pionStub = makeStubBinary(dir, "stub-pion", versionAndTagStubBody("stillfail-pion 0.1.0", "pion"));
+
+  await withEnv({
+    STILLFAIL_MB_READER: mbStub,
+    STILLFAIL_PION_READER: pionStub,
+    STILLFAIL_READER_PACKED: undefined,
+    STILLFAIL_READER_ENGINE: undefined,
+  }, async () => {
+    let mode: "mb" | "pion" = "mb";
+    const program = new PackedProgram({ readers: () => ({ readers: { packed: mode } }) });
+    try {
+      const fromMb = await workspaceFile(room, "hello.txt", { program });
+      assert.equal(fromMb?.toString("utf8"), "mb");
+
+      mode = "pion";
+      assert.equal(program.trimIdle(), 1);
+      const fromPion = await workspaceFile(room, "hello.txt", { program });
+      assert.equal(fromPion?.toString("utf8"), "pion");
+    } finally {
+      await program.close();
+    }
+  });
+});
+
+test("retireAfterPrevious catches synchronous reader binary resolution errors and resolves false instead of dying", async () => {
+  const dir = freshDir("usage-retire-");
+  const store = Store.open(join(dir, "station.db"), join(dir, "archive"));
+  try {
+    const ok = await Effect.runPromise(
+      retireAfterPrevious(store, Promise.resolve(), undefined, () => {
+        throw new Error("boom: reader binary resolution failed");
+      }),
+    );
+    assert.equal(ok, false);
+  } finally {
+    store.close();
+  }
 });
 
 test("two independent station PackedProgram instances with distinct ReaderConfig snapshots never interfere (Astra P2-3)", { skip: skipPosixStubs }, async () => {

@@ -102,8 +102,13 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
       return true;
     }
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
-    const mb = resolveReaderSelection("usage-retire", { binary, config: readers, logAt: "readers" }).primaryBinary;
-    yield* Effect.tryPromise({ try: () => retireByProgram(store, mb, path), catch: (error) => error });
+    yield* Effect.tryPromise({
+      try: () => {
+        const mb = resolveReaderSelection("usage-retire", { binary, config: readers, logAt: "readers" }).primaryBinary;
+        return retireByProgram(store, mb, path);
+      },
+      catch: (error) => error,
+    });
     return true;
   }).pipe(Effect.catch((error) => Effect.sync(() => {
     log.warn("usage", stopped ? "the old usage statistics could not be removed" : "the old usage statistics' writers could not be stopped", { error: (error as Error).message });

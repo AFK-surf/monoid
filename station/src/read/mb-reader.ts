@@ -68,6 +68,11 @@ function isExecutableFile(path: string): boolean {
 }
 
 const foundPionBinary = new Map<string, string | null>();
+/// Cooldown before re-checking disk when non-explicit `pionBinary()` lookup missed (avoids repeated `statSync`
+/// on hot paths while still discovering binaries installed or built while the station is running).
+const PION_BINARY_MISS_COOLDOWN_MS = 30_000;
+let pionBinaryMissUntil = 0;
+
 /// The Pion reader/builder binary (`stillfail-pion`):
 /// 1. Explicit `STILLFAIL_PION_READER` env override (resolved via `path.resolve`; if set and non-empty,
 ///    only that path is accepted and its lookup result — found or missing — is cached by resolved path)
@@ -84,7 +89,8 @@ export function pionBinary(): string | null {
     return ok;
   }
   const had = foundPionBinary.get("");
-  if (had !== undefined) return had;
+  if (had !== undefined && had !== null) return had;
+  if (had === null && wall.now() < pionBinaryMissUntil) return null;
   const hostBuild = import.meta.url.endsWith(".ts") && platform.buildOs !== null
     ? fileURLToPath(new URL(`../../../pion/station/_build/${platform.exe(`stillfail-pion-${platform.buildOs}-${process.arch}`)}`, import.meta.url))
     : undefined;
@@ -94,10 +100,13 @@ export function pionBinary(): string | null {
   ];
   const found = candidates.find((p) => p !== undefined && p !== "" && isExecutableFile(p)) ?? null;
   foundPionBinary.set("", found);
+  pionBinaryMissUntil = found === null ? wall.now() + PION_BINARY_MISS_COOLDOWN_MS : 0;
   return found;
 }
 
-/// The three baseline modes supported by every version of `stillfail-pion` without needing a `--version` probe.
+/// The three baseline modes supported without a `--version` probe.
+/// This assumes any `stillfail-pion` binary on disk is no older than the three-baseline-complete release baseline
+/// (commit `ab0bba7835` and later, predating Wave 5 first bundling `stillfail-pion` with stations).
 export const PION_BASELINE_MODES: ReadonlySet<ReaderMode> = new Set<ReaderMode>(["footprint", "packed", "memory"]);
 
 /// Cooldown before retrying a failed or timed-out `--version` probe (transient load should not lock out Pion forever).
@@ -170,6 +179,7 @@ export function probePionSupportedModes(binaryPath: string): Promise<ReadonlySet
 /// Clear cached binary lookups, `--version` capability probes, retry cooldowns, and deduped fallback warnings (tests only).
 export function resetReaderSelectionStateForTest(): void {
   foundPionBinary.clear();
+  pionBinaryMissUntil = 0;
   probedPionModes.clear();
   probingPionModes.clear();
   failedPionProbeUntil.clear();

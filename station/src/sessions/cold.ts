@@ -323,9 +323,9 @@ export class ColdRooms implements ColdStorage {
     if (room === null) return;
     await archive.withLock(room, async () => {
       if (opts?.onlyIfUnarchived === true && this.hub().store.getSession(key)?.archivedAt !== null) return;
-      await archive.restoreWorkspace(room, { readers: this.readers, program: this.packed });
+      await archive.restoreWorkspace(room, { program: this.packed });
       // Restoration must work even after the store has already brought this chat back.
-      for (const path of await this.historyFilesSoon(key, false)) await archive.restoreFile(path, { readers: this.readers, program: this.packed });
+      for (const path of await this.historyFilesSoon(key, false)) await archive.restoreFile(path, { program: this.packed });
       await unlink(join(room, "cold")).catch(() => undefined);
     });
   }
@@ -344,7 +344,7 @@ export class ColdRooms implements ColdStorage {
     if (room === null) return;
     await archive.withLock(room, async () => {
       if (!due() || !(await there(join(room, "cold"))) || !(await archive.holdsMore(room))) return;
-      await archive.emptyWorkspace(room, { readers: this.readers, program: this.packed });
+      await archive.emptyWorkspace(room, { program: this.packed });
       log.info("hub", "workspace of a long-archived session emptied", { session: key });
     });
   }
@@ -464,7 +464,7 @@ export class ColdRooms implements ColdStorage {
     const sources = hub.store.runtimeSessionSources(key);
     const unused = () => !sources.some((source) => hub.store.transcriptInUse(source.runtime, source.id, key));
     for (const path of files) {
-      await archive.packFileIf(path, () => ready() && unused(), { readers: this.readers, program: this.packed });
+      await archive.packFileIf(path, () => ready() && unused(), { program: this.packed });
     }
     if (files.length === 0) return 0;
     for (const path of files) if ((await there(path)) || !(await there(archive.packed(path)))) return 0;
@@ -536,7 +536,7 @@ export class ColdRooms implements ColdStorage {
         } catch {}
         for (const path of files) {
           try {
-            if (await archive.segmentFile(path, { readers: this.readers, program: this.packed })) done++;
+            if (await archive.segmentFile(path, { program: this.packed })) done++;
           } catch (error) {
             failed = true;
             log.warn("hub", "a put-away transcript not put in segments", { session: row.key, error: (error as Error).message });
