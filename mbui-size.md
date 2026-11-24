@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ce75f9f7](https://github.com/AFK-surf/monoid/commit/8ce75f9f76b7d0c9972edbc7fd3ef97d037065e9) feat(ui,mbui): unify doc notes, profiles batch bar | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [18e6b5ea7](https://github.com/AFK-surf/monoid/commit/18e6b5ea7597b50152a9d17d35a82daa25cccb61) perf(replica): prune agy/brain derived caches and  | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [c442651d2](https://github.com/AFK-surf/monoid/commit/c442651d201bf33ac7025d379eb2d4fdc2da87b1) refactor(ui): drop Blitter and Moving trait object | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [d2d0b0a9c](https://github.com/AFK-surf/monoid/commit/d2d0b0a9c5b2e41b4f7323abbe27893d7c5b7bc4) perf(ui): exact-phase glyph prewarm and Windows Di | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d9a7748e3](https://github.com/AFK-surf/monoid/commit/d9a7748e3cf7f12fdc33b338bd86f763d53f8d53) fix(screens): bound simulator view startup and enu | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [e5dc78307](https://github.com/AFK-surf/monoid/commit/e5dc78307cf13887651506576fa3d4636e9ccdb5) feat(pion-station): migrate 5 index/job SQLite bui | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
-| [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.65 | 127.41 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ce75f9f7](https://github.com/AFK-surf/monoid/commit/8ce75f9f76b7d0c9972edbc7fd3ef97d037065e9) feat(ui,mbui): unify doc notes, profiles batch bar | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.46 |
 | [18e6b5ea7](https://github.com/AFK-surf/monoid/commit/18e6b5ea7597b50152a9d17d35a82daa25cccb61) perf(replica): prune agy/brain derived caches and  | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.57 |
 | [c442651d2](https://github.com/AFK-surf/monoid/commit/c442651d201bf33ac7025d379eb2d4fdc2da87b1) refactor(ui): drop Blitter and Moving trait object | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.36 |
 | [d2d0b0a9c](https://github.com/AFK-surf/monoid/commit/d2d0b0a9c5b2e41b4f7323abbe27893d7c5b7bc4) perf(ui): exact-phase glyph prewarm and Windows Di | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d9a7748e3](https://github.com/AFK-surf/monoid/commit/d9a7748e3cf7f12fdc33b338bd86f763d53f8d53) fix(screens): bound simulator view startup and enu | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
 | [e5dc78307](https://github.com/AFK-surf/monoid/commit/e5dc78307cf13887651506576fa3d4636e9ccdb5) feat(pion-station): migrate 5 index/job SQLite bui | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.46 |
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
-| [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.2 |
