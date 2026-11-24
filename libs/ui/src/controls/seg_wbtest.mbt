@@ -1,9 +1,8 @@
 // Segmented choice helpers (seg.mbt): thumb contrast and option_widths math.
 
 ///|
-/// The thumb on the dark theme's track on every ground it may lie on: seen off it (1.25 to 1, mbui ui/contrast.mbt)
-/// and the chosen words read on it. (The light one is white with a shadow round it, the track grey: what a shadow does
-/// a ratio does not say.) The canvas and an opaque grey were 1.02 and 1.05 to 1 off it (2026-10-27).
+/// The thumb on the dark theme's track on every ground it may lie on: seen clearly off both 6% and 9.4% tracks
+/// (>= 1.65:1, matching native iOS 27.0 resting `#68686E` with zero border/shadow) and chosen words read at >= 4.5:1.
 test "the dark theme's segmented thumb seen off its track on every ground, its words read on it" {
   let lifted = @ui.Theme::narrow_dark().lifted
   let wrong : Array[String] = []

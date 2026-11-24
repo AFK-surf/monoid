@@ -33,19 +33,13 @@ let ctrl_type_seg : Double = 14.0
 ///|
 /// Native iOS 27.0 lifted opaque pill fill at rest for segmented controls
 /// (pure white in Light, lifted medium grey `0x68686EFF` in Dark matching native `(105..111)`).
+/// Resting pills use zero border and zero shadow in both themes.
 fn ctrl_seg_thumb_idle() -> Int64 {
   if is_dark() {
     0x68686EFFL
   } else {
     0xFFFFFFFFL
   }
-}
-
-///|
-/// Native iOS 27.0 resting segmented pill has zero outer drop shadow in both Light and Dark modes
-/// (verified pixel-for-pixel on iOS 27.0 UISegmentedControl: no dark halo or grey ring around the pill).
-fn ctrl_seg_thumb_idle_shadow() -> (Double, Double, Int64) {
-  (0.0, 0.0, 0L)
 }
 
 ///|

@@ -31,11 +31,16 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
       |> ignore
     })
     t.run_for(glass_springs_out)
-    // 1. Resting state: 1 liquid glass instance (track only), bright lifted idle pill with exact fill color.
+    // 1. Resting state: 1 liquid glass instance (track only), bright lifted idle pill with exact fill color,
+    //    and zero border / zero shadow instances in the drawlist (matching native iOS 27.0).
     let expected_idle = if dark { 0x68686EFFL } else { 0xFFFFFFFFL }
-    assert_eq(ctrl_seg_thumb_idle_shadow(), (0.0, 0.0, 0L), msg="dark=\{dark}: resting pill shadow must be zero (iOS 27)")
     let idle_pills = t.drawn_rects().filter(fn(r) { r.4 == expected_idle && r.2 > 80.0 && r.3 > 30.0 })
     assert_eq(idle_pills.length(), 1, msg="dark=\{dark}: rest must draw 1 lifted idle pill with expected color")
+    let pill_r = idle_pills[0]
+    let pill_shadows = t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 && (a[2] - pill_r.2).abs() < 12.0 })
+    let pill_borders = t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 && (a[2] - pill_r.2).abs() < 12.0 })
+    assert_eq(pill_shadows.length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero shadow")
+    assert_eq(pill_borders.length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero border")
     assert_eq(t.drawn_glass().length(), 1, msg="dark=\{dark}: rest must draw only the track glass (0 hidden lens)")
     assert_eq(t.audit(), [], msg="dark=\{dark}: rest audit must be empty")
 
@@ -78,6 +83,27 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
     assert_eq(seg_idx.untracked(), 1, msg="dark=\{dark}: release on Week must select index 1")
     assert_eq(t.drawn_glass().length(), 1, msg="dark=\{dark}: settled must return to track glass only")
     assert_eq(t.audit(), [], msg="dark=\{dark}: settled audit must be empty")
+
+    // 4. Verify flat (glass_track=false) resting pill emits exact lifted fill with zero border and zero shadow.
+    let flat_idx = @signals.signal(0)
+    let tf = glass_case(dark, false, fn(page) {
+      liquid_segmented_node(
+        page,
+        fn() { ["Day", "Week", "Month"] },
+        fn() { flat_idx.get() },
+        fn(i) { flat_idx.set(i) },
+        width=360.0,
+        height=36.0,
+        glass_track=false,
+      )
+      |> ignore
+    })
+    tf.run_for(glass_springs_out)
+    let flat_pills = tf.drawn_rects().filter(fn(r) { r.4 == @ui.tree_theme().lifted && r.2 > 80.0 && r.3 > 20.0 })
+    assert_eq(flat_pills.length(), 1, msg="dark=\{dark}: rest glass_track=false must draw 1 lifted pill")
+    assert_eq(tf.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero shadow")
+    assert_eq(tf.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero border")
+    assert_eq(tf.audit(), [], msg="dark=\{dark}: flat rest audit must be empty")
   }
   set_dark(None)
 }

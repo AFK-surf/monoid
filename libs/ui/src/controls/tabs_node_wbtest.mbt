@@ -89,17 +89,23 @@ test "tabs: the chosen one read out selected, its panel the one read out and sho
 
 ///|
 test "tabs, the pill look: the lifted capsule under the chosen tab, sliding to another chosen, there by move_most_ms; nothing the audit finds" {
-  let k = tabs2(look=Pill)
-  let tab = fn(name : String) raise {
-    let r = k.t.get(Tab, label=name).rect
-    (r.0.round().to_int(), r.2.round().to_int())
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    let k = tabs2(look=Pill)
+    let tab = fn(name : String) raise {
+      let r = k.t.get(Tab, label=name).rect
+      (r.0.round().to_int(), r.2.round().to_int())
+    }
+    assert_eq(tabs2_mark(k.t, tabs_pill_h), tab("对话"))
+    assert_eq(k.t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 }).length(), 0, msg="dark=\{dark}: resting tabs Pill must draw zero shadow")
+    assert_eq(k.t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 }).length(), 0, msg="dark=\{dark}: resting tabs Pill must draw zero border")
+    assert_eq(k.t.audit(), [])
+    k.t.click(Tab, label="文件")
+    k.t.run_for(@ui.move_most_ms)
+    assert_eq(tabs2_mark(k.t, tabs_pill_h), tab("文件"))
+    assert_eq(k.t.audit(), [])
   }
-  assert_eq(tabs2_mark(k.t, tabs_pill_h), tab("对话"))
-  assert_eq(k.t.audit(), [])
-  k.t.click(Tab, label="文件")
-  k.t.run_for(@ui.move_most_ms)
-  assert_eq(tabs2_mark(k.t, tabs_pill_h), tab("文件"))
-  assert_eq(k.t.audit(), [])
+  set_dark(None)
 }
 
 ///|
