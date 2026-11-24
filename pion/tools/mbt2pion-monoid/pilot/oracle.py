@@ -27,7 +27,7 @@ TIMEOUT_S = 120
 CASES = {
     "signal_by": ("ok", 4),
     "window_kept": ("ok", 3),
-    "style_css": ("ok", 5),
+    "style_css": ("ok", 6),
     "guard_init_order": ("ok", 6),
     "opt_param_relay": ("ok", 5),
     "utf16_boundary": ("ok", 5),

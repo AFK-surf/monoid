@@ -491,4 +491,38 @@ if [ "$ORACLE_RC" -ne 1 ] || grep -q "SETUP FAILED" "$WORK/neg_d3.log"; then
 fi
 echo "[neg-gate] PASS (d): (d1) dropped assert, (d2) mutated guard+tautology, (d3) mutated real numbers.pion all strict rc=1"
 
-echo "=== ALL 4 NEGATIVE MUTATION CI GATES + 2 POSITIVE CONTROLS PASSED ==="
+# =============================================================================
+# (e) Single-invar-pin URL-normalization negative gates (no .git / case / ssh / git@)
+# =============================================================================
+for url_case in \
+  "no_dot_git|https://github.com/AFK-surf/invar" \
+  "lowercase|https://github.com/afk-surf/invar.git" \
+  "ssh_scheme|ssh://git@github.com/AFK-surf/invar" \
+  "scp_ssh|git@github.com:AFK-surf/invar"; do
+  CASE_ID="${url_case%%|*}"
+  ALT_URL="${url_case#*|}"
+  PIN_TMP="$WORK/pin_url_$CASE_ID"
+  mkdir -p "$PIN_TMP/pion/ui/packages/sf" "$PIN_TMP/pion/app" "$PIN_TMP/pion/tools/mbt2pion-monoid"
+  cp "$REPO_ROOT/pion/ui/pion.toml" "$PIN_TMP/pion/ui/pion.toml"
+  cp "$REPO_ROOT/pion/ui/pion.lock" "$PIN_TMP/pion/ui/pion.lock"
+  cp "$REPO_ROOT/pion/app/pion.toml" "$PIN_TMP/pion/app/pion.toml"
+  cp "$REPO_ROOT/pion/app/pion.lock" "$PIN_TMP/pion/app/pion.lock"
+  cp "$REPO_ROOT/pion/tools/mbt2pion-monoid/manifest.toml" "$PIN_TMP/pion/tools/mbt2pion-monoid/manifest.toml"
+  cp "$SCRIPT_DIR/check_single_invar_pin.sh" "$PIN_TMP/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh"
+  cat > "$PIN_TMP/pion/ui/packages/sf/pion.toml" << EOF
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+textdiff = { git = "$ALT_URL", rev = "ff2ed93000000000000000000000000000000000", subdir = "packages/textdiff" }
+EOF
+  if sh "$PIN_TMP/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_${CASE_ID}.log" 2>&1; then
+    echo "FAIL (pin-url:$CASE_ID): invar URL variant '$ALT_URL' with second SHA bypassed check_single_invar_pin.sh!" >&2
+    cat "$WORK/neg_pin_${CASE_ID}.log" >&2
+    exit 1
+  fi
+done
+echo "[neg-gate] PASS (e): check_single_invar_pin.sh rejected all 4 invar URL variants (no .git, lowercase, ssh://, git@)"
+
+echo "=== ALL 5 NEGATIVE MUTATION CI GATES + 2 POSITIVE CONTROLS PASSED ==="

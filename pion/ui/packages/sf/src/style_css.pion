@@ -367,7 +367,8 @@ fn Css::align(self : Css) -> Result[ui::Align, String] {
     "ACenter" => Ok(ui::Align::Center)
     "AEnd" => Ok(ui::Align::End)
     "AStretch" => Ok(ui::Align::Stretch)
-    "AFirstLine" => Ok(ui::Align::Start)
+    "AFirstLine" =>
+    self.fail("unsupported Align AFirstLine (missing in invar ui::Align)")
     "ABaseline" => Ok(ui::Align::Baseline)
     _ => self.fail("no Align " + n)
   }

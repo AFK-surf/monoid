@@ -86,6 +86,32 @@ def parse_lock_blocks_fallback(text):
         blocks.append(cur)
     return blocks
 
+def normalize_git_repo(url):
+    """Canonicalize Git remote URLs (https/http/ssh/git/SCP, case, trailing slash, .git)."""
+    s = str(url or "").strip().lower()
+    for prefix in ("https://", "http://", "ssh://", "git://"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    if "@" in s:
+        user_part, rest = s.split("@", 1)
+        if "/" not in user_part:
+            s = rest
+    m_scp = re.match(r"^([^/:]+):([^0-9/].*)$", s)
+    if m_scp:
+        s = f"{m_scp.group(1)}/{m_scp.group(2)}"
+    s = re.sub(r"^([^/:]+):\d+/", r"\1/", s)
+    while s.endswith("/"):
+        s = s[:-1]
+    if s.endswith(".git"):
+        s = s[:-4]
+    return s
+
+def is_invar_repo(url):
+    return normalize_git_repo(url) == "github.com/afk-surf/invar"
+
+GIT_URL_RE = re.compile(r'git\s*=\s*(?:"([^"]+)"|\'([^\']+)\')')
+
 for root, _dirs, files in os.walk(pion_dir):
     for fn in sorted(files):
         full = os.path.join(root, fn)
@@ -94,17 +120,22 @@ for root, _dirs, files in os.walk(pion_dir):
             txt = open(full, "r", encoding="utf-8").read()
             for lineno, raw_line in enumerate(txt.splitlines(), 1):
                 line = strip_toml_comment(raw_line).strip()
-                if "AFK-surf/invar.git" not in line:
+                if not line:
                     continue
-                m = re.search(r'rev\s*=\s*"([0-9a-f]{40})"', line)
+                gm = GIT_URL_RE.search(line)
+                if not gm:
+                    continue
+                git_url = gm.group(1) if gm.group(1) is not None else gm.group(2)
+                if not is_invar_repo(git_url):
+                    continue
+                m = re.search(r'rev\s*=\s*(?:"([0-9a-f]{40})"|\'([0-9a-f]{40})\')', line)
                 if not m:
                     errors.append(f"{rel}:{lineno}: AFK-surf/invar dependency without valid 40-char hex rev: {line}")
                 else:
-                    toml_entries.append((m.group(1), rel))
+                    rev_val = m.group(1) if m.group(1) is not None else m.group(2)
+                    toml_entries.append((rev_val, rel))
         elif fn == "pion.lock":
             txt = open(full, "r", encoding="utf-8").read()
-            if "AFK-surf/invar.git" not in txt:
-                continue
             tables = []
             if tomllib is not None:
                 data = tomllib.loads(txt)
@@ -116,7 +147,7 @@ for root, _dirs, files in os.walk(pion_dir):
                 tables = parse_lock_blocks_fallback(txt)
             for idx, tbl in enumerate(tables):
                 git_url = str(tbl.get("git", ""))
-                if "AFK-surf/invar.git" not in git_url:
+                if not is_invar_repo(git_url):
                     continue
                 rev = str(tbl.get("rev", ""))
                 if not HEX40.match(rev):

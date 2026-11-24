@@ -148,6 +148,18 @@ fn case_style_css(world : World) -> Unit {
     }
     Ok(_) => check(world, "css.err_unclosed_loc", false)
   }
+  // Known Layer 2 blocker: Pion sf::css_read must fail loudly on AFirstLine (zero silent downgrade to Align::Start)
+  match sf::css_read("row align=AFirstLine") {
+    Err(e) => {
+      check(
+        world,
+        "css.afirstline_blocker_tracked",
+        e == "css: unsupported Align AFirstLine (missing in invar ui::Align) at 20 in \"row align=AFirstLine\"",
+      )
+      trace(world, "css.afirstline", "known_invar_blocker:ui::Align::FirstLine")
+    }
+    Ok(_) => check(world, "css.afirstline_blocker_tracked", false)
+  }
 }
 
 // --- 4. Live mbt2pion-generated guard + 00_init_order + cross-pkg invar-before-sf init ---

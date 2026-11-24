@@ -960,6 +960,28 @@ function main() {
     }
   }
 
+  // Explicitly track missing ui::Align::FirstLine (`AFirstLine`) until Invar adds first-line alignment
+  const invarAlign = (invarIndex.get('ui') || new Map()).get('Align');
+  if (
+    invarAlign &&
+    !parsePionEnumVariants(invarAlign.sig).some(v => v.name === 'FirstLine' || v.name === 'AFirstLine')
+  ) {
+    strictBlockers.push({
+      category: 'controls_prod_signature_incompatible',
+      source: '@ui.Align::AFirstLine',
+      expected_invar: 'ui::Align::FirstLine',
+      source_sig: ((mbtiIndex.get('ui') || new Map()).get('Align') || {}).sig || null,
+      invar_sig: invarAlign.sig,
+      call_count: 1,
+      locations: [
+        'libs/ui/src/ui/style_css.mbt:415',
+        'libs/ui/src/controls/style_node.mbt:411',
+        'apps/mbui/src/sfpages/model_triple.mbt:3267',
+      ],
+      note: 'Invar ui::Align lacks FirstLine (AFirstLine: FirstLineCenter + lines_up_first_line); sf::css_read fails loudly instead of silently downgrading to Align::Start',
+    });
+  }
+
   // Scan pre-frozen M1.3 test matrix for missing ui::Tester methods
   const invarTesterMethods = new Set();
   for (const it of invarDoc.ui || []) {

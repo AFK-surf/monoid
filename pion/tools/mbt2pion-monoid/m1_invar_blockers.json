@@ -3,7 +3,7 @@
   "monoid_source_commit": "f0fb92750e75a8625aa4da34e206fee16f6c96db",
   "invar_target_commit": "339c271e0bd4ea9e2680f13adcec8075d6da9cf3",
   "summary": {
-    "strict_invar_blockers": 58,
+    "strict_invar_blockers": 59,
     "pure_logic_escape_hatch_candidates": 34,
     "m13_frozen_tester_missing_methods": 45,
     "m2_plus_deferred_examples": 2
@@ -715,6 +715,20 @@
         "libs/ui/src/controls/player_node.mbt:132"
       ],
       "note": "Struct/enum field mismatch with invar player (tested by player_wbtest.mbt:185); align directly with Invar framework owner"
+    },
+    {
+      "category": "controls_prod_signature_incompatible",
+      "source": "@ui.Align::AFirstLine",
+      "expected_invar": "ui::Align::FirstLine",
+      "source_sig": "pub(all) enum Align { AStart ACenter AEnd AStretch AFirstLine ABaseline }",
+      "invar_sig": "#derive(Eq) enum Align { Start; Center; End; Stretch; Baseline }",
+      "call_count": 1,
+      "locations": [
+        "libs/ui/src/ui/style_css.mbt:415",
+        "libs/ui/src/controls/style_node.mbt:411",
+        "apps/mbui/src/sfpages/model_triple.mbt:3267"
+      ],
+      "note": "Invar ui::Align lacks FirstLine (AFirstLine: FirstLineCenter + lines_up_first_line); sf::css_read fails loudly instead of silently downgrading to Align::Start"
     }
   ],
   "pure_logic_escape_hatch_candidates": [

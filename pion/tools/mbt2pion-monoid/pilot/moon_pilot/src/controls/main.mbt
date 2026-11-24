@@ -172,6 +172,18 @@ fn case_style_css() -> Unit {
     }
     Ok(_) => check("css.err_unclosed_loc", false)
   }
+  // Known Layer 2 blocker: upstream mbui supports AFirstLine; Pion sf::css_read must fail loud (tracked in m1_invar_blockers.json)
+  match @ui.css_read("row align=AFirstLine") {
+    Ok(st) => {
+      let a_ok = match st.base.align {
+        Some(@ui.Align::AFirstLine) => true
+        _ => false
+      }
+      check("css.afirstline_blocker_tracked", a_ok)
+      trace("css.afirstline", "known_invar_blocker:ui::Align::FirstLine")
+    }
+    Err(_) => check("css.afirstline_blocker_tracked", false)
+  }
 }
 
 // --- 4. value guard + indirect forward scalar/heap let + fn init (from real pilot_core.mbt!) ---
