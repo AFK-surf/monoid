@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.58 | 66.24 | 100.27 | 131.27 |
 | [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.27 | 121.74 |
 | [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 | [cc802ae52](https://github.com/AFK-surf/monoid/commit/cc802ae5243195f5594d7d999e45fbbf3c87cebd) test(station): wait for turn messages and snapshot | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [539a932fd](https://github.com/AFK-surf/monoid/commit/539a932fd288b0c2149ab25ca8866dceb0c7924a) fix(station): guard replica handover removal again | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [7d4a6e7fd](https://github.com/AFK-surf/monoid/commit/7d4a6e7fd254a4a22fab46851a89cf7c110b8d3b) fix(station): sign in Google Colab profiles on the | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
-| [e8c5ae383](https://github.com/AFK-surf/monoid/commit/e8c5ae383aeb2bea5739328cde431f1b566a997c) ci(station): run the station's tests in seven slic | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.41 |
 | [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.23 |
 | [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [cc802ae52](https://github.com/AFK-surf/monoid/commit/cc802ae5243195f5594d7d999e45fbbf3c87cebd) test(station): wait for turn messages and snapshot | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [539a932fd](https://github.com/AFK-surf/monoid/commit/539a932fd288b0c2149ab25ca8866dceb0c7924a) fix(station): guard replica handover removal again | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.41 |
 | [7d4a6e7fd](https://github.com/AFK-surf/monoid/commit/7d4a6e7fd254a4a22fab46851a89cf7c110b8d3b) fix(station): sign in Google Colab profiles on the | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.26 |
 | [0137c6212](https://github.com/AFK-surf/monoid/commit/0137c6212710357ba77f919d775790e0ac96785e) perf(station): read the sessions waiting for a per | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.51 |
-| [e8c5ae383](https://github.com/AFK-surf/monoid/commit/e8c5ae383aeb2bea5739328cde431f1b566a997c) ci(station): run the station's tests in seven slic | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
