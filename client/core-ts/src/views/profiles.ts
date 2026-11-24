@@ -18,9 +18,9 @@ const KEYED = new Set(["opencode-go", "anthropic-api", "api-provider"]);
 /// whitelist (a share following it reaches it).
 export type ShareStation = { id: string; station: string; name: string; online: boolean; allowed: boolean; acceptAutoChats: boolean; tasksOnly: boolean };
 
-/// Whether a station is on the workspace's whitelist as its item says it (`acceptAutoChats`, not one only running
+/// Whether a station is on the workspace's whitelist as its overview says it (`autoChats`, not one only running
 /// tasks), as the station hosting a share following it goes by (station share/index.ts `autoAllow`).
-const onWhitelist = (s: J) => s?.acceptAutoChats === true && s?.mode !== "tasks";
+const onWhitelist = (s: J) => s?.overview?.autoChats?.enabled === true && s?.mode !== "tasks";
 
 /// Which account a profile is: the same one on several stations has the same identity (null: none to tell by).
 function account(p: J): string | null {
@@ -61,8 +61,8 @@ function listedProfiles(overview: J, station: J): J[] {
   return profiles.filter((p: J) => !(isObject(p?.share) && p.share.role === "user" && !profileServes(p, ws, joined)));
 }
 
-/// `stations`: the `stations` view's items (each with its decorated overview, and whether it is on the workspace's
-/// whitelist: `acceptAutoChats`, `mode`).
+/// `stations`: the `stations` view's items (each with its decorated overview, its `autoChats` whether it is on the
+/// workspace's whitelist).
 export function workspaceProfiles(stations: J[]): J {
   const byId = new Map(stations.map((s) => [String(s.id), s]));
   const name = (id: string) => String(byId.get(id)?.name ?? id.slice(0, 8));
@@ -229,7 +229,7 @@ export function workspaceProfiles(stations: J[]): J {
         (x): ShareStation => ({
           id: String(x.id), station: String(x.station), name: String(x.name), online: x.online === true,
           allowed: share !== null ? allowed(share, String(x.id)) : allow === null || allow.includes(String(x.id)) || String(x.id) === host,
-          acceptAutoChats: x.acceptAutoChats === true, tasksOnly: x.mode === "tasks",
+          acceptAutoChats: x.overview?.autoChats?.enabled === true, tasksOnly: x.mode === "tasks",
         }),
       ),
       editable,

@@ -53,9 +53,10 @@ fn ProfilesBatch::rows(self : ProfilesBatch, rows : Array[Json]) -> Array[Json] 
 }
 
 ///|
-/// Whether 多选 is offered: to a workspace's owners and admins, where it lists an account.
-pub fn profiles_batch_offered(core : Core, here : () -> Here, rows : () -> Array[Json]) -> Bool {
-  @settings.manager_of(core, here()) == Some(true) && rows().length() > 0
+/// Whether 多选 is offered: to a workspace's owners and admins (`manages`: as the workspace's list says it, the
+/// `profiles` topic's, so the place reads nothing more for it), where it lists an account.
+pub fn profiles_batch_offered(manages : () -> Bool, rows : () -> Array[Json]) -> Bool {
+  manages() && rows().length() > 0
 }
 
 ///|

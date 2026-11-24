@@ -155,19 +155,19 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
   // (the accounts' 多选: begun at the band's end beside 添加, its bar at the sidebar's foot; over as the workspace in
   // view changes)
   let batch = @sfpages.ProfilesBatch::new()
-  let rows_of = fn(w : Workspace) { items(src.topic("profiles", { "scope": Json::string(w.id) }).get().value, "items") }
-  let band_end = fn(b : @view.View, core : @settings.Core, w : Workspace, here : () -> @settings.Here) {
+  let listed_of = fn(w : Workspace) { src.topic("profiles", { "scope": Json::string(w.id) }).get().value }
+  let rows_of = fn(w : Workspace) { items(listed_of(w), "items") }
+  let offered = fn(w : Workspace) { @sfpages.profiles_batch_offered(fn() { flag(listed_of(w), "manages") }, fn() { rows_of(w) }) }
+  let band_end = fn(b : @view.View, _ : @settings.Core, w : Workspace, _ : () -> @settings.Here) {
     // (it stays while 多选 is on, lit, pressed again to end it: the band never changes as it begins)
-    b.show(fn() { @sfpages.profiles_batch_offered(core, here, fn() { rows_of(w) }) }, fn(k) {
+    b.show(fn() { offered(w) }, fn(k) {
       @sf.icon_button_node(k, "check-circle", fn() { @sf.t("web-pages.profiles.batch.select") }, fn() { batch.toggle() }, tips~, on=fn() {
         batch.on.get()
       })
       |> ignore
     })
   }
-  let band_end_shown = fn(core : @settings.Core, w : Workspace, here : () -> @settings.Here) {
-    @sfpages.profiles_batch_offered(core, here, fn() { rows_of(w) })
-  }
+  let band_end_shown = fn(_ : @settings.Core, w : Workspace, _ : () -> @settings.Here) { offered(w) }
   let foot = fn(f : @view.View, core : @settings.Core, w : Workspace, here : () -> @settings.Here) {
     let stations = fn() {
       match @settings.stations_of(core, here()).value {

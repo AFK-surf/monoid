@@ -290,7 +290,7 @@ test("a shared account lists all allowed stations while their copies or overview
 test("a share following the workspace's whitelist reaches the stations on it as the viewer knows them, and its page's stations say who is", () => {
   const C = "c".repeat(64);
   const sub = { email: "z@x.test", runtime: "codex" };
-  const on = (s: any, accept: boolean) => ({ ...s, acceptAutoChats: accept });
+  const on = (s: any, accept: boolean) => ({ ...s, overview: { ...s.overview, autoChats: { enabled: accept, canEdit: false } } });
   const host = station(A, "Office", true, [profile("host", { ...sub, share: { id: "sh-1", role: "host", host: A, allow: [A], allowAuto: true } })]);
   const row = workspaceProfiles([on(host, false), on(station(B, "Laptop", true, []), true), on(station(C, "Lab", true, []), false)]).items[0];
   // (Laptop is on the whitelist though its host has not heard yet: a copy on its way; Lab is not)

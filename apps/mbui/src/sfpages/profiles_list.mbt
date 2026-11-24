@@ -100,7 +100,13 @@ pub fn profiles_list_node(
   // (a workspace come into view: no 多选 begun in another)
   v.reacts(fn() { here().workspace }, fn(_) { batch.stop() }, at_start=false)
   let batch_rows = fn() { batch_rows_now.get() }
-  let batch_offered = fn() { profiles_batch_offered(core, here, fn() { rows_now.get() }) }
+  // (a manager's as the workspace's list says it; a station's own page's as the workspace does)
+  let batch_offered = fn() {
+    profiles_batch_offered(
+      fn() { if only == "" { flag(profiles().value, "manages") } else { @settings.manager_of(core, here()) == Some(true) } },
+      fn() { rows_now.get() },
+    )
+  }
   let batch_stations = fn() {
     match stations_topic().value {
       Some(Array(a)) => a
@@ -1130,16 +1136,25 @@ pub fn profiles_page_node(
         }
       }
       let label = fn() { @sf.t("android-misc.bar.action.profiles") }
-      // (多选 of the list's, while it shows: not on 概览)
+      // (多选 of the list's: on 概览 too, so the bar keeps its parts as the tabs switch, pressed there it shows the list
+      // with 多选 begun)
       let select_shown = fn() {
-        !overview.get() &&
-        profiles_batch_offered(core, here, fn() { items((core.topic)("profiles", { "scope": Json::string(here().workspace) }).get().value, "items") })
+        let listed = fn() { (core.topic)("profiles", { "scope": Json::string(here().workspace) }).get().value }
+        profiles_batch_offered(fn() { flag(listed(), "manages") }, fn() { items(listed(), "items") })
+      }
+      let select = fn() {
+        if @signals.untracked(fn() { overview.get() }) {
+          overview.set(false)
+          batch.start()
+        } else {
+          batch.toggle()
+        }
       }
       f(
         fn(l) {
           profile_share_node(l, core, here, fn() { true }, tips, bar=true, has_pools=fn() { has_pools.get() })
           l.show(select_shown, fn(a) {
-            @sf.bar_icon_node(a, "check-circle", fn() { @sf.t("web-pages.profiles.batch.select") }, fn() { batch.toggle() }, tips?)
+            @sf.bar_icon_node(a, "check-circle", fn() { @sf.t("web-pages.profiles.batch.select") }, select, tips?)
           })
           if bar_add {
             l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })

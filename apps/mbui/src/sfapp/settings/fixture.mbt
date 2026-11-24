@@ -4219,6 +4219,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ("items", Json::array(list)),
           ("attention", Json::number(attention.to_double())),
           ("wait", obj([("reading", Json::boolean(false)), ("failing", []), ("empty", Json::boolean(false))])),
+          // (the workspace's owner's: its `workspace` says so)
+          ("manages", Json::boolean(true)),
         ]),
       )
     }

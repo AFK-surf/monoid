@@ -368,7 +368,7 @@ function profileRowsOf(shown: J): J {
     }
     return row;
   });
-  return { profiles, sharing: get(shown, "sharing") ?? null, shareAllowAuto: get(shown, "shareAllowAuto") === true, mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null };
+  return { profiles, sharing: get(shown, "sharing") ?? null, shareAllowAuto: get(shown, "shareAllowAuto") === true, autoChats: { enabled: get(get(shown, "autoChats"), "enabled") === true }, mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null };
 }
 
 /// What a window of a kept row says as it goes out: its refills in words, made of its `resetsAt` and now alone (present.ts
@@ -2085,7 +2085,7 @@ export class Views implements Owner {
         const stations0 = this.#stationsOr(view.scope as string);
         if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
         const key = profileRowKey();
-        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, acceptAutoChats: this.#stationShownOf(s.address).acceptAutoChats.get(), overview: this.#profileRowsOfStation(s.address, key) })));
+        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
         const now = this.#core.host.nowMs();
         this.#againIn(HOUR / 4 - (now % (HOUR / 4)));
         const stations = new Map(stations0.map((s) => [s.address, s.online]));
@@ -3695,7 +3695,6 @@ export class Views implements Owner {
       name: s.name,
       online: s.online,
       joined: s.joined,
-      acceptAutoChats: this.#stationShownOf(s.address).acceptAutoChats.get(),
       overview: this.#stationShownOf(s.address).profile.get(),
     })));
     // What the Profile place lists beside them: each up station's own logins it could take as a profile (it read them of
@@ -3716,7 +3715,7 @@ export class Views implements Owner {
     const stations = this.#stationsOr(scope);
     if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
     const key = profileRowKey();
-    const ins = stations.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, acceptAutoChats: this.#stationShownOf(s.address).acceptAutoChats.get(), overview: this.#profileRowsOfStation(s.address, key) }));
+    const ins = stations.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) }));
     const listed = workspaceProfiles(ins);
     const c = this.#clock();
     const items = arr(listed.items).map((e) => {
@@ -3728,7 +3727,9 @@ export class Views implements Owner {
       const logins = s.online ? this.#offeredOf(ins[i]!.overview, c) : [];
       return logins.length > 0 ? [{ station: s.address, stationName: s.name, logins }] : [];
     });
-    return { ok: { ...listed, items, machineLogins } };
+    // (whether the viewer manages the workspace, of what #stationsOr read of it: the list's 多选 is its owners' and admins')
+    const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
+    return { ok: { ...listed, items, machineLogins, ...(role === "owner" || role === "admin" ? { manages: true } : {}) } };
   }
 
   /// A station's own logins offered for a profile, as the list shows them beside its rows (#profileRowsView): its

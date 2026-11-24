@@ -329,6 +329,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["attention", "i64", { client: "I54", doc: "How many of them need a look (`look`): what the settings' row says." }],
     ["wait", "ListNote", { doc: "What it still waits on, as every list's first read is drawn (looks.ts waitNote): the stations not read yet, those that could not be." }],
     ["machineLogins", vec("StationMachineLogins"), { default: true, doc: "The machines' own logins offered for a profile, each up station's whose overview is read, in the\nstations' order; a station with none left out. What the Profile place lists with its profiles, in the topic it opens on." }],
+    ["manages", "bool", { default: true, doc: "The viewer is one of the workspace's owners or admins: the list's 多选 (sharing several at once) is theirs." }],
   ], { doc: "The workspace's profiles in one list (the `profiles` view): one shared between stations once, the others each with\nthe station they are on; by kind of account (`group`, in its order), those that need a look first in each.", keepNone: true }),
   ProfilesOverviewView: struct([
     ["pools", vec("OverviewPool"), { doc: "Each model's pool the workspace's subscriptions make (Claude, Fable, Codex, Gemini, each other vendor's), in that order." }],
