@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { test } from "node:test";
@@ -189,9 +189,9 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     writeFileSync(path, text);
   };
 
-  // Real >8 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> guaranteed >= 2 chunks across P11!)
+  // Real >16 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> >= 3 chunks across 2+ P11 yields!)
   const chunkLine = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(4000) } })}\n`;
-  const repeats = opts.multiChunkHistory ? 2200 : 80; // 2200 * ~4060B ≈ 8.93 MiB > 8 MiB TEXT_PART
+  const repeats = opts.multiChunkHistory ? 4200 : 80; // 4200 * ~4060B ≈ 17.0 MiB -> 3 x 8 MiB chunks
 
   addSession("h-a", "claude", "W1", 100);
   store.ranIn("h-a", "ha1", "cc");
@@ -220,6 +220,29 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     `{"type":"assistant","timestamp":"2026-11-01T12:00:00Z","message":{"content":"surrogatehisttoken \\ud800 mid \\ude00 end"}}\n`,
   );
 
+  // Cursor assistant transcript with raw JSON-escaped lone surrogate (\ud800).
+  addSession("h-cursor", "cursor", "W1", 75);
+  store.ranIn("h-cursor", "cu1", "cc");
+  store.setRuntimeSessionId("h-cursor", "cu1");
+  put(
+    join(dir, "transcripts", "cursor", "cu1.jsonl"),
+    `{"type":"assistant","time":1700000000000,"text":"cursorneedle \\ud800 end"}\n`,
+  );
+
+  // Claude transcript: 4000 leading spaces + <command-name> user record MUST be filtered BEFORE 4000-code-point clipping,
+  // so the following assistant record lands at entry index 0 on both MB and Pion!
+  addSession("h-cmd", "claude", "W1", 70);
+  store.ranIn("h-cmd", "hc1", "cc");
+  store.setRuntimeSessionId("h-cmd", "hc1");
+  put(
+    join(dir, "transcripts", "claude", "-w-h-cmd", "hc1.jsonl"),
+    [
+      JSON.stringify({ type: "user", timestamp: "2026-11-01T12:00:00Z", message: { role: "user", content: `${" ".repeat(4000)}<command-name>/clear</command-name>` } }),
+      JSON.stringify({ type: "assistant", timestamp: "2026-11-01T12:00:01Z", message: { content: "cmdfilterneedle hit after filtered command" } }),
+      "",
+    ].join("\n"),
+  );
+
   return {
     dir,
     dbPath,
@@ -229,6 +252,23 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+function openFdTargets(pid: number): string[] | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const out: string[] = [];
+    for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+      try {
+        out.push(readlinkSync(`/proc/${pid}/fd/${fd}`));
+      } catch {
+        // FD may close concurrently
+      }
+    }
+    return out;
+  } catch {
+    return null;
+  }
 }
 
 function openFdCount(pid: number): number | null {
@@ -264,22 +304,34 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-g
     assert.equal(replies1[1].id, 1);
     assert.equal(replies1[1].groups[0].kind, "message");
 
-    // 2. Real >8 MiB multi-chunk P11 interleaving (Rust shell TEXT_PART = 8 MiB):
-    //    Send qHistA(10), qHistB(11), and fast probe qProbe(12).
-    //    In FIFO round-robin:
-    //      Round 1: 10 yields P12, 11 yields P12, 12 yields P9.
-    //      Round 2: 10 opens >8MiB file & reads chunk 1 -> yields P11 (holding open FD!),
-    //               11 opens >8MiB file & reads chunk 1 -> yields P11 (holding open FD!),
-    //               12 finishes P9 -> replies {id: 12}!
-    //    When {id: 12} arrives, BOTH 10 and 11 are deterministically paused at P11 holding real open FDs!
+    // 2. Real >16 MiB (3 x 8 MiB chunks) multi-chunk P11 interleaving (Rust shell TEXT_PART = 8 MiB):
+    //    Send qHistA(10), qHistB(11), and probe1(12).
+    //    Round 1: 10 P9, 11 P9, 12 P9.
+    //    Round 2: 10 P12, 11 P12, 12 DONE -> replies {id: 12}.
+    //    Then send probe2(13):
+    //    Round 3: 10 opens ha1.jsonl + chunk 1 -> P11 (FD OPEN!), 11 opens hb1.jsonl + chunk 1 -> P11 (FD OPEN!), 13 P9.
+    //    Round 4: 10 chunk 2 -> P11 (FD STILL OPEN!), 11 chunk 2 -> P11 (FD STILL OPEN!), 13 DONE -> replies {id: 13}!
     const fdBase = openFdCount(client.child.pid!);
     const qHistA = JSON.stringify({ type: "query", id: 10, query: "alphaonlytoken", asker, kinds: ["history"] });
     const qHistB = JSON.stringify({ type: "query", id: 11, query: "betafirstchunk betaonlytoken overlapcheck", asker, kinds: ["history"] });
-    const qProbe = JSON.stringify({ type: "query", id: 12, query: "FastProfileHit", asker, kinds: ["profile"] });
-    client.writeRaw(`${qHistA}\n${qHistB}\n${qProbe}\n`);
+    const qProbe1 = JSON.stringify({ type: "query", id: 12, query: "FastProfileHit", asker, kinds: ["profile"] });
+    client.writeRaw(`${qHistA}\n${qHistB}\n${qProbe1}\n`);
+    assert.equal((await client.nextJson()).id, 12, "probe 1 advances 10 & 11 to P12");
 
-    const probeReply = await client.nextJson();
-    assert.equal(probeReply.id, 12, "probe query must reply once both >8 MiB history queries have paused at P11");
+    client.send({ type: "query", id: 13, query: "FastProfileHit", asker, kinds: ["profile"] });
+    assert.equal((await client.nextJson()).id, 13, "probe 2 advances 10 & 11 into P11 with open FDs");
+
+    // On Linux, verify at the OS kernel level (`/proc/<pid>/fd`) that the Pion process is
+    // genuinely mid-P11 holding an open >16 MiB transcript FD when cancel A is issued.
+    // (Deterministic step-by-step dual-handle P11 barrier asserting `idA != idB` simultaneously
+    // open before cancel A, plus all 5 exit paths, is verified in `builders_search_test.pion`.)
+    const midP11Targets = openFdTargets(client.child.pid!);
+    if (midP11Targets !== null) {
+      assert.ok(
+        midP11Targets.some((t) => t.endsWith("ha1.jsonl") || t.endsWith("hb1.jsonl")),
+        `expected an open >16 MiB transcript FD in /proc/${client.child.pid}/fd at P11 barrier; got ${JSON.stringify(midP11Targets)}`,
+      );
+    }
 
     // Now cancel A while both A and B are paused mid-P11 holding open handles!
     client.send({ type: "cancel", id: 10 });
@@ -296,16 +348,18 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-g
     assert.equal(histReplies.get(11)?.groups[0].hits.length, 1);
     assert.ok(histReplies.get(11)?.groups[0].hits[0].text.includes("betaonlytoken"));
 
-    // 3. Probe-gated repeated P11 cancellation across 6 >8 MiB history queries -> STRICT 0 FD leak (no +1 tolerance).
-    for (let i = 0; i < 6; i++) {
-      const qid = 100 + i * 2;
-      const pid = 101 + i * 2;
+    // 3. Two-probe-gated repeated mid-P11 cancellation across 4 >16 MiB history queries -> STRICT 0 FD leak (no +1 tolerance).
+    for (let i = 0; i < 4; i++) {
+      const qid = 100 + i * 3;
+      const p1 = 101 + i * 3;
+      const p2 = 102 + i * 3;
       client.writeRaw(
         `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker, kinds: ["history"] })}\n` +
-        `${JSON.stringify({ type: "query", id: pid, query: "FastProfileHit", asker, kinds: ["profile"] })}\n`,
+        `${JSON.stringify({ type: "query", id: p1, query: "FastProfileHit", asker, kinds: ["profile"] })}\n`,
       );
-      const pr = await client.nextJson();
-      assert.equal(pr.id, pid, "probe must confirm >8 MiB history query entered P11");
+      assert.equal((await client.nextJson()).id, p1);
+      client.send({ type: "query", id: p2, query: "FastProfileHit", asker, kinds: ["profile"] });
+      assert.equal((await client.nextJson()).id, p2);
       client.send({ type: "cancel", id: qid });
       const ans = await client.nextJson();
       assert.equal(ans.id, qid);
@@ -313,7 +367,7 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-g
     }
     const fdAfter = openFdCount(client.child.pid!);
     if (fdBase !== null && fdAfter !== null) {
-      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across probe-gated >8 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
+      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across probe-gated >16 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
     }
   } finally {
     await client.close();
@@ -381,6 +435,16 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, disting
         rawLines.push(line);
         break;
       }
+
+      // D2. Claude 4000-leading-spaces `<command-name>` filtered BEFORE 4000-code-point clipping -> assistant hit at index 0
+      c.writeRaw(`{"type":"query","id":43,"query":"cmdfilterneedle","asker":${JSON.stringify(asker)},"kinds":["history"]}\n`);
+      for (;;) {
+        const line = await c.nextLine();
+        const obj = JSON.parse(line);
+        if ("scopePending" in obj || "sessionListPending" in obj) continue;
+        rawLines.push(line);
+        break;
+      }
       return rawLines;
     } finally {
       await c.close();
@@ -410,6 +474,8 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, disting
     assert.equal(id1Ok?.groups?.[0]?.hits?.[0]?.profile, "prof-beta", "subsequent id=1 must succeed with prof-beta");
     const strIdOk = pionNorm.find((o) => o.id === "1");
     assert.equal(strIdOk?.groups?.[0]?.hits?.[0]?.profile, "prof-alpha", 'string id="1" must succeed with prof-alpha');
+    const cmdHit = pionNorm.find((o) => o.id === 43);
+    assert.equal(cmdHit?.groups?.[0]?.hits?.[0]?.index, 0, "4000-space <command-name> must be filtered before clip so assistant hit is index 0");
 
     // Full 0-diff against real MB (preserving exact per-step reply structure)
     const byKey = (arr: any[]) => [...arr].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
@@ -448,6 +514,22 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, disting
       const histParsed = JSON.parse(histSurrLine);
       assert.equal(histParsed.id, 78);
       assert.equal(histParsed.groups[0].hits.length, 1);
+
+      // Cursor assistant transcript with raw JSON-escaped lone surrogate (\ud800)
+      pc.writeRaw(`{"type":"query","id":79,"query":"cursorneedle","asker":${JSON.stringify(asker)},"kinds":["history"]}\n`);
+      let curSurrLine = "";
+      for (;;) {
+        const line = await pc.nextLine();
+        const obj = JSON.parse(line);
+        if ("scopePending" in obj || "sessionListPending" in obj) continue;
+        curSurrLine = line;
+        break;
+      }
+      assert.ok(curSurrLine.includes("\\ud800"), `expected raw \\ud800 preserved in Cursor history excerpt: ${curSurrLine}`);
+      assert.ok(!curSurrLine.includes("\ufffd"), `Cursor history excerpt must NOT replace lone surrogate with U+FFFD: ${curSurrLine}`);
+      const curParsed = JSON.parse(curSurrLine);
+      assert.equal(curParsed.id, 79);
+      assert.equal(curParsed.groups[0].hits.length, 1);
     } finally {
       await pc.close();
     }

@@ -106,24 +106,25 @@ test "state_json encodes raw partial bytes as base64" {
   expect_bs(marks_dir("/", "/data") == "/data/transcript-marks", "marks_dir")
 }
 
-test "tail_utf16 preserves UTF-8 boundaries and never exceeds max_units on odd surrogate boundary" {
+test "tail_utf16_units keeps exact trailing 1024 UTF-16 code units including low surrogate 0xDE00 on odd boundary" {
   let sb = StringBuilder::new()
   for _ in 0..<600 {
     sb.write_string("😀") // 2 UTF-16 units each -> 1200 units
   }
-  let t = tail_utf16(sb.to_string(), 1024)
-  expect_bs(js_json::utf16_len(t) == 1024, "exact 1024 UTF-16 units")
+  let t = tail_utf16_units(js_json::utf16_units(sb.to_string()), 1024)
+  expect_bs(t.length() == 1024, "exact 1024 UTF-16 units")
 
-  // Odd boundary: 😀 (2 units) + 1023 'a' (1023 units) = 1025 UTF-16 units.
-  // Retaining 😀 would produce 1025 > 1024, so tail_utf16 must drop it and keep 1023 <= 1024 units.
+  // Odd boundary: 😀 (0xD83D, 0xDE00) + 1023 'a' = 1025 UTF-16 units.
+  // Aligning with `history.mbt:235`, the trailing 1024 UTF-16 units start with low surrogate 0xDE00!
   let odd = StringBuilder::new()
   odd.write_string("😀")
   for _ in 0..<1023 {
     odd.write_string("a")
   }
-  let t_odd = tail_utf16(odd.to_string(), 1024)
-  expect_bs(js_json::utf16_len(t_odd) == 1023, "odd surrogate boundary capped at 1023 <= 1024, got " + js_json::utf16_len(t_odd).to_string())
-  expect_bs(!t_odd.contains("😀"), "straddling surrogate pair dropped cleanly")
+  let t_odd = tail_utf16_units(js_json::utf16_units(odd.to_string()), 1024)
+  expect_bs(t_odd.length() == 1024, "odd surrogate boundary keeps exact 1024 UTF-16 units, got " + t_odd.length().to_string())
+  expect_bs(t_odd[0] == 0xDE00, "first unit at odd surrogate cut must be low surrogate 0xDE00")
+  expect_bs(t_odd[1] == 0x61 && t_odd[1023] == 0x61, "remaining 1023 units are 'a'")
 }
 
 fn make_mock_session_row(key : String) -> Map[String, base_codec::Json] {
@@ -238,18 +239,22 @@ test "HistoriesStepper P11 interleaved A/B cancel + tail overlap + exact-once te
     Ok(Some("{\"type\":\"assistant\",\"message\":{\"content\":\"alphaonly\"}}\n")),
     Ok(None),
   ])
-  // File B: keyword 1 ("betakey") in chunk 1, keyword 2 ("crossbound") split RIGHT across chunk 1/2 boundary!
-  let b_line1 = "{\"type\":\"assistant\",\"message\":{\"content\":\"betakey part1\"}}\n"
-  let b_line2_a = "{\"type\":\"assistant\",\"message\":{\"content\":\"betakey middle cross"
-  let b_line2_b = "bound end\"}}\n"
+  // File B: keyword 1 ("betakey") sits strictly OUTSIDE the 1024-unit tail overlap (>1200 chars before chunk 1 end),
+  // so resetting `ms.left` on chunk 2 would guarantee failure! Keyword 2 ("crossbound") is split across chunk 1/2.
+  let pad_sb = StringBuilder::new()
+  for _ in 0..<1200 {
+    pad_sb.write_string("f")
+  }
+  let b_part1 = "{\"type\":\"assistant\",\"message\":{\"content\":\"betakey " + pad_sb.to_string() + " cross"
+  let b_part2 = "bound end\"}}\n"
   file_chunks.set("/b.jsonl", [
-    Ok(Some(b_line1 + b_line2_a)),
-    Ok(Some(b_line2_b)),
+    Ok(Some(b_part1)),
+    Ok(Some(b_part2)),
     Ok(None),
   ])
   // File B lines=true read for collect_session_entries
   file_chunks.set("/b.jsonl#lines", [
-    Ok(Some(b_line1 + b_line2_a + b_line2_b)),
+    Ok(Some(b_part1 + b_part2)),
     Ok(None),
   ])
   // File E: read error on chunk 2
@@ -416,13 +421,15 @@ test "HistoriesStepper P11 interleaved A/B cancel + tail overlap + exact-once te
   expect_bs(match stE.step_with(drvE, false) { HistStepResult::Yielded => true; _ => false }, "E P11")
   expect_bs(match stE.step_with(drvE, false) { HistStepResult::Finished(None) => true; _ => false }, "E finishes cleanly on read error")
 
-  // 5. stdin EOF cleanup while paused at P11 (and idempotent second close)
+  // 5. Real scheduler stdin EOF entrypoint (`dispatch_eof`) while paused at P11 (and idempotent second call)
   let drvF = make_driver("s-f", "/a.jsonl")
   let stF = HistoriesStepper::new("/data", "/", ["alphaonly"], asker, 8, 0, clock[0])
   expect_bs(match stF.step_with(drvF, false) { HistStepResult::Yielded => true; _ => false }, "F P12")
   expect_bs(match stF.step_with(drvF, false) { HistStepResult::Yielded => true; _ => false }, "F P11")
-  stF.close_text_handle_with(drvF.text_close)
-  stF.close_text_handle_with(drvF.text_close) // idempotent!
+  let active_eof : Array[HistoriesStepper] = [stF]
+  dispatch_eof(active_eof, fn(s : HistoriesStepper) -> Unit { s.close_text_handle_with(drvF.text_close) })
+  expect_bs(active_eof.length() == 0, "dispatch_eof drains active queue")
+  dispatch_eof(active_eof, fn(s : HistoriesStepper) -> Unit { s.close_text_handle_with(drvF.text_close) }) // idempotent!
 
   // Assert EVERY handle opened across all 5 exit paths was closed EXACTLY ONCE (0 leaks, 0 double-closes)
   let total_opened = next_id[0] - 1

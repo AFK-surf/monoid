@@ -524,12 +524,14 @@ fn cursor_entry(r : js_json::JValue, out : Array[Entry]) -> Result[Unit, String]
     Err(e) => return Err(e)
   }
   if kind == "user" || kind == "assistant" || kind == "thinking" {
-    let text = match jv_string_of(jv_get(rj, "text")) {
-      Some(s) => s
-      None => ""
-    }
-    if hist_trim(text) != "" {
-      out.push(make_entry(at, kind, clip(text)))
+    match jv_units_of(jv_get(rj, "text")) {
+      Some(u) => {
+        if hist_trim(js_json::sanitize_str(u)) != "" {
+          let cu = clip_units(u)
+          out.push(make_entry(at, kind, js_json::sanitize_str(cu), text_units=Some(cu)))
+        }
+      }
+      None => ()
     }
   } else if kind == "tool" {
     let mut name = match jv_string_of(jv_get(rj, "name")) {
@@ -674,12 +676,14 @@ fn claude_entry(r : js_json::JValue, out : Array[Entry]) -> Unit {
   let content = jv_get(jv_get(rj, "message"), "content")
   match content {
     Some(js_json::JValue::Str(u)) => {
-      let cu = clip_units(u)
-      let text = js_json::sanitize_str(cu)
-      if kind == "user" && claude_command(text) {
+      // Align with `station/mb/src/history/entries.mbt:358-363`: filter `claude_command`
+      // BEFORE 4000-code-point clipping so 4000+ leading spaces + `<command-name>` is still filtered.
+      let full_text = js_json::sanitize_str(u)
+      if kind == "user" && claude_command(full_text) {
         return
       }
-      out.push(make_entry(at, kind, text, text_units=Some(cu), subagent=subagent))
+      let cu = clip_units(u)
+      out.push(make_entry(at, kind, js_json::sanitize_str(cu), text_units=Some(cu), subagent=subagent))
       return
     }
     Some(js_json::JValue::Arr(blocks)) => {
