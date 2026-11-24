@@ -53,8 +53,7 @@ pub fn doc_notes_side(width : Double, count : Int) -> Bool {
 /// The notes as rows in `v`: where each is, what it is of (two lines at most) and what was said of it; a press on
 /// one opens it (`opened` first, a sheet closing), its bin takes it off. The one open stands out.
 pub fn doc_notes_list_node(v : @view.View, of : DocNotes, opened : () -> Unit) -> Unit {
-  // 4pt inset keeps outer keyboard focus rings (focus_gap + focus_w = 4pt) unclipped inside scroll viewports
-  v.padding(Is((4.0, 4.0, 4.0, 4.0))).gap(Is(6.0)) |> ignore
+  v.gap(Is(6.0)) |> ignore
   v.each(of.notes, fn(n) { n.id }, fn(row, n) {
     row.row(Is(true)).lines_up(Is(Some(Start))).gap(Is(2.0)) |> ignore
     @sf.action_box_node(
@@ -145,9 +144,29 @@ pub fn doc_notes_side_node(parent : @view.View, of : DocNotes, shown : () -> Boo
       doc_note_line(p, fn() { pv_fill("android-chat.pdf.notes.count", [("n", "\{(of.notes)().length()}")]) }, 15.0, 600, 1, fn() {
         @sf.theme().p.text
       })
+      let ring_inset = fn() {
+        let t = @ui.tree_theme()
+        t.focus_gap + t.focus_w
+      }
       p.box(fn(s) {
-        s.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-        s.scrolls(@view.Scroll::new(), fn(c) { doc_notes_list_node(c, of, fn() {  }) }) |> ignore
+        s
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        .min_height(Is(Some(0.0)))
+        .margin(By(fn() {
+          let o = ring_inset()
+          (-o, -o, -o, -o)
+        }))
+        |> ignore
+        s.scrolls(@view.Scroll::new(), fn(c) {
+          c.padding(By(fn() {
+            let o = ring_inset()
+            (o, o, o, o)
+          }))
+          |> ignore
+          doc_notes_list_node(c, of, fn() {  })
+        })
+        |> ignore
       })
       |> ignore
       doc_notes_foot_keys(p, of, fn() {  })

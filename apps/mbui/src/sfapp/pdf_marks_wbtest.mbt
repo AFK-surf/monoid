@@ -332,6 +332,15 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
   let clear_btn = t.get(Button, label="清除标注")
   let send_btn = t.get(Button, label="回到输入框发送")
   let del_btn = t.all(Button, label="删除批注")[0]
+  // Side heading ("1 条标注") left edge must align with first note card left edge (<= 0.5pt, zero inset shift)
+  guard t.words().filter(fn(wd) { wd.0.contains("条标注") }) is [(_, head_x, _, _, _, _), ..] else {
+    fail("side heading containing 条标注 not found")
+  }
+  let note_card = t.get(Button, label="第 1 页 first page")
+  assert_true(
+    (head_x - note_card.rect.0).abs() <= 0.5,
+    msg="side heading left \{head_x} must align with first note card left \{note_card.rect.0} (<= 0.5pt)",
+  )
   assert_true(clear_btn.rect.1 >= 0.0 && clear_btn.rect.1 + clear_btn.rect.3 <= 420.0, msg="clear btn visible in short window")
   assert_true(send_btn.rect.1 >= 0.0 && send_btn.rect.1 + send_btn.rect.3 <= 420.0, msg="send btn visible in short window")
   assert_true(del_btn.rect.1 >= 0.0 && del_btn.rect.1 + del_btn.rect.3 <= 420.0, msg="top delete btn visible in short window")
