@@ -121,7 +121,9 @@ export function* transcriptInLooking(runtime: RuntimeKind, dir: string, id: stri
     if (kept === null && placed) return null;
     if (kept != null && (yield* stored(kept))) return kept;
     if (!anywhere) return null;
-    for (const project of (yield* entriesOf(dir)) ?? []) {
+    const projects = yield* entriesOf(dir);
+    if (projects === null) return null; // readdir failure must not poison elsewhere negative cache
+    for (const project of projects) {
       const path = join(dir, project, `${id}.jsonl`);
       if (yield* stored(path)) {
         if (elsewhere.get(at) !== path) { elsewhere.set(at, path); hintChanged(id); }

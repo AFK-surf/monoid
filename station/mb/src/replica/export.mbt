@@ -1481,7 +1481,7 @@ async fn Exporter::export_transcripts(
       finder_readdir_err.add(d)
     }
   }
-  let finder = @locate.Finder::new(self.host, self.files.sep, readdir_err=finder_readdir_err)
+  let finder = @locate.Finder::new(self.host, self.files.sep, track_failed_dirs=true, readdir_err=finder_readdir_err)
   let by_ws : Map[String, Map[String, String?]] = Map([])
   let unreadable_dirs_by_ws : Map[String, Set[String]] = Map([])
   let unreadable_paths_by_ws : Map[String, Set[String]] = Map([])

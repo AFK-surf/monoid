@@ -1661,12 +1661,14 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     const pass = async (told: ReturnType<typeof nothingTold>) =>
       exporter !== null ? exporter.pass(told) : mb!.pass(told, now);
 
-    // Ensure notes2File & annPath exist for this mode run
+    // Ensure notes2File, annPath, taskPath, and finderEioTrPath start from clean baseline for this mode run
     mkdirSync(join(notes2File, ".."), { recursive: true });
     writeFileSync(notes2File, "sibling content\n");
     writeFileSync(annPath, `content:${annPath}\n`);
     writeFileSync(taskPath, `content:${taskPath}\n`);
     utimesSync(taskPath, new Date(now), new Date(now));
+    writeFileSync(finderEioTrPath, '{"role":"user","text":"finder-eio-keep"}\n');
+    utimesSync(finderEioTrPath, new Date(now), new Date(now));
 
     // Baseline export
     await pass(nothingTold());
@@ -1818,16 +1820,78 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     await setFaults({});
     rmSync(swapDir, { force: true });
 
-    // (j) R3: Finder opendir succeeds (dir is 0o755!) but mid-iteration readdir hits EIO -> ONLY Finder failed_dirs
-    //     saves existing Claude transcript (dir_unreadable_checked sees 0o755 as readable!) -> 0 tr_del (root-safe, TS + MB)
-    assert.ok(readStatePaths(replica).some((r) => r.path === finderEioTrPath), `${mode}: baseline has finderEioTrPath`);
+    // (j) R3/R4: Finder opendir succeeds (dir is 0o755!) but mid-iteration readdir hits EIO -> ONLY Finder failed_dirs
+    //     saves existing Claude transcript (dir_unreadable_checked sees 0o755 as readable!) -> 0 tr_del (root-safe, TS + MB);
+    //     then clear fault + append new content -> re-discovered and exported (proves no poisoned `elsewhere` negative cache!)
+    const prevFinderRow = readStatePaths(replica).find((r) => r.path === finderEioTrPath)!;
+    assert.ok(prevFinderRow, `${mode}: baseline has finderEioTrPath`);
     resetTranscriptLocateCache();
     now += 10_000;
     await setFaults({ finder_readdir_err: [claudeProjectsDir] });
     const pFinderEio = await pass({ ...nothingTold(), transcripts: true });
     assert.equal(pFinderEio.wrote, 0, `${mode}: Finder mid-iteration EIO on 0o755 dir preserves transcript with 0 tr_del`);
-    assert.ok(readStatePaths(replica).some((r) => r.path === finderEioTrPath));
+    assert.deepEqual(readStatePaths(replica).find((r) => r.path === finderEioTrPath), prevFinderRow);
+
     await setFaults({});
+    now += 10_000;
+    writeFileSync(finderEioTrPath, `{"role":"user","text":"finder-eio-keep"}\n{"role":"assistant","text":"recovered-after-eio-${mode}"}\n`);
+    utimesSync(finderEioTrPath, new Date(now), new Date(now));
+    const pFinderRecover = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(pFinderRecover.wrote, 1, `${mode}: recovery pass after Finder EIO re-discovers and exports appended content`);
+    const recoveredFinderRow = readStatePaths(replica).find((r) => r.path === finderEioTrPath)!;
+    assert.ok(recoveredFinderRow, `${mode}: finderEioTrPath retained after recovery`);
+    assert.notEqual(recoveredFinderRow.chunks_json, prevFinderRow.chunks_json, `${mode}: appended content exported (no poisoned negative cache)`);
+
+    // (k) R4: two workspaces in the SAME pass sharing the same Claude runtime ID (both scanning `transcripts/claude`):
+    //     injecting `finder_readdir_err` must preserve BOTH workspaces' rows with 0 tr_del (no negative-cache short-circuit on 2nd ws)
+    const ws2Key = `chat:claude-finder-eio-ws2-${mode}`;
+    const ws2Room = join(s.data, "sessions", "chat", ws2Key, "workspace");
+    mkdirSync(ws2Room, { recursive: true });
+    s.store.insertSession({
+      key: ws2Key,
+      connect: "chat",
+      runtime: "claude",
+      profile: "cc",
+      workspace: ws2Room,
+      token: `tok-${ws2Key}`,
+      createdAt: 4,
+      lastActiveAt: 4,
+      ws: OTHER,
+    });
+    s.store.setRuntimeSessionId(ws2Key, finderEioId);
+    const tWs2 = s.store.openThread("chat", "C", `ts-${ws2Key}`, "Claude Finder WS2", "p@x").id;
+    s.store.joinThread(tWs2, ws2Key, "chat");
+    const twoWsList = [
+      { workspace: HOME, name: "src" },
+      { workspace: OTHER, name: "other" },
+    ];
+    if (exporter !== null) exporter.setPlaces({ home: HOME, workspaces: twoWsList });
+    else await mb!.places(now, twoWsList);
+
+    const readWsRows = (ws: string) => {
+      const db = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+      try {
+        return db.prepare("SELECT path, chunks_json FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string; chunks_json: string }[];
+      } finally {
+        db.close();
+      }
+    };
+    resetTranscriptLocateCache();
+    now += 10_000;
+    await pass({ ...nothingTold(), transcripts: true });
+    assert.ok(readWsRows(HOME).some((r) => r.path === finderEioTrPath), `${mode}: HOME has shared Claude transcript`);
+    assert.ok(readWsRows(OTHER).some((r) => r.path === finderEioTrPath), `${mode}: OTHER has shared Claude transcript`);
+
+    resetTranscriptLocateCache();
+    now += 10_000;
+    await setFaults({ finder_readdir_err: [claudeProjectsDir] });
+    const pTwoWsEio = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(pTwoWsEio.wrote, 0, `${mode}: shared Claude ID across 2 workspaces emits 0 tr_del on Finder EIO`);
+    assert.ok(readWsRows(HOME).some((r) => r.path === finderEioTrPath), `${mode}: HOME row preserved`);
+    assert.ok(readWsRows(OTHER).some((r) => r.path === finderEioTrPath), `${mode}: OTHER row preserved (no negative-cache skip)`);
+    await setFaults({});
+    if (exporter !== null) exporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+    else await mb!.places(now);
   };
 
   await runDeterministicSuite("ts");
