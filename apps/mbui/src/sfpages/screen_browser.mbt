@@ -391,6 +391,7 @@ fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
     @sf.hover_ground_node(b)
     b.box(fn(sq) {
       @sf.style_node(sq, fn() { browser_count_square }, in_row=true)
+      sq.shapes(By(fn() { browser_count_square_shapes(@sf.theme().p.text, @sf.radii.sm) })) |> ignore
       @sf.mark_words_node(sq, fn() { "\{count()}" }, fn() { browser_count_words }) |> ignore
     })
     |> ignore
@@ -398,6 +399,33 @@ fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
   @sf.tip_node(pg.tips, b, label) |> ignore
   // (asked from elsewhere, a fixture's: opened as it is made)
   screen_asked(b, pg, ["tabs"], fn(_) { open(b) })
+}
+
+///|
+/// Closed 20×20 rounded-square vector outline (outer radius `outer_r`, 1.5pt stroke inset by 0.75pt) drawn as
+/// `kind == 11` shapes so adaptive liquid glass inverts the frame together with its count glyph and `corner_faults`
+/// treats it as an icon rather than a nested card.
+fn browser_count_square_shapes(color : Int64, outer_r : Double) -> Array[@ui.Shape] {
+  let lo = 0.75
+  let hi = 19.25
+  let r = if outer_r - 0.75 > 0.5 { outer_r - 0.75 } else { 0.5 }
+  let steps = 4
+  let pts : Array[Double] = []
+  let corners : Array[(Double, Double, Double)] = [
+    (hi - r, lo + r, -@math.PI / 2.0),
+    (hi - r, hi - r, 0.0),
+    (lo + r, hi - r, @math.PI / 2.0),
+    (lo + r, lo + r, @math.PI),
+  ]
+  for c in corners {
+    let (cx, cy, a0) = c
+    for i in 0..<=steps {
+      let a = a0 + (@math.PI / 2.0) * i.to_double() / steps.to_double()
+      pts.push(cx + r * @math.cos(a))
+      pts.push(cy + r * @math.sin(a))
+    }
+  }
+  [@ui.shape_of([(pts, true)], stroke=color, width=1.5)]
 }
 
 ///|
