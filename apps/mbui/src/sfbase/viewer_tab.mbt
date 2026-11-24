@@ -1358,7 +1358,7 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer, chat : String, ta
         h,
         fn() { !marked() && vw.near_ids(src).0 is Some(_) },
         fn() { !marked() && vw.near_ids(src).1 is Some(_) },
-        fn() { !@sf.pointer_rests() || stage.pointer_within() },
+        fn(_) { !@sf.pointer_rests() || stage.pointer_within() },
         fn(_) { 1.0 },
         fn() {
           z.told()

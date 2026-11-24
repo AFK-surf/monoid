@@ -10,7 +10,7 @@
       "src/sfbase/screen_links_node.mbt": 2,
       "src/sfbase/sync_key_node.mbt": 3,
       "src/sfbase/viewer.mbt": 2,
-      "src/sfbase/viewer_tree.mbt": 4,
+      "src/sfbase/viewer_tree.mbt": 3,
       "src/sfbase/workspace_switch.mbt": 2
     }
   }

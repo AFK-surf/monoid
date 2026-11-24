@@ -4,8 +4,11 @@
 // canvas, src/ui/native.mbt), its bytes read through the core a part at a time (`station.file.part`); PDFs drawn by the
 // system page by page; HTML in a page of its own (a native web view: its scripts on, nothing of the app's reachable);
 // Markdown rendered; CSV as a table; code and text as they are. Anything else says it cannot be shown and offers the
-// download. One bar floats at the top with its name and tools. Back (or ×) closes it; a picture closes as well by a
-// tap on it, a finger taking it down or a trackpad's two going down it (darksky, 2026-11-15).
+// download. One bar floats over the full-bleed stage with its name and tools. Back (or ×) closes it; with a desktop
+// pointer, clicking blank space outside a sized picture (and outside active side arrow zones) closes it while clicking
+// the picture toggles bars and arrows, and bars auto-fade after 1800 ms idle; with touch (including iPhone Duo fitted
+// view), tapping anywhere toggles bars and arrows while dragging down or a trackpad's two fingers going down closes it
+// (zuozijian, 2026-11-25, superseding the 2026-11-15 #6550 tap-picture-to-close rule).
 //
 // An image or a video flies from the chat's thumbnail and back into it; a video closed
 // so keeps the frame it was left at, which its thumbnail shows and where it goes on from when opened again
@@ -204,13 +207,35 @@ pub(all) struct Viewer {
   asked_told : @signals.Signal[Int]
   /// …or to be installed (an APK)
   mut install_after : Bool
-  /// the bars shown: till a tap (a click) hides them, and another brings them back (the user, 2026-10-28; a picture's
-  /// tap closes it instead, darksky 2026-11-15); told as it
-  /// changes (`awake_told`: what shows the bars follows it)
+  /// the bars shown: on desktop pointer, auto-fades after `image_idle_ms` idle and toggled by clicking the picture;
+  /// on touch, toggled by tapping anywhere (zuozijian, 2026-11-25, superseding 2026-11-15 #6550 tap-picture-to-close).
+  /// Told as it changes (`awake_told`: what shows the bars and side arrows follows it).
   mut awake : Bool
   awake_told : @signals.Signal[Int]
   /// a mouse's pointer along the top, where the bar is: there while it is, hidden or not
   mut near_bar : Bool
+  /// a mouse's pointer in the left / right `viewer_step_zone_w` (84 pt) hot zone: lights only that side's arrow
+  mut near_left : Bool
+  mut near_right : Bool
+  /// keyboard focus inside the viewer's top bar (locks auto-fade)
+  mut bar_focused : Bool
+  mut bar_focus_count : Int
+  /// picture context menu currently open (locks auto-fade)
+  mut menu_open : Bool
+  /// user manually hid bars/arrows by clicking the picture: suppresses near_bar/near_left/near_right rebound until a
+  /// real pointer move arrives
+  mut manual_hidden : Bool
+  /// desktop pointer has left the viewer window (suppresses lock-clear rebound until pointer re-enters or user acts)
+  mut pointer_left : Bool
+  /// desktop single-tap double-click window paused `idle_off`; if a second press ends in `Off` or drag without
+  /// committing a tap or double-tap, restore `1800ms` idle auto-fade
+  mut tap_paused_idle : Bool
+  /// monotonic epoch incremented on `bars_locked` transitions and `wake()` to invalidate stale pending tap intents
+  mut lock_epoch : Int
+  /// single idle auto-fade timer handle owned by the viewer root node (`later=true`)
+  mut idle_off : () -> Unit
+  /// whether the current press started from a resting pointer (`@sf.pointer_rests()` recorded at `Down`)
+  mut down_pointer : Bool
   zoom : @motion.Zoom
   vzoom : @motion.Zoom
   /// 源码 rather than 预览
@@ -939,6 +964,17 @@ pub fn new_viewer(
     awake_told: @signals.signal(0),
     asked_told: @signals.signal(0),
     near_bar: false,
+    near_left: false,
+    near_right: false,
+    bar_focused: false,
+    bar_focus_count: 0,
+    menu_open: false,
+    manual_hidden: false,
+    pointer_left: false,
+    tap_paused_idle: false,
+    lock_epoch: 0,
+    idle_off: fn() {  },
+    down_pointer: false,
     // (a tab's fitted as the whole window's is, but always as on a narrow stage: tab_picture_node lays it out so)
     zoom: if beside {
       @motion.Zoom::new(margin=fn(_) { tab_picture_margin })
@@ -2196,16 +2232,57 @@ fn Viewer::grab_set(self : Viewer, on : Bool) -> Unit {
 }
 
 ///|
-/// A tap (a click) on the stage shows or hides the bars: nothing else hides them.
+/// Desktop pointer idle timeout before full-screen image bars and arrows auto-fade (ms).
+pub let image_idle_ms : Double = 1800.0
+
+///|
+/// Desktop side hot-zone width (pt) that wakes only the corresponding prev/next arrow.
+pub let viewer_step_zone_w : Double = 84.0
+
+///|
+/// A tap (or click on a picture) toggles the bars: hiding an image on a desktop pointer sets `manual_hidden` so a
+/// still cursor in a hot zone does not immediately bounce the bars or arrows back. Non-image previews never set
+/// `manual_hidden` so top-edge hover still wakes their bar.
 pub fn Viewer::toggle(self : Viewer) -> Unit {
-  self.awake = !self.awake
+  if self.awake {
+    self.awake = false
+    if self.shown_kind() == Some(KImage) && @sf.pointer_rests() {
+      self.manual_hidden = true
+      self.cancel_idle()
+    }
+  } else {
+    self.awake = true
+    self.manual_hidden = false
+    self.pointer_left = false
+  }
+  self.awake_said()
+}
+
+///|
+/// Commit a deterministic single-tap bar visibility target captured at `Up` before the `twice_ms` double-tap window,
+/// preventing an expiring idle timer during `twice_ms` from inverting the user's intent.
+fn Viewer::set_bars_after_tap(self : Viewer, show : Bool, desktop~ : Bool) -> Unit {
+  if show {
+    self.awake = true
+    self.manual_hidden = false
+    self.pointer_left = false
+  } else {
+    self.awake = false
+    if desktop && self.shown_kind() == Some(KImage) && @sf.pointer_rests() {
+      self.manual_hidden = true
+      self.cancel_idle()
+    }
+  }
   self.awake_said()
 }
 
 ///|
 pub fn Viewer::wake(self : Viewer) -> Unit {
-  if !self.awake {
+  if !self.awake || self.manual_hidden || self.pointer_left {
     self.awake = true
+    self.manual_hidden = false
+    self.pointer_left = false
+    self.lock_epoch += 1
     self.awake_said()
   }
 }
@@ -2216,17 +2293,65 @@ fn Viewer::awake_said(self : Viewer) -> Unit {
 }
 
 ///|
-/// Whether the bars show: awake, or a mouse's pointer along the top where the bar is, or while the whole of an image
-/// comes, or over a page whose taps are its own, or while it marks. As each is told (marking: marks_said).
-pub fn Viewer::bars_shown(self : Viewer) -> Bool {
+/// Cancel the pending desktop idle auto-fade timer on this viewer, if any.
+fn Viewer::cancel_idle(self : Viewer) -> Unit {
+  (self.idle_off)()
+  self.idle_off = fn() {  }
+}
+
+///|
+/// Whether the picture is currently zoomed in past fitted (or gliding there), tracked via `zoom.told()`.
+fn Viewer::zoomed_now(self : Viewer) -> Bool {
+  self.zoom.told()
+  let z = self.zoom
+  z.nw > 0.0 && (if z.gliding { z.g_to[0] } else { z.scale }) > z.fit() * 1.01
+}
+
+///|
+/// Whether the bars are locked visible (never auto-faded while any lock holds).
+pub fn Viewer::bars_locked(self : Viewer) -> Bool {
   self.awake_told.get() |> ignore
   self.source_told.get() |> ignore
   marks_said()
-  self.awake ||
-  self.near_bar ||
+  marking.on ||
   self.image_loading() ||
   ((self.shown_kind() == Some(KHtml) || self.shown_kind() == Some(KMbui)) && !self.source) ||
-  marking.on
+  @ui.screen_reader_on() ||
+  ((self.shown_kind() != Some(KImage) || !self.manual_hidden) && self.near_bar) ||
+  self.menu_open ||
+  self.bar_focused
+}
+
+///|
+/// Whether the bars show: awake or any lock holds. As each is told (marking: marks_said).
+pub fn Viewer::bars_shown(self : Viewer) -> Bool {
+  self.bars_locked() || self.awake
+}
+
+///|
+/// Whether the side step arrow for `dir` (-1 before, 1 after) should be awake.
+/// Hard-suppressed while marking or zoomed; on desktop pointer, `near_left` / `near_right` wake only their own side
+/// without waking the top bar or the opposite arrow, and `manual_hidden` suppresses rebound until real pointer motion.
+pub fn Viewer::step_shown(self : Viewer, dir : Int) -> Bool {
+  self.awake_told.get() |> ignore
+  marks_said()
+  if marking.on || self.zoomed_now() {
+    return false
+  }
+  if !@sf.pointer_rests() {
+    return self.awake
+  }
+  if self.manual_hidden {
+    return false
+  }
+  if self.awake || @ui.screen_reader_on() || self.menu_open || self.bar_focused {
+    return true
+  }
+  if dir < 0 {
+    self.near_left
+  } else {
+    self.near_right
+  }
 }
 
 ///|
@@ -2597,7 +2722,14 @@ fn Viewer::picture_menu_at(self : Viewer, x : Double, y : Double) -> Unit {
   if shares_out() {
     items.push(Some(@sf.menu_item_of(@sf.t("android-misc.drive.share"), fn() { self.ask_share() }, icon="share")))
   }
-  @sf.menu(items, from=@sf.at_point(x, y))
+  self.menu_open = true
+  self.awake_said()
+  @sf.menu(items, from=@sf.at_point(x, y), gone=fn() {
+    if self.menu_open {
+      self.menu_open = false
+      self.awake_said()
+    }
+  })
 }
 
 ///|
@@ -2918,10 +3050,11 @@ pub fn Viewer::go(self : Viewer, c : @ui.Ctx, src : Source, dir : Int, velocity 
         }
         _ => None
       }
-      // shown at once: no fade; its bars as they were (only a tap hides or shows them, the user 2026-10-28)
+      // shown at once: no fade; carries awake state (manual_hidden cleared on step)
       n.started = true
       n.fade.put(1.0)
       n.awake = self.awake
+      n.manual_hidden = false
       n.awake_said()
       viewer.set(Some(n))
       pv_strip.near.remove(n.thumb_id())

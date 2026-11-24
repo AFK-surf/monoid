@@ -773,6 +773,8 @@ pub struct Zoom {
   mut bh : Double
   mut bar : Double
   mut foot_bar : Double
+  mut pan_bar : Double
+  mut pan_foot_bar : Double
   mut scale : Double
   mut x : Double
   mut y : Double
@@ -802,6 +804,7 @@ pub fn Zoom::min_scale(Self) -> Double
 pub fn Zoom::natural(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::new(margin? : (Double) -> Double, enlarge? : Bool, min_scale? : (Double) -> Double, max_scale? : (Double) -> Double, free? : Bool, fit_step? : Double) -> Self
 pub fn Zoom::pan(Self, Double, Double, at~ : Double) -> Unit
+pub fn Zoom::pan_under_bars(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::pull(Self, Double, Double, at~ : Double) -> Unit
 pub fn Zoom::pulled_at(Self, Double) -> Double
 pub fn Zoom::rect_at(Self, Double) -> (Double, Double, Double, Double)?

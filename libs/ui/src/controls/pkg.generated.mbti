@@ -3190,7 +3190,9 @@ pub fn viewer_reset() -> Unit
 pub let viewer_small_w : Double
 
 #callsite(autofill(loc))
-pub fn viewer_steps_node(@view.View, () -> Bool, () -> Bool, () -> Bool, (@view.View) -> Double, () -> Bool, (Int32) -> Unit, TipLayer, loc~ : SourceLoc) -> @view.View
+pub fn viewer_steps_node(@view.View, () -> Bool, () -> Bool, (Int32) -> Bool, (@view.View) -> Double, () -> Bool, (Int32) -> Unit, TipLayer, loc~ : SourceLoc) -> @view.View
+
+pub fn viewer_steps_on_move(@view.View, () -> Unit) -> Unit
 
 pub let viewer_tool_icon : Double
 
