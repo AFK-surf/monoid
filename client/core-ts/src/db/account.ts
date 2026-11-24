@@ -521,7 +521,7 @@ export class AccountDb {
   dropWorkspace(id: string): void { this.#docs.dropWorkspace(id); }
   workspaceIds(): string[] { return this.#docs.workspaceIds(); }
   stationDoc(station: string, kind: string): J { return this.#docs.stationDoc(station, kind); }
-  putStationDoc(station: string, kind: string, value: J, confirmed: number | null, topic: Topic | null): void { this.#docs.putStationDoc(station, kind, value, confirmed, topic); }
+  putStationDoc(station: string, kind: string, value: J, confirmed: number | null, topic: Topic | null, cache = true): void { this.#docs.putStationDoc(station, kind, value, confirmed, topic, cache); }
   dropStationDoc(station: string, kind: string, topic: Topic | null): void { this.#docs.dropStationDoc(station, kind, topic); }
   overviewPart(station: string): J { return this.#docs.overviewPart(station); }
   overviewRow(station: string): J { return this.#docs.overviewRow(station); }

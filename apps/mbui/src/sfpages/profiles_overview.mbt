@@ -645,6 +645,7 @@ fn ov_trajectory_plot(pool : ModelPool, w : Double, h : Double) -> (Array[@ui.Re
       run_pts = []
     }
   }
+  let mut skip_next_dash = false
   for step in 0..<168 {
     let i0 = 48 + step
     let i1 = i0 + 1
@@ -675,12 +676,51 @@ fn ov_trajectory_plot(pool : ModelPool, w : Double, h : Double) -> (Array[@ui.Re
     }
 
     if is_jump {
+      skip_next_dash = false
       lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=t.p.green))
       if v1 - v0 >= 6.0 {
         refill_dots.push((x1, y1))
       }
     } else if !(v0 <= 0.4 && v1 <= 0.4) && step % 3 != 2 {
-      lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=seg_ink))
+      if step % 3 == 1 && skip_next_dash {
+        skip_next_dash = false
+      } else if step % 3 == 0 && step + 1 < 168 && i1 + 1 < pool.traj.length() {
+        let i2 = i1 + 1
+        let v2 = pool.traj[i2]
+        let is_jump2 = v2 > v1 + 1.8
+        let starve2 = pool.will_starve[step + 1]
+        let seg_ink2 = if is_jump2 || !starve2 { t.p.green } else { t.p.red }
+        if !is_jump2 && !(v1 <= 0.4 && v2 <= 0.4) && seg_ink2 == seg_ink {
+          let x2 = x_of(i2)
+          let y2 = y_of(v2)
+          let dx = x2 - x0
+          let dy = y2 - y0
+          let len2 = dx * dx + dy * dy
+          let d2 = if len2 <= 1.0e-12 {
+            let ex = x1 - x0
+            let ey = y1 - y0
+            ex * ex + ey * ey
+          } else {
+            let cross = (x1 - x0) * dy - (y1 - y0) * dx
+            cross * cross / len2
+          }
+          if d2 <= 0.08 * 0.08 {
+            lines.push(@ui.line([(x0, y0), (x2, y2)], width=2.0, color=seg_ink))
+            skip_next_dash = true
+          } else {
+            lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=seg_ink))
+            skip_next_dash = false
+          }
+        } else {
+          lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=seg_ink))
+          skip_next_dash = false
+        }
+      } else {
+        lines.push(@ui.line([(x0, y0), (x1, y1)], width=2.0, color=seg_ink))
+        skip_next_dash = false
+      }
+    } else {
+      skip_next_dash = false
     }
   }
   flush_run()
@@ -1403,7 +1443,35 @@ pub fn profiles_overview_node(
   let list_now = @signals.computed(fn(_) { items(topic().value, "items") }, same=jsons_same)
   let list = fn() { list_now.get() }
   let overview = fn() { (core.topic)("profilesOverview", { "scope": Json::string(here().workspace) }).get() }
-  let pools_now = @signals.computed(fn(_) { items(overview().value, "pools").map(ov_pool_of) }, same=fn(a, b) { a == b })
+  let prev_pool_jsons : Ref[Array[Json]] = Ref([])
+  let prev_pools : Ref[Array[ModelPool]] = Ref([])
+  let pools_now = @signals.computed(fn(_) {
+    let raw = items(overview().value, "pools")
+    let old_js = prev_pool_jsons.val
+    let old_ps = prev_pools.val
+    let out : Array[ModelPool] = Array(capacity=raw.length())
+    for i, j in raw {
+      if i < old_js.length() && json_same(old_js[i], j) {
+        out.push(old_ps[i])
+      } else {
+        let title = text(Some(j), "title")
+        let mut found : ModelPool? = None
+        for k, oj in old_js {
+          if k != i && old_ps[k].title == title && json_same(oj, j) {
+            found = Some(old_ps[k])
+            break
+          }
+        }
+        match found {
+          Some(p) => out.push(p)
+          None => out.push(ov_pool_of(j))
+        }
+      }
+    }
+    prev_pool_jsons.val = raw
+    prev_pools.val = out
+    out
+  }, same=fn(a, b) { a == b })
   let pools = fn() { pools_now.get() }
   let has_accounts_tab = on_show_accounts is Some(_)
   // (what it lists, each worked out once of the accounts for all that reads it, told only as it comes out otherwise: an

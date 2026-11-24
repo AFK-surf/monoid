@@ -79,9 +79,9 @@ export class DocsStore {
     return v;
   }
 
-  putStationDoc(station: string, kind: string, value: J, confirmed: number | null, topic: Topic | null): void {
+  putStationDoc(station: string, kind: string, value: J, confirmed: number | null, topic: Topic | null, cache = true): void {
     const doc = { table: "station", keys: ["address", "kind"], of: [station, kind], confirmed };
-    this.#putDoc(K("st", station, kind), value, doc, topic, kind === "overview" ? (put) => this.#overviewWritten(station, put) : undefined);
+    this.#putDoc(K("st", station, kind), value, doc, topic, kind === "overview" ? (put) => this.#overviewWritten(station, put) : undefined, cache);
   }
 
   dropStationDoc(station: string, kind: string, topic: Topic | null): void {
@@ -305,7 +305,7 @@ export class DocsStore {
   /// beside it: #overviewWritten). Whether it is the same as the one held is SQLite's to say, by a number: no document's
   /// text comes back to be compared. The same: only when it was confirmed changes. Another, or none held: it is put,
   /// kept in the cache as it is, and told.
-  #putDoc(key: string, value: J, doc: Doc, topic: Topic | null, around?: (put: () => void) => void): void {
+  #putDoc(key: string, value: J, doc: Doc, topic: Topic | null, around?: (put: () => void) => void, cache = true): void {
     this.#env.write(() => {
       const json = JSON.stringify(value);
       const where = doc.keys.map((c) => `${c} = ?`).join(" AND ");
@@ -314,6 +314,7 @@ export class DocsStore {
         : this.#env.sql.all(`SELECT json = ?, confirmed FROM ${doc.table} WHERE ${where}`, [json, ...doc.of])[0];
       if (same?.[0] === 1) {
         if (doc.confirmed !== undefined && doc.confirmed !== null && same[1] !== doc.confirmed) this.#env.run(`UPDATE ${doc.table} SET confirmed = ? WHERE ${where}`, [doc.confirmed, ...doc.of]);
+        if (!cache) this.#env.cache.delete(key);
         return;
       }
       const columns = [...doc.keys, "json", ...(doc.confirmed === undefined ? [] : ["confirmed"])];
@@ -329,7 +330,8 @@ export class DocsStore {
             : `INSERT INTO ${doc.table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${doc.keys.join(", ")}) DO UPDATE SET json = excluded.json, confirmed = coalesce(excluded.confirmed, confirmed)`,
           values,
         );
-        this.#env.cache.set(key, frozen(JSON.parse(json)));
+        if (cache) this.#env.cache.set(key, frozen(JSON.parse(json)));
+        else this.#env.cache.delete(key);
         if (topic) this.#env.tell(topic);
       };
       if (around === undefined) put();

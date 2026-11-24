@@ -227,21 +227,13 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       }
       out
     })
+    let room_cache = QuotaRoomCache::new()
     let widths = @signals.computed(fn(_) {
+      room_cache.sync_env(@sf.theme().dark, q.words_scale(), q.words_redone(), @ui.tree_theme().tabular)
       let by : Map[String, (Double, Array[Double])] = Map([])
       for item in quota_inputs.get() {
         let (k, ws) = item
-        let wins = ws.map(fn(win) {
-          Json::object({
-            "label": Json::string(win.0),
-            "scope": Json::string(win.1),
-            "mark": Json::string(win.2),
-            "left": Json::number(win.3.to_double()),
-            "refillShort": Json::string(win.4),
-          })
-        })
-        let qj : Json = Json::object({ "state": Json::string("ok"), "windows": Json::array(wins) })
-        let room = @sfbase.nav_quota_room_node(q, Some(qj))
+        let room = room_cache.room_of(q, ws)
         match by.get(k) {
           Some((most, _)) if most >= room.0 => ()
           _ => by[k] = room
@@ -419,6 +411,95 @@ fn offer_kind(l : Json?) -> String {
   } else {
     rt
   }
+}
+
+///|
+/// Per-sidebar memoization cache for `nav_quota_room_node`, keyed by compact window signature and invalidated on
+/// theme/font-scale/tabular changes, capped at 256 entries so updating one account does not rebuild Json::object or
+/// re-measure text for unchanged rows.
+// hits and misses are read by profiles_side_room_w_wbtest.mbt to verify cache hits and invalidation
+#warnings("-unused_field")
+priv struct QuotaRoomCache {
+  mut env : (Bool, Double, Int, Bool)
+  entries : Map[String, (Double, Array[Double])]
+  mut hits : Int
+  mut misses : Int
+}
+
+///|
+fn QuotaRoomCache::new() -> QuotaRoomCache {
+  { env: (false, 0.0, -1, false), entries: Map([]), hits: 0, misses: 0 }
+}
+
+///|
+fn QuotaRoomCache::sync_env(self : QuotaRoomCache, dark : Bool, scale : Double, redone : Int, tabular : Bool) -> Unit {
+  let next = (dark, scale, redone, tabular)
+  if self.env != next {
+    self.env = next
+    self.entries.clear()
+  }
+}
+
+///|
+fn QuotaRoomCache::room_of(
+  self : QuotaRoomCache,
+  q : @view.View,
+  ws : Array[(String, String, String, Int, String)],
+) -> (Double, Array[Double]) {
+  let ck = quota_windows_cache_key(ws)
+  match self.entries.get(ck) {
+    Some(cached) => {
+      self.hits += 1
+      cached
+    }
+    None => {
+      self.misses += 1
+      let wins = ws.map(fn(win) {
+        Json::object({
+          "label": Json::string(win.0),
+          "scope": Json::string(win.1),
+          "mark": Json::string(win.2),
+          "left": Json::number(win.3.to_double()),
+          "refillShort": Json::string(win.4),
+        })
+      })
+      let qj : Json = Json::object({ "state": Json::string("ok"), "windows": Json::array(wins) })
+      let measured = @sfbase.nav_quota_room_node(q, Some(qj))
+      if self.entries.length() >= 256 {
+        self.entries.clear()
+      }
+      self.entries[ck] = measured
+      measured
+    }
+  }
+}
+
+///|
+/// Compact injective cache key for a sidebar account's quota windows so unchanged rows skip Json::object construction
+/// and repeated nav_quota_room_node text measurement when another account's quota updates.
+fn quota_windows_cache_key(ws : Array[(String, String, String, Int, String)]) -> String {
+  let sb = StringBuilder()
+  for win in ws {
+    sb.write_string(win.0.length().to_string())
+    sb.write_char(':')
+    sb.write_string(win.0)
+    sb.write_char('|')
+    sb.write_string(win.1.length().to_string())
+    sb.write_char(':')
+    sb.write_string(win.1)
+    sb.write_char('|')
+    sb.write_string(win.2.length().to_string())
+    sb.write_char(':')
+    sb.write_string(win.2)
+    sb.write_char('|')
+    sb.write_string(win.3.to_string())
+    sb.write_char('|')
+    sb.write_string(win.4.length().to_string())
+    sb.write_char(':')
+    sb.write_string(win.4)
+    sb.write_char(';')
+  }
+  sb.to_string()
 }
 
 ///|

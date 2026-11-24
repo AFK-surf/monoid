@@ -2,7 +2,8 @@
 // views/profiles-overview.ts): what its allowance said in each hour, and what its calls spent in each, as dollars at
 // list prices by the window they count against (`scope`, as the allowance names its models' windows: Fable's, an
 // Antigravity account's "gemini" and "3p"). Read of the two statistics kept at write (store/profile-hours.ts).
-import { HOUR_MS, PACE_HOURS, type HourWindow, type SpeedQuarter, type SpendHour } from "../store/profile-hours.ts";
+import { createHash } from "node:crypto";
+import { HOUR_MS, PACE_HOURS, type HourWindow, type QuotaHour, type SpeedQuarter, type SpendHour } from "../store/profile-hours.ts";
 import { price } from "../read/usage.ts";
 
 export type PaceQuota = { hour: number; at: number; windows: HourWindow[] };
@@ -14,6 +15,133 @@ export type PaceView = {
   nowAt: number; fromHour: number; profiles: Record<string, { quotas: PaceQuota[]; spend: PaceSpend[] }>;
   speedHours: PaceSpeed[]; speedQuarters: PaceSpeed[];
 };
+
+export type PaceHourWindowV2 = {
+  label?: string;
+  scope: string | null;
+  usedPercent: number;
+  resetsAt: number | null;
+  minutes: number | null;
+};
+export type PaceQuotaV2 = { hour: number; at: number; windows: PaceHourWindowV2[] };
+export type PaceProfileV2 = { quotas: PaceQuotaV2[]; spend: PaceSpend[] };
+export type PaceViewV2 = {
+  rev: string;
+  nowAt: number;
+  fromHour: number;
+  profiles: Record<string, PaceProfileV2>;
+  speedHours: PaceSpeed[];
+  speedQuarters: PaceSpeed[];
+};
+export type PaceUnchangedV2 = { unchanged: true; rev: string };
+export type PaceDeltaV2 = {
+  delta: true;
+  base: string;
+  rev: string;
+  nowAt: number;
+  fromHour: number;
+  keep: string[];
+  profiles: Record<string, PaceProfileV2>;
+  speedHours?: PaceSpeed[];
+  speedQuarters?: PaceSpeed[];
+};
+export type PaceResponseV2 = PaceViewV2 | PaceUnchangedV2 | PaceDeltaV2;
+
+export function compactWindow(w: HourWindow): PaceHourWindowV2 {
+  const omitLabel =
+    w.minutes !== null &&
+    ((typeof w.scope === "string" && w.scope.trim() !== "") ||
+      (typeof w.label === "string" && !w.label.includes(" · ")));
+  return omitLabel
+    ? { scope: w.scope, usedPercent: w.usedPercent, resetsAt: w.resetsAt, minutes: w.minutes }
+    : { label: w.label, scope: w.scope, usedPercent: w.usedPercent, resetsAt: w.resetsAt, minutes: w.minutes };
+}
+
+export function paceViewV2(v1: PaceView, rev: string): PaceViewV2 {
+  const profiles: Record<string, PaceProfileV2> = {};
+  for (const [id, p] of Object.entries(v1.profiles)) {
+    profiles[id] = {
+      quotas: p.quotas.map((q) => ({ hour: q.hour, at: q.at, windows: q.windows.map(compactWindow) })),
+      spend: p.spend,
+    };
+  }
+  return {
+    rev,
+    nowAt: v1.nowAt,
+    fromHour: v1.fromHour,
+    profiles,
+    speedHours: v1.speedHours,
+    speedQuarters: v1.speedQuarters,
+  };
+}
+
+function sha16(v: unknown): string {
+  return createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, 16);
+}
+
+export function hashPaceV2(v2: PaceViewV2): { profileHashes: Map<string, string>; speedHoursHash: string; speedQuartersHash: string } {
+  const profileHashes = new Map<string, string>();
+  for (const [id, p] of Object.entries(v2.profiles)) {
+    profileHashes.set(id, sha16(p));
+  }
+  return {
+    profileHashes,
+    speedHoursHash: sha16(v2.speedHours),
+    speedQuartersHash: sha16(v2.speedQuarters),
+  };
+}
+
+export function sameQuotaHours(a: readonly QuotaHour[], b: readonly QuotaHour[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.profile !== y.profile || x.hour !== y.hour || x.at !== y.at || x.windows.length !== y.windows.length) return false;
+    for (let j = 0; j < x.windows.length; j++) {
+      const wx = x.windows[j]!;
+      const wy = y.windows[j]!;
+      if (wx.label !== wy.label || wx.scope !== wy.scope || wx.usedPercent !== wy.usedPercent || wx.resetsAt !== wy.resetsAt || wx.minutes !== wy.minutes) return false;
+    }
+  }
+  return true;
+}
+
+export function sameSpendHours(a: readonly SpendHour[], b: readonly SpendHour[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (
+      x.hour !== y.hour ||
+      x.profile !== y.profile ||
+      x.runtime !== y.runtime ||
+      x.model !== y.model ||
+      x.fast !== y.fast ||
+      x.calls !== y.calls ||
+      x.input !== y.input ||
+      x.cacheRead !== y.cacheRead ||
+      x.cacheWrite !== y.cacheWrite ||
+      x.cacheWriteLong !== y.cacheWriteLong ||
+      x.output !== y.output ||
+      (x.genMs ?? 0) !== (y.genMs ?? 0) ||
+      (x.genOutput ?? 0) !== (y.genOutput ?? 0)
+    ) return false;
+  }
+  return true;
+}
+
+export function sameSpeedQuarters(a: readonly SpeedQuarter[], b: readonly SpeedQuarter[]): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    if (x.quarter !== y.quarter || x.profile !== y.profile || x.model !== y.model || x.genMs !== y.genMs || x.genOutput !== y.genOutput) return false;
+  }
+  return true;
+}
 
 /// The calls' times of the profiles `shown` keeps, added up by `at` and model, in their order.
 function speedOf(rows: { at: number; profile: string; model: string | null; genMs: number; genOutput: number }[], shown: (profile: string) => boolean): PaceSpeed[] {

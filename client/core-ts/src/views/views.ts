@@ -1106,6 +1106,12 @@ export class Views implements Owner {
   #daysZone: number | null = null;
   /// What parts of a view were last made with, by the view (`#steady`).
   readonly #steadied = new Map<string, unknown>();
+  /// Memoized `workspaceProfiles` output for `profilesOverview` per workspace scope.
+  readonly #profilesOverviewListed = new Map<string, {
+    key: string;
+    inputs: { station: string; id: string; name: string; online: boolean; joined: boolean; overview: unknown }[];
+    listed: ReturnType<typeof workspaceProfiles>;
+  }>();
   readonly #core: ViewsEnv;
   readonly local: Local;
   /// The device's data, as the views read it (archive.ts).
@@ -1259,6 +1265,7 @@ export class Views implements Owner {
     this.#views.delete(key);
     // (nothing holds the list any more: told again as it is asked again)
     if (view.topic === "chats") this.#windows.delete(windowKey(view));
+    if (view.topic === "profilesOverview") this.#profilesOverviewListed.delete(String(view.scope));
     // (nor the chat: its page tells its first window again before it asks it again)
     if (view.topic === "chat") this.#chatWindows.delete(chatWindowKey(String(view.station), u64(view.thread), str(view.session) ?? null));
     if (view.topic === "chat" || view.topic === "chatOutline") {
@@ -2102,10 +2109,35 @@ export class Views implements Owner {
         // window's percent left and its refill's moment: no overview decorated whole) and their stations' hours, made
         // again as either changes and at each quarter hour (its hours, and its models' speed a quarter apart, are the
         // clock's).
-        const stations0 = this.#stationsOr(view.scope as string);
+        const scope = view.scope as string;
+        const stations0 = this.#stationsOr(scope);
         if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
         const key = profileRowKey();
-        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
+        // Read every reactive dependency unconditionally inside the tracking scope before checking the memo.
+        const inputs = stations0.map((s) => ({
+          station: s.address,
+          id: s.id,
+          name: s.name,
+          online: s.online,
+          joined: s.joined,
+          overview: this.#profileRowsOfStation(s.address, key),
+        }));
+        const prev = this.#profilesOverviewListed.get(scope);
+        let listed: ReturnType<typeof workspaceProfiles>;
+        if (
+          prev !== undefined &&
+          prev.key === key &&
+          prev.inputs.length === inputs.length &&
+          prev.inputs.every((p, i) => {
+            const c = inputs[i]!;
+            return p.station === c.station && p.id === c.id && p.name === c.name && p.online === c.online && p.joined === c.joined && p.overview === c.overview;
+          })
+        ) {
+          listed = prev.listed;
+        } else {
+          listed = workspaceProfiles(inputs);
+          this.#profilesOverviewListed.set(scope, { key, inputs, listed });
+        }
         const now = this.#core.host.nowMs();
         this.#againIn(HOUR / 4 - (now % (HOUR / 4)));
         const stations = new Map(stations0.map((s) => [s.address, s.online]));

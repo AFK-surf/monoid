@@ -25,8 +25,11 @@ const HISTORY_HOURS = 168;
 /// The hours a pace is weighed over, and the decay of their weights (an hour `a` back weighs e^(-a/τ)).
 const RECENT_HOURS = 12;
 const RECENT_TAU = 6;
+const RECENT_WEIGHTS = Float64Array.from({ length: RECENT_HOURS }, (_, j) => Math.exp(-j / RECENT_TAU));
+const RECENT_WEIGHT_SUM = RECENT_WEIGHTS.reduce((a, b) => a + b, 0);
 /// How fast the demand leans from the last hours' pace to the week's (`w = e^(-h/LEAN_HOURS)`).
 const LEAN_HOURS = 12;
+const LEAN_WEIGHTS = Float64Array.from({ length: FUTURE_HOURS + 1 }, (_, h) => Math.exp(-h / LEAN_HOURS));
 /// The day's shape: each hour's share of the day against an even prior of so many hours of each (two days), held
 /// between these.
 const DIURNAL_PRIOR = 2;
@@ -76,43 +79,123 @@ export type PoolSpeed = { quarters: number[]; hours: number[]; days: number[] };
 
 const QUARTER_MS = 900_000;
 
+const SPEED_POOL_CACHE_MAX = 512;
+const speedPoolCache = new Map<string, string | null>();
+
 /// The pool a model's speed counts in, by its name (no provider path, variant or version): a model's own later.
 export function speedPool(model: string): string | null {
+  const cached = speedPoolCache.get(model);
+  if (cached !== undefined) return cached;
   const raw = model.trim().toLowerCase();
   const bare = (raw.split("[")[0]?.split("/").pop() ?? "").split("@")[0]!;
-  if (bare.includes("fable") || bare.includes("mythos")) return "Fable";
-  if (bare.includes("claude") || /^(opus|sonnet|haiku)/.test(bare)) return "Claude";
-  if (bare.includes("gemini") || bare.includes("gemma")) return "Gemini";
-  if (bare.startsWith("gpt") || /^o\d/.test(bare) || bare.includes("codex")) return "Codex";
-  return null;
+  let res: string | null = null;
+  if (bare.includes("fable") || bare.includes("mythos")) res = "Fable";
+  else if (bare.includes("claude") || /^(opus|sonnet|haiku)/.test(bare)) res = "Claude";
+  else if (bare.includes("gemini") || bare.includes("gemma")) res = "Gemini";
+  else if (bare.startsWith("gpt") || /^o\d/.test(bare) || bare.includes("codex")) res = "Codex";
+  if (speedPoolCache.size >= SPEED_POOL_CACHE_MAX) speedPoolCache.clear();
+  speedPoolCache.set(model, res);
+  return res;
 }
 
 /// What each pool's models wrote and took (ms) by quarter and by hour, of the stations the accounts are on (each said
 /// its own calls: GET /profiles/pace's speedQuarters and speedHours).
 type Took = Map<number, [number, number]>;
-function speedsOf(items: J[], pace: (station: string) => J): Map<string, { quarters: Took; hours: Took }> {
+const speedListAgg = new WeakMap<object, Map<string, Took>>();
+function aggregateSpeedList(list: unknown): Map<string, Took> | null {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const cached = speedListAgg.get(list);
+  if (cached !== undefined) return cached;
+  const byPool = new Map<string, Took>();
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    const at = num(r?.at);
+    const output = num(r?.output);
+    const ms = num(r?.ms);
+    const pool = speedPool(str(r?.model));
+    if (at === null || output === null || ms === null || !(ms > 0) || pool === null) continue;
+    let took = byPool.get(pool);
+    if (took === undefined) {
+      took = new Map();
+      byPool.set(pool, took);
+    }
+    const was = took.get(at);
+    if (was !== undefined) {
+      was[0] += output;
+      was[1] += ms;
+    } else {
+      took.set(at, [output, ms]);
+    }
+  }
+  speedListAgg.set(list, byPool);
+  return byPool;
+}
+
+function mergeTook(dst: Took, src: Took): void {
+  for (const [at, [output, ms]] of src) {
+    const was = dst.get(at);
+    if (was !== undefined) {
+      was[0] += output;
+      was[1] += ms;
+    } else {
+      dst.set(at, [output, ms]);
+    }
+  }
+}
+
+function speedsOf(items: J[], pace: (station: string) => J): { byPool: Map<string, { quarters: Took; hours: Took }>; refs: unknown[]; stationsKey: string } {
   const stations = new Set<string>();
   for (const i of items) for (const m of Array.isArray(i?.members) ? i.members : []) stations.add(str(m?.station));
-  const out = new Map<string, { quarters: Took; hours: Took }>();
-  const add = (list: unknown, which: "quarters" | "hours") => {
-    for (const r of Array.isArray(list) ? list : []) {
-      const at = num(r?.at);
-      const output = num(r?.output);
-      const ms = num(r?.ms);
-      const pool = speedPool(str(r?.model));
-      if (at === null || output === null || ms === null || !(ms > 0) || pool === null) continue;
-      const of = out.get(pool) ?? { quarters: new Map(), hours: new Map() };
-      out.set(pool, of);
-      const was = of[which].get(at) ?? [0, 0];
-      of[which].set(at, [was[0] + output, was[1] + ms]);
-    }
-  };
+  const refs: unknown[] = [];
+  const qParts = new Map<string, Took[]>();
+  const hParts = new Map<string, Took[]>();
+  const pools = new Set<string>();
   for (const station of stations) {
     const said = pace(station);
-    add(said?.speedQuarters, "quarters");
-    add(said?.speedHours, "hours");
+    const sq = said?.speedQuarters;
+    const sh = said?.speedHours;
+    refs.push(sq, sh);
+    const aq = aggregateSpeedList(sq);
+    if (aq !== null) {
+      for (const [pool, took] of aq) {
+        pools.add(pool);
+        let list = qParts.get(pool);
+        if (list === undefined) qParts.set(pool, (list = []));
+        list.push(took);
+      }
+    }
+    const ah = aggregateSpeedList(sh);
+    if (ah !== null) {
+      for (const [pool, took] of ah) {
+        pools.add(pool);
+        let list = hParts.get(pool);
+        if (list === undefined) hParts.set(pool, (list = []));
+        list.push(took);
+      }
+    }
   }
-  return out;
+  const empty: Took = new Map();
+  const byPool = new Map<string, { quarters: Took; hours: Took }>();
+  for (const pool of pools) {
+    const ql = qParts.get(pool);
+    let quarters: Took;
+    if (ql === undefined) quarters = empty;
+    else if (ql.length === 1) quarters = ql[0]!;
+    else {
+      quarters = new Map();
+      for (const part of ql) mergeTook(quarters, part);
+    }
+    const hl = hParts.get(pool);
+    let hours: Took;
+    if (hl === undefined) hours = empty;
+    else if (hl.length === 1) hours = hl[0]!;
+    else {
+      hours = new Map();
+      for (const part of hl) mergeTook(hours, part);
+    }
+    byPool.set(pool, { quarters, hours });
+  }
+  return { byPool, refs, stationsKey: [...stations].join("\u0000") };
 }
 
 /// Each window's tokens a second (to a tenth), the windows `width` long ending at each of `ends`; -1 where none was timed.
@@ -142,7 +225,7 @@ function speedOf(took: { quarters: Took; hours: Took } | undefined, now: number)
 }
 
 /// One window of an account's allowance, as its station or an hour of it says it.
-type Win = { label: string; scope: string; used: number; resetsAt: number | null; minutes: number | null; mark: string };
+type Win = { label: string; scope: string; used: number; resetsAt: number | null; minutes: number | null; mark: string; kind: Kind };
 type Kind = "long" | "short";
 /// An hour an account's allowance was read in: when, and its windows.
 type Snap = { at: number; windows: Win[] };
@@ -188,11 +271,27 @@ function normScopeOf(name: string): string | null {
 /// them (stations from before spent against "Gemini" and "Claude / GPT"), Fable's "Fable"; with none said, of a
 /// label that names one of these after its " · ".
 export function normScope(scope: string, label = ""): string {
-  if (scope === "" && label === "") return "";
+  if (scope === "") {
+    if (label === "") return "";
+    const at = label.lastIndexOf(" · ");
+    return at < 0 ? "" : normScopeOf(label.slice(at + 3)) ?? "";
+  }
+  if (scope === "gemini" || scope === "3p" || scope === "Fable" || scope === "Argon") return scope;
   const s = scope.trim();
   if (s !== "") return normScopeOf(s) ?? s;
+  if (label === "") return "";
   const at = label.lastIndexOf(" · ");
   return at < 0 ? "" : normScopeOf(label.slice(at + 3)) ?? "";
+}
+
+/// Whether a window is a week's (or a month's) or a few hours'.
+function kindOfFields(minutes: number | null, mark: string, label: string): Kind {
+  if (minutes !== null) return minutes >= 1440 ? "long" : "short";
+  if (mark === "W" || mark === "M") return "long";
+  if (mark === "5H" || mark === "2H" || mark === "3D") return "short";
+  const l = label.toLowerCase();
+  if (l.includes("小时") || l.includes("hour") || /\b\d+h\b/.test(l)) return "short";
+  return "long";
 }
 
 function winOf(w: J): Win | null {
@@ -202,17 +301,9 @@ function winOf(w: J): Win | null {
   const used = num(w.usedPercent) ?? (left === null ? null : 100 - left);
   if (used === null) return null;
   const label = str(w.label);
-  return { label, scope: normScope(str(w.scope), label), used: clamp(used, 0, 100), resetsAt: num(w.resetsAt), minutes: num(w.minutes), mark: str(w.mark) };
-}
-
-/// Whether a window is a week's (or a month's) or a few hours'.
-function kindOf(w: Win): Kind {
-  if (w.minutes !== null) return w.minutes >= 1440 ? "long" : "short";
-  if (w.mark === "W" || w.mark === "M") return "long";
-  if (w.mark === "5H" || w.mark === "2H" || w.mark === "3D") return "short";
-  const l = w.label.toLowerCase();
-  if (l.includes("小时") || l.includes("hour") || /\b\d+h\b/.test(l)) return "short";
-  return "long";
+  const minutes = num(w.minutes);
+  const mark = str(w.mark);
+  return { label, scope: normScope(str(w.scope), label), used: clamp(used, 0, 100), resetsAt: num(w.resetsAt), minutes, mark, kind: kindOfFields(minutes, mark, label) };
 }
 
 /// A long window's cycle in hours.
@@ -223,7 +314,7 @@ function cycleOf(w: Win): number {
 }
 const shortHoursOf = (w: Win) => (w.minutes !== null && w.minutes > 0 && w.minutes < 1440 ? w.minutes / 60 : 5);
 
-const find = (ws: Win[], scope: string, kind: Kind) => ws.find((w) => w.scope === scope && kindOf(w) === kind) ?? null;
+const find = (ws: Win[], scope: string, kind: Kind) => ws.find((w) => w.scope === scope && w.kind === kind) ?? null;
 
 function windowsOf(item: J): Win[] {
   const q = item?.profile?.quota;
@@ -344,7 +435,7 @@ function exact(w: Win | null, hours: Hours, now: number): Win | null {
   for (let i = hours.snaps.length - 1; i >= 0; i--) {
     const snap = hours.snaps[i]!;
     if (snap.at < now - 2 * HOUR_MS) break;
-    const sw = snap.windows.find((x) => x.scope === w.scope && kindOf(x) === kindOf(w) && Math.round(100 - x.used) === Math.round(100 - w.used));
+    const sw = snap.windows.find((x) => x.scope === w.scope && x.kind === w.kind && Math.round(100 - x.used) === Math.round(100 - w.used));
     if (sw !== undefined) return { ...w, minutes: sw.minutes, used: sw.used };
   }
   return w;
@@ -476,7 +567,7 @@ function pastOf(s: Slot, now: number, w: Win | null = s.long, scope: string = s.
     let sw: Win | undefined;
     for (let wi = 0; wi < wins.length; wi++) {
       const x = wins[wi]!;
-      if (x.scope === wScope && kindOf(x) === "long") { sw = x; break; }
+      if (x.scope === wScope && x.kind === "long") { sw = x; break; }
     }
     if (sw === undefined) continue;
     const end = sw.resetsAt !== null ? (sw.resetsAt - now) / HOUR_MS : endOf(t);
@@ -565,8 +656,8 @@ function shortOfLong(s: Slot): number {
   const w0 = snaps[0]!.windows;
   for (let wi = 0; wi < w0.length; wi++) {
     const x = w0[wi]!;
-    if (la === undefined && x.scope === lScope && kindOf(x) === "long") la = x;
-    if (sa === undefined && x.scope === sScope && kindOf(x) === "short") sa = x;
+    if (la === undefined && x.scope === lScope && x.kind === "long") la = x;
+    if (sa === undefined && x.scope === sScope && x.kind === "short") sa = x;
   }
   let dl = 0;
   let ds = 0;
@@ -576,8 +667,8 @@ function shortOfLong(s: Slot): number {
     let sb: Win | undefined;
     for (let wi = 0; wi < wb.length; wi++) {
       const x = wb[wi]!;
-      if (lb === undefined && x.scope === lScope && kindOf(x) === "long") lb = x;
-      if (sb === undefined && x.scope === sScope && kindOf(x) === "short") sb = x;
+      if (lb === undefined && x.scope === lScope && x.kind === "long") lb = x;
+      if (sb === undefined && x.scope === sScope && x.kind === "short") sb = x;
     }
     if (la !== undefined && lb !== undefined && sa !== undefined && sb !== undefined && lb.used >= la.used && sb.used >= sa.used && sa.resetsAt === sb.resetsAt) {
       dl += lb.used - la.used;
@@ -623,6 +714,7 @@ type SimBuf = {
   cap: number;
   share: Float64Array;
   left: Float64Array;
+  mult: Float64Array;
   resetIn: Float64Array;
   cycle: Float64Array;
   lockedTill: Float64Array;
@@ -643,6 +735,7 @@ function makeSimBuf(cap: number): SimBuf {
     cap,
     share: new Float64Array(cap),
     left: new Float64Array(cap),
+    mult: new Float64Array(cap),
     resetIn: new Float64Array(cap),
     cycle: new Float64Array(cap),
     lockedTill: new Float64Array(cap),
@@ -668,11 +761,12 @@ function ensureSimBuf(need: number): SimBuf {
 
 function loadTanks(start: Tank[], scale: number): void {
   const n = start.length;
-  const { share, left, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
+  const { share, left, mult, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
   for (let i = 0; i < n; i++) {
     const t = start[i]!;
     share[i] = t.share * scale;
     left[i] = t.left * scale;
+    mult[i] = 1;
     resetIn[i] = t.resetIn;
     cycle[i] = t.cycle;
     lockedTill[i] = t.lockedTill;
@@ -703,6 +797,7 @@ function stepHour(n: number, h: number, wantIn: number): number {
   const buf = simBuf;
   const share = buf.share;
   const left = buf.left;
+  const mult = buf.mult;
   const resetIn = buf.resetIn;
   const cycle = buf.cycle;
   const lockedTill = buf.lockedTill;
@@ -730,13 +825,14 @@ function stepHour(n: number, h: number, wantIn: number): number {
     }
     const li = left[i]!;
     const si = share[i]!;
-    if (li > 1e-9 && h > lockedTill[i]! && si > 0) {
+    const eps = 1e-9 * mult[i]!;
+    if (li > eps && h > lockedTill[i]! && si > 0) {
       let room = li;
       if (hs !== 0) {
         const srCap = ((100 - shortUsed[i]!) * si * shortOfLong[i]!) / 1e4;
         if (srCap < room) room = srCap;
       }
-      if (room > 1e-9) {
+      if (room > eps) {
         openIdx[openLen] = i;
         openRoom[openLen] = room;
         openLen++;
@@ -761,7 +857,8 @@ function stepHour(n: number, h: number, wantIn: number): number {
       const room = openRoom[oi]!;
       const part = (want * openPace[oi]!) / whole;
       const take = room < part ? room : part;
-      const isFull = take >= room - 1e-9;
+      const eps = 1e-9 * mult[i]!;
+      const isFull = take >= room - eps;
       if (isFull) anyFull = true;
       if (take > 0) {
         const nl = left[i]! - take;
@@ -775,13 +872,13 @@ function stepHour(n: number, h: number, wantIn: number): number {
       }
       if (!isFull) {
         const nl = left[i]!;
-        if (nl > 1e-9) {
+        if (nl > eps) {
           let remRoom = nl;
           if (hasShort[i] !== 0) {
             const srCap = ((100 - shortUsed[i]!) * share[i]! * shortOfLong[i]!) / 1e4;
             if (srCap < remRoom) remRoom = srCap;
           }
-          if (remRoom > 1e-9) {
+          if (remRoom > eps) {
             openIdx[nextOpenLen] = i;
             openRoom[nextOpenLen] = remRoom;
             nextOpenLen++;
@@ -830,9 +927,8 @@ function simulateAnyUnmet(start: Tank[], constDemand: number, maxUnmet: number):
   return false;
 }
 
-/// True if `start` plus `k` full unit accounts (all scaled by `scale`) keep total unmet demand over the week within
-/// `maxUnmet` (in original unscaled percent of the pool).
-function simulateTotalUnmet(
+/// Exact unmerged reference simulation of `start` plus `k` full unit accounts.
+function simulateTotalUnmetExact(
   start: Tank[],
   k: number,
   unitShare: number,
@@ -850,11 +946,12 @@ function simulateTotalUnmet(
   const hasUnitShort = unitShort !== null ? 1 : 0;
   const uHours = unitShort !== null ? unitShort.hours : 0;
   const uOfLong = unitShort !== null ? unitShort.ofLong : 0;
-  const { share, left, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
+  const { share, left, mult, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
   for (let j = 0; j < k; j++) {
     const idx = n + j;
     share[idx] = scaledUnitShare;
     left[idx] = scaledUnitShare;
+    mult[idx] = 1;
     resetIn[idx] = unitCycle;
     cycle[idx] = unitCycle;
     lockedTill[idx] = 0;
@@ -872,9 +969,58 @@ function simulateTotalUnmet(
   return unmetSum / scale <= maxUnmet;
 }
 
+/// True if `start` plus `k` full unit accounts (all scaled by `scale`) keep total unmet demand over the week within
+/// `maxUnmet` (in original unscaled percent of the pool). Merges the `k` identical added accounts into one slot with
+/// `mult = k`, falling back to `simulateTotalUnmetExact` when near the `maxUnmet` decision boundary.
+function simulateTotalUnmet(
+  start: Tank[],
+  k: number,
+  unitShare: number,
+  unitCycle: number,
+  unitShort: { hours: number; ofLong: number } | null,
+  demandArr: Float64Array,
+  scale: number,
+  maxUnmet: number,
+  exactOnly = false,
+): boolean {
+  if (exactOnly) return simulateTotalUnmetExact(start, k, unitShare, unitCycle, unitShort, demandArr, scale, maxUnmet);
+  const n = start.length;
+  const total = k > 0 ? n + 1 : n;
+  ensureSimBuf(total);
+  loadTanks(start, scale);
+  if (k > 0) {
+    const mergedShare = k * unitShare * scale;
+    const hasUnitShort = unitShort !== null ? 1 : 0;
+    const uHours = unitShort !== null ? unitShort.hours : 0;
+    const uOfLong = unitShort !== null ? unitShort.ofLong : 0;
+    const { share, left, mult, resetIn, cycle, lockedTill, hasShort, shortUsed, shortResetIn, shortHours, shortOfLong } = simBuf;
+    share[n] = mergedShare;
+    left[n] = mergedShare;
+    mult[n] = k;
+    resetIn[n] = unitCycle;
+    cycle[n] = unitCycle;
+    lockedTill[n] = 0;
+    hasShort[n] = hasUnitShort;
+    shortUsed[n] = 0;
+    shortResetIn[n] = -1;
+    shortHours[n] = uHours;
+    shortOfLong[n] = uOfLong;
+  }
+  let unmetSum = 0;
+  for (let h = 1; h <= FUTURE_HOURS; h++) {
+    unmetSum += stepHour(total, h, demandArr[h]! * scale);
+    if (unmetSum / scale > maxUnmet + 1e-5) return false;
+  }
+  const unmetPct = unmetSum / scale;
+  if (k > 1 && Math.abs(unmetPct - maxUnmet) <= 1e-5) {
+    return simulateTotalUnmetExact(start, k, unitShare, unitCycle, unitShort, demandArr, scale, maxUnmet);
+  }
+  return unmetPct <= maxUnmet;
+}
+
 const starves = (s: { avail: number[]; unmet: number[] }, h: number) => s.unmet[h]! > 0.05 || s.avail[h]! <= 0.3;
 
-function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
+function poolOf(spec: PoolSpec, now: number, offsetMin: number, exactOnly = false): OverviewPool {
   const total = spec.slots.length;
   const ready = spec.slots.filter((s) => s.ready).length;
   const active = spec.slots.filter((s) => !s.broken && s.weight > 0);
@@ -919,14 +1065,11 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
     pastBurn.push(b);
   }
   // The last hours' pace, and the week's.
-  let wsum = 0;
   let recent = 0;
   for (let j = 0; j < RECENT_HOURS; j++) {
-    const wj = Math.exp(-j / RECENT_TAU);
-    wsum += wj;
-    recent += wj * pastBurn[j]!;
+    recent += RECENT_WEIGHTS[j]! * pastBurn[j]!;
   }
-  recent /= wsum;
+  recent /= RECENT_WEIGHT_SUM;
   const known = Math.max(1, Math.round(Math.max(...pasts.map((p) => p.known))));
   const meanKnown = pastBurn.slice(0, known).reduce((a, b) => a + b, 0) / known;
   let cycleAvg = 0;
@@ -956,7 +1099,7 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   diurnal = diurnal.map((d) => d / dm);
   const demandArr = new Float64Array(FUTURE_HOURS + 1);
   for (let h = 1; h <= FUTURE_HOURS; h++) {
-    const w = Math.exp(-h / LEAN_HOURS);
+    const w = LEAN_WEIGHTS[h]!;
     demandArr[h] = w * recent + (1 - w) * base * diurnal[localHour(now + (h - 0.5) * HOUR_MS)]!;
   }
   const sim = simulate(tanks, demandArr);
@@ -998,7 +1141,7 @@ function poolOf(spec: PoolSpec, now: number, offsetMin: number): OverviewPool {
   // pace asks 3); where nothing is left now, the cycles' so far if faster: an hour it could not spend in is no pace
   // of its)
   const pace = Math.max(base, nowAvail <= 0.3 ? cycleAvg : 0);
-  const neededAccounts = overPace ? neededFor(active, shares, weight, tanks, demandArr, pace) : null;
+  const neededAccounts = overPace ? neededFor(active, shares, weight, tanks, demandArr, pace, exactOnly) : null;
   // (over it, or going without within the week: said against the faster of now's pace and the week's, never above
   // -0.1, so it falls as either rises)
   const net = sustainable - recent;
@@ -1035,7 +1178,7 @@ function mode(xs: number[]): number | null {
 /// cycles give back what it asks an hour on the whole (`pace`), so the weeks after go on so. Each is reckoned at the
 /// pool's shares with them in (`scale`), as the pools made again of those accounts would be. None (null) where it
 /// goes without by no more than that as it is; most `NEEDED_MOST`.
-function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank[], demandArr: Float64Array, pace: number): number | null {
+function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank[], demandArr: Float64Array, pace: number, exactOnly = false): number | null {
   const unitWeight = mode(active.map((s) => s.weight))!;
   const unitShare = (unitWeight / weight) * 100;
   const unitCycle = mode(active.flatMap((s) => (s.long !== null ? [cycleOf(s.long)] : []))) ?? 168;
@@ -1055,16 +1198,27 @@ function neededFor(active: Slot[], shares: number[], weight: number, tanks: Tank
     const scale = 100 / (100 + k * unitShare);
     if ((existingSteady + k * (unitShare / unitCycle)) * scale < pace * scale + 0.005) return false;
     // (what it goes without, back in percent of the pool as it is)
-    return simulateTotalUnmet(tanks, k, unitShare, unitCycle, unitShort, demandArr, scale, NEEDED_SLACK);
+    return simulateTotalUnmet(tanks, k, unitShare, unitCycle, unitShort, demandArr, scale, NEEDED_SLACK, exactOnly);
   };
   if (canKeepUp(0)) return null;
   // (lo: so few do not keep it from going without; hi: so many do)
   let lo = 0;
-  let hi = 1;
+  const slope = unitShare * (1 / unitCycle - 0.005 / 100);
+  if (!exactOnly && slope > 0) {
+    const kExact = (pace + 0.005 - existingSteady) / slope;
+    const kMin = Math.min(NEEDED_MOST, Math.max(0, Math.floor(kExact) - 1));
+    if (kMin > 0 && !canKeepUp(kMin)) {
+      if (kMin >= NEEDED_MOST) return NEEDED_MOST;
+      lo = kMin;
+    }
+  }
+  let step = 1;
+  let hi = Math.min(NEEDED_MOST, lo + step);
   while (!canKeepUp(hi)) {
     if (hi >= NEEDED_MOST) return NEEDED_MOST;
     lo = hi;
-    hi = Math.min(NEEDED_MOST, hi * 2);
+    step *= 2;
+    hi = Math.min(NEEDED_MOST, lo + step);
   }
   while (hi - lo > 1) {
     const mid = Math.floor((lo + hi) / 2);
@@ -1120,6 +1274,15 @@ function poolKept(rows: PoolRows, pace: (station: string) => J, now: number, off
   return pool;
 }
 
+type SpeedKept = { q: number; h: number; refs: unknown[]; speed: PoolSpeed | undefined; basePool?: OverviewPool; fullPool?: OverviewPool };
+const speedKept = new Map<string, SpeedKept>();
+
+function sameRefs(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 /// The overview's pools of the workspace's accounts (`profilesWhole`'s items), with their stations' hours (`pace`,
 /// by a station's address: what it said of GET /profiles/pace; nothing said, none), at `now` in the viewer's offset.
 /// `fresh`: every pool made anew, none kept (what the kept ones are held to: profiles-overview-kept.test.ts).
@@ -1127,6 +1290,8 @@ export function profilesOverview(items: J[], pace: (station: string) => J, nowMs
   // (as of the minute `nowMs` is in: what is made within it is the same whenever in it, so a pool kept is what one
   // made anew would be)
   const now = Math.floor(nowMs / 60_000) * 60_000;
+  const q = Math.floor(now / QUARTER_MS);
+  const hBucket = Math.floor(now / HOUR_MS);
   const speeds = speedsOf(items, pace);
   // (an account's hours read as a pool not kept first needs them: the pools kept read none)
   const hours = new Map<J, Hours>();
@@ -1138,8 +1303,48 @@ export function profilesOverview(items: J[], pace: (station: string) => J, nowMs
   return {
     pools: poolSpecs(items.map((item) => item.poolProfile ? { ...item, profile: item.poolProfile, look: false, state: null } : item), now).map((rows) => {
       const pool = fresh ? poolOf({ title: rows.title, slots: rows.slots(h) }, now, offsetMin) : poolKept(rows, pace, now, offsetMin, h);
-      const speed = speedOf(speeds.get(rows.title), now);
+      if (fresh) {
+        const speed = speedOf(speeds.byPool.get(rows.title), now);
+        return speed === undefined ? pool : Object.freeze({ ...pool, speed });
+      }
+      const speedKey = `${rows.title}\u0000${speeds.stationsKey}`;
+      const prev = speedKept.get(speedKey);
+      if (prev !== undefined && prev.q === q && prev.h === hBucket && sameRefs(prev.refs, speeds.refs)) {
+        if (prev.basePool === pool && prev.fullPool !== undefined) return prev.fullPool;
+        const fullPool = prev.speed === undefined ? pool : Object.freeze({ ...pool, speed: prev.speed });
+        prev.basePool = pool;
+        prev.fullPool = fullPool;
+        return fullPool;
+      }
+      const speed = speedOf(speeds.byPool.get(rows.title), now);
+      if (speed !== undefined) deepFreeze(speed);
+      const fullPool = speed === undefined ? pool : Object.freeze({ ...pool, speed });
+      speedKept.delete(speedKey);
+      speedKept.set(speedKey, { q, h: hBucket, refs: speeds.refs, speed, basePool: pool, fullPool });
+      if (speedKept.size > POOLS_KEPT) speedKept.delete(speedKept.keys().next().value!);
+      return fullPool;
+    }),
+  };
+}
+
+/// Unmerged reference comparison helper for differential tests of `simulateTotalUnmet` and `neededFor`.
+export function _profilesOverviewExactRef(items: J[], pace: (station: string) => J, nowMs: number, offsetMin: number): { pools: OverviewPool[] } {
+  const now = Math.floor(nowMs / 60_000) * 60_000;
+  const speeds = speedsOf(items, pace);
+  const hours = new Map<J, Hours>();
+  const h = (i: J): Hours => {
+    let made = hours.get(i);
+    if (made === undefined) hours.set(i, made = hoursOf(i, pace));
+    return made;
+  };
+  return {
+    pools: poolSpecs(items.map((item) => item.poolProfile ? { ...item, profile: item.poolProfile, look: false, state: null } : item), now).map((rows) => {
+      const pool = poolOf({ title: rows.title, slots: rows.slots(h) }, now, offsetMin, true);
+      const speed = speedOf(speeds.byPool.get(rows.title), now);
       return speed === undefined ? pool : Object.freeze({ ...pool, speed });
     }),
   };
 }
+
+/// Direct differential test helper for `simulateTotalUnmet` vs unmerged exact simulation.
+export const _simulateTotalUnmetForTest = simulateTotalUnmet;

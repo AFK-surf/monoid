@@ -53,6 +53,117 @@ import { keepOs } from "../station-os.ts";
 export { HOST_KEY, LINK_KEY, LONG_MISSES, MISSES, OFFLINE_RETRY_MS, RECONNECT_MAX_MS, RECONNECT_MS, STREAM_IDLE_MS, STREAM_QUIET_MS, Link } from "./link.ts";
 export type { EventsFor, LiveView } from "./link.ts";
 
+export type MergePaceResult =
+  | { kind: "unchanged"; value: unknown; rev: string | null }
+  | { kind: "refetch" }
+  | { kind: "merged"; changed: boolean; value: unknown; rev: string | null };
+
+/// Merges a `GET /profiles/pace` (v1 or v2 full/unchanged/delta) answer into the previous cached PaceView,
+/// preserving unchanged profile and speed object references so downstream WeakMaps stay warm.
+export function mergePace(prev: unknown, said: unknown, prevRev: string | null): MergePaceResult {
+  if (isObject(said) && said.unchanged === true) {
+    if (prevRev !== null && prevRev !== "" && typeof said.rev === "string" && said.rev === prevRev && isObject(prev) && isObject(prev.profiles)) {
+      return { kind: "unchanged", value: prev, rev: prevRev };
+    }
+    return { kind: "refetch" };
+  }
+  if (isObject(said) && said.delta === true) {
+    if (
+      !isObject(prev) ||
+      !isObject(prev.profiles) ||
+      typeof said.base !== "string" ||
+      typeof said.rev !== "string" ||
+      said.rev === "" ||
+      said.rev === said.base ||
+      prevRev === null ||
+      prevRev === "" ||
+      said.base !== prevRev ||
+      !Array.isArray(said.keep) ||
+      !isObject(said.profiles)
+    ) {
+      return { kind: "refetch" };
+    }
+    const prevProfiles = prev.profiles as Record<string, unknown>;
+    const nextProfiles: Record<string, unknown> = {};
+    for (const id of said.keep) {
+      if (typeof id !== "string" || !(id in prevProfiles)) return { kind: "refetch" };
+      nextProfiles[id] = prevProfiles[id];
+    }
+    for (const [id, val] of Object.entries(said.profiles as Record<string, unknown>)) {
+      nextProfiles[id] = val;
+    }
+    const nextSpeedHours = "speedHours" in said ? said.speedHours : prev.speedHours;
+    const nextSpeedQuarters = "speedQuarters" in said ? said.speedQuarters : prev.speedQuarters;
+    const nextFromHour = "fromHour" in said ? said.fromHour : prev.fromHour;
+    const nextNowAt = "nowAt" in said ? said.nowAt : prev.nowAt;
+    const prevKeys = Object.keys(prevProfiles);
+    const nextKeys = Object.keys(nextProfiles);
+    let profilesSame = prevKeys.length === nextKeys.length;
+    if (profilesSame) {
+      for (const k of nextKeys) {
+        if (prevProfiles[k] !== nextProfiles[k]) { profilesSame = false; break; }
+      }
+    }
+    const same =
+      profilesSame &&
+      prev.fromHour === nextFromHour &&
+      prev.speedHours === nextSpeedHours &&
+      prev.speedQuarters === nextSpeedQuarters;
+    const rev = said.rev;
+    if (same) return { kind: "merged", changed: false, value: prev, rev };
+    const value: Record<string, unknown> = { profiles: nextProfiles };
+    if (nextNowAt !== undefined) value.nowAt = nextNowAt;
+    if (nextFromHour !== undefined) value.fromHour = nextFromHour;
+    if (nextSpeedHours !== undefined) value.speedHours = nextSpeedHours;
+    if (nextSpeedQuarters !== undefined) value.speedQuarters = nextSpeedQuarters;
+    return { kind: "merged", changed: true, value, rev };
+  }
+  if (!isObject(said) || !isObject(said.profiles)) {
+    return { kind: "refetch" };
+  }
+  const rev = typeof said.rev === "string" && said.rev !== "" ? said.rev : null;
+  const prevObj = isObject(prev) ? (prev as Record<string, unknown>) : null;
+  const prevProfiles = prevObj !== null && isObject(prevObj.profiles) ? (prevObj.profiles as Record<string, unknown>) : null;
+  const saidProfiles = said.profiles as Record<string, unknown>;
+  const nextProfiles: Record<string, unknown> = {};
+  let allProfilesRefSame = prevProfiles !== null && Object.keys(prevProfiles).length === Object.keys(saidProfiles).length;
+  for (const [id, nextP] of Object.entries(saidProfiles)) {
+    const prevP = prevProfiles?.[id];
+    if (isObject(prevP) && isObject(nextP)) {
+      const sameQuotas = equal(prevP.quotas, nextP.quotas);
+      const sameSpend = equal(prevP.spend, nextP.spend);
+      if (sameQuotas && sameSpend) {
+        nextProfiles[id] = prevP;
+        continue;
+      }
+      allProfilesRefSame = false;
+      nextProfiles[id] = {
+        ...nextP,
+        ...(sameQuotas ? { quotas: prevP.quotas } : {}),
+        ...(sameSpend ? { spend: prevP.spend } : {}),
+      };
+    } else {
+      allProfilesRefSame = false;
+      nextProfiles[id] = nextP;
+    }
+  }
+  const speedHours = prevObj !== null && equal(prevObj.speedHours, said.speedHours) ? prevObj.speedHours : said.speedHours;
+  const speedQuarters = prevObj !== null && equal(prevObj.speedQuarters, said.speedQuarters) ? prevObj.speedQuarters : said.speedQuarters;
+  const same =
+    prevObj !== null &&
+    allProfilesRefSame &&
+    prevObj.fromHour === said.fromHour &&
+    speedHours === prevObj.speedHours &&
+    speedQuarters === prevObj.speedQuarters;
+  if (same) return { kind: "merged", changed: false, value: prevObj, rev };
+  const value: Record<string, unknown> = { profiles: nextProfiles };
+  if (said.nowAt !== undefined) value.nowAt = said.nowAt;
+  if (said.fromHour !== undefined) value.fromHour = said.fromHour;
+  if (speedHours !== undefined) value.speedHours = speedHours;
+  if (speedQuarters !== undefined) value.speedQuarters = speedQuarters;
+  return { kind: "merged", changed: true, value, rev };
+}
+
 /// A burst of `thread` events becomes one read of each thread's summary.
 export const EVENTS_COALESCE_MS = 400;
 export { PAGE, TRANSCRIPT_PAGE };
@@ -577,6 +688,7 @@ export class StationsSync {
       // at rest, so it would wait for ever.
       else if (topic.topic === "live") this.channels.bring(transcriptOf(address, String(topic.key)), Priority.shown, "latest");
       else if (topic.topic === "drive" && this.#core.store.inUse(topic)) this.driveShown(address, String(topic.root), String(topic.path));
+      else if (topic.topic === "profilePace" && this.#core.store.inUse(topic)) this.paceShown(address);
     }
   }
 
@@ -759,17 +871,28 @@ export class StationsSync {
     this.#enqueue(address, "profilePace", Priority.shown, this.#pace(address));
   }
 
-  #pace(address: string): Effect.Effect<void, CoreError> {
+  #pace(address: string, retry = false): Effect.Effect<void, CoreError> {
     const key = topicKey({ topic: "profilePace", station: address });
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
-      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/profiles/pace", null, { quiet: true }));
+      const prev = link.memory.get(PACE);
+      const prevRev = !retry && prev !== undefined ? link.paceRev : null;
+      const path = prevRev !== null ? `/profiles/pace?v=2&sinceRev=${encodeURIComponent(prevRev)}` : "/profiles/pace?v=2";
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", path, null, { quiet: true }));
+      if (this.#links.get(address) !== link) return;
       const said = answer._tag === "Success" ? answer.success : answer.failure.status === 404 ? { profiles: {} } : undefined;
       if (said === undefined) return;
       link.errors.delete(key);
-      if (equal(link.memory.get(PACE), said)) return;
-      link.memory.set(PACE, said);
+      const merged = mergePace(prev, said, prevRev);
+      if (merged.kind === "refetch") {
+        link.paceRev = null;
+        if (!retry) yield* this.#pace(address, true);
+        return;
+      }
+      link.paceRev = merged.rev;
+      if (merged.kind === "unchanged" || !merged.changed) return;
+      link.memory.set(PACE, merged.value);
       this.onChange(address, "log", key);
     });
   }

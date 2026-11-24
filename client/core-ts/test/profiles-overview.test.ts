@@ -4,7 +4,7 @@
 // before (no GET /profiles/pace) giving the overview of the allowances alone.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { FUTURE_HOURS, PAST_HOURS, profilesOverview, speedPool } from "../src/views/profiles-overview.ts";
+import { FUTURE_HOURS, PAST_HOURS, _profilesOverviewExactRef, _simulateTotalUnmetForTest, normScope, profilesOverview, speedPool } from "../src/views/profiles-overview.ts";
 import { apply, subscribe, v } from "./helpers.ts";
 import { base, overview, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -262,7 +262,7 @@ test("the overview is of the stations' hours as they come, and of the allowances
     const { host, core } = await started(base(), 0, undefined, (s) => stationReplies(s.host, (req) => {
       const now = s.host.nowMs();
       if (req.url.endsWith("/admin/api/overview")) return { ...overview, profiles: [profile(now)] };
-      if (!req.url.endsWith("/admin/api/profiles/pace")) return undefined;
+      if (!new URL(req.url).pathname.endsWith("/admin/api/profiles/pace")) return undefined;
       asked++;
       return old ? status(404, { error: "no route GET /profiles/pace" }) : { nowAt: now, fromHour: 0, profiles: { p1: { quotas: [], spend: [{ hour: Math.floor(now / H) - 2, scope: "", weight: 3 }] } } };
     }));
@@ -324,4 +324,110 @@ test("each pool's models' speed: what their timed calls wrote over the time they
   assert.deepEqual(of("Codex")!.hours.at(-1), 100);
   assert.equal(of("Gemini"), undefined);
   assert.deepEqual(["claude-sonnet-5-5", "claude-mythos-5", "gemini-4-hydrogen-high", "gpt-6-luna", "o4-mini", "grok-5"].map(speedPool), ["Claude", "Fable", "Gemini", "Codex", "Codex", null]);
+
+  // Speed object and full pool reference stability when called again with unchanged inputs.
+  const pools2 = profilesOverview(items, (s) => (s === "ws/one" ? one : s === "ws/two" ? two : undefined), NOW, 0).pools;
+  for (let i = 0; i < pools.length; i++) {
+    assert.equal(pools2[i], pools[i], `pool ${pools[i]!.title} keeps identical frozen reference`);
+  }
+});
+
+test("normScope preserves Fable suffix fallback and merged simulateTotalUnmet matches unmerged reference across edge cases and 200 random scenarios", () => {
+  assert.equal(normScope("", "Weekly · Fable"), "Fable");
+  assert.equal(normScope("", "每周 · Fable"), "Fable");
+  assert.equal(normScope("gemini", ""), "gemini");
+  assert.equal(normScope("3p", ""), "3p");
+  assert.equal(normScope("Fable", ""), "Fable");
+  assert.equal(normScope("Argon", ""), "Argon");
+
+  // Astra counterexample: share=100, left=0, unitShare=1, k=6, demand=7, slack=1.
+  {
+    const demand = new Float64Array(FUTURE_HOURS + 1);
+    demand[1] = 7;
+    const start = [{ share: 100, left: 0, resetIn: 168, cycle: 168, lockedTill: 0, short: null }];
+    const scale = 100 / (100 + 6 * 1);
+    const merged = _simulateTotalUnmetForTest(start, 6, 1, 168, null, demand, scale, 1, false);
+    const exact = _simulateTotalUnmetForTest(start, 6, 1, 168, null, demand, scale, 1, true);
+    assert.equal(merged, exact);
+  }
+
+  // Exact slack boundary, k=0, k=999, short-cycle resets.
+  for (const k of [0, 1, 2, 6, 50, 999]) {
+    const demand = new Float64Array(FUTURE_HOURS + 1);
+    for (let h = 1; h <= FUTURE_HOURS; h++) demand[h] = h % 7 === 0 ? 15 : 2;
+    const start = [
+      { share: 60, left: 10, resetIn: 40, cycle: 168, lockedTill: 0, short: { used: 50, resetIn: 2, hours: 5, ofLong: 12 } },
+      { share: 40, left: 30, resetIn: 100, cycle: 168, lockedTill: 3, short: { used: 0, resetIn: null, hours: 5, ofLong: 12 } },
+    ];
+    const scale = 100 / (100 + k * 25);
+    const merged = _simulateTotalUnmetForTest(start, k, 25, 168, { hours: 5, ofLong: 12 }, demand, scale, 1, false);
+    const exact = _simulateTotalUnmetForTest(start, k, 25, 168, { hours: 5, ofLong: 12 }, demand, scale, 1, true);
+    assert.equal(merged, exact, `k=${k}`);
+  }
+
+  // 200 deterministic PRNG stress scenarios comparing profilesOverview vs _profilesOverviewExactRef.
+  let seed = 0x51a7c0de;
+  const rand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+  for (let s = 0; s < 200; s++) {
+    const nAcc = 1 + Math.floor(rand() * 5);
+    const items: J[] = [];
+    const accountsPace: Record<string, { quotas?: [number, J[]][]; spend?: [number, number, string?][] }> = {};
+    for (let a = 0; a < nAcc; a++) {
+      const id = `a${a}`;
+      const used = Math.floor(rand() * 100);
+      const resetIn = 1 + Math.floor(rand() * 167);
+      const hasShort = rand() > 0.25;
+      const ws: J[] = [week(used, resetIn)];
+      if (hasShort) ws.push(five(Math.floor(rand() * 100), rand() > 0.3 ? 1 + Math.floor(rand() * 5) : null));
+      const plan = rand() < 0.33 ? "Max 20x" : rand() < 0.66 ? "Max 5x" : "Pro";
+      items.push(account(id, ws, { profile: { id, planText: plan, checkTone: "green", quota: { state: "ok", windows: ws, checkedAt: NOW } } }));
+      const rate = 0.5 + rand() * 35;
+      accountsPace[id] = {
+        spend: Array.from({ length: 24 }, (_, h) => [h, rate * (0.2 + rand() * 2)] as [number, number]),
+      };
+    }
+    const pace = paceOf(accountsPace);
+    const opt = profilesOverview(items, (st) => (st === "ws/st" ? pace : undefined), NOW, 0, true).pools;
+    const ref = _profilesOverviewExactRef(items, (st) => (st === "ws/st" ? pace : undefined), NOW, 0).pools;
+    assert.equal(opt.length, ref.length);
+    for (let i = 0; i < opt.length; i++) {
+      assert.equal(opt[i]!.neededAccounts, ref[i]!.neededAccounts, `scenario ${s} pool ${opt[i]!.title} neededAccounts`);
+      assert.deepEqual(opt[i]!.traj, ref[i]!.traj, `scenario ${s} pool ${opt[i]!.title} traj`);
+    }
+  }
+
+  // Exact short-window floating-point rounding regression (2 healthy Claude Pro accounts, no history, UTC, now=500000.5h).
+  {
+    const nowBoundary = 500_000.5 * H;
+    const mk = (id: string, wUsed: number, wResetH: number, sUsed: number, sResetH: number) =>
+      account(
+        id,
+        [
+          { label: "每周", scope: "", usedPercent: wUsed, resetsAt: nowBoundary + wResetH * H, minutes: 10_080, mark: "W" },
+          { label: "5 小时", scope: "", usedPercent: sUsed, resetsAt: nowBoundary + sResetH * H, minutes: 300, mark: "5H" },
+        ],
+        {
+          profile: {
+            id,
+            planText: "Pro",
+            checkTone: "green",
+            quota: {
+              state: "ok",
+              checkedAt: nowBoundary,
+              windows: [
+                { label: "每周", scope: "", usedPercent: wUsed, resetsAt: nowBoundary + wResetH * H, minutes: 10_080, mark: "W" },
+                { label: "5 小时", scope: "", usedPercent: sUsed, resetsAt: nowBoundary + sResetH * H, minutes: 300, mark: "5H" },
+              ],
+            },
+          },
+        },
+      );
+    const items = [mk("a", 99, 94, 57, 3), mk("b", 55, 162, 52, 1)];
+    const claude = profilesOverview(items, () => undefined, nowBoundary, 0, true).pools.find((p) => p.title === "Claude");
+    assert.ok(claude);
+    assert.deepEqual([claude.traj[55], claude.traj[56], claude.traj[59]], [10, 10, 4]);
+  }
 });

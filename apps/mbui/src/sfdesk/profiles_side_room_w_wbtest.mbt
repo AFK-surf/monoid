@@ -145,3 +145,82 @@ test "profiles_side_node quota room_w matches laid-out nav_quota_chips_node widt
     }
   }
 }
+
+///|
+fn make_quota_window_keys(count : Int, changed_idx : Int, changed_left : Int) -> Array[Array[(String, String, String, Int, String)]] {
+  Array::makei(count, fn(i) {
+    let left5h = if i == changed_idx { changed_left } else { 10 + i }
+    let left_w = 50 + i % 40
+    [("5 小时", "", "5H", left5h, ""), ("每周", "", "W", left_w, "")]
+  })
+}
+
+///|
+fn direct_quota_room(v : @view.View, ws : Array[(String, String, String, Int, String)]) -> (Double, Array[Double]) {
+  let wins = ws.map(fn(win) {
+    Json::object({
+      "label": Json::string(win.0),
+      "scope": Json::string(win.1),
+      "mark": Json::string(win.2),
+      "left": Json::number(win.3.to_double()),
+      "refillShort": Json::string(win.4),
+    })
+  })
+  @sfbase.nav_quota_room_node(v, Some(Json::object({ "state": Json::string("ok"), "windows": Json::array(wins) })))
+}
+
+///|
+test "QuotaRoomCache: updating 1 of 40 accounts hits cache for 39 unchanged rows and invalidates on scale/theme change" {
+  @sfbase.reset()
+  @sf.set_words(@sfbase.fill)
+  let holder : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::new(fn(ctx) { @sf.begin(ctx) |> ignore }, w=400.0, h=600.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(v) { holder.val = Some(v) }) |> ignore
+  })
+  t.draw()
+  let q = holder.val.unwrap()
+  let cache = QuotaRoomCache::new()
+  let run_batch = fn(rows : Array[Array[(String, String, String, Int, String)]]) {
+    cache.sync_env(@sf.theme().dark, q.words_scale(), q.words_redone(), @ui.tree_theme().tabular)
+    rows.map(fn(ws) { cache.room_of(q, ws) })
+  }
+
+  // 1. Cold pass over 40 distinct accounts: 40 misses, 0 hits, bit-exact with nav_quota_room_node
+  let batch1 = make_quota_window_keys(40, -1, 0)
+  let out1 = run_batch(batch1)
+  assert_eq((cache.hits, cache.misses), (0, 40))
+  for i in 0..<40 {
+    assert_eq(out1[i], direct_quota_room(q, batch1[i]))
+  }
+
+  // 2. Update 1 of 40 accounts: 39 cache hits, only 1 miss, bit-exact with nav_quota_room_node
+  let batch2 = make_quota_window_keys(40, 0, 99)
+  let out2 = run_batch(batch2)
+  assert_eq((cache.hits, cache.misses), (39, 41))
+  for i in 0..<40 {
+    assert_eq(out2[i], direct_quota_room(q, batch2[i]))
+  }
+
+  // 3. Switch font scale (1.0 -> 1.3): cache invalidates and re-measures all 40 accounts
+  t.set_font_scale(1.3)
+  t.frame()
+  let out3 = run_batch(batch2)
+  assert_eq((cache.hits, cache.misses), (39, 81))
+  for i in 0..<40 {
+    assert_eq(out3[i], direct_quota_room(q, batch2[i]))
+    assert_true(out3[i].0 > out2[i].0, msg="1.3x font scale must measure wider quota room")
+  }
+
+  // 4. Switch dark theme (false -> true): cache invalidates and re-measures cleanly
+  @sf.set_dark(Some(true))
+  t.draw()
+  assert_true(@sf.theme().dark)
+  let out4 = run_batch(batch2)
+  assert_eq((cache.hits, cache.misses), (39, 121))
+  for i in 0..<40 {
+    assert_eq(out4[i], direct_quota_room(q, batch2[i]))
+  }
+  @sf.set_dark(None)
+}

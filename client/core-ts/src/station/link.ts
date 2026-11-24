@@ -238,6 +238,8 @@ export class Link {
   sharedChangesRefused: number | null = null;
   /// Verified station build from the open stream's `stillfail-build` header (null if unknown).
   build: string | null = null;
+  /// Revision token of the last `GET /profiles/pace?v=2` response held in `memory` (in-memory only, never persisted).
+  paceRev: string | null = null;
   /// When the station said it has no POST /batch (one from before): its history is read a request a read a while.
   batchRefused: number | null = null;
   /// What is left of the sweep of its history under way (#history), and what the sweep asked (each read once).

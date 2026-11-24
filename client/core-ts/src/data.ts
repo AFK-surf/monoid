@@ -1084,7 +1084,7 @@ export class Data {
   keepStationMemory(station: string, key: string, value: unknown): void {
     const db = this.of(station);
     if (!db) return;
-    if (value !== undefined) db.putStationDoc(station, `${MEMORY}${key}`, value, this.#host.nowMs(), null);
+    if (value !== undefined) db.putStationDoc(station, `${MEMORY}${key}`, value, this.#host.nowMs(), null, false);
     else if (db.stationDoc(station, `${MEMORY}${key}`) !== undefined) db.dropStationDoc(station, `${MEMORY}${key}`, null);
   }
 
