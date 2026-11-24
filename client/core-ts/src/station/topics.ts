@@ -576,19 +576,21 @@ export class StationTopics implements Owner {
     this.#firsts.set(tk, from);
     const timeline: unknown[] = [];
     for (let n = from; n < end && items.has(n); n++) timeline.push(items.get(n));
-    // What is held does not reach where its stream said the transcript goes: the steps in flight go on from there, not
-    // from here, and what is between is being read (it is not loaded yet, and nothing says it begins where it is held).
-    const behind = typeof view?.told === "number" && end < view.told;
+    // Its stream says it has entries and none is held here (spared, let go for room, or never read): nothing of it is
+    // loaded, whatever its steps' snapshot said, and what goes on after them waits for them (else it would go on from
+    // nothing, under "the start of the session"). Held up to some way short of it (a stream back after a while), what
+    // is held shows with the steps after it while the rest is read.
+    const unread = !span && (view?.told ?? 0) > 0;
     const value: Record<string, unknown> = {
-      loaded: (view?.loaded ?? false) && !behind,
+      loaded: (view?.loaded ?? false) && !unread,
       first: from,
       timeline,
       usage: view?.usage ?? null,
-      steps: behind ? [] : (view?.steps ?? []).filter((step) => stepShown(step, end)),
-      phase: view?.phase ?? null,
+      steps: unread ? [] : (view?.steps ?? []).filter((step) => stepShown(step, end)),
+      phase: unread ? null : (view?.phase ?? null),
     };
     // Not read: why, while nothing shows (it is read again meanwhile); the page before, being read or why it was not.
-    if (view?.failed !== undefined && !view.loaded) value.failed = view.failed;
+    if (view?.failed !== undefined && value.loaded !== true) value.failed = view.failed;
     const older = this.#olders.get(tk);
     if (older?.reading) value.older = "reading";
     else if (older?.failed) Object.assign(value, { older: "failed", olderFailed: older.failed });

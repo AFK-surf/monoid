@@ -161,9 +161,9 @@ test("steps_ended_while_a_transcript_is_not_taken_are_let_go_and_its_history_sho
     await s.host.time.pass(200, 10);
     let x = live();
     assert.ok(reads >= 1);
-    assert.deepEqual([x.loaded, x.steps], [false, []]);
+    assert.deepEqual([x.loaded, x.steps, x.failed], [false, [], "坏了"]);
     assert.ok(x.timeline.length < 2, "none of what came while spared is held");
-    assert.equal(x.phase.phase, "requesting", "where its turn stands still shows");
+    assert.equal(x.phase, null, "nothing goes on from nothing held");
 
     // Read again: what is held reaches where its stream said it goes, and the step in flight goes on after it.
     answering = true;
