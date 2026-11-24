@@ -70,7 +70,7 @@ export async function harness(
     statusPages?: Record<string, string>;
     /** STATUS_REPO_ID: the id of the repository whose issues labelled `incident` it shows; answered by `push`. */
     statusRepoId?: string;
-    ciNativeSigner?: { accessKeyId: string; secretAccessKey: string };
+    ciNativeSigner?: { accessKeyId: string; secretAccessKey: string; sessionToken: string; expiresAt: number };
     /** The console's admin (alice unless said otherwise). */
     adminEmail?: string;
     /** The console's host. */

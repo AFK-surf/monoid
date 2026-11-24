@@ -1569,6 +1569,9 @@ jobs:
     if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.api == 'true' && needs.api.result == 'success' }}
     runs-on: ubuntu-24.04
     environment: production
+    concurrency:
+      group: monoid-api-production
+      queue: max
     timeout-minutes: 5
     steps:
       - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
@@ -1578,7 +1581,7 @@ jobs:
         env:
           STILLFAIL_CLOUD: monoid
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
-          CI_NATIVE_R2_SIGNER: ${{ secrets.CI_NATIVE_R2_SIGNER }}
+          STILLFAIL_CI_NATIVE_R2: 'on'
           STILLFAIL_ADMIN_EMAIL: ${{ secrets.STILLFAIL_ADMIN_EMAIL }}
           # Once still.fail's accounts moved in (CLOUD_MOVED on: workflows/move-cloud.yml): still.fail's keys, and answered
           # as still.fail too (cloud/src/guests.ts).

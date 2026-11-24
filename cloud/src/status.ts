@@ -156,6 +156,7 @@ async function repositoryClaims(request: Request, env: Env): Promise<({ reposito
 }
 
 const NATIVE_CHUNK_MAX = 32 * 1024 * 1024;
+const NATIVE_UPLOAD_TTL_SECONDS = 120;
 
 /** A push of this repository's pipeline can stage a chunk for its other runners. The read receipt names only that chunk. */
 export async function stageNative(request: Request, env: Env): Promise<Response> {
@@ -181,14 +182,15 @@ export async function stageNative(request: Request, env: Env): Promise<Response>
   const key = `staged/ci-natives/${receipt}`;
   if (direct) {
     try {
-      const { accessKeyId, secretAccessKey } = JSON.parse(signer!);
-      if (!/^[a-f0-9]{32}$/.test(account!) || typeof accessKeyId !== "string" || !/^[a-f0-9]{32}$/.test(accessKeyId) ||
-          typeof secretAccessKey !== "string" || !/^[a-f0-9]{64}$/.test(secretAccessKey)) {
+      const { accessKeyId, secretAccessKey, sessionToken, expiresAt } = JSON.parse(signer!);
+      if (!/^[a-f0-9]{32}$/.test(account!) || ![accessKeyId, secretAccessKey, sessionToken].every((value) =>
+        typeof value === "string" && value.length > 0) || !Number.isSafeInteger(expiresAt)) {
         return reply({ error: "r2_signer_unavailable" }, 503);
       }
-      const client = new AwsClient({ accessKeyId, secretAccessKey, service: "s3", region: "auto" });
+      if (expiresAt < nowSeconds() + NATIVE_UPLOAD_TTL_SECONDS) return reply({ error: "not_found" }, 404);
+      const client = new AwsClient({ accessKeyId, secretAccessKey, sessionToken, service: "s3", region: "auto" });
       const target = new URL(`https://${account}.r2.cloudflarestorage.com/monoid-ci-natives/${key}`);
-      target.searchParams.set("X-Amz-Expires", "120");
+      target.searchParams.set("X-Amz-Expires", String(NATIVE_UPLOAD_TTL_SECONDS));
       const signed = await client.sign(target.href, {
         method: "PUT",
         headers: { "content-length": String(length), "if-none-match": "*" },

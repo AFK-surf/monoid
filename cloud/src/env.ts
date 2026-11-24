@@ -24,7 +24,7 @@ export interface Env {
   /** CI handoffs uploaded with an object-specific S3 link. The releases bucket still serves older handoffs. */
   CI_NATIVE_ARCHIVES?: R2Bucket;
   CI_NATIVE_R2_ACCOUNT_ID?: string;
-  /** The accessKeyId and secretAccessKey of a token scoped to the CI bucket. */
+  /** The temporary S3 credential and its expiry. It can only put objects into the CI handoff prefix. */
   CI_NATIVE_R2_SIGNER?: string;
   /** Where the station's releases are read when the bucket has none of a file (releases.ts upstream): still.fail's
    * (https://app.still.fail/releases) for monoid's cloud, whose bucket holds its own apps' builds alone. */
