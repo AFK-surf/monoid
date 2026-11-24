@@ -253,7 +253,11 @@ test "liquid_slider_look: fill and buffered stay clamped within [track_inset, w 
       buf.set(at)
       t.draw()
       for col in [fill_col, buf_col] {
-        for r in t.drawn_rects().filter(fn(r) { r.4 == col }) {
+        let rects = t.drawn_rects().filter(fn(r) { r.4 == col })
+        if at > 0.0 {
+          assert_eq(rects.length(), 1, msg="w=\{w} ti=\{track_in} tr=\{travel_in} at=\{at}: expected 1 bar rect")
+        }
+        for r in rects {
           assert_true(r.0 >= lo - 0.05, msg="w=\{w} ti=\{track_in} tr=\{travel_in} at=\{at}: left \{r.0} < \{lo}")
           assert_true(r.0 + r.2 <= hi + 0.05, msg="w=\{w} ti=\{track_in} tr=\{travel_in} at=\{at}: right \{r.0 + r.2} > \{hi}")
         }

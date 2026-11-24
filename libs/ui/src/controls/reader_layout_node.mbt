@@ -457,11 +457,6 @@ fn slider_node(
       }
     }
   }
-  let outer_h = if lens_enabled {
-    dmax(slider_thumb_d + slider_room, slider_thumb_d + 2.0 * @glass.slider_held_reach(slider_thumb_d))
-  } else {
-    slider_thumb_d + slider_room
-  }
   @headless.slider(
     parent,
     label,
@@ -477,8 +472,13 @@ fn slider_node(
           dd.update_value(v)
         }
       })
+      s.reacts(at_start=false, fn() { sl.disabled() }, fn(off) {
+        if off {
+          dd.release()
+        }
+      })
       s
-      .height(Is(Some(outer_h)))
+      .height(Is(Some(slider_thumb_d + slider_room)))
       .lies_along(Is(Middle))
       |> ignore
       let look = @glass.SliderLook::new(
