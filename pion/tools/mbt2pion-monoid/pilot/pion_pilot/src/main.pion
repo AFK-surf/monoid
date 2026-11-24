@@ -87,67 +87,66 @@ fn case_window_kept(world : World) -> Unit {
   trace(world, "win.a_restored", current.v.label + ":" + current.v.sig.get().to_string())
 }
 
-// --- 3. Style parser valid input + exact error location ---
-fn parse_style_mini(text : String) -> Result[String, String] {
-  let n = text.length()
-  let mut i = 0
-  let out : Array[String] = []
-  while i < n {
-    while i < n && text.code_unit_at(i) == 32 {
-      i = i + 1
-    }
-    if i >= n {
-      break
-    }
-    let start = i
-    while i < n && text.code_unit_at(i) != 32 {
-      i = i + 1
-    }
-    let tok = text.slice(start, i)
-    if tok == "row" || tok == "clip" {
-      out.push(tok + "=true")
-    } else if tok == "h=S7" || tok == "px=S2" || tok == "radius=Lg" {
-      out.push(tok)
-    } else if tok == "hovered{bg=Hover}" {
-      out.push("hovered:bg=Hover")
-    } else if mc::str_has_prefix(tok, "h=") {
-      let v = tok.slice(2, tok.length())
-      return Err("err@" + (start + 2).to_string() + ":unknown len " + v)
-    } else {
-      return Err("err@" + start.to_string() + ":unknown prop " + tok)
-    }
-  }
-  let mut joined = ""
-  for j in 0..<out.length() {
-    if j > 0 {
-      joined = joined + ";"
-    }
-    joined = joined + out[j]
-  }
-  Ok(joined)
-}
-
+// --- 3. Real Pion `sf::css_read` (`pion/ui/packages/sf/src/style_css.pion`) parity ---
 fn case_style_css(world : World) -> Unit {
-  match parse_style_mini("row h=S7 px=S2 radius=Lg hovered{bg=Hover}") {
-    Ok(s) => {
-      check(world, "css.valid_ok", s == "row=true;h=S7;px=S2;radius=Lg;hovered:bg=Hover")
-      trace(world, "css.valid", s)
+  match sf::css_read("row h=S7 px=S2 radius=Lg hovered{bg=Hover}") {
+    Ok(st) => {
+      let row_ok = st.base.row is Some(true)
+      let h_ok = st.base.h is Some(ui::Len::S7)
+      let px_ok = st.base.px is Some(ui::Space::S2)
+      let rad_ok = st.base.radius is Some(ui::Radius::Lg)
+      let hov_ok = match st.hovered {
+        Some(h) => h.bg is Some(ui::Color::Hover)
+        None => false
+      }
+      check(world, "css.valid1_ok", row_ok && h_ok && px_ok && rad_ok && hov_ok)
+      trace(world, "css.valid1", "row=true;h=S7;px=S2;radius=Lg;hovered.bg=Hover")
     }
-    Err(_) => check(world, "css.valid_ok", false)
+    Err(_) => check(world, "css.valid1_ok", false)
   }
-  match parse_style_mini("row h=S7 badprop=1") {
+  match sf::css_read("w=Grow(1.0) radius=Exact(3.5) pressed{bg=Over(Card, A(Fg, O5))}") {
+    Ok(st) => {
+      let w_ok = match st.base.w {
+        Some(ui::Len::Grow(g)) => g == 1.0
+        _ => false
+      }
+      let rad_ok = match st.base.radius {
+        Some(ui::Radius::Exact(r)) => r == 3.5
+        _ => false
+      }
+      let pr_ok = match st.pressed {
+        Some(pr) =>
+        match pr.bg {
+          Some(ui::Color::Over(ui::Color::Card, ui::Color::A(ui::Color::Fg, ui::Opacity::O5))) => true
+          _ => false
+        }
+        None => false
+      }
+      check(world, "css.valid2_ok", w_ok && rad_ok && pr_ok)
+      trace(world, "css.valid2", "w=Grow(1);radius=Exact(3.5);pressed.bg=Over(Card,A(Fg,O5))")
+    }
+    Err(_) => check(world, "css.valid2_ok", false)
+  }
+  match sf::css_read("row h=S7 badprop=1") {
     Err(e) => {
-      check(world, "css.err_prop_loc", e == "err@9:unknown prop badprop=1")
+      check(world, "css.err_prop_loc", e == "css: no property badprop at 17 in \"row h=S7 badprop=1\"")
       trace(world, "css.err_prop", e)
     }
     Ok(_) => check(world, "css.err_prop_loc", false)
   }
-  match parse_style_mini("row h=NOPE") {
+  match sf::css_read("row h=NOPE") {
     Err(e) => {
-      check(world, "css.err_val_loc", e == "err@6:unknown len NOPE")
+      check(world, "css.err_val_loc", e == "css: no Len NOPE at 10 in \"row h=NOPE\"")
       trace(world, "css.err_val", e)
     }
     Ok(_) => check(world, "css.err_val_loc", false)
+  }
+  match sf::css_read("hovered{bg=Hover") {
+    Err(e) => {
+      check(world, "css.err_unclosed_loc", e == "css: a block not closed at 16 in \"hovered{bg=Hover\"")
+      trace(world, "css.err_unclosed", e)
+    }
+    Ok(_) => check(world, "css.err_unclosed_loc", false)
   }
 }
 

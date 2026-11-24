@@ -27,7 +27,7 @@ TIMEOUT_S = 120
 CASES = {
     "signal_by": ("ok", 4),
     "window_kept": ("ok", 3),
-    "style_css": ("ok", 3),
+    "style_css": ("ok", 5),
     "guard_init_order": ("ok", 6),
     "opt_param_relay": ("ok", 5),
     "utf16_boundary": ("ok", 5),
@@ -140,6 +140,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--moon-dir", required=True)
     ap.add_argument("--moon-extra-src", action="append", default=[])
+    ap.add_argument(
+        "--libs-ui-dir",
+        default=os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../libs/ui")),
+    )
     ap.add_argument("--pion-dir", required=True)
     ap.add_argument("--moon-bin", default="moon")
     ap.add_argument("--pionc-bin", default="pionc")
@@ -151,6 +155,34 @@ def main():
     try:
         moon_work = os.path.join(work, "moon_pilot")
         shutil.copytree(args.moon_dir, moon_work)
+        # Stage real `libs/ui/src/{ui,...}` production packages so `moon_pilot`
+        # calls real `@ui.css_read` (`libs/ui/src/ui/style_css.mbt`) directly.
+        libs_ui_src = os.path.join(args.libs_ui_dir, "src")
+        for dep_pkg in (
+            "halt",
+            "dmath",
+            "zip",
+            "codec",
+            "signals",
+            "pixels",
+            "paint",
+            "text",
+            "flex",
+            "effect",
+            "damage",
+            "hostapi",
+            "view",
+            "ui",
+        ):
+            src_pkg = os.path.join(libs_ui_src, dep_pkg)
+            if not os.path.isdir(src_pkg):
+                print(f"SETUP FAILED: missing real libs/ui package {src_pkg}", file=sys.stderr)
+                return 2
+            shutil.copytree(
+                src_pkg,
+                os.path.join(moon_work, "src", dep_pkg),
+                ignore=shutil.ignore_patterns("*_test.mbt", "*_wbtest.mbt"),
+            )
         moon_pkg_dir = os.path.join(moon_work, "src", "controls")
         for extra in args.moon_extra_src:
             shutil.copy2(extra, os.path.join(moon_pkg_dir, os.path.basename(extra)))

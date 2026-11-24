@@ -94,67 +94,83 @@ fn case_window_kept() -> Unit {
   trace("win.a_restored", current.val.label + ":" + current.val.count.to_string())
 }
 
-// --- 3. style parser valid input + exact error location ---
-fn parse_style_mini(text : String) -> Result[String, String] {
-  let n = text.length()
-  let mut i = 0
-  let out : Array[String] = []
-  while i < n {
-    while i < n && text[i] == 32 {
-      i = i + 1
-    }
-    if i >= n {
-      break
-    }
-    let start = i
-    while i < n && text[i] != 32 {
-      i = i + 1
-    }
-    let tok = text.clamped_view(start=start, end=i).to_owned()
-    if tok == "row" || tok == "clip" {
-      out.push(tok + "=true")
-    } else if tok == "h=S7" || tok == "px=S2" || tok == "radius=Lg" {
-      out.push(tok)
-    } else if tok == "hovered{bg=Hover}" {
-      out.push("hovered:bg=Hover")
-    } else if tok.has_prefix("h=") {
-      let val = tok.clamped_view(start=2, end=tok.length()).to_owned()
-      return Err("err@" + (start + 2).to_string() + ":unknown len " + val)
-    } else {
-      return Err("err@" + start.to_string() + ":unknown prop " + tok)
-    }
-  }
-  let mut joined = ""
-  for j = 0; j < out.length(); j = j + 1 {
-    if j > 0 {
-      joined = joined + ";"
-    }
-    joined = joined + out[j]
-  }
-  Ok(joined)
-}
-
+// --- 3. Real production `@ui.css_read` (`libs/ui/src/ui/style_css.mbt`) parity ---
 fn case_style_css() -> Unit {
-  match parse_style_mini("row h=S7 px=S2 radius=Lg hovered{bg=Hover}") {
-    Ok(s) => {
-      check("css.valid_ok", s == "row=true;h=S7;px=S2;radius=Lg;hovered:bg=Hover")
-      trace("css.valid", s)
+  match @ui.css_read("row h=S7 px=S2 radius=Lg hovered{bg=Hover}") {
+    Ok(st) => {
+      let row_ok = match st.base.row {
+        Some(true) => true
+        _ => false
+      }
+      let h_ok = match st.base.h {
+        Some(@ui.Len::S7) => true
+        _ => false
+      }
+      let px_ok = match st.base.px {
+        Some(@ui.Space::S2) => true
+        _ => false
+      }
+      let rad_ok = match st.base.radius {
+        Some(@ui.Radius::Lg) => true
+        _ => false
+      }
+      let hov_ok = match st.hovered {
+        Some(h) =>
+          match h.bg {
+            Some(@ui.Color::Hover) => true
+            _ => false
+          }
+        None => false
+      }
+      check("css.valid1_ok", row_ok && h_ok && px_ok && rad_ok && hov_ok)
+      trace("css.valid1", "row=true;h=S7;px=S2;radius=Lg;hovered.bg=Hover")
     }
-    Err(_) => check("css.valid_ok", false)
+    Err(_) => check("css.valid1_ok", false)
   }
-  match parse_style_mini("row h=S7 badprop=1") {
+  match @ui.css_read("w=Grow(1.0) radius=Exact(3.5) pressed{bg=Over(Card, A(Fg, O5))}") {
+    Ok(st) => {
+      let w_ok = match st.base.w {
+        Some(@ui.Len::Grow(g)) => g == 1.0
+        _ => false
+      }
+      let rad_ok = match st.base.radius {
+        Some(@ui.Radius::Exact(r)) => r == 3.5
+        _ => false
+      }
+      let pr_ok = match st.pressed {
+        Some(pr) =>
+          match pr.bg {
+            Some(@ui.Color::Over(@ui.Color::Card, @ui.Color::A(@ui.Color::Fg, @ui.Opacity::O5))) =>
+              true
+            _ => false
+          }
+        None => false
+      }
+      check("css.valid2_ok", w_ok && rad_ok && pr_ok)
+      trace("css.valid2", "w=Grow(1);radius=Exact(3.5);pressed.bg=Over(Card,A(Fg,O5))")
+    }
+    Err(_) => check("css.valid2_ok", false)
+  }
+  match @ui.css_read("row h=S7 badprop=1") {
     Err(e) => {
-      check("css.err_prop_loc", e == "err@9:unknown prop badprop=1")
+      check("css.err_prop_loc", e == "css: no property badprop at 17 in \"row h=S7 badprop=1\"")
       trace("css.err_prop", e)
     }
     Ok(_) => check("css.err_prop_loc", false)
   }
-  match parse_style_mini("row h=NOPE") {
+  match @ui.css_read("row h=NOPE") {
     Err(e) => {
-      check("css.err_val_loc", e == "err@6:unknown len NOPE")
+      check("css.err_val_loc", e == "css: no Len NOPE at 10 in \"row h=NOPE\"")
       trace("css.err_val", e)
     }
     Ok(_) => check("css.err_val_loc", false)
+  }
+  match @ui.css_read("hovered{bg=Hover") {
+    Err(e) => {
+      check("css.err_unclosed_loc", e == "css: a block not closed at 16 in \"hovered{bg=Hover\"")
+      trace("css.err_unclosed", e)
+    }
+    Ok(_) => check("css.err_unclosed_loc", false)
   }
 }
 

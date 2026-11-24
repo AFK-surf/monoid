@@ -1,80 +1,122 @@
 #!/bin/sh
 # CI gate: verify EVERY AFK-surf/invar dependency across ALL pion/**/pion.toml and
-# pion/**/pion.lock files (including workspace member packages) is pinned to the
-# exact same single 40-char commit SHA, matching `manifest.toml`'s `invar_lock_sha`.
+# pion/**/pion.lock files (key-order-independent full TOML table parsing, checking
+# both `rev` and `ref = "rev:<sha>"`) is pinned to the exact same single 40-char
+# commit SHA, matching `manifest.toml`'s `invar_lock_sha`.
 set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 MANIFEST="$REPO_ROOT/pion/tools/mbt2pion-monoid/manifest.toml"
 
-TMP_FILE="$(mktemp)"
-trap 'rm -f "$TMP_FILE"' EXIT
+python3 - "$REPO_ROOT" "$MANIFEST" << 'PY'
+import os, re, sys
 
-FOUND_TOML=0
-for toml in $(find "$REPO_ROOT/pion" -name 'pion.toml' -type f | sort); do
-  REL="${toml#"$REPO_ROOT"/}"
-  grep -q 'AFK-surf/invar\.git' "$toml" 2>/dev/null || continue
-  while IFS= read -r line; do
-    FOUND_TOML=$((FOUND_TOML + 1))
-    REV="$(printf '%s\n' "$line" | sed -n 's/.*rev *= *"\([0-9a-f]\{40\}\)".*/\1/p')"
-    if [ -z "$REV" ]; then
-      echo "ERROR: $REL has an AFK-surf/invar dependency without a 40-char hex rev:" >&2
-      echo "  $line" >&2
-      exit 1
-    fi
-    printf '%s %s\n' "$REV" "$REL" >> "$TMP_FILE"
-  done <<EOF
-$(grep 'AFK-surf/invar\.git' "$toml")
-EOF
-done
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
 
-FOUND_LOCK=0
-for lock in $(find "$REPO_ROOT/pion" -name 'pion.lock' -type f | sort); do
-  REL="${lock#"$REPO_ROOT"/}"
-  grep -q 'AFK-surf/invar\.git' "$lock" 2>/dev/null || continue
-  # Parse [[package]] / [[git]] blocks referencing AFK-surf/invar.git and extract their rev
-  LOCK_REVS="$(awk '
-    /AFK-surf\/invar\.git/ { in_invar = 1; next }
-    /^\[/ { in_invar = 0 }
-    in_invar && /rev *= *"/ {
-      if (match($0, /"[0-9a-f]{40}"/)) {
-        print substr($0, RSTART + 1, RLENGTH - 2)
-      } else {
-        print "INVALID"
-      }
-      in_invar = 0
-    }
-  ' "$lock")"
-  for rev in $LOCK_REVS; do
-    FOUND_LOCK=$((FOUND_LOCK + 1))
-    if [ "$rev" = "INVALID" ] || [ "${#rev}" -ne 40 ]; then
-      echo "ERROR: $REL has an AFK-surf/invar lock entry without a 40-char hex rev" >&2
-      exit 1
-    fi
-    printf '%s %s\n' "$rev" "$REL" >> "$TMP_FILE"
-  done
-done
+repo_root, manifest_path = sys.argv[1], sys.argv[2]
+pion_dir = os.path.join(repo_root, "pion")
+HEX40 = re.compile(r"^[0-9a-f]{40}$")
 
-if [ "$FOUND_TOML" -eq 0 ] || [ "$FOUND_LOCK" -eq 0 ]; then
-  echo "ERROR: expected AFK-surf/invar entries in both pion.toml ($FOUND_TOML) and pion.lock ($FOUND_LOCK)" >&2
-  exit 1
-fi
+toml_entries = []  # (rev, rel)
+lock_entries = []  # (rev, rel)
+errors = []
 
-UNIQUE_REVS="$(awk '{print $1}' "$TMP_FILE" | sort -u)"
-COUNT="$(printf '%s\n' "$UNIQUE_REVS" | wc -l | tr -d ' ')"
+def parse_lock_blocks_fallback(text):
+    """Key-order-independent TOML [[...]] array-of-tables fallback parser."""
+    blocks = []
+    cur = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[[") and line.endswith("]]"):
+            if cur is not None:
+                blocks.append(cur)
+            cur = {}
+            continue
+        if line.startswith("["):
+            if cur is not None:
+                blocks.append(cur)
+            cur = None
+            continue
+        if cur is not None and "=" in line:
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip('"').strip("'")
+            cur[k] = v
+    if cur is not None:
+        blocks.append(cur)
+    return blocks
 
-if [ "$COUNT" -ne 1 ]; then
-  echo "ERROR: multiple AFK-surf/invar pins detected across pion/**/pion.{toml,lock}:" >&2
-  cat "$TMP_FILE" >&2
-  exit 1
-fi
+for root, _dirs, files in os.walk(pion_dir):
+    for fn in sorted(files):
+        full = os.path.join(root, fn)
+        rel = os.path.relpath(full, repo_root)
+        if fn == "pion.toml":
+            txt = open(full, "r", encoding="utf-8").read()
+            for lineno, line in enumerate(txt.splitlines(), 1):
+                if "AFK-surf/invar.git" not in line:
+                    continue
+                m = re.search(r'rev\s*=\s*"([0-9a-f]{40})"', line)
+                if not m:
+                    errors.append(f"{rel}:{lineno}: AFK-surf/invar dependency without valid 40-char hex rev: {line.strip()}")
+                else:
+                    toml_entries.append((m.group(1), rel))
+        elif fn == "pion.lock":
+            txt = open(full, "r", encoding="utf-8").read()
+            if "AFK-surf/invar.git" not in txt:
+                continue
+            tables = []
+            if tomllib is not None:
+                data = tomllib.loads(txt)
+                for key in ("git", "package", "packages"):
+                    val = data.get(key)
+                    if isinstance(val, list):
+                        tables.extend(t for t in val if isinstance(t, dict))
+            else:
+                tables = parse_lock_blocks_fallback(txt)
+            for idx, tbl in enumerate(tables):
+                git_url = str(tbl.get("git", ""))
+                if "AFK-surf/invar.git" not in git_url:
+                    continue
+                rev = str(tbl.get("rev", ""))
+                if not HEX40.match(rev):
+                    errors.append(f"{rel} table#{idx}: AFK-surf/invar lock entry missing valid 40-char hex rev (got {rev!r})")
+                    continue
+                ref = str(tbl.get("ref", ""))
+                if ref.startswith("rev:") and ref[4:] != rev:
+                    errors.append(f"{rel} table#{idx}: AFK-surf/invar lock entry ref ({ref!r}) != rev ({rev!r})")
+                    continue
+                lock_entries.append((rev, rel))
 
-if [ -f "$MANIFEST" ]; then
-  MANIFEST_SHA="$(sed -n 's/^invar_lock_sha *= *"\([0-9a-f]\{40\}\)".*/\1/p' "$MANIFEST" | head -n 1)"
-  if [ -z "$MANIFEST_SHA" ] || [ "$MANIFEST_SHA" != "$UNIQUE_REVS" ]; then
-    echo "ERROR: manifest.toml invar_lock_sha ($MANIFEST_SHA) != workspace pin ($UNIQUE_REVS)" >&2
-    exit 1
-  fi
-fi
+if errors:
+    for e in errors:
+        print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
 
-echo "OK: all $FOUND_TOML pion.toml + $FOUND_LOCK pion.lock AFK-surf/invar entries + manifest.toml pinned to single rev $UNIQUE_REVS"
+if not toml_entries or not lock_entries:
+    print(f"ERROR: expected AFK-surf/invar entries in both pion.toml ({len(toml_entries)}) and pion.lock ({len(lock_entries)})", file=sys.stderr)
+    sys.exit(1)
+
+all_revs = sorted({r for r, _ in toml_entries} | {r for r, _ in lock_entries})
+if len(all_revs) != 1:
+    print("ERROR: multiple AFK-surf/invar pins detected across pion/**/pion.{toml,lock}:", file=sys.stderr)
+    for r, rel in toml_entries + lock_entries:
+        print(f"  {r} {rel}", file=sys.stderr)
+    sys.exit(1)
+
+unique_rev = all_revs[0]
+
+if os.path.isfile(manifest_path):
+    mtxt = open(manifest_path, "r", encoding="utf-8").read()
+    m = re.search(r'^invar_lock_sha\s*=\s*"([0-9a-f]{40})"', mtxt, flags=re.M)
+    if not m or m.group(1) != unique_rev:
+        got = m.group(1) if m else "<missing>"
+        print(f"ERROR: manifest.toml invar_lock_sha ({got}) != workspace pin ({unique_rev})", file=sys.stderr)
+        sys.exit(1)
+
+print(f"OK: all {len(toml_entries)} pion.toml + {len(lock_entries)} pion.lock AFK-surf/invar entries + manifest.toml pinned to single rev {unique_rev}")
+PY

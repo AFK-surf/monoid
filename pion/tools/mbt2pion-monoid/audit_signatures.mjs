@@ -797,7 +797,9 @@ function main() {
         missingSourceSigSymbols++;
       } else {
         status = 'matched';
-        if (mbtiDecl.kind === 'fn' && pionItem.kind === 'fn') {
+        if (mbtiDecl.kind !== pionItem.kind) {
+          diffs.push(`kind_mismatch: mbui=${mbtiDecl.kind} vs invar=${pionItem.kind}`);
+        } else if (mbtiDecl.kind === 'fn' && pionItem.kind === 'fn') {
           const mSig = parseFnSig(mbtiDecl.sig);
           const pSig = parseFnSig(pionItem.sig);
           if (mSig && pSig) {
@@ -828,10 +830,41 @@ function main() {
             diffs.push(`struct_fields: mbui=[${mFields.join(', ')}] vs invar=[${pFields.join(', ')}]`);
           }
         } else if (mbtiDecl.kind === 'enum' && pionItem.kind === 'enum') {
-          const mVars = (mbtiDecl.variants || []).map(v => v.name);
-          const pVars = parsePionEnumVariants(pionItem.sig).map(v => v.name);
+          const mVariants = mbtiDecl.variants || [];
+          const pVariants = parsePionEnumVariants(pionItem.sig);
+          const mVars = mVariants.map(v => v.name);
+          const pVars = pVariants.map(v => v.name);
           if (mVars.join(',') !== pVars.join(',')) {
             diffs.push(`enum_variants: mbui=[${mVars.join(', ')}] vs invar=[${pVars.join(', ')}]`);
+          } else {
+            for (let vi = 0; vi < mVariants.length; vi++) {
+              const mv = mVariants[vi];
+              const pv = pVariants[vi];
+              if (normalizeTypeForCompare(mv.payload) !== normalizeTypeForCompare(pv.payload)) {
+                diffs.push(`enum_variant_payload[${mv.name}]: mbui=${mv.payload || '()'} vs invar=${pv.payload || '()'}`);
+              }
+            }
+          }
+        } else if (mbtiDecl.kind === 'enum_variant' && pionItem.kind === 'enum_variant') {
+          const extractPayload = s => {
+            const idx = String(s || '').indexOf('(');
+            const end = String(s || '').lastIndexOf(')');
+            return idx >= 0 && end > idx ? String(s).slice(idx + 1, end).trim() : '';
+          };
+          const mPay = extractPayload(mbtiDecl.sig);
+          const pPay = extractPayload(pionItem.sig);
+          if (normalizeTypeForCompare(mPay) !== normalizeTypeForCompare(pPay)) {
+            diffs.push(`enum_variant_payload[${mbtiDecl.name}]: mbui=${mPay || '()'} vs invar=${pPay || '()'}`);
+          }
+        } else if (mbtiDecl.kind === 'const' && pionItem.kind === 'const') {
+          const extractConstType = s => {
+            const m = String(s || '').match(/:\s*([^=]+?)(?:\s*=.*)?$/);
+            return m ? m[1].trim() : '';
+          };
+          const mTy = extractConstType(mbtiDecl.sig);
+          const pTy = extractConstType(pionItem.sig);
+          if (normalizeTypeForCompare(mTy) !== normalizeTypeForCompare(pTy)) {
+            diffs.push(`const_type: mbui=${mTy} vs invar=${pTy}`);
           }
         }
         if (diffs.length > 0) {

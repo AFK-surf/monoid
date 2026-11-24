@@ -10,7 +10,7 @@ Monoid-specific configuration, asset generators, verification gates, vertical du
 - `gen_assets.mjs`: direct Pion asset generator for `pion/ui/packages/sf_assets_native/src/` (`--check` is strictly read-only).
 - `regen.sh`: deterministic regeneration & `--check` wrapper (always runs real Stage A.5 probes; probe-skipping is intentionally unsupported).
 - `test_negative_gates.sh`: 2 positive controls + 4 negative mutation CI gates (`api_map` unit/signature, overlay stale source CST hash, `native` vs `wasm32` code diff, and differential oracle dropped/tautologized/real-controls mutations).
-- `pilot/`: 19-case 3-engine differential pilot (`moon run --target wasm-gc` vs `pionc run` vs `pionc run --target wasm32`) transpiling 6 real `libs/ui/src/controls/*.mbt` production files + `pilot_core.mbt` live (`pilot/oracle.py` is strictly a test-oracle harness).
+- `pilot/`: 19-case 3-engine differential pilot (`moon run --target wasm-gc` vs `pionc run` vs `pionc run --target wasm32`) transpiling 6 real `libs/ui/src/controls/*.mbt` production files + `pilot_core.mbt` live and verifying real `@ui.css_read` (`libs/ui/src/ui/style_css.mbt`) vs `sf::css_read` (`pion/ui/packages/sf/src/style_css.pion`) parity (`pilot/oracle.py` is strictly a test-oracle harness).
 - `run_audit_histogram.sh`: reproducible full `@sf` `--mode audit` + `pionc check --json` diagnostic histogram collector writing `audit_254_histogram.json` and `audit_254_summary.md`.
 
 ## Rules

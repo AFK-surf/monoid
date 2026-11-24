@@ -25,8 +25,8 @@
     "production_loc": 67628,
     "source_reachable_symbols": 491,
     "source_reachable_calls": 6880,
-    "target_signature_exact_matched": 216,
-    "target_signature_diff": 168,
+    "target_signature_exact_matched": 190,
+    "target_signature_diff": 194,
     "target_missing_source_sig": 18,
     "target_missing": 88,
     "excluded_comment_hits": {
@@ -5598,8 +5598,11 @@
       "source_sig": "pub(all) enum TipOwner { Built(Int32) Node(Int32) }",
       "target": "headless::TipOwner",
       "target_sig": "#derive(Eq) enum TipOwner { Built(Int); Node(Int) }",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "enum_variant_payload[Built]: mbui=Int32 vs invar=Int",
+        "enum_variant_payload[Node]: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 5,
       "sample_locations": [
@@ -8879,8 +8882,10 @@
       "source_sig": "pub let face_code : Int32",
       "target": "hostapi::face_code",
       "target_sig": "const face_code: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -8905,8 +8910,10 @@
       "source_sig": "pub let ime_action_go : Int32",
       "target": "hostapi::ime_action_go",
       "target_sig": "const ime_action_go: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -8931,8 +8938,10 @@
       "source_sig": "pub let ime_action_search : Int32",
       "target": "hostapi::ime_action_search",
       "target_sig": "const ime_action_search: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -9046,8 +9055,10 @@
       "source_sig": "pub let style_tabular : Int32",
       "target": "hostapi::style_tabular",
       "target_sig": "const style_tabular: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -9072,8 +9083,10 @@
       "source_sig": "pub let text_menu_copy : Int32",
       "target": "hostapi::text_menu_copy",
       "target_sig": "const text_menu_copy: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 3,
       "sample_locations": [
@@ -9100,8 +9113,10 @@
       "source_sig": "pub let text_menu_cut : Int32",
       "target": "hostapi::text_menu_cut",
       "target_sig": "const text_menu_cut: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 3,
       "sample_locations": [
@@ -9128,8 +9143,10 @@
       "source_sig": "pub let text_menu_paste : Int32",
       "target": "hostapi::text_menu_paste",
       "target_sig": "const text_menu_paste: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 3,
       "sample_locations": [
@@ -9156,8 +9173,10 @@
       "source_sig": "pub let text_menu_select_all : Int32",
       "target": "hostapi::text_menu_select_all",
       "target_sig": "const text_menu_select_all: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 3,
       "sample_locations": [
@@ -18041,8 +18060,10 @@
       "source_sig": "pub let key_code_down : Int32",
       "target": "ui::key_code_down",
       "target_sig": "const key_code_down: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 4,
       "sample_locations": [
@@ -18070,8 +18091,10 @@
       "source_sig": "pub let key_code_enter : Int32",
       "target": "ui::key_code_enter",
       "target_sig": "const key_code_enter: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -18096,8 +18119,10 @@
       "source_sig": "pub let key_code_left : Int32",
       "target": "ui::key_code_left",
       "target_sig": "const key_code_left: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 4,
       "sample_locations": [
@@ -18125,8 +18150,10 @@
       "source_sig": "pub let key_code_right : Int32",
       "target": "ui::key_code_right",
       "target_sig": "const key_code_right: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 4,
       "sample_locations": [
@@ -18154,8 +18181,10 @@
       "source_sig": "pub let key_code_up : Int32",
       "target": "ui::key_code_up",
       "target_sig": "const key_code_up: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 3,
       "sample_locations": [
@@ -18182,8 +18211,10 @@
       "source_sig": "pub let key_escape : Int32",
       "target": "ui::key_escape",
       "target_sig": "const key_escape: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 8,
       "sample_locations": [
@@ -18252,8 +18283,10 @@
       "source_sig": "pub let key_space : Int32",
       "target": "ui::key_space",
       "target_sig": "const key_space: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -18278,8 +18311,10 @@
       "source_sig": "pub let key_tab : Int32",
       "target": "ui::key_tab",
       "target_sig": "const key_tab: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -18566,8 +18601,10 @@
       "source_sig": "pub let mod_alt : Int32",
       "target": "ui::mod_alt",
       "target_sig": "const mod_alt: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -18592,8 +18629,10 @@
       "source_sig": "pub let mod_cmd : Int32",
       "target": "ui::mod_cmd",
       "target_sig": "const mod_cmd: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 2,
       "sample_locations": [
@@ -18619,8 +18658,10 @@
       "source_sig": "pub let mod_ctrl : Int32",
       "target": "ui::mod_ctrl",
       "target_sig": "const mod_ctrl: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 2,
       "sample_locations": [
@@ -18646,8 +18687,10 @@
       "source_sig": "pub let mod_shift_key : Int32",
       "target": "ui::mod_shift_key",
       "target_sig": "const mod_shift_key: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -21771,8 +21814,10 @@
       "source_sig": "pub let wheel_mod_cmd : Int32",
       "target": "ui::wheel_mod_cmd",
       "target_sig": "const wheel_mod_cmd: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -21797,8 +21842,10 @@
       "source_sig": "pub let wheel_mod_ctrl : Int32",
       "target": "ui::wheel_mod_ctrl",
       "target_sig": "const wheel_mod_ctrl: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 2,
       "sample_locations": [
@@ -21824,8 +21871,10 @@
       "source_sig": "pub let wheel_mod_shift : Int32",
       "target": "ui::wheel_mod_shift",
       "target_sig": "const wheel_mod_shift: Int",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -23064,8 +23113,10 @@
       "source_sig": "pub(all) enum Opener { ByNode(NodeId) ByOld(Int32) }",
       "target": "view::Opener",
       "target_sig": "#derive(Eq) enum Opener { ByNode(NodeId); ByOld(Int) }",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "enum_variant_payload[ByOld]: mbui=Int32 vs invar=Int"
+      ],
       "ordered_map_boundary": false,
       "call_count": 1,
       "sample_locations": [
@@ -25194,8 +25245,10 @@
       "source_sig": "pub let runs_picker : Lent[(View) -> Live[(Int32, Int32)]]",
       "target": "view::runs_picker",
       "target_sig": "const runs_picker: Lent[(View) -> Live[(Int, Int)]]",
-      "status": "matched",
-      "diffs": [],
+      "status": "signature_diff",
+      "diffs": [
+        "const_type: mbui=Lent[(View) -> Live[(Int32, Int32)]] vs invar=Lent[(View) -> Live[(Int, Int)]]"
+      ],
       "ordered_map_boundary": false,
       "call_count": 2,
       "sample_locations": [
