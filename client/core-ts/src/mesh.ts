@@ -830,7 +830,7 @@ export class Link {
       const done = Deferred.makeUnsafe<boolean>();
       runner.fork(
         Effect.flatMap(
-          Effect.result(this.controlled((c) => (probing ? Effect.as(c.exchange(this.credential), true) : Effect.succeed(false)))),
+          Effect.result(this.controlled((c) => Effect.suspend(() => (probing ? Effect.as(c.exchange(this.credential), true) : Effect.succeed(false))))),
           (r) => Effect.sync(() => Deferred.doneUnsafe(done, Effect.succeed(r._tag === "Success" && r.success))),
         ),
       );

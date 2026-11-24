@@ -908,6 +908,29 @@ sim("a_link_that_answers_again_while_a_wakes_new_dial_waits_is_kept_with_its_rea
   await close(s, station, mesh);
 });
 
+/// A probe let go of before its turn on the control stream came sends nothing when the turn comes (`Link.answers`):
+/// whether it sends is decided once it holds the control stream, not as it is asked.
+sim("a_probe_let_go_of_before_its_turn_on_the_control_stream_sends_nothing", async (s) => {
+  const { mesh, station } = await setup(s);
+  const link = await s.run(mesh.link(station.id(), grants("ok", { n: 0 })));
+  await request(s, link, head("/admin/api/overview"));
+  const gate = Deferred.makeUnsafe<void>();
+  const held = s.runner.fork(link.controlled(() => Deferred.await(gate)));
+  await s.time.pass(1);
+  const sent = station.grants.length;
+  const asked = s.runner.fork(link.answers(s.runner));
+  await s.time.pass(10);
+  await s.run(Fiber.interrupt(asked));
+  Deferred.doneUnsafe(gate, Effect.void);
+  await s.run(Fiber.join(held));
+  await s.time.pass(100);
+  assert.equal(station.grants.length, sent);
+  // Not let go of, it sends its line and is answered.
+  assert.equal(await s.run(link.answers(s.runner)), true);
+  assert.equal(station.grants.length, sent + 1);
+  await close(s, station, mesh);
+});
+
 sim("a_write_is_asked_again_only_of_a_station_that_does_it_once", async (s) => {
   const { mesh, station } = await setup(s);
   const wire = wireOf(s, mesh);
