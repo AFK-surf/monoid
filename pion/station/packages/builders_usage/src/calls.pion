@@ -59,6 +59,9 @@ pub fn jstr(v : Option[base_codec::Json]) -> Option[String] {
 }
 
 fn floor_d(d : Double) -> Double {
+  if sql_db::is_nan_or_inf(d) || d >= 4503599627370496.0 || d <= -4503599627370496.0 {
+    return d
+  }
   let i = d.to_int64()
   let f = i.to_double()
   if f > d { f - 1.0 } else { f }
@@ -98,11 +101,11 @@ pub fn min_d(a : Double, b : Double) -> Double {
 }
 
 pub fn js_number(d : Double) -> String {
-  if !sql_db::is_nan_or_inf(d) && abs_d(d) < 1.0e21 && d >= -9223372036854775808.0 && d < 9223372036854775808.0 && d == floor_d(d) {
+  if !sql_db::is_nan_or_inf(d) && d == floor_d(d) && abs_d(d) < 1.0e21 {
     if d == 0.0 {
       "0"
     } else {
-      d.to_int64().to_string()
+      builders_core::double_to_i64_saturating(d).to_string()
     }
   } else {
     d.to_string()

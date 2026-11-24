@@ -22,7 +22,6 @@ import {
   resetReaderSelectionStateForTest,
   setPionProbeRunnerForTest,
 } from "../src/read/mb-reader.ts";
-import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
 import { UsageCounter } from "../src/usage/counter.ts";
 import { testClock } from "./hub-fakes.ts";
@@ -240,20 +239,115 @@ test("dual-engine 0-diff: partial commit, file replacement re-read, and segmente
     assert.deepEqual(pionDump, mbDump, "partial commit + recovery must be 0-diff between MB and Pion");
   }
 
-  // 2. File replacement (anchor mismatch) + segmented .zst resume + single-frame .zst resume
+  // 1b. Main read path `flush` partial commit (WRITE_BATCH=64) on INSERT failure + recovery
+  {
+    const dir = tempdir("w6-usage-flush-");
+    const time = testClock();
+    const t0 = Date.parse("2026-11-24T10:30:00Z");
+    await time.adjust(t0);
+    const ws = join(dir, "ws-flush");
+    mkdirSync(ws, { recursive: true });
+    // Two files under the same Claude project dir:
+    // - f1.jsonl has 70 calls (>= WRITE_BATCH=64) -> flushed in batch 1
+    // - f2.jsonl has 50 calls -> hits trigger on call #100 (f099) during batch 2 flush
+    const f1 = join(dir, "transcripts/claude", claudeProject(ws), "f1.jsonl");
+    const f2 = join(dir, "transcripts/claude", claudeProject(ws), "f2.jsonl");
+    appendLines(
+      f1,
+      Array.from({ length: 70 }, (_, i) => claudeLine(`f${String(i).padStart(3, "0")}`, t0 + 1_000 + i * 100, "claude-opus-5-5", 10, 5)),
+    );
+    appendLines(
+      f2,
+      Array.from({ length: 50 }, (_, i) => claudeLine(`f${String(70 + i).padStart(3, "0")}`, t0 + 10_000 + i * 100, "claude-opus-5-5", 12, 6)),
+    );
+
+    const runFlush = async (label: string, bin: string) => {
+      const store = Store.open(join(dir, `${label}.db`), null, time.clock);
+      cleanup.unshift(() => store.close());
+      store.insertSession({
+        key: "chat:c-flush",
+        connect: "ember",
+        runtime: "claude",
+        profile: "cc",
+        workspace: ws,
+        token: "tok",
+        createdAt: t0 - 1_000,
+        lastActiveAt: t0 - 1_000,
+        ws: "mine",
+      });
+      store.startTurnFor("t1", "chat:c-flush", "input", { profile: "cc", person: "a@x", thread: null });
+      store.db.exec(
+        "CREATE TRIGGER fail_f099 BEFORE INSERT ON usage WHEN NEW.id = 'f099' BEGIN SELECT RAISE(ABORT, 'boom flush'); END;",
+      );
+      const counter = new UsageCounter({ store, config: () => ({ dataDir: dir, profiles: [] }), clock: time.clock, mb: bin });
+      cleanup.unshift(() => counter.stop());
+
+      await assert.rejects(counter.read(new Set(["chat:c-flush"])), /boom flush/);
+      const midCalls = (store.db.prepare("SELECT COUNT(*) AS n FROM usage").get() as { n: number }).n;
+      assert.equal(midCalls, 64, `${label}: batch 1 (WRITE_BATCH=64 calls) must stay committed after batch 2 flush failure`);
+
+      store.db.exec("DROP TRIGGER fail_f099");
+      // Same worker process (no trimIdle): `self.files = None` on flush error must allow clean recovery.
+      assert.equal(await counter.read(new Set(["chat:c-flush"])), 56, `${label}: recovery read must ingest remaining 56 calls`);
+      const finalCalls = (store.db.prepare("SELECT COUNT(*) AS n FROM usage").get() as { n: number }).n;
+      assert.equal(finalCalls, 120);
+      return dumpUsageDb(store);
+    };
+
+    const mbDump = await runFlush("mb", bins.mb);
+    const pionDump = await runFlush("pion", bins.pion);
+    assert.deepEqual(pionDump, mbDump, "main-path flush partial commit + recovery must be 0-diff between MB and Pion");
+  }
+
+  // 2. File replacement (anchor mismatch) + segmented .zst resume (>= 2 real frames) + single-frame .zst resume
   {
     const dir = tempdir("w6-usage-replace-");
     const time = testClock();
     const t0 = Date.parse("2026-11-24T11:00:00Z");
     await time.adjust(t0);
 
+    const parseSeekTable = (zstPath: string): { numFrames: number; frame0Decomp: number } => {
+      const buf = readFileSync(zstPath);
+      const magic = buf.readUInt32LE(buf.length - 4);
+      assert.equal(magic, 0x8f92eab1, "must have zstd seekable format magic");
+      const desc = buf[buf.length - 5]!;
+      const hasChecksum = (desc & 0x80) !== 0;
+      const numFrames = buf.readUInt32LE(buf.length - 9);
+      const entrySize = hasChecksum ? 12 : 8;
+      const tableStart = buf.length - 9 - numFrames * entrySize;
+      const frame0Decomp = buf.readUInt32LE(tableStart + 4);
+      return { numFrames, frame0Decomp };
+    };
+
+    const writeSeekableTwoFrameZst = (rawPath: string, splitAt: number) => {
+      const raw = readFileSync(rawPath);
+      assert.ok(splitAt > 0 && splitAt < raw.length, "splitAt must divide raw transcript into 2 non-empty frames");
+      const f0Raw = raw.subarray(0, splitAt);
+      const f1Raw = raw.subarray(splitAt);
+      const f0Comp = zstdCompressSync(f0Raw);
+      const f1Comp = zstdCompressSync(f1Raw);
+      // Zstd seekable format skippable frame: magic 0x184D2A5E + payloadLen (2*8+9=25) + 2 entries + numFrames + desc + 0x8F92EAB1
+      const footer = Buffer.alloc(8 + 25);
+      footer.writeUInt32LE(0x184d2a5e, 0);
+      footer.writeUInt32LE(25, 4);
+      footer.writeUInt32LE(f0Comp.length, 8);
+      footer.writeUInt32LE(f0Raw.length, 12);
+      footer.writeUInt32LE(f1Comp.length, 16);
+      footer.writeUInt32LE(f1Raw.length, 20);
+      footer.writeUInt32LE(2, 24);
+      footer[28] = 0; // no checksum
+      footer.writeUInt32LE(0x8f92eab1, 29);
+      writeFileSync(`${rawPath}.zst`, Buffer.concat([f0Comp, f1Comp, footer]));
+      unlinkSync(rawPath);
+    };
+
     const runScenario = async (mode: "replaced" | "segmented" | "single-frame") => {
       const subDir = join(dir, mode);
       const ws = join(subDir, "ws");
       mkdirSync(ws, { recursive: true });
       const transcript = join(subDir, "transcripts/claude", claudeProject(ws), "r.jsonl");
-      const filler = mode === "segmented" ? "z".repeat(3000) : "z".repeat(400);
-      const initialCount = mode === "segmented" ? 300 : 30;
+      const filler = "z".repeat(400);
+      const initialCount = 30;
       appendLines(
         transcript,
         Array.from({ length: initialCount }, (_, i) => claudeLine(`a${i}`, t0 + i * 100, "claude-opus-5-5", i + 1, 2, { pad: filler })),
@@ -295,7 +389,15 @@ test("dual-engine 0-diff: partial commit, file replacement re-read, and segmente
           claudeLine("after-pack", t0 + 10_000, "claude-opus-5-5", 5, 4),
         ]);
         if (mode === "segmented") {
-          await packFile(transcript);
+          const savedOffset = (mbStore.db.prepare("SELECT offset FROM usage_files").get() as { offset: number }).offset;
+          // Put frame boundary at half of savedOffset so savedOffset lies strictly inside frame 2.
+          writeSeekableTwoFrameZst(transcript, Math.floor(savedOffset / 2));
+          const { numFrames, frame0Decomp } = parseSeekTable(`${transcript}.zst`);
+          assert.ok(numFrames >= 2, `segmented zst must have >= 2 real frames (got ${numFrames})`);
+          assert.ok(
+            savedOffset > frame0Decomp,
+            `saved offset (${savedOffset}) must lie inside frame >= 2 (frame0Decomp=${frame0Decomp})`,
+          );
         } else {
           writeFileSync(`${transcript}.zst`, zstdCompressSync(readFileSync(transcript)));
           unlinkSync(transcript);
@@ -468,7 +570,7 @@ test("wire protocol & edge cases: bad JSON, missing/arbitrary JSON id, empty lin
     );
     const fullReq2 = Buffer.from(
       JSON.stringify({
-        id: ["arr", 42],
+        id: ["arr", "中文🚀", 42],
         // op intentionally omitted (no extra validation on op)
         dataDir: dir,
         homes: [],
@@ -480,7 +582,10 @@ test("wire protocol & edge cases: bad JSON, missing/arbitrary JSON id, empty lin
       "utf8",
     );
     const req3 = Buffer.from(JSON.stringify({ id: "str-err-id" }) + "\n", "utf8");
-    const splitAt = Math.floor(fullReq2.length / 2);
+    const rocketIdx = fullReq2.indexOf(Buffer.from("🚀", "utf8"));
+    assert.ok(rocketIdx > 0, "fullReq2 must contain multi-byte rocket emoji");
+    // Split right in the middle of the 4-byte UTF-8 sequence for 🚀 (after byte 2).
+    const splitAt = rocketIdx + 2;
     const answers = await sendRawLines(bin, dbPath, [req1, fullReq2.subarray(0, splitAt), fullReq2.subarray(splitAt), req3]);
     return {
       answers: answers.map((l) => JSON.parse(l)),
@@ -506,11 +611,80 @@ test("wire protocol & edge cases: bad JSON, missing/arbitrary JSON id, empty lin
   assert.equal(pionRes.answers[0].error, "no data directory");
   assert.equal(pionRes.answers[1].id, null);
   assert.equal(pionRes.answers[1].added, 1, "only complete line w1 counted; incomplete trailing line buffered");
-  assert.deepEqual(pionRes.answers[2].id, ["arr", 42]);
+  assert.deepEqual(pionRes.answers[2].id, ["arr", "中文🚀", 42]);
   assert.equal(pionRes.answers[2].added, 0);
   assert.equal(pionRes.answers[3].id, "str-err-id");
   assert.equal(pionRes.answers[3].error, "no data directory");
   assert.deepEqual(pionRes.db, mbRes.db, "DB state after wire edge cases must be 0-diff");
+
+  // Also test > 1 MiB transcript where a multi-byte UTF-8 call id ("中"/"🚀") straddles the exact CHUNK=1,048,576 boundary.
+  {
+    const CHUNK = 1_048_576;
+    const bigDir = tempdir("w6-usage-chunk-utf8-");
+    const bigWs = join(bigDir, "ws-big");
+    mkdirSync(bigWs, { recursive: true });
+    const bigTranscript = join(bigDir, "transcripts/claude", claudeProject(bigWs), "rbig.jsonl");
+    mkdirSync(dirname(bigTranscript), { recursive: true });
+
+    const crossId = "c-中文-🚀-cross";
+    const crossLine = `${claudeLine(crossId, t0 + 9_000, "claude-opus-5-5", 77, 88)}\n`;
+    const crossBuf = Buffer.from(crossLine, "utf8");
+    const rocketInLine = crossBuf.indexOf(Buffer.from("🚀", "utf8"));
+    assert.ok(rocketInLine > 0, "crossLine must contain 🚀");
+    // Pad prefix lines so that `rocketInLine + 2` lands at exact byte offset CHUNK (1,048,576).
+    const targetPrefixBytes = CHUNK - (rocketInLine + 2);
+    const prefixChunks: Buffer[] = [];
+    let prefixLen = 0;
+    let padIdx = 0;
+    while (prefixLen + 4000 < targetPrefixBytes) {
+      const line = `${claudeLine(`p${padIdx++}`, t0 + 1_000 + padIdx, "claude-opus-5-5", 1, 1, { pad: "x".repeat(3800) })}\n`;
+      const b = Buffer.from(line, "utf8");
+      prefixChunks.push(b);
+      prefixLen += b.length;
+    }
+    const baseExact = `${claudeLine(`p${padIdx++}`, t0 + 5_000, "claude-opus-5-5", 1, 1, { pad: "y" })}\n`;
+    const remain = targetPrefixBytes - prefixLen - Buffer.byteLength(baseExact, "utf8");
+    assert.ok(remain >= 0, `expected non-negative exact padding, got ${remain}`);
+    const exactLine = `${claudeLine(`p${padIdx - 1}`, t0 + 5_000, "claude-opus-5-5", 1, 1, { pad: "y".repeat(remain + 1) })}\n`;
+    prefixChunks.push(Buffer.from(exactLine, "utf8"));
+    const prefixBuf = Buffer.concat(prefixChunks);
+    assert.equal(prefixBuf.length, targetPrefixBytes);
+    assert.equal(prefixBuf.length + rocketInLine + 2, CHUNK, "🚀 must straddle CHUNK=1,048,576 exactly");
+    writeFileSync(bigTranscript, Buffer.concat([prefixBuf, crossBuf]));
+
+    const runBig = async (label: string, bin: string) => {
+      const store = Store.open(join(bigDir, `${label}.db`), null, time.clock);
+      cleanup.unshift(() => store.close());
+      store.insertSession({
+        key: "kbig",
+        connect: "ember",
+        runtime: "claude",
+        profile: "cc",
+        workspace: bigWs,
+        token: "tok",
+        createdAt: t0 - 1_000,
+        lastActiveAt: t0 - 1_000,
+        ws: "mine",
+      });
+      store.setRuntimeSessionId("kbig", "rbig");
+      store.startTurn("tbig", "kbig", "input");
+      const counter = new UsageCounter({ store, config: () => ({ dataDir: bigDir, profiles: [] }), clock: time.clock, mb: bin });
+      cleanup.unshift(() => counter.stop());
+      await counter.read(new Set(["kbig"]));
+      const found = store.db.prepare("SELECT id, input, output FROM usage WHERE id = ?").get(crossId) as
+        | { id: string; input: number; output: number }
+        | undefined;
+      assert.ok(found, `${label}: must decode cross-CHUNK multi-byte call id`);
+      assert.deepEqual({ ...found }, { id: crossId, input: 77, output: 88 }, `${label}: must decode cross-CHUNK multi-byte call id`);
+      const off = (store.db.prepare("SELECT offset FROM usage_files").get() as { offset: number }).offset;
+      assert.equal(off, prefixBuf.length + crossBuf.length, `${label}: exact byte offset`);
+      return dumpUsageDb(store);
+    };
+
+    const mbBig = await runBig("mb", bins.mb);
+    const pionBig = await runBig("pion", bins.pion);
+    assert.deepEqual(pionBig, mbBig, ">1 MiB cross-CHUNK UTF-8 transcript must be 0-diff between MB and Pion");
+  }
 });
 
 test("production new UsageCounter (no mb): cold-start/hot-reload hits Pion on first spawn, mb:null throws, hot-switch does not disrupt in-flight read", async (t) => {
@@ -524,8 +698,60 @@ test("production new UsageCounter (no mb): cold-start/hot-reload hits Pion on fi
 
   const mbLog = join(dir, "mb-spawns.log");
   const pionLog = join(dir, "pion-spawns.log");
+  const req2Seen = join(dir, "req2.seen");
+  const req2Go = join(dir, "req2.go");
   const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", bins.mb, mbLog);
-  const pionWrap = makeRecordingWrapper(dir, "pion-wrap.sh", bins.pion, pionLog);
+  // Pion wrapper logs every spawn and pauses the 2nd stdin request on its first spawn until `req2Go` appears,
+  // proving hot-switch truly happens while read #2 is in-flight on the live Pion process.
+  const pionGateJs = join(dir, "pion-gate.mjs");
+  writeFileSync(
+    pionGateJs,
+    `import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+const [realBin, logFile, seenFile, goFile, ...args] = process.argv.slice(2);
+appendFileSync(logFile, args.join(" ") + "\\n");
+const child = spawn(realBin, args, { stdio: ["pipe", "inherit", "inherit"] });
+let buf = "";
+let reqCount = 0;
+const queue = [];
+let busy = false;
+async function pump() {
+  if (busy) return;
+  busy = true;
+  while (queue.length > 0) {
+    const line = queue.shift();
+    reqCount++;
+    if (reqCount === 2 && !existsSync(goFile)) {
+      writeFileSync(seenFile, "1");
+      while (!existsSync(goFile)) await new Promise((r) => setTimeout(r, 10));
+    }
+    child.stdin.write(line + "\\n");
+  }
+  busy = false;
+}
+process.stdin.on("data", (c) => {
+  buf += c.toString("utf8");
+  let idx;
+  while ((idx = buf.indexOf("\\n")) >= 0) {
+    queue.push(buf.slice(0, idx));
+    buf = buf.slice(idx + 1);
+  }
+  void pump();
+});
+process.stdin.on("end", () => {
+  const fin = () => { if (busy || queue.length > 0) setTimeout(fin, 10); else child.stdin.end(); };
+  fin();
+});
+child.on("exit", (code, sig) => process.exit(code ?? (sig ? 1 : 0)));
+`,
+    "utf8",
+  );
+  const pionWrap = join(dir, "pion-wrap.sh");
+  writeFileSync(
+    pionWrap,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(pionGateJs)} ${JSON.stringify(bins.pion)} ${JSON.stringify(pionLog)} ${JSON.stringify(req2Seen)} ${JSON.stringify(req2Go)} "$@"\n`,
+    { mode: 0o755 },
+  );
 
   const ws = join(dir, "ws-prod");
   mkdirSync(ws, { recursive: true });
@@ -597,12 +823,18 @@ test("production new UsageCounter (no mb): cold-start/hot-reload hits Pion on fi
         assert.equal(readSpawns(mbLog).length, 0, "MB must not be spawned on cold start");
         assert.match(readSpawns(pionLog)[0]!, /--builder usage-counter/);
 
-        // 3. Hot-switch config to "mb" while another read is in flight:
-        //    in-flight read completes on existing Pion process without disruption;
-        //    after trimIdle(), next read spawns MB!
+        // 3. Real in-flight hot-switch (Pion -> MB): pause 2nd request inside Pion wrapper,
+        //    flip config to "mb" while read #2 is truly in flight, then release wrapper.
         appendLines(transcript, [claudeLine("p2", t0 + 2_000, "claude-opus-5-5", 13, 24)]);
         const inFlight = counter.read(new Set(["kp"]));
+        const deadline = Date.now() + 5_000;
+        while (!existsSync(req2Seen)) {
+          assert.ok(Date.now() < deadline, "timed out waiting for Pion wrapper to receive 2nd request");
+          await new Promise((r) => setTimeout(r, 10));
+        }
         currentEngine = "mb";
+        assert.equal(readSpawns(mbLog).length, 0, "no MB spawn while Pion read is in flight");
+        writeFileSync(req2Go, "go");
         assert.equal(await inFlight, 1, "in-flight read must complete uninterrupted during hot-switch");
         assert.equal(readSpawns(pionLog).length, 1, "in-flight read reused existing Pion worker");
         assert.equal(readSpawns(mbLog).length, 0, "no MB spawn until worker recycles");
@@ -612,6 +844,32 @@ test("production new UsageCounter (no mb): cold-start/hot-reload hits Pion on fi
         assert.equal(await counter.read(new Set(["kp"])), 1);
         assert.equal(readSpawns(mbLog).length, 1, "next spawn after trimIdle picks up hot-switched MB engine");
         assert.match(readSpawns(mbLog)[0]!, /--builder usage-counter/);
+
+        // 4. MB -> Pion hot-reload with suspended probe: recycle MB worker, suspend probe,
+        //    verify first read after recycle spawns ONLY Pion wrapper.
+        currentEngine = "pion";
+        assert.equal(counter.trimIdle(), 1, "trimIdle releases idle MB worker");
+        resetReaderSelectionStateForTest();
+        let releaseProbe2!: () => void;
+        const probeGate2 = new Promise<void>((r) => {
+          releaseProbe2 = r;
+        });
+        let probeCalls2 = 0;
+        setPionProbeRunnerForTest(async () => {
+          probeCalls2++;
+          await probeGate2;
+          return new Set(["usage-counter"]);
+        });
+        appendLines(transcript, [claudeLine("p4", t0 + 4_000, "claude-opus-5-5", 17, 28)]);
+        const reloadRead = counter.read(new Set(["kp"]));
+        await new Promise((r) => setImmediate(r));
+        assert.equal(probeCalls2, 1, "hot-reload probe must start once");
+        assert.equal(readSpawns(pionLog).length, 1, "0 new Pion spawns while hot-reload probe is pending");
+        assert.equal(readSpawns(mbLog).length, 1, "0 new MB spawns while hot-reload probe is pending");
+        releaseProbe2();
+        assert.equal(await reloadRead, 1);
+        assert.equal(readSpawns(pionLog).length, 2, "hot-reload first spawn hits Pion wrapper");
+        assert.equal(readSpawns(mbLog).length, 1, "hot-reload must not spawn MB");
 
         await counter.stop();
       } finally {

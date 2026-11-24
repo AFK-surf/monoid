@@ -142,11 +142,11 @@ pub fn arg_number(v : Option[base_codec::Json]) -> base_codec::Json {
 pub fn text_arg_with(v : Option[base_codec::Json], stringify : (base_codec::Json) -> String) -> String {
   match v {
     Some(base_codec::Json::Str(s)) => s
-    Some(base_codec::Json::Num(n, _)) => {
-      if !sql_db::is_nan_or_inf(n) && abs_d(n) < 1.0e21 && n.to_int64().to_double() == n {
-        n.to_int64().to_string()
+    Some(base_codec::Json::Num(n, r)) => {
+      if !sql_db::is_nan_or_inf(n) && n == floor_d(n) && abs_d(n) < 1.0e21 {
+        builders_core::double_to_i64_saturating(n).to_string()
       } else {
-        stringify(base_codec::json_num(n))
+        stringify(base_codec::Json::Num(n, r))
       }
     }
     Some(base_codec::Json::Null) => "null"

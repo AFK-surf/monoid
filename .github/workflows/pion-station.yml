@@ -776,41 +776,48 @@ jobs:
           echo "BIN_PION=$BIN_PION"
           "$BIN_PION" --version
 
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local tests_n pass_n
+            tests_n="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            pass_n="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! printf '%s\n' "$tests_n" | grep -qE '^[1-9][0-9]*$'; then
+              echo "FAIL: $label reported invalid test count '$tests_n'" >&2
+              exit 1
+            fi
+            if [ "$pass_n" != "$tests_n" ]; then
+              echo "FAIL: $label pass ($pass_n) != tests ($tests_n)" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+          }
+
           COLD_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
             node --test --test-reporter=tap station/test/w6-selection-coldstart.test.ts)"
-          printf '%s\n' "$COLD_OUT"
-          printf '%s\n' "$COLD_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$COLD_OUT" | grep -qE '^# skipped 0$'
+          check_tap_strict "w6-selection-coldstart.test.ts" "$COLD_OUT"
 
           MB_USAGE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
             node --test --test-reporter=tap station/test/mb-usage-counter.test.ts)"
-          printf '%s\n' "$MB_USAGE_OUT"
-          printf '%s\n' "$MB_USAGE_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$MB_USAGE_OUT" | grep -qE '^# skipped 0$'
+          check_tap_strict "mb-usage-counter.test.ts" "$MB_USAGE_OUT"
 
           TIMING_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
             node --test --test-reporter=tap station/test/usage-timing-bounded.test.ts)"
-          printf '%s\n' "$TIMING_OUT"
-          printf '%s\n' "$TIMING_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$TIMING_OUT" | grep -qE '^# skipped 0$'
+          check_tap_strict "usage-timing-bounded.test.ts" "$TIMING_OUT"
 
-          # Deterministic subset of usage-counter.test.ts: only the local snapshot test (`no /tmp/usage-work/transcripts`) may skip.
+          # Deterministic subset of usage-counter.test.ts: exclude the local-snapshot test via --test-skip-pattern
+          # (in Node 24.x, excluded tests are not counted in `# skipped`, enforcing strict `# skipped 0`).
           USAGE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
-            node --test --test-reporter=tap station/test/usage-counter.test.ts)"
-          printf '%s\n' "$USAGE_OUT"
-          printf '%s\n' "$USAGE_OUT" | grep -qE '^# pass [1-9]'
-          printf '%s\n' "$USAGE_OUT" | grep -qE '^# fail 0$'
-          printf '%s\n' "$USAGE_OUT" | grep -qE '^# skipped [01]$'
-          if printf '%s\n' "$USAGE_OUT" | grep '# SKIP' | grep -qv 'no /tmp/usage-work/transcripts'; then
-            echo "FAIL: unexpected skip in usage-counter.test.ts" >&2
-            exit 1
-          fi
+            node --test --test-reporter=tap --test-skip-pattern="^on a real station's copy" station/test/usage-counter.test.ts)"
+          check_tap_strict "usage-counter.test.ts" "$USAGE_OUT"
+          printf '%s\n' "$USAGE_OUT" | grep -qE '^# tests 46$'
+          printf '%s\n' "$USAGE_OUT" | grep -qE '^# pass 46$'
 
           SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
             node --test --test-reporter=tap station/test/builders-usage-pion-switch.test.ts)"
-          printf '%s\n' "$SW_OUT"
-          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
+          check_tap_strict "builders-usage-pion-switch.test.ts" "$SW_OUT"
 
   gate-w6-replica:
     runs-on: ubuntu-24.04
