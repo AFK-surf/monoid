@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9a7748e3](https://github.com/AFK-surf/monoid/commit/d9a7748e3cf7f12fdc33b338bd86f763d53f8d53) fix(screens): bound simulator view startup and enu | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [e5dc78307](https://github.com/AFK-surf/monoid/commit/e5dc78307cf13887651506576fa3d4636e9ccdb5) feat(pion-station): migrate 5 index/job SQLite bui | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.65 | 127.41 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
 | [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.58 | 66.24 | 100.27 | 131.27 |
 | [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.27 | 121.74 |
-| [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9a7748e3](https://github.com/AFK-surf/monoid/commit/d9a7748e3cf7f12fdc33b338bd86f763d53f8d53) fix(screens): bound simulator view startup and enu | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
 | [e5dc78307](https://github.com/AFK-surf/monoid/commit/e5dc78307cf13887651506576fa3d4636e9ccdb5) feat(pion-station): migrate 5 index/job SQLite bui | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.46 |
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
 | [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [4b508f967](https://github.com/AFK-surf/monoid/commit/4b508f967010aaeb7105382480ee6f35f2282a1b) test(station): assert exponential backoff floor in | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.41 |
 | [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.23 |
-| [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
