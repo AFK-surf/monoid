@@ -13,10 +13,6 @@ concurrency:
 permissions:
   contents: read
   actions: read
-env:
-  # Farview's client, which the app draws a chat's Farview tab with (apps/mbui/scripts/farview.sh: a private repository,
-  # read by its deploy key)
-  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   plan:
     if: github.repository_owner == 'AFK-surf' && github.ref == 'refs/heads/main'
@@ -491,7 +487,7 @@ jobs:
           echo "list=$missing" >> "$GITHUB_OUTPUT"
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc', farview: 'false' }
+        with: { tools: 'mbc' }
       - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
         if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
         run: |
@@ -561,7 +557,7 @@ jobs:
       - *station-natives-missing
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc', farview: 'false' }
+        with: { tools: 'mbc' }
       - *station-natives-ensure
 
   # Offer compatible apps before making the station update available. Built and signed as the pipeline's station job
@@ -587,9 +583,9 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
       # (MoonBit for the station's reader, station/mb/build.sh, where one is not prebuilt after all: mbc alone of mbui's
-      # tools, no Farview client)
+      # tools)
       - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc', farview: 'false' }
+        with: { tools: 'mbc' }
       # (the Node each platform's release names, kept by scripts/node-dist.sh: nodejs.org's tarballs and the packages
       # made of them)
       - uses: actions/cache@v4

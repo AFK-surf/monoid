@@ -433,7 +433,7 @@ jobs:
 
       - if: steps.reader.outputs.missing == 'true'
         uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc', farview: 'false' }
+        with: { tools: 'mbc' }
 
       - name: Zig 0.16.0 for the reader (UBSan off at -O0, as natives)
         if: steps.reader.outputs.missing == 'true'
