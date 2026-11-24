@@ -80,11 +80,32 @@ test "row_val, row_int, json_blob_byte, and int64_to_json helpers" {
   expect(row_int(row, "missing") == -1, "row_int missing")
   expect(base_codec::json_eq(row_val(row, "missing"), base_codec::json_null()), "row_val missing")
   expect(json_blob_byte(base_codec::json_int(255)).to_int() == 255, "blob 255")
+  expect(json_blob_byte(base_codec::json_int(256)).to_int() == 0, "blob 256 wraps to 0")
+  expect(json_blob_byte(base_codec::json_num(9223372036854775808.0)).to_int() == 255, "blob 2^63 saturates to 255")
+  expect(json_blob_byte(base_codec::json_num(1.0 / 0.0)).to_int() == 255, "blob +Inf saturates to 255")
+  expect(json_blob_byte(base_codec::json_num(1.5)).to_int() == 0, "blob 1.5 -> 0")
   expect(json_blob_byte(base_codec::json_int(-1)).to_int() == 0, "blob neg -> 0")
   expect(json_blob_byte(base_codec::json_str("x")).to_int() == 0, "blob str -> 0")
-  let over = safe_most() + 2.to_int64()
-  match int64_to_json(over) {
-    base_codec::Json::Num(_, repr) => expect(repr == "9007199254740993", "exact repr")
+  let safe = safe_most()
+  match int64_to_json(safe) {
+    base_codec::Json::Num(_, repr) => expect(repr == "", "SAFE_MOST has empty repr")
     _ => panic("expected Num")
   }
+  let over = safe + 2.to_int64()
+  match int64_to_json(over) {
+    base_codec::Json::Num(_, repr) => expect(repr == "9007199254740993", "exact repr beyond SAFE_MOST")
+    _ => panic("expected Num")
+  }
+  expect(is_pure_integer_repr("42"), "42 pure int")
+  expect(is_pure_integer_repr("-0"), "-0 pure int")
+  expect(!is_pure_integer_repr("1.0"), "1.0 not pure int")
+  expect(!is_pure_integer_repr("1e2"), "1e2 not pure int")
+  let obj = match base_codec::json_parse("{\"n\":1.0,\"e\":1e2,\"neg\":-0,\"big\":9007199254740993}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  expect(
+    stringify_json(obj) == "{\"n\":1,\"e\":100,\"neg\":0,\"big\":9007199254740993}",
+    "stringify_json normalizes numbers to match MoonBit",
+  )
 }

@@ -63,7 +63,23 @@ test "is_cancel_ask requires strict boolean true and parse_ask_line maps invalid
   expect(base_codec::json_eq(parse_ask_line("{\"s\":\"\\uD800\"}"), base_codec::json_null()), "lone surrogate -> null")
 }
 
-test "format_step_response matches MB builder protocol exactly" {
+test "json_get_last implements last-wins for duplicate keys" {
+  let dup = base_codec::json_obj([
+    ("scope", base_codec::json_str("all")),
+    ("scope", base_codec::json_str("x")),
+  ])
+  match json_get_last(dup, "scope") {
+    Some(base_codec::Json::Str("x")) => ()
+    _ => panic("expected last-wins value 'x'")
+  }
+  let dup_cancel = base_codec::json_obj([
+    ("cancel", base_codec::json_bool(true)),
+    ("cancel", base_codec::json_bool(false)),
+  ])
+  expect(!is_cancel_ask(dup_cancel), "duplicate cancel last-wins false")
+}
+
+test "format_step_response matches MB builder protocol and never retries App errors as busy" {
   expect(format_step_response("archive mark", Ok(Some(true))) == "{\"done\":true}", "done true")
   expect(format_step_response("archive mark", Ok(Some(false))) == "{\"done\":false}", "done false")
   expect(
@@ -72,14 +88,19 @@ test "format_step_response matches MB builder protocol exactly" {
     "invalid request",
   )
   expect(
-    format_step_response("archive mark", Err(sql_db::sql_error(5, "database is locked"))) ==
+    format_step_response("archive mark", Err(StepError::Sql(sql_db::sql_error(5, "database is locked")))) ==
     "{\"done\":false}",
-    "busy omits error",
+    "SQL busy omits error",
   )
   expect(
-    format_step_response("archive mark", Err(sql_db::sql_error(1, "boom"))) ==
+    format_step_response("archive mark", Err(StepError::Sql(sql_db::sql_error(1, "boom")))) ==
     "{\"done\":false,\"error\":\"boom\"}",
-    "non-busy includes error",
+    "SQL non-busy includes error",
+  )
+  expect(
+    format_step_response("archive mark", Err(StepError::App("archive mark index version \"is locked\" is incompatible with 1"))) ==
+    "{\"done\":false,\"error\":\"archive mark index version \\\"is locked\\\" is incompatible with 1\"}",
+    "App error mentioning 'is locked' must NOT be treated as busy",
   )
 }
 

@@ -223,11 +223,45 @@ pub fn is_busy(err : SqlError) -> Bool {
   str_contains(err.message, "database is locked") || str_contains(err.message, "is locked")
 }
 
-/// Convert a JSON array element to a BLOB byte (matching `sql.mbt:267-270`).
+/// Whether `repr` is a pure signed decimal integer literal (optional `-`, digits only; no `.`/`e`/`E`).
+/// Note: upstream `pion/base`'s `base_codec::json_parse` rejects overflowing exponents like `1e400`
+/// rather than yielding `+Inf` (unlike MoonBit `@json.parse`); we do not modify `pion/base` here.
+pub fn is_pure_integer_repr(repr : String) -> Bool {
+  let n = repr.length()
+  if n == 0 {
+    return false
+  }
+  let mut i = 0
+  if repr.code_unit_at(0) == 45 {
+    i = 1
+  }
+  if i >= n {
+    return false
+  }
+  while i < n {
+    let c = repr.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Convert a JSON array element to a BLOB byte, 1:1 matching `sql.mbt:268`:
+/// `Number(b, ..) if b >= 0.0 && b == b.floor() => b.to_int64().to_byte()`, else `0x00`.
+/// Non-negative integers >= 2^63 (and +Inf) saturate to INT64_MAX (0x7fff_ffff_ffff_ffff),
+/// whose low byte is `0xFF`.
 pub fn json_blob_byte(item : base_codec::Json) -> Byte {
   match item {
     base_codec::Json::Num(b, _) => {
-      if !is_nan_or_inf(b) && b >= 0.0 && b < 9223372036854775808.0 && b.to_int64().to_double() == b {
+      if b != b || b < 0.0 {
+        0 as Byte
+      } else if b >= 9223372036854775808.0 {
+        // Covers both finite >= 2^63 (all exact integers in IEEE-754) and +Inf:
+        // MoonBit `Double::to_int64()` saturates to INT64_MAX -> low byte 0xFF.
+        255 as Byte
+      } else if b.to_int64().to_double() == b {
         (b.to_int64() & 0xFF.to_int64()).to_int() as Byte
       } else {
         0 as Byte
@@ -237,10 +271,64 @@ pub fn json_blob_byte(item : base_codec::Json) -> Byte {
   }
 }
 
-/// Format an Int64 column value as `base_codec::Json` (exact decimal `repr` preserved for all
-/// integers, including beyond `SAFE_MOST = 9007199254740991`).
+/// Format an Int64 column value as `base_codec::Json`, 1:1 matching `sql.mbt:348-352`:
+/// attach exact decimal `repr` only when `|v| > SAFE_MOST` (9007199254740991), else empty `repr`.
 pub fn int64_to_json(v : Int64) -> base_codec::Json {
-  base_codec::Json::Num(v.to_double(), v.to_string())
+  let lim = safe_most()
+  if v > lim || v < -lim {
+    base_codec::Json::Num(v.to_double(), v.to_string())
+  } else {
+    base_codec::Json::Num(v.to_double(), "")
+  }
+}
+
+/// Recursively normalize `Json::Num` values so `base_codec::json_stringify` matches JS / MoonBit
+/// `Json::stringify()` (e.g. `1.0` -> `1`, `1e2` -> `100`, `-0` -> `0`, `9007199254740993` preserved).
+pub fn normalize_json_for_stringify(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Num(d, repr) => {
+      if is_pure_integer_repr(repr) {
+        match parse_int64_strict(repr) {
+          Some(v) => base_codec::Json::Num(v.to_double(), v.to_string())
+          None => {
+            if is_nan_or_inf(d) {
+              base_codec::json_null()
+            } else {
+              base_codec::Json::Num(d, "")
+            }
+          }
+        }
+      } else if is_nan_or_inf(d) {
+        base_codec::json_null()
+      } else if double_is_i64_integer(d) && d >= -9007199254740991.0 && d <= 9007199254740991.0 {
+        let v = d.to_int64()
+        base_codec::Json::Num(d, v.to_string())
+      } else {
+        base_codec::Json::Num(d, "")
+      }
+    }
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(normalize_json_for_stringify(items[i]))
+      }
+      base_codec::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, normalize_json_for_stringify(v)))
+      }
+      base_codec::Json::Obj(out)
+    }
+    other => other
+  }
+}
+
+/// Stringify a `base_codec::Json` value with JS / MoonBit numeric normalization.
+pub fn stringify_json(j : base_codec::Json) -> String {
+  base_codec::json_stringify(normalize_json_for_stringify(j))
 }
 
 /// Format a Double column value as `base_codec::Json` (non-finite -> Null).
@@ -334,7 +422,7 @@ pub fn Db::exec(self : Db, sql : String) -> Result[Unit, SqlError] {
 }
 
 fn bind_number(stmt : sqlite_ffi::Stmt, at : Int, d : Double, repr : String) -> Int {
-  if repr.length() > 0 {
+  if is_pure_integer_repr(repr) {
     match parse_int64_strict(repr) {
       Some(v) => stmt.bind_int64(at, v)
       None => stmt.bind_double(at, d)
@@ -402,7 +490,7 @@ fn Db::prepared(self : Db, sql : String, params : Array[base_codec::Json]) -> Re
         }
         kept.stmt.bind_blob(at, buf)
       }
-      base_codec::Json::Obj(_) => kept.stmt.bind_text(at, base_codec::json_stringify(p))
+      base_codec::Json::Obj(_) => kept.stmt.bind_text(at, stringify_json(p))
     }
     if rc != sqlite_ffi::SQLITE_OK {
       reset_stmt(kept.stmt)
@@ -501,12 +589,16 @@ pub fn Db::first(
   }
 }
 
-/// The sole write-transaction entry point: `BEGIN IMMEDIATE`, run `f`, `COMMIT`.
-/// On `f` error OR `COMMIT` error, best-effort `ROLLBACK` and return the original error.
-pub fn Db::tx[T](self : Db, f : (Db) -> Result[T, SqlError]) -> Result[T, SqlError] {
+/// Generalized write-transaction entry point allowing callers to distinguish SQLite errors
+/// (`map_sql`) from application errors while still guaranteeing `ROLLBACK` on body or `COMMIT` failure.
+pub fn Db::tx_err[T, E](
+  self : Db,
+  f : (Db) -> Result[T, E],
+  map_sql : (SqlError) -> E,
+) -> Result[T, E] {
   match self.exec("BEGIN IMMEDIATE") {
     Ok(_) => ()
-    Err(e) => return Err(e)
+    Err(e) => return Err(map_sql(e))
   }
   match f(self) {
     Err(e) => {
@@ -518,11 +610,17 @@ pub fn Db::tx[T](self : Db, f : (Db) -> Result[T, SqlError]) -> Result[T, SqlErr
         Ok(_) => Ok(v)
         Err(e) => {
           let _ = self.exec("ROLLBACK")
-          Err(e)
+          Err(map_sql(e))
         }
       }
     }
   }
+}
+
+/// The sole write-transaction entry point: `BEGIN IMMEDIATE`, run `f`, `COMMIT`.
+/// On `f` error OR `COMMIT` error, best-effort `ROLLBACK` and return the original error.
+pub fn Db::tx[T](self : Db, f : (Db) -> Result[T, SqlError]) -> Result[T, SqlError] {
+  self.tx_err(f, fn(e : SqlError) -> SqlError { e })
 }
 
 pub fn Db::schema_version(self : Db) -> Result[base_codec::Json, SqlError] {
@@ -807,6 +905,100 @@ pub fn run_selftest(temp_db_path : String) -> Result[Unit, String] {
       }
     }
     _ => { db.close(); return Err("select infv failed") }
+  }
+
+  // 7b. P1-2 BLOB array element saturation parity (`sql.mbt:268`)
+  let blob_sat_param = match base_codec::json_parse("[9223372036854775808, 1, 255]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse blob sat failed") }
+  }
+  match db.first("SELECT hex(?) AS h", [blob_sat_param]) {
+    Ok(Some(r)) => {
+      match row_val(r, "h") {
+        base_codec::Json::Str("FF01FF") => ()
+        other => { db.close(); return Err("blob saturation hex mismatch: " + stringify_json(other)) }
+      }
+    }
+    _ => { db.close(); return Err("select hex(blob_sat) failed") }
+  }
+  let blob_edge_param = match base_codec::json_parse("[-1, 0, 255, 256, 1.5]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse blob edge failed") }
+  }
+  match db.first("SELECT hex(?) AS h", [blob_edge_param]) {
+    Ok(Some(r)) => {
+      match row_val(r, "h") {
+        base_codec::Json::Str("0000FF0000") => ()
+        other => { db.close(); return Err("blob edge hex mismatch: " + stringify_json(other)) }
+      }
+    }
+    _ => { db.close(); return Err("select hex(blob_edge) failed") }
+  }
+
+  // 7c. P1-3 JSON numeric `repr` boundary semantics (typeof, readback repr, object stringify)
+  let num_cases : Array[(String, String, Bool)] = [
+    ("1.0", "integer", false),
+    ("1e2", "integer", false),
+    ("-0", "integer", false),
+    ("1.5", "real", false),
+    ("9007199254740991", "integer", false),
+    ("9007199254740992", "integer", true),
+    ("9007199254740993", "integer", true),
+    ("-9007199254740993", "integer", true),
+  ]
+  for i in 0..<num_cases.length() {
+    let (lit, want_ty, want_repr) = num_cases[i]
+    let parsed_num = match base_codec::json_parse(lit) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => { db.close(); return Err("parse num case failed: " + lit) }
+    }
+    match db.first("SELECT typeof(?) AS ty, ? AS v", [parsed_num, parsed_num]) {
+      Ok(Some(r)) => {
+        match row_val(r, "ty") {
+          base_codec::Json::Str(ty) => {
+            if ty != want_ty {
+              db.close()
+              return Err("typeof(" + lit + ") mismatch: got=" + ty + " want=" + want_ty)
+            }
+          }
+          _ => { db.close(); return Err("typeof(" + lit + ") not Str") }
+        }
+        match row_val(r, "v") {
+          base_codec::Json::Num(_, repr) => {
+            let has_repr = repr.length() > 0
+            if has_repr != want_repr {
+              db.close()
+              return Err("readback repr presence for " + lit + ": got=" + has_repr.to_string() + " want=" + want_repr.to_string())
+            }
+            if want_repr && repr != lit {
+              db.close()
+              return Err("readback repr value for " + lit + ": got=" + repr)
+            }
+          }
+          _ => { db.close(); return Err("readback value for " + lit + " not Num") }
+        }
+      }
+      _ => { db.close(); return Err("query num case failed: " + lit) }
+    }
+  }
+  let obj_param = match base_codec::json_parse("{\"n\":1.0,\"e\":1e2,\"neg\":-0,\"big\":9007199254740993}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse obj_param failed") }
+  }
+  match db.first("SELECT ? AS txt", [obj_param]) {
+    Ok(Some(r)) => {
+      let want_txt = "{\"n\":1,\"e\":100,\"neg\":0,\"big\":9007199254740993}"
+      match row_val(r, "txt") {
+        base_codec::Json::Str(s) => {
+          if s != want_txt {
+            db.close()
+            return Err("object bind text mismatch: got=" + s + " want=" + want_txt)
+          }
+        }
+        _ => { db.close(); return Err("object bind text not Str") }
+      }
+    }
+    _ => { db.close(); return Err("select obj_param failed") }
   }
 
   // Invalid UTF-8 bytes cast to TEXT -> WHATWG lossy UTF-8 replacement U+FFFD

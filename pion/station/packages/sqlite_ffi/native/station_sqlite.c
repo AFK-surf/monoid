@@ -391,6 +391,8 @@ int32_t stq_step(int64_t stmt_h) {
     return (int32_t)sqlite3_step(stmt);
 }
 
+// Single-owner thread contract: g_table_lock protects only slot lookup/alloc/free;
+// caller must serialize calls on the same db/stmt handle (consistent with SQLITE_OPEN_NO_MUTEX).
 int32_t stq_stmt_readonly(int64_t stmt_h) {
     sqlite3_stmt *stmt = lookup_stmt(stmt_h);
     if (stmt == NULL) {
@@ -399,6 +401,8 @@ int32_t stq_stmt_readonly(int64_t stmt_h) {
     return (int32_t)sqlite3_stmt_readonly(stmt);
 }
 
+// Single-owner thread contract: g_table_lock protects only slot lookup/alloc/free;
+// caller must serialize calls on the same db/stmt handle (consistent with SQLITE_OPEN_NO_MUTEX).
 int32_t stq_bind_parameter_count(int64_t stmt_h) {
     sqlite3_stmt *stmt = lookup_stmt(stmt_h);
     if (stmt == NULL) {

@@ -4,10 +4,22 @@
 // By default this runs against the shipped MoonBit `stillfail-reader` (`mbReaderBinary()`). Set
 // `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary with zero edits
 // to this suite: a candidate named but empty, missing or not executable fails every test, never skips.
-// With no candidate named and no reader built, the tests skip locally and fail under CI (`CI` set).
+// Set `STILLFAIL_REQUIRE_DUAL_READER=1` (used in CI `verify-linux`) to require BOTH a real MoonBit
+// `stillfail-reader` and a distinct candidate binary, failing loudly if either is missing or identical.
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  accessSync,
+  constants as fsConstants,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -19,7 +31,20 @@ import { archiveMarksReady, archiveMarksStep, installArchiveMarkIndex } from "./
 
 const ASK_TIMEOUT_MS = 30_000;
 
+// Sole known wire difference between MoonBit `fail(...)` and Pion `StepError::App(...)`:
+// MoonBit's `Failure::to_string()` prepends its compiler source location prefix
+// (`src/marks/marks.mbt:46:12-46:101@station FAILED: `). Strip ONLY that exact prefix before
+// strict `assert.deepStrictEqual` on the full response object.
+const MB_FAIL_PREFIX = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
+
 type Json = any;
+
+function normalizeErrorResponse(res: Json): Json {
+  if (res !== null && typeof res === "object" && typeof res.error === "string") {
+    return { ...res, error: res.error.replace(MB_FAIL_PREFIX, "") };
+  }
+  return res;
+}
 
 function resolveCandidate(): { binary: string } | { fail: string } | { skip: string } {
   const raw = process.env.STILLFAIL_READER_CANDIDATE;
@@ -55,36 +80,56 @@ after(() => {
   for (const d of dirs) rmSync(d, { recursive: true, force: true });
 });
 
-function seedArchiveMarksDb() {
+/// Create one canonical seeded DB file, checkpoint and close it cleanly, then clone it byte-for-byte.
+function createSeedSnapshot(): { dir: string; seedPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "builder-contract-"));
   dirs.push(dir);
-  const path = join(dir, "stillfail.db");
-  const store = Store.open(path, join(dir, "archive"));
-  const db = store.db;
-  for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'archive_pin_%' OR name LIKE 'archive_keep_%')").all() as { name: string }[]) {
-    db.exec(`DROP TRIGGER ${row.name}`);
+  const seedPath = join(dir, "seed.db");
+  const store = Store.open(seedPath, join(dir, "archive"));
+  try {
+    const db = store.db;
+    for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'archive_pin_%' OR name LIKE 'archive_keep_%')").all() as { name: string }[]) {
+      db.exec(`DROP TRIGGER ${row.name}`);
+    }
+    db.exec("DROP TABLE archive_pin_rows; DROP TABLE archive_keep_rows; DROP TABLE archive_pin_replaced; DROP TABLE archive_keep_replaced; DROP TABLE archive_mark_meta");
+    const pin = db.prepare("INSERT INTO pins(viewer, session, at) VALUES (?, ?, ?)");
+    for (let i = 0; i < 600; i++) pin.run(`person${i % 7}`, `session-${i % 211}`, i);
+    db.exec("DELETE FROM pins WHERE rowid % 13 = 0");
+    const keep = db.prepare("INSERT INTO kept_chats(viewer, thread) VALUES (?, ?)");
+    for (let i = 0; i < 300; i++) keep.run(`person${i % 5}`, i * 3);
+    installArchiveMarkIndex(db);
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } finally {
+    store.close();
   }
-  db.exec("DROP TABLE archive_pin_rows; DROP TABLE archive_keep_rows; DROP TABLE archive_pin_replaced; DROP TABLE archive_keep_replaced; DROP TABLE archive_mark_meta");
-  const pin = db.prepare("INSERT INTO pins(viewer, session, at) VALUES (?, ?, ?)");
-  for (let i = 0; i < 600; i++) pin.run(`person${i % 7}`, `session-${i % 211}`, i);
-  db.exec("DELETE FROM pins WHERE rowid % 13 = 0");
-  const keep = db.prepare("INSERT INTO kept_chats(viewer, thread) VALUES (?, ?)");
-  for (let i = 0; i < 300; i++) keep.run(`person${i % 5}`, i * 3);
-  installArchiveMarkIndex(db);
-  return { dir, path, store };
+  return { dir, seedPath };
 }
 
-function snapshotTables(db: DatabaseSync): string {
+function cloneSeedDb(dir: string, seedPath: string, label: string): { path: string; db: DatabaseSync } {
+  const path = join(dir, `${label}.db`);
+  copyFileSync(seedPath, path);
+  const db = new DatabaseSync(path);
+  return { path, db };
+}
+
+function snapshotBatchState(db: DatabaseSync): string {
   const all = (sql: string) => JSON.stringify(db.prepare(sql).all());
   return [
-    all("SELECT session, position FROM archive_pin_rows ORDER BY session, position"),
-    all("SELECT thread, position FROM archive_keep_rows ORDER BY thread, position"),
-    all("SELECT kind, version, last_rowid, end_rowid, complete FROM archive_mark_meta ORDER BY kind"),
-    all("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"),
+    `meta=${all("SELECT kind, version, last_rowid, end_rowid, complete FROM archive_mark_meta ORDER BY kind")}`,
+    `pin_rows=${all("SELECT session, position FROM archive_pin_rows ORDER BY session, position")}`,
+    `keep_rows=${all("SELECT thread, position FROM archive_keep_rows ORDER BY thread, position")}`,
+    `pins=${all("SELECT rowid, viewer, session, at FROM pins ORDER BY rowid")}`,
+    `kept_chats=${all("SELECT rowid, viewer, thread FROM kept_chats ORDER BY rowid")}`,
+    `pin_replaced=${all("SELECT position, value FROM archive_pin_replaced ORDER BY position")}`,
+    `keep_replaced=${all("SELECT position, value FROM archive_keep_replaced ORDER BY position")}`,
   ].join("\n");
 }
 
-type Waiter = { resolve: (j: Json) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
+function snapshotSqliteMaster(db: DatabaseSync): string {
+  return JSON.stringify(db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all());
+}
+
+type Waiter = { resolve: (r: { json: Json; rawLine: Buffer }) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 
 class BuilderProcess {
   readonly #child: ChildProcess;
@@ -134,7 +179,8 @@ class BuilderProcess {
   #heard(chunk: Buffer) {
     this.#carry = this.#carry.length === 0 ? chunk : Buffer.concat([this.#carry, chunk]);
     for (let nl = this.#carry.indexOf(0x0a); nl >= 0; nl = this.#carry.indexOf(0x0a)) {
-      const line = this.#carry.subarray(0, nl).toString("utf8");
+      const rawLine = Buffer.from(this.#carry.subarray(0, nl));
+      const line = rawLine.toString("utf8");
       this.#carry = this.#carry.subarray(nl + 1);
       let parsed: Json;
       try {
@@ -145,11 +191,11 @@ class BuilderProcess {
       const w = this.#waiting.shift();
       if (w === undefined) return this.#forbid(`stdout emitted unsolicited line: ${line.slice(0, 300)}`);
       clearTimeout(w.timer);
-      w.resolve(parsed);
+      w.resolve({ json: parsed, rawLine });
     }
   }
 
-  expect(): Promise<Json> {
+  expectRaw(): Promise<{ json: Json; rawLine: Buffer }> {
     if (this.#protocolError !== null) return Promise.reject(this.#protocolError);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.#forbid(`ask unanswered within ${ASK_TIMEOUT_MS} ms; stderr: ${this.#stderr}`), ASK_TIMEOUT_MS);
@@ -161,10 +207,14 @@ class BuilderProcess {
     return new Promise((resolve, reject) => this.#child.stdin!.write(bytes, (e) => (e ? reject(e) : resolve())));
   }
 
-  ask(rawLine: string): Promise<Json> {
-    const answer = this.expect();
-    void this.write(`${rawLine}\n`).catch(() => {});
+  async askRaw(rawLine: string, eol = "\n"): Promise<{ json: Json; rawLine: Buffer }> {
+    const answer = this.expectRaw();
+    void this.write(`${rawLine}${eol}`).catch(() => {});
     return answer;
+  }
+
+  async ask(rawLine: string, eol = "\n"): Promise<Json> {
+    return (await this.askRaw(rawLine, eol)).json;
   }
 
   async end(): Promise<void> {
@@ -198,79 +248,119 @@ class BuilderProcess {
   }
 }
 
-async function runArchiveMarksBatches(binary: string, dbPath: string): Promise<{ responses: Json[]; timingsMs: number[] }> {
-  const proc = new BuilderProcess(binary, ["--builder", "archive-marks", "--db", dbPath]);
-  const responses: Json[] = [];
-  const timingsMs: number[] = [];
-  let failed = true;
-  try {
-    for (let i = 0; i < 20; i++) {
-      const t0 = performance.now();
-      const res = await proc.ask(JSON.stringify({ scope: "all" }));
-      timingsMs.push(Math.round((performance.now() - t0) * 100) / 100);
-      responses.push(res);
-      if (res.done === true) break;
+test("archive-marks: cloned single-seed per-batch 0-diff parity (TS reference + candidate + MoonBit reader)", { skip }, async () => {
+  const candBin = candidate();
+  const mbBinRaw = mbReaderBinary();
+  const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
+
+  let mbBin: string | null = null;
+  if (mbBinRaw !== null) {
+    const candReal = realpathSync(candBin);
+    const mbReal = realpathSync(mbBinRaw);
+    if (mbReal !== candReal) {
+      mbBin = resolve(mbBinRaw);
+    } else if (requireDual) {
+      assert.fail(`STILLFAIL_REQUIRE_DUAL_READER=1 requires distinct MB and candidate binaries, but both resolved to ${candReal}`);
     }
-    // Idempotent once complete
-    const again = await proc.ask(JSON.stringify({ scope: "all" }));
-    assert.deepEqual(again, { done: true });
+  } else if (requireDual) {
+    assert.fail("STILLFAIL_REQUIRE_DUAL_READER=1 requires MoonBit reader binary (mbReaderBinary() returned null)");
+  }
+
+  const { dir, seedPath } = createSeedSnapshot();
+  const refCopy = cloneSeedDb(dir, seedPath, "ref");
+  const candCopy = cloneSeedDb(dir, seedPath, "cand");
+  const mbCopy = mbBin !== null ? cloneSeedDb(dir, seedPath, "mb") : null;
+
+  const candProc = new BuilderProcess(candBin, ["--builder", "archive-marks", "--db", candCopy.path]);
+  const mbProc = mbBin !== null && mbCopy !== null
+    ? new BuilderProcess(mbBin, ["--builder", "archive-marks", "--db", mbCopy.path])
+    : null;
+
+  let failed = true;
+  const candTimingsMs: number[] = [];
+  const mbTimingsMs: number[] = [];
+  const candResponses: Json[] = [];
+  const mbResponses: Json[] = [];
+
+  try {
+    let done = false;
+    for (let batch = 1; batch <= 20; batch++) {
+      const refRes = { done: archiveMarksStep(refCopy.db).done };
+
+      const t0 = performance.now();
+      const candRes = await candProc.ask(JSON.stringify({ scope: "all" }));
+      candTimingsMs.push(Math.round((performance.now() - t0) * 100) / 100);
+      candResponses.push(candRes);
+
+      assert.deepStrictEqual(candRes, refRes, `batch ${batch}: candidate response vs TS reference`);
+      assert.equal(
+        snapshotBatchState(candCopy.db),
+        snapshotBatchState(refCopy.db),
+        `batch ${batch}: candidate DB tables/cursors must match TS reference 0-diff`,
+      );
+
+      if (mbProc !== null && mbCopy !== null) {
+        const m0 = performance.now();
+        const mbRes = await mbProc.ask(JSON.stringify({ scope: "all" }));
+        mbTimingsMs.push(Math.round((performance.now() - m0) * 100) / 100);
+        mbResponses.push(mbRes);
+
+        assert.deepStrictEqual(candRes, mbRes, `batch ${batch}: candidate response vs MB`);
+        assert.equal(
+          snapshotBatchState(candCopy.db),
+          snapshotBatchState(mbCopy.db),
+          `batch ${batch}: candidate DB tables/cursors must match MB 0-diff`,
+        );
+      }
+
+      if (refRes.done) {
+        done = true;
+        break;
+      }
+    }
+
+    assert.equal(done, true, "archive-marks must reach done=true");
+    assert.ok(candResponses.length >= 4, `expected >= 4 batches, got ${candResponses.length}`);
+    assert.equal(archiveMarksReady(candCopy.db), true);
+    assert.equal(snapshotSqliteMaster(candCopy.db), snapshotSqliteMaster(refCopy.db), "final sqlite_master vs TS reference");
+
+    // Idempotency once complete
+    assert.deepStrictEqual(await candProc.ask(JSON.stringify({ scope: "all" })), { done: true });
+    if (mbProc !== null && mbCopy !== null) {
+      assert.deepStrictEqual(await mbProc.ask(JSON.stringify({ scope: "all" })), { done: true });
+      assert.equal(snapshotSqliteMaster(candCopy.db), snapshotSqliteMaster(mbCopy.db), "final sqlite_master vs MB");
+    }
+
+    console.log(`[reader-contract-builders] archive-marks candidate batches=${candResponses.length} timingsMs=${JSON.stringify(candTimingsMs)}`);
+    if (mbProc !== null) {
+      console.log(`[reader-contract-builders] archive-marks MB batches=${mbResponses.length} timingsMs=${JSON.stringify(mbTimingsMs)}`);
+    }
     failed = false;
   } finally {
-    if (failed) await proc.kill();
-  }
-  await proc.end();
-  return { responses, timingsMs };
-}
-
-test("archive-marks: cloned dual-DB 0-diff parity (candidate vs reference and MoonBit reader when available)", { skip }, async () => {
-  const candBin = candidate();
-  const refSeed = seedArchiveMarksDb();
-  const candSeed = seedArchiveMarksDb();
-  const mbBin = mbReaderBinary();
-  const mbSeed = mbBin !== null && resolve(mbBin) !== candBin ? seedArchiveMarksDb() : null;
-
-  try {
-    // 1. Run TypeScript reference batch by batch
-    const refSteps: { done: boolean }[] = [];
-    for (let i = 0; i < 20; i++) {
-      const r = archiveMarksStep(refSeed.store.db);
-      refSteps.push({ done: r.done });
-      if (r.done) break;
+    if (failed) {
+      await candProc.kill();
+      if (mbProc !== null) await mbProc.kill();
+    } else {
+      await candProc.end();
+      if (mbProc !== null) await mbProc.end();
     }
-
-    // 2. Run candidate binary
-    const candRun = await runArchiveMarksBatches(candBin, candSeed.path);
-    console.log(`[reader-contract-builders] archive-marks candidate batches=${candRun.responses.length} timingsMs=${JSON.stringify(candRun.timingsMs)}`);
-
-    assert.ok(candRun.responses.length >= 4, `expected >= 4 batches, got ${JSON.stringify(candRun.responses)}`);
-    assert.deepEqual(candRun.responses, refSteps, "candidate batch sequence must match TS reference 0-diff");
-    assert.equal(snapshotTables(candSeed.store.db), snapshotTables(refSeed.store.db), "candidate tables & sqlite_master must match TS reference 0-diff");
-    assert.equal(archiveMarksReady(candSeed.store.db), true);
-
-    // 3. When a distinct MoonBit reader binary is available, verify strict 0-diff against MB too
-    if (mbSeed !== null && mbBin !== null) {
-      const mbRun = await runArchiveMarksBatches(resolve(mbBin), mbSeed.path);
-      console.log(`[reader-contract-builders] archive-marks MB batches=${mbRun.responses.length} timingsMs=${JSON.stringify(mbRun.timingsMs)}`);
-      assert.deepEqual(candRun.responses, mbRun.responses, "candidate batch sequence must match MB 0-diff");
-      assert.equal(snapshotTables(candSeed.store.db), snapshotTables(mbSeed.store.db), "candidate tables & sqlite_master must match MB 0-diff");
-    }
-  } finally {
-    refSeed.store.close();
-    candSeed.store.close();
-    mbSeed?.store.close();
+    refCopy.db.close();
+    candCopy.db.close();
+    mbCopy?.db.close();
   }
 });
 
 test("archive-marks: deterministic SQLITE_BUSY returns {done:false} without error, then finishes after lock release", { skip }, async () => {
-  const seed = seedArchiveMarksDb();
-  const locker = new DatabaseSync(seed.path);
-  const proc = new BuilderProcess(candidate(), ["--builder", "archive-marks", "--db", seed.path]);
+  const { dir, seedPath } = createSeedSnapshot();
+  const copy = cloneSeedDb(dir, seedPath, "busy");
+  const locker = new DatabaseSync(copy.path);
+  const proc = new BuilderProcess(candidate(), ["--builder", "archive-marks", "--db", copy.path]);
   let failed = true;
   try {
     locker.exec("BEGIN IMMEDIATE");
     const busyRes = await proc.ask(JSON.stringify({ scope: "all" }));
-    assert.deepEqual(busyRes, { done: false }, `expected {done:false} with no error field, got ${JSON.stringify(busyRes)}`);
-    assert.deepEqual(Object.keys(busyRes), ["done"]);
+    assert.deepStrictEqual(busyRes, { done: false }, `expected {done:false} with no error field, got ${JSON.stringify(busyRes)}`);
+    assert.deepStrictEqual(Object.keys(busyRes), ["done"]);
 
     locker.exec("ROLLBACK");
     locker.close();
@@ -285,46 +375,83 @@ test("archive-marks: deterministic SQLITE_BUSY returns {done:false} without erro
       }
     }
     assert.equal(done, true, "builder must complete after write lock is released");
-    assert.equal(archiveMarksReady(seed.store.db), true);
+    assert.equal(archiveMarksReady(copy.db), true);
     failed = false;
   } finally {
     try { locker.close(); } catch {}
     if (failed) await proc.kill();
     else await proc.end();
-    seed.store.close();
+    copy.db.close();
   }
 });
 
-test("archive-marks: protocol boundaries (empty line, cancel, bad JSON, invalid scope, incompatible version + zero lock leak)", { skip }, async () => {
-  const seed = seedArchiveMarksDb();
-  const proc = new BuilderProcess(candidate(), ["--builder", "archive-marks", "--db", seed.path]);
+test("archive-marks: protocol boundaries (empty line, cancel, duplicate keys, CRLF, U+2028 escape, app error 'is locked', zero lock leak)", { skip }, async () => {
+  const { dir, seedPath } = createSeedSnapshot();
+  const copy = cloneSeedDb(dir, seedPath, "proto");
+  const proc = new BuilderProcess(candidate(), ["--builder", "archive-marks", "--db", copy.path]);
   let failed = true;
   try {
-    // Empty line and {"cancel":true} must produce zero stdout lines before the next real ask.
+    // 1. Empty line and strict boolean {"cancel":true} produce zero stdout lines.
     await proc.write("\n");
     await proc.write(`${JSON.stringify({ cancel: true })}\n`);
     await proc.write(`${JSON.stringify({ cancel: true, scope: "all" })}\n`);
 
-    // Malformed JSON -> invalid preparation request
-    const badJson = await proc.ask("{not valid json");
-    assert.deepEqual(badJson, { done: false, error: "invalid archive mark preparation request" });
-
-    // Invalid scope -> invalid preparation request
-    const badScope = await proc.ask(JSON.stringify({ scope: "other" }));
-    assert.deepEqual(badScope, { done: false, error: "invalid archive mark preparation request" });
-
-    // Incompatible version -> error message mentioning version 99 AND zero transaction/lock leak!
-    seed.store.db.exec("UPDATE archive_mark_meta SET version = 99 WHERE kind = 'kept'");
-    const badVer = await proc.ask(JSON.stringify({ scope: "all" }));
-    assert.equal(badVer.done, false);
-    assert.equal(typeof badVer.error, "string");
-    assert.ok(
-      badVer.error.includes("archive mark index version 99 is incompatible with 1"),
-      `unexpected incompatible version error: ${JSON.stringify(badVer)}`,
+    // 2. Non-boolean {"cancel":"true"} is NOT treated as cancel; returns invalid preparation request.
+    assert.deepStrictEqual(
+      await proc.ask(JSON.stringify({ cancel: "true" })),
+      { done: false, error: "invalid archive mark preparation request" },
     );
 
-    // Immediately acquire BEGIN IMMEDIATE on an external connection: fails with SQLITE_BUSY if candidate leaked a tx!
-    const ext = new DatabaseSync(seed.path);
+    // 3. Malformed JSON, invalid scope, and duplicate key last-wins ({"scope":"all","scope":"x"}).
+    assert.deepStrictEqual(
+      await proc.ask("{not valid json"),
+      { done: false, error: "invalid archive mark preparation request" },
+    );
+    assert.deepStrictEqual(
+      await proc.ask(JSON.stringify({ scope: "other" })),
+      { done: false, error: "invalid archive mark preparation request" },
+    );
+    assert.deepStrictEqual(
+      await proc.ask('{"scope":"all","scope":"x"}'),
+      { done: false, error: "invalid archive mark preparation request" },
+    );
+
+    // 4. Incompatible numeric version -> strict deep-equal (after stripping MB fail() location prefix) + zero lock leak.
+    copy.db.exec("UPDATE archive_mark_meta SET version = 99 WHERE kind = 'kept'");
+    const badVer = await proc.ask(JSON.stringify({ scope: "all" }));
+    assert.deepStrictEqual(
+      normalizeErrorResponse(badVer),
+      { done: false, error: "archive mark index version 99 is incompatible with 1" },
+    );
+
+    // 5. P1-1: Application error containing "is locked" MUST return error (NEVER misclassified as SQLITE_BUSY {done:false}).
+    copy.db.exec("UPDATE archive_mark_meta SET version = 'is locked' WHERE kind = 'kept'");
+    const lockedVer = await proc.ask(JSON.stringify({ scope: "all" }));
+    assert.deepStrictEqual(
+      normalizeErrorResponse(lockedVer),
+      { done: false, error: 'archive mark index version "is locked" is incompatible with 1' },
+    );
+
+    // 6. P2-12: Error text containing U+2028 must be escaped as literal `\u2028` on stdout wire bytes.
+    copy.db.exec("UPDATE archive_mark_meta SET version = 'bad' || char(8232) || 'ver' WHERE kind = 'kept'");
+    const u2028Res = await proc.askRaw(JSON.stringify({ scope: "all" }));
+    assert.equal(
+      u2028Res.rawLine.includes(Buffer.from([0xe2, 0x80, 0xa8])),
+      false,
+      "raw UTF-8 U+2028 must not appear unescaped on stdout wire",
+    );
+    assert.equal(
+      u2028Res.rawLine.toString("utf8").includes("\\u2028"),
+      true,
+      `expected \\u2028 escape on stdout wire, got: ${u2028Res.rawLine.toString("utf8")}`,
+    );
+    assert.deepStrictEqual(
+      normalizeErrorResponse(u2028Res.json),
+      { done: false, error: 'archive mark index version "bad\u2028ver" is incompatible with 1' },
+    );
+
+    // 7. Zero lock leak check: external connection with busy_timeout=0 immediately acquires BEGIN IMMEDIATE.
+    const ext = new DatabaseSync(copy.path);
     try {
       ext.exec("PRAGMA busy_timeout = 0");
       ext.exec("BEGIN IMMEDIATE");
@@ -334,7 +461,10 @@ test("archive-marks: protocol boundaries (empty line, cancel, bad JSON, invalid 
       ext.close();
     }
 
-    // Builder remains healthy and completes after version is restored.
+    // 8. P2-12: CRLF (`\r\n`) line ending is accepted and builder completes cleanly.
+    const crlfRes = await proc.ask(JSON.stringify({ scope: "all" }), "\r\n");
+    assert.deepStrictEqual(crlfRes, { done: false });
+
     let done = false;
     for (let i = 0; i < 20; i++) {
       const res = await proc.ask(JSON.stringify({ scope: "all" }));
@@ -349,7 +479,7 @@ test("archive-marks: protocol boundaries (empty line, cancel, bad JSON, invalid 
   } finally {
     if (failed) await proc.kill();
     else await proc.end();
-    seed.store.close();
+    copy.db.close();
   }
 });
 
@@ -383,17 +513,69 @@ test("archive-marks: missing DB path exits non-zero immediately without creating
   assert.equal(existsSync(missing), false, "attach must never create a missing DB file");
 });
 
-test("builders_core static guard: business files never use raw BEGIN IMMEDIATE / BEGIN TRANSACTION", () => {
+/// Static guard for `builders_core/src/` business files: extracts string literals from non-comment
+/// lines and rejects raw SQL transaction control (`BEGIN`, `BEGIN DEFERRED|IMMEDIATE|EXCLUSIVE|TRANSACTION`,
+/// `COMMIT`, `SAVEPOINT`, `RELEASE SAVEPOINT`, `ROLLBACK`), allowing only `CREATE TRIGGER ... BEGIN ... END`
+/// and `builder_loop.pion`'s transaction-leak guard `ROLLBACK`.
+function findRawTxControlViolations(filename: string, source: string): string[] {
+  const violations: string[] = [];
+  const rawTxPattern = /\b(BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE|TRANSACTION))?|COMMIT|SAVEPOINT|RELEASE\s+SAVEPOINT|ROLLBACK)\b/gi;
+  const triggerBeginPattern = /\bCREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b[\s\S]*\bBEGIN\b[\s\S]*\bEND\b/i;
+  const lines = source.split("\n");
+  for (let idx = 0; idx < lines.length; idx++) {
+    const line = lines[idx]!;
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//")) continue;
+    // Scan double-quoted string literals on the line.
+    const litRe = /"((?:\\.|[^"\\])*)"/g;
+    let m: RegExpExecArray | null;
+    while ((m = litRe.exec(line)) !== null) {
+      const literal = m[1]!;
+      if (triggerBeginPattern.test(literal)) continue;
+      rawTxPattern.lastIndex = 0;
+      let hit: RegExpExecArray | null;
+      while ((hit = rawTxPattern.exec(literal)) !== null) {
+        const kw = hit[1]!.toUpperCase();
+        // Allow builder_loop.pion's explicit leak-guard ROLLBACK and its diagnostic message.
+        if (filename === "builder_loop.pion" && kw === "ROLLBACK") continue;
+        violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${kw}" in literal "${literal}"`);
+      }
+    }
+  }
+  return violations;
+}
+
+test("builders_core static guard: rejects raw transaction SQL and passes on real business files", () => {
+  // Self-test positive (violations caught) & negative (allowed patterns pass) cases.
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN")').length > 0, "bare BEGIN caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN IMMEDIATE")').length > 0, "BEGIN IMMEDIATE caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN DEFERRED")').length > 0, "BEGIN DEFERRED caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN EXCLUSIVE")').length > 0, "BEGIN EXCLUSIVE caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN TRANSACTION")').length > 0, "BEGIN TRANSACTION caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("COMMIT")').length > 0, "COMMIT caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("SAVEPOINT sp1")').length > 0, "SAVEPOINT caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("RELEASE SAVEPOINT sp1")').length > 0, "RELEASE SAVEPOINT caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("ROLLBACK")').length > 0, "ROLLBACK in business file caught");
+  assert.equal(
+    findRawTxControlViolations("foo.pion", 'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN DELETE FROM y; END")').length,
+    0,
+    "CREATE TRIGGER ... BEGIN ... END allowed",
+  );
+  assert.equal(
+    findRawTxControlViolations("builder_loop.pion", 'let _ = db.exec("ROLLBACK")').length,
+    0,
+    "builder_loop.pion leak-guard ROLLBACK allowed",
+  );
+
+  // Check real business files in pion/station/packages/builders_core/src/.
   const buildersSrcDir = resolve(fileURLToPath(new URL("../../pion/station/packages/builders_core/src", import.meta.url)));
   assert.ok(existsSync(buildersSrcDir), `expected ${buildersSrcDir} to exist`);
   const files = readdirSync(buildersSrcDir).filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion"));
   assert.ok(files.length > 0, "expected builders_core .pion business files");
+  const allViolations: string[] = [];
   for (const file of files) {
     const content = readFileSync(join(buildersSrcDir, file), "utf8");
-    assert.equal(
-      /\bBEGIN\s+(IMMEDIATE|TRANSACTION)\b/i.test(content),
-      false,
-      `${file} must use db.tx(...) instead of raw BEGIN IMMEDIATE/BEGIN TRANSACTION`,
-    );
+    allViolations.push(...findRawTxControlViolations(file, content));
   }
+  assert.deepStrictEqual(allViolations, [], `raw transaction SQL found in builders_core:\n${allViolations.join("\n")}`);
 });

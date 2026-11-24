@@ -22,6 +22,7 @@ on:
       - "station/src/read/mb-reader.ts"
       - "station/src/read/reader-select.ts"
       - "station/src/read/requested-builder.ts"
+      - "station/src/store/archive-mark-index.ts"
       - "station/test/footprint-reference.ts"
       - "station/test/mb-archive-marks.test.ts"
       - "station/test/mb-footprint.test.ts"
@@ -38,6 +39,7 @@ on:
       - "station/test/memory-pion-switch.test.ts"
       - "station/test/memory-program.ts"
       - "station/test/packed-pion-switch.test.ts"
+      - "station/test/reference/backfill/archive-mark-index.ts"
       - "station/test/reference/memory-merge.ts"
       - "station/test/reference/share-skills.ts"
       - "station/test/reference/packed.ts"
@@ -310,7 +312,7 @@ jobs:
 
           # Black-box 0-diff contract gate for SQLite builders (`--builder archive-marks`).
           STILLFAIL_MB_READER="$BIN" node -e 'import { resolve } from "node:path"; import { mbReaderBinary } from "./station/src/read/mb-reader.ts"; const got = mbReaderBinary(); const want = resolve(process.env.STILLFAIL_MB_READER); if (got !== want) { console.error("mbReaderBinary mismatch:", { got, want }); process.exit(1); }'
-          STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-builders.test.ts
+          PATH="$RUNNER_TEMP/zig-bin:$PATH" MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- env STILLFAIL_READER_CANDIDATE="$BIN" STILLFAIL_REQUIRE_DUAL_READER=1 node --test station/test/reader-contract-builders.test.ts
           STILLFAIL_MB_READER="$BIN" node --test station/test/mb-archive-marks.test.ts
 
       - name: Save Zig cache
