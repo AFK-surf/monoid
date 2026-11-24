@@ -1879,7 +1879,9 @@
         return;
       }
       float sig1 = pow(sp, 1.0 / kf);
-      float rs = r * r * (3.0 - 2.0 * r);
+      // the blur grows as the square of the way into the fade, not smoothstep's 3r^2 - 2r^3: words are unreadable from
+      // a deviation of 1-2 pt, so smoothstep's quick start left two thirds of the band one flat frost
+      float rs = r * r;
       float target_px = sp * rs;
       if (target_px <= sig1 || kf <= 1.05) {
         vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;
