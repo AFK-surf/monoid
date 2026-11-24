@@ -51,30 +51,7 @@ pub fn liquid_lens_overlay_node(
           None => clear
         }
         if droplet_role == 3 {
-          let seg_sol = if sol != clear {
-            sol
-          } else if is_dark() {
-            0x242428FFL
-          } else {
-            0xFFFFFFFFL
-          }
-          Some(
-            @paint.Glass::liquid(
-              blur=0.0,
-              tint=0xFFFFFF00L,
-              solid=seg_sol,
-              saturation=1.0,
-              rim=1.0 * p,
-              bezel=9.0 * p,
-              refraction=9.0 * p,
-              chroma=0.04 * p,
-              merge=0.0,
-              adaptive=false,
-              spot=None,
-              zoom=1.0,
-              droplet_role=3,
-            ),
-          )
+          Some(ctrl_segmented_lens_glass(p, solid=sol))
         } else {
           Some(liquid_tab_lens_glass(p, solid=sol, droplet_role~))
         }

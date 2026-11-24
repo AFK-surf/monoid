@@ -277,7 +277,7 @@ function keptBetween(was: J[], made: (J | null)[], listed: J[], make: (raw: J) =
 const unmade = new WeakMap<object, () => J>();
 /// What a chat's whole row (`chatRow`, views.ts #chatRow `whole` and #rowMenu) says that its list's row is made without:
 /// what is read only as the row is pressed, held, swiped or pointed at (the rest of the two is one: views.test.ts).
-const WHOLE_ONLY = ["watch", "swipeAsk", "decision", "mayShare", "mayPublish", "slackUrl", "slackApp", "feishuUrl", "commaUrl", "commaApp"];
+const WHOLE_ONLY = ["watch", "swipeAsk", "decision", "mayShare", "mayPublish", "mayMove", "slackUrl", "slackApp", "feishuUrl", "commaUrl", "commaApp"];
 /// What a chat list's row holds (#listRow) besides what its shape declares (schema.ts LISTED_CHAT), each for what reads it
 /// in the core (`store.value`, a row as made): nothing else of its record is copied into it, nor worked out for it.
 /// (A search's, the `@` menu's and a share's chats are a list's rows sent as ChatItem: `search`, `chatSearch`, `shareIn`,
@@ -1987,6 +1987,9 @@ export class Views implements Owner {
       if (get(v.link, "cause") === "updating") v.updating = true;
       if (Array.isArray(v.outbox)) v.outbox = looks.outboxHeld(v.outbox);
     }
+    // Going to another station now (its overview's `move.chats`): its composer shut, saying where, till it is there.
+    const moving = looks.movingOf(get(get(overview, "move"), "chats"), [...(session === null ? [] : [session]), ...arr(v.agents).map((a) => str(get(get(a, "session"), "key")) ?? "")], (id) => this.stationName(`${ofAddress(station)}/${id}`));
+    if (moving !== null) v.moving = moving;
     // Its agent's prompt cache over: said over the composer, computed again as the next one's is over.
     const context = get(overview, "context");
     const above = get(context, "afreshAbove");
@@ -3297,7 +3300,8 @@ export class Views implements Owner {
   /// What a row's menu offers besides the list's own, as its page's "…" does from its `ChatView` (`xshare`, `publish`,
   /// `slackUrl`, `feishuUrl`): a row's menu and the page's are one. Shared with the viewer's other workspaces by its
   /// starter or an owner or admin (xshare.ts shown); a picture of it published by any but a read-only member (publish.ts
-  /// shown); a Slack or Feishu thread's link there, by its connect (#whereIn).
+  /// shown); to another station, by an owner or admin (`move.start`); a Slack or Feishu thread's link there, by its
+  /// connect (#whereIn).
   #rowMenu(station: string, raw: J, me: J, menu: { role: string | null; places: (readonly [string, string | null])[] }, connects: J[]): J {
     work.rowMenus++;
     const out: J = {};
@@ -3308,6 +3312,8 @@ export class Views implements Owner {
     const role = menu.places.find(([id]) => id === scope)?.[1] ?? null;
     if (menu.places.some(([id]) => id !== scope) && (starter || role === "owner" || role === "admin")) out.mayShare = true;
     if (typeof raw.thread === "number" && menu.role !== "viewer") out.mayPublish = true;
+    // (to another station of its workspace: by its owners and admins, as the station's POST /move takes it)
+    if (menu.role === "owner" || menu.role === "admin") out.mayMove = true;
     const id = str(get(raw, "connect"));
     const c = id === null ? undefined : connects.find((x) => str(get(x, "id")) === id);
     if (c !== undefined && isObject(raw.origin)) {
