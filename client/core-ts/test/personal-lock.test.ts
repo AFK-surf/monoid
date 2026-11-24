@@ -724,3 +724,24 @@ for (const lost of [true, false])
       b.runner.shutdown();
     }
   });
+
+test("a start reads the lock it pinned from the device in one wait, not one wait for each thing it kept", async () => {
+  const c = cloud();
+  const a = device(c, "a");
+  await a.runner.run(a.lock.signGrant(SUB, body({ exp: 4_000_000_000 }), "why"));
+  // (each read of the device's storage answered 200 ms after it is asked, as a disk busy at a start answers)
+  const get = a.host.storageGet.bind(a.host);
+  a.host.storageGet = (k) => Effect.flatMap(Effect.sleep("200 millis"), () => get(k));
+  const again = new PersonalLock({ host: a.host, runner: a.runner, cloud: () => Effect.fail(new CoreError("offline", "offline")), device: () => Effect.succeed("61".repeat(32)), label: () => "a", changed: () => {} });
+  try {
+    a.runner.fork(Effect.ignore(again.refresh(SUB)));
+    await a.host.time.pass(150);
+    assert.equal(again.loaded(SUB), false);
+    await a.host.time.pass(100);
+    assert.equal(again.loaded(SUB), true, "read in one wait of 200 ms");
+    assert.notEqual(again.chain(SUB), null, "the chain pinned is what it read");
+    assert.equal(again.standing(SUB), "member", "the key it is on the chain with is what it read");
+  } finally {
+    a.runner.shutdown();
+  }
+});

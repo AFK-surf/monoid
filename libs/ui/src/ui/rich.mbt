@@ -312,19 +312,40 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
   // (greedy wrapping gives the same lines in any width from the widest line up to the one they were made in, a label
   // kept whole in it too: what is not wrapped, in any)
   for i, e in k.lays {
-    let (made, lay) = e
-    if !r.wrap || (lay.w <= max_w + 0.01 && max_w <= made) {
+    let lay = e.lay
+    if !r.wrap || (lay.w <= max_w + 0.01 && max_w <= e.made) {
       if i > 0 {
         k.lays.remove(i) |> ignore
         k.lays.insert(0, e)
+      }
+      if measuring_origin_known.val && paint_phase.val != 1 {
+        let zoomed = words_zoom.val != 1.0
+        if !e.ahead_known ||
+          e.ahead_moves != glyph_moves.val ||
+          e.ahead_zoomed != zoomed ||
+          (!zoomed && !ahead_origin_same(measuring_origin_x.val, e.ahead_ox, g().scale)) {
+          if laid_ahead(lay.keys, fn(c) { lay.xs[c] + lay.pre[c] }) {
+            e.ahead_known = true
+            e.ahead_ox = measuring_origin_x.val
+            e.ahead_zoomed = zoomed
+            e.ahead_moves = glyph_moves.val
+          }
+        }
       }
       return lay
     }
   }
   let lay = rich_lines(r, k.prep, max_w)
   // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, text.mbt glyphs_ahead)
-  laid_ahead(lay.keys, fn(c) { lay.xs[c] + lay.pre[c] })
-  k.lays.insert(0, (max_w, lay))
+  let complete = laid_ahead(lay.keys, fn(c) { lay.xs[c] + lay.pre[c] })
+  k.lays.insert(0, {
+    made: max_w,
+    lay,
+    ahead_known: complete && measuring_origin_known.val && paint_phase.val != 1,
+    ahead_ox: measuring_origin_x.val,
+    ahead_zoomed: words_zoom.val != 1.0,
+    ahead_moves: glyph_moves.val,
+  })
   if k.lays.length() > rich_lays_most {
     k.lays.pop() |> ignore
   }
@@ -438,6 +459,16 @@ fn RichPrep::breaks(self : RichPrep) -> Array[Int] {
 }
 
 ///|
+priv struct KeptRichLay {
+  made : Double
+  lay : RichLayout
+  mut ahead_known : Bool
+  mut ahead_ox : Double
+  mut ahead_zoomed : Bool
+  mut ahead_moves : Int
+}
+
+///|
 /// A paragraph laid out before (layout_rich), as it was given then (`r`, at the scale, the lines' way and the faces
 /// measured in then), what of it any width shares, the layouts made of it (the latest asked first, each with the width
 /// it was made in) and the last frame that asked for it.
@@ -447,7 +478,7 @@ priv struct RichKept {
   web : Bool
   gen : Int
   prep : RichPrep
-  lays : Array[(Double, RichLayout)]
+  lays : Array[KeptRichLay]
   mut used : Int
 }
 

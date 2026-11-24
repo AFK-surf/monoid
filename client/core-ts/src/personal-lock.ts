@@ -365,33 +365,42 @@ export class PersonalLock {
     const env = this.#env;
     return Effect.gen({ self: this }, function* () {
       if (!this.#loaded.has(sub)) {
-        const kept = yield* Effect.orElseSucceed(env.host.storageGet(keptAs(sub)), () => null);
-        const said = kept === null ? null : (parseJson(kept) as Entry[] | null);
-        if (Array.isArray(said) && checkChain(said, sub) !== null) {
-          this.#pinned.set(sub, said);
-          const aside = parseJson(yield* Effect.orElseSucceed(env.host.storageGet(asideAs(sub)), () => null)) as unknown;
-          // (one on the chain now, written before the chain was, is not aside)
-          const on = new Set(said.map(hashOf));
-          if (Array.isArray(aside)) this.#aside.set(sub, (aside as Entry[]).filter((e) => typeof e === "object" && e !== null && !on.has(hashOf(e))));
+        // (read together, not one after another: at a start each waits its turn on the host's disk behind whatever else is
+        // read or written then, and the vaults' pages and cards wait on all of them; core.start `own_lock_ms`)
+        const read = (key: string) => Effect.orElseSucceed(env.host.storageGet(key), () => null);
+        const [kept, asideKept, left, pendingKept, statedKept, id] = yield* Effect.all(
+          [read(keptAs(sub)), read(asideAs(sub)), this.#leftKept(sub), read(pendingAs(sub)), read(statedAs(sub)), read(KEY_ID)],
+          { concurrency: "unbounded" },
+        );
+        // (another refresh of this person read and took them meanwhile, and may have taken newer since: what was read here
+        // is older, not put back over it)
+        if (!this.#loaded.has(sub)) {
+          const said = kept === null ? null : (parseJson(kept) as Entry[] | null);
+          if (Array.isArray(said) && checkChain(said, sub) !== null) {
+            this.#pinned.set(sub, said);
+            const aside = parseJson(asideKept) as unknown;
+            // (one on the chain now, written before the chain was, is not aside)
+            const on = new Set(said.map(hashOf));
+            if (Array.isArray(aside)) this.#aside.set(sub, (aside as Entry[]).filter((e) => typeof e === "object" && e !== null && !on.has(hashOf(e))));
+          }
+          this.#left.set(sub, left);
+          const pending = parseJson(pendingKept) as unknown;
+          if (Array.isArray(pending)) this.#pending.set(sub, (pending as Pending[]).filter((x) => typeof x === "object" && x !== null && typeof x.id === "string" && typeof x.entry === "object"));
+          const stated = parseJson(statedKept) as unknown;
+          if (Array.isArray(stated)) {
+            const kept: [string, { act: Act | null; name: string; role?: string }][] = (stated as unknown[]).flatMap((x) => (Array.isArray(x) && typeof x[0] === "string" && typeof x[1]?.name === "string" ? [[x[0], x[1]] as [string, { act: Act | null; name: string; role?: string }]] : []));
+            this.#stated.set(sub, kept.slice(-STATED_KEPT));
+            for (const [h, as] of kept) if (!this.#shown.has(h)) this.#shown.set(h, as);
+          }
+          if (id !== null) this.#myKey = fromUtf8(id);
+          this.#loaded.add(sub);
+          const waiting = this.#loads.get(sub);
+          if (waiting !== undefined) {
+            this.#loads.delete(sub);
+            Deferred.doneUnsafe(waiting, Effect.void);
+          }
+          env.changed();
         }
-        this.#left.set(sub, yield* this.#leftKept(sub));
-        const pending = parseJson(yield* Effect.orElseSucceed(env.host.storageGet(pendingAs(sub)), () => null)) as unknown;
-        if (Array.isArray(pending)) this.#pending.set(sub, (pending as Pending[]).filter((x) => typeof x === "object" && x !== null && typeof x.id === "string" && typeof x.entry === "object"));
-        const stated = parseJson(yield* Effect.orElseSucceed(env.host.storageGet(statedAs(sub)), () => null)) as unknown;
-        if (Array.isArray(stated)) {
-          const kept: [string, { act: Act | null; name: string; role?: string }][] = (stated as unknown[]).flatMap((x) => (Array.isArray(x) && typeof x[0] === "string" && typeof x[1]?.name === "string" ? [[x[0], x[1]] as [string, { act: Act | null; name: string; role?: string }]] : []));
-          this.#stated.set(sub, kept.slice(-STATED_KEPT));
-          for (const [h, as] of kept) if (!this.#shown.has(h)) this.#shown.set(h, as);
-        }
-        const id = yield* Effect.orElseSucceed(env.host.storageGet(KEY_ID), () => null);
-        if (id !== null) this.#myKey = fromUtf8(id);
-        this.#loaded.add(sub);
-        const waiting = this.#loads.get(sub);
-        if (waiting !== undefined) {
-          this.#loads.delete(sub);
-          Deferred.doneUnsafe(waiting, Effect.void);
-        }
-        env.changed();
       }
       const bound = (this.#pinned.get(sub)?.length ?? 0) > 0 ? within : undefined;
       // (a read and what is done with what it brings are one work, so that one past the wait is taken all the same)

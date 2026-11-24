@@ -115,7 +115,7 @@ export class Search {
     return looker;
   }
 
-  #spawnSync(binary: string): Looker | null {
+  #spawnLooker(binary: string): Looker | null {
     if (this.#closed) return null;
     if (this.#looker !== null) return this.#looker;
     const looker = new MbProcess(binary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep]);
@@ -134,10 +134,10 @@ export class Search {
         return Promise.reject(e);
       }
       if (!sync.pending) {
-        return this.#ask(this.#spawnSync(sync.primaryBinary), query, asker, options);
+        return this.#ask(this.#spawnLooker(sync.primaryBinary), query, asker, options);
       }
       const pending = resolveReaderSelectionAsync("search", { config: this.#readers, logAt: "search" }).then(
-        (resolved) => this.#spawnSync(resolved.primaryBinary),
+        (resolved) => this.#spawnLooker(resolved.primaryBinary),
       ).finally(() => {
         if (this.#spawning === pending) this.#spawning = null;
       });

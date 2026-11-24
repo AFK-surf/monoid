@@ -251,3 +251,38 @@ int sfc_dir_readable(moonbit_bytes_t path) {
   return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
 #endif
 }
+
+/// Whether `path` is a regular file, links followed: what the shell's `fs.stat` says as "file" (Rust's
+/// `fs::metadata(path).is_file()`, Node's `statSync(path).isFile()`), asked without a message to the shell, for a
+/// replica's `sources` that asks it of every file a place lacks. 1 a file, 0 not one, -1 not known here: on Windows a
+/// path of MAX_PATH or more, which the shell asks in its verbatim form (`\\?\`) and this does not.
+int sfc_is_file(moonbit_bytes_t path) {
+#ifdef _WIN32
+  int n = MultiByteToWideChar(CP_UTF8, 0, (const char *)path, -1, NULL, 0);
+  if (n <= 0 || n >= MAX_PATH) return -1;
+  wchar_t *w = wide((const char *)path);
+  if (w == NULL) return -1;
+  DWORD attr = GetFileAttributesW(w);
+  if (attr == INVALID_FILE_ATTRIBUTES) {
+    DWORD e = GetLastError();
+    free(w);
+    return e == ERROR_FILENAME_EXCED_RANGE ? -1 : 0;
+  }
+  if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+    free(w);
+    return (attr & FILE_ATTRIBUTE_DIRECTORY) == 0 ? 1 : 0;
+  }
+  HANDLE h = CreateFileW(w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                         FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  free(w);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  BY_HANDLE_FILE_INFORMATION info;
+  int ok = GetFileType(h) == FILE_TYPE_DISK && GetFileInformationByHandle(h, &info) &&
+           (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+  CloseHandle(h);
+  return ok ? 1 : 0;
+#else
+  struct stat st;
+  return (stat((const char *)path, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
+#endif
+}

@@ -15,6 +15,7 @@ import "builders_recent"
 import "builders_replica"
 import "builders_requested"
 import "builders_stateful"
+import "builders_usage"
 import "builders_vault"
 import "footprint"
 import "host_shim"
@@ -106,6 +107,7 @@ fn advertised_modes() -> Array[String] {
     "replica-export",
     "replica-restore",
     "replica-carry",
+    "usage-counter",
   ]
 }
 
@@ -1298,6 +1300,18 @@ fn main(world : World) -> Unit {
       }
       Some("replica-carry") => {
         host_shim::exit_process(builders_replica::run_replica_carry(argv))
+      }
+      Some("usage-counter") => {
+        match flag_value(argv, "--db") {
+          Some(db_path) => {
+            let sep = match flag_value(argv, "--sep") {
+              Some(s) => s
+              None => "/"
+            }
+            host_shim::exit_process(builders_usage::run_usage_counter(db_path, sep))
+          }
+          None => usage_exit()
+        }
       }
       _ => usage_exit()
     }

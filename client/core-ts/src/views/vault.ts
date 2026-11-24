@@ -711,6 +711,7 @@ export function install(inner: Inner): void {
       lockSeen(inner).touch("self");
       inner.views?.vaultChanged(null);
       vaultReady(inner);
+      inner.startRead("box");
     }),
   );
 }

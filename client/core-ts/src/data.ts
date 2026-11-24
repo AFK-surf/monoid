@@ -1155,6 +1155,8 @@ export class Data {
     if (table === "ways") return [this.#ofWorkspace(key) ?? null, [key, "ways"]];
     // Its stations' names and marks as they keep them (views/station-marks.ts): in the workspace's, by its id.
     if (table === "stationMarks") return [this.#ofWorkspace(key) ?? null, [key, "stationMarks"]];
+    // The systems its stations run on as their host readings said (station-os.ts): in the workspace's, by its id.
+    if (table === "stationOs") return [this.#ofWorkspace(key) ?? null, [key, "stationOs"]];
     // Its person's presets as the device carries them, and which of its stations are from before (presets-kept.ts):
     // in the workspace's, by its id.
     if (table === "presetRecords") return [this.#ofWorkspace(key) ?? null, [key, "presetRecords"]];
@@ -1703,13 +1705,34 @@ export class Data {
 
   /// The messages of these stations that have all of `terms`, newest first, across their databases (AccountDb.findSaid).
   findSaid(stations: string[], terms: string[], limit: number): ReturnType<AccountDb["findSaid"]> {
+    return this.#said(stations, terms, limit, (db, list) => db.findSaid(list, terms, limit))!;
+  }
+
+  /// `findSaid` as found last (`now`: nothing said since), without looking; null where its databases were never looked
+  /// through for these (each scan reads the whole of what they keep was said).
+  saidFoundKept(stations: string[], terms: string[], limit: number): { found: ReturnType<AccountDb["findSaid"]>; now: boolean } | null {
+    let now = true;
+    const found = this.#said(stations, terms, limit, (db, list) => {
+      const kept = db.saidFoundKept(list, terms, limit);
+      if (kept !== null && !kept.now) now = false;
+      return kept?.found ?? null;
+    });
+    return found === null ? null : { found, now };
+  }
+
+  #said(stations: string[], terms: string[], limit: number, of: (db: AccountDb, stations: string[]) => ReturnType<AccountDb["findSaid"]> | null): ReturnType<AccountDb["findSaid"]> | null {
     for (const station of stations) this.#readQuery({ topic: "$said", station });
     const by = new Map<AccountDb, string[]>();
     for (const s of stations) {
       const db = this.of(s);
       if (db) by.set(db, [...(by.get(db) ?? []), s]);
     }
-    const found = [...by].flatMap(([db, list]) => db.findSaid(list, terms, limit));
+    const found: ReturnType<AccountDb["findSaid"]> = [];
+    for (const [db, list] of by) {
+      const one = of(db, list);
+      if (one === null) return null;
+      found.push(...one);
+    }
     return by.size > 1 ? found.sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity)).slice(0, limit) : found;
   }
 

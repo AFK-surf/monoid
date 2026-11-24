@@ -115,7 +115,7 @@ export const READER_MODES = {
   },
   "usage-counter": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Usage transcript scan and SQLite writes (--builder usage-counter)",
   },

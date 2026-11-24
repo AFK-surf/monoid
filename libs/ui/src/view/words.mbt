@@ -663,6 +663,13 @@ pub fn Tree::measuring_origin_x(self : Tree) -> Double {
 }
 
 ///|
+/// Whether `Tree::measuring_origin_x` holds a real estimated horizontal origin for the node currently being measured
+/// (`false` outside `View::words` measure callbacks, such as unpositioned table or cut-width measurements).
+pub fn Tree::measuring_origin_known(self : Tree) -> Bool {
+  self.measuring_origin_known
+}
+
+///|
 /// Accumulate widths, `Pt` horizontal margins, and `gap_col` of visible preceding siblings of `target` in a `Row`
 /// container, expanding `slot` nodes inline. Returns `true` once `target` is reached.
 fn Tree::estimate_row_before(
