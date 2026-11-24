@@ -344,7 +344,7 @@ fn restart_interrupted_card_node(
             "",
             "station.resumeInterrupted",
             { "station": Json::string(station) },
-            failed=fn() { @view.transition(fn() { @sfbase.restart_interrupted_gone.remove(station) }) },
+            failed=fn() { @sfbase.restart_interrupted_gone.remove(station) },
           )
         }, tone=Primary)
         |> ignore
@@ -356,7 +356,7 @@ fn restart_interrupted_card_node(
             "",
             "station.dismissInterrupted",
             { "station": Json::string(station) },
-            failed=fn() { @view.transition(fn() { @sfbase.restart_interrupted_gone.remove(station) }) },
+            failed=fn() { @sfbase.restart_interrupted_gone.remove(station) },
           )
         }, tone=Plain)
         |> ignore
