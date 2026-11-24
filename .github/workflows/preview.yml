@@ -1089,8 +1089,28 @@ jobs:
         run: if HERMESC=$(cygpath -m "$(node scripts/native.ts path engine win32-x64)/hermesc.exe") bash apps/mbui/scripts/core.sh hermes-kept; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
       - if: env.E2E == '1' || steps.core.outputs.kept != 'true'
         uses: ./.github/actions/setup
+      # A push's core not kept: its packages and bytecode (~55 s: the packages' NTFS unpack, esbuild, Babel, hermesc)
+      # made in the background below the build's priority (BelowNormal, which every process it starts takes on), and
+      # waited for by "Build (APP=stillfail)" once the app is built. In steps of their own at the app's priority they
+      # took cores from moonc and mbc, and a build that fits alone (136-146 s of a branch's ~155) was cut: #8525's
+      # 5da63b312 and 8151cc430 (`the build not done after 85 s`, 78 s), release/2026-11-25's 138566450245.
+      - name: The core's packages and bytecode, started below the build
+        if: env.E2E == '' && steps.core.outputs.kept != 'true'
+        run: |
+          H=$RUNNER_TEMP/core; mkdir -p "$H"
+          cat > "$H/make.sh" <<'EOF'
+          # (this shell below the build's priority first: what it starts after takes that on, the next line says so)
+          powershell -NoProfile -Command "(Get-Process -Id $(cat /proc/$$/winpid)).PriorityClass = 'BelowNormal'" || exit 1
+          echo "the core made at $(powershell -NoProfile -Command '[Diagnostics.Process]::GetCurrentProcess().PriorityClass') priority"
+          t0=$SECONDS
+          export npm_config_script_shell="$(cygpath -w "$(command -v bash)")"
+          (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline --reporter=append-only) || { echo "packages: pnpm install in client/core-ts failed"; exit 1; }
+          echo "the core's packages in $((SECONDS - t0)) s"
+          bash apps/mbui/scripts/win.sh core
+          EOF
+          nohup bash -c 'bash "$0/make.sh" > "$0/log" 2>&1; echo $? > "$0/status.tmp"; mv "$0/status.tmp" "$0/status"' "$H" > /dev/null 2>&1 < /dev/null &
       - name: Packages (the core's, the cloud's; the test station built)
-        if: env.E2E == '1' || steps.core.outputs.kept != 'true'
+        if: env.E2E == '1'
         run: |
           # (the packages' scripts in bash, not cmd: the station's build is sh)
           export npm_config_script_shell="$(cygpath -w "$(command -v bash)")"
@@ -1222,6 +1242,7 @@ jobs:
           E=$RUNNER_TEMP/e2e; mkdir -p "$E"
           nohup bash -c 'E2E_APP="$0/app" bash apps/mbui/e2e/win.sh > "$0/log" 2>&1; echo $? > "$0/status"' "$E" > /dev/null 2>&1 &
       - name: The core's bytecode (Hermes)
+        if: env.E2E == '1' || steps.core.outputs.kept == 'true'
         run: |
           bash apps/mbui/scripts/win.sh core
           [ ! -d .ci/hbc ] || echo "HBC_CACHE: $(ls .ci/hbc | wc -l) files, $(du -sm .ci/hbc | cut -f1) MB"
@@ -1257,6 +1278,20 @@ jobs:
           echo "(waited $((SECONDS - t0)) s for it)"
           cat "$B/log"
           [ "$(cat "$B/status")" = 0 ] || exit 1
+          # (a push's core made below the build's priority, above: waited for within the same wait)
+          H=$RUNNER_TEMP/core
+          if [ -d "$H" ]; then
+            t1=$SECONDS
+            while [ ! -s "$H/status" ]; do
+              [ $((SECONDS - t0)) -lt $wait ] || { echo "::error::the core's bytecode not done after $wait s"; cat "$H/log"; exit 1; }
+              sleep 1
+            done
+            echo "(waited $((SECONDS - t1)) s for the core after the app)"
+            cat "$H/log"
+            [ "$(cat "$H/status")" = 0 ] || { echo "::error::the core's packages or bytecode failed"; exit 1; }
+            [ ! -d .ci/hbc ] || echo "HBC_CACHE: $(ls .ci/hbc | wc -l) files, $(du -sm .ci/hbc | cut -f1) MB"
+            [ ! -d .ci/hbc ] || echo "HBC_KEY=mbui-win-hbc-$(ls .ci/hbc | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
+          fi
           bash apps/mbui/scripts/win.sh put
           echo ok > "$E/app"
           # the cache's key: the app's C by its content (a C as the restored one was is not saved again)
