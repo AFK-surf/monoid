@@ -58,9 +58,11 @@ assert.throws(
   /type mismatch/
 );
 
-const fnSrcOpt = parseFnSig('pub fn demo(a? : Int32, b~ : Bool = false) -> Unit');
+const fnSrcOpt = parseFnSig('pub fn demo(a? : Int32, b~ : Bool = false, c? : @one.Int32) -> Unit');
 const fnDstMismatchOpt = parseFnSig('fn demo(a_new~ : Int, b_new~ : Bool = false) -> Unit');
 const fnDstMismatchDefault = parseFnSig('fn demo(a_new? : Int, b_new~ : Bool) -> Unit');
+const fnDstMismatchDefaultVal = parseFnSig('fn demo(a_new? : Int, b_new~ : Bool = true) -> Unit');
+const fnDstMismatchScope = parseFnSig('fn demo(c_new? : two::Int32) -> Unit');
 const fnDstValid = parseFnSig('fn demo(a_new? : Int, b_new~ : Bool = false) -> Unit');
 
 assert.throws(
@@ -70,6 +72,14 @@ assert.throws(
 assert.throws(
   () => validateParamRenameRule({ from: 'b', to: 'b_new' }, fnSrcOpt, fnDstMismatchDefault),
   /default-value mismatch/
+);
+assert.throws(
+  () => validateParamRenameRule({ from: 'b', to: 'b_new' }, fnSrcOpt, fnDstMismatchDefaultVal),
+  /default-value expression mismatch/
+);
+assert.throws(
+  () => validateParamRenameRule({ from: 'c', to: 'c_new' }, fnSrcOpt, fnDstMismatchScope),
+  /type mismatch/
 );
 assert.equal(validateParamRenameRule({ from: 'a', to: 'a_new' }, fnSrcOpt, fnDstValid), true);
 assert.equal(validateParamRenameRule({ from: 'b', to: 'b_new' }, fnSrcOpt, fnDstValid), true);

@@ -561,39 +561,105 @@ EOF
   }
 done
 
-# (e2a) Local `path =` pointing to an AFK-surf/invar checkout MUST be rejected (rc=1)
-FAKE_INVAR="$WORK/local_checkout_not_named_that"
-mkdir -p "$FAKE_INVAR/.git" "$FAKE_INVAR/packages/ui"
-cat > "$FAKE_INVAR/.git/config" << 'EOF'
-[remote "origin"]
-	url = https://github.com/AFK-surf/invar.git
-EOF
-cat > "$FAKE_INVAR/packages/ui/pion.toml" << 'EOF'
+# (e2a) External no-.git / no-repository cache checkout via `{ path = ... }` MUST be rejected (rc=1)
+FAKE_CACHE_EXT="$WORK/fake_pion_cache/checkouts/ff2ed930/packages/textdiff"
+mkdir -p "$FAKE_CACHE_EXT"
+cat > "$FAKE_CACHE_EXT/pion.toml" << 'EOF'
 [package]
-name = "ui"
+name = "textdiff"
 version = "0.1.0"
 EOF
-PIN_PATH_NEG="$WORK/pin_path_neg"
-setup_pin_tmp "$PIN_PATH_NEG"
-cat > "$PIN_PATH_NEG/pion/ui/packages/sf/pion.toml" << EOF
+PIN_PATH_E2A="$WORK/pin_path_e2a"
+setup_pin_tmp "$PIN_PATH_E2A"
+cat > "$PIN_PATH_E2A/pion/ui/packages/sf/pion.toml" << EOF
 [package]
 name = "sf"
 version = "0.1.0"
 
 [dependencies]
-ui = { path = "$FAKE_INVAR/packages/ui" }
+textdiff = { path = "$FAKE_CACHE_EXT" }
 EOF
 set +e
-sh "$PIN_PATH_NEG/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_path.log" 2>&1
+sh "$PIN_PATH_E2A/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2a.log" 2>&1
 PIN_RC=$?
 set -e
-if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_path.log" || ! grep -q "local path invar bypass forbidden" "$WORK/neg_pin_path.log"; then
-  echo "FAIL (pin-path-neg): expected rc=1 + exact path + 'local path invar bypass forbidden' (got rc=$PIN_RC)!" >&2
-  cat "$WORK/neg_pin_path.log" >&2
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2a.log" || ! grep -q "escapes pion/ workspace" "$WORK/neg_pin_e2a.log"; then
+  echo "FAIL (pin-e2a): expected rc=1 + exact path + 'escapes pion/ workspace' (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2a.log" >&2
   exit 1
 fi
 
-# (e2b) Positive control: local non-invar package whose directory name contains 'invar' MUST pass (rc=0)
+# (e2b) Same external path via Pion string path shorthand `textdiff = "..."` MUST be rejected (rc=1)
+PIN_PATH_E2B="$WORK/pin_path_e2b"
+setup_pin_tmp "$PIN_PATH_E2B"
+cat > "$PIN_PATH_E2B/pion/ui/packages/sf/pion.toml" << EOF
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+textdiff = "$FAKE_CACHE_EXT"
+EOF
+set +e
+sh "$PIN_PATH_E2B/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2b.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2b.log" || ! grep -q "escapes pion/ workspace" "$WORK/neg_pin_e2b.log"; then
+  echo "FAIL (pin-e2b): expected rc=1 + exact path + 'escapes pion/ workspace' for string shorthand (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2b.log" >&2
+  exit 1
+fi
+
+# (e2c) In-repo vendored invar package `pion/vendor/td` (`[package] name = "textdiff"`) MUST be rejected (rc=1)
+PIN_PATH_E2C="$WORK/pin_path_e2c"
+setup_pin_tmp "$PIN_PATH_E2C"
+mkdir -p "$PIN_PATH_E2C/pion/vendor/td"
+cat > "$PIN_PATH_E2C/pion/vendor/td/pion.toml" << 'EOF'
+[package]
+name = "textdiff"
+version = "0.1.0"
+EOF
+cat > "$PIN_PATH_E2C/pion/ui/packages/sf/pion.toml" << 'EOF'
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+td = { path = "../../../vendor/td" }
+EOF
+set +e
+sh "$PIN_PATH_E2C/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2c.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2c.log" || ! grep -q "local path invar bypass forbidden" "$WORK/neg_pin_e2c.log"; then
+  echo "FAIL (pin-e2c): expected rc=1 + exact path + 'local path invar bypass forbidden' for vendored invar pkg (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2c.log" >&2
+  exit 1
+fi
+
+# (e2d) In-repo relative symlink pointing to external no-.git dir MUST be rejected (rc=1)
+PIN_PATH_E2D="$WORK/pin_path_e2d"
+setup_pin_tmp "$PIN_PATH_E2D"
+ln -s "$FAKE_CACHE_EXT" "$PIN_PATH_E2D/pion/ui/packages/sym_ext"
+cat > "$PIN_PATH_E2D/pion/ui/packages/sf/pion.toml" << 'EOF'
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+sym_ext = { path = "../sym_ext" }
+EOF
+set +e
+sh "$PIN_PATH_E2D/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2d.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2d.log" || ! grep -q "escapes pion/ workspace" "$WORK/neg_pin_e2d.log"; then
+  echo "FAIL (pin-e2d): expected rc=1 + exact path + 'escapes pion/ workspace' for escaping symlink (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2d.log" >&2
+  exit 1
+fi
+
+# (e2e) Positive control: local non-invar package inside pion/ named 'invar_local_helper' MUST pass (rc=0)
 PIN_PATH_POS="$WORK/pin_path_pos"
 setup_pin_tmp "$PIN_PATH_POS"
 mkdir -p "$PIN_PATH_POS/pion/ui/packages/invar_local_helper"

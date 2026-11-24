@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Deterministic full-production `@ui.css(...)` corpus extractor & manifest verifier.
+"""Deterministic full-production `@ui.css(...)` corpus extractor & raw-byte manifest verifier.
 
 Scans 100% of non-test `.mbt` files under `libs/ui/src/controls/` and `apps/mbui/src/`,
-handling ordinary string literals, parenthesized `#|` raw strings, trailing commas,
-and EOF-token callsites (where `)` is the exact final byte of the file with no newline).
+respecting MoonBit token boundaries (`@ui .css(...)`), string interpolations (`"\{...}"`),
+ordinary string literals, parenthesized `#|` raw strings, trailing commas, and EOF-token
+callsites (where `)` is the exact final byte of the file with no trailing newline).
 
 Fails loudly (non-zero exit) on any unparsed or non-static `@ui.css(...)` callsite.
 """
@@ -13,6 +14,7 @@ import difflib
 import json
 import os
 import sys
+import tempfile
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../.."))
@@ -148,36 +150,64 @@ def parse_css_call_arg(src, open_paren_idx, file_label, line_no):
     raise ValueError(f"{file_label}:{line_no}: non-static @ui.css(...) argument starting with {src[i:i+24]!r}")
 
 
-def extract_from_source(src, file_label):
-    """Lex MoonBit source and extract every `@ui.css(...)` callsite."""
-    calls = []
-    n = len(src)
-    i = 0
-    line_no = 1
+def _extract_range(src, start_idx, end_idx, start_line, file_label, calls, stop_at_rbrace=False):
+    """Lex MoonBit source range, respecting token boundaries and string interpolation `\\{...}`."""
+    i = start_idx
+    line_no = start_line
+    brace_depth = 0
 
-    while i < n:
+    while i < end_idx:
         c = src[i]
         if c == "\n":
             line_no += 1
             i += 1
             continue
+        if stop_at_rbrace:
+            if c == "{":
+                brace_depth += 1
+                i += 1
+                continue
+            if c == "}":
+                if brace_depth == 0:
+                    return i + 1, line_no
+                brace_depth -= 1
+                i += 1
+                continue
+
         # Skip line comments
-        if c == "/" and i + 1 < n and src[i + 1] == "/":
-            while i < n and src[i] != "\n":
+        if c == "/" and i + 1 < end_idx and src[i + 1] == "/":
+            while i < end_idx and src[i] != "\n":
                 i += 1
             continue
         # Skip raw string lines outside @ui.css
-        if c == "#" and i + 1 < n and src[i + 1] == "|":
-            while i < n and src[i] != "\n":
+        if c == "#" and i + 1 < end_idx and src[i + 1] == "|":
+            while i < end_idx and src[i] != "\n":
                 i += 1
             continue
-        # Skip string literals
-        if c == '"' or (c == "b" and i + 1 < n and src[i + 1] == '"'):
-            if c == "b":
-                i += 1
-            i += 1
-            while i < n:
+        # Byte string literal b"..." (no interpolation)
+        if c == "b" and i + 1 < end_idx and src[i + 1] == '"':
+            i += 2
+            while i < end_idx:
                 if src[i] == "\\":
+                    i += 2
+                    continue
+                if src[i] == '"':
+                    i += 1
+                    break
+                if src[i] == "\n":
+                    line_no += 1
+                i += 1
+            continue
+        # Double-quoted string literal `"..."` (recursively scan `\{ ... }` interpolations!)
+        if c == '"':
+            i += 1
+            while i < end_idx:
+                if src[i] == "\\":
+                    if i + 1 < end_idx and src[i + 1] == "{":
+                        i, line_no = _extract_range(
+                            src, i + 2, end_idx, line_no, file_label, calls, stop_at_rbrace=True
+                        )
+                        continue
                     i += 2
                     continue
                 if src[i] == '"':
@@ -190,7 +220,7 @@ def extract_from_source(src, file_label):
         # Skip char literals
         if c == "'":
             i += 1
-            while i < n:
+            while i < end_idx:
                 if src[i] == "\\":
                     i += 2
                     continue
@@ -202,29 +232,43 @@ def extract_from_source(src, file_label):
                 i += 1
             continue
 
-        # Match `@ui.css` followed by optional whitespace and `(`
-        if src.startswith("@ui.css", i):
-            after = i + len("@ui.css")
-            # Ensure it's not `@ui.css_read` or another identifier
-            if after < n and (src[after].isalnum() or src[after] == "_"):
-                i = after
+        # Match MoonBit token sequence: `@ui` <ws/comment>* `.` <ws/comment>* `css` <ws/comment>* `(`
+        if src.startswith("@ui", i):
+            after_ui = i + 3
+            if after_ui < end_idx and (src[after_ui].isalnum() or src[after_ui] == "_" or src[after_ui] == "/"):
+                i = after_ui
                 continue
-            j = skip_ws_and_comments(src, after)
-            if j < n and src[j] == "(":
-                kind, decoded, close_idx, is_eof = parse_css_call_arg(src, j, file_label, line_no)
-                calls.append({
-                    "file": file_label,
-                    "line": line_no,
-                    "kind": kind,
-                    "text": decoded,
-                    "eof_token": is_eof,
-                })
-                line_no += src[i:close_idx + 1].count("\n")
-                i = close_idx + 1
-                continue
+            j = skip_ws_and_comments(src, after_ui)
+            if j < end_idx and src[j] == ".":
+                k = skip_ws_and_comments(src, j + 1)
+                if src.startswith("css", k):
+                    after_css = k + 3
+                    if after_css < end_idx and (src[after_css].isalnum() or src[after_css] == "_"):
+                        i = after_css
+                        continue
+                    p = skip_ws_and_comments(src, after_css)
+                    if p < end_idx and src[p] == "(":
+                        kind, decoded, close_idx, is_eof = parse_css_call_arg(src, p, file_label, line_no)
+                        calls.append({
+                            "file": file_label,
+                            "line": line_no,
+                            "kind": kind,
+                            "text": decoded,
+                            "eof_token": is_eof,
+                        })
+                        line_no += src[i:close_idx + 1].count("\n")
+                        i = close_idx + 1
+                        continue
 
         i += 1
 
+    return i, line_no
+
+
+def extract_from_source(src, file_label):
+    """Lex MoonBit source and extract every `@ui.css(...)` callsite."""
+    calls = []
+    _extract_range(src, 0, len(src), 1, file_label, calls, stop_at_rbrace=False)
     return calls
 
 
@@ -282,14 +326,31 @@ def extract_repo_corpus(repo_root):
     }
 
 
+def check_manifest_raw_bytes(manifest_path, expected_text):
+    """Strict raw-byte check against committed manifest (catches LF -> CRLF drift)."""
+    if not os.path.isfile(manifest_path):
+        return f"manifest missing at {manifest_path}"
+    committed_bytes = open(manifest_path, "rb").read()
+    expected_bytes = expected_text.encode("utf-8")
+    if committed_bytes == expected_bytes:
+        return None
+    if committed_bytes.replace(b"\r\n", b"\n") == expected_bytes:
+        return "css_corpus_manifest.json raw byte drift detected (CRLF line endings != LF)"
+    diff = "".join(difflib.unified_diff(
+        committed_bytes.decode("utf-8", "replace").splitlines(keepends=True),
+        expected_text.splitlines(keepends=True),
+        fromfile="committed/css_corpus_manifest.json",
+        tofile="extracted/css_corpus_manifest.json",
+        n=2,
+    ))
+    return f"css_corpus_manifest.json drift detected:\n{diff[:2000]}"
+
+
 def run_self_test():
     # 1. Final-token-at-EOF regression (no trailing newline after `)`)
     eof_src = 'let s = @ui.css("row w=Full")'
     res = extract_from_source(eof_src, "eof_test.mbt")
-    assert len(res) == 1, f"expected 1 EOF callsite, got {res}"
-    assert res[0]["text"] == "row w=Full"
-    assert res[0]["kind"] == "ordinary"
-    assert res[0]["eof_token"] is True
+    assert len(res) == 1 and res[0]["text"] == "row w=Full" and res[0]["kind"] == "ordinary" and res[0]["eof_token"] is True
 
     # 2. Parenthesized raw string `#|` at EOF
     raw_src = 'let s = @ui.css((\n  #|row h=S8\n))'
@@ -301,7 +362,7 @@ def run_self_test():
     res3 = extract_from_source(tr_src, "trailing_test.mbt")
     assert len(res3) == 1 and res3[0]["kind"] == "trailing" and res3[0]["text"] == "w=Full" and res3[0]["eof_token"] is False
 
-    # 4. Comment and string-embedded `@ui.css(...)` MUST be ignored, `@ui.css_read(...)` ignored
+    # 4. Comment and plain string-embedded `@ui.css(...)` MUST be ignored, `@ui.css_read(...)` ignored
     ign_src = '// @ui.css("nope")\nlet a = "@ui.css(\\"nope2\\")"\nlet b = @ui.css_read("ok")\n'
     assert extract_from_source(ign_src, "ignore_test.mbt") == []
 
@@ -310,11 +371,29 @@ def run_self_test():
     try:
         extract_from_source("let s = @ui.css(dyn_var)\n", "nonstatic.mbt")
     except ValueError as e:
-        assert "non-static" in str(e)
+        assert "nonstatic.mbt:1" in str(e) and "non-static" in str(e)
         failed = True
     assert failed, "expected non-static @ui.css(dyn_var) to raise ValueError"
 
-    # 6. String interpolation inside `@ui.css(...)` MUST fail loud
+    # 6. Whitespace between `@ui` and `.css` (`@ui .css(v)`) MUST be caught and fail loud!
+    failed_ws = False
+    try:
+        extract_from_source("let x = 1\nlet s = @ui .css(v)\n", "ws_token.mbt")
+    except ValueError as e:
+        assert "ws_token.mbt:2" in str(e) and "non-static" in str(e)
+        failed_ws = True
+    assert failed_ws, "expected '@ui .css(v)' to raise ValueError"
+
+    # 7. `@ui.css(v)` inside string interpolation `"result: \{@ui.css(v)}"` MUST be caught and fail loud!
+    failed_str_interp = False
+    try:
+        extract_from_source('let a = 1\nlet b = 2\nlet s = "result: \\{@ui.css(v)}"\n', "str_interp.mbt")
+    except ValueError as e:
+        assert "str_interp.mbt:3" in str(e) and "non-static" in str(e)
+        failed_str_interp = True
+    assert failed_str_interp, "expected '\"result: \\{@ui.css(v)}\"' to raise ValueError"
+
+    # 8. String interpolation inside `@ui.css("w=\{x}")` MUST fail loud
     failed_interp = False
     try:
         extract_from_source('let s = @ui.css("w=\\{x}")\n', "interp.mbt")
@@ -323,7 +402,15 @@ def run_self_test():
         failed_interp = True
     assert failed_interp, "expected interpolated @ui.css(...) to raise ValueError"
 
-    print("OK: extract_css_corpus.py self-tests passed (EOF token, raw #|, trailing comma, comment/string skip, non-static fail-loud)")
+    # 9. Raw-byte `--check` MUST reject CRLF manifest
+    with tempfile.TemporaryDirectory() as td:
+        sample = '{"ok": true}\n'
+        p_crlf = os.path.join(td, "crlf.json")
+        open(p_crlf, "wb").write(sample.replace("\n", "\r\n").encode("utf-8"))
+        err = check_manifest_raw_bytes(p_crlf, sample)
+        assert err is not None and "CRLF" in err, f"expected CRLF rejection, got {err!r}"
+
+    print("OK: extract_css_corpus.py self-tests passed (EOF, raw #|, trailing comma, @ui .css(v), string interp \\{@ui.css(v)}, CRLF raw-byte check)")
 
 
 def main():
@@ -361,24 +448,14 @@ def main():
         print(f"OK: 100% row-for-row match vs {args.compare_tsv} ({len(actual_rows)} callsites, {corpus['distinct_strings_total']} distinct, {corpus['eof_callsites_count']} EOF)")
 
     if args.write:
-        with open(args.manifest, "w", encoding="utf-8") as f:
-            f.write(text)
+        with open(args.manifest, "wb") as f:
+            f.write(text.encode("utf-8"))
         print(f"OK: wrote {args.manifest} ({corpus['callsites_total']} callsites: {corpus['controls_callsites']} controls + {corpus['app_callsites']} apps, {corpus['distinct_strings_total']} distinct, {corpus['eof_callsites_count']} EOF)")
 
     if args.check:
-        if not os.path.isfile(args.manifest):
-            print(f"ERROR: manifest missing at {args.manifest}", file=sys.stderr)
-            return 1
-        committed = open(args.manifest, "r", encoding="utf-8").read()
-        if committed != text:
-            diff = "".join(difflib.unified_diff(
-                committed.splitlines(keepends=True),
-                text.splitlines(keepends=True),
-                fromfile="committed/css_corpus_manifest.json",
-                tofile="extracted/css_corpus_manifest.json",
-                n=2,
-            ))
-            print(f"ERROR: css_corpus_manifest.json drift detected:\n{diff[:2000]}", file=sys.stderr)
+        err = check_manifest_raw_bytes(args.manifest, text)
+        if err:
+            print(f"ERROR: {err}", file=sys.stderr)
             return 1
         print(f"OK (--check): byte-identical css_corpus_manifest.json ({corpus['callsites_total']} callsites, {corpus['distinct_strings_total']} distinct, {corpus['eof_callsites_count']} EOF)")
 

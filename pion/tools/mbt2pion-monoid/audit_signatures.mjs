@@ -283,9 +283,10 @@ export function parseFnSig(sig) {
         modifier: m[2] || '',
         type: m[3].trim(),
         has_default: Boolean(m[4]),
+        default_expr: m[4] ? m[4].trim().replace(/\s+/g, ' ') : null,
       };
     }
-    return { index: idx, name: `arg${idx}`, modifier: '', type: p.trim(), has_default: false };
+    return { index: idx, name: `arg${idx}`, modifier: '', type: p.trim(), has_default: false, default_expr: null };
   });
   return { params, ret };
 }
@@ -304,8 +305,8 @@ export function normalizeTypeForCompare(raw) {
   // Strip package qualifiers (`@pkg.` and `pkg::`)
   s = s.replace(/@[A-Za-z0-9_\/]+\./g, '');
   s = s.replace(/\b[a-z_][a-z0-9_]*::/g, '');
-  // Strip parameter names inside function types like `(a : Int, b : Int) -> Bool`
-  s = s.replace(/\b[a-z_][A-Za-z0-9_]*[~?]?\s*:\s*/g, '');
+  // Strip parameter names inside function types like `(a : Int, b : Int) -> Bool` (NEVER strip `pkg::`!)
+  s = s.replace(/\b[a-z_][A-Za-z0-9_]*[~?]?\s*:(?!:)\s*/g, '');
   // Collapse whitespace
   s = s.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ',').replace(/\s*->\s*/g, '->').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/\[\s+/g, '[').replace(/\s+\]/g, ']');
   // Iteratively rewrite postfix `T?` into `Option[T]`
@@ -329,10 +330,58 @@ export function typesCompatible(mType, pType, paramName, isAutofillLoc) {
   return false;
 }
 
+const PKG_ALIASES_DEFAULT = {
+  glass: 'lg',
+  ui: 'ui',
+  view: 'view',
+  signals: 'signals',
+  motion: 'motion',
+  headless: 'headless',
+  pixels: 'pixels',
+  paint: 'paint',
+  player: 'player',
+  hostapi: 'hostapi',
+  dmath: 'dmath',
+  codec: 'codec',
+  text: 'text',
+  zip: 'zip',
+  halt: 'halt',
+};
+
+// Scope-preserving type normalization for strict parameter-rename validation:
+// - Normalizes ONLY unqualified scalar `Int32` -> `Int`
+// - Canonicalizes `@pkg.Type` to `<aliased_pkg>::Type` while PRESERVING package scope
+//   so `@one.Int32` (`one::Int32`) and `two::Int32` NEVER compare equal!
+export function normalizeTypePreservingScope(raw, pkgAliases = PKG_ALIASES_DEFAULT) {
+  let s = String(raw || '').trim();
+  s = s.replace(/\s+raise\b.*$/, '');
+  // Normalize ONLY unqualified scalar Int32 -> Int
+  s = s.replace(/(?<![A-Za-z0-9_:.@])Int32(?![A-Za-z0-9_])/g, 'Int');
+  // Canonicalize MoonBit `@pkg.Type` into `<mapped_pkg>::Type` (preserving package identity!)
+  s = s.replace(/@([A-Za-z0-9_\/]+)\./g, (_m, pkg) => {
+    const basePkg = pkg.split('/').pop();
+    const mapped = (pkgAliases && pkgAliases[basePkg]) || basePkg;
+    return `${mapped}::`;
+  });
+  // Strip parameter names inside function types like `(a : Int, b : Int) -> Bool` (NEVER strip `pkg::`!)
+  s = s.replace(/\b[a-z_][A-Za-z0-9_]*[~?]?\s*:(?!:)\s*/g, '');
+  s = s.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ',').replace(/\s*->\s*/g, '->').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/\[\s+/g, '[').replace(/\s+\]/g, ']');
+  for (let pass = 0; pass < 6; pass++) {
+    const next = s
+      .replace(/\(([^()]+)\)\?/g, 'Option[($1)]')
+      .replace(/([A-Za-z_][A-Za-z0-9_:]*(?:\[[^\[\]]*\])?)\?/g, 'Option[$1]');
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+
 // Strict parameter-rename rule validator: any future parameter rename MUST match on
-// normalized type, optionality (`?` vs `~` vs positional), and default-value presence.
-// Rejects erroneous renames such as `w? : Len` -> `weight? : Weight`.
-export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLoc = false) {
+// scope-preserving normalized type, optionality (`?` vs `~` vs positional),
+// default-value presence, AND normalized default-value expression.
+// Rejects erroneous renames such as `w? : Len` -> `weight? : Weight`,
+// `Bool = false` -> `Bool = true`, and `@one.Int32` -> `two::Int32`.
+export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLoc = false, pkgAliases = PKG_ALIASES_DEFAULT) {
   if (!rule || !rule.from || !rule.to) {
     throw new Error(`Invalid param_rename rule: missing 'from' or 'to' (${JSON.stringify(rule)})`);
   }
@@ -347,9 +396,12 @@ export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLo
   if (!dstParam) {
     throw new Error(`Invalid param_rename ${rule.from} -> ${rule.to}: target param '${rule.to}' not found`);
   }
-  if (!typesCompatible(srcParam.type, dstParam.type, srcParam.name, isAutofillLoc)) {
+  const mScoped = normalizeTypePreservingScope(srcParam.type, pkgAliases);
+  const pScoped = normalizeTypePreservingScope(dstParam.type, pkgAliases);
+  const locOk = isAutofillLoc && srcParam.name === 'loc' && mScoped === 'SourceLoc' && pScoped === 'String';
+  if (mScoped !== pScoped && !locOk) {
     throw new Error(
-      `Rejected param_rename ${rule.from} -> ${rule.to}: type mismatch (source=${srcParam.type} vs target=${dstParam.type})`
+      `Rejected param_rename ${rule.from} -> ${rule.to}: type mismatch (source=${srcParam.type} [${mScoped}] vs target=${dstParam.type} [${pScoped}])`
     );
   }
   if (srcParam.modifier !== dstParam.modifier) {
@@ -360,6 +412,11 @@ export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLo
   if (Boolean(srcParam.has_default) !== Boolean(dstParam.has_default)) {
     throw new Error(
       `Rejected param_rename ${rule.from} -> ${rule.to}: default-value mismatch (source=${Boolean(srcParam.has_default)} vs target=${Boolean(dstParam.has_default)})`
+    );
+  }
+  if (srcParam.default_expr !== dstParam.default_expr) {
+    throw new Error(
+      `Rejected param_rename ${rule.from} -> ${rule.to}: default-value expression mismatch (source=${JSON.stringify(srcParam.default_expr)} vs target=${JSON.stringify(dstParam.default_expr)})`
     );
   }
   return true;

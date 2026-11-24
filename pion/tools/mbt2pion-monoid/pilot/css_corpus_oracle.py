@@ -278,7 +278,8 @@ fn ser_radius_val(x : @ui.Radius) -> String {
     Around => "Around"
     Exact(d) => "Exact(" + dbits(d) + ")"
     Corners(a, b, c, d) => "Corners(" + dbits(a) + "," + dbits(b) + "," + dbits(c) + "," + dbits(d) + ")"
-    _ => "OtherRadius"
+    Linked(_) => "Linked"
+    LinkedEach(_, _, _, _) => "LinkedEach"
   }
 }
 
@@ -644,7 +645,8 @@ fn ser_radius_val(x : ui::Radius) -> String {
     ui::Radius::Around => "Around"
     ui::Radius::Exact(d) => "Exact(" + dbits(d) + ")"
     ui::Radius::Corners(a, b, c, d) => "Corners(" + dbits(a) + "," + dbits(b) + "," + dbits(c) + "," + dbits(d) + ")"
-    _ => "OtherRadius"
+    ui::Radius::Linked(_) => "Linked"
+    ui::Radius::LinkedEach(_, _, _, _) => "LinkedEach"
   }
 }
 
@@ -850,8 +852,17 @@ def compare_engine_outputs(strings, moon_out, nat_out, wasm_out):
             afirstline_checked += 1
             if not (mv.startswith("OK:") and "align=FirstLine" in mv):
                 errs.append(f"[{i}] moon expected OK with align=FirstLine for {css_text!r}, got {mv!r}")
-            if not (nv.startswith("ERR:css: unsupported Align AFirstLine (missing in invar ui::Align) at ")):
-                errs.append(f"[{i}] pion expected fail-loud AFirstLine error for {css_text!r}, got {nv!r}")
+            exact_offset = css_text.index("AFirstLine") + len("AFirstLine")
+            expected_err = (
+                f'ERR:css: unsupported Align AFirstLine (missing in invar ui::Align) '
+                f'at {exact_offset} in "{css_text}"'
+            )
+            if nv != expected_err:
+                errs.append(
+                    f"[{i}] pion AFirstLine error mismatch for {css_text!r}:\n"
+                    f"  expected={expected_err}\n"
+                    f"  actual  ={nv}"
+                )
         else:
             if mv != nv:
                 errs.append(f"[{i}] moon != pion for {css_text!r}:\n  moon={mv}\n  pion={nv}")
@@ -864,6 +875,40 @@ def compare_engine_outputs(strings, moon_out, nat_out, wasm_out):
     return errs
 
 
+def write_pion_batch_ws(pion_ws, sf_pkg_path, mbt_compat_dir, invar_rev, strings):
+    pion_pkg = os.path.join(pion_ws, "css_batch")
+    os.makedirs(os.path.join(pion_pkg, "src"), exist_ok=True)
+    with open(os.path.join(pion_ws, "pion.toml"), "w", encoding="utf-8") as f:
+        f.write(f'''[workspace]
+members = ["css_batch"]
+
+[workspace.dependencies]
+base64 = {{ git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }}
+mbt_compat = {{ path = "{mbt_compat_dir}" }}
+sf = {{ path = "{sf_pkg_path}" }}
+signals = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{invar_rev}", subdir = "packages/signals" }}
+view = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{invar_rev}", subdir = "packages/view" }}
+ui = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{invar_rev}", subdir = "packages/ui" }}
+zip = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{invar_rev}", subdir = "packages/zip" }}
+pixels = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{invar_rev}", subdir = "packages/pixels" }}
+paint = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{invar_rev}", subdir = "packages/paint" }}
+''')
+    with open(os.path.join(pion_pkg, "pion.toml"), "w", encoding="utf-8") as f:
+        f.write('''[package]
+name = "m12_css_corpus_batch"
+version = "0.1.0"
+
+[dependencies]
+sf = { workspace = true }
+ui = { workspace = true }
+''')
+    with open(os.path.join(pion_pkg, "src/main.pion"), "w", encoding="utf-8") as f:
+        f.write(PION_DRIVER)
+    with open(os.path.join(pion_pkg, "src/corpus_data.pion"), "w", encoding="utf-8") as f:
+        f.write(gen_corpus_array_pion(strings))
+    return pion_pkg
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
@@ -872,16 +917,22 @@ def main():
     ap.add_argument("--pionc-bin", default="pionc")
     ap.add_argument("--invar-rev", required=True)
     ap.add_argument("--mbt-compat-dir", required=True)
+    ap.add_argument("--live", action="store_true", help="Live-extracted corpus mode (do not enforce frozen count constants)")
     ap.add_argument("--verify-negative", action="store_true")
     args = ap.parse_args()
 
     manifest = json.load(open(args.manifest, "r", encoding="utf-8"))
-    if manifest.get("callsites_total") != EXPECTED_CALLSITES:
-        print(f"ERROR: callsites_total={manifest.get('callsites_total')} != frozen {EXPECTED_CALLSITES}", file=sys.stderr)
-        return 1
+    callsites_total = manifest.get("callsites_total", 0)
     strings = manifest.get("distinct_strings", [])
-    if len(strings) != EXPECTED_DISTINCT:
-        print(f"ERROR: distinct_strings={len(strings)} != frozen {EXPECTED_DISTINCT}", file=sys.stderr)
+    if not args.live:
+        if callsites_total != EXPECTED_CALLSITES:
+            print(f"ERROR: callsites_total={callsites_total} != frozen {EXPECTED_CALLSITES}", file=sys.stderr)
+            return 1
+        if len(strings) != EXPECTED_DISTINCT:
+            print(f"ERROR: distinct_strings={len(strings)} != frozen {EXPECTED_DISTINCT}", file=sys.stderr)
+            return 1
+    elif not strings:
+        print("ERROR: live corpus extracted 0 strings", file=sys.stderr)
         return 1
 
     work = tempfile.mkdtemp(prefix="m12-css-corpus.")
@@ -905,37 +956,9 @@ def main():
             f.write(gen_corpus_array_mbt(strings))
 
         # 2. Assemble batch Pion workspace using real `pion/ui/packages/sf`
+        sf_orig = os.path.join(args.repo_root, "pion/ui/packages/sf")
         pion_ws = os.path.join(work, "pion_css_ws")
-        pion_pkg = os.path.join(pion_ws, "css_batch")
-        os.makedirs(os.path.join(pion_pkg, "src"))
-        with open(os.path.join(pion_ws, "pion.toml"), "w", encoding="utf-8") as f:
-            f.write(f'''[workspace]
-members = ["css_batch"]
-
-[workspace.dependencies]
-base64 = {{ git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }}
-mbt_compat = {{ path = "{args.mbt_compat_dir}" }}
-sf = {{ path = "{os.path.join(args.repo_root, 'pion/ui/packages/sf')}" }}
-signals = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{args.invar_rev}", subdir = "packages/signals" }}
-view = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{args.invar_rev}", subdir = "packages/view" }}
-ui = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{args.invar_rev}", subdir = "packages/ui" }}
-zip = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{args.invar_rev}", subdir = "packages/zip" }}
-pixels = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{args.invar_rev}", subdir = "packages/pixels" }}
-paint = {{ git = "https://github.com/AFK-surf/invar.git", rev = "{args.invar_rev}", subdir = "packages/paint" }}
-''')
-        with open(os.path.join(pion_pkg, "pion.toml"), "w", encoding="utf-8") as f:
-            f.write('''[package]
-name = "m12_css_corpus_batch"
-version = "0.1.0"
-
-[dependencies]
-sf = { workspace = true }
-ui = { workspace = true }
-''')
-        with open(os.path.join(pion_pkg, "src/main.pion"), "w", encoding="utf-8") as f:
-            f.write(PION_DRIVER)
-        with open(os.path.join(pion_pkg, "src/corpus_data.pion"), "w", encoding="utf-8") as f:
-            f.write(gen_corpus_array_pion(strings))
+        pion_pkg = write_pion_batch_ws(pion_ws, sf_orig, args.mbt_compat_dir, args.invar_rev, strings)
 
         native_bin = os.path.join(work, "css_batch_native")
         wasm_bin = os.path.join(work, "css_batch.wasm")
@@ -971,23 +994,38 @@ ui = { workspace = true }
             return 1
 
         print(
-            f"[css-corpus] PASS: 100% 3-engine parity across {EXPECTED_CALLSITES} production callsites / "
-            f"{EXPECTED_DISTINCT} distinct decoded CSS strings (32 fields x 8 patches + Double bits + AFirstLine fail-loud)"
+            f"[css-corpus] PASS: 100% 3-engine parity across {callsites_total} production callsites / "
+            f"{len(strings)} distinct decoded CSS strings (32 fields x 8 patches + Double bits + exact AFirstLine offset)"
         )
 
-        # 4. Optional negative self-check: prove mutating 1 state field fails compare_engine_outputs!
+        # 4. Real source-code mutation negative check: mutate `sf/src/style_css.pion` state branch,
+        #    recompile & execute `css_batch_native_mut`, and assert compare_engine_outputs FAILS!
         if args.verify_negative:
-            mutated_nat = None
-            for line in n_out.splitlines():
-                if ";hovered={" in line:
-                    mutated_nat = n_out.replace(line, line.replace(";hovered={", ";hovered={row=true,", 1), 1)
-                    break
-            assert mutated_nat is not None and mutated_nat != n_out, "expected at least one hovered state block in corpus"
-            neg_errs = compare_engine_outputs(strings, m_out, mutated_nat, w_out)
+            sf_mut = os.path.join(work, "sf_mut")
+            shutil.copytree(sf_orig, sf_mut)
+            css_pion = os.path.join(sf_mut, "src/style_css.pion")
+            src_txt = open(css_pion, "r", encoding="utf-8").read()
+            needle = '"hovered" => st.hovered = b'
+            assert needle in src_txt, f"expected {needle!r} in style_css.pion"
+            open(css_pion, "w", encoding="utf-8").write(
+                src_txt.replace(needle, '"hovered" => st.pressed = b', 1)
+            )
+            mut_ws = os.path.join(work, "pion_css_mut_ws")
+            mut_pkg = write_pion_batch_ws(mut_ws, sf_mut, args.mbt_compat_dir, args.invar_rev, strings)
+            mut_bin = os.path.join(work, "css_batch_native_mut")
+            rc, out, err, _ = run_cmd([args.pionc_bin, "build", mut_pkg, "-o", mut_bin])
+            if rc != 0:
+                print(f"SETUP FAILED (neg-mutate-src): build mutated sf failed (rc={rc})\n{err[-1000:]}", file=sys.stderr)
+                return 2
+            rc, mut_out, err, _ = run_cmd([mut_bin])
+            if rc != 0:
+                print(f"SETUP FAILED (neg-mutate-src): run mutated sf failed (rc={rc})\n{err[-1000:]}", file=sys.stderr)
+                return 2
+            neg_errs = compare_engine_outputs(strings, m_out, mut_out, mut_out)
             if not neg_errs:
-                print("FAIL (neg-mutate-state): mutating 1 state field was NOT caught by compare_engine_outputs!", file=sys.stderr)
+                print("FAIL (neg-mutate-src): real style_css.pion state-branch mutation was NOT caught!", file=sys.stderr)
                 return 1
-            print(f"[css-corpus] PASS (neg-mutate-state): mutated hovered state field caught ({neg_errs[0][:120]})")
+            print(f"[css-corpus] PASS (neg-mutate-src): real style_css.pion hovered->pressed mutation caught ({neg_errs[0][:120]})")
 
         return 0
     finally:

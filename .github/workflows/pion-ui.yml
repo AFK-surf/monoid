@@ -22,6 +22,7 @@ on:
       - "libs/ui/src/view/**"
       - "libs/ui/src/dmath/**"
       - "libs/ui/src/damage/**"
+      - "libs/ui/src/zip/**"
       - "libs/ui/src/ui/**"
       - ".github/workflows/pion-ui.yml"
   workflow_dispatch:
@@ -46,6 +47,7 @@ jobs:
         run: |
           sh pion/tools/mbt2pion-monoid/check_single_invar_pin.sh
           node pion/tools/mbt2pion-monoid/test_audit_signatures.mjs
+          python3 pion/tools/mbt2pion-monoid/test_audit_histogram.py
           node pion/tools/mbt2pion-monoid/gen_assets.mjs --check
           sh pion/tools/mbt2pion-monoid/regen.sh --assets-only --check
 
@@ -75,7 +77,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-ui-toolchain
-          key: pion-ui-toolchain-linux-x64-v1-${{ steps.pin.outputs.pion_sha }}
+          key: pion-ui-toolchain-linux-x64-v2-${{ steps.pin.outputs.pion_sha }}
 
       - name: Build or restore pinned pionc
         run: |
@@ -188,6 +190,24 @@ jobs:
           tools: ''
           farview: 'false'
 
+      - name: Decide frozen snapshot scope (pion/** or workflow changes vs product-only PR)
+        id: scope
+        run: |
+          RUN_FROZEN="true"
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            BEFORE="${{ github.event.before }}"
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              if git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1; then
+                CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
+                if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
+                  RUN_FROZEN="false"
+                fi
+              fi
+            fi
+          fi
+          echo "run_frozen=$RUN_FROZEN" >> "$GITHUB_OUTPUT"
+          echo "Scope decision: run_frozen=$RUN_FROZEN"
+
       - name: Verify access to AFK-surf/pion, pion-packages, and invar (fail loudly)
         env:
           PION_TOKEN: ${{ secrets.PION_TOKEN }}
@@ -214,7 +234,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-ui-toolchain
-          key: pion-ui-toolchain-linux-x64-v1-${{ steps.pin.outputs.pion_sha }}
+          key: pion-ui-toolchain-linux-x64-v2-${{ steps.pin.outputs.pion_sha }}
 
       - name: Build or restore pinned pionc, mbt2pion, and mbt_compat
         run: |
@@ -238,7 +258,11 @@ jobs:
         run: |
           sh pion/tools/mbt2pion-monoid/test_negative_gates.sh
           sh pion/tools/mbt2pion-monoid/pilot/run_pilot.sh
-          sh pion/tools/mbt2pion-monoid/run_audit_histogram.sh --check
+          if [ "${{ steps.scope.outputs.run_frozen }}" = "true" ]; then
+            sh pion/tools/mbt2pion-monoid/run_audit_histogram.sh --check
+          else
+            echo "Skipping frozen audit_254_histogram --check on product-only branch push"
+          fi
 
   pion-css-corpus:
     runs-on: ubuntu-24.04
@@ -252,6 +276,24 @@ jobs:
         with:
           tools: ''
           farview: 'false'
+
+      - name: Decide frozen snapshot scope (pion/** or workflow changes vs product-only PR)
+        id: scope
+        run: |
+          RUN_FROZEN="true"
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            BEFORE="${{ github.event.before }}"
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+              if git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1; then
+                CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
+                if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
+                  RUN_FROZEN="false"
+                fi
+              fi
+            fi
+          fi
+          echo "run_frozen=$RUN_FROZEN" >> "$GITHUB_OUTPUT"
+          echo "Scope decision: run_frozen=$RUN_FROZEN"
 
       - name: Verify access to AFK-surf/pion, pion-packages, and invar (fail loudly)
         env:
@@ -279,7 +321,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-ui-toolchain
-          key: pion-ui-toolchain-linux-x64-v1-${{ steps.pin.outputs.pion_sha }}
+          key: pion-ui-toolchain-linux-x64-v2-${{ steps.pin.outputs.pion_sha }}
 
       - name: Build or restore pinned pionc and mbt_compat
         run: |
@@ -295,6 +337,10 @@ jobs:
           echo "MBT_COMPAT_DIR=$PION_SRC/tools/mbt_compat" >> "$GITHUB_ENV"
           "$PREFIX/bin/pionc" fetch pion/ui >/dev/null
 
-      - name: Run full production @ui.css corpus 3-engine batch parity gate (2,096 callsites / 1,237 distinct)
+      - name: Run full production @ui.css corpus 3-engine batch parity gate
         run: |
-          sh pion/tools/mbt2pion-monoid/pilot/run_css_corpus.sh
+          if [ "${{ steps.scope.outputs.run_frozen }}" = "true" ]; then
+            sh pion/tools/mbt2pion-monoid/pilot/run_css_corpus.sh
+          else
+            sh pion/tools/mbt2pion-monoid/pilot/run_css_corpus.sh --live-only
+          fi
