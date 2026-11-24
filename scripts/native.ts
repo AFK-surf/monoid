@@ -1591,11 +1591,21 @@ function rustEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   };
 }
 /// The toolchain and the target, installed when missing (rustup does it once per machine).
-function rustTarget(triple: string) {
+export function rustTarget(triple: string) {
   const env = rustEnv();
-  const installed = spawnSync("rustup", ["target", "list", "--installed", "--toolchain", TOOLCHAIN], { env, encoding: "utf8" });
-  if (installed.status !== 0) run("rustup", ["toolchain", "install", TOOLCHAIN, "--profile", "minimal"], { env });
-  if (!(installed.stdout ?? "").split("\n").includes(triple)) run("rustup", ["target", "add", "--toolchain", TOOLCHAIN, triple], { env });
+  // `ensure` runs up to 3 builds in parallel; rustup mutates shared ~/.rustup downloads and toolchain dirs in place,
+  // so concurrent installs corrupt the toolchain on fresh runners (45460250774, 45461499107).
+  const release = acquire(join(CACHE, ".rustup"));
+  try {
+    let installed = spawnSync("rustup", ["target", "list", "--installed", "--toolchain", TOOLCHAIN], { env, encoding: "utf8" });
+    if (installed.status !== 0) {
+      run("rustup", ["toolchain", "install", TOOLCHAIN, "--profile", "minimal"], { env });
+      installed = spawnSync("rustup", ["target", "list", "--installed", "--toolchain", TOOLCHAIN], { env, encoding: "utf8" });
+    }
+    if (!(installed.stdout ?? "").split(/\r?\n/).includes(triple)) run("rustup", ["target", "add", "--toolchain", TOOLCHAIN, triple], { env });
+  } finally {
+    release();
+  }
 }
 function cargo(args: string[], cwd: string, extra: Record<string, string>) {
   const env = rustEnv(extra);
