@@ -32,11 +32,11 @@ test "cmdQuote: off by default does not highlight or quote; turning it on draws 
   // Off by default: Cmd+hover draws no highlight/underline and Cmd+click adds no quote.
   t.hold_mods(@ui.mod_cmd)
   t.move_to(px, py)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(cmd_quote_rect_counts(t), (0, 0), msg="off by default: no highlight or underline drawn")
   t.press_at(px, py)
   t.release(px, py)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(@sfbase.writing(src, draft).quotes.get().length(), 0, msg="off by default: no quote added")
 
   // Turn on experimental switch cmdQuote.
@@ -47,20 +47,20 @@ test "cmdQuote: off by default does not highlight or quote; turning it on draws 
   // Hold Cmd and hover over the first sentence: actually paints tint + underline rects and sets Hand cursor.
   t.hold_mods(@ui.mod_cmd)
   t.move_to(px, py)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   let (tints, lines) = cmd_quote_rect_counts(t)
   assert_true(tints >= 1 && lines >= 1, msg="highlight tint (\{tints}) and underline (\{lines}) painted on Cmd+hover")
   assert_eq(t.cursor(), @view.Cursor::Hand, msg="hand cursor while Cmd-hovering sentence")
 
   // Releasing Cmd while still hovering over the sentence clears highlight+underline and restores IBeam cursor.
   t.hold_mods(0)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(cmd_quote_rect_counts(t), (0, 0), msg="releasing Cmd clears highlight and underline")
   assert_eq(t.cursor(), @view.Cursor::IBeam, msg="releasing Cmd restores IBeam cursor")
 
   // Hold Cmd again and click: adds that exact sentence as a quote in the composer.
   t.hold_mods(@ui.mod_cmd)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   t.press_at(px, py)
   t.release(px, py)
   t.run_for(@ui.move_most_ms)
@@ -75,10 +75,10 @@ test "cmdQuote: off by default does not highlight or quote; turning it on draws 
   t.move_to(rx2 + 30.0, ry2 + 8.0)
   t.press_at(rx2 + 30.0, ry2 + 8.0)
   t.release(rx2 + 30.0, ry2 + 8.0)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(@sfbase.writing(src, draft).quotes.get().length(), 1, msg="duplicate Cmd+click deduplicated")
   t.hold_mods(0)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(cmd_quote_rect_counts(t), (0, 0), msg="final Cmd release clears highlight")
 }
 
@@ -94,7 +94,7 @@ test "cmdQuote: on Windows/Linux (platform=3), Ctrl triggers highlight and click
   let (px, py) = (rx + 30.0, ry + 8.0)
   t.hold_mods(@ui.mod_ctrl)
   t.move_to(px, py)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   let (tints, lines) = cmd_quote_rect_counts(t)
   assert_true(tints >= 1 && lines >= 1, msg="Ctrl+hover paints highlight (\{tints}) and underline (\{lines})")
   t.press_at(px, py)
@@ -119,26 +119,26 @@ test "cmdQuote: manually selected text shows underline when Cmd is pressed (even
   t.press_at(rx + 20.0, y)
   t.move_to(rx + 120.0, y)
   t.release(rx + 120.0, y)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   // Move cursor away from the text.
   t.move_to(rx + 20.0, ry + 200.0)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(cmd_quote_rect_counts(t).1, 0, msg="no underline before pressing Cmd")
 
   // Press Cmd: manually selected text immediately shows the underline even though cursor is away.
   t.hold_mods(@ui.mod_cmd)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_true(cmd_quote_rect_counts(t).1 >= 1, msg="manual selection shows underline when Cmd is pressed")
 
   // Release Cmd: underline disappears while selection remains.
   t.hold_mods(0)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   assert_eq(cmd_quote_rect_counts(t).1, 0, msg="releasing Cmd clears manual selection underline")
 
   // Press Cmd and click on the manually selected text: quotes the selected substring.
   t.hold_mods(@ui.mod_cmd)
   t.move_to(rx + 60.0, y)
-  t.run_for(50.0)
+  t.run_for(cmd_quote_step_ms)
   t.press_at(rx + 60.0, y)
   t.release(rx + 60.0, y)
   t.run_for(@ui.move_most_ms)
@@ -147,3 +147,7 @@ test "cmdQuote: manually selected text shows underline when Cmd is pressed (even
   assert_true(text(Some(quotes[0]), "text") != "", msg="quoted text is non-empty")
   assert_true(text(Some(quotes[0]), "text").length() < "高度先按 90 估，量过一次就记住。".length(), msg="quoted custom substring rather than full sentence")
 }
+
+///|
+/// A frame or two past a pointer move or a modifier change, for what it shows to be drawn.
+let cmd_quote_step_ms : Double = 50.0
