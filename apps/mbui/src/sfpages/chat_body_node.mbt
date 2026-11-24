@@ -2186,7 +2186,21 @@ fn chat_body_row(
     // a piece of a long message gone to as the message is; one gone to whole is lit by the list's band:
     // chat_body_bands)
     let flash = chat_flash_way(p, whole_key, jump)
-    let lit = chat_passage_lit(p, whole_key, jump, flash)
+    let flash_lit = chat_passage_lit(p, whole_key, jump, flash)
+    // (its words a 戳一下 was asked of lit as they are kept, its note beside them in the margin at its right; a quote's
+    // flash over them while it shows: intent_note_lit, intent_notes_node)
+    let notes_of = here.station + ":" + here.session
+    let lit = fn() {
+      let l = flash_lit()
+      if l.0 != "" {
+        l
+      } else {
+        intent_note_lit(notes_of, whole_key())
+      }
+    }
+    let note_room = fn() { intent_note_room(notes_of, (here.width)()) }
+    p.padding(By(fn() { (0.0, 0.0, note_room(), 0.0) })) |> ignore
+    intent_notes_node(p, src, notes_of, fn() { if slice() > 0 { "" } else { whole_key() } }, note_room, top)
     let m0 = match @signals.untracked(entry) {
       Said(m) => m
       _ => chat_body_none
