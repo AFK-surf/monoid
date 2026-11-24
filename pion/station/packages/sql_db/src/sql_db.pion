@@ -626,6 +626,53 @@ pub fn Db::all(
   Ok(rows)
 }
 
+/// Execute a query and return all rows as ordered `(column_name, value)` pairs in SQL column order
+/// (later duplicate column updates the existing slot in-place, matching MoonBit `Map` / JS object order).
+pub fn Db::all_ordered(
+  self : Db,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Array[Array[(String, base_codec::Json)]], SqlError] {
+  let kept = match self.prepared(sql, params) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  if !kept.reads_only {
+    self.changed = self.changed + 1
+  }
+  let rows : Array[Array[(String, base_codec::Json)]] = []
+  while true {
+    let rc = kept.stmt.step()
+    if rc == sqlite_ffi::SQLITE_ROW {
+      let row : Array[(String, base_codec::Json)] = []
+      for i in 0..<kept.names.length() {
+        let name = kept.names[i]
+        let v = read_column_value(kept.stmt, i)
+        let mut updated = false
+        for j in 0..<row.length() {
+          if row[j].0 == name {
+            row[j] = (name, v)
+            updated = true
+            break
+          }
+        }
+        if !updated {
+          row.push((name, v))
+        }
+      }
+      rows.push(row)
+    } else if rc == sqlite_ffi::SQLITE_DONE {
+      break
+    } else {
+      let err = SqlError::{ code: rc, message: self.errmsg() }
+      reset_stmt(kept.stmt)
+      return Err(err)
+    }
+  }
+  reset_stmt(kept.stmt)
+  Ok(rows)
+}
+
 /// Execute a query fully (supporting `RETURNING`) and return its first row, if any.
 pub fn Db::first(
   self : Db,

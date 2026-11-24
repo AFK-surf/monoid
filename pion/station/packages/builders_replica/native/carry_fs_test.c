@@ -1,0 +1,167 @@
+// Unit tests for `carry_fs.c` (plain -Wall -Wextra -Werror, -DNDEBUG, ASan+UBSan, TSan).
+// Verifies sfc_open/sfc_write/sfc_close (trunc + append + binary NUL + empty),
+// sfc_utimes (sub-second precision), sfc_nlink, sfc_link (0/2 error codes),
+// sfc_denied vs sfc_missing (follow=0/1, dangling symlink), sfc_dir_missing, sfc_dir_readable.
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
+
+#include "carry_fs.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define REQUIRE(cond)                                                          \
+    do {                                                                       \
+        if (!(cond)) {                                                         \
+            fprintf(stderr, "carry_fs_test FAIL at %s:%d: %s\n", __FILE__,     \
+                    __LINE__, #cond);                                          \
+            exit(1);                                                           \
+        }                                                                      \
+    } while (0)
+
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(void) {
+    char tmpl[] = "/tmp/sfc_fs_test_XXXXXX";
+    char *root = mkdtemp(tmpl);
+    REQUIRE(root != NULL);
+
+    char p_file[512];
+    char p_link[512];
+    char p_dangling[512];
+    char p_sub[512];
+    char p_missing[512];
+    char p_noaccess_file[512];
+    char p_noaccess_dir[512];
+
+    snprintf(p_file, sizeof(p_file), "%s/data.bin", root);
+    snprintf(p_link, sizeof(p_link), "%s/data.link", root);
+    snprintf(p_dangling, sizeof(p_dangling), "%s/dangling", root);
+    snprintf(p_sub, sizeof(p_sub), "%s/sub", root);
+    snprintf(p_missing, sizeof(p_missing), "%s/missing", root);
+    snprintf(p_noaccess_file, sizeof(p_noaccess_file), "%s/secret.txt", root);
+    snprintf(p_noaccess_dir, sizeof(p_noaccess_dir), "%s/secret_dir", root);
+
+    // 1. sfc_open / sfc_write / sfc_close: binary NUL, append, truncate, empty write.
+    const uint8_t part1[] = {'A', 0x00, 'B', '\n'};
+    const uint8_t part2[] = {'C', 'D'};
+    int32_t fd = sfc_open(p_file, 0);
+    REQUIRE(fd >= 0);
+    REQUIRE(sfc_write(fd, part1, (int64_t)sizeof(part1)) == 0);
+    REQUIRE(sfc_write(fd, NULL, 0) == 0);
+    REQUIRE(sfc_write(fd, NULL, 4) == -1);
+    REQUIRE(sfc_write(fd, part1, -1) == -1);
+    REQUIRE(sfc_close(fd) == 0);
+
+    fd = sfc_open(p_file, 1);
+    REQUIRE(fd >= 0);
+    REQUIRE(sfc_write(fd, part2, (int64_t)sizeof(part2)) == 0);
+    REQUIRE(sfc_close(fd) == 0);
+
+    FILE *f = fopen(p_file, "rb");
+    REQUIRE(f != NULL);
+    uint8_t buf[16] = {0};
+    size_t got = fread(buf, 1, sizeof(buf), f);
+    REQUIRE(fclose(f) == 0);
+    REQUIRE(got == 6);
+    REQUIRE(buf[0] == 'A' && buf[1] == 0x00 && buf[2] == 'B' && buf[3] == '\n' && buf[4] == 'C' && buf[5] == 'D');
+
+    // Truncate overwrites.
+    fd = sfc_open(p_file, 0);
+    REQUIRE(fd >= 0);
+    REQUIRE(sfc_write(fd, part2, (int64_t)sizeof(part2)) == 0);
+    REQUIRE(sfc_close(fd) == 0);
+    struct stat st;
+    REQUIRE(lstat(p_file, &st) == 0);
+    REQUIRE(st.st_size == 2);
+
+    // 2. sfc_utimes: sub-second precision.
+    REQUIRE(sfc_utimes(p_file, 1700000123.456) == 0);
+    REQUIRE(lstat(p_file, &st) == 0);
+    REQUIRE((int64_t)st.st_mtime == 1700000123LL);
+    REQUIRE(sfc_utimes(p_missing, 1700000000.0) == -1);
+
+    // 3. sfc_nlink and sfc_link (0 on success, 2 on EEXIST and ENOENT).
+    REQUIRE(sfc_nlink(p_file) == 1);
+    REQUIRE(sfc_nlink(p_missing) == -1);
+    REQUIRE(sfc_link(p_file, p_link) == 0);
+    REQUIRE(sfc_nlink(p_file) == 2);
+    REQUIRE(sfc_nlink(p_link) == 2);
+    REQUIRE(sfc_link(p_file, p_link) == 2); // EEXIST must return 2 (never 1)
+    REQUIRE(sfc_link(p_missing, p_link) == 2); // ENOENT must return 2
+
+    // 4. sfc_missing (follow=0 vs follow=1 on dangling symlink).
+    REQUIRE(symlink(p_missing, p_dangling) == 0);
+    REQUIRE(sfc_missing(p_file, 0) == 0);
+    REQUIRE(sfc_missing(p_file, 1) == 0);
+    REQUIRE(sfc_missing(p_missing, 0) == 1);
+    REQUIRE(sfc_missing(p_missing, 1) == 1);
+    REQUIRE(sfc_missing(p_dangling, 0) == 0); // link itself exists
+    REQUIRE(sfc_missing(p_dangling, 1) == 1); // target is missing
+
+    // 5. sfc_dir_missing and sfc_dir_readable.
+    REQUIRE(mkdir(p_sub, 0755) == 0);
+    REQUIRE(sfc_dir_missing(p_sub) == 0);
+    REQUIRE(sfc_dir_missing(p_missing) == 1);
+    REQUIRE(sfc_dir_missing(p_file) == 1); // regular file is ENOTDIR -> missing as dir
+    REQUIRE(sfc_dir_readable(p_sub) == 1);
+    REQUIRE(sfc_dir_readable(p_missing) == 1);
+    REQUIRE(sfc_dir_readable(p_file) == 1);
+
+    // 6. sfc_denied vs sfc_missing on chmod 0000 (skip if running as root).
+    fd = sfc_open(p_noaccess_file, 0);
+    REQUIRE(fd >= 0);
+    REQUIRE(sfc_write(fd, part2, 2) == 0);
+    REQUIRE(sfc_close(fd) == 0);
+    REQUIRE(mkdir(p_noaccess_dir, 0755) == 0);
+
+    if (geteuid() != 0) {
+        REQUIRE(chmod(p_noaccess_file, 0000) == 0);
+        REQUIRE(chmod(p_noaccess_dir, 0000) == 0);
+        REQUIRE(sfc_denied(p_noaccess_file, 0) == 1);
+        REQUIRE(sfc_denied(p_missing, 0) == 0);
+        REQUIRE(sfc_denied(p_noaccess_dir, 1) == 1);
+        REQUIRE(sfc_denied(p_missing, 1) == 0);
+        REQUIRE(sfc_missing(p_noaccess_file, 0) == 0);
+        REQUIRE(sfc_dir_missing(p_noaccess_dir) == 0);
+        REQUIRE(sfc_dir_readable(p_noaccess_dir) == 0);
+        REQUIRE(chmod(p_noaccess_file, 0644) == 0);
+        REQUIRE(chmod(p_noaccess_dir, 0755) == 0);
+    }
+
+    // 7. NULL safety.
+    REQUIRE(sfc_open(NULL, 0) == -1);
+    REQUIRE(sfc_utimes(NULL, 0.0) == -1);
+    REQUIRE(sfc_nlink(NULL) == -1);
+    REQUIRE(sfc_link(NULL, p_link) == 2);
+    REQUIRE(sfc_denied(NULL, 0) == 0);
+    REQUIRE(sfc_missing(NULL, 0) == 0);
+    REQUIRE(sfc_dir_missing(NULL) == 0);
+    REQUIRE(sfc_dir_readable(NULL) == 0);
+
+    // Cleanup.
+    REQUIRE(unlink(p_file) == 0);
+    REQUIRE(unlink(p_link) == 0);
+    REQUIRE(unlink(p_dangling) == 0);
+    REQUIRE(unlink(p_noaccess_file) == 0);
+    REQUIRE(rmdir(p_sub) == 0);
+    REQUIRE(rmdir(p_noaccess_dir) == 0);
+    REQUIRE(rmdir(root) == 0);
+
+    printf("carry_fs_test OK\n");
+    return 0;
+}
+#else
+int main(void) {
+    printf("carry_fs_test skipped on _WIN32\n");
+    return 0;
+}
+#endif

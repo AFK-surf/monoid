@@ -1,0 +1,353 @@
+// Cross-platform C11 filesystem shim for Pion `builders_replica` (`replica-export`, `replica-carry`).
+// 1:1 port of `station/mb/src/replica/carry.c` replacing MoonBit byte-array headers with Pion
+// borrowed `const char *` (NUL-terminated UTF-8) and `const uint8_t * + int64_t byte_len`.
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+#define _POSIX_C_SOURCE 200809L
+#endif
+#ifdef __APPLE__
+#define _DARWIN_C_SOURCE
+#endif
+
+#include "carry_fs.h"
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+
+static wchar_t *sfc_wide(const char *s) {
+    if (s == NULL) {
+        return NULL;
+    }
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (n <= 0) {
+        return NULL;
+    }
+    wchar_t *w = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)n);
+    if (w == NULL) {
+        return NULL;
+    }
+    if (MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n) <= 0) {
+        free(w);
+        return NULL;
+    }
+    return w;
+}
+
+static HANDLE sfc_opened(const char *path, DWORD access) {
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return INVALID_HANDLE_VALUE;
+    }
+    HANDLE h = CreateFileW(
+        w,
+        access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        NULL);
+    free(w);
+    return h;
+}
+#else
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <unistd.h>
+#endif
+
+int32_t sfc_open(const char *path, int32_t append) {
+    if (path == NULL) {
+        return -1;
+    }
+#ifdef _WIN32
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return -1;
+    }
+    int fd = _wopen(
+        w,
+        _O_WRONLY | _O_CREAT | _O_BINARY | (append ? _O_APPEND : _O_TRUNC),
+        _S_IREAD | _S_IWRITE);
+    free(w);
+    return (int32_t)fd;
+#else
+    return (int32_t)open(
+        path,
+        O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC),
+        0666);
+#endif
+}
+
+int32_t sfc_write(int32_t fd, const uint8_t *data, int64_t byte_len) {
+    if (byte_len < 0) {
+        return -1;
+    }
+    if (byte_len == 0) {
+        return 0;
+    }
+    if (data == NULL) {
+        return -1;
+    }
+    size_t len = (size_t)byte_len;
+    size_t done = 0;
+    while (done < len) {
+#ifdef _WIN32
+        size_t rem = len - done;
+        unsigned int chunk = rem > 0x40000000U ? 0x40000000U : (unsigned int)rem;
+        int n = _write((int)fd, (const char *)data + done, chunk);
+#else
+        ssize_t n = write((int)fd, (const char *)data + done, len - done);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+#endif
+        if (n <= 0) {
+            return -1;
+        }
+        done += (size_t)n;
+    }
+    return 0;
+}
+
+int32_t sfc_close(int32_t fd) {
+#ifdef _WIN32
+    return (int32_t)_close((int)fd);
+#else
+    return (int32_t)close((int)fd);
+#endif
+}
+
+int32_t sfc_utimes(const char *path, double secs) {
+    if (path == NULL) {
+        return -1;
+    }
+#ifdef _WIN32
+    HANDLE h = sfc_opened(path, FILE_WRITE_ATTRIBUTES);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    int64_t ticks = (int64_t)(secs * 10000000.0) + 116444736000000000LL;
+    FILETIME t;
+    t.dwLowDateTime = (DWORD)(ticks & 0xFFFFFFFF);
+    t.dwHighDateTime = (DWORD)((uint64_t)ticks >> 32);
+    BOOL ok = SetFileTime(h, NULL, &t, &t);
+    CloseHandle(h);
+    return ok ? 0 : -1;
+#else
+    struct timespec ts[2];
+    ts[0].tv_sec = (time_t)secs;
+    ts[0].tv_nsec = (long)((secs - (double)ts[0].tv_sec) * 1e9);
+    if (ts[0].tv_nsec < 0) {
+        ts[0].tv_nsec += 1000000000L;
+        ts[0].tv_sec -= 1;
+    }
+    ts[1] = ts[0];
+    return utimensat(AT_FDCWD, path, ts, 0) == 0 ? 0 : -1;
+#endif
+}
+
+int32_t sfc_nlink(const char *path) {
+    if (path == NULL) {
+        return -1;
+    }
+#ifdef _WIN32
+    HANDLE h = sfc_opened(path, FILE_READ_ATTRIBUTES);
+    if (h == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    BOOL ok = GetFileInformationByHandle(h, &info);
+    CloseHandle(h);
+    return ok ? (int32_t)info.nNumberOfLinks : -1;
+#else
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        return -1;
+    }
+    return (int32_t)st.st_nlink;
+#endif
+}
+
+int32_t sfc_link(const char *from, const char *to) {
+    if (from == NULL || to == NULL) {
+        return 2;
+    }
+#ifdef _WIN32
+    wchar_t *f = sfc_wide(from);
+    wchar_t *t = sfc_wide(to);
+    BOOL ok = f != NULL && t != NULL && CreateHardLinkW(t, f, NULL);
+    DWORD e = ok ? 0 : GetLastError();
+    free(f);
+    free(t);
+    if (ok) {
+        return 0;
+    }
+    return (e == ERROR_NOT_SAME_DEVICE || e == ERROR_ACCESS_DENIED || e == ERROR_NOT_SUPPORTED ||
+            e == ERROR_TOO_MANY_LINKS || e == ERROR_INVALID_FUNCTION)
+               ? 1
+               : 2;
+#else
+    if (link(from, to) == 0) {
+        return 0;
+    }
+    int e = errno;
+    return (e == EXDEV || e == EPERM || e == ENOTSUP || e == EMLINK || e == ENOSYS
+#ifdef EOPNOTSUPP
+            || e == EOPNOTSUPP
+#endif
+            )
+               ? 1
+               : 2;
+#endif
+}
+
+int32_t sfc_denied(const char *path, int32_t dir) {
+    if (path == NULL) {
+        return 0;
+    }
+#ifdef _WIN32
+    (void)dir;
+    HANDLE h = sfc_opened(path, GENERIC_READ);
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+        return 0;
+    }
+    return GetLastError() == ERROR_ACCESS_DENIED ? 1 : 0;
+#else
+    if (dir) {
+        DIR *d = opendir(path);
+        if (d != NULL) {
+            closedir(d);
+            return 0;
+        }
+    } else {
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        if (fd >= 0) {
+            close(fd);
+            return 0;
+        }
+    }
+    return (errno == EACCES || errno == EPERM) ? 1 : 0;
+#endif
+}
+
+int32_t sfc_missing(const char *path, int32_t follow) {
+    if (path == NULL) {
+        return 0;
+    }
+#ifdef _WIN32
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return 0;
+    }
+    DWORD attr = GetFileAttributesW(w);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        DWORD e = GetLastError();
+        free(w);
+        return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+    }
+    if (follow && (attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        HANDLE h = CreateFileW(
+            w,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            NULL);
+        DWORD e = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+        }
+        free(w);
+        if (h != INVALID_HANDLE_VALUE) {
+            return 0;
+        }
+        return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+    }
+    free(w);
+    return 0;
+#else
+    struct stat st;
+    int rc = follow ? stat(path, &st) : lstat(path, &st);
+    if (rc == 0) {
+        return 0;
+    }
+    return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
+#endif
+}
+
+int32_t sfc_dir_missing(const char *path) {
+    if (path == NULL) {
+        return 0;
+    }
+#ifdef _WIN32
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return 0;
+    }
+    DWORD attr = GetFileAttributesW(w);
+    free(w);
+    if (attr != INVALID_FILE_ATTRIBUTES) {
+        return (attr & FILE_ATTRIBUTE_DIRECTORY) ? 0 : 1;
+    }
+    DWORD e = GetLastError();
+    return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+#else
+    DIR *d = opendir(path);
+    if (d != NULL) {
+        closedir(d);
+        return 0;
+    }
+    return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
+#endif
+}
+
+int32_t sfc_dir_readable(const char *path) {
+    if (path == NULL) {
+        return 0;
+    }
+#ifdef _WIN32
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return 0;
+    }
+    HANDLE h = CreateFileW(
+        w,
+        FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
+    DWORD e = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+    }
+    free(w);
+    if (h != INVALID_HANDLE_VALUE) {
+        return 1;
+    }
+    return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME || e == ERROR_DIRECTORY)
+               ? 1
+               : 0;
+#else
+    DIR *d = opendir(path);
+    if (d != NULL) {
+        closedir(d);
+        return 1;
+    }
+    return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
+#endif
+}

@@ -779,6 +779,9 @@ test("recursive zero-exception static SQLite transaction guard across ALL SQLite
   assert.ok(checkedFiles.includes("builders_stateful/src/page_letters.pion"), "must discover page_letters.pion");
   assert.ok(checkedFiles.includes("station_conv/src/station_conv.pion"), "must discover station_conv.pion");
   assert.ok(checkedFiles.includes("locate/src/locate.pion"), "must discover locate.pion");
+  assert.ok(checkedFiles.includes("builders_replica/src/export.pion"), "must discover builders_replica/src/export.pion");
+  assert.ok(checkedFiles.includes("builders_replica/src/restore.pion"), "must discover builders_replica/src/restore.pion");
+  assert.ok(checkedFiles.includes("builders_replica/src/carry.pion"), "must discover builders_replica/src/carry.pion");
   assert.ok(checkedFiles.includes("smoke/src/main.pion"), "must discover smoke/src/main.pion");
 
   for (const rel of checkedFiles) {

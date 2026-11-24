@@ -12,6 +12,7 @@ import "builders_core"
 import "builders_index"
 import "builders_legacy"
 import "builders_recent"
+import "builders_replica"
 import "builders_requested"
 import "builders_stateful"
 import "builders_vault"
@@ -102,6 +103,9 @@ fn advertised_modes() -> Array[String] {
     "cc-index",
     "usage-check",
     "live-locator",
+    "replica-export",
+    "replica-restore",
+    "replica-carry",
   ]
 }
 
@@ -1279,6 +1283,21 @@ fn main(world : World) -> Unit {
           }
           _ => usage_exit()
         }
+      }
+      Some("replica-export") => {
+        match flag_value(argv, "--db") {
+          Some(db_path) => host_shim::exit_process(builders_replica::run_replica_export(argv, db_path))
+          None => usage_exit()
+        }
+      }
+      Some("replica-restore") => {
+        match (flag_value(argv, "--db"), flag_value(argv, "--data")) {
+          (Some(db_path), Some(data_dir)) => host_shim::exit_process(builders_replica::run_replica_restore(argv, db_path, data_dir))
+          _ => usage_exit()
+        }
+      }
+      Some("replica-carry") => {
+        host_shim::exit_process(builders_replica::run_replica_carry(argv))
       }
       _ => usage_exit()
     }

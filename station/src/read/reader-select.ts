@@ -91,19 +91,19 @@ export const READER_MODES = {
   },
   "replica-export": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-fs",
     note: "Replica chunk export and state mutation (--builder replica-export)",
   },
   "replica-restore": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Replica restore into SQLite and data dir (--builder replica-restore)",
   },
   "replica-carry": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-fs",
     note: "Migration file gather/place operations (--builder replica-carry)",
   },

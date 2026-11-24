@@ -124,10 +124,12 @@ on:
       - "station/test/builders-legacy-pion-switch.test.ts"
       - "station/test/builders-locate-pion-switch.test.ts"
       - "station/test/builders-recent-pion-switch.test.ts"
+      - "station/test/builders-replica-pion-switch.test.ts"
       - "station/test/builders-requested-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
       - "station/test/builders-vault-pion-switch.test.ts"
       - "station/test/carry-reference.ts"
+      - "station/test/carry-walk-bounded.test.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - "station/test/footprint-reference.ts"
@@ -146,6 +148,9 @@ on:
       - "station/test/mb-outflow-chats.test.ts"
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-replica-carry.test.ts"
+      - "station/test/mb-replica.test.ts"
+      - "station/test/replica-retire.test.ts"
+      - "station/test/replica-transcript.test.ts"
       - "station/test/reference/transcript-paths.ts"
       - "station/test/workers/live-locator-worker.ts"
       - "station/test/mb-page-letters.test.ts"
@@ -303,6 +308,24 @@ jobs:
             -o "$RUNNER_TEMP/footprint_fs_test_tsan"
           "$RUNNER_TEMP/footprint_fs_test_tsan"
 
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DNDEBUG \
+            pion/station/packages/builders_replica/native/carry_fs.c \
+            pion/station/packages/builders_replica/native/carry_fs_test.c \
+            -o "$RUNNER_TEMP/carry_fs_test"
+          "$RUNNER_TEMP/carry_fs_test"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+            pion/station/packages/builders_replica/native/carry_fs.c \
+            pion/station/packages/builders_replica/native/carry_fs_test.c \
+            -o "$RUNNER_TEMP/carry_fs_test_asan"
+          "$RUNNER_TEMP/carry_fs_test_asan"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=thread -fno-omit-frame-pointer \
+            pion/station/packages/builders_replica/native/carry_fs.c \
+            pion/station/packages/builders_replica/native/carry_fs_test.c \
+            -o "$RUNNER_TEMP/carry_fs_test_tsan"
+          "$RUNNER_TEMP/carry_fs_test_tsan"
+
           # Verify _WIN32 compilation path on every CI run with pinned Zig 0.16.0.
           zbase="$HOME/.cache/pion-station-zig/0.16.0"
           zbin="$zbase/zig-x86_64-linux-0.16.0/zig"
@@ -321,6 +344,8 @@ jobs:
             pion/station/packages/sqlite_ffi/native/station_sqlite.c -o "$RUNNER_TEMP/station_sqlite_win.o"
           "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
             pion/station/packages/footprint/native/footprint_fs.c -o "$RUNNER_TEMP/footprint_fs_win.o"
+          "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
+            pion/station/packages/builders_replica/native/carry_fs.c -o "$RUNNER_TEMP/carry_fs_win.o"
 
   pion-unit:
     runs-on: ubuntu-24.04
@@ -797,15 +822,46 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Verify Wave 6 replica baseline placeholder (W6-B will take over)
+      - name: Run Wave 6 replica gates (Pion forced 5 suites + dual-engine switch)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
           BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           pnpm --dir station install --frozen-lockfile --prefer-offline
 
-          "$BIN_PION" --version | grep -q 'live-locator'
-          STILLFAIL_MB_READER="$BIN_MB" node --test station/test/mb-replica-carry.test.ts
+          echo "BIN_PION=$BIN_PION"
+          "$BIN_PION" --version
+          "$BIN_PION" --version | grep -q 'replica-export'
+          "$BIN_PION" --version | grep -q 'replica-restore'
+          "$BIN_PION" --version | grep -q 'replica-carry'
+
+          for suite in \
+            station/test/mb-replica.test.ts \
+            station/test/mb-replica-carry.test.ts \
+            station/test/replica-transcript.test.ts \
+            station/test/carry-walk-bounded.test.ts; do
+            echo "=== Forced Pion suite: $suite ==="
+            OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap "$suite")"
+            printf '%s\n' "$OUT"
+            printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
+            printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+          done
+
+          echo "=== Pion replica-carry in Retire suite: station/test/replica-retire.test.ts ==="
+          # replica-retire.test.ts test 10 also starts the MoonBit session program (W7), so keep BIN_MB for non-replica modes
+          # while forcing Pion for all implemented modes (including replica-carry) via STILLFAIL_PION_READER + STILLFAIL_READER_ENGINE=pion.
+          RET_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_READER_ENGINE=pion \
+            node --test --test-reporter=tap station/test/replica-retire.test.ts)"
+          printf '%s\n' "$RET_OUT"
+          printf '%s\n' "$RET_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$RET_OUT" | grep -qE '^# skipped 0$'
+
+          echo "=== Dual-engine switch suite: station/test/builders-replica-pion-switch.test.ts ==="
+          SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-replica-pion-switch.test.ts)"
+          printf '%s\n' "$SW_OUT"
+          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
 
   verify-linux:
     runs-on: ubuntu-24.04

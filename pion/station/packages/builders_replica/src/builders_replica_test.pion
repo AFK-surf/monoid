@@ -1,0 +1,124 @@
+// Pure Pion unit tests for `builders_replica` helpers (run under `pionc test`).
+
+import "builders_core"
+
+fn expect_true(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+fn expect_str(got : String, want : String) -> Unit {
+  if got != want {
+    panic("expected `" + want + "`, got `" + got + "`")
+  }
+}
+
+fn expect_int(got : Int, want : Int) -> Unit {
+  if got != want {
+    panic("expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn expect_int64(got : Int64, want : Int64) -> Unit {
+  if got != want {
+    panic("expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn expect_double(got : Double, want : Double) -> Unit {
+  if got != want {
+    panic("expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+test "bumped_ts increments trailing digits or appends 1" {
+  expect_str(bumped_ts("1700.000001"), "1700.000002")
+  expect_str(bumped_ts("1700.999"), "1700.1000")
+  expect_str(bumped_ts("abc"), "abc1")
+  expect_str(bumped_ts("99"), "100")
+  expect_str(bumped_ts(""), "1")
+}
+
+test "batch_span and batch_name round-trip" {
+  let name = batch_name(1.to_int64(), 42.to_int64(), "0a1b2c3d4e5f6789")
+  expect_str(name, "0000000001-0000000042-0a1b2c3d.ndjson.zst")
+  match batch_span(name) {
+    Some((f, t)) => {
+      expect_int64(f, 1.to_int64())
+      expect_int64(t, 42.to_int64())
+    }
+    None => panic("expected Some batch_span")
+  }
+  match batch_span("bad.ndjson.zst") {
+    None => ()
+    Some(_) => panic("expected None batch_span")
+  }
+}
+
+test "gen_ok and hash_ok validation" {
+  expect_true(gen_ok("1a2b3c-0123abcd"), "gen_ok 1")
+  expect_true(gen_ok("0-00000000"), "gen_ok 2")
+  expect_true(!gen_ok("-0123abcd"), "gen_ok 3")
+  expect_true(!gen_ok("1a-0123abcg"), "gen_ok 4")
+  expect_true(hash_ok("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), "hash_ok 1")
+  expect_true(!hash_ok("0123456789abcdef"), "hash_ok 2")
+  expect_true(!hash_ok("0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"), "hash_ok 3")
+}
+
+test "gen_name base36 encoding" {
+  expect_str(gen_name(0.0, "deadbeefcafe"), "0-deadbeef")
+  expect_str(gen_name(36.0, "1234567890"), "10-12345678")
+}
+
+test "fold_level_of matches floor(log4(max(sz, 4096) / 4096))" {
+  expect_int(fold_level_of(0.0), 0)
+  expect_int(fold_level_of(4096.0), 0)
+  expect_int(fold_level_of(16383.0), 0)
+  expect_int(fold_level_of(16384.0), 1)
+  expect_int(fold_level_of(65535.0), 1)
+  expect_int(fold_level_of(65536.0), 2)
+  expect_int(fold_level_of(262144.0), 3)
+}
+
+test "cli_kept, one_segment, is_pruned_brain_rel" {
+  expect_true(cli_kept(["homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid"]), "cli_kept 1")
+  expect_true(cli_kept(["homes", "p1", "agy", ".gemini", "antigravity-cli", "conversations", "cid.db"]), "cli_kept 2")
+  expect_true(!cli_kept(["homes", "p1", "agy", ".gemini", "antigravity-cli", "other", "cid"]), "cli_kept 3")
+  expect_true(one_segment("abc-123_@+.x"), "one_segment 1")
+  expect_true(!one_segment(""), "one_segment 2")
+  expect_true(!one_segment(".hidden"), "one_segment 3")
+  expect_true(!one_segment("a/b"), "one_segment 4")
+  expect_true(is_pruned_brain_rel(["scratch"]), "pruned 1")
+  expect_true(is_pruned_brain_rel([".system_generated", "steps"]), "pruned 2")
+  expect_true(is_pruned_brain_rel([".system_generated", "logs", "chunks"]), "pruned 3")
+  expect_true(!is_pruned_brain_rel([".system_generated", "logs"]), "pruned 4")
+}
+
+test "moved and carried_to path remapping" {
+  let client = builders_core::ShellClient::new()
+  let files = Files::new(client, "/")
+  expect_str(moved(files, "/old/data/sessions/a/b", "/old/data", "/new/data"), "/new/data/sessions/a/b")
+  expect_str(moved(files, "/elsewhere/file", "/old/data", "/new/data"), "/elsewhere/file")
+  expect_str(
+    carried_to(files, "/old/data/transcripts/claude/-old-ws/id.jsonl", "/old/data", "/new/data", Some("/new/ws")),
+    "/new/data/transcripts/claude/-new-ws/id.jsonl",
+  )
+}
+
+test "utf16 sorting puts non-BMP emoji before BMP U+E000" {
+  let xs = ["\u{E000}.txt", "😀.txt", "a.txt", "Z.txt"]
+  sort_strings_utf16(xs)
+  expect_str(xs[0], "Z.txt")
+  expect_str(xs[1], "a.txt")
+  expect_str(xs[2], "😀.txt")
+  expect_str(xs[3], "\u{E000}.txt")
+}
+
+test "parse_int_flag and parse_double_flag fall back on invalid" {
+  expect_int(parse_int_flag(Some("42"), 7), 42)
+  expect_int(parse_int_flag(Some("nope"), 7), 7)
+  expect_int(parse_int_flag(None, 7), 7)
+  expect_double(parse_double_flag(Some("12.5"), 1.0), 12.5)
+  expect_double(parse_double_flag(Some("bad"), 1.0), 1.0)
+}

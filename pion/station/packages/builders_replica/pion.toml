@@ -1,0 +1,14 @@
+[package]
+name = "builders_replica"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+host_shim = { workspace = true }
+sql_db = { workspace = true }
+js_json = { workspace = true }
+nodepath = { workspace = true }
+station_conv = { workspace = true }
+builders_core = { workspace = true }
+transcript_io = { workspace = true }
+locate = { workspace = true }

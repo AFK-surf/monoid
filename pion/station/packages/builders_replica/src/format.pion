@@ -1,0 +1,798 @@
+// Replica batch format and on-disk record folder (`Folded`), 1:1 aligned with
+// `station/mb/src/replica/format.mbt`.
+// Uses `sql_db::Db::with_temp_write_tx` with strict Windows-safe cleanup order:
+// COMMIT -> db.close() -> remove temp file -> re-propagate error (zero raw tx SQL).
+
+import "base_codec"
+import "js_json"
+import "sql_db"
+
+pub let REPLICA_VERSION : Int = 1
+pub let BATCH_BYTES : Int = 8388608 // 8 << 20
+pub let PAGE_SIZE : Int = 500
+pub let STILLFAIL_SURFACE : String = "chat"
+pub let STILLFAIL_CONNECT : String = "chat"
+
+pub fn restore_order() -> Array[String] {
+  [
+    "threads",
+    "sessions",
+    "thread_sessions",
+    "entries",
+    "letters",
+    "turns",
+    "runtime_sessions",
+    "closed_cards",
+    "reads",
+    "hidden_chats",
+    "muted_chats",
+    "kept_chats",
+    "dismissed",
+    "pins",
+    "opened_chats",
+  ]
+}
+
+pub fn former_own_names() -> Array[String] {
+  ["ember", "stillfail"]
+}
+
+pub fn own_log_tables() -> Array[String] {
+  ["entries", "letters", "closed_cards", "dismissed", "reads"]
+}
+
+pub fn thread_of_col(table : String) -> Option[String] {
+  if table == "threads" {
+    Some("id")
+  } else if table == "thread_sessions" ||
+  table == "entries" ||
+  table == "letters" ||
+  table == "closed_cards" ||
+  table == "reads" ||
+  table == "hidden_chats" ||
+  table == "muted_chats" ||
+  table == "kept_chats" ||
+  table == "dismissed" {
+    Some("thread")
+  } else {
+    None
+  }
+}
+
+pub fn thread_of_tbls() -> Array[Int] {
+  [0, 2, 3, 4, 7, 8, 9, 10, 11, 12]
+}
+
+pub fn thread_column_of(table : String) -> Option[String] {
+  if table == "thread_sessions" ||
+  table == "entries" ||
+  table == "letters" ||
+  table == "closed_cards" ||
+  table == "reads" ||
+  table == "hidden_chats" ||
+  table == "muted_chats" ||
+  table == "kept_chats" ||
+  table == "dismissed" {
+    Some("thread")
+  } else if table == "turns" {
+    Some("about_thread")
+  } else {
+    None
+  }
+}
+
+pub fn session_of_col(table : String) -> Option[String] {
+  if table == "sessions" {
+    Some("key")
+  } else if table == "thread_sessions" || table == "pins" {
+    Some("session")
+  } else if table == "turns" || table == "runtime_sessions" {
+    Some("session_key")
+  } else if table == "opened_chats" {
+    Some("child")
+  } else {
+    None
+  }
+}
+
+pub fn session_of_tbls() -> Array[Int] {
+  [1, 2, 5, 6, 13, 14]
+}
+
+pub fn order_of(table : String) -> Int {
+  let ord = restore_order()
+  for i in 0..<ord.length() {
+    if ord[i] == table {
+      return i
+    }
+  }
+  -1
+}
+
+pub fn key_columns(table : String) -> Result[Array[String], String] {
+  if table == "threads" || table == "turns" {
+    Ok(["id"])
+  } else if table == "sessions" {
+    Ok(["key"])
+  } else if table == "thread_sessions" {
+    Ok(["thread", "session"])
+  } else if table == "entries" || table == "letters" || table == "closed_cards" {
+    Ok(["thread", "n"])
+  } else if table == "runtime_sessions" {
+    Ok(["session_key", "id"])
+  } else if table == "reads" || table == "hidden_chats" || table == "muted_chats" || table == "kept_chats" {
+    Ok(["viewer", "thread"])
+  } else if table == "dismissed" {
+    Ok(["viewer", "thread", "n"])
+  } else if table == "pins" {
+    Ok(["viewer", "session"])
+  } else if table == "opened_chats" {
+    Ok(["child_station", "child"])
+  } else {
+    Err("no such table in a copy: " + table)
+  }
+}
+
+pub fn key_of(table : String, row : js_json::JValue) -> Result[String, String] {
+  let cols = match key_columns(table) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  let vals : Array[js_json::JValue] = []
+  for i in 0..<cols.length() {
+    match jval_get(row, cols[i]) {
+      Some(v) => vals.push(v)
+      None => vals.push(js_json::JValue::Null)
+    }
+  }
+  Ok(js_json::stringify(js_json::JValue::Arr(vals)))
+}
+
+/// `bumpedTs`: increment trailing ASCII decimal digits by 1, or append `"1"`.
+pub fn bumped_ts(ts : String) -> String {
+  let b = ts.to_bytes()
+  let mut i = b.length()
+  while i > 0 {
+    let c = b[i - 1].to_int() & 0xFF
+    if c >= 48 && c <= 57 {
+      i = i - 1
+    } else {
+      break
+    }
+  }
+  if i == b.length() {
+    return ts + "1"
+  }
+  let digits : Array[Int] = []
+  for k in i..<b.length() {
+    digits.push((b[k].to_int() & 0xFF) - 48)
+  }
+  let mut j = digits.length() - 1
+  while j >= 0 && digits[j] == 9 {
+    digits[j] = 0
+    j = j - 1
+  }
+  let out = StringBuilder::new()
+  for k in 0..<i {
+    out.write_byte(b[k])
+  }
+  if j < 0 {
+    out.write_byte(49 as Byte)
+  } else {
+    digits[j] = digits[j] + 1
+  }
+  for k in 0..<digits.length() {
+    out.write_byte((digits[k] + 48) as Byte)
+  }
+  out.to_string()
+}
+
+pub fn pad10(n : Int64) -> String {
+  let s = n.to_string()
+  if s.length() >= 10 {
+    return s
+  }
+  let sb = StringBuilder::new()
+  for _ in 0..<(10 - s.length()) {
+    sb.write_byte(48 as Byte)
+  }
+  sb.write_string(s)
+  sb.to_string()
+}
+
+pub fn batch_name(from : Int64, to : Int64, sha256 : String) -> String {
+  pad10(from) + "-" + pad10(to) + "-" + str_slice(sha256, 0, 8) + ".ndjson.zst"
+}
+
+pub fn batch_span(name : String) -> Option[(Int64, Int64)] {
+  let b = name.to_bytes()
+  if b.length() != 41 || !str_has_suffix(name, ".ndjson.zst") {
+    return None
+  }
+  if (b[10].to_int() & 0xFF) != 0x2D || (b[21].to_int() & 0xFF) != 0x2D {
+    return None
+  }
+  for i in 22..<30 {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66)) {
+      return None
+    }
+  }
+  let mut f = 0.to_int64()
+  for i in 0..<10 {
+    let c = b[i].to_int() & 0xFF
+    if c < 0x30 || c > 0x39 {
+      return None
+    }
+    f = f * 10.to_int64() + (c - 0x30).to_int64()
+  }
+  let mut t = 0.to_int64()
+  for i in 11..<21 {
+    let c = b[i].to_int() & 0xFF
+    if c < 0x30 || c > 0x39 {
+      return None
+    }
+    t = t * 10.to_int64() + (c - 0x30).to_int64()
+  }
+  Some((f, t))
+}
+
+pub fn attached_paths(row : js_json::JValue) -> Array[String] {
+  let a = match text_of(jval_get(row, "attachments")) {
+    Some(s) => s
+    None => return []
+  }
+  if a == "" || a == "[]" {
+    return []
+  }
+  let list = match js_json::parse(a) {
+    Ok(v) => v
+    Err(_) => return []
+  }
+  let items = match list {
+    js_json::JValue::Arr(xs) => xs
+    _ => return []
+  }
+  let out : Array[String] = []
+  for i in 0..<items.length() {
+    match text_of(jval_get(items[i], "path")) {
+      Some(p) => if p.length() > 0 { out.push(p) }
+      None => ()
+    }
+  }
+  out
+}
+
+pub struct Runs {
+  most : Int
+  put : (Array[String]) -> Result[Unit, String]
+  mut run : Array[String]
+  mut size : Int
+}
+
+pub fn Runs::new(most : Int, put : (Array[String]) -> Result[Unit, String]) -> Runs {
+  Runs::{ most: most, put: put, run: [], size: 0 }
+}
+
+pub fn Runs::push(self : Runs, line : String) -> Result[Unit, String] {
+  let b = utf8_length(line) + 1
+  if self.run.length() > 0 && self.size + b > self.most {
+    let cur = self.run
+    self.run = []
+    self.size = 0
+    match (self.put)(cur) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  self.run.push(line)
+  self.size = self.size + b
+  Ok(())
+}
+
+pub fn Runs::finish(self : Runs) -> Result[Unit, String] {
+  if self.run.length() > 0 {
+    let cur = self.run
+    self.run = []
+    self.size = 0
+    return (self.put)(cur)
+  }
+  Ok(())
+}
+
+pub fn batch_text(gen : String, from : Int64, to : Int64, made : Double, lines : Array[String]) -> String {
+  let out = StringBuilder::new()
+  let header = jval_obj([
+    ("v", jval_num(REPLICA_VERSION.to_double())),
+    ("gen", jval_str(gen)),
+    ("from", jval_num(from.to_double())),
+    ("to", jval_num(to.to_double())),
+    ("made", jval_num(made)),
+  ])
+  out.write_string(js_json::stringify(header))
+  out.write_byte(10 as Byte)
+  for i in 0..<lines.length() {
+    out.write_string(lines[i])
+    out.write_byte(10 as Byte)
+  }
+  out.to_string()
+}
+
+pub fn batch_lines(files : Files, path : String) -> Result[Array[String], String] {
+  let text = match files.read(path, zstd=true) {
+    Ok(Some(t)) => t
+    Ok(None) => return Err("ENOENT: no such file or directory, open '" + path + "'")
+    Err(e) => return Err(e)
+  }
+  let tb = text.to_bytes()
+  let first = match str_find_byte(text, 10, 0) {
+    Some(i) => i
+    None => tb.length()
+  }
+  let header = match js_json::parse(slice_bytes(tb, 0, first)) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let ver = match header {
+    js_json::JValue::Obj(_) => {
+      match jval_get(header, "v") {
+        Some(js_json::JValue::Num(v)) => v
+        _ => return Err("not a batch")
+      }
+    }
+    _ => return Err("not a batch")
+  }
+  if ver > REPLICA_VERSION.to_double() {
+    return Err("a batch of format " + js_json::stringify(jval_num(ver)) + ", newer than this station's " + REPLICA_VERSION.to_string())
+  }
+  let out : Array[String] = []
+  let mut at = if first < tb.length() { first + 1 } else { tb.length() }
+  while at < tb.length() {
+    let end = match str_find_byte(text, 10, at) {
+      Some(i) => i
+      None => tb.length()
+    }
+    if end > at {
+      out.push(slice_bytes(tb, at, end))
+    }
+    at = end + 1
+  }
+  Ok(out)
+}
+
+pub fn file_line(path : String, hash : String, size : Double) -> String {
+  js_json::stringify(jval_obj([("file", jval_str(hash)), ("size", jval_num(size)), ("path", jval_str(path))]))
+}
+
+let FOLD_SCHEMA : String = "CREATE TABLE IF NOT EXISTS rows (tbl INTEGER NOT NULL, k TEXT NOT NULL, seq INTEGER NOT NULL, line TEXT NOT NULL, thread INTEGER, session TEXT, message INTEGER NOT NULL, PRIMARY KEY (tbl, k)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS rows_order ON rows (tbl, seq); CREATE INDEX IF NOT EXISTS rows_thread ON rows (thread) WHERE thread IS NOT NULL; CREATE INDEX IF NOT EXISTS rows_session ON rows (session) WHERE session IS NOT NULL; CREATE TABLE IF NOT EXISTS attached (tbl INTEGER NOT NULL, k TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (tbl, k, path)) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS attached_path ON attached (path); CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, hash TEXT NOT NULL, size INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS files_order ON files (seq); CREATE TABLE IF NOT EXISTS transcripts (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS transcripts_order ON transcripts (seq); CREATE TABLE IF NOT EXISTS tr_dels (path TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS dels (tk TEXT PRIMARY KEY, seq INTEGER NOT NULL, line TEXT NOT NULL) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS gone (line TEXT PRIMARY KEY, seq INTEGER NOT NULL) WITHOUT ROWID;"
+
+pub struct Folded {
+  db : sql_db::Db
+  mut seq : Int64
+}
+
+/// Scoped temporary folder DB (`Folded::with_open`), strictly enforcing Windows-safe order:
+/// 1) `with_temp_write_tx` (best-effort COMMIT + rollback_if_in_tx)
+/// 2) `db.close()` to release file handle
+/// 3) `files.remove(path)` to unlink temp DB
+/// 4) re-propagate original error if any
+pub fn Folded::with_open[T](
+  files : Files,
+  path : String,
+  f : (Folded) -> Result[T, String],
+) -> Result[T, String] {
+  match files.remove(path) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let db = match sql_db::Db::create(path, wait_ms=5000) {
+    Ok(d) => d
+    Err(e) => return Err(e.message)
+  }
+  match db.exec("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF; PRAGMA cache_size = -8192; PRAGMA temp_store = FILE;") {
+    Ok(()) => ()
+    Err(e) => {
+      db.close()
+      let _ = files.remove(path)
+      return Err(e.message)
+    }
+  }
+  match db.exec(FOLD_SCHEMA) {
+    Ok(()) => ()
+    Err(e) => {
+      db.close()
+      let _ = files.remove(path)
+      return Err(e.message)
+    }
+  }
+  let folded = Folded::{ db: db, seq: 0.to_int64() }
+  let res = db.with_temp_write_tx(
+    fn(e : sql_db::SqlError) -> String { e.message },
+    fn() -> Result[T, String] { f(folded) },
+  )
+  // Step 2: close handle before unlink (Windows-safe)
+  db.close()
+  // Step 3: unlink temp file; on Ok propagate remove error (matching MB), on Err ignore remove error & preserve original Err
+  match res {
+    Ok(v) => {
+      match files.remove(path) {
+        Ok(()) => Ok(v)
+        Err(e) => Err(e)
+      }
+    }
+    Err(e) => {
+      let _ = files.remove(path)
+      Err(e)
+    }
+  }
+}
+
+pub fn Folded::apply(self : Folded, line : String) -> Result[Unit, String] {
+  let rec = match js_json::parse(line) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  self.seq = self.seq + 1.to_int64()
+  let seq = self.seq
+  let db = self.db
+  match jval_get(rec, "r") {
+    Some(r) => {
+      let table = text_or(Some(r), "")
+      let tbl = order_of(table)
+      if tbl < 0 {
+        return Ok(())
+      }
+      let row = match jval_get(rec, "row") {
+        Some(v) => v
+        None => js_json::JValue::Null
+      }
+      let key = match key_of(table, row) {
+        Ok(k) => k
+        Err(e) => return Err(e)
+      }
+      let thread = match thread_of_col(table) {
+        None => base_codec::json_null()
+        Some(c) => jval_param(jval_get(row, c))
+      }
+      let session = match session_of_col(table) {
+        None => base_codec::json_null()
+        Some(c) => {
+          if table == "opened_chats" && !opt_str_is(text_of(jval_get(row, "child_station")), "") {
+            base_codec::json_null()
+          } else {
+            jval_param(jval_get(row, c))
+          }
+        }
+      }
+      let is_msg = table == "entries" && opt_str_is(text_of(jval_get(row, "kind")), "message")
+      match db.run(
+        "INSERT INTO rows (tbl, k, seq, line, thread, session, message) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tbl, k) DO UPDATE SET seq = excluded.seq, line = excluded.line, thread = excluded.thread, session = excluded.session, message = excluded.message",
+        [
+          base_codec::json_int(tbl),
+          base_codec::json_str(key),
+          base_codec::json_int64(seq),
+          base_codec::json_str(line),
+          thread,
+          session,
+          base_codec::json_int(if is_msg { 1 } else { 0 }),
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match db.run("DELETE FROM attached WHERE tbl = ? AND k = ?", [base_codec::json_int(tbl), base_codec::json_str(key)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      if table == "entries" || table == "letters" {
+        let paths = attached_paths(row)
+        for i in 0..<paths.length() {
+          match db.run(
+            "INSERT OR IGNORE INTO attached (tbl, k, path) VALUES (?, ?, ?)",
+            [base_codec::json_int(tbl), base_codec::json_str(key), base_codec::json_str(paths[i])],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e.message)
+          }
+        }
+      }
+      match db.run("DELETE FROM dels WHERE tk = ?", [base_codec::json_str(table + "|" + key)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  match jval_get(rec, "del") {
+    Some(d) => {
+      let table = text_or(Some(d), "")
+      let tbl = order_of(table)
+      if tbl < 0 {
+        return Ok(())
+      }
+      let key_val = match jval_get(rec, "key") {
+        Some(v) => v
+        None => js_json::JValue::Null
+      }
+      let key = match key_of(table, key_val) {
+        Ok(k) => k
+        Err(e) => return Err(e)
+      }
+      match db.run("DELETE FROM rows WHERE tbl = ? AND k = ?", [base_codec::json_int(tbl), base_codec::json_str(key)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match db.run("DELETE FROM attached WHERE tbl = ? AND k = ?", [base_codec::json_int(tbl), base_codec::json_str(key)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match db.run(
+        "INSERT INTO dels (tk, seq, line) VALUES (?, ?, ?) ON CONFLICT (tk) DO UPDATE SET seq = excluded.seq, line = excluded.line",
+        [base_codec::json_str(table + "|" + key), base_codec::json_int64(seq), base_codec::json_str(line)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  match jval_get(rec, "gone") {
+    Some(g) => {
+      let is_session = opt_str_is(text_of(Some(g)), "session")
+      let column = if is_session { "session" } else { "thread" }
+      let value = if is_session { jval_param(jval_get(rec, "key")) } else { jval_param(jval_get(rec, "id")) }
+      let tbls = if is_session { session_of_tbls() } else { thread_of_tbls() }
+      let rows = match db.all("SELECT tbl, k FROM rows WHERE " + column + " = ?", [value]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let tbl = match r.get("tbl") {
+          Some(base_codec::Json::Num(x, _)) => x.to_int()
+          _ => -1
+        }
+        if !arr_contains_int(tbls, tbl) {
+          continue
+        }
+        let k = match r.get("k") {
+          Some(kv) => kv
+          None => base_codec::json_null()
+        }
+        match db.run("DELETE FROM rows WHERE tbl = ? AND k = ?", [base_codec::json_int(tbl), k]) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+        match db.run("DELETE FROM attached WHERE tbl = ? AND k = ?", [base_codec::json_int(tbl), k]) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+      }
+      match db.run(
+        "INSERT INTO gone (line, seq) VALUES (?, ?) ON CONFLICT (line) DO UPDATE SET seq = excluded.seq",
+        [base_codec::json_str(line), base_codec::json_int64(seq)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  match jval_get(rec, "file") {
+    Some(f) => {
+      match db.run(
+        "INSERT INTO files (path, seq, hash, size) VALUES (?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, hash = excluded.hash, size = excluded.size",
+        [jval_param(jval_get(rec, "path")), base_codec::json_int64(seq), jval_param(Some(f)), jval_param(jval_get(rec, "size"))],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  match jval_get(rec, "tr") {
+    Some(tr_path) => {
+      let p = jval_param(Some(tr_path))
+      match db.run(
+        "INSERT INTO transcripts (path, seq, line) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, line = excluded.line",
+        [p, base_codec::json_int64(seq), base_codec::json_str(line)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match db.run("DELETE FROM tr_dels WHERE path = ?", [p]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  match jval_get(rec, "tr_del") {
+    Some(tr_path) => {
+      let p = jval_param(Some(tr_path))
+      match db.run("DELETE FROM transcripts WHERE path = ?", [p]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match db.run(
+        "INSERT INTO tr_dels (path, seq, line) VALUES (?, ?, ?) ON CONFLICT (path) DO UPDATE SET seq = excluded.seq, line = excluded.line",
+        [p, base_codec::json_int64(seq), base_codec::json_str(line)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  Ok(())
+}
+
+pub fn Folded::each_row(self : Folded, f : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  let mut tbl = -1.0
+  let mut seq = 0.0
+  while true {
+    let rows = match self.db.all(
+      "SELECT tbl, seq, line FROM rows WHERE tbl > ?1 OR (tbl = ?1 AND seq > ?2) ORDER BY tbl, seq LIMIT ?3",
+      [sql_db::double_to_json(tbl), sql_db::double_to_json(seq), base_codec::json_int(PAGE_SIZE)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match f(field_text(r, "line")) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      tbl = field_num(r, "tbl")
+      seq = field_num(r, "seq")
+    }
+    if rows.length() < PAGE_SIZE {
+      break
+    }
+  }
+  Ok(())
+}
+
+pub fn Folded::each_named_file(self : Folded, f : (String, String, Double) -> Result[Unit, String]) -> Result[Unit, String] {
+  let mut seq = 0.0
+  while true {
+    let rows = match self.db.all(
+      "SELECT f.seq, f.path, f.hash, f.size FROM files f WHERE f.seq > ? AND EXISTS (SELECT 1 FROM attached a WHERE a.path = f.path) ORDER BY f.seq LIMIT ?",
+      [sql_db::double_to_json(seq), base_codec::json_int(PAGE_SIZE)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match f(field_text(r, "path"), field_text(r, "hash"), field_num(r, "size")) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      seq = field_num(r, "seq")
+    }
+    if rows.length() < PAGE_SIZE {
+      break
+    }
+  }
+  Ok(())
+}
+
+pub fn Folded::each_transcript(self : Folded, f : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  let mut seq = 0.0
+  while true {
+    let rows = match self.db.all(
+      "SELECT seq, line FROM transcripts WHERE seq > ? ORDER BY seq LIMIT ?",
+      [sql_db::double_to_json(seq), base_codec::json_int(PAGE_SIZE)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match f(field_text(r, "line")) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      seq = field_num(r, "seq")
+    }
+    if rows.length() < PAGE_SIZE {
+      break
+    }
+  }
+  Ok(())
+}
+
+pub fn Folded::records(self : Folded, f : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  match self.each_row(f) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  match self.each_named_file(fn(path : String, hash : String, sz : Double) -> Result[Unit, String] {
+    f(file_line(path, hash, sz))
+  }) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  self.each_transcript(f)
+}
+
+pub fn Folded::partial(self : Folded, f : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  let del_tables = ["gone", "dels", "tr_dels"]
+  for ti in 0..<del_tables.length() {
+    let table = del_tables[ti]
+    let mut seq = 0.0
+    while true {
+      let rows = match self.db.all(
+        "SELECT seq, line FROM " + table + " WHERE seq > ? ORDER BY seq LIMIT ?",
+        [sql_db::double_to_json(seq), base_codec::json_int(PAGE_SIZE)],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        match f(field_text(r, "line")) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+        seq = field_num(r, "seq")
+      }
+      if rows.length() < PAGE_SIZE {
+        break
+      }
+    }
+  }
+  match self.each_row(f) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let mut seq = 0.0
+  while true {
+    let rows = match self.db.all(
+      "SELECT seq, path, hash, size FROM files WHERE seq > ? ORDER BY seq LIMIT ?",
+      [sql_db::double_to_json(seq), base_codec::json_int(PAGE_SIZE)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match f(file_line(field_text(r, "path"), field_text(r, "hash"), field_num(r, "size"))) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      seq = field_num(r, "seq")
+    }
+    if rows.length() < PAGE_SIZE {
+      break
+    }
+  }
+  self.each_transcript(f)
+}
+
+fn Folded::count_q(self : Folded, sql : String, params : Array[base_codec::Json]) -> Result[Double, String] {
+  match self.db.all(sql, params) {
+    Ok(rows) => if rows.length() > 0 { Ok(field_num(rows[0], "n")) } else { Ok(0.0) }
+    Err(e) => Err(e.message)
+  }
+}
+
+pub fn Folded::counts(self : Folded) -> Result[(Double, Double), String] {
+  let chats = match self.count_q("SELECT COUNT(*) AS n FROM rows WHERE tbl = ?", [base_codec::json_int(order_of("threads"))]) {
+    Ok(n) => n
+    Err(e) => return Err(e)
+  }
+  let messages = match self.count_q("SELECT COUNT(*) AS n FROM rows WHERE message = 1", []) {
+    Ok(n) => n
+    Err(e) => return Err(e)
+  }
+  Ok((chats, messages))
+}
