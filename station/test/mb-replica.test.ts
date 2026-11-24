@@ -459,8 +459,11 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
 
 // A level of a first copy asks where every file a place lacks is (246k transcript chunks on a real station): each hash
 // looked at once, the files table read once, each candidate stat'ed in the program (it took 25 minutes of a core, the
-// answer's keys searched one by one and each candidate asked of the shell).
-test("the MoonBit export says where 50,000 files are, as the TypeScript did, in well under two seconds", { skip }, async (t) => {
+// answer's keys searched one by one and each candidate asked of the shell). How long it takes is held by how it grows,
+// not by a machine's milliseconds, which a CI runner running four test files at once more than quadruples: four times
+// the hashes take at most twice four times as long (on pvg-office-1 before, 12,500 took 0.73 s and 50,000 17 s, 23
+// times; now 0.16 s and 0.52 s).
+test("the MoonBit export says where 50,000 files are, as the TypeScript did, in time that grows with them", { skip }, async (t) => {
   const data = dataDir("sources");
   const db = join(data, "stillfail.db");
   const store = Store.open(db, join(data, "archive"));
@@ -530,13 +533,23 @@ test("the MoonBit export says where 50,000 files are, as the TypeScript did, in 
   }
   // each asked twice: said once
   const asked = [...hashes, ...hashes.filter((_, i) => i % 7 === 0)];
-  const start = performance.now();
   const answer = await mb.ask({ type: "sources", hashes: asked });
-  const took = performance.now() - start;
-  t.diagnostic(`sources of ${asked.length} hashes: ${Math.round(took)} ms`);
   assert.deepEqual(Object.keys(answer), hashes.filter((h) => expected[h] !== undefined), "each found once, in the order asked");
   assert.deepEqual(answer, expected);
-  assert.ok(took < 2_000, `50,000 hashes took ${Math.round(took)} ms`);
+  // (the least of two asks of each: a moment the machine was busy elsewhere is not the program's)
+  const took = async (n: number) => {
+    let least = Infinity;
+    for (let i = 0; i < 2; i++) {
+      const start = performance.now();
+      await mb.ask({ type: "sources", hashes: hashes.slice(0, n) });
+      least = Math.min(least, performance.now() - start);
+    }
+    return least;
+  };
+  const quarter = await took(12_500);
+  const whole = await took(50_000);
+  t.diagnostic(`sources of 12,500 hashes: ${Math.round(quarter)} ms, of 50,000: ${Math.round(whole)} ms`);
+  assert.ok(whole < 8 * quarter, `50,000 hashes took ${Math.round(whole)} ms, 12,500 ${Math.round(quarter)} ms: more than linear`);
   // a few, asked one by one of the table
   const few = [hash(0), hash(3), hash(6), hash(7), hash(8), hash(9), hash(6), "f".repeat(64)];
   assert.deepEqual(await mb.ask({ type: "sources", hashes: few }), Object.fromEntries(few.flatMap((h) => (expected[h] === undefined ? [] : [[h, expected[h]]]))));
