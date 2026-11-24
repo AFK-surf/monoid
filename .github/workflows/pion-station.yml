@@ -92,6 +92,7 @@ on:
       - "station/test/autoarchive-last-bounded.test.ts"
       - "station/test/builders-core-pion-switch.test.ts"
       - "station/test/builders-index-pion-switch.test.ts"
+      - "station/test/builders-legacy-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/footprint-pion-switch.test.ts"
@@ -100,14 +101,20 @@ on:
       - "station/test/mb-archive-marks.test.ts"
       - "station/test/mb-card-posts.test.ts"
       - "station/test/mb-footprint.test.ts"
+      - "station/test/mb-legacy-ids.test.ts"
+      - "station/test/mb-legacy-rest.test.ts"
+      - "station/test/mb-legacy.test.ts"
       - "station/test/mb-lookups.test.ts"
       - "station/test/mb-memory-merge.test.ts"
       - "station/test/mb-outflow-chats.test.ts"
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
+      - "station/test/mb-process-jobs.test.ts"
       - "station/test/mb-said.test.ts"
+      - "station/test/mb-sandbox-names.test.ts"
       - "station/test/mb-search-scope.test.ts"
+      - "station/test/mb-session-backfill.test.ts"
       - "station/test/mb-session-bindings.test.ts"
       - "station/test/mb-session-counts.test.ts"
       - "station/test/mb-session-list.test.ts"
@@ -608,6 +615,17 @@ jobs:
           STILLFAIL_MB_READER="$BIN_MB" node --test \
             station/test/mb-turn-counts.test.ts \
             station/test/mb-said.test.ts
+
+          STILLFAIL_MB_READER="$BIN_PION" node --test \
+            station/test/mb-legacy.test.ts \
+            station/test/mb-legacy-ids.test.ts \
+            station/test/mb-legacy-rest.test.ts \
+            station/test/mb-process-jobs.test.ts \
+            station/test/mb-sandbox-names.test.ts \
+            station/test/mb-session-backfill.test.ts
+
+          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" node --test \
+            station/test/builders-legacy-pion-switch.test.ts
 
   verify-linux:
     runs-on: ubuntu-24.04
