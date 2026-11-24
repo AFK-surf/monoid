@@ -212,6 +212,15 @@ fn restore_build(
     Some(h) => h
     None => return Err(RestoreError::Other("no copy here, or one of a newer station's"))
   }
+  match text_of(jval_get(head, "transcriptManifest")) {
+    Some(root_hash) => {
+      match verify_manifest_dir(files, from_files, root_hash) {
+        Ok(_) => ()
+        Err(e) => return Err(RestoreError::Other(e))
+      }
+    }
+    None => ()
+  }
   let origin = text_or(jval_get(head, "origin"), "")
   let gen = text_or(jval_get(head, "gen"), "")
   let head_dir = text_or(jval_get(head, "dataDir"), "")

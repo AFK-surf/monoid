@@ -172,9 +172,9 @@ pub struct Exporter {
   priv mut known : Bool
   priv mut transcripts_pending : Bool
   priv tf_cache : Map[String, Array[(String, JValue)]]
-  /// Each generation's `head.json` as last read or written, by its directory, with the size and mtime it had on disk:
-  /// a head of many transcripts is megabytes of JSON, parsed again only when the file changed.
-  priv head_cache : Map[String, (Double, Double, JValue)]
+  /// Each generation's `head.json` as last read or written, by its directory, keyed by SHA-256 of its UTF-8 bytes:
+  /// a head of many transcripts is megabytes of JSON, parsed again only when its content hash changed.
+  priv head_cache : Map[String, (String, JValue)]
   priv manifest_cache : Map[String, (String, Array[String])]
   priv mut manifest_live : Set[String]
   priv manifest_superseded_at : Map[String, Double]
@@ -327,27 +327,29 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 ///|
 fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
   let path = self.files.join([dir, "head.json"])
-  guard self.files.meta(path) is Some((size, mtime)) else {
-    self.head_cache.remove(dir)
-    return None
-  }
-  if self.head_cache.get(dir) is Some((c_size, c_mtime, cached)) && c_size == size && c_mtime == mtime {
-    return Some(cached)
-  }
   let text = (try { self.files.read(path) } catch { _ => None })
-  let parsed = match text {
-    Some(t) =>
-      match (@jsjson.parse(t) catch { _ => Null }) {
-        Obj(_) as v => Some(v)
-        _ => None
+  match text {
+    None => {
+      self.head_cache.remove(dir)
+      None
+    }
+    Some(t) => {
+      let hash = @hash.sha256_hex(@utf8.encode(t)[:])
+      if self.head_cache.get(dir) is Some((c_hash, cached)) && c_hash == hash {
+        return Some(cached)
       }
-    None => None
+      match (@jsjson.parse(t) catch { _ => Null }) {
+        Obj(_) as head => {
+          self.head_cache[dir] = (hash, head)
+          Some(head)
+        }
+        _ => {
+          self.head_cache.remove(dir)
+          None
+        }
+      }
+    }
   }
-  match parsed {
-    Some(head) => self.head_cache[dir] = (size, mtime, head)
-    None => self.head_cache.remove(dir)
-  }
-  parsed
 }
 
 ///|
@@ -398,52 +400,38 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
   let path = self.files.join([dir, "head.json"])
   let log_dir = self.files.join([dir, "log"])
   let committed = self.read_committed_head_state(ws, gen)
-  let meta_opt = self.files.meta(path)
-  let mut cached_head : JValue? = None
-  match meta_opt {
-    Some((size, mtime)) =>
-      if self.head_cache.get(dir) is Some((c_size, c_mtime, cached)) && c_size == size && c_mtime == mtime {
-        if denied_ffi(c_path(path), 0) == 1 {
-          self.head_cache.remove(dir)
-          fail("cannot read \{path}")
-        }
-        cached_head = Some(cached)
+  let v = match self.files.read(path) {
+    None => {
+      self.head_cache.remove(dir)
+      if self.files.exists(path) || self.files.lstat(path) is Some(_) {
+        fail("cannot read \{path}")
       }
-    None => self.head_cache.remove(dir)
-  }
-  let v = match cached_head {
-    Some(ch) => ch
-    None =>
-      match self.files.read(path) {
-        None => {
-          self.head_cache.remove(dir)
-          if self.files.exists(path) || self.files.lstat(path) is Some(_) {
-            fail("cannot read \{path}")
-          }
-          let has_log = match self.files.names(log_dir) {
-            Some(names) => names.length() > 0
-            None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
-          }
-          if has_log || committed is Some(_) || self.has_ws_progress(ws) {
-            fail("missing \{path} for existing generation \{gen}")
-          }
-          return Fresh
-        }
-        Some(t) =>
-          match (@jsjson.parse(t) catch { e => { self.head_cache.remove(dir); fail("corrupted \{path}: \{e}") } }) {
-            Obj(_) as obj => {
-              match meta_opt {
-                Some((size, mtime)) => self.head_cache[dir] = (size, mtime, obj)
-                None => ()
-              }
-              obj
-            }
-            _ => {
-              self.head_cache.remove(dir)
-              fail("corrupted \{path}: expected JSON object")
-            }
-          }
+      let has_log = match self.files.names(log_dir) {
+        Some(names) => names.length() > 0
+        None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
       }
+      if has_log || committed is Some(_) || self.has_ws_progress(ws) {
+        fail("missing \{path} for existing generation \{gen}")
+      }
+      return Fresh
+    }
+    Some(t) => {
+      let hash = @hash.sha256_hex(@utf8.encode(t)[:])
+      if self.head_cache.get(dir) is Some((c_hash, cached)) && c_hash == hash {
+        cached
+      } else {
+        match (@jsjson.parse(t) catch { e => { self.head_cache.remove(dir); fail("corrupted \{path}: \{e}") } }) {
+          Obj(_) as obj => {
+            self.head_cache[dir] = (hash, obj)
+            obj
+          }
+          _ => {
+            self.head_cache.remove(dir)
+            fail("corrupted \{path}: expected JSON object")
+          }
+        }
+      }
+    }
   }
   if text_of(get(v, "gen")) != Some(gen) ||
     text_of(get(v, "workspace")) != Some(ws) ||
@@ -1384,11 +1372,9 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
 fn Exporter::write_head(self : Exporter, dir : String, head : JValue) -> Unit raise {
   let path = self.files.join([dir, "head.json"])
   self.head_cache.remove(dir)
-  ignore(self.files.write(path, @jsjson.stringify_indent(head, 1)))
-  match self.files.meta(path) {
-    Some((size, mtime)) => self.head_cache[dir] = (size, mtime, head)
-    None => ()
-  }
+  let text = @jsjson.stringify_indent(head, 1)
+  ignore(self.files.write(path, text))
+  self.head_cache[dir] = (@hash.sha256_hex(@utf8.encode(text)[:]), head)
 }
 
 ///|

@@ -16,6 +16,7 @@ import {
   readdirSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -1531,6 +1532,229 @@ test("healthy legacy upgrade persists head_state:<ws> immediately even on idle w
       assert.equal(parsed.to, p1.heads[HOME].to);
     } finally {
       st2.close();
+    }
+  }
+});
+
+function makeTranscriptSeedStation() {
+  const made = station();
+  cleanupDirs.push(made.data);
+  const trDir = join(made.data, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-manifest");
+  mkdirSync(trDir, { recursive: true });
+  writeFileSync(join(trDir, "notes.md"), "transcript-manifest-payload-".repeat(120));
+  writeFileSync(join(trDir, "extra.json"), JSON.stringify({ ok: true, data: "x".repeat(2500) }));
+  made.store.db
+    .prepare("INSERT INTO runtime_sessions (session_key, id, profile, at, runtime) VALUES (?, ?, ?, ?, ?)")
+    .run("chat:a", "cid-manifest", "p1", NOW, "agy");
+  return made;
+}
+
+test("manifest restore rejects missing root, corrupted root, and missing leaf before touching target DB (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  const made = makeTranscriptSeedStation();
+  const rep = join(made.data, "replica-manifest-restore-src");
+  const exp = new ExportClient(bins.mb, made.db, rep, made.data, ["--compact-heads", "--chunk-bytes", "1024"]);
+  await exp.ask({ type: "places", places: PLACES });
+  let p = await exp.ask({ type: "pass", told: nothingTold() });
+  while (p.more) p = await exp.ask({ type: "pass", told: nothingTold() });
+  const ipcHead = p.heads[HOME] as Record<string, any>;
+  const gen = String(ipcHead.gen);
+  const rootHash = String(ipcHead.transcriptManifest);
+  assert.match(rootHash, /^[0-9a-f]{64}$/, "compact-heads must emit 64-hex transcriptManifest");
+  const diskHead = JSON.parse(readFileSync(join(rep, "own", HOME, gen, "head.json"), "utf8")) as Record<string, any>;
+  const hashes = [...Object.keys(diskHead.files ?? {}), ...Object.keys(diskHead.transcriptFiles ?? {})];
+  const sources = (await exp.ask({ type: "sources", hashes })) as Record<string, string>;
+  await exp.close();
+
+  const manifestsDir = join(rep, "manifests");
+  const rootObj = JSON.parse(readFileSync(join(manifestsDir, rootHash), "utf8")) as { v: number; buckets: Record<string, string> };
+  const leafHashes = Object.values(rootObj.buckets);
+  assert.ok(leafHashes.length >= 1, "expected at least one manifest leaf");
+
+  const stageWithManifest = (dest: string) => {
+    stageRestoreCopy(rep, made.data, HOME, gen, dest, sources);
+    // Write the compact head carrying transcriptManifest (as S3/Folder restore downloads it).
+    writeFileSync(join(dest, "restore", "copy", gen, "head.json"), JSON.stringify(ipcHead, null, 1));
+    const filesDir = join(dest, "restore", "copy", "files");
+    cpSync(join(manifestsDir, rootHash), join(filesDir, rootHash));
+    for (const lh of leafHashes) {
+      cpSync(join(manifestsDir, lh), join(filesDir, lh));
+    }
+  };
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    // Control group: intact manifest succeeds on both engines.
+    {
+      const dest = tempDir(`w6b-mrest-ok-${label}-`);
+      const destDb = join(dest, "stillfail.db");
+      Store.open(destDb).close();
+      stageWithManifest(dest);
+      await takeBackSoon(dest, destDb, NOW + 2000, bin);
+      const restoredSessions = dumpTableRows(destDb, "sessions");
+      const restoredMarks = dumpTableRows(destDb, "replica_restored");
+      assert.ok(restoredSessions.length >= 1, `${label}/control: expected restored sessions`);
+      assert.equal(restoredMarks.length, 1, `${label}/control: expected 1 replica_restored mark`);
+    }
+
+    // Fault cases: (a) missing root, (b) corrupted root, (c) missing leaf.
+    for (const fault of ["missing-root", "corrupt-root", "missing-leaf"] as const) {
+      const dest = tempDir(`w6b-mrest-${fault}-${label}-`);
+      const destDb = join(dest, "stillfail.db");
+      Store.open(destDb).close();
+      stageWithManifest(dest);
+      const filesDir = join(dest, "restore", "copy", "files");
+      if (fault === "missing-root") {
+        rmSync(join(filesDir, rootHash));
+      } else if (fault === "corrupt-root") {
+        writeFileSync(join(filesDir, rootHash), '{"v":1,"buckets":{"00":"deadbeef"}}');
+      } else {
+        rmSync(join(filesDir, leafHashes[0]!));
+      }
+
+      await takeBackSoon(dest, destDb, NOW + 3000, bin);
+      const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8")) as {
+        error: string | null;
+        reason: string | null;
+      };
+      assert.ok(typeof outcome.error === "string" && outcome.error.length > 0, `${label}/${fault}: expected non-empty restored.json error`);
+      assert.equal(outcome.reason, "error", `${label}/${fault}: expected reason === 'error'`);
+
+      const db = new DatabaseSync(destDb, { readOnly: true });
+      try {
+        const sessCount = (db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
+        assert.equal(sessCount, 0, `${label}/${fault}: target DB must have 0 sessions`);
+        const hasMarkTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'replica_restored'").get();
+        if (hasMarkTable) {
+          const markCount = (db.prepare("SELECT COUNT(*) AS n FROM replica_restored").get() as { n: number }).n;
+          assert.equal(markCount, 0, `${label}/${fault}: target DB must have 0 replica_restored rows`);
+        }
+      } finally {
+        db.close();
+      }
+    }
+  }
+});
+
+test("--compact-heads dual-engine parity: identical root hash, compact IPC head, inline disk head.json, and non-compact omission (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  const made = makeTranscriptSeedStation();
+
+  // 1. With --compact-heads: MB vs Pion must produce identical transcriptManifest root hash.
+  const runCompact = async (label: string, bin: string) => {
+    const rep = join(made.data, `replica-compact-${label}`);
+    const exp = new ExportClient(bin, made.db, rep, made.data, ["--compact-heads", "--chunk-bytes", "1024"]);
+    await exp.ask({ type: "places", places: PLACES });
+    let p = await exp.ask({ type: "pass", told: nothingTold() });
+    while (p.more) p = await exp.ask({ type: "pass", told: nothingTold() });
+    const ipcHead = p.heads[HOME] as Record<string, any>;
+    const diskHead = JSON.parse(readFileSync(join(rep, "own", HOME, String(ipcHead.gen), "head.json"), "utf8")) as Record<string, any>;
+    await exp.close();
+    return { rep, ipcHead, diskHead };
+  };
+
+  const mbC = await runCompact("mb", bins.mb);
+  const pionC = await runCompact("pion", bins.pion);
+
+  assert.equal(mbC.ipcHead.transcriptFiles, undefined, "MB compact IPC head must omit inline transcriptFiles");
+  assert.equal(pionC.ipcHead.transcriptFiles, undefined, "Pion compact IPC head must omit inline transcriptFiles");
+  assert.match(String(mbC.ipcHead.transcriptManifest), /^[0-9a-f]{64}$/);
+  assert.equal(pionC.ipcHead.transcriptManifest, mbC.ipcHead.transcriptManifest, "Pion and MB transcriptManifest root hashes must match exactly");
+
+  for (const [label, res] of [
+    ["mb", mbC],
+    ["pion", pionC],
+  ] as const) {
+    assert.equal(res.diskHead.transcriptManifest, undefined, `${label}: disk head.json must NOT carry transcriptManifest`);
+    assert.ok(
+      res.diskHead.transcriptFiles !== undefined && Object.keys(res.diskHead.transcriptFiles).length > 0,
+      `${label}: disk head.json must retain inline transcriptFiles`,
+    );
+    const rootPath = join(res.rep, "manifests", String(res.ipcHead.transcriptManifest));
+    assert.ok(existsSync(rootPath), `${label}: manifest root file must exist under <replica>/manifests/`);
+    const rootParsed = JSON.parse(readFileSync(rootPath, "utf8")) as { v: number; buckets: Record<string, string> };
+    assert.equal(rootParsed.v, 1);
+    const leaves = Object.values(rootParsed.buckets);
+    assert.ok(leaves.length > 0, `${label}: manifest root must reference >= 1 bucket leaf`);
+    for (const lh of leaves) {
+      const lp = join(res.rep, "manifests", lh);
+      assert.ok(existsSync(lp), `${label}: manifest leaf ${lh} must exist under <replica>/manifests/`);
+      const leafParsed = JSON.parse(readFileSync(lp, "utf8")) as { v: number; files: Record<string, number> };
+      assert.equal(leafParsed.v, 1);
+    }
+  }
+  assert.deepEqual(pionC.diskHead.transcriptFiles, mbC.diskHead.transcriptFiles, "disk head.json transcriptFiles must match between MB and Pion");
+
+  // 2. Without --compact-heads: neither MB nor Pion emits transcriptManifest.
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    const rep = join(made.data, `replica-plain-${label}`);
+    const exp = new ExportClient(bin, made.db, rep, made.data, ["--chunk-bytes", "1024"]);
+    await exp.ask({ type: "places", places: PLACES });
+    let p = await exp.ask({ type: "pass", told: nothingTold() });
+    while (p.more) p = await exp.ask({ type: "pass", told: nothingTold() });
+    const ipcHead = p.heads[HOME] as Record<string, any>;
+    await exp.close();
+    assert.equal(ipcHead.transcriptManifest, undefined, `${label}: without --compact-heads must NOT emit transcriptManifest`);
+    assert.ok(
+      ipcHead.transcriptFiles !== undefined && Object.keys(ipcHead.transcriptFiles).length > 0,
+      `${label}: without --compact-heads must emit inline transcriptFiles`,
+    );
+  }
+});
+
+test("hot head_cache detects equal-size preserved-mtime head.json tampering (atomic replace & in-place) identically to cold restart (MB + Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [label, bin] of [
+    ["mb", bins.mb],
+    ["pion", bins.pion],
+  ] as const) {
+    for (const mode of ["atomic-replace", "in-place"] as const) {
+      const made = station();
+      cleanupDirs.push(made.data);
+      const rep = join(made.data, `replica-hot-tamper-${mode}-${label}`);
+      const exp = new ExportClient(bin, made.db, rep, made.data);
+      await exp.ask({ type: "places", places: PLACES });
+      const p1 = await exp.ask({ type: "pass", told: nothingTold() });
+      assert.ok(p1.wrote >= 1);
+      const gen = String(p1.heads[HOME].gen);
+      const genDir = join(rep, "own", HOME, gen);
+      const headPath = join(genDir, "head.json");
+      const origStat = statSync(headPath);
+      const origBytes = readFileSync(headPath);
+      assert.ok(origBytes.length > 8);
+
+      // Construct an equal-byte-length invalid JSON payload and preserve exact original mtime.
+      const corruptBytes = Buffer.from("{INVALID" + " ".repeat(origBytes.length - 8), "utf8");
+      assert.equal(corruptBytes.length, origBytes.length);
+      if (mode === "atomic-replace") {
+        const tmp = join(genDir, "head.json.tamper");
+        writeFileSync(tmp, corruptBytes);
+        utimesSync(tmp, origStat.atime, origStat.mtime);
+        renameSync(tmp, headPath);
+      } else {
+        writeFileSync(headPath, corruptBytes);
+        utimesSync(headPath, origStat.atime, origStat.mtime);
+      }
+
+      // Same hot process MUST immediately fail (never serve stale cache with wrote === 0).
+      exp.now = NOW + 2000;
+      await assert.rejects(
+        () => exp.ask({ type: "pass", told: nothingTold() }),
+        /corrupted/i,
+        `${label}/${mode}: hot process must immediately reject equal-size preserved-mtime corrupted head.json`,
+      );
+      await exp.close();
     }
   }
 });

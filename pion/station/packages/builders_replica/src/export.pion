@@ -245,12 +245,18 @@ pub struct Exporter {
   transcript_pass_deletes : Int
   chunk_gc_grace_ms : Double
   fold : Bool
+  compact_heads : Bool
   now : () -> Double
   mut places : Places
   mut known : Bool
   mut transcripts_pending : Bool
   mut tf_cache : Map[String, Array[(String, js_json::JValue)]]
-  mut head_cache : Map[String, (Double, Double, js_json::JValue)]
+  mut head_cache : Map[String, (String, js_json::JValue)]
+  mut manifest_cache : Map[String, (String, Array[String])]
+  mut manifest_live : Map[String, Bool]
+  mut manifest_live_keys : Array[String]
+  mut manifest_superseded_at : Map[String, Double]
+  mut manifest_superseded_keys : Array[String]
   mut test_faults : Option[TestFaults]
   run : String
   mut read : Int
@@ -271,6 +277,7 @@ pub fn Exporter::new(
   transcript_pass_deletes : Int = TRANSCRIPT_PASS_DELETES,
   chunk_gc_grace_ms : Double = CHUNK_GC_GRACE_MS,
   fold : Bool = true,
+  compact_heads : Bool = false,
   test_faults : Option[TestFaults] = None,
 ) -> Result[Exporter, String] {
   let files = Files::new(client, sep)
@@ -330,12 +337,18 @@ pub fn Exporter::new(
     transcript_pass_deletes: if transcript_pass_deletes > 0 { transcript_pass_deletes } else { TRANSCRIPT_PASS_DELETES },
     chunk_gc_grace_ms: if chunk_gc_grace_ms >= 0.0 { chunk_gc_grace_ms } else { CHUNK_GC_GRACE_MS },
     fold: fold,
+    compact_heads: compact_heads,
     now: now,
     places: Places::{ home: None, workspaces: [] },
     known: false,
     transcripts_pending: false,
     tf_cache: Map::new(),
     head_cache: Map::new(),
+    manifest_cache: Map::new(),
+    manifest_live: Map::new(),
+    manifest_live_keys: [],
+    manifest_superseded_at: Map::new(),
+    manifest_superseded_keys: [],
     test_faults: test_faults,
     run: run_id,
     read: 0,
@@ -418,6 +431,11 @@ fn Exporter::forget(self : Exporter) -> Result[Unit, String] {
   self.transcripts_pending = false
   self.tf_cache = Map::new()
   self.head_cache = Map::new()
+  self.manifest_cache = Map::new()
+  self.manifest_live = Map::new()
+  self.manifest_live_keys = []
+  self.manifest_superseded_at = Map::new()
+  self.manifest_superseded_keys = []
   Ok(())
 }
 
@@ -459,37 +477,34 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 
 fn Exporter::read_head(self : Exporter, dir : String) -> Option[js_json::JValue] {
   let path = self.files.join([dir, "head.json"])
-  let (size, mtime) = match self.files.meta(path) {
-    Some(m) => m
-    None => {
-      let _ = self.head_cache.remove(dir)
-      return None
-    }
-  }
-  match self.head_cache.get(dir) {
-    Some((c_size, c_mtime, cached)) => {
-      if c_size == size && c_mtime == mtime && !c_denied(path, false) {
-        return Some(cached)
-      }
-    }
-    None => ()
-  }
-  let parsed = match self.files.read(path) {
+  match self.files.read(path) {
     Ok(Some(t)) => {
+      let hash = transcript_io::sha256_utf8_hex(t)
+      match self.head_cache.get(dir) {
+        Some((c_hash, cached)) => {
+          if c_hash == hash {
+            return Some(cached)
+          }
+        }
+        None => ()
+      }
       match js_json::parse(t) {
-        Ok(js_json::JValue::Obj(es)) => Some(js_json::JValue::Obj(es))
-        _ => None
+        Ok(js_json::JValue::Obj(es)) => {
+          let head = js_json::JValue::Obj(es)
+          self.head_cache.set(dir, (hash, head))
+          Some(head)
+        }
+        _ => {
+          let _ = self.head_cache.remove(dir)
+          None
+        }
       }
     }
-    _ => None
-  }
-  match parsed {
-    Some(head) => self.head_cache.set(dir, (size, mtime, head))
-    None => {
+    _ => {
       let _ = self.head_cache.remove(dir)
+      None
     }
   }
-  parsed
 }
 
 fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Result[Bool, String] {
@@ -574,65 +589,51 @@ fn Exporter::read_head_checked(
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  let meta_opt = self.files.meta(path)
-  let mut cached_head : Option[js_json::JValue] = None
-  match meta_opt {
-    Some((size, mtime)) => {
+  let h = match self.files.read(path) {
+    Err(e) => {
+      let _ = self.head_cache.remove(dir)
+      return Err("cannot read " + path + ": " + e)
+    }
+    Ok(None) => {
+      let _ = self.head_cache.remove(dir)
+      if !c_missing(path, false) {
+        return Err("cannot read " + path)
+      }
+      let has_batches = match self.files.names(log_dir) {
+        Some(names) => names.length() > 0
+        None => !c_missing(log_dir, false)
+      }
+      if has_batches {
+        return Err("missing " + path + " for existing generation " + gen)
+      }
+      match committed {
+        Some(_) => return Err("missing " + path + " for existing generation " + gen)
+        None => ()
+      }
+      return match self.has_ws_progress(ws) {
+        Ok(true) => Err("missing " + path + " for existing generation " + gen)
+        Ok(false) => Ok(HeadCheck::Fresh)
+        Err(e) => Err(e)
+      }
+    }
+    Ok(Some(t)) => {
+      let hash = transcript_io::sha256_utf8_hex(t)
+      let mut hit : Option[js_json::JValue] = None
       match self.head_cache.get(dir) {
-        Some((c_size, c_mtime, cached)) => {
-          if c_size == size && c_mtime == mtime {
-            if c_denied(path, false) {
-              let _ = self.head_cache.remove(dir)
-              return Err("cannot read " + path)
-            }
-            cached_head = Some(cached)
+        Some((c_hash, cached)) => {
+          if c_hash == hash {
+            hit = Some(cached)
           }
         }
         None => ()
       }
-    }
-    None => {
-      let _ = self.head_cache.remove(dir)
-    }
-  }
-  let h = match cached_head {
-    Some(ch) => ch
-    None => {
-      match self.files.read(path) {
-        Err(e) => {
-          let _ = self.head_cache.remove(dir)
-          return Err("cannot read " + path + ": " + e)
-        }
-        Ok(None) => {
-          let _ = self.head_cache.remove(dir)
-          if !c_missing(path, false) {
-            return Err("cannot read " + path)
-          }
-          let has_batches = match self.files.names(log_dir) {
-            Some(names) => names.length() > 0
-            None => !c_missing(log_dir, false)
-          }
-          if has_batches {
-            return Err("missing " + path + " for existing generation " + gen)
-          }
-          match committed {
-            Some(_) => return Err("missing " + path + " for existing generation " + gen)
-            None => ()
-          }
-          return match self.has_ws_progress(ws) {
-            Ok(true) => Err("missing " + path + " for existing generation " + gen)
-            Ok(false) => Ok(HeadCheck::Fresh)
-            Err(e) => Err(e)
-          }
-        }
-        Ok(Some(t)) => {
+      match hit {
+        Some(ch) => ch
+        None => {
           match js_json::parse(t) {
             Ok(js_json::JValue::Obj(es)) => {
               let parsed = js_json::JValue::Obj(es)
-              match meta_opt {
-                Some((size, mtime)) => self.head_cache.set(dir, (size, mtime, parsed))
-                None => ()
-              }
+              self.head_cache.set(dir, (hash, parsed))
               parsed
             }
             Ok(_) => {
@@ -838,6 +839,7 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> Result[String, String] {
     }
   }
   let _ = self.tf_cache.remove(ws)
+  let _ = self.manifest_cache.remove(ws)
   Ok(gen)
 }
 
@@ -906,6 +908,7 @@ pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json
       self.transcripts_pending = prev_transcripts_pending
       self.tf_cache = Map::new()
       self.head_cache = Map::new()
+      self.manifest_cache = Map::new()
       return Err(e)
     }
   }
@@ -1953,7 +1956,22 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       }
       wrote = wrote + 1
     }
-    heads.push((ws, out.head))
+    let ipc_head = if self.compact_heads {
+      match self.compact_head(ws, out.head) {
+        Ok(ch) => ch
+        Err(e) => return Err(e)
+      }
+    } else {
+      out.head
+    }
+    heads.push((ws, ipc_head))
+  }
+
+  if self.compact_heads {
+    match self.gc_manifests(outs, out_keys) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
   }
 
   if scan_transcripts && !self.transcripts_pending {
@@ -2212,12 +2230,10 @@ fn Exporter::transcript_sessions(
 fn Exporter::write_head(self : Exporter, dir : String, head : js_json::JValue) -> Result[Unit, String] {
   let path = self.files.join([dir, "head.json"])
   let _ = self.head_cache.remove(dir)
-  match self.files.write(path, js_json::stringify_indent(head, 1)) {
+  let text = js_json::stringify_indent(head, 1)
+  match self.files.write(path, text) {
     Ok(_) => {
-      match self.files.meta(path) {
-        Some((size, mtime)) => self.head_cache.set(dir, (size, mtime, head))
-        None => ()
-      }
+      self.head_cache.set(dir, (transcript_io::sha256_utf8_hex(text), head))
       Ok(())
     }
     Err(e) => Err(e)
@@ -3057,6 +3073,7 @@ fn Exporter::export_transcripts(
         Err(e) => return Err(e.message)
       }
       let _ = self.tf_cache.remove(ws)
+      let _ = self.manifest_cache.remove(ws)
       say(
         ws,
         jval_obj([
@@ -3181,6 +3198,7 @@ fn Exporter::export_transcripts(
       }
       if deleted_in_ws {
         let _ = self.tf_cache.remove(ws)
+        let _ = self.manifest_cache.remove(ws)
       }
     }
   }
@@ -3355,5 +3373,190 @@ fn Exporter::gc_transcript_chunks(self : Exporter) -> Result[Unit, String] {
       }
     }
   }
+  Ok(())
+}
+
+/// Writes the canonical 2-level transcript manifest for `head` under `<replica>/manifests/<hash>`
+/// (atomic tmp + fsync + rename, skipping existing files) and returns the compact IPC head carrying
+/// `transcriptManifest` instead of inline `transcriptFiles`. Disk `own/<ws>/<gen>/head.json` keeps
+/// inline `transcriptFiles` unchanged (D72a invariant).
+fn Exporter::compact_head(self : Exporter, ws : String, head : js_json::JValue) -> Result[js_json::JValue, String] {
+  match jval_get(head, "transcriptFiles") {
+    Some(js_json::JValue::Obj(entries)) => {
+      if entries.length() == 0 {
+        let _ = self.manifest_cache.remove(ws)
+        return Ok(jval_without(head, "transcriptManifest"))
+      }
+      let manifests_dir = self.files.join([self.replica, "manifests"])
+      let cached_rh : Option[String] = match self.manifest_cache.get(ws) {
+        Some((rh, _)) => {
+          match self.files.kind(self.files.join([manifests_dir, rh])) {
+            Some("file") => Some(rh)
+            _ => None
+          }
+        }
+        None => None
+      }
+      let root_hash = match cached_rh {
+        Some(rh) => rh
+        None => {
+          let pairs : Array[(String, Double)] = []
+          for i in 0..<entries.length() {
+            pairs.push((js_json::sanitize_str(entries[i].0), num_of(Some(entries[i].1))))
+          }
+          let enc = match encode_transcript_manifest(pairs) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          let leaf_hashes : Array[String] = []
+          for i in 0..<enc.leaves.length() {
+            let (_, lh, lbytes) = enc.leaves[i]
+            leaf_hashes.push(lh)
+            let lp = self.files.join([manifests_dir, lh])
+            let exists = match self.files.kind(lp) {
+              Some("file") => true
+              _ => false
+            }
+            if !exists {
+              match self.files.client.write_atomic(lp, lbytes, mode=420, sync=true, mkdir=true, sep=self.files.sep) {
+                Ok(()) => ()
+                Err(e) => return Err(e.message)
+              }
+            }
+          }
+          let rp = self.files.join([manifests_dir, enc.root_hash])
+          let r_exists = match self.files.kind(rp) {
+            Some("file") => true
+            _ => false
+          }
+          if !r_exists {
+            match self.files.client.write_atomic(rp, enc.root_bytes, mode=420, sync=true, mkdir=true, sep=self.files.sep) {
+              Ok(()) => ()
+              Err(e) => return Err(e.message)
+            }
+          }
+          self.manifest_cache.set(ws, (enc.root_hash, leaf_hashes))
+          enc.root_hash
+        }
+      }
+      Ok(jval_set(jval_without(head, "transcriptFiles"), "transcriptManifest", jval_str(root_hash)))
+    }
+    _ => {
+      let _ = self.manifest_cache.remove(ws)
+      Ok(jval_without(head, "transcriptManifest"))
+    }
+  }
+}
+
+/// Reclaims unreferenced manifest files under `<replica>/manifests/` after a 10-minute grace period
+/// measured from when a manifest hash leaves the live set, always preserving root + leaf hashes
+/// referenced by current `own` heads.
+fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out], out_keys : Array[String]) -> Result[Unit, String] {
+  let now = (self.now)()
+  let manifests_dir = self.files.join([self.replica, "manifests"])
+  let live : Map[String, Bool] = Map::new()
+  let live_keys : Array[String] = []
+  let add_live = fn(h : String) -> Unit {
+    if !map_has(live, h) {
+      live.set(h, true)
+      live_keys.push(h)
+    }
+  }
+  for i in 0..<out_keys.length() {
+    let ws = out_keys[i]
+    let out = match outs.get(ws) {
+      Some(o) => o
+      None => continue
+    }
+    match self.manifest_cache.get(ws) {
+      Some((rh, leaves)) => {
+        add_live(rh)
+        for li in 0..<leaves.length() {
+          add_live(leaves[li])
+        }
+      }
+      None => {
+        match jval_get(out.head, "transcriptFiles") {
+          Some(js_json::JValue::Obj(entries)) => {
+            if entries.length() > 0 {
+              let pairs : Array[(String, Double)] = []
+              for ei in 0..<entries.length() {
+                pairs.push((js_json::sanitize_str(entries[ei].0), num_of(Some(entries[ei].1))))
+              }
+              let enc = match encode_transcript_manifest(pairs) {
+                Ok(v) => v
+                Err(e) => return Err(e)
+              }
+              add_live(enc.root_hash)
+              for li in 0..<enc.leaves.length() {
+                add_live(enc.leaves[li].1)
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+  for i in 0..<live_keys.length() {
+    let _ = self.manifest_superseded_at.remove(live_keys[i])
+  }
+  for i in 0..<self.manifest_live_keys.length() {
+    let prev = self.manifest_live_keys[i]
+    if !map_has(live, prev) {
+      match self.manifest_superseded_at.get(prev) {
+        Some(_) => ()
+        None => {
+          self.manifest_superseded_at.set(prev, now)
+          self.manifest_superseded_keys.push(prev)
+        }
+      }
+    }
+  }
+  self.manifest_live = live
+  self.manifest_live_keys = live_keys
+  let on_disk : Map[String, Bool] = Map::new()
+  let names = match self.files.names(manifests_dir) {
+    Some(ns) => ns
+    None => return Ok(())
+  }
+  for i in 0..<names.length() {
+    let name = names[i]
+    on_disk.set(name, true)
+    if map_has(live, name) {
+      continue
+    }
+    match self.manifest_superseded_at.get(name) {
+      Some(superseded_at) => {
+        if now - superseded_at >= MANIFEST_GC_GRACE_MS {
+          let p = self.files.join([manifests_dir, name])
+          let _ = self.files.remove(p)
+          let _ = self.manifest_superseded_at.remove(name)
+        }
+      }
+      None => {
+        self.manifest_superseded_at.set(name, now)
+        self.manifest_superseded_keys.push(name)
+      }
+    }
+  }
+  let next_sup_keys : Array[String] = []
+  let seen_sup : Map[String, Bool] = Map::new()
+  for i in 0..<self.manifest_superseded_keys.length() {
+    let k = self.manifest_superseded_keys[i]
+    if map_has(seen_sup, k) {
+      continue
+    }
+    seen_sup.set(k, true)
+    if !map_has(on_disk, k) {
+      let _ = self.manifest_superseded_at.remove(k)
+    } else {
+      match self.manifest_superseded_at.get(k) {
+        Some(_) => next_sup_keys.push(k)
+        None => ()
+      }
+    }
+  }
+  self.manifest_superseded_keys = next_sup_keys
   Ok(())
 }

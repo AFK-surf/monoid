@@ -311,6 +311,7 @@ pub fn run_replica_export(argv : Array[String], db : String) -> Int {
   let transcript_pass_deletes = parse_int_flag(flag_first(argv, "--transcript-pass-deletes"), TRANSCRIPT_PASS_DELETES)
   let chunk_gc_grace_ms = parse_double_flag(flag_first(argv, "--chunk-gc-grace-ms"), CHUNK_GC_GRACE_MS)
   let fold = !has_flag(argv, "--no-fold")
+  let compact_heads = has_flag(argv, "--compact-heads")
   let test_faults = match flag_first(argv, "--test-faults") {
     Some(raw) => TestFaults::from_json(raw)
     None => None
@@ -336,6 +337,7 @@ pub fn run_replica_export(argv : Array[String], db : String) -> Int {
     transcript_pass_deletes=transcript_pass_deletes,
     chunk_gc_grace_ms=chunk_gc_grace_ms,
     fold=fold,
+    compact_heads=compact_heads,
     test_faults=test_faults,
   ) {
     Ok(e) => e

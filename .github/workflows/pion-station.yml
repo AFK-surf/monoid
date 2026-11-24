@@ -57,6 +57,7 @@ on:
       - "station/src/read/**"
       - "station/src/replica/carry.ts"
       - "station/src/replica/handover.ts"
+      - "station/src/replica/manifest.ts"
       - "station/src/replica/module.ts"
       - "station/src/replica/restore.ts"
       - "station/src/replica/retire.ts"
@@ -151,6 +152,7 @@ on:
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-replica-carry.test.ts"
       - "station/test/mb-replica.test.ts"
+      - "station/test/replica-manifest.test.ts"
       - "station/test/replica-retire.test.ts"
       - "station/test/replica-transcript.test.ts"
       - "station/test/reference/transcript-paths.ts"
@@ -880,7 +882,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 6 replica gates (Pion forced 5 suites + dual-engine switch)
+      - name: Run Wave 6 replica gates (Pion forced 6 suites + dual-engine switch)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
@@ -898,6 +900,7 @@ jobs:
           for suite in \
             station/test/mb-replica.test.ts \
             station/test/mb-replica-carry.test.ts \
+            station/test/replica-manifest.test.ts \
             station/test/replica-transcript.test.ts \
             station/test/carry-walk-bounded.test.ts; do
             echo "=== Forced Pion suite: $suite ==="
