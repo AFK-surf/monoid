@@ -190,17 +190,30 @@ jobs:
           tools: ''
           farview: 'false'
 
-      - name: Decide frozen snapshot scope (pion/** or workflow changes vs product-only PR)
+      - name: Decide frozen snapshot scope (pion/** or workflow changes vs product-only PR/merge)
         id: scope
         run: |
           RUN_FROZEN="true"
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
-            BEFORE="${{ github.event.before }}"
-            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
-              if git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1; then
-                CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
-                if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
-                  RUN_FROZEN="false"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              BEFORE="${{ github.event.before }}"
+              if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+                if git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1; then
+                  CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
+                  if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
+                    RUN_FROZEN="false"
+                  fi
+                fi
+              fi
+            else
+              if git fetch --no-tags --filter=blob:none origin main >/dev/null 2>&1; then
+                git fetch --no-tags --filter=blob:none --unshallow >/dev/null 2>&1 || true
+                BASE="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+                if [ -n "$BASE" ]; then
+                  CHANGED="$(git diff --name-only "$BASE" HEAD 2>/dev/null || true)"
+                  if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
+                    RUN_FROZEN="false"
+                  fi
                 fi
               fi
             fi
@@ -277,17 +290,30 @@ jobs:
           tools: ''
           farview: 'false'
 
-      - name: Decide frozen snapshot scope (pion/** or workflow changes vs product-only PR)
+      - name: Decide frozen snapshot scope (pion/** or workflow changes vs product-only PR/merge)
         id: scope
         run: |
           RUN_FROZEN="true"
-          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
-            BEFORE="${{ github.event.before }}"
-            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
-              if git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1; then
-                CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
-                if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
-                  RUN_FROZEN="false"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              BEFORE="${{ github.event.before }}"
+              if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+                if git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1; then
+                  CHANGED="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null || true)"
+                  if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
+                    RUN_FROZEN="false"
+                  fi
+                fi
+              fi
+            else
+              if git fetch --no-tags --filter=blob:none origin main >/dev/null 2>&1; then
+                git fetch --no-tags --filter=blob:none --unshallow >/dev/null 2>&1 || true
+                BASE="$(git merge-base origin/main HEAD 2>/dev/null || true)"
+                if [ -n "$BASE" ]; then
+                  CHANGED="$(git diff --name-only "$BASE" HEAD 2>/dev/null || true)"
+                  if [ -n "$CHANGED" ] && ! printf '%s\n' "$CHANGED" | grep -Eq '^(pion/|\.github/workflows/pion-ui\.yml$)'; then
+                    RUN_FROZEN="false"
+                  fi
                 fi
               fi
             fi

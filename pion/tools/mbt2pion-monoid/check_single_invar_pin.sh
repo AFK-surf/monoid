@@ -400,6 +400,12 @@ def check_local_path_dep(rel, lineno, dep_name, dep_path, toml_full):
                     )
                     return
 
+    if dep_name in invar_pkg_names:
+        errors.append(
+            f"{rel}:{lineno}: local path dependency {dep_name!r} ({dep_path!r}) shadows AFK-surf/invar package {dep_name!r}; local path invar bypass forbidden"
+        )
+        return
+
     # Check target's pion.toml [package] name & repository/homepage metadata
     target_toml = os.path.join(real_target, "pion.toml")
     if os.path.isfile(target_toml):

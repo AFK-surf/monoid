@@ -610,7 +610,8 @@ if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_p
   exit 1
 fi
 
-# (e2c) In-repo vendored invar package `pion/vendor/td` (`[package] name = "textdiff"`) MUST be rejected (rc=1)
+# (e2c) In-repo vendored invar package `pion/vendor/td` (`[package] name = "textdiff"`)
+#       AND renamed vendored package bound under invar dep_name (`ui = { path = ... }`) MUST be rejected (rc=1)
 PIN_PATH_E2C="$WORK/pin_path_e2c"
 setup_pin_tmp "$PIN_PATH_E2C"
 mkdir -p "$PIN_PATH_E2C/pion/vendor/td"
@@ -634,6 +635,32 @@ set -e
 if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2c.log" || ! grep -q "local path invar bypass forbidden" "$WORK/neg_pin_e2c.log"; then
   echo "FAIL (pin-e2c): expected rc=1 + exact path + 'local path invar bypass forbidden' for vendored invar pkg (got rc=$PIN_RC)!" >&2
   cat "$WORK/neg_pin_e2c.log" >&2
+  exit 1
+fi
+
+PIN_PATH_E2C2="$WORK/pin_path_e2c2"
+setup_pin_tmp "$PIN_PATH_E2C2"
+mkdir -p "$PIN_PATH_E2C2/pion/vendor/renamed_pkg"
+cat > "$PIN_PATH_E2C2/pion/vendor/renamed_pkg/pion.toml" << 'EOF'
+[package]
+name = "renamed_local_copy"
+version = "0.1.0"
+EOF
+cat > "$PIN_PATH_E2C2/pion/ui/packages/sf/pion.toml" << 'EOF'
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+ui = { path = "../../../vendor/renamed_pkg" }
+EOF
+set +e
+sh "$PIN_PATH_E2C2/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_e2c2.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_e2c2.log" || ! grep -q "local path invar bypass forbidden" "$WORK/neg_pin_e2c2.log"; then
+  echo "FAIL (pin-e2c2): expected rc=1 + exact path + 'local path invar bypass forbidden' for invar dep_name shadow (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_e2c2.log" >&2
   exit 1
 fi
 

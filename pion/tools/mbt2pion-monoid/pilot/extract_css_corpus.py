@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic full-production `@ui.css(...)` corpus extractor & raw-byte manifest verifier.
+r"""Deterministic full-production `@ui.css(...)` corpus extractor & raw-byte manifest verifier.
 
 Scans 100% of non-test `.mbt` files under `libs/ui/src/controls/` and `apps/mbui/src/`,
 respecting MoonBit token boundaries (`@ui .css(...)`), string interpolations (`"\{...}"`),
