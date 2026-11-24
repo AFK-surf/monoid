@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [8eaa7eeb3](https://github.com/AFK-surf/monoid/commit/8eaa7eeb3b0c312dd4fc5b773e992e2d97b93810) fix(ui): fix Role 4 Tab bevelGate ghosting, slim L | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [208f9e2ff](https://github.com/AFK-surf/monoid/commit/208f9e2ffce41755590dfea1aa85464da8ecabc4) fix(mbui): let the chat scroll under an open Poke  | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [674707c85](https://github.com/AFK-surf/monoid/commit/674707c850553d39ee4ba9c1ea2f1aba344e55e9) fix(app): drop the 屏幕 menu headings when no agent  | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.6 | 122.68 |
 | [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 130.05 |
 | [15372e7f5](https://github.com/AFK-surf/monoid/commit/15372e7f5a4ec23f99bca1d0bac0b2920cf58958) feat(station): restore a hand-archived platform th | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 132.16 |
-| [ab0bba783](https://github.com/AFK-surf/monoid/commit/ab0bba7835eb64a94cb65870b45a89eabee784fc) feat(pion-station): add Pion memory worker, mb/pio | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.47 | 132.16 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.44 |
 | [8eaa7eeb3](https://github.com/AFK-surf/monoid/commit/8eaa7eeb3b0c312dd4fc5b773e992e2d97b93810) fix(ui): fix Role 4 Tab bevelGate ghosting, slim L | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.1 | 5.84 | 57.48 |
 | [208f9e2ff](https://github.com/AFK-surf/monoid/commit/208f9e2ffce41755590dfea1aa85464da8ecabc4) fix(mbui): let the chat scroll under an open Poke  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.26 |
 | [674707c85](https://github.com/AFK-surf/monoid/commit/674707c850553d39ee4ba9c1ea2f1aba344e55e9) fix(app): drop the 屏幕 menu headings when no agent  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
 | [b784641b7](https://github.com/AFK-surf/monoid/commit/b784641b76e03e54a96b5d4e27743a662030ad07) fix(ui): bound post-layout re-entry passes in Tree | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
 | [15372e7f5](https://github.com/AFK-surf/monoid/commit/15372e7f5a4ec23f99bca1d0bac0b2920cf58958) feat(station): restore a hand-archived platform th | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.33 |
-| [ab0bba783](https://github.com/AFK-surf/monoid/commit/ab0bba7835eb64a94cb65870b45a89eabee784fc) feat(pion-station): add Pion memory worker, mb/pio | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.48 |
