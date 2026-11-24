@@ -192,7 +192,7 @@ fn chat_quote_node(
           Some(thread) =>
             items.push({
               label: @sf.t("web-main.chat.inferIntent"),
-              icon: "zap",
+              icon: "poke",
               mark: false,
               press: fn() { chat_intent_of(src, r, thread, draft, p, m, @sf.Anchor::Node(end), whole~) },
             })
@@ -326,7 +326,7 @@ fn chat_quote_node(
               fn(b) {
                 @sf.style_node(b, fn() { chat_quote_part })
                 @sf.hover_ground_node(b)
-                @sf.icon_node(b, "zap", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
+                @sf.icon_node(b, "poke", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
                 @sf.words_node(b, fn() { @sf.t("web-main.chat.inferIntent") }, fn() { chat_quote_words }) |> ignore
               },
             )
