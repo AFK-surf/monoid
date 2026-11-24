@@ -26,6 +26,7 @@ on:
       - "rules/js/**"
       - "web/public/avatars/index.json"
       - "shared/moved-from.ts"
+      - "shared/station-busy.ts"
       - "shared/release-keys.ts"
       - "shared/release-signed.ts"
       - "shared/delta.ts"
