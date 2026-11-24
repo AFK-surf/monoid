@@ -374,6 +374,9 @@ export class Data {
   readonly #keptUntil = new WeakMap<AccountDb, number>();
   /// Last time runtime eviction ran `#giveBackRoom` for each db.
   readonly #gaveBackAt = new WeakMap<AccountDb, number>();
+  /// The databases a transcript was left as it was for want of room in (`transcriptOverBudget`): told once they have
+  /// room again (`onRoomAgain`), as any commit finds it.
+  readonly #roomOwed = new Set<AccountDb>();
   #roomWaiters: Deferred.Deferred<void>[] = [];
   #keptAt = -Infinity;
 
@@ -580,6 +583,15 @@ export class Data {
   }
 
   #committed(changes: Changes): void {
+    // (asked at each commit while one is owed, a few numbers of SQLite's: the commit that made the room may be the
+    // last for long)
+    for (const db of [...this.#roomOwed]) {
+      if (this.#dbs.get(db.sub) !== db) this.#roomOwed.delete(db);
+      else if (db.used() <= this.#kept) {
+        this.#roomOwed.delete(db);
+        this.onRoomAgain((station) => this.of(station) === db);
+      }
+    }
     if (changes.logs.size > 0) {
       const now = this.#host.nowMs();
       if (now - this.#keptAt >= KEPT_CHECK_MS) {
@@ -1721,9 +1733,10 @@ export class Data {
 
   // ── what is kept within the device's room ──
 
-  /// Whether a log's items were let go for room and its chat is not shown: the sync leaves it as it is.
+  /// Whether a log's items were let go for room and nothing shows or reads it: the sync leaves it as it is.
   evicted(kind: LogTable, station: string, id: string): boolean {
-    return !this.#shown.has(`${kind}\u0001${station}\u0001${id}`) && (this.of(station)?.evicted(kind, station, id) ?? false);
+    if (kind === "transcript" ? this.#transcriptRead(station, id) : this.#shown.has(`${kind}\u0001${station}\u0001${id}`)) return false;
+    return this.of(station)?.evicted(kind, station, id) ?? false;
   }
 
   /// Whether something reads a session's transcript now: its history is shown, or a query reads its items or what it
@@ -1740,7 +1753,10 @@ export class Data {
   transcriptOverBudget(station: string, id: string): boolean {
     if (this.#transcriptRead(station, id)) return false;
     const db = this.of(station);
-    return db !== undefined && this.#keptUntil.has(db) && db.used() > this.#kept;
+    if (db === undefined || !this.#keptUntil.has(db) || db.used() <= this.#kept) return false;
+    // (owed a reading again once there is room, whatever becomes of the wait before the next try to make some)
+    this.#roomOwed.add(db);
+    return true;
   }
 
   /// A UI shows a log's chat (`open`), or no longer does: shown, it is the most recently opened and not let go. Answers
@@ -1781,7 +1797,7 @@ export class Data {
         for (;;) {
           const logs = db.transcriptsByUse(50).filter((l) => {
             const key = `transcript\u0001${l.station}\u0001${l.id}`;
-            return !this.#shown.has(key) && !gone.has(key);
+            return !this.#shown.has(key) && !gone.has(key) && !this.#transcriptRead(l.station, l.id);
           });
           if (logs.length === 0) {
             exhausted = true;
@@ -1791,7 +1807,7 @@ export class Data {
             if (this.#dbs.get(db.sub) !== db) return;
             const key = `transcript\u0001${l.station}\u0001${l.id}`;
             // A chat may have opened since this list was read.
-            if (this.#shown.has(key)) continue;
+            if (this.#transcriptRead(l.station, l.id)) continue;
             gone.add(key);
             db.evict(l.station, l.id);
             evicted = true;
@@ -1804,7 +1820,7 @@ export class Data {
         if (this.#dbs.get(db.sub) === db) {
           const now = this.#host.nowMs();
           if (exhausted && db.used() > this.#kept) this.#keptUntil.set(db, now + KEPT_FULL_BACKOFF_MS);
-          else if (this.#keptUntil.delete(db) && db.used() <= this.#kept) this.onRoomAgain((station) => this.of(station) === db);
+          else this.#keptUntil.delete(db);
           if (evicted && db.freelistPages() >= ROOM_BACK_PAGES && now - (this.#gaveBackAt.get(db) ?? -Infinity) >= ROOM_BACK_EVERY_MS) {
             this.#gaveBackAt.set(db, now);
             this.#giveBackRoom(db, ROOM_BACK_PAGES);

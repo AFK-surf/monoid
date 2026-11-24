@@ -98,6 +98,9 @@ export class AccountDb {
   readonly kept: KeptValues;
   readonly #runner: Runner;
   #inTx = false;
+  /// The burst under way has no transaction (its BEGIN failed): nothing more is run in it, and it is ended as one
+  /// that failed, so that no statement of it is committed alone.
+  #noTx = false;
   /// The burst under way holds only writes that may wait (`soon`): no commit is asked for yet.
   #waits = false;
   /// How long the write being run may wait for its commit (`soon`); null: it is committed as the work at hand has run.
@@ -230,14 +233,25 @@ export class AccountDb {
   #write(fn: () => void): void {
     if (this.readOnly || this.#closed) return;
     try {
+      if (this.#noTx) return;
       const soon = this.#soonMs;
       if (!this.#inTx) {
         this.#inTx = true;
+        // (asked for, or its wait's end set, before the transaction is begun: one that cannot begin is ended too)
         if (soon === null) Queue.offerUnsafe(this.#bursts, undefined);
-        else this.#waits = true;
-        this.sql.exec("BEGIN IMMEDIATE");
+        else {
+          this.#waits = true;
+          this.#waitEnd(soon);
+        }
+        try {
+          this.sql.exec("BEGIN IMMEDIATE");
+        } catch (e) {
+          this.#noTx = true;
+          this.#hurry();
+          throw e;
+        }
       } else if (soon === null) this.#hurry();
-      if (soon !== null && this.#waits) this.#waitEnd(soon);
+      else if (this.#waits) this.#waitEnd(soon);
       fn();
     } catch (e) {
       // SQLite could not write (no room, the file gone): the burst is rolled back as it is committed, and said.
@@ -280,7 +294,9 @@ export class AccountDb {
   }
 
   #run(sql: string, params: readonly SqlValue[]): number {
-    if (PRECIOUS.test(sql)) this.#precious.push([sql, params]);
+    // (a write that may wait is not what the device did itself: a station's cursor written again alone, its burst
+    // rolled back, would say the events that burst lost were heard)
+    if (this.#soonMs === null && PRECIOUS.test(sql)) this.#precious.push([sql, params]);
     return this.sql.run(sql, params);
   }
 
@@ -303,6 +319,7 @@ export class AccountDb {
     this.#precious = [];
     this.#inTx = false;
     this.#waits = false;
+    this.#noTx = false;
     const failed = this.#failed;
     this.#failed = null;
     try {

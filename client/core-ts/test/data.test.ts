@@ -1991,14 +1991,81 @@ test("a_transcript_whose_slack_messages_a_chat_shows_is_not_left_for_want_of_roo
     assert.equal(data.transcriptOverBudget("w/a", "other"), true);
     stop();
     assert.deepEqual(again, []);
+    // A history shown and closed meanwhile lets go of the wait before the next try, not of what is owed.
+    data.opened("transcript", "w/a", "other", true);
+    data.opened("transcript", "w/a", "other", false);
     data.set({ topic: "overview", station: "w/a" }, { counts: { running: 1 } });
     await run(data.written);
     assert.ok(data.db("s1")!.used() <= 1024 * 1024, "what filled it is gone");
-    await host.time.pass(11 * 60_000, 60_000);
-    data.putItems("entry", "w/a", "1", [[2, { n: 2, kind: "message", text: "b", at: 2 }]]);
+    assert.deepEqual(again, [true], "room again, told by the commit that made it, no log written and no time passed");
+    data.set({ topic: "overview", station: "w/a" }, { counts: { running: 2 } });
+    await run(data.written);
+    assert.deepEqual(again, [true], "told once");
+    assert.equal(data.transcriptOverBudget("w/a", "bg"), false);
+  } finally { runner.shutdown(); }
+});
+
+test("a_transcript_let_go_for_room_is_taken_again_while_a_page_reads_what_it_said_in_slack_and_is_not_let_go_then", async () => {
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  const sql = new NodeSql(new DatabaseSync(":memory:"), true);
+  host.openDbHook = () => sql;
+  const data = new Data(host, runner, { owner: () => "s1", kept: 1024 * 1024 });
+  await run(data.open(["s1"]));
+  try {
+    const big = "字".repeat(4000);
+    data.putItems("transcript", "w/a", "bg", Array.from({ length: 60 }, (_, i) => [i, { kind: "user", text: `${i} ${big}` }] as [number, J]));
     await run(data.written);
     await flush();
-    assert.deepEqual(again, [true], "room again: its stations' transcripts are read again");
-    assert.equal(data.transcriptOverBudget("w/a", "bg"), false);
+    assert.equal(data.evicted("transcript", "w/a", "bg"), true, "past its room, not shown: let go");
+    const stop = observe(() => void data.slackSaid("w/a", "bg"), () => {});
+    assert.equal(data.evicted("transcript", "w/a", "bg"), false, "read on a page: the sync takes its items again");
+    data.putItems("transcript", "w/a", "bg", Array.from({ length: 60 }, (_, i) => [i, { kind: "user", text: `${i} ${big}` }] as [number, J]));
+    await host.time.pass(60_000, 10_000);
+    data.putItems("entry", "w/a", "1", [[1, { n: 1, kind: "message", text: "a", at: 1 }]]);
+    await run(data.written);
+    await flush();
+    assert.equal(data.logNumbers("transcript", "w/a", "bg").length, 60, "nothing a page reads is let go");
+    stop();
+  } finally { runner.shutdown(); }
+});
+
+test("a_burst_that_could_not_begin_is_ended_and_a_cursor_is_not_written_again_alone_when_its_burst_is_rolled_back", async () => {
+  const { data, open, db, host, runner } = fresh();
+  await open();
+  try {
+    data.put("heard", "w/a", "abc.1");
+    await run(data.written);
+    await run(data.roomGivenBack);
+    // No transaction could begin for a write that may wait: its burst is ended by its wait, nothing of it committed.
+    let fail = true;
+    db().failing = (q) => {
+      if (q !== "BEGIN IMMEDIATE" || !fail) return null;
+      fail = false;
+      return new SqlError("database or disk is full", "full");
+    };
+    db().statements.length = 0;
+    data.put("heard", "w/a", "abc.2");
+    data.put("heard", "w/a", "abc.3");
+    assert.deepEqual(db().writes(), [], "nothing is run outside a transaction");
+    await host.time.pass(HEARD_FLUSH_MS);
+    await flush();
+    assert.equal(JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0])), "abc.1");
+    data.put("heard", "w/a", "abc.4");
+    await run(data.written);
+    assert.equal(JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0])), "abc.4", "the next burst is written as any");
+    // A burst rolled back takes its cursor with it: the items it lost were not heard.
+    fail = true;
+    db().failing = (q) => {
+      if (q !== "COMMIT" || !fail) return null;
+      fail = false;
+      return new SqlError("database or disk is full", "full");
+    };
+    data.putItemsSoon("w/a", "bg", [[0, { text: "lost" }]]);
+    data.put("heard", "w/a", "abc.5");
+    await run(data.written);
+    await flush();
+    assert.equal(db().all("SELECT count(*) FROM transcript WHERE station = 'w/a' AND session = 'bg'")[0]![0], 0);
+    assert.equal(JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0])), "abc.4", "not past what was rolled back");
   } finally { runner.shutdown(); }
 });
