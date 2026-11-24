@@ -2745,7 +2745,7 @@ static void ad_forget(void) {
   ad_rb_prev_copied = 0;
   ad_rb_cur = -1;
   ad_last_time = 0.0;
-  ad_settling = 0;
+  __atomic_store_n(&ad_settling, 0, __ATOMIC_RELEASE);
   gad_n = 0;
 }
 
@@ -3065,12 +3065,12 @@ static void ad_finalize_frame(int whole_frame, uint64_t serial) {
     if (s->settle_left > 0.0 && ad_conv_serial[i] >= s->settle_serial) s->settle_left = 0.0;
     if (s->settle_left > 0.0) settling = 1;
   }
-  ad_settling = settling;
+  __atomic_store_n(&ad_settling, settling, __ATOMIC_RELEASE);
 }
 
 static void gl_set_fixed_dt(double dt) { ad_fixed_dt = dt > 0.0 ? dt : 0.0; }
 static void gl_adaptive_reset(void) { ad_forget(); }
-static int gl_adaptive_settling(void) { return ad_settling; }
+static int gl_adaptive_settling(void) { return __atomic_load_n(&ad_settling, __ATOMIC_ACQUIRE); }
 
 static void slots_invalidate(void) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
@@ -3698,7 +3698,7 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
   ad_cur_dt = ad_next_dt();
   ad_frame_serial++;
   int whole = !dirty_told || dirty_whole || pictures_missing || views_drawn_in();
-  if (!whole && ad_settling) {
+  if (!whole && gl_adaptive_settling()) {
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
       if (ad_slots[i].active && ad_slots[i].settle_left > 0.0)
         gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
@@ -3725,7 +3725,7 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
 }
 
 static int gl_adaptive_step(void) {
-  if (!ad_settling || kept_count <= 0 || !fbuf) return 0;
+  if (!gl_adaptive_settling() || kept_count <= 0 || !fbuf) return 0;
   ad_poll_readbacks();
   int need = 0;
   for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
@@ -3738,7 +3738,7 @@ static int gl_adaptive_step(void) {
     }
   }
   if (!need) {
-    ad_settling = 0;
+    __atomic_store_n(&ad_settling, 0, __ATOMIC_RELEASE);
     if (!offscreen) {
       if (canvas_ok && canvas_fb) canvas_shown();
       else draw_kept();

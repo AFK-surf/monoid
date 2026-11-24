@@ -40,6 +40,7 @@ double mb_app_scale(void) { return 1.0; }
 }
 
 #include "win_render.cpp"
+#include "frame_late.h"
 
 static int failed = 0;
 #define CHECK(c)                                                         \
@@ -73,41 +74,133 @@ static void fill_rect_instances(double *inst, int count) {
 static void test_dropped_step_logic(void) {
   const int64_t freq = 10000000;  // 10 MHz QPC (10000 ticks = 1 ms)
   const double p60 = 1000.0 / 60.0;
-  // First sample (has_prev = 0): never counts drops.
-  CHECK(win_count_dropped_step(0, 0, 0, 0, 10, 20, 100000, freq, p60, 1) == 0);
-  // Continuous 60Hz (dt = 16.67ms < 41.67ms), no drops (d_sync == d_present == 1).
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 101, 266700, freq, p60, 1) == 0);
-  // Continuous animation (dt = 33.3ms < 41.67ms), 2 sync refreshes missed (d_sync=3, d_present=1).
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 103, 433000, freq, p60, 1) == 2);
-  // Idle pause (dt = 50ms >= 2.5 * 16.67ms): ignored even if d_sync > d_present.
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 104, 600000, freq, p60, 1) == 0);
-  // Huge spike within continuous window: clamped to MB_WIN_DROPPED_CLAMP (10).
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 11, 150, 300000, freq, p60, 1) == MB_WIN_DROPPED_CLAMP);
-  // Non-monotonic QPC or PresentCount: 0.
-  CHECK(win_count_dropped_step(10, 100, 200000, 1, 11, 103, 100000, freq, p60, 1) == 0);
-  CHECK(win_count_dropped_step(10, 100, 100000, 1, 10, 103, 200000, freq, p60, 1) == 0);
-  // 120Hz continuous (period = 8.33ms, 2.5x = 20.83ms): dt = 16.67ms counts 1 drop, dt = 22ms ignored.
   const double p120 = 1000.0 / 120.0;
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 12, 266700, freq, p120, 1) == 1);
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 320000, freq, p120, 1) == 0);
 
-  // 240Hz paced to 120fps (beats = 2, period = 8.33ms per frame, 2.5x = 20.83ms): each present expects 2 syncs.
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 12, 183300, freq, p120, 2) == 0);   // normal frame
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 225000, freq, p120, 2) == 0);   // one-beat phase jitter
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, 2) == 1);   // one 120fps frame dropped
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 16, 300000, freq, p120, 2) == 2);   // two dropped
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 3, 16, 300000, freq, p120, 2) == 1);   // two presents, one dropped
-  // 360Hz paced to 120fps (beats = 3).
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 13, 183300, freq, p120, 3) == 0);   // normal frame
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 16, 266700, freq, p120, 3) == 1);   // one dropped
-  // Waking from a 500ms idle: the samples' own sync times are 500ms apart, so the long sync gap is not a drop.
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 130, 5100000, freq, p120, 2) == 0);
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 130, 5100000, freq, p60, 1) == 0);
-  // A sample without a sync time, or no beats: 0.
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 0, freq, p120, 2) == 0);
-  CHECK(win_count_dropped_step(1, 10, 0, 1, 2, 14, 166700, freq, p120, 2) == 0);
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, 0) == 0);
-  CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, -1) == 0);
+  // 1. Continuous 60Hz, drops, idle >= 2.5*period, clamp, non-monotonic QPC, missing time.
+  WinDropStats st = {};
+  CHECK(win_stats_step(&st, 1, 0, 10, 100, 100000, freq, p60, 1) == 0);  // first sample
+  CHECK(win_stats_step(&st, 1, 0, 11, 101, 266700, freq, p60, 1) == 0);  // normal 60Hz
+  CHECK(win_stats_step(&st, 1, 0, 12, 104, 599700, freq, p60, 1) == 2);  // 2 refreshes missed
+  CHECK(win_stats_step(&st, 1, 0, 13, 108, 1099700, freq, p60, 1) == 0); // idle 50ms >= 2.5*16.67ms
+  CHECK(win_stats_step(&st, 1, 0, 14, 158, 1299700, freq, p60, 1) == MB_WIN_DROPPED_CLAMP);
+  CHECK(win_stats_step(&st, 1, 0, 15, 162, 1200000, freq, p60, 1) == 0); // non-monotonic QPC
+  CHECK(win_stats_step(&st, 1, 0, 15, 165, 1400000, freq, p60, 1) == 0); // duplicate PresentCount
+
+  // 2. 120Hz / 240Hz (beats=2) / 360Hz (beats=3).
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 0, 1, 10, 100000, freq, p120, 2) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 2, 12, 183300, freq, p120, 2) == 0);   // normal 240Hz->120fps
+  CHECK(win_stats_step(&st, 1, 0, 3, 15, 225000, freq, p120, 2) == 0);   // 1-beat phase jitter
+  CHECK(win_stats_step(&st, 1, 0, 4, 19, 391700, freq, p120, 2) == 1);   // 1 frame dropped
+  CHECK(win_stats_step(&st, 1, 0, 5, 25, 558400, freq, p120, 2) == 2);   // 2 frames dropped
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 0, 1, 10, 100000, freq, p120, 3) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 2, 13, 183300, freq, p120, 3) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 3, 19, 350000, freq, p120, 3) == 1);
+
+  // 3. Old-segment lagging sample preserved (101->102 counts!), cross-gap (102->103) suppressed, new-segment (103->104) counts.
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 0, 101, 500, 100000, freq, p60, 1) == 0);
+  st.gap_owed = 1;  // idle gap after submitting 102
+  win_stats_on_present(&st, 1, 1, 103);  // new segment starts at 103
+  CHECK(win_stats_step(&st, 1, 0, 102, 503, 433000, freq, p60, 1) == 2);  // lagging 101->102 real drop NOT lost!
+  CHECK(win_stats_step(&st, 1, 0, 103, 508, 633000, freq, p60, 1) == 0);  // cross-gap 102->103 suppressed!
+  CHECK(win_stats_step(&st, 1, 0, 104, 510, 966000, freq, p60, 1) == 1);  // new segment 103->104 real drop counts!
+
+  // 4. Lagging jump sequence 97 -> 97 -> 99 -> 101 -> 102 with gap boundary 100.
+  memset(&st, 0, sizeof st);
+  st.gap_owed = 1;
+  win_stats_on_present(&st, 1, 1, 100);
+  CHECK(win_stats_step(&st, 1, 0, 97, 500, 100000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 97, 500, 100000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 99, 502, 300000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 101, 508, 500000, freq, p60, 1) == 0);  // crosses 100 -> suppressed
+  CHECK(win_stats_step(&st, 1, 0, 102, 511, 833000, freq, p60, 1) == 2);  // post-gap 101->102 counts 2
+
+  // 5. 32-bit wrap-around through production win_stats_step: 0xFFFFFFFF -> 0 must NOT be dropped as invalid.
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 0, 0xFFFFFFFFu, 0xFFFFFFFEu, 100000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 0x00000000u, 0x00000001u, 300000, freq, p60, 1) == 2);
+
+  // 6. DISJOINT, OCCLUDED, GetLastPresentCount failure -> unknown_until sealing, and gap_starts overflow recovery.
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 0, 50, 100, 100000, freq, p60, 1) == 0);
+  st.gap_owed = 1;
+  win_stats_on_present(&st, 1, 0, 0);  // GetLastPresentCount failed -> gap_unknown_open=1
+  // Next present seals unknown gap at pc=52: lagging 50->51 and 51->52 must be suppressed, then 52->53 counts!
+  win_stats_on_present(&st, 1, 1, 52);
+  CHECK(win_stats_step(&st, 1, 0, 51, 104, 300000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 52, 108, 500000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 0, 53, 111, 800000, freq, p60, 1) == 2);
+  // OCCLUDED & DISJOINT reset history and open unknown gap.
+  win_stats_on_present(&st, 0, 0, 0);
+  CHECK(st.has_frame_stats == 0 && st.gap_unknown_open == 1);
+  win_stats_on_present(&st, 1, 1, 54);
+  CHECK(win_stats_step(&st, 1, 0, 54, 112, 900000, freq, p60, 1) == 0);
+  CHECK(win_stats_step(&st, 1, 1, 55, 116, 1100000, freq, p60, 1) == 0);  // DISJOINT
+  CHECK(st.has_frame_stats == 0 && st.gap_unknown_open == 1);
+
+  // 6b. 5 consecutive gap_owed calls overflow gap_starts (last pc=120): suppressed up to 120, then 120->121 recovers!
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 0, 100, 200, 100000, freq, p60, 1) == 0);
+  UINT gap_pcs[5] = {104, 108, 112, 116, 120};
+  for (int i = 0; i < 5; i++) {
+    st.gap_owed = 1;
+    win_stats_on_present(&st, 1, 1, gap_pcs[i]);
+  }
+  CHECK(win_stats_step(&st, 1, 0, 120, 230, 300000, freq, p60, 1) == 0);  // crosses unknown_until=120 -> 0
+  CHECK(win_stats_step(&st, 1, 0, 121, 233, 600000, freq, p60, 1) == 2);  // post-overflow 120->121 recovers!
+
+  // 6c. DISJOINT recovery landing right on 32-bit wrap pc == 0: cold sample 0 is accepted and 0->1 counts drops!
+  memset(&st, 0, sizeof st);
+  CHECK(win_stats_step(&st, 1, 1, 0xFFFFFFFFu, 100, 100000, freq, p60, 1) == 0);  // DISJOINT
+  win_stats_on_present(&st, 1, 1, 0u);  // seals unknown_until == 0
+  CHECK(win_stats_step(&st, 1, 0, 0u, 105, 200000, freq, p60, 1) == 0);
+  CHECK(st.has_frame_stats == 1 && st.has_unknown_until == 0);
+  CHECK(win_stats_step(&st, 1, 0, 1u, 108, 500000, freq, p60, 1) == 2);
+
+  // 7. Dual-window interleaved reporting + secondary window close/reopen: mb_host_frames_dropped() stays monotonic.
+  present_dropped_total = 0;
+  render_win_fresh(&render_wins[0]);
+  render_win_fresh(&render_wins[1]);
+  win_stats_on_present(&render_wins[0].drop_stats, 1, 1, 1);
+  win_stats_on_present(&render_wins[1].drop_stats, 1, 1, 1);
+  present_dropped_total += win_stats_step(&render_wins[0].drop_stats, 1, 0, 1, 10, 100000, freq, p60, 1);
+  present_dropped_total += win_stats_step(&render_wins[1].drop_stats, 1, 0, 1, 20, 100000, freq, p60, 1);
+  present_dropped_total += win_stats_step(&render_wins[0].drop_stats, 1, 0, 2, 12, 300000, freq, p60, 1);  // +1
+  present_dropped_total += win_stats_step(&render_wins[1].drop_stats, 1, 0, 2, 23, 300000, freq, p60, 1);  // +2
+  CHECK(mb_host_frames_dropped() == 3);
+  // Close & reopen window 1: total must NOT regress
+  render_win_fresh(&render_wins[1]);
+  CHECK(mb_host_frames_dropped() == 3);
+  present_dropped_total = 0;
+  render_win_fresh(&render_wins[0]);
+  render_win_fresh(&render_wins[1]);
+}
+
+static void test_frame_late_logic(void) {
+  const double p60 = 1000.0 / 60.0;
+  // Multi-window independent last_begin: window A continuous late by 1 beat, window B fresh/idle.
+  double win_a_last = -1.0, win_b_last = -1.0;
+  CHECK(mb_frame_late_from_begin(win_a_last, 100.0, p60, 0) == 0.0);
+  win_a_last = mb_frame_late_next(1, 100.0);
+  // Window B draws while idle (want_next = 0) -> does not affect window A.
+  CHECK(mb_frame_late_from_begin(win_b_last, 105.0, p60, 0) == 0.0);
+  win_b_last = mb_frame_late_next(0, 105.0);
+  CHECK(win_b_last == -1.0);
+  // Window A's next continuous frame arrives 33.33ms later (1 beat late) -> late > 0.
+  double late_a = mb_frame_late_from_begin(win_a_last, 133.333, p60, 0);
+  CHECK(late_a > 15.0 && late_a < 18.0);
+  // Settle gap: window A stops asking for next app frame (want_next = 0), 100ms later next app frame has frame_late == 0.
+  win_a_last = mb_frame_late_next(0, 133.333);
+  CHECK(win_a_last == -1.0);
+  CHECK(mb_frame_late_from_begin(win_a_last, 233.333, p60, 0) == 0.0);
+  // Scripted / away always 0.
+  CHECK(mb_frame_late_from_begin(100.0, 200.0, p60, 1) == 0.0);
+  // Target-based helper (iOS).
+  CHECK(mb_frame_late_from_target(-1.0, 200.0) == 0.0);
+  CHECK(mb_frame_late_from_target(100.0, 100.0) == 0.0);
+  CHECK(mb_frame_late_from_target(100.0, 116.67) > 16.0);
 }
 
 static void fill_p0_rect(double *p, double x, double y, double w, double h, double kind, double r, double g, double b,
@@ -1104,8 +1197,9 @@ int main(void) {
   CHECK(mb_host_gpu_ms() == -1.0);
   CHECK(mb_host_frames_dropped() == 0);
 
-  // 2. Pure dropped-frame boundary logic.
+  // 2. Pure dropped-frame boundary logic & frame_late continuity logic.
   test_dropped_step_logic();
+  test_frame_late_logic();
 
   // 3. D3D11 timestamp query ring on WARP offscreen device.
   mb_render_init_offscreen(128.0, 128.0, 1.0);
