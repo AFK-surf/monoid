@@ -167,6 +167,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
       case "clientReports":
         inner.reporting = call.on;
         inner.useCounts.setOn(call.on);
+        inner.tracer.setOn(call.on);
         return Effect.succeed({});
       case "clientShown":
         inner.useCounts.shown(call.page);

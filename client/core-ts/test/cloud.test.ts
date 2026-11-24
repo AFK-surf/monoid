@@ -305,6 +305,28 @@ test("spans_nest_and_go_out_in_one_batch", async () => {
   assert.equal(context.traceparent(), `00-${r.traceId}-${r.spanId}-01`);
 });
 
+/// The settings' 发送使用统计和错误报告 off: this device sends no trace of its own, waiting ones dropped, and its requests
+/// say they are not recorded; on again, they go out again.
+test("traces_follow_the_reports_switch", async () => {
+  const host = new FakeHost();
+  const tracer = new Tracer(host, new Runner(host.time.clock), 1);
+  const bodies: unknown[] = [];
+  tracer.setExport((b) => Effect.sync(() => void bodies.push(parseJson(b))));
+  tracer.root("waiting", Kind.Internal).end();
+  tracer.setOn(false);
+  const root = tracer.root("chat.open", Kind.Internal);
+  tracer.span("GET /admin/api/threads", Kind.Client, root.context).end();
+  root.end();
+  tracer.always("client.wake", Kind.Internal).end();
+  assert.match(root.context.traceparent(), /-00$/);
+  await host.time.pass(EXPORT_MS + 20, 100);
+  assert.equal(bodies.length, 0);
+  tracer.setOn(true);
+  tracer.root("mesh.connect", Kind.Internal).end();
+  await host.time.pass(EXPORT_MS + 20, 100);
+  assert.deepEqual(exported(bodies).map((s) => s.name), ["mesh.connect"]);
+});
+
 /// 2026-11-07: a phone's failed reconnects, sent as its network was down, never reached the traces.
 test("a_batch_that_did_not_go_out_goes_with_the_next", async () => {
   const host = new FakeHost();

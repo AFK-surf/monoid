@@ -83,7 +83,13 @@ cd cloud && pnpm install --frozen-lockfile && pnpm run types && pnpm test
 
 ## Privacy and telemetry
 
-Clients send operation traces (names, timings and errors, without message content) to the cloud they are signed in to. Product analytics (PostHog) are only included when a key is supplied at build time, so builds from this repository have none; station error reports are off unless the station's operator enables them. The apps connect to `app.monoid.build`. See the [privacy policy](https://monoid.build/en/privacy).
+Official still.fail and monoid builds send, by default:
+
+- **Usage counts and error reports to PostHog** from the apps: which features and kinds of pages were used and how often (names fixed in code, never what they carried), crashes, hangs and errors, tied to the account ID. The web app also records session replays with all text, input and images masked. Turn this off in the app's settings (Send usage and error reports); the device then sends nothing to PostHog and no traces either.
+- **Request traces to Google Cloud**, through the cloud the app is signed in to: names, timings, errors and the account ID, never message content. The app's traces follow the same switch; with it off, the cloud keeps only that device's failed, rate-limited or slow requests.
+- **Station run logs to Google Cloud**: scrubbed of home paths, emails, secrets and quoted text. A workspace admin turns them off in the station's Diagnostics settings, or with `"telemetry": { "logs": false }` in its `config.json`.
+
+Station error reports to PostHog are off unless the station's operator enables them. Nothing here reads other tools' accounts to identify you: the station reads its own Claude Code and Codex logins only to run agents, and shows them only to the workspace's devices. Builds from this repository have no PostHog key, so they send no usage counts or error reports. The apps connect to `app.monoid.build`. See the [privacy policy](https://monoid.build/en/privacy).
 
 ## Repository
 

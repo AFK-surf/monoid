@@ -73,6 +73,9 @@ export class Tracer {
   /// The app's build, once its UI has said it (`client.device`): the traces' `service.version`, which tells what an
   /// update changed from what older builds still running do.
   #version = "";
+  /// Whether this device sends its traces (the settings' 发送使用统计和错误报告, `client.reports`): off, no trace is
+  /// recorded here, a request's `traceparent` says so, and what was waiting is dropped.
+  #on = true;
 
   constructor(host: BaseHost, runner: Runner, sample: number, names: TraceNames = { scope: "", own: "" }) {
     this.names = names;
@@ -83,6 +86,12 @@ export class Tracer {
 
   setExport(e: Export): void {
     this.#export = e;
+  }
+
+  /// As the settings say (`client.reports`).
+  setOn(on: boolean): void {
+    this.#on = on;
+    if (!on) this.#buffer = [];
   }
 
   setVersion(version: string): void {
@@ -120,10 +129,10 @@ export class Tracer {
     return this.#start(name, kind, null);
   }
 
-  /// The root of a new trace that is always recorded.
+  /// The root of a new trace that is always recorded (while this device sends traces at all).
   always(name: string, kind: Kind): Span {
     const span = this.#start(name, kind, null);
-    span.context = new SpanContext(span.context.trace, span.context.span, true, span.context.anchor, span.context.under);
+    span.context = new SpanContext(span.context.trace, span.context.span, this.#on, span.context.anchor, span.context.under);
     return span;
   }
 
@@ -141,14 +150,14 @@ export class Tracer {
       const roll = new Uint8Array(4);
       this.#host.randomBytes(roll);
       const r = new DataView(roll.buffer).getUint32(0, true);
-      const sampled = r < this.#sample * 2 ** 32;
+      const sampled = this.#on && r < this.#sample * 2 ** 32;
       context = new SpanContext(trace, span, sampled, { wallMs: this.#host.nowMs(), monoMs: this.#host.monotonicMs() });
     }
     return new Span(this, this.#host, context, parent ? parent.span : null, name, kind, this.#host.monotonicMs());
   }
 
   record(span: unknown): void {
-    if (this.#buffer.length >= MAX_BUFFER) return;
+    if (!this.#on || this.#buffer.length >= MAX_BUFFER) return;
     this.#buffer.push(span);
     this.#schedule();
   }
