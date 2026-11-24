@@ -4444,6 +4444,23 @@ test("a start is one span of its own: how long each step took, and till the pers
   }
 });
 
+test("a start reads this device's notice settings beside its databases, not after them", async () => {
+  const s = stationHost(base());
+  // (the notice settings and the device's values each answered 200 ms after they are asked, as a disk busy at a start answers)
+  const get = s.host.storageGet.bind(s.host);
+  s.host.storageGet = (k) => (k === "notify" || k.startsWith("device/") ? Effect.flatMap(Effect.sleep("200 millis"), () => get(k)) : get(k));
+  let core: Core | undefined;
+  const making = Core.create(s.host, { clock: s.host.time.clock, sample: 0, wire: () => new HostWire(s.host) }).then((c) => void (core = c));
+  try {
+    await s.host.time.pass(250);
+    assert.notEqual(core, undefined, "made in one wait of 200 ms, not one after the other");
+  } finally {
+    await s.host.time.pass(1_000);
+    await making;
+    core?.close();
+  }
+});
+
 test("a start whose own lock is never read from the device is told at the deadline, as not read", async () => {
   const { host, core } = await started(base(), 1, undefined, (x) => {
     const get = x.host.storageGet.bind(x.host);
