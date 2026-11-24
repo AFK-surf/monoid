@@ -16,24 +16,35 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define REQUIRE(cond)                                                            \
+    do {                                                                         \
+        if (!(cond)) {                                                           \
+            fprintf(stderr, "footprint_fs_test FAIL at %s:%d: %s\n", __FILE__,   \
+                    __LINE__, #cond);                                            \
+            exit(1);                                                             \
+        }                                                                        \
+    } while (0)
+
 #ifndef _WIN32
 #include <sys/stat.h>
 #include <unistd.h>
 
 static void write_file(const char *path, const char *content) {
     FILE *f = fopen(path, "wb");
-    assert(f != NULL);
+    REQUIRE(f != NULL);
     size_t len = strlen(content);
     if (len > 0) {
-        assert(fwrite(content, 1, len, f) == len);
+        size_t written = fwrite(content, 1, len, f);
+        REQUIRE(written == len);
     }
-    assert(fclose(f) == 0);
+    int rc = fclose(f);
+    REQUIRE(rc == 0);
 }
 
 int main(void) {
     char tmpl[] = "/tmp/sfp_fs_test_XXXXXX";
     char *root = mkdtemp(tmpl);
-    assert(root != NULL);
+    REQUIRE(root != NULL);
 
     char p_file[512];
     char p_link[512];
@@ -52,11 +63,16 @@ int main(void) {
     snprintf(p_missing, sizeof(p_missing), "%s/does_not_exist", root);
 
     write_file(p_file, "hello footprint\nline2\n");
-    assert(link(p_file, p_link) == 0);
-    assert(symlink(p_file, p_sym) == 0);
-    assert(mkdir(p_sub, 0755) == 0);
-    assert(mkfifo(p_fifo, 0644) == 0);
-    assert(symlink(p_fifo, p_fifo_sym) == 0);
+    int rc_link = link(p_file, p_link);
+    REQUIRE(rc_link == 0);
+    int rc_sym = symlink(p_file, p_sym);
+    REQUIRE(rc_sym == 0);
+    int rc_mkdir = mkdir(p_sub, 0755);
+    REQUIRE(rc_mkdir == 0);
+    int rc_fifo = mkfifo(p_fifo, 0644);
+    REQUIRE(rc_fifo == 0);
+    int rc_fifo_sym = symlink(p_fifo, p_fifo_sym);
+    REQUIRE(rc_fifo_sym == 0);
 
     // 1. lstat on regular file & hardlink: same (dev, ino), nlink >= 2.
     int64_t st_file[5] = {0};

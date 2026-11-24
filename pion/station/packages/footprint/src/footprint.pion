@@ -47,20 +47,116 @@ pub fn error_of(code : Int) -> (String, String) {
   }
 }
 
-fn bytes_to_str(b : Bytes) -> String {
+fn write_fffd(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / MoonBit `@utf8.decode_lossy` UTF-8 decoder (maximal subpart of ill-formed subsequence -> U+FFFD).
+pub fn decode_utf8_lossy(b : Bytes, start : Int, end : Int) -> String {
   let sb = StringBuilder::new()
-  for i in 0..<b.length() {
-    sb.write_byte(b[i])
+  let mut i = start
+  while i < end {
+    let b0 = b[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end {
+        let b1 = b[i + 1].to_int() & 0xFF
+        if is_utf8_cont(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = b[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = b[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = b[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = b[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              if i + 3 < end {
+                let b3 = b[i + 3].to_int() & 0xFF
+                if is_utf8_cont(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else {
+      write_fffd(sb)
+      i = i + 1
+    }
   }
   sb.to_string()
 }
 
+fn bytes_to_str(b : Bytes) -> String {
+  decode_utf8_lossy(b, 0, b.length())
+}
+
 fn bytes_slice_to_str(b : Bytes, start : Int, end : Int) -> String {
-  let sb = StringBuilder::new()
-  for i in start..<end {
-    sb.write_byte(b[i])
+  decode_utf8_lossy(b, start, end)
+}
+
+fn has_nul_byte(s : String) -> Bool {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    if b[i].to_int() == 0 {
+      return true
+    }
   }
-  sb.to_string()
+  false
 }
 
 fn is_sep_byte(sep : String, b : Int) -> Bool {
@@ -385,6 +481,12 @@ fn Measure::rebuildable(self : Measure, parent : String, name : String, path : S
   false
 }
 
+/// Whether a directory entry is eligible for `.git`/`uploads`/rebuildable classification & sub-walk.
+/// Cross-filesystem mount points (`same_dev == false`) are counted as themselves only and never entered.
+pub fn should_classify_dir(finding : Bool, depth : Int, dir : Bool, same_dev : Bool) -> Bool {
+  finding && depth > 0 && dir && same_dev
+}
+
 fn Measure::visit(
   self : Measure,
   path : String,
@@ -392,6 +494,7 @@ fn Measure::visit(
   name : String,
   depth : Int,
   dir : Bool,
+  same_dev : Bool,
   finding : Bool,
 ) -> (Visit, WalkOutcome) {
   self.visited = self.visited + 1.to_int64()
@@ -404,7 +507,7 @@ fn Measure::visit(
     }
     None => ()
   }
-  if finding && depth > 0 && dir {
+  if should_classify_dir(finding, depth, dir, same_dev) {
     if name == ".git" || name == "uploads" {
       match self.walk(path, path, false) {
         WalkOutcome::Ok => ()
@@ -455,7 +558,7 @@ fn Measure::walk(self : Measure, root : String, base : String, finding : Bool) -
   }
   let root_dir = self.stat_kind() == KIND_DIR
   let root_dev = self.stat_dev()
-  let (root_visit, root_out) = self.visit(root, "", "", 0, root_dir, finding)
+  let (root_visit, root_out) = self.visit(root, "", "", 0, root_dir, true, finding)
   match root_out {
     WalkOutcome::Ok => ()
     other => return other
@@ -519,7 +622,8 @@ fn Measure::walk(self : Measure, root : String, base : String, finding : Bool) -
       }
       let dir = self.stat_kind() == KIND_DIR
       let its_dev = self.stat_dev()
-      let (v, out) = self.visit(child_path, at.base, name, depth, dir, finding)
+      let same_dev = its_dev == at.dev
+      let (v, out) = self.visit(child_path, at.base, name, depth, dir, same_dev, finding)
       match out {
         WalkOutcome::Ok => ()
         other => return other
@@ -534,7 +638,7 @@ fn Measure::walk(self : Measure, root : String, base : String, finding : Bool) -
         }
       }
       // Another filesystem mounted inside this tree: counted, not traversed into.
-      if its_dev != at.dev {
+      if !same_dev {
         continue
       }
       if depth >= MAX_DEPTH {
@@ -581,6 +685,9 @@ pub fn parse_ask(line : String) -> ParseAskResult {
   let base = match base_codec::json_obj_get(fields, "base") {
     Some(base_codec::Json::Str(s)) => s
     _ => path
+  }
+  if has_nul_byte(path) || has_nul_byte(base) {
+    return ParseAskResult::Err("path must not contain NUL bytes", "EINVAL")
   }
   let finding = match base_codec::json_obj_get(fields, "finding") {
     Some(base_codec::Json::Bool(true)) => true

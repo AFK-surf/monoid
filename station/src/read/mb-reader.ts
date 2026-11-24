@@ -6,7 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { sep } from "node:path";
+import { resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
@@ -60,18 +60,24 @@ function isExecutableFile(path: string): boolean {
   }
 }
 
-const foundPionBinary = new Map<string, string>();
+const foundPionBinary = new Map<string, string | null>();
 /// The Pion reader/builder binary (`stillfail-pion`):
-/// 1. Explicit `STILLFAIL_PION_READER` env override (if set and non-empty, only that path is accepted)
+/// 1. Explicit `STILLFAIL_PION_READER` env override (resolved via `path.resolve`; if set and non-empty,
+///    only that path is accepted and its lookup result — found or missing — is cached by resolved path)
 /// 2. Bundled beside `stillfail-reader` (`stillfail-pion` / `stillfail-pion.exe`)
 /// 3. Checkout dev build (`pion/station/_build/stillfail-pion-<host>`)
 export function pionBinary(): string | null {
-  const explicit = process.env.STILLFAIL_PION_READER?.trim();
-  if (explicit !== undefined && explicit !== "") {
-    return isExecutableFile(explicit) ? explicit : null;
+  const explicitRaw = process.env.STILLFAIL_PION_READER?.trim();
+  if (explicitRaw !== undefined && explicitRaw !== "") {
+    const resolved = resolve(explicitRaw);
+    const cacheKey = `explicit:${resolved}`;
+    if (foundPionBinary.has(cacheKey)) return foundPionBinary.get(cacheKey)!;
+    const ok = isExecutableFile(resolved) ? resolved : null;
+    foundPionBinary.set(cacheKey, ok);
+    return ok;
   }
   const had = foundPionBinary.get("");
-  if (had !== undefined) return had;
+  if (had !== undefined && had !== null) return had;
   const hostBuild = import.meta.url.endsWith(".ts") && platform.buildOs !== null
     ? fileURLToPath(new URL(`../../../pion/station/_build/${platform.exe(`stillfail-pion-${platform.buildOs}-${process.arch}`)}`, import.meta.url))
     : undefined;

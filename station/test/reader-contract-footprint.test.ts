@@ -519,6 +519,27 @@ test("invalid CLI arguments, malformed JSON requests, and missing paths follow e
   assert.equal(noPath.exitCode, 0);
   assert.deepEqual(noPath.messages, [{ error: "path is required", code: "EINVAL" }]);
 
+  // Unterminated fragment at stdin EOF exits 0 quietly without responding (matches MoonBit host.line).
+  const unterminatedEof = await new Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string }>((resolve, reject) => {
+    const child = spawn(CANDIDATE, ["--builder", "footprint", "--sep", sep], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stdout = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("unterminated EOF test timed out"));
+    }, CHILD_TIMEOUT_MS);
+    child.stdout!.on("data", (c: Buffer) => { stdout += c.toString("utf8"); });
+    child.stderr!.resume();
+    child.on("error", (err) => { clearTimeout(timer); reject(err); });
+    child.on("close", (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout }); });
+    child.stdin!.end('{"path":"/tmp"}');
+  });
+  assert.equal(unterminatedEof.code, 0);
+  assert.equal(unterminatedEof.signal, null);
+  assert.equal(unterminatedEof.stdout, "");
+
   const badCli = await new Promise<{ code: number | null; stderr: string }>((resolve, reject) => {
     const child = spawn(CANDIDATE, ["--builder", "no-such-builder-xyz"], {
       stdio: ["pipe", "pipe", "pipe"],
@@ -537,4 +558,40 @@ test("invalid CLI arguments, malformed JSON requests, and missing paths follow e
   });
   assert.equal(badCli.code, 2);
   assert.match(badCli.stderr, /usage:/i);
+});
+
+test("UTF-8 CJK filenames and invalid non-UTF-8 POSIX filenames match TS oracle 0-diff", async () => {
+  const root = freshDir();
+  writeSized(join(root, "中文目录/测试文件.txt"), 8192);
+  writeSized(join(root, "中文项目/node_modules/依赖/index.js"), 16384);
+
+  // On Linux POSIX filesystems that allow raw non-UTF-8 entry names, create `f\xff\xfe/`
+  // containing a file and `node_modules` to verify WHATWG lossy UTF-8 parity with Node/MB.
+  let createdRawNonUtf8 = false;
+  if (platform.os === "linux") {
+    try {
+      const rawDir = Buffer.concat([Buffer.from(root, "utf8"), Buffer.from("/f", "utf8"), Buffer.from([0xff, 0xfe])]);
+      mkdirSync(rawDir);
+      const rawFile = Buffer.concat([rawDir, Buffer.from("/data.bin", "utf8")]);
+      writeFileSync(rawFile, Buffer.alloc(32768, 0x42));
+      const rawNm = Buffer.concat([rawDir, Buffer.from("/node_modules", "utf8")]);
+      mkdirSync(rawNm);
+      writeFileSync(Buffer.concat([rawNm, Buffer.from("/dep.js", "utf8")]), Buffer.alloc(16384, 0x43));
+      createdRawNonUtf8 = true;
+    } catch {
+      createdRawNonUtf8 = false;
+    }
+  }
+
+  const [gotRoom, refRoom] = [await candidateMeasureRoom(root), await measureRoomReference(root)];
+  assert.deepEqual(gotRoom, refRoom);
+  assert.equal(await candidateMeasured(root), await measuredReference(root));
+  assert.deepEqual(
+    await candidateMeasuredUpTo(root, Number.MAX_SAFE_INTEGER),
+    await measuredUpToReference(root, Number.MAX_SAFE_INTEGER),
+  );
+  assert.ok(gotRoom.rebuild.some(([p]) => p.endsWith("中文项目/node_modules") || p.endsWith("中文项目\\node_modules")));
+  if (platform.os === "linux") {
+    assert.equal(createdRawNonUtf8, true, "expected Linux tmpfs/ext4 to allow raw non-UTF-8 filename creation");
+  }
 });

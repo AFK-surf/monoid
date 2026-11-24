@@ -64,13 +64,20 @@ static wchar_t *sfp_wide(const char *s, const wchar_t *suffix) {
         return NULL;
     }
     size_t extra = suffix == NULL ? 0 : wcslen(suffix);
+    if ((size_t)n > ((size_t)-1) / sizeof(wchar_t) - extra) {
+        return NULL;
+    }
     wchar_t *w = (wchar_t *)malloc(sizeof(wchar_t) * ((size_t)n + extra));
     if (w == NULL) {
         return NULL;
     }
-    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    int written = MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    if (written <= 0 || written > n) {
+        free(w);
+        return NULL;
+    }
     if (suffix != NULL) {
-        wcscat(w, suffix);
+        memcpy(w + (size_t)written - 1, suffix, (extra + 1) * sizeof(wchar_t));
     }
     return w;
 }
@@ -133,8 +140,12 @@ int32_t sfp_lstat(const char *path, int64_t *out5) {
     int32_t kind = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? SFP_DIR : SFP_FILE;
     if (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
         FILE_ATTRIBUTE_TAG_INFO tag;
-        if (GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag)) &&
-            (tag.ReparseTag == IO_REPARSE_TAG_SYMLINK || tag.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT)) {
+        if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &tag, sizeof(tag))) {
+            DWORD e = GetLastError();
+            CloseHandle(h);
+            return sfp_failed(e);
+        }
+        if (tag.ReparseTag == IO_REPARSE_TAG_SYMLINK || tag.ReparseTag == IO_REPARSE_TAG_MOUNT_POINT) {
             kind = SFP_LINK;
         }
     }
@@ -178,34 +189,41 @@ void *sfp_readdir(const char *path, int64_t *out_len, int32_t *out_err) {
         }
         return NULL;
     }
-    int oom = 0;
-    do {
+    int32_t err = SFP_OK;
+    for (;;) {
         const wchar_t *name = found.cFileName;
-        if (wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0) {
-            continue;
+        if (wcscmp(name, L".") != 0 && wcscmp(name, L"..") != 0) {
+            int len = WideCharToMultiByte(CP_UTF8, 0, name, -1, NULL, 0, NULL, NULL);
+            if (len > 1) {
+                char *u = (char *)malloc((size_t)len);
+                if (u == NULL) {
+                    err = SFP_EIO;
+                    break;
+                }
+                int written = WideCharToMultiByte(CP_UTF8, 0, name, -1, u, len, NULL, NULL);
+                if (written > 1 && written <= len) {
+                    if (sfp_names_add(&n, u, (size_t)written - 1) != 0) {
+                        free(u);
+                        err = SFP_EIO;
+                        break;
+                    }
+                }
+                free(u);
+            }
         }
-        int len = WideCharToMultiByte(CP_UTF8, 0, name, -1, NULL, 0, NULL, NULL);
-        if (len <= 1) {
-            continue;
-        }
-        char *u = (char *)malloc((size_t)len);
-        if (u == NULL) {
-            oom = 1;
+        if (!FindNextFileW(h, &found)) {
+            DWORD last_err = GetLastError();
+            if (last_err != ERROR_NO_MORE_FILES) {
+                err = sfp_failed(last_err);
+            }
             break;
         }
-        WideCharToMultiByte(CP_UTF8, 0, name, -1, u, len, NULL, NULL);
-        if (sfp_names_add(&n, u, (size_t)len - 1) != 0) {
-            free(u);
-            oom = 1;
-            break;
-        }
-        free(u);
-    } while (FindNextFileW(h, &found));
+    }
     FindClose(h);
-    if (oom) {
+    if (err != SFP_OK) {
         free(n.data);
         if (out_err != NULL) {
-            *out_err = SFP_EIO;
+            *out_err = err;
         }
         return NULL;
     }
@@ -241,9 +259,23 @@ int32_t sfp_is_dir(const char *path) {
     if (w == NULL) {
         return 0;
     }
-    DWORD a = GetFileAttributesW(w);
+    HANDLE h = CreateFileW(
+        w,
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
     free(w);
-    return (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 1 : 0;
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    int32_t is_dir = (GetFileInformationByHandle(h, &info) &&
+        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 1 : 0;
+    CloseHandle(h);
+    return is_dir;
 }
 
 static long sfp_head_read(const char *path, char *buf, size_t most) {

@@ -316,9 +316,10 @@ function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText:
  * Resolve which engine (`"mb"`, `"pion"`, or `"shadow"`) should execute `mode`.
  *
  * Precedence:
- * 1. Environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` (non-empty trimmed string)
+ * 1. Per-mode environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` (non-empty trimmed string)
  * 2. `config.readers[mode]`
- * 3. Default `"mb"`
+ * 3. Global environment variable `STILLFAIL_READER_ENGINE` (non-empty trimmed string)
+ * 4. Default `"mb"`
  *
  * Safety gates:
  * - Invalid values fall back to `"mb"` (`reason: "invalid-value"`).
@@ -343,9 +344,6 @@ export function resolveReaderEngine(
   if (typeof rawEnv === "string" && rawEnv.trim() !== "") {
     source = "env";
     rawInput = rawEnv;
-  } else if (typeof rawGlobalEnv === "string" && rawGlobalEnv.trim() !== "") {
-    source = "env";
-    rawInput = rawGlobalEnv;
   } else {
     const readers = opts.config?.readers;
     if (readers !== null && readers !== undefined && typeof readers === "object" && Object.hasOwn(readers, mode)) {
@@ -354,6 +352,10 @@ export function resolveReaderEngine(
         source = "config";
         rawInput = configured;
       }
+    }
+    if (source === "default" && typeof rawGlobalEnv === "string" && rawGlobalEnv.trim() !== "") {
+      source = "env";
+      rawInput = rawGlobalEnv;
     }
   }
 

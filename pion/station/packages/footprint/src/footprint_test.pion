@@ -101,3 +101,147 @@ test "error_of maps all POSIX/Windows codes to Node errno names" {
   let (c7, m7) = error_of(7)
   expect(c7 == "EIO" && m7 == "i/o error", "EIO")
 }
+
+test "decode_utf8_lossy replaces invalid UTF-8 sequences with U+FFFD and preserves valid UTF-8" {
+  // "f\xff\xfe" -> "f\uFFFD\uFFFD"
+  let bad = Bytes::new(3)
+  bad[0] = 0x66 as Byte
+  bad[1] = 0xFF as Byte
+  bad[2] = 0xFE as Byte
+  let decoded = decode_utf8_lossy(bad, 0, 3)
+  expect(decoded == "f\u{FFFD}\u{FFFD}", "invalid bytes -> U+FFFD")
+
+  // Truncated 3-byte sequence [0xE4, 0xB8] followed by 'a' -> "\uFFFDa" (WHATWG maximal subpart)
+  let trunc = Bytes::new(3)
+  trunc[0] = 0xE4 as Byte
+  trunc[1] = 0xB8 as Byte
+  trunc[2] = 0x61 as Byte
+  expect(decode_utf8_lossy(trunc, 0, 3) == "\u{FFFD}a", "truncated 3-byte maximal subpart")
+
+  // Valid UTF-8 Chinese + emoji
+  let valid = "中文目录🚀".to_bytes()
+  expect(decode_utf8_lossy(valid, 0, valid.length()) == "中文目录🚀", "valid utf8 roundtrip")
+}
+
+test "parse_ask rejects embedded NUL bytes in path or base" {
+  match parse_ask("{\"path\":\"/tmp/a\\u0000b\"}") {
+    ParseAskResult::Err(_, code) => expect(code == "EINVAL", "nul path EINVAL")
+    ParseAskResult::Ok(_) => panic("expected EINVAL for embedded NUL in path")
+  }
+  match parse_ask("{\"path\":\"/tmp/ok\",\"base\":\"/tmp/b\\u0000c\"}") {
+    ParseAskResult::Err(_, code) => expect(code == "EINVAL", "nul base EINVAL")
+    ParseAskResult::Ok(_) => panic("expected EINVAL for embedded NUL in base")
+  }
+}
+
+struct MockEntry {
+  name : String
+  dir : Bool
+  dev : Int64
+  blocks : Int64
+  children : Array[MockEntry]
+}
+
+test "cross-device mount points (including node_modules, uploads, .git) are counted as themselves and never classified or traversed" {
+  expect(should_classify_dir(true, 1, true, true), "same dev dir classified")
+  expect(!should_classify_dir(true, 1, true, false), "cross dev dir never classified")
+  expect(!should_classify_dir(true, 0, true, true), "root depth 0 never classified")
+
+  // Simulate BFS walk with root dev=1 and cross-device mount points dev=2 named
+  // "other_fs", "node_modules", "uploads", ".git", plus a same-dev "node_modules".
+  let tree = MockEntry::{
+    name: "root",
+    dir: true,
+    dev: 1.to_int64(),
+    blocks: 8.to_int64(),
+    children: [
+      MockEntry::{
+        name: "other_fs",
+        dir: true,
+        dev: 2.to_int64(),
+        blocks: 8.to_int64(),
+        children: [MockEntry::{ name: "secret.bin", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
+      },
+      MockEntry::{
+        name: "node_modules",
+        dir: true,
+        dev: 2.to_int64(),
+        blocks: 8.to_int64(),
+        children: [MockEntry::{ name: "dep.js", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
+      },
+      MockEntry::{
+        name: "uploads",
+        dir: true,
+        dev: 2.to_int64(),
+        blocks: 8.to_int64(),
+        children: [MockEntry::{ name: "big.png", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
+      },
+      MockEntry::{
+        name: ".git",
+        dir: true,
+        dev: 2.to_int64(),
+        blocks: 8.to_int64(),
+        children: [MockEntry::{ name: "pack", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
+      },
+      MockEntry::{
+        name: "local_pkg",
+        dir: true,
+        dev: 1.to_int64(),
+        blocks: 8.to_int64(),
+        children: [
+          MockEntry::{
+            name: "node_modules",
+            dir: true,
+            dev: 1.to_int64(),
+            blocks: 8.to_int64(),
+            children: [MockEntry::{ name: "a.js", dir: false, dev: 1.to_int64(), blocks: 16.to_int64(), children: [] }],
+          },
+        ],
+      },
+    ],
+  }
+
+  let mut visited = 0
+  let mut total_blocks : Int64 = 0.to_int64()
+  let rebuild : Array[String] = []
+  let queue : Array[(MockEntry, Int, Int64)] = [(tree, 0, tree.dev)]
+  let mut head = 0
+  while head < queue.length() {
+    let (node, depth, root_dev) = queue[head]
+    head = head + 1
+    if depth == 0 {
+      visited = visited + 1
+      total_blocks = total_blocks + node.blocks
+    }
+    for i in 0..<node.children.length() {
+      let c = node.children[i]
+      let same_dev = c.dev == root_dev
+      visited = visited + 1
+      if should_classify_dir(true, depth + 1, c.dir, same_dev) {
+        if c.name == ".git" || c.name == "uploads" {
+          total_blocks = total_blocks + c.blocks
+          continue
+        }
+        if c.name == "node_modules" {
+          rebuild.push(c.name)
+          total_blocks = total_blocks + c.blocks
+          for k in 0..<c.children.length() {
+            visited = visited + 1
+            total_blocks = total_blocks + c.children[k].blocks
+          }
+          continue
+        }
+      }
+      total_blocks = total_blocks + c.blocks
+      if c.dir && same_dev {
+        queue.push((c, depth + 1, root_dev))
+      }
+    }
+  }
+  // root(1) + 4 cross-dev mounts(4) + local_pkg(1) + local node_modules(1) + a.js(1) = 8 entries
+  expect(visited == 8, "cross-dev mounts consume 1 entry each and are never descended")
+  // Only same-dev local_pkg/node_modules is classified as rebuildable, never cross-dev mounts.
+  expect(rebuild.length() == 1 && rebuild[0] == "node_modules", "only same-dev node_modules rebuildable")
+  // None of the 200-block files inside cross-dev mounts were counted.
+  expect(total_blocks == 72.to_int64(), "cross-dev children blocks excluded")
+}

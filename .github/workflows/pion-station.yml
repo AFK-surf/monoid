@@ -5,8 +5,14 @@ on:
     paths:
       - "pion/station/**"
       - "pion/base/**"
+      - "station/mb/src/footprint/**"
       - "station/src/sessions/footprint.ts"
+      - "station/src/read/mb-reader.ts"
+      - "station/src/read/reader-select.ts"
+      - "station/test/footprint-reference.ts"
+      - "station/test/mb-footprint.test.ts"
       - "station/test/reader-contract-footprint.test.ts"
+      - "station/test/reader-contract-select.test.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
@@ -205,6 +211,7 @@ jobs:
           # Black-box 0-diff contract gate for `--builder footprint`.
           pnpm --dir station install --frozen-lockfile --prefer-offline
           STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-footprint.test.ts
+          STILLFAIL_MB_READER="$BIN" node --test station/test/mb-footprint.test.ts
           STILLFAIL_PION_READER="$BIN" node --test station/test/footprint-pion-switch.test.ts
 
       - name: Save Zig cache

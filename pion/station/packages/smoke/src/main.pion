@@ -813,7 +813,7 @@ fn run_smoke_rc_soak(world : World, total_iters : Int) -> Unit {
 }
 
 fn run_builder_footprint(sep : String) -> Unit {
-  // No Rust shell needed: footprint only reads one JSON request line from stdin and exits.
+  // No Rust shell needed: footprint only reads one LF-terminated JSON request line from stdin and exits.
   if !host_shim::start("", true) {
     host_shim::exit_process(1)
   }
@@ -826,11 +826,8 @@ fn run_builder_footprint(sep : String) -> Unit {
     match host_shim::wait(5000.to_int64()) {
       None => ()
       Some(host_shim::HostEvent::StdinEof) => {
-        match reader.flush() {
-          Some(host_shim::LineItem::Line(l)) => line_opt = Some(l)
-          Some(host_shim::LineItem::TooLong(_)) => too_long = true
-          None => ()
-        }
+        // Match MoonBit host.line(): only complete LF-terminated frames are accepted;
+        // an unterminated fragment at EOF exits 0 quietly without responding.
         waiting = false
       }
       Some(host_shim::HostEvent::StdinData(chunk)) => {
@@ -854,6 +851,7 @@ fn run_builder_footprint(sep : String) -> Unit {
     }
   }
 
+  // Exit 1 if stdout write fails (broken pipe / closed stdout) so caller observes incomplete delivery.
   if too_long {
     let err = base_codec::json_stringify(footprint::error_json("line too long", "EINVAL"))
     let ok = host_shim::write_stdout_line(err)
