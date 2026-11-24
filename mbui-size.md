@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [04d026f01](https://github.com/AFK-surf/monoid/commit/04d026f016facd8321e7926397e7dd2df40d49dc) test(core-ts): report the hung test when CI stops  | 2.78 | 3.75 | 15.18 | 37.39 | 57.76 | 32.74 | 66.69 | 100.52 | 128.91 |
 | [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.74 | 66.69 | 100.52 | 128.91 |
 | [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d698a546d](https://github.com/AFK-surf/monoid/commit/d698a546dedaf9e5ec935630cc7fd1b91b404a6e) test(station): add black-box packed and memory rea | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.98 | 129.73 |
 | [2022be82c](https://github.com/AFK-surf/monoid/commit/2022be82c7ed168ca59ec597ae6f42210486f532) feat(station): add expected_card_seq CAS for Comma | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.98 | 129.73 |
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
-| [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [04d026f01](https://github.com/AFK-surf/monoid/commit/04d026f016facd8321e7926397e7dd2df40d49dc) test(core-ts): report the hung test when CI stops  | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.62 |
 | [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.62 |
 | [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.59 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.39 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d698a546d](https://github.com/AFK-surf/monoid/commit/d698a546dedaf9e5ec935630cc7fd1b91b404a6e) test(station): add black-box packed and memory rea | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.51 |
 | [2022be82c](https://github.com/AFK-surf/monoid/commit/2022be82c7ed168ca59ec597ae6f42210486f532) feat(station): add expected_card_seq CAS for Comma | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
-| [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.61 |
