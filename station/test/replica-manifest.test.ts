@@ -1955,4 +1955,27 @@ test("27. R7: warm-cached FolderPlace.put('head') re-verifies existing manifest 
   assert.equal(okRes.behind, false, "superset same-to full head succeeds idempotently in level()");
   // Disk head stays untouched (never overwritten by subset incoming head)
   assert.deepEqual((await dstSuperset.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cCommon]: 2, [cSrcOnly]: 2, [cDstOnly]: 2 });
+
+  // (iv) R8: initial inventory (known = null) with IDENTICAL `to=2` AND `made=2000`:
+  //      - conflicting destination full head MUST force put('head') and reject /head conflict:/ without returning synced Known;
+  //      - covering superset destination full head MUST take fast path without calling put('head') (putHeadCalls === 0)!
+  const ownSameMade: Own = {
+    head: makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cSrcOnly]: 2 }, to: 2, made: 2000 }),
+    batch: async () => Buffer.from("b"),
+    sources: async (hashes) => new Map(hashes.filter((h) => h === cSrcOnly).map((h) => [h, srcChunkPath])),
+  };
+  await assert.rejects(() => level(dstPlace, HOME, ownSameMade, null), /head conflict:/);
+  const afterSameMadeConflict = (await dstPlace.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(afterSameMadeConflict.made, 2000);
+  assert.deepEqual(afterSameMadeConflict.transcriptFiles, { [cCommon]: 2, [cDstOnly]: 2 });
+
+  let supersetPutHeadCalls = 0;
+  const origSupersetPut = dstSuperset.put.bind(dstSuperset);
+  dstSuperset.put = async (ws, orig, g, kind, name, bytes) => {
+    if (kind === "head") supersetPutHeadCalls++;
+    return origSupersetPut(ws, orig, g, kind, name, bytes);
+  };
+  const fastRes = await level(dstSuperset, HOME, ownSameMade, null);
+  assert.equal(fastRes.behind, false, "same-to same-made superset succeeds on fast path");
+  assert.equal(supersetPutHeadCalls, 0, "same-to same-made superset skips put('head') on fast path");
 });

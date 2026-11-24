@@ -776,14 +776,18 @@ export async function level(
   const strategy = includeTranscripts ? "with-transcripts" : "no-transcripts";
   const origin = own.head.origin;
   let k = known;
+  let initialHoldingHead: Head | null = null;
+  let initialReadPlace: ReadPlaceObject | undefined;
   if (k === null || k.gen !== own.head.gen) {
     const held = await place.held(ws, origin);
     if (behind(own.head, held)) return { behind: true };
     const holding = held.gens.find((g) => g.gen === own.head.gen);
+    initialHoldingHead = holding?.head ?? null;
     const others = new Set<string>();
     const unverifiedGens = new Set<string>(held.unverifiedGens ?? []);
     let hasUnverifiedHead = held.hasUnverifiedHead === true || unverifiedGens.size > 0;
     const readPlace = placeObjectReader(place, ws, origin);
+    initialReadPlace = readPlace;
     for (const g of held.gens) {
       if (g.gen === own.head.gen) continue;
       if (g.head === null) {
@@ -929,6 +933,35 @@ export async function level(
     wireHead = resolvedTf !== undefined && tfCount > 0 ? { ...rest, transcriptFiles: resolvedTf } : rest;
   }
   const selfUnverified = k.unverifiedGens?.has(own.head.gen) === true;
+  if (
+    initialHoldingHead !== null &&
+    initialHoldingHead.partial !== true &&
+    initialHoldingHead.to === own.head.to &&
+    initialHoldingHead.made === own.head.made &&
+    !selfUnverified
+  ) {
+    let covered = sameBatches(own.head.batches, initialHoldingHead.batches) && sameFileMap(own.head.files, initialHoldingHead.files);
+    if (covered) {
+      const ownAllTf = own.head.transcriptManifest !== undefined
+        ? { ...(own.head.transcriptFiles ?? {}), ...(resolvedTf ?? {}) }
+        : (resolvedTf ?? {});
+      let targetTf: Record<string, number> | null = null;
+      if (initialHoldingHead.transcriptManifest !== undefined) {
+        if (initialReadPlace !== undefined) {
+          try {
+            const resolvedTarget = await loadTranscriptManifest(initialHoldingHead.transcriptManifest, initialReadPlace);
+            targetTf = { ...(initialHoldingHead.transcriptFiles ?? {}), ...resolvedTarget.files };
+          } catch {
+            targetTf = null;
+          }
+        }
+      } else {
+        targetTf = initialHoldingHead.transcriptFiles ?? {};
+      }
+      covered = targetTf !== null && isSubsetFileMap(ownAllTf, targetTf);
+    }
+    if (!covered) k.made = -1;
+  }
   if (k.to !== own.head.to || k.made !== own.head.made || selfUnverified) {
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
     k.to = own.head.to;
