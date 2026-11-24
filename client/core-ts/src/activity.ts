@@ -228,7 +228,7 @@ function shortChatRef(raw: string, known: Known): string {
   const linked = /^https?:\/\//.test(s) ? chatOfLink(s) : null;
   if (linked !== null) {
     const id = linked.id.replace(/^chat:/, "");
-    return agents?.get(linked.id) ?? agents?.get(id) ?? known.chatTitle?.(s) ?? "";
+    return agents?.get(linked.id) ?? agents?.get(id) ?? known.chatTitle?.(s) ?? (isOpaqueId(id) ? "" : id);
   }
   const urlPart = s.includes("/chats/") ? (s.split("/chats/").pop() ?? s) : s;
   let decoded = urlPart;
@@ -239,7 +239,7 @@ function shortChatRef(raw: string, known: Known): string {
   }
   const named = agents?.get(s) ?? agents?.get(urlPart) ?? agents?.get(decoded) ?? (s.includes("/chats/") ? known.chatTitle?.(s) : undefined);
   if (named) return named;
-  if (isOpaqueId(decoded) || isOpaqueId(s) || /^https?:\/\//.test(s)) return "";
+  if (isOpaqueId(decoded) || isOpaqueId(s) || /^https?:\/\//.test(decoded)) return "";
   return decoded.length > 28 ? `${decoded.slice(0, 24)}…` : decoded;
 }
 

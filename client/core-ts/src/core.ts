@@ -9,6 +9,7 @@ import * as commands from "./commands.ts";
 import { findGo } from "./chat-find.ts";
 import { mentionView, relayView } from "./relay-pick.ts";
 import { wordsAnswer } from "./words.ts";
+import { args } from "./activity.ts";
 import { copiedRef } from "./refLinks.ts";
 import { toolCall, toolResult, type ToolPart } from "./tool-step.ts";
 import * as fonts from "./fonts.ts";
@@ -465,9 +466,12 @@ export class Core {
         const c = call as Extract<Call, { kind: "historyTool" }>;
         // A chat the call names by its link (chat_read, session_history, session_send) shown by its title, linking to
         // it, where the device's lists know it: the link alone reads as an address, not as which chat.
+        // (read from the call as given: its fields may say an opaque link as 其他对话)
+        const given = args(c.call);
         const titled = (r: { key: string; value: string; form: "short" | "long" | "json"; prose?: true }) => {
-          if (r.key !== "chat" && r.key !== "to") return r;
-          const link = r.value.trim().replace(/^@/, "");
+          const raw = given?.[r.key];
+          if ((r.key !== "chat" && r.key !== "to") || typeof raw !== "string") return r;
+          const link = raw.trim().replace(/^@/, "").replace(/^<(.*)>$/, "$1");
           const title = /^https?:\/\//.test(link) ? inner.views?.chatTitleOfLink(link) : undefined;
           return title === undefined ? r : { key: r.key, value: copiedRef(title, link).plain, form: "long" as const };
         };

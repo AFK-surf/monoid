@@ -1789,11 +1789,11 @@ export class Views implements Owner {
     });
   }
 
-  /// The title of the chat `link` names (a still.fail link or a chat's page, as an agent's chat tools take it), as its
-  /// station's lists have it (data.ts chatLinked: its row's columns alone); undefined for one no list has. A chat named
-  /// but never titled is 新对话, as its row says it.
-  chatTitleOfLink(link: string): string | undefined {
-    const of = chatOfLink(link);
+  /// The title of the chat `link` names (a still.fail link or a chat's page, as an agent's chat tools take it; a page
+  /// naming no station, `…/chats/<key>`, one of `here`'s), as its station's lists have it (data.ts chatLinked: its row's
+  /// columns alone); undefined for one no list has. A chat named but never titled is 新对话, as its row says it.
+  chatTitleOfLink(link: string, here?: string): string | undefined {
+    const of = chatOfLink(link) ?? (here === undefined ? undefined : this.#chatsLinked(link, here)[0]) ?? null;
     if (of === null) return undefined;
     const found = this.#core.data.chatLinked(this.stationNow(of.station), of.id);
     return found === undefined ? undefined : found.title || t("core-views.new_chat");
@@ -5168,7 +5168,7 @@ export class Views implements Owner {
         offsetMin: this.#core.host.utcOffsetMin(now),
         now,
         stations: this.stationNames(ofAddress(station)),
-        chatTitle: (link) => this.chatTitleOfLink(link),
+        chatTitle: (link) => this.chatTitleOfLink(link, station),
         turnOpen: isObject(get(session, "lastTurn")) && typeof get(get(session, "lastTurn"), "endedAt") !== "number",
         ...(md !== undefined ? { md } : {}),
       }),

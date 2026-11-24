@@ -214,3 +214,26 @@ test("a_client_asks_the_core_what_a_step_is", async () => {
   );
   core.close();
 });
+
+test("a_chat_a_call_names_by_its_link_shows_as_a_reference_to_it", async () => {
+  const { host, core } = await cloudCore();
+  const ui = core.connect();
+  await host.settle();
+  const agent = { key: "chat:c-0123456789abcdef", connect: "c1", profile: "p1", runtime: "claude", model: "opus", effort: null, process: "cold", pending: 0, lastTurn: null };
+  (core as J).inner.data.set({ topic: "chatRows", station: "ws/st" }, [
+    { id: "c-0123456789abcdef", session: "chat:c-0123456789abcdef", thread: null, title: "安卓启动超时", agents: [agent], last: null, unread: false, mine: false, lastActiveAt: 1, connect: null, origin: null },
+  ]);
+  const link = "https://app.still.fail/o/ws/st/chat%3Ac-0123456789abcdef";
+  const rowsOf = async (id: number, input: J) => {
+    call(core, ui, id, "history.tool", { name: "mcp__stillfail__session_history", call: JSON.stringify(input), result: null, said: true });
+    await host.settle();
+    return (answers(host.takeEmitted(), id) as J).ok.call[0].rows.map((r: J) => [r.key, r.value, r.form]);
+  };
+  // As agents give it (`@`-marked), and as a page whose key reads as an opaque id: the chat's title, linking to it.
+  assert.deepEqual(await rowsOf(1, { chat: `@${link}`, limit: 15 }), [["chat", `[安卓启动超时](${link})`, "long"], ["limit", "15", "short"]]);
+  const page = "https://app.still.fail/w/ws/s/st/chats/c-0123456789abcdef";
+  assert.deepEqual((await rowsOf(2, { to: page }))[0], ["to", `[安卓启动超时](${page})`, "long"]);
+  // A chat the device does not list: the field as it was.
+  const other = "https://app.still.fail/o/ws/st/chat%3Ac-ffffffffffffffff";
+  assert.deepEqual((await rowsOf(3, { chat: other }))[0], ["chat", other, "short"]);
+});

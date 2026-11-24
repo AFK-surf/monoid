@@ -134,7 +134,12 @@ test("a_chat_a_call_names_by_its_link_is_said_by_its_title_never_its_link", () =
   assert.equal(call("session_send", { to: link, message: "hi" }), "向 安卓启动超时 发送消息");
   // A chat the device does not list yet: its link is not shown in its place.
   assert.equal(told("mcp__stillfail__session_history", JSON.stringify({ chat: `@${link}` })), "读取执行历史");
-  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: "https://app.example/w/01WS/s/st/chats/c-1" })), "读取对话");
+  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: "https://app.example/w/01WS/s/st/chats/c-0123456789abcdef" })), "读取对话");
+  // A readable key is said as it is; a page naming no station is one of the history's station's.
+  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: "https://app.example/w/01WS/s/st/chats/standup" })), "读取对话 standup");
+  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: "https://app.still.fail/chats/standup" })), "读取对话 standup");
+  const own = (l: string) => (l === "https://app.still.fail/chats/standup" ? "每日站会" : undefined);
+  assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: "<https://app.still.fail/chats/standup>" }), { chatTitle: own }), "读取对话 每日站会");
   // One named by a sub-agent's chat earlier in the transcript, by its key.
   const agents = new Map([["c-90f61c4e4bcf74b3a5a92d93864aa1b6", "迁移子任务"]]);
   assert.equal(told("mcp__stillfail__chat_read", JSON.stringify({ chat: link }), { agents }), "读取对话 迁移子任务");

@@ -46,7 +46,7 @@ test("a_web_call_in_history_says_how_many_pages_it_opens", () => {
 });
 
 test("a_chat_a_call_names_by_its_link_is_said_by_its_title", () => {
-  const link = "https://app.still.fail/o/ws/st/chat%3Ac-90f6";
+  const link = "https://app.still.fail/o/ws/st/chat%3Ac-90f61c4e4bcf74b3";
   const text = JSON.stringify({ chat: `@${link}`, limit: 15 });
   const timeline = [
     { kind: "tool_call", tool: "mcp__stillfail__session_history", callId: "h1", text },

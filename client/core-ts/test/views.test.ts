@@ -4619,4 +4619,7 @@ test("a_chat_link_an_agent_names_is_titled_as_its_stations_list_has_it", () => {
   assert.equal(t.views.chatTitleOfLink("https://app.still.fail/o/ws/st/c-untitled"), words("core-views.new_chat"));
   assert.equal(t.views.chatTitleOfLink("https://app.still.fail/o/ws/st/chat%3Ac-none"), undefined);
   assert.equal(t.views.chatTitleOfLink("https://example.com/a"), undefined);
+  // A page naming no station: one of the station the history is on.
+  assert.equal(t.views.chatTitleOfLink("https://app.still.fail/chats/c-90f6", "ws/st"), "安卓启动超时");
+  assert.equal(t.views.chatTitleOfLink("https://app.still.fail/chats/c-90f6"), undefined);
 });
