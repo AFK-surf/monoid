@@ -860,83 +860,92 @@ test("cc-index: latest priority over name, latest ignores cancel, independent ob
     }
   }
 
-  // 3b. Observable turn-cursor rotation & cancel isolation across MB and Pion:
-  //     After 1 scan step on "long", turn cursor is 1 (dispatch). Seed a pending cc_order_dispatch row so
+  // 3b. Symmetric observable turn-cursor rotation & cancel isolation for BOTH `cc` and `names` across MB and Pion:
+  //     After 1 scan step on "long", that instance's turn cursor is 1 (dispatch). Seed a pending cc_order_dispatch row so
   //     BOTH lane 0 (scan) and lane 1 (dispatch) are runnable:
-  //     - Cancelling `names` or `latest` leaves `cc`'s turn at 1 -> next `{"session":"long"}` runs dispatch (scan_after unchanged, dispatch consumed).
-  //     - Cancelling `cc` resets `cc`'s turn to 0 -> next `{"session":"long"}` runs scan (scan_after advances, dispatch untouched).
-  for (const scenario of ["other-lanes-isolated", "cc-cancel-resets-turn"] as const) {
-    const mbDb = join(dir, `cc-obs-${scenario}-mb.db`);
-    const pionDb = join(dir, `cc-obs-${scenario}-pion.db`);
-    copyFileSync(seed, mbDb);
-    copyFileSync(seed, pionDb);
+  //     - Cancelling the OTHER lanes leaves the active instance's turn at 1 -> next step runs dispatch (scan_after unchanged, dispatch consumed).
+  //     - Cancelling the active instance itself resets its turn to 0 -> next step runs scan (scan_after advances, dispatch untouched).
+  for (const lane of ["cc", "names"] as const) {
+    const stepReq = lane === "names" ? '{"session":"long","name":true}\n' : '{"session":"long"}\n';
+    const otherCancelReqs =
+      lane === "names"
+        ? '{"session":"long","cancel":true}\n{"session":"long","latest":true,"cancel":true}\n'
+        : '{"session":"long","name":true,"cancel":true}\n{"session":"long","latest":true,"cancel":true}\n';
+    const selfCancelReq =
+      lane === "names" ? '{"session":"long","name":true,"cancel":true}\n' : '{"session":"long","cancel":true}\n';
 
-    const mbProc = new RawLineProc(bins.realMb, ["--builder", "cc-index", "--db", mbDb]);
-    const pionProc = new RawLineProc(bins.realPion, ["--builder", "cc-index", "--db", pionDb]);
-    try {
-      // Step 1: lane 0 (scan_step) runs, advancing cc.turns["long"] -> 1.
-      mbProc.writeRaw('{"session":"long"}\n');
-      pionProc.writeRaw('{"session":"long"}\n');
-      const [m1, p1] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
-      assert.deepStrictEqual(p1, m1);
-      assert.deepStrictEqual(p1, { done: false });
+    for (const scenario of ["other-lanes-isolated", "self-cancel-resets-turn"] as const) {
+      const tag = `${lane}-${scenario}`;
+      const mbDb = join(dir, `cc-obs-${tag}-mb.db`);
+      const pionDb = join(dir, `cc-obs-${tag}-pion.db`);
+      copyFileSync(seed, mbDb);
+      copyFileSync(seed, pionDb);
 
-      // Seed a pending dispatch row for a scanned thread in both DBs.
-      const scanAfterBefore: number[] = [];
-      for (const dbPath of [mbDb, pionDb]) {
-        const db = new DatabaseSync(dbPath);
-        try {
-          const row = db.prepare("SELECT scan_after FROM cc_sessions WHERE session='long'").get() as { scan_after: number };
-          scanAfterBefore.push(row.scan_after);
-          const th = (db.prepare("SELECT thread FROM cc_session_rows WHERE session='long' ORDER BY thread LIMIT 1").get() as { thread: number }).thread;
-          db.prepare("INSERT OR REPLACE INTO cc_order_dispatch(thread, after_session, through_session) VALUES (?, NULL, 'long')").run(th);
-        } finally {
-          db.close();
-        }
-      }
-      assert.equal(scanAfterBefore[0], scanAfterBefore[1]);
+      const mbProc = new RawLineProc(bins.realMb, ["--builder", "cc-index", "--db", mbDb]);
+      const pionProc = new RawLineProc(bins.realPion, ["--builder", "cc-index", "--db", pionDb]);
+      try {
+        // Step 1: lane 0 (scan_step) runs, advancing active instance's turns["long"] -> 1.
+        mbProc.writeRaw(stepReq);
+        pionProc.writeRaw(stepReq);
+        const [m1, p1] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
+        assert.deepStrictEqual(p1, m1);
+        assert.deepStrictEqual(p1, { done: false });
 
-      if (scenario === "other-lanes-isolated") {
-        // Cancel names and latest; neither may disturb cc's turn cursor (which stays at 1 = dispatch).
-        mbProc.writeRaw('{"session":"long","name":true,"cancel":true}\n{"session":"long","latest":true,"cancel":true}\n');
-        pionProc.writeRaw('{"session":"long","name":true,"cancel":true}\n{"session":"long","latest":true,"cancel":true}\n');
-      } else {
-        // Cancel cc itself -> resets cc.turns["long"] to 0 (scan).
-        mbProc.writeRaw('{"session":"long","cancel":true}\n');
-        pionProc.writeRaw('{"session":"long","cancel":true}\n');
-      }
-
-      // Step 2: observe which lane ran via SQLite state!
-      mbProc.writeRaw('{"session":"long"}\n');
-      pionProc.writeRaw('{"session":"long"}\n');
-      const [m2, p2] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
-      assert.deepStrictEqual(p2, m2);
-      assert.deepStrictEqual(p2, { done: false });
-
-      for (const [eng, dbPath] of [
-        ["mb", mbDb],
-        ["pion", pionDb],
-      ] as const) {
-        const db = new DatabaseSync(dbPath);
-        try {
-          const after = (db.prepare("SELECT scan_after FROM cc_sessions WHERE session='long'").get() as { scan_after: number }).scan_after;
-          const dispatchLeft = (db.prepare("SELECT count(*) AS n FROM cc_order_dispatch").get() as { n: number }).n;
-          if (scenario === "other-lanes-isolated") {
-            assert.equal(after, scanAfterBefore[0], `${eng}: names/latest cancel must NOT reset cc turn (scan_after stays)`);
-            assert.equal(dispatchLeft, 0, `${eng}: cc turn=1 must run dispatch_step`);
-          } else {
-            assert.ok(after > scanAfterBefore[0]!, `${eng}: cc cancel must reset turn to 0 (scan_after advances)`);
-            assert.equal(dispatchLeft, 1, `${eng}: cc turn=0 must leave dispatch untouched`);
+        // Seed a pending dispatch row for a scanned thread in both DBs.
+        const scanAfterBefore: number[] = [];
+        for (const dbPath of [mbDb, pionDb]) {
+          const db = new DatabaseSync(dbPath);
+          try {
+            const row = db.prepare("SELECT scan_after FROM cc_sessions WHERE session='long'").get() as { scan_after: number };
+            scanAfterBefore.push(row.scan_after);
+            const th = (db.prepare("SELECT thread FROM cc_session_rows WHERE session='long' ORDER BY thread LIMIT 1").get() as { thread: number }).thread;
+            db.prepare("INSERT OR REPLACE INTO cc_order_dispatch(thread, after_session, through_session) VALUES (?, NULL, 'long')").run(th);
+          } finally {
+            db.close();
           }
-        } finally {
-          db.close();
         }
+        assert.equal(scanAfterBefore[0], scanAfterBefore[1]);
+
+        if (scenario === "other-lanes-isolated") {
+          mbProc.writeRaw(otherCancelReqs);
+          pionProc.writeRaw(otherCancelReqs);
+        } else {
+          mbProc.writeRaw(selfCancelReq);
+          pionProc.writeRaw(selfCancelReq);
+        }
+
+        // Step 2: observe which lane ran via SQLite state!
+        mbProc.writeRaw(stepReq);
+        pionProc.writeRaw(stepReq);
+        const [m2, p2] = await Promise.all([mbProc.nextJson(), pionProc.nextJson()]);
+        assert.deepStrictEqual(p2, m2);
+        assert.deepStrictEqual(p2, { done: false });
+
+        for (const [eng, dbPath] of [
+          ["mb", mbDb],
+          ["pion", pionDb],
+        ] as const) {
+          const db = new DatabaseSync(dbPath);
+          try {
+            const after = (db.prepare("SELECT scan_after FROM cc_sessions WHERE session='long'").get() as { scan_after: number }).scan_after;
+            const dispatchLeft = (db.prepare("SELECT count(*) AS n FROM cc_order_dispatch").get() as { n: number }).n;
+            if (scenario === "other-lanes-isolated") {
+              assert.equal(after, scanAfterBefore[0], `${eng}/${tag}: other-lane cancels must NOT reset ${lane} turn (scan_after stays)`);
+              assert.equal(dispatchLeft, 0, `${eng}/${tag}: ${lane} turn=1 must run dispatch_step`);
+            } else {
+              assert.ok(after > scanAfterBefore[0]!, `${eng}/${tag}: ${lane} cancel must reset turn to 0 (scan_after advances)`);
+              assert.equal(dispatchLeft, 1, `${eng}/${tag}: ${lane} turn=0 must leave dispatch untouched`);
+            }
+          } finally {
+            db.close();
+          }
+        }
+        assert.equal(snapshotCc(pionDb), snapshotCc(mbDb), `${tag}: MB vs Pion 0-diff`);
+        assert.equal((await mbProc.finish()).code, 0);
+        assert.equal((await pionProc.finish()).code, 0);
+      } finally {
+        await Promise.all([mbProc.kill(), pionProc.kill()]);
       }
-      assert.equal(snapshotCc(pionDb), snapshotCc(mbDb), `${scenario}: MB vs Pion 0-diff`);
-      assert.equal((await mbProc.finish()).code, 0);
-      assert.equal((await pionProc.finish()).code, 0);
-    } finally {
-      await Promise.all([mbProc.kill(), pionProc.kill()]);
     }
   }
 });
