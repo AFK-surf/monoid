@@ -6,6 +6,7 @@ members = [
   "packages/js_json",
   "packages/builders_core",
   "packages/builders_index",
+  "packages/builders_requested",
   "packages/builders_stateful",
   "packages/footprint",
   "packages/memory",
@@ -24,6 +25,7 @@ sql_db = { path = "packages/sql_db" }
 js_json = { path = "packages/js_json" }
 builders_core = { path = "packages/builders_core" }
 builders_index = { path = "packages/builders_index" }
+builders_requested = { path = "packages/builders_requested" }
 builders_stateful = { path = "packages/builders_stateful" }
 footprint = { path = "packages/footprint" }
 memory = { path = "packages/memory" }
