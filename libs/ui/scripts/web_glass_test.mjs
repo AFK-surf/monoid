@@ -309,7 +309,21 @@ function runGlassVectorsInPage() {
         for (let ch = 0; ch < 3; ch++) textDiff = Math.max(textDiff, Math.abs(a[ch] - b[ch]));
       }
     }
-    roi.v9_seg = { topBR: top[2] - top[0], botBR: bot[2] - bot[0], lftRB: lft[0] - lft[2], rgtRB: rgt[0] - rgt[2], textDiff };
+    let strokeSpan = 0;
+    for (let py = 30 * 3; py <= 50 * 3; py++) {
+      if (lumaOf(pxAt(shot, 62 * 3, py)) < 160) strokeSpan++;
+    }
+    const tp = new Float32Array(3 * INST);
+    rect(tp, 0, 0, 0, VW, VH, 0, 1, 1, 1, 1, 0);
+    rect(tp, INST, 10, 24, 140, 32, 0, 190 / 255, 190 / 255, 190 / 255, 1, 0);
+    rect(tp, 2 * INST, 25, 17.5, 110, 45, 6, 1, 1, 1, 0, -5611);
+    tp[2 * INST + 4] = 22.5; tp[2 * INST + 6] = 1; tp[2 * INST + 7] = -48;
+    tp[2 * INST + 12] = 1; tp[2 * INST + 13] = 9; tp[2 * INST + 15] = 1; tp[2 * INST + 21] = 9; tp[2 * INST + 22] = 0.04;
+    H.present(tp, 3, 1, 1, 1);
+    const shotT = H.renderPixels();
+    const pinchOutL = lumaOf(pxAt(shotT, 80 * 3, Math.floor(25.5 * 3)));
+    const pinchInL = lumaOf(pxAt(shotT, 80 * 3, Math.floor(29.0 * 3)));
+    roi.v9_seg = { topBR: top[2] - top[0], botBR: bot[2] - bot[0], lftRB: lft[0] - lft[2], rgtRB: rgt[0] - rgt[2], textDiff, strokeSpan, pinchOutL, pinchInL };
   }
   // V9e: Switch uniform green center + blue track swap + OFF r9->r4.5 + 5-level press monotonic area
   {
@@ -984,7 +998,10 @@ check(roi.v9_sw.tipGr < 15, `v9_sw tipGr=${roi.v9_sw.tipGr}`);
 check(roi.v9_sw_off.coreR > roi.v9_sw_off.moatR + 15 && roi.v9_sw_off.rmR > roi.v9_sw_off.h0R, `v9_sw_off=${JSON.stringify(roi.v9_sw_off)}`);
 check(roi.v9_sw_off.rcapBR < 20 && roi.v9_sw_off.rtirBR > 80, `v9_sw_off right cap=${JSON.stringify(roi.v9_sw_off)}`);
 check(roi.v9_half_press[0] >= 4 && roi.v9_half_press[1] >= roi.v9_half_press[0] && roi.v9_half_press[2] > roi.v9_half_press[1], `v9_half_press=${JSON.stringify(roi.v9_half_press)}`);
-check(roi.v9_seg.topBR >= 10 && roi.v9_seg.botBR >= 10 && roi.v9_seg.lftRB >= 20 && roi.v9_seg.rgtRB >= 20 && roi.v9_seg.textDiff === 0, `v9_seg=${JSON.stringify(roi.v9_seg)}`);
+check(roi.v9_seg.topBR >= 10 && roi.v9_seg.botBR >= 10 && roi.v9_seg.lftRB >= 20 && roi.v9_seg.rgtRB >= 20 && roi.v9_seg.textDiff === 0 &&
+  roi.v9_seg.strokeSpan >= 35 && roi.v9_seg.strokeSpan <= 37 &&
+  roi.v9_seg.pinchOutL > 240 && roi.v9_seg.pinchInL < 215,
+  `v9_seg=${JSON.stringify(roi.v9_seg)}`);
 check(Math.abs(roi.v9_sw_green_ctr[0] - 57) <= 2 && Math.abs(roi.v9_sw_green_ctr[1] - 218) <= 2 && Math.abs(roi.v9_sw_green_ctr[2] - 97) <= 2,
   `v9_sw_green_ctr=${JSON.stringify(roi.v9_sw_green_ctr)}`);
 check(roi.v9_sw_blue_caustic[2] - roi.v9_sw_blue_caustic[0] >= 100 && roi.v9_sw_blue_caustic[2] > roi.v9_sw_blue_caustic[1],

@@ -670,6 +670,34 @@ static void test_v8_v9_droplet_roi_gates(void) {
         }
         printf("win_gpu: v9_seg_text_roi_diff=%d\n", text_max_diff);
         CHECK(text_max_diff == 0);
+        // Role 3 interior 1.00x vertical text scale (12pt = 36px@3x dark stroke, no ~20% compression)
+        int seg_stroke_span = 0;
+        for (int py = 30 * 3; py <= 50 * 3; py++) {
+          uint8_t *sc = W_PX(px, AW3, 62 * 3, py);
+          double sl = 0.2126 * sc[0] + 0.7152 * sc[1] + 0.0722 * sc[2];
+          if (sl < 160.0) seg_stroke_span++;
+        }
+        // Role 3 track pinch (+3.0pt outer grey track pulled white at y=25.5pt, grey at y=29.0pt)
+        double tp[3 * MB_INST];
+        fill_p0_rect(tp, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 1.0, 0);
+        fill_p0_rect(tp + MB_INST, 10.0, 24.0, 140.0, 32.0, 0, 190.0 / 255.0, 190.0 / 255.0, 190.0 / 255.0, 1.0, 0);
+        fill_p0_rect(tp + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, 0.0, -5611.0);
+        tp[2 * MB_INST + 4] = 22.5; tp[2 * MB_INST + 6] = 1.0; tp[2 * MB_INST + 7] = -48.0;
+        tp[2 * MB_INST + 12] = 1.0; tp[2 * MB_INST + 13] = 9.0; tp[2 * MB_INST + 15] = 1.0;
+        tp[2 * MB_INST + 21] = 9.0; tp[2 * MB_INST + 22] = 0.04;
+        uint8_t *pxt = render_rgba_pixels_of(tp, 3, 1.0, 1.0, 1.0, 3.0, AW3, AH3);
+        CHECK(pxt != NULL);
+        if (pxt) {
+          uint8_t *po = W_PX(pxt, AW3, 80 * 3, (int)(25.5 * 3));
+          uint8_t *pi = W_PX(pxt, AW3, 80 * 3, (int)(29.0 * 3));
+          double pinch_out_L = 0.2126 * po[0] + 0.7152 * po[1] + 0.0722 * po[2];
+          double pinch_in_L = 0.2126 * pi[0] + 0.7152 * pi[1] + 0.0722 * pi[2];
+          printf("win_gpu: v9_seg_scale stroke_span=%dpx pinch_out_L=%.1f pinch_in_L=%.1f\n",
+                 seg_stroke_span, pinch_out_L, pinch_in_L);
+          CHECK(seg_stroke_span >= 35 && seg_stroke_span <= 37);
+          CHECK(pinch_out_L > 240.0 && pinch_in_L < 215.0);
+          free(pxt);
+        }
         free(px0);
       }
       free(px);

@@ -3470,6 +3470,33 @@ int main(void) {
       }
       printf("gles_render: v9_seg_text_roi_diff=%d\n", text_max_diff);
       CHECK(text_max_diff == 0);
+      // Role 3 interior 1.00x vertical text scale (12pt = 36px@3x dark stroke, no ~20% compression)
+      int seg_stroke_span = 0;
+      for (int py = 30 * 3; py <= 50 * 3; py++) {
+        unsigned char *sc = V_PX(px, 62 * 3, py);
+        double sl = 0.2126 * sc[0] + 0.7152 * sc[1] + 0.0722 * sc[2];
+        if (sl < 160.0) seg_stroke_span++;
+      }
+      // Role 3 track pinch (+3.0pt outer grey track pulled white at y=25.5pt, grey at y=29.0pt)
+      double tp[3 * MB_INST];
+      V_RECT(tp, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 0);
+      V_RECT(tp + MB_INST, 10.0, 24.0, 140.0, 32.0, 0, 190.0 / 255.0, 190.0 / 255.0, 190.0 / 255.0, 0);
+      V_RECT(tp + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -5611);
+      tp[2 * MB_INST + 4] = 22.5; tp[2 * MB_INST + 6] = 1.0; tp[2 * MB_INST + 7] = -48.0;
+      tp[2 * MB_INST + 11] = 0.0; tp[2 * MB_INST + 12] = 1.0; tp[2 * MB_INST + 13] = 9.0;
+      tp[2 * MB_INST + 15] = 1.0; tp[2 * MB_INST + 21] = 9.0; tp[2 * MB_INST + 22] = 0.04; tp[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(tp, 3, 1.0, 1.0, 1.0);
+      unsigned char *pxt = pixels_of_fb(vfb);
+      unsigned char *po = V_PX(pxt, 80 * 3, (int)(25.5 * 3));
+      unsigned char *pi = V_PX(pxt, 80 * 3, (int)(29.0 * 3));
+      double pinch_out_L = 0.2126 * po[0] + 0.7152 * po[1] + 0.0722 * po[2];
+      double pinch_in_L = 0.2126 * pi[0] + 0.7152 * pi[1] + 0.0722 * pi[2];
+      printf("gles_render: v9_seg_scale stroke_span=%dpx pinch_out_L=%.1f pinch_in_L=%.1f\n",
+             seg_stroke_span, pinch_out_L, pinch_in_L);
+      CHECK(seg_stroke_span >= 35 && seg_stroke_span <= 37);
+      CHECK(pinch_out_L > 240.0 && pinch_in_L < 215.0);
+      free(pxt);
       free(px);
       free(px0);
     }

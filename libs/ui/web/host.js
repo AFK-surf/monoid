@@ -1083,13 +1083,20 @@
       float u = max(d - 1.20 * hs, 0.0) / (2.80 * hs);
       s_cap = 1.28 * 1.847264 * u * u * exp(-u) * medialTaper;
       H_opt = 10.6 * hs * refScale;
+    } else if (role == 3) {
+      float r_lip = 2.15 * hs;
+      float L_lip = 0.42 * hs;
+      s_lip = 14.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;
+      float u = max(d - 1.95 * hs, 0.0) / (1.80 * hs);
+      float capCut = 1.0 - smoothstep(7.5 * hs, 10.5 * hs, d);
+      s_cap = 1.16 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;
+      H_opt = 10.6 * hs * refScale;
     } else {
       float r_lip = 2.15 * hs;
       float L_lip = 0.42 * hs;
       s_lip = 14.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;
       float u = max(d - 1.95 * hs, 0.0) / (2.60 * hs);
-      float cap_amp = (role == 3) ? 1.16 : 0.56;
-      s_cap = cap_amp * 1.847264 * u * u * exp(-u) * medialTaper;
+      s_cap = 0.56 * 1.847264 * u * u * exp(-u) * medialTaper;
       H_opt = 10.6 * hs * refScale;
     }
     return vec2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);
