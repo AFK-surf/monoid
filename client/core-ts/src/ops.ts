@@ -132,6 +132,9 @@ export const PARAMS: Record<string, string> = {
   "machineSessions.list": "",
   "machineSessions.read": "runtime:string id:string limit?:number",
   "machineSessions.continue": "runtime?:string id?:string",
+  "import.sources": "",
+  "import.list": "source:string includeArchived?:boolean",
+  "import.run": "source:string ids?:strings includeArchived?:boolean",
   "automaticDecisions.save": "input:json",
   "automaticDecisions.refresh": "",
   "automaticDecisions.review": "",
@@ -581,6 +584,12 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("GET", () => `/machine-sessions/${p.at("runtime")}/${p.at("id")}?limit=${optU64("limit") ?? 200}`, null, NONE);
     case "machineSessions.continue":
       return op("POST", () => "/machine-sessions", p.pick(["runtime", "id"]), NONE);
+    case "import.sources":
+      return op("GET", () => "/imports", null, NONE);
+    case "import.list":
+      return op("GET", () => `/imports/${p.at("source")}/sessions${p.bool("includeArchived") ? "?includeArchived=1" : ""}`, null, NONE);
+    case "import.run":
+      return op("POST", () => `/imports/${p.at("source")}/run`, p.pick(["ids", "includeArchived"]), NONE);
     case "automaticDecisions.save":
       return op("PUT", () => "/automatic-decisions", p.has("input") ? p.v.input : {}, OVERVIEW);
     case "automaticDecisions.review":

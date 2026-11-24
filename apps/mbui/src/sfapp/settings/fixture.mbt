@@ -191,6 +191,8 @@ priv struct SettingsFixture {
   mut ours_off : Bool
   /// whether the profiles' overview uses the multi-pool summary fixture (`settings-profiles-sum-a`)
   mut summary : Bool
+  /// external T3 Code thread IDs imported during this fixture run (`import.run`)
+  import_done : Array[String]
 }
 
 ///|
@@ -278,6 +280,7 @@ let fx : SettingsFixture = {
   relays: [],
   ours_off: false,
   summary: false,
+  import_done: [],
 }
 
 ///|
@@ -564,6 +567,7 @@ fn fixture_reset() -> Unit {
   fx.kept_cleared.clear()
   fx.relays.clear()
   fx.ours_off = false
+  fx.import_done.clear()
   fx.resets_used = 0
   fx.reset_expiry = false
   fx.reset_kinds = false
@@ -1002,6 +1006,7 @@ pub fn fixture_page(mode : String) -> String {
       fx.copies = Some(fixture_copies_config())
       fx.mba_online = true
     }
+    "settings-import" => fx.mba_online = true
     "settings-backup-station" | "settings-backup-s3-form" => {
       fx.copies = Some(fixture_copies_config())
       if m == "settings-backup-s3-form" {
@@ -1329,6 +1334,7 @@ pub fn fixture_page(mode : String) -> String {
     _ if moves => "move:ws1/st1"
     "settings-backup" => "backup"
     "settings-backup-station" | "settings-backup-s3-form" | "settings-backup-restore-s3" => "backup:ws1/st1"
+    "settings-import" => "import"
     "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-override" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-copies-config" | "settings-station-copies-s3-form" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restore-s3" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
@@ -4392,6 +4398,10 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
   if name == "copies.history" {
     return Some(Ok(fixture_copies_history()))
   }
+  match import_fixture_call(name, p) {
+    Some(r) => return Some(r)
+    None => ()
+  }
   match move_fixture_call(name, p) {
     Some(r) => return Some(r)
     None => ()
@@ -6068,6 +6078,126 @@ fn fixture_copies_maple() -> Json {
       ]),
     ),
   ])
+}
+
+///|
+/// Fixture responses for Settings > Import (`import.sources`, `import.list`, `import.run`).
+fn fx_import_rows() -> Array[(String, String, String, String, String, Int, Bool)] {
+  [
+    ("t3-1", "修复 OAuth 登录重定向", "stillfail", "antigravity", "gemini-3-pro", 12, false),
+    ("t3-2", "梳理多语言翻译词条", "monoid", "claude", "claude-sonnet-4-6", 6, false),
+    ("t3-3", "调研旧版索引迁移", "monoid", "codex", "gpt-5.4", 4, true),
+  ]
+}
+
+///|
+fn import_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
+  match name {
+    "import.sources" => {
+      let rows = fx_import_rows()
+      let active = rows.filter(fn(r) { !r.6 }).length()
+      let archived = rows.filter(fn(r) { r.6 }).length()
+      Some(
+        Ok(
+          obj([
+            (
+              "sources",
+              Json::array([
+                obj([
+                  ("id", str("t3")),
+                  ("name", str("T3 Code")),
+                  ("available", Json::boolean(true)),
+                  ("dataPath", str("/Users/lin/.t3/userdata/statev2.sqlite")),
+                  ("activeCount", Json::number(active.to_double())),
+                  ("archivedCount", Json::number(archived.to_double())),
+                  ("importedCount", Json::number(fx.import_done.length().to_double())),
+                  ("error", Json::null()),
+                ]),
+              ]),
+            ),
+          ]),
+        ),
+      )
+    }
+    "import.list" => {
+      let inc = flag(p, "includeArchived")
+      let out : Array[Json] = []
+      for r in fx_import_rows() {
+        if r.6 && !inc {
+          continue
+        }
+        let imported = fx.import_done.contains(r.0)
+        out.push(
+          obj([
+            ("source", str("t3")),
+            ("id", str(r.0)),
+            ("title", str(r.1)),
+            ("project", str(r.2)),
+            ("cwd", str("/Users/lin/src/" + r.2)),
+            ("provider", str(r.3)),
+            ("runtime", str(if r.3 == "antigravity" { "agy" } else { r.3 })),
+            ("model", str(r.4)),
+            ("effort", str("high")),
+            ("messageCount", Json::number(r.5.to_double())),
+            ("updatedAt", Json::number(1795500000000.0)),
+            ("createdAt", Json::number(1795490000000.0)),
+            ("archived", Json::boolean(r.6)),
+            ("nativeResumable", Json::boolean(true)),
+            ("session", if imported { str("chat:imp-" + r.0) } else { Json::null() }),
+          ]),
+        )
+      }
+      Some(Ok(obj([("source", str(text(p, "source"))), ("sessions", Json::array(out))])))
+    }
+    "import.run" => {
+      let inc = flag(p, "includeArchived")
+      let wanted = strings(p, "ids")
+      let items_out : Array[Json] = []
+      let mut imported = 0
+      let mut skipped = 0
+      for r in fx_import_rows() {
+        let take = if !wanted.is_empty() { wanted.contains(r.0) } else { !r.6 || inc }
+        if !take {
+          continue
+        }
+        if fx.import_done.contains(r.0) {
+          skipped += 1
+          items_out.push(
+            obj([
+              ("id", str(r.0)),
+              ("title", str(r.1)),
+              ("status", str("skipped")),
+              ("session", str("chat:imp-" + r.0)),
+            ]),
+          )
+        } else {
+          fx.import_done.push(r.0)
+          imported += 1
+          items_out.push(
+            obj([
+              ("id", str(r.0)),
+              ("title", str(r.1)),
+              ("status", str("imported")),
+              ("session", str("chat:imp-" + r.0)),
+              ("resumed", Json::boolean(true)),
+            ]),
+          )
+        }
+      }
+      Some(
+        Ok(
+          obj([
+            ("source", str(text(p, "source"))),
+            ("imported", Json::number(imported.to_double())),
+            ("skipped", Json::number(skipped.to_double())),
+            ("failed", Json::number(0.0)),
+            ("items", Json::array(items_out)),
+          ]),
+        ),
+      )
+    }
+    _ => None
+  }
 }
 
 ///|

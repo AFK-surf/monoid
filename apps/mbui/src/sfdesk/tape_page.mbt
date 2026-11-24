@@ -617,6 +617,10 @@ fn tape_made(
       made("station-backup/" + st, fn(p, core, here, _stint, told, _acts) {
         @sfpages.station_backup_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Import) =>
+      made("import", fn(p, core, here, _stint, told, _acts) {
+        @sfpages.import_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(StationMove(st)) =>
       made("station-move/" + st, fn(p, core, here, _stint, told, _acts) {
         @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)

@@ -27,7 +27,7 @@ import {
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addThreadLinksColumn, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addImportedSessions, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addThreadLinksColumn, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
 import { OWNED_WS_SQL, activeConversationMembers, birthThreadsOf, conversationOf, membersOf, reanchorOnDeleteInTx, repairConversations, settleConversationInTx } from "./conversations.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
@@ -829,6 +829,7 @@ export class Store {
       addWaitWatchColumn(db);
       addWorkspaceColumns(db);
       addConvColumn(db);
+      addImportedSessions(db);
       installArchivePolicyIndex(db);
       addOpenerTitle(db);
       addLedColumn(db);
@@ -1977,6 +1978,7 @@ export class Store {
         this.#deleteMarks(PIN_MARKS, key);
         this.#run("DELETE FROM transcript_lengths WHERE session = ?", key);
         this.#run("DELETE FROM session_usage WHERE session = ?", key);
+        this.#run("DELETE FROM imported_sessions WHERE session_key = ?", key);
         this.#run("DELETE FROM sessions WHERE key = ?", key);
         this.#wsOf.delete(key);
         for (const [token, of] of this.#tokenKey) if (of === key) this.#tokenKey.delete(token);
@@ -4955,6 +4957,54 @@ export class Store {
       c.thread, c.n, c.kind, c.target, c.ts, c.author_kind, c.author, c.text, c.attachments, c.quotes, c.declared, c.client, c.profile, c.runtime,
       c.options, c.card, c.at, c.agent_identity, c.letter, c.change,
     );
+  }
+
+  /// Session key already imported for `(source, externalId)` in workspace `ws` (null: not imported or session deleted).
+  importedSession(source: string, externalId: string, ws: string | null = null): string | null {
+    const row = this.#one(
+      `SELECT i.session_key FROM imported_sessions i
+       JOIN sessions s ON s.key = i.session_key
+       WHERE i.source = ?1 AND i.external_id = ?2 AND i.ws = ?3
+       LIMIT 1`,
+      source,
+      externalId,
+      ws ?? "",
+    );
+    return typeof row?.session_key === "string" ? row.session_key : null;
+  }
+
+  /// Map of `external_id -> session_key` for all still-present sessions imported from `source` in workspace `ws`.
+  importedSessionsOf(source: string, ws: string | null = null, limit = 10_000): Map<string, string> {
+    const rows = this.#all(
+      `SELECT i.external_id, i.session_key FROM imported_sessions i
+       JOIN sessions s ON s.key = i.session_key
+       WHERE i.source = ?1 AND i.ws = ?2
+       LIMIT ?3`,
+      source,
+      ws ?? "",
+      limit,
+    );
+    const out = new Map<string, string>();
+    for (const r of rows) {
+      if (typeof r.external_id === "string" && typeof r.session_key === "string") out.set(r.external_id, r.session_key);
+    }
+    return out;
+  }
+
+  /// Records an imported external conversation mapping `(source, externalId, ws) -> sessionKey`.
+  recordImportedSession(source: string, externalId: string, sessionKey: string, ws: string | null = null): void {
+    this.#tx(() => {
+      this.#run(
+        `INSERT INTO imported_sessions (source, external_id, ws, session_key, imported_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (source, external_id, ws) DO UPDATE SET session_key = excluded.session_key, imported_at = excluded.imported_at`,
+        source,
+        externalId,
+        ws ?? "",
+        sessionKey,
+        this.now(),
+      );
+    });
   }
 }
 

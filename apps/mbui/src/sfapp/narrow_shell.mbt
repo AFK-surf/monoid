@@ -592,6 +592,10 @@ fn narrow_made_as(
       made("station-backup/" + st, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.station_backup_node(p, core, here, st, on_back=core.pop, frame~)
       })
+    Setting(Import) =>
+      made("import", fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.import_node(p, core, here, on_back=core.pop, frame~)
+      })
     Setting(StationMove(st)) =>
       made("station-move/" + st, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.station_move_node(p, core, here, st, on_back=core.pop, frame~)

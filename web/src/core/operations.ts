@@ -63,6 +63,9 @@ export interface OperationParams {
   "machineSessions.list": {  };
   "machineSessions.read": { runtime: string; id: string; limit?: number | null | undefined };
   "machineSessions.continue": { runtime?: string | null | undefined; id?: string | null | undefined };
+  "import.sources": {  };
+  "import.list": { source: string; includeArchived?: boolean | null | undefined };
+  "import.run": { source: string; ids?: string[] | null | undefined; includeArchived?: boolean | null | undefined };
   "automaticDecisions.save": { input: unknown };
   "automaticDecisions.refresh": {  };
   "automaticDecisions.review": {  };
@@ -210,7 +213,7 @@ export interface OperationParams {
   "admin.revokeKey": { id: string };
 }
 
-export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.history", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
+export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.history", "copies.retirePreview", "drive.folders", "file.peek", "import.list", "import.sources", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
 
 type Call = (name: string, params: Record<string, unknown>) => Promise<unknown>;
 
@@ -279,6 +282,9 @@ export function bindStationOperations(call: Call) {
     machineSessionsList: <T = unknown>(params: OperationParams["machineSessions.list"] = {}) => call("machineSessions.list", params) as Promise<T>,
     machineSessionsRead: <T = unknown>(params: OperationParams["machineSessions.read"]) => call("machineSessions.read", params) as Promise<T>,
     machineSessionsContinue: <T = unknown>(params: OperationParams["machineSessions.continue"] = {}) => call("machineSessions.continue", params) as Promise<T>,
+    importSources: <T = unknown>(params: OperationParams["import.sources"] = {}) => call("import.sources", params) as Promise<T>,
+    importList: <T = unknown>(params: OperationParams["import.list"]) => call("import.list", params) as Promise<T>,
+    importRun: <T = unknown>(params: OperationParams["import.run"]) => call("import.run", params) as Promise<T>,
     automaticDecisionsSave: <T = unknown>(params: OperationParams["automaticDecisions.save"]) => call("automaticDecisions.save", params) as Promise<T>,
     automaticDecisionsRefresh: <T = unknown>(params: OperationParams["automaticDecisions.refresh"] = {}) => call("automaticDecisions.refresh", params) as Promise<T>,
     automaticDecisionsReview: <T = unknown>(params: OperationParams["automaticDecisions.review"] = {}) => call("automaticDecisions.review", params) as Promise<T>,
