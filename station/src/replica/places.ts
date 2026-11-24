@@ -426,6 +426,7 @@ export class FolderPlace implements Place {
         const was = await this.#headMeta(ws, origin, gen);
         if (was !== null && (was.to > head.to || (!was.partial && was.to >= head.to))) return;
         for (const b of head.batches) if (!(await this.#exists(join(dir, "log", b)))) throw new Error(`batch ${b} is not here yet`);
+        let resolvedIncoming: ResolvedManifest | undefined;
         let manifestRefs: Set<string> | undefined;
         if (head.transcriptManifest !== undefined) {
           const resolved = await this.#resolveHeadManifest(ws, origin, head);
@@ -436,7 +437,31 @@ export class FolderPlace implements Place {
               throw new Error(`transcript chunk ${chunkHash} is not here yet`);
             }
           }
+          resolvedIncoming = resolved;
           manifestRefs = manifestAllRefs(resolved);
+        }
+        if (was !== null && was.partial && was.to === head.to) {
+          // Under #withLock, verify the incoming head covers the live on-disk same-to partial head
+          // so a concurrent partial update between handOver's held() and put("head") can never be clobbered.
+          const existing = await this.#head(join(dir, "head.json"));
+          if (existing === null) return;
+          if (!sameBatches(head.batches, existing.batches) || !sameFileMap(head.files, existing.files)) return;
+          let existingTf: Record<string, number>;
+          if (existing.transcriptManifest !== undefined) {
+            try {
+              const resolvedExisting = await this.#resolveHeadManifest(ws, origin, existing);
+              if (resolvedExisting === null) return;
+              existingTf = { ...(existing.transcriptFiles ?? {}), ...resolvedExisting.files };
+            } catch {
+              return;
+            }
+          } else {
+            existingTf = existing.transcriptFiles ?? {};
+          }
+          const incomingTf = resolvedIncoming !== undefined
+            ? { ...(head.transcriptFiles ?? {}), ...resolvedIncoming.files }
+            : (head.transcriptFiles ?? {});
+          if (!isSubsetFileMap(existingTf, incomingTf)) return;
         }
         const st = await this.#whole(join(dir, "head.json"), oneOf(bytes));
         this.#cacheHead(`${ws}\n${origin}\n${gen}`, st, head, manifestRefs);
@@ -1069,7 +1094,11 @@ export function holdsAll(mine: Held, theirs: Held): boolean {
     if (t.head.to > g.head.to) return true;
     if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
     if (g.head.transcriptManifest !== undefined || t.head.transcriptManifest !== undefined) {
-      return g.head.transcriptManifest !== undefined && g.head.transcriptManifest === t.head.transcriptManifest;
+      return (
+        g.head.transcriptManifest !== undefined &&
+        g.head.transcriptManifest === t.head.transcriptManifest &&
+        isSubsetFileMap(g.head.transcriptFiles, t.head.transcriptFiles)
+      );
     }
     if (!isSubsetFileMap(g.head.transcriptFiles, t.head.transcriptFiles)) return false;
     return true;

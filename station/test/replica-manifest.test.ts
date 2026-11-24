@@ -1692,4 +1692,55 @@ test("25. R4: same-to partial <-> full bidirectional superset check rejects conf
   const upgraded = (await toPartialSubset.held(HOME, origin)).gens[0]!.head!;
   assert.equal(upgraded.partial, undefined, "upgraded head is full");
   assert.deepEqual(upgraded.transcriptFiles, { [cCommon]: 2, [cUniqueFull]: 2 });
+
+  // 25d. R5 TOCTOU: concurrent same-to partial update between handOver's to.held() and to.put('head')
+  //      adds a unique chunk `cConcurrentOnly` not in `fromFull` -> FolderPlace.put('head') under #withLock
+  //      MUST refuse overwrite, preserve `cConcurrentOnly` on disk, and handOver MUST return false!
+  const cConcurrentOnly = hex64("44", "4");
+  const toToctou = new FolderPlace(dataDir("d72a-r5-toctou"));
+  await toToctou.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await toToctou.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await toToctou.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstPartialSubset)));
+
+  let injectedConcurrent = false;
+  const wrappedTo: Place = {
+    held: (ws, orig) => toToctou.held(ws, orig),
+    putFile: (ws, orig, hash, src) => toToctou.putFile(ws, orig, hash, src),
+    drop: (ws, orig, g, b, f) => toToctou.drop(ws, orig, g, b, f),
+    put: async (ws, orig, g, kind, name, bytes) => {
+      if (kind === "head" && !injectedConcurrent) {
+        injectedConcurrent = true;
+        // Simulate concurrent writer updating the same-to partial head with a new unique chunk before handOver's put("head")!
+        await toToctou.putFile(ws, orig, cConcurrentOnly, Buffer.from("co"));
+        const concurrentPartial = makeHead({
+          origin,
+          gen,
+          batches: [batch],
+          transcriptFiles: { [cCommon]: 2, [cConcurrentOnly]: 2 },
+          partial: true,
+          to: 2,
+          made: 2000,
+        });
+        await toToctou.put(ws, orig, g, "head", "head.json", Buffer.from(JSON.stringify(concurrentPartial)));
+      }
+      return toToctou.put(ws, orig, g, kind, name, bytes);
+    },
+  };
+  assert.equal(await handOver(fromFull, wrappedTo, HOME, origin), false, "TOCTOU concurrent partial update must prevent overwrite and return false");
+  assert.equal(injectedConcurrent, true);
+  const afterToctou = (await toToctou.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(afterToctou.partial, true, "concurrent partial head preserved on disk");
+  assert.deepEqual(afterToctou.transcriptFiles, { [cCommon]: 2, [cConcurrentOnly]: 2 }, "cConcurrentOnly preserved on disk");
+
+  // Also verify synchronous holdsAll rejects dual-field heads sharing the same transcriptManifest root when inline-only refs differ
+  const encCommon = encodeTranscriptManifest({ [cCommon]: 2 });
+  const dualMine: Held = {
+    gens: [{ gen, head: makeHead({ origin, gen, batches: [batch], transcriptManifest: encCommon.rootHash, transcriptFiles: { [cUniqueFull]: 2 }, to: 2 }), batches: [batch] }],
+    files: [cCommon, cUniqueFull],
+  };
+  const dualTheirsMissingInline: Held = {
+    gens: [{ gen, head: makeHead({ origin, gen, batches: [batch], transcriptManifest: encCommon.rootHash, to: 2 }), batches: [batch] }],
+    files: [cCommon, cUniqueFull],
+  };
+  assert.equal(holdsAll(dualMine, dualTheirsMissingInline), false, "sync holdsAll must check inline transcriptFiles superset even when transcriptManifest roots match");
 });
