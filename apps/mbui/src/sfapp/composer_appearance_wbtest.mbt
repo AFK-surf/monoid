@@ -359,7 +359,7 @@ test "adding files, wrapping to row 2, stacking quote, and removing all never cl
   t.tap_text("发消息")
   t.run_for(@ui.move_most_ms)
   let w = @sfbase.writing(src, "ws1/st1:s-c1")
-  let check_window = fn(tag : String, allow_quote_foot_clip? : Bool = false) raise {
+  let check_window = fn(tag : String, allow_quote_foot_clip : Bool) raise {
     let mut ms = 0.0
     while ms < @ui.move_most_ms {
       t.run_for(@ui.frame_period_default)
@@ -370,27 +370,27 @@ test "adding files, wrapping to row 2, stacking quote, and removing all never cl
   }
   // 0 -> 1 file
   @sfbase.writing_add(src, w, "ws1/st1", "发布变更清单说明.md", b"abc")
-  check_window("file 0->1")
+  check_window("file 0->1", false)
   // same row 2nd attachment (image)
   @sfbase.writing_add(src, w, "ws1/st1", "截图.png", png_head())
-  check_window("same row pic")
+  check_window("same row pic", false)
   // wrap to row 2
   @sfbase.writing_add(src, w, "ws1/st1", "性能压测结果报告.pdf", b"def")
-  check_window("file 3")
+  check_window("file 3", false)
   @sfbase.writing_add(src, w, "ws1/st1", "线上告警排查记录.log", b"ghi")
-  check_window("file 4 row2")
+  check_window("file 4 row2", false)
   // stack quote on files
   @sfbase.writing_quote(src, w, { "author": "Ana", "text": quote_passage, "ts": "ts8" })
-  check_window("quote on files", allow_quote_foot_clip=true)
+  check_window("quote on files", true)
   // remove quote and files one by one
   let qid = text(Some(w.quotes.get()[0]), "id")
   @sfbase.writing_unquote(src, w, qid)
-  check_window("remove quote", allow_quote_foot_clip=true)
+  check_window("remove quote", true)
   while w.files.get().length() > 0 {
     let files = w.files.get()
     let fid = text(Some(files[files.length() - 1]), "id")
     @sfbase.writing_remove(src, w, fid)
-    check_window("remove file left=\{w.files.get().length()}")
+    check_window("remove file left=\{w.files.get().length()}", false)
   }
 }
 
