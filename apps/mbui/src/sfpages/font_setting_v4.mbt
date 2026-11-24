@@ -189,7 +189,7 @@ fn font_preview_v5_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
 /// Compact 4-option preset strip (4-col wide, auto 2x2 narrow via flex-wrap; zero fake Aa specimen headers).
 fn font_presets_strip_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
   parent.box(fn(sec) {
-    @sf.style_node(sec, fn() { fp_v5_section })
+    @sf.style_node(sec, fn() { fp_v5_presets_sec })
     @sf.words_node(sec, fn() { @sf.t("web-pages.appearance.fonts.presets") }, fn() { fp_v5_sec_heading }) |> ignore
     sec.box(fn(row) {
       @sf.style_node(row, fn() { fp_v5_preset_row })
@@ -299,9 +299,11 @@ fn font_picker_unified_node(parent : @view.View, ctx : FontPageCtx, over_faces :
             fn() { @settings.fonts_script_at.get() == 1 }, fn() { fonts_trying.set(""); @settings.fonts_script_at.set(1) })
         }) |> ignore
         top.show(at_once=true, fn() { @ui.can_list_local_fonts() }, fn(src_box) {
-          @sf.style_node(src_box, fn() { fp_v5_tab_row })
-          tab_btn(src_box, fn() { @sf.t("web-pages.appearance.fonts.curated") }, fn() { !local_open.get() }, fn() { fonts_trying.set(""); local_open.set(false) })
-          tab_btn(src_box, fn() { @sf.t("web-pages.appearance.fonts.local") }, fn() { local_open.get() }, fn() { fonts_trying.set(""); local_open.set(true) })
+          src_box.box(fn(row) {
+            @sf.style_node(row, fn() { fp_v5_tab_row })
+            tab_btn(row, fn() { @sf.t("web-pages.appearance.fonts.curated") }, fn() { !local_open.get() }, fn() { fonts_trying.set(""); local_open.set(false) })
+            tab_btn(row, fn() { @sf.t("web-pages.appearance.fonts.local") }, fn() { local_open.get() }, fn() { fonts_trying.set(""); local_open.set(true) })
+          }) |> ignore
         })
       }) |> ignore
       fp_divider_node(card)
@@ -382,7 +384,7 @@ fn font_advanced_v5_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
     if n > 0 { @sf.t("web-pages.appearance.fonts.advanced.summaryCustom", args=[("n", n.to_string())]) } else { @sf.t("web-pages.appearance.fonts.default") }
   }
   parent.box(fn(sec) {
-    @sf.style_node(sec, fn() { fp_v5_section })
+    @sf.style_node(sec, fn() { fp_v5_adv_sec })
     sec.box(fn(hdr) {
       @sf.style_node(hdr, fn() { fp_v5_adv_hdr })
       @sf.action_box_node(hdr, fn() { @sf.t("web-pages.appearance.fonts.advanced.title") }, fn(_) {
@@ -391,7 +393,9 @@ fn font_advanced_v5_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
         @sf.style_node(btn, fn() { fp_v5_adv_toggle })
         @sf.words_node(btn, fn() { @sf.t("web-pages.appearance.fonts.advanced.title") }, fn() { fp_v5_sec_heading }) |> ignore
         @sf.words_node(btn, summary, fn() { fp_v5_adv_summary }) |> ignore
-        @sf.icon_node(btn, if advanced_open.get() { "chevron-down" } else { "chevron-right" }, 13.0, By(fn() { @sf.theme().p.subtle })) |> ignore
+        btn.pick(fn() { advanced_open.get() }, fn(ic, open) {
+          @sf.icon_node(ic, if open { "chevron-down" } else { "chevron-right" }, 13.0, By(fn() { @sf.theme().p.subtle })) |> ignore
+        })
       }) |> ignore
       hdr.show(at_once=true, fn() { font_typo_custom_count(ctx.typo()) > 0 }, fn(rw) {
         @sf.action_box_node(rw, fn() { @sf.t("web-pages.appearance.fonts.advanced.reset") }, fn(_) {
@@ -499,15 +503,12 @@ fn font_advanced_v5_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
                 }, fn(btn) { @sf.words_node(btn, fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkResetFollow") }, fn() { fp_v5_undo_words }) |> ignore }) |> ignore
               })
             }) |> ignore
-            col.box(fn(seg_wrap) {
-              seg_wrap.width(Is(Some(0.0))).grow(Is(1.0)) |> ignore
-              @sf.segmented_node(seg_wrap, fn() {
-                [@sf.t("web-pages.appearance.fonts.advanced.weightLight"), @sf.t("web-pages.appearance.fonts.advanced.weightAuto"), @sf.t("web-pages.appearance.fonts.advanced.weightBold")]
-              }, fn() {
-                let cur = ctx.live_cjk_weight(p())
-                if cur < 0 { 0 } else if cur > 0 { 2 } else { 1 }
-              }, fn(i) { let m : Map[String, Json] = Map([]); m[font_cjk_weight_key(p())] = ToJson::to_json(w_vals[i]); set_typo(m) })
-            }) |> ignore
+            @sf.segmented_node(col, fn() {
+              [@sf.t("web-pages.appearance.fonts.advanced.weightLight"), @sf.t("web-pages.appearance.fonts.advanced.weightAuto"), @sf.t("web-pages.appearance.fonts.advanced.weightBold")]
+            }, fn() {
+              let cur = ctx.live_cjk_weight(p())
+              if cur < 0 { 0 } else if cur > 0 { 2 } else { 1 }
+            }, fn(i) { let m : Map[String, Json] = Map([]); m[font_cjk_weight_key(p())] = ToJson::to_json(w_vals[i]); set_typo(m) })
           }) |> ignore
         })
       }) |> ignore
@@ -533,6 +534,8 @@ let fp_v5_time_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, w
 let fp_v5_code_box : @ui.Style = @ui.css("w=Full px=S2_5 py=S1_5 bg=Bg")
 let fp_v5_code_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, w=Full)
 let fp_v5_section : @ui.Style = @ui.css("w=Full gap=S1_5")
+let fp_v5_presets_sec : @ui.Style = @ui.css("w=Full gap=S1_5 pb=S3")
+let fp_v5_adv_sec : @ui.Style = @ui.css("w=Full gap=S1_5 pt=S1")
 let fp_v5_sec_heading : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Muted, wrap=false)
 let fp_v5_preset_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStretch")
 let fp_v5_preset : @ui.Style = @ui.css("w=Full px=S3 py=S1_5 gap=S0_5 radius=Xl2 bg=Card")

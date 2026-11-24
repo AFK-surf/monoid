@@ -510,11 +510,15 @@ test "local font panel: smart filter pills (仅中文 / 仅等宽 / 全部) and 
   )
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
-  // Switch to 界面 中文 so smart default filter is 仅中文
+  // Switch to 界面 中文 so smart default filter is 仅中文; both source tabs must be visible
   tap_matrix_slot(t, 0, true)
   t.draw()
+  assert_true(t.find("精选字体") is Some(_))
+  assert_true(t.find("本机字体") is Some(_))
   t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
+  assert_true(t.find("精选字体") is Some(_))
+  assert_true(t.find("本机字体") is Some(_))
   // Smart default 仅中文 shows 苹方-简 and hides Helvetica
   assert_true(t.find("苹方-简") is Some(_))
   assert_true(t.find("Helvetica") is None)
