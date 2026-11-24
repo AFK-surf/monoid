@@ -12,6 +12,7 @@ builders_core = { workspace = true }
 builders_index = { workspace = true }
 builders_requested = { workspace = true }
 builders_stateful = { workspace = true }
+builders_recent = { workspace = true }
 footprint = { workspace = true }
 memory = { workspace = true }
 packed = { workspace = true }

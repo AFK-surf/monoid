@@ -803,6 +803,9 @@ struct Node {
   /// on its way whole (a page's list's key said `comes_whole`, View::scrolls_window): not cut to its room as it makes
   /// its way, nor what it holds; cut as what holds it cuts it
   mut come_uncut : Bool
+  /// on its way down its column, cut at its animated foot alone and open across and above its top (View::resizes'
+  /// `open_top`: a quote room whose ✕ hangs above its top edge)
+  mut come_open_top : Bool
   // (on a way its list's page said of its key, View::scrolls_window `comes_way`: a flight in to it goes with it,
   // shared.mbt's Tree::rides_said_way; let go with the way)
   mut list_key_way : Bool
@@ -2218,6 +2221,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.clips_said = false
       n.clips_down = false
       n.come_uncut = false
+      n.come_open_top = false
       n.list_key_way = false
       n.inert = false
       n.takes_unseen = false
@@ -2413,6 +2417,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         clips_said: false,
         clips_down: false,
         come_uncut: false,
+        come_open_top: false,
         list_key_way: false,
         inert: false,
         takes_unseen: false,
@@ -11332,6 +11337,7 @@ fn View::comes(
   foot? : Bool = false,
   anew? : Bool = false,
   uncut? : Bool = false,
+  open_top? : Bool = false,
 ) -> Bool {
   let tree = self.tree
   // (in a block of a page's list said `flips`: there at once, the list setting it out with the rest of its column)
@@ -11365,7 +11371,7 @@ fn View::comes(
     // (in what is laid out nowhere (a page under the one on top): there at once, as it is shown again (Tree::nowhere_at))
     !tree.nowhere_at(self.at) &&
     tree.makes_way(v.at) &&
-    !tree.holds_shared(v.at, stays_ok=uncut) &&
+    !tree.holds_shared(v.at, stays_ok=uncut || open_top) &&
     // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
     // way a cause set it on, turned back by an answer (a show's shown again as it closes), turns back on that way as
     // it would for a cause: that way is the cause's still, and stopped dead or done at once it jumps)
@@ -11449,6 +11455,7 @@ fn View::comes(
   if uncut {
     n.come_uncut = true
   }
+  n.come_open_top = open_top
   n.look.clips = n.clips_said || !n.come_uncut
   (n.come_off)()
   n.come_off = fn() {  }
@@ -11524,7 +11531,7 @@ fn View::comes(
     @signals.after_flush(fn() {
       guard v.live() is Some(m) && m.coming && st.come_at == at && st.come_to >= 1.0 else { return }
       tree.measured_now()
-      if m.come_uncut {
+      if m.come_uncut || m.come_open_top {
         match m.come_said {
           Some(s) => s.set(s.untracked() + 1)
           None => ()
@@ -11843,7 +11850,7 @@ fn Tree::come_group_settle(
       // (leaving as long as the group's way: let go as it ends)
       m.span = dmax(st.come_ends - m.left_at, 0.0)
     }
-    if m.come_uncut {
+    if m.come_uncut || m.come_open_top {
       match m.come_said {
         Some(s) => s.set(s.untracked() + 1)
         None => ()
@@ -11869,8 +11876,9 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   if m.structure_box {
     tree.structure_row_sync_one(v.at)
   }
-  let was_uncut = m.come_uncut
+  let was_uncut = m.come_uncut || m.come_open_top
   m.come_uncut = false
+  m.come_open_top = false
   m.list_key_way = false
   st.come_grid = 0.0
   st.come_foot = false
@@ -14548,6 +14556,8 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
       }
     } else if self.along_row_at(at) {
       2
+    } else if n.come_open_top {
+      3
     } else {
       1
     },

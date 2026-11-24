@@ -856,6 +856,8 @@ let zh : Map[String, String] = {
   "web-main.chat.agentCard.plan": "清单",
   "web-main.chat.archive": "归档",
   "web-main.chat.hide": "隐藏",
+  "web-main.chat.moveStarted": "开始迁移到「{station}」",
+  "web-main.chat.movingTo": "迁移到 {station}",
   "web-main.chat.unhide": "取消隐藏",
   "web-main.chat.hiddenNotice": "已隐藏，任务会继续运行",
   "web-main.chat.unhiddenNotice": "已取消隐藏",
