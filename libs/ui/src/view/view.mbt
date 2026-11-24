@@ -979,6 +979,11 @@ pub struct Tree {
   /// how deep the passes given to the bindings a layout told are, one inside another (Tree::laid_out: at most
   /// `told_passes_most`)
   mut told_passes : Int
+  /// how deep nested `Tree::laid_out` calls currently are (0 outside `Tree::laid_out`)
+  mut laid_depth : Int
+  /// how many post-layout re-entry passes (`outs_told`, `sizes_told`, `laid_waits`, `shown_now`, `holds_now`) have run
+  /// during the current outermost `Tree::laid_out` call (at most `laid_passes_most`)
+  mut laid_passes : Int
   /// where the tree keeps sources (a Tester's): each layout pass since the log was last taken, what ran it again inside
   /// another (`again_names`' index; -1 none: a pass of its own), the node whose layout was first marked for it and the
   /// node whose binding was first due in it (-1: none), for what says a frame's passes by their causes (passes.mbt)
@@ -1655,6 +1660,8 @@ pub fn Tree::new(
     bindings_due: [],
     after_bindings: [],
     told_passes: 0,
+    laid_depth: 0,
+    laid_passes: 0,
     pass_log: [],
     pass_again: -1,
     layout_first: -1,
@@ -13281,6 +13288,11 @@ fn Tree::brought(self : Tree, upto : Double, via? : Int = 0) -> Unit {
 let told_passes_most : Int = 4
 
 ///|
+/// How many post-layout re-entry passes (`outs_told`, `sizes_told`, `laid_waits`, `shown_now`, `holds_now`) one
+/// outermost `Tree::laid_out` call may run before breaking a feedback cycle and leaving the rest for the next frame.
+let laid_passes_most : Int = 64
+
+///|
 /// A hover may move the box that says it, leaving no stable state for the
 /// pointer. Check for repeated states after ordinary chains have time to settle.
 let pointer_passes_check : Int = 32
@@ -13293,6 +13305,13 @@ let pointer_passes_most : Int = 256
 /// What was marked laid out and drawn at `upto`, the logic not moved: no moment's work done, nothing due run (for where
 /// things are as an event finds them in the middle of its change: Tree::laid_now).
 fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
+  if self.laid_depth == 0 {
+    self.laid_passes = 0
+  }
+  self.laid_depth = self.laid_depth + 1
+  defer {
+    self.laid_depth = self.laid_depth - 1
+  }
   let w = self.last_w
   let h = self.last_h
   if !self.due {
@@ -13443,44 +13462,58 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   }
   // (what its rows left out told once all of it is laid out, and what that tells (a ⋯ saying how many) laid out in this
   // same pass: one result, the frame drawing all of it)
-  if self.outs_changed {
+  if self.laid_passes < laid_passes_most && self.outs_changed {
     self.outs_told()
-    if self.due {
+    if self.due && self.laid_passes < laid_passes_most {
+      self.laid_passes = self.laid_passes + 1
       self.again_said(1)
       self.laid_out(upto)
     }
   }
   // (the sizes followed told once all of it is laid out, and what that tells laid out in this same pass)
-  if self.sizes_due && self.sized.length() > 0 && self.sizes_told() && self.due {
+  if self.laid_passes < laid_passes_most &&
+    self.sizes_due &&
+    self.sized.length() > 0 &&
+    self.sizes_told() &&
+    self.due &&
+    self.laid_passes < laid_passes_most {
+    self.laid_passes = self.laid_passes + 1
     self.again_said(2)
     self.laid_out(upto)
   }
   // (what waited on all of it laid out, told once now, whether any size it follows came out otherwise or not; what that
   // tells laid out in this same pass)
-  if self.laid_waits.length() > 0 {
+  if self.laid_passes < laid_passes_most && self.laid_waits.length() > 0 {
     let waits = self.laid_waits.copy()
     self.laid_waits.clear()
     self.laid_waits.release_unused(placeholder=run_gone)
     for f in waits {
       @signals.untracked(f)
     }
-    if self.due {
+    if self.due && self.laid_passes < laid_passes_most {
+      self.laid_passes = self.laid_passes + 1
       self.again_said(3)
       self.laid_out(upto)
     }
   }
   // (what is to be brought into sight, where all of it is laid out, before it is drawn; what that moves laid out in
   // this same pass)
-  if self.shows_due.length() > 0 {
+  if self.laid_passes < laid_passes_most && self.shows_due.length() > 0 {
     self.shown_now()
-    if self.due {
+    if self.due && self.laid_passes < laid_passes_most {
+      self.laid_passes = self.laid_passes + 1
       self.again_said(4)
       self.laid_out(upto)
     }
   }
   // (what the focus has kept in sight by the column it was brought into sight by, where that column's room came out
   // another: placed so it is, in this same pass)
-  if self.focus_holds.length() > 0 && self.holds_now() && self.due {
+  if self.laid_passes < laid_passes_most &&
+    self.focus_holds.length() > 0 &&
+    self.holds_now() &&
+    self.due &&
+    self.laid_passes < laid_passes_most {
+    self.laid_passes = self.laid_passes + 1
     self.again_said(5)
     self.laid_out(upto)
   }
@@ -13500,7 +13533,7 @@ fn Tree::laid_out(self : Tree, upto : Double) -> Unit {
   if !self.withins_passing {
     self.pointer_still_holds() |> ignore
   }
-  let pointer_ready = !self.withins_passing
+  let pointer_ready = !self.withins_passing && self.laid_passes < laid_passes_most
   if (placing || pointer_needed) && pointer_ready {
     self.pointer_pass = self.pointer_pass + 1
     self.withins_passing = true
