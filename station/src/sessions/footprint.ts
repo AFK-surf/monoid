@@ -200,12 +200,26 @@ type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 const warnedReaderFallbacks = new Set<string>();
 const pendingShadows = new Set<Promise<void>>();
 let shadowInFlight = false;
-let shadowHardTimeoutOverrideMs: number | null = null;
+let activeShadowDeadline: (() => void) | null = null;
+let lastShadowPid: number | null = null;
 const SHADOW_HARD_TIMEOUT_PAD_MS = 5_000;
 
-/// Override the host hard-timeout for background `shadow` runs (tests only; pass `null` to restore default).
-export function setShadowTimeoutForTest(ms: number | null): void {
-  shadowHardTimeoutOverrideMs = ms;
+/// Synchronously report whether a background `shadow` run currently holds the single-flight slot (tests only).
+export function isShadowInFlightForTest(): boolean {
+  return shadowInFlight;
+}
+
+/// Return the OS pid of the most recently spawned shadow child process (tests only).
+export function lastShadowPidForTest(): number | null {
+  return lastShadowPid;
+}
+
+/// Immediately fire the active background `shadow` run's host hard-timeout callback (tests only).
+/// Returns `true` if an in-flight shadow deadline was triggered, `false` otherwise.
+export function triggerShadowDeadlineForTest(): boolean {
+  if (activeShadowDeadline === null) return false;
+  activeShadowDeadline();
+  return true;
 }
 
 function parseMeasureMessage(raw: unknown): { ok: true; value: Measured } | { ok: false; error: Error } {
@@ -261,30 +275,38 @@ function spawnMeasureBinary(
 
   const result = new Promise<Measured>((resolve, reject) => {
     let settled = false;
-    const done = (f: () => void) => {
+    let exited = false;
+    const settle = (f: () => void) => {
       if (settled) return;
       settled = true;
-      signal?.removeEventListener("abort", stop);
       f();
     };
-    const stop = () => done(() => {
+    const stop = () => {
       p.kill();
-      reject(signal!.reason);
-    });
+      settle(() => reject(signal!.reason));
+    };
+    const markClosed = () => {
+      if (exited) return;
+      exited = true;
+      // Keep the abort -> kill listener armed until the child actually exits/closes,
+      // so an abort after a lingering child emitted its first frame still kills it immediately.
+      signal?.removeEventListener("abort", stop);
+      resolveClosed();
+    };
     signal?.addEventListener("abort", stop, { once: true });
     // (its bytes said `size`: a line that says `bytes` has a body after it, read/mb-reader.ts `Said`)
-    p.on("message", (raw: unknown) => done(() => {
+    p.on("message", (raw: unknown) => settle(() => {
       const parsed = parseMeasureMessage(raw);
       if (parsed.ok) resolve(parsed.value);
       else reject(parsed.error);
     }));
     p.on("error", (e: Error) => {
-      done(() => reject(e));
-      resolveClosed();
+      settle(() => reject(e));
+      markClosed();
     });
     p.on("exit", (code: number) => {
-      done(() => reject(new Error(`the measure's program ended saying nothing (${code})`)));
-      resolveClosed();
+      settle(() => reject(new Error(`the measure's program ended saying nothing (${code})`)));
+      markClosed();
     });
     p.postMessage({
       path, base: normalize(path), ...ask,
@@ -367,23 +389,37 @@ async function runShadowComparison(
   if (callerSignal?.aborted) return;
   callerSignal?.addEventListener("abort", forwardAbort, { once: true });
 
-  const hardTimeoutMs = shadowHardTimeoutOverrideMs ??
-    (Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs) + SHADOW_HARD_TIMEOUT_PAD_MS);
+  const hardTimeoutMs = Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs) + SHADOW_HARD_TIMEOUT_PAD_MS;
   const spawned = spawnMeasureBinary(pionBin, path, ask, budget, shadowAc.signal);
+  lastShadowPid = MbProcess.live().at(-1)?.pid ?? null;
   // Prevent unhandledRejection if shadow rejects before we await it.
   spawned.result.catch(() => {});
 
-  const stopTimer = wall.after(hardTimeoutMs, () => { // timer: timeout/deadline for shadow footprint process
+  let timedOut = false;
+  const onDeadline = () => {
+    if (timedOut) return;
+    timedOut = true;
     shadowAc.abort(new Error(`shadow footprint timed out after ${hardTimeoutMs}ms`));
     spawned.kill();
-  });
+  };
+  activeShadowDeadline = onDeadline;
+  const stopTimer = wall.after(hardTimeoutMs, onDeadline); // timer: timeout/deadline for shadow footprint process
 
   try {
     const [sRes] = await Promise.allSettled([spawned.result]);
     // Always wait for the shadow child process to actually exit/close before releasing the single-flight slot,
-    // even if it emitted a JSON line and then lingered without exiting (the hard timeout above kills it).
+    // even if it emitted a JSON line and then lingered without exiting (killed on abort or hard timeout).
     await spawned.closed;
     if (callerSignal?.aborted) return;
+    if (timedOut) {
+      log.warn("footprint", "reader shadow timed out", {
+        path,
+        finding: ask.finding,
+        strict: ask.strict,
+        timeoutMs: hardTimeoutMs,
+      });
+      return;
+    }
     const pSnap = snapshotOf(pRes);
     const sSnap = snapshotOf(sRes);
     // Skip diff noise when either side truncated on wall-clock duration budget.
@@ -400,6 +436,7 @@ async function runShadowComparison(
       });
     }
   } finally {
+    if (activeShadowDeadline === onDeadline) activeShadowDeadline = null;
     stopTimer();
     callerSignal?.removeEventListener("abort", forwardAbort);
   }
@@ -451,8 +488,9 @@ function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSi
   if (selection.engine !== "shadow" || pionBin === null) {
     return primary;
   }
-  // Single-flight serial shadow: return `primary` immediately without waiting, and only launch shadow
-  // after `primary` finishes (so shadow never competes with primary disk IO) when no other shadow is active.
+  // Single-flight serial shadow: return `primary` immediately without waiting, and start shadow only after
+  // `primary` finishes (so it never slows its own primary; a queued subsequent primary may overlap with at most
+  // one in-flight shadow because shadow itself is strictly capped at 1 concurrent process).
   const track = primary.then(
     (value): PromiseSettledResult<Measured> => ({ status: "fulfilled", value }),
     (reason): PromiseSettledResult<Measured> => ({ status: "rejected", reason }),

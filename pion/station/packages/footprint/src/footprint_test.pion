@@ -134,114 +134,122 @@ test "parse_ask rejects embedded NUL bytes in path or base" {
   }
 }
 
-struct MockEntry {
-  name : String
-  dir : Bool
-  dev : Int64
-  blocks : Int64
-  children : Array[MockEntry]
+fn pack_nul_names(names : Array[String]) -> Bytes {
+  let total_bytes : Array[Byte] = []
+  for i in 0..<names.length() {
+    let b = names[i].to_bytes()
+    for j in 0..<b.length() {
+      total_bytes.push(b[j])
+    }
+    total_bytes.push(0 as Byte)
+  }
+  let out = Bytes::new(total_bytes.length())
+  for i in 0..<total_bytes.length() {
+    out[i] = total_bytes[i]
+  }
+  out
 }
 
-test "cross-device mount points (including node_modules, uploads, .git) are counted as themselves and never classified or traversed" {
-  expect(should_classify_dir(true, 1, true, true), "same dev dir classified")
-  expect(!should_classify_dir(true, 1, true, false), "cross dev dir never classified")
-  expect(!should_classify_dir(true, 0, true, true), "root depth 0 never classified")
+test "production walk/visit counts cross-device mount points (including node_modules, uploads, .git) as themselves and never classifies or descends into them" {
+  // Build a virtual filesystem table with root dev=1 and cross-device mount points dev=2
+  // named "other_fs", "node_modules", "uploads", ".git", plus a same-dev "local_pkg/node_modules".
+  let stats : Map[String, StatInfo] = Map::new()
+  let dirs : Map[String, Array[String]] = Map::new()
 
-  // Simulate BFS walk with root dev=1 and cross-device mount points dev=2 named
-  // "other_fs", "node_modules", "uploads", ".git", plus a same-dev "node_modules".
-  let tree = MockEntry::{
-    name: "root",
-    dir: true,
-    dev: 1.to_int64(),
-    blocks: 8.to_int64(),
-    children: [
-      MockEntry::{
-        name: "other_fs",
-        dir: true,
-        dev: 2.to_int64(),
-        blocks: 8.to_int64(),
-        children: [MockEntry::{ name: "secret.bin", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
+  let add_dir = fn(p : String, dev : Int64, ino : Int64, blocks : Int64, children : Array[String]) -> Unit {
+    stats.set(
+      p,
+      StatInfo::{
+        code: 0,
+        kind: 2.to_int64(),
+        dev: dev,
+        ino: ino,
+        nlink: 1.to_int64(),
+        blocks: blocks,
       },
-      MockEntry::{
-        name: "node_modules",
-        dir: true,
-        dev: 2.to_int64(),
-        blocks: 8.to_int64(),
-        children: [MockEntry::{ name: "dep.js", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
+    )
+    dirs.set(p, children)
+  }
+  let add_file = fn(p : String, dev : Int64, ino : Int64, blocks : Int64) -> Unit {
+    stats.set(
+      p,
+      StatInfo::{
+        code: 0,
+        kind: 1.to_int64(),
+        dev: dev,
+        ino: ino,
+        nlink: 1.to_int64(),
+        blocks: blocks,
       },
-      MockEntry::{
-        name: "uploads",
-        dir: true,
-        dev: 2.to_int64(),
-        blocks: 8.to_int64(),
-        children: [MockEntry::{ name: "big.png", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
-      },
-      MockEntry::{
-        name: ".git",
-        dir: true,
-        dev: 2.to_int64(),
-        blocks: 8.to_int64(),
-        children: [MockEntry::{ name: "pack", dir: false, dev: 2.to_int64(), blocks: 200.to_int64(), children: [] }],
-      },
-      MockEntry::{
-        name: "local_pkg",
-        dir: true,
-        dev: 1.to_int64(),
-        blocks: 8.to_int64(),
-        children: [
-          MockEntry::{
-            name: "node_modules",
-            dir: true,
-            dev: 1.to_int64(),
-            blocks: 8.to_int64(),
-            children: [MockEntry::{ name: "a.js", dir: false, dev: 1.to_int64(), blocks: 16.to_int64(), children: [] }],
-          },
-        ],
-      },
-    ],
+    )
   }
 
-  let mut visited = 0
-  let mut total_blocks : Int64 = 0.to_int64()
-  let rebuild : Array[String] = []
-  let queue : Array[(MockEntry, Int, Int64)] = [(tree, 0, tree.dev)]
-  let mut head = 0
-  while head < queue.length() {
-    let (node, depth, root_dev) = queue[head]
-    head = head + 1
-    if depth == 0 {
-      visited = visited + 1
-      total_blocks = total_blocks + node.blocks
-    }
-    for i in 0..<node.children.length() {
-      let c = node.children[i]
-      let same_dev = c.dev == root_dev
-      visited = visited + 1
-      if should_classify_dir(true, depth + 1, c.dir, same_dev) {
-        if c.name == ".git" || c.name == "uploads" {
-          total_blocks = total_blocks + c.blocks
-          continue
-        }
-        if c.name == "node_modules" {
-          rebuild.push(c.name)
-          total_blocks = total_blocks + c.blocks
-          for k in 0..<c.children.length() {
-            visited = visited + 1
-            total_blocks = total_blocks + c.children[k].blocks
-          }
-          continue
+  add_dir("/root", 1.to_int64(), 1.to_int64(), 8.to_int64(), [".git", "local_pkg", "node_modules", "other_fs", "uploads"])
+  // Cross-device mounts (dev=2): each contains a large 200-block file that MUST NOT be counted.
+  add_dir("/root/.git", 2.to_int64(), 10.to_int64(), 8.to_int64(), ["pack"])
+  add_file("/root/.git/pack", 2.to_int64(), 11.to_int64(), 200.to_int64())
+  add_dir("/root/node_modules", 2.to_int64(), 20.to_int64(), 8.to_int64(), ["dep.js"])
+  add_file("/root/node_modules/dep.js", 2.to_int64(), 21.to_int64(), 200.to_int64())
+  add_dir("/root/other_fs", 2.to_int64(), 30.to_int64(), 8.to_int64(), ["secret.bin"])
+  add_file("/root/other_fs/secret.bin", 2.to_int64(), 31.to_int64(), 200.to_int64())
+  add_dir("/root/uploads", 2.to_int64(), 40.to_int64(), 8.to_int64(), ["big.png"])
+  add_file("/root/uploads/big.png", 2.to_int64(), 41.to_int64(), 200.to_int64())
+  // Same-device package (dev=1): MUST be classified as rebuildable and counted whole.
+  add_dir("/root/local_pkg", 1.to_int64(), 50.to_int64(), 8.to_int64(), ["node_modules"])
+  add_dir("/root/local_pkg/node_modules", 1.to_int64(), 51.to_int64(), 8.to_int64(), ["a.js"])
+  add_file("/root/local_pkg/node_modules/a.js", 1.to_int64(), 52.to_int64(), 16.to_int64())
+
+  let ops = FsOps::{
+    lstat: fn(p : String) -> StatInfo {
+      match stats.get(p) {
+        Some(st) => st
+        None => StatInfo::{
+          code: 1,
+          kind: 0.to_int64(),
+          dev: 0.to_int64(),
+          ino: 0.to_int64(),
+          nlink: 0.to_int64(),
+          blocks: 0.to_int64(),
         }
       }
-      total_blocks = total_blocks + c.blocks
-      if c.dir && same_dev {
-        queue.push((c, depth + 1, root_dev))
+    },
+    readdir: fn(p : String) -> (Bytes, Int) {
+      match dirs.get(p) {
+        Some(names) => (pack_nul_names(names), 0)
+        None => (Bytes::new(0), 1)
       }
-    }
+    },
+    exists: fn(p : String) -> Bool {
+      match stats.get(p) {
+        Some(_) => true
+        None => false
+      }
+    },
+    is_dir: fn(p : String) -> Bool {
+      match stats.get(p) {
+        Some(st) => st.kind == 2.to_int64()
+        None => false
+      }
+    },
+    head: fn(_p : String, _most : Int) -> (Bytes, Int) { (Bytes::new(0), 1) },
+    now_ms: fn() -> Int64 { 1000.to_int64() },
   }
-  // root(1) + 4 cross-dev mounts(4) + local_pkg(1) + local node_modules(1) + a.js(1) = 8 entries
-  expect(visited == 8, "cross-dev mounts consume 1 entry each and are never descended")
-  // Only same-dev local_pkg/node_modules is classified as rebuildable, never cross-dev mounts.
-  expect(rebuild.length() == 1 && rebuild[0] == "node_modules", "only same-dev node_modules rebuildable")
-  // None of the 200-block files inside cross-dev mounts were counted.
-  expect(total_blocks == 72.to_int64(), "cross-dev children blocks excluded")
+
+  let res = answer_with_ops("{\"path\":\"/root\",\"finding\":true,\"strict\":true,\"maxEntries\":1000,\"maxDurationMs\":60000}", "/", ops)
+  let s = base_codec::json_stringify(res)
+  // Expected blocks: root(8) + 4 cross-dev mounts(32) + local_pkg(8) + local_pkg/node_modules(8) + a.js(16) = 72 blocks = 36864 bytes.
+  // Expected rebuild: ONLY [["/root/local_pkg/node_modules", 12288]] (8+16 = 24 blocks = 12288 bytes).
+  expect(
+    s == "{\"size\":36864,\"complete\":true,\"rebuild\":[[\"/root/local_pkg/node_modules\",12288]]}",
+    "unexpected cross-dev production walk result: " + s,
+  )
+
+  // Verify entry budget: root(1) + 5 children(5) + local_pkg/node_modules(1) + sub-walk root(1) + a.js(1) = 9 visits.
+  // With maxEntries=8, it must truncate on entries before finishing a.js.
+  let cut = answer_with_ops("{\"path\":\"/root\",\"finding\":true,\"strict\":true,\"maxEntries\":8,\"maxDurationMs\":60000}", "/", ops)
+  let cut_s = base_codec::json_stringify(cut)
+  expect(
+    cut_s == "{\"size\":28672,\"complete\":false,\"reason\":\"entries\",\"rebuild\":[[\"/root/local_pkg/node_modules\",4096]]}",
+    "unexpected cross-dev entry-budget result: " + cut_s,
+  )
 }

@@ -1,8 +1,10 @@
 // Cross-platform C11 filesystem shim for Pion `footprint` worker (POSIX + _WIN32).
 // Mirrors station/mb/src/footprint/footprint.c semantics exactly:
-// - lstat without following symlinks (dev, ino, nlink, 512-byte blocks)
+// - lstat without following symlinks (dev, ino, nlink, 512-byte blocks; on Windows, fails explicitly
+//   if FileAttributeTagInfo reparse-tag query fails instead of silently misclassifying)
 // - readdir excluding "."/"..", sorted by strcmp on POSIX (matching libuv scandir)
-// - exists / is_dir following symlinks
+// - exists / is_dir following symlinks (on Windows, sfp_is_dir opens the target handle with
+//   FILE_FLAG_BACKUP_SEMANTICS so broken directory symlinks reliably return 0)
 // - head: non-blocking regular-file-only read (O_NONBLOCK + fstat S_ISREG on POSIX;
 //   FILE_TYPE_DISK + !DIRECTORY on Windows), never blocking on FIFOs or devices
 // - monotonic millisecond clock for maxDurationMs budget
@@ -194,6 +196,10 @@ void *sfp_readdir(const char *path, int64_t *out_len, int32_t *out_err) {
         const wchar_t *name = found.cFileName;
         if (wcscmp(name, L".") != 0 && wcscmp(name, L"..") != 0) {
             int len = WideCharToMultiByte(CP_UTF8, 0, name, -1, NULL, 0, NULL, NULL);
+            if (len <= 0) {
+                err = SFP_EIO;
+                break;
+            }
             if (len > 1) {
                 char *u = (char *)malloc((size_t)len);
                 if (u == NULL) {
@@ -201,12 +207,15 @@ void *sfp_readdir(const char *path, int64_t *out_len, int32_t *out_err) {
                     break;
                 }
                 int written = WideCharToMultiByte(CP_UTF8, 0, name, -1, u, len, NULL, NULL);
-                if (written > 1 && written <= len) {
-                    if (sfp_names_add(&n, u, (size_t)written - 1) != 0) {
-                        free(u);
-                        err = SFP_EIO;
-                        break;
-                    }
+                if (written <= 0 || written > len) {
+                    free(u);
+                    err = SFP_EIO;
+                    break;
+                }
+                if (written > 1 && sfp_names_add(&n, u, (size_t)written - 1) != 0) {
+                    free(u);
+                    err = SFP_EIO;
+                    break;
                 }
                 free(u);
             }

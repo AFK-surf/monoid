@@ -813,7 +813,8 @@ fn run_smoke_rc_soak(world : World, total_iters : Int) -> Unit {
 }
 
 fn run_builder_footprint(sep : String) -> Unit {
-  // No Rust shell needed: footprint only reads one LF-terminated JSON request line from stdin and exits.
+  // No Rust shell needed: footprint only reads one LF-terminated JSON request line (bounded to
+  // host_shim::MAX_LINE_BYTES = 16 MiB) from stdin and exits.
   if !host_shim::start("", true) {
     host_shim::exit_process(1)
   }

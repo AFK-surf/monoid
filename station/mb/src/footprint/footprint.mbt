@@ -319,7 +319,6 @@ fn Measure::visit(
   name : String,
   depth : Int,
   dir : Bool,
-  same_dev : Bool,
   finding : Bool,
 ) -> Visit raise {
   self.visited += 1.0
@@ -329,7 +328,7 @@ fn Measure::visit(
     }
     return Stop
   }
-  if finding && depth > 0 && dir && same_dev {
+  if finding && depth > 0 && dir {
     // Never discover cleanup candidates in repository metadata or historical attachments.
     if name == ".git" || name == "uploads" {
       self.walk(path, path, false)
@@ -366,7 +365,7 @@ fn Measure::walk(self : Measure, root : String, base : String, finding : Bool) -
   }
   let dir = self.stat[0] == kind_dir
   let dev = self.stat[1]
-  match self.visit(root, "", "", 0, dir, true, finding) {
+  match self.visit(root, "", "", 0, dir, finding) {
     Stop => return
     Skip => return
     Go => if !dir { return }
@@ -404,14 +403,13 @@ fn Measure::walk(self : Measure, root : String, base : String, finding : Bool) -
       }
       let dir = self.stat[0] == kind_dir
       let its = self.stat[1]
-      let same_dev = its == at.dev
-      match self.visit(path, at.base, name, depth, dir, same_dev, finding) {
+      match self.visit(path, at.base, name, depth, dir, finding) {
         Stop => return
         Skip => continue
         Go => if !dir { continue }
       }
       // (another file system mounted in it: listed, not gone into)
-      if !same_dev {
+      if its != at.dev {
         continue
       }
       if depth >= max_depth {

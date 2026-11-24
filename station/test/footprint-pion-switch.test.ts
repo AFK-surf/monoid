@@ -1,30 +1,32 @@
 // Tests for `sessions/footprint.ts` engine switching:
-// - `mb` default (with zero main-thread statSync for pionBinary)
+// - `mb` default (zero main-thread statSync for pionBinary)
 // - `pion` switch (`STILLFAIL_READER_FOOTPRINT=pion` and `STILLFAIL_READER_ENGINE=pion`)
 // - `shadow` single-flight serial execution after primary completes, non-blocking primary return,
-//   host hard timeout + child reap before releasing the single-flight slot, structured diff logging
-//   (with summarized rebuild list and duration-noise suppression), malformed JSON frame isolation
+//   deterministic host hard-timeout reap & slot release via test hooks (zero wall-clock polling),
+//   abort killing lingering post-response shadow immediately, structured diff logging (summarized
+//   rebuild list, duration-noise suppression, separate timeout log), malformed JSON frame isolation
 //   with zero uncaughtException/unhandledRejection, and missing-binary fallback
-// - Real `STILLFAIL_PION_READER` binary end-to-end `pion` + `shadow` test when provided.
+// - Dedicated real MoonBit + real Pion dual-run shadow 0-diff test (fails loudly in CI if missing).
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
 import { MbProcess, mbReaderBinary, pionBinary } from "../src/read/mb-reader.ts";
 import {
+  isShadowInFlightForTest,
+  lastShadowPidForTest,
   measureRoom,
   measured,
-  setShadowTimeoutForTest,
+  triggerShadowDeadlineForTest,
   waitForShadowMeasures,
 } from "../src/sessions/footprint.ts";
 import { measureRoomReference } from "./footprint-reference.ts";
 
 const tempDirs: string[] = [];
 after(() => {
-  setShadowTimeoutForTest(null);
   for (const dir of tempDirs) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -68,22 +70,13 @@ async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () 
   }
 }
 
-/** Bounded wait helper (fails loudly at deadline, never spins forever). */
-async function waitUntil(pred: () => boolean, label: string, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!pred()) {
-    if (Date.now() > deadline) assert.fail(`timed out waiting for: ${label}`);
-    await new Promise<void>((r) => setTimeout(r, 10));
-  }
-}
+/** Flush microtasks so primary `.then()` launches the single-flight shadow synchronously. */
+const flushMicrotasks = () => new Promise<void>((r) => queueMicrotask(r));
 
-function responderBody(responseJson: string, countFile?: string): string {
-  const record = countFile
-    ? `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(countFile)}, "1\\n");\n`
-    : "";
+function responderBody(responseJson: string): string {
   return `
 import { createInterface } from "node:readline";
-${record}const rl = createInterface({ input: process.stdin });
+const rl = createInterface({ input: process.stdin });
 rl.once("line", () => {
   process.stdout.write(${JSON.stringify(responseJson)} + "\\n");
   process.exit(0);
@@ -94,7 +87,6 @@ rl.once("line", () => {
 function makeHangAndRecordStub(dir: string, name: string, countFile: string): string {
   if (platform.os !== "windows") {
     const shPath = join(dir, name);
-    // Pure POSIX sh avoids Node startup latency under macOS `taskpolicy -b`.
     writeFileSync(shPath, `#!/bin/sh\nprintf '1\\n' >> ${JSON.stringify(countFile)}\nexec sleep 60\n`, "utf8");
     chmodSync(shPath, 0o755);
     return shPath;
@@ -111,8 +103,10 @@ function respondThenLingerBody(responseJson: string): string {
 import { createInterface } from "node:readline";
 const rl = createInterface({ input: process.stdin });
 rl.once("line", () => {
-  process.stdout.write(${JSON.stringify(responseJson)} + "\\n");
-  // Deliberately stay alive after writing stdout to verify host hard-timeout reaps it.
+  process.stdout.write(${JSON.stringify(responseJson)} + "\\n", () => {
+    process.stderr.write("SHADOW_LINGER_READY\\n");
+  });
+  // Deliberately stay alive after writing stdout to verify abort/hard-timeout reaps it.
   setInterval(() => {}, 10000);
 });
 `;
@@ -187,7 +181,7 @@ test("mb default, pion switch (STILLFAIL_READER_FOOTPRINT & STILLFAIL_READER_ENG
   }
 });
 
-test("shadow mode is single-flight after primary, never blocks primary, reaps hanging/lingering shadows via hard timeout, and isolates malformed/crashing shadows", async () => {
+test("shadow mode is single-flight after primary, never blocks primary, reaps hanging/lingering shadows deterministically on deadline or abort, and isolates malformed/crashing shadows", async () => {
   const dir = freshDir();
   const target = freshDir("footprint-shadow-");
   const countFile = join(dir, "shadow-starts.txt");
@@ -276,66 +270,156 @@ test("shadow mode is single-flight after primary, never blocks primary, reaps ha
       );
     }
 
-    // 5. Single-flight + non-blocking primary + host hard-timeout kill & slot release.
-    setShadowTimeoutForTest(400);
+    // 5. Single-flight + non-blocking primary + deterministic deadline kill & slot release (zero wall-clock races).
+    logs.length = 0;
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: pionHang,
       STILLFAIL_READER_FOOTPRINT: "shadow",
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
-      // (a) Primary returns immediately while the hanging shadow is still running in background.
+      assert.equal(isShadowInFlightForTest(), false);
+      // (a) Primary returns immediately while the hanging shadow occupies the single-flight slot.
       assert.equal(await measured(target), 4096);
-      await waitUntil(() => existsSync(countFile) && readFileSync(countFile, "utf8").trim().split("\n").length === 1, "first shadow spawn");
+      await flushMicrotasks();
+      assert.equal(isShadowInFlightForTest(), true, "shadow must hold single-flight slot after primary returns");
+
+      // (b) Second measure while first shadow occupies the slot skips shadow completely.
+      assert.equal(await measured(target), 4096);
+      assert.equal(isShadowInFlightForTest(), true, "first shadow must still hold the slot");
+
+      // (c) Deterministically trigger host deadline -> kills shadow, logs timeout (not diff), releases slot.
+      const shadowPid = lastShadowPidForTest();
+      assert.ok(typeof shadowPid === "number" && shadowPid > 0, "expected active shadow pid");
+      assert.equal(triggerShadowDeadlineForTest(), true, "expected active shadow deadline callback");
+      await waitForShadowMeasures();
+      assert.equal(isShadowInFlightForTest(), false, "slot must be released once shadow child closes");
+      assert.equal(
+        MbProcess.live().some((p) => p.pid === shadowPid),
+        false,
+        "hanging shadow child must be removed from MbProcess.live()",
+      );
+      assert.throws(() => process.kill(shadowPid, 0), { code: "ESRCH" }, "hanging shadow OS pid must be reaped");
       assert.ok(
-        MbProcess.live().filter((p) => p.args.includes("footprint")).length >= 1,
-        "hanging shadow must still be running after primary already returned",
+        logs.some((l) => l.level === "WARN" && l.at === "footprint" && l.message === "reader shadow timed out"),
+        "timeout must log `reader shadow timed out`",
+      );
+      assert.equal(
+        logs.filter((l) => l.message === "reader shadow diff").length,
+        0,
+        "timeout must not be mixed into `reader shadow diff`",
       );
 
-      // (b) Second measure while first shadow occupies the single-flight slot skips shadow completely.
+      // (d) Slot is free again: third measure launches a fresh shadow (which we then reap deterministically).
       assert.equal(await measured(target), 4096);
-      assert.equal(readFileSync(countFile, "utf8").trim().split("\n").length, 1, "single-flight must skip overlapping shadow");
-
-      // (c) Host hard timeout kills the hanging shadow and releases the slot.
+      await flushMicrotasks();
+      assert.equal(isShadowInFlightForTest(), true, "third measure must acquire the released slot");
+      const shadowPid2 = lastShadowPidForTest();
+      assert.ok(typeof shadowPid2 === "number" && shadowPid2 !== shadowPid, "expected a new shadow pid");
+      assert.equal(triggerShadowDeadlineForTest(), true);
       await waitForShadowMeasures();
-      await waitUntil(() => MbProcess.live().filter((p) => p.args.includes("footprint")).length === 0, "hanging shadow reaped");
-
-      // Slot is now free: a subsequent measure launches a new shadow (count increments to 2).
-      assert.equal(await measured(target), 4096);
-      await waitForShadowMeasures();
-      assert.equal(readFileSync(countFile, "utf8").trim().split("\n").length, 2, "slot must be released after hard-timeout reap");
+      assert.equal(isShadowInFlightForTest(), false);
+      assert.throws(() => process.kill(shadowPid2, 0), { code: "ESRCH" }, "second shadow OS pid must be reaped");
     });
+    // At most 2 shadows ever ran (1st and 3rd; 2nd was skipped). Note countFile may have <= 2 lines
+    // if SIGKILL arrived before sh appended, never > 2.
+    const starts = (() => {
+      try {
+        return readFileSync(countFile, "utf8").trim().split("\n").filter(Boolean).length;
+      } catch {
+        return 0;
+      }
+    })();
+    assert.ok(starts <= 2, `single-flight must never spawn more than 2 shadows across 3 measures (got ${starts})`);
 
-    // 6. Shadow that emits a valid JSON line then lingers without exiting is still killed at hard timeout before releasing slot.
-    setShadowTimeoutForTest(400);
+    // 6. Lingering shadow (emits valid JSON line, then stays alive): caller AbortSignal kills it immediately
+    //    and releases the single-flight slot without waiting for the 65s hard timeout.
+    logs.length = 0;
+    let resolveLingerReady!: () => void;
+    const lingerReady = new Promise<void>((r) => { resolveLingerReady = r; });
+    hearLines((l) => {
+      logs.push(l);
+      if (l.at === "readers" && l.fields.line === "SHADOW_LINGER_READY") resolveLingerReady();
+    });
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: pionLinger,
       STILLFAIL_READER_FOOTPRINT: "shadow",
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
-      assert.equal((await measureRoom(target)).bytes, 4096);
+      const ac = new AbortController();
+      assert.equal(await measured(target, ac.signal), 4096);
+      // Event-driven wait until shadow has actually written its valid JSON response and entered linger state.
+      await lingerReady;
+      assert.equal(isShadowInFlightForTest(), true, "lingering shadow must still hold slot after emitting response");
+      const lingerPid = lastShadowPidForTest();
+      assert.ok(typeof lingerPid === "number" && lingerPid > 0, "expected lingering shadow pid");
+      // Caller aborts after shadow already responded: lingering shadow must be killed immediately.
+      ac.abort(new Error("caller cancelled after shadow response"));
       await waitForShadowMeasures();
-      await waitUntil(() => MbProcess.live().filter((p) => p.args.includes("footprint")).length === 0, "lingering shadow reaped");
+      assert.equal(isShadowInFlightForTest(), false, "abort must kill lingering shadow and release slot");
+      assert.equal(
+        MbProcess.live().some((p) => p.pid === lingerPid),
+        false,
+        "lingering shadow must be removed from MbProcess.live()",
+      );
+      assert.throws(() => process.kill(lingerPid, 0), { code: "ESRCH" }, "lingering shadow OS pid must be reaped");
+      assert.equal(
+        logs.filter((l) => l.message === "reader shadow timed out" || l.message === "reader shadow diff").length,
+        0,
+        "aborted lingering shadow must not emit timeout or diff warnings",
+      );
     });
 
     assert.deepEqual(unhandled, [], "shadow mode must never emit unhandledRejection");
     assert.deepEqual(uncaught, [], "malformed shadow frames must never emit uncaughtException");
   } finally {
-    setShadowTimeoutForTest(null);
     hearLines(null);
     process.off("unhandledRejection", onUnhandled);
     process.off("uncaughtException", onUncaught);
   }
 });
 
-test("real STILLFAIL_PION_READER binary end-to-end pion and shadow verification", async (t) => {
+test("real STILLFAIL_PION_READER binary end-to-end pion mode matches TS oracle 0-diff", async (t) => {
   const realPion = pionBinary();
   if (realPion === null) {
     t.skip("STILLFAIL_PION_READER / built stillfail-pion binary not present in this environment");
     return;
   }
-  const tree = freshDir("footprint-real-e2e-");
+  const tree = freshDir("footprint-real-pion-");
+  mkdirSync(join(tree, "app/node_modules/pkg"), { recursive: true });
+  writeFileSync(join(tree, "app/node_modules/pkg/index.js"), Buffer.alloc(8192, 0x61));
+  writeFileSync(join(tree, "readme.md"), Buffer.alloc(1024, 0x62));
+
+  const ref = await measureRoomReference(tree);
+  await withEnv({
+    STILLFAIL_PION_READER: realPion,
+    STILLFAIL_READER_FOOTPRINT: "pion",
+    STILLFAIL_READER_ENGINE: undefined,
+  }, async () => {
+    const got = await measureRoom(tree);
+    assert.deepEqual(got, ref);
+  });
+});
+
+test("real MoonBit + real Pion dual-run shadow produces 0 diff", async (t) => {
+  const realPion = pionBinary();
+  const realMb = mbReaderBinary();
+  const strictCi = Boolean(process.env.STILLFAIL_PION_READER?.trim() && process.env.CI);
+  if (strictCi) {
+    assert.ok(realPion !== null, "CI with STILLFAIL_PION_READER must resolve a real Pion binary");
+    assert.ok(realMb !== null, "CI with STILLFAIL_PION_READER must also have a real MoonBit stillfail-reader binary");
+    assert.notEqual(
+      resolve(realMb),
+      resolve(realPion),
+      "dual-run shadow in CI must execute two distinct binaries (MoonBit stillfail-reader vs Pion stillfail-pion)",
+    );
+  } else if (realPion === null || realMb === null || resolve(realMb) === resolve(realPion)) {
+    t.skip("requires distinct built MoonBit stillfail-reader and Pion stillfail-pion binaries");
+    return;
+  }
+
+  const tree = freshDir("footprint-real-shadow-");
   mkdirSync(join(tree, "app/node_modules/pkg"), { recursive: true });
   writeFileSync(join(tree, "app/node_modules/pkg/index.js"), Buffer.alloc(8192, 0x61));
   writeFileSync(join(tree, "readme.md"), Buffer.alloc(1024, 0x62));
@@ -344,30 +428,21 @@ test("real STILLFAIL_PION_READER binary end-to-end pion and shadow verification"
   const logs: Line[] = [];
   hearLines((l) => logs.push(l));
   try {
-    // 1. Real Pion binary via STILLFAIL_READER_FOOTPRINT=pion matches TS reference 0-diff.
     await withEnv({
+      STILLFAIL_MB_READER: realMb,
       STILLFAIL_PION_READER: realPion,
-      STILLFAIL_READER_FOOTPRINT: "pion",
+      STILLFAIL_READER_FOOTPRINT: "shadow",
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
       const got = await measureRoom(tree);
       assert.deepEqual(got, ref);
+      await waitForShadowMeasures();
     });
-
-    // 2. If MoonBit reader is also available, verify real dual-run shadow produces 0 diff warnings.
-    if (mbReaderBinary() !== null) {
-      logs.length = 0;
-      await withEnv({
-        STILLFAIL_PION_READER: realPion,
-        STILLFAIL_READER_FOOTPRINT: "shadow",
-        STILLFAIL_READER_ENGINE: undefined,
-      }, async () => {
-        const got = await measureRoom(tree);
-        assert.deepEqual(got, ref);
-        await waitForShadowMeasures();
-      });
-      assert.equal(logs.filter((l) => l.message === "reader shadow diff").length, 0, "real Pion vs MB shadow must be 0-diff");
-    }
+    assert.equal(
+      logs.filter((l) => l.message === "reader shadow diff" || l.message === "reader shadow timed out").length,
+      0,
+      "real MoonBit + real Pion shadow must produce 0 diff and 0 timeouts",
+    );
   } finally {
     hearLines(null);
   }
