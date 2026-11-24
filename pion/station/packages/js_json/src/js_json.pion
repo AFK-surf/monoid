@@ -702,7 +702,7 @@ pub fn index_key(key : Array[Int]) -> Option[Int64] {
     }
     v = v * ten + (c - 0x30).to_int64()
   }
-  let limit : Int64 = 4294967295.to_int64()
+  let limit : Int64 = (1.to_int64() << 32.to_int64()) - 1.to_int64()
   if v < limit { Some(v) } else { None }
 }
 
