@@ -357,6 +357,9 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 
     if (file !== undefined) env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS = "60000";
     env.CLAUDE_CONFIG_DIR = home;
+    // Claude Code refuses --dangerously-skip-permissions to root (a station installed under sudo, a root container)
+    // and exits before the turn begins; IS_SANDBOX=1 is its own way to say the machine is the agent's to run as root.
+    if (!options.textOnly && process.getuid?.() === 0) env.IS_SANDBOX = "1";
     env[MCP_TOKEN_VAR] = options.mcpToken;
     // Web services of the workspace's other stations: <this>/<station>/<port>/<path> (mesh/peer-http.ts).
     env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
