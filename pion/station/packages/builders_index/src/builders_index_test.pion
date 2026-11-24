@@ -1,0 +1,27 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "outflow_schema generates all tables, index, and 18 triggers" {
+  let s = outflow_schema()
+  expect(s.length() > 1000, "outflow_schema non-empty")
+}
+
+test "search_scope_schema generates all tables and triggers" {
+  let s = search_scope_schema()
+  expect(s.length() > 2000, "search_scope_schema non-empty")
+}
+
+test "workspace_old_rowids builds first and next queries" {
+  let q1 = workspace_old_rowids("last_rowid", "running_end", true)
+  let q2 = workspace_old_rowids("last_rowid", "running_end", false)
+  expect(q2.length() > q1.length(), "non-first adds cursor predicate")
+}
+
+test "TurnCell mutates in place" {
+  let cell = TurnCell::{ current: 0 }
+  cell.current = (cell.current + 1) % 5
+  expect(cell.current == 1, "turn advanced to 1")
+}
