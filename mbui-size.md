@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2022be82c](https://github.com/AFK-surf/monoid/commit/2022be82c7ed168ca59ec597ae6f42210486f532) feat(station): add expected_card_seq CAS for Comma | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.98 | 129.73 |
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
 | [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
 | [a36442026](https://github.com/AFK-surf/monoid/commit/a3644202602ce7a3f5220f22546dc7e69c24a564) feat(pion-station): add pinned pionc toolchain, ho | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a9ed054f1](https://github.com/AFK-surf/monoid/commit/a9ed054f13fee12ad7b7aa5bf2f1a8019e6ef72a) feat(pion-core): native event wake, pure-C screen/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [576b3c3bf](https://github.com/AFK-surf/monoid/commit/576b3c3bfa187f50f42b5d062bfce9f291aba37b) feat(pion-core): W28a merged stations roster, lock | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [2074adb56](https://github.com/AFK-surf/monoid/commit/2074adb56bb048760d3da413f0ef9d71302692b9) fix(station): check borrowed API provider profiles | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
-| [452a24829](https://github.com/AFK-surf/monoid/commit/452a248291c8ee8922510e3c11f2ed41e62d3fc4) feat(pion-core): W24-v6 1:1 views parity, chat-sha | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2022be82c](https://github.com/AFK-surf/monoid/commit/2022be82c7ed168ca59ec597ae6f42210486f532) feat(station): add expected_card_seq CAS for Comma | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
 | [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.61 |
 | [a36442026](https://github.com/AFK-surf/monoid/commit/a3644202602ce7a3f5220f22546dc7e69c24a564) feat(pion-station): add pinned pionc toolchain, ho | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a9ed054f1](https://github.com/AFK-surf/monoid/commit/a9ed054f13fee12ad7b7aa5bf2f1a8019e6ef72a) feat(pion-core): native event wake, pure-C screen/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.54 |
 | [576b3c3bf](https://github.com/AFK-surf/monoid/commit/576b3c3bfa187f50f42b5d062bfce9f291aba37b) feat(pion-core): W28a merged stations roster, lock | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.25 |
 | [2074adb56](https://github.com/AFK-surf/monoid/commit/2074adb56bb048760d3da413f0ef9d71302692b9) fix(station): check borrowed API provider profiles | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.18 |
-| [452a24829](https://github.com/AFK-surf/monoid/commit/452a248291c8ee8922510e3c11f2ed41e62d3fc4) feat(pion-core): W24-v6 1:1 views parity, chat-sha | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.12 |
