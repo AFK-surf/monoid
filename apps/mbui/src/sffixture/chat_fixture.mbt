@@ -1482,6 +1482,16 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     // the places the station's bots are in, for a chat relayed (relay.mbt, sfdesk relay.mbt)
     "chat.relayPlaces" => Some(Ok(fix_relay_places()))
     "chat.relay" => Some(Ok({ "place": "#dev" }))
+    "chat.selectionIntent" => {
+      let picked = text(Some(params), "selection")
+      Some(
+        Ok({
+          "intent": Json::string("解释选中内容在当前对话里的含义"),
+          "reply": Json::string("关于「" + picked + "」：这是由轻量模型结合当前对话上下文自动推断并生成的示例回复。"),
+          "model": Json::string("claude-haiku-4-5"),
+        }),
+      )
+    }
     // (chat-cc: a thread its words are copied to ticked or not, as the core keeps it: with_cc reads it)
     "chat.cc" => {
       match (field(p, "to"), field(p, "on")) {

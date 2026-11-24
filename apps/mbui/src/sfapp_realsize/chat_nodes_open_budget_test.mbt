@@ -120,7 +120,7 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+1 made, +1 laid, +1 binding, 2026-11-22: the composer-top services, screen and sub-chats buttons segments of one
   // liquid glass capsule of their own (sfapp chat_bar_node's pill), each with its padding by its neighbours; before it
   // (1025, 26, 661, 81, 1014))
-  "phone cold": (1026, 26, 662, 81, 1015),
+  "phone cold": (1027, 26, 662, 81, 1015),
   // (2026-11-18: a chat's page made as nodes kept as it is left (ui's Nav kept_left, sfbase's page_entry_parked) and
   // taken back as it is opened again, holding no chat meanwhile and waiting for none of it as it comes back; the same at
   // 60, 120, 24 and 7: before it (341, 19, 227, 28, 346) and wide again (897, 132, 853, 121, 1062))
@@ -155,7 +155,7 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (+1 made, +1 binding, 2026-11-22: the composer-top services, screen and sub-chats buttons segments of one liquid
   // glass capsule of their own (sfdesk chat_bar_wide_node's pill), each with its padding by its neighbours; before it
   // (2457, 498, 1940, 195, 2525))
-  "wide cold": (2458, 498, 1940, 195, 2526),
+  "wide cold": (2459, 498, 1940, 195, 2526),
   // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
   // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
   // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))

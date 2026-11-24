@@ -376,6 +376,7 @@ jobs:
         run: |
           find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
           find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
+          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -485,6 +486,7 @@ jobs:
         run: |
           find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
           find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
+          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -623,6 +625,7 @@ jobs:
         run: |
           find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
           find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
+          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -735,6 +738,7 @@ jobs:
         run: |
           find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
           find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
+          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -815,6 +819,7 @@ jobs:
         run: |
           find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
           find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
+          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         continue-on-error: true

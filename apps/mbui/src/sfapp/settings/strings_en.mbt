@@ -2126,6 +2126,8 @@ let en : Map[String, String] = {
   "web-pages.experimental.farviewNative.description": "Draw Farview browser tabs directly on this device for instant scrolling and typing; turn it off anytime to switch back to screenshots",
   "web-pages.experimental.board.title": "Board view for chats",
   "web-pages.experimental.board.description": "View chats in columns by status, station, or person and manage pending tasks; turning it off returns to the chat list",
+  "web-pages.experimental.selectionIntent.title": "Poke",
+  "web-pages.experimental.selectionIntent.description": "Show a “Poke” button beside Quote when selecting text in a chat; a lightweight model reads context and replies directly",
   "core-views.move.why.offline": "Offline: available once it is back",
   "core-views.move.why.stable": "Stable release: turn on Beta under its Software",
   "android-misc.bar.place.remote": "Remote",

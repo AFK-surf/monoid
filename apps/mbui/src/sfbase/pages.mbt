@@ -180,6 +180,11 @@ pub let farview_native : @signals.Signal[Bool] = @signals.signal(false, same=fn(
 pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
+/// Whether selecting text in a chat offers the experimental intent-inference action (实验性功能 › 选中文本自动推测意图).
+// kept across runs: false as a run begins (reset)
+pub let selection_intent_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// How a chat's column is laid out as the shell has it at a node's moment (chat_page_made's `narrower`): how much narrower
 /// than it is drawn (`by`), how far across it is moved (`across`), and the width it is laid out at (`laid`: where that
 /// steps, all it holds is laid out anew at once, View::lays_anew); the width at the other end of its way (`toward`:
@@ -1684,9 +1689,12 @@ pub fn reset() -> Unit {
   fresh_reset()
   // how times are said (message_words.mbt)
   absolute_times.set(false)
-  // whether Farview tabs are native, or the board enabled
+  // whether Farview tabs are native, or the board / selection intent enabled
   farview_native.set(false)
   board_feature.set(false)
+  selection_intent_feature.set(false)
+  selection_intent_reset()
+  selection_intent_pins_reset()
   // a chat's messages out of avatars (emit.mbt)
   emits.clear()
   chat_foot_dropped.set(None)

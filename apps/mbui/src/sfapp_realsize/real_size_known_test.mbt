@@ -760,7 +760,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide screen-trackpad-command": (1286, 884, 80),
   "wide settings-home": (591, 460, 68),
   "wide settings-appearance": (650, 519, 97),
-  "wide settings-experimental": (509, 405, 58),
+  "wide settings-experimental": (526, 419, 64),
   "wide settings-me": (591, 460, 68),
   "wide settings-me-reading": (616, 477, 74),
   "wide settings-workspace": (764, 572, 110),

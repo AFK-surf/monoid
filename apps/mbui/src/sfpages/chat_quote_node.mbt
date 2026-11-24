@@ -78,6 +78,44 @@ fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message,
 }
 
 ///|
+/// What `p` says is picked, of message `m`, sent to the experimental selection-intent helper and let go.
+fn chat_intent_of(
+  src : Source,
+  r : ChatRef,
+  thread : Double,
+  draft : String,
+  p : @ui.WordsPicked,
+  m : Message,
+  from : @sf.Anchor,
+  whole? : Bool = false,
+) -> Unit {
+  let text = chat_picked_words(p, m, whole).trim(chars=" \n\t").to_owned()
+  if text != "" {
+    let author = if m.mine { @sf.t("web-main.chat.you") } else { m.by.name }
+    let role = if !m.mine && m.author_kind == "agent" { "agent" } else { "person" }
+    open_selection_intent(src, r, thread, draft, text, m.ts, author, role, from~)
+  }
+  @ui.picked_let_go()
+}
+
+///|
+/// What is picked within one message of chat `rows` sent to the experimental selection-intent helper and let go.
+fn chat_intent_take(
+  v : @view.View,
+  src : Source,
+  r : ChatRef,
+  here : MessageNodeHere,
+  draft : String,
+  rows : ChatBodyList,
+  from : @sf.Anchor,
+) -> Unit {
+  guard @signals.untracked(fn() { (chat_picked_message(v, rows), (here.view)().thread) }) is (Some((p, m)), Some(thread)) else {
+    return
+  }
+  chat_intent_of(src, r, thread, draft, p, m, from)
+}
+
+///|
 /// What is picked of message `m` as `p` says it, or all of its words where all of it was picked (`whole`: 全选 over a
 /// finger's pick): those as the message has them, not what its rows drawn round what shows hold of them (a long
 /// message's pieces past them made of none, its words picked of them cut short).
@@ -148,16 +186,28 @@ fn chat_quote_node(
           mark: false,
           press: fn() { chat_quote_of(src, draft, p, m, whole~) },
         },
-        {
-          label: @sf.t("common.copy"),
-          icon: "copy",
-          mark: false,
-          press: fn() {
-            @sfbase.copy_out(chat_picked_words(p, m, whole), said=@sf.t("android-chat.annotate.copied"))
-            @ui.picked_let_go()
-          },
-        },
       ]
+      if @sfbase.selection_intent_feature.get() {
+        match @signals.untracked(fn() { (here.view)().thread }) {
+          Some(thread) =>
+            items.push({
+              label: @sf.t("web-main.chat.inferIntent"),
+              icon: "poke",
+              mark: false,
+              press: fn() { chat_intent_of(src, r, thread, draft, p, m, @sf.Anchor::Node(end), whole~) },
+            })
+          None => ()
+        }
+      }
+      items.push({
+        label: @sf.t("common.copy"),
+        icon: "copy",
+        mark: false,
+        press: fn() {
+          @sfbase.copy_out(chat_picked_words(p, m, whole), said=@sf.t("android-chat.annotate.copied"))
+          @ui.picked_let_go()
+        },
+      })
       if !whole {
         items.push({
           label: @sf.t("android-chat.annotate.selectAll"),
@@ -221,24 +271,71 @@ fn chat_quote_node(
   }
   v.reacts(fn() { chat_finger_picked(v, rows) is Some(_) }, fn(on) { if on { make() } })
   let quote_in = fn(host : @view.View) {
-    host.pick(fn() { chat_quotable(v, rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
-      guard made is Some(_) && @signals.untracked(fn() { chat_quotable(v, rows) }) is Some((p, _)) else { return }
-      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) && !end.shown_nowhere() else { return }
-      @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
-        let gone = fn() { chat_pick_gone(p) }
-        let unkept = end.owns_while(gone)
-        b.owns(unkept) |> ignore
-        end.on_reused(gone)
-        @sf.style_node(b, fn() { chat_quote_pill })
-        @sf.glass_capsule_node(@ui.keeps_picked(b), interactive=true)
-        .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
-        |> ignore
-        @sf.hover_ground_node(b)
-        @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
-        @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
-      })
-      |> ignore
-    })
+    host.pick(
+      fn() {
+        chat_quotable(v, rows).map(fn(q) {
+          (q.0.made, @sfbase.selection_intent_feature.get() && (here.view)().thread is Some(_))
+        })
+      },
+      fn(holds, made) {
+        guard made is Some((_, with_intent)) && @signals.untracked(fn() { chat_quotable(v, rows) }) is Some((p, _)) else {
+          return
+        }
+        guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) && !end.shown_nowhere() else {
+          return
+        }
+        if !with_intent {
+          @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
+            let gone = fn() { chat_pick_gone(p) }
+            let unkept = end.owns_while(gone)
+            b.owns(unkept) |> ignore
+            end.on_reused(gone)
+            @sf.style_node(b, fn() { chat_quote_pill })
+            @sf.glass_capsule_node(@ui.keeps_picked(b), interactive=true)
+            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+            |> ignore
+            @sf.hover_ground_node(b)
+            @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text }))
+            |> ignore
+            @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
+          })
+          |> ignore
+        } else {
+          holds.box(fn(pill) {
+            let gone = fn() { chat_pick_gone(p) }
+            let unkept = end.owns_while(gone)
+            pill.owns(unkept) |> ignore
+            end.on_reused(gone)
+            @sf.style_node(pill, fn() { chat_quote_bar })
+            @sf.glass_capsule_node(@ui.keeps_picked(pill), interactive=true)
+            .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
+            |> ignore
+            @sf.action_box_node(pill, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
+              @sf.style_node(b, fn() { chat_quote_part })
+              @sf.hover_ground_node(b)
+              @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.text }))
+              |> ignore
+              @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
+            })
+            |> ignore
+            pill.box(fn(sep) { @sf.style_node(sep, fn() { chat_quote_sep }) }) |> ignore
+            @sf.action_box_node(
+              pill,
+              fn() { @sf.t("web-main.chat.inferIntent") },
+              fn(_) { chat_intent_take(v, src, r, here, draft, rows, @sf.Anchor::Node(end)) },
+              fn(b) {
+                @sf.style_node(b, fn() { chat_quote_part })
+                @sf.hover_ground_node(b)
+                @sf.icon_node(b, "poke", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
+                @sf.words_node(b, fn() { @sf.t("web-main.chat.inferIntent") }, fn() { chat_quote_words }) |> ignore
+              },
+            )
+            |> ignore
+          })
+          |> ignore
+        }
+      },
+    )
   }
   let quote_made = Ref(false)
   let make_quote = fn() {
@@ -266,6 +363,31 @@ let chat_quote_pill : @ui.Style = @ui.style(
   radius=Full,
   align=ACenter,
 )
+
+///|
+// kept across runs: a value (no field of it changes)
+let chat_quote_bar : @ui.Style = @ui.style(
+  row=true,
+  h=@sf.quote_pop_h,
+  px=S0_5,
+  radius=Full,
+  align=ACenter,
+)
+
+///|
+// kept across runs: a value (no field of it changes)
+let chat_quote_part : @ui.Style = @ui.style(
+  row=true,
+  h=@sf.quote_pop_h,
+  px=S2_5,
+  gap=S1,
+  radius=Full,
+  align=ACenter,
+)
+
+///|
+// kept across runs: a value (no field of it changes)
+let chat_quote_sep : @ui.Style = @ui.css("w=SPx h=S3 bg=Line")
 
 ///|
 let chat_quote_icon : Double = 12.0
