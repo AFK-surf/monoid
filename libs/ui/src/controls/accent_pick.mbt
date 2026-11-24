@@ -241,12 +241,16 @@ fn hue_slider_node(
         flush=true,
         track_color=fn() { 0L },
         fill_color=None,
-        track_image=Some(fn() { Some((hue_strip(theme().dark), "", hue_strip_most)) }),
+        track_image=Some(fn() {
+          let tw = dmax(1.0, wide() - 2.0 * hue_track_in)
+          Some((hue_strip(theme().dark, tw, hue_thumb_room / 2.0 - hue_track_in), "", hue_strip_most))
+        }),
         thumb_color=None,
         thumb_edge=None,
         focus_shown=Some(fn() { sl.focus_shown() }),
         focus_color=Some(fn() { @ui.tree_theme().focus }),
         lens_enabled=true,
+        center_mark=true,
       )
       s.box(fn(slot) {
         slot.height(Is(Some(@glass.slider_thumb_h))) |> ignore
@@ -315,18 +319,29 @@ let custom_hue_most : Double = 355.0
 let custom_hue_step : Double = 5.0
 
 ///|
-/// How many pixels across the hues' track's picture is made, each its hue's accent, stretched over the track.
-let hue_cells : Int = 72
+/// How many pixels across the hues' track's picture is made (1px ≈ 1pt on desktop 208pt track), mapping 0°..355°
+/// linearly across the thumb center travel `[cap_in, track_w - cap_in]` and clamping both end caps to 0° / 355°.
+let hue_cells : Int = 208
 
 ///|
-/// The picture of every hue's accent by day or by night (hue_strip_px across, 1 high), by the key the host keeps it at:
-/// made the first time it is asked for (gradient.mbt's way: mbui fills no gradient itself).
-fn hue_strip(dark : Bool) -> String {
-  let key = "mem:sf-hues/\{dark}/\{hue_cells}"
+/// Hue in degrees [0, 355] at track-local position `x` in `[0, track_w]` when thumb centers travel `[cap_in, track_w - cap_in]`.
+fn hue_strip_hue_at(x : Double, track_w : Double, cap_in : Double) -> Int {
+  let span = dmax(1.0, track_w - 2.0 * cap_in)
+  let frac = dclamp((x - cap_in) / span, 0.0, 1.0)
+  (frac * custom_hue_most).round().to_int()
+}
+
+///|
+/// The picture of every hue's accent by day or by night (hue_cells across, 1 high), aligned to the flush capsule
+/// thumb's center travel `[cap_in, track_w - cap_in]` so the color under the droplet center matches the selected hue.
+fn hue_strip(dark : Bool, track_w : Double, cap_in : Double) -> String {
+  let tw_key = dmax(1.0, track_w.round()).to_int()
+  let key = "mem:sf-hues/\{dark}/\{tw_key}/\{hue_cells}"
   if !@ui.has_image(key) {
     let px = FixedArray::make(hue_cells * 4, b'\x00')
     for i in 0..<hue_cells {
-      let a = custom_tone((i.to_double() * 360.0 / hue_cells.to_double()).to_int())
+      let x = (i.to_double() + 0.5) / hue_cells.to_double() * track_w
+      let a = custom_tone(hue_strip_hue_at(x, track_w, cap_in))
       let ink = if dark { a.dark } else { a.light }
       for k in 0..<4 {
         px[i * 4 + k] = ((ink >> (24 - k * 8)) & 0xFFL).to_int().to_byte()

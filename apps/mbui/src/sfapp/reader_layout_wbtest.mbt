@@ -128,7 +128,7 @@ test "小屏: the layout's controls pressed where they are drawn: the size, a pa
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
   assert_eq(layout_style().paper, "green")
-  // the lines tapped a quarter along (its knob's middle 11 in from either end): 1.2 + a quarter of 1.2, kept as it is
+  // the lines tapped a quarter along (its capsule thumb's middle 19 in from either end): 1.2 + a quarter of 1.2, kept as it is
   // let go
   let ((sx, sy, sw, sh), _) = layout_control(t, Slider, "行距")
   t.tap(sx + 19.0 + (sw - 38.0) * 0.25, sy + sh / 2.0)

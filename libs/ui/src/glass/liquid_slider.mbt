@@ -90,6 +90,7 @@ pub(all) struct SliderLook {
   focus_shown : (() -> Bool)?
   focus_color : (() -> Int64)?
   lens_enabled : Bool
+  center_mark : Bool
   disabled : () -> Bool
 }
 
@@ -113,6 +114,7 @@ pub fn SliderLook::new(
   focus_shown? : (() -> Bool)? = None,
   focus_color? : (() -> Int64)? = None,
   lens_enabled? : Bool = true,
+  center_mark? : Bool = false,
   disabled? : () -> Bool = fn() { false },
 ) -> SliderLook {
   {
@@ -133,6 +135,7 @@ pub fn SliderLook::new(
     focus_shown,
     focus_color,
     lens_enabled,
+    center_mark,
     disabled,
   }
 }
@@ -212,7 +215,8 @@ fn liquid_slider_look_core(
         Some(_) => middle_at(at) - ends
         None =>
           if look.flush {
-            middle_at(at) - eff_tw() / 2.0 * (1.0 - at) - ends
+            let left_t = clamp(at / 0.04, 0.0, 1.0)
+            dmax(0.0, middle_at(at) - ends) * left_t
           } else {
             middle_at(at) - ends
           }
@@ -413,6 +417,38 @@ fn liquid_slider_look_core(
           .ground_drawn(By(fn() { thumb_shape(gl) }))
           |> ignore
         })
+        if look.center_mark {
+          let mark_w = 2.5
+          let mark_h = 16.0
+          thumb.show(fn() { lens_mounted.get() }, at_once=true, fn(m) {
+            m
+            .over(Is(true))
+            .points(Is(false))
+            .width(Is(Some(mark_w)))
+            .height(Is(Some(mark_h)))
+            .radius(Is(mark_w / 2.0))
+            .ground(Is(white))
+            .edge(Is((0.75, 0x00000055L)))
+            .shadow(By(fn() {
+              if lens(m) > 0.001 {
+                (2.0, 0.0, 0x00000033L)
+              } else {
+                (0.0, 0.0, 0L)
+              }
+            }))
+            .alpha(By(fn() { clamp(lens(m), 0.0, 1.0) }))
+            .ground_drawn(By(fn() {
+              {
+                dx: middle_at(progress(m)) - mark_w / 2.0,
+                dy: (look.thumb_h - mark_h) / 2.0,
+                dw: 0.0,
+                dh: 0.0,
+                corners: None,
+              }
+            }))
+            |> ignore
+          })
+        }
       }
       match in_thumb {
         Some(f) => f(thumb, eff_tw, thumb_x)

@@ -102,3 +102,78 @@ test "hue_slider_node: rejected hue keeps thumb aligned with model value" {
   let cx1 = knob_cx()
   assert_true((cx1 - cx0).abs() < 0.5, msg="rejected hue drag must keep thumb at model value: \{cx0} vs \{cx1}")
 }
+
+///|
+test "hue_slider_node: hue strip color at 0%/25%/75%/100% matches committed custom hue within 5 deg" {
+  let chosen = @signals.signal("custom:0")
+  let t = w2_case(w=600.0, fn(root) {
+    accent_pick_node(
+      root,
+      fn() { ["橙色", "蓝色", "青色", "紫色", "粉色"] },
+      fn() { "五彩色" },
+      fn() { "自定义" },
+      fn() { "色相" },
+      fn() { chosen.get() },
+      fn(k) { chosen.set(k) },
+    )
+  })
+  t.run_for(@ui.move_most_ms)
+  let sl = t.get(Slider, label="色相").rect
+  let cy = sl.1 + sl.3 / 2.0
+  let track_w = sl.2 - 2.0 * hue_track_in
+  let cap_in = hue_thumb_room / 2.0 - hue_track_in
+  for frac in [0.0, 0.25, 0.75, 1.0] {
+    let tap_x = sl.0 + hue_thumb_room / 2.0 + (sl.2 - hue_thumb_room) * frac
+    let strip_hue = hue_strip_hue_at(tap_x - (sl.0 + hue_track_in), track_w, cap_in)
+    t.tap(tap_x, cy)
+    t.run_for(hue_settle_ms)
+    let committed = custom_hue(chosen.untracked()).unwrap_or(-999)
+    assert_true(
+      (committed - strip_hue).abs() <= 5,
+      msg="frac=\{frac}: strip hue \{strip_hue} vs committed \{committed}",
+    )
+  }
+}
+
+///|
+test "hue_slider_node: held droplet at 0 and 355 ends inside clipped container has zero glass clipping" {
+  let chosen = @signals.signal("custom:0")
+  let t = w2_case(w=400.0, h=300.0, fn(root) {
+    root.box(fn(sc) {
+      sc.grow(Is(1.0)).clips(Is(true)).padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+      accent_pick_node(
+        sc,
+        fn() { ["橙色", "蓝色", "青色", "紫色", "粉色"] },
+        fn() { "五彩色" },
+        fn() { "自定义" },
+        fn() { "色相" },
+        fn() { chosen.get() },
+        fn(k) { chosen.set(k) },
+      )
+    })
+    |> ignore
+  })
+  t.run_for(@ui.move_most_ms)
+  let sl = t.get(Slider, label="色相").rect
+  let cy = sl.1 + sl.3 / 2.0
+  for end_x in [sl.0 + hue_thumb_room / 2.0, sl.0 + sl.2 - hue_thumb_room / 2.0] {
+    t.press_at(end_x, cy)
+    t.run_for(hue_hold_ms)
+    let drawn = t.drawn_glass()
+    let cut = t.drawn_glass_cut()
+    assert_true(drawn.length() > 0, msg="expected droplet glass at end_x=\{end_x}")
+    assert_eq(cut.length(), drawn.length(), msg="cut count mismatch at end_x=\{end_x}")
+    for i, g in drawn {
+      let (cx, ctop, cw, ch) = cut[i]
+      assert_true(
+        (cx - g.0).abs() < 0.01 &&
+        (ctop - g.1).abs() < 0.01 &&
+        (cw - g.2).abs() < 0.01 &&
+        (ch - g.3).abs() < 0.01,
+        msg="hue droplet at end_x=\{end_x} clipped: \{Repr(g)} -> \{Repr(cut[i])}",
+      )
+    }
+    t.release(end_x, cy)
+    t.run_for(hue_settle_ms)
+  }
+}
