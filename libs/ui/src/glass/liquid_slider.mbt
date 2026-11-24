@@ -438,8 +438,9 @@ fn liquid_slider_look_core(
             }))
             .alpha(By(fn() { clamp(lens(m), 0.0, 1.0) }))
             .ground_drawn(By(fn() {
+              let cur_tw = eff_tw()
               {
-                dx: middle_at(progress(m)) - mark_w / 2.0,
+                dx: thumb_x(cur_tw, progress(m)) + cur_tw / 2.0 - mark_w / 2.0,
                 dy: (look.thumb_h - mark_h) / 2.0,
                 dw: 0.0,
                 dh: 0.0,

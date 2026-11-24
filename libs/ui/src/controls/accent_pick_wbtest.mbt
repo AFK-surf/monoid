@@ -136,11 +136,13 @@ test "hue_slider_node: hue strip color at 0%/25%/75%/100% matches committed cust
 }
 
 ///|
-test "hue_slider_node: held droplet at 0 and 355 ends inside clipped container has zero glass clipping" {
+test "hue_slider_node: held droplet at 0 and 355 ends inside scrolled container has zero glass clipping" {
   let chosen = @signals.signal("custom:0")
-  let t = w2_case(w=400.0, h=300.0, fn(root) {
-    root.box(fn(sc) {
-      sc.grow(Is(1.0)).clips(Is(true)).padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+  let scroll = @view.Scroll::new()
+  let t = w2_case(w=400.0, h=220.0, fn(root) {
+    root.scrolls(scroll, fn(sc) {
+      sc.padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+      sc.box(fn(top) { top.height(Is(Some(120.0))) |> ignore }) |> ignore
       accent_pick_node(
         sc,
         fn() { ["橙色", "蓝色", "青色", "紫色", "粉色"] },
@@ -150,11 +152,16 @@ test "hue_slider_node: held droplet at 0 and 355 ends inside clipped container h
         fn() { chosen.get() },
         fn(k) { chosen.set(k) },
       )
+      sc.box(fn(bot) { bot.height(Is(Some(240.0))) |> ignore }) |> ignore
     })
     |> ignore
   })
   t.run_for(@ui.move_most_ms)
+  let sl_before = t.get(Slider, label="色相").rect
+  t.wheel(200.0, 110.0, 80.0)
+  t.run_for(@ui.move_most_ms)
   let sl = t.get(Slider, label="色相").rect
+  assert_true(sl.1 < sl_before.1 - 20.0, msg="scroll container must scroll to non-zero offset: \{sl_before.1} -> \{sl.1}")
   let cy = sl.1 + sl.3 / 2.0
   for end_x in [sl.0 + hue_thumb_room / 2.0, sl.0 + sl.2 - hue_thumb_room / 2.0] {
     t.press_at(end_x, cy)

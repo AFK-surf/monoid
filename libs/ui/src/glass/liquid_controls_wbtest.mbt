@@ -376,6 +376,39 @@ test "liquid_slider_look: center_mark=true draws centered indicator only while h
 }
 
 ///|
+test "liquid_slider_look: default non-flush center_mark aligns strictly with droplet center at 0.0 and 1.0" {
+  let dd = DampedDrag::new(0.0, lo=0.0, hi=1.0, held_scale=slider_thumb_held_scale)
+  let w = 216.0
+  let t = glass_case(false, false, fn(page) {
+    page.box(fn(host) {
+      dd.attach(host)
+      host.width(Is(Some(w))).height(Is(Some(slider_thumb_h))) |> ignore
+      let look = SliderLook::new(center_mark=true)
+      liquid_slider_look(host, fn(n) { dd.progress(n) }, fn(n) { dd.pressed(n) }, look, velocity=fn(n) { dd.velocity(n) })
+    })
+    |> ignore
+  })
+  t.run_for(glass_springs_out)
+  for at in [0.0, 1.0] {
+    t.by_hand(fn() {
+      dd.update_value(at)
+      dd.press()
+    })
+    t.run_for(glass_ctrl_hold_ms)
+    let marks = t.drawn_rects().filter(fn(r) { r.4 == white && (r.2 - 2.5).abs() < 0.2 && (r.3 - 16.0).abs() < 0.2 })
+    let glass = t.drawn_glass()
+    assert_eq(marks.length(), 1, msg="expected 1 center_mark at \{at}")
+    assert_eq(glass.length(), 1, msg="expected 1 droplet glass at \{at}")
+    let mark_cx = marks[0].0 + marks[0].2 / 2.0
+    let glass_cx = glass[0].0 + glass[0].2 / 2.0
+    assert_true((mark_cx - glass_cx).abs() <= 0.1, msg="non-flush center_mark at \{at}: mark=\{mark_cx} vs glass=\{glass_cx}")
+    t.by_hand(fn() { dd.release() })
+    t.run_for(glass_springs_out)
+  }
+  set_dark(None)
+}
+
+///|
 test "built-in droplet recipes assign exact unscaled droplet_role IDs (1..4) and public knob stays 0" {
   assert_eq(slider_glass(1.0).droplet_role, 1)
   assert_eq(slider_glass(1.0).at_strength(0.5).droplet_role, 1)
