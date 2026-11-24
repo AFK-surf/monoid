@@ -64,7 +64,10 @@ pub fn stops_node(
   let dd = @glass.DampedDrag::new(init_v, lo=0.0, hi=last, held_scale=@glass.slider_thumb_held_scale)
   parent.box(made_for=loc, fn(wrap) {
     style_node(wrap, fn() { stops_track.then(@ui.style(h=Fixed(button_height()))) }, in_row=true)
-    wrap.ground(Is(0L)).lines_up(Is(Some(Middle))) |> ignore
+    // (room kept clear over and under it for the thumb held at its tallest, past its own padding: what holds it, a sheet
+    // that scrolls, cuts what is drawn past its box)
+    let reach = dmax(0.0, @glass.slider_held_reach(thumb_h) - pad)
+    wrap.ground(Is(0L)).lines_up(Is(Some(Middle))).margin(Is((0.0, reach, 0.0, reach))) |> ignore
     wrap.reacts(at_start=false, fn() { (chosen(), state.resets.get()) }, fn(k) { told(k.0) })
     let sl = @glass.liquid_slider_node(
       wrap,
@@ -87,6 +90,7 @@ pub fn stops_node(
           labels().get(v.round().to_int()).unwrap_or("")
         }
       },
+      stop_labels=labels,
       drag=dd,
       loc~,
     )
