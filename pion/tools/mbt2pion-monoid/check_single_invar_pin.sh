@@ -24,13 +24,50 @@ toml_entries = []  # (rev, rel)
 lock_entries = []  # (rev, rel)
 errors = []
 
+def strip_toml_comment(raw):
+    """Strip unquoted `# ...` TOML comments while preserving '...' and \"...\" strings."""
+    out = []
+    in_double = False
+    in_single = False
+    escaped = False
+    for ch in raw:
+        if in_double:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_double = False
+        elif in_single:
+            out.append(ch)
+            if ch == "'":
+                in_single = False
+        else:
+            if ch == "#":
+                break
+            if ch == '"':
+                in_double = True
+            elif ch == "'":
+                in_single = True
+            out.append(ch)
+    return "".join(out)
+
+def unquote_toml_str(val):
+    val = val.strip()
+    if len(val) >= 2 and val[0] == '"' and val[-1] == '"':
+        return val[1:-1]
+    if len(val) >= 2 and val[0] == "'" and val[-1] == "'":
+        return val[1:-1]
+    return val
+
 def parse_lock_blocks_fallback(text):
-    """Key-order-independent TOML [[...]] array-of-tables fallback parser."""
+    """Key-order-independent TOML [[...]] array-of-tables fallback parser (comment-aware)."""
     blocks = []
     cur = None
     for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
+        line = strip_toml_comment(raw).strip()
+        if not line:
             continue
         if line.startswith("[[") and line.endswith("]]"):
             if cur is not None:
@@ -44,9 +81,7 @@ def parse_lock_blocks_fallback(text):
             continue
         if cur is not None and "=" in line:
             k, v = line.split("=", 1)
-            k = k.strip()
-            v = v.strip().strip('"').strip("'")
-            cur[k] = v
+            cur[k.strip()] = unquote_toml_str(v)
     if cur is not None:
         blocks.append(cur)
     return blocks
@@ -57,12 +92,13 @@ for root, _dirs, files in os.walk(pion_dir):
         rel = os.path.relpath(full, repo_root)
         if fn == "pion.toml":
             txt = open(full, "r", encoding="utf-8").read()
-            for lineno, line in enumerate(txt.splitlines(), 1):
+            for lineno, raw_line in enumerate(txt.splitlines(), 1):
+                line = strip_toml_comment(raw_line).strip()
                 if "AFK-surf/invar.git" not in line:
                     continue
                 m = re.search(r'rev\s*=\s*"([0-9a-f]{40})"', line)
                 if not m:
-                    errors.append(f"{rel}:{lineno}: AFK-surf/invar dependency without valid 40-char hex rev: {line.strip()}")
+                    errors.append(f"{rel}:{lineno}: AFK-surf/invar dependency without valid 40-char hex rev: {line}")
                 else:
                     toml_entries.append((m.group(1), rel))
         elif fn == "pion.lock":
