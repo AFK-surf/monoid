@@ -123,7 +123,7 @@ pub fn liquid_bar_pill_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=1.2,
+      blur=2.0,
       tint~,
       solid=sol,
       saturation=1.0,
@@ -161,7 +161,7 @@ pub fn liquid_floating_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=1.1,
+      blur=2.2,
       tint=glass_tint,
       solid=sol,
       saturation=1.0,
@@ -197,7 +197,7 @@ pub fn liquid_tab_bar_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=1.1,
+      blur=2.2,
       tint~,
       solid=sol,
       saturation=1.0,
@@ -225,7 +225,7 @@ pub fn liquid_prominent_glass(
   let sol = if solid != clear { solid } else { accent }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=1.1,
+      blur=2.0,
       tint=alpha(accent, 0.85),
       solid=sol,
       saturation=1.15,

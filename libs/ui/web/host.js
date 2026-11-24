@@ -1180,7 +1180,7 @@
       float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));
       float clearBevel = min(rawBevel * lensScale, halfMinor * 0.72);
       float clearAmount = min(rawAmount * lensScale, halfMinor * 0.58);
-      float regBevel = min(rawBevel, 0.5 * halfMinor);
+      float regBevel = min(rawBevel, 0.55 * halfMinor);
       float regAmount = min(rawAmount, halfMinor);
       float bevel = mix(clearBevel, regBevel, regMix);
       float amount = mix(clearAmount, regAmount, regMix);
@@ -1212,7 +1212,13 @@
         if (inward < bevel && bevel > 0.001 && amount > 0.0) {
           float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);
           float clearMag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
-          float regMag = min(amount, 0.45 * bevel) * bevelX * bevelX * shortening;
+          float regMaxR = 0.80;
+          if (bevel > 3.0) {
+            float inv = 1.0 / (1.0 - 3.0 / bevel);
+            float rCap = sqrt(max(inv * inv - 1.0, 0.0)) / (1.0 + abs(v_pad.z) * 0.5);
+            regMaxR = min(regMaxR, rCap);
+          }
+          float regMag = min(amount, regMaxR * bevel) * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;
           float mag = mix(clearMag, regMag, regMix);
           disp = surfaceNormal * (-mag);
         }
@@ -1356,6 +1362,11 @@
       float glintFaceGain;
       float glintVib;
       float fogT = 0.0;
+      vec3 lightEmSaved = vec3(0.0);
+      vec3 darkEmSaved = vec3(0.0);
+      float darkMixSaved = 0.0;
+      float lightExtra = 0.0;
+      bool hasLightEm = false;
       if (is_clear) {
         // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens
         // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)
@@ -1379,16 +1390,16 @@
         float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;
         #endif
         float val = ad_sample(ac, ar, is_dark);
-        float baseDens = (col.a > 0.41) ? col.a : 0.30;
+        float baseDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));
         if (is_dark) {
           float brightT = val;
           fogT = brightT;
           float dens = max(baseDens, mix(baseDens, 0.64, brightT));
           float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
-          emission = mix(vec3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), vec3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), extra);
-          transmittance = mix(0.61, 0.0, extra);
-          lift = mix(0.60, 0.0, extra);
-          chromaGain = mix(0.92, 0.0, extra);
+          emission = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), extra);
+          transmittance = mix(0.50, 0.0, extra);
+          lift = mix(0.24, 0.0, extra);
+          chromaGain = mix(1.05, 0.0, extra);
           contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
           glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
         } else {
@@ -1398,34 +1409,60 @@
           float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));
           float darkExtra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
           vec3 lightEm = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * baseDens;
-          vec3 darkEm = mix(vec3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), vec3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), darkExtra);
+          vec3 darkEm = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), darkExtra);
+          lightEmSaved = lightEm; darkEmSaved = darkEm; darkMixSaved = darkMix; lightExtra = extra; hasLightEm = true;
           emission = mix(lightEm, darkEm, darkMix);
-          transmittance = mix(mix(0.70, 0.0, extra), mix(0.61, 0.0, darkExtra), darkMix);
-          lift = mix(mix(0.16, 0.0, extra), mix(0.60, 0.0, darkExtra), darkMix);
-          chromaGain = mix(mix(0.85, 0.0, extra), mix(0.92, 0.0, darkExtra), darkMix);
+          transmittance = mix(mix(0.70, 0.0, extra), mix(0.50, 0.0, darkExtra), darkMix);
+          lift = mix(mix(0.16, 0.0, extra), mix(0.24, 0.0, darkExtra), darkMix);
+          chromaGain = mix(mix(1.18, 0.0, extra), mix(1.05, 0.0, darkExtra), darkMix);
           contourStr = mix(0.43, 0.88, darkMix);
           contourDirAmt = mix(0.77, 1.0, darkMix);
           bevelShadowStr = 0.036;
           glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
         }
       } else if (is_dark) {
-        float darkDens = (col.a > 0.41) ? col.a : 0.30;
+        float darkDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));
         float extra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
-        emission = mix(vec3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), vec3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), extra);
-        transmittance = mix(0.61, 0.0, extra);
-        lift = mix(0.60, 0.0, extra);
-        chromaGain = mix(0.92, 0.0, extra);
+        emission = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), extra);
+        transmittance = mix(0.50, 0.0, extra);
+        lift = mix(0.24, 0.0, extra);
+        chromaGain = mix(1.05, 0.0, extra);
         contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
       } else {
-        float lightDens = (col.a > 0.41) ? col.a : 0.30;
+        float lightDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));
         float extra = clamp((lightDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);
         emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightDens;
+        lightEmSaved = emission; lightExtra = extra; hasLightEm = true;
         transmittance = mix(0.70, 0.0, extra);
         lift = mix(0.16, 0.0, extra);
-        chromaGain = mix(0.85, 0.0, extra);
+        chromaGain = mix(1.18, 0.0, extra);
         contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;
         glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;
+      }
+      vec3 lowC = refractColor;
+      if (regMix > 0.001) {
+        vec2 fc = sampleBase + disp;
+        float rD = mix(3.2, 4.2, fogT);
+        vec3 s1 = backdrop(fc + vec2( rD,  rD));
+        vec3 s2 = backdrop(fc + vec2(-rD,  rD));
+        vec3 s3 = backdrop(fc + vec2( rD, -rD));
+        vec3 s4 = backdrop(fc + vec2(-rD, -rD));
+        lowC = (refractColor * 2.0 + s1 + s2 + s3 + s4) * (1.0 / 6.0);
+        float interior = (bevel > 0.001) ? smoothstep(0.30 * bevel, 0.85 * bevel, inward) : 1.0;
+        float y0 = luma(refractColor), y1 = luma(s1), y2 = luma(s2), y3 = luma(s3), y4 = luma(s4);
+        float yMean = (y0 * 2.0 + y1 + y2 + y3 + y4) * (1.0 / 6.0);
+        float yVar = ((y0 - yMean) * (y0 - yMean) * 2.0
+                    + (y1 - yMean) * (y1 - yMean) + (y2 - yMean) * (y2 - yMean)
+                    + (y3 - yMean) * (y3 - yMean) + (y4 - yMean) * (y4 - yMean)) * (1.0 / 6.0);
+        float detailAmt = smoothstep(0.020, 0.095, sqrt(max(yVar, 0.0)));
+        float dampW = interior * max(detailAmt * 0.65, fogT * 0.72) * regMix;
+        refractColor = mix(refractColor, lowC, dampW);
+      }
+      if (hasLightEm) {
+        float bgChroma = max(lowC.r, max(lowC.g, lowC.b)) - min(lowC.r, min(lowC.g, lowC.b));
+        float lightVeilScale = mix(1.0, 0.65, smoothstep(0.08, 0.40, bgChroma) * regMix * (1.0 - lightExtra));
+        emission = mix(lightEmSaved * lightVeilScale, darkEmSaved, darkMixSaved);
       }
       if (regMix > 0.0 && regMix < 1.0) {
         emission = mix(vec3(0.126, 0.126, 0.126), emission, regMix);
@@ -1439,42 +1476,42 @@
         glintFaceGain = mix(0.25, glintFaceGain, regMix);
         glintVib = mix(1.5, glintVib, regMix);
       }
-      contourStr = mix(contourStr, is_dark ? 0.54 : 0.0, regMix);
-      if (is_dark && regMix > 0.001) {
-        contourDirAmt = mix(contourDirAmt, 0.65, regMix);
-      }
-      if (fogT > 0.001) {
-        float r1 = fogT * 1.1;
-        float r2 = fogT * 1.6;
-        vec2 fc = sampleBase + disp;
-        vec3 fBlur = (refractColor * 2.0
-          + (backdrop(fc + vec2(r1, 0.0)) + backdrop(fc - vec2(r1, 0.0))
-           + backdrop(fc + vec2(0.0, r1)) + backdrop(fc - vec2(0.0, r1))) * 1.5
-          + (backdrop(fc + vec2(r2, r2)) + backdrop(fc + vec2(-r2, r2))
-           + backdrop(fc + vec2(r2, -r2)) + backdrop(fc + vec2(-r2, -r2)))) * (1.0 / 12.0);
-        refractColor = mix(refractColor, fBlur, fogT * 0.45);
-      }
+      contourStr *= (1.0 - regMix);
       float Y = luma(refractColor);
       float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
-      float regChromaAtten = mix(1.0, 1.0 - clamp(luma(emission), 0.0, 0.85), regMix);
-      vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z * regChromaAtten);
+      vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z);
       float baseLum = clamp(transLum * transmittance, 0.0, 1.0);
       vec3 transmittedColor = vec3(baseLum) + chromaVec;
       vec3 rawBase = emission + transmittedColor;
+      // Exact Wave 3 legacy mapping for Clear / Lifted Lenses (regMix == 0)
       float maxC = max(rawBase.r, max(rawBase.g, rawBase.b));
-      vec3 baseColor = rawBase;
+      vec3 legacyBase = rawBase;
       if (maxC > 1.0) {
-        float lumR = clamp(luma(emission) + baseLum, 0.0, 0.999);
-        float s = clamp((1.0 - lumR) / max(maxC - lumR, 0.0001), 0.0, 1.0);
-        baseColor = vec3(lumR) + (rawBase - vec3(lumR)) * s;
+        float lumL = clamp(luma(emission) + baseLum, 0.0, 0.999);
+        float sL = clamp((1.0 - lumL) / max(maxC - lumL, 0.0001), 0.0, 1.0);
+        legacyBase = vec3(lumL) + (rawBase - vec3(lumL)) * sL;
       }
-      baseColor = clamp(baseColor, 0.0, 1.0);
+      legacyBase = clamp(legacyBase, 0.0, 1.0);
+      vec3 baseColor = legacyBase;
+      if (regMix > 0.001) {
+        float lumR = clamp(luma(emission) + baseLum, 0.001, 0.999);
+        vec3 dC = rawBase - vec3(lumR);
+        float s = 1.0;
+        if (dC.r > 0.0001) s = min(s, (1.0 - lumR) / dC.r);
+        else if (dC.r < -0.0001) s = min(s, lumR / (-dC.r));
+        if (dC.g > 0.0001) s = min(s, (1.0 - lumR) / dC.g);
+        else if (dC.g < -0.0001) s = min(s, lumR / (-dC.g));
+        if (dC.b > 0.0001) s = min(s, (1.0 - lumR) / dC.b);
+        else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));
+        vec3 regProjected = clamp(vec3(lumR) + dC * clamp(s, 0.0, 1.0), 0.0, 1.0);
+        baseColor = mix(legacyBase, regProjected, regMix);
+      }
       // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass
       float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);
       if (colChroma > 0.08 && col.a > 0.001) {
         float tintW = col.a <= 0.45
           ? col.a * 0.5
-          : mix(0.225, 1.0, smoothstep(0.45, 0.80, col.a));
+          : mix(0.225, 0.86, smoothstep(0.45, 0.80, col.a));
         baseColor = mix(baseColor, col.rgb, tintW);
       }
       float spot = 0.0;
@@ -1533,14 +1570,15 @@
           float opp = max(-along, 0.0);
           float lit2 = lit * lit;
           float opp2 = opp * opp;
-          float regLobe = (is_dark ? 0.95 : 1.0) * (lit2 * lit2) + (is_dark ? 0.95 : 0.85) * (opp2 * opp2) + 0.08;
-          float regInset = max(0.0, inward - 0.10);
-          float regCore = exp(-regInset / 0.80);
-          float regTail = exp(-regInset / 2.67);
+          float regLobe = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.03;
+          float regInset = max(0.0, inward - 0.30);
+          float regCore = exp(-regInset / 0.55);
+          float regTail = exp(-inward / 2.0);
           float regEase = pow(max(1.0 - luma(result), 0.0), 0.3);
-          float regRimGain = (is_dark ? 1.15 : 1.0) * clamp(v_c2.x / 0.6, 0.0, 1.5);
-          float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.035 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;
-          result = mix(result, vec3(1.0), clamp(regRim, 0.0, 1.0));
+          float regRimGain = 1.0 * clamp(v_c2.x / 0.6, 0.0, 1.5);
+          float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.020 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;
+          vec3 rimTarget = clamp(vec3(1.0) + (refractColor - vec3(Y)) * 1.0, 0.0, 1.0);
+          result = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));
         }
         if (regHairline > 0.001) {
           float regShade = (is_dark ? 0.0 : 0.22) * regShadeMask;

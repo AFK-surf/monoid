@@ -109,6 +109,106 @@ static void test_dropped_step_logic(void) {
   CHECK(win_count_dropped_step(1, 10, 100000, 1, 2, 14, 266700, freq, p120, -1) == 0);
 }
 
+static void fill_p0_rect(double *p, double x, double y, double w, double h, double kind, double r, double g, double b,
+                         double a, double grp) {
+  memset(p, 0, MB_INST * sizeof(double));
+  p[0] = x;
+  p[1] = y;
+  p[2] = w;
+  p[3] = h;
+  p[5] = kind;
+  p[8] = r;
+  p[9] = g;
+  p[10] = b;
+  p[11] = a;
+  p[16] = -1e9;
+  p[17] = -1e9;
+  p[18] = 1e9;
+  p[19] = 1e9;
+  p[20] = grp;
+}
+
+static int read_offscreen_pixel_rgb(int px, int py, uint8_t rgb[3]) {
+  if (!dev || !ctx || !off_target) return 0;
+  D3D11_TEXTURE2D_DESC td = {};
+  off_target->GetDesc(&td);
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  td.MiscFlags = 0;
+  ID3D11Texture2D *staging = NULL;
+  if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) return 0;
+  ctx->CopyResource(staging, off_target);
+  D3D11_MAPPED_SUBRESOURCE m = {};
+  int ok = 0;
+  if (SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
+    const uint8_t *p = (const uint8_t *)m.pData + (size_t)py * (size_t)m.RowPitch + (size_t)px * 4u;
+    rgb[0] = p[2];  // R (off_target is DXGI_FORMAT_B8G8R8A8_UNORM)
+    rgb[1] = p[1];  // G
+    rgb[2] = p[0];  // B
+    ctx->Unmap(staging, 0);
+    ok = 1;
+  }
+  staging->Release();
+  return ok;
+}
+
+static void test_p0_liquid_glass_vectors(void) {
+  struct VecCase {
+    const char *name;
+    double bg[3];
+    double tint[4];
+    int is_clear;
+    int adaptive;
+  };
+  static const VecCase cases[7] = {
+      {"dark_black", {0.0, 0.0, 0.0}, {32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0}, 0, 0},
+      {"dark_1b1c1f", {27.0 / 255.0, 28.0 / 255.0, 31.0 / 255.0}, {32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0}, 0, 0},
+      {"dark_ad_white", {1.0, 1.0, 1.0}, {32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, 0x67 / 255.0}, 0, 1},
+      {"light_blue", {0.0, 136.0 / 255.0, 1.0}, {253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0}, 0, 0},
+      {"pure_clear", {0.0, 1.0, 64.0 / 255.0}, {1.0, 1.0, 1.0, 0.0}, 1, 0},
+      {"light_d9_blue", {0.0, 0.4, 1.0}, {253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0xD9 / 255.0}, 0, 0},
+      {"light_ff_blue", {0.0, 0.4, 1.0}, {253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 1.0}, 0, 0},
+  };
+  for (int i = 0; i < 7; i++) {
+    double inst[2 * MB_INST];
+    fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, cases[i].bg[0], cases[i].bg[1], cases[i].bg[2], 1.0, 0.0);
+    fill_p0_rect(inst + MB_INST, 16.0, 16.0, 96.0, 96.0, 6.0, cases[i].tint[0], cases[i].tint[1], cases[i].tint[2],
+                 cases[i].tint[3], (double)(-40 - i));
+    inst[MB_INST + 4] = 16.0;
+    inst[MB_INST + 6] = 1.0;
+    inst[MB_INST + 7] = cases[i].is_clear ? 0.0 : 1.0;
+    inst[MB_INST + 12] = 0.0;
+    inst[MB_INST + 13] = 4.0;
+    inst[MB_INST + 14] = cases[i].adaptive ? -1.0 : 0.0;
+    inst[MB_INST + 15] = 1.0;
+    glass_free();
+    CHECK(submit(inst, 2, cases[i].bg[0], cases[i].bg[1], cases[i].bg[2]) == 1);
+    ctx->Flush();
+    uint8_t rgb[3] = {0, 0, 0};
+    CHECK(read_offscreen_pixel_rgb(64, 64, rgb) == 1);
+    printf("win_gpu: p0 %s -> rgb(%u, %u, %u)\n", cases[i].name, rgb[0], rgb[1], rgb[2]);
+    if (i == 0) {
+      CHECK(rgb[0] >= 26 && rgb[0] <= 34 && rgb[1] >= 26 && rgb[1] <= 34 && rgb[2] >= 26 && rgb[2] <= 34);
+    } else if (i == 1) {
+      CHECK(rgb[0] >= 41 && rgb[0] <= 51 && rgb[1] >= 42 && rgb[1] <= 52 && rgb[2] >= 45 && rgb[2] <= 55);
+    } else if (i == 2) {
+      CHECK(rgb[0] >= 85 && rgb[0] <= 101 && rgb[1] >= 85 && rgb[1] <= 101 && rgb[2] >= 85 && rgb[2] <= 101);
+    } else if (i == 3) {
+      double mx = (double)(rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]));
+      double mn = (double)(rgb[0] < rgb[1] ? (rgb[0] < rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] < rgb[2] ? rgb[1] : rgb[2]));
+      double sat = mx > 0.0 ? (mx - mn) / mx : 0.0;
+      CHECK(rgb[0] >= 27 && rgb[0] <= 51 && rgb[1] >= 142 && rgb[1] <= 166 && rgb[2] >= 243 && sat >= 0.80);
+    } else if (i == 4) {
+      CHECK(rgb[0] <= 8 && rgb[1] >= 247 && rgb[2] >= 56 && rgb[2] <= 72);
+    } else if (i == 5) {
+      CHECK(rgb[0] >= (uint8_t)(0.72 * 255.0 + 0.5) && rgb[1] >= 200 && rgb[2] >= 240);
+    } else if (i == 6) {
+      CHECK(rgb[0] >= 249 && rgb[1] >= 248 && rgb[2] >= 249);
+    }
+  }
+}
+
 int main(void) {
   // 1. Initial values before any frame.
   CHECK(mb_host_gpu_ms() == -1.0);
@@ -158,6 +258,9 @@ int main(void) {
   CHECK(submit(inst, 16, 1.0, 1.0, 1.0) == 1);
   ctx->Flush();
   gpu_q_free();
+
+  // 5. P0 Regular Liquid Glass optics 5+2 numerical vector readback on D3D11 WARP production shader.
+  test_p0_liquid_glass_vectors();
 
   if (failed) return 1;
   printf("win_gpu: ok\n");

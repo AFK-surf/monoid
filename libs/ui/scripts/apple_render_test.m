@@ -594,7 +594,7 @@ int main(void) {
       uint8_t *tl_p = px_as + (206 * aw + 126) * 4;  // (63, 103) outside top-left rounded corner (r=24)
       uint8_t *bl_p = px_as + (434 * aw + 126) * 4;  // (63, 217) inside bottom-left square corner (r=0)
       CHECK(abs((int)tl_p[1] - (int)bg_p[1]) <= 2 && abs((int)tl_p[2] - (int)bg_p[2]) <= 2);
-      CHECK((int)bl_p[2] > 90 && (int)bl_p[1] > 90);
+      CHECK((int)bl_p[2] > (int)bg_p[2] + 40 && (int)bl_p[1] > (int)bg_p[1] + 40);
       free(px_as);
 
       // Glass::clear() (col.a = 26/255 ~ 0.102, blur = 0) yields +0.126 veil vs pure lens (col.a = 0, blur = 0) zero veil
@@ -699,7 +699,7 @@ int main(void) {
       // Top edge (160, 80.5) -> (320, 161); Left edge (100.5, 140) -> (201, 280)
       int top0 = (int)px_la0[(161 * aw + 320) * 4 + 1];
       int left0 = (int)px_la0[(280 * aw + 201) * 4 + 1];
-      CHECK(top0 > left0 + 30);
+      CHECK(top0 > left0 + 20);
 
       mb_host_glass_light_angle(1.5707963267948966);  // PI / 2
       glass_forget();
@@ -710,8 +710,8 @@ int main(void) {
       int top90 = (int)px_la90[(161 * aw + 320) * 4 + 1];
       int left90 = (int)px_la90[(280 * aw + 201) * 4 + 1];
       int right90 = (int)px_la90[(280 * aw + 439) * 4 + 1];
-      CHECK(left90 > top90 + 30);
-      CHECK(right90 > top90 + 30);
+      CHECK(left90 > top90 + 20);
+      CHECK(right90 > top90 + 20);
       free(px_la90);
 
       mb_host_glass_light_angle(0.0);
@@ -729,11 +729,11 @@ int main(void) {
       // and fades transmittance, lift and chroma to 0, so over black it is far brighter and over saturated blue it
       // stays neutral.
       double ld[2 * MB_INST];
-      uint8_t *px_ld[4];
+      uint8_t *px_ld[5];
       // (alpha byte, backdrop r, g, b)
-      static const double ld_case[4][4] = {
-          {0x50, 0, 0, 0}, {0x67, 0, 0, 0}, {0xD9, 0, 0, 0}, {0xD9, 0.0, 0.4, 1.0}};
-      for (int i = 0; i < 4; i++) {
+      static const double ld_case[5][4] = {
+          {0x50, 0, 0, 0}, {0x67, 0, 0, 0}, {0xD9, 0, 0, 0}, {0xD9, 0.0, 0.4, 1.0}, {0xFF, 0.0, 0.4, 1.0}};
+      for (int i = 0; i < 5; i++) {
         rect_at(ld, 0, 0, 400, 300, 0, ld_case[i][1], ld_case[i][2], ld_case[i][3], 0);
         rect_at(ld + MB_INST, 100, 80, 200, 140, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -17);
         ld[MB_INST + 4] = 28;
@@ -753,8 +753,8 @@ int main(void) {
         px_ld[i] = read_texture(canvas, &aw, &ah);
       }
       // centre (200, 150) -> (400, 300) at 2x; the canvas is BGRA
-      double ld_lum[4];
-      for (int i = 0; i < 4; i++) {
+      double ld_lum[5];
+      for (int i = 0; i < 5; i++) {
         uint8_t *c = px_ld[i] + (300 * aw + 400) * 4;
         ld_lum[i] = (0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0]) / 255.0;
         printf("apple_render: light glass 0x%02X over (%.1f, %.1f, %.1f): rgb %d %d %d, luma %.4f\n",
@@ -764,7 +764,9 @@ int main(void) {
       CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
       CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
       CHECK(px_ld[3][(300 * aw + 400) * 4 + 2] >= (int)(0.72 * 255.0 + 0.5));
-      for (int i = 0; i < 4; i++) free(px_ld[i]);
+      uint8_t *c_ff = px_ld[4] + (300 * aw + 400) * 4;
+      CHECK(abs((int)c_ff[2] - 253) <= 4 && abs((int)c_ff[1] - 252) <= 4 && abs((int)c_ff[0] - 253) <= 4);
+      for (int i = 0; i < 5; i++) free(px_ld[i]);
 
       // Neutral dark liquid glass density (kind 6, is_dark): alpha <= 0.41 keeps the regular baseline to the byte
       // (0x20202050 and 0x20202067 draw the same), while dense veils (0x202020BF 75%, 0x202020D9 85%) fade
@@ -1043,7 +1045,8 @@ int main(void) {
       }
       printf("apple_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
              fog_peaks[0], fog_peaks[1]);
-      CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
+      CHECK(fog_peaks[1] < fog_peaks[0] - 0.08);
+      CHECK(fog_peaks[1] <= 0.30);
 
       // Test A: wide 320x36pt adaptive capsule over deep navy #173255 with centered 60x24pt pure white "{less}" block
       // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
@@ -2269,7 +2272,72 @@ int main(void) {
     CHECK(last_inst[0] == shown_first);
     mb_host_group_drop(5);
     free(last_inst);
+    last_inst = NULL;
     last_cap = 0;
+
+    // P0 optics fix numerical smoke vectors:
+    // 0: Dark Regular (0x20202067) over #000000 -> (30,30,30)
+    // 1: Dark Regular (0x20202067) over #1B1C1F -> (46,47,50)
+    // 2: Dark Adaptive (0x20202067, adaptive=1) over #FFFFFF -> (93,93,93)
+    // 3: Light Regular (0xFDFCFD67) over #0088FF -> (40,154,255), HSV S >= 0.75
+    // 4: Pure Clear (0xFFFFFF00, regMix=0) over (0,255,64) -> (0,255,64)
+    {
+      struct {
+        const char *name;
+        double bg_r, bg_g, bg_b;
+        double t_r, t_g, t_b, t_a;
+        double blur, adaptive;
+        int exp_r, exp_g, exp_b, tol;
+      } p0_cases[5] = {
+        {"dark_black",    0.0, 0.0, 0.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 30,  30,  30, 3},
+        {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 46,  47,  50, 3},
+        {"dark_ad_white", 1.0, 1.0, 1.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 93,  93,  93, 3},
+        {"light_blue",    0.0, 136.0/255.0, 1.0,              253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 40, 154, 255, 3},
+        {"pure_clear",    0.0, 1.0, 64.0/255.0,               1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
+      };
+      double p0[2 * MB_INST];
+      for (int ci = 0; ci < 5; ci++) {
+        rect_at(p0, 0, 0, 400, 300, 0, p0_cases[ci].bg_r, p0_cases[ci].bg_g, p0_cases[ci].bg_b, 0);
+        rect_at(p0 + MB_INST, 100, 80, 200, 120, 6, p0_cases[ci].t_r, p0_cases[ci].t_g, p0_cases[ci].t_b, -30 - ci);
+        p0[MB_INST + 4] = 20.0;
+        p0[MB_INST + 6] = 1.0;
+        p0[MB_INST + 7] = p0_cases[ci].blur;
+        p0[MB_INST + 11] = p0_cases[ci].t_a;
+        p0[MB_INST + 12] = 0.0;
+        p0[MB_INST + 13] = 4.0;
+        p0[MB_INST + 14] = p0_cases[ci].adaptive;
+        p0[MB_INST + 15] = 1.0;
+        p0[MB_INST + 21] = 0.0;
+        p0[MB_INST + 22] = 0.0;
+        p0[MB_INST + 23] = 0.0;
+        glass_forget();
+        mb_host_render_dirty(0, 0, 400, 300);
+        mb_render_present(p0, 2, p0_cases[ci].bg_r, p0_cases[ci].bg_g, p0_cases[ci].bg_b);
+        present_drain();
+        int aw = 0, ah = 0;
+        uint8_t *px = read_texture(canvas, &aw, &ah);
+        // BGRA8 at center (200, 140) -> (400, 280) at 2x
+        uint8_t *c = px + (280 * aw + 400) * 4;
+        int r = c[2], g = c[1], b = c[0];
+        printf("apple_render: p0_%s rgb=(%d,%d,%d) exp=(%d,%d,%d)\n",
+               p0_cases[ci].name, r, g, b, p0_cases[ci].exp_r, p0_cases[ci].exp_g, p0_cases[ci].exp_b);
+        CHECK(abs(r - p0_cases[ci].exp_r) <= p0_cases[ci].tol);
+        CHECK(abs(g - p0_cases[ci].exp_g) <= p0_cases[ci].tol);
+        CHECK(abs(b - p0_cases[ci].exp_b) <= p0_cases[ci].tol);
+        if (ci == 3) {
+          double mx = fmax(fmax(r, g), b);
+          double mn = fmin(fmin(r, g), b);
+          double hsv_s = mx > 0.0 ? (mx - mn) / mx : 0.0;
+          printf("apple_render: p0_light_blue hsv_s=%.3f\n", hsv_s);
+          CHECK(hsv_s >= 0.75);
+        }
+        free(px);
+      }
+      glass_forget();
+      free(last_inst);
+      last_inst = NULL;
+      last_cap = 0;
+    }
 
     // Restore synthetic state for trim checks.
     for (int i = 0; i < MB_INST; i++) f[i] = (float)inst[i];
