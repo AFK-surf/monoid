@@ -515,6 +515,8 @@ export class Exporter {
     const scanTranscripts = !this.#known || wantTranscripts || this.#transcriptsPending;
     const sessRows: Row[] = [];
     const runRows = new Map<string, Row[]>();
+    /// Whether `sessRows` and `runRows` hold the sessions already (the small tables were read whole this pass).
+    let loadedTranscriptSessions = false;
     this.#db.exec("BEGIN");
     try {
       // What was deleted, as told.
@@ -580,22 +582,7 @@ export class Exporter {
           }
         }
         this.#known = true;
-      } else if (scanTranscripts) {
-        for (const table of ["sessions", "runtime_sessions"] as const) {
-          for (let after = 0; ; ) {
-            const rows = all(pageOf(table), after, PAGE);
-            for (const r of rows) {
-              if (table === "sessions") sessRows.push(r);
-              else if (typeof r.session_key === "string") {
-                let xs = runRows.get(r.session_key);
-                if (xs === undefined) runRows.set(r.session_key, (xs = []));
-                xs.push(r);
-              }
-            }
-            if (rows.length < PAGE) break;
-            after = num(rows[rows.length - 1]!._rowid);
-          }
-        }
+        loadedTranscriptSessions = true;
       }
       // What changed in place, as told.
       for (const key of told.sessions) sessionRows(key);
@@ -676,6 +663,10 @@ export class Exporter {
       if (more) {
         this.#transcriptsPending = true;
       } else {
+        // The sessions the transcripts are found by, read only once the logs are caught up and outside the pass's row
+        // budget: read before, on a station with more sessions than PASS_ROWS, they used up every pass's budget ahead
+        // of the logs, so `more` never came false and nothing after them (logs, transcripts) was exported again.
+        if (!loadedTranscriptSessions) this.#transcriptSessions(sessRows, runRows);
         const transcriptsMore = this.#exportTranscripts(outs, sessRows, runRows, wsOfSession, say);
         if (transcriptsMore) {
           this.#transcriptsPending = true;
@@ -701,6 +692,31 @@ export class Exporter {
       this.#gcTranscriptChunks();
     }
     return { heads, more, wrote, read: this.#read };
+  }
+
+  /// Every session and runtime session, for finding transcripts by: in a short read of their own, not counted in the
+  /// pass's rows.
+  #transcriptSessions(sessRows: Row[], runRows: Map<string, Row[]>): void {
+    this.#db.exec("BEGIN");
+    try {
+      for (const table of ["sessions", "runtime_sessions"] as const) {
+        for (let after = 0; ; ) {
+          const rows = this.#q(pageOf(table)).all(after, PAGE) as Row[];
+          for (const r of rows) {
+            if (table === "sessions") sessRows.push(r);
+            else if (typeof r.session_key === "string") {
+              let xs = runRows.get(r.session_key);
+              if (xs === undefined) runRows.set(r.session_key, (xs = []));
+              xs.push(r);
+            }
+          }
+          if (rows.length < PAGE) break;
+          after = num(rows[rows.length - 1]!._rowid);
+        }
+      }
+    } finally {
+      this.#db.exec("COMMIT");
+    }
   }
 
   #sessionWs(table: string, row: Row, wsOf: (ws: unknown) => string): string[] {

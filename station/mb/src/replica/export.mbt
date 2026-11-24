@@ -172,6 +172,9 @@ pub struct Exporter {
   priv mut known : Bool
   priv mut transcripts_pending : Bool
   priv tf_cache : Map[String, Array[(String, JValue)]]
+  /// Each generation's `head.json` as last read or written, by its directory, with the size and mtime it had on disk:
+  /// a head of many transcripts is megabytes of JSON, parsed again only when the file changed.
+  priv head_cache : Map[String, (Double, Double, JValue)]
   priv manifest_cache : Map[String, (String, Array[String])]
   priv mut manifest_live : Set[String]
   priv manifest_superseded_at : Map[String, Double]
@@ -227,6 +230,7 @@ pub fn Exporter::new(
     known: false,
     transcripts_pending: false,
     tf_cache: Map([]),
+    head_cache: Map([]),
     manifest_cache: Map([]),
     manifest_live: Set([]),
     manifest_superseded_at: Map([]),
@@ -282,6 +286,7 @@ fn Exporter::forget(self : Exporter) -> Unit raise {
   self.known = false
   self.transcripts_pending = false
   self.tf_cache.clear()
+  self.head_cache.clear()
   self.manifest_cache.clear()
   self.manifest_live = Set([])
   self.manifest_superseded_at.clear()
@@ -321,11 +326,24 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 
 ///|
 fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
-  let text = (try { self.files.read(self.files.join([dir, "head.json"])) } catch { _ => None })
-  match text {
+  let path = self.files.join([dir, "head.json"])
+  guard self.files.meta(path) is Some((size, mtime)) else {
+    self.head_cache.remove(dir)
+    return None
+  }
+  if self.head_cache.get(dir) is Some((c_size, c_mtime, cached)) && c_size == size && c_mtime == mtime {
+    return Some(cached)
+  }
+  let text = (try { self.files.read(path) } catch { _ => None })
+  let parsed = match text {
     Some(t) => Some(@jsjson.parse(t)) catch { _ => None }
     None => None
   }
+  match parsed {
+    Some(head) => self.head_cache[dir] = (size, mtime, head)
+    None => self.head_cache.remove(dir)
+  }
+  parsed
 }
 
 ///|
@@ -352,6 +370,9 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   let known = self.meta("gen:\{ws}")
   if known is Some(g) && self.files.exists(self.gen_dir(ws, g)) {
     return g
+  }
+  if known is Some(g) {
+    self.head_cache.remove(self.gen_dir(ws, g))
   }
   let after = match self.meta("after") {
     Some(a) => @string.parse_double(a) catch { _ => 0.0 }
@@ -405,6 +426,7 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
         _ => ()
       }
       self.tf_cache.clear()
+      self.head_cache.clear()
       self.manifest_cache.clear()
       raise e
     }
@@ -657,6 +679,8 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
   let scan_transcripts = !self.known || want_transcripts || self.transcripts_pending
   let sess_rows : Array[JValue] = []
   let run_rows : Map[String, Array[JValue]] = Map([])
+  // Whether `sess_rows` and `run_rows` hold the sessions already (the small tables were read whole this pass).
+  let mut loaded_transcript_sessions = false
   self.db.exec("BEGIN")
   let body = () => {
     // What was deleted, as told.
@@ -758,27 +782,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
         }
       }
       self.known = true
-    } else if scan_transcripts {
-      for table in ["sessions", "runtime_sessions"] {
-        let mut after = 0.0
-        while true {
-          let rows = all(page_of(table), [Json::number(after), ni(page)])
-          for r in rows {
-            if table == "sessions" {
-              sess_rows.push(r)
-            } else if text_of(get(r, "session_key")) is Some(sk) {
-              match run_rows.get(sk) {
-                Some(xs) => xs.push(r)
-                None => run_rows[sk] = [r]
-              }
-            }
-          }
-          if rows.length() < page {
-            break
-          }
-          after = num(get(rows[rows.length() - 1], "_rowid"))
-        }
-      }
+      loaded_transcript_sessions = true
     }
     // What changed in place, as told.
     for k in list_of(get(told, "sessions")) {
@@ -904,6 +908,12 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     if more {
       self.transcripts_pending = true
     } else {
+      // The sessions the transcripts are found by, read only once the logs are caught up and outside the pass's row
+      // budget: read before, on a station with more sessions than `pass_rows`, they used up every pass's budget ahead of
+      // the logs, so `more` never came false and nothing after them (logs, transcripts) was exported again.
+      if !loaded_transcript_sessions {
+        self.transcript_sessions(sess_rows, run_rows)
+      }
       let transcripts_more = self.export_transcripts(outs, sess_rows, run_rows, ws_of_session, say)
       if transcripts_more {
         self.transcripts_pending = true
@@ -935,6 +945,44 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     ("wrote", Num(wrote.to_double())),
     ("read", Num(self.read.to_double())),
   ])
+}
+
+///|
+/// Every session and runtime session, for finding transcripts by: in a short read of their own, not counted in the
+/// pass's rows.
+fn Exporter::transcript_sessions(self : Exporter, sess_rows : Array[JValue], run_rows : Map[String, Array[JValue]]) -> Unit raise {
+  self.db.exec("BEGIN")
+  let read = () => {
+    for table in ["sessions", "runtime_sessions"] {
+      let mut after = 0.0
+      while true {
+        let rows = self.db.all(page_of(table), [Json::number(after), ni(page)]).map(row_of)
+        for r in rows {
+          if table == "sessions" {
+            sess_rows.push(r)
+          } else if text_of(get(r, "session_key")) is Some(sk) {
+            match run_rows.get(sk) {
+              Some(xs) => xs.push(r)
+              None => run_rows[sk] = [r]
+            }
+          }
+        }
+        if rows.length() < page {
+          break
+        }
+        after = num(get(rows[rows.length() - 1], "_rowid"))
+      }
+    }
+  }
+  read() catch {
+    e => {
+      self.db.exec("COMMIT") catch {
+        _ => ()
+      }
+      raise e
+    }
+  }
+  self.db.exec("COMMIT")
 }
 
 ///|
@@ -1057,7 +1105,13 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
 
 ///|
 fn Exporter::write_head(self : Exporter, dir : String, head : JValue) -> Unit raise {
-  ignore(self.files.write(self.files.join([dir, "head.json"]), @jsjson.stringify_indent(head, 1)))
+  let path = self.files.join([dir, "head.json"])
+  self.head_cache.remove(dir)
+  ignore(self.files.write(path, @jsjson.stringify_indent(head, 1)))
+  match self.files.meta(path) {
+    Some((size, mtime)) => self.head_cache[dir] = (size, mtime, head)
+    None => ()
+  }
 }
 
 ///|

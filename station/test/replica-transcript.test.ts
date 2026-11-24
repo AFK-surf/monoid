@@ -2187,3 +2187,168 @@ test("D71: tr_del batch throttling drains 7 stale records in 3 passes (3 + 3 + 1
     assert.deepEqual(mbPerPass, tsPerPass, "MoonBit and TS reference emit identical tr_del batches pass by pass");
   }
 });
+
+/// Exports `s` to `replica` until it is caught up, in the TS reference (`mode: "ts"`) or the MoonBit reader, a new
+/// exporter each call (as a station's start): the rounds it took, none past `most`.
+async function exportCaughtUp(mode: "ts" | "mb", s: { db: string; data: string }, replica: string, now: number, most: number) {
+  const originId = sid("a");
+  const rounds: { more: boolean; read: number }[] = [];
+  if (mode === "ts") {
+    const exporter = new Exporter({ db: s.db, replica, dataDir: s.data, origin: originId, now: () => now, chunkBytes: 4096, fold: false });
+    try {
+      exporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+      for (let i = 0; i < most; i++) {
+        const p = exporter.pass(nothingTold());
+        rounds.push({ more: p.more, read: p.read });
+        if (!p.more) break;
+      }
+    } finally {
+      exporter.close();
+    }
+  } else {
+    const mb = await makeMbExportHelper(s.db, replica, s.data, originId, 4096, ["--no-fold"]);
+    try {
+      await mb.places(now);
+      for (let i = 0; i < most; i++) {
+        const p = await mb.pass(nothingTold(), now);
+        rounds.push({ more: p.more, read: p.read });
+        if (!p.more) break;
+      }
+    } finally {
+      await mb.close(now);
+    }
+  }
+  return rounds;
+}
+
+test("D75: more sessions than PASS_ROWS no longer starve the logs and transcripts of every pass (TS + MoonBit)", async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  const now = 1_700_000_000_000;
+  const modes: ("ts" | "mb")[] = binary !== null ? ["ts", "mb"] : ["ts"];
+  const replicaOf = (mode: "ts" | "mb") => join(s.data, `replica-d75-${mode}`);
+  // A first export, caught up, by an exporter from before D71: it still holds a derived cache file of the brain.
+  const steps = s.prunedFiles.find((p) => p.includes(`${sep}steps${sep}`))!;
+  for (const mode of modes) {
+    assert.equal((await exportCaughtUp(mode, s, replicaOf(mode), now, 5)).at(-1)!.more, false);
+    const state = new DatabaseSync(join(replicaOf(mode), "export.db"), { timeout: 5000 });
+    try {
+      state.prepare("INSERT INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, NULL, 1, 1, 420, '[]')").run(HOME, steps);
+    } finally {
+      state.close();
+    }
+  }
+
+  // Then 3,000 sessions and 3,000 runtime sessions (6,000 rows > PASS_ROWS), and logs to export behind them.
+  const raw = new DatabaseSync(s.db, { timeout: 5000 });
+  try {
+    const cols = (raw.prepare("PRAGMA table_info(sessions)").all() as { name: string }[]).map((c) => c.name);
+    const picked = cols.map((c) => (c === "key" ? "'bulk:' || n" : c === "token" ? "'tok-bulk-' || n" : c === "runtime_session_id" ? "NULL" : c));
+    raw.exec("BEGIN IMMEDIATE");
+    raw.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 3000)
+      INSERT INTO sessions (${cols.join(", ")}) SELECT ${picked.join(", ")} FROM seq, sessions WHERE key = 'chat:agy-d71'`);
+    raw.exec(`WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 3000)
+      INSERT INTO runtime_sessions (session_key, id, profile, at, runtime) SELECT 'bulk:' || n, 'bulk-rt-' || n, 'agyprof', n, 'agy' FROM seq`);
+    raw.exec("COMMIT");
+  } finally {
+    raw.close();
+  }
+  const t2 = s.store.openThread("chat", "C", "ts-d75", "D75", "p@x").id;
+  s.store.joinThread(t2, "chat:agy-d71", "chat");
+  for (let i = 0; i < 600; i++) s.store.insertMessage({ thread: t2, ts: `d75.${i}`, authorKind: "person", author: "p@x", text: `backlog ${i}` });
+  for (let i = 0; i < 3; i++) s.store.insertLetter({ thread: t2, ts: `d75l.${i}`, authorKind: "person", author: "u", text: `letter ${i}`, letter: { way: "in", title: "another", link: null } });
+  s.store.startTurn("turn-d75", "chat:agy-d71", "message");
+  s.store.endTurn("turn-d75", "done", null, null, null);
+
+  const one = (db: string, sql: string) => {
+    const d = new DatabaseSync(db, { readOnly: true });
+    try {
+      return d.prepare(sql).get() as Record<string, unknown>;
+    } finally {
+      d.close();
+    }
+  };
+  const maxOf = (table: string) => Number(one(s.db, `SELECT MAX(rowid) AS m FROM ${table}`).m);
+  const roundsBy: Record<string, number> = {};
+  for (const mode of modes) {
+    const replica = replicaOf(mode);
+    const rounds = await exportCaughtUp(mode, s, replica, now + 10_000, 25);
+    assert.equal(rounds.at(-1)!.more, false, `${mode}: caught up within 25 passes (rounds: ${JSON.stringify(rounds)})`);
+    assert.equal(rounds[0]!.more, true, `${mode}: the first pass ran out of its rows on the sessions alone`);
+    assert.ok(rounds.slice(1).every((r) => r.read < 5000), `${mode}: later passes do not read the sessions again in their budget`);
+    roundsBy[mode] = rounds.length;
+    const state = join(replica, "export.db");
+    for (const k of ["entries", "letters", "turns"]) {
+      assert.equal(Number(one(state, `SELECT v FROM meta WHERE k = '${k}'`).v), maxOf(k), `${mode}: ${k} exported to the end`);
+    }
+    assert.equal(Number(one(state, "SELECT COUNT(*) AS n FROM entering").n), 0, `${mode}: no thread left entering`);
+    const d = new DatabaseSync(state, { readOnly: true });
+    let paths: string[];
+    try {
+      paths = (d.prepare("SELECT path FROM transcript_files").all() as { path: string }[]).map((r) => r.path);
+    } finally {
+      d.close();
+    }
+    for (const kept of s.keptFiles) assert.ok(paths.includes(kept), `${mode}: transcript ${kept} exported`);
+    assert.ok(!paths.includes(steps), `${mode}: the derived cache record is dropped`);
+    const gen = String(one(state, `SELECT v FROM meta WHERE k = 'gen:${HOME}'`).v);
+    const log = join(replica, "own", HOME, gen, "log");
+    const records = readdirSync(log)
+      .filter((b) => !b.endsWith(".writing"))
+      .flatMap((b) => [...decodeBatch(readFileSync(join(log, b))).lines].map((l) => JSON.parse(l) as Record<string, unknown>));
+    assert.ok(records.some((r) => r.tr_del === steps), `${mode}: tr_del sent for the derived cache record`);
+    assert.equal(records.filter((r) => r.r === "entries" && (r.row as { thread?: number }).thread === t2).length, 600, `${mode}: the backlog's entries exported`);
+  }
+  if (roundsBy.mb !== undefined) assert.equal(roundsBy.mb, roundsBy.ts, "MoonBit and the TS reference take the same passes");
+});
+
+test("D75: MoonBit exporter parses head.json again only when its size or mtime changed, and never across generations", { skip: skipMb }, async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  let now = 1_700_000_000_000;
+  const replica = join(s.data, "replica-d75-head");
+  const mb = await makeMbExportHelper(s.db, replica, s.data, sid("a"), 4096);
+  await mb.places(now);
+  let p = await mb.pass(nothingTold(), now);
+  while (p.more) p = await mb.pass(nothingTold(), now);
+  const gen = String(p.heads[HOME].gen);
+  const headPath = join(replica, "own", HOME, gen, "head.json");
+  const written = readFileSync(headPath, "utf8");
+  const quiet = async () => (await mb.pass(nothingTold(), (now += 1_000))).heads[HOME];
+  assert.deepEqual(await quiet(), JSON.parse(written), "a quiet pass answers the head as written");
+
+  // The same size and mtime: the head kept is answered, the file is not parsed again.
+  const at = new Date(1_700_000_100_000);
+  utimesSync(headPath, at, at);
+  assert.equal((await quiet()).name, "src", "a changed mtime reads the file again");
+  const changed = written.replace(/"name":(\s*)"src"/, '"name":$1"srX"');
+  assert.notEqual(changed, written);
+  assert.equal(Buffer.byteLength(changed), Buffer.byteLength(written));
+  writeFileSync(headPath, changed);
+  utimesSync(headPath, at, at);
+  assert.equal((await quiet()).name, "src", "same size and mtime: answered from the head kept");
+
+  // Its mtime moved: read again, as it is on disk now.
+  const later = new Date(1_700_000_200_000);
+  utimesSync(headPath, later, later);
+  assert.equal((await quiet()).name, "srX", "a moved mtime reads the file again");
+  // A different size at the same mtime: read again.
+  const longer = written.replace(/"name":(\s*)"src"/, '"name":$1"srcXY"');
+  writeFileSync(headPath, longer);
+  utimesSync(headPath, later, later);
+  assert.equal((await quiet()).name, "srcXY", "a changed size reads the file again");
+
+  // Gone: the head starts again from nothing rather than from the one kept.
+  rmSync(headPath);
+  const fresh = await quiet();
+  assert.equal(fresh.to, 0, "a removed head.json is not answered from memory");
+  assert.deepEqual(fresh.batches, []);
+
+  // A new generation never answers the old one's head.
+  await mb.newGenerations(now, now);
+  const next = await mb.pass(nothingTold(), (now += 1_000));
+  assert.notEqual(next.heads[HOME].gen, gen, "a new generation");
+  assert.equal(next.heads[HOME].name, "src");
+  assert.deepEqual(next.heads[HOME], JSON.parse(readFileSync(join(replica, "own", HOME, String(next.heads[HOME].gen), "head.json"), "utf8")));
+  assert.deepEqual(await quiet(), next.heads[HOME], "and a quiet pass after it answers that generation's head");
+});
