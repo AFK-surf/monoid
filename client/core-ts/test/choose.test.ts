@@ -543,6 +543,34 @@ test("auto station allowlist: only acceptAutoChats stations enter the load-balan
   assert.equal(v.station.id, "mm2");
 });
 
+test("auto station allowlist: a station with fewer agents but its CPU full is passed over; when all are full the least busy is still picked", () => {
+  const { setStations, view } = makeAllowlistRig();
+  const cpu = (percent: number) => ({ identity: "", os: "", egressText: "", meters: [{ label: "CPU", short: "CPU", percent }, { label: "内存", short: "内存", percent: 10 }] });
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(96), overview: { counts: { running: 0 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(10), overview: { counts: { running: 2 } } },
+  ]);
+  assert.equal(view().station.id, "mm2");
+  // mm1 at 30% weighs 0 + 1, mm2 two agents at 10%: mm1.
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(30), overview: { counts: { running: 0 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(10), overview: { counts: { running: 2 } } },
+  ]);
+  assert.equal(view().station.id, "mm1");
+  // Same agents, one 80% busy and one idle: the idle one.
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(80), overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(5), overview: { counts: { running: 1 } } },
+  ]);
+  assert.equal(view().station.id, "mm2");
+  // Both full: not refused, the lighter one.
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(100), overview: { counts: { running: 3 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(95), overview: { counts: { running: 1 } } },
+  ]);
+  assert.equal(view().station.id, "mm2");
+});
+
 test("auto station allowlist: new user with no last history picks least busy allowlisted station, never non-allowlisted online[0]", () => {
   const { setStations, view } = makeAllowlistRig();
   setStations([

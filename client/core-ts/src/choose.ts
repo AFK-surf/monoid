@@ -24,6 +24,7 @@ import { type PresetRecord, type Stars, isGone } from "./preset-records.ts";
 import { type Who, fromBefore, heldOf, starredKeys, starsHeld } from "./presets-kept.ts";
 import { work } from "./work.ts";
 import { ofAddress } from "./workspace.ts";
+import { lessBusy, type Busy } from "../../../shared/station-busy.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -640,16 +641,15 @@ export class Choose implements Owner {
     return online.filter((s) => s.acceptAutoChats === true && s.mode !== "tasks");
   }
 
-  /// The least busy station in `pool` that runs `pm` (or any station in `pool` when `pm` is null, without reading other stations' overviews).
+  /// The least busy station in `pool` (shared/station-busy.ts: agents running and CPU) that runs `pm` (or any station in `pool` when `pm` is null, without reading other stations' overviews).
   #pickBest(pool: J[], scope: string, pm: J | null = null): J | undefined {
     const runs = (s: J) => pm === null || (typeof s.station === "string" && this.#runsBound(s.station, pm));
     const list = pool.filter(runs);
     if (list.length === 0) return undefined;
     const recent = this.#autoRecent.get(scope);
     const sorted = [...list].sort((a, b) => {
-      const ra = typeof get(get(get(a, "overview"), "counts"), "running") === "number" ? a.overview.counts.running : 0;
-      const rb = typeof get(get(get(b, "overview"), "counts"), "running") === "number" ? b.overview.counts.running : 0;
-      if (ra !== rb) return ra - rb;
+      const by = lessBusy(busyOf(a), busyOf(b));
+      if (by !== 0) return by;
       if (recent !== undefined) {
         const aRecent = a.id === recent ? 1 : 0;
         const bRecent = b.id === recent ? 1 : 0;
@@ -2263,3 +2263,12 @@ export class Choose implements Owner {
 }
 
 export { Effect };
+
+/// How busy a station row is (shared/station-busy.ts): its agents running and its CPU meter (present.ts `host`: CPU busy,
+/// or its load per core where an older station tells no busy), as its row shows them.
+function busyOf(s: J): Busy {
+  const running = get(get(get(s, "overview"), "counts"), "running");
+  const cpu = arr(get(get(s, "host"), "meters")).find((m: J) => get(m, "short") === "CPU");
+  const percent = get(cpu, "percent");
+  return { agents: typeof running === "number" ? running : 0, cpu: typeof percent === "number" ? percent / 100 : null };
+}
