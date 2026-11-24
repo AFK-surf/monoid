@@ -12,6 +12,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type AddressInfo, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { after, test } from "node:test";
@@ -154,16 +155,18 @@ function sendRawLines(binary: string, dbPath: string, rawChunks: Buffer[]): Prom
     const child = spawn(binary, ["--builder", "usage-counter", "--db", dbPath, "--sep", sep], {
       stdio: ["pipe", "pipe", "pipe"],
     });
-    let out = "";
-    let err = "";
+    const outChunks: Buffer[] = [];
+    const errChunks: Buffer[] = [];
     child.stdout.on("data", (d: Buffer) => {
-      out += d.toString("utf8");
+      outChunks.push(d);
     });
     child.stderr.on("data", (d: Buffer) => {
-      err += d.toString("utf8");
+      errChunks.push(d);
     });
     child.on("error", reject);
     child.on("close", (code) => {
+      const out = Buffer.concat(outChunks).toString("utf8");
+      const err = Buffer.concat(errChunks).toString("utf8");
       if (code !== 0) reject(new Error(`exit ${code}: ${err}`));
       else resolve(out.split("\n").filter((l) => l.length > 0));
     });
@@ -698,49 +701,78 @@ test("production new UsageCounter (no mb): cold-start/hot-reload hits Pion on fi
 
   const mbLog = join(dir, "mb-spawns.log");
   const pionLog = join(dir, "pion-spawns.log");
-  const req2Seen = join(dir, "req2.seen");
-  const req2Go = join(dir, "req2.go");
   const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", bins.mb, mbLog);
-  // Pion wrapper logs every spawn and pauses the 2nd stdin request on its first spawn until `req2Go` appears,
-  // proving hot-switch truly happens while read #2 is in-flight on the live Pion process.
+
+  // Event-driven localhost TCP handshake (zero setTimeout/setInterval polling):
+  // wrapper connects on request #2, signals "seen", and waits for the test to send "go"
+  // after hot-switching config, proving read #2 is truly in-flight on the live Pion worker.
+  let gateSocket: Socket | null = null;
+  let gateReleased = false;
+  let resolveReq2Seen!: () => void;
+  const req2SeenPromise = new Promise<void>((r) => {
+    resolveReq2Seen = r;
+  });
+  const releaseReq2Gate = () => {
+    gateReleased = true;
+    if (gateSocket && !gateSocket.destroyed) {
+      gateSocket.end("go\n");
+    }
+  };
+  const gateServer = createServer((sock) => {
+    gateSocket = sock;
+    if (gateReleased) {
+      sock.end("go\n");
+    }
+    resolveReq2Seen();
+  });
+  await new Promise<void>((resolve) => gateServer.listen(0, "127.0.0.1", () => resolve()));
+  const gatePort = (gateServer.address() as AddressInfo).port;
+  cleanup.unshift(() => {
+    releaseReq2Gate();
+    return new Promise<void>((resolve) => gateServer.close(() => resolve()));
+  });
+
   const pionGateJs = join(dir, "pion-gate.mjs");
   writeFileSync(
     pionGateJs,
     `import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
-const [realBin, logFile, seenFile, goFile, ...args] = process.argv.slice(2);
+import { appendFileSync } from "node:fs";
+import { createConnection } from "node:net";
+const [realBin, logFile, gatePortStr, ...args] = process.argv.slice(2);
+const gatePort = Number(gatePortStr);
 appendFileSync(logFile, args.join(" ") + "\\n");
 const child = spawn(realBin, args, { stdio: ["pipe", "inherit", "inherit"] });
-let buf = "";
+let pending = Buffer.alloc(0);
 let reqCount = 0;
-const queue = [];
-let busy = false;
-async function pump() {
-  if (busy) return;
-  busy = true;
-  while (queue.length > 0) {
-    const line = queue.shift();
-    reqCount++;
-    if (reqCount === 2 && !existsSync(goFile)) {
-      writeFileSync(seenFile, "1");
-      while (!existsSync(goFile)) await new Promise((r) => setTimeout(r, 10));
-    }
-    child.stdin.write(line + "\\n");
-  }
-  busy = false;
+let chain = Promise.resolve();
+function waitForGate() {
+  return new Promise((resolve) => {
+    const sock = createConnection({ host: "127.0.0.1", port: gatePort });
+    const done = () => { sock.destroy(); resolve(); };
+    sock.once("data", done);
+    sock.once("end", done);
+    sock.once("close", done);
+    sock.once("error", done);
+  });
 }
-process.stdin.on("data", (c) => {
-  buf += c.toString("utf8");
+process.stdin.on("data", (chunk) => {
+  pending = Buffer.concat([pending, chunk]);
   let idx;
-  while ((idx = buf.indexOf("\\n")) >= 0) {
-    queue.push(buf.slice(0, idx));
-    buf = buf.slice(idx + 1);
+  while ((idx = pending.indexOf(0x0a)) >= 0) {
+    const lineBuf = pending.subarray(0, idx + 1);
+    pending = pending.subarray(idx + 1);
+    const n = ++reqCount;
+    chain = chain.then(async () => {
+      if (n === 2) await waitForGate();
+      child.stdin.write(lineBuf);
+    });
   }
-  void pump();
 });
 process.stdin.on("end", () => {
-  const fin = () => { if (busy || queue.length > 0) setTimeout(fin, 10); else child.stdin.end(); };
-  fin();
+  void chain.finally(() => {
+    if (pending.length > 0) child.stdin.write(pending);
+    child.stdin.end();
+  });
 });
 child.on("exit", (code, sig) => process.exit(code ?? (sig ? 1 : 0)));
 `,
@@ -749,7 +781,7 @@ child.on("exit", (code, sig) => process.exit(code ?? (sig ? 1 : 0)));
   const pionWrap = join(dir, "pion-wrap.sh");
   writeFileSync(
     pionWrap,
-    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(pionGateJs)} ${JSON.stringify(bins.pion)} ${JSON.stringify(pionLog)} ${JSON.stringify(req2Seen)} ${JSON.stringify(req2Go)} "$@"\n`,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(pionGateJs)} ${JSON.stringify(bins.pion)} ${JSON.stringify(pionLog)} ${JSON.stringify(String(gatePort))} "$@"\n`,
     { mode: 0o755 },
   );
 
@@ -823,18 +855,14 @@ child.on("exit", (code, sig) => process.exit(code ?? (sig ? 1 : 0)));
         assert.equal(readSpawns(mbLog).length, 0, "MB must not be spawned on cold start");
         assert.match(readSpawns(pionLog)[0]!, /--builder usage-counter/);
 
-        // 3. Real in-flight hot-switch (Pion -> MB): pause 2nd request inside Pion wrapper,
-        //    flip config to "mb" while read #2 is truly in flight, then release wrapper.
+        // 3. Real in-flight hot-switch (Pion -> MB): pause 2nd request inside Pion wrapper via
+        //    event-driven TCP handshake, flip config to "mb" while read #2 is truly in flight, then release.
         appendLines(transcript, [claudeLine("p2", t0 + 2_000, "claude-opus-5-5", 13, 24)]);
         const inFlight = counter.read(new Set(["kp"]));
-        const deadline = Date.now() + 5_000;
-        while (!existsSync(req2Seen)) {
-          assert.ok(Date.now() < deadline, "timed out waiting for Pion wrapper to receive 2nd request");
-          await new Promise((r) => setTimeout(r, 10));
-        }
+        await req2SeenPromise;
         currentEngine = "mb";
         assert.equal(readSpawns(mbLog).length, 0, "no MB spawn while Pion read is in flight");
-        writeFileSync(req2Go, "go");
+        releaseReq2Gate();
         assert.equal(await inFlight, 1, "in-flight read must complete uninterrupted during hot-switch");
         assert.equal(readSpawns(pionLog).length, 1, "in-flight read reused existing Pion worker");
         assert.equal(readSpawns(mbLog).length, 0, "no MB spawn until worker recycles");
@@ -873,6 +901,7 @@ child.on("exit", (code, sig) => process.exit(code ?? (sig ? 1 : 0)));
 
         await counter.stop();
       } finally {
+        releaseReq2Gate();
         setPionProbeRunnerForTest(null);
         resetReaderSelectionStateForTest();
       }
