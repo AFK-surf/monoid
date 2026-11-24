@@ -324,7 +324,7 @@ fn select_chip_look(
   focus_ring_node(v)
   content(v)
   v.show(at_once=true, on, fn(t) {
-    icon_node(t, "check", select_chip_tick, By(fn() { theme().p.accent })) |> ignore
+    icon_node(t, "check", select_chip_tick, By(fn() { theme().p.accent_text })) |> ignore
   })
 }
 
