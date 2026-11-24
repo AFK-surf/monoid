@@ -335,7 +335,53 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
   assert_true(clear_btn.rect.1 >= 0.0 && clear_btn.rect.1 + clear_btn.rect.3 <= 420.0, msg="clear btn visible in short window")
   assert_true(send_btn.rect.1 >= 0.0 && send_btn.rect.1 + send_btn.rect.3 <= 420.0, msg="send btn visible in short window")
   assert_true(del_btn.rect.1 >= 0.0 && del_btn.rect.1 + del_btn.rect.3 <= 420.0, msg="top delete btn visible in short window")
-  // Step with t.tab() until top "删除批注" and bottom "回到输入框发送" each receive focus, verifying live frame visibility & 0 faults
+  // Step with t.tab() until top "删除批注" and bottom "回到输入框发送" each receive focus,
+  // verifying live frame visibility, 0 faults (both doc_notes_node & viewer_marks_node),
+  // and that the theme outer focus ring is actually drawn with all 4 edges unclipped inside [0, 1280] × [0, 420].
+  let check_focus_ring = fn(label : String, rect : (Double, Double, Double, Double)) raise {
+    let th = @ui.tree_theme()
+    let out = th.focus_gap + th.focus_w
+    let fc = th.focus
+    let fr = ((fc >> 24) & 0xFFL).to_double() / 255.0
+    let fg = ((fc >> 16) & 0xFFL).to_double() / 255.0
+    let fb = ((fc >> 8) & 0xFFL).to_double() / 255.0
+    let fa = (fc & 0xFFL).to_double() / 255.0
+    let exp_x = rect.0 - out
+    let exp_y = rect.1 - out
+    let exp_w = rect.2 + 2.0 * out
+    let exp_h = rect.3 + 2.0 * out
+    let rings = t
+      .drawn_instances()
+      .filter(fn(a) {
+        a.length() >= 20 &&
+        a[5] == 0.0 &&
+        a[11] == 0.0 &&
+        (a[6] - th.focus_w).abs() < 0.2 &&
+        (a[12] - fr).abs() < 0.02 &&
+        (a[13] - fg).abs() < 0.02 &&
+        (a[14] - fb).abs() < 0.02 &&
+        (a[15] - fa).abs() < 0.02 &&
+        (a[0] - exp_x).abs() < 1.5 &&
+        (a[1] - exp_y).abs() < 1.5 &&
+        (a[2] - exp_w).abs() < 3.0 &&
+        (a[3] - exp_h).abs() < 3.0
+      })
+    guard rings is [ring, ..] else {
+      fail("focus ring not drawn for \{label} rect=\{Repr(rect)} expected=(\{exp_x},\{exp_y},\{exp_w},\{exp_h})")
+    }
+    let rx0 = ring[0]
+    let ry0 = ring[1]
+    let rx1 = ring[0] + ring[2]
+    let ry1 = ring[1] + ring[3]
+    assert_true(
+      rx0 >= 0.0 && ry0 >= 0.0 && rx1 <= 1280.0 && ry1 <= 420.0,
+      msg="focus ring for \{label} outside viewport: (\{rx0},\{ry0})..(\{rx1},\{ry1})",
+    )
+    assert_true(
+      rx0 >= ring[16] - 0.5 && ry0 >= ring[17] - 0.5 && rx1 <= ring[18] + 0.5 && ry1 <= ring[19] + 0.5,
+      msg="focus ring for \{label} clipped: ring=(\{rx0},\{ry0})..(\{rx1},\{ry1}) clip=(\{ring[16]},\{ring[17]})..(\{ring[18]},\{ring[19]})",
+    )
+  }
   let mut hit_top = false
   let mut hit_bottom = false
   for _ in 0..<24 {
@@ -344,14 +390,32 @@ test "wide: doc_notes_side_node uses single-layer liquid panel glass with outsid
       Some(s) if s.label == "删除批注" => {
         hit_top = true
         assert_true(s.rect.1 >= 0.0 && s.rect.1 + s.rect.3 <= 420.0, msg="focused top btn in [0,420]: \{Repr(s.rect)}")
-        assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused top btn corner faults")
-        assert_eq(t.focus_visible_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused top btn focus visible")
+        assert_eq(
+          t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") || f.contains("viewer_marks_node") }),
+          [],
+          msg="focused top btn corner faults",
+        )
+        assert_eq(
+          t.focus_visible_faults().filter(fn(f) { f.contains("doc_notes_node") || f.contains("viewer_marks_node") }),
+          [],
+          msg="focused top btn focus visible",
+        )
+        check_focus_ring("删除批注", s.rect)
       }
       Some(s) if s.label == "回到输入框发送" => {
         hit_bottom = true
         assert_true(s.rect.1 >= 0.0 && s.rect.1 + s.rect.3 <= 420.0, msg="focused bottom btn in [0,420]: \{Repr(s.rect)}")
-        assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused bottom btn corner faults")
-        assert_eq(t.focus_visible_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="focused bottom btn focus visible")
+        assert_eq(
+          t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") || f.contains("viewer_marks_node") }),
+          [],
+          msg="focused bottom btn corner faults",
+        )
+        assert_eq(
+          t.focus_visible_faults().filter(fn(f) { f.contains("doc_notes_node") || f.contains("viewer_marks_node") }),
+          [],
+          msg="focused bottom btn focus visible",
+        )
+        check_focus_ring("回到输入框发送", s.rect)
       }
       _ => ()
     }

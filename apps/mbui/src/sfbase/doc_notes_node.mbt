@@ -53,7 +53,8 @@ pub fn doc_notes_side(width : Double, count : Int) -> Bool {
 /// The notes as rows in `v`: where each is, what it is of (two lines at most) and what was said of it; a press on
 /// one opens it (`opened` first, a sheet closing), its bin takes it off. The one open stands out.
 pub fn doc_notes_list_node(v : @view.View, of : DocNotes, opened : () -> Unit) -> Unit {
-  v.gap(Is(6.0)) |> ignore
+  // 4pt inset keeps outer keyboard focus rings (focus_gap + focus_w = 4pt) unclipped inside scroll viewports
+  v.padding(Is((4.0, 4.0, 4.0, 4.0))).gap(Is(6.0)) |> ignore
   v.each(of.notes, fn(n) { n.id }, fn(row, n) {
     row.row(Is(true)).lines_up(Is(Some(Start))).gap(Is(2.0)) |> ignore
     @sf.action_box_node(

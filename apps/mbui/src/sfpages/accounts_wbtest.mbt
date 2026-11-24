@@ -1849,15 +1849,36 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
         guard t.query(Button, label="使用此账号") is Some(last_btn) else {
           fail("\{at}: narrow wrapped last row (使用此账号) not found after scrolling")
         }
+        let cx = last_btn.rect.0 + last_btn.rect.2 / 2.0
+        let cy = last_btn.rect.1 + last_btn.rect.3 / 2.0
+        let cards = t
+          .boxes_held()
+          .filter(fn(b) {
+            b.bg != 0L && b.radius >= 8.0 && b.h < 400.0 && b.w > last_btn.rect.2 + 20.0 && b.x <= cx && cx <= b.x + b.w && b.y <= cy && cy <= b.y + b.h
+          })
+        guard cards.length() > 0 else {
+          fail("\{at}: narrow wrapped Codex last card enclosing 使用此账号 not found")
+        }
+        let mut last_card = cards[0]
+        for c in cards {
+          if c.h < last_card.h {
+            last_card = c
+          }
+        }
+        let card_bottom = last_card.y + last_card.h
         assert_true(
-          last_btn.rect.1 + last_btn.rect.3 <= narrow_bar_top,
-          msg="\{at}: narrow wrapped last row bottom \{last_btn.rect.1 + last_btn.rect.3} must be <= bar_top \{narrow_bar_top}",
+          card_bottom > last_btn.rect.1 + last_btn.rect.3 + 10.0,
+          msg="\{at}: narrow Codex card bottom \{card_bottom} must include below-button lines past \{last_btn.rect.1 + last_btn.rect.3}",
+        )
+        assert_true(
+          card_bottom <= narrow_bar_top,
+          msg="\{at}: narrow wrapped Codex card bottom \{card_bottom} must be <= bar_top \{narrow_bar_top}",
         )
         t.set_font_scale(1.0)
         t.resize(w, 640.0)
         t.run_for(@ui.move_most_ms)
       } else {
-        // Wide: scroll down and strictly assert the true last row ("使用此账号") clears bar_top
+        // Wide: scroll down and strictly assert the full Codex last card bottom clears bar_top
         for _ in 0..<12 {
           t.wheel(w / 2.0, 200.0, 200.0)
         }
@@ -1866,9 +1887,30 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
         guard t.query(Button, label="使用此账号") is Some(last_btn) else {
           fail("\{at}: wide last row (使用此账号) not found after scrolling")
         }
+        let cx = last_btn.rect.0 + last_btn.rect.2 / 2.0
+        let cy = last_btn.rect.1 + last_btn.rect.3 / 2.0
+        let cards = t
+          .boxes_held()
+          .filter(fn(b) {
+            b.bg != 0L && b.radius >= 8.0 && b.h < 400.0 && b.w > last_btn.rect.2 + 20.0 && b.x <= cx && cx <= b.x + b.w && b.y <= cy && cy <= b.y + b.h
+          })
+        guard cards.length() > 0 else {
+          fail("\{at}: wide Codex last card enclosing 使用此账号 not found")
+        }
+        let mut last_card = cards[0]
+        for c in cards {
+          if c.h < last_card.h {
+            last_card = c
+          }
+        }
+        let card_bottom = last_card.y + last_card.h
         assert_true(
-          last_btn.rect.1 + last_btn.rect.3 <= wide_bar_top,
-          msg="\{at}: wide last row bottom \{last_btn.rect.1 + last_btn.rect.3} must be <= bar_top \{wide_bar_top}",
+          card_bottom > last_btn.rect.1 + last_btn.rect.3 + 10.0,
+          msg="\{at}: wide Codex card bottom \{card_bottom} must include below-button lines past \{last_btn.rect.1 + last_btn.rect.3}",
+        )
+        assert_true(
+          card_bottom <= wide_bar_top,
+          msg="\{at}: wide Codex card bottom \{card_bottom} must be <= bar_top \{wide_bar_top}",
         )
       }
       // MBUI_GLASS=solid fallback: 0 glass + 1pt border
