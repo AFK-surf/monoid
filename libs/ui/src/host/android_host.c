@@ -12,6 +12,7 @@
 #include <sys/resource.h>
 #include <dlfcn.h>
 #include <jni.h>
+#include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <android/log.h>
 #include <math.h>
@@ -399,7 +400,128 @@ static int image_new(void) {
 // the app on its own thread: what a frame says differs goes with it to the GL thread, a read back done there (the frame
 // waiting, gl_sync, below)
 #define MB_HOST_THREADS 1
+// the programs the GL thread has none of made ahead on a thread of their own (progs_ahead_start below)
+#define MB_PROGS_AHEAD 1
 #include "gles_render.h"
+
+#ifdef MB_PROGS_AHEAD
+// Programs made ahead (gles_render.h gl_progs_ahead): a thread of their own, low in priority, in a context of its own
+// that shares the GL thread's objects (made with the same config, current with no surface, else a pixel's pbuffer). EGL
+// is GLSurfaceView's, in the process already: its calls looked up there, nothing linked for them (as latencyFrame's).
+typedef struct {
+  EGLDisplay (*current_display)(void);
+  EGLContext (*current_context)(void);
+  EGLBoolean (*query_context)(EGLDisplay, EGLContext, EGLint, EGLint *);
+  EGLBoolean (*choose_config)(EGLDisplay, const EGLint *, EGLConfig *, EGLint, EGLint *);
+  EGLContext (*create_context)(EGLDisplay, EGLConfig, EGLContext, const EGLint *);
+  EGLSurface (*create_pbuffer)(EGLDisplay, EGLConfig, const EGLint *);
+  EGLBoolean (*make_current)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
+  EGLBoolean (*destroy_surface)(EGLDisplay, EGLSurface);
+  EGLBoolean (*destroy_context)(EGLDisplay, EGLContext);
+  EGLBoolean (*release_thread)(void);
+  EGLint (*get_error)(void);
+} ahead_egl;
+static ahead_egl aegl;
+
+typedef struct {
+  EGLDisplay dpy;
+  EGLContext share;
+  EGLint config_id;
+  unsigned gen;
+} ahead_job;
+
+static int ahead_egl_found(void) {
+  static int found = -1;
+  if (found >= 0) return found;
+  found = 0;
+  void *egl = dlopen("libEGL.so", RTLD_NOW);
+  if (!egl) return 0;
+  *(void **)&aegl.current_display = dlsym(egl, "eglGetCurrentDisplay");
+  *(void **)&aegl.current_context = dlsym(egl, "eglGetCurrentContext");
+  *(void **)&aegl.query_context = dlsym(egl, "eglQueryContext");
+  *(void **)&aegl.choose_config = dlsym(egl, "eglChooseConfig");
+  *(void **)&aegl.create_context = dlsym(egl, "eglCreateContext");
+  *(void **)&aegl.create_pbuffer = dlsym(egl, "eglCreatePbufferSurface");
+  *(void **)&aegl.make_current = dlsym(egl, "eglMakeCurrent");
+  *(void **)&aegl.destroy_surface = dlsym(egl, "eglDestroySurface");
+  *(void **)&aegl.destroy_context = dlsym(egl, "eglDestroyContext");
+  *(void **)&aegl.release_thread = dlsym(egl, "eglReleaseThread");
+  *(void **)&aegl.get_error = dlsym(egl, "eglGetError");
+  void **fns = (void **)&aegl;
+  for (size_t i = 0; i < sizeof aegl / sizeof(void *); i++)
+    if (!fns[i]) return 0;
+  found = 1;
+  return 1;
+}
+
+static double ahead_ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec * 1000.0 + t.tv_nsec / 1e6;
+}
+
+static void *progs_ahead_run(void *arg) {
+  ahead_job j = *(ahead_job *)arg;
+  free(arg);
+  // (behind the app's and the GL thread's: what it makes is wanted soon, not before the next frame)
+  setpriority(PRIO_PROCESS, 0, 10);
+  double t0 = ahead_ms();
+  const EGLint pick[] = {EGL_CONFIG_ID, j.config_id, EGL_NONE};
+  EGLConfig cfg;
+  EGLint n = 0;
+  if (!aegl.choose_config(j.dpy, pick, &cfg, 1, &n) || n < 1) {
+    LOG("programs ahead: no config (0x%x)", aegl.get_error());
+    return NULL;
+  }
+  const EGLint attrs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
+  EGLContext ctx = aegl.create_context(j.dpy, cfg, j.share, attrs);
+  if (ctx == EGL_NO_CONTEXT) {
+    LOG("programs ahead: no context (0x%x)", aegl.get_error());
+    return NULL;
+  }
+  EGLSurface surf = EGL_NO_SURFACE;
+  if (!aegl.make_current(j.dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) {
+    const EGLint one[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+    surf = aegl.create_pbuffer(j.dpy, cfg, one);
+    if (surf == EGL_NO_SURFACE || !aegl.make_current(j.dpy, surf, surf, ctx)) {
+      LOG("programs ahead: not current (0x%x)", aegl.get_error());
+      if (surf != EGL_NO_SURFACE) aegl.destroy_surface(j.dpy, surf);
+      aegl.destroy_context(j.dpy, ctx);
+      aegl.release_thread();
+      return NULL;
+    }
+  }
+  int made = gl_progs_ahead(j.gen);
+  aegl.make_current(j.dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+  if (surf != EGL_NO_SURFACE) aegl.destroy_surface(j.dpy, surf);
+  aegl.destroy_context(j.dpy, ctx);
+  aegl.release_thread();
+  LOG("programs ahead: %d made in %.0f ms", made, ahead_ms() - t0);
+  return NULL;
+}
+
+// (GL thread, the surface's context current: its first frame drawn)
+static void progs_ahead_start(unsigned gen) {
+  if (!ahead_egl_found()) return;
+  ahead_job *j = (ahead_job *)malloc(sizeof *j);
+  if (!j) return;
+  j->dpy = aegl.current_display();
+  j->share = aegl.current_context();
+  j->gen = gen;
+  j->config_id = 0;
+  if (j->dpy == EGL_NO_DISPLAY || j->share == EGL_NO_CONTEXT ||
+      !aegl.query_context(j->dpy, j->share, EGL_CONFIG_ID, &j->config_id)) {
+    free(j);
+    return;
+  }
+  pthread_t t;
+  pthread_attr_t at;
+  pthread_attr_init(&at);
+  pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+  if (pthread_create(&t, &at, progs_ahead_run, j) != 0) free(j);
+  pthread_attr_destroy(&at);
+}
+#endif
 
 // (GL thread) directory where compiled GLES program binaries are cached on disk (MBView.onSurfaceCreated)
 JNIEXPORT void JNICALL Java_dev_mbui_Native_setShaderCacheDir(JNIEnv *env, jclass c, jstring path) {
