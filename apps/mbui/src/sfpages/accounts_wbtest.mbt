@@ -1791,3 +1791,75 @@ test "多选 is over as 概览 is shown, and a station's own page takes its acco
     assert_eq(one.audit(), [], msg="\{at}: " + one.audit().join("; "))
   }
 }
+
+///|
+test "profiles_batch_foot_node (page=true): liquid glass card with outside shadow, 1pt solid fallback, 0 corner faults, reverse-wrap height, and last row scrollable clear of bar" {
+  for dark in [false, true] {
+    for case in [(900.0, 0), (390.0, 2)] {
+      let (w, platform) = case
+      let at = "dark=\{dark} w=\{w} platform=\{platform}"
+      @sf.set_dark(Some(dark))
+      @ui.set_glass_solid(None)
+      let t = setting_tester(Profiles(""), w, platform~, h=640.0, over=fn(base) { with_share_auto(base) })
+      t.click(Button, label="多选")
+      t.run_for(@ui.move_most_ms)
+      assert_true(t.find("已选 0 项") is Some(_), msg=at)
+      let share_btn = t.get(Button, label="分享与 station")
+      let stop_btn = t.get(Button, label="停止分享")
+      // Card sits at the bottom of the viewport
+      let bar_glass = t.drawn_glass().filter(fn(g) { g.1 + g.3 > 450.0 && g.2 > 200.0 })
+      let bar_liquid = bar_glass.filter(fn(g) { g.4 == 6 })
+      let bar_shadow = t
+        .drawn_instances()
+        .iter()
+        .any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && a[1] + a[3] > 450.0 && a[2] > 200.0 })
+      assert_eq((at, bar_glass.length(), bar_liquid.length(), bar_shadow), (at, 1, 1, true))
+      // Direct 0 corner fault assertion on the batch bar card
+      assert_eq(t.corner_faults(), [], msg="\{at}: corner faults")
+      // Buttons stay inside the glass card with proper concentric inset
+      let g = bar_liquid[0]
+      assert_true(
+        share_btn.rect.0 >= g.0 + 4.0 &&
+        share_btn.rect.1 + share_btn.rect.3 <= g.1 + g.3 - 4.0 &&
+        stop_btn.rect.0 >= g.0 + 4.0 &&
+        stop_btn.rect.1 + stop_btn.rect.3 <= g.1 + g.3 - 4.0,
+        msg="\{at}: buttons inside card g=\{Repr(g)} share=\{Repr(share_btn.rect)} stop=\{Repr(stop_btn.rect)}",
+      )
+      // On narrow 320pt, verify reverse-wrap keeps primary button on the bottom row
+      if w <= 390.0 {
+        t.resize(320.0, 640.0)
+        t.run_for(@ui.move_most_ms)
+        let s2 = t.get(Button, label="分享与 station")
+        let st2 = t.get(Button, label="停止分享")
+        assert_true(s2.rect.1 >= st2.rect.1, msg="\{at}: reverse-wrap keeps primary at bottom row: share=\{Repr(s2.rect)} stop=\{Repr(st2.rect)}")
+        assert_eq(t.corner_faults(), [], msg="\{at}: 320pt corner faults")
+        t.resize(w, 640.0)
+        t.run_for(@ui.move_most_ms)
+      }
+      // Scroll list down to verify last row can scroll clear above the floating batch bar
+      for _ in 0..<8 {
+        t.wheel(w / 2.0, 200.0, 200.0)
+      }
+      t.run_for(@ui.move_most_ms)
+      let bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })[0].1
+      match t.find("备用 key") {
+        Some((_, ry)) => assert_true(ry < bar_top, msg="\{at}: last row scrollable clear of bar (ry=\{ry}, bar_top=\{bar_top})")
+        None => ()
+      }
+      // MBUI_GLASS=solid fallback: 0 glass + 1pt border
+      @ui.set_glass_solid(Some(true))
+      t.draw()
+      t.run_for(@ui.move_most_ms)
+      let solid_glass = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })
+      let solid_edges = t
+        .boxes_held()
+        .filter(fn(b) { b.border_w >= 0.9 && b.y + b.h > 450.0 && b.w > 200.0 })
+        .map(fn(b) { b.border_w })
+      assert_eq((at, solid_glass.length(), solid_edges), (at, 0, [1.0]))
+      assert_eq(t.corner_faults(), [], msg="\{at}: solid corner faults")
+      @ui.set_glass_solid(None)
+    }
+  }
+  @ui.set_glass_solid(None)
+  @sf.set_dark(None)
+}

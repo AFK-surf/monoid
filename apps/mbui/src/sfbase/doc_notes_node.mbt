@@ -136,13 +136,11 @@ pub fn doc_notes_side_node(parent : @view.View, of : DocNotes, shown : () -> Boo
     l.box(fn(p) {
       p
       .width(Is(Some(doc_notes_side_w)))
-      .radius(Is(14.0))
-      .ground(By(fn() { @sf.panel_ground() }))
-      .edge(By(fn() { (@sf.control_edge_w, @sf.theme().p.line) }))
-      .shadow(By(fn() { @sf.glass_control_shadow() }))
       .padding(Is((8.0, 12.0, 8.0, 10.0)))
       .gap(Is(8.0))
       |> ignore
+      @sf.panel_surface_decorate(p, radius=14.0, solid=fn() { @sf.panel_ground() }, clips=false) |> ignore
+      @sf.floating_host_lend(p)
       doc_note_line(p, fn() { pv_fill("android-chat.pdf.notes.count", [("n", "\{(of.notes)().length()}")]) }, 15.0, 600, 1, fn() {
         @sf.theme().p.text
       })
@@ -262,10 +260,6 @@ fn doc_note_card_node(holds : @view.View, of : DocNotes) -> Unit {
     .shrink(Is(1.0))
     .padding(Is((6.0, 10.0, 6.0, 6.0)))
     .gap(Is(2.0))
-    |> ignore
-    card
-    .edge(By(fn() { if card.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
-    .shadow(By(fn() { @sf.glass_control_shadow() }))
     |> ignore
     // (what it is said of, a line, over the field)
     card.box(fn(t) {

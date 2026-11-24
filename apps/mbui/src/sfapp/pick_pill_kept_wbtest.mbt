@@ -435,3 +435,59 @@ test "大屏, words a mouse picked in a message, the list then scrolled on till 
   assert_true(by2 < 800.0, msg="the words back in sight: \{by2}")
   assert_true(pill_over(t, by2) is Some(_), msg="引用 over the words again")
 }
+
+///|
+test "大屏, selectionIntent enabled: mouse selection shows 26pt dual-button 引用 | 戳一下 glass bar, hides on scroll out and returns on scroll back, and 戳一下 opens Poke popover at real anchor" {
+  let calls : Array[Made] = []
+  let t = pick_list_tester(calls)
+  t.check_looks(false)
+  @sfbase.selection_intent_feature.set(true)
+  t.draw()
+  let (bx, by, bw, bh) = words_rect(t, "表 18")
+  mouse_dragged(t, bx + 1.0, by + bh / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.words().filter(fn(w) { w.0 == "引用" && w.2 < by && w.2 > by - 60.0 }) is [(_, qx, qy, qw, qh, _), ..] else {
+    fail("no 引用 in dual-button bar")
+  }
+  guard t.words().filter(fn(w) { w.0 == "戳一下" && w.2 < by && w.2 > by - 60.0 }) is [(_, px, _, _, _, _), ..] else {
+    fail("no 戳一下 in dual-button bar")
+  }
+  assert_true(px > qx + qw, msg="戳一下 sits to the right of 引用")
+  // Single 26pt liquid glass pill + hairline rule_down divider between the two actions
+  let glass = t.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, (qx, qy, qw, qh)) })
+  assert_eq(glass.length(), 1, msg="single liquid glass capsule")
+  assert_eq(glass[0].4, 6)
+  assert_true((glass[0].3 - 26.0).abs() < 0.5, msg="height 26pt: \{glass[0].3}")
+  let seps = t.drawn_rects().filter(fn(r) {
+    (r.2 - @sf.rule_w).abs() < 0.1 && (r.3 - 12.0).abs() < 0.5 && r.0 >= qx + qw && r.0 <= px
+  })
+  assert_eq(seps.length(), 1, msg="hairline rule_down separator between 引用 and 戳一下")
+
+  // Scroll out of sight -> dual bar hidden; scroll back -> dual bar returns
+  let mut turned = 0
+  while turned < 12 {
+    t.wheel(900.0, 400.0, -150.0)
+    t.run_for(@ui.move_most_ms)
+    turned = turned + 1
+    if words_rect(t, "表 18").1 > 820.0 {
+      break
+    }
+  }
+  assert_true(t.words().filter(fn(w) { w.0 == "戳一下" }).is_empty(), msg="dual bar hidden when scrolled out")
+  for _ in 0..<turned {
+    t.wheel(900.0, 400.0, 150.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  let (_, by2, _, _) = words_rect(t, "表 18")
+  guard t.words().filter(fn(w) { w.0 == "戳一下" && w.2 < by2 && w.2 > by2 - 60.0 }) is [(_, px2, py2, pw2, ph2, _), ..] else {
+    fail("dual bar did not return after scrolling back")
+  }
+
+  // Click 戳一下 -> calls chat.selectionIntent and opens Poke popover
+  t.run_for(@ui.double_click_ms)
+  mouse_clicked(t, px2 + pw2 / 2.0, py2 + ph2 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "chat.selectionIntent").length(), 1, msg="chat.selectionIntent called")
+  assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="Poke popover opened with reply")
+  @sfbase.selection_intent_feature.set(false)
+}

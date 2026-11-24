@@ -274,3 +274,63 @@ test "a finger held off the words frames an area as it slides" {
 ///|
 /// A little longer than a long press, for a hold to be taken.
 let tap_hold_extra_ms : Double = 20.0
+
+///|
+test "wide: doc_notes_side_node uses single-layer liquid panel glass with outside shadow, 1pt solid fallback, and stays clean in short window, long notes, 1.3x font scale, and keyboard focus" {
+  let long_comment = "这段设计说明里的接口约束需要补充错误码与边界条件说明，同时确认多端降级行为保持一致"
+  for dark in [false, true] {
+    let at = "dark=\{dark}"
+    @sf.set_dark(Some(dark))
+    @ui.set_glass_solid(None)
+    let (t, _, x, y, w, h) = pdf_marks_tester(w=1280.0)
+    pdf_note_made(t, x, y, w, h, said=long_comment)
+    t.run_for(@ui.move_most_ms)
+    // Side panel lies on the right (`x >= 1280 - doc_notes_side_w - 24`)
+    let side_x_min = 1280.0 - @sfbase.doc_notes_side_w - 24.0
+    let side_glass = t.drawn_glass().filter(fn(g) { g.0 >= side_x_min && (g.2 - @sfbase.doc_notes_side_w).abs() < 2.0 })
+    let side_liquid = side_glass.filter(fn(g) { g.4 == 6 })
+    let side_outside_shadow = t
+      .drawn_instances()
+      .iter()
+      .any(fn(a) {
+        a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && a[0] >= side_x_min && (a[2] - @sfbase.doc_notes_side_w).abs() < 2.0
+      })
+    assert_eq((at, side_glass.length(), side_liquid.length(), side_outside_shadow), (at, 1, 1, true))
+    assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="\{at}: glass corner faults")
+
+    // MBUI_GLASS=solid fallback: 0 glass on side panel + 1pt border
+    @ui.set_glass_solid(Some(true))
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    let solid_glass = t.drawn_glass().filter(fn(g) { g.0 >= side_x_min && (g.2 - @sfbase.doc_notes_side_w).abs() < 2.0 })
+    let solid_edges = t
+      .boxes_held()
+      .filter(fn(b) { b.border_w >= 0.9 && b.x >= side_x_min && (b.w - @sfbase.doc_notes_side_w).abs() < 2.0 })
+      .map(fn(b) { b.border_w })
+    assert_eq((at, solid_glass.length(), solid_edges), (at, 0, [1.0]))
+    @ui.set_glass_solid(None)
+  }
+
+  // Short window + long notes + 1.3x font scale + keyboard focus on top/bottom buttons
+  @sf.set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  let (t, _, x, y, w, h) = pdf_marks_tester(w=1280.0)
+  pdf_note_made(t, x, y, w, h, said=long_comment)
+  t.set_font_scale(1.3)
+  t.resize(1280.0, 420.0)
+  t.run_for(@ui.move_most_ms)
+  let clear_btn = t.get(Button, label="清除标注")
+  let send_btn = t.get(Button, label="回到输入框发送")
+  let del_btn = t.all(Button, label="删除批注")[0]
+  assert_true(clear_btn.rect.1 >= 0.0 && clear_btn.rect.1 + clear_btn.rect.3 <= 420.0, msg="clear btn visible in short window")
+  assert_true(send_btn.rect.1 >= 0.0 && send_btn.rect.1 + send_btn.rect.3 <= 420.0, msg="send btn visible in short window")
+  assert_true(del_btn.rect.1 >= 0.0 && del_btn.rect.1 + del_btn.rect.3 <= 420.0, msg="top delete btn visible in short window")
+  // Tab through controls to verify keyboard focus ring does not trigger corner faults
+  for _ in 0..<8 {
+    t.key(@ui.key_tab)
+    t.draw()
+  }
+  assert_eq(t.corner_faults().filter(fn(f) { f.contains("doc_notes_node") }), [], msg="short window + 1.3x + focus corner faults")
+  @ui.set_glass_solid(None)
+  @sf.set_dark(None)
+}
