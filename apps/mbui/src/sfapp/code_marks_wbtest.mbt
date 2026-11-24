@@ -15,16 +15,26 @@ let code_marks_sample : Array[String] = [
 ]
 
 ///|
-test "lines_place_of resolves exact 1-based line ranges including multi-line and blank lines" {
+test "lines_span_of says the exact 1-based lines of where a pick begins and ends, repeated words included" {
   let count = code_marks_sample.length()
   let at = fn(k : Int) { code_marks_sample[k] }
-  assert_eq(@sfbase.lines_place_of(count, at, 0, 0, "const out = rows.slice(0, at);"), (3, 3))
-  assert_eq(
-    @sfbase.lines_place_of(count, at, 0, 0, "  const out = rows.slice(0, at);\n  for (let i = 0; i < n; i++) out.push(-1);"),
-    (3, 4),
-  )
-  // Spans a blank line between line 6 and line 8
-  assert_eq(@sfbase.lines_place_of(count, at, 0, 0, "}\n\nexport const estimate = 66;"), (6, 8))
+  // (where line k begins in the row's words: its lines joined by "\n")
+  let start = fn(k : Int) {
+    let mut n = 0
+    for j in 0..<k {
+      n += code_marks_sample[j].length() + 1
+    }
+    n
+  }
+  // `out` is on lines 3, 4 and 5: picked on line 5 it is line 5, not the first line that has it
+  let out5 = start(4) + code_marks_sample[4].find("out").unwrap()
+  assert_eq(@sfbase.lines_span_of(count, at, 0, out5, 0, out5 + 3), (5, 5))
+  // from inside line 3 to inside line 5
+  assert_eq(@sfbase.lines_span_of(count, at, 0, start(2) + 2, 0, start(4) + 8), (3, 5))
+  // across the blank line 7, to the end of line 8
+  assert_eq(@sfbase.lines_span_of(count, at, 0, start(5), 0, start(7) + code_marks_sample[7].length()), (6, 8))
+  // begun on line 2's "\n", ended just past line 4's: lines 3 to 4
+  assert_eq(@sfbase.lines_span_of(count, at, 0, start(2) - 1, 0, start(4)), (3, 4))
   // Mark encoding/decoding round-trip and rejection of malformed or foreign marks
   let mark = @sfbase.lines_mark_of((3, 5))
   assert_eq(@sfbase.lines_where_of(mark), Some((3, 5)))
@@ -209,6 +219,8 @@ test "code viewer multi-line selection quotes exact line range and Escape clears
   t.drag(x1 + 1.0, y1 + h1 / 2.0, x2 + w2 - 1.0, y2 + h2 / 2.0)
   t.frame()
   assert_true(@ui.picked_now() is Some(_), msg="multi-line selection active")
+  // (the gutter's numbers are not picked with the lines beside them)
+  assert_true(@ui.picked_now().map(fn(p) { p.text.contains("\u2007") || p.text.contains("\n4\n") }) == Some(false))
   t.tap_text("批注")
   assert_eq(text(Some(code_draft_quotes()[0]), "author"), "list.ts 第 3–5 行")
   t.type_text("合并循环")

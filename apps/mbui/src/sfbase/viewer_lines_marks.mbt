@@ -63,108 +63,42 @@ fn lines_row_of(key : String) -> Int? {
 }
 
 ///|
-/// Whether `line` matches picked line `part` at position `pos` of a multi-line selection (`m` lines total): the first
-/// line may start mid-line, the last may end mid-line, middle lines match whole (or trimmed).
-fn lines_part_matches(src_line : String, part : String, pos : Int, m : Int) -> Bool {
-  if m == 1 {
-    if part == "" {
-      return src_line == ""
+/// Which 0-based line of the file code unit `at` of 60-line row `row`'s words is on (its lines joined by "\n", as
+/// lines_stage_node shows them; a line's "\n" is its own), and whether `at` is that "\n" (the line's end).
+fn lines_line_at(count : Int, line : (Int) -> String, row : Int, at : Int) -> (Int, Bool) {
+  let from = md_max(0, row * lines_per_row)
+  let to = md_min(count, from + lines_per_row)
+  let mut start = 0
+  for k in from..<to {
+    let end = start + line(k).length()
+    if at < end || k == to - 1 {
+      return (k, false)
     }
-    if src_line.contains(part) {
-      return true
+    if at == end {
+      return (k, true)
     }
-    let t = part.trim(chars=" \t\r").to_owned()
-    return t != "" && src_line.contains(t)
+    start = end + 1
   }
-  if pos == 0 {
-    if part == "" {
-      return true
-    }
-    if src_line.has_suffix(part) || src_line.contains(part) {
-      return true
-    }
-    let t = part.trim(chars=" \t\r").to_owned()
-    return t != "" && src_line.contains(t)
-  }
-  if pos == m - 1 {
-    if part == "" {
-      return true
-    }
-    if src_line.has_prefix(part) || src_line.contains(part) {
-      return true
-    }
-    let t = part.trim(chars=" \t\r").to_owned()
-    return t != "" && src_line.contains(t)
-  }
-  src_line == part || src_line.trim(chars=" \t\r") == part.trim(chars=" \t\r")
+  (md_max(0, md_min(from, count - 1)), false)
 }
 
 ///|
-/// Exact 1-based `(line_start, line_end)` of `words` picked across 60-line rows `from_row`..=`to_row` of a file with
-/// `count` lines (`line(k)` is 0-based line `k`).
-pub fn lines_place_of(
+/// Exact 1-based `(line_start, line_end)` of what is picked: from code unit `first_at` of 60-line row `first_row`'s
+/// words to code unit `last_at` (its end) of row `last_row`'s, in a file of `count` lines (`line(k)` is 0-based line
+/// `k`). A pick begun on a line's "\n" begins on the next; one ended just past it ends on that line.
+pub fn lines_span_of(
   count : Int,
   line : (Int) -> String,
-  from_row : Int,
-  to_row : Int,
-  words : String,
+  first_row : Int,
+  first_at : Int,
+  last_row : Int,
+  last_at : Int,
 ) -> (Int, Int) {
   guard count > 0 else { return (1, 1) }
-  let r0 = md_max(0, from_row * lines_per_row)
-  let r1 = md_min(count, (to_row + 1) * lines_per_row)
-  guard r0 < r1 else { return (1, 1) }
-  // Keep internal blank lines while dropping a trailing newline produced by dragging past a line's end.
-  let raw = words.split("\n").map(fn(s) { s.to_owned() }).collect()
-  while raw.length() > 1 && raw[raw.length() - 1] == "" {
-    raw.pop() |> ignore
-  }
-  while raw.length() > 1 && raw[0] == "" {
-    raw.remove(0) |> ignore
-  }
-  let m = raw.length()
-  if m > 0 && m <= r1 - r0 {
-    let mut k = r0
-    while k + m <= r1 {
-      let mut ok = true
-      for j in 0..<m {
-        if !lines_part_matches(line(k + j), raw[j], j, m) {
-          ok = false
-          break
-        }
-      }
-      if ok {
-        return (k + 1, k + m)
-      }
-      k += 1
-    }
-  }
-  // Fallback: locate first and last non-empty picked lines in r0..<r1.
-  let non_empty = raw.map(fn(s) { s.trim(chars=" \t\r").to_owned() }).filter(fn(s) { s != "" })
-  let mut first = r0
-  match non_empty.get(0) {
-    Some(head) =>
-      for k in r0..<r1 {
-        if line(k).contains(head) {
-          first = k
-          break
-        }
-      }
-    None => ()
-  }
-  let mut last = first
-  match non_empty.last() {
-    Some(tail) =>
-      for k in first..<r1 {
-        if line(k).contains(tail) {
-          last = k
-          if non_empty.length() == 1 {
-            break
-          }
-        }
-      }
-    None => last = r1 - 1
-  }
-  (first + 1, md_max(first, last) + 1)
+  let (l1, _) = lines_line_at(count, line, last_row, md_max(0, last_at - 1))
+  let (k0, at_end) = lines_line_at(count, line, first_row, first_at)
+  let l0 = if at_end && k0 < l1 { k0 + 1 } else { k0 }
+  (md_min(l0, l1) + 1, l1 + 1)
 }
 
 ///|
@@ -250,7 +184,7 @@ pub fn Viewer::lines_notes(self : Viewer) -> Array[LinesMark] {
 /// and let go.
 fn Viewer::lines_quote_picked(self : Viewer, p : @ui.WordsPicked, from_row : Int, to_row : Int) -> Unit {
   let words = p.text.trim(chars="\r\n").to_owned()
-  let lines = lines_place_of((self.lines_marks.count)(), self.lines_marks.line_at, from_row, to_row, p.text)
+  let lines = lines_span_of((self.lines_marks.count)(), self.lines_marks.line_at, from_row, p.first_at, to_row, p.last_at)
   @ui.picked_let_go()
   self.md_give([md_quote(self.file.name, lines, "", words, "")])
 }
@@ -265,7 +199,7 @@ fn Viewer::lines_mark_picked(self : Viewer, p : @ui.WordsPicked, from_row : Int,
   }
   self.lines_note_done()
   let words = p.text.trim(chars="\r\n").to_owned()
-  let lines = lines_place_of((m.count)(), m.line_at, from_row, to_row, p.text)
+  let lines = lines_span_of((m.count)(), m.line_at, from_row, p.first_at, to_row, p.last_at)
   let (whose, said, _) = md_quote(self.file.name, lines, "", words, "")
   let mark = self.lines_mark_whose() + lines_mark_of(lines)
   writing_quote(src, w, {
@@ -419,12 +353,13 @@ pub fn Viewer::lines_row_marks(
       let b = ends[hi]
       if b > a {
         let dark = @sf.theme().dark
+        // (light: faint enough that code's own colours keep 4.5:1 on it, its orange the least: 0.24 left it 4.43:1)
         let alpha = if x.id == open {
-          if dark { 0.45 } else { 0.24 }
+          if dark { 0.45 } else { 0.16 }
         } else if dark {
           0.28
         } else {
-          0.14
+          0.1
         }
         let ground = @sf.alpha(md_mark_ground, alpha)
         out.push({ from: a, to: b, ground, line: 0L, line_w: 0.0, round: 3.0, starts: x.lines.0 >= from + 1, ends: x.lines.1 <= to })

@@ -554,18 +554,20 @@ fn lines_stage_node(
       }
       if code {
         row.row(Is(true)) |> ignore
-        // Pinned line-number gutter (plain `.words` is non-selectable by `@ui.words_picked`).
+        // Pinned line-number gutter: in the code's own face and line (words in pieces), lent a picker that picks none, so
+        // a pick over the code neither takes nor copies its numbers (as a quote's card in a message: quote_card_node).
         row.box(fn(g) {
           g
           .width(By(fn() { Some(gutter_w(g)) }))
           .padding(Is((12.0, 0.0, 12.0, 0.0)))
           .lines_up(Is(Some(End)))
+          .lends(@view.runs_picker, fn(_) { Is((0, 0)) })
           |> ignore
           g.box(fn(num) {
             num
-            .words(By(fn() {
+            .words_runs(By(fn() {
               let (from, to) = bounds()
-              lines_gutter_text(from, to, digits())
+              [@ui.span(lines_gutter_text(from, to, digits()), mono=true)]
             }))
             .words_look(Is({
               size: desk_code_size,
@@ -584,7 +586,7 @@ fn lines_stage_node(
         })
         |> ignore
         row.box(fn(sep) {
-          sep.width(Is(Some(1.0))).ground(By(fn() { @sf.theme().p.line })) |> ignore
+          sep.width(Is(Some(@sf.rule_w))).ground(By(fn() { @sf.rule_color() })) |> ignore
         })
         |> ignore
         row.box(fn(body) {
