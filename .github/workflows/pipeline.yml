@@ -727,6 +727,8 @@ jobs:
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
+        env:
+          STILLFAIL_NATIVE_DIRECT_R2: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
         run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-mac.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
@@ -808,6 +810,8 @@ jobs:
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
+        env:
+          STILLFAIL_NATIVE_DIRECT_R2: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
         run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-mac-reader.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
@@ -1574,6 +1578,7 @@ jobs:
         env:
           STILLFAIL_CLOUD: monoid
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+          CI_NATIVE_R2_SIGNER: ${{ secrets.CI_NATIVE_R2_SIGNER }}
           STILLFAIL_ADMIN_EMAIL: ${{ secrets.STILLFAIL_ADMIN_EMAIL }}
           # Once still.fail's accounts moved in (CLOUD_MOVED on: workflows/move-cloud.yml): still.fail's keys, and answered
           # as still.fail too (cloud/src/guests.ts).

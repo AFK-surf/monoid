@@ -9,7 +9,7 @@
 # (the other product's apps' push credentials), POSTHOG_JSON, APPLE_JSON (apple.json, Sign in with Apple), REVIEW_ACCOUNTS_JSON
 # (review-accounts.json, App Store review's password sign-in), FEEDBACK_TOKEN (feedback-token, the feedback monitor's: reads bug reports and marks their status), GUEST_GOOGLE_OAUTH_JSON, FORWARD_TO and
 # FORWARD_SECRET (one cloud answering as the other product too: cloud/src/guests.ts), MOVING (any value: accounts moving
-# between clouds, cloud/src/move.ts).
+# between clouds, cloud/src/move.ts). CI_NATIVE_R2_SIGNER contains the S3 credentials of the CI handoff bucket.
 set -eu
 cd "$(dirname "$0")/.."
 pnpm install --frozen-lockfile --prefer-offline > /dev/null

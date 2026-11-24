@@ -268,7 +268,7 @@ def wrangler(*args, env=None, capture=False, input=None):
 
 # The API's secrets that are there only while something is (src/move.ts MOVING, src/guests.ts the rest): `secret bulk`
 # only adds and changes, so one this deploy does not give is taken away, else a cloud once MOVING stays so.
-SWITCHED = ("MOVING", "FORWARD_TO", "FORWARD_SECRET", "GUESTS")
+SWITCHED = ("MOVING", "FORWARD_TO", "FORWARD_SECRET", "GUESTS", "CI_NATIVE_R2_SIGNER")
 
 
 def drop_unset(given: dict, local: Path, env) -> None:
@@ -613,14 +613,30 @@ def main() -> None:
             subprocess.run(["node", "website/build.mjs", "--site", site, "--out", f"dist/{part}"], cwd=REPO, check=True)
     # Read only for the parts that take them: keys() makes keys.json where there is none, which a deploy of the static
     # sites alone (CI's web-beta, on a machine without the deploy directory's keys) must not do.
+    ci_native_signer = os.getenv("CI_NATIVE_R2_SIGNER") if CLOUD == "monoid" and "api" in parts and not args.dry_run else None
+    if ci_native_signer:
+        try:
+            signer = json.loads(ci_native_signer)
+            if not isinstance(signer, dict) or not all(
+                isinstance(signer.get(key), str) and re.fullmatch(pattern, signer[key])
+                for key, pattern in (("accessKeyId", r"[a-f0-9]{32}"), ("secretAccessKey", r"[a-f0-9]{64}"))
+            ):
+                raise ValueError()
+        except ValueError:
+            sys.exit("CI_NATIVE_R2_SIGNER must contain the CI bucket's R2 access key and secret")
     secrets_of = {
-        "api": lambda: {**keys(), "GOOGLE_CLIENT_SECRET": web["client_secret"], **apple(), **telemetry(), **push(), **review(), **feedback(), **guests()},
+        "api": lambda: {**keys(), "GOOGLE_CLIENT_SECRET": web["client_secret"], **apple(), **telemetry(), **push(), **review(), **feedback(), **guests(),
+                        **({"CI_NATIVE_R2_SIGNER": ci_native_signer} if ci_native_signer else {})},
         "relay": lambda: {"ADMIN_TOKEN": keys()["ADMIN_TOKEN"]},
     }
     def deploy(part: str, env) -> None:
         config = {**read_template(PARTS[part]), "account_id": account}
         if part == "api":
             config["vars"] = {**config["vars"], "GOOGLE_CLIENT_ID": web.get("client_id", "dry-run"), "ADMIN_EMAIL": admin_account}
+            if ci_native_signer:
+                config["vars"]["CI_NATIVE_R2_ACCOUNT_ID"] = account
+                config["r2_buckets"] = [*config.get("r2_buckets", []),
+                                        {"binding": "CI_NATIVE_ARCHIVES", "bucket_name": "monoid-ci-natives"}]
             if not beta:
                 config = without_beta(config)
         local = ROOT / PARTS[part].replace(".jsonc", ".local.json")

@@ -70,6 +70,7 @@ export async function harness(
     statusPages?: Record<string, string>;
     /** STATUS_REPO_ID: the id of the repository whose issues labelled `incident` it shows; answered by `push`. */
     statusRepoId?: string;
+    ciNativeSigner?: { accessKeyId: string; secretAccessKey: string };
     /** The console's admin (alice unless said otherwise). */
     adminEmail?: string;
     /** The console's host. */
@@ -229,6 +230,10 @@ export async function harness(
         ...(options.relayUrl ? { RELAY_URL: options.relayUrl } : {}),
         ...(options.statusPages ? { STATUS_PAGES: options.statusPages } : {}),
         ...(options.statusRepoId ? { STATUS_REPO_ID: options.statusRepoId } : {}),
+        ...(options.ciNativeSigner ? {
+          CI_NATIVE_R2_ACCOUNT_ID: "a".repeat(32),
+          CI_NATIVE_R2_SIGNER: JSON.stringify(options.ciNativeSigner),
+        } : {}),
         ...(options.vapid ? { VAPID_PUBLIC_KEY: options.vapid.publicKey, VAPID_PRIVATE_KEY: options.vapid.privateKey, VAPID_SUBJECT: "mailto:ops@example.test" } : {}),
         ...(options.fcm ? { FCM_SERVICE_ACCOUNT: options.fcm } : {}),
         ...(options.fcmMore ? { FCM_SERVICE_ACCOUNT_MORE: options.fcmMore } : {}),
@@ -242,7 +247,7 @@ export async function harness(
         ...(options.mail ? { TEST_MAIL: "1" } : {}),
         ...(telemetryAccount ? { GCP_TELEMETRY: telemetryAccount } : {}),
       },
-      r2Buckets: ["RELEASES"],
+      r2Buckets: options.ciNativeSigner ? ["RELEASES", "CI_NATIVE_ARCHIVES"] : ["RELEASES"],
       durableObjects: {
         ...Object.fromEntries(["Account", "LoginAttempt", "LoginLimiter", "Directory", "TelemetryLimiter", "RelayLoad", "ServiceStatus", "Station"].map((className, i) => [["ACCOUNTS", "LOGINS", "LOGIN_LIMITS", "DIRECTORY", "TELEMETRY_LIMITS", "RELAY_LOAD", "SERVICE_STATUS", "STATIONS"][i], { className, useSQLite: true }])),
         RELAY: { className: "Relay", scriptName: "relay", useSQLite: true },
