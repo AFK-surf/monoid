@@ -9,7 +9,7 @@
 let ctrl_seg_pad : Double = 3.0
 
 ///|
-let ctrl_seg_held_scale : Double = 1.15
+pub let ctrl_seg_held_scale : Double = 1.15
 
 ///|
 let ctrl_seg_px : Double = 12.0
@@ -45,6 +45,17 @@ fn ctrl_seg_thumb_idle() -> Int64 {
 ///|
 fn ctrl_seg_inactive_ink() -> Int64 {
   colors().content
+}
+
+///|
+/// Translucent neutral track ground for embedded segmented controls (`glass_track=false`)
+/// and narrow menu disclosures, ensuring zero visual jump between side-by-side and menu modes.
+pub fn ctrl_seg_embedded_track_ink() -> Int64 {
+  if is_dark() {
+    0xFFFFFF18L
+  } else {
+    0x7878801FL
+  }
 }
 
 // ---------------------------------------------------------------------------
