@@ -126,9 +126,10 @@ function redirect(location: string, cookies: string): Response {
     },
   });
 }
-/** A link to one of the legal pages on still.fail's site (web/public/terms.html, privacy.html; en/ the English), opened beside the sign-in. */
+/** A link to one of the legal pages on the current product's site (terms, privacy; en/ the English), opened beside the sign-in. */
 function legalLink(lang: Lang, page: "terms" | "privacy"): string {
-  return `<a href="https://still.fail/${lang === "zh" ? "" : "en/"}${page}" target="_blank" rel="noopener">${tr(lang, `cloud.login.choose.${page}`)}</a>`;
+  const site = cloudProduct().id === "monoid" ? "https://monoid.build" : "https://still.fail";
+  return `<a href="${site}/${lang === "zh" ? "" : "en/"}${page}" target="_blank" rel="noopener">${tr(lang, `cloud.login.choose.${page}`)}</a>`;
 }
 
 /** One login attempt, single-use callback and PKCE code, removed on its alarm. */
@@ -516,11 +517,12 @@ export class LoginAttempt extends DurableObject<Env> {
       device +
         (buttons.length ? `<form class="wide" method="post" action="${action}">${csrf}${buttons.join("")}</form>` : "") +
         (buttons.length && hasMail ? `<p class="or">${tr(lang, "cloud.login.choose.or")}</p>` : "") +
-        (hasMail ? `<form class="wide" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="email"><input type="email" name="email" value="${escape(email)}" placeholder="${tr(lang, "cloud.login.email.placeholder")}" autocomplete="email" required maxlength="254"><button>${tr(lang, "cloud.login.email.send")}</button></form>` : "") +
-        (error ? `<p class="error">${escape(error)}</p>` : "") +
         // With a password, for the accounts set up for it (password.ts): a page of its own behind a quiet link, as the web's
-        // sign-in page folds it away.
-        `<p class="links"><button form="password" class="link">${tr(lang, "cloud.login.password.open")}</button></p><form id="password" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="password-page"></form>` +
+        // sign-in page folds it away. Inside the email form when mail is on so any email already typed carries over.
+        (hasMail
+          ? `<form class="wide" method="post" action="${action}">${csrf}<input type="email" name="email" value="${escape(email)}" placeholder="${tr(lang, "cloud.login.email.placeholder")}" autocomplete="email" required maxlength="254"><button name="via" value="email">${tr(lang, "cloud.login.email.send")}</button>${error ? `<p class="error">${escape(error)}</p>` : ""}<p class="links"><button class="link" name="via" value="password-page" formnovalidate>${tr(lang, "cloud.login.password.open")}</button></p></form>`
+          : (error ? `<p class="error">${escape(error)}</p>` : "") +
+            `<p class="links"><button form="password" class="link">${tr(lang, "cloud.login.password.open")}</button></p><form id="password" method="post" action="${action}">${csrf}<input type="hidden" name="via" value="password-page"></form>`) +
         `<p class="legal">${tr(lang, "cloud.login.choose.agree", { terms: legalLink(lang, "terms"), privacy: legalLink(lang, "privacy") })}</p>`,
       cookie(this.#env.PUBLIC_ORIGIN, id, browser, LOGIN_TTL_SEC),
       await this.providerSources(),
@@ -639,7 +641,7 @@ export class LoginAttempt extends DurableObject<Env> {
         if (!EMAIL.test(email) || !email.split("@")[1]!.includes(".")) return this.choosePage(lang, id, attempt, browser, email, tr(lang, "cloud.login.email.invalid"));
         return send(email);
       }
-      if (via === "password-page") return this.passwordPage(lang, id, attempt, browser);
+      if (via === "password-page") return this.passwordPage(lang, id, attempt, browser, (form.get("email") ?? "").trim().slice(0, 254));
       if (via === "password") {
         const email = (form.get("email") ?? "").trim().toLowerCase();
         const password = form.get("password") ?? "";

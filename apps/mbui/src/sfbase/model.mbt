@@ -559,7 +559,7 @@ fn workspaces_read(v : Json?) -> (Array[Workspace], Bool, Bool) {
   let mut answered = true
   let mut invited = false
   match v {
-    Some(Array(accounts)) =>
+    Some(Array(accounts)) if !accounts.is_empty() =>
       for a in accounts {
         let s = Some(a)
         if !flag(s, "loaded") && field(s, "error") is None {

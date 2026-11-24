@@ -82,3 +82,30 @@ test "an account not let in: why, its email, 退出此账号 signs it out" {
   assert_eq(calls[0].0, "auth.signOut")
   assert_eq(text(Some(calls[0].1), "account"), "u1")
 }
+
+///|
+test "signed in before workspaces lists an account: stays on reading instead of flashing empty landing" {
+  new_run()
+  let base = fixture("landing")
+  let workspaces : @signals.Signal[@sfbase.Topic] = @signals.signal(
+    { value: Some(Json::array([])), error: None, version: 1 },
+    same=fn(a, b) { physical_equal(a, b) },
+  )
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "workspaces" { workspaces.get() } else { (base.topic_read)(name, params) }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.frame()
+  assert_true(t.find("尚未加入任何 workspace") is None, msg="empty workspaces array must not flash no-workspace landing")
+  workspaces.set({
+    value: Some([{ "account": { "sub": "u1", "email": "lin@example.com", "name": "林" }, "workspaces": [], "invitations": [], "loaded": true }]),
+    error: None,
+    version: 2,
+  })
+  t.frame()
+  assert_true(t.find("尚未加入任何 workspace") is Some(_), msg="landing appears once the account answers with no workspaces")
+  assert_true(t.find("lin@example.com") is Some(_), msg="account email is present on the first landing frame")
+}

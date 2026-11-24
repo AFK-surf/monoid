@@ -611,6 +611,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   UITab *x = self.tabsById[self.action];
   CGRect r = x ? [x frameInView:self.view] : CGRectNull;
   UIView *p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
+  if (!p && x) {
+    [self.tabBar layoutIfNeeded];
+    r = [x frameInView:self.view];
+    p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
+  }
   if (!p) return;
   MBActionWash *w = self.actionWash;
   if (!w) {
@@ -655,10 +660,22 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   if (w.superview == p) {
     if (!CGRectEqualToRect(w.frame, p.bounds)) w.frame = p.bounds;
+#ifdef __IPHONE_26_0
+    if (@available(iOS 26.0, *)) {
+      UIView *g = w.subviews.firstObject;
+      if (g && !CGRectEqualToRect(g.frame, w.bounds)) g.frame = w.bounds;
+    }
+#endif
     return;
   }
   [w removeFromSuperview];
   w.frame = p.bounds;
+#ifdef __IPHONE_26_0
+  if (@available(iOS 26.0, *)) {
+    UIView *g = w.subviews.firstObject;
+    if (g && !CGRectEqualToRect(g.frame, w.bounds)) g.frame = w.bounds;
+  }
+#endif
   [p insertSubview:w atIndex:0];
 }
 // What is pressed, not gone to, as the navigation bar's own items on every tab's page (the system lays them out:
@@ -1258,6 +1275,9 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   [self floatingItems:@[] ink:UIColor.labelColor];
   self.allPlaces = nil;
   self.actSpec = nil;
+  self.action = nil;
+  self.actionInk = nil;
+  [self.actionWash removeFromSuperview];
   self.selectedPlaceId = nil;
   self.overflowPlaces = @[];
   self.visibleRegularCap = 0;
@@ -1328,7 +1348,20 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   [self floatingItems:bare ? @[] : b[@"floating"] ink:ink];
   BOOL tabsChanged = [self rebuildDisplayedTabs];
   BOOL hiddenChanged = self.tabBarHidden != bare;
-  if (hiddenChanged) [self setTabBarHidden:bare animated:YES];
+  if (hiddenChanged) {
+    if (!bare) {
+      __weak MBTabs *weakSelf = self;
+      [CATransaction begin];
+      [CATransaction setCompletionBlock:^{
+        [weakSelf washAction];
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
+      }];
+      [self setTabBarHidden:NO animated:YES];
+      [CATransaction commit];
+    } else {
+      [self setTabBarHidden:YES animated:YES];
+    }
+  }
   self.shown = YES;
   if (bare) [buttons removeAllObjects];
   [buttons insertObjects:own atIndexes:[NSIndexSet indexSetWithIndexesInRange:NSMakeRange(0, own.count)]];
@@ -1349,7 +1382,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [self collapseIfUIKitOverflowed:lkey];
     self.reconcilingOverflow = NO;
   }
-  if (tabsChanged || hiddenChanged) {
+  if (tabsChanged || hiddenChanged || (self.actionInk && !bare && !self.actionWash.window)) {
     [self washAction];
     if (self.actionInk && !bare) {
       __weak MBTabs *weakSelf = self;

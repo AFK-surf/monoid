@@ -245,10 +245,13 @@ test("the sign-in page signs an account set up for it in with its password, a wr
   const h = await harness({ mail: true, reviewAccounts: JSON.stringify([{ email: "Review@Example.test", password: "correct horse battery", name: "App Review" }]) });
   try {
     const b = await browser(h, "10.9.0.1");
-    assert.match(b.page, /name="via" value="password-page"/, "a link to the page that asks for a password");
-    const asked = await (await b.post({ via: "password-page" })).text();
+    assert.match(b.page, /name="via" value="password-page" formnovalidate/, "a link to the page that asks for a password inside the email form");
+    assert.match(b.page, /scroll-margin-block:/, "inputs reserve bottom clearance above mobile keyboards");
+    assert.match(b.page, /main:has\(input:focus\)\{padding-bottom:/, "mobile focus adds bottom scroll runway");
+    const asked = await (await b.post({ via: "password-page", email: "review@example.test" })).text();
     assert.match(asked, /name="via" value="password"/);
-    assert.match(asked, /type="password"/);
+    assert.match(asked, /name="email" value="review@example\.test"/, "email typed before switching carries over");
+    assert.match(asked, /type="password"[^>]*autofocus/, "password field autofocuses when email is already filled");
     const wrong = await b.post({ via: "password", email: "review@example.test", password: "correct horse batter" });
     assert.equal(wrong.status, 200);
     const page = await wrong.text();
@@ -283,7 +286,9 @@ test("monoid's cloud names monoid on its pages and in its mails, still.fail's ho
   try {
     const b = await browser(h, "10.1.0.9");
     assert.match(b.page, /<title>[^<]*monoid<\/title>/);
-    assert.doesNotMatch(b.page.replace(/https:\/\/still\.fail\//g, ""), /(?<![\w./@-])still\.fail/, "no still.fail but the legal pages' links");
+    assert.match(b.page, /href="https:\/\/monoid\.build\/(?:en\/)?terms"/, "monoid legal terms link");
+    assert.match(b.page, /href="https:\/\/monoid\.build\/(?:en\/)?privacy"/, "monoid legal privacy link");
+    assert.doesNotMatch(b.page, /(?<![\w./@-])still\.fail/, "no still.fail anywhere on monoid's sign-in page");
     assert.equal((await b.post({ via: "email", email: "a@example.test" })).status, 200);
     const mail = h.mails.at(-1)!;
     assert.equal(typeof mail.from === "string" ? mail.from : mail.from.name, "monoid");

@@ -21,7 +21,7 @@ const STYLE = [
   "button.secondary{background:var(--chip);color:var(--text)}",
   "button.secondary:hover{background:var(--chip-hover)}",
   "button svg{flex:none}",
-  "input{box-sizing:border-box;width:100%;height:48px;margin:0;padding:0 20px;border:1px solid var(--edge);border-radius:999px;background:var(--field);color:inherit;font:inherit;outline:none;transition:border-color .15s}",
+  "input{box-sizing:border-box;width:100%;height:48px;margin:0;padding:0 20px;border:1px solid var(--edge);border-radius:999px;background:var(--field);color:inherit;font:inherit;outline:none;scroll-margin-block:24px 160px;transition:border-color .15s}",
   "input:hover,input:focus{border-color:var(--edge-hover)}",
   "input::placeholder{color:var(--muted)}",
   "input.code{font-size:22px;font-variant-numeric:tabular-nums;letter-spacing:8px;text-indent:8px;text-align:center}",
@@ -30,10 +30,12 @@ const STYLE = [
   ".or{margin:20px 0 -8px;font-size:13px}",
   ".error{color:var(--red);font-size:13px}",
   ".links{display:flex;justify-content:center;gap:4px;margin:16px 0 0}",
+  "form .links{margin:4px 0 0}",
   "button.link{height:36px;padding:0 14px;background:none;color:var(--text);font-size:13px;font-weight:500}",
   "button.link:hover{background:var(--chip)}",
   ".legal{margin:24px 0 0;font-size:12px}",
   ".legal a{color:var(--text)}",
+  "@media(pointer:coarse),(max-width:600px),(max-height:780px){main{padding:20px 24px 40px}main>svg{width:168px;margin-bottom:10px}form{margin-top:16px}.or{margin:14px 0 -4px}main:has(input:focus){padding-bottom:45vh}}",
 ].join("");
 
 // A self POST needs a non-null Origin; only same-origin requests receive the
