@@ -1,13 +1,23 @@
-// A sign-in card's first action and the choice wrapped over it start at its title's words. A code field over the
-// buttons keeps both its ends and its words in line with theirs.
+// A sign-in card's first action starts at its title when the buttons sit beside the choice, and fills the card's
+// bottom corners cleanly with the second action on a narrow card with the choice aligned to the title above them. A
+// code field over the buttons keeps both its ends and its words in line with theirs.
 
 ///|
-test "a sign-in card's first action starts at its title" {
+test "a sign-in card's first action starts at its title on a wide card and fills the bottom symmetrically on a narrow card" {
   let calls : Array[Made] = []
   let t = cards_core(calls, mode="chat-signin", autofill=true)
+  // On a narrow card, the two action pills fill the bottom symmetrically across both foot corners.
+  let first = t.get(Button, label="用密码管理器登录").rect
+  let second = t.get(Button, label="在画面中登录").rect
+  assert_true((first.1 - second.1).abs() < 0.01, msg="narrow pills share one row: \{first.1}, \{second.1}")
+  assert_true(second.0 > first.0 + first.2, msg="narrow pills do not overlap: \{first.0 + first.2}, \{second.0}")
+  // On a wide card, the first action starts directly under the title, and the choice sits at the bottom-right corner.
+  t.resize(960.0, 640.0)
   let (title_x, _, _, _) = t.rect_of("登录 github.com").unwrap()
-  let (action_x, _, _, _) = t.rect_of("用密码管理器登录").unwrap()
+  let (action_x, action_y, _, _) = t.rect_of("用密码管理器登录").unwrap()
+  let (_, choice_y, _, _) = t.rect_of("登录后存入密钥库").unwrap()
   assert_true((action_x - title_x).abs() < 0.01, msg="title \{title_x}, action \{action_x}")
+  assert_true((choice_y - action_y).abs() < 4.0, msg="wide choice sits on the action row: action_y \{action_y}, choice_y \{choice_y}")
 }
 
 ///|
@@ -25,12 +35,11 @@ test "a sign-in card keeps its primary action at the bottom when the choice wrap
 }
 
 ///|
-test "the sign-in choice has the button's size and keeps its quiet colors" {
+test "the sign-in choice keeps its quiet foot-chooser look" {
   let calls : Array[Made] = []
   let t = cards_core(calls, mode="chat-signin", autofill=true)
   let primary = t.words().filter(fn(w) { w.0 == "用密码管理器登录" })[0]
   let choice = t.words().filter(fn(w) { w.0 == "登录后存入密钥库" })[0]
-  assert_true((primary.4 - choice.4).abs() < 0.01, msg="the two labels have the same line height")
   let ground_at = fn(w : (String, Double, Double, Double, Double, Double)) {
     t.drawn_rect_corners().iter().find_first(fn(r) {
       r.0 <= w.1 && r.0 + r.2 >= w.1 + w.3 && r.1 <= w.2 && r.1 + r.3 >= w.2 + w.4 && r.3 <= 40.0

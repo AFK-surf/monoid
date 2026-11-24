@@ -159,12 +159,16 @@ async function measure(path: string, seen: Seen, found: [string, number][] | nul
   let cut: string | undefined;
   const onError = strict ? (_: string, error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; } : undefined;
   const walk = async (root: string, finding: boolean): Promise<void> => {
+    let dev: bigint | undefined;
     const walked = await walkBounded(root, async (entry) => {
       if (++visited > most) {
         cut ??= "entries";
         return "stop";
       }
-      if (finding && entry.depth > 0 && entry.directory) {
+      if (entry.depth === 0) dev = entry.stats!.dev;
+      // (another file system mounted in it, whatever its name: counted as itself, never looked into nor found; the walk
+      // does not go into it)
+      if (finding && entry.depth > 0 && entry.directory && entry.stats!.dev === dev) {
         if (entry.name === ".git" || entry.name === "uploads") {
           await walk(entry.path, false);
           return cut !== undefined ? "stop" : "skip";

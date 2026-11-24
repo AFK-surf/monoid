@@ -5,9 +5,33 @@
 import "base_codec"
 import "host_shim"
 
+/// Pure `\n`-delimited line accumulator matching MoonBit `wire.mbt` & `MbProcess`:
+/// no 16 MiB line cap, preserves `\r` bytes verbatim, drops unterminated trailing bytes at EOF.
+pub struct RawLines {
+  mut carry : StringBuilder
+}
+
+pub fn RawLines::new() -> RawLines {
+  RawLines::{ carry: StringBuilder::new() }
+}
+
+pub fn RawLines::push(self : RawLines, chunk : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<chunk.length() {
+    let b = chunk[i]
+    if b.to_int() == 10 {
+      out.push(self.carry.to_string())
+      self.carry = StringBuilder::new()
+    } else {
+      self.carry.write_byte(b)
+    }
+  }
+  out
+}
+
 pub struct MemoryHost {
-  reader : host_shim::LineReader
-  mut pending : Array[host_shim::LineItem]
+  reader : RawLines
+  mut pending : Array[String]
   mut pending_head : Int
   mut stdin_eof : Bool
   mut next_shell_id : Int64
@@ -17,7 +41,7 @@ pub struct MemoryHost {
 
 pub fn MemoryHost::new() -> MemoryHost {
   MemoryHost::{
-    reader: host_shim::LineReader::new(),
+    reader: RawLines::new(),
     pending: [],
     pending_head: 0,
     stdin_eof: false,
@@ -34,17 +58,18 @@ fn MemoryHost::push_stdin(self : MemoryHost, chunk : Bytes) -> Unit {
   }
 }
 
-fn MemoryHost::pop_pending(self : MemoryHost) -> Option[host_shim::LineItem] {
+fn MemoryHost::pop_pending(self : MemoryHost) -> Option[String] {
   if self.pending_head >= self.pending.length() {
     return None
   }
   let item = self.pending[self.pending_head]
+  self.pending[self.pending_head] = ""
   self.pending_head = self.pending_head + 1
   if self.pending_head >= self.pending.length() {
     self.pending = []
     self.pending_head = 0
   } else if self.pending_head >= 64 && self.pending_head * 2 >= self.pending.length() {
-    let rest : Array[host_shim::LineItem] = []
+    let rest : Array[String] = []
     for i in self.pending_head..<self.pending.length() {
       rest.push(self.pending[i])
     }
@@ -55,13 +80,13 @@ fn MemoryHost::pop_pending(self : MemoryHost) -> Option[host_shim::LineItem] {
 }
 
 /// Next LF-terminated line from stdin; None once stdin reached EOF and all buffered lines drained.
-pub fn MemoryHost::next_line(self : MemoryHost) -> Option[host_shim::LineItem] {
+pub fn MemoryHost::next_line(self : MemoryHost) -> Option[String] {
   match self.pop_pending() {
     Some(item) => return Some(item)
     None => ()
   }
   while !self.stdin_eof {
-    match host_shim::wait(5000.to_int64()) {
+    match host_shim::wait((-1).to_int64()) {
       None => ()
       Some(host_shim::HostEvent::StdinData(chunk)) => {
         self.push_stdin(chunk)
@@ -91,7 +116,7 @@ pub fn MemoryHost::shell(
   let payload = base_codec::json_stringify(base_codec::json_obj(args))
   host_shim::shell_call(req_id, op, payload, bytes)
   while true {
-    match host_shim::wait(5000.to_int64()) {
+    match host_shim::wait((-1).to_int64()) {
       None => ()
       Some(host_shim::HostEvent::StdinData(chunk)) => self.push_stdin(chunk)
       Some(host_shim::HostEvent::StdinEof) => {

@@ -173,3 +173,9 @@ pub fn View::as_ground(self : View) -> View {
   n.as_ground = true
   self
 }
+
+///|
+/// Whether node `id` is a ground, no control (View::as_ground); none gone is.
+pub fn Tree::is_ground(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].as_ground
+}

@@ -1091,6 +1091,15 @@ pub let caret_blinks_for_ms : Double = 30000.0
 pub let caret_blink_android_ms : Double = 500.0
 
 ///|
+/// Whether a field takes a finger's ways here (a tap as it is let go, a long press's word, the caret's drop handle
+/// and the picked words' teardrops): a system whose fields feel as Android's (h_feel 2, still.fail's iOS and a browser
+/// started with a finger among them), or a finger on a machine that has a mouse too (a laptop's touch screen, a
+/// browser started with a mouse then touched). iOS's own feel (h_feel 1) keeps its own ways for a finger.
+fn field_touch_feel() -> Bool {
+  h_feel() == 2 || (h_feel() != 1 && @signals.untracked(pointing) is Finger)
+}
+
+///|
 /// How long the caret is shown, and then hidden, here.
 fn caret_blink() -> Double {
   if h_feel() == 2 {
@@ -1323,7 +1332,7 @@ fn EditorState::caret_box(
   let (cx, cl) = self.place_of(tl, off)
   let top = self.oy + cl.to_double() * tl.line_h
   let x = dmax(b.x, dmin(self.ox + cx - caret_w / 2.0, b.x + b.w - caret_w))
-  if h_feel() == 2 {
+  if field_touch_feel() {
     (x, top, caret_w, tl.line_h)
   } else {
     (x, top + 2.0, caret_w, tl.line_h - 4.0)
@@ -1721,7 +1730,7 @@ fn Ctx::paint_field(
   // hanging from the middle of its foot, a circle 25 across under a corner turned to point up, over everything (a
   // popup's, a window of its own over the app's on Android: no box cuts it and nothing painted after it covers it,
   // Ctx::paint_top)
-  if focused && st.handle && h_feel() == 2 && a == b && ml == 0 && st.text.length() > 0 {
+  if focused && st.handle && field_touch_feel() && a == b && ml == 0 && st.text.length() > 0 {
     let (cx, cy, cw, ch) = st.caret_box(tl, fb, st.caret)
     let x = cx + cw / 2.0
     let y = cy + ch
@@ -1750,7 +1759,7 @@ fn Ctx::paint_field(
   }
   // Android & iOS handles of words a finger picked: Android hangs a teardrop under each end joined to a full-line-height
   // boundary bar; iOS draws a 2pt boundary bar with a 12pt knob at the start's top and the end's bottom.
-  if focused && st.sel_handles && (h_feel() == 2 || h_feel() == 1) && a != b && ml == 0 {
+  if focused && st.sel_handles && (field_touch_feel() || h_feel() == 1) && a != b && ml == 0 {
     let r = handle_r
     let (ax, al) = st.place_of(tl, a)
     let (bx, bl) = st.place_of(tl, b)
@@ -1766,7 +1775,7 @@ fn Ctx::paint_field(
       st.sel_on = true
       push_unclipped()
       let i0 = self.ninst
-      if h_feel() == 2 {
+      if h_feel() != 1 {
         let cw_px = on_pixels(caret_w, self.scale)
         if a_vis {
           // start boundary anchor bar + teardrop aligned to the same pixel edge with 1pt overlap into tip (no notch)
@@ -2298,25 +2307,64 @@ pub let double_tap_slop : Double = 40.0
 /// over it. False when there is none there (nothing under the finger but spaces, or no words at all: the caret put
 /// there instead, the menu over it all the same, to paste: Android's EditText offers 粘贴 in an empty field too).
 fn EditorState::pick_word(self : EditorState, x : Double, y : Double, now : Double) -> Bool {
+  guard self.tl is Some(_) else { return false }
+  if self.marked.length() > 0 {
+    self.text_input(2, "", 0, 0, now)
+  }
+  // (laid out anew as what was composed is committed: the layout as it is now)
   let tl = match self.tl {
     Some(t) => t
     None => return false
   }
-  if self.marked.length() > 0 {
-    self.text_input(2, "", 0, 0, now)
-  }
-  let off = imin(tl.offset_at(x - self.ox, y - self.oy), self.text.length())
-  let (a, b) = word_at(self.text, off)
   self.blink0 = now
+  // (no word under the finger: the caret where it is in the words, never pulled back onto the last character, and the
+  // menu over it to paste)
+  let place_only = fn() {
+    self.caret_to_point(tl, x, y)
+    self.anchor = self.caret
+    self.sel_handles = false
+    self.handle = self.text.length() > 0
+    self.menu = true
+    false
+  }
+  let lx = x - self.ox
+  let ly = y - self.oy
+  let lines = tl.line_start.length()
+  if self.secret || self.text.length() == 0 || lines == 0 {
+    return place_only()
+  }
+  // (over the first line or under the last: the field's own room round its words)
+  if ly < -2.0 || ly > lines.to_double() * tl.line_h + 2.0 {
+    return place_only()
+  }
+  let line = imin(imax((ly / tl.line_h).to_int(), 0), lines - 1)
+  // (before the line's start or past its end: the blank beside its words)
+  if lx < -2.0 || lx > tl.line_w[line] {
+    return place_only()
+  }
+  let s = tl.shaped
+  let mut char_off = -1
+  if tl.lv.length() > 0 {
+    let off = tl.offset_at(lx, ly)
+    if off < self.text.length() {
+      char_off = off
+    }
+  } else {
+    for c in tl.line_start[line]..<tl.line_end[line] {
+      if char_off < 0 && !is_nl(s.cu[c]) && lx <= tl.xs[c] + s.adv[c] {
+        char_off = s.starts[c]
+      }
+    }
+  }
+  if char_off < 0 {
+    return place_only()
+  }
+  let (a, b) = word_at(self.text, char_off)
+  if b <= a || sub(self.text, a, b).trim(chars=" \t\n\r\u{3000}\u{200B}").length() == 0 {
+    return place_only()
+  }
   self.handle = false
   self.upstream = -1
-  if b <= a || self.secret {
-    self.caret = off
-    self.anchor = off
-    self.sel_handles = false
-    self.menu = true
-    return false
-  }
   self.anchor = a
   self.caret = b
   self.word_a = a
@@ -2324,6 +2372,24 @@ fn EditorState::pick_word(self : EditorState, x : Double, y : Double, now : Doub
   self.sel_handles = true
   self.menu = true
   true
+}
+
+///|
+/// A tap at (`x`, `y`) in the window on a field (a finger's, let go where it went down): the caret put there, its
+/// handle under it where it holds words; where the field had the focus already and the caret stays where it was,
+/// nothing picked nor composed (the caret itself tapped, or the blank past the words' end where it is), its menu
+/// (粘贴, 全选) shown or put away, as a phone's own fields do; anywhere else the menu away.
+fn EditorState::tap_caret_at(self : EditorState, was_focused : Bool, x : Double, y : Double, t : Double) -> Unit {
+  let was_menu = self.menu
+  let (was_a, was_b) = self.sel()
+  let was_caret = self.caret
+  let was_up = self.caret_up()
+  let was_marked = self.marked != ""
+  place_caret_at(self, x, y, t)
+  self.handle = self.text.length() > 0
+  if was_focused && !was_marked && was_a == was_b && self.caret == was_caret && self.caret_up() == was_up {
+    self.menu = !was_menu
+  }
 }
 
 ///|

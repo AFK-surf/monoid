@@ -250,6 +250,8 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
         // round it, its words 12 and 10 in: code_field_box, as tall as its line laid out and that)
         f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         @sf.style_node(f, fn() { code_field_box })
+        // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+        @ui.field_backdrop(f, landing.code)
         let field = @ui.field(
           f,
           landing.code,
@@ -275,7 +277,7 @@ fn invite_code_form_node(body : @view.View, src : Source, account : () -> Json?)
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
-        f.edge(By(fn() { @sf.control_edge(hot=f.pointed() || field.focused()) })) |> ignore
+        f.edge(By(fn() { @sf.control_edge(hot=f.pointed_in() || field.focused()) })) |> ignore
       })
       |> ignore
       @sf.button_node(

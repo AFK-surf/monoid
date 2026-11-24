@@ -27,8 +27,8 @@ let signin_runs : @sf.LiveMap[String, SignInRun] = @sf.LiveMap::new()
 
 ///|
 /// Where each card's asking is (by its id): "" nothing asked, listing / getting / otp (1Password asked), auto (the
-/// system's autofill service offers its logins), choosing (logins to pick from), sending (to the station), said (why
-/// it did not fill: `signin_notes`).
+/// system's autofill service offers its logins), choosing (logins to pick from), sending / denying (to the station),
+/// said (why it did not fill: `signin_notes`).
 let signin_steps : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 
 ///|
@@ -253,10 +253,35 @@ fn signin_self(core : @settings.Core, station : String, ask : SignInAsk, done : 
 }
 
 ///|
+/// The person cancels the sign-in: stops any password manager ask in flight and tells the station (`signin.deny`).
+fn signin_deny(core : @settings.Core, station : String, ask : SignInAsk) -> Unit {
+  if core.read_only != "" {
+    (core.say)(core.read_only)
+    return
+  }
+  signin_stop(ask.id)
+  signin_steps[ask.id] = "denying"
+  (core.call)("signin.deny", { "station": Json::string(station), "id": Json::string(ask.id) }, fn(r) {
+    match r {
+      Ok(_) => ()
+      Err(e) => {
+        signin_steps.remove(ask.id)
+        (core.say)(
+          @sf.t(
+            "android-misc.act.failed",
+            args=[("what", @sf.t("android-misc.signin.cancelWhat")), ("error", @settings.error_text(e))],
+          ),
+        )
+      }
+    }
+  })
+}
+
+///|
 /// Whether a sign-in's card has nothing more to answer: it ended, and what keeps it (where it is kept) was decided.
 fn signin_over(ask : SignInAsk) -> Bool {
   match ask.status {
-    "denied" | "expired" | "ended" => true
+    "denied" | "withdrawn" | "expired" | "ended" => true
     "done" => ask.save == "" || ask.kept != ""
     _ => false
   }
@@ -270,6 +295,7 @@ fn signin_outcome_words(ask : SignInAsk) -> String {
     "done" if ask.save != "" || !ask.keep => @sf.t("android-misc.signin.outcome.notKept", args=site)
     "done" => @sf.t("android-misc.signin.outcome.done", args=site)
     "denied" => @sf.t("android-misc.signin.outcome.denied", args=site)
+    "withdrawn" => @sf.t("android-misc.signin.outcome.withdrawn", args=site)
     "expired" => @sf.t("android-misc.signin.outcome.expired", args=site)
     _ => @sf.t("android-misc.signin.outcome.ended")
   }

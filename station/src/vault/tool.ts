@@ -47,7 +47,7 @@ export const SECRET_CANCEL_DESCRIPTION =
   "Withdraw an undecided request of this chat (secret_list, secret_use, secret_save, secret_describe, secret_delete) when no longer needed, closing its card and removing it from the person's pending list.";
 
 export const SIGN_IN_DESCRIPTION =
-  "Get this chat's browser signed in to a website: the one way to ask for it. A sign-in the person you work for keeps in their vault for the site is asked for on a card; with none kept, first open the site's sign-in page in this chat's browser (the `browser` tool), then call this: a card has them sign in, and you never see what they typed. It does not wait: you are told in this session when the page has left its sign-in, and what to do then (done, stuck). Never ask for a password or a code in the chat, and do not post the tab's screen for a sign-in yourself. Skill stillfail-browser (Sign-ins) says the rest: passkeys, a sign-in that ran out.";
+  "Get this chat's browser signed in to a website: the one way to ask for it. A sign-in the person you work for keeps in their vault for the site is asked for on a card; with none kept, first open the site's sign-in page in this chat's browser (the `browser` tool), then call this: a card has them sign in, and you never see what they typed. It does not wait: you are told in this session when the page has left its sign-in, and what to do then (done, stuck, or cancel when no longer needed). Never ask for a password or a code in the chat, and do not post the tab's screen for a sign-in yourself. Skill stillfail-browser (Sign-ins) says the rest: passkeys, a sign-in that ran out.";
 
 export function vaultTools(secrets: Secrets, workspace: (session: string) => string | null, signIns?: SignIns): Tool[] {
   return [
@@ -64,6 +64,7 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
           reask: { type: "boolean", description: "The existing sign-in is still needed but its card is no longer pending: post a new card for that sign-in." },
           done: { type: "boolean", description: "You looked after being told the page left its sign-in: it is signed in." },
           stuck: { type: "string", description: "You looked: it is not signed in yet; what is left for the person to do there, in their language." },
+          cancel: { type: "boolean", description: "Withdraw this chat's open sign-in request for the site when it is no longer needed, closing its card." },
           name: { type: "string", description: "With done: what it is kept by, as secret_save's name; default <site> 登录态." },
           about: { type: "string", description: "With done: what it is for and how it is used (how its site is reached, what to open), in the person's language; never a secret." },
         },
@@ -79,6 +80,7 @@ export function vaultTools(secrets: Secrets, workspace: (session: string) => str
           ...(args.reask === true ? { reask: true } : {}),
           ...(args.done === true ? { done: true } : {}),
           ...(typeof args.stuck === "string" ? { stuck: args.stuck } : {}),
+          ...(args.cancel === true ? { cancel: true } : {}),
           ...(text(args, "name").trim() ? { name: text(args, "name") } : {}),
           ...(text(args, "about").trim() ? { about: text(args, "about") } : {}),
         }, signal),

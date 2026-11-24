@@ -4311,7 +4311,7 @@ fn view_claimed(tree : @view.Tree, x : Double, y : Double, at : Double) -> Bool 
     Some(Node(n)) => {
       tree.press_held(n) |> ignore
       // (a field's press taken over: nothing of it kept)
-      tree_field_let_go(n, x, y, false)
+      tree_field_let_go(tree_field_pressing(n), x, y, false)
     }
     Some(Old(part, _)) => {
       view_input_went(part)
@@ -4869,11 +4869,13 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
             tree.event(at, fn() { tree.hold_press(id) })
             // (a field of the tree's that takes it as it goes down (its caret put there, what is picked dragged on from
             // there): its own from here, nothing of the tree's taking it over, as an old view's field's: view_old_moved)
-            if tree_field_bar_down(id, x, y, at) {
+            // (a ground round a field given its presses (field_backdrop): the field's press, as on the field)
+            let fid = tree_field_target_of(id).unwrap_or(id)
+            if fid == id && tree_field_bar_down(id, x, y, at) {
               view_down.val = None
               view_down_slot0.val = false
               view_down_extra.clear()
-            } else if tree_field_down(id, x, y, at) {
+            } else if tree_field_down(fid, x, y, at, pressed_node=id) {
               // As on an old view's field, a mouse press lets go of words picked on the page.
               if pointing() is Mouse && picked.from.base != NoSel {
                 select_none()
@@ -4946,7 +4948,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
     // down: View::claims), what had it called off)
     // (a field of the tree's the press went down on: what is picked dragged on, where it took it as it went down; how far
     // a finger went, where it waits for a tap: tree_field_moved)
-    (1, Some(Node(id))) if tree_field_moved(id, x, y, at) => true
+    (1, Some(Node(id))) if tree_field_moved(tree_field_pressing(id), x, y, at) => true
     (1, Some(Node(_) | Nowhere)) if view_claimed(tree, x, y, at) => true
     // (held by a gesture waiting on a tap, a hold or its own slop: taken over as a press is, Tree::yields; what holds it
     // asked first, at the same move)
@@ -4983,10 +4985,15 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
     }
     (2, Some(Node(id))) => {
       view_held.val = None
+      let fid = tree_field_pressing(id)
       if tree.press_held(id) && tree.target_at(x, y) == Pressed(id) {
         tapped.val = tree.run_press_at(id, at, place=(x, y))
+        // (a ground round a field given its presses: the field's tap, as its own press is on the field itself)
+        if tapped.val && fid != id {
+          tree_field_tapped(fid)
+        }
       }
-      tree_field_let_go(id, x, y, true)
+      tree_field_let_go(fid, x, y, true)
       h_frame_owed()
       true
     }
@@ -5051,7 +5058,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
     }
     (4 | 5 | 6 | 8, Some(Node(id))) => {
       // (a second finger on a press: called off, the rest nobody's; a field's, nothing of it kept)
-      tree_field_let_go(id, x, y, false)
+      tree_field_let_go(tree_field_pressing(id), x, y, false)
       view_held.val = Some(Nowhere)
       tree.event(at, fn() { tree.hold_lost_in(0) })
       true
@@ -5097,7 +5104,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       // (called off: the press's hold let go, nothing pressed)
       view_held.val = None
       tree.press_held(id) |> ignore
-      tree_field_let_go(id, x, y, false)
+      tree_field_let_go(tree_field_pressing(id), x, y, false)
       true
     }
     (2 | 3, Some(held)) => {
@@ -5651,7 +5658,7 @@ fn view_hold_lost() -> Unit {
     (Some(tree), Some(Dragging(_))) | (Some(tree), Some(Node(_))) => {
       // (a field of the tree's holding it: the press called off, nothing of it kept, tree_field.mbt)
       match view_held.val {
-        Some(Node(n)) => tree_field_let_go(n, 0.0, 0.0, false)
+        Some(Node(n)) => tree_field_let_go(tree_field_pressing(n), 0.0, 0.0, false)
         _ => ()
       }
       view_held.val = Some(Nowhere)

@@ -1129,13 +1129,14 @@ test "two station variables editors share the draft without sharing editor state
       }
     },
   }
-  // (two pages' editors of one station's draft: each its own field)
+  // (two pages' editors of one station's draft: each its own field, each in a card's room as on its page, the second's
+  // field frame reaching out to its card's edge (card_block_out) not over the first's buttons)
   let a = @ui.Field::new()
   let b = @ui.Field::new()
   let core = @sfbase.settings_core(src, rig_workspace)
   let t = station_part_tester(fn(p) {
-    p.box(fn(k) { station_env_editor_node(k, core, "ws1/st1", a) }) |> ignore
-    p.box(fn(k) { station_env_editor_node(k, core, "ws1/st1", b) }) |> ignore
+    p.box(fn(k) { k.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore; station_env_editor_node(k, core, "ws1/st1", a) }) |> ignore
+    p.box(fn(k) { k.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore; station_env_editor_node(k, core, "ws1/st1", b) }) |> ignore
   }, w=390.0, h=900.0, platform=1)
   t.check_looks(false)
   t.set_rows_on_pixels(true)

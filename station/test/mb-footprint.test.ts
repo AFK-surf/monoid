@@ -3,14 +3,17 @@
 // the same bytes, the same rebuildable directories and sizes in the same order, cut short at the same place and for
 // the same reason, stopped past a limit at the same count, failing on the same errors.
 import assert from "node:assert/strict";
-import { chmodSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { after, test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { platform } from "../src/platform/index.ts";
 import { measureRoom, measured, measuredUpTo } from "../src/sessions/footprint.ts";
 import { measureRoomReference, measuredReference, measuredUpToReference } from "./footprint-reference.ts";
+import { measuredMounted, noMounts } from "./footprint-mounts.ts";
 
 const binary = mbReaderBinary();
 const skip = binary === null ? "the MoonBit program (stillfail-reader) is not built here" : false;
@@ -151,6 +154,45 @@ test("no deeper than 32 below a root, each found directory's walk its own", { sk
   const { program, reference } = await roomOfBoth(root);
   assert.deepEqual(program, reference);
   assert.equal(program.rebuild.length, 1);
+});
+
+// (no mount is made here: the walk's lstat says these directories and all in them are of another device)
+test("another file system mounted in a room, whatever its name, is counted as itself, never looked into nor found", async () => {
+  const root = fresh();
+  write(join(root, "web/node_modules/y.js"), 3_000);
+  const mounts = ["mnt", "app/node_modules", "uploads", ".git"].map((m) => join(root, m));
+  for (const m of mounts) {
+    write(join(m, "node_modules/x.js"), 20_000);
+    write(join(m, "a/b/c"), 9_000);
+  }
+  const plain = await measureRoomReference(root);
+  const inside = (await Promise.all(mounts.map(async (m) => await measuredReference(m) - Number(lstatSync(m, { bigint: true }).blocks) * 512))).reduce((a, b) => a + b, 0);
+  const lstat = fsp.lstat;
+  const mounted = (p: string) => mounts.some((m) => p === m || p.startsWith(m + sep));
+  fsp.lstat = (async (p: string, o?: { bigint?: boolean }) => {
+    const s = await lstat(p, o as { bigint: true });
+    return mounted(String(p)) ? Object.assign(Object.create(Object.getPrototypeOf(s)), s, { dev: s.dev + 1n }) : s;
+  }) as typeof fsp.lstat;
+  syncBuiltinESMExports();
+  try {
+    const room = await measureRoomReference(root);
+    assert.deepEqual(room.rebuild.map(([p]) => p.slice(root.length + 1)), [join("web", "node_modules")]);
+    assert.equal(room.bytes, plain.bytes - inside);
+    assert.equal(room.complete, true);
+  } finally {
+    fsp.lstat = lstat;
+    syncBuiltinESMExports();
+  }
+});
+
+test("the program as the walk: a file system really mounted in a room, whatever its name, counted as itself, never looked into nor found", { skip: skip || noMounts() }, () => {
+  const root = fresh();
+  write(join(root, "web/node_modules/y.js"), 3_000);
+  const { got, reference, visible } = measuredMounted(root);
+  assert.deepEqual(got, reference);
+  assert.deepEqual(got.rebuild.map(([p]) => p.slice(root.length + 1)), [join("web", "node_modules")]);
+  assert.equal(got.bytes, visible);
+  assert.equal(got.complete, true);
 });
 
 const unreadable = platform.os === "windows" || process.getuid?.() === 0 ? "a directory this user cannot read (not on Windows, nor as root)" : false;

@@ -769,9 +769,11 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     @sfdesk.context_menu_node(root)
     // floating liquid-glass editing bar for focused text fields, over presented layers and below the loupe
     @ui.field_menu_bar(root) |> ignore
+    // (on every page, signed in or not, a share's too: the system's own menu is held off over all of it,
+    // field_menu_bar; idle it makes nothing)
     @sf.field_bar_node(
       root,
-      fn() { !share_over.get() && app_is(src) is SignedIn },
+      fn() { true },
       fn() {
         {
           cut: @sf.t("desktop.contextMenu.cut"),
@@ -784,9 +786,9 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     )
     // what a write said, over all of it, in every state and shell (sfbase's toasts_node)
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
-    // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in (the
-    // library's loupe_node: a switch's knob held's glass)
-    @sf.loupe_node(root, fn() { !share_over.get() && app_is(src) is SignedIn })
+    // what a finger hides as it drags a field's caret or what is picked, shown larger over all of it, signed in or not
+    // (the library's loupe_node: a switch's knob held's glass)
+    @sf.loupe_node(root, fn() { true })
     // the window's own buttons where they are the app's (Windows', Linux's), over all of it as a title bar's are: on
     // the bar's line of a page over all the window (a window of its own, a chat's tab or a file over the whole window)
     // at any width, as in a window's whole
@@ -1076,6 +1078,7 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
       on_copied=fn() { @sfbase.toast_later(@sf.t("common.copied")) },
     )
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
+    @sf.loupe_node(root, fn() { true })
     @sf.window_keys_node(root, whole=fn() { true })
   }
 }

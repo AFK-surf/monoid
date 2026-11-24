@@ -226,4 +226,47 @@ test "sha256_digest_hex, skill_hash, base64_bytes, skill_path, and skill_conflic
     skill_conflict_path("/", "/s/x", "中文站点名字很长很长很长很长") == "/s/x/SKILL.conflict-中文站点名字很长很长很长.md",
     "conflict path utf16 12 chars",
   )
+
+  // Intentional non-BMP boundary safety: never split a surrogate pair (U+20000 = 2 UTF-16 code units).
+  let mut a39 = ""
+  for _ in 0..<39 {
+    a39 = a39 + "a"
+  }
+  expect(station_tag(a39 + "\u{20000}") == a39, "station_tag stops cleanly before splitting astral letter at 40 units")
+  expect(
+    skill_conflict_path("/", "/s/x", "aaaaaaaaaaa\u{20000}") == "/s/x/SKILL.conflict-aaaaaaaaaaa.md",
+    "skill_conflict_path stops cleanly before splitting astral char at 12 units",
+  )
+}
+
+test "has_lone_surrogate, escape_line_separators, RawLines, and skill_given safety checks" {
+  // Valid surrogate pair (😀 = \uD83D\uDE00) is accepted; lone high/low surrogates rejected.
+  expect(!has_lone_surrogate("{\"id\":\"\\uD83D\\uDE00\",\"op\":\"tags\"}"), "valid surrogate pair ok")
+  expect(!has_lone_surrogate("{\"s\":\"\\\\uD800\"}"), "escaped backslash before uD800 is literal text")
+  expect(has_lone_surrogate("{\"id\":\"\\uD800\",\"op\":\"tags\"}"), "lone high surrogate rejected")
+  expect(has_lone_surrogate("{\"id\":\"\\uDC00\",\"op\":\"tags\"}"), "lone low surrogate rejected")
+  expect(has_lone_surrogate("{\"id\":\"\\uD83D\\u0041\",\"op\":\"tags\"}"), "high followed by non-low rejected")
+
+  // U+2028 / U+2029 escaped in JSON output.
+  let raw_ls = "{\"a\":\"x\u{2028}y\u{2029}z\"}"
+  expect(escape_line_separators(raw_ls) == "{\"a\":\"x\\u2028y\\u2029z\"}", "U+2028/U+2029 escaped")
+  expect(escape_line_separators("{\"a\":\"plain\"}") == "{\"a\":\"plain\"}", "fast path unchanged")
+
+  // RawLines splits only on LF (0x0A), preserves CR (0x0D), drops EOF tail.
+  let rl = RawLines::new()
+  let out1 = rl.push("a\r\n\r\npartial".to_bytes())
+  expect(out1.length() == 2, "two lines emitted")
+  expect(out1[0] == "a\r", "CR preserved on line 0")
+  expect(out1[1] == "\r", "CR-only line preserved")
+
+  // NUL in path and file/dir prefix collisions rejected in skill_given.
+  expect_none_parts(skill_path("/", "a\u{0000}b"), "NUL in path rejected")
+  match skill_given("/", [("a", base_codec::json_str("YQ==")), ("a/b", base_codec::json_str("YQ=="))], None) {
+    Err(_) => ()
+    Ok(_) => panic("expected file/dir collision (a vs a/b) to be rejected")
+  }
+  match skill_given("/", [("a/b", base_codec::json_str("YQ==")), ("a", base_codec::json_str("YQ=="))], None) {
+    Err(_) => ()
+    Ok(_) => panic("expected dir/file collision (a/b vs a) to be rejected")
+  }
 }

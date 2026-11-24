@@ -2083,3 +2083,249 @@ test "field_menu_bar takes over system text_menu, keeps_field_menu preserves bar
   t.draw()
   assert_eq(field_menu_now(), None)
 }
+
+///|
+/// Field `f` (10 big, `lines` lines at most and at least) in a box at (20, 20), 200 wide, `pad` round it given to the
+/// field (field_backdrop: its presses the field's) where `backdrop`, on `platform`'s host with `pointing` and `native`.
+fn padded_field(
+  f : Field,
+  platform? : Int = 2,
+  pointing? : Pointing,
+  native? : Pointing,
+  backdrop? : Bool = true,
+  pad? : Double = 10.0,
+  lines? : Int = 1,
+  menus? : Ref[Int],
+) -> Tester {
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform~, pointing?, native?)
+  set_view_app(fn(root) {
+    match menus {
+      Some(m) => on_field_menu(root, fn(_, _, _, _) { m.val += 1 })
+      None => ()
+    }
+    root.box(fn(h) {
+      h.over(Is(true)).offset(Is((20.0, 20.0))).width(Is(Some(200.0))).padding(Is((pad, pad, pad, pad))) |> ignore
+      if backdrop {
+        field_backdrop(h, f)
+      }
+      field(h, f, label="字", font_size=10.0, min_lines=lines, max_lines=lines) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t
+}
+
+///|
+/// Where in the window the middle of cluster `i` of field `f`'s first line is drawn (as placed, at its whole size).
+fn cluster_mid(f : Field, i : Int) -> (Double, Double) {
+  let st = f.st
+  let tl = st.tl.unwrap()
+  (st.ox + tl.xs[i] + tl.shaped.adv[i] / 2.0, st.oy + tl.line_h / 2.0)
+}
+
+///|
+test "a finger's tap on a focused field where its caret already is (the blank past its words' end): its menu to paste or pick all, nothing picked; tapped again, away; the tree's as the old view's" {
+  let words = "然后 ios"
+  // (tapped once: focused, the caret at the end, no menu; tapped there again, later than a double tap's: the menu)
+  field_alike("tapped twice at the end", words, platform=2, fn(t, _) {
+    t.tap(20.0 + 150.0, 30.0)
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 150.0, 30.0)
+  })
+  field_alike("tapped thrice at the end", words, platform=2, fn(t, _) {
+    t.tap(20.0 + 150.0, 30.0)
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 150.0, 30.0)
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 150.0, 30.0)
+  })
+  field_alike("tapped at the end, then before the first", words, platform=2, fn(t, _) {
+    t.tap(20.0 + 150.0, 30.0)
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 1.0, 30.0)
+  })
+  for tree in [false, true] {
+    let s = @signals.signal(1.0, same=fn(a, b) { a == b })
+    let f = Field::new(text=words)
+    let t = one_field(tree, s, f, [], platform=2)
+    t.tap(20.0 + 150.0, 30.0)
+    assert_eq((f.selection(), t.text_menu().0), ((6, 6), false), msg="tree \{tree}: focused by a first tap, no menu")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 150.0, 30.0)
+    let (shown, _, _, _, _, can) = t.text_menu()
+    assert_eq((f.selection(), shown, can), ((6, 6), true, @hostapi.text_menu_paste | @hostapi.text_menu_select_all), msg="tree \{tree}: the caret tapped, its menu")
+    // (粘贴 from it: put in at the caret, nothing written over)
+    t.clipboard_gives("新内容")
+    field_edit_now(g().focus, @hostapi.text_menu_paste)
+    t.draw()
+    t.draw()
+    assert_eq(f.text(), "然后 ios新内容", msg="tree \{tree}: pasted at the end")
+    // (tapped elsewhere: the caret moved, no menu; there again: the menu)
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 1.0, 30.0)
+    assert_eq((f.selection(), t.text_menu().0), ((0, 0), false), msg="tree \{tree}: the caret moved, no menu")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 1.0, 30.0)
+    assert_eq((f.selection(), t.text_menu().0), ((0, 0), true), msg="tree \{tree}: the moved caret tapped, its menu")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 1.0, 30.0)
+    assert_eq((f.selection(), t.text_menu().0), ((0, 0), false), msg="tree \{tree}: tapped again, away")
+  }
+}
+
+///|
+test "a finger's tap on an empty focused field: the menu to paste, at once or after; tapped again, away" {
+  for tree in [false, true] {
+    let s = @signals.signal(1.0, same=fn(a, b) { a == b })
+    let f = Field::new(text="")
+    let t = one_field(tree, s, f, [], platform=2)
+    t.tap(20.0 + 40.0, 30.0)
+    assert_eq((f.focused(), t.text_menu().0), (true, false), msg="tree \{tree}: focused, no menu")
+    // (again at once: a double tap's second, nothing there to pick: the menu all the same)
+    t.tap(20.0 + 40.0, 30.0)
+    let (shown, _, _, _, _, can) = t.text_menu()
+    assert_eq((f.selection(), shown, can), ((0, 0), true, @hostapi.text_menu_paste), msg="tree \{tree}: the menu to paste")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 40.0, 30.0)
+    assert_false(t.text_menu().0, msg="tree \{tree}: away")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 40.0, 30.0)
+    assert_true(t.text_menu().0, msg="tree \{tree}: later, again")
+  }
+}
+
+///|
+test "a long press or a double tap past a field's words' end, under its last line or on a space: the caret there, nothing picked, the menu to paste; on a word, the word" {
+  let words = "做不到。"
+  field_alike("a long press past the end", words, platform=2, fn(t, _) {
+    t.press_at(20.0 + 150.0, 30.0)
+    t.run_for(long_press_ms)
+    t.release(20.0 + 150.0, 30.0)
+  })
+  field_alike("a double tap past the end", words, platform=2, fn(t, _) {
+    t.tap(20.0 + 150.0, 30.0)
+    t.tap(20.0 + 150.0, 30.0)
+  })
+  for tree in [false, true] {
+    let s = @signals.signal(1.0, same=fn(a, b) { a == b })
+    let f = Field::new(text=words)
+    let t = one_field(tree, s, f, [], platform=2)
+    t.press_at(20.0 + 150.0, 30.0)
+    t.run_for(long_press_ms)
+    t.release(20.0 + 150.0, 30.0)
+    let (shown, _, _, _, _, can) = t.text_menu()
+    assert_eq((f.selection(), shown, can), ((4, 4), true, @hostapi.text_menu_paste | @hostapi.text_menu_select_all), msg="tree \{tree}: past the 。, nothing picked")
+    t.clipboard_gives("贴")
+    field_edit_now(g().focus, @hostapi.text_menu_paste)
+    t.draw()
+    t.draw()
+    assert_eq(f.text(), "做不到。贴", msg="tree \{tree}: the 。 kept")
+  }
+  // (on the space between two words: the caret by it, nothing picked; on a word: the word)
+  let f = Field::new(text="然后 ios")
+  let t = padded_field(f, backdrop=false, pad=0.0)
+  let (sx, sy) = cluster_mid(f, 2)
+  t.press_at(sx, sy)
+  t.run_for(long_press_ms)
+  t.release(sx, sy)
+  let (a, b) = f.selection()
+  assert_true(a == b && (a == 2 || a == 3) && t.text_menu().0, msg="on the space: (\{a}, \{b})")
+  t.run_for(double_tap_ms + 50.0)
+  let (wx, wy) = cluster_mid(f, 4)
+  t.press_at(wx, wy)
+  t.run_for(long_press_ms)
+  t.release(wx, wy)
+  assert_eq(f.selection(), (3, 6))
+  // (a field of three lines holding one: under it, the caret at the end, nothing picked)
+  let f = Field::new(text="然后 ios")
+  let t = padded_field(f, backdrop=false, pad=0.0, lines=3)
+  let lh = f.st.tl.unwrap().line_h
+  t.press_at(20.0 + 150.0, f.st.oy + lh * 2.5)
+  t.run_for(long_press_ms)
+  t.release(20.0 + 150.0, f.st.oy + lh * 2.5)
+  assert_eq((f.selection(), t.text_menu().0), ((6, 6), true), msg="under its last line, past its end")
+  t.run_for(double_tap_ms + 50.0)
+  t.press_at(20.0 + 3.0, f.st.oy + lh * 2.5)
+  t.run_for(long_press_ms)
+  t.release(20.0 + 3.0, f.st.oy + lh * 2.5)
+  let (a, b) = f.selection()
+  assert_true(a == b && a <= 1 && t.text_menu().0, msg="under its last line, by its start: the caret there, (\{a}, \{b})")
+}
+
+///|
+test "field_backdrop: the room round a field its own to a press: a finger's tap focuses it and a second its caret's menu, a long press its 粘贴, the secondary button its menu; a mouse's press its caret" {
+  let f = Field::new(text="然后 ios")
+  let asked = Ref(0)
+  let t = padded_field(f, menus=asked)
+  let below = f.st.oy + f.st.tl.unwrap().line_h + 5.0
+  // (its foot's room, under its words: tapped, focused, the caret at the end of the words over it; again, the menu)
+  t.tap(20.0 + 150.0, below)
+  assert_eq((f.focused(), f.selection(), t.text_menu().0), (true, (6, 6), false))
+  t.run_for(double_tap_ms + 50.0)
+  t.tap(20.0 + 150.0, below)
+  assert_eq((f.selection(), t.text_menu().0), ((6, 6), true))
+  t.run_for(double_tap_ms + 50.0)
+  t.tap(20.0 + 150.0, below)
+  assert_false(t.text_menu().0)
+  // (held there: the caret, the menu to paste, nothing picked)
+  t.run_for(double_tap_ms + 50.0)
+  t.press_at(20.0 + 3.0, 25.0)
+  t.run_for(long_press_ms)
+  t.release(20.0 + 3.0, 25.0)
+  let (shown, _, _, _, _, can) = t.text_menu()
+  assert_eq((f.selection(), shown, can), ((0, 0), true, @hostapi.text_menu_paste | @hostapi.text_menu_select_all))
+  assert_eq(t.haptics().length(), 1)
+  // (a script's `clip`, as a film's run says what the clipboard holds: Tester::clipboard_gives)
+  let log = t.drive("clip 新\n")
+  assert_true(log.contains("EXIT 0"), msg=log.join("\n"))
+  field_edit_now(g().focus, @hostapi.text_menu_paste)
+  t.draw()
+  t.draw()
+  assert_eq(f.text(), "新然后 ios")
+  // (the secondary button there: its editing menu asked)
+  t.right_click(20.0 + 150.0, below)
+  assert_eq(asked.val, 1)
+  assert_eq(t.audit(), [])
+  // (a mouse's press there: the focus and the caret there at once)
+  let g2 = Field::new(text="hello")
+  let m = padded_field(g2, platform=0)
+  m.tap(20.0 + 150.0, 22.0)
+  assert_eq((g2.focused(), g2.selection()), (true, (5, 5)))
+}
+
+///|
+test "field_backdrop: a press on the room before a field's words while it has not the focus (a label, an icon) writes on at their end; focused, the caret where it went down" {
+  // (a mouse's press, then a finger's tap: the caret at the words' end, never before the first)
+  for platform in [0, 2] {
+    let f = Field::new(text="hello")
+    let t = padded_field(f, platform~)
+    t.tap(20.0 + 3.0, 30.0)
+    assert_eq((f.focused(), f.selection()), (true, (5, 5)), msg="\{platform}: unfocused")
+    t.run_for(double_click_ms + double_tap_ms)
+    t.tap(20.0 + 3.0, 30.0)
+    assert_eq(f.selection(), (0, 0), msg="\{platform}: focused")
+  }
+}
+
+///|
+test "a finger on a machine with a mouse too (a laptop's touch screen, a browser started with a mouse): a field's tap, its caret's menu and its long press's 粘贴 a finger's, its handle drawn" {
+  for platform in [3, 4] {
+    let f = Field::new(text="然后 ios")
+    let t = padded_field(f, platform~, native=Mouse, pointing=Finger)
+    t.tap(20.0 + 150.0, 30.0)
+    assert_eq((f.selection(), t.text_menu().0), ((6, 6), false), msg="\{platform}: tapped")
+    assert_true(f.st.handle_on, msg="\{platform}: its caret's handle drawn")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 150.0, 30.0)
+    assert_eq((f.selection(), t.text_menu().0), ((6, 6), true), msg="\{platform}: the caret tapped, its menu")
+    t.run_for(double_tap_ms + 50.0)
+    t.tap(20.0 + 150.0, 30.0)
+    t.run_for(double_tap_ms + 50.0)
+    let (wx, wy) = cluster_mid(f, 4)
+    t.press_at(wx, wy)
+    t.run_for(long_press_ms)
+    t.release(wx, wy)
+    assert_eq((f.selection(), t.text_menu().0), ((3, 6), true), msg="\{platform}: held on a word, picked")
+  }
+}

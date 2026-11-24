@@ -69,7 +69,7 @@ pub fn input_bar_node(
   let line = @signals.untracked(fn() { theme().t.body_line })
   let x = if card_words { card_foot_words_in(button_height()) } else { @ui.Space::px(S4) }
   let has_tf = description is Some(_) || error is Some(_) || invalid is Some(_) || read_only is Some(_)
-  field_frame(parent, disabled, row=true, solid~, fn(f) {
+  field_frame(parent, field, disabled, row=true, solid~, fn(f) {
     f
     .padding(Is((x, @ui.Space::px(S1_5), x, @ui.Space::px(S1_5))))
     |> ignore
@@ -172,7 +172,7 @@ pub fn textarea_node(
 ) -> @view.View {
   let x = if card_words { card_foot_words_in(button_height()) } else { @ui.Space::px(S4) }
   let has_tf = description is Some(_) || error is Some(_) || invalid is Some(_) || read_only is Some(_)
-  field_frame(parent, disabled, row=false, solid~, fn(f) {
+  field_frame(parent, field, disabled, row=false, solid~, fn(f) {
     f
     .padding(Is((x, @ui.Space::px(S2), x, @ui.Space::px(S2))))
     .min_height(Is(Some(rows.to_double() * textarea_line + textarea_in)))
@@ -234,11 +234,13 @@ pub fn textarea_node(
 /// border's hairline where what `body` makes in it (its field, the node it gives back) is written in, or pointed at
 /// (a mouse's pointer on it or its field, nothing over it there; a finger pressing its field: Ctx::lit's); faded to
 /// O55 (input_box's `disabled`) over dur_ms while `disabled()`, its field then taking no press nor the focus. `solid`:
-/// on the canvas's ground, its line the canvas's but where it is pointed at or written in (field_solid). The field's
-/// node.
+/// on the canvas's ground, its line the canvas's but where it is pointed at or written in (field_solid). Its padding
+/// round the field is the field's to a press (@ui.field_backdrop: a tap there its tap, a long press its 粘贴). The
+/// field's node.
 #callsite(autofill(loc))
 fn field_frame(
   parent : @view.View,
+  field : @ui.Field,
   disabled : () -> Bool,
   row~ : Bool,
   solid? : Bool = false,
@@ -255,10 +257,10 @@ fn field_frame(
     .lines_up(Is(if row { Some(Middle) } else { None }))
     .ground(By(fn() { @ui.tree_theme().color(if solid { Bg } else { Surface }) }))
     .alpha(By(fn() { seen.shown(f) }))
-    // (pointed at as a whole, as the old frame's box is by its id: lit with the pointer on its padding too, a press
-    // there passing through to what is under it, as there)
-    .points(Is(true))
     |> ignore
+    // (pointed at as a whole, as the old frame's box is by its id: lit with the pointer on its padding too; a press
+    // there its field's, as on the field: the caret, its menu to paste)
+    @ui.field_backdrop(f, field, enabled=live)
     let v = body(f)
     // (pointed at as the old frame lit its box: a mouse's on it or its field, nothing over it there; a finger's
     // pressing its field; written in)
@@ -266,7 +268,7 @@ fn field_frame(
       v.focused() ||
       (match @ui.pointing() {
         Mouse => f.pointed_in()
-        Finger => v.pressed()
+        Finger => v.pressed() || f.pressed()
       })
     }
     f.edge(By(fn() { control_edge(hot=hot(), solid~) }))

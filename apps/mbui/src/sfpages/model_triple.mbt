@@ -1929,6 +1929,8 @@ fn triple_find_node(
       }
     })
     |> ignore
+    // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
+    @ui.field_backdrop(f, contents.field)
     @sf.icon_node(f, "search", triple_find_icon, By(fn() { @sf.theme().p.muted })) |> ignore
     let field = @ui.field(
       f,

@@ -31,6 +31,8 @@
 //   enter                       backspace                 back       the system's back
 //   paste TEXT                  TEXT on the clipboard, then the system's paste
 //   pasten N TEXT               TEXT repeated to N characters, pasted
+//   clip TEXT                   under a Tester (a film's run), the clipboard holds TEXT as the app next reads it (an
+//                               editing menu's 粘贴: Tester::clipboard_gives); a real host's clipboard is its own
 //   wheel DY [MODS]             the list under the middle of the window scrolled by DY (with MODS held: cmd, ctrl,
 //                               alt, shift joined by +; ⌘ and a wheel over a picture zoom it)
 //   wheelat DY TEXT             the list under the lowest TEXT scrolled by DY at once, as a test's Flow::wheel_at
@@ -1833,7 +1835,7 @@ fn drive_steps(c : Ctx) -> Unit {
             return
           }
         }
-      "system" | "viewsaid" | "appsaid" | "ime" => {
+      "system" | "viewsaid" | "appsaid" | "ime" | "clip" => {
         // (what only some hosts take of a script: a Tester's says what its system, its native views' host and its
         // keyboard do as it is told; a host that takes no such step says why)
         let failed = @hostapi.script_step(cmd, arg)

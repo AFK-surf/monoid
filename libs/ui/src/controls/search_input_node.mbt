@@ -64,6 +64,9 @@ pub fn search_input_node(
         |> ignore
       None => ()
     }
+    // (its ground round the field (the search mark, its ends) the field's to a press: a tap there its tap, a long press
+    // its 粘贴)
+    @ui.field_backdrop(g, field)
     // (its size the native input's, the same all the run: read once)
     icon_node(g, "search", @signals.untracked(fn() { theme().chat_list.band_icon }), By(fn() { theme().p.muted })) |> ignore
     let typed = @ui.field(

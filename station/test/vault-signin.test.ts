@@ -365,8 +365,70 @@ test("refused on the card, or its chat archived: let go, the card withdrawn, wha
   assert.match(w.told[0]!, /chose not to sign in/);
   assert.deepEqual(w.withdrawn, ["t1"]);
   assert.equal(w.signIns.get("g1")!.status, "denied");
+  // also denied while filling or waiting for agent confirmation (`left`): in-flight fill is ignored
+  const f = world();
+  await f.signIns.ask("s1", { site: "github.com", reason: "看 PR" });
+  assert.equal(f.signIns.fill("pat@example.com", "ws", "g1", { username: "pat", password: "pw" }), null);
+  assert.equal(f.signIns.get("g1")!.status, "filling");
+  assert.equal(f.signIns.deny("pat@example.com", "ws", "g1"), null);
+  await tick();
+  assert.equal(f.signIns.get("g1")!.status, "denied");
+  assert.equal(f.cards[0]!.card.signin.outcome.status, "denied");
+  assert.deepEqual(f.withdrawn, ["t1"]);
+  assert.equal(f.told.length, 1);
+  const l = world();
+  await l.signIns.ask("s1", { site: "github.com", reason: "看 PR" });
+  assert.equal(l.signIns.self("pat@example.com", "ws", "g1", true), null);
+  assert.equal(l.signIns.get("g1")!.status, "left");
+  assert.equal(l.signIns.deny("pat@example.com", "ws", "g1"), null);
+  assert.equal(l.signIns.get("g1")!.status, "denied");
+  assert.deepEqual(l.withdrawn, ["t1"]);
   const a = world();
   await a.signIns.ask("s1", { site: "github.com", reason: "看 PR" });
   a.archive("s1");
   assert.equal(a.signIns.get("g1")!.status, "ended");
+});
+
+test("withdrawn by the agent via sign_in {site, cancel: true}: closes the card without notifying, forgets held values, and allows a fresh ask", async () => {
+  let seq = 0;
+  const w = world();
+  const tool = vaultTools(null as never, () => "/chat/s1", w.signIns).find((t) => t.name === "sign_in")!;
+  await assert.rejects(tool.run("s1", { site: "github.com", cancel: true }), /No sign-in to github.com is under way/);
+  await w.signIns.ask("s1", { site: "github.com", reason: "看 PR" });
+  const said = await tool.run("s1", { site: "github.com", cancel: true });
+  assert.match(said, /Withdrew sign-in to github.com \(g1\)/);
+  assert.equal(w.signIns.get("g1")!.status, "withdrawn");
+  assert.equal(w.cards[0]!.card.signin.outcome.status, "withdrawn");
+  assert.deepEqual(w.withdrawn, ["t1"]);
+  assert.equal(w.told.length, 0, "agent-initiated cancel does not re-notify the session");
+  // expired sign-in cancelled: closes cleanly
+  const e = world();
+  await e.signIns.ask("s1", { site: "github.com", reason: "看 PR" });
+  e.pass(86401_000);
+  assert.match(await e.signIns.ask("s1", { site: "github.com", cancel: true }), /already expired/);
+  assert.equal(e.signIns.get("g1")!.status, "expired");
+  assert.deepEqual(e.withdrawn, ["t1"]);
+  // withdrawn while filling: in-flight fill does not overwrite withdrawn, and a new ask can start after
+  const f = world();
+  await f.signIns.ask("s1", { site: "github.com", reason: "看 PR" });
+  assert.equal(f.signIns.fill("pat@example.com", "ws", "g1", { username: "pat", password: "pw" }), null);
+  assert.match(await f.signIns.ask("s1", { site: "github.com", cancel: true }), /Withdrew sign-in/);
+  await tick();
+  assert.equal(f.signIns.get("g1")!.status, "withdrawn");
+  assert.equal(f.told.length, 0);
+  // fresh ask after cancel works
+  const db = new DatabaseSync(":memory:");
+  const fresh = new SignIns({
+    db, hub: w.hub, now: () => 1_800_000_000_000, after: () => () => {},
+    workspace: () => "ws", screenLink: () => null, id: () => `g${++seq}`,
+    browser: { tabs: () => [{ id: "T1", url: "https://github.com/login" }], look: async () => ({ username: true, password: true, code: false, blocked: false }), drive: async () => ({ state: "left" }) },
+    vault: { listed: () => null, held: () => null, use: async () => "", keep: async () => "" },
+  });
+  await fresh.ask("s1", { site: "github.com", reason: "first" });
+  await fresh.ask("s1", { site: "github.com", cancel: true });
+  assert.equal(fresh.get("g1")!.status, "withdrawn");
+  assert.match(await fresh.ask("s1", { site: "github.com", reason: "second" }), /sign-in g2/);
+  assert.equal(fresh.get("g2")!.status, "pending");
+  await fresh.close();
+  db.close();
 });

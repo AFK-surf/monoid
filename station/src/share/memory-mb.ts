@@ -1,10 +1,12 @@
-// The agents' memory's files and merges in the MoonBit program (station/mb src/memory, reader `--builder memory`), in
-// place of share/memory.ts's own: a workspace's memory read and hashed, what changed kept in blobs/, and two versions
-// made apart merged (three-way by lines, or each line once) there, none of their bytes on the station's thread; and a
-// skill shared on its own (share/index.ts, a program of its own there) read, hashed and written. Started
-// at its first ask, it goes after IDLE_MS with nothing asked of it (or at once: `trimIdle`) and is started again by the
-// next: it keeps nothing between asks. There is no TypeScript to fall back to: what it replaced is
-// station/test/reference/memory-merge.ts, which station/test/mb-memory-merge.test.ts holds it to.
+// The agents' memory's files and merges in the `--builder memory` program (MoonBit `station/mb/src/memory` by default,
+// or Pion `pion/station/packages/memory` via `STILLFAIL_READER_MEMORY=pion` / `STILLFAIL_READER_ENGINE=pion`; shadow
+// is strictly forbidden because of filesystem writes), in place of share/memory.ts's own: a workspace's memory read
+// and hashed, what changed kept in blobs/, and two versions made apart merged (three-way by lines, or each line once)
+// there, none of their bytes on the station's thread; and a skill shared on its own (share/index.ts, a program of its
+// own there) read, hashed and written. Started at its first ask, it goes after IDLE_MS with nothing asked of it (or at
+// once: `trimIdle`) and is started again by the next: it keeps nothing between asks. There is no TypeScript to fall
+// back to: what it replaced is station/test/reference/memory-merge.ts, which station/test/mb-memory-merge.test.ts and
+// station/test/reader-contract-memory.test.ts hold it to.
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -103,7 +105,10 @@ export class MemoryProgram {
         return;
       }
       const waiting = typeof answer.id === "number" ? this.#waiting.get(answer.id) : undefined;
-      if (!waiting) return;
+      if (!waiting) {
+        log.warn("memory", "the memory's program returned an unmatched response", { id: answer.id ?? null });
+        return;
+      }
       this.#waiting.delete(answer.id);
       if (typeof answer.error === "string") waiting.reject(new Error(answer.error));
       else if (answer.error !== undefined) waiting.reject(new Error("the memory's program returned a malformed error"));

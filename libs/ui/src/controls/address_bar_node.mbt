@@ -61,13 +61,17 @@ pub fn address_field_node(
       // words' room grown past it (rule 2) is the field's still. Where the capsule holds an end key, `cap` is that box,
       // bar_field_node's words; else one is made as it makes it)
       let ibeam : @view.Live[@view.Cursor?] = By(fn() { if editable() { Some(IBeam) } else { None } })
+      // (a press there the field's own, as on its words: a tap its caret and its menu to paste, a long press its 粘贴,
+      // @ui.field_menu_on)
       let anywhere_in = fn(w : @view.View) {
         w
         .cursor(ibeam)
-        .on_press(fn() { if @signals.untracked(editable) { field.focus() } })
+        .presses(By(editable))
+        .on_press(fn() {  })
         .takes(fn(bw, bh, _) { [(0.0, 0.0, bw, bh)] })
         .as_ground()
         |> ignore
+        @ui.field_menu_on(w, field, enabled=editable)
       }
       let made = fn(b : @view.View) {
         // (Escape, which the field takes not, gives the writing up: the page's address again, the field let go)

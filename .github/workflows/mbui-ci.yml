@@ -36,6 +36,10 @@ jobs:
         working-directory: libs/ui
         shell: bash scripts/offline.sh {0}
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v4
       - name: "A network namespace of its own for the steps (Ubuntu 24.04's AppArmor keeps them from a user's: let)"
         shell: bash
@@ -127,6 +131,10 @@ jobs:
       MOTION_OUT: ${{ github.workspace }}/motion.txt
       OWN: ${{ github.ref == 'refs/heads/main' && 'm-' || 'b-' }}
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v4
       - name: "A network namespace of its own for the steps (Ubuntu 24.04's AppArmor keeps them from a user's: let)"
         shell: bash
@@ -228,6 +236,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { sparse-checkout: libs/ui/scripts }
       - uses: actions/download-artifact@v4
@@ -261,6 +273,10 @@ jobs:
     timeout-minutes: 3
     permissions: { contents: read, actions: read }
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - env: { GH_TOKEN: "${{ github.token }}" }
         run: bash scripts/rates-said.sh mbui-ci
@@ -369,6 +385,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
@@ -406,6 +426,10 @@ jobs:
       ABI: x86_64
       EMU_PORT: "5554"
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
@@ -451,6 +475,10 @@ jobs:
       ABI: x86_64
       EMU_PORT: "5554"
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }
@@ -489,6 +517,10 @@ jobs:
       ABI: x86_64
       EMU_PORT: "5554"
     steps:
+      # (before checkout, so outside the job's defaults: libs/ui is not there yet, nor scripts/offline.sh)
+      - working-directory: ${{ runner.temp }}
+        shell: bash
+        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: 21 }

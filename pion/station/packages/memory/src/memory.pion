@@ -374,9 +374,127 @@ pub fn answer(host : MemoryHost, ask : base_codec::Json, sep : String) -> Result
   Err("unknown memory op " + op)
 }
 
+fn read_hex4_at(s : String, pos : Int) -> Option[Int] {
+  if pos + 4 > s.length() {
+    return None
+  }
+  let mut v = 0
+  for k in 0..<4 {
+    match base_codec::hex_digit(s.code_unit_at(pos + k)) {
+      Some(d) => v = (v << 4) | d
+      None => return None
+    }
+  }
+  Some(v)
+}
+
+/// Pre-check JSON string literals for lone UTF-16 surrogates (`\uD800`..`\uDFFF` unpaired)
+/// before `base_codec::json_parse` so paths or IDs are never silently replaced with U+FFFD.
+pub fn has_lone_surrogate(line : String) -> Bool {
+  let n = line.length()
+  let mut i = 0
+  let mut in_str = false
+  while i < n {
+    let c = line.code_unit_at(i)
+    if !in_str {
+      if c == 34 {
+        in_str = true
+      }
+      i = i + 1
+      continue
+    }
+    if c == 34 {
+      in_str = false
+      i = i + 1
+    } else if c == 92 {
+      // '\\'
+      if i + 1 >= n {
+        return false
+      }
+      let esc = line.code_unit_at(i + 1)
+      if esc == 117 {
+        // '\uXXXX'
+        match read_hex4_at(line, i + 2) {
+          None => return false
+          Some(u) => {
+            i = i + 6
+            if u >= 0xD800 && u <= 0xDBFF {
+              // High surrogate must be immediately followed by \uDC00..\uDFFF.
+              if i + 6 <= n && line.code_unit_at(i) == 92 && line.code_unit_at(i + 1) == 117 {
+                match read_hex4_at(line, i + 2) {
+                  Some(lo) => {
+                    if lo >= 0xDC00 && lo <= 0xDFFF {
+                      i = i + 6
+                    } else {
+                      return true
+                    }
+                  }
+                  None => return true
+                }
+              } else {
+                return true
+              }
+            } else if u >= 0xDC00 && u <= 0xDFFF {
+              return true
+            }
+          }
+        }
+      } else {
+        i = i + 2
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  false
+}
+
+/// Escape raw UTF-8 U+2028 (E2 80 A8) and U+2029 (E2 80 A9) in serialized JSON output
+/// so line-oriented JS consumers never split a JSON frame mid-string.
+pub fn escape_line_separators(s : String) -> String {
+  let n = s.length()
+  let mut found = false
+  let mut i = 0
+  while i + 2 < n {
+    if s.code_unit_at(i) == 0xE2 && s.code_unit_at(i + 1) == 0x80 {
+      let b2 = s.code_unit_at(i + 2)
+      if b2 == 0xA8 || b2 == 0xA9 {
+        found = true
+        break
+      }
+    }
+    i = i + 1
+  }
+  if !found {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut k = 0
+  while k < n {
+    if k + 2 < n && s.code_unit_at(k) == 0xE2 && s.code_unit_at(k + 1) == 0x80 {
+      let b2 = s.code_unit_at(k + 2)
+      if b2 == 0xA8 {
+        sb.write_string("\\u2028")
+        k = k + 3
+        continue
+      } else if b2 == 0xA9 {
+        sb.write_string("\\u2029")
+        k = k + 3
+        continue
+      }
+    }
+    sb.write_byte(s.code_unit_at(k) as Byte)
+    k = k + 1
+  }
+  sb.to_string()
+}
+
 /// Streaming JSON-RPC loop for `--builder memory --shell-dir <dir> [--sep <sep>]`.
 pub fn run(shell_dir : String, sep : String) -> Unit {
   if !host_shim::start(shell_dir, true) {
+    if shell_dir.length() > 0 {
+      let _ = host_shim::write_stderr_line("the shell did not start")
+    }
     host_shim::exit_process(1)
   }
   let host = MemoryHost::new()
@@ -385,37 +503,41 @@ pub fn run(shell_dir : String, sep : String) -> Unit {
   while true {
     match host.next_line() {
       None => break
-      Some(host_shim::LineItem::TooLong(cap)) => {
-        let resp = base_codec::json_obj([
-          ("id", base_codec::json_null()),
-          ("error", base_codec::json_str("line exceeds max_bytes: " + cap.to_string())),
-        ])
-        if !host_shim::write_stdout_line(base_codec::json_stringify(resp)) {
-          write_failed = true
-          break
-        }
-      }
-      Some(host_shim::LineItem::Line(line)) => {
+      Some(line) => {
         if line.length() == 0 {
           continue
         }
-        let ask = match base_codec::json_parse(line) {
-          base_codec::JsonParseResult::Ok(j) => j
-          base_codec::JsonParseResult::Err(_) => base_codec::json_null()
-        }
-        let id = match base_codec::json_get(ask, "id") {
-          Some(v) => v
-          None => base_codec::json_null()
-        }
-        let resp = match answer(host, ask, sep) {
-          Ok(base_codec::Json::Obj(fields)) => {
-            base_codec::json_obj_set(fields, "id", id)
-            base_codec::json_obj(fields)
+        let resp = if has_lone_surrogate(line) {
+          base_codec::json_obj([
+            ("id", base_codec::json_null()),
+            ("error", base_codec::json_str("no such ask")),
+          ])
+        } else {
+          match base_codec::json_parse(line) {
+            base_codec::JsonParseResult::Ok(base_codec::Json::Obj(ask_fields)) => {
+              let ask = base_codec::Json::Obj(ask_fields)
+              let id = match base_codec::json_get(ask, "id") {
+                Some(v) => v
+                None => base_codec::json_null()
+              }
+              match answer(host, ask, sep) {
+                Ok(base_codec::Json::Obj(fields)) => {
+                  base_codec::json_obj_set(fields, "id", id)
+                  base_codec::json_obj(fields)
+                }
+                Ok(other) => other
+                Err(msg) => base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))])
+              }
+            }
+            _ =>
+            base_codec::json_obj([
+              ("id", base_codec::json_null()),
+              ("error", base_codec::json_str("no such ask")),
+            ])
           }
-          Ok(other) => other
-          Err(msg) => base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))])
         }
-        if !host_shim::write_stdout_line(base_codec::json_stringify(resp)) {
+        let out_line = escape_line_separators(base_codec::json_stringify(resp))
+        if !host_shim::write_stdout_line(out_line) {
           write_failed = true
           break
         }

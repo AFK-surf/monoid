@@ -1516,7 +1516,7 @@ fn old_pointer_now(kind : Int, x : Double, y : Double, button : Int, mods : Int,
     if !desk.mouse_drags {
       c.edge = 0
     }
-    c.press_late = h_feel() == 2 && c.drag_scroll != 0
+    c.press_late = field_touch_feel() && c.drag_scroll != 0
     // a list moving on its own (flung, springing back from an end) is caught wherever on it the finger lands, and the
     // press presses nothing in it: the finger drags it from there at once; on what scrolls or drags its own way in it
     // (a table or a code block that scrolls sideways, a row swiped across), stopped, the press goes the finger's way
@@ -1559,7 +1559,7 @@ fn old_pointer_now(kind : Int, x : Double, y : Double, button : Int, mods : Int,
     match c.editors.get(target) {
       // Android's: a field takes the focus and the caret where it is tapped, the finger lifted where it came down
       // (Compose's tap); a finger that moves on drags what is under it (the list), the field untouched
-      Some(_) if h_feel() == 2 => c.editor_tap = target
+      Some(_) if field_touch_feel() => c.editor_tap = target
       Some(st) => {
         c.focus_moved(target)
         c.editor_drag = true
@@ -1769,7 +1769,8 @@ fn old_pointer_now(kind : Int, x : Double, y : Double, button : Int, mods : Int,
       match c.editors.get(c.editor_tap) {
         Some(st) => {
           // (tapped again: said to the host anew, which asks for its keyboard again if none is up)
-          if c.focus == c.editor_tap {
+          let was_focused = c.focus == c.editor_tap
+          if was_focused {
             c.ime_sig = "tap"
           }
           c.focus_moved(c.editor_tap)
@@ -1785,8 +1786,7 @@ fn old_pointer_now(kind : Int, x : Double, y : Double, button : Int, mods : Int,
             }
             c.last_tap = (0, -1.0e9, 0.0, 0.0)
           } else {
-            place_caret_at(st, c.press_x, c.press_y, t)
-            st.handle = st.text.length() > 0
+            st.tap_caret_at(was_focused, c.press_x, c.press_y, t)
             c.last_tap = (c.editor_tap, t, c.press_x, c.press_y)
           }
           h_request_frame()

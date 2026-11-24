@@ -266,7 +266,10 @@ pub fn utf8_at(s : String, i : Int) -> (Int, Int) {
   (0xFFFD, 1)
 }
 
-/// Slice `s` to at most `max_units` UTF-16 code units (matching JS `s.slice(0, max_units)` for BMP & whole astral chars).
+/// Slice `s` to at most `max_units` UTF-16 code units.
+/// Intentional safety deviation vs JS/MoonBit: stops before splitting a supplementary
+/// code point (surrogate pair) at the `max_units` boundary so the output stays valid UTF-8
+/// and never emits a lone surrogate or triggers a UTF-8 encoding abort.
 pub fn slice_utf16(s : String, max_units : Int) -> String {
   let n = s.length()
   let mut i = 0

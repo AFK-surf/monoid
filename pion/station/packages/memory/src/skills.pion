@@ -29,10 +29,11 @@ fn is_path_sep(c : Int, win : Bool) -> Bool {
   c == 47 || (win && c == 92) // '/' or '\\'
 }
 
-/// Port of station/mb/src/nodepath/nodepath.mbt `relative_parts`.
+/// Port of station/mb/src/nodepath/nodepath.mbt `relative_parts`, plus NUL byte rejection.
 pub fn relative_parts(sep : String, path : String) -> Option[Array[String]] {
   let win = sep == "\\"
   if path == "" ||
+  str_contains_byte(path, 0) ||
   str_has_prefix(path, "/") ||
   (win && (str_has_prefix(path, "\\") || str_contains_byte(path, 58))) {
     return None
@@ -241,18 +242,34 @@ fn join_parts(parts : Array[String], count : Int, sep : String) -> String {
   sb.to_string()
 }
 
-fn skill_given(
+pub fn skill_given(
   sep : String,
   files : Array[(String, base_codec::Json)],
   most : Option[Double],
 ) -> Result[Array[(Array[String], Bytes)], String] {
   let out : Array[(Array[String], Bytes)] = []
+  let file_paths : Map[String, Bool] = Map::new()
+  let dir_prefixes : Map[String, Bool] = Map::new()
   let mut size = 0.0
   for i in 0..<files.length() {
     let (path, data) = files[i]
     let parts = match skill_path(sep, path) {
       Some(p) => p
       None => return Err("bad path in a shared skill: " + path)
+    }
+    let norm = join_parts(parts, parts.length(), "/")
+    match dir_prefixes.get(norm) {
+      Some(true) => return Err("bad path in a shared skill: " + path)
+      _ => ()
+    }
+    file_paths.set(norm, true)
+    for k in 1..<parts.length() {
+      let prefix = join_parts(parts, k, "/")
+      match file_paths.get(prefix) {
+        Some(true) => return Err("bad path in a shared skill: " + path)
+        _ => ()
+      }
+      dir_prefixes.set(prefix, true)
     }
     let b64 = match data {
       base_codec::Json::Str(s) => s
@@ -273,6 +290,15 @@ fn skill_given(
   Ok(out)
 }
 
+fn cleanup_dir(host : MemoryHost, path : String) -> Unit {
+  let _ = fs_call(
+    host,
+    "fs.remove",
+    [("path", base_codec::json_str(path)), ("recursive", base_codec::json_bool(true))],
+    None,
+  )
+}
+
 pub fn skill_write(
   host : MemoryHost,
   sep : String,
@@ -289,7 +315,9 @@ pub fn skill_write(
     return Ok(())
   }
   host.skill_temps = host.skill_temps + 1
-  let temp = dir + ".tmp-" + host_shim::pid().to_string() + "-" + host.skill_temps.to_string()
+  let seq = host.skill_temps.to_string()
+  let pid_s = host_shim::pid().to_string()
+  let temp = dir + ".tmp-" + pid_s + "-" + seq
   match fs_call(
     host,
     "fs.remove",
@@ -309,7 +337,10 @@ pub fn skill_write(
     }
     match fs_call(host, "fs.mkdir", [("path", base_codec::json_str(parent))], None) {
       Ok(_) => ()
-      Err(e) => return Err(e)
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
     }
     match fs_call(
       host,
@@ -322,30 +353,78 @@ pub fn skill_write(
       Some(bytes),
     ) {
       Ok(_) => ()
-      Err(e) => return Err(e)
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
     }
   }
   match fs_call(host, "fs.mkdir", [("path", base_codec::json_str(temp))], None) {
     Ok(_) => ()
-    Err(e) => return Err(e)
+    Err(e) => {
+      cleanup_dir(host, temp)
+      return Err(e)
+    }
   }
-  match fs_call(
-    host,
-    "fs.remove",
-    [("path", base_codec::json_str(dir)), ("recursive", base_codec::json_bool(true))],
-    None,
-  ) {
-    Ok(_) => ()
-    Err(e) => return Err(e)
+  // Recoverable directory swap: if `dir` exists, move it to a unique sibling backup first,
+  // rename `temp` into `dir`, restore `backup` on failure, and delete `backup` only after success.
+  let had_dest = match lstat(host, dir) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => {
+      cleanup_dir(host, temp)
+      return Err(e)
+    }
   }
-  match fs_call(
-    host,
-    "fs.rename",
-    [("from", base_codec::json_str(temp)), ("to", base_codec::json_str(dir))],
-    None,
-  ) {
-    Ok(_) => Ok(())
-    Err(e) => Err(e)
+  if had_dest {
+    let backup = dir + ".bak-" + pid_s + "-" + seq
+    cleanup_dir(host, backup)
+    match fs_call(
+      host,
+      "fs.rename",
+      [("from", base_codec::json_str(dir)), ("to", base_codec::json_str(backup))],
+      None,
+    ) {
+      Ok(_) => ()
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
+    }
+    match fs_call(
+      host,
+      "fs.rename",
+      [("from", base_codec::json_str(temp)), ("to", base_codec::json_str(dir))],
+      None,
+    ) {
+      Ok(_) => {
+        cleanup_dir(host, backup)
+        Ok(())
+      }
+      Err(e) => {
+        let _ = fs_call(
+          host,
+          "fs.rename",
+          [("from", base_codec::json_str(backup)), ("to", base_codec::json_str(dir))],
+          None,
+        )
+        cleanup_dir(host, temp)
+        Err(e)
+      }
+    }
+  } else {
+    match fs_call(
+      host,
+      "fs.rename",
+      [("from", base_codec::json_str(temp)), ("to", base_codec::json_str(dir))],
+      None,
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => {
+        cleanup_dir(host, temp)
+        Err(e)
+      }
+    }
   }
 }
 

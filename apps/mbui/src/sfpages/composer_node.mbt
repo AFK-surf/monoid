@@ -1644,15 +1644,11 @@ fn composer_box_node(
       // (a press on its words' row beside its field is its field's, the cursor put in it; one on what waits to go over
       // it is that one's, as the old composer's cards took theirs, never the field's. Taken by what lies under the row,
       // not the row itself: what is drawn small on it (send) reached from round it as far as its press's room holds,
-      // over the row's own, as the old composer's (reach.mbt's `cut` is only by what holds it). Secondary click on that
-      // backdrop opens the field's editing menu via field_menu_on, which skips touch long-press.)
+      // over the row's own, as the old composer's (reach.mbt's `cut` is only by what holds it). A press on that backdrop
+      // is the field's own (@ui.field_backdrop): a tap its caret and its menu to paste, a long press its 粘贴, the
+      // secondary button its editing menu.)
       // (with what stands between ＋ and send (a station choice, as tall as a row's press room, past the row's foot):
       // the box's own, under all it holds, as nothing it holds overlaps it; none while it is locked)
-      let focus = fn() {
-        if !locked() {
-          w.field.focus()
-        }
-      }
       if spec.tools is None {
         line.box(fn(under) {
           under
@@ -1667,18 +1663,12 @@ fn composer_box_node(
               []
             }
           })
-          .on_press(focus)
           |> ignore
-          @ui.field_menu_on(under, w.field, enabled=fn() { !locked() })
+          @ui.field_backdrop(under, w.field, enabled=fn() { !locked() })
         })
         |> ignore
       } else {
-        box.on_press(focus) |> ignore
-        line.box(fn(under) {
-          under.over(Is(true)) |> ignore
-          @ui.field_menu_on(under, w.field, enabled=fn() { !locked() })
-        })
-        |> ignore
+        @ui.field_backdrop(box, w.field, enabled=fn() { !locked() })
       }
       line
       .row(Is(true))
@@ -2775,6 +2765,8 @@ fn composer_extras_node(
               fn() { text(v(), "text") },
               fn() { text(v(), "role") },
               fn(line) {
+                // (round its words the field's to a press too: a tap its caret and 粘贴)
+                @ui.field_backdrop(line, f)
                 @ui.field(
                   line,
                   f,
