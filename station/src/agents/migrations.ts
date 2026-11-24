@@ -188,6 +188,7 @@ export const NOTES: [number, string][] = [
   [181, "Google Colab GPU sandboxes (colab-g4, colab-l4, colab-t4) are now automatically exposed from Google Colab profiles in Settings → Profiles (设置 → Profiles) and discoverable across stations in the same workspace via station_list and station_task."],
   [182, "chat_configure now takes for: \"me\" (lead a still.fail chat as your sub-chat) or \"person\" (hand a led sub-chat back to people), and reports led and leader when inspecting a session."],
   [183, "station_version now supports action: \"wait\" (until: [\"pr:N\", \"fix:FB-N\", \"commit:SHA\", \"version:0.1.N\", \"after:0.1.N\"], or clear: true) to auto-update once a release contains specified fixes; list also reports overridden, overrideBase, overrideKind, overrideNote, autoWhen and autoHeld when applicable."],
+  [184, "A new built-in skill, stillfail-latex: live LaTeX PDF preview with SyncTeX line-anchored comments via Scholia (MCP and HTTP helper), served through a station web service and synced with collaborators over Git (.scholia/comments.json)."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

@@ -38,7 +38,7 @@ let follow_most : Int = 1000
 /// those it brought before (`RETIRED_SKILLS`: a copy left of one is never synced as a team skill).
 pub let builtin_skills : Array[String] = [
   "stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault",
-  "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move", "stillfail-leading", "stillfail-feedback",
+  "stillfail-cron", "stillfail-github-ci", "stillfail-latex", "stillfail-retire", "stillfail-move", "stillfail-leading", "stillfail-feedback",
 ]
 
 ///|
