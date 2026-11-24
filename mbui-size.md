@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f0170c00c](https://github.com/AFK-surf/monoid/commit/f0170c00c685faac64c2f74ac87b61f0c25496fc) refactor(station): detach station_main from stillf | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 | [08cf53d77](https://github.com/AFK-surf/monoid/commit/08cf53d7791503c7b7a528d4ad2dde6f777fb074) fix(cloud): stop hot-path storage writes on creden | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.5 | 105.48 |
 | [b02677196](https://github.com/AFK-surf/monoid/commit/b0267719676c66e17fc54961dade04d9347cb222) feat(station): add reader engine selector and blac | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 120.98 |
 | [a8ecd98c2](https://github.com/AFK-surf/monoid/commit/a8ecd98c2a3237ab773bcbd86e6ba6b44468f7d3) test(station): stop holding the frozen station_mai | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 120.97 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a8b332d2f](https://github.com/AFK-surf/monoid/commit/a8b332d2f3eeaa44a1fabefd96f5af2913772a35) test(e2e): serialize fake claude turns, send held  | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.04 | 101.17 | 144.6 |
 | [e4c4c5abc](https://github.com/AFK-surf/monoid/commit/e4c4c5abc0fbcde0da13426e38aa22c8bd3d35be) feat(pion-core): wake the core worker natively and | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.04 | 101.17 | 144.6 |
 | [55d4cd98a](https://github.com/AFK-surf/monoid/commit/55d4cd98aad6acb1b3ae9d2a29095da6b76d4481) refactor(ui): migrate controls overlays, drawer, a | 2.74 | 3.69 | 14.94 | 37.13 | 56.92 | 32.51 | 66.02 | 101.02 | 97.79 |
-| [42840c9fd](https://github.com/AFK-surf/monoid/commit/42840c9fd2e9ea8baca1ce606efe1540a3720397) refactor(ui): migrate remaining controls widgets t | 2.74 | 3.68 | 14.93 | 37.12 | 56.89 | 32.51 | 66.02 | 101.02 | 127.06 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f0170c00c](https://github.com/AFK-surf/monoid/commit/f0170c00c685faac64c2f74ac87b61f0c25496fc) refactor(station): detach station_main from stillf | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.2 |
 | [08cf53d77](https://github.com/AFK-surf/monoid/commit/08cf53d7791503c7b7a528d4ad2dde6f777fb074) fix(cloud): stop hot-path storage writes on creden | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.46 |
 | [b02677196](https://github.com/AFK-surf/monoid/commit/b0267719676c66e17fc54961dade04d9347cb222) feat(station): add reader engine selector and blac | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.03 |
 | [a8ecd98c2](https://github.com/AFK-surf/monoid/commit/a8ecd98c2a3237ab773bcbd86e6ba6b44468f7d3) test(station): stop holding the frozen station_mai | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a8b332d2f](https://github.com/AFK-surf/monoid/commit/a8b332d2f3eeaa44a1fabefd96f5af2913772a35) test(e2e): serialize fake claude turns, send held  | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.93 |
 | [e4c4c5abc](https://github.com/AFK-surf/monoid/commit/e4c4c5abc0fbcde0da13426e38aa22c8bd3d35be) feat(pion-core): wake the core worker natively and | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.85 |
 | [55d4cd98a](https://github.com/AFK-surf/monoid/commit/55d4cd98aad6acb1b3ae9d2a29095da6b76d4481) refactor(ui): migrate controls overlays, drawer, a | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.8 |
-| [42840c9fd](https://github.com/AFK-surf/monoid/commit/42840c9fd2e9ea8baca1ce606efe1540a3720397) refactor(ui): migrate remaining controls widgets t | 0.55 | 0.71 | 2.79 | 3.8 | 6.88 | 2.04 | 5.64 | 57.93 |
