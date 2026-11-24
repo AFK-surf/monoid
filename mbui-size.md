@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.76 | 130.62 |
 | [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ca9c7827a](https://github.com/AFK-surf/monoid/commit/ca9c7827af71025ff4835dd52e9b042202099a0d) feat(rules): default Node station to Pion Wasm rul | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 116.63 |
 | [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 116.63 |
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.62 | 118.2 |
-| [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
 | [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
 | [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.56 |
 | [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ca9c7827a](https://github.com/AFK-surf/monoid/commit/ca9c7827af71025ff4835dd52e9b042202099a0d) feat(rules): default Node station to Pion Wasm rul | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.26 |
 | [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
-| [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.23 |
