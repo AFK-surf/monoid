@@ -114,8 +114,42 @@ export function whoseOf(table: readonly ProcessInfo[], o: Pick<ResourceOptions, 
 /// The agents' own processes: each runner and the runtime it runs (ending one is stopping the agent, not this page's).
 const agentsOwn = (runners: readonly Runner[]) => new Set(runners.flatMap((r) => [r.runner, r.pid]));
 
-/// A program as people know it: its executable's name.
-const programOf = (command: string) => basename(command) || "?";
+/// Interpreters whose program is the script they run.
+const INTERPRETERS = /^(node|nodejs|bun|deno|python[0-9.]*|ruby|perl)$/;
+/// A script's name that says nothing of what it is (`station/main.js`): its directory's instead.
+const BARE_SCRIPTS = new Set(["main", "index", "cli", "run", "server", "__main__"]);
+
+/// A process as people know it: its executable's name and, for still.fail's reader and an interpreter, what it runs.
+/// `command`: `ps`'s comm (on Linux cut to 15 bytes, and Node's renamed `MainThread`); `line`: its command line, where
+/// read. `stillfail-reader --builder replica-export …` is `stillfail-reader · replica-export`, `node …/vite.js` is
+/// `node · vite`, the station's `node …/station/main.js run` is `node · station`.
+export function processName(command: string, line?: string): string {
+  const comm = basename(command);
+  if (line === undefined) return comm || "?";
+  // The executable may hold spaces (macOS's comm is its whole path): the line's start where it does.
+  const whole = command.includes("/") && line.startsWith(command);
+  const first = whole ? command : line.match(/^\S*/)![0];
+  const rest = line.slice(first.length);
+  const argv0 = basename(first);
+  const words = rest.trim().split(/\s+/).filter((w) => w !== "");
+  // Linux's comm cut short, or a thread's name for the process (Node's main thread): the executable's own.
+  const program = argv0 !== "" && (comm === "" || comm === "MainThread" || (comm.length >= 15 && argv0.startsWith(comm))) ? argv0 : comm || argv0 || "?";
+  if (program === "stillfail-reader") {
+    const builder = words.indexOf("--builder");
+    const role = builder >= 0 ? words[builder + 1] : words.includes("--serve") ? "serve" : words.includes("--sessions") ? "sessions" : null;
+    return role ? `${program} · ${role}` : program;
+  }
+  if (INTERPRETERS.test(program)) {
+    // (`python -m pkg`: the module; flags and the values they take passed over)
+    if (words[0] === "-m" && words[1]) return `${program} · ${words[1]}`;
+    const script = words.find((w, i) => !w.startsWith("-") && !(i > 0 && /^-(e|r|c|-require|-import|-loader)$/.test(words[i - 1]!)));
+    if (!script) return program;
+    const stem = basename(script).replace(/\.(m|c)?(j|t)s$|\.py$|\.rb$|\.pl$/, "");
+    const named = BARE_SCRIPTS.has(stem) ? basename(script.slice(0, script.length - basename(script).length - 1)) || stem : stem;
+    return named ? `${program} · ${named}` : program;
+  }
+  return program;
+}
 const zero = (): Use => ({ cpu: 0, memory: 0, netIn: 0, netOut: 0, diskRead: 0, diskWrite: 0 });
 const add = (to: Use, u: Use) => {
   to.cpu += u.cpu;
@@ -246,7 +280,7 @@ export class ResourceWatch {
       };
       const g = groups.get(w.key) ?? { ...w, ...zero(), processes: [] };
       add(g, use);
-      g.processes.push({ pid: p.pid, name: programOf(p.command), ...use, endable: w.kind === "chat" && !agent.has(p.pid) });
+      g.processes.push({ pid: p.pid, name: processName(p.command, args?.get(p.pid)), ...use, endable: w.kind === "chat" && !agent.has(p.pid) });
       groups.set(w.key, g);
     });
     this.#last = last;
@@ -280,7 +314,7 @@ export class ResourceWatch {
         } catch {}
       }
     });
-    return { name: programOf(now.command) };
+    return { name: processName(now.command, args?.get(pid)) };
   }
 
   /// The last look and the history, the oldest first.

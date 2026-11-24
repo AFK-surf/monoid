@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { resourceRoutes } from "../src/api/routes/usage.ts";
 import { appBundles, parseNettop } from "../src/resources/module.ts";
-import { FIRST_MS, KILL_AFTER_MS, LOOK_MS, NotEndable, ResourceWatch, type Traffic, type Usage, WANTED_MS, whoseOf } from "../src/resources/watch.ts";
+import { FIRST_MS, KILL_AFTER_MS, LOOK_MS, NotEndable, processName, ResourceWatch, type Traffic, type Usage, WANTED_MS, whoseOf } from "../src/resources/watch.ts";
 import { testClock } from "./hub-fakes.ts";
 import type { ProcessInfo } from "../src/platform/index.ts";
 
@@ -379,4 +379,25 @@ test("monoid's desktop app (build.monoid.desktop) is the desktop app's too", asy
   for (const a of apps) isApp(a);
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(apps.map(isApp), [true, true, true, false]);
+});
+
+test("a process's name: Linux's comm cut short and Node's MainThread made whole; the reader's role, a script's name", () => {
+  const app = "/home/u/.stillfail/app";
+  const cases: [string, string | undefined, string][] = [
+    ["stillfail-reade", `${app}/station/stillfail-reader --builder replica-export --db ${app}/x.db`, "stillfail-reader · replica-export"],
+    ["stillfail-reade", `${app}/station/stillfail-reader --builder mesh --socket /run/front.sock`, "stillfail-reader · mesh"],
+    ["stillfail-reade", `${app}/station/stillfail-reader --data /d --sep / --serve /run/serve-1.sock`, "stillfail-reader · serve"],
+    ["stillfail-reade", `${app}/station/stillfail-reader --sessions 1 --data /d --sep /`, "stillfail-reader · sessions"],
+    ["stillfail-reade", `${app}/station/stillfail-reader --data /d --sep /`, "stillfail-reader"],
+    ["stillfail-stati", `${app}/stillfail-station run`, "stillfail-station"],
+    ["MainThread", `${app}/node/bin/node ${app}/station/main.js run --app ${app}`, "node · station"],
+    ["MainThread", "node /w/it/node_modules/.bin/../vite/bin/vite.js preview --port 4000", "node · vite"],
+    ["python3", "python3 -I scripts/train.py --epochs 3", "python3 · train"],
+    ["python3", "python3 -m http.server 8000", "python3 · http.server"],
+    ["claude", "claude --print", "claude"],
+    // macOS: comm is the whole path, spaces and all.
+    [HELPER, `${HELPER} --type=renderer`, "youdid.wtf Helper (Renderer)"],
+    ["stillfail-reade", undefined, "stillfail-reade"],
+  ];
+  for (const [command, line, name] of cases) assert.equal(processName(command, line), name, line);
 });
