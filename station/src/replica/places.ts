@@ -707,6 +707,12 @@ export type Known = {
   unverifiedGens?: Set<string>;
   to: number;
   made: number;
+  /// All file/manifest hashes referenced by a preserved same-to superset full head on the target, preventing `oldFiles`
+  /// drop from reclaiming them on this or subsequent same-to `level()` calls.
+  keptTargetFiles?: Set<string>;
+  /// The preserved same-to superset full head on the target, passed to `pruneOrphans` so orphan reconciliation matches
+  /// the live remote head.
+  keptTargetHead?: Head;
   /// Confirmed manifest cache keyed by `(gen, strategy, rootHash)` to avoid re-expanding unchanged manifests.
   manifest?: {
     gen: string;
@@ -922,6 +928,8 @@ export async function level(
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(partial, null, 1)), partial);
     k.to = own.head.to;
     k.made = -1;
+    k.keptTargetFiles = undefined;
+    k.keptTargetHead = undefined;
     opts.onPartial?.(own.head.to, sendableTranscripts);
   }
   for (const hash of lackingTranscripts) await send(hash, true);
@@ -933,39 +941,56 @@ export async function level(
     wireHead = resolvedTf !== undefined && tfCount > 0 ? { ...rest, transcriptFiles: resolvedTf } : rest;
   }
   const selfUnverified = k.unverifiedGens?.has(own.head.gen) === true;
-  if (
-    initialHoldingHead !== null &&
-    initialHoldingHead.partial !== true &&
-    initialHoldingHead.to === own.head.to &&
-    initialHoldingHead.made === own.head.made &&
-    !selfUnverified
-  ) {
-    let covered = sameBatches(own.head.batches, initialHoldingHead.batches) && sameFileMap(own.head.files, initialHoldingHead.files);
-    if (covered) {
-      const ownAllTf = own.head.transcriptManifest !== undefined
-        ? { ...(own.head.transcriptFiles ?? {}), ...(resolvedTf ?? {}) }
-        : (resolvedTf ?? {});
-      let targetTf: Record<string, number> | null = null;
-      if (initialHoldingHead.transcriptManifest !== undefined) {
-        if (initialReadPlace !== undefined) {
-          try {
-            const resolvedTarget = await loadTranscriptManifest(initialHoldingHead.transcriptManifest, initialReadPlace);
-            targetTf = { ...(initialHoldingHead.transcriptFiles ?? {}), ...resolvedTarget.files };
-          } catch {
-            targetTf = null;
-          }
+  let preserveTargetHead = false;
+  if (initialHoldingHead !== null && initialHoldingHead.to === own.head.to && !selfUnverified) {
+    const sameCore = sameBatches(own.head.batches, initialHoldingHead.batches) && sameFileMap(own.head.files, initialHoldingHead.files);
+    const ownAllTf = own.head.transcriptManifest !== undefined
+      ? { ...(own.head.transcriptFiles ?? {}), ...(resolvedTf ?? {}) }
+      : (resolvedTf ?? {});
+    let targetTf: Record<string, number> | null = null;
+    let targetManifestRefs: Set<string> | undefined;
+    if (initialHoldingHead.transcriptManifest !== undefined) {
+      if (initialReadPlace !== undefined) {
+        try {
+          const resolvedTarget = await loadTranscriptManifest(initialHoldingHead.transcriptManifest, initialReadPlace);
+          targetTf = { ...(initialHoldingHead.transcriptFiles ?? {}), ...resolvedTarget.files };
+          targetManifestRefs = manifestAllRefs(resolvedTarget);
+        } catch {
+          targetTf = null;
         }
-      } else {
-        targetTf = initialHoldingHead.transcriptFiles ?? {};
       }
-      covered = targetTf !== null && isSubsetFileMap(ownAllTf, targetTf);
+    } else {
+      targetTf = initialHoldingHead.transcriptFiles ?? {};
     }
-    if (!covered) k.made = -1;
+    if (initialHoldingHead.partial !== true) {
+      const covered = sameCore && targetTf !== null && isSubsetFileMap(ownAllTf, targetTf);
+      if (!covered) {
+        throw new Error("head conflict: existing same-to full head does not cover incoming head");
+      }
+      preserveTargetHead = true;
+      k.to = own.head.to;
+      k.made = own.head.made;
+      const kept = new Set<string>();
+      for (const h in initialHoldingHead.files) if (Object.hasOwn(initialHoldingHead.files, h)) kept.add(h);
+      for (const h in targetTf) if (Object.hasOwn(targetTf, h)) kept.add(h);
+      if (targetManifestRefs !== undefined) {
+        for (const h of targetManifestRefs) kept.add(h);
+      }
+      k.keptTargetFiles = kept;
+      k.keptTargetHead = initialHoldingHead;
+    } else {
+      const coversPartial = sameCore && targetTf !== null && isSubsetFileMap(targetTf, ownAllTf);
+      if (!coversPartial) {
+        throw new Error("head conflict: incoming head does not cover existing same-to partial head");
+      }
+    }
   }
-  if (k.to !== own.head.to || k.made !== own.head.made || selfUnverified) {
+  if (!preserveTargetHead && (k.to !== own.head.to || k.made !== own.head.made || selfUnverified)) {
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
     k.to = own.head.to;
     k.made = own.head.made;
+    k.keptTargetFiles = undefined;
+    k.keptTargetHead = undefined;
     if (k.unverifiedGens !== undefined) {
       k.unverifiedGens.delete(own.head.gen);
       if (k.unverifiedGens.size === 0) {
@@ -990,7 +1015,12 @@ export async function level(
   const oldFiles: string[] = [];
   if (!k.hasUnverifiedHead && k.files.size > wantedCount - missing) {
     for (const f of k.files) {
-      if (!Object.hasOwn(ownFiles, f) && !(ownTf !== undefined && Object.hasOwn(ownTf, f)) && !k.others.has(f)) {
+      if (
+        !Object.hasOwn(ownFiles, f) &&
+        !(ownTf !== undefined && Object.hasOwn(ownTf, f)) &&
+        !k.others.has(f) &&
+        !(k.keptTargetFiles?.has(f) === true)
+      ) {
         oldFiles.push(f);
       }
     }
@@ -1013,7 +1043,7 @@ export async function level(
   }
   if (!k.hasUnverifiedHead) {
     try {
-      await place.pruneOrphans?.(ws, origin, wireHead);
+      await place.pruneOrphans?.(ws, origin, k.keptTargetHead ?? wireHead);
     } catch (err) {
       // best-effort: head and drop already succeeded; retain remaining orphans for next sync
       opts.onPruneError?.(err);

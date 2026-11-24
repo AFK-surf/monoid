@@ -1978,4 +1978,85 @@ test("27. R7: warm-cached FolderPlace.put('head') re-verifies existing manifest 
   const fastRes = await level(dstSuperset, HOME, ownSameMade, null);
   assert.equal(fastRes.behind, false, "same-to same-made superset succeeds on fast path");
   assert.equal(supersetPutHeadCalls, 0, "same-to same-made superset skips put('head') on fast path");
+
+  // 27c. R9: MiniS3Server + S3Place E2E verification of level() common-layer conflict rejection & superset preservation
+  const mock = new MiniS3Server();
+  await mock.start();
+  closing.push(() => mock.stop());
+  const readS3Bytes = async (p: S3Place, hash: string): Promise<Buffer> => {
+    const chunks: Buffer[] = [];
+    for await (const c of await p.read(HOME, origin, null, hash)) chunks.push(c);
+    return Buffer.concat(chunks);
+  };
+
+  // 27c-i: S3 conflict rejection (both same made=2000 and different made=2001) preserves remote head & cDstOnly bytes
+  const conflictTarget: NormalizedS3Target = {
+    ...mock.target("33".repeat(32), true),
+    id: "t-r9-conflict",
+    prefix: "r9c",
+  };
+  const s3Conflict = new S3Place(conflictTarget);
+  await s3Conflict.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await s3Conflict.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await s3Conflict.putFile(HOME, origin, cDstOnly, Buffer.from("do"));
+  await s3Conflict.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstFull)), dstFull);
+
+  await assert.rejects(() => level(s3Conflict, HOME, ownSameMade, null), /head conflict:/, "S3 same-to same-made conflict rejected");
+  await assert.rejects(() => level(s3Conflict, HOME, own, null), /head conflict:/, "S3 same-to diff-made conflict rejected");
+  const s3ConflictFresh = new S3Place(conflictTarget);
+  const s3ConflictHeld = await s3ConflictFresh.held(HOME, origin);
+  assert.equal(s3ConflictHeld.gens[0]!.head!.made, 2000, "S3 remote head.made preserved after conflicts");
+  assert.deepEqual(
+    s3ConflictHeld.gens[0]!.head!.transcriptFiles,
+    { [cCommon]: 2, [cDstOnly]: 2 },
+    "S3 remote head.transcriptFiles preserved after conflicts",
+  );
+  assert.deepEqual(
+    await readS3Bytes(s3ConflictFresh, cDstOnly),
+    Buffer.from("do"),
+    "S3 cDstOnly object bytes still readable after conflicts",
+  );
+
+  // 27c-ii: S3 superset preservation does NOT overwrite remote head or delete cDstOnly via drop() or pruneOrphans(),
+  //         both on initial inventory (known=null) and subsequent call with returned Known!
+  const supersetTarget: NormalizedS3Target = {
+    ...mock.target("44".repeat(32), true),
+    id: "t-r9-superset",
+    prefix: "r9s",
+  };
+  const s3Superset = new S3Place(supersetTarget);
+  await s3Superset.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await s3Superset.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await s3Superset.putFile(HOME, origin, cSrcOnly, Buffer.from("so"));
+  await s3Superset.putFile(HOME, origin, cDstOnly, Buffer.from("do"));
+  await s3Superset.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstSupersetHead)), dstSupersetHead);
+
+  const r1 = await level(s3Superset, HOME, own, null, { includeTranscripts: true });
+  assert.equal(r1.behind, false, "S3 superset first level() succeeds");
+  const s3SupersetFresh1 = new S3Place(supersetTarget);
+  const s3SupersetHeld1 = await s3SupersetFresh1.held(HOME, origin);
+  assert.deepEqual(
+    s3SupersetHeld1.gens[0]!.head!.transcriptFiles,
+    { [cCommon]: 2, [cSrcOnly]: 2, [cDstOnly]: 2 },
+    "S3 remote superset head preserved after first level()",
+  );
+  assert.deepEqual(
+    await readS3Bytes(s3SupersetFresh1, cDstOnly),
+    Buffer.from("do"),
+    "S3 cDstOnly object still readable after first level() (not dropped or pruned)",
+  );
+
+  const r2 = await level(s3Superset, HOME, own, r1.known, { includeTranscripts: true });
+  assert.equal(r2.behind, false, "S3 superset second level() with returned Known succeeds");
+  const s3SupersetFresh2 = new S3Place(supersetTarget);
+  assert.deepEqual(
+    (await s3SupersetFresh2.held(HOME, origin)).gens[0]!.head!.transcriptFiles,
+    { [cCommon]: 2, [cSrcOnly]: 2, [cDstOnly]: 2 },
+    "S3 remote superset head still preserved after second level()",
+  );
+  assert.deepEqual(
+    await readS3Bytes(s3SupersetFresh2, cDstOnly),
+    Buffer.from("do"),
+    "S3 cDstOnly object still readable after second level() with Known",
+  );
 });
