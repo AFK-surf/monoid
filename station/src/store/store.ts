@@ -4320,7 +4320,8 @@ export class Store {
   }
 
   /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET
-  /// /profiles/pace): by the hour's index and usage_15m's quarters' (`from * 4`, the hour's first quarter), so a read
+  /// /profiles/pace): the allowances' by the hour's index, the calls' each workspace's range of usage_15m's key (scope,
+  /// quarter, ...) from `from * 4` (the hour's first quarter) on, by usage_scope_totals (profile-hours.ts), so a read
   /// takes those hours' rows alone.
   profileHours(nowHour: number): { quotas: QuotaHour[]; spend: SpendHour[]; speed: SpeedQuarter[] } {
     const from = nowHour - PACE_HOURS;

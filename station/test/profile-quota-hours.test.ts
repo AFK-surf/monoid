@@ -211,7 +211,7 @@ describe("an account's last hours", () => {
     }
   });
 
-  test("GET /profiles/pace reads again only what changed: an allowance kept its profile's hours, each minute the calls' last two hours, every 15 minutes all", async () => {
+  test("GET /profiles/pace reads again only what changed: an allowance kept its profile's hours, each minute the calls' last two hours, every 15 minutes or as the clock goes back all", async () => {
     const data = temp("pace-cache");
     writeFileSync(join(data, "config.json"), JSON.stringify({
       profiles: [{ id: "cc", runtime: "claude", home: "homes/cc" }, { id: "cx", runtime: "codex", home: "homes/cx" }],
@@ -234,9 +234,15 @@ describe("an account's last hours", () => {
     // What the accounts asked of the store, while `record` says so.
     const asked: [string, ...unknown[]][] = [];
     let record = true;
+    // A read that throws once, as the database refusing it would (SQLITE_BUSY, an I/O error).
+    const failing = new Set<string>();
     for (const name of ["profileHours", "profileQuotaHours", "profileQuotaHoursFor", "profileSpendHours", "profileSpeedQuarters"] as const) {
       const real = (store[name] as (...a: unknown[]) => unknown).bind(store);
-      (store as any)[name] = (...args: unknown[]) => { if (record) asked.push([name, ...args]); return real(...args); };
+      (store as any)[name] = (...args: unknown[]) => {
+        if (record) asked.push([name, ...args]);
+        if (failing.delete(name)) throw new Error("database is locked");
+        return real(...args);
+      };
     }
     const table = routes({ accounts, overview: () => ({}) });
     const home = { sub: "s", email: "o@example.com", name: "", role: "owner", workspace: "W1", device: "d" } as Request["viewer"];
@@ -267,10 +273,13 @@ describe("an account's last hours", () => {
       assert.deepEqual(asked.map((a) => a[0]), ["profileHours", "profileQuotaHours", "profileSpendHours", "profileSpeedQuarters"]);
       assert.deepEqual(seen, fresh());
 
-      // The same minute, an allowance kept: that profile's hours read again alone, and the calls' not at all.
+      // The same minute, an allowance kept: that profile's hours read again alone, and the calls' not at all; a read of
+      // them that fails is asked again the next time.
       time.now = t0 + 1_000;
       used.cc = 60;
       await accounts.refreshQuota("cc");
+      failing.add("profileQuotaHoursFor");
+      assert.throws(() => accounts.paceView(home), /database is locked/);
       seen = await get();
       assert.deepEqual(asked, [["profileQuotaHoursFor", "cc", H - PACE_HOURS]]);
       assert.deepEqual(seen.profiles.cc.quotas.map((q: any) => [q.hour - H, q.windows[1].usedPercent]), [[-PACE_HOURS, 5], [0, 60]]);
@@ -304,15 +313,26 @@ describe("an account's last hours", () => {
       // ...and read once 15 minutes have gone since all of them were.
       time.now = t0 + 15 * 60_000;
       seen = await get();
-      assert.deepEqual(asked, [["profileSpendHours", H + 1 - PACE_HOURS], ["profileSpeedQuarters", (H + 1 - SPEED_QUARTER_HOURS) * 4]]);
+      // (the allowances' hours read again with them: what another process kept shows too)
+      assert.deepEqual(asked, [["profileQuotaHours", H + 1 - PACE_HOURS], ["profileSpendHours", H + 1 - PACE_HOURS], ["profileSpeedQuarters", (H + 1 - SPEED_QUARTER_HOURS) * 4]]);
       assert.deepEqual(spendHours(seen, "cc"), [[-5, 20], [-3, 20], [0, 20]]);
       assert.deepEqual(seen, fresh());
+      // The minute after: the last two hours again, all of them not till 15 minutes on.
+      time.now += 60_000;
+      seen = await get();
+      assert.deepEqual(asked, [["profileSpendHours", H], ["profileSpeedQuarters", (H + 1 - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(seen, fresh());
+      // Back over the hour, a few minutes: all of it read again.
+      time.now = H * HOUR_MS + 59 * 60_000;
+      seen = await get();
+      assert.deepEqual(asked, [["profileQuotaHours", H - PACE_HOURS], ["profileSpendHours", H - PACE_HOURS], ["profileSpeedQuarters", (H - SPEED_QUARTER_HOURS) * 4]]);
+      assert.deepEqual(seen, fresh());
 
-      // The clock two hours on: all of the calls' read again.
+      // The clock two hours on: all of it read again.
       time.now += 2 * HOUR_MS + 60_000;
       seen = await get();
-      assert.deepEqual(asked.map((a) => a[0]), ["profileSpendHours", "profileSpeedQuarters"]);
-      assert.equal(asked[0]![1], Math.floor(time.now / HOUR_MS) - PACE_HOURS);
+      assert.deepEqual(asked.map((a) => a[0]), ["profileQuotaHours", "profileSpendHours", "profileSpeedQuarters"]);
+      assert.equal(asked[1]![1], Math.floor(time.now / HOUR_MS) - PACE_HOURS);
       assert.deepEqual(seen, fresh());
       // Gone back three hours: the allowances' hours and the calls' all read again.
       time.now -= 3 * HOUR_MS;
