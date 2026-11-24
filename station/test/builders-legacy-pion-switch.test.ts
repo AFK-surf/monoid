@@ -857,9 +857,9 @@ test("all 19 session-backfill kinds + unknown/default/empty lines match MB 0-dif
   }
 });
 
-// ── Test 3b: chat-share lone UTF-16 surrogate escape whole-document rejection dual-engine 0-diff ──
+// ── Test 3b: chat-share lone UTF-16 surrogate & 1e400 overflow dual-engine 0-diff ──
 
-test("chat-share lone UTF-16 surrogate escapes match MB 0-diff (0 targets on lone surrogate, W1 on control)", async (t) => {
+test("chat-share lone UTF-16 surrogate escapes and 1e400 overflow match MB 0-diff", async (t) => {
   const bins = resolveBinaries(t);
   if (!bins) return;
 
@@ -874,6 +874,8 @@ test("chat-share lone UTF-16 surrogate escapes match MB 0-diff (0 targets on lon
     ins.run("s-ws-lone", '[{"workspace":"\\uD800"}]', 5000);
     // 3. Normal control row -> both engines write target "W1".
     ins.run("s-control", '[{"workspace":"W1","used":5000}]', 5000);
+    // 4. Overflow numeric literal 1e400 (raw string literal, not JSON.stringify).
+    ins.run("s-overflow", '[{"workspace":"W1","used":1e400}]', 5000);
     store.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   } finally {
     store.close();
@@ -897,26 +899,30 @@ test("chat-share lone UTF-16 surrogate escapes match MB 0-diff (0 targets on lon
     await Promise.all([mbProc.end(), pionProc.end()]);
   }
 
-  assert.equal(snapshotAllTables(pionPath), snapshotAllTables(mbPath), "chat-share lone surrogate tables 0-diff");
   for (const [label, p] of [["mb", mbPath], ["pion", pionPath]] as const) {
     const db = new DatabaseSync(p);
     try {
       const targets = (
         db.prepare("SELECT session, ordinal, workspace, used FROM chat_share_targets ORDER BY session, ordinal").all() as Record<string, unknown>[]
       ).map((r) => ({ ...r }));
-      assert.deepStrictEqual(
-        targets,
-        [{ session: "s-control", ordinal: 0, workspace: "W1", used: 5000 }],
-        `${label}: only control row may emit target W1; lone-surrogate rows must emit 0 targets`,
-      );
       const uncertain = (
         db.prepare("SELECT session FROM chat_share_uncertain ORDER BY session").all() as Record<string, unknown>[]
       ).map((r) => ({ ...r }));
-      assert.deepStrictEqual(uncertain, [], `${label}: lone-surrogate JSON parse fallback is empty targets, not uncertain`);
+      assert.deepStrictEqual(
+        targets,
+        [{ session: "s-control", ordinal: 0, workspace: "W1", used: 5000 }],
+        `${label}: only control row may emit target W1; lone-surrogate & 1e400 rows must emit 0 targets`,
+      );
+      assert.deepStrictEqual(
+        uncertain,
+        [{ session: "s-overflow" }],
+        `${label}: 1e400 overflow must be uncertain while lone-surrogate JSON parse fallback is empty targets`,
+      );
     } finally {
       db.close();
     }
   }
+  assert.equal(snapshotAllTables(pionPath), snapshotAllTables(mbPath), "chat-share lone surrogate & 1e400 tables 0-diff");
 });
 
 // ── Test 4: CJK/emoji UTF-16 login_card_meta.offset cross-engine hot-swap resume (MB -> Pion -> MB) ──

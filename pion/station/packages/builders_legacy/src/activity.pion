@@ -862,6 +862,7 @@ pub fn parse_share_values(shared : String, at_opt : Option[Double]) -> Option[Ar
   if js_json::utf16_len(shared) > 16384 {
     return None
   }
+  // 1:1 align with MB `@json.parse` (intentionally differs from JS `JSON.parse`).
   if builders_core::has_lone_surrogate(shared) {
     return Some([])
   }

@@ -191,6 +191,7 @@ test "split_session_thread and conv_cmp_earliest (lexicographical tie-break per 
   }
   expect(conv_cmp_earliest(100.0, "b", 200.0, "a") < 0, "earlier timestamp wins")
   expect(conv_cmp_earliest(100.0, "a", 100.0, "b") < 0, "tie breaks lexicographically by key")
-  expect(conv_cmp_earliest(100.0, "b", 100.0, "aa") > 0, "lexicographical tie-break: 'b' > 'aa' per TS conversations.ts")
+  expect(conv_cmp_earliest(100.0, "b", 100.0, "aa") > 0, "UTF-16 tie-break: 'b' > 'aa' per TS conversations.ts")
+  expect(conv_cmp_earliest(100.0, "😀:C:T", 100.0, "\u{E000}:C:T") < 0, "UTF-16 code-unit order: U+1F600 (0xD83D) < U+E000 (0xE000)")
   expect(conv_cmp_earliest(100.0, "a", 100.0, "a") == 0, "equal")
 }
