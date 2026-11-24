@@ -42,6 +42,8 @@ jobs:
     runs-on: [self-hosted, macos-ci]
     environment: production
     timeout-minutes: 10
+    outputs:
+      monoid: ${{ steps.monoid-upload.outcome == 'success' && '1' || '' }}
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
@@ -59,10 +61,11 @@ jobs:
         run: sh .github/release.sh --stable android
       # monoid's (build.monoid.android, the same key): from the same build, in the same warm cache (only the package is
       # made again: its id, name and links are in its manifest and resources); put by monoid-android. Not a reason to hold
-      # still.fail's release back: monoid-android, apart from done, fails where this did. Ended before the job is: run
-      # beside the pipeline's android on the same Mac it ran on to the job's 10 minutes, and the job cut skipped web,
-      # station, site and done after it (44770813931, 2026-11-20).
+      # still.fail's release back: skipped without failing monoid-android when time is short or upload fails (45498745060).
+      # Ended before the job is: run beside the pipeline's android on the same Mac it ran on to the job's 10 minutes, and
+      # the job cut skipped web, station, site and done after it (44770813931, 2026-11-20).
       - name: Build and sign monoid's stable Android app from the same build
+        id: monoid-build
         continue-on-error: true
         env:
           ANDROID_DEBUG_KEYSTORE_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
@@ -75,8 +78,11 @@ jobs:
             exit 1
           fi
           bash scripts/with-timeout.sh "@$(( JOB_END - 25 ))" sh .github/release.sh --product monoid --stable android
-      - uses: actions/upload-artifact@v4
+      - if: steps.monoid-build.outcome == 'success'
+        id: monoid-upload
+        uses: actions/upload-artifact@v4
         continue-on-error: true
+        timeout-minutes: 1
         with: { name: "monoid-android-stable", path: "${{ runner.temp }}/monoid", if-no-files-found: error, retention-days: 1, compression-level: 0 }
 
   # The Mac app is mbui's (apps/mbui, its `stable` variant: fail.still.desktop, signed by the same team, so an installed
@@ -134,6 +140,8 @@ jobs:
     runs-on: windows-2025
     environment: production
     timeout-minutes: 10
+    outputs:
+      monoid: ${{ steps.monoid-upload.outcome == 'success' && '1' || '' }}
     defaults:
       run:
         shell: bash
@@ -248,6 +256,7 @@ jobs:
       # monoid's (build.monoid.desktop): the same program, linked again with its own resources (its id, name and
       # environment: apps/mbui/scripts/win.sh), nothing compiled again; put by monoid-desktop-win.
       - name: Pack and sign monoid's stable Windows app from the same build
+        id: monoid-build
         continue-on-error: true
         env:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -255,8 +264,11 @@ jobs:
         run: |
           . "$RUNNER_TEMP/win-compiler.sh"
           sh scripts/release.sh --product monoid desktop-win
-      - uses: actions/upload-artifact@v4
+      - if: steps.monoid-build.outcome == 'success'
+        id: monoid-upload
+        uses: actions/upload-artifact@v4
         continue-on-error: true
+        timeout-minutes: 1
         with: { name: "monoid-desktop-win-stable", path: "${{ runner.temp }}/monoid", if-no-files-found: error, retention-days: 1 }
 
   # The stable Windows app's feeds (desktop-win put its files), after the deltas to it from the stable builds before
@@ -286,7 +298,7 @@ jobs:
   # company's Cloudflare account. Apart from done: still.fail's stable is recorded whatever they do.
   monoid-android:
     needs: [plan, android]
-    if: ${{ !cancelled() && needs.android.result == 'success' }}
+    if: ${{ !cancelled() && needs.android.result == 'success' && needs.android.outputs.monoid == '1' }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -333,7 +345,7 @@ jobs:
 
   monoid-desktop-win:
     needs: [plan, desktop-win]
-    if: ${{ !cancelled() && needs.desktop-win.result == 'success' }}
+    if: ${{ !cancelled() && needs.desktop-win.result == 'success' && needs.desktop-win.outputs.monoid == '1' }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
