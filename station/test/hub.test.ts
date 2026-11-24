@@ -2760,7 +2760,7 @@ test("archiving hands an idle session to cold storage, never on a timer for what
   await r.close();
 });
 
-test("archiving ends the wait and every job and service; only a new message wakes it, and none reaches one archived by hand", async (t) => {
+test("archiving ends the wait and every job and service; only a new message wakes it, and only a mention one archived by hand", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
   for (const by of [AUTO, MANUAL]) {
     const r = new Rig();
@@ -2789,7 +2789,8 @@ test("archiving ends the wait and every job and service; only a new message wake
     await settle();
     assert.equal(r.claude.last().prompts.length, 1, `${by}: neither the clock nor a notice wakes it`);
     assert.ok(r.store.getSession(key)!.archivedAt !== null);
-    await r.accept(reply(m, "9999.2", "<@UBOT> 还在吗", { addressed: true }));
+    const posts = r.chat.posts.length;
+    await r.accept(reply(m, "9999.2", "还在吗"));
     await settle();
     if (by === AUTO) {
       assert.equal(r.store.getSession(key)!.archivedAt, null, "a new message brings it back");
@@ -2797,13 +2798,12 @@ test("archiving ends the wait and every job and service; only a new message wake
     } else {
       assert.ok(r.store.getSession(key)!.archivedAt !== null, "archived by hand, it stays so");
       assert.equal(r.claude.last().prompts.length, 1);
-      assert.ok(r.chat.lastText().includes("已手动归档"), r.chat.lastText());
-      // Shown again by hand, it hears what is said from then on.
-      archive(r.hub, key, false);
       await r.accept(reply(m, "9999.3", "<@UBOT> 回来了", { addressed: true }));
       await settle();
+      assert.equal(r.store.getSession(key)!.archivedAt, null, "mentioned, it is back");
       assert.ok(r.claude.last().prompts.at(-1)!.includes("回来了"));
     }
+    assert.equal(r.chat.posts.length, posts, "nothing is said of the archive");
     await r.close();
   }
 });

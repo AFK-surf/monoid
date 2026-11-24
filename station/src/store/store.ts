@@ -1770,7 +1770,8 @@ export class Store {
   }
 
   /// Out of lists by hand: the chat archived itself, or its sessions archived with one of them by hand. It takes no
-  /// messages until shown again by hand; one archived by the station comes back with anything new said.
+  /// messages until shown again, by hand or (a platform's thread) by a mention of its agent there (hub `acceptInTurn`);
+  /// one archived by the station comes back with anything new said.
   manuallyArchived(thread: number): boolean {
     const r = this.#one("SELECT hidden_by FROM threads WHERE id = ?", thread);
     if (r === undefined || !this.#outOfLists(thread)) return false;
@@ -3192,6 +3193,11 @@ export class Store {
   /// Whether this exact message was handed to the session and still waits to be read.
   deliveryPending(thread: number, n: number, session: string): boolean {
     return this.#one("SELECT 1 FROM deliveries WHERE thread = ? AND n = ? AND session = ? AND delivered_at IS NULL", thread, n, session) !== undefined;
+  }
+
+  /// Whether this session was given this message, read since or not.
+  wasDelivered(thread: number, n: number, session: string): boolean {
+    return this.#one("SELECT 1 FROM deliveries WHERE thread = ? AND n = ? AND session = ?", thread, n, session) !== undefined;
   }
 
   /// Finishes this particular Router write, never a later write which has reused its expired key.

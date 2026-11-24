@@ -62,6 +62,7 @@ import { Clones } from "./clones.ts";
 import { type Roots, roots as machineRoots } from "../read/machine.ts";
 import { carrySubagents, goesAfresh, startsAfresh, toldCleared, toldLongChat, toldResumeLost } from "./afresh.ts";
 import { serves } from "./pool.ts";
+import { archive } from "./lifecycle.ts";
 import { settled } from "./opened.ts";
 import { untitledChat } from "./titles.ts";
 import { shownFactsSoon } from "./image-size.ts";
@@ -1007,19 +1008,26 @@ export class Hub {
     const sameBot = single ? [] : members.filter((m) => m.connect === connect.id);
     const taken = sameBot.find((m) => m.leftAt === null) ?? sameBot.find((m) => m.session === own) ?? sameBot[0];
     let key = bound ?? taken?.session ?? own ?? newSingleSessionKey(connect.id);
-    const exists = this.store.getSession(key) !== null;
-    // Left (chat_leave): it hears the thread again only once someone mentions it.
+    const sessionRow = this.store.getSession(key);
+    const exists = sessionRow !== null;
+    // Left (chat_leave), or archived by hand, the session or the whole thread: it hears the thread again only once
+    // someone mentions it.
     const left = members.some((m) => m.session === key && m.leftAt !== null);
-    const wanted = message.addressed || (!left && (single ? !connect.requireMention || (exists && members.some((m) => m.session === key)) : exists));
+    const threadManuallyArchived = existing !== null && this.store.manuallyArchived(existing.id);
+    const selfManuallyArchived = sessionRow?.archivedBy === MANUAL;
+    const out = left || selfManuallyArchived || threadManuallyArchived;
+    const wanted = message.addressed || (!out && (single ? !connect.requireMention || (exists && members.some((m) => m.session === key)) : exists));
     // Chatter this connect is not part of, in a thread no session takes part in.
     if (!wanted && members.length === 0) return;
+    if (!message.addressed && threadManuallyArchived) return;
     const here: ThreadRef = { channel: message.channel, threadTs: message.threadTs };
-    // Archived by hand: it takes no messages until someone shows it again; told so, once per message.
-    if (existing && this.store.manuallyArchived(existing.id)) {
-      if (this.store.messageNumberAt(existing.id, message.ts) === null) {
-        await chat.post(here, markNotice(`⚠️ ${tr(stationLang(), "station.chat.archived")}`), []).catch((error) => log.warn("hub", "archived notice not posted", { thread: existing.id, error: (error as Error).message }));
-      }
-      return;
+    if (message.addressed && (selfManuallyArchived || threadManuallyArchived)) {
+      // One this session was given before (a platform sends again what it was slow to hear of): no one mentions it anew.
+      const seen = existing === null ? null : this.store.messageNumberAt(existing.id, message.ts);
+      if (existing !== null && seen !== null && this.store.wasDelivered(existing.id, seen, key)) return;
+      // Mentioned: shown again as by hand, its whole conversation. Another bot's first mention here leaves it archived.
+      if (sessionRow !== null && sessionRow.archivedAt !== null) archive(this, key, false);
+      if (existing !== null && existing.hiddenAt !== null) this.store.setThreadHidden(existing.id, false, MANUAL);
     }
     const createdBy = `slack:${connect.id}:${message.user}`;
     if (wanted && !exists) {
@@ -1053,7 +1061,9 @@ export class Hub {
     const thread = existing ?? (await this.openSlackThread(chat, surface, message, createdBy, key));
     if (wanted) this.store.joinThread(thread.id, key, connect.id);
     // Its files go where a session of the thread reads them; once (Slack sends a message again it was slow to hear of).
-    const into = wanted ? key : (members[0]?.session ?? key);
+    // Never, where another can, of one archived by hand: its workspace is put away.
+    const shown = wanted ? [] : members.filter((m) => this.store.getSession(m.session)?.archivedBy !== MANUAL);
+    const into = wanted ? key : ((shown.find((m) => m.leftAt === null) ?? shown[0] ?? members[0])?.session ?? key);
     const first = this.store.messageNumberAt(thread.id, message.ts) === null;
     let said = first ? await this.fetched(chat, into, message.text, message.files) : { text: message.text, attachments: [] };
     if (first && wanted) said = await this.withQuoted(chat, thread.id, here, into, message, said);
@@ -1107,6 +1117,8 @@ export class Hub {
   async fetched(chat: ChatSurface, key: string, text: string, files: InboundFile[] | undefined): Promise<{ text: string; attachments: Attachment[] }> {
     const row = files && files.length > 0 ? this.store.getSession(key) : null;
     if (!files || !row) return { text, attachments: [] };
+    // Just shown again (`archiveBy`): what is written as its workspace comes back could go with the one it replaces.
+    await this.waitRestore(key);
     const dir = join(row.workspace, "uploads");
     const attachments: Attachment[] = [];
     const missing: string[] = [];
