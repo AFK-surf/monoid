@@ -98,6 +98,10 @@ export class AccountDb {
   readonly kept: KeptValues;
   readonly #runner: Runner;
   #inTx = false;
+  /// A write of this database was lost since it was opened (no transaction could begin for it, or its burst was
+  /// rolled back): what the stations' events changed may not be kept, so where the device is in them is written no
+  /// more (`putCursor`). The core that opens it next takes up from the last one written, and is told those events again.
+  #lost = false;
   /// The burst under way failed and no transaction could be begun again for the rest of it: nothing more of it is
   /// run until one can, so that no statement of it is committed alone.
   #noTx = false;
@@ -255,6 +259,7 @@ export class AccountDb {
       fn();
     } catch (e) {
       if (!(e instanceof SqlError)) throw e;
+      this.#lost = true;
       if (!this.#inTx) return this.#said(e);
       // SQLite could not write (no room, the file gone): the burst is rolled back as it is committed, and said.
       this.#failed ??= e;
@@ -360,6 +365,7 @@ export class AccountDb {
       }
     } catch (e) {
       const error = sqlError(e);
+      this.#lost = true;
       try {
         this.sql.exec("ROLLBACK");
       } catch {
@@ -534,8 +540,12 @@ export class AccountDb {
   putDraft(station: string, chat: string, value: J | undefined): void { this.#docs.putDraft(station, chat, value); }
   workspacePref(workspace: string, key: string): J { return this.#docs.workspacePref(workspace, key); }
   putWorkspacePref(workspace: string, key: string, value: J | undefined, topic: Topic | null = null): void { this.#docs.putWorkspacePref(workspace, key, value, topic); }
-  /// As `putWorkspacePref`, its commit waiting up to `ms` (`soon`).
-  putWorkspacePrefSoon(ms: number, workspace: string, key: string, value: J, topic: Topic | null = null): void { this.soon(ms, () => this.#docs.putWorkspacePref(workspace, key, value, topic)); }
+  /// Where the device is in a station's events, kept as a workspace's value: its commit may wait up to `ms` (`soon`),
+  /// and it is not written once a write of this database was lost (`#lost`).
+  putCursor(ms: number, workspace: string, key: string, value: J, topic: Topic | null = null): void {
+    if (this.#lost) return;
+    this.soon(ms, () => this.#docs.putWorkspacePref(workspace, key, value, topic));
+  }
   locals(table: "outbox" | "pending" | "first" | "changing"): [string, string, J][] { return this.#docs.locals(table); }
   putLocal(table: "outbox" | "pending" | "first" | "changing", station: string, key: string, value: J | undefined): void { this.#docs.putLocal(table, station, key, value); }
 

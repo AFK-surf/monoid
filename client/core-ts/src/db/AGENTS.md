@@ -25,3 +25,4 @@
 ## Writes that may wait (`client/core-ts/src/db/account.ts` `soon`)
 
 - A write that need not be committed by itself (a station's event cursor, a transcript nothing reads) still runs in SQLite at once, in the burst's transaction, and only its commit waits. Never hold such a value in memory beside the database to write it later: every read, delete, account change and rollback would have to know of the copy, and the cursor must be in the transaction of what its events changed (`client/core-ts/test/data.test.ts`).
+- A write that is lost (no transaction could begin, a statement failed, the burst was rolled back) commits nothing of its burst alone, and the database writes no station cursor after it (`putCursor`): the next core resumes from the last cursor written and is told those events again. The writes of the device (`PRECIOUS`) are written again on their own.

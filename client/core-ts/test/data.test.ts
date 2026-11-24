@@ -2030,56 +2030,43 @@ test("a_transcript_let_go_for_room_is_taken_again_while_a_page_reads_what_it_sai
   } finally { runner.shutdown(); }
 });
 
-test("a_write_that_could_not_begin_leaves_no_burst_open_and_a_burst_that_failed_commits_nothing_alone", async () => {
-  const { data, open, db, host, runner } = fresh();
-  await open();
-  try {
-    const heard = () => JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0]));
-    const failOnce = (at: (q: string) => boolean) => {
+for (const [how, at] of [
+  ["no_transaction_could_begin", (q: string) => q === "BEGIN IMMEDIATE"],
+  ["a_statement_failed_for_want_of_room", (q: string) => /INTO station /.test(q)],
+  ["its_commit_failed", (q: string) => q === "COMMIT"],
+] as const) {
+  test(`a_cursor_is_not_kept_past_an_event_whose_write_was_lost_when_${how}_and_what_the_device_did_is`, async () => {
+    const { data, open, db, runner } = fresh();
+    await open();
+    try {
+      const heard = () => JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0]));
+      data.set({ topic: "overview", station: "w/a" }, { name: "before" });
+      data.put("heard", "w/a", "abc.1");
+      await run(data.written);
+      await run(data.roomGivenBack);
       let fail = true;
       db().failing = (q) => {
         if (!at(q) || !fail) return null;
         fail = false;
         return new SqlError("database or disk is full", "full");
       };
-    };
-    data.put("heard", "w/a", "abc.1");
-    await run(data.written);
-    await run(data.roomGivenBack);
-    // No transaction could begin for a write that may wait: no burst is left without a timer, and what the device
-    // does next is written in a transaction of its own, not lost and not outside one.
-    failOnce((q) => q === "BEGIN IMMEDIATE");
-    db().statements.length = 0;
-    data.put("heard", "w/a", "abc.2");
-    assert.deepEqual(db().statements, ["BEGIN IMMEDIATE"]);
-    data.putLocal("outbox", "w/a", "1", { text: "x" });
-    assert.deepEqual(db().statements.slice(1, 2), ["BEGIN IMMEDIATE"], "begun again for the next write");
-    await run(data.written);
-    assert.equal(db().all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 1, "what the device did is kept");
-    assert.equal(heard(), "abc.1");
-    // A statement fails for want of room, which ends SQLite's transaction: the cursor written after it in the same
-    // burst is rolled back with it, never committed alone past the items the burst lost.
-    data.put("heard", "w/a", "abc.4");
-    await run(data.written);
-    failOnce((q) => /INTO transcript/.test(q));
-    data.putItemsSoon("w/a", "bg", [[0, { text: "lost" }]]);
-    data.put("heard", "w/a", "abc.5");
-    data.putLocal("outbox", "w/a", "2", { text: "y" });
-    await run(data.written);
-    await flush();
-    assert.equal(db().all("SELECT count(*) FROM transcript WHERE station = 'w/a' AND session = 'bg'")[0]![0], 0);
-    assert.equal(heard(), "abc.4", "not past what was rolled back");
-    assert.equal(db().all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 2, "what the device did is written again on its own");
-    // A commit that fails: the same.
-    failOnce((q) => q === "COMMIT");
-    data.putItemsSoon("w/a", "bg", [[0, { text: "lost" }]]);
-    data.put("heard", "w/a", "abc.6");
-    await run(data.written);
-    await flush();
-    assert.equal(db().all("SELECT count(*) FROM transcript WHERE station = 'w/a' AND session = 'bg'")[0]![0], 0);
-    assert.equal(heard(), "abc.4");
-  } finally { runner.shutdown(); }
-});
+      // One event: what it changed, then where the device is. Its write is lost.
+      data.set({ topic: "overview", station: "w/a" }, { name: "after" });
+      data.put("heard", "w/a", "abc.2");
+      data.putLocal("outbox", "w/a", "1", { text: "x" });
+      await run(data.written);
+      await flush();
+      assert.equal(fail, false, "the failure happened");
+      assert.equal(String(db().all("SELECT json FROM station WHERE address = 'w/a' AND kind = 'overview'")[0]![0]), '{"name":"before"}');
+      assert.equal(heard(), "abc.1", "not past the event that was lost");
+      assert.equal(db().all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 1, "what the device did is kept");
+      // Nor past it by a later event: the next core takes up from before what was lost.
+      data.put("heard", "w/a", "abc.3");
+      await run(data.written);
+      assert.equal(heard(), "abc.1");
+    } finally { runner.shutdown(); }
+  });
+}
 
 test("room_is_made_past_fifty_transcripts_a_page_reads_and_room_again_is_not_told_by_another_account_s_commit", async () => {
   const owners: Record<string, string[]> = { s1: ["w"], s2: ["v"] };

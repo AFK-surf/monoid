@@ -1106,7 +1106,7 @@ export class Data {
     const topic = this.#recordTopic(table, key, db, k);
     if (table === "me") return db.putAccountDoc("me", value, confirmed ? this.#host.nowMs() : null, topic);
     // (where the device is in a station's events: in the write of what they changed, never one of its own)
-    if (table === "heard" && value !== undefined) return db.putWorkspacePrefSoon(HEARD_FLUSH_MS, k[0], k[1], value, topic);
+    if (table === "heard" && value !== undefined) return db.putCursor(HEARD_FLUSH_MS, k[0], k[1], value, topic);
     db.putWorkspacePref(k[0], k[1], value, topic);
   }
 
