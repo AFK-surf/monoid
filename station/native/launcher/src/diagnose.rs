@@ -3,15 +3,16 @@
 //! Privacy boundary: only numeric metrics, process state codes, kernel wait channels, and binary/kernel symbol names
 //! are kept. No filesystem paths, command-line arguments, or user text ever leave this module.
 
+#[cfg(unix)]
 use serde_json::{Map, Value};
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::io::Read;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::process::{Command, Stdio};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::sync::mpsc;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 const WCHAN_MAX_BYTES: usize = 64;
@@ -23,7 +24,10 @@ const KERNEL_STACK_MAX_BYTES: usize = 800;
 const MAIN_STACK_MAX_FRAMES: usize = 25;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const MAIN_STACK_MAX_BYTES: usize = 1600;
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STACK_ELLIPSIS: &str = "… -> ";
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SAMPLE_STDOUT_MAX_BYTES: usize = 512 * 1024;
 #[cfg(target_os = "macos")]
 const MACOS_TOTAL_BUDGET: Duration = Duration::from_secs(3);
@@ -142,17 +146,20 @@ pub fn parse_macos_ps(text: &str) -> MacosPs {
     out
 }
 
-/// Sanitizes a single macOS `sample` call-graph frame line:
-/// strips tree prefixes, sample counts, `+ offset [0x...]`, and directory paths inside `(in ...)`.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn sanitize_sample_frame(line: &str) -> Option<String> {
-    let trimmed = line.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '+' | '!' | ':' | '|'));
-    if trimmed.is_empty() {
-        return None;
-    }
-    // Strip leading sample count digits (e.g. "998 start (in dyld) + 2840 [0x...]").
-    let after_digits = trimmed.trim_start_matches(|c: char| c.is_ascii_digit());
-    let mut frame = if after_digits.len() < trimmed.len() { after_digits.trim_start() } else { trimmed };
+fn is_hex_address(tok: &str) -> bool {
+    let Some(hex) = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) else {
+        return false;
+    };
+    !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Sanitizes the body of a macOS `sample` call-graph frame (after tree prefix and sample count):
+/// strips `[0x...]`, `+ offset`, directory paths inside `(in ...)` (even when directories contain `)`),
+/// stray path tokens, and unsymbolicated `0x...` addresses.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn sanitize_sample_frame_body(body: &str) -> Option<String> {
+    let mut frame = body.trim();
     if frame.is_empty() {
         return None;
     }
@@ -164,8 +171,7 @@ fn sanitize_sample_frame(line: &str) -> Option<String> {
     if let Some(idx) = frame.rfind(" + ") {
         let offset = frame[idx + 3..].trim();
         let is_offset = !offset.is_empty()
-            && (offset.bytes().all(|b| b.is_ascii_digit())
-                || offset.strip_prefix("0x").is_some_and(|hex| !hex.is_empty() && hex.bytes().all(|b| b.is_ascii_hexdigit())));
+            && (offset.bytes().all(|b| b.is_ascii_digit()) || is_hex_address(offset));
         if is_offset {
             frame = frame[..idx].trim_end();
         }
@@ -173,31 +179,62 @@ fn sanitize_sample_frame(line: &str) -> Option<String> {
     if frame.is_empty() {
         return None;
     }
-    // Strip any directory path inside `(in ...)` keeping only the basename.
-    let mut sanitized = String::with_capacity(frame.len());
-    let mut rest = frame;
-    while let Some(start) = rest.find("(in ") {
-        sanitized.push_str(&rest[..start + 4]);
-        let after_in = &rest[start + 4..];
-        if let Some(end) = after_in.find(')') {
-            let module = &after_in[..end];
+    // After stripping `[0x...]` and `+ offset`, `(in ...)` sits at the end: match `rfind("(in ")` with the final `)`
+    // so directory names containing `)` (e.g. `/Users/a (work)/lib/x.node`) never truncate early or leak paths.
+    let stripped_in = if let Some(in_start) = frame.rfind("(in ") {
+        let after_in = &frame[in_start + 4..];
+        if let Some(close) = after_in.rfind(')') {
+            let module = &after_in[..close];
             let base = if module.contains('/') || module.contains('\\') {
                 module.rsplit(['/', '\\']).next().unwrap_or(module)
             } else {
                 module
             };
-            sanitized.push_str(base);
-            sanitized.push(')');
-            rest = &after_in[end + 1..];
+            format!("{}(in {}){}", &frame[..in_start], base, &after_in[close + 1..])
         } else {
-            sanitized.push_str(after_in);
-            rest = "";
-            break;
+            frame.to_string()
+        }
+    } else {
+        frame.to_string()
+    };
+
+    let mut tokens = Vec::new();
+    for tok in stripped_in.split_whitespace() {
+        if is_hex_address(tok) {
+            tokens.push("???".to_string());
+        } else if tok.starts_with('/') || tok.contains('\\') {
+            let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
+            if !base.is_empty() {
+                tokens.push(base.to_string());
+            }
+        } else {
+            tokens.push(tok.to_string());
         }
     }
-    sanitized.push_str(rest);
-    let collapsed = sanitized.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = tokens.join(" ");
     if collapsed.is_empty() { None } else { Some(collapsed) }
+}
+
+/// Parses `(indent_width, sample_count, sanitized_frame)` from one frame line in a `sample` Call graph block.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_sample_frame_line(line: &str) -> Option<(usize, u64, String)> {
+    let prefix_len = line
+        .bytes()
+        .take_while(|b| b.is_ascii_whitespace() || matches!(b, b'+' | b'!' | b':' | b'|'))
+        .count();
+    let rest = &line[prefix_len..];
+    if rest.is_empty() {
+        return None;
+    }
+    let digits_len = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let (count, body) = if digits_len > 0 {
+        let count = rest[..digits_len].parse::<u64>().unwrap_or(0);
+        (count, rest[digits_len..].trim_start())
+    } else {
+        (0, rest)
+    };
+    let frame = sanitize_sample_frame_body(body)?;
+    Some((prefix_len, count, frame))
 }
 
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -206,7 +243,29 @@ fn is_sample_thread_header(trimmed: &str) -> bool {
     after_digits.len() < trimmed.len() && after_digits.trim_start().starts_with("Thread_")
 }
 
-/// Extracts and sanitizes the main thread's top frames from macOS `sample <pid> 1 -mayDie` output.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct SampleNode {
+    indent: usize,
+    count: u64,
+    frame: String,
+    children: Vec<usize>,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pick_heaviest(indices: &[usize], nodes: &[SampleNode]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for &idx in indices {
+        if best.is_none_or(|b| nodes[idx].count > nodes[b].count) {
+            best = Some(idx);
+        }
+    }
+    best
+}
+
+/// Extracts and sanitizes the heaviest single root-to-leaf path of the main thread from macOS `sample` output.
+///
+/// Preserves the leaf end (up to `MAIN_STACK_MAX_FRAMES` frames and `MAIN_STACK_MAX_BYTES` bytes), dropping outer
+/// root frames and prefixing `"… -> "` when truncated so the blocking leaf frame stays intact.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn parse_macos_sample_main_stack(text: &str) -> Option<String> {
     let mut in_graph = false;
@@ -232,20 +291,60 @@ pub fn parse_macos_sample_main_stack(text: &str) -> Option<String> {
         }
     }
     let (_, raw_frames) = blocks.iter().find(|(is_main, _)| *is_main).or_else(|| blocks.first())?;
-    let mut frames = Vec::with_capacity(MAIN_STACK_MAX_FRAMES);
+
+    // Reconstruct the call tree by indentation width so sibling branches are never concatenated.
+    let mut nodes: Vec<SampleNode> = Vec::new();
+    let mut roots: Vec<usize> = Vec::new();
+    let mut stack: Vec<usize> = Vec::new();
     for raw in raw_frames {
-        if let Some(frame) = sanitize_sample_frame(raw) {
-            frames.push(frame);
-            if frames.len() >= MAIN_STACK_MAX_FRAMES {
-                break;
-            }
+        let Some((indent, count, frame)) = parse_sample_frame_line(raw) else { continue };
+        while stack.last().is_some_and(|&top| nodes[top].indent >= indent) {
+            stack.pop();
         }
+        let idx = nodes.len();
+        nodes.push(SampleNode { indent, count, frame, children: Vec::new() });
+        if let Some(&parent) = stack.last() {
+            nodes[parent].children.push(idx);
+        } else {
+            roots.push(idx);
+        }
+        stack.push(idx);
     }
-    if frames.is_empty() {
+
+    // Walk the single heaviest root-to-leaf path (tie-break: first seen).
+    let mut path: Vec<&str> = Vec::new();
+    let mut cur = pick_heaviest(&roots, &nodes);
+    while let Some(idx) = cur {
+        path.push(&nodes[idx].frame);
+        cur = pick_heaviest(&nodes[idx].children, &nodes);
+    }
+    if path.is_empty() {
         return None;
     }
-    let joined = frames.join(" -> ");
-    Some(truncate_utf8(&joined, MAIN_STACK_MAX_BYTES).to_string())
+
+    // Keep the leaf tail up to MAIN_STACK_MAX_FRAMES and MAIN_STACK_MAX_BYTES.
+    let dropped_root = path.len() > MAIN_STACK_MAX_FRAMES;
+    let tail = if dropped_root { &path[path.len() - MAIN_STACK_MAX_FRAMES..] } else { &path[..] };
+
+    if !dropped_root {
+        let full = tail.join(" -> ");
+        if full.len() <= MAIN_STACK_MAX_BYTES {
+            return Some(full);
+        }
+    }
+
+    // Drop outermost root frames until `"… -> "` + tail fits within MAIN_STACK_MAX_BYTES.
+    for start in 0..tail.len() {
+        let candidate = format!("{STACK_ELLIPSIS}{}", tail[start..].join(" -> "));
+        if candidate.len() <= MAIN_STACK_MAX_BYTES {
+            return Some(candidate);
+        }
+    }
+
+    // Only when the single leaf frame itself exceeds MAIN_STACK_MAX_BYTES do we truncate that frame.
+    let leaf = tail.last().copied().unwrap_or_default();
+    let budget = MAIN_STACK_MAX_BYTES.saturating_sub(STACK_ELLIPSIS.len());
+    Some(format!("{STACK_ELLIPSIS}{}", truncate_utf8(leaf, budget)))
 }
 
 /// Collects `/proc/<pid>` diagnostics on Linux (<1 ms, no subprocesses).
@@ -288,11 +387,13 @@ pub fn collect(pid: i32) -> Map<String, Value> {
 }
 
 /// Runs a subprocess with a strict wall-clock deadline, killing and reaping it on timeout.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn run_bounded(mut cmd: Command, timeout: Duration) -> Option<String> {
     if timeout.is_zero() {
         return None;
     }
+    let deadline = Instant::now() + timeout;
     let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let stdout = child.stdout.take()?;
     let (tx, rx) = mpsc::channel();
@@ -303,7 +404,23 @@ fn run_bounded(mut cmd: Command, timeout: Duration) -> Option<String> {
     });
     match rx.recv_timeout(timeout) {
         Ok(buf) => {
-            let _ = child.wait();
+            // Poll try_wait bounded by remaining deadline (capped at 200 ms) so a child whose stdout exceeded
+            // SAMPLE_STDOUT_MAX_BYTES never blocks the launcher.
+            let wait_deadline = deadline.min(Instant::now() + Duration::from_millis(200));
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => {
+                        let left = wait_deadline.saturating_duration_since(Instant::now());
+                        if left.is_zero() {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break;
+                        }
+                        std::thread::sleep(left.min(Duration::from_millis(10)));
+                    }
+                }
+            }
             Some(String::from_utf8_lossy(&buf).into_owned())
         }
         Err(_) => {
@@ -344,8 +461,9 @@ pub fn collect(pid: i32) -> Map<String, Value> {
 
     let remaining = deadline.saturating_duration_since(Instant::now());
     if !remaining.is_zero() {
+        // `-file /dev/stdout` avoids macOS `sample` writing a full-path `.sample.txt` report to `/tmp`.
         let mut sample_cmd = Command::new("/usr/bin/sample");
-        sample_cmd.args([&pid_arg, "1", "-mayDie"]);
+        sample_cmd.args([&pid_arg, "1", "-mayDie", "-file", "/dev/stdout"]);
         if let Some(sample_text) = run_bounded(sample_cmd, remaining) {
             if let Some(stack) = parse_macos_sample_main_stack(&sample_text) {
                 out.insert("mainStack".into(), stack.into());
@@ -416,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn macos_sample_extracts_main_thread_strips_paths_and_addresses_and_truncates_utf8() {
+    fn macos_sample_follows_heaviest_branch_without_mixing_siblings() {
         let sample = "\
 Sampling process 4242 for 1 second with 1 millisecond of run time between samples
 Analysis of sampling node (pid 4242) every 1 millisecond
@@ -426,31 +544,92 @@ Path:            /Users/alice/.stillfail/app/node/bin/node
 Call graph:
     998 Thread_10001
     + 998 thread_start  (in libsystem_pthread.dylib) + 8  [0x1956a1234]
-    998 Thread_10000   DispatchQueue_1: com.apple.main-thread  (serial)
-    + 998 start  (in dyld) + 2840  [0x19532c274]
-    +   998 main  (in /Users/alice/.stillfail/app/node/bin/node) + 123  [0x104a1b2c0]
-    +     998 uv_run  (in /Users/alice/.stillfail/app/mesh/mesh.node) + 0x140  [0x105123456]
-    +       ! 998 __psynch_mutexwait  (in libsystem_kernel.dylib) + 8  [0x195678900]
+    823 Thread_10000   DispatchQueue_1: com.apple.main-thread  (serial)
+    + 823 start  (in dyld) + 2840  [0x19532c274]
+    +   823 main  (in /Users/alice/.stillfail/app/node/bin/node) + 123  [0x104a1b2c0]
+    +     823 uv_run  (in /Users/alice/.stillfail/app/mesh/mesh.node) + 0x140  [0x105123456]
+    +       1 uv__run_timers  (in node) + 40  [0x105123600]
+    +       ! 1 v8::Function::Call  (in node) + 12  [0x105123700]
+    +       822 uv__io_poll  (in node) + 100  [0x105123500]
+    +         822 kevent  (in libsystem_kernel.dylib) + 8  [0x195678900]
 
 Total number in stack (recursive counted multiple, when >=5):
 ";
         let stack = parse_macos_sample_main_stack(sample).unwrap();
         assert_eq!(
             stack,
-            "start (in dyld) -> main (in node) -> uv_run (in mesh.node) -> __psynch_mutexwait (in libsystem_kernel.dylib)"
+            "start (in dyld) -> main (in node) -> uv_run (in mesh.node) -> uv__io_poll (in node) -> kevent (in libsystem_kernel.dylib)"
         );
+        assert!(!stack.contains("uv__run_timers"));
+        assert!(!stack.contains("v8::Function::Call"));
         assert!(!stack.contains("/Users/"));
         assert!(!stack.contains("0x"));
+    }
 
-        // Fallback to first Thread_ block when com.apple.main-thread is absent, and safe multi-byte truncation.
-        let mut fallback = String::from("Call graph:\n    10 Thread_20000\n");
-        for i in 0..30 {
-            fallback.push_str(&format!("    + 10 fn_{i}_测试函数_{} (in /private/tmp/app.dylib) + 16 [0x1234]\n", "é".repeat(40)));
+    #[test]
+    fn macos_sample_keeps_leaf_tail_and_prefixes_ellipsis_when_deep_or_long() {
+        // 35 frames: must keep the bottom 25 leaf frames, drop outer roots (`start`, `main`), and prefix `… -> `.
+        let mut deep = String::from("Call graph:\n    100 Thread_20000   DispatchQueue_1: com.apple.main-thread\n");
+        for depth in 0..35 {
+            let indent = "  ".repeat(depth);
+            let name = match depth {
+                0 => "start".to_string(),
+                1 => "main".to_string(),
+                34 => "blocking_leaf_syscall".to_string(),
+                n => format!("frame_{n:02}"),
+            };
+            deep.push_str(&format!("    + {indent}100 {name}  (in node) + 8  [0x1000]\n"));
         }
-        let truncated = parse_macos_sample_main_stack(&fallback).unwrap();
+        let parsed = parse_macos_sample_main_stack(&deep).unwrap();
+        assert!(parsed.starts_with(STACK_ELLIPSIS));
+        assert!(parsed.ends_with("blocking_leaf_syscall (in node)"));
+        assert!(!parsed.contains("start (in node)"));
+        assert!(!parsed.contains("main (in node)"));
+        assert!(parsed.len() <= MAIN_STACK_MAX_BYTES);
+
+        // Long frames exceeding 1600 bytes: must drop outer frames and keep the blocking leaf intact with valid UTF-8.
+        let mut long_stack = String::from("Call graph:\n    50 Thread_20001\n");
+        for depth in 0..20 {
+            let indent = "  ".repeat(depth);
+            let name = if depth == 19 {
+                "leaf_阻塞函数_kevent".to_string()
+            } else {
+                format!("outer_{depth:02}_{}", "é".repeat(50))
+            };
+            long_stack.push_str(&format!("    + {indent}50 {name} (in /private/tmp/app.dylib) + 16 [0x1234]\n"));
+        }
+        let truncated = parse_macos_sample_main_stack(&long_stack).unwrap();
+        assert!(truncated.starts_with(STACK_ELLIPSIS));
+        assert!(truncated.ends_with("leaf_阻塞函数_kevent (in app.dylib)"));
         assert!(truncated.len() <= MAIN_STACK_MAX_BYTES);
         assert!(truncated.is_char_boundary(truncated.len()));
         assert!(!truncated.contains("/private/tmp/"));
         assert!(!truncated.contains("0x1234"));
+    }
+
+    #[test]
+    fn macos_sample_strips_parens_in_paths_and_unsymbolicated_hex_frames() {
+        let sample = "\
+Call graph:
+    10 Thread_30000   DispatchQueue_1: com.apple.main-thread
+    + 10 0x104abc  (in node)  [0x104abc]
+    +   10 native_call  (in /Users/a (work)/lib/x.node) + 24  [0x110000123]
+";
+        let stack = parse_macos_sample_main_stack(sample).unwrap();
+        assert_eq!(stack, "??? (in node) -> native_call (in x.node)");
+        assert!(!stack.contains("0x"));
+        assert!(!stack.contains("/Users/"));
+        assert!(!stack.contains("(work)"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_bounded_kills_and_reaps_timed_out_child() {
+        let started = Instant::now();
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("5");
+        let out = run_bounded(cmd, Duration::from_millis(100));
+        assert!(out.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2), "timed out child should be killed promptly");
     }
 }

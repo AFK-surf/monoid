@@ -959,6 +959,8 @@ impl<O: Os> Lifecycle<O> {
                 node.hung = true;
                 (node.process.pid(), node.version.clone(), node.ready)
             };
+            // Collect bounded diagnostics before SIGKILL (on macOS this runs up to ~3 s); `node.hung = true` is
+            // already set above, so `heartbeat_by()` will not fire a second time.
             let diag = {
                 let Lifecycle { os, current, .. } = self;
                 os.diagnose_hung(&current.as_ref().unwrap().process)
