@@ -56,7 +56,7 @@ export MBT2PION_BIN
 MANIFEST="$SCRIPT_DIR/manifest.toml"
 INVAR_REV="$(grep 'AFK-surf/invar\.git' "$REPO_ROOT/pion/ui/pion.toml" | head -n 1 | sed -n 's/.*rev *= *"\([0-9a-f]\{40\}\)".*/\1/p')"
 M2P_COMMIT="$(sed -n 's/^mbt2pion_commit *= *"\([0-9a-f]\{40\}\)".*/\1/p' "$MANIFEST" | head -n 1)"
-MONOID_SRC_COMMIT="$(git -C "$REPO_ROOT" log -n 1 --format=%H -- libs/ui/src/controls)"
+MONOID_SRC_COMMIT="$(sed -n 's/^monoid_source_commit *= *"\([0-9a-f]\{40\}\)".*/\1/p' "$MANIFEST" | head -n 1)"
 
 if [ "${#INVAR_REV}" -ne 40 ] || [ "${#M2P_COMMIT}" -ne 40 ] || [ "${#MONOID_SRC_COMMIT}" -ne 40 ]; then
   echo "ERROR: failed to resolve 40-char SHAs (invar=$INVAR_REV mbt2pion=$M2P_COMMIT monoid=$MONOID_SRC_COMMIT)" >&2
