@@ -46,6 +46,12 @@ pub fn reader_node(
   let ems = if host == PanelTab { panel_column_ems } else { desk_column_ems }
   let r = reading_for(key)
   reader_load(r, file, markdown)
+  // (what the page that holds it keeps on its words: told of the phone's bars, and first to take a tap on the text)
+  let marks = parent.lent(reader_marks_lent)
+  match marks {
+    Some(ms) => (ms.bars)(fn() { r.chrome.get() }, fn(on) { @view.transition(fn() { r.chrome.set(on) }) })
+    None => ()
+  }
   // (gone back: its layout's panel, the window's tree's, closed with it)
   let back = fn() {
     if r.panel.untracked() == Layout {
@@ -431,7 +437,11 @@ fn reader_column_node(
     // a mouse's press on the words picking them: under them, never round them, so what scrolls takes the wheel and the
     // hand whatever it says)
     col.box(fn(g) {
-      g.over(Is(true)).presses(By(small)).on_press(fn() { reader_tapped(r) }).cursor(Is(Some(Arrow))).as_ground() |> ignore
+      g.over(Is(true)).presses(By(small)).on_press(fn() {
+          if !(g.lent(reader_marks_lent) is Some(ms) && (ms.tapped)()) {
+            reader_tapped(r)
+          }
+        }).cursor(Is(Some(Arrow))).as_ground() |> ignore
     })
     |> ignore
     col.box(fn(l) {

@@ -4086,6 +4086,8 @@ pub(all) enum ReaderHost {
 
 pub(all) struct ReaderMarks {
   lits : (Int32) -> Array[(String, Int64)]
+  tapped : () -> Bool
+  bars : (() -> Bool, (Bool) -> Unit) -> Unit
 }
 
 #derive(Eq)

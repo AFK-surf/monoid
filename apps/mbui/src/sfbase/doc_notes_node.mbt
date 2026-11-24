@@ -200,9 +200,10 @@ let doc_note_w : Double = 320.0
 /// how many (pressed, them in a sheet: doc_notes_sheet) and 发送; while one is written, its card there in their place,
 /// as a picture's note is written at its viewer's foot (note_box_node), never over the words round it. While `side()`,
 /// the notes stand at the stage's side (doc_notes_side_node) and only the card is here. None while there are none.
-pub fn doc_notes_foot_node(parent : @view.View, of : DocNotes, side : () -> Bool) -> Unit {
+pub fn doc_notes_foot_node(parent : @view.View, of : DocNotes, side : () -> Bool, hidden? : () -> Bool = fn() { false }) -> Unit {
   let count = fn() { (of.notes)().length() }
-  parent.show(fn() { count() > 0 }, fn(l) {
+  // (`hidden`: what else stands at the stage's foot now (a reader's phone bars), the notes' bar away for it)
+  parent.show(fn() { count() > 0 && !hidden() }, fn(l) {
     // (nothing of its own to press but its keys: what is under it keeps the rest)
     l.over(Is(true)).lines_up(Is(Some(Middle))) |> ignore
     l.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore

@@ -191,3 +191,31 @@ test "a phone: a finger held on the words picks them (not the reader's bars), wi
   assert_eq(v.md_notes().length(), 1)
   assert_true(t.find("1 条标注") is Some(_) && t.find("去发送") is Some(_), msg="the foot")
 }
+
+///|
+test "a phone: a tap on the words finishes the note being written; the reader's bars, shown, keep the notes' foot away" {
+  let t = preview_tester("md", platform=2)
+  t.run_for(@ui.move_most_ms)
+  let v = viewer.get().unwrap()
+  let (x, y, _, h) = md_words_at(t, "安卓和 mac 的包都签名")
+  t.press_at(x + 4.0, y + h / 2.0)
+  t.run_for(@ui.long_press_ms + md_hold_extra_ms)
+  t.release(x + 4.0, y + h / 2.0)
+  t.frame()
+  t.tap_text("批注")
+  t.type_text("这里")
+  // (a tap on the text, under the words: the note finished, not the reader's bars brought)
+  let (sx, sy, _, _) = md_words_at(t, "会把新截图和旧的比一遍")
+  t.tap(sx + 4.0, sy + 120.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(v.md_marks.writing.get(), "", msg="the note finished")
+  assert_eq(v.md_notes()[0].comment, "这里")
+  assert_true(t.find("1 条标注") is Some(_), msg="the foot, the reader's bars not brought")
+  // (a tap again: the reader's bars, the notes' foot away for them, never under them)
+  t.tap(sx + 4.0, sy + 120.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("1 条标注") is None, msg="the foot away while the reader's bars show")
+  t.tap(sx + 4.0, sy + 120.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("1 条标注") is Some(_), msg="the foot back as they go")
+}

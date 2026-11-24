@@ -4,9 +4,14 @@
 // the text it is (Book's starts) without the reader knowing what is done with it.
 
 ///|
-/// What a page keeps on a reader's words: `lits(k)`, the passages marked on block `k`, each with its ground.
+/// What a page keeps on a reader's words: `lits(k)`, the passages marked on block `k`, each with its ground;
+/// `tapped()`, a tap on the text the page takes first (true: taken, a phone's bars left as they are: a note being
+/// written finished); `bars(shown, show)`, the reader's phone bars handed to the page as it is made (whether they show,
+/// and to show or take them away), so what the page puts at the reader's foot keeps clear of them.
 pub(all) struct ReaderMarks {
   lits : (Int) -> Array[(String, Int64)]
+  tapped : () -> Bool
+  bars : (() -> Bool, (Bool) -> Unit) -> Unit
 }
 
 ///|

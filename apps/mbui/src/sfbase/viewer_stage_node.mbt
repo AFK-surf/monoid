@@ -100,7 +100,15 @@ doc_notes_side(width(), vw.md_notes().length())
             if notes {
               vw.md_marks.src = Some(src)
               p.owns(fn() { vw.md_note_done() }) |> ignore
-              @sf.reader_marks(holds, { lits: fn(k) { vw.md_lits(k) } }) |> ignore
+              @sf.reader_marks(holds, {
+                lits: fn(k) { vw.md_lits(k) },
+                tapped: fn() { vw.md_tapped() },
+                bars: fn(on, set) {
+                  vw.md_marks.bars_on = on
+                  vw.md_marks.bars_set = set
+                },
+              })
+              |> ignore
             }
             @sf.reader_node(
               holds,
@@ -132,7 +140,8 @@ doc_notes_side(width(), vw.md_notes().length())
             |> ignore
             if notes {
               md_pick_bar_node(n, vw)
-              doc_notes_foot_node(p, vw.md_doc_notes(), side)
+              // (its foot clear of the reader's phone bars: away while they show, a note's card taking them away)
+              doc_notes_foot_node(p, vw.md_doc_notes(), side, hidden=fn() { (vw.md_marks.bars_on)() })
               doc_notes_side_node(p, vw.md_doc_notes(), side, fn() { md_side_top }, fn() { md_side_foot })
             }
           }
@@ -798,8 +807,9 @@ let desk_cell_share : Double = 18.0 / 13.0
 let csv_foot : Double = 48.0
 
 ///|
-/// How far under the stage's top and over its foot a Markdown file's notes stand at its side.
-let md_side_top : Double = 12.0
+/// How far under the stage's top and over its foot a Markdown file's notes stand at its side: under the bar every file
+/// opened has, as a PDF's pages are.
+let md_side_top : Double = desk_page_top
 
 ///|
 let md_side_foot : Double = 12.0

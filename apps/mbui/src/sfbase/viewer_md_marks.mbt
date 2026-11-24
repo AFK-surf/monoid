@@ -29,11 +29,14 @@ pub(all) struct MdMarks {
   note : @ui.Field
   /// what reaches the chat's draft the notes are in: the stage's, said as it is made
   mut src : Source?
+  /// whether the reader's phone bars show, and to show or take them away (ReaderMarks' bars: none till it is made)
+  mut bars_on : () -> Bool
+  mut bars_set : (Bool) -> Unit
 }
 
 ///|
 fn MdMarks::new() -> MdMarks {
-  { writing: @signals.signal(""), note: @ui.Field::new(), src: None }
+  { writing: @signals.signal(""), note: @ui.Field::new(), src: None, bars_on: fn() { false }, bars_set: fn(_) {  } }
 }
 
 ///|
@@ -53,13 +56,15 @@ let md_mark_open : Double = 0.55
 ///|
 /// How many of a line's first or last characters are looked for in the file to find where it is: as many as the first
 /// says, else fewer.
-let md_probe_chars : Array[Int] = [8, 4, 2]
+fn md_probe_chars() -> Array[Int] {
+  [8, 4, 2]
+}
 
 ///|
 /// Where line `line`'s first characters (its last: `last`) are in `text` from `from` up to `to`, and how long what was
 /// found is; as many of them as are found of md_probe_chars, none where none are.
 fn md_probe(text : String, line : String, last : Bool, from : Int, to : Int) -> (Int, Int)? {
-  for n in md_probe_chars {
+  for n in md_probe_chars() {
     let probe = md_chars(line, n, last)
     match md_find(text, probe, from, to) {
       Some(at) => return Some((at, probe.length()))
@@ -354,6 +359,8 @@ fn Viewer::md_mark_picked(self : Viewer, p : @ui.WordsPicked, from : Int, to : I
     None => ""
   }
   @ui.picked_let_go()
+  // (the note's card at the reader's foot, its bars taken away so it is clear of them)
+  (m.bars_set)(false)
   m.note.set("")
   m.writing.set(id)
   m.note.focus()
@@ -403,9 +410,19 @@ fn Viewer::md_note_open(self : Viewer, id : String) -> Unit {
     }
     None => ()
   }
+  (m.bars_set)(false)
   m.note.set(x.comment)
   m.writing.set(id)
   m.note.focus()
+}
+
+///|
+/// A tap on the reader's text: the note being written finished (taken: the reader's bars left as they are); else not
+/// taken.
+fn Viewer::md_tapped(self : Viewer) -> Bool {
+  guard self.md_marks.writing.untracked() != "" else { return false }
+  self.md_note_done()
+  true
 }
 
 ///|
