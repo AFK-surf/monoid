@@ -114,14 +114,39 @@ test("the handoff reaches the releases Worker at CI's DNS addresses in turn, the
     assert.equal(requests.splice(0).length, 1);
   });
 
-  await t.test("with both addresses down, the usual route", async () => {
+  await t.test("with both addresses down, the usual route is remembered for later requests and falls back to direct if it fails", async () => {
     refuse = 2; connections = 0;
-    const { out, stderr } = await child(`${usual}
-      const get = await fetchHandoff("${worker}/releases/ci-natives/key", { redirect: "error" });
-      console.log(JSON.stringify({ text: await get.text(), usual }));`, env);
-    assert.deepEqual(out, { text: "usual route", usual: [[`${worker}/releases/ci-natives/key`, "error"]] });
-    assert.equal(connections, 2);
+    const { out, stderr } = await child(`
+      const usual = [];
+      let failUsual = false;
+      globalThis.fetch = async (at, init) => {
+        usual.push([String(at), init?.redirect ?? null]);
+        if (failUsual) throw new Error("proxy down");
+        return new Response("usual route");
+      };
+      const first = await fetchHandoff("${worker}/releases/ci-natives/key1", { redirect: "error" });
+      const t1 = await first.text();
+      const second = await fetchHandoff("${worker}/releases/ci-natives/key2", { redirect: "error" });
+      const t2 = await second.text();
+      failUsual = true;
+      const third = await fetchHandoff("${worker}/releases/ci-natives/key3", { redirect: "error" });
+      const len3 = (await third.arrayBuffer()).byteLength;
+      console.log(JSON.stringify({ t1, t2, len3, usual }));`, env);
+    assert.deepEqual(out, {
+      t1: "usual route",
+      t2: "usual route",
+      len3: archive.length,
+      usual: [
+        [`${worker}/releases/ci-natives/key1`, "error"],
+        [`${worker}/releases/ci-natives/key2`, "error"],
+        [`${worker}/releases/ci-natives/key3`, "error"],
+      ],
+    });
+    // Request 1 tried both direct connections (2 refused); request 2 skipped direct completely (0); request 3 fell back to direct (1).
+    assert.equal(connections, 3);
     assert.equal(stderr.match(/trying the next route/g)?.length, 2);
+    assert.match(stderr, /by the usual route failed \(proxy down\); trying direct routes/);
+    assert.equal(requests.splice(0).length, 1);
   });
 
   await t.test("a DNS server that cannot be used leaves it to the usual route", async () => {

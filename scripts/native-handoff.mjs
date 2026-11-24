@@ -85,18 +85,55 @@ function directRequest(url, address, init, routeMs, idleMs) {
   });
 }
 
+const preferredRoutes = new Map();
+
+function usualRequest(at, init, usualMs) {
+  const signal = AbortSignal.any([AbortSignal.timeout(usualMs), ...(init.signal ? [init.signal] : [])]);
+  return fetch(at, { ...init, redirect: "error", signal });
+}
+
 /**
  * fetch, but a request to the releases Worker under STILLFAIL_DIRECT_DNS (the CI Mac: .github/actions/setup-mac) goes
  * to each of that server's first two addresses in turn and then by the machine's own routing, as native.ts's
  * fetchNative and release-put.sh's cf_curl do: through the home network's proxy an upload stalled until its deadline
  * (release/2026-11-25's natives-mac-reader, 45428114521 and 45432440965). A route that answers anything ends it; one
- * that fails is said and the next tried. Redirects are refused, as fetch's redirect: "error".
+ * that fails is said and the next tried. Once a route succeeds for an origin, later chunks try it first so a multi-part
+ * upload does not repeat dead direct timeouts on every chunk (falling back to the other routes if it later fails).
+ * Redirects are refused, as fetch's redirect: "error".
  */
 export async function fetchHandoff(at, init = {}, options = {}) {
-  const { dnsMs = 5_000, routeMs = 35_000, idleMs = 15_000, usualMs = 60_000 } = options;
+  const { dnsMs = 5_000, routeMs = 25_000, idleMs = 10_000, usualMs = 60_000 } = options;
   const url = new URL(at), dns = directDns(url);
   if (!dns) return fetch(at, init);
   const method = init.method ?? "GET";
+  const routeKey = dns + "\0" + url.origin;
+  const preferred = preferredRoutes.get(routeKey);
+  let triedDirect = "", triedUsual = false, lastError = null;
+  if (preferred?.kind === "direct") {
+    try {
+      const response = await directRequest(url, preferred.address, init, routeMs, idleMs);
+      if (response.status >= 500) preferredRoutes.delete(routeKey);
+      return response;
+    } catch (error) {
+      if (error?.redirect || init.signal?.aborted) throw error;
+      preferredRoutes.delete(routeKey);
+      triedDirect = preferred.address;
+      lastError = error;
+      log(method + " " + url.pathname + " at " + preferred.address + " failed (" + reason(error) + "); trying the next route");
+    }
+  } else if (preferred?.kind === "usual") {
+    try {
+      const response = await usualRequest(at, init, usualMs);
+      if (response.status >= 500) preferredRoutes.delete(routeKey);
+      return response;
+    } catch (error) {
+      if (init.signal?.aborted) throw error;
+      preferredRoutes.delete(routeKey);
+      triedUsual = true;
+      lastError = error;
+      log(method + " " + url.pathname + " by the usual route failed (" + reason(error) + "); trying direct routes");
+    }
+  }
   let addresses = [];
   try {
     addresses = await directAddresses(dns, url.hostname, dnsMs, init.signal ?? undefined);
@@ -106,15 +143,21 @@ export async function fetchHandoff(at, init = {}, options = {}) {
     log("resolving " + url.hostname + " at " + dns + " failed (" + reason(error) + "); by the usual route");
   }
   for (const address of addresses) {
+    if (address === triedDirect) continue;
     try {
-      return await directRequest(url, address, init, routeMs, idleMs);
+      const response = await directRequest(url, address, init, routeMs, idleMs);
+      if (response.status < 500) preferredRoutes.set(routeKey, { kind: "direct", address });
+      return response;
     } catch (error) {
       if (error?.redirect || init.signal?.aborted) throw error;
+      lastError = error;
       log(method + " " + url.pathname + " at " + address + " failed (" + reason(error) + "); trying the next route");
     }
   }
-  const signal = AbortSignal.any([AbortSignal.timeout(usualMs), ...(init.signal ? [init.signal] : [])]);
-  return fetch(at, { ...init, redirect: "error", signal });
+  if (triedUsual) throw lastError ?? new Error("all handoff routes failed");
+  const response = await usualRequest(at, init, usualMs);
+  if (response.status < 500) preferredRoutes.set(routeKey, { kind: "usual" });
+  return response;
 }
 
 async function transfer(url, options, consume) {
@@ -152,7 +195,7 @@ async function put(dir, manifest) {
     if (!asset.test(name)) throw new Error("Unexpected native archive name: " + name);
     const chunks = [];
     const hash = createHash("sha256");
-    for await (const bytes of createReadStream(join(dir, name), { highWaterMark: 4 * 1024 * 1024 })) {
+    for await (const bytes of createReadStream(join(dir, name), { highWaterMark: 8 * 1024 * 1024 })) {
       hash.update(bytes);
       // A 401 can be the Worker's clock behind GitHub's or a token run out over a long upload: a new token, twice.
       let part;
