@@ -26,3 +26,8 @@ jobs:
           STILLFAIL_CLOUD: monoid
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
         run: python3 cloud/deploy.py refresh-ci-r2-signer
+      - name: Prune expired CI archives
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+        run: node scripts/release-prune.ts --ci-natives-only

@@ -21,8 +21,6 @@ export interface Env {
   DIRECTORY_SOCKETS?: string;
   /** The stations' releases (scripts/release.sh). */
   RELEASES?: R2Bucket;
-  /** CI handoffs uploaded with an object-specific S3 link. The releases bucket still serves older handoffs. */
-  CI_NATIVE_ARCHIVES?: R2Bucket;
   CI_NATIVE_R2_ACCOUNT_ID?: string;
   /** The temporary S3 credential and its expiry. It can only put objects into the CI handoff prefix. */
   CI_NATIVE_R2_SIGNER?: string;

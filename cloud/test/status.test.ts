@@ -185,26 +185,21 @@ test("the branch pipeline gets a short PUT link for a single immutable CI object
     assert.match(receipt, new RegExp(`^\\d{10}-${sha}/[0-9a-f-]{36}$`));
     const url = new URL(upload);
     assert.equal(url.origin, `https://${"a".repeat(32)}.r2.cloudflarestorage.com`);
-    assert.equal(url.pathname, "/monoid-ci-natives/staged/ci-natives/" + receipt);
+    assert.equal(url.pathname, "/stillfail-releases/staged/ci-natives/" + receipt);
     assert.equal(url.searchParams.get("X-Amz-Expires"), "120");
     assert.equal(url.searchParams.get("X-Amz-Security-Token"), signer.sessionToken);
     assert.equal(url.searchParams.get("X-Amz-SignedHeaders"), "content-length;host;if-none-match");
     assert.match(url.searchParams.get("X-Amz-Signature") ?? "", /^[a-f0-9]{64}$/);
     assert.equal((await h.fetch("/releases/ci-natives/" + receipt)).status, 404);
 
-    const bucket = await h.mf.getR2Bucket("CI_NATIVE_ARCHIVES", "api") as unknown as Pick<R2Bucket, "put">;
+    const bucket = await h.mf.getR2Bucket("RELEASES", "api") as unknown as Pick<R2Bucket, "put">;
     await bucket.put("staged/ci-natives/" + receipt, "part");
     const got = await h.fetch("/releases/ci-natives/" + receipt);
     assert.equal(got.status, 200);
     assert.equal(await got.text(), "part");
 
-    // The company endpoint serves only its CI bucket while shared releases use an upstream.
+    // The company endpoint signs uploads while shared releases use an upstream.
     assert.equal((await h.fetch("/releases/ci-natives", { method: "PUT", body: "part" })).status, 404);
-    const old = `1700000000-${sha}/4c2b3e5d-e7a3-4c28-b7f1-fa96b9305844`;
-    const releases = await h.mf.getR2Bucket("RELEASES", "api") as unknown as Pick<R2Bucket, "put">;
-    await releases.put("staged/ci-natives/" + old, "old");
-    assert.equal((await h.fetch("/releases/ci-natives/" + old)).status, 404);
-
     const expiring = await fixture(119);
     try {
       assert.equal((await ticket(4, {}, expiring)).status, 404);

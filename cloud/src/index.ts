@@ -212,8 +212,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
     }
     const receipt = /^\/releases\/ci-natives\/(\d{10}-[0-9a-f]{40}\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(path);
     if (receipt && request.method === "GET") {
-      const bucket = env.CI_NATIVE_ARCHIVES ?? (env.RELEASES_UPSTREAM ? undefined : env.RELEASES);
-      return serveRelease(request, bucket, `staged/ci-natives/${receipt[1]}`, "application/octet-stream");
+      if (!env.RELEASES_UPSTREAM || env.CI_NATIVE_R2_ACCOUNT_ID) {
+        return serveRelease(request, env.RELEASES, `staged/ci-natives/${receipt[1]}`, "application/octet-stream");
+      }
     }
     return notFound();
   }

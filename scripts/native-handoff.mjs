@@ -208,7 +208,7 @@ async function uploadToR2(upload, key, bytes) {
   let url;
   try { url = new URL(upload); } catch { throw new Error("Invalid R2 upload URL"); }
   if (url.protocol !== "https:" || !r2Host.test(url.hostname) || url.port || url.username || url.password || url.hash ||
-      url.pathname !== "/monoid-ci-natives/staged/ci-natives/" + key || !url.searchParams.has("X-Amz-Signature")) {
+      url.pathname !== "/stillfail-releases/staged/ci-natives/" + key || !url.searchParams.has("X-Amz-Signature")) {
     throw new Error("Invalid R2 upload URL");
   }
   let response;

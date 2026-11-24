@@ -221,7 +221,7 @@ test("the native handoff posts metadata and sends the archive directly to the si
   writeFileSync(join(natives, name), "part");
   const sha = "a".repeat(40);
   const receipt = `1700000000-${sha}/4c2b3e5d-e7a3-4c28-b7f1-fa96b9305844`;
-  const url = `https://${"b".repeat(32)}.r2.cloudflarestorage.com/monoid-ci-natives/staged/ci-natives/${receipt}?X-Amz-Signature=private-signature`;
+  const url = `https://${"b".repeat(32)}.r2.cloudflarestorage.com/stillfail-releases/staged/ci-natives/${receipt}?X-Amz-Signature=private-signature`;
   const mock = `
     import assert from "node:assert/strict";
     let asked = false;

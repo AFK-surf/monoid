@@ -289,7 +289,7 @@ def account_id() -> str:
     return accounts[0]["id"]
 
 
-CI_NATIVE_BUCKET = "monoid-ci-natives"
+CI_NATIVE_BUCKET = "stillfail-releases"
 CI_NATIVE_PREFIX = "staged/ci-natives/"
 CI_NATIVE_TTL = 7 * 24 * 60 * 60
 CI_NATIVE_SECRET = "CI_NATIVE_R2_SIGNER"
@@ -697,8 +697,6 @@ def main() -> None:
             config["vars"] = {**config["vars"], "GOOGLE_CLIENT_ID": web.get("client_id", "dry-run"), "ADMIN_EMAIL": admin_account}
             if ci_native_r2:
                 config["vars"]["CI_NATIVE_R2_ACCOUNT_ID"] = account
-                config["r2_buckets"] = [*config.get("r2_buckets", []),
-                                        {"binding": "CI_NATIVE_ARCHIVES", "bucket_name": CI_NATIVE_BUCKET}]
             if not beta:
                 config = without_beta(config)
         local = ROOT / PARTS[part].replace(".jsonc", ".local.json")

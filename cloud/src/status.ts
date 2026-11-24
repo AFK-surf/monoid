@@ -162,7 +162,7 @@ const NATIVE_UPLOAD_TTL_SECONDS = 120;
 export async function stageNative(request: Request, env: Env): Promise<Response> {
   const direct = request.method === "POST";
   const { RELEASES: releases, CI_NATIVE_R2_SIGNER: signer, CI_NATIVE_R2_ACCOUNT_ID: account } = env;
-  if (direct ? !env.CI_NATIVE_ARCHIVES || !signer || !account : !releases) {
+  if (!releases || (direct && (!signer || !account))) {
     return reply({ error: "not_found" }, 404);
   }
   const claims = await repositoryClaims(request, env);
@@ -189,7 +189,7 @@ export async function stageNative(request: Request, env: Env): Promise<Response>
       }
       if (expiresAt < nowSeconds() + NATIVE_UPLOAD_TTL_SECONDS) return reply({ error: "not_found" }, 404);
       const client = new AwsClient({ accessKeyId, secretAccessKey, sessionToken, service: "s3", region: "auto" });
-      const target = new URL(`https://${account}.r2.cloudflarestorage.com/monoid-ci-natives/${key}`);
+      const target = new URL(`https://${account}.r2.cloudflarestorage.com/stillfail-releases/${key}`);
       target.searchParams.set("X-Amz-Expires", String(NATIVE_UPLOAD_TTL_SECONDS));
       const signed = await client.sign(target.href, {
         method: "PUT",
@@ -201,7 +201,7 @@ export async function stageNative(request: Request, env: Env): Promise<Response>
       return reply({ error: "r2_signer_unavailable" }, 503);
     }
   }
-  await releases!.put(key, request.body);
+  await releases.put(key, request.body);
   return reply({ receipt }, 201);
 }
 

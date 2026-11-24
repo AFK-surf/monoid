@@ -247,7 +247,7 @@ export async function harness(
         ...(options.mail ? { TEST_MAIL: "1" } : {}),
         ...(telemetryAccount ? { GCP_TELEMETRY: telemetryAccount } : {}),
       },
-      r2Buckets: options.ciNativeSigner ? ["RELEASES", "CI_NATIVE_ARCHIVES"] : ["RELEASES"],
+      r2Buckets: ["RELEASES"],
       durableObjects: {
         ...Object.fromEntries(["Account", "LoginAttempt", "LoginLimiter", "Directory", "TelemetryLimiter", "RelayLoad", "ServiceStatus", "Station"].map((className, i) => [["ACCOUNTS", "LOGINS", "LOGIN_LIMITS", "DIRECTORY", "TELEMETRY_LIMITS", "RELAY_LOAD", "SERVICE_STATUS", "STATIONS"][i], { className, useSQLite: true }])),
         RELAY: { className: "Relay", scriptName: "relay", useSQLite: true },
