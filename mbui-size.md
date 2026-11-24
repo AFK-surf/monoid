@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2ee61943a](https://github.com/AFK-surf/monoid/commit/2ee61943a73dd8befe837c9fbd73efa7b2400f7b) perf(station): fix O(N^2) Exporter::sources and he | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 | [cec55a581](https://github.com/AFK-surf/monoid/commit/cec55a5814431a92ad98f30d8045c6058ee9ff75) perf(core): trace each step of a start and when th | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 | [b3364e6c3](https://github.com/AFK-surf/monoid/commit/b3364e6c3162f69451876e18c4ee681d045e534c) fix(e2e): retry station_task start on transient ri | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [491053e63](https://github.com/AFK-surf/monoid/commit/491053e63b5024c26d17b28f5aafe9819f86b70e) fix(station): rename Search.#spawnSync to #spawnLo | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [674707c85](https://github.com/AFK-surf/monoid/commit/674707c850553d39ee4ba9c1ea2f1aba344e55e9) fix(app): drop the 屏幕 menu headings when no agent  | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [8f98e134a](https://github.com/AFK-surf/monoid/commit/8f98e134af1708e573fdb5714339079d0972d885) fix(station): bound the task list a station answer | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
-| [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.84 | 132.14 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2ee61943a](https://github.com/AFK-surf/monoid/commit/2ee61943a73dd8befe837c9fbd73efa7b2400f7b) perf(station): fix O(N^2) Exporter::sources and he | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.56 |
 | [cec55a581](https://github.com/AFK-surf/monoid/commit/cec55a5814431a92ad98f30d8045c6058ee9ff75) perf(core): trace each step of a start and when th | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.79 |
 | [b3364e6c3](https://github.com/AFK-surf/monoid/commit/b3364e6c3162f69451876e18c4ee681d045e534c) fix(e2e): retry station_task start on transient ri | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.62 |
 | [491053e63](https://github.com/AFK-surf/monoid/commit/491053e63b5024c26d17b28f5aafe9819f86b70e) fix(station): rename Search.#spawnSync to #spawnLo | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [674707c85](https://github.com/AFK-surf/monoid/commit/674707c850553d39ee4ba9c1ea2f1aba344e55e9) fix(app): drop the 屏幕 menu headings when no agent  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.43 |
 | [8f98e134a](https://github.com/AFK-surf/monoid/commit/8f98e134af1708e573fdb5714339079d0972d885) fix(station): bound the task list a station answer | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.16 |
 | [a2a1f41bb](https://github.com/AFK-surf/monoid/commit/a2a1f41bbfbe96aeaae1c00b3105c63aa098f029) feat(station,core,mbui): let a shared profile foll | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.87 |
-| [b55239583](https://github.com/AFK-surf/monoid/commit/b55239583372d921e62424d996c323e7e1b3c557) perf(ui,mbui): fix touch-move batching and elimina | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.53 |
