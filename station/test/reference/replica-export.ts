@@ -132,18 +132,36 @@ export function readHead(dir: string): Head | null {
   }
 }
 
-export function readHeadChecked(dir: string): Head | null {
+export function readHeadChecked(dir: string, ws?: string, gen?: string, origin?: string, hasProgress = false): Head | null {
   const path = headFile(dir);
   let text: string;
   try {
     text = readFileSync(path, "utf8"); // sync: in the export's own thread (worker.ts)
   } catch (e) {
-    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+      let hasBatches = false;
+      try {
+        hasBatches = readdirSync(join(dir, "log")).length > 0;
+      } catch {
+        hasBatches = false;
+      }
+      if (hasBatches || hasProgress) {
+        throw new Error(`missing ${path} for existing generation ${gen ?? ""}`);
+      }
+      return null;
+    }
     throw e;
   }
   const parsed = JSON.parse(text);
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`corrupted ${path}: expected JSON object`);
+  }
+  const h = parsed as Record<string, unknown>;
+  if ((gen !== undefined && h.gen !== gen) || (ws !== undefined && h.workspace !== ws) || (origin !== undefined && h.origin !== origin)) {
+    throw new Error(`corrupted ${path}: head identity mismatch`);
+  }
+  if (!Array.isArray(h.batches) || !h.batches.every((b) => typeof b === "string" && /^\d{10}-\d{10}-[0-9a-f]{8}\.ndjson\.zst$/.test(b))) {
+    throw new Error(`corrupted ${path}: invalid or missing batches array`);
   }
   return parsed as Head;
 }
@@ -381,12 +399,21 @@ export class Exporter {
       this.#state.exec("COMMIT");
       return passed;
     } catch (e) {
-      this.#state.exec("ROLLBACK");
+      try {
+        this.#state.exec("ROLLBACK");
+      } catch {}
       this.#known = prevKnown;
       this.#transcriptsPending = prevTranscriptsPending;
       this.#tfCache.clear();
       throw e;
     }
+  }
+
+  #hasWsProgress(ws: string): boolean {
+    for (const t of ["digests", "threads", "sent", "entering", "transcript_files"]) {
+      if (this.#state.prepare(`SELECT 1 FROM ${t} WHERE ws = ? LIMIT 1`).get(ws) !== undefined) return true;
+    }
+    return false;
   }
 
   #pass(told: Told, home: string, workspaces: Places["workspaces"]): Passed {
@@ -397,7 +424,7 @@ export class Exporter {
     for (const ws of names.keys()) {
       const gen = this.#genOf(ws);
       const dir = genDir(this.#root(), ws, gen);
-      const head: Head = readHeadChecked(dir) ?? {
+      const head: Head = readHeadChecked(dir, ws, gen, this.#o.origin, this.#hasWsProgress(ws)) ?? {
         v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
         batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
       };

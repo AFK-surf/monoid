@@ -25,31 +25,92 @@ fn has_flag(argv : Array[String], name : String) -> Bool {
   false
 }
 
+/// Parse an Int32 matching MoonBit `@string.parse_int` lexical rules:
+/// no leading/trailing whitespace, optional `+`/`-`, optional `0x`/`0o`/`0b`
+/// base prefix, `_` digit separators, and strict signed 32-bit range check.
 pub fn parse_int_flag(raw : Option[String], fallback : Int) -> Int {
   let s = match raw {
     Some(v) => v
     None => return fallback
   }
-  match sql_db::parse_int64_strict(s) {
-    Some(v) => {
-      let max32 = 2147483647.to_int64()
-      let min32 = -max32 - 1.to_int64()
-      if v >= min32 && v <= max32 {
-        v.to_int()
-      } else {
-        fallback
-      }
-    }
-    None => fallback
+  let b = s.to_bytes()
+  let n = b.length()
+  if n == 0 {
+    return fallback
   }
+  let mut i = 0
+  let mut neg = false
+  let c0 = b[i].to_int() & 0xFF
+  if c0 == 43 {
+    i = i + 1
+  } else if c0 == 45 {
+    neg = true
+    i = i + 1
+  }
+  if i >= n {
+    return fallback
+  }
+  let mut base : Int64 = 10.to_int64()
+  if (b[i].to_int() & 0xFF) == 48 && i + 1 < n {
+    let p = b[i + 1].to_int() & 0xFF
+    if p == 120 || p == 88 {
+      base = 16.to_int64()
+      i = i + 2
+    } else if p == 111 || p == 79 {
+      base = 8.to_int64()
+      i = i + 2
+    } else if p == 98 || p == 66 {
+      base = 2.to_int64()
+      i = i + 2
+    }
+  }
+  if i >= n {
+    return fallback
+  }
+  let max32 = 2147483647.to_int64()
+  let limit = if neg { max32 + 1.to_int64() } else { max32 }
+  let mut acc : Int64 = 0.to_int64()
+  let mut digits = 0
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    if c == 95 {
+      if digits == 0 {
+        return fallback
+      }
+      i = i + 1
+      continue
+    }
+    let d = if c >= 48 && c <= 57 {
+      c - 48
+    } else if c >= 97 && c <= 102 {
+      c - 97 + 10
+    } else if c >= 65 && c <= 70 {
+      c - 65 + 10
+    } else {
+      return fallback
+    }
+    if d.to_int64() >= base {
+      return fallback
+    }
+    if acc > (limit - d.to_int64()) / base {
+      return fallback
+    }
+    acc = acc * base + d.to_int64()
+    digits = digits + 1
+    i = i + 1
+  }
+  if digits == 0 {
+    return fallback
+  }
+  if neg { (-acc).to_int() } else { acc.to_int() }
 }
 
 /// Normalize a MoonBit `@string.parse_double`-compatible numeric string into
-/// canonical JSON number syntax (supports leading `+`, leading `.5`, trailing `5.`,
-/// and surrounding whitespace; rejects empty/non-numeric strings).
+/// canonical JSON number syntax: NO leading/trailing whitespace, supports
+/// optional `+`/`-`, leading zeros (`0012.5`), `_` digit separators (`1_000.5`),
+/// leading `.5`, trailing `5.`, and scientific notation.
 fn normalize_double_text(raw : String) -> Option[String] {
-  let trimmed = js_json::trim_js(raw)
-  let b = trimmed.to_bytes()
+  let b = raw.to_bytes()
   let n = b.length()
   if n == 0 {
     return None
@@ -70,17 +131,32 @@ fn normalize_double_text(raw : String) -> Option[String] {
   if neg {
     sb.write_byte(45 as Byte)
   }
-  let int_start = i
+  let int_digits : Array[Byte] = []
   while i < n {
     let c = b[i].to_int() & 0xFF
     if c >= 48 && c <= 57 {
-      sb.write_byte(b[i])
+      int_digits.push(b[i])
+      i = i + 1
+    } else if c == 95 {
+      if int_digits.length() == 0 {
+        return None
+      }
       i = i + 1
     } else {
       break
     }
   }
-  let has_int = i > int_start
+  let has_int = int_digits.length() > 0
+  if has_int {
+    // Strip leading zeros for canonical JSON syntax (keep at least one '0').
+    let mut zi = 0
+    while zi + 1 < int_digits.length() && (int_digits[zi].to_int() & 0xFF) == 48 {
+      zi = zi + 1
+    }
+    for k in zi..<int_digits.length() {
+      sb.write_byte(int_digits[k])
+    }
+  }
   let mut has_frac = false
   if i < n && (b[i].to_int() & 0xFF) == 46 {
     if !has_int {
@@ -88,17 +164,23 @@ fn normalize_double_text(raw : String) -> Option[String] {
     }
     sb.write_byte(46 as Byte)
     i = i + 1
-    let frac_start = i
+    let mut frac_digits = 0
     while i < n {
       let c = b[i].to_int() & 0xFF
       if c >= 48 && c <= 57 {
         sb.write_byte(b[i])
+        frac_digits = frac_digits + 1
+        i = i + 1
+      } else if c == 95 {
+        if frac_digits == 0 {
+          return None
+        }
         i = i + 1
       } else {
         break
       }
     }
-    has_frac = i > frac_start
+    has_frac = frac_digits > 0
     if !has_frac {
       sb.write_byte(48 as Byte)
     }
@@ -118,17 +200,23 @@ fn normalize_double_text(raw : String) -> Option[String] {
           i = i + 1
         }
       }
-      let exp_start = i
+      let mut exp_digits = 0
       while i < n {
         let c = b[i].to_int() & 0xFF
         if c >= 48 && c <= 57 {
           sb.write_byte(b[i])
+          exp_digits = exp_digits + 1
+          i = i + 1
+        } else if c == 95 {
+          if exp_digits == 0 {
+            return None
+          }
           i = i + 1
         } else {
           break
         }
       }
-      if i == exp_start {
+      if exp_digits == 0 {
         return None
       }
     }

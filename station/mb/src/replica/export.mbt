@@ -319,13 +319,57 @@ fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
 }
 
 ///|
-fn Exporter::read_head_checked(self : Exporter, dir : String) -> JValue? raise {
+fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Bool raise {
+  for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
+    if self.state.all("SELECT 1 FROM \{t} WHERE ws = ? LIMIT 1", [s(ws)]).length() > 0 {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir : String) -> JValue? raise {
   let path = self.files.join([dir, "head.json"])
   match self.files.read(path) {
-    None => None
+    None => {
+      if self.files.exists(path) || self.files.lstat(path) is Some(_) {
+        fail("cannot read \{path}")
+      }
+      let log_dir = self.files.join([dir, "log"])
+      let has_log = match self.files.names(log_dir) {
+        Some(names) => names.length() > 0
+        None => self.files.exists(log_dir)
+      }
+      if has_log || self.has_ws_progress(ws) {
+        fail("missing \{path} for existing generation \{gen}")
+      }
+      None
+    }
     Some(t) =>
       match (@jsjson.parse(t) catch { e => fail("corrupted \{path}: \{e}") }) {
-        Obj(_) as v => Some(v)
+        Obj(_) as v => {
+          if text_of(get(v, "gen")) != Some(gen) ||
+            text_of(get(v, "workspace")) != Some(ws) ||
+            text_of(get(v, "origin")) != Some(self.origin) {
+            fail("corrupted \{path}: head identity mismatch")
+          }
+          match get(v, "batches") {
+            Some(Arr(bs)) => {
+              for item in bs {
+                match text_of(Some(item)) {
+                  Some(name) =>
+                    if batch_span(name) is None {
+                      fail("corrupted \{path}: invalid batch name")
+                    }
+                  None => fail("corrupted \{path}: invalid batch entry")
+                }
+              }
+              Some(v)
+            }
+            _ => fail("corrupted \{path}: missing batches array")
+          }
+        }
         _ => fail("corrupted \{path}: expected JSON object")
       }
   }
@@ -403,7 +447,11 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
   let prev_known = self.known
   let prev_transcripts_pending = self.transcripts_pending
   self.state.exec("BEGIN IMMEDIATE")
-  let passed = self.pass_in(told, home) catch {
+  let passed = try {
+    let p = self.pass_in(told, home)
+    self.state.exec("COMMIT")
+    p
+  } catch {
     e => {
       self.state.exec("ROLLBACK") catch {
         _ => ()
@@ -414,7 +462,6 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
       raise e
     }
   }
-  self.state.exec("COMMIT")
   set(passed, "empty", Bool(self.empty()))
 }
 
@@ -438,7 +485,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     let ws = w.0
     let gen = self.gen_of(ws)
     let dir = self.gen_dir(ws, gen)
-    let head = match self.read_head_checked(dir) {
+    let head = match self.read_head_checked(ws, gen, dir) {
       Some(h) => h
       None =>
         Obj([

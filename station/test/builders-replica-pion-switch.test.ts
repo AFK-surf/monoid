@@ -39,7 +39,7 @@ import { takeBackSoon } from "../src/replica/restore.ts";
 import { ProgramRunner } from "../src/replica/runner.ts";
 import { Store } from "../src/store/store.ts";
 import { nothingTold } from "./reference/replica-export.ts";
-import { HOME, ORIGIN, OTHER, attach, chat, station } from "./replica-fakes.ts";
+import { HOME, ORIGIN, OTHER, attach, chat, rowsOf, station } from "./replica-fakes.ts";
 
 type Json = any;
 const NOW = 1_700_000_000_000;
@@ -251,6 +251,7 @@ function makeRichStation(): {
     text: "with attachment",
     attachments: [att],
   });
+  store.setChatHidden("p@x", t.id, true);
   store.setRuntimeSessionId("chat:a", "rt-agy-1");
   store.db
     .prepare("INSERT INTO runtime_sessions (session_key, id, runtime, profile, at) VALUES (?, ?, ?, ?, ?)")
@@ -311,24 +312,27 @@ test("bidirectional MB export -> Pion restore and Pion export -> MB restore prod
 
   assert.ok(Object.keys(headPion.transcriptFiles ?? {}).length >= 1, "headPion.transcriptFiles must be non-empty");
 
-  for (const tbl of [
-    "threads",
-    "sessions",
-    "thread_sessions",
-    "entries",
-    "letters",
-    "runtime_sessions",
-    "turns",
-    "reads",
-    "pins",
-    "closed_cards",
-    "opened_chats",
-    "replica_restored",
-  ]) {
-    const rowsA = dumpTableRows(dbA, tbl).map((r) => JSON.stringify(r).replaceAll(destA, "<DATA>").replaceAll(headMb.gen, "<GEN>"));
-    const rowsB = dumpTableRows(dbB, tbl).map((r) => JSON.stringify(r).replaceAll(destB, "<DATA>").replaceAll(headPion.gen, "<GEN>"));
-    assert.deepEqual(rowsA, rowsB, `table ${tbl} must match 0-diff between MB->Pion and Pion->MB`);
+  // Compare ALL RESTORE_ORDER tables (including hidden_chats, turns, reads, pins, closed_cards, opened_chats)
+  // directly against source DB expected rows via replica-fakes.ts `rowsOf`, plus separate `replica_restored` check.
+  const srcDbConn = new DatabaseSync(made.db, { readOnly: true });
+  const dbAConn = new DatabaseSync(dbA, { readOnly: true });
+  const dbBConn = new DatabaseSync(dbB, { readOnly: true });
+  try {
+    const expectedA = rowsOf(srcDbConn, null, made.data, destA);
+    const expectedB = rowsOf(srcDbConn, null, made.data, destB);
+    const actualA = rowsOf(dbAConn, null);
+    const actualB = rowsOf(dbBConn, null);
+    assert.ok(expectedA.hidden_chats!.size >= 1, "fixture must seed hidden_chats");
+    assert.deepEqual(actualA, expectedA, "MB export -> Pion restore must match source DB rows 0-diff across all tables");
+    assert.deepEqual(actualB, expectedB, "Pion export -> MB restore must match source DB rows 0-diff across all tables");
+  } finally {
+    srcDbConn.close();
+    dbAConn.close();
+    dbBConn.close();
   }
+  const restRowsA = dumpTableRows(dbA, "replica_restored").map((r) => JSON.stringify(r).replaceAll(headMb.gen, "<GEN>"));
+  const restRowsB = dumpTableRows(dbB, "replica_restored").map((r) => JSON.stringify(r).replaceAll(headPion.gen, "<GEN>"));
+  assert.deepEqual(restRowsA, restRowsB, "table replica_restored must match 0-diff between MB->Pion and Pion->MB");
 
   // Regular attachment content must also be restored identically on both sides.
   const attRel = attPath.slice(made.data.length + 1);
@@ -459,22 +463,34 @@ test("forced head write failure rolls back export.db cleanly and retries on next
   // Pass 1 establishes gen dir.
   const p1 = await exp.ask({ type: "pass", told: nothingTold() });
   const gen = p1.heads[HOME].gen as string;
-  const headPath = join(rep, "own", HOME, gen, "head.json");
+  const genDir = join(rep, "own", HOME, gen);
+  const headPath = join(genDir, "head.json");
   const savedHead = readFileSync(headPath, "utf8");
+  const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
-  // Add a new entry and replace head.json with a directory so writing head.json fails!
+  // Add a new entry and block writing head.json (chmod 0555 on genDir lets read_head_checked + log/ write succeed,
+  // then fails at write_head after pass_in has mutated in-memory state).
   const told = nothingTold();
   made.store.subscribe((c) => void tell(told, c));
   const th = made.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
   made.store.insertMessage({ thread: th.id, ts: "r2.fault", authorKind: "person", author: "p@x", text: "after-head-fault" });
-  rmSync(headPath);
-  mkdirSync(headPath);
+  if (!isRoot) {
+    chmodSync(genDir, 0o555);
+  } else {
+    rmSync(headPath);
+    mkdirSync(headPath);
+  }
 
-  await assert.rejects(() => exp.ask({ type: "pass", told }), /EISDIR|Is a directory/i);
-
-  // Restore head.json and retry pass: because export.db rolled back, the new entry is still exported cleanly.
-  rmSync(headPath, { recursive: true });
-  writeFileSync(headPath, savedHead);
+  try {
+    await assert.rejects(() => exp.ask({ type: "pass", told }), /EACCES|Permission denied|cannot read|EISDIR|Is a directory/i);
+  } finally {
+    if (!isRoot) {
+      chmodSync(genDir, 0o755);
+    } else {
+      rmSync(headPath, { recursive: true, force: true });
+      writeFileSync(headPath, savedHead);
+    }
+  }
   const p2 = await exp.ask({ type: "pass", told });
   assert.ok(p2.wrote >= 1, "retry pass after head write failure must write the rolled-back entry");
   await exp.close();
@@ -486,30 +502,41 @@ test("forced head write failure rolls back export.db cleanly and retries on next
   ] as const) {
     const { made: m2 } = makeRichStation();
     const rep2 = join(m2.data, `replica-cold-fault-${label}`);
-    // Run pass 1, capture gen, then start a brand-new cold process where head.json is replaced by a directory on its FIRST pass.
+    // Run pass 1, capture gen, then start a brand-new cold process where write_head fails on its FIRST pass.
     const seed = new ExportClient(bin, m2.db, rep2, m2.data);
     await seed.ask({ type: "places", places: PLACES });
     const sp1 = await seed.ask({ type: "pass", told: nothingTold() });
     const g2 = sp1.heads[HOME].gen as string;
-    const h2Path = join(rep2, "own", HOME, g2, "head.json");
+    const g2Dir = join(rep2, "own", HOME, g2);
+    const h2Path = join(g2Dir, "head.json");
     const h2Saved = readFileSync(h2Path, "utf8");
-    const logDir2 = join(rep2, "own", HOME, g2, "log");
+    const logDir2 = join(g2Dir, "log");
     await seed.close();
 
-    // Modify source DB while cold exporter is stopped, then block head.json with a directory.
-    const th2 = m2.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
-    m2.store.insertMessage({ thread: th2.id, ts: "r2.coldfault", authorKind: "person", author: "p@x", text: `cold-fault-msg-${label}` });
-    rmSync(h2Path);
-    mkdirSync(h2Path);
+    // Modify an existing session's metadata field (which requires cold full-scan, not just incremental entries cursor!)
+    // while cold exporter is stopped, then block write_head by making genDir read-only (head.json & log/ stay accessible
+    // so pass_in executes the full scan and mutates `known` before failing at write_head).
+    m2.store.db.prepare("UPDATE sessions SET model = ? WHERE key = ?").run(`r2-cold-model-${label}`, "chat:a");
+    if (!isRoot) {
+      chmodSync(g2Dir, 0o555);
+    } else {
+      rmSync(h2Path);
+      mkdirSync(h2Path);
+    }
 
     const cold = new ExportClient(bin, m2.db, rep2, m2.data);
     cold.now = NOW + 2000;
     await cold.ask({ type: "places", places: PLACES });
-    await assert.rejects(() => cold.ask({ type: "pass", told: nothingTold() }), /EISDIR|Is a directory/i);
-
-    // Fix head.json path and retry IN THE SAME PROCESS (without restarting): must write the rolled-back change!
-    rmSync(h2Path, { recursive: true });
-    writeFileSync(h2Path, h2Saved);
+    try {
+      await assert.rejects(() => cold.ask({ type: "pass", told: nothingTold() }), /EACCES|Permission denied|cannot read|EISDIR|Is a directory/i);
+    } finally {
+      if (!isRoot) {
+        chmodSync(g2Dir, 0o755);
+      } else {
+        rmSync(h2Path, { recursive: true, force: true });
+        writeFileSync(h2Path, h2Saved);
+      }
+    }
     const retry = await cold.ask({ type: "pass", told: nothingTold() });
     assert.ok(retry.wrote >= 1, `${label}: same-process retry after cold-start head failure must write >= 1`);
     const retryHead = retry.heads[HOME];
@@ -524,11 +551,9 @@ test("forced head write failure rolls back export.db cleanly and retries on next
     Store.open(destDb2).close();
     stageRestoreCopy(rep2, m2.data, HOME, g2, dest2, sources2);
     await takeBackSoon(dest2, destDb2, NOW + 3000, bin);
-    const entries2 = dumpTableRows(destDb2, "entries");
-    assert.ok(
-      entries2.some((e) => JSON.stringify(e).includes(`cold-fault-msg-${label}`)),
-      `${label}: restored DB must include message exported on same-process retry`,
-    );
+    const sessions2 = dumpTableRows(destDb2, "sessions") as Array<{ key: string; model: string | null }>;
+    const chatA = sessions2.find((s) => s.key === "chat:a");
+    assert.equal(chatA?.model, `r2-cold-model-${label}`, `${label}: restored session must reflect metadata modified before cold-start failure`);
   }
 });
 
@@ -790,9 +815,11 @@ test("production entrypoints (ProgramRunner, takeBackSoon, carry) cold-start wit
   );
 });
 
-test("corrupted head.json on existing generation aborts pass and preserves all historical batches (MB + Pion)", async (t) => {
+test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass and preserves all historical batches (MB + Pion)", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
+
+  const isNonRoot = typeof process.getuid === "function" && process.getuid() !== 0;
 
   for (const [label, bin] of [
     ["mb", bins.mb],
@@ -800,7 +827,6 @@ test("corrupted head.json on existing generation aborts pass and preserves all h
   ] as const) {
     const made = station();
     cleanupDirs.push(made.data);
-    // Ensure two distinct sessions exist (`chat:a` unchanged, `chat:b` updated later).
     const thA = made.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
     made.store.insertMessage({ thread: thA.id, ts: "u.1", authorKind: "person", author: "p@x", text: "unchanged-session-msg" });
 
@@ -816,15 +842,35 @@ test("corrupted head.json on existing generation aborts pass and preserves all h
     const savedBatches = readdirSync(logDir).sort();
     assert.ok(savedBatches.length >= 1);
 
-    // Corrupt head.json, update second session/message, and run pass -> MUST fail & keep all historical batches!
-    writeFileSync(headPath, "{corrupted-json");
+    // Update second message before testing all 4 head.json fault modes.
     made.store.insertMessage({ thread: thA.id, ts: "x.2", authorKind: "person", author: "p@x", text: "updated-after-corrupt" });
+
+    // Fault 1: invalid JSON syntax
+    writeFileSync(headPath, "{corrupted-json");
     await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /corrupt|json|head/i);
-    assert.deepEqual(
-      readdirSync(logDir).sort(),
-      savedBatches,
-      `${label}: historical batches must NEVER be deleted when head.json is corrupted`,
-    );
+    assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: invalid JSON must preserve all historical batches`);
+
+    // Fault 2: valid JSON object missing `batches`
+    writeFileSync(headPath, JSON.stringify({ v: 1, origin: ORIGIN, workspace: HOME, gen }));
+    await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /corrupt|batches|head/i);
+    assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: missing batches schema must preserve all historical batches`);
+
+    // Fault 3: head.json deleted while gen dir, log/, and export.db progress still exist
+    rmSync(headPath);
+    await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /missing|head/i);
+    assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: deleted head.json must preserve all historical batches`);
+
+    // Fault 4: chmod 000 head.json (unreadable EACCES on non-root)
+    writeFileSync(headPath, savedHead);
+    if (isNonRoot) {
+      chmodSync(headPath, 0o000);
+      try {
+        await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /cannot read|EACCES|permission|head/i);
+        assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: chmod 000 head.json must preserve all historical batches`);
+      } finally {
+        chmodSync(headPath, 0o644);
+      }
+    }
 
     // Restore valid head.json -> next pass succeeds and full restore retains BOTH unchanged and updated messages!
     writeFileSync(headPath, savedHead);
@@ -840,39 +886,31 @@ test("corrupted head.json on existing generation aborts pass and preserves all h
     stageRestoreCopy(rep, made.data, HOME, gen, dest, sources);
     await takeBackSoon(dest, destDb, NOW + 4000, bin);
     const restoredSessions = dumpTableRows(destDb, "sessions");
-    assert.ok(restoredSessions.length >= 2, `${label}: both sessions must survive after head.json corruption recovery`);
+    assert.ok(restoredSessions.length >= 2, `${label}: both sessions must survive after head.json recovery`);
     const restoredEntries = dumpTableRows(destDb, "entries");
     assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("unchanged-session-msg")), `${label}: unchanged message preserved`);
     assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("updated-after-corrupt")), `${label}: updated message preserved`);
   }
 });
 
-test("CLI numeric flag parity: --batch-bytes 4294967296 falls back to default and --now +1 parses as 1 (MB + Pion)", async (t) => {
+test("CLI numeric flag parity: Int (+0/0x0/0_0/4294967296) and Double (+1/0012.5/1_000.5/' 12.5 ') match MB 1:1", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
-  for (const [label, bin] of [
-    ["mb", bins.mb],
-    ["pion", bins.pion],
-  ] as const) {
+  const runExportFlag = async (bin: string, flagVal: string) => {
     const made = station();
     cleanupDirs.push(made.data);
-    const rep = join(made.data, `replica-cli-num-${label}`);
+    const thNum = made.store.db.prepare("SELECT id FROM threads ORDER BY id LIMIT 1").get() as { id: number };
+    made.store.insertMessage({ thread: thNum.id, ts: "num.1", authorKind: "person", author: "p@x", text: "numeric flag parity" });
+    const rep = join(made.data, "replica-cli-num");
     const p = new MbProcess(bin, [
-      "--builder",
-      "replica-export",
-      "--db",
-      made.db,
-      "--replica",
-      rep,
-      "--data-dir",
-      made.data,
-      "--origin",
-      ORIGIN,
-      "--sep",
-      sep,
-      "--batch-bytes",
-      "4294967296",
+      "--builder", "replica-export",
+      "--db", made.db,
+      "--replica", rep,
+      "--data-dir", made.data,
+      "--origin", ORIGIN,
+      "--sep", sep,
+      "--batch-bytes", flagVal,
     ]);
     const ask = (req: Record<string, unknown>) =>
       new Promise<any>((resolve, reject) => {
@@ -887,27 +925,69 @@ test("CLI numeric flag parity: --batch-bytes 4294967296 falls back to default an
     try {
       await ask({ type: "places", places: PLACES });
       const passed = await ask({ type: "pass", told: nothingTold() });
-      assert.ok(passed.wrote >= 1, `${label}: --batch-bytes 4294967296 must fall back to default, not 0`);
       const head = passed.heads[HOME];
-      const hashes = [...Object.keys(head.files ?? {}), ...Object.keys(head.transcriptFiles ?? {})];
+      const hashes = [...Object.keys(head?.files ?? {}), ...Object.keys(head?.transcriptFiles ?? {})];
       const sources = await ask({ type: "sources", hashes });
       await ask({ type: "close" });
+      const stDb = new DatabaseSync(join(rep, "export.db"), { readOnly: true });
+      let entriesCursor = "0";
+      try {
+        const row = stDb.prepare("SELECT v FROM meta WHERE k = 'entries'").get() as { v: string } | undefined;
+        entriesCursor = row?.v ?? "0";
+      } finally {
+        stDb.close();
+      }
+      return { made, rep, head, sources, wrote: passed.wrote as number, more: passed.more as boolean, entriesCursor };
+    } finally {
+      p.kill();
+    }
+  };
 
-      // Test --now +1 on replica-restore
-      const dest = tempDir(`w6b-now-plus1-${label}-`);
+  // Int flags:
+  // - +0, 0x0, 0_0 all parse as 0 (so `most = 0`: pass stops with `more = true` and `entries` cursor stays at "0");
+  // - 4294967296 overflows signed Int32 -> falls back to default BATCH_BYTES (`more = false` and `entries` cursor > 0).
+  for (const [val, wantMore] of [
+    ["+0", true],
+    ["0x0", true],
+    ["0_0", true],
+    ["4294967296", false],
+  ] as const) {
+    const mbRes = await runExportFlag(bins.mb, val);
+    const pionRes = await runExportFlag(bins.pion, val);
+    assert.equal(pionRes.more, mbRes.more, `--batch-bytes ${val}: more must match MB`);
+    assert.equal(pionRes.entriesCursor, mbRes.entriesCursor, `--batch-bytes ${val}: entries cursor must match MB`);
+    assert.equal(pionRes.more, wantMore, `--batch-bytes ${val}: expected more=${wantMore}`);
+    if (wantMore) {
+      assert.equal(pionRes.entriesCursor, "0", `--batch-bytes ${val}: most=0 must leave entries cursor at 0`);
+    } else {
+      assert.ok(Number(pionRes.entriesCursor) > 0, `--batch-bytes ${val}: fallback BATCH_BYTES must advance entries cursor past 0`);
+    }
+  }
+
+  // Double flags on replica-restore: +1 -> 1, 0012.5 -> 12.5, 1_000.5 -> 1000.5, " 12.5 " -> 0 (MB rejects whitespace!)
+  const seed = await runExportFlag(bins.pion, "4294967296");
+  for (const [rawNow, wantAt] of [
+    ["+1", 1],
+    ["0012.5", 12.5],
+    ["1_000.5", 1000.5],
+    [" 12.5 ", 0],
+  ] as const) {
+    for (const [label, bin] of [
+      ["mb", bins.mb],
+      ["pion", bins.pion],
+    ] as const) {
+      const dest = tempDir(`w6b-now-${label}-`);
       const destDb = join(dest, "stillfail.db");
       Store.open(destDb).close();
-      stageRestoreCopy(rep, made.data, HOME, head.gen, dest, sources);
-      const rp = new MbProcess(bin, ["--builder", "replica-restore", "--db", destDb, "--data", dest, "--now", "+1", "--sep", sep]);
+      stageRestoreCopy(seed.rep, seed.made.data, HOME, seed.head.gen, dest, seed.sources);
+      const rp = new MbProcess(bin, ["--builder", "replica-restore", "--db", destDb, "--data", dest, "--now", rawNow, "--sep", sep]);
       const rmsg = await new Promise<{ ready?: unknown; error?: string }>((resolve, reject) => {
         rp.once("message", resolve);
         rp.once("error", reject);
       });
-      assert.equal(rmsg.error, undefined);
+      assert.equal(rmsg.error, undefined, `${label}: --now ${JSON.stringify(rawNow)} must succeed`);
       const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8"));
-      assert.equal(outcome.at, 1, `${label}: --now +1 must parse as 1`);
-    } finally {
-      p.kill();
+      assert.equal(outcome.at, wantAt, `${label}: --now ${JSON.stringify(rawNow)} must parse as ${wantAt}`);
     }
   }
 });

@@ -465,14 +465,70 @@ fn Exporter::read_head(self : Exporter, dir : String) -> Option[js_json::JValue]
   }
 }
 
-fn Exporter::read_head_checked(self : Exporter, dir : String) -> Result[Option[js_json::JValue], String] {
+fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Result[Bool, String] {
+  let tables = ["digests", "threads", "sent", "entering", "transcript_files"]
+  for i in 0..<tables.length() {
+    match self.state.all("SELECT 1 FROM " + tables[i] + " WHERE ws = ? LIMIT 1", [base_codec::json_str(ws)]) {
+      Ok(rows) => if rows.length() > 0 { return Ok(true) }
+      Err(e) => return Err(e.message)
+    }
+  }
+  Ok(false)
+}
+
+fn Exporter::read_head_checked(
+  self : Exporter,
+  ws : String,
+  gen : String,
+  dir : String,
+) -> Result[Option[js_json::JValue], String] {
   let path = self.files.join([dir, "head.json"])
   match self.files.read(path) {
-    Ok(None) => Ok(None)
-    Err(e) => Err("failed to read " + path + ": " + e)
+    Err(e) => Err("cannot read " + path + ": " + e)
+    Ok(None) => {
+      if !c_missing(path, true) {
+        return Err("cannot read " + path)
+      }
+      let has_batches = match self.files.names(self.files.join([dir, "log"])) {
+        Some(names) => names.length() > 0
+        None => false
+      }
+      if has_batches {
+        return Err("missing " + path + " for existing generation " + gen)
+      }
+      match self.has_ws_progress(ws) {
+        Ok(true) => Err("missing " + path + " for existing generation " + gen)
+        Ok(false) => Ok(None)
+        Err(e) => Err(e)
+      }
+    }
     Ok(Some(t)) => {
       match js_json::parse(t) {
-        Ok(js_json::JValue::Obj(es)) => Ok(Some(js_json::JValue::Obj(es)))
+        Ok(js_json::JValue::Obj(es)) => {
+          let h = js_json::JValue::Obj(es)
+          if !opt_str_is(text_of(jval_get(h, "gen")), gen) ||
+          !opt_str_is(text_of(jval_get(h, "workspace")), ws) ||
+          !opt_str_is(text_of(jval_get(h, "origin")), self.origin) {
+            return Err("corrupted " + path + ": head identity mismatch")
+          }
+          match jval_get(h, "batches") {
+            Some(js_json::JValue::Arr(bs)) => {
+              for i in 0..<bs.length() {
+                match text_of(Some(bs[i])) {
+                  Some(name) => {
+                    match batch_span(name) {
+                      Some(_) => ()
+                      None => return Err("corrupted " + path + ": invalid batch name")
+                    }
+                  }
+                  None => return Err("corrupted " + path + ": invalid batch entry")
+                }
+              }
+              Ok(Some(h))
+            }
+            _ => Err("corrupted " + path + ": missing batches array")
+          }
+        }
         Ok(_) => Err("corrupted " + path + ": expected JSON object")
         Err(e) => Err("corrupted " + path + ": " + e)
       }
@@ -611,7 +667,7 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       Err(e) => return Err(e)
     }
     let dir = self.gen_dir(ws, gen)
-    let head = match self.read_head_checked(dir) {
+    let head = match self.read_head_checked(ws, gen, dir) {
       Ok(Some(h)) => h
       Err(e) => return Err(e)
       Ok(None) =>
