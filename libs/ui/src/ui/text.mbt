@@ -1344,6 +1344,7 @@ let glyphs_ahead_batch : Int = 48
 
 ///|
 /// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase (glyph_sub_at).
+/// Used only for phase-less `shape` (`text_cache.fresh`) prewarming, never for exact-phase `laid_ahead` deduplication.
 fn glyph_drawn_any_sub(k : Int) -> Bool {
   text_cache.glyphs.contains(k) ||
   text_cache.glyphs.contains(k | (1 << 26)) ||
@@ -1366,8 +1367,11 @@ fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
       break
     }
     let k = keys[c]
-    if k >= 0 && !glyph_drawn_any_sub(k) {
-      glyphs_laid.push(glyph_sub_at(k, ox + x(c), sc, z))
+    if k >= 0 {
+      let pk = glyph_sub_at(k, ox + x(c), sc, z)
+      if !text_cache.glyphs.contains(pk) {
+        glyphs_laid.push(pk)
+      }
     }
   }
   if glyphs_laid.length() >= glyphs_ahead_batch {
@@ -1403,7 +1407,7 @@ fn glyphs_laid_flush() -> Unit {
   let mut n = 0
   for k in laid {
     let base = k & 0x03FFFFFF
-    if !glyphs_ahead_laid_keys.contains(k) && !glyph_drawn_any_sub(base) {
+    if !glyphs_ahead_laid_keys.contains(k) && !text_cache.glyphs.contains(k) {
       glyphs_ahead_laid_keys[k] = true
       glyphs_ahead_laid_bases[base] = true
       keys[n] = k
@@ -1442,7 +1446,7 @@ fn glyphs_ahead() -> Unit {
   let asked : Map[Int, Bool] = Map([])
   for k in laid {
     let base = k & 0x03FFFFFF
-    if !glyphs_ahead_laid_keys.contains(k) && !asked.contains(k) && !glyph_drawn_any_sub(base) {
+    if !glyphs_ahead_laid_keys.contains(k) && !asked.contains(k) && !text_cache.glyphs.contains(k) {
       asked[k] = true
       asked[base | (1 << 30)] = true
       keys[n] = k

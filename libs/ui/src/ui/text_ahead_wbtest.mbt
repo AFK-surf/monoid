@@ -554,3 +554,105 @@ test "words_ahead ellipsizes overflowing single-line text and prewarms ellipsis 
   let has_ellipsis = asked.iter().any(fn(k) { (k & 0x03FFFFFF) == ellipsis_base })
   assert_true(has_ellipsis, msg="expected ellipsis glyph U+2026 to be prewarmed")
 }
+
+///|
+test "laid_ahead dispatches non-zero subpixel phases after phase 0 is in atlas via glyphs_ahead" {
+  let asked : Array[Int] = []
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=200.0, scale=2.75)
+  t.latin_advances(
+    FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+    FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+  )
+  let sample = "精确子像素相位判重测试abcd"
+  // Pre-populate phase 0 for every glyph in sample into text_cache.glyphs.
+  let s = shape(sample, 15.3, 400)
+  for k in s.keys {
+    if k >= 0 {
+      text_cache.glyphs[k] = no_glyph
+    }
+  }
+  glyphs_ahead()
+  // Also push base keys into fresh to confirm fresh will not re-dispatch phase 0.
+  for k in s.keys {
+    if k >= 0 {
+      text_cache.fresh.push(k)
+    }
+  }
+  fake_ahead.val = Some(asked)
+  let prev_ox = measuring_origin_x.val
+  measuring_origin_x.val = 0.25 / g().scale
+  let tl = layout_text(sample, 15.3, 400, 328.0, true)
+  let ox = measuring_origin_x.val
+  measuring_origin_x.val = prev_ox
+  glyphs_ahead()
+  fake_ahead.val = None
+  let want : Array[Int] = []
+  let seen : Map[Int, Bool] = Map([])
+  for c, k in tl.shaped.keys {
+    if k >= 0 {
+      let pk = glyph_sub_at(k, ox + tl.xs[c] + tl.shaped.pad, g().scale, 1.0)
+      if (pk >> 26) != 0 && !seen.contains(pk) {
+        seen[pk] = true
+        want.push(pk)
+      }
+    }
+  }
+  assert_true(want.length() > 0 && want.length() < glyphs_ahead_batch)
+  assert_eq(asked, want, msg="expected exact non-zero phase keys once and no phase 0 from fresh")
+  for k in asked {
+    assert_true((k >> 26) != 0, msg="phase 0 must not be re-dispatched: \{k}")
+  }
+}
+
+///|
+test "laid_ahead dispatches non-zero subpixel phases after phase 0 is in atlas via glyphs_laid_flush" {
+  let asked : Array[Int] = []
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=600.0, scale=2.75)
+  t.latin_advances(
+    FixedArray::makei(95, fn(i) { 0.45 + (i % 7).to_double() * 0.037 }),
+    FixedArray::makei(95, fn(i) { 0.48 + (i % 5).to_double() * 0.041 }),
+  )
+  // > 48 distinct characters so laid_ahead triggers mid-layout glyphs_laid_flush().
+  let long_sample = "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰菜重芥姜海咸河淡"
+  let s = shape(long_sample, 15.3, 400)
+  for k in s.keys {
+    if k >= 0 {
+      text_cache.glyphs[k] = no_glyph
+    }
+  }
+  glyphs_ahead()
+  for k in s.keys {
+    if k >= 0 {
+      text_cache.fresh.push(k)
+    }
+  }
+  fake_ahead.val = Some(asked)
+  let prev_ox = measuring_origin_x.val
+  measuring_origin_x.val = 0.25 / g().scale
+  let tl = layout_text(long_sample, 15.3, 400, 328.0, true)
+  let ox = measuring_origin_x.val
+  measuring_origin_x.val = prev_ox
+  let mid_count = asked.length()
+  assert_true(
+    mid_count >= glyphs_ahead_batch,
+    msg="expected mid-layout glyphs_laid_flush >= \{glyphs_ahead_batch}, got \{mid_count}",
+  )
+  glyphs_ahead()
+  fake_ahead.val = None
+  let want : Array[Int] = []
+  let seen : Map[Int, Bool] = Map([])
+  for c, k in tl.shaped.keys {
+    if k >= 0 {
+      let pk = glyph_sub_at(k, ox + tl.xs[c] + tl.shaped.pad, g().scale, 1.0)
+      if (pk >> 26) != 0 && !seen.contains(pk) {
+        seen[pk] = true
+        want.push(pk)
+      }
+    }
+  }
+  assert_true(want.length() >= glyphs_ahead_batch)
+  assert_eq(asked, want, msg="expected exact non-zero phase keys once across mid-layout flush + glyphs_ahead")
+  for k in asked {
+    assert_true((k >> 26) != 0, msg="phase 0 must not be re-dispatched: \{k}")
+  }
+}

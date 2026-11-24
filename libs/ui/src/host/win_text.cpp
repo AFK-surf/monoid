@@ -29,6 +29,7 @@ static const int FINE = 4;        // a gray glyph drawn at this many times its s
 
 struct ClusterBounds {
   double x0, y0, x1, y1, base;
+  double box_w, box_h;
   int color;
   // the least weight of the fonts without variations its runs are drawn in (0: none such): a Medium asked of a face
   // with none (Microsoft YaHei UI: 290, 400, 700), drawn in its Regular
@@ -974,6 +975,7 @@ extern "C" void mb_text_set_scale(double scale) {
 // Draws nothing; tells whether any run of a layout comes from a color font
 // (emoji), the way the Core Text host checks kCTFontTraitColorGlyphs.
 struct ColorProbe : public IDWriteTextRenderer {
+  bool check_weight = false;
   int color = 0;
   int static_weight = 0;
   STDMETHOD(QueryInterface)(REFIID iid, void **o) override {
@@ -1001,19 +1003,39 @@ struct ColorProbe : public IDWriteTextRenderer {
   }
   STDMETHOD(DrawGlyphRun)(void *, FLOAT x, FLOAT y, DWRITE_MEASURING_MODE mode, DWRITE_GLYPH_RUN const *run,
                           DWRITE_GLYPH_RUN_DESCRIPTION const *desc, IUnknown *) override {
-    IDWriteColorGlyphRunEnumerator *runs = NULL;
-    if (SUCCEEDED(dw->TranslateColorGlyphRun(x, y, run, desc, mode, NULL, 0, &runs))) {
-      color = 1;
-      runs->Release();
-    }
-    // the weight of a font with no variations a run is drawn in (a variable one's is what was asked)
-    IDWriteFontFace5 *f5 = NULL;
-    if (run->fontFace && SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace5), (void **)&f5))) {
-      if (!f5->HasVariations()) {
-        int w = (int)f5->GetWeight();
-        if (static_weight == 0 || w < static_weight) static_weight = w;
+    bool need_color = true;
+    if (run->fontFace) {
+      if (check_weight) {
+        // the weight of a font with no variations a run is drawn in (a variable one's is what was asked)
+        IDWriteFontFace5 *f5 = NULL;
+        if (SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace5), (void **)&f5))) {
+          need_color = f5->IsColorFont() != FALSE;
+          if (!f5->HasVariations()) {
+            int w = (int)f5->GetWeight();
+            if (static_weight == 0 || w < static_weight) static_weight = w;
+          }
+          f5->Release();
+        } else {
+          IDWriteFontFace2 *f2 = NULL;
+          if (SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace2), (void **)&f2))) {
+            need_color = f2->IsColorFont() != FALSE;
+            f2->Release();
+          }
+        }
+      } else {
+        IDWriteFontFace2 *f2 = NULL;
+        if (SUCCEEDED(run->fontFace->QueryInterface(__uuidof(IDWriteFontFace2), (void **)&f2))) {
+          need_color = f2->IsColorFont() != FALSE;
+          f2->Release();
+        }
       }
-      f5->Release();
+    }
+    if (!color && need_color) {
+      IDWriteColorGlyphRunEnumerator *runs = NULL;
+      if (SUCCEEDED(dw->TranslateColorGlyphRun(x, y, run, desc, mode, NULL, 0, &runs))) {
+        color = 1;
+        runs->Release();
+      }
     }
     return S_OK;
   }
@@ -1036,6 +1058,7 @@ static void target_ensure(Target *t, double scale) {
   t->white = NULL;
   t->black = NULL;
   t->rt = NULL;
+  if (!t->wic || !t->d2d) return;
   if (!t->bitmap && FAILED(t->wic->CreateBitmap(RT_SIZE, RT_SIZE, GUID_WICPixelFormat32bppPBGRA,
                                                   WICBitmapCacheOnDemand, &t->bitmap)))
     return;
@@ -1052,17 +1075,24 @@ static void target_ensure(Target *t, double scale) {
 }
 
 // A cluster drawn: its picture (pw × ph pixels, RGBA, NULL none), its box in points as its entry has it, whether it is
-// in its own colours (an emoji)
+// in its own colours (an emoji), and the measured ClusterBounds used to draw it
 struct Drawn {
   int pw, ph;
   uint8_t *px;
   double w, h, ox, oy;
   int color;
+  ClusterBounds bounds;
 };
 
-static void measure_bounds(IDWriteTextLayout *l, ClusterBounds *cb) {
-  if (cb->valid) return;
+static void measure_bounds(IDWriteTextLayout *l, int weight, ClusterBounds *cb) {
+  if (cb->valid) {
+    if (l->GetMaxWidth() != (FLOAT)cb->box_w) l->SetMaxWidth((FLOAT)cb->box_w);
+    if (l->GetMaxHeight() != (FLOAT)cb->box_h) l->SetMaxHeight((FLOAT)cb->box_h);
+    return;
+  }
+  bool check_weight = (weight > 400 && weight < 700);
   ColorProbe probe;
+  probe.check_weight = check_weight;
   l->Draw(NULL, &probe, 0, 0);
   DWRITE_TEXT_METRICS tm;
   DWRITE_LINE_METRICS lm;
@@ -1088,6 +1118,8 @@ static void measure_bounds(IDWriteTextLayout *l, ClusterBounds *cb) {
   cb->x1 = x1;
   cb->y1 = y1;
   cb->base = nl ? lm.baseline : 0;
+  cb->box_w = tm.widthIncludingTrailingWhitespace;
+  cb->box_h = tm.height;
   cb->color = probe.color;
   cb->static_weight = probe.static_weight;
   cb->valid = true;
@@ -1123,6 +1155,7 @@ static bool fine_ensure(Target *t, double scale, int fw, int fh) {
     t->fine_w = ((fw > t->fine_w ? fw : t->fine_w) + 63) & ~63;
     t->fine_h = ((fh > t->fine_h ? fh : t->fine_h) + 63) & ~63;
   }
+  if (!t->wic || !t->d2d) return false;
   if (!t->fine_bitmap && FAILED(t->wic->CreateBitmap((UINT)t->fine_w, (UINT)t->fine_h, GUID_WICPixelFormat32bppPBGRA,
                                                        WICBitmapCacheOnDemand, &t->fine_bitmap))) {
     t->fine_w = t->fine_h = 0;
@@ -1265,8 +1298,6 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
   double y0 = base + py0 / sc;
   int pw = px1 - px0, ph = py1 - py0;
   if (pw <= 0 || ph <= 0 || pw > RT_SIZE || ph > RT_SIZE) return;
-  target_ensure(t, sc);
-  if (!t->rt) return;
   bool mono = !color && (params_ct || params_gray);
   bool ct = mono && use_cleartype(sc);
   d->w = pw / sc;
@@ -1280,9 +1311,15 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
       d->pw = pw;
       d->ph = ph;
       d->px = px;
+      d->bounds = *cb;
       return;
     }
     free(px);
+  }
+  target_ensure(t, sc);
+  if (!t->rt) {
+    *d = {};
+    return;
   }
   // One colour: drawn black on opaque white at linear gamma with no contrast, each stripe's cover (255 - s) in its
   // channel (ClearType under 125% on RGB/BGR LCDs; else gray, the small hinted), the shader blending a mask stripe by
@@ -1330,6 +1367,7 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
     d->pw = pw;
     d->ph = ph;
     d->px = px;
+    d->bounds = *cb;
   }
   // a color font's glyph drawn in the text's colour (Segoe UI Emoji's flags are letters): a mask after all
   d->color = color == 2;
@@ -1370,6 +1408,7 @@ struct Ahead {
   double scale;
   double size;
   int weight;
+  ClusterBounds bounds;
   uint8_t want_mask;
   uint8_t first_mask;
   uint8_t drawing_mask;
@@ -1471,19 +1510,23 @@ static DWORD WINAPI ahead_thread(void *) {
   Target t = {};
   D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, __uuidof(ID2D1Factory), NULL, (void **)&t.d2d);
   CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER, __uuidof(IWICImagingFactory), (void **)&t.wic);
+  int cur_prio = THREAD_PRIORITY_BELOW_NORMAL;
   for (;;) {
     EnterCriticalSection(&ahead_lock);
     Ahead *a = NULL;
     uint8_t claim = 0;
+    int want_prio = THREAD_PRIORITY_BELOW_NORMAL;
     for (;;) {
       while (ahead_first.n == 0 && ahead_rest.n == 0) SleepConditionVariableCS(&ahead_more, &ahead_lock, INFINITE);
       if (ahead_first.n) {
         a = queue_pop(&ahead_first);
         uint8_t f = (uint8_t)(a->want_mask & a->first_mask);
         claim = (uint8_t)(f & -f);
+        want_prio = THREAD_PRIORITY_NORMAL;
       } else {
         a = queue_pop(&ahead_rest);
         claim = (uint8_t)(a->want_mask & ~a->first_mask);
+        want_prio = THREAD_PRIORITY_BELOW_NORMAL;
       }
       if (a->dropped) claim = 0;
       if (claim) break;
@@ -1499,9 +1542,12 @@ static DWORD WINAPI ahead_thread(void *) {
     a->first_mask &= (uint8_t)~claim;
     a->drawing_mask |= claim;
     LeaveCriticalSection(&ahead_lock);
+    if (want_prio != cur_prio) {
+      if (SetThreadPriority(GetCurrentThread(), want_prio) != 0) cur_prio = want_prio;
+    }
     IDWriteTextLayout *l = t.d2d && t.wic ? layout_with(a->text, a->len, a->format, a->typography) : NULL;
-    ClusterBounds cb = {};
-    if (l) measure_bounds(l, &cb);
+    ClusterBounds cb = a->bounds;
+    if (l) measure_bounds(l, a->weight, &cb);
     for (int s = 0; s < SUB_COUNT; s++) {
       uint8_t bit = (uint8_t)(1 << s);
       if (!(claim & bit)) continue;
@@ -1579,8 +1625,9 @@ static bool drop_oldest_drawn(void) {
 }
 
 // What was drawn ahead of `key` at subpixel phase `sub` and the scale of now, taken (true, its picture in *d); false
-// when it was not ready (asked and not begun: no longer asked; being drawn on a lower-priority worker thread: marked
-// skipped so the worker discards it and the frames' thread draws it immediately without blocking).
+// when it was not ready (asked and not begun: no longer asked; being drawn on a worker thread — NORMAL for ahead_first,
+// BELOW_NORMAL for ahead_rest — marked skipped via skip_mask so the worker discards it and the frames' thread draws it
+// immediately without ever blocking).
 static bool drawn_ahead(int key, int sub, Drawn *d) {
   if (sub < 0 || sub >= SUB_COUNT) return false;
   Ahead *a = key < ahead_of_cap ? ahead_of[key] : NULL;
@@ -1593,8 +1640,8 @@ static bool drawn_ahead(int key, int sub, Drawn *d) {
     a->want_mask &= (uint8_t)~bit;
     a->first_mask &= (uint8_t)~bit;
   } else if (a->drawing_mask & bit) {
-    // (a below-normal worker thread is drawing this phase: never stall the frames' thread on it; mark skipped so the
-    // worker frees its bitmap when done and draw here immediately)
+    // (a worker thread — NORMAL for ahead_first, BELOW_NORMAL for ahead_rest — is drawing this phase: never stall the
+    // frames' thread on it; mark skip_mask so the worker frees its bitmap when done and draw here immediately)
     a->skip_mask |= bit;
   } else if ((a->have_mask & bit) && a->scale == text_scale) {
     *d = a->drawn[sub];
@@ -1661,6 +1708,7 @@ static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   a->scale = text_scale;
   a->size = e->size;
   a->weight = e->weight;
+  a->bounds = e->bounds;
   a->want_mask = mask;
   a->first_mask = (uint8_t)(first & mask);
   // (the frames' thread's hold, till it lets go of it)
@@ -1782,8 +1830,10 @@ static void rasterize(int full_key) {
   bool moved = e->subs_queued != 0 && (e->subs_queued & bit) == 0;
   if (!drawn_ahead(key, sub, &d)) {
     IDWriteTextLayout *l = main_layout_for(key);
-    measure_bounds(l, &e->bounds);
+    measure_bounds(l, e->weight, &e->bounds);
     draw_cluster(l, &e->bounds, text_scale, sub_dx(sub) / text_scale, e->size, e->weight, &main_target, &d);
+  } else if (!e->bounds.valid && d.bounds.valid) {
+    e->bounds = d.bounds;
   }
   e->subs_queued |= bit;
   if (moved) {
