@@ -92,8 +92,17 @@ static void checked_draw_arrays_instanced(GLenum mode, GLint first, GLsizei coun
 #undef glDrawArraysInstanced
 #define glDrawArraysInstanced checked_draw_arrays_instanced
 
+// Programs made ahead (gles_render.h gl_progs_ahead): the host's thread stood in for by this one, in its own context,
+// called by the test where a host would start it
+#define MB_PROGS_AHEAD 1
 #include "gles_render.h"
 #include "frame_mail.h"
+
+static unsigned ahead_started, ahead_started_gen;
+static void progs_ahead_start(unsigned gen) {
+  ahead_started++;
+  ahead_started_gen = gen;
+}
 
 static int failed;
 
@@ -2923,6 +2932,49 @@ int main(void) {
     }
 
     printf("gles_render: gl_setup cache preload ok (nfmt=%d)\n", (int)nfmt);
+    gl_set_prog_cache_dir(NULL);
+    (void)system(rmcmd);
+  }
+
+  // Programs made ahead: asked for once, after a new context's first frame; what was made is taken where a frame
+  // first needs it, nothing compiled then; what was made for a context gone is not handed over.
+  {
+    char adir[256];
+    snprintf(adir, sizeof adir, "/tmp/mbui_gl_ahead_test_%ld", (long)getpid());
+    char rmcmd[320];
+    snprintf(rmcmd, sizeof rmcmd, "rm -rf %s", adir);
+    (void)system(rmcmd);
+    gl_set_prog_cache_dir(adir);
+    gl_setup();
+    ahead_started = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+    double one[MB_INST];
+    rect_at(one, 10, 10, 20, 20, 0, 0.2, 0.7, 0.3, 0);
+    gl_present(one, 1, 0.0, 0.0, 0.0);
+    CHECK(ahead_started == 1 && ahead_started_gen == ahead_gen);
+    gl_present(one, 1, 0.0, 0.0, 0.0);
+    CHECK(ahead_started == 1);
+    // (the first frame made the plain one, MB_PROG_UI, itself: every other slot made ahead)
+    CHECK(gl_progs_ahead(ahead_started_gen) == MB_SLOTS - 1);
+    CHECK(progs[MB_PROG_FROSTED].p == 0 && post == 0);
+    prog_cache_misses = 0;
+    double fg[2 * MB_INST];
+    rect_at(fg, 25, 25, 10, 10, 0, 0.9, 0.1, 0.1, 0);
+    rect_at(fg + MB_INST, 20, 20, 40, 30, 5, 1, 1, 1, -2);
+    fg[MB_INST + 7] = 4;
+    fg[MB_INST + 11] = 0.5;
+    gl_present(fg, 2, 0.1, 0.2, 0.3);
+    CHECK(progs[MB_PROG_FROSTED].p != 0 && post != 0);
+    CHECK(prog_cache_misses == 0);
+    CHECK(ahead_progs[MB_PROG_FROSTED] == 0 && ahead_progs[MB_SLOT_POST] == 0);
+    CHECK(glGetError() == GL_NO_ERROR);
+    // (a context made anew: the one before's programs dropped, none made for it handed over)
+    unsigned old = ahead_gen;
+    gl_setup();
+    for (int i = 0; i < MB_SLOTS; i++) CHECK(ahead_progs[i] == 0);
+    CHECK(gl_progs_ahead(old) == 0);
+    for (int i = 0; i < MB_SLOTS; i++) CHECK(ahead_progs[i] == 0);
+    printf("gles_render: programs made ahead ok\n");
     gl_set_prog_cache_dir(NULL);
     (void)system(rmcmd);
   }

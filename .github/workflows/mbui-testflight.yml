@@ -123,6 +123,16 @@ jobs:
           case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac
       # (restored only: preview.yml's ios job, on main, saves them, keyed by runner ImageVersion)
       - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: .ci/mbc-store
+          key: mbui-ios-${{ env.IMG }}-${{ github.sha }}
+          restore-keys: |
+            mbui-ios-${{ env.IMG }}-
+            mbui-ios-
+      # (the units kept with core.hbc beside them, until main has saved a store of the units alone, as preview.yml's)
+      - uses: actions/cache/restore@v4
+        if: steps.store.outputs.cache-matched-key == ''
         with:
           path: |
             .ci/mbc-store
@@ -131,6 +141,11 @@ jobs:
           restore-keys: |
             mbui-ios-${{ env.IMG }}-
             mbui-ios-
+      - uses: actions/cache/restore@v4
+        with:
+          path: .ci/hbc
+          key: mbui-ios-hbc-${{ github.sha }}
+          restore-keys: mbui-ios-hbc-
       - uses: actions/cache/restore@v4
         with:
           path: |

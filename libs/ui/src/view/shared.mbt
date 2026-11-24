@@ -154,9 +154,6 @@ priv struct Lift {
   /// drawn so on the way; and its room as cut by what held it, what is drawn of it at that end (`at_start`: the end it
   /// sets out from)
   stays : StaysEnd?
-  /// how far what holds it was drawn off where it is laid out as it set out (View::drawn_off): what moves it so after
-  /// (a later cause's way in a page's list said `flips`) moves where it goes with it
-  mut held_off : (Double, Double)
   /// the node both its ends are within that says what flies so is drawn within it (View::flights_within); none
   within : NodeId?
   /// what of where it set out was seen (View::flies_in's `cut_from`, x0, y0, x1, y1 in the window), what is seen of it
@@ -427,6 +424,19 @@ fn flight_far(from : (Double, Double, Double, Double), to : (Double, Double, Dou
 }
 
 ///|
+/// How far node `at` flying from `from` to `to` goes, accounting for any ancestor `held_off` offset at departure.
+fn Tree::flight_far_for(
+  self : Tree,
+  at : Int,
+  from : (Double, Double, Double, Double),
+  to : (Double, Double, Double, Double),
+  far_of : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)?,
+) -> Double {
+  let (hx, hy) = self.held_off(at)
+  dmax(flight_far(from, to, far_of), flight_far(from, (to.0 + hx, to.1 + hy, to.2, to.3), far_of))
+}
+
+///|
 /// Made in the change being committed, it flies, as that change is committed whole, from what is none of the window's
 /// tree (an old view's words, a text field's: nothing of it here to let go of, so no old copy) to where that change
 /// lays it out: from where `from` says, given that place and size in the window (None: no flight, there at once),
@@ -581,7 +591,7 @@ fn Tree::incoming_leads(
   for j, i in all {
     guard i.lead && ends[j] is Some((from, to)) && self.nodes[i.node.at].in_flight is Some(fl) else { continue }
     guard leads.search_by(fn(l) { physical_equal(l.0, fl) }) is None else { continue }
-    let far = flight_far(from, to, i.far_of)
+    let far = self.flight_far_for(i.node.at, from, to, i.far_of)
     let (ms, along) = (fl.way)(far)
     guard ms > 0.0 && far > 0.5 else { continue }
     leads.push((fl, i.node, (ms, along)))
@@ -831,7 +841,7 @@ pub fn Tree::lift_particle_of(self : Tree, id : NodeId) -> LiftParticle? {
   let (fx, fy, fw, fh) = l.origin
   let (x0, y0, tw, th) = self.placed_window(l.follow)
   let (hx, hy) = self.held_off(l.follow)
-  let (tx, ty) = (x0 + hx - l.held_off.0, y0 + hy - l.held_off.1)
+  let (tx, ty) = (x0 + hx, y0 + hy)
   let seed_mul = 0x9E3779B1U.reinterpret_as_int()
   Some({
     from_x: fx,
@@ -891,7 +901,7 @@ pub fn Tree::lift_cut(self : Tree, id : NodeId) -> (Double, Double, Double, Doub
     (None, Some((cx0, cy0, cx1, cy1))) => {
       let (x0, y0, tw, th) = self.placed_window(l.follow)
       let (hx, hy) = self.held_off(l.follow)
-      let (tx, ty) = (x0 + hx - l.held_off.0, y0 + hy - l.held_off.1)
+      let (tx, ty) = (x0 + hx, y0 + hy)
       let (lx, ly, lw, lh) = self.lift_rect(l)
       let (px, py) = (1.0 - l.k, 1.0 - l.ky)
       let q0 = dmax(cx0 + (tx - cx0) * px, lx)
@@ -966,7 +976,7 @@ pub fn Tree::lift_cut_corners(self : Tree, id : NodeId) -> (Double, Double, Doub
       let (ox, oy, ow, oh) = if e.at_start {
         let (fx, fy, fw, fh) = self.placed_window(l.follow)
         let (hx, hy) = self.held_off(l.follow)
-        (fx + hx - l.held_off.0, fy + hy - l.held_off.1, fw, fh)
+        (fx + hx, fy + hy, fw, fh)
       } else {
         e.ends.from
       }
@@ -1460,8 +1470,8 @@ fn Tree::placed_window(self : Tree, at : Int) -> (Double, Double, Double, Double
 fn Tree::lift_rect(self : Tree, l : Lift) -> (Double, Double, Double, Double) {
   let (x0, y0, w, h) = self.placed_window(l.follow)
   let (hx, hy) = self.held_off(l.follow)
-  let x = x0 + hx - l.held_off.0
-  let y = y0 + hy - l.held_off.1
+  let x = x0 + hx
+  let y = y0 + hy
   let k = l.k
   let ky = l.ky
   // (one with an end that stays whose route says how it goes: where that has it, as far along its way)
@@ -2114,7 +2124,7 @@ fn Tree::pairs_now(self : Tree) -> Unit {
       continue
     }
     guard leads.search_by(fn(l) { physical_equal(l.0, fl) }) is None && self.alive_id(d.node) else { continue }
-    let far = flight_far(d.from, self.handle(to.at).laid_window_now(), how.far_of)
+    let far = self.flight_far_for(to.at, d.from, self.handle(to.at).laid_window_now(), how.far_of)
     let (ms, along) = (fl.way)(far)
     guard ms > 0.0 && far > 0.5 else { continue }
     leads.push((fl, to, (ms, along)))
@@ -2277,9 +2287,10 @@ fn Tree::paired(
   }
   let to_at = to_v.laid_window_now()
   let (tx, ty, tw, th) = to_at
+  let (hx0, hy0) = self.held_off(to.at)
   let (fx, fy, fw, fh) = d.from
-  let dd = (fx - tx, fy - ty, fw - tw, fh - th)
-  let far = flight_far(d.from, to_at, far_of)
+  let dd = (fx - (tx + hx0), fy - (ty + hy0), fw - tw, fh - th)
+  let far = self.flight_far_for(to.at, d.from, to_at, far_of)
   // (one led by another of its Flight (the lead of its change: View::shared's, View::flies_in's `lead`): that one's
   // way, landing with it; it leading, its own)
   let led = leads.search_by(fn(l) { physical_equal(l.0, flight) }).map(fn(i) { leads[i] })
@@ -2348,7 +2359,6 @@ fn Tree::paired(
     from: d.look,
     stays: None,
     fixed: None,
-    held_off: self.held_off(to.at),
     within,
     from_cut: None,
     particle,
@@ -2374,7 +2384,6 @@ fn Tree::paired(
     from: d.look,
     stays: None,
     fixed: None,
-    held_off: self.held_off(to.at),
     within,
     from_cut: None,
     particle,
@@ -2520,18 +2529,23 @@ fn Tree::fly_from(
   guard flight is Some(flight) else { return false }
   let to_v = self.handle(to.at)
   let (tx, ty, tw, th) = to_v.laid_window_now()
+  let (hx0, hy0) = self.held_off(to.at)
+  let (dx0, dy0) = (tx + hx0, ty + hy0)
   let (fx, fy, fw, fh) = from
-  let dd = (fx - tx, fy - ty, fw - tw, fh - th)
-  let far = flight_far(from, (tx, ty, tw, th), far_of)
+  let dd = (fx - dx0, fy - dy0, fw - tw, fh - th)
+  let far = self.flight_far_for(to.at, from, (tx, ty, tw, th), far_of)
   // (one with an end that stays: what it sets out between told its route, as far as that says it goes; none said, as far
   // as its furthest going edge goes)
   let far = match stays {
     Some(e) => {
-      e.ends = { from, to: (tx, ty, tw, th), from_stays: e.at_start, clear: e.clear }
+      e.ends = { from, to: (dx0, dy0, tw, th), from_stays: e.at_start, clear: e.clear }
       match e.route {
         Some(r) => (r.far)(e.ends)
         None =>
-          dmax(dmax((fx - tx).abs(), (fx + fw - tx - tw).abs()), dmax((fy - ty).abs(), (fy + fh - ty - th).abs()))
+          dmax(
+            dmax((fx - dx0).abs(), (fx + fw - dx0 - tw).abs()),
+            dmax((fy - dy0).abs(), (fy + fh - dy0 - th).abs()),
+          )
       }
     }
     None => far
@@ -2616,7 +2630,6 @@ fn Tree::fly_from(
     from: look,
     stays,
     fixed,
-    held_off: self.held_off(to.at),
     within,
     from_cut,
     particle,
@@ -2648,8 +2661,8 @@ fn Tree::fly_from(
 
 ///|
 /// Flights set out in the change whose hosted old views just laid out their new height (`Tree::old_waits_run`, after a
-/// list's pinned foot ran `set_out` for that height): each flight's offset `d` and `held_off` refreshed against its
-/// final laid-out place `to`, so a foot shrinking on send never shifts flying items down by the room it gave back.
+/// list's pinned foot ran `set_out` for that height): each flight's offset `d` refreshed against its final drawn place
+/// `to + held_off`, so a foot shrinking on send never shifts flying items down by the room it gave back.
 fn Tree::flights_refresh_now(self : Tree) -> Unit {
   guard !self.flights.is_empty() else { return }
   let now = self.drawn_said()
@@ -2677,7 +2690,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
   for d in due {
     let (f, from, to) = d
     guard f.lead && from is Some(from) && self.flight_of_node(f.node.at) is Some(fl) else { continue }
-    let far = flight_far(from, to, f.far_of)
+    let far = self.flight_far_for(f.node.at, from, to, f.far_of)
     let (ms, along) = (fl.way)(far)
     guard ms > 0.0 && far > 0.5 else { continue }
     leads.push((fl, f.start, f, (ms, along)))
@@ -2701,7 +2714,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
   // (the keys' blocks told their way anew in this pass: the first flight in one told it as it is now, the others in it
   // as the longest)
   let told : Array[Int] = []
-  // (those still flying, where each sets out from and how far off where it is laid out)
+  // (those still flying, where each sets out from and where it is laid out)
   let going : Array[(Flying, (Double, Double, Double, Double), (Double, Double, Double, Double))] = []
   for d in due {
     let (f, from, to) = d
@@ -2709,8 +2722,7 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
       self.flight_over(f)
       continue
     }
-    let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
-    let far = flight_far(from, to, f.far_of)
+    let far = self.flight_far_for(f.node.at, from, to, f.far_of)
     if far <= 0.5 {
       self.flight_over(f)
       continue
@@ -2761,18 +2773,18 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
         }
       }
     }
-    going.push((f, from, dd))
+    going.push((f, from, to))
   }
   // (all of them carried before any is drawn anew, so that what flies in a block is held off where the block is drawn
   // once carried, whichever of them came first)
   for g in going {
-    let (f, from, dd) = g
+    let (f, from, to) = g
     match self.nodes[f.node.at].lift {
       Some(l) => {
-        l.d = dd
+        let (hx, hy) = self.held_off(l.follow)
+        l.d = (from.0 - (to.0 + hx), from.1 - (to.1 + hy), from.2 - to.2, from.3 - to.3)
         l.origin = from
         l.fixed = if l.stays is None && !self.rides_said_way(f.node.at) { Some(from) } else { None }
-        l.held_off = self.held_off(l.follow)
       }
       None => ()
     }
@@ -3380,7 +3392,7 @@ fn Tree::carried(
   guard self.flight_of_node(at) is Some(flight) else { return }
   let p = self.carried_row(at)
   guard p >= 0 else { return }
-  let far = flight_far(from, to, far_of)
+  let far = self.flight_far_for(at, from, to, far_of)
   let (ms, along) = (flight.way)(far)
   guard ms > 0.0 && far > 0.5 else { return }
   // (its rise: what flight_at draws its way down or up by, as a share of the time of all of it)

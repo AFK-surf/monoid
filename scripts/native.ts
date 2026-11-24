@@ -996,12 +996,15 @@ function git(args: string[], input?: string, cwd = ROOT): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", input, maxBuffer: 64 << 20 });
 }
 /// Each input file and its content's git hash: as committed or staged, and as it is in the worktree when it differs
-/// there (an edit not yet committed is another key), new files not ignored included. Read off one listing of the
-/// whole checkout (`tree`), not two git processes a part and target: `missing --linux` and `--mac` asked git 75 times
-/// and took 20-40 s of plan's natives step (main 44674271258, 2026-11-20). A pathspec that listing cannot answer
-/// exactly (`pathspec`) is still git's.
+/// there (an edit not yet committed is another key), new files not ignored included. A command that asks of many parts
+/// (`useTree`) reads them off one listing of the whole checkout (`tree`), not two git processes a part and target:
+/// `missing --linux` and `--mac` asked git 75 times and took 20-40 s of plan's natives step (main 44674271258,
+/// 2026-11-20). A pathspec that listing cannot answer exactly (`pathspec`) is still git's, as is all of a command of one
+/// part: listing the whole checkout, its build directories walked for new files, took `key` 16 s and `path` 14 s beside
+/// the iOS app's moonc (45386683892, 2026-11-24).
 function inputs(paths: string[]): [string, string][] {
   if (paths.length === 0) return [];
+  if (!useTree) return inputsByGit(paths);
   checkout ??= tree(ROOT);
   return inputsIn(checkout, paths) ?? inputsByGit(paths);
 }
@@ -1009,6 +1012,8 @@ function inputs(paths: string[]): [string, string][] {
 /// for. Dropped after a build (`buildHere`), which may write into the checkout.
 export type Tree = { root: string; staged: [string, string][]; dirty: string[]; hashes: Map<string, string> };
 let checkout: Tree | null = null;
+/// Whether this process reads its parts' inputs off that listing: main's, for the commands of many parts.
+let useTree = false;
 export function tree(root: string): Tree {
   const staged: [string, string][] = [];
   for (const line of git(["ls-files", "-s", "-z"], undefined, root).split("\0")) {
@@ -1774,6 +1779,7 @@ const mainFile = (part: string, target: Target, dir: string) => join(dir, P(part
 
 async function main(argv: string[]) {
   const [cmd, ...args] = argv;
+  useTree = ["status", "missing", "ensure", "prebuild", "store-sync"].includes(cmd ?? "") || (cmd === "run" && args.indexOf("--") > 1);
   switch (cmd) {
     case "key": { const [p, t] = pair(args); console.log(key(p, t)); return; }
     case "path": { const [p, t] = pair(args); console.log(await get(p, t)); return; }

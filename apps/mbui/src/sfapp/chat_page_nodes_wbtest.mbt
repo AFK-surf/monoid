@@ -2827,3 +2827,43 @@ test "a chat just created from NewChat: shows no skeleton bones while its first 
     assert_true(t.rect_of("看下进度") is Some(_), msg="sent first message stays visible without skeleton flash")
   }
 }
+
+///|
+/// A notification tapped before what it tells is on the device (Push.java's `notice.bring` short of its station): the
+/// chat opens on what it holds, at its end, the message past it; never said gone (2026-11-24: 找不到这条消息 on every
+/// notification opened), gone to as it comes; one waited for, the reader's finger on the list lets it go, unsaid.
+test "a chat's page made as nodes gone to a message past all it holds at its end, 小屏 and 大屏: waited for, not said gone, gone to as it comes; let go of by the finger meanwhile" {
+  let k = long_ref.station + "\u{1}" + long_ref.session
+  for s in long_screens {
+    let (name, _, h, platform) = s
+    let l = long_chat()
+    let t = long_open(l, s)
+    @signals.start_batch()
+    @sfbase.go_to(long_ref, (long_count + 1).to_double(), keep_place=false)
+    @signals.end_batch()
+    @ui.came_from_outside()
+    long_run(t, l, long_rest_ms)
+    assert_true(@sfbase.toast_words() != @sf.t("web-main.chat.messageGone"), msg="\{name}: said gone before it came")
+    assert_true(@sfbase.go_tos.contains(k), msg="\{name}: let go of before it came")
+    // (it comes: the window's end at it)
+    l.last.set(long_count + 1)
+    @ui.came_from_outside()
+    long_run(t, l, long_rest_ms)
+    assert_true(long_drawn(t, long_count + 1, h), msg="\{name}: \{Repr(t.words().map(fn(w) { w.0 }))}")
+    assert_true(!@sfbase.go_tos.contains(k), msg="\{name}: still to go to once there")
+    assert_true(@sfbase.toast_words() != @sf.t("web-main.chat.messageGone"), msg="\{name}: said gone")
+    // (another past it, the finger on the list before it comes (小屏: the wheel lays no hand on it): let go of, unsaid)
+    if platform != 2 {
+      continue
+    }
+    @signals.start_batch()
+    @sfbase.go_to(long_ref, (long_count + 5).to_double(), keep_place=false)
+    @signals.end_batch()
+    @ui.came_from_outside()
+    long_run(t, l, long_rest_ms)
+    t.drag(195.0, 300.0, 195.0, 340.0, steps=4)
+    long_run(t, l, long_rest_ms)
+    assert_true(!@sfbase.go_tos.contains(k), msg="\{name}: kept past the hand")
+    assert_true(@sfbase.toast_words() != @sf.t("web-main.chat.messageGone"), msg="\{name}: said gone as the hand let it go")
+  }
+}

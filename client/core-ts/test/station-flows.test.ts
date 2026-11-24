@@ -3721,6 +3721,57 @@ test("an_ended_step_goes_once_the_transcript_held_goes_past_it_however_it_came",
   core.close();
 });
 
+test("a_history_held_short_of_where_its_stream_says_keeps_its_steps_in_flight_and_one_read_shorter_lets_go_what_ended_past_it", async () => {
+  const answers: J = base();
+  const s = await ui(answers, (st) => (st.gate.follows = true));
+  const { host, core, read } = s;
+  core.receive(1, { kind: "subscribe", id: 1, subscribe: liveK });
+  await read();
+  await read();
+  const push = (m: J) => s.push("live", { key: "k1", ...m });
+  push({ type: "timeline", start: 0, entries: ["a", "b"], usage: {} });
+  push({ type: "steps", steps: [], phase: null });
+  push({ type: "step", event: { kind: "start", id: "s1", step: "thinking" } });
+  await read();
+  // A stream back after a while says it goes further than what is held: what is held shows, the step in flight after
+  // it, while the rest is read (no flash of it gone).
+  push({ type: "timeline", start: 5, entries: [], usage: {} });
+  await read();
+  let x = liveOf(core);
+  assert.deepEqual([x.loaded, x.timeline, x.steps.map((st: J) => st.id)], [true, ["a", "b"], ["s1"]]);
+  // It ends there; the transcript read says it was written anew shorter (2 entries, not 5): nothing is waited for
+  // past it.
+  push({ type: "step", event: { kind: "end", id: "s1" } });
+  await read();
+  assert.deepEqual(liveOf(core).steps.map((st: J) => [st.id, st.ended]), [["s1", true]]);
+  answers["GET /sessions/k1/timeline?after=1&before=1000000000000000&limit=200&brief=1"] = { start: 2, entries: [], end: 2 };
+  s.push("session", { ...session("k1"), transcriptLength: 5 });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  await read();
+  x = liveOf(core);
+  assert.deepEqual([x.loaded, x.timeline, x.steps], [true, ["a", "b"], []]);
+  core.close();
+});
+
+test("a_history_whose_stream_said_it_has_entries_and_whose_read_says_none_is_loaded_and_empty", async () => {
+  const answers: J = base();
+  answers["GET /sessions/k1/timeline?before=1000000000000000&limit=200&brief=1"] = { start: 0, entries: [], end: 0 };
+  const s = await ui(answers, (st) => (st.gate.follows = true));
+  const { host, core, read } = s;
+  const push = (m: J) => s.push("live", { key: "k1", ...m });
+  push({ type: "timeline", start: 3, entries: [], usage: {} });
+  push({ type: "steps", steps: [], phase: null });
+  await read();
+  assert.equal(core.inner.stations.link(ST)?.lives.get("k1")?.told, 3);
+  core.receive(1, { kind: "subscribe", id: 1, subscribe: liveK });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  await read();
+  await read();
+  const x = liveOf(core);
+  assert.deepEqual([x.loaded, x.timeline, x.failed], [true, [], undefined]);
+  core.close();
+});
+
 test("a_bad_station_and_a_stations_no_are_errors_a_passing_failure_keeps_loading", async () => {
   const answers: J = { ...base(), "GET /sessions": status(404, { error: "没有" }), "GET /threads": status(502, { error: "坏了" }) };
   const { host, core } = await started(answers);

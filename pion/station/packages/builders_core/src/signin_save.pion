@@ -1,0 +1,129 @@
+// Sign-in save index backfill builder (`--builder signin-save`), 1:1 aligned with
+// `station/mb/src/signin/signin.mbt` and `station/mb/src/reader/main.mbt:998-1002`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+/// At most `limit` of `session`'s old sign-ins put in the lookup, with the cursor; whether all are then.
+pub fn signin_save_step(
+  db : sql_db::Db,
+  session : String,
+  limit : Int = 64,
+) -> Result[Bool, StepError] {
+  if limit < 1 {
+    return Err(StepError::App("sign-in index batch must be positive"))
+  }
+  let s = base_codec::json_str(session)
+  let lim = base_codec::json_int(limit)
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let _ = match tx_db.run(
+        "INSERT INTO signin_save_progress (session, status, row, done) SELECT ?, NULL, NULL, 0 WHERE NOT EXISTS (SELECT 1 FROM signin_save_progress WHERE session = ?)",
+        [s, s],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let states = match tx_db.all(
+        "SELECT status, CAST(row AS TEXT) AS row, done FROM signin_save_progress WHERE session = ?",
+        [s],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      if states.length() == 0 {
+        return Err(StepError::App("sign-in index progress is missing"))
+      }
+      let state = states[0]
+      match sql_db::row_val(state, "done") {
+        base_codec::Json::Num(n, _) => {
+          if n == 1.0 {
+            return Ok(true)
+          }
+        }
+        _ => ()
+      }
+      let state_status = sql_db::row_val(state, "status")
+      let state_row = sql_db::row_val(state, "row")
+      let rows = match state_status {
+        base_codec::Json::Null => {
+          match tx_db.all(
+            "SELECT status, CAST(rowid AS TEXT) AS row FROM signin_asks INDEXED BY signin_asks_by_session WHERE session = ?1 ORDER BY status, signin_asks.rowid LIMIT ?2",
+            [s, lim],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+        _ => {
+          let found = match tx_db.all(
+            "SELECT status, CAST(rowid AS TEXT) AS row FROM signin_asks INDEXED BY signin_asks_by_session WHERE session = ?1 AND status = ?3 AND rowid > CAST(?4 AS INTEGER) ORDER BY status, signin_asks.rowid LIMIT ?2",
+            [s, lim, state_status, state_row],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+          if found.length() < limit {
+            let more = match tx_db.all(
+              "SELECT status, CAST(rowid AS TEXT) AS row FROM signin_asks INDEXED BY signin_asks_by_session WHERE session = ?1 AND status > ?3 ORDER BY status, signin_asks.rowid LIMIT ?2",
+              [s, base_codec::json_int(limit - found.length()), state_status],
+            ) {
+              Ok(r) => r
+              Err(e) => return Err(StepError::Sql(e))
+            }
+            for i in 0..<more.length() {
+              found.push(more[i])
+            }
+          }
+          found
+        }
+      }
+      for i in 0..<rows.length() {
+        let _ = match tx_db.run(
+          "INSERT INTO signin_save_lookup (ask, session, save) SELECT id, session, json_extract(body, '$.save') FROM signin_asks WHERE rowid = CAST(?1 AS INTEGER) AND json_type(body, '$.save') = 'text' AND NOT EXISTS (SELECT 1 FROM signin_save_lookup l WHERE l.ask = signin_asks.id)",
+          [sql_db::row_val(rows[i], "row")],
+        ) {
+          Ok(n) => n
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      let done = rows.length() < limit
+      let (next_status, next_row) = if rows.length() > 0 {
+        let last_r = rows[rows.length() - 1]
+        (sql_db::row_val(last_r, "status"), sql_db::row_val(last_r, "row"))
+      } else {
+        (state_status, state_row)
+      }
+      let _ = match tx_db.run(
+        "UPDATE signin_save_progress SET status = ?, row = CAST(? AS INTEGER), done = ? WHERE session = ?",
+        [next_status, next_row, base_codec::json_int(if done { 1 } else { 0 }), s],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      Ok(done)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder signin-save` (matches MB `String(session) => Some(@signin.step(db, session))`).
+pub fn signin_save_dispatch(
+  db : sql_db::Db,
+  ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match ask {
+    base_codec::Json::Str(session) => {
+      match signin_save_step(db, session, limit=64) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+    _ => Ok(None)
+  }
+}
+
+pub fn run_signin_save(db_path : String) -> Int {
+  builder_loop(db_path, "sign-in index", signin_save_dispatch)
+}

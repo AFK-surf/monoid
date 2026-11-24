@@ -437,3 +437,44 @@ test "flies_in in one block: what is said before its lead sets out from where it
   }
   assert_true((y - 320.0).abs() < 0.5, msg="引 drawn at \{y} as it sets out, 320 wanted (where it says it flies from)")
 }
+
+///|
+test "flights_refresh_now: non-in_list carried flight refreshes l.d after carried updates slot drawn_off, staying continuous across refresh and landing" {
+  let foot = @signals.signal(90.0, same=fn(a, b) { a == b })
+  let (t, keys) = fnw_old_case(foot)
+  t.event(rc_at, fn() {
+    t.old_views_building()
+    keys.set(rc_ten_and([70]))
+  })
+  t.frame(390.0, 844.0, now=rc_at) |> ignore
+  let y0 = rc_y(t, "行70")
+  assert_true((y0 - 380.0).abs() <= 0.5, msg="departure y=\{y0} != 380.0")
+  // Trigger flights_refresh_now while the slot has a live non-zero drawn_off from the initial FlipWay
+  t.event(rc_at + 16.0, fn() {
+    foot.set(30.0)
+    t.old_views_built()
+  })
+  t.frame(390.0, 844.0, now=rc_at + 16.0) |> ignore
+  let y_ref = rc_y(t, "行70")
+  assert_true(
+    (y_ref - y0).abs() < 20.0,
+    msg="flights_refresh_now jumped on refresh frame: y0=\{y0}, y_ref=\{y_ref}",
+  )
+  let ys : Array[(Double, Double)] = [(rc_at, y0), (rc_at + 16.0, y_ref)]
+  let mut m = rc_at + 32.0
+  while m <= rc_at + 800.0 {
+    t.frame(390.0, 844.0, now=m) |> ignore
+    ys.push((m, rc_y(t, "行70")))
+    m = m + 16.0
+  }
+  t.frame(390.0, 844.0, now=rc_at + 1200.0) |> ignore
+  let rest_y = rc_y(t, "行70")
+  assert_true(y0 - rest_y > 20.0, msg="expected upward flight > 20pt (y0=\{y0}, rest_y=\{rest_y})")
+  for i in 1..<ys.length() {
+    let (ti, yi) = ys[i]
+    let (_, py) = ys[i - 1]
+    assert_true(yi >= rest_y - 0.5, msg="t=\{ti}: overshot above rest_y=\{rest_y} (got \{yi})")
+    assert_true(yi <= py + 0.5, msg="t=\{ti}: moved downward during upward flight (prev=\{py}, now=\{yi})")
+    assert_true((yi - py).abs() < 20.0, msg="t=\{ti}: single-frame snap (prev=\{py}, now=\{yi})")
+  }
+}

@@ -476,8 +476,9 @@ priv struct AgentOutPlan {
   float_ms : Double
   spit_end : Double
   from : () -> (Double, Double, Double, Double)
-  /// where the line's picture was as the message came into the list (its plan's Float: the list's held keys let it in,
-  /// the line going in that change): what it flies from, whatever becomes of the line after
+  /// where the departure picture was just before the message came into the list (its plan's Float: the list's held keys
+  /// let it in, both for the activity line's picture when folding and for the prior message's picture when dropping on):
+  /// snapshotted before the list lays out and flips for the new row, so it flies from its true on-screen origin
   face_at : Ref[(Double, Double, Double, Double)?]
   av : Ref[@view.View?]
   has_face : Bool
@@ -565,6 +566,7 @@ fn agent_out_steps(plan : AgentOutPlan) -> AgentOut {
           after(@sf.dmax(plan.float_at - av.cause_at(), 0.0), plan.float_ms),
           fn(_) { Some(plan.face_at.val.unwrap_or_else(plan.from)) },
           in_list=true,
+          bare_from=plan.folds,
         )
         |> ignore
       }
@@ -610,6 +612,9 @@ fn agent_out_return(face : AgentFace, plan : AgentOutPlan, ending : Bool) -> Uni
     _ => 0.0
   }
   face.away.set(false)
+  face.ring_alpha.put(0.0)
+  // det-ok(motion-length): emit.mbt's Return, the ring returning as its picture lands home
+  face.ring_alpha.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out, delay=back_ms), at=plan.spit_end)
   // det-ok(motion-length): emit.mbt's Return, the line unfolding once its picture is home
   face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out, delay=back_ms), at=plan.spit_end)
 }

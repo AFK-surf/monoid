@@ -235,6 +235,23 @@ pub fn is_cancel_ask(ask : base_codec::Json) -> Bool {
   }
 }
 
+/// Saturating Double -> Int64 conversion matching MoonBit `Double::to_int64()`:
+/// NaN -> 0, >= 2^63 -> INT64_MAX, <= -2^63 -> INT64_MIN, otherwise truncation toward zero.
+pub fn double_to_i64_saturating(d : Double) -> Int64 {
+  if d != d {
+    return 0.to_int64()
+  }
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  if d >= 9223372036854775808.0 {
+    return max64
+  }
+  if d <= -9223372036854775808.0 {
+    return min64
+  }
+  d.to_int64()
+}
+
 pub fn format_step_response(
   name : String,
   res : Result[Option[Bool], StepError],

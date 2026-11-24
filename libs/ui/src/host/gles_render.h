@@ -17,6 +17,7 @@
 // What is drawn where is the host's to say: the frame's size in points and its scale (cur_w, cur_h, cur_scale), the
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
 #define MB_GLES_RENDER 1  // (frame_mail.h, included after it, keeps its frames in it: fm_keep)
+#include <pthread.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -1410,6 +1411,7 @@ static GLuint prog_now;
 static char prog_cache_dir[512];
 static int prog_bin_checked;
 static int prog_bin_ok;
+// (GL thread) what the cache did: programs loaded from it, compiled for want of one, written to it
 static int prog_cache_hits;
 static int prog_cache_misses;
 static int prog_cache_stores;
@@ -1580,33 +1582,35 @@ static GLuint prog_cache_load(const char *path) {
   return p;
 }
 
-static void prog_cache_save(const char *path, GLuint p) {
+// (1: written)
+static int prog_cache_save(const char *path, GLuint p) {
   GLint blen = 0;
   glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &blen);
-  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return;
+  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return 0;
   uint8_t *buf = (uint8_t *)malloc((size_t)blen);
-  if (!buf) return;
+  if (!buf) return 0;
   GLsizei got = 0;
   GLenum fmt = 0;
   glGetProgramBinary(p, blen, &got, &fmt, buf);
   if (got <= 0 || (uint32_t)got > MB_GLBIN_MAX_BYTES) {
     free(buf);
-    return;
+    return 0;
   }
   mkdir(prog_cache_dir, 0700);
+  // (a name of its own: the GL thread and the one making programs ahead may write the same program's at once)
+  static unsigned tmp_seq;
   char tmp[700];
-  snprintf(tmp, sizeof tmp, "%s.%ld.tmp", path, (long)getpid());
+  snprintf(tmp, sizeof tmp, "%s.%ld.%u.tmp", path, (long)getpid(), __atomic_fetch_add(&tmp_seq, 1, __ATOMIC_RELAXED));
   FILE *f = fopen(tmp, "wb");
+  int saved = 0;
   if (f) {
     uint32_t hdr[3] = {MB_GLBIN_MAGIC, (uint32_t)fmt, (uint32_t)got};
     int ok = fwrite(hdr, sizeof(uint32_t), 3, f) == 3 && fwrite(buf, 1, (size_t)got, f) == (size_t)got;
-    if (fclose(f) == 0 && ok && rename(tmp, path) == 0) {
-      prog_cache_stores++;
-    } else {
-      unlink(tmp);
-    }
+    saved = fclose(f) == 0 && ok && rename(tmp, path) == 0;
+    if (!saved) unlink(tmp);
   }
   free(buf);
+  return saved;
 }
 
 static float *fbuf;
@@ -1651,6 +1655,164 @@ static GLuint compile2(GLenum type, const char *head, const char *body, const ch
   return s;
 }
 
+// The programs the renderer draws with: its groups (MB_PROG_*), then a ground's flat middle, the glass's passes' and the
+// adaptive ink's; a slot each.
+#define MB_SLOT_FLAT MB_PROGS
+#define MB_SLOT_POST (MB_PROGS + 1)
+#define MB_SLOT_ADAPTIVE (MB_PROGS + 2)
+#define MB_SLOTS (MB_PROGS + 3)
+
+// What the program of a slot is made of: its vertex shader (vs: 0 vs_main, 1 vs_main_ad, 2 vs_post, the one shared by
+// the programs that have the same) and its fragment shader, each a head (NULL: none, the body's own #version) and body.
+typedef struct {
+  const char *tag, *vs_head, *vs_body, *fs_head, *fs_body;
+  int vs;
+} prog_src;
+
+static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
+  static const char *head_plain = "#version 300 es\n#define MB_VS_ADAPTIVE 0\n";
+  static const char *head_ad = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
+  prog_src s = {"ui", head_plain, VS, fs_head, FS, 0};
+  switch (slot) {
+    case MB_SLOT_FLAT: {
+      prog_src f = {"flat", head_plain, VS, NULL, FS_FLAT, 0};
+      return f;
+    }
+    case MB_SLOT_POST: {
+      prog_src f = {"post", NULL, PVS, NULL, PFS, 2};
+      return f;
+    }
+    case MB_SLOT_ADAPTIVE: {
+      prog_src f = {"adaptive", NULL, PVS, NULL, AD_FS, 2};
+      return f;
+    }
+    case MB_PROG_FROSTED:
+      s.tag = "frosted";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 5\n"
+               "#define MB_HAS(K) ((K) == 5)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_LIQUID_MERGED:
+      s.tag = "liquid_merged";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 6\n"
+               "#define MB_HAS(K) ((K) == 6)\n"
+               "#define MB_HAS_LIQUID 1\n"
+               "#define MB_HAS_ADAPTIVE 1\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 1\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_LIQUID_SINGLE:
+      s.tag = "liquid_single";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 13\n"
+               "#define MB_HAS(K) ((K) == 6)\n"
+               "#define MB_HAS_LIQUID 1\n"
+               "#define MB_HAS_ADAPTIVE 1\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 1\n");
+      break;
+    case MB_PROG_LENS:
+      s.tag = "lens";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 8\n"
+               "#define MB_HAS(K) ((K) == 8)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_PATH:
+      s.tag = "path";
+      s.vs_head = head_ad;
+      s.vs = 1;
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 11\n"
+               "#define MB_HAS(K) ((K) == 11)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_UI:
+    default:
+      s.vs_head = head_ad;
+      s.vs = 1;
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND -1\n"
+               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+  }
+  return s;
+}
+
+// Programs made ahead (a host that defines MB_PROGS_AHEAD: Android's). A new context draws its first frame, then the
+// host starts a thread of its own with a context sharing this one's objects (progs_ahead_start), which links what the
+// GL thread has none of yet (gl_progs_ahead below), the heavy glass first, and hands each over here as it is linked:
+// a program the GL thread first needs (liquid glass bonding as it is first dragged, frosted glass as a panel first
+// opens) is taken from here (ahead_take), not compiled in that frame, which a fresh install's or an update's first
+// drag would wait a large share of a second for (the binary cache, prog_cache_load, keeps only what was linked before).
+// A slot the GL thread made itself, or took, is claimed: the thread skips it, or lets go of what it made of it.
+static pthread_mutex_t ahead_mu = PTHREAD_MUTEX_INITIALIZER;
+// the context the programs are made ahead for (gl_setup's, counted), what of it was handed over, and claimed
+static unsigned ahead_gen;
+static GLuint ahead_progs[MB_SLOTS];
+static unsigned ahead_claimed;
+// (GL thread) a new context's: the thread started after its first frame (gl_present_kept)
+static int ahead_due;
+
+#ifdef MB_PROGS_AHEAD
+// (the host's; GL thread, the context current) a thread started that makes the programs of `gen` ahead, in a context of
+// its own sharing the current one's objects, by gl_progs_ahead
+static void progs_ahead_start(unsigned gen);
+#endif
+
+// (GL thread) a new context's: what was handed over of the old one let go with it (made in the old context's objects)
+static void ahead_reset(void) {
+  pthread_mutex_lock(&ahead_mu);
+  ahead_gen++;
+  memset(ahead_progs, 0, sizeof ahead_progs);
+  ahead_claimed = 0;
+  pthread_mutex_unlock(&ahead_mu);
+  ahead_due = 1;
+}
+
+// (GL thread) the program of `slot` made ahead, taken (0: none yet); the slot claimed either way
+static GLuint ahead_take(int slot) {
+  pthread_mutex_lock(&ahead_mu);
+  GLuint p = ahead_progs[slot];
+  ahead_progs[slot] = 0;
+  ahead_claimed |= 1u << slot;
+  pthread_mutex_unlock(&ahead_mu);
+  return p;
+}
+
 static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
                              const char *fs_head, const char *fs_body, int cache_only) {
   char path[640];
@@ -1675,108 +1837,41 @@ static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_he
   if (use_cache) {
     GLint ok = 0;
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (ok == GL_TRUE) prog_cache_save(path, p);
+    if (ok == GL_TRUE && prog_cache_save(path, p)) prog_cache_stores++;
   }
   return p;
 }
 
-static GLuint link_prog_cached(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
-                               const char *fs_head, const char *fs_body) {
-  return link_prog_impl(tag, vs_slot, vs_head, vs_body, fs_head, fs_body, 0);
+// (GL thread) the program of `slot`: made ahead and handed over, else loaded from the binary cache, else (unless
+// `cache_only`: 0) compiled now; claimed (ahead_take) when not only looked for in the cache
+static GLuint slot_prog(int slot, int cache_only) {
+  char fs_head[1024];
+  prog_src s = prog_src_of(slot, fs_head, sizeof fs_head);
+  if (!cache_only) {
+    GLuint p = ahead_take(slot);
+    if (p) {
+      LOG("program %s taken as made ahead", s.tag);
+      return p;
+    }
+  }
+  GLuint *vs_slots[3] = {&vs_main, &vs_main_ad, &vs_post};
+  struct timespec t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  GLuint p = link_prog_impl(s.tag, vs_slots[s.vs], s.vs_head, s.vs_body, s.fs_head, s.fs_body, cache_only);
+  if (p && cache_only) ahead_take(slot);
+  // (what a frame waited for a program, in the host's log: a stall to be found there, not guessed at)
+  if (p && !cache_only) {
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    LOG("program %s made on the GL thread in %.1f ms", s.tag,
+        (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
+  }
+  return p;
 }
 
-// The program for `group` (MB_PROG_*), compiled (or loaded from binary cache) on first use, its textures' units set.
+// The program for `group` (MB_PROG_*), compiled (or loaded from binary cache, or taken as made ahead) on first use, its
+// textures' units set.
 static kprog make_prog_impl(int group, int cache_only) {
-  const char *vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 0\n";
-  GLuint *vs_slot = &vs_main;
-  const char *tag = "ui";
-  char fs_head[1024];
-  switch (group) {
-    case MB_PROG_FROSTED:
-      tag = "frosted";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 5\n"
-               "#define MB_HAS(K) ((K) == 5)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 1\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_LIQUID_MERGED:
-      tag = "liquid_merged";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 6\n"
-               "#define MB_HAS(K) ((K) == 6)\n"
-               "#define MB_HAS_LIQUID 1\n"
-               "#define MB_HAS_ADAPTIVE 1\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 1\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_LIQUID_SINGLE:
-      tag = "liquid_single";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 13\n"
-               "#define MB_HAS(K) ((K) == 6)\n"
-               "#define MB_HAS_LIQUID 1\n"
-               "#define MB_HAS_ADAPTIVE 1\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 1\n");
-      break;
-    case MB_PROG_LENS:
-      tag = "lens";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 8\n"
-               "#define MB_HAS(K) ((K) == 8)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_PATH:
-      tag = "path";
-      vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
-      vs_slot = &vs_main_ad;
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 11\n"
-               "#define MB_HAS(K) ((K) == 11)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 0\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_UI:
-    default:
-      tag = "ui";
-      vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
-      vs_slot = &vs_main_ad;
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND -1\n"
-               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 0\n"
-               "#define MB_HAS_BOX 1\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-  }
-  GLuint p = link_prog_impl(tag, vs_slot, vs_head, VS, fs_head, FS, cache_only);
+  GLuint p = slot_prog(group, cache_only);
   if (!p) {
     kprog empty = {0};
     return empty;
@@ -1811,7 +1906,7 @@ static kprog make_prog(int group) { return make_prog_impl(group, 0); }
 
 static void ensure_prog_flat_impl(int cache_only) {
   if (prog_flat) return;
-  GLuint p = link_prog_impl("flat", &vs_main, "#version 300 es\n#define MB_VS_ADAPTIVE 0\n", VS, NULL, FS_FLAT, cache_only);
+  GLuint p = slot_prog(MB_SLOT_FLAT, cache_only);
   if (!p) return;
   prog_flat = p;
   uf_vp = glGetUniformLocation(prog_flat, "u_vp");
@@ -1821,7 +1916,7 @@ static void ensure_prog_flat(void) { ensure_prog_flat_impl(0); }
 
 static void ensure_post_impl(int cache_only) {
   if (post) return;
-  GLuint p = link_prog_impl("post", &vs_post, NULL, PVS, NULL, PFS, cache_only);
+  GLuint p = slot_prog(MB_SLOT_POST, cache_only);
   if (!p) return;
   post = p;
   pu_src = glGetUniformLocation(post, "u_src");
@@ -1837,7 +1932,7 @@ static void ensure_post(void) { ensure_post_impl(0); }
 
 static void ensure_ad_prog_impl(int cache_only) {
   if (ad_prog) return;
-  GLuint p = link_prog_impl("adaptive", &vs_post, NULL, PVS, NULL, AD_FS, cache_only);
+  GLuint p = slot_prog(MB_SLOT_ADAPTIVE, cache_only);
   if (!p) return;
   ad_prog = p;
   adu_bd = glGetUniformLocation(ad_prog, "u_bd");
@@ -1850,7 +1945,63 @@ static void ensure_ad_prog_impl(int cache_only) {
 
 static void ensure_ad_prog(void) { ensure_ad_prog_impl(0); }
 
-// Preload any already-cached .glbin program binaries on context setup without compiling or counting misses.
+#ifdef MB_PROGS_AHEAD
+// (the host's thread that makes programs ahead, its own context current, sharing the objects of the GL thread's of
+// `gen`) the programs of the slots the GL thread has none of linked, the heavy glass first, each kept in the binary
+// cache for the next start and handed over (ahead_progs) once it is whole (glFinish: another context draws with it):
+// how many. Stops when the GL thread's context is no longer `gen`'s.
+static int gl_progs_ahead(unsigned gen) {
+  static const int order[MB_SLOTS] = {MB_PROG_LIQUID_MERGED, MB_PROG_LIQUID_SINGLE, MB_SLOT_ADAPTIVE,
+                                      MB_PROG_FROSTED,       MB_PROG_LENS,          MB_SLOT_POST,
+                                      MB_PROG_PATH,          MB_SLOT_FLAT,          MB_PROG_UI};
+  GLint nfmt = 0;
+  glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
+  int use_cache = prog_cache_dir[0] != '\0' && nfmt > 0;
+  GLuint vs[3] = {0, 0, 0};
+  int made = 0;
+  for (int i = 0; i < MB_SLOTS; i++) {
+    int slot = order[i];
+    pthread_mutex_lock(&ahead_mu);
+    int gone = ahead_gen != gen, claimed = (ahead_claimed >> slot) & 1;
+    pthread_mutex_unlock(&ahead_mu);
+    if (gone) break;
+    if (claimed) continue;
+    char fs_head[1024];
+    prog_src s = prog_src_of(slot, fs_head, sizeof fs_head);
+    if (!vs[s.vs]) vs[s.vs] = compile2(GL_VERTEX_SHADER, s.vs_head, s.vs_body, s.tag);
+    GLuint fs = compile2(GL_FRAGMENT_SHADER, s.fs_head, s.fs_body, s.tag);
+    GLuint p = glCreateProgram();
+    if (use_cache) glProgramParameteri(p, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+    glAttachShader(p, vs[s.vs]);
+    glAttachShader(p, fs);
+    glLinkProgram(p);
+    glDeleteShader(fs);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (ok != GL_TRUE) {
+      glDeleteProgram(p);
+      continue;
+    }
+    if (use_cache) {
+      char path[640];
+      prog_cache_path(path, sizeof path, s.tag, s.vs_head, s.vs_body, s.fs_head, s.fs_body);
+      prog_cache_save(path, p);
+    }
+    glFinish();
+    pthread_mutex_lock(&ahead_mu);
+    int keep = ahead_gen == gen && !((ahead_claimed >> slot) & 1);
+    if (keep) ahead_progs[slot] = p;
+    pthread_mutex_unlock(&ahead_mu);
+    if (keep) made++;
+    else glDeleteProgram(p);
+  }
+  for (int i = 0; i < 3; i++)
+    if (vs[i]) glDeleteShader(vs[i]);
+  return made;
+}
+#endif
+
+// Preload any already-cached .glbin program binaries on context setup without compiling.
 static void gl_preload_cached_progs(void) {
   if (prog_cache_dir[0] == '\0' || !prog_bin_capable()) return;
   for (int g = 0; g < MB_PROGS; g++) {
@@ -1863,9 +2014,11 @@ static void gl_preload_cached_progs(void) {
   glUseProgram(0);
 }
 
-// The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use
-// (a new context has none of the old: handles are cleared here, as glass_lost and canvas_lost do).
+// The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use,
+// or made ahead (ahead_reset) (a new context has none of the old: handles are cleared here, as glass_lost and
+// canvas_lost do).
 static void gl_setup(void) {
+  ahead_reset();
   vs_main = vs_main_ad = vs_post = 0;
   memset(progs, 0, sizeof progs);
   prog_flat = 0;
@@ -3457,6 +3610,17 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
   ad_rb_finish(ad_frame_serial);
   ad_finalize_frame(whole, ad_frame_serial);
   glass_idle_tick();
+  // (the surface's context's first frame drawn: what it has no program of yet made ahead, not in a frame that first
+  // needs it; never offscreen, which has no binary cache set: mbui-render's draws stay all on its thread)
+  if (ahead_due && !offscreen && prog_cache_dir[0] != '\0') {
+    ahead_due = 0;
+#ifdef MB_PROGS_AHEAD
+    pthread_mutex_lock(&ahead_mu);
+    unsigned gen = ahead_gen, all = ahead_claimed == (1u << MB_SLOTS) - 1;
+    pthread_mutex_unlock(&ahead_mu);
+    if (!all) progs_ahead_start(gen);
+#endif
+  }
 }
 
 static int gl_adaptive_step(void) {

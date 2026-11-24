@@ -398,3 +398,165 @@ test("F2a: endSeq clamps end-based read advancement across catchup, tall message
   attend.focus(2, focus({ visible: true, focused: true, chat: { station: "ws/st", thread: 8, end: true } }));
   assert.deepEqual(attend.chat("ws/st", null, { ...chat(10, false, msgs(25)), thread: { id: 8, read: 10 } }).due, [{ read: { thread: 8, seq: 25 } }]);
 });
+
+test("queued_agent_marks_started_immediately_and_keeps_it_into_running", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  const snap = (status: string, since: number | null): J => ({
+    ...chat(1, false, [[1, 0, true]]),
+    caught: 0,
+    agents: [{ session: { key: "a" }, status, ...(since === null ? {} : { since }) }],
+  });
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle", null)).value), []);
+  // idle -> queued (since: null): started immediately on the queued frame
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("queued", null)).value), ["a"]);
+  // queued -> running: stays started
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("running", host.nowMs())).value), ["a"]);
+  // running -> idle: cleared
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle", null)).value), []);
+});
+
+test("resumed_chat_with_clock_skew_keeps_existing_running_quiet_but_animates_new_queued_and_running", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  const snap = (status: string, since: number | null): J => ({
+    ...chat(1, false, [[1, 0, true]]),
+    caught: 0,
+    agents: [{ session: { key: "a" }, status, ...(since === null ? {} : { since }) }],
+  });
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  attend.chat("ws/st", null, snap("idle", null));
+  // App backgrounded and resumed (e.g. Android foreground/background switch)
+  attend.focus(1, focus({ visible: false }));
+  attend.focus(1, focus({ visible: true }));
+  // First snapshot after resume: already running -> quiet
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("running", host.nowMs() - 60_000)).value), []);
+  // Agent finishes and starts a new turn with station clock 60s behind local clock -> must still mark started
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle", null)).value), []);
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("queued", null)).value), ["a"]);
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("running", host.nowMs() - 60_000)).value), ["a"]);
+  // Directly idle -> running with 60s clock skew also marks started
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle", null)).value), []);
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("running", host.nowMs() - 60_000)).value), ["a"]);
+});
+
+test("consecutive_turn_without_idle_marks_started_when_last_turn_changes", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  const snap = (turnId: string): J => ({
+    ...chat(1, false, [[1, 0, true]]),
+    caught: 0,
+    agents: [{ session: { key: "a", lastTurn: { id: turnId } }, status: "running", since: host.nowMs() }],
+  });
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  // Opened while turn t1 is already running -> quiet
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("t1")).value), []);
+  // Continues directly into turn t2 without an intervening idle snapshot -> started
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("t2")).value), ["a"]);
+});
+
+test("resume_offline_or_catching_keeps_reconnected_running_quiet_then_animates_new_turn_with_clock_skew", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  const snap = (status: string, since: number | null, offline = false): J => ({
+    ...chat(1, false, [[1, 0, true]]),
+    caught: 0,
+    offline,
+    agents: [{ session: { key: "a" }, status, ...(since === null ? {} : { since }) }],
+  });
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  attend.chat("ws/st", null, snap("idle", null), { catching: false, epoch: 0 });
+  // Background -> foreground while socket is catching up / offline: first frame reads cached idle
+  attend.focus(1, focus({ visible: false }));
+  attend.focus(1, focus({ visible: true }));
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle", null, true), { catching: true, epoch: 1 }).value), []);
+  // Reconnect catch-up completes and reports running (even with 60s clock skew) -> must stay quiet
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("running", host.nowMs() - 60_000, false), { catching: false, epoch: 1 }).value), []);
+  // Subsequent real new turn on the settled epoch (still with 60s clock skew) -> must mark started
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle", null, false), { catching: false, epoch: 1 }).value), []);
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("queued", null, false), { catching: false, epoch: 1 }).value), ["a"]);
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("running", host.nowMs() - 60_000, false), { catching: false, epoch: 1 }).value), ["a"]);
+});
+
+test("caught_up_messages_without_live_told_keep_agent_transition_quiet", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  const msgs = (n: number) => Array.from({ length: n }, (_, i) => [i + 1, 0, false] as [number, number, boolean]);
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  attend.chat("ws/st", null, {
+    ...chat(10, false, msgs(10)),
+    caught: 10,
+    told: [],
+    agents: [{ session: { key: "a" }, status: "idle" }],
+  });
+  // caught jumps 10 -> 15 with told: [] while agent transitions idle -> running: catch-up frame must stay quiet
+  const res = attend.chat("ws/st", null, {
+    ...chat(10, false, msgs(15)),
+    caught: 15,
+    told: [],
+    agents: [{ session: { key: "a" }, status: "running", since: host.nowMs() }],
+  });
+  assert.deepEqual(started(res.value), []);
+});
+
+test("filling_in_last_turn_id_within_same_running_turn_does_not_mark_started", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  // Opened running with empty lastTurn and since=1000 -> quiet
+  assert.deepEqual(
+    started(
+      attend.chat("ws/st", null, {
+        ...chat(1, false, [[1, 0, true]]),
+        caught: 0,
+        agents: [{ session: { key: "a", lastTurn: {} }, status: "running", since: 1000 }],
+      }).value,
+    ),
+    [],
+  );
+  // Next frame fills in lastTurn.id="t1" with same since=1000 -> still same turn, must remain quiet
+  assert.deepEqual(
+    started(
+      attend.chat("ws/st", null, {
+        ...chat(1, false, [[1, 0, true]]),
+        caught: 0,
+        agents: [{ session: { key: "a", lastTurn: { id: "t1" } }, status: "running", since: 1000 }],
+      }).value,
+    ),
+    [],
+  );
+  // Subsequent turn whose summary has empty lastTurn.id but a newer since=2000 -> marks started
+  assert.deepEqual(
+    started(
+      attend.chat("ws/st", null, {
+        ...chat(1, false, [[1, 0, true]]),
+        caught: 0,
+        agents: [{ session: { key: "a", lastTurn: {} }, status: "running", since: 2000 }],
+      }).value,
+    ),
+    ["a"],
+  );
+});
+
+test("current_thread_caught_up_while_other_threads_still_catching_animates_new_queued_turn", async () => {
+  const host = new FakeHost();
+  const attend = await run(Attend.load(host));
+  const started = (v: J) => v.agents.filter((a: J) => a.started === true).map((a: J) => a.session.key);
+  const snap = (status: string): J => ({
+    ...chat(1, false, [[1, 0, true]]),
+    caught: 0,
+    agents: [{ session: { key: "a" }, status }],
+  });
+  attend.focus(1, focus({ visible: true, chat: { station: "ws/st", thread: 7 } }));
+  // Resumed and this thread is already caught up (catching: false on epoch 2, even if other station threads remain behind)
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("idle"), { catching: false, epoch: 2 }).value), []);
+  // User sends a message in this caught-up thread -> idle -> queued must animate immediately
+  assert.deepEqual(started(attend.chat("ws/st", null, snap("queued"), { catching: false, epoch: 2 }).value), ["a"]);
+});

@@ -22,6 +22,8 @@
 priv struct AgentFace {
   face : @view.View
   fold : @motion.Way
+  ring_alpha : @motion.Way
+  bind_ring : () -> Unit
   away : @signals.Signal[Bool]
   last : Ref[AgentOutPlan?]
   /// its picture's own node (agent_avatar_node's) made once with the line: where a message's picture flies from
@@ -100,6 +102,7 @@ fn working_said_node(
   // (what it does now folded into its picture as a message of its agent's comes out of it, back once that is out:
   // agent_said_node's `out_of`, emit.mbt's Fold and Return; 1 shown)
   let fold = @motion.Way::new(1.0)
+  let ring_alpha = @motion.Way::new(1.0)
   let away = @signals.signal(false)
   let last : Ref[AgentOutPlan?] = Ref(None)
   let pic : Ref[@view.View?] = Ref(None)
@@ -114,18 +117,28 @@ fn working_said_node(
       last.val = None
       if @signals.untracked(fn() { away.get() }) {
         away.set(false)
+        ring_alpha.put(0.0)
+        // det-ok(motion-length): emit.mbt's Return, the ring returning on a new turn
+        ring_alpha.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=r.cause_at())
+      } else {
+        // det-ok(motion-length): emit.mbt's Return, restoring ring if a new turn arrived mid-Fold
+        ring_alpha.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=r.cause_at())
       }
-      fold.put(1.0)
+      // det-ok(motion-length): emit.mbt's Return, the line unfolding on a new turn
+      fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=r.cause_at())
     })
     // (made by the room the row gives it: how much of the line its words have, activity_visible_width's)
     r.by_room(fn(held, room) {
       held.box(fn(area) {
         @sf.style_node(area, fn() { activity_row_box })
         // (where it is in the list with words sent from here as they fly: none of it seen till they land, its room
-        // taken all along, chat_body_node's working_shows_at; none bound where it is seen at once)
-        if shows_at() > area.cause_at() {
+        // taken all along, chat_body_node's working_shows_at; fades in from shows_at over row_size_ms)
+        let show_at = shows_at()
+        if show_at > area.cause_at() {
           let shown_after = @sf.waited_past_node(area, shows_at, 0.0)
-          area.alpha(By(fn() { if shown_after() { 1.0 } else { 0.0 } })) |> ignore
+          let reveal = @motion.Way::new(0.0)
+          reveal.go(1.0, @motion.tween(@ui.row_size_ms, ease=Out), at=show_at)
+          area.alpha(By(fn() { if shown_after() { reveal.shown_on(area) } else { 0.0 } })) |> ignore
         }
         // the clock's words as they show now ("" none): what they take of the line
         let clock_said : @signals.Signal[String] = @signals.signal("")
@@ -162,10 +175,27 @@ fn working_said_node(
             // (away, its picture and its ring with it drawn nowhere, its room kept: one binding for all of it, bound once a
             // message's picture first flies from it, at that cause; there in full till then)
             let faded = Ref(false)
+            let ring_box : Ref[@view.View?] = Ref(None)
+            let ring_bound = Ref(false)
+            let bind_ring = fn() {
+              if !ring_bound.val {
+                match ring_box.val {
+                  Some(rb) if rb.alive() => {
+                    ring_bound.val = true
+                    rb.alpha(By(fn() { ring_alpha.shown_on(rb) })) |> ignore
+                  }
+                  _ => ()
+                }
+              }
+            }
             face.reacts(fn() { away.get() }, at_start=false, fn(gone) {
-              if gone && !faded.val && face.alive() {
-                faded.val = true
-                face.alpha(By(fn() { if away.get() { 0.0 } else { 1.0 } })) |> ignore
+              if gone {
+                ring_alpha.put(0.0)
+                if !faded.val && face.alive() {
+                  faded.val = true
+                  face.alpha(By(fn() { if away.get() { 0.0 } else { 1.0 } })) |> ignore
+                }
+                bind_ring()
               }
             })
             // (its picture, made once; away, drawn nowhere and its room kept, while a message's picture flies from it
@@ -176,7 +206,7 @@ fn working_said_node(
             // (what a message of its agent's coming while it is at work comes out of: agent_said_node's `out_of`; told no more
             // as it is let go)
             let agent = @signals.untracked(a).key
-            faces[agent] = { face, fold, away, last, pic }
+            faces[agent] = { face, fold, ring_alpha, bind_ring, away, last, pic }
             face.owns(fn() {
               match faces.get(agent) {
                 Some(f) if f.face.id() == face.id() => faces.remove(agent)
@@ -189,7 +219,9 @@ fn working_said_node(
             message_agent_card_node(face, src, here, fn() { a().key }, pointed=true)
             // (its ring over its picture)
             face.box(fn(ring) {
-              // (away with its picture: one picture and one ring, the message's on its way, never a second here)
+              // (away with its picture: one picture and one ring, the message's on its way, never a second here;
+              // ring_alpha is bound lazily on first `away` to keep resting binding count at 0 overhead)
+              ring_box.val = Some(ring)
               ring.over(Is(true)) |> ignore
               @sf.style_node(ring, fn() { ring_room_style })
               ring.pick(fn() { a().wait is Some(_) }, fn(k, waiting) {
@@ -214,9 +246,15 @@ fn working_said_node(
             let shown = activity_steady_node(tail, steadies, key, said, came)
             let style = fn() { if @sf.hovered_node(line) { now_words_hot } else { now_words } }
             tail.box(fn(words) { working_words_node(words, shown, came, style, visible, key.length()) }) |> ignore
+            let first_clock = Ref(true)
+            let had_clock_prev = Ref(true)
             tail.pick(fn() { working_clock_from(a()) }, fn(k, from) {
+              let is_first = first_clock.val
+              first_clock.val = false
               match from {
                 Some((since, most)) => {
+                  let from_none = !is_first && !had_clock_prev.val
+                  had_clock_prev.val = true
                   let tick = steps_seconds(k, src, since, till?=most.map(fn(sec) { sec * 1000.0 }))
                   let words = fn() {
                     tick() |> ignore
@@ -224,20 +262,29 @@ fn working_said_node(
                   }
                   let clock = @sf.words_node(k, words, fn() { activity_clock })
                   k.reacts(words, fn(s) { clock_said.set(s) })
-                  // (seen from when the row came into its list, as its rows' size goes)
+                  // (seen from when the row came into its list, or when the clock first appeared after mount, as its rows' size goes)
                   let seen = @motion.Way::new(1.0)
                   k.reacts(came, fn(at) {
-                    match at {
-                      Some(at) => {
-                        seen.put(0.0)
-                        seen.go(1.0, @motion.tween(@ui.row_size_ms, ease=Out), at~)
+                    if from_none {
+                      let start = @sf.dmax(at.unwrap_or(k.cause_at()), k.cause_at())
+                      seen.put(0.0)
+                      seen.go(1.0, @motion.tween(@ui.row_size_ms, ease=Out), at=start)
+                    } else {
+                      match at {
+                        Some(at) => {
+                          seen.put(0.0)
+                          seen.go(1.0, @motion.tween(@ui.row_size_ms, ease=Out), at~)
+                        }
+                        None => seen.put(1.0)
                       }
-                      None => seen.put(1.0)
                     }
                   })
                   clock.alpha(By(fn() { seen.shown_on(clock) })) |> ignore
                 }
-                None => k.reacts(fn() { "" }, fn(s) { clock_said.set(s) })
+                None => {
+                  had_clock_prev.val = false
+                  k.reacts(fn() { "" }, fn(s) { clock_said.set(s) })
+                }
               }
             })
           })
@@ -452,7 +499,7 @@ fn working_words_node(
       }
     },
   )
-  v.pick(fn() { changing.get() }, fn(k, ch) {
+  v.pick(fn() { changing.get() }, at_once=true, fn(k, ch) {
     match ch {
       None => {
         k.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore

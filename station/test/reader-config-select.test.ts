@@ -338,7 +338,7 @@ rl.on("line", (line) => {
   });
 });
 
-test("real ArchiveMarkBuilder wires config.readers (unimplemented fallback warn) and RequestedBuilder catches synchronous binary() throws cleanly", { skip: skipPosixStubs }, async () => {
+test("real ArchiveMarkBuilder wires config.readers (unsupported-binary fallback warn) and RequestedBuilder catches synchronous binary() throws cleanly", { skip: skipPosixStubs }, async () => {
   resetReaderSelectionStateForTest();
   const dir = freshDir("builder-wire-");
   const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb-reader 1.0", "mb"));
@@ -351,7 +351,10 @@ test("real ArchiveMarkBuilder wires config.readers (unimplemented fallback warn)
   hearLines((l) => logs.push(l));
 
   try {
-    // 1. ArchiveMarkBuilder reads options.readers() on spawn, logs deduped pion-mode-unimplemented, and runs mb.
+    // 1. ArchiveMarkBuilder reads options.readers() on spawn; when the probed Pion binary omits
+    //    `archive-marks`, it logs a deduped pion-binary-unsupported-mode warning and runs mb.
+    const supported = await probePionSupportedModes(pionStub);
+    assert.ok(supported !== null && !supported.has("archive-marks"));
     let readerCalls = 0;
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
@@ -374,10 +377,10 @@ test("real ArchiveMarkBuilder wires config.readers (unimplemented fallback warn)
       }
     });
     assert.equal(readerCalls, 2, "expected ArchiveMarkBuilder to read options.readers() on each spawn");
-    const unimplWarns = logs.filter(
-      (l) => l.level === "WARN" && l.at === "readers" && l.fields.mode === "archive-marks" && l.fields.reason === "pion-mode-unimplemented",
+    const unsupportedWarns = logs.filter(
+      (l) => l.level === "WARN" && l.at === "readers" && l.fields.mode === "archive-marks" && l.fields.reason === "pion-binary-unsupported-mode",
     );
-    assert.equal(unimplWarns.length, 1, "expected exactly 1 deduped pion-mode-unimplemented warning");
+    assert.equal(unsupportedWarns.length, 1, "expected exactly 1 deduped pion-binary-unsupported-mode warning");
 
     // 2. RequestedBuilder dynamic binary() throw rejects ready() cleanly without unhandledRejection and allows retry.
     let shouldThrow = true;

@@ -69,9 +69,9 @@ type Visit = {
   visible: boolean;
   /// Come into view again: what it holds by then came while it was not (`top` is taken up to it as it is next made).
   again: boolean;
-  /// When it came into view again (this device's clock), for its agents: one at work since then started as it showed.
-  resumedAt: number | null;
+  settledEpoch: number | null;
   statuses: Map<string, string>;
+  turns: Map<string, { id: string; since: number | null }>;
   started: Set<string>;
   /// Made here as it showed (its station had no thread for it yet): an agent first seen at work in it started while it
   /// shows, as none was there before; until it is out of view.
@@ -277,11 +277,10 @@ export class Attend {
         v.said.clear();
         v.started.clear();
         v.statuses.clear();
+        v.turns.clear();
+        v.settledEpoch = null;
         v.made = false;
-        if (visible) {
-          v.resumedAt = this.#host.nowMs();
-          v.again = true;
-        }
+        if (visible) v.again = true;
         v.visible = visible;
       }
       if (showing.length === 0) this.visits.delete(key);
@@ -298,7 +297,7 @@ export class Attend {
 
   /// A chat's value as computed, with its unread line (and what was said and started while it showed) put in, and
   /// what it asks of the core.
-  chat(station: string, session: string | null, value: J): { due: Due[]; value: J } {
+  chat(station: string, session: string | null, value: J, stream?: { catching?: boolean; epoch?: number }): { due: Due[]; value: J } {
     this.#seen.read("focus");
     const due: Due[] = [];
     const thread = value?.thread?.id;
@@ -327,10 +326,26 @@ export class Attend {
     }
     const key = `${station}\u0001${thread}`;
     const newest = messages.length > 0 ? endSeq(messages[messages.length - 1]) : 0;
+    const offline = value.offline === true;
+    const catching = stream?.catching === true;
+    const epoch = stream?.epoch ?? 0;
     let visit = this.visits.get(key);
     if (!visit) {
       const made = session !== null && this.#making.delete(`${station}\u0001${session}`);
-      visit = { at: now, read: known, session, top: newest, said: new Set(), visible: shown.some((f) => f.visible), again: false, resumedAt: null, statuses: new Map(), started: new Set(), made };
+      visit = {
+        at: now,
+        read: known,
+        session,
+        top: newest,
+        said: new Set(),
+        visible: shown.some((f) => f.visible),
+        again: false,
+        settledEpoch: !offline && !catching ? epoch : null,
+        statuses: new Map(),
+        turns: new Map(),
+        started: new Set(),
+        made,
+      };
       this.visits.set(key, visit);
     }
     // Said: what its station's stream told as it happened (`caught` stops before it: station/topics.ts) after what the
@@ -340,26 +355,51 @@ export class Attend {
       visit.top = Math.max(visit.top, newest);
       visit.again = false;
     }
+    const prevTop = visit.top;
     const caught = typeof value.caught === "number" ? value.caught : 0;
     const told: Set<number> | null = Array.isArray(value.told) ? new Set(value.told) : null;
+    let anyLiveMessage = false;
     for (const m of messages) {
       const n = seq(m);
-      if (visit.visible && n > visit.top && n > caught && (told === null || told.has(n))) visit.said.add(n);
+      if (visit.visible && n > prevTop && n > caught && (told === null || told.has(n))) {
+        visit.said.add(n);
+        anyLiveMessage = true;
+      }
     }
     visit.top = Math.max(visit.top, newest);
     if (messages.some((m) => visit.said.has(seq(m)))) out.messages = messages.map((m) => (visit.said.has(seq(m)) ? { ...m, said: true } : m));
+    const caughtUpMessages = newest > prevTop && !anyLiveMessage;
+    const isCatchUp = offline || catching || epoch !== visit.settledEpoch || caughtUpMessages;
+    if (offline || catching) visit.settledEpoch = null;
+    else visit.settledEpoch = epoch;
     const agents: J[] = Array.isArray(value.agents) ? value.agents : [];
     const started: J[] = [];
     for (const a of agents) {
       const k = a?.session?.key;
       if (typeof k !== "string") continue;
       const status = typeof a.status === "string" ? a.status : "";
-      const running = status === "running";
+      const working = status === "running" || status === "queued";
+      const curId = typeof a?.session?.lastTurn?.id === "string" ? a.session.lastTurn.id : "";
+      const curSince = typeof a?.since === "number" ? a.since : null;
       const was = visit.statuses.get(k);
+      const prevTurn = visit.turns.get(k);
       visit.statuses.set(k, status);
-      if (!running) visit.started.delete(k);
+      const newTurn =
+        prevTurn !== undefined &&
+        ((curId !== "" && prevTurn.id !== "" && curId !== prevTurn.id) ||
+          (curSince !== null && prevTurn.since !== null && curSince !== prevTurn.since));
+      if (curId !== "" || curSince !== null) {
+        visit.turns.set(k, {
+          id: curId !== "" ? curId : (prevTurn?.id ?? ""),
+          since: curSince ?? prevTurn?.since ?? null,
+        });
+      } else if (!working) {
+        visit.turns.delete(k);
+      }
+      const wasWorking = was === "running" || was === "queued";
+      if (!working) visit.started.delete(k);
       // (one first seen at work: at work already as the chat came into view, unless the chat was made as it showed)
-      else if ((was === undefined ? visit.made : was !== "running") && visit.visible && (visit.resumedAt === null || (typeof a.since === "number" && a.since >= visit.resumedAt))) visit.started.add(k);
+      else if (!isCatchUp && (was === undefined ? visit.made : (!wasWorking || newTurn)) && visit.visible) visit.started.add(k);
       if (visit.started.has(k)) started.push(a);
     }
     if (started.length > 0) out.agents = agents.map((a) => (started.includes(a) ? { ...a, started: true } : a));

@@ -1,6 +1,6 @@
 #!/bin/bash
-# CI, before moon builds over the build main's last run left (the moon cache): each file of apps/mbui, of libs/ui
-# and of libs/ui (moon.work's other members: mbui itself and still.fail's component library) given an mtime
+# CI, before moon builds over the build main's last run left (the moon cache): each file of apps/mbui and of libs/ui
+# (moon.work's other member: mbui itself and its component library) given an mtime
 # that is its content's (from its blob's id), the same in every checkout of that content. moon builds again a file whose
 # mtime is not the one it built from, older or newer: a checkout gives every file a new one, and moon built all of it
 # again over the cache each run (80 tasks, 95 s of the Mac job's 243 where three files of two pages had changed: main
@@ -16,12 +16,17 @@
 set -e
 cd "$(git rev-parse --show-toplevel)"
 # (git ls-files -s: mode, blob id, stage, path; 2000-01-01 plus its first 28 bits in seconds, 2000 to 2008: never ahead of the clock)
-git ls-files -s -z apps/mbui libs/ui libs/ui | perl -0ne '
+git ls-files -s -z apps/mbui libs/ui | perl -0ne '
   my ($meta, $path) = split /\t/, $_, 2; $path =~ s/\0$//;
   my $t = 946684800 + hex(substr((split / /, $meta)[1], 0, 7));
   next if -l $path || ! -e $path;
   utime($t, $t, $path) or die "moon-mtimes: $path: $!\n"; $n++;
-  END { print "moon-mtimes: $n files of apps/mbui, libs/ui and libs/ui given their content'"'"'s mtime\n" }'
+  END { print "moon-mtimes: $n files of apps/mbui and libs/ui given their content'"'"'s mtime\n" }'
+# (git's index told the mtimes just given, its own file written alone, no file's content or mtime: without it each
+# `git ls-files -m` or `git status` after this read and hashed all of both again, scripts/native.ts's two 16 s and 14 s
+# beside moonc, 45386683892. No paths: update-index refuses a directory, dies and writes nothing. Only a cache of
+# stats: where it is not written, git hashes as it did)
+git update-index -q --refresh || echo "moon-mtimes: git's index not refreshed"
 pin=apps/mbui/deps/farview/.pin
 if [ -f "$pin" ]; then
   find apps/mbui/deps/farview -type f -print0 | perl -0ne '

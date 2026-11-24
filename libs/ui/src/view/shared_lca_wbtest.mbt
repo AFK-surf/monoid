@@ -483,3 +483,174 @@ test "what flies in from within a page's list (in_list) carries no key: the row 
     msg="drawn in \{Repr(at)} (list \{list.val.unwrap().at}, after \{held}), \{raised} raised, row 0 at \{y0} to \{y0 + h0}, the new row's words at \{y1}",
   )
 }
+
+///|
+test "in_list flight inside a flips=true list moves monotonically without overshooting target or snapping on landing across frame rates" {
+  for fps in [0.0, 120.0, 60.0, 24.0, 7.0] {
+    let sent = @signals.signal(false, same=fn(a, b) { a == b })
+    let av_ref : Ref[View?] = Ref(None)
+    let from_rect = (16.0, 240.0, 24.0, 24.0)
+    let tree = Tree::new(fn(root) {
+      root.box(fn(o) {
+        o.width(Is(Some(390.0))).height(Is(Some(300.0))) |> ignore
+        o.scrolls_window(
+          Scroll::list(),
+          fn() { if sent.get() { [0, 1, 2] } else { [0, 2] } },
+          est=80.0,
+          follows=fn() { true },
+          from_end=true,
+          flips=true,
+          comes=fn(k) { k == 1 },
+          fn(b, k) {
+            match k {
+              1 =>
+                b.box(fn(r) {
+                  r.width(Is(Some(390.0))).height(Is(Some(110.0))) |> ignore
+                  r.box(fn(av) {
+                    av_ref.val = Some(av)
+                    av
+                    .width(Is(Some(24.0)))
+                    .height(Is(Some(24.0)))
+                    .ground(Is(lca_red))
+                    .flies_in(lca_straight, fn(_) { Some(from_rect) }, in_list=true)
+                    |> ignore
+                  })
+                  |> ignore
+                })
+                |> ignore
+              2 => b.box(fn(r) { r.width(Is(Some(390.0))).height(Is(Some(40.0))) |> ignore }) |> ignore
+              _ => b.box(fn(r) { r.width(Is(Some(390.0))).height(Is(Some(220.0))) |> ignore }) |> ignore
+            }
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    tree.frame(390.0, 300.0, now=0.0) |> ignore
+    tree.event(1000.0, fn() { sent.set(true) })
+    tree.frame(390.0, 300.0, now=1000.0) |> ignore
+    let av = av_ref.val.unwrap()
+    assert_true(av.flies(), msg="fps=\{fps}: expected avatar to fly")
+    let y_start = match lca_drawn(tree, av) {
+      Some((_, y, _, _, _, _)) => y
+      None => fail("fps=\{fps}: avatar not drawn at departure")
+    }
+    assert_true(
+      (y_start - from_rect.1).abs() <= 0.5,
+      msg="fps=\{fps}: departure y=\{y_start} != from.y=\{from_rect.1}",
+    )
+    let step = if fps <= 0.0 { 16.0 } else { 1000.0 / fps }
+    let ys : Array[(Double, Double, Bool)] = [(1000.0, y_start, true)]
+    let mut t = 1000.0
+    while t < 1500.0 {
+      t = t + step
+      tree.frame(390.0, 300.0, now=t) |> ignore
+      match lca_drawn(tree, av) {
+        Some((_, y, _, _, _, _)) => ys.push((t, y, av.flies()))
+        None => ()
+      }
+    }
+    tree.frame(390.0, 300.0, now=1800.0) |> ignore
+    assert_true(!av.flies(), msg="fps=\{fps}: avatar still flying at rest")
+    let rest_y = match lca_drawn(tree, av) {
+      Some((_, y, _, _, _, _)) => y
+      None => fail("fps=\{fps}: avatar not drawn at rest")
+    }
+    assert_true(
+      from_rect.1 - rest_y > 40.0,
+      msg="fps=\{fps}: expected upward flight > 40pt (from=\{from_rect.1}, rest=\{rest_y})",
+    )
+    // Monotonic upward trajectory, zero overshoot above rest_y - 0.5, and zero snap across flight_over.
+    let mut prev_y = ys[0].1
+    let mut prev_flying = ys[0].2
+    for i in 1..<ys.length() {
+      let (ti, yi, fl) = ys[i]
+      assert_true(
+        yi >= rest_y - 0.5,
+        msg="fps=\{fps} t=\{ti}: avatar overshot above rest_y=\{rest_y} (got y=\{yi})",
+      )
+      assert_true(
+        yi <= prev_y + 0.5,
+        msg="fps=\{fps} t=\{ti}: avatar moved downward during upward flight (prev=\{prev_y}, now=\{yi})",
+      )
+      if prev_flying && !fl {
+        // Across the flight_over landing frame, the avatar hands off smoothly to its slot's live FlipWay position
+        // (no snap jump; at 60/120fps < 3pt step, at lower fps bounded by the coarser frame step).
+        let land_jump = (yi - prev_y).abs()
+        let limit = if fps >= 60.0 || fps <= 0.0 { 3.0 } else if fps >= 24.0 { 15.0 } else { 45.0 }
+        assert_true(
+          land_jump < limit,
+          msg="fps=\{fps} t=\{ti}: landing snap across flight_over (prev=\{prev_y}, now=\{yi}, rest=\{rest_y})",
+        )
+      }
+      prev_y = yi
+      prev_flying = fl
+    }
+  }
+}
+
+///|
+test "flight inside an ancestor with static non-zero drawn_off lands at laid + static_off with zero snap across flight_over" {
+  let shown = @signals.signal(false)
+  let target : Ref[View?] = Ref(None)
+  let fl : Flight = { way: fn(_) { (200.0, fn(t) { t / 200.0 }) } }
+  let tree = Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(Is(Some(300.0))).height(Is(Some(300.0))).drawn_off(Is((12.0, 24.0))) |> ignore
+      o.show(fn() { shown.get() }, fn(s) {
+        s.box(fn(w) {
+          w.width(Is(Some(20.0))).height(Is(Some(20.0))).ground(Is(0x4488CCFFL)) |> ignore
+          w.flies_in(fl, fn(to) { Some((100.0, 200.0, to.2, to.3)) }) |> ignore
+          target.val = Some(w)
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  tree.frame(300.0, 300.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { shown.set(true) })
+  tree.frame(300.0, 300.0, now=1000.0) |> ignore
+  guard target.val is Some(w) else { fail("target node not built") }
+  assert_true(w.flies(), msg="expected flight to start")
+  let (x0, y0) = match lca_drawn(tree, w) {
+    Some((x, y, _, _, _, _)) => (x, y)
+    None => fail("target not drawn at departure")
+  }
+  assert_true(
+    (x0 - 100.0).abs() <= 0.5 && (y0 - 200.0).abs() <= 0.5,
+    msg="departure (\{x0}, \{y0}) != (100, 200)",
+  )
+  let laid = w.laid_window_now()
+  let mut prev_x = x0
+  let mut prev_y = y0
+  let mut prev_flying = true
+  let mut saw_land = false
+  let mut t = 1000.0
+  while t < 1300.0 {
+    t = t + 16.0
+    tree.frame(300.0, 300.0, now=t) |> ignore
+    guard lca_drawn(tree, w) is Some((xi, yi, _, _, _, _)) else { continue }
+    let fl_now = w.flies()
+    if prev_flying && !fl_now {
+      saw_land = true
+      assert_true(
+        (xi - prev_x).abs() < 12.0 && (yi - prev_y).abs() < 20.0,
+        msg="snap across flight_over at t=\{t}: prev=(\{prev_x}, \{prev_y}) now=(\{xi}, \{yi})",
+      )
+    }
+    prev_x = xi
+    prev_y = yi
+    prev_flying = fl_now
+  }
+  assert_true(saw_land, msg="flight never completed")
+  let (rx, ry) = match lca_drawn(tree, w) {
+    Some((x, y, _, _, _, _)) => (x, y)
+    None => fail("target not drawn at rest")
+  }
+  assert_true(
+    (rx - (laid.0 + 12.0)).abs() <= 0.5 && (ry - (laid.1 + 24.0)).abs() <= 0.5,
+    msg="rest (\{rx}, \{ry}) != laid + static_off (\{laid.0 + 12.0}, \{laid.1 + 24.0})",
+  )
+}
