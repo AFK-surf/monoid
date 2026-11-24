@@ -322,7 +322,7 @@ fn chat_quote_node(
             @sf.action_box_node(
               pill,
               fn() { @sf.t("web-main.chat.inferIntent") },
-              fn(anchor) { chat_intent_take(v, src, r, here, draft, rows, @sf.Anchor::Node(anchor)) },
+              fn(_) { chat_intent_take(v, src, r, here, draft, rows, @sf.Anchor::Node(end)) },
               fn(b) {
                 @sf.style_node(b, fn() { chat_quote_part })
                 @sf.hover_ground_node(b)
