@@ -639,6 +639,32 @@ jobs:
         with:
           path: ~/Library/Caches/stillfail-native/ghostty-vt
           key: ${{ steps.ghostty-key.outputs.key }}
+      # (the device's engine, core.sh's libmbui_core.a for aarch64-apple-ios: compiled from apple_core.mm on every fresh
+      # runner, 34 s of the build before ios.sh, and main c2e84024c's job 138301895231 was cut 10 s after mbc had linked
+      # the app. Keyed by all it is made of, as pipeline.yml's desktop-build keeps the Mac's: its sources and the headers
+      # they include, core.sh, the compiler, the iOS it is for and Hermes; only that exact key is taken, never an older
+      # engine. Saved by main alone, below; mbui-testflight.yml takes it by the same key)
+      - name: The iOS engine's key
+        id: ios-engine-key
+        run: |
+          set -o pipefail
+          # (its first line, cut here: a pipe into head could end clang++ on a closed pipe, and pipefail the step)
+          cc=$(xcrun --sdk iphoneos clang++ --version)
+          cc=${cc%%$'\n'*}
+          sources=$(shasum -a 256 apps/mbui/src/host/apple_core.mm apps/mbui/engine/ready_queue.h \
+            apps/mbui/src/host/apple_collate.h apps/mbui/src/host/electron_sealed.h apps/mbui/src/host/core_api.h \
+            apps/mbui/src/host/listen_api.h libs/ui/src/host/listen_api.h apps/mbui/scripts/core.sh)
+          key=$(printf '%s\n' 'ios 17.0' "$cc" '${{ steps.hermes.outputs.key }}' "$sources" | shasum -a 256 | cut -c1-16)
+          echo "key=mbui-ios-engine-$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: ios-engine
+        with:
+          path: apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a
+          key: ${{ steps.ios-engine-key.outputs.key }}
+      # (newer than every source, which moon-mtimes.sh dates 2000-2008, and than core.sh, as engine() asks; ios.sh links
+      # the app on a fresh runner whatever its mtime: no app is kept)
+      - if: steps.ios-engine.outputs.cache-hit == 'true'
+        run: touch apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a
       # Always unsigned. TestFlight signing/upload is a separate manual workflow.
       # (the shell's cargo build, its dependencies kept, as main's newest that built it left it: a shell changed is built
       # here when not prebuilt yet, and from nothing that was 180-320 s of the job, a crate of its own again and again
@@ -674,6 +700,7 @@ jobs:
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
           APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 32)) bash -ec '
             bash apps/mbui/scripts/core.sh apple-native aarch64-apple-ios
+            touch "$RUNNER_TEMP/ios-engine-made"
             H=$RUNNER_TEMP/ios-hermes
             if [ -f "$H/pid" ]; then
               while [ ! -s "$H/status" ]; do
@@ -777,6 +804,23 @@ jobs:
             apps/mbui/out/ios-device/_build
             !apps/mbui/out/ios-device/_build/**/*.mbc
           key: ${{ steps.moon-room.outputs.key }}
+      # (main's, when it compiled the engine here: once core.sh apple-native went through, a build cut after it too, so a
+      # run cut in moonc's C still spares the next its 34 s. Last, after moon's build, which is longer to make again: a
+      # 292 KB save, only with room left before the job is cut)
+      - id: ios-engine-room
+        if: always() && github.ref == 'refs/heads/main' && steps.ios-engine.outputs.cache-hit != 'true' && steps.build.outcome != 'skipped'
+        run: |
+          left=$(( JOB_END - $(date +%s) ))
+          if [ -f "$RUNNER_TEMP/ios-engine-made" ] && [ -s apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a ] && [ "$left" -gt 8 ]; then
+            echo "save=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "the iOS engine not saved (${left} s left)"
+          fi
+      - if: always() && steps.ios-engine-room.outputs.save == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a
+          key: ${{ steps.ios-engine-key.outputs.key }}
 
   windows:
     needs: what
