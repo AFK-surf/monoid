@@ -391,7 +391,7 @@ test "小屏: quote card enters near full width without overlapping bottom contr
   let add_at = t.time()
   let mut min_w = 1.0e9
   while t.time() - add_at < @ui.move_most_ms {
-    t.frame()
+    t.frame_as_host() |> ignore
     assert_quote_above_send("enter")
     if quote_seen(t).length() > 0 {
       let gw = quote_ground(t).2
@@ -426,7 +426,7 @@ test "小屏: quote card enters near full width without overlapping bottom contr
   t.click(Button, label=@sf.t("web-main.quote.remove"))
   let rm_at = t.time()
   while t.time() - rm_at < @ui.move_most_ms {
-    t.frame()
+    t.frame_as_host() |> ignore
     assert_quote_above_send("remove")
     assert_no_orphan_x("remove")
   }
@@ -456,10 +456,10 @@ test "小屏: quote card enters near full width without overlapping bottom contr
       Some(r) => fail("caret appeared mid-flight at +\{dt}ms: \{Repr(r)}")
       None => ()
     }
-    t.frame()
+    t.frame_as_host() |> ignore
   }
   assert_true(checked_past_plain_away, msg="did not check caret past plain sent_out_away_ms")
-  t.run_for(40.0)
+  t.run_for(@sfbase.sent_out_hold_ms)
   assert_true(mf_caret(t, fx, fw) is Some(_), msg="composer caret did not return after quote send settled")
   // 4) Immediate typing right after sending a quote restores the caret immediately without waiting move_most_ms.
   @sfbase.writing_quote(src, @sfbase.writing(src, "ws1/st1:s-c1"), {
@@ -469,7 +469,7 @@ test "小屏: quote card enters near full width without overlapping bottom contr
   })
   t.run_for(@ui.move_most_ms)
   tap_send(t)
-  t.run_for(50.0)
+  t.run_for(@sfbase.sent_out_hold_ms)
   t.type_text("马上继续打字")
   t.draw()
   assert_true(mf_caret(t, fx, fw) is Some(_), msg="immediate typing after quote send kept caret hidden")
