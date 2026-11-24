@@ -265,10 +265,14 @@ test "has_lone_surrogate, escape_line_separators, RawLines, and skill_given safe
   expect(out2[0] == "a\u{fffd}b\u{fffd}\u{fffd}c\u{fffd}d", "WHATWG maximal-subpart lossy UTF-8")
   expect(out2[1] == "中😀", "valid multi-byte UTF-8 preserved")
 
-  // extract_safe_top_level_id preserves clean top-level id and nulls lone-surrogate or nested id.
+  // extract_safe_top_level_id preserves clean top-level id (including JSON-escaped key names) and nulls lone-surrogate or nested id.
   expect(
     base_codec::json_stringify(extract_safe_top_level_id("{\"id\":7,\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "7",
     "numeric top-level id preserved",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"i\\u0064\":7,\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "7",
+    "escaped key name i\\u0064 decoded to id",
   )
   expect(
     base_codec::json_stringify(extract_safe_top_level_id("{\"op\":\"tags\",\"names\":[\"\\uD800\"],\"id\":\"ok-1\"}")) == "\"ok-1\"",
@@ -298,10 +302,17 @@ test "has_lone_surrogate, escape_line_separators, RawLines, and skill_given safe
     Ok(_) => panic("expected normalized duplicate path (a/b vs a\\b on win32) to be rejected")
   }
 
-  // Hidden dot-prefixed temp/backup siblings live in parent dir and fail portable_name so scan ignores them.
+  // Hidden dot-prefixed temp/backup siblings use a short fixed prefix (never exceeding NAME_MAX even for 240-byte skill names)
+  // and fail portable_name so scan ignores them.
   let sib_posix = skill_hidden_sibling("/", "/home/skills/demo", "tmp", "42", 1)
-  expect(sib_posix == "/home/skills/.stillfail-tmp-demo-42-1", "posix hidden sibling: " + sib_posix)
-  expect(!portable_name(".stillfail-tmp-demo-42-1"), "hidden sibling ignored by scan portable_name")
+  expect(sib_posix == "/home/skills/.stillfail-tmp-42-1", "posix hidden sibling: " + sib_posix)
+  expect(!portable_name(".stillfail-tmp-42-1"), "hidden sibling ignored by scan portable_name")
   let sib_win = skill_hidden_sibling("\\", "C:\\skills\\demo\\", "bak", "42", 2)
-  expect(sib_win == "C:\\skills\\.stillfail-bak-demo-42-2", "win hidden sibling: " + sib_win)
+  expect(sib_win == "C:\\skills\\.stillfail-bak-42-2", "win hidden sibling: " + sib_win)
+  let mut long_name = ""
+  for _ in 0..<240 {
+    long_name = long_name + "a"
+  }
+  let sib_long = skill_hidden_sibling("/", "/home/skills/" + long_name, "tmp", "42", 3)
+  expect(sib_long == "/home/skills/.stillfail-tmp-42-3", "long skill name hidden sibling stays short: " + sib_long)
 }

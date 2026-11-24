@@ -121,6 +121,7 @@ test("mb default, pion switch, shadow refusal, invalid value, deduplicated fallb
       const p = new MemoryProgram(shellDir);
       try {
         assert.deepEqual((await p.ask("tags", { names: ["x"] })).tags, ["from-mb"]);
+        assert.deepEqual((await p.ask("tags", { names: [123n] as unknown as string[] })).tags, ["from-mb"]);
       } finally {
         await p.close();
       }
@@ -342,10 +343,12 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
   }, async () => {
     const p = new MemoryProgram(shellDir);
     try {
-      // 1. tags & merge3
+      // 1. tags (including BigInt serialization compatibility) & merge3
       const stations = ["Mini 1", "中文 站点", "😀 emoji 😀"];
       const gotTags = await p.ask("tags", { names: stations });
       assert.deepEqual(gotTags.tags, stations.map(stationTag));
+      const gotBigIntTags = await p.ask("tags", { names: [123n] as unknown as string[] });
+      assert.deepEqual(gotBigIntTags.tags, ["123"]);
 
       const base = "a\nb\nc\n";
       const newer = "A\nb\nc\n";
@@ -387,21 +390,23 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
       mkdirSync(skillParent, { recursive: true });
       assert.deepEqual(
         await p.ask("skillWrite", { dir: skillDir, files: { "SKILL.md": b64("# v1\n") } }),
-        { id: 5, written: true },
+        { id: 6, written: true },
       );
       assert.deepEqual(readdirSync(skillParent), ["demo"]);
 
-      // Replace existing skill cleanly via recoverable swap -> no .stillfail-tmp- or .stillfail-bak- left behind,
-      // and pre-existing unrelated hidden siblings are never deleted.
-      const preExistingHidden = join(skillParent, ".stillfail-tmp-demo-keep");
-      mkdirSync(preExistingHidden, { recursive: true });
-      writeFileSync(join(preExistingHidden, "keep.txt"), "do-not-delete");
+      // Replace existing skill cleanly via recoverable swap -> no .stillfail-tmp- or .stillfail-bak- left behind.
       const wr2 = await p.ask("skillWrite", { dir: skillDir, files: { "SKILL.md": b64("# v2\n"), "a/b.txt": b64("hi") } });
       assert.equal(wr2.written, true);
-      assert.deepEqual(readdirSync(skillParent).sort(), [".stillfail-tmp-demo-keep", "demo"]);
-      assert.equal(readFileSync(join(preExistingHidden, "keep.txt"), "utf8"), "do-not-delete");
+      assert.deepEqual(readdirSync(skillParent), ["demo"]);
       assert.equal(readFileSync(join(skillDir, "SKILL.md"), "utf8"), "# v2\n");
-      rmSync(preExistingHidden, { recursive: true, force: true });
+
+      // Long 240-byte ASCII skill name creates & replaces cleanly without hitting ENAMETOOLONG.
+      const longSkillName = "a".repeat(240);
+      const longSkillDir = join(skillParent, longSkillName);
+      assert.equal((await p.ask("skillWrite", { dir: longSkillDir, files: { "SKILL.md": b64("# long v1\n") } })).written, true);
+      assert.equal((await p.ask("skillWrite", { dir: longSkillDir, files: { "SKILL.md": b64("# long v2\n") } })).written, true);
+      assert.equal(readFileSync(join(longSkillDir, "SKILL.md"), "utf8"), "# long v2\n");
+      rmSync(longSkillDir, { recursive: true, force: true });
 
       // Lone UTF-16 surrogates via MemoryProgram.ask reject immediately without leaking #waiting or blocking trimIdle().
       await assert.rejects(p.ask("tags", { names: ["bad\uD800"] }), /invalid UTF-16 surrogate/);
@@ -462,12 +467,27 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
     await assert.rejects(p.ask("tags", { names: [] }), MemoryProgramStopped);
   });
 
-  // 5. Raw stdio protocol edge checks on real Pion binary: CR-only line and lone UTF-16 surrogates.
+  // 5. Raw stdio protocol edge checks on real Pion binary: CR-only line, lone UTF-16 surrogates
+  //    (including escaped "i\u0064" key), and colliding .stillfail-tmp-<pid>-1 / .stillfail-bak-<pid>-3 preservation.
+  const collideParent = join(root, "collide-skills");
+  const collideSkill = join(collideParent, "demo");
+  mkdirSync(collideSkill, { recursive: true });
+  writeFileSync(join(collideSkill, "SKILL.md"), "# old\n");
+
   const rawOut = await new Promise<string>((resolve, reject) => {
     const child = spawn(realPion!, ["--builder", "memory", "--shell-dir", shellDir], {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
+    assert.ok(typeof child.pid === "number" && child.pid > 0);
+    // Pre-occupy the exact first temp and backup candidate names this PID will probe.
+    const occupiedTmp = join(collideParent, `.stillfail-tmp-${child.pid}-1`);
+    const occupiedBak = join(collideParent, `.stillfail-bak-${child.pid}-3`);
+    mkdirSync(occupiedTmp, { recursive: true });
+    writeFileSync(join(occupiedTmp, "keep.txt"), "keep-tmp");
+    mkdirSync(occupiedBak, { recursive: true });
+    writeFileSync(join(occupiedBak, "keep.txt"), "keep-bak");
+
     let out = "";
     child.stdout!.on("data", (c: Buffer) => { out += c.toString("utf8"); });
     child.on("error", reject);
@@ -477,17 +497,26 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
     });
     child.stdin!.write("\r\n");
     child.stdin!.write('{"id":1,"op":"tags","names":["\\uD800"]}\n');
+    child.stdin!.write('{"i\\u0064":7,"op":"tags","names":["\\uD800"]}\n');
     child.stdin!.write('{"id":2,"op":"tags","names":["\\uDC00"]}\n');
     child.stdin!.write('{"id":"\\uD800","op":"tags","names":["x"]}\n');
     child.stdin!.write('{"id":3,"op":"tags","names":["\\uD83D\\uDE00"]}\n');
+    child.stdin!.write(JSON.stringify({ id: 4, op: "skillWrite", dir: collideSkill, files: { "SKILL.md": b64("# new\n") } }) + "\n");
     child.stdin!.end();
   });
   const lines = rawOut.trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines, [
     { id: null, error: "unknown memory op " },
     { id: 1, error: "invalid UTF-16 surrogate" },
+    { id: 7, error: "invalid UTF-16 surrogate" },
     { id: 2, error: "invalid UTF-16 surrogate" },
     { id: null, error: "invalid UTF-16 surrogate" },
     { id: 3, tags: ["station"] },
+    { id: 4, written: true },
   ]);
+  assert.equal(readFileSync(join(collideSkill, "SKILL.md"), "utf8"), "# new\n");
+  const collideEntries = readdirSync(collideParent).sort();
+  assert.equal(collideEntries.length, 3, `expected demo + 2 pre-occupied hidden dirs, got: ${collideEntries.join(", ")}`);
+  assert.equal(readFileSync(join(collideParent, collideEntries[0], "keep.txt"), "utf8"), "keep-bak");
+  assert.equal(readFileSync(join(collideParent, collideEntries[1], "keep.txt"), "utf8"), "keep-tmp");
 });

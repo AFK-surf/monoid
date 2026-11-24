@@ -88,24 +88,24 @@ export class MemoryProgram {
   /// What the program answers `op` with `args` (mb/src/memory answer.mbt); its `error` thrown.
   ask<A = Json>(op: string, args: Record<string, unknown>): Promise<A> {
     if (this.#closed) return Promise.reject(new MemoryProgramStopped("station stopping"));
+    const id = ++this.#next;
     let serialized: string;
     try {
-      serialized = JSON.stringify({ ...args, id: 0, op });
+      serialized = JSON.stringify({ ...args, id, op }, (_, v) => typeof v === "bigint" ? v.toString() : v);
     } catch (error) {
       return Promise.reject(error as Error);
     }
-    if (serialized !== undefined && jsonHasLoneSurrogate(serialized)) {
+    if (serialized !== undefined && serialized.includes("\\ud") && jsonHasLoneSurrogate(serialized)) {
       return Promise.reject(new Error("invalid UTF-16 surrogate"));
     }
     return new Promise((resolve, reject) => {
-      const id = ++this.#next;
       this.#waiting.set(id, { resolve, reject });
       this.#idle?.();
       this.#idle = null;
       try {
         const child = this.#start();
         child.ref(true);
-        child.postMessage({ ...args, id, op });
+        child.postLine(serialized);
       } catch (error) {
         this.#waiting.delete(id);
         reject(error as Error);
@@ -152,6 +152,7 @@ export class MemoryProgram {
       }
       const waiting = typeof answer.id === "number" ? this.#waiting.get(answer.id) : undefined;
       if (!waiting) {
+        if (this.#closed) return;
         log.warn("memory", "the memory's program returned an unmatched response", { id: answer.id ?? null });
         return;
       }

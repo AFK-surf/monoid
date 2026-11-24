@@ -602,7 +602,17 @@ pub fn extract_safe_top_level_id(line : String) -> base_codec::Json {
     if val_end < 0 {
       break
     }
-    if key_slice == "\"id\"" {
+    let is_id_key = if key_slice == "\"id\"" {
+      true
+    } else if !has_lone_surrogate(key_slice) {
+      match base_codec::json_parse(key_slice) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Str(k)) => k == "id"
+        _ => false
+      }
+    } else {
+      false
+    }
+    if is_id_key {
       let val_slice = line.slice(i, val_end)
       if !has_lone_surrogate(val_slice) {
         match base_codec::json_parse(val_slice) {

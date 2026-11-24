@@ -303,9 +303,9 @@ fn cleanup_dir(host : MemoryHost, path : String) -> Unit {
   )
 }
 
-/// Split `dir` into `(parent, base)` on the last path separator so hidden staging/backup siblings
-/// live beside `dir` with a leading `.` (ignored by `scan`'s `portable_name` check).
-pub fn skill_hidden_sibling(sep : String, dir : String, tag : String, pid_s : String, seq : Int) -> String {
+/// Build a short dot-prefixed hidden sibling path inside `dir`'s parent so `scan`'s
+/// `portable_name` ignores it and long 240..255-byte skill names never hit `ENAMETOOLONG`.
+pub fn skill_hidden_sibling(sep : String, dir : String, kind : String, pid_s : String, seq : Int) -> String {
   let win = sep == "\\"
   let mut end = dir.length()
   while end > 1 && is_path_sep(dir.code_unit_at(end - 1), win) {
@@ -320,12 +320,8 @@ pub fn skill_hidden_sibling(sep : String, dir : String, tag : String, pid_s : St
     }
     i = i - 1
   }
-  let (parent, base) = if slash < 0 {
-    ("", dir.slice(0, end))
-  } else {
-    (dir.slice(0, slash), dir.slice(slash + 1, end))
-  }
-  let name = ".stillfail-" + tag + "-" + base + "-" + pid_s + "-" + seq.to_string()
+  let parent = if slash < 0 { "" } else { dir.slice(0, slash) }
+  let name = ".stillfail-" + kind + "-" + pid_s + "-" + seq.to_string()
   if parent == "" {
     if slash == 0 {
       sep + name

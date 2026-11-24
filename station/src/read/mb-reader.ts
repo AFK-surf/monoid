@@ -237,9 +237,14 @@ export class MbProcess extends EventEmitter {
   /// (a bigint said as its digits)
   /// One that has left more than its `stdinMost` unread is ended (STDIN_MOST), what is posted after dropped.
   postMessage(message: unknown) {
+    this.postLine(JSON.stringify(message, (_, v) => typeof v === "bigint" ? v.toString() : v));
+  }
+
+  /// Write an already-serialized JSON line to stdin, sharing `postMessage`'s backpressure and `SIGKILL` guard.
+  postLine(line: string) {
     if (this.#stalled || this.#exited) return;
     const stdin = this.#child.stdin!;
-    stdin.write(`${JSON.stringify(message, (_, v) => typeof v === "bigint" ? v.toString() : v)}\n`);
+    stdin.write(`${line}\n`);
     if (stdin.writableLength <= this.#stdinMost) return;
     this.#stalled = true;
     log.error("readers", "a MoonBit program stopped reading what it is asked; ending it", { args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: stdin.writableLength });
