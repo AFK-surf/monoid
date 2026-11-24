@@ -181,7 +181,8 @@ void mb_app_window_round(int wid, double radius) {
   }
   [w invalidateShadow];
 }
-extern void mb_app_reopen(void) __attribute__((weak_import));
+static void (*app_reopen_cb)(void);
+void mb_app_set_reopen(void (*fn)(void)) { app_reopen_cb = fn; }
 
 // Which window of the run an event is of: the window it came to, else the key window (a menu's item chosen).
 static int win_of(NSWindow *w) {
@@ -2139,7 +2140,7 @@ static void bring_back(void) {
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
   (void)app;
   (void)visible;
-  if (mb_app_reopen) { mb_app_reopen(); return NO; }
+  if (app_reopen_cb) { app_reopen_cb(); return NO; }
   bring_back();
   return NO;
 }
