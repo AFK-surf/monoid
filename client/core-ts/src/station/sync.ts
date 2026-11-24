@@ -333,6 +333,12 @@ export class StationsSync {
     }
   }
 
+  /// A database has room again (data.ts `onRoomAgain`): the transcripts of the stations kept in it that were left as
+  /// they were while it had none are read again, as on leaving a cellular network.
+  roomAgain(kept: (station: string) => boolean): void {
+    for (const link of this.#links.values()) if (kept(link.address) && this.reachable(link.address)) this.#historyStart(link.address);
+  }
+
   #transcriptSpared(address: string, key: string): boolean {
     return this.#sparing && !this.#core.store.inUse({ topic: "live", station: address, key });
   }
@@ -2796,7 +2802,8 @@ export class StationsSync {
         view.told = start + entries.length;
       }
       if (kind === "timeline" && this.#transcriptLetGo(address, key)) {
-        // Let go for room or spared on cellular: its items are read when opened or when leaving cellular.
+        // Let go for room, no room for it, or spared on cellular: its items are read when opened, when there is room
+        // again, or when leaving cellular.
       } else if (kind === "timeline") {
         const start = u64(get(message, "start")) ?? 0;
         const entries = (get(message, "entries") as unknown[] | undefined) ?? [];
