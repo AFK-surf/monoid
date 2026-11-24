@@ -180,14 +180,14 @@ pub fn liquid_segmented_node(
           if glass_track {
             pill
             .ground(By(ctrl_seg_thumb_idle))
-            .shadow(Is(ctrl_seg_thumb_idle_shadow))
+            .shadow(By(ctrl_seg_thumb_idle_shadow))
             .shadow_outside(Is(true))
             |> ignore
           } else {
+            // Native iOS 27.0 resting segmented pill: clean opaque fill with zero border and zero shadow
+            // in both Light and Dark modes (no grey outline or dark halo ring inside the track).
             pill
             .ground(By(fn() { @ui.tree_theme().lifted }))
-            .edge(By(fn() { (0.5, @ui.tree_theme().line) }))
-            .shadow(By(fn() { (1.0, 0.0, @ui.tree_theme().shadow) }))
             |> ignore
           }
         })

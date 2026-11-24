@@ -31,19 +31,22 @@ let ctrl_type_seg : Double = 14.0
 // ---------------------------------------------------------------------------
 
 ///|
-/// iOS 26 lifted opaque pill fill at rest for `glass_track=true` segmented controls
-/// (pure white in Light, lifted medium grey in Dark).
+/// Native iOS 27.0 lifted opaque pill fill at rest for segmented controls
+/// (pure white in Light, lifted medium grey `0x68686EFF` in Dark matching native `(105..111)`).
 fn ctrl_seg_thumb_idle() -> Int64 {
   if is_dark() {
-    0x5A5A60FFL
+    0x68686EFFL
   } else {
     0xFFFFFFFFL
   }
 }
 
 ///|
-/// Subtle outer drop shadow for the resting lifted pill in `glass_track=true` segmented controls.
-let ctrl_seg_thumb_idle_shadow : (Double, Double, Int64) = (2.0, 1.0, 0x0000001FL)
+/// Native iOS 27.0 resting segmented pill has zero outer drop shadow in both Light and Dark modes
+/// (verified pixel-for-pixel on iOS 27.0 UISegmentedControl: no dark halo or grey ring around the pill).
+fn ctrl_seg_thumb_idle_shadow() -> (Double, Double, Int64) {
+  (0.0, 0.0, 0L)
+}
 
 ///|
 fn ctrl_seg_inactive_ink() -> Int64 {

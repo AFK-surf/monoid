@@ -231,8 +231,6 @@ pub fn[K : Eq] tabs_node(
                 .height(By(fn() { Some(tab_h_now()) }))
                 .radius(By(fn() { tab_h_now() / 2.0 }))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
-                .edge(By(fn() { (0.5, theme().p.line) }))
-                .shadow(By(fn() { (1.0, 0.0, theme().p.shadow) }))
                 .alpha(By(fn() { seg_thumb_alpha(lens()) }))
                 |> ignore
             }

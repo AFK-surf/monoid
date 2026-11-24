@@ -1,7 +1,7 @@
 // White-box tests for Stage 1 S1-3A optical & interaction alignment in `ui/glass`:
 // 1. `liquid_segmented_node(glass_track=true)`:
 //    - Clear refraction lens is mounted AFTER the label row (Z-order above text glyphs).
-//    - Resting selected pill uses iOS 26 lifted fill (Light 0xFFFFFFFF, Dark 0x5A5A60FF) + outer shadow (2, 1, 0x0000001F).
+//    - Resting selected pill uses iOS 27 lifted fill (Light 0xFFFFFFFF, Dark 0x68686EFF) with zero border/shadow.
 //    - Held lens scales to 1.15x (`ctrl_seg_held_scale == 1.15`) with zero relayout (`laid == 0`).
 // 2. `liquid_slider_node`:
 //    - Track & active fill elastically thicken from 6pt at rest to 10pt while held/dragged in paint layer (`laid == 0`),
@@ -32,7 +32,8 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
     })
     t.run_for(glass_springs_out)
     // 1. Resting state: 1 liquid glass instance (track only), bright lifted idle pill with exact fill color.
-    let expected_idle = if dark { 0x5A5A60FFL } else { 0xFFFFFFFFL }
+    let expected_idle = if dark { 0x68686EFFL } else { 0xFFFFFFFFL }
+    assert_eq(ctrl_seg_thumb_idle_shadow(), (0.0, 0.0, 0L), msg="dark=\{dark}: resting pill shadow must be zero (iOS 27)")
     let idle_pills = t.drawn_rects().filter(fn(r) { r.4 == expected_idle && r.2 > 80.0 && r.3 > 30.0 })
     assert_eq(idle_pills.length(), 1, msg="dark=\{dark}: rest must draw 1 lifted idle pill with expected color")
     assert_eq(t.drawn_glass().length(), 1, msg="dark=\{dark}: rest must draw only the track glass (0 hidden lens)")

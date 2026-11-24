@@ -22,15 +22,17 @@ test "the dark theme's segmented thumb seen off its track on every ground, its w
       ("chip", pal.chip),
     ]
     for g in grounds {
-      let track = over(g.1, alpha(pal.text, 0.06))
-      let thumb = over(track, lifted)
-      let seen = @ui.contrast_ratio(thumb, track)
-      let read = @ui.contrast_ratio(pal.text, thumb)
-      if seen < 1.25 {
-        wrong.push("\{name}: the thumb on a track on the \{g.0} \{seen}:1, under 1.25")
-      }
-      if read < 4.5 {
-        wrong.push("\{name}: the chosen words on the thumb on the \{g.0} \{read}:1, under 4.5")
+      for track_kind in [("6%", over(g.1, alpha(pal.text, 0.06))), ("9.4%", over(g.1, 0xFFFFFF18L))] {
+        let track = track_kind.1
+        let thumb = over(track, lifted)
+        let seen = @ui.contrast_ratio(thumb, track)
+        let read = @ui.contrast_ratio(pal.text, thumb)
+        if seen < 1.65 {
+          wrong.push("\{name}: the thumb on a \{track_kind.0} track on the \{g.0} \{seen}:1, under 1.65")
+        }
+        if read < 4.5 {
+          wrong.push("\{name}: the chosen words on the thumb on the \{g.0} \{read}:1, under 4.5")
+        }
       }
     }
   }
