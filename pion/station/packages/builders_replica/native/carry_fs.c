@@ -355,3 +355,49 @@ int32_t sfc_dir_readable(const char *path) {
     return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
 #endif
 }
+
+int32_t sfc_is_file(const char *path) {
+    if (path == NULL) {
+        return 0;
+    }
+#ifdef _WIN32
+    int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (n <= 0 || n >= MAX_PATH) {
+        return -1;
+    }
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return -1;
+    }
+    DWORD attr = GetFileAttributesW(w);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        DWORD e = GetLastError();
+        free(w);
+        return e == ERROR_FILENAME_EXCED_RANGE ? -1 : 0;
+    }
+    if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+        free(w);
+        return (attr & FILE_ATTRIBUTE_DIRECTORY) == 0 ? 1 : 0;
+    }
+    HANDLE h = CreateFileW(
+        w,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    int ok = GetFileType(h) == FILE_TYPE_DISK && GetFileInformationByHandle(h, &info) &&
+             (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    CloseHandle(h);
+    return ok ? 1 : 0;
+#else
+    struct stat st;
+    return (stat(path, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
+#endif
+}

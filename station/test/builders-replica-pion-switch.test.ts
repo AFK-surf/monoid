@@ -815,7 +815,7 @@ test("production entrypoints (ProgramRunner, takeBackSoon, carry) cold-start wit
   );
 });
 
-test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass and preserves all historical batches (MB + Pion)", async (t) => {
+test("corrupted, unreadable, missing, schema-invalid, stale, empty-array, or gap head.json aborts pass and preserves all historical batches (MB + Pion)", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
@@ -838,12 +838,24 @@ test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass an
     const genDirPath = join(rep, "own", HOME, gen);
     const headPath = join(genDirPath, "head.json");
     const logDir = join(genDirPath, "log");
-    const savedHead = readFileSync(headPath, "utf8");
-    const savedBatches = readdirSync(logDir).sort();
-    assert.ok(savedBatches.length >= 1);
+    const headPass1 = readFileSync(headPath, "utf8");
 
-    // Update second message before testing all 4 head.json fault modes.
-    made.store.insertMessage({ thread: thA.id, ts: "x.2", authorKind: "person", author: "p@x", text: "updated-after-corrupt" });
+    // Pass 2: add a second session + message so there are 2 committed batches.
+    const told2 = nothingTold();
+    const unsub2 = made.store.subscribe((c) => void tell(told2, c));
+    const addedThread = chat(made.store, made.data, "chat:added", HOME, 1);
+    made.store.insertMessage({ thread: addedThread, ts: "added.1", authorKind: "person", author: "p@x", text: "added-session-msg" });
+    unsub2();
+    const p2 = await exp.ask({ type: "pass", told: told2 });
+    assert.ok(p2.wrote >= 1);
+    const headPass2 = readFileSync(headPath, "utf8");
+    const parsedPass2 = JSON.parse(headPass2) as { batches: string[]; to: number; [k: string]: unknown };
+    const savedBatches = readdirSync(logDir).sort();
+    assert.ok(savedBatches.length >= 2, `${label}: expected >= 2 committed batches after pass 2`);
+    assert.ok(parsedPass2.batches.length >= 2, `${label}: expected >= 2 batches in head.json after pass 2`);
+
+    // Add a third message before testing all 7 head.json fault modes.
+    made.store.insertMessage({ thread: thA.id, ts: "x.3", authorKind: "person", author: "p@x", text: "updated-after-corrupt" });
 
     // Fault 1: invalid JSON syntax
     writeFileSync(headPath, "{corrupted-json");
@@ -851,7 +863,7 @@ test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass an
     assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: invalid JSON must preserve all historical batches`);
 
     // Fault 2: valid JSON object missing `batches`
-    writeFileSync(headPath, JSON.stringify({ v: 1, origin: ORIGIN, workspace: HOME, gen }));
+    writeFileSync(headPath, JSON.stringify({ v: 1, origin: ORIGIN, workspace: HOME, gen, to: parsedPass2.to }));
     await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /corrupt|batches|head/i);
     assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: missing batches schema must preserve all historical batches`);
 
@@ -861,7 +873,7 @@ test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass an
     assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: deleted head.json must preserve all historical batches`);
 
     // Fault 4: chmod 000 head.json (unreadable EACCES on non-root)
-    writeFileSync(headPath, savedHead);
+    writeFileSync(headPath, headPass2);
     if (isNonRoot) {
       chmodSync(headPath, 0o000);
       try {
@@ -872,11 +884,26 @@ test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass an
       }
     }
 
-    // Restore valid head.json -> next pass succeeds and full restore retains BOTH unchanged and updated messages!
-    writeFileSync(headPath, savedHead);
-    const p2 = await exp.ask({ type: "pass", told: nothingTold() });
-    assert.ok(p2.wrote >= 1);
-    const hashes = [...Object.keys(p2.heads[HOME].files ?? {}), ...Object.keys(p2.heads[HOME].transcriptFiles ?? {})];
+    // Fault 5 (stale): replace Pass 2's head.json with Pass 1's real valid head.json
+    writeFileSync(headPath, headPass1);
+    await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /stale|head/i);
+    assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: stale head.json must preserve all 2/2 historical batches`);
+
+    // Fault 6 (empty-array): keep Pass 2's `to` with `batches: []`
+    writeFileSync(headPath, JSON.stringify({ ...parsedPass2, batches: [] }));
+    await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /corrupt|non-contiguous|head/i);
+    assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: empty-array head.json must preserve all 2/2 historical batches`);
+
+    // Fault 7 (gap): drop the first batch (`batches.slice(1)`)
+    writeFileSync(headPath, JSON.stringify({ ...parsedPass2, batches: parsedPass2.batches.slice(1) }));
+    await assert.rejects(() => exp.ask({ type: "pass", told: nothingTold() }), /corrupt|non-contiguous|head/i);
+    assert.deepEqual(readdirSync(logDir).sort(), savedBatches, `${label}: gap head.json must preserve all 2/2 historical batches`);
+
+    // Restore valid Pass 2 head.json -> Pass 3 succeeds and full restore retains ALL sessions and messages!
+    writeFileSync(headPath, headPass2);
+    const p3 = await exp.ask({ type: "pass", told: nothingTold() });
+    assert.ok(p3.wrote >= 1);
+    const hashes = [...Object.keys(p3.heads[HOME].files ?? {}), ...Object.keys(p3.heads[HOME].transcriptFiles ?? {})];
     const sources = await exp.ask({ type: "sources", hashes });
     await exp.close();
 
@@ -885,15 +912,17 @@ test("corrupted, unreadable, missing, or schema-invalid head.json aborts pass an
     Store.open(destDb).close();
     stageRestoreCopy(rep, made.data, HOME, gen, dest, sources);
     await takeBackSoon(dest, destDb, NOW + 4000, bin);
-    const restoredSessions = dumpTableRows(destDb, "sessions");
-    assert.ok(restoredSessions.length >= 2, `${label}: both sessions must survive after head.json recovery`);
+    const restoredSessionKeys = dumpTableRows(destDb, "sessions").map((s) => s.key);
+    assert.ok(restoredSessionKeys.includes("chat:a"), `${label}: chat:a must survive`);
+    assert.ok(restoredSessionKeys.includes("chat:added"), `${label}: chat:added from Pass 2 must survive`);
     const restoredEntries = dumpTableRows(destDb, "entries");
     assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("unchanged-session-msg")), `${label}: unchanged message preserved`);
+    assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("added-session-msg")), `${label}: added message from Pass 2 preserved`);
     assert.ok(restoredEntries.some((e) => JSON.stringify(e).includes("updated-after-corrupt")), `${label}: updated message preserved`);
   }
 });
 
-test("CLI numeric flag parity: Int (+0/0x0/0_0/4294967296) and Double (+1/0012.5/1_000.5/' 12.5 ') match MB 1:1", async (t) => {
+test("CLI numeric flag parity: Int and Double lexical edge cases match MB 1:1", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
 
@@ -944,12 +973,19 @@ test("CLI numeric flag parity: Int (+0/0x0/0_0/4294967296) and Double (+1/0012.5
   };
 
   // Int flags:
-  // - +0, 0x0, 0_0 all parse as 0 (so `most = 0`: pass stops with `more = true` and `entries` cursor stays at "0");
-  // - 4294967296 overflows signed Int32 -> falls back to default BATCH_BYTES (`more = false` and `entries` cursor > 0).
+  // - valid 0 spellings parse as 0 (`most = 0`: `more = true`, `entries` cursor stays "0");
+  // - invalid/overflow spellings fall back to default BATCH_BYTES (`more = false`, `entries` cursor > 0).
   for (const [val, wantMore] of [
     ["+0", true],
     ["0x0", true],
+    ["0X0", true],
+    ["-0x0", true],
     ["0_0", true],
+    ["0x_0", true],
+    ["0o_0", true],
+    ["0b_0", true],
+    ["0_", false],
+    ["0__0", false],
     ["4294967296", false],
   ] as const) {
     const mbRes = await runExportFlag(bins.mb, val);
@@ -964,13 +1000,23 @@ test("CLI numeric flag parity: Int (+0/0x0/0_0/4294967296) and Double (+1/0012.5
     }
   }
 
-  // Double flags on replica-restore: +1 -> 1, 0012.5 -> 12.5, 1_000.5 -> 1000.5, " 12.5 " -> 0 (MB rejects whitespace!)
+  // Double flags on replica-restore: finite, invalid underscores, overflow 1e309 -> 0, Infinity/-inf/NaN -> JSON null.
   const seed = await runExportFlag(bins.pion, "4294967296");
   for (const [rawNow, wantAt] of [
     ["+1", 1],
     ["0012.5", 12.5],
     ["1_000.5", 1000.5],
     [" 12.5 ", 0],
+    ["1__2", 0],
+    ["1_", 0],
+    ["1_e2", 0],
+    ["1._2", 0],
+    ["1.2_", 0],
+    ["1e2_", 0],
+    ["1e309", 0],
+    ["Infinity", null],
+    ["-inf", null],
+    ["NaN", null],
   ] as const) {
     for (const [label, bin] of [
       ["mb", bins.mb],
@@ -987,7 +1033,7 @@ test("CLI numeric flag parity: Int (+0/0x0/0_0/4294967296) and Double (+1/0012.5
       });
       assert.equal(rmsg.error, undefined, `${label}: --now ${JSON.stringify(rawNow)} must succeed`);
       const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8"));
-      assert.equal(outcome.at, wantAt, `${label}: --now ${JSON.stringify(rawNow)} must parse as ${wantAt}`);
+      assert.equal(outcome.at, wantAt, `${label}: --now ${JSON.stringify(rawNow)} must parse as ${JSON.stringify(wantAt)}`);
     }
   }
 });

@@ -154,12 +154,21 @@ function normal(passed: Json): Json {
   return { ...passed, heads: Object.fromEntries(Object.entries(passed.heads).map(([ws, h]) => [ws, headOf(h)])) };
 }
 
-/// The exporter's state: every row of export.db, generations' names without their random part.
+/// The exporter's state: every row of export.db, generations' names and batch hashes without their random/zstd parts.
+function headStateOf(v: string): string {
+  const s = JSON.parse(v) as { gen: string; to: number; batches: string[] };
+  return JSON.stringify({ gen: genOf(s.gen), to: s.to, batches: s.batches.map(batchOf) });
+}
+
 function state(replica: string): Json {
   const d = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
   const out: Json = {};
   for (const t of ["meta", "digests", "threads", "files", "sent", "entering"]) {
-    out[t] = d.prepare(`SELECT * FROM ${t} ORDER BY 1, 2`).all().map((r: Json) => (t === "meta" && String(r.k).startsWith("gen:") ? { ...r, v: genOf(r.v) } : { ...r }));
+    out[t] = d.prepare(`SELECT * FROM ${t} ORDER BY 1, 2`).all().map((r: Json) => {
+      if (t === "meta" && String(r.k).startsWith("gen:")) return { ...r, v: genOf(r.v) };
+      if (t === "meta" && String(r.k).startsWith("head_state:")) return { ...r, v: headStateOf(r.v) };
+      return { ...r };
+    });
   }
   d.close();
   return out;

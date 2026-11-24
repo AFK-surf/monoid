@@ -146,7 +146,24 @@ int main(void) {
         REQUIRE(chmod(p_noaccess_dir, 0755) == 0);
     }
 
-    // 7. NULL safety.
+    // 7. sfc_is_file (regular file, symlink to file, dir, symlink to dir, dangling, missing, NULL).
+    char p_file_sym[512];
+    char p_dir_sym[512];
+    snprintf(p_file_sym, sizeof(p_file_sym), "%s/sym_to_file", root);
+    snprintf(p_dir_sym, sizeof(p_dir_sym), "%s/sym_to_dir", root);
+    REQUIRE(symlink(p_file, p_file_sym) == 0);
+    REQUIRE(symlink(p_sub, p_dir_sym) == 0);
+    REQUIRE(sfc_is_file(p_file) == 1);
+    REQUIRE(sfc_is_file(p_file_sym) == 1);
+    REQUIRE(sfc_is_file(p_sub) == 0);
+    REQUIRE(sfc_is_file(p_dir_sym) == 0);
+    REQUIRE(sfc_is_file(p_dangling) == 0);
+    REQUIRE(sfc_is_file(p_missing) == 0);
+    REQUIRE(sfc_is_file(NULL) == 0);
+    REQUIRE(unlink(p_file_sym) == 0);
+    REQUIRE(unlink(p_dir_sym) == 0);
+
+    // 8. NULL safety.
     REQUIRE(sfc_open(NULL, 0) == -1);
     REQUIRE(sfc_utimes(NULL, 0.0) == -1);
     REQUIRE(sfc_nlink(NULL) == -1);

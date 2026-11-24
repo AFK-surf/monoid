@@ -22,6 +22,7 @@ extern "C" fn sfc_denied(path : Ptr, dir : Int) -> Int
 extern "C" fn sfc_missing(path : Ptr, follow : Int) -> Int
 extern "C" fn sfc_dir_missing(path : Ptr) -> Int
 extern "C" fn sfc_dir_readable(path : Ptr) -> Int
+extern "C" fn sfc_is_file(path : Ptr) -> Int
 
 pub fn c_open(path : String, append : Bool) -> Int {
   let rc = sfc_open(path.as_cstr(), if append { 1 } else { 0 })
@@ -81,6 +82,12 @@ pub fn c_dir_readable(path : String) -> Bool {
   let rc = sfc_dir_readable(path.as_cstr())
   let _ = path.length()
   rc == 1
+}
+
+pub fn c_is_file(path : String) -> Int {
+  let rc = sfc_is_file(path.as_cstr())
+  let _ = path.length()
+  rc
 }
 
 // ── String & Byte utilities ──
@@ -515,6 +522,51 @@ pub fn jval_set(o : js_json::JValue, name : String, v : js_json::JValue) -> js_j
   }
 }
 
+/// `o` with each of `pairs` set, as `jval_set` of each in turn gives, in one O(N+M) walk.
+pub fn jval_set_all(
+  o : js_json::JValue,
+  pairs : Array[(String, js_json::JValue)],
+) -> js_json::JValue {
+  let entries = match o {
+    js_json::JValue::Obj(es) => es
+    _ => if pairs.length() == 0 { return o } else { [] }
+  }
+  let n_pairs = pairs.length()
+  let at : Map[String, Int] = Map::new()
+  let pair_units : Array[Array[Int]] = []
+  let put : Array[Bool] = []
+  for i in 0..<n_pairs {
+    let (k, _) = pairs[i]
+    at.set(k, i)
+    pair_units.push(js_json::utf16_units(k))
+    put.push(false)
+  }
+  let out : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<entries.length() {
+    let (ek, ev) = entries[i]
+    let sk = js_json::sanitize_str(ek)
+    match at.get(sk) {
+      Some(idx) => {
+        if js_json::units_eq(ek, pair_units[idx]) {
+          if !put[idx] {
+            out.push((pair_units[idx], pairs[idx].1))
+            put[idx] = true
+          }
+        } else {
+          out.push((ek, ev))
+        }
+      }
+      None => out.push((ek, ev))
+    }
+  }
+  for i in 0..<n_pairs {
+    if !put[i] {
+      out.push((pair_units[i], pairs[i].1))
+    }
+  }
+  js_json::JValue::Obj(out)
+}
+
 pub fn jval_without(o : js_json::JValue, name : String) -> js_json::JValue {
   let ku = js_json::utf16_units(name)
   match o {
@@ -649,6 +701,17 @@ pub fn Files::kind(self : Files, path : String) -> Option[String] {
   match self.call("fs.stat", base_codec::json_obj([("path", base_codec::json_str(path))])) {
     Ok(base_codec::Json::Str(k)) => Some(k)
     _ => None
+  }
+}
+
+pub fn Files::is_regular_file(self : Files, path : String) -> Bool {
+  let rc = c_is_file(path)
+  if rc == 1 {
+    true
+  } else if rc == 0 {
+    false
+  } else {
+    opt_str_is(self.kind(path), "file")
   }
 }
 

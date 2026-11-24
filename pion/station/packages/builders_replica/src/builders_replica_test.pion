@@ -115,27 +115,77 @@ test "utf16 sorting puts non-BMP emoji before BMP U+E000" {
   expect_str(xs[3], "\u{E000}.txt")
 }
 
-test "parse_int_flag and parse_double_flag fall back on invalid or out-of-range" {
+test "parse_int_flag and parse_double_flag match MoonBit lexical rules" {
   expect_int(parse_int_flag(Some("42"), 7), 42)
   expect_int(parse_int_flag(Some("+0"), 7), 0)
+  expect_int(parse_int_flag(Some("00"), 7), 0)
   expect_int(parse_int_flag(Some("0x0"), 7), 0)
+  expect_int(parse_int_flag(Some("0X0"), 7), 0)
+  expect_int(parse_int_flag(Some("-0x0"), 7), 0)
   expect_int(parse_int_flag(Some("0_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0x_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0o_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0b_0"), 7), 0)
   expect_int(parse_int_flag(Some("0x1_0"), 7), 16)
   expect_int(parse_int_flag(Some("0o10"), 7), 8)
   expect_int(parse_int_flag(Some("0b101"), 7), 5)
   expect_int(parse_int_flag(Some("2147483647"), 7), 2147483647)
   expect_int(parse_int_flag(Some("4294967296"), 7), 7)
   expect_int(parse_int_flag(Some("-2147483649"), 7), 7)
+  expect_int(parse_int_flag(Some("0_"), 7), 7)
+  expect_int(parse_int_flag(Some("0__0"), 7), 7)
+  expect_int(parse_int_flag(Some("_0"), 7), 7)
+  expect_int(parse_int_flag(Some("0x__0"), 7), 7)
+  expect_int(parse_int_flag(Some("0x_"), 7), 7)
   expect_int(parse_int_flag(Some(" 42 "), 7), 7)
   expect_int(parse_int_flag(Some("nope"), 7), 7)
   expect_int(parse_int_flag(None, 7), 7)
+
   expect_double(parse_double_flag(Some("12.5"), 1.0), 12.5)
   expect_double(parse_double_flag(Some("+1"), 0.0), 1.0)
+  expect_double(parse_double_flag(Some("01"), 0.0), 1.0)
   expect_double(parse_double_flag(Some("0012.5"), 0.0), 12.5)
   expect_double(parse_double_flag(Some("1_000.5"), 0.0), 1000.5)
+  expect_double(parse_double_flag(Some("1e2"), 0.0), 100.0)
   expect_double(parse_double_flag(Some("5."), 0.0), 5.0)
   expect_double(parse_double_flag(Some(".5"), 0.0), 0.5)
   expect_double(parse_double_flag(Some("-2.5e1"), 0.0), -25.0)
   expect_double(parse_double_flag(Some(" 12.5 "), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1__2"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1_"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1_e2"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1._2"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1.2_"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1e2_"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1e309"), 0.0), 0.0)
   expect_double(parse_double_flag(Some("bad"), 1.0), 1.0)
+  let pos_inf = parse_double_flag(Some("Infinity"), 0.0)
+  if !(pos_inf > 1.0e308) {
+    panic("expected +Infinity")
+  }
+  let neg_inf = parse_double_flag(Some("-inf"), 0.0)
+  if !(neg_inf < -1.0e308) {
+    panic("expected -inf")
+  }
+  let nan_v = parse_double_flag(Some("NaN"), 0.0)
+  if nan_v == nan_v {
+    panic("expected NaN")
+  }
+}
+
+test "jval_set_all matches sequential jval_set" {
+  let base = jval_obj([("a", jval_num(1.0)), ("b", jval_num(2.0)), ("c", jval_num(4.0))])
+  let pairs = [("a", jval_num(9.0)), ("d", jval_num(5.0)), ("c", jval_num(8.0))]
+  let mut seq = base
+  for i in 0..<pairs.length() {
+    seq = jval_set(seq, pairs[i].0, pairs[i].1)
+  }
+  let got = jval_set_all(base, pairs)
+  let got_keys = jval_keys(got)
+  let seq_keys = jval_keys(seq)
+  expect_int(got_keys.length(), seq_keys.length())
+  for i in 0..<seq_keys.length() {
+    expect_str(got_keys[i], seq_keys[i])
+    expect_double(num_of(jval_get(got, seq_keys[i])), num_of(jval_get(seq, seq_keys[i])))
+  }
 }

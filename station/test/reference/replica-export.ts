@@ -132,8 +132,16 @@ export function readHead(dir: string): Head | null {
   }
 }
 
-export function readHeadChecked(dir: string, ws?: string, gen?: string, origin?: string, hasProgress = false): Head | null {
+export function readHeadChecked(
+  dir: string,
+  ws?: string,
+  gen?: string,
+  origin?: string,
+  hasProgress = false,
+  committed?: { to: number; batches: string[] } | null,
+): Head | null {
   const path = headFile(dir);
+  const logDir = join(dir, "log");
   let text: string;
   try {
     text = readFileSync(path, "utf8"); // sync: in the export's own thread (worker.ts)
@@ -141,11 +149,11 @@ export function readHeadChecked(dir: string, ws?: string, gen?: string, origin?:
     if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
       let hasBatches = false;
       try {
-        hasBatches = readdirSync(join(dir, "log")).length > 0;
-      } catch {
-        hasBatches = false;
+        hasBatches = readdirSync(logDir).length > 0;
+      } catch (re) {
+        hasBatches = !isMissingError(re);
       }
-      if (hasBatches || hasProgress) {
+      if (hasBatches || committed != null || hasProgress) {
         throw new Error(`missing ${path} for existing generation ${gen ?? ""}`);
       }
       return null;
@@ -160,8 +168,56 @@ export function readHeadChecked(dir: string, ws?: string, gen?: string, origin?:
   if ((gen !== undefined && h.gen !== gen) || (ws !== undefined && h.workspace !== ws) || (origin !== undefined && h.origin !== origin)) {
     throw new Error(`corrupted ${path}: head identity mismatch`);
   }
-  if (!Array.isArray(h.batches) || !h.batches.every((b) => typeof b === "string" && /^\d{10}-\d{10}-[0-9a-f]{8}\.ndjson\.zst$/.test(b))) {
-    throw new Error(`corrupted ${path}: invalid or missing batches array`);
+  if (typeof h.to !== "number" || !Number.isInteger(h.to) || h.to < 0) {
+    throw new Error(`corrupted ${path}: invalid or missing to`);
+  }
+  if (!Array.isArray(h.batches)) {
+    throw new Error(`corrupted ${path}: missing batches array`);
+  }
+  const expectedFirstFrom =
+    committed == null
+      ? 1
+      : committed.batches.length > 0
+        ? (batchSpan(committed.batches[0]!)?.from ?? 1)
+        : committed.to + 1;
+  const batchNames: string[] = [];
+  let prevFrom = 0;
+  let prevTo = 0;
+  for (let i = 0; i < h.batches.length; i++) {
+    const b = h.batches[i];
+    if (typeof b !== "string") throw new Error(`corrupted ${path}: invalid batch entry`);
+    const span = batchSpan(b);
+    if (span === null) throw new Error(`corrupted ${path}: invalid batch name`);
+    if (span.from <= 0 || span.from > span.to) throw new Error(`corrupted ${path}: non-contiguous batches`);
+    if (i === 0) {
+      if (span.from !== expectedFirstFrom) throw new Error(`corrupted ${path}: non-contiguous batches`);
+    } else {
+      if (span.from < prevFrom || span.from > prevTo + 1 || span.to < prevTo) {
+        throw new Error(`corrupted ${path}: non-contiguous batches`);
+      }
+    }
+    prevFrom = span.from;
+    prevTo = span.to;
+    batchNames.push(b);
+  }
+  if (batchNames.length === 0) {
+    const committedEmpty = committed != null && committed.to === h.to && committed.batches.length === 0;
+    if (h.to !== 0 && !committedEmpty) throw new Error(`corrupted ${path}: non-contiguous batches`);
+    let hasLogBatch = false;
+    try {
+      hasLogBatch = readdirSync(logDir).some((nm) => batchSpan(nm) !== null);
+    } catch (re) {
+      hasLogBatch = !isMissingError(re);
+    }
+    if (hasLogBatch) throw new Error(`corrupted ${path}: non-contiguous batches`);
+  } else if (prevTo !== h.to) {
+    throw new Error(`corrupted ${path}: non-contiguous batches`);
+  }
+  if (committed != null) {
+    if (h.to < committed.to) throw new Error(`stale ${path} for generation ${gen ?? ""}`);
+    if (h.to === committed.to && (batchNames.length !== committed.batches.length || batchNames.some((b, i) => b !== committed.batches[i]))) {
+      throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
+    }
   }
   return parsed as Head;
 }
@@ -362,6 +418,7 @@ export class Exporter {
     if (known !== null && existsSync(genDir(this.#root(), ws, known))) return known; // sync: in the export's own thread (worker.ts)
     const gen = genName(Math.max(this.#o.now(), Number(this.#meta("after") ?? 0) + 1), randomBytes(4).toString("hex"));
     this.#setMeta(`gen:${ws}`, gen);
+    this.#state.prepare("DELETE FROM meta WHERE k = ?").run(`head_state:${ws}`);
     // (what was written of this workspace before belongs to another generation)
     this.#state.prepare("DELETE FROM digests WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM threads WHERE ws = ?").run(ws);
@@ -416,6 +473,22 @@ export class Exporter {
     return false;
   }
 
+  #readCommittedHeadState(ws: string, gen: string): { to: number; batches: string[] } | null {
+    const raw = this.#meta(`head_state:${ws}`);
+    if (raw === null) return null;
+    try {
+      const parsed = JSON.parse(raw) as { gen?: unknown; to?: unknown; batches?: unknown };
+      if (parsed.gen !== gen || typeof parsed.to !== "number" || !Array.isArray(parsed.batches)) return null;
+      return { to: parsed.to, batches: parsed.batches.filter((b): b is string => typeof b === "string") };
+    } catch {
+      return null;
+    }
+  }
+
+  #saveCommittedHeadState(ws: string, head: Head): void {
+    this.#setMeta(`head_state:${ws}`, JSON.stringify({ gen: head.gen, to: head.to, batches: head.batches }));
+  }
+
   #pass(told: Told, home: string, workspaces: Places["workspaces"]): Passed {
     const names = new Map(workspaces.map((w) => [w.workspace, w.name]));
     const wsOfSession = (ws: unknown) => (typeof ws === "string" && ws !== "" ? ws : home);
@@ -424,7 +497,7 @@ export class Exporter {
     for (const ws of names.keys()) {
       const gen = this.#genOf(ws);
       const dir = genDir(this.#root(), ws, gen);
-      const head: Head = readHeadChecked(dir, ws, gen, this.#o.origin, this.#hasWsProgress(ws)) ?? {
+      const head: Head = readHeadChecked(dir, ws, gen, this.#o.origin, this.#hasWsProgress(ws), this.#readCommittedHeadState(ws, gen)) ?? {
         v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
         batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
       };
@@ -808,6 +881,7 @@ export class Exporter {
     if (hasTf) next.transcriptFiles = tf;
     else delete next.transcriptFiles;
     out.head = this.#fold(dir, next, out.gone);
+    this.#saveCommittedHeadState(ws, out.head);
   }
 
   /// The generation's batches folded where they built up: all of them where something was deleted (so a deletion

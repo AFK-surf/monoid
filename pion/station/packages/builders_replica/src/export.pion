@@ -137,6 +137,7 @@ struct Out {
   lines : Array[String]
   mut bytes : Int
   files : Array[(String, Double)]
+  file_at : Map[String, Int]
   mut gone : Bool
   mut messages : Double
 }
@@ -476,6 +477,59 @@ fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Result[Bool, Strin
   Ok(false)
 }
 
+fn Exporter::read_committed_head_state(
+  self : Exporter,
+  ws : String,
+  gen : String,
+) -> Result[Option[(Int64, Array[String])], String] {
+  match self.meta("head_state:" + ws) {
+    Err(e) => Err(e)
+    Ok(None) => Ok(None)
+    Ok(Some(raw)) => {
+      match js_json::parse(raw) {
+        Ok(js_json::JValue::Obj(es)) => {
+          let v = js_json::JValue::Obj(es)
+          if !opt_str_is(text_of(jval_get(v, "gen")), gen) {
+            return Ok(None)
+          }
+          let to = num_of(jval_get(v, "to")).to_int64()
+          let bs = strings_of(jval_get(v, "batches"))
+          Ok(Some((to, bs)))
+        }
+        _ => Ok(None)
+      }
+    }
+  }
+}
+
+fn Exporter::save_committed_head_state(
+  self : Exporter,
+  ws : String,
+  head : js_json::JValue,
+) -> Result[Unit, String] {
+  let gen = text_or(jval_get(head, "gen"), "")
+  let to = num_of(jval_get(head, "to"))
+  let bs = strings_of(jval_get(head, "batches"))
+  let v = jval_obj([
+    ("gen", jval_str(gen)),
+    ("to", jval_num(to)),
+    ("batches", strs_jval(bs)),
+  ])
+  self.set_meta("head_state:" + ws, js_json::stringify(v))
+}
+
+fn str_arrays_eq(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
 fn Exporter::read_head_checked(
   self : Exporter,
   ws : String,
@@ -483,18 +537,27 @@ fn Exporter::read_head_checked(
   dir : String,
 ) -> Result[Option[js_json::JValue], String] {
   let path = self.files.join([dir, "head.json"])
+  let log_dir = self.files.join([dir, "log"])
+  let committed = match self.read_committed_head_state(ws, gen) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
   match self.files.read(path) {
     Err(e) => Err("cannot read " + path + ": " + e)
     Ok(None) => {
-      if !c_missing(path, true) {
+      if !c_missing(path, false) {
         return Err("cannot read " + path)
       }
-      let has_batches = match self.files.names(self.files.join([dir, "log"])) {
+      let has_batches = match self.files.names(log_dir) {
         Some(names) => names.length() > 0
-        None => false
+        None => !c_missing(log_dir, false)
       }
       if has_batches {
         return Err("missing " + path + " for existing generation " + gen)
+      }
+      match committed {
+        Some(_) => return Err("missing " + path + " for existing generation " + gen)
+        None => ()
       }
       match self.has_ws_progress(ws) {
         Ok(true) => Err("missing " + path + " for existing generation " + gen)
@@ -511,18 +574,101 @@ fn Exporter::read_head_checked(
           !opt_str_is(text_of(jval_get(h, "origin")), self.origin) {
             return Err("corrupted " + path + ": head identity mismatch")
           }
+          let head_to_d = match jval_get(h, "to") {
+            Some(js_json::JValue::Num(d)) => {
+              if sql_db::is_nan_or_inf(d) || d < 0.0 || floor_double(d) != d {
+                return Err("corrupted " + path + ": invalid to")
+              }
+              d
+            }
+            _ => return Err("corrupted " + path + ": missing to")
+          }
+          let head_to = head_to_d.to_int64()
+          let expected_first_from : Int64 = match committed {
+            Some((c_to, c_bs)) => {
+              if c_bs.length() > 0 {
+                match batch_span(c_bs[0]) {
+                  Some((cf, _)) => cf
+                  None => 1.to_int64()
+                }
+              } else {
+                c_to + 1.to_int64()
+              }
+            }
+            None => 1.to_int64()
+          }
           match jval_get(h, "batches") {
             Some(js_json::JValue::Arr(bs)) => {
+              let batch_names : Array[String] = []
+              let mut prev_from : Int64 = 0.to_int64()
+              let mut prev_to : Int64 = 0.to_int64()
               for i in 0..<bs.length() {
                 match text_of(Some(bs[i])) {
                   Some(name) => {
                     match batch_span(name) {
-                      Some(_) => ()
+                      Some((from, to)) => {
+                        if from <= 0.to_int64() || from > to {
+                          return Err("corrupted " + path + ": non-contiguous batches")
+                        }
+                        if i == 0 {
+                          if from != expected_first_from {
+                            return Err("corrupted " + path + ": non-contiguous batches")
+                          }
+                        } else {
+                          if from < prev_from || from > prev_to + 1.to_int64() || to < prev_to {
+                            return Err("corrupted " + path + ": non-contiguous batches")
+                          }
+                        }
+                        prev_from = from
+                        prev_to = to
+                        batch_names.push(name)
+                      }
                       None => return Err("corrupted " + path + ": invalid batch name")
                     }
                   }
                   None => return Err("corrupted " + path + ": invalid batch entry")
                 }
+              }
+              if batch_names.length() == 0 {
+                let committed_empty = match committed {
+                  Some((c_to, c_bs)) => c_to == head_to && c_bs.length() == 0
+                  None => false
+                }
+                if head_to != 0.to_int64() && !committed_empty {
+                  return Err("corrupted " + path + ": non-contiguous batches")
+                }
+                let has_log_batch = match self.files.names(log_dir) {
+                  Some(names) => {
+                    let mut found_batch = false
+                    for i in 0..<names.length() {
+                      match batch_span(names[i]) {
+                        Some(_) => {
+                          found_batch = true
+                          break
+                        }
+                        None => ()
+                      }
+                    }
+                    found_batch
+                  }
+                  None => !c_missing(log_dir, false)
+                }
+                if has_log_batch {
+                  return Err("corrupted " + path + ": non-contiguous batches")
+                }
+              } else if prev_to != head_to {
+                return Err("corrupted " + path + ": non-contiguous batches")
+              }
+              match committed {
+                Some((c_to, c_batches)) => {
+                  if head_to < c_to {
+                    return Err("stale " + path + " for generation " + gen)
+                  }
+                  if head_to == c_to && !str_arrays_eq(batch_names, c_batches) {
+                    return Err("mismatched " + path + " for generation " + gen)
+                  }
+                }
+                None => ()
               }
               Ok(Some(h))
             }
@@ -564,6 +710,10 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> Result[String, String] {
   match self.set_meta("gen:" + ws, gen) {
     Ok(()) => ()
     Err(e) => return Err(e)
+  }
+  match self.state.run("DELETE FROM meta WHERE k = ?", [base_codec::json_str("head_state:" + ws)]) {
+    Ok(_) => ()
+    Err(e) => return Err(e.message)
   }
   let reset_tables = ["digests", "threads", "sent", "entering", "transcript_files"]
   for i in 0..<reset_tables.length() {
@@ -698,7 +848,7 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       Some(_) => ()
       None => out_keys.push(ws)
     }
-    outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], gone: false, messages: 0.0 })
+    outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
   }
   let entries_meta = match self.meta("entries") {
     Ok(v) => v
@@ -736,16 +886,12 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
     match text_of(jval_get(rec, "file")) {
       Some(h) => {
         let size = num_of(jval_get(rec, "size"))
-        let mut updated = false
-        for i in 0..<out.files.length() {
-          if out.files[i].0 == h {
-            out.files[i] = (h, size)
-            updated = true
-            break
+        match out.file_at.get(h) {
+          Some(i) => out.files[i] = (h, size)
+          None => {
+            out.file_at.set(h, out.files.length())
+            out.files.push((h, size))
           }
-        }
-        if !updated {
-          out.files.push((h, size))
         }
       }
       None => ()
@@ -1812,13 +1958,17 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Result[Unit, Stri
   for i in start_idx..<runs_list.length() {
     kept.push(runs_list[i])
   }
-  let mut files_obj = match jval_get(head, "files") {
-    Some(v) => v
-    None => jval_obj([])
-  }
+  let file_pairs : Array[(String, js_json::JValue)] = []
   for i in 0..<out.files.length() {
-    files_obj = jval_set(files_obj, out.files[i].0, jval_num(out.files[i].1))
+    file_pairs.push((out.files[i].0, jval_num(out.files[i].1)))
   }
+  let files_obj = jval_set_all(
+    match jval_get(head, "files") {
+      Some(v) => v
+      None => jval_obj([])
+    },
+    file_pairs,
+  )
   let chats = match self.state.all("SELECT COUNT(*) AS n FROM threads WHERE ws = ?", [base_codec::json_str(ws)]) {
     Ok(rows) => if rows.length() > 0 { field_num(rows[0], "n") } else { 0.0 }
     Err(e) => return Err(e.message)
@@ -1858,7 +2008,7 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Result[Unit, Stri
   match self.fold_gen(dir, next, out.gone) {
     Ok(h) => {
       out.head = h
-      Ok(())
+      self.save_committed_head_state(ws, h)
     }
     Err(e) => Err(e)
   }
@@ -2099,36 +2249,69 @@ fn Exporter::bytes(self : Exporter, dir : String, h : js_json::JValue) -> Double
   n
 }
 
+let SOURCES_POINT_MOST : Int = 32
+
 pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> Result[js_json::JValue, String] {
-  let out : Array[(String, js_json::JValue)] = []
-  let put_out = fn(key : String, v : String) -> Unit {
-    for i in 0..<out.length() {
-      if out[i].0 == key {
-        out[i] = (key, jval_str(v))
-        return ()
-      }
+  let by_hash : Option[Map[String, Array[String]]] = if hashes.length() > SOURCES_POINT_MOST {
+    let m : Map[String, Array[String]] = Map::new()
+    for hi in 0..<hashes.length() {
+      m.set(hashes[hi], [])
     }
-    out.push((key, jval_str(v)))
-  }
-  for hi in 0..<hashes.length() {
-    let h = hashes[hi]
-    let mut found = false
-    let rows = match self.state.all("SELECT path FROM files WHERE hash = ?", [base_codec::json_str(h)]) {
+    let rows = match self.state.all("SELECT hash, path FROM files ORDER BY path", []) {
       Ok(rs) => rs
       Err(e) => return Err(e.message)
     }
     for ri in 0..<rows.length() {
-      let path = field_text(rows[ri], "path")
-      if opt_str_is(self.files.kind(path), "file") {
-        put_out(h, path)
+      let h = field_text(rows[ri], "hash")
+      match m.get(h) {
+        Some(paths) => paths.push(field_text(rows[ri], "path"))
+        None => ()
+      }
+    }
+    Some(m)
+  } else {
+    None
+  }
+  let out : Array[(String, js_json::JValue)] = []
+  let seen : Map[String, Bool] = Map::new()
+  for hi in 0..<hashes.length() {
+    let h = hashes[hi]
+    if map_has(seen, h) {
+      continue
+    }
+    seen.set(h, true)
+    let paths : Array[String] = match by_hash {
+      Some(m) => {
+        match m.get(h) {
+          Some(ps) => ps
+          None => []
+        }
+      }
+      None => {
+        let rows = match self.state.all("SELECT path FROM files WHERE hash = ? ORDER BY path", [base_codec::json_str(h)]) {
+          Ok(rs) => rs
+          Err(e) => return Err(e.message)
+        }
+        let ps : Array[String] = []
+        for ri in 0..<rows.length() {
+          ps.push(field_text(rows[ri], "path"))
+        }
+        ps
+      }
+    }
+    let mut found = false
+    for pi in 0..<paths.length() {
+      let path = paths[pi]
+      if self.files.is_regular_file(path) {
+        out.push((h, jval_str(path)))
         found = true
         break
       }
     }
     if !found {
       let chunk = self.files.join([self.replica, "chunks", h])
-      if opt_str_is(self.files.kind(chunk), "file") {
-        put_out(h, chunk)
+      if self.files.is_regular_file(chunk) {
+        out.push((h, jval_str(chunk)))
       }
     }
   }

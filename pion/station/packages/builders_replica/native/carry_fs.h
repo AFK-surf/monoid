@@ -49,6 +49,9 @@ int32_t sfc_dir_missing(const char *path);
 // Return 1 if directory `path` is readable OR confirmed missing/not-a-dir; 0 if unreadable (EACCES/EIO/other).
 int32_t sfc_dir_readable(const char *path);
 
+// Return 1 if `path` is a regular file (links followed), 0 if not, -1 if unknown here (Windows MAX_PATH fallback).
+int32_t sfc_is_file(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

@@ -331,19 +331,46 @@ fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Bool raise {
 }
 
 ///|
+fn Exporter::read_committed_head_state(self : Exporter, ws : String, gen : String) -> (Int64, Array[String])? raise {
+  match self.meta("head_state:\{ws}") {
+    None => None
+    Some(raw) =>
+      match (@jsjson.parse(raw) catch { _ => Null }) {
+        Obj(_) as v => {
+          if text_of(get(v, "gen")) != Some(gen) {
+            return None
+          }
+          Some((num(get(v, "to")).to_int64(), strings_of(get(v, "batches"))))
+        }
+        _ => None
+      }
+  }
+}
+
+///|
+fn Exporter::save_committed_head_state(self : Exporter, ws : String, head : JValue) -> Unit raise {
+  let gen = text_of(get(head, "gen")).unwrap_or("")
+  let to = num(get(head, "to"))
+  let bs = strings_of(get(head, "batches"))
+  let v : JValue = Obj([("gen", str(gen)), ("to", Num(to)), ("batches", strs(bs))])
+  self.set_meta("head_state:\{ws}", @jsjson.stringify(v))
+}
+
+///|
 fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir : String) -> JValue? raise {
   let path = self.files.join([dir, "head.json"])
+  let log_dir = self.files.join([dir, "log"])
+  let committed = self.read_committed_head_state(ws, gen)
   match self.files.read(path) {
     None => {
       if self.files.exists(path) || self.files.lstat(path) is Some(_) {
         fail("cannot read \{path}")
       }
-      let log_dir = self.files.join([dir, "log"])
       let has_log = match self.files.names(log_dir) {
         Some(names) => names.length() > 0
-        None => self.files.exists(log_dir)
+        None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
       }
-      if has_log || self.has_ws_progress(ws) {
+      if has_log || committed is Some(_) || self.has_ws_progress(ws) {
         fail("missing \{path} for existing generation \{gen}")
       }
       None
@@ -356,16 +383,96 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
             text_of(get(v, "origin")) != Some(self.origin) {
             fail("corrupted \{path}: head identity mismatch")
           }
+          let head_to_d = match get(v, "to") {
+            Some(Num(d)) => {
+              if d != d || d - d != 0.0 || d < 0.0 || @math.floor(d) != d {
+                fail("corrupted \{path}: invalid to")
+              }
+              d
+            }
+            _ => fail("corrupted \{path}: missing to")
+          }
+          let head_to = head_to_d.to_int64()
+          let expected_first_from : Int64 = match committed {
+            Some((c_to, c_bs)) =>
+              if c_bs.length() > 0 {
+                match batch_span(c_bs[0]) {
+                  Some((cf, _)) => cf
+                  None => 1L
+                }
+              } else {
+                c_to + 1L
+              }
+            None => 1L
+          }
           match get(v, "batches") {
             Some(Arr(bs)) => {
-              for item in bs {
+              let batch_names : Array[String] = []
+              let mut prev_from = 0L
+              let mut prev_to = 0L
+              for i, item in bs {
                 match text_of(Some(item)) {
                   Some(name) =>
-                    if batch_span(name) is None {
-                      fail("corrupted \{path}: invalid batch name")
+                    match batch_span(name) {
+                      Some((from, to)) => {
+                        if from <= 0L || from > to {
+                          fail("corrupted \{path}: non-contiguous batches")
+                        }
+                        if i == 0 {
+                          if from != expected_first_from {
+                            fail("corrupted \{path}: non-contiguous batches")
+                          }
+                        } else {
+                          if from < prev_from || from > prev_to + 1L || to < prev_to {
+                            fail("corrupted \{path}: non-contiguous batches")
+                          }
+                        }
+                        prev_from = from
+                        prev_to = to
+                        batch_names.push(name)
+                      }
+                      None => fail("corrupted \{path}: invalid batch name")
                     }
                   None => fail("corrupted \{path}: invalid batch entry")
                 }
+              }
+              if batch_names.length() == 0 {
+                let committed_empty = match committed {
+                  Some((c_to, c_bs)) => c_to == head_to && c_bs.length() == 0
+                  None => false
+                }
+                if head_to != 0L && !committed_empty {
+                  fail("corrupted \{path}: non-contiguous batches")
+                }
+                let has_log_batch = match self.files.names(log_dir) {
+                  Some(names) => {
+                    let mut found_batch = false
+                    for nm in names {
+                      if batch_span(nm) is Some(_) {
+                        found_batch = true
+                        break
+                      }
+                    }
+                    found_batch
+                  }
+                  None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
+                }
+                if has_log_batch {
+                  fail("corrupted \{path}: non-contiguous batches")
+                }
+              } else if prev_to != head_to {
+                fail("corrupted \{path}: non-contiguous batches")
+              }
+              match committed {
+                Some((c_to, c_batches)) => {
+                  if head_to < c_to {
+                    fail("stale \{path} for generation \{gen}")
+                  }
+                  if head_to == c_to && batch_names != c_batches {
+                    fail("mismatched \{path} for generation \{gen}")
+                  }
+                }
+                None => ()
               }
               Some(v)
             }
@@ -409,6 +516,7 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   let now = (self.now)()
   let gen = gen_name(if now > after + 1.0 { now } else { after + 1.0 }, self.files.random(4))
   self.set_meta("gen:\{ws}", gen)
+  ignore(self.state.run("DELETE FROM meta WHERE k = ?", [s("head_state:\{ws}")]))
   for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
     ignore(self.state.run("DELETE FROM \{t} WHERE ws = ?", [s(ws)]))
   }
@@ -1104,6 +1212,7 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
   next = set(next, "chats", Num(chats))
   next = set(next, "messages", Num(num(get(head, "messages")) + out.messages))
   out.head = self.fold_gen(dir, next, out.gone)
+  self.save_committed_head_state(ws, out.head)
 }
 
 ///|
