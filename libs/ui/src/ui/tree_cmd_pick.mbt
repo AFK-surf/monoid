@@ -406,11 +406,12 @@ fn cmd_hover_update(laid? : Bool = true, over? : Bool = false, mods? : Int? = No
 }
 
 ///|
-/// Clear any active Cmd-hover and pending Cmd-click (e.g. on reset or window leave).
+/// Clear any active Cmd-hover and pending Cmd-click as the views are forgotten (view_forget).
 fn cmd_hover_clear() -> Unit {
+  // (as the views are forgotten: nothing left to repaint, so put back as the lets have them)
   cmd_pick_down.val = None
-  cmd_hover_set(None)
-  cmd_sel_underline_set(None)
+  cmd_hover.val = None
+  cmd_sel_underline.val = None
 }
 
 ///|
