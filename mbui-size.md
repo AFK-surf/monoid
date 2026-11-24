@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [c08f26292](https://github.com/AFK-surf/monoid/commit/c08f26292ab15d842d07412250cc2b99f73a22df) feat(ui): Wave 3c iOS 27.0 Liquid Glass parity acr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 116.63 |
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.62 | 118.2 |
 | [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
-| [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
 | [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.56 |
 | [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.57 |
 | [c08f26292](https://github.com/AFK-surf/monoid/commit/c08f26292ab15d842d07412250cc2b99f73a22df) feat(ui): Wave 3c iOS 27.0 Liquid Glass parity acr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
 | [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.23 |
-| [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.07 |
