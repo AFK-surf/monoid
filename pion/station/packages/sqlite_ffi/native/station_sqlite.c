@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -511,6 +512,86 @@ void *stq_column_blob(int64_t stmt_h, int32_t index, int64_t *out_len) {
     const void *p = sqlite3_column_blob(stmt, (int)index);
     int n = sqlite3_column_bytes(stmt, (int)index);
     return copy_bytes(p, n, out_len);
+}
+
+// Format a finite IEEE-754 double using ECMAScript Number::toString shortest-decimal rules
+// (matching MoonBit/JS JSON.stringify: fixed notation for 1e-6 <= |d| < 1e21, otherwise
+// shortest d[.ddd]e±exp with no leading zeros in exponent; -0.0 -> "0"; non-finite -> "null").
+void *stq_format_js_double(double value, int64_t *out_len) {
+    if (value != value || (value - value) != 0.0) {
+        return copy_cstr("null", out_len);
+    }
+    if (value == 0.0) {
+        return copy_cstr("0", out_len);
+    }
+    int neg = value < 0.0;
+    double x = neg ? -value : value;
+
+    char sci[64];
+    sci[0] = '\0';
+    for (int prec = 0; prec <= 16; prec++) {
+        snprintf(sci, sizeof(sci), "%.*e", prec, x);
+        if (strtod(sci, NULL) == x) {
+            break;
+        }
+    }
+
+    char digits[32];
+    int k = 0;
+    const char *p = sci;
+    while (*p != '\0' && *p != 'e' && *p != 'E') {
+        if (*p >= '0' && *p <= '9' && k < (int)sizeof(digits) - 1) {
+            digits[k++] = *p;
+        }
+        p++;
+    }
+    while (k > 1 && digits[k - 1] == '0') {
+        k--;
+    }
+    digits[k] = '\0';
+
+    int exp = (*p == 'e' || *p == 'E') ? atoi(p + 1) : 0;
+    int n = exp + 1;
+
+    char out[64];
+    int pos = 0;
+    if (neg) {
+        out[pos++] = '-';
+    }
+    if (k <= n && n <= 21) {
+        memcpy(out + pos, digits, (size_t)k);
+        pos += k;
+        for (int i = 0; i < n - k; i++) {
+            out[pos++] = '0';
+        }
+        out[pos] = '\0';
+    } else if (0 < n && n <= 21) {
+        memcpy(out + pos, digits, (size_t)n);
+        pos += n;
+        out[pos++] = '.';
+        memcpy(out + pos, digits + n, (size_t)(k - n));
+        pos += k - n;
+        out[pos] = '\0';
+    } else if (-6 < n && n <= 0) {
+        out[pos++] = '0';
+        out[pos++] = '.';
+        for (int i = 0; i < -n; i++) {
+            out[pos++] = '0';
+        }
+        memcpy(out + pos, digits, (size_t)k);
+        pos += k;
+        out[pos] = '\0';
+    } else {
+        out[pos++] = digits[0];
+        if (k > 1) {
+            out[pos++] = '.';
+            memcpy(out + pos, digits + 1, (size_t)(k - 1));
+            pos += k - 1;
+        }
+        int abs_exp = exp < 0 ? -exp : exp;
+        pos += snprintf(out + pos, sizeof(out) - (size_t)pos, "e%c%d", exp >= 0 ? '+' : '-', abs_exp);
+    }
+    return copy_bytes(out, pos, out_len);
 }
 
 void stq_free(void *ptr) {

@@ -54,6 +54,7 @@ double stq_column_double(int64_t stmt, int32_t index);
 void *stq_column_text(int64_t stmt, int32_t index, int64_t *out_len);
 void *stq_column_blob(int64_t stmt, int32_t index, int64_t *out_len);
 
+void *stq_format_js_double(double value, int64_t *out_len);
 void stq_free(void *ptr);
 
 #ifdef __cplusplus

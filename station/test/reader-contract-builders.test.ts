@@ -337,16 +337,26 @@ test("archive-marks: cloned single-seed per-batch 0-diff parity (TS reference + 
     }
     failed = false;
   } finally {
-    if (failed) {
-      await candProc.kill();
-      if (mbProc !== null) await mbProc.kill();
-    } else {
-      await candProc.end();
-      if (mbProc !== null) await mbProc.end();
+    // Independent teardown: never let one child's exit error skip ending the other child or closing DBs.
+    let teardownError: unknown = null;
+    try {
+      const results = await Promise.allSettled([
+        failed ? candProc.kill() : candProc.end(),
+        mbProc !== null ? (failed ? mbProc.kill() : mbProc.end()) : Promise.resolve(),
+      ]);
+      for (const r of results) {
+        if (r.status === "rejected" && teardownError === null) {
+          teardownError = r.reason;
+        }
+      }
+    } finally {
+      refCopy.db.close();
+      candCopy.db.close();
+      mbCopy?.db.close();
     }
-    refCopy.db.close();
-    candCopy.db.close();
-    mbCopy?.db.close();
+    if (!failed && teardownError !== null) {
+      throw teardownError;
+    }
   }
 });
 
@@ -513,30 +523,35 @@ test("archive-marks: missing DB path exits non-zero immediately without creating
   assert.equal(existsSync(missing), false, "attach must never create a missing DB file");
 });
 
-/// Static guard for `builders_core/src/` business files: extracts string literals from non-comment
-/// lines and rejects raw SQL transaction control (`BEGIN`, `BEGIN DEFERRED|IMMEDIATE|EXCLUSIVE|TRANSACTION`,
-/// `COMMIT`, `SAVEPOINT`, `RELEASE SAVEPOINT`, `ROLLBACK`), allowing only `CREATE TRIGGER ... BEGIN ... END`
-/// and `builder_loop.pion`'s transaction-leak guard `ROLLBACK`.
+/// Static guard for `builders_core/src/` business files:
+/// 1) Strips SQL comments (`--...`, `/*...*/`) and single-quoted SQL string literals (`'...'`, incl. `''`),
+/// 2) Strips ONLY `CREATE [TEMP|TEMPORARY] TRIGGER ... BEGIN ... END` trigger bodies (never the whole string),
+/// 3) Splits on `;` and rejects any statement whose leading SQL keyword is `BEGIN`, `COMMIT`, `END`,
+///    `SAVEPOINT`, `RELEASE`, or `ROLLBACK` (allowing only `builder_loop.pion`'s leak-guard `ROLLBACK`).
 function findRawTxControlViolations(filename: string, source: string): string[] {
   const violations: string[] = [];
-  const rawTxPattern = /\b(BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE|TRANSACTION))?|COMMIT|SAVEPOINT|RELEASE\s+SAVEPOINT|ROLLBACK)\b/gi;
-  const triggerBeginPattern = /\bCREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b[\s\S]*\bBEGIN\b[\s\S]*\bEND\b/i;
+  const forbiddenHeads = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
+  const triggerBodyPattern = /\bCREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b[\s\S]*?\bBEGIN\b[\s\S]*?\bEND\b/gi;
   const lines = source.split("\n");
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx]!;
     const trimmed = line.trim();
     if (trimmed.startsWith("//")) continue;
-    // Scan double-quoted string literals on the line.
     const litRe = /"((?:\\.|[^"\\])*)"/g;
     let m: RegExpExecArray | null;
     while ((m = litRe.exec(line)) !== null) {
       const literal = m[1]!;
-      if (triggerBeginPattern.test(literal)) continue;
-      rawTxPattern.lastIndex = 0;
-      let hit: RegExpExecArray | null;
-      while ((hit = rawTxPattern.exec(literal)) !== null) {
-        const kw = hit[1]!.toUpperCase();
-        // Allow builder_loop.pion's explicit leak-guard ROLLBACK and its diagnostic message.
+      // Strip SQL comments and single-quoted SQL string literals first (eliminates `SELECT 'begin'` false positives).
+      const stripped = literal
+        .replace(/\/\*[\s\S]*?\*\//g, " ")
+        .replace(/--[^\n]*/g, " ")
+        .replace(/'(?:''|[^'])*'/g, "''")
+        .replace(triggerBodyPattern, "");
+      for (const stmt of stripped.split(";")) {
+        const head = stmt.match(/^\s*([A-Za-z_]+)/);
+        if (!head) continue;
+        const kw = head[1]!.toUpperCase();
+        if (!forbiddenHeads.has(kw)) continue;
         if (filename === "builder_loop.pion" && kw === "ROLLBACK") continue;
         violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${kw}" in literal "${literal}"`);
       }
@@ -546,18 +561,27 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
 }
 
 test("builders_core static guard: rejects raw transaction SQL and passes on real business files", () => {
-  // Self-test positive (violations caught) & negative (allowed patterns pass) cases.
+  // Positive cases (must be caught):
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN")').length > 0, "bare BEGIN caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN IMMEDIATE")').length > 0, "BEGIN IMMEDIATE caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN DEFERRED")').length > 0, "BEGIN DEFERRED caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN EXCLUSIVE")').length > 0, "BEGIN EXCLUSIVE caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("BEGIN TRANSACTION")').length > 0, "BEGIN TRANSACTION caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("COMMIT")').length > 0, "COMMIT caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("END")').length > 0, "END caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("END TRANSACTION")').length > 0, "END TRANSACTION caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("SAVEPOINT sp1")').length > 0, "SAVEPOINT caught");
+  assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("RELEASE s")').length > 0, "RELEASE s caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("RELEASE SAVEPOINT sp1")').length > 0, "RELEASE SAVEPOINT caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("ROLLBACK")').length > 0, "ROLLBACK in business file caught");
+  assert.ok(
+    findRawTxControlViolations("foo.pion", 'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT 1; END; BEGIN IMMEDIATE")').length > 0,
+    "BEGIN IMMEDIATE after CREATE TRIGGER must still be caught",
+  );
+  // Negative cases (must produce 0 false positives):
+  assert.equal(findRawTxControlViolations("foo.pion", 'let _ = db.all("SELECT \'begin\'", [])').length, 0, "SELECT 'begin' allowed");
   assert.equal(
-    findRawTxControlViolations("foo.pion", 'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN DELETE FROM y; END")').length,
+    findRawTxControlViolations("foo.pion", 'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT 1; END")').length,
     0,
     "CREATE TRIGGER ... BEGIN ... END allowed",
   );

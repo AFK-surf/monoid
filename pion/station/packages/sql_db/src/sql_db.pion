@@ -224,8 +224,6 @@ pub fn is_busy(err : SqlError) -> Bool {
 }
 
 /// Whether `repr` is a pure signed decimal integer literal (optional `-`, digits only; no `.`/`e`/`E`).
-/// Note: upstream `pion/base`'s `base_codec::json_parse` rejects overflowing exponents like `1e400`
-/// rather than yielding `+Inf` (unlike MoonBit `@json.parse`); we do not modify `pion/base` here.
 pub fn is_pure_integer_repr(repr : String) -> Bool {
   let n = repr.length()
   if n == 0 {
@@ -282,29 +280,72 @@ pub fn int64_to_json(v : Int64) -> base_codec::Json {
   }
 }
 
-/// Recursively normalize `Json::Num` values so `base_codec::json_stringify` matches JS / MoonBit
-/// `Json::stringify()` (e.g. `1.0` -> `1`, `1e2` -> `100`, `-0` -> `0`, `9007199254740993` preserved).
-pub fn normalize_json_for_stringify(j : base_codec::Json) -> base_codec::Json {
+/// Normalize a `base_codec::json_parse` result to match MoonBit `@json.parse` `repr` semantics:
+/// - Keep raw `repr` for non-finite parsed numbers (e.g. `1e400`, `-1e400`),
+/// - Keep raw `repr` for pure integer literals outside `[-SAFE_MOST, SAFE_MOST]` (including > Int64),
+/// - Clear `repr` to `""` for all other parsed numbers (`1.0`, `1e2`, `-0`, `0.00001`, `1e20`, `1e-7`, `42`).
+pub fn normalize_parsed_json(j : base_codec::Json) -> base_codec::Json {
   match j {
     base_codec::Json::Num(d, repr) => {
-      if is_pure_integer_repr(repr) {
+      if repr.length() == 0 {
+        base_codec::Json::Num(d, "")
+      } else if is_nan_or_inf(d) {
+        base_codec::Json::Num(d, repr)
+      } else if is_pure_integer_repr(repr) {
         match parse_int64_strict(repr) {
-          Some(v) => base_codec::Json::Num(v.to_double(), v.to_string())
-          None => {
-            if is_nan_or_inf(d) {
-              base_codec::json_null()
+          None => base_codec::Json::Num(d, repr)
+          Some(v) => {
+            let lim = safe_most()
+            if v > lim || v < -lim {
+              base_codec::Json::Num(d, repr)
             } else {
               base_codec::Json::Num(d, "")
             }
           }
         }
-      } else if is_nan_or_inf(d) {
-        base_codec::json_null()
-      } else if double_is_i64_integer(d) && d >= -9007199254740991.0 && d <= 9007199254740991.0 {
-        let v = d.to_int64()
-        base_codec::Json::Num(d, v.to_string())
       } else {
         base_codec::Json::Num(d, "")
+      }
+    }
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(normalize_parsed_json(items[i]))
+      }
+      base_codec::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, normalize_parsed_json(v)))
+      }
+      base_codec::Json::Obj(out)
+    }
+    other => other
+  }
+}
+
+/// Parse JSON with MoonBit `@json.parse`-aligned numeric `repr` semantics.
+pub fn parse_json(raw : String) -> base_codec::JsonParseResult {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => base_codec::JsonParseResult::Ok(normalize_parsed_json(j))
+    base_codec::JsonParseResult::Err(e) => base_codec::JsonParseResult::Err(e)
+  }
+}
+
+/// Recursively prepare `Json::Num` values for ECMAScript / MoonBit `Json::stringify()`:
+/// - Numbers with non-empty `repr` keep `repr` verbatim (`1e400`, `18446744073709551615`, `9007199254740993`, `-0.0`).
+/// - Numbers with empty `repr`: non-finite -> `null`, finite -> ECMAScript shortest decimal (`sqlite_ffi::format_js_double`).
+fn normalize_json_for_stringify(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Num(d, repr) => {
+      if repr.length() > 0 {
+        base_codec::Json::Num(d, repr)
+      } else if is_nan_or_inf(d) {
+        base_codec::json_null()
+      } else {
+        base_codec::Json::Num(d, sqlite_ffi::format_js_double(d))
       }
     }
     base_codec::Json::Arr(items) => {
@@ -326,7 +367,7 @@ pub fn normalize_json_for_stringify(j : base_codec::Json) -> base_codec::Json {
   }
 }
 
-/// Stringify a `base_codec::Json` value with JS / MoonBit numeric normalization.
+/// Stringify a `base_codec::Json` value matching MoonBit / ECMAScript `Json::stringify()`.
 pub fn stringify_json(j : base_codec::Json) -> String {
   base_codec::json_stringify(normalize_json_for_stringify(j))
 }
@@ -421,8 +462,9 @@ pub fn Db::exec(self : Db, sql : String) -> Result[Unit, SqlError] {
   }
 }
 
+// Matches `station/mb/src/sql/sql.mbt:286-302` 1:1.
 fn bind_number(stmt : sqlite_ffi::Stmt, at : Int, d : Double, repr : String) -> Int {
-  if is_pure_integer_repr(repr) {
+  if repr.length() > 0 {
     match parse_int64_strict(repr) {
       Some(v) => stmt.bind_int64(at, v)
       None => stmt.bind_double(at, d)
@@ -935,24 +977,34 @@ pub fn run_selftest(temp_db_path : String) -> Result[Unit, String] {
     _ => { db.close(); return Err("select hex(blob_edge) failed") }
   }
 
-  // 7c. P1-3 JSON numeric `repr` boundary semantics (typeof, readback repr, object stringify)
-  let num_cases : Array[(String, String, Bool)] = [
-    ("1.0", "integer", false),
-    ("1e2", "integer", false),
-    ("-0", "integer", false),
-    ("1.5", "real", false),
-    ("9007199254740991", "integer", false),
-    ("9007199254740992", "integer", true),
-    ("9007199254740993", "integer", true),
-    ("-9007199254740993", "integer", true),
+  // 7c. P1-1 + P1-2: Complete 14-case MB vs Pion numeric repr / typeof / object stringify parity table
+  let num_matrix : Array[(String, String, String)] = [
+    ("1.0", "integer", "{\"n\":1}"),
+    ("1e2", "integer", "{\"n\":100}"),
+    ("1e400", "real", "{\"n\":1e400}"),
+    ("-1e400", "real", "{\"n\":-1e400}"),
+    ("9223372036854775809", "real", "{\"n\":9223372036854775809}"),
+    ("18446744073709551615", "real", "{\"n\":18446744073709551615}"),
+    ("9007199254740993", "integer", "{\"n\":9007199254740993}"),
+    ("0.00001", "real", "{\"n\":0.00001}"),
+    ("0.000001", "real", "{\"n\":0.000001}"),
+    ("1e20", "real", "{\"n\":100000000000000000000}"),
+    ("1e-7", "real", "{\"n\":1e-7}"),
+    ("1.5e-7", "real", "{\"n\":1.5e-7}"),
+    ("9007199254740992", "integer", "{\"n\":9007199254740992}"),
+    ("-0", "integer", "{\"n\":0}"),
   ]
-  for i in 0..<num_cases.length() {
-    let (lit, want_ty, want_repr) = num_cases[i]
-    let parsed_num = match base_codec::json_parse(lit) {
+  for i in 0..<num_matrix.length() {
+    let (lit, want_ty, want_obj) = num_matrix[i]
+    let parsed_num = match parse_json(lit) {
       base_codec::JsonParseResult::Ok(j) => j
-      _ => { db.close(); return Err("parse num case failed: " + lit) }
+      base_codec::JsonParseResult::Err(e) => { db.close(); return Err("parse_json failed for " + lit + ": " + e) }
     }
-    match db.first("SELECT typeof(?) AS ty, ? AS v", [parsed_num, parsed_num]) {
+    let parsed_obj = match parse_json("{\"n\":" + lit + "}") {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => { db.close(); return Err("parse_json obj failed for " + lit + ": " + e) }
+    }
+    match db.first("SELECT typeof(?) AS ty, ? AS obj_txt", [parsed_num, parsed_obj]) {
       Ok(Some(r)) => {
         match row_val(r, "ty") {
           base_codec::Json::Str(ty) => {
@@ -963,42 +1015,62 @@ pub fn run_selftest(temp_db_path : String) -> Result[Unit, String] {
           }
           _ => { db.close(); return Err("typeof(" + lit + ") not Str") }
         }
-        match row_val(r, "v") {
-          base_codec::Json::Num(_, repr) => {
-            let has_repr = repr.length() > 0
-            if has_repr != want_repr {
+        match row_val(r, "obj_txt") {
+          base_codec::Json::Str(s) => {
+            if s != want_obj {
               db.close()
-              return Err("readback repr presence for " + lit + ": got=" + has_repr.to_string() + " want=" + want_repr.to_string())
-            }
-            if want_repr && repr != lit {
-              db.close()
-              return Err("readback repr value for " + lit + ": got=" + repr)
+              return Err("obj_txt(" + lit + ") mismatch: got=" + s + " want=" + want_obj)
             }
           }
-          _ => { db.close(); return Err("readback value for " + lit + " not Num") }
+          _ => { db.close(); return Err("obj_txt(" + lit + ") not Str") }
         }
       }
-      _ => { db.close(); return Err("query num case failed: " + lit) }
+      _ => { db.close(); return Err("query num_matrix failed: " + lit) }
     }
   }
-  let obj_param = match base_codec::json_parse("{\"n\":1.0,\"e\":1e2,\"neg\":-0,\"big\":9007199254740993}") {
-    base_codec::JsonParseResult::Ok(j) => j
-    _ => { db.close(); return Err("parse obj_param failed") }
-  }
-  match db.first("SELECT ? AS txt", [obj_param]) {
+  // Explicit direct-constructed Num(-0.0, "-0.0") must bind as real (matching sql.mbt:288-292).
+  let neg_zero_repr = base_codec::Json::Num(-0.0, "-0.0")
+  match db.first("SELECT typeof(?) AS ty", [neg_zero_repr]) {
     Ok(Some(r)) => {
-      let want_txt = "{\"n\":1,\"e\":100,\"neg\":0,\"big\":9007199254740993}"
-      match row_val(r, "txt") {
-        base_codec::Json::Str(s) => {
-          if s != want_txt {
-            db.close()
-            return Err("object bind text mismatch: got=" + s + " want=" + want_txt)
-          }
-        }
-        _ => { db.close(); return Err("object bind text not Str") }
+      match row_val(r, "ty") {
+        base_codec::Json::Str("real") => ()
+        other => { db.close(); return Err("Num(-0.0, \"-0.0\") typeof mismatch: " + stringify_json(other)) }
       }
     }
-    _ => { db.close(); return Err("select obj_param failed") }
+    _ => { db.close(); return Err("select neg_zero_repr failed") }
+  }
+  // Direct Num(NaN, "") and Num(+Inf, "") (empty repr) must still bind as NULL.
+  match db.first("SELECT typeof(?) AS t1, typeof(?) AS t2", [base_codec::json_num(nan_d), base_codec::json_num(inf_d)]) {
+    Ok(Some(r)) => {
+      match (row_val(r, "t1"), row_val(r, "t2")) {
+        (base_codec::Json::Str("null"), base_codec::Json::Str("null")) => ()
+        _ => { db.close(); return Err("empty-repr NaN/+Inf must bind as null") }
+      }
+    }
+    _ => { db.close(); return Err("select empty-repr NaN/+Inf failed") }
+  }
+  // Readback repr presence: |v| <= SAFE_MOST -> "", |v| > SAFE_MOST -> exact decimal repr.
+  let safe_lit = match parse_json("9007199254740991") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse safe_lit") }
+  }
+  let over_lit = match parse_json("-9007199254740993") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse over_lit") }
+  }
+  match db.first("SELECT ? AS a, ? AS b", [safe_lit, over_lit]) {
+    Ok(Some(r)) => {
+      match (row_val(r, "a"), row_val(r, "b")) {
+        (base_codec::Json::Num(_, ra), base_codec::Json::Num(_, rb)) => {
+          if ra != "" || rb != "-9007199254740993" {
+            db.close()
+            return Err("readback repr boundary mismatch: ra=" + ra + " rb=" + rb)
+          }
+        }
+        _ => { db.close(); return Err("readback repr boundary not Num") }
+      }
+    }
+    _ => { db.close(); return Err("select readback repr boundary failed") }
   }
 
   // Invalid UTF-8 bytes cast to TEXT -> WHATWG lossy UTF-8 replacement U+FFFD

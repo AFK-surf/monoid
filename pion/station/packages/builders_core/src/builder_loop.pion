@@ -215,12 +215,13 @@ pub fn escape_line_separators(s : String) -> String {
   sb.to_string()
 }
 
-/// Parse one stdin line as JSON; invalid JSON (or lone surrogate) becomes `Json::Null`.
+/// Parse one stdin line as JSON (with MoonBit `@json.parse`-aligned numeric `repr` semantics);
+/// invalid JSON (or lone surrogate) becomes `Json::Null`.
 pub fn parse_ask_line(line : String) -> base_codec::Json {
   if has_lone_surrogate(line) {
     return base_codec::json_null()
   }
-  match base_codec::json_parse(line) {
+  match sql_db::parse_json(line) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(_) => base_codec::json_null()
   }

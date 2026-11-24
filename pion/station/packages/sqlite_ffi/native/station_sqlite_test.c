@@ -305,6 +305,44 @@ int main(void) {
         REQUIRE(pthread_join(threads[i], NULL) == 0);
     }
 
+    // 5. ECMAScript shortest-decimal double formatting (`stq_format_js_double`).
+    struct {
+        double v;
+        const char *want;
+    } fmt_cases[] = {
+        {0.0, "0"},
+        {-0.0, "0"},
+        {1.0, "1"},
+        {100.0, "100"},
+        {1.5, "1.5"},
+        {-1.5, "-1.5"},
+        {0.00001, "0.00001"},
+        {0.000001, "0.000001"},
+        {1e-7, "1e-7"},
+        {1.5e-7, "1.5e-7"},
+        {1e20, "100000000000000000000"},
+        {1e21, "1e+21"},
+        {1.8531501765868567e21, "1.8531501765868567e+21"},
+        {9007199254740992.0, "9007199254740992"},
+    };
+    for (size_t i = 0; i < sizeof(fmt_cases) / sizeof(fmt_cases[0]); i++) {
+        int64_t flen = 0;
+        char *fstr = (char *)stq_format_js_double(fmt_cases[i].v, &flen);
+        REQUIRE(fstr != NULL);
+        REQUIRE((size_t)flen == strlen(fmt_cases[i].want));
+        REQUIRE(memcmp(fstr, fmt_cases[i].want, (size_t)flen) == 0);
+        stq_free(fstr);
+    }
+    // Non-finite doubles -> "null".
+    double zero_d = 0.0;
+    double nonfinite[3] = {0.0 / zero_d, 1.0 / zero_d, -1.0 / zero_d};
+    for (int i = 0; i < 3; i++) {
+        int64_t flen = 0;
+        char *fstr = (char *)stq_format_js_double(nonfinite[i], &flen);
+        REQUIRE(fstr != NULL && flen == 4 && memcmp(fstr, "null", 4) == 0);
+        stq_free(fstr);
+    }
+
     printf("station_sqlite_test: ALL PASSED\n");
     return 0;
 }
