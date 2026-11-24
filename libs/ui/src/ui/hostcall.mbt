@@ -10,6 +10,8 @@ struct FakeHost {
   /// how long presenting a frame takes (its clock moved on by it as each is presented, as a device's GPU may hold a
   /// frame's present: 0 by default, presenting taking no time)
   mut present_ms : Double
+  /// how long rasterizing a glyph cache miss takes (its clock moved on by it in `FakeHost::glyph`: 0 by default)
+  mut glyph_ms : Double
   /// how late the frame drawn at `late_after` reached the screen, as said of it (Tester::frame_late, a run's LATE line):
   /// what the first frame drawn after then says (frame `late_frame`, once it is drawn); every other frame's was on time
   mut late : Double

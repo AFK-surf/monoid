@@ -175,6 +175,7 @@ fn reset_globals() -> Unit {
   text_cache.metrics.clear()
   glyphs_forget()
   measuring_origin_x.val = 0.0
+  measuring_origin_known.val = false
   halos_forget()
   halos.none = false
   halos.blurred = 0
@@ -636,6 +637,7 @@ fn tester_make(
     late_after: -1.0,
     late_frame: -1,
     present_ms: 0.0,
+    glyph_ms: 0.0,
     wall: tester_wall - time,
     scale,
     wants: false,

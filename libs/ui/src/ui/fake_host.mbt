@@ -586,6 +586,9 @@ fn FakeHost::glyphs_ahead_able(_ : FakeHost) -> Bool {
 
 ///|
 fn FakeHost::glyph(self : FakeHost, key : Int, out : FixedArray[Double]) -> Unit {
+  if self.glyph_ms > 0.0 {
+    self.time = self.time + self.glyph_ms
+  }
   if self.live is Some(l) {
     (l.host.glyph)(key, out)
     return

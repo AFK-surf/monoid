@@ -476,9 +476,166 @@ static void test_cross_phase_bounds_reuse(void) {
   held_key = -1;
 }
 
+static void test_ahead_reenqueue_after_eviction(void) {
+  ahead_forget();
+  drain_ahead_queues_test();
+  text_scale = 2.0;
+  wchar_t sE[] = L"E";
+  int k = mb_host_text_key(sE, 16.0, 400, 0);
+  CHECK(k >= 0);
+  if (k < 0) return;
+
+  // 1. Enqueue phase 0, consume & free Ahead (ahead_of[k] == NULL), then re-request phase 0: must re-enqueue and keep subs_queued.
+  int32_t k_sub0[1] = {k | (0 << 26)};
+  mb_host_glyphs_ahead(k_sub0, 1);
+  CHECK(entries[k].subs_queued == 0x01);
+  Ahead *a = k < ahead_of_cap ? ahead_of[k] : NULL;
+  CHECK(a != NULL);
+  if (!a) return;
+  Drawn wd = {};
+  wd.pw = 2;
+  wd.ph = 2;
+  wd.px = (uint8_t *)calloc(2 * 2, 4);
+  EnterCriticalSection(&ahead_lock);
+  a->want_mask = 0;
+  a->first_mask = 0;
+  a->drawing_mask = 0x01;
+  LeaveCriticalSection(&ahead_lock);
+  CHECK(ahead_begin_phase(a, 0));
+  ahead_finish_phase(a, 0, true, wd);
+  Drawn taken = {};
+  CHECK(drawn_ahead(k, 0, &taken));
+  free(taken.px);
+  CHECK(ahead_of[k] == NULL);
+  CHECK(entries[k].subs_queued == 0x01);
+
+  mb_host_glyphs_ahead(k_sub0, 1);
+  Ahead *a2 = k < ahead_of_cap ? ahead_of[k] : NULL;
+  CHECK(a2 != NULL);
+  CHECK(entries[k].subs_queued == 0x01);
+  if (a2) {
+    CHECK(a2->want_mask == 0x01);
+    CHECK(a2->first_mask == 0x01);
+  }
+
+  // 2. Same Ahead with multiple phases: take phase 0 while other phases remain, then re-request phase 0.
+  int32_t k_sub2[1] = {k | (2 << 26)};
+  mb_host_glyphs_ahead(k_sub2, 1);
+  CHECK(entries[k].subs_queued == 0x0F);
+  CHECK(ahead_of[k] == a2);
+  if (a2) {
+    Drawn wd0 = {};
+    wd0.pw = 2;
+    wd0.ph = 2;
+    wd0.px = (uint8_t *)calloc(2 * 2, 4);
+    EnterCriticalSection(&ahead_lock);
+    a2->want_mask &= (uint8_t)~0x01;
+    a2->first_mask &= (uint8_t)~0x01;
+    a2->drawing_mask |= 0x01;
+    LeaveCriticalSection(&ahead_lock);
+    CHECK(ahead_begin_phase(a2, 0));
+    ahead_finish_phase(a2, 0, true, wd0);
+    Drawn t0 = {};
+    CHECK(drawn_ahead(k, 0, &t0));
+    free(t0.px);
+    CHECK(ahead_of[k] == a2);
+    CHECK((a2->want_mask & 0x01) == 0 && (a2->have_mask & 0x01) == 0);
+
+    // Re-request phase 0 on the still-alive Ahead: bit 0 must be added back to want_mask & first_mask.
+    mb_host_glyphs_ahead(k_sub0, 1);
+    CHECK((a2->want_mask & 0x01) != 0);
+    CHECK((a2->first_mask & 0x01) != 0);
+
+    // 3a. Race Order 1: foreground marks skip_mask -> re-request clears skip_mask BEFORE worker calls ahead_begin_phase ->
+    //     ahead_begin_phase returns true -> ahead_finish_phase retains bitmap in have_mask -> drawn_ahead retrieves it.
+    EnterCriticalSection(&ahead_lock);
+    a2->want_mask &= (uint8_t)~0x01;
+    a2->first_mask &= (uint8_t)~0x01;
+    a2->drawing_mask |= 0x01;
+    LeaveCriticalSection(&ahead_lock);
+    Drawn miss1 = {};
+    CHECK(!drawn_ahead(k, 0, &miss1));
+    EnterCriticalSection(&ahead_lock);
+    CHECK((a2->drawing_mask & 0x01) != 0 && (a2->skip_mask & 0x01) != 0);
+    LeaveCriticalSection(&ahead_lock);
+
+    mb_host_glyphs_ahead(k_sub0, 1);
+    EnterCriticalSection(&ahead_lock);
+    CHECK((a2->skip_mask & 0x01) == 0 && (a2->drawing_mask & 0x01) != 0);
+    LeaveCriticalSection(&ahead_lock);
+
+    CHECK(ahead_begin_phase(a2, 0));
+    Drawn wd_keep1 = {};
+    wd_keep1.pw = 3;
+    wd_keep1.ph = 3;
+    wd_keep1.px = (uint8_t *)malloc(3 * 3 * 4);
+    memset(wd_keep1.px, 0x5A, 3 * 3 * 4);
+    ahead_finish_phase(a2, 0, true, wd_keep1);
+    EnterCriticalSection(&ahead_lock);
+    CHECK((a2->have_mask & 0x01) != 0);
+    LeaveCriticalSection(&ahead_lock);
+    Drawn got1 = {};
+    CHECK(drawn_ahead(k, 0, &got1));
+    CHECK(got1.pw == 3 && got1.ph == 3 && got1.px != NULL && got1.px[0] == 0x5A);
+    free(got1.px);
+
+    // 3b. Race Order 2: foreground marks skip_mask -> worker calls ahead_begin_phase first (returns false and atomically
+    //     clears drawing_mask & skip_mask) -> re-request re-adds bit 0 to want_mask & first_mask -> next worker claims
+    //     bit 0, ahead_begin_phase returns true, ahead_finish_phase stores bitmap -> drawn_ahead retrieves it.
+    mb_host_glyphs_ahead(k_sub0, 1);
+    EnterCriticalSection(&ahead_lock);
+    a2->want_mask &= (uint8_t)~0x01;
+    a2->first_mask &= (uint8_t)~0x01;
+    a2->drawing_mask |= 0x01;
+    LeaveCriticalSection(&ahead_lock);
+    Drawn miss2 = {};
+    CHECK(!drawn_ahead(k, 0, &miss2));
+    EnterCriticalSection(&ahead_lock);
+    CHECK((a2->drawing_mask & 0x01) != 0 && (a2->skip_mask & 0x01) != 0);
+    LeaveCriticalSection(&ahead_lock);
+
+    CHECK(!ahead_begin_phase(a2, 0));
+    EnterCriticalSection(&ahead_lock);
+    CHECK((a2->drawing_mask & 0x01) == 0 && (a2->skip_mask & 0x01) == 0);
+    LeaveCriticalSection(&ahead_lock);
+
+    mb_host_glyphs_ahead(k_sub0, 1);
+    EnterCriticalSection(&ahead_lock);
+    CHECK((a2->want_mask & 0x01) != 0 && (a2->first_mask & 0x01) != 0);
+    a2->want_mask &= (uint8_t)~0x01;
+    a2->first_mask &= (uint8_t)~0x01;
+    a2->drawing_mask |= 0x01;
+    LeaveCriticalSection(&ahead_lock);
+
+    CHECK(ahead_begin_phase(a2, 0));
+    Drawn wd_keep2 = {};
+    wd_keep2.pw = 4;
+    wd_keep2.ph = 4;
+    wd_keep2.px = (uint8_t *)malloc(4 * 4 * 4);
+    memset(wd_keep2.px, 0xA5, 4 * 4 * 4);
+    ahead_finish_phase(a2, 0, true, wd_keep2);
+    Drawn got2 = {};
+    CHECK(drawn_ahead(k, 0, &got2));
+    CHECK(got2.pw == 4 && got2.ph == 4 && got2.px != NULL && got2.px[0] == 0xA5);
+    free(got2.px);
+  }
+
+  // 4. After ahead_forget(), re-requesting phase 0 starts cleanly again.
+  ahead_forget();
+  drain_ahead_queues_test();
+  CHECK(entries[k].subs_queued == 0);
+  mb_host_glyphs_ahead(k_sub0, 1);
+  CHECK(entries[k].subs_queued == 0x01);
+  CHECK(ahead_of[k] != NULL && ahead_of[k]->want_mask == 0x01 && ahead_of[k]->first_mask == 0x01);
+
+  ahead_forget();
+  drain_ahead_queues_test();
+}
+
 int main(void) {
   test_fine_math_and_reuse();
   test_ahead_single_phase_and_nonblocking();
+  test_ahead_reenqueue_after_eviction();
   test_color_probe_and_weight();
   test_lazy_target_and_failure_zero();
   test_cross_phase_bounds_reuse();
