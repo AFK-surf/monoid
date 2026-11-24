@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fe220a848](https://github.com/AFK-surf/monoid/commit/fe220a8482864df7977422f47192751d9253b0a9) fix(core,station): keep waiting writes in SQLite a | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.91 | 130.93 |
 | [56d4ffcb5](https://github.com/AFK-surf/monoid/commit/56d4ffcb54e7c88a08ec6c8e2ce8973da252bad4) docs(releases): 0.1.11211 stable notes (#8518) | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.91 | 130.93 |
 | [056fa5a93](https://github.com/AFK-surf/monoid/commit/056fa5a9323df0e00f29bac61313ed61152eb4e9) feat(pion): Wave M1.1 monoid mbt2pion toolchain, s | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.81 | 130.64 |
 | [03c64d375](https://github.com/AFK-surf/monoid/commit/03c64d375a40de178f160b4ce6c6e70df185be9e) feat(mbui): add multicolor accent option that pick | 2.8 | 3.76 | 15.23 | 37.46 | 57.96 | 32.79 | 66.84 | 100.86 | 120.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [434f6f625](https://github.com/AFK-surf/monoid/commit/434f6f62557761a0b68c98b0376b26b10666eec3) fix(ui,mbui): P0 Regular Liquid Glass optics fix a | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.71 | 66.62 | 100.6 | 127.13 |
 | [294d9460f](https://github.com/AFK-surf/monoid/commit/294d9460f6ff2ac0888058581e24c0a38904beb7) fix(mbui): tidy Poke's pill and popover, and say w | 2.78 | 3.74 | 15.16 | 37.36 | 57.7 | 32.71 | 66.62 | 100.6 | 114.04 |
 | [a40327a3b](https://github.com/AFK-surf/monoid/commit/a40327a3b3e8ca64f325c114bdd1bbcdf1b68fc0) feat(mbui): add experimental Cmd/Ctrl hover highli | 2.78 | 3.74 | 15.16 | 37.36 | 57.69 | 32.7 | 66.59 | 100.6 | 118.87 |
-| [21b5451ae](https://github.com/AFK-surf/monoid/commit/21b5451ae519b17261bbd35ea4e5c54c078fb953) fix(ui): set emoji presentation sequences and keyc | 2.78 | 3.74 | 15.15 | 37.35 | 57.65 | 32.7 | 66.59 | 100.6 | 123.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fe220a848](https://github.com/AFK-surf/monoid/commit/fe220a8482864df7977422f47192751d9253b0a9) fix(core,station): keep waiting writes in SQLite a | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.51 |
 | [56d4ffcb5](https://github.com/AFK-surf/monoid/commit/56d4ffcb54e7c88a08ec6c8e2ce8973da252bad4) docs(releases): 0.1.11211 stable notes (#8518) | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.54 |
 | [056fa5a93](https://github.com/AFK-surf/monoid/commit/056fa5a9323df0e00f29bac61313ed61152eb4e9) feat(pion): Wave M1.1 monoid mbt2pion toolchain, s | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.75 |
 | [03c64d375](https://github.com/AFK-surf/monoid/commit/03c64d375a40de178f160b4ce6c6e70df185be9e) feat(mbui): add multicolor accent option that pick | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [434f6f625](https://github.com/AFK-surf/monoid/commit/434f6f62557761a0b68c98b0376b26b10666eec3) fix(ui,mbui): P0 Regular Liquid Glass optics fix a | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.08 | 5.79 | 57.46 |
 | [294d9460f](https://github.com/AFK-surf/monoid/commit/294d9460f6ff2ac0888058581e24c0a38904beb7) fix(mbui): tidy Poke's pill and popover, and say w | 0.56 | 0.73 | 2.84 | 3.85 | 7.04 | 2.08 | 5.79 | 57.48 |
 | [a40327a3b](https://github.com/AFK-surf/monoid/commit/a40327a3b3e8ca64f325c114bdd1bbcdf1b68fc0) feat(mbui): add experimental Cmd/Ctrl hover highli | 0.56 | 0.73 | 2.84 | 3.85 | 7.04 | 2.08 | 5.79 | 57.33 |
-| [21b5451ae](https://github.com/AFK-surf/monoid/commit/21b5451ae519b17261bbd35ea4e5c54c078fb953) fix(ui): set emoji presentation sequences and keyc | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.44 |
