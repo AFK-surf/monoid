@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bbb59ac01](https://github.com/AFK-surf/monoid/commit/bbb59ac011c72633c1fb031f9609cf8f7e6fb234) fix(station): arm waiting timer mid-turn and remin | 2.78 | 3.74 | 15.16 | 37.37 | 57.71 | 32.72 | 66.65 | 100.6 | 116.14 |
 | [1956fcba8](https://github.com/AFK-surf/monoid/commit/1956fcba8ea950dccabd1737b79a4530e21a22bd) fix(station): weigh CPU when assigning new chats a | 2.78 | 3.74 | 15.16 | 37.37 | 57.71 | 32.72 | 66.65 | 100.62 | 126.7 |
 | [6641932f7](https://github.com/AFK-surf/monoid/commit/6641932f70c050d192449ce0bfb0d9cc7c668cce) fix(mbui): grow the soft scroll edge's blur as r²  | 2.78 | 3.74 | 15.16 | 37.37 | 57.71 | 32.72 | 66.65 | 100.62 | 126.7 |
 | [2d8645beb](https://github.com/AFK-surf/monoid/commit/2d8645beb6916175cbb7e43b09d3085d2e8ef566) feat(ui): add transparent/borderless child windows | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.72 | 66.65 | 100.62 | 127.5 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [98a6b07ba](https://github.com/AFK-surf/monoid/commit/98a6b07ba2be5599e3479b1da6e6d60c88e0fe51) fix(cloud): hold credential devices in memory and  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
 | [c7347fe3c](https://github.com/AFK-surf/monoid/commit/c7347fe3c75abf5cd01d2d082318d3244137ea4f) fix(ui,mbui): keep a never-placed beside overlay o | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
 | [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.76 | 130.62 |
-| [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bbb59ac01](https://github.com/AFK-surf/monoid/commit/bbb59ac011c72633c1fb031f9609cf8f7e6fb234) fix(station): arm waiting timer mid-turn and remin | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.64 |
 | [1956fcba8](https://github.com/AFK-surf/monoid/commit/1956fcba8ea950dccabd1737b79a4530e21a22bd) fix(station): weigh CPU when assigning new chats a | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.44 |
 | [6641932f7](https://github.com/AFK-surf/monoid/commit/6641932f70c050d192449ce0bfb0d9cc7c668cce) fix(mbui): grow the soft scroll edge's blur as r²  | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.84 |
 | [2d8645beb](https://github.com/AFK-surf/monoid/commit/2d8645beb6916175cbb7e43b09d3085d2e8ef566) feat(ui): add transparent/borderless child windows | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [98a6b07ba](https://github.com/AFK-surf/monoid/commit/98a6b07ba2be5599e3479b1da6e6d60c88e0fe51) fix(cloud): hold credential devices in memory and  | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.48 |
 | [c7347fe3c](https://github.com/AFK-surf/monoid/commit/c7347fe3c75abf5cd01d2d082318d3244137ea4f) fix(ui,mbui): keep a never-placed beside overlay o | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.33 |
 | [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
-| [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
