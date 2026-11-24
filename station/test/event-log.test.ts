@@ -155,3 +155,25 @@ test("what is handed over is kept as what is appended is, and what is no log is 
   const bad = [{}, { ...log.kept(), run: "../x" }, { ...log.kept(), seq: 1 }, { run: "1f", seq: 2, forgotten: 0, events: [{ n: 3, to: "all", text: "", at: 0 }] }];
   for (const kept of bad) assert.throws(() => EventLog.from(kept as never, 0), /not a log/, JSON.stringify(kept));
 });
+
+test("a full log lets go of one at a time, and goes on as before across where its array is cut", () => {
+  // Five kept at most: every append lets go of one, and the array is cut every few (`#letGo`).
+  const log = new EventLog<string>("1f2e3d4c", { most: 5, ms: 1e12, bytes: 1e12 });
+  for (let i = 1; i <= 40; i++) log.append("thread", { id: i }, "all", i, i % 7 === 0 ? "thing" : undefined);
+  assert.deepEqual(log.state().kept, 5);
+  assert.equal(log.has("1f2e3d4c.34"), false);
+  assert.deepEqual(ids(log, "1f2e3d4c.35"), [36, 37, 38, 39, 40]);
+  assert.deepEqual(log.kept().events.map((e) => e.n), [36, 37, 38, 39, 40]);
+  // The thing was last said at 35, let go since: said again, nothing kept is taken for it, and what is kept counts
+  // what each kept says.
+  const before = log.state().bytes;
+  const again = log.append("thread", { id: 41 }, "all", 41, "thing");
+  assert.deepEqual(ids(log, "1f2e3d4c.36"), [37, 38, 39, 40, 41]);
+  const kept = log.kept().events;
+  assert.equal(log.state().bytes, kept.reduce((n, e) => n + e.text.length, 0));
+  assert.ok(log.state().bytes > before - again.text.length);
+  // Said again while kept: the earlier is no longer told, the latest is.
+  log.append("thread", { id: 42 }, "all", 42, "thing");
+  assert.deepEqual(ids(log, "1f2e3d4c.37"), [38, 39, 40, 42]);
+  assert.equal(log.state().bytes, log.kept().events.reduce((n, e) => n + e.text.length, 0));
+});
