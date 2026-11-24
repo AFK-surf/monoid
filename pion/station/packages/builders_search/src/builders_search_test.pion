@@ -125,6 +125,38 @@ test "tail_utf16_units keeps exact trailing 1024 UTF-16 code units including low
   expect_bs(t_odd.length() == 1024, "odd surrogate boundary keeps exact 1024 UTF-16 units, got " + t_odd.length().to_string())
   expect_bs(t_odd[0] == 0xDE00, "first unit at odd surrogate cut must be low surrogate 0xDE00")
   expect_bs(t_odd[1] == 0x61 && t_odd[1023] == 0x61, "remaining 1023 units are 'a'")
+
+  // Parity check: O(max_units) `next_tail_utf16_units` vs full-chunk `tail_utf16_units(concat(...))`
+  let eq_units = fn(a : Array[Int], b : Array[Int], label : String) -> Unit {
+    expect_bs(a.length() == b.length(), label + " length mismatch: " + a.length().to_string() + " vs " + b.length().to_string())
+    for i in 0..<a.length() {
+      expect_bs(a[i] == b[i], label + " mismatch at " + i.to_string())
+    }
+  }
+  // Case 1: short chunk concatenated onto existing prev_tail (must pull from prev_tail)
+  let prev1 = js_json::utf16_units("prefix😀中文" + odd.to_string())
+  let prev1_tail = tail_utf16_units(prev1, 1024)
+  let short_chunk = "tail-中文😀end"
+  eq_units(
+    next_tail_utf16_units(prev1_tail, short_chunk, 1024),
+    tail_utf16_units(concat_utf16_units(prev1_tail, js_json::utf16_units(short_chunk)), 1024),
+    "short chunk concat",
+  )
+  // Case 2: >4 KiB multi-byte chunk (3-byte CJK + 4-byte emoji straddling the 4096-byte cut point)
+  let big_sb = StringBuilder::new()
+  big_sb.write_string("x") // shift UTF-8 alignment by 1 byte
+  for _ in 0..<900 {
+    big_sb.write_string("中😀") // 7 UTF-8 bytes, 3 UTF-16 units -> 6300 bytes (>4096), 2700 UTF-16 units
+  }
+  big_sb.write_string("😀")
+  for _ in 0..<1023 {
+    big_sb.write_string("a") // ends on exact odd surrogate boundary (0xDE00 + 1023 'a')
+  }
+  let big_chunk = big_sb.to_string()
+  let got_big = next_tail_utf16_units(prev1_tail, big_chunk, 1024)
+  let ref_big = tail_utf16_units(concat_utf16_units(prev1_tail, js_json::utf16_units(big_chunk)), 1024)
+  eq_units(got_big, ref_big, ">4KiB multibyte + odd surrogate boundary")
+  expect_bs(got_big.length() == 1024 && got_big[0] == 0xDE00, ">4KiB odd surrogate starts with 0xDE00")
 }
 
 fn make_mock_session_row(key : String) -> Map[String, base_codec::Json] {

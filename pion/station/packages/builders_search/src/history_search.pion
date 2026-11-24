@@ -124,6 +124,32 @@ fn concat_utf16_units(a : Array[Int], b : Array[Int]) -> Array[Int] {
   out
 }
 
+/// Compute the next `max_units` UTF-16 overlap tail in O(max_units) time & memory instead of
+/// converting an entire 8 MiB chunk to UTF-16 code units.
+/// Because every UTF-16 code unit encodes to at most 3 UTF-8 bytes (BMP <= 3 bytes, astral = 4 bytes / 2 units),
+/// taking at most `4 * max_units` trailing bytes (stepping forward past UTF-8 continuation bytes)
+/// leaves >= 4093 bytes for `max_units = 1024`, which always covers >= 1024 UTF-16 code units.
+fn next_tail_utf16_units(prev_tail : Array[Int], text : String, max_units : Int) -> Array[Int] {
+  let raw = text.to_bytes()
+  let n = raw.length()
+  let max_bytes = 4 * max_units
+  let slice = if n > max_bytes {
+    let mut start = n - max_bytes
+    while start < n && ((raw[start].to_int() & 0xC0) == 0x80) {
+      start = start + 1
+    }
+    str_slice_bytes(text, start, n)
+  } else {
+    text
+  }
+  let text_u = js_json::utf16_units(slice)
+  if text_u.length() >= max_units {
+    tail_utf16_units(text_u, max_units)
+  } else {
+    tail_utf16_units(concat_utf16_units(prev_tail, text_u), max_units)
+  }
+}
+
 fn history_text(e : Entry) -> Option[String] {
   if e.kind == "assistant" || e.kind == "thinking" {
     return Some(e.text)
@@ -726,8 +752,7 @@ fn HistoriesStepper::step_mentions_with(
         if !self.keep_with(driver, is_cancelled) {
           return self.partial_result_with(driver, ms.key)
         }
-        let view_units = concat_utf16_units(ms.tail, js_json::utf16_units(text))
-        let view = js_json::sanitize_str(view_units)
+        let view = if ms.tail.length() == 0 { text } else { js_json::sanitize_str(ms.tail) + text }
         let remaining : Array[WordMatcher] = []
         for i in 0..<ms.left.length() {
           if !matcher_matches(ms.left[i], view) {
@@ -757,7 +782,7 @@ fn HistoriesStepper::step_mentions_with(
           self.phase = HistPhase::SessionLoop(sess_idx + 1)
           return self.step_with(driver, is_cancelled)
         }
-        ms.tail = tail_utf16_units(view_units, MENTION_OVERLAP)
+        ms.tail = next_tail_utf16_units(ms.tail, text, MENTION_OVERLAP)
         self.phase = HistPhase::InMentions(sess_idx, ms)
         return HistStepResult::Yielded // P11 (`history.mbt:236`) — handle stays open across yield!
       }

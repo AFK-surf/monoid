@@ -189,11 +189,13 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     writeFileSync(path, text);
   };
 
-  // Real >16 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> >= 3 chunks across 2+ P11 yields!)
+  // Real ~34.5 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> ~5 chunks across 4 P11 yields!)
   const chunkLine = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(4000) } })}\n`;
-  const repeats = opts.multiChunkHistory ? 4200 : 80; // 4200 * ~4060B ≈ 17.0 MiB -> 3 x 8 MiB chunks
+  const repeats = opts.multiChunkHistory ? 8500 : 80; // 8500 * ~4060B ≈ 34.5 MiB -> 5 x 8 MiB chunks
 
-  addSession("h-a", "claude", "W1", 100);
+  // Isolate h-a (WA) and h-b (WB) into distinct workspaces so query A ONLY scans ha1.jsonl
+  // and query B ONLY scans hb1.jsonl during dual-handle P11 concurrency verification.
+  addSession("h-a", "claude", "WA", 100);
   store.ranIn("h-a", "ha1", "cc");
   store.setRuntimeSessionId("h-a", "ha1");
   const bigA =
@@ -201,7 +203,7 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T10:00:00Z", message: { content: "alphaonlytoken" } })}\n`;
   put(join(dir, "transcripts", "claude", "-w-h-a", "ha1.jsonl"), bigA);
 
-  addSession("h-b", "claude", "W1", 90);
+  addSession("h-b", "claude", "WB", 90);
   store.ranIn("h-b", "hb1", "cc");
   store.setRuntimeSessionId("h-b", "hb1");
   const bHead = `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T10:30:00Z", message: { content: "betafirstchunk" } })}\n`;
@@ -256,36 +258,28 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
 
 function openFdTargets(pid: number): string[] | null {
   if (process.platform !== "linux") return null;
-  try {
-    const out: string[] = [];
-    for (const fd of readdirSync(`/proc/${pid}/fd`)) {
-      try {
-        out.push(readlinkSync(`/proc/${pid}/fd/${fd}`));
-      } catch {
-        // FD may close concurrently
-      }
-    }
-    return out;
-  } catch {
-    return null;
+  // On Linux, never swallow /proc errors (test must fail loudly if /proc/<pid>/fd is unreadable).
+  const out: string[] = [];
+  for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+    out.push(readlinkSync(`/proc/${pid}/fd/${fd}`));
   }
+  return out;
 }
 
 function openFdCount(pid: number): number | null {
   if (process.platform !== "linux") return null;
-  try {
-    return readdirSync(`/proc/${pid}/fd`).length;
-  } catch {
-    return null;
-  }
+  return readdirSync(`/proc/${pid}/fd`).length;
 }
 
-test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-gated >8MiB P11 interleaved history cancel A preserves B with strict 0 FD leak", async (t) => {
+test("deterministic no-sleep concurrency: fast query B overtakes slow A; SIGSTOP-frozen dual-FD P11 interleaved cancel A preserves B with strict 0 FD leak", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   const fx = makeFixture({ multiChunkHistory: true });
   const asker = { workspace: "W1", home: true, scopes: [] };
+  const askerA = { workspace: "WA", home: false, scopes: [] };
+  const askerB = { workspace: "WB", home: false, scopes: [] };
   const client = new RawLineClient(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
+  const pid = client.child.pid!;
   try {
     // 1. Slow message scan (A, id=1) + fast profile query (B, id=2) sent back-to-back in one write:
     //    B finishes in 2 steps (ProfileRun -> FinalPause), while A yields >= 7 times across P1 message batches.
@@ -304,16 +298,14 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-g
     assert.equal(replies1[1].id, 1);
     assert.equal(replies1[1].groups[0].kind, "message");
 
-    // 2. Real >16 MiB (3 x 8 MiB chunks) multi-chunk P11 interleaving (Rust shell TEXT_PART = 8 MiB):
-    //    Send qHistA(10), qHistB(11), and probe1(12).
-    //    Round 1: 10 P9, 11 P9, 12 P9.
-    //    Round 2: 10 P12, 11 P12, 12 DONE -> replies {id: 12}.
-    //    Then send probe2(13):
-    //    Round 3: 10 opens ha1.jsonl + chunk 1 -> P11 (FD OPEN!), 11 opens hb1.jsonl + chunk 1 -> P11 (FD OPEN!), 13 P9.
-    //    Round 4: 10 chunk 2 -> P11 (FD STILL OPEN!), 11 chunk 2 -> P11 (FD STILL OPEN!), 13 DONE -> replies {id: 13}!
-    const fdBase = openFdCount(client.child.pid!);
-    const qHistA = JSON.stringify({ type: "query", id: 10, query: "alphaonlytoken", asker, kinds: ["history"] });
-    const qHistB = JSON.stringify({ type: "query", id: 11, query: "betafirstchunk betaonlytoken overlapcheck", asker, kinds: ["history"] });
+    // 2. Real ~34.5 MiB (5 x 8 MiB chunks) isolated-workspace dual-FD P11 interleaving:
+    //    Query A (askerA -> WA) ONLY scans ha1.jsonl; Query B (askerB -> WB) ONLY scans hb1.jsonl.
+    //    Probe 1 (id=12) advances A & B to P12; Probe 2 (id=13) advances A & B into P11 with open FDs.
+    //    Immediately freeze the child via SIGSTOP so /proc/<pid>/fd inspection and cancel delivery
+    //    are 100% race-free, strictly asserting BOTH ha1.jsonl AND hb1.jsonl are simultaneously open!
+    const fdBase = openFdCount(pid);
+    const qHistA = JSON.stringify({ type: "query", id: 10, query: "alphaonlytoken", asker: askerA, kinds: ["history"] });
+    const qHistB = JSON.stringify({ type: "query", id: 11, query: "betafirstchunk betaonlytoken overlapcheck", asker: askerB, kinds: ["history"] });
     const qProbe1 = JSON.stringify({ type: "query", id: 12, query: "FastProfileHit", asker, kinds: ["profile"] });
     client.writeRaw(`${qHistA}\n${qHistB}\n${qProbe1}\n`);
     assert.equal((await client.nextJson()).id, 12, "probe 1 advances 10 & 11 to P12");
@@ -321,20 +313,31 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-g
     client.send({ type: "query", id: 13, query: "FastProfileHit", asker, kinds: ["profile"] });
     assert.equal((await client.nextJson()).id, 13, "probe 2 advances 10 & 11 into P11 with open FDs");
 
-    // On Linux, verify at the OS kernel level (`/proc/<pid>/fd`) that the Pion process is
-    // genuinely mid-P11 holding an open >16 MiB transcript FD when cancel A is issued.
-    // (Deterministic step-by-step dual-handle P11 barrier asserting `idA != idB` simultaneously
-    // open before cancel A, plus all 5 exit paths, is verified in `builders_search_test.pion`.)
-    const midP11Targets = openFdTargets(client.child.pid!);
-    if (midP11Targets !== null) {
-      assert.ok(
-        midP11Targets.some((t) => t.endsWith("ha1.jsonl") || t.endsWith("hb1.jsonl")),
-        `expected an open >16 MiB transcript FD in /proc/${client.child.pid}/fd at P11 barrier; got ${JSON.stringify(midP11Targets)}`,
-      );
+    if (process.platform === "linux") {
+      process.kill(pid, "SIGSTOP");
+      try {
+        const midP11Targets = openFdTargets(pid)!;
+        assert.ok(
+          midP11Targets.some((t) => t.endsWith("ha1.jsonl")),
+          `expected ha1.jsonl open in /proc/${pid}/fd while SIGSTOP-frozen at P11; got ${JSON.stringify(midP11Targets)}`,
+        );
+        assert.ok(
+          midP11Targets.some((t) => t.endsWith("hb1.jsonl")),
+          `expected hb1.jsonl open in /proc/${pid}/fd while SIGSTOP-frozen at P11; got ${JSON.stringify(midP11Targets)}`,
+        );
+        // Queue cancel A into stdin pipe while child is STILL frozen so it arrives before A's next step!
+        client.send({ type: "cancel", id: 10 });
+      } finally {
+        try {
+          process.kill(pid, "SIGCONT");
+        } catch {
+          // ignore if child already exited
+        }
+      }
+    } else {
+      client.send({ type: "cancel", id: 10 });
     }
 
-    // Now cancel A while both A and B are paused mid-P11 holding open handles!
-    client.send({ type: "cancel", id: 10 });
     const histReplies = new Map<number, any>();
     while (histReplies.size < 2) {
       const m = await client.nextJson();
@@ -348,28 +351,51 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-g
     assert.equal(histReplies.get(11)?.groups[0].hits.length, 1);
     assert.ok(histReplies.get(11)?.groups[0].hits[0].text.includes("betaonlytoken"));
 
-    // 3. Two-probe-gated repeated mid-P11 cancellation across 4 >16 MiB history queries -> STRICT 0 FD leak (no +1 tolerance).
+    // 3. Repeated SIGSTOP-verified mid-P11 cancellations across 4 ~34.5 MiB history queries -> STRICT 0 FD leak.
     for (let i = 0; i < 4; i++) {
       const qid = 100 + i * 3;
       const p1 = 101 + i * 3;
       const p2 = 102 + i * 3;
       client.writeRaw(
-        `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker, kinds: ["history"] })}\n` +
+        `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker: askerA, kinds: ["history"] })}\n` +
         `${JSON.stringify({ type: "query", id: p1, query: "FastProfileHit", asker, kinds: ["profile"] })}\n`,
       );
       assert.equal((await client.nextJson()).id, p1);
       client.send({ type: "query", id: p2, query: "FastProfileHit", asker, kinds: ["profile"] });
       assert.equal((await client.nextJson()).id, p2);
-      client.send({ type: "cancel", id: qid });
+      if (process.platform === "linux") {
+        process.kill(pid, "SIGSTOP");
+        try {
+          const targets = openFdTargets(pid)!;
+          assert.ok(
+            targets.some((t) => t.endsWith("ha1.jsonl")),
+            `iteration ${i}: expected ha1.jsonl open in /proc/${pid}/fd before cancel; got ${JSON.stringify(targets)}`,
+          );
+          client.send({ type: "cancel", id: qid });
+        } finally {
+          try {
+            process.kill(pid, "SIGCONT");
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        client.send({ type: "cancel", id: qid });
+      }
       const ans = await client.nextJson();
       assert.equal(ans.id, qid);
       assert.equal(ans.error, "the search took too long");
     }
-    const fdAfter = openFdCount(client.child.pid!);
+    const fdAfter = openFdCount(pid);
     if (fdBase !== null && fdAfter !== null) {
-      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across probe-gated >16 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
+      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across SIGSTOP-verified >34 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
     }
   } finally {
+    try {
+      process.kill(pid, "SIGCONT");
+    } catch {
+      // ignore
+    }
     await client.close();
     fx.close();
   }
@@ -552,6 +578,7 @@ test("cross-engine .zst parity, bidirectional SHA-1 transcript-marks interop (MB
     // 1. Pack h-a transcript to .zst -> direct MB vs Pion history search 0-diff parity
     await packFile(join(fx.dir, "transcripts", "claude", "-w-h-a", "ha1.jsonl"));
     const asker = { workspace: "W1", home: true, scopes: [] };
+    const askerA = { workspace: "WA", home: false, scopes: [] };
     const mbProc = new MbProcess(bins.mb, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
     const pionProc = new MbProcess(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
     const askOne = (proc: MbProcess, query: string) =>
@@ -562,7 +589,7 @@ test("cross-engine .zst parity, bidirectional SHA-1 transcript-marks interop (MB
           resolve(m);
         };
         proc.on("message", handler);
-        proc.postMessage({ type: "query", id: 1, query, asker, kinds: ["history"] });
+        proc.postMessage({ type: "query", id: 1, query, asker: askerA, kinds: ["history"] });
       });
     try {
       const [mbA, pionA] = await Promise.all([askOne(mbProc, "alphaonlytoken"), askOne(pionProc, "alphaonlytoken")]);
