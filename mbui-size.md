@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bdab53e32](https://github.com/AFK-surf/monoid/commit/bdab53e32df499e4b266b389ddae0f6d02e0eed6) fix(ui): preserve 1.00x vertical text scale inside | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.78 | 121.83 |
 | [a9586853d](https://github.com/AFK-surf/monoid/commit/a9586853d26ebd14d56fc69a9d971acaa8f4846f) feat(pion): W6-0 Wave 6 foundation, live-locator ( | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.93 | 121.83 |
 | [37a5954c1](https://github.com/AFK-surf/monoid/commit/37a5954c1e707b732e109dd172c2c91f24f99016) fix(vault): stop 未获此库授权 flashing at start, and nev | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.93 | 121.83 |
 | [3f5a8522b](https://github.com/AFK-surf/monoid/commit/3f5a8522b7da579d43297b5a870e3c0f0e834fef) feat(mbui): report a message sent from here that a | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.5 | 100.73 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 | [f0fb92750](https://github.com/AFK-surf/monoid/commit/f0fb92750e75a8625aa4da34e206fee16f6c96db) feat(ui): v8 liquid glass optics, parabolic Light  | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.75 | 100.78 | 125.87 |
 | [d40b1fee6](https://github.com/AFK-surf/monoid/commit/d40b1fee6657d2b51f62954d6daab0e7f44312a8) fix(station): start a new Feishu thread for a quot | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.74 | 100.68 | 123.04 |
-| [67be246b5](https://github.com/AFK-surf/monoid/commit/67be246b5291e9c7094563d4e6eec8fde602916c) fix(station): let granted stations reach a rig's s | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.74 | 100.68 | 123.04 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bdab53e32](https://github.com/AFK-surf/monoid/commit/bdab53e32df499e4b266b389ddae0f6d02e0eed6) fix(ui): preserve 1.00x vertical text scale inside | 0.56 | 0.73 | 2.85 | 3.87 | 7.08 | 2.1 | 5.86 | 57.61 |
 | [a9586853d](https://github.com/AFK-surf/monoid/commit/a9586853d26ebd14d56fc69a9d971acaa8f4846f) feat(pion): W6-0 Wave 6 foundation, live-locator ( | 0.56 | 0.73 | 2.85 | 3.87 | 7.08 | 2.1 | 5.86 | 58.07 |
 | [37a5954c1](https://github.com/AFK-surf/monoid/commit/37a5954c1e707b732e109dd172c2c91f24f99016) fix(vault): stop 未获此库授权 flashing at start, and nev | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.77 |
 | [3f5a8522b](https://github.com/AFK-surf/monoid/commit/3f5a8522b7da579d43297b5a870e3c0f0e834fef) feat(mbui): report a message sent from here that a | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.74 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [49c56a044](https://github.com/AFK-surf/monoid/commit/49c56a04493e35db7f2da2b4b906537df25bda7e) fix(station): share one ssh connection per Colab V | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 65.41 |
 | [f0fb92750](https://github.com/AFK-surf/monoid/commit/f0fb92750e75a8625aa4da34e206fee16f6c96db) feat(ui): v8 liquid glass optics, parabolic Light  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.71 |
 | [d40b1fee6](https://github.com/AFK-surf/monoid/commit/d40b1fee6657d2b51f62954d6daab0e7f44312a8) fix(station): start a new Feishu thread for a quot | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.53 |
-| [67be246b5](https://github.com/AFK-surf/monoid/commit/67be246b5291e9c7094563d4e6eec8fde602916c) fix(station): let granted stations reach a rig's s | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.44 |
