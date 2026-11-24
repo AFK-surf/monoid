@@ -236,6 +236,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     assert.equal(env.CLAUDE_CODE_CERT_STORE, "bundled");
     assert.equal(env.CLAUDE_CODE_SILENT_TURN_REMINDER, "0");
     assert.equal(env.CLAUDECODE, undefined);
+    assert.equal(env.IS_SANDBOX, process.getuid?.() === 0 ? "1" : undefined, "root may skip permissions only as a sandbox");
     assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, undefined, "not a profile's own");
     // OpenCode Go's access, its route the session's.
     assert.equal(env.ANTHROPIC_BASE_URL, "https://opencode.ai/zen/go");
