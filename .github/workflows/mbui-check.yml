@@ -599,7 +599,7 @@ jobs:
   # sfapp's test program built once (scripts/test.sh APP_BUILD_OUT), its units kept as the native job keeps its own
   app-build:
     name: native (app build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && (vars.CI_1_MBUI == 'on' || startsWith(github.ref, 'refs/heads/release/')) && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     env:
       PART: app
