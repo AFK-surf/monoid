@@ -222,6 +222,9 @@ class MemoryProcess {
   }
 
   /// Its end by stdin's alone: no protocol error before or after, no ask left, exit 0 with no signal, no line cut short.
+  /// What this holds: an ask still waiting when the process ends fails, and so does any line the protocol forbids that
+  /// was said before it closed. A process that exits 0 by itself just after its last answer cannot be told apart here
+  /// from one that saw stdin's end; that it lives on after an answer is held by the asks each test sends after it.
   async end(): Promise<void> {
     this.#ending = true;
     let timer: NodeJS.Timeout | undefined;

@@ -232,6 +232,9 @@ class PackedProcess {
   }
 
   /// Its end by stdin's alone: no protocol error before or after, no ask left, exit 0 with no signal, no line cut short.
+  /// What this holds: an ask still waiting when the process ends fails, and so does any line the protocol forbids that
+  /// was said before it closed. A process that exits 0 by itself just after its last answer cannot be told apart here
+  /// from one that saw stdin's end; that it lives on after an answer is held by the asks each test sends after it.
   async end(): Promise<void> {
     this.#ending = true;
     let timer: NodeJS.Timeout | undefined;
@@ -694,7 +697,9 @@ test("workspaces: an archive leading out of its destination writes nothing outsi
     ];
     const cases: [string, (room: string) => Buffer[], boolean][] = [
       ["`..` components passed over", () => [...entry("../escaped", "0", Buffer.from("no")), ...entry("a/../../escaped2", "0", Buffer.from("no")), ...entry("ok", "0", Buffer.from("yes"))], true],
-      ["an absolute name, made inside", () => [...entry(`${outside}/abs-escaped`, "0", Buffer.from("no")), ...entry("/rooted/x", "0", Buffer.from("in"))], true],
+      // (a name rooted at `/` with no drive, on every machine; the outside directory's own absolute name only where it
+      // starts with `/`, not Windows' drive)
+      ["an absolute name, made inside", () => [...entry("/rooted-contract/x", "0", Buffer.from("in")), ...(unix ? entry(`${outside}/abs-escaped`, "0", Buffer.from("no")) : [])], true],
       ["a hard link up to a file that is there", (room) => entry("h", "1", Buffer.alloc(0), relative(join(room, "dest"), secret).split(sep).join("/")), true],
       ["a hard link by an absolute path to a file that is there", () => entry("h", "1", Buffer.alloc(0), secret), true],
       ["a hard link inside", () => [...entry("first", "0", Buffer.from("same")), ...entry("second", "1", Buffer.alloc(0), "first")], true],
@@ -728,8 +733,8 @@ test("workspaces: an archive leading out of its destination writes nothing outsi
       assert.equal(readFileSync(secret, "utf8"), "outside", what);
       if (what === "an absolute name, made inside") {
         assert.equal(refused, false);
-        assert.equal(readFileSync(join(dest, "rooted/x"), "utf8"), "in");
-        assert.equal(existsSync("/rooted/x"), false);
+        assert.equal(readFileSync(join(dest, "rooted-contract/x"), "utf8"), "in");
+        if (unix) assert.equal(readFileSync(join(dest, ...outside.split("/").filter((s) => s !== ""), "abs-escaped"), "utf8"), "no");
       }
       if (what === "a hard link inside") assert.equal(statSync(join(dest, "first")).ino, statSync(join(dest, "second")).ino);
       if (what === "`..` components passed over") assert.equal(refused, false);
