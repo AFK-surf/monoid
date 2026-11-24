@@ -523,15 +523,114 @@ test("archive-marks: missing DB path exits non-zero immediately without creating
   assert.equal(existsSync(missing), false, "attach must never create a missing DB file");
 });
 
+type SqlToken =
+  | { kind: "word"; upper: string }
+  | { kind: "semi" }
+  | { kind: "other" };
+
+function unescapePionString(raw: string): string {
+  let out = "";
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (ch === "\\" && i + 1 < raw.length) {
+      const next = raw[i + 1]!;
+      if (next === "n") out += "\n";
+      else if (next === "r") out += "\r";
+      else if (next === "t") out += "\t";
+      else out += next;
+      i++;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/// Single-pass character-level SQL lexer:
+/// - Single-quoted strings ('...' with '' escapes) and quoted identifiers ("...", `...`, [...])
+///   never interpret `--` or `/*` inside quotes as comments.
+/// - Line comments (`--...\n`) and block comments (`/*...*/`) are skipped outside quotes.
+/// - Emits ASCII keywords/identifiers, `;`, and `other` tokens.
+function tokenizeSql(sql: string): SqlToken[] {
+  const tokens: SqlToken[] = [];
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i]!;
+    if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n" || ch === "\f" || ch === "\v") {
+      i++;
+      continue;
+    }
+    if (ch === "-" && i + 1 < n && sql[i + 1] === "-") {
+      i += 2;
+      while (i < n && sql[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && i + 1 < n && sql[i + 1] === "*") {
+      i += 2;
+      while (i + 1 < n && !(sql[i] === "*" && sql[i + 1] === "/")) i++;
+      i = Math.min(i + 2, n);
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const quote = ch;
+      i++;
+      while (i < n) {
+        if (sql[i] === quote) {
+          if (i + 1 < n && sql[i + 1] === quote) {
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        i++;
+      }
+      tokens.push({ kind: "other" });
+      continue;
+    }
+    if (ch === "[") {
+      i++;
+      while (i < n && sql[i] !== "]") i++;
+      if (i < n) i++;
+      tokens.push({ kind: "other" });
+      continue;
+    }
+    if (ch === ";") {
+      tokens.push({ kind: "semi" });
+      i++;
+      continue;
+    }
+    if ((ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_") {
+      const start = i;
+      i++;
+      while (
+        i < n &&
+        ((sql[i]! >= "A" && sql[i]! <= "Z") ||
+          (sql[i]! >= "a" && sql[i]! <= "z") ||
+          (sql[i]! >= "0" && sql[i]! <= "9") ||
+          sql[i] === "_")
+      ) {
+        i++;
+      }
+      tokens.push({ kind: "word", upper: sql.slice(start, i).toUpperCase() });
+      continue;
+    }
+    tokens.push({ kind: "other" });
+    i++;
+  }
+  return tokens;
+}
+
 /// Static guard for `builders_core/src/` business files:
-/// 1) Strips SQL comments (`--...`, `/*...*/`) and single-quoted SQL string literals (`'...'`, incl. `''`),
-/// 2) Strips ONLY `CREATE [TEMP|TEMPORARY] TRIGGER ... BEGIN ... END` trigger bodies (never the whole string),
-/// 3) Splits on `;` and rejects any statement whose leading SQL keyword is `BEGIN`, `COMMIT`, `END`,
-///    `SAVEPOINT`, `RELEASE`, or `ROLLBACK` (allowing only `builder_loop.pion`'s leak-guard `ROLLBACK`).
+/// Uses a single-pass SQL lexer (`tokenizeSql`) and tracks nested `CASE ... END` depth
+/// inside `CREATE [TEMP|TEMPORARY] TRIGGER ... BEGIN ... END` bodies so statements after
+/// triggers (or after `'--'` literals) are still checked, while rejecting any non-trigger
+/// statement whose leading SQL keyword is `BEGIN`, `COMMIT`, `END`, `SAVEPOINT`, `RELEASE`,
+/// or `ROLLBACK` (allowing only `builder_loop.pion`'s leak-guard `ROLLBACK`).
 function findRawTxControlViolations(filename: string, source: string): string[] {
   const violations: string[] = [];
   const forbiddenHeads = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
-  const triggerBodyPattern = /\bCREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\b[\s\S]*?\bBEGIN\b[\s\S]*?\bEND\b/gi;
   const lines = source.split("\n");
   for (let idx = 0; idx < lines.length; idx++) {
     const line = lines[idx]!;
@@ -541,19 +640,62 @@ function findRawTxControlViolations(filename: string, source: string): string[] 
     let m: RegExpExecArray | null;
     while ((m = litRe.exec(line)) !== null) {
       const literal = m[1]!;
-      // Strip SQL comments and single-quoted SQL string literals first (eliminates `SELECT 'begin'` false positives).
-      const stripped = literal
-        .replace(/\/\*[\s\S]*?\*\//g, " ")
-        .replace(/--[^\n]*/g, " ")
-        .replace(/'(?:''|[^'])*'/g, "''")
-        .replace(triggerBodyPattern, "");
-      for (const stmt of stripped.split(";")) {
-        const head = stmt.match(/^\s*([A-Za-z_]+)/);
-        if (!head) continue;
-        const kw = head[1]!.toUpperCase();
-        if (!forbiddenHeads.has(kw)) continue;
-        if (filename === "builder_loop.pion" && kw === "ROLLBACK") continue;
-        violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${kw}" in literal "${literal}"`);
+      const tokens = tokenizeSql(unescapePionString(literal));
+      let atStmtStart = true;
+      let inTriggerHeader = false;
+      let triggerDepth = 0;
+
+      for (let t = 0; t < tokens.length; t++) {
+        const tok = tokens[t]!;
+        if (triggerDepth > 0) {
+          if (tok.kind === "word") {
+            if (tok.upper === "CASE") {
+              triggerDepth++;
+            } else if (tok.upper === "END") {
+              triggerDepth--;
+              if (triggerDepth === 0) {
+                atStmtStart = false;
+              }
+            }
+          }
+          continue;
+        }
+        if (inTriggerHeader) {
+          if (tok.kind === "word" && tok.upper === "BEGIN") {
+            inTriggerHeader = false;
+            triggerDepth = 1;
+          } else if (tok.kind === "semi") {
+            inTriggerHeader = false;
+            atStmtStart = true;
+          }
+          continue;
+        }
+        if (tok.kind === "semi") {
+          atStmtStart = true;
+          continue;
+        }
+        if (!atStmtStart) continue;
+        atStmtStart = false;
+        if (tok.kind !== "word") continue;
+
+        if (tok.upper === "CREATE") {
+          const t1 = tokens[t + 1];
+          const t2 = tokens[t + 2];
+          if (
+            (t1?.kind === "word" && t1.upper === "TRIGGER") ||
+            (t1?.kind === "word" &&
+              (t1.upper === "TEMP" || t1.upper === "TEMPORARY") &&
+              t2?.kind === "word" &&
+              t2.upper === "TRIGGER")
+          ) {
+            inTriggerHeader = true;
+          }
+          continue;
+        }
+
+        if (!forbiddenHeads.has(tok.upper)) continue;
+        if (filename === "builder_loop.pion" && tok.upper === "ROLLBACK") continue;
+        violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
       }
     }
   }
@@ -575,8 +717,19 @@ test("builders_core static guard: rejects raw transaction SQL and passes on real
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("RELEASE SAVEPOINT sp1")').length > 0, "RELEASE SAVEPOINT caught");
   assert.ok(findRawTxControlViolations("foo.pion", 'let _ = db.exec("ROLLBACK")').length > 0, "ROLLBACK in business file caught");
   assert.ok(
+    findRawTxControlViolations("foo.pion", 'let _ = db.exec("SELECT \'--\'; BEGIN IMMEDIATE")').length > 0,
+    "BEGIN IMMEDIATE after '--' string literal must be caught",
+  );
+  assert.ok(
     findRawTxControlViolations("foo.pion", 'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT 1; END; BEGIN IMMEDIATE")').length > 0,
     "BEGIN IMMEDIATE after CREATE TRIGGER must still be caught",
+  );
+  assert.ok(
+    findRawTxControlViolations(
+      "foo.pion",
+      'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT CASE WHEN 1 THEN 2 ELSE 3 END; END; BEGIN IMMEDIATE")',
+    ).length > 0,
+    "BEGIN IMMEDIATE after CREATE TRIGGER with nested CASE...END must be caught",
   );
   // Negative cases (must produce 0 false positives):
   assert.equal(findRawTxControlViolations("foo.pion", 'let _ = db.all("SELECT \'begin\'", [])').length, 0, "SELECT 'begin' allowed");
@@ -584,6 +737,14 @@ test("builders_core static guard: rejects raw transaction SQL and passes on real
     findRawTxControlViolations("foo.pion", 'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT 1; END")').length,
     0,
     "CREATE TRIGGER ... BEGIN ... END allowed",
+  );
+  assert.equal(
+    findRawTxControlViolations(
+      "foo.pion",
+      'let _ = db.exec("CREATE TRIGGER t AFTER INSERT ON x BEGIN SELECT CASE WHEN 1 THEN 2 ELSE 3 END; END")',
+    ).length,
+    0,
+    "CREATE TRIGGER with nested CASE...END allowed",
   );
   assert.equal(
     findRawTxControlViolations("builder_loop.pion", 'let _ = db.exec("ROLLBACK")').length,

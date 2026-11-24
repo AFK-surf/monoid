@@ -463,6 +463,9 @@ pub fn Db::exec(self : Db, sql : String) -> Result[Unit, SqlError] {
 }
 
 // Matches `station/mb/src/sql/sql.mbt:286-302` 1:1.
+// Bound JSON values must come from `sql_db::parse_json`, `int64_to_json`, or explicit
+// `json_int`/`json_num` constructors; passing raw un-normalized `base_codec::json_parse`
+// output preserves `repr` on e.g. `1.0` and would bind it as SQLite REAL instead of INTEGER.
 fn bind_number(stmt : sqlite_ffi::Stmt, at : Int, d : Double, repr : String) -> Int {
   if repr.length() > 0 {
     match parse_int64_strict(repr) {
@@ -478,6 +481,10 @@ fn bind_number(stmt : sqlite_ffi::Stmt, at : Int, d : Double, repr : String) -> 
   }
 }
 
+// Prepares/caches `sql` and binds `params`. Callers must pass JSON produced by
+// `sql_db::parse_json`, `int64_to_json`, or `json_int`/`json_num` (never raw
+// un-normalized `base_codec::json_parse` output, which keeps `repr` on `1.0` and
+// would bind it as REAL).
 fn Db::prepared(self : Db, sql : String, params : Array[base_codec::Json]) -> Result[KeptStmt, SqlError] {
   let kept = match self.kept.get(sql) {
     Some(k) => k
@@ -993,6 +1000,7 @@ pub fn run_selftest(temp_db_path : String) -> Result[Unit, String] {
     ("1.5e-7", "real", "{\"n\":1.5e-7}"),
     ("9007199254740992", "integer", "{\"n\":9007199254740992}"),
     ("-0", "integer", "{\"n\":0}"),
+    ("5.960464477539063e-8", "real", "{\"n\":5.960464477539063e-8}"),
   ]
   for i in 0..<num_matrix.length() {
     let (lit, want_ty, want_obj) = num_matrix[i]
