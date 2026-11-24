@@ -85,11 +85,11 @@ cd cloud && pnpm install --frozen-lockfile && pnpm run types && pnpm test
 
 still.fail 和 monoid 的官方版本默认会发送：
 
-- **使用统计和错误报告，发往 PostHog**（各端 app）：用了哪些功能、打开了哪类页面、各多少次（只有程序里写定的名字，不含操作内容）、闪退、卡顿和错误，以账号 ID 标识。网页版还会录制会话回放，所有文字、输入和图片在录制时就被遮盖。可以在 app 设置里关闭「发送使用统计和错误报告」，关闭后这台设备不再向 PostHog 发送任何数据，也不再发送链路追踪。
-- **请求链路追踪，发往 Google Cloud**（经 app 登录的云端转发）：名称、耗时、错误和账号 ID，不含消息内容。app 的追踪跟随上面那个开关；关闭后，云端只为排查故障记下这台设备失败、被限流或很慢的请求。
+- **使用统计和错误报告，发往 PostHog**（各端 app，只在登录 still.fail 自己的云端时发送）：用了哪些功能、打开了哪类页面、各多少次（只有程序里写定的名字，不含操作内容）、闪退、卡顿和错误，以账号 ID 标识。可以在 app 设置里关闭「发送使用统计和错误报告」，关闭后这台设备不再向 PostHog 发送任何数据，也不再发送链路追踪。
+- **请求链路追踪，发往 Google Cloud**（经 app 登录的云端转发，still.fail 的或 monoid 的）：名称、耗时、错误和账号 ID，不含消息内容。云端会给每批追踪附上它发出时所在的网络（运营商、国家、省份和城市，不含 IP 地址）。app 的追踪跟随上面那个开关，只要 app 会发送追踪就显示这个开关；app 启动后读到开关之前，追踪先留在本机，发出的请求注明不要记录。关闭后，云端只为排查故障记下这台设备失败、被限流或很慢的请求。
 - **station 运行日志，发往 Google Cloud**：发送前去掉家目录路径、邮箱、密钥和引号里的文字。workspace 管理员可以在 station 设置的「诊断」里关闭，或在 `config.json` 里写 `"telemetry": { "logs": false }`。
 
-station 发往 PostHog 的错误报告默认关闭，由 station 的管理者决定是否开启。这里没有任何代码读取别的工具的账号来识别你：station 读本机 Claude Code、Codex 的登录只是为了运行 agent，并且只给本 workspace 的设备看。从本仓库自己构建的版本不带 PostHog key，不发送使用统计和错误报告。各端 app 连接 `app.monoid.build`。见[隐私政策](https://monoid.build/privacy)。
+station 发往 PostHog 的错误报告默认关闭，由 station 的管理者决定是否开启。这里没有任何代码读取别的工具的账号来识别你：station 读它所运行的 agent 运行时的登录只是为了运行 agent，并且只给本 workspace 的设备看。从本仓库自己构建的版本不带 PostHog key，不发送使用统计和错误报告。各端 app 连接 `app.monoid.build`。见[隐私政策](https://monoid.build/privacy)。
 
 ## 仓库结构
 
