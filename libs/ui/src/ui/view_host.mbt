@@ -3269,10 +3269,6 @@ fn glyphs_held_drawn() -> Unit {
 }
 
 ///|
-/// Optical vertical shift (in points) for a single line of text within its line box:
-/// aligns the visual ink midpoint (Latin cap-height center or CJK em-box center) with the geometric line midpoint
-/// (`line_h * 0.5`), clamped to `[-0.18 * size, 0.18 * size]`.
-///|
 /// A round mark's ground on a line of `lay` whose box is `rect` (a passage lit: View::runs_marks with `round`): about
 /// its words' ink, the same room above it as below, never taller than its line. The line's box sets its words where
 /// its font says (CJK glyphs sit above its middle), so a ground as tall as the box stood further below them than above.
@@ -3302,6 +3298,9 @@ fn mark_round_rect(
 }
 
 ///|
+/// Optical vertical shift (in points) for a single line of text within its line box:
+/// aligns the visual ink midpoint (Latin cap-height center or CJK em-box center) with the geometric line midpoint
+/// (`line_h * 0.5`), clamped to `[-0.18 * size, 0.18 * size]`.
 fn optical_shift_y(text : String, size : Double, ascent : Double, line_h : Double) -> Double {
   if size <= 0.0 || line_h <= 0.0 {
     return 0.0
