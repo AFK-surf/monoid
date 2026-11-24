@@ -252,14 +252,38 @@ test "has_lone_surrogate, escape_line_separators, RawLines, and skill_given safe
   expect(escape_line_separators(raw_ls) == "{\"a\":\"x\\u2028y\\u2029z\"}", "U+2028/U+2029 escaped")
   expect(escape_line_separators("{\"a\":\"plain\"}") == "{\"a\":\"plain\"}", "fast path unchanged")
 
-  // RawLines splits only on LF (0x0A), preserves CR (0x0D), drops EOF tail.
+  // RawLines splits only on LF (0x0A), preserves CR (0x0D), decodes invalid UTF-8 lossily, drops EOF tail.
   let rl = RawLines::new()
   let out1 = rl.push("a\r\n\r\npartial".to_bytes())
   expect(out1.length() == 2, "two lines emitted")
   expect(out1[0] == "a\r", "CR preserved on line 0")
   expect(out1[1] == "\r", "CR-only line preserved")
 
-  // NUL in path and file/dir prefix collisions rejected in skill_given.
+  let rl2 = RawLines::new()
+  let out2 = rl2.push(hex_bytes("61ff62c0af63e4b8640ae4b8adf09f98800a"))
+  expect(out2.length() == 2, "lossy + valid utf8 lines emitted")
+  expect(out2[0] == "a\u{fffd}b\u{fffd}\u{fffd}c\u{fffd}d", "WHATWG maximal-subpart lossy UTF-8")
+  expect(out2[1] == "中😀", "valid multi-byte UTF-8 preserved")
+
+  // extract_safe_top_level_id preserves clean top-level id and nulls lone-surrogate or nested id.
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"id\":7,\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "7",
+    "numeric top-level id preserved",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"op\":\"tags\",\"names\":[\"\\uD800\"],\"id\":\"ok-1\"}")) == "\"ok-1\"",
+    "string top-level id after lone surrogate preserved",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"id\":\"\\uD800\",\"op\":\"tags\"}")) == "null",
+    "lone-surrogate id replaced with null",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"nested\":{\"id\":99},\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "null",
+    "nested id not mistaken for top-level id",
+  )
+
+  // NUL in path, file/dir prefix collisions, and normalized duplicate paths rejected in skill_given.
   expect_none_parts(skill_path("/", "a\u{0000}b"), "NUL in path rejected")
   match skill_given("/", [("a", base_codec::json_str("YQ==")), ("a/b", base_codec::json_str("YQ=="))], None) {
     Err(_) => ()
@@ -269,4 +293,15 @@ test "has_lone_surrogate, escape_line_separators, RawLines, and skill_given safe
     Err(_) => ()
     Ok(_) => panic("expected dir/file collision (a/b vs a) to be rejected")
   }
+  match skill_given("\\", [("a/b", base_codec::json_str("YQ==")), ("a\\b", base_codec::json_str("YQ=="))], None) {
+    Err(_) => ()
+    Ok(_) => panic("expected normalized duplicate path (a/b vs a\\b on win32) to be rejected")
+  }
+
+  // Hidden dot-prefixed temp/backup siblings live in parent dir and fail portable_name so scan ignores them.
+  let sib_posix = skill_hidden_sibling("/", "/home/skills/demo", "tmp", "42", 1)
+  expect(sib_posix == "/home/skills/.stillfail-tmp-demo-42-1", "posix hidden sibling: " + sib_posix)
+  expect(!portable_name(".stillfail-tmp-demo-42-1"), "hidden sibling ignored by scan portable_name")
+  let sib_win = skill_hidden_sibling("\\", "C:\\skills\\demo\\", "bak", "42", 2)
+  expect(sib_win == "C:\\skills\\.stillfail-bak-demo-42-2", "win hidden sibling: " + sib_win)
 }

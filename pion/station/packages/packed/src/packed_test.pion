@@ -1,0 +1,315 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "seek_table encodes skippable seekable footer and round-trips through table_length and frames_in" {
+  // Empty table: 8 + 0 + 9 = 17 bytes.
+  let empty = seek_table([])
+  expect(empty.length() == 17, "empty table length")
+  expect(base_codec::hex_encode(empty) == "5e2a4d18090000000000000000b1ea928f", "empty table exact bytes")
+
+  match table_length(17.to_int64(), empty.slice(8, 17)) {
+    Some((len, entry)) => {
+      expect(len == 17.to_int64() && entry == 8.to_int64(), "empty table_length")
+      match frames_in(17.to_int64(), empty, entry) {
+        Some(fs) => expect(fs.length() == 0, "empty frames_in")
+        None => panic("expected empty frames_in")
+      }
+    }
+    None => panic("expected empty table_length")
+  }
+
+  // Non-empty table including 32-bit unsigned boundary values (0xffffffff, 0xfffffffe).
+  let max32 = u32_const(0xFFFF, 0xFFFF)
+  let max32_minus1 = u32_const(0xFFFF, 0xFFFE)
+  let frames_spec : Array[(Int64, Int64)] = [
+    (max32, 0.to_int64()),
+    (1.to_int64(), max32_minus1),
+  ]
+  let tbl = seek_table(frames_spec)
+  expect(tbl.length() == 8 + 16 + 9, "2-frame table length")
+  let total_file_size = max32 + 1.to_int64() + tbl.length().to_int64()
+  let foot = tbl.slice(tbl.length() - FOOTER, tbl.length())
+  match table_length(total_file_size, foot) {
+    Some((len, entry)) => {
+      expect(len == tbl.length().to_int64() && entry == 8.to_int64(), "2-frame table_length")
+      match frames_in(total_file_size, tbl, entry) {
+        Some(fs) => {
+          expect(fs.length() == 2, "2 frames")
+          expect(fs[0].at == 0.to_int64() && fs[0].packed == max32 && fs[0].from == 0.to_int64() && fs[0].size == 0.to_int64(), "frame 0")
+          expect(fs[1].at == max32 && fs[1].packed == 1.to_int64() && fs[1].from == 0.to_int64() && fs[1].size == max32_minus1, "frame 1")
+        }
+        None => panic("expected 2 frames")
+      }
+    }
+    None => panic("expected table_length for 2 frames")
+  }
+
+  // Off-by-one file size rejected by frames_in.
+  match frames_in(total_file_size - 1.to_int64(), tbl, 8.to_int64()) {
+    None => ()
+    Some(_) => panic("expected None when frame sizes do not add up")
+  }
+}
+
+test "table_length rejects reserved bits, short files, and checksummed 12-byte entry detection" {
+  let tbl = seek_table([(5.to_int64(), 3.to_int64())])
+  let foot = tbl.slice(tbl.length() - FOOTER, tbl.length())
+  // Reserved bit 0x01 set in descriptor -> None.
+  let bad_foot = Bytes::new(FOOTER)
+  for i in 0..<FOOTER {
+    bad_foot[i] = foot[i]
+  }
+  bad_foot[4] = 0x01 as Byte
+  match table_length(100.to_int64(), bad_foot) {
+    None => ()
+    Some(_) => panic("expected None on reserved descriptor bit")
+  }
+
+  // Checksum flag 0x80 set -> 12-byte entry size.
+  let csum_foot = Bytes::new(FOOTER)
+  for i in 0..<FOOTER {
+    csum_foot[i] = foot[i]
+  }
+  csum_foot[4] = 0x80 as Byte
+  match table_length(100.to_int64(), csum_foot) {
+    Some((len, entry)) => expect(len == (8 + 12 + FOOTER).to_int64() && entry == 12.to_int64(), "12-byte entry")
+    None => panic("expected Some for checksummed footer")
+  }
+}
+
+test "stored detects 0.1.6800-0.1.6802 stored frame header" {
+  let h = Bytes::new(5)
+  put32(h, 0, frame_magic())
+  h[4] = 0xe0 as Byte
+  expect(stored(h), "stored frame header")
+
+  h[4] = 0x60 as Byte
+  expect(!stored(h), "compressed frame header")
+
+  expect(!stored(Bytes::new(4)), "short header")
+}
+
+test "answer_table validates frames and encodes exact hex" {
+  let ok_ask = match base_codec::json_parse("{\"op\":\"table\",\"frames\":[[9,0],[1,2]]}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match answer_table(ok_ask) {
+    Ok(j) => {
+      let want = base_codec::hex_encode(seek_table([(9.to_int64(), 0.to_int64()), (1.to_int64(), 2.to_int64())]))
+      match base_codec::json_get(j, "table") {
+        Some(base_codec::Json::Str(s)) => expect(s == want, "table hex match")
+        _ => panic("missing table string")
+      }
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Omitted frames -> empty table.
+  let no_frames = match base_codec::json_parse("{\"op\":\"table\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match answer_table(no_frames) {
+    Ok(j) => {
+      let want = base_codec::hex_encode(seek_table([]))
+      match base_codec::json_get(j, "table") {
+        Some(base_codec::Json::Str(s)) => expect(s == want, "empty table hex match")
+        _ => panic("missing table string")
+      }
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Bad frames rejected.
+  let bad_cases = [
+    "{\"op\":\"table\",\"frames\":[[1]]}",
+    "{\"op\":\"table\",\"frames\":[[\"1\",2]]}",
+    "{\"op\":\"table\",\"frames\":[5]}",
+  ]
+  for i in 0..<bad_cases.length() {
+    let ask = match base_codec::json_parse(bad_cases[i]) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => panic("parse")
+    }
+    match answer_table(ask) {
+      Err(_) => ()
+      Ok(_) => panic("expected error for bad frames case " + i.to_string())
+    }
+  }
+}
+
+test "json_num_to_int64 matches MoonBit Double::to_int64 rounding and saturation" {
+  // 9007199254740993 rounds in IEEE-754 double to 9007199254740992 (2^53).
+  let p53_plus_1 = match base_codec::json_parse("9007199254740993") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, _)) => json_num_to_int64(d)
+    _ => panic("parse 2^53+1")
+  }
+  expect(p53_plus_1 == (1.to_int64() << 53.to_int64()), "2^53+1 rounds to 2^53 via Double")
+
+  // 18446744073709551617 and 1e30 saturate to INT64_MAX (not wrapping or UB).
+  let huge = match base_codec::json_parse("18446744073709551617") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, _)) => json_num_to_int64(d)
+    _ => panic("parse huge")
+  }
+  expect(huge == int64_max(), "2^64+1 saturates to INT64_MAX")
+  expect(json_num_to_int64(1e30) == int64_max(), "1e30 saturates to INT64_MAX")
+  expect(json_num_to_int64(-1e30) == int64_min(), "-1e30 saturates to INT64_MIN")
+
+  // Negative fraction truncates toward zero; u32 max stays exact.
+  expect(json_num_to_int64(-3.7) == (-3).to_int64(), "negative fraction truncates toward zero")
+  expect(json_num_to_int64(4294967295.0) == u32_const(0xFFFF, 0xFFFF), "u32 max exact")
+  expect(json_num_to_int64(0.0 / 0.0) == 0.to_int64(), "NaN -> 0")
+}
+
+test "has_lone_surrogate rejects unpaired UTF-16 surrogates and accepts valid pairs" {
+  expect(!has_lone_surrogate("{\"id\":1,\"op\":\"table\",\"note\":\"\\ud83d\\ude00\"}"), "valid surrogate pair")
+  expect(!has_lone_surrogate("{\"id\":1,\"op\":\"table\",\"note\":\"\\\\ud800\"}"), "escaped backslash before ud800 is literal text")
+  expect(has_lone_surrogate("{\"id\":1,\"op\":\"frames\",\"path\":\"\\ud800\"}"), "lone high surrogate")
+  expect(has_lone_surrogate("{\"id\":1,\"op\":\"frames\",\"path\":\"\\udc00\"}"), "lone low surrogate")
+  expect(has_lone_surrogate("{\"id\":1,\"op\":\"frames\",\"path\":\"\\ud800\\u0041\"}"), "high surrogate followed by non-low")
+  match parse_ask_line("{\"id\":1,\"op\":\"table\",\"x\":\"\\ud800\"}") {
+    base_codec::Json::Null => ()
+    _ => panic("lone surrogate line must parse as Null")
+  }
+}
+
+test "RawLines splits strictly on LF without stripping CR and LoopState compacts under backlog" {
+  let rl = RawLines::new()
+  let got = rl.push("\r\n\nhello\r\nworld".to_bytes())
+  expect(got.length() == 3, "three LF-terminated lines")
+  expect(got[0] == "\r", "CRLF empty line preserves CR")
+  expect(got[1] == "", "pure LF empty line is empty")
+  expect(got[2] == "hello\r", "CR before LF preserved")
+
+  // Invalid UTF-8 bytes (0xff, truncated 3-byte seq, UTF-8 surrogate) decode lossily to U+FFFD (ef bf bd).
+  let rl2 = RawLines::new()
+  let bad = Bytes::new(8)
+  bad[0] = 97 as Byte // 'a'
+  bad[1] = 0xFF as Byte
+  bad[2] = 0xE2 as Byte
+  bad[3] = 0x82 as Byte // truncated 3-byte sequence before 'b'
+  bad[4] = 98 as Byte // 'b'
+  bad[5] = 0xED as Byte
+  bad[6] = 0xA0 as Byte // invalid UTF-8 surrogate prefix
+  bad[7] = 10 as Byte // '\n'
+  let bad_lines = rl2.push(bad)
+  expect(bad_lines.length() == 1, "one invalid-utf8 line")
+  let decoded = bad_lines[0].to_bytes()
+  // Expected: 'a' (61), U+FFFD (ef bf bd), U+FFFD (ef bf bd), 'b' (62), U+FFFD (ef bf bd), U+FFFD (ef bf bd)
+  expect(base_codec::hex_encode(decoded) == "61efbfbdefbfbd62efbfbdefbfbd", "WHATWG lossy UTF-8 bytes")
+
+  // Sustained non-empty queue: seed 10 items, then 200 rounds of push 1 + pop 1 ->
+  // queue never empties, yet compaction keeps storage bounded (<= 74, never 210).
+  let st = LoopState::new()
+  for i in 0..<10 {
+    st.enqueue_chunk(("seed" + i.to_string() + "\n").to_bytes())
+  }
+  for i in 0..<200 {
+    st.enqueue_chunk(("item" + i.to_string() + "\n").to_bytes())
+    match st.pop_line() {
+      Some(_) => ()
+      None => panic("expected queued line")
+    }
+  }
+  expect(st.pending_storage_len() <= 74, "compacted storage stays bounded under backlog")
+}
+
+test "escape_line_separators escapes U+2028 and U+2029 in JSON responses" {
+  let ls_bytes = Bytes::new(3)
+  ls_bytes[0] = 0xE2 as Byte
+  ls_bytes[1] = 0x80 as Byte
+  ls_bytes[2] = 0xA8 as Byte
+  let ps_bytes = Bytes::new(3)
+  ps_bytes[0] = 0xE2 as Byte
+  ps_bytes[1] = 0x80 as Byte
+  ps_bytes[2] = 0xA9 as Byte
+  let sb = StringBuilder::new()
+  sb.write_string("a")
+  for i in 0..<3 {
+    sb.write_byte(ls_bytes[i])
+  }
+  sb.write_string("b")
+  for i in 0..<3 {
+    sb.write_byte(ps_bytes[i])
+  }
+  sb.write_string("c")
+  let escaped = escape_line_separators(sb.to_string())
+  expect(escaped == "a\\u2028b\\u2029c", "U+2028 and U+2029 escaped")
+  expect(escape_line_separators("plain ascii") == "plain ascii", "fast path unchanged")
+}
+
+test "workspace_call validates required fields and optional prefix" {
+  let pack_ok = match base_codec::json_parse("{\"dir\":\"/a\",\"out\":\"/b.tar.zst\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.pack", pack_ok) {
+    Ok((op, args)) => expect(op == "tar.pack" && args.length() == 2, "workspace.pack")
+    Err(e) => panic("unexpected err: " + e)
+  }
+
+  let unpack_null_prefix = match base_codec::json_parse("{\"path\":\"/a\",\"dest\":\"/b\",\"prefix\":null}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.unpack", unpack_null_prefix) {
+    Ok((op, args)) => expect(op == "tar.unpack" && args.length() == 2, "unpack null prefix omitted")
+    Err(e) => panic("unexpected err: " + e)
+  }
+
+  let unpack_str_prefix = match base_codec::json_parse("{\"path\":\"/a\",\"dest\":\"/b\",\"prefix\":\"uploads\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.unpack", unpack_str_prefix) {
+    Ok((op, args)) => expect(op == "tar.unpack" && args.length() == 3, "unpack string prefix included")
+    Err(e) => panic("unexpected err: " + e)
+  }
+
+  let unpack_bad_prefix = match base_codec::json_parse("{\"path\":\"/a\",\"dest\":\"/b\",\"prefix\":5}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.unpack", unpack_bad_prefix) {
+    Err(_) => ()
+    Ok(_) => panic("expected error on numeric prefix")
+  }
+
+  let file_bad_wanted = match base_codec::json_parse("{\"path\":\"/a\",\"wanted\":[\"f\",1],\"out\":\"/o\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.file", file_bad_wanted) {
+    Err(_) => ()
+    Ok(_) => panic("expected error on non-string wanted element")
+  }
+}
+
+test "ok_response and error_response preserve arbitrary JSON ids" {
+  let complex_id = match base_codec::json_parse("{\"nested\":[1,\"中文\"]}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  let ok_line = ok_response(complex_id, base_codec::json_obj([("segmented", base_codec::json_bool(true))]))
+  let parsed_ok = match base_codec::json_parse(ok_line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse ok")
+  }
+  match base_codec::json_get(parsed_ok, "id") {
+    Some(got_id) => expect(base_codec::json_eq(got_id, complex_id), "ok id preserved")
+    None => panic("missing id")
+  }
+  let err_line = error_response(base_codec::json_str("req-1"), "no such ask")
+  let parsed_err = match base_codec::json_parse(err_line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse err")
+  }
+  match base_codec::json_get(parsed_err, "error") {
+    Some(base_codec::Json::Str(s)) => expect(s == "no such ask", "err message")
+    _ => panic("missing error")
+  }
+}

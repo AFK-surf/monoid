@@ -21,6 +21,43 @@ const warnedReaderFallbacks = new Set<string>();
 type Json = any;
 type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
 
+/// Detect unpaired UTF-16 surrogates (`\uD800`..`\uDFFF`) in a JSON-serialized string before
+/// sending it over stdio so neither MB nor Pion can leave `#waiting` hanging.
+function jsonHasLoneSurrogate(json: string): boolean {
+  let inStr = false;
+  for (let i = 0; i < json.length; i++) {
+    const c = json.charCodeAt(i);
+    if (!inStr) {
+      if (c === 34) inStr = true;
+      continue;
+    }
+    if (c === 34) {
+      inStr = false;
+    } else if (c === 92) {
+      if (i + 1 >= json.length) return false;
+      const esc = json.charCodeAt(i + 1);
+      if (esc === 117 && i + 5 < json.length) {
+        const u = parseInt(json.slice(i + 2, i + 6), 16);
+        i += 5;
+        if (u >= 0xd800 && u <= 0xdbff) {
+          if (i + 6 < json.length && json.charCodeAt(i + 1) === 92 && json.charCodeAt(i + 2) === 117) {
+            const lo = parseInt(json.slice(i + 3, i + 7), 16);
+            if (lo >= 0xdc00 && lo <= 0xdfff) {
+              i += 6;
+              continue;
+            }
+          }
+          return true;
+        }
+        if (u >= 0xdc00 && u <= 0xdfff) return true;
+      } else {
+        i++;
+      }
+    }
+  }
+  return false;
+}
+
 /// The program ended while an ask was under way (`close`).
 export class MemoryProgramStopped extends Error {}
 
@@ -51,6 +88,15 @@ export class MemoryProgram {
   /// What the program answers `op` with `args` (mb/src/memory answer.mbt); its `error` thrown.
   ask<A = Json>(op: string, args: Record<string, unknown>): Promise<A> {
     if (this.#closed) return Promise.reject(new MemoryProgramStopped("station stopping"));
+    let serialized: string;
+    try {
+      serialized = JSON.stringify({ ...args, id: 0, op });
+    } catch (error) {
+      return Promise.reject(error as Error);
+    }
+    if (serialized !== undefined && jsonHasLoneSurrogate(serialized)) {
+      return Promise.reject(new Error("invalid UTF-16 surrogate"));
+    }
     return new Promise((resolve, reject) => {
       const id = ++this.#next;
       this.#waiting.set(id, { resolve, reject });

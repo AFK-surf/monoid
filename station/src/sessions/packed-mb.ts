@@ -12,10 +12,41 @@
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
+import { resolveReaderEngine } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
 export const IDLE_MS = 60_000;
+
+const warnedReaderFallbacks = new Set<string>();
+
+/// Resolve the binary for `--builder packed` (`mb` by default; `pion` via `STILLFAIL_READER_PACKED` /
+/// `STILLFAIL_READER_ENGINE`; `shadow` is forbidden by `READER_MODES.packed.allowShadow === false`).
+/// Probes engine intent before calling `pionBinary()` so default `mb` does zero main-thread `statSync`.
+function resolvePackedBinary(explicit?: string | null): string {
+  if (explicit != null) return explicit;
+  const probe = resolveReaderEngine("packed", { hasPionBinary: true });
+  const pionBin = probe.engine === "mb" ? null : pionBinary();
+  const selection = probe.engine === "mb"
+    ? probe
+    : resolveReaderEngine("packed", { hasPionBinary: pionBin !== null });
+  if (selection.fallback) {
+    const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
+    if (!warnedReaderFallbacks.has(dedupKey)) {
+      warnedReaderFallbacks.add(dedupKey);
+      log.warn("archive", "reader engine fallback", {
+        mode: selection.mode,
+        engine: selection.engine,
+        requested: selection.requested,
+        source: selection.source,
+        reason: selection.reason,
+        detail: selection.detail,
+      });
+    }
+  }
+  if (selection.engine === "pion" && pionBin !== null) return pionBin;
+  return readerBinary();
+}
 
 type Json = any;
 type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
@@ -37,7 +68,7 @@ export function runPackedOnce<A = Json>(
   if (signal?.aborted) return Promise.reject(new PackAborted("workspace packing aborted"));
   return new Promise((resolve, reject) => {
     const p = new MbProcess(
-      options?.binary ?? readerBinary(),
+      resolvePackedBinary(options?.binary),
       ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
       { background: options?.background },
     );
@@ -63,7 +94,8 @@ export function runPackedOnce<A = Json>(
     };
     signal?.addEventListener("abort", stop, { once: true });
     p.on("message", (answer: Json) => {
-      if (answer?.id !== 1 || aborted) return;
+      if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return;
+      if (answer.id !== 1 || aborted) return;
       done(() => {
         finishChild();
         if (typeof answer.error === "string") reject(new Error(answer.error));
@@ -144,11 +176,12 @@ export class PackedProgram {
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(this.#binary ?? readerBinary(), ["--builder", "packed", "--shell-dir", this.#shellDir]);
+    const child = new MbProcess(resolvePackedBinary(this.#binary), ["--builder", "packed", "--shell-dir", this.#shellDir]);
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {
-      const waiting = typeof answer?.id === "number" ? this.#waiting.get(answer.id) : undefined;
+      if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return;
+      const waiting = typeof answer.id === "number" ? this.#waiting.get(answer.id) : undefined;
       if (!waiting) return;
       this.#waiting.delete(answer.id);
       if (typeof answer.error === "string") waiting.reject(new Error(answer.error));

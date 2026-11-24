@@ -489,6 +489,147 @@ pub fn escape_line_separators(s : String) -> String {
   sb.to_string()
 }
 
+fn skip_json_ws(s : String, start : Int) -> Int {
+  let n = s.length()
+  let mut i = start
+  while i < n {
+    let c = s.code_unit_at(i)
+    if c == 32 || c == 9 || c == 13 || c == 10 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  i
+}
+
+/// Advance past a JSON string literal starting at `start` (which must be `"`), returning
+/// the index right after the closing `"`, or `-1` if unterminated.
+fn scan_json_str(s : String, start : Int) -> Int {
+  let n = s.length()
+  if start >= n || s.code_unit_at(start) != 34 {
+    return -1
+  }
+  let mut i = start + 1
+  while i < n {
+    let c = s.code_unit_at(i)
+    if c == 34 {
+      return i + 1
+    } else if c == 92 {
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  -1
+}
+
+/// Advance past one JSON value starting at `start`, returning the index right after it, or `-1`.
+fn scan_json_val(s : String, start : Int) -> Int {
+  let n = s.length()
+  if start >= n {
+    return -1
+  }
+  let c = s.code_unit_at(start)
+  if c == 34 {
+    return scan_json_str(s, start)
+  }
+  if c == 123 || c == 91 {
+    // '{' or '['
+    let mut depth = 0
+    let mut i = start
+    while i < n {
+      let ch = s.code_unit_at(i)
+      if ch == 34 {
+        let next = scan_json_str(s, i)
+        if next < 0 {
+          return -1
+        }
+        i = next
+      } else if ch == 123 || ch == 91 {
+        depth = depth + 1
+        i = i + 1
+      } else if ch == 125 || ch == 93 {
+        depth = depth - 1
+        i = i + 1
+        if depth == 0 {
+          return i
+        }
+      } else {
+        i = i + 1
+      }
+    }
+    return -1
+  }
+  let mut i = start
+  while i < n {
+    let ch = s.code_unit_at(i)
+    if ch == 44 || ch == 125 || ch == 93 || ch == 32 || ch == 9 || ch == 13 || ch == 10 {
+      break
+    }
+    i = i + 1
+  }
+  if i == start { -1 } else { i }
+}
+
+/// Best-effort extraction of a top-level `"id"` JSON value from a line that failed the lone
+/// surrogate check, only returning it when the `"id"` value itself has no lone surrogate and
+/// parses cleanly as JSON; otherwise `Json::Null`.
+pub fn extract_safe_top_level_id(line : String) -> base_codec::Json {
+  let n = line.length()
+  let mut i = skip_json_ws(line, 0)
+  if i >= n || line.code_unit_at(i) != 123 {
+    return base_codec::json_null()
+  }
+  i = i + 1
+  let mut found : Option[base_codec::Json] = None
+  while i < n {
+    i = skip_json_ws(line, i)
+    if i >= n || line.code_unit_at(i) == 125 {
+      break
+    }
+    let key_end = scan_json_str(line, i)
+    if key_end < 0 {
+      break
+    }
+    let key_slice = line.slice(i, key_end)
+    i = skip_json_ws(line, key_end)
+    if i >= n || line.code_unit_at(i) != 58 {
+      break
+    }
+    i = skip_json_ws(line, i + 1)
+    let val_end = scan_json_val(line, i)
+    if val_end < 0 {
+      break
+    }
+    if key_slice == "\"id\"" {
+      let val_slice = line.slice(i, val_end)
+      if !has_lone_surrogate(val_slice) {
+        match base_codec::json_parse(val_slice) {
+          base_codec::JsonParseResult::Ok(v) => {
+            found = Some(v)
+          }
+          _ => {
+            found = None
+          }
+        }
+      } else {
+        found = None
+      }
+    }
+    i = skip_json_ws(line, val_end)
+    if i < n && line.code_unit_at(i) == 44 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  match found {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
 /// Streaming JSON-RPC loop for `--builder memory --shell-dir <dir> [--sep <sep>]`.
 pub fn run(shell_dir : String, sep : String) -> Unit {
   if !host_shim::start(shell_dir, true) {
@@ -509,8 +650,8 @@ pub fn run(shell_dir : String, sep : String) -> Unit {
         }
         let resp = if has_lone_surrogate(line) {
           base_codec::json_obj([
-            ("id", base_codec::json_null()),
-            ("error", base_codec::json_str("no such ask")),
+            ("id", extract_safe_top_level_id(line)),
+            ("error", base_codec::json_str("invalid UTF-16 surrogate")),
           ])
         } else {
           match base_codec::json_parse(line) {
@@ -532,7 +673,7 @@ pub fn run(shell_dir : String, sep : String) -> Unit {
             _ =>
             base_codec::json_obj([
               ("id", base_codec::json_null()),
-              ("error", base_codec::json_str("no such ask")),
+              ("error", base_codec::json_str("unknown memory op ")),
             ])
           }
         }

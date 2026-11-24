@@ -262,6 +262,10 @@ pub fn skill_given(
       Some(true) => return Err("bad path in a shared skill: " + path)
       _ => ()
     }
+    match file_paths.get(norm) {
+      Some(true) => return Err("bad path in a shared skill: " + path)
+      _ => ()
+    }
     file_paths.set(norm, true)
     for k in 1..<parts.length() {
       let prefix = join_parts(parts, k, "/")
@@ -299,6 +303,61 @@ fn cleanup_dir(host : MemoryHost, path : String) -> Unit {
   )
 }
 
+/// Split `dir` into `(parent, base)` on the last path separator so hidden staging/backup siblings
+/// live beside `dir` with a leading `.` (ignored by `scan`'s `portable_name` check).
+pub fn skill_hidden_sibling(sep : String, dir : String, tag : String, pid_s : String, seq : Int) -> String {
+  let win = sep == "\\"
+  let mut end = dir.length()
+  while end > 1 && is_path_sep(dir.code_unit_at(end - 1), win) {
+    end = end - 1
+  }
+  let mut slash = -1
+  let mut i = end - 1
+  while i >= 0 {
+    if is_path_sep(dir.code_unit_at(i), win) {
+      slash = i
+      break
+    }
+    i = i - 1
+  }
+  let (parent, base) = if slash < 0 {
+    ("", dir.slice(0, end))
+  } else {
+    (dir.slice(0, slash), dir.slice(slash + 1, end))
+  }
+  let name = ".stillfail-" + tag + "-" + base + "-" + pid_s + "-" + seq.to_string()
+  if parent == "" {
+    if slash == 0 {
+      sep + name
+    } else {
+      name
+    }
+  } else {
+    parent + sep + name
+  }
+}
+
+/// Allocate a dot-prefixed hidden sibling path verified unoccupied via `lstat`; never blindly
+/// deletes a pre-existing path whose ownership was not established.
+fn alloc_unique_sibling(
+  host : MemoryHost,
+  sep : String,
+  dir : String,
+  tag : String,
+  pid_s : String,
+) -> Result[String, String] {
+  for _ in 0..<4096 {
+    host.skill_temps = host.skill_temps + 1
+    let cand = skill_hidden_sibling(sep, dir, tag, pid_s, host.skill_temps)
+    match lstat(host, cand) {
+      Ok(None) => return Ok(cand)
+      Ok(Some(_)) => continue
+      Err(e) => return Err(e)
+    }
+  }
+  Err("could not allocate temporary skill directory")
+}
+
 pub fn skill_write(
   host : MemoryHost,
   sep : String,
@@ -314,16 +373,12 @@ pub fn skill_write(
   if check {
     return Ok(())
   }
-  host.skill_temps = host.skill_temps + 1
-  let seq = host.skill_temps.to_string()
   let pid_s = host_shim::pid().to_string()
-  let temp = dir + ".tmp-" + pid_s + "-" + seq
-  match fs_call(
-    host,
-    "fs.remove",
-    [("path", base_codec::json_str(temp)), ("recursive", base_codec::json_bool(true))],
-    None,
-  ) {
+  let temp = match alloc_unique_sibling(host, sep, dir, "tmp", pid_s) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  match fs_call(host, "fs.mkdir", [("path", base_codec::json_str(temp))], None) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -359,15 +414,9 @@ pub fn skill_write(
       }
     }
   }
-  match fs_call(host, "fs.mkdir", [("path", base_codec::json_str(temp))], None) {
-    Ok(_) => ()
-    Err(e) => {
-      cleanup_dir(host, temp)
-      return Err(e)
-    }
-  }
-  // Recoverable directory swap: if `dir` exists, move it to a unique sibling backup first,
-  // rename `temp` into `dir`, restore `backup` on failure, and delete `backup` only after success.
+  // Recoverable directory swap: if `dir` exists, move it to an unoccupied dot-prefixed hidden
+  // sibling backup first, rename `temp` into `dir`, restore `backup` on failure (surfacing any
+  // rollback error), and delete `backup` only after success.
   let had_dest = match lstat(host, dir) {
     Ok(Some(_)) => true
     Ok(None) => false
@@ -377,8 +426,13 @@ pub fn skill_write(
     }
   }
   if had_dest {
-    let backup = dir + ".bak-" + pid_s + "-" + seq
-    cleanup_dir(host, backup)
+    let backup = match alloc_unique_sibling(host, sep, dir, "bak", pid_s) {
+      Ok(p) => p
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
+    }
     match fs_call(
       host,
       "fs.rename",
@@ -398,18 +452,33 @@ pub fn skill_write(
       None,
     ) {
       Ok(_) => {
-        cleanup_dir(host, backup)
+        match fs_call(
+          host,
+          "fs.remove",
+          [("path", base_codec::json_str(backup)), ("recursive", base_codec::json_bool(true))],
+          None,
+        ) {
+          Ok(_) => ()
+          Err(rm_err) => {
+            let _ = host_shim::write_stderr_line(
+              "memory skillWrite: failed to remove backup " + backup + ": " + rm_err,
+            )
+          }
+        }
         Ok(())
       }
       Err(e) => {
-        let _ = fs_call(
+        let rb = fs_call(
           host,
           "fs.rename",
           [("from", base_codec::json_str(backup)), ("to", base_codec::json_str(dir))],
           None,
         )
         cleanup_dir(host, temp)
-        Err(e)
+        match rb {
+          Ok(_) => Err(e)
+          Err(rb_err) => Err(e + "; rollback from " + backup + " failed: " + rb_err)
+        }
       }
     }
   } else {

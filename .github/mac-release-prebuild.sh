@@ -80,7 +80,9 @@ case "${1:-}" in
     . apps/mbui/scripts/env.sh
     export MACOSX_DEPLOYMENT_TARGET=12.0
     export CARGO_TARGET_DIR="$A/out/core-target-macos$MACOSX_DEPLOYMENT_TARGET"
+    t0=$SECONDS
     bash "$A/scripts/core.sh" apple-native aarch64-apple-darwin
+    echo "Mac prebuild: apple-native in $((SECONDS - t0)) s"
     # (made: the app's mac.sh does not make them again, and says itself whether the app is linked again)
     export MBUI_APPLE_NATIVE_READY=1
     while [ ! -f "$dir/ready" ]; do sleep 1; done

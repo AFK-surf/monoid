@@ -101,15 +101,20 @@ test("mb default, pion switch, shadow refusal, invalid value, deduplicated fallb
   const pionStub = makeStubBinary(dir, "stub-pion", tagResponderBody("from-pion"));
   const explicitStub = makeStubBinary(dir, "stub-explicit", tagResponderBody("from-explicit"));
   const missingBin = join(dir, "no-such-stillfail-pion");
+  const deferredPionPath = join(dir, "deferred-pion");
 
   const logs: Line[] = [];
   hearLines((l) => logs.push(l));
   try {
-    // 1. Default is mb even when STILLFAIL_PION_READER points to a missing path: zero fallback warning.
+    // 1. Non-vacuous proof that default `mb` never calls `pionBinary()`:
+    //    `pionBinary()` caches negative explicit path lookups (`explicit:<path> -> null`).
+    //    Point `STILLFAIL_PION_READER` at `deferredPionPath` BEFORE it exists on disk, run default `mb`,
+    //    then create `deferredPionPath` and switch to `pion`: if default `mb` had probed `pionBinary()`,
+    //    the negative cache entry would force a fallback to `mb` instead of routing to `deferred-pion`.
     logs.length = 0;
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
-      STILLFAIL_PION_READER: missingBin,
+      STILLFAIL_PION_READER: deferredPionPath,
       STILLFAIL_READER_MEMORY: undefined,
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
@@ -125,6 +130,24 @@ test("mb default, pion switch, shadow refusal, invalid value, deduplicated fallb
       0,
       "default mb must not probe pionBinary or emit fallback warnings",
     );
+
+    // Create the previously-absent binary now; `pion` mode must find and run it (proving no negative cache entry was recorded).
+    const createdDeferred = makeStubBinary(dir, "deferred-pion", tagResponderBody("from-deferred-pion"));
+    assert.equal(createdDeferred, deferredPionPath);
+    await withEnv({
+      STILLFAIL_MB_READER: mbStub,
+      STILLFAIL_PION_READER: deferredPionPath,
+      STILLFAIL_READER_MEMORY: "pion",
+      STILLFAIL_READER_ENGINE: undefined,
+    }, async () => {
+      assert.equal(pionBinary(), deferredPionPath);
+      const p = new MemoryProgram(shellDir);
+      try {
+        assert.deepEqual((await p.ask("tags", { names: ["x"] })).tags, ["from-deferred-pion"]);
+      } finally {
+        await p.close();
+      }
+    });
 
     // 2. STILLFAIL_READER_MEMORY=pion routes to Pion binary.
     await withEnv({
@@ -368,11 +391,25 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
       );
       assert.deepEqual(readdirSync(skillParent), ["demo"]);
 
-      // Replace existing skill cleanly via recoverable swap -> no .tmp- or .bak- left behind.
+      // Replace existing skill cleanly via recoverable swap -> no .stillfail-tmp- or .stillfail-bak- left behind,
+      // and pre-existing unrelated hidden siblings are never deleted.
+      const preExistingHidden = join(skillParent, ".stillfail-tmp-demo-keep");
+      mkdirSync(preExistingHidden, { recursive: true });
+      writeFileSync(join(preExistingHidden, "keep.txt"), "do-not-delete");
       const wr2 = await p.ask("skillWrite", { dir: skillDir, files: { "SKILL.md": b64("# v2\n"), "a/b.txt": b64("hi") } });
       assert.equal(wr2.written, true);
-      assert.deepEqual(readdirSync(skillParent), ["demo"]);
+      assert.deepEqual(readdirSync(skillParent).sort(), [".stillfail-tmp-demo-keep", "demo"]);
+      assert.equal(readFileSync(join(preExistingHidden, "keep.txt"), "utf8"), "do-not-delete");
       assert.equal(readFileSync(join(skillDir, "SKILL.md"), "utf8"), "# v2\n");
+      rmSync(preExistingHidden, { recursive: true, force: true });
+
+      // Lone UTF-16 surrogates via MemoryProgram.ask reject immediately without leaking #waiting or blocking trimIdle().
+      await assert.rejects(p.ask("tags", { names: ["bad\uD800"] }), /invalid UTF-16 surrogate/);
+      await assert.rejects(
+        p.ask("skillWrite", { dir: skillDir, files: { "SKILL.md": b64("x"), "bad\uDC00": b64("y") } }),
+        /invalid UTF-16 surrogate/,
+      );
+      assert.deepEqual((await p.ask("tags", { names: ["after-surrogate"] })).tags, ["after-surrogate"]);
 
       // NUL byte & file/dir collision rejected in both check:true and check:false, parent untouched.
       for (const check of [true, false]) {
@@ -441,14 +478,16 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line,
     child.stdin!.write("\r\n");
     child.stdin!.write('{"id":1,"op":"tags","names":["\\uD800"]}\n');
     child.stdin!.write('{"id":2,"op":"tags","names":["\\uDC00"]}\n');
+    child.stdin!.write('{"id":"\\uD800","op":"tags","names":["x"]}\n');
     child.stdin!.write('{"id":3,"op":"tags","names":["\\uD83D\\uDE00"]}\n');
     child.stdin!.end();
   });
   const lines = rawOut.trim().split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines, [
-    { id: null, error: "no such ask" },
-    { id: null, error: "no such ask" },
-    { id: null, error: "no such ask" },
+    { id: null, error: "unknown memory op " },
+    { id: 1, error: "invalid UTF-16 surrogate" },
+    { id: 2, error: "invalid UTF-16 surrogate" },
+    { id: null, error: "invalid UTF-16 surrogate" },
     { id: 3, tags: ["station"] },
   ]);
 });

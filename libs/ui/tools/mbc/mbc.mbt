@@ -336,6 +336,7 @@ priv struct Job {
   mut shared : Bool
   mut ok : Bool
   mut err : Bytes
+  mut store_rel : Bytes?
 }
 
 ///|
@@ -363,6 +364,7 @@ fn Job::new(
     shared: false,
     ok: true,
     err: b"",
+    store_rel: None,
   }
 }
 
@@ -491,6 +493,12 @@ fn Job::store_key_of(self : Job, argv : Array[Bytes]) -> Bytes {
 }
 
 ///|
+fn Job::store_rel_of(self : Job, argv : Array[Bytes]) -> Bytes {
+  let k = self.store_key_of(argv)
+  cat([sub(k, 0, 2), b"/", k])
+}
+
+///|
 fn Job::store_dir(self : Job, store : Bytes) -> Bytes {
   self.store_dir_of(store, self.argv)
 }
@@ -502,14 +510,26 @@ fn Job::store_dir_of(self : Job, store : Bytes, argv : Array[Bytes]) -> Bytes {
 }
 
 ///|
+fn Job::from_store_of(self : Job, store : Bytes, argv : Array[Bytes]) -> Bool {
+  let rel = self.store_rel_of(argv)
+  let d = path_join(store, rel)
+  if self.from_store_dir(d) {
+    self.store_rel = Some(rel)
+    true
+  } else {
+    false
+  }
+}
+
+///|
 /// Read a cached object if its source, command, compiler, and header contents match.
 /// For a unit compiled at a lower optimization level, try the program's own level (alt_argv) first.
 fn Job::from_store(self : Job, store : Bytes) -> Bool {
   (match self.alt_argv {
-    Some(alt) => self.from_store_dir(self.store_dir_of(store, alt))
+    Some(alt) => self.from_store_of(store, alt)
     None => false
   }) ||
-  self.from_store_dir(self.store_dir(store))
+  self.from_store_of(store, self.argv)
 }
 
 ///|
@@ -537,7 +557,8 @@ fn Job::from_store_dir(self : Job, d : Bytes) -> Bool {
 
 ///|
 fn Job::to_store(self : Job, store : Bytes, deps : Array[Bytes]) -> Unit {
-  let d = self.store_dir(store)
+  let rel = self.store_rel_of(self.argv)
+  let d = path_join(store, rel)
   let tmp = cat([d, utf8(".tmp\{c_getpid()}")])
   makedirs(tmp)
   let src = abspath(self.src)
@@ -549,6 +570,7 @@ fn Job::to_store(self : Job, store : Bytes, deps : Array[Bytes]) -> Unit {
           rmtree(d)
         }
         if c_rename(tmp, d) != 0 {
+          self.store_rel = Some(rel)
           return
         }
       }
@@ -563,17 +585,21 @@ fn Job::to_store(self : Job, store : Bytes, deps : Array[Bytes]) -> Unit {
 /// what changed and took nothing from the store, so main's store kept only those, 54 units of 376 (40125500788),
 /// and a branch restoring it compiled the other 250 again (240 s, 40125788155, 2026-10-24)
 fn Job::keep_in_store(self : Job, store : Bytes) -> Unit {
-  let d = self.store_dir(store)
+  let rel = self.store_rel_of(self.argv)
+  let d = path_join(store, rel)
   if is_dir(d) {
     let _ = c_touch(d)
+    self.store_rel = Some(rel)
     return
   }
   // (one taken at the program's own level is kept there, not put again under its less optimised command)
   match self.alt_argv {
     Some(alt) => {
-      let a = self.store_dir_of(store, alt)
+      let arel = self.store_rel_of(alt)
+      let a = path_join(store, arel)
       if is_dir(a) {
         let _ = c_touch(a)
+        self.store_rel = Some(arel)
         return
       }
     }
@@ -617,6 +643,33 @@ fn compile_args(
 }
 
 ///|
+/// A prebuild may overlap Moon with cache restoration. Never read a partial store.
+fn wait_for_store() -> Unit {
+  match getenv("MBC_STORE_WAIT") {
+    Some(p) if p.length() > 0 => {
+      let limit = match getenv("MBC_STORE_WAIT_SECS") {
+        Some(v) if parse_int(strip(v)) > 0 => parse_int(strip(v))
+        _ => 180
+      }
+      let started = now_s()
+      while exists(p) {
+        if exists(cat([p, b".failed"])) {
+          fatal("MBC_STORE_WAIT failed")
+        }
+        if now_s() - started >= limit.to_double() {
+          fatal("MBC_STORE_WAIT timed out")
+        }
+        c_wait_short()
+      }
+      if exists(cat([p, b".failed"])) {
+        fatal("MBC_STORE_WAIT failed")
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 /// The jobs, j at a time (the heaviest first): the objects of those that compiled. An object whose stamp says it
 /// is made of what it would be made of now is kept; with MBC_STORE, one another program made of the same is taken.
 /// Another program compiling the same unit at the same time (moon builds a module's tests side by side): its object
@@ -633,23 +686,7 @@ fn run_jobs_c(jobs0 : Array[Job], j : Int, label : Bytes) -> Array[Bytes] {
       0
     }
   })
-  // A prebuild may overlap Moon with cache restoration. Never read a partial store.
-  match getenv("MBC_STORE_WAIT") {
-    Some(p) if p.length() > 0 => {
-      let limit = match getenv("MBC_STORE_WAIT_SECS") {
-        Some(v) if parse_int(strip(v)) > 0 => parse_int(strip(v))
-        _ => 180
-      }
-      let started = now_s()
-      while exists(p) {
-        if exists(cat([p, b".failed"])) { fatal("MBC_STORE_WAIT failed") }
-        if now_s() - started >= limit.to_double() { fatal("MBC_STORE_WAIT timed out") }
-        c_wait_short()
-      }
-      if exists(cat([p, b".failed"])) { fatal("MBC_STORE_WAIT failed") }
-    }
-    _ => ()
-  }
+  wait_for_store()
   let store = match getenv("MBC_STORE") {
     Some(s) if s.length() > 0 => Some(s)
     _ => None
@@ -2030,7 +2067,149 @@ fn msvc_core_obj(real : Array[Bytes], wargs : Array[Bytes], c_file : Bytes, obj 
 }
 
 ///|
+/// Include search directories (-I, -isystem, -iquote) and explicit forced includes (-include) from C compiler flags.
+fn c_include_dirs(flags : Array[Bytes]) -> (Array[Bytes], Array[Bytes]) {
+  let dirs = []
+  let forced = []
+  let mut i = 0
+  while i < flags.length() {
+    let w = flags[i]
+    if (w == b"-I" || w == b"-isystem" || w == b"-iquote") && i + 1 < flags.length() {
+      dirs.push(flags[i + 1])
+      i += 2
+      continue
+    }
+    if w == b"-include" && i + 1 < flags.length() {
+      forced.push(flags[i + 1])
+      i += 2
+      continue
+    }
+    if starts(w, b"-isystem") && w.length() > 8 {
+      dirs.push(sub(w, 8, w.length()))
+    } else if starts(w, b"-iquote") && w.length() > 7 {
+      dirs.push(sub(w, 7, w.length()))
+    } else if starts(w, b"-include") && w.length() > 8 {
+      forced.push(sub(w, 8, w.length()))
+    } else if starts(w, b"-I") && w.length() > 2 {
+      dirs.push(sub(w, 2, w.length()))
+    }
+    i += 1
+  }
+  (dirs, forced)
+}
+
+///|
+/// Target/architecture flags passed to the relocatable link (`-r`) that reassembles a core_obj.
+fn core_obj_link_flags(flags0 : Array[Bytes]) -> Array[Bytes] {
+  let out = []
+  let mut k = 0
+  while k < flags0.length() {
+    let x = flags0[k]
+    if (x == b"-arch" || x == b"-target" || x == b"-isysroot") && k + 1 < flags0.length() {
+      out.push(x)
+      out.push(flags0[k + 1])
+      k += 2
+      continue
+    }
+    if starts(x, b"-target=") || starts(x, b"-m") {
+      out.push(x)
+    }
+    k += 1
+  }
+  out
+}
+
+///|
+/// Content-addressed key covering every input that determines a `core_obj` (`__moonbit_link_core__/<prog>.o`) output,
+/// plus the output file's own content hash.
+fn core_obj_key(
+  real : Array[Bytes],
+  flags : Array[Bytes],
+  init_flags : Array[Bytes],
+  link_flags : Array[Bytes],
+  alt_flags : Array[Bytes]?,
+  c_file : Bytes,
+  out : Bytes,
+) -> Bytes {
+  let buf = Buffer()
+  buf.write_bytes(b"mbc-core-v1\n")
+  buf.write_bytes(file_hash(self_exe.val).unwrap_or(b""))
+  buf.write_byte(b'\n')
+  buf.write_bytes(tool_identity(real))
+  buf.write_byte(b'\n')
+  buf.write_bytes(join_words(flags, b"\x1f"))
+  buf.write_byte(b'\n')
+  buf.write_bytes(join_words(init_flags, b"\x1f"))
+  buf.write_byte(b'\n')
+  buf.write_bytes(join_words(link_flags, b"\x1f"))
+  buf.write_byte(b'\n')
+  match alt_flags {
+    Some(af) => {
+      buf.write_bytes(b"1\x1f")
+      buf.write_bytes(join_words(af, b"\x1f"))
+    }
+    None => buf.write_byte(b'0')
+  }
+  buf.write_byte(b'\n')
+  for name in ["MBC_GROUP", "MBC_TEST_OPT", "MBC_LIGHT_UNITS", "MBC_LIGHT_KEEP", "MBC_LTO"] {
+    buf.write_bytes(utf8(name))
+    buf.write_byte(b'=')
+    match getenv(name) {
+      Some(v) => {
+        buf.write_bytes(b"1:")
+        buf.write_bytes(v)
+      }
+      None => buf.write_byte(b'0')
+    }
+    buf.write_byte(b'\n')
+  }
+  buf.write_bytes(file_hash(c_file).unwrap_or(b""))
+  buf.write_byte(b'\n')
+  let (dirs, forced) = c_include_dirs(flags)
+  let inc_set = BSet::new()
+  for f in included_files(c_file, dirs) {
+    inc_set.add(abspath(f))
+  }
+  for inc in forced {
+    let mut resolved : Bytes? = if is_file(inc) { Some(inc) } else { None }
+    if resolved is None {
+      for d in dirs {
+        let q = path_join(d, inc)
+        if is_file(q) {
+          resolved = Some(q)
+          break
+        }
+      }
+    }
+    match resolved {
+      Some(r) => {
+        inc_set.add(abspath(r))
+        for f in included_files(r, dirs) {
+          inc_set.add(abspath(f))
+        }
+      }
+      None => inc_set.add(abspath(inc))
+    }
+  }
+  for f in inc_set.sorted() {
+    buf.write_bytes(f)
+    buf.write_byte(b'\x1f')
+    buf.write_bytes(file_hash(f).unwrap_or(b""))
+    buf.write_byte(b'\n')
+  }
+  buf.write_bytes(b"out\x1f")
+  buf.write_bytes(file_hash(out).unwrap_or(b""))
+  buf.write_byte(b'\n')
+  sha1_hex(buf.to_bytes(), 40)
+}
+
+///|
 fn cmd_wrap(args : Array[String]) -> Unit {
+  c_exit(run_wrap(args))
+}
+
+///|
+fn run_wrap(args : Array[String]) -> Int {
   let a = parse_args(args, ["--real"])
   let real_s = a.need("--real")
   let real = if is_file(real_s) { [real_s] } else { split_words(real_s) }
@@ -2100,8 +2279,7 @@ fn cmd_wrap(args : Array[String]) -> Unit {
         if ends(prog, cat([b"/", e, b".exe"])) {
           let _ = write_file(o, b"mbc: a test program with no tests (MBC_EMPTY_TESTS), not built\n")
           log("\{str(e)}: no tests, not built")
-          c_exit(0)
-          return
+          return 0
         }
       }
     }
@@ -2122,7 +2300,7 @@ fn cmd_wrap(args : Array[String]) -> Unit {
       match fo {
         Some(o) if ends(lower(o), b".obj") && contains(o, b"__moonbit_link_core__") => {
           msvc_core_obj(real, wargs, wargs[cs[0]], o)
-          return
+          return 0
         }
         _ => ()
       }
@@ -2149,8 +2327,7 @@ fn cmd_wrap(args : Array[String]) -> Unit {
         for x in largs {
           cmd.push(x)
         }
-        c_exit(link(cmd, o, [], None))
-        return
+        return link(cmd, o, [], None)
       }
     }
   }
@@ -2165,8 +2342,7 @@ fn cmd_wrap(args : Array[String]) -> Unit {
     if getenv("MBC_VERBOSE") is Some(_) {
       log("as is: \{str(join_words(whole, b" "))}")
     }
-    c_exit(run_inherit(whole))
-    return
+    return run_inherit(whole)
   }
   let out = out.unwrap()
   // (the program the core object is for, as the names below say it: …/<pkg>/<program>.exe)
@@ -2179,7 +2355,6 @@ fn cmd_wrap(args : Array[String]) -> Unit {
   }
   let c_file = wargs[cs[0]]
   let objdir = cat([sub(out, 0, out.length() - (if core_obj { 2 } else { 4 })), b".mbc"])
-  makedirs(objdir)
   let flags0 = if msvc {
     msvc_compile_flags(wargs[:])
   } else {
@@ -2204,6 +2379,59 @@ fn cmd_wrap(args : Array[String]) -> Unit {
   // (a unit compiled less optimised takes the program's own level's object from MBC_STORE where there is one: not
   // with LTO, whose units are bitcode)
   let alt_flags = if light && lto is None { Some(flags0) } else { None }
+  let core_stamp = cat([out, b".mbc-core"])
+  let core_link_flags = if core_obj { core_obj_link_flags(flags0) } else { [] }
+  if core_obj {
+    let mut key_mismatch = false
+    if is_file(out) {
+      match read_file(core_stamp) {
+        Some(t) => {
+          let ls = lines(t)
+          let key = core_obj_key(real, flags, init_flags, core_link_flags, alt_flags, c_file, out)
+          if ls.length() >= 1 && ls[0] == key {
+            let rels = ls[1:].to_owned().filter(fn(r) { r.length() > 0 })
+            let store_ok = match getenv("MBC_STORE") {
+              Some(store) if store.length() > 0 =>
+                if rels.length() == 0 {
+                  false
+                } else {
+                  wait_for_store()
+                  let mut all_present = true
+                  for rel in rels {
+                    if !is_dir(path_join(store, rel)) {
+                      all_present = false
+                      break
+                    }
+                  }
+                  if all_present {
+                    for rel in rels {
+                      let _ = c_touch(path_join(store, rel))
+                    }
+                    true
+                  } else {
+                    false
+                  }
+                }
+              _ => true
+            }
+            if store_ok {
+              let _ = c_touch(out)
+              log("\{str(basename(out))}: built already from the same C and flags")
+              return 0
+            }
+          } else {
+            key_mismatch = true
+          }
+        }
+        None => ()
+      }
+    }
+    let _ = c_remove(core_stamp)
+    if key_mismatch {
+      let _ = c_remove(cat([out, b".mbc-link"]))
+    }
+  }
+  makedirs(objdir)
   let (jobs, _) = split_jobs(
     c_file,
     objdir,
@@ -2219,19 +2447,8 @@ fn cmd_wrap(args : Array[String]) -> Unit {
   if core_obj {
     let cmd = real.copy()
     // (for the same machine as the units: -arch, -target, -isysroot, -m…)
-    let mut k = 0
-    while k < flags0.length() {
-      let x = flags0[k]
-      if (x == b"-arch" || x == b"-target" || x == b"-isysroot") && k + 1 < flags0.length() {
-        cmd.push(x)
-        cmd.push(flags0[k + 1])
-        k += 2
-        continue
-      }
-      if starts(x, b"-target=") || starts(x, b"-m") {
-        cmd.push(x)
-      }
-      k += 1
+    for x in core_link_flags {
+      cmd.push(x)
     }
     for x in [b"-r", b"-nostdlib", b"-o", out] {
       cmd.push(x)
@@ -2239,8 +2456,27 @@ fn cmd_wrap(args : Array[String]) -> Unit {
     for o in objs {
       cmd.push(o)
     }
-    c_exit(link(cmd, out, [], None))
-    return
+    let code = link(cmd, out, [], None)
+    if code == 0 && is_file(out) {
+      hash_cache.remove(out)
+      let key = core_obj_key(real, flags, init_flags, core_link_flags, alt_flags, c_file, out)
+      let rel_set = BSet::new()
+      for job in jobs {
+        match job.store_rel {
+          Some(rel) => rel_set.add(rel)
+          None => ()
+        }
+      }
+      let buf = Buffer()
+      buf.write_bytes(key)
+      buf.write_byte(b'\n')
+      for rel in rel_set.sorted() {
+        buf.write_bytes(rel)
+        buf.write_byte(b'\n')
+      }
+      let _ = write_file(core_stamp, buf.to_bytes())
+    }
+    return code
   }
   let largs = wargs[0:cs[0]].to_owned()
   for o in objs {
@@ -2256,7 +2492,7 @@ fn cmd_wrap(args : Array[String]) -> Unit {
   if msvc && lto is Some(_) {
     drop_brepro()
   }
-  c_exit(link(cmd, out, [], None))
+  link(cmd, out, [], None)
 }
 
 ///|

@@ -5,25 +5,137 @@
 import "base_codec"
 import "host_shim"
 
+fn write_fffd_raw(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont_raw(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / MoonBit `@utf8.decode_lossy` decoder over a byte array (maximal subpart of
+/// ill-formed subsequence -> U+FFFD), matching `wire.mbt:44`.
+pub fn decode_utf8_lossy_arr(buf : Array[Byte]) -> String {
+  let sb = StringBuilder::new()
+  let end = buf.length()
+  let mut i = 0
+  while i < end {
+    let b0 = buf[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if is_utf8_cont_raw(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd_raw(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont_raw(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd_raw(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd_raw(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont_raw(b2) {
+              if i + 3 < end {
+                let b3 = buf[i + 3].to_int() & 0xFF
+                if is_utf8_cont_raw(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd_raw(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd_raw(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd_raw(sb)
+      i = i + 1
+    } else {
+      write_fffd_raw(sb)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
 /// Pure `\n`-delimited line accumulator matching MoonBit `wire.mbt` & `MbProcess`:
-/// no 16 MiB line cap, preserves `\r` bytes verbatim, drops unterminated trailing bytes at EOF.
+/// no 16 MiB line cap, preserves `\r` bytes verbatim, decodes each line with WHATWG lossy UTF-8
+/// (with an ASCII fast path), and drops unterminated trailing bytes at EOF.
 pub struct RawLines {
-  mut carry : StringBuilder
+  mut carry : Array[Byte]
+  mut all_ascii : Bool
 }
 
 pub fn RawLines::new() -> RawLines {
-  RawLines::{ carry: StringBuilder::new() }
+  RawLines::{ carry: [], all_ascii: true }
 }
 
 pub fn RawLines::push(self : RawLines, chunk : Bytes) -> Array[String] {
   let out : Array[String] = []
   for i in 0..<chunk.length() {
     let b = chunk[i]
-    if b.to_int() == 10 {
-      out.push(self.carry.to_string())
-      self.carry = StringBuilder::new()
+    let bi = b.to_int() & 0xFF
+    if bi == 10 {
+      let line = if self.all_ascii {
+        let sb = StringBuilder::new()
+        for k in 0..<self.carry.length() {
+          sb.write_byte(self.carry[k])
+        }
+        sb.to_string()
+      } else {
+        decode_utf8_lossy_arr(self.carry)
+      }
+      out.push(line)
+      self.carry = []
+      self.all_ascii = true
     } else {
-      self.carry.write_byte(b)
+      if bi >= 0x80 {
+        self.all_ascii = false
+      }
+      self.carry.push(b)
     }
   }
   out

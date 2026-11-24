@@ -8,3 +8,4 @@ host_shim = { workspace = true }
 sqlite_ffi = { workspace = true }
 footprint = { workspace = true }
 memory = { workspace = true }
+packed = { workspace = true }
