@@ -1221,6 +1221,7 @@ pub struct Tree {
   held_anywhere : @signals.Signal[Bool]
   tapped_anywhere : @signals.Signal[Int32]
   words_redone : @signals.Signal[Int32]
+  face_redone : FixedArray[@signals.Signal[Int32]]
   outs_said : @signals.Signal[Int32]
   mut outs_changed : Bool
   sized : Array[Int32]

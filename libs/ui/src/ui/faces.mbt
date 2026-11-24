@@ -301,6 +301,14 @@ fn resolve_slot_cjk(slot : Int) -> (Int, Double, Int)? {
   }
 }
 
+fn quantize_cjk_scale(scale : Double) -> Double {
+  if scale == 1.0 {
+    1.0
+  } else {
+    (scale * 100.0).round() / 100.0
+  }
+}
+
 ///|
 /// Effective CJK companion `(cjk_slot, scale, weight_off)` for `style` and optional local preview `cjk_override`.
 /// Strictly mirrors the 5-platform `face_id` precedence:
@@ -311,29 +319,32 @@ fn resolve_slot_cjk(slot : Int) -> (Int, Double, Int)? {
 /// 5. `style_serif` -> `None` (protects reader Songti),
 /// 6. default -> `face_ui`.
 fn effective_cjk(style : Int, cjk_override : @view.CjkOverride?) -> (Int, Double, Int)? {
-  match cjk_override {
+  let raw = match cjk_override {
     Some(ov) =>
-      return if ov.face > 0 && face_given(ov.face) {
+      if ov.face > 0 && face_given(ov.face) {
         Some((ov.face, ov.scale, ov.weight_off))
       } else {
         None
       }
-    None => ()
+    None => {
+      let f = @hostapi.face_of_style(style)
+      if f > 0 {
+        if face_given(f) { resolve_slot_cjk(f) } else { None }
+      } else if (style & @hostapi.style_mono) != 0 {
+        resolve_slot_cjk(@hostapi.face_code)
+      } else if (style & @hostapi.style_serif) != 0 {
+        None
+      } else if (style & @hostapi.style_words) != 0 {
+        resolve_slot_cjk(@hostapi.face_text)
+      } else {
+        resolve_slot_cjk(@hostapi.face_ui)
+      }
+    }
   }
-  let f = @hostapi.face_of_style(style)
-  if f > 0 {
-    return if face_given(f) { resolve_slot_cjk(f) } else { None }
+  match raw {
+    Some((slot, sc, woff)) => Some((slot, quantize_cjk_scale(sc), woff))
+    None => None
   }
-  if (style & @hostapi.style_mono) != 0 {
-    return resolve_slot_cjk(@hostapi.face_code)
-  }
-  if (style & @hostapi.style_serif) != 0 {
-    return None
-  }
-  if (style & @hostapi.style_words) != 0 {
-    return resolve_slot_cjk(@hostapi.face_text)
-  }
-  resolve_slot_cjk(@hostapi.face_ui)
 }
 
 ///|

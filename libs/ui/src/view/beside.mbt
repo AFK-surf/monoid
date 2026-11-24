@@ -1117,6 +1117,10 @@ pub fn Tree::words_again_for_face(self : Tree, face : Int) -> Unit {
       self.cut_applied(at)
     }
   }
+  if face >= 0 && face < self.face_redone.length() {
+    let sig = self.face_redone[face]
+    sig.set(sig.untracked() + 1)
+  }
 }
 
 ///|

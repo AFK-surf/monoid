@@ -526,11 +526,12 @@ test "font_v2: web_lines=false non-CJK inline code overflow does not inflate las
 }
 
 ///|
-test "font_v2: preview slot switch does not bump words_redone or evict virtual list offscreen heights" {
+test "font_v2: preview slot switch updates affected tracks table widths without bumping words_redone or evicting virtual list offscreen heights" {
   let items = Array::makei(40, fn(i) { "row-\{i}" })
   let measured : Array[Int] = []
   let t = Tester::new(fn(c) { c.text("x") |> ignore }, w=400.0, h=220.0)
   let scroll = @view.Scroll::new()
+  let tracks_ref : Ref[@view.Tracks?] = Ref(None)
   set_view_app(fn(root) {
     root.box(fn(row) {
       row.row(Is(true)) |> ignore
@@ -540,6 +541,18 @@ test "font_v2: preview slot switch does not bump words_redone or evict virtual l
       |> ignore
     })
     |> ignore
+    tracks_ref.val = Some(
+      root.tracks(
+        fn() {
+          [[@view.TrackCell::Said([@text.span("Preview cell", face=Some(7))], @view.words_plain, @view.runs_plain)]]
+        },
+        fn() { 360.0 },
+        fn(extents, _room) {
+          let w = extents[0][0].whole
+          ([w], w)
+        },
+      ),
+    )
     root.box(fn(box) {
       box.height(Is(Some(160.0))) |> ignore
       box.scrolls_window(
@@ -565,7 +578,9 @@ test "font_v2: preview slot switch does not bump words_redone or evict virtual l
   let forgotten_before = words_forgotten_count()
   let measured_before = measured.length()
   let (_, _, w_before, _) = t.rect_of("Preview sample").unwrap()
-  // Switch preview slot 7 to a wider family: must NOT bump words_redone or re-measure unrelated list rows.
+  let col_before = (tracks_ref.val.unwrap().widths)().0[0]
+  // Switch preview slot 7 to a wider family: updates preview text & tracks table width,
+  // while NOT bumping words_redone or re-measuring unrelated list rows.
   t.face_wider(7, 0.35)
   face_clear(7)
   assert_true(face_add_family(7, "FamilyB"))
@@ -574,5 +589,7 @@ test "font_v2: preview slot switch does not bump words_redone or evict virtual l
   assert_eq(words_forgotten_count(), forgotten_before)
   assert_eq(measured.length(), measured_before)
   let (_, _, w_after, _) = t.rect_of("Preview sample").unwrap()
+  let col_after = (tracks_ref.val.unwrap().widths)().0[0]
   assert_true(w_after > w_before + 1.0, msg="preview width before=\{w_before} after=\{w_after}")
+  assert_true(col_after > col_before + 1.0, msg="tracks col width before=\{col_before} after=\{col_after}")
 }

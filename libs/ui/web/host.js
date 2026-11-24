@@ -4820,6 +4820,7 @@
     const had = narrowFaces.get(face);
     if (had !== undefined) return had;
     narrowFaces.set(face, false);
+    const gen = faceCancelGen.get(face) || 0;
     const cjk = cjkFiles.get(face);
     const files = [...(faceFiles.get(face) || []), ...(cjk || [])];
     Promise.all(files.map(([src, weight, desc]) => {
@@ -4832,10 +4833,13 @@
         if (desc) {
           if (cjkFiles.get(face) !== cjk) return;
           cjkLoaded.get(face).push(ff);
+        } else if ((faceCancelGen.get(face) || 0) !== gen) {
+          return;
         }
         document.fonts.add(ff);
       }, () => {});
     })).then(() => {
+      if ((faceCancelGen.get(face) || 0) !== gen) return;
       if (narrowFaces.get(face) !== false) return;
       narrowFaces.set(face, true);
       textChanged();
@@ -4957,20 +4961,34 @@
     if (!files || !files.length || typeof FontFace !== 'function') return;
     const gen = nextFaceCancelGen(face);
     const cjkSet = new Set(cjkLoaded.get(face) || []);
+    const hasNarrow = narrowFaces.has(face);
     for (const ff of [...document.fonts]) {
       if (cjkSet.has(ff)) continue;
       const fam = ff.family.replace(/"/g, '');
-      if (fam === `mbface${face}`) document.fonts.delete(ff);
+      if (fam === `mbface${face}` || fam === `mbface${face}n`) document.fonts.delete(ff);
     }
-    Promise.all(files.map(([src, weight]) => {
+    const loads = files.map(([src, weight]) => {
       const ff = new FontFace(`mbface${face}`, src, faceDescriptors(face, weight));
       return ff.load().then(() => {
         if (faceCancelGen.get(face) !== gen) return;
         document.fonts.add(ff);
         faces.add(face);
       }, () => {});
-    })).then(() => {
+    });
+    if (hasNarrow) {
+      for (const [src, weight] of files) {
+        const d = faceDescriptors(face, weight);
+        d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
+        const ff = new FontFace(`mbface${face}n`, src, d);
+        loads.push(ff.load().then(() => {
+          if (faceCancelGen.get(face) !== gen) return;
+          document.fonts.add(ff);
+        }, () => {}));
+      }
+    }
+    Promise.all(loads).then(() => {
       if (faceCancelGen.get(face) !== gen) return;
+      if (hasNarrow && narrowFaces.get(face) === false) narrowFaces.set(face, true);
       nextFaceKeyGen(face);
       textChanged();
       H.requestFrame();

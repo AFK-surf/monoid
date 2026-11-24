@@ -367,4 +367,6 @@ test('faceSetLigatures preserves CJK companion FontFaces and narrow CJK faces', 
   const cjkAfter = [...b.fonts].filter((f) => f.unicodeRange === CJK_RANGE);
   assert.equal(cjkAfter.length, cjkBefore.length, 'CJK companion FontFaces preserved across faceSetLigatures');
   assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && !f.unicodeRange && /"calt" 0/.test(f.featureSettings || '')));
+  assert.ok([...b.fonts].some((f) => f.family === 'mbface3n' && !f.unicodeRange && /"calt" 0/.test(f.featureSettings || '') && /"pwid" 1/.test(f.featureSettings || '')),
+    'primary narrow variant mbface3n reloaded with calt 0 and pwid 1');
 });
