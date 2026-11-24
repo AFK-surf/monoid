@@ -209,7 +209,6 @@ fn hue_slider_node(
       }
     }
   }
-  let outer_h = dmax(hue_slider_h, hue_knob_d + 2.0 * @glass.slider_held_reach(hue_knob_d))
   @headless.slider(
     made_for=loc,
     parent,
@@ -230,7 +229,7 @@ fn hue_slider_node(
       })
       s
       .width(By(fn() { Some(wide()) }))
-      .height(Is(Some(outer_h)))
+      .height(Is(Some(hue_slider_h)))
       .lies_along(Is(Middle))
       |> ignore
       let look = @glass.SliderLook::new(
