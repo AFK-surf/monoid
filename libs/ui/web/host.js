@@ -4696,6 +4696,7 @@
       return ff.load().then(() => {
         if (faceGen.get(face) !== gen) return;
         document.fonts.add(ff);
+        faces.add(face);
       }, () => {});
     })).then(() => {
       if (faceGen.get(face) !== gen) return;

@@ -63,7 +63,11 @@ pub fn markdown_node(
   tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
+  prose_scale? : () -> Double = fn() { 1.0 },
   code_scale? : () -> Double = fn() { 1.0 },
+  line_scale? : () -> Double = fn() { 1.0 },
+  text_cjk? : () -> @view.CjkOverride? = fn() { None },
+  code_cjk? : () -> @view.CjkOverride? = fn() { None },
   serif? : () -> Bool = fn() { false },
   nodes? : () -> Array[Json],
   loc~ : SourceLoc,
@@ -123,7 +127,11 @@ pub fn markdown_node(
       tracks_of,
       text_face,
       code_face,
+      prose_scale,
       code_scale,
+      line_scale,
+      text_cjk,
+      code_cjk,
       serif,
     }
     // (where its nodes are told (`nodes`: a reader's block of a book the core read, its own nodes of the whole
@@ -359,7 +367,11 @@ priv struct MdNode {
   /// face, Some(0) the app's face for that kind)
   text_face : () -> Int?
   code_face : () -> Int?
+  prose_scale : () -> Double
   code_scale : () -> Double
+  line_scale : () -> Double
+  text_cjk : () -> @view.CjkOverride?
+  code_cjk : () -> @view.CjkOverride?
   /// its words in the serif face (a reader's layout: code stays in the code face), as it is now
   serif : () -> Bool
 }
@@ -752,7 +764,7 @@ fn md_block_node(
           Some(CodeBlock(_, _, colours)) => colours
           _ => None
         }
-      }, face=md.code_face, scale=md.code_scale)
+      }, face=md.code_face, scale=fn() { (md.prose_scale)() * (md.code_scale)() }, code_cjk=md.code_cjk)
     }
     // (drawn another way, as its language says: a chart, its code as it changes; another language's made again)
     8 => {
@@ -820,6 +832,11 @@ fn md_block_node(
         // (its cells' words as the message's are, measured as they are drawn: its files' chips, a bare link's title)
         cell_runs=fn(cell) { md_inlines_runs(md, cell, 0) },
         line_share=md.line,
+        prose_scale=Some(md.prose_scale),
+        code_scale=Some(md.code_scale),
+        line_scale=Some(md.line_scale),
+        text_cjk=Some(md.text_cjk),
+        code_cjk=Some(md.code_cjk),
         link_cards=md.link_cards,
         on_link_shown=md.on_link_shown,
       )
@@ -991,7 +1008,8 @@ fn md_words_node(
     // (a line said as a share of the size (`line`): that share of the words as they are drawn, the system's size of
     // words applied first, as the old view's paragraph's line_em; else Md::lh's points)
     let share = (md.line)()
-    let line = if share > 0.0 { -share } else { md_line(md, size) }
+    let ls = (md.line_scale)()
+    let line = if share > 0.0 { -(share * ls) } else { md_line(md, size) }
     let wrap = match one_line {
       Some(f) => !f()
       None => wrap
@@ -1004,8 +1022,15 @@ fn md_words_node(
     .words_runs(By(runs))
     .sets_together(fn() {
       let cs = (md.code_scale)()
+      let tc = (md.text_cjk)()
+      let cc = (md.code_cjk)()
       let rl = table_runs_look()
-      (look(), if cs == 1.0 { rl } else { { ..rl, code_scale: rl.code_scale * cs } }, (md.ink)())
+      let rl = if cs == 1.0 && tc is None && cc is None {
+        rl
+      } else {
+        { ..rl, code_scale: rl.code_scale * cs, cjk: tc, code_cjk: cc }
+      }
+      (look(), rl, (md.ink)())
     }, fn(s) {
       w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore
     })
@@ -1115,12 +1140,14 @@ pub fn words_links_node(
 ///|
 /// A line of `size`'s words (Md::lh's).
 fn md_line(md : MdNode, size : Double) -> Double {
+  let ls = (md.line_scale)()
   let share = (md.line)()
   if share > 0.0 {
-    return (size * share).round()
+    return (size * share * ls).round()
   }
   let k : Float = 1.65
-  (Float::from_double(size) * k).to_double()
+  let base = (Float::from_double(size) * k).to_double()
+  if ls == 1.0 { base } else { base * ls }
 }
 
 ///|
@@ -1385,6 +1412,7 @@ pub fn code_block_node(
   colours : () -> String?,
   face? : () -> Int? = fn() { None },
   scale? : () -> Double = fn() { 1.0 },
+  code_cjk? : () -> @view.CjkOverride? = fn() { None },
   command? : Bool = false,
   keys_always? : Bool = false,
   loc~ : SourceLoc,
@@ -1437,7 +1465,18 @@ pub fn code_block_node(
       }
     }
     // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
-    w.words_runs(By(runs)).words_look(By(look)).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+    w
+    .words_runs(By(runs))
+    .words_look(By(look))
+    .runs_look(By(fn() {
+      match code_cjk() {
+        Some(_) as cc => { ..@view.runs_plain, code_cjk: cc }
+        None => @view.runs_plain
+      }
+    }))
+    .words_breaks(Is(true))
+    .ink(By(fn() { theme().p.text }))
+    |> ignore
     // (copied as the block of code it is: @ui.picked_html)
     @ui.words_shaped(w, fn() { @ui.WordsShape::Code(p.id()) }) |> ignore
   }

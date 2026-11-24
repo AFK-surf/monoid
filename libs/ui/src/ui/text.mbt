@@ -113,6 +113,7 @@ priv struct TextCache {
   mut too_much : Bool
   buf : FixedArray[Double]
   mut part_buf : FixedArray[Double]?
+  mut seg_buf : FixedArray[Double]?
   gbuf : FixedArray[Double]
 }
 
@@ -133,6 +134,7 @@ let text_cache : TextCache = {
   too_much: false,
   buf: FixedArray::make(4 * 8192, 0.0),
   part_buf: None,
+  seg_buf: None,
   gbuf: FixedArray::make(8, 0.0),
 }
 
@@ -304,16 +306,54 @@ let words_zoom : Ref[Double] = Ref(1.0)
 /// The glyphs of words `text`, shaped as `s` is in `size`, `weight`, `style` and `spacing`, shaped again words_zoom
 /// times as large, cluster for cluster: a shot drawn at more pixels a point than the window's draws its words by them,
 /// each made by the host as crisp as that. None at 1, or where they do not come to as many clusters.
-fn zoomed_keys(text : String, s : Shaped, size : Double, weight : Int, style : Int, spacing : Double) -> Array[Int]? {
+fn zoomed_keys(
+  text : String,
+  s : Shaped,
+  size : Double,
+  weight : Int,
+  style : Int,
+  spacing : Double,
+  cjk_override? : @view.CjkOverride? = None,
+) -> Array[Int]? {
   let k = words_zoom.val
   if k == 1.0 {
     return None
   }
-  let big = shape(text, size * k, weight, style~, spacing=spacing * k)
+  let big = shape(text, size * k, weight, style~, spacing=spacing * k, cjk_override~)
   if big.keys.length() == s.keys.length() {
     Some(big.keys)
   } else {
     None
+  }
+}
+
+///|
+/// Purge cached shaped strings and metrics belonging to `face` alone (used by `face_set_local_preview` to avoid
+/// triggering a global `words_forgotten()` invalidation).
+fn purge_face_cache(face : Int) -> Unit {
+  let kept : Array[FontShapes] = []
+  let mut shaped = 0
+  for f in text_cache.fonts {
+    if @hostapi.face_of_style(f.style) == face || f.cjk_slot == face {
+      continue
+    }
+    shaped = shaped + f.map.length()
+    kept.push(f)
+  }
+  text_cache.fonts.clear()
+  for f in kept {
+    text_cache.fonts.push(f)
+  }
+  text_cache.shaped = shaped
+  let drop_metrics : Array[Int64] = []
+  text_cache.metrics.each(fn(k, _) {
+    let style = (k & 8191L).to_int()
+    if @hostapi.face_of_style(style) == face {
+      drop_metrics.push(k)
+    }
+  })
+  for k in drop_metrics {
+    text_cache.metrics.remove(k)
   }
 }
 
@@ -465,15 +505,12 @@ fn all_metrics(size : Double, weight : Int, style : Int) -> (Double, Double, Dou
 /// Whether the Unicode code point belongs to the unified CJK character set (Han, kana, Hangul, bopomofo, CJK and
 /// full-width punctuation, and Extension B..I ideographs U+20000..U+3FFFF).
 fn is_cjk_cp(cp : Int) -> Bool {
-  (cp >= 0x2E80 && cp <= 0x2FDF) ||
-  (cp >= 0x3000 && cp <= 0x303F) ||
-  (cp >= 0x3040 && cp <= 0x30FF) ||
-  (cp >= 0x3100 && cp <= 0x312F) ||
-  (cp >= 0x3190 && cp <= 0x31FF) ||
-  (cp >= 0x3400 && cp <= 0x4DBF) ||
-  (cp >= 0x4E00 && cp <= 0x9FFF) ||
+  (cp >= 0x1100 && cp <= 0x11FF) ||
+  (cp >= 0x2E80 && cp <= 0x9FFF) ||
+  (cp >= 0xA960 && cp <= 0xA97F) ||
   (cp >= 0xAC00 && cp <= 0xD7AF) ||
   (cp >= 0xF900 && cp <= 0xFAFF) ||
+  (cp >= 0xFE10 && cp <= 0xFE1F) ||
   (cp >= 0xFE30 && cp <= 0xFE4F) ||
   (cp >= 0xFF00 && cp <= 0xFFEF) ||
   (cp >= 0x20000 && cp <= 0x3FFFF)
@@ -505,16 +542,13 @@ fn is_cjk_cluster(text : String, start : Int, is_narrow_ctx : Bool) -> Bool {
 /// Whether the UTF-16 code unit starts a character set in a CJK font: Han, kana, Hangul, bopomofo, CJK and full-width
 /// punctuation (high surrogate 0xD840..0xD8BF covers supplementary ideographs U+20000..U+3FFFF).
 fn is_cjk(c : Int) -> Bool {
-  (c >= 0x2E80 && c <= 0x2FDF) ||
-  (c >= 0x3000 && c <= 0x303F) ||
-  (c >= 0x3040 && c <= 0x30FF) ||
-  (c >= 0x3100 && c <= 0x312F) ||
-  (c >= 0x3190 && c <= 0x31FF) ||
-  (c >= 0x3400 && c <= 0x4DBF) ||
-  (c >= 0x4E00 && c <= 0x9FFF) ||
+  (c >= 0x1100 && c <= 0x11FF) ||
+  (c >= 0x2E80 && c <= 0x9FFF) ||
+  (c >= 0xA960 && c <= 0xA97F) ||
   (c >= 0xAC00 && c <= 0xD7AF) ||
   (c >= 0xD840 && c <= 0xD8BF) ||
   (c >= 0xF900 && c <= 0xFAFF) ||
+  (c >= 0xFE10 && c <= 0xFE1F) ||
   (c >= 0xFE30 && c <= 0xFE4F) ||
   (c >= 0xFF00 && c <= 0xFFEF)
 }
@@ -549,9 +583,15 @@ fn set_line(
   sc : Double,
   px : Bool,
   trim? : Bool = false,
+  cjk_fit? : Bool = false,
 ) -> (Double, Double, Double) {
   // as a browser: the room halved, rounded down above; a font taller than its line overflows it, the line as asked
+  // (except when an enlarged CJK companion is active and its ascent+descent exceeds the requested line, in which case
+  // keep enough extra box height so the final line is not clipped).
   if web_lines.val {
+    if cjk_fit && asc + desc > line {
+      return (line, asc, asc + desc - line)
+    }
     return (line, asc + ((line - asc - desc) / 2.0).floor(), 0.0)
   }
   let sc = if sc > 0.0 { sc } else { 1.0 }
@@ -1120,11 +1160,11 @@ fn shape(
           shape_widths(text, size, weight, style, out)
         } else {
           let cap = out.length() / 4
-          let part = match text_cache.part_buf {
+          let seg_buf = match text_cache.seg_buf {
             Some(b) if b.length() >= out.length() => b
             _ => {
               let b = FixedArray::make(out.length(), 0.0)
-              text_cache.part_buf = Some(b)
+              text_cache.seg_buf = Some(b)
               b
             }
           }
@@ -1133,18 +1173,18 @@ fn shape(
             let (sa, sb, is_c) = seg
             let sub = text.unsafe_substring(start=sa, end=sb)
             let sm = if is_c {
-              shape_widths(sub, cjk_size, cjk_weight, cjk_style, part)
+              shape_widths(sub, cjk_size, cjk_weight, cjk_style, seg_buf)
             } else {
-              shape_widths(sub, size, weight, style, part)
+              shape_widths(sub, size, weight, style, seg_buf)
             }
             for j in 0..<sm {
               if k >= cap {
                 break
               }
-              out[k * 4] = part[j * 4] + sa.to_double()
-              out[k * 4 + 1] = part[j * 4 + 1]
-              out[k * 4 + 2] = part[j * 4 + 2]
-              out[k * 4 + 3] = part[j * 4 + 3]
+              out[k * 4] = seg_buf[j * 4] + sa.to_double()
+              out[k * 4 + 1] = seg_buf[j * 4 + 1]
+              out[k * 4 + 2] = seg_buf[j * 4 + 2]
+              out[k * 4 + 3] = seg_buf[j * 4 + 3]
               out_cjk.push(is_c)
               k = k + 1
             }
@@ -2113,6 +2153,7 @@ fn layout_text(
     g().scale,
     whole_pixel_lines(size, weight),
     trim~,
+    cjk_fit=has_cjk_comp && cjk,
   )
   // right to left: each line's clusters in their visual order
   let lv = match s.bidi {

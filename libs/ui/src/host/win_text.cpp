@@ -496,78 +496,103 @@ static void wbuf_append_json_str(WCHAR **buf, size_t *n, size_t *cap, const WCHA
   (*buf)[(*n)++] = L'"';
 }
 
-extern "C" moonbit_string_t mb_host_local_font_info(void) {
-  init();
-  if (!local_font_info_cache) {
-    IDWriteFontCollection *fc = NULL;
-    if (FAILED(dw->GetSystemFontCollection(&fc, FALSE))) return moonbit_make_string_raw(0);
-    if (!GetUserDefaultLocaleName(names_locale, LOCALE_NAME_MAX_LENGTH)) names_locale[0] = 0;
-    UINT32 count = fc->GetFontFamilyCount();
-    size_t cap = 4096, n = 0;
-    WCHAR *out = (WCHAR *)malloc(sizeof(WCHAR) * cap);
-    out[n++] = L'[';
-    for (UINT32 i = 0; i < count; i++) {
-      IDWriteFontFamily *fam = NULL;
-      IDWriteLocalizedStrings *names = NULL;
-      WCHAR en_name[256] = {0}, loc_name[256] = {0};
-      bool mono = false, serif = false, cjk = false;
-      if (SUCCEEDED(fc->GetFontFamily(i, &fam)) && SUCCEEDED(fam->GetFamilyNames(&names))) {
-        UINT32 at = 0;
-        BOOL there = FALSE;
-        names->FindLocaleName(L"en-us", &at, &there);
-        if (!there) at = 0;
-        UINT32 len = 0;
-        if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, en_name, 256);
-        at = 0;
-        there = FALSE;
-        if (names_locale[0]) names->FindLocaleName(names_locale, &at, &there);
-        if (!there) at = 0;
-        len = 0;
-        if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, loc_name, 256);
-        IDWriteFont *font = NULL;
-        if (SUCCEEDED(fam->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                                DWRITE_FONT_STYLE_NORMAL, &font)) && font) {
-          IDWriteFont1 *font1 = NULL;
-          if (SUCCEEDED(font->QueryInterface(__uuidof(IDWriteFont1), (void **)&font1)) && font1) {
-            mono = font1->IsMonospacedFont() != FALSE;
-            DWRITE_PANOSE panose;
-            font1->GetPanose(&panose);
-            if (panose.familyKind == DWRITE_PANOSE_FAMILY_TEXT_DISPLAY &&
-                panose.text.serifStyle >= DWRITE_PANOSE_SERIF_STYLE_COVE &&
-                panose.text.serifStyle <= DWRITE_PANOSE_SERIF_STYLE_TRIANGLE) {
-              serif = true;
-            }
-            font1->Release();
-          }
-          BOOL has_han = FALSE;
-          if (SUCCEEDED(font->HasCharacter(0x4E2D, &has_han)) && has_han) cjk = true;
-          font->Release();
-        }
-      }
-      if (names) names->Release();
-      if (fam) fam->Release();
-      if (!en_name[0] && loc_name[0]) wcscpy_s(en_name, 256, loc_name);
-      if (!loc_name[0] && en_name[0]) wcscpy_s(loc_name, 256, en_name);
-      if (!en_name[0]) continue;
-      if (n > 1) out[n++] = L',';
-      wbuf_append(&out, &n, &cap, L"{\"name\":", 8);
-      wbuf_append_json_str(&out, &n, &cap, en_name);
-      wbuf_append(&out, &n, &cap, L",\"localized\":", 13);
-      wbuf_append_json_str(&out, &n, &cap, loc_name);
-      const WCHAR *tail_m = mono ? L",\"mono\":true" : L",\"mono\":false";
-      wbuf_append(&out, &n, &cap, tail_m, wcslen(tail_m));
-      const WCHAR *tail_s = serif ? L",\"serif\":true" : L",\"serif\":false";
-      wbuf_append(&out, &n, &cap, tail_s, wcslen(tail_s));
-      const WCHAR *tail_c = cjk ? L",\"cjk\":true}" : L",\"cjk\":false}";
-      wbuf_append(&out, &n, &cap, tail_c, wcslen(tail_c));
-    }
-    fc->Release();
-    out[n++] = L']';
-    local_font_info_cache = out;
-    local_font_info_cache_len = n;
+extern "C" void mb_host_request_frame(void);
+
+static volatile LONG local_font_info_started = 0;
+
+static DWORD WINAPI local_font_info_worker(LPVOID) {
+  IDWriteFactory *factory = NULL;
+  if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                 (IUnknown **)&factory)) || !factory) {
+    return 0;
   }
-  moonbit_string_t s = moonbit_make_string_raw((int32_t)local_font_info_cache_len);
-  memcpy(s, local_font_info_cache, sizeof(WCHAR) * local_font_info_cache_len);
+  IDWriteFontCollection *fc = NULL;
+  if (FAILED(factory->GetSystemFontCollection(&fc, FALSE)) || !fc) {
+    factory->Release();
+    return 0;
+  }
+  WCHAR locale[LOCALE_NAME_MAX_LENGTH] = {0};
+  if (!GetUserDefaultLocaleName(locale, LOCALE_NAME_MAX_LENGTH)) locale[0] = 0;
+  UINT32 count = fc->GetFontFamilyCount();
+  size_t cap = 4096, n = 0;
+  WCHAR *out = (WCHAR *)malloc(sizeof(WCHAR) * cap);
+  out[n++] = L'[';
+  for (UINT32 i = 0; i < count; i++) {
+    IDWriteFontFamily *fam = NULL;
+    IDWriteLocalizedStrings *names = NULL;
+    WCHAR en_name[256] = {0}, loc_name[256] = {0};
+    bool mono = false, serif = false, cjk = false;
+    if (SUCCEEDED(fc->GetFontFamily(i, &fam)) && SUCCEEDED(fam->GetFamilyNames(&names))) {
+      UINT32 at = 0;
+      BOOL there = FALSE;
+      names->FindLocaleName(L"en-us", &at, &there);
+      if (!there) at = 0;
+      UINT32 len = 0;
+      if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, en_name, 256);
+      at = 0;
+      there = FALSE;
+      if (locale[0]) names->FindLocaleName(locale, &at, &there);
+      if (!there) at = 0;
+      len = 0;
+      if (SUCCEEDED(names->GetStringLength(at, &len)) && len < 255) names->GetString(at, loc_name, 256);
+      IDWriteFont *font = NULL;
+      if (SUCCEEDED(fam->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                              DWRITE_FONT_STYLE_NORMAL, &font)) && font) {
+        IDWriteFont1 *font1 = NULL;
+        if (SUCCEEDED(font->QueryInterface(__uuidof(IDWriteFont1), (void **)&font1)) && font1) {
+          mono = font1->IsMonospacedFont() != FALSE;
+          DWRITE_PANOSE panose;
+          font1->GetPanose(&panose);
+          if (panose.familyKind == DWRITE_PANOSE_FAMILY_TEXT_DISPLAY &&
+              panose.text.serifStyle >= DWRITE_PANOSE_SERIF_STYLE_COVE &&
+              panose.text.serifStyle <= DWRITE_PANOSE_SERIF_STYLE_TRIANGLE) {
+            serif = true;
+          }
+          font1->Release();
+        }
+        BOOL has_han = FALSE;
+        if (SUCCEEDED(font->HasCharacter(0x4E2D, &has_han)) && has_han) cjk = true;
+        font->Release();
+      }
+    }
+    if (names) names->Release();
+    if (fam) fam->Release();
+    if (!en_name[0] && loc_name[0]) wcscpy_s(en_name, 256, loc_name);
+    if (!loc_name[0] && en_name[0]) wcscpy_s(loc_name, 256, en_name);
+    if (!en_name[0]) continue;
+    if (n > 1) out[n++] = L',';
+    wbuf_append(&out, &n, &cap, L"{\"name\":", 8);
+    wbuf_append_json_str(&out, &n, &cap, en_name);
+    wbuf_append(&out, &n, &cap, L",\"localized\":", 13);
+    wbuf_append_json_str(&out, &n, &cap, loc_name);
+    const WCHAR *tail_m = mono ? L",\"mono\":true" : L",\"mono\":false";
+    wbuf_append(&out, &n, &cap, tail_m, wcslen(tail_m));
+    const WCHAR *tail_s = serif ? L",\"serif\":true" : L",\"serif\":false";
+    wbuf_append(&out, &n, &cap, tail_s, wcslen(tail_s));
+    const WCHAR *tail_c = cjk ? L",\"cjk\":true}" : L",\"cjk\":false}";
+    wbuf_append(&out, &n, &cap, tail_c, wcslen(tail_c));
+  }
+  fc->Release();
+  factory->Release();
+  out[n++] = L']';
+  local_font_info_cache_len = n;
+  InterlockedExchangePointer((PVOID *)&local_font_info_cache, out);
+  mb_host_request_frame();
+  return 0;
+}
+
+extern "C" moonbit_string_t mb_host_local_font_info(void) {
+  WCHAR *cached = (WCHAR *)InterlockedCompareExchangePointer((PVOID *)&local_font_info_cache, NULL, NULL);
+  if (!cached) {
+    if (InterlockedCompareExchange(&local_font_info_started, 1, 0) == 0) {
+      HANDLE th = CreateThread(NULL, 0, local_font_info_worker, NULL, 0, NULL);
+      if (th) CloseHandle(th);
+    }
+    return moonbit_make_string_raw(0);
+  }
+  size_t len = local_font_info_cache_len;
+  moonbit_string_t s = moonbit_make_string_raw((int32_t)len);
+  memcpy(s, cached, sizeof(WCHAR) * len);
   return s;
 }
 

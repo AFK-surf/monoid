@@ -90,14 +90,15 @@ test "font_v2: web_lines=true scans full paragraph for enlarged CJK on line 2" {
   let (la, ld) = line_metrics(20.0, 400, false)
   let (ca, cd) = line_metrics(20.0, 400, true)
   assert_true(ca > la && cd >= ld)
-  // Full paragraph scan (0..<n): CJK on line 2 produces identical line metrics to CJK on line 1
-  set_web_lines(false)
+  // Full paragraph scan (0..<n) under web_lines=true: CJK on line 2 produces identical line metrics to CJK on line 1
+  // and grows total box height so enlarged CJK glyphs are not clipped at the bottom edge.
   let latin_only = layout_text("hello\nworld", 20.0, 400, 100.0, true, line=20.0)
   let line1_cjk = layout_text("中文\nworld", 20.0, 400, 100.0, true, line=20.0)
   let line2_cjk = layout_text("hello\n中文", 20.0, 400, 100.0, true, line=20.0)
   assert_eq(line2_cjk.ascent, line1_cjk.ascent)
   assert_eq(line2_cjk.h, line1_cjk.h)
   assert_true(line2_cjk.h > latin_only.h)
+  assert_true(line2_cjk.h >= 20.0 + ca + cd)
 }
 
 ///|
@@ -110,9 +111,14 @@ test "font_v2: RTL full-width bracket mirrors while preserving CJK companion" {
   let s = shape("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}\u{FF08}\u{FF09}", 20.0, 400)
   assert_true(s.bidi is Some(_))
   // Full-width '(' is at the penultimate cluster; its advance should reflect CJK companion (22.0 + 4.4 = 26.4)
+  // and its glyph key must be the mirrored '）' (U+FF09) in the CJK companion font (different from unmirrored '（').
   let n = s.starts.length()
   assert_true(n >= 3)
   assert_true((s.adv[n - 2] - 26.4).abs() < 0.01)
+  let mirrored_close = shape("\u{FF09}", 20.0, 400)
+  let unmirrored_open = shape("\u{FF08}", 20.0, 400)
+  assert_eq(s.keys[n - 2], mirrored_close.keys[0])
+  assert_true(s.keys[n - 2] != unmirrored_open.keys[0])
 }
 
 ///|
@@ -121,8 +127,9 @@ test "font_v2: style_serif is exempt from UI CJK companion; textCjk ExplicitNone
   ignore(t)
   assert_true(face_add(@hostapi.face_ui_cjk, "/fonts/ui-cjk.ttf"))
   face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=1.0, weight_off=0)
-  // style_serif must NOT pick up face_ui's CJK companion
+  // style_serif (alone and combined with style_words in reader mode) must NOT pick up face_ui's CJK companion
   assert_eq(effective_cjk(@hostapi.style_serif, None), None)
+  assert_eq(effective_cjk(@hostapi.style_serif | @hostapi.style_words, None), None)
   // Default face_text inherits face_ui's CJK companion
   assert_eq(faces_style(true, 0), 0)
   assert_eq(effective_cjk(@hostapi.style_words, None), Some((@hostapi.face_ui_cjk, 1.0, 0)))
@@ -276,4 +283,79 @@ test "font_v2: Rich cjk_override and code_cjk_override stay isolated between pro
   )
   assert_true((run_w(p_code, 0) - prose_base).abs() < 0.01)
   assert_true(run_w(p_code, 1) > code_base + 1.0)
+}
+
+///|
+test "font_v2: composite seg_buf does not alias shape_widths part_buf for multi-run primary segments" {
+  let t = Tester::new(fn(c) { c.text("x") |> ignore })
+  ignore(t)
+  assert_true(face_add(@hostapi.face_ui_cjk, "/fonts/cjk.ttf"))
+  face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=1.1, weight_off=0)
+  for sample in ["it\u{2019}s\u{1100}中", "10\u{33A1} room, it\u{2019}s big"] {
+    let s = shape(sample, 16.0, 400)
+    let gbs = @text.graphemes(sample)
+    assert_eq(s.starts.length(), gbs.length() - 1)
+    for i in 0..<s.starts.length() {
+      assert_eq(s.starts[i], gbs[i])
+      assert_eq(s.lens[i], gbs[i + 1] - gbs[i])
+      if sample.at(s.starts[i]).to_int() != 32 {
+        assert_true(s.keys[i] >= 0)
+      }
+    }
+  }
+}
+
+///|
+test "font_v2: rich_zoomed_keys at 2x preserves local CjkOverride glyph keys" {
+  let t = Tester::new(fn(c) { c.text("x") |> ignore })
+  ignore(t)
+  assert_true(face_add(@hostapi.face_text_cjk, "/fonts/text_cjk.ttf"))
+  let ov : @view.CjkOverride = { face: @hostapi.face_text_cjk, scale: 1.15, weight_off: 0 }
+  let make_rich = fn(cjk_override : @view.CjkOverride?) -> Rich {
+    {
+      runs: [@text.span("中文")],
+      size: 16.0,
+      weight: 400,
+      color: 0xFFFFFFFFL,
+      line: 22.0,
+      trim: false,
+      wrap: false,
+      link_color: 0L,
+      pressed_bg: 0L,
+      code_color: 0L,
+      code_bg: 0L,
+      code_scale: 1.0,
+      spacing: 0.0,
+      base: 0,
+      select: false,
+      max_lines: 0,
+      faces: faces_style(true, 0),
+      shaped_in: words_shaped_in.untracked(),
+      cjk_override,
+      code_cjk_override: None,
+    }
+  }
+  let r_ov = make_rich(Some(ov))
+  let lay_ov = layout_rich(r_ov, 400.0)
+  words_zoom.val = 2.0
+  let k_ov = rich_zoomed_keys(r_ov, lay_ov).unwrap()
+  words_zoom.val = 1.0
+  assert_eq(k_ov.length(), 2)
+  assert_true(k_ov[0] >= 0)
+  // Verify the 2x zoomed shaping bucket actually carried the local CjkOverride (slot + 115% scale)
+  let has_2x_cjk = text_cache.fonts.iter().any(fn(f) {
+    (f.size - 32.0).abs() < 0.01 && f.cjk_slot == @hostapi.face_text_cjk && f.cjk_scale_pct == 115
+  })
+  assert_true(has_2x_cjk)
+}
+
+///|
+test "font_v2: face_set_local_preview switches slot 7 without incrementing words_forgotten" {
+  let t = Tester::new(fn(c) { c.text("x") |> ignore })
+  ignore(t)
+  let gen0 = words_forgotten_count()
+  assert_true(face_set_local_preview(7, "PingFang SC"))
+  assert_eq(words_forgotten_count(), gen0)
+  assert_true(face_set_local_preview(7, "Menlo"))
+  assert_eq(words_forgotten_count(), gen0)
 }

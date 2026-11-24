@@ -1609,8 +1609,9 @@ fn rich_zoomed_keys(r : Rich, lay : RichLayout) -> Array[Int]? {
     }
     let (c0, c1) = (lay.run_c0[k], lay.run_c1[k])
     let style = r.run_style(run)
-    let s = shape(run.text, r.run_size(run), r.run_weight(run), style~, spacing=r.spacing)
-    match zoomed_keys(run.text, s, r.run_size(run), r.run_weight(run), style, r.spacing) {
+    let cjk_override = r.run_cjk_override(run, style)
+    let s = shape(run.text, r.run_size(run), r.run_weight(run), style~, spacing=r.spacing, cjk_override~)
+    match zoomed_keys(run.text, s, r.run_size(run), r.run_weight(run), style, r.spacing, cjk_override~) {
       Some(big) if big.length() == c1 - c0 =>
         for c in c0..<c1 {
           keys[c] = big[c - c0]

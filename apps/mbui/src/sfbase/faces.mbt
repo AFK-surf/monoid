@@ -32,33 +32,96 @@ priv enum FaceFile {
 let faces_had : @sf.LiveMap[String, FaceHad] = @sf.LiveMap::new()
 
 ///|
-/// The face each place's host face holds now, by its id ("": the app's own); index 1 ui, 2 text, 3 code.
-pub let faces_in : Array[String] = ["", "", "", ""]
+/// The face each place's host face holds now, by its id ("": the app's own);
+/// index 1..3: ui, text, code primary; index 4..6: uiCjk, textCjk, codeCjk companions.
+pub let faces_in : Array[String] = ["", "", "", "", "", "", ""]
 
 ///|
 /// A face's preview, by its id: the host face it is given to (> 0), being asked for (0), not had (-1).
 let previews : @sf.LiveMap[String, Int] = @sf.LiveMap::new()
 
 ///|
-/// The host face the app's own code face is given to for the fonts page's 默认 (code's own may be another's then).
-pub let own_code_face : Int = 15
+/// Catalog font ids that are monospace (for applying `codeLigatures` to mono preview slots).
+let mono_face_ids : Map[String, Bool] = Map([])
+
+///|
+/// Preview host face slots that hold a monospace font (for re-applying `codeLigatures` on toggle).
+let preview_mono_slots : Map[Int, Bool] = Map([])
+
+///|
+/// Whether programming ligatures are currently enabled for code faces.
+let code_ligatures_on : Ref[Bool] = Ref(true)
+
+///|
+/// Reactive typography scale signals (updated in `faces()`, reset in `faces_reset()`).
+let prose_scale_sig : @signals.Signal[Double] = @signals.signal(1.0, same=fn(a, b) { a == b })
+
+///|
+let code_scale_sig : @signals.Signal[Double] = @signals.signal(1.0, same=fn(a, b) { a == b })
+
+///|
+let prose_line_scale_sig : @signals.Signal[Double] = @signals.signal(1.0, same=fn(a, b) { a == b })
+
+///|
+let typography_ver_sig : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
+/// Prose font scale multiplier from `prefs.typography.textSize` (default `1.0`).
+pub fn prose_text_scale() -> Double {
+  prose_scale_sig.get()
+}
+
+///|
+/// Code relative font scale multiplier from `prefs.typography.codeScale` (default `1.0`).
+pub fn code_text_scale() -> Double {
+  code_scale_sig.get()
+}
+
+///|
+/// Prose line-height multiplier from `prefs.typography.lineHeight` (`compact` 0.92, `normal` 1.0, `relaxed` 1.14).
+pub fn prose_line_scale() -> Double {
+  prose_line_scale_sig.get()
+}
+
+///|
+/// Monotonic counter bumped whenever prose size, code scale, or line height changes (for off-screen list height reset).
+pub fn typography_version() -> Int {
+  typography_ver_sig.get()
+}
+
+///|
+/// Dedicated host face for hovering local fonts in the font settings panel (isolated from `share_face`).
+pub let local_try_face : Int = 7
 
 ///|
 /// The host face the share card is set in (share_face.mbt), whatever this device chose for its places.
-pub let share_face : Int = 14
+pub let share_face : Int = 8
 
 ///|
-/// The first host face of the previews (each face's by its place in the list, share_face - 1 the last).
-pub let preview_faces_from : Int = 4
+/// The host face the app's own code face is given to for the fonts page's 默认 (code's own may be another's then).
+pub let own_code_face : Int = 9
+
+///|
+/// The first host face of the previews (10..31, upper bound `< @hostapi.faces_most`).
+pub let preview_faces_from : Int = 10
 
 ///|
 fn faces_reset() -> Unit {
   faces_had.clear()
   for i in 0..<faces_in.length() {
     faces_in[i] = ""
+  }
+  for i in 0..<faces_web.length() {
     faces_web[i] = ("", "")
   }
   previews.clear()
+  mono_face_ids.clear()
+  preview_mono_slots.clear()
+  code_ligatures_on.val = true
+  prose_scale_sig.set(1.0)
+  code_scale_sig.set(1.0)
+  prose_line_scale_sig.set(1.0)
+  typography_ver_sig.set(0)
   share_face_asked.val = false
   share_face_whole_asked.val = 0
   looks_files_reset()
@@ -88,6 +151,124 @@ pub let faces_web : Array[(String, String)] = [("", ""), ("", ""), ("", ""), (""
 let local_face : String = "local:"
 
 ///|
+fn typo_int(typo : Json?, key : String, fallback : Int) -> Int {
+  match field(typo, key) {
+    Some(Number(n, ..)) => n.round().to_int()
+    _ => fallback
+  }
+}
+
+///|
+fn typo_bool(typo : Json?, key : String, fallback : Bool) -> Bool {
+  match field(typo, key) {
+    Some(True) => true
+    Some(False) => false
+    _ => fallback
+  }
+}
+
+///|
+/// Resolve a CJK catalog font's `files` array with `path` populated from either primary slots' `files[].path`
+/// or `prefs.faces.cjkPaths[sha256]`, avoiding redundant `fonts.file` calls.
+fn cjk_files_with_paths(
+  id : String,
+  list : Array[Json],
+  primary_paths : Map[String, String],
+  cjk_paths : Json?,
+) -> Array[Json] {
+  for entry in list {
+    if text(Some(entry), "id") == id {
+      return items(Some(entry), "files").map(fn(f) {
+        let sha = text(Some(f), "sha256")
+        let p = match primary_paths.get(sha) {
+          Some(path) if path != "" => path
+          _ => text(cjk_paths, sha)
+        }
+        if p == "" {
+          f
+        } else {
+          match f {
+            Object(m) => {
+              let out : Map[String, Json] = Map([])
+              for k, v in m {
+                out[k] = v
+              }
+              out["path"] = ToJson::to_json(p)
+              Json::object(out)
+            }
+            _ => f
+          }
+        }
+      })
+    }
+  }
+  []
+}
+
+///|
+/// Load a CJK companion font (`id`, empty = none) into host slot `host_face` (4..6).
+fn sync_cjk_slot(
+  src : Source,
+  host_face : Int,
+  id : String,
+  list : Array[Json],
+  primary_paths : Map[String, String],
+  cjk_paths : Json?,
+  wanted : Array[String],
+) -> Unit {
+  if id != "" {
+    wanted.push(id)
+  }
+  let files = if id == "" || id.has_prefix(local_face) {
+    []
+  } else {
+    cjk_files_with_paths(id, list, primary_paths, cjk_paths)
+  }
+  let now = if id == "" {
+    ""
+  } else if id.has_prefix(local_face) {
+    id
+  } else if files.is_empty() {
+    ""
+  } else {
+    match face_had(src, id, files) {
+      Some(_) => id
+      None => ""
+    }
+  }
+  if faces_in[host_face] == now {
+    return
+  }
+  @ui.face_clear(host_face)
+  if now == "" {
+    ()
+  } else if now.has_prefix(local_face) {
+    ignore(@ui.face_add_family(host_face, now.unsafe_substring(start=local_face.length(), end=now.length())))
+  } else {
+    match faces_had.get(now) {
+      Some(Whole(had)) => {
+        let mut read = true
+        for f in had {
+          match f.0 {
+            At(path) => if !@ui.face_add(host_face, path, weight=f.1) { read = false }
+            Held(b) => ignore(@ui.face_add_bytes(host_face, b, weight=f.1))
+          }
+        }
+        if !read {
+          @ui.face_clear(host_face)
+          faces_had[now] = Asking
+          face_files(src, now, files, 0, [], false, fn(h) { faces_had[now] = h })
+          faces_in[host_face] = ""
+          return
+        }
+      }
+      _ => ()
+    }
+  }
+  faces_in[host_face] = now
+}
+
+///|
 /// The places' faces as the prefs say them, given to the host as each is here (call each frame, before the pages):
 /// with none chosen for the app's words, the desktop app's in the wide frame (`wide`).
 pub fn faces(src : Source, wide : Bool) -> Unit {
@@ -99,11 +280,48 @@ pub fn faces(src : Source, wide : Bool) -> Unit {
   vector_cjk_had(src, prefs)
   let shown = field(prefs, "faces")
   let chosen = field(prefs, "fonts")
+  let typo = field(prefs, "typography")
+  let list = items(shown, "list")
+  for entry in list {
+    if flag(Some(entry), "mono") {
+      let id = text(Some(entry), "id")
+      if id != "" {
+        mono_face_ids[id] = true
+      }
+    }
+  }
+  let cjk_auto_space = typo_bool(typo, "cjkAutoSpace", true)
+  let code_ligatures = typo_bool(typo, "codeLigatures", true)
+  code_ligatures_on.val = code_ligatures
+  @ui.set_cjk_autospace(cjk_auto_space)
+  let next_prose_scale = typo_int(typo, "textSize", 100).to_double() / 100.0
+  let next_code_scale = typo_int(typo, "codeScale", 100).to_double() / 100.0
+  let next_line_scale = match text(typo, "lineHeight") {
+    "compact" => 0.92
+    "relaxed" => 1.14
+    _ => 1.0
+  }
+  if prose_scale_sig.untracked() != next_prose_scale ||
+    code_scale_sig.untracked() != next_code_scale ||
+    prose_line_scale_sig.untracked() != next_line_scale {
+    prose_scale_sig.set(next_prose_scale)
+    code_scale_sig.set(next_code_scale)
+    prose_line_scale_sig.set(next_line_scale)
+    typography_ver_sig.set(typography_ver_sig.untracked() + 1)
+  }
   let wanted : Array[String] = []
+  let primary_paths : Map[String, String] = Map([])
   for slot, place in ["ui", "text", "code"] {
     let host_face = slot + 1
     let face = field(shown, place)
     let files = items(face, "files")
+    for f in files {
+      let sha = text(Some(f), "sha256")
+      let p = text(Some(f), "path")
+      if sha != "" && p != "" {
+        primary_paths[sha] = p
+      }
+    }
     // text not chosen: as ui (what people wrote in the app's words' face); a face of the device's own (local:<family>):
     // the host's, by its name
     let picked = text(chosen, place)
@@ -146,8 +364,12 @@ pub fn faces(src : Source, wide : Bool) -> Unit {
       !@ui.face_given(host_face) &&
       @sf.code_face().length() > 0 {
       ignore(@ui.face_add_bytes(host_face, @sf.code_face()))
+      @ui.face_set_ligatures(host_face, code_ligatures)
     }
     if faces_in[host_face] == now {
+      if host_face == @hostapi.face_code {
+        @ui.face_set_ligatures(host_face, code_ligatures)
+      }
       continue
     }
     // (a file the app carries not here yet, as a browser's come after it starts: given the frame it comes, the
@@ -195,7 +417,58 @@ pub fn faces(src : Source, wide : Bool) -> Unit {
         _ => ()
       }
     }
+    if host_face == @hostapi.face_code {
+      @ui.face_set_ligatures(host_face, code_ligatures)
+    }
     faces_in[host_face] = now
+  }
+  // Sync CJK companion slots 4..6 (textCjk reusing slot 4 when following uiCjk)
+  let cjk_paths = field(shown, "cjkPaths")
+  let ui_cjk = text(shown, "uiCjk")
+  let raw_text_cjk = text(chosen, "textCjk")
+  let own_text_cjk = if raw_text_cjk != "" && raw_text_cjk != "none" { raw_text_cjk } else { "" }
+  let code_cjk = text(shown, "codeCjk")
+  sync_cjk_slot(src, @hostapi.face_ui_cjk, ui_cjk, list, primary_paths, cjk_paths, wanted)
+  sync_cjk_slot(src, @hostapi.face_text_cjk, own_text_cjk, list, primary_paths, cjk_paths, wanted)
+  sync_cjk_slot(src, @hostapi.face_code_cjk, code_cjk, list, primary_paths, cjk_paths, wanted)
+  // Bind companion slots according to the v3 truth table
+  let ui_cjk_scale = typo_int(typo, "uiCjkScale", 100).to_double() / 100.0
+  let ui_cjk_weight = typo_int(typo, "uiCjkWeight", 0)
+  let text_cjk_scale = typo_int(typo, "textCjkScale", 100).to_double() / 100.0
+  let text_cjk_weight = typo_int(typo, "textCjkWeight", 0)
+  let code_cjk_scale = typo_int(typo, "codeCjkScale", 100).to_double() / 100.0
+  let code_cjk_weight = typo_int(typo, "codeCjkWeight", 0)
+  if ui_cjk != "" && @ui.face_given(@hostapi.face_ui_cjk) {
+    @ui.face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=ui_cjk_scale, weight_off=ui_cjk_weight)
+  } else {
+    @ui.face_set_cjk_none(@hostapi.face_ui)
+  }
+  if raw_text_cjk == "none" {
+    @ui.face_set_cjk_none(@hostapi.face_text)
+  } else if raw_text_cjk == "" {
+    if ui_cjk != "" && @ui.face_given(@hostapi.face_ui_cjk) {
+      @ui.face_set_cjk(@hostapi.face_text, @hostapi.face_ui_cjk, scale=text_cjk_scale, weight_off=text_cjk_weight)
+    } else {
+      @ui.face_set_cjk_inherit(@hostapi.face_text)
+    }
+  } else if @ui.face_given(@hostapi.face_text_cjk) {
+    @ui.face_set_cjk(@hostapi.face_text, @hostapi.face_text_cjk, scale=text_cjk_scale, weight_off=text_cjk_weight)
+  } else {
+    @ui.face_set_cjk_none(@hostapi.face_text)
+  }
+  if code_cjk != "" && @ui.face_given(@hostapi.face_code_cjk) {
+    @ui.face_set_cjk(@hostapi.face_code, @hostapi.face_code_cjk, scale=code_cjk_scale, weight_off=code_cjk_weight)
+  } else {
+    @ui.face_set_cjk_none(@hostapi.face_code)
+  }
+  // Keep own_code_face and mono preview slots in sync with codeLigatures
+  if @ui.face_given(own_code_face) {
+    @ui.face_set_ligatures(own_code_face, code_ligatures)
+  }
+  for slot, _ in preview_mono_slots {
+    if @ui.face_given(slot) {
+      @ui.face_set_ligatures(slot, code_ligatures)
+    }
   }
   // a face no longer chosen: let go (what failed stays said until it is chosen again)
   for id in faces_had.keys().collect() {
@@ -309,7 +582,7 @@ fn face_failed(id : String) -> String {
 /// is here (asked for the first time).
 fn face_preview(src : Source, id : String, index : Int, variable : Bool) -> Int {
   let host_face = preview_faces_from + index
-  if host_face >= share_face {
+  if host_face >= @hostapi.faces_most {
     return 0
   }
   match previews.get(id) {
@@ -320,6 +593,10 @@ fn face_preview(src : Source, id : String, index : Int, variable : Bool) -> Int 
         match r {
           Ok((_, bytes)) =>
             previews[id] = if @ui.face_add_bytes(host_face, bytes, weight=if variable { 0 } else { 400 }) {
+              if mono_face_ids.contains(id) {
+                preview_mono_slots[host_face] = true
+                @ui.face_set_ligatures(host_face, code_ligatures_on.val)
+              }
               host_face
             } else {
               -1
@@ -415,6 +692,7 @@ pub fn share_face_whole(src : Source, drawing : Int) -> Unit {
 fn own_code_preview() -> Int {
   if !@ui.face_given(own_code_face) {
     ignore(@ui.face_add_bytes(own_code_face, @sf.code_face()))
+    @ui.face_set_ligatures(own_code_face, code_ligatures_on.val)
   }
   own_code_face
 }

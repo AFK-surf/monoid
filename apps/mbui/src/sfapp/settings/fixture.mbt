@@ -1282,6 +1282,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-workspace-mark" => up("workspace-mark", "", 0)
     // 外观's 本机字体 open (src/sfpages font_setting.mbt local_tile: the families the host lists)
     "settings-local-fonts" => fixture_open.desk = "local-fonts"
+    // 外观 › 字体 with 光学微调与阅读排版 expanded (src/sfpages font_setting.mbt fx_advanced_up)
+    "settings-fonts-advanced" => fixture_open.desk = "fonts-advanced"
     // the archive policy with a dialog up (src/sfpages automatic_decisions.mbt): its words, an option of the
     // station's; its 安全 with one (security.mbt): Maple to take in, turning it off
     "settings-policy-text" => fixture_open.desk = "policy-text"
@@ -1369,7 +1371,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-stations-motion" | "settings-stations-incompatible" | "settings-stations-low" => "stations"
     "settings-connects-motion" => "connects"
     "settings-vault-motion" => "vault-items"
-    "settings-local-fonts" => "fonts"
+    "settings-local-fonts" | "settings-fonts-advanced" => "fonts"
     "settings-security-join" | "settings-security-off" | "settings-security-protecting" | "settings-security-pending"
     | "settings-security-confirm" | "settings-security-root" | "settings-security-root-off" | "settings-security-again"
     | "settings-security-own-outside" => "security"

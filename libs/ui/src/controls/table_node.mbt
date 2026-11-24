@@ -157,9 +157,13 @@ fn table_cell_runs(cell : Array[MdInline]) -> Array[@ui.Run] {
 /// How a table's cell's pieces are set where a piece says nothing of it itself, as Md::words sets a message's
 /// paragraph: links in the theme's blue, code in its code ink on no ground of its own at 0.9 of the words' size, the
 /// words a person's.
-fn table_runs_look() -> @view.RunsLook {
+fn table_runs_look(
+  code_scale? : Double = 1.0,
+  cjk? : @view.CjkOverride? = None,
+  code_cjk? : @view.CjkOverride? = None,
+) -> @view.RunsLook {
   let p = theme().p
-  { link: p.blue, pressed: alpha(p.blue, 0.14), code_ink: p.code_ink, code_ground: 0L, code_scale: 0.9, words: true, cjk: None, code_cjk: None }
+  { link: p.blue, pressed: alpha(p.blue, 0.14), code_ink: p.code_ink, code_ground: 0L, code_scale: 0.9 * code_scale, words: true, cjk, code_cjk }
 }
 
 ///|
@@ -227,6 +231,11 @@ fn md_table_body_node(
   tracks_kept? : @view.TracksKept,
   cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
+  prose_scale? : (() -> Double)? = None,
+  code_scale? : (() -> Double)? = None,
+  line_scale? : (() -> Double)? = None,
+  text_cjk? : (() -> @view.CjkOverride?)? = None,
+  code_cjk? : (() -> @view.CjkOverride?)? = None,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
   on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
@@ -278,7 +287,39 @@ fn md_table_body_node(
             match cell_images.bind(fn(f) { f(cell) }) {
               // (a cell of images as wide as their row: Md::table's)
               Some(images) => Wide(cell_images_node_width(images))
-              None => Said(cell_runs(cell), table_words_look(r == 0, 1.0), table_runs_look())
+              None =>
+                Said(
+                  cell_runs(cell),
+                  table_words_look_line(
+                    r == 0,
+                    match prose_scale {
+                      Some(f) => f()
+                      None => 1.0
+                    },
+                    match line_share {
+                      Some(f) => f()
+                      None => 0.0
+                    },
+                    line_scale=match line_scale {
+                      Some(f) => f()
+                      None => 1.0
+                    },
+                  ),
+                  table_runs_look(
+                    code_scale=match code_scale {
+                      Some(f) => f()
+                      None => 1.0
+                    },
+                    cjk=match text_cjk {
+                      Some(f) => f()
+                      None => None
+                    },
+                    code_cjk=match code_cjk {
+                      Some(f) => f()
+                      None => None
+                    },
+                  ),
+                )
             }
           })
         })
@@ -348,6 +389,11 @@ fn md_table_body_node(
               rows_by?,
               cell_runs~,
               line_share?,
+              prose_scale~,
+              code_scale~,
+              line_scale~,
+              text_cjk~,
+              code_cjk~,
               link_cards~,
               on_link_shown~,
             )
@@ -413,6 +459,11 @@ fn md_table_body_node(
           rows_by?,
           cell_runs~,
           line_share?,
+          prose_scale~,
+          code_scale~,
+          line_scale~,
+          text_cjk~,
+          code_cjk~,
           link_cards~,
           on_link_shown~,
         )
@@ -441,10 +492,17 @@ fn table_words_look(head : Bool, scale : Double) -> @view.WordsLook {
 ///|
 /// How a table's cell's words are set (table_words_look), on lines `line_share` of their size where that is said (more
 /// than 0: a message's, as its words are, Md::words' `line_em`).
-fn table_words_look_line(head : Bool, scale : Double, line_share : Double) -> @view.WordsLook {
+fn table_words_look_line(
+  head : Bool,
+  scale : Double,
+  line_share : Double,
+  line_scale? : Double = 1.0,
+) -> @view.WordsLook {
   let look = table_words_look(head, scale)
   if line_share > 0.0 {
-    { ..look, line: -line_share }
+    { ..look, line: -(line_share * line_scale) }
+  } else if line_scale != 1.0 {
+    { ..look, line: look.line * line_scale }
   } else {
     look
   }
@@ -476,6 +534,11 @@ fn table_frame_node(
   rows_by? : () -> (Int, Int)?,
   cell_runs? : (Array[MdInline]) -> Array[@ui.Run] = table_cell_runs,
   line_share? : () -> Double,
+  prose_scale? : (() -> Double)? = None,
+  code_scale? : (() -> Double)? = None,
+  line_scale? : (() -> Double)? = None,
+  text_cjk? : (() -> @view.CjkOverride?)? = None,
+  code_cjk? : (() -> @view.CjkOverride?)? = None,
   link_cards? : (TipLayer, (LinkOf) -> LinkCard?)? = None,
   on_link_shown? : ((@view.View, Array[(String, String, Int)]) -> Unit)? = None,
   loc~ : SourceLoc,
@@ -558,10 +621,39 @@ fn table_frame_node(
               let runs_now = @signals.computed(fn(_) { cell_runs(words()) })
               let runs = fn() { runs_now.get() }
               let look = fn() {
-                table_words_look_line(head, scale(), match line_share {
+                let ps = match prose_scale {
                   Some(f) => f()
-                  None => 0.0
-                })
+                  None => 1.0
+                }
+                let ls = match line_scale {
+                  Some(f) => f()
+                  None => 1.0
+                }
+                table_words_look_line(
+                  head,
+                  scale() * ps,
+                  match line_share {
+                    Some(f) => f()
+                    None => 0.0
+                  },
+                  line_scale=ls,
+                )
+              }
+              let runs_look_now = fn() {
+                table_runs_look(
+                  code_scale=match code_scale {
+                    Some(f) => f()
+                    None => 1.0
+                  },
+                  cjk=match text_cjk {
+                    Some(f) => f()
+                    None => None
+                  },
+                  code_cjk=match code_cjk {
+                    Some(f) => f()
+                    None => None
+                  },
+                )
               }
               let w = cell.box(fn(w) {
                 // (its pieces first: saying them says the words' look and ink plain, what follows says them)
@@ -570,17 +662,17 @@ fn table_frame_node(
                 // ink, all from the theme: one binding for both; on the message's lines as they change, one binding for
                 // the three, as a message's words have them: md_words_node)
                 if line_share is Some(_) {
-                  w.sets_together(fn() { (look(), table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
+                  w.sets_together(fn() { (look(), runs_look_now(), if head { web().muted } else { theme().p.text }) }, fn(s) {
                     w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore
                   })
                   |> ignore
                 } else {
-                  if scale_by is None {
+                  if scale_by is None && prose_scale is None && line_scale is None {
                     w.words_look(Is(look())) |> ignore
                   } else {
                     w.words_look(By(look)) |> ignore
                   }
-                  w.sets_together(fn() { (table_runs_look(), if head { web().muted } else { theme().p.text }) }, fn(s) {
+                  w.sets_together(fn() { (runs_look_now(), if head { web().muted } else { theme().p.text }) }, fn(s) {
                     w.runs_look(Is(s.0)).ink(Is(s.1)) |> ignore
                   })
                   |> ignore

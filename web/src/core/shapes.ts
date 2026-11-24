@@ -1715,12 +1715,16 @@ export interface TypographyPrefs {
 	uiCjkScale: number;
 	/** `text`'s CJK face's size, as `uiCjkScale` (none chosen while `text`'s CJK face is `ui`'s: `uiCjkScale`). */
 	textCjkScale: number;
+	/** Whether `textCjkScale` was explicitly set rather than inherited from `uiCjkScale`. */
+	textCjkScaleOwn?: boolean;
 	/** `code`'s CJK face's size, as `uiCjkScale`. */
 	codeCjkScale: number;
 	/** `ui`'s CJK face a step lighter (-100), as it is (0), or a step heavier (100). */
 	uiCjkWeight: number;
 	/** `text`'s CJK face's weight, as `uiCjkWeight` (none chosen while `text`'s CJK face is `ui`'s: `uiCjkWeight`). */
 	textCjkWeight: number;
+	/** Whether `textCjkWeight` was explicitly set rather than inherited from `uiCjkWeight`. */
+	textCjkWeightOwn?: boolean;
 	/** `code`'s CJK face's weight, as `uiCjkWeight`. */
 	codeCjkWeight: number;
 	/** Room between CJK characters and Latin letters or digits beside them (on). */

@@ -11,6 +11,7 @@
 #include <math.h>
 #include <pango/pangocairo.h>
 #include <pango/pangofc-fontmap.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -295,7 +296,10 @@ moonbit_string_t mb_host_local_font_families(void) {
   return s;
 }
 
+extern void mb_host_request_frame(void);
+
 static char *local_font_info_cache;
+static int local_font_info_started;
 
 static void json_append_escaped(GString *out, const char *str) {
   g_string_append_c(out, '"');
@@ -306,54 +310,100 @@ static void json_append_escaped(GString *out, const char *str) {
   g_string_append_c(out, '"');
 }
 
-// Cached metadata for locally installed font families (name, localized, mono, serif, cjk).
-moonbit_string_t mb_host_local_font_info(void) {
-  init();
-  if (!local_font_info_cache) {
-    PangoFontFamily **fams = NULL;
-    int n = 0;
-    pango_font_map_list_families(fontmap, &fams, &n);
-    GString *out = g_string_new("[");
-    for (int i = 0; i < n; i++) {
-      const char *name = pango_font_family_get_name(fams[i]);
-      if (!name || !*name) continue;
-      int mono = pango_font_family_is_monospace(fams[i]) ? 1 : 0;
-      int serif = (strstr(name, "Serif") || strstr(name, "serif") || strstr(name, "Song") || strstr(name, "Ming") ||
-                   strstr(name, "Mincho") || strstr(name, "Georgia") || strstr(name, "Times"))
-                      ? 1
-                      : 0;
-      int cjk = 0;
-      FcPattern *pat = FcPatternBuild(NULL, FC_FAMILY, FcTypeString, name, NULL);
-      FcObjectSet *os = FcObjectSetBuild(FC_LANG, NULL);
-      FcFontSet *fs = FcFontList(NULL, pat, os);
-      if (fs && fs->nfont > 0) {
+static gboolean local_font_info_wake(gpointer data) {
+  (void)data;
+  mb_host_request_frame();
+  return G_SOURCE_REMOVE;
+}
+
+typedef struct {
+  int mono;
+  int serif;
+  int cjk;
+} LinuxFontMeta;
+
+static void *local_font_info_worker(void *arg) {
+  (void)arg;
+  FcPattern *pat = FcPatternCreate();
+  FcObjectSet *os = FcObjectSetBuild(FC_FAMILY, FC_LANG, FC_SPACING, NULL);
+  FcFontSet *fs = FcFontList(NULL, pat, os);
+  GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
+  GPtrArray *order = g_ptr_array_new();
+  if (fs) {
+    for (int i = 0; i < fs->nfont; i++) {
+      FcChar8 *fam = NULL;
+      if (FcPatternGetString(fs->fonts[i], FC_FAMILY, 0, &fam) != FcResultMatch || !fam || !*fam) continue;
+      const char *name = (const char *)fam;
+      LinuxFontMeta *meta = (LinuxFontMeta *)g_hash_table_lookup(seen, name);
+      if (!meta) {
+        meta = g_new0(LinuxFontMeta, 1);
+        meta->serif = (strstr(name, "Serif") || strstr(name, "serif") || strstr(name, "Song") ||
+                       strstr(name, "Ming") || strstr(name, "Mincho") || strstr(name, "Georgia") ||
+                       strstr(name, "Times"))
+                          ? 1
+                          : 0;
+        char *key = g_strdup(name);
+        g_hash_table_insert(seen, key, meta);
+        g_ptr_array_add(order, key);
+      }
+      int spacing = 0;
+      if (FcPatternGetInteger(fs->fonts[i], FC_SPACING, 0, &spacing) == FcResultMatch &&
+          (spacing == FC_MONO || spacing == FC_DUAL)) {
+        meta->mono = 1;
+      }
+      if (!meta->cjk) {
         FcLangSet *ls = NULL;
-        if (FcPatternGetLangSet(fs->fonts[0], FC_LANG, 0, &ls) == FcResultMatch && ls) {
+        if (FcPatternGetLangSet(fs->fonts[i], FC_LANG, 0, &ls) == FcResultMatch && ls) {
           if (FcLangSetHasLang(ls, (const FcChar8 *)"zh-cn") != FcLangDifferentLang ||
               FcLangSetHasLang(ls, (const FcChar8 *)"zh-tw") != FcLangDifferentLang ||
               FcLangSetHasLang(ls, (const FcChar8 *)"ja") != FcLangDifferentLang ||
               FcLangSetHasLang(ls, (const FcChar8 *)"ko") != FcLangDifferentLang) {
-            cjk = 1;
+            meta->cjk = 1;
           }
         }
       }
-      if (fs) FcFontSetDestroy(fs);
-      FcObjectSetDestroy(os);
-      FcPatternDestroy(pat);
-      if (out->len > 1) g_string_append_c(out, ',');
-      g_string_append(out, "{\"name\":");
-      json_append_escaped(out, name);
-      g_string_append(out, ",\"localized\":");
-      json_append_escaped(out, name);
-      g_string_append_printf(out, ",\"mono\":%s,\"serif\":%s,\"cjk\":%s}",
-                             mono ? "true" : "false", serif ? "true" : "false", cjk ? "true" : "false");
     }
-    g_string_append_c(out, ']');
-    g_free(fams);
-    local_font_info_cache = g_string_free(out, FALSE);
+    FcFontSetDestroy(fs);
+  }
+  FcObjectSetDestroy(os);
+  FcPatternDestroy(pat);
+  GString *out = g_string_new("[");
+  for (guint i = 0; i < order->len; i++) {
+    const char *name = (const char *)g_ptr_array_index(order, i);
+    LinuxFontMeta *meta = (LinuxFontMeta *)g_hash_table_lookup(seen, name);
+    if (out->len > 1) g_string_append_c(out, ',');
+    g_string_append(out, "{\"name\":");
+    json_append_escaped(out, name);
+    g_string_append(out, ",\"localized\":");
+    json_append_escaped(out, name);
+    g_string_append_printf(out, ",\"mono\":%s,\"serif\":%s,\"cjk\":%s}",
+                           meta->mono ? "true" : "false", meta->serif ? "true" : "false",
+                           meta->cjk ? "true" : "false");
+  }
+  g_string_append_c(out, ']');
+  g_ptr_array_free(order, TRUE);
+  g_hash_table_destroy(seen);
+  char *json = g_string_free(out, FALSE);
+  __atomic_store_n(&local_font_info_cache, json, __ATOMIC_RELEASE);
+  g_idle_add(local_font_info_wake, NULL);
+  return NULL;
+}
+
+// Asynchronous cached metadata for locally installed font families (name, localized, mono, serif, cjk).
+// Returns "" immediately on first call while a detached pthread performs a single FcFontList scan.
+moonbit_string_t mb_host_local_font_info(void) {
+  char *cached = __atomic_load_n(&local_font_info_cache, __ATOMIC_ACQUIRE);
+  if (!cached) {
+    if (__atomic_exchange_n(&local_font_info_started, 1, __ATOMIC_ACQ_REL) == 0) {
+      pthread_t tid;
+      if (pthread_create(&tid, NULL, local_font_info_worker, NULL) == 0) {
+        pthread_detach(tid);
+      }
+    }
+    return moonbit_make_string_raw(0);
   }
   glong len = 0;
-  gunichar2 *u = g_utf8_to_utf16(local_font_info_cache, -1, NULL, &len, NULL);
+  gunichar2 *u = g_utf8_to_utf16(cached, -1, NULL, &len, NULL);
   moonbit_string_t s = moonbit_make_string_raw((int32_t)len);
   if (len) memcpy(s, u, (size_t)len * 2);
   g_free(u);

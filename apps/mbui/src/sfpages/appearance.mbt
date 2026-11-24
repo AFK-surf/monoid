@@ -256,13 +256,31 @@ fn appearance_setting(v : @view.View, core : Core, key : String, wide : () -> Bo
 }
 
 ///|
-/// The faces chosen at a glance (FontRow: their names, " · " between), or the app's own.
+/// The faces chosen at a glance (FontRow: deduplicated names across all 6 slots, ignoring "" and "none"), or the app's own.
 fn fonts_said(prefs : Json?) -> String {
+  let fonts = field(prefs, "fonts")
   let faces = field(prefs, "faces")
-  let names = []
-  for place in @settings.font_places {
-    if text(field(prefs, "fonts"), place) != "" {
-      names.push(text(field(faces, place), "name"))
+  let list = items(faces, "list")
+  let name_of = fn(id : String) -> String {
+    if id.has_prefix("local:") {
+      return id.unsafe_substring(start=6, end=id.length())
+    }
+    for entry in list {
+      if text(Some(entry), "id") == id {
+        return text(Some(entry), "name")
+      }
+    }
+    id
+  }
+  let names : Array[String] = []
+  for slot in ["ui", "uiCjk", "text", "textCjk", "code", "codeCjk"] {
+    let raw = text(fonts, slot)
+    if raw == "" || raw == "none" {
+      continue
+    }
+    let label = name_of(raw)
+    if label != "" && !names.contains(label) {
+      names.push(label)
     }
   }
   if names.is_empty() {

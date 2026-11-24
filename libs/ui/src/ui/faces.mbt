@@ -97,6 +97,21 @@ pub fn face_add_family(face : Int, family : String) -> Bool {
 }
 
 ///|
+/// Switch a local-font preview slot (`face`, e.g. `local_try_face`) to `family` without triggering a global
+/// `words_forgotten()` invalidation: clears only cached shapes and metrics referencing `face`.
+pub fn face_set_local_preview(face : Int, family : String) -> Bool {
+  if face <= 0 || face >= @hostapi.faces_most {
+    return false
+  }
+  h_face_clear(face)
+  faces_no_lig[face] = false
+  let ok = h_face_add_family(face, family)
+  faces_given[face] = ok
+  purge_face_cache(face)
+  ok
+}
+
+///|
 /// The font families installed on this machine (@hostapi.local_font_families), a JSON array of their names; "" where
 /// there is no way to them.
 pub fn local_font_families() -> String {
@@ -117,18 +132,20 @@ pub fn local_font_info() -> String {
 
 ///|
 /// Reactive signal reading `local_font_info()`. Triggers a background scan if not yet started and automatically
-/// updates when the host finishes scanning and requests a frame.
+/// updates when the host finishes scanning and requests a frame (never writes signals during computed reads).
 pub fn local_font_info_signal() -> String {
   let cur = local_font_info_sig.get()
   if cur != "" {
     return cur
   }
-  local_font_info_asked.val = true
-  let info = h_local_font_info()
-  if info != "" {
-    local_font_info_sig.set(info)
+  if !local_font_info_asked.val {
+    local_font_info_asked.val = true
+    let info = @signals.untracked(fn() { h_local_font_info() })
+    if info != "" {
+      return info
+    }
   }
-  info
+  ""
 }
 
 ///|
@@ -297,11 +314,11 @@ fn effective_cjk(style : Int, cjk_override : @view.CjkOverride?) -> (Int, Double
   if (style & @hostapi.style_mono) != 0 {
     return resolve_slot_cjk(@hostapi.face_code)
   }
-  if (style & @hostapi.style_words) != 0 {
-    return resolve_slot_cjk(@hostapi.face_text)
-  }
   if (style & @hostapi.style_serif) != 0 {
     return None
+  }
+  if (style & @hostapi.style_words) != 0 {
+    return resolve_slot_cjk(@hostapi.face_text)
   }
   resolve_slot_cjk(@hostapi.face_ui)
 }
@@ -340,6 +357,12 @@ fn faces_style(words : Bool, face : Int) -> Int {
 /// as laid out) are laid out again.
 // kept across runs: put back as a run begins (faces_reset)
 let words_shaped_in : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Number of times `words_forgotten()` has run in the current session (read untracked for zero-invalidation tests).
+pub fn words_forgotten_count() -> Int {
+  words_shaped_in.untracked()
+}
 
 ///|
 /// Everything shaped and measured forgotten (its faces changed): shaped again as it is next asked for; the window's

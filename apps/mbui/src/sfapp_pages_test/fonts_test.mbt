@@ -326,3 +326,271 @@ test "a face pointed at tried in the chat above them: the chat held at its talle
   t.draw()
   assert_eq(t.find("Inter"), Some(before))
 }
+
+///|
+test "curated presets: hover triggers 0 fetches; click overwrites all 6 slots, resets CJK optics, preserves reading typography" {
+  new_run()
+  let base = fixture("home")
+  // Pre-set custom reading typography + custom CJK optics + custom codeCjk
+  (base.call)(
+    "prefs.set",
+    {
+      "fonts": { "ui": "lxgw-wenkai", "codeCjk": "maple-mono" },
+      "typography": { "textSize": 120, "lineHeight": "relaxed", "uiCjkScale": 115, "uiCjkWeight": 100, "cjkAutoSpace": false },
+    },
+    fn(_) {  },
+  )
+  let fetched = Ref(0)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "fonts.fetch" {
+        fetched.val += 1
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1200.0, h=820.0, platform=0)
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  // Hovering a preset chip must never trigger fonts.fetch
+  let (px, py) = t.find("现代无衬线").unwrap()
+  let before_hover = fetched.val
+  t.move_to(px + 4.0, py + 4.0)
+  t.draw()
+  t.draw()
+  assert_eq(fetched.val, before_hover)
+  // Clicking "现代无衬线" applies all 6 slots (clearing codeCjk), resets CJK optics, and preserves textSize/lineHeight/cjkAutoSpace
+  t.tap(px + 4.0, py + 4.0)
+  t.run_for(@ui.move_most_ms)
+  let prefs = src.topic("prefs", {}).get().value
+  let fonts = field(prefs, "fonts")
+  let typo = field(prefs, "typography")
+  assert_eq(text(fonts, "ui"), "inter")
+  assert_eq(text(fonts, "uiCjk"), "noto-sans-sc")
+  assert_eq(text(fonts, "text"), "")
+  assert_eq(text(fonts, "textCjk"), "")
+  assert_eq(text(fonts, "code"), "jetbrains-mono")
+  assert_eq(text(fonts, "codeCjk"), "")
+  // CJK optics reset to defaults (100 / 0)
+  assert_eq(number(typo, "uiCjkScale").round().to_int(), 100)
+  assert_eq(number(typo, "uiCjkWeight").round().to_int(), 0)
+  // Reading typography preserved
+  assert_eq(number(typo, "textSize").round().to_int(), 120)
+  assert_eq(text(typo, "lineHeight"), "relaxed")
+  assert_false(flag(typo, "cjkAutoSpace"))
+  assert_true(prose_text_scale() > 1.19)
+  assert_true(prose_line_scale() > 1.13)
+}
+
+///|
+test "script switch: CJK slots, textCjk='none' breaks uiCjk inheritance, restoring followUi reconnects" {
+  let t = settings_tester("fonts")
+  // Switch to 中文与标点 on 界面 and pick 思源宋体
+  t.tap_text("中文与标点")
+  t.draw()
+  assert_true(t.find("思源宋体") is Some(_))
+  assert_true(t.find("Inter") is None)
+  t.tap_text("思源宋体")
+  t.draw()
+  assert_true(@ui.face_given(@hostapi.face_ui_cjk))
+  // Switch to 正文 (still on 中文与标点): should show 跟随界面 with 当前：思源宋体 and 不单独指定（随西文）
+  tap_place(t, "正文")
+  t.draw()
+  assert_true(t.find("当前：思源宋体") is Some(_))
+  assert_true(t.find("不单独指定（随西文）") is Some(_))
+  // Pick 不单独指定（随西文） -> textCjk="none"
+  t.tap_text("不单独指定（随西文）")
+  t.draw()
+  assert_false(@ui.face_given(@hostapi.face_text_cjk))
+  // Restore 跟随界面 -> textCjk=null
+  t.tap_text("跟随界面")
+  t.draw()
+  assert_true(@ui.face_given(@hostapi.face_ui_cjk))
+  assert_false(@ui.face_given(@hostapi.face_text_cjk))
+}
+
+///|
+test "hovering CJK row previews locally with 0 words_forgotten and never pollutes inline code" {
+  let t = settings_tester("fonts")
+  tap_place(t, "正文")
+  t.draw()
+  t.tap_text("中文与标点")
+  t.draw()
+  // Give 思源宋体's preview slot extra width so CJK text widens when hovered
+  t.face_wider(preview_faces_from + 2, 0.05)
+  t.draw()
+  let forgotten_before = @ui.words_forgotten_count()
+  let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
+  let inline_before = preview_width(t, "preventDefault")
+  let (x, y) = t.find("思源宋体").unwrap()
+  t.move_to(x + 4.0, y + 4.0)
+  t.draw()
+  t.draw()
+  // Zero global glyph invalidation!
+  assert_eq(@ui.words_forgotten_count(), forgotten_before)
+  assert_true(preview_width(t, "Safari 和 Chrome 都试过了。") > text_before)
+  assert_eq(preview_width(t, "preventDefault"), inline_before)
+  t.move_to(x, 4.0)
+  t.draw()
+  t.draw()
+  assert_eq(@ui.words_forgotten_count(), forgotten_before)
+  assert_eq(preview_width(t, "Safari 和 Chrome 都试过了。"), text_before)
+}
+
+///|
+test "local font panel: smart filter pills (仅中文 / 仅等宽 / 全部) and localized name search via set_local_font_info" {
+  let t = wide_tester([])
+  t.host_says_finger(Some(false))
+  t.set_local_fonts("[\"PingFang SC\",\"JetBrains Mono\",\"Helvetica\"]")
+  t.set_local_font_info(
+    "[{\"name\":\"PingFang SC\",\"localized\":\"苹方-简\",\"mono\":false,\"serif\":false,\"cjk\":true},{\"name\":\"JetBrains Mono\",\"localized\":\"JetBrains Mono\",\"mono\":true,\"serif\":false,\"cjk\":false},{\"name\":\"Helvetica\",\"localized\":\"Helvetica\",\"mono\":false,\"serif\":false,\"cjk\":false}]",
+  )
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  // Switch to 中文与标点 so smart default filter is 仅中文
+  t.tap_text("中文与标点")
+  t.draw()
+  t.wheel(900.0, 400.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.query(Button, label="本机字体") is Some(s) else { fail("no 本机字体") }
+  t.tap(s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  // Smart default 仅中文 shows 苹方-简 and hides Helvetica
+  assert_true(t.find("苹方-简") is Some(_))
+  assert_true(t.find("Helvetica") is None)
+  // Switch to 仅等宽
+  t.tap_text("仅等宽")
+  t.draw()
+  assert_true(t.find("JetBrains Mono") is Some(_))
+  assert_true(t.find("苹方-简") is None)
+  // Switch to 全部
+  t.tap_text("全部")
+  t.draw()
+  assert_true(t.find("Helvetica") is Some(_))
+  assert_true(t.find("苹方-简") is Some(_))
+  // Hovering a local font uses isolated local_try_face (slot 7)
+  let (lx, ly) = t.find("苹方-简").unwrap()
+  t.move_to(lx + 4.0, ly + 4.0)
+  t.draw()
+  assert_eq(t.family_given(local_try_face), "PingFang SC")
+}
+
+///|
+test "collapsible advanced typography section: expand, toggle autospace & ligatures, reset to defaults" {
+  let t = wide_tester([])
+  t.host_says_finger(Some(false))
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  // Scroll down to collapsible section; collapsed by default so inner controls are not visible
+  t.wheel(900.0, 400.0, 600.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("光学微调与阅读排版") is Some(_))
+  assert_true(t.find("正文阅读字号") is None)
+  // Expand
+  t.tap_text("光学微调与阅读排版")
+  t.run_for(@ui.move_most_ms)
+  t.wheel(900.0, 400.0, 500.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("正文阅读字号") is Some(_))
+  assert_true(t.find("正文行距") is Some(_))
+  assert_true(t.find("中西文自动留白") is Some(_))
+  assert_true(t.find("代码连字") is Some(_))
+  // Pick 舒展 line height -> updates prose_line_scale and bumps typography_version
+  let ver_before = typography_version()
+  t.tap_text("舒展")
+  t.draw()
+  assert_true(prose_line_scale() > 1.13)
+  assert_true(typography_version() > ver_before)
+  // Toggle 中西文自动留白 off
+  assert_true(@ui.cjk_autospace())
+  guard t.query(Switch, label="中西文自动留白") is Some(sw) else { fail("no 中西文自动留白 switch") }
+  t.tap(sw.rect.0 + sw.rect.2 / 2.0, sw.rect.1 + sw.rect.3 / 2.0)
+  t.draw()
+  assert_false(@ui.cjk_autospace())
+  // Reset to defaults restores lineHeight and cjkAutoSpace
+  t.wheel(900.0, 400.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("恢复默认")
+  t.draw()
+  assert_eq(prose_line_scale(), 1.0)
+  assert_true(@ui.cjk_autospace())
+}
+
+///|
+test "preview charset guard: every CJK char in font_preview_node exists in published preview-*.ttf" {
+  fresh_app()
+  // Exact CJK characters baked into published preview-*.ttf by scripts/fonts.py (NAMES + existing web-pages.appearance.fonts.* + punctuation).
+  let published_cjk = "思源黑体思源宋体霞鹜文楷字体界面正文和代码各用什么默认跟随本机无法读取预览天地玄黄宇宙洪荒登录页在上点了没反应分钟前都试过了搜索没有匹配的按钮点击表单提交之前被吞掉改成里处理，。：、·…“”‘’（）"
+  let preview_strings = [
+    @sf.t("web-pages.appearance.fonts.sampleMine"),
+    @sf.t("web-pages.appearance.fonts.sampleTime"),
+    @sf.t("web-pages.appearance.fonts.sampleText"),
+    @sfpages.fp_sample_code,
+    @sf.t("web-pages.appearance.fonts.sampleAfter"),
+  ]
+  for s in preview_strings {
+    for ch in s {
+      let cp = ch.to_int()
+      if cp >= 0x2E80 {
+        assert_true(
+          published_cjk.contains_char(ch),
+          msg="preview char '\{ch}' (U+\{cp}) is missing from published preview-*.ttf charset",
+        )
+      }
+    }
+  }
+}
+
+///|
+test "chat typography scaling: enlarging textSize preserves at-foot state, history anchor, and composer CJK input" {
+  new_run()
+  let src = fixture("chat-long")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1200.0, h=800.0, platform=0)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  t.run_for(@ui.move_most_ms)
+  assert_eq(prose_text_scale(), 1.0)
+  assert_eq(code_text_scale(), 1.0)
+  let ver0 = typography_version()
+  let forgotten0 = @ui.words_forgotten_count()
+  // Scale prose to 130% + relaxed line height via prefs.set
+  (src.call)("prefs.set", { "typography": { "textSize": 130, "lineHeight": "relaxed" } }, fn(_) {  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(prose_text_scale() > 1.29)
+  assert_true(prose_line_scale() > 1.13)
+  assert_true(typography_version() > ver0)
+  // Scaling typography does not trigger global glyph cache invalidation
+  assert_eq(@ui.words_forgotten_count(), forgotten0)
+  // (a) At-foot state preserved: last visible message stays in viewport after scaling up to 130%
+  let visible_msgs = t.words().filter(fn(w) { w.1 > 300.0 && w.2 > 80.0 && w.2 < 680.0 && w.5 > 0.5 })
+  assert_true(visible_msgs.length() > 0)
+  // (b) Scroll up into history (negative dy), pick an anchor word, scale typography again, verify anchor remains in viewport
+  t.wheel(700.0, 360.0, -360.0)
+  t.run_for(@ui.move_most_ms)
+  let hist_words = t.words().filter(fn(w) { w.1 > 340.0 && w.2 > 140.0 && w.2 < 560.0 && w.5 > 0.5 && w.0.trim().length() >= 4 })
+  assert_true(hist_words.length() > 0)
+  let anchor_raw = hist_words[hist_words.length() / 2].0.trim().to_owned()
+  let anchor = anchor_raw.unsafe_substring(start=0, end=3)
+  (src.call)("prefs.set", { "typography": { "textSize": 115, "lineHeight": "normal" } }, fn(_) {  })
+  t.run_for(@ui.move_most_ms)
+  let anchor_after = t.find(anchor)
+  let after_y = match anchor_after {
+    Some((_, y)) => "\{y}"
+    None => "none"
+  }
+  assert_true(
+    anchor_after is Some((_, y)) && y >= 0.0 && y <= 800.0,
+    msg="anchor=\{anchor} raw=\{anchor_raw} after_y=\{after_y}",
+  )
+  // (c) Verify composer accepts Chinese IME composition (preedit) and commit cleanly at enlarged scale
+  let fields = t.semantics().filter(fn(s) { s.role is TextField })
+  assert_true(fields.length() > 0)
+  let (fx, fy, fw, fh) = fields[0].rect
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.frame()
+  t.compose("zhongwen")
+  t.frame()
+  t.type_text("中文排版测试")
+  t.frame()
+  assert_eq(t.semantics().filter(fn(s) { s.role is TextField })[0].value, "中文排版测试")
+}

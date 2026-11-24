@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { answers, apply, call, subscribe, v } from "./helpers.ts";
 import { started } from "./station-fixture.ts";
 
-const DEFAULTS = { textSize: 100, codeScale: 100, lineHeight: "normal", uiCjkScale: 100, textCjkScale: 100, codeCjkScale: 100, uiCjkWeight: 0, textCjkWeight: 0, codeCjkWeight: 0, cjkAutoSpace: true, codeLigatures: true };
+const DEFAULTS = { textSize: 100, codeScale: 100, lineHeight: "normal", uiCjkScale: 100, textCjkScale: 100, textCjkScaleOwn: false, codeCjkScale: 100, uiCjkWeight: 0, textCjkWeight: 0, textCjkWeightOwn: false, codeCjkWeight: 0, cjkAutoSpace: true, codeLigatures: true };
 
 async function opened() {
   const s = await started();
@@ -64,16 +64,24 @@ test("text's CJK size and weight follow ui's while text's CJK face is ui's, unti
   assert.deepEqual(text(), [115, -100]);
   assert.deepEqual(kept().typography, { uiCjkScale: 115, uiCjkWeight: -100 });
 
-  // 100 chosen for text's over ui's 115: kept, and so it goes out.
+  // 100 chosen for text's over ui's 115: kept, and so it goes out; textCjkScaleOwn/WeightOwn stay true even if ui later matches 100/0.
   await set({ typography: { textCjkScale: 100, textCjkWeight: 0 } });
   assert.deepEqual(text(), [100, 0]);
+  assert.equal(prefs().typography.textCjkScaleOwn, true);
+  assert.equal(prefs().typography.textCjkWeightOwn, true);
   assert.deepEqual(kept().typography, { textCjkScale: 100, textCjkWeight: 0, uiCjkScale: 115, uiCjkWeight: -100 });
-  // ui's changed: text's as chosen.
-  await set({ typography: { uiCjkScale: 85 } });
+  // ui's changed to 100/0 (matching text's explicit 100/0): textCjkScaleOwn/WeightOwn remain true.
+  await set({ typography: { uiCjkScale: 100, uiCjkWeight: 0 } });
+  assert.equal(prefs().typography.textCjkScaleOwn, true);
+  assert.equal(prefs().typography.textCjkWeightOwn, true);
+  // ui's changed again: text's stays as explicitly chosen.
+  await set({ typography: { uiCjkScale: 85, uiCjkWeight: -100 } });
   assert.deepEqual(text(), [100, 0]);
-  // Taken back: ui's again.
+  // Taken back: ui's again, and Own flags return to false.
   await set({ typography: { textCjkScale: null, textCjkWeight: null } });
   assert.deepEqual(text(), [85, -100]);
+  assert.equal(prefs().typography.textCjkScaleOwn, false);
+  assert.equal(prefs().typography.textCjkWeightOwn, false);
 
   // Text's own CJK face, or `none`, or no CJK face of ui's: its own, the defaults where none chosen.
   for (const fonts of [{ textCjk: "noto-serif-sc" }, { textCjk: "none" }, { textCjk: null, uiCjk: null }]) {

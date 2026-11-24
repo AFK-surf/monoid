@@ -170,7 +170,7 @@ test("fonts kept by an older build read as before: ui's face sets the CJK charac
   assert.deepEqual(prefs.fonts, { ui: "lxgw-wenkai" });
   assert.deepEqual([prefs.faces.ui.id, prefs.faces.text.id, prefs.faces.code.id], ["lxgw-wenkai", "lxgw-wenkai", ""]);
   assert.deepEqual([prefs.faces.uiCjk, prefs.faces.textCjk, prefs.faces.codeCjk, prefs.faces.cjkPaths], ["", "", "", {}]);
-  assert.deepEqual(prefs.typography, { textSize: 100, codeScale: 100, lineHeight: "normal", uiCjkScale: 100, textCjkScale: 100, codeCjkScale: 100, uiCjkWeight: 0, textCjkWeight: 0, codeCjkWeight: 0, cjkAutoSpace: true, codeLigatures: true });
+  assert.deepEqual(prefs.typography, { textSize: 100, codeScale: 100, lineHeight: "normal", uiCjkScale: 100, textCjkScale: 100, textCjkScaleOwn: false, codeCjkScale: 100, uiCjkWeight: 0, textCjkWeight: 0, textCjkWeightOwn: false, codeCjkWeight: 0, cjkAutoSpace: true, codeLigatures: true });
   assert.ok(prefs.faces.list.every((f: any) => f.hasCjk === ["noto-sans-sc", "noto-serif-sc", "lxgw-wenkai", "maple-mono"].includes(f.id)));
   assert.equal(prefs.faces.ui.hasCjk, true);
   assert.equal(prefs.faces.code.hasCjk, false);
