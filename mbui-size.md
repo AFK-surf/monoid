@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [98a6b07ba](https://github.com/AFK-surf/monoid/commit/98a6b07ba2be5599e3479b1da6e6d60c88e0fe51) fix(cloud): hold credential devices in memory and  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
 | [c7347fe3c](https://github.com/AFK-surf/monoid/commit/c7347fe3c75abf5cd01d2d082318d3244137ea4f) fix(ui,mbui): keep a never-placed beside overlay o | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
 | [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.76 | 130.62 |
 | [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cfeddd40f](https://github.com/AFK-surf/monoid/commit/cfeddd40ffa87c2fe84cd131f4e28d54ddc4449b) feat(pion-client-core): wire mesh transport, lock/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.58 | 121.18 |
 | [b01ba4eaa](https://github.com/AFK-surf/monoid/commit/b01ba4eaa266dd5e9f43f0389fd6fca7e8317b89) feat(ui): align regular liquid glass rim/hairline  | 2.74 | 3.69 | 14.96 | 37.15 | 56.99 | 32.53 | 66.11 | 100.45 | 123.8 |
 | [ca9c7827a](https://github.com/AFK-surf/monoid/commit/ca9c7827af71025ff4835dd52e9b042202099a0d) feat(rules): default Node station to Pion Wasm rul | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 116.63 |
-| [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 116.63 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [98a6b07ba](https://github.com/AFK-surf/monoid/commit/98a6b07ba2be5599e3479b1da6e6d60c88e0fe51) fix(cloud): hold credential devices in memory and  | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.48 |
 | [c7347fe3c](https://github.com/AFK-surf/monoid/commit/c7347fe3c75abf5cd01d2d082318d3244137ea4f) fix(ui,mbui): keep a never-placed beside overlay o | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.33 |
 | [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
 | [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cfeddd40f](https://github.com/AFK-surf/monoid/commit/cfeddd40ffa87c2fe84cd131f4e28d54ddc4449b) feat(pion-client-core): wire mesh transport, lock/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.39 |
 | [b01ba4eaa](https://github.com/AFK-surf/monoid/commit/b01ba4eaa266dd5e9f43f0389fd6fca7e8317b89) feat(ui): align regular liquid glass rim/hairline  | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.15 |
 | [ca9c7827a](https://github.com/AFK-surf/monoid/commit/ca9c7827af71025ff4835dd52e9b042202099a0d) feat(rules): default Node station to Pion Wasm rul | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.26 |
-| [c9ce75bdc](https://github.com/AFK-surf/monoid/commit/c9ce75bdcb0c5c3c0204c5f42ee4b2ec033e45d3) perf(station): project each event once for all old | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
