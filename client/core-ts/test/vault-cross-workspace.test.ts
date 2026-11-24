@@ -14,6 +14,7 @@ import { HostWire, type RequestHead, type StationWire } from "../src/station/wir
 import type { FakeHost } from "../src/testing.ts";
 import { type Entry, Signer, entryHash, signedBytes } from "../src/lock.ts";
 import { hex, utf8 } from "../src/util.ts";
+import { lockSeen } from "../src/views/lock.ts";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { HostError } from "../src/error.ts";
 import { t } from "../src/i18n.ts";
@@ -846,6 +847,13 @@ test("the source workspace with no safe mode, its person's own lock not read fro
     const vaults = await r.watch(97, { topic: "vaults", workspace: "wsB" });
     assert.equal(vaults(), undefined, "no value yet: the page waits rather than say there is nothing to browse");
     assert.deepEqual(askAnswers(r.core.inner, "wsB", [{ request: "rc", save: false, crossWs: "ws" }, { request: "rb", save: false, browse: true }]).map((x) => x.answer), ["approve", "approve"]);
+    // Read meanwhile, as `PersonalLock` tells it (core.ts `changed`): the page shows the browse with what it finds.
+    loaded = true;
+    lockSeen(r.core.inner).touch("lock wsB");
+    await r.host.time.pass(100);
+    const rb = vaults().requests.find((x: any) => x.id === "rb");
+    assert.deepEqual([rb.browseItems, rb.noKey], [1, undefined]);
+    loaded = false;
     assert.deepEqual(await r.ask("vault.approve", { workspace: "wsB", request: "rb" }), { request: "rb", workspaces: 1, items: 1 });
     assert.equal(loaded, true);
     loaded = false;
