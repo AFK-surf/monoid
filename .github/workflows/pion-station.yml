@@ -12,6 +12,7 @@ on:
       - "station/test/footprint-reference.ts"
       - "station/test/mb-footprint.test.ts"
       - "station/test/reader-contract-footprint.test.ts"
+      - "station/test/footprint-mounts.ts"
       - "station/test/reader-contract-select.test.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - ".github/workflows/pion-station.yml"
@@ -179,6 +180,9 @@ jobs:
           "$PIONC" fmt --check pion/station
           "$PIONC" check --json pion/station
           "$PIONC" test --json pion/station
+
+      # (the footprint tests mount a tmpfs in a user namespace, which Ubuntu 24.04's AppArmor keeps from a user's)
+      - run: sudo -n sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       - name: Build linux-x64 with real libstillfail_shell.a and run smoke suite
         env:
