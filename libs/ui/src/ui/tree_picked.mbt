@@ -200,7 +200,7 @@ fn picked_now_worked() -> WordsPicked? {
   guard picked_in_order() is Some((spans, end)) else { return None }
   guard picked_shown.get(end) is Some((ends_in, _, end_scope)) && end_scope == within else { return None }
   guard view_app.val is Some(tree) else { return None }
-  guard tree.view_of(ends_in) is Some(end_v) && end_v.lent(words_picks) == Some(within) else { return None }
+  guard tree.view_of(ends_in) is Some(end_v) && !end_v.shown_nowhere() && end_v.lent(words_picks) == Some(within) else { return None }
   let of : Array[String] = []
   let mut strays = 0
   for e in spans {
@@ -248,7 +248,7 @@ pub fn picked_end_piece(p : WordsPicked) -> (Double, Double) -> (Double, Double,
     let (_, lay, _) = view_runs_laid(rs, look, set, w, tree.words_scale_of(v.id()), kept=v.words_breaks_now(), tabular=v.words_tabular_now())
     let rects = selected_rects(base, lay)
     guard !rects.is_empty() else { return None }
-    let down = spot_cmp(picked.from, picked.to) <= 0
+    let down = spot_cmp(refresh_spot(picked.from), refresh_spot(picked.to)) <= 0
     let mut r = rects[0]
     for q in rects {
       let later = q.1 > r.1 || (q.1 == r.1 && q.0 > r.0)

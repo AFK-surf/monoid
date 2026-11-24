@@ -138,7 +138,7 @@ fn chat_quote_node(
       guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(v, rows) }) is Some((_, m)) else { return }
       // (where the words it ends in are no more, made of none of a list's rows round what shows as it was moved on, or
       // put by to be another's: no bar beside nothing, and what was picked let go as they go, the bar with it)
-      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
+      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) && !end.shown_nowhere() else { return }
       // (all of the message picked by 全选: its words whole, quoted and copied)
       let whole = alled.val == p.made
       let items : Array[@sf.PickBarItem] = [
@@ -223,7 +223,7 @@ fn chat_quote_node(
   let quote_in = fn(host : @view.View) {
     host.pick(fn() { chat_quotable(v, rows).map(fn(q) { q.0.made }) }, fn(holds, made) {
       guard made is Some(_) && @signals.untracked(fn() { chat_quotable(v, rows) }) is Some((p, _)) else { return }
-      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
+      guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) && !end.shown_nowhere() else { return }
       @sf.action_box_node(holds, fn() { @sf.t("web-main.chat.quote") }, fn(_) { chat_quote_take(v, src, draft, rows) }, fn(b) {
         let gone = fn() { chat_pick_gone(p) }
         let unkept = end.owns_while(gone)

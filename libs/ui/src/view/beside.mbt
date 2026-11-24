@@ -500,8 +500,26 @@ fn Tree::besides_placed(self : Tree) -> Unit {
   self.besides_at.append(live)
   // (1 being placed, 2 placed beside its anchor, 3 refused: where it is laid out)
   let state : Map[Int, Int] = Map([])
+  fn set_unplaced(at : Int, unplaced : Bool) -> Unit {
+    let n = self.nodes[at]
+    n.beside_unplaced = unplaced
+    let out = n.flex.left_out() || unplaced
+    if out != n.out {
+      n.out = out
+      self.outs_changed = true
+      self.sizes_due = true
+      self.outs_gone.push(at)
+      self.work.composed = self.work.composed + 1
+      self.composed.push({ at, gen: n.gen })
+      self.places_rev = self.places_rev + 1
+      self.touched(at, words=true, state=true, kids=true)
+      self.hits_bump()
+    }
+  }
+
   fn refused(at : Int) -> Unit {
     state[at] = 3
+    set_unplaced(at, false)
     // (on no side of anything)
     self.nodes[at].went = None
     // (where it is laid out, as if it went beside nothing: never where it went last)
@@ -526,10 +544,12 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     state[at] = 1
     let n = self.nodes[at]
     // (where it was last beside its anchor, kept: placed again by what changed of its own (its fading, its size), it
-    // stays there, never where it is laid out)
+    // stays there, never where it is laid out; never placed beside it yet: kept out of sight rather than drawn at
+    // (0, 0) in its holder)
     let stay = fn() {
       match n.beside_last {
         Some((lx, ly, px, py)) => {
+          set_unplaced(at, false)
           // (as big as about the point it last went from: its max_shift kept there, View::scale)
           let ls = n.scaled_at(n.lw, n.lh, px, py)
           if lx != n.lx || ly != n.ly || px != n.lpx || py != n.lpy || ls != n.ls {
@@ -544,7 +564,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
             self.hits_bump()
           }
         }
-        None => ()
+        None => if self.held_from_root(at) { set_unplaced(at, true) }
       }
       state[at] = 2
       true
@@ -688,6 +708,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     let ls = n.scaled_at(n.lw, n.lh, px, py)
     let (lx, ly) = ((x - hx) / hs, (y - hy) / hs)
     n.beside_last = Some((lx, ly, px, py))
+    set_unplaced(at, false)
     if lx != n.lx || ly != n.ly || px != n.lpx || py != n.lpy || ls != n.ls {
       n.lx = lx
       n.ly = ly

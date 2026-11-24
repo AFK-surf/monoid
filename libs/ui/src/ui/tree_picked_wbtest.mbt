@@ -611,3 +611,60 @@ test "picked_words_at returns empty inside a nested apart=true sub-scope even th
   // Point inside nested apart=true sub-scope (y=50, still inside outer's 0..200 rect) must return ""
   assert_eq(picked_words_at(50.0, 50.0), "")
 }
+
+///|
+test "picked_now_worked returns None when the selection's ending paragraph node is hidden via laid_nowhere" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  let hide_end = @signals.signal(false, same=fn(a, b) { a == b })
+  let pill : Ref[@view.NodeId?] = Ref(None)
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.padding(Is((0.0, 40.0, 0.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+      words_picked(page)
+      page.box(fn(m1) {
+        picked_of(m1, "m1") |> ignore
+        m1.box(fn(n) {
+          n
+          .width(Is(Some(280.0)))
+          .laid_nowhere(By(fn() { hide_end.get() }))
+          .words_runs(Is([plain("hidden end words")]), ink=0x333333FFL, look~)
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      page.show(fn() { picked_now() is Some(p) && !p.finger }, fn(holds) {
+        guard @signals.untracked(fn() { picked_now() }) is Some(p) else { return }
+        holds.box(fn(b) {
+          pill.val = Some(b.id())
+          keeps_picked(b)
+          .width(Is(Some(50.0)))
+          .height(Is(Some(26.0)))
+          .ground(Is(0x112233FFL))
+          .beside(p.ends_in, side=Top, offset=8.0, piece=picked_end_piece(p))
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Drag while ending paragraph is visible, hide it before release
+  t.fake.time = t.time()
+  finger(0, 1.0, 51.0)
+  t.fake.time = t.fake.time + input_step_ms
+  finger(1, 120.0, 51.0)
+  t.frame_at(t.fake.time)
+  assert_true(t.ctx().selected_text().contains("hidden"))
+  hide_end.set(true)
+  t.draw()
+  t.fake.time = t.fake.time + input_step_ms
+  finger(2, 120.0, 51.0)
+  t.frame_at(t.fake.time)
+  assert_eq(picked_now(), None, msg="ending paragraph is shown_nowhere so picked_now must be None")
+  assert_eq(pill.val, None, msg="quote pill must not mount when ending paragraph is hidden")
+}

@@ -542,6 +542,8 @@ struct Node {
   /// where it was last placed beside its anchor (its place in what holds it, and the point it is drawn bigger or
   /// smaller about): where it stays once it is leaving or its anchor is drawn nowhere (View::beside)
   mut beside_last : (Double, Double, Double, Double)?
+  /// whether it is hidden because it goes beside an anchor that has not been placeable yet (beside_last is None)
+  mut beside_unplaced : Bool
   /// the point of its anchor the pointer was last at, in the anchor's own terms (View::beside's `at_pointer`)
   mut beside_point : (Double, Double)?
   /// the piece of its anchor it goes beside (View::beside's `piece`: asked as it is placed, given how big the anchor is
@@ -2111,6 +2113,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.as_ground = false
       n.beside = None
       n.beside_last = None
+      n.beside_unplaced = false
       n.beside_point = None
       n.beside_piece = None
       n.focused_cell = None
@@ -2259,6 +2262,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         beside: None,
         went: None,
         beside_last: None,
+        beside_unplaced: false,
         beside_point: None,
         beside_piece: None,
         default_press: false,
@@ -9758,6 +9762,7 @@ fn View::let_go(self : View) -> Unit {
   n.as_ground = false
   n.beside = None
   n.beside_last = None
+  n.beside_unplaced = false
   n.beside_point = None
   n.beside_piece = None
   n.focused_cell = None
@@ -12528,6 +12533,7 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     n.as_ground = false
     n.beside = None
     n.beside_last = None
+    n.beside_unplaced = false
     n.beside_point = None
     n.beside_piece = None
     n.focused_cell = None
@@ -14233,8 +14239,9 @@ fn Tree::place(self : Tree, at : Int) -> Unit {
   }
   // (as big as it says, its farthest corner kept within its max_shift: View::scale)
   let s = n.scaled_at(w, h, px, py)
-  // (left out of its row: laid out nowhere; told once all of it is laid out, View::left_out)
-  let out = n.flex.left_out()
+  // (left out of its row: laid out nowhere; told once all of it is laid out, View::left_out; or an overlay beside an
+  // anchor that has never been placeable yet: Tree::besides_placed)
+  let out = n.flex.left_out() || n.beside_unplaced
   let went = !n.placed || x != n.lx || y != n.ly || a != n.la || s != n.ls || px != n.lpx || py != n.lpy || out != n.out
   // (first placed, or left out of its row or back in it: what holds it reads out another set, what it holds takes presses
   // otherwise: Tree::said_marked)
