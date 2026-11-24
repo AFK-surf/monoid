@@ -53,12 +53,25 @@ async function* oneOf(bytes: Buffer): AsyncIterable<Buffer> {
   yield bytes;
 }
 
+type HeadMeta = { mtimeMs: number; size: number; to: number; batches: string[]; files: Set<string> };
+
+function headMetaOf(mtimeMs: number, size: number, head: Head): HeadMeta {
+  const files = new Set<string>();
+  for (const h in head.files) if (Object.hasOwn(head.files, h)) files.add(h);
+  if (head.transcriptFiles !== undefined) {
+    for (const h in head.transcriptFiles) if (Object.hasOwn(head.transcriptFiles, h)) files.add(h);
+  }
+  return { mtimeMs, size, to: head.to, batches: [...head.batches], files };
+}
+
 /// Where a station keeps what other stations send it (`<data>/replicas`), on its own disk.
 export class FolderPlace implements Place {
   readonly root: string;
-  readonly fs: Fs = direct;
-  constructor(root: string) {
+  readonly fs: Fs;
+  readonly #meta = new Map<string, HeadMeta>();
+  constructor(root: string, fs: Fs = direct) {
     this.root = root;
+    this.fs = fs;
   }
 
   dir(ws: string, origin: string): string {
@@ -100,6 +113,28 @@ export class FolderPlace implements Place {
     }
   }
 
+  async #headMeta(ws: string, origin: string, gen: string): Promise<HeadMeta | null> {
+    const key = `${ws}\n${origin}\n${gen}`;
+    const path = join(this.dir(ws, origin), gen, "head.json");
+    let st;
+    try {
+      st = await this.fs.stat(path);
+    } catch {
+      this.#meta.delete(key);
+      return null;
+    }
+    const cached = this.#meta.get(key);
+    if (cached !== undefined && cached.mtimeMs === st.mtimeMs && cached.size === st.size) return cached;
+    const head = await this.#head(path);
+    if (head === null) {
+      this.#meta.delete(key);
+      return null;
+    }
+    const meta = headMetaOf(st.mtimeMs, st.size, head);
+    this.#meta.set(key, meta);
+    return meta;
+  }
+
   async held(ws: string, origin: string): Promise<Held> {
     check(ws, origin);
     const dir = this.dir(ws, origin);
@@ -124,10 +159,18 @@ export class FolderPlace implements Place {
       const head = asHead(JSON.parse(bytes.toString("utf8")));
       if (head === null || head.gen !== gen || head.origin !== origin || head.workspace !== ws) throw new Error("not a head of this copy");
       // A head never goes back: one older than what is held (another station's sending what it holds) is not taken.
-      const was = await this.#head(join(dir, "head.json"));
+      const was = await this.#headMeta(ws, origin, gen);
       if (was !== null && was.to > head.to) return;
       for (const b of head.batches) if (!(await this.#exists(join(dir, "log", b)))) throw new Error(`batch ${b} is not here yet`);
-      await this.#whole(join(dir, "head.json"), oneOf(bytes));
+      const headPath = join(dir, "head.json");
+      await this.#whole(headPath, oneOf(bytes));
+      const key = `${ws}\n${origin}\n${gen}`;
+      try {
+        const st = await this.fs.stat(headPath);
+        this.#meta.set(key, headMetaOf(st.mtimeMs, st.size, head));
+      } catch {
+        this.#meta.delete(key);
+      }
     }
   }
 
@@ -150,16 +193,27 @@ export class FolderPlace implements Place {
   async drop(ws: string, origin: string, gen: string, batches: string[], files: string[]): Promise<void> {
     check(ws, origin, gen);
     const dir = this.dir(ws, origin);
-    const head = await this.#head(join(dir, gen, "head.json"));
-    for (const b of batches) if (BATCH.test(b) && !(head?.batches ?? []).includes(b)) await this.fs.unlink(join(dir, gen, "log", b)).catch(() => {});
+    const meta = await this.#headMeta(ws, origin, gen);
+    for (const b of batches) if (BATCH.test(b) && !(meta?.batches ?? []).includes(b)) await this.fs.unlink(join(dir, gen, "log", b)).catch(() => {});
     if (files.length === 0) return;
     // (a file stays while any generation held names it)
-    const named = new Set<string>();
-    for (const g of (await this.held(ws, origin)).gens) {
-      for (const h of Object.keys(g.head?.files ?? {})) named.add(h);
-      for (const h of Object.keys(g.head?.transcriptFiles ?? {})) named.add(h);
+    const metas: HeadMeta[] = [];
+    for (const g of await this.#list(dir)) {
+      if (!GEN.test(g)) continue;
+      const m = await this.#headMeta(ws, origin, g);
+      if (m !== null) metas.push(m);
     }
-    for (const f of files) if (HASH.test(f) && !named.has(f)) await this.fs.unlink(join(dir, "files", f)).catch(() => {});
+    for (const f of files) {
+      if (!HASH.test(f)) continue;
+      let referenced = false;
+      for (const m of metas) {
+        if (m.files.has(f)) {
+          referenced = true;
+          break;
+        }
+      }
+      if (!referenced) await this.fs.unlink(join(dir, "files", f)).catch(() => {});
+    }
   }
 
   /// Where a batch, a head or a file held here is, by its name; null where it is not.
@@ -204,6 +258,10 @@ export class FolderPlace implements Place {
   /// All it holds of a workspace (a station that left it), or of one station's copies there, let go.
   async remove(ws: string, origin?: string): Promise<void> {
     await this.fs.remove(origin === undefined ? join(this.root, ws) : this.dir(ws, origin)).catch(() => {});
+    const prefix = origin === undefined ? `${ws}\n` : `${ws}\n${origin}\n`;
+    for (const key of this.#meta.keys()) {
+      if (key.startsWith(prefix)) this.#meta.delete(key);
+    }
   }
 }
 
@@ -246,18 +304,16 @@ export function behind(own: Head, held: Held): boolean {
   return false;
 }
 
-function headFileHashes(head: Head, includeTranscripts: boolean): string[] {
-  if (!includeTranscripts || head.transcriptFiles === undefined) return Object.keys(head.files);
-  const out = new Set(Object.keys(head.files));
-  for (const h of Object.keys(head.transcriptFiles)) out.add(h);
-  return [...out];
-}
-
 /// `head` naming only the transcripts `held` (`partial`): what a place holds once the chats are sent and before the
 /// transcripts are, a whole copy for a restorer as far as it goes.
 function partialHead(head: Head, held: Set<string>): Head {
   const transcriptFiles: Record<string, number> = {};
-  for (const [h, n] of Object.entries(head.transcriptFiles ?? {})) if (held.has(h) || h in head.files) transcriptFiles[h] = n;
+  const tf = head.transcriptFiles;
+  if (tf !== undefined) {
+    for (const h in tf) {
+      if (Object.hasOwn(tf, h) && (held.has(h) || Object.hasOwn(head.files, h))) transcriptFiles[h] = tf[h]!;
+    }
+  }
   return { ...head, transcriptFiles, partial: true };
 }
 
@@ -274,7 +330,13 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     if (behind(own.head, held)) return { behind: true };
     const holding = held.gens.find((g) => g.gen === own.head.gen);
     const others = new Set<string>();
-    for (const g of held.gens) if (g.gen !== own.head.gen && g.head !== null) for (const h of headFileHashes(g.head, includeTranscripts)) others.add(h);
+    for (const g of held.gens) {
+      if (g.gen === own.head.gen || g.head === null) continue;
+      for (const h in g.head.files) if (Object.hasOwn(g.head.files, h)) others.add(h);
+      if (includeTranscripts && g.head.transcriptFiles !== undefined) {
+        for (const h in g.head.transcriptFiles) if (Object.hasOwn(g.head.transcriptFiles, h)) others.add(h);
+      }
+    }
     k = { gen: own.head.gen, batches: new Set(holding?.batches ?? []), files: new Set(held.files), others, to: holding?.head?.to ?? -1, made: holding?.head?.partial === true ? -1 : (holding?.head?.made ?? -1) };
   }
   for (const b of own.head.batches) {
@@ -282,18 +344,32 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     await place.put(ws, origin, own.head.gen, "batch", b, await own.batch(b));
     k.batches.add(b);
   }
-  const wanted = headFileHashes(own.head, includeTranscripts);
-  const lacking = wanted.filter((h) => !k.files.has(h));
-  const sources = lacking.length === 0 ? new Map<string, string>() : await own.sources(lacking);
-  const transcriptSet = includeTranscripts && own.head.transcriptFiles !== undefined
-    ? new Set(Object.keys(own.head.transcriptFiles))
-    : new Set<string>();
+  const ownFiles = own.head.files;
+  const ownTf = includeTranscripts ? own.head.transcriptFiles : undefined;
   // (the chats' own files first, then the transcripts: a transcript a file also names is the chat's)
-  const chatFiles = new Set(Object.keys(own.head.files));
-  const lackingTranscripts = lacking.filter((h) => !chatFiles.has(h));
-  const toSendTranscripts = lackingTranscripts.some((h) => sources.has(h));
+  const lackingChat: string[] = [];
+  const lackingTranscripts: string[] = [];
+  let wantedCount = 0;
+  for (const h in ownFiles) {
+    if (!Object.hasOwn(ownFiles, h)) continue;
+    wantedCount++;
+    if (!k.files.has(h)) lackingChat.push(h);
+  }
+  if (ownTf !== undefined) {
+    for (const h in ownTf) {
+      if (!Object.hasOwn(ownTf, h) || Object.hasOwn(ownFiles, h)) continue;
+      wantedCount++;
+      if (!k.files.has(h)) lackingTranscripts.push(h);
+    }
+  }
+  const lackingCount = lackingChat.length + lackingTranscripts.length;
+  const sources = lackingCount === 0
+    ? new Map<string, string>()
+    : await own.sources(lackingTranscripts.length === 0 ? lackingChat : lackingChat.length === 0 ? lackingTranscripts : [...lackingChat, ...lackingTranscripts]);
+  let sendableTranscripts = 0;
+  for (const h of lackingTranscripts) if (sources.has(h)) sendableTranscripts++;
   let missing = 0;
-  const send = async (hash: string): Promise<void> => {
+  const send = async (hash: string, isTranscript: boolean): Promise<void> => {
     const source = sources.get(hash);
     if (source === undefined) {
       missing++;
@@ -303,7 +379,7 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
       await place.putFile(ws, origin, hash, source);
     } catch (e) {
       const enoent = (e as { code?: unknown } | null)?.code === "ENOENT" || (e instanceof Error && e.message.startsWith("ENOENT:"));
-      if (enoent && !transcriptSet.has(hash)) {
+      if (enoent && !isTranscript) {
         missing++;
         return;
       }
@@ -311,25 +387,31 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
     }
     k.files.add(hash);
   };
-  for (const hash of lacking) if (chatFiles.has(hash)) await send(hash);
+  for (const hash of lackingChat) await send(hash, ownTf !== undefined && Object.hasOwn(ownTf, hash));
   // The chats as far as they go now, before the transcripts still to send: a first copy of a station's transcripts is
   // hundreds of thousands of files, and its chats waited behind them for a day (2026-11-23). This head names only the
   // transcripts the place holds, and says it is partial, so that the whole one is put after them.
-  if (toSendTranscripts && k.to !== own.head.to) {
+  if (sendableTranscripts > 0 && k.to !== own.head.to) {
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(partialHead(own.head, k.files), null, 1)));
     k.to = own.head.to;
     k.made = -1;
-    opts.onPartial?.(own.head.to, lackingTranscripts.filter((h) => sources.has(h)).length);
+    opts.onPartial?.(own.head.to, sendableTranscripts);
   }
-  for (const hash of lackingTranscripts) await send(hash);
+  for (const hash of lackingTranscripts) await send(hash, true);
   if (k.to !== own.head.to || k.made !== own.head.made) {
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(own.head, null, 1)));
     k.to = own.head.to;
     k.made = own.head.made;
   }
-  const named = new Set(wanted);
   const oldBatches = [...k.batches].filter((b) => !own.head.batches.includes(b));
-  const oldFiles = [...k.files].filter((f) => !named.has(f) && !k.others.has(f));
+  const oldFiles: string[] = [];
+  if (k.files.size > wantedCount - missing) {
+    for (const f of k.files) {
+      if (!Object.hasOwn(ownFiles, f) && !(ownTf !== undefined && Object.hasOwn(ownTf, f)) && !k.others.has(f)) {
+        oldFiles.push(f);
+      }
+    }
+  }
   if (oldBatches.length > 0 || oldFiles.length > 0) {
     await place.drop(ws, origin, own.head.gen, oldBatches, oldFiles);
     for (const b of oldBatches) k.batches.delete(b);

@@ -966,6 +966,7 @@ async function makeMbExportHelper(db: string, replica: string, data: string, ori
     places: (now: number) => ask({ type: "places", places: { home: HOME, workspaces: [{ workspace: HOME, name: "src" }] } }, now),
     pass: (told: ReturnType<typeof nothingTold>, now: number) => ask({ type: "pass", told }, now),
     sources: (hashes: string[], now: number) => ask({ type: "sources", hashes }, now) as Promise<Record<string, string>>,
+    newGenerations: (after: number, now: number) => ask({ type: "newGenerations", after }, now),
     close: (now: number) => ask({ type: "close" }, now),
   };
 }
@@ -1173,3 +1174,100 @@ test("TS reference: chunk re-referenced within grace period is not deleted and c
 
 test("MoonBit reader: chunk re-referenced within grace period is not deleted and clears transcript_chunk_gc", { skip: skipMb }, () =>
   runReReferencedChunkRegression("mb"));
+
+async function runTranscriptCacheConsistency(mode: "ts" | "mb") {
+  const s = makeTranscriptStation();
+  closing.push(async () => s.store.close());
+  const replica = join(s.data, "replica");
+  const originId = sid("a");
+  let now = 1_700_000_000_000;
+
+  let passFn: (told: ReturnType<typeof nothingTold>) => Promise<any>;
+  let newGenFn: (after: number) => Promise<void>;
+  if (mode === "ts") {
+    const exporter = new Exporter({
+      db: s.db,
+      replica,
+      dataDir: s.data,
+      origin: originId,
+      now: () => now,
+      chunkBytes: 4096,
+    });
+    closing.push(async () => exporter.close());
+    exporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+    passFn = async (told) => exporter.pass(told);
+    newGenFn = async (after) => exporter.newGenerations(after);
+  } else {
+    const mb = await makeMbExportHelper(s.db, replica, s.data, originId, 4096);
+    await mb.places(now);
+    passFn = (told) => mb.pass(told, now);
+    newGenFn = (after) => mb.newGenerations(after, now);
+  }
+
+  // 1. Initial pass populates transcriptFiles and tfCache.
+  const p1 = await passFn(nothingTold());
+  const tf1 = p1.heads[HOME]!.transcriptFiles as Record<string, number>;
+  assert.ok(tf1 && Object.keys(tf1).length >= 3);
+
+  // 2. Non-transcript chat-only pass hits tfCache with zero drift.
+  now += 10_000;
+  const thread = s.store.sessionThreads("chat:claude")[0]!.thread.id;
+  s.store.insertMessage({ thread, ts: "c.cache.1", authorKind: "person", author: "p@x", text: "chat only" });
+  const p2 = await passFn(nothingTold());
+  assert.equal(p2.wrote, 1);
+  assert.deepEqual(p2.heads[HOME]!.transcriptFiles, tf1, "cached transcriptFiles matches on non-transcript pass");
+
+  // 3. Updating a transcript invalidates tfCache and updates head.transcriptFiles.
+  now += 10_000;
+  writeFileSync(s.claudeTrPath, s.claudeInitial + JSON.stringify({ role: "assistant", text: "cache-invalidation-append" }) + "\n");
+  utimesSync(s.claudeTrPath, new Date(now), new Date(now));
+  const p3 = await passFn({ ...nothingTold(), transcripts: true });
+  const tf3 = p3.heads[HOME]!.transcriptFiles as Record<string, number>;
+  assert.notDeepEqual(tf3, tf1, "transcript update invalidates cache");
+
+  // 4. Failed pass with rollback clears tfCache; subsequent pass succeeds with exact state.
+  now += 10_000;
+  const gen = p3.heads[HOME]!.gen as string;
+  const headPath = join(replica, "own", HOME, gen, "head.json");
+  const keptPath = join(replica, "own", HOME, gen, "head.kept");
+  writeFileSync(s.codexTrPath, '{"type":"event","payload":"codex-before-rollback"}\n');
+  utimesSync(s.codexTrPath, new Date(now), new Date(now));
+  // Make head.json unwritable (directory) so write_head fails and pass rolls back.
+  writeFileSync(keptPath, readFileSync(headPath));
+  rmSync(headPath);
+  mkdirSync(headPath);
+  await assert.rejects(() => passFn({ ...nothingTold(), transcripts: true }));
+  rmSync(headPath, { recursive: true });
+  writeFileSync(headPath, readFileSync(keptPath));
+  rmSync(keptPath);
+  // Chat-only pass after rollback must still see pre-rollback tf3 (not uncommitted codex update).
+  now += 10_000;
+  s.store.insertMessage({ thread, ts: "c.cache.2", authorKind: "person", author: "p@x", text: "after rollback" });
+  const pAfterRollback = await passFn(nothingTold());
+  assert.deepEqual(pAfterRollback.heads[HOME]!.transcriptFiles, tf3, "rollback cleared tfCache so stale uncommitted transcripts are not leaked");
+
+  // Now commit the codex transcript update.
+  now += 10_000;
+  const p4 = await passFn({ ...nothingTold(), transcripts: true });
+  const tf4 = p4.heads[HOME]!.transcriptFiles as Record<string, number>;
+  assert.notDeepEqual(tf4, tf3);
+
+  // 5. Deleting a transcript (tr_del) invalidates tfCache.
+  now += 10_000;
+  rmSync(s.codexTrPath);
+  const p5 = await passFn({ ...nothingTold(), transcripts: true });
+  const tf5 = p5.heads[HOME]!.transcriptFiles as Record<string, number>;
+  assert.notDeepEqual(tf5, tf4, "tr_del invalidates tfCache");
+
+  // 6. newGenerations() clears tfCache and re-exports cleanly.
+  now += 60_000;
+  await newGenFn(now - 1);
+  const p6 = await passFn(nothingTold());
+  assert.deepEqual(p6.heads[HOME]!.transcriptFiles, tf5, "newGenerations re-exports exact transcriptFiles");
+}
+
+test("TS reference: transcriptFiles cache stays consistent across chat-only pass, tr, tr_del, rollback, and newGenerations", () =>
+  runTranscriptCacheConsistency("ts"));
+
+test("MoonBit reader: transcriptFiles cache stays consistent across chat-only pass, tr, tr_del, rollback, and newGenerations", { skip: skipMb }, () =>
+  runTranscriptCacheConsistency("mb"));
