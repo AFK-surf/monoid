@@ -48,6 +48,7 @@ on:
       - "station/src/read/mb-reader.ts"
       - "station/src/read/pool.ts"
       - "station/src/read/reader-select.ts"
+      - "station/src/read/recent-chat-builder.ts"
       - "station/src/read/requested-builder.ts"
       - "station/src/read/said-builder.ts"
       - "station/src/read/session-bindings-builder.ts"
@@ -92,6 +93,7 @@ on:
       - "station/test/autoarchive-last-bounded.test.ts"
       - "station/test/builders-core-pion-switch.test.ts"
       - "station/test/builders-index-pion-switch.test.ts"
+      - "station/test/builders-recent-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/footprint-pion-switch.test.ts"
@@ -106,6 +108,7 @@ on:
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
+      - "station/test/mb-recent-chat.test.ts"
       - "station/test/mb-said.test.ts"
       - "station/test/mb-search-scope.test.ts"
       - "station/test/mb-session-bindings.test.ts"
@@ -144,6 +147,7 @@ on:
       - "station/test/reference/backfill/usage-retire.ts"
       - "station/test/reference/backfill/widget-sources.ts"
       - "station/test/reference/backfill/workspace-up-jobs.ts"
+      - "station/test/reference/chat-list/**"
       - "station/test/reference/memory-merge.ts"
       - "station/test/reference/packed.ts"
       - "station/test/reference/search-scope-prepare.ts"
@@ -608,6 +612,12 @@ jobs:
           STILLFAIL_MB_READER="$BIN_MB" node --test \
             station/test/mb-turn-counts.test.ts \
             station/test/mb-said.test.ts
+
+          STILLFAIL_MB_READER="$BIN_PION" node --test \
+            station/test/mb-recent-chat.test.ts
+
+          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" node --test \
+            station/test/builders-recent-pion-switch.test.ts
 
   verify-linux:
     runs-on: ubuntu-24.04

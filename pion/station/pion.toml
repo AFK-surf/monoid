@@ -7,6 +7,7 @@ members = [
   "packages/builders_core",
   "packages/builders_index",
   "packages/builders_stateful",
+  "packages/builders_recent",
   "packages/footprint",
   "packages/memory",
   "packages/packed",
@@ -25,6 +26,7 @@ js_json = { path = "packages/js_json" }
 builders_core = { path = "packages/builders_core" }
 builders_index = { path = "packages/builders_index" }
 builders_stateful = { path = "packages/builders_stateful" }
+builders_recent = { path = "packages/builders_recent" }
 footprint = { path = "packages/footprint" }
 memory = { path = "packages/memory" }
 packed = { path = "packages/packed" }
