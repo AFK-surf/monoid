@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4fc759d20](https://github.com/AFK-surf/monoid/commit/4fc759d2076e82c29b7b05d86e91f2932fa66d6b) fix(mbui): hide TestFlight prompt on App Store bui | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.57 | 66.21 | 100.42 | 120.6 |
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.54 | 66.16 | 100.42 | 120.6 |
 | [f1eaf852b](https://github.com/AFK-surf/monoid/commit/f1eaf852b6cd86ee55e472cb617558a078504507) fix(ui): isolate per-window D3D11 vertex buffers a | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.54 | 66.16 | 100.42 | 108.37 |
 | [ad527d4f4](https://github.com/AFK-surf/monoid/commit/ad527d4f4ef9047d0475e16afb5b7f28c8d43442) fix(ui): allocate exact CF_UNICODETEXT buffer size | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.54 | 66.16 | 100.42 | 108.37 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.48 | 127.55 |
 | [c4160616f](https://github.com/AFK-surf/monoid/commit/c4160616f52038080e27860eed80bdc1eab6592e) perf(station): keep the hub's config when a check  | 2.74 | 3.69 | 14.95 | 37.14 | 56.94 | 32.52 | 66.06 | 101.3 | 131.39 |
 | [cabc742d9](https://github.com/AFK-surf/monoid/commit/cabc742d9fa13e6f7852c7ed5cb67dc16b6f5e99) perf(mbui): prewarm offscreen home chat row text a | 2.74 | 3.69 | 14.95 | 37.14 | 56.94 | 32.52 | 66.06 | 101.3 | 131.39 |
-| [f32384c6d](https://github.com/AFK-surf/monoid/commit/f32384c6dbc05992d004ddb2b4e03375664f5820) feat(ui): calibrate pressed liquid glass lens and  | 2.74 | 3.69 | 14.95 | 37.14 | 56.93 | 32.51 | 66.04 | 101.09 | 118.55 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4fc759d20](https://github.com/AFK-surf/monoid/commit/4fc759d2076e82c29b7b05d86e91f2932fa66d6b) fix(mbui): hide TestFlight prompt on App Store bui | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
 | [f1eaf852b](https://github.com/AFK-surf/monoid/commit/f1eaf852b6cd86ee55e472cb617558a078504507) fix(ui): isolate per-window D3D11 vertex buffers a | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.56 |
 | [ad527d4f4](https://github.com/AFK-surf/monoid/commit/ad527d4f4ef9047d0475e16afb5b7f28c8d43442) fix(ui): allocate exact CF_UNICODETEXT buffer size | 0.55 | 0.72 | 2.82 | 3.83 | 6.99 | 2.07 | 5.74 | 57.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
 | [c4160616f](https://github.com/AFK-surf/monoid/commit/c4160616f52038080e27860eed80bdc1eab6592e) perf(station): keep the hub's config when a check  | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.85 |
 | [cabc742d9](https://github.com/AFK-surf/monoid/commit/cabc742d9fa13e6f7852c7ed5cb67dc16b6f5e99) perf(mbui): prewarm offscreen home chat row text a | 0.55 | 0.72 | 2.8 | 3.81 | 6.89 | 2.04 | 5.66 | 57.85 |
-| [f32384c6d](https://github.com/AFK-surf/monoid/commit/f32384c6dbc05992d004ddb2b4e03375664f5820) feat(ui): calibrate pressed liquid glass lens and  | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.28 |
