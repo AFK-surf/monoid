@@ -792,7 +792,7 @@ pub(all) struct Host {
   mut full_screen : () -> Bool
   mut set_full_screen : (Bool) -> Unit
   mut window_corner : () -> Double
-  mut window_corner_at : (Int32) -> Double
+  mut window_corner_at : ((Int32) -> Double)?
   mut window_drag : () -> Unit
   mut window_act : (Int32) -> Unit
   mut window_zoomed : () -> Bool
@@ -816,15 +816,15 @@ pub(all) struct Host {
   mut run : (String, FuncRef[(Double, Double, Double, Double) -> Unit], FuncRef[(Int32, Double, Double, Int32) -> Unit], FuncRef[(Double, Double, Double, Double, Int32) -> Unit], FuncRef[(Int32, Int32) -> Unit], FuncRef[(Int32, String, Int32, Int32) -> Unit]) -> Unit
   mut now : () -> Double
   mut wall_ms : () -> Double
-  mut clock_at_wall : (Double) -> Double
+  mut clock_at_wall : ((Double) -> Double)?
   mut utc_offset_min : (Double) -> Int32
   mut event_time : () -> Double
   mut event_finger : () -> Int32
   mut frame_late : () -> Double
   mut platform : () -> Int32
   mut request_frame : () -> Unit
-  mut request_frame_on : () -> Unit
-  mut frames_paced : (Double) -> Unit
+  mut request_frame_on : (() -> Unit)?
+  mut frames_paced : ((Double) -> Unit)?
   mut wake_after : (Double) -> Unit
   mut font_metrics : (Double, Int32, Int32, FixedArray[Double]) -> Unit
   mut shape : (String, Double, Int32, Int32, FixedArray[Double]) -> Int32
@@ -850,7 +850,7 @@ pub(all) struct Host {
   mut text_menu_own : (String) -> Unit
   mut edit_can : (Int32) -> Unit
   mut clipboard_set : (String) -> Unit
-  mut clipboard_set_html : (String, String) -> Unit
+  mut clipboard_set_html : ((String, String) -> Unit)?
   mut clipboard_set_secret : (String, Double) -> Unit
   mut clipboard_secret_off : () -> Unit
   mut clipboard_set_image : (Bytes) -> Unit
@@ -861,7 +861,7 @@ pub(all) struct Host {
   mut script_step : (String, String) -> String
   mut rows_on_pixels : () -> Bool
   mut keeps_sources : () -> Bool
-  mut lines_on_pixels : () -> Bool
+  mut lines_on_pixels : (() -> Bool)?
   mut frame_awaiting : (Int32, String) -> Unit
   mut own_clock : () -> Bool
   mut reduce_motion : () -> Bool
@@ -1005,11 +1005,11 @@ pub(all) struct Host {
   mut st_audio_queued : (Int32) -> Double
   mut st_audio_wanted : (Int32) -> Double
   mut st_audio_volume : (Int32, Double) -> Unit
-  mut st_frame_shown : (Int32, Bytes, Int32, Double, Int32) -> Int32
+  mut st_frame_shown : ((Int32, Bytes, Int32, Double, Int32) -> Int32)?
   mut st_flush : (Int32, Int32) -> Unit
   mut st_layers : () -> Int32
   mut st_pointer : (Int32, Bytes, Double, Double, Double, Double) -> Unit
-  mut st_pointer_named : (Int32, String, () -> Bytes, Double, Double, Double, Double) -> Unit
+  mut st_pointer_named : ((Int32, String, () -> Bytes, Double, Double, Double, Double) -> Unit)?
   mut st_pointer_at : (Int32, Double, Double, Int32) -> Unit
   mut st_direct : (Int32, Double, Double, Int32) -> Unit
   mut st_h265_here : () -> Int32
@@ -1057,7 +1057,7 @@ pub(all) struct Host {
   mut ncall_state : (Int32) -> Int32
   mut ncall_result : (Int32) -> String
   mut ncall_end : (Int32) -> Unit
-  mut words_spaced : () -> Int32
+  mut words_spaced : (() -> Int32)?
   mut window_set_title : (Int32, String) -> Unit
   mut auto_launch : () -> Bool
   mut set_auto_launch : (Bool) -> Bool
@@ -1069,7 +1069,16 @@ pub(all) struct Host {
   mut gamepads : (FixedArray[Double]) -> Int32
   mut glyphs_ahead_able : () -> Bool
 }
+pub fn Host::clipboard_set_html(Self, String, String) -> Unit
+pub fn Host::clock_at_wall(Self, Double) -> Double
+pub fn Host::frames_paced(Self, Double) -> Unit
+pub fn Host::lines_on_pixels(Self) -> Bool
 pub fn Host::noop() -> Self
+pub fn Host::request_frame_on(Self) -> Unit
+pub fn Host::st_frame_shown(Self, Int32, Bytes, Int32, Double, Int32) -> Int32
+pub fn Host::st_pointer_named(Self, Int32, String, () -> Bytes, Double, Double, Double, Double) -> Unit
+pub fn Host::window_corner_at(Self, Int32) -> Double
+pub fn Host::words_spaced(Self) -> Int32
 
 pub struct Keep {
   // private fields

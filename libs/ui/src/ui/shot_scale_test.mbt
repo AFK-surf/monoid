@@ -40,14 +40,13 @@ fn ZoomHost::as_host(self : ZoomHost) -> @hostapi.Host {
   }
   h.glyph_put = fn(key, x, y) { self.put[(x, y)] = key }
   h.atlas_size = fn(colour) { if colour { 0 } else { 1024 } }
-  h.drawn_pixels_of = fn(inst, count, _, _, _, scale, w, h, out) {
-    self.drawn.push((scale, w, h, Array::makei(count * zoom_inst, fn(i) { inst[i] })))
-    for i in 0..<(w * h * 4) {
+  h.drawn_pixels_of = fn(inst, count, _, _, _, scale, w, hh, out) {
+    self.drawn.push((scale, w, hh, Array::makei(count * zoom_inst, fn(i) { inst[i] })))
+    for i in 0..<(w * hh * 4) {
       out[i] = b'\x00'
     }
     true
   }
-  h.words_spaced = fn() { @hostapi.words_spaced_of(h) }
   h
 }
 

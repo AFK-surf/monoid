@@ -50,7 +50,7 @@ fn make_native_host() -> @hostapi.Host {
   h.set_window_zoom = fn(zoom) { set_window_zoom(zoom) }
   h.set_window_key = fn(f) { set_window_key(f) }
   h.wheel_kept = fn(kept) { wheel_kept(kept) }
-  h.window_setup = fn(min_w, min_h, w, h, inset) { window_setup(min_w, min_h, w, h, inset~) }
+  h.window_setup = fn(min_w, min_h, w, hh, inset) { window_setup(min_w, min_h, w, hh, inset~) }
   h.window_hold = fn() { window_hold() }
   h.window_show = fn() { window_show() }
   h.window_inset = fn() { window_inset() }
@@ -58,11 +58,11 @@ fn make_native_host() -> @hostapi.Host {
   h.set_full_screen = fn(on) { set_full_screen(on) }
   h.window_buttons_down = fn(by, ms) { window_buttons_down(by, ms) }
   h.window_corner = fn() { window_corner() }
-  h.window_corner_at = fn(k) { window_corner_at(k) }
+  h.window_corner_at = Some(fn(k) { window_corner_at(k) })
   h.window_drag = fn() { window_drag() }
   h.window_act = fn(what) { window_act(what) }
   h.window_zoomed = fn() { window_zoomed() }
-  h.window_snap = fn(x, y, w, h) { window_snap(x, y, w, h) }
+  h.window_snap = fn(x, y, w, hh) { window_snap(x, y, w, hh) }
   h.window_snap_state = fn() { window_snap_state() }
   h.window_opens = fn() { window_opens() }
   h.window_open = fn(what) { window_open(what) }
@@ -93,7 +93,7 @@ fn make_native_host() -> @hostapi.Host {
   h.frame_late = fn() { frame_late() }
   h.platform = fn() { said_once(platform_said, fn() { platform() }) }
   h.request_frame = fn() { request_frame() }
-  h.frames_paced = fn(hz) { frames_paced(hz) }
+  h.frames_paced = Some(fn(hz) { frames_paced(hz) })
   h.wake_after = fn(ms) { wake_after(ms) }
   h.font_metrics = fn(size, weight, style, out) { font_metrics(size, weight, style, out) }
   h.shape = fn(text, size, weight, style, out) { shape(text, size, weight, style, out) }
@@ -101,7 +101,7 @@ fn make_native_host() -> @hostapi.Host {
   h.glyph = fn(key, out) { glyph(key, out) }
   h.glyph_put = fn(key, x, y) { glyph_put(key, x, y) }
   h.glyph_picture = fn(key, out) { glyph_picture(key, out) }
-  h.atlas_put = fn(x, y, w, h, px) { atlas_put(x, y, w, h, px) }
+  h.atlas_put = fn(x, y, w, hh, px) { atlas_put(x, y, w, hh, px) }
   h.atlas_size = fn(colour) { atlas_size(colour) }
   h.glyphs_ahead = fn(keys, n) { glyphs_ahead(keys, n) }
   h.glyphs_ahead_able = fn() { true }
@@ -120,7 +120,7 @@ fn make_native_host() -> @hostapi.Host {
   h.text_menu_own = fn(words) { ffi_text_menu_own(words) }
   h.edit_can = fn(can) { ffi_edit_can(can) }
   h.clipboard_set = fn(s) { clipboard_set(s) }
-  h.clipboard_set_html = fn(text, html) { clipboard_set_html(text, html) }
+  h.clipboard_set_html = Some(fn(text, html) { clipboard_set_html(text, html) })
   h.clipboard_set_image = fn(data) { clipboard_set_image(data) }
   h.clipboard_set_secret = fn(s, clear_ms) { clipboard_set_secret(s, clear_ms~) }
   h.clipboard_secret_off = fn() { clipboard_secret_off() }
@@ -176,7 +176,7 @@ fn make_native_host() -> @hostapi.Host {
   h.image_info = fn(id, out) { image_info(id, out) }
   h.image_free = fn(id) { image_free(id) }
   h.image_pixels = fn(id, out) { image_pixels(id, out) }
-  h.drawn_pixels = fn(x, y, w, h, out) { drawn_pixels(x, y, w, h, out) }
+  h.drawn_pixels = fn(x, y, w, hh, out) { drawn_pixels(x, y, w, hh, out) }
   h.drawn_pixels_of = fn(inst, count, r, g, b, scale, w, h, out) { drawn_pixels_of(inst, count, r, g, b, scale, w, h, out) }
   h.view_site_next = fn(id) { view_site_next(id) }
   h.view_site_body = fn(id, req) { view_site_body(id, req) }
@@ -187,7 +187,7 @@ fn make_native_host() -> @hostapi.Host {
   h.view_site_load = fn(id, path) { view_site_load(id, path) }
   h.view_tell = fn(id, what, text) { view_tell(id, what, text) }
   h.view_open = fn(kind, arg) { view_open(kind, arg) }
-  h.view_place = fn(id, x, y, w, h, cx0, cy0, cx1, cy1, r0, r1, r2, r3, shown) { view_place(id, x, y, w, h, cx0, cy0, cx1, cy1, r0, r1, r2, r3, shown) }
+  h.view_place = fn(id, x, y, w, hh, cx0, cy0, cx1, cy1, r0, r1, r2, r3, shown) { view_place(id, x, y, w, hh, cx0, cy0, cx1, cy1, r0, r1, r2, r3, shown) }
   h.view_close = fn(id) { view_close(id) }
   h.view_control = fn(id, op, value) { view_control(id, op, value) }
   h.view_info = fn(id, out) { view_info(id, out) }
@@ -264,7 +264,7 @@ fn make_native_host() -> @hostapi.Host {
   h.nt_state = fn(what) { nt_state(what) }
   h.nt_text = fn(what) { nt_text(what) }
   h.st_open = fn() { st_open() }
-  h.st_h264 = fn(id, avcc, w, h) { st_h264(id, avcc, w, h) }
+  h.st_h264 = fn(id, avcc, w, hh) { st_h264(id, avcc, w, hh) }
   h.st_frame = fn(id, data, key, ts) { st_frame(id, data, key, ts) }
   h.st_jpeg = fn(id, data, ts) { st_jpeg(id, data, ts) }
   h.st_next = fn(id) { st_next(id) }
@@ -307,15 +307,15 @@ fn make_native_host() -> @hostapi.Host {
   h.st_audio_here = fn() { st_audio_here() }
   h.st_audio = fn(id, data) { st_audio(id, data) }
   h.st_layers = fn() { said_once(layers_said, fn() { st_layers() }) }
-  h.st_pointer = fn(id, png, w, h, hx, hy) { st_pointer(id, png, w, h, hx, hy) }
+  h.st_pointer = fn(id, png, w, hh, hx, hy) { st_pointer(id, png, w, hh, hx, hy) }
   h.st_pointer_at = fn(id, x, y, shown) { st_pointer_at(id, x, y, shown) }
   h.st_direct = fn(id, route, after, what) { st_direct(id, route, after, what) }
   h.st_h265_here = fn() { said_once(h265_said, fn() { st_h265_here() }) }
-  h.st_hevc = fn(id, hvcc, w, h) { st_hevc(id, hvcc, w, h) }
+  h.st_hevc = fn(id, hvcc, w, hh) { st_hevc(id, hvcc, w, hh) }
   h.st_av1_here = fn() { said_once(av1_said, fn() { st_av1_here() }) }
-  h.st_av1 = fn(id, av1c, w, h) { st_av1(id, av1c, w, h) }
+  h.st_av1 = fn(id, av1c, w, hh) { st_av1(id, av1c, w, hh) }
   h.rows_on_pixels = fn() { true }
-  h.st_frame_shown = fn(id, data, key, ts, show) { st_frame_shown(id, data, key, ts, show) }
+  h.st_frame_shown = Some(fn(id, data, key, ts, show) { st_frame_shown(id, data, key, ts, show) })
   h.st_flush = fn(id, drain) { st_flush(id, drain) }
   h.st_audio_played = fn(id) { st_audio_played(id) }
   h.st_audio_queued = fn(id) { st_audio_queued(id) }
@@ -325,15 +325,6 @@ fn make_native_host() -> @hostapi.Host {
   h.set_auto_launch = fn(enabled) { set_auto_launch(enabled) }
   h.hotkey_set = fn(id, accel) { hotkey_set(id, accel) }
   h.hotkey_clear = fn(id) { hotkey_clear(id) }
-  h.words_spaced = fn() { @hostapi.words_spaced_of(h) }
-  h.clock_at_wall = fn(ms) { ms - (wall_ms() - now()) }
-  h.request_frame_on = fn() { request_frame() }
-  h.lines_on_pixels = fn() {
-    let o = FixedArray::make(6, -1.0)
-    font_metrics(15.0, 400, 0, o)
-    o[5] == 1.0
-  }
-  h.st_pointer_named = fn(id, _, png, w, hh, hx, hy) { st_pointer(id, png(), w, hh, hx, hy) }
   h
 }
 

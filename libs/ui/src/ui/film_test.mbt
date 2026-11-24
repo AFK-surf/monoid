@@ -56,7 +56,6 @@ fn FilmHost::as_host(self : FilmHost) -> @hostapi.Host {
     1
   }
   h.image_free = fn(id) { self.freed.push(id) }
-  h.words_spaced = fn() { @hostapi.words_spaced_of(h) }
   h
 }
 

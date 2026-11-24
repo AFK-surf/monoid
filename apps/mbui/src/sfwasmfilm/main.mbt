@@ -141,7 +141,6 @@ fn make_wasm_host() -> @hostapi.Host {
     unsupported_pixels.val = true
     false
   }
-  h.words_spaced = fn() { @hostapi.words_spaced_of(h) }
   h
 }
 

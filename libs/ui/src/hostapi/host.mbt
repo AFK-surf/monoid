@@ -22,7 +22,7 @@ pub(all) struct Host {
   mut full_screen : () -> Bool
   mut set_full_screen : (Bool) -> Unit
   mut window_corner : () -> Double
-  mut window_corner_at : (Int) -> Double
+  mut window_corner_at : ((Int) -> Double)?
   mut window_drag : () -> Unit
   mut window_act : (Int) -> Unit
   mut window_zoomed : () -> Bool
@@ -46,15 +46,15 @@ pub(all) struct Host {
   mut run : (String, FuncRef[(Double, Double, Double, Double) -> Unit], FuncRef[(Int, Double, Double, Int) -> Unit], FuncRef[(Double, Double, Double, Double, Int) -> Unit], FuncRef[(Int, Int) -> Unit], FuncRef[(Int, String, Int, Int) -> Unit]) -> Unit
   mut now : () -> Double
   mut wall_ms : () -> Double
-  mut clock_at_wall : (Double) -> Double
+  mut clock_at_wall : ((Double) -> Double)?
   mut utc_offset_min : (Double) -> Int
   mut event_time : () -> Double
   mut event_finger : () -> Int
   mut frame_late : () -> Double
   mut platform : () -> Int
   mut request_frame : () -> Unit
-  mut request_frame_on : () -> Unit
-  mut frames_paced : (Double) -> Unit
+  mut request_frame_on : (() -> Unit)?
+  mut frames_paced : ((Double) -> Unit)?
   mut wake_after : (Double) -> Unit
   mut font_metrics : (Double, Int, Int, FixedArray[Double]) -> Unit
   mut shape : (String, Double, Int, Int, FixedArray[Double]) -> Int
@@ -80,7 +80,7 @@ pub(all) struct Host {
   mut text_menu_own : (String) -> Unit
   mut edit_can : (Int) -> Unit
   mut clipboard_set : (String) -> Unit
-  mut clipboard_set_html : (String, String) -> Unit
+  mut clipboard_set_html : ((String, String) -> Unit)?
   mut clipboard_set_secret : (String, Double) -> Unit
   mut clipboard_secret_off : () -> Unit
   mut clipboard_set_image : (Bytes) -> Unit
@@ -91,7 +91,7 @@ pub(all) struct Host {
   mut script_step : (String, String) -> String
   mut rows_on_pixels : () -> Bool
   mut keeps_sources : () -> Bool
-  mut lines_on_pixels : () -> Bool
+  mut lines_on_pixels : (() -> Bool)?
   mut frame_awaiting : (Int, String) -> Unit
   mut own_clock : () -> Bool
   mut reduce_motion : () -> Bool
@@ -235,11 +235,11 @@ pub(all) struct Host {
   mut st_audio_queued : (Int) -> Double
   mut st_audio_wanted : (Int) -> Double
   mut st_audio_volume : (Int, Double) -> Unit
-  mut st_frame_shown : (Int, Bytes, Int, Double, Int) -> Int
+  mut st_frame_shown : ((Int, Bytes, Int, Double, Int) -> Int)?
   mut st_flush : (Int, Int) -> Unit
   mut st_layers : () -> Int
   mut st_pointer : (Int, Bytes, Double, Double, Double, Double) -> Unit
-  mut st_pointer_named : (Int, String, () -> Bytes, Double, Double, Double, Double) -> Unit
+  mut st_pointer_named : ((Int, String, () -> Bytes, Double, Double, Double, Double) -> Unit)?
   mut st_pointer_at : (Int, Double, Double, Int) -> Unit
   mut st_direct : (Int, Double, Double, Int) -> Unit
   mut st_h265_here : () -> Int
@@ -287,7 +287,7 @@ pub(all) struct Host {
   mut ncall_state : (Int) -> Int
   mut ncall_result : (Int) -> String
   mut ncall_end : (Int) -> Unit
-  mut words_spaced : () -> Int
+  mut words_spaced : (() -> Int)?
   mut window_set_title : (Int, String) -> Unit
   mut auto_launch : () -> Bool
   mut set_auto_launch : (Bool) -> Bool
@@ -324,7 +324,7 @@ pub fn words_spaced_of(h : Host) -> Int {
 
 ///|
 /// A host with nothing for any call (nothing done, 0, false, empty, None).
-fn host_noop_raw() -> Host {
+pub fn Host::noop() -> Host {
   {
     set_window_zoom: fn(_) { () },
     set_window_key: fn(_) { () },
@@ -337,7 +337,7 @@ fn host_noop_raw() -> Host {
     full_screen: fn() { false },
     set_full_screen: fn(_) { () },
     window_corner: fn() { 0.0 },
-    window_corner_at: fn(_) { 0.0 },
+    window_corner_at: None,
     window_drag: fn() { () },
     window_act: fn(_) { () },
     window_zoomed: fn() { false },
@@ -361,15 +361,15 @@ fn host_noop_raw() -> Host {
     run: fn(_, _, _, _, _, _) { @halt.saying("mbui: no host: an app's main imports mbui/host") },
     now: fn() { 0.0 },
     wall_ms: fn() { 0.0 },
-    clock_at_wall: fn(ms) { ms },
+    clock_at_wall: None,
     utc_offset_min: fn(_) { 0 },
     event_time: fn() { -1.0 },
     event_finger: fn() { -1 },
     frame_late: fn() { 0.0 },
     platform: fn() { 0 },
     request_frame: fn() { () },
-    request_frame_on: fn() { () },
-    frames_paced: fn(_) { () },
+    request_frame_on: None,
+    frames_paced: None,
     wake_after: fn(_) { () },
     font_metrics: fn(_, _, _, _) { () },
     shape: fn(_, _, _, _, _) { 0 },
@@ -395,7 +395,7 @@ fn host_noop_raw() -> Host {
     text_menu_own: fn(_) { () },
     edit_can: fn(_) { () },
     clipboard_set: fn(_) { () },
-    clipboard_set_html: fn(_, _) { () },
+    clipboard_set_html: None,
     clipboard_set_secret: fn(_, _) { () },
     clipboard_secret_off: fn() { () },
     clipboard_set_image: fn(_) { () },
@@ -406,7 +406,7 @@ fn host_noop_raw() -> Host {
     script_step: fn(step, _) { "\{step}: this host takes no such step of a script" },
     rows_on_pixels: fn() { false },
     keeps_sources: fn() { false },
-    lines_on_pixels: fn() { false },
+    lines_on_pixels: None,
     frame_awaiting: fn(_, _) { () },
     own_clock: fn() { false },
     reduce_motion: fn() { false },
@@ -550,11 +550,11 @@ fn host_noop_raw() -> Host {
     st_audio_queued: fn(_) { 0.0 },
     st_audio_wanted: fn(_) { 0.0 },
     st_audio_volume: fn(_, _) { () },
-    st_frame_shown: fn(_, _, _, _, _) { 0 },
+    st_frame_shown: None,
     st_flush: fn(_, _) { () },
     st_layers: fn() { 0 },
     st_pointer: fn(_, _, _, _, _, _) { () },
-    st_pointer_named: fn(_, _, _, _, _, _, _) { () },
+    st_pointer_named: None,
     st_pointer_at: fn(_, _, _, _) { () },
     st_direct: fn(_, _, _, _) { () },
     st_h265_here: fn() { 0 },
@@ -602,7 +602,7 @@ fn host_noop_raw() -> Host {
     ncall_state: fn(_) { 0 },
     ncall_result: fn(_) { "" },
     ncall_end: fn(_) { () },
-    words_spaced: fn() { words_spaced_here },
+    words_spaced: None,
     window_set_title: fn(_, _) { () },
     auto_launch: fn() { false },
     set_auto_launch: fn(_) { false },
@@ -617,42 +617,99 @@ fn host_noop_raw() -> Host {
 }
 
 ///|
-// set as the program starts (mbui/host's init), or by a Tester for its test
-let current : Ref[Host] = { val: host_noop_raw() }
+pub fn Host::window_corner_at(self : Host, k : Int) -> Double {
+  match self.window_corner_at {
+    Some(f) => f(k)
+    None => (self.window_corner)()
+  }
+}
 
 ///|
-/// A host with nothing for any call (nothing done, 0, false, empty, None).
-pub fn Host::noop() -> Host {
-  let h = host_noop_raw()
-  h.window_corner_at = fn(_) { (current.val.window_corner)() }
-  h.clock_at_wall = fn(ms) { ms - ((current.val.wall_ms)() - (current.val.now)()) }
-  h.request_frame_on = fn() { (current.val.request_frame)() }
-  h.frames_paced = fn(_) { (current.val.request_frame_on)() }
-  h.clipboard_set_html = fn(text, _) { (current.val.clipboard_set)(text) }
-  h.lines_on_pixels = fn() {
-    let o = FixedArray::make(6, -1.0)
-    (current.val.font_metrics)(15.0, 400, 0, o)
-    o[5] == 1.0
+pub fn Host::clock_at_wall(self : Host, ms : Double) -> Double {
+  match self.clock_at_wall {
+    Some(f) => f(ms)
+    None => ms - ((self.wall_ms)() - (self.now)())
   }
-  h.st_frame_shown = fn(id, data, key, ts, show) {
-    if show != 0 {
-      (current.val.st_frame)(id, data, key, ts)
-      1
-    } else {
-      0
+}
+
+///|
+pub fn Host::request_frame_on(self : Host) -> Unit {
+  match self.request_frame_on {
+    Some(f) => f()
+    None => (self.request_frame)()
+  }
+}
+
+///|
+pub fn Host::frames_paced(self : Host, hz : Double) -> Unit {
+  match self.frames_paced {
+    Some(f) => f(hz)
+    None => self.request_frame_on()
+  }
+}
+
+///|
+pub fn Host::words_spaced(self : Host) -> Int {
+  match self.words_spaced {
+    Some(f) => f()
+    None => words_spaced_of(self)
+  }
+}
+
+///|
+pub fn Host::clipboard_set_html(self : Host, text : String, html : String) -> Unit {
+  match self.clipboard_set_html {
+    Some(f) => f(text, html)
+    None => (self.clipboard_set)(text)
+  }
+}
+
+///|
+pub fn Host::lines_on_pixels(self : Host) -> Bool {
+  match self.lines_on_pixels {
+    Some(f) => f()
+    None => {
+      let o = FixedArray::make(6, -1.0)
+      (self.font_metrics)(15.0, 400, 0, o)
+      o[5] == 1.0
     }
   }
-  h.st_pointer_named = fn(id, _, png, w, h, hx, hy) {
-    (current.val.st_pointer)(id, png(), w, h, hx, hy)
-  }
-  h.words_spaced = fn() { words_spaced_of(current.val) }
-  h
 }
 
 ///|
-fn init {
-  current.val = Host::noop()
+pub fn Host::st_frame_shown(self : Host, id : Int, data : Bytes, key : Int, ts : Double, show : Int) -> Int {
+  match self.st_frame_shown {
+    Some(f) => f(id, data, key, ts, show)
+    None =>
+      if show != 0 {
+        (self.st_frame)(id, data, key, ts)
+        1
+      } else {
+        0
+      }
+  }
 }
+
+///|
+pub fn Host::st_pointer_named(
+  self : Host,
+  id : Int,
+  key : String,
+  png : () -> Bytes,
+  w : Double,
+  h : Double,
+  hx : Double,
+  hy : Double,
+) -> Unit {
+  match self.st_pointer_named {
+    Some(f) => f(id, key, png, w, h, hx, hy)
+    None => (self.st_pointer)(id, png(), w, h, hx, hy)
+  }
+}
+
+///|
+// set as the program starts (mbui/host's init), or by a Tester for its test
+let current : Ref[Host] = { val: Host::noop() }
 
 ///|
 /// Who answers from now on: the platform's (mbui/host's init, as the program starts), a Tester's fake.
@@ -756,7 +813,7 @@ pub fn window_corner() -> Double {
 /// How round the system draws the window's corner `k` (0 top left, then round it): each its own where they differ (an
 /// iPhone Duo's outer screen: the two along its hinge 8, the others 59), window_corner the roundest of them.
 pub fn window_corner_at(k : Int) -> Double {
-  (current.val.window_corner_at)(k)
+  current.val.window_corner_at(k)
 }
 
 ///|
@@ -954,7 +1011,7 @@ pub fn wall_ms() -> Double {
 /// taken from it. A run on a clock of its own (a scripted shot, a Tester's) has its day at its clock's 0 taken from it,
 /// as it is.
 pub fn clock_at_wall(ms : Double) -> Double {
-  (current.val.clock_at_wall)(ms)
+  current.val.clock_at_wall(ms)
 }
 
 ///|
@@ -1003,7 +1060,7 @@ pub fn request_frame() -> Unit {
 /// A frame asked for what moves on by the clock (a motion going on, a cycle shown), not for what changed: a host's
 /// next display frame, as request_frame; a run whose time goes by as it says (a Tester's) owes none at this moment.
 pub fn request_frame_on() -> Unit {
-  (current.val.request_frame_on)()
+  current.val.request_frame_on()
 }
 
 ///|
@@ -1013,7 +1070,7 @@ pub fn request_frame_on() -> Unit {
 /// Android's Surface.setFrameRate); anything asking for a frame before then (request_frame: an input, a change) has
 /// the display's next and every frame again. A host with nothing for it draws the display's next (request_frame_on).
 pub fn frames_paced(hz : Double) -> Unit {
-  (current.val.frames_paced)(hz)
+  current.val.frames_paced(hz)
 }
 
 ///|
@@ -1077,7 +1134,7 @@ pub let words_spaced_none : Int = 2
 /// character comes out wider than on its own; MBUI_AUTOSPACE=off for none (and for the Apple hosts =off or =mbui
 /// their shaper's own left out: apple_text.m's make_line).
 pub fn words_spaced() -> Int {
-  (current.val.words_spaced)()
+  current.val.words_spaced()
 }
 
 ///|
@@ -1301,7 +1358,7 @@ pub fn clipboard_set(s : String) -> Unit {
 /// page), as `html` (a fragment: lists, headings, code): Windows' "HTML Format", a Mac's public.html. A host that puts
 /// no HTML there puts the words alone, as clipboard_set.
 pub fn clipboard_set_html(text : String, html : String) -> Unit {
-  (current.val.clipboard_set_html)(text, html)
+  current.val.clipboard_set_html(text, html)
 }
 
 ///|
@@ -1373,7 +1430,7 @@ pub fn keeps_sources() -> Bool {
 /// Whether the host sets things on whole device pixels, its lengths as its lines (Android's: Compose rounds each
 /// length to pixels, StaticLayout each line), as it says of its fonts (font_metrics' sixth number).
 pub fn lines_on_pixels() -> Bool {
-  (current.val.lines_on_pixels)()
+  current.val.lines_on_pixels()
 }
 
 ///|
@@ -2655,7 +2712,7 @@ fn st_audio_volume(id : Int, v : Double) -> Unit { (current.val.st_audio_volume)
 
 ///|
 fn st_frame_shown(id : Int, data : Bytes, key : Int, ts : Double, show : Int) -> Int {
-  (current.val.st_frame_shown)(id, data, key, ts, show)
+  current.val.st_frame_shown(id, data, key, ts, show)
 }
 
 ///|

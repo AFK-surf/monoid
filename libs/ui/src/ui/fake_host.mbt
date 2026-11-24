@@ -445,7 +445,7 @@ fn FakeHost::words_spaced(self : FakeHost) -> Int {
     return @hostapi.words_spaced_none
   }
   match self.live {
-    Some(l) => (l.host.words_spaced)()
+    Some(l) => l.host.words_spaced()
     None => self.words_spaced
   }
 }
@@ -3106,18 +3106,18 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.kp_end = fn(a0) { self.kp_end(a0) }
   h.now = fn() { self.now() }
   h.wall_ms = fn() { self.wall_ms() }
-  h.clock_at_wall = fn(a0) { self.clock_at_wall(a0) }
+  h.clock_at_wall = Some(fn(a0) { self.clock_at_wall(a0) })
   h.event_time = fn() { self.event_time() }
   h.event_finger = fn() { self.event_finger() }
   h.frame_late = fn() { self.frame_late() }
   h.platform = fn() { self.platform() }
   h.keys_platform = fn() { self.keys_platform() }
   h.request_frame = fn() { self.request_frame() }
-  h.request_frame_on = fn() { self.request_frame_on() }
-  h.frames_paced = fn(a0) { self.frames_paced(a0) }
+  h.request_frame_on = Some(fn() { self.request_frame_on() })
+  h.frames_paced = Some(fn(a0) { self.frames_paced(a0) })
   h.wake_after = fn(a0) { self.wake_after(a0) }
   h.font_metrics = fn(a0, a1, a2, a3) { self.font_metrics(a0, a1, a2, a3) }
-  h.words_spaced = fn() { self.words_spaced() }
+  h.words_spaced = Some(fn() { self.words_spaced() })
   h.shape = fn(a0, a1, a2, a3, a4) { self.shape(a0, a1, a2, a3, a4) }
   h.text_key = fn(a0, a1, a2, a3) { self.text_key(a0, a1, a2, a3) }
   h.glyphs_ahead = fn(a0, a1) { self.glyphs_ahead(a0, a1) }
@@ -3148,7 +3148,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.text_menu_own = fn(a0) { self.text_menu_own(a0) }
   h.edit_can = fn(a0) { self.edit_can(a0) }
   h.clipboard_set = fn(a0) { self.clipboard_set(a0) }
-  h.clipboard_set_html = fn(a0, a1) { self.clipboard_set_html(a0, a1) }
+  h.clipboard_set_html = Some(fn(a0, a1) { self.clipboard_set_html(a0, a1) })
   h.word_at = fn(a0, a1) { self.word_at(a0, a1) }
   h.open_url = fn(a0) { self.open_url(a0) }
   h.open_tab = fn(a0) { self.open_tab(a0) }
@@ -3227,7 +3227,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.set_full_screen = fn(a0) { self.set_full_screen(a0) }
   h.window_buttons_down = fn(a0, a1) { self.window_buttons_down(a0, a1) }
   h.window_corner = fn() { self.window_corner() }
-  h.window_corner_at = fn(a0) { self.window_corner_at(a0) }
+  h.window_corner_at = Some(fn(a0) { self.window_corner_at(a0) })
   h.nv_able = fn() { self.nv_able() }
   h.nv_bar = fn(a0) { self.nv_bar(a0) }
   h.env = fn(a0) { self.env(a0) }
@@ -3282,7 +3282,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.st_hevc = fn(a0, a1, a2, a3) { self.st_hevc(a0, a1, a2, a3) }
   h.st_av1 = fn(a0, a1, a2, a3) { self.st_av1(a0, a1, a2, a3) }
   h.st_frame = fn(a0, a1, a2, a3) { self.st_frame(a0, a1, a2, a3) }
-  h.st_frame_shown = fn(a0, a1, a2, a3, a4) { self.st_frame_shown(a0, a1, a2, a3, a4) }
+  h.st_frame_shown = Some(fn(a0, a1, a2, a3, a4) { self.st_frame_shown(a0, a1, a2, a3, a4) })
   h.st_flush = fn(a0, a1) { self.st_flush(a0, a1) }
   h.st_audio_played = fn(a0) { self.st_audio_played(a0) }
   h.st_audio_queued = fn(a0) { self.st_audio_queued(a0) }
@@ -3294,7 +3294,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.st_close = fn(a0) { self.st_close(a0) }
   h.st_direct = fn(a0, a1, a2, a3) { self.st_direct(a0, a1, a2, a3) }
   h.st_audio = fn(a0, a1) { self.st_audio(a0, a1) }
-  h.st_pointer_named = fn(a0, a1, a2, a3, a4, a5, a6) { self.st_pointer_named(a0, a1, a2, a3, a4, a5, a6) }
+  h.st_pointer_named = Some(fn(a0, a1, a2, a3, a4, a5, a6) { self.st_pointer_named(a0, a1, a2, a3, a4, a5, a6) })
   h.st_pointer_at = fn(a0, a1, a2, a3) { self.st_pointer_at(a0, a1, a2, a3) }
   h.st_next = fn(a0) { self.st_next(a0) }
   h.st_h264_here = fn() { self.st_h264_here() }
@@ -3314,7 +3314,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.groups_here = fn() { self.groups_here() }
   h.rows_on_pixels = fn() { self.rows_on_pixels() }
   h.keeps_sources = fn() { self.keeps_sources() }
-  h.lines_on_pixels = fn() { self.lines_on_pixels() }
+  h.lines_on_pixels = Some(fn() { self.lines_on_pixels() })
   h.tm_open = fn(a0, a1) { self.tm_open(a0, a1) }
   h.tm_write = fn(a0, a1) { self.tm_write(a0, a1) }
   h.tm_resize = fn(a0, a1, a2, a3, a4) { self.tm_resize(a0, a1, a2, a3, a4) }

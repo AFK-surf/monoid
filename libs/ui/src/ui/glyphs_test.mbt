@@ -38,7 +38,6 @@ fn SquareHost::as_host(self : SquareHost) -> @hostapi.Host {
   }
   h.glyph_put = fn(key, x, y) { self.put[(x, y)] = key }
   h.atlas_size = fn(colour) { if colour { 0 } else { 1024 } }
-  h.words_spaced = fn() { @hostapi.words_spaced_of(h) }
   h
 }
 
