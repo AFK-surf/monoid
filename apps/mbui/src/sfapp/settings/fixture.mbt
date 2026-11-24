@@ -980,7 +980,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-station-many-profiles" => fx_station_many_profiles.val = true
     "settings-station-gpu" => fx.gpus = true
     "settings-stations-low" => fx.low_meters = true
-    // (Willow on Linux, its GPUs', Maple a Mac: their systems apart)
+    // (Willow on Linux, its GPUs', Maple a Mac, Cedar on Windows: their systems apart)
     "settings-stations-unmarked" => {
       fx.gpus = true
       fx.os_icons = 1
@@ -2971,8 +2971,8 @@ fn fx_station(address : String) -> Json {
     obj([
       ("station", str(address)),
       ("id", str(id)),
-      ("name", str(renamed.unwrap_or(if id == "st3" && fx.retire_others >= 2 { "Cedar" } else { "Maple" }))),
-      ("icon", str(fx_mark(id, "glyph:laptop:teal", "macos"))),
+      ("name", str(renamed.unwrap_or(if id == "st3" && (fx.retire_others >= 2 || fx.os_icons > 0) { "Cedar" } else { "Maple" }))),
+      ("icon", str(fx_mark(id, "glyph:laptop:teal", if id == "st3" { "windows" } else { "macos" }))),
       ("osIcon", Json::boolean(fx_os_icon(id))),
       ("summary", str(if up { "Apple M3 · 空闲" } else { "离线 · 2 天前" })),
       ("face", str(if up { "idle" } else { "offline" })),
@@ -3562,7 +3562,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       } else {
         // (settings-stations-motion: 3 comes, then Maple goes)
         let all = if rigs_fixture_made() { [fx_station("ws1/st2")] } else { [fx_station("ws1/st1"), fx_station("ws1/st2")] }
-        if fx.motion >= 1 || fx.retire_others >= 2 {
+        // (settings-stations-os: Cedar, a Windows machine, beside them)
+        if fx.motion >= 1 || fx.retire_others >= 2 || fx.os_icons > 0 {
           all.push(fx_station("ws1/st3"))
         }
         if fx.motion >= 2 {
