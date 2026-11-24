@@ -5,6 +5,10 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Lowered, 2026-11-24: stations_list_node now renders compact grouped two-line station rows (and single-line offline
+// rows) with compact meters and network tail instead of full per-station cards, lowering made/laid/measured bars on
+// phone place-stations and all phone/wide settings-stations screens.
+
 // Raised once, 2026-11-24: adding a profile shows two gateways more (Command Code and Open Design, after OpenRouter in
 // 中转站), a phone's settings-new-profile and settings-new-profile-stations making, laying out and measuring their two
 // rows (a mark and a name each), nothing else changed.
@@ -235,8 +239,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone files-split": (713, 573, 74),
   "phone files-transfers": (713, 573, 74),
   "phone files-tree": (844, 689, 81),
-  // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
-  "phone place-stations": (499, 377, 86),
+  "phone place-stations": (458, 302, 50),
   "phone place-profiles": (694, 524, 84),
   "phone place-remote": (355, 291, 29),
   "phone place-remote-tabs": (355, 291, 29),
@@ -349,8 +352,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-vault": (586, 396, 62),
   "phone settings-vault-items": (567, 384, 51),
   "phone settings-vault-item": (383, 271, 31),
-  "phone settings-stations": (699, 501, 105),
-  "phone settings-stations-unprotected": (699, 501, 105),
+  "phone settings-stations": (687, 449, 77),
+  "phone settings-stations-unprotected": (687, 449, 77),
   "phone settings-station": (572, 399, 68),
   "phone settings-station-unprotected": (572, 399, 68),
   "phone settings-station-offline": (572, 399, 68),
@@ -387,11 +390,11 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-station-taking": (572, 399, 68),
   "phone settings-profile-move": (583, 400, 64),
   "phone settings-profile-move-key": (355, 252, 30),
-  "phone settings-stations-add": (791, 576, 115),
+  "phone settings-stations-add": (779, 524, 87),
   // Raised once, 2026-11-23: settings-stations-existing now renders the full/tasks mode segmented control below the list and rig row icons.
-  "phone settings-stations-existing": (850, 618, 128),
-  "phone settings-stations-command": (753, 542, 109),
-  "phone settings-first-station": (699, 501, 105),
+  "phone settings-stations-existing": (816, 551, 91),
+  "phone settings-stations-command": (741, 490, 81),
+  "phone settings-first-station": (687, 449, 77),
   "phone settings-adb": (376, 266, 31),
   "phone settings-adb-unpaired": (434, 311, 42),
   "phone settings-adb-pairing": (434, 311, 42),
@@ -483,15 +486,13 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-security-upgrade-many": (446, 313, 38),
   "phone settings-security-upgrade-other": (446, 313, 38),
   "phone settings-security-upgrade-updating": (446, 313, 38),
-  "phone settings-stations-tasks": (699, 501, 105),
-  // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
-  "phone place-stations-tasks": (499, 377, 86),
+  "phone settings-stations-tasks": (687, 449, 77),
+  "phone place-stations-tasks": (458, 302, 50),
   "phone settings-station-tasks": (572, 399, 68),
   "phone settings-station-tasks-other": (572, 399, 68),
   "phone settings-station-tasks-locked": (572, 399, 68),
-  "phone settings-stations-devices": (699, 501, 105),
-  // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
-  "phone place-stations-devices": (499, 377, 86),
+  "phone settings-stations-devices": (687, 449, 77),
+  "phone place-stations-devices": (458, 302, 50),
   "phone settings-station-devices": (572, 399, 68),
   "phone settings-fonts": (535, 664, 124),
   "phone settings-fonts-code": (515, 636, 116),
@@ -772,8 +773,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-vault": (732, 554, 92),
   "wide settings-vault-items": (796, 608, 82),
   "wide settings-vault-item": (507, 401, 52),
-  "wide settings-stations": (826, 636, 122),
-  "wide settings-stations-unprotected": (826, 636, 122),
+  "wide settings-stations": (822, 593, 103),
+  "wide settings-stations-unprotected": (822, 593, 103),
   "wide settings-station": (791, 608, 107),
   "wide settings-station-unprotected": (791, 608, 107),
   "wide settings-station-offline": (791, 608, 107),
@@ -807,10 +808,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-station-taking": (791, 608, 107),
   "wide settings-profile-move": (683, 533, 102),
   "wide settings-profile-move-key": (475, 379, 48),
-  "wide settings-stations-add": (945, 730, 135),
-  "wide settings-stations-existing": (938, 723, 134),
-  "wide settings-stations-command": (881, 677, 127),
-  "wide settings-first-station": (826, 636, 122),
+  "wide settings-stations-add": (941, 687, 116),
+  "wide settings-stations-existing": (938, 707, 118),
+  "wide settings-stations-command": (877, 634, 108),
+  "wide settings-first-station": (822, 593, 103),
   "wide settings-adb": (497, 395, 49),
   "wide settings-adb-unpaired": (561, 445, 63),
   "wide settings-adb-pairing": (561, 445, 63),
@@ -907,13 +908,13 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-security-upgrade-many": (666, 514, 76),
   "wide settings-security-upgrade-other": (666, 514, 76),
   "wide settings-security-upgrade-updating": (666, 514, 76),
-  "wide settings-stations-tasks": (826, 636, 122),
+  "wide settings-stations-tasks": (822, 593, 103),
   // (raised once, 2026-11-17: Station's sidebar made as nodes, as "wide place-stations" says)
   "wide place-stations-tasks": (1026, 816, 149),
   "wide settings-station-tasks": (791, 608, 107),
   "wide settings-station-tasks-other": (791, 608, 107),
   "wide settings-station-tasks-locked": (791, 608, 107),
-  "wide settings-stations-devices": (826, 636, 122),
+  "wide settings-stations-devices": (822, 593, 103),
   "wide place-stations-devices": (1026, 816, 149),
   "wide settings-station-devices": (791, 608, 107),
   "wide settings-fonts": (638, 800, 166),
