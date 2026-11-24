@@ -4119,3 +4119,33 @@ test("FB-51: the box key ended with no screen lock set again yet: no box key kep
   assert.equal((await r.ask("vault.open", { item: put.id })).plain.fields.value, "b");
   r.core.close();
 });
+
+test("restarted, this device's box key not read yet: its vaults and cards say keyed as its certificate names, never 未获此库授权 for the moment", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", { vault: id, plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } }, listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"], lasts: "hour" } });
+  await r.ask("vault.lock", {});
+  const req: Request = { id: "r_use", ws: "ws", vault: id, item: put.id, session: "k1", chat: "7", mode: "proxy", hosts: ["api.github.com"], reason: "use it", box: boxPublic(fill(9)), at: 1, status: "pending", owner: "a@x.com" };
+  r.st.requests.push(req);
+  r.push("vault-request", req);
+  await r.host.time.pass(500);
+  r.take();
+  // The box key's public half read slowly at start (a desktop's storage busy as the app opens).
+  let letGo = () => {};
+  const held = new Promise<void>((done) => (letGo = done));
+  const get = r.host.storageGet.bind(r.host);
+  r.host.storageGet = (k) => (k === BOX_PUB ? Effect.flatMap(Effect.promise(() => held), () => get(k)) : get(k));
+  await r.restart();
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  const shown = () => [vaults().setUp, vaults().vaults.map((v: any) => v.keyed), vaults().requests.map((x: any) => x.noKey ?? false)];
+  const answers = () => askAnswers(r.core.inner, "ws", [{ request: "r_use", save: false }, { request: "r_save", save: true }]);
+  assert.deepEqual(shown(), [true, [true], [false]]);
+  assert.deepEqual(answers(), [{ answer: "approve", lasts: "hour" }, { answer: "approve" }]);
+  letGo();
+  await r.host.time.pass(500);
+  r.take();
+  assert.deepEqual(shown(), [true, [true], [false]]);
+  assert.deepEqual(answers(), [{ answer: "approve", lasts: "hour" }, { answer: "approve" }]);
+  r.core.close();
+});

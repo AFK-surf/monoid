@@ -1354,18 +1354,20 @@ export function browseCandidates(inner: Inner, ws: string): BrowseCandidates {
       }
       continue;
     }
+    // (not read yet at start: as this device's certificate there names it, `boxShown`)
+    const box = myBox !== undefined ? myBox : hA.boxes[selfA.device]?.box;
     const wsItems: BrowseCandidateItem[] = [];
     let hasUnkeyed = false;
     for (const v of Object.values(hA.vaults)) {
       if (v.deleted || v.scope === "workspace" || v.owner !== otherOwner) continue;
       const asA = readAs(inner, otherWs, lockA, v, selfA);
-      const keyed = asA !== null && myBox !== null && myBox !== undefined && v.keys.some((k) => k.cert.device === selfA.device && k.cert.box === myBox);
+      const keyed = asA !== null && box !== null && box !== undefined && v.keys.some((k) => k.cert.device === selfA.device && k.cert.box === box);
       if (!keyed) {
         hasUnkeyed = true;
         continue;
       }
       for (const i of Object.values(items(inner, otherWs, v.id))) {
-        if (crossItemReadable(inner, otherWs, lockA, hA, v, selfA, myBox, i) === null) continue;
+        if (crossItemReadable(inner, otherWs, lockA, hA, v, selfA, box, i) === null) continue;
         const l = i.listing!;
         wsItems.push({
           vault: v.id,
@@ -1395,6 +1397,14 @@ export function browseCandidates(inner: Inner, ws: string): BrowseCandidates {
 /// failing as 存入 is pressed (2026-11-03, 「此申请提出时此设备尚未开启密钥库」).
 const notHere = (r: Request | undefined, device: string | null, box: string | null): boolean =>
   r?.save !== undefined && r.save.typed !== true && Array.isArray(r.sealed) && device !== null && !r.sealed.some((x) => x.device === device && (box === null || x.box === box));
+
+/// This device's box key's public half as what is shown reads it: the one kept, or, while it is not read yet at start
+/// (`undefined`, `install`), the one this device's certificate names. Read as none, every keyed vault and card would
+/// say 未获此库授权 for as long as that read takes after each restart.
+const boxShown = (inner: Inner, mine: BoxCert | undefined): string | null | undefined => {
+  const box = mem(inner).box;
+  return box === undefined ? mine?.box : box;
+};
 
 /// Whether an encrypted-vault request lacks a key on this device (cannot be approved, saved, renamed or deleted here):
 /// - plain requests never need an encrypted vault key;
@@ -1458,7 +1468,7 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
   const isSetUp = (): boolean => {
     if (setUp !== undefined) return setUp;
     const mine = mineOf();
-    return (setUp = mine !== undefined && mine.box === mem(inner).box);
+    return (setUp = mine !== undefined && mine.box === boxShown(inner, mine));
   };
   let activeVaults: Vault[] | undefined;
   const activeMemberVaults = (): Vault[] => {
@@ -1471,8 +1481,7 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
     if (saveTargetsCache !== undefined) return saveTargetsCache ?? undefined;
     if (plain || lock instanceof CoreError || self === null) return (saveTargetsCache = null), undefined;
     const mine = mineOf();
-    const box = mem(inner).box;
-    if (mine === undefined || mine.box !== box) return (saveTargetsCache = null), undefined;
+    if (mine === undefined || mine.box !== boxShown(inner, mine)) return (saveTargetsCache = null), undefined;
     const keyed = activeMemberVaults().filter((v) => v.keys.some((k) => k.cert.device === self.device && k.cert.box === mine.box));
     if (keyed.length <= 1) return (saveTargetsCache = null), undefined;
     const cmp = (a: Vault, b: Vault) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1);
@@ -1504,7 +1513,7 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
       const lockA = lockOf(inner, sourceWs);
       const selfA = lockA instanceof CoreError ? null : me(lockA, signerOf(inner));
       const hA = held(inner, sourceWs);
-      const myBox = mem(inner).box;
+      const myBox = boxShown(inner, mineOf());
       let sourceNoKey = otherOwner === null || lockA instanceof CoreError || selfA === null || selfA.sub !== otherOwner || myBox === null || myBox === undefined;
       if (!sourceNoKey && !(lockA instanceof CoreError) && r !== undefined) {
         const vA = hA.vaults[r.vault];
@@ -1520,7 +1529,7 @@ export function askAnswers(inner: Inner, ws: string, asks: { request: string; sa
       return { answer: sourceNoKey ? "noKey" : "approve", lasts };
     }
     const noKey = (): boolean =>
-      !plain && !(lock instanceof CoreError) && vaultNoKey(lock, h, self, mineOf(), mem(inner).box, r, save, isSetUp, activeMemberVaults);
+      !plain && !(lock instanceof CoreError) && vaultNoKey(lock, h, self, mineOf(), boxShown(inner, mineOf()), r, save, isSetUp, activeMemberVaults);
     if (save) {
       if (r?.describe !== undefined || r?.remove !== undefined) {
         return { answer: noKey() ? "noKey" : !plain && !isSetUp() ? "setUp" : "approve" };
@@ -2154,7 +2163,7 @@ export function vaultsView(inner: Inner, ws: string): J {
         // Whether this device has a key to it; members' devices set up since that have none yet (its owner's device gives
         // them the key as it next has it in hand, or as asked: addDevice).
         // (by the box key kept here too: a certificate naming one made anew since is not this device's key, FB-51)
-        keyed: self !== null && mine !== undefined && mine.box === m.box && keyed.get(self.device) === mine.box,
+        keyed: self !== null && mine !== undefined && mine.box === boxShown(inner, mine) && keyed.get(self.device) === mine.box,
         missing: pendingDevices.length,
         recoverable: v.recovery !== undefined, lasts: v.lasts ?? "chat",
         authorizedDevices,
@@ -2165,7 +2174,8 @@ export function vaultsView(inner: Inner, ws: string): J {
     });
   // (a secret to keep is told only to whom it is for: it may be meant for no vault yet; none of the plain library's, which
   // safe mode on has none of)
-  const setUp = mine !== undefined && mine.box === m.box;
+  const setUp = mine !== undefined && mine.box === boxShown(inner, mine);
+  const box = boxShown(inner, mine);
   const plain = plainMode(inner, ws);
   let activeVaults: Vault[] | undefined;
   const activeMemberVaults = (): Vault[] =>
@@ -2201,14 +2211,14 @@ export function vaultsView(inner: Inner, ws: string): J {
           self === null ||
           selfA === null ||
           selfA.sub !== otherOwner ||
-          m.box === null ||
-          m.box === undefined ||
+          box === null ||
+          box === undefined ||
           vA === undefined ||
           vA.deleted ||
           vA.scope === "workspace" ||
           vA.owner !== otherOwner ||
           readAs(inner, srcWs, lockA, vA, selfA) === null ||
-          !vA.keys.some((k) => k.cert.device === selfA.device && k.cert.box === m.box);
+          !vA.keys.some((k) => k.cert.device === selfA.device && k.cert.box === box);
         return {
           ...requestRow(r, listingA?.name ?? null, r.cross.vaultName, listingA?.lasts ?? vA?.lasts ?? "chat"),
           ...(crossNoKey ? { noKey: true } : {}),
@@ -2216,7 +2226,7 @@ export function vaultsView(inner: Inner, ws: string): J {
       }
       const listing = items(inner, ws, r.vault)[r.item]?.listing;
       const isSave = r.save !== undefined || r.describe !== undefined || r.remove !== undefined;
-      const noKey = !plain && vaultNoKey(lock, h, self, mine, m.box, r, isSave, () => setUp, activeMemberVaults);
+      const noKey = !plain && vaultNoKey(lock, h, self, mine, box, r, isSave, () => setUp, activeMemberVaults);
       return {
         ...requestRow(r, r.save?.name ?? r.describe?.was.name ?? r.remove?.name ?? listing?.name ?? null, h.vaults[r.vault]?.name ?? personal, listing?.lasts ?? h.vaults[r.vault]?.lasts ?? "chat"),
         ...(notHere(r, self?.device ?? null, m.box ?? null) ? { notHere: true } : {}),
