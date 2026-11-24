@@ -577,7 +577,16 @@ test("all 6 production index/job builder classes switch cleanly between real MB 
       }
     }
 
-    // 2c. Existing owner asked for a different thread (`same = 0`) -> completes immediately without overwriting row.
+    // 2c. Existing owner asked for a different thread (`same = 0`) while `ready = 0` -> completes immediately
+    // without overwriting row or flipping `ready` to 1 (discriminating against removing the `same` guard).
+    for (const dbPath of [mbDb, pionDb]) {
+      const db = new DatabaseSync(dbPath);
+      try {
+        db.exec("UPDATE job_name_first SET ready = 0 WHERE owner = 'long'");
+      } finally {
+        db.close();
+      }
+    }
     const otherKey = JSON.stringify(["long", thread + 999]);
     const beforeSame0 = snapshotJobNameFirst(pionDb);
     await withEnv(baseEnv, async () => {
@@ -590,6 +599,15 @@ test("all 6 production index/job builder classes switch cleanly between real MB 
     });
     assert.equal(snapshotJobNameFirst(pionDb), beforeSame0, "same=0 must leave existing job_name_first row unchanged");
     assert.equal(snapshotJobNameFirst(pionDb), snapshotJobNameFirst(mbDb), "JobNameFirstBuilder same=0 MB vs Pion 0-diff");
+    {
+      const db = new DatabaseSync(pionDb);
+      try {
+        const row = db.prepare("SELECT ready FROM job_name_first WHERE owner = 'long'").get() as { ready: number };
+        assert.equal(row.ready, 0, "same=0 with ready=0 must not flip ready to 1");
+      } finally {
+        db.close();
+      }
+    }
   }
 
   // 3. WorkspaceUpJobsBuilder: default mb vs STILLFAIL_READER_WORKSPACE_UP_JOBS=pion
