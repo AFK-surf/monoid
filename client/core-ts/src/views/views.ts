@@ -368,7 +368,14 @@ function profileRowsOf(shown: J): J {
     }
     return row;
   });
-  return { profiles, sharing: get(shown, "sharing") ?? null, shareAllowAuto: get(shown, "shareAllowAuto") === true, autoChats: { enabled: get(get(shown, "autoChats"), "enabled") === true }, mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null };
+  // (whether a share of it can follow the workspace's whitelist, and whether it is on that whitelist, said only where
+  // so: every station's rows are read for the list and its overview, and these are false on most)
+  return {
+    profiles, sharing: get(shown, "sharing") ?? null,
+    ...(get(shown, "shareAllowAuto") === true ? { shareAllowAuto: true } : {}),
+    ...(get(get(shown, "autoChats"), "enabled") === true ? { autoChats: { enabled: true } } : {}),
+    mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null,
+  };
 }
 
 /// What a window of a kept row says as it goes out: its refills in words, made of its `resetsAt` and now alone (present.ts
