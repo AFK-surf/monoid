@@ -752,13 +752,13 @@ test "用量 made once in a window 220 wide at words twice as large, as it is re
     None => fail("分享 read out")
   }
   let day = at(words, "7 天").unwrap()
-  // (each within the window; 分享 and the days under the title, 分享 before the days, the days' end 16 in)
+  // (each within the window; 分享 sits inline in the floating top bar beside the title, and the days sit full-width below the bar)
   for p in [("title", (title.1, title.2, title.3, title.4)), ("分享", share), ("7 天", (day.1, day.2, day.3, day.4))] {
     let (x, y, w, h) = p.1
     assert_true(x >= 0.0 && x + w <= 220.0 + 0.01 && y >= 0.0 && w > 0.0 && h > 0.0, msg="\{p.0} within the window: \{Repr(p.1)}")
   }
-  assert_true(share.1 >= title.2 + title.4 && day.2 >= title.2 + title.4, msg="under the title: \{Repr(title)} \{Repr(share)} \{Repr(day)}")
-  assert_true(share.0 + share.2 <= day.1, msg="分享 before the days: \{Repr(share)} \{Repr(day)}")
+  assert_true(share.0 >= title.1 + title.3, msg="分享 beside the title: \{Repr(title)} \{Repr(share)}")
+  assert_true(day.2 >= title.2 + title.4 && day.2 >= share.1 + share.3, msg="days under the bar: \{Repr(title)} \{Repr(share)} \{Repr(day)}")
   // (no words over words on its title's line as it comes in)
   let made_end = usage_line_end(words)
   assert_true(made_over.iter().all(fn(m) { m.y >= made_end }), msg="words over words on its title's line: \{Repr(made_over)}")

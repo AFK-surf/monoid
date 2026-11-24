@@ -106,8 +106,10 @@ test "styles: how many values of each kind the app's screens use" {
   // radius 22 to 23.
   // Four more once iOS 27 pressed-lens calibration updates resting Switch/Slider thumb shadows and Switch/Segmented track grounds:
   // color 83 to 87.
+  // One fewer text style once pushed narrow sub-pages use the single-row floating inline Liquid Glass top bar instead of
+  // the second-row 28pt Large Title: text 31 to 30.
   inspect(counts.to_string(), content=(
-    #|text 31
+    #|text 30
     #|weight 4
     #|space 22
     #|radius 23

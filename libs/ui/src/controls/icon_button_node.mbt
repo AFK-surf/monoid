@@ -154,7 +154,13 @@ fn icon_button_by(
       v
       .width(Is(Some(size)))
       .height(Is(Some(size)))
-      .padding(Is((pad, pad, pad, pad)))
+      |> ignore
+      if in_back_bar {
+        v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+      } else {
+        v.padding(Is((pad, pad, pad, pad))) |> ignore
+      }
+      v
       // (none where it has no ground: nothing of it is round to stand in a corner)
       .radius(
         match linked {

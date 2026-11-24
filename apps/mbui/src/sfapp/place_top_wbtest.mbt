@@ -97,8 +97,12 @@ test "a page's name kept whole: 用量's share and days as wide as they are afte
         fail("\{at}: Share card at \{Repr((x, y, w, h))}, Usage at \{Repr(title)}")
       }
       match t.rect_of("7 days") {
-        Some((x, _, w, _)) =>
-          if x < title.0 + title.2 || x + w > 360.0 {
+        Some((x, y, w, _)) =>
+          if from_settings {
+            if y < title.1 + title.3 || x < 0.0 || x + w > 360.0 {
+              fail("\{at}: 7 days at \{x}, \{y}, \{w}, Usage at \{Repr(title)}")
+            }
+          } else if x < title.0 + title.2 || x + w > 360.0 {
             fail("\{at}: 7 days at \{x}, \{w}, Usage at \{Repr(title)}")
           }
         None => fail("\{at}: no 7 days")

@@ -27,11 +27,11 @@ pub fn about_mark_node(
     let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
     let side = if in_back_bar { 34.0 } else { @ui.Space::px(S5) }
     let icon_sz = if in_back_bar { 20.0 } else { about_icon }
-    let pad = (side - icon_sz) / 2.0
     v
     .width(Is(Some(side)))
     .height(Is(Some(side)))
-    .padding(Is((pad, pad, pad, pad)))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
     .radius(Is(side / 2.0))
     |> ignore
     if in_back_bar {

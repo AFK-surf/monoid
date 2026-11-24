@@ -140,7 +140,8 @@ test "the update dialog as tall in every stage of a newer build: offered, the pe
 ///|
 test "关于 on a phone: back goes to settings" {
   let t = one_page_tester(@settings.Route::About, 390.0, platform=2)
-  t.tap_text("设置")
+  let (bx, by, bw, bh) = t.get(Link, label="设置").rect
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(app.nav.top() == Settings)
 }

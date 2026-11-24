@@ -1023,10 +1023,13 @@ pub fn narrow_bar_choice_node(
   loc~ : SourceLoc,
 ) -> Unit {
   if part_of(parent).look is Narrow {
-    let pushed = parent.lent(pushed_narrow_lent).unwrap_or(fn() { false })
-    parent.show(pushed, at_once=true, fn(slot) {
-      page_choice_node(loc~, slot, labels, chosen, choose)
-    })
+    match parent.lent(pushed_narrow_lent) {
+      Some(pushed) =>
+        parent.show(pushed, at_once=true, fn(slot) {
+          page_choice_node(loc~, slot, labels, chosen, choose)
+        })
+      None => ()
+    }
   }
 }
 

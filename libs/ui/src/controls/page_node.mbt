@@ -561,7 +561,9 @@ fn narrow_page_node(
   }
   let back_holds = fn() { head is Some(_) && pushed_narrow() }
   v.lends(head_back_holds, back_holds) |> ignore
-  v.lends(pushed_narrow_lent, pushed_narrow) |> ignore
+  if !@signals.untracked(fn() { frame().named }) {
+    v.lends(pushed_narrow_lent, pushed_narrow) |> ignore
+  }
   // (its blocks as last read, and whether their last change put another set in their place: another part of the page, or
   // what it shows as it is answered in place of what it showed waiting or empty, there at once: pg_blocks_read)
   let was : Ref[Set[String]] = Ref(Set([]))

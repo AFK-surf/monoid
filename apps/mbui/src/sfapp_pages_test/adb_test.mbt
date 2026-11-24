@@ -581,8 +581,11 @@ test "settings' 共享调试 on a phone's narrow page: what it is behind the ⓘ
     let (t, _) = adb_settings_calls("settings-adb-chats-long", w~)
     assert_true(t.find("agent 在对话里申请，你允许后只有那个对话能用。") is None)
     guard adb_button_at(t, "说明") is Some((x, y)) else { fail("no ⓘ at \{w}: \{Repr(t.semantics().map(fn(s) { s.label }))}") }
-    // after the title, in the bar
-    let (title_x, title_y) = t.find("共享调试").unwrap()
+    // after the title, in the bar (pick the topmost "共享调试", as the switch row below also carries that exact label)
+    let titles = t.words().filter(fn(w) { w.0 == "共享调试" })
+    assert_true(titles.length() > 0, msg="\{w}: no title")
+    let title = titles.fold(init=titles[0], fn(best, cur) { if cur.2 < best.2 { cur } else { best } })
+    let (title_x, title_y) = (title.1 + title.3 / 2.0, title.2 + title.4 / 2.0)
     assert_true(x > title_x && (y - title_y).abs() < 20.0, msg="\{w}: \{Repr((x, y))} \{Repr((title_x, title_y))}")
     t.tap(x, y)
     t.draw()
