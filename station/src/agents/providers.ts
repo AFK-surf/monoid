@@ -82,6 +82,7 @@ export const SOURCES: Source[] = [
     auth: "apiKey",
     sessionHeader: true,
   }),
+  // Command Code serves Claude models at /messages, OpenAI and open models at /chat/completions and /responses.
   source("command-code", "Command Code", {
     anthropic: "https://api.commandcode.ai/provider",
     chat: "https://api.commandcode.ai/provider/v1",
