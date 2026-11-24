@@ -45,6 +45,11 @@ test("a_search_lists_what_the_device_holds_and_what_its_stations_find_each_once"
   const ui = core.connect();
   subscribe(core, ui, 1, { topic: "search", scope: "ws", query: "部署" });
   await host.settle();
+  // The chats the device holds go out first, before its messages are looked through (a scan of all it keeps).
+  const sent = host.emitted.filter(([, m]: J) => m.id === 1).map(([, m]: J) => m);
+  const firstValue = sent.find((m: J) => "value" in m);
+  assert.deepEqual(firstValue.value.items.map((i: J) => i.id), ["a"]);
+  assert.deepEqual(firstValue.value.messages, []);
   const values = new Map();
   apply(host, values);
   // Before the stations answer: what the device holds.
