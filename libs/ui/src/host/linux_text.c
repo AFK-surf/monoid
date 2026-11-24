@@ -342,9 +342,10 @@ static gint ptr_str_order(gconstpointer a, gconstpointer b) {
 
 static void *local_font_info_worker(void *arg) {
   (void)arg;
+  FcConfig *cfg = FcInitLoadConfigAndFonts();
   FcPattern *pat = FcPatternCreate();
   FcObjectSet *os = FcObjectSetBuild(FC_FAMILY, FC_LANG, FC_SPACING, NULL);
-  FcFontSet *fs = FcFontList(NULL, pat, os);
+  FcFontSet *fs = cfg ? FcFontList(cfg, pat, os) : NULL;
   GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   GPtrArray *order = g_ptr_array_new();
   if (fs) {
@@ -385,6 +386,7 @@ static void *local_font_info_worker(void *arg) {
   }
   FcObjectSetDestroy(os);
   FcPatternDestroy(pat);
+  if (cfg) FcConfigDestroy(cfg);
   g_ptr_array_sort(order, ptr_str_order);
   GString *out = g_string_new("[");
   for (guint i = 0; i < order->len; i++) {
@@ -417,9 +419,14 @@ moonbit_string_t mb_host_local_font_info(void) {
       pthread_t tid;
       if (pthread_create(&tid, NULL, local_font_info_worker, NULL) == 0) {
         pthread_detach(tid);
+      } else {
+        char *empty = g_strdup("[]");
+        __atomic_store_n(&local_font_info_cache, empty, __ATOMIC_RELEASE);
+        g_idle_add(local_font_info_wake, NULL);
+        cached = empty;
       }
     }
-    return moonbit_make_string_raw(0);
+    if (!cached) return moonbit_make_string_raw(0);
   }
   glong len = 0;
   gunichar2 *u = g_utf8_to_utf16(cached, -1, NULL, &len, NULL);

@@ -4897,6 +4897,7 @@
     return g;
   };
   const nextFaceKeyGen = (face) => {
+    if (face < FACE_TRY) return 0;
     const g = (faceKeyGen.get(face) || 0) + 1;
     faceKeyGen.set(face, g);
     return g;
@@ -4955,7 +4956,9 @@
     const files = faceFiles.get(face);
     if (!files || !files.length || typeof FontFace !== 'function') return;
     const gen = nextFaceCancelGen(face);
+    const cjkSet = new Set(cjkLoaded.get(face) || []);
     for (const ff of [...document.fonts]) {
+      if (cjkSet.has(ff)) continue;
       const fam = ff.family.replace(/"/g, '');
       if (fam === `mbface${face}`) document.fonts.delete(ff);
     }
@@ -5074,7 +5077,8 @@
   };
 
   const textKey = (c, size, weight, style) => {
-    const fg = faceKeyGen.get(faceOf(style)) || 0;
+    const f = faceOf(style);
+    const fg = f >= FACE_TRY ? (faceKeyGen.get(f) || 0) : 0;
     const kk = fg ? c + '\x01' + size + '\x01' + weight + '\x01' + style + '\x01' + fg : c + '\x01' + size + '\x01' + weight + '\x01' + style;
     let key = keys.get(kk);
     if (key === undefined) {

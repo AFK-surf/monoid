@@ -350,3 +350,21 @@ test('slot >= 7 async faceAddBytes completion bumps atlasGeneration so MoonBit r
   await task();
   assert.ok(b.H.atlasGeneration() > gen0, 'atlasGeneration bumped after async preview font load');
 });
+
+test('faceSetLigatures preserves CJK companion FontFaces and narrow CJK faces', async () => {
+  const b = browser();
+  await task();
+  b.installed.add('PingFang SC Medium');
+  b.H.faceAddBytes(3, new Uint8Array(4), 400);
+  await task();
+  b.H.setCjkFace(3, 100, ['PingFang SC']);
+  fontOf(b, (3 << 8) | 64);
+  await task();
+  const cjkBefore = [...b.fonts].filter((f) => f.unicodeRange === CJK_RANGE);
+  assert.ok(cjkBefore.length >= 2, 'regular and narrow CJK companion loaded');
+  b.H.faceSetLigatures(3, false);
+  await task();
+  const cjkAfter = [...b.fonts].filter((f) => f.unicodeRange === CJK_RANGE);
+  assert.equal(cjkAfter.length, cjkBefore.length, 'CJK companion FontFaces preserved across faceSetLigatures');
+  assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && !f.unicodeRange && /"calt" 0/.test(f.featureSettings || '')));
+});

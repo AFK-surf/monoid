@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { answers, apply, call, subscribe, v } from "./helpers.ts";
 import { started } from "./station-fixture.ts";
+import { typographyOf } from "../src/prefs.ts";
 
 const DEFAULTS = { textSize: 100, codeScale: 100, lineHeight: "normal", uiCjkScale: 100, textCjkScale: 100, textCjkScaleOwn: false, codeCjkScale: 100, uiCjkWeight: 0, textCjkWeight: 0, textCjkWeightOwn: false, codeCjkWeight: 0, cjkAutoSpace: true, codeLigatures: true };
 
@@ -104,6 +105,7 @@ test("a setting not there, out of its range, off its step, or not one of its wor
     { lineHeight: "loose" }, { lineHeight: 1.5 },
     { cjkAutoSpace: "on" }, { codeLigatures: 1 },
     { fontSize: 100 }, { fontSize: null },
+    { constructor: 1 }, { toString: "x" }, { constructor: null }, { toString: null },
   ];
   for (const typography of bad) {
     const answer = await set({ typography });
@@ -116,6 +118,8 @@ test("a setting not there, out of its range, off its step, or not one of its wor
   }
   assert.deepEqual(kept().typography, { textSize: 110 });
   assert.deepEqual(prefs().typography, { ...DEFAULTS, textSize: 110 });
+  // Stored prefs containing prototype property names must not throw and are ignored.
+  assert.deepEqual(typographyOf({ constructor: 1, toString: "x", textSize: 110 }, undefined), { ...DEFAULTS, textSize: 110 });
 
   // Every value each can be: kept.
   const good: Record<string, unknown[]> = {

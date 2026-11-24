@@ -99,9 +99,11 @@ const CJK_WEIGHTS = [-100, 0, 100];
 const LINE_HEIGHTS = ["compact", "normal", "relaxed"];
 const TYPOGRAPHY_BOOLS = ["cjkAutoSpace", "codeLigatures"];
 
+const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
+
 /// Whether `v` is a value `key` of `typography` can be; an unknown key none.
 function typographyValid(key: string, v: unknown): boolean {
-  if (key in TYPOGRAPHY_NUMBERS) {
+  if (hasOwn(TYPOGRAPHY_NUMBERS, key)) {
     const [min, max, step] = TYPOGRAPHY_NUMBERS[key as keyof typeof TYPOGRAPHY_NUMBERS];
     return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max && (v - min) % step === 0;
   }
@@ -123,10 +125,10 @@ function typographyKept(v: unknown): Map_ {
 function typographyPut(kept: unknown, patch: Map_, fill: boolean): Map_ | string {
   const now = typographyKept(kept);
   for (const key of Object.keys(patch).sort()) {
-    if (fill && key in now) continue;
+    if (fill && hasOwn(now, key)) continue;
     const v = patch[key];
     if (v === null) {
-      if (key in TYPOGRAPHY_NUMBERS || TYPOGRAPHY_WEIGHTS.includes(key) || key === "lineHeight" || TYPOGRAPHY_BOOLS.includes(key)) delete now[key];
+      if (hasOwn(TYPOGRAPHY_NUMBERS, key) || TYPOGRAPHY_WEIGHTS.includes(key) || key === "lineHeight" || TYPOGRAPHY_BOOLS.includes(key)) delete now[key];
       else return key;
     } else if (typographyValid(key, v)) now[key] = v;
     else return key;
@@ -138,24 +140,24 @@ function typographyPut(kept: unknown, patch: Map_, fill: boolean): Map_ | string
 /// which follow ui's where text's CJK face does (`fonts`: no `textCjk` and a `uiCjk`).
 export function typographyOf(v: unknown, fontsKept: unknown): Map_ {
   const k = typographyKept(v);
-  const num = (key: keyof typeof TYPOGRAPHY_NUMBERS) => (key in k ? k[key] : TYPOGRAPHY_NUMBERS[key][3]) as number;
-  const weight = (key: string) => (key in k ? k[key] : 0) as number;
+  const num = (key: keyof typeof TYPOGRAPHY_NUMBERS) => (hasOwn(k, key) ? k[key] : TYPOGRAPHY_NUMBERS[key][3]) as number;
+  const weight = (key: string) => (hasOwn(k, key) ? k[key] : 0) as number;
   const c = fonts.choicesOf(fontsKept);
   const follows = c.textCjk === null && c.uiCjk !== null;
   return {
     textSize: num("textSize"),
     codeScale: num("codeScale"),
-    lineHeight: "lineHeight" in k ? k.lineHeight : "normal",
+    lineHeight: hasOwn(k, "lineHeight") ? k.lineHeight : "normal",
     uiCjkScale: num("uiCjkScale"),
-    textCjkScale: "textCjkScale" in k || !follows ? num("textCjkScale") : num("uiCjkScale"),
-    textCjkScaleOwn: "textCjkScale" in k,
+    textCjkScale: hasOwn(k, "textCjkScale") || !follows ? num("textCjkScale") : num("uiCjkScale"),
+    textCjkScaleOwn: hasOwn(k, "textCjkScale"),
     codeCjkScale: num("codeCjkScale"),
     uiCjkWeight: weight("uiCjkWeight"),
-    textCjkWeight: "textCjkWeight" in k || !follows ? weight("textCjkWeight") : weight("uiCjkWeight"),
-    textCjkWeightOwn: "textCjkWeight" in k,
+    textCjkWeight: hasOwn(k, "textCjkWeight") || !follows ? weight("textCjkWeight") : weight("uiCjkWeight"),
+    textCjkWeightOwn: hasOwn(k, "textCjkWeight"),
     codeCjkWeight: weight("codeCjkWeight"),
-    cjkAutoSpace: "cjkAutoSpace" in k ? k.cjkAutoSpace : true,
-    codeLigatures: "codeLigatures" in k ? k.codeLigatures : true,
+    cjkAutoSpace: hasOwn(k, "cjkAutoSpace") ? k.cjkAutoSpace : true,
+    codeLigatures: hasOwn(k, "codeLigatures") ? k.codeLigatures : true,
   };
 }
 

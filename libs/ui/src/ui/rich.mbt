@@ -593,9 +593,17 @@ fn rich_forget_face(face : Int) -> Unit {
     }
     if !hit {
       for run in r.runs {
-        if run.face == Some(face) || @hostapi.face_of_style(r.run_style(run)) == face {
+        let style = r.run_style(run)
+        if run.face == Some(face) || @hostapi.face_of_style(style) == face {
           hit = true
           break
+        }
+        match effective_cjk(style, r.run_cjk_override(run, style)) {
+          Some((cjk_slot, _, _)) if cjk_slot == face => {
+            hit = true
+            break
+          }
+          _ => ()
         }
       }
     }
@@ -707,15 +715,16 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
       Some((_, s, _)) => s > 1.0
       None => false
     }
+    let fit = run_cjk && run_cjk_enlarged
     let (a, d) = line_metrics(size, weight, run_cjk, style~, cjk_override=ov)
-    let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=run_cjk && run_cjk_enlarged)
+    let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
     run_start.push(off)
     run_size.push(size)
     run_a.push(a)
     run_d.push(d)
     run_lasc.push(lasc)
     run_ldesc.push(l - lasc)
-    run_extra.push(rx)
+    run_extra.push(if fit { rx } else { 0.0 })
     run_c0.push(starts.length())
     let n = s.starts.length()
     let (room, after) = r.run_room(run, size)
@@ -875,8 +884,9 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
               Some((_, s, _)) => s > 1.0
               None => false
             }
+            let fit = rrun_cjk && batch_cjk_enlarged
             let (a, d) = line_metrics(size, weight, rrun_cjk, style~, cjk_override=batch_ov)
-            let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=rrun_cjk && batch_cjk_enlarged)
+            let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
             drawings.push(None)
             run_start.push(off + local_start[j])
             run_size.push(size)
@@ -884,7 +894,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
             run_d.push(d)
             run_lasc.push(lasc)
             run_ldesc.push(l - lasc)
-            run_extra.push(rx)
+            run_extra.push(if fit { rx } else { 0.0 })
             run_c0.push(starts.length())
             for c in batch_c0[j]..<batch_c1[j] {
               starts.push(s.starts[c] + off)
@@ -984,8 +994,9 @@ fn rich_prep_one(
     Some((_, s, _)) => s > 1.0
     None => false
   }
+  let fit = run_cjk && run_cjk_enlarged
   let (a, d) = line_metrics(size, weight, run_cjk, style~, cjk_override=ov)
-  let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=run_cjk && run_cjk_enlarged)
+  let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
   let n = s.starts.length()
   let (room, after) = r.run_room(run, size)
   let (adv, pre) = if room == 0.0 && after == 0.0 {
@@ -1010,7 +1021,7 @@ fn rich_prep_one(
     run_d: [d],
     run_lasc: [lasc],
     run_ldesc: [l - lasc],
-    run_extra: [rx],
+    run_extra: [if fit { rx } else { 0.0 }],
     drawings: [None],
     starts: s.starts,
     lens: s.lens,

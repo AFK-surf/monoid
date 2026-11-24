@@ -487,15 +487,19 @@ static bool style_no_ligatures(int style) {
 }
 
 // style & 8 or per-face ligatures disabled: no ligatures
-static CTLineRef make_line(NSString *s, CTFontRef f, int style) {
+static CTLineRef make_line_with(NSString *s, CTFontRef f, bool no_lig, bool no_autospace) {
   NSMutableDictionary *attrs = [@{
     (__bridge id)kCTFontAttributeName : (__bridge id)f,
     (__bridge id)kCTForegroundColorFromContextAttributeName : @YES,
   } mutableCopy];
-  if (style_no_ligatures(style)) attrs[(__bridge id)kCTLigatureAttributeName] = @0;
-  if (unspaced()) attrs[(__bridge id)kCTLanguageAttributeName] = @"en";
+  if (no_lig) attrs[(__bridge id)kCTLigatureAttributeName] = @0;
+  if (no_autospace) attrs[(__bridge id)kCTLanguageAttributeName] = @"en";
   NSAttributedString *as = [[NSAttributedString alloc] initWithString:s attributes:attrs];
   return CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)as);
+}
+
+static CTLineRef make_line(NSString *s, CTFontRef f, int style) {
+  return make_line_with(s, f, style_no_ligatures(style), unspaced() != 0);
 }
 
 static int intern_at(NSString *cluster, double size, int weight, int style, double dx) {
@@ -876,9 +880,10 @@ static int key_sub(int full_key) {
 - (void)dealloc { free(_px); }
 @end
 
-static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, double e_dx, double sub_px, double sc) {
+static MBDrawn *draw_cluster_with(NSString *cluster, CTFontRef f, int style, bool no_lig, bool no_autospace,
+                                  double e_dx, double sub_px, double sc) {
   MBDrawn *d = [MBDrawn new];
-  CTLineRef line = make_line(cluster, f, style);
+  CTLineRef line = make_line_with(cluster, f, no_lig, no_autospace);
   // is it drawn from a color font (emoji)? slanted, from a face with no italic?
   int color = 0, oblique = 0;
   const double slant = 0.2126;  // tan 12°
@@ -966,6 +971,10 @@ static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, double e
   return d;
 }
 
+static MBDrawn *draw_cluster(NSString *cluster, CTFontRef f, int style, double e_dx, double sub_px, double sc) {
+  return draw_cluster_with(cluster, f, style, style_no_ligatures(style), unspaced() != 0, e_dx, sub_px, sc);
+}
+
 // the glyph drawn last (mb_host_glyph), its picture until it is put in its atlas (mb_host_glyph_put): its key with its
 // phase
 static int held_key = -1;
@@ -1009,6 +1018,8 @@ static void place(int full_key, MBDrawn *d) {
 @property(nonatomic, copy) NSString *cluster;
 @property(nonatomic, strong) id font;  // a CTFontRef
 @property(nonatomic) int style;
+@property(nonatomic) BOOL noLig;
+@property(nonatomic) BOOL noAutospace;
 @property(nonatomic) double dx;
 @property(nonatomic) double scale;
 @property(nonatomic) BOOL gone;
@@ -1051,7 +1062,7 @@ static void draw_ahead(MBAhead *a, BOOL first) {
   int s = __builtin_ctz(bit);
   MBDrawn *d;
   @autoreleasepool {
-    d = draw_cluster(a.cluster, (__bridge CTFontRef)a.font, a.style, a.dx, sub_dx(s), a.scale);
+    d = draw_cluster_with(a.cluster, (__bridge CTFontRef)a.font, a.style, a.noLig, a.noAutospace, a.dx, sub_dx(s), a.scale);
   }
   pthread_mutex_lock(&ahead_lock);
   a.drawing = (uint8_t)(a.drawing & ~bit);
@@ -1156,6 +1167,8 @@ static BOOL ahead_ask(int k, uint8_t want, uint8_t first, NSMutableArray<MBAhead
   a.cluster = texts[k];
   a.font = (__bridge id)font_for(e->size, e->weight, e->style);
   a.style = e->style;
+  a.noLig = style_no_ligatures(e->style);
+  a.noAutospace = unspaced() != 0;
   a.dx = e->dx;
   a.scale = text_scale;
   a.want = want;

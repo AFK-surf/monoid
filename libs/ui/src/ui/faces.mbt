@@ -175,7 +175,7 @@ pub fn face_set_cjk(
   scale? : Double = 1.0,
   weight_off? : Int = 0,
 ) -> Unit {
-  if slot <= 0 || slot >= @hostapi.faces_most || cjk_face <= 0 || cjk_face >= @hostapi.faces_most {
+  if slot <= 0 || slot >= @hostapi.faces_most || cjk_face <= 0 || cjk_face >= @hostapi.face_try {
     return
   }
   let next = Companion(cjk_face, scale, weight_off)

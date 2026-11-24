@@ -6,7 +6,9 @@
 // of another kind made again in its place.
 
 ///|
-/// Grouped typography scaling & CJK companion overrides for `markdown_node` (paragraphs, code blocks, and tables).
+/// Grouped typography scaling & CJK companion overrides for `markdown_node` (paragraphs, headings, code blocks, and
+/// tables). `markdown_node`'s `size` parameter is the unscaled base font size; `prose_scale` scales prose, headings,
+/// code blocks, and tables uniformly once.
 #derive(Eq)
 pub(all) struct MdTypography {
   prose_scale : Double
@@ -113,7 +115,9 @@ pub fn markdown_node(
     let md : MdNode = {
       size: fn() {
         let now = size()
-        if now > 0.0 { now } else { theme().t.body }
+        let base = if now > 0.0 { now } else { theme().t.body }
+        let ps = (typography)().prose_scale
+        if ps == 1.0 { base } else { base * ps }
       },
       line,
       apart,

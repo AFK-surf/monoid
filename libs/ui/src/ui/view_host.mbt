@@ -1149,6 +1149,15 @@ fn view_words_rescaled() -> Unit {
 }
 
 ///|
+/// Surgically invalidate only tree nodes referencing preview `face` without disturbing global `words_redone`.
+fn view_words_rescaled_for_face(face : Int) -> Unit {
+  match view_app.val {
+    Some(t) => t.words_again_for_face(face)
+    None => ()
+  }
+}
+
+///|
 /// The tree's frame of the window `w` by `h` at `t` (what was marked done: src/view), the instances it changed to be
 /// made again, where each old view is placed now.
 fn view_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {

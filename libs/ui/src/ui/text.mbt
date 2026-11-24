@@ -748,7 +748,7 @@ fn forget_words_for_face(face : Int) -> Unit {
     words_forgotten()
     return
   }
-  view_words_rescaled()
+  view_words_rescaled_for_face(face)
 }
 
 ///|
@@ -1157,10 +1157,11 @@ fn shape(
     style
   }
   let eff = effective_cjk(style, cjk_override)
-  let (cjk_slot, cjk_scale, cjk_scale_pct, cjk_weight_off) = match eff {
-    Some((slot, sc, woff)) => (slot, sc, (sc * 100.0).round().to_int(), woff)
-    None => (0, 1.0, 100, 0)
+  let (cjk_slot, cjk_scale_pct, cjk_weight_off) = match eff {
+    Some((slot, sc, woff)) => (slot, (sc * 100.0).round().to_int(), woff)
+    None => (0, 100, 0)
   }
+  let cjk_scale = cjk_scale_pct.to_double() / 100.0
   let shapes = font_shapes(size, weight, style, spacing, cjk_slot, cjk_scale_pct, cjk_weight_off)
   match shapes.get(text) {
     Some(s) => {

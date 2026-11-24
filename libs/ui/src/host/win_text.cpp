@@ -615,10 +615,11 @@ extern "C" moonbit_string_t mb_host_local_font_info(void) {
       if (th) {
         CloseHandle(th);
       } else {
-        local_font_info_finish_empty(false);
+        local_font_info_finish_empty(true);
+        cached = local_font_info_empty;
       }
     }
-    return moonbit_make_string_raw(0);
+    if (!cached) return moonbit_make_string_raw(0);
   }
   size_t len = local_font_info_cache_len;
   moonbit_string_t s = moonbit_make_string_raw((int32_t)len);

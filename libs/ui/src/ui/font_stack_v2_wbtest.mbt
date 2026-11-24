@@ -488,3 +488,91 @@ test "font_v2: slot 7 consecutive family switch evicts slot-7 rich_kept without 
   assert_eq(lay1_after.w, lay1_before.w)
   assert_eq(lay1_after.keys, lay1_before.keys)
 }
+
+///|
+test "font_v2: web_lines=false non-CJK inline code overflow does not inflate last-line run_extra" {
+  let _t = Tester::new(fn(c) { c.text("x") |> ignore })
+  set_web_lines(false)
+  let r : Rich = {
+    runs: [@text.plain("alpha "), @text.code("inline_code")],
+    size: 16.0,
+    weight: 400,
+    color: 0xFFFFFFFFL,
+    // Tight line height (< ascent + descent) so set_line returns non-zero extra when room < 0
+    line: 14.0,
+    trim: false,
+    wrap: true,
+    link_color: 0L,
+    pressed_bg: 0L,
+    code_color: 0xFFFFFFFFL,
+    code_bg: 0L,
+    code_scale: 1.0,
+    spacing: 0.0,
+    base: 0,
+    select: false,
+    max_lines: 0,
+    faces: 0,
+    shaped_in: words_shaped_in.untracked(),
+    cjk_override: None,
+    code_cjk_override: None,
+  }
+  let lay = layout_rich(r, 400.0)
+  for rx in lay.run_extra {
+    assert_eq(rx, 0.0)
+  }
+  // Paragraph height equals line height + base extra only (never inflated by per-run non-CJK extra).
+  let (_, _, base_extra) = set_line(14.0, lay.run_a[0], lay.run_d[0], g().scale, false)
+  assert_eq(lay.h, lay.line_h[0] + base_extra)
+}
+
+///|
+test "font_v2: preview slot switch does not bump words_redone or evict virtual list offscreen heights" {
+  let items = Array::makei(40, fn(i) { "row-\{i}" })
+  let measured : Array[Int] = []
+  let t = Tester::new(fn(c) { c.text("x") |> ignore }, w=400.0, h=220.0)
+  let scroll = @view.Scroll::new()
+  set_view_app(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)) |> ignore
+      row.box(fn(p) {
+        p.words_runs(Is([@text.span("Preview sample", face=Some(7))])) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(box) {
+      box.height(Is(Some(160.0))) |> ignore
+      box.scrolls_window(
+        scroll,
+        fn() { items },
+        fn(row, k) {
+          row.height(Is(Some(32.0))).words(Is(k)) |> ignore
+          measured.push(1)
+        },
+        est=30.0,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  assert_true(face_add_family(7, "FamilyA"))
+  t.draw()
+  // Scroll down so early rows go offscreen with cached heights, then settle.
+  t.wheel(200.0, 120.0, -300.0)
+  t.draw()
+  let tree = view_tree().unwrap()
+  let redone_before = tree.words_redone.untracked()
+  let forgotten_before = words_forgotten_count()
+  let measured_before = measured.length()
+  let (_, _, w_before, _) = t.rect_of("Preview sample").unwrap()
+  // Switch preview slot 7 to a wider family: must NOT bump words_redone or re-measure unrelated list rows.
+  t.face_wider(7, 0.35)
+  face_clear(7)
+  assert_true(face_add_family(7, "FamilyB"))
+  t.draw()
+  assert_eq(tree.words_redone.untracked(), redone_before)
+  assert_eq(words_forgotten_count(), forgotten_before)
+  assert_eq(measured.length(), measured_before)
+  let (_, _, w_after, _) = t.rect_of("Preview sample").unwrap()
+  assert_true(w_after > w_before + 1.0, msg="preview width before=\{w_before} after=\{w_after}")
+}
