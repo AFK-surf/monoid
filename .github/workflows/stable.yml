@@ -65,10 +65,10 @@ jobs:
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           RELEASE_DIR: ${{ runner.temp }}/release
         run: sh .github/release.sh --stable android
-      # Only the APK and symbols go up from Mini1 directly via Cloudflare's API (~10-20 s instead of pushing ~75 MB of
-      # deltas over Mini1's home uplink for 6-8 minutes, 45502063213); android-feeds computes and uploads the deltas and
-      # feed on ubuntu-24.04.
-      - name: Put its files and hand the feed to android-feeds
+      # Stage the APK and symbols from Mini1 directly via Cloudflare's API (~15-20 s instead of computing and uploading
+      # ~75 MB of deltas over Mini1's home uplink for ~5-6 minutes, 45502063213). Staging keeps any existing APK of the
+      # same version untouched until android-feeds publishes APK, deltas, and android/latest.json together on ubuntu-24.04.
+      - name: Stage its files and hand the feed to android-feeds
         id: hand
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -76,14 +76,14 @@ jobs:
           set -o pipefail
           git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch --depth=1 --filter=blob:none origin "$GITHUB_SHA"
           git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
-          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --files "$RUNNER_TEMP/release"
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --stage "$RUNNER_TEMP/release"
           STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --hand "$RUNNER_TEMP/release" | tee "$RUNNER_TEMP/hand.out"
           echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
       # monoid's (build.monoid.android, the same key): from the same build, in the same warm cache (only the package is
       # made again: its id, name and links are in its manifest and resources); put by monoid-android. Not a reason to hold
       # still.fail's release back: skipped without failing monoid-android when time is short or upload fails (45498745060).
-      # Leave 95 s before JOB_END for monoid-upload (timeout-minutes: 1) and cleanup so optional monoid work can never
-      # cancel android and skip web/station/site/done (44770813931, 45502063213).
+      # Leave 165 s before JOB_END for monoid-upload (timeout-minutes: 2; 37 MB took 84 s in 45502063213) and cleanup so
+      # optional monoid work cannot cancel android and skip web/station/site/done (44770813931, 45502063213).
       - name: Build and sign monoid's stable Android app from the same build
         id: monoid-build
         continue-on-error: true
@@ -92,14 +92,14 @@ jobs:
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           RELEASE_DIR: ${{ runner.temp }}/monoid
         run: |
-          left=$(( JOB_END - $(date +%s) - 95 ))
+          left=$(( JOB_END - $(date +%s) - 165 ))
           if [ "$left" -lt 30 ]; then
             echo "::warning::skipping monoid's stable Android build: only ${left} s left before upload reserve"
             exit 1
           fi
-          bash scripts/with-timeout.sh "@$(( JOB_END - 95 ))" sh .github/release.sh --product monoid --stable android
+          bash scripts/with-timeout.sh "@$(( JOB_END - 165 ))" sh .github/release.sh --product monoid --stable android
           left_up=$(( JOB_END - $(date +%s) ))
-          if [ "$left_up" -ge 75 ]; then
+          if [ "$left_up" -ge 145 ]; then
             echo "packed=1" >> "$GITHUB_OUTPUT"
           else
             echo "::warning::skipping monoid's stable Android upload: only ${left_up} s left before job end"
@@ -108,11 +108,11 @@ jobs:
         id: monoid-upload
         uses: actions/upload-artifact@v4
         continue-on-error: true
-        timeout-minutes: 1
+        timeout-minutes: 2
         with: { name: "monoid-android-stable", path: "${{ runner.temp }}/monoid", if-no-files-found: error, retention-days: 1, compression-level: 0 }
 
-  # The stable Android app's deltas and feed (android put the APK and symbols), on Linux where Java compiles the delta
-  # applier and uploads are fast, mirroring desktop-win-feeds and pipeline.yml's deltas-android.
+  # The stable Android app's deltas, APK, symbols, and feed (staged by android), on Linux where Java compiles the delta
+  # applier and uploads are fast, mirroring station-put/desktop-win-feeds and pipeline.yml's deltas-android.
   android-feeds:
     needs: [plan, android]
     if: ${{ !cancelled() && needs.android.result == 'success' }}
@@ -134,12 +134,14 @@ jobs:
             /libs/ui/android/jzlib/
           sparse-checkout-cone-mode: false
       - uses: ./.github/actions/node
-      - name: Its deltas, then its feed
+      - name: Its deltas, then its APK and feed
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
+          [ -n "$HANDED" ] || { echo "no handoff key from android" >&2; exit 1; }
           # shellcheck disable=SC2086 # names, one word each
           sh scripts/release-put.sh --unhand "$RUNNER_TEMP/release" $HANDED
+          sh scripts/release-put.sh --unstage "$RUNNER_TEMP/release"
           node scripts/release-deltas.ts "$RUNNER_TEMP/release" --deadline 180
           sh scripts/release-put.sh "$RUNNER_TEMP/release"
           # shellcheck disable=SC2086 # names, one word each
