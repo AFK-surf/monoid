@@ -131,12 +131,13 @@ test "player_node hidden controls emit zero hidden glass instances" {
   t.run_for(playing_for("k").media.times().1 + 600.0)
   assert_eq(t.drawn_glass().length(), 0, msg="phone hidden controls must emit zero glass")
   assert_eq(outside_shadows(t).length(), 0, msg="phone hidden controls must emit zero shadows")
-  // Desktop playing: click stage once to hide controls, wait past fade-out.
+  // Desktop playing: idle auto-fade hides bottom bar after 2000ms + sleep_ms.
   let td = player_glass_tester(false, "video", true, false, pin=pinned(2000.0))
+  td.host_says_finger(Some(false))
+  td.draw()
   let before_glass = td.drawn_glass().length()
   assert_true(before_glass >= 2, msg="desktop visible controls glass count")
-  td.tap(640.0, 400.0)
-  td.run_for(playing_for("k").media.times().1 + 600.0)
+  td.run_for(player_desk_idle_ms + @player.media_sleep_ms + 50.0)
   // Bottom control bar is hidden; remaining glass count drops strictly.
   assert_true(td.drawn_glass().length() < before_glass, msg="desktop hidden bottom bar drops glass count")
   @ui.set_glass_solid(None)

@@ -1163,6 +1163,9 @@ static int life_message(UINT msg, WPARAM wp, LPARAM lp, LRESULT *r) {
       if (lp && !wcscmp((const WCHAR *)lp, L"ImmersiveColorSet")) {
         read_dark();
         ws->want_frame = 1;
+      } else if (wp == SPI_SETSCREENREADER || wp == SPI_SETHIGHCONTRAST) {
+        win_sr_invalidate();
+        mb_host_request_frame();
       }
       return 0;
     case WM_POWERBROADCAST:

@@ -71,7 +71,9 @@ pub let player_speeds : Array[Double] = [0.1, 0.25, 0.5, 1.0, 1.25, 1.5, 2.0]
 
 ///|
 /// A player for a page (`key` keeps its widgets apart from another's), its waits said once they have waited later_ms;
-/// its controls there till a tap (a click) on its picture hides them, never going of themselves (the user, 2026-10-28).
+/// its controls auto-fade after idle (2000 ms for desktop pointer in playing or paused state, 3000 ms for touch while
+/// playing; deterministic `at_moment(later=true)`, never auto-fading while `@hostapi.a11y_on()`), superseding the
+/// earlier never-auto-hide rule (zuozijian, 2026-11-25).
 pub fn new_media(key : String) -> @player.Media {
   @player.Media::new(key~, speeds=player_speeds, wait_ms=later_ms)
 }
@@ -510,28 +512,20 @@ fn where_runs(p : @player.Media, fr : Frames, s : @player.MediaStatus, playing :
 }
 
 ///|
-/// How far in from the stage's top and foot a film's picture is fitted (`top`, `foot`): laid out wider than Small,
-/// clear of the bar along the top and of the controls over the foot (and of the system's bars where they are over the
-/// window), so neither ever hides an edge of it (a screen's recording looked at closely, its time dragged along); it
-/// stays where it is as they come and go. Laid out Small (a phone's) or beside the system's bars (an iPhone Duo's:
-/// its bar's actions in them, none of its own over the film) edge to edge, its controls over it. `embedded`: in
-/// a stage of a page's own (a tab beside a chat), no bar over it and nothing of the window's bars: the room over its
-/// controls, a phone's (phone_embedded_foot) or a desktop's, which stand as far up from the stage's foot as a panel's
-/// corner is round.
+/// How far in from the stage's top and foot a film's picture is fitted (`top`, `foot`): standalone fullscreen video
+/// (`!embedded`) uses the full stage `(0.0, 0.0)` with top and bottom controls overlaid as floating chrome, superseding
+/// the earlier permanent desktop top/bottom margins (zuozijian, 2026-11-25). `embedded`: in a stage of a page's own
+/// (a tab beside a chat), no bar over it and nothing of the window's bars: the room over its controls, a phone's
+/// (phone_embedded_foot) or a desktop's, which stand as far up from the stage's foot as a panel's corner is round.
 pub fn player_room(width : Double, embedded? : Bool = false) -> (Double, Double) {
-  if layout(width) is Small {
-    return (0.0, if embedded { phone_embedded_foot() } else { 0.0 })
-  }
-  if embedded {
-    return (0.0, desk_controls_foot(width, true))
-  }
-  // (beside the system's bars, an iPhone Duo's: its bar's actions in them, none of its own over the film; its
-  // controls over it as a phone's are)
-  if native_on() {
+  if !embedded {
     return (0.0, 0.0)
   }
-  let top = (viewer_host().room)().0
-  (viewer_bar_h + top, desk_controls_foot(width, false))
+  if layout(width) is Small {
+    (0.0, phone_embedded_foot())
+  } else {
+    (0.0, desk_controls_foot(width, true))
+  }
 }
 
 ///|
@@ -631,15 +625,48 @@ let player_second_ms : Double = 1000.0
 let player_speeds_w : Double = 120.0
 
 ///|
-/// A finger held: this fast while it is; a drag down past this closes; a screen's width along it is this much of the
-/// time at most (all of a shorter one).
+/// Idle auto-fade durations (desktop pointer: 2000 ms in playing or paused; touch while playing: 3000 ms) and quiet
+/// play/pause center feedback duration (450 ms).
+let player_desk_idle_ms : Double = 2000.0
+
+///|
+let player_touch_idle_ms : Double = 3000.0
+
+///|
+let player_quiet_note_ms : Double = 450.0
+
+///|
+/// A finger held: this fast while it is; a drag down past this closes; AlongTime scrub spans (paused: up to 15 s/screen,
+/// playing: up to 60 s/screen), vertical gear thresholds with ±6 pt hysteresis, frame step distance (8 pt), and 3 pt
+/// thin progress line height.
 let player_held_speed : Double = 2.0
 
 ///|
 let player_close_dy : Double = 120.0
 
 ///|
-let player_drag_span : Double = 120000.0
+let player_scrub_paused_span : Double = 15000.0
+
+///|
+let player_scrub_playing_span : Double = 60000.0
+
+///|
+let player_scrub_fine_up : Double = 44.0
+
+///|
+let player_scrub_fine_down : Double = 38.0
+
+///|
+let player_scrub_frame_up : Double = 96.0
+
+///|
+let player_scrub_frame_down : Double = 90.0
+
+///|
+let player_scrub_frame_px : Double = 8.0
+
+///|
+let player_scrub_bar_h : Double = 3.0
 
 ///|
 /// 选集's sheet: its share of the page.
@@ -848,6 +875,7 @@ pub fn player_bindings() -> Array[@view.Binding] {
     ("zoom_reset", [(ch('0'), 0)]),
     ("zoom_whole", [(ch('1'), 0)]),
     ("escape", [(@ui.key_escape, 0)]),
+    ("wake_tab", [(@ui.key_tab, 0), (@ui.key_tab, shift)]),
   ]
   let out : Array[@view.Binding] = []
   for k in keys {

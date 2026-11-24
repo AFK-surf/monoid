@@ -165,6 +165,7 @@ fn make_native_host() -> @hostapi.Host {
   h.native_pointing = fn() { said_once(native_pointing_said, fn() { native_pointing() }) }
   h.keyboard = fn() { keyboard() }
   h.a11y_on = fn() { a11y_on() }
+  h.screen_reader_on = fn() { screen_reader_on() }
   h.a11y_tree = fn(s) { a11y_tree(s) }
   h.set_dark = fn(dark) { set_dark(dark) }
   h.set_sideways = fn(on) { set_sideways(on) }

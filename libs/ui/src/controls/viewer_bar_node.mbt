@@ -237,6 +237,16 @@ let viewer_tools_pad : Double = 2.0
 let viewer_tools_pill_lent : @view.Lent[Bool] = @view.Lent::new()
 
 ///|
+/// Lent callback invoked with the top bar's back button node when `viewer_bar_node` mounts under an ancestor.
+let viewer_bar_back_watch_lent : @view.Lent[(@view.View) -> Unit] = @view.Lent::new()
+
+///|
+/// Register a callback invoked with the top bar's back button node when `viewer_bar_node` mounts under `parent`.
+pub fn viewer_bar_watch_back(parent : @view.View, watch : (@view.View) -> Unit) -> Unit {
+  parent.lends(viewer_bar_back_watch_lent, watch) |> ignore
+}
+
+///|
 /// How far in from the window's side the bar's tools pill stands, the window `w` wide (viewer_bar's end): clear of the
 /// window's buttons where they are the app's (12pt gap between pills); on rounded windows following the window's corner
 /// (macOS 16pt), symmetric `bar_keys_top() - viewer_tools_pad` (4pt) so the pill is concentric with the window corner
@@ -351,6 +361,10 @@ fn back_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.button(made_for=loc, parent, words, fn(_) { went() }, fn(v, b) {
+    match parent.lent(viewer_bar_back_watch_lent) {
+      Some(watch) => watch(v)
+      None => ()
+    }
     let lit = fn() {
       b.focus_shown() ||
       (match @ui.pointing() {

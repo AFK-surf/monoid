@@ -930,6 +930,14 @@ pub fn Tester::set_a11y(self : Tester, on : Bool) -> Unit {
 }
 
 ///|
+/// Whether an actual screen reader is active (`@ui.screen_reader_on`), decoupled from `set_a11y`, waking a frame on change.
+pub fn Tester::set_screen_reader(self : Tester, on : Bool) -> Unit {
+  host_setting_set("set_screen_reader")
+  self.fake.screen_reader = on
+  self.fake.wants = true
+}
+
+///|
 /// What the host's accessibility has of the widgets, as the updates it was told left it (A11yMirror::lines: the lines
 /// Ctx::a11y_lines writes; "" nothing yet).
 pub fn Tester::a11y_said(self : Tester) -> String {

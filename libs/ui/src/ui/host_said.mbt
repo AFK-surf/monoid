@@ -105,6 +105,18 @@ let words_size_said : HostSaid[Double] = host_said(
 let reads_out_said : HostSaid[Bool] = host_said(false, h_a11y_on)
 
 ///|
+/// Whether an actual screen reader is active (screen_reader_on).
+// kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
+let screen_reader_said : HostSaid[Bool] = host_said(false, h_screen_reader_on)
+
+///|
+/// Whether an actual screen reader is active now (macOS VoiceOver, iOS VoiceOver/Switch Control, Android screen reader,
+/// Windows SPI_GETSCREENREADER, Linux AT-SPI ScreenReaderEnabled), followed as a signal.
+pub fn screen_reader_on() -> Bool {
+  screen_reader_said.now()
+}
+
+///|
 /// Whether motion is reduced (reduced_motion).
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
 let motion_reduced_said : HostSaid[Bool] = host_said(false, motion_reduced_asked)
@@ -151,6 +163,7 @@ fn host_settings_arrive() -> Unit {
   dark_said.arrive()
   words_size_said.arrive()
   reads_out_said.arrive()
+  screen_reader_said.arrive()
   motion_reduced_said.arrive()
   glass_solid_said.arrive()
   contrast_said.arrive()

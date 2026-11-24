@@ -140,6 +140,7 @@ static int win_of(HWND h) {
   return -1;
 }
 void mb_host_request_frame(void);
+static void win_sr_invalidate(void);
 // Window `wid` put in place: its slot and its drawing.
 static void win_use(int wid) {
   if (wid == win_active || wid < 0 || wid >= MB_WINS || (wid > 0 && !win_slots[wid].h)) return;
@@ -2277,6 +2278,153 @@ int32_t mb_host_increase_contrast(void) {
   HIGHCONTRASTW hc = {sizeof hc};
   if (!SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0)) return 0;
   return (hc.dwFlags & HCF_HIGHCONTRASTON) ? 1 : 0;
+}
+
+// Narrator registry watch & cached screen-reader state (zero per-frame syscalls when armed):
+// Level 0 = unarmed, 1 = HKCU\Software\Microsoft (NAME only, non-recursive),
+// 2 = HKCU\Software\Microsoft\Narrator (NAME|LAST_SET, subtree),
+// 3 = HKCU\Software\Microsoft\Narrator\NoRoam (NAME|LAST_SET, non-recursive).
+static HKEY win_narrator_key = NULL;
+static int win_narrator_level = 0;
+static int win_narrator_armed = 0;
+static int win_sr_cached = -1;
+static uintptr_t win_narrator_gen = 0;
+static HANDLE win_narrator_event = NULL;
+static HANDLE win_narrator_wait = NULL;
+
+static void win_sr_invalidate(void) { win_sr_cached = -1; }
+static void win_sr_refresh(int rearm_watch);
+
+static void win_sr_wake(void *arg) {
+  // Drop stale callbacks queued from a previously closed ancestor key generation.
+  if ((uintptr_t)arg != win_narrator_gen) return;
+  // One registry notification was consumed: re-arm watch and refresh cached state on the UI main thread.
+  win_narrator_armed = 0;
+  win_sr_refresh(1);
+  mb_host_request_frame();
+}
+
+static void CALLBACK win_narrator_cb(PVOID param, BOOLEAN timed_out) {
+  (void)timed_out;
+  mb_app_call(win_sr_wake, param);
+}
+
+static void win_narrator_close_key(void) {
+  win_narrator_gen++;
+  if (win_narrator_wait) {
+    UnregisterWaitEx(win_narrator_wait, INVALID_HANDLE_VALUE);
+    win_narrator_wait = NULL;
+  }
+  if (win_narrator_key) {
+    RegCloseKey(win_narrator_key);
+    win_narrator_key = NULL;
+  }
+  if (win_narrator_event) {
+    CloseHandle(win_narrator_event);
+    win_narrator_event = NULL;
+  }
+  win_narrator_level = 0;
+  win_narrator_armed = 0;
+}
+
+static int win_narrator_probe_key(HKEY *out_key) {
+  HKEY k = NULL;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Narrator\\NoRoam", 0, KEY_NOTIFY, &k) ==
+      ERROR_SUCCESS) {
+    *out_key = k;
+    return 3;
+  }
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Narrator", 0, KEY_NOTIFY, &k) == ERROR_SUCCESS) {
+    *out_key = k;
+    return 2;
+  }
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft", 0, KEY_NOTIFY, &k) == ERROR_SUCCESS) {
+    *out_key = k;
+    return 1;
+  }
+  *out_key = NULL;
+  return 0;
+}
+
+// Always called on the persistent UI main thread (MSDN binds async RegNotifyChangeKeyValue to the calling thread).
+// Loops up to 4 steps to close any TOCTOU gap between probing and arming when Narrator keys are created mid-arm.
+static void win_narrator_arm_on_ui(void) {
+  for (int step = 0; step < 4; step++) {
+    HKEY cand = NULL;
+    int target_level = win_narrator_probe_key(&cand);
+    if (target_level == 0) {
+      win_narrator_close_key();
+      return;
+    }
+    if (!win_narrator_key || target_level != win_narrator_level) {
+      win_narrator_close_key();
+      win_narrator_key = cand;
+      win_narrator_level = target_level;
+    } else {
+      RegCloseKey(cand);
+    }
+    if (!win_narrator_event) {
+      win_narrator_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+      if (!win_narrator_event) {
+        win_narrator_close_key();
+        return;
+      }
+    }
+    if (!win_narrator_wait) {
+      if (!RegisterWaitForSingleObject(&win_narrator_wait, win_narrator_event, win_narrator_cb,
+                                       (PVOID)win_narrator_gen, INFINITE, WT_EXECUTEDEFAULT)) {
+        win_narrator_wait = NULL;
+        win_narrator_close_key();
+        return;
+      }
+    }
+    BOOL subtree = (win_narrator_level == 2) ? TRUE : FALSE;
+    DWORD filter = (win_narrator_level == 1) ? REG_NOTIFY_CHANGE_NAME
+                                             : (REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME);
+    if (RegNotifyChangeKeyValue(win_narrator_key, subtree, filter, win_narrator_event, TRUE) != ERROR_SUCCESS) {
+      win_narrator_close_key();
+      return;
+    }
+    // Re-probe immediately after arming to close any TOCTOU window where a deeper key appeared before arming.
+    if (win_narrator_level < 3) {
+      HKEY deeper = NULL;
+      int deeper_level = win_narrator_probe_key(&deeper);
+      if (deeper) RegCloseKey(deeper);
+      if (deeper_level > win_narrator_level) {
+        win_narrator_close_key();
+        continue;
+      }
+    }
+    win_narrator_armed = 1;
+    return;
+  }
+  win_narrator_armed = (win_narrator_key != NULL) ? 1 : 0;
+}
+
+static void win_sr_refresh(int rearm_watch) {
+  if (rearm_watch || !win_narrator_armed) {
+    win_narrator_arm_on_ui();
+  }
+  BOOL sr = FALSE;
+  if (SystemParametersInfoW(SPI_GETSCREENREADER, 0, &sr, 0) && sr) {
+    win_sr_cached = 1;
+    return;
+  }
+  DWORD running = 0, n = sizeof running;
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Narrator\\NoRoam", L"RunningState", RRF_RT_REG_DWORD, NULL,
+                   &running, &n) == ERROR_SUCCESS &&
+      running != 0) {
+    win_sr_cached = 1;
+    return;
+  }
+  win_sr_cached = 0;
+}
+
+// Whether a Windows screen reader is active (@hostapi.screen_reader_on): checks SPI_GETSCREENREADER (NVDA/JAWS)
+// or Narrator's NoRoam\RunningState DWORD; cached for zero per-frame overhead when armed, with self-healing fallback.
+int32_t mb_host_screen_reader_on(void) {
+  if (!win_narrator_armed || win_sr_cached < 0) win_sr_refresh(0);
+  return win_sr_cached > 0 ? 1 : 0;
 }
 
 // (no heat of the machine Windows tells an app of: never slowed)

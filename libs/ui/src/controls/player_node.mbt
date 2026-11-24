@@ -37,11 +37,21 @@ priv struct PlayerNode {
   grabbing : @signals.Signal[Bool]
   listing : @signals.Signal[Bool]
   ended_off : @signals.Signal[String]
+  scrubbing_ui : @signals.Signal[Bool]
+  bar_focused : @signals.Signal[Bool]
+  scrub_gear : @signals.Signal[Int]
+  scrub_exact : @signals.Signal[Bool]
   embedded : Bool
   /// (embedded: how far in from the stage's edges what takes the hand is, as its picture is: clear of what lies at
   /// them, the side panel's edge)
   inset : Double
   pl : PlayList
+  mut root : @view.View?
+  mut idle_off : () -> Unit
+  mut forgot_twice : () -> Unit
+  mut ui_scrubs : Int
+  mut lock_epoch : Int
+  focused_controls : Map[@view.NodeId, Unit]
   mut pending : Bool
   mut single : () -> Unit
   mut note_end : () -> Unit
@@ -55,13 +65,20 @@ priv struct PlayerNode {
   mut pinch : (Double, Double, Double)
   fingers : Map[Int, (Double, Double)]
   speed : @ui.Velocity
-  mut drag_from : Double
+  mut drag_pointer : Bool
+  mut had_overlay : Bool
+  mut scrub_pos : Double
+  mut drag_lock_y : Double
+  mut frame_acc : Double
+  mut scrub_started_paused : Bool
+  mut scrub_last_frame : Int
 }
 
 ///|
 fn PlayerNode::new(p : @player.Media, v : PlayerView, embedded : Bool, inset : Double, pl : PlayList) -> PlayerNode {
   let same_b = fn(a : Bool, b : Bool) { a == b }
   let same_d = fn(a : Double, b : Double) { a == b }
+  let same_i = fn(a : Int, b : Int) { a == b }
   {
     p,
     v,
@@ -85,9 +102,19 @@ fn PlayerNode::new(p : @player.Media, v : PlayerView, embedded : Bool, inset : D
     grabbing: @signals.signal(false, same=same_b),
     listing: v.list_shown,
     ended_off: @signals.signal(v.ended_off),
+    scrubbing_ui: @signals.signal(false, same=same_b),
+    bar_focused: @signals.signal(false, same=same_b),
+    scrub_gear: @signals.signal(0, same=same_i),
+    scrub_exact: @signals.signal(false, same=same_b),
     embedded,
     inset,
     pl,
+    root: None,
+    idle_off: fn() {  },
+    forgot_twice: fn() {  },
+    ui_scrubs: 0,
+    lock_epoch: 0,
+    focused_controls: Map([]),
     pending: false,
     single: fn() {  },
     note_end: fn() {  },
@@ -101,7 +128,13 @@ fn PlayerNode::new(p : @player.Media, v : PlayerView, embedded : Bool, inset : D
     pinch: (0.0, 0.0, 0.0),
     fingers: Map([]),
     speed: @ui.Velocity::new(),
-    drag_from: 0.0,
+    drag_pointer: false,
+    had_overlay: false,
+    scrub_pos: 0.0,
+    drag_lock_y: 0.0,
+    frame_acc: 0.0,
+    scrub_started_paused: false,
+    scrub_last_frame: -1,
   }
 }
 
@@ -173,13 +206,91 @@ fn PlayerNode::plays(self : PlayerNode) -> Bool {
 }
 
 ///|
-/// Whether its controls come (Media::frame's target): woken, the pointer near the bar or them, not playing, a song.
-fn PlayerNode::wanted(self : PlayerNode) -> Bool {
+/// Unified lock predicate: while any of these holds, player chrome stays visible and never auto-fades.
+/// Deliberately excludes `self.p.scrubbing() is Some(_)` so stage `AlongTime` scrubbing never raises the bottom bar.
+fn PlayerNode::chrome_locked(self : PlayerNode) -> Bool {
   if self.embedded {
     return true
   }
   let s = self.status()
-  self.awake.get() || self.near_top.get() || self.near_foot.get() || self.phase(s) != Playing || self.audio(s)
+  if self.audio(s) || @ui.screen_reader_on() {
+    return true
+  }
+  let ph = self.phase(s)
+  if ph == Opening ||
+    (ph == Buffering && self.waited.get() && self.drag.get() != AlongTime && self.p.scrubbing() is None) ||
+    ph == Failed ||
+    ph == Ended {
+    return true
+  }
+  self.near_top.get() ||
+  self.near_foot.get() ||
+  self.rates.get() ||
+  self.more.get() ||
+  self.listing.get() ||
+  self.scrubbing_ui.get() ||
+  self.grabbing.get() ||
+  self.bar_focused.get()
+}
+
+///|
+/// Idle auto-fade deadline for the current input mode and playback phase: desktop pointer auto-fades after 2000 ms
+/// in both Playing and Paused; touch auto-fades after 3000 ms while Playing and respects the user's state while Paused.
+fn PlayerNode::auto_fade_ms(self : PlayerNode) -> Double? {
+  if pointer_rests() {
+    Some(player_desk_idle_ms)
+  } else {
+    let ph = self.phase(self.status())
+    if ph == Playing {
+      Some(player_touch_idle_ms)
+    } else {
+      None
+    }
+  }
+}
+
+///|
+/// Whether its controls come: locked or awake (both Playing and Paused support auto-fade).
+fn PlayerNode::wanted(self : PlayerNode) -> Bool {
+  self.chrome_locked() || self.awake.get()
+}
+
+///|
+/// Cancel any pending single-shot idle auto-fade timer owned by the preview root.
+fn PlayerNode::cancel_idle(self : PlayerNode) -> Unit {
+  (self.idle_off)()
+  self.idle_off = fn() {  }
+}
+
+///|
+/// Arm the single-shot idle auto-fade timer on the preview root `n` with `later=true` so idle assertions pass.
+fn PlayerNode::arm_idle(self : PlayerNode, n : @view.View, ms : Double) -> Unit {
+  self.cancel_idle()
+  self.idle_off = n.at_moment(
+    n.cause_at() + ms,
+    later=true,
+    fn() {
+      self.idle_off = fn() {  }
+      let locked = @signals.untracked(fn() { self.chrome_locked() })
+      let can_fade = @signals.untracked(fn() { self.auto_fade_ms() is Some(_) })
+      if !locked && can_fade {
+        self.awake.set(false)
+      }
+    },
+  )
+}
+
+///|
+/// Refresh the idle auto-fade deadline on root `n` if unlocked and eligible to auto-fade.
+fn PlayerNode::bump_idle(self : PlayerNode, n : @view.View) -> Unit {
+  if @signals.untracked(fn() { self.chrome_locked() }) {
+    self.cancel_idle()
+    return
+  }
+  match @signals.untracked(fn() { self.auto_fade_ms() }) {
+    Some(ms) => self.arm_idle(n, ms)
+    None => self.cancel_idle()
+  }
 }
 
 ///|
@@ -190,9 +301,145 @@ fn PlayerNode::rates_open(self : PlayerNode, on : Bool) -> Unit {
 }
 
 ///|
-/// Its controls brought back.
+/// Its controls brought back, refreshing the idle auto-fade deadline.
 fn PlayerNode::wake(self : PlayerNode) -> Unit {
+  self.lock_epoch = self.lock_epoch + 1
   self.awake.set(true)
+  match self.root {
+    Some(n) => self.bump_idle(n)
+    None => ()
+  }
+}
+
+///|
+/// Track bottom-bar slider scrubbing (`timeline_node` / `volume_node`) for `chrome_locked()`.
+fn PlayerNode::set_ui_scrub(self : PlayerNode, on : Bool) -> Unit {
+  if on {
+    self.ui_scrubs = self.ui_scrubs + 1
+  } else if self.ui_scrubs > 0 {
+    self.ui_scrubs = self.ui_scrubs - 1
+  }
+  self.scrubbing_ui.set(self.ui_scrubs > 0)
+}
+
+///|
+/// Track keyboard focus on a bar control: sets `bar_focused` and immediately wakes controls if fading/hidden.
+fn PlayerNode::watch_focus(self : PlayerNode, v : @view.View) -> Unit {
+  let id = v.id()
+  let update = fn(on : Bool) {
+    if on {
+      self.focused_controls[id] = ()
+      if !self.bar_focused.untracked() {
+        self.bar_focused.set(true)
+      }
+      if !self.awake.untracked() {
+        self.wake()
+      }
+    } else {
+      self.focused_controls.remove(id)
+      if self.focused_controls.is_empty() && self.bar_focused.untracked() {
+        self.bar_focused.set(false)
+      }
+    }
+  }
+  v.reacts(at_start=false, fn() { v.focus_shown() }, update)
+  v.owns(fn() { update(false) }) |> ignore
+}
+
+///|
+/// Show a transient center feedback pill (`note`) for `ms` on the preview root.
+fn PlayerNode::show_note(self : PlayerNode, note : @player.MediaNote, ms : Double) -> Unit {
+  guard self.root is Some(n) else { return }
+  self.note.set(Some(note))
+  (self.note_end)()
+  self.note_end = n.at_moment(n.cause_at() + ms, later=true, fn() {
+    self.note_end = fn() {  }
+    self.note.set(None)
+  })
+}
+
+///|
+/// Toggle play/pause without waking hidden controls: when hidden, stays hidden and shows 450 ms center feedback;
+/// when visible, refreshes the idle deadline.
+fn PlayerNode::play_pause_quiet(self : PlayerNode) -> Unit {
+  let was = @signals.untracked(fn() { self.plays() })
+  self.act(fn() { self.p.play_pause() })
+  if self.awake.untracked() {
+    match self.root {
+      Some(n) => self.bump_idle(n)
+      None => ()
+    }
+  } else {
+    self.show_note(if was { Paused } else { Played }, player_quiet_note_ms)
+  }
+}
+
+///|
+/// Clean up transient timers, double-click memory, temporary 2× held speed, and any active `AlongTime` scrub
+/// (on episode switch or unmount).
+fn PlayerNode::reset_transient(self : PlayerNode) -> Unit {
+  self.cancel_idle()
+  (self.forgot_twice)()
+  (self.single)()
+  self.single = fn() {  }
+  self.pending = false
+  (self.note_end)()
+  self.note_end = fn() {  }
+  (self.hold_end)()
+  self.hold_end = fn() {  }
+  if self.held.untracked() >= 0.0 {
+    self.act(fn() { self.p.set_speed(self.held.untracked()) })
+    self.held.set(-1.0)
+  }
+  if self.drag.untracked() == AlongTime {
+    self.act(fn() { self.p.scrub_done() })
+    self.drag.set(NoDrag)
+    self.scrub_gear.set(0)
+    self.scrub_exact.set(false)
+    self.frame_acc = 0.0
+  }
+}
+
+///|
+/// Clean up any in-flight stage gesture when the stage node unmounts (e.g. crossing the wide/narrow layout breakpoint):
+/// pairs `scrub_done()` once for active `AlongTime`, restores 2× held speed, clears active fingers/drag state, and forgets twice.
+fn PlayerNode::cancel_stage_gesture(self : PlayerNode, s : @view.View) -> Unit {
+  (self.hold_end)()
+  self.hold_end = fn() {  }
+  let was_pending = self.pending
+  (self.single)()
+  self.single = fn() {  }
+  self.pending = false
+  if self.drag.untracked() == AlongTime {
+    self.act(fn() { self.p.scrub_done() })
+    self.scrub_gear.set(0)
+    self.scrub_exact.set(false)
+    self.frame_acc = 0.0
+  }
+  if self.held.untracked() >= 0.0 {
+    self.act(fn() { self.p.set_speed(self.held.untracked()) })
+    self.held.set(-1.0)
+  }
+  self.fingers.clear()
+  self.drag.set(NoDrag)
+  if !self.taken_down.untracked() {
+    self.drag_dy.set(0.0)
+  }
+  self.moved = false
+  self.long = false
+  self.caught = false
+  self.pinched = false
+  self.had_overlay = false
+  self.down = (0.0, 0.0)
+  self.last = (0.0, 0.0)
+  self.pinch = (0.0, 0.0, 0.0)
+  s.twice_forgot()
+  if was_pending && self.awake.untracked() {
+    match self.root {
+      Some(r) => self.bump_idle(r)
+      None => ()
+    }
+  }
 }
 
 ///|
@@ -281,10 +528,9 @@ fn PlayerNode::grab_taken(self : PlayerNode, name : String) -> Unit {
 }
 
 ///|
-/// A tap on its picture `w` wide at `x` (its own terms), at its moment in `n` (Media::stage's): left single once a
-/// double tap's time has gone with no second (its controls hidden while they show over what plays, else woken); a
-/// second within it a double one: on the left third back, on the right on, in the middle played or paused, said a
-/// moment.
+/// A touch tap on its picture `w` wide at `x` (its own terms), at its moment in `n` (Media::stage's): left single once
+/// a double tap's time has gone with no second (toggles `awake` in both Playing and Paused); a second within it a double
+/// one: on the left third back, on the right on, in the middle silent play/pause, said a moment.
 fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double) -> Unit {
   let (_, double_ms, note_ms, _, _) = self.p.times()
   let at = n.cause_at()
@@ -302,7 +548,7 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
       Ahead(nudge)
     } else {
       // (at its end, whatever its host says of its playing: played again, as Media::play_pause does)
-      let was = self.plays()
+      let was = @signals.untracked(fn() { self.plays() })
       self.act(fn() { self.p.play_pause() })
       if was {
         Paused
@@ -310,19 +556,29 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
         Played
       }
     }
-    self.note.set(Some(note))
-    (self.note_end)()
-    self.note_end = n.at_moment(at + note_ms, fn() { self.note.set(None) }, later=true)
+    self.show_note(note, note_ms)
+    if self.awake.untracked() {
+      match self.root {
+        Some(r) => self.bump_idle(r)
+        None => ()
+      }
+    }
   } else {
+    let want_show = !self.awake.untracked()
+    let tap_epoch = self.lock_epoch
+    self.cancel_idle()
     self.pending = true
     self.single = n.at_moment(at + double_ms, fn() {
       self.pending = false
       self.single = fn() {  }
-      let playing = @signals.untracked(fn() { self.phase(self.status()) == Playing })
-      if self.awake.untracked() && playing {
-        self.awake.set(false)
-      } else {
+      if self.lock_epoch != tap_epoch {
+        return
+      }
+      if want_show {
         self.wake()
+      } else if !@signals.untracked(fn() { self.chrome_locked() }) {
+        self.cancel_idle()
+        self.awake.set(false)
       }
     })
   }
@@ -332,11 +588,13 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
 /// What the player's nodes follow of it in `n`, from as it is made (what Media::frame did each frame, at the moments
 /// of their causes): ready as its host says it is (the place it opens at sought once more there: Media::take_ready);
 /// its decoder given up once it has waited media_decode_wait_ms from when all its bytes came; its controls coming
-/// over wake_ms and going over sleep_ms from the moment that changed, gone (taking no press) once they have; what it
-/// waits on said once it has waited wait_ms, and how fast its bytes come each whole second of it after the first; a
-/// frame asked to be saved taken as the host answers.
+/// over wake_ms and going over sleep_ms from the moment that changed, gone (taking no press) once they have; idle
+/// auto-fade armed on `n` with `later=true` and re-armed whenever the last chrome lock clears; what it waits on said
+/// once it has waited wait_ms, and how fast its bytes come each whole second of it after the first; a frame asked to
+/// be saved taken as the host answers.
 fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit {
   let pn = self
+  pn.root = Some(n)
   let (wait_ms, _, _, wake_ms, sleep_ms) = pn.p.times()
   n.reacts(fn() { pn.status() }, fn(_) {
     if pn.p.take_ready() {
@@ -372,6 +630,42 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
     } else {
       pn.shown.go_ms(n, 0.0, sleep_ms, ease=Out)
       fade_end.val = n.at_moment(pn.shown.end(), fn() { pn.faded.set(true) })
+    }
+  })
+  // When any chrome lock engages, mark awake=true so releasing the last lock re-arms a fresh full idle deadline
+  // even if controls had auto-faded before the lock engaged (e.g. sustained buffering or screen reader toggled on).
+  n.reacts(
+    at_start=false,
+    fn() { pn.chrome_locked() },
+    fn(locked) {
+      pn.lock_epoch = pn.lock_epoch + 1
+      if locked {
+        pn.awake.set(true)
+      }
+    },
+  )
+  // When the last chrome lock clears (or phase/input becomes eligible to auto-fade), arm a fresh full idle deadline.
+  n.reacts(
+    at_start=false,
+    fn() { pn.chrome_locked() || pn.auto_fade_ms() is None },
+    fn(hold) {
+      if hold {
+        pn.cancel_idle()
+      } else if pn.awake.untracked() {
+        match @signals.untracked(fn() { pn.auto_fade_ms() }) {
+          Some(ms) => pn.arm_idle(n, ms)
+          None => ()
+        }
+      }
+    },
+  )
+  // Initial idle deadline if already ready and unlocked at mount.
+  pn.bump_idle(n)
+  // Pointer leaving the window immediately fades unlocked desktop chrome.
+  n.reacts(at_start=false, fn() { n.pointer_within() }, fn(within) {
+    if !within && pointer_rests() && !@signals.untracked(fn() { pn.chrome_locked() }) {
+      pn.cancel_idle()
+      pn.awake.set(false)
     }
   })
   let wait_end : Ref[() -> Unit] = Ref(fn() {  })
@@ -424,12 +718,11 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
     fn(_) { pn.grab_taken(name) },
   )
   n.owns(fn() {
+    pn.reset_transient()
     (fade_end.val)()
     (wait_end.val)()
     (stall.val)()
-    (pn.single)()
-    (pn.note_end)()
-    (pn.hold_end)()
+    pn.root = None
   })
   |> ignore
 }
@@ -1046,6 +1339,7 @@ fn media_key_node(
   faint? : Bool = true,
   ripples? : Bool = false,
   tips? : TipLayer,
+  focus_pn? : PlayerNode,
   loc~ : SourceLoc,
 ) -> @view.View {
   let rippled : Ref[PressLook?] = Ref(None)
@@ -1112,6 +1406,10 @@ fn media_key_node(
       }
       match tips {
         Some(tl) => tip_node(tl, v, label, side=Top) |> ignore
+        None => ()
+      }
+      match focus_pn {
+        Some(p) => p.watch_focus(v)
         None => ()
       }
     },
@@ -1243,6 +1541,7 @@ fn speed_node(
     )
   })
   b.owns(fn() { pn.rates_open(false) }) |> ignore
+  pn.watch_focus(b)
   b
 }
 
@@ -1315,9 +1614,11 @@ fn timeline_node(
           }
         }
       }
+      let own_scrub = Ref(false)
       let scrub = fn(x : Double, w : Double) {
         match at_x(x, w) {
           Some(ms) => {
+            own_scrub.val = true
             pn.act(fn() { pn.p.scrub_to(ms) })
             pn.wake()
           }
@@ -1325,11 +1626,19 @@ fn timeline_node(
         }
       }
       let node : Ref[@view.View?] = Ref(None)
+      let ui_held = Ref(false)
+      let set_held = fn(on : Bool) {
+        if ui_held.val != on {
+          ui_held.val = on
+          pn.set_ui_scrub(on)
+        }
+      }
       let drag = fn(e : @view.Drag) {
         guard node.val is Some(on) else { return }
         match e.kind {
           Down => {
             active.set(true)
+            set_held(true)
             pending.val = Some((e.x, e.w))
             dragging.val = false
             // (held a frame, as a frame drawn while it is down saw it held (Ctx::pressed): moved through the time from
@@ -1357,7 +1666,8 @@ fn timeline_node(
           Up => {
             (held_due.val)()
             held_due.val = fn() {  }
-            if dragging.val || pn.p.scrubbing() is Some(_) {
+            if dragging.val || own_scrub.val {
+              own_scrub.val = false
               let target = at_x(e.x, e.w)
               pn.act(fn() { pn.p.scrub_done(at?=target) })
               pn.wake()
@@ -1373,16 +1683,19 @@ fn timeline_node(
             pending.val = None
             dragging.val = false
             active.set(false)
+            set_held(false)
           }
           Off => {
             (held_due.val)()
             held_due.val = fn() {  }
-            if pn.p.scrubbing() is Some(_) {
+            if own_scrub.val {
+              own_scrub.val = false
               pn.act(fn() { pn.p.scrub_done() })
             }
             pending.val = None
             dragging.val = false
             active.set(false)
+            set_held(false)
           }
         }
       }
@@ -1409,17 +1722,28 @@ fn timeline_node(
         drag~,
         fn(v, sl) {
           node.val = Some(v)
-          v.owns(fn() { (held_due.val)() }) |> ignore
+          pn.watch_focus(v)
+          v.owns(fn() {
+            (held_due.val)()
+            if own_scrub.val {
+              own_scrub.val = false
+              pn.act(fn() { pn.p.scrub_done() })
+            }
+            set_held(false)
+          })
+          |> ignore
           v.reacts(at_start=false, fn() { sl.disabled() }, fn(off) {
             if off {
               (held_due.val)()
               held_due.val = fn() {  }
-              if pn.p.scrubbing() is Some(_) {
+              if own_scrub.val {
+                own_scrub.val = false
                 pn.act(fn() { pn.p.scrub_done() })
               }
               pending.val = None
               dragging.val = false
               active.set(false)
+              set_held(false)
             }
           })
           v.reacts(
@@ -1606,7 +1930,7 @@ fn PlayerNode::keys(self : PlayerNode, n : @view.View, on_back : () -> Unit, fly
   }
   let on = fn(action : String, f : (Double) -> Unit) { able(action, f, fn() { true }) }
   let playing = fn() { @signals.untracked(fn() { pn.plays() }) }
-  on("play", fn(_) { pn.play_pause() })
+  on("play", fn(_) { pn.play_pause_quiet() })
   on("frame_back", fn(_) { pn.step(-1) })
   on("frame_on", fn(_) { pn.step(1) })
   on("back", fn(_) { if playing() { pn.jump(-pn.p.nudge_ms()) } else { pn.step(-1) } })
@@ -1662,6 +1986,7 @@ fn PlayerNode::keys(self : PlayerNode, n : @view.View, on_back : () -> Unit, fly
       pn.leave(on_back)
     }
   })
+  able("wake_tab", fn(_) { pn.wake() }, fn() { !@signals.untracked(fn() { pn.on() }) })
   // (in flight, before its keys are its own: Escape the viewer's, as it is over an image in flight)
   n.on_action("viewer.escape", fn(_) {
     on_back()
@@ -1715,8 +2040,21 @@ fn desk_player_node(
     })
     let tips_at : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { tips_at.val })
-    // the stage: a click or a finger's tap on it, a wheel over it
+    // the stage: a click or a finger's tap on it, a wheel over it (dispatched per gesture by pointer_rests() at Down)
+    let back = fn() {
+      if pn.p.is_sideways() {
+        pn.act(fn() { pn.p.upright() })
+      } else {
+        pn.leave(on_back)
+      }
+    }
     n.box(fn(s) {
+      pn.forgot_twice = fn() { s.twice_forgot() }
+      s.owns(fn() {
+        pn.cancel_stage_gesture(s)
+        pn.forgot_twice = fn() {  }
+      })
+      |> ignore
       s
       .over(Is(true))
       .presses(By(fn() { !flying() }))
@@ -1726,28 +2064,12 @@ fn desk_player_node(
       .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1 - pn.inset)) } else { None } }))
       .clips(Is(embedded))
-      .on_drag(fn(d) {
-        match d.kind {
-          Down => {
-            pn.down = (d.wx, d.wy)
-            pn.last = (d.wx, d.wy)
-            pn.moved = false
-          }
-          Moved => {
-            let (x0, y0) = pn.down
-            if (d.wx - x0).abs() > @ui.touch_slop() || (d.wy - y0).abs() > @ui.touch_slop() {
-              pn.moved = true
-            }
-            // (zoomed in: what is zoomed moved with the pointer or finger, as the wheel moves it)
-            if pn.moved && picture() && z.nw > 0.0 && z.zoomed_at(d.at) {
-              z.pan(d.wx - pn.last.0, d.wy - pn.last.1, at=d.at)
-            }
-            pn.last = (d.wx, d.wy)
-          }
-          Up => if !pn.moved { pn.tapped(s, d.x, d.w) }
-          Off => ()
+      .on_pointer_moved(fn() {
+        if pointer_rests() {
+          pn.wake()
         }
       })
+      .on_drag(fn(d) { stage_gesture(s, pn, d, stage, back) }, fingers=2, whole=true)
       .on_wheel(fn(w) {
         if !picture() || z.nw <= 0.0 || (w.dx == 0.0 && w.dy == 0.0) {
           return
@@ -1769,6 +2091,7 @@ fn desk_player_node(
       picture_node(s, pn, stage, still, flying, -pn.inset)
     })
     |> ignore
+    let away = fn() { pn.drag.get() == DownClose || pn.taken_down.get() || going() }
     // what lies over the picture: in what 选集 leaves of it (embedded, in the room over the controls)
     n.box(fn(mid) {
       // (what is over it fills it whole: as wide as what 选集 leaves)
@@ -1777,14 +2100,16 @@ fn desk_player_node(
       .width(By(fn() { Some(dmax(0.0, stage().0 - panel())) }))
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1)) } else { None } }))
       |> ignore
-      // (what a double click did said a moment in its middle, as a phone's double tap is)
+      // (what a double tap or quiet click/Space did, or 2× held, said a moment in its middle)
       middle_node(mid, pn, file.name, fn() {
-        match pn.note.get() {
-          Some(note) => phone_note_words(note)
-          None => ""
+        match (pn.note.get(), pn.held.get() >= 0.0) {
+          (_, true) => t("web-pages.drive.player.held")
+          (Some(note), _) => phone_note_words(note)
+          _ => ""
         }
       })
-      cue_node(mid, pn, fn() { embedded || pn.wanted() }, fn() {
+      along_time_hud_node(mid, pn, ink, fn() { viewer_bar_h + @ui.Space::S2.px() })
+      cue_node(mid, pn, fn(v) { if away() { 0.0 } else { pn.shown.shown(v) } }, fn() {
         if embedded {
           desk_cue_apart
         } else {
@@ -1818,62 +2143,66 @@ fn desk_player_node(
         let f = if picture() { film_facts(file.facts, s, pn.frames()) } else { "" }
         joined([pn.pl.which(), file_size(file.size), f], " · ")
       }
+      viewer_bar_watch_back(b, fn(v) { pn.watch_focus(v) })
       viewer_bar_node(
         b,
         back_label,
         fn() { file.name },
         facts,
         fn() { file.title },
-        fn() { pn.faded.get() && !pn.listing.get() },
+        fn() { away() || !pn.wanted() },
         fn(_) { 1.0 },
         fn() { (viewer_host().room)().0 },
         fn() { stage().0 },
         bar_ink,
         fn(row, corner) {
           // what it waits on, once it has waited, beside its tools (player_wait_node)
-          row.show(at_once=true, fn() { pn.waits() }, fn(r) {
+          row.show(along_row=true, fn() { pn.waits() }, fn(r) {
             r.row(Is(true)).padding(Is((@ui.Space::S2.px(), 0.0, @ui.Space::S2.px(), 0.0))) |> ignore
             player_wait_node(r, pn, Meta, fn() { bar_ink().muted }) |> ignore
           })
           // 选集, where the folder has others
           row.show(at_once=true, fn() { pn.pl.many() }, fn(r) {
             r.row(Is(true)) |> ignore
-            tool_node(
-              r,
-              fn() { { icon: "list", label: t("web-pages.drive.player.list"), on: pn.listing.get(), disabled: false } },
-              bar_ink,
-              corner,
-              fn() { pn.list_open(!pn.listing.untracked()) },
-              tip=tips,
+            pn.watch_focus(
+              tool_node(
+                r,
+                fn() { { icon: "list", label: t("web-pages.drive.player.list"), on: pn.listing.get(), disabled: false } },
+                bar_ink,
+                corner,
+                fn() { pn.list_open(!pn.listing.untracked()) },
+                tip=tips,
+              ),
             )
-            |> ignore
           })
           row.show(at_once=true, fn() { move_beside() is Some(_) }, fn(r) {
             r.row(Is(true)) |> ignore
+            pn.watch_focus(
+              tool_node(
+                r,
+                fn() { { icon: "panel-open", label: t("web-main.preview.moveBeside"), on: false, disabled: false } },
+                bar_ink,
+                corner,
+                fn() {
+                  match @signals.untracked(move_beside) {
+                    Some(f) => f()
+                    None => ()
+                  }
+                },
+                tip=tips,
+              ),
+            )
+          })
+          pn.watch_focus(
             tool_node(
-              r,
-              fn() { { icon: "panel-open", label: t("web-main.preview.moveBeside"), on: false, disabled: false } },
+              row,
+              fn() { { icon: "download", label: t("web-main.preview.download"), on: false, disabled: false } },
               bar_ink,
               corner,
-              fn() {
-                match @signals.untracked(move_beside) {
-                  Some(f) => f()
-                  None => ()
-                }
-              },
+              fn() { (file.save)() },
               tip=tips,
-            )
-            |> ignore
-          })
-          tool_node(
-            row,
-            fn() { { icon: "download", label: t("web-main.preview.download"), on: false, disabled: false } },
-            bar_ink,
-            corner,
-            fn() { (file.save)() },
-            tip=tips,
+            ),
           )
-          |> ignore
         },
         fn() { pn.leave(on_back) },
         tips,
@@ -1900,8 +2229,9 @@ fn desk_player_node(
         .width(By(fn() { Some(dmin(media_bar_most, dmax(0.0, stage().0 - panel() - 2.0 * media_bar_in))) }))
         .padding(By(fn() { (media_bar_pad, if narrow() { desk_time_over } else { media_bar_top }, media_bar_pad, media_bar_foot()) }))
         .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
-        .alpha(By(fn() { if going() { 0.0 } else { pn.shown.shown(bar) } }))
-        .presses(By(fn() { pn.on() && !flying() && !going() }))
+        .alpha(By(fn() { if away() { 0.0 } else { pn.shown.shown(bar) } }))
+        .hides(By(fn() { away() || pn.faded.get() }))
+        .presses(By(fn() { pn.on() && !flying() && !away() }))
         |> ignore
         if embedded {
           bar.ground(Is(no_ground)) |> ignore
@@ -1909,7 +2239,7 @@ fn desk_player_node(
           @glass.liquid_capsule_decorate(
             bar,
             glass=fn(spot) { player_surface_glass(ink, spot) },
-            active=fn() { !going() && pn.shown.shown(bar) > 0.001 },
+            active=fn() { !away() && pn.shown.shown(bar) > 0.001 },
             shadow=glass_control_shadow,
             solid_edge=fn() { player_solid_edge(ink) },
             clips=false,
@@ -1921,11 +2251,15 @@ fn desk_player_node(
       |> ignore
     })
     |> ignore
-    // (a mouse's pointer along the top or over the foot: the controls kept while it is there)
+    // (a mouse's pointer along the top or over the foot: the controls kept while it is there;
+    // explicit top bar height `viewer_bar_h + (viewer_host().room)().0` since full-bleed `room().0` is 0.0)
     n.box(fn(top) {
       // (taking nothing of the pointer: what is under it, the bar's buttons, still lit under it; whether it is within
       // it is where it is, whatever is over it, View::pointer_within)
-      top.over(Is(true)).height(By(fn() { Some(room().0) })) |> ignore
+      top
+      .over(Is(true))
+      .height(By(fn() { Some(if !native_on() && !embedded { viewer_bar_h + (viewer_host().room)().0 } else { 0.0 }) }))
+      |> ignore
       top.reacts(fn() { top.pointer_within() && pointer_rests() }, fn(near) { pn.near_top.set(near) })
     })
     |> ignore
@@ -1986,17 +2320,17 @@ fn desk_controls_node(
         g.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
           media_key_node(k, fn() { "skip-back" }, fn() { t("web-pages.drive.player.prev") }, fn() { on() && pn.pl.prev() is Some(_) }, ink, step_to(
               fn() { pn.pl.prev() },
-            ), icon_size=viewer_tool_icon, tips~)
+            ), icon_size=viewer_tool_icon, tips~, focus_pn=pn)
           |> ignore
         })
         media_key_node(g, fn() { "back-15" }, fn() { t("web-pages.drive.player.back15") }, on, ink, fn() {
           pn.jump(-pn.p.nudge_ms())
-        }, tips~)
+        }, tips~, focus_pn=pn)
         |> ignore
         g.show(at_once=true, picture, fn(k) {
           media_key_node(k, fn() { "chevron-left" }, fn() { t("android-chat.video.prev") }, fn() { on() && ready() }, ink, fn() {
             pn.step(-1)
-          }, icon_size=viewer_tool_icon, tips~)
+          }, icon_size=viewer_tool_icon, tips~, focus_pn=pn)
           |> ignore
         })
         media_key_node(
@@ -2018,22 +2352,23 @@ fn desk_controls_node(
           fn() { pn.play_pause() },
           bright=true,
           tips~,
+          focus_pn=pn,
         )
         |> ignore
         g.show(at_once=true, picture, fn(k) {
           media_key_node(k, fn() { "chevron-right" }, fn() { t("android-chat.video.next") }, fn() { on() && ready() }, ink, fn() {
             pn.step(1)
-          }, icon_size=viewer_tool_icon, tips~)
+          }, icon_size=viewer_tool_icon, tips~, focus_pn=pn)
           |> ignore
         })
         media_key_node(g, fn() { "forward-15" }, fn() { t("web-pages.drive.player.forward15") }, on, ink, fn() {
           pn.jump(pn.p.nudge_ms())
-        }, tips~)
+        }, tips~, focus_pn=pn)
         |> ignore
         g.show(at_once=true, fn() { pn.pl.many() }, fn(k) {
           media_key_node(k, fn() { "skip-forward" }, fn() { t("web-pages.drive.player.next") }, fn() { on() && pn.pl.next() is Some(_) }, ink, step_to(
               fn() { pn.pl.next() },
-            ), icon_size=viewer_tool_icon, tips~)
+            ), icon_size=viewer_tool_icon, tips~, focus_pn=pn)
           |> ignore
         })
       })
@@ -2069,7 +2404,7 @@ fn desk_controls_node(
           slot.drops(Is(player_drop_subtitle)) |> ignore
           subs_slot.val = Some(slot)
           slot.owns(fn() { subs_slot.val = None }) |> ignore
-          media_key_node(slot, fn() { "captions" }, subs_label, on, ink, subs_flip, icon_size=viewer_tool_icon, lit=subs_on, tips~)
+          media_key_node(slot, fn() { "captions" }, subs_label, on, ink, subs_flip, icon_size=viewer_tool_icon, lit=subs_on, tips~, focus_pn=pn)
           |> ignore
         })
         // 保存此帧: paused, the frame shown at its own size
@@ -2080,7 +2415,7 @@ fn desk_controls_node(
           save_slot.val = Some(slot)
           media_key_node(slot, fn() { "camera" }, fn() { t("android-chat.video.saveFrame") }, grabs, ink, fn() {
             pn.grab(slot)
-          }, icon_size=viewer_tool_icon, tips~)
+          }, icon_size=viewer_tool_icon, tips~, focus_pn=pn)
           |> ignore
         })
         // 全屏: the window filling the screen (macOS's), back as it was; beside the system's bars, the window filled
@@ -2094,6 +2429,7 @@ fn desk_controls_node(
             fn() { pn.full() },
             icon_size=viewer_tool_icon,
             tips~,
+            focus_pn=pn,
           )
           |> ignore
         })
@@ -2159,7 +2495,7 @@ fn more_node(
   let k = media_key_node(slot, fn() { "more" }, fn() { t("web-main.menu.more") }, on, ink, fn() {
     pn.more.set(!pn.more.untracked())
     pn.wake()
-  }, icon_size=viewer_tool_icon, lit=fn() { pn.more.get() }, tips~)
+  }, icon_size=viewer_tool_icon, lit=fn() { pn.more.get() }, tips~, focus_pn=pn)
   let holder = slot.tree.root().box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(k)
   holder.show(at_once=true, fn() { pn.more.get() }, fn(m) {
     m.over(Is(true)).opened_by(@view.ByNode(k.id())) |> ignore
@@ -2250,12 +2586,20 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
       },
       icon_size=viewer_tool_icon,
       tips~,
+      focus_pn=pn,
     )
     |> ignore
     if slider {
       let step = 1.0 / desk_volume_steps
       let swell = @motion.NodeWay::new(0.0)
       let active = @signals.signal(false)
+      let ui_held = Ref(false)
+      let set_held = fn(on : Bool) {
+        if ui_held.val != on {
+          ui_held.val = on
+          pn.set_ui_scrub(on)
+        }
+      }
       let last_vol : Ref[Int] = Ref(-1)
       let set_at = fn(d : @view.Drag) {
         if d.w > 0.0 {
@@ -2277,6 +2621,7 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
         match d.kind {
           Down => {
             active.set(true)
+            set_held(true)
             last_vol.val = (@signals.untracked(shown) * 100.0).round().to_int()
             set_at(d)
           }
@@ -2284,10 +2629,12 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
           Up => {
             set_at(d)
             active.set(false)
+            set_held(false)
             last_vol.val = -1
           }
           Off => {
             active.set(false)
+            set_held(false)
             last_vol.val = -1
           }
         }
@@ -2307,9 +2654,12 @@ fn volume_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, tips 
         disabled=fn() { !pn.on() },
         drag~,
         fn(v, sl) {
+          pn.watch_focus(v)
+          v.owns(fn() { set_held(false) }) |> ignore
           v.reacts(at_start=false, fn() { sl.disabled() }, fn(off) {
             if off {
               active.set(false)
+              set_held(false)
               last_vol.val = -1
             }
           })
@@ -2401,6 +2751,13 @@ fn phone_player_node(
       b.width(Is(Some(0.0))).height(Is(Some(0.0))).takes_back(fn() { pn.act(fn() { pn.p.upright() }) }) |> ignore
     })
     n.box(fn(s) {
+      let z = pn.v.zoom
+      pn.forgot_twice = fn() { s.twice_forgot() }
+      s.owns(fn() {
+        pn.cancel_stage_gesture(s)
+        pn.forgot_twice = fn() {  }
+      })
+      |> ignore
       s
       .over(Is(true))
       .presses(By(fn() { !flying() }))
@@ -2408,31 +2765,31 @@ fn phone_player_node(
       .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
       .height(By(hand_h))
       .clips(Is(embedded))
-      .on_drag(fn(d) { phone_fingers(s, pn, d, stage, back) }, fingers=2, whole=true)
+      .on_pointer_moved(fn() {
+        if pointer_rests() {
+          pn.wake()
+        }
+      })
+      .on_drag(fn(d) { stage_gesture(s, pn, d, stage, back) }, fingers=2, whole=true)
+      .on_wheel(fn(w) {
+        if !picture() || z.nw <= 0.0 || (w.dx == 0.0 && w.dy == 0.0) {
+          return
+        }
+        let at = w.at
+        if (w.mods & (@ui.wheel_mod_ctrl | @ui.wheel_mod_cmd)) != 0 {
+          let fine = (w.mods & @ui.wheel_mod_ctrl) != 0 && w.dy.abs() < player_pinch_step
+          let k = @dmath.exp(-w.dy * (if fine { player_pinch_rate } else { player_wheel_rate }))
+          z.zoom_to(z.scale_at(at) * k, w.x + pn.inset, w.y + pn.inset, false, at~)
+        } else if z.zoomed_at(at) {
+          if (w.mods & @ui.wheel_mod_shift) != 0 && w.dx == 0.0 {
+            z.pan(-w.dy, 0.0, at~)
+          } else {
+            z.pan(-w.dx, -w.dy, at~)
+          }
+        }
+      })
       |> ignore
       picture_node(s, pn, stage, still, flying, -pn.inset)
-    })
-    |> ignore
-    let pill = fn() {
-      let s = pn.status()
-      match (pn.note.get(), pn.held.get() >= 0.0, pn.drag.get()) {
-        (_, _, AlongTime) => {
-          pn.said()
-          clock(pn.p.scrubbing().unwrap_or(pn.drag_to.get())) + " / " + (if s.duration > 0.0 { clock(s.duration) } else { "--:--" })
-        }
-        (_, true, _) => t("web-pages.drive.player.held")
-        (Some(note), _, _) => phone_note_words(note)
-        _ => ""
-      }
-    }
-    // what lies over the picture (embedded, in the room over the controls)
-    n.box(fn(mid) {
-      mid.over(Is(true)).height(By(room_h)) |> ignore
-      middle_node(mid, pn, file.name, pill)
-      cue_node(mid, pn, fn() { embedded || pn.wanted() }, fn() { if embedded { desk_cue_apart } else { phone_cue_over() } }, fn() {
-        0.0
-      })
-      ended_card_node(mid, pn, ink)
     })
     |> ignore
     // (closed, drawn as it leaves, or dragged down to close: its controls away at once, none of them seen, pressed or
@@ -2440,6 +2797,24 @@ fn phone_player_node(
     let away = fn() { pn.drag.get() == DownClose || pn.taken_down.get() || going() }
     let shown = fn(node : @view.View) { if away() { 0.0 } else { pn.shown.shown(node) } }
     let live = fn() { pn.on() && pn.drag.get() != DownClose && !pn.taken_down.get() && !flying() && !going() }
+    let pill = fn() {
+      match (pn.note.get(), pn.held.get() >= 0.0) {
+        (_, true) => t("web-pages.drive.player.held")
+        (Some(note), _) => phone_note_words(note)
+        _ => ""
+      }
+    }
+    // what lies over the picture (embedded, in the room over the controls)
+    n.box(fn(mid) {
+      mid.over(Is(true)).height(By(room_h)) |> ignore
+      middle_node(mid, pn, file.name, pill)
+      along_time_hud_node(mid, pn, ink, fn() { @ui.Space::S12.px() + @ui.Space::S3.px() })
+      cue_node(mid, pn, shown, fn() { if embedded { desk_cue_apart } else { phone_cue_over() } }, fn() {
+        0.0
+      })
+      ended_card_node(mid, pn, ink)
+    })
+    |> ignore
     let tips_at : Ref[@view.View?] = Ref(None)
     let tips = TipLayer::new(fn() { tips_at.val })
     // the bar at the top: back, the name, which of the folder's it is, 选集, 下载 (beside the system's bars, an iPhone
@@ -2454,7 +2829,7 @@ fn phone_player_node(
           (l, @ui.Space::S1_5.px(), r, @ui.Space::S1_5.px())
         }))
         .alpha(By(fn() { shown(place) }))
-        .hides(By(away))
+        .hides(By(fn() { away() || pn.faded.get() }))
         |> ignore
         place.box(fn(h) {
           h
@@ -2474,7 +2849,7 @@ fn phone_player_node(
             solid_edge=fn() { player_solid_edge(ink) },
           )
           |> ignore
-          media_key_node(h, fn() { "chevron-left" }, fn() { t("common.back") }, live, ink, back, side=phone_key_side, faint=false, ripples=true)
+          media_key_node(h, fn() { "chevron-left" }, fn() { t("common.back") }, live, ink, back, side=phone_key_side, faint=false, ripples=true, focus_pn=pn)
           |> ignore
           h.box(fn(nm) {
             nm.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).clips(Is(true)).padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
@@ -2503,6 +2878,7 @@ fn phone_player_node(
               faint=false,
               ripples=true,
               lit=fn() { pn.listing.get() },
+              focus_pn=pn,
             )
             |> ignore
           })
@@ -2517,6 +2893,7 @@ fn phone_player_node(
             side=phone_key_side,
             faint=false,
             ripples=true,
+            focus_pn=pn,
           )
           |> ignore
         })
@@ -2542,7 +2919,7 @@ fn phone_player_node(
         .fills_across(Is(true))
         .lines_up(Is(Some(Middle)))
         .alpha(By(fn() { shown(place) }))
-        .hides(By(away))
+        .hides(By(fn() { away() || pn.faded.get() }))
         |> ignore
         place.box(fn(c) {
           c
@@ -2572,6 +2949,25 @@ fn phone_player_node(
       })
       |> ignore
       l.box(fn(r) { r.height(By(fn() { Some(if embedded { 0.0 } else { (viewer_host().room)().1 }) })) |> ignore }) |> ignore
+    })
+    |> ignore
+    // (a mouse's pointer along the top or over the foot on a narrow window: keep controls while there)
+    n.box(fn(top) {
+      top
+      .over(Is(true))
+      .height(By(fn() { Some(if !native_on() && !embedded { @ui.Space::S12.px() + @ui.Space::S3.px() + (viewer_host().room)().0 } else { 0.0 }) }))
+      |> ignore
+      top.reacts(fn() { top.pointer_within() && pointer_rests() }, fn(near) { pn.near_top.set(near) })
+    })
+    |> ignore
+    n.box(fn(foot_hot) {
+      foot_hot.over(Is(true)) |> ignore
+      foot_hot.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+      foot_hot.box(fn(f) {
+        f.height(By(fn() { Some(if embedded { phone_embedded_foot() } else { phone_cue_over() + (viewer_host().room)().1 }) })) |> ignore
+        f.reacts(fn() { f.pointer_within() && pointer_rests() }, fn(near) { pn.near_foot.set(near) })
+      })
+      |> ignore
     })
     |> ignore
     tips_at.val = Some(n.box(fn(t) { t.over(Is(true)) |> ignore }))
@@ -2613,7 +3009,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
     c.box(fn(row) {
       row.row(Is(true)).min_height(Is(Some(phone_row_h()))).lines_up(Is(Some(Middle))).gap(Is(keys_apart(size=phone_key_side))).fits(Is(true)) |> ignore
       let key = fn(parent : @view.View, icon : () -> String, label : () -> String, press : () -> Unit, lit : () -> Bool) {
-        media_key_node(parent, icon, label, on, ink, press, side=phone_key_side, faint=false, ripples=true, lit~) |> ignore
+        media_key_node(parent, icon, label, on, ink, press, side=phone_key_side, faint=false, ripples=true, lit~, focus_pn=pn) |> ignore
       }
       let off = fn() { false }
       // (the one before and the one after, where the folder has others: the first to leave short of room)
@@ -2624,7 +3020,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
             Some(o) => pn.go(o)
             None => ()
           }
-        }, side=phone_key_side, faint=false, ripples=true)
+        }, side=phone_key_side, faint=false, ripples=true, focus_pn=pn)
         |> ignore
       }
       row.show(at_once=true, fn() { pn.pl.many() }, fn(slot) {
@@ -2665,6 +3061,7 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
           side=phone_key_side,
           faint=false,
           ripples=true,
+          focus_pn=pn,
         )
         |> ignore
       })
@@ -2702,13 +3099,231 @@ fn phone_controls_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaIn
 }
 
 ///|
-/// A finger's event on a phone's stage `s` (the old player's phone_gestures, at its own moment): two zoom it round the point
-/// between them; one along it moves through the time (the picture going with it frame by frame, paused meanwhile:
-/// Media::scrub_to), down it takes the picture down and closes it past player_close_dy (`back`: sideways, upright
-/// first), held still it plays at 2× until let go; zoomed in, one moves what is shown (let go moving, it goes on,
-/// slowing). A tap or a double tap is the player's own (PlayerNode::tapped), not when the finger did any of these, nor
-/// when it came down on the picture flinging (stopping it).
-fn phone_fingers(
+/// Lightweight `AlongTime` scrub HUD over `parent` (both narrow and wide touch): top-centered pill avoiding
+/// `(viewer_host().room)().0` safe area, Duo top bar, and visible top chrome when controls are on (showing time,
+/// frame count in gear 2 with real frame table, and gear sub-label), plus a 3 pt bottom progress line when the
+/// bottom bar is hidden.
+#callsite(autofill(loc))
+fn along_time_hud_node(
+  parent : @view.View,
+  pn : PlayerNode,
+  ink : () -> MediaInk,
+  top_bar_h : () -> Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  parent.show(at_once=true, fn() { pn.drag.get() == AlongTime }, fn(hud) {
+    hud.over(Is(true)).presses(Is(false)) |> ignore
+    // Top-centered pill, clear of top safe area / Duo bar / visible top chrome
+    hud.box(made_for=loc, fn(top) {
+      top
+      .padding(By(fn() {
+        let base_top = (viewer_host().room)().0
+        let clear_top = if pn.on() && !native_on() && !pn.embedded {
+          base_top + top_bar_h() + @ui.Space::S2.px()
+        } else {
+          base_top + @ui.Space::S4.px()
+        }
+        (@ui.Space::S4.px(), clear_top, @ui.Space::S4.px(), 0.0)
+      }))
+      .lines_up(Is(Some(Middle)))
+      .presses(Is(false))
+      |> ignore
+      top.box(fn(pill) {
+        pill
+        .padding(Is((@ui.Space::S3.px(), @ui.Space::S1_5.px(), @ui.Space::S3.px(), @ui.Space::S1_5.px())))
+        .radius(By(fn() { @ui.tree_theme().corner(Xl1_5) }))
+        .lines_up(Is(Some(Middle)))
+        .gap(Is(@ui.Space::S0_5.px()))
+        |> ignore
+        if pn.embedded {
+          pill.ground(By(fn() { ink().ground })) |> ignore
+        } else {
+          @glass.liquid_capsule_decorate(
+            pill,
+            glass=fn(spot) { player_surface_glass(ink, spot) },
+            shadow=glass_control_shadow,
+            solid_edge=fn() { player_solid_edge(ink) },
+          )
+          |> ignore
+        }
+        let main_words = fn() {
+          pn.said()
+          let s = pn.status()
+          let pos = pn.p.scrubbing().unwrap_or(pn.drag_to.get())
+          let long = if s.duration > 0.0 { clock(s.duration) } else { "--:--" }
+          let g = pn.scrub_gear.get()
+          if g == 2 && pn.scrub_exact.get() {
+            let fr = frames_of(pn.p, s, pos)
+            clock_ms(fr.now) + " · " + t("android-chat.video.frames", args=[("at", "\{fr.at + 1}"), ("n", "\{fr.count}")])
+          } else if g >= 1 {
+            clock_ms(pos) + " / " + long
+          } else {
+            clock(pos) + " / " + long
+          }
+        }
+        let sub_words = fn() {
+          match pn.scrub_gear.get() {
+            0 => "1×"
+            1 => "¼×"
+            _ => if pn.scrub_exact.get() { t("android-chat.video.scrubFrame") } else { t("android-chat.video.scrubFine") }
+          }
+        }
+        said_words_node(pill, main_words, Ui, fn() { ink().text }, weight=media_strong) |> ignore
+        said_words_node(pill, sub_words, Caption, fn() { ink().muted }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    hud.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    // Bottom 3 pt ultra-thin progress line when the bottom bar is hidden
+    hud.show(at_once=true, fn() { !pn.on() }, fn(foot) {
+      foot
+      .padding(By(fn() {
+        (@ui.Space::S4.px(), 0.0, @ui.Space::S4.px(), if pn.embedded { @ui.Space::S2.px() } else { (viewer_host().room)().1 + @ui.Space::S2.px() })
+      }))
+      .presses(Is(false))
+      |> ignore
+      foot.by_room(fn(track, r) {
+        let frac = fn() {
+          pn.said()
+          let dur = pn.status().duration
+          let pos = pn.p.scrubbing().unwrap_or(pn.drag_to.get())
+          if dur <= 0.0 {
+            0.0
+          } else {
+            dmin(1.0, dmax(0.0, pos / dur))
+          }
+        }
+        track
+        .height(Is(Some(player_scrub_bar_h)))
+        .radius(Is(player_scrub_bar_h / 2.0))
+        .ground(By(fn() { alpha(ink().text, media_track_share) }))
+        .clips(Is(true))
+        |> ignore
+        track.box(fn(fill) {
+          fill
+          .over(Is(true))
+          .height(Is(Some(player_scrub_bar_h)))
+          .radius(Is(player_scrub_bar_h / 2.0))
+          .ground(By(fn() { ink().text }))
+          .ground_drawn(By(fn() {
+            let w = r.width()
+            let f = frac()
+            { dx: 0.0, dy: 0.0, dw: (f - 1.0) * w, dh: 0.0, corners: None }
+          }))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+  })
+}
+
+///|
+/// Advance an active `AlongTime` scrub by one pointer/finger sample `(x, y)` on a stage `stage_w` wide:
+/// updates vertical gear with ±6 pt hysteresis (44/96 pt up, 38/90 pt down), applies normal / ¼× fine / real-frame-table
+/// VFR index stepping (8 pt per frame with signed remainder and `scrub_pos` sync so downgrading never jumps backward) or
+/// `1/16×` micro-adjust fallback when no real frame table is available.
+fn along_time_step(pn : PlayerNode, x : Double, y : Double, stage_w : Double) -> Unit {
+  let dx = x - pn.last.0
+  let dy_gear = (y - pn.drag_lock_y).abs()
+  let cur_g = pn.scrub_gear.untracked()
+  let next_g = match cur_g {
+    0 => if dy_gear >= player_scrub_frame_up { 2 } else if dy_gear >= player_scrub_fine_up { 1 } else { 0 }
+    1 => if dy_gear >= player_scrub_frame_up { 2 } else if dy_gear < player_scrub_fine_down { 0 } else { 1 }
+    _ => if dy_gear < player_scrub_fine_down { 0 } else if dy_gear < player_scrub_frame_down { 1 } else { 2 }
+  }
+  let s0 = @signals.untracked(fn() { pn.status() })
+  let dur = s0.duration
+  guard dur > 0.0 else { return }
+  let fr = @signals.untracked(fn() { frames_of(pn.p, s0, pn.scrub_pos) })
+  let real_starts : Array[Double]? = match fr.starts {
+    Some(starts) if !starts.is_empty() => Some(starts)
+    _ => None
+  }
+  let mut haptic_fired = false
+  if next_g != cur_g {
+    pn.scrub_gear.set(next_g)
+    pn.frame_acc = 0.0
+    if next_g == 2 {
+      pn.scrub_last_frame = match real_starts {
+        Some(starts) => frame_at(starts, pn.scrub_pos)
+        None => -1
+      }
+    }
+    haptic_fired = true
+  }
+  pn.scrub_exact.set(next_g == 2 && real_starts is Some(_))
+  let base_span = if pn.scrub_started_paused {
+    dmin(dur, player_scrub_paused_span)
+  } else {
+    dmin(dur, player_scrub_playing_span)
+  }
+  let sw = dmax(1.0, stage_w)
+  match next_g {
+    0 => {
+      pn.scrub_pos = dmax(0.0, dmin(dur, pn.scrub_pos + dx / sw * base_span))
+      let target = fr.snap(pn.scrub_pos)
+      pn.drag_to.set(target)
+      pn.act(fn() { pn.p.scrub_to(target) })
+    }
+    1 => {
+      let span = base_span / 4.0
+      pn.scrub_pos = dmax(0.0, dmin(dur, pn.scrub_pos + dx / sw * span))
+      let target = fr.snap(pn.scrub_pos)
+      pn.drag_to.set(target)
+      pn.act(fn() { pn.p.scrub_to(target) })
+    }
+    _ =>
+      match real_starts {
+        Some(starts) => {
+          pn.frame_acc = pn.frame_acc + dx
+          let step_px = player_scrub_frame_px
+          let steps = if pn.frame_acc >= step_px {
+            (pn.frame_acc / step_px).floor().to_int()
+          } else if pn.frame_acc <= -step_px {
+            -((-pn.frame_acc) / step_px).floor().to_int()
+          } else {
+            0
+          }
+          if steps != 0 {
+            pn.frame_acc = pn.frame_acc - steps.to_double() * step_px
+            let cur_idx = frame_at(starts, pn.scrub_pos)
+            let raw_idx = cur_idx + steps
+            let next_idx = if raw_idx < 0 { 0 } else if raw_idx >= starts.length() { starts.length() - 1 } else { raw_idx }
+            if next_idx != cur_idx {
+              let target = fr.start_of(next_idx)
+              pn.scrub_pos = target
+              pn.drag_to.set(target)
+              pn.act(fn() { pn.p.scrub_to(target) })
+              if next_idx != pn.scrub_last_frame {
+                pn.scrub_last_frame = next_idx
+                haptic_fired = true
+              }
+            }
+          }
+        }
+        None => {
+          let span = base_span / 16.0
+          pn.scrub_pos = dmax(0.0, dmin(dur, pn.scrub_pos + dx / sw * span))
+          pn.drag_to.set(pn.scrub_pos)
+          pn.act(fn() { pn.p.scrub_to(pn.scrub_pos) })
+        }
+      }
+  }
+  if haptic_fired {
+    @ui.haptic(TextHandleMove)
+  }
+}
+
+///|
+/// Unified stage gesture handler for both wide and narrow layouts: records `pointer_rests()` on `Down` and dispatches
+/// to either desktop pointer semantics (pan when zoomed; 0 ms click play/pause via `View::twice` swallowing genuine
+/// double-click second Up; overlay dismissal without toggling) or touch semantics (single-tap toggle awake in both
+/// Playing and Paused; double-tap ±15 s / silent play-pause; long-press 2×; `AlongTime` precise 3-gear frame scrub
+/// without waking bottom chrome; safe second-finger handoff to `MoveZoom` pinch; `DownClose` swipe down).
+fn stage_gesture(
   s : @view.View,
   pn : PlayerNode,
   d : @view.Drag,
@@ -2726,6 +3341,61 @@ fn phone_fingers(
     ((x1 + x2) / 2.0, (y1 + y2) / 2.0, ((x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2)).sqrt())
   }
   let (ox, oy) = (d.x - d.wx + pn.inset, d.y - d.wy + pn.inset)
+  // On first Down, record this gesture's input mode (pointer vs touch).
+  if d.kind == Down && pn.fingers.is_empty() {
+    pn.drag_pointer = pointer_rests()
+  }
+  if pn.drag_pointer {
+    match d.kind {
+      Down => {
+        pn.fingers[d.finger] = (x, y)
+        pn.down = (x, y)
+        pn.last = (x, y)
+        pn.moved = false
+        pn.had_overlay = pn.rates.untracked() || pn.more.untracked() || pn.listing.untracked()
+      }
+      Moved => {
+        pn.fingers[d.finger] = (x, y)
+        let (x0, y0) = pn.down
+        if (x - x0).abs() > @ui.touch_slop() || (y - y0).abs() > @ui.touch_slop() {
+          pn.moved = true
+        }
+        if pn.moved && picture && z.nw > 0.0 && z.zoomed_at(at) {
+          z.pan(x - pn.last.0, y - pn.last.1, at~)
+        }
+        pn.last = (x, y)
+      }
+      Up => {
+        pn.fingers.remove(d.finger)
+        let moved = pn.moved || (x - pn.down.0).abs() > @ui.touch_slop() || (y - pn.down.1).abs() > @ui.touch_slop()
+        if !moved {
+          let had = pn.had_overlay || pn.rates.untracked() || pn.more.untracked() || pn.listing.untracked()
+          pn.had_overlay = false
+          if had {
+            if pn.rates.untracked() {
+              pn.rates_open(false)
+            }
+            if pn.more.untracked() {
+              pn.more.set(false)
+            }
+            if pn.listing.untracked() {
+              pn.list_open(false)
+            }
+            s.twice_forgot()
+          } else if !s.twice(d) {
+            pn.play_pause_quiet()
+          }
+        }
+      }
+      Off => {
+        pn.fingers.remove(d.finger)
+        pn.had_overlay = false
+        s.twice_forgot()
+      }
+    }
+    return
+  }
+  // Touch gesture path (both narrow and wide screens)
   match d.kind {
     Down => {
       pn.fingers[d.finger] = (x, y)
@@ -2748,11 +3418,23 @@ fn phone_fingers(
             pn.act(fn() { pn.p.set_speed(player_held_speed) })
           }
         })
-      } else if picture && z.nw > 0.0 {
+      } else {
         (pn.hold_end)()
-        pn.pinch = pinch_now()
-        pn.pinched = true
-        pn.drag.set(MoveZoom)
+        pn.hold_end = fn() {  }
+        // Safe handoff from AlongTime to pinch: pair scrub_done() once and clear HUD before entering MoveZoom.
+        if pn.drag.untracked() == AlongTime {
+          pn.act(fn() { pn.p.scrub_done() })
+          pn.scrub_gear.set(0)
+          pn.scrub_exact.set(false)
+          pn.frame_acc = 0.0
+          pn.drag.set(MoveZoom)
+          pn.pinched = true
+        }
+        if picture && z.nw > 0.0 {
+          pn.pinch = pinch_now()
+          pn.pinched = true
+          pn.drag.set(MoveZoom)
+        }
       }
     }
     Moved => {
@@ -2773,34 +3455,41 @@ fn phone_fingers(
       if !pn.moved && (dx0.abs() > @ui.touch_slop() || dy0.abs() > @ui.touch_slop()) {
         pn.moved = true
         (pn.hold_end)()
+        pn.hold_end = fn() {  }
       }
       pn.speed.add(at, x, y)
       let s0 = @signals.untracked(fn() { pn.status() })
       if pn.drag.untracked() == NoDrag && pn.moved && !pn.pinched {
-        pn.drag.set(
-          if z.zoomed_at(at) {
-            MoveZoom
-          } else if dx0.abs() > dy0.abs() && s0.duration > 0.0 {
-            AlongTime
-          } else if dy0 > 0.0 && !pn.embedded {
-            DownClose
-          } else {
-            MoveZoom
-          },
-        )
-        pn.drag_from = s0.position
-        pn.drag_to.set(s0.position)
-        pn.wake()
+        let locked = if z.zoomed_at(at) {
+          MoveZoom
+        } else if dx0.abs() > dy0.abs() && s0.duration > 0.0 {
+          AlongTime
+        } else if dy0 > 0.0 && !pn.embedded {
+          DownClose
+        } else {
+          MoveZoom
+        }
+        pn.drag.set(locked)
+        if locked == AlongTime {
+          // Zero slop jump: anchor scrub_pos, last, drag_lock_y at the lock-in sample; do NOT wake bottom chrome.
+          pn.scrub_pos = s0.position
+          pn.drag_to.set(s0.position)
+          pn.last = (x, y)
+          pn.drag_lock_y = y
+          pn.frame_acc = 0.0
+          pn.scrub_gear.set(0)
+          pn.scrub_exact.set(false)
+          pn.scrub_started_paused = !((s0.playing || s0.buffering) && !s0.ended)
+          pn.scrub_last_frame = -1
+          let fr = @signals.untracked(fn() { frames_of(pn.p, s0, pn.scrub_pos) })
+          let target = fr.snap(pn.scrub_pos)
+          pn.drag_to.set(target)
+          pn.act(fn() { pn.p.scrub_to(target) })
+          return
+        }
       }
       match pn.drag.untracked() {
-        AlongTime => {
-          // a screen's width is as much as player_drag_span of it (all of it, a short one)
-          let span = dmin(s0.duration, player_drag_span)
-          let to = dmax(0.0, dmin(s0.duration, pn.drag_from + dx0 / dmax(1.0, stage().0) * span))
-          pn.drag_to.set(to)
-          let fr = @signals.untracked(fn() { pn.frames() })
-          pn.act(fn() { pn.p.scrub_to(fr.snap(to)) })
-        }
+        AlongTime => along_time_step(pn, x, y, stage().0)
         DownClose => pn.drag_dy.set(dmax(0.0, dy0))
         MoveZoom =>
           if !pn.pinched {
@@ -2826,7 +3515,18 @@ fn phone_fingers(
         pn.speed.up(at, x, y)
       }
       match was {
-        AlongTime => pn.act(fn() { pn.p.scrub_done() })
+        AlongTime => {
+          if d.kind == Up {
+            along_time_step(pn, x, y, stage().0)
+            let target = pn.drag_to.untracked()
+            pn.act(fn() { pn.p.scrub_done(at=target) })
+          } else {
+            pn.act(fn() { pn.p.scrub_done() })
+          }
+          pn.scrub_gear.set(0)
+          pn.scrub_exact.set(false)
+          pn.frame_acc = 0.0
+        }
         DownClose =>
           if d.kind == Up && pn.drag_dy.untracked() > player_close_dy {
             // going (not turned upright first): its picture stays where the finger left it, to go from there
@@ -2855,8 +3555,9 @@ fn phone_fingers(
         z.reset(at~)
       }
       pn.pinched = false
-      // a tap or a double tap (none of the above)
-      if d.kind == Up && was == NoDrag && !held && !pn.long && !pn.caught && !pinched {
+      // a tap or a double tap (none of the above; re-check slop against final Up coordinates for sparse sampling)
+      let up_moved = pn.moved || (x - pn.down.0).abs() > @ui.touch_slop() || (y - pn.down.1).abs() > @ui.touch_slop()
+      if d.kind == Up && was == NoDrag && !up_moved && !held && !pn.long && !pn.caught && !pinched {
         pn.tapped(s, d.x, d.w)
       }
     }

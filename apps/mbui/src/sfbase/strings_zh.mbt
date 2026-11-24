@@ -306,6 +306,8 @@ let zh : Map[String, String] = {
   "android-chat.video.reading": "正在读取帧",
   "android-chat.video.saveFrame": "保存此帧",
   "android-chat.video.saveFrame.failed": "无法保存此帧",
+  "android-chat.video.scrubFine": "微调",
+  "android-chat.video.scrubFrame": "逐帧",
   "android-chat.web.badBody": "请求内容无效",
   "android-chat.web.badRedirect": "网页重定向到无法识别的地址：{location}",
   "android-chat.web.badRequest": "请求无效",

@@ -3551,6 +3551,37 @@ int32_t mb_host_a11y_on(void) {
   return a11y_asked ? 1 : 0;
 }
 
+@interface MBVoiceOverObserver : NSObject
+@end
+@implementation MBVoiceOverObserver
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context {
+  (void)keyPath;
+  (void)object;
+  (void)change;
+  (void)context;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    mb_host_request_frame();
+  });
+}
+@end
+static MBVoiceOverObserver *voiceover_observer = nil;
+
+// Whether VoiceOver is actually running (@hostapi.screen_reader_on): unlike mb_host_a11y_on, not set by
+// non-screen-reader AX clients (window managers, launchers). Observes voiceOverEnabled to trigger a frame on toggle.
+int32_t mb_host_screen_reader_on(void) {
+  if (!voiceover_observer) {
+    voiceover_observer = [MBVoiceOverObserver new];
+    [[NSWorkspace sharedWorkspace] addObserver:voiceover_observer
+                                    forKeyPath:@"voiceOverEnabled"
+                                       options:0
+                                       context:NULL];
+  }
+  return [[NSWorkspace sharedWorkspace] isVoiceOverEnabled] ? 1 : 0;
+}
+
 // What the widgets are now (@hostapi.a11y_tree): an update of them (a11y.mbt's head: the nodes that changed, each
 // whole, and the focus), kept; one in nothing that holds it gone with what it holds; what reads them told what changed
 void mb_host_a11y_tree(moonbit_string_t s) {

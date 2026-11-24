@@ -66,15 +66,16 @@ test "desk: a chat's film says its size, length and rate in the bar as its messa
 }
 
 ///|
-test "desk: a chat's film fitted clear of the bar and the controls, never under them; ⌘ and the wheel zoom it" {
+test "desk: a chat's film fills the full-bleed stage (0, 0) with controls overlaid; ⌘ and the wheel zoom it" {
   let t = desk_tester("chat-preview-video")
   let key = viewer.get().unwrap().media.unwrap().key()
   let (top, foot) = @sf.player_room(1280.0)
+  assert_eq((top, foot), (0.0, 0.0))
   let (_, y, w, h) = @sf.player_picture_at(key).unwrap()
-  // 1280 × 720 in 1280 × (800 less the bar and the controls): as tall as that leaves, under the bar, over the controls
-  assert_true((y - top).abs() < 0.5, msg="\{y} \{top}")
-  assert_true((y + h - (800.0 - foot)).abs() < 0.5, msg="\{y + h} \{800.0 - foot}")
-  assert_true(w < 1280.0, msg="\{w}")
+  // 1280 × 720 in 1280 × 800 full-bleed stage: full width 1280, height 720, vertically centered at y = 40
+  assert_true((w - 1280.0).abs() < 0.5, msg="\{w}")
+  assert_true((h - 720.0).abs() < 0.5, msg="\{h}")
+  assert_true((y - 40.0).abs() < 0.5, msg="\{y}")
   t.wheel_with(640.0, 400.0, 0.0, -200.0, @ui.wheel_mod_cmd)
   t.run_for(@ui.move_most_ms)
   let (_, _, w2, _) = @sf.player_picture_at(key).unwrap()

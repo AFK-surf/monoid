@@ -259,8 +259,10 @@ test "a video's 全屏 from where a tab played it, at 0:00: from its start, not 
 }
 
 ///|
-test "a desktop's video of a chat made as nodes, double clicked on its right: 15 s on, said in its middle a moment" {
+test "a wide video of a chat made as nodes: touch double tap on right jumps 15 s on; pointer click plays/pauses once and double click swallows second Up" {
+  // 1. Wide touch: double tap on right third jumps 15 s on and shows center note
   let t = pv_chat(fn() { [video_one()] }, w=1280.0, h=800.0, platform=0)
+  t.host_says_finger(Some(true))
   pv_video_tap(t)
   t.run_for(@ui.move_most_ms)
   t.set_player(pv_player(t), position=20000.0, duration=42000.0)
@@ -271,6 +273,26 @@ test "a desktop's video of a chat made as nodes, double clicked on its right: 15
   t.draw()
   let said = @sf.t("android-misc.drive.player.ahead", args=[("n", "15")])
   assert_true(t.find(said) is Some(_), msg="said: \{said}")
+  // 2. Wide pointer: single click immediately toggles play/pause, genuine double click swallows 2nd Up
+  let tp = pv_chat(fn() { [video_one()] }, w=1280.0, h=800.0, platform=0)
+  tp.host_says_finger(Some(false))
+  pv_video_tap(tp)
+  tp.run_for(@ui.move_most_ms)
+  tp.set_player(pv_player(tp), position=20000.0, duration=42000.0, playing=true)
+  tp.draw()
+  let plays = fn() {
+    tp.views().filter(fn(s) {
+      let w = s.split(" ").to_array()
+      w.length() > 2 && w[0] == "control" && (w[2] == "1" || w[2] == "2")
+    }).length()
+  }
+  let c0 = plays()
+  tp.tap(1100.0, 400.0)
+  assert_eq(plays(), c0 + 1, msg="pointer click immediately toggles play/pause")
+  tp.advance(@ui.double_tap_ms / 2.0)
+  tp.tap(1100.0, 400.0)
+  tp.draw()
+  assert_eq(plays(), c0 + 1, msg="pointer double click swallows 2nd Up")
 }
 
 ///|

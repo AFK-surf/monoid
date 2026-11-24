@@ -246,6 +246,9 @@ extern "C" fn ffi_keyboard() -> Int = "mb_host_keyboard"
 extern "C" fn ffi_a11y_on() -> Int = "mb_host_a11y_on"
 
 ///|
+extern "C" fn ffi_screen_reader_on() -> Int = "mb_host_screen_reader_on"
+
+///|
 #borrow(s)
 extern "C" fn ffi_a11y_tree(s : String) -> Unit = "mb_host_a11y_tree"
 
@@ -1075,6 +1078,11 @@ fn keyboard() -> Int {
 ///|
 fn a11y_on() -> Bool {
   ffi_a11y_on() != 0
+}
+
+///|
+fn screen_reader_on() -> Bool {
+  ffi_screen_reader_on() != 0
 }
 
 ///|

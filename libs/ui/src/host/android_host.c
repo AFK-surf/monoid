@@ -962,6 +962,10 @@ int32_t mb_host_a11y_on(void) {
   return atomic_load_explicit(&g_a11y_enabled, memory_order_acquire);
 }
 
+int32_t mb_host_screen_reader_on(void) {
+  return mb_host_a11y_on();
+}
+
 void mb_host_a11y_tree(moonbit_string_t s) {
   JNIEnv *env = env_();
   jstring j = jstr(env, s);

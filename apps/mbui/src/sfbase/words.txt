@@ -299,6 +299,8 @@ android-chat.video.prev
 android-chat.video.reading
 android-chat.video.saveFrame
 android-chat.video.saveFrame.failed
+android-chat.video.scrubFine
+android-chat.video.scrubFrame
 android-chat.web.badBody
 android-chat.web.badRedirect
 android-chat.web.badRequest

@@ -2530,6 +2530,10 @@ int32_t mb_host_a11y_on(void) {
   return UIAccessibilityIsVoiceOverRunning() || UIAccessibilityIsSwitchControlRunning() || getenv("MBUI_A11Y_SELFCHECK") ? 1 : 0;
 }
 
+int32_t mb_host_screen_reader_on(void) {
+  return mb_host_a11y_on();
+}
+
 // What the widgets are now (@hostapi.a11y_tree): an update of them (a11y.mbt's head: the nodes that changed, each whole,
 // and the focus), kept; one in nothing that holds it gone with what it holds; VoiceOver told what changed
 void mb_host_a11y_tree(moonbit_string_t s) {

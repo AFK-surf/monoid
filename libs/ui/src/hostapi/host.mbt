@@ -116,6 +116,7 @@ pub(all) struct Host {
   mut pointing : () -> Int
   mut keyboard : () -> Int
   mut a11y_on : () -> Bool
+  mut screen_reader_on : () -> Bool
   mut a11y_tree : (String) -> Unit
   mut set_dark : (Bool) -> Unit
   mut set_sideways : (Bool) -> Unit
@@ -436,6 +437,7 @@ pub fn Host::noop() -> Host {
     pointing: fn() { -1 },
     keyboard: fn() { -1 },
     a11y_on: fn() { false },
+    screen_reader_on: fn() { false },
     a11y_tree: fn(_) { () },
     set_dark: fn(_) { () },
     set_sideways: fn(_) { () },
@@ -1623,6 +1625,14 @@ pub fn set_app_state(f : FuncRef[(Int) -> Unit]) -> Unit {
 /// app then tells the host what of its widgets changed (`a11y_tree`, @ui's a11y.mbt).
 pub fn a11y_on() -> Bool {
   (current.val.a11y_on)()
+}
+
+///|
+/// Whether an actual screen reader is active (macOS VoiceOver, iOS VoiceOver/Switch Control, Android spoken/touch-exploration
+/// service, Windows SPI_GETSCREENREADER, Linux AT-SPI ScreenReaderEnabled): unlike `a11y_on()`, never triggered by
+/// non-screen-reader accessibility clients such as window managers or launchers.
+pub fn screen_reader_on() -> Bool {
+  (current.val.screen_reader_on)()
 }
 
 ///|

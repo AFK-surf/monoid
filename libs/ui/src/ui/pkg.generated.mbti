@@ -767,6 +767,8 @@ pub let scrollbar_fade_ms : Double
 
 pub let scrollbar_hold_ms : Double
 
+pub fn screen_reader_on() -> Bool
+
 pub fn sd_box(Double, Double, Double, Double, Double) -> Double
 
 pub fn sd_clip(Double, Double, Double, Double, Double, Double, (Double, Double, Double, Double), (Double, Double, Double, Double), band? : Double) -> Double
@@ -3470,6 +3472,7 @@ pub fn Tester::set_reduce_motion(Self, Bool) -> Unit
 pub fn Tester::set_reduce_transparency(Self, Bool) -> Unit
 pub fn Tester::set_reveals(Self, Bool) -> Unit
 pub fn Tester::set_rows_on_pixels(Self, Bool) -> Unit
+pub fn Tester::set_screen_reader(Self, Bool) -> Unit
 pub fn Tester::set_stream_audio(Self, Bool) -> Unit
 pub fn Tester::set_stream_audio_clock(Self, Int32, Double, Double) -> Unit
 pub fn Tester::set_stream_audio_wanted(Self, Int32, Double) -> Unit

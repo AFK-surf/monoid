@@ -438,6 +438,8 @@ pub fn run(String, FuncRef[(Double, Double, Double, Double) -> Unit], FuncRef[(I
 
 pub fn save_file(String, Bytes) -> Bool
 
+pub fn screen_reader_on() -> Bool
+
 pub fn script_step(String, String) -> String
 
 pub fn set_app_state(FuncRef[(Int32) -> Unit]) -> Unit
@@ -910,6 +912,7 @@ pub(all) struct Host {
   mut pointing : () -> Int32
   mut keyboard : () -> Int32
   mut a11y_on : () -> Bool
+  mut screen_reader_on : () -> Bool
   mut a11y_tree : (String) -> Unit
   mut set_dark : (Bool) -> Unit
   mut set_sideways : (Bool) -> Unit

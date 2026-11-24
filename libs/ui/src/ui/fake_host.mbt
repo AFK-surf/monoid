@@ -3203,6 +3203,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.back_enabled = fn(a0) { self.back_enabled(a0) }
   h.wheel_kept = fn(a0) { self.wheel_kept(a0) }
   h.a11y_on = fn() { self.a11y_on() }
+  h.screen_reader_on = fn() { self.screen_reader }
   h.a11y_tree = fn(a0) { self.a11y_tree(a0) }
   h.log = fn(a0) { self.log(a0) }
   h.image_load = fn(a0, a1) { self.image_load(a0, a1) }

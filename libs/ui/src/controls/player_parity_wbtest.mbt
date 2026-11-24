@@ -94,18 +94,19 @@ test "both players, a phone's: opened, played; the film edge to edge in the midd
 }
 
 ///|
-test "both players, a phone's and a desktop's: played, left alone 3 s, its controls staying (no one's go of themselves); a tap on the film hides them" {
+test "both players, a phone's and a desktop's: played, left alone past idle deadline, controls auto-fade" {
   for narrow in [true, false] {
-    let play = if narrow { "web-main.video.pauseKey" } else { "web-main.video.pauseKey" }
-    ignore(play)
     let seen = both("left alone", fn(node) { either_player(node, narrow, "a.mp4", []) }, fn(t, m) {
+      if !narrow {
+        t.host_says_finger(Some(false))
+      }
       m.pin({ ..pinned(1000.0), playing: true })
       t.draw()
-      t.run_for(@player.media_rest_ms + @player.media_sleep_ms + 500.0)
-      let shown = t.find("0:01 / 0:10") is Some(_)
-      shown
+      let idle_ms = if narrow { player_touch_idle_ms } else { player_desk_idle_ms }
+      t.run_for(idle_ms + @player.media_sleep_ms + 50.0)
+      t.query(Slider, label="web-pages.drive.player.position") is None
     })
-    assert_true(seen, msg="narrow \{narrow}: its controls staying")
+    assert_true(seen, msg="narrow \{narrow}: controls auto-faded")
   }
 }
 
@@ -172,8 +173,9 @@ test "both players, a phone's: a finger's shake as it taps (5 across, 5 down) no
 }
 
 ///|
-test "both players, a desktop's: a double click in the film's middle plays or pauses it once; a click alone does not" {
+test "both players, a desktop's: a pointer click immediately plays or pauses once; double click swallows second Up" {
   let seen = both("double clicked", fn(node) { either_player(node, false, "a.mp4", []) }, fn(t, _) {
+    t.host_says_finger(Some(false))
     t.draw()
     let plays = fn() {
       t.views().filter(fn(s) {
@@ -183,15 +185,13 @@ test "both players, a desktop's: a double click in the film's middle plays or pa
     }
     let before = plays()
     t.tap(640.0, 400.0)
-    t.run_for(@player.media_note_ms)
     let one = plays() - before
-    t.tap(640.0, 400.0)
     t.advance(@ui.double_tap_ms / 2.0)
     t.tap(640.0, 400.0)
     t.draw()
     (one, plays() - before)
   })
-  assert_eq(seen, (0, 1))
+  assert_eq(seen, (1, 1))
 }
 
 ///|

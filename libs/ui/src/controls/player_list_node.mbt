@@ -57,6 +57,7 @@ fn PlayList::which(self : PlayList) -> String {
 ///|
 /// Another of them played in its place, what plays now paused first.
 fn PlayerNode::go(self : PlayerNode, other : String) -> Unit {
+  self.reset_transient()
   self.act(fn() { self.p.pause() })
   (self.pl.go)(other)
 }
@@ -457,20 +458,39 @@ fn ended_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, l
 
 ///|
 /// The subtitle's lines over the picture in `parent` (the old player's player_cue): in the middle of what is left of its
-/// width (`right` kept clear: 选集 docked there), `over()` off its foot while `up()` (clear of the controls), lower
-/// (28) once they go; on a veil, in its words.
+/// width (`right` kept clear: 选集 docked there), laid out at a fixed bottom baseline (28 pt off the foot, or `over()`
+/// when embedded) and lifted smoothly in the paint layer (`offset`) following `shown(row)` in `[0, -lift]` so controls
+/// fade in/out with zero relayout (`laid == 0`) and smooth mid-fade reversal; on a veil, in its words.
 #callsite(autofill(loc))
-fn cue_node(parent : @view.View, pn : PlayerNode, up : () -> Bool, over : () -> Double, right : () -> Double, loc~ : SourceLoc) -> Unit {
+fn cue_node(
+  parent : @view.View,
+  pn : PlayerNode,
+  shown : (@view.View) -> Double,
+  over : () -> Double,
+  right : () -> Double,
+  loc~ : SourceLoc,
+) -> Unit {
   let words = fn() { pn.p.cue_now() }
+  let rest = @ui.Space::S7.px()
   parent.box(made_for=loc, fn(l) {
     l
     .over(Is(true))
     .presses(Is(false))
-    .padding(By(fn() { (@ui.Space::S4.px(), 0.0, @ui.Space::S4.px() + right(), if up() { over() } else { @ui.Space::S7.px() }) }))
+    .padding(By(fn() { (@ui.Space::S4.px(), 0.0, @ui.Space::S4.px() + right(), if pn.embedded { over() } else { rest }) }))
     |> ignore
     l.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     l.show(at_once=true, fn() { words() != "" }, fn(row) {
-      row.row(Is(true)) |> ignore
+      row
+      .row(Is(true))
+      .offset(By(fn() {
+        if pn.embedded {
+          (0.0, 0.0)
+        } else {
+          let lift = dmax(0.0, over() - rest)
+          (0.0, -lift * shown(row))
+        }
+      }))
+      |> ignore
       row.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
       row.box(fn(b) {
         style_node(b, fn() { desk_cue_box }, in_row=true)
