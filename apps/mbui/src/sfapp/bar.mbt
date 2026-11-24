@@ -8,7 +8,7 @@
 // motion is a number on a spring (or a timed glide) stepped a frame at a time. Shown on a place's top page with
 // nothing over it; gone down out of the way (300 ms) under a page pushed, back up (380 ms) as it comes back.
 //
-// The capsule and the circle are neutral optical liquid glass over the pages (@sf.glass_tab_bar: uniform 2.1pt blur,
+// The capsule and the circle are neutral optical liquid glass over the pages (@sf.glass_tab_bar: uniform 2.2pt blur,
 // quarter-circle bevel refraction, adaptive iOS 27 color transfer and glint, optional touch spot); where glass is drawn solid, their ground. What moves is only drawn so (src/motion's rule): the
 // bar going down and coming back, the capsule giving the action room and the action growing and shrinking, its icon
 // swapping, a bar chosen in the panel sliding down into the bar's place are looks over where they are laid out, and

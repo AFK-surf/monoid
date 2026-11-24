@@ -598,6 +598,9 @@ pub struct Ctx {
   /// a back gesture held from its start (Ctx::back_gesture), and whether the rest of one called off is nobody's
   mut back_held : BackHeld?
   mut back_off : Bool
+  /// a forward gesture held from its start (Ctx::forward_gesture), and whether the rest of one called off is nobody's
+  mut forward_held : BackHeld?
+  mut forward_off : Bool
   mut back_told : Bool
   mut edge : Int
   // the theme and the direction in force where the view builds (theme.mbt); the themes set, wide and narrow, the
@@ -897,6 +900,8 @@ fn Ctx::new() -> Ctx {
     layers_gone: Set([]),
     back_held: None,
     back_off: false,
+    forward_held: None,
+    forward_off: false,
     back_node_next: -1,
     back_edge_next: 20.0,
     back_told: false,
@@ -988,6 +993,8 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.back_next = None
   self.layer_hook = None
   self.back_held = None
+  self.forward_held = None
+  self.forward_off = false
   // (not its corner_ladder: its theme's own, Ctx::set_theme)
   for n in self.nodes {
     n.unlinked()

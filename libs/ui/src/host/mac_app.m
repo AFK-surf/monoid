@@ -147,6 +147,43 @@ static void win_use(int wid) {
   mb_render_use(wid);
 }
 
+// App-managed window helpers (borderless floating bars, transparent overlays, rounded panels).
+NSWindow *mb_app_window_of(int wid) { return win_slots[@(wid)].win; }
+void mb_app_manage_window(int wid) { win_slots[@(wid)].view.held = NO; }
+void mb_app_window_clear(int wid) {
+  NSWindow *w = win_slots[@(wid)].win;
+  if (!w) return;
+  mb_render_set_clear(wid, 1);
+  w.opaque = NO;
+  w.backgroundColor = NSColor.clearColor;
+  win_slots[@(wid)].view.layer.opaque = NO;
+}
+void mb_app_window_round(int wid, double radius) {
+  MBWinSlot *slot = win_slots[@(wid)];
+  if (!slot || !slot.win) return;
+  NSWindow *w = slot.win;
+  mb_render_set_clear(wid, 1);
+  w.opaque = NO;
+  w.backgroundColor = NSColor.clearColor;
+  CALayer *vl = slot.view.layer;
+  if (vl) {
+    vl.opaque = NO;
+    vl.cornerRadius = radius;
+    vl.cornerCurve = kCACornerCurveContinuous;
+    vl.masksToBounds = YES;
+  }
+  if (w.contentView && w.contentView != slot.view) {
+    w.contentView.wantsLayer = YES;
+    CALayer *cl = w.contentView.layer;
+    cl.cornerRadius = radius;
+    cl.cornerCurve = kCACornerCurveContinuous;
+    cl.masksToBounds = YES;
+  }
+  [w invalidateShadow];
+}
+static void (*app_reopen_cb)(void);
+void mb_app_set_reopen(void (*fn)(void)) { app_reopen_cb = fn; }
+
 // Which window of the run an event is of: the window it came to, else the key window (a menu's item chosen).
 static int win_of(NSWindow *w) {
   for (NSNumber *k in win_slots)
@@ -417,6 +454,8 @@ static double paced_hz, link_hz = -1;
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return self.layer ? self.layer.opaque : YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
+// Borderless floating windows accept the first click without requiring an activation click first.
+- (BOOL)acceptsFirstMouse:(NSEvent *)e { (void)e; return self.window.styleMask == NSWindowStyleMaskBorderless; }
 
 // The app's widgets for VoiceOver and whatever reads the screen: elements under the view (mb_host_a11y_tree), the
 // view only what holds them
@@ -1368,6 +1407,7 @@ static BOOL frame_buttons_centred(id self, SEL s) {
 @interface MBWindow : NSWindow
 @end
 @implementation MBWindow
+- (BOOL)canBecomeKeyWindow { return self.styleMask == NSWindowStyleMaskBorderless || [super canBecomeKeyWindow]; }
 // A scripted run's window keeps the size it was given (MBUI_WIN) on a screen shorter than it (a virtual machine's):
 // AppKit would shrink it to the screen, and the run's page would not be the one its test replays (a 390×844 phone's).
 - (NSRect)constrainFrameRect:(NSRect)r toScreen:(NSScreen *)s {
@@ -1704,6 +1744,7 @@ static void win_closed(int wid) {
     [slot.win saveFrameUsingName:kept];
     [slot.win setFrameAutosaveName:@""];
   }
+  mb_render_set_clear(wid, 0);
   [win_slots removeObjectForKey:@(wid)];
   mb_views_forget(wid);
   mb_render_forget(wid);
@@ -2097,6 +2138,9 @@ static void bring_back(void) {
   full_screen_going(w, true);
 }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
+  (void)app;
+  (void)visible;
+  if (app_reopen_cb) { app_reopen_cb(); return NO; }
   bring_back();
   return NO;
 }
@@ -2644,7 +2688,8 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
     [NSApplication sharedApplication];
     // (a run measuring input to the screen, mac_latency.h: out of the way of whoever works here, its window shown
     // without the app made active, and its wakes as the app in front's: App Nap would put them off by milliseconds)
-    [NSApp setActivationPolicy:latency_run() ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular];
+    BOOL accessory = [[NSBundle.mainBundle objectForInfoDictionaryKey:@"LSUIElement"] boolValue];
+    [NSApp setActivationPolicy:(latency_run() || accessory) ? NSApplicationActivationPolicyAccessory : NSApplicationActivationPolicyRegular];
     if (latency_run())
       [NSProcessInfo.processInfo beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical
                                                    reason:@"measuring input latency"];
@@ -2774,7 +2819,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
                                                   usingBlock:^(NSNotification *n) { full_screen_going(w, true); }];
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillExitFullScreenNotification object:w queue:nil
                                                   usingBlock:^(NSNotification *n) { full_screen_going(w, false); }];
-    if (!latency_run()) [NSApp activateIgnoringOtherApps:YES];
+    if (!latency_run() && !accessory) [NSApp activateIgnoringOtherApps:YES];
     // closed, the program ends (an app's bundle's window is put away instead: MBAppDelegate windowShouldClose)
     w.delegate = app_delegate;
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification

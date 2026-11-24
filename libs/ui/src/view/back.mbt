@@ -219,6 +219,155 @@ fn Tree::back_lost_in(self : Tree, at : Int) -> Unit {
 }
 
 ///|
+/// What forward does to it, while it takes input (as a key's: View::on_key): `f`, as forward is done (a forward gesture
+/// let go there, or a forward with no gesture), as one change outside any tracking; the topmost that takes forward takes
+/// it before any other (Tree::forward_taker). Said in the place of what it followed forward by (View::follows_forward).
+pub fn View::takes_forward(self : View, when? : () -> Bool, f : () -> Unit) -> View {
+  guard self.live() is Some(n) else { return self }
+  if n.on_forward is None && n.on_forward_step is None {
+    self.tree.forwards.push(self.at)
+  }
+  n.on_forward = Some(f)
+  n.on_forward_step = None
+  n.forward_when = when
+  n.forward_said = n.forward_said + 1
+  self
+}
+
+///|
+/// Forward followed by it step by step, while it takes input (Tree::forward_taker's order, as View::takes_forward's):
+/// the gesture as it goes (Began, Moved, LetGo, CalledOff: x from where it began, at its moment), held by it from its
+/// start. Each step one change outside any tracking. Said in the place of what it took forward by (View::takes_forward);
+/// said anew, a gesture under way goes on to it no more.
+pub fn View::follows_forward(self : View, when? : () -> Bool, f : (BackStep) -> Unit) -> View {
+  guard self.live() is Some(n) else { return self }
+  if n.on_forward is None && n.on_forward_step is None {
+    self.tree.forwards.push(self.at)
+  }
+  n.on_forward_step = Some(f)
+  n.on_forward = None
+  n.forward_when = when
+  n.forward_said = n.forward_said + 1
+  self
+}
+
+///|
+fn forward_node_ready(n : Node) -> Bool {
+  match n.forward_when {
+    Some(when) => @signals.untracked(when)
+    None => true
+  }
+}
+
+///|
+/// What takes forward now of the tree's: the node drawn last that takes forward (View::takes_forward,
+/// View::follows_forward) and may take input; none where no node does.
+pub fn Tree::forward_taker(self : Tree) -> NodeId? {
+  if self.forwards.is_empty() || self.nodes.length() == 0 || !self.nodes[0].live {
+    return None
+  }
+  let mut top = -1
+  let mut top_path : Array[Int] = []
+  for at in self.forwards {
+    let n = self.nodes[at]
+    if !n.live ||
+      (n.on_forward is None && n.on_forward_step is None) ||
+      self.pressless_at(at) ||
+      !self.held_from_root(at) ||
+      !forward_node_ready(n) {
+      continue
+    }
+    if top < 0 {
+      top = at
+      continue
+    }
+    if top_path.is_empty() {
+      guard self.kids_path(top) is Some(tp) else {
+        top = at
+        continue
+      }
+      top_path = tp
+    }
+    guard self.kids_path(at) is Some(path) else { continue }
+    if drawn_after(path, top_path) {
+      top = at
+      top_path = path
+    }
+  }
+  if top < 0 {
+    None
+  } else {
+    Some({ at: top, gen: self.nodes[top].gen })
+  }
+}
+
+///|
+/// Step `step` of forward to node `id` as one event at `at`: a gesture begun (Began) or a forward with no gesture (Back)
+/// to it where it takes forward and may take input then, the gesture held by it as it said it then; each step after
+/// (Moved, LetGo, CalledOff) to the one holding it alone, as it said it then, the gesture let go as it is let go or
+/// called off. Whether it took it.
+pub fn Tree::forward_step(self : Tree, id : NodeId, step : BackStep, at : Double) -> Bool {
+  let took = Ref(false)
+  self.event(at, fn() {
+    guard self.alive_id(id) else { return }
+    let n = self.nodes[id.at]
+    let mine = Some((id, n.forward_said))
+    match step {
+      Began(_, _) | Back => {
+        if self.pressless_at(id.at) || (n.on_forward is None && n.on_forward_step is None) || !forward_node_ready(n) {
+          return
+        }
+        if step is Began(_, _) {
+          self.forwarding = mine
+        }
+      }
+      _ => {
+        guard self.forwarding == mine else { return }
+        if step is LetGo(_, _) || step is CalledOff {
+          self.forwarding = None
+        }
+      }
+    }
+    took.val = true
+    forward_told(n, step)
+  })
+  took.val
+}
+
+///|
+fn forward_told(n : Node, step : BackStep) -> Unit {
+  match (n.on_forward_step, n.on_forward, step) {
+    (Some(f), _, _) => @signals.untracked(fn() { f(step) })
+    (None, Some(f), LetGo(_, _)) | (None, Some(f), Back) => @signals.untracked(f)
+    _ => ()
+  }
+}
+
+///|
+/// The forward gesture held by a node where it is `at` or in it (0: wherever it is) called off for it, at the moment of
+/// what did it (taking no input from then: leaving, said to take no press, a modal layer over it): what follows it told
+/// so once (CalledOff), the rest of the gesture nobody's.
+fn Tree::forward_lost_in(self : Tree, at : Int) -> Unit {
+  guard self.forwarding is Some((id, said)) else { return }
+  let mut i = id.at
+  let mut under = false
+  while i >= 0 && i < self.nodes.length() {
+    if i == at {
+      under = true
+      break
+    }
+    i = self.nodes[i].parent
+  }
+  if !under {
+    return
+  }
+  self.forwarding = None
+  if self.alive_id(id) && self.nodes[id.at].forward_said == said {
+    forward_told(self.nodes[id.at], CalledOff)
+  }
+}
+
+///|
 /// A modal layer that leaves what is typed to the field of an old view under it that has the focus (a menu a finger
 /// opens beside a field, its input method left in place: kit's dropdown_menu's): the text typed that field's still;
 /// every key, the wheel and every press the layer's and what it holds, as a modal layer's are, none of them the

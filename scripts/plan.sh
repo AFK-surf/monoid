@@ -26,8 +26,8 @@ decide() {
   if has '^docs/releases/'; then static+=(web-beta); fi
   # (the app's page, each of the web app's pages: the app and mbui's web host built into it, apps/mbui/scripts/web-app.sh;
   # the Worker that serves them, cloud/src/web.ts)
-  if has '^(web/|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|apps/mbui/(src|assets)/|libs/ui/(src|web)/|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.web-beta\.jsonc|src/(web|compat)\.ts)$|apps/mbui/scripts/web-app\.sh$|libs/ui/scripts/web\.sh$)' && [ ${#static[@]} = 0 ]; then static+=(web-beta); fi
-  if has '^(web/|client/|rules/js/|shared/(release-keys|moved-from)\.ts$|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.admin\.jsonc)$)'; then static+=(admin); fi
+  if has '^(web/|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from|station-busy)\.ts$|apps/mbui/(src|assets)/|libs/ui/(src|web)/|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.web-beta\.jsonc|src/(web|compat)\.ts)$|apps/mbui/scripts/web-app\.sh$|libs/ui/scripts/web\.sh$)' && [ ${#static[@]} = 0 ]; then static+=(web-beta); fi
+  if has '^(web/|client/|rules/js/|shared/(release-keys|moved-from|station-busy)\.ts$|package\.json$|pnpm-lock\.yaml$|cloud/(deploy\.py|build-static\.ts|wrangler\.admin\.jsonc)$)'; then static+=(admin); fi
   if has '^cloud/(src/preview\.ts|build-static\.ts|wrangler\.preview\.jsonc)$'; then static+=(preview); fi
   # (the official site, website/, with the legal pages it serves from web/public)
   if has_but '^website/' '^website/ui/' || has '^(web/public/((en/)?(terms|privacy|trademark|support)\.html|legal\.css|favicon-beta\.svg|favicon-beta-32\.png|apple-touch-icon-beta\.png)$|cloud/wrangler\.site-beta\.jsonc$)'; then static+=(site-beta); fi
@@ -55,17 +55,17 @@ decide() {
   # twice a day (station/package.json's packages) without changing the core. One that does change it ships with the
   # next release, its core made anew because the key changed.
   android_beta=false
-  if has '^(apps/mbui/(src|core|android|ios|engine)/|libs/ui/(src|android)/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|libs/ui/tools/apk/|scripts/(release\.sh|native\.ts|delta\.ts|delta-fast\.c|release-deltas\.ts)$|\.github/release\.sh$|apps/mbui/scripts/(beta|android|android-core|core)\.sh$|libs/ui/scripts/android\.sh$)'; then android_beta=true; fi
+  if has '^(apps/mbui/(src|core|android|ios|engine)/|libs/ui/(src|android)/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from|station-busy)\.ts$|web/public/avatars/index\.json$|media/|vendor/|libs/ui/tools/apk/|scripts/(release\.sh|native\.ts|delta\.ts|delta-fast\.c|release-deltas\.ts)$|\.github/release\.sh$|apps/mbui/scripts/(beta|android|android-core|core)\.sh$|libs/ui/scripts/android\.sh$)'; then android_beta=true; fi
   # The beta Mac app: mbui's in the Electron one's place (scripts/release.sh --beta desktop), released, as the
   # Android one, for a change to what apps/mbui's Mac app is made of (its code, mbui's with its Mac host, the
   # client's, media's, vendor's) or to how it is built and released.
   mac_beta=false
-  if has '^(apps/mbui/(src|core|engine)/|libs/ui/src/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|mac-feeds)\.sh$|scripts/(native|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|\.github/(release-desktop\.sh|mac_signing\.py)$|apps/mbui/scripts/(beta|mac-app|mac|core)\.sh$|libs/ui/scripts/mac\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then mac_beta=true; fi
+  if has '^(apps/mbui/(src|core|engine)/|libs/ui/src/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from|station-busy)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|mac-feeds)\.sh$|scripts/(native|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|\.github/(release-desktop\.sh|mac_signing\.py)$|apps/mbui/scripts/(beta|mac-app|mac|core)\.sh$|libs/ui/scripts/mac\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then mac_beta=true; fi
   # The beta Windows app: mbui's in the Electron one's place (scripts/release.sh --beta desktop-win), released, as
   # the Mac one, for a change to what apps/mbui's Windows app is made of (its code, mbui's with its Windows host,
   # its installer, the client's, media's, vendor's) or to how it is built and released.
   win_beta=false
-  if has '^(apps/mbui/(src|core|engine|windows)/|libs/ui/src/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|win-feeds)\.sh$|scripts/(native|delta|release-deltas|release-sign)\.ts$|scripts/delta-fast\.c$|apps/mbui/scripts/(win|core)\.sh$|libs/ui/scripts/win\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then win_beta=true; fi
+  if has '^(apps/mbui/(src|core|engine|windows)/|libs/ui/src/|(apps/mbui|libs/ui)/moon\.(mod|work)$|client/|libs/mesh-transport/|rules/js/|shared/(release-keys|moved-from|station-busy)\.ts$|web/public/avatars/index\.json$|media/|vendor/|scripts/(release|win-feeds)\.sh$|scripts/(native|delta|release-deltas|release-sign)\.ts$|scripts/delta-fast\.c$|apps/mbui/scripts/(win|core)\.sh$|libs/ui/scripts/win\.sh$|apps/mbui/scripts/mac-icon\.swift$)'; then win_beta=true; fi
   # The mbui app's Windows shell and engine, prebuilt: fetched and the shell's tests run (windows-natives), for a
   # change to what they are made of.
   windows_natives=false

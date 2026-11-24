@@ -43,7 +43,7 @@ Narrower rules:
 ## Core invariants
 
 - Subagents never speak in a chat; agent plain text is never forwarded; turns end with a state; bug-report replies never reach agents by themselves (`station/src/agents/AGENTS.md`, `station/src/sessions/AGENTS.md`).
-- Workspace `MEMORY.md` and team skills sync to all stations by `--builder memory` 3-way merges (MoonBit by default, or Pion via `STILLFAIL_READER_MEMORY=pion`); each person's devices carry presets and starred models (`station/src/share/AGENTS.md`).
+- Workspace `MEMORY.md` and team skills sync to all stations by `--builder memory` 3-way merges (MoonBit by default, or Pion via `STILLFAIL_READER_MEMORY=pion`, `config.json` `readers.memory`, or `STILLFAIL_READER_ENGINE=pion`); reader/builder engine selection (`station/src/read/reader-select.ts`, `station/src/read/mb-reader.ts` `resolveReaderSelection`) follows `STILLFAIL_READER_<MODE> > config.readers[mode] > STILLFAIL_READER_ENGINE > mb`, hot-reloads from the live `ReaderConfig` snapshot on each new spawn without disrupting in-flight work, and gates Pion behind `pionImplemented` plus a non-blocking `--version` capability probe; each person's devices carry presets and starred models (`station/src/share/AGENTS.md`).
 - Relays: kept on stations, added by agents without approval after a probe; disabled ones apply to stations too (`station/src/mesh/AGENTS.md`).
 - Rigs run tasks only under owner-signed grants; a whole station becomes a rig by its adder or a workspace owner/admin, who then owns it, and only that owner makes it whole again (`station/src/rig/AGENTS.md`).
 - Pinned locks are released only by `disable` or the local CLI, follow fork choice, enforce moved-workspace build floors (`station/src/cloud/AGENTS.md`).

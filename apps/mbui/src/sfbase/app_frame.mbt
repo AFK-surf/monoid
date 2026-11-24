@@ -43,6 +43,11 @@ pub fn features_from_prefs(prefs : Json?) -> Unit {
     selection_intent_told.val = si
     selection_intent_feature.set(si)
   }
+  let cq = @settings.feature_from(prefs, "cmdQuote")
+  if cq != cmd_quote_told.val {
+    cmd_quote_told.val = cq
+    cmd_quote_feature.set(cq)
+  }
 }
 
 ///|
@@ -54,6 +59,9 @@ let board_told : Ref[Bool] = Ref(false)
 
 ///|
 let selection_intent_told : Ref[Bool] = Ref(false)
+
+///|
+let cmd_quote_told : Ref[Bool] = Ref(false)
 
 ///|
 /// Light or dark, as this device is set (the prefs' `appearance`), or as the system is (@hostapi.system_dark)
@@ -429,6 +437,7 @@ fn app_frame_reset() -> Unit {
   farview_told.val = false
   board_told.val = false
   selection_intent_told.val = false
+  cmd_quote_told.val = false
   attention.told = false
   attention.visible = false
   attention.focused = false

@@ -18,7 +18,7 @@ import { lanAddrs } from "../mesh/lan.ts";
 import { applyNetwork, keptRunning } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
-import { DeviceRefused, PEER_HTTP_ALPN, serveHttp } from "../mesh/peer-http.ts";
+import { DeviceRefused, PEER_HTTP_ALPN, rigAllowed, serveHttp } from "../mesh/peer-http.ts";
 import { keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
 import { Fibers } from "../ops/fibers.ts";
@@ -30,7 +30,7 @@ import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { becomeOther } from "../ops/restart.ts";
 import { stationLog } from "../ops/log-export.ts";
-import { AdminHost, AgentsSide, ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, RigSide, StationConfig, Store, Up } from "../services.ts";
+import { AdminHost, AgentsSide, ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, ReaderConfig, RigSide, StationConfig, Store, Up } from "../services.ts";
 import { type AgentsDoor, openAgentsDoor } from "../tools/http.ts";
 import { McpEndpoint } from "../tools/mcp.ts";
 import { makeUpdates } from "../updates/updates.ts";
@@ -90,6 +90,7 @@ export const RigLive = (control: Control) =>
       const plane = yield* ControlPlane;
       const cloud = plane.state;
       const config = yield* StationConfig;
+      const readerConfig = yield* ReaderConfig;
       const host = yield* AdminHost;
       const up = yield* Up;
       const bus = yield* Peers;
@@ -105,7 +106,7 @@ export const RigLive = (control: Control) =>
         notify: () => {},
         link: () => null,
       });
-      const remote = new Remote({ data, store, jobs, notify: () => {}, bus });
+      const remote = new Remote({ data, store, jobs, notify: () => {}, bus, readers: readerConfig });
       const rig = new Rig({
         data, cloud, bus, fibers: time,
         busy: (workspace, station, session) => store.runningJobsAtLeast(ownerOf(workspace, station, session), 1),
@@ -297,7 +298,7 @@ export const RigMeshLive = Layer.effectDiscard(
         serve: (conn) =>
           conn.alpn().equals(PEER_HTTP_ALPN)
             ? serveHttp(conn, cloud, {
-                allowed: (peer, workspace) => rig.current?.stationRefusal(peer, workspace) ?? "the rig is starting",
+                allowed: rigAllowed(rig),
                 device: (peer, workspace, session, device, probe) => rig.current === null ? Promise.reject(new DeviceRefused(503, "the rig is starting")) : rig.current.device(peer, workspace, session, device, probe),
               })
             : servePeer(conn, cloud, peers),

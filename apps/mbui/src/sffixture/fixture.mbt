@@ -2885,6 +2885,7 @@ let fixture_experimental_features : Array[(String, Bool)] = [
   ("farviewNative", true),
   ("board", false),
   ("selectionIntent", false),
+  ("cmdQuote", false),
 ]
 
 ///|

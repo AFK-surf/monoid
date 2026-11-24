@@ -17,6 +17,7 @@
 // What is drawn where is the host's to say: the frame's size in points and its scale (cur_w, cur_h, cur_scale), the
 // surface's in pixels (fb_w, fb_h), the framebuffer drawn into (target_fb); gl_setup once its context is current.
 #define MB_GLES_RENDER 1  // (frame_mail.h, included after it, keeps its frames in it: fm_keep)
+#include <pthread.h>
 #include <stdint.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -300,6 +301,63 @@ static const char *FS =
     "  float u = clamp(t, 0.0, w);\n"
     "  return u - u * u / (2.0 * w);\n"
     "}\n"
+    "float mb_para_int(float t, float w) {\n"
+    "  float u = clamp(t / max(w, 0.0001), 0.0, 1.0);\n"
+    "  return w * (2.0 * u * u - (4.0 / 3.0) * u * u * u);\n"
+    "}\n"
+    "float mb_bevel_F(float t, float w0, float L) {\n"
+    "  if (t <= w0) return t;\n"
+    "  return w0 + L * (1.0 - exp(-(t - w0) / max(L, 0.0001)));\n"
+    "}\n"
+    "float mb_bevel_cov(float sd_px, float scale, float w0_pt, float L_pt) {\n"
+    "  float invS = 1.0 / max(scale, 1.0);\n"
+    "  float s0 = max(sd_px - 0.5, 0.0) * invS;\n"
+    "  float s1 = max(sd_px + 0.5, 0.0) * invS;\n"
+    "  if (s1 <= s0) return 0.0;\n"
+    "  return max(scale * (mb_bevel_F(s1, w0_pt, L_pt) - mb_bevel_F(s0, w0_pt, L_pt)), 0.0);\n"
+    "}\n"
+    "float mb_snell_intersect(float s, float ior, float H_opt) {\n"
+    "  float invLen = inversesqrt(1.0 + s * s);\n"
+    "  float cosI = invLen;\n"
+    "  float sinI = abs(s) * invLen;\n"
+    "  float eta = 1.0 / ior;\n"
+    "  float sinT = sinI * eta;\n"
+    "  float cosT = sqrt(max(1.0 - sinT * sinT, 0.0001));\n"
+    "  float k = eta * cosI - cosT;\n"
+    "  float Tr = k * (s * invLen);\n"
+    "  float Tz = -eta + k * invLen;\n"
+    "  return H_opt * (Tr / max(-Tz, 0.0001));\n"
+    "}\n"
+    "vec2 mb_droplet_snell(float d, float rawAmount, float halfMinor, int role, float ior) {\n"
+    "  float hs = clamp(halfMinor / 19.2, 0.72, 1.25);\n"
+    "  float refScale = clamp(rawAmount / 9.0, 0.0, 2.0);\n"
+    "  float medialTaper = 1.0 - smoothstep(0.68 * halfMinor, 0.96 * halfMinor, d);\n"
+    "  float s_lip = 0.0;\n"
+    "  float s_cap = 0.0;\n"
+    "  float H_opt = 0.0;\n"
+    "  if (role == 1) {\n"
+    "    float r_lip = 5.0 * hs;\n"
+    "    float L_lip = 1.15 * hs;\n"
+    "    s_lip = 10.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.55 * r_lip, r_lip, d)) * medialTaper;\n"
+    "    H_opt = 9.4 * hs * refScale;\n"
+    "  } else if (role == 2) {\n"
+    "    float r_lip = 3.8 * hs;\n"
+    "    float L_lip = 0.52 * hs;\n"
+    "    s_lip = 6.3 * exp(-d / L_lip) * (1.0 - smoothstep(0.55 * r_lip, r_lip, d)) * medialTaper;\n"
+    "    float u = max(d - 1.20 * hs, 0.0) / (2.80 * hs);\n"
+    "    s_cap = 1.28 * 1.847264 * u * u * exp(-u) * medialTaper;\n"
+    "    H_opt = 10.6 * hs * refScale;\n"
+    "  } else {\n"
+    "    float r_lip = 2.15 * hs;\n"
+    "    float L_lip = 0.42 * hs;\n"
+    "    s_lip = 14.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;\n"
+    "    float u = max(d - 1.95 * hs, 0.0) / (2.60 * hs);\n"
+    "    float cap_amp = (role == 3) ? 1.16 : 0.56;\n"
+    "    s_cap = cap_amp * 1.847264 * u * u * exp(-u) * medialTaper;\n"
+    "    H_opt = 10.6 * hs * refScale;\n"
+    "  }\n"
+    "  return vec2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);\n"
+    "}\n"
     "#endif\n"
     "#if MB_HAS(5) || MB_HAS_LIQUID || MB_HAS_ADAPTIVE\n"
     "vec3 backdrop(vec2 p) {\n"
@@ -483,7 +541,7 @@ static const char *FS =
     "    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
     "    float clearBevel = min(rawBevel * lensScale, halfMinor * 0.72);\n"
     "    float clearAmount = min(rawAmount * lensScale, halfMinor * 0.58);\n"
-    "    float regBevel = min(rawBevel, 0.5 * halfMinor);\n"
+    "    float regBevel = min(rawBevel, 0.55 * halfMinor);\n"
     "    float regAmount = min(rawAmount, halfMinor);\n"
     "    float bevel = mix(clearBevel, regBevel, regMix);\n"
     "    float amount = mix(clearAmount, regAmount, regMix);\n"
@@ -515,12 +573,27 @@ static const char *FS =
     "      if (inward < bevel && bevel > 0.001 && amount > 0.0) {\n"
     "        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);\n"
     "        float clearMag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
-    "        float regMag = min(amount, 0.45 * bevel) * bevelX * bevelX * shortening;\n"
+    "        float regMaxR = 0.80;\n"
+    "        if (bevel > 3.0) {\n"
+    "          float inv = 1.0 / (1.0 - 3.0 / bevel);\n"
+    "          float rCap = sqrt(max(inv * inv - 1.0, 0.0)) / (1.0 + abs(v_pad.z) * 0.5);\n"
+    "          regMaxR = min(regMaxR, rCap);\n"
+    "        }\n"
+    "        float regMag = min(amount, regMaxR * bevel) * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
     "        float mag = mix(clearMag, regMag, regMix);\n"
     "        disp = surfaceNormal * (-mag);\n"
     "      }\n"
     "    }\n"
-    "    float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;\n"
+    "    int dropRole = (v_p.w <= -8.0) ? int(floor((-v_p.w + 4.0) / 16.0)) : 0;\n"
+    "    float rawZoomDelta = (v_p.w <= -8.0) ? ((-v_p.w) - float(dropRole) * 16.0) : ((v_p.w < 0.0) ? (-v_p.w) : 0.0);\n"
+    "    float lensZoom = clamp(1.0 + rawZoomDelta, 1.0, 3.0);\n"
+    "    bool isRoleSlid = (dropRole == 1);\n"
+    "    bool isRoleSw = (dropRole == 2);\n"
+    "    bool isRoleSeg = (dropRole == 3);\n"
+    "    bool isRoleTab = (dropRole == 4);\n"
+    "    bool isModernDrop = is_drop && (dropRole >= 1) && (dropRole <= 4);\n"
+    "    float snellSLip = 0.0;\n"
+    "    float snellDmag = 0.0;\n"
     "    vec2 sampleBase = p;\n"
     "    if (lensZoom > 1.0001) {\n"
     "#if MB_LIQUID_SINGLE\n"
@@ -531,75 +604,63 @@ static const char *FS =
     "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
     "    }\n"
     "    float dropHairline = 0.0;\n"
-    "    float isPlatter = 0.0;\n"
-    "    float isBarTab = 0.0;\n"
+    "    float pressAmt = 0.0;\n"
     "    float menAA = 0.0;\n"
-    "    float menN = 0.0;\n"
     "    float barIconGate = 0.0;\n"
     "    vec2 barCaDisp = vec2(0.0, 0.0);\n"
     "    if (is_drop) {\n"
-    "      float pressAmt = clamp(v_c2.x, 0.0, 1.0);\n"
-    "      float pinchWeight = smoothstep(4.5, 6.5, rawAmount);\n"
-    "      isPlatter = smoothstep(39.0, 41.5, v_rect.w);\n"
-    "      isBarTab = smoothstep(54.0, 58.0, v_rect.w);\n"
-    "      vec2 lensCenter = v_rect.xy + v_rect.zw * 0.5;\n"
-    "      vec2 centered = (p - lensCenter) / max(v_rect.zw, vec2(1.0));\n"
-    "      vec2 absC = abs(centered) * 2.0;\n"
-    "      float bevelX = (bevel > 0.001) ? (1.0 - clamp(inward / bevel, 0.0, 1.0)) : 0.0;\n"
-    "      vec2 paraxialDisp = -surfaceNormal * (bevelX * bevelX * 3.6 * pressAmt);\n"
-    "      float ax2 = absC.x * absC.x;\n"
-    "      float ay2 = absC.y * absC.y;\n"
-    "      float sqDist = sqrt(sqrt(ax2 * ax2 + ay2 * ay2));\n"
-    "      float pinchRamp = smoothstep(0.0, 1.0, sqDist);\n"
-    "      float pinchRimGate = smoothstep(1.8, 5.2, inward);\n"
-    "      float endYScale = 1.0 - 0.32 * smoothstep(0.55, 0.92, absC.x);\n"
-    "      float compactScale = clamp(v_rect.w / 38.33, 0.70, 1.15);\n"
-    "      vec2 compactPinch = vec2(centered.x * 0.72, centered.y * endYScale) * pinchRamp * pinchRimGate * (15.5 * compactScale);\n"
-    "      float cMenBand = smoothstep(0.30, 0.85, inward) * (1.0 - smoothstep(1.15, 1.85, inward));\n"
-    "      float menLobe = smoothstep(0.15, 0.85, dot(surfaceNormal, normalize(vec2(0.55, 0.83))));\n"
-    "      vec2 compactMeniscus = -surfaceNormal * (4.8 * cMenBand * menLobe) + surfaceNormal * (0.9 * cMenBand * (1.0 - menLobe));\n"
-    "      float tipDist = (0.5 - abs(centered.x)) * v_rect.z;\n"
-    "      float capAbsX = clamp(1.0 - tipDist / max(v_rect.w * 0.6514, 1.0), 0.0, 1.0);\n"
-    "      float barPinchHoriz = 1.0 - smoothstep(0.30, 0.94, capAbsX);\n"
-    "      float isSegLens = 1.0 - smoothstep(48.0, 52.0, v_rect.w);\n"
-    "      float barPinchVert = smoothstep(mix(0.42, 0.28, isSegLens), mix(0.76, 0.70, isSegLens), absC.y)\n"
-    "                         * smoothstep(1.35, 5.2, inward);\n"
-    "      float barPinchPx = mix(0.245, 0.38, isSegLens) * v_rect.w * 0.40;\n"
-    "      vec2 platterPinch = vec2(0.0, centered.y * barPinchHoriz * barPinchVert * barPinchPx);\n"
-    "      float endCapX = smoothstep(0.32, 0.70, capAbsX);\n"
-    "      float pMenBand = smoothstep(0.22, 0.55, inward) * (1.0 - smoothstep(0.95, 1.35, inward));\n"
-    "      menAA = max(cMenBand, pMenBand) * pressAmt * pinchWeight;\n"
-    "      menN = cMenBand * pressAmt * pinchWeight;\n"
-    "      if (isBarTab > 0.01) {\n"
-    "        float iconBandY = 1.0 - smoothstep(0.66, 0.79, absC.y);\n"
-    "        barIconGate = iconBandY * endCapX * pressAmt * pinchWeight;\n"
-    "        float iconBevelX = smoothstep(0.45, 1.15, inward) * (1.0 - smoothstep(2.60, 9.40, inward));\n"
-    "        float iconBevelY = smoothstep(0.45, 1.25, inward) * (1.0 - smoothstep(2.20, 9.00, inward));\n"
-    "        float signX = (centered.x >= 0.0) ? 1.0 : -1.0;\n"
-    "        barCaDisp = vec2(-signX * 5.2 * iconBevelX, -centered.y * 2.0 * 4.8 * iconBevelY) * barIconGate;\n"
+    "      pressAmt = clamp(v_c2.x, 0.0, 1.0);\n"
+    "      dropHairline = (1.0 - smoothstep(0.18, 0.62, inward)) * pressAmt;\n"
+    "      if (isModernDrop) {\n"
+    "        vec2 sn = mb_droplet_snell(inward, rawAmount, halfMinor, dropRole, 1.52);\n"
+    "        snellSLip = sn.y;\n"
+    "        snellDmag = clamp(sn.x * shortening, -halfMinor, halfMinor);\n"
+    "        vec2 dropDisp = surfaceNormal * snellDmag;\n"
+    "        if (isRoleSlid && snellSLip > 0.6 && pressAmt > 0.001) {\n"
+    "          menAA = 0.35 * smoothstep(0.6, 2.0, snellSLip) * pressAmt;\n"
+    "        }\n"
+    "        if (isRoleTab) {\n"
+    "          float pinchWeight = smoothstep(4.5, 6.5, rawAmount);\n"
+    "          vec2 lensCenter = v_rect.xy + v_rect.zw * 0.5;\n"
+    "          vec2 centered = (p - lensCenter) / max(v_rect.zw, vec2(1.0));\n"
+    "          vec2 absC = abs(centered) * 2.0;\n"
+    "          float tipDist = (0.5 - abs(centered.x)) * v_rect.z;\n"
+    "          float capAbsX = clamp(1.0 - tipDist / max(v_rect.w * 0.6514, 1.0), 0.0, 1.0);\n"
+    "          float endCapX = smoothstep(0.32, 0.70, capAbsX);\n"
+    "          float iconBandY = 1.0 - smoothstep(0.66, 0.79, absC.y);\n"
+    "          barIconGate = iconBandY * endCapX * pressAmt * pinchWeight;\n"
+    "          float iconBevelX = smoothstep(0.45, 1.15, inward) * (1.0 - smoothstep(2.60, 9.40, inward));\n"
+    "          float iconBevelY = smoothstep(0.45, 1.25, inward) * (1.0 - smoothstep(2.20, 9.00, inward));\n"
+    "          float signX = (centered.x >= 0.0) ? 1.0 : -1.0;\n"
+    "          barCaDisp = vec2(-signX * 5.2 * iconBevelX, -centered.y * 2.0 * 4.8 * iconBevelY) * barIconGate;\n"
+    "        }\n"
+    "        disp = mix(disp, dropDisp, droplet);\n"
+    "      } else {\n"
+    "        float bevelX = (bevel > 0.001) ? (1.0 - clamp(inward / bevel, 0.0, 1.0)) : 0.0;\n"
+    "        vec2 paraxialDisp = -surfaceNormal * (bevelX * bevelX * 3.6 * pressAmt);\n"
+    "        vec2 dropDisp = mix(paraxialDisp, surfaceNormal * 0.85, dropHairline);\n"
+    "        float dLen = length(dropDisp);\n"
+    "        if (dLen > halfMinor) dropDisp *= (halfMinor / dLen);\n"
+    "        disp = mix(disp, dropDisp, droplet);\n"
     "      }\n"
-    "      vec2 pMenReach = vec2(3.9 + 1.2 * endCapX, 3.9 * endCapX);\n"
-    "      vec2 platterMeniscus = -surfaceNormal * pMenReach * pMenBand;\n"
-    "      float capPinchBand = smoothstep(1.35, 4.40, inward) * (1.0 - smoothstep(5.40, 7.80, inward));\n"
-    "      vec2 capOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.45) * (2.8 * capPinchBand * endCapX);\n"
-    "      vec2 barCapOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.62) * (2.6 * capPinchBand * endCapX);\n"
-    "      float tabPinchHoriz = 1.0 - smoothstep(0.20, 0.96, capAbsX);\n"
-    "      float tabPinchVert = smoothstep(0.42, 0.74, absC.y) * smoothstep(1.35, 5.2, inward);\n"
-    "      vec2 tabPinch = vec2(0.0, centered.y * tabPinchHoriz * tabPinchVert * (0.245 * v_rect.w) * 0.28);\n"
-    "      dropHairline = (1.0 - smoothstep(0.30, 0.82, inward)) * pressAmt;\n"
-    "      vec2 widePinch = mix(platterPinch, tabPinch, isBarTab);\n"
-    "      vec2 iosPinch = mix(compactPinch, widePinch, isPlatter) * (pressAmt * pinchWeight) * (1.0 - dropHairline);\n"
-    "      vec2 wideMen = mix(platterMeniscus + capOutward, (platterMeniscus + barCapOutward) * (1.0 - dropHairline), isBarTab);\n"
-    "      vec2 iosMen = mix(compactMeniscus, wideMen, isPlatter);\n"
-    "      vec2 dropDisp = mix(paraxialDisp, iosMen, pressAmt * pinchWeight);\n"
-    "      dropDisp = mix(dropDisp, surfaceNormal * 0.85, dropHairline * (1.0 - isPlatter));\n"
-    "      float dLen = length(dropDisp);\n"
-    "      if (dLen > halfMinor) dropDisp *= (halfMinor / dLen);\n"
-    "      sampleBase = sampleBase + iosPinch * droplet;\n"
-    "      disp = mix(disp, dropDisp, droplet);\n"
     "    }\n"
     "    vec3 refractColor;\n"
-    "    if (inward >= bevel || abs(v_pad.z) * amount * u_scale <= 0.25) {\n"
+    "    if (isModernDrop) {\n"
+    "      if (abs(v_pad.z) > 0.001 && snellSLip > 0.15 && pressAmt > 0.001) {\n"
+    "        float dispR = mb_droplet_snell(inward, rawAmount, halfMinor, dropRole, 1.47).x * shortening;\n"
+    "        float dispB = mb_droplet_snell(inward, rawAmount, halfMinor, dropRole, 1.58).x * shortening;\n"
+    "        float caW = smoothstep(0.15, 1.20, snellSLip) * clamp(abs(v_pad.z) / 0.04, 0.0, 1.0);\n"
+    "        float dR = clamp(mix(snellDmag, dispR, caW), -halfMinor, halfMinor);\n"
+    "        float dB = clamp(mix(snellDmag, dispB, caW), -halfMinor, halfMinor);\n"
+    "        refractColor = vec3(\n"
+    "          backdrop(sampleBase + surfaceNormal * dR).r,\n"
+    "          backdrop(sampleBase + surfaceNormal * snellDmag).g,\n"
+    "          backdrop(sampleBase + surfaceNormal * dB).b\n"
+    "        );\n"
+    "      } else {\n"
+    "        refractColor = backdrop(sampleBase + disp);\n"
+    "      }\n"
+    "    } else if (inward >= bevel || abs(v_pad.z) * amount * u_scale <= 0.25) {\n"
     "      refractColor = backdrop(sampleBase + disp);\n"
     "    } else {\n"
     "      float ds = v_pad.z * 0.5;\n"
@@ -610,20 +671,15 @@ static const char *FS =
     "      );\n"
     "    }\n"
     "    if (menAA > 0.01) {\n"
-    "      vec2 nOff = surfaceNormal * 0.35;\n"
-    "      vec2 tOff = vec2(-surfaceNormal.y, surfaceNormal.x) * 0.35;\n"
+    "      float aaOff = isModernDrop ? 0.25 : 0.35;\n"
+    "      vec2 nOff = surfaceNormal * aaOff;\n"
+    "      vec2 tOff = vec2(-surfaceNormal.y, surfaceNormal.x) * aaOff;\n"
     "      vec2 mc = sampleBase + disp;\n"
     "      vec3 menAvg = (backdrop(mc + nOff + tOff) + backdrop(mc + nOff - tOff)\n"
     "                   + backdrop(mc - nOff + tOff) + backdrop(mc - nOff - tOff)) * 0.25;\n"
     "      refractColor = mix(refractColor, menAvg, menAA);\n"
     "    }\n"
-    "    if (menN > 0.001) {\n"
-    "      float menY = luma(refractColor);\n"
-    "      float outerBgY = luma(backdrop(p + surfaceNormal * 3.0));\n"
-    "      float lightCard = smoothstep(0.35, 0.65, outerBgY);\n"
-    "      refractColor = mix(refractColor, mix(vec3(menY), vec3(1.0), 0.45 * lightCard), 0.60 * menN);\n"
-    "    }\n"
-    "    if (isBarTab > 0.5 && barIconGate > 0.01 && dropHairline < 0.99) {\n"
+    "    if (isRoleTab && barIconGate > 0.01 && dropHairline < 0.99) {\n"
     "      float bevelGate = barIconGate * smoothstep(0.45, 1.15, inward) * (1.0 - dropHairline);\n"
     "      if (bevelGate > 0.001) {\n"
     "        float refX = (p.x >= v_rect.x + v_rect.z * 0.5) ? 0.26 : 0.74;\n"
@@ -659,6 +715,11 @@ static const char *FS =
     "    float glintFaceGain;\n"
     "    float glintVib;\n"
     "    float fogT = 0.0;\n"
+    "    vec3 lightEmSaved = vec3(0.0);\n"
+    "    vec3 darkEmSaved = vec3(0.0);\n"
+    "    float darkMixSaved = 0.0;\n"
+    "    float lightExtra = 0.0;\n"
+    "    bool hasLightEm = false;\n"
     "    if (is_clear) {\n"
     "      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
     "      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
@@ -682,16 +743,16 @@ static const char *FS =
     "      float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
     "      float val = ad_sample(ac, ar, is_dark);\n"
-    "      float baseDens = (col.a > 0.41) ? col.a : 0.30;\n"
+    "      float baseDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
     "      if (is_dark) {\n"
     "        float brightT = val;\n"
     "        fogT = brightT;\n"
     "        float dens = max(baseDens, mix(baseDens, 0.64, brightT));\n"
     "        float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
-    "        emission = mix(vec3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), vec3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), extra);\n"
-    "        transmittance = mix(0.61, 0.0, extra);\n"
-    "        lift = mix(0.60, 0.0, extra);\n"
-    "        chromaGain = mix(0.92, 0.0, extra);\n"
+    "        emission = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), extra);\n"
+    "        transmittance = mix(0.50, 0.0, extra);\n"
+    "        lift = mix(0.24, 0.0, extra);\n"
+    "        chromaGain = mix(1.05, 0.0, extra);\n"
     "        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "      } else {\n"
@@ -701,34 +762,60 @@ static const char *FS =
     "        float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));\n"
     "        float darkExtra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
     "        vec3 lightEm = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * baseDens;\n"
-    "        vec3 darkEm = mix(vec3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), vec3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), darkExtra);\n"
+    "        vec3 darkEm = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), darkExtra);\n"
+    "        lightEmSaved = lightEm; darkEmSaved = darkEm; darkMixSaved = darkMix; lightExtra = extra; hasLightEm = true;\n"
     "        emission = mix(lightEm, darkEm, darkMix);\n"
-    "        transmittance = mix(mix(0.70, 0.0, extra), mix(0.61, 0.0, darkExtra), darkMix);\n"
-    "        lift = mix(mix(0.16, 0.0, extra), mix(0.60, 0.0, darkExtra), darkMix);\n"
-    "        chromaGain = mix(mix(0.85, 0.0, extra), mix(0.92, 0.0, darkExtra), darkMix);\n"
+    "        transmittance = mix(mix(0.70, 0.0, extra), mix(0.50, 0.0, darkExtra), darkMix);\n"
+    "        lift = mix(mix(0.16, 0.0, extra), mix(0.24, 0.0, darkExtra), darkMix);\n"
+    "        chromaGain = mix(mix(1.18, 0.0, extra), mix(1.05, 0.0, darkExtra), darkMix);\n"
     "        contourStr = mix(0.43, 0.88, darkMix);\n"
     "        contourDirAmt = mix(0.77, 1.0, darkMix);\n"
     "        bevelShadowStr = 0.036;\n"
     "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "      }\n"
     "    } else if (is_dark) {\n"
-    "      float darkDens = (col.a > 0.41) ? col.a : 0.30;\n"
+    "      float darkDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
     "      float extra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
-    "      emission = mix(vec3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), vec3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), extra);\n"
-    "      transmittance = mix(0.61, 0.0, extra);\n"
-    "      lift = mix(0.60, 0.0, extra);\n"
-    "      chromaGain = mix(0.92, 0.0, extra);\n"
+    "      emission = mix(vec3(30.0 / 255.0), vec3(24.0 / 255.0), extra);\n"
+    "      transmittance = mix(0.50, 0.0, extra);\n"
+    "      lift = mix(0.24, 0.0, extra);\n"
+    "      chromaGain = mix(1.05, 0.0, extra);\n"
     "      contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "    } else {\n"
-    "      float lightDens = (col.a > 0.41) ? col.a : 0.30;\n"
+    "      float lightDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
     "      float extra = clamp((lightDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
     "      emission = vec3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightDens;\n"
+    "      lightEmSaved = emission; lightExtra = extra; hasLightEm = true;\n"
     "      transmittance = mix(0.70, 0.0, extra);\n"
     "      lift = mix(0.16, 0.0, extra);\n"
-    "      chromaGain = mix(0.85, 0.0, extra);\n"
+    "      chromaGain = mix(1.18, 0.0, extra);\n"
     "      contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;\n"
     "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
+    "    }\n"
+    "    vec3 lowC = refractColor;\n"
+    "    if (regMix > 0.001) {\n"
+    "      vec2 fc = sampleBase + disp;\n"
+    "      float rD = mix(3.2, 4.2, fogT);\n"
+    "      vec3 s1 = backdrop(fc + vec2( rD,  rD));\n"
+    "      vec3 s2 = backdrop(fc + vec2(-rD,  rD));\n"
+    "      vec3 s3 = backdrop(fc + vec2( rD, -rD));\n"
+    "      vec3 s4 = backdrop(fc + vec2(-rD, -rD));\n"
+    "      lowC = (refractColor * 2.0 + s1 + s2 + s3 + s4) * (1.0 / 6.0);\n"
+    "      float interior = (bevel > 0.001) ? smoothstep(0.30 * bevel, 0.85 * bevel, inward) : 1.0;\n"
+    "      float y0 = luma(refractColor), y1 = luma(s1), y2 = luma(s2), y3 = luma(s3), y4 = luma(s4);\n"
+    "      float yMean = (y0 * 2.0 + y1 + y2 + y3 + y4) * (1.0 / 6.0);\n"
+    "      float yVar = ((y0 - yMean) * (y0 - yMean) * 2.0\n"
+    "                  + (y1 - yMean) * (y1 - yMean) + (y2 - yMean) * (y2 - yMean)\n"
+    "                  + (y3 - yMean) * (y3 - yMean) + (y4 - yMean) * (y4 - yMean)) * (1.0 / 6.0);\n"
+    "      float detailAmt = smoothstep(0.020, 0.095, sqrt(max(yVar, 0.0)));\n"
+    "      float dampW = interior * max(detailAmt * 0.65, fogT * 0.72) * regMix;\n"
+    "      refractColor = mix(refractColor, lowC, dampW);\n"
+    "    }\n"
+    "    if (hasLightEm) {\n"
+    "      float bgChroma = max(lowC.r, max(lowC.g, lowC.b)) - min(lowC.r, min(lowC.g, lowC.b));\n"
+    "      float lightVeilScale = mix(1.0, 0.65, smoothstep(0.08, 0.40, bgChroma) * regMix * (1.0 - lightExtra));\n"
+    "      emission = mix(lightEmSaved * lightVeilScale, darkEmSaved, darkMixSaved);\n"
     "    }\n"
     "    if (regMix > 0.0 && regMix < 1.0) {\n"
     "      emission = mix(vec3(0.126, 0.126, 0.126), emission, regMix);\n"
@@ -742,42 +829,42 @@ static const char *FS =
     "      glintFaceGain = mix(0.25, glintFaceGain, regMix);\n"
     "      glintVib = mix(1.5, glintVib, regMix);\n"
     "    }\n"
-    "    contourStr = mix(contourStr, is_dark ? 0.54 : 0.0, regMix);\n"
-    "    if (is_dark && regMix > 0.001) {\n"
-    "      contourDirAmt = mix(contourDirAmt, 0.65, regMix);\n"
-    "    }\n"
-    "    if (fogT > 0.001) {\n"
-    "      float r1 = fogT * 1.1;\n"
-    "      float r2 = fogT * 1.6;\n"
-    "      vec2 fc = sampleBase + disp;\n"
-    "      vec3 fBlur = (refractColor * 2.0\n"
-    "        + (backdrop(fc + vec2(r1, 0.0)) + backdrop(fc - vec2(r1, 0.0))\n"
-    "         + backdrop(fc + vec2(0.0, r1)) + backdrop(fc - vec2(0.0, r1))) * 1.5\n"
-    "        + (backdrop(fc + vec2(r2, r2)) + backdrop(fc + vec2(-r2, r2))\n"
-    "         + backdrop(fc + vec2(r2, -r2)) + backdrop(fc + vec2(-r2, -r2)))) * (1.0 / 12.0);\n"
-    "      refractColor = mix(refractColor, fBlur, fogT * 0.45);\n"
-    "    }\n"
+    "    contourStr *= (1.0 - regMix);\n"
     "    float Y = luma(refractColor);\n"
     "    float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);\n"
-    "    float regChromaAtten = mix(1.0, 1.0 - clamp(luma(emission), 0.0, 0.85), regMix);\n"
-    "    vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z * regChromaAtten);\n"
+    "    vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z);\n"
     "    float baseLum = clamp(transLum * transmittance, 0.0, 1.0);\n"
     "    vec3 transmittedColor = vec3(baseLum) + chromaVec;\n"
     "    vec3 rawBase = emission + transmittedColor;\n"
+    "    // Exact Wave 3 legacy mapping for Clear / Lifted Lenses (regMix == 0)\n"
     "    float maxC = max(rawBase.r, max(rawBase.g, rawBase.b));\n"
-    "    vec3 baseColor = rawBase;\n"
+    "    vec3 legacyBase = rawBase;\n"
     "    if (maxC > 1.0) {\n"
-    "      float lumR = clamp(luma(emission) + baseLum, 0.0, 0.999);\n"
-    "      float s = clamp((1.0 - lumR) / max(maxC - lumR, 0.0001), 0.0, 1.0);\n"
-    "      baseColor = vec3(lumR) + (rawBase - vec3(lumR)) * s;\n"
+    "      float lumL = clamp(luma(emission) + baseLum, 0.0, 0.999);\n"
+    "      float sL = clamp((1.0 - lumL) / max(maxC - lumL, 0.0001), 0.0, 1.0);\n"
+    "      legacyBase = vec3(lumL) + (rawBase - vec3(lumL)) * sL;\n"
     "    }\n"
-    "    baseColor = clamp(baseColor, 0.0, 1.0);\n"
+    "    legacyBase = clamp(legacyBase, 0.0, 1.0);\n"
+    "    vec3 baseColor = legacyBase;\n"
+    "    if (regMix > 0.001) {\n"
+    "      float lumR = clamp(luma(emission) + baseLum, 0.001, 0.999);\n"
+    "      vec3 dC = rawBase - vec3(lumR);\n"
+    "      float s = 1.0;\n"
+    "      if (dC.r > 0.0001) s = min(s, (1.0 - lumR) / dC.r);\n"
+    "      else if (dC.r < -0.0001) s = min(s, lumR / (-dC.r));\n"
+    "      if (dC.g > 0.0001) s = min(s, (1.0 - lumR) / dC.g);\n"
+    "      else if (dC.g < -0.0001) s = min(s, lumR / (-dC.g));\n"
+    "      if (dC.b > 0.0001) s = min(s, (1.0 - lumR) / dC.b);\n"
+    "      else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));\n"
+    "      vec3 regProjected = clamp(vec3(lumR) + dC * clamp(s, 0.0, 1.0), 0.0, 1.0);\n"
+    "      baseColor = mix(legacyBase, regProjected, regMix);\n"
+    "    }\n"
     "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
     "    float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "    if (colChroma > 0.08 && col.a > 0.001) {\n"
     "      float tintW = col.a <= 0.45\n"
     "        ? col.a * 0.5\n"
-    "        : mix(0.225, 1.0, smoothstep(0.45, 0.80, col.a));\n"
+    "        : mix(0.225, 0.86, smoothstep(0.45, 0.80, col.a));\n"
     "      baseColor = mix(baseColor, col.rgb, tintW);\n"
     "    }\n"
     "    float spot = 0.0;\n"
@@ -826,8 +913,17 @@ static const char *FS =
     "      result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);\n"
     "    }\n"
     "    if (regMix > 0.001) {\n"
-    "      float regHw = min(0.50, 1.15 / max(u_scale, 1.0));\n"
-    "      float regHairline = (1.0 - smoothstep(regHw * 0.35, regHw, inward)) * materialAlpha * regMix;\n"
+    "      float regHairline;\n"
+    "      if (is_dark) {\n"
+    "        float regHw = min(0.50, 1.15 / max(u_scale, 1.0));\n"
+    "        regHairline = (1.0 - smoothstep(regHw * 0.35, regHw, inward)) * materialAlpha * regMix;\n"
+    "      } else {\n"
+    "        float regHairWpx = max(1.10 * u_scale, 2.20);\n"
+    "        float regA = clamp(sd_px - 0.5, 0.0, regHairWpx);\n"
+    "        float regB = clamp(sd_px + 0.5, 0.0, regHairWpx);\n"
+    "        float regBandCov = mb_para_int(regB, regHairWpx) - mb_para_int(regA, regHairWpx);\n"
+    "        regHairline = clamp(regBandCov / max(materialAlpha, 0.001), 0.0, 1.0) * regMix;\n"
+    "      }\n"
     "      float regAcross = pow(max(1.0 - rn.y * rn.y, 0.0), 1.75);\n"
     "      float regShadeMask = is_dark ? regAcross : mix(0.28, 1.0, regAcross);\n"
     "      if (v_c2.x > 0.01 && inward < 12.0) {\n"
@@ -836,66 +932,134 @@ static const char *FS =
     "        float opp = max(-along, 0.0);\n"
     "        float lit2 = lit * lit;\n"
     "        float opp2 = opp * opp;\n"
-    "        float regLobe = (is_dark ? 0.95 : 1.0) * (lit2 * lit2) + (is_dark ? 0.95 : 0.85) * (opp2 * opp2) + 0.08;\n"
-    "        float regInset = max(0.0, inward - 0.10);\n"
-    "        float regCore = exp(-regInset / 0.80);\n"
-    "        float regTail = exp(-regInset / 2.67);\n"
+    "        float diag = abs(rn.x * rn.y) * 2.0;\n"
+    "        float regLobe = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.10 * (diag * diag * diag) + 0.03;\n"
+    "        float regInset = max(0.0, inward - 0.30);\n"
+    "        float regCore = exp(-regInset / 0.55);\n"
+    "        float regTail = exp(-inward / 2.0);\n"
     "        float regEase = pow(max(1.0 - luma(result), 0.0), 0.3);\n"
-    "        float regRimGain = (is_dark ? 1.15 : 1.0) * clamp(v_c2.x / 0.6, 0.0, 1.5);\n"
-    "        float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.035 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;\n"
-    "        result = mix(result, vec3(1.0), clamp(regRim, 0.0, 1.0));\n"
+    "        float regRimGain = 1.0 * clamp(v_c2.x / 0.6, 0.0, 1.5);\n"
+    "        float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.020 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;\n"
+    "        vec3 rimTarget = clamp(vec3(1.0) + (refractColor - vec3(Y)) * 1.0, 0.0, 1.0);\n"
+    "        result = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));\n"
     "      }\n"
     "      if (regHairline > 0.001) {\n"
     "        float regShade = (is_dark ? 0.0 : 0.22) * regShadeMask;\n"
     "        result *= (1.0 - regShade * regHairline);\n"
     "      }\n"
     "    }\n"
-    "    if (is_drop) {\n"
-    "      float pressAmt = clamp(v_c2.x, 0.0, 1.0);\n"
+    "    if (isModernDrop) {\n"
     "      float backdropLuma = clamp(Y, 0.0, 1.0);\n"
-    "      float tt = (inward - 4.0) / 3.0;\n"
-    "      float topTrough = exp(-tt * tt)\n"
-    "                      * smoothstep(0.3, 0.85, -surfaceNormal.y)\n"
-    "                      * smoothstep(1.5, 3.5, inward);\n"
-    "      float liftGain = mix(mix(0.105, 0.085, isPlatter), 0.035, isBarTab);\n"
-    "      float lensLift = liftGain * (1.0 - 0.45 * topTrough) * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);\n"
+    "      float brightBg = smoothstep(0.35, 0.75, backdropLuma);\n"
+    "      float liftGain = isRoleTab ? 0.025 : (isRoleSeg ? 0.014 : 0.098);\n"
+    "      result = clamp(refractColor + vec3(liftGain * pressAmt * (1.0 - backdropLuma)), 0.0, 1.0);\n"
+    "      float domeScale = clamp(v_rect.w / 38.4, 0.80, 1.35);\n"
+    "      float sizeGate = smoothstep(28.0, 36.0, v_rect.w);\n"
+    "      float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.55 : 1.0);\n"
+    "      float upperFace = smoothstep(-0.15, 0.85, -surfaceNormal.y);\n"
+    "      float qTop = (inward - 8.5 * domeScale) / (6.2 * domeScale);\n"
+    "      float topEnv = exp(-qTop * qTop) * upperFace * smoothstep(0.55, 1.80, inward);\n"
+    "      result *= (1.0 - mix(0.20, 0.082, brightBg) * roleVol * sizeGate * pressAmt * topEnv);\n"
+    "      float sideArc = pow(max(abs(surfaceNormal.x), 0.0), 1.6);\n"
+    "      float sideEnv = exp(-max(inward - 1.5, 0.0) / 4.2) * smoothstep(0.25, 1.20, inward);\n"
+    "      result *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.45 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);\n"
+    "      float lowerFace = smoothstep(0.10, 0.85, surfaceNormal.y);\n"
+    "      float lowEnv = exp(-max(inward - 2.0, 0.0) / 5.5) * smoothstep(0.50, 1.60, inward);\n"
+    "      result = clamp(result + vec3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.35 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);\n"
+    "      // Stage A: Razor-sharp inner 3D specular rim\n"
+    "      if (pressAmt > 0.001 && inward < 12.0) {\n"
+    "        float litTop = max(-surfaceNormal.y, 0.0);\n"
+    "        float litBot = max(surfaceNormal.y, 0.0);\n"
+    "        float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + 0.05;\n"
+    "        float rimStart = isRoleSw ? 0.60 : 0.45;\n"
+    "        float rimPeak  = isRoleSw ? 0.95 : 0.75;\n"
+    "        float rimRise = smoothstep(rimStart, rimPeak, inward);\n"
+    "        float rimInset = max(inward - rimPeak, 0.0);\n"
+    "        float rimEnv = rimRise * (0.90 * exp(-rimInset / 0.38) + 0.14 * exp(-rimInset / 1.50));\n"
+    "        float rimStr = mix(0.24, 0.14, brightBg) * dirLobe * rimEnv * pressAmt;\n"
+    "        result = mix(result, vec3(1.0), clamp(rimStr, 0.0, 1.0));\n"
+    "      }\n"
+    "      // Stage B: Slim Apple-exact closed-form analytic 3D bevel wall\n"
+    "      float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.35);\n"
+    "      float invS = 1.0 / max(u_scale, 1.0);\n"
+    "      float hsWall = clamp(halfMinor / 19.2, 0.72, 1.25);\n"
+    "      float w0_top = (isRoleSw ? 0.30 : 0.24) * hsWall;\n"
+    "      float w0_side = max(0.52 * hsWall, 1.55 * invS);\n"
+    "      float w0_eff = mix(w0_top, w0_side, across);\n"
+    "      float L_eff  = mix(0.12, 0.42, across) * hsWall;\n"
+    "      float wallCov = mb_bevel_cov(sd_px, u_scale, w0_eff, L_eff);\n"
+    "      float wallBlend = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0) * 0.94 * pressAmt;\n"
+    "      if (wallBlend > 0.001) {\n"
+    "        vec3 envBg = backdrop(p + surfaceNormal * 1.2);\n"
+    "        float envY = luma(envBg);\n"
+    "        float envChroma = max(envBg.r, max(envBg.g, envBg.b)) - min(envBg.r, min(envBg.g, envBg.b));\n"
+    "        float brightEnv = smoothstep(0.35, 0.75, envY);\n"
+    "        float satEnv = smoothstep(0.10, 0.35, envChroma);\n"
+    "        float neutralMul = mix(0.26, mix(0.80, 0.72, across), brightEnv);\n"
+    "        vec3 neutralTint = envBg * neutralMul;\n"
+    "        vec3 satTint = pow(max(envBg, vec3(0.0001)), vec3(1.25)) * 0.72;\n"
+    "        result = mix(result, mix(neutralTint, satTint, satEnv), wallBlend);\n"
+    "      }\n"
+    "      // Stage C: Segmented prismatic edge dispersion AFTER Stage B\n"
+    "      if (pressAmt > 0.001 && inward < 12.0 && abs(v_pad.z) > 0.005) {\n"
+    "        float chromaGate = smoothstep(0.005, 0.04, abs(v_pad.z));\n"
+    "        float pBand = smoothstep(0.45, 0.75, inward) * (1.0 - smoothstep(1.35, 2.20, inward)) * pressAmt * chromaGate;\n"
+    "        float hw = smoothstep(0.35, 0.85, abs(surfaceNormal.x));\n"
+    "        vec3 pDark = mix(vec3(-0.025, 0.015, 0.045), vec3(0.048, 0.012, -0.032), hw);\n"
+    "        vec3 pLight = mix(vec3(-0.085, 0.0, 0.0), vec3(-0.015, -0.075, -0.135), hw);\n"
+    "        vec3 pAdd = mix(pDark, pLight, brightBg);\n"
+    "        result = clamp(result + pAdd * pBand, 0.0, 1.0);\n"
+    "      }\n"
+    "    } else if (is_drop) {\n"
+    "      float backdropLuma = clamp(Y, 0.0, 1.0);\n"
+    "      float brightBg = smoothstep(0.35, 0.75, backdropLuma);\n"
+    "      float liftGain = isRoleTab ? 0.025 : (isRoleSeg ? 0.008 : 0.101);\n"
+    "      float lensLift = liftGain * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);\n"
     "      result = clamp(result + vec3(lensLift), 0.0, 1.0);\n"
-    "      float keyShade = 0.025 * topTrough * backdropLuma * pressAmt * (1.0 - dropHairline);\n"
-    "      result = max(result - vec3(keyShade), vec3(0.0));\n"
-    "      float dInnerSh = sd_rr(p - vec2(0.0, 7.0), v_rect, s_rr);\n"
-    "      float innerShMask = smoothstep(-3.0, 3.0, dInnerSh) * smoothstep(0.85, 1.65, inward);\n"
-    "      result *= (1.0 - 0.085 * innerShMask * pressAmt);\n"
-    "      if (pressAmt > 0.001 && inward < 10.0) {\n"
-    "        vec2 ld = vec2(0.0, 1.0);\n"
-    "        float along = dot(surfaceNormal, ld);\n"
+    "      float domeScale = clamp(v_rect.w / 38.0, 0.85, 1.35);\n"
+    "      float sizeGate = smoothstep(28.0, 36.0, v_rect.w);\n"
+    "      float upperFace = smoothstep(0.0, 0.75, -surfaceNormal.y);\n"
+    "      float qDome = (inward - 9.2 * domeScale) / (5.6 * domeScale);\n"
+    "      float domeEnv = exp(-qDome * qDome) * upperFace * smoothstep(0.65, 1.85, inward);\n"
+    "      float domeStr = mix(0.196, 0.086, brightBg) * sizeGate;\n"
+    "      result *= (1.0 - domeStr * domeEnv * pressAmt);\n"
+    "      float lightSh = smoothstep(0.75, 1.80, inward) * (1.0 - smoothstep(4.5, 8.5, inward))\n"
+    "                    * upperFace * brightBg * sizeGate;\n"
+    "      result *= (1.0 - 0.032 * lightSh * pressAmt);\n"
+    "      if (pressAmt > 0.001 && inward < 12.0) {\n"
+    "        float along = surfaceNormal.y;\n"
     "        float lit = max(along, 0.0);\n"
     "        float opp = max(-along, 0.0);\n"
-    "        float lobe = 0.84 * lit * lit * lit + 1.02 * opp * opp * opp;\n"
-    "        float insetPt = max(0.0, inward - 0.75);\n"
-    "        float core = exp(-insetPt / 0.50);\n"
-    "        float tail = exp(-insetPt / 2.67);\n"
-    "        float bodyLuma = clamp(luma(result), 0.0, 1.0);\n"
-    "        float ease = pow(max(1.0 - bodyLuma, 0.0), 0.30);\n"
-    "        float rimLight = pressAmt * 1.32 * lobe * ease * (0.175 * core + 0.055 * tail) * (1.0 - dropHairline);\n"
+    "        float lobe = 1.0 * (lit * lit * lit) + 1.0 * (opp * opp * opp) + 0.14;\n"
+    "        float insetPt = max(0.0, inward - 0.60);\n"
+    "        float core = exp(-insetPt / 0.48);\n"
+    "        float shoulder = exp(-insetPt / 1.8);\n"
+    "        float ease = pow(max(1.0 - clamp(luma(result), 0.0, 1.0), 0.0), 0.30);\n"
+    "        float rimGain = isRoleSeg ? 0.85 : (isRoleTab ? 0.75 : 1.0);\n"
+    "        float rimLight = pressAmt * rimGain * lobe * ease * (0.205 * core + 0.025 * shoulder) * (1.0 - dropHairline);\n"
     "        result = mix(result, vec3(1.0), clamp(rimLight, 0.0, 1.0));\n"
     "      }\n"
-    "      if (isPlatter > 0.01 && pressAmt > 0.01) {\n"
-    "        float prismBand = smoothstep(0.55, 1.05, inward) * (1.0 - smoothstep(1.30, 2.00, inward)) * (1.0 - dropHairline) * isPlatter * pressAmt;\n"
+    "      if (isRoleSeg && pressAmt > 0.01) {\n"
+    "        float prismBand = smoothstep(0.40, 0.80, inward) * (1.0 - smoothstep(1.15, 1.85, inward))\n"
+    "                        * (1.0 - dropHairline) * pressAmt;\n"
     "        if (prismBand > 0.001) {\n"
-    "          float prismPhase = abs(surfaceNormal.y) * 0.45 + surfaceNormal.x * 0.35 + 0.52;\n"
-    "          vec3 sp = 0.5 + 0.5 * cos(6.2831853 * (prismPhase * 1.2 + vec3(0.0, 0.3333, 0.6667)));\n"
-    "          float spY = luma(sp);\n"
-    "          result = clamp(result + (sp - vec3(spY)) * (0.080 * prismBand), 0.0, 1.0);\n"
+    "          float hW = smoothstep(0.35, 0.85, abs(surfaceNormal.x));\n"
+    "          vec3 rawD = mix(vec3(-0.045, 0.015, 0.030), vec3(0.075, -0.015, -0.060), hW);\n"
+    "          vec3 darkPrism = (rawD - vec3(luma(rawD))) * 0.60 * prismBand;\n"
+    "          vec3 lightPrism = mix(vec3(-0.068, 0.0, 0.0), vec3(-0.055, -0.148, -0.188), hW) * prismBand;\n"
+    "          vec3 pD = mix(darkPrism, lightPrism, brightBg);\n"
+    "          float sP = 1.0;\n"
+    "          if (pD.r > 0.0001) sP = min(sP, (1.0 - result.r) / pD.r); else if (pD.r < -0.0001) sP = min(sP, result.r / (-pD.r));\n"
+    "          if (pD.g > 0.0001) sP = min(sP, (1.0 - result.g) / pD.g); else if (pD.g < -0.0001) sP = min(sP, result.g / (-pD.g));\n"
+    "          if (pD.b > 0.0001) sP = min(sP, (1.0 - result.b) / pD.b); else if (pD.b < -0.0001) sP = min(sP, result.b / (-pD.b));\n"
+    "          result = clamp(result + pD * clamp(sP, 0.0, 1.0), 0.0, 1.0);\n"
     "        }\n"
     "      }\n"
     "      if (dropHairline > 0.001) {\n"
-    "        vec2 ld = vec2(0.0, 1.0);\n"
-    "        float dl = dot(surfaceNormal, ld);\n"
-    "        float across = pow(max(1.0 - dl * dl, 0.0), 1.75);\n"
-    "        float brightBg = smoothstep(0.35, 0.70, backdropLuma);\n"
-    "        float effRimShade = mix(0.38, 0.82, brightBg);\n"
-    "        float effShadeEnds = mix(0.18, 0.68, brightBg);\n"
-    "        float shade = effRimShade * 0.28 * mix(effShadeEnds, 1.0, across) * pressAmt;\n"
+    "        float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.75);\n"
+    "        float shadeTB = mix(0.047, 0.161, brightBg);\n"
+    "        float shadeEnds = mix(0.063, 0.239, brightBg);\n"
+    "        float shade = mix(shadeTB, shadeEnds, across) * pressAmt;\n"
     "        result = max(result - vec3(shade * dropHairline), vec3(0.0));\n"
     "      }\n"
     "    }\n"
@@ -1127,7 +1291,9 @@ static const char *PFS =
     "      return;\n"
     "    }\n"
     "    float sig1 = pow(sp, 1.0 / kf);\n"
-    "    float rs = r * r * (3.0 - 2.0 * r);\n"
+    "    // the blur grows as the square of the way into the fade, not smoothstep's 3r^2 - 2r^3: words are unreadable from\n"
+    "    // a deviation of 1-2 pt, so smoothstep's quick start left two thirds of the band one flat frost\n"
+    "    float rs = r * r;\n"
     "    float target_px = sp * rs;\n"
     "    if (target_px <= sig1 || kf <= 1.05) {\n"
     "      vec2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;\n"
@@ -1343,6 +1509,7 @@ static GLuint prog_now;
 static char prog_cache_dir[512];
 static int prog_bin_checked;
 static int prog_bin_ok;
+// (GL thread) what the cache did: programs loaded from it, compiled for want of one, written to it
 static int prog_cache_hits;
 static int prog_cache_misses;
 static int prog_cache_stores;
@@ -1513,33 +1680,35 @@ static GLuint prog_cache_load(const char *path) {
   return p;
 }
 
-static void prog_cache_save(const char *path, GLuint p) {
+// (1: written)
+static int prog_cache_save(const char *path, GLuint p) {
   GLint blen = 0;
   glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &blen);
-  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return;
+  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return 0;
   uint8_t *buf = (uint8_t *)malloc((size_t)blen);
-  if (!buf) return;
+  if (!buf) return 0;
   GLsizei got = 0;
   GLenum fmt = 0;
   glGetProgramBinary(p, blen, &got, &fmt, buf);
   if (got <= 0 || (uint32_t)got > MB_GLBIN_MAX_BYTES) {
     free(buf);
-    return;
+    return 0;
   }
   mkdir(prog_cache_dir, 0700);
+  // (a name of its own: the GL thread and the one making programs ahead may write the same program's at once)
+  static unsigned tmp_seq;
   char tmp[700];
-  snprintf(tmp, sizeof tmp, "%s.%ld.tmp", path, (long)getpid());
+  snprintf(tmp, sizeof tmp, "%s.%ld.%u.tmp", path, (long)getpid(), __atomic_fetch_add(&tmp_seq, 1, __ATOMIC_RELAXED));
   FILE *f = fopen(tmp, "wb");
+  int saved = 0;
   if (f) {
     uint32_t hdr[3] = {MB_GLBIN_MAGIC, (uint32_t)fmt, (uint32_t)got};
     int ok = fwrite(hdr, sizeof(uint32_t), 3, f) == 3 && fwrite(buf, 1, (size_t)got, f) == (size_t)got;
-    if (fclose(f) == 0 && ok && rename(tmp, path) == 0) {
-      prog_cache_stores++;
-    } else {
-      unlink(tmp);
-    }
+    saved = fclose(f) == 0 && ok && rename(tmp, path) == 0;
+    if (!saved) unlink(tmp);
   }
   free(buf);
+  return saved;
 }
 
 static float *fbuf;
@@ -1584,6 +1753,164 @@ static GLuint compile2(GLenum type, const char *head, const char *body, const ch
   return s;
 }
 
+// The programs the renderer draws with: its groups (MB_PROG_*), then a ground's flat middle, the glass's passes' and the
+// adaptive ink's; a slot each.
+#define MB_SLOT_FLAT MB_PROGS
+#define MB_SLOT_POST (MB_PROGS + 1)
+#define MB_SLOT_ADAPTIVE (MB_PROGS + 2)
+#define MB_SLOTS (MB_PROGS + 3)
+
+// What the program of a slot is made of: its vertex shader (vs: 0 vs_main, 1 vs_main_ad, 2 vs_post, the one shared by
+// the programs that have the same) and its fragment shader, each a head (NULL: none, the body's own #version) and body.
+typedef struct {
+  const char *tag, *vs_head, *vs_body, *fs_head, *fs_body;
+  int vs;
+} prog_src;
+
+static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
+  static const char *head_plain = "#version 300 es\n#define MB_VS_ADAPTIVE 0\n";
+  static const char *head_ad = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
+  prog_src s = {"ui", head_plain, VS, fs_head, FS, 0};
+  switch (slot) {
+    case MB_SLOT_FLAT: {
+      prog_src f = {"flat", head_plain, VS, NULL, FS_FLAT, 0};
+      return f;
+    }
+    case MB_SLOT_POST: {
+      prog_src f = {"post", NULL, PVS, NULL, PFS, 2};
+      return f;
+    }
+    case MB_SLOT_ADAPTIVE: {
+      prog_src f = {"adaptive", NULL, PVS, NULL, AD_FS, 2};
+      return f;
+    }
+    case MB_PROG_FROSTED:
+      s.tag = "frosted";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 5\n"
+               "#define MB_HAS(K) ((K) == 5)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_LIQUID_MERGED:
+      s.tag = "liquid_merged";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 6\n"
+               "#define MB_HAS(K) ((K) == 6)\n"
+               "#define MB_HAS_LIQUID 1\n"
+               "#define MB_HAS_ADAPTIVE 1\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 1\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_LIQUID_SINGLE:
+      s.tag = "liquid_single";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 13\n"
+               "#define MB_HAS(K) ((K) == 6)\n"
+               "#define MB_HAS_LIQUID 1\n"
+               "#define MB_HAS_ADAPTIVE 1\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 1\n");
+      break;
+    case MB_PROG_LENS:
+      s.tag = "lens";
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 8\n"
+               "#define MB_HAS(K) ((K) == 8)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 1\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_PATH:
+      s.tag = "path";
+      s.vs_head = head_ad;
+      s.vs = 1;
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 11\n"
+               "#define MB_HAS(K) ((K) == 11)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_UI:
+    default:
+      s.vs_head = head_ad;
+      s.vs = 1;
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND -1\n"
+               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+  }
+  return s;
+}
+
+// Programs made ahead (a host that defines MB_PROGS_AHEAD: Android's). A new context draws its first frame, then the
+// host starts a thread of its own with a context sharing this one's objects (progs_ahead_start), which links what the
+// GL thread has none of yet (gl_progs_ahead below), the heavy glass first, and hands each over here as it is linked:
+// a program the GL thread first needs (liquid glass bonding as it is first dragged, frosted glass as a panel first
+// opens) is taken from here (ahead_take), not compiled in that frame, which a fresh install's or an update's first
+// drag would wait a large share of a second for (the binary cache, prog_cache_load, keeps only what was linked before).
+// A slot the GL thread made itself, or took, is claimed: the thread skips it, or lets go of what it made of it.
+static pthread_mutex_t ahead_mu = PTHREAD_MUTEX_INITIALIZER;
+// the context the programs are made ahead for (gl_setup's, counted), what of it was handed over, and claimed
+static unsigned ahead_gen;
+static GLuint ahead_progs[MB_SLOTS];
+static unsigned ahead_claimed;
+// (GL thread) a new context's: the thread started after its first frame (gl_present_kept)
+static int ahead_due;
+
+#ifdef MB_PROGS_AHEAD
+// (the host's; GL thread, the context current) a thread started that makes the programs of `gen` ahead, in a context of
+// its own sharing the current one's objects, by gl_progs_ahead
+static void progs_ahead_start(unsigned gen);
+#endif
+
+// (GL thread) a new context's: what was handed over of the old one let go with it (made in the old context's objects)
+static void ahead_reset(void) {
+  pthread_mutex_lock(&ahead_mu);
+  ahead_gen++;
+  memset(ahead_progs, 0, sizeof ahead_progs);
+  ahead_claimed = 0;
+  pthread_mutex_unlock(&ahead_mu);
+  ahead_due = 1;
+}
+
+// (GL thread) the program of `slot` made ahead, taken (0: none yet); the slot claimed either way
+static GLuint ahead_take(int slot) {
+  pthread_mutex_lock(&ahead_mu);
+  GLuint p = ahead_progs[slot];
+  ahead_progs[slot] = 0;
+  ahead_claimed |= 1u << slot;
+  pthread_mutex_unlock(&ahead_mu);
+  return p;
+}
+
 static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
                              const char *fs_head, const char *fs_body, int cache_only) {
   char path[640];
@@ -1608,108 +1935,41 @@ static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_he
   if (use_cache) {
     GLint ok = 0;
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (ok == GL_TRUE) prog_cache_save(path, p);
+    if (ok == GL_TRUE && prog_cache_save(path, p)) prog_cache_stores++;
   }
   return p;
 }
 
-static GLuint link_prog_cached(const char *tag, GLuint *vs_slot, const char *vs_head, const char *vs_body,
-                               const char *fs_head, const char *fs_body) {
-  return link_prog_impl(tag, vs_slot, vs_head, vs_body, fs_head, fs_body, 0);
+// (GL thread) the program of `slot`: made ahead and handed over, else loaded from the binary cache, else (unless
+// `cache_only`: 0) compiled now; claimed (ahead_take) when not only looked for in the cache
+static GLuint slot_prog(int slot, int cache_only) {
+  char fs_head[1024];
+  prog_src s = prog_src_of(slot, fs_head, sizeof fs_head);
+  if (!cache_only) {
+    GLuint p = ahead_take(slot);
+    if (p) {
+      LOG("program %s taken as made ahead", s.tag);
+      return p;
+    }
+  }
+  GLuint *vs_slots[3] = {&vs_main, &vs_main_ad, &vs_post};
+  struct timespec t0, t1;
+  clock_gettime(CLOCK_MONOTONIC, &t0);
+  GLuint p = link_prog_impl(s.tag, vs_slots[s.vs], s.vs_head, s.vs_body, s.fs_head, s.fs_body, cache_only);
+  if (p && cache_only) ahead_take(slot);
+  // (what a frame waited for a program, in the host's log: a stall to be found there, not guessed at)
+  if (p && !cache_only) {
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    LOG("program %s made on the GL thread in %.1f ms", s.tag,
+        (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
+  }
+  return p;
 }
 
-// The program for `group` (MB_PROG_*), compiled (or loaded from binary cache) on first use, its textures' units set.
+// The program for `group` (MB_PROG_*), compiled (or loaded from binary cache, or taken as made ahead) on first use, its
+// textures' units set.
 static kprog make_prog_impl(int group, int cache_only) {
-  const char *vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 0\n";
-  GLuint *vs_slot = &vs_main;
-  const char *tag = "ui";
-  char fs_head[1024];
-  switch (group) {
-    case MB_PROG_FROSTED:
-      tag = "frosted";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 5\n"
-               "#define MB_HAS(K) ((K) == 5)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 1\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_LIQUID_MERGED:
-      tag = "liquid_merged";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 6\n"
-               "#define MB_HAS(K) ((K) == 6)\n"
-               "#define MB_HAS_LIQUID 1\n"
-               "#define MB_HAS_ADAPTIVE 1\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 1\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_LIQUID_SINGLE:
-      tag = "liquid_single";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 13\n"
-               "#define MB_HAS(K) ((K) == 6)\n"
-               "#define MB_HAS_LIQUID 1\n"
-               "#define MB_HAS_ADAPTIVE 1\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 1\n");
-      break;
-    case MB_PROG_LENS:
-      tag = "lens";
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 8\n"
-               "#define MB_HAS(K) ((K) == 8)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 1\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_PATH:
-      tag = "path";
-      vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
-      vs_slot = &vs_main_ad;
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND 11\n"
-               "#define MB_HAS(K) ((K) == 11)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 0\n"
-               "#define MB_HAS_BOX 0\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-    case MB_PROG_UI:
-    default:
-      tag = "ui";
-      vs_head = "#version 300 es\n#define MB_VS_ADAPTIVE 1\n";
-      vs_slot = &vs_main_ad;
-      snprintf(fs_head, sizeof fs_head,
-               "#version 300 es\n"
-               "#define ONE_KIND -1\n"
-               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n"
-               "#define MB_HAS_LIQUID 0\n"
-               "#define MB_HAS_ADAPTIVE 0\n"
-               "#define MB_HAS_BACKDROP 0\n"
-               "#define MB_HAS_BOX 1\n"
-               "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
-      break;
-  }
-  GLuint p = link_prog_impl(tag, vs_slot, vs_head, VS, fs_head, FS, cache_only);
+  GLuint p = slot_prog(group, cache_only);
   if (!p) {
     kprog empty = {0};
     return empty;
@@ -1744,7 +2004,7 @@ static kprog make_prog(int group) { return make_prog_impl(group, 0); }
 
 static void ensure_prog_flat_impl(int cache_only) {
   if (prog_flat) return;
-  GLuint p = link_prog_impl("flat", &vs_main, "#version 300 es\n#define MB_VS_ADAPTIVE 0\n", VS, NULL, FS_FLAT, cache_only);
+  GLuint p = slot_prog(MB_SLOT_FLAT, cache_only);
   if (!p) return;
   prog_flat = p;
   uf_vp = glGetUniformLocation(prog_flat, "u_vp");
@@ -1754,7 +2014,7 @@ static void ensure_prog_flat(void) { ensure_prog_flat_impl(0); }
 
 static void ensure_post_impl(int cache_only) {
   if (post) return;
-  GLuint p = link_prog_impl("post", &vs_post, NULL, PVS, NULL, PFS, cache_only);
+  GLuint p = slot_prog(MB_SLOT_POST, cache_only);
   if (!p) return;
   post = p;
   pu_src = glGetUniformLocation(post, "u_src");
@@ -1770,7 +2030,7 @@ static void ensure_post(void) { ensure_post_impl(0); }
 
 static void ensure_ad_prog_impl(int cache_only) {
   if (ad_prog) return;
-  GLuint p = link_prog_impl("adaptive", &vs_post, NULL, PVS, NULL, AD_FS, cache_only);
+  GLuint p = slot_prog(MB_SLOT_ADAPTIVE, cache_only);
   if (!p) return;
   ad_prog = p;
   adu_bd = glGetUniformLocation(ad_prog, "u_bd");
@@ -1783,7 +2043,63 @@ static void ensure_ad_prog_impl(int cache_only) {
 
 static void ensure_ad_prog(void) { ensure_ad_prog_impl(0); }
 
-// Preload any already-cached .glbin program binaries on context setup without compiling or counting misses.
+#ifdef MB_PROGS_AHEAD
+// (the host's thread that makes programs ahead, its own context current, sharing the objects of the GL thread's of
+// `gen`) the programs of the slots the GL thread has none of linked, the heavy glass first, each kept in the binary
+// cache for the next start and handed over (ahead_progs) once it is whole (glFinish: another context draws with it):
+// how many. Stops when the GL thread's context is no longer `gen`'s.
+static int gl_progs_ahead(unsigned gen) {
+  static const int order[MB_SLOTS] = {MB_PROG_LIQUID_MERGED, MB_PROG_LIQUID_SINGLE, MB_SLOT_ADAPTIVE,
+                                      MB_PROG_FROSTED,       MB_PROG_LENS,          MB_SLOT_POST,
+                                      MB_PROG_PATH,          MB_SLOT_FLAT,          MB_PROG_UI};
+  GLint nfmt = 0;
+  glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
+  int use_cache = prog_cache_dir[0] != '\0' && nfmt > 0;
+  GLuint vs[3] = {0, 0, 0};
+  int made = 0;
+  for (int i = 0; i < MB_SLOTS; i++) {
+    int slot = order[i];
+    pthread_mutex_lock(&ahead_mu);
+    int gone = ahead_gen != gen, claimed = (ahead_claimed >> slot) & 1;
+    pthread_mutex_unlock(&ahead_mu);
+    if (gone) break;
+    if (claimed) continue;
+    char fs_head[1024];
+    prog_src s = prog_src_of(slot, fs_head, sizeof fs_head);
+    if (!vs[s.vs]) vs[s.vs] = compile2(GL_VERTEX_SHADER, s.vs_head, s.vs_body, s.tag);
+    GLuint fs = compile2(GL_FRAGMENT_SHADER, s.fs_head, s.fs_body, s.tag);
+    GLuint p = glCreateProgram();
+    if (use_cache) glProgramParameteri(p, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+    glAttachShader(p, vs[s.vs]);
+    glAttachShader(p, fs);
+    glLinkProgram(p);
+    glDeleteShader(fs);
+    GLint ok = 0;
+    glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (ok != GL_TRUE) {
+      glDeleteProgram(p);
+      continue;
+    }
+    if (use_cache) {
+      char path[640];
+      prog_cache_path(path, sizeof path, s.tag, s.vs_head, s.vs_body, s.fs_head, s.fs_body);
+      prog_cache_save(path, p);
+    }
+    glFinish();
+    pthread_mutex_lock(&ahead_mu);
+    int keep = ahead_gen == gen && !((ahead_claimed >> slot) & 1);
+    if (keep) ahead_progs[slot] = p;
+    pthread_mutex_unlock(&ahead_mu);
+    if (keep) made++;
+    else glDeleteProgram(p);
+  }
+  for (int i = 0; i < 3; i++)
+    if (vs[i]) glDeleteShader(vs[i]);
+  return made;
+}
+#endif
+
+// Preload any already-cached .glbin program binaries on context setup without compiling.
 static void gl_preload_cached_progs(void) {
   if (prog_cache_dir[0] == '\0' || !prog_bin_capable()) return;
   for (int g = 0; g < MB_PROGS; g++) {
@@ -1796,9 +2112,11 @@ static void gl_preload_cached_progs(void) {
   glUseProgram(0);
 }
 
-// The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use
-// (a new context has none of the old: handles are cleared here, as glass_lost and canvas_lost do).
+// The instances' buffer and the glyphs' atlases made in the context now current; programs are compiled on first use,
+// or made ahead (ahead_reset) (a new context has none of the old: handles are cleared here, as glass_lost and
+// canvas_lost do).
 static void gl_setup(void) {
+  ahead_reset();
   vs_main = vs_main_ad = vs_post = 0;
   memset(progs, 0, sizeof progs);
   prog_flat = 0;
@@ -2600,7 +2918,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       ad_slots[sid].seen_serial = serial;
     }
     mb_ad_slot *s = &ad_slots[sid];
-    if (s->updated_serial == serial) continue;
+    if (!is_new && s->updated_serial == serial) continue;
     if (!is_new && !backdrop_changed && s->settle_left > 0.0 && ad_conv_serial[sid] >= s->settle_serial) {
       s->settle_left = 0.0;
     }
@@ -3390,6 +3708,17 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
   ad_rb_finish(ad_frame_serial);
   ad_finalize_frame(whole, ad_frame_serial);
   glass_idle_tick();
+  // (the surface's context's first frame drawn: what it has no program of yet made ahead, not in a frame that first
+  // needs it; never offscreen, which has no binary cache set: mbui-render's draws stay all on its thread)
+  if (ahead_due && !offscreen && prog_cache_dir[0] != '\0') {
+    ahead_due = 0;
+#ifdef MB_PROGS_AHEAD
+    pthread_mutex_lock(&ahead_mu);
+    unsigned gen = ahead_gen, all = ahead_claimed == (1u << MB_SLOTS) - 1;
+    pthread_mutex_unlock(&ahead_mu);
+    if (!all) progs_ahead_start(gen);
+#endif
+  }
 }
 
 static int gl_adaptive_step(void) {

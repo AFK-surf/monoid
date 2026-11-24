@@ -114,7 +114,12 @@ export class Attention implements Owner {
     const input = isObject(value.ok) && isObject(thread) && read !== null && typeof thread.read === "number" && read < thread.read
       ? { ...value.ok, thread: { ...thread, read } }
       : value.ok;
-    const { due, value: attended } = this.attend.chat(station, typeof topic.session === "string" ? topic.session : null, input);
+    const { due, value: attended } = this.attend.chat(
+      station,
+      typeof topic.session === "string" ? topic.session : null,
+      input,
+      core.stations.catchUpState(station, typeof id === "number" ? id : null),
+    );
     for (const d of due) {
       core.runner.fork(
         Effect.catch(core.stations.read(station, d.read.thread, d.read.seq, null), () => Effect.sync(() => this.attend.failed(station, d))),

@@ -43,6 +43,13 @@ let corners_everywhere_known : Map[String, Int] = {
   // panel a presenter's of the window's tree, no old view holding the rail drawn again beside it).
   known["desk-win-zh home-shared-bell"] = 1
   known["desk-win-en home-shared-bell"] = 1
+  // Adding a profile with a station to choose (settings-new-profile-stations) in the 600 wide window touch is in: the
+  // rail's one, and the gateways' card's foot corners (OpenRouter, Command Code, Open Design), 16 in from the panel's
+  // sides and 26 round, its page shorter than its panel so it does not scroll and ends 23 over the panel's foot, where
+  // the panel's 42 would want them 19. Where a page that does not fill its panel ends is its words' and the window's,
+  // as 安全's and the account's above: gone as the page's height is any other (a gateway more or less, another window).
+  known["touch-zh settings-new-profile-stations"] = 3
+  known["touch-en settings-new-profile-stations"] = 3
   known
 }
 

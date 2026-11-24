@@ -32,7 +32,7 @@ export const CHAT_POST = {
       },
       "send": {
         "type": "string",
-        "description": "The id of a post held back (its chat_post answered it): sends it as written. Give only to, send and the state the turn now ends with (kind, need, done, about)."
+        "description": "The id of a post held back (its chat_post answered it): sends it as written. Give only to, send and the state the turn now ends with."
       },
       "withdraw": {
         "type": "string",
@@ -46,13 +46,23 @@ export const CHAT_POST = {
         "type": "string",
         "enum": [
           "all_done",
-          "need_human"
+          "need_human",
+          "waiting"
         ],
-        "description": "Omit for a progress update. all_done: nothing in the chat is left unfinished; give done. need_human: a person has to give, do or decide something (a card you posted included); give need. Only for a real unresolved need: a factual answer alone needs no follow-up question."
+        "description": "Omit for a progress update. all_done: nothing in the chat is left unfinished; give done. waiting: only your own work runs on and brings you back; give for, seconds, watch as in chat_state. need_human: a person has to give, do or decide something (a card you posted included); give need. A factual answer alone needs no follow-up question."
       },
       "need": {
         "type": "string",
         "description": "For need_human (required): what the person has to give, do or decide, in one sentence in their language (要 Stripe 的测试 key); to verify something, where, how and what to look at; work of yours still running, after the ask (选统计口径；CI 还在跑)."
+      },
+      "for": {
+        "type": "string"
+      },
+      "seconds": {
+        "type": "integer"
+      },
+      "watch": {
+        "type": "boolean"
       },
       "about": {
         "type": "string",
@@ -71,7 +81,7 @@ export const CHAT_POST = {
       },
       "title": {
         "type": "string",
-        "description": "The conversation's name in still.fail lists (nothing is renamed in Slack): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it: the station changes it rarely, and never over a name people gave."
+        "description": "The conversation's name in still.fail lists (nothing is renamed in Slack): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave."
       },
       "card": {
         "type": "object",
@@ -169,7 +179,7 @@ export const CHAT_STATE = {
       },
       "about": {
         "type": "string",
-        "description": "The ts of the message in your conversation the state is about (all_done: the result's; need_human: the one where you visibly ask what is still needed, required unless a card is pending; waiting: the one saying what you started). People's lists jump to it."
+        "description": "The ts of the message in your conversation the state is about (all_done: the result's; need_human: the one where you visibly ask what is still needed, required unless a card is pending; waiting: the one saying what you started)."
       },
       "done": {
         "type": "string",

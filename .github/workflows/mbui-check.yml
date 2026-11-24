@@ -519,8 +519,13 @@ jobs:
               echo "not every program built (cut at its limit): none of this run's units kept"
             fi
           fi
+      # (both saves: at most 2 minutes, and a save that hangs or fails does not fail a job whose build went through;
+      # main's 45369648320 built pages_test in 1m12s and then hung 9 minutes in this MOON_KEY save until the job's
+      # 10 minutes cancelled it, and every pages test after it with it)
       - if: always() && runner.environment != 'self-hosted' && env.BUILD_KEY != '' && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        timeout-minutes: 2
+        continue-on-error: true
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.BUILD_KEY }}
@@ -556,6 +561,8 @@ jobs:
           echo "MOON_KEY=mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-${{ github.sha }}" >> "$GITHUB_ENV"
       - if: always() && runner.environment != 'self-hosted' && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true' && env.MOON_KEY != ''
         uses: actions/cache/save@v4
+        timeout-minutes: 2
+        continue-on-error: true
         with:
           path: |
             apps/mbui/_build

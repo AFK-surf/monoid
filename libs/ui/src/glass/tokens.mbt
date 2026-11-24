@@ -112,40 +112,28 @@ pub let shadow_thumb : (Double, Double, Int64) = (2.0, 4.0 / 6.0, 0x0000000DL)
 pub let shadow_none : (Double, Double, Int64) = (0.0, 0.0, 0x00000000L)
 
 ///|
-/// Dynamic outer lift shadow for Slider / Switch thumb as press progresses from 0.0 (rest) to 1.0 (lifted droplet).
-pub fn thumb_lift_shadow(press : Double) -> (Double, Double, Int64) {
-  let p = clamp(press, 0.0, 1.0)
-  if is_dark() {
-    (lerp(3.0, 8.0, p), lerp(1.5, 4.5, p), alpha(black, lerp(0.26, 0.38, p)))
-  } else {
-    (lerp(2.5, 6.0, p), lerp(1.0, 4.0, p), alpha(black, lerp(0.10, 0.11, p)))
-  }
+/// Outer lift shadow for Slider / Switch thumb: removed (`shadow_none`) for shadow-free lifted transparent droplets.
+pub fn thumb_lift_shadow(_press : Double) -> (Double, Double, Int64) {
+  shadow_none
 }
 
 ///|
-/// Dynamic floating shadow for Segmented control's lifted clear lens (`shadow_none` at rest).
-pub fn seg_lens_shadow(press : Double) -> (Double, Double, Int64) {
-  let p = clamp(press, 0.0, 1.0)
-  if p <= 0.001 {
-    shadow_none
-  } else if is_dark() {
-    (8.0 * p, 4.5 * p, alpha(black, 0.36 * p))
-  } else {
-    (6.0 * p, 4.0 * p, alpha(black, 0.10 * p))
-  }
+/// Outer lift shadow for Segmented control's lifted clear lens: removed (`shadow_none`).
+pub fn seg_lens_shadow(_press : Double) -> (Double, Double, Int64) {
+  shadow_none
 }
 
 // Sizes (dp, mbui's points).
 
 ///|
-/// LiquidToggle: its track 64 × 28, its thumb 40 × 24, 2 in; held 58.0 × 38.4pt (1.45× wide, 1.60× tall, matching iOS 27).
-pub let toggle_w : Double = 64.0
+/// LiquidToggle: its track 63 × 28, its thumb 37 × 24, 2 in; held 59.2 × 38.4pt (1.60× uniform, matching iOS 27).
+pub let toggle_w : Double = 63.0
 
 ///|
 pub let toggle_h : Double = 28.0
 
 ///|
-pub let thumb_w : Double = 40.0
+pub let thumb_w : Double = 37.0
 
 ///|
 pub let thumb_h : Double = 24.0
@@ -157,12 +145,14 @@ pub let toggle_pad : Double = 2.0
 pub let thumb_held_scale : Double = 1.60
 
 ///|
-/// Horizontal held scale for LiquidToggle's asymmetric iOS 27 droplet (40 -> 58.0pt).
-let thumb_held_scale_x : Double = 1.45
+/// LiquidSlider: resting thumb 38 × 24, held 58 × 38pt (`slider_thumb_held_scale = 38/24`).
+pub let slider_thumb_w : Double = 38.0
 
 ///|
-/// LiquidSlider: held thumb scale (40 × 24 -> 60 × 36pt).
-pub let slider_thumb_held_scale : Double = 1.50
+pub let slider_thumb_h : Double = 24.0
+
+///|
+pub let slider_thumb_held_scale : Double = 38.0 / 24.0
 
 ///|
 /// LiquidSlider: its track 6 high.

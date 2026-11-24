@@ -1,6 +1,6 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
 export type MinuteRequest = { id: number; remote: true } | { id: number; chats: InWorkspace | null };
@@ -17,6 +17,7 @@ const IDLE_MS = 60_000;
 export class MinuteReader {
   readonly #path: string;
   readonly #mb: string | undefined;
+  readonly #readers: BackfillOptions["readers"];
   #worker: MbProcess | null = null;
   #next = 0;
   #closed = false;
@@ -27,9 +28,10 @@ export class MinuteReader {
   #idle: (() => void) | null = null;
   readonly #after: (ms: number, f: () => void) => () => void;
   /// `options.after`: the timer of IDLE_MS (a test's own; else the wall's).
-  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer; after?: (ms: number, f: () => void) => () => void } = {}, binary?: string) {
+  constructor(path: string, options: BackfillOptions & { after?: (ms: number, f: () => void) => () => void } = {}, binary?: string) {
     this.#path = path;
     this.#mb = binary;
+    this.#readers = options.readers;
     this.#after = options.after ?? wall.after;
   }
 
@@ -64,7 +66,8 @@ export class MinuteReader {
 
   start(): void {
     if (this.#closed || this.#complete || this.#worker !== null) return;
-    const worker = new MbProcess(this.#mb ?? readerBinary(), ["--builder", "usage-check", "--db", this.#path]);
+    const bin = resolveReaderSelection("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" }).primaryBinary;
+    const worker = new MbProcess(bin, ["--builder", "usage-check", "--db", this.#path]);
     this.#worker = worker;
     worker.on("message", (answer: MinuteResponse) => {
       if (answer.complete) {

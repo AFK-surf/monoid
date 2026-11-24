@@ -223,6 +223,8 @@ pub(all) struct Viewer {
   pdf_marks : PdfMarks
   /// what is marked in its Markdown file (viewer_md_marks.mbt)
   md_marks : MdMarks
+  /// what is marked in its code or text lines (viewer_lines_marks.mbt)
+  lines_marks : LinesMarks
   mut text : String?
   /// its words highlighted, a line each (code, or Markdown's source), read once: None until then, Some([]) when not
   mut colored : Array[Array[@ui.Run]]?
@@ -952,6 +954,7 @@ pub fn new_viewer(
     pdf: None,
     pdf_marks: PdfMarks::new(),
     md_marks: MdMarks::new(),
+    lines_marks: LinesMarks::new(),
     text: None,
     colored: None,
     colored_dark: false,

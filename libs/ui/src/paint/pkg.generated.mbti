@@ -2,8 +2,8 @@
 package "ui/paint"
 
 import {
-  "ui/pixels",
   "moonbitlang/core/debug",
+  "ui/pixels",
 }
 
 // Values
@@ -112,13 +112,14 @@ pub(all) struct Glass {
   zoom : Double
   strength : Double
   progressive : Bool
-  layer : Int
+  layer : Int32
   break_gap : Double
+  droplet_role : Int32
 }
 pub fn Glass::at_strength(Self, Double) -> Self
 pub fn Glass::clear(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?, zoom? : Double, strength? : Double) -> Self
 pub fn Glass::frosted(blur~ : Double, tint~ : Int64, solid~ : Int64, saturation? : Double, rim_edge? : Double, rim_lit? : Double, rim_back? : Double, shares_capture? : Bool, contained? : Bool, progressive? : Bool, strength? : Double) -> Self
-pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?, zoom? : Double, strength? : Double, layer? : Int, break_gap? : Double) -> Self
+pub fn Glass::liquid(blur? : Double, tint? : Int64, solid? : Int64, saturation? : Double, rim? : Double, bezel? : Double, refraction? : Double, chroma? : Double, merge? : Double, adaptive? : Bool, spot? : (Double, Double)?, zoom? : Double, strength? : Double, layer? : Int32, break_gap? : Double, droplet_role? : Int32) -> Self
 pub fn Glass::sharing(Self) -> Self
 
 #derive(Eq, @debug.Debug)

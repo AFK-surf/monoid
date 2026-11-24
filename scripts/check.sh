@@ -123,8 +123,9 @@ running() {
 below() { for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; below "$c"; done; }
 open_tests() {
   for p in $(below $$); do ps -o etime= -o args= -p "$p" 2>/dev/null; done | awk 'gsub(/\.test\.(ts|mts|mjs|js)/, "&") == 1 { for (i = 2; i <= NF; i++) if ($i ~ /\.test\.(ts|mts|mjs|js)$/) print "  ◦ " $1 " " $i }'
-  # Each of them asked which of its tests runs, or what it still has open (station/test/setup-env.mjs), and the
-  # processes under it: the file alone did not say which test hung (41597210040, test/sandbox.test.ts).
+  # Each of them asked which of its tests runs, or what it still has open (station/test/setup-env.mjs,
+  # client/core-ts/test/setup-env.mjs), and the processes under it: the file alone did not say which test hung
+  # (41597210040, test/sandbox.test.ts; the core's had nothing to answer it, 45381066232, test/web-sql-bounds.test.ts).
   hung=""
   # (One file each: the runner above them names them all.)
   for p in $(below $$); do ps -o args= -p "$p" 2>/dev/null | awk 'gsub(/\.test\.(ts|mts|mjs|js)/, "&") != 1 { exit 1 }' && kill -USR2 "$p" 2>/dev/null && hung="$hung $p"; done
@@ -286,11 +287,11 @@ TS
 # paths): a change to one alone typechecks the core and runs its tests. #6720 made station/src/sessions/presets.ts'
 # Presets answer promises; test/presets-carried.test.ts, which calls them, ran neither, and main was red at the next
 # change to the core (43894522015). scripts/core-station.ts (part ts) holds every such import to these three lists.
-core_station='^station/test/fake-control-plane\.ts$|^shared/(lock|moved-from|release-keys|rules-runtime)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
+core_station='^station/test/fake-control-plane\.ts$|^shared/(lock|moved-from|release-keys|rules-runtime|station-busy)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
 # The core's tests read these (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core; one line,
 # in single quotes) and are remembered by these (core_test_inputs).
-core_test_paths='^station/test/fake-control-plane\.ts$|^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^station/mb/src/(rigs_mode|api_routes|session_chats|cloud_lock|mesh_door|mesh_scopes|reader_harness)/|^vendor/|^rules/js/|^pion/rules/js/|^shared/(lock|moved-from|release-keys|rules-runtime)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
-core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh station/mb/src/rigs_mode station/mb/src/api_routes station/mb/src/session_chats station/mb/src/cloud_lock station/mb/src/mesh_door station/mb/src/mesh_scopes station/mb/src/reader_harness vendor rules/js pion/rules/js shared/lock.ts shared/rules-runtime.ts shared/moved-from.ts shared/release-keys.ts station/test/fake-control-plane.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
+core_test_paths='^station/test/fake-control-plane\.ts$|^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^station/mb/src/(rigs_mode|api_routes|session_chats|cloud_lock|mesh_door|mesh_scopes|reader_harness)/|^vendor/|^rules/js/|^pion/rules/js/|^shared/(lock|moved-from|release-keys|rules-runtime|station-busy)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
+core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh station/mb/src/rigs_mode station/mb/src/api_routes station/mb/src/session_chats station/mb/src/cloud_lock station/mb/src/mesh_door station/mb/src/mesh_scopes station/mb/src/reader_harness vendor rules/js pion/rules/js shared/lock.ts shared/rules-runtime.ts shared/moved-from.ts shared/release-keys.ts shared/station-busy.ts station/test/fake-control-plane.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
 
 if part ts; then
   ts_root='^(scripts|test|spike|shared)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
@@ -602,7 +603,7 @@ if [ $full = 1 ]; then
     prep core deps client/core-ts; prep station deps station
     slice=${STILLFAIL_CORE_SHARD:-}
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: core-ts${slice:+ $slice}" "$core_test_inputs" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh reader-harness -- node --test --test-force-exit $files'
+    remembered "tests: core-ts${slice:+ $slice}" "$core_test_inputs" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh reader-harness -- node --import ./test/setup-env.mjs --test --test-force-exit $files'
   fi
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n shared/lock.ts shared/log-keep.ts shared/rules-runtime.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:

@@ -538,3 +538,165 @@ test "大屏: hint plays exit transition after release (fade+shrink on commit, s
   t2.run_for(@ui.move_most_ms)
   assert_true(back_hint_drawn() is None, msg="hint gone after cancel leave completes")
 }
+
+///|
+fn forward_hint_drawn() -> @view.Drawn? {
+  guard @ui.view_tree() is Some(tree) else { return None }
+  for d in tree.drawn() {
+    if tree.drawn_name(d.id) == "/forward-hint/" {
+      return Some(d)
+    }
+  }
+  None
+}
+
+///|
+test "大屏: swipe-forward hint slides from right edge monotonically, retreats on reverse, turns accent at far, does not eat hits, and navigates forward" {
+  let t = wide_desktop_pair()
+  assert_eq(top_session(), "s-c2")
+  // (no forward history yet: left swipe does nothing and draws no hint)
+  sweep_step(t, 20.0)
+  sweep_step(t, 20.0)
+  assert_true(forward_hint_drawn() is None, msg="no forward hint without forward history")
+  t.run_for(@ui.move_most_ms)
+  // (go back to s-c1 so s-c2 is in forward history)
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1")
+  assert_true(forward_hint_drawn() is None, msg="absent before forward gesture")
+  let probe_x = 1280.0 - @sf.card_pad - @sf.float_button_side / 2.0
+  let probe_y = 400.0
+  let drag_before = t.drags_window_at(probe_x, probe_y)
+  // (left swipe past wheel_back_slop=10: across = 20, then 40; badge moves leftward so x decreases)
+  sweep_step(t, 20.0)
+  let a1 = back_hint_audit(t).join("; ")
+  assert_eq(a1, "", msg="audit at across=20: \{a1}")
+  let d1 = forward_hint_drawn().unwrap()
+  let cx1 = d1.x + d1.w / 2.0
+  sweep_step(t, 20.0)
+  let a2 = back_hint_audit(t).join("; ")
+  assert_eq(a2, "", msg="audit at across=40: \{a2}")
+  let d2 = forward_hint_drawn().unwrap()
+  let cx2 = d2.x + d2.w / 2.0
+  assert_true(cx2 < cx1, msg="monotonic leftward from right edge: \{cx2} < \{cx1}")
+  // (reverse sweep: dx < 0 reduces across from 40 to 25 -> badge retreats rightward)
+  sweep_step(t, -15.0)
+  let a3 = back_hint_audit(t).join("; ")
+  assert_eq(a3, "", msg="audit on reverse: \{a3}")
+  let d_rev = forward_hint_drawn().unwrap()
+  let cx_rev = d_rev.x + d_rev.w / 2.0
+  assert_true(cx_rev > cx2, msg="retreats rightward on reverse: \{cx_rev} > \{cx2}")
+  // (advance past back_hint_far at steady speed for > dur_ms so ready_way completes)
+  for _ in 0..<10 {
+    sweep_step(t, 20.0)
+  }
+  let a4 = back_hint_audit(t).join("; ")
+  assert_eq(a4, "", msg="audit at ready: \{a4}")
+  let d_ready = forward_hint_drawn().unwrap()
+  let cx_ready = d_ready.x + d_ready.w / 2.0
+  let min_cx = 1280.0 - @sf.card_pad - @sf.corner_inset - @sf.float_button_side / 2.0 - 0.5
+  assert_true(cx_ready < cx2 && cx_ready > min_cx, msg="past far and damped from right: \{cx_ready}")
+  assert_eq(d_ready.glass.map(fn(g) { g.tint }), Some(@sf.theme().p.accent), msg="accent glass tint when ready")
+  assert_eq(t.drags_window_at(probe_x, probe_y), drag_before, msg="drags_window_at unchanged under forward badge")
+  // (let go via stillness: commits forward to s-c2, badge fades out and leaves)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c2", msg="long left swipe commits forward")
+  assert_true(forward_hint_drawn() is None, msg="absent after fade out")
+  assert_eq(back_hint_audit(t), [], msg="audit after fade out")
+}
+
+///|
+test "大屏: short left swipe below back_hint_far cancels without navigating forward and slides back off right edge" {
+  let t = wide_desktop_pair()
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1")
+  sweep_step(t, 20.0)
+  sweep_step(t, 15.0)
+  let before_cancel = forward_hint_drawn().unwrap()
+  assert_eq(back_hint_audit(t), [], msg="audit during short forward swipe")
+  // (wait for wheel_back_still_ms release + one frame: badge slides back rightward before leaving)
+  t.advance(120.0 + @ui.input_step_ms)
+  t.draw()
+  assert_eq(top_session(), "s-c1", msg="short left swipe does not navigate forward")
+  match forward_hint_drawn() {
+    Some(mid) => assert_true(mid.x > before_cancel.x, msg="cancel exit slides rightward: \{mid.x} > \{before_cancel.x}")
+    None => ()
+  }
+  t.run_for(@ui.move_most_ms)
+  assert_true(forward_hint_drawn() is None, msg="forward hint gone after snap back")
+}
+
+///|
+test "大屏: modal dialog blocks swipe-forward behind it" {
+  let t = wide_desktop_pair()
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1")
+  @sf.confirm("删除", "删除这个对话？", "删除", fn() {  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sf.presenting())
+  for _ in 0..<6 {
+    sweep_step(t, 20.0)
+  }
+  assert_true(forward_hint_drawn() is None, msg="no forward hint behind modal")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1", msg="modal prevents forward navigation")
+}
+
+///|
+test "中屏 (tape): two-finger left swipe slides Side back to Page, and on Page with forward history navigates forward" {
+  new_run()
+  let src = fixture("chat")
+  open_chat(chat_a)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=690.0, h=840.0, platform=0)
+  say_room(t, "medium", "medium")
+  t.run_for(@ui.move_most_ms)
+  // (starts on Side -> left swipe slides tape to Page)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+  for _ in 0..<8 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(345.0, 420.0, 20.0, 0.0, 0)
+    t.draw()
+  }
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page, msg="left swipe on Side brings Page over")
+  // (open chat B over chat A on Page, swipe back to A, then swipe left to go forward to B)
+  open_chat(chat_b)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c2")
+  @sfbase.back_pop()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1")
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(345.0, 420.0, 20.0, 0.0, 0)
+    t.draw()
+  }
+  assert_true(forward_hint_drawn() is Some(_), msg="forward hint shown on tape Page")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(top_session(), "s-c2", msg="left swipe on tape Page navigates forward")
+}
+
+///|
+test "小屏 (web/desktop): two-finger left swipe navigates forward with right-edge hint" {
+  new_run()
+  let src = fixture("chat")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=420.0, h=800.0, platform=4)
+  t.run_for(@ui.move_most_ms)
+  open_chat(chat_a)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(top_session(), "s-c1")
+  @sfbase.back_pop()
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Home)
+  for _ in 0..<6 {
+    t.advance(@ui.input_step_ms)
+    t.wheel_with(210.0, 400.0, 20.0, 0.0, 0)
+    t.draw()
+  }
+  assert_true(forward_hint_drawn() is Some(_), msg="forward hint shown on narrow web window")
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(top_session(), "s-c1", msg="left swipe on narrow web window navigates forward")
+  assert_true(forward_hint_drawn() is None, msg="forward hint leaves after commit")
+}

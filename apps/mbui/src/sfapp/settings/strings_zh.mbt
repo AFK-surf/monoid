@@ -2089,6 +2089,8 @@ let zh : Map[String, String] = {
   "web-pages.experimental.board.description": "在主页按状态、机器或成员分列查看对话并管理待派发事项；关闭后自动退回普通对话列表",
   "web-pages.experimental.selectionIntent.title": "戳一下",
   "web-pages.experimental.selectionIntent.description": "在对话中选中一段文字后，在引用按钮旁显示「戳一下」，由轻量模型读取上下文直接给出回复",
+  "web-pages.experimental.cmdQuote.title": "按住 ⌘/Ctrl 点击引用文本",
+  "web-pages.experimental.cmdQuote.description": "按住 ⌘（Windows/Linux 为 Ctrl）悬停消息文本时高亮并显示下划线，点击直接加入输入框引用",
   "core-views.move.why.offline": "离线：它上线后可选",
   "core-views.move.why.stable": "正式版：在它的「软件与更新」里打开「测试版」后可选",
   "android-misc.bar.place.remote": "远程",

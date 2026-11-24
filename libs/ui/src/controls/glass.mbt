@@ -28,7 +28,7 @@ pub fn glass_menu(merge? : Double = 0.0) -> @ui.Glass {
 
 ///|
 /// Three-anchor continuous optical interpolation for iOS 27.0 in-place liquid-droplet popover morphing:
-/// - `stage == 0.0`: bar-pill anchor, bit-identical to `glass_bar_pill` (`a=0x67`, `blur=2.5`, `bezel=14`, `refr=20`, `rim=0.60`);
+/// - `stage == 0.0`: bar-pill anchor, bit-identical to `glass_bar_pill` (`a=0x67`, `blur=2.0`, `bezel=14`, `refr=20`, `rim=0.60`);
 /// - `stage == 0.5`: mid-flight frosted droplet (`a=0x88`, `blur=4.5`, `bezel=18`, `refr=15`, `rim=0.78`;
 ///   `refr/bezel=0.83 < 1.0` prevents fold-over while keeping backdrop text legible during morph);
 /// - `stage == 1.0`: resting frosted menu anchor, bit-identical to `glass_menu` (`a=0xBF`, `blur=8.0`, `bezel=16`, `refr=22`, `rim=0.60`).
@@ -123,17 +123,13 @@ pub fn tab_lens_surface_decorate(
 }
 
 ///|
-/// The shadow under the bottom bar's lens in Light mode (blur sigma 8, 4 down, black at ~9.4%).
-pub let tab_lens_raised : Raised = { sigma: 8.0, dy: 4.0, color: 0x00000018L }
+/// The shadow under the bottom bar's pressed lens: zeroed (`shadow_none`) for shadow-free lifted droplets.
+pub let tab_lens_raised : Raised = { sigma: 0.0, dy: 0.0, color: 0x00000000L }
 
 ///|
-/// Theme-aware outer shadow under the bottom bar's pressed lens: Light `(8, 4, 0x18)` / Dark `(10, 4, 0x3C)`.
-pub fn tab_lens_raised_for(dark : Bool) -> Raised {
-  if dark {
-    { sigma: 10.0, dy: 4.0, color: 0x0000003CL }
-  } else {
-    tab_lens_raised
-  }
+/// Theme-aware outer shadow under the bottom bar's pressed lens: zeroed (`shadow_none`).
+pub fn tab_lens_raised_for(_dark : Bool) -> Raised {
+  tab_lens_raised
 }
 
 ///|

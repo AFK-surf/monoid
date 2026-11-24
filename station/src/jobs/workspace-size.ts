@@ -66,6 +66,7 @@ export class WorkspaceReader {
   readonly #abort = new AbortController();
   readonly #entries = new Map<string, Measurement>();
   readonly #queue: string[] = [];
+  readonly #idleWaiters: (() => void)[] = [];
   #running = false;
 
   constructor(now: () => number, read: (path: string, limit: number, signal: AbortSignal) => Promise<WorkspaceSize> = measuredUpTo) {
@@ -111,7 +112,18 @@ export class WorkspaceReader {
       this.#sweep();
     } finally {
       this.#running = false;
+      if (this.#queue.length === 0) {
+        for (const resolve of this.#idleWaiters.splice(0)) resolve();
+      }
     }
+  }
+
+  /// Resolves once the current measurement and all queued measurements finish (immediately when idle).
+  idle(): Promise<void> {
+    if (!this.#running && this.#queue.length === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.#idleWaiters.push(resolve);
+    });
   }
 
   /// How many workspaces it keeps a measure of (or is measuring).
@@ -131,6 +143,9 @@ export class WorkspaceReader {
   close(): void {
     this.#abort.abort();
     this.#queue.length = 0;
+    if (!this.#running) {
+      for (const resolve of this.#idleWaiters.splice(0)) resolve();
+    }
   }
 }
 

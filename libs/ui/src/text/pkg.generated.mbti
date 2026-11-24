@@ -28,7 +28,7 @@ pub fn plain(String) -> Run
 
 pub fn prev_grapheme(String, Int32) -> Int32
 
-pub fn span(String, weight? : Int32, bold? : Bool, italic? : Bool, code? : Bool, mono? : Bool, serif? : Bool, face? : Int32?, scale? : Double, color? : Int64, bg? : Int64, ground? : Ground?, strike? : Bool, underline? : Bool, link? : String, drawing? : InlineDrawing?) -> Run
+pub fn span(String, weight? : Int32, bold? : Bool, italic? : Bool, emph? : Bool, code? : Bool, mono? : Bool, serif? : Bool, face? : Int32?, scale? : Double, color? : Int64, bg? : Int64, ground? : Ground?, strike? : Bool, underline? : Bool, link? : String, drawing? : InlineDrawing?) -> Run
 
 pub fn strike(String) -> Run
 
@@ -76,6 +76,7 @@ pub(all) struct Run {
   text : String
   weight : Int32
   italic : Bool
+  emph : Bool
   code : Bool
   mono : Bool
   serif : Bool

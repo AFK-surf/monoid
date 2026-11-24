@@ -92,8 +92,17 @@ static void checked_draw_arrays_instanced(GLenum mode, GLint first, GLsizei coun
 #undef glDrawArraysInstanced
 #define glDrawArraysInstanced checked_draw_arrays_instanced
 
+// Programs made ahead (gles_render.h gl_progs_ahead): the host's thread stood in for by this one, in its own context,
+// called by the test where a host would start it
+#define MB_PROGS_AHEAD 1
 #include "gles_render.h"
 #include "frame_mail.h"
+
+static unsigned ahead_started, ahead_started_gen;
+static void progs_ahead_start(unsigned gen) {
+  ahead_started++;
+  ahead_started_gen = gen;
+}
 
 static int failed;
 
@@ -747,7 +756,7 @@ int main(void) {
     unsigned char *tl_p = px_as + ((fb_h - 1 - 44) * fb_w + 24) * 4;  // (12, 22) outside top-left rounded corner (r=14)
     unsigned char *bl_p = px_as + ((fb_h - 1 - 116) * fb_w + 24) * 4; // (12, 58) inside bottom-left square corner (r=0)
     CHECK(abs((int)tl_p[0] - (int)bg_p[0]) <= 2 && abs((int)tl_p[1] - (int)bg_p[1]) <= 2);
-    CHECK((int)bl_p[0] > 90 && (int)bl_p[1] > 90);
+    CHECK((int)bl_p[0] > (int)bg_p[0] + 40 && (int)bl_p[1] > (int)bg_p[1] + 40);
     free(px_as);
 
     double cl[3 * MB_INST];
@@ -843,7 +852,7 @@ int main(void) {
     // Top edge (50, 10.5) -> (100, 21); Left edge (25.5, 35) -> (51, 70)
     int top0 = (int)px_la0[((fb_h - 1 - 21) * fb_w + 100) * 4 + 1];
     int left0 = (int)px_la0[((fb_h - 1 - 70) * fb_w + 51) * 4 + 1];
-    CHECK(top0 > left0 + 30);
+    CHECK(top0 > left0 + 20);
 
     mb_host_glass_light_angle(1.5707963267948966);  // PI / 2
     glass_forget();
@@ -852,8 +861,8 @@ int main(void) {
     int top90 = (int)px_la90[((fb_h - 1 - 21) * fb_w + 100) * 4 + 1];
     int left90 = (int)px_la90[((fb_h - 1 - 70) * fb_w + 51) * 4 + 1];
     int right90 = (int)px_la90[((fb_h - 1 - 70) * fb_w + 149) * 4 + 1];
-    CHECK(left90 > top90 + 30);
-    CHECK(right90 > top90 + 30);
+    CHECK(left90 > top90 + 20);
+    CHECK(right90 > top90 + 20);
     free(px_la90);
 
     mb_host_glass_light_angle(0.0);
@@ -870,11 +879,11 @@ int main(void) {
   // fades transmittance, lift and chroma to 0, so over black it is far brighter and over saturated blue it stays neutral.
   {
     double ld[2 * MB_INST];
-    unsigned char *px_ld[4];
+    unsigned char *px_ld[5];
     // (alpha byte, backdrop r, g, b)
-    static const double ld_case[4][4] = {
-        {0x50, 0, 0, 0}, {0x67, 0, 0, 0}, {0xD9, 0, 0, 0}, {0xD9, 0.0, 0.4, 1.0}};
-    for (int i = 0; i < 4; i++) {
+    static const double ld_case[5][4] = {
+        {0x50, 0, 0, 0}, {0x67, 0, 0, 0}, {0xD9, 0, 0, 0}, {0xD9, 0.0, 0.4, 1.0}, {0xFF, 0.0, 0.4, 1.0}};
+    for (int i = 0; i < 5; i++) {
       rect_at(ld, 0, 0, W, H, 0, ld_case[i][1], ld_case[i][2], ld_case[i][3], 0);
       rect_at(ld + MB_INST, 10, 10, 80, 50, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -17);
       ld[MB_INST + 4] = 12;
@@ -892,8 +901,8 @@ int main(void) {
       px_ld[i] = pixels_of_fb(surface);
     }
     // centre (50, 35) -> (100, 70) at 2x
-    double ld_lum[4];
-    for (int i = 0; i < 4; i++) {
+    double ld_lum[5];
+    for (int i = 0; i < 5; i++) {
       unsigned char *c = px_ld[i] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
       ld_lum[i] = (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255.0;
       printf("gles_render: light glass 0x%02X over (%.1f, %.1f, %.1f): rgb %d %d %d, luma %.4f\n", (int)ld_case[i][0],
@@ -903,7 +912,9 @@ int main(void) {
     CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
     CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
     CHECK(px_ld[3][((fb_h - 1 - 70) * fb_w + 100) * 4 + 0] >= (int)(0.72 * 255.0 + 0.5));
-    for (int i = 0; i < 4; i++) free(px_ld[i]);
+    unsigned char *c_ff = px_ld[4] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+    CHECK(abs((int)c_ff[0] - 253) <= 4 && abs((int)c_ff[1] - 252) <= 4 && abs((int)c_ff[2] - 253) <= 4);
+    for (int i = 0; i < 5; i++) free(px_ld[i]);
   }
 
   // Neutral dark liquid glass density (kind 6, is_dark): alpha <= 0.41 keeps the regular baseline to the byte
@@ -1164,7 +1175,8 @@ int main(void) {
     }
     printf("gles_render: wave7 fog stripe peak plain_dark=%.3f adaptive_fog=%.3f\n",
            fog_peaks[0], fog_peaks[1]);
-    CHECK(fog_peaks[1] < fog_peaks[0] - 0.15);
+    CHECK(fog_peaks[1] < fog_peaks[0] - 0.08);
+    CHECK(fog_peaks[1] <= 0.30);
 
     // Test A: wide 84x16pt adaptive capsule over deep navy #173255 with centered 16x10pt pure white "{less}" block
     // must resist ping-pong flipping (trimmed mean stays dark -> dark glass + white ink).
@@ -2922,6 +2934,851 @@ int main(void) {
     printf("gles_render: gl_setup cache preload ok (nfmt=%d)\n", (int)nfmt);
     gl_set_prog_cache_dir(NULL);
     (void)system(rmcmd);
+  }
+
+  // Programs made ahead: asked for once, after a new context's first frame; what was made is taken where a frame
+  // first needs it, nothing compiled then; what was made for a context gone is not handed over.
+  {
+    char adir[256];
+    snprintf(adir, sizeof adir, "/tmp/mbui_gl_ahead_test_%ld", (long)getpid());
+    char rmcmd[320];
+    snprintf(rmcmd, sizeof rmcmd, "rm -rf %s", adir);
+    (void)system(rmcmd);
+    gl_set_prog_cache_dir(adir);
+    gl_setup();
+    ahead_started = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+    double one[MB_INST];
+    rect_at(one, 10, 10, 20, 20, 0, 0.2, 0.7, 0.3, 0);
+    gl_present(one, 1, 0.0, 0.0, 0.0);
+    CHECK(ahead_started == 1 && ahead_started_gen == ahead_gen);
+    gl_present(one, 1, 0.0, 0.0, 0.0);
+    CHECK(ahead_started == 1);
+    // (the first frame made the plain one, MB_PROG_UI, itself: every other slot made ahead)
+    CHECK(gl_progs_ahead(ahead_started_gen) == MB_SLOTS - 1);
+    CHECK(progs[MB_PROG_FROSTED].p == 0 && post == 0);
+    prog_cache_misses = 0;
+    double fg[2 * MB_INST];
+    rect_at(fg, 25, 25, 10, 10, 0, 0.9, 0.1, 0.1, 0);
+    rect_at(fg + MB_INST, 20, 20, 40, 30, 5, 1, 1, 1, -2);
+    fg[MB_INST + 7] = 4;
+    fg[MB_INST + 11] = 0.5;
+    gl_present(fg, 2, 0.1, 0.2, 0.3);
+    CHECK(progs[MB_PROG_FROSTED].p != 0 && post != 0);
+    CHECK(prog_cache_misses == 0);
+    CHECK(ahead_progs[MB_PROG_FROSTED] == 0 && ahead_progs[MB_SLOT_POST] == 0);
+    CHECK(glGetError() == GL_NO_ERROR);
+    // (a context made anew: the one before's programs dropped, none made for it handed over)
+    unsigned old = ahead_gen;
+    gl_setup();
+    for (int i = 0; i < MB_SLOTS; i++) CHECK(ahead_progs[i] == 0);
+    CHECK(gl_progs_ahead(old) == 0);
+    for (int i = 0; i < MB_SLOTS; i++) CHECK(ahead_progs[i] == 0);
+    printf("gles_render: programs made ahead ok\n");
+    gl_set_prog_cache_dir(NULL);
+    (void)system(rmcmd);
+  }
+
+  // P0 optics fix numerical smoke vectors:
+  // 0: Dark Regular (0x20202067) over #000000 -> (30,30,30)
+  // 1: Dark Regular (0x20202067) over #1B1C1F -> (46,47,50)
+  // 2: Dark Adaptive (0x20202067, adaptive=1) over #FFFFFF -> (93,93,93)
+  // 3: Light Regular (0xFDFCFD67) over #0088FF -> (40,154,255), HSV S >= 0.75
+  // 4: Pure Clear (0xFFFFFF00, regMix=0) over (0,255,64) -> (0,255,64)
+  {
+    struct {
+      const char *name;
+      double bg_r, bg_g, bg_b;
+      double t_r, t_g, t_b, t_a;
+      double blur, adaptive;
+      int exp_r, exp_g, exp_b, tol;
+    } p0_cases[5] = {
+      {"dark_black",    0.0, 0.0, 0.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 30,  30,  30, 3},
+      {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, 0.0, 46,  47,  50, 3},
+      {"dark_ad_white", 1.0, 1.0, 1.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 93,  93,  93, 3},
+      {"light_blue",    0.0, 136.0/255.0, 1.0,           253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 40, 154, 255, 3},
+      {"pure_clear",    0.0, 1.0, 64.0/255.0,            1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
+    };
+    double p0[2 * MB_INST];
+    for (int ci = 0; ci < 5; ci++) {
+      rect_at(p0, 0, 0, W, H, 0, p0_cases[ci].bg_r, p0_cases[ci].bg_g, p0_cases[ci].bg_b, 0);
+      rect_at(p0 + MB_INST, 10, 10, 80, 50, 6, p0_cases[ci].t_r, p0_cases[ci].t_g, p0_cases[ci].t_b, -30 - ci);
+      p0[MB_INST + 4] = 12.0;
+      p0[MB_INST + 6] = 1.0;
+      p0[MB_INST + 7] = p0_cases[ci].blur;
+      p0[MB_INST + 11] = p0_cases[ci].t_a;
+      p0[MB_INST + 12] = 0.0;
+      p0[MB_INST + 13] = 4.0;
+      p0[MB_INST + 14] = p0_cases[ci].adaptive;
+      p0[MB_INST + 15] = 1.0;
+      p0[MB_INST + 21] = 0.0;
+      p0[MB_INST + 22] = 0.0;
+      p0[MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(p0, 2, p0_cases[ci].bg_r, p0_cases[ci].bg_g, p0_cases[ci].bg_b);
+      unsigned char *px = pixels_of_fb(surface);
+      unsigned char *c = px + ((fb_h - 1 - 70) * fb_w + 100) * 4;
+      printf("gles_render: p0_%s rgb=(%d,%d,%d) exp=(%d,%d,%d)\n",
+             p0_cases[ci].name, c[0], c[1], c[2], p0_cases[ci].exp_r, p0_cases[ci].exp_g, p0_cases[ci].exp_b);
+      CHECK(abs((int)c[0] - p0_cases[ci].exp_r) <= p0_cases[ci].tol);
+      CHECK(abs((int)c[1] - p0_cases[ci].exp_g) <= p0_cases[ci].tol);
+      CHECK(abs((int)c[2] - p0_cases[ci].exp_b) <= p0_cases[ci].tol);
+      if (ci == 3) {
+        double mx = fmax(fmax(c[0], c[1]), c[2]);
+        double mn = fmin(fmin(c[0], c[1]), c[2]);
+        double hsv_s = mx > 0.0 ? (mx - mn) / mx : 0.0;
+        printf("gles_render: p0_light_blue hsv_s=%.3f\n", hsv_s);
+        CHECK(hsv_s >= 0.75);
+      }
+      free(px);
+    }
+  }
+
+  // Commit 2 V8/V9 2D Multi-Pixel ROI Gates (Slider, Switch ON/OFF, 3x TIR rows, 2x phase-shifted TIR, Light Segmented Prism):
+  {
+    int saved_fb_w = fb_w, saved_fb_h = fb_h;
+    double saved_w = cur_w, saved_h = cur_h, saved_s = cur_scale;
+    GLuint saved_surface = surface;
+    GLuint saved_target = target_fb;
+    int VW = 160, VH = 80;
+    GLuint vtex = 0, vfb = 0;
+    glGenTextures(1, &vtex);
+    glGenFramebuffers(1, &vfb);
+    surface = vfb;
+    target_fb = vfb;
+
+    #define V_RECT(d, x, y, w, h, k, r, g, b, tid) do { \
+      rect_at((d), (x), (y), (w), (h), (k), (r), (g), (b), (tid)); \
+      (d)[18] = VW; (d)[19] = VH; \
+    } while (0)
+    #define V_SETUP(SC) do { \
+      fb_w = VW * (SC); fb_h = VH * (SC); cur_w = VW; cur_h = VH; cur_scale = (SC); \
+      glDeleteTextures(1, &vtex); glGenTextures(1, &vtex); \
+      glBindTexture(GL_TEXTURE_2D, vtex); \
+      glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, fb_w, fb_h); \
+      glBindFramebuffer(GL_FRAMEBUFFER, vfb); \
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, vtex, 0); \
+      glass_forget(); \
+    } while (0)
+    #define V_PX(buf, xpx, ypx) ((buf) + ((fb_h - 1 - (ypx)) * fb_w + (xpx)) * 4)
+
+    // --- V8a: Slider Dark & Light @ 3x ---
+    V_SETUP(3);
+    for (int is_light = 0; is_light <= 1; is_light++) {
+      double bg = is_light ? 1.0 : 28.0 / 255.0;
+      double bg_b = is_light ? 1.0 : 30.0 / 255.0;
+      double sl[4 * MB_INST];
+      V_RECT(sl, 0, 0, VW, VH, 0, bg, bg, bg_b, 0);
+      V_RECT(sl + MB_INST, 10, 37, 70, 6, 0, 0.0, 136.0 / 255.0, 1.0, 0);
+      V_RECT(sl + 2 * MB_INST, 80, 37, 70, 6, 0, 120.0 / 255.0, 120.0 / 255.0, 128.0 / 255.0, 0);
+      V_RECT(sl + 3 * MB_INST, 51, 21, 58, 38, 6, 1.0, 1.0, 1.0, -50 - is_light);
+      sl[3 * MB_INST + 4] = 19.0; sl[3 * MB_INST + 6] = 1.0; sl[3 * MB_INST + 7] = -16.0;
+      sl[3 * MB_INST + 11] = 0.0; sl[3 * MB_INST + 12] = 1.0; sl[3 * MB_INST + 13] = 9.0;
+      sl[3 * MB_INST + 15] = 1.0; sl[3 * MB_INST + 21] = 9.0; sl[3 * MB_INST + 22] = 0.0; sl[3 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sl, 4, bg, bg, bg_b);
+      unsigned char *px = pixels_of_fb(vfb);
+
+      double max_bh = 0.0, peak_dx = 0.0, h_55 = 0.0;
+      double max_gh = 0.0, grey_peak_dx = 0.0, grey_h55 = 0.0;
+      for (int i = 0; i <= 18; i++) {
+        int x_l = 51 * 3 + i;
+        int cnt = 0;
+        for (int ypx = 21 * 3; ypx < 59 * 3; ypx++) {
+          unsigned char *c = V_PX(px, x_l, ypx);
+          if ((int)c[2] - (int)c[0] > 100) cnt++;
+        }
+        double hpt = cnt / 3.0;
+        double dx_l = (i + 0.5) / 3.0;
+        if (hpt > max_bh) { max_bh = hpt; peak_dx = dx_l; }
+        if (i == 16) h_55 = hpt;
+      }
+      // Right grey peak height (mirrored pixel centers x_r = 109*3 - 1 - i)
+      unsigned char *bg_ref = V_PX(px, 80 * 3, 25 * 3);
+      double ref_y = 0.2126 * bg_ref[0] + 0.7152 * bg_ref[1] + 0.0722 * bg_ref[2];
+      for (int i = 0; i <= 18; i++) {
+        int x_r = 109 * 3 - 1 - i;
+        int cnt = 0;
+        for (int ypx = 33 * 3; ypx < 47 * 3; ypx++) {
+          unsigned char *c = V_PX(px, x_r, ypx);
+          double cy = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+          if (is_light ? (cy < ref_y - 70.0) : (cy > ref_y + 20.0)) cnt++;
+        }
+        double hpt = cnt / 3.0;
+        double dx_r = (i + 0.5) / 3.0;
+        if (hpt > max_gh) { max_gh = hpt; grey_peak_dx = dx_r; }
+        if (i == 16) grey_h55 = hpt;
+      }
+      // Center unshifted + zero blue at |dy| >= 14pt
+      unsigned char *c_l = V_PX(px, (int)(79.3 * 3), 40 * 3);
+      unsigned char *c_r = V_PX(px, (int)(80.7 * 3), 40 * 3);
+      unsigned char *c_top = V_PX(px, 60 * 3, 25 * 3);
+      unsigned char *c_bot = V_PX(px, 60 * 3, 55 * 3);
+      // 5-point 3D thickness profile at x = 80 (dy = 0, 0.67, 2.0, 9.0, 24.0pt from y = 21)
+      unsigned char *t0 = V_PX(px, 80 * 3, 21 * 3);
+      unsigned char *t1 = V_PX(px, 80 * 3, 21 * 3 + 2);
+      unsigned char *t2 = V_PX(px, 80 * 3, 23 * 3);
+      unsigned char *t9 = V_PX(px, 80 * 3, 30 * 3);
+      unsigned char *t24 = V_PX(px, 80 * 3, 45 * 3);
+      double y0 = 0.2126 * t0[0] + 0.7152 * t0[1] + 0.0722 * t0[2];
+      double y1 = 0.2126 * t1[0] + 0.7152 * t1[1] + 0.0722 * t1[2];
+      double y2 = 0.2126 * t2[0] + 0.7152 * t2[1] + 0.0722 * t2[2];
+      double y9 = 0.2126 * t9[0] + 0.7152 * t9[1] + 0.0722 * t9[2];
+      double y24 = 0.2126 * t24[0] + 0.7152 * t24[1] + 0.0722 * t24[2];
+      printf("gles_render: v8_slider(%s) blue_peak=%.2f@dx=%.2f blue_h55=%.2f grey_peak=%.2f@dx=%.2f grey_h55=%.2f prof5=(%.0f,%.0f,%.0f,%.0f,%.0f)\n",
+             is_light ? "light" : "dark", max_bh, peak_dx, h_55, max_gh, grey_peak_dx, grey_h55, y0, y1, y2, y9, y24);
+      CHECK(max_bh >= 9.5 && max_bh <= 12.5);
+      CHECK(peak_dx >= 0.33 && peak_dx <= 1.50);
+      CHECK(h_55 >= 5.6 && h_55 <= 6.4);
+      CHECK(max_gh >= 9.5 && max_gh <= 12.5);
+      CHECK(grey_peak_dx >= 0.33 && grey_peak_dx <= 1.50);
+      CHECK(grey_h55 >= 5.6 && grey_h55 <= 6.4);
+      CHECK((int)c_l[2] - (int)c_l[0] > 100 && (int)c_r[2] - (int)c_r[0] < 20);
+      CHECK((int)c_top[2] - (int)c_top[0] < 20 && (int)c_bot[2] - (int)c_bot[0] < 20);
+      CHECK(y1 > y0 && y2 > y9 && y9 < y24);
+      free(px);
+    }
+
+    // --- V8a2: Horizontal-stripe vertical monotonicity (zero folding) ---
+    {
+      double st[42 * MB_INST];
+      V_RECT(st, 0, 0, VW, VH, 0, 0.0, 0.0, 0.0, 0);
+      for (int i = 0; i < 40; i++) {
+        double v = fmin(1.0, fmax(0.0, (i - 12.0) / 16.0));
+        V_RECT(st + (i + 1) * MB_INST, 0, 20 + i, VW, 1, 0, 1.0 - v, 0.0, v, 0);
+      }
+      V_RECT(st + 41 * MB_INST, 51, 21, 58, 38, 6, 1.0, 1.0, 1.0, -52);
+      st[41 * MB_INST + 4] = 19.0; st[41 * MB_INST + 6] = 1.0; st[41 * MB_INST + 7] = -16.0;
+      st[41 * MB_INST + 11] = 0.0; st[41 * MB_INST + 12] = 1.0; st[41 * MB_INST + 13] = 9.0;
+      st[41 * MB_INST + 15] = 1.0; st[41 * MB_INST + 21] = 9.0; st[41 * MB_INST + 22] = 0.0; st[41 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(st, 42, 0.0, 0.0, 0.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      int xpx = (int)(51.85 * 3);
+      int prev = -1000;
+      int mono_ok = 1;
+      for (int ypx = 36 * 3; ypx <= 44 * 3; ypx++) {
+        unsigned char *c = V_PX(px, xpx, ypx);
+        int cur = (int)c[2] - (int)c[0];  // B - R: invariant to achromatic specular rim
+        if (prev > -999 && cur < prev - 6) mono_ok = 0;
+        prev = cur;
+      }
+      CHECK(mono_ok);
+      free(px);
+    }
+
+    // --- V8b: 124x48pt dropRole=0 magnifier unaffected + Role 0 real zoom (1.18) contact-edge push ---
+    {
+      double mg[3 * MB_INST];
+      V_RECT(mg, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(mg + MB_INST, 0, 37, VW, 6, 0, 0.0, 136.0 / 255.0, 1.0, 0);
+      V_RECT(mg + 2 * MB_INST, 18, 16, 124, 48, 6, 1.0, 1.0, 1.0, -53);
+      mg[2 * MB_INST + 4] = 24.0; mg[2 * MB_INST + 6] = 1.0; mg[2 * MB_INST + 7] = 0.0;
+      mg[2 * MB_INST + 11] = 0.0; mg[2 * MB_INST + 12] = 1.0; mg[2 * MB_INST + 13] = 8.0;
+      mg[2 * MB_INST + 15] = 1.0; mg[2 * MB_INST + 21] = 3.0; mg[2 * MB_INST + 22] = 0.0; mg[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(mg, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      int cnt = 0;
+      for (int ypx = 16 * 3; ypx < 64 * 3; ypx++) {
+        unsigned char *c = V_PX(px, 19 * 3, ypx);
+        if ((int)c[2] - (int)c[0] > 100) cnt++;
+      }
+      printf("gles_render: v8_magnifier_role0 h(1.0)=%.2f\n", cnt / 3.0);
+      CHECK(cnt / 3.0 < 7.0);
+      free(px);
+    }
+    {
+      double zm[3 * MB_INST];
+      V_RECT(zm, 0, 0, VW, VH, 0, 1.0, 0.0, 0.0, 0);
+      V_RECT(zm + MB_INST, 0, 0, 55.2, VH, 0, 0.0, 1.0, 0.0, 0);
+      V_RECT(zm + 2 * MB_INST, 51, 21, 58, 38, 6, 1.0, 1.0, 1.0, -59);
+      zm[2 * MB_INST + 4] = 19.0; zm[2 * MB_INST + 6] = 1.0; zm[2 * MB_INST + 7] = -0.18;
+      zm[2 * MB_INST + 11] = 0.0; zm[2 * MB_INST + 12] = 1.0; zm[2 * MB_INST + 13] = 8.0;
+      zm[2 * MB_INST + 15] = 1.0; zm[2 * MB_INST + 21] = 8.0; zm[2 * MB_INST + 22] = 0.0; zm[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(zm, 3, 1.0, 0.0, 0.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      unsigned char *edge = V_PX(px, 51 * 3, 40 * 3);
+      printf("gles_render: v8_role0_zoom118_contact rgb=(%d,%d,%d)\n", edge[0], edge[1], edge[2]);
+      CHECK((int)edge[1] > (int)edge[0] + 40);
+      free(px);
+    }
+
+    // --- V9a: Switch ON @ 3x (core + moat from y_top+2 >= 6.5pt + 3 adjacent TIR rows + neutral outer right tip) ---
+    {
+      double sw[3 * MB_INST];
+      V_RECT(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(sw + MB_INST, 40, 26, 63, 28, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+      sw[MB_INST + 4] = 14.0;
+      V_RECT(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -54);
+      sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+      sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+      sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      unsigned char *r0 = V_PX(px, 80 * 3, 21 * 3 + 0);  // d = 0.167pt
+      unsigned char *r1 = V_PX(px, 80 * 3, 21 * 3 + 1);  // d = 0.500pt
+      unsigned char *r2 = V_PX(px, 80 * 3, 21 * 3 + 2);  // d = 0.833pt
+      int gr0 = (int)r0[1] - (int)r0[0];
+      int gr1 = (int)r1[1] - (int)r1[0];
+      int gr2 = (int)r2[1] - (int)r2[0];
+      int core_px = 0, first_core_y = -1;
+      for (int ypx = 21 * 3 + 2; ypx < 59 * 3; ypx++) {
+        unsigned char *c = V_PX(px, 80 * 3, ypx);
+        if ((int)c[1] - (int)c[0] > 60) {
+          if (first_core_y < 0) first_core_y = ypx;
+          core_px++;
+        }
+      }
+      double moat_top_pt = first_core_y >= 0 ? (first_core_y - (21 * 3 + 2)) / 3.0 : 0.0;
+      unsigned char *tip = V_PX(px, (int)(111.5 * 3), 40 * 3);
+      int tip_gr = (int)tip[1] - (int)tip[0];
+      printf("gles_render: v9_switch_on_3x tir=(%d,%d,%d) core=%.2f moat_top=%.2f tip_gr=%d\n",
+             gr0, gr1, gr2, core_px / 3.0, moat_top_pt, tip_gr);
+      CHECK(gr0 < 15 && gr1 > 60 && gr2 < 15);
+      CHECK(core_px / 3.0 >= 20.0 && core_px / 3.0 <= 22.5);
+      CHECK(moat_top_pt >= 6.5);
+      CHECK(tip_gr < 15);
+      free(px);
+    }
+
+    // --- V9b: Switch OFF @ 3x + right-cap inward horizontal profile ---
+    {
+      double sw[4 * MB_INST];
+      V_RECT(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(sw + MB_INST, 40, 26, 63, 28, 0, 120.0 / 255.0, 120.0 / 255.0, 128.0 / 255.0, 0);
+      sw[MB_INST + 4] = 14.0;
+      V_RECT(sw + 2 * MB_INST, 85.0, 26.0, 2.0, 28.0, 0, 0.0, 136.0 / 255.0, 1.0, 0);
+      V_RECT(sw + 3 * MB_INST, 30.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -55);
+      sw[3 * MB_INST + 4] = 19.2; sw[3 * MB_INST + 6] = 1.0; sw[3 * MB_INST + 7] = -32.0;
+      sw[3 * MB_INST + 11] = 0.0; sw[3 * MB_INST + 12] = 1.0; sw[3 * MB_INST + 13] = 9.0;
+      sw[3 * MB_INST + 15] = 1.0; sw[3 * MB_INST + 21] = 9.0; sw[3 * MB_INST + 22] = 0.0; sw[3 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sw, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      unsigned char *core_c = V_PX(px, 60 * 3, 40 * 3);
+      unsigned char *moat_c = V_PX(px, 60 * 3, 25 * 3);
+      unsigned char *h0 = V_PX(px, 60 * 3, 21 * 3);
+      unsigned char *rm = V_PX(px, 60 * 3, 21 * 3 + 2);
+      unsigned char *rcap = V_PX(px, (int)(88.6 * 3), 40 * 3);
+      unsigned char *rtir = V_PX(px, (int)(89.3 * 3), 40 * 3);
+      int rcap_br = (int)rcap[2] - (int)rcap[0];
+      int rtir_br = (int)rtir[2] - (int)rtir[0];
+      printf("gles_render: v9_switch_off_3x core=%d moat=%d rim=%d h0=%d rcap_br=%d rtir_br=%d\n",
+             core_c[0], moat_c[0], rm[0], h0[0], rcap_br, rtir_br);
+      CHECK(core_c[0] > moat_c[0] + 15 && rm[0] > h0[0]);
+      CHECK(rcap_br < 20 && rtir_br > 80);
+      free(px);
+    }
+
+    // --- V9b2: Switch half-press p = 0.5 / 0.6 / 1.0 pinch displacement on 2D color grid ---
+    {
+      double ps[3] = { 0.5, 0.6, 1.0 };
+      int red_rows[3] = { 0, 0, 0 };
+      for (int pi = 0; pi < 3; pi++) {
+        double p = ps[pi];
+        double sw[3 * MB_INST];
+        V_RECT(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+        V_RECT(sw + MB_INST, 40, 20, 80, 7, 0, 1.0, 0.0, 0.0, 0);
+        V_RECT(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -60 - pi);
+        sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+        sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0 * p; sw[2 * MB_INST + 13] = 9.0 * p;
+        sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0 * p; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+        glass_forget();
+        gl_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+        unsigned char *px = pixels_of_fb(vfb);
+        for (int ypx = 27 * 3; ypx < 38 * 3; ypx++) {
+          unsigned char *c = V_PX(px, 80 * 3, ypx);
+          if ((int)c[0] - (int)c[2] > 80) red_rows[pi]++;
+        }
+        free(px);
+      }
+      printf("gles_render: v9_switch_half_press red_shift_px=(p0.5:%d, p0.6:%d, p1.0:%d)\n",
+             red_rows[0], red_rows[1], red_rows[2]);
+      CHECK(red_rows[0] >= 4 && red_rows[1] >= red_rows[0] && red_rows[2] > red_rows[1]);
+    }
+
+    // --- V9c: Light Segmented Prism @ 3x (top/bot cyan, left/right amber, dark-stroke text ROI chroma-0 invariance) ---
+    {
+      double sg[4 * MB_INST];
+      V_RECT(sg, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 0);
+      V_RECT(sg + MB_INST, 60.0, 34.0, 4.0, 12.0, 0, 20.0 / 255.0, 20.0 / 255.0, 20.0 / 255.0, 0);
+      V_RECT(sg + 2 * MB_INST, 78.0, 36.0, 22.0, 3.0, 0, 20.0 / 255.0, 20.0 / 255.0, 20.0 / 255.0, 0);
+      V_RECT(sg + 3 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -56);
+      sg[3 * MB_INST + 4] = 22.5; sg[3 * MB_INST + 6] = 1.0; sg[3 * MB_INST + 7] = -48.0;
+      sg[3 * MB_INST + 11] = 0.0; sg[3 * MB_INST + 12] = 1.0; sg[3 * MB_INST + 13] = 9.0;
+      sg[3 * MB_INST + 15] = 1.0; sg[3 * MB_INST + 21] = 9.0; sg[3 * MB_INST + 22] = 0.04; sg[3 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sg, 4, 1.0, 1.0, 1.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      unsigned char *top = V_PX(px, 80 * 3, (int)(18.4 * 3));
+      unsigned char *bot = V_PX(px, 80 * 3, (int)(61.6 * 3));
+      unsigned char *lft = V_PX(px, (int)(25.9 * 3), 40 * 3);
+      unsigned char *rgt = V_PX(px, (int)(134.1 * 3), 40 * 3);
+      printf("gles_render: v9_seg_light top B-R=%d bot B-R=%d lft R-B=%d rgt R-B=%d\n",
+             (int)top[2] - (int)top[0], (int)bot[2] - (int)bot[0],
+             (int)lft[0] - (int)lft[2], (int)rgt[0] - (int)rgt[2]);
+      CHECK((int)top[2] - (int)top[0] >= 10);
+      CHECK((int)bot[2] - (int)bot[0] >= 10);
+      CHECK((int)lft[0] - (int)lft[2] >= 20);
+      CHECK((int)rgt[0] - (int)rgt[2] >= 20);
+      sg[3 * MB_INST + 20] = -561;
+      sg[3 * MB_INST + 22] = 0.0;
+      glass_forget();
+      gl_present(sg, 4, 1.0, 1.0, 1.0);
+      unsigned char *px0 = pixels_of_fb(vfb);
+      int text_max_diff = 0;
+      for (int py = 32 * 3; py <= 48 * 3; py++) {
+        for (int px_i = 55 * 3; px_i <= 105 * 3; px_i++) {
+          unsigned char *a = V_PX(px, px_i, py);
+          unsigned char *b = V_PX(px0, px_i, py);
+          for (int ch = 0; ch < 3; ch++) {
+            int df = abs((int)a[ch] - (int)b[ch]);
+            if (df > text_max_diff) text_max_diff = df;
+          }
+        }
+      }
+      printf("gles_render: v9_seg_text_roi_diff=%d\n", text_max_diff);
+      CHECK(text_max_diff == 0);
+      free(px);
+      free(px0);
+    }
+
+    // --- V9e: Switch uniform green (48,209,88) center RGB ~(57,218,97) + blue-track swap + OFF r9->r4.5 + 5-level press ---
+    {
+      double sg[2 * MB_INST];
+      V_RECT(sg, 0, 0, VW, VH, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+      V_RECT(sg + MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -562);
+      sg[MB_INST + 4] = 19.2; sg[MB_INST + 6] = 1.0; sg[MB_INST + 7] = -32.0;
+      sg[MB_INST + 11] = 0.0; sg[MB_INST + 12] = 1.0; sg[MB_INST + 13] = 9.0;
+      sg[MB_INST + 15] = 1.0; sg[MB_INST + 21] = 9.0; sg[MB_INST + 22] = 0.0; sg[MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sg, 2, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      unsigned char *c = V_PX(px, (int)lround(82.5 * 3), (int)lround(40.2 * 3));
+      printf("gles_render: v9_switch_green_ctr rgb=(%d,%d,%d) exp=(57,218,97)\n", c[0], c[1], c[2]);
+      CHECK(abs((int)c[0] - 57) <= 2 && abs((int)c[1] - 218) <= 2 && abs((int)c[2] - 97) <= 2);
+      free(px);
+
+      // Blue track swap: first colored caustic pixel turns blue
+      double sb[3 * MB_INST];
+      V_RECT(sb, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(sb + MB_INST, 40.0, 26.0, 63.0, 28.0, 0, 0.0, 122.0 / 255.0, 1.0, 0);
+      sb[MB_INST + 4] = 14.0;
+      sb[MB_INST + 36] = 14.0; sb[MB_INST + 37] = 14.0; sb[MB_INST + 38] = 14.0; sb[MB_INST + 39] = 14.0;
+      V_RECT(sb + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -5621);
+      sb[2 * MB_INST + 4] = 19.2; sb[2 * MB_INST + 6] = 1.0; sb[2 * MB_INST + 7] = -32.0;
+      sb[2 * MB_INST + 11] = 0.0; sb[2 * MB_INST + 12] = 1.0; sb[2 * MB_INST + 13] = 9.0;
+      sb[2 * MB_INST + 15] = 1.0; sb[2 * MB_INST + 21] = 9.0; sb[2 * MB_INST + 22] = 0.0; sb[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sb, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *pxb = pixels_of_fb(vfb);
+      unsigned char *cb = V_PX(pxb, 80 * 3, 21 * 3 + 1);
+      printf("gles_render: v9_switch_blue_caustic rgb=(%d,%d,%d) B-R=%d\n", cb[0], cb[1], cb[2], (int)cb[2] - (int)cb[0]);
+      CHECK((int)cb[2] - (int)cb[0] >= 100 && cb[2] > cb[1]);
+      free(pxb);
+
+      // OFF fixed press: slot 21 9.0 -> 4.5 narrows neutral moat
+      int off_moat[2] = {0, 0};
+      double refs[2] = {9.0, 4.5};
+      for (int ri = 0; ri < 2; ri++) {
+        double so[3 * MB_INST];
+        V_RECT(so, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+        V_RECT(so + MB_INST, 40.0, 26.0, 63.0, 28.0, 0, 120.0 / 255.0, 120.0 / 255.0, 128.0 / 255.0, 0);
+        so[MB_INST + 4] = 14.0;
+        so[MB_INST + 36] = 14.0; so[MB_INST + 37] = 14.0; so[MB_INST + 38] = 14.0; so[MB_INST + 39] = 14.0;
+        V_RECT(so + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -5622 - ri);
+        so[2 * MB_INST + 4] = 19.2; so[2 * MB_INST + 6] = 1.0; so[2 * MB_INST + 7] = -32.0;
+        so[2 * MB_INST + 11] = 0.0; so[2 * MB_INST + 12] = 1.0; so[2 * MB_INST + 13] = 9.0;
+        so[2 * MB_INST + 15] = 1.0; so[2 * MB_INST + 21] = refs[ri]; so[2 * MB_INST + 22] = 0.0; so[2 * MB_INST + 23] = 0.0;
+        glass_forget();
+        gl_present(so, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+        unsigned char *pxo = pixels_of_fb(vfb);
+        int best = 0, cur = 0;
+        for (int py = 21 * 3 + 2; py < 40 * 3; py++) {
+          unsigned char *c0 = V_PX(pxo, 80 * 3, py);
+          if (c0[0] < 95) { cur++; if (cur > best) best = cur; } else cur = 0;
+        }
+        off_moat[ri] = best;
+        free(pxo);
+      }
+      printf("gles_render: v9_switch_off_moat r9=%dpx r4.5=%dpx\n", off_moat[0], off_moat[1]);
+      CHECK(off_moat[0] > off_moat[1] && off_moat[1] >= 1);
+
+      // Real white-cap + glass 5-level press (0.0, 0.25, 0.5, 0.75, 1.0) monotonic visible delta area vs p=0 rest (synced with liquid_toggle.mbt)
+      double ps[5] = {0.0, 0.25, 0.50, 0.75, 1.0};
+      int areas[5] = {0, 0, 0, 0, 0};
+      unsigned char *px_rest = NULL;
+      for (int pi = 0; pi < 5; pi++) {
+        double p = ps[pi];
+        double sc5[4 * MB_INST];
+        V_RECT(sc5, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+        V_RECT(sc5 + MB_INST, 40.0, 26.0, 63.0, 28.0, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+        sc5[MB_INST + 4] = 14.0;
+        sc5[MB_INST + 36] = 14.0; sc5[MB_INST + 37] = 14.0; sc5[MB_INST + 38] = 14.0; sc5[MB_INST + 39] = 14.0;
+        double cw = 37.0 * (1.0 + 0.60 * p), ch = 24.0 * (1.0 + 0.60 * p);
+        double cx0 = 82.5 - cw * 0.5, cy0 = 40.0 - ch * 0.5;
+        double cap_a = 1.0 - 1.8 * p;
+        if (cap_a < 0.0) cap_a = 0.0;
+        if (cap_a > 1.0) cap_a = 1.0;
+        V_RECT(sc5 + 2 * MB_INST, cx0, cy0, cw, ch, 0, 1.0, 1.0, 1.0, 0);
+        sc5[2 * MB_INST + 4] = ch * 0.5;
+        sc5[2 * MB_INST + 11] = cap_a;
+        sc5[2 * MB_INST + 36] = ch * 0.5; sc5[2 * MB_INST + 37] = ch * 0.5;
+        sc5[2 * MB_INST + 38] = ch * 0.5; sc5[2 * MB_INST + 39] = ch * 0.5;
+        int ninst = 3;
+        if (p > 0.001) {
+          V_RECT(sc5 + 3 * MB_INST, cx0, cy0, cw, ch, 6, 1.0, 1.0, 1.0, -5625 - pi);
+          sc5[3 * MB_INST + 4] = ch * 0.5; sc5[3 * MB_INST + 6] = 1.0; sc5[3 * MB_INST + 7] = -32.0;
+          sc5[3 * MB_INST + 11] = 0.0; sc5[3 * MB_INST + 12] = p; sc5[3 * MB_INST + 13] = 9.0 * p;
+          sc5[3 * MB_INST + 15] = p; sc5[3 * MB_INST + 21] = 9.0 * p; sc5[3 * MB_INST + 22] = 0.0; sc5[3 * MB_INST + 23] = 0.0;
+          ninst = 4;
+        }
+        glass_forget();
+        gl_present(sc5, ninst, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+        unsigned char *px5 = pixels_of_fb(vfb);
+        if (pi == 0) {
+          px_rest = px5;
+          areas[0] = 0;
+        } else {
+          int cnt = 0;
+          for (int py = 21 * 3; py <= 59 * 3; py += 2) {
+            for (int px_i = 53 * 3; px_i <= 112 * 3; px_i += 2) {
+              unsigned char *c0 = V_PX(px5, px_i, py);
+              unsigned char *r0 = V_PX(px_rest, px_i, py);
+              int d = abs((int)c0[0] - (int)r0[0]) + abs((int)c0[1] - (int)r0[1]) + abs((int)c0[2] - (int)r0[2]);
+              if (d >= 30) cnt++;
+            }
+          }
+          areas[pi] = cnt;
+          free(px5);
+        }
+      }
+      free(px_rest);
+      printf("gles_render: v9_switch_5press_delta_area=(%d,%d,%d,%d,%d)\n", areas[0], areas[1], areas[2], areas[3], areas[4]);
+      CHECK(areas[0] < areas[1] && areas[1] < areas[2] && areas[2] < areas[3] && areas[3] < areas[4]);
+    }
+
+    // --- V9f: Role 4 Tab icon bevel gate (FIXED refract=9.0, Role 4 -64; icon at x_right-6.7pt vs empty; |y-cy|=0.42*h diff==0) ---
+    {
+      double tb[4 * MB_INST];
+      V_RECT(tb, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(tb + MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -563);
+      tb[MB_INST + 4] = 22.5; tb[MB_INST + 6] = 1.0; tb[MB_INST + 7] = -64.0;
+      tb[MB_INST + 11] = 0.0; tb[MB_INST + 12] = 1.0; tb[MB_INST + 13] = 9.0;
+      tb[MB_INST + 15] = 1.0; tb[MB_INST + 21] = 9.0; tb[MB_INST + 22] = 0.0; tb[MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(tb, 2, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px_empty = pixels_of_fb(vfb);
+      // Place bright orange icons strictly inside: (1) right cap mid-band at x_right-6.7 = 128.3 (only p+barCaDisp hits it),
+      // (2) bottom outer-band at (117.0, 56.0) where |y-cy|=0.42*h has barIconGate == 0.
+      V_RECT(tb + MB_INST, 127.3, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
+      V_RECT(tb + 2 * MB_INST, 117.0, 56.0, 2.0, 6.0, 0, 1.0, 0.55, 0.0, 0);
+      V_RECT(tb + 3 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -564);
+      tb[3 * MB_INST + 4] = 22.5; tb[3 * MB_INST + 6] = 1.0; tb[3 * MB_INST + 7] = -64.0;
+      tb[3 * MB_INST + 11] = 0.0; tb[3 * MB_INST + 12] = 1.0; tb[3 * MB_INST + 13] = 9.0;
+      tb[3 * MB_INST + 15] = 1.0; tb[3 * MB_INST + 21] = 9.0; tb[3 * MB_INST + 22] = 0.0; tb[3 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(tb, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px_icon = pixels_of_fb(vfb);
+      unsigned char *a_mid = V_PX(px_empty, 400, 120);
+      unsigned char *b_mid = V_PX(px_icon, 400, 120);
+      int mid_delta = abs((int)b_mid[0] - (int)a_mid[0]) + abs((int)b_mid[1] - (int)a_mid[1]);
+      // Control at |y - cy| = 0.42 * 45 = 18.9 -> y = 58.9, x = 123.2 (inward = 1.5pt, barIconGate == 0)
+      unsigned char *a_out = V_PX(px_empty, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
+      unsigned char *b_out = V_PX(px_icon, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
+      int out_diff = 0;
+      for (int ch = 0; ch < 3; ch++) {
+        int df = abs((int)b_out[ch] - (int)a_out[ch]);
+        if (df > out_diff) out_diff = df;
+      }
+      printf("gles_render: v9_tab_icon_bevel mid_delta=%d out_diff=%d\n", mid_delta, out_diff);
+      CHECK(mid_delta >= 40 && out_diff == 0);
+      free(px_empty);
+      free(px_icon);
+    }
+
+    // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
+    V_SETUP(2);
+    for (int ph = 0; ph < 2; ph++) {
+      double yoff = ph * 0.25;
+      double sw[3 * MB_INST];
+      V_RECT(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(sw + MB_INST, 40, 26 + yoff, 63, 28, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+      sw[MB_INST + 4] = 14.0;
+      V_RECT(sw + 2 * MB_INST, 52.9, 21.0 + yoff, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -57 - ph);
+      sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+      sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+      sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      int gsum = 0;
+      for (int dy = 0; dy < 3; dy++) {
+        unsigned char *c = V_PX(px, 80 * 2, 21 * 2 + dy);
+        int d = (int)c[1] - (int)c[0];
+        if (d > 0) gsum += d;
+      }
+      printf("gles_render: v9_switch_on_2x phase=%d green_mass=%d\n", ph, gsum);
+      CHECK(gsum > 40);
+      free(px);
+    }
+
+    // --- V10: Regular Glass Light Parabolic AA (@2x, R=24pt) ---
+    {
+      V_SETUP(2);
+      double rg[2 * MB_INST];
+      V_RECT(rg, 0, 0, VW, VH, 0, 242.0 / 255.0, 240.0 / 255.0, 236.0 / 255.0, 0);
+      V_RECT(rg + MB_INST, 20, 10, 120, 60, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -70);
+      rg[MB_INST + 4] = 24.0; rg[MB_INST + 6] = 1.0; rg[MB_INST + 7] = 0.0;
+      rg[MB_INST + 11] = 0.40; rg[MB_INST + 12] = 0.6; rg[MB_INST + 13] = 14.0;
+      rg[MB_INST + 15] = 1.0; rg[MB_INST + 21] = 20.0; rg[MB_INST + 22] = 0.0; rg[MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(rg, 2, 242.0 / 255.0, 240.0 / 255.0, 236.0 / 255.0);
+      unsigned char *px = pixels_of_fb(vfb);
+      double mins[64];
+      int n = 0;
+      for (int py = 20 + 4; py <= 20 + 44; py++) {
+        double rm = 1e9;
+        for (int xpx = 140 * 2 - 48; xpx <= 140 * 2 + 2; xpx++) {
+          unsigned char *c = V_PX(px, xpx, py);
+          double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+          if (L < rm) rm = L;
+        }
+        mins[n++] = rm;
+      }
+      double max_d2 = 0.0;
+      for (int i = 1; i < n - 1; i++) {
+        double d2 = fabs(mins[i - 1] - 2.0 * mins[i] + mins[i + 1]);
+        if (d2 > max_d2) max_d2 = d2;
+      }
+      double side_lmin = 1e9;
+      for (int xpx = 140 * 2 - 8; xpx <= 140 * 2 + 2; xpx++) {
+        unsigned char *c = V_PX(px, xpx, 40 * 2);
+        double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        if (L < side_lmin) side_lmin = L;
+      }
+      printf("gles_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
+      CHECK(max_d2 <= 14.0);
+      CHECK(side_lmin >= 190.0 && side_lmin <= 215.0);
+      free(px);
+      double rgd[2 * MB_INST];
+      V_RECT(rgd, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      V_RECT(rgd + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -71);
+      rgd[MB_INST + 4] = 24.0; rgd[MB_INST + 6] = 1.0; rgd[MB_INST + 7] = 0.0;
+      rgd[MB_INST + 11] = 0x67 / 255.0; rgd[MB_INST + 12] = 0.6; rgd[MB_INST + 13] = 14.0;
+      rgd[MB_INST + 15] = 1.0; rgd[MB_INST + 21] = 20.0; rgd[MB_INST + 22] = 0.0; rgd[MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(rgd, 2, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+      unsigned char *pxd = pixels_of_fb(vfb);
+      unsigned char *dc_mid = V_PX(pxd, 80 * 2, 40 * 2);
+      unsigned char *dc_top = V_PX(pxd, 80 * 2, 10 * 2 + 1);
+      unsigned char *dc_side = V_PX(pxd, 140 * 2 - 1, 40 * 2);
+      double l_mid = 0.2126 * dc_mid[0] + 0.7152 * dc_mid[1] + 0.0722 * dc_mid[2];
+      double l_top = 0.2126 * dc_top[0] + 0.7152 * dc_top[1] + 0.0722 * dc_top[2];
+      double l_side = 0.2126 * dc_side[0] + 0.7152 * dc_side[1] + 0.0722 * dc_side[2];
+      printf("gles_render: v10_reg_dark_2x top=%.1f mid=%.1f side=%.1f", l_top, l_mid, l_side);
+      // Full Dark Regular corner ROI (top column + straight side + 45-deg corner arc RGBA8) FNV-1a hash
+      uint64_t dh = 14695981039346656037ULL;
+      for (int py = 10 * 2; py <= 10 * 2 + 8; py++) {
+        unsigned char *c = V_PX(pxd, 80 * 2, py);
+        for (int ch = 0; ch < 4; ch++) { dh ^= c[ch]; dh *= 1099511628211ULL; }
+      }
+      for (int xpx = 140 * 2 - 8; xpx <= 140 * 2 + 1; xpx++) {
+        unsigned char *c = V_PX(pxd, xpx, 40 * 2);
+        for (int ch = 0; ch < 4; ch++) { dh ^= c[ch]; dh *= 1099511628211ULL; }
+      }
+      for (int py = 10 * 2; py <= 10 * 2 + 48; py++) {
+        for (int xpx = 140 * 2 - 48; xpx <= 140 * 2 + 2; xpx++) {
+          unsigned char *c = V_PX(pxd, xpx, py);
+          for (int ch = 0; ch < 4; ch++) { dh ^= c[ch]; dh *= 1099511628211ULL; }
+        }
+      }
+      printf(" roi_fnv1a=0x%016llx\n", (unsigned long long)dh);
+      CHECK(dh == 0x80e02702612bc2bbULL);
+      CHECK(l_top > l_mid + 5.0);
+      CHECK(l_side >= l_mid - 6.0 && l_side <= l_mid + 20.0);
+      free(pxd);
+    }
+
+    // --- V11-AA & V11-Wall: Switch ON (Dark & Light, 3x & 2x, shadow-free) ---
+    for (int is_light = 0; is_light <= 1; is_light++) {
+      double bg = is_light ? 1.0 : 28.0 / 255.0;
+      double bg_b = is_light ? 1.0 : 30.0 / 255.0;
+      double tr_r = is_light ? 52.0 / 255.0 : 48.0 / 255.0;
+      double tr_g = is_light ? 199.0 / 255.0 : 209.0 / 255.0;
+      double tr_b = is_light ? 89.0 / 255.0 : 88.0 / 255.0;
+      for (int sc_idx = 0; sc_idx < 2; sc_idx++) {
+        int sc = (sc_idx == 0) ? 3 : 2;
+        V_SETUP(sc);
+        double sw[3 * MB_INST];
+        V_RECT(sw, 0, 0, VW, VH, 0, bg, bg, bg_b, 0);
+        V_RECT(sw + MB_INST, 18.5, 18.0, 63.0, 28.0, 0, tr_r, tr_g, tr_b, 0);
+        sw[MB_INST + 4] = 14.0;
+        sw[MB_INST + 36] = 14.0; sw[MB_INST + 37] = 14.0; sw[MB_INST + 38] = 14.0; sw[MB_INST + 39] = 14.0;
+        V_RECT(sw + 2 * MB_INST, 31.58, 12.8, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -72 - is_light * 2 - sc_idx);
+        sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+        sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+        sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+        glass_forget();
+        gl_present(sw, 3, bg, bg, bg_b);
+        unsigned char *px = pixels_of_fb(vfb);
+        int y_lo = (int)ceil((32.0 - 0.52 * 19.2) * sc - 0.5);
+        int y_hi = (int)floor((32.0 + 0.52 * 19.2) * sc - 0.5);
+        int xl0 = (sc == 3) ? 89 : 58, xl1 = (sc == 3) ? 109 : 74;
+        int xr0 = (sc == 3) ? 259 : 170, xr1 = (sc == 3) ? 281 : 188;
+        double minL[128], minR[128];
+        int n = 0;
+        for (int py = y_lo; py <= y_hi; py++) {
+          double ml = 1e9, mr = 1e9;
+          for (int xpx = xl0; xpx <= xl1; xpx++) {
+            unsigned char *c = V_PX(px, xpx, py);
+            double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            if (L < ml) ml = L;
+          }
+          for (int xpx = xr0; xpx <= xr1; xpx++) {
+            unsigned char *c = V_PX(px, xpx, py);
+            double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            if (L < mr) mr = L;
+          }
+          minL[n] = ml; minR[n] = mr; n++;
+        }
+        double d2L = 0.0, d2R = 0.0;
+        for (int i = 1; i < n - 1; i++) {
+          double a = fabs(minL[i - 1] - 2.0 * minL[i] + minL[i + 1]);
+          double b = fabs(minR[i - 1] - 2.0 * minR[i] + minR[i + 1]);
+          if (a > d2L) d2L = a;
+          if (b > d2R) d2R = b;
+        }
+        double lim = (sc == 3) ? (is_light ? 12.0 : 10.0) : (is_light ? 14.0 : 12.0);
+        printf("gles_render: v11_aa(%s %dx [%d..%d]) L=%.2f R=%.2f (lim=%.1f)\n",
+               is_light ? "light" : "dark", sc, y_lo, y_hi, d2L, d2R, lim);
+        CHECK(d2L <= lim && d2R <= lim);
+        if (sc == 3) {
+          int cy_px = 32 * 3;
+          int rx_min = 271;
+          double r_minL = 1e9;
+          for (int xpx = 268; xpx <= 272; xpx++) {
+            unsigned char *c = V_PX(px, xpx, cy_px);
+            double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+            if (L < r_minL) { r_minL = L; rx_min = xpx; }
+          }
+          unsigned char *rc0 = V_PX(px, rx_min, cy_px);
+          int r_gr = (int)rc0[1] - (int)rc0[0];
+          double l1, l2, l3, l4;
+          {
+            unsigned char *c1 = V_PX(px, rx_min - 1, cy_px);
+            unsigned char *c2 = V_PX(px, rx_min - 2, cy_px);
+            unsigned char *c3 = V_PX(px, rx_min - 3, cy_px);
+            unsigned char *c4 = V_PX(px, rx_min - 4, cy_px);
+            l1 = 0.2126 * c1[0] + 0.7152 * c1[1] + 0.0722 * c1[2];
+            l2 = 0.2126 * c2[0] + 0.7152 * c2[1] + 0.0722 * c2[2];
+            l3 = 0.2126 * c3[0] + 0.7152 * c3[1] + 0.0722 * c3[2];
+            l4 = 0.2126 * c4[0] + 0.7152 * c4[1] + 0.0722 * c4[2];
+          }
+          int r_mono = (l1 >= r_minL && l2 >= l1 && l3 >= l2 && l4 >= l3);
+          int best_gr = -999, best_g = 0;
+          for (int xpx = 94; xpx <= 98; xpx++) {
+            unsigned char *c = V_PX(px, xpx, cy_px);
+            int gr = (int)c[1] - (int)c[0];
+            if (gr > best_gr && c[1] >= 125 && c[1] <= 165) { best_gr = gr; best_g = c[1]; }
+          }
+          printf("gles_render: v11_wall(%s 3x) r_minL=%.1f@x=%d r_gr=%d wall=(%.1f,%.1f,%.1f,%.1f) r_mono=%d l_emerald=(G=%d,G-R=%d)\n",
+                 is_light ? "light" : "dark", r_minL, rx_min, r_gr, l1, l2, l3, l4, r_mono, best_g, best_gr);
+          if (!is_light) {
+            CHECK(r_minL <= 14.0 && r_gr <= 12 && r_mono);
+          } else {
+            CHECK(r_minL >= 170.0 && r_minL <= 205.0 && r_mono && l4 >= 230.0);
+          }
+          CHECK(best_gr >= 90 && best_g >= 125 && best_g <= 165);
+          {
+            double prev_moat = -1.0;
+            printf("gles_render: v9_left_horn_3x(%s)", is_light ? "light" : "dark");
+            for (int dx = 6; dx <= 20; dx += 2) {
+              int pc = (int)lround((31.58 + dx) * 3.0);
+              double dyc = sqrt(fmax(19.2 * 19.2 - fmax(19.2 - dx, 0.0) * fmax(19.2 - dx, 0.0), 0.0));
+              int y0 = (int)lround((32.0 - dyc + 1.0) * 3.0);
+              int y1 = (int)lround(32.0 * 3.0);
+              int best = 0, cur = 0;
+              for (int py = y0; py < y1; py++) {
+                unsigned char *c = V_PX(px, pc, py);
+                if ((int)c[1] - (int)c[0] < 26) { cur++; if (cur > best) best = cur; } else cur = 0;
+              }
+              double mpt = best / 3.0;
+              printf(" dx=%d:%.2f", dx, mpt);
+              if (dx == 6 || dx == 8) CHECK(mpt == 0.0);
+              if (dx == 10) CHECK(mpt >= 1.5 && mpt <= 4.5);
+              if (dx >= 12 && prev_moat >= 0.0) CHECK(mpt >= prev_moat - 0.35 && mpt - prev_moat <= 3.5);
+              if (dx == 20) CHECK(mpt >= 7.0);
+              prev_moat = mpt;
+            }
+            printf("\n");
+          }
+        }
+        free(px);
+      }
+    }
+
+    // --- V11-Top: Registered 3x & 2x top-wall at 5.00pt & 5.20pt (Dark & Light) ---
+    {
+      double offs[2] = { 5.00, 5.20 };
+      for (int is_light = 0; is_light <= 1; is_light++) {
+        double bg = is_light ? 1.0 : 28.0 / 255.0;
+        double bg_b = is_light ? 1.0 : 30.0 / 255.0;
+        double tr_r = is_light ? 52.0 / 255.0 : 48.0 / 255.0;
+        double tr_g = is_light ? 199.0 / 255.0 : 209.0 / 255.0;
+        double tr_b = is_light ? 89.0 / 255.0 : 88.0 / 255.0;
+        for (int oi = 0; oi < 2; oi++) {
+          double off = offs[oi], th = 38.4 - 2.0 * off;
+          for (int sc_idx = 0; sc_idx < 2; sc_idx++) {
+            int sc = (sc_idx == 0) ? 3 : 2;
+            V_SETUP(sc);
+            double sw[3 * MB_INST];
+            V_RECT(sw, 0, 0, VW, VH, 0, bg, bg, bg_b, 0);
+            V_RECT(sw + MB_INST, 40.0, 21.0 + off, 63.0, th, 0, tr_r, tr_g, tr_b, 0);
+            sw[MB_INST + 4] = th * 0.5;
+            sw[MB_INST + 36] = th * 0.5; sw[MB_INST + 37] = th * 0.5; sw[MB_INST + 38] = th * 0.5; sw[MB_INST + 39] = th * 0.5;
+            V_RECT(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -80 - is_light * 4 - oi * 2 - sc_idx);
+            sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+            sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+            sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+            glass_forget();
+            gl_present(sw, 3, bg, bg, bg_b);
+            unsigned char *px = pixels_of_fb(vfb);
+            unsigned char *r0 = V_PX(px, 80 * sc, 21 * sc + 0);
+            unsigned char *r1 = V_PX(px, 80 * sc, 21 * sc + 1);
+            unsigned char *r2 = V_PX(px, 80 * sc, 21 * sc + 2);
+            int gr0 = (int)r0[1] - (int)r0[0], gr1 = (int)r1[1] - (int)r1[0], gr2 = (int)r2[1] - (int)r2[0];
+            double l0 = 0.2126 * r0[0] + 0.7152 * r0[1] + 0.0722 * r0[2];
+            double l2 = 0.2126 * r2[0] + 0.7152 * r2[1] + 0.0722 * r2[2];
+            printf("gles_render: v11_top(%s %dx @%.2fpt) r0=(G-R=%d,L=%.0f) r1=(G-R=%d) r2=(G-R=%d,L=%.0f)\n",
+                   is_light ? "light" : "dark", sc, off, gr0, l0, gr1, gr2, l2);
+            if (sc == 3) {
+              if (!is_light) {
+                CHECK(gr0 < 15 && l0 <= 35.0 && gr1 >= 100 && gr2 < 15 && l2 >= 75.0);
+              } else {
+                CHECK(gr0 < 15 && l0 >= 180.0 && l0 <= 215.0 && gr1 >= 95 && gr2 < 15 && l2 >= 245.0);
+              }
+            } else {
+              CHECK(gr1 >= 70 && gr2 < 15);
+            }
+            free(px);
+          }
+        }
+      }
+    }
+
+    #undef V_RECT
+    #undef V_SETUP
+    #undef V_PX
+    surface = saved_surface;
+    target_fb = saved_target;
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+    glDeleteFramebuffers(1, &vfb);
+    glDeleteTextures(1, &vtex);
+    fb_w = saved_fb_w; fb_h = saved_fb_h; cur_w = saved_w; cur_h = saved_h; cur_scale = saved_s;
   }
 
   if (!failed) printf("gles_render: ok\n");

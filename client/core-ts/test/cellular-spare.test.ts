@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apply, call, subscribe, v } from "./helpers.ts";
-import { base, session, started, stationReplies } from "./station-fixture.ts";
+import { base, session, started, stationReplies, status } from "./station-fixture.ts";
 
 const S = "ws/st";
 
@@ -103,6 +103,75 @@ test("cellular network spares unopened live streams, skips unopened transcript w
     assert.equal(s.core.inner.data.logSpan("transcript", S, "k3")?.max, 2, "leaving cellular catches up lagging transcript k3");
     apply(s.host, values);
     assert.ok(v(values, 11) !== undefined);
+  } finally {
+    s.core.close();
+  }
+});
+
+// A session's steps keep coming while its transcript is not taken here (spared on cellular while its stream follows
+// every session, as with stationRates in use; or let go for room). What is held stays where it was, so the steps that
+// ended were never let go: its history, opened, showed a column of 正在思考… under 已到会话开头 and none of its entries.
+test("steps_ended_while_a_transcript_is_not_taken_are_let_go_and_its_history_shows_them_only_once_it_holds_where_they_go_on_from", async () => {
+  const answers = threeSessions();
+  let reads = 0;
+  let answering = false;
+  const s = await started(answers, 0, undefined, (f) => {
+    f.gate.marks = true;
+    f.gate.resumes = true;
+    stationReplies(f.host, (req) => {
+      const path = req.url.replace("https://stillfail.test/admin/api", "");
+      if (!path.startsWith("/sessions/k2/timeline")) return undefined;
+      // Its reads fail till it answers: it is read again while shown.
+      reads++;
+      if (!answering) return status(502, { error: "坏了" });
+      return { start: 0, end: 22, entries: Array.from({ length: 22 }, (_, i) => ({ kind: "step", text: `k2-${i}` })) };
+    });
+  });
+  const ui = s.core.connect();
+  const k2 = { topic: "live", station: S, key: "k2" };
+  const view = () => s.core.inner.stations.link(S)?.lives.get("k2");
+  const live = () => (s.core.inner.stationTopics.compute(k2) as any).ok;
+  try {
+    await s.host.time.pass(500, 10);
+    call(s.core, ui, 1, "client.network", { cellular: true });
+    // stationRates: its stream follows every session, k2's steps too, while k2's transcript is spared.
+    subscribe(s.core, ui, 12, { topic: "stationRates", station: S });
+    await s.host.time.pass(500, 10);
+    assert.ok(!s.streams.at(-1)!.path.includes("spare=1"), s.streams.at(-1)!.path);
+    const push = (m: unknown) => s.push("live", { key: "k2", ...(m as object) });
+    push({ type: "timeline", start: 1, entries: [], usage: {} });
+    push({ type: "steps", steps: [], phase: null });
+    // Ten model calls, each thinking and then a call, as the station tells them; their entries are not taken here.
+    for (let i = 0; i < 10; i++) {
+      push({ type: "step", event: { kind: "start", id: `said:${i}/thinking`, step: "thinking" } });
+      push({ type: "step", event: { kind: "end", id: `said:${i}/thinking` } });
+      push({ type: "step", event: { kind: "start", id: `call:${i}`, step: "tool", tool: "Bash", input: "ls" } });
+      push({ type: "step", event: { kind: "end", id: `call:${i}` } });
+      push({ type: "timeline", start: 1 + 2 * i, entries: [{ kind: "step", text: `t${i}` }, { kind: "step", text: `c${i}` }], usage: {} });
+    }
+    push({ type: "step", event: { kind: "start", id: "said:10/thinking", step: "thinking" } });
+    push({ type: "step", event: { kind: "phase", phase: "requesting" } });
+    await s.host.time.pass(500, 10);
+    assert.ok((s.core.inner.data.logSpan("transcript", S, "k2")?.max ?? 0) < 1, "its entries are not taken while spared");
+    assert.deepEqual(view()?.steps.map((st: any) => st.id), ["said:10/thinking"], "what ended is let go: its entries come with the read that shows them");
+
+    // Opened, its latest entries' read fails: what is held is behind where the steps go on from, so none is shown, and
+    // nothing says it is all there is.
+    subscribe(s.core, ui, 13, k2);
+    await s.host.time.pass(200, 10);
+    let x = live();
+    assert.ok(reads >= 1);
+    assert.deepEqual([x.loaded, x.steps, x.failed], [false, [], "坏了"]);
+    assert.ok(x.timeline.length < 2, "none of what came while spared is held");
+    assert.equal(x.phase, null, "nothing goes on from nothing held");
+
+    // Read again: what is held reaches where its stream said it goes, and the step in flight goes on after it.
+    answering = true;
+    await s.host.time.pass(60_000, 500);
+    x = live();
+    assert.equal(x.loaded, true);
+    assert.equal(x.timeline.length, 22);
+    assert.deepEqual(x.steps.map((st: any) => st.id), ["said:10/thinking"]);
   } finally {
     s.core.close();
   }

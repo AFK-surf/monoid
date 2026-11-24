@@ -247,10 +247,10 @@ test "a table's copy key with keyboard and mouse, as the app's host follows the 
 }
 
 ///|
-let tn_rich : String = "| 样式 | 写法 |\n| --- | --- |\n| *斜体* | `code` |\n| ~~删去~~ | **粗** 与 *斜* |\n| [链接](https://still.fail) | 甲 |"
+let tn_rich : String = "| *样式* | 写法 |\n| --- | --- |\n| *斜体* | `code` |\n| ~~删去~~ | **粗** 与 *斜* |\n| [链接](https://still.fail) | 甲 |"
 
 ///|
-/// The core's reading of tn_rich: its cells italic, code, struck through, bold beside italic, a link.
+/// The core's reading of tn_rich: header emphasis, body emphasis, code, struck through, bold beside emphasis, a link.
 fn tn_rich_tree() -> Json {
   let s = fn(w : String) { Json::string(w) }
   let el = fn(name : String, kids : Array[Json]) { Json::array([s(name), Json::array(kids)]) }
@@ -258,7 +258,7 @@ fn tn_rich_tree() -> Json {
   let code = Json::array([s("code"), Json::array([]), Json::object({ "content": s("code") })])
   Json::array([
     el("table", [
-      el("tr", [td([s("样式")]), td([s("写法")])]),
+      el("tr", [td([el("i", [s("样式")])]), td([s("写法")])]),
       el("tr", [td([el("i", [s("斜体")])]), td([code])]),
       el("tr", [td([el("s", [s("删去")])]), td([el("b", [s("粗")]), s(" 与 "), el("i", [s("斜")])])]),
       el("tr", [
@@ -289,11 +289,16 @@ fn tn_rich_drawn() -> Array[(Double, Double, Int64)] {
 }
 
 ///|
-test "a table's cells in pieces as nodes (italic, code, struck through, bold beside italic, a link): drawn purely as nodes in their inks" {
+test "a table's cells in pieces as nodes (muted emphasis, code, struck through, bold beside emphasis, a link): drawn purely as nodes in their inks" {
   let made = tn_rich_drawn()
   assert_true(made.length() > 12, msg="drawn: \{made.length()}")
   // (none of it an old view's: no old view in the window)
-  assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "斜体" }).length(), 1)
+  let head_emph = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "样式" })
+  assert_eq(head_emph.length(), 1)
+  assert_true(head_emph[0].runs.iter().all(fn(r) { !r.italic && r.emph && r.color == theme().p.text }))
+  let emph_cells = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "斜体" })
+  assert_eq(emph_cells.length(), 1)
+  assert_true(emph_cells[0].runs.iter().all(fn(r) { !r.italic && r.emph && r.color == theme().p.muted }))
   assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "code" }).length(), 1)
   assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "删去" }).length(), 1)
   assert_eq(@ui.view_tree().unwrap().drawn().filter(fn(d) { d.words == "链接" }).length(), 1)

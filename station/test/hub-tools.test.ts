@@ -193,7 +193,7 @@ test("chat_state refuses kinds it does not know", async () => {
   const r = new Rig();
   const m = message();
   await r.accept(m);
-  assert.ok((await r.refused(sessionKey("cl", "C1", m.threadTs), "chat_state", { kind: "wait" })).includes('"all_done" or "need_human" (or "waiting"'));
+  assert.ok((await r.refused(sessionKey("cl", "C1", m.threadTs), "chat_state", { kind: "wait" })).includes('"all_done", "need_human" or "waiting"'));
   await settle();
   await r.close();
 });
@@ -674,6 +674,58 @@ test("a turn ends all_done, needing a decision or help, or waiting, and the word
     ["need_help"],
     "posts keep today's words",
   );
+  await r.close();
+});
+
+test("a post that says what was started ends the turn waiting by itself, and a need that asks for nothing is refused", async () => {
+  const r = new Rig();
+  const [key, thread] = await newSession(r.hub, web());
+  const to = `CHAT/${thread.threadTs}`;
+  const last = () => r.store.lastTurn(key)!;
+  sayIn(r.hub, thread.id, "ada@x.com", "合进 main");
+  await settle();
+  const text = "好，等 CI 跑绿了就合进 main。";
+  // What agents ended such a post with while need_human was the one kind left for it.
+  for (const need of ["（无需操作）", "无需操作；等 CI 跑完", "无需决定", "不需要你操作，CI 还在跑", "无需人工介入，CI 在跑", "- 暂无需操作", "不用操作", "无", "N/A", "No action needed", "None"]) {
+    assert.ok((await r.refused(key, "chat_post", { to, text, kind: "need_human", need })).includes('kind "waiting"'), need);
+  }
+  for (const missing of [{ for: "CI" }, { seconds: 600 }]) {
+    assert.ok((await r.refused(key, "chat_post", { to, text, kind: "waiting", ...missing })).includes("is required for waiting"));
+  }
+  assert.ok((await r.refused(key, "chat_post", { to, text, kind: "waiting", for: "CI", seconds: 600, card: { type: "text" } })).includes("a card waits on a person"));
+  assert.equal(r.said(thread.id).length, 1, "nothing refused is posted");
+  assert.equal(await r.call(key, "chat_post", { to, text, kind: "waiting", for: "#8471 的 CI 跑完", seconds: 600 }), `Posted to ${to}, and recorded state waiting: you are asked again in 600 seconds unless something brings you back first.`);
+  assert.equal(r.said(thread.id).at(-1)!.declared, null, "in the chat a progress update");
+  r.claude.last().complete();
+  await settle();
+  assert.deepEqual([last().ending, last().waitFor, last().waitSeconds, last().need], ["waiting", "#8471 的 CI 跑完", 600, null]);
+  assert.equal(r.claude.last().prompts.length, 1, "a state: not nudged");
+  // A need that only begins alike is one.
+  sayIn(r.hub, thread.id, "ada@x.com", "还要什么");
+  await settle();
+  for (const need of ["确认是否无需操作数据库", "无需操作代码，只需你确认是否合并", "不需要你决定方案，请给 Stripe key", "No reply from the vendor yet; please ping them"]) {
+    assert.equal(await r.call(key, "chat_post", { to, text: "看一下这个", kind: "need_human", need }), `Posted to ${to}, and recorded state need_human.`);
+  }
+  // Said waiting after it in the same turn, on a watch: the wait is what stands, and one with none running is refused.
+  assert.ok((await r.refused(key, "chat_post", { to, text, kind: "waiting", for: "盯 CI", seconds: 600, watch: true })).includes("none does"));
+  r.store.insertJob({ id: "job_w", sessionKey: key, name: "盯 CI", command: "sleep 600", cwd: "/", port: null, token: "tw", state: "running", pgid: null, exitCode: null, startedAt: Date.now(), endedAt: null, restarts: 0, log: "/dev/null", watch: true });
+  assert.equal(await r.call(key, "chat_post", { to, text, kind: "waiting", for: "盯 CI", seconds: 99_999, watch: true }), `Posted to ${to}, and recorded state waiting on your watch: its notices, its end or a message bring you back.`);
+  r.claude.last().complete();
+  await settle();
+  assert.deepEqual([last().ending, last().waitFor, last().waitSeconds, last().waitWatch], ["waiting", "盯 CI", 3600, true]);
+  // Held over a message not read, then sent with the wait.
+  sayIn(r.hub, thread.id, "ada@x.com", "顺便看下日志");
+  await settle();
+  sayIn(r.hub, thread.id, "ada@x.com", "还有这个");
+  const held = await r.call(key, "chat_post", { to, text: "在看，CI 还在跑", kind: "waiting", for: "CI", seconds: 60 });
+  assert.ok(held.startsWith("Not posted"), held);
+  await settle();
+  r.claude.last().reads();
+  await r.call(key, "chat_post", { to, send: held.match(/Held as (held-\d+)/)![1]!, kind: "waiting", for: "日志和 CI", seconds: 120 });
+  assert.equal(r.said(thread.id).at(-1)!.text, "在看，CI 还在跑");
+  r.claude.last().complete();
+  await settle();
+  assert.deepEqual([last().ending, last().waitFor, last().waitSeconds], ["waiting", "日志和 CI", 120]);
   await r.close();
 });
 

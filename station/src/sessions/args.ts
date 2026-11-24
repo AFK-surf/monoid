@@ -25,7 +25,7 @@ export function jsNumber(value: Json): number | null {
 /// serde_json's Display of a value, as error messages quote what was given.
 const shown = (value: Json): string => JSON.stringify(value);
 
-/// How long an agent may say it waits (chat_state "waiting").
+/// How long an agent may say it waits (kind waiting).
 export const MIN_WAIT_SECONDS = 10;
 export const MAX_WAIT_SECONDS = 3600;
 /// How many answers a decision may offer.
@@ -50,14 +50,14 @@ export const declaredStr = (kind: DeclaredState): string => (kind.kind === "all_
 /// A state in the words agents are told (need_human is kept as need_help, the word clients read).
 export const saidAs = (kind: DeclaredState): string => (kind.kind === "need_help" ? "need_human" : declaredStr(kind));
 
-/// How a post or chat_state ends the turn (`kind`), and in which words. Waiting is chat_state's own.
+/// How a post or chat_state ends the turn (`kind`), and in which words; waiting is read apart (conversations.ts `waitingArg`).
 export function stateArg(value: Json): [DeclaredState, Said] | null {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value === "string" && value !== "waiting") {
     const kind = parseDeclared(value, 0);
     if (kind) return [kind, value === "final" || value === "block" ? "before" : value === "need_decision" ? "decision" : "now"];
   }
-  throw new Error(`kind must be "all_done" or "need_human" (or "waiting", with chat_state), got ${shown(value)}`);
+  throw new Error(`kind must be "all_done", "need_human" or "waiting", got ${shown(value)}`);
 }
 
 /// Whether all_done's `done` gives a reason, not only the word: at least a few characters, and not one of the words
@@ -69,6 +69,13 @@ export function isReason(done: string): boolean {
     .toLowerCase();
   const EMPTY = ["做完了", "已完成", "全部完成", "都完成了", "done", "ok", "alldone", "finished", "allfinished"];
   return chars(bare) >= MIN_REASON && !EMPTY.includes(bare);
+}
+
+/// Whether `need` says that nothing is needed of anyone (无需操作；CI 还在跑) and asks for nothing after it (无需改代码 alone is
+/// no such word, and 无需操作，只需确认合并 asks): then it is no need.
+export function isNoNeed(need: string): boolean {
+  const opening = /^[\s\p{P}]*(?:(?:暂时?|目前|当前|现在)?(?:无需|无须|不需要|不用)(?:你|您|人工?|用户|任何人?|额外|做?任何)*(?:操作|决定|处理|回复|介入|动作)|(?:暂?无|none|n\/a)(?=[\s\p{P}]*$)|(?:no (?:human |user |further )?(?:action|decision|input)|nothing) (?:is )?(?:needed|required|to do)\b)/iu.exec(need);
+  return opening !== null && !/请|只需|只要|需要|确认|please|\bneed/iu.test(need.slice(opening[0].length));
 }
 
 /// The turn's words kept with it (turns.need): what a need_help turn needs of a person (`need`), or what an all_done
@@ -87,6 +94,9 @@ export function needArg(args: Args, kind: DeclaredState, said: Said): string | n
     throw new Error(
       "done must say why nothing in the chat is left, so people can trust it: what was finished and where it landed or how it was confirmed (a commit, a release, a person's confirmation, the answer given), e.g. 已合进 main 82f108a5，测试版 1389 已发，你确认过滑动可以; not just that it is done",
     );
+  }
+  if (need !== null && isNoNeed(need)) {
+    throw new Error('need must say what a person has to give, do or decide. With nothing needed of anyone, only your own work still running: kind "waiting" with for and seconds; nothing left at all: kind "all_done" with done');
   }
   if (kind.kind === "need_help" && need === null && said === "now") throw new Error("need is required for need_human: what the person has to give, do or decide, in one sentence");
   if (kind.kind === "all_done" && done === null && said === "now") {

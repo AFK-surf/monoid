@@ -385,7 +385,7 @@ export const routes = (tools: Tools): Route[] => {
         const workspace = dirname(owner.dir);
         const room = await roomOfSoon(a.hub.config().dataDir, workspace);
         if (room !== null) {
-          const bytes = await withLock(room, () => workspaceFile(room, path.slice(workspace.length + 1)));
+          const bytes = await withLock(room, () => workspaceFile(room, path.slice(workspace.length + 1), { program: tools.packed }));
           if (bytes !== null) {
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, bytes);

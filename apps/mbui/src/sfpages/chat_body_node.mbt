@@ -950,6 +950,8 @@ fn chat_body_node(
   let linger_rows : Map[String, ChatBodyRow] = Map([])
   // (each agent's line's row as last read: what is kept of it as its turn is said over before its answer comes out)
   let act_rows : Map[String, ChatBodyRow] = Map([])
+  // (lingering activity keys replaced by their answering message at a given cause_at: suppresses empty foot_room)
+  let answered_lingers : Map[String, Double] = Map([])
   // (counted on as a held message is let in or flushed: what the keys are worked out again by)
   let held_told = @signals.signal(0)
   let listed_was : Ref[Array[String]] = Ref([])
@@ -1016,10 +1018,10 @@ fn chat_body_node(
           due_at.val = None
           due_cancel.val = None
           if stage.barrier_until() <= next_at {
-            for k, hb in held_by {
+            for k, _ in held_by {
               match (stage.held_plan(k), out_plans.get(k)) {
-                (Some(hp), Some(plan)) if hp.release_at <= next_at && plan.folds =>
-                  plan.face_at.val = Some(agent_face_at(hb.0))
+                (Some(hp), Some(plan)) if hp.release_at <= next_at =>
+                  plan.face_at.val = Some((plan.from)())
                 _ => ()
               }
             }
@@ -1042,6 +1044,7 @@ fn chat_body_node(
           }
           if !res.released.is_empty() {
             @view.transition(within=v, fn() {
+              answered_lingers.clear()
               for rk in res.released {
                 match held_by.get(rk) {
                   Some((face, ends)) => {
@@ -1056,6 +1059,7 @@ fn chat_body_node(
                 }
               }
               for lk in res.released_lingers {
+                answered_lingers[lk] = next_at
                 linger_rows.remove(lk)
               }
               recompute_bridged_pairs()
@@ -1085,6 +1089,8 @@ fn chat_body_node(
             }
             face.last.val = None
             face.away.set(false)
+            // det-ok(motion-length): emit.mbt's Return, the ring returning as its answer is let in at once
+            face.ring_alpha.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=v.cause_at())
             // det-ok(motion-length): emit.mbt's Return, the line unfolding as its answer is let in at once
             face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=v.cause_at())
           }
@@ -1092,7 +1098,9 @@ fn chat_body_node(
         }
         held_by.remove(k)
       }
+      answered_lingers.clear()
       for lk in res.flushed_lingers {
+        answered_lingers[lk] = v.cause_at()
         linger_rows.remove(lk)
       }
       linger_rows.clear()
@@ -1227,7 +1235,12 @@ fn chat_body_node(
             }
           }
         })
+        let dropped_faces : Array[AgentFace] = []
         for dk in step.dropped_held {
+          match held_by.get(dk) {
+            Some((face, _)) => dropped_faces.push(face)
+            None => ()
+          }
           held_by.remove(dk)
         }
         for lk in step.dropped_lingers {
@@ -1236,11 +1249,21 @@ fn chat_body_node(
         recompute_bridged_pairs()
         if !pending_faces.is_empty() || !step.newly_held.is_empty() || !step.dropped_held.is_empty() {
           @signals.after_computing(fn() {
+            for face in dropped_faces {
+              face.last.val = None
+              face.away.set(false)
+              // det-ok(motion-length): emit.mbt's Return, restoring ring and line if held message was dropped during Fold
+              face.ring_alpha.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=now)
+              face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out), at=now)
+            }
             for pf in pending_faces {
               let (pk, face, plan) = pf
               if plan.folds {
                 // det-ok(motion-length): emit.mbt's Fold, the line folding to its picture from the plan's start
                 face.fold.go(0.0, @motion.tween(@sfbase.Pose::Fold.ms(), ease=Out, delay=plan.came - now), at=now)
+                (face.bind_ring)()
+                // det-ok(motion-length): emit.mbt's Fold, fading the spinning ring out smoothly with the line
+                face.ring_alpha.go(0.0, @motion.tween(@sfbase.Pose::Fold.ms(), ease=Out, delay=plan.came - now), at=now)
               }
               v.at_moment(plan.spit_end, fn() {
                 guard !stage.is_flushed(pk) else { return }
@@ -1619,7 +1642,11 @@ fn chat_body_node(
       // the last row, what is over it not coming down (the old list's room agents' lines left); its answer out over it,
       // it goes as any row, what is over it coming down into its room on the list's way)
       leaves_room=fn(k) {
-        match chat_working_key_agent(stage.unalias(k)) {
+        let rk = stage.unalias(k)
+        if answered_lingers.get(rk) == Some(v.cause_at()) {
+          return false
+        }
+        match chat_working_key_agent(rk) {
           Some(a) if chat_entry_policy(Entry::Working(@sfbase.agent_of({}))).leaves_room =>
             match turns.answered.get(a) {
               // (answered this turn: the turn it is at as the line goes)

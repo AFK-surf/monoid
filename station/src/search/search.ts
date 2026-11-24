@@ -18,7 +18,7 @@ export type Told = { type: "query"; id: number; query: string; asker: Asker; kin
 export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, readerBinary } from "../read/mb-reader.ts";
 
 /// How long a search may take before it is answered with nothing.
 const QUERY_MS = 30_000;
@@ -57,7 +57,7 @@ export class Search {
 
   /// `after`: the timer of IDLE_MS (a test's own; else the wall's); `reference`: what looks in the program's place (a
   /// test's).
-  constructor(options: { data: string; files?: FileSearch | null; backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer }; reference?: (data: string) => Looker; after?: (ms: number, f: () => void) => () => void }) {
+  constructor(options: { data: string; files?: FileSearch | null; backfill?: BackfillOptions; reference?: (data: string) => Looker; after?: (ms: number, f: () => void) => () => void }) {
     this.#data = options.data;
     this.#after = options.after ?? wall.after;
     const reference = options.reference;

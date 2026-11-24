@@ -43,6 +43,7 @@ priv struct ChatJump {
   mut landing : Bool
   mut stood : (Double?, String, Double)
   mut around : Double
+  mut beyond : Double
   mut ask_to : Double
   asked_card : @signals.Signal[String]
   flashed : @signals.Signal[(String, Double, String)]
@@ -92,6 +93,7 @@ fn ChatJump::new() -> ChatJump {
     landing: false,
     stood: (None, "", 0.0),
     around: -1.0,
+    beyond: -1.0,
     ask_to: -1.0,
     asked_card: @signals.signal("", same=fn(a, b) { a == b }),
     flashed: @signals.signal(("", -1.0, ""), same=fn(a, b) { a == b }),
@@ -518,6 +520,7 @@ fn chat_goes_to(
     @sfbase.go_to_around.remove(chat)
     find_goes.remove(chat)
     jump.around = -1.0
+    jump.beyond = -1.0
     jump.ask_to = -1.0
     if said {
       @sfbase.toast_later(@sf.t("web-main.chat.messageGone"))
@@ -579,6 +582,7 @@ fn chat_goes_to(
         let card = jump.ask_to == target
         jump.ask_to = -1.0
         jump.around = -1.0
+        jump.beyond = -1.0
         // (the slice of a long message that holds what was meant in it: its block brought, View::sought's there)
         // (back where the reader was: the slice that was at the top, where the place said one and it is one still)
         let back_at = match (back, back_piece) {
@@ -648,6 +652,10 @@ fn chat_goes_to(
         chat_stand(jump, place, k, stand_at, c, slice=pk, glide=back is None && in_sight, sought=back is None)
       }
       None if first is Some(f) && last is Some(l) && target >= f && target <= l => give_up(true)
+      // (past all the device holds of the chat, none said to come after it: not on the device yet (a notification
+      // tapped before what it tells was brought), waited for as the chat's rows come, never said gone; the hand on the
+      // list lets it go)
+      None if !cv.newer && (match last { Some(l) => target > l; None => true }) => jump.beyond = target
       None => {
         let before = cv.more && (match first { Some(f) => target < f; None => true })
         let after = cv.newer && (match last { Some(l) => target > l; None => true })
@@ -681,6 +689,16 @@ fn chat_goes_to(
     }
   }
   v.reacts(fn() { ((rows.keys)(), @sfbase.go_tos_said.get()) }, fn(_) { goes() })
+  // (a message waited for past the chat's end, the reader's hand on the list meanwhile: let go of, unsaid)
+  v.reacts(
+    fn() { scroll.in_hand() },
+    fn(held) {
+      if held && jump.beyond >= 0.0 && @sfbase.go_tos.get(chat) == Some(jump.beyond) {
+        give_up(false)
+      }
+    },
+    at_start=false,
+  )
   // (its latest page come in place of a window short of the chat's end, asked: the list at its end)
   v.reacts(
     fn() { view().newer },

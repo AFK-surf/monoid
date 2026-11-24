@@ -846,3 +846,51 @@ test("autoStation: dispatches only to online stations with acceptAutoChats===tru
   assert.match(none.h.rig.chat.lastText(), /⚠️/, "should post away notice when no allowlisted station is reachable");
   await none.close();
 });
+
+test("autoStation: a station with fewer agents but its CPUs full is passed over for a quieter one; when every one is full, the least busy still takes it", async () => {
+  let s1Busy = 0.97;
+  let s2Busy = 0.1;
+  let s1Load = [2, 2, 2];
+  const { h, s1, s2, close } = multiWorkspace({
+    [H]: () => ({ sessions: true, acceptAutoChats: false, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 95 } } }),
+    [S]: () => ({ sessions: true, acceptAutoChats: true, load: { cpus: 8, cpuBusy: { share: s1Busy, seconds: 60 }, loadAvg: s1Load, running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 90 } } }),
+    [S2]: () => ({ sessions: true, acceptAutoChats: true, load: { cpus: 8, cpuBusy: { share: s2Busy, seconds: 60 }, loadAvg: [1, 1, 1], running: { turns: 2 }, memory: { totalBytes: 100, availableBytes: 50 } } }),
+  });
+  const entry = h.rig.raw.connects.find((c: Json) => c.id === "cl");
+  entry.autoStation = true;
+  delete entry.station;
+  delete entry.stations;
+  const at = (m: Json) => h.rig.store.connectThreadStation("cl", m.channel, m.threadTs);
+
+  // S runs no agent but its CPUs are 97% busy: S2, two agents and 10% busy, takes it.
+  const m1 = message({ text: "<@UBOT> cpu 1", threadTs: "4101.1", ts: "4101.1" });
+  await h.connects.receive("cl", { type: "message", message: m1 });
+  await settle();
+  assert.equal(at(m1), S2);
+
+  // S's CPUs 30% busy but its run queue 2 per core (16 on 8 cores): still full.
+  s1Busy = 0.3;
+  s1Load = [16, 16, 16];
+  const m2 = message({ text: "<@UBOT> cpu 2", threadTs: "4101.2", ts: "4101.2" });
+  await h.connects.receive("cl", { type: "message", message: m2 });
+  await settle();
+  assert.equal(at(m2), S2);
+
+  // S quiet again (30%, 2 on 8 cores) weighs 0 + 1 against S2's 2 + 0: S.
+  s1Load = [2, 2, 2];
+  const m3 = message({ text: "<@UBOT> cpu 3", threadTs: "4101.3", ts: "4101.3" });
+  await h.connects.receive("cl", { type: "message", message: m3 });
+  await settle();
+  assert.equal(at(m3), S);
+
+  // Both full: never refused, the lighter of the two (S, no agent) takes it.
+  s1Busy = 0.95;
+  s2Busy = 0.95;
+  const m4 = message({ text: "<@UBOT> cpu 4", threadTs: "4101.4", ts: "4101.4" });
+  await h.connects.receive("cl", { type: "message", message: m4 });
+  await settle();
+  assert.equal(at(m4), S);
+  assert.equal(h.rig.store.listSessions().length, 0);
+  assert.ok(s1.rig.store.listSessions().length + s2.rig.store.listSessions().length >= 4);
+  await close();
+});

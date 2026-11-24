@@ -1,6 +1,5 @@
-//! Thumbnails and ThumbHashes of the images sent in chats, for the station in TypeScript (src/drive/thumbs.ts): the
-//! Rust station's mesh/app/src/thumbs.rs as it is (the same `image` and `thumbhash` crates, at the versions mesh/ is
-//! built with, so both stations make the same bytes), its decoding and encoding off Node's thread. Which files, when,
+//! Thumbnails and ThumbHashes of the images sent in chats, for the station in TypeScript (src/drive/thumbs.ts),
+//! decoding and encoding off Node's thread using the `image` and `thumbhash` crates. Which files, when,
 //! and what is kept with a message: the TypeScript's.
 
 use std::io::Cursor;
@@ -27,18 +26,24 @@ const PREVIEW_SMALL: u64 = 300 * 1024;
 
 /// A smaller copy of an image: how large at most, which name beside its id, how much smaller it must come out to be
 /// kept (bytes × `of` below the image's), and whether a lossless WebP is tried too (kept where it is the smaller).
+/// When `min_short > 0`, extreme tall/wide images keep their short side at least `min_short` (without upscaling) up to
+/// `max_long` on the long side so FitCover thumbnails stay legible.
 struct Size {
     max_w: u32,
     max_h: u32,
+    min_short: u32,
+    max_long: u32,
     suffix: &'static str,
     of: u64,
     lossless: bool,
 }
-const THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, suffix: "", of: 1, lossless: false };
+const THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 320, max_long: 8192, suffix: "", of: 1, lossless: false };
+/// Strictly bounded 720×600 thumbnail without short-side floor (for inline-sized link previews).
+const BOX_THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 0, max_long: 0, suffix: ".b", of: 1, lossless: false };
 /// Kept only at half the image or less: anything more saves too little of the wait to be worth a second read. A
 /// screenshot of text is often smaller as a lossless WebP than as a JPEG, and then has every edge as it was; a photo
 /// is the JPEG. (Not a lossy WebP: the `image` crate writes none, and the app's own decoder reads only lossless ones.)
-const PREVIEW: Size = Size { max_w: PREVIEW_MAX, max_h: PREVIEW_MAX, suffix: ".p", of: 2, lossless: true };
+const PREVIEW: Size = Size { max_w: PREVIEW_MAX, max_h: PREVIEW_MAX, min_short: 0, max_long: 0, suffix: ".p", of: 2, lossless: true };
 
 /// Whether a file is an image a thumbnail is made for (a GIF would lose its motion).
 fn wanted(name: &str) -> bool {
@@ -46,8 +51,8 @@ fn wanted(name: &str) -> bool {
     [".png", ".jpg", ".jpeg", ".webp"].iter().any(|e| lower.ends_with(e))
 }
 
-/// thumbs.rs `thumbnail`.
-fn thumbnail_of(image: &Path, dir: &Path) -> Option<(PathBuf, &'static str)> {
+/// thumbs.rs `thumbnail`. When `boxed` is true, fits strictly within MAX_W×MAX_H (`BOX_THUMB`).
+fn thumbnail_of(image: &Path, dir: &Path, boxed: bool) -> Option<(PathBuf, &'static str)> {
     let name = image.file_name()?.to_str()?;
     if !wanted(name) {
         return None;
@@ -57,7 +62,8 @@ fn thumbnail_of(image: &Path, dir: &Path) -> Option<(PathBuf, &'static str)> {
         return None;
     }
     let id = id_of(image);
-    kept(dir, &id, &THUMB).or_else(|| make(decode(image)?, len, dir, &id, &THUMB))
+    let size = if boxed { &BOX_THUMB } else { &THUMB };
+    kept(dir, &id, size).or_else(|| make(decode(image)?, len, dir, &id, size))
 }
 
 /// thumbs.rs `preview`: as `thumbnail`, at PREVIEW, for an image over PREVIEW_SMALL.
@@ -97,7 +103,28 @@ fn decode(image: &Path) -> Option<DynamicImage> {
 fn make(decoded: DynamicImage, len: u64, dir: &Path, id: &str, size: &Size) -> Option<(PathBuf, &'static str)> {
     // Resampled with care: most are screenshots of text, which a quick filter leaves jagged. Never made larger.
     let (max_w, max_h) = (size.max_w, size.max_h);
-    let small = if decoded.width() > max_w || decoded.height() > max_h { decoded.resize(max_w, max_h, FilterType::CatmullRom) } else { decoded };
+    let (ow, oh) = (decoded.width(), decoded.height());
+    let small = if ow <= max_w && oh <= max_h {
+        decoded
+    } else {
+        let fit_k = (max_w as f64 / ow as f64).min(max_h as f64 / oh as f64);
+        let short = ow.min(oh) as f64;
+        let long = ow.max(oh) as f64;
+        if size.min_short > 0 && short * fit_k < size.min_short as f64 {
+            let short_k = (size.min_short as f64 / short).min(1.0);
+            let long_cap_k = if size.max_long > 0 { (size.max_long as f64 / long).min(1.0) } else { 1.0 };
+            let k = fit_k.max(short_k.min(long_cap_k));
+            if k < 1.0 {
+                let nw = (ow as f64 * k).round().max(1.0) as u32;
+                let nh = (oh as f64 * k).round().max(1.0) as u32;
+                decoded.resize_exact(nw, nh, FilterType::CatmullRom)
+            } else {
+                decoded
+            }
+        } else {
+            decoded.resize(max_w, max_h, FilterType::CatmullRom)
+        }
+    };
     // Clear parts stay clear (PNG); anything else is a photo or a screenshot, smallest as JPEG.
     let clear = small.color().has_alpha() && small.to_rgba8().pixels().any(|p| p.0[3] < 255);
     let (mut ext, mut kind, mut bytes) = if clear { ("png", "image/png", png(&small)?) } else { ("jpg", "image/jpeg", jpeg(&small)?) };
@@ -159,8 +186,9 @@ pub struct Thumbnail {
 /// thumbs.rs `thumbnail`: the image's thumbnail in `dir` and its type, made if it is not there yet; null when the image
 /// is shown itself (not a png/jpg/jpeg/webp by its name, 24 KiB or less, not readable as an image, or no smaller made).
 #[napi]
-pub async fn thumbnail(image: String, dir: String) -> Option<Thumbnail> {
-    let found = tokio::task::spawn_blocking(move || thumbnail_of(Path::new(&image), Path::new(&dir))).await.ok().flatten()?;
+pub async fn thumbnail(image: String, dir: String, boxed: Option<bool>) -> Option<Thumbnail> {
+    let boxed = boxed.unwrap_or(false);
+    let found = tokio::task::spawn_blocking(move || thumbnail_of(Path::new(&image), Path::new(&dir), boxed)).await.ok().flatten()?;
     Some(Thumbnail { path: found.0.to_string_lossy().into_owned(), kind: found.1.to_string() })
 }
 

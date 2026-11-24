@@ -21,6 +21,8 @@ extern "C" fn stq_finalize(stmt : Int64) -> Int
 extern "C" fn stq_reset(stmt : Int64) -> Int
 extern "C" fn stq_clear_bindings(stmt : Int64) -> Int
 extern "C" fn stq_step(stmt : Int64) -> Int
+extern "C" fn stq_stmt_readonly(stmt : Int64) -> Int
+extern "C" fn stq_bind_parameter_count(stmt : Int64) -> Int
 extern "C" fn stq_bind_null(stmt : Int64, index : Int) -> Int
 extern "C" fn stq_bind_int64(stmt : Int64, index : Int, value : Int64) -> Int
 extern "C" fn stq_bind_double(stmt : Int64, index : Int, value : Double) -> Int
@@ -33,6 +35,7 @@ extern "C" fn stq_column_int64(stmt : Int64, index : Int) -> Int64
 extern "C" fn stq_column_double(stmt : Int64, index : Int) -> Double
 extern "C" fn stq_column_text(stmt : Int64, index : Int, out_len : Ptr) -> Ptr
 extern "C" fn stq_column_blob(stmt : Int64, index : Int, out_len : Ptr) -> Ptr
+extern "C" fn stq_format_js_double(value : Double, out_len : Ptr) -> Ptr
 extern "C" fn stq_free(ptr : Ptr) -> Unit
 
 pub let SQLITE_OK : Int = 0
@@ -45,6 +48,7 @@ pub let OPEN_READONLY : Int = 1
 pub let OPEN_READWRITE : Int = 2
 pub let OPEN_CREATE : Int = 4
 pub let OPEN_URI : Int = 64
+pub let OPEN_NO_MUTEX : Int = 32768
 pub let OPEN_FULLMUTEX : Int = 65536
 
 pub let COL_INTEGER : Int = 1
@@ -107,11 +111,22 @@ fn take_c_bytes(p : Ptr, out_len : Ptr) -> Bytes {
   out
 }
 
-pub fn errstr(rc : Int) -> String {
+pub fn format_js_double(value : Double) -> String {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = stq_format_js_double(value, out_len)
+  bytes_to_str(take_c_bytes(p, out_len))
+}
+
+pub fn errstr_bytes(rc : Int) -> Bytes {
   let out_len = ptr_alloc(8.to_int64())
   ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
   let p = stq_errstr(rc, out_len)
-  bytes_to_str(take_c_bytes(p, out_len))
+  take_c_bytes(p, out_len)
+}
+
+pub fn errstr(rc : Int) -> String {
+  bytes_to_str(errstr_bytes(rc))
 }
 
 pub fn Db::open(path : String, flags : Int, busy_timeout_ms : Int = 5000) -> Result[Db, SqliteError] {
@@ -128,11 +143,15 @@ pub fn Db::close(self : Db) -> Int {
   stq_close(self.handle)
 }
 
-pub fn Db::errmsg(self : Db) -> String {
+pub fn Db::errmsg_bytes(self : Db) -> Bytes {
   let out_len = ptr_alloc(8.to_int64())
   ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
   let p = stq_errmsg(self.handle, out_len)
-  bytes_to_str(take_c_bytes(p, out_len))
+  take_c_bytes(p, out_len)
+}
+
+pub fn Db::errmsg(self : Db) -> String {
+  bytes_to_str(self.errmsg_bytes())
 }
 
 pub fn Db::exec(self : Db, sql : String) -> Result[Unit, SqliteError] {
@@ -222,6 +241,14 @@ pub fn Stmt::step(self : Stmt) -> Int {
   stq_step(self.handle)
 }
 
+pub fn Stmt::readonly(self : Stmt) -> Bool {
+  stq_stmt_readonly(self.handle) != 0
+}
+
+pub fn Stmt::bind_parameter_count(self : Stmt) -> Int {
+  stq_bind_parameter_count(self.handle)
+}
+
 pub fn Stmt::bind_null(self : Stmt, index : Int) -> Int {
   stq_bind_null(self.handle, index)
 }
@@ -257,11 +284,15 @@ pub fn Stmt::column_count(self : Stmt) -> Int {
   stq_column_count(self.handle)
 }
 
-pub fn Stmt::column_name(self : Stmt, index : Int) -> String {
+pub fn Stmt::column_name_bytes(self : Stmt, index : Int) -> Bytes {
   let out_len = ptr_alloc(8.to_int64())
   ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
   let p = stq_column_name(self.handle, index, out_len)
-  bytes_to_str(take_c_bytes(p, out_len))
+  take_c_bytes(p, out_len)
+}
+
+pub fn Stmt::column_name(self : Stmt, index : Int) -> String {
+  bytes_to_str(self.column_name_bytes(index))
 }
 
 pub fn Stmt::column_type(self : Stmt, index : Int) -> Int {

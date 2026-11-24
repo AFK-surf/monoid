@@ -86,6 +86,8 @@ test "a message's Markdown dragged over and copied: beside its words, HTML keepi
   let html = t.clipboard_html()
   assert_true(t.clipboard().contains("第一项，inline code"), msg=t.clipboard())
   assert_true(html.has_prefix("<h2>今天的进度</h2>"), msg=html)
+  assert_true(html.contains("<strong>布局</strong>"), msg=html)
+  assert_true(html.contains("<em>动画</em>"), msg=html)
   assert_true(html.contains("<li>第一项，<code>inline code</code></li><li>第二项<ol><li>nested one</li></ol></li>"), msg=html)
   assert_true(html.contains("<blockquote><p>引用里的一句话</p></blockquote>"), msg=html)
   assert_true(html.has_suffix("<pre><code>moon test</code></pre>"), msg=html)

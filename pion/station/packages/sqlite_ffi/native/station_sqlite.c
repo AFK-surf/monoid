@@ -7,6 +7,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,6 +43,8 @@ extern int sqlite3_finalize(sqlite3_stmt *stmt);
 extern int sqlite3_reset(sqlite3_stmt *stmt);
 extern int sqlite3_clear_bindings(sqlite3_stmt *stmt);
 extern int sqlite3_step(sqlite3_stmt *stmt);
+extern int sqlite3_stmt_readonly(sqlite3_stmt *stmt);
+extern int sqlite3_bind_parameter_count(sqlite3_stmt *stmt);
 extern int sqlite3_bind_null(sqlite3_stmt *stmt, int i);
 extern int sqlite3_bind_int64(sqlite3_stmt *stmt, int i, int64_t v);
 extern int sqlite3_bind_double(sqlite3_stmt *stmt, int i, double v);
@@ -389,6 +392,26 @@ int32_t stq_step(int64_t stmt_h) {
     return (int32_t)sqlite3_step(stmt);
 }
 
+// Single-owner thread contract: g_table_lock protects only slot lookup/alloc/free;
+// caller must serialize calls on the same db/stmt handle (consistent with SQLITE_OPEN_NO_MUTEX).
+int32_t stq_stmt_readonly(int64_t stmt_h) {
+    sqlite3_stmt *stmt = lookup_stmt(stmt_h);
+    if (stmt == NULL) {
+        return 0;
+    }
+    return (int32_t)sqlite3_stmt_readonly(stmt);
+}
+
+// Single-owner thread contract: g_table_lock protects only slot lookup/alloc/free;
+// caller must serialize calls on the same db/stmt handle (consistent with SQLITE_OPEN_NO_MUTEX).
+int32_t stq_bind_parameter_count(int64_t stmt_h) {
+    sqlite3_stmt *stmt = lookup_stmt(stmt_h);
+    if (stmt == NULL) {
+        return 0;
+    }
+    return (int32_t)sqlite3_bind_parameter_count(stmt);
+}
+
 int32_t stq_bind_null(int64_t stmt_h, int32_t index) {
     sqlite3_stmt *stmt = lookup_stmt(stmt_h);
     if (stmt == NULL) {
@@ -489,6 +512,189 @@ void *stq_column_blob(int64_t stmt_h, int32_t index, int64_t *out_len) {
     const void *p = sqlite3_column_blob(stmt, (int)index);
     int n = sqlite3_column_bytes(stmt, (int)index);
     return copy_bytes(p, n, out_len);
+}
+
+static void build_sci_candidate(char *buf, size_t cap, const char *digs, int k, int exp) {
+    int p = 0;
+    buf[p++] = digs[0];
+    if (k > 1) {
+        buf[p++] = '.';
+        memcpy(buf + p, digs + 1, (size_t)(k - 1));
+        p += k - 1;
+    }
+    snprintf(buf + p, cap - (size_t)p, "e%+03d", exp);
+}
+
+// Format a finite IEEE-754 double using ECMAScript Number::toString shortest-decimal rules
+// (matching MoonBit/JS JSON.stringify: fixed notation for 1e-6 <= |d| < 1e21, otherwise
+// shortest d[.ddd]e±exp with no leading zeros in exponent; -0.0 -> "0"; non-finite -> "null").
+// Relies on the default "C" locale (LC_NUMERIC decimal point is '.'; stillfail-pion never
+// calls setlocale).
+void *stq_format_js_double(double value, int64_t *out_len) {
+    if (value != value || (value - value) != 0.0) {
+        return copy_cstr("null", out_len);
+    }
+    if (value == 0.0) {
+        return copy_cstr("0", out_len);
+    }
+    int neg = value < 0.0;
+    double x = neg ? -value : value;
+
+    char digits[32];
+    int k = 0;
+    int exp = 0;
+    for (int prec = 0; prec <= 16; prec++) {
+        char sci[64];
+        snprintf(sci, sizeof(sci), "%.*e", prec, x);
+
+        char c0[32];
+        int ck = 0;
+        const char *p = sci;
+        while (*p != '\0' && *p != 'e' && *p != 'E') {
+            if (*p >= '0' && *p <= '9' && ck < (int)sizeof(c0) - 1) {
+                c0[ck++] = *p;
+            }
+            p++;
+        }
+        c0[ck] = '\0';
+        int cexp = (*p == 'e' || *p == 'E') ? atoi(p + 1) : 0;
+
+        if (strtod(sci, NULL) == x) {
+            memcpy(digits, c0, (size_t)ck + 1);
+            k = ck;
+            exp = cexp;
+            break;
+        }
+
+        // At asymmetric rounding boundaries (e.g. powers of two like 2^-24 where the upper
+        // half-ULP is twice the lower half-ULP), c0 = round(x, k) can fall just outside x's
+        // rounding interval while c0 + 1 or c0 - 1 lands inside and round-trips to x.
+        char up[32];
+        memcpy(up, c0, (size_t)ck + 1);
+        int up_exp = cexp;
+        int carry = 1;
+        for (int i = ck - 1; i >= 0 && carry; i--) {
+            if (up[i] == '9') {
+                up[i] = '0';
+            } else {
+                up[i]++;
+                carry = 0;
+            }
+        }
+        if (carry) {
+            up[0] = '1';
+            for (int i = 1; i < ck; i++) {
+                up[i] = '0';
+            }
+            up_exp = cexp + 1;
+        }
+        char up_sci[64];
+        build_sci_candidate(up_sci, sizeof(up_sci), up, ck, up_exp);
+        int up_ok = (strtod(up_sci, NULL) == x);
+
+        char dn[32];
+        memcpy(dn, c0, (size_t)ck + 1);
+        int dn_exp = cexp;
+        int all_zero_tail = 1;
+        for (int i = 1; i < ck; i++) {
+            if (dn[i] != '0') {
+                all_zero_tail = 0;
+                break;
+            }
+        }
+        if (dn[0] == '1' && all_zero_tail) {
+            for (int i = 0; i < ck; i++) {
+                dn[i] = '9';
+            }
+            dn_exp = cexp - 1;
+        } else {
+            int borrow = 1;
+            for (int i = ck - 1; i >= 0 && borrow; i--) {
+                if (dn[i] == '0') {
+                    dn[i] = '9';
+                } else {
+                    dn[i]--;
+                    borrow = 0;
+                }
+            }
+        }
+        char dn_sci[64];
+        build_sci_candidate(dn_sci, sizeof(dn_sci), dn, ck, dn_exp);
+        int dn_ok = (strtod(dn_sci, NULL) == x);
+
+        if (up_ok || dn_ok) {
+            if (up_ok && !dn_ok) {
+                memcpy(digits, up, (size_t)ck + 1);
+                k = ck;
+                exp = up_exp;
+            } else if (dn_ok && !up_ok) {
+                memcpy(digits, dn, (size_t)ck + 1);
+                k = ck;
+                exp = dn_exp;
+            } else {
+                // Both round-trip (unreachable when c0 missed by convexity, kept defensive):
+                // prefer even last digit.
+                int up_even = ((up[ck - 1] - '0') % 2) == 0;
+                if (up_even) {
+                    memcpy(digits, up, (size_t)ck + 1);
+                    k = ck;
+                    exp = up_exp;
+                } else {
+                    memcpy(digits, dn, (size_t)ck + 1);
+                    k = ck;
+                    exp = dn_exp;
+                }
+            }
+            break;
+        }
+    }
+
+    while (k > 1 && digits[k - 1] == '0') {
+        k--;
+    }
+    digits[k] = '\0';
+
+    int n = exp + 1;
+
+    char out[64];
+    int pos = 0;
+    if (neg) {
+        out[pos++] = '-';
+    }
+    if (k <= n && n <= 21) {
+        memcpy(out + pos, digits, (size_t)k);
+        pos += k;
+        for (int i = 0; i < n - k; i++) {
+            out[pos++] = '0';
+        }
+        out[pos] = '\0';
+    } else if (0 < n && n <= 21) {
+        memcpy(out + pos, digits, (size_t)n);
+        pos += n;
+        out[pos++] = '.';
+        memcpy(out + pos, digits + n, (size_t)(k - n));
+        pos += k - n;
+        out[pos] = '\0';
+    } else if (-6 < n && n <= 0) {
+        out[pos++] = '0';
+        out[pos++] = '.';
+        for (int i = 0; i < -n; i++) {
+            out[pos++] = '0';
+        }
+        memcpy(out + pos, digits, (size_t)k);
+        pos += k;
+        out[pos] = '\0';
+    } else {
+        out[pos++] = digits[0];
+        if (k > 1) {
+            out[pos++] = '.';
+            memcpy(out + pos, digits + 1, (size_t)(k - 1));
+            pos += k - 1;
+        }
+        int abs_exp = exp < 0 ? -exp : exp;
+        pos += snprintf(out + pos, sizeof(out) - (size_t)pos, "e%c%d", exp >= 0 ? '+' : '-', abs_exp);
+    }
+    return copy_bytes(out, pos, out_len);
 }
 
 void stq_free(void *ptr) {

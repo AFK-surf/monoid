@@ -65,7 +65,11 @@ pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -
         g
         .over(Is(true))
         .presses(By(fn() { @sf.viewer_bar_floats(width()) }))
-        .on_press(fn() { vw.toggle() })
+        .on_press(fn() {
+          if !vw.lines_tapped() {
+            vw.toggle()
+          }
+        })
         .cursor(Is(Some(Arrow)))
         .as_ground()
         |> ignore
@@ -78,7 +82,7 @@ pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -
       StageFlow(kind) => {
         let q = taps()
         match vw.flow {
-          Some(f) => flow_stage_node(q, src, vw, f, kind, width)
+          Some(f) => flow_stage_node(q, n, src, vw, f, kind, width)
           None => ()
         }
       }
@@ -155,7 +159,7 @@ doc_notes_side(width(), vw.md_notes().length())
         csv_stage_node(taps(), vw, tab, width)
       }
       StageLines(kind) => {
-        text_stage_node(taps(), vw, kind, width)
+        text_stage_node(taps(), n, src, vw, kind, width)
       }
     }
   }, at_once=true)
@@ -400,7 +404,7 @@ fn stage_words(vw : Viewer) -> String {
 /// Code and words as they are in `parent` (Viewer::text_stage's): in the code face, code in the colours the core says
 /// of its language (`code.ink`, the whole as one, then cut at its lines: up to highlight_limit), words and what is past
 /// it as they are; a file shown only in part said so over them.
-fn text_stage_node(parent : @view.View, vw : Viewer, kind : PKind, width : () -> Double) -> Unit {
+fn text_stage_node(parent : @view.View, stage : @view.View, src : Source, vw : Viewer, kind : PKind, width : () -> Double) -> Unit {
   let words = stage_words(vw)
   let cut = match vw.bytes.untracked() {
     Some(b) if b.length() > show_limit => Some(pv_fill("android-chat.file.cut", [("size", @sf.file_size(show_limit.to_double()))]))
@@ -426,7 +430,7 @@ fn text_stage_node(parent : @view.View, vw : Viewer, kind : PKind, width : () ->
     }
   })
   let told = @signals.signal(0)
-  lines_stage_node(parent, vw, kind, width, fn() { lines.length() }, fn(k) { lines[k] }, fn(k) { colored.get().get(k) }, fn() {
+  lines_stage_node(parent, stage, src, vw, kind, width, fn() { lines.length() }, fn(k) { lines[k] }, fn(k) { colored.get().get(k) }, fn() {
     cut
   }, told)
 }
@@ -434,12 +438,14 @@ fn text_stage_node(parent : @view.View, vw : Viewer, kind : PKind, width : () ->
 ///|
 /// Code and words in the code face in `parent` (Viewer::lines_stage's), `count()` lines (`line(k)`, coloured as
 /// `colored(k)` says, else plain; what they read changes as `told` is), in rows of 60 lines, a row a block of a page's
-/// list, so a long file lays out only what is in view; code's rows not wrapped, scrolled across as one, 32 in from
-/// their sides; `cut()`: what it says over them of a file shown only in part, or of reading on that failed. As the
-/// web's (fpCode 80 down, 32 in, 12 on 1.6; fpPlain 76 down, 32 in, 12 on 1.65; under 640, words 60 down, 16 in, 48
-/// under). `near`: what reads more as its foot comes near, while it wants more (scrolls_window's `near_foot`).
+/// list, so a long file lays out only what is in view; code's rows show a pinned non-selectable line-number gutter on
+/// the left and scroll across as one; `cut()`: what it says over them of a file shown only in part, or of reading on
+/// that failed. Words picked in the lines can be quoted or noted into the chat's draft with exact 1-based line numbers
+/// (viewer_lines_marks.mbt), listed beside the code on wide stages or at its foot on narrow ones (doc_notes_node.mbt).
 fn lines_stage_node(
   parent : @view.View,
+  stage : @view.View,
+  src : Source,
   vw : Viewer,
   kind : PKind,
   width : () -> Double,
@@ -452,8 +458,31 @@ fn lines_stage_node(
 ) -> Unit {
   let code = kind != KText && kind != KCsv
   let small = fn() { width() <= @sf.viewer_small_w && !code }
-  let side = fn() { if small() { plain_small_side } else { desk_text_side } }
+  let side_pad = fn() { if small() { plain_small_side } else { desk_text_side } }
   let height = if code { desk_code_line } else { desk_plain_line }
+  let m = vw.lines_marks
+  m.src = Some(src)
+  m.count = count
+  m.line_at = line
+  parent.owns(fn() { vw.lines_note_done() }) |> ignore
+  let side = fn() { doc_notes_side(width(), vw.lines_notes().length()) }
+  let side_room = fn() { if side() { doc_notes_side_room } else { 0.0 } }
+  let place : @view.ListPlace[Int] = @view.ListPlace::new()
+  m.locate = fn(ln) {
+    let idx = md_max(0, ln - 1)
+    let row_i = idx / lines_per_row
+    let within = (idx % lines_per_row).to_double() * height
+    place.bring(row_i, offset=within - pdf_locate_room)
+  }
+  let digits = fn() {
+    let n = count()
+    let d = "\{if n > 0 { n } else { 1 }}".length()
+    if d < 2 { 2 } else { d }
+  }
+  let gutter_w = fn(v : @view.View) {
+    let w = digits().to_double() * lines_gutter_digit_w + lines_gutter_pad
+    w * @sf.node_sp(v, desk_code_size) / desk_code_size
+  }
   // (code's rows scrolled across as one: each a scroll beside this one)
   let across = @view.Scroll::across()
   let rows = fn() {
@@ -461,15 +490,22 @@ fn lines_stage_node(
     let n = count()
     Array::makei((n + lines_per_row - 1) / lines_per_row, fn(i) { i })
   }
-  parent.scrolls_window(
+  let shell = parent.box(fn(r) { r.over(Is(true)).row(Is(true)) |> ignore })
+  let holds = shell.box(fn(h) { h.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore })
+  shell.box(fn(g) { g.width(By(fn() { Some(side_room()) })) |> ignore }) |> ignore
+  holds.scrolls_window(
     @view.Scroll::list(),
     rows,
     fn(row, i) {
-      let words = fn() -> Array[@ui.Run] {
+      let bounds = fn() -> (Int, Int) {
         told.get() |> ignore
         let n = count()
         let from = i * lines_per_row
         let to = if from + lines_per_row < n { from + lines_per_row } else { n }
+        (from, to)
+      }
+      let words = fn() -> Array[@ui.Run] {
+        let (from, to) = bounds()
         let sb = StringBuilder()
         let runs : Array[@ui.Run] = []
         let mut inked = true
@@ -495,8 +531,13 @@ fn lines_stage_node(
         }
       }
       let look = fn(w : @view.View) {
+        @ui.picked_of(w, lines_row_key(i)) |> ignore
         w
         .words_runs(By(words))
+        .runs_marks(By(fn() {
+          let (from, to) = bounds()
+          vw.lines_row_marks(from, to, line)
+        }))
         .words_look(Is({
           size: desk_code_size,
           weight: 400,
@@ -512,18 +553,59 @@ fn lines_stage_node(
         |> ignore
       }
       if code {
-        // scrolled across, its rows as one (32 in from its sides)
-        row.scrolls(across.beside(), fn(s) {
-          s.padding(Is((desk_text_side, 0.0, desk_text_side, 0.0))) |> ignore
-          s.box(look) |> ignore
+        row.row(Is(true)) |> ignore
+        // Pinned line-number gutter: in the code's own face and line (words in pieces), lent a picker that picks none, so
+        // a pick over the code neither takes nor copies its numbers (as a quote's card in a message: quote_card_node).
+        row.box(fn(g) {
+          g
+          .width(By(fn() { Some(gutter_w(g)) }))
+          .padding(Is((12.0, 0.0, 12.0, 0.0)))
+          .lines_up(Is(Some(End)))
+          .lends(@view.runs_picker, fn(_) { Is((0, 0)) })
+          |> ignore
+          g.box(fn(num) {
+            num
+            .words_runs(By(fn() {
+              let (from, to) = bounds()
+              [@ui.span(lines_gutter_text(from, to, digits()), mono=true)]
+            }))
+            .words_look(Is({
+              size: desk_code_size,
+              weight: 400,
+              line: height,
+              wrap: false,
+              tracking: @view.letters_own,
+              balance: false,
+              max_lines: 0,
+            }))
+            .words_breaks(Is(true))
+            .ink(By(fn() { @sf.theme().p.muted }))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        row.box(fn(sep) {
+          sep.width(Is(Some(@sf.rule_w))).ground(By(fn() { @sf.rule_color() })) |> ignore
+        })
+        |> ignore
+        row.box(fn(body) {
+          body.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+          // scrolled across, its rows as one
+          body.scrolls(across.beside(), fn(s) {
+            s.padding(Is((16.0, 0.0, desk_text_side, 0.0))) |> ignore
+            s.box(look) |> ignore
+          })
+          |> ignore
         })
         |> ignore
       } else {
-        row.padding(By(fn() { (side(), 0.0, side(), 0.0) })) |> ignore
+        row.padding(By(fn() { (side_pad(), 0.0, side_pad(), 0.0) })) |> ignore
         row.box(look) |> ignore
       }
     },
     est=lines_est,
+    place~,
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
     near_foot?=near,
@@ -538,7 +620,24 @@ fn lines_stage_node(
     foot=fn(f) { f.height(By(fn() { Some(if small() { plain_small_foot } else { desk_text_foot }) })) |> ignore },
   )
   |> ignore
+  lines_pick_bar_node(stage, vw)
+  doc_notes_foot_node(parent, vw.lines_doc_notes(), side)
+  doc_notes_side_node(
+    parent,
+    vw.lines_doc_notes(),
+    side,
+    fn() { if small() { page_small_top } else { desk_page_top } },
+    fn() { if vw.beside { md_side_foot } else { stage_foot_room(width()) + md_side_foot } },
+  )
+  parent.on_key(fn(k) { vw.lines_key(k.code, k.mods) }) |> ignore
 }
+
+///|
+/// Width of one digit and horizontal padding in the code line-number gutter (at desk_code_size = 12).
+let lines_gutter_digit_w : Double = 7.8
+
+///|
+let lines_gutter_pad : Double = 24.0
 
 ///|
 /// A block of code or words holds this many lines (lines_stage's 60), and is guessed this tall before it is laid out.
@@ -577,11 +676,13 @@ let cut_warn : Int64 = 0xD9962BFFL
 /// What has come of words read as they come in `parent` (Viewer::flow_stage's), as a file's words are
 /// (lines_stage_node): its lines and the one begun, coloured where they are (code, a piece at a time: flow_ink_node);
 /// the next part read as its end comes near (Viewer::read_on); why reading on failed over them.
-fn flow_stage_node(parent : @view.View, src : Source, vw : Viewer, f : Flow, kind : PKind, width : () -> Double) -> Unit {
+fn flow_stage_node(parent : @view.View, stage : @view.View, src : Source, vw : Viewer, f : Flow, kind : PKind, width : () -> Double) -> Unit {
   let (_, _, language) = preview_kind(vw.name)
   let told = flow_ink_node(parent, f, if kind == KCode { language } else { "" })
   lines_stage_node(
     parent,
+    stage,
+    src,
     vw,
     kind,
     width,

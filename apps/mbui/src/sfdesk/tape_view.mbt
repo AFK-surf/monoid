@@ -599,12 +599,10 @@ fn tape_let_go(p : TapePane, v : Double, at : Double) -> Unit {
 }
 
 ///|
-/// Back on the tape bringing `p` over (the one before the one in use: tape_back_to), step by step as the system's back
-/// gesture goes (wide_back_step): the tape in its hand from where it began, as a finger pulling `p` over has it,
-/// moved as far as the gesture has come from the edge it came from; gone through, `p` brought over from there; let go,
-/// over or back as a finger's is; called off, back where it was. Each at its step's moment. A back with no gesture (a
-/// back key, ⌘[) brings `p` over at once.
-fn tape_back(p : TapePane, step : @ui.BackStep) -> Unit {
+/// Back (`sign = 1.0`) or forward (`sign = -1.0`) on the tape bringing `p` over, step by step as the gesture goes: the
+/// tape in its hand from where it began, moved as far as the gesture has come; let go, over or back as a finger's is;
+/// called off, back where it was. Each at its step's moment.
+fn tape_gesture(p : TapePane, step : @ui.BackStep, sign : Double) -> Unit {
   let now = match @ui.tree_cause() {
     Some(t) => t
     None =>
@@ -633,10 +631,10 @@ fn tape_back(p : TapePane, step : @ui.BackStep) -> Unit {
             wide.tape_back_v = 0.0
           }
         } else if t > t1 {
-          wide.tape_back_v = (x - x1) / (t - t1) * 1000.0
+          wide.tape_back_v = sign * (x - x1) / (t - t1) * 1000.0
           wide.tape_back_last = (x, t)
         }
-        wide.tape_drag.set(x - wide.tape_back_x0)
+        wide.tape_drag.set(sign * (x - wide.tape_back_x0))
         if step is LetGo(_, _) {
           wide.tape_backing = false
           match wide.tape_pull.get() {
@@ -676,8 +674,14 @@ pub fn wide_takes_back(src : Source) -> Bool {
 }
 
 ///|
-/// What back on the wide frame does, as it is chosen (wide_back_what): a panel of the tape brought over, followed as the
-/// gesture goes (tape_back); the shell's back (wide_back), done once as the gesture goes through or a back with none comes; nothing.
+/// Whether forward is the wide frame's now (the tape's, or the frame's off it: tape_view, pane_view).
+pub fn wide_takes_forward(src : Source) -> Bool {
+  wide_forward(src) is Some(_)
+}
+
+///|
+/// What back or forward on the wide frame does, as it is chosen: a panel of the tape brought over, followed as the
+/// gesture goes (tape_gesture); a one-shot navigation step done once as the gesture goes through; nothing.
 priv enum WideBack {
   Follows(TapePane)
   Once(() -> Unit)
@@ -691,6 +695,19 @@ fn wide_back_what(src : Source) -> WideBack {
     Some(p) => Follows(p)
     None =>
       match wide_back(src) {
+        Some(f) => Once(f)
+        None => Nothing
+      }
+  }
+}
+
+///|
+/// What forward on the wide frame does now.
+fn wide_forward_what(src : Source) -> WideBack {
+  match tape_forward_to() {
+    Some(p) => Follows(p)
+    None =>
+      match wide_forward(src) {
         Some(f) => Once(f)
         None => Nothing
       }
@@ -716,8 +733,32 @@ fn wide_back_step(src : Source, held : Ref[WideBack?], hint : BackHint, step : @
     held.val = None
   }
   match what {
-    Follows(p) => tape_back(p, step)
+    Follows(p) => tape_gesture(p, step, 1.0)
     Once(f) => if hint.step(step) { f() }
+    Nothing => ()
+  }
+}
+
+///|
+/// A step of forward on the wide frame (tape_view's, pane_view's), at its moment: what it does chosen as a gesture
+/// begins, the whole gesture's (`held`, while it goes); each step to that alone, whatever changed meanwhile.
+fn wide_forward_step(src : Source, held : Ref[WideBack?], hint : BackHint, step : @ui.BackStep) -> Unit {
+  let what = match (step, held.val) {
+    (Began(_, _), _) => {
+      let w = wide_forward_what(src)
+      held.val = Some(w)
+      w
+    }
+    (_, Some(w)) => w
+    (Back, None) => wide_forward_what(src)
+    _ => return
+  }
+  if step is (LetGo(_, _) | CalledOff | Back) {
+    held.val = None
+  }
+  match what {
+    Follows(p) => tape_gesture(p, step, -1.0)
+    Once(f) => if hint.step(step, forward=true) { f() }
     Nothing => ()
   }
 }
@@ -981,6 +1022,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // view in one of them says takes back (a page's own stack) taking it before it, what is over them too; whose it is
   // said at the cause that changes it, each step taken at its moment (wide_back_step)
   let held : Ref[WideBack?] = Ref(None)
+  let fwd_held : Ref[WideBack?] = Ref(None)
   let hint = back_hint_new(v)
   v.show(at_once=true, fn() { wide_takes_back(src) }, fn(b) {
     b.follows_back(fn(step) { wide_back_step(src, held, hint, step) }) |> ignore
@@ -988,6 +1030,9 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     // here, the tape back where it was in use)
     b.owns(fn() { wide_back_left(held, hint, v.cause_at()) }) |> ignore
   })
+  v.follows_forward(when=fn() { wide_takes_forward(src) }, fn(step) { wide_forward_step(src, fwd_held, hint, step) })
+  |> ignore
+  v.owns(fn() { wide_back_left(fwd_held, hint, v.cause_at()) }) |> ignore
   v.box(fn(row) {
     tape_goes.parts.clear()
     tape_goes.parts.push(row)

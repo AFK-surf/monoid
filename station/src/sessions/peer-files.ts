@@ -15,6 +15,7 @@ import { NoBytes, bytesOf, withBytes } from "../mesh/bus.ts";
 import { fileBytes, writeBytes } from "../mesh/files.ts";
 import { withLock, workspaceFile } from "./archive.ts";
 import { roomOfSoon } from "./footprint.ts";
+import type { PackedProgram } from "./packed-mb.ts";
 import type { Hub } from "./hub.ts";
 import { shownFactsSoon } from "./image-size.ts";
 import { fromBefore, named, reachable } from "./others.ts";
@@ -81,7 +82,7 @@ async function chunkOf(path: string, flags: number, offset: number, whole: boole
 /// What another station's session reads of a chat's attachment here (`fetchAttachments` there): a file in the uploads of one of its sessions, the files its page shows (GET /sessions/:key/files), maybe packed with its
 /// archived workspace, all of it from `offset` after the answer (`whole`; a station from before asks for a chunk at a
 /// time). `ws`: the workspace it was asked in, whose chats it reads (null: any, as xshare/index.ts checked).
-export async function fileForPeer(hub: Hub, request: Json, ws: string | null = null): Promise<Json> {
+export async function fileForPeer(hub: Hub, request: Json, ws: string | null = null, packed?: PackedProgram): Promise<Json> {
   const chat = typeof request?.chat === "string" ? request.chat : "";
   const given = typeof request?.path === "string" ? request.path : "";
   const offset = typeof request?.offset === "number" && Number.isSafeInteger(request.offset) && request.offset >= 0 ? request.offset : 0;
@@ -100,7 +101,7 @@ export async function fileForPeer(hub: Hub, request: Json, ws: string | null = n
   const kept = join(dir, hash([path]));
   if (offset === 0 || (await statOf(kept)) === null) {
     const room = await roomOfSoon(hub.config().dataDir, row.workspace);
-    const bytes = room === null ? null : await withLock(room, async () => workspaceFile(room, `uploads/${base}`));
+    const bytes = room === null ? null : await withLock(room, async () => workspaceFile(room, `uploads/${base}`, { program: packed }));
     if (bytes === null) throw new Error(`${given} is gone from that chat`);
     await mkdir(dir, { recursive: true });
     await sweep(hub, dir);

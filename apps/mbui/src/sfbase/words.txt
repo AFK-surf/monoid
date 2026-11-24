@@ -891,6 +891,9 @@ web-main.chat.inferIntent.copyReply
 web-main.chat.inferIntent.quoteToDraft
 web-main.chat.inferIntent.model
 web-main.chat.inferIntent.retry
+web-main.chat.inferIntent.failed
+web-main.chat.inferIntent.outdated
+web-main.chat.inferIntent.outdatedHint
 web-main.chat.inferIntent.pin
 web-main.chat.inferIntent.pinned
 web-main.chat.inferIntent.unpin

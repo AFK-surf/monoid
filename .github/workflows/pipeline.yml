@@ -1743,7 +1743,7 @@ jobs:
     runs-on: [self-hosted, macos-ci]
     outputs:
       hand: ${{ steps.hand.outputs.key }}
-      monoid: ${{ steps.hand.outputs.packed }}
+      monoid: ${{ steps.hand.outputs.packed == '1' && steps.monoid-upload.outcome == 'success' && '1' || '' }}
     environment: production
     timeout-minutes: 5
     env:
@@ -1821,8 +1821,13 @@ jobs:
             fi
           fi
           [ -z "$failed" ]
+      # (not uploaded, monoid's beta is left for the next release, monoid-android skipped, as where it was not packed: a
+      # reset of the artifact service failed this job after still.fail's own was put, and held its put back, main
+      # 04d026f01's 45386684272, 2026-11-24)
       - if: vars.MONOID_CI == 'on' && steps.hand.outputs.packed == '1'
+        id: monoid-upload
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with: { name: "monoid-android-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1, compression-level: 0 }
 
   # monoid's beta Android app (build.monoid.android.beta), built by android from its own build, put whole in monoid's
@@ -2054,11 +2059,9 @@ jobs:
       - uses: actions/cache/restore@v4
         if: github.ref != 'refs/heads/main' && steps.arch-base.outputs.next != 'true'
         with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
-          key: mbui-ios-${{ github.sha }}
-          restore-keys: mbui-ios-
+          path: .ci/hbc
+          key: mbui-ios-hbc-${{ github.sha }}
+          restore-keys: mbui-ios-hbc-
       - if: github.ref != 'refs/heads/main'
         run: |
           if [ "${{ steps.arch-base.outputs.next }}" = true ] && [ -d .ci/mbc-store ]; then
@@ -2606,8 +2609,11 @@ jobs:
           [ "$put_rc" = 0 ] && [ -z "$failed" ]
       - uses: actions/upload-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release", retention-days: 7 }
+      # (not uploaded, left for the next release, monoid-desktop-win skipped, as android's)
       - if: steps.monoid.outputs.packed == '1'
+        id: monoid-upload
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with: { name: "monoid-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1 }
       # (main's caches, however the build ended, last: after the release is put, never holding it back. One cut short
       # keeps what it compiled, what it left running (moon, mbc, clang-cl) stopped first and their locks taken out, so
@@ -2655,7 +2661,7 @@ jobs:
             libs/ui/out
           key: ${{ env.BUILD_KEY }}
     outputs:
-      monoid: ${{ steps.monoid.outputs.packed }}
+      monoid: ${{ steps.monoid.outputs.packed == '1' && steps.monoid-upload.outcome == 'success' && '1' || '' }}
 
   # monoid's beta Windows app (build.monoid.desktop.beta), packed by desktop-win from its own build, put whole in monoid's
   # bucket once the check passed.

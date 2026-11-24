@@ -210,10 +210,10 @@ pub fn seg_node(
 
 ///|
 /// A sliding group's lens's shadow, held all the way (@kit.toggle_group's): its blur and how far down.
-let seg_lens_shadow : Double = 6.0
+let seg_lens_shadow : Double = 0.0
 
 ///|
-let seg_lens_shadow_y : Double = 2.0
+let seg_lens_shadow_y : Double = 0.0
 
 ///|
 /// Growth ratio of the clear liquid glass lens while a compact segmented thumb is held (1.15x).
@@ -255,6 +255,7 @@ fn seg_lens_overlay_node(
     overhang_x=18.0,
     overhang_y=16.0,
     active~,
+    droplet_role=3,
     loc~,
   )
 }

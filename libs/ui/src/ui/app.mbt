@@ -1991,6 +1991,43 @@ fn Ctx::back_gesture(self : Ctx, kind : Int, x : Double, t : Double, progress? :
 }
 
 ///|
+/// The forward gesture's step to the node that takes forward (wheel_back.mbt): held from its start (0) by what takes
+/// forward then (Ctx::forward_taker); each step after goes to that one alone; if it may take input no more, called off
+/// once and the rest of the gesture is nobody's. Done (2) or called off (3), let go.
+fn Ctx::forward_gesture(self : Ctx, kind : Int, x : Double, t : Double) -> Bool {
+  match (kind, self.forward_held) {
+    (0, _) | (_, None) => {
+      if kind != 0 && self.forward_off {
+        if kind >= 2 {
+          self.forward_off = false
+        }
+        return false
+      }
+      guard self.forward_taker() is Some(h) else { return false }
+      if kind == 0 {
+        self.forward_off = false
+        self.forward_held = Some(h)
+      }
+      (h.f)(kind, x - h.left, h.w, t, -1.0)
+      true
+    }
+    (_, Some(h)) => {
+      if kind >= 2 {
+        self.forward_held = None
+      }
+      if kind != 3 && !old_owner_open(h.owner) {
+        self.forward_held = None
+        self.forward_off = kind < 2
+        (h.f)(3, x - h.left, h.w, t, -1.0)
+        return false
+      }
+      (h.f)(kind, x - h.left, h.w, t, -1.0)
+      true
+    }
+  }
+}
+
+///|
 /// A back gesture held from its start (Ctx::back_gesture): what takes it, where that was then (its left, its width), and
 /// the old view it is of (none: what the old frame put over all of it at its root).
 struct BackHeld {
@@ -2357,7 +2394,11 @@ fn on_key(code : Int, mods : Int) -> Unit {
   // Code 0 is the host's modifier change, not a key for a field or shortcut. Ordinary keys also carry their
   // modifiers, so a key received after focus returns corrects the state before it is acted on.
   if modifiers_said.val.untracked() != mods {
-    view_event(fn() { modifiers_said.val.set(mods) }, what="modifiers")
+    view_event(fn() {
+      modifiers_said.val.set(mods)
+      cmd_hover_update(mods=Some(mods))
+      view_cursor_tell()
+    }, what="modifiers")
     h_request_frame()
   }
   if code == 0 { return }

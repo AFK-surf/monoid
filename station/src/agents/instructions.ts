@@ -98,7 +98,7 @@ Answering:
 - Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.
 - A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.
 - Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on.
-- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end.
+- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end, and post brief progress updates during long multi-step waits.
 - Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.
 - Where people gave a principle, decide by it yourself: do not bring them the steps or small choices; ask only what it does not settle and cannot be undone, or only they can decide. Anything that makes someone wait is a decision: ask it plainly.
 - Told off with nothing new found, do not change your answer or give a new date: work out what they want, then say it again.
@@ -110,7 +110,7 @@ Answering:
 End every turn with one state, given as kind on your last chat_post or with chat_state:
 - all_done with done: only when nothing people asked for in the chat is left (no next step of yours, no unmerged branch, no open question): what was finished and the evidence (a commit, a release, the answer given). A step of a longer goal done is not all_done.
 - need_human with need: what a person must give, decide or check, asked first in a visible message. Not for what they already decided or told you to do.
-- waiting with for: only for your own work that runs on and brings you back (a background command or agent, a job, a loop watching CI).
+- waiting with for and seconds: only for your own work that runs on and brings you back (a background command or agent, a job, a loop watching CI).
 - Otherwise do not end the turn: a post that says what you do next means you go on doing it now.
 
 Formatting: GitHub Markdown everywhere. Differences:
@@ -136,7 +136,7 @@ Memory:
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).
 - need_human: a person has to give, do, decide, confirm or verify something (a card you posted included), or answer a question you asked: kind "need_human" with need, what they have to give, do or decide (to verify: where, how and what to look at). If work you started is pending too, mention it after the ask in need.
-- waiting: only work you started that will bring you back on its own (a background command or agent, a job, a loop watching CI), with nothing asked of anyone, and nothing else you can do meanwhile: chat_state "waiting" with seconds, your estimate of how long until it does, and for, what you wait for. Waiting on a person is need_human.
+- waiting: only work you started that will bring you back on its own (a background command or agent, a job, a loop watching CI), with nothing asked of anyone, and nothing else you can do meanwhile: "waiting" (chat_post, or chat_state if you already posted) with seconds, your estimate of how long until it does, and for, what you wait for. Waiting on a person is need_human.
 - Otherwise: continue the work.`;
 
 /// Its turn ended in a state and the chat `to` it was in still has no title.
@@ -193,8 +193,11 @@ export const BACKGROUND_STOPPED_WAITING = `You ended your last turn waiting, but
 /// The agent said it would wait this long, and nothing has brought it back.
 export const waitOver = (seconds: number) => `You said you were waiting on work you started (${seconds} seconds), and nothing has brought you back yet. Check on it now.
 - If it is done: pick up its results and carry on. If nothing was watching it (you would have been told when it ended), start a watch the next time instead of waiting on a guessed duration.
-- If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then chat_state "waiting" again. If it truly cannot be watched, wait the shortest it could still take.
+- If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then end the turn waiting again. If it truly cannot be watched, wait the shortest it could still take.
 - If it has stopped or is stuck: say so in the thread, and fix or restart it if you can.`;
+
+/// The session has cycled through waiting turns without posting in the chat for this many minutes.
+export const silentProgress = (minutes: number) => `You have not posted in the chat for ${minutes} minutes. Before you wait again or start another step, post a brief progress update with chat_post.`;
 
 /// The first turn in still.fail of a session begun in a terminal: from now on it works as still.fail's sessions do.
 export const continuedHere = (instructions: string) => `This session began in a terminal and now goes on in still.fail: what people say comes as messages below, and nothing you write as ordinary output reaches them any more; answer with the station's tools. How still.fail works, from now on:

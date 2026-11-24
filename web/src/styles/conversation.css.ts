@@ -12,7 +12,11 @@ globalStyle(`${markdown} pre`, {
   overflow: "auto", cornerShape: vars.cornerShape,
 });
 globalStyle(`${markdown} pre code`, { padding: "0", background: "none" });
+/** Emphasis (*…*): upright muted text rather than slanted glyphs; muted contexts flip to body ink, links and code keep theirs. */
+globalStyle(`${markdown} em`, { fontStyle: "normal", color: vars.muted });
+globalStyle(`${markdown} blockquote em, ${markdown} th em`, { color: vars.text });
 globalStyle(`${markdown} a`, { color: vars.blue });
+globalStyle(`${markdown} a em`, { color: "inherit" });
 globalStyle(`${markdown} table`, { borderCollapse: "collapse", fontSize: vars.textUi, fontVariantNumeric: "tabular-nums" });
 globalStyle(`${markdown} th, ${markdown} td`, { borderBottom: `1px solid ${vars.line}`, padding: "7px 12px", textAlign: "left" });
 globalStyle(`${markdown} th`, {

@@ -1,0 +1,165 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "RawLines splits on LF only without stripping CR and decodes lossy UTF-8" {
+  let rl = RawLines::new()
+  let c1 = Bytes::new(5)
+  c1[0] = 97 as Byte // 'a'
+  c1[1] = 13 as Byte // '\r'
+  c1[2] = 10 as Byte // '\n'
+  c1[3] = 0xFF as Byte
+  c1[4] = 10 as Byte
+  let out = rl.push(c1)
+  expect(out.length() == 2, "2 lines")
+  expect(out[0] == "a\r", "CR preserved")
+  expect(out[1] == "\u{FFFD}", "lossy UTF-8")
+}
+
+test "LineQueue clears slots and compacts storage" {
+  let q = LineQueue::new()
+  let sb = StringBuilder::new()
+  for i in 0..<80 {
+    sb.write_string("line-" + i.to_string() + "\n")
+  }
+  q.enqueue_chunk(sb.to_string().to_bytes())
+  expect(q.storage_len() == 80, "queued 80")
+  for i in 0..<64 {
+    match q.pop_line() {
+      Some(l) => expect(l == "line-" + i.to_string(), "line " + i.to_string())
+      None => panic("unexpected None")
+    }
+  }
+  expect(q.storage_len() == 16, "compacted to 16")
+  for _ in 0..<16 {
+    let _ = q.pop_line()
+  }
+  expect(q.storage_len() == 0, "emptied to 0")
+}
+
+test "escape_line_separators escapes U+2028 and U+2029" {
+  expect(escape_line_separators("{\"ok\":true}") == "{\"ok\":true}", "ascii fast path")
+  let b = Bytes::new(8)
+  b[0] = 97 as Byte // 'a'
+  b[1] = 0xE2 as Byte
+  b[2] = 0x80 as Byte
+  b[3] = 0xA8 as Byte // U+2028
+  b[4] = 0xE2 as Byte
+  b[5] = 0x80 as Byte
+  b[6] = 0xA9 as Byte // U+2029
+  b[7] = 98 as Byte // 'b'
+  let raw = decode_utf8_lossy_arr([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+  expect(escape_line_separators(raw) == "a\\u2028\\u2029b", "escaped separators")
+}
+
+test "is_cancel_ask requires strict boolean true and parse_ask_line maps invalid JSON to Null" {
+  expect(is_cancel_ask(parse_ask_line("{\"cancel\":true}")), "cancel true")
+  expect(!is_cancel_ask(parse_ask_line("{\"cancel\":false}")), "cancel false")
+  expect(!is_cancel_ask(parse_ask_line("{\"cancel\":1}")), "cancel 1")
+  expect(!is_cancel_ask(parse_ask_line("{\"cancel\":\"true\"}")), "cancel str")
+  expect(base_codec::json_eq(parse_ask_line("{bad json"), base_codec::json_null()), "bad json -> null")
+  expect(base_codec::json_eq(parse_ask_line("{\"s\":\"\\uD800\"}"), base_codec::json_null()), "lone surrogate -> null")
+}
+
+test "json_get_last implements last-wins for duplicate keys" {
+  let dup = base_codec::json_obj([
+    ("scope", base_codec::json_str("all")),
+    ("scope", base_codec::json_str("x")),
+  ])
+  match json_get_last(dup, "scope") {
+    Some(base_codec::Json::Str("x")) => ()
+    _ => panic("expected last-wins value 'x'")
+  }
+  let dup_cancel = base_codec::json_obj([
+    ("cancel", base_codec::json_bool(true)),
+    ("cancel", base_codec::json_bool(false)),
+  ])
+  expect(!is_cancel_ask(dup_cancel), "duplicate cancel last-wins false")
+}
+
+test "format_step_response matches MB builder protocol and never retries App errors as busy" {
+  expect(format_step_response("archive mark", Ok(Some(true))) == "{\"done\":true}", "done true")
+  expect(format_step_response("archive mark", Ok(Some(false))) == "{\"done\":false}", "done false")
+  expect(
+    format_step_response("archive mark", Ok(None)) ==
+    "{\"done\":false,\"error\":\"invalid archive mark preparation request\"}",
+    "invalid request",
+  )
+  expect(
+    format_step_response("archive mark", Err(StepError::Sql(sql_db::sql_error(5, "database is locked")))) ==
+    "{\"done\":false}",
+    "SQL busy omits error",
+  )
+  expect(
+    format_step_response("archive mark", Err(StepError::Sql(sql_db::sql_error(1, "boom")))) ==
+    "{\"done\":false,\"error\":\"boom\"}",
+    "SQL non-busy includes error",
+  )
+  expect(
+    format_step_response("archive mark", Err(StepError::App("archive mark index version \"is locked\" is incompatible with 1"))) ==
+    "{\"done\":false,\"error\":\"archive mark index version \\\"is locked\\\" is incompatible with 1\"}",
+    "App error mentioning 'is locked' must NOT be treated as busy",
+  )
+}
+
+test "archive_marks_part and archive_marks_complete" {
+  let p = archive_marks_part("pins")
+  expect(p.source == "pins" && p.key == "session" && p.rows == "archive_pin_rows", "pins part")
+  let k = archive_marks_part("kept")
+  expect(k.source == "kept_chats" && k.key == "thread" && k.rows == "archive_keep_rows", "kept part")
+  let m : Map[String, base_codec::Json] = Map::new()
+  m.set("complete", base_codec::json_int(1))
+  expect(archive_marks_complete(m), "complete 1")
+  m.set("complete", base_codec::json_int(0))
+  expect(!archive_marks_complete(m), "complete 0")
+}
+
+test "usage_retire quote_sql_ident, double_floor, and double_ceil" {
+  expect(quote_sql_ident("usage_detail") == "\"usage_detail\"", "plain ident")
+  expect(quote_sql_ident("a\"b") == "\"a\"\"b\"", "escaped quote")
+  expect(double_floor(3.0) == 3.0, "floor exact")
+  expect(double_floor(3.7) == 3.0, "floor pos")
+  expect(double_floor(-3.2) == -4.0, "floor neg")
+  expect(double_floor(-3.0) == -3.0, "floor neg exact")
+  expect(double_ceil(3.0) == 3.0, "ceil exact")
+  expect(double_ceil(3.2) == 4.0, "ceil pos")
+  expect(double_ceil(-3.7) == -3.0, "ceil neg")
+  expect(double_ceil(-3.0) == -3.0, "ceil neg exact")
+  // Large finite doubles (|x| >= 2^52) are exact integers in IEEE-754 and must not overflow to_int64.
+  expect(double_floor(4503599627370496.0) == 4503599627370496.0, "floor 2^52")
+  expect(double_ceil(4503599627370496.0) == 4503599627370496.0, "ceil 2^52")
+  expect(double_floor(2.0e30) == 2.0e30, "floor 2e30")
+  expect(double_ceil(2.0e30) == 2.0e30, "ceil 2e30")
+  expect(double_floor(-2.0e30) == -2.0e30, "floor -2e30")
+  expect(double_ceil(-2.0e30) == -2.0e30, "ceil -2e30")
+  let q = 1.0e30 / 900000.0
+  expect(double_floor(q) == q, "floor 1e30/900000")
+  expect(double_ceil(q) == q, "ceil 1e30/900000")
+}
+
+test "double_to_i64_saturating matches MoonBit Double::to_int64" {
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  expect(double_to_i64_saturating(0.0 / 0.0) == 0.to_int64(), "NaN -> 0")
+  expect(double_to_i64_saturating(9223372036854775808.0) == max64, "2^63 -> INT64_MAX")
+  expect(double_to_i64_saturating(1.0e300 * 1.0e300) == max64, "+Inf -> INT64_MAX")
+  expect(double_to_i64_saturating(-9223372036854775808.0) == min64, "-2^63 -> INT64_MIN")
+  expect(double_to_i64_saturating(-1.0e300 * 1.0e300) == min64, "-Inf -> INT64_MIN")
+  expect(double_to_i64_saturating(42.9) == 42.to_int64(), "truncate pos")
+  expect(double_to_i64_saturating(-42.9) == (-42).to_int64(), "truncate neg")
+}
+
+test "post_block_expr and positions_query SQL alignment" {
+  expect(
+    post_block_expr("e.n") == "(e.n / 64 - CASE WHEN e.n < 0 AND e.n % 64 != 0 THEN 1 ELSE 0 END)",
+    "post block expr",
+  )
+  let c0 = card_positions_query(Some("card"), false)
+  expect(c0 == "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries INDEXED BY entries_cards WHERE thread=?1 AND n<=CAST(?2 AS INTEGER) AND card IS NOT NULL ORDER BY n LIMIT ?3)", "card query 0")
+  let c1 = card_positions_query(Some("options"), true)
+  expect(c1 == "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries INDEXED BY entries_options WHERE thread=?1 AND n>CAST(?2 AS INTEGER) AND n<=CAST(?3 AS INTEGER) AND options IS NOT NULL ORDER BY n LIMIT ?4)", "card query 1")
+  let c3 = card_positions_query(None, false)
+  expect(c3 == "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries WHERE thread=?1 AND n<=CAST(?2 AS INTEGER) ORDER BY n LIMIT ?3)", "card query 3")
+}

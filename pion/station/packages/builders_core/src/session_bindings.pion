@@ -1,0 +1,114 @@
+// Session bindings backfill builder (`--builder session-bindings`), 1:1 aligned with
+// `station/mb/src/bindings/bindings.mbt` and `station/mb/src/reader/main.mbt:885-886`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+let SESSION_BINDINGS_VERSION : Int = 1
+
+let BINDINGS_FIRST : String = "SELECT CAST(rowid AS TEXT) AS position FROM bindings WHERE rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?"
+
+let BINDINGS_NEXT : String = "SELECT CAST(rowid AS TEXT) AS position FROM bindings WHERE rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?"
+
+let BINDINGS_PUT : String = "INSERT INTO session_binding_rows (session, binding_rowid, connect) SELECT b.session_key, b.rowid, b.connect FROM bindings b WHERE b.rowid = CAST(? AS INTEGER) AND NOT EXISTS (SELECT 1 FROM session_binding_rows i WHERE i.session = b.session_key AND i.binding_rowid = b.rowid)"
+
+/// One batch of at most `limit` old bindings; whether all are copied then.
+pub fn session_bindings_step(db : sql_db::Db, limit : Int = 256) -> Result[Bool, StepError] {
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let rows_meta = match tx_db.all(
+        "SELECT version, CAST(last_rowid AS TEXT) AS last_rowid, CAST(end_rowid AS TEXT) AS end_rowid, complete FROM session_binding_meta WHERE id = 1",
+        [],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      if rows_meta.length() == 0 {
+        return Err(StepError::App("session binding index version marker is missing"))
+      }
+      let meta = rows_meta[0]
+      let ver_ok = match meta.get("version") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int() == SESSION_BINDINGS_VERSION
+        _ => false
+      }
+      if !ver_ok {
+        let v_str = sql_db::stringify_json(sql_db::row_val(meta, "version"))
+        return Err(
+          StepError::App(
+            "session binding index version " +
+            v_str +
+            " is incompatible with " +
+            SESSION_BINDINGS_VERSION.to_string(),
+          ),
+        )
+      }
+      match meta.get("complete") {
+        Some(base_codec::Json::Num(n, _)) => {
+          if n == 1.0 {
+            return Ok(true)
+          }
+        }
+        _ => ()
+      }
+      let last = sql_db::row_val(meta, "last_rowid")
+      let end = sql_db::row_val(meta, "end_rowid")
+      let lim = base_codec::json_int(limit)
+      let rows = match last {
+        base_codec::Json::Null => {
+          match tx_db.all(BINDINGS_FIRST, [end, lim]) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+        _ => {
+          match tx_db.all(BINDINGS_NEXT, [last, end, lim]) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+      }
+      for i in 0..<rows.length() {
+        let _ = match tx_db.run(BINDINGS_PUT, [sql_db::row_val(rows[i], "position")]) {
+          Ok(n) => n
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      let done = rows.length() < limit
+      let reached = if rows.length() > 0 {
+        sql_db::row_val(rows[rows.length() - 1], "position")
+      } else {
+        last
+      }
+      let _ = match tx_db.run(
+        "UPDATE session_binding_meta SET last_rowid = CAST(? AS INTEGER), complete = ? WHERE id = 1",
+        [reached, base_codec::json_int(if done { 1 } else { 0 })],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      Ok(done)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder session-bindings` (matches MB `all(db => @bindings.step(db))`).
+pub fn session_bindings_dispatch(
+  db : sql_db::Db,
+  ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match json_get_last(ask, "scope") {
+    Some(base_codec::Json::Str("all")) => {
+      match session_bindings_step(db, limit=256) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+    _ => Ok(None)
+  }
+}
+
+pub fn run_session_bindings(db_path : String) -> Int {
+  builder_loop(db_path, "session binding", session_bindings_dispatch)
+}

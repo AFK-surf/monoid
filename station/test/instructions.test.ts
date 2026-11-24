@@ -90,6 +90,7 @@ test("a session is opened with what the deployment adds to its instructions", as
 test("the fixed prompts", () => {
   for (const name of ["NUDGE", "RESUME_AFTER_RESTART", "GO_ON_AFTER_AUTH", "GO_ON_AFTER_SPENT"] as const) assert.ok(ts[name].length > 20, name);
   assert.ok(ts.waitOver(90).includes("(90 seconds)"));
+  assert.ok(ts.silentProgress(12).includes("12 minutes") && ts.silentProgress(12).includes("chat_post"));
   assert.ok(ts.continuedHere("X").endsWith("<stillfail-instructions>\nX\n</stillfail-instructions>"));
   assert.ok(ts.resumeLost("k", ["C1/1.0"]).includes("session_history with chat k") && ts.resumeLost("k", ["C1/1.0"]).includes("chat_history for C1/1.0"));
 });

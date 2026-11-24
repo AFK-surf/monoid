@@ -1,0 +1,326 @@
+// Archive-mark backfill builder (`--builder archive-marks`), 1:1 aligned with
+// `station/mb/src/marks/marks.mbt` and `station/mb/src/reader/main.mbt:884`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+let ARCHIVE_MARKS_VERSION : Int = 1
+
+pub struct ArchiveMarkPart {
+  pub source : String
+  pub key : String
+  pub rows : String
+}
+
+pub fn archive_marks_part(kind : String) -> ArchiveMarkPart {
+  if kind == "pins" {
+    ArchiveMarkPart::{ source: "pins", key: "session", rows: "archive_pin_rows" }
+  } else {
+    ArchiveMarkPart::{ source: "kept_chats", key: "thread", rows: "archive_keep_rows" }
+  }
+}
+
+pub fn archive_marks_complete(row : Map[String, base_codec::Json]) -> Bool {
+  match row.get("complete") {
+    Some(base_codec::Json::Num(n, _)) => n == 1.0
+    _ => false
+  }
+}
+
+fn markers(db : sql_db::Db) -> Result[Array[Map[String, base_codec::Json]], StepError] {
+  let rows = match db.all(
+    "SELECT kind, version, CAST(last_rowid AS TEXT) AS last_rowid, CAST(end_rowid AS TEXT) AS end_rowid, complete FROM archive_mark_meta ORDER BY kind",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(StepError::Sql(e))
+  }
+  let ok_shape = rows.length() == 2 &&
+  match (rows[0].get("kind"), rows[1].get("kind")) {
+    (Some(base_codec::Json::Str("kept")), Some(base_codec::Json::Str("pins"))) => true
+    _ => false
+  }
+  if !ok_shape {
+    return Err(StepError::App("archive mark index version marker is missing"))
+  }
+  for i in 0..<rows.length() {
+    let row = rows[i]
+    let ver_ok = match row.get("version") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int() == ARCHIVE_MARKS_VERSION
+      _ => false
+    }
+    if !ver_ok {
+      let v_str = sql_db::stringify_json(sql_db::row_val(row, "version"))
+      return Err(
+        StepError::App(
+          "archive mark index version " +
+          v_str +
+          " is incompatible with " +
+          ARCHIVE_MARKS_VERSION.to_string(),
+        ),
+      )
+    }
+  }
+  Ok(rows)
+}
+
+/// One bounded batch of at most `limit` rows of the first incomplete kind; returns whether both are complete.
+pub fn archive_marks_step(db : sql_db::Db, limit : Int = 256) -> Result[Bool, StepError] {
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let all = match markers(tx_db) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let mut target : Option[Map[String, base_codec::Json]] = None
+      for i in 0..<all.length() {
+        if !archive_marks_complete(all[i]) {
+          target = Some(all[i])
+          break
+        }
+      }
+      let meta = match target {
+        Some(m) => m
+        None => return Ok(true)
+      }
+      let kind = match meta.get("kind") {
+        Some(base_codec::Json::Str(k)) => k
+        _ => return Err(StepError::App("archive mark kind is missing"))
+      }
+      let part = archive_marks_part(kind)
+      let last = sql_db::row_val(meta, "last_rowid")
+      let end = sql_db::row_val(meta, "end_rowid")
+      let lim = base_codec::json_int(limit)
+      let positions = match last {
+        base_codec::Json::Null => {
+          match tx_db.all(
+            "SELECT CAST(rowid AS TEXT) AS position FROM " +
+            part.source +
+            " WHERE rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?",
+            [end, lim],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+        _ => {
+          match tx_db.all(
+            "SELECT CAST(rowid AS TEXT) AS position FROM " +
+            part.source +
+            " WHERE rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?",
+            [last, end, lim],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+      }
+      let put = "INSERT INTO " +
+      part.rows +
+      " (" +
+      part.key +
+      ", position) SELECT s." +
+      part.key +
+      ", s.rowid FROM " +
+      part.source +
+      " s WHERE s.rowid = CAST(? AS INTEGER) AND NOT EXISTS (SELECT 1 FROM " +
+      part.rows +
+      " i WHERE i." +
+      part.key +
+      " IS s." +
+      part.key +
+      " AND i.position = s.rowid)"
+      for i in 0..<positions.length() {
+        let _ = match tx_db.run(put, [sql_db::row_val(positions[i], "position")]) {
+          Ok(n) => n
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      let finished = positions.length() < limit
+      let reached = if positions.length() > 0 {
+        sql_db::row_val(positions[positions.length() - 1], "position")
+      } else {
+        last
+      }
+      let _ = match tx_db.run(
+        "UPDATE archive_mark_meta SET last_rowid = CAST(? AS INTEGER), complete = ? WHERE kind = ?",
+        [
+          reached,
+          base_codec::json_int(if finished { 1 } else { 0 }),
+          base_codec::json_str(kind),
+        ],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let mut all_done = finished
+      if all_done {
+        for i in 0..<all.length() {
+          let is_cur = match all[i].get("kind") {
+            Some(base_codec::Json::Str(k)) => k == kind
+            _ => false
+          }
+          if !is_cur && !archive_marks_complete(all[i]) {
+            all_done = false
+            break
+          }
+        }
+      }
+      Ok(all_done)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder archive-marks` (matches MB `all(db => @marks.step(db))`).
+pub fn archive_marks_dispatch(
+  db : sql_db::Db,
+  ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match json_get_last(ask, "scope") {
+    Some(base_codec::Json::Str("all")) => {
+      match archive_marks_step(db, limit=256) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+    _ => Ok(None)
+  }
+}
+
+pub fn run_archive_marks(db_path : String) -> Int {
+  builder_loop(db_path, "archive mark", archive_marks_dispatch)
+}
+
+// ── Real-SQLite self-test suite for builders_core + archive-marks ──
+
+pub fn run_builders_selftest() -> Result[Unit, String] {
+  let db = match sql_db::Db::create(":memory:", wait_ms=250) {
+    Ok(d) => d
+    Err(e) => return Err("create :memory: failed: " + e.message)
+  }
+  let schema = "CREATE TABLE pins (viewer TEXT, session TEXT, at INTEGER);" +
+  "CREATE TABLE kept_chats (viewer TEXT, thread INTEGER);" +
+  "CREATE TABLE archive_pin_rows (session TEXT, position INTEGER);" +
+  "CREATE TABLE archive_keep_rows (thread INTEGER, position INTEGER);" +
+  "CREATE TABLE archive_mark_meta (kind TEXT PRIMARY KEY, version INTEGER, last_rowid INTEGER, end_rowid INTEGER, complete INTEGER);"
+  match db.exec(schema) {
+    Ok(_) => ()
+    Err(e) => { db.close(); return Err("schema failed: " + e.message) }
+  }
+
+  // 1. Missing markers -> App error & autocommit still true (no lock leak).
+  match archive_marks_step(db, limit=4) {
+    Ok(_) => { db.close(); return Err("expected missing marker error") }
+    Err(StepError::App(msg)) => {
+      if msg != "archive mark index version marker is missing" {
+        db.close()
+        return Err("missing marker msg mismatch: " + msg)
+      }
+      if !db.autocommit() {
+        db.close()
+        return Err("lock leaked after missing marker error")
+      }
+    }
+    Err(StepError::Sql(e)) => { db.close(); return Err("expected App error, got Sql: " + e.message) }
+  }
+
+  // 2. Seed rows + incompatible version -> App error & autocommit still true.
+  let _ = match db.run("INSERT INTO archive_mark_meta VALUES ('kept', 99, NULL, 5, 0)", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO archive_mark_meta VALUES ('pins', 1, NULL, 5, 0)", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  match archive_marks_step(db, limit=4) {
+    Ok(_) => { db.close(); return Err("expected incompatible version error") }
+    Err(StepError::App(msg)) => {
+      if msg != "archive mark index version 99 is incompatible with 1" {
+        db.close()
+        return Err("incompatible version msg mismatch: " + msg)
+      }
+      if !db.autocommit() {
+        db.close()
+        return Err("lock leaked after incompatible version error")
+      }
+    }
+    Err(StepError::Sql(e)) => { db.close(); return Err("expected App error, got Sql: " + e.message) }
+  }
+
+  // 2b. P1-1: kept.version = 'is locked' must return App error (never misclassified as SQLITE_BUSY).
+  let _ = match db.run("UPDATE archive_mark_meta SET version = 'is locked' WHERE kind = 'kept'", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let locked_res = archive_marks_dispatch(db, base_codec::json_obj([("scope", base_codec::json_str("all"))]))
+  let locked_wire = format_step_response("archive mark", locked_res)
+  let want_locked = "{\"done\":false,\"error\":\"archive mark index version \\\"is locked\\\" is incompatible with 1\"}"
+  if locked_wire != want_locked {
+    db.close()
+    return Err("is locked version wire mismatch: got=" + locked_wire + " want=" + want_locked)
+  }
+
+  // 3. Fix version to 1, seed 5 kept_chats and 6 pins, batch with limit=3 -> multiple batches then done=true.
+  let _ = match db.run("UPDATE archive_mark_meta SET version = 1 WHERE kind = 'kept'", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  for i in 1..<6 {
+    let _ = match db.run("INSERT INTO kept_chats (viewer, thread) VALUES (?, ?)", [base_codec::json_str("u"), base_codec::json_int(i * 10)]) {
+      Ok(n) => n
+      Err(e) => { db.close(); return Err(e.message) }
+    }
+  }
+  for i in 1..<7 {
+    let _ = match db.run("INSERT INTO pins (viewer, session, at) VALUES (?, ?, ?)", [base_codec::json_str("u"), base_codec::json_str("s-" + i.to_string()), base_codec::json_int(i)]) {
+      Ok(n) => n
+      Err(e) => { db.close(); return Err(e.message) }
+    }
+  }
+  let _ = match db.run("UPDATE archive_mark_meta SET end_rowid = 6 WHERE kind = 'pins'", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+
+  let mut batches = 0
+  let mut finished = false
+  while !finished && batches < 20 {
+    batches = batches + 1
+    match archive_marks_step(db, limit=3) {
+      Ok(d) => finished = d
+      Err(StepError::App(m)) => { db.close(); return Err("batch app failed: " + m) }
+      Err(StepError::Sql(e)) => { db.close(); return Err("batch sql failed: " + e.message) }
+    }
+  }
+  if !finished || batches != 5 {
+    db.close()
+    return Err("expected finished=true in 5 batches, got finished=" + finished.to_string() + " batches=" + batches.to_string())
+  }
+  let pin_cnt = match db.first("SELECT COUNT(*) AS n FROM archive_pin_rows", []) {
+    Ok(Some(r)) => sql_db::row_int(r, "n")
+    _ => -1
+  }
+  let keep_cnt = match db.first("SELECT COUNT(*) AS n FROM archive_keep_rows", []) {
+    Ok(Some(r)) => sql_db::row_int(r, "n")
+    _ => -1
+  }
+  if pin_cnt != 6 || keep_cnt != 5 {
+    db.close()
+    return Err("row counts mismatch: pins=" + pin_cnt.to_string() + " keeps=" + keep_cnt.to_string())
+  }
+  // Already complete -> returns true immediately.
+  match archive_marks_dispatch(db, base_codec::json_obj([("scope", base_codec::json_str("all"))])) {
+    Ok(Some(true)) => ()
+    _ => { db.close(); return Err("expected Ok(Some(true)) when already complete") }
+  }
+  // Invalid scope -> returns Ok(None).
+  match archive_marks_dispatch(db, base_codec::json_obj([("scope", base_codec::json_str("other"))])) {
+    Ok(None) => ()
+    _ => { db.close(); return Err("expected Ok(None) for invalid scope") }
+  }
+  db.close()
+  Ok(())
+}

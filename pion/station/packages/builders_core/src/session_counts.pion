@@ -1,0 +1,114 @@
+// Session counts backfill builder (`--builder session-counts`), 1:1 aligned with
+// `station/mb/src/counts/counts.mbt` and `station/mb/src/reader/main.mbt:927-929`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+let SESSION_COUNTS_VERSION : Int = 1
+
+let SESSION_COUNT_SEE_POSITION : String = "INSERT INTO session_count_seen (session, connect, ws) SELECT s.key, s.connect, s.ws FROM sessions s WHERE s.key = (SELECT key FROM sessions WHERE rowid = CAST(? AS INTEGER)) AND NOT EXISTS (SELECT 1 FROM session_count_seen c WHERE c.session = s.key)"
+
+/// At most `limit` old sessions counted, with the cursor; whether all are then.
+pub fn session_counts_step(db : sql_db::Db, limit : Int = 256) -> Result[Bool, StepError] {
+  if limit < 1 {
+    return Err(StepError::App("session count batch must be positive"))
+  }
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let rows_meta = match tx_db.all(
+        "SELECT version, CAST(last_rowid AS TEXT) AS last_rowid, CAST(end_rowid AS TEXT) AS end_rowid, complete FROM session_count_meta WHERE id = 1",
+        [],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      if rows_meta.length() == 0 {
+        return Err(StepError::App("session count index version marker is missing"))
+      }
+      let meta = rows_meta[0]
+      let ver_val = sql_db::row_val(meta, "version")
+      let ver_ok = match ver_val {
+        base_codec::Json::Num(v, _) => v.to_int() == SESSION_COUNTS_VERSION
+        _ => false
+      }
+      if !ver_ok {
+        return Err(
+          StepError::App(
+            "session count index version " +
+            sql_db::stringify_json(ver_val) +
+            " is incompatible with " +
+            SESSION_COUNTS_VERSION.to_string(),
+          ),
+        )
+      }
+      match sql_db::row_val(meta, "complete") {
+        base_codec::Json::Num(n, _) => {
+          if n == 1.0 {
+            return Ok(true)
+          }
+        }
+        _ => ()
+      }
+      let last = sql_db::row_val(meta, "last_rowid")
+      let end = sql_db::row_val(meta, "end_rowid")
+      let lim = base_codec::json_int(limit)
+      let rows = match last {
+        base_codec::Json::Null => {
+          match tx_db.all(
+            "SELECT CAST(rowid AS TEXT) AS position FROM sessions WHERE rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?",
+            [end, lim],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+        _ => {
+          match tx_db.all(
+            "SELECT CAST(rowid AS TEXT) AS position FROM sessions WHERE rowid > CAST(? AS INTEGER) AND rowid <= CAST(? AS INTEGER) ORDER BY rowid LIMIT ?",
+            [last, end, lim],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+      }
+      for i in 0..<rows.length() {
+        let _ = match tx_db.run(SESSION_COUNT_SEE_POSITION, [sql_db::row_val(rows[i], "position")]) {
+          Ok(n) => n
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      let done = rows.length() < limit
+      let reached = if rows.length() > 0 {
+        sql_db::row_val(rows[rows.length() - 1], "position")
+      } else {
+        last
+      }
+      let _ = match tx_db.run(
+        "UPDATE session_count_meta SET last_rowid = CAST(? AS INTEGER), complete = ? WHERE id = 1",
+        [reached, base_codec::json_int(if done { 1 } else { 0 })],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      Ok(done)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder session-counts` (matches MB `(db, _) => Some(@counts.step(db))`).
+pub fn session_counts_dispatch(
+  db : sql_db::Db,
+  _ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match session_counts_step(db, limit=256) {
+    Ok(done) => Ok(Some(done))
+    Err(e) => Err(e)
+  }
+}
+
+pub fn run_session_counts(db_path : String) -> Int {
+  builder_loop(db_path, "session count", session_counts_dispatch)
+}

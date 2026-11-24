@@ -1,0 +1,1161 @@
+// High-level SQLite database wrapper over `sqlite_ffi`, matching `station/mb/src/sql/sql.mbt`
+// external observable behavior 1:1 (prepared statement cache, exact parameter binding & column
+// decoding, WHATWG lossy UTF-8, errmsg timing, and transaction-safe `Db::tx`).
+
+import "base_codec"
+import "sqlite_ffi"
+
+pub let KEPT_MOST : Int = 256
+
+pub fn safe_most() -> Int64 {
+  // 2^53 - 1 = 9007199254740991
+  (1.to_int64() << 53.to_int64()) - 1.to_int64()
+}
+
+pub struct SqlError {
+  pub code : Int
+  pub message : String
+}
+
+pub fn sql_error(code : Int, message : String) -> SqlError {
+  SqlError::{ code: code, message: message }
+}
+
+struct KeptStmt {
+  stmt : sqlite_ffi::Stmt
+  names : Array[String]
+  reads_only : Bool
+}
+
+pub struct Db {
+  raw : sqlite_ffi::Db
+  mut kept : Map[String, KeptStmt]
+  mut kept_list : Array[KeptStmt]
+  mut changed : Int
+}
+
+// ── Pure helpers (UTF-8 lossy, strict Int64, float/busy checks) ──
+
+fn write_fffd(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / MoonBit `@utf8.decode_lossy` decoder over `Bytes`
+/// (maximal subpart of ill-formed subsequence -> U+FFFD).
+pub fn decode_utf8_lossy_bytes(buf : Bytes) -> String {
+  let sb = StringBuilder::new()
+  let end = buf.length()
+  let mut i = 0
+  while i < end {
+    let b0 = buf[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if is_utf8_cont(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              if i + 3 < end {
+                let b3 = buf[i + 3].to_int() & 0xFF
+                if is_utf8_cont(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else {
+      write_fffd(sb)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+pub fn is_nan_or_inf(n : Double) -> Bool {
+  if n != n {
+    return true
+  }
+  let diff = n - n
+  diff != 0.0
+}
+
+/// Parse an exact signed 64-bit decimal integer with strict overflow rejection
+/// (full Int64 range `[-9223372036854775808, 9223372036854775807]`, no silent wrap).
+pub fn parse_int64_strict(text : String) -> Option[Int64] {
+  let n = text.length()
+  if n == 0 {
+    return None
+  }
+  let mut i = 0
+  let mut neg = false
+  if text.code_unit_at(0) == 45 {
+    neg = true
+    i = 1
+  }
+  if i >= n {
+    return None
+  }
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  let ten = 10.to_int64()
+  let min_div10 = min64 / ten
+  let max_last = if neg { 8.to_int64() } else { 7.to_int64() }
+  let mut acc : Int64 = 0.to_int64()
+  while i < n {
+    let c = text.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    let d = (c - 48).to_int64()
+    if acc < min_div10 || (acc == min_div10 && d > max_last) {
+      return None
+    }
+    acc = acc * ten - d
+    i = i + 1
+  }
+  if neg {
+    Some(acc)
+  } else {
+    Some(-acc)
+  }
+}
+
+/// Whether `d` is finite, falls in `[-2^63, 2^63)`, and equals `floor(d)`.
+pub fn double_is_i64_integer(d : Double) -> Bool {
+  if is_nan_or_inf(d) {
+    return false
+  }
+  let bound = 9223372036854775808.0
+  if d < -bound || d >= bound {
+    return false
+  }
+  d.to_int64().to_double() == d
+}
+
+fn str_contains(haystack : String, needle : String) -> Bool {
+  let h = haystack.to_bytes()
+  let n = needle.to_bytes()
+  if n.length() == 0 {
+    return true
+  }
+  if n.length() > h.length() {
+    return false
+  }
+  let last = h.length() - n.length()
+  for i in 0..<(last + 1) {
+    let mut matched = true
+    for j in 0..<n.length() {
+      if h[i + j] != n[j] {
+        matched = false
+        break
+      }
+    }
+    if matched {
+      return true
+    }
+  }
+  false
+}
+
+/// Aligns strictly with MB `sql.mbt:436-441`: database busy or locked.
+pub fn is_busy(err : SqlError) -> Bool {
+  str_contains(err.message, "database is locked") || str_contains(err.message, "is locked")
+}
+
+/// Whether `repr` is a pure signed decimal integer literal (optional `-`, digits only; no `.`/`e`/`E`).
+pub fn is_pure_integer_repr(repr : String) -> Bool {
+  let n = repr.length()
+  if n == 0 {
+    return false
+  }
+  let mut i = 0
+  if repr.code_unit_at(0) == 45 {
+    i = 1
+  }
+  if i >= n {
+    return false
+  }
+  while i < n {
+    let c = repr.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Convert a JSON array element to a BLOB byte, 1:1 matching `sql.mbt:268`:
+/// `Number(b, ..) if b >= 0.0 && b == b.floor() => b.to_int64().to_byte()`, else `0x00`.
+/// Non-negative integers >= 2^63 (and +Inf) saturate to INT64_MAX (0x7fff_ffff_ffff_ffff),
+/// whose low byte is `0xFF`.
+pub fn json_blob_byte(item : base_codec::Json) -> Byte {
+  match item {
+    base_codec::Json::Num(b, _) => {
+      if b != b || b < 0.0 {
+        0 as Byte
+      } else if b >= 9223372036854775808.0 {
+        // Covers both finite >= 2^63 (all exact integers in IEEE-754) and +Inf:
+        // MoonBit `Double::to_int64()` saturates to INT64_MAX -> low byte 0xFF.
+        255 as Byte
+      } else if b.to_int64().to_double() == b {
+        (b.to_int64() & 0xFF.to_int64()).to_int() as Byte
+      } else {
+        0 as Byte
+      }
+    }
+    _ => 0 as Byte
+  }
+}
+
+/// Format an Int64 column value as `base_codec::Json`, 1:1 matching `sql.mbt:348-352`:
+/// attach exact decimal `repr` only when `|v| > SAFE_MOST` (9007199254740991), else empty `repr`.
+pub fn int64_to_json(v : Int64) -> base_codec::Json {
+  let lim = safe_most()
+  if v > lim || v < -lim {
+    base_codec::Json::Num(v.to_double(), v.to_string())
+  } else {
+    base_codec::Json::Num(v.to_double(), "")
+  }
+}
+
+/// Normalize a `base_codec::json_parse` result to match MoonBit `@json.parse` `repr` semantics:
+/// - Keep raw `repr` for non-finite parsed numbers (e.g. `1e400`, `-1e400`),
+/// - Keep raw `repr` for pure integer literals outside `[-SAFE_MOST, SAFE_MOST]` (including > Int64),
+/// - Clear `repr` to `""` for all other parsed numbers (`1.0`, `1e2`, `-0`, `0.00001`, `1e20`, `1e-7`, `42`).
+pub fn normalize_parsed_json(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Num(d, repr) => {
+      if repr.length() == 0 {
+        base_codec::Json::Num(d, "")
+      } else if is_nan_or_inf(d) {
+        base_codec::Json::Num(d, repr)
+      } else if is_pure_integer_repr(repr) {
+        match parse_int64_strict(repr) {
+          None => base_codec::Json::Num(d, repr)
+          Some(v) => {
+            let lim = safe_most()
+            if v > lim || v < -lim {
+              base_codec::Json::Num(d, repr)
+            } else {
+              base_codec::Json::Num(d, "")
+            }
+          }
+        }
+      } else {
+        base_codec::Json::Num(d, "")
+      }
+    }
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(normalize_parsed_json(items[i]))
+      }
+      base_codec::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, normalize_parsed_json(v)))
+      }
+      base_codec::Json::Obj(out)
+    }
+    other => other
+  }
+}
+
+/// Parse JSON with MoonBit `@json.parse`-aligned numeric `repr` semantics.
+pub fn parse_json(raw : String) -> base_codec::JsonParseResult {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => base_codec::JsonParseResult::Ok(normalize_parsed_json(j))
+    base_codec::JsonParseResult::Err(e) => base_codec::JsonParseResult::Err(e)
+  }
+}
+
+/// Recursively prepare `Json::Num` values for ECMAScript / MoonBit `Json::stringify()`:
+/// - Numbers with non-empty `repr` keep `repr` verbatim (`1e400`, `18446744073709551615`, `9007199254740993`, `-0.0`).
+/// - Numbers with empty `repr`: non-finite -> `null`, finite -> ECMAScript shortest decimal (`sqlite_ffi::format_js_double`).
+fn normalize_json_for_stringify(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Num(d, repr) => {
+      if repr.length() > 0 {
+        base_codec::Json::Num(d, repr)
+      } else if is_nan_or_inf(d) {
+        base_codec::json_null()
+      } else {
+        base_codec::Json::Num(d, sqlite_ffi::format_js_double(d))
+      }
+    }
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(normalize_json_for_stringify(items[i]))
+      }
+      base_codec::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, normalize_json_for_stringify(v)))
+      }
+      base_codec::Json::Obj(out)
+    }
+    other => other
+  }
+}
+
+/// Stringify a `base_codec::Json` value matching MoonBit / ECMAScript `Json::stringify()`.
+pub fn stringify_json(j : base_codec::Json) -> String {
+  base_codec::json_stringify(normalize_json_for_stringify(j))
+}
+
+/// Format a Double column value as `base_codec::Json` (non-finite -> Null).
+pub fn double_to_json(d : Double) -> base_codec::Json {
+  if is_nan_or_inf(d) {
+    base_codec::json_null()
+  } else {
+    base_codec::json_num(d)
+  }
+}
+
+/// A row's column, null where it has none (matching `sql.mbt:493`).
+pub fn row_val(row : Map[String, base_codec::Json], name : String) -> base_codec::Json {
+  match row.get(name) {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+/// A row's small integer column; -1 where it is no number (matching `sql.mbt:499`).
+pub fn row_int(row : Map[String, base_codec::Json], name : String) -> Int {
+  match row.get(name) {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => -1
+  }
+}
+
+// ── Connection lifecycle & operations ──
+
+fn reset_stmt(stmt : sqlite_ffi::Stmt) -> Unit {
+  let _ = stmt.reset()
+  let _ = stmt.clear_bindings()
+}
+
+fn Db::errmsg(self : Db) -> String {
+  decode_utf8_lossy_bytes(self.raw.errmsg_bytes())
+}
+
+fn open_db(path : String, extra_flags : Int, wait_ms : Int) -> Result[Db, SqlError] {
+  let flags = extra_flags | sqlite_ffi::OPEN_READWRITE | sqlite_ffi::OPEN_URI | sqlite_ffi::OPEN_NO_MUTEX
+  let raw = match sqlite_ffi::Db::open(path, flags, busy_timeout_ms=wait_ms) {
+    Ok(d) => d
+    Err(e) => {
+      let msg = decode_utf8_lossy_bytes(sqlite_ffi::errstr_bytes(e.code))
+      return Err(SqlError::{ code: e.code, message: msg })
+    }
+  }
+  let db = Db::{ raw: raw, kept: Map::new(), kept_list: [], changed: 0 }
+  match db.exec("PRAGMA synchronous = NORMAL;") {
+    Ok(_) => Ok(db)
+    Err(e) => {
+      db.close()
+      Err(e)
+    }
+  }
+}
+
+/// Open an existing SQLite database (no OPEN_CREATE; missing file returns raw SQLite errstr).
+pub fn Db::attach(path : String, wait_ms : Int = 250) -> Result[Db, SqlError] {
+  open_db(path, 0, wait_ms)
+}
+
+/// Open or create a SQLite database (with OPEN_CREATE; supports `:memory:`).
+pub fn Db::create(path : String, wait_ms : Int = 250) -> Result[Db, SqlError] {
+  open_db(path, sqlite_ffi::OPEN_CREATE, wait_ms)
+}
+
+pub fn Db::close(self : Db) -> Unit {
+  for i in 0..<self.kept_list.length() {
+    let _ = self.kept_list[i].stmt.finalize()
+  }
+  self.kept = Map::new()
+  self.kept_list = []
+  let _ = self.raw.close()
+}
+
+pub fn Db::kept_len(self : Db) -> Int {
+  self.kept_list.length()
+}
+
+pub fn Db::autocommit(self : Db) -> Bool {
+  self.raw.autocommit()
+}
+
+pub fn Db::exec(self : Db, sql : String) -> Result[Unit, SqlError] {
+  self.changed = self.changed + 1
+  match self.raw.exec(sql) {
+    Ok(_) => Ok(())
+    Err(e) => Err(SqlError::{ code: e.code, message: self.errmsg() })
+  }
+}
+
+// Matches `station/mb/src/sql/sql.mbt:286-302` 1:1.
+// Bound JSON values must come from `sql_db::parse_json`, `int64_to_json`, or explicit
+// `json_int`/`json_num` constructors; passing raw un-normalized `base_codec::json_parse`
+// output preserves `repr` on e.g. `1.0` and would bind it as SQLite REAL instead of INTEGER.
+fn bind_number(stmt : sqlite_ffi::Stmt, at : Int, d : Double, repr : String) -> Int {
+  if repr.length() > 0 {
+    match parse_int64_strict(repr) {
+      Some(v) => stmt.bind_int64(at, v)
+      None => stmt.bind_double(at, d)
+    }
+  } else if is_nan_or_inf(d) {
+    stmt.bind_null(at)
+  } else if double_is_i64_integer(d) {
+    stmt.bind_int64(at, d.to_int64())
+  } else {
+    stmt.bind_double(at, d)
+  }
+}
+
+// Prepares/caches `sql` and binds `params`. Callers must pass JSON produced by
+// `sql_db::parse_json`, `int64_to_json`, or `json_int`/`json_num` (never raw
+// un-normalized `base_codec::json_parse` output, which keeps `repr` on `1.0` and
+// would bind it as REAL).
+fn Db::prepared(self : Db, sql : String, params : Array[base_codec::Json]) -> Result[KeptStmt, SqlError] {
+  let kept = match self.kept.get(sql) {
+    Some(k) => k
+    None => {
+      let stmt = match self.raw.prepare(sql) {
+        Ok(s) => s
+        Err(e) => return Err(SqlError::{ code: e.code, message: self.errmsg() })
+      }
+      let col_count = stmt.column_count()
+      let names : Array[String] = []
+      for i in 0..<col_count {
+        names.push(decode_utf8_lossy_bytes(stmt.column_name_bytes(i)))
+      }
+      if self.kept_list.length() >= KEPT_MOST {
+        for i in 0..<self.kept_list.length() {
+          let _ = self.kept_list[i].stmt.finalize()
+        }
+        self.kept = Map::new()
+        self.kept_list = []
+      }
+      let k = KeptStmt::{ stmt: stmt, names: names, reads_only: stmt.readonly() }
+      self.kept.set(sql, k)
+      self.kept_list.push(k)
+      k
+    }
+  }
+  let needed = kept.stmt.bind_parameter_count()
+  if needed != params.length() {
+    return Err(
+      SqlError::{
+        code: sqlite_ffi::SQLITE_MISUSE,
+        message: "Wrong number of parameters passed to query. Got " +
+        params.length().to_string() +
+        ", needed " +
+        needed.to_string(),
+      },
+    )
+  }
+  for i in 0..<params.length() {
+    let at = i + 1
+    let p = params[i]
+    let rc = match p {
+      base_codec::Json::Null => kept.stmt.bind_null(at)
+      base_codec::Json::Bool(true) => kept.stmt.bind_int64(at, 1.to_int64())
+      base_codec::Json::Bool(false) => kept.stmt.bind_int64(at, 0.to_int64())
+      base_codec::Json::Num(d, repr) => bind_number(kept.stmt, at, d, repr)
+      base_codec::Json::Str(s) => kept.stmt.bind_text(at, s)
+      base_codec::Json::Arr(items) => {
+        let buf = Bytes::new(items.length())
+        for j in 0..<items.length() {
+          buf[j] = json_blob_byte(items[j])
+        }
+        kept.stmt.bind_blob(at, buf)
+      }
+      base_codec::Json::Obj(_) => kept.stmt.bind_text(at, stringify_json(p))
+    }
+    if rc != sqlite_ffi::SQLITE_OK {
+      reset_stmt(kept.stmt)
+      return Err(SqlError::{ code: rc, message: self.errmsg() })
+    }
+  }
+  Ok(kept)
+}
+
+fn read_column_value(stmt : sqlite_ffi::Stmt, index : Int) -> base_codec::Json {
+  let ty = stmt.column_type(index)
+  if ty == sqlite_ffi::COL_INTEGER {
+    int64_to_json(stmt.column_int64(index))
+  } else if ty == sqlite_ffi::COL_FLOAT {
+    double_to_json(stmt.column_double(index))
+  } else if ty == sqlite_ffi::COL_TEXT {
+    base_codec::json_str(decode_utf8_lossy_bytes(stmt.column_text_bytes(index)))
+  } else if ty == sqlite_ffi::COL_BLOB {
+    let b = stmt.column_blob(index)
+    let items : Array[base_codec::Json] = []
+    for j in 0..<b.length() {
+      items.push(base_codec::json_int(b[j].to_int() & 0xFF))
+    }
+    base_codec::json_arr(items)
+  } else {
+    base_codec::json_null()
+  }
+}
+
+/// Execute a non-query statement with parameters; returns number of changed rows.
+pub fn Db::run(self : Db, sql : String, params : Array[base_codec::Json]) -> Result[Int, SqlError] {
+  self.changed = self.changed + 1
+  let kept = match self.prepared(sql, params) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  let rc = kept.stmt.step()
+  reset_stmt(kept.stmt)
+  if rc == sqlite_ffi::SQLITE_ROW {
+    return Err(
+      SqlError::{
+        code: rc,
+        message: "Execute returned results - did you mean to call query?",
+      },
+    )
+  }
+  if rc != sqlite_ffi::SQLITE_DONE {
+    return Err(SqlError::{ code: rc, message: self.errmsg() })
+  }
+  Ok(self.raw.changes())
+}
+
+/// Execute a query and return all rows keyed by column name (later duplicate column overwrites earlier).
+pub fn Db::all(
+  self : Db,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Array[Map[String, base_codec::Json]], SqlError] {
+  let kept = match self.prepared(sql, params) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  if !kept.reads_only {
+    self.changed = self.changed + 1
+  }
+  let rows : Array[Map[String, base_codec::Json]] = []
+  while true {
+    let rc = kept.stmt.step()
+    if rc == sqlite_ffi::SQLITE_ROW {
+      let row : Map[String, base_codec::Json] = Map::new()
+      for i in 0..<kept.names.length() {
+        row.set(kept.names[i], read_column_value(kept.stmt, i))
+      }
+      rows.push(row)
+    } else if rc == sqlite_ffi::SQLITE_DONE {
+      break
+    } else {
+      let err = SqlError::{ code: rc, message: self.errmsg() }
+      reset_stmt(kept.stmt)
+      return Err(err)
+    }
+  }
+  reset_stmt(kept.stmt)
+  Ok(rows)
+}
+
+/// Execute a query fully (supporting `RETURNING`) and return its first row, if any.
+pub fn Db::first(
+  self : Db,
+  sql : String,
+  params : Array[base_codec::Json],
+) -> Result[Option[Map[String, base_codec::Json]], SqlError] {
+  match self.all(sql, params) {
+    Ok(rows) => if rows.length() > 0 { Ok(Some(rows[0])) } else { Ok(None) }
+    Err(e) => Err(e)
+  }
+}
+
+/// Generalized write-transaction entry point allowing callers to distinguish SQLite errors
+/// (`map_sql`) from application errors while still guaranteeing `ROLLBACK` on body or `COMMIT` failure.
+pub fn Db::tx_err[T, E](
+  self : Db,
+  f : (Db) -> Result[T, E],
+  map_sql : (SqlError) -> E,
+) -> Result[T, E] {
+  match self.exec("BEGIN IMMEDIATE") {
+    Ok(_) => ()
+    Err(e) => return Err(map_sql(e))
+  }
+  match f(self) {
+    Err(e) => {
+      let _ = self.exec("ROLLBACK")
+      Err(e)
+    }
+    Ok(v) => {
+      match self.exec("COMMIT") {
+        Ok(_) => Ok(v)
+        Err(e) => {
+          let _ = self.exec("ROLLBACK")
+          Err(map_sql(e))
+        }
+      }
+    }
+  }
+}
+
+/// The sole write-transaction entry point: `BEGIN IMMEDIATE`, run `f`, `COMMIT`.
+/// On `f` error OR `COMMIT` error, best-effort `ROLLBACK` and return the original error.
+pub fn Db::tx[T](self : Db, f : (Db) -> Result[T, SqlError]) -> Result[T, SqlError] {
+  self.tx_err(f, fn(e : SqlError) -> SqlError { e })
+}
+
+pub fn Db::schema_version(self : Db) -> Result[base_codec::Json, SqlError] {
+  match self.first("PRAGMA schema_version", []) {
+    Ok(Some(r)) => Ok(row_val(r, "schema_version"))
+    Ok(None) => Ok(base_codec::json_null())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Db::has_schema(self : Db, kind : String, name : String) -> Result[Bool, SqlError] {
+  match self.first(
+    "SELECT 1 FROM sqlite_master WHERE type=? AND name=?",
+    [base_codec::json_str(kind), base_codec::json_str(name)],
+  ) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Db::sqlite_master_sql(self : Db, kind : String, name : String) -> Result[Option[String], SqlError] {
+  match self.first(
+    "SELECT sql FROM sqlite_master WHERE type=? AND name=?",
+    [base_codec::json_str(kind), base_codec::json_str(name)],
+  ) {
+    Ok(Some(r)) => {
+      match r.get("sql") {
+        Some(base_codec::Json::Str(s)) => Ok(Some(s))
+        _ => Ok(Some(""))
+      }
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+// ── Real-SQLite self-test suite (invoked from `stillfail-pion --smoke-sql-db`) ──
+
+fn check_cond(cond : Bool, msg : String) -> Result[Unit, String] {
+  if cond { Ok(()) } else { Err(msg) }
+}
+
+pub fn run_selftest(temp_db_path : String) -> Result[Unit, String] {
+  // 1. Db::attach on missing path must fail with raw errstr (no OPEN_CREATE).
+  let missing_path = temp_db_path + ".definitely-missing"
+  match Db::attach(missing_path, wait_ms=50) {
+    Ok(d) => {
+      d.close()
+      return Err("Db::attach unexpectedly created missing file")
+    }
+    Err(e) => {
+      if e.message.length() == 0 || str_contains(e.message, "code=") {
+        return Err("Db::attach error should be raw errstr, got: " + e.message)
+      }
+    }
+  }
+
+  // 2. In-memory DB: tx commit, mid-tx rollback, COMMIT failure rollback (deferred FK),
+  //    multiple sequential tx calls, early Ok return, RETURNING via first().
+  let db = match Db::create(":memory:", wait_ms=250) {
+    Ok(d) => d
+    Err(e) => return Err("create :memory: failed: " + e.message)
+  }
+  match db.exec("PRAGMA foreign_keys = ON; CREATE TABLE p (id INTEGER PRIMARY KEY); CREATE TABLE c (id INTEGER PRIMARY KEY, pid INTEGER REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED);") {
+    Ok(_) => ()
+    Err(e) => { db.close(); return Err("schema setup failed: " + e.message) }
+  }
+
+  // 2a. tx commit + early return Ok(v)
+  let tx1 = db.tx(fn(t : Db) -> Result[Int, SqlError] {
+    let _ = match t.run("INSERT INTO p (id) VALUES (?)", [base_codec::json_int(1)]) {
+      Ok(n) => n
+      Err(e) => return Err(e)
+    }
+    if true {
+      return Ok(42)
+    }
+    Ok(0)
+  })
+  match tx1 {
+    Ok(42) => ()
+    Ok(other) => { db.close(); return Err("tx early return mismatch: " + other.to_string()) }
+    Err(e) => { db.close(); return Err("tx1 failed: " + e.message) }
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("expected autocommit after tx1")
+  }
+
+  // 2b. Mid-tx failure rollback
+  let tx2 = db.tx(fn(t : Db) -> Result[Unit, SqlError] {
+    let _ = match t.run("INSERT INTO p (id) VALUES (?)", [base_codec::json_int(2)]) {
+      Ok(n) => n
+      Err(e) => return Err(e)
+    }
+    Err(sql_error(1, "boom mid-tx"))
+  })
+  match tx2 {
+    Err(e) => {
+      if e.message != "boom mid-tx" {
+        db.close()
+        return Err("expected original mid-tx error, got: " + e.message)
+      }
+    }
+    Ok(_) => { db.close(); return Err("tx2 should have failed") }
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("expected autocommit after mid-tx rollback")
+  }
+  let p_rows = match db.all("SELECT id FROM p ORDER BY id", []) {
+    Ok(r) => r
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  if p_rows.length() != 1 || row_int(p_rows[0], "id") != 1 {
+    db.close()
+    return Err("mid-tx insert was not rolled back")
+  }
+
+  // 2c. COMMIT failure rollback (deferred FK constraint fails at COMMIT!)
+  let tx3 = db.tx(fn(t : Db) -> Result[Unit, SqlError] {
+    let _ = match t.run("INSERT INTO c (id, pid) VALUES (?, ?)", [base_codec::json_int(10), base_codec::json_int(999)]) {
+      Ok(n) => n
+      Err(e) => return Err(e)
+    }
+    Ok(())
+  })
+  match tx3 {
+    Err(_) => ()
+    Ok(_) => { db.close(); return Err("tx3 deferred FK should fail at COMMIT") }
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("expected autocommit after COMMIT failure rollback")
+  }
+
+  // 2d. Multiple sequential tx calls + first() with RETURNING
+  for k in 2..<5 {
+    let step_res = db.tx(fn(t : Db) -> Result[Int, SqlError] {
+      match t.first("INSERT INTO p (id) VALUES (?) RETURNING id", [base_codec::json_int(k)]) {
+        Ok(Some(r)) => Ok(row_int(r, "id"))
+        Ok(None) => Err(sql_error(1, "no returning row"))
+        Err(e) => Err(e)
+      }
+    })
+    match step_res {
+      Ok(v) => if v != k { db.close(); return Err("RETURNING mismatch") }
+      Err(e) => { db.close(); return Err("sequential tx failed: " + e.message) }
+    }
+  }
+
+  // 3. 257 distinct SQL statements -> whole-cache clear (256 -> 1)
+  let base_kept = db.kept_len()
+  let need_to_fill = KEPT_MOST - base_kept
+  for i in 0..<need_to_fill {
+    let sql = "SELECT " + i.to_string() + " AS v"
+    match db.first(sql, []) {
+      Ok(Some(r)) => if row_int(r, "v") != i { db.close(); return Err("cache query mismatch") }
+      Ok(None) => { db.close(); return Err("cache query empty") }
+      Err(e) => { db.close(); return Err("cache query err: " + e.message) }
+    }
+  }
+  let len_at_cap = db.kept_len()
+  if len_at_cap != KEPT_MOST {
+    db.close()
+    return Err("expected kept_len=256, got " + len_at_cap.to_string())
+  }
+  match db.first("SELECT 256 AS v", []) {
+    Ok(Some(r)) => if row_int(r, "v") != 256 { db.close(); return Err("257th query mismatch") }
+    _ => { db.close(); return Err("257th query failed") }
+  }
+  let len_after_evict = db.kept_len()
+  if len_after_evict != 1 {
+    db.close()
+    return Err("expected kept_len=1 after 257th distinct SQL, got " + len_after_evict.to_string())
+  }
+
+  // 4. Wrong parameter count exact message
+  match db.all("SELECT ? + ?", [base_codec::json_int(1)]) {
+    Ok(_) => { db.close(); return Err("expected param count mismatch error") }
+    Err(e) => {
+      let want = "Wrong number of parameters passed to query. Got 1, needed 2"
+      if e.message != want {
+        db.close()
+        return Err("param count error mismatch: got=" + e.message + " want=" + want)
+      }
+    }
+  }
+
+  // 5. run() returning SQLITE_ROW exact message
+  match db.run("SELECT 1", []) {
+    Ok(_) => { db.close(); return Err("expected run() on SELECT to fail") }
+    Err(e) => {
+      let want = "Execute returned results - did you mean to call query?"
+      if e.message != want {
+        db.close()
+        return Err("run() ROW error mismatch: got=" + e.message + " want=" + want)
+      }
+    }
+  }
+
+  // 6. Duplicate column names (later overwrites earlier)
+  match db.first("SELECT 1 AS dup, 2 AS dup", []) {
+    Ok(Some(r)) => if row_int(r, "dup") != 2 { db.close(); return Err("duplicate column should be overwritten by later") }
+    _ => { db.close(); return Err("duplicate column query failed") }
+  }
+
+  // 7. Data types: Int64 > SAFE_MOST, empty BLOB vs NULL, NaN/Inf, WHATWG lossy UTF-8
+  let over_safe = safe_most() + 2.to_int64() // 9007199254740993
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  match db.exec("CREATE TABLE types (k TEXT PRIMARY KEY, v)") {
+    Ok(_) => ()
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let nan_d = 0.0 / 0.0
+  let inf_d = 1.0 / 0.0
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("over"), base_codec::json_int64(over_safe)]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("max64"), base_codec::json_int64(max64)]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("min64"), base_codec::json_int64(min64)]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("eblob"), base_codec::json_arr([])]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("nullv"), base_codec::json_null()]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("nanv"), base_codec::json_num(nan_d)]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO types VALUES (?, ?)", [base_codec::json_str("infv"), base_codec::json_num(inf_d)]) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+
+  match db.first("SELECT v FROM types WHERE k = 'over'", []) {
+    Ok(Some(r)) => {
+      match row_val(r, "v") {
+        base_codec::Json::Num(_, repr) => if repr != "9007199254740993" { db.close(); return Err("over_safe repr: " + repr) }
+        _ => { db.close(); return Err("over_safe not Num") }
+      }
+    }
+    _ => { db.close(); return Err("select over_safe failed") }
+  }
+  match db.first("SELECT typeof(v) AS ty, v FROM types WHERE k = 'eblob'", []) {
+    Ok(Some(r)) => {
+      match (row_val(r, "ty"), row_val(r, "v")) {
+        (base_codec::Json::Str("blob"), base_codec::Json::Arr(xs)) => {
+          if xs.length() != 0 { db.close(); return Err("eblob not empty") }
+        }
+        _ => { db.close(); return Err("eblob should be empty blob") }
+      }
+    }
+    _ => { db.close(); return Err("select eblob failed") }
+  }
+  match db.first("SELECT typeof(v) AS ty FROM types WHERE k = 'nanv'", []) {
+    Ok(Some(r)) => {
+      match row_val(r, "ty") {
+        base_codec::Json::Str("null") => ()
+        _ => { db.close(); return Err("nanv should be null") }
+      }
+    }
+    _ => { db.close(); return Err("select nanv failed") }
+  }
+  match db.first("SELECT typeof(v) AS ty FROM types WHERE k = 'infv'", []) {
+    Ok(Some(r)) => {
+      match row_val(r, "ty") {
+        base_codec::Json::Str("null") => ()
+        _ => { db.close(); return Err("infv should be null") }
+      }
+    }
+    _ => { db.close(); return Err("select infv failed") }
+  }
+
+  // 7b. P1-2 BLOB array element saturation parity (`sql.mbt:268`)
+  let blob_sat_param = match base_codec::json_parse("[9223372036854775808, 1, 255]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse blob sat failed") }
+  }
+  match db.first("SELECT hex(?) AS h", [blob_sat_param]) {
+    Ok(Some(r)) => {
+      match row_val(r, "h") {
+        base_codec::Json::Str("FF01FF") => ()
+        other => { db.close(); return Err("blob saturation hex mismatch: " + stringify_json(other)) }
+      }
+    }
+    _ => { db.close(); return Err("select hex(blob_sat) failed") }
+  }
+  let blob_edge_param = match base_codec::json_parse("[-1, 0, 255, 256, 1.5]") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse blob edge failed") }
+  }
+  match db.first("SELECT hex(?) AS h", [blob_edge_param]) {
+    Ok(Some(r)) => {
+      match row_val(r, "h") {
+        base_codec::Json::Str("0000FF0000") => ()
+        other => { db.close(); return Err("blob edge hex mismatch: " + stringify_json(other)) }
+      }
+    }
+    _ => { db.close(); return Err("select hex(blob_edge) failed") }
+  }
+
+  // 7c. P1-1 + P1-2: Complete 14-case MB vs Pion numeric repr / typeof / object stringify parity table
+  let num_matrix : Array[(String, String, String)] = [
+    ("1.0", "integer", "{\"n\":1}"),
+    ("1e2", "integer", "{\"n\":100}"),
+    ("1e400", "real", "{\"n\":1e400}"),
+    ("-1e400", "real", "{\"n\":-1e400}"),
+    ("9223372036854775809", "real", "{\"n\":9223372036854775809}"),
+    ("18446744073709551615", "real", "{\"n\":18446744073709551615}"),
+    ("9007199254740993", "integer", "{\"n\":9007199254740993}"),
+    ("0.00001", "real", "{\"n\":0.00001}"),
+    ("0.000001", "real", "{\"n\":0.000001}"),
+    ("1e20", "real", "{\"n\":100000000000000000000}"),
+    ("1e-7", "real", "{\"n\":1e-7}"),
+    ("1.5e-7", "real", "{\"n\":1.5e-7}"),
+    ("9007199254740992", "integer", "{\"n\":9007199254740992}"),
+    ("-0", "integer", "{\"n\":0}"),
+    ("5.960464477539063e-8", "real", "{\"n\":5.960464477539063e-8}"),
+  ]
+  for i in 0..<num_matrix.length() {
+    let (lit, want_ty, want_obj) = num_matrix[i]
+    let parsed_num = match parse_json(lit) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => { db.close(); return Err("parse_json failed for " + lit + ": " + e) }
+    }
+    let parsed_obj = match parse_json("{\"n\":" + lit + "}") {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => { db.close(); return Err("parse_json obj failed for " + lit + ": " + e) }
+    }
+    match db.first("SELECT typeof(?) AS ty, ? AS obj_txt", [parsed_num, parsed_obj]) {
+      Ok(Some(r)) => {
+        match row_val(r, "ty") {
+          base_codec::Json::Str(ty) => {
+            if ty != want_ty {
+              db.close()
+              return Err("typeof(" + lit + ") mismatch: got=" + ty + " want=" + want_ty)
+            }
+          }
+          _ => { db.close(); return Err("typeof(" + lit + ") not Str") }
+        }
+        match row_val(r, "obj_txt") {
+          base_codec::Json::Str(s) => {
+            if s != want_obj {
+              db.close()
+              return Err("obj_txt(" + lit + ") mismatch: got=" + s + " want=" + want_obj)
+            }
+          }
+          _ => { db.close(); return Err("obj_txt(" + lit + ") not Str") }
+        }
+      }
+      _ => { db.close(); return Err("query num_matrix failed: " + lit) }
+    }
+  }
+  // Explicit direct-constructed Num(-0.0, "-0.0") must bind as real (matching sql.mbt:288-292).
+  let neg_zero_repr = base_codec::Json::Num(-0.0, "-0.0")
+  match db.first("SELECT typeof(?) AS ty", [neg_zero_repr]) {
+    Ok(Some(r)) => {
+      match row_val(r, "ty") {
+        base_codec::Json::Str("real") => ()
+        other => { db.close(); return Err("Num(-0.0, \"-0.0\") typeof mismatch: " + stringify_json(other)) }
+      }
+    }
+    _ => { db.close(); return Err("select neg_zero_repr failed") }
+  }
+  // Direct Num(NaN, "") and Num(+Inf, "") (empty repr) must still bind as NULL.
+  match db.first("SELECT typeof(?) AS t1, typeof(?) AS t2", [base_codec::json_num(nan_d), base_codec::json_num(inf_d)]) {
+    Ok(Some(r)) => {
+      match (row_val(r, "t1"), row_val(r, "t2")) {
+        (base_codec::Json::Str("null"), base_codec::Json::Str("null")) => ()
+        _ => { db.close(); return Err("empty-repr NaN/+Inf must bind as null") }
+      }
+    }
+    _ => { db.close(); return Err("select empty-repr NaN/+Inf failed") }
+  }
+  // Readback repr presence: |v| <= SAFE_MOST -> "", |v| > SAFE_MOST -> exact decimal repr.
+  let safe_lit = match parse_json("9007199254740991") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse safe_lit") }
+  }
+  let over_lit = match parse_json("-9007199254740993") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => { db.close(); return Err("parse over_lit") }
+  }
+  match db.first("SELECT ? AS a, ? AS b", [safe_lit, over_lit]) {
+    Ok(Some(r)) => {
+      match (row_val(r, "a"), row_val(r, "b")) {
+        (base_codec::Json::Num(_, ra), base_codec::Json::Num(_, rb)) => {
+          if ra != "" || rb != "-9007199254740993" {
+            db.close()
+            return Err("readback repr boundary mismatch: ra=" + ra + " rb=" + rb)
+          }
+        }
+        _ => { db.close(); return Err("readback repr boundary not Num") }
+      }
+    }
+    _ => { db.close(); return Err("select readback repr boundary failed") }
+  }
+
+  // Invalid UTF-8 bytes cast to TEXT -> WHATWG lossy UTF-8 replacement U+FFFD
+  match db.first("SELECT CAST(X'61FF62' AS TEXT) AS s", []) {
+    Ok(Some(r)) => {
+      match row_val(r, "s") {
+        base_codec::Json::Str(s) => {
+          if s != "a\u{FFFD}b" {
+            db.close()
+            return Err("lossy utf8 text mismatch")
+          }
+        }
+        _ => { db.close(); return Err("lossy utf8 not Str") }
+      }
+    }
+    _ => { db.close(); return Err("select lossy utf8 failed") }
+  }
+
+  // Schema introspection helpers
+  match db.has_schema("table", "types") {
+    Ok(true) => ()
+    _ => { db.close(); return Err("has_schema table types failed") }
+  }
+  match db.has_schema("table", "nope_xyz") {
+    Ok(false) => ()
+    _ => { db.close(); return Err("has_schema missing should be false") }
+  }
+  match db.sqlite_master_sql("table", "types") {
+    Ok(Some(s)) => if !str_contains(s, "CREATE TABLE types") { db.close(); return Err("sqlite_master_sql mismatch") }
+    _ => { db.close(); return Err("sqlite_master_sql failed") }
+  }
+  match db.schema_version() {
+    Ok(base_codec::Json::Num(_, _)) => ()
+    _ => { db.close(); return Err("schema_version not Num") }
+  }
+  db.close()
+
+  // 8. Real SQLITE_BUSY detection across two connections on a temp file DB
+  let f1 = match Db::create(temp_db_path, wait_ms=50) {
+    Ok(d) => d
+    Err(e) => return Err("create temp db failed: " + e.message)
+  }
+  let _ = match f1.exec("PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS lock_t (id INTEGER PRIMARY KEY);") {
+    Ok(_) => ()
+    Err(e) => { f1.close(); return Err(e.message) }
+  }
+  let f2 = match Db::attach(temp_db_path, wait_ms=20) {
+    Ok(d) => d
+    Err(e) => { f1.close(); return Err("attach temp db failed: " + e.message) }
+  }
+  let _ = match f1.exec("BEGIN IMMEDIATE") {
+    Ok(_) => ()
+    Err(e) => { f2.close(); f1.close(); return Err(e.message) }
+  }
+  match f2.tx(fn(t : Db) -> Result[Unit, SqlError] {
+    let _ = match t.run("INSERT INTO lock_t (id) VALUES (?)", [base_codec::json_int(1)]) {
+      Ok(n) => n
+      Err(e) => return Err(e)
+    }
+    Ok(())
+  }) {
+    Ok(_) => {
+      let _ = f1.exec("ROLLBACK")
+      f2.close()
+      f1.close()
+      return Err("expected busy error on locked temp db")
+    }
+    Err(e) => {
+      let _ = f1.exec("ROLLBACK")
+      if !is_busy(e) {
+        f2.close()
+        f1.close()
+        return Err("expected is_busy(e) == true, got: " + e.message)
+      }
+    }
+  }
+  f2.close()
+  f1.close()
+  check_cond(true, "ok")
+}

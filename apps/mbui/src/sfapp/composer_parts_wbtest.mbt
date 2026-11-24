@@ -1323,3 +1323,57 @@ test "idle chat refresh updating message relative times moves no messages on bot
     }
   })
 }
+
+///|
+test "a tall image in the composer 56x56 tile decodes at 2048 and crops from top while a 4:3 image stays centered" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~, platform=0)
+  t.add_image("tall-draft.png", 1000, 15000)
+  t.add_image("normal-draft.png", 400, 300)
+  let src = made.val.unwrap()
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_add(src, w, "ws1/st1", "tall.png", @utf8.encode("tall"), still="tall-draft.png")
+  @sfbase.writing_add(src, w, "ws1/st1", "normal.png", @utf8.encode("normal"), still="normal-draft.png")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let tall_loads = t.image_loads().filter(fn(l) { l.0 == "tall-draft.png" }).map(fn(l) { l.1 })
+  let normal_loads = t.image_loads().filter(fn(l) { l.0 == "normal-draft.png" }).map(fn(l) { l.1 })
+  assert_true(tall_loads.length() > 0 && tall_loads[tall_loads.length() - 1] == 2048, msg="expected tall tile decode tier 2048, got \{Repr(tall_loads)}")
+  assert_eq(normal_loads, [128], msg="expected 4:3 400x300 photo in 56x56 tile to decode once at 128, got \{Repr(normal_loads)}")
+  let tall_inst = t.drawn_instances().iter().find_first(fn(i) { i[5] == 4.0 && t.image_src(i[20].to_int()) == "tall-draft.png" }).unwrap()
+  let normal_inst = t.drawn_instances().iter().find_first(fn(i) { i[5] == 4.0 && t.image_src(i[20].to_int()) == "normal-draft.png" }).unwrap()
+  // (instance UV: [12]=u0, [13]=v0, [14]=uw, [15]=vh; tall image cropped from top: v0 == 0.0)
+  assert_true(tall_inst[13] == 0.0 && tall_inst[15] < 0.2, msg="expected tall tile cropped from top, got uv=(\{tall_inst[12]}, \{tall_inst[13]}, \{tall_inst[14]}, \{tall_inst[15]})")
+  // (4:3 image centered horizontally in 56x56 square: u0 = 0.125, uw = 0.75, u0 + uw/2 = 0.5)
+  assert_true(normal_inst[12] > 0.1 && (normal_inst[12] + normal_inst[14] / 2.0 - 0.5).abs() < 0.01, msg="expected 4:3 tile centered, got uv=(\{normal_inst[12]}, \{normal_inst[13]}, \{normal_inst[14]}, \{normal_inst[15]})")
+}
+
+///|
+test "composer tile_start_crop excludes videos and matches 1.875/2.25 image_cropped_from_start thresholds" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~, platform=0)
+  // Portrait phone screenshot 1179x2556 (h/w = 2.17 > 1.875) -> top-cropped.
+  t.add_image("phone-portrait.png", 1179, 2556)
+  // Landscape phone screenshot 2556x1179 (w/h = 2.17 <= 2.25) -> centered.
+  t.add_image("phone-landscape.png", 2556, 1179)
+  // Tall 19.5:9 video still 1170x2535 (h/w = 2.17 > 1.875) -> excluded because video stays centered.
+  t.add_image("tall-video-still.png", 1170, 2535)
+  let src = made.val.unwrap()
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_add(src, w, "ws1/st1", "portrait.png", @utf8.encode("p"), still="phone-portrait.png")
+  @sfbase.writing_add(src, w, "ws1/st1", "landscape.png", @utf8.encode("l"), still="phone-landscape.png")
+  @sfbase.writing_add(src, w, "ws1/st1", "clip.mp4", @utf8.encode("v"), still="tall-video-still.png")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let inst_of = fn(key : String) {
+    t.drawn_instances().iter().find_first(fn(i) { i[5] == 4.0 && t.image_src(i[20].to_int()) == key }).unwrap()
+  }
+  let portrait = inst_of("phone-portrait.png")
+  let landscape = inst_of("phone-landscape.png")
+  let video = inst_of("tall-video-still.png")
+  assert_true(portrait[13] == 0.0 && portrait[15] < 0.6, msg="portrait 1179x2556 should top-crop, got uv=(\{portrait[12]}, \{portrait[13]}, \{portrait[14]}, \{portrait[15]})")
+  assert_true(landscape[12] > 0.1 && (landscape[12] + landscape[14] / 2.0 - 0.5).abs() < 0.01, msg="landscape 2556x1179 (<= 2.25) should stay centered, got uv=(\{landscape[12]}, \{landscape[13]}, \{landscape[14]}, \{landscape[15]})")
+  assert_true(video[13] > 0.1 && (video[13] + video[15] / 2.0 - 0.5).abs() < 0.01, msg="19.5:9 video tile should stay centered, got uv=(\{video[12]}, \{video[13]}, \{video[14]}, \{video[15]})")
+}

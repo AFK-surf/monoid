@@ -82,6 +82,34 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     })
     |> ignore
   })
+  // trackpad left-swipe forward along the app's history on web/desktop narrow windows, mirroring wide frames
+  let fwd_hint = @sfdesk.back_hint_new(v)
+  let fwd_held : Ref[(() -> Unit)?] = Ref(None)
+  v.follows_forward(when=fn() { @sfbase.history_forward_step(src) is Some(_) }, fn(step) {
+    let f = match (step, fwd_held.val) {
+      (Began(_, _), _) => {
+        let got = @sfbase.history_forward_step(src)
+        fwd_held.val = got
+        got
+      }
+      (_, Some(f)) => Some(f)
+      (Back, None) => @sfbase.history_forward_step(src)
+      _ => return
+    }
+    if step is (LetGo(_, _) | CalledOff | Back) {
+      fwd_held.val = None
+    }
+    match f {
+      Some(go) => if fwd_hint.step(step, forward=true) { go() }
+      None => ()
+    }
+  })
+  |> ignore
+  v.owns(fn() {
+    fwd_held.val = None
+    fwd_hint.clear()
+  })
+  |> ignore
   @ui.nav_view(
     v,
     app.nav,
@@ -179,6 +207,9 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // (bar_node.mbt); on a place's top page with nothing over it (narrow_bar_shown); none while this device waits to be
   // confirmed in the workspace's safe mode (its Home is the wait: lock_gate)
   bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
+  if @ui.platform() != 1 && @ui.platform() != 2 {
+    @sfdesk.back_hint_node(v, fwd_hint)
+  }
   // ⌘K's panel over the pages (sfdesk's switcher.mbt), over what the old view puts over them
   @sfdesk.switcher_node(v, src)
   // ⌘/'s shortcuts, presented as the shell's keys_open says (sfdesk's shortcuts.mbt)

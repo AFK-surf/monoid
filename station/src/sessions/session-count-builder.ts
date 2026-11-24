@@ -1,4 +1,5 @@
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -7,7 +8,12 @@ import type { Store } from "../store/store.ts";
 
 /// Wait for the previous station before reading old rows; a stopped builder resumes at its committed cursor. By the
 /// MoonBit builder (station/mb, src/counts; `binary`: the program, a test's own where it gives one).
-export function buildSessionCounts(store: Store, previous: Promise<void>, binary?: string): { ready: Promise<boolean>; close: () => Promise<void> } {
+export function buildSessionCounts(
+  store: Store,
+  previous: Promise<void>,
+  binary?: string,
+  readers?: () => ReaderSelectConfig,
+): { ready: Promise<boolean>; close: () => Promise<void> } {
   const { promise: ready, resolve } = Promise.withResolvers<boolean>();
   const path = store.db.location();
   const retries = new Fibers("session counts", store.clock);
@@ -30,7 +36,8 @@ export function buildSessionCounts(store: Store, previous: Promise<void>, binary
     }
     let current: MbBackfill;
     try {
-      current = new MbBackfill(binary ?? readerBinary(), ["--builder", "session-counts", "--db", path], store.backfillPriority, 20);
+      const bin = resolveReaderSelection("session-counts", { binary, config: readers, logAt: "readers" }).primaryBinary;
+      current = new MbBackfill(bin, ["--builder", "session-counts", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {
       log.warn("hub", "the session count worker could not start", { error: (error as Error).message });

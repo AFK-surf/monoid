@@ -35,8 +35,22 @@ let history_said : @signals.Signal[Spot?] = @signals.signal_by(None, same=fn(a, 
 })
 
 ///|
+/// The entry back came from (the last of history_forward; None: none), told as the entries ahead change (back,
+/// forward, new navigation, reset): what reads whether there is one and goes forward to it (history_forward_step)
+/// follows it.
+// kept across runs: said again as the entries change (history_reset among them)
+let history_forward_said : @signals.Signal[Spot?] = @signals.signal_by(None, same=fn(a, b) {
+  match (a, b) {
+    (Some(x), Some(y)) => physical_equal(x, y)
+    (None, None) => true
+    _ => false
+  }
+})
+
+///|
 fn history_changed() -> Unit {
   history_said.set(history_back.last())
+  history_forward_said.set(history_forward.last())
 }
 
 ///|
@@ -231,14 +245,29 @@ pub fn history_tops() -> (Array[Page], Page?) {
 }
 
 ///|
-/// Forward along the history, where back came from an entry: it brought again (history_go).
+/// Forward along the history, where back came from an entry: that entry, as it is now, brought again when what it gives
+/// is done (history_go; later, as a gesture goes through, the same entry, whatever changed meanwhile; the entry
+/// forgotten by then, nothing).
 pub fn history_forward_step(src : Source) -> (() -> Unit)? {
-  guard history_forward.last() is Some(_) else { return None }
+  guard history_forward_said.get() is Some(spot) else { return None }
   Some(fn() {
-    guard history_forward.pop() is Some(spot) else { return }
+    let mut at = history_forward.length() - 1
+    while at >= 0 && !physical_equal(history_forward[at], spot) {
+      at = at - 1
+    }
+    guard at >= 0 else { return }
     match history_now.val {
       Some(now) => history_back.push(now)
       None => ()
+    }
+    for k = history_forward.length() - 1; k > at; k = k - 1 {
+      history_back.push(history_forward[k])
+    }
+    while history_forward.length() > at {
+      history_forward.pop() |> ignore
+    }
+    while history_back.length() > history_most {
+      history_back.remove(0) |> ignore
     }
     history_changed()
     history_go(src, spot)

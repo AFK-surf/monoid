@@ -69,6 +69,27 @@ fn message_image_node(
     let (sw, sh) = share()
     (nw * sw, nh * sh)
   }
+  let decode_box = fn() {
+    let (bw, bh) = most()
+    if letterbox() || bw <= 0.0 || bh <= 0.0 {
+      return (bw, bh)
+    }
+    let nat = match own_size(a()) {
+      Some(s) => Some(s)
+      None => {
+        let k = key()
+        if k == "" || k == "!" { None } else { @ui.image_natural(k) }
+      }
+    }
+    match nat {
+      Some((ow, oh)) if ow > 0.0 && oh > 0.0 => {
+        let k = @sf.dmax(bw / ow, bh / oh)
+        let (fw, fh) = (ow * k, oh * k)
+        if @sf.dmax(fw, fh) > @sf.dmax(bw, bh) * 1.5 { (fw, fh) } else { (bw, bh) }
+      }
+      _ => (bw, bh)
+    }
+  }
   let start_crop = fn() { image_cropped_from_start(a()) }
   let likeness = fn() {
     let th = @ui.tree_theme()
@@ -87,11 +108,11 @@ fn message_image_node(
   @sf.action_box_node(parent, fn() { @sf.t("web-main.file.view", args=[("name", a().name)]) }, fn(_) { pressed() }, fn(f) {
     // (all of it kept, one value, as it comes to another: what is bound to it worked out again only then, not as the
     // message's data is said again with its size, its picture's share and its likeness the same: @sf.value_kept)
-    let kept = @sf.value_kept(f, fn() { (w(), h(), share(), most(), start_crop(), likeness()) })
+    let kept = @sf.value_kept(f, fn() { (w(), h(), share(), decode_box(), start_crop(), likeness()) })
     let w = fn() { kept().0 }
     let h = fn() { kept().1 }
     let share = fn() { kept().2 }
-    let most = fn() { kept().3 }
+    let decode_box = fn() { kept().3 }
     let pw = fn() { w() * share().0 }
     let ph = fn() { h() * share().1 }
     let start_crop = fn() { kept().4 }
@@ -202,7 +223,7 @@ fn message_image_node(
               held=as_is,
               comes=place.said,
               start_crop~,
-              decoded_for=fn() { dmax(most().0, most().1) },
+              decoded_for=decode_box,
               flies~,
               corner~,
             )

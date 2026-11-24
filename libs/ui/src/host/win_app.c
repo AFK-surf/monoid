@@ -96,6 +96,8 @@ typedef struct WinSlot {
   int touch_moving;
   // a window beside the first, out of sight (cloaked) till its first frame is presented (win_open, held_shown)
   int held;
+  // transparent borderless child window (win_open clear) and app-managed cloak override (mb_app_window_keep_cloaked)
+  int clear, keep_cloaked;
   // what the app opened it as (mb_host_windows' 1, its spec; the first's, window_setup): its role (its place and size
   // kept under it as it closes, a second of the role set down and to the right of the one before), when it opened,
   // its least size (points) and whether its top row is the app's (an inset window: WM_NCCALCSIZE and the rest)
@@ -336,8 +338,25 @@ static void draw_frame(void) {
 // with the app's page drawn, not with nothing for the page's first moments. So is each window beside the first, till
 // its first frame is (win_open: held).
 static int window_held, window_shown, window_to_show;
+static int win0_reveal;
 
 static int cloak(HWND h, BOOL on) { return SUCCEEDED(DwmSetWindowAttribute(h, DWMWA_CLOAK, &on, sizeof on)); }
+
+void mb_app_reveal_after_frame(int wid) {
+  if (wid == 0 && hwnd) {
+    win0_reveal = 1;
+    win_slots[0].want_frame = 1;
+    InvalidateRect(hwnd, NULL, FALSE);
+  }
+}
+
+void mb_app_cancel_reveal(int wid) {
+  if (wid == 0) win0_reveal = 0;
+}
+
+void mb_app_window_keep_cloaked(int wid, int on) {
+  if (wid >= 0 && wid < MB_WINS) win_slots[wid].keep_cloaked = on != 0;
+}
 
 void mb_host_window_hold(void) { window_held = 1; }
 
@@ -352,17 +371,22 @@ static void held_shown_now(void) {
     WinSlot *w = &win_slots[k];
     if (!w->h || w->held != 2) continue;
     w->held = 0;
-    cloak(w->h, FALSE);
+    if (!w->keep_cloaked) cloak(w->h, FALSE);
+  }
+  if (win0_reveal == 2 && hwnd) {
+    win0_reveal = 0;
+    if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
   }
   if (window_to_show && !window_shown && hwnd) {
     window_to_show = 0;
     window_shown = 1;
-    cloak(hwnd, FALSE);
+    if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
   }
 }
 
 // What the frames presented since the last round owe the compositor waited for, and what was held shown then.
 static void frames_paced(void) {
+  if (win0_reveal == 2) mb_render_finish();
   mb_render_pace();
   held_shown_now();
 }
@@ -596,6 +620,7 @@ static void key_down(WPARAM vk) {
     case VK_PRIOR: code = ws->ime_active ? 0 : 15; break;
     case VK_NEXT: code = ws->ime_active ? 0 : 16; break;
   }
+  if (!code && vk >= VK_F1 && vk <= VK_F12) code = 100 + (int)(vk - VK_F1);
   if (code) {
     mb_cb.key(code, mods);
     return;
@@ -1499,7 +1524,24 @@ static char *utf8_of(const WCHAR *s, int n) {
 // spec says; one of a role where the last of the role was left as it closed (roles_kept), a second of a role open
 // beside the first of it down and to the right of the last one opened, never over it. Out of sight (cloaked) till its
 // first frame, drawn in the round of frames under way or the next, is on the screen (held_shown_now).
+#ifndef WS_EX_NOREDIRECTIONBITMAP
+#define WS_EX_NOREDIRECTIONBITMAP 0x00200000L
+#endif
+static int next_win_clear, next_win_no_activate;
+void mb_app_next_clear(void) {
+  next_win_clear = 1;
+  next_win_no_activate = 1;
+}
+void mb_app_next_clear_ex(int clear, int no_activate) {
+  next_win_clear = clear != 0;
+  next_win_no_activate = no_activate != 0;
+}
+
 static int win_open(moonbit_string_t what) {
+  int clear = next_win_clear;
+  int no_activate = next_win_no_activate;
+  next_win_clear = 0;
+  next_win_no_activate = 0;
   if (!hwnd || !*win_class) return 0;
   int wid = 0;
   for (int k = 1; k < MB_WINS; k++)
@@ -1564,10 +1606,16 @@ static int win_open(moonbit_string_t what) {
   } else if (kept) {
     x = kept->left, y = kept->top, cx = kept->right - kept->left, cy = kept->bottom - kept->top;
   }
+  const jv *clear_v = jget(&spec, "clear");
+  if (clear_v && clear_v->kind == 't') clear = 1;
+  const jv *no_act_v = jget(&spec, "noActivate");
+  if (no_act_v && (no_act_v->kind == 't' || no_act_v->kind == 'f')) no_activate = no_act_v->kind == 't';
   jv_free(&spec);
   free(u);
+  DWORD ex = clear ? (WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW) : 0;
+  DWORD st = clear ? WS_POPUP : WS_OVERLAPPEDWINDOW;
   win_making = wid;
-  HWND h = CreateWindowExW(0, win_class, title, WS_OVERLAPPEDWINDOW, x, y, cx, cy, NULL, NULL, GetModuleHandleW(NULL),
+  HWND h = CreateWindowExW(ex, win_class, title, st, x, y, cx, cy, NULL, NULL, GetModuleHandleW(NULL),
                            NULL);
   win_making = -1;
   if (!h) {
@@ -1575,19 +1623,21 @@ static int win_open(moonbit_string_t what) {
     return 0;
   }
   w->h = h;
+  w->clear = clear;
   w->scale = GetDpiForWindow(h) / 96.0;
   // (an inset window's frame without the title bar, as the first's: WM_NCCALCSIZE)
-  SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  if (!clear) SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   ImmAssociateContextEx(h, NULL, 0);
   if (!mb_render_open(wid, h)) {
     win_slot_fresh(w);
     DestroyWindow(h);
     return 0;
   }
-  title_dark_of(h);
+  if (clear) mb_render_set_clear(wid, 1);
+  else title_dark_of(h);
   drop_start(wid);
   w->held = cloak(h, TRUE) ? 1 : 0;
-  ShowWindow(h, SW_SHOW);
+  ShowWindow(h, no_activate ? SW_SHOWNOACTIVATE : SW_SHOW);
   w->want_frame = 1;
   return wid;
 }
@@ -1650,7 +1700,12 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a frame built while the window is not shown: nothing of it on the screen)
   if (!presenting) return;
   // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
-  if (mb_render_present(buf, count, r, g, b) && ws->held) ws->held = 2;
+  int presented = mb_render_present(buf, count, r, g, b);
+  if (presented && ws->held) ws->held = 2;
+  if (presented && win_active == 0 && win0_reveal == 1 && !mb_render_pictures_missing() &&
+      ws->frame_w > 32.0 && ws->frame_h > 32.0) {
+    win0_reveal = 2;
+  }
 }
 
 void mb_host_set_ime(int32_t active, double x, double y, double w, double h, moonbit_string_t text,

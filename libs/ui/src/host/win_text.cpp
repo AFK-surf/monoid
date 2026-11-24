@@ -52,6 +52,8 @@ typedef struct {
 
 static IDWriteFactory2 *dw;
 static IDWriteFontFallback *fallback;
+// Whether Segoe UI Emoji is here (init): what emoji_sequences sets its sequences in.
+static bool has_emoji_face;
 static IDWriteRenderingParams *params, *params_gray, *params_gray_small, *params_ct;
 static ID2D1Factory *d2d;
 static IWICImagingFactory *wic;
@@ -192,6 +194,7 @@ static void init(void) {
     const WCHAR *latin_fonts[] = {FAMILY, L"Segoe UI"};
     b->AddMapping(latin, sizeof latin / sizeof latin[0], latin_fonts, 2, NULL, NULL, NULL, 1.0f);
   }
+  has_emoji_face = system_family(L"Segoe UI Emoji");
   dw->GetSystemFontFallback(&sys);
   b->AddMappings(sys);
   b->CreateFontFallback(&fallback);
@@ -536,6 +539,66 @@ static void set_style_features(IDWriteTextLayout *l, int len, int style) {
   if (t) l->SetTypography(t, {0, (UINT32)len});
 }
 
+// The code point at s[i] and how many WCHARs it takes.
+static uint32_t code_at(const WCHAR *s, int len, int i, int *n) {
+  WCHAR c = s[i];
+  if (c >= 0xD800 && c < 0xDC00 && i + 1 < len && s[i + 1] >= 0xDC00 && s[i + 1] < 0xE000) {
+    *n = 2;
+    return 0x10000 + (((uint32_t)c - 0xD800) << 10) + ((uint32_t)s[i + 1] - 0xDC00);
+  }
+  *n = 1;
+  return c;
+}
+
+// An emoji asked for by U+FE0F, or a keycap (U+20E3), whose base the face has as text: a digit, # or *, ©, ®, ❤, ☺,
+// ✔ and the like. DirectWrite does not let U+FE0F choose the font: it takes the base from the face (Consolas, Segoe
+// UI) and the keycap's enclosing mark from a fallback, drawn on its own about the base (no width of its own, over the
+// next character: 1️⃣ before 整 drawn as a box across both). Each such sequence, with the ZWJ sequence or skin tone
+// that goes on from it (❤️‍🔥), set in Segoe UI Emoji, as Edge and Chrome set it; one its base is not in falls back as
+// any other text.
+static void emoji_sequences(IDWriteTextLayout *l, const WCHAR *s, int len) {
+  if (!has_emoji_face) return;
+  for (int i = 0; i < len;) {
+    int bn;
+    uint32_t b = code_at(s, len, i, &bn);
+    int end = i + bn;
+    bool keycap_base = (b >= '0' && b <= '9') || b == '#' || b == '*';
+    bool asked = false;
+    if (end < len && s[end] == 0xFE0F && (keycap_base || b == 0xA9 || b == 0xAE || b >= 0x2000)) {
+      end++;
+      asked = true;
+    }
+    if (keycap_base && end < len && s[end] == 0x20E3) {
+      end++;
+      asked = true;
+    }
+    if (!asked) {
+      i += bn;
+      continue;
+    }
+    // what goes on from it: a skin tone, or a ZWJ and the next emoji (with its own U+FE0F)
+    for (;;) {
+      int n;
+      if (end < len) {
+        uint32_t c = code_at(s, len, end, &n);
+        if (c >= 0x1F3FB && c <= 0x1F3FF) {
+          end += n;
+          continue;
+        }
+      }
+      if (end + 1 < len && s[end] == 0x200D) {
+        code_at(s, len, end + 1, &n);
+        end += 1 + n;
+        if (end < len && s[end] == 0xFE0F) end++;
+        continue;
+      }
+      break;
+    }
+    l->SetFontFamilyName(L"Segoe UI Emoji", {(UINT32)i, (UINT32)(end - i)});
+    i = end;
+  }
+}
+
 static IDWriteTextLayout *make_layout(const WCHAR *s, int len, double size, int weight, int style) {
   IDWriteTextLayout *l = NULL;
   dw->CreateTextLayout(s, (UINT32)len, format_for(size, weight, style), 1e6f, 1e6f, &l);
@@ -545,6 +608,7 @@ static IDWriteTextLayout *make_layout(const WCHAR *s, int len, double size, int 
     l2->Release();
   }
   set_style_features(l, len, style);
+  emoji_sequences(l, s, len);
   return l;
 }
 
@@ -1381,6 +1445,7 @@ static IDWriteTextLayout *layout_with(const WCHAR *s, int len, IDWriteTextFormat
     l2->Release();
   }
   if (typo) l->SetTypography(typo, {0, (UINT32)len});
+  emoji_sequences(l, s, len);
   return l;
 }
 
@@ -1843,6 +1908,7 @@ extern "C" void mb_host_ref_text(moonbit_string_t text, double size, int32_t wei
     l2->Release();
   }
   set_style_features(l, len, style);
+  emoji_sequences(l, (const WCHAR *)text, len);
   DWRITE_LINE_METRICS lm;
   UINT32 nl = 0;
   l->GetLineMetrics(&lm, 1, &nl);

@@ -34,6 +34,7 @@ void mb_render_init(CAMetalLayer *layer);
 // and let go of as it closes
 void mb_render_use(int wid);
 void mb_render_forget(int wid);
+void mb_render_set_clear(int wid, int on);
 id<MTLDevice> mb_render_device(void);
 void mb_render_set_size(double w, double h, double scale);
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b);
@@ -66,6 +67,10 @@ id<MTLTexture> mb_image_texture(int iid);
 // MB_STREAM_TEX + sid is it (src/hostapi/stream.mbt)
 #define MB_STREAM_TEX 4194304
 id<MTLTexture> mb_stream_texture(int sid);
+// the frame stream sid shows, whole, read back as top-down BGRA sRGB on a background queue for an app's own native code
+// (NULL: not read); 1 asked, 0 none shown
+typedef void (*mb_stream_grabbed_fn)(void *arg, const unsigned char *rows, int w, int h, int pitch, double ts);
+int mb_stream_grab(int sid, mb_stream_grabbed_fn done, void *arg);
 // the layer stream sid's frames are put on as they are shown as well (their IOSurfaces, the contents of a native view's
 // of kind 4, apple_views.m), nil none: what it shows now on it at once
 void mb_stream_attach_layer(int sid, CALayer *layer);
