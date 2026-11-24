@@ -49,7 +49,7 @@ export const CHAT_POST = {
           "need_human",
           "waiting"
         ],
-        "description": "Omit for a progress update. all_done: nothing in the chat is left unfinished; give done. waiting: only your own work runs on and brings you back; give for, seconds (as chat_state's). need_human: a person has to give, do or decide something (a card you posted included); give need. A factual answer alone needs no follow-up question."
+        "description": "Omit for a progress update. all_done: nothing in the chat is left unfinished; give done. waiting: only your own work runs on and brings you back; give for, seconds, watch as in chat_state. need_human: a person has to give, do or decide something (a card you posted included); give need. A factual answer alone needs no follow-up question."
       },
       "need": {
         "type": "string",
@@ -60,6 +60,9 @@ export const CHAT_POST = {
       },
       "seconds": {
         "type": "integer"
+      },
+      "watch": {
+        "type": "boolean"
       },
       "about": {
         "type": "string",
@@ -176,7 +179,7 @@ export const CHAT_STATE = {
       },
       "about": {
         "type": "string",
-        "description": "The ts of the message in your conversation the state is about (all_done: the result's; need_human: the one where you visibly ask what is still needed, required unless a card is pending; waiting: the one saying what you started). People's lists jump to it."
+        "description": "The ts of the message in your conversation the state is about (all_done: the result's; need_human: the one where you visibly ask what is still needed, required unless a card is pending; waiting: the one saying what you started)."
       },
       "done": {
         "type": "string",

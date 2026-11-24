@@ -193,7 +193,7 @@ export const BACKGROUND_STOPPED_WAITING = `You ended your last turn waiting, but
 /// The agent said it would wait this long, and nothing has brought it back.
 export const waitOver = (seconds: number) => `You said you were waiting on work you started (${seconds} seconds), and nothing has brought you back yet. Check on it now.
 - If it is done: pick up its results and carry on. If nothing was watching it (you would have been told when it ended), start a watch the next time instead of waiting on a guessed duration.
-- If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then chat_state "waiting" again. If it truly cannot be watched, wait the shortest it could still take.
+- If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then end the turn waiting again. If it truly cannot be watched, wait the shortest it could still take.
 - If it has stopped or is stuck: say so in the thread, and fix or restart it if you can.`;
 
 /// The session has cycled through waiting turns without posting in the chat for this many minutes.

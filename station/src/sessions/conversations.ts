@@ -555,7 +555,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   const place = threadAddress(thread.thread.channel, thread.thread.threadTs) + (opening !== null ? ` (added to the station's first message there, ts ${posted})` : existing === null ? " (now one of your conversations)" : "");
   const crossed = unreadBefore(hub, key, thread.thread.id, n);
   return kind !== null ? recorded
-    ? `Posted to ${place}, and recorded state ${saidAs(kind)}.${crossed}${titled}${offered}`
+    ? `Posted to ${place}, and recorded state ${stateSaid(kind, wait?.watch === true)}.${crossed}${titled}${offered}`
     : stateError !== null ? `Posted to ${place}, but its state was not recorded: ${stateError}.${crossed}${titled}${offered}`
       : `Posted to ${place}, but its turn ended before its state was recorded.${crossed}${titled}${offered}`
     : `Posted to ${place}.${crossed}${titled}${offered}`;
@@ -707,6 +707,14 @@ function waitingArg(hub: Hub, key: string, args: Args): { kind: Extract<Declared
   return { kind: { kind: "waiting", seconds: Math.min(MAX_WAIT_SECONDS, Math.max(MIN_WAIT_SECONDS, whole)) }, words, watch };
 }
 
+/// A recorded state as its agent is told it: a wait with what brings it back.
+function stateSaid(kind: DeclaredState, watch: boolean): string {
+  if (kind.kind !== "waiting") return saidAs(kind);
+  return watch
+    ? "waiting on your watch: its notices, its end or a message bring you back"
+    : `waiting: you are asked again in ${kind.seconds} seconds unless something brings you back first`;
+}
+
 /// chat_state: how this turn ends, recorded without posting.
 export async function chatState(hub: Hub, key: string, args: Args): Promise<string> {
   // Checked whole before anything is recorded: its words (what it waits for, needs, ends with) and what it is about.
@@ -762,10 +770,7 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
     }
   }
   if (kind.kind === "all_done") suggestArchive(hub, key);
-  if (kind.kind !== "waiting") return `Recorded state ${saidAs(kind)}.`;
-  return watch
-    ? "Recorded state waiting on your watch: its notices, its end or a message bring you back."
-    : `Recorded state waiting: you are asked again in ${kind.seconds} seconds unless something brings you back first.`;
+  return `Recorded state ${stateSaid(kind, watch)}.`;
 }
 
 /// chat_history: earlier messages of one of the session's conversations.

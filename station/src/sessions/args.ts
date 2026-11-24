@@ -25,7 +25,7 @@ export function jsNumber(value: Json): number | null {
 /// serde_json's Display of a value, as error messages quote what was given.
 const shown = (value: Json): string => JSON.stringify(value);
 
-/// How long an agent may say it waits (chat_state "waiting").
+/// How long an agent may say it waits (kind waiting).
 export const MIN_WAIT_SECONDS = 10;
 export const MAX_WAIT_SECONDS = 3600;
 /// How many answers a decision may offer.
@@ -71,9 +71,12 @@ export function isReason(done: string): boolean {
   return chars(bare) >= MIN_REASON && !EMPTY.includes(bare);
 }
 
-/// Whether `need` opens by saying that nothing is needed of anyone (无需操作；CI 还在跑): then it is no need.
-export const isNoNeed = (need: string): boolean =>
-  /^[\s（(【[]*(?:(?:无需|无须|不需要)(?:你|您|人|任何人?)?(?:操作|决定|处理|回复|确认|介入|动作)|no (?:action|decision|input|reply)\b|nothing (?:is )?(?:needed|required)\b|none\W*$)/iu.test(need);
+/// Whether `need` says that nothing is needed of anyone (无需操作；CI 还在跑) and asks for nothing after it (无需改代码 alone is
+/// no such word, and 无需操作，只需确认合并 asks): then it is no need.
+export function isNoNeed(need: string): boolean {
+  const opening = /^[\s\p{P}]*(?:(?:暂时?|目前|当前|现在)?(?:无需|无须|不需要|不用)(?:你|您|人工?|用户|任何人?|额外|做?任何)*(?:操作|决定|处理|回复|介入|动作)|(?:暂?无|none|n\/a)(?=[\s\p{P}]*$)|(?:no (?:human |user |further )?(?:action|decision|input)|nothing) (?:is )?(?:needed|required|to do)\b)/iu.exec(need);
+  return opening !== null && !/请|只需|只要|需要|确认|please|\bneed/iu.test(need.slice(opening[0].length));
+}
 
 /// The turn's words kept with it (turns.need): what a need_help turn needs of a person (`need`), or what an all_done
 /// one leaves the chat with (`done`). Each goes only with its kind, and is required with it, unless the kind is given in
