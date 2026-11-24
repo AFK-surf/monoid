@@ -12872,10 +12872,18 @@ fn Tree::advance_clock(self : Tree, upto : Double) -> Unit {
 }
 
 ///|
+/// How many `Once` items newly scheduled during one `advance_loop` at the same moment may run before breaking a
+/// same-moment re-scheduling cycle.
+let advance_same_moment_most : Int = 256
+
+///|
 fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
   // (a moment whose last change was to be settled with the next of it, that next gone before it came due: settled as
   // the loop ends)
   let mut owed = -1.0
+  let loop_start_told = self.told
+  let mut last_resched_at = -1.0
+  let mut same_resched = 0
   while true {
     let mut next = -1
     let mut next_at = 0.0
@@ -12893,6 +12901,10 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
         Steps(_, s) => s
         Once(_, s) => s
         Holds(_, s) => s
+      }
+      if d is Once(_, _) && seq >= loop_start_told && at == last_resched_at && same_resched >= advance_same_moment_most {
+        i = i + 1
+        continue
       }
       if at <= upto && (next < 0 || at < next_at || (at == next_at && seq < next_seq)) {
         next = i
@@ -12913,6 +12925,16 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       return
     }
     let d = self.timeline[next]
+    match d {
+      Once(_, seq) if seq >= loop_start_told =>
+        if next_at == last_resched_at {
+          same_resched += 1
+        } else {
+          last_resched_at = next_at
+          same_resched = 1
+        }
+      _ => ()
+    }
     let was = self.cause_at
     self.cause_at = next_at
 
