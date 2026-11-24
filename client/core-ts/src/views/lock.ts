@@ -306,6 +306,19 @@ const bases = new WeakMap<Inner, string>();
 export const signerOf = (inner: Inner): string | null => signers.get(inner) ?? null;
 export const baseOf = (inner: Inner): string | null => bases.get(inner) ?? null;
 
+/// This device's own keys as an earlier run read them (`signer`, here; `box`, views/vault.ts), kept beside the device's
+/// records: what is shown while this run's reads of the keys are in flight at start.
+export const KEYS_SHOWN = "keys";
+
+/// This device's signing key as what is shown reads it: the one read, or, while the first read is in flight at start,
+/// the one an earlier run read. Read as none, the vault's pages and cards said 未获此库授权 for as long as that read
+/// took. What signs or checks reads `signerOf`.
+export function signerShown(inner: Inner): string | null {
+  if (signers.has(inner)) return signers.get(inner) ?? null;
+  const kept = inner.data.record(KEYS_SHOWN, "signer");
+  return typeof kept === "string" ? kept : null;
+}
+
 /// Await the initial read only while it has not answered yet. Once read (even as absent), no request waits on it.
 export function signerLoading(inner: Inner): Effect.Effect<void> | null {
   const pending = signerLoads.get(inner);
@@ -326,6 +339,7 @@ export function lockSeen(inner: Inner): Marks {
 /// (the lock's, and the vault's, whose page waits on it).
 export function signerKnown(inner: Inner, id: string | null): void {
   signers.set(inner, id);
+  if (inner.data.record(KEYS_SHOWN, "signer") !== id) inner.data.put(KEYS_SHOWN, "signer", id);
   lockSeen(inner).touch("self");
   inner.views?.vaultChanged(null);
   if (id !== null) vaultReady(inner);

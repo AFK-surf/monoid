@@ -4120,7 +4120,8 @@ test("FB-51: the box key ended with no screen lock set again yet: no box key kep
   r.core.close();
 });
 
-test("restarted, this device's box key not read yet: its vaults and cards say keyed as its certificate names, never 未获此库授权 for the moment", async () => {
+for (const held of [["box"], ["signer"], ["box", "signer"]] as string[][]) {
+test(`restarted, this device's ${held.join(" and ")} key${held.length > 1 ? "s" : ""} not read yet: its vaults and cards say keyed as the run before read them, never 未获此库授权 for the moment`, async () => {
   const r = await rig();
   r.putLock();
   const { made: id } = await r.ask("vault.setup", {});
@@ -4131,21 +4132,24 @@ test("restarted, this device's box key not read yet: its vaults and cards say ke
   r.push("vault-request", req);
   await r.host.time.pass(500);
   r.take();
-  // The box key's public half read slowly at start (a desktop's storage busy as the app opens).
+  // The keys read slowly at start (a desktop's storage and keychain busy as the app opens).
   let letGo = () => {};
-  const held = new Promise<void>((done) => (letGo = done));
+  const gate = new Promise<void>((done) => (letGo = done));
   const get = r.host.storageGet.bind(r.host);
-  r.host.storageGet = (k) => (k === BOX_PUB ? Effect.flatMap(Effect.promise(() => held), () => get(k)) : get(k));
+  const secure = r.host.secureGet!.bind(r.host);
+  if (held.includes("box")) r.host.storageGet = (k) => (k === BOX_PUB ? Effect.flatMap(Effect.promise(() => gate), () => get(k)) : get(k));
+  if (held.includes("signer")) r.host.secureGet = (k, o) => (k === Signer.KEY ? Effect.flatMap(Effect.promise(() => gate), () => secure(k, o)) : secure(k, o));
   await r.restart();
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
-  const shown = () => [vaults().setUp, vaults().vaults.map((v: any) => v.keyed), vaults().requests.map((x: any) => x.noKey ?? false)];
+  const shown = () => [vaults().setUp, vaults().canSign, vaults().vaults.map((v: any) => v.keyed), vaults().requests.map((x: any) => x.noKey ?? false)];
   const answers = () => askAnswers(r.core.inner, "ws", [{ request: "r_use", save: false }, { request: "r_save", save: true }]);
-  assert.deepEqual(shown(), [true, [true], [false]]);
+  assert.deepEqual(shown(), [true, true, [true], [false]]);
   assert.deepEqual(answers(), [{ answer: "approve", lasts: "hour" }, { answer: "approve" }]);
   letGo();
   await r.host.time.pass(500);
   r.take();
-  assert.deepEqual(shown(), [true, [true], [false]]);
+  assert.deepEqual(shown(), [true, true, [true], [false]]);
   assert.deepEqual(answers(), [{ answer: "approve", lasts: "hour" }, { answer: "approve" }]);
   r.core.close();
 });
+}
