@@ -240,8 +240,9 @@ pub fn draw() -> Int {
   if [0, 3, 5].contains(option_number(3).to_int()) { t.set_reveals(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
-  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)
+  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS / MBUI_FILM_LOCAL_FONT_INFO)
   if option(22) != "" { t.set_local_fonts(option(22)) }
+  if option(25) != "" { t.set_local_font_info(option(25)) }
   let prepare = option(3)
   let script = option(4)
   let max = option_number(7).to_int()

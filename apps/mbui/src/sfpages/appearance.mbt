@@ -301,18 +301,7 @@ pub fn fonts_node(
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
 ) -> Unit {
-  let (blocks, block) = fonts_blocks_node(core)
-  @sf.page_node(
-    v,
-    fn() { @sf.t("web-pages.appearance.fonts.title") },
-    on_back~,
-    frame~,
-    said?,
-    width?,
-    lead=fn() { @sf.t("web-pages.appearance.fonts.description") },
-    blocks,
-    block,
-  )
+  fonts_page_v4_node(v, core, on_back~, frame~, said?, width?)
 }
 
 ///|

@@ -7,6 +7,7 @@
 ///|
 fn font_setting_reset() -> Unit {
   fonts_trying.set("")
+  preset_trying.set(-1)
   local_try_given.val = ""
   local_open.set(false)
   fx_local_up.val = false
@@ -189,381 +190,7 @@ fn font_cjk_weight_key(place : String) -> String {
 }
 
 ///|
-/// 字体's setting made once as nodes, a block at a time (fonts_node's and 外观's):
-/// curated presets, purpose/script switches, live mixed-script preview card, font list, and collapsible typography.
-fn fonts_blocks_node(core : Core) -> (() -> Array[String], (@view.View, String) -> Unit) {
-  let prefs = fn() { (core.topic)("prefs", Map([])).get().value }
-  let chosen_of = fn(slot : String) { text(field(prefs(), "fonts"), slot) }
-  let faces_view = fn() { field(prefs(), "faces") }
-  let typo = fn() { field(prefs(), "typography") }
-  let all = fn() { items(faces_view(), "list") }
-  let files_state = fn() { (core.topic)("fonts", Map([])).get().value }
-  let place = fn() { @settings.font_places[@settings.fonts_at.get()] }
-  let script = fn() { @settings.fonts_script_at.get() }
-  let active_slot = fn() { if script() == 1 { font_cjk_slot_of(place()) } else { place() } }
-  // each face shown in itself: its host face (its preview's), by its place in the list
-  let shown_in = fn(id : String) {
-    let mut face = 0
-    for i, f in all() {
-      if text(Some(f), "id") == id {
-        face = (core.face_preview)(id, i, items(Some(f), "files").iter().any(fn(x) { number(Some(x), "weight") == 0.0 }))
-      }
-    }
-    face
-  }
-  let name_of_id = fn(id : String) -> String {
-    if id == "" {
-      return @sf.t("web-pages.appearance.fonts.default")
-    }
-    if id.has_prefix(local_prefix) {
-      return id.unsafe_substring(start=local_prefix.length(), end=id.length())
-    }
-    for f in all() {
-      if text(Some(f), "id") == id {
-        return text(Some(f), "name")
-      }
-    }
-    id
-  }
-  // the place's own: code's JetBrains Mono, the others' the app's words'
-  let own = fn() { if place() == "code" { (core.own_code_face)() } else { 0 } }
-  // as chosen, each primary place in its face as far as it is here
-  let as_chosen = fn(p : String) {
-    let id = chosen_of(p)
-    if id == "" || (core.face_here)(id) {
-      0
-    } else {
-      shown_in(id)
-    }
-  }
-  // Resolve a CJK id to its loaded host slot (4..6) or its preview slot (10..31) without global cache invalidation.
-  let cjk_host_face = fn(id : String) -> Int {
-    if id == "" || id == "none" {
-      return 0
-    }
-    if @sfbase.faces_in[4] == id && @ui.face_given(@hostapi.face_ui_cjk) {
-      return @hostapi.face_ui_cjk
-    }
-    if @sfbase.faces_in[5] == id && @ui.face_given(@hostapi.face_text_cjk) {
-      return @hostapi.face_text_cjk
-    }
-    if @sfbase.faces_in[6] == id && @ui.face_given(@hostapi.face_code_cjk) {
-      return @hostapi.face_code_cjk
-    }
-    if id.has_prefix(local_prefix) {
-      return local_tried(id.unsafe_substring(start=local_prefix.length(), end=id.length()))
-    }
-    shown_in(id)
-  }
-  let live_cjk_scale = fn(p : String) -> Double {
-    let key = font_cjk_scale_key(p)
-    match cjk_scale_drag.get() {
-      Some((k, pct)) if k == key => pct / 100.0
-      Some((k, pct)) if p == "text" &&
-        k == "uiCjkScale" &&
-        chosen_of("textCjk") == "" &&
-        text(faces_view(), "uiCjk") != "" &&
-        !font_typo_bool(typo(), "textCjkScaleOwn", false) => pct / 100.0
-      _ => font_typo_num(typo(), key, 100.0) / 100.0
-    }
-  }
-  let live_cjk_weight = fn(p : String) -> Int {
-    font_typo_num(typo(), font_cjk_weight_key(p), 0.0).round().to_int()
-  }
-  // Primary hover face (only when editing Latin/primary script)
-  let try_primary_face = fn() -> Int? {
-    if script() != 0 {
-      return None
-    }
-    let tried = fonts_trying.get()
-    if tried == "\u{1}" {
-      Some(own())
-    } else if tried.has_prefix(local_prefix) {
-      Some(local_tried(tried.unsafe_substring(start=local_prefix.length(), end=tried.length())))
-    } else if tried != "" {
-      Some(
-        match shown_in(tried) {
-          0 => own()
-          f => f
-        },
-      )
-    } else {
-      None
-    }
-  }
-  let ui_face = fn() {
-    match (place(), try_primary_face()) {
-      ("ui", Some(f)) => f
-      _ => as_chosen("ui")
-    }
-  }
-  // None keeps the chosen face. Some(0) explicitly follows the interface, even if a separate text face is chosen.
-  let text_face = fn() {
-    match (place(), try_primary_face()) {
-      ("text", Some(f)) => Some(f)
-      ("ui", Some(f)) if chosen_of("text") == "" => Some(f)
-      _ => {
-        let face = if chosen_of("text") == "" { ui_face() } else { as_chosen("text") }
-        if face == 0 { None } else { Some(face) }
-      }
-    }
-  }
-  let code_face = fn() {
-    match (place(), try_primary_face()) {
-      ("code", Some(f)) => Some(f)
-      _ => {
-        let face = as_chosen("code")
-        if face == 0 { None } else { Some(face) }
-      }
-    }
-  }
-  // Effective CJK override for a role (`ui`, `text`, `code`) in the live preview card.
-  let cjk_override_for = fn(role : String) -> @view.CjkOverride? {
-    let scale = live_cjk_scale(role)
-    let weight_off = live_cjk_weight(role)
-    let tried = if script() == 1 { fonts_trying.get() } else { "" }
-    let trying_this = tried != "" && (
-      place() == role || (place() == "ui" && role == "text" && chosen_of("textCjk") == "")
-    )
-    if trying_this {
-      if tried == "\u{2}" {
-        // Explicit "none": break inheritance from uiCjk
-        return Some({ face: 0, scale: 1.0, weight_off: 0 })
-      }
-      if tried == "\u{1}" {
-        if role == "text" && place() == "text" {
-          // Hovering "跟随界面" on textCjk
-          let ui_id = text(faces_view(), "uiCjk")
-          let f = cjk_host_face(ui_id)
-          return Some({ face: f, scale, weight_off })
-        }
-        return Some({ face: 0, scale: 1.0, weight_off: 0 })
-      }
-      let f = if tried.has_prefix(local_prefix) {
-        local_tried(tried.unsafe_substring(start=local_prefix.length(), end=tried.length()))
-      } else {
-        cjk_host_face(tried)
-      }
-      return if f > 0 { Some({ face: f, scale, weight_off }) } else { None }
-    }
-    // Not hovering CJK for this role: preserve active CJK companion (especially when hovering a Primary font or dragging slider).
-    let active_id = text(faces_view(), font_cjk_slot_of(role))
-    if active_id != "" {
-      let f = cjk_host_face(active_id)
-      if f > 0 {
-        return Some({ face: f, scale, weight_off })
-      }
-    }
-    None
-  }
-  let ui_cjk = fn() { cjk_override_for("ui") }
-  let text_cjk = fn() { cjk_override_for("text") }
-  let code_cjk = fn() { cjk_override_for("code") }
-  let preview_prose_scale = fn() {
-    match text_size_drag.get() {
-      Some(pct) => pct / 100.0
-      None => font_typo_num(typo(), "textSize", 100.0) / 100.0
-    }
-  }
-  let preview_code_scale = fn() {
-    match code_scale_drag.get() {
-      Some(pct) => pct / 100.0
-      None => font_typo_num(typo(), "codeScale", 100.0) / 100.0
-    }
-  }
-  let preview_line_scale = fn() {
-    match text(typo(), "lineHeight") {
-      "compact" => 0.92
-      "relaxed" => 1.14
-      _ => 1.0
-    }
-  }
-  // whether the pointer is over the faces (their box, the gaps between rows too), as it comes and goes
-  let over_faces : @signals.Signal[Bool] = @signals.signal(false)
-  let block = fn(b : @view.View, key : String) {
-    match key {
-      "presets" => font_presets_node(b, core, all, files_state, chosen_of)
-      "preview" =>
-        // held at its tallest while the pointer is over the faces or while dragging sliders
-        b.by_room(fn(held, room) {
-          held.box(fn(cell) {
-            let chat : Ref[@view.View?] = Ref(None)
-            let tallest = Ref(0.0)
-            cell.box(fn(p) {
-              chat.val = Some(p)
-              font_preview_node(
-                p,
-                ui_face,
-                text_face,
-                code_face,
-                ui_cjk,
-                text_cjk,
-                code_cjk,
-                preview_prose_scale,
-                preview_code_scale,
-                preview_line_scale,
-              )
-            })
-            |> ignore
-            cell.min_height(By(fn() {
-              match chat.val {
-                Some(p) => {
-                  let tall = room.tall(p)
-                  let lock_tall = over_faces.get() ||
-                    cjk_scale_drag.get() is Some(_) ||
-                    text_size_drag.get() is Some(_) ||
-                    code_scale_drag.get() is Some(_)
-                  if lock_tall {
-                    tallest.val = dmax(tallest.val, tall)
-                    Some(tallest.val)
-                  } else {
-                    tallest.val = tall
-                    None
-                  }
-                }
-                None => None
-              }
-            }))
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      "controls" =>
-        b.box(fn(bar) {
-          @sf.style_node(bar, fn() { fp_controls_bar })
-          bar.wraps(Is(Some(10.0))) |> ignore
-          @sf.seg_node(
-            bar,
-            fn() { @settings.font_places.map(fn(p) { @sf.t("web-pages.appearance.fonts." + p) }) },
-            fn() { @settings.fonts_at.get() },
-            fn(picked) {
-              if picked != @signals.untracked(fn() { @settings.fonts_at.get() }) {
-                fonts_trying.set("")
-                @settings.fonts_at.set(picked)
-              }
-            },
-            said=@sf.t("web-pages.appearance.fonts.ui"),
-          )
-          |> ignore
-          @sf.seg_node(
-            bar,
-            fn() {
-              [
-                @sf.t("web-pages.appearance.fonts.script.latin"),
-                @sf.t("web-pages.appearance.fonts.script.cjk"),
-              ]
-            },
-            fn() { @settings.fonts_script_at.get() },
-            fn(picked) {
-              if picked != @signals.untracked(fn() { @settings.fonts_script_at.get() }) {
-                fonts_trying.set("")
-                @settings.fonts_script_at.set(picked)
-              }
-            },
-            said=@sf.t("web-pages.appearance.fonts.script.latin"),
-          )
-          |> ignore
-        })
-        |> ignore
-      "faces" =>
-        b.box(fn(faces) {
-          // (pointed at as the pointer is over it or what it holds: the gaps between its rows too)
-          faces.points(Is(true)) |> ignore
-          faces.reacts(fn() { faces.pointed_in() }, fn(on) { over_faces.set(on) })
-          faces.owns(fn() { over_faces.set(false) }) |> ignore
-          @sf.group_node(faces, fn(g) {
-            g.pick(active_slot, fn(held, slot) {
-              @sf.group_rows_node(held, fn(rows) {
-                face_rows_node(
-                  rows,
-                  core,
-                  slot,
-                  place(),
-                  script() == 1,
-                  all,
-                  own,
-                  shown_in,
-                  files_state,
-                  chosen_of,
-                  name_of_id,
-                )
-              })
-            })
-          })
-        })
-        |> ignore
-      _ =>
-        font_advanced_node(b, core, place, faces_view, chosen_of, typo)
-    }
-  }
-  (fn() { ["presets", "preview", "controls", "faces", "advanced"] }, block)
-}
-
-///|
-/// Curated font pairings strip: each chip highlights when active and displays total unkept download size (hovering a
-/// preset never triggers `fonts.fetch`).
-fn font_presets_node(
-  parent : @view.View,
-  core : Core,
-  all : () -> Array[Json],
-  files_state : () -> Json?,
-  chosen_of : (String) -> String,
-) -> Unit {
-  parent.box(fn(strip) {
-    @sf.style_node(strip, fn() { fp_presets_strip })
-    strip.min_width(Is(Some(0.0))) |> ignore
-    strip.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), fn(row) {
-      @sf.style_node(row, fn() { fp_presets_row })
-      for p in font_presets {
-        let on = fn() { font_preset_matches(p, chosen_of) }
-        let title = fn() { @sf.t("web-pages.appearance.fonts.preset." + p.key) }
-        let bytes = fn() {
-          let kept = items(files_state(), "kept")
-          preset_needed_bytes(p, all(), kept, core.face_here)
-        }
-        @sf.action_box_node(
-          row,
-          title,
-          fn(_) { @settings.set_fonts_preset(core, preset_patch(p), reset_cjk_optics=true) },
-          fn(chip) {
-            let lit = fn() { @sf.lit_node(chip) }
-            @sf.style_node(chip, fn() {
-              if on() {
-                fp_preset_chip_on
-              } else if lit() {
-                fp_preset_chip_hot
-              } else {
-                fp_preset_chip
-              }
-            })
-            chip.shrink(Is(0.0)).edge(By(fn() {
-              if on() {
-                (1.0, @sf.theme().p.accent)
-              } else if lit() {
-                (0.5, @sf.theme().p.line_strong)
-              } else {
-                (0.5, @sf.theme().p.line)
-              }
-            }))
-            |> ignore
-            @sf.words_node(chip, title, fn() { if on() { fp_preset_title_on } else { fp_preset_title } }) |> ignore
-            chip.show(at_once=true, fn() { bytes() > 0.0 }, fn(sz) {
-              let w = @sf.words_node(sz, fn() { face_size(bytes()) }, fn() { fp_preset_size })
-              @sf.on_baseline(w, Ui, Meta, weight=500, own_weight=400) |> ignore
-            })
-          },
-        )
-        |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// Collapsible "光学微调与阅读排版" section (collapsed by default).
+/// Collapsible V4 "排版与字号细节" section (collapsed by default; expanded by `settings-fonts-advanced` fixture).
 fn font_advanced_node(
   parent : @view.View,
   core : Core,
@@ -571,49 +198,16 @@ fn font_advanced_node(
   faces_view : () -> Json?,
   chosen_of : (String) -> String,
   typo : () -> Json?,
+  ui_face : () -> Int,
+  text_face : () -> Int?,
+  code_face : () -> Int?,
+  cjk_host_face : (String) -> Int,
 ) -> Unit {
   if fx_advanced_up.val {
     fx_advanced_up.val = false
     advanced_open.set(true)
   }
-  let custom_count = fn() -> Int {
-    let t = typo()
-    let mut n = 0
-    if font_typo_num(t, "textSize", 100.0).round().to_int() != 100 {
-      n = n + 1
-    }
-    if font_typo_num(t, "codeScale", 100.0).round().to_int() != 100 {
-      n = n + 1
-    }
-    if text(t, "lineHeight") != "" && text(t, "lineHeight") != "normal" {
-      n = n + 1
-    }
-    if font_typo_num(t, "uiCjkScale", 100.0).round().to_int() != 100 {
-      n = n + 1
-    }
-    if font_typo_num(t, "textCjkScale", 100.0).round().to_int() != 100 {
-      n = n + 1
-    }
-    if font_typo_num(t, "codeCjkScale", 100.0).round().to_int() != 100 {
-      n = n + 1
-    }
-    if font_typo_num(t, "uiCjkWeight", 0.0).round().to_int() != 0 {
-      n = n + 1
-    }
-    if font_typo_num(t, "textCjkWeight", 0.0).round().to_int() != 0 {
-      n = n + 1
-    }
-    if font_typo_num(t, "codeCjkWeight", 0.0).round().to_int() != 0 {
-      n = n + 1
-    }
-    if !font_typo_bool(t, "cjkAutoSpace", true) {
-      n = n + 1
-    }
-    if !font_typo_bool(t, "codeLigatures", true) {
-      n = n + 1
-    }
-    n
-  }
+  let custom_count = fn() -> Int { font_typo_custom_count(typo()) }
   let summary = fn() -> String {
     let n = custom_count()
     if n == 0 {
@@ -621,6 +215,31 @@ fn font_advanced_node(
     } else {
       @sf.t("web-pages.appearance.fonts.advanced.summaryCustom", args=[("n", n.to_string())])
     }
+  }
+  let active_primary_face = fn() -> Int {
+    match place() {
+      "text" => text_face().unwrap_or(0)
+      "code" => code_face().unwrap_or(0)
+      _ => ui_face()
+    }
+  }
+  let active_cjk_preview = fn() -> @view.CjkOverride? {
+    let p = place()
+    let id = text(faces_view(), font_cjk_slot_of(p))
+    if id == "" {
+      return None
+    }
+    let f = cjk_host_face(id)
+    if f <= 0 {
+      return None
+    }
+    let k = font_cjk_scale_key(p)
+    let scale = match cjk_scale_drag.get() {
+      Some((dk, pct)) if dk == k => pct / 100.0
+      _ => font_typo_num(typo(), k, 100.0) / 100.0
+    }
+    let weight_off = font_typo_num(typo(), font_cjk_weight_key(p), 0.0).round().to_int()
+    Some({ face: f, scale, weight_off })
   }
   @sf.group_node(parent, fn(g) {
     @sf.action_box_node(
@@ -650,19 +269,98 @@ fn font_advanced_node(
     |> ignore
     g.show(fn() { advanced_open.get() }, fn(inner) {
       @sf.style_node(inner, fn() { fp_adv_body })
-      // --- CJK optical tuning group ---
+      // --- Reading & code layout group (visual sliders + 3-bar line-height cards + visual switch comparisons) ---
+      inner.box(fn(read_sec) {
+        @sf.style_node(read_sec, fn() { fp_adv_group })
+        @sf.words_node(read_sec, fn() { @sf.t("web-pages.appearance.fonts.advanced.readingGroup") }, fn() { fp_adv_group_title })
+        |> ignore
+        font_visual_slider_row_node(
+          read_sec,
+          fn() { @sf.t("web-pages.appearance.fonts.advanced.textSize") },
+          "A",
+          "A",
+          fn() { text_size_drag.get().unwrap_or(font_typo_num(typo(), "textSize", 100.0)) },
+          fn(v) { text_size_drag.set(Some(v)) },
+          fn(v) {
+            text_size_drag.set(None)
+            @settings.set_typography(core, Json::object({ "textSize": ToJson::to_json(v.round().to_int()) }))
+          },
+          min=85.0,
+          max=130.0,
+          step=5.0,
+        )
+        font_visual_slider_row_node(
+          read_sec,
+          fn() { @sf.t("web-pages.appearance.fonts.advanced.codeScale") },
+          "</>",
+          "</>",
+          fn() { code_scale_drag.get().unwrap_or(font_typo_num(typo(), "codeScale", 100.0)) },
+          fn(v) { code_scale_drag.set(Some(v)) },
+          fn(v) {
+            code_scale_drag.set(None)
+            @settings.set_typography(core, Json::object({ "codeScale": ToJson::to_json(v.round().to_int()) }))
+          },
+          min=85.0,
+          max=110.0,
+          step=5.0,
+        )
+        font_line_height_cards_node(
+          read_sec,
+          fn() { @sf.t("web-pages.appearance.fonts.advanced.lineHeight") },
+          fn() { text(typo(), "lineHeight") },
+          fn(v) { @settings.set_typography(core, Json::object({ "lineHeight": ToJson::to_json(v) })) },
+        )
+        let autospace_on = fn() { font_typo_bool(typo(), "cjkAutoSpace", true) }
+        font_switch_row_node(
+          read_sec,
+          fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") },
+          fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpaceNote") },
+          autospace_on,
+          fn(on) { @settings.set_typography(core, Json::object({ "cjkAutoSpace": ToJson::to_json(on) })) },
+          extra=fn(e) { font_autospace_pills_node(e, autospace_on) },
+        )
+        // Web Canvas 2D draws per-cluster and cannot render multi-character code ligatures; hide on Web (platform 4).
+        if @ui.platform() != 4 {
+          font_switch_row_node(
+            read_sec,
+            fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") },
+            fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigaturesNote") },
+            fn() { font_typo_bool(typo(), "codeLigatures", true) },
+            fn(on) { @settings.set_typography(core, Json::object({ "codeLigatures": ToJson::to_json(on) })) },
+            extra=fn(e) {
+              e.box(fn(row) {
+                @sf.style_node(row, fn() { fp_v4_cmp_row })
+                font_ligature_sample_node(row, code_face)
+              })
+              |> ignore
+            },
+          )
+        }
+      })
+      |> ignore
+      inner.box(fn(sep) { @sf.style_node(sep, fn() { @sf.rule_line }) }) |> ignore
+      // --- CJK-Latin optical ratio group with live `Aa 字体` comparison badge ---
       inner.box(fn(cjk_sec) {
         @sf.style_node(cjk_sec, fn() { fp_adv_group })
-        @sf.words_node(
-          cjk_sec,
-          fn() {
-            @sf.t(
-              "web-pages.appearance.fonts.advanced.cjkGroup",
-              args=[("place", @sf.t("web-pages.appearance.fonts." + place()))],
+        cjk_sec.box(fn(head) {
+          @sf.style_node(head, fn() { fp_v4_ratio_head })
+          head.box(fn(tw) {
+            tw.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            @sf.words_node(
+              tw,
+              fn() {
+                @sf.t(
+                  "web-pages.appearance.fonts.advanced.cjkRatioTitle",
+                  args=[("place", @sf.t("web-pages.appearance.fonts." + place()))],
+                )
+              },
+              fn() { fp_adv_group_title },
             )
-          },
-          fn() { fp_adv_group_title },
-        )
+            |> ignore
+          })
+          |> ignore
+          font_cjk_ratio_badge_node(head, active_primary_face, active_cjk_preview)
+        })
         |> ignore
         let has_cjk = fn() { text(faces_view(), font_cjk_slot_of(place())) != "" }
         cjk_sec.pick(has_cjk, fn(p, active) {
@@ -717,7 +415,6 @@ fn font_advanced_node(
                 @settings.set_typography(core, Json::object(m))
               },
             )
-            // When text inherits uiCjk but has explicit optical overrides, offer "恢复跟随界面"
             let text_overridden = fn() {
               place() == "text" &&
               chosen_of("textCjk") == "" &&
@@ -743,80 +440,7 @@ fn font_advanced_node(
             })
           }
         })
-      })
-      |> ignore
-      inner.box(fn(sep) { @sf.style_node(sep, fn() { @sf.rule_line }) }) |> ignore
-      // --- Reading & code layout group ---
-      inner.box(fn(read_sec) {
-        @sf.style_node(read_sec, fn() { fp_adv_group })
-        @sf.words_node(read_sec, fn() { @sf.t("web-pages.appearance.fonts.advanced.readingGroup") }, fn() { fp_adv_group_title })
-        |> ignore
-        font_slider_row_node(
-          read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.textSize") },
-          fn() { text_size_drag.get().unwrap_or(font_typo_num(typo(), "textSize", 100.0)) },
-          fn(v) { text_size_drag.set(Some(v)) },
-          fn(v) {
-            text_size_drag.set(None)
-            @settings.set_typography(core, Json::object({ "textSize": ToJson::to_json(v.round().to_int()) }))
-          },
-          min=85.0,
-          max=130.0,
-          step=5.0,
-        )
-        font_slider_row_node(
-          read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.codeScale") },
-          fn() { code_scale_drag.get().unwrap_or(font_typo_num(typo(), "codeScale", 100.0)) },
-          fn(v) { code_scale_drag.set(Some(v)) },
-          fn(v) {
-            code_scale_drag.set(None)
-            @settings.set_typography(core, Json::object({ "codeScale": ToJson::to_json(v.round().to_int()) }))
-          },
-          min=85.0,
-          max=110.0,
-          step=5.0,
-        )
-        font_seg_row_node(
-          read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.lineHeight") },
-          fn() {
-            [
-              @sf.t("web-pages.appearance.fonts.advanced.lineCompact"),
-              @sf.t("web-pages.appearance.fonts.advanced.lineNormal"),
-              @sf.t("web-pages.appearance.fonts.advanced.lineRelaxed"),
-            ]
-          },
-          fn() {
-            match text(typo(), "lineHeight") {
-              "compact" => 0
-              "relaxed" => 2
-              _ => 1
-            }
-          },
-          fn(idx) {
-            let v = if idx == 0 { "compact" } else if idx == 2 { "relaxed" } else { "normal" }
-            @settings.set_typography(core, Json::object({ "lineHeight": ToJson::to_json(v) }))
-          },
-        )
-        font_switch_row_node(
-          read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") },
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpaceNote") },
-          fn() { font_typo_bool(typo(), "cjkAutoSpace", true) },
-          fn(on) { @settings.set_typography(core, Json::object({ "cjkAutoSpace": ToJson::to_json(on) })) },
-        )
-        // Web Canvas 2D draws per-cluster and cannot render multi-character code ligatures; hide on Web (platform 4).
-        if @ui.platform() != 4 {
-          font_switch_row_node(
-            read_sec,
-            fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") },
-            fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigaturesNote") },
-            fn() { font_typo_bool(typo(), "codeLigatures", true) },
-            fn(on) { @settings.set_typography(core, Json::object({ "codeLigatures": ToJson::to_json(on) })) },
-          )
-        }
-        read_sec.show(at_once=true, fn() { custom_count() > 0 }, fn(bar) {
+        cjk_sec.show(at_once=true, fn() { custom_count() > 0 }, fn(bar) {
           @sf.style_node(bar, fn() { fp_adv_action_row })
           @sf.button_node(
             bar,
@@ -899,6 +523,7 @@ fn font_switch_row_node(
   note : () -> String,
   on : () -> Bool,
   turn : (Bool) -> Unit,
+  extra? : (@view.View) -> Unit,
 ) -> Unit {
   parent.box(fn(row) {
     @sf.style_node(row, fn() { fp_switch_row })
@@ -907,6 +532,10 @@ fn font_switch_row_node(
       left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       @sf.words_node(left, label, fn() { fp_adv_row_label }) |> ignore
       @sf.words_node(left, note, fn() { fp_adv_hint }) |> ignore
+      match extra {
+        Some(f) => f(left)
+        None => ()
+      }
     })
     |> ignore
     row.box(fn(sw) {
@@ -933,6 +562,8 @@ fn face_rows_node(
   chosen_of : (String) -> String,
   name_of_id : (String) -> String,
 ) -> Unit {
+  let sample_key = font_slot_sample_key(place, is_cjk)
+  let glyph = fn() { font_slot_glyph(place, is_cjk) }
   let chosen = fn() { chosen_of(slot) }
   if is_cjk {
     if place == "text" {
@@ -949,6 +580,7 @@ fn face_rows_node(
         fn() { 0 },
         fn() { chosen() == "" },
         fn() { ("", false) },
+        glyph~,
         note_text=follow_note,
       )
       face_row_node(
@@ -960,7 +592,9 @@ fn face_rows_node(
         fn() { 0 },
         fn() { chosen() == "none" },
         fn() { ("", false) },
+        glyph~,
         tried_key="\u{2}",
+        sample_key~,
       )
     } else {
       face_row_node(
@@ -972,11 +606,13 @@ fn face_rows_node(
         fn() { 0 },
         fn() { chosen() == "" },
         fn() { ("", false) },
+        glyph~,
+        sample_key~,
       )
     }
   } else {
     let none = if place == "text" { "web-pages.appearance.fonts.followUi" } else { "web-pages.appearance.fonts.default" }
-    face_row_node(rows, core, slot, "", fn() { @sf.t(none) }, own, fn() { chosen() == "" }, fn() { ("", false) })
+    face_row_node(rows, core, slot, "", fn() { @sf.t(none) }, own, fn() { chosen() == "" }, fn() { ("", false) }, glyph~, sample_key~)
   }
   // Catalog entries filtered by script & place:
   // - Latin mode: mono == (place == "code")
@@ -1031,18 +667,18 @@ fn face_rows_node(
           x => x
         }
       }
-      face_row_node(r, core, slot, id, fn() { text(fv(), "name") }, face, fn() { chosen() == id }, status)
+      face_row_node(r, core, slot, id, fn() { text(fv(), "name") }, face, fn() { chosen() == id }, status, glyph~, sample_key~)
     },
   )
   // a face of this machine's own, where the host lists them (keyboard and mouse's)
   rows.show(fn() { @ui.can_list_local_fonts() }, fn(l) {
-    local_face_row_node(l, core, slot, place, is_cjk, chosen)
+    local_face_row_node(l, core, slot, place, is_cjk, chosen, glyph, sample_key)
   })
 }
 
 ///|
-/// A face of the slot in `parent`: its name and a sample line drawn in itself (`face()`), status & check at its end;
-/// pointed at, tried in the preview card; pressed, persisted via `set_font`.
+/// A face of the slot in `parent`: 32×32 glyph badge + name + context-specific sample line drawn in itself (`face()`),
+/// status & check at its end; pointed at, tried in the preview card; pressed, persisted via `set_font`.
 fn face_row_node(
   parent : @view.View,
   core : Core,
@@ -1052,6 +688,8 @@ fn face_row_node(
   face : () -> Int,
   on : () -> Bool,
   status : () -> (String, Bool),
+  glyph~ : () -> String,
+  sample_key? : String = "web-pages.appearance.fonts.sampleRow",
   tried_key? : String,
   note_text? : () -> String,
 ) -> Unit {
@@ -1067,6 +705,8 @@ fn face_row_node(
       face,
       on,
       press=fn() { @settings.set_font(core, slot, if id == "" { None } else { Some(id) }) },
+      glyph~,
+      sample_key~,
       status~,
       note_text?,
     )
@@ -1101,6 +741,8 @@ fn face_choice_node(
   face : () -> Int,
   on : () -> Bool,
   press~ : () -> Unit,
+  glyph~ : () -> String,
+  sample_key? : String = "web-pages.appearance.fonts.sampleRow",
   status? : () -> (String, Bool) = fn() { ("", false) },
   held? : () -> Bool = fn() { false },
   grounded? : (@view.View) -> Unit = fn(_) { () },
@@ -1108,7 +750,7 @@ fn face_choice_node(
 ) -> Unit {
   let sample = match note_text {
     Some(f) => f
-    None => fn() { @sf.t("web-pages.appearance.fonts.sampleRow") }
+    None => fn() { @sf.t(sample_key) }
   }
   @sf.choice_row_node(
     parent,
@@ -1116,6 +758,7 @@ fn face_choice_node(
     on,
     press~,
     note=sample,
+    lead=fn(l) { face_glyph_badge_node(l, glyph, face, on) },
     label_made=fn(line) { face_in_node(line, name, face, face_name_words) },
     note_made=fn(n) { face_in_node(n, sample, face, face_sample_words) },
     trail=fn(e) {
@@ -1203,6 +846,8 @@ fn local_face_row_node(
   place : String,
   is_cjk : Bool,
   chosen : () -> String,
+  glyph : () -> String,
+  sample_key : String,
 ) -> Unit {
   let picked = fn() {
     let c = chosen()
@@ -1231,6 +876,8 @@ fn local_face_row_node(
       face,
       fn() { picked() != "" },
       press=fn() { local_open.set(!local_open.untracked()) },
+      glyph~,
+      sample_key~,
       held=fn() { local_open.get() },
       grounded=fn(g) { ground.val = Some(g) },
     )
@@ -1428,110 +1075,8 @@ fn local_faces_node(
 }
 
 ///|
-/// Live mixed-script preview card: user bubble + agent header + Markdown prose + TypeScript code block with ligatures
-/// and CJK comments. Hovering any online/local font or dragging typography sliders updates locally with zero global
-/// cache invalidation (`words_forgotten`).
-fn font_preview_node(
-  parent : @view.View,
-  ui_face : () -> Int,
-  text_face : () -> Int?,
-  code_face : () -> Int?,
-  ui_cjk : () -> @view.CjkOverride?,
-  text_cjk : () -> @view.CjkOverride?,
-  code_cjk : () -> @view.CjkOverride?,
-  prose_scale : () -> Double,
-  code_scale : () -> Double,
-  line_scale : () -> Double,
-) -> Unit {
-  @sf.page_card_node(parent, fn(card) {
-    card.box(fn(col) {
-      @sf.style_node(col, fn() { fp_column })
-      col.box(fn(mine) {
-        @sf.style_node(mine, fn() { fp_mine_room })
-        mine.box(fn(clear) { clear.width_share(Is(fp_mine_clear_share / 100.0)).shrink(Is(0.0)) |> ignore }) |> ignore
-        mine.box(fn(bubble) {
-          @sf.style_node(bubble, fn() { fp_bubble })
-          face_in_node(
-            bubble,
-            fn() { @sf.t("web-pages.appearance.fonts.sampleMine") },
-            fn() { text_face().unwrap_or(0) },
-            @sf.body,
-            person=fn() { text_face() is None },
-            cjk=text_cjk,
-            size_scale=prose_scale,
-            line_scale~,
-          )
-          |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
-      col.box(fn(agent) {
-        @sf.style_node(agent, fn() { fp_agent })
-        agent.box(fn(who) {
-          @sf.style_node(who, fn() { fp_who_line })
-          face_in_node(who, fn() { "Claude" }, ui_face, fp_who_words, cjk=ui_cjk) |> ignore
-          face_in_node(who, fn() { @sf.t("web-pages.appearance.fonts.sampleTime") }, ui_face, fp_time_words, cjk=ui_cjk)
-          |> ignore
-        })
-        |> ignore
-        @sf.markdown_node(
-          agent,
-          fn() {
-            @sf.t("web-pages.appearance.fonts.sampleText") + "\n\n" + fp_sample_code + "\n\n" + @sf.t("web-pages.appearance.fonts.sampleAfter")
-          },
-          size=fn() { body_size * prose_scale() },
-          text_face~,
-          code_face~,
-          typography=fn() {
-            {
-              prose_scale: prose_scale(),
-              code_scale: code_scale(),
-              line_scale: line_scale(),
-              text_cjk: text_cjk(),
-              code_cjk: code_cjk(),
-            }
-          },
-        )
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-  })
-}
-
-///|
 // kept across runs: a value (all CJK chars 表单 appear in sampleText -> 0 missing glyphs in preview-*.ttf)
 pub let fp_sample_code : String = "```ts\nform.onsubmit = (e) => {\n  e.preventDefault(); // 表单 0O 1lI !==\n};\n```"
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_column : @ui.Style = @ui.css("w=Full gap=S3")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_controls_bar : @ui.Style = @ui.css("row w=Full pt=S1 pb=S2_5 justify=JBetween align=ACenter gap=S2")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_presets_strip : @ui.Style = @ui.css("w=Full pb=S2_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_presets_row : @ui.Style = @ui.css("row gap=S1_5 px=S0_5 py=S0_5 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_preset_chip : @ui.Style = @ui.css("row gap=S1 px=S3 py=S1_5 radius=Full bg=Surface align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_preset_chip_hot : @ui.Style = @ui.css("row gap=S1 px=S3 py=S1_5 radius=Full bg=Hover align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_preset_chip_on : @ui.Style = @ui.css("row gap=S1 px=S3 py=S1_5 radius=Full bg=AccentBg align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1611,7 +1156,7 @@ let fp_switch_left : @ui.Style = @ui.css("gap=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_adv_action_row : @ui.Style = @ui.css("row w=Full justify=JEnd pt=S1")
+let fp_adv_action_row : @ui.Style = @ui.css("row w=Full justify=JEnd pt=S1 pb=S1 pr=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1620,16 +1165,6 @@ let fp_mine_room : @ui.Style = @ui.css("row w=Full justify=JEnd")
 ///|
 /// What their bubble leaves at the row's start, a share of the row (percent).
 let fp_mine_clear_share : Double = 22.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_bubble : @ui.Style = @ui.css("radius=Xl2 bg=Bg px=S3_5 py=S2_5").then(
-  @ui.style(mt=@sf.room_of(@sf.corner_inset - @sf.card_pad), mr=@sf.room_of(@sf.corner_inset - @sf.card_pad)),
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_agent : @ui.Style = @ui.css("w=Full gap=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
