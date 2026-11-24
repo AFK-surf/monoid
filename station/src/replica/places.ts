@@ -508,10 +508,17 @@ export class FolderPlace implements Place {
           : null;
   }
 
-  /// Where a batch, a head or a file held here is, by its name; null where it is not.
+  /// Where a batch, a head or a file held here is, by its name; null where it is not (propagates non-ENOENT errors like EACCES/EIO).
   async pathOf(ws: string, origin: string, gen: string | null, name: string): Promise<string | null> {
     const path = this.#resolvePath(ws, origin, gen, name);
-    return path !== null && (await this.#exists(path)) ? path : null;
+    if (path === null) return null;
+    try {
+      await this.fs.stat(path);
+      return path;
+    } catch (e) {
+      if (isMissingFsError(e)) return null;
+      throw e;
+    }
   }
 
   /// A batch, a head or a file held here, whole; null where it is not (propagates non-ENOENT errors like EACCES/EIO).
@@ -982,56 +989,35 @@ export async function handOver(from: FolderPlace, to: Place, ws: string, origin:
     if (path !== null) await to.putFile(ws, origin, hash, path);
   }
   for (const g of mine.gens) {
-    if (g.head === null) continue;
-    const t = theirs.gens.find((x) => x.gen === g.gen);
-    const theirsBatchesOk = t !== undefined &&
-      hasAllBatches(t.batches, g.head.batches) &&
-      (t.head === null || hasAllBatches(t.batches, t.head.batches));
-    let resolvedMineTf: Record<string, number> | undefined;
-    const getMineTf = async (): Promise<Record<string, number>> => {
-      if (resolvedMineTf !== undefined) return resolvedMineTf;
-      if (g.head!.transcriptManifest !== undefined) {
-        const resolved = await loadTranscriptManifest(g.head!.transcriptManifest, readMine);
-        resolvedMineTf = { ...(g.head!.transcriptFiles ?? {}), ...resolved.files };
-      } else {
-        resolvedMineTf = g.head!.transcriptFiles ?? {};
-      }
-      return resolvedMineTf;
-    };
-    if (t?.head != null && theirsBatchesOk) {
-      const theirsFull = t.head.partial !== true;
-      const mineFull = g.head.partial !== true;
-      if (theirsFull && t.head.to > g.head.to) {
-        const theirsManifestOk = t.head.transcriptManifest === undefined ||
-          (readTheirs !== undefined && await loadTranscriptManifest(t.head.transcriptManifest, readTheirs).then(() => true, () => false));
-        if (theirsManifestOk) continue;
-      }
-      if (t.head.to === g.head.to && (!mineFull || theirsFull)) {
-        if (!mineFull && theirsFull) {
-          const theirsManifestOk = t.head.transcriptManifest === undefined ||
-            (readTheirs !== undefined && await loadTranscriptManifest(t.head.transcriptManifest, readTheirs).then(() => true, () => false));
-          if (theirsManifestOk) continue;
-        } else if (mineFull && theirsFull) {
-          // Never overwrite an existing full head at the same `to` when on-disk batches are complete:
-          // if contents match (theirs ⊇ mine) holdsAllLogical returns true; if conflicting, it returns false
-          // so the source copy is safely preserved without clobbering the destination's full head.
-          continue;
-        } else if (sameBatches(g.head.batches, t.head.batches) && sameFileMap(g.head.files, t.head.files)) {
-          continue;
-        }
-      }
+    if (g.head === null) {
+      // Unfinished generation with on-disk batches but no published head.json: never approve source deletion.
+      if (g.batches.length > 0) return false;
+      continue;
     }
+    const t = theirs.gens.find((x) => x.gen === g.gen);
+    // 1. Always upload any batch files from `g.head.batches` missing on disk at `to`.
     const has = new Set(t?.batches ?? []);
     for (const b of g.head.batches) {
       if (has.has(b)) continue;
       const bytes = await from.read(ws, origin, g.gen, b);
       if (bytes !== null) await to.put(ws, origin, g.gen, "batch", b, bytes);
     }
+    // 2. Decide whether to put head independently from batch upload:
+    //    NEVER call `to.put("head")` when `to` already holds a full head at `t.head.to >= g.head.to`
+    //    (prevents overwriting a conflicting same-to full head on older peers).
+    const theirsFull = t?.head != null && t.head.partial !== true;
+    const mineFull = g.head.partial !== true;
+    const shouldPutHead =
+      t?.head == null ||
+      t.head.to < g.head.to ||
+      (t.head.to === g.head.to && !theirsFull && mineFull);
+    if (!shouldPutHead) continue;
     // D72a invariant: outgoing wire `put("head")` always sends inline `transcriptFiles` (never `transcriptManifest`),
     // taking the union of inline `transcriptFiles` and `transcriptManifest` for dual-field source heads.
     let wireHead: Head = g.head;
     if (g.head.transcriptManifest !== undefined) {
-      const tf = await getMineTf();
+      const resolved = await loadTranscriptManifest(g.head.transcriptManifest, readMine);
+      const tf = { ...(g.head.transcriptFiles ?? {}), ...resolved.files };
       const { transcriptManifest: _, ...rest } = g.head;
       let hasTf = false;
       for (const _ in tf) {
@@ -1050,7 +1036,7 @@ export function holdsAll(mine: Held, theirs: Held): boolean {
   const files = new Set(theirs.files);
   if (mine.files.some((f) => !files.has(f))) return false;
   return mine.gens.every((g) => {
-    if (g.head === null) return true;
+    if (g.head === null) return g.batches.length === 0;
     const t = theirs.gens.find((x) => x.gen === g.gen);
     if (t?.head == null) return false;
     if (!hasAllBatches(t.batches, g.head.batches) || !hasAllBatches(t.batches, t.head.batches)) return false;
@@ -1058,7 +1044,7 @@ export function holdsAll(mine: Held, theirs: Held): boolean {
     if (t.head.to < g.head.to) return false;
     if (t.head.to > g.head.to) return true;
     if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
-    if (g.head.partial !== true) {
+    if (g.head.partial !== true || t.head.partial === true) {
       if (g.head.transcriptManifest !== undefined || t.head.transcriptManifest !== undefined) {
         return g.head.transcriptManifest !== undefined && g.head.transcriptManifest === t.head.transcriptManifest;
       }
@@ -1080,7 +1066,10 @@ export async function holdsAllLogical(
   const theirsFiles = new Set(theirs.files);
   const mineManifestMeta = new Set<string>();
   for (const g of mine.gens) {
-    if (g.head === null) continue;
+    if (g.head === null) {
+      if (g.batches.length > 0) return false;
+      continue;
+    }
     const t = theirs.gens.find((x) => x.gen === g.gen);
     if (t?.head == null) return false;
     if (!hasAllBatches(t.batches, g.head.batches) || !hasAllBatches(t.batches, t.head.batches)) return false;
@@ -1113,7 +1102,7 @@ export async function holdsAllLogical(
     }
     if (t.head.to === g.head.to) {
       if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
-      if (g.head.partial !== true) {
+      if (g.head.partial !== true || t.head.partial === true) {
         let theirsTf: Record<string, number>;
         if (t.head.transcriptManifest !== undefined) {
           if (opts.readTheirs === undefined) return false;

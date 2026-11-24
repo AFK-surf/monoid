@@ -26,6 +26,7 @@ import {
   readStreamBounded,
 } from "../src/replica/manifest.ts";
 import { FolderPlace, type Held, type Known, type Own, type Place, handOver, holdsAll, holdsAllLogical, level } from "../src/replica/places.ts";
+import { serve } from "../src/replica/peers.ts";
 import { ProgramRunner, exportThread } from "../src/replica/runner.ts";
 import { S3Place } from "../src/replica/s3.ts";
 import type { NormalizedS3Target } from "../src/replica/backup-config.ts";
@@ -1043,7 +1044,7 @@ test("14. R1: handOver and holdsAll/holdsAllLogical verify actual on-disk Holdin
     "holdsAllLogical rejects missing on-disk batch even when head.json matches",
   );
 
-  // handOver MUST detect missing b2, re-upload b2, and send inline wire head (no transcriptManifest on wire)!
+  // handOver MUST detect missing b2, re-upload b2, NOT overwrite existing same-to full head, and return true!
   const wireHeads: Head[] = [];
   const origPut = toPlace.put.bind(toPlace);
   toPlace.put = async (ws, orig, g, kind, name, bytes) => {
@@ -1053,9 +1054,28 @@ test("14. R1: handOver and holdsAll/holdsAllLogical verify actual on-disk Holdin
   const ok = await handOver(fromPlace, toPlace, HOME, origin);
   assert.equal(ok, true);
   assert.ok(existsSync(join(toPlace.dir(HOME, origin), gen, "log", b2)), "handOver restored missing batch file b2");
-  assert.equal(wireHeads.length, 1);
-  assert.equal(wireHeads[0]!.transcriptManifest, undefined, "handOver wire head must be inline in D72a");
-  assert.deepEqual(wireHeads[0]!.transcriptFiles, { [c1]: 10 });
+  assert.equal(wireHeads.length, 0, "handOver must NOT call put('head') when destination already has same-to full head");
+  assert.deepEqual((await toPlace.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [c1]: 10 });
+
+  // Also test: destination missing b2 AND has conflicting same-to full head -> uploads b2, does NOT call put('head'), preserves destination head, returns false!
+  const toConflict = new FolderPlace(dataDir("d72a-r3-ho-missing-batch-conflict"));
+  const cOther = hex64("22", "2");
+  await toConflict.put(HOME, origin, gen, "batch", b1, Buffer.from("b1"));
+  await toConflict.put(HOME, origin, gen, "batch", b2, Buffer.from("b2"));
+  await toConflict.putFile(HOME, origin, cOther, Buffer.from("other"));
+  const conflictHead = makeHead({ origin, gen, batches: [b1, b2], transcriptFiles: { [cOther]: 5 }, to: 2, made: 2001 });
+  await toConflict.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(conflictHead)));
+  rmSync(join(toConflict.dir(HOME, origin), gen, "log", b2));
+  let conflictHeadPuts = 0;
+  const origConflictPut = toConflict.put.bind(toConflict);
+  toConflict.put = async (ws, orig, g, kind, name, bytes) => {
+    if (kind === "head") conflictHeadPuts++;
+    return origConflictPut(ws, orig, g, kind, name, bytes);
+  };
+  assert.equal(await handOver(fromPlace, toConflict, HOME, origin), false, "conflicting same-to full head with missing batch returns false");
+  assert.ok(existsSync(join(toConflict.dir(HOME, origin), gen, "log", b2)), "missing batch b2 was uploaded");
+  assert.equal(conflictHeadPuts, 0, "must NOT call put('head') to overwrite conflicting same-to full head");
+  assert.deepEqual((await toConflict.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cOther]: 5 }, "original destination head preserved");
 });
 
 test("15. R1: streaming byte cap aborts early + parse-time entry cap + strict integer / -0 rejection", async () => {
@@ -1486,5 +1506,125 @@ test("21. R2: local restore aborts on real EACCES/EIO instead of swallowing into
     () => copies.restore(HOME, origin, compactHead.gen, { station: sid("b") }),
     /EACCES/,
     "restore must abort on EACCES instead of swallowing it as ENOENT missingChunk",
+  );
+});
+
+test("22. R3: source generation with on-disk batches but no head.json is never approved for deletion by handOver/holdsAll/holdsAllLogical", async () => {
+  const fromPlace = new FolderPlace(dataDir("d72a-r3-nohead-from"));
+  const toPlace = new FolderPlace(dataDir("d72a-r3-nohead-to"));
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+
+  // Seed source with an in-flight batch file and NO head.json
+  await fromPlace.put(HOME, origin, gen, "batch", batch, Buffer.from("in-flight-batch"));
+
+  const mine = await fromPlace.heldStrict(HOME, origin);
+  const theirs = await toPlace.held(HOME, origin);
+  assert.equal(holdsAll(mine, theirs), false, "holdsAll must refuse unfinished gen with batches and no head.json");
+  assert.equal(await holdsAllLogical(mine, theirs), false, "holdsAllLogical must refuse unfinished gen with batches and no head.json");
+  assert.equal(await handOver(fromPlace, toPlace, HOME, origin), false, "handOver must refuse and preserve source");
+  assert.ok(existsSync(join(fromPlace.dir(HOME, origin), gen, "log", batch)), "in-flight source batch preserved");
+});
+
+test("23. R3: same-to partial vs partial with distinct transcript chunks does not approve handOver deletion", async () => {
+  const fromPlace = new FolderPlace(dataDir("d72a-r3-partial-from"));
+  const toPlace = new FolderPlace(dataDir("d72a-r3-partial-to"));
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const cMine = hex64("11", "1");
+  const cTheirs = hex64("22", "2");
+
+  await fromPlace.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await fromPlace.putFile(HOME, origin, cMine, Buffer.from("mine"));
+  const minePartial = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cMine]: 4 }, partial: true, to: 2, made: 2000 });
+  await fromPlace.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(minePartial)));
+
+  await toPlace.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await toPlace.putFile(HOME, origin, cTheirs, Buffer.from("theirs"));
+  const theirsPartial = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cTheirs]: 6 }, partial: true, to: 2, made: 2001 });
+  await toPlace.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(theirsPartial)));
+
+  const mineHeld = await fromPlace.heldStrict(HOME, origin);
+  const theirsHeld = await toPlace.held(HOME, origin);
+  assert.equal(holdsAll(mineHeld, theirsHeld), false, "holdsAll must require transcript superset for same-to partial vs partial");
+  assert.equal(await holdsAllLogical(mineHeld, theirsHeld), false, "holdsAllLogical must require transcript superset for same-to partial vs partial");
+  assert.equal(await handOver(fromPlace, toPlace, HOME, origin), false, "handOver must return false when same-to partial lacks source unique chunk");
+  assert.deepEqual((await toPlace.held(HOME, origin)).gens[0]!.head!.transcriptFiles, { [cTheirs]: 6 }, "destination partial head preserved");
+});
+
+test("24. R3: PeerPlace/serve restore aborts on FolderPlace.pathOf EACCES/EIO instead of masking as 'not kept here'", async () => {
+  const s = makeTranscriptStation("d72a-r3-peer-eio");
+  const replica = join(s.data, "replica");
+  const origin = sid("a");
+  const peerId = sid("c");
+  const exp = new Exporter({ db: s.db, replica, dataDir: s.data, origin, now: () => 1_700_000_000_000, chunkBytes: 1024, compactHeads: true });
+  closing.push(() => exp.close());
+  exp.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "src" }] });
+  const p = exp.pass(nothingTold());
+  const compactHead = p.heads[HOME]!;
+  const tf = await loadLocalTranscriptFiles(replica, compactHead);
+  const enc = encodeTranscriptManifest(tf);
+  const genDirPath = join(replica, "own", HOME, compactHead.gen);
+  const targetChunk = Object.keys(tf)[0]!;
+
+  // Seed peer's FolderPlace with full backup
+  const peerRoot = dataDir("d72a-r3-peer-kept");
+  const peerSeed = new FolderPlace(peerRoot);
+  for (const b of compactHead.batches) {
+    await peerSeed.put(HOME, origin, compactHead.gen, "batch", b, readFileSync(join(genDirPath, "log", b)));
+  }
+  for (const h of Object.keys(compactHead.files)) {
+    await peerSeed.putFile(HOME, origin, h, exp.sourceOf(h)!);
+  }
+  for (const h of Object.keys(tf)) {
+    await peerSeed.putFile(HOME, origin, h, exp.sourceOf(h)!);
+  }
+  await peerSeed.putFile(HOME, origin, enc.rootHash, enc.rootBytes);
+  for (const [lh, { bytes }] of enc.leaves) await peerSeed.putFile(HOME, origin, lh, bytes);
+  await peerSeed.put(HOME, origin, compactHead.gen, "head", "head.json", Buffer.from(JSON.stringify(compactHead)));
+
+  // Wrap peer's FolderPlace fs.stat to throw EACCES on targetChunk -> pathOf must propagate EACCES (NOT return null / "not kept here")
+  const badPath = join(peerSeed.dir(HOME, origin), "files", targetChunk);
+  const faultyPeerPlace = new FolderPlace(peerRoot, {
+    ...direct,
+    stat: async (path) => {
+      if (path === badPath) throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      return direct.stat(path);
+    },
+  });
+  const handler = serve({
+    place: faultyPeerPlace,
+    inWorkspace: () => true,
+    hello: () => [],
+  });
+
+  const targetData = dataDir("d72a-r3-peer-dst");
+  const clock = testClock();
+  Store.open(join(targetData, "stillfail.db"), join(targetData, "archive"), clock.clock).close();
+  const fibers = new Fibers("peer-eio-restore");
+  closing.push(() => fibers.close());
+  const runner = new InlineRunner({ db: join(targetData, "stillfail.db"), replica: join(targetData, "replica"), dataDir: targetData, origin: sid("b"), now: () => 1 });
+  closing.push(() => runner.close());
+  const copies = new Copies({
+    data: targetData,
+    here: () => sid("b"),
+    places: () => ({ home: HOME, workspaces: [{ workspace: HOME, name: "dst" }] }),
+    roster: () => [{ id: sid("b"), name: "dst" }, { id: peerId, name: "peer" }],
+    ask: async (_station, req) => handler(sid("b"), req, HOME),
+    runner,
+    fibers,
+    restart: async () => null,
+    changed: () => {},
+  });
+  closing.push(() => copies.close());
+
+  await copies.placesChanged();
+  await copies.settle();
+  await assert.rejects(
+    () => copies.restore(HOME, origin, compactHead.gen, { station: peerId }),
+    /EACCES/,
+    "PeerPlace/serve restore must abort on EACCES instead of treating it as 'not kept here' missing chunk",
   );
 });
