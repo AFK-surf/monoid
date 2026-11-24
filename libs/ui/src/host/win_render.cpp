@@ -47,8 +47,7 @@ static ID3D11PixelShader *ps;
 // a ground's flat middle (bands.h mb_pieces)
 static ID3D11PixelShader *ps_flat;
 static ID3D11InputLayout *layout;
-static ID3D11Buffer *vbuf, *ubuf;
-static size_t vbuf_cap;
+static ID3D11Buffer *ubuf;
 static ID3D11Texture2D *atlas;
 static ID3D11ShaderResourceView *atlas_srv;
 static ID3D11SamplerState *sampler;
@@ -88,7 +87,7 @@ static ID3D11ShaderResourceView *gsrv;
 // What is a window's own (win_app.c: the windows of one run): its swap chain and its buffer's view, its composition's
 // target, root, the native views' visual under the canvas's and the canvas's (NULL: the swap chain is the window's own),
 // its buffer's size in pixels and its size in points and scale (mb_render_set_size's); the last frame, kept for
-// snapshots (the vertex buffer still holds it) and to find the runs of each image; the canvas its frames are drawn
+// snapshots (its own vertex buffer still holds it) and to find the runs of each image; the canvas its frames are drawn
 // into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
 #define MB_PARTS 8
 struct RenderWin {
@@ -98,10 +97,13 @@ struct RenderWin {
   IDCompositionVisual *droot, *dunder, *dcanvas;
   int fb_w, fb_h;
   double vw, vh, vscale;
+  ID3D11Buffer *win_vbuf;
+  size_t win_vbuf_cap;
   int32_t last_count;
   float *last_inst;
   size_t last_cap;
   float last_bg[3];
+  int has_glass;
   ID3D11Texture2D *canvas;
   ID3D11RenderTargetView *canvas_rtv;
   int canvas_w, canvas_h, canvas_ok;
@@ -142,6 +144,8 @@ static struct RenderWinsMade {
 #define vw (rw->vw)
 #define vh (rw->vh)
 #define vscale (rw->vscale)
+#define vbuf (rw->win_vbuf)
+#define vbuf_cap (rw->win_vbuf_cap)
 #define last_count (rw->last_count)
 #define last_inst (rw->last_inst)
 #define last_cap (rw->last_cap)
@@ -1517,6 +1521,14 @@ void mb_render_forget(int wid) {
   if (chain) chain->Release();
   if (dtarget) dtarget->Release();
   if (dcomp) dcomp->Commit();
+  if (vbuf) {
+    if (ctx) {
+      ID3D11Buffer *no_vb = NULL;
+      UINT z = 0;
+      ctx->IASetVertexBuffers(0, 1, &no_vb, &z, &z);
+    }
+    vbuf->Release();
+  }
   free(last_inst);
   // (the device's state left naming none of its views)
   ctx->OMSetRenderTargets(0, NULL, NULL);
@@ -2206,7 +2218,16 @@ static int glass_idle_frames;
 static int glass_drawn;  // a frame drawing now reached glass (encode)
 
 static void glass_idle_tick(void) {
-  if (glass_drawn) glass_idle_frames = 0;
+  int any_glass = glass_drawn;
+  if (!any_glass) {
+    for (int k = 0; k < MB_WINS; k++) {
+      if (render_wins[k].has_glass) {
+        any_glass = 1;
+        break;
+      }
+    }
+  }
+  if (any_glass) glass_idle_frames = 0;
   else if (glass_idle_frames < MB_GLASS_IDLE && ++glass_idle_frames == MB_GLASS_IDLE && lv_w > 0) glass_free();
   glass_drawn = 0;
 }
@@ -3290,6 +3311,8 @@ static int ensure_vbuf(size_t room) {
   return 1;
 }
 
+static int fill_vbuf(const float *f, int32_t count, const float *bg = NULL);
+
 // The frame's instances into the vertex buffer and kept (a snapshot draws them again), as floats with its groups'
 // headers drawn out (groups.h: one pass, into what is kept), then drawn into the target: a window's (`chain`) into the
 // canvas, only the parts that differ where it holds the frame before; how many in `parts_out` (-1 all of it, 0 none),
@@ -3428,7 +3451,10 @@ int mb_render_present(const double *inst, int32_t count, double r, double g, dou
     }
   }
   int drawn = submit(inst, count, r, g, b, &n, parts, adaptive_damage);
-  if (drawn) ad_finalize_frame(rw, n < 0, rw->ad_frame_serial);
+  if (drawn) {
+    if (n != 0) rw->has_glass = (chain != NULL && glass_drawn) ? 1 : 0;
+    ad_finalize_frame(rw, n < 0, rw->ad_frame_serial);
+  }
   glass_idle_tick();
   if (!drawn || !chain) {
     commit_presented();
@@ -3488,6 +3514,10 @@ int mb_render_adaptive_step(int wid) {
   RenderWin *back = rw;
   rw = &render_wins[wid];
   if (!rw->ad_settling || !last_inst || !rtv || !dev || !ctx || !chain) {
+    rw = back;
+    return 0;
+  }
+  if (!vbuf && !fill_vbuf(last_inst, last_count, last_bg)) {
     rw = back;
     return 0;
   }
@@ -3682,22 +3712,36 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
   return staging;
 }
 
-// The last presented frame drawn again (its instances are what the vertex buffer holds), as redrawn_of draws.
+// The last presented frame drawn again (its own vertex buffer holds it), as redrawn_of draws.
 static ID3D11Texture2D *redrawn(int w, int h) {
+  if (!vbuf && !fill_vbuf(last_inst, last_count, last_bg)) return NULL;
   return redrawn_of(w, h, last_count, last_bg, last_inst);
 }
 
-// `count` instances of `f` into the vertex buffer, grown to hold them: 0 where it could not be written.
-static int fill_vbuf(const float *f, int32_t count) {
+// `count` instances of `f` into the vertex buffer, grown to hold them (plus the partial-redraw ground rect at slot
+// `count` when `bg` is given): 0 where it could not be written.
+static int fill_vbuf(const float *f, int32_t count, const float *bg) {
   if (!dev || !ctx || count < 0) return 0;
   size_t slots = (size_t)(count > 0 ? count : 1);
   const size_t stride_bytes = (size_t)MB_INST * sizeof(float);
-  if (slots > (size_t)UINT_MAX / stride_bytes) return 0;
-  size_t need = slots * stride_bytes;
+  if (bg) {
+    if (slots > ((size_t)UINT_MAX - stride_bytes) / stride_bytes) return 0;
+  } else if (slots > (size_t)UINT_MAX / stride_bytes) {
+    return 0;
+  }
+  size_t need = (slots + (bg ? 1 : 0)) * stride_bytes;
   if (!ensure_vbuf(need)) return 0;
   D3D11_MAPPED_SUBRESOURCE m;
   if (FAILED(ctx->Map(vbuf, 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return 0;
-  if (count > 0) memcpy(m.pData, f, (size_t)count * stride_bytes);
+  float *dst = (float *)m.pData;
+  if (count > 0) memcpy(dst, f, (size_t)count * stride_bytes);
+  if (bg) {
+    float *gr = dst + (size_t)count * MB_INST;
+    memset(gr, 0, stride_bytes);
+    gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
+    gr[8] = bg[0]; gr[9] = bg[1]; gr[10] = bg[2]; gr[11] = 1.0f;
+    gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
+  }
   ctx->Unmap(vbuf, 0);
   return 1;
 }
@@ -3729,8 +3773,8 @@ extern "C" int32_t mb_render_pixels_of(const double *inst, int32_t count, double
   vh = kh;
   vscale = ks;
   free(f);
-  // (the frame's own back where it was)
-  if (last_inst) fill_vbuf(last_inst, last_count);
+  // (the frame's own back where it was, including the partial-redraw ground slot)
+  if (last_inst) fill_vbuf(last_inst, last_count, last_bg);
   if (!staging) return 0;
   int ok = 0;
   D3D11_MAPPED_SUBRESOURCE m;
