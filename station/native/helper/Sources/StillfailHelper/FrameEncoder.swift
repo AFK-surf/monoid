@@ -294,9 +294,10 @@ final class FrameEncoder {
       for p in profiles where set(kVTCompressionPropertyKey_ProfileLevel, p) == noErr { break }
       Self.applyRate(made, bitrate)
       _ = set(kVTCompressionPropertyKey_ExpectedFrameRate, fps)
-      // Infinite / on-demand GOP: no periodic 10s IDR spike.
-      _ = set(kVTCompressionPropertyKey_MaxKeyFrameInterval, 0)
-      _ = set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 0)
+      // Explicit large GOP (~1h / 999999 frames): on Apple Silicon VideoToolbox, leaving these unset or 0
+      // falls back to a 0.5-2s automatic IDR interval; explicit large values yield true on-demand keyframes.
+      _ = set(kVTCompressionPropertyKey_MaxKeyFrameInterval, 999_999)
+      _ = set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 3600)
       for (key, value) in colorProperties { _ = set(key, value) }
       VTCompressionSessionPrepareToEncodeFrames(made)
       session = made

@@ -713,9 +713,11 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       _ = set(kVTCompressionPropertyKey_MaxAllowedFrameQP, ScreenView.maxQP(for: rate))
       // As many a second as asked (at 120 set for 60, each picture was sized for 60 and twice the rate went).
       _ = set(kVTCompressionPropertyKey_ExpectedFrameRate, fps)
-      // Infinite / on-demand GOP (no 10s periodic IDR spike): keyframes only on start, config change, or explicit request.
-      _ = set(kVTCompressionPropertyKey_MaxKeyFrameInterval, 0)
-      _ = set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 0)
+      // Explicit large GOP (~1h / 999999 frames): on Apple Silicon VideoToolbox, leaving these unset or 0
+      // falls back to a 0.5-2s automatic IDR interval (8-30 IDR spikes in 15s); explicit large values yield
+      // true on-demand keyframes (only on start, config change, or explicit request).
+      _ = set(kVTCompressionPropertyKey_MaxKeyFrameInterval, 999_999)
+      _ = set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 3600)
       // The pictures' colours in the stream's VUI (as each picture is tagged: `colors`).
       for (key, value) in colors { _ = set(key, value) }
       VTCompressionSessionPrepareToEncodeFrames(made)

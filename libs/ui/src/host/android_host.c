@@ -2731,6 +2731,12 @@ JNIEXPORT void JNICALL Java_dev_mbui_Streams_routeAck(JNIEnv *env, jclass c, jlo
   else if (route_ack) route_ack((double)route, ts);
 }
 
+JNIEXPORT void JNICALL Java_dev_mbui_Streams_routeAckWait(JNIEnv *env, jclass c, jlong route, jdouble ts, jint wait_us) {
+  uint32_t w = wait_us > 0 ? (uint32_t)wait_us : 0;
+  if (route_ack_wait) route_ack_wait((double)route, ts, w);
+  else if (route_ack) route_ack((double)route, ts);
+}
+
 // An engine's thread this attached to the VM is detached as it ends (a thread that ends attached aborts the process).
 static pthread_key_t route_attached;
 static pthread_once_t route_attached_once = PTHREAD_ONCE_INIT;

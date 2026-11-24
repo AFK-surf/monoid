@@ -58,10 +58,9 @@ typedef struct {
   Decoder *dec;
   // (under lock) what it says, oldest first; frames decoded, not shown yet; JPEGs waiting, their stamps
   GQueue events, decoded, jobs;
-  // (under lock) adaptive jitter buffer for H.264 frames (stream_pace.h)
+  // (under lock) adaptive jitter buffer for H.264 frames (stream_pace.h), ticked by linux_app.c's GdkFrameClock
   mb_pace_t pace;
   GQueue paced;
-  guint pace_source;
   int pace_drawn;
   int pace_idle_ticks;
   // (the main thread's) the one shown: its pixels until they are its texture, then its texture
@@ -276,52 +275,48 @@ static int pace_trim_locked(Stream *s, double now, int draws) {
   return dropped;
 }
 
-// (under lock) clear paced queue and stop timer
+// (under lock) clear paced queue
 static void pace_clear_locked(Stream *s) {
-  if (s->pace_source) {
-    g_source_remove(s->pace_source);
-    s->pace_source = 0;
-  }
   g_queue_clear_full(&s->paced, (GDestroyNotify)paced_frame_free);
   s->pace_drawn = 0;
   s->pace_idle_ticks = 0;
   mb_pace_reset(&s->pace);
 }
 
-static gboolean pace_tick_cb(gpointer data) {
-  int id = GPOINTER_TO_INT(data);
+// Called from linux_app.c's GTK GdkFrameClock on_tick (hardware VSync, main thread).
+// Sets *wake_out = 1 if any stream emitted or dropped a frame; returns 1 while any stream needs further VSync ticks.
+int mb_linux_stream_tick(int *wake_out) {
   int wake = 0;
-  gboolean keep = G_SOURCE_REMOVE;
-  g_mutex_lock(&lock);
-  Stream *s = stream_of(id);
-  if (!s || s->closed) {
-    if (s) s->pace_source = 0;
-    g_mutex_unlock(&lock);
-    return G_SOURCE_REMOVE;
-  }
-  s->pace_drawn = 0;
+  int keep = 0;
   double now = linux_now_ms();
-  if (pace_trim_locked(s, now, 1)) wake = 1;
-  int drew = 0;
-  PacedFrame *head = g_queue_peek_head(&s->paced);
-  if (head && mb_pace_is_due(&s->pace, head->frame->ts, head->base_ms, head->immediate, now)) {
-    g_queue_pop_head(&s->paced);
-    pace_emit_locked(s, head, now);
-    drew = 1;
-    wake = 1;
-  }
-  if (drew || !g_queue_is_empty(&s->paced)) {
-    s->pace_idle_ticks = 0;
-    keep = G_SOURCE_CONTINUE;
-  } else if (++s->pace_idle_ticks < MB_PACE_IDLE_STOP_TICKS) {
-    keep = G_SOURCE_CONTINUE;
-  } else {
-    s->pace_idle_ticks = 0;
-    s->pace_source = 0;
-    keep = G_SOURCE_REMOVE;
+  g_mutex_lock(&lock);
+  if (streams) {
+    for (guint i = 1; i < streams->len; i++) {
+      Stream *s = g_ptr_array_index(streams, i);
+      if (!s || s->closed) continue;
+      if (g_queue_is_empty(&s->paced) && !s->pace_drawn && s->pace_idle_ticks == 0) continue;
+      s->pace_drawn = 0;
+      if (pace_trim_locked(s, now, 1)) wake = 1;
+      int drew = 0;
+      PacedFrame *head = g_queue_peek_head(&s->paced);
+      if (head && mb_pace_is_due(&s->pace, head->frame->ts, head->base_ms, head->immediate, now)) {
+        g_queue_pop_head(&s->paced);
+        pace_emit_locked(s, head, now);
+        drew = 1;
+        wake = 1;
+      }
+      if (drew || !g_queue_is_empty(&s->paced)) {
+        s->pace_idle_ticks = 0;
+        keep = 1;
+      } else if (++s->pace_idle_ticks < MB_PACE_IDLE_STOP_TICKS) {
+        keep = 1;
+      } else {
+        s->pace_idle_ticks = 0;
+      }
+    }
   }
   g_mutex_unlock(&lock);
-  if (wake) mb_app_wake();
+  if (wake_out) *wake_out = wake;
   return keep;
 }
 
@@ -376,9 +371,7 @@ static int on_decoded(void *sink, gpointer data) {
       pace_emit_locked(s, head, now);
       wake = 1;
     }
-    if ((!g_queue_is_empty(&s->paced) || s->pace_drawn) && !s->pace_source) {
-      s->pace_source = g_timeout_add(16, pace_tick_cb, GINT_TO_POINTER(s->id));
-    }
+    if (!g_queue_is_empty(&s->paced) || s->pace_drawn) wake = 1;
     got = 0;
   } else if (f) {
     char *t = stamp(f->ts);
