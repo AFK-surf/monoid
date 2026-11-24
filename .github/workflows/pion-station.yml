@@ -5,6 +5,9 @@ on:
     paths:
       - "pion/station/**"
       - "pion/base/**"
+      - "station/src/sessions/footprint.ts"
+      - "station/test/reader-contract-footprint.test.ts"
+      - "station/test/footprint-pion-switch.test.ts"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 

@@ -214,7 +214,17 @@ test("shadow mode returns primary without waiting, logs diffs & shadow crashes w
     );
 
     // 4. AbortSignal cancels both primary and shadow processes cleanly with zero leaks.
-    const beforeLive = MbProcess.live().filter((p) => p.args.includes("footprint")).length;
+    // Wait for prior completed children's `close` events before sampling the baseline count.
+    const waitFootprintLive = async (targetCount: number) => {
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (MbProcess.live().filter((p) => p.args.includes("footprint")).length === targetCount) resolve();
+          else setImmediate(check);
+        };
+        check();
+      });
+    };
+    await waitFootprintLive(0);
     await withEnv({
       STILLFAIL_MB_READER: mbHang,
       STILLFAIL_PION_READER: pionHang,
@@ -225,24 +235,17 @@ test("shadow mode returns primary without waiting, logs diffs & shadow crashes w
       const pending = measured(target, ac.signal);
       assert.equal(
         MbProcess.live().filter((p) => p.args.includes("footprint")).length,
-        beforeLive + 2,
+        2,
         "shadow mode must spawn both primary and shadow footprint processes",
       );
       ac.abort(new Error("aborted shadow"));
       await assert.rejects(pending, /aborted shadow/);
       await waitForShadowMeasures();
     });
-    // Wait briefly via microtask/event-loop for close events to reap both killed children.
-    await new Promise<void>((resolve) => {
-      const check = () => {
-        if (MbProcess.live().filter((p) => p.args.includes("footprint")).length <= beforeLive) resolve();
-        else setImmediate(check);
-      };
-      check();
-    });
+    await waitFootprintLive(0);
     assert.equal(
       MbProcess.live().filter((p) => p.args.includes("footprint")).length,
-      beforeLive,
+      0,
       "both primary and shadow processes must be reaped after abort",
     );
     assert.deepEqual(unhandled, [], "shadow mode must never emit unhandledRejection");
