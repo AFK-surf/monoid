@@ -3,13 +3,13 @@
 
 [metadata]
 schema_version = 1
-monoid_source_commit = "f0fb92750e75a8625aa4da34e206fee16f6c96db"
+monoid_source_commit = "41601bf576e9798f57b9853ef390bd4b52aa9953"
 invar_lock_sha = "339c271e0bd4ea9e2680f13adcec8075d6da9cf3"
 mbt2pion_commit = "6d22ff1f90bd19012a5997f7fdfdc56ee3012408"
 toolchain_lock = "2f2886f685c5f21a8fd33f766a13673d385fbf05b24334da79bcb352fcb11d50"
-api_map_sha256 = "1582a389d7a01f19508df4b56e22a77b7da9e8e6655e8f8a6bc3b614436051a9"
+api_map_sha256 = "5da0d405e984977e442aee9b6fb56a7521b9fce843e756aa19471b3eb455c228"
 recipes_sha256 = "326388adc01e16d447a92e25e0f422e0a005c77bd54df3c55ab94c7d2eb38051"
-blockers_sha256 = "11792b9508b287f81e75368a1bad2221a288616b385473b1fbdd1c81e70f5743"
+blockers_sha256 = "588bcbc5b51eed37833e76f6183f9ca6c5c0da069a7f4adb93b0005f4995efbc"
 
 [toolchain.versions]
 pionc = "0.1.0"
@@ -39,11 +39,11 @@ math_mac_textrec_sha256 = "eb3197183f1252d7382e30e4e1b20022f7111664f023421a3e844
 
 [counts]
 production_files = 255
-production_loc = 67628
+production_loc = 67808
 app_unreachable_production_files = 4
-wbtest_files = 201
+wbtest_files = 202
 blackbox_test_files = 7
-total_test_files = 208
+total_test_files = 209
 
 [m1_3_frozen_test_matrix]
 tokens = ["contrast_theme_wbtest.mbt", "style_defaults_wbtest.mbt", "style_node_wbtest.mbt", "styled_words_wbtest.mbt"]
@@ -91,10 +91,10 @@ sha256 = "fc862aca0df090c803bb4fbbb87ac037713b6130d88a764cd5f73dc85a2fb521"
 
 [[production_files]]
 file = "accent_pick.mbt"
-loc = 298
+loc = 352
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "0b29b5c9764809c064e2ef062431d921bdffbb9a83af6fd0a7d3597aa720827e"
+sha256 = "e16060c2bab25aa1ccd6749f3b8e4b6b3a307e6169c0e9b29ad5b30ab8515727"
 
 [[production_files]]
 file = "accordion_node.mbt"
@@ -364,10 +364,10 @@ sha256 = "c87eda0e23290794b9a500d4619d850ba80a1052dbc8ac89e757fc751d58071f"
 
 [[production_files]]
 file = "corner_remove_node.mbt"
-loc = 74
+loc = 75
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "8d79ae7c4d78f8e52d0c60f4e3805defac193b6a15cc63081d872059c17b3959"
+sha256 = "49f82bb04c08180f2c4f271954604f1197978c2efcaf609c90011ec3de8b5a51"
 
 [[production_files]]
 file = "count_badge_node.mbt"
@@ -651,10 +651,10 @@ sha256 = "2a39d56672f1033457df4121d7a7e84c4c844003a55e98dc4a06acac2a97518d"
 
 [[production_files]]
 file = "icons.mbt"
-loc = 492
+loc = 493
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "698a6666a9f221f1f0f7a80e7400def178707d9454751bab48970f261b6ac07c"
+sha256 = "6993ac6d0feb93c363bb073e94026f283ece7d71b05481d0993d5251469c9db2"
 
 [[production_files]]
 file = "image_reveal_node.mbt"
@@ -1071,24 +1071,24 @@ sha256 = "1fa8742300bf4c8db01d9cd32997ce75afa60bcb73db60a96d501f2abd4dc8e5"
 
 [[production_files]]
 file = "page_node.mbt"
-loc = 3097
+loc = 3114
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "47ac1edf759dc0b7f31b9bb86c5fd7741fddbb347d01165c5bc54272a1ab46a5"
+sha256 = "1c441dc3f85c20e56cc00864d032b658be290e752f8def0e048cb9d97632f9bb"
 
 [[production_files]]
 file = "page_skeleton_node.mbt"
-loc = 443
+loc = 454
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "cc10249687a73d823e8ba2424e2a0bdf856454c1ad42c45738658006b88fafde"
+sha256 = "7357021d3beb621e4aadf7e363020250d81bb4da63b7acab918606d4e9faa820"
 
 [[production_files]]
 file = "page_wide_node.mbt"
-loc = 1061
+loc = 1079
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "33ec8b16dbd583cd0f520413b4fa1cddade273b3a8344a9836c596ba71a7590c"
+sha256 = "4aeb36a0f5e6f576c3ce9e4321b5d64ff9eb1f56454f969f71ba498b295300d9"
 
 [[production_files]]
 file = "palette_data.mbt"
@@ -1120,10 +1120,10 @@ sha256 = "564edff7199121fdda5ca3041e9f3b10a6319e0b26747abbc952d9722a5c0763"
 
 [[production_files]]
 file = "panel_node.mbt"
-loc = 419
+loc = 423
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "f64b71f5e6b9d201cfcdf34a0433b03ba13132974369ce98f97238a14076487d"
+sha256 = "a56e36bd2c5cd3593a22e27857079a7706301f3bd891b327d29afd9bde87c93b"
 
 [[production_files]]
 file = "panel_parts_node.mbt"
@@ -1225,10 +1225,10 @@ sha256 = "9a52ac7ad048558eb4967677ad163d1464e1853b220a4064a08762895862018c"
 
 [[production_files]]
 file = "player_list_node.mbt"
-loc = 484
+loc = 485
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "1c8b4d50f26efc1f867da722ab8b0cfe9e4eccfe6e5276239e266c1a4a5f7c16"
+sha256 = "55b5babea746fea785e3d158e7a2a148378cc4148bf1b979cb44357e07d9dbe2"
 
 [[production_files]]
 file = "player_node.mbt"
@@ -1295,10 +1295,10 @@ sha256 = "61a0ea77d8b78158ed5a0c70206cb2a79acf0baa01004a6688ad889f74068f89"
 
 [[production_files]]
 file = "presenters.mbt"
-loc = 1797
+loc = 1804
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "45dfbf931e50754defa52e8b4fe50451bfb6619fb8af3f16a847954f668eaa86"
+sha256 = "c7492cc747b8ca52101a7f1496de43e7fe5443eb2fc0356e64f821e15912e130"
 
 [[production_files]]
 file = "press_late.mbt"
@@ -1358,10 +1358,10 @@ sha256 = "b602c42478aa2d4731b3c48ddd6578e776f59a4b214404da6fe09da4e2c0a459"
 
 [[production_files]]
 file = "reader_layout_node.mbt"
-loc = 517
+loc = 518
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "4ef0c3ae00cfe0291293e76432a90e200538127ceaaa5c67ca7eb0c5745616cb"
+sha256 = "70ddb264a627bae655385dd44dd7b4b37df9687404c0d773e1716adc61bdf350"
 
 [[production_files]]
 file = "reader_marks.mbt"
@@ -1372,10 +1372,10 @@ sha256 = "6cf81ee0579a3dcd88c1c602438815afa01b4925e48abc0cb5e4f7af03242514"
 
 [[production_files]]
 file = "reader_node.mbt"
-loc = 1736
+loc = 1737
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "288b8b8808f904944d24fdeaaac9a506fd709e517e636f273747b2a2edae7828"
+sha256 = "1d1844471fddd23bc9425cfa9f3da2f128bbeda00ff0ada106f8144f2a89e4be"
 
 [[production_files]]
 file = "reader_style.mbt"
@@ -1540,10 +1540,10 @@ sha256 = "477c1df1c228e417b6f2633e1df3266fe1e0c1c191521003935de8140cb91bf3"
 
 [[production_files]]
 file = "sheet_shows_node.mbt"
-loc = 518
+loc = 519
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "e8a7448da946547c840b061952f47d5d10f36b24b1e62672769aa0a31b5a6199"
+sha256 = "453f9d6faa48d8cc9cf1d553d27e59ad010e261a10b575d0d16f2fda3f58144e"
 
 [[production_files]]
 file = "shortcuts.mbt"
@@ -1610,10 +1610,10 @@ sha256 = "b6e3e0d45abfc4c3c773b1a6d2a9b76ed513fc7add147bcb84b0465df597c00f"
 
 [[production_files]]
 file = "stops_node.mbt"
-loc = 103
+loc = 109
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "f753e8bfa8a10a84cb2065f44733697dbfa4a9819a60366901840afea2003c66"
+sha256 = "f7c51d825c46a83ba20bd7ca31cfc0c66a7a41c1d66da5c1f0d0dfc8b03a6413"
 
 [[production_files]]
 file = "stroke.mbt"
@@ -1736,10 +1736,10 @@ sha256 = "4e0d1d3be4d9324769e9cb1f859b004cf4ef415440e06f630a45afc6602c25ff"
 
 [[production_files]]
 file = "tokens.mbt"
-loc = 3027
+loc = 3084
 app_reachable = true
 disposition = "transpile_sf"
-sha256 = "51296f22eebf88ce1339f7a2e1d5605b6acc05cd611d45098539d486719ef85b"
+sha256 = "b782ee885713336bd5c93835cc9778124262a62508954446514e6b57ab3c9e52"
 
 [[production_files]]
 file = "tokens_data.mbt"
@@ -2101,7 +2101,7 @@ disposition = "m1_3_full_wbtest_migrate"
 [[test_files]]
 file = "custom_tone_wbtest.mbt"
 kind = "wbtest"
-loc = 30
+loc = 50
 m1_3_frozen = false
 disposition = "m1_3_full_wbtest_migrate"
 
@@ -2633,7 +2633,7 @@ disposition = "m1_3_full_wbtest_migrate"
 [[test_files]]
 file = "page_node_wbtest.mbt"
 kind = "wbtest"
-loc = 1171
+loc = 1217
 m1_3_frozen = false
 disposition = "m1_3_full_wbtest_migrate"
 
@@ -2683,6 +2683,13 @@ disposition = "m1_3_full_wbtest_migrate"
 file = "panel_list_node_wbtest.mbt"
 kind = "wbtest"
 loc = 365
+m1_3_frozen = false
+disposition = "m1_3_full_wbtest_migrate"
+
+[[test_files]]
+file = "panel_scrolls_under_wbtest.mbt"
+kind = "wbtest"
+loc = 65
 m1_3_frozen = false
 disposition = "m1_3_full_wbtest_migrate"
 
@@ -3039,7 +3046,7 @@ disposition = "m1_3_full_wbtest_migrate"
 [[test_files]]
 file = "stops_wbtest.mbt"
 kind = "wbtest"
-loc = 249
+loc = 359
 m1_3_frozen = false
 disposition = "m1_3_full_wbtest_migrate"
 

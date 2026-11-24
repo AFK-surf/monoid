@@ -1,6 +1,7 @@
 import {
   "moonbitlang/core/env",
   "ui/ui",
+  "ui/view",
 }
 
 pkgtype(kind: "executable")

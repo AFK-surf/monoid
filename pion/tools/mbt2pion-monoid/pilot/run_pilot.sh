@@ -159,6 +159,9 @@ python3 "$SCRIPT_DIR/oracle.py" \
   --moon-extra-src "$CONTROLS_DIR/numbers.mbt" \
   --moon-extra-src "$CONTROLS_DIR/marked.mbt" \
   --moon-extra-src "$CONTROLS_DIR/tokens_data.mbt" \
+  --moon-extra-src "$CONTROLS_DIR/clock_read_known.mbt" \
+  --moon-extra-src "$CONTROLS_DIR/table_copy.mbt" \
+  --moon-extra-src "$CONTROLS_DIR/reader_marks.mbt" \
   --moon-extra-src "$SCRIPT_DIR/mbt_transpile_src/pilot_core.mbt" \
   --pion-dir "$PILOT_PKG" \
   --moon-bin "$MOON" \

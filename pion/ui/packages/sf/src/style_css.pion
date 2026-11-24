@@ -1,6 +1,9 @@
 // 1:1 pure-Pion port of `libs/ui/src/ui/style_css.mbt` (`@ui.css` / `@ui.css_read`)
 // targeting `AFK-surf/invar` `ui::Style` / `ui::Patch` tokens with identical grammar,
 // Clinger fast-path number parsing, and exact `Css::fail` cursor offsets.
+//
+// Temporary mapping: `@ui.css` / `@ui.css_read` -> `sf::css` / `sf::css_read`.
+// Removal condition: delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands.
 
 import "ui"
 

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "monoid_source_commit": "41601bf576e9798f57b9853ef390bd4b52aa9953",
+  "invar_target_commit": "339c271e0bd4ea9e2680f13adcec8075d6da9cf3",
+  "temporary_mappings": [
+    {
+      "id": "temp-ui-css",
+      "source": "@ui.css",
+      "temporary_target": "sf::css",
+      "upstream_target": "ui::css",
+      "temporary_file": "pion/ui/packages/sf/src/style_css.pion",
+      "upstream_track": "Invar Wave P0-2 Track 2A",
+      "removal_condition": "delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands"
+    },
+    {
+      "id": "temp-ui-css-read",
+      "source": "@ui.css_read",
+      "temporary_target": "sf::css_read",
+      "upstream_target": "ui::css_read",
+      "temporary_file": "pion/ui/packages/sf/src/style_css.pion",
+      "upstream_track": "Invar Wave P0-2 Track 2A",
+      "removal_condition": "delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands"
+    }
+  ]
+}

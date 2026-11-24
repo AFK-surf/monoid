@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const SCRIPT_DIR = path.dirname(new URL(import.meta.url).pathname);
@@ -255,7 +256,7 @@ function splitTopLevel(str, sep = ',') {
   return parts;
 }
 
-function parseFnSig(sig) {
+export function parseFnSig(sig) {
   const openIdx = sig.indexOf('(');
   if (openIdx < 0) return null;
   let depth = 0;
@@ -290,10 +291,16 @@ function parseFnSig(sig) {
 }
 
 // Normalize a MoonBit or Pion type string for position-by-position comparison.
-function normalizeTypeForCompare(raw) {
+// Only normalizes unqualified scalar `Int32` -> `Int` (proven 32-bit signed integer synonym
+// between MoonBit `Int`/`Int32` and Pion `Int`), strictly preserving signedness (`UInt`, `UInt32`),
+// width (`Int64`, `UInt64`), containers, and package-qualified/user-scoped types (`pkg::Int32`, `@pkg.Int32`).
+export function normalizeTypeForCompare(raw) {
   let s = String(raw || '').trim();
   // Strip optional `raise ...` suffix on return types
   s = s.replace(/\s+raise\b.*$/, '');
+  // Normalize ONLY unqualified scalar `Int32` -> `Int` BEFORE stripping package qualifiers
+  // so scoped types like `foo::Int32` or `@foo.Int32` remain distinct from scalar `Int`.
+  s = s.replace(/(?<![A-Za-z0-9_:.@])Int32(?![A-Za-z0-9_])/g, 'Int');
   // Strip package qualifiers (`@pkg.` and `pkg::`)
   s = s.replace(/@[A-Za-z0-9_\/]+\./g, '');
   s = s.replace(/\b[a-z_][a-z0-9_]*::/g, '');
@@ -312,7 +319,7 @@ function normalizeTypeForCompare(raw) {
   return s;
 }
 
-function typesCompatible(mType, pType, paramName, isAutofillLoc) {
+export function typesCompatible(mType, pType, paramName, isAutofillLoc) {
   const mNorm = normalizeTypeForCompare(mType);
   const pNorm = normalizeTypeForCompare(pType);
   if (mNorm === pNorm) return true;
@@ -320,6 +327,114 @@ function typesCompatible(mType, pType, paramName, isAutofillLoc) {
     return true;
   }
   return false;
+}
+
+// Strict parameter-rename rule validator: any future parameter rename MUST match on
+// normalized type, optionality (`?` vs `~` vs positional), and default-value presence.
+// Rejects erroneous renames such as `w? : Len` -> `weight? : Weight`.
+export function validateParamRenameRule(rule, mbtiFnSig, pionFnSig, isAutofillLoc = false) {
+  if (!rule || !rule.from || !rule.to) {
+    throw new Error(`Invalid param_rename rule: missing 'from' or 'to' (${JSON.stringify(rule)})`);
+  }
+  if (!mbtiFnSig || !pionFnSig) {
+    throw new Error(`Cannot validate param_rename ${rule.from} -> ${rule.to}: missing function signature`);
+  }
+  const srcParam = mbtiFnSig.params.find(p => p.name === rule.from);
+  const dstParam = pionFnSig.params.find(p => p.name === rule.to);
+  if (!srcParam) {
+    throw new Error(`Invalid param_rename ${rule.from} -> ${rule.to}: source param '${rule.from}' not found`);
+  }
+  if (!dstParam) {
+    throw new Error(`Invalid param_rename ${rule.from} -> ${rule.to}: target param '${rule.to}' not found`);
+  }
+  if (!typesCompatible(srcParam.type, dstParam.type, srcParam.name, isAutofillLoc)) {
+    throw new Error(
+      `Rejected param_rename ${rule.from} -> ${rule.to}: type mismatch (source=${srcParam.type} vs target=${dstParam.type})`
+    );
+  }
+  if (srcParam.modifier !== dstParam.modifier) {
+    throw new Error(
+      `Rejected param_rename ${rule.from} -> ${rule.to}: optionality mismatch (source='${srcParam.modifier}' vs target='${dstParam.modifier}')`
+    );
+  }
+  if (Boolean(srcParam.has_default) !== Boolean(dstParam.has_default)) {
+    throw new Error(
+      `Rejected param_rename ${rule.from} -> ${rule.to}: default-value mismatch (source=${Boolean(srcParam.has_default)} vs target=${Boolean(dstParam.has_default)})`
+    );
+  }
+  return true;
+}
+
+// Strip // line comments only (preserving string literals) so CSS string tokens like `align=AFirstLine` are scanned accurately.
+function stripLineCommentsOnly(src) {
+  const lines = src.split('\n');
+  return lines.map(line => {
+    let inDouble = false;
+    let inSingle = false;
+    let escaped = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (inDouble) {
+        if (escaped) { escaped = false; continue; }
+        if (c === '\\') { escaped = true; continue; }
+        if (c === '"') { inDouble = false; continue; }
+      } else if (inSingle) {
+        if (escaped) { escaped = false; continue; }
+        if (c === '\\') { escaped = true; continue; }
+        if (c === '\'') { inSingle = false; continue; }
+      } else {
+        if (c === '/' && line[i + 1] === '/') {
+          return line.slice(0, i);
+        }
+        if (c === '"') inDouble = true;
+        else if (c === '\'') inSingle = true;
+      }
+    }
+    return line;
+  }).join('\n');
+}
+
+function walkNonTestMbtFiles(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkNonTestMbtFiles(full, out);
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith('.mbt') &&
+      !entry.name.endsWith('_test.mbt') &&
+      !entry.name.endsWith('_wbtest.mbt')
+    ) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+export function scanAFirstLine(repoRoot) {
+  const scanDir = subDir => {
+    const absDir = path.join(repoRoot, subDir);
+    const hits = [];
+    for (const fp of walkNonTestMbtFiles(absDir)) {
+      const rel = path.relative(repoRoot, fp).split(path.sep).join('/');
+      const cleanLines = stripLineCommentsOnly(fs.readFileSync(fp, 'utf8')).split('\n');
+      for (let li = 0; li < cleanLines.length; li++) {
+        if (/\bAFirstLine\b/.test(cleanLines[li])) {
+          hits.push(`${rel}:${li + 1}`);
+        }
+      }
+    }
+    return hits.sort();
+  };
+  const definition_locations = scanDir('libs/ui/src/ui');
+  const controls_callsites = scanDir('libs/ui/src/controls');
+  const app_callsites = scanDir('apps/mbui/src');
+  return {
+    definition_locations,
+    controls_callsites,
+    app_callsites,
+  };
 }
 
 // String-offset / length Int unit classifier
@@ -545,7 +660,43 @@ const EXPLICIT_OVERRIDES = {
     status: 'm2_plus_deferred',
     note: 'OTP segmented verification code input; NEVER map to invar code_field (syntax-highlighted code editor)',
   },
+  // Temporary pure-Pion port mapping until Invar Wave P0-2 Track 2A lands ui::css / ui::css_read:
+  '@ui.css': {
+    status: 'missing_layer2_pure_logic',
+    temporary_target: 'sf::css',
+    temporary_file: 'pion/ui/packages/sf/src/style_css.pion',
+    removal_condition: 'delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands',
+    note: 'Temporary pure-Pion port in sf/src/style_css.pion; delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands',
+  },
+  '@ui.css_read': {
+    status: 'missing_layer2_pure_logic',
+    temporary_target: 'sf::css_read',
+    temporary_file: 'pion/ui/packages/sf/src/style_css.pion',
+    removal_condition: 'delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands',
+    note: 'Temporary pure-Pion port in sf/src/style_css.pion; delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands',
+  },
 };
+
+const TEMPORARY_DRIFT_MAPPINGS = [
+  {
+    id: 'temp-ui-css',
+    source: '@ui.css',
+    temporary_target: 'sf::css',
+    upstream_target: 'ui::css',
+    temporary_file: 'pion/ui/packages/sf/src/style_css.pion',
+    upstream_track: 'Invar Wave P0-2 Track 2A',
+    removal_condition: 'delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands',
+  },
+  {
+    id: 'temp-ui-css-read',
+    source: '@ui.css_read',
+    temporary_target: 'sf::css_read',
+    upstream_target: 'ui::css_read',
+    temporary_file: 'pion/ui/packages/sf/src/style_css.pion',
+    upstream_track: 'Invar Wave P0-2 Track 2A',
+    removal_condition: 'delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands',
+  },
+];
 
 // Classify missing Layer 2 symbols into strict invar blockers (require invar internal state/draw/event wiring)
 // vs pure-logic escape-hatch candidates (can be temporarily overlaid with 100% real logic if upstream PR is in flight)
@@ -802,6 +953,11 @@ function main() {
         } else if (mbtiDecl.kind === 'fn' && pionItem.kind === 'fn') {
           const mSig = parseFnSig(mbtiDecl.sig);
           const pSig = parseFnSig(pionItem.sig);
+          if (override && Array.isArray(override.param_renames)) {
+            for (const rule of override.param_renames) {
+              validateParamRenameRule(rule, mSig, pSig, engineSig.autofill_loc);
+            }
+          }
           if (mSig && pSig) {
             if (mSig.params.length !== pSig.params.length) {
               diffs.push(`param_count: mbui=${mSig.params.length} vs invar=${pSig.params.length}`);
@@ -915,6 +1071,9 @@ function main() {
     };
     if (override && override.forbidden_target) entry.forbidden_target = override.forbidden_target;
     if (override && override.alt_target) entry.alt_target = override.alt_target;
+    if (override && override.temporary_target) entry.temporary_target = override.temporary_target;
+    if (override && override.temporary_file) entry.temporary_file = override.temporary_file;
+    if (override && override.removal_condition) entry.removal_condition = override.removal_condition;
     if (override && override.note) entry.note = override.note;
     apiEntries.push(entry);
 
@@ -960,24 +1119,83 @@ function main() {
     }
   }
 
-  // Explicitly track missing ui::Align::FirstLine (`AFirstLine`) until Invar adds first-line alignment
-  const invarAlign = (invarIndex.get('ui') || new Map()).get('Align');
+  // Explicitly track missing ui::TextPatch / ui::text_style / ui::text_patch fields/params
+  // (`w? : Len`, `center? : Bool`, `balance? : Bool` — NEVER rename `w` -> `weight`!).
+  const uiMbtiForText = mbtiIndex.get('ui') || new Map();
+  const invarUiMap = invarIndex.get('ui') || new Map();
+  const textPatchMbti = uiMbtiForText.get('TextPatch');
+  const textPatchInvar = invarUiMap.get('TextPatch');
+  if (textPatchMbti && textPatchInvar) {
+    const invarFieldNames = new Set(parsePionStructFields(textPatchInvar.sig).map(f => f.name));
+    const missingFields = (textPatchMbti.fields || [])
+      .filter(f => !invarFieldNames.has(f.name))
+      .map(f => `${f.name} : ${f.type}`);
+    if (missingFields.length > 0) {
+      const locs = prodRefs.get('@ui.TextPatch') || [];
+      strictBlockers.push({
+        category: 'controls_prod_signature_incompatible',
+        source: '@ui.TextPatch',
+        expected_invar: 'ui::TextPatch',
+        source_sig: textPatchMbti.sig,
+        invar_sig: textPatchInvar.sig,
+        missing_fields: missingFields,
+        call_count: locs.length,
+        locations: locs.slice(0, 8).map(l => `libs/ui/src/controls/${l.file}:${l.line}`),
+        note: 'Invar ui::TextPatch lacks w/center/balance fields (absorbed into Invar Wave P0-2 Track 2A); never rename w -> weight',
+      });
+    }
+  }
+  for (const fnName of ['text_style', 'text_patch']) {
+    const fnMbti = uiMbtiForText.get(fnName);
+    const fnInvar = invarUiMap.get(fnName);
+    if (fnMbti && fnInvar) {
+      const mFn = parseFnSig(fnMbti.sig);
+      const pFn = parseFnSig(fnInvar.sig);
+      if (mFn && pFn) {
+        const pParamNames = new Set(pFn.params.map(p => p.name));
+        const missingParams = mFn.params
+          .filter(p => !pParamNames.has(p.name))
+          .map(p => `${p.name}${p.modifier} : ${p.type}`);
+        if (missingParams.length > 0) {
+          const locs = prodRefs.get(`@ui.${fnName}`) || [];
+          strictBlockers.push({
+            category: 'controls_prod_signature_incompatible',
+            source: `@ui.${fnName}`,
+            expected_invar: `ui::${fnName}`,
+            source_sig: fnMbti.sig,
+            invar_sig: fnInvar.sig,
+            missing_params: missingParams,
+            call_count: locs.length,
+            locations: locs.slice(0, 8).map(l => `libs/ui/src/controls/${l.file}:${l.line}`),
+            note: `Invar ui::${fnName} lacks ${missingParams.join(', ')} (absorbed into Invar Wave P0-2 Track 2A); never rename w -> weight`,
+          });
+        }
+      }
+    }
+  }
+
+  // Explicitly track missing ui::Align::FirstLine (`AFirstLine`) via dynamic scan separated into:
+  // (a) definition (`libs/ui/src/ui`), (b) controls callsites (`libs/ui/src/controls`), (c) app callsites (`apps/mbui/src`).
+  const invarAlign = invarUiMap.get('Align');
   if (
     invarAlign &&
     !parsePionEnumVariants(invarAlign.sig).some(v => v.name === 'FirstLine' || v.name === 'AFirstLine')
   ) {
+    const afScan = scanAFirstLine(REPO_ROOT);
     strictBlockers.push({
       category: 'controls_prod_signature_incompatible',
       source: '@ui.Align::AFirstLine',
       expected_invar: 'ui::Align::FirstLine',
-      source_sig: ((mbtiIndex.get('ui') || new Map()).get('Align') || {}).sig || null,
+      source_sig: (uiMbtiForText.get('Align') || {}).sig || null,
       invar_sig: invarAlign.sig,
-      call_count: 1,
-      locations: [
-        'libs/ui/src/ui/style_css.mbt:415',
-        'libs/ui/src/controls/style_node.mbt:411',
-        'apps/mbui/src/sfpages/model_triple.mbt:3267',
-      ],
+      definition_count: afScan.definition_locations.length,
+      definition_locations: afScan.definition_locations,
+      controls_call_count: afScan.controls_callsites.length,
+      controls_callsites: afScan.controls_callsites,
+      app_call_count: afScan.app_callsites.length,
+      app_callsites: afScan.app_callsites,
+      call_count: afScan.controls_callsites.length + afScan.app_callsites.length,
+      locations: [...afScan.controls_callsites, ...afScan.app_callsites],
       note: 'Invar ui::Align lacks FirstLine (AFirstLine: FirstLineCenter + lines_up_first_line); sf::css_read fails loudly instead of silently downgrading to Align::Start',
     });
   }
@@ -1099,10 +1317,21 @@ function main() {
       { source: '@ui.window_zoomed', forbidden_target: 'hostapi::window_zoomed', reason: 'Must use reactive signal / ui::host_said' },
       { source: '@ui.window_snap_state', forbidden_target: 'hostapi::window_snap_state', reason: 'Must use reactive signal / ui::host_said' },
     ],
+    temporary_mappings: TEMPORARY_DRIFT_MAPPINGS,
+    drift_ledger: TEMPORARY_DRIFT_MAPPINGS,
     symbols: apiEntries,
   };
   const apiMapPath = path.join(SCRIPT_DIR, 'api_map.json');
   fs.writeFileSync(apiMapPath, JSON.stringify(apiMapObj, null, 2) + '\n');
+
+  const driftLedgerObj = {
+    schema_version: 1,
+    monoid_source_commit: MONOID_SHA,
+    invar_target_commit: INVAR_SHA,
+    temporary_mappings: TEMPORARY_DRIFT_MAPPINGS,
+  };
+  const driftLedgerPath = path.join(SCRIPT_DIR, 'drift_ledger.json');
+  fs.writeFileSync(driftLedgerPath, JSON.stringify(driftLedgerObj, null, 2) + '\n');
 
   // Write m1_invar_blockers.json
   const blockersObj = {
@@ -1296,4 +1525,6 @@ function main() {
   console.log(`  Excluded comment hits:  @kit.*=${kitCommentHits}, tree_read_out_id=${treeReadOutIdCommentHits}`);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  main();
+}

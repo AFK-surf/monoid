@@ -389,6 +389,90 @@ fn case_real_controls_tokens_layout() -> Unit {
   trace("real.tokens", token_wide_body.to_string() + "|" + token_pane_corner.to_string())
 }
 
+// --- 13. REAL production `libs/ui/src/controls/clock_read_known.mbt` init registration side effect ---
+fn case_real_controls_clock_read_known() -> Unit {
+  let tip_within = @view.clock_read_fault(
+    "drawn_at",
+    "ui/src/controls/tip_node.mbt:10",
+    ["ui/src/controls/tip_node.mbt:5"],
+  )
+  let tip_over = @view.clock_read_fault(
+    "drawn_at",
+    "ui/src/controls/tip_node.mbt:20",
+    ["ui/src/controls/tip_node.mbt:5", "ui/src/controls/tip_node.mbt:10"],
+  )
+  let vh_within = @view.clock_read_fault(
+    "drawn_at",
+    "ui/src/controls/viewer_head_node.mbt:10",
+    [],
+  )
+  let vh_over = @view.clock_read_fault(
+    "drawn_at",
+    "ui/src/controls/viewer_head_node.mbt:20",
+    ["ui/src/controls/viewer_head_node.mbt:10"],
+  )
+  let unreg = @view.clock_read_fault(
+    "drawn_at",
+    "ui/src/controls/unregistered_file.mbt:10",
+    [],
+  )
+  let tip_ok = tip_within is None
+  let tip_over_ok = match tip_over {
+    Some(s) => s.contains("its bar 2")
+    None => false
+  }
+  let vh_ok = vh_within is None
+  let vh_over_ok = match vh_over {
+    Some(s) => s.contains("its bar 1")
+    None => false
+  }
+  let unreg_ok = match unreg {
+    Some(s) => s.contains("its bar 0")
+    None => false
+  }
+  check("real.clock_tip_within_bar2", tip_ok)
+  check("real.clock_tip_over_bar2", tip_over_ok)
+  check("real.clock_vh_within_bar1", vh_ok)
+  check("real.clock_vh_over_bar1", vh_over_ok)
+  check("real.clock_unreg_bar0", unreg_ok)
+  trace(
+    "real.clock_bars",
+    tip_ok.to_string() + "|" + tip_over_ok.to_string() + "|" + vh_ok.to_string() + "|" + vh_over_ok.to_string() + "|" + unreg_ok.to_string(),
+  )
+}
+
+// --- 14. REAL production `libs/ui/src/controls/table_copy.mbt` derived constants ---
+fn case_real_controls_table_copy() -> Unit {
+  check("real.table_key_room", table_key_room == 44.0)
+  check("real.table_shot_in", table_shot_in == 16.0)
+  check("real.table_shot_scale", table_shot_scale == 2.0)
+  trace(
+    "real.table_copy",
+    table_key_room.to_string() + "|" + table_shot_in.to_string() + "|" + table_shot_scale.to_string(),
+  )
+}
+
+// --- 15. REAL production `libs/ui/src/controls/reader_marks.mbt` outputs ---
+fn case_real_controls_reader_marks() -> Unit {
+  let k0 = reader_block_key(0)
+  let k42 = reader_block_key(42)
+  let p0 = reader_block_of(k0)
+  let p42 = reader_block_of(k42)
+  let p_empty = reader_block_of("reader-block:")
+  let p_bad_char = reader_block_of("reader-block:12x")
+  let p_bad_prefix = reader_block_of("other:42")
+  check("real.reader_key_0", k0 == "reader-block:0")
+  check("real.reader_key_42", k42 == "reader-block:42")
+  check("real.reader_of_0", p0 == Some(0))
+  check("real.reader_of_42", p42 == Some(42))
+  check("real.reader_of_empty_none", p_empty is None)
+  check("real.reader_of_invalid_none", p_bad_char is None && p_bad_prefix is None)
+  trace(
+    "real.reader_marks",
+    k0 + "|" + k42 + "|" + p0.to_string() + "|" + p42.to_string() + "|" + p_empty.to_string(),
+  )
+}
+
 fn main {
   let args = @env.args()
   if args.length() < 2 {
@@ -419,6 +503,12 @@ fn main {
     case_real_controls_numbers_marked()
   } else if c == "real_controls_tokens_layout" {
     case_real_controls_tokens_layout()
+  } else if c == "real_controls_clock_read_known" {
+    case_real_controls_clock_read_known()
+  } else if c == "real_controls_table_copy" {
+    case_real_controls_table_copy()
+  } else if c == "real_controls_reader_marks" {
+    case_real_controls_reader_marks()
   } else if c.has_prefix("div_") || c.has_prefix("mod_") {
     case_div_trap(c)
   } else {

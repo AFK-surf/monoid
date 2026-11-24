@@ -6,19 +6,23 @@ on:
       - "pion/ui/**"
       - "pion/app/**"
       - "pion/tools/mbt2pion-monoid/**"
-      - "libs/ui/src/controls/font_assets.mbt"
-      - "libs/ui/src/controls/math_glyphs.mbt"
-      - "libs/ui/src/controls/icon_data.mbt"
-      - "libs/ui/src/controls/palette_data.mbt"
-      - "libs/ui/src/controls/math.json"
-      - "libs/ui/src/controls/math-mac.textrec"
-      - "libs/ui/src/controls/numbers.mbt"
-      - "libs/ui/src/controls/marked.mbt"
-      - "libs/ui/src/controls/tokens_data.mbt"
-      - "libs/ui/src/controls/clock_read_known.mbt"
-      - "libs/ui/src/controls/table_copy.mbt"
-      - "libs/ui/src/controls/reader_marks.mbt"
-      - "libs/ui/src/ui/style_css.mbt"
+      - "pion/**/pion.toml"
+      - "pion/**/pion.lock"
+      - "apps/mbui/src/**"
+      - "libs/ui/src/controls/**"
+      - "libs/ui/src/halt/**"
+      - "libs/ui/src/codec/**"
+      - "libs/ui/src/paint/**"
+      - "libs/ui/src/pixels/**"
+      - "libs/ui/src/hostapi/**"
+      - "libs/ui/src/text/**"
+      - "libs/ui/src/flex/**"
+      - "libs/ui/src/effect/**"
+      - "libs/ui/src/signals/**"
+      - "libs/ui/src/view/**"
+      - "libs/ui/src/dmath/**"
+      - "libs/ui/src/damage/**"
+      - "libs/ui/src/ui/**"
       - ".github/workflows/pion-ui.yml"
   workflow_dispatch:
 
@@ -38,9 +42,10 @@ jobs:
 
       - uses: ./.github/actions/node
 
-      - name: Static pin & read-only asset gates
+      - name: Static pin, audit unit tests & read-only asset gates
         run: |
           sh pion/tools/mbt2pion-monoid/check_single_invar_pin.sh
+          node pion/tools/mbt2pion-monoid/test_audit_signatures.mjs
           node pion/tools/mbt2pion-monoid/gen_assets.mjs --check
           sh pion/tools/mbt2pion-monoid/regen.sh --assets-only --check
 
@@ -85,14 +90,86 @@ jobs:
           echo "PIONC=$PREFIX/bin/pionc" >> "$GITHUB_ENV"
           "$PREFIX/bin/pionc" --version
 
-      - name: Pion fmt, check, unit tests, wasm32 build & 4-FPS app_state/sf_smoke
+      - name: Separate workspace fmt/check, unit tests, wasm32 consumer & 4-FPS app_state/sf_smoke
         run: |
-          "$PIONC" fmt --check pion/ui pion/app
-          "$PIONC" check --json pion/ui
-          "$PIONC" check --json pion/app
+          "$PIONC" fmt --check pion/ui
+          "$PIONC" fmt --check pion/app
+
+          # NEVER combine workspaces in one `pionc check`: verify each independently with ok==true & diagnostics==[]
+          for ws in pion/ui pion/app; do
+            out_json="$RUNNER_TEMP/check_$(echo "$ws" | tr '/' '_').json"
+            "$PIONC" check --json "$ws" > "$out_json"
+            python3 - "$ws" "$out_json" << 'PY'
+          import json, sys
+          ws, path = sys.argv[1], sys.argv[2]
+          d = json.load(open(path, "r", encoding="utf-8"))
+          assert d.get("ok") is True and d.get("diagnostics") == [], f"{ws} check failed: {d}"
+          print(f"OK: pionc check --json {ws} (ok=true, diagnostics=[])")
+          PY
+          done
+
           "$PIONC" test --json pion/ui
           "$PIONC" build --target wasm32 pion/ui -o "$RUNNER_TEMP/pion_ui.wasm"
           ls -lh "$RUNNER_TEMP/pion_ui.wasm"
+
+          # Real wasm32 consumer check importing and executing sf + sf_assets_web
+          INVAR_REV="$(grep 'AFK-surf/invar\.git' pion/ui/pion.toml | head -n 1 | sed -n 's/.*rev *= *"\([0-9a-f]\{40\}\)".*/\1/p')"
+          WASM_WS="$RUNNER_TEMP/wasm_consumer_ws"
+          WASM_CONS="$WASM_WS/consumer"
+          mkdir -p "$WASM_CONS/src"
+          cat > "$WASM_WS/pion.toml" << EOF
+          [workspace]
+          members = ["consumer"]
+
+          [workspace.dependencies]
+          base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
+          mbt_compat = { git = "https://github.com/AFK-surf/pion.git", rev = "${{ steps.pin.outputs.pion_sha }}", subdir = "tools/mbt_compat" }
+          sf = { path = "$PWD/pion/ui/packages/sf" }
+          sf_assets_web = { path = "$PWD/pion/ui/packages/sf_assets_web" }
+          signals = { git = "https://github.com/AFK-surf/invar.git", rev = "$INVAR_REV", subdir = "packages/signals" }
+          view = { git = "https://github.com/AFK-surf/invar.git", rev = "$INVAR_REV", subdir = "packages/view" }
+          ui = { git = "https://github.com/AFK-surf/invar.git", rev = "$INVAR_REV", subdir = "packages/ui" }
+          zip = { git = "https://github.com/AFK-surf/invar.git", rev = "$INVAR_REV", subdir = "packages/zip" }
+          pixels = { git = "https://github.com/AFK-surf/invar.git", rev = "$INVAR_REV", subdir = "packages/pixels" }
+          paint = { git = "https://github.com/AFK-surf/invar.git", rev = "$INVAR_REV", subdir = "packages/paint" }
+          EOF
+          cat > "$WASM_CONS/pion.toml" << 'EOF'
+          [package]
+          name = "sf_wasm32_consumer"
+          version = "0.1.0"
+
+          [dependencies]
+          sf = { workspace = true }
+          sf_assets_web = { workspace = true }
+          ui = { workspace = true }
+          EOF
+          cat > "$WASM_CONS/src/main.pion" << 'EOF'
+          import "sf"
+          import "sf_assets_web"
+          import "ui"
+
+          pub fn main(world : World) -> Int {
+            if sf::sf_version_tag() != "sf-m1.1-prep" {
+              panic("unexpected sf_version_tag")
+            }
+            match sf::css_read("row h=S7 hovered{bg=Hover}") {
+              Ok(st) => {
+                if !(st.base.row is Some(true)) {
+                  panic("wasm32 consumer css_read base.row mismatch")
+                }
+              }
+              Err(e) => panic("wasm32 consumer css_read failed: " + e)
+            }
+            let ready = sf_assets_web::web_assets_smoke_ready()
+            if ready != 0 {
+              panic("wasm32 consumer web_assets_smoke_ready expected 0 (absent initial state)")
+            }
+            io_println(world, "OK: wasm32 real consumer verified sf + sf_assets_web")
+            0
+          }
+          EOF
+          "$PIONC" run --target wasm32 "$WASM_CONS"
+
           for fps in 60 120 24 7; do
             INVAR_TEST_FPS="$fps" INVAR_FPS="$fps" "$PIONC" test --json --package sf_smoke pion/app
             INVAR_TEST_FPS="$fps" INVAR_FPS="$fps" "$PIONC" test --json --package app_state pion/app
@@ -157,7 +234,67 @@ jobs:
           echo "MBT_COMPAT_DIR=$PION_SRC/tools/mbt_compat" >> "$GITHUB_ENV"
           "$PREFIX/bin/pionc" fetch pion/ui >/dev/null
 
-      - name: Run 4 negative mutation CI gates & 19-case 3-engine vertical pilot
+      - name: Run 5 negative mutation CI gates, 22-case 6/6 real controls pilot & audit histogram --check
         run: |
           sh pion/tools/mbt2pion-monoid/test_negative_gates.sh
           sh pion/tools/mbt2pion-monoid/pilot/run_pilot.sh
+          sh pion/tools/mbt2pion-monoid/run_audit_histogram.sh --check
+
+  pion-css-corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/node
+
+      - uses: ./.github/actions/mbui-moonbit
+        with:
+          tools: ''
+          farview: 'false'
+
+      - name: Verify access to AFK-surf/pion, pion-packages, and invar (fail loudly)
+        env:
+          PION_TOKEN: ${{ secrets.PION_TOKEN }}
+        run: |
+          if [ -n "${PION_TOKEN:-}" ]; then
+            auth_b64="$(printf 'x-access-token:%s' "$PION_TOKEN" | base64 | tr -d '\n\r')"
+            git config --global http.https://github.com/.extraheader "AUTHORIZATION: basic $auth_b64"
+          fi
+          for repo in pion pion-packages invar; do
+            if ! GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code "https://github.com/AFK-surf/${repo}.git" HEAD >/dev/null 2>&1; then
+              echo "::error::Cannot reach https://github.com/AFK-surf/${repo}.git (check PION_TOKEN secret scope)."
+              exit 1
+            fi
+          done
+
+      - name: Read pinned mbt2pion commit from manifest.toml
+        id: pin
+        run: |
+          sha="$(sed -n 's/^mbt2pion_commit *= *"\([0-9a-f]\{40\}\)".*/\1/p' pion/tools/mbt2pion-monoid/manifest.toml | head -n 1)"
+          test "${#sha}" -eq 40
+          echo "pion_sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache pinned Pion toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-ui-toolchain
+          key: pion-ui-toolchain-linux-x64-v1-${{ steps.pin.outputs.pion_sha }}
+
+      - name: Build or restore pinned pionc and mbt_compat
+        run: |
+          PREFIX="$HOME/.cache/pion-ui-toolchain/${{ steps.pin.outputs.pion_sha }}"
+          PION_SRC="$RUNNER_TEMP/pion-src"
+          git clone --filter=blob:none --no-checkout https://github.com/AFK-surf/pion.git "$PION_SRC"
+          git -C "$PION_SRC" checkout "${{ steps.pin.outputs.pion_sha }}"
+          if [ ! -x "$PREFIX/bin/pionc" ]; then
+            (cd "$PION_SRC" && bash scripts/install.sh --prefix "$PREFIX")
+          fi
+          echo "$PREFIX/bin" >> "$GITHUB_PATH"
+          echo "PIONC=$PREFIX/bin/pionc" >> "$GITHUB_ENV"
+          echo "MBT_COMPAT_DIR=$PION_SRC/tools/mbt_compat" >> "$GITHUB_ENV"
+          "$PREFIX/bin/pionc" fetch pion/ui >/dev/null
+
+      - name: Run full production @ui.css corpus 3-engine batch parity gate (2,096 callsites / 1,237 distinct)
+        run: |
+          sh pion/tools/mbt2pion-monoid/pilot/run_css_corpus.sh

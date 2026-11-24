@@ -1,26 +1,44 @@
 {
-  "schema_version": 3,
-  "reproduce_command": "MBT2PION_BIN=<path> MBT_COMPAT_DIR=<dir> sh pion/tools/mbt2pion-monoid/run_audit_histogram.sh",
+  "schema_version": 4,
+  "reproduce_command": "MBT2PION_BIN=<path> MBT_COMPAT_DIR=<dir> sh pion/tools/mbt2pion-monoid/run_audit_histogram.sh --check",
   "source_dir": "libs/ui/src/controls",
+  "monoid_source_commit": "41601bf576e9798f57b9853ef390bd4b52aa9953",
   "production_files_total": 255,
-  "native_target_excluded_js_only": 2,
   "native_target_prod_files_emitted": 253,
+  "native_target_excluded_js_only": 2,
+  "excluded_by_target_files": [
+    "font_assets_js.mbt",
+    "math_glyphs_js.mbt"
+  ],
+  "manifest_asset_bypass_count": 8,
+  "manifest_asset_bypass_files": [
+    "font_assets.mbt",
+    "font_assets_js.mbt",
+    "font_assets_native.mbt",
+    "icon_data.mbt",
+    "math_glyphs.mbt",
+    "math_glyphs_js.mbt",
+    "math_glyphs_native.mbt",
+    "palette_data.mbt"
+  ],
+  "synthesized_files": [
+    "00_init_order.pion"
+  ],
   "generated_files_total": 254,
   "has_00_init_order": true,
   "invar_rev": "339c271e0bd4ea9e2680f13adcec8075d6da9cf3",
   "mbt2pion_commit": "6d22ff1f90bd19012a5997f7fdfdc56ee3012408",
   "mbt_compat_commit": "6d22ff1f90bd19012a5997f7fdfdc56ee3012408",
-  "mbt2pion_elapsed_ms": 5363,
   "mbt2pion_stage": {
-    "total_diagnostics": 2502,
-    "blockers": 4983,
+    "total_diagnostics": 2512,
+    "blockers": 5003,
     "probe_rounds": 1,
-    "probes_instrumented": 1947,
+    "probes_instrumented": 1957,
     "probes_resolved": 0,
     "stage_b_iterations": 5,
     "by_code": {
-      "MBT2PION_UNDISPOSED_PROBE_SITE": 1955,
-      "MBT2PION_UNDISPOSED_DIV_MOD": 526,
+      "MBT2PION_UNDISPOSED_PROBE_SITE": 1958,
+      "MBT2PION_UNDISPOSED_DIV_MOD": 533,
       "MBT2PION_PROBE_RESIDUAL": 18,
       "MBT2PION_UNKNOWN_DERIVE": 2,
       "MBT2PION_PROBE_MISMATCH": 1
@@ -30,36 +48,36 @@
         "reason": "MBT2PION_UNDISPOSED_PROBE_SITE: undisposed `<id>` field access remained after Stage A.5",
         "count": 945,
         "samples": [
-          "00_init_order.pion:1217:49 (undisposed `.val` field access remained after Stage A.5)",
-          "00_init_order.pion:1217:87 (undisposed `.val` field access remained after Stage A.5)",
-          "00_init_order.pion:1332:24 (undisposed `.val` field access remained after Stage A.5)"
+          "00_init_order.pion:1220:49 (undisposed `.val` field access remained after Stage A.5)",
+          "00_init_order.pion:1220:87 (undisposed `.val` field access remained after Stage A.5)",
+          "00_init_order.pion:1335:24 (undisposed `.val` field access remained after Stage A.5)"
         ]
       },
       {
         "reason": "MBT2PION_UNDISPOSED_PROBE_SITE: undisposed `<id>` call remained after Stage A.5",
-        "count": 538,
+        "count": 540,
         "samples": [
-          "accent_pick.pion:103:69 (undisposed `.to_string()` call remained after Stage A.5)",
-          "accent_pick.pion:110:30 (undisposed `.to_string()` call remained after Stage A.5)",
-          "accent_pick.pion:125:20 (undisposed `.length()` call remained after Stage A.5)"
+          "accent_pick.pion:122:69 (undisposed `.to_string()` call remained after Stage A.5)",
+          "accent_pick.pion:129:30 (undisposed `.to_string()` call remained after Stage A.5)",
+          "accent_pick.pion:144:20 (undisposed `.length()` call remained after Stage A.5)"
         ]
       },
       {
         "reason": "MBT2PION_UNDISPOSED_DIV_MOD: undisposed `<id>` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary)",
-        "count": 526,
+        "count": 533,
         "samples": [
-          "00_init_order.pion:1452:49 (undisposed `/` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary))",
-          "00_init_order.pion:1452:70 (undisposed `/` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary))",
-          "00_init_order.pion:1452:90 (undisposed `/` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary))"
+          "00_init_order.pion:1455:49 (undisposed `/` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary))",
+          "00_init_order.pion:1455:70 (undisposed `/` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary))",
+          "00_init_order.pion:1455:90 (undisposed `/` operator remained after Stage A.5 (round cap reached or unrecognized operand boundary))"
         ]
       },
       {
         "reason": "MBT2PION_UNDISPOSED_PROBE_SITE: undisposed `<id>` index expression remained after Stage A.5",
-        "count": 472,
+        "count": 473,
         "samples": [
+          "accent_pick.pion:81:45 (undisposed `[...]` index expression remained after Stage A.5)",
           "action_sheet_node.pion:86:25 (undisposed `[...]` index expression remained after Stage A.5)",
-          "avatar.pion:20:16 (undisposed `[...]` index expression remained after Stage A.5)",
-          "avatar_stack_node.pion:51:20 (undisposed `[...]` index expression remained after Stage A.5)"
+          "avatar.pion:20:16 (undisposed `[...]` index expression remained after Stage A.5)"
         ]
       },
       {
@@ -71,10 +89,10 @@
         ]
       },
       {
-        "reason": "MBT2PION_PROBE_MISMATCH: Stage A.5 coverage guard failed in round 1: probes_instrumented=1947 != probe_diagnostics_received=1363",
+        "reason": "MBT2PION_PROBE_MISMATCH: Stage A.5 coverage guard failed in round 1: probes_instrumented=1957 != probe_diagnostics_received=1369",
         "count": 1,
         "samples": [
-          "<stage_a5>:1:1 (Stage A.5 coverage guard failed in round 1: probes_instrumented=1947 != probe_diagnostics_received=1363)"
+          "<stage_a5>:1:1 (Stage A.5 coverage guard failed in round 1: probes_instrumented=1957 != probe_diagnostics_received=1369)"
         ]
       },
       {
@@ -109,14 +127,14 @@
   },
   "pionc_check_stage": {
     "ok": false,
-    "total_diagnostics": 36516,
+    "total_diagnostics": 36654,
     "files_with_diagnostics": 232,
     "files_clean": 21,
-    "init_order_diagnostics": 1898,
+    "init_order_diagnostics": 1899,
     "diagnostics_in_asset_bypass_files": 0,
     "by_code": {
-      "E_TYPE_MISMATCH": 21850,
-      "E_PARSE": 14258,
+      "E_TYPE_MISMATCH": 21921,
+      "E_PARSE": 14324,
       "E_NON_EXHAUSTIVE": 171,
       "E_TRAIT_NOT_IMPLEMENTED": 41,
       "E_TRAIT_METHOD_MISSING": 38,
@@ -124,16 +142,16 @@
       "E_MISSING_TYPE": 33,
       "E_UNKNOWN_TRAIT": 27,
       "E_UNKNOWN_VARIANT": 27,
-      "E_UNKNOWN_PACKAGE": 25,
+      "E_UNKNOWN_PACKAGE": 26,
       "E_DUP_DEF": 10,
       "E_PRIVATE_SYMBOL": 3
     },
     "by_category": {
-      "mbt2pion_engine": 35875,
-      "invar_layer2_blocker": 641
+      "mbt2pion_engine": 36011,
+      "invar_layer2_blocker": 643
     },
-    "layer2_blocker_hits_count": 641,
-    "layer2_blocker_distinct_symbols": 75,
+    "layer2_blocker_hits_count": 643,
+    "layer2_blocker_distinct_symbols": 76,
     "layer2_blocker_top_symbols": [
       {
         "symbol": "ui::css",
@@ -180,16 +198,16 @@
         "count": 5
       },
       {
+        "symbol": "ui::has_image",
+        "count": 5
+      },
+      {
         "symbol": "ui::text_advance",
         "count": 5
       },
       {
         "symbol": "ui::words_shaped",
         "count": 5
-      },
-      {
-        "symbol": "ui::has_image",
-        "count": 4
       },
       {
         "symbol": "ui::field_edit_now",
@@ -208,137 +226,137 @@
         "count": 3
       },
       {
-        "symbol": "ui::row_gone_at",
+        "symbol": "ui::full_screen",
         "count": 3
       },
       {
-        "symbol": "ui::full_screen",
+        "symbol": "ui::row_gone_at",
         "count": 3
       }
     ],
     "top_15_engine_mechanical_buckets": [
       {
         "bucket": "E_TYPE_MISMATCH: undefined identifier (parse cascade / missing local/import)",
-        "count": 10120,
+        "count": 10159,
         "samples": [
-          "00_init_order.pion:84:59 (undefined identifier `Ui`)",
-          "00_init_order.pion:84:71 (undefined identifier `L6`)",
-          "00_init_order.pion:84:96 (undefined identifier `Fg`)"
+          "00_init_order.pion:87:59 (undefined identifier `Ui`)",
+          "00_init_order.pion:87:71 (undefined identifier `L6`)",
+          "00_init_order.pion:87:96 (undefined identifier `Fg`)"
         ]
       },
       {
         "bucket": "E_TYPE_MISMATCH: cannot call undefined function",
-        "count": 6913,
+        "count": 6936,
         "samples": [
-          "00_init_order.pion:418:84 (cannot call undefined function `A`)",
-          "00_init_order.pion:421:89 (cannot call undefined function `A`)",
-          "00_init_order.pion:427:87 (cannot call undefined function `A`)"
+          "00_init_order.pion:421:84 (cannot call undefined function `A`)",
+          "00_init_order.pion:424:89 (cannot call undefined function `A`)",
+          "00_init_order.pion:430:87 (cannot call undefined function `A`)"
         ]
       },
       {
         "bucket": "E_PARSE: unexpected `:` where expression expected",
-        "count": 2813,
+        "count": 2826,
         "samples": [
-          "accent_pick.pion:69:67 (expected expression, found `:`)",
-          "accent_pick.pion:139:27 (expected expression, found `:`)",
-          "accent_pick.pion:139:45 (expected expression, found `:`)"
+          "accent_pick.pion:71:67 (expected expression, found `:`)",
+          "accent_pick.pion:71:89 (expected expression, found `:`)",
+          "accent_pick.pion:160:27 (expected expression, found `:`)"
         ]
       },
       {
         "bucket": "E_PARSE: Pion keyword `val` used as field/ident (`r.val` unlowered when Stage A.5 aborts)",
         "count": 2268,
         "samples": [
-          "00_init_order.pion:1236:49 (expected field or method name, found `val`)",
-          "00_init_order.pion:1236:49 (expected expression, found `val`)",
-          "00_init_order.pion:1236:87 (expected field or method name, found `val`)"
+          "00_init_order.pion:1239:49 (expected expression, found `val`)",
+          "00_init_order.pion:1239:49 (expected field or method name, found `val`)",
+          "00_init_order.pion:1239:87 (expected expression, found `val`)"
         ]
       },
       {
         "bucket": "E_PARSE: unexpected `,` where expression expected",
-        "count": 2174,
+        "count": 2182,
         "samples": [
-          "accent_pick.pion:69:60 (expected expression, found `,`)",
-          "accent_pick.pion:119:6 (expected expression, found `,`)",
-          "accent_pick.pion:139:39 (expected expression, found `,`)"
+          "accent_pick.pion:71:60 (expected expression, found `,`)",
+          "accent_pick.pion:71:81 (expected expression, found `,`)",
+          "accent_pick.pion:140:6 (expected expression, found `,`)"
         ]
       },
       {
         "bucket": "E_PARSE: unexpected `->` where expression expected",
-        "count": 1363,
+        "count": 1371,
         "samples": [
-          "accent_pick.pion:69:72 (expected expression, found `->`)",
-          "accent_pick.pion:139:50 (expected expression, found `->`)",
-          "accent_pick.pion:139:69 (expected expression, found `->`)"
+          "accent_pick.pion:71:72 (expected expression, found `->`)",
+          "accent_pick.pion:160:50 (expected expression, found `->`)",
+          "accent_pick.pion:160:69 (expected expression, found `->`)"
         ]
       },
       {
         "bucket": "E_PARSE: expected `<tok>`, found `<tok>` (found `(`)",
-        "count": 1064,
+        "count": 1076,
         "samples": [
-          "accent_pick.pion:139:19 (expected `)`, found `(`)",
-          "accent_pick.pion:139:19 (expected `{`, found `(`)",
-          "accent_pick.pion:186:14 (expected `)`, found `(`)"
+          "accent_pick.pion:160:19 (expected `)`, found `(`)",
+          "accent_pick.pion:160:19 (expected `{`, found `(`)",
+          "accent_pick.pion:207:14 (expected `)`, found `(`)"
         ]
       },
       {
         "bucket": "E_TYPE_MISMATCH: struct `<sym>` has no field `<sym>`",
         "count": 1001,
         "samples": [
-          "00_init_order.pion:1236:48 (struct `signals::Ref` has no field `<error>`)",
-          "00_init_order.pion:1236:86 (struct `signals::Ref` has no field `<error>`)",
-          "00_init_order.pion:1353:27 (struct `signals::Ref` has no field `<error>`)"
+          "00_init_order.pion:1239:48 (struct `signals::Ref` has no field `<error>`)",
+          "00_init_order.pion:1239:86 (struct `signals::Ref` has no field `<error>`)",
+          "00_init_order.pion:1356:27 (struct `signals::Ref` has no field `<error>`)"
         ]
       },
       {
         "bucket": "E_PARSE: unexpected `)` where expression expected",
-        "count": 969,
+        "count": 975,
         "samples": [
-          "00_init_order.pion:7237:48 (expected expression, found `)`)",
-          "00_init_order.pion:7237:69 (expected expression, found `)`)",
+          "00_init_order.pion:7253:48 (expected expression, found `)`)",
+          "00_init_order.pion:7253:69 (expected expression, found `)`)",
           "about_mark_node.pion:35:71 (expected expression, found `)`)"
         ]
       },
       {
         "bucket": "E_PARSE: expected `<tok>`, found `<tok>` (found `:`)",
-        "count": 582,
+        "count": 587,
         "samples": [
-          "accent_pick.pion:139:27 (expected `)`, found `:`)",
-          "accent_pick.pion:186:17 (expected `)`, found `:`)",
-          "accent_pick.pion:235:15 (expected `)`, found `:`)"
+          "accent_pick.pion:160:27 (expected `)`, found `:`)",
+          "accent_pick.pion:207:17 (expected `)`, found `:`)",
+          "accent_pick.pion:256:15 (expected `)`, found `:`)"
         ]
       },
       {
         "bucket": "E_PARSE: unexpected `pub` where expression expected",
-        "count": 540,
+        "count": 544,
         "samples": [
-          "00_init_order.pion:7244:1 (expected expression, found `pub`)",
-          "00_init_order.pion:7253:1 (expected expression, found `pub`)",
-          "00_init_order.pion:7259:1 (expected expression, found `pub`)"
+          "00_init_order.pion:7260:1 (expected expression, found `pub`)",
+          "00_init_order.pion:7269:1 (expected expression, found `pub`)",
+          "00_init_order.pion:7275:1 (expected expression, found `pub`)"
         ]
       },
       {
         "bucket": "E_TYPE_MISMATCH: type mismatch in assignment",
         "count": 382,
         "samples": [
-          "00_init_order.pion:1236:49 (type mismatch in assignment)",
-          "00_init_order.pion:1236:87 (type mismatch in assignment)",
-          "00_init_order.pion:1351:24 (type mismatch in assignment)"
+          "00_init_order.pion:1239:49 (type mismatch in assignment)",
+          "00_init_order.pion:1239:87 (type mismatch in assignment)",
+          "00_init_order.pion:1354:24 (type mismatch in assignment)"
         ]
       },
       {
         "bucket": "E_TYPE_MISMATCH: unknown named argument `<sym>` in call to `<sym>`",
-        "count": 336,
+        "count": 338,
         "samples": [
-          "00_init_order.pion:155:83 (unknown named argument `w` in call to `text_style`)",
-          "00_init_order.pion:158:93 (unknown named argument `w` in call to `text_style`)",
-          "00_init_order.pion:301:86 (unknown named argument `w` in call to `text_style`)"
+          "00_init_order.pion:158:83 (unknown named argument `w` in call to `text_style`)",
+          "00_init_order.pion:161:93 (unknown named argument `w` in call to `text_style`)",
+          "00_init_order.pion:304:86 (unknown named argument `w` in call to `text_style`)"
         ]
       },
       {
         "bucket": "E_TYPE_MISMATCH: missing/unmapped Invar symbol in `view::*`",
-        "count": 326,
+        "count": 327,
         "samples": [
-          "accent_pick.pion:139:29 (unknown path `view::View`)",
+          "accent_pick.pion:160:29 (unknown path `view::View`)",
           "bar_pill_group_node.pion:121:33 (unknown path `view::View`)",
           "bar_pill_group_node.pion:121:194 (unknown path `view::View`)"
         ]
@@ -356,15 +374,15 @@
     "top_15_files_by_diagnostics": [
       {
         "file": "page_node.pion",
-        "count": 3210
+        "count": 3214
       },
       {
         "file": "presenters.pion",
-        "count": 2270
+        "count": 2280
       },
       {
         "file": "00_init_order.pion",
-        "count": 1898
+        "count": 1899
       },
       {
         "file": "player_node.pion",
@@ -376,11 +394,11 @@
       },
       {
         "file": "reader_node.pion",
-        "count": 1323
+        "count": 1326
       },
       {
         "file": "tokens.pion",
-        "count": 1110
+        "count": 1155
       },
       {
         "file": "reader.pion",

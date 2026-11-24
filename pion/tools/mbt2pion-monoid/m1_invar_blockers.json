@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "monoid_source_commit": "f0fb92750e75a8625aa4da34e206fee16f6c96db",
+  "monoid_source_commit": "41601bf576e9798f57b9853ef390bd4b52aa9953",
   "invar_target_commit": "339c271e0bd4ea9e2680f13adcec8075d6da9cf3",
   "summary": {
-    "strict_invar_blockers": 59,
-    "pure_logic_escape_hatch_candidates": 34,
+    "strict_invar_blockers": 62,
+    "pure_logic_escape_hatch_candidates": 35,
     "m13_frozen_tester_missing_methods": 45,
     "m2_plus_deferred_examples": 2
   },
@@ -45,7 +45,7 @@
         "libs/ui/src/controls/icon_button_node.mbt:132",
         "libs/ui/src/controls/own_head_node.mbt:312",
         "libs/ui/src/controls/page_node.mbt:52",
-        "libs/ui/src/controls/page_node.mbt:2548"
+        "libs/ui/src/controls/page_node.mbt:2565"
       ],
       "note": "Requires invar internal state, draw hook, or host/event wiring (no local workaround allowed)"
     },
@@ -81,8 +81,8 @@
         "libs/ui/src/controls/about_mark_node.mbt:44",
         "libs/ui/src/controls/bar_pill_group_node.mbt:40",
         "libs/ui/src/controls/button_node.mbt:202",
-        "libs/ui/src/controls/page_node.mbt:977",
-        "libs/ui/src/controls/page_node.mbt:2550"
+        "libs/ui/src/controls/page_node.mbt:994",
+        "libs/ui/src/controls/page_node.mbt:2567"
       ],
       "note": "Requires invar internal state, draw hook, or host/event wiring (no local workaround allowed)"
     },
@@ -181,7 +181,7 @@
       "source_sig": "pub struct Ctx { nodes : Array[Node] mut count : Int32 mut cur : Int32 mut id_seed : Int32 id_stack : Array[Int32] mut width : Double mut height : Double mut window_w : Double mut window_h : Double mut scale : Double mut whole_px : Bool mut clock : Double mut dt : Double mut last_now : Double mut frame_no : Int32 mut words_k : Double mut build_no : Int32 mut sideways_depth : Int32 mut bones : Int64 mut wants_frame : Bool mut wake_at : Double mut wake_waited : Double mut frame_rest : Bool mut frame_unasked : Bool mut frame_by : SourceLoc? mut wake_by : SourceLoc? mut page_in_hand : Bool mut hit_ids : Array[Int32] mut hit_rects : Array[Double] mut next_hit_ids : Array[Int32] mut next_hit_rects : Array[Double] mut hit_clips : Array[Double] mut next_hit_clips : Array[Double] mut hit_ends : Array[Int32] mut next_hit_ends : Array[Int32] mut hit_marks : Array[Int32] mut next_hit_marks : Array[Int32] built_ids : Map[Int32, Int32] marks_ahead : Map[Int32, Int32] focus_ahead : Map[Int32, Focusable] mut points : Map[Int32, Bool] mut passes : Map[Int32, Bool] mut next_passes : Map[Int32, Bool] mut passing : Int32 mut next_points : Map[Int32, Bool] next_point_hits : Array[Int32] mut scroll_ids : Array[Int32] mut scroll_rects : Array[Double] mut next_scroll_ids : Array[Int32] mut next_scroll_rects : Array[Double] mut bars : Array[BarAt] mut next_bars : Array[BarAt] across_seen : Array[(Int32, Double, Double)] floating : Array[Int32] mut bar_near : Int32 mut bar_drag : Int32 mut px : Double mut py : Double mut down : Bool mut hover : Int32 hover_in : Array[Int32] press_on : Array[Int32] mut active : Int32 mut focus : Int32 clicked : Array[Int32] double_clicked : Array[Int32] mut last_click : (Int32, Double, Double, Double) mut clicks : Int32 mut press_run : (Int32, Double, Double, Double) mut drag_scroll : Int32 mut press_chain : Array[Int32] mut claimed : Bool mut dragging : Bool mut following : Bool mut press_x : Double mut press_at : Double mut press_strayed : Bool mut press_late : Bool mut pointer_t : Double mut held_told : Double mut held_on : Int32 mut held_build : Int32 mut press_seen : Press mut press_seen_frame : Int32 mut press_was_down : Bool mut press_seen_at : Double mut press_mods : Int32 mut tapped : (Double, Double)? mut taken_at : Double mut press_y : Double mut last_y : Double mut last_x : Double mut vel_x : Double mut last_t : Double mut vel : Double mut editor_drag : Bool mut handle_drag : Int32 mut editor_tap : Int32 mut handle_which : Int32 mut word_drag : Int32 mut last_tap : (Int32, Double, Double, Double) mut menu_sig : String mut edit_can_told : Int32 mut handle_dy : Double lists : Map[Int32, ListState] editors : Map[Int32, EditorState] dev : DeviceState springs : Map[Int32, SpringPath] movers : Array[MoverEntry] mut cycling : Bool cycles : Array[(Double, SourceLoc)] periodic : Array[(Double, SourceLoc)] mut motion_left : Bool mut motion_read : Bool mut fiber_frame : Bool mut motion_unstarted : Bool mut took_input : Bool mut read_back_moved : Bool mut read_back_key : String mut read_back_whole : Bool laid_reads : Map[Int32, ((Double, Double, Double, Double)?, SourceLoc)] size_reads : Map[Int32, ((Double, Double)?, SourceLoc)] place_reads : Map[Int32, (String, (Int32, Double, Double)?)] info_reads : Array[(String, () -> Bool)] row_reads : Map[(Int32, Int32), (String, Double?)] words_reads : Map[String, Bool] words_shape_reads : Map[String, Bool] left_ids : Map[Int32, Bool] left_reads : Map[Int32, (Bool, SourceLoc)] cut_ids : Map[Int32, Bool] laid_watch : Map[Int32, Int32] tallest_h : Map[Int32, Double] mut tallest_new : Bool laid_rects : Map[Int32, (Double, Double, Double, Double)] shown_watch : Map[Int32, (Int32, String)] shown_spans : Map[Int32, (Double, Double)] mut nav_rest : Double mut clear : (Double, Double, Double) host_rec : HostRec covers : Map[Int32, CoverState] cover_asks : Array[CoverAsk] mut owner : Int32 mut stint : Int32 owned : Map[Int32, Array[Int32]] owned_releases : Map[Int32, OwnedReleases] mut back : ((Int32, Double, Double, Double, Double) -> Unit)? mut back_node : Int32 mut back_edge : Double mut back_next : ((Int32, Double, Double, Double, Double) -> Unit)? mut back_layer_next : Int32 mut back_within : Int32 mut back_node_next : Int32 mut back_edge_next : Double mut back_island : @view.NodeId? mut back_island_next : @view.NodeId? mut back_chain : BackList mut back_chain_next : BackList layer_gen : Map[Int32, Int32] mut layer_hook : ((Dismiss) -> Unit)? layer_on_dismiss : Map[Int32, (Int32, (Dismiss) -> Unit)] layer_retired : Map[Int32, Int32] layers_gone : @set.Set[Int32] mut back_held : BackHeld? mut back_off : Bool mut back_told : Bool mut edge : Int32 mut theme : Theme mut theme_wide : Theme mut theme_narrow : Theme? mut narrow_below : Double mut narrow : Bool inners : Array[Int32] inners_or : Array[Int32] move_runs : Array[MoveRun] mut shown_now : Map[String, MoveShown] mut shown_last : Map[String, MoveShown] move_seen : Map[String, Int32] arounds : Array[Int32] inner_faults : Array[String] mut corner_ladder : Array[Double] mut corner_fit : @paint.CornerFit? lit_asked : @set.Set[Int32] hand_chooses : @set.Set[Int32] mut hand_was : (Double, Double) mut hand_moved : Bool mut lit_apart : Double mut lit_reach : Double mut lit_all : Bool mut lit_every : Bool mut window_corner : Double window_corners : FixedArray[Double] mut direction : Direction sems : Array[Sem] mut sem_hide : Int32 asked_actions : Array[(Int32, @view.Action)] actions : Array[(Int32, @view.Action)] a11y : A11yTold mut focus_visible : Bool mut focus_roved : Bool mut focus_before : Int32 mut focusables : Array[Focusable] mut last_focusables : Array[Focusable] groups : Map[Int32, Group] mut group_cur : Int32 mut layers : Array[Layer] mut last_layers : Array[Layer] mut built_count : Int32 last_stacks : Map[Int32, Int32] layers_opened : Array[Int32] tells : Array[(Int32, () -> Unit)] told : Array[(Int32, () -> Unit)] shots : Map[Int32, Shot] mut shot_scale : Double mut layer_cur : Int32 mut stack_cur : Int32 mut keys_layer : Int32 dismissals : Map[Int32, Dismiss] layer_return : Map[Int32, Int32] editor_layer : Map[Int32, Int32] focus_island : Map[Int32, @view.NodeId] mut focus_returned : Bool mut press_down : (Double, Double)? mut press_down_tree : Bool mut press_tree_stack : Int32 mut inst : FixedArray[Double] mut ninst : Int32 segs : Array[Double] mut ime_sig : String mut ime_action_told : Int32 mut t_build : Double mut t_layout : Double mut t_paint : Double mut t_present : Double mut bench_list : Int32 // private fields }",
       "call_count": 2,
       "locations": [
-        "libs/ui/src/controls/presenters.mbt:1264",
+        "libs/ui/src/controls/presenters.mbt:1271",
         "libs/ui/src/controls/tokens.mbt:1176"
       ],
       "note": "Requires invar internal state, draw hook, or host/event wiring (no local workaround allowed)"
@@ -364,9 +364,10 @@
       "source": "@ui.has_image",
       "expected_invar": "ui::has_image",
       "source_sig": "pub fn has_image(String) -> Bool",
-      "call_count": 4,
+      "call_count": 5,
       "locations": [
-        "libs/ui/src/controls/accent_pick.mbt:271",
+        "libs/ui/src/controls/accent_pick.mbt:292",
+        "libs/ui/src/controls/accent_pick.mbt:330",
         "libs/ui/src/controls/made_images.mbt:26",
         "libs/ui/src/controls/mask_words.mbt:74",
         "libs/ui/src/controls/open_gate.mbt:33"
@@ -451,8 +452,8 @@
       "call_count": 3,
       "locations": [
         "libs/ui/src/controls/tokens.mbt:1178",
-        "libs/ui/src/controls/tokens.mbt:1507",
-        "libs/ui/src/controls/tokens.mbt:1736"
+        "libs/ui/src/controls/tokens.mbt:1558",
+        "libs/ui/src/controls/tokens.mbt:1793"
       ],
       "note": "Requires invar internal state, draw hook, or host/event wiring (no local workaround allowed)"
     },
@@ -571,9 +572,9 @@
       "source_sig": "pub fn window_keys_own() -> Bool",
       "call_count": 6,
       "locations": [
-        "libs/ui/src/controls/tokens.mbt:2292",
-        "libs/ui/src/controls/tokens.mbt:2330",
-        "libs/ui/src/controls/tokens.mbt:2389",
+        "libs/ui/src/controls/tokens.mbt:2349",
+        "libs/ui/src/controls/tokens.mbt:2387",
+        "libs/ui/src/controls/tokens.mbt:2446",
         "libs/ui/src/controls/window_keys.mbt:24",
         "libs/ui/src/controls/window_keys.mbt:106",
         "libs/ui/src/controls/window_keys.mbt:119"
@@ -718,13 +719,89 @@
     },
     {
       "category": "controls_prod_signature_incompatible",
+      "source": "@ui.TextPatch",
+      "expected_invar": "ui::TextPatch",
+      "source_sig": "pub(all) struct TextPatch { size : TextSize? weight : Weight? color : Color? w : Len? center : Bool? wrap : Bool? tracking : Tracking? max_lines : Int32? leading : Leading? tabular : Bool? balance : Bool? }",
+      "invar_sig": "struct TextPatch { size: Option[TextSize]; leading: Option[Leading]; tracking: Option[Tracking]; weight: Option[Weight]; color: Option[Color]; italic: Option[Bool]; mono: Option[Bool]; tabular: Option[Bool]; underline: Option[Bool]; strike: Option[Bool]; wrap: Option[Bool]; max_lines: Option[Int] }",
+      "missing_fields": [
+        "w : Len?",
+        "center : Bool?",
+        "balance : Bool?"
+      ],
+      "call_count": 0,
+      "locations": [],
+      "note": "Invar ui::TextPatch lacks w/center/balance fields (absorbed into Invar Wave P0-2 Track 2A); never rename w -> weight"
+    },
+    {
+      "category": "controls_prod_signature_incompatible",
+      "source": "@ui.text_style",
+      "expected_invar": "ui::text_style",
+      "source_sig": "pub fn text_style(size? : TextSize, weight? : Weight, color? : Color, w? : Len, center? : Bool, wrap? : Bool, tracking? : Tracking, max_lines? : Int32, leading? : Leading, tabular? : Bool, balance? : Bool, narrow? : TextPatch, dark? : TextPatch) -> TextStyle",
+      "invar_sig": "fn text_style(size?: TextSize, leading?: Leading, tracking?: Tracking, weight?: Weight, color?: Color, italic?: Bool, mono?: Bool, tabular?: Bool, underline?: Bool, strike?: Bool, wrap?: Bool, max_lines?: Int, narrow?: TextPatch, dark?: TextPatch, selected?: TextPatch, hovered?: TextPatch, disabled?: TextPatch) -> TextStyle",
+      "missing_params": [
+        "w? : Len",
+        "center? : Bool",
+        "balance? : Bool"
+      ],
+      "call_count": 338,
+      "locations": [
+        "libs/ui/src/controls/accordion_node.mbt:123",
+        "libs/ui/src/controls/agent_stats_node.mbt:145",
+        "libs/ui/src/controls/ask.mbt:18",
+        "libs/ui/src/controls/ask.mbt:23",
+        "libs/ui/src/controls/ask_outcome_node.mbt:174",
+        "libs/ui/src/controls/avatar_stack_node.mbt:124",
+        "libs/ui/src/controls/change_node.mbt:264",
+        "libs/ui/src/controls/change_node.mbt:268"
+      ],
+      "note": "Invar ui::text_style lacks w? : Len, center? : Bool, balance? : Bool (absorbed into Invar Wave P0-2 Track 2A); never rename w -> weight"
+    },
+    {
+      "category": "controls_prod_signature_incompatible",
+      "source": "@ui.text_patch",
+      "expected_invar": "ui::text_patch",
+      "source_sig": "pub fn text_patch(size? : TextSize, weight? : Weight, color? : Color, w? : Len, center? : Bool, wrap? : Bool, tracking? : Tracking, max_lines? : Int32, leading? : Leading, tabular? : Bool, balance? : Bool) -> TextPatch",
+      "invar_sig": "fn text_patch(size?: TextSize, leading?: Leading, tracking?: Tracking, weight?: Weight, color?: Color, italic?: Bool, mono?: Bool, tabular?: Bool, underline?: Bool, strike?: Bool, wrap?: Bool, max_lines?: Int) -> TextPatch",
+      "missing_params": [
+        "w? : Len",
+        "center? : Bool",
+        "balance? : Bool"
+      ],
+      "call_count": 22,
+      "locations": [
+        "libs/ui/src/controls/fill_chip.mbt:54",
+        "libs/ui/src/controls/fill_chip.mbt:97",
+        "libs/ui/src/controls/fill_chip.mbt:102",
+        "libs/ui/src/controls/fill_chip.mbt:107",
+        "libs/ui/src/controls/player_parts.mbt:785",
+        "libs/ui/src/controls/player_parts.mbt:789",
+        "libs/ui/src/controls/reader.mbt:775",
+        "libs/ui/src/controls/reader.mbt:779"
+      ],
+      "note": "Invar ui::text_patch lacks w? : Len, center? : Bool, balance? : Bool (absorbed into Invar Wave P0-2 Track 2A); never rename w -> weight"
+    },
+    {
+      "category": "controls_prod_signature_incompatible",
       "source": "@ui.Align::AFirstLine",
       "expected_invar": "ui::Align::FirstLine",
       "source_sig": "pub(all) enum Align { AStart ACenter AEnd AStretch AFirstLine ABaseline }",
       "invar_sig": "#derive(Eq) enum Align { Start; Center; End; Stretch; Baseline }",
-      "call_count": 1,
+      "definition_count": 3,
+      "definition_locations": [
+        "libs/ui/src/ui/layout.mbt:570",
+        "libs/ui/src/ui/node.mbt:33",
+        "libs/ui/src/ui/style_css.mbt:415"
+      ],
+      "controls_call_count": 1,
+      "controls_callsites": [
+        "libs/ui/src/controls/style_node.mbt:411"
+      ],
+      "app_call_count": 1,
+      "app_callsites": [
+        "apps/mbui/src/sfpages/model_triple.mbt:3267"
+      ],
+      "call_count": 2,
       "locations": [
-        "libs/ui/src/ui/style_css.mbt:415",
         "libs/ui/src/controls/style_node.mbt:411",
         "apps/mbui/src/sfpages/model_triple.mbt:3267"
       ],
@@ -732,6 +809,17 @@
     }
   ],
   "pure_logic_escape_hatch_candidates": [
+    {
+      "category": "controls_prod_missing_pure_logic",
+      "source": "@glass.slider_held_reach",
+      "expected_invar": "lg::slider_held_reach",
+      "source_sig": "pub fn slider_held_reach(Double) -> Double",
+      "call_count": 1,
+      "locations": [
+        "libs/ui/src/controls/stops_node.mbt:69"
+      ],
+      "note": "Pure-logic builder/helper; upstream to invar preferred, temporary 100%-real-logic overlay allowed if upstream PR is in flight"
+    },
     {
       "category": "controls_prod_missing_pure_logic",
       "source": "@headless.submenu_in_aim_corridor",
@@ -801,12 +889,12 @@
       "source_sig": null,
       "call_count": 12,
       "locations": [
-        "libs/ui/src/controls/tokens.mbt:2286",
-        "libs/ui/src/controls/tokens.mbt:2303",
-        "libs/ui/src/controls/tokens.mbt:2328",
-        "libs/ui/src/controls/tokens.mbt:2342",
-        "libs/ui/src/controls/tokens.mbt:2348",
-        "libs/ui/src/controls/tokens.mbt:2361",
+        "libs/ui/src/controls/tokens.mbt:2343",
+        "libs/ui/src/controls/tokens.mbt:2360",
+        "libs/ui/src/controls/tokens.mbt:2385",
+        "libs/ui/src/controls/tokens.mbt:2399",
+        "libs/ui/src/controls/tokens.mbt:2405",
+        "libs/ui/src/controls/tokens.mbt:2418",
         "libs/ui/src/controls/viewer_bar.mbt:121",
         "libs/ui/src/controls/window_keys.mbt:84"
       ],
@@ -894,7 +982,7 @@
         "libs/ui/src/controls/agent_stats_node.mbt:31",
         "libs/ui/src/controls/agent_stats_node.mbt:36"
       ],
-      "note": "Pure-logic builder/helper; upstream to invar preferred, temporary 100%-real-logic overlay allowed if upstream PR is in flight"
+      "note": "Temporary pure-Pion port in sf/src/style_css.pion; delete sf/src/style_css.pion in the exact commit Invar Wave P0-2 Track 2A ui::css lands"
     },
     {
       "category": "controls_prod_missing_pure_logic",
@@ -905,7 +993,7 @@
       "locations": [
         "libs/ui/src/controls/glyph.mbt:235",
         "libs/ui/src/controls/glyph.mbt:235",
-        "libs/ui/src/controls/icons.mbt:458"
+        "libs/ui/src/controls/icons.mbt:459"
       ],
       "note": "Pure-logic builder/helper; upstream to invar preferred, temporary 100%-real-logic overlay allowed if upstream PR is in flight"
     },
@@ -1005,10 +1093,10 @@
       "call_count": 6,
       "locations": [
         "libs/ui/src/controls/files.mbt:56",
-        "libs/ui/src/controls/icons.mbt:445",
-        "libs/ui/src/controls/icons.mbt:449",
-        "libs/ui/src/controls/icons.mbt:484",
-        "libs/ui/src/controls/icons.mbt:488",
+        "libs/ui/src/controls/icons.mbt:446",
+        "libs/ui/src/controls/icons.mbt:450",
+        "libs/ui/src/controls/icons.mbt:485",
+        "libs/ui/src/controls/icons.mbt:489",
         "libs/ui/src/controls/qr.mbt:80"
       ],
       "note": "Pure-logic builder/helper; upstream to invar preferred, temporary 100%-real-logic overlay allowed if upstream PR is in flight"
@@ -1043,7 +1131,7 @@
       "source_sig": "pub let smooth_scale : Double",
       "call_count": 1,
       "locations": [
-        "libs/ui/src/controls/tokens.mbt:2732"
+        "libs/ui/src/controls/tokens.mbt:2789"
       ],
       "note": "Pure-logic builder/helper; upstream to invar preferred, temporary 100%-real-logic overlay allowed if upstream PR is in flight"
     },

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Wave M1.1 Negative Mutation CI Gates (plan_wave_m1_v3.md §6 #12c)
 # Runs positive controls FIRST (so broken tools / missing env / bad sentinel never
-# masquerade as a passing negative gate), then executes all 4 negative mutations
+# masquerade as a passing negative gate), then executes all 5 negative mutations
 # with REAL Stage A.5 probes (probes always enabled) and asserts exact failure
 # codes & zero `--out` pollution:
 #   (a) Mutate `api_map.json`:
@@ -90,6 +90,9 @@ cp "$SCRIPT_DIR/pilot/mbt_transpile_src/pilot_core.mbt" "$BASE_SRC/pilot_core.mb
 cp "$CONTROLS_DIR/numbers.mbt" "$BASE_SRC/numbers.mbt"
 cp "$CONTROLS_DIR/marked.mbt" "$BASE_SRC/marked.mbt"
 cp "$CONTROLS_DIR/tokens_data.mbt" "$BASE_SRC/tokens_data.mbt"
+cp "$CONTROLS_DIR/clock_read_known.mbt" "$BASE_SRC/clock_read_known.mbt"
+cp "$CONTROLS_DIR/table_copy.mbt" "$BASE_SRC/table_copy.mbt"
+cp "$CONTROLS_DIR/reader_marks.mbt" "$BASE_SRC/reader_marks.mbt"
 
 SENTINEL_POS="$WORK/sentinel_pos"
 cp -R "$SENTINEL_DIR" "$SENTINEL_POS"
@@ -98,21 +101,27 @@ sh "$SCRIPT_DIR/regen.sh" \
   --out "$SENTINEL_POS" \
   --target native \
   --mode publish \
-  --mbt-compat "$MBT_COMPAT_DIR"
+  --mbt-compat "$MBT_COMPAT_DIR" \
+  --dep "view=$INVAR_DIR/packages/view" \
+  --dep "ui=$INVAR_DIR/packages/ui"
 
 sh "$SCRIPT_DIR/regen.sh" \
   --src "$BASE_SRC" \
   --out "$BASE_OUT" \
   --target native \
   --mode publish \
-  --mbt-compat "$MBT_COMPAT_DIR"
+  --mbt-compat "$MBT_COMPAT_DIR" \
+  --dep "view=$INVAR_DIR/packages/view" \
+  --dep "ui=$INVAR_DIR/packages/ui"
 
 sh "$SCRIPT_DIR/regen.sh" \
   --src "$BASE_SRC" \
   --out "$BASE_OUT" \
   --target native \
   --check \
-  --mbt-compat "$MBT_COMPAT_DIR"
+  --mbt-compat "$MBT_COMPAT_DIR" \
+  --dep "view=$INVAR_DIR/packages/view" \
+  --dep "ui=$INVAR_DIR/packages/ui"
 echo "[neg-gate] positive control 1 OK (sentinel publish + baseline --check rc=0)"
 
 # =============================================================================
@@ -414,6 +423,9 @@ run_oracle_cmd() {
     --moon-extra-src "$CONTROLS_DIR/numbers.mbt" \
     --moon-extra-src "$CONTROLS_DIR/marked.mbt" \
     --moon-extra-src "$CONTROLS_DIR/tokens_data.mbt" \
+    --moon-extra-src "$CONTROLS_DIR/clock_read_known.mbt" \
+    --moon-extra-src "$CONTROLS_DIR/table_copy.mbt" \
+    --moon-extra-src "$CONTROLS_DIR/reader_marks.mbt" \
     --moon-extra-src "$SCRIPT_DIR/pilot/mbt_transpile_src/pilot_core.mbt" \
     --pion-dir "$PION_DIR" \
     --moon-bin "$MOON" \
@@ -492,8 +504,25 @@ fi
 echo "[neg-gate] PASS (d): (d1) dropped assert, (d2) mutated guard+tautology, (d3) mutated real numbers.pion all strict rc=1"
 
 # =============================================================================
-# (e) Single-invar-pin URL-normalization negative gates (no .git / case / ssh / git@)
+# (e) Single-invar-pin negative gates:
+#     (e1) URL-normalization variants (no .git / case / ssh / git@) with second SHA
+#          -> assert exit code 1, exact file path, exact conflicting SHA, diagnostic class
+#     (e2) Local `path =` dependency pointing to an AFK-surf/invar checkout -> exit 1;
+#          local `path =` dependency named `invar_local_helper` (non-invar) -> exit 0
+#     (e3) Non-`rev:` lock entry (`ref = "branch:main"`) -> exit 1 + exact path & class
 # =============================================================================
+BAD_SHA="ff2ed93000000000000000000000000000000000"
+setup_pin_tmp() {
+  PIN_TMP="$1"
+  mkdir -p "$PIN_TMP/pion/ui/packages/sf" "$PIN_TMP/pion/app" "$PIN_TMP/pion/tools/mbt2pion-monoid"
+  cp "$REPO_ROOT/pion/ui/pion.toml" "$PIN_TMP/pion/ui/pion.toml"
+  cp "$REPO_ROOT/pion/ui/pion.lock" "$PIN_TMP/pion/ui/pion.lock"
+  cp "$REPO_ROOT/pion/app/pion.toml" "$PIN_TMP/pion/app/pion.toml"
+  cp "$REPO_ROOT/pion/app/pion.lock" "$PIN_TMP/pion/app/pion.lock"
+  cp "$REPO_ROOT/pion/tools/mbt2pion-monoid/manifest.toml" "$PIN_TMP/pion/tools/mbt2pion-monoid/manifest.toml"
+  cp "$SCRIPT_DIR/check_single_invar_pin.sh" "$PIN_TMP/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh"
+}
+
 for url_case in \
   "no_dot_git|https://github.com/AFK-surf/invar" \
   "lowercase|https://github.com/afk-surf/invar.git" \
@@ -502,27 +531,107 @@ for url_case in \
   CASE_ID="${url_case%%|*}"
   ALT_URL="${url_case#*|}"
   PIN_TMP="$WORK/pin_url_$CASE_ID"
-  mkdir -p "$PIN_TMP/pion/ui/packages/sf" "$PIN_TMP/pion/app" "$PIN_TMP/pion/tools/mbt2pion-monoid"
-  cp "$REPO_ROOT/pion/ui/pion.toml" "$PIN_TMP/pion/ui/pion.toml"
-  cp "$REPO_ROOT/pion/ui/pion.lock" "$PIN_TMP/pion/ui/pion.lock"
-  cp "$REPO_ROOT/pion/app/pion.toml" "$PIN_TMP/pion/app/pion.toml"
-  cp "$REPO_ROOT/pion/app/pion.lock" "$PIN_TMP/pion/app/pion.lock"
-  cp "$REPO_ROOT/pion/tools/mbt2pion-monoid/manifest.toml" "$PIN_TMP/pion/tools/mbt2pion-monoid/manifest.toml"
-  cp "$SCRIPT_DIR/check_single_invar_pin.sh" "$PIN_TMP/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh"
+  setup_pin_tmp "$PIN_TMP"
   cat > "$PIN_TMP/pion/ui/packages/sf/pion.toml" << EOF
 [package]
 name = "sf"
 version = "0.1.0"
 
 [dependencies]
-textdiff = { git = "$ALT_URL", rev = "ff2ed93000000000000000000000000000000000", subdir = "packages/textdiff" }
+textdiff = { git = "$ALT_URL", rev = "$BAD_SHA", subdir = "packages/textdiff" }
 EOF
-  if sh "$PIN_TMP/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_${CASE_ID}.log" 2>&1; then
-    echo "FAIL (pin-url:$CASE_ID): invar URL variant '$ALT_URL' with second SHA bypassed check_single_invar_pin.sh!" >&2
+  set +e
+  sh "$PIN_TMP/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_${CASE_ID}.log" 2>&1
+  PIN_RC=$?
+  set -e
+  if [ "$PIN_RC" -ne 1 ]; then
+    echo "FAIL (pin-url:$CASE_ID): expected exit 1, got $PIN_RC for '$ALT_URL'!" >&2
     cat "$WORK/neg_pin_${CASE_ID}.log" >&2
     exit 1
   fi
+  grep -q "ERROR: multiple AFK-surf/invar pins detected" "$WORK/neg_pin_${CASE_ID}.log" || {
+    echo "FAIL (pin-url:$CASE_ID): missing diagnostic class in stderr!" >&2
+    cat "$WORK/neg_pin_${CASE_ID}.log" >&2
+    exit 1
+  }
+  grep -q "$BAD_SHA pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_${CASE_ID}.log" || {
+    echo "FAIL (pin-url:$CASE_ID): missing exact conflicting SHA + path in stderr!" >&2
+    cat "$WORK/neg_pin_${CASE_ID}.log" >&2
+    exit 1
+  }
 done
-echo "[neg-gate] PASS (e): check_single_invar_pin.sh rejected all 4 invar URL variants (no .git, lowercase, ssh://, git@)"
+
+# (e2a) Local `path =` pointing to an AFK-surf/invar checkout MUST be rejected (rc=1)
+FAKE_INVAR="$WORK/local_checkout_not_named_that"
+mkdir -p "$FAKE_INVAR/.git" "$FAKE_INVAR/packages/ui"
+cat > "$FAKE_INVAR/.git/config" << 'EOF'
+[remote "origin"]
+	url = https://github.com/AFK-surf/invar.git
+EOF
+cat > "$FAKE_INVAR/packages/ui/pion.toml" << 'EOF'
+[package]
+name = "ui"
+version = "0.1.0"
+EOF
+PIN_PATH_NEG="$WORK/pin_path_neg"
+setup_pin_tmp "$PIN_PATH_NEG"
+cat > "$PIN_PATH_NEG/pion/ui/packages/sf/pion.toml" << EOF
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+ui = { path = "$FAKE_INVAR/packages/ui" }
+EOF
+set +e
+sh "$PIN_PATH_NEG/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_path.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/packages/sf/pion.toml" "$WORK/neg_pin_path.log" || ! grep -q "local path invar bypass forbidden" "$WORK/neg_pin_path.log"; then
+  echo "FAIL (pin-path-neg): expected rc=1 + exact path + 'local path invar bypass forbidden' (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_path.log" >&2
+  exit 1
+fi
+
+# (e2b) Positive control: local non-invar package whose directory name contains 'invar' MUST pass (rc=0)
+PIN_PATH_POS="$WORK/pin_path_pos"
+setup_pin_tmp "$PIN_PATH_POS"
+mkdir -p "$PIN_PATH_POS/pion/ui/packages/invar_local_helper"
+cat > "$PIN_PATH_POS/pion/ui/packages/invar_local_helper/pion.toml" << 'EOF'
+[package]
+name = "invar_local_helper"
+version = "0.1.0"
+EOF
+cat > "$PIN_PATH_POS/pion/ui/packages/sf/pion.toml" << 'EOF'
+[package]
+name = "sf"
+version = "0.1.0"
+
+[dependencies]
+invar_local_helper = { path = "../invar_local_helper" }
+EOF
+sh "$PIN_PATH_POS/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/pos_pin_path.log" 2>&1
+
+# (e3) Non-`rev:` lock ref (`ref = "branch:main"`) MUST be rejected (rc=1)
+PIN_BRANCH="$WORK/pin_branch_ref"
+setup_pin_tmp "$PIN_BRANCH"
+python3 - "$PIN_BRANCH/pion/ui/pion.lock" "$INVAR_REV" << 'PY'
+import sys
+p, invar_rev = sys.argv[1], sys.argv[2]
+txt = open(p).read()
+needle = f'ref = "rev:{invar_rev}"'
+assert needle in txt, f"expected {needle} in pion.lock"
+open(p, "w").write(txt.replace(needle, 'ref = "branch:main"', 1))
+PY
+set +e
+sh "$PIN_BRANCH/pion/tools/mbt2pion-monoid/check_single_invar_pin.sh" >"$WORK/neg_pin_branch.log" 2>&1
+PIN_RC=$?
+set -e
+if [ "$PIN_RC" -ne 1 ] || ! grep -q "pion/ui/pion.lock" "$WORK/neg_pin_branch.log" || ! grep -q "non-rev pin forbidden" "$WORK/neg_pin_branch.log"; then
+  echo "FAIL (pin-branch-ref): expected rc=1 + pion/ui/pion.lock + 'non-rev pin forbidden' (got rc=$PIN_RC)!" >&2
+  cat "$WORK/neg_pin_branch.log" >&2
+  exit 1
+fi
+echo "[neg-gate] PASS (e): check_single_invar_pin.sh rejected all 4 URL variants (exact rc=1/SHA/path/class), local path invar bypass (+ allowed non-invar local pkg), and ref='branch:main'"
 
 echo "=== ALL 5 NEGATIVE MUTATION CI GATES + 2 POSITIVE CONTROLS PASSED ==="
