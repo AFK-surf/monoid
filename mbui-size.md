@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4efe50b6b](https://github.com/AFK-surf/monoid/commit/4efe50b6b75751b3fae0a3150dfb4ed06af0f7d9) ci(preview): keep the iOS device's engine by its i | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.68 | 66.54 | 100.47 | 132.16 |
 | [d7b42d970](https://github.com/AFK-surf/monoid/commit/d7b42d970192b854013e713d801b1d49d0e6fb9c) fix(mb): refill a moon-include directory CI's clea | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.68 | 66.54 | 100.47 | 129.98 |
 | [1b5405d50](https://github.com/AFK-surf/monoid/commit/1b5405d50c3cdf70d15d847a73b86c81907432c7) feat(mbui): pick and note words of a Markdown file | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.66 | 66.47 | 100.93 | 123.45 |
 | [c2e84024c](https://github.com/AFK-surf/monoid/commit/c2e84024ce63b1aed5ad3ecefe4d34425b8dc73f) feat(chat): add experimental Poke selection reply  | 2.77 | 3.74 | 15.13 | 37.33 | 57.58 | 32.66 | 66.47 | 100.93 | 123.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da1df4b8a](https://github.com/AFK-surf/monoid/commit/da1df4b8a3582f9373b19c5dfa89b72b5d449812) fix(station): never block on a CACHEDIR.TAG that i | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 | [f0170c00c](https://github.com/AFK-surf/monoid/commit/f0170c00c685faac64c2f74ac87b61f0c25496fc) refactor(station): detach station_main from stillf | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.68 | 123.09 |
 | [08cf53d77](https://github.com/AFK-surf/monoid/commit/08cf53d7791503c7b7a528d4ad2dde6f777fb074) fix(cloud): stop hot-path storage writes on creden | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.5 | 105.48 |
-| [b02677196](https://github.com/AFK-surf/monoid/commit/b0267719676c66e17fc54961dade04d9347cb222) feat(station): add reader engine selector and blac | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 120.98 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4efe50b6b](https://github.com/AFK-surf/monoid/commit/4efe50b6b75751b3fae0a3150dfb4ed06af0f7d9) ci(preview): keep the iOS device's engine by its i | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.48 |
 | [d7b42d970](https://github.com/AFK-surf/monoid/commit/d7b42d970192b854013e713d801b1d49d0e6fb9c) fix(mb): refill a moon-include directory CI's clea | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.62 |
 | [1b5405d50](https://github.com/AFK-surf/monoid/commit/1b5405d50c3cdf70d15d847a73b86c81907432c7) feat(mbui): pick and note words of a Markdown file | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.75 |
 | [c2e84024c](https://github.com/AFK-surf/monoid/commit/c2e84024ce63b1aed5ad3ecefe4d34425b8dc73f) feat(chat): add experimental Poke selection reply  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [da1df4b8a](https://github.com/AFK-surf/monoid/commit/da1df4b8a3582f9373b19c5dfa89b72b5d449812) fix(station): never block on a CACHEDIR.TAG that i | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.18 |
 | [f0170c00c](https://github.com/AFK-surf/monoid/commit/f0170c00c685faac64c2f74ac87b61f0c25496fc) refactor(station): detach station_main from stillf | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.2 |
 | [08cf53d77](https://github.com/AFK-surf/monoid/commit/08cf53d7791503c7b7a528d4ad2dde6f777fb074) fix(cloud): stop hot-path storage writes on creden | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.46 |
-| [b02677196](https://github.com/AFK-surf/monoid/commit/b0267719676c66e17fc54961dade04d9347cb222) feat(station): add reader engine selector and blac | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.03 |
