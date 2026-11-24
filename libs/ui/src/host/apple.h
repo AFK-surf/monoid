@@ -34,6 +34,7 @@ void mb_render_init(CAMetalLayer *layer);
 // and let go of as it closes
 void mb_render_use(int wid);
 void mb_render_forget(int wid);
+void mb_render_set_clear(int wid, int on);
 id<MTLDevice> mb_render_device(void);
 void mb_render_set_size(double w, double h, double scale);
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b);

@@ -48,7 +48,7 @@ typedef struct {
   size_t cap;
   int32_t count;
   double bg[3], w, h, scale;
-  int tw, th, glass, lat;
+  int tw, th, glass, lat, clear;
   MBDirty parts;
   int through_n;
   float through_tid[MB_THROUGH];
@@ -95,6 +95,7 @@ typedef struct {
   MBFrame *pending;
   int queued;
   atomic_int missed;
+  int clear;  // window drawn on transparent ground (mb_render_set_clear)
   id<MTLTexture> ad_tex[2];
   int ad_cur;
   id<MTLBuffer> ad_rb[3];
@@ -135,6 +136,11 @@ static MBRenderWin *rw = &render_wins[0];
 // The window of the run drawn now (mac_app.m's win_use): its layer, its size, its last frame and its canvas in place.
 void mb_render_use(int wid) {
   if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
+
+// Window `wid` drawn on transparent ground (its layer not opaque): drawn whole each frame.
+void mb_render_set_clear(int wid, int on) {
+  if (wid >= 0 && wid < MB_WINS) render_wins[wid].clear = on != 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -3273,7 +3279,7 @@ static void keep_last(int32_t count, double r, double g, double b) {
 
 // Instances `f` (`count` of them) into the next buffer of the ring, and the frame's ground after them: a rect over all
 // the frame (at_w × at_h), opaque, a part drawn again first.
-static id<MTLBuffer> ring_put(const float *f, int32_t count, double r, double g, double b) {
+static id<MTLBuffer> ring_put(const float *f, int32_t count, double r, double g, double b, float ga) {
   buf_i = (buf_i + 1) % 3;
   size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
   size_t room = need + MB_INST * sizeof(float);
@@ -3288,7 +3294,7 @@ static id<MTLBuffer> ring_put(const float *f, int32_t count, double r, double g,
   float *gr = d + n;
   memset(gr, 0, MB_INST * sizeof(float));
   gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)at_w + 32.0f; gr[3] = (float)at_h + 32.0f;
-  gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
+  gr[8] = (float)r * ga; gr[9] = (float)g * ga; gr[10] = (float)b * ga; gr[11] = ga;
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   return bufs[buf_i];
 }
@@ -3475,7 +3481,9 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   uint64_t ad_serial = ++w->ad_frame_serial;
   int32_t count = fr->count;
   double r = fr->bg[0], g = fr->bg[1], b = fr->bg[2];
-  id<MTLBuffer> buf = ring_put(fr->inst, count, r, g, b);
+  double ga = fr->clear ? 0 : 1;
+  if (fr->clear) r = g = b = 0;
+  id<MTLBuffer> buf = ring_put(fr->inst, count, r, g, b, (float)ga);
   double e0 = CACurrentMediaTime();
   // A frame drawn whole (nothing said of its parts, all of it said, a picture missing from the last) with no glass in
   // it is drawn straight into the drawable once it is had: the canvas would only be drawn whole and copied again, a
@@ -3485,7 +3493,7 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   // drawable that is only a framebuffer cannot be read for: a frame with glass goes through the canvas, as do frames
   // drawn in part.
   int tw = fr->tw, th = fr->th;
-  int direct = !fr->glass && tw > 0 && th > 0 && (!fr->parts.told || fr->parts.whole || pictures_missing);
+  int direct = !fr->glass && tw > 0 && th > 0 && (fr->clear || !fr->parts.told || fr->parts.whole || pictures_missing);
   // drawn into the canvas and committed before asking for the drawable, so the GPU draws the canvas while nextDrawable
   // waits on the swapchain and the drawable is held only for the final copy; a drawable of another size than the
   // canvas (a resize between) redraws the canvas at that size before copying
@@ -3505,7 +3513,7 @@ static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   double p3 = CACurrentMediaTime();
   id<MTLCommandBuffer> pcb = [queue commandBuffer];
   if (drawable && direct) {
-    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL, ad_dt, ad_serial);
+    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, ga, NULL, ad_dt, ad_serial);
     ad_rb_finish(pcb, at_win, ad_serial);
     pictures_missing = encode_missing;
   } else if (drawable) {
@@ -3574,7 +3582,7 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   float *f = next_room(count);
   mb_groups_floats(f, inst, count);
   int has_hole = glass_through(f, count);
-  BOOL want_opaque = !has_hole;
+  BOOL want_opaque = !has_hole && !rw->clear;
   int opaque_changed = mlayer && mlayer.opaque != want_opaque;
   int with_views = (mb_views_take_moved() || opaque_changed) && !mlayer.presentsWithTransaction;
   // (the last frame handed over had no drawable: not the one shown)
@@ -3589,6 +3597,7 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   fr->count = count;
   fr->bg[0] = r; fr->bg[1] = g; fr->bg[2] = b;
   fr->w = vw; fr->h = vh; fr->scale = vscale;
+  fr->clear = rw->clear;
   fr->tw = (int)mlayer.drawableSize.width;
   fr->th = (int)mlayer.drawableSize.height;
   // (whether it has glass, which copies what is drawn under it out of what it is drawn into: slot 20 negative)
@@ -4033,7 +4042,7 @@ void mb_render_draw_timed(const double *inst, int32_t count, double r, double g,
     at_win = rw;
     double ad_dt = ad_next_dt(rw);
     uint64_t ad_serial = ++rw->ad_frame_serial;
-    id<MTLBuffer> buf = ring_put(last_inst, count, r, g, b);
+    id<MTLBuffer> buf = ring_put(last_inst, count, r, g, b, 1.0f);
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     // (only the parts said to differ, as a window's canvas is drawn: the target is kept across frames too)
     MBDirty said = rw->said;

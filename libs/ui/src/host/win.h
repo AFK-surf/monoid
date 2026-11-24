@@ -58,6 +58,16 @@ void mb_render_use(int wid);
 void mb_render_forget(int wid);
 // what drawing holds beyond its frames given back (a window minimized or hidden), made again as it draws
 void mb_render_trim(void);
+// transparent ground for a borderless/composed child window (no redirection bitmap); 0 opaque (default)
+void mb_render_set_clear(int wid, int on);
+// whether the last encoded frame missed an image texture still decoding, and a GPU event-query wait before reveal
+int mb_render_pictures_missing(void);
+void mb_render_finish(void);
+// snapshot of a specific window `wid` as PNG (1 on success)
+int mb_render_snap_win(int wid, const wchar_t *path);
+// optional startup knobs (call before mb_render_init, or set MBUI_ATLAS_SIZE / MBUI_NO_VIDEO)
+void mb_render_set_atlas_size(int size);
+void mb_render_set_video_support(int on);
 // the wait for the compositor (as many of its beats as mb_frame_beats says) once a round of the windows' frames is
 // presented, not after each window's: two windows drawing on did not halve their rate
 void mb_render_pace(void);
@@ -147,6 +157,12 @@ double mb_app_scale(void);
 int mb_app_wid(void);
 void *mb_app_hwnd_now(void);
 void *mb_app_hwnd_of(int wid);
+// borderless transparent child-window helpers (consumed by the next win_open) and app-managed cloak/reveal
+void mb_app_next_clear(void);
+void mb_app_next_clear_ex(int clear, int no_activate);
+void mb_app_window_keep_cloaked(int wid, int on);
+void mb_app_reveal_after_frame(int wid);
+void mb_app_cancel_reveal(int wid);
 
 // native views (win_views.cpp): web pages in WebView2 under the canvas, seen through its holes (kind 9)
 int mb_views_count(void);

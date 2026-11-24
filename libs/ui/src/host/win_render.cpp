@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <new>
 #include "win.h"
 #include "corner_sl.h"
 #include "contained.h"
@@ -39,6 +40,33 @@
 #pragma comment(lib, "ole32.lib")
 
 int mb_atlas_size = 4096;
+static int video_support = 1;
+static ID3D11Texture2D *atlas;
+
+static int valid_atlas_size(int size) {
+  return size >= 512 && size <= 4096 && (size & (size - 1)) == 0;
+}
+
+static void init_render_knobs(void) {
+  static int done;
+  if (done) return;
+  done = 1;
+  const wchar_t *a = mb_win_env(L"MBUI_ATLAS_SIZE");
+  if (a && *a) {
+    int sz = (int)wcstol(a, NULL, 10);
+    if (valid_atlas_size(sz)) mb_atlas_size = sz;
+  }
+  const wchar_t *nv = mb_win_env(L"MBUI_NO_VIDEO");
+  if (nv && *nv && *nv != L'0') video_support = 0;
+}
+
+extern "C" void mb_render_set_atlas_size(int size) {
+  if (valid_atlas_size(size) && !atlas) mb_atlas_size = size;
+}
+
+extern "C" void mb_render_set_video_support(int on) {
+  video_support = on != 0;
+}
 
 static ID3D11Device *dev;
 static ID3D11DeviceContext *ctx;
@@ -48,7 +76,6 @@ static ID3D11PixelShader *ps;
 static ID3D11PixelShader *ps_flat;
 static ID3D11InputLayout *layout;
 static ID3D11Buffer *ubuf;
-static ID3D11Texture2D *atlas;
 static ID3D11ShaderResourceView *atlas_srv;
 static ID3D11SamplerState *sampler;
 static ID3D11BlendState *blend;
@@ -91,6 +118,7 @@ static ID3D11ShaderResourceView *gsrv;
 // into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
 #define MB_PARTS 8
 struct RenderWin {
+  HWND target_hwnd;
   IDXGISwapChain1 *chain;
   ID3D11RenderTargetView *rtv;
   IDCompositionTarget *dtarget;
@@ -111,6 +139,8 @@ struct RenderWin {
   int dirty_n, dirty_whole, dirty_told;
   // a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
   int pictures_missing;
+  // transparent ground for borderless composed child windows (mb_render_set_clear)
+  int clear;
   level ad_tex[2];
   int ad_cur;
   MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
@@ -133,6 +163,7 @@ static struct RenderWinsMade {
     for (int k = 0; k < MB_WINS; k++) render_win_fresh(&render_wins[k]);
   }
 } render_wins_made;
+#define target_hwnd (rw->target_hwnd)
 #define chain (rw->chain)
 #define rtv (rw->rtv)
 #define dtarget (rw->dtarget)
@@ -164,6 +195,10 @@ static struct RenderWinsMade {
 // The window of the run drawn now (win_app.c's win_use): its swap chain, its size, its last frame and its canvas.
 void mb_render_use(int wid) {
   if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
+
+extern "C" void mb_render_set_clear(int wid, int on) {
+  if (wid >= 0 && wid < MB_WINS) render_wins[wid].clear = on ? 1 : 0;
 }
 
 // the numbers of an instance (src/ui/scene.mbt)
@@ -1381,6 +1416,43 @@ static bool shader_path(wchar_t *out, size_t cap, UINT64 key) {
   return n > 0 && (size_t)n < cap;
 }
 
+// Local ID3DBlob for cached bytecode so reading shader cache never loads d3dcompiler_47.dll.
+struct KeptBlob : public ID3DBlob {
+  LONG refs = 1;
+  SIZE_T size = 0;
+  void *bytes = NULL;
+  static KeptBlob *made(SIZE_T n) {
+    KeptBlob *b = new (std::nothrow) KeptBlob();
+    if (!b) return NULL;
+    b->bytes = malloc(n ? n : 1);
+    if (!b->bytes) {
+      delete b;
+      return NULL;
+    }
+    b->size = n;
+    return b;
+  }
+  ~KeptBlob() { free(bytes); }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    if (!out) return E_POINTER;
+    if (id == __uuidof(IUnknown) || id == __uuidof(ID3D10Blob)) {
+      *out = static_cast<ID3DBlob *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)InterlockedIncrement(&refs); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    LONG n = InterlockedDecrement(&refs);
+    if (!n) delete this;
+    return (ULONG)n;
+  }
+  LPVOID STDMETHODCALLTYPE GetBufferPointer() override { return bytes; }
+  SIZE_T STDMETHODCALLTYPE GetBufferSize() override { return size; }
+};
+
 // The bytecode kept at `path`, whole and as it was written; NULL (the file deleted where it is there and is not that).
 static ID3DBlob *shader_kept(const wchar_t *path) {
   HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -1392,7 +1464,7 @@ static ID3DBlob *shader_kept(const wchar_t *path) {
   bool ok = GetFileSizeEx(f, &size) && ReadFile(f, &head, sizeof head, &got, NULL) && got == sizeof head &&
             memcmp(head.magic, "MBSH", 4) == 0 && head.size > 0 && head.size < (64u << 20) &&
             size.QuadPart == (LONGLONG)sizeof head + (LONGLONG)head.size &&
-            SUCCEEDED(D3DCreateBlob(head.size, &blob)) &&
+            (blob = KeptBlob::made(head.size)) != NULL &&
             ReadFile(f, blob->GetBufferPointer(), head.size, &got, NULL) && got == head.size &&
             shader_fnv(blob->GetBufferPointer(), head.size, shader_fnv_start) == head.hash;
   CloseHandle(f);
@@ -1424,6 +1496,24 @@ static void shader_keep(const wchar_t *path, ID3DBlob *code) {
 
 static ID3DBlob *compile(const char *entry, const char *target, const char *src = shader_src,
                          const D3D_SHADER_MACRO *defines = NULL) {
+  char *patched = NULL;
+  if (src == shader_src && mb_atlas_size != 4096) {
+    const char *needle = "/ 4096.0;";
+    const char *hit = strstr(src, needle);
+    if (hit) {
+      char repl[32];
+      snprintf(repl, sizeof repl, "/ %d.0;", mb_atlas_size);
+      size_t nlen = strlen(needle), rlen = strlen(repl), slen = strlen(src);
+      patched = (char *)malloc(slen - nlen + rlen + 1);
+      if (patched) {
+        size_t pre = (size_t)(hit - src);
+        memcpy(patched, src, pre);
+        memcpy(patched + pre, repl, rlen);
+        memcpy(patched + pre + rlen, hit + nlen, slen - pre - nlen + 1);
+        src = patched;
+      }
+    }
+  }
   UINT64 key = shader_fnv(src, strlen(src), shader_fnv_start);
   key = shader_fnv(entry, strlen(entry) + 1, key);
   key = shader_fnv(target, strlen(target) + 1, key);
@@ -1437,7 +1527,10 @@ static ID3DBlob *compile(const char *entry, const char *target, const char *src 
   bool kept = shader_path(path, MAX_PATH * 2, key);
   if (kept) {
     ID3DBlob *was = shader_kept(path);
-    if (was) return was;
+    if (was) {
+      free(patched);
+      return was;
+    }
   }
   ID3DBlob *code = NULL, *err = NULL;
   HRESULT hr = D3DCompile(src, strlen(src), "mbui", defines, NULL, entry, target,
@@ -1445,6 +1538,7 @@ static ID3DBlob *compile(const char *entry, const char *target, const char *src 
   if (FAILED(hr)) fprintf(stderr, "shader %s: %s\n", entry, err ? (char *)err->GetBufferPointer() : "?");
   if (err) err->Release();
   if (code && kept) shader_keep(path, code);
+  free(patched);
   return code;
 }
 
@@ -1524,8 +1618,9 @@ static int make_own_chain(HWND hwnd) {
 static void make_pipeline(void);
 
 int mb_render_init(void *hwnd) {
+  init_render_knobs();
   // (with its video side where the GPU has one: a remote screen decoded and shown by the GPU, win_stream.cpp)
-  if (FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) &&
+  if ((!video_support || FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, D3D11_CREATE_DEVICE_VIDEO_SUPPORT))) &&
       FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, 0)) && FAILED(make_device(D3D_DRIVER_TYPE_WARP, 0))) {
     fprintf(stderr, "no Direct3D 11 device\n");
     return 0;
@@ -1537,6 +1632,7 @@ int mb_render_init(void *hwnd) {
   xdev->GetAdapter(&adapter);
   adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
   flip_chain = 1;
+  target_hwnd = (HWND)hwnd;
   if (make_composed(xdev, (HWND)hwnd)) {
     // the composition's swap chain, made at the window's size (its first buffers' view: at the first frame's size)
     fb_w = fb_h = 0;
@@ -1557,6 +1653,7 @@ int mb_render_open(int wid, void *hwnd) {
   RenderWin *back = rw;
   rw = &render_wins[wid];
   render_win_fresh(rw);
+  target_hwnd = (HWND)hwnd;
   int ok;
   if (dcomp) {
     ok = make_composed(NULL, (HWND)hwnd);
@@ -1794,6 +1891,7 @@ void mb_render_set_size(int pw, int ph, double w, double h, double scale) {
   }
   fb_w = pw;
   fb_h = ph;
+  if (dcomp) commit_after_present = true;
 }
 
 #ifndef MB_WIN_ATLAS_UPDATE
@@ -2308,11 +2406,44 @@ static void glass_idle_tick(void) {
   glass_drawn = 0;
 }
 
-// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels, made
-// again as a frame with glass is drawn.
+// The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the pixel
+// shader to read (segs, t3): as they are, 15 fours an instance.
+static ID3D11Buffer *segs_buf;
+static ID3D11ShaderResourceView *segs_srv;
+static size_t segs_cap;
+
+// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels,
+// transient shape-segment buffer, and hidden primary window's canvas/swapchain, made again as the next frame draws.
 void mb_render_trim(void) {
   glass_free();
   glass_idle_frames = 0;
+  if (segs_srv) segs_srv->Release(), segs_srv = NULL;
+  if (segs_buf) segs_buf->Release(), segs_buf = NULL;
+  segs_cap = 0;
+  RenderWin *back = rw;
+  rw = &render_wins[0];
+  if (target_hwnd && !IsWindowVisible(target_hwnd)) {
+    if (ctx) ctx->OMSetRenderTargets(0, NULL, NULL);
+    ensure_canvas(0, 0);
+    if (chain && (fb_w > 16 || fb_h > 16)) {
+      if (rtv) rtv->Release(), rtv = NULL;
+      chain->ResizeBuffers(0, 16, 16, DXGI_FORMAT_UNKNOWN, 0);
+      ID3D11Texture2D *back_tex = NULL;
+      if (SUCCEEDED(chain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&back_tex))) {
+        dev->CreateRenderTargetView(back_tex, NULL, &rtv);
+        back_tex->Release();
+      }
+      fb_w = 16;
+      fb_h = 16;
+      if (rtv && ctx) {
+        float clear[4] = {0, 0, 0, 0};
+        ctx->ClearRenderTargetView(rtv, clear);
+        chain->Present(0, 0);
+      }
+    }
+    if (dcomp) dcomp->Commit();
+  }
+  rw = back;
 }
 
 static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
@@ -2879,11 +3010,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   return 1;
 }
 
-// The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the pixel
-// shader to read (segs, t3): as they are, 15 fours an instance.
-static ID3D11Buffer *segs_buf;
-static ID3D11ShaderResourceView *segs_srv;
-static size_t segs_cap;
+// segs_buf / segs_srv / segs_cap declared above mb_render_trim
 
 static void segs_upload(const float *f, int32_t count) {
   if (!dev || !ctx || count <= 0) return;
@@ -2996,9 +3123,11 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
 // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
 // the frame's in the vertex buffer, submit's); NULL, all of it, cleared to the ground.
 static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count, const float *bg,
-                   const float *f, const D3D11_RECT *part = NULL) {
+                   const float *f, const D3D11_RECT *part = NULL, int allow_clear = 1) {
   atlas_flush();
-  float clear[4] = {bg[0], bg[1], bg[2], 1};
+  int clear_win = allow_clear && rw->clear;
+  float clear[4] = {clear_win ? 0.0f : bg[0], clear_win ? 0.0f : bg[1], clear_win ? 0.0f : bg[2],
+                    clear_win ? 0.0f : 1.0f};
   encode_missing = 0;
   ctx->OMSetRenderTargets(1, &target, NULL);
   cut_on = part != NULL;
@@ -3424,7 +3553,10 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
   gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
-  gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
+  gr[8] = rw->clear ? 0.0f : (float)r;
+  gr[9] = rw->clear ? 0.0f : (float)g;
+  gr[10] = rw->clear ? 0.0f : (float)b;
+  gr[11] = rw->clear ? 0.0f : 1.0f;
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   ctx->Unmap(vbuf, 0);
   last_count = count;
@@ -3758,7 +3890,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
 // Instances `f` (`count` of them) drawn on the ground `bg` into a texture of their own, `w` × `h`, and copied where the
 // CPU reads it (a staging texture, to Map; NULL where it could not be made). What the vertex buffer holds is drawn: the
 // caller has put `f` there.
-static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg, const float *f) {
+static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg, const float *f, int allow_clear = 0) {
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = (UINT)w;
   td.Height = (UINT)h;
@@ -3776,7 +3908,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
   }
   int prev_ad_mode = ad_mode;
   if (ad_mode > 0) ad_mode = 0;
-  encode(view, w, h, count, bg, f);
+  encode(view, w, h, count, bg, f, NULL, allow_clear);
   ad_mode = prev_ad_mode;
   td.Usage = D3D11_USAGE_STAGING;
   td.BindFlags = 0;
@@ -3791,7 +3923,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
 // The last presented frame drawn again (its own vertex buffer holds it), as redrawn_of draws.
 static ID3D11Texture2D *redrawn(int w, int h) {
   if (!vbuf && !fill_vbuf(last_inst, last_count, last_bg)) return NULL;
-  return redrawn_of(w, h, last_count, last_bg, last_inst);
+  return redrawn_of(w, h, last_count, last_bg, last_inst, 1);
 }
 
 // `count` instances of `f` into the vertex buffer, grown to hold them (plus the partial-redraw ground rect at slot
@@ -3815,7 +3947,10 @@ static int fill_vbuf(const float *f, int32_t count, const float *bg) {
     float *gr = dst + (size_t)count * MB_INST;
     memset(gr, 0, stride_bytes);
     gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
-    gr[8] = bg[0]; gr[9] = bg[1]; gr[10] = bg[2]; gr[11] = 1.0f;
+    gr[8] = rw->clear ? 0.0f : bg[0];
+    gr[9] = rw->clear ? 0.0f : bg[1];
+    gr[10] = rw->clear ? 0.0f : bg[2];
+    gr[11] = rw->clear ? 0.0f : 1.0f;
     gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   }
   ctx->Unmap(vbuf, 0);
@@ -3924,6 +4059,28 @@ int mb_render_snapshot(const wchar_t *path) {
       }
       px = out;
       stride = w * 4;
+    } else if (rw->clear) {
+      out = (uint8_t *)calloc((size_t)w * h, 4);
+      for (int y = 0; y < h; y++) {
+        const uint8_t *s = px + (size_t)y * stride;
+        uint8_t *d = out + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++, s += 4, d += 4) {
+          uint8_t a = s[3];
+          d[3] = a;
+          if (a == 0) {
+            d[0] = d[1] = d[2] = 0;
+          } else if (a == 255) {
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
+          } else {
+            for (int c = 0; c < 3; c++) {
+              int v = ((int)s[c] * 255 + (a / 2)) / a;
+              d[c] = (uint8_t)(v > 255 ? 255 : v);
+            }
+          }
+        }
+      }
+      px = out;
+      stride = w * 4;
     }
     ok = write_png(path, px, w, h, stride);
     free(out);
@@ -3931,6 +4088,44 @@ int mb_render_snapshot(const wchar_t *path) {
   }
   staging->Release();
   return ok;
+}
+
+extern "C" int mb_render_snap_win(int wid, const wchar_t *path) {
+  if (wid < 0 || wid >= MB_WINS || !dev || !path) return 0;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  int ok = 0;
+  if (last_inst && fb_w > 0 && fb_h > 0 && fill_vbuf(last_inst, last_count, last_bg)) {
+    ok = mb_render_snapshot(path);
+  }
+  rw = back;
+  if (last_inst) fill_vbuf(last_inst, last_count, last_bg);
+  return ok;
+}
+
+extern "C" int mb_render_pictures_missing(void) { return pictures_missing; }
+
+// Waits for the GPU to finish queued work (e.g. a window's first frame before reveal) using a reusable event query.
+extern "C" void mb_render_finish(void) {
+  static ID3D11Query *q;
+  static ID3D11Device *q_dev;
+  static HANDLE nap;
+  if (!dev || !ctx) return;
+  if (q && q_dev != dev) q->Release(), q = NULL;
+  if (!q) {
+    D3D11_QUERY_DESC qd = {D3D11_QUERY_EVENT, 0};
+    if (FAILED(dev->CreateQuery(&qd, &q)) || !q) return;
+    q_dev = dev;
+  }
+  if (!nap) nap = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  ctx->End(q);
+  ctx->Flush();
+  for (int i = 0; i < 4000 && ctx->GetData(q, NULL, 0, 0) == S_FALSE; i++) {
+    LARGE_INTEGER due;
+    due.QuadPart = -2500;  // 250 us
+    if (nap && SetWaitableTimer(nap, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(nap, 5);
+    else Sleep(0);
+  }
 }
 
 // The offscreen target as its frames left it (not the last frame drawn again: what drawing only the parts that differ
