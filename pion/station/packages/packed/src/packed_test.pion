@@ -185,6 +185,23 @@ test "RawLines splits strictly on LF without stripping CR and LoopState compacts
   expect(got[1] == "", "pure LF empty line is empty")
   expect(got[2] == "hello\r", "CR before LF preserved")
 
+  // Invalid UTF-8 bytes (0xff, truncated 3-byte seq, UTF-8 surrogate) decode lossily to U+FFFD (ef bf bd).
+  let rl2 = RawLines::new()
+  let bad = Bytes::new(8)
+  bad[0] = 97 as Byte // 'a'
+  bad[1] = 0xFF as Byte
+  bad[2] = 0xE2 as Byte
+  bad[3] = 0x82 as Byte // truncated 3-byte sequence before 'b'
+  bad[4] = 98 as Byte // 'b'
+  bad[5] = 0xED as Byte
+  bad[6] = 0xA0 as Byte // invalid UTF-8 surrogate prefix
+  bad[7] = 10 as Byte // '\n'
+  let bad_lines = rl2.push(bad)
+  expect(bad_lines.length() == 1, "one invalid-utf8 line")
+  let decoded = bad_lines[0].to_bytes()
+  // Expected: 'a' (61), U+FFFD (ef bf bd), U+FFFD (ef bf bd), 'b' (62), U+FFFD (ef bf bd), U+FFFD (ef bf bd)
+  expect(base_codec::hex_encode(decoded) == "61efbfbdefbfbd62efbfbdefbfbd", "WHATWG lossy UTF-8 bytes")
+
   // Sustained non-empty queue: seed 10 items, then 200 rounds of push 1 + pop 1 ->
   // queue never empties, yet compaction keeps storage bounded (<= 74, never 210).
   let st = LoopState::new()

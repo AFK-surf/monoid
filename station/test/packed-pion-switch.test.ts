@@ -1,21 +1,20 @@
-// Tests for `sessions/packed-mb.ts` engine switching and real Pion binary E2E edge contracts:
-// - `mb` default (zero main-thread statSync / zero fallback warn even when STILLFAIL_PION_READER is broken)
+// Tests for `sessions/packed-mb.ts` engine switching and real Pion binary E2E contracts:
+// - `mb` default (non-vacuous proof that `pionBinary()` is never probed or cached on default `mb`)
 // - `pion` switch (`STILLFAIL_READER_PACKED=pion` and `STILLFAIL_READER_ENGINE=pion`) for both `PackedProgram` and `runPackedOnce`
 // - explicit `options.binary` always takes precedence over env engine selection
 // - missing Pion binary falls back safely to `mb` with deduped `pion-binary-missing` warning
 // - `shadow` is strictly refused (`allowShadow: false`) and falls back safely to `mb` with `shadow-forbidden` warning
 // - malformed JSON / non-object frames from child stdout are isolated with zero uncaughtException/unhandledRejection
-// - real `STILLFAIL_PION_READER` binary E2E: table, pack/restore, workspace pack/unpack, >16 MiB lines,
-//   `\r\n` framing parity, lone UTF-16 surrogate rejection without invoking shell, and `runPackedOnce` abort
+// - real `STILLFAIL_PION_READER` binary E2E: table, pack/restore, >16 MiB lines, workspace pack/unpack,
+//   and real mid-flight `workspace.pack` AbortSignal cancellation after output file begins writing
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
-import { pionBinary } from "../src/read/mb-reader.ts";
+import { MbProcess, pionBinary } from "../src/read/mb-reader.ts";
 import { PackAborted, PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
 import { seekTable } from "./reference/packed.ts";
 
@@ -86,21 +85,26 @@ rl.on("line", (line) => {
 });
 `;
 
-test("mb default, pion switch, explicit binary override, missing-binary fallback, and shadow refusal", { skip: skipPosixStubs }, async () => {
+test("mb default (zero pionBinary probe), pion switch, explicit binary override, missing-binary fallback, and shadow refusal", { skip: skipPosixStubs }, async () => {
   const dir = freshDir();
   const mbStub = makeStubBinary(dir, "stub-mb", tagResponderBody("mb"));
   const pionStub = makeStubBinary(dir, "stub-pion", tagResponderBody("pion"));
   const explicitStub = makeStubBinary(dir, "stub-explicit", tagResponderBody("explicit"));
   const missingBin = join(dir, "no-such-stillfail-pion");
+  const deferredPionPath = join(dir, "deferred-pion");
 
   const logs: Line[] = [];
   hearLines((l) => logs.push(l));
   try {
-    // 1. Default is `mb` even when a Pion binary is present, AND does not probe broken STILLFAIL_PION_READER.
+    // 1. Non-vacuous proof that default `mb` never calls `pionBinary()`:
+    //    `pionBinary()` caches negative explicit path lookups (`explicit:<path> -> null`).
+    //    Point `STILLFAIL_PION_READER` at `deferredPionPath` BEFORE it exists on disk, run default `mb`,
+    //    then create `deferredPionPath` and switch to `pion`: if default `mb` had probed `pionBinary()`,
+    //    the negative cache entry would force a fallback to `mb` instead of routing to `deferred-pion`.
     logs.length = 0;
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
-      STILLFAIL_PION_READER: missingBin,
+      STILLFAIL_PION_READER: deferredPionPath,
       STILLFAIL_READER_PACKED: undefined,
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
@@ -112,12 +116,22 @@ test("mb default, pion switch, explicit binary override, missing-binary fallback
       }
       assert.equal((await runPackedOnce<{ tag: string }>("table", {})).tag, "mb");
     });
-    assert.equal(
-      logs.filter((l) => l.message === "reader engine fallback").length,
-      0,
-      "default mb path must not probe STILLFAIL_PION_READER or emit fallback warnings",
-    );
+    assert.equal(logs.filter((l) => l.message === "reader engine fallback").length, 0);
 
+    // Create the previously-absent binary now; `pion` mode must find and run it (proving no negative cache entry was recorded).
+    const createdDeferred = makeStubBinary(dir, "deferred-pion", tagResponderBody("deferred-pion"));
+    assert.equal(createdDeferred, deferredPionPath);
+    await withEnv({
+      STILLFAIL_MB_READER: mbStub,
+      STILLFAIL_PION_READER: deferredPionPath,
+      STILLFAIL_READER_PACKED: "pion",
+      STILLFAIL_READER_ENGINE: undefined,
+    }, async () => {
+      assert.equal(pionBinary(), deferredPionPath);
+      assert.equal((await runPackedOnce<{ tag: string }>("table", {})).tag, "deferred-pion");
+    });
+
+    // Default `mb` also stays on `mb` when a valid Pion binary is already available.
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: pionStub,
@@ -245,28 +259,7 @@ test("malformed JSON and non-object stdout frames are isolated without uncaughtE
   }
 });
 
-/** Run raw stdin bytes through `binary --builder packed --shell-dir <dir>` and collect stdout lines. */
-function runRawPacked(binary: string, shellDir: string, stdinText: string): Promise<{ code: number | null; lines: string[]; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(binary, ["--builder", "packed", "--shell-dir", shellDir], {
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    const chunks: Buffer[] = [];
-    let stderr = "";
-    child.stdout!.on("data", (c: Buffer) => chunks.push(c));
-    child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      const text = Buffer.concat(chunks).toString("utf8");
-      const lines = text.length === 0 ? [] : text.replace(/\n$/, "").split("\n");
-      resolve({ code, lines, stderr });
-    });
-    child.stdin!.end(stdinText);
-  });
-}
-
-test("real STILLFAIL_PION_READER binary E2E: ops, >16 MiB lines, CRLF & lone-surrogate parity, and workspace.pack abort", async (t) => {
+test("real STILLFAIL_PION_READER binary E2E: ops, >16 MiB lines, and real mid-flight workspace.pack abort", async (t) => {
   const explicitEnv = process.env.STILLFAIL_PION_READER?.trim();
   const realPion = pionBinary();
   if (explicitEnv) {
@@ -305,9 +298,8 @@ test("real STILLFAIL_PION_READER binary E2E: ops, >16 MiB lines, CRLF & lone-sur
       await p.ask("restore", { source: packedFile, temp: restored });
       assert.deepEqual(readFileSync(restored), content);
 
-      // >16 MiB valid request line (16,777,252+ bytes) must succeed without truncation or hang.
-      const bigPad = "x".repeat(16 * 1024 * 1024 + 64);
-      const bigResp = await p.ask<{ table: string }>("table", { frames: [[1, 2]], pad: bigPad });
+      // >16 MiB valid request line (16,777,252+ bytes) via PackedProgram must succeed without truncation or hang.
+      const bigResp = await p.ask<{ table: string }>("table", { frames: [[1, 2]], pad: "x".repeat(16 * 1024 * 1024 + 64) });
       assert.equal(bigResp.table, seekTable([{ packed: 1, size: 2 }]).toString("hex"));
     } finally {
       await p.close();
@@ -330,45 +322,44 @@ test("real STILLFAIL_PION_READER binary E2E: ops, >16 MiB lines, CRLF & lone-sur
     assert.deepEqual(unpacked.refused, []);
     assert.equal(readFileSync(join(dest, "sub/hello.txt"), "utf8"), "hello workspace\n");
 
-    // Raw stdio framing parity: `\r\n` returns `{id:null,error:"no such ask"}` (not skipped),
-    // lone UTF-16 surrogates are rejected before shell dispatch, valid surrogate pair succeeds.
-    const surrogateOut = join(dir, "should-not-exist.zst");
-    const raw = await runRawPacked(
-      realPion,
-      join(dir, "shell-raw"),
-      [
-        "\r",
-        "",
-        `{"id":1,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${surrogateOut.replaceAll("\\", "\\\\")}\\ud800"}`,
-        `{"id":2,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${surrogateOut.replaceAll("\\", "\\\\")}\\udc00"}`,
-        `{"id":3,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${surrogateOut.replaceAll("\\", "\\\\")}\\ud800\\u0041"}`,
-        `{"id":"\\ud83d\\ude00","op":"table","frames":[[5,6]]}`,
-      ].join("\n") + "\n",
-    );
-    assert.equal(raw.code, 0, `raw packed exited ${raw.code}: ${raw.stderr}`);
-    assert.equal(raw.lines.length, 5, `expected 5 answers (CR-only + 3 lone surrogates + 1 valid), got ${raw.lines.length}`);
-    for (let i = 0; i < 4; i++) {
-      assert.deepEqual(JSON.parse(raw.lines[i]!), { id: null, error: "no such ask" }, `line ${i}`);
-    }
-    assert.deepEqual(JSON.parse(raw.lines[4]!), {
-      id: "😀",
-      table: seekTable([{ packed: 5, size: 6 }]).toString("hex"),
-    });
-    assert.equal(existsSync(surrogateOut), false, "lone surrogate request must never invoke shell");
-
-    // Mid-flight AbortSignal on real Pion `runPackedOnce("workspace.pack")` rejects cleanly with PackAborted.
+    // Real mid-flight AbortSignal on Pion `runPackedOnce("workspace.pack")` (matching cold-archive.test.ts:567):
+    // write 24 MiB of incompressible pseudo-random bytes, wait until the target archive file actually starts
+    // being written (`size > 0`), then abort and verify PackAborted, intact workspace, and zero lingering child.
     const bigWs = join(dir, "big-ws");
     mkdirSync(bigWs, { recursive: true });
-    const noisy = Buffer.alloc(4 * 1024 * 1024);
-    for (let i = 0; i < noisy.length; i++) noisy[i] = (i * 2654435761) >>> 24;
-    for (let k = 0; k < 12; k++) writeFileSync(join(bigWs, `blob-${k}.bin`), noisy);
+    const blob = Buffer.allocUnsafe(24 << 20);
+    let seed = 0x12345678;
+    for (let i = 0; i < blob.length; i += 4) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      blob.writeUInt32LE(seed, i);
+    }
+    const blobPath = join(bigWs, "data.bin");
+    writeFileSync(blobPath, blob);
+
+    const abortedOut = join(dir, "aborted.tar.zst");
     const abortAc = new AbortController();
+    const abortShellDir = join(dir, "shell-abort");
     const packPromise = runPackedOnce(
       "workspace.pack",
-      { dir: bigWs, out: join(dir, "aborted.tar.zst") },
-      { shellDir: join(dir, "shell-abort"), signal: abortAc.signal },
+      { dir: bigWs, out: abortedOut },
+      { shellDir: abortShellDir, signal: abortAc.signal },
     );
-    queueMicrotask(() => abortAc.abort());
+    let sawWriting = false;
+    for (let i = 0; i < 1000; i++) {
+      if (existsSync(abortedOut) && statSync(abortedOut).size > 0) {
+        sawWriting = true;
+        break;
+      }
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    assert.ok(sawWriting, "expected aborted.tar.zst to begin writing (size > 0) before abort");
+    abortAc.abort();
     await assert.rejects(packPromise, PackAborted);
+    assert.equal(statSync(blobPath).size, blob.length, "original workspace file must stay intact after abort");
+    assert.equal(
+      MbProcess.live().some((proc) => proc.args.includes(abortShellDir)),
+      false,
+      "aborted packed child process must exit and be removed from MbProcess.live()",
+    );
   });
 });

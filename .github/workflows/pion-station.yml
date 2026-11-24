@@ -6,6 +6,7 @@ on:
       - "pion/station/**"
       - "pion/base/**"
       - "station/mb/src/footprint/**"
+      - "station/mb/src/host/**"
       - "station/mb/src/packed/**"
       - "station/mb/src/reader/main.mbt"
       - "station/mb/src/wire/**"
