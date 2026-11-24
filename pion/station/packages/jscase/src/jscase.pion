@@ -318,7 +318,19 @@ pub fn trim_end_white(s : String) -> String {
   trim_end_by(s, is_white_space)
 }
 
-/// Split at runs of `space`, keeping empty parts at either end as JS split does.
+fn is_utf16_space(cp : Int, space : (Int) -> Bool) -> Bool {
+  if cp < 0x10000 {
+    space(cp)
+  } else {
+    let v = cp - 0x10000
+    let hi = 0xD800 + (v >> 10)
+    let lo = 0xDC00 + (v & 0x3FF)
+    space(hi) || space(lo)
+  }
+}
+
+/// Split at runs of `space` (fed UTF-16 code units, 1:1 aligned with `jscase.mbt:225`),
+/// keeping empty parts at either end as JS split does.
 pub fn split_by(s : String, space : (Int) -> Bool) -> Array[String] {
   let raw = s.to_bytes()
   let n = raw.length()
@@ -327,12 +339,12 @@ pub fn split_by(s : String, space : (Int) -> Bool) -> Array[String] {
   let mut i = 0
   while i < n {
     let (cp, next) = decode_utf8_at(raw, i, n)
-    if space(cp) {
+    if is_utf16_space(cp, space) {
       out.push(slice_bytes_str(raw, start, i))
       i = next
       while i < n {
         let (cp2, next2) = decode_utf8_at(raw, i, n)
-        if space(cp2) {
+        if is_utf16_space(cp2, space) {
           i = next2
         } else {
           break

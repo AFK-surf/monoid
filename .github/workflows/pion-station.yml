@@ -69,6 +69,7 @@ on:
       - "station/src/sessions/agents.ts"
       - "station/src/sessions/footprint.ts"
       - "station/src/sessions/hub.ts"
+      - "station/src/sessions/live-location-protocol.ts"
       - "station/src/sessions/live-locator.ts"
       - "station/src/sessions/packed-mb.ts"
       - "station/src/sessions/post-block-builder.ts"
@@ -126,6 +127,7 @@ on:
       - "station/test/builders-requested-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
       - "station/test/builders-vault-pion-switch.test.ts"
+      - "station/test/carry-reference.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - "station/test/footprint-reference.ts"
@@ -143,6 +145,9 @@ on:
       - "station/test/mb-memory-merge.test.ts"
       - "station/test/mb-outflow-chats.test.ts"
       - "station/test/mb-packed.test.ts"
+      - "station/test/mb-replica-carry.test.ts"
+      - "station/test/reference/transcript-paths.ts"
+      - "station/test/workers/live-locator-worker.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
       - "station/test/mb-process-jobs.test.ts"
@@ -719,7 +724,10 @@ jobs:
           echo "BIN_PION=$BIN_PION"
           "$BIN_PION" --version
 
-          STILLFAIL_MB_READER="$BIN_PION" node --test station/test/mb-live-locator.test.ts
+          LOC_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap station/test/mb-live-locator.test.ts)"
+          printf '%s\n' "$LOC_OUT"
+          printf '%s\n' "$LOC_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$LOC_OUT" | grep -qE '^# skipped 0$'
 
           # Run ONLY the live-locator idle lifecycle case from mb-idle-programs.test.ts (never feed --data to Pion)
           IDLE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap --test-name-pattern "live locator's program goes when trimmed" station/test/mb-idle-programs.test.ts)"
@@ -727,8 +735,11 @@ jobs:
           printf '%s\n' "$IDLE_OUT" | grep -qE '^# tests [1-9]'
           printf '%s\n' "$IDLE_OUT" | grep -qE '^# skipped 0$'
 
-          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test station/test/builders-locate-pion-switch.test.ts
+          SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-locate-pion-switch.test.ts)"
+          printf '%s\n' "$SW_OUT"
+          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
 
   gate-w6-usage:
     runs-on: ubuntu-24.04
@@ -757,8 +768,14 @@ jobs:
           BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           pnpm --dir station install --frozen-lockfile --prefer-offline
 
-          STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test station/test/w6-selection-coldstart.test.ts
+          echo "BIN_PION=$BIN_PION"
+          "$BIN_PION" --version
+
+          COLD_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/w6-selection-coldstart.test.ts)"
+          printf '%s\n' "$COLD_OUT"
+          printf '%s\n' "$COLD_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$COLD_OUT" | grep -qE '^# skipped 0$'
 
   gate-w6-replica:
     runs-on: ubuntu-24.04

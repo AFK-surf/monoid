@@ -6,7 +6,7 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { MbProcess, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { TranscriptLocationHints } from "../read/transcript.ts";
 
@@ -101,13 +101,13 @@ export class MbUsageCounter {
       }
       let syncSel;
       try {
-        syncSel = resolveReaderSelection("usage-counter", { config: this.#readers, logAt: "usage" });
+        syncSel = resolveReaderSelectionOrPending("usage-counter", { config: this.#readers, logAt: "usage" });
       } catch (error) {
         this.#waiting.delete(id);
         reject(error as Error);
         return;
       }
-      if (syncSel.selection.reason !== "pion-probe-pending") {
+      if (!syncSel.pending) {
         try {
           send(this.#startWith(syncSel.primaryBinary));
         } catch (error) {

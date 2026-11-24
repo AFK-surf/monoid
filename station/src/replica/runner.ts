@@ -3,7 +3,7 @@
 // to line by line in the test's thread in tests (test/reference/replica-work.ts `InlineRunner`).
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Passed, Places, Told } from "./export.ts";
 
@@ -121,11 +121,11 @@ export class ProgramRunner implements Runner {
     if (this.#starting === null) {
       let sync;
       try {
-        sync = resolveReaderSelection("replica-export", { config: this.#o.readers, logAt: "replica" });
+        sync = resolveReaderSelectionOrPending("replica-export", { config: this.#o.readers, logAt: "replica" });
       } catch (e) {
         return Promise.reject(e);
       }
-      if (sync.selection.reason !== "pion-probe-pending") {
+      if (!sync.pending) {
         return this.#sendAsk(this.#begin(sync.primaryBinary), m);
       }
       const pending = resolveReaderSelectionAsync("replica-export", { config: this.#o.readers, logAt: "replica" }).then(

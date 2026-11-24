@@ -76,6 +76,12 @@ test "trim, trim_white, split_by, has_cases, and in_ranges boundaries" {
   expect(parts.length() == 4, "split_by len 4")
   expect(parts[0] == "" && parts[1] == "a" && parts[2] == "b" && parts[3] == "", "split_by parts")
 
+  // split_by feeds UTF-16 code units to predicate (1:1 with jscase.mbt:225): non-BMP scalar never matches
+  let emoji_scalar = split_by("a\u{1f600}b", fn(c : Int) -> Bool { c == 0x1F600 })
+  expect(emoji_scalar.length() == 1 && emoji_scalar[0] == "a\u{1f600}b", "split_by UTF-16 code unit semantics")
+  let emoji_surr = split_by("a\u{1f600}b", fn(c : Int) -> Bool { c == 0xD83D })
+  expect(emoji_surr.length() == 2 && emoji_surr[0] == "a" && emoji_surr[1] == "b", "split_by UTF-16 high surrogate")
+
   expect(has_cases("abc"), "ascii letters have cases")
   expect(has_cases("123Σ"), "greek sigma has cases")
   expect(!has_cases("12345 中文 _-"), "digits/cjk/punct no cases")

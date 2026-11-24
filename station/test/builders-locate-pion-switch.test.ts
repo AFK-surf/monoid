@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { test } from "node:test";
@@ -18,15 +18,16 @@ import { Store } from "../src/store/store.ts";
 function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
   const realMb = mbReaderBinary();
   const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
   const realPion = pionBinary();
 
   if (realMb === null) {
-    if (process.env.CI) assert.fail("stillfail-reader binary is required in CI");
+    if (process.env.CI || requireDual) assert.fail("stillfail-reader binary is required in CI");
     t.skip("stillfail-reader not built here");
     return null;
   }
-  if (explicitPion) {
-    assert.ok(realPion !== null, `STILLFAIL_PION_READER is set (${explicitPion}) but resolved to null`);
+  if (explicitPion || requireDual) {
+    assert.ok(realPion !== null, `STILLFAIL_PION_READER is required (${explicitPion ?? "unset"}) but resolved to null`);
   } else if (realPion === null) {
     t.skip("STILLFAIL_PION_READER / built stillfail-pion binary not present in this environment");
     return null;
@@ -37,18 +38,57 @@ function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; 
   return { mb: realMb, pion: realPion };
 }
 
+function makeRecordingWrapper(dir: string, name: string, realBin: string, logFile: string): string {
+  const wrapper = join(dir, name);
+  const sh = [
+    "#!/bin/sh",
+    `printf '%s %s\\n' "$$" "$*" >> ${JSON.stringify(logFile)}`,
+    `exec ${JSON.stringify(realBin)} "$@"`,
+    "",
+  ].join("\n");
+  writeFileSync(wrapper, sh, "utf8");
+  chmodSync(wrapper, 0o755);
+  return wrapper;
+}
+
+function readSpawns(logFile: string): string[] {
+  if (!existsSync(logFile)) return [];
+  return readFileSync(logFile, "utf8").split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
+async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(overrides)) {
+    saved.set(k, process.env[k]);
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  resetReaderSelectionStateForTest();
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    resetReaderSelectionStateForTest();
+  }
+}
+
 function makeFixture() {
   const dir = mkdtempSync(join(tmpdir(), "w6-locate-switch-"));
   const dbPath = join(dir, "stillfail.db");
   const store = Store.open(dbPath);
   const wsA = join(dir, "wsA");
   const wsB = join(dir, "wsB");
+  const wsSnap = join(dir, "wsSnap");
   mkdirSync(wsA, { recursive: true });
   mkdirSync(wsB, { recursive: true });
+  mkdirSync(wsSnap, { recursive: true });
   const profHome = join(dir, "home");
   mkdirSync(join(profHome, "projects"), { recursive: true });
 
-  // Session A: claude with transcript under shared transcripts/claude/<project>/<id>.jsonl
+  // Session A: claude with 2 transcripts under shared transcripts/claude/<project>/<id>.jsonl
   store.insertSession({
     key: "ses-a",
     connect: "ember",
@@ -70,7 +110,7 @@ function makeFixture() {
   writeFileSync(join(sharedClaudeA, "rt-a0.jsonl"), "{\"type\":\"a0\"}\n");
   writeFileSync(join(sharedClaudeA, "rt-a1.jsonl"), "{\"type\":\"a1\"}\n");
 
-  // Session B: agy with transcript under shared transcripts/agy/<id>.jsonl
+  // Session B: agy with 1 transcript under shared transcripts/agy/<id>.jsonl
   store.insertSession({
     key: "ses-b",
     connect: "ember",
@@ -87,7 +127,44 @@ function makeFixture() {
   mkdirSync(sharedAgy, { recursive: true });
   writeFileSync(join(sharedAgy, "rt-b1.jsonl"), "{\"type\":\"b1\"}\n");
 
-  return { dir, dbPath, store, profHome, wsA, wsB };
+  // Session C: codex session for empty/duplicate `said` hints 0-diff parity
+  store.insertSession({
+    key: "ses-codex",
+    connect: "ember",
+    runtime: "codex",
+    profile: "p1",
+    workspace: wsA,
+    token: "tok-c",
+    createdAt: 250,
+    lastActiveAt: 250,
+    ws: "mine",
+  });
+  store.setRuntimeSessionId("ses-codex", "cx-1");
+  store.db.prepare("INSERT INTO runtime_sessions (session_key, id, runtime, profile, at) VALUES (?, ?, ?, ?, ?)").run("ses-codex", "cx-1", "codex", "p1", 250);
+
+  // Session Snap: 70 runtime_sessions spanning the 64-entry batch boundary + pre-created rt-new on disk
+  store.insertSession({
+    key: "ses-snap",
+    connect: "ember",
+    runtime: "agy",
+    profile: "p1",
+    workspace: wsSnap,
+    token: "tok-snap",
+    createdAt: 300,
+    lastActiveAt: 300,
+    ws: "mine",
+  });
+  store.setRuntimeSessionId("ses-snap", "snap-069");
+  const ins = store.db.prepare("INSERT INTO runtime_sessions (session_key, id, runtime, profile, at) VALUES (?, ?, ?, ?, ?)");
+  for (let i = 0; i < 70; i++) {
+    const id = `snap-${String(i).padStart(3, "0")}`;
+    ins.run("ses-snap", id, "agy", "p1", 300 + i);
+    writeFileSync(join(sharedAgy, `${id}.jsonl`), `{"type":"${id}"}\n`);
+  }
+  // Pre-create the 71st transcript file on disk before inserting its DB row mid-locate
+  writeFileSync(join(sharedAgy, "snap-new.jsonl"), "{\"type\":\"snap-new\"}\n");
+
+  return { dir, dbPath, store, profHome, wsA, wsB, sharedAgy };
 }
 
 class MessageQueue {
@@ -104,7 +181,7 @@ class MessageQueue {
   }
 }
 
-test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, cancel A while B finishes, unknown cancel, error phase, snapshot isolation", async (t) => {
+test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, cancel A while B finishes, unknown cancel, error phase, multi-batch snapshot isolation, Codex hints 0-diff", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   const { mb, pion } = bins;
@@ -172,16 +249,13 @@ test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, can
     const unkCancel = await q.next();
     assert.deepEqual(unkCancel, { type: "cancelled", id: 999 });
 
-    // 3. Cancel A (id=10) while B (id=11) completes; also mutate DB after snapshot release
+    // 3. Cancel A (id=10) while B (id=11) completes
     proc.postMessage({ type: "locate", id: 10, key: "ses-a", profiles });
     proc.postMessage({ type: "locate", id: 11, key: "ses-b", profiles });
     const h10 = await q.next();
     const h11 = await q.next();
     assert.equal(h10.id, 10);
     assert.equal(h11.id, 11);
-
-    // Mutate DB while snapshot is already released (must not block WAL writer!)
-    fx.store.db.prepare("INSERT INTO runtime_sessions (session_key, id, runtime, profile, at) VALUES (?, ?, ?, ?, ?)").run("ses-b", "rt-b2", "agy", "p1", 300);
 
     proc.postMessage({ type: "cancel", id: 10 });
     const c10 = await q.next();
@@ -190,13 +264,64 @@ test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, can
     proc.postMessage({ type: "hints", id: 11, hints: { elsewhere: [], rollouts: [], said: [] } });
     const b11 = await q.next();
     assert.equal(b11.id, 11);
-    assert.equal(b11.paths.length, 1); // snapshot isolated from rt-b2 inserted after snapshot
+    assert.equal(b11.paths.length, 1);
     proc.postMessage({ type: "accepted", id: 11, accepted: true });
     const d11 = await q.next();
     assert.equal(d11.type, "done");
     assert.equal(d11.id, 11);
 
-    // 4. Wrong phase error removes only that id and returns exact error message
+    // 4. Multi-batch snapshot isolation across the 64-entry batch boundary:
+    //    Insert `snap-new` (whose file already exists on disk) AFTER batch 1's hints arrive
+    //    (proving the DB snapshot was released and doesn't block WAL writers).
+    //    The in-flight locate must return exactly 70 paths without `snap-new`;
+    //    the immediately following locate must return 71 paths including `snap-new`.
+    proc.postMessage({ type: "locate", id: 15, key: "ses-snap", profiles });
+    const snapH1 = await q.next();
+    assert.equal(snapH1.type, "hints");
+    assert.equal(snapH1.id, 15);
+    assert.equal(snapH1.sources.length, 64);
+
+    // Mutate DB while locate id=15 is paused between batch 1 and batch 2
+    fx.store.db.prepare("INSERT INTO runtime_sessions (session_key, id, runtime, profile, at) VALUES (?, ?, ?, ?, ?)").run("ses-snap", "snap-new", "agy", "p1", 999);
+
+    const inFlightPaths: { path: string }[] = [];
+    proc.postMessage({ type: "hints", id: 15, hints: { elsewhere: [], rollouts: [], said: [] } });
+    for (;;) {
+      const m = await q.next();
+      assert.equal(m.id, 15);
+      if (m.type === "hints") {
+        proc.postMessage({ type: "hints", id: 15, hints: { elsewhere: [], rollouts: [], said: [] } });
+      } else if (m.type === "batch") {
+        inFlightPaths.push(...m.paths);
+        proc.postMessage({ type: "accepted", id: 15, accepted: true });
+      } else {
+        assert.equal(m.type, "done");
+        break;
+      }
+    }
+    assert.equal(inFlightPaths.length, 70, "in-flight multi-batch locate must stay on its snapshot");
+    assert.ok(!inFlightPaths.some((p) => p.path.includes("snap-new")), "in-flight locate must NOT include post-snapshot row");
+
+    // Next locate sees the newly committed 71st row
+    proc.postMessage({ type: "locate", id: 16, key: "ses-snap", profiles });
+    const nextPaths: { path: string }[] = [];
+    for (;;) {
+      const m = await q.next();
+      assert.equal(m.id, 16);
+      if (m.type === "hints") {
+        proc.postMessage({ type: "hints", id: 16, hints: { elsewhere: [], rollouts: [], said: [] } });
+      } else if (m.type === "batch") {
+        nextPaths.push(...m.paths);
+        proc.postMessage({ type: "accepted", id: 16, accepted: true });
+      } else {
+        assert.equal(m.type, "done");
+        break;
+      }
+    }
+    assert.equal(nextPaths.length, 71, "subsequent locate must see newly inserted runtime_session");
+    assert.ok(nextPaths.some((p) => p.path.includes("snap-new")), "subsequent locate must include snap-new.jsonl");
+
+    // 5. Wrong phase error removes only that id and returns exact error message
     proc.postMessage({ type: "locate", id: 20, key: "ses-b", profiles });
     await q.next(); // hints
     proc.postMessage({ type: "accepted", id: 20, accepted: true }); // wrong phase!
@@ -205,21 +330,20 @@ test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, can
     assert.equal(err20.id, 20);
     assert.equal(err20.error, "expected transcript location hints");
 
-    // 5. Parity vs MB on same DB state
-    const runLocator = async (bin: string) => {
-      const loc = new LiveLocator(fx.dir, (k) => fx.store.getSession(k), () => profiles, undefined, undefined, undefined);
-      // Use direct MbProcess parity check
-      await loc.close();
+    // 6. Dual-binary 0-diff parity vs MB on:
+    //    (a) normal claude session,
+    //    (b) Codex session with empty `said:[["x",[]]]`, duplicate id replacement, and missing `seen` key!
+    const runWire = async (bin: string, key: string, hintsPayload: Record<string, unknown>) => {
       const p = new MbProcess(bin, ["--builder", "live-locator", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
       const mq = new MessageQueue();
       p.on("message", (m: any) => mq.push(m));
       try {
-        p.postMessage({ type: "locate", id: 1, key: "ses-a", profiles });
+        p.postMessage({ type: "locate", id: 1, key, profiles });
         const out: any[] = [];
         for (;;) {
           const msg = await mq.next();
           out.push(msg);
-          if (msg.type === "hints") p.postMessage({ type: "hints", id: 1, hints: { elsewhere: [], rollouts: [], said: [] } });
+          if (msg.type === "hints") p.postMessage({ type: "hints", id: 1, hints: hintsPayload });
           else if (msg.type === "batch") p.postMessage({ type: "accepted", id: 1, accepted: true });
           else break;
         }
@@ -228,8 +352,27 @@ test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, can
         await p.terminate();
       }
     };
-    const [mbOut, pionOut] = await Promise.all([runLocator(mb), runLocator(pion)]);
-    assert.deepEqual(pionOut, mbOut, "Pion live-locator wire output must match MB 0-diff");
+
+    const [mbA, pionA] = await Promise.all([
+      runWire(mb, "ses-a", { elsewhere: [], rollouts: [], said: [] }),
+      runWire(pion, "ses-a", { elsewhere: [], rollouts: [], said: [] }),
+    ]);
+    assert.deepEqual(pionA, mbA, "Pion live-locator wire output must match MB 0-diff on claude");
+
+    const codexHints = {
+      elsewhere: [],
+      rollouts: [],
+      said: [
+        ["x", []],
+        ["dup", [["/d1", { suffix: ".jsonl", seen: true }]]],
+        ["dup", [["/d2", { suffix: ".jsonl", seen: false }], ["/d3", { suffix: ".jsonl" }]]],
+      ],
+    };
+    const [mbCodex, pionCodex] = await Promise.all([
+      runWire(mb, "ses-codex", codexHints),
+      runWire(pion, "ses-codex", codexHints),
+    ]);
+    assert.deepEqual(pionCodex, mbCodex, "Pion live-locator wire output must match MB 0-diff on Codex hints with empty said:[[\"x\",[]]], duplicate id, and missing seen");
   } finally {
     await proc.terminate();
     fx.store.close();
@@ -237,45 +380,63 @@ test("live-locator Pion protocol: interleaved A/B ACK, accepted:false retry, can
   }
 });
 
-test("production LiveLocator switches cleanly between MB and Pion via ReaderConfig and rejects shadow", async (t) => {
+test("production LiveLocator switches cleanly between real MB and real Pion wrappers via ReaderConfig and rejects shadow", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   const { mb, pion } = bins;
-  resetReaderSelectionStateForTest();
   const fx = makeFixture();
-  let modeCfg: "mb" | "pion" | "shadow" = "mb";
-  const profiles = [{ id: "p1", home: fx.profHome }];
-  const locator = new LiveLocator(
-    fx.dir,
-    (k) => fx.store.getSession(k),
-    () => profiles,
-    undefined,
-    undefined,
-    () => ({ readers: { "live-locator": modeCfg } }),
-  );
-  try {
-    // Default / mb
-    assert.equal(resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "mb" } } }).primaryBinary, mb);
-    const resMb = await locator.locate("ses-a");
-    assert.ok(resMb !== null && resMb.paths.length === 2);
-    assert.equal(locator.trimIdle(), 1);
+  const mbLog = join(fx.dir, "mb-spawns.log");
+  const pionLog = join(fx.dir, "pion-spawns.log");
+  const mbWrap = makeRecordingWrapper(fx.dir, "mb-wrap.sh", mb, mbLog);
+  const pionWrap = makeRecordingWrapper(fx.dir, "pion-wrap.sh", pion, pionLog);
 
-    // Shadow forbidden -> falls back to mb
-    const shadowSel = resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "shadow" } } });
-    assert.equal(shadowSel.engine, "mb");
-    assert.equal(shadowSel.selection.reason, "shadow-forbidden");
+  await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
+    let modeCfg: "mb" | "pion" | "shadow" = "mb";
+    const profiles = [{ id: "p1", home: fx.profHome }];
+    const locator = new LiveLocator(
+      fx.dir,
+      (k) => fx.store.getSession(k),
+      () => profiles,
+      undefined,
+      undefined,
+      () => ({ readers: { "live-locator": modeCfg } }),
+    );
+    try {
+      // 1. Default / mb -> actually spawns MB wrapper with `--builder live-locator`, 0 Pion spawns
+      assert.equal(resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "mb" } } }).primaryBinary, mbWrap);
+      const resMb = await locator.locate("ses-a");
+      assert.ok(resMb !== null && resMb.paths.length === 2);
+      assert.equal(readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length, 1, "MB wrapper must be spawned for live-locator");
+      assert.equal(readSpawns(pionLog).length, 0, "Pion wrapper must NOT be spawned or probed on mb");
+      assert.equal(locator.trimIdle(), 1);
 
-    // Hot-reload to pion -> first lookup awaits probe and spawns real Pion binary
-    modeCfg = "pion";
-    const resPion = await locator.locate("ses-a");
-    assert.deepEqual(resPion, resMb);
-    const modes = await probePionSupportedModes(pion);
-    assert.ok(modes?.has("live-locator"));
-    assert.equal(resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "pion" } } }).primaryBinary, pion);
-  } finally {
-    await locator.close();
-    fx.store.close();
-    rmSync(fx.dir, { recursive: true, force: true });
-    resetReaderSelectionStateForTest();
-  }
+      // 2. Shadow forbidden -> falls back to mb
+      const shadowSel = resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "shadow" } } });
+      assert.equal(shadowSel.engine, "mb");
+      assert.equal(shadowSel.selection.reason, "shadow-forbidden");
+
+      // 3. Hot-reload to pion -> first lookup probes Pion wrapper (`--version`) AND actually spawns Pion wrapper (`--builder live-locator`)!
+      modeCfg = "pion";
+      const resPion = await locator.locate("ses-a");
+      assert.deepEqual(resPion, resMb);
+      const pionSpawns = readSpawns(pionLog);
+      assert.ok(pionSpawns.some((l) => l.includes("--version")), `expected Pion --version probe, got: ${JSON.stringify(pionSpawns)}`);
+      assert.equal(
+        pionSpawns.filter((l) => l.includes("--builder live-locator")).length,
+        1,
+        `expected production LiveLocator to actually spawn Pion --builder live-locator, got: ${JSON.stringify(pionSpawns)}`,
+      );
+      assert.equal(
+        readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length,
+        1,
+        "MB wrapper must NOT be spawned again after switching to pion",
+      );
+      const modes = await probePionSupportedModes(pionWrap);
+      assert.ok(modes?.has("live-locator"));
+    } finally {
+      await locator.close();
+      fx.store.close();
+      rmSync(fx.dir, { recursive: true, force: true });
+    }
+  });
 });

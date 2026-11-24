@@ -496,13 +496,9 @@ pub fn Locator::heard(self : Locator, line : String) -> Unit {
   )
 }
 
-fn shell_dir_beside(db_path : String, sep : String) -> String {
-  nodepath::join(sep, [nodepath::dirname(sep, db_path), "shell"])
-}
-
 /// Production `--builder live-locator --db <db> --data <data> [--sep <sep>]` entrypoint.
 pub fn run_live_locator(db_path : String, data : String, sep : String) -> Int {
-  let shell_dir = shell_dir_beside(db_path, sep)
+  let shell_dir = builders_core::beside(db_path, "shell")
   if !host_shim::start(shell_dir, true) {
     let _ = host_shim::write_stderr_line("the shell did not start")
     return 1

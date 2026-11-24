@@ -8,15 +8,18 @@ fn expect_sc(cond : Bool, msg : String) -> Unit {
 }
 
 test "parse_shell_sync_answer matches wire.mbt:115-123 all 4 branches" {
-  // 1. Non-JSON / empty string
+  // 1. Non-JSON / empty string -> exact diagnostic prefix + parse reason
   match parse_shell_sync_answer("") {
-    Err(e) => expect_sc(e.message.length() > 0, "empty non-json error")
+    Err(e) => {
+      let want = "the shell's answer is not JSON: unexpected end of JSON"
+      expect_sc(e.message == want, "empty non-json error: got=" + e.message + " want=" + want)
+    }
     Ok(_) => panic("empty must fail")
   }
   match parse_shell_sync_answer("not json") {
     Err(e) => {
-      let prefix = "the shell's answer is not JSON: "
-      expect_sc(e.message.length() >= prefix.length(), "non-json prefix: " + e.message)
+      let want = "the shell's answer is not JSON: expected null"
+      expect_sc(e.message == want, "bad chars non-json error: got=" + e.message + " want=" + want)
     }
     Ok(_) => panic("not json must fail")
   }
@@ -117,6 +120,46 @@ test "ShellClient async shell_call_wait preserves interleaved stdin frames, igno
     Ok((Some(base_codec::Json::Null), None)) => ()
     _ => panic("expected invalid non-empty json -> Some(Null) and bytes -> None")
   }
+  // Empty JSON text maps to Some(Json::Null) (1:1 with wire.mbt:107) with both bytes=None and bytes=Some(empty)
+  let client3 = ShellClient::new()
+  let mut sent3 = false
+  match client3.shell_call_wait_with(3.to_int64(), fn() -> Option[host_shim::HostEvent] {
+    if !sent3 {
+      sent3 = true
+      Some(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+        id: 3.to_int64(),
+        error: "",
+        json: "",
+        bytes: None,
+      }))
+    } else {
+      None
+    }
+  }) {
+    Ok((Some(base_codec::Json::Null), None)) => ()
+    _ => panic("expected empty json -> Some(Null) and bytes -> None")
+  }
+  let mut sent4 = false
+  match client3.shell_call_wait_with(4.to_int64(), fn() -> Option[host_shim::HostEvent] {
+    if !sent4 {
+      sent4 = true
+      Some(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+        id: 4.to_int64(),
+        error: "",
+        json: "",
+        bytes: Some(Bytes::new(0)),
+      }))
+    } else {
+      None
+    }
+  }) {
+    Ok((Some(base_codec::Json::Null), Some(b))) => expect_sc(b.length() == 0, "empty json + Some(empty) bytes")
+    _ => panic("expected empty json -> Some(Null) and bytes -> Some(empty)")
+  }
+  let tmp1 = client3.tmp_beside("/a/file.json", 4242)
+  let tmp2 = client3.tmp_beside("/a/file.json", 4242)
+  expect_sc(tmp1 == "/a/file.json.4242.1.tmp", "tmp_beside 1: " + tmp1)
+  expect_sc(tmp2 == "/a/file.json.4242.2.tmp", "tmp_beside 2: " + tmp2)
   expect_sc(beside("/a/b", "shell") == "/a/shell", "beside posix")
   expect_sc(beside("C:\\a\\b", "shell") == "C:\\a\\shell", "beside win")
   expect_sc(beside("b", "shell") == "shell", "beside bare")

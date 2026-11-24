@@ -18,7 +18,7 @@ export type Told = { type: "query"; id: number; query: string; asker: Asker; kin
 export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
-import { type BackfillOptions, MbProcess, resolveReaderSelection, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a search may take before it is answered with nothing.
@@ -129,11 +129,11 @@ export class Search {
     if (this.#spawning === null) {
       let sync;
       try {
-        sync = resolveReaderSelection("search", { config: this.#readers, logAt: "search" });
+        sync = resolveReaderSelectionOrPending("search", { config: this.#readers, logAt: "search" });
       } catch (e) {
         return Promise.reject(e);
       }
-      if (sync.selection.reason !== "pion-probe-pending") {
+      if (!sync.pending) {
         return this.#ask(this.#spawnSync(sync.primaryBinary), query, asker, options);
       }
       const pending = resolveReaderSelectionAsync("search", { config: this.#readers, logAt: "search" }).then(

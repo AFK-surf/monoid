@@ -4,6 +4,7 @@
 
 import "base_codec"
 import "host_shim"
+import "nodepath"
 import "sql_db"
 
 pub struct ShellError {
@@ -59,7 +60,6 @@ pub fn ShellClient::shell_sync_json(
   op : String,
   args : base_codec::Json,
 ) -> Result[base_codec::Json, ShellError] {
-  let _ = self.next_id
   let raw = host_shim::shell_sync(op, sql_db::stringify_json(args))
   parse_shell_sync_answer(raw)
 }
@@ -68,8 +68,8 @@ pub fn ShellClient::shell_sync_json(
 /// - Matches `HostEvent::ShellDone` strictly by `call_id`, discarding stale/mismatched completions.
 /// - Buffers every `HostEvent::StdinData` chunk in order into `self.queue` (never drops bytes)
 ///   and records `HostEvent::StdinEof` into `self.queue.stdin_eof`.
-/// - Independently decodes `error` / `json` (invalid non-empty JSON -> `Some(Json::Null)`, empty -> `None`)
-///   / `bytes` (preserving `None` vs `Some(empty_bytes)`).
+/// - Independently decodes `error` / `json` (empty or invalid JSON -> `Some(Json::Null)`, matching
+///   `wire.mbt:107`) / `bytes` (preserving `None` vs `Some(empty_bytes)`).
 pub fn ShellClient::shell_call_wait_with(
   self : ShellClient,
   call_id : Int64,
@@ -88,7 +88,7 @@ pub fn ShellClient::shell_call_wait_with(
           return Err(shell_error(done.error))
         }
         let j_opt : Option[base_codec::Json] = if done.json.length() == 0 {
-          None
+          Some(base_codec::json_null())
         } else {
           match sql_db::parse_json(done.json) {
             base_codec::JsonParseResult::Ok(j) => Some(j)
@@ -149,7 +149,6 @@ pub fn ShellClient::next_line(self : ShellClient) -> Option[String] {
 
 /// Write a single JSON line to stdout with U+2028/U+2029 escaped.
 pub fn ShellClient::say_line(self : ShellClient, line : String) -> Bool {
-  let _ = self.next_id
   host_shim::write_stdout_line(escape_line_separators(line))
 }
 
@@ -177,10 +176,17 @@ pub fn beside(path : String, name : String) -> String {
   sb.to_string()
 }
 
-/// Generate a unique temporary sibling path for atomic writes.
-pub fn ShellClient::unique_tmp(self : ShellClient, path : String, tag : String) -> String {
+/// Generate a unique temporary sibling path for a given `pid` (`<path>.<pid>.<n>.tmp`),
+/// 1:1 aligned with `station/mb/src/host/fs.mbt:13-16`.
+pub fn ShellClient::tmp_beside(self : ShellClient, path : String, pid : Int) -> String {
   self.tmp_seq = self.tmp_seq + 1
-  path + "." + tag + "." + host_shim::pid().to_string() + "." + self.tmp_seq.to_string() + ".tmp"
+  path + "." + pid.to_string() + "." + self.tmp_seq.to_string() + ".tmp"
+}
+
+/// Generate a unique temporary sibling path for atomic writes (`<path>.<pid>.<n>.tmp`),
+/// 1:1 aligned with `station/mb/src/host/fs.mbt:21-23`.
+pub fn ShellClient::unique_tmp(self : ShellClient, path : String) -> String {
+  self.tmp_beside(path, host_shim::pid())
 }
 
 fn decode_hex_bytes(hex : String) -> Option[Bytes] {
@@ -205,15 +211,16 @@ fn decode_hex_bytes(hex : String) -> Option[Bytes] {
   Some(out)
 }
 
-fn encode_hex_bytes(data : Bytes) -> String {
-  let digits = "0123456789abcdef"
-  let sb = StringBuilder::new()
-  for i in 0..<data.length() {
-    let b = data[i].to_int() & 0xFF
-    sb.write_byte(digits.code_unit_at((b >> 4) & 0xF) as Byte)
-    sb.write_byte(digits.code_unit_at(b & 0xF) as Byte)
+fn bytes_answered(path : String, said : base_codec::Json) -> Result[Option[Bytes], ShellError] {
+  match said {
+    base_codec::Json::Str(hex) => {
+      match decode_hex_bytes(hex) {
+        Some(b) => Ok(Some(b))
+        None => Err(shell_error("the shell's bytes of " + path + " are not hex"))
+      }
+    }
+    _ => Ok(None)
   }
-  sb.to_string()
 }
 
 /// Read raw bytes of `path` via synchronous `fs.bytes` (returns `Ok(None)` when absent).
@@ -226,41 +233,123 @@ pub fn ShellClient::read_bytes(
     ("from", base_codec::json_int(0)),
   ])
   match self.shell_sync_json("fs.bytes", args) {
-    Ok(base_codec::Json::Str(hex)) => {
-      match decode_hex_bytes(hex) {
-        Some(b) => Ok(Some(b))
-        None => Err(shell_error("invalid hex in fs.bytes answer"))
-      }
-    }
-    Ok(_) => Ok(None)
+    Ok(v) => bytes_answered(path, v)
     Err(e) => Err(e)
   }
 }
 
-/// Atomically write `data` to `path` via a unique temp file + `fs.rename` (cleans up on error).
+/// Read raw bytes of `path` (optional `from` offset and `length`) via async `fs.bytes`,
+/// 1:1 aligned with `station/mb/src/host/fs.mbt:41-51`.
+pub fn ShellClient::read_bytes_range(
+  self : ShellClient,
+  path : String,
+  from? : Int,
+  length? : Int,
+) -> Result[Option[Bytes], ShellError] {
+  let fields : Array[(String, base_codec::Json)] = [("path", base_codec::json_str(path))]
+  match from {
+    Some(f) => fields.push(("from", base_codec::json_int(f)))
+    None => ()
+  }
+  match length {
+    Some(n) => fields.push(("length", base_codec::json_int(n)))
+    None => ()
+  }
+  match self.shell_call_wait("fs.bytes", base_codec::json_obj(fields), None) {
+    Ok((Some(said), _)) => bytes_answered(path, said)
+    Ok((None, _)) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+fn is_transient_rename_error(msg : String) -> Bool {
+  msg.contains("EPERM") ||
+  msg.contains("EBUSY") ||
+  msg.contains("EACCES") ||
+  msg.contains("(os error 1)") ||
+  msg.contains("(os error 13)") ||
+  msg.contains("(os error 16)") ||
+  msg.contains("(os error 32)") ||
+  msg.contains("(os error 33)") ||
+  msg.contains("Permission denied") ||
+  msg.contains("Access is denied") ||
+  msg.contains("Operation not permitted") ||
+  msg.contains("Device or resource busy") ||
+  msg.contains("Resource busy") ||
+  msg.contains("being used by another process") ||
+  msg.contains("locked a portion")
+}
+
+fn ShellClient::sleep_draining_stdin(self : ShellClient, ms : Int) -> Unit {
+  let deadline = host_shim::now_ms() + ms.to_int64()
+  while true {
+    let rem = deadline - host_shim::now_ms()
+    if rem <= 0.to_int64() {
+      return
+    }
+    match host_shim::wait(rem) {
+      Some(host_shim::HostEvent::StdinData(chunk)) => self.queue.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => self.queue.stdin_eof = true
+      _ => ()
+    }
+  }
+}
+
+/// Atomically write `data` to `path` via async `fs.mkdir` + `fs.put` (binary payload) +
+/// `fs.rename` (with Windows transient lock backoff `[20, 40, 80, 160]` ms), cleaning up
+/// the temp file via `fs.remove` on any `put` or `rename` error.
+/// 1:1 aligned with `station/mb/src/host/fs.mbt:146-229`.
 pub fn ShellClient::write_atomic(
   self : ShellClient,
   path : String,
   data : Bytes,
+  mode : Int = 438,
+  sync : Bool = false,
+  mkdir : Bool = true,
+  sep : String = "/",
 ) -> Result[Unit, ShellError] {
-  let tmp = self.unique_tmp(path, "w")
+  if mkdir {
+    let dir = nodepath::dirname(sep, path)
+    if dir != "" && dir != "." && dir != path {
+      match self.shell_call_wait("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(dir))]), None) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let tmp = self.unique_tmp(path)
   let put_args = base_codec::json_obj([
     ("path", base_codec::json_str(tmp)),
-    ("hex", base_codec::json_str(encode_hex_bytes(data))),
+    ("offset", base_codec::json_int(0)),
+    ("truncate", base_codec::json_bool(true)),
+    ("mode", base_codec::json_int(mode)),
+    ("sync", base_codec::json_bool(sync)),
   ])
-  match self.shell_sync_json("fs.put", put_args) {
+  match self.shell_call_wait("fs.put", put_args, Some(data)) {
     Ok(_) => ()
-    Err(e) => return Err(e)
+    Err(e) => {
+      let _ = self.shell_call_wait("fs.remove", base_codec::json_obj([("path", base_codec::json_str(tmp))]), None)
+      return Err(e)
+    }
   }
   let ren_args = base_codec::json_obj([
     ("from", base_codec::json_str(tmp)),
     ("to", base_codec::json_str(path)),
   ])
-  match self.shell_sync_json("fs.rename", ren_args) {
-    Ok(_) => Ok(())
-    Err(e) => {
-      let _ = self.shell_sync_json("fs.remove", base_codec::json_obj([("path", base_codec::json_str(tmp))]))
-      Err(e)
+  let backoff = [20, 40, 80, 160]
+  let mut attempt = 0
+  while true {
+    match self.shell_call_wait("fs.rename", ren_args, None) {
+      Ok(_) => return Ok(())
+      Err(e) => {
+        if attempt >= backoff.length() || !is_transient_rename_error(e.message) {
+          let _ = self.shell_call_wait("fs.remove", base_codec::json_obj([("path", base_codec::json_str(tmp))]), None)
+          return Err(e)
+        }
+        self.sleep_draining_stdin(backoff[attempt])
+        attempt = attempt + 1
+      }
     }
   }
+  Ok(())
 }

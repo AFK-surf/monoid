@@ -698,19 +698,33 @@ pub fn Finder::use_hints(self : Finder, hints : base_codec::Json) -> Unit {
             if entry.length() == 2 {
               match (entry[0], entry[1]) {
                 (base_codec::Json::Str(id), base_codec::Json::Arr(dirs)) => {
+                  // 1:1 with paths.mbt:433: always create a fresh group for `id` (preserving empty
+                  // `said:[["x",[]]]`), replacing any previous group while keeping first-seen order.
+                  let group = SaidById::{ id: id, dirs: Map::new(), dir_keys: [] }
+                  match self.said.get(id) {
+                    Some(_) => ()
+                    None => self.said_ids.push(id)
+                  }
                   for j in 0..<dirs.length() {
                     match dirs[j] {
                       base_codec::Json::Arr(d) => {
                         if d.length() == 2 {
                           match (d[0], d[1]) {
                             (base_codec::Json::Str(dir), obj) => {
-                              match builders_core::json_get_last(obj, "suffix") {
-                                Some(base_codec::Json::Str(suffix)) => {
-                                  let seen = match builders_core::json_get_last(obj, "seen") {
-                                    Some(base_codec::Json::Bool(true)) => true
+                              match (
+                                builders_core::json_get_last(obj, "suffix"),
+                                builders_core::json_get_last(obj, "seen"),
+                              ) {
+                                (Some(base_codec::Json::Str(suffix)), Some(seen_val)) => {
+                                  let seen = match seen_val {
+                                    base_codec::Json::Bool(true) => true
                                     _ => false
                                   }
-                                  self.set_said_entry(id, dir, Said::{ suffix: suffix, seen: seen })
+                                  match group.dirs.get(dir) {
+                                    Some(_) => ()
+                                    None => group.dir_keys.push(dir)
+                                  }
+                                  group.dirs.set(dir, Said::{ suffix: suffix, seen: seen })
                                 }
                                 _ => ()
                               }
@@ -722,6 +736,7 @@ pub fn Finder::use_hints(self : Finder, hints : base_codec::Json) -> Unit {
                       _ => ()
                     }
                   }
+                  self.said.set(id, group)
                 }
                 _ => ()
               }

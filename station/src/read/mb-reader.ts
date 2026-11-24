@@ -344,9 +344,40 @@ export function resolveReaderSelection(
   return { engine: "shadow", primaryBinary: readerBinary(), pionBinary: pionBin, selection: probe };
 }
 
+export type PendingOrResolvedSelection =
+  | { readonly pending: true; readonly pionBinary: string }
+  | ({ readonly pending: false } & ResolvedReaderSelection);
+
+/// Synchronous fast-path selection that returns `{ pending: true, pionBinary }` when a Pion
+/// capability probe has not completed yet — WITHOUT calling `readerBinary()` (so Pion-only
+/// hosts without `stillfail-reader` on disk can cold-start cleanly through `resolveReaderSelectionAsync`).
+export function resolveReaderSelectionOrPending(
+  mode: ReaderMode,
+  options: ResolveReaderSelectionOptions = {},
+): PendingOrResolvedSelection {
+  if (options.binary !== undefined) {
+    return { pending: false, ...resolveReaderSelection(mode, options) };
+  }
+  const config = typeof options.config === "function" ? options.config() : options.config;
+  const probe = resolveReaderEngine(mode, {
+    config,
+    env: options.env,
+    hasPionBinary: true,
+    pionImplemented: options.pionImplemented,
+  });
+  if (probe.engine !== "mb" && !PION_BASELINE_MODES.has(mode)) {
+    const pionBin = pionBinary();
+    if (pionBin !== null && pionSupportedModesStatus(pionBin).state === "pending") {
+      return { pending: true, pionBinary: pionBin };
+    }
+  }
+  return { pending: false, ...resolveReaderSelection(mode, options) };
+}
+
 /// Await-capable reader selection:
 /// - Synchronous fast path for explicit binary, `mb` intent, baseline modes, cached Pion, or cooldown failures.
-/// - Only when `reason === "pion-probe-pending"` does it await the shared `probePionSupportedModes(pionBin)` promise.
+/// - Only when the Pion capability probe is pending does it await the shared `probePionSupportedModes(pionBin)` promise,
+///   without eagerly requiring `stillfail-reader` on disk.
 /// - When `signal` is supplied, aborting rejects immediately with `"called off"` without cancelling the shared probe,
 ///   cleans up its listener, and re-checks `signal.aborted` after await.
 export async function resolveReaderSelectionAsync(
@@ -355,8 +386,8 @@ export async function resolveReaderSelectionAsync(
   signal?: AbortSignal,
 ): Promise<ResolvedReaderSelection> {
   if (signal?.aborted) throw new Error("called off");
-  const sync = resolveReaderSelection(mode, options);
-  if (sync.selection.reason !== "pion-probe-pending" || sync.pionBinary === null) {
+  const sync = resolveReaderSelectionOrPending(mode, options);
+  if (!sync.pending) {
     return sync;
   }
   const probePromise = probePionSupportedModes(sync.pionBinary);

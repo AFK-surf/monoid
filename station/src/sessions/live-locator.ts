@@ -5,7 +5,7 @@
 import { join, sep } from "node:path";
 import type { Clock } from "effect";
 import { Fibers } from "../ops/fibers.ts";
-import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { onTranscriptHintsChanged, transcriptLocationHints } from "../read/transcript.ts";
 import { locationIdentity, type LiveLocation, type LiveLocationIdentity, type LiveLocationProfile, type LiveSession, type LiveSource, type LocateMessage, type LocateReply, type LocateRequest } from "./live-location-protocol.ts";
@@ -120,13 +120,13 @@ export class LiveLocator {
     if (this.worker === null && this.reference === undefined && this.waiting.length > 0 && this.active.size < IN_FLIGHT) {
       let sel;
       try {
-        sel = resolveReaderSelection("live-locator", { config: this.readers, logAt: "live-locator" });
+        sel = resolveReaderSelectionOrPending("live-locator", { config: this.readers, logAt: "live-locator" });
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         for (const req of this.waiting.splice(0)) this.finish(req, err);
         return;
       }
-      if (sel.selection.reason === "pion-probe-pending") {
+      if (sel.pending) {
         const pending = resolveReaderSelectionAsync("live-locator", { config: this.readers, logAt: "live-locator" }).then(
           () => {
             if (this.starting === pending) this.starting = null;

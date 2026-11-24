@@ -20,7 +20,7 @@
 // index and streams the lists, and what goes between the two stations is a list's piece at a time (retire.ts).
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { MbProcess, mbReaderBinary, pionBinary, resolveReaderSelection, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { MbProcess, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type ReaderSelectConfig, resolveReaderEngine } from "../read/reader-select.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../sessions/agent-home.ts";
 
@@ -126,7 +126,12 @@ export function inProgram<T>(
 
     const spawnAndRun = (bin: string) => {
       if (signal?.aborted) return reject(new Error("called off"));
-      const p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")]);
+      let p: MbProcess;
+      try {
+        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")]);
+      } catch (e) {
+        return reject(e instanceof Error ? e : new Error(String(e)));
+      }
       // (what it comes to, the first thing told: given as the program has ended)
       let outcome: (() => void) | null = null;
       const decide = (f: () => void) => {
@@ -155,7 +160,12 @@ export function inProgram<T>(
         decide(() => reject(new Error(`the gathering's program ended saying nothing (${code})`)));
         end();
       });
-      p.postMessage(asked);
+      try {
+        p.postMessage(asked);
+      } catch (e) {
+        decide(() => reject(e instanceof Error ? e : new Error(String(e))));
+        p.kill();
+      }
     };
 
     if (binary !== undefined) {
@@ -170,15 +180,26 @@ export function inProgram<T>(
       return reject(new Error(MISSING_CARRY_BINARY_ERROR));
     }
 
-    const sync = resolveReaderSelection("replica-carry", { config: readers, logAt: "replica" });
-    if (sync.selection.reason !== "pion-probe-pending") {
+    let sync;
+    try {
+      sync = resolveReaderSelectionOrPending("replica-carry", { config: readers, logAt: "replica" });
+    } catch (e) {
+      return reject(e instanceof Error ? e : new Error(String(e)));
+    }
+    if (!sync.pending) {
       // Synchronous fast path: spawn in the same call stack as `inProgram()` (keeps mb-replica-carry.test.ts:495-502).
       spawnAndRun(sync.primaryBinary);
       return;
     }
 
     resolveReaderSelectionAsync("replica-carry", { config: readers, logAt: "replica" }, signal).then(
-      (resolved) => spawnAndRun(resolved.primaryBinary),
+      (resolved) => {
+        try {
+          spawnAndRun(resolved.primaryBinary);
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      },
       (err) => reject(err instanceof Error ? err : new Error(String(err))),
     );
   });
