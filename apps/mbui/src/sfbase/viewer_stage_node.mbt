@@ -212,6 +212,10 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
   }
   let gap = fn() { if small() { pdf_small_in } else { desk_pdf_gap } }
   let keys = Array::makei(pdf.pages, fn(i) { i })
+  let tall_of = fn(i : Int) {
+    let (pw, ph) = pdf.sizes[i]
+    if pw > 0.0 { page_w() * ph / pw } else { page_w() * pdf_page_share }
+  }
   parent.scrolls_window(
     @view.Scroll::list(),
     fn() { keys },
@@ -237,6 +241,8 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
           |> ignore
         })
         |> ignore
+        // (its words picked and marked over the picture)
+        pdf_page_marks_node(page, vw, i, pdf.pages, page_w, tall_of, gap, fn() { @sf.viewer_bar_floats(width()) })
       })
       |> ignore
     },
@@ -262,6 +268,11 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
       |> ignore
     },
   )
+  |> ignore
+  pdf_marks_bar_node(parent, vw)
+  // (⌘C copies what is picked; Esc lets it go, then closes the note being written)
+  parent
+  .on_key(fn(k) { vw.pdf_key(k.code, k.mods) })
   |> ignore
 }
 

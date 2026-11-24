@@ -185,6 +185,12 @@ android-chat.new.sub
 android-chat.new.title
 android-chat.new.unchanged
 android-chat.newChat
+android-chat.pdf.mark
+android-chat.pdf.marks.clear
+android-chat.pdf.marks.send
+android-chat.pdf.quote.area
+android-chat.pdf.quote.page
+android-chat.pdf.quote.pages
 android-chat.pick.default
 android-chat.pick.effort.default
 android-chat.pick.failed

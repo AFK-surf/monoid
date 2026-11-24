@@ -219,6 +219,8 @@ pub(all) struct Viewer {
   source_told : @signals.Signal[Int]
   mut page : @ui.NativeView?
   mut pdf : @ui.Pdf?
+  /// what is picked and marked in its PDF (viewer_pdf_marks.mbt)
+  pdf_marks : PdfMarks
   mut text : String?
   /// its words highlighted, a line each (code, or Markdown's source), read once: None until then, Some([]) when not
   mut colored : Array[Array[@ui.Run]]?
@@ -946,6 +948,7 @@ pub fn new_viewer(
     flow_told: @signals.signal(0),
     page: None,
     pdf: None,
+    pdf_marks: PdfMarks::new(),
     text: None,
     colored: None,
     colored_dark: false,

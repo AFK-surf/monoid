@@ -708,6 +708,8 @@ pub fn dmin(Double, Double) -> Double
 
 pub let dot_size : @ui.Len
 
+pub fn drags_once_held(@view.Drag) -> Bool
+
 pub fn drawable_height(String, Double) -> Double
 
 #callsite(autofill(loc))

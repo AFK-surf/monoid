@@ -8,6 +8,7 @@ import {
   "ui/ui",
   "ui/hostapi",
   "ui/zip",
+  "ui/pdftext",
   "ui/kit",
   "ui/player",
   "ui/codec",
