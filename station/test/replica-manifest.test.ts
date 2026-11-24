@@ -2059,4 +2059,81 @@ test("27. R7: warm-cached FolderPlace.put('head') re-verifies existing manifest 
     Buffer.from("do"),
     "S3 cDstOnly object still readable after second level() with Known",
   );
+
+  // 27c-iii: R10: pure policy toggle includeTranscripts: true -> false with UNCHANGED head (to/made) and known=null
+  //          MUST drop current-gen exclusive transcript chunk while keeping chat attachment and older-gen transcript!
+  const toggleTarget: NormalizedS3Target = {
+    ...mock.target("55".repeat(32), true),
+    id: "t-r10-toggle",
+    prefix: "r10t",
+  };
+  const s3Toggle1 = new S3Place(toggleTarget);
+  const genOld = "090-aaaaaaaa";
+  const fChat = hex64("aa", "a");
+  const cOldGenTr = hex64("bb", "b");
+  const cCurOnlyTr = hex64("cc", "c");
+  await s3Toggle1.put(HOME, origin, genOld, "batch", batch, Buffer.from("b"));
+  await s3Toggle1.putFile(HOME, origin, cOldGenTr, Buffer.from("old"));
+  const oldGenHead = makeHead({ origin, gen: genOld, batches: [batch], transcriptFiles: { [cOldGenTr]: 3 }, to: 1, made: 1000 });
+  await s3Toggle1.put(HOME, origin, genOld, "head", "head.json", Buffer.from(JSON.stringify(oldGenHead)), oldGenHead);
+
+  const toggleDir = dataDir("d72a-r10-toggle-src");
+  const fChatPath = join(toggleDir, "chat-att");
+  const cCurTrPath = join(toggleDir, "cur-tr");
+  writeFileSync(fChatPath, "chat");
+  writeFileSync(cCurTrPath, "cur");
+  const toggleCurHead = makeHead({
+    origin,
+    gen,
+    batches: [batch],
+    files: { [fChat]: 4 },
+    transcriptFiles: { [cCurOnlyTr]: 3 },
+    to: 2,
+    made: 2000,
+  });
+  const ownToggle: Own = {
+    head: toggleCurHead,
+    batch: async () => Buffer.from("b"),
+    sources: async (hashes) => {
+      const m = new Map<string, string>();
+      for (const h of hashes) {
+        if (h === fChat) m.set(h, fChatPath);
+        else if (h === cCurOnlyTr) m.set(h, cCurTrPath);
+      }
+      return m;
+    },
+  };
+
+  // Step 1: sync with includeTranscripts: true -> fChat, cOldGenTr, cCurOnlyTr all readable on S3
+  const tRes1 = await level(s3Toggle1, HOME, ownToggle, null, { includeTranscripts: true });
+  assert.equal(tRes1.behind, false);
+  const s3ToggleVerify1 = new S3Place(toggleTarget);
+  assert.deepEqual(await readS3Bytes(s3ToggleVerify1, fChat), Buffer.from("chat"));
+  assert.deepEqual(await readS3Bytes(s3ToggleVerify1, cOldGenTr), Buffer.from("old"));
+  assert.deepEqual(await readS3Bytes(s3ToggleVerify1, cCurOnlyTr), Buffer.from("cur"));
+
+  // Step 2: keep head (to/made) identical, fresh S3Place + known=null (simulating configChanged()), toggle includeTranscripts: false
+  const s3Toggle2 = new S3Place(toggleTarget);
+  const tRes2 = await level(s3Toggle2, HOME, ownToggle, null, { includeTranscripts: false });
+  assert.equal(tRes2.behind, false);
+
+  const wtToggle = s3Toggle2.wsTag(HOME);
+  const otToggle = s3Toggle2.originTag(origin);
+  assert.equal(
+    mock.objects.has(`r10t/${wtToggle}/${otToggle}/files/${s3Toggle2.fileTag(cCurOnlyTr)}.enc`),
+    false,
+    "current-gen exclusive transcript chunk deleted from S3 after includeTranscripts: true -> false",
+  );
+  const s3ToggleVerify2 = new S3Place(toggleTarget);
+  await assert.rejects(() => readS3Bytes(s3ToggleVerify2, cCurOnlyTr), "reading deleted current-gen transcript rejects");
+  assert.deepEqual(
+    await readS3Bytes(s3ToggleVerify2, fChat),
+    Buffer.from("chat"),
+    "chat attachment preserved on S3 after includeTranscripts: false",
+  );
+  assert.deepEqual(
+    await readS3Bytes(s3ToggleVerify2, cOldGenTr),
+    Buffer.from("old"),
+    "older-gen exclusive transcript preserved on S3 after includeTranscripts: false",
+  );
 });

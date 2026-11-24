@@ -948,13 +948,13 @@ export async function level(
       ? { ...(own.head.transcriptFiles ?? {}), ...(resolvedTf ?? {}) }
       : (resolvedTf ?? {});
     let targetTf: Record<string, number> | null = null;
-    let targetManifestRefs: Set<string> | undefined;
+    let targetManifestMeta: string[] | undefined;
     if (initialHoldingHead.transcriptManifest !== undefined) {
       if (initialReadPlace !== undefined) {
         try {
           const resolvedTarget = await loadTranscriptManifest(initialHoldingHead.transcriptManifest, initialReadPlace);
           targetTf = { ...(initialHoldingHead.transcriptFiles ?? {}), ...resolvedTarget.files };
-          targetManifestRefs = manifestAllRefs(resolvedTarget);
+          targetManifestMeta = [resolvedTarget.rootHash, ...resolvedTarget.leafHashes];
         } catch {
           targetTf = null;
         }
@@ -972,9 +972,11 @@ export async function level(
       k.made = own.head.made;
       const kept = new Set<string>();
       for (const h in initialHoldingHead.files) if (Object.hasOwn(initialHoldingHead.files, h)) kept.add(h);
-      for (const h in targetTf) if (Object.hasOwn(targetTf, h)) kept.add(h);
-      if (targetManifestRefs !== undefined) {
-        for (const h of targetManifestRefs) kept.add(h);
+      if (targetManifestMeta !== undefined) {
+        for (const h of targetManifestMeta) kept.add(h);
+      }
+      for (const h in targetTf) {
+        if (Object.hasOwn(targetTf, h) && (includeTranscripts || !Object.hasOwn(ownAllTf, h))) kept.add(h);
       }
       k.keptTargetFiles = kept;
       k.keptTargetHead = initialHoldingHead;
