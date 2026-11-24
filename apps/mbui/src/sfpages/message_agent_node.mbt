@@ -565,6 +565,7 @@ fn agent_out_steps(plan : AgentOutPlan) -> AgentOut {
           after(@sf.dmax(plan.float_at - av.cause_at(), 0.0), plan.float_ms),
           fn(_) { Some(plan.face_at.val.unwrap_or_else(plan.from)) },
           in_list=true,
+          bare_from=plan.folds,
         )
         |> ignore
       }
@@ -610,6 +611,9 @@ fn agent_out_return(face : AgentFace, plan : AgentOutPlan, ending : Bool) -> Uni
     _ => 0.0
   }
   face.away.set(false)
+  face.ring_alpha.put(0.0)
+  // det-ok(motion-length): emit.mbt's Return, the ring returning as its picture lands home
+  face.ring_alpha.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out, delay=back_ms), at=plan.spit_end)
   // det-ok(motion-length): emit.mbt's Return, the line unfolding once its picture is home
   face.fold.go(1.0, @motion.tween(@sfbase.Pose::Return.ms(), ease=Out, delay=back_ms), at=plan.spit_end)
 }

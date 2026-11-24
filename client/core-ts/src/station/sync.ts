@@ -284,6 +284,14 @@ export class StationsSync {
     return this.#links.online(address);
   }
 
+  /// Whether station `address`'s stream is currently catching up for `thread` after an absence, and its catch-up epoch.
+  catchUpState(address: string, thread: number | null): { catching: boolean; epoch: number } {
+    const link = this.#links.get(address);
+    const c = link?.catching;
+    const catching = c != null && (!c.tallied || (thread !== null && c.behind.has(thread)));
+    return { catching, epoch: link?.catchingEpoch ?? 0 };
+  }
+
   /// Every station of every workspace an account reaches is linked, those no longer listed let go (link.ts).
   reconcile(): void {
     this.#links.reconcile();

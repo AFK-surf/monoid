@@ -6081,7 +6081,7 @@ fn View::scrolls_window_ids(
           flip_said.val = Some((now, k, keep.unwrap_or(w)))
           (flip_rebuild.val)()
           // (carried: at its rest from now on, as its flight sets out from here (what holds the flight, as it is drawn
-          // off now, is where the flight goes from: Lift's held_off), not as the frame before had it)
+          // off now, is where the flight goes from: Tree::held_off), not as the frame before had it)
           if flip_whole.contains(k) && slot.alive() {
             let d = match (flip_items.get(k), flip_way.untracked()) {
               (Some(it), Some(way)) => {
