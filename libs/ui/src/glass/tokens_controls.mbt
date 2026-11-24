@@ -326,6 +326,7 @@ pub fn liquid_tab_lens_glass(
   press : Double,
   solid? : Int64 = clear,
   sharing? : Bool = false,
+  droplet_role? : Int = 4,
 ) -> @paint.Glass {
   let p = clamp(press, 0.0, 1.0)
   let d = is_dark()
@@ -350,6 +351,7 @@ pub fn liquid_tab_lens_glass(
       adaptive=false,
       spot=None,
       zoom=1.0,
+      droplet_role~,
     ),
     sharing,
   )
@@ -392,6 +394,7 @@ fn ctrl_segmented_lens_glass(p : Double) -> @paint.Glass {
     adaptive=false,
     spot=None,
     zoom=1.0,
+    droplet_role=3,
   )
 }
 
@@ -414,5 +417,6 @@ fn ctrl_segmented_compact_lens_glass(p : Double) -> @paint.Glass {
     adaptive=false,
     spot=None,
     zoom=1.0,
+    droplet_role=3,
   )
 }

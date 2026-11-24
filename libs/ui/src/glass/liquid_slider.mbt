@@ -24,6 +24,7 @@ fn slider_glass(p : Double) -> @paint.Glass {
     merge=0.0,
     adaptive=false,
     zoom=1.0,
+    droplet_role=1,
   )
 }
 
@@ -71,8 +72,8 @@ pub fn liquid_slider_node(
   disabled? : () -> Bool = fn() { false },
   track_h? : Double = slider_track_h,
   track_held_grow? : Double = slider_track_held_grow,
-  thumb_w_px? : Double = thumb_w,
-  thumb_h_px? : Double = thumb_h,
+  thumb_w_px? : Double = slider_thumb_w,
+  thumb_h_px? : Double = slider_thumb_h,
   track_color? : () -> Int64,
   fill_color? : () -> Int64,
   stops? : Int = 0,
@@ -353,9 +354,12 @@ pub fn liquid_slider_node(
         inner.box(fn(thumb) {
           let thumb_shape = fn(n : @view.View) -> @view.GroundShape {
             let cur_tw = eff_tw()
-            let (sx, sy) = if no_lens() { (1.0, 1.0) } else { dd.jelly(n, 10.0) }
-            let tw = cur_tw * sx
-            let th = thumb_h_px * sy
+            let p = clamp(lens(n), 0.0, 1.0)
+            let v = if no_lens() { 0.0 } else { dd.velocity(n) / 10.0 }
+            let vel_sx = 1.0 / (1.0 - clamp(v * 0.75, -0.2, 0.2))
+            let vel_sy = 1.0 - clamp(v * 0.25, -0.2, 0.2)
+            let tw = cur_tw * lerp(1.0, 58.0 / 38.0, p) * vel_sx
+            let th = thumb_h_px * lerp(1.0, slider_thumb_held_scale, p) * vel_sy
             let x = slider_thumb_x_for(w(), cur_tw, dd.progress(n), eff_flush)
             let r = th / 2.0
             {

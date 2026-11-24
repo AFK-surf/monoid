@@ -2333,6 +2333,320 @@ int main(void) {
         }
         free(px);
       }
+
+      // Commit 2 V8/V9 2D Multi-Pixel ROI Gates (Slider, Switch ON/OFF, 3x TIR rows, 2x phase-shifted TIR, Light Segmented Prism):
+      {
+        int VW = 160, VH = 80;
+        #define A_PX(buf, aw, xpx, ypx) ((buf) + ((ypx) * (aw) + (xpx)) * 4)
+        mb_render_set_size(VW, VH, 3);
+        // --- V8a: Slider Dark & Light @ 3x ---
+        for (int is_light = 0; is_light <= 1; is_light++) {
+          double bg = is_light ? 1.0 : 28.0 / 255.0;
+          double bg_b = is_light ? 1.0 : 30.0 / 255.0;
+          double sl[4 * MB_INST];
+          rect_at(sl, 0, 0, VW, VH, 0, bg, bg, bg_b, 0);
+          rect_at(sl + MB_INST, 10, 37, 70, 6, 0, 0.0, 136.0 / 255.0, 1.0, 0);
+          rect_at(sl + 2 * MB_INST, 80, 37, 70, 6, 0, 120.0 / 255.0, 120.0 / 255.0, 128.0 / 255.0, 0);
+          rect_at(sl + 3 * MB_INST, 51, 21, 58, 38, 6, 1.0, 1.0, 1.0, -50 - is_light);
+          sl[3 * MB_INST + 4] = 19.0; sl[3 * MB_INST + 6] = 1.0; sl[3 * MB_INST + 7] = -16.0;
+          sl[3 * MB_INST + 11] = 0.0; sl[3 * MB_INST + 12] = 1.0; sl[3 * MB_INST + 13] = 8.0;
+          sl[3 * MB_INST + 15] = 1.0; sl[3 * MB_INST + 21] = 3.0; sl[3 * MB_INST + 22] = 0.0; sl[3 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(sl, 4, bg, bg, bg_b);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          double max_bh = 0.0, peak_dx = 0.0, h_55 = 0.0;
+          double max_gh = 0.0, grey_peak_dx = 0.0, grey_h55 = 0.0;
+          for (int i = 0; i <= 18; i++) {
+            int x_l = 51 * 3 + i;
+            int cnt = 0;
+            for (int ypx = 21 * 3; ypx < 59 * 3; ypx++) {
+              uint8_t *c = A_PX(px, aw, x_l, ypx);
+              if ((int)c[0] - (int)c[2] > 100) cnt++;  // BGRA: B=c[0], R=c[2]
+            }
+            double hpt = cnt / 3.0;
+            double dx_l = (i + 0.5) / 3.0;
+            if (hpt > max_bh) { max_bh = hpt; peak_dx = dx_l; }
+            if (i == 16) h_55 = hpt;
+          }
+          uint8_t *bg_ref = A_PX(px, aw, 80 * 3, 25 * 3);
+          double ref_y = 0.2126 * bg_ref[2] + 0.7152 * bg_ref[1] + 0.0722 * bg_ref[0];
+          for (int i = 0; i <= 18; i++) {
+            int x_r = 109 * 3 - 1 - i;
+            int cnt = 0;
+            for (int ypx = 33 * 3; ypx < 47 * 3; ypx++) {
+              uint8_t *c = A_PX(px, aw, x_r, ypx);
+              double cy = 0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0];
+              if (is_light ? (cy < ref_y - 80.0) : (cy > ref_y + 25.0)) cnt++;
+            }
+            double hpt = cnt / 3.0;
+            double dx_r = (i + 0.5) / 3.0;
+            if (hpt > max_gh) { max_gh = hpt; grey_peak_dx = dx_r; }
+            if (i == 16) grey_h55 = hpt;
+          }
+          uint8_t *c_l = A_PX(px, aw, (int)(79.3 * 3), 40 * 3);
+          uint8_t *c_r = A_PX(px, aw, (int)(80.7 * 3), 40 * 3);
+          uint8_t *c_top = A_PX(px, aw, 60 * 3, 25 * 3);
+          uint8_t *c_bot = A_PX(px, aw, 60 * 3, 55 * 3);
+          // 5-point 3D thickness profile at x = 80 (dy = 0, 0.67, 2.0, 9.0, 24.0pt from y = 21)
+          uint8_t *t0 = A_PX(px, aw, 80 * 3, 21 * 3);
+          uint8_t *t1 = A_PX(px, aw, 80 * 3, 21 * 3 + 2);
+          uint8_t *t2 = A_PX(px, aw, 80 * 3, 23 * 3);
+          uint8_t *t9 = A_PX(px, aw, 80 * 3, 30 * 3);
+          uint8_t *t24 = A_PX(px, aw, 80 * 3, 45 * 3);
+          double y0 = 0.2126 * t0[2] + 0.7152 * t0[1] + 0.0722 * t0[0];
+          double y1 = 0.2126 * t1[2] + 0.7152 * t1[1] + 0.0722 * t1[0];
+          double y2 = 0.2126 * t2[2] + 0.7152 * t2[1] + 0.0722 * t2[0];
+          double y9 = 0.2126 * t9[2] + 0.7152 * t9[1] + 0.0722 * t9[0];
+          double y24 = 0.2126 * t24[2] + 0.7152 * t24[1] + 0.0722 * t24[0];
+          printf("apple_render: v8_slider(%s) blue_peak=%.2f@dx=%.2f blue_h55=%.2f grey_peak=%.2f@dx=%.2f grey_h55=%.2f prof5=(%.0f,%.0f,%.0f,%.0f,%.0f)\n",
+                 is_light ? "light" : "dark", max_bh, peak_dx, h_55, max_gh, grey_peak_dx, grey_h55, y0, y1, y2, y9, y24);
+          CHECK(max_bh >= 10.0 && max_bh <= 12.0);
+          CHECK(peak_dx >= 0.67 && peak_dx <= 1.33);
+          CHECK(h_55 >= 5.6 && h_55 <= 6.4);
+          CHECK(max_gh >= 10.0 && max_gh <= 12.0);
+          CHECK(grey_peak_dx >= 0.67 && grey_peak_dx <= 1.33);
+          CHECK(grey_h55 >= 5.6 && grey_h55 <= 6.4);
+          CHECK((int)c_l[0] - (int)c_l[2] > 100 && (int)c_r[0] - (int)c_r[2] < 20);
+          CHECK((int)c_top[0] - (int)c_top[2] < 20 && (int)c_bot[0] - (int)c_bot[2] < 20);
+          CHECK(y1 > y0 && y2 > y9 && y9 < y24);
+          free(px);
+        }
+        // --- V8a2: Horizontal-stripe vertical monotonicity ---
+        {
+          double st[42 * MB_INST];
+          rect_at(st, 0, 0, VW, VH, 0, 0.0, 0.0, 0.0, 0);
+          for (int i = 0; i < 40; i++) {
+            double v = fmin(1.0, fmax(0.0, (i - 12.0) / 16.0));
+            rect_at(st + (i + 1) * MB_INST, 0, 20 + i, VW, 1, 0, 1.0 - v, 0.0, v, 0);
+          }
+          rect_at(st + 41 * MB_INST, 51, 21, 58, 38, 6, 1.0, 1.0, 1.0, -52);
+          st[41 * MB_INST + 4] = 19.0; st[41 * MB_INST + 6] = 1.0; st[41 * MB_INST + 7] = -16.0;
+          st[41 * MB_INST + 11] = 0.0; st[41 * MB_INST + 12] = 1.0; st[41 * MB_INST + 13] = 8.0;
+          st[41 * MB_INST + 15] = 1.0; st[41 * MB_INST + 21] = 3.0; st[41 * MB_INST + 22] = 0.0; st[41 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(st, 42, 0.0, 0.0, 0.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          int xpx = (int)(51.85 * 3);
+          int prev = -1000;
+          int mono_ok = 1;
+          for (int ypx = 36 * 3; ypx <= 44 * 3; ypx++) {
+            uint8_t *c = A_PX(px, aw, xpx, ypx);
+            int cur = (int)c[0] - (int)c[2];  // BGRA B - R: invariant to achromatic specular rim
+            if (prev > -999 && cur < prev - 6) mono_ok = 0;
+            prev = cur;
+          }
+          CHECK(mono_ok);
+          free(px);
+        }
+        // --- V8b: 124x48pt dropRole=0 magnifier unaffected + Role 0 real zoom (1.18) contact-edge push ---
+        {
+          double mg[3 * MB_INST];
+          rect_at(mg, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+          rect_at(mg + MB_INST, 0, 37, VW, 6, 0, 0.0, 136.0 / 255.0, 1.0, 0);
+          rect_at(mg + 2 * MB_INST, 18, 16, 124, 48, 6, 1.0, 1.0, 1.0, -53);
+          mg[2 * MB_INST + 4] = 24.0; mg[2 * MB_INST + 6] = 1.0; mg[2 * MB_INST + 7] = 0.0;
+          mg[2 * MB_INST + 11] = 0.0; mg[2 * MB_INST + 12] = 1.0; mg[2 * MB_INST + 13] = 8.0;
+          mg[2 * MB_INST + 15] = 1.0; mg[2 * MB_INST + 21] = 3.0; mg[2 * MB_INST + 22] = 0.0; mg[2 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(mg, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          int cnt = 0;
+          for (int ypx = 16 * 3; ypx < 64 * 3; ypx++) {
+            uint8_t *c = A_PX(px, aw, 19 * 3, ypx);
+            if ((int)c[0] - (int)c[2] > 100) cnt++;
+          }
+          printf("apple_render: v8_magnifier_role0 h(1.0)=%.2f\n", cnt / 3.0);
+          CHECK(cnt / 3.0 < 7.0);
+          free(px);
+        }
+        {
+          // Role 0 real zoom (1.18 -> slot 7 = -0.18) contact-edge +0.85pt outward push:
+          // at p.x=51.17, zoom maps sampleBase.x to 80+(51.17-80)/1.18=55.57; +0.85pt outward shifts to 54.72 (<55.2 -> green),
+          // whereas missing outward push stays >=55.57 (red).
+          double zm[3 * MB_INST];
+          rect_at(zm, 0, 0, VW, VH, 0, 1.0, 0.0, 0.0, 0);
+          rect_at(zm + MB_INST, 0, 0, 55.2, VH, 0, 0.0, 1.0, 0.0, 0);
+          rect_at(zm + 2 * MB_INST, 51, 21, 58, 38, 6, 1.0, 1.0, 1.0, -59);
+          zm[2 * MB_INST + 4] = 19.0; zm[2 * MB_INST + 6] = 1.0; zm[2 * MB_INST + 7] = -0.18;
+          zm[2 * MB_INST + 11] = 0.0; zm[2 * MB_INST + 12] = 1.0; zm[2 * MB_INST + 13] = 8.0;
+          zm[2 * MB_INST + 15] = 1.0; zm[2 * MB_INST + 21] = 8.0; zm[2 * MB_INST + 22] = 0.0; zm[2 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(zm, 3, 1.0, 0.0, 0.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          uint8_t *edge = A_PX(px, aw, 51 * 3, 40 * 3);
+          printf("apple_render: v8_role0_zoom118_contact rgb=(%d,%d,%d)\n", edge[2], edge[1], edge[0]);
+          CHECK((int)edge[1] > (int)edge[2] + 40);
+          free(px);
+        }
+        // --- V9a: Switch ON @ 3x ---
+        {
+          double sw[3 * MB_INST];
+          rect_at(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+          rect_at(sw + MB_INST, 40, 26, 63, 28, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+          sw[MB_INST + 4] = 14.0;
+          rect_at(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -54);
+          sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+          sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+          sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          uint8_t *r0 = A_PX(px, aw, 80 * 3, 21 * 3 + 0);
+          uint8_t *r1 = A_PX(px, aw, 80 * 3, 21 * 3 + 1);
+          uint8_t *r2 = A_PX(px, aw, 80 * 3, 21 * 3 + 2);
+          int gr0 = (int)r0[1] - (int)r0[2];
+          int gr1 = (int)r1[1] - (int)r1[2];
+          int gr2 = (int)r2[1] - (int)r2[2];
+          int core_px = 0, first_core_y = -1;
+          for (int ypx = 21 * 3 + 2; ypx < 59 * 3; ypx++) {
+            uint8_t *c = A_PX(px, aw, 80 * 3, ypx);
+            if ((int)c[1] - (int)c[2] > 60) {
+              if (first_core_y < 0) first_core_y = ypx;
+              core_px++;
+            }
+          }
+          double moat_top_pt = first_core_y >= 0 ? (first_core_y - (21 * 3 + 2)) / 3.0 : 0.0;
+          uint8_t *tip = A_PX(px, aw, (int)(111.5 * 3), 40 * 3);
+          int tip_gr = (int)tip[1] - (int)tip[2];
+          printf("apple_render: v9_switch_on_3x tir=(%d,%d,%d) core=%.2f moat_top=%.2f tip_gr=%d\n",
+                 gr0, gr1, gr2, core_px / 3.0, moat_top_pt, tip_gr);
+          CHECK(gr0 < 15 && gr1 > 60 && gr2 < 15);
+          CHECK(core_px / 3.0 >= 20.0 && core_px / 3.0 <= 22.5);
+          CHECK(moat_top_pt >= 6.5);
+          CHECK(tip_gr < 15);
+          free(px);
+        }
+        // --- V9b: Switch OFF @ 3x + right-cap inward horizontal profile (distinguishes dropDisp=0 from paraxialDisp) ---
+        {
+          double sw[4 * MB_INST];
+          rect_at(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+          rect_at(sw + MB_INST, 40, 26, 63, 28, 0, 120.0 / 255.0, 120.0 / 255.0, 128.0 / 255.0, 0);
+          sw[MB_INST + 4] = 14.0;
+          // Blue vertical probe bar at x=[85, 87] inside track: dropDisp=0 leaves x=89.0 neutral; residual paraxialDisp pulls blue into x=89.0.
+          rect_at(sw + 2 * MB_INST, 85.0, 26.0, 2.0, 28.0, 0, 0.0, 136.0 / 255.0, 1.0, 0);
+          rect_at(sw + 3 * MB_INST, 30.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -55);
+          sw[3 * MB_INST + 4] = 19.2; sw[3 * MB_INST + 6] = 1.0; sw[3 * MB_INST + 7] = -32.0;
+          sw[3 * MB_INST + 11] = 0.0; sw[3 * MB_INST + 12] = 1.0; sw[3 * MB_INST + 13] = 9.0;
+          sw[3 * MB_INST + 15] = 1.0; sw[3 * MB_INST + 21] = 9.0; sw[3 * MB_INST + 22] = 0.0; sw[3 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(sw, 4, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          uint8_t *core_c = A_PX(px, aw, 60 * 3, 40 * 3);
+          uint8_t *moat_c = A_PX(px, aw, 60 * 3, 25 * 3);
+          uint8_t *h0 = A_PX(px, aw, 60 * 3, 21 * 3);
+          uint8_t *rm = A_PX(px, aw, 60 * 3, 21 * 3 + 2);
+          uint8_t *rcap = A_PX(px, aw, (int)(88.6 * 3), 40 * 3);
+          uint8_t *rtir = A_PX(px, aw, (int)(89.3 * 3), 40 * 3);
+          int rcap_br = (int)rcap[0] - (int)rcap[2];
+          int rtir_br = (int)rtir[0] - (int)rtir[2];
+          printf("apple_render: v9_switch_off_3x core=%d moat=%d rim=%d h0=%d rcap_br=%d rtir_br=%d\n",
+                 core_c[2], moat_c[2], rm[2], h0[2], rcap_br, rtir_br);
+          CHECK(core_c[2] > moat_c[2] + 15 && rm[2] > h0[2]);
+          CHECK(rcap_br < 20 && rtir_br > 80);
+          free(px);
+        }
+        // --- V9b2: Switch half-press p = 0.5 / 0.6 / 1.0 pinch displacement on 2D color grid ---
+        {
+          double ps[3] = { 0.5, 0.6, 1.0 };
+          int red_rows[3] = { 0, 0, 0 };
+          for (int pi = 0; pi < 3; pi++) {
+            double p = ps[pi];
+            double sw[3 * MB_INST];
+            rect_at(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+            // Bright red horizontal band at y=[20, 27]: outward pinch at y>=27 pulls red downward into the capsule.
+            rect_at(sw + MB_INST, 40, 20, 80, 7, 0, 1.0, 0.0, 0.0, 0);
+            rect_at(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -60 - pi);
+            sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+            sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0 * p; sw[2 * MB_INST + 13] = 9.0 * p;
+            sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0 * p; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+            glass_forget();
+            mb_host_render_dirty(0, 0, VW, VH);
+            mb_render_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+            present_drain();
+            int aw = 0, ah = 0;
+            uint8_t *px = read_texture(canvas, &aw, &ah);
+            for (int ypx = 27 * 3; ypx < 38 * 3; ypx++) {
+              uint8_t *c = A_PX(px, aw, 80 * 3, ypx);
+              if ((int)c[2] - (int)c[0] > 80) red_rows[pi]++;
+            }
+            free(px);
+          }
+          printf("apple_render: v9_switch_half_press red_shift_px=(p0.5:%d, p0.6:%d, p1.0:%d)\n",
+                 red_rows[0], red_rows[1], red_rows[2]);
+          CHECK(red_rows[0] >= 4 && red_rows[1] >= red_rows[0] && red_rows[2] > red_rows[1]);
+        }
+        // --- V9c: Light Segmented Prism @ 3x ---
+        {
+          double sg[2 * MB_INST];
+          rect_at(sg, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(sg + MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -56);
+          sg[MB_INST + 4] = 22.5; sg[MB_INST + 6] = 1.0; sg[MB_INST + 7] = -48.0;
+          sg[MB_INST + 11] = 0.0; sg[MB_INST + 12] = 1.0; sg[MB_INST + 13] = 9.0;
+          sg[MB_INST + 15] = 1.0; sg[MB_INST + 21] = 9.0; sg[MB_INST + 22] = 0.04; sg[MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(sg, 2, 1.0, 1.0, 1.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          uint8_t *bot = A_PX(px, aw, 80 * 3, (int)(61.6 * 3));
+          uint8_t *lft = A_PX(px, aw, (int)(25.9 * 3), 40 * 3);
+          printf("apple_render: v9_seg_light bot=(%d,%d,%d) B-R=%d lft=(%d,%d,%d) R-B=%d\n",
+                 bot[2], bot[1], bot[0], (int)bot[0] - (int)bot[2], lft[2], lft[1], lft[0], (int)lft[2] - (int)lft[0]);
+          CHECK((int)bot[0] - (int)bot[2] >= 10);
+          CHECK((int)lft[2] - (int)lft[0] >= 20);
+          free(px);
+        }
+        // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
+        mb_render_set_size(VW, VH, 2);
+        for (int ph = 0; ph < 2; ph++) {
+          double yoff = ph * 0.25;
+          double sw[3 * MB_INST];
+          rect_at(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+          rect_at(sw + MB_INST, 40, 26 + yoff, 63, 28, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+          sw[MB_INST + 4] = 14.0;
+          rect_at(sw + 2 * MB_INST, 52.9, 21.0 + yoff, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -57 - ph);
+          sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = -32.0;
+          sw[2 * MB_INST + 11] = 0.0; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+          sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = 9.0; sw[2 * MB_INST + 22] = 0.0; sw[2 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+          present_drain();
+          int aw = 0, ah = 0;
+          uint8_t *px = read_texture(canvas, &aw, &ah);
+          int gsum = 0;
+          for (int dy = 0; dy < 3; dy++) {
+            uint8_t *c = A_PX(px, aw, 80 * 2, 21 * 2 + dy);
+            int d = (int)c[1] - (int)c[2];
+            if (d > 0) gsum += d;
+          }
+          printf("apple_render: v9_switch_on_2x phase=%d green_mass=%d\n", ph, gsum);
+          CHECK(gsum > 40);
+          free(px);
+        }
+        #undef A_PX
+        mb_render_set_size(400, 300, 2);
+      }
+
       glass_forget();
       free(last_inst);
       last_inst = NULL;

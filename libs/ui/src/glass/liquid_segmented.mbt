@@ -225,7 +225,7 @@ pub fn liquid_segmented_node(
               let base_grow_x = lerp(0.0, 20.0, p)
               let grow_x = dmin(base_grow_x + rw * (vel_sx - 1.0), ctrl_seg_max_grow_x)
               let lw = dmax(0.0, rw + grow_x)
-              let base_lh = lerp(ih, th + 12.0, p)
+              let base_lh = lerp(ih, th + 13.0, p)
               let lh = dmax(0.0, base_lh * vel_sy)
               {
                 dx: rx + (rw - lw) / 2.0,

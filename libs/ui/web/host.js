@@ -1223,7 +1223,13 @@
           disp = surfaceNormal * (-mag);
         }
       }
-      float lensZoom = (v_p.w < 0.0) ? clamp(1.0 - v_p.w, 1.0, 3.0) : 1.0;
+      int dropRole = (v_p.w <= -8.0) ? int(floor((-v_p.w + 4.0) / 16.0)) : 0;
+      float rawZoomDelta = (v_p.w <= -8.0) ? ((-v_p.w) - float(dropRole) * 16.0) : ((v_p.w < 0.0) ? (-v_p.w) : 0.0);
+      float lensZoom = clamp(1.0 + rawZoomDelta, 1.0, 3.0);
+      bool isRoleSlid = (dropRole == 1);
+      bool isRoleSw = (dropRole == 2);
+      bool isRoleSeg = (dropRole == 3);
+      bool isRoleTab = (dropRole == 4);
       vec2 sampleBase = p;
       if (lensZoom > 1.0001) {
         #if MB_LIQUID_SINGLE
@@ -1234,75 +1240,84 @@
         sampleBase = zoomC + (p - zoomC) / lensZoom;
       }
       float dropHairline = 0.0;
-      float isPlatter = 0.0;
-      float isBarTab = 0.0;
+      float isPlatter = (isRoleSeg || isRoleTab) ? 1.0 : 0.0;
+      float isBarTab = isRoleTab ? 1.0 : 0.0;
+      float pressAmt = 0.0;
       float menAA = 0.0;
-      float menN = 0.0;
       float barIconGate = 0.0;
       vec2 barCaDisp = vec2(0.0, 0.0);
       if (is_drop) {
-        float pressAmt = clamp(v_c2.x, 0.0, 1.0);
+        pressAmt = clamp(v_c2.x, 0.0, 1.0);
         float pinchWeight = smoothstep(4.5, 6.5, rawAmount);
-        isPlatter = smoothstep(39.0, 41.5, v_rect.w);
-        isBarTab = smoothstep(54.0, 58.0, v_rect.w);
         vec2 lensCenter = v_rect.xy + v_rect.zw * 0.5;
         vec2 centered = (p - lensCenter) / max(v_rect.zw, vec2(1.0));
         vec2 absC = abs(centered) * 2.0;
         float bevelX = (bevel > 0.001) ? (1.0 - clamp(inward / bevel, 0.0, 1.0)) : 0.0;
         vec2 paraxialDisp = -surfaceNormal * (bevelX * bevelX * 3.6 * pressAmt);
-        float ax2 = absC.x * absC.x;
-        float ay2 = absC.y * absC.y;
-        float sqDist = sqrt(sqrt(ax2 * ax2 + ay2 * ay2));
-        float pinchRamp = smoothstep(0.0, 1.0, sqDist);
-        float pinchRimGate = smoothstep(1.8, 5.2, inward);
-        float endYScale = 1.0 - 0.32 * smoothstep(0.55, 0.92, absC.x);
-        float compactScale = clamp(v_rect.w / 38.33, 0.70, 1.15);
-        vec2 compactPinch = vec2(centered.x * 0.72, centered.y * endYScale) * pinchRamp * pinchRimGate * (15.5 * compactScale);
-        float cMenBand = smoothstep(0.30, 0.85, inward) * (1.0 - smoothstep(1.15, 1.85, inward));
-        float menLobe = smoothstep(0.15, 0.85, dot(surfaceNormal, normalize(vec2(0.55, 0.83))));
-        vec2 compactMeniscus = -surfaceNormal * (4.8 * cMenBand * menLobe) + surfaceNormal * (0.9 * cMenBand * (1.0 - menLobe));
-        float tipDist = (0.5 - abs(centered.x)) * v_rect.z;
-        float capAbsX = clamp(1.0 - tipDist / max(v_rect.w * 0.6514, 1.0), 0.0, 1.0);
-        float barPinchHoriz = 1.0 - smoothstep(0.30, 0.94, capAbsX);
-        float isSegLens = 1.0 - smoothstep(48.0, 52.0, v_rect.w);
-        float barPinchVert = smoothstep(mix(0.42, 0.28, isSegLens), mix(0.76, 0.70, isSegLens), absC.y)
-                           * smoothstep(1.35, 5.2, inward);
-        float barPinchPx = mix(0.245, 0.38, isSegLens) * v_rect.w * 0.40;
-        vec2 platterPinch = vec2(0.0, centered.y * barPinchHoriz * barPinchVert * barPinchPx);
-        float endCapX = smoothstep(0.32, 0.70, capAbsX);
-        float pMenBand = smoothstep(0.22, 0.55, inward) * (1.0 - smoothstep(0.95, 1.35, inward));
-        menAA = max(cMenBand, pMenBand) * pressAmt * pinchWeight;
-        menN = cMenBand * pressAmt * pinchWeight;
-        if (isBarTab > 0.01) {
-          float iconBandY = 1.0 - smoothstep(0.66, 0.79, absC.y);
-          barIconGate = iconBandY * endCapX * pressAmt * pinchWeight;
-          float iconBevelX = smoothstep(0.45, 1.15, inward) * (1.0 - smoothstep(2.60, 9.40, inward));
-          float iconBevelY = smoothstep(0.45, 1.25, inward) * (1.0 - smoothstep(2.20, 9.00, inward));
-          float signX = (centered.x >= 0.0) ? 1.0 : -1.0;
-          barCaDisp = vec2(-signX * 5.2 * iconBevelX, -centered.y * 2.0 * 4.8 * iconBevelY) * barIconGate;
+        dropHairline = (1.0 - smoothstep(0.18, 0.62, inward)) * pressAmt;
+        vec2 iosPinch = vec2(0.0, 0.0);
+        vec2 dropDisp = paraxialDisp;
+        if (isRoleSw) {
+          float ax2 = absC.x * absC.x;
+          float ay2 = absC.y * absC.y;
+          float sqDist = sqrt(sqrt(ax2 * ax2 + ay2 * ay2));
+          float pinchRamp = smoothstep(0.0, 1.0, sqDist);
+          float pinchRimGate = smoothstep(1.35, 3.8, inward);
+          float endYScale = 1.0 - 0.24 * smoothstep(0.55, 0.92, absC.x);
+          float compactScale = clamp(v_rect.w / 38.4, 0.70, 1.15);
+          vec2 compactPinch = vec2(centered.x * 0.85, centered.y * endYScale) * pinchRamp * pinchRimGate * (21.0 * compactScale);
+          iosPinch = compactPinch * pressAmt * (1.0 - dropHairline);
+          dropDisp = vec2(0.0, 0.0);
+        } else if (isRoleSlid) {
+          float capDx = (0.5 - abs(centered.x)) * v_rect.z;
+          float slFlare = exp(-max(capDx - 0.85, 0.0) / 1.85)
+                        * (1.0 - smoothstep(4.4, 5.8, capDx))
+                        * mix(0.65, 1.0, smoothstep(0.0, 0.65, capDx));
+          float slK = 1.0 - 0.50 * slFlare * pressAmt;
+          float dyMid = p.y - lensCenter.y;
+          float wY = 1.0 - smoothstep(6.5, 13.5, abs(dyMid));
+          dropDisp = vec2(0.0, -dyMid * (1.0 - slK) * wY);
+          menAA = max(menAA, 0.55 * slFlare * pressAmt);
+        } else if (isPlatter > 0.5) {
+          float tipDist = (0.5 - abs(centered.x)) * v_rect.z;
+          float capAbsX = clamp(1.0 - tipDist / max(v_rect.w * 0.6514, 1.0), 0.0, 1.0);
+          float barPinchHoriz = 1.0 - smoothstep(0.30, 0.94, capAbsX);
+          float barPinchVert = smoothstep(0.28, 0.70, absC.y) * smoothstep(1.35, 5.2, inward);
+          float barPinchPx = 0.80 * v_rect.w * 0.42;
+          vec2 platterPinch = vec2(0.0, centered.y * barPinchHoriz * barPinchVert * barPinchPx);
+          float endCapX = smoothstep(0.32, 0.70, capAbsX);
+          float pMenBand = smoothstep(0.22, 0.55, inward) * (1.0 - smoothstep(0.95, 1.35, inward));
+          menAA = pMenBand * pressAmt * pinchWeight;
+          if (isRoleTab) {
+            float iconBandY = 1.0 - smoothstep(0.66, 0.79, absC.y);
+            barIconGate = iconBandY * endCapX * pressAmt * pinchWeight;
+            float iconBevelX = smoothstep(0.45, 1.15, inward) * (1.0 - smoothstep(2.60, 9.40, inward));
+            float iconBevelY = smoothstep(0.45, 1.25, inward) * (1.0 - smoothstep(2.20, 9.00, inward));
+            float signX = (centered.x >= 0.0) ? 1.0 : -1.0;
+            barCaDisp = vec2(-signX * 5.2 * iconBevelX, -centered.y * 2.0 * 4.8 * iconBevelY) * barIconGate;
+          }
+          vec2 pMenReach = vec2(3.9 + 1.2 * endCapX, 3.9 * endCapX);
+          vec2 platterMeniscus = -surfaceNormal * pMenReach * pMenBand;
+          float capPinchBand = smoothstep(1.35, 4.40, inward) * (1.0 - smoothstep(5.40, 7.80, inward));
+          vec2 capOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.45) * (5.5 * capPinchBand * endCapX);
+          vec2 barCapOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.62) * (2.6 * capPinchBand * endCapX);
+          float tabPinchHoriz = 1.0 - smoothstep(0.20, 0.96, capAbsX);
+          float tabPinchVert = smoothstep(0.42, 0.74, absC.y) * smoothstep(1.35, 5.2, inward);
+          vec2 tabPinch = vec2(0.0, centered.y * tabPinchHoriz * tabPinchVert * (0.245 * v_rect.w) * 0.28);
+          vec2 widePinch = isRoleTab ? tabPinch : platterPinch;
+          iosPinch = widePinch * (pressAmt * pinchWeight) * (1.0 - dropHairline);
+          vec2 wideMen = isRoleTab ? ((platterMeniscus + barCapOutward) * (1.0 - dropHairline)) : (platterMeniscus + capOutward);
+          dropDisp = mix(paraxialDisp, wideMen, pressAmt * pinchWeight);
+        } else {
+          dropDisp = mix(dropDisp, surfaceNormal * 0.85, dropHairline);
         }
-        vec2 pMenReach = vec2(3.9 + 1.2 * endCapX, 3.9 * endCapX);
-        vec2 platterMeniscus = -surfaceNormal * pMenReach * pMenBand;
-        float capPinchBand = smoothstep(1.35, 4.40, inward) * (1.0 - smoothstep(5.40, 7.80, inward));
-        vec2 capOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.45) * (2.8 * capPinchBand * endCapX);
-        vec2 barCapOutward = vec2(surfaceNormal.x, surfaceNormal.y * 0.62) * (2.6 * capPinchBand * endCapX);
-        float tabPinchHoriz = 1.0 - smoothstep(0.20, 0.96, capAbsX);
-        float tabPinchVert = smoothstep(0.42, 0.74, absC.y) * smoothstep(1.35, 5.2, inward);
-        vec2 tabPinch = vec2(0.0, centered.y * tabPinchHoriz * tabPinchVert * (0.245 * v_rect.w) * 0.28);
-        dropHairline = (1.0 - smoothstep(0.30, 0.82, inward)) * pressAmt;
-        vec2 widePinch = mix(platterPinch, tabPinch, isBarTab);
-        vec2 iosPinch = mix(compactPinch, widePinch, isPlatter) * (pressAmt * pinchWeight) * (1.0 - dropHairline);
-        vec2 wideMen = mix(platterMeniscus + capOutward, (platterMeniscus + barCapOutward) * (1.0 - dropHairline), isBarTab);
-        vec2 iosMen = mix(compactMeniscus, wideMen, isPlatter);
-        vec2 dropDisp = mix(paraxialDisp, iosMen, pressAmt * pinchWeight);
-        dropDisp = mix(dropDisp, surfaceNormal * 0.85, dropHairline * (1.0 - isPlatter));
         float dLen = length(dropDisp);
         if (dLen > halfMinor) dropDisp *= (halfMinor / dLen);
         sampleBase = sampleBase + iosPinch * droplet;
         disp = mix(disp, dropDisp, droplet);
       }
       vec3 refractColor;
-      if (inward >= bevel || abs(v_pad.z) * amount * u_scale <= 0.25) {
+      if (inward >= bevel || (isRoleSeg && inward >= 2.2) || abs(v_pad.z) * amount * u_scale <= 0.25) {
         refractColor = backdrop(sampleBase + disp);
       } else {
         float ds = v_pad.z * 0.5;
@@ -1320,13 +1335,20 @@
                      + backdrop(mc - nOff + tOff) + backdrop(mc - nOff - tOff)) * 0.25;
         refractColor = mix(refractColor, menAvg, menAA);
       }
-      if (menN > 0.001) {
-        float menY = luma(refractColor);
-        float outerBgY = luma(backdrop(p + surfaceNormal * 3.0));
-        float lightCard = smoothstep(0.35, 0.65, outerBgY);
-        refractColor = mix(refractColor, mix(vec3(menY), vec3(1.0), 0.45 * lightCard), 0.60 * menN);
+      if (is_drop && isRoleSw && pressAmt > 0.001) {
+        float capArc = smoothstep(0.20, 0.70, abs(surfaceNormal.x));
+        float tirLo = 0.333333;
+        float tirHi = mix(0.666667, 1.05, capArc);
+        float pxPt = 1.0 / max(u_scale, 1.0);
+        float tirCov = clamp(min(inward + 0.5 * pxPt, tirHi) - max(inward - 0.5 * pxPt, tirLo), 0.0, pxPt) / pxPt;
+        float tirW = tirCov * pressAmt;
+        if (tirW > 0.001) {
+          vec2 tirSamplePos = p - surfaceNormal * (5.4 * mix(0.65, 1.0, abs(surfaceNormal.y)));
+          vec3 tirCol = backdrop(tirSamplePos);
+          refractColor = mix(refractColor, tirCol, tirW);
+        }
       }
-      if (isBarTab > 0.5 && barIconGate > 0.01 && dropHairline < 0.99) {
+      if (isRoleTab && barIconGate > 0.01 && dropHairline < 0.99) {
         float bevelGate = barIconGate * smoothstep(0.45, 1.15, inward) * (1.0 - dropHairline);
         if (bevelGate > 0.001) {
           float refX = (p.x >= v_rect.x + v_rect.z * 0.5) ? 0.26 : 0.74;
@@ -1570,7 +1592,8 @@
           float opp = max(-along, 0.0);
           float lit2 = lit * lit;
           float opp2 = opp * opp;
-          float regLobe = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.03;
+          float diag = abs(rn.x * rn.y) * 2.0;
+          float regLobe = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.10 * (diag * diag * diag) + 0.03;
           float regInset = max(0.0, inward - 0.30);
           float regCore = exp(-regInset / 0.55);
           float regTail = exp(-inward / 2.0);
@@ -1586,51 +1609,55 @@
         }
       }
       if (is_drop) {
-        float pressAmt = clamp(v_c2.x, 0.0, 1.0);
         float backdropLuma = clamp(Y, 0.0, 1.0);
-        float tt = (inward - 4.0) / 3.0;
-        float topTrough = exp(-tt * tt)
-                        * smoothstep(0.3, 0.85, -surfaceNormal.y)
-                        * smoothstep(1.5, 3.5, inward);
-        float liftGain = mix(mix(0.105, 0.085, isPlatter), 0.035, isBarTab);
-        float lensLift = liftGain * (1.0 - 0.45 * topTrough) * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);
+        float brightBg = smoothstep(0.35, 0.75, backdropLuma);
+        float liftGain = isRoleTab ? 0.025 : (isRoleSeg ? 0.008 : 0.101);
+        float lensLift = liftGain * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);
         result = clamp(result + vec3(lensLift), 0.0, 1.0);
-        float keyShade = 0.025 * topTrough * backdropLuma * pressAmt * (1.0 - dropHairline);
-        result = max(result - vec3(keyShade), vec3(0.0));
-        float dInnerSh = sd_rr(p - vec2(0.0, 7.0), v_rect, s_rr);
-        float innerShMask = smoothstep(-3.0, 3.0, dInnerSh) * smoothstep(0.85, 1.65, inward);
-        result *= (1.0 - 0.085 * innerShMask * pressAmt);
-        if (pressAmt > 0.001 && inward < 10.0) {
-          vec2 ld = vec2(0.0, 1.0);
-          float along = dot(surfaceNormal, ld);
+        float domeScale = clamp(v_rect.w / 38.0, 0.85, 1.35);
+        float sizeGate = smoothstep(28.0, 36.0, v_rect.w);
+        float upperFace = smoothstep(0.0, 0.75, -surfaceNormal.y);
+        float qDome = (inward - 9.2 * domeScale) / (5.6 * domeScale);
+        float domeEnv = exp(-qDome * qDome) * upperFace * smoothstep(0.65, 1.85, inward);
+        float domeStr = mix(0.196, 0.086, brightBg) * sizeGate;
+        result *= (1.0 - domeStr * domeEnv * pressAmt);
+        float lightSh = smoothstep(0.75, 1.80, inward) * (1.0 - smoothstep(4.5, 8.5, inward))
+                      * upperFace * brightBg * sizeGate;
+        result *= (1.0 - 0.032 * lightSh * pressAmt);
+        if (pressAmt > 0.001 && inward < 12.0) {
+          float along = surfaceNormal.y;
           float lit = max(along, 0.0);
           float opp = max(-along, 0.0);
-          float lobe = 0.84 * lit * lit * lit + 1.02 * opp * opp * opp;
-          float insetPt = max(0.0, inward - 0.75);
-          float core = exp(-insetPt / 0.50);
-          float tail = exp(-insetPt / 2.67);
-          float bodyLuma = clamp(luma(result), 0.0, 1.0);
-          float ease = pow(max(1.0 - bodyLuma, 0.0), 0.30);
-          float rimLight = pressAmt * 1.32 * lobe * ease * (0.175 * core + 0.055 * tail) * (1.0 - dropHairline);
+          float lobe = 1.0 * (lit * lit * lit) + 1.0 * (opp * opp * opp) + 0.14;
+          float insetPt = max(0.0, inward - 0.60);
+          float core = exp(-insetPt / 0.48);
+          float shoulder = exp(-insetPt / 1.8);
+          float ease = pow(max(1.0 - clamp(luma(result), 0.0, 1.0), 0.0), 0.30);
+          float rimGain = isRoleSeg ? 0.85 : (isRoleTab ? 0.75 : 1.0);
+          float rimLight = pressAmt * rimGain * lobe * ease * (0.205 * core + 0.025 * shoulder) * (1.0 - dropHairline);
           result = mix(result, vec3(1.0), clamp(rimLight, 0.0, 1.0));
         }
-        if (isPlatter > 0.01 && pressAmt > 0.01) {
-          float prismBand = smoothstep(0.55, 1.05, inward) * (1.0 - smoothstep(1.30, 2.00, inward)) * (1.0 - dropHairline) * isPlatter * pressAmt;
+        if (isRoleSeg && pressAmt > 0.01) {
+          float prismBand = smoothstep(0.40, 0.80, inward) * (1.0 - smoothstep(1.15, 1.85, inward))
+                          * (1.0 - dropHairline) * pressAmt;
           if (prismBand > 0.001) {
-            float prismPhase = abs(surfaceNormal.y) * 0.45 + surfaceNormal.x * 0.35 + 0.52;
-            vec3 sp = 0.5 + 0.5 * cos(6.2831853 * (prismPhase * 1.2 + vec3(0.0, 0.3333, 0.6667)));
-            float spY = luma(sp);
-            result = clamp(result + (sp - vec3(spY)) * (0.080 * prismBand), 0.0, 1.0);
+            float hW = smoothstep(0.35, 0.85, abs(surfaceNormal.x));
+            vec3 rawD = mix(vec3(-0.045, 0.015, 0.030), vec3(0.075, -0.015, -0.060), hW);
+            vec3 darkPrism = (rawD - vec3(luma(rawD))) * 0.60 * prismBand;
+            vec3 lightPrism = mix(vec3(-0.068, 0.0, 0.0), vec3(-0.055, -0.148, -0.188), hW) * prismBand;
+            vec3 pD = mix(darkPrism, lightPrism, brightBg);
+            float sP = 1.0;
+            if (pD.r > 0.0001) sP = min(sP, (1.0 - result.r) / pD.r); else if (pD.r < -0.0001) sP = min(sP, result.r / (-pD.r));
+            if (pD.g > 0.0001) sP = min(sP, (1.0 - result.g) / pD.g); else if (pD.g < -0.0001) sP = min(sP, result.g / (-pD.g));
+            if (pD.b > 0.0001) sP = min(sP, (1.0 - result.b) / pD.b); else if (pD.b < -0.0001) sP = min(sP, result.b / (-pD.b));
+            result = clamp(result + pD * clamp(sP, 0.0, 1.0), 0.0, 1.0);
           }
         }
         if (dropHairline > 0.001) {
-          vec2 ld = vec2(0.0, 1.0);
-          float dl = dot(surfaceNormal, ld);
-          float across = pow(max(1.0 - dl * dl, 0.0), 1.75);
-          float brightBg = smoothstep(0.35, 0.70, backdropLuma);
-          float effRimShade = mix(0.38, 0.82, brightBg);
-          float effShadeEnds = mix(0.18, 0.68, brightBg);
-          float shade = effRimShade * 0.28 * mix(effShadeEnds, 1.0, across) * pressAmt;
+          float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.75);
+          float shadeTB = mix(0.047, 0.161, brightBg);
+          float shadeEnds = mix(0.063, 0.239, brightBg);
+          float shade = mix(shadeTB, shadeEnds, across) * pressAmt;
           result = max(result - vec3(shade * dropHairline), vec3(0.0));
         }
       }
@@ -2332,7 +2359,7 @@
         s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
       }
       const s = adSlots[sid];
-      if (s.updatedSerial === serial) continue;
+      if (!isNew && s.updatedSerial === serial) continue;
       if (isNew || backdropChanged || s.settleLeft > 0) {
         if (isNew) s.settleLeft = 0;
         else if (backdropChanged) s.settleLeft = AD_SETTLE_SEC;

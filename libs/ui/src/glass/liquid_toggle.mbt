@@ -25,6 +25,7 @@ fn toggle_glass(p : Double) -> @paint.Glass {
     merge=0.0,
     adaptive=false,
     zoom=1.0,
+    droplet_role=2,
   )
 }
 
@@ -48,7 +49,7 @@ pub fn liquid_toggle_node(
 ) -> @view.View {
   let pad = toggle_pad
   let th = dmax(4.0, height - 2.0 * pad)
-  let tw = width * 40.0 / 64.0
+  let tw = if width == toggle_w { thumb_w } else { width * thumb_w / toggle_w }
   let drag_dist = dmax(1.0, width - 2.0 * pad - tw)
   let was_on = @signals.untracked(on)
   let dd = match drag {
@@ -158,9 +159,11 @@ pub fn liquid_toggle_node(
     v.box(fn(thumb) {
       let thumb_shape = fn(n : @view.View, with_velocity : Bool) -> @view.GroundShape {
         let p = clamp(lens(n), 0.0, 1.0)
-        let (sx, sy) = if no_lens() { (1.0, 1.0) } else { dd.jelly(n, 50.0) }
-        let base_w = tw * sx * lerp(1.0, thumb_held_scale_x / thumb_held_scale, p)
-        let base_h = th * sy
+        let v = if no_lens() { 0.0 } else { dd.velocity(n) / 50.0 }
+        let vel_sx = 1.0 / (1.0 - clamp(v * 0.75, -0.2, 0.2))
+        let vel_sy = 1.0 - clamp(v * 0.25, -0.2, 0.2)
+        let base_w = tw * lerp(1.0, thumb_held_scale, p) * vel_sx
+        let base_h = th * lerp(1.0, thumb_held_scale, p) * vel_sy
         let x = lerp(pad, pad + drag_dist, dd.value(n))
         let (w, h) = if with_velocity && !@ui.reduced_motion() {
           let (_, speed) = dd.value.motion(n)

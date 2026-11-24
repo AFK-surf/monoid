@@ -46,6 +46,9 @@ pub(all) struct Glass {
   layer : Int
   // physical edge-gap break threshold (pt) for same-layer liquid fusion (<= 0 defaults to merge * 0.25)
   break_gap : Double
+  // built-in zero-blur droplet lens role (0: default/loupe, 1: slider, 2: switch, 3: segmented, 4: tab lens);
+  // never scaled by `at_strength` or `effective_glass` frost.
+  droplet_role : Int
 }
 
 ///|
@@ -86,6 +89,7 @@ pub fn Glass::frosted(
     progressive,
     layer: 0,
     break_gap: 0.0,
+    droplet_role: 0,
   }
 }
 
@@ -119,6 +123,7 @@ pub fn Glass::liquid(
   strength? : Double = 1.0,
   layer? : Int = 0,
   break_gap? : Double = 0.0,
+  droplet_role? : Int = 0,
 ) -> Glass {
   {
     blur,
@@ -143,6 +148,7 @@ pub fn Glass::liquid(
     progressive: false,
     layer,
     break_gap,
+    droplet_role,
   }
 }
 
