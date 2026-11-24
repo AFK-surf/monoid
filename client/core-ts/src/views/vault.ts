@@ -333,7 +333,7 @@ function lockUnread(inner: Inner, ws: string): boolean {
   if (safeMode(inner, ws)) return false;
   const sub = inner.workspaces.owner(ws);
   const personal = inner.adb.personal();
-  return sub !== null && typeof personal.loaded === "function" && !personal.loaded(sub);
+  return sub !== null && typeof personal.loaded === "function" && typeof personal.whenLoaded === "function" && !personal.loaded(sub);
 }
 function personalLockOf(inner: Inner, ws: string): Checked | CoreError {
   const sub = inner.workspaces.owner(ws);
@@ -1268,8 +1268,12 @@ function owner(inner: Inner): Owner {
           for (const otherWs of crossWorkspaces) seen.read(`vault ${otherWs}`);
         }
       }
-      // (no value yet while the lock it goes by is not read from the device: `lockUnread`)
+      // (no value yet while the lock it goes by is not read from the device: `lockUnread`; nor, with a browse asked,
+      // while that of a workspace it would browse is not: it would say there is nothing to browse)
       if (lockUnread(inner, ws)) return undefined;
+      if (t.topic === "vaults" && Object.values(held(inner, ws).requests).some((r) => r.status === "pending" && r.browse !== undefined)) {
+        for (const [otherWs] of inner.workspaces.owned()) if (otherWs !== ws && lockUnread(inner, otherWs)) return undefined;
+      }
       return { ok: t.topic === "vaults" ? vaultsView(inner, ws) : t.topic === "vaultUses" ? usesView(inner, ws, String(t.vault), String(t.item)) : itemsView(inner, ws, String(t.vault)) };
     },
   };
@@ -3749,6 +3753,8 @@ class Vaults {
     return Effect.gen(function* () {
       const inner = self.#inner;
       const { signer } = yield* self.#ready();
+      // (the lock of each workspace it may browse read from the device first: unread, it names none of their devices)
+      for (const [otherWs] of inner.workspaces.owned()) if (otherWs !== self.ws) yield* lockRead(inner, otherWs);
       // (read now, not as shown: the candidates shown may be by the one an earlier run read, `boxShown`)
       const kept = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
       const myBox = kept ? new TextDecoder().decode(kept) : null;
@@ -3819,6 +3825,8 @@ class Vaults {
       const wsA = r.cross!.workspace;
       if (wsA === self.ws) return yield* fail("vault_invalid", t("core-misc.vault.unknown"));
       const { signer } = yield* self.#ready();
+      // (the source workspace's lock read from the device first, as this one's in `#ready`)
+      yield* lockRead(inner, wsA);
       const otherOwner = inner.workspaces.owner(wsA);
       if (otherOwner === null) return yield* fail("vault_not_owner", t("core-misc.vault.notOwner"));
       const lockA = lockOf(inner, wsA);
