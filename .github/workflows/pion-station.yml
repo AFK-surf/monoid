@@ -731,25 +731,31 @@ jobs:
 
           LOC_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap station/test/mb-live-locator.test.ts)"
           printf '%s\n' "$LOC_OUT"
-          printf '%s\n' "$LOC_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$LOC_OUT" | grep -qE '^# tests [1-9][0-9]*$'
           printf '%s\n' "$LOC_OUT" | grep -qE '^# skipped 0$'
 
           # Run ONLY the live-locator and search idle lifecycle cases from mb-idle-programs.test.ts (never feed --data to Pion)
           IDLE_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap --test-name-pattern "live locator's program goes when trimmed|a search starts its program when asked" station/test/mb-idle-programs.test.ts)"
           printf '%s\n' "$IDLE_OUT"
-          printf '%s\n' "$IDLE_OUT" | grep -qE '^# tests [2-9]'
+          printf '%s\n' "$IDLE_OUT" | grep -qE '^# tests ([2-9]|[1-9][0-9]+)$'
           printf '%s\n' "$IDLE_OUT" | grep -qE '^# skipped 0$'
 
           SRCH_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap station/test/mb-search.test.ts station/test/mb-search-history.test.ts)"
           printf '%s\n' "$SRCH_OUT"
-          printf '%s\n' "$SRCH_OUT" | grep -qE '^# tests [2-9]'
+          printf '%s\n' "$SRCH_OUT" | grep -qE '^# tests ([2-9]|[1-9][0-9]+)$'
           printf '%s\n' "$SRCH_OUT" | grep -qE '^# skipped 0$'
 
-          SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
-            node --test --test-reporter=tap station/test/builders-locate-pion-switch.test.ts station/test/builders-search-pion-switch.test.ts)"
-          printf '%s\n' "$SW_OUT"
-          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
-          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
+          SW_LOC_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-locate-pion-switch.test.ts)"
+          printf '%s\n' "$SW_LOC_OUT"
+          printf '%s\n' "$SW_LOC_OUT" | grep -qE '^# tests [1-9][0-9]*$'
+          printf '%s\n' "$SW_LOC_OUT" | grep -qE '^# skipped 0$'
+
+          SW_SRCH_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-search-pion-switch.test.ts)"
+          printf '%s\n' "$SW_SRCH_OUT"
+          printf '%s\n' "$SW_SRCH_OUT" | grep -qE '^# tests [1-9][0-9]*$'
+          printf '%s\n' "$SW_SRCH_OUT" | grep -qE '^# skipped 0$'
 
   gate-w6-usage:
     runs-on: ubuntu-24.04

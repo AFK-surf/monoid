@@ -11,6 +11,7 @@ fn make_entry(
   at : Option[String],
   kind : String,
   text : String,
+  text_units : Option[Array[Int]] = None,
   tool : Option[String] = None,
   ok : Option[Bool] = None,
   call_id : Option[String] = None,
@@ -22,6 +23,7 @@ fn make_entry(
     at: at,
     kind: kind,
     text: text,
+    text_units: text_units,
     tool: tool,
     ok: ok,
     call_id: call_id,
@@ -672,11 +674,12 @@ fn claude_entry(r : js_json::JValue, out : Array[Entry]) -> Unit {
   let content = jv_get(jv_get(rj, "message"), "content")
   match content {
     Some(js_json::JValue::Str(u)) => {
-      let text = js_json::sanitize_str(u)
+      let cu = clip_units(u)
+      let text = js_json::sanitize_str(cu)
       if kind == "user" && claude_command(text) {
         return
       }
-      out.push(make_entry(at, kind, clip(text), subagent=subagent))
+      out.push(make_entry(at, kind, text, text_units=Some(cu), subagent=subagent))
       return
     }
     Some(js_json::JValue::Arr(blocks)) => {
@@ -684,14 +687,24 @@ fn claude_entry(r : js_json::JValue, out : Array[Entry]) -> Unit {
         let b = Some(blocks[i])
         match jv_string_of(jv_get(b, "type")) {
           Some("text") => {
-            match jv_string_of(jv_get(b, "text")) {
-              Some(t) => if t != "" { out.push(make_entry(at, kind, clip(t), subagent=subagent)) }
+            match jv_units_of(jv_get(b, "text")) {
+              Some(u) => {
+                if u.length() > 0 {
+                  let cu = clip_units(u)
+                  out.push(make_entry(at, kind, js_json::sanitize_str(cu), text_units=Some(cu), subagent=subagent))
+                }
+              }
               None => ()
             }
           }
           Some("thinking") => {
-            match jv_string_of(jv_get(b, "thinking")) {
-              Some(t) => if t != "" { out.push(make_entry(at, "thinking", clip(t), subagent=subagent)) }
+            match jv_units_of(jv_get(b, "thinking")) {
+              Some(u) => {
+                if u.length() > 0 {
+                  let cu = clip_units(u)
+                  out.push(make_entry(at, "thinking", js_json::sanitize_str(cu), text_units=Some(cu), subagent=subagent))
+                }
+              }
               None => ()
             }
           }

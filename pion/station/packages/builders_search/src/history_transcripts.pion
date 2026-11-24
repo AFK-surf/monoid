@@ -1044,3 +1044,39 @@ pub fn tail_read(
     ]),
   )
 }
+
+/// Internal smoke entrypoint (`--smoke-history-marks`) for cross-engine `transcript-marks/<sha1>.json`
+/// interoperability testing against real MoonBit `stillfail-reader`.
+pub fn run_smoke_history_marks(data : String, path : String, runtime : String, sep : String) -> Int {
+  let shell_dir = nodepath::join(sep, [data, "shell"])
+  if !host_shim::start(shell_dir, true) {
+    let _ = host_shim::write_stderr_line("the shell did not start")
+    return 1
+  }
+  let queue = builders_core::LineQueue::new()
+  let client = builders_core::ShellClient::from_queue(queue)
+  let cache = TranscriptCache::new()
+  let mdir = marks_dir(sep, data)
+  let rc = match marked_of(cache, client, sep, runtime, path, Some(mdir)) {
+    Ok(m) => {
+      let from = if m.state.count > 5 { (m.state.count - 5).to_double() } else { 0.0 }
+      let to = m.state.count.to_double()
+      let ej = entries_of(cache, client, runtime, [m], from, to, false)
+      let out = base_codec::json_obj([
+        ("markFile", base_codec::json_str(mark_file_of(sep, mdir, path))),
+        ("count", base_codec::json_int(m.state.count)),
+        ("marked", marked_json(m)),
+        ("state", state_json(m.state)),
+        ("tailEntries", base_codec::json_arr(ej)),
+      ])
+      let _ = host_shim::write_stdout_line(sql_db::stringify_json(out))
+      0
+    }
+    Err(e) => {
+      let _ = host_shim::write_stderr_line(e)
+      1
+    }
+  }
+  host_shim::stop()
+  rc
+}

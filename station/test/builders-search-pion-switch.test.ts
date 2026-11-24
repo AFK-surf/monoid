@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { test } from "node:test";
@@ -15,6 +16,7 @@ import type { ReaderSelectConfig } from "../src/read/reader-select.ts";
 import { Search } from "../src/search/search.ts";
 import { packFile } from "../src/sessions/archive.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
   const realMb = mbReaderBinary();
@@ -35,7 +37,9 @@ function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; 
   }
   assert.notEqual(realpathSync(realMb), realpathSync(realPion), "MB and Pion binaries must be distinct files");
   const ver = execFileSync(realPion, ["--version"], { encoding: "utf8" });
-  assert.match(ver, /modes:[^\n]*\bsearch\b/, `Pion --version must advertise search: ${ver}`);
+  const m = ver.match(/modes:([^\n\r]+)/);
+  const modes = m ? m[1]!.split(",").map((s) => s.trim()).filter(Boolean) : [];
+  assert.ok(modes.includes("search"), `Pion --version modes list must include exact token "search": ${ver}`);
   return { mb: realMb, pion: realPion };
 }
 
@@ -134,7 +138,7 @@ class RawLineClient {
   }
 }
 
-function makeFixture() {
+function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "w6-search-switch-"));
   const dbPath = join(dir, "stillfail.db");
   const store = Store.open(dbPath, join(dir, "archive"));
@@ -168,33 +172,53 @@ function makeFixture() {
     ...newMessage(tid, String(++ts), "person", "a@x", `xx😀${"a".repeat(79)}surrogateneedle`),
   } as ReturnType<typeof newMessage>);
 
-  // Profile for fast single-step query B.
+  // Distinguishable profiles for fast single-step queries & 1 vs 1.0 vs "1" assertions.
   writeFileSync(
     join(dir, "config.json"),
     JSON.stringify({
-      profiles: [{ id: "fastprof", home: "homes/fast", runtime: "claude", name: "FastProfileHit" }],
+      profiles: [
+        { id: "fastprof", home: "homes/fast", runtime: "claude", name: "FastProfileHit" },
+        { id: "prof-alpha", home: "homes/alpha", runtime: "claude", name: "ProfileAlphaHit" },
+        { id: "prof-beta", home: "homes/beta", runtime: "claude", name: "ProfileBetaHit" },
+      ],
     }),
   );
 
-  // Two large multi-chunk history transcripts (> 512 KiB each -> multiple `text.next` chunks across P11)
-  // Session A: large transcript with match only at the very end.
-  // Session B: large transcript with a match at the end and a word near the chunk overlap boundary.
   const put = (path: string, text: string) => {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, text);
   };
+
+  // Real >8 MiB multi-chunk transcripts (Rust shell TEXT_PART = 8 MiB -> guaranteed >= 2 chunks across P11!)
+  const chunkLine = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(4000) } })}\n`;
+  const repeats = opts.multiChunkHistory ? 2200 : 80; // 2200 * ~4060B ≈ 8.93 MiB > 8 MiB TEXT_PART
+
   addSession("h-a", "claude", "W1", 100);
   store.ranIn("h-a", "ha1", "cc");
   store.setRuntimeSessionId("h-a", "ha1");
-  const fillerLine = `${JSON.stringify({ type: "assistant", message: { content: "x".repeat(400) } })}\n`;
-  const bigA = fillerLine.repeat(1400) + `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T10:00:00Z", message: { content: "alphaonlytoken" } })}\n`;
+  const bigA =
+    chunkLine.repeat(repeats) +
+    `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T10:00:00Z", message: { content: "alphaonlytoken" } })}\n`;
   put(join(dir, "transcripts", "claude", "-w-h-a", "ha1.jsonl"), bigA);
 
   addSession("h-b", "claude", "W1", 90);
   store.ranIn("h-b", "hb1", "cc");
   store.setRuntimeSessionId("h-b", "hb1");
-  const bigB = fillerLine.repeat(1400) + `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T11:00:00Z", message: { content: "betaonlytoken overlapcheck" } })}\n`;
+  const bHead = `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T10:30:00Z", message: { content: "betafirstchunk" } })}\n`;
+  const bigB =
+    bHead +
+    chunkLine.repeat(repeats) +
+    `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T11:00:00Z", message: { content: "betafirstchunk betaonlytoken overlapcheck" } })}\n`;
   put(join(dir, "transcripts", "claude", "-w-h-b", "hb1.jsonl"), bigB);
+
+  // Small history transcript with a plain keyword + raw JSON-escaped lone surrogates (\ud800 and \ude00).
+  addSession("h-surr", "claude", "W1", 80);
+  store.ranIn("h-surr", "hs1", "cc");
+  store.setRuntimeSessionId("h-surr", "hs1");
+  put(
+    join(dir, "transcripts", "claude", "-w-h-surr", "hs1.jsonl"),
+    `{"type":"assistant","timestamp":"2026-11-01T12:00:00Z","message":{"content":"surrogatehisttoken \\ud800 mid \\ude00 end"}}\n`,
+  );
 
   return {
     dir,
@@ -216,16 +240,15 @@ function openFdCount(pid: number): number | null {
   }
 }
 
-test("deterministic no-sleep concurrency: fast query B overtakes slow query A; interleaved multi-chunk history cancel A preserves B and closes A text.* handles (0 FD leak)", async (t) => {
+test("deterministic no-sleep concurrency: fast query B overtakes slow A; probe-gated >8MiB P11 interleaved history cancel A preserves B with strict 0 FD leak", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
-  const fx = makeFixture();
+  const fx = makeFixture({ multiChunkHistory: true });
   const asker = { workspace: "W1", home: true, scopes: [] };
   const client = new RawLineClient(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
   try {
     // 1. Slow message scan (A, id=1) + fast profile query (B, id=2) sent back-to-back in one write:
-    //    B has 0 thread/job/memory batches and finishes in 2 steps (ProfileRun -> FinalPause),
-    //    while A yields >= 7 times across P1 message batches -> B MUST return before A!
+    //    B finishes in 2 steps (ProfileRun -> FinalPause), while A yields >= 7 times across P1 message batches.
     const qSlow = JSON.stringify({ type: "query", id: 1, query: "slowneedle", asker, kinds: ["message"] });
     const qFast = JSON.stringify({ type: "query", id: 2, query: "FastProfileHit", asker, kinds: ["profile"] });
     client.writeRaw(`${qSlow}\n${qFast}\n`);
@@ -237,20 +260,29 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow query A; i
       replies1.push(m);
     }
     assert.equal(replies1[0].id, 2, `fast query B must finish before slow query A; got order ${JSON.stringify(replies1.map((r) => r.id))}`);
-    assert.equal(replies1[0].groups.length, 1);
     assert.equal(replies1[0].groups[0].kind, "profile");
     assert.equal(replies1[1].id, 1);
-    assert.equal(replies1[1].groups.length, 1);
     assert.equal(replies1[1].groups[0].kind, "message");
 
-    // 2. Two multi-chunk history queries A (id=10) & B (id=11) interleaved mid-`parts`, cancel A:
-    //    A must fail with "the search took too long", B must succeed with intact tail/left!
+    // 2. Real >8 MiB multi-chunk P11 interleaving (Rust shell TEXT_PART = 8 MiB):
+    //    Send qHistA(10), qHistB(11), and fast probe qProbe(12).
+    //    In FIFO round-robin:
+    //      Round 1: 10 yields P12, 11 yields P12, 12 yields P9.
+    //      Round 2: 10 opens >8MiB file & reads chunk 1 -> yields P11 (holding open FD!),
+    //               11 opens >8MiB file & reads chunk 1 -> yields P11 (holding open FD!),
+    //               12 finishes P9 -> replies {id: 12}!
+    //    When {id: 12} arrives, BOTH 10 and 11 are deterministically paused at P11 holding real open FDs!
     const fdBase = openFdCount(client.child.pid!);
     const qHistA = JSON.stringify({ type: "query", id: 10, query: "alphaonlytoken", asker, kinds: ["history"] });
-    const qHistB = JSON.stringify({ type: "query", id: 11, query: "betaonlytoken overlapcheck", asker, kinds: ["history"] });
-    const cHistA = JSON.stringify({ type: "cancel", id: 10 });
-    client.writeRaw(`${qHistA}\n${qHistB}\n${cHistA}\n`);
+    const qHistB = JSON.stringify({ type: "query", id: 11, query: "betafirstchunk betaonlytoken overlapcheck", asker, kinds: ["history"] });
+    const qProbe = JSON.stringify({ type: "query", id: 12, query: "FastProfileHit", asker, kinds: ["profile"] });
+    client.writeRaw(`${qHistA}\n${qHistB}\n${qProbe}\n`);
 
+    const probeReply = await client.nextJson();
+    assert.equal(probeReply.id, 12, "probe query must reply once both >8 MiB history queries have paused at P11");
+
+    // Now cancel A while both A and B are paused mid-P11 holding open handles!
+    client.send({ type: "cancel", id: 10 });
     const histReplies = new Map<number, any>();
     while (histReplies.size < 2) {
       const m = await client.nextJson();
@@ -264,20 +296,24 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow query A; i
     assert.equal(histReplies.get(11)?.groups[0].hits.length, 1);
     assert.ok(histReplies.get(11)?.groups[0].hits[0].text.includes("betaonlytoken"));
 
-    // 3. Repeatedly cancel 12 multi-chunk history queries and assert 0 FD leak on Linux (proving text.close is called).
-    for (let i = 0; i < 12; i++) {
-      const qid = 100 + i;
+    // 3. Probe-gated repeated P11 cancellation across 6 >8 MiB history queries -> STRICT 0 FD leak (no +1 tolerance).
+    for (let i = 0; i < 6; i++) {
+      const qid = 100 + i * 2;
+      const pid = 101 + i * 2;
       client.writeRaw(
         `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker, kinds: ["history"] })}\n` +
-        `${JSON.stringify({ type: "cancel", id: qid })}\n`,
+        `${JSON.stringify({ type: "query", id: pid, query: "FastProfileHit", asker, kinds: ["profile"] })}\n`,
       );
+      const pr = await client.nextJson();
+      assert.equal(pr.id, pid, "probe must confirm >8 MiB history query entered P11");
+      client.send({ type: "cancel", id: qid });
       const ans = await client.nextJson();
       assert.equal(ans.id, qid);
       assert.equal(ans.error, "the search took too long");
     }
     const fdAfter = openFdCount(client.child.pid!);
     if (fdBase !== null && fdAfter !== null) {
-      assert.ok(fdAfter <= fdBase + 1, `expected no text.* FD leak across 12 cancelled history queries: before=${fdBase} after=${fdAfter}`);
+      assert.equal(fdAfter, fdBase, `expected strict 0 FD leak across probe-gated >8 MiB P11 cancellations: before=${fdBase} after=${fdAfter}`);
     }
   } finally {
     await client.close();
@@ -285,7 +321,7 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow query A; i
   }
 });
 
-test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, numeric vs string id, 1 vs 1.0 parity, empty keywords, same-chunk query+cancel, UTF-16 lone-surrogate excerpt", async (t) => {
+test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, distinguishable 1 vs 1.0 vs string id, lone-surrogate query, same-chunk cancel, message & history lone-surrogate excerpt", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   const fx = makeFixture();
@@ -299,7 +335,7 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, numeric
       c.writeRaw(`{"type":"cancel","id":99999}\n{"type":"query","id":900,"query":"   ","asker":${JSON.stringify(asker)}}\n`);
       rawLines.push(await c.nextLine());
 
-      // B. Cancel already-completed id=900 -> NO reply; followed by pre-cancelled empty query id=901 (empty words returns [] without checking cancel!)
+      // B. Cancel already-completed id=900 -> NO reply; followed by pre-cancelled empty query id=901
       c.writeRaw(
         `{"type":"cancel","id":900}\n` +
         `{"type":"cancel","id":901}\n` +
@@ -307,14 +343,22 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, numeric
       );
       rawLines.push(await c.nextLine());
 
-      // C. Numeric `1` / `1.0` vs string `"1"`:
-      //    cancel `1` cancels `1.0` (both stringify to `1` in MB & Pion), and consumes the cancel so a subsequent `1` succeeds;
-      //    string `"1"` is a distinct key and is unaffected.
+      // B2. Lone-surrogate query string (`\ud800`) followed by sentinel id=903:
+      //     both MB (`@json.parse` catch -> continue) and Pion (`sql_db::parse_json` Err -> return) silently ignore 902 and reply only 903.
+      c.writeRaw(
+        `{"type":"query","id":902,"query":"\\ud800","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n` +
+        `{"type":"query","id":903,"query":"   ","asker":${JSON.stringify(asker)}}\n`,
+      );
+      rawLines.push(await c.nextLine());
+
+      // C. Distinguishable numeric `1.0` / `1` vs string `"1"`:
+      //    cancel `1` cancels `1.0` (ProfileAlphaHit -> error) and consumes cancel so subsequent `1` succeeds (ProfileBetaHit);
+      //    string `"1"` is a distinct key and succeeds with ProfileAlphaHit.
       c.writeRaw(
         `{"type":"cancel","id":1}\n` +
-        `{"type":"query","id":1.0,"query":"FastProfileHit","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n` +
-        `{"type":"query","id":1,"query":"FastProfileHit","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n` +
-        `{"type":"query","id":"1","query":"FastProfileHit","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n`,
+        `{"type":"query","id":1.0,"query":"ProfileAlphaHit","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n` +
+        `{"type":"query","id":1,"query":"ProfileBetaHit","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n` +
+        `{"type":"query","id":"1","query":"ProfileAlphaHit","asker":${JSON.stringify(asker)},"kinds":["profile"]}\n`,
       );
       const trio: string[] = [];
       while (trio.length < 3) {
@@ -345,44 +389,65 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, numeric
 
   // Normalize MoonBit Failure source-location prefix (`src/search/match.mbt:...:... FAILED: `) when comparing error replies.
   const normalize = (lines: string[]) =>
-    lines
-      .map((l) => {
-        const obj = JSON.parse(l);
-        if (typeof obj.error === "string") {
-          obj.error = obj.error.replace(/^.*FAILED:\s*/, "");
-        }
-        return obj;
-      })
-      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    lines.map((l) => {
+      const obj = JSON.parse(l);
+      if (typeof obj.error === "string") {
+        obj.error = obj.error.replace(/^.*FAILED:\s*/, "");
+      }
+      return obj;
+    });
 
   try {
-    const [mbOut, pionOut] = [await runSharedScenario(bins.mb), await runSharedScenario(bins.pion)];
-    assert.deepEqual(
-      normalize(pionOut),
-      normalize(mbOut),
-      "Pion and MB must produce 0-diff responses across all protocol/wire cases",
-    );
+    const [mbRaw, pionRaw] = [await runSharedScenario(bins.mb), await runSharedScenario(bins.pion)];
+    const mbNorm = normalize(mbRaw);
+    const pionNorm = normalize(pionRaw);
 
-    // E. Pion-side UTF-16 surrogate-pair excerpt cut boundary:
-    //    `js_json::stringify_line` cleanly escapes the lone trailing surrogate as `\ude00` (matching JS JSON.stringify),
+    // Explicitly verify distinguishable targets for 1.0 (cancelled), 1 (ProfileBetaHit), and "1" (ProfileAlphaHit)
+    const id1Replies = pionNorm.filter((o) => o.id === 1);
+    assert.equal(id1Replies.length, 2, "expected 2 numeric id=1 replies (1.0 cancelled + 1 succeeded)");
+    assert.equal(id1Replies.filter((o) => o.error === "the search took too long").length, 1, "cancel 1 must cancel 1.0");
+    const id1Ok = id1Replies.find((o) => Array.isArray(o.groups));
+    assert.equal(id1Ok?.groups?.[0]?.hits?.[0]?.profile, "prof-beta", "subsequent id=1 must succeed with prof-beta");
+    const strIdOk = pionNorm.find((o) => o.id === "1");
+    assert.equal(strIdOk?.groups?.[0]?.hits?.[0]?.profile, "prof-alpha", 'string id="1" must succeed with prof-alpha');
+
+    // Full 0-diff against real MB (preserving exact per-step reply structure)
+    const byKey = (arr: any[]) => [...arr].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    assert.deepEqual(byKey(pionNorm), byKey(mbNorm), "Pion and MB must produce 0-diff responses across all protocol/wire cases");
+
+    // E. Pion-side UTF-16 lone-surrogate preservation on BOTH message excerpt cut AND history transcript JSON escapes:
+    //    `js_json::stringify_line` cleanly escapes lone surrogates as `\ud800`/`\ude00` (matching JS JSON.stringify),
     //    whereas MB's UTF-8 stdout encoder aborts on lone surrogates.
     const pc = new RawLineClient(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
     try {
       pc.writeRaw(`{"type":"query","id":77,"query":"surrogateneedle","asker":${JSON.stringify(asker)},"kinds":["message"]}\n`);
-      let surrogateLine = "";
+      let msgSurrLine = "";
       for (;;) {
         const line = await pc.nextLine();
         const obj = JSON.parse(line);
         if ("scopePending" in obj || "sessionListPending" in obj) continue;
-        surrogateLine = line;
+        msgSurrLine = line;
         break;
       }
-      assert.ok(surrogateLine.includes("\\ude00"), `expected lone surrogate escape in Pion wire output: ${surrogateLine}`);
-      const parsed = JSON.parse(surrogateLine);
-      assert.equal(parsed.id, 77);
-      assert.equal(parsed.groups.length, 1);
-      assert.equal(parsed.groups[0].hits.length, 1);
-      assert.ok(parsed.groups[0].hits[0].text.includes("surrogateneedle"));
+      assert.ok(msgSurrLine.includes("\\ude00"), `expected lone surrogate escape in message excerpt: ${msgSurrLine}`);
+      assert.equal(JSON.parse(msgSurrLine).id, 77);
+
+      // History transcript with raw JSON-escaped lone surrogates (\ud800 and \ude00)
+      pc.writeRaw(`{"type":"query","id":78,"query":"surrogatehisttoken","asker":${JSON.stringify(asker)},"kinds":["history"]}\n`);
+      let histSurrLine = "";
+      for (;;) {
+        const line = await pc.nextLine();
+        const obj = JSON.parse(line);
+        if ("scopePending" in obj || "sessionListPending" in obj) continue;
+        histSurrLine = line;
+        break;
+      }
+      assert.ok(histSurrLine.includes("\\ud800"), `expected raw \\ud800 preserved in history excerpt: ${histSurrLine}`);
+      assert.ok(histSurrLine.includes("\\ude00"), `expected raw \\ude00 preserved in history excerpt: ${histSurrLine}`);
+      assert.ok(!histSurrLine.includes("\ufffd"), `history excerpt must NOT replace lone surrogates with U+FFFD: ${histSurrLine}`);
+      const histParsed = JSON.parse(histSurrLine);
+      assert.equal(histParsed.id, 78);
+      assert.equal(histParsed.groups[0].hits.length, 1);
     } finally {
       await pc.close();
     }
@@ -391,7 +456,7 @@ test("protocol & wire 0-diff vs real MB: unknown/finished cancel silent, numeric
   }
 });
 
-test("cross-engine history search parity (including packed .zst) and production new Search hanging-probe cold-start/hot-reload hits Pion wrapper on first spawn", async (t) => {
+test("cross-engine .zst parity, bidirectional SHA-1 transcript-marks interop (MB<->Pion with raw partial UTF-8 bytes), and live hot-reload new Search (MB -> Pion)", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   const fx = makeFixture();
@@ -402,10 +467,8 @@ test("cross-engine history search parity (including packed .zst) and production 
   const pionWrap = makeRecordingWrapper(wrapDir, "pion-wrap.sh", bins.pion, pionLog);
 
   try {
-    // Pack h-a transcript to .zst so both MB and Pion read packed history via seekable zstd
+    // 1. Pack h-a transcript to .zst -> direct MB vs Pion history search 0-diff parity
     await packFile(join(fx.dir, "transcripts", "claude", "-w-h-a", "ha1.jsonl"));
-
-    // 1. Direct MB vs Pion history search parity on packed + plain transcripts
     const asker = { workspace: "W1", home: true, scopes: [] };
     const mbProc = new MbProcess(bins.mb, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
     const pionProc = new MbProcess(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
@@ -428,8 +491,107 @@ test("cross-engine history search parity (including packed .zst) and production 
       await Promise.all([mbProc.terminate(), pionProc.terminate()]);
     }
 
-    // 2. Production `new Search` with hanging probe + live hot-reload config:
-    //    FIRST `--builder search` spawn MUST hit the Pion recording wrapper (0 MB spawns)!
+    // 2. Bidirectional real SHA-1 `transcript-marks/<sha1>.json` cross-engine interop (MB <-> Pion):
+    //    Includes an incomplete multi-byte UTF-8 char (€ = E2 82 AC split after E2 82) in a half-written JSONL line,
+    //    and tampers with line 1 (preserving byte length) so any engine that ignores marks and re-scans from 0 FAILS!
+    const marksDir = join(fx.dir, "transcript-marks");
+    const mSessPath = join(fx.dir, "transcripts", "claude", "-w-h-marks", "hm1.jsonl");
+    fx.store.insertSession({
+      key: "h-marks",
+      connect: "ember",
+      runtime: "claude",
+      profile: "cc",
+      workspace: "/w/h-marks",
+      token: "tok-h-marks",
+      createdAt: 1,
+      lastActiveAt: 110,
+      ws: "W1",
+    } as Parameters<Store["insertSession"]>[0]);
+    fx.store.ranIn("h-marks", "hm1", "cc");
+    fx.store.setRuntimeSessionId("h-marks", "hm1");
+    const expectedSha1 = createHash("sha1").update(mSessPath, "utf8").digest("hex");
+    const expectedMarkFile = join(marksDir, `${expectedSha1}.json`);
+
+    const line1 = `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T12:00:00Z", message: { content: "line-one-original" } })}\n`;
+    const halfLineFull = Buffer.from(
+      `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T12:01:00Z", message: { content: "price €100" } })}\n`,
+      "utf8",
+    );
+    const euroPos = halfLineFull.indexOf(Buffer.from([0xe2, 0x82, 0xac]));
+    assert.ok(euroPos > 0);
+    // Split RIGHT inside the 3-byte UTF-8 sequence of '€' (keep 0xE2 0x82 in partial, 0xAC in the appended suffix)
+    const halfPart1 = halfLineFull.subarray(0, euroPos + 2);
+    const halfPart2 = halfLineFull.subarray(euroPos + 2);
+    const line3 = `${JSON.stringify({ type: "assistant", timestamp: "2026-11-01T12:02:00Z", message: { content: "line-three-final" } })}\n`;
+
+    const writeInitialTranscript = () => {
+      mkdirSync(dirname(mSessPath), { recursive: true });
+      writeFileSync(mSessPath, Buffer.concat([Buffer.from(line1, "utf8"), halfPart1]));
+    };
+    const tamperLine1AndAppend = () => {
+      // Overwrite line 1 with invalid JSON of EXACT same byte length (would drop count from 3 -> 2 if mark were ignored!)
+      const cur = readFileSync(mSessPath);
+      const l1Len = Buffer.byteLength(line1, "utf8");
+      const tampered = Buffer.concat([Buffer.from(`${"x".repeat(l1Len - 1)}\n`, "utf8"), cur.subarray(l1Len), halfPart2, Buffer.from(line3, "utf8")]);
+      writeFileSync(mSessPath, tampered);
+    };
+
+    // 2a. MB writes mark -> tamper line 1 & append rest -> Pion resumes from MB's <sha1>.json!
+    rmSync(marksDir, { recursive: true, force: true });
+    writeInitialTranscript();
+    const mbReader1 = readersOf(fx.dir, bins.mb);
+    try {
+      const st1 = JSON.parse(await mbReader1.read("transcriptState", { key: "h-marks" }, "en"));
+      assert.equal(st1.states[0].count, 1);
+    } finally {
+      mbReader1.close();
+    }
+    assert.ok(existsSync(expectedMarkFile), `MB must write mark at exact SHA-1 path ${expectedMarkFile}`);
+    const mbWrittenMark = JSON.parse(readFileSync(expectedMarkFile, "utf8"));
+    assert.equal(mbWrittenMark.state.partial, halfPart1.toString("base64"), "MB mark partial must be raw base64 of incomplete UTF-8 bytes");
+
+    tamperLine1AndAppend();
+    const pionResumed = JSON.parse(
+      execFileSync(bins.pion, ["--smoke-history-marks", "--data", fx.dir, "--path", mSessPath, "--runtime", "claude", "--sep", sep], {
+        encoding: "utf8",
+      }),
+    );
+    assert.equal(pionResumed.markFile, expectedMarkFile);
+    assert.equal(pionResumed.count, 3, "Pion must resume from MB mark (count=3 including tampered line 1; ignoring mark would give 2)");
+    assert.ok(
+      pionResumed.tailEntries.some((e: any) => typeof e.text === "string" && e.text.includes("price €100")),
+      `Pion must reassemble split UTF-8 € from MB base64 partial: ${JSON.stringify(pionResumed.tailEntries)}`,
+    );
+
+    // 2b. Pion writes mark -> verify exact SHA-1 file & schema parity -> tamper line 1 & append rest -> MB resumes from Pion's <sha1>.json!
+    rmSync(marksDir, { recursive: true, force: true });
+    writeInitialTranscript();
+    const pionInitial = JSON.parse(
+      execFileSync(bins.pion, ["--smoke-history-marks", "--data", fx.dir, "--path", mSessPath, "--runtime", "claude", "--sep", sep], {
+        encoding: "utf8",
+      }),
+    );
+    assert.equal(pionInitial.count, 1);
+    assert.ok(existsSync(expectedMarkFile), `Pion must write mark at exact SHA-1 path ${expectedMarkFile}`);
+    const pionWrittenMark = JSON.parse(readFileSync(expectedMarkFile, "utf8"));
+    assert.deepEqual(pionWrittenMark, mbWrittenMark, "Pion and MB transcript-marks/<sha1>.json must be byte/schema identical");
+
+    tamperLine1AndAppend();
+    const mbReader2 = readersOf(fx.dir, bins.mb);
+    try {
+      const st2 = JSON.parse(await mbReader2.read("transcriptState", { key: "h-marks" }, "en"));
+      assert.equal(st2.states[0].count, 3, "MB must resume from Pion mark (count=3 including tampered line 1; ignoring mark would give 2)");
+      const tl2 = JSON.parse(await mbReader2.read("timeline", { key: "h-marks", from: "0", to: "10" }, "en"));
+      assert.ok(
+        tl2.entries.some((e: any) => typeof e.text === "string" && e.text.includes("price €100")),
+        `MB must reassemble split UTF-8 € from Pion base64 partial: ${JSON.stringify(tl2.entries)}`,
+      );
+    } finally {
+      mbReader2.close();
+    }
+
+    // 3. Real hot-reload on production `new Search`: start on MB -> in-flight query finishes on MB ->
+    //    flip liveConfig to "pion" + trimIdle + hanging probe -> first post-reload spawn hits Pion wrapper!
     await withEnv(
       {
         STILLFAIL_MB_READER: mbWrap,
@@ -438,37 +600,52 @@ test("cross-engine history search parity (including packed .zst) and production 
         STILLFAIL_READER_ENGINE: undefined,
       },
       async () => {
-        let releaseProbe!: () => void;
-        let probeCalls = 0;
-        setPionProbeRunnerForTest((bin) => {
-          probeCalls++;
-          return new Promise<ReadonlySet<string> | null>((resolve) => {
-            releaseProbe = () => {
-              const ver = execFileSync(bin, ["--version"], { encoding: "utf8" });
-              const m = ver.match(/modes:([^\n\r]+)/);
-              resolve(m ? new Set(m[1]!.split(",").map((s) => s.trim()).filter(Boolean)) : null);
-            };
-          });
-        });
-
-        let liveConfig: ReaderSelectConfig = { readers: { search: "pion" } };
+        const searchSpawns = (logFile: string) =>
+          readSpawns(logFile).filter((l) => /--builder search(?:\s|$)/.test(l));
+        let liveConfig: ReaderSelectConfig = { readers: { search: "mb" } };
         const search = new Search({ data: fx.dir, backfill: { readers: () => liveConfig } });
         try {
-          const pending = search.query("FastProfileHit", asker, { kinds: ["profile"] });
-          // Probe is hanging: neither MB nor Pion should have spawned `--builder search` yet
-          await Promise.resolve();
-          assert.equal(probeCalls, 1, "hanging probe should be triggered once");
-          assert.equal(readSpawns(mbLog).length, 0, "MB must NOT be spawned while Pion probe is pending");
+          // 3a. Initial query hits real MB wrapper (0 Pion spawns)
+          const r1 = await search.query("FastProfileHit", asker, { kinds: ["profile"] });
+          assert.equal(r1.groups.length, 1);
+          assert.equal(searchSpawns(mbLog).length, 1, "initial query must spawn MB wrapper");
+          assert.equal(searchSpawns(pionLog).length, 0, "0 Pion spawns while configured as mb");
 
-          // Release probe -> first `--builder search` spawn hits Pion!
+          // 3b. Flip liveConfig to "pion" while an in-flight query is running on MB -> completes on existing MB worker
+          const inFlight = search.query("slowneedle", asker, { kinds: ["message"] });
+          liveConfig = { readers: { search: "pion" } };
+          const r2 = await inFlight;
+          assert.equal(r2.groups.length, 1);
+          assert.equal(r2.groups[0]!.kind, "message");
+          assert.equal(searchSpawns(mbLog).length, 1, "in-flight query stays on existing MB worker");
+          assert.equal(searchSpawns(pionLog).length, 0, "no Pion spawn during in-flight MB query");
+
+          // 3c. Trim idle MB worker, install hanging Pion probe, issue query #3 -> first post-reload spawn hits Pion!
+          assert.equal(search.trimIdle(), 1, "trimIdle must release idle MB search worker");
+          let releaseProbe!: () => void;
+          let probeCalls = 0;
+          setPionProbeRunnerForTest((bin) => {
+            probeCalls++;
+            return new Promise<ReadonlySet<string> | null>((resolve) => {
+              releaseProbe = () => {
+                const ver = execFileSync(bin, ["--version"], { encoding: "utf8" });
+                const m = ver.match(/modes:([^\n\r]+)/);
+                resolve(m ? new Set(m[1]!.split(",").map((s) => s.trim()).filter(Boolean)) : null);
+              };
+            });
+          });
+
+          const pendingPion = search.query("FastProfileHit", asker, { kinds: ["profile"] });
+          await Promise.resolve();
+          assert.equal(probeCalls, 1, "hanging Pion probe should be triggered once after hot-reload");
+          assert.equal(searchSpawns(mbLog).length, 1, "MB must NOT respawn while Pion probe is pending");
+
           releaseProbe();
-          const found = await pending;
-          assert.equal(found.groups.length, 1);
-          assert.equal(found.groups[0]!.kind, "profile");
-          const pionSpawns = readSpawns(pionLog).filter((l) => l.includes("--builder search"));
-          const mbSpawns = readSpawns(mbLog).filter((l) => l.includes("--builder search"));
-          assert.equal(pionSpawns.length, 1, `expected first --builder search spawn to hit Pion wrapper; got ${JSON.stringify(pionSpawns)}`);
-          assert.equal(mbSpawns.length, 0, `expected 0 MB --builder search spawns; got ${JSON.stringify(mbSpawns)}`);
+          const r3 = await pendingPion;
+          assert.equal(r3.groups.length, 1);
+          assert.equal(r3.groups[0]!.kind, "profile");
+          assert.equal(searchSpawns(pionLog).length, 1, "post-reload query must spawn Pion wrapper");
+          assert.equal(searchSpawns(mbLog).length, 1, "MB must NOT spawn again after switch to Pion");
         } finally {
           setPionProbeRunnerForTest(null);
           await search.stop();

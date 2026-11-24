@@ -69,9 +69,8 @@ let EXCERPT_BEFORE : Int = 80
 
 let EXCERPT_AFTER : Int = 240
 
-/// `body.replace(/\s+/gu, " ").trim()` over UTF-16 code units.
-fn flatten_units(body : String) -> Array[Int] {
-  let raw = js_json::utf16_units(body)
+/// `body.replace(/\s+/gu, " ").trim()` over raw UTF-16 code units (preserving lone surrogates).
+fn flatten_units_raw(raw : Array[Int]) -> Array[Int] {
   let n = raw.length()
   let out : Array[Int] = []
   let mut i = 0
@@ -102,10 +101,10 @@ fn flatten_units(body : String) -> Array[Int] {
   trimmed
 }
 
-/// match.ts `excerpt` returning exact UTF-16 code units (preserving lone surrogates if a cut
-/// lands inside a surrogate pair, until serialized via `js_json::stringify_line`).
-pub fn excerpt_units(body : String, words : Array[String]) -> Array[Int] {
-  let flat = flatten_units(body)
+/// match.ts `excerpt` over raw UTF-16 code units (preserving lone surrogates both from the source
+/// text and from any cut landing inside a surrogate pair, until serialized via `js_json::stringify_line`).
+pub fn excerpt_units_from_utf16(raw : Array[Int], words : Array[String]) -> Array[Int] {
+  let flat = flatten_units_raw(raw)
   let flat_str = js_json::sanitize_str(flat)
   let lower_str = jscase::lower(flat_str)
   let lower_u = js_json::utf16_units(lower_str)
@@ -141,6 +140,12 @@ pub fn excerpt_units(body : String, words : Array[String]) -> Array[Int] {
     out.push(0x2026) // '…'
   }
   out
+}
+
+/// match.ts `excerpt` returning exact UTF-16 code units (preserving lone surrogates if a cut
+/// lands inside a surrogate pair, until serialized via `js_json::stringify_line`).
+pub fn excerpt_units(body : String, words : Array[String]) -> Array[Int] {
+  excerpt_units_from_utf16(js_json::utf16_units(body), words)
 }
 
 /// Convenience sanitized string form of `excerpt_units`.

@@ -1087,6 +1087,17 @@ fn main(world : World) -> Unit {
   } else if cmd == "--smoke-rc-soak" {
     let iters = if argv.length() >= 3 { parse_positive_int(argv[2], 50000) } else { 50000 }
     run_smoke_rc_soak(world, iters)
+  } else if cmd == "--smoke-history-marks" {
+    match (flag_value(argv, "--data"), flag_value(argv, "--path"), flag_value(argv, "--runtime")) {
+      (Some(data_dir), Some(tpath), Some(rt)) => {
+        let sep = match flag_value(argv, "--sep") {
+          Some(s) => s
+          None => "/"
+        }
+        host_shim::exit_process(builders_search::run_smoke_history_marks(data_dir, tpath, rt, sep))
+      }
+      _ => usage_exit()
+    }
   } else {
     match flag_value(argv, "--builder") {
       Some("footprint") => {

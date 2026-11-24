@@ -8,6 +8,8 @@ pub struct Entry {
   pub at : Option[String]
   pub kind : String
   pub text : String
+  /// Raw UTF-16 code units preserving lone surrogates from transcript JSON until serialization.
+  pub text_units : Option[Array[Int]]
   pub tool : Option[String]
   pub ok : Option[Bool]
   pub call_id : Option[String]
@@ -98,6 +100,47 @@ fn jv_string_of(v : Option[js_json::JValue]) -> Option[String] {
     Some(js_json::JValue::Str(u)) => Some(js_json::sanitize_str(u))
     _ => None
   }
+}
+
+fn jv_units_of(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+/// Clip raw UTF-16 code units by Unicode code points (MAX_TEXT = 4000), preserving lone surrogates.
+fn clip_units(u : Array[Int]) -> Array[Int] {
+  let n = u.length()
+  let mut pts = 0
+  let mut cut = -1
+  let mut i = 0
+  while i < n {
+    if pts == MAX_TEXT && cut < 0 {
+      cut = i
+    }
+    let c = u[i]
+    if c >= 0xD800 && c <= 0xDBFF && i + 1 < n && u[i + 1] >= 0xDC00 && u[i + 1] <= 0xDFFF {
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+    pts = pts + 1
+  }
+  if pts <= MAX_TEXT {
+    return u
+  }
+  let out : Array[Int] = []
+  let lim = if cut >= 0 { cut } else { n }
+  for k in 0..<lim {
+    out.push(u[k])
+  }
+  let suffix = "\n… (" + (pts - MAX_TEXT).to_string() + " more characters)"
+  let su = js_json::utf16_units(suffix)
+  for k in 0..<su.length() {
+    out.push(su[k])
+  }
+  out
 }
 
 fn jv_is_str(v : Option[js_json::JValue]) -> Bool {
