@@ -1507,7 +1507,8 @@ fn board_files_node(
                 v
                 .width(Is(Some(@sf.waiting_tile_side)))
                 .height(Is(Some(@sf.waiting_tile_side)))
-                .image(By(fn() { Some((picture(), "", (@sf.waiting_tile_side * v.pixel_scale()).ceil().to_int())) }))
+                .image(By(fn() { Some((picture(), "", image_px_most.to_int())) }))
+                .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
                 .image_in(
                   By(fn() {
                     if is_video() {
@@ -1523,6 +1524,7 @@ fn board_files_node(
                   }),
                 )
                 .image_covers(Is(true))
+                .image_covers_at(By(fn() { tile_start_crop(picture()) }))
                 |> ignore
               } else {
                 v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore

@@ -357,3 +357,66 @@ test("the files route and a message give what the Rust station gives", async () 
     rmSync(data, { recursive: true, force: true });
   }
 });
+
+/// Fast striped PNG for very tall or wide test images (level 1 deflate keeps it compact yet larger than JPEG).
+function fastStripedPng(w: number, h: number): Buffer {
+  const rowLen = 1 + w * 3;
+  const rowA = Buffer.alloc(rowLen);
+  const rowB = Buffer.alloc(rowLen);
+  for (let x = 0; x < w; x++) {
+    const o = 1 + x * 3;
+    rowA[o] = (x * 17) & 255;
+    rowA[o + 1] = (x * 31) & 255;
+    rowA[o + 2] = (x * 53) & 255;
+    rowB[o] = (x * 43 + 90) & 255;
+    rowB[o + 1] = (x * 19 + 40) & 255;
+    rowB[o + 2] = (x * 7 + 120) & 255;
+  }
+  const raw = Buffer.allocUnsafe(h * rowLen);
+  for (let y = 0; y < h; y++) {
+    const src = (y & 7) < 4 ? rowA : rowB;
+    src.copy(raw, y * rowLen);
+  }
+  const chunk = (type: string, data: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(data.length, 0);
+    head.write(type, 4, "latin1");
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])) >>> 0, 0);
+    return Buffer.concat([head, data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw, { level: 0 })),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+test("preserves short side for extreme tall and wide thumbnails without upscaling", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "thumbs-extreme-"));
+  try {
+    const thumbs = join(tmp, "thumbs");
+    const cases: Array<[string, number, number, [number, number]]> = [
+      ["tall15.png", 1000, 15000, [320, 4800]],
+      ["tall30.png", 1000, 30000, [273, 8192]],
+      ["narrow.png", 200, 3000, [200, 3000]],
+      ["wide15.png", 15000, 1000, [4800, 320]],
+    ];
+    for (const [name, w, h, want] of cases) {
+      const src = join(tmp, name);
+      writeFileSync(src, fastStripedPng(w, h));
+      const made = await thumbnail(src, thumbs, codecs);
+      assert.ok(made, `${name}: expected thumbnail`);
+      assert.equal(made.type, "image/jpeg", name);
+      assert.deepEqual(sizeOf(readFileSync(made.path)), want, name);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});

@@ -420,3 +420,51 @@ test "a node's picture in a tree laid out once each change is told: drawn by the
   t.run_for(image_fade_ms)
   assert_eq(pictures_sized(60.0, 40.0).length(), 1)
 }
+
+///|
+test "a FitCover node with a stand-in judges readiness using image_px (short-side cover scale)" {
+  let t = Tester::new(fn(_c) {  }, images=[("tall", 1000, 15000), ("stand", 60, 40)], finish=false)
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(160.0)))
+      .height(Is(Some(300.0)))
+      .image(Is(Some(("tall", "stand", 8192))))
+      .image_covers(Is(true))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Finish stand-in first: while tall has no decode at all, stand-in is drawn.
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "stand" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  let drawn = fn() {
+    t.drawn_instances().filter(fn(i) { i[5] == 4.0 && i[2] == 160.0 && i[3] == 300.0 }).map(fn(i) { t.image_src(i[20].to_int()) })
+  }
+  assert_eq(drawn(), ["stand"], msg="stand-in shown before tall decodes")
+  // Finish the initial 1024px decode of tall (before natural 1000x15000 dimensions were known).
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  // Once natural dimensions (1000x15000) are known, FitCover needs 15000 * (160/1000) * 2 = 4800px -> 8192 tier;
+  // view_picture's stand-in readiness path must upgrade to 8192 instead of stopping at 1024.
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall" }).map(fn(l) { l.1 })
+  assert_true(asked.length() > 0 && asked[asked.length() - 1] == 8192, msg="expected 8192 for 1000x15000 FitCover in 160x300, got \{Repr(asked)}")
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  t.run_for(image_fade_ms)
+  assert_eq(drawn(), ["tall"], msg="tall shown once 8192px decode completes")
+}

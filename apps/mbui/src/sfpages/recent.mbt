@@ -344,7 +344,7 @@ fn recent_photo_node(
         .height(Is(Some(recent_tile_h)))
         .radius(Is(corner))
         .clips(Is(true))
-        .image(By(fn() { Some((src(), "", (recent_tile_h * i.pixel_scale()).ceil().to_int())) }))
+        .image(By(fn() { Some((src(), "", image_px_most.to_int())) }))
         .image_covers(Is(true))
         |> ignore
       })

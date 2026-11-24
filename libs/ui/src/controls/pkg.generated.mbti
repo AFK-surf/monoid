@@ -1146,7 +1146,7 @@ pub fn icon_well_node(@view.View, () -> String, () -> Unit, () -> Int64, () -> I
 pub let identity_mark : Double
 
 #callsite(autofill(loc))
-pub fn image_reveal_node(@view.View, () -> String, () -> String, () -> Double, () -> Double, cover? : Bool, decoded_for? : () -> Double, held? : () -> Bool, comes? : () -> Bool, start_crop? : () -> Bool, flies? : ((@view.View) -> Unit)?, corner? : Double, loc~ : SourceLoc) -> @view.View
+pub fn image_reveal_node(@view.View, () -> String, () -> String, () -> Double, () -> Double, cover? : Bool, decoded_for? : () -> (Double, Double), held? : () -> Bool, comes? : () -> Bool, start_crop? : () -> Bool, flies? : ((@view.View) -> Unit)?, corner? : Double, loc~ : SourceLoc) -> @view.View
 
 pub fn in_dialog_node(@view.View) -> Bool
 

@@ -30,8 +30,8 @@ priv enum RevealPhase {
 /// box (View::flies_in: its way, where from, how late its rise is, how far it goes and what leads it, with what else
 /// of the same send flies), drawn on the way as it is at rest, covering the box the way has, rounded `corner` (its
 /// frame's: what cuts it at rest cuts it nowhere on the way).
-/// `decoded_for`: the longer side it is decoded for (the largest it is drawn at, bound), so a size that changes asks no
-/// other decode; none: as it is laid out. The node.
+/// `decoded_for`: the box `(w, h)` it is decoded for (the largest it is drawn at, bound), so a size that changes asks
+/// no other decode; none: as it is laid out. The node.
 #callsite(autofill(loc))
 pub fn image_reveal_node(
   parent : @view.View,
@@ -40,7 +40,7 @@ pub fn image_reveal_node(
   w : () -> Double,
   h : () -> Double,
   cover? : Bool = true,
-  decoded_for? : () -> Double,
+  decoded_for? : () -> (Double, Double),
   held? : () -> Bool = fn() { false },
   comes? : () -> Bool = fn() { true },
   start_crop? : () -> Bool = fn() { false },
@@ -49,22 +49,22 @@ pub fn image_reveal_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(b) {
-    // (its size, its likeness, where it is cut from and the pixels it is decoded at, kept as one value as it comes to
+    // (its size, its likeness, where it is cut from and the box it is decoded for, kept as one value as it comes to
     // another: what is bound to them worked out again only then, not each time what they are read of is told anew, a
     // message's file said again with its size the same: value_kept)
     let kept = value_kept(b, fn() {
       let (w, h) = (w(), h())
-      let px = match decoded_for {
-        Some(side) => reveal_px(side(), side(), b.pixel_scale())
-        None => reveal_px(w, h, b.pixel_scale())
+      let target = match decoded_for {
+        Some(size) => size()
+        None => (0.0, 0.0)
       }
-      (w, h, likeness(), start_crop(), px)
+      (w, h, likeness(), start_crop(), target)
     })
     let w = fn() { kept().0 }
     let h = fn() { kept().1 }
     let likeness = fn() { kept().2 }
     let start_crop = fn() { kept().3 }
-    let px = fn() { kept().4 }
+    let target = fn() { kept().4 }
     // (its size as it is made, said again as it comes to another: watched, nothing bound to it at rest)
     let (w0, h0) = @signals.untracked(fn() { (w(), h()) })
     b.width(Is(Some(w0))).height(Is(Some(h0))).clips(Is(true)) |> ignore
@@ -72,7 +72,7 @@ pub fn image_reveal_node(
     // (read only: its picture's node, made from the first, has its decode asked by what draws it as it comes to it, in
     // sight or outside its clip; one made and let go of before anything drew it, a page's list's block in one layout,
     // has nothing decoded)
-    let ready = fn() { key() != "" && b.image_ready(key(), px()) }
+    let ready = fn() { key() != "" && b.image_ready(key(), reveal_px_most) }
     let phase = @signals.signal(Waiting)
     let way = @motion.NodeWay::new(0.0)
     // (the end of the way of the picture being brushed in, called off when it is given another)
@@ -89,11 +89,15 @@ pub fn image_reveal_node(
       .image_fades(Is(false))
       .scale(By(fn() { 1.0 + reveal_grow * (1.0 - e()) }))
       |> ignore
+      match decoded_for {
+        Some(_) => i.image_for(By(target)) |> ignore
+        None => ()
+      }
       // (its picture and where it is cut from, one binding set again as either comes to another)
       i.sets_together(
         fn() {
           (
-            if key() == "" { None } else { Some((key(), "", px().to_int())) },
+            if key() == "" { None } else { Some((key(), "", reveal_px_most.to_int())) },
             if start_crop() { Some((0.0, 0.0)) } else { None },
           )
         },
@@ -260,12 +264,6 @@ fn reveal_wait_strip(
     style_node(l, fn() { if likeness() == "" { reveal_ground } else { reveal_clear } })
   })
   |> ignore
-}
-
-///|
-/// How many pixels a message's picture `w` by `h` is decoded to on its longer side, at `scale` (reveal_px's).
-fn reveal_px(w : Double, h : Double, scale : Double) -> Double {
-  dmin(dmax(w, h) * scale, reveal_px_most)
 }
 
 ///|

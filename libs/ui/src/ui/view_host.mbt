@@ -2876,10 +2876,30 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
   }
   let (fw, fh) = c.image_for
   let judged = fw > 0.0 || fh > 0.0
-  let room = if judged { dmax(fw, fh) * s } else { dmax(pw, ph) }
+  let fit = match c.image_in {
+    Some(_) =>
+      if c.image_cover_at is Some((across, down)) {
+        FitCoverFrom(across, down)
+      } else if c.image_cover {
+        FitCover
+      } else {
+        FitFill
+      }
+    None =>
+      if c.image_cover_at is Some((across, down)) {
+        FitCoverFrom(across, down)
+      } else if c.image_cover {
+        FitCover
+      } else if c.image_contain {
+        FitContain
+      } else {
+        FitFill
+      }
+  }
+  let (rw, rh) = if judged { (fw * s, fh * s) } else { (pw, ph) }
   let shown = if stand_in == "" {
     src
-  } else if self.image_ready(src, dmin(room * self.scale, most.to_double())) {
+  } else if self.image_ready(src, dmin(self.image_px(src, rw, rh, fit), most.to_double())) {
     src
   } else {
     stand_in
@@ -2890,13 +2910,6 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
     // (filling its rect, or covering it where it says so: View::image_covers, View::image_covers_at)
     Some(((ix, iy, iw, ih), matte)) => {
       let before = self.ninst
-      let fit = if c.image_cover_at is Some((across, down)) {
-        FitCoverFrom(across, down)
-      } else if c.image_cover {
-        FitCover
-      } else {
-        FitFill
-      }
       self.draw_image(shown, x + ix * s, y + iy * s, iw * s, ih * s, fit, c.radius * s, a, fade=false, max_px=most, ground=matte, matte=true, frame=Some((x, y, w, h)), decode_size~)
       // (its corners each, where it says them (View::corners), as big as it is drawn: the frame's)
       match c.corners {
@@ -2909,15 +2922,6 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
     // View::image_contains; fading in where it says so,
     // View::image_fades; a GIF that moves going through its frames, each woken for, as an old view's: moving_key)
     None => {
-      let fit = if c.image_cover_at is Some((across, down)) {
-        FitCoverFrom(across, down)
-      } else if c.image_cover {
-        FitCover
-      } else if c.image_contain {
-        FitContain
-      } else {
-        FitFill
-      }
       let shown = self.moving_key(shown, w, h, fit)
       self.draw_image(shown, x, y, w, h, fit, c.radius * s, a, fade=c.image_fade, max_px=most, decode_size~)
     }

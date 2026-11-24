@@ -1323,3 +1323,26 @@ test "idle chat refresh updating message relative times moves no messages on bot
     }
   })
 }
+
+///|
+test "a tall image in the composer 56x56 tile decodes at 2048 and crops from top while a 4:3 image stays centered" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~, platform=0)
+  t.add_image("tall-draft.png", 1000, 15000)
+  t.add_image("normal-draft.png", 800, 600)
+  let src = made.val.unwrap()
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_add(src, w, "ws1/st1", "tall.png", @utf8.encode("tall"), still="tall-draft.png")
+  @sfbase.writing_add(src, w, "ws1/st1", "normal.png", @utf8.encode("normal"), still="normal-draft.png")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let tall_loads = t.image_loads().filter(fn(l) { l.0 == "tall-draft.png" }).map(fn(l) { l.1 })
+  assert_true(tall_loads.length() > 0 && tall_loads[tall_loads.length() - 1] == 2048, msg="expected tall tile decode tier 2048, got \{Repr(tall_loads)}")
+  let tall_inst = t.drawn_instances().iter().find_first(fn(i) { i[5] == 4.0 && t.image_src(i[20].to_int()) == "tall-draft.png" }).unwrap()
+  let normal_inst = t.drawn_instances().iter().find_first(fn(i) { i[5] == 4.0 && t.image_src(i[20].to_int()) == "normal-draft.png" }).unwrap()
+  // (instance UV: [12]=u0, [13]=v0, [14]=uw, [15]=vh; tall image cropped from top: v0 == 0.0)
+  assert_true(tall_inst[13] == 0.0 && tall_inst[15] < 0.2, msg="expected tall tile cropped from top, got uv=(\{tall_inst[12]}, \{tall_inst[13]}, \{tall_inst[14]}, \{tall_inst[15]})")
+  // (4:3 image centered horizontally in 56x56 square: u0 = 0.125, uw = 0.75, u0 + uw/2 = 0.5)
+  assert_true(normal_inst[12] > 0.1 && (normal_inst[12] + normal_inst[14] / 2.0 - 0.5).abs() < 0.01, msg="expected 4:3 tile centered, got uv=(\{normal_inst[12]}, \{normal_inst[13]}, \{normal_inst[14]}, \{normal_inst[15]})")
+}

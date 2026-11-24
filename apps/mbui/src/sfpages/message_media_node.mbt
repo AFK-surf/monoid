@@ -202,7 +202,7 @@ fn message_image_node(
               held=as_is,
               comes=place.said,
               start_crop~,
-              decoded_for=fn() { dmax(most().0, most().1) },
+              decoded_for=most,
               flies~,
               corner~,
             )

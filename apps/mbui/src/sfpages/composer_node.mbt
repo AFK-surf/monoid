@@ -2918,6 +2918,16 @@ fn composer_extras_node(
 }
 
 ///|
+/// Where a square tile crops picture `key`: tall or wide strips (> 2:1) start at their top/left `(0.0, 0.0)`,
+/// while ordinary aspect ratios return `None` to keep centered `FitCover`.
+fn tile_start_crop(key : String) -> (Double, Double)? {
+  match @ui.image_natural(key) {
+    Some((ow, oh)) if ow > 0.0 && oh > 0.0 && (oh > ow * 2.0 || ow > oh * 2.0) => Some((0.0, 0.0))
+    _ => None
+  }
+}
+
+///|
 /// A picture or a video's still waiting in the composer in `parent` (the library's waiting_tile_node): picture `key()`
 /// covering it (a video's still on the words' ink; none yet, the neutral ground), decoded for as many of the device's
 /// pixels as it is drawn at; going up, failed and a video's mark as the library's tile draws them. The tile's node.
@@ -2942,17 +2952,16 @@ fn waiting_tile_of(
           (
             key(),
             @ui.tree_theme().color(if video() { @sf.video_ground } else { Neutral }),
-            (@sf.waiting_tile_side * p.pixel_scale()).ceil().to_int(),
           )
         },
         fn(state) {
-          let (k, ground, px) = state
+          let (k, ground) = state
           match k {
             "" | "!" => p.ground(Is(ground)).image(Is(None)).image_in(Is(None)) |> ignore
             _ =>
               p
               .ground(Is(0L))
-              .image(Is(Some((k, "", px))))
+              .image(Is(Some((k, "", image_px_most.to_int()))))
               .image_in(Is(Some(((0.0, 0.0, @sf.waiting_tile_side, @sf.waiting_tile_side), ground))))
               |> ignore
           }
@@ -2960,6 +2969,7 @@ fn waiting_tile_of(
       )
       .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
       .image_covers(Is(true))
+      .image_covers_at(By(fn() { tile_start_crop(key()) }))
       |> ignore
     },
     going,
@@ -3096,6 +3106,7 @@ fn composer_file_node(
           // thumbnail is (message_media_node))
           tile
           .image_covers(Is(true))
+          .image_covers_at(By(fn() { tile_start_crop(picture()) }))
           .shared(
             By(fn() {
               // (one the viewer cannot open yet, a video whose first frame is still being made: the id it will open by
