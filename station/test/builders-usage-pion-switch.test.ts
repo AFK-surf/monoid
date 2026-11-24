@@ -727,10 +727,14 @@ test("production new UsageCounter (no mb): cold-start/hot-reload hits Pion on fi
   });
   await new Promise<void>((resolve) => gateServer.listen(0, "127.0.0.1", () => resolve()));
   const gatePort = (gateServer.address() as AddressInfo).port;
-  cleanup.unshift(() => {
+  const cleanupGateServer = () => {
     releaseReq2Gate();
+    if (gateSocket && !gateSocket.destroyed) {
+      gateSocket.destroy();
+    }
     return new Promise<void>((resolve) => gateServer.close(() => resolve()));
-  });
+  };
+  cleanup.unshift(cleanupGateServer);
 
   const pionGateJs = join(dir, "pion-gate.mjs");
   writeFileSync(
@@ -745,14 +749,32 @@ const child = spawn(realBin, args, { stdio: ["pipe", "inherit", "inherit"] });
 let pending = Buffer.alloc(0);
 let reqCount = 0;
 let chain = Promise.resolve();
+let failed = false;
+const GO_TOKEN = Buffer.from("go\\n");
 function waitForGate() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const sock = createConnection({ host: "127.0.0.1", port: gatePort });
-    const done = () => { sock.destroy(); resolve(); };
-    sock.once("data", done);
-    sock.once("end", done);
-    sock.once("close", done);
-    sock.once("error", done);
+    let chunks = [];
+    let settled = false;
+    const ok = () => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      resolve();
+    };
+    const fail = (reason) => {
+      if (settled) return;
+      settled = true;
+      sock.destroy();
+      reject(new Error("gate handshake failed: " + reason));
+    };
+    sock.on("data", (d) => {
+      chunks.push(d);
+      if (Buffer.concat(chunks).includes(GO_TOKEN)) ok();
+    });
+    sock.once("end", () => fail("premature EOF before go"));
+    sock.once("close", () => fail("socket closed before go"));
+    sock.once("error", (err) => fail(err?.message ?? String(err)));
   });
 }
 process.stdin.on("data", (chunk) => {
@@ -762,14 +784,24 @@ process.stdin.on("data", (chunk) => {
     const lineBuf = pending.subarray(0, idx + 1);
     pending = pending.subarray(idx + 1);
     const n = ++reqCount;
-    chain = chain.then(async () => {
-      if (n === 2) await waitForGate();
-      child.stdin.write(lineBuf);
-    });
+    chain = chain
+      .then(async () => {
+        if (failed) return;
+        if (n === 2) await waitForGate();
+        child.stdin.write(lineBuf);
+      })
+      .catch((err) => {
+        failed = true;
+        process.stderr.write(String(err) + "\\n");
+        child.stdin.destroy();
+        child.kill("SIGTERM");
+        process.exit(1);
+      });
   }
 });
 process.stdin.on("end", () => {
   void chain.finally(() => {
+    if (failed) return;
     if (pending.length > 0) child.stdin.write(pending);
     child.stdin.end();
   });
@@ -857,9 +889,22 @@ child.on("exit", (code, sig) => process.exit(code ?? (sig ? 1 : 0)));
 
         // 3. Real in-flight hot-switch (Pion -> MB): pause 2nd request inside Pion wrapper via
         //    event-driven TCP handshake, flip config to "mb" while read #2 is truly in flight, then release.
+        //    Race req2SeenPromise against inFlight so gate or worker-reuse regressions fail fast.
         appendLines(transcript, [claudeLine("p2", t0 + 2_000, "claude-opus-5-5", 13, 24)]);
         const inFlight = counter.read(new Set(["kp"]));
-        await req2SeenPromise;
+        const gateOutcome = await Promise.race([
+          req2SeenPromise.then(() => ({ kind: "seen" as const })),
+          inFlight.then(
+            (count) => ({ kind: "bypassed" as const, count }),
+            (err: unknown) => ({ kind: "error" as const, err }),
+          ),
+        ]);
+        if (gateOutcome.kind === "error") throw gateOutcome.err;
+        if (gateOutcome.kind === "bypassed") {
+          assert.fail(
+            `2nd read completed (${gateOutcome.count}) before gate; worker not reused`,
+          );
+        }
         currentEngine = "mb";
         assert.equal(readSpawns(mbLog).length, 0, "no MB spawn while Pion read is in flight");
         releaseReq2Gate();
