@@ -576,12 +576,15 @@ export class StationTopics implements Owner {
     this.#firsts.set(tk, from);
     const timeline: unknown[] = [];
     for (let n = from; n < end && items.has(n); n++) timeline.push(items.get(n));
+    // What is held does not reach where its stream said the transcript goes: the steps in flight go on from there, not
+    // from here, and what is between is being read (it is not loaded yet, and nothing says it begins where it is held).
+    const behind = typeof view?.told === "number" && end < view.told;
     const value: Record<string, unknown> = {
-      loaded: view?.loaded ?? false,
+      loaded: (view?.loaded ?? false) && !behind,
       first: from,
       timeline,
       usage: view?.usage ?? null,
-      steps: (view?.steps ?? []).filter((step) => stepShown(step, end)),
+      steps: behind ? [] : (view?.steps ?? []).filter((step) => stepShown(step, end)),
       phase: view?.phase ?? null,
     };
     // Not read: why, while nothing shows (it is read again meanwhile); the page before, being read or why it was not.
@@ -595,7 +598,7 @@ export class StationTopics implements Owner {
     if (view) value.activity = this.#sync.activity(value, this.#core.views.stationNames(ofAddress(station)));
     // Offline, what is held is all there is: it is loaded, and says why it ends there.
     if (!this.#sync.reachable(station) || !link || link.state.state !== "online") {
-      if (!view?.loaded) {
+      if (value.loaded !== true) {
         value.loaded = true;
         value.offline = true;
       }

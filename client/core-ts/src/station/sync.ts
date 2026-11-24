@@ -2780,6 +2780,13 @@ export class StationsSync {
       }
       const now = core.host.nowMs();
       const kind = str(get(message, "type")) ?? "";
+      if (kind === "timeline") {
+        const start = u64(get(message, "start")) ?? 0;
+        const entries = (get(message, "entries") as unknown[] | undefined) ?? [];
+        // How far it goes, said whether or not its items are taken here: what is held must reach it before the steps
+        // in flight are shown after it (topics.ts `live`).
+        view.told = start + entries.length;
+      }
       if (kind === "timeline" && this.#transcriptLetGo(address, key)) {
         // Let go for room or spared on cellular: its items are read when opened or when leaving cellular.
       } else if (kind === "timeline") {
@@ -2817,9 +2824,13 @@ export class StationsSync {
         if (event !== undefined) {
           const span = core.data.logSpan("transcript", address, key);
           const held = span ? span.max + 1 : 0;
-          applyStep(view, event, now, held);
-          // Those the transcript recorded since are let go.
-          view.steps = view.steps.filter((s) => stepShown(s, held));
+          // A step that ends is recorded after where the transcript goes now: as the station said it, not as far as
+          // what is held here goes (behind it, or let go, what is held stays put and would keep the step forever).
+          applyStep(view, event, now, Math.max(held, view.told ?? 0));
+          // Those the transcript recorded since are let go; all that ended, where its transcript is not taken here
+          // (its records come with the read that shows it).
+          const letGo = this.#transcriptLetGo(address, key);
+          view.steps = view.steps.filter((s) => (letGo ? get(s, "ended") !== true : stepShown(s, held)));
         }
       } else return;
       if (kind !== "clear") this.#core.sendTrace.onLive(address, key);
