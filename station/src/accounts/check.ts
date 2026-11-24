@@ -202,6 +202,11 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
   // decision.rs AutomaticDecisions (deny_unknown_fields).
   const decisions = raw.automaticDecisions;
   if (decisions !== undefined && decisions !== null) checkAutomaticDecisions(decisions);
+
+  // `raw.readers` (src/read/reader-select.ts) is intentionally left unchecked here so invalid values,
+  // unknown mode keys, or non-object shapes never block `ConfigFile.update` on unrelated settings
+  // (language, channel, connects, etc.); `resolveReaderEngine` safely ignores unknown keys and
+  // falls back to `"mb"` with a deduplicated warning on invalid values.
 }
 
 /// decision.rs `AutomaticDecisions` as serde reads it: `{completion?: {enabled?: bool, model?: string|null}}`, nothing

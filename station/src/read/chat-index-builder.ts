@@ -3,7 +3,7 @@ import { Fibers } from "../ops/fibers.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
 import { outflowChatScopes } from "../store/outflow-index.ts";
 import type { InWorkspace } from "../store/rows.ts";
-import { MbProcess, readerBinary } from "./mb-reader.ts";
+import { type BackfillOptions, MbProcess, readerBinary } from "./mb-reader.ts";
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void; done: () => void };
 const IDLE_MS = 5_000;
@@ -30,9 +30,9 @@ export class OutflowChatIndex {
   #retryMs = 250;
   readonly #timers = new Fibers("outflow chat index");
   readonly #path: string;
-  readonly #options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
+  readonly #options: BackfillOptions;
 
-  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, binary = readerBinary()) {
+  constructor(path: string, options: BackfillOptions = {}, binary = readerBinary()) {
     this.#path = path;
     this.#options = options;
     this.#mb = binary;

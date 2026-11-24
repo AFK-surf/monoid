@@ -39,7 +39,7 @@ import { OUTFLOW_CHATS_PENDING } from "./outflow.ts";
 import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING } from "./store.ts";
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
-import { type Answer, type Ask, MbReader, type ReaderLike, type Ready, readerBinary } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, readerBinary } from "./mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -217,7 +217,7 @@ export class Readers {
   readonly data: string;
   /// What answers in a program's place: a test's reference (test/reference.ts).
   private readonly reference: ((data: string) => ReaderLike) | undefined;
-  private readonly backfill: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
+  private readonly backfill: BackfillOptions;
   /// People's names as their credentials say them (the admin API's `deps.names`), given to every read.
   readonly names = new Map<string, string>();
   /// The MoonBit reader's program (read/mb-reader.ts); none where a test's reference answers instead (`reference`).
@@ -232,7 +232,7 @@ export class Readers {
   clientKeys: () => Map<string, string> = () => new Map();
 
   /// For what devices ask, at most two by default (STILLFAIL_READERS says otherwise); for what is told, `tellers`.
-  constructor(data: string, size = Number(process.env.STILLFAIL_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1)), reference?: (data: string) => ReaderLike, tellers = 1, backfill: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}) {
+  constructor(data: string, size = Number(process.env.STILLFAIL_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1)), reference?: (data: string) => ReaderLike, tellers = 1, backfill: BackfillOptions = {}) {
     this.data = data;
     this.reference = reference;
     this.mbReader = reference === undefined ? readerBinary() : null;

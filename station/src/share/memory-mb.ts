@@ -10,13 +10,11 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
-import { resolveReaderEngine } from "../read/reader-select.ts";
+import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
 export const IDLE_MS = 60_000;
-
-const warnedReaderFallbacks = new Set<string>();
 
 type Json = any;
 type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
@@ -65,6 +63,7 @@ export class MemoryProgram {
   readonly #binary: string | null;
   readonly #shellDir: string;
   readonly #after: (ms: number, f: () => void) => () => void;
+  readonly #readers: (() => ReaderSelectConfig) | undefined;
   #process: MbProcess | null = null;
   #termination: Promise<number> | null = null;
   #next = 0;
@@ -76,10 +75,12 @@ export class MemoryProgram {
 
   /// `shellDir`: where the program's shell keeps its own files (the memory's directory). `binary`: the program
   /// (readerBinary's where none is given). `after`: the timer of IDLE_MS (a test's own; else the wall's).
-  constructor(shellDir: string, options: { binary?: string; after?: (ms: number, f: () => void) => () => void } = {}) {
+  /// `readers`: live `config.json` `readers` snapshot getter read on each spawn.
+  constructor(shellDir: string, options: { binary?: string; after?: (ms: number, f: () => void) => () => void; readers?: () => ReaderSelectConfig } = {}) {
     this.#binary = options.binary ?? null;
     this.#shellDir = shellDir;
     this.#after = options.after ?? wall.after;
+    this.#readers = options.readers;
   }
 
   /// Whether a program runs now.
@@ -114,30 +115,11 @@ export class MemoryProgram {
   }
 
   #resolveBinary(): string {
-    if (this.#binary !== null) return this.#binary;
-    // Probe engine intent first without touching disk (`pionBinary()`) so default `mb` does zero main-thread statSync.
-    // `memory` has write-fs side effects (`allowShadow: false`), so shadow is never executed.
-    const probe = resolveReaderEngine("memory", { hasPionBinary: true });
-    const pionBin = probe.engine === "pion" ? pionBinary() : null;
-    const selection = probe.engine === "pion"
-      ? resolveReaderEngine("memory", { hasPionBinary: pionBin !== null })
-      : probe;
-    if (selection.fallback) {
-      const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
-      if (!warnedReaderFallbacks.has(dedupKey)) {
-        warnedReaderFallbacks.add(dedupKey);
-        log.warn("memory", "reader engine fallback", {
-          mode: selection.mode,
-          engine: selection.engine,
-          requested: selection.requested,
-          source: selection.source,
-          reason: selection.reason,
-          detail: selection.detail,
-        });
-      }
-    }
-    if (selection.engine === "pion" && pionBin !== null) return pionBin;
-    return readerBinary();
+    return resolveReaderSelection("memory", {
+      binary: this.#binary,
+      config: this.#readers,
+      logAt: "memory",
+    }).primaryBinary;
   }
 
   #start(): MbProcess {

@@ -5,8 +5,8 @@ import { basename, dirname, join, normalize, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
-import { resolveReaderEngine } from "../read/reader-select.ts";
+import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
 export { within };
@@ -197,7 +197,6 @@ export const MEASURE_ROOM: Required<MeasureBudget> = { maxEntries: 500_000, maxD
 type Measured = { bytes: number; complete: boolean; reason?: string; rebuild?: [string, number][]; enough?: true };
 type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 
-const warnedReaderFallbacks = new Set<string>();
 const pendingShadows = new Set<Promise<void>>();
 let shadowInFlight = false;
 let activeShadowDeadline: (() => void) | null = null;
@@ -450,8 +449,8 @@ export async function waitForShadowMeasures(): Promise<void> {
 }
 
 /// The size of `path` and everything under it, on its file system, by `--builder footprint` (`mb` MoonBit by default,
-/// or `pion` / `shadow` via environment variables `STILLFAIL_READER_FOOTPRINT` / `STILLFAIL_READER_ENGINE`; wiring
-/// `config.readers` is deferred to unified station reader config), one process a measure under the system's background
+/// or `pion` / `shadow` via `STILLFAIL_READER_FOOTPRINT` / `config.json` `readers.footprint` / `STILLFAIL_READER_ENGINE`),
+/// one process a measure under the system's background
 /// priority, so none of the walk's entries are the station's thread's or its heap's: links not followed (a link counted
 /// as itself), another file system mounted in it not gone into, at most 32 deep, each file once however many names it
 /// has, within `budget` (the walks of what it finds sharing it). With `finding`, directories that can be made again are
@@ -459,33 +458,21 @@ export async function waitForShadowMeasures(): Promise<void> {
 /// the file system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at
 /// once and fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
 /// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
-function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
+function measure(
+  path: string,
+  ask: Ask,
+  budget: MeasureBudget,
+  signal?: AbortSignal,
+  readers?: () => ReaderSelectConfig,
+): Promise<Measured> {
   if (signal?.aborted) return Promise.reject(signal.reason);
-  // Probe engine intent first without touching disk (`pionBinary()`) so default `mb` does zero main-thread statSync.
-  const probe = resolveReaderEngine("footprint", { hasPionBinary: true });
-  const pionBin = probe.engine === "mb" ? null : pionBinary();
-  const selection = probe.engine === "mb"
-    ? probe
-    : resolveReaderEngine("footprint", { hasPionBinary: pionBin !== null });
-  if (selection.fallback) {
-    const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
-    if (!warnedReaderFallbacks.has(dedupKey)) {
-      warnedReaderFallbacks.add(dedupKey);
-      log.warn("footprint", "reader engine fallback", {
-        mode: selection.mode,
-        engine: selection.engine,
-        requested: selection.requested,
-        source: selection.source,
-        reason: selection.reason,
-        detail: selection.detail,
-      });
-    }
+  const resolved = resolveReaderSelection("footprint", { config: readers, logAt: "footprint" });
+  if (resolved.engine === "pion") {
+    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal).result;
   }
-  if (selection.engine === "pion" && pionBin !== null) {
-    return spawnMeasureBinary(pionBin, path, ask, budget, signal).result;
-  }
-  const primary = spawnMeasureBinary(readerBinary(), path, ask, budget, signal).result;
-  if (selection.engine !== "shadow" || pionBin === null) {
+  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal).result;
+  const pionBin = resolved.pionBinary;
+  if (resolved.engine !== "shadow" || pionBin === null) {
     return primary;
   }
   // Single-flight serial shadow: return `primary` immediately without waiting, and start shadow only after
@@ -510,13 +497,22 @@ function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSi
 }
 
 /// Measures one chat's directory again (after something in it was cleaned).
-export async function measureRoom(dir: string, budget: MeasureBudget = MEASURE_ROOM): Promise<Room> {
-  const { bytes, rebuild, complete, reason } = await measure(dir, { finding: true, strict: false }, budget);
+export async function measureRoom(
+  dir: string,
+  budget: MeasureBudget = MEASURE_ROOM,
+  readers?: () => ReaderSelectConfig,
+): Promise<Room> {
+  const { bytes, rebuild, complete, reason } = await measure(dir, { finding: true, strict: false }, budget, undefined, readers);
   return { bytes, rebuild: rebuild ?? [], complete, ...(reason !== undefined ? { reason } : {}) };
 }
 
 /// The size of a path, each file once.
-export const measured = async (path: string, signal?: AbortSignal, budget: MeasureBudget = MEASURE_ROOM) => (await measure(path, { finding: false, strict: false }, budget, signal)).bytes;
+export const measured = async (
+  path: string,
+  signal?: AbortSignal,
+  budget: MeasureBudget = MEASURE_ROOM,
+  readers?: () => ReaderSelectConfig,
+) => (await measure(path, { finding: false, strict: false }, budget, signal, readers)).bytes;
 
 /// Count the whole path when it fits; once it exceeds `limit`, return a lower bound without traversing the rest. A
 /// workspace too large or too slow to walk within `budget` (MEASURE_UP_TO) is a lower bound too, `truncated`.
@@ -526,8 +522,9 @@ export async function measuredUpTo(
   signal?: AbortSignal,
   budget: MeasureBudget = MEASURE_UP_TO,
   strict = true,
+  readers?: () => ReaderSelectConfig,
 ): Promise<{ bytes: number; complete: boolean; truncated?: true }> {
-  const got = await measure(path, { finding: false, strict, stopAfter: limit }, budget, signal);
+  const got = await measure(path, { finding: false, strict, stopAfter: limit }, budget, signal, readers);
   if (got.enough) return { bytes: got.bytes, complete: false };
   if (got.complete) return { bytes: got.bytes, complete: true };
   log.info("workspace-size", "workspace walk cut short", { path, bytes: got.bytes, reason: got.reason });

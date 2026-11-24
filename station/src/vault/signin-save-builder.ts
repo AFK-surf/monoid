@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -9,7 +9,7 @@ import { forgetSigninSave, installSigninSaveIndex, nextPendingSigninSave, queueS
 export class SigninSaveBuilder {
   readonly #db: DatabaseSync;
   readonly #path: string | null;
-  readonly #options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
+  readonly #options: BackfillOptions;
   readonly #answer: (pending: PendingSigninSave, body: string | null) => void;
   readonly #binary: string | undefined;
   readonly #timers = new Fibers("signin save index");
@@ -23,7 +23,7 @@ export class SigninSaveBuilder {
   #retryMs = 250;
 
   constructor(db: DatabaseSync, answer: (pending: PendingSigninSave, body: string | null) => void,
-    options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, binary?: string) {
+    options: BackfillOptions = {}, binary?: string) {
     this.#db = db; this.#path = db.location(); this.#answer = answer; this.#options = options; this.#binary = binary;
     installSigninSaveIndex(db);
     this.#pump();

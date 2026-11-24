@@ -1,6 +1,6 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, readerBinary } from "../read/mb-reader.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
 export type MinuteRequest = { id: number; remote: true } | { id: number; chats: InWorkspace | null };
@@ -27,7 +27,7 @@ export class MinuteReader {
   #idle: (() => void) | null = null;
   readonly #after: (ms: number, f: () => void) => () => void;
   /// `options.after`: the timer of IDLE_MS (a test's own; else the wall's).
-  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer; after?: (ms: number, f: () => void) => () => void } = {}, binary?: string) {
+  constructor(path: string, options: BackfillOptions & { after?: (ms: number, f: () => void) => () => void } = {}, binary?: string) {
     this.#path = path;
     this.#mb = binary;
     this.#after = options.after ?? wall.after;
