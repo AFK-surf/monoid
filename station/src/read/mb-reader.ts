@@ -444,6 +444,9 @@ export class MbProcess extends EventEmitter {
     createInterface({ input: this.#child.stderr! }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
     // (a failed write is the process gone, told by its exit)
     this.#child.stdin!.on("error", () => {});
+    // All it was given read, with nothing written meanwhile: no longer behind (else the next time it is would be told
+    // from where it stood before).
+    this.#child.stdin!.on("drain", () => void (this.#behind = null));
     this.#child.on("error", (error) => {
       if (this.#child.pid === undefined) MbProcess.#live.delete(this);
       this.emit("error", error);
