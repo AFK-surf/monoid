@@ -1,0 +1,96 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "RawLines splits on LF only without stripping CR and decodes lossy UTF-8" {
+  let rl = RawLines::new()
+  let c1 = Bytes::new(5)
+  c1[0] = 97 as Byte // 'a'
+  c1[1] = 13 as Byte // '\r'
+  c1[2] = 10 as Byte // '\n'
+  c1[3] = 0xFF as Byte
+  c1[4] = 10 as Byte
+  let out = rl.push(c1)
+  expect(out.length() == 2, "2 lines")
+  expect(out[0] == "a\r", "CR preserved")
+  expect(out[1] == "\u{FFFD}", "lossy UTF-8")
+}
+
+test "LineQueue clears slots and compacts storage" {
+  let q = LineQueue::new()
+  let sb = StringBuilder::new()
+  for i in 0..<80 {
+    sb.write_string("line-" + i.to_string() + "\n")
+  }
+  q.enqueue_chunk(sb.to_string().to_bytes())
+  expect(q.storage_len() == 80, "queued 80")
+  for i in 0..<64 {
+    match q.pop_line() {
+      Some(l) => expect(l == "line-" + i.to_string(), "line " + i.to_string())
+      None => panic("unexpected None")
+    }
+  }
+  expect(q.storage_len() == 16, "compacted to 16")
+  for _ in 0..<16 {
+    let _ = q.pop_line()
+  }
+  expect(q.storage_len() == 0, "emptied to 0")
+}
+
+test "escape_line_separators escapes U+2028 and U+2029" {
+  expect(escape_line_separators("{\"ok\":true}") == "{\"ok\":true}", "ascii fast path")
+  let b = Bytes::new(8)
+  b[0] = 97 as Byte // 'a'
+  b[1] = 0xE2 as Byte
+  b[2] = 0x80 as Byte
+  b[3] = 0xA8 as Byte // U+2028
+  b[4] = 0xE2 as Byte
+  b[5] = 0x80 as Byte
+  b[6] = 0xA9 as Byte // U+2029
+  b[7] = 98 as Byte // 'b'
+  let raw = decode_utf8_lossy_arr([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+  expect(escape_line_separators(raw) == "a\\u2028\\u2029b", "escaped separators")
+}
+
+test "is_cancel_ask requires strict boolean true and parse_ask_line maps invalid JSON to Null" {
+  expect(is_cancel_ask(parse_ask_line("{\"cancel\":true}")), "cancel true")
+  expect(!is_cancel_ask(parse_ask_line("{\"cancel\":false}")), "cancel false")
+  expect(!is_cancel_ask(parse_ask_line("{\"cancel\":1}")), "cancel 1")
+  expect(!is_cancel_ask(parse_ask_line("{\"cancel\":\"true\"}")), "cancel str")
+  expect(base_codec::json_eq(parse_ask_line("{bad json"), base_codec::json_null()), "bad json -> null")
+  expect(base_codec::json_eq(parse_ask_line("{\"s\":\"\\uD800\"}"), base_codec::json_null()), "lone surrogate -> null")
+}
+
+test "format_step_response matches MB builder protocol exactly" {
+  expect(format_step_response("archive mark", Ok(Some(true))) == "{\"done\":true}", "done true")
+  expect(format_step_response("archive mark", Ok(Some(false))) == "{\"done\":false}", "done false")
+  expect(
+    format_step_response("archive mark", Ok(None)) ==
+    "{\"done\":false,\"error\":\"invalid archive mark preparation request\"}",
+    "invalid request",
+  )
+  expect(
+    format_step_response("archive mark", Err(sql_db::sql_error(5, "database is locked"))) ==
+    "{\"done\":false}",
+    "busy omits error",
+  )
+  expect(
+    format_step_response("archive mark", Err(sql_db::sql_error(1, "boom"))) ==
+    "{\"done\":false,\"error\":\"boom\"}",
+    "non-busy includes error",
+  )
+}
+
+test "archive_marks_part and archive_marks_complete" {
+  let p = archive_marks_part("pins")
+  expect(p.source == "pins" && p.key == "session" && p.rows == "archive_pin_rows", "pins part")
+  let k = archive_marks_part("kept")
+  expect(k.source == "kept_chats" && k.key == "thread" && k.rows == "archive_keep_rows", "kept part")
+  let m : Map[String, base_codec::Json] = Map::new()
+  m.set("complete", base_codec::json_int(1))
+  expect(archive_marks_complete(m), "complete 1")
+  m.set("complete", base_codec::json_int(0))
+  expect(!archive_marks_complete(m), "complete 0")
+}

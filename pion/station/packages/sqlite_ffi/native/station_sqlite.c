@@ -42,6 +42,8 @@ extern int sqlite3_finalize(sqlite3_stmt *stmt);
 extern int sqlite3_reset(sqlite3_stmt *stmt);
 extern int sqlite3_clear_bindings(sqlite3_stmt *stmt);
 extern int sqlite3_step(sqlite3_stmt *stmt);
+extern int sqlite3_stmt_readonly(sqlite3_stmt *stmt);
+extern int sqlite3_bind_parameter_count(sqlite3_stmt *stmt);
 extern int sqlite3_bind_null(sqlite3_stmt *stmt, int i);
 extern int sqlite3_bind_int64(sqlite3_stmt *stmt, int i, int64_t v);
 extern int sqlite3_bind_double(sqlite3_stmt *stmt, int i, double v);
@@ -387,6 +389,22 @@ int32_t stq_step(int64_t stmt_h) {
         return STQ_SQLITE_MISUSE;
     }
     return (int32_t)sqlite3_step(stmt);
+}
+
+int32_t stq_stmt_readonly(int64_t stmt_h) {
+    sqlite3_stmt *stmt = lookup_stmt(stmt_h);
+    if (stmt == NULL) {
+        return 0;
+    }
+    return (int32_t)sqlite3_stmt_readonly(stmt);
+}
+
+int32_t stq_bind_parameter_count(int64_t stmt_h) {
+    sqlite3_stmt *stmt = lookup_stmt(stmt_h);
+    if (stmt == NULL) {
+        return 0;
+    }
+    return (int32_t)sqlite3_bind_parameter_count(stmt);
 }
 
 int32_t stq_bind_null(int64_t stmt_h, int32_t index) {

@@ -32,6 +32,8 @@ int32_t stq_finalize(int64_t stmt);
 int32_t stq_reset(int64_t stmt);
 int32_t stq_clear_bindings(int64_t stmt);
 int32_t stq_step(int64_t stmt);
+int32_t stq_stmt_readonly(int64_t stmt);
+int32_t stq_bind_parameter_count(int64_t stmt);
 
 int32_t stq_bind_null(int64_t stmt, int32_t index);
 int32_t stq_bind_int64(int64_t stmt, int32_t index, int64_t value);
