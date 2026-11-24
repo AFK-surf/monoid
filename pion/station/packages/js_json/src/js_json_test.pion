@@ -17,9 +17,9 @@ test "parse and stringify preserve lone surrogates and NUL losslessly" {
   match v {
     JValue::Obj(entries) => {
       expect(entries.length() == 1, "1 entry")
-      let (k, val) = entries[0]
+      let (k, jv) = entries[0]
       expect(k.length() == 1 && k[0] == 0xD800, "key is lone high surrogate 0xD800")
-      match val {
+      match jv {
         JValue::Str(u) => {
           expect(u.length() == 5, "5 UTF-16 code units")
           expect(u[0] == 0x61 && u[1] == 0x0000 && u[2] == 0xDC00 && u[3] == 0xD83D && u[4] == 0xDE80, "exact units")

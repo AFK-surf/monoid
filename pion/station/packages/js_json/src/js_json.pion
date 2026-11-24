@@ -560,7 +560,7 @@ fn Parser::parse_value(self : Parser, depth : Int) -> Result[JValue, String] {
         Err(e) => return Err(e)
       }
       let v = match self.parse_value(depth + 1) {
-        Ok(val) => val
+        Ok(jv) => jv
         Err(e) => return Err(e)
       }
       match seen {
@@ -620,7 +620,7 @@ fn Parser::parse_value(self : Parser, depth : Int) -> Result[JValue, String] {
     }
     while true {
       match self.parse_value(depth + 1) {
-        Ok(val) => items.push(val)
+        Ok(jv) => items.push(jv)
         Err(e) => return Err(e)
       }
       self.skip()
@@ -667,7 +667,7 @@ fn Parser::parse_value(self : Parser, depth : Int) -> Result[JValue, String] {
 pub fn parse_units(units : Array[Int]) -> Result[JValue, String] {
   let p = Parser::{ units: units, at: 0 }
   let v = match p.parse_value(0) {
-    Ok(val) => val
+    Ok(jv) => jv
     Err(e) => return Err(e)
   }
   p.skip()
@@ -886,10 +886,10 @@ fn write_value(
         if i > 0 {
           sb.write_byte(0x2C as Byte)
         }
-        let (k, val) = ord[i]
+        let (k, jv) = ord[i]
         quote_units(sb, k, escape_ls)
         sb.write_byte(0x3A as Byte)
-        write_value(sb, val, escape_ls, fmt_num)
+        write_value(sb, jv, escape_ls, fmt_num)
       }
       sb.write_byte(0x7D as Byte)
     }
