@@ -813,17 +813,21 @@ fn wide_station_group_tile(
         } else {
           let hot = fn() { @sf.lit_within_node(sp) }
           @sf.hover_ground_node(sp, lit=Some(hot))
-          @sf.hover_card_node(
-            tips,
-            sp,
-            fn(c) { @settings.station_peek_card_node(c, r.station, stint, offline_note~) },
-            tile=true,
-            padded=false,
-            side=Top,
-            press=fn() { @settings.open_station_peek(r.station, from=Node(sp), offline_note~) },
-            tapped=fn() { @settings.open_station_peek(r.station, from=Node(sp), offline_note~) },
+          // (a click or Enter holds the card the pointer brought, never a second panel over it: one card, held till a
+          // press outside or Escape; a finger's tap, which brings no card, opens the station's own)
+          let station_hand : Ref[@sf.HoverHand?] = Ref(None)
+          station_hand.val = Some(
+            @sf.hover_card_node(
+              tips,
+              sp,
+              fn(c) { @settings.station_peek_card_node(c, r.station, stint, offline_note~) },
+              tile=true,
+              padded=false,
+              side=Top,
+              press=fn() { if station_hand.val is Some(h) { (h.hold)() } },
+              tapped=fn() { @settings.open_station_peek(r.station, from=Node(sp), offline_note~) },
+            ),
           )
-          |> ignore
           wide_station_inline(sp, station_now, via, is_offline, is_updating, stint)
         }
       })

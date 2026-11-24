@@ -8305,7 +8305,8 @@ pub fn View::on_wheel_moves(self : View, f : (Wheel) -> Bool) -> View {
 ///|
 /// A wheel that nothing in it moves goes on to what is drawn under it, not to what holds it: a card floating over a page
 /// (in a layer of the window, so the page is none of what holds it) leaves the page to scroll under the pointer. What is
-/// kept from input (a modal layer over the page) is not asked, as ever.
+/// kept from input by a modal layer over the page is not asked, unless that layer (the topmost) is this one: then the
+/// page under it scrolls by the wheel while presses and keys stay the layer's (Tree::wheelless_at).
 pub fn View::wheel_passes(self : View) -> View {
   guard self.live() is Some(n) else { return self }
   n.wheel_passes = true
@@ -8365,7 +8366,7 @@ pub fn Tree::wheel_at(
     let hits : Array[NodeId] = []
     let now = self.logic_said()
     self.each_drawn_scaled(fn(c, cx, cy, _, s) {
-      if self.finger_on(c, cx, cy, s, x, y, now, tracked=false) {
+      if self.finger_on(c, cx, cy, s, x, y, now, tracked=false, wheel=true) {
         let n = self.nodes[c.id.at]
         if n.on_wheel is Some(_) ||
           n.on_drag is Some(_) ||
@@ -8415,7 +8416,7 @@ pub fn Tree::wheel_at(
         let (id, hosted, said) = e
         guard self.nodes[0].live else { break }
         let n = self.nodes[id.at]
-        guard n.live && n.gen == id.gen && !self.pressless_at(id.at) else { continue }
+        guard n.live && n.gen == id.gen && !self.wheelless_at(id.at) else { continue }
         if hosted && n.hosted {
           theirs.val = true
           if @signals.untracked(fn() { old(id) }) {
@@ -12206,6 +12207,27 @@ pub fn View::leaving_now(self : View) -> Bool {
 fn Tree::pressless_at(self : Tree, at : Int) -> Bool {
   // (under the topmost modal layer, not in it: none)
   !self.allows_at(at) || self.pressless_own_at(at)
+}
+
+///|
+/// Whether a wheel turned over node `at` is kept from it: as a press is (Tree::pressless_at), but under the topmost
+/// modal layer where that layer lets the wheel through (View::wheel_passes): a popover that leaves the page under it to
+/// scroll while it stays open, its presses outside it and its keys still its own. An old frame's modal layer over it
+/// keeps it as ever.
+fn Tree::wheelless_at(self : Tree, at : Int) -> Bool {
+  if self.pressless_own_at(at) {
+    return true
+  }
+  if self.allows_at(at) {
+    return false
+  }
+  match self.modal_top() {
+    Some(m) if self.nodes[m.at].wheel_passes => {
+      let under = self.held_under_now()
+      under > -2 && self.stack_at(at) <= under
+    }
+    _ => true
+  }
 }
 
 ///|
@@ -16105,8 +16127,11 @@ fn Tree::finger_on(
   y : Double,
   at : Double,
   tracked~ : Bool,
+  wheel? : Bool = false,
 ) -> Bool {
-  if x < cx || y < cy || x >= cx + c.w * s || y >= cy + c.h * s || self.pressless_at(c.id.at) {
+  // (a wheel's: as a press's, but on under a modal layer that lets the wheel through, Tree::wheelless_at)
+  let kept = if wheel { self.wheelless_at(c.id.at) } else { self.pressless_at(c.id.at) }
+  if x < cx || y < cy || x >= cx + c.w * s || y >= cy + c.h * s || kept {
     return false
   }
   // (within what holds it bounds it to: View::bounds_input)

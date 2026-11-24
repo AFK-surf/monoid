@@ -150,3 +150,28 @@ test "戳一下 on a station that predates it: says to update the station, no ra
   assert_true(t.query(Button, label="重试") is None)
   assert_true(t.query(Button, label="复制") is None)
 }
+
+///|
+test "大屏, 戳一下 open beside the words picked with the mouse: the wheel over the chat scrolls it, the answer staying open" {
+  new_run()
+  @sf.presenters_reset()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  // (what scrolls is asked here, not how the popover looks: its head's keys break the corner rule on 大屏 as on main)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, corners_held=false)
+  t.check_looks(false)
+  t.run_for(@ui.move_most_ms)
+  exp_set(t, src, ["selectionIntent"], true)
+  let (px, py, pw, ph) = quote_nodes_words(t, "高度先按 90 估")
+  t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="戳一下")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="the answer shown")
+  // (over the words picked, clear of the panel under them: the chat moves under the pointer)
+  t.wheel(px + 1.0, py + ph / 2.0, -40.0)
+  t.run_for(@ui.move_most_ms)
+  guard t.run_rects("高度先按 90 估") is [(_, moved, _, _), ..] else { fail("words not drawn") }
+  assert_true(moved > py + 20.0, msg="the chat scrolled: \{py} to \{moved}")
+  assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="the answer stays open")
+}

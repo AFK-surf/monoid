@@ -19,6 +19,8 @@ fn open_selection_intent(
     fn(v, close) { selection_intent_body(v, src, close) },
     from~,
     heads_itself=true,
+    // (read beside the chat: the chat under it still scrolls by the wheel while it stays where it opened)
+    scrolls_under=true,
     gone=fn() { @sfbase.selection_intent_reset() },
   )
 }
