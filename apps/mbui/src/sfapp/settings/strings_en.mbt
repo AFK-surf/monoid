@@ -2128,6 +2128,8 @@ let en : Map[String, String] = {
   "web-pages.experimental.board.description": "View chats in columns by status, station, or person and manage pending tasks; turning it off returns to the chat list",
   "web-pages.experimental.selectionIntent.title": "Poke",
   "web-pages.experimental.selectionIntent.description": "Show a “Poke” button beside Quote when selecting text in a chat; a lightweight model reads context and replies directly",
+  "web-pages.experimental.cmdQuote.title": "Hold ⌘/Ctrl to highlight & quote text",
+  "web-pages.experimental.cmdQuote.description": "Hold ⌘ (Ctrl on Windows/Linux) and hover over message text to highlight and underline a sentence, then click to quote it into the composer",
   "core-views.move.why.offline": "Offline: available once it is back",
   "core-views.move.why.stable": "Stable release: turn on Beta under its Software",
   "android-misc.bar.place.remote": "Remote",

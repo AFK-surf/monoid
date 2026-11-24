@@ -2357,7 +2357,11 @@ fn on_key(code : Int, mods : Int) -> Unit {
   // Code 0 is the host's modifier change, not a key for a field or shortcut. Ordinary keys also carry their
   // modifiers, so a key received after focus returns corrects the state before it is acted on.
   if modifiers_said.val.untracked() != mods {
-    view_event(fn() { modifiers_said.val.set(mods) }, what="modifiers")
+    view_event(fn() {
+      modifiers_said.val.set(mods)
+      cmd_hover_update(mods=Some(mods))
+      view_cursor_tell()
+    }, what="modifiers")
     h_request_frame()
   }
   if code == 0 { return }

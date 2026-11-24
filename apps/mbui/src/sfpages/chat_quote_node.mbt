@@ -28,19 +28,24 @@ fn chat_finger_picked(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, 
 }
 
 ///|
+fn chat_message_of(rows : ChatBodyList, key : String) -> Message? {
+  match rows.read().get(key) {
+    Some({ entry: Said(m), .. }) if m.ts != "" => Some(m)
+    // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
+    Some({ entry: Out(o), .. }) => Some(outgoing_said(o))
+    // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
+    Some({ entry: Sent(s), .. }) => Some(elsewhere_said(s))
+    _ => None
+  }
+}
+
+///|
 /// The message of chat `rows` whose words what is picked lies wholly within (in `v`'s selection scope, with no stray
 /// unowned paragraphs), once let go, with the mouse or a finger (one the viewer sent not yet the chat's too:
 /// outgoing_said; one said in Slack or Feishu: elsewhere_said): what is picked and the message; none otherwise.
 fn chat_picked_message(v : @view.View, rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard @ui.picked_now_in(v) is Some(p) && p.of.length() == 1 && p.strays == 0 else { return None }
-  match rows.read().get(p.of[0]) {
-    Some({ entry: Said(m), .. }) if m.ts != "" => Some((p, m))
-    // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
-    Some({ entry: Out(o), .. }) => Some((p, outgoing_said(o)))
-    // (one said in Slack or Feishu, the chat's only words where it has been nowhere else: whose there, of no message)
-    Some({ entry: Sent(s), .. }) => Some((p, elsewhere_said(s)))
-    _ => None
-  }
+  chat_message_of(rows, p.of[0]).map(fn(m) { (p, m) })
 }
 
 ///|
@@ -60,10 +65,8 @@ fn chat_quote_take(v : @view.View, src : Source, draft : String, rows : ChatBody
 }
 
 ///|
-/// What `p` says is picked, of message `m`, quoted into draft `draft` as chat_quote_take quotes it, and let go: as it
-/// was when what quotes it was made (the bar over a finger's pick), not found again as it is pressed.
-fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message, whole? : Bool = false) -> Unit {
-  let text = chat_picked_words(p, m, whole).trim(chars=" \n\t").to_owned()
+fn chat_quote_text(src : Source, draft : String, raw : String, m : Message) -> Unit {
+  let text = raw.trim(chars=" \n\t").to_owned()
   if text != "" {
     let author = if m.mine { @sf.t("web-main.chat.you") } else { m.by.name }
     let role = if !m.mine && m.author_kind == "agent" { "agent" } else { "person" }
@@ -74,6 +77,13 @@ fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message,
       "role": Json::string(role),
     })
   }
+}
+
+///|
+/// What `p` says is picked, of message `m`, quoted into draft `draft` as chat_quote_take quotes it, and let go: as it
+/// was when what quotes it was made (the bar over a finger's pick), not found again as it is pressed.
+fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message, whole? : Bool = false) -> Unit {
+  chat_quote_text(src, draft, chat_picked_words(p, m, whole), m)
   @ui.picked_let_go()
 }
 
@@ -151,6 +161,30 @@ fn chat_quote_node(
   place : @view.ListPlace[String],
 ) -> Unit {
   let draft = r.station + ":" + r.session
+  // (实验性功能 › 按住 ⌘ 点击引用文本: holding ⌘ highlights and underlines the hovered sentence; clicking quotes it)
+  @ui.words_cmd_pick(
+    v,
+    fn() { @sfbase.cmd_quote_feature.get() },
+    fn() { @sf.theme().p.accent },
+    fn(of, text) {
+      match @signals.untracked(fn() { chat_message_of(rows, of) }) {
+        Some(m) => {
+          let trimmed = text.trim(chars=" \n\t").to_owned()
+          // (avoid duplicate quotes from accidental rapid double Cmd+click on the same sentence)
+          let dup = @signals.untracked(fn() {
+            @sfbase.writing(src, draft).quotes.get().iter().any(fn(q) {
+              @sfbase.text(Some(q), "ts") == m.ts && @sfbase.text(Some(q), "text") == trimmed
+            })
+          })
+          if !dup {
+            chat_quote_text(src, draft, trimmed, m)
+          }
+          @ui.picked_let_go()
+        }
+        None => ()
+      }
+    },
+  )
   // (a pick whose words' block was put by as the list moved on: let go of it and its bar or pill)
   place.on_sight(fn(_) {
     match chat_picked_message(v, rows) {

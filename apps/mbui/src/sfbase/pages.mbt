@@ -185,6 +185,12 @@ pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a
 pub let selection_intent_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
 
 ///|
+/// Whether holding ⌘ (Ctrl on Windows/Linux) highlights and underlines message text on hover so clicking quotes it
+/// directly into the composer (实验性功能 › 按住 ⌘ 点击引用文本).
+// kept across runs: false as a run begins (reset)
+pub let cmd_quote_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// How a chat's column is laid out as the shell has it at a node's moment (chat_page_made's `narrower`): how much narrower
 /// than it is drawn (`by`), how far across it is moved (`across`), and the width it is laid out at (`laid`: where that
 /// steps, all it holds is laid out anew at once, View::lays_anew); the width at the other end of its way (`toward`:
@@ -1689,12 +1695,13 @@ pub fn reset() -> Unit {
   fresh_reset()
   // how times are said (message_words.mbt)
   absolute_times.set(false)
-  // whether Farview tabs are native, or the board / selection intent enabled
+  // whether Farview tabs are native, the board, selection intent or Cmd-click quote enabled
   farview_native.set(false)
   board_feature.set(false)
   selection_intent_feature.set(false)
   selection_intent_reset()
   selection_intent_pins_reset()
+  cmd_quote_feature.set(false)
   // a chat's messages out of avatars (emit.mbt)
   emits.clear()
   chat_foot_dropped.set(None)

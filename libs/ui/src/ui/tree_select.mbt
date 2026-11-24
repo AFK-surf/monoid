@@ -223,6 +223,7 @@ fn picked_told() -> Unit {
   })
   picked_finger_said.val.set(picked.finger)
   picked_now_tell()
+  cmd_sel_underline_update()
   @signals.end_batch()
   // (what no node reads any more let go)
   if picked_spans_said.length() > 64 {

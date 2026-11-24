@@ -1027,6 +1027,8 @@ pub fn words_over_closing_expected(Array[(String, String, String)]) -> Unit
 
 pub fn words_over_known(Array[(String, Int32)]) -> Unit
 
+pub fn words_cmd_pick(@view.View, () -> Bool, () -> Int64, (String, String) -> Unit) -> Unit
+
 pub fn words_picked(@view.View) -> Unit
 
 pub fn yield_thumbs(@view.View, island? : @view.View) -> Unit

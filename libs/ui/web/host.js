@@ -5110,6 +5110,7 @@
     const touch = (e) => e.pointerType === 'touch';
     const modsOf = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
     const tellModifiers = (mods, force = false) => {
+      modsNow = mods;
       if (force || mods !== modifiersSaid) cb.key(0, mods);
     };
     // (the canvas's, and what takes them in its place while a site is seen)
