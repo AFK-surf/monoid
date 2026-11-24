@@ -235,20 +235,21 @@ fn hue_slider_node(
       let look = @glass.SliderLook::new(
         track_h=hue_track_h,
         track_inset=hue_track_in,
-        travel_inset=Some(hue_thumb_room / 2.0),
-        thumb_w=hue_knob_d,
-        thumb_h=hue_knob_d,
+        travel_inset=None,
+        thumb_w=@glass.slider_thumb_w,
+        thumb_h=@glass.slider_thumb_h,
+        flush=true,
         track_color=fn() { 0L },
         fill_color=None,
         track_image=Some(fn() { Some((hue_strip(theme().dark), "", hue_strip_most)) }),
-        thumb_color=Some(fn() { ink_of_hue(now()) }),
-        thumb_edge=Some(fn() { (2.0, theme().p.canvas) }),
+        thumb_color=None,
+        thumb_edge=None,
         focus_shown=Some(fn() { sl.focus_shown() }),
         focus_color=Some(fn() { @ui.tree_theme().focus }),
         lens_enabled=true,
       )
       s.box(fn(slot) {
-        slot.height(Is(Some(hue_knob_d))) |> ignore
+        slot.height(Is(Some(@glass.slider_thumb_h))) |> ignore
         @glass.liquid_slider_look(
           slot,
           fn(n) { dd.progress(n) },
@@ -265,33 +266,19 @@ fn hue_slider_node(
 }
 
 ///|
-/// Hue `h`'s accent as the theme draws it now (light or dark).
-fn ink_of_hue(h : Int) -> Int64 {
-  let a = custom_tone(h)
-  if theme().dark {
-    a.dark
-  } else {
-    a.light
-  }
-}
+/// How much of the slider's width its capsule thumb's middle does not run along (matches flush=true: half a thumb at
+/// each end).
+let hue_thumb_room : Double = @glass.slider_thumb_w
 
 ///|
-/// How much of the slider's width its knob's middle does not run along (@kit.slider's thumb_room: half at each end).
-let hue_thumb_room : Double = 22.0
-
-///|
-/// The slider's height (h=S7), its track's (h=S1_5) and how far in from each end it is (mx=S2_5), the knob's side
-/// (w=S6).
+/// The slider's layout height (h=S7), its track's height (6pt capsule) and end inset (4pt, tucked under flush capsule).
 let hue_slider_h : Double = 28.0
 
 ///|
-let hue_track_h : Double = 6.0
+let hue_track_h : Double = @glass.slider_track_h
 
 ///|
-let hue_track_in : Double = 10.0
-
-///|
-let hue_knob_d : Double = 24.0
+let hue_track_in : Double = @glass.slider_track_h / 2.0 + 1.0
 
 ///|
 /// The check on the chosen dot (and 自定义's ＋): 0.6 of its side.

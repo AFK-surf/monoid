@@ -83,10 +83,14 @@ test "hue_slider_node: rejected hue keeps thumb aligned with model value" {
   t.run_for(@ui.move_most_ms)
   let sl = t.get(Slider, label="色相").rect
   let cy = sl.1 + sl.3 / 2.0
-  let knob_col = ink_of_hue(120)
   let knob_cx = fn() -> Double raise {
-    let ks = t.drawn_rects().filter(fn(r) { r.4 == knob_col && r.3 >= 23.0 && r.3 <= 25.0 && r.1 >= sl.1 - 2.0 })
-    assert_eq(ks.length(), 1, msg="expected 1 hue knob rect")
+    let ks = t.drawn_rects().filter(fn(r) {
+      r.4 == 0xFFFFFFFFL &&
+      (r.2 - @glass.slider_thumb_w).abs() < 0.5 &&
+      (r.3 - @glass.slider_thumb_h).abs() < 0.5 &&
+      r.1 >= sl.1 - 2.0
+    })
+    assert_eq(ks.length(), 1, msg="expected 1 white 38x24 hue capsule thumb rect")
     ks[0].0 + ks[0].2 / 2.0
   }
   let cx0 = knob_cx()

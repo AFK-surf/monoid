@@ -89,7 +89,7 @@ test "a book's track follows text position when its blocks have different length
   assert_true((reader_fraction(book, (0, 0.5)) - 0.45).abs() < 0.000001, msg="halfway through the first 90 characters is 45% of the book")
   let (t, r) = track_tester("track-uneven", book)
   let (x, y, w, h) = t.get(Slider).rect
-  t.tap(x + 11.0 + (w - 22.0) * 0.95, y + h / 2.0)
+  t.tap(x + slider_thumb_room / 2.0 + (w - slider_thumb_room) * 0.95, y + h / 2.0)
   assert_eq(r.jump.get().map(fn(j) { (j.0, j.1) }), Some((1, 5)), msg="95% reaches the middle of the last 10 characters")
   reader_let_go("track-uneven")
 }
@@ -142,6 +142,9 @@ test "phone reader position slider emits zero extra liquid glass instances while
 ///|
 test "reader layout sliders: Tab focus + arrow keys update value and focus ring follows thumb" {
   let tr = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=900.0, h=700.0, platform=0)
+  let prev_words = words_of.val
+  set_words(default_words)
+  set_language(Some("zh"))
   set_viewer_host(viewer_host_default())
   (viewer_host().set_reader_style)(Line(1.7))
   @ui.set_view_app(
@@ -166,15 +169,21 @@ test "reader layout sliders: Tab focus + arrow keys update value and focus ring 
     let sl_rect = tr.get(Slider, label=line_label).rect
     let mut best = -1.0
     for inst in tr.drawn_instances() {
-      // Focus ring is a 28x28 rounded rect (thumb 22 + 6) around the slider y band
-      if inst[5] == 0.0 && (inst[2] - 28.0).abs() < 0.5 && (inst[3] - 28.0).abs() < 0.5 && inst[1] >= sl_rect.1 - 4.0 && inst[1] <= sl_rect.1 + sl_rect.3 {
+      // Focus ring is a 44x30 rounded rect (38x24 capsule thumb + 6) within the slider rect
+      if inst[5] == 0.0 &&
+        (inst[2] - 44.0).abs() < 0.5 &&
+        (inst[3] - 30.0).abs() < 0.5 &&
+        inst[0] >= sl_rect.0 - 4.0 &&
+        inst[0] + inst[2] <= sl_rect.0 + sl_rect.2 + 4.0 &&
+        inst[1] >= sl_rect.1 - 4.0 &&
+        inst[1] <= sl_rect.1 + sl_rect.3 {
         best = inst[0]
       }
     }
     best
   }
   let x0 = ring_x()
-  assert_true(x0 > 0.0, msg="focused line-spacing slider must draw 28x28 focus ring")
+  assert_true(x0 > 0.0, msg="focused line-spacing slider must draw 44x30 focus ring")
   tr.key(@ui.key_code_right)
   tr.key(@ui.key_code_right)
   tr.key(@ui.key_code_right)
@@ -184,6 +193,8 @@ test "reader layout sliders: Tab focus + arrow keys update value and focus ring 
   assert_true(x1 > x0 + 4.0, msg="focus ring must move right with thumb after Right arrow keys: \{x0} -> \{x1}")
   assert_true((viewer_host().reader_style)().line > 1.7, msg="Right arrow must increase line spacing")
   (viewer_host().set_reader_style)(Line(reader_style_default.line))
+  set_language(None)
+  set_words(prev_words)
 }
 
 ///|
@@ -270,10 +281,13 @@ test "reader slider_node: rejected value keeps thumb synced to model value and n
   @ui.view_tree().unwrap().event(t.time(), fn() { box_w.set(240.0) })
   t.draw()
   let sl2 = t.get(Slider, label="受限滑块").rect
-  let accent_col = reader_paper("white").accent
-  let knobs = t.drawn_rects().filter(fn(r) { r.4 == accent_col && r.3 >= 21.0 && r.3 <= 23.0 })
-  assert_eq(knobs.length(), 1, msg="expected 1 thumb rect after restore")
+  let knobs = t.drawn_rects().filter(fn(r) {
+    r.4 == 0xFFFFFFFFL &&
+    (r.2 - @glass.slider_thumb_w).abs() < 0.5 &&
+    (r.3 - @glass.slider_thumb_h).abs() < 0.5
+  })
+  assert_eq(knobs.length(), 1, msg="expected 1 white 38x24 capsule thumb rect after restore")
   let cx = knobs[0].0 + knobs[0].2 / 2.0
-  let expected_cx = sl2.0 + slider_thumb_d / 2.0 + (sl2.2 - slider_thumb_d) * 0.4
+  let expected_cx = sl2.0 + slider_thumb_room / 2.0 + (sl2.2 - slider_thumb_room) * 0.4
   assert_true((cx - expected_cx).abs() < 1.0, msg="thumb center \{cx} must align with clamped model 40% (\{expected_cx})")
 }

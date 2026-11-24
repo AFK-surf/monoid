@@ -478,26 +478,27 @@ fn slider_node(
         }
       })
       s
-      .height(Is(Some(slider_thumb_d + slider_room)))
+      .height(Is(Some(slider_outer_h)))
       .lies_along(Is(Middle))
       |> ignore
       let look = @glass.SliderLook::new(
         track_h=slider_track_h,
-        track_inset=slider_thumb_d / 2.0,
-        travel_inset=Some(slider_thumb_d / 2.0),
-        thumb_w=slider_thumb_d,
-        thumb_h=slider_thumb_d,
+        track_inset=slider_track_in,
+        travel_inset=None,
+        thumb_w=@glass.slider_thumb_w,
+        thumb_h=@glass.slider_thumb_h,
+        flush=true,
         track_color=fn() { alpha(p().ink, slider_rest) },
         fill_color=Some(fn() { p().accent }),
-        thumb_color=Some(fn() { p().accent }),
-        thumb_edge=Some(fn() { (slider_ring, p().ground) }),
+        thumb_color=None,
+        thumb_edge=None,
         focus_shown=Some(fn() { sl.focus_shown() }),
         focus_color=Some(fn() { @ui.tree_theme().focus }),
         lens_enabled~,
         disabled=fn() { sl.disabled() },
       )
       s.box(fn(slot) {
-        slot.height(Is(Some(slider_thumb_d))) |> ignore
+        slot.height(Is(Some(@glass.slider_thumb_h))) |> ignore
         @glass.liquid_slider_look(
           slot,
           fn(n) { dd.progress(n) },
@@ -524,25 +525,22 @@ fn slider_node(
 }
 
 ///|
-/// The slider's sizes (@kit.slider_look_of's): the knob 22 across, 6 more of room round it, its ring 3; the line 3
-/// high, the ink at 16% after the knob; how much of its width the knob's middle does not run along (@kit.slider's
-/// thumb_room).
-let slider_thumb_d : Double = 22.0
+/// The slider's layout height (28pt, preserving reader panel row geometry), unified iOS 27 capsule track height (6pt),
+/// end inset (4pt, tucked under flush 38x24 white capsule thumb), rest track ink alpha (16%), and thumb travel room
+/// (38pt, matching flush=true).
+let slider_outer_h : Double = 28.0
 
 ///|
-let slider_room : Double = 6.0
+let slider_track_h : Double = @glass.slider_track_h
 
 ///|
-let slider_ring : Double = 3.0
-
-///|
-let slider_track_h : Double = 3.0
+let slider_track_in : Double = @glass.slider_track_h / 2.0 + 1.0
 
 ///|
 let slider_rest : Double = 0.16
 
 ///|
-let slider_thumb_room : Double = 22.0
+let slider_thumb_room : Double = @glass.slider_thumb_w
 
 ///|
 /// The layout's sheet's title's row (the old host's reader sheet's: 18 in, 4 over, 10 under).
