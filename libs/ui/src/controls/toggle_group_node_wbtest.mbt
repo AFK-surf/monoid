@@ -185,8 +185,13 @@ test "toggle_group_node: smooth NodeWay highlight transition with laid == 0 and 
     let full_a = (lifted & 0xFFL).to_int()
     assert_eq(lifted_alpha_in("列表"), full_a, msg="dark=\{dark}: rest active 列表 must have full lifted alpha")
     assert_eq(lifted_alpha_in("分栏"), 0, msg="dark=\{dark}: rest inactive 分栏 must have 0 ground alpha")
+    let active_r = k.t.get(Button, label="列表").rect
+    let active_insts = k.t.drawn_instances().filter(fn(a) {
+      a.length() > 6 && a[5] == 0.0 && (a[0] - active_r.0).abs() < 1.0 && (a[1] - active_r.1).abs() < 1.0 && (a[2] - active_r.2).abs() < 1.0 && (a[3] - active_r.3).abs() < 1.0
+    })
+    assert_true(active_insts.length() >= 1, msg="dark=\{dark}: rest active toggle_group rect instance must be present")
+    assert_eq(active_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="dark=\{dark}: rest active toggle_group must draw zero border")
     assert_eq(k.t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 }).length(), 0, msg="dark=\{dark}: rest active toggle_group must draw zero shadow")
-    assert_eq(k.t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 }).length(), 0, msg="dark=\{dark}: rest active toggle_group must draw zero border")
 
     k.t.tree_frames_from_now()
     k.t.click(Button, label="分栏")

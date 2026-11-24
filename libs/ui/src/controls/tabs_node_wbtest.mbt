@@ -96,9 +96,19 @@ test "tabs, the pill look: the lifted capsule under the chosen tab, sliding to a
       let r = k.t.get(Tab, label=name).rect
       (r.0.round().to_int(), r.2.round().to_int())
     }
-    assert_eq(tabs2_mark(k.t, tabs_pill_h), tab("对话"))
+    let (px, pw) = tabs2_mark(k.t, tabs_pill_h)
+    assert_eq((px, pw), tab("对话"))
+    let pill_rects = k.t.drawn_rects().filter(fn(r) {
+      r.4 == @ui.tree_theme().lifted && (r.3 - tabs_pill_h).abs() <= 0.5 && (r.0 - px.to_double()).abs() < 1.0
+    })
+    assert_eq(pill_rects.length(), 1, msg="dark=\{dark}: resting tabs Pill must draw 1 lifted pill")
+    let pr = pill_rects[0]
+    let pill_insts = k.t.drawn_instances().filter(fn(a) {
+      a.length() > 6 && a[5] == 0.0 && (a[0] - pr.0).abs() < 1.0 && (a[1] - pr.1).abs() < 1.0 && (a[2] - pr.2).abs() < 1.0 && (a[3] - pr.3).abs() < 1.0
+    })
+    assert_true(pill_insts.length() >= 1, msg="dark=\{dark}: resting tabs Pill rect instance must be present")
+    assert_eq(pill_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="dark=\{dark}: resting tabs Pill must draw zero border")
     assert_eq(k.t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 }).length(), 0, msg="dark=\{dark}: resting tabs Pill must draw zero shadow")
-    assert_eq(k.t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 }).length(), 0, msg="dark=\{dark}: resting tabs Pill must draw zero border")
     assert_eq(k.t.audit(), [])
     k.t.click(Tab, label="文件")
     k.t.run_for(@ui.move_most_ms)

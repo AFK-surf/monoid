@@ -37,10 +37,13 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
     let idle_pills = t.drawn_rects().filter(fn(r) { r.4 == expected_idle && r.2 > 80.0 && r.3 > 30.0 })
     assert_eq(idle_pills.length(), 1, msg="dark=\{dark}: rest must draw 1 lifted idle pill with expected color")
     let pill_r = idle_pills[0]
+    let pill_insts = t.drawn_instances().filter(fn(a) {
+      a.length() > 6 && a[5] == 0.0 && (a[0] - pill_r.0).abs() < 1.0 && (a[1] - pill_r.1).abs() < 1.0 && (a[2] - pill_r.2).abs() < 1.0 && (a[3] - pill_r.3).abs() < 1.0
+    })
     let pill_shadows = t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 && (a[2] - pill_r.2).abs() < 12.0 })
-    let pill_borders = t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 && (a[2] - pill_r.2).abs() < 12.0 })
+    assert_true(pill_insts.length() >= 1, msg="dark=\{dark}: resting glass_track=true pill rect instance must be present")
+    assert_eq(pill_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero border")
     assert_eq(pill_shadows.length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero shadow")
-    assert_eq(pill_borders.length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero border")
     assert_eq(t.drawn_glass().length(), 1, msg="dark=\{dark}: rest must draw only the track glass (0 hidden lens)")
     assert_eq(t.audit(), [], msg="dark=\{dark}: rest audit must be empty")
 
@@ -101,8 +104,13 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
     tf.run_for(glass_springs_out)
     let flat_pills = tf.drawn_rects().filter(fn(r) { r.4 == @ui.tree_theme().lifted && r.2 > 80.0 && r.3 > 20.0 })
     assert_eq(flat_pills.length(), 1, msg="dark=\{dark}: rest glass_track=false must draw 1 lifted pill")
+    let flat_r = flat_pills[0]
+    let flat_insts = tf.drawn_instances().filter(fn(a) {
+      a.length() > 6 && a[5] == 0.0 && (a[0] - flat_r.0).abs() < 1.0 && (a[1] - flat_r.1).abs() < 1.0 && (a[2] - flat_r.2).abs() < 1.0 && (a[3] - flat_r.3).abs() < 1.0
+    })
+    assert_true(flat_insts.length() >= 1, msg="dark=\{dark}: glass_track=false pill rect instance must be present")
+    assert_eq(flat_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero border")
     assert_eq(tf.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero shadow")
-    assert_eq(tf.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 0.0 && a[6] == 1.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero border")
     assert_eq(tf.audit(), [], msg="dark=\{dark}: flat rest audit must be empty")
   }
   set_dark(None)
