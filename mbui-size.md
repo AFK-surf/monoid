@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.65 | 127.41 |
 | [0f5041107](https://github.com/AFK-surf/monoid/commit/0f5041107ca0906f0ac433a02d252c283a3233b1) fix(mbui): wait for a notified message past the ch | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.58 | 137.62 |
 | [d4d7cf079](https://github.com/AFK-surf/monoid/commit/d4d7cf079cc732d783dd55d9978be5758c34e56e) fix(core-ts,ui,mbui): eliminate chat activity moti | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.45 | 130.12 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.27 | 121.74 |
 | [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 | [cc802ae52](https://github.com/AFK-surf/monoid/commit/cc802ae5243195f5594d7d999e45fbbf3c87cebd) test(station): wait for turn messages and snapshot | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
-| [522969f64](https://github.com/AFK-surf/monoid/commit/522969f64b9d23e6e84b57c359c80bdb06753976) perf(web,core-ts,ui): bound caches, fix statement/ | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.73 | 130.61 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
 | [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.2 |
 | [0f5041107](https://github.com/AFK-surf/monoid/commit/0f5041107ca0906f0ac433a02d252c283a3233b1) fix(mbui): wait for a notified message past the ch | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.59 |
 | [d4d7cf079](https://github.com/AFK-surf/monoid/commit/d4d7cf079cc732d783dd55d9978be5758c34e56e) fix(core-ts,ui,mbui): eliminate chat activity moti | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5afb197a2](https://github.com/AFK-surf/monoid/commit/5afb197a21308a8ccc71402e96c54edf9bbfba72) fix(mbui): stream animated GIFs past the 16M pixel | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.23 |
 | [a2ec761dc](https://github.com/AFK-surf/monoid/commit/a2ec761dc24fcd05963eb01ad28c753c8e5fe511) feat(mbui): pick words and add notes in the PDF vi | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [cc802ae52](https://github.com/AFK-surf/monoid/commit/cc802ae5243195f5594d7d999e45fbbf3c87cebd) test(station): wait for turn messages and snapshot | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.43 |
-| [522969f64](https://github.com/AFK-surf/monoid/commit/522969f64b9d23e6e84b57c359c80bdb06753976) perf(web,core-ts,ui): bound caches, fix statement/ | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.44 |
