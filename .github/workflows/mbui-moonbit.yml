@@ -78,9 +78,11 @@ jobs:
         with:
           path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
+          # (also match a fallback key written after a wedged reservation on the primary key)
+          restore-keys: ${{ steps.tag.outputs.key }}-
           lookup-only: true
       - name: "Installed (MOON_HOME: moon-ci in the runner's tool cache)"
-        if: env.GO == 'true' && steps.had.outputs.cache-hit != 'true'
+        if: env.GO == 'true' && steps.had.outputs.cache-matched-key == ''
         shell: bash
         run: |
           export MOON_HOME="$RUNNER_TOOL_CACHE/moon-ci"; [ "${{ runner.os }}" != Windows ] || MOON_HOME=$(cygpath -u "$MOON_HOME")
@@ -118,18 +120,33 @@ jobs:
           # (a self-hosted runner's saved from moon-ci-put in its workspace: the path every runner of it asks by,
           # .github/actions/mbui-moonbit)
           if [ "${{ runner.environment }}" = self-hosted ]; then rm -rf moon-ci-put && cp -R "$MOON_HOME" moon-ci-put; fi
-      - if: env.GO == 'true' && steps.had.outputs.cache-hit != 'true'
+      - if: env.GO == 'true' && steps.had.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
       # (put in, or this fails: a save that could not be made is only a warning of actions/cache/save's, run 39533061843's
-      # every put green with nothing saved)
+      # every put green with nothing saved. If a cancelled run left a stale reservation on the primary key — 45436742717
+      # timed out on ci-1 and blocked 45443985070 and 45447800112 for an hour — fall back to a run-suffixed key under the
+      # same prefix so actions/mbui-moonbit and subsequent hourly checks still find it.)
       - if: env.GO == 'true'
         uses: actions/cache/restore@v4
+        id: verify
         with:
           path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
+          restore-keys: ${{ steps.tag.outputs.key }}-
+          lookup-only: true
+      - if: env.GO == 'true' && steps.had.outputs.cache-matched-key == '' && steps.verify.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          key: ${{ steps.tag.outputs.key }}-${{ github.run_id }}
+      - if: env.GO == 'true' && steps.verify.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.environment == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          key: ${{ steps.tag.outputs.key }}-${{ github.run_id }}
           lookup-only: true
           fail-on-cache-miss: true
       # (what a job gets: the action over what was put in)
