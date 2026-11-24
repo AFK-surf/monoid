@@ -196,7 +196,7 @@ pub fn stream_pointer(
   hx : Double,
   hy : Double,
 ) -> Unit {
-  current.val.st_pointer_named(id, key, png, w, h, hx, hy)
+  (current.val.st_pointer_named)(id, key, png, w, h, hx, hy)
 }
 
 ///|

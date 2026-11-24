@@ -394,7 +394,7 @@ struct FakeHost {
 /// they are. A test never does. `turn`: the host given a moment for what it was asked (its main queue turned: a
 /// picture's decode told).
 pub(all) struct Live {
-  host : &@hostapi.Host
+  host : @hostapi.Host
   turn : () -> Unit
 }
 
@@ -407,11 +407,11 @@ let live_turns_most = 3000
 /// did not decode), the host's kept by it (Tester::live_image); the answer recorded as a host's is.
 fn live_image(f : FakeHost, l : Live, mine : Int, head : Json) -> Int {
   let info = FixedArray::make(4, 0.0)
-  let mut st = l.host.image_info(mine, info)
+  let mut st = (l.host.image_info)(mine, info)
   let mut turns = 0
   while st == 0 && turns < live_turns_most {
     (l.turn)()
-    st = l.host.image_info(mine, info)
+    st = (l.host.image_info)(mine, info)
     turns = turns + 1
   }
   let id = if st == 1 {

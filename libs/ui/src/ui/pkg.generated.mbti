@@ -2279,7 +2279,7 @@ pub fn[T] ListRows::went(Self[T], String) -> Double?
 type ListState
 
 pub(all) struct Live {
-  host : &@hostapi.Host
+  host : @hostapi.Host
   turn : () -> Unit
 }
 
@@ -3106,7 +3106,7 @@ pub fn Tester::dump(Self) -> String
 pub fn Tester::each_frame(Self, (() -> Unit)?) -> Unit
 pub fn Tester::edit_can(Self) -> Int32
 pub fn Tester::effect_in_view_faults(Self) -> Array[String]
-pub fn Tester::end_run(Self, &@hostapi.Host) -> Unit
+pub fn Tester::end_run(Self, @hostapi.Host) -> Unit
 pub fn Tester::enter(Self) -> Unit
 pub fn Tester::export_frames(Self) -> Unit
 pub fn Tester::face_wider(Self, Int32, Double) -> Unit
