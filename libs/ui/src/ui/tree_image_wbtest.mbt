@@ -468,3 +468,81 @@ test "a FitCover node with a stand-in judges readiness using image_px (short-sid
   t.run_for(image_fade_ms)
   assert_eq(drawn(), ["tall"], msg="tall shown once 8192px decode completes")
 }
+
+///|
+test "an unseen FitCover tall picture prefetches at 8192 via view_unseen once natural dimensions are known" {
+  let seen = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, images=[("tall-unseen", 1000, 15000)], finish=false)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.alpha(By(fn() { seen.get() })) |> ignore
+      h.box(fn(n) {
+        n
+        .offset(Is((20.0, 20.0)))
+        .width(Is(Some(160.0)))
+        .height(Is(Some(300.0)))
+        .image(Is(Some(("tall-unseen", "", 8192))))
+        .image_covers(Is(true))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  // First draw while transparent: initial 1024px decode asked via view_unseen.
+  t.draw()
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall-unseen" {
+      t.finish(1, p.1)
+    }
+  }
+  // Second draw still transparent (view_unseen path): natural 1000x15000 is now known, so view_unseen must prefetch 8192.
+  t.draw()
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall-unseen" }).map(fn(l) { l.1 })
+  assert_true(asked.length() >= 2 && asked[asked.length() - 1] == 8192, msg="expected view_unseen to prefetch 8192, got \{Repr(asked)}")
+}
+
+///|
+test "a FitCover node with image_in matte and stand-in judges readiness and decodes at 8192" {
+  let t = Tester::new(fn(_c) {  }, images=[("tall-matte", 1000, 15000), ("stand", 60, 40)], finish=false)
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(200.0)))
+      .height(Is(Some(320.0)))
+      .image(Is(Some(("tall-matte", "stand", 8192))))
+      .image_in(Is(Some(((20.0, 10.0, 160.0, 300.0), 0x111111FFL))))
+      .image_covers(Is(true))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "stand" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  let drawn = fn() {
+    t.drawn_instances().filter(fn(i) { i[5] == 4.0 && i[2] == 200.0 && i[3] == 320.0 }).map(fn(i) { t.image_src(i[20].to_int()) })
+  }
+  assert_eq(drawn(), ["stand"], msg="stand-in shown before tall-matte decodes")
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall-matte" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall-matte" }).map(fn(l) { l.1 })
+  assert_true(asked.length() >= 2 && asked[asked.length() - 1] == 8192, msg="expected image_in matte to upgrade to 8192, got \{Repr(asked)}")
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall-matte" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  t.run_for(image_fade_ms)
+  assert_eq(drawn(), ["tall-matte"], msg="tall-matte shown once 8192px decode completes")
+}

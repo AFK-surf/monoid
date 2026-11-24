@@ -2918,11 +2918,16 @@ fn composer_extras_node(
 }
 
 ///|
-/// Where a square tile crops picture `key`: tall or wide strips (> 2:1) start at their top/left `(0.0, 0.0)`,
-/// while ordinary aspect ratios return `None` to keep centered `FitCover`.
+/// Where a square tile crops picture `key`: tall or wide strips matching `image_cropped_from_start`
+/// (`oh/ow > box_most_h/image_min_side` = 1.875, or `ow/oh > box_most_w/image_min_side` = 2.25) start at their
+/// top/left `(0.0, 0.0)`, while ordinary aspect ratios return `None` to keep centered `FitCover`.
 fn tile_start_crop(key : String) -> (Double, Double)? {
+  if key == "" || key == "!" {
+    return None
+  }
   match @ui.image_natural(key) {
-    Some((ow, oh)) if ow > 0.0 && oh > 0.0 && (oh > ow * 2.0 || ow > oh * 2.0) => Some((0.0, 0.0))
+    Some((ow, oh)) if ow > 0.0 && oh > 0.0 && (oh * image_min_side > ow * box_most_h || ow * image_min_side > oh * box_most_w) =>
+      Some((0.0, 0.0))
     _ => None
   }
 }
@@ -2969,7 +2974,7 @@ fn waiting_tile_of(
       )
       .image_for(Is((@sf.waiting_tile_side, @sf.waiting_tile_side)))
       .image_covers(Is(true))
-      .image_covers_at(By(fn() { tile_start_crop(key()) }))
+      .image_covers_at(By(fn() { if video() { None } else { tile_start_crop(key()) } }))
       |> ignore
     },
     going,
@@ -3106,7 +3111,7 @@ fn composer_file_node(
           // thumbnail is (message_media_node))
           tile
           .image_covers(Is(true))
-          .image_covers_at(By(fn() { tile_start_crop(picture()) }))
+          .image_covers_at(By(fn() { if file_kind(name()) == "video" { None } else { tile_start_crop(picture()) } }))
           .shared(
             By(fn() {
               // (one the viewer cannot open yet, a video whose first frame is still being made: the id it will open by

@@ -2857,26 +2857,11 @@ fn Ctx::view_drawn(
 }
 
 ///|
-/// Content `c`'s picture, each frame where it is drawn (at (x, y), `s` times as big, as opaque as `a`) and as big, over what
-/// its block draws: its decode the one for that size, asked for as an old view's is, its own kept as one shown this
-/// frame, View::image; not in its block, whose instances are kept as they were made.
-fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : Double, a : Double) -> Unit {
-  guard c.image is Some((src, stand_in, most)) else { return }
-  // (its instances the node's, as what its block makes are: view_made's)
-  let (was, was_tree) = (inst_owners.painting, inst_owners.tree_painting)
-  inst_owners.painting = -1
-  inst_owners.tree_painting = Some(c.id)
-  // (what stands in for it till it is decoded for the pixels it is drawn at, now, or for the room it is judged
-  // ready for where that is said (View::image_for): asked for then, whatever stands in)
-  let (w, h) = (c.w * s, c.h * s)
-  // (its picture where it lies in it, as big, a matte round it: View::image_in)
-  let (pw, ph) = match c.image_in {
-    Some(((_, _, iw, ih), _)) => (iw * s, ih * s)
-    None => (w, h)
-  }
-  let (fw, fh) = c.image_for
-  let judged = fw > 0.0 || fh > 0.0
-  let fit = match c.image_in {
+///|
+/// How content `c`'s picture fits its box (shared by Ctx::view_picture and Ctx::view_unseen so offscreen prefetches
+/// request the same decode tier as visible draws).
+fn view_image_fit(c : @view.Content) -> Fit {
+  match c.image_in {
     Some(_) =>
       if c.image_cover_at is Some((across, down)) {
         FitCoverFrom(across, down)
@@ -2896,6 +2881,29 @@ fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : 
         FitFill
       }
   }
+}
+
+///|
+/// Content `c`'s picture, each frame where it is drawn (at (x, y), `s` times as big, as opaque as `a`) and as big, over what
+/// its block draws: its decode the one for that size, asked for as an old view's is, its own kept as one shown this
+/// frame, View::image; not in its block, whose instances are kept as they were made.
+fn Ctx::view_picture(self : Ctx, c : @view.Content, x : Double, y : Double, s : Double, a : Double) -> Unit {
+  guard c.image is Some((src, stand_in, most)) else { return }
+  // (its instances the node's, as what its block makes are: view_made's)
+  let (was, was_tree) = (inst_owners.painting, inst_owners.tree_painting)
+  inst_owners.painting = -1
+  inst_owners.tree_painting = Some(c.id)
+  // (what stands in for it till it is decoded for the pixels it is drawn at, now, or for the room it is judged
+  // ready for where that is said (View::image_for): asked for then, whatever stands in)
+  let (w, h) = (c.w * s, c.h * s)
+  // (its picture where it lies in it, as big, a matte round it: View::image_in)
+  let (pw, ph) = match c.image_in {
+    Some(((_, _, iw, ih), _)) => (iw * s, ih * s)
+    None => (w, h)
+  }
+  let (fw, fh) = c.image_for
+  let judged = fw > 0.0 || fh > 0.0
+  let fit = view_image_fit(c)
   let (rw, rh) = if judged { (fw * s, fh * s) } else { (pw, ph) }
   let shown = if stand_in == "" {
     src
@@ -8694,12 +8702,15 @@ fn Ctx::view_unseen(self : Ctx, c : @view.Content, s : Double) -> Unit {
     // (none in its bones: nothing it would show asked for, View::bones)
     Some((src, stand_in, most)) if c.bones == 0L => {
       let (fw, fh) = c.image_for
-      let room = if fw > 0.0 || fh > 0.0 {
-        if stand_in == "" { dmax(fw, fh) } else { dmax(fw, fh) * s }
+      let (rw, rh) = if fw > 0.0 || fh > 0.0 {
+        if stand_in == "" { (fw, fh) } else { (fw * s, fh * s) }
       } else {
-        dmax(c.w * s, c.h * s)
+        match c.image_in {
+          Some(((_, _, iw, ih), _)) => (iw * s, ih * s)
+          None => (c.w * s, c.h * s)
+        }
       }
-      self.image_ready(src, dmin(room * self.scale, most.to_double())) |> ignore
+      self.image_ready(src, dmin(self.image_px(src, rw, rh, view_image_fit(c)), most.to_double())) |> ignore
     }
     _ => ()
   }

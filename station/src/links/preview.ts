@@ -335,7 +335,7 @@ async function picture(href: string): Promise<string | null> {
     try {
       const file = join(dir, `picture.${ext}`);
       await writeFile(file, found.bytes);
-      const small = await thumbnail(file, dir);
+      const small = await thumbnail(file, dir, undefined, undefined, true);
       if (small) {
         const bytes = await readFile(small.path);
         return bytes.length > PICTURE_INLINE ? null : dataUrl(small.type, bytes);

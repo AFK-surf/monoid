@@ -164,7 +164,7 @@ fn message_video_node(
           None
         } else {
           // (decoded for its box at its largest, as its data says it now (one sent from here its size once the core's
-          // row takes it over): a width given changing asks no other decode; as large as it is drawn, reveal_px's)
+          // row takes it over): a width given changing asks no other decode; as large as it is drawn, image_reveal_node's)
           let (nw, nh, _) = image_box(a(), video_least)
           let px = dmin(dmax(nw, nh) * s.pixel_scale(), image_px_most)
           Some((k, "", px.to_int()))

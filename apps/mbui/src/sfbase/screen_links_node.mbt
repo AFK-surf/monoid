@@ -386,7 +386,7 @@ fn screen_peek_node(
       fn(i, k) {
         i
         .over(Is(true))
-        .image(By(fn() { Some((k.get(), "", peek_image_max_px)) }))
+        .image(By(fn() { Some((k.get(), "", peek_size.to_int())) }))
         .image_covers_at(Is(Some((0.5, 0.0))))
         |> ignore
       },
@@ -414,10 +414,6 @@ fn screen_peek_node(
   })
   |> ignore
 }
-
-///|
-/// Upper bound on decoded pixels for a FitCover screen preview so tall/wide captures stay sharp.
-let peek_image_max_px : Int = 8192
 
 ///|
 /// The preview's frame (peek_frame's but its corner, said on its node: concentric with the card's).

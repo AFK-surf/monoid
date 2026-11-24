@@ -1,6 +1,5 @@
-//! Thumbnails and ThumbHashes of the images sent in chats, for the station in TypeScript (src/drive/thumbs.ts): the
-//! Rust station's mesh/app/src/thumbs.rs as it is (the same `image` and `thumbhash` crates, at the versions mesh/ is
-//! built with, so both stations make the same bytes), its decoding and encoding off Node's thread. Which files, when,
+//! Thumbnails and ThumbHashes of the images sent in chats, for the station in TypeScript (src/drive/thumbs.ts),
+//! decoding and encoding off Node's thread using the `image` and `thumbhash` crates. Which files, when,
 //! and what is kept with a message: the TypeScript's.
 
 use std::io::Cursor;
@@ -39,6 +38,8 @@ struct Size {
     lossless: bool,
 }
 const THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 320, max_long: 8192, suffix: "", of: 1, lossless: false };
+/// Strictly bounded 720×600 thumbnail without short-side floor (for inline-sized link previews).
+const BOX_THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 0, max_long: 0, suffix: "", of: 1, lossless: false };
 /// Kept only at half the image or less: anything more saves too little of the wait to be worth a second read. A
 /// screenshot of text is often smaller as a lossless WebP than as a JPEG, and then has every edge as it was; a photo
 /// is the JPEG. (Not a lossy WebP: the `image` crate writes none, and the app's own decoder reads only lossless ones.)
@@ -50,8 +51,8 @@ fn wanted(name: &str) -> bool {
     [".png", ".jpg", ".jpeg", ".webp"].iter().any(|e| lower.ends_with(e))
 }
 
-/// thumbs.rs `thumbnail`.
-fn thumbnail_of(image: &Path, dir: &Path) -> Option<(PathBuf, &'static str)> {
+/// thumbs.rs `thumbnail`. When `boxed` is true, fits strictly within MAX_W×MAX_H (`BOX_THUMB`).
+fn thumbnail_of(image: &Path, dir: &Path, boxed: bool) -> Option<(PathBuf, &'static str)> {
     let name = image.file_name()?.to_str()?;
     if !wanted(name) {
         return None;
@@ -61,7 +62,8 @@ fn thumbnail_of(image: &Path, dir: &Path) -> Option<(PathBuf, &'static str)> {
         return None;
     }
     let id = id_of(image);
-    kept(dir, &id, &THUMB).or_else(|| make(decode(image)?, len, dir, &id, &THUMB))
+    let size = if boxed { &BOX_THUMB } else { &THUMB };
+    kept(dir, &id, size).or_else(|| make(decode(image)?, len, dir, &id, size))
 }
 
 /// thumbs.rs `preview`: as `thumbnail`, at PREVIEW, for an image over PREVIEW_SMALL.
@@ -184,8 +186,9 @@ pub struct Thumbnail {
 /// thumbs.rs `thumbnail`: the image's thumbnail in `dir` and its type, made if it is not there yet; null when the image
 /// is shown itself (not a png/jpg/jpeg/webp by its name, 24 KiB or less, not readable as an image, or no smaller made).
 #[napi]
-pub async fn thumbnail(image: String, dir: String) -> Option<Thumbnail> {
-    let found = tokio::task::spawn_blocking(move || thumbnail_of(Path::new(&image), Path::new(&dir))).await.ok().flatten()?;
+pub async fn thumbnail(image: String, dir: String, boxed: Option<bool>) -> Option<Thumbnail> {
+    let boxed = boxed.unwrap_or(false);
+    let found = tokio::task::spawn_blocking(move || thumbnail_of(Path::new(&image), Path::new(&dir), boxed)).await.ok().flatten()?;
     Some(Thumbnail { path: found.0.to_string_lossy().into_owned(), kind: found.1.to_string() })
 }
 

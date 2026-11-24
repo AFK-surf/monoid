@@ -1524,7 +1524,7 @@ fn board_files_node(
                   }),
                 )
                 .image_covers(Is(true))
-                .image_covers_at(By(fn() { tile_start_crop(picture()) }))
+                .image_covers_at(By(fn() { if is_video() { None } else { tile_start_crop(picture()) } }))
                 |> ignore
               } else {
                 v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
