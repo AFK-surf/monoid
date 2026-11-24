@@ -1172,7 +1172,6 @@ fn composer_box_node(
       !composing_node.quiet &&
       !foot_at_rest.val &&
       !@view.answering_now() &&
-      foot.cause_at() != reshaped_at.val &&
       (user_change || (qn_was + fn_was > 0 && qn + fn_ > 0)) {
       // (first attachment mounting lazy `area` in this same flush: let `area`'s mount callback call resizes(uncut=true))
       if qn_was + fn_was == 0 && qn + fn_ > 0 && pad_room.val is None {
@@ -1182,21 +1181,21 @@ fn composer_box_node(
       // transitions_only; uncut so attachments scale/fade into the room without clipping)
       let change = fn() {
         let mut said = false
-        if (qn + fn_ > 0) != (qn_was + fn_was > 0) && pad_room.val is Some(pr) && pr.was_placed() {
+        if (qn + fn_ > 0) != (qn_was + fn_was > 0) && pad_room.val is Some(pr) {
           pr.resizes(uncut=true) |> ignore
           said = true
         }
-        if qn != qn_was && quotes_room.val is Some(qr) && qr.was_placed() {
+        if qn != qn_was && quotes_room.val is Some(qr) {
           qr.resizes(open_top=true) |> ignore
           said = true
         }
-        if fn_ != fn_was && files_room.val is Some(fr) && fr.was_placed() {
+        if fn_ != fn_was && files_room.val is Some(fr) {
           fr.resizes(uncut=true) |> ignore
           said = true
         }
         if said {
           reshaped_at.val = foot.cause_at()
-        } else {
+        } else if foot.cause_at() != reshaped_at.val {
           reshape()
         }
       }

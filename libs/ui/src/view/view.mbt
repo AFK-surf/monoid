@@ -11871,7 +11871,7 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
   if m.structure_box {
     tree.structure_row_sync_one(v.at)
   }
-  let was_uncut = m.come_uncut
+  let was_uncut = m.come_uncut || m.come_open_top
   m.come_uncut = false
   m.come_open_top = false
   m.list_key_way = false
