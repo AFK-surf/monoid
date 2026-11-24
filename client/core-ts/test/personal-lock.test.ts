@@ -740,6 +740,7 @@ test("a start reads the lock it pinned from the device in one wait, not one wait
     await a.host.time.pass(100);
     assert.equal(again.loaded(SUB), true, "read in one wait of 200 ms");
     assert.notEqual(again.chain(SUB), null, "the chain pinned is what it read");
+    assert.equal(again.standing(SUB), "member", "the key it is on the chain with is what it read");
   } finally {
     a.runner.shutdown();
   }
