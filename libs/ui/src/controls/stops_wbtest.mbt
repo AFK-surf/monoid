@@ -1,4 +1,5 @@
-// The stops as nodes (stops_node): a few levels in order on one line, the one it is at named in its thumb.
+// The stops as nodes (stops_node): single-row standard pill slider (6pt track, 38x24 pure white capsule thumb) paired
+// with a fixed-width right-side label showing only the current/preview stop name.
 
 ///|
 /// A phone's window with the stops of `labels` in it as nodes (stops_node), at `chosen` as its caller says; what was
@@ -40,10 +41,13 @@ test "stops: every level a stop on one line, the one it is at alone named; a sto
   let s = t.get(@ui.Role::Slider, label="思考深度")
   assert_eq(s.value, "高")
   assert_eq(stops_named(t, labels), ["高"])
-  // (its name whole in its thumb, the thumb in its track)
+  // (its name on the same single row to the right of the slider track)
   let (x, y, w, h) = s.rect
-  let (nx, _, nw, _) = t.rect_of("高").unwrap()
-  assert_true(nx >= x && nx + nw <= x + w, msg="\{Repr((nx, nw))} in \{Repr(s.rect)}")
+  let (nx, ny, nw, nh) = t.rect_of("高").unwrap()
+  assert_true(
+    nx >= x + w && ny >= y - 2.0 && ny + nh <= y + h + 2.0,
+    msg="\{Repr((nx, ny, nw, nh))} beside \{Repr(s.rect)}",
+  )
   // its last stop tapped
   t.tap(x + w - w / 8.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
@@ -91,6 +95,50 @@ test "stops: a finger takes its thumb along the track, nothing picked on the way
 }
 
 ///|
+test "stops: blank track Down -> Moved -> Up commits once, Down -> Off commits zero times and reverts" {
+  let labels = ["低", "中", "高", "最高"]
+  let (chosen, state, picks) = (@signals.signal(2), Stops::new(), [])
+  let t = stops_run(labels, chosen, state, picks)
+  let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
+  let mid = y + h / 2.0
+  // Down on blank track at stop 0: preview updates, zero commit
+  t.touch(0, x + 8.0, mid)
+  t.run_for(part_whole_ms)
+  assert_eq(picks, [], msg="blank track Down must not commit")
+  assert_eq(stops_named(t, labels), ["低"])
+  assert_eq(t.get(@ui.Role::Slider, label="思考深度").value, "高")
+  // Moved across to last stop: preview updates, still zero commit
+  t.touch(1, x + w * 0.5, mid)
+  t.run_for(part_whole_ms)
+  assert_eq(picks, [], msg="Moved mid must not commit")
+  t.touch(1, x + w - 8.0, mid)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(picks, [], msg="Moved must not commit")
+  assert_eq(stops_named(t, labels), ["最高"])
+  // Up commits exactly once
+  t.touch(2, x + w - 8.0, mid)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(picks, [3], msg="Up must commit exactly once")
+  assert_eq(stops_named(t, labels), ["最高"])
+  assert_eq(t.get(@ui.Role::Slider, label="思考深度").value, "最高")
+  let thumb_x = fn() {
+    t.drawn_rects().filter(fn(r) { r.4 == 0xFFFFFFFFL && (r.3 - 24.0).abs() < 0.5 }).map(fn(r) { r.0 })
+  }
+  let committed_x = thumb_x()[0]
+  // Down on blank track at stop 0, then Off (cancel): zero commit, reverts to stop 3
+  t.touch(0, x + 8.0, mid)
+  t.run_for(part_whole_ms)
+  assert_eq(picks, [3], msg="second Down must not commit")
+  assert_eq(stops_named(t, labels), ["低"])
+  t.touch(3, x + 8.0, mid)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(picks, [3], msg="Off cancel must not commit")
+  assert_eq(stops_named(t, labels), ["最高"], msg="Off must revert preview label to committed stop")
+  assert_eq(t.drawn_glass().length(), 0, msg="Off must release lens")
+  assert_true((thumb_x()[0] - committed_x).abs() < 0.5, msg="Off must revert thumb to committed stop")
+}
+
+///|
 test "stops: at none of its levels, a stop tapped stays shown while its caller still says none; its caller's reset takes it back to none" {
   let labels = ["低", "中", "高", "最高"]
   let (chosen, state, picks) = (@signals.signal(-1), Stops::new(), [])
@@ -127,20 +175,77 @@ test "stops: a pick that did not take (its caller's reset) shows what its caller
 }
 
 ///|
-test "stops: seven levels with long names on a narrow phone: still one line, the one it is at whole in its thumb" {
+test "stops: seven levels with long names on a narrow phone: still one line, current label whole beside slider" {
   let labels = ["Minimal", "Low", "Medium", "High", "Very high", "Maximum", "Ultra"]
   let (chosen, state, picks) = (@signals.signal(4), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   t.resize(320.0, 200.0)
   t.draw()
   t.run_for(@ui.move_most_ms)
-  let (x, _, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
+  let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
   assert_eq(t.lines_of("Very high"), ["Very high"])
-  let (nx, _, nw, _) = t.rect_of("Very high").unwrap()
-  assert_true(nx >= x && nx + nw <= x + w, msg="\{Repr((nx, nw))} in \{Repr((x, w))}")
+  let (nx, ny, nw, nh) = t.rect_of("Very high").unwrap()
+  assert_true(
+    nx >= x + w && ny >= y - 2.0 && ny + nh <= y + h + 2.0,
+    msg="\{Repr((nx, ny, nw, nh))} beside \{Repr((x, y, w, h))}",
+  )
   assert_true(h <= 44.5, msg="\{h} high: more than a line")
+  assert_true(w > @glass.slider_thumb_w, msg="slider track width \{w} must exceed thumb width")
   assert_eq(stops_named(t, labels), ["Very high"])
   assert_eq(t.squeeze_faults(), [])
+}
+
+///|
+test "stops: 320pt + 1.3x + ultra-long custom stop name keeps track > 38pt and drags to first and last stops" {
+  let long_name = "Supercalifragilisticexpialidocious Extreme Thinking Level"
+  let labels = ["低", "中", long_name, "最高"]
+  let chosen = @signals.signal(1)
+  let state = Stops::new()
+  let picks : Array[Int] = []
+  let t = @ui.Tester::new(fn(_c) {  }, w=320.0, h=200.0, platform=2, scale=1.3)
+  @ui.set_view_app(fn(root) {
+    root.padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
+    root.box(fn(r) {
+      r.row(Is(true)) |> ignore
+      stops_node(r, fn() { labels }, fn() { chosen.get() }, state, said="思考深度", on_pick=fn(i) { picks.push(i) })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
+  assert_true(w > 38.0, msg="320pt + 1.3x + long name must keep track width > 38pt, got \{w}")
+  assert_eq(t.squeeze_faults(), [])
+  let mid = y + h / 2.0
+  let stop_x = fn(i : Int) { x + @glass.slider_thumb_w / 2.0 + (w - @glass.slider_thumb_w) * i.to_double() / 3.0 }
+  // Drag smoothly to first stop (0)
+  t.touch(0, stop_x(1), mid)
+  t.frame()
+  t.touch(1, stop_x(0), mid)
+  t.frame()
+  t.touch(2, stop_x(0), mid)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(picks, [0])
+  assert_eq(t.get(@ui.Role::Slider, label="思考深度").value, "低")
+  // Drag to the ultra-long stop (2): screen-reader value keeps full untruncated name
+  t.touch(0, stop_x(0), mid)
+  t.frame()
+  t.touch(1, stop_x(2), mid)
+  t.frame()
+  t.touch(2, stop_x(2), mid)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(picks, [0, 2])
+  assert_eq(t.get(@ui.Role::Slider, label="思考深度").value, long_name)
+  // Drag to last stop (3)
+  t.touch(0, stop_x(2), mid)
+  t.frame()
+  t.touch(1, stop_x(3), mid)
+  t.frame()
+  t.touch(2, stop_x(3), mid)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(picks, [0, 2, 3])
+  assert_eq(t.get(@ui.Role::Slider, label="思考深度").value, "最高")
 }
 
 ///|
@@ -182,7 +287,7 @@ test "stops_node: discrete keyboard switch uses critically damped spring without
 }
 
 ///|
-test "stops_node: liquid glass lens scale animation causes zero relayout (laid == 0)" {
+test "stops_node: lens scale animation has laid == 0; cross-stop drag updates label with zero slider/sibling shift" {
   let labels = ["低", "中", "高", "极高"]
   let chosen = @signals.signal(1)
   let state = Stops::new()
@@ -190,15 +295,22 @@ test "stops_node: liquid glass lens scale animation causes zero relayout (laid =
   t.check_looks(false)
   @ui.set_view_app(fn(root) {
     root.padding(Is((20.0, 20.0, 20.0, 20.0))) |> ignore
-    stops_node(root, fn() { labels }, fn() { chosen.get() }, state, said="思考深度", on_pick=fn(i) { chosen.set(i) })
+    root.box(fn(r) {
+      r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(8.0)) |> ignore
+      words_node(r, fn() { "思考深度" }, fn() { stops_label_words }) |> ignore
+      stops_node(r, fn() { labels }, fn() { chosen.get() }, state, said="思考深度", on_pick=fn(i) { chosen.set(i) })
+      |> ignore
+    })
     |> ignore
   })
   t.draw()
   t.run_for(@ui.move_most_ms)
-  let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
+  let sl_before = t.get(@ui.Role::Slider, label="思考深度").rect
+  let sib_before = t.rect_of("思考深度").unwrap()
+  let (x, y, w, h) = sl_before
   let mid = y + h / 2.0
   let lens_step_ms = @ui.move_most_ms / 2.0
-  t.touch(0, x + w * 1.5 / 4.0, mid)
+  t.touch(0, x + w * 1.0 / 3.0, mid)
   t.draw()
   t.tree_frames_from_now()
   t.run_for(lens_step_ms)
@@ -208,12 +320,20 @@ test "stops_node: liquid glass lens scale animation causes zero relayout (laid =
     frames.iter().all(fn(f) { f.laid == 0 }),
     msg="stops_node lens animation must not trigger relayout: \{Repr(frames.map(fn(f) { f.laid }))}",
   )
-  t.touch(2, x + w * 1.5 / 4.0, mid)
+  // Cross stop to "极高": right label updates while slider and sibling rects stay pixel-identical
+  t.touch(1, x + w - 4.0, mid)
+  t.frame()
+  assert_eq(stops_named(t, labels), ["极高"])
+  let sl_after = t.get(@ui.Role::Slider, label="思考深度").rect
+  let sib_after = t.rect_of("思考深度").unwrap()
+  assert_eq(sl_after, sl_before, msg="slider rect must not shift on cross-stop label update")
+  assert_eq(sib_after, sib_before, msg="sibling rect must not shift on cross-stop label update")
+  t.touch(2, x + w - 4.0, mid)
   t.run_for(@ui.move_most_ms * 2.0)
 }
 
 ///|
-test "stops_node: zero hidden glass at rest, clear refraction lens while pressed, and settles back to 0 glass" {
+test "stops_node: light/dark 38x24 white pill, 0 hidden glass at rest, kind==6 held, glass_solid degrades cleanly" {
   for dark in [false, true] {
     set_dark(Some(dark))
     @ui.set_glass_solid(None)
@@ -232,66 +352,82 @@ test "stops_node: zero hidden glass at rest, clear refraction lens while pressed
     )
     t.draw()
     t.run_for(@ui.move_most_ms)
-    // Rest: zero hidden glass instances.
+    // Rest: zero hidden glass instances and pure white 38x24 capsule thumb in both light and dark modes.
     assert_eq(t.drawn_glass().length(), 0, msg="stops_node rest must draw 0 glass (dark=\{dark})")
+    let white_pills = t.drawn_rects().filter(fn(r) {
+      r.4 == 0xFFFFFFFFL && (r.2 - @glass.slider_thumb_w).abs() < 0.5 && (r.3 - @glass.slider_thumb_h).abs() < 0.5
+    })
+    assert_eq(white_pills.length(), 1, msg="stops_node rest must draw 1 pure white 38x24 pill thumb (dark=\{dark})")
     let (x, y, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
     let mid = y + h / 2.0
-    t.touch(0, x + w * 1.5 / 4.0, mid)
+    t.touch(0, x + w * 1.0 / 3.0, mid)
     t.run_for(part_whole_ms)
     let pressed_glass = t.drawn_glass()
     assert_eq(pressed_glass.length(), 1, msg="stops_node held must draw 1 glass lens (dark=\{dark})")
     assert_eq(pressed_glass[0].4, 6, msg="stops_node lens must be kind == 6")
-    t.touch(2, x + w * 1.5 / 4.0, mid)
+    t.touch(2, x + w * 1.0 / 3.0, mid)
     t.run_for(@ui.move_most_ms * 2.0)
     assert_eq(t.drawn_glass().length(), 0, msg="stops_node settled must return to 0 glass (dark=\{dark})")
+    // glass_solid degradation: 0 glass even while held, solid white 38x24 pill stays.
+    @ui.set_glass_solid(Some(true))
+    t.touch(0, x + w * 1.0 / 3.0, mid)
+    t.run_for(part_whole_ms)
+    assert_eq(t.drawn_glass().length(), 0, msg="stops_node glass_solid held must draw 0 glass (dark=\{dark})")
+    let solid_pills = t.drawn_rects().filter(fn(r) {
+      r.4 == 0xFFFFFFFFL && (r.2 - @glass.slider_thumb_w).abs() < 0.5 && (r.3 - @glass.slider_thumb_h).abs() < 0.5
+    })
+    assert_eq(solid_pills.length(), 1, msg="stops_node glass_solid held must keep 38x24 white pill (dark=\{dark})")
+    t.touch(2, x + w * 1.0 / 3.0, mid)
+    t.run_for(@ui.move_most_ms * 2.0)
+    @ui.set_glass_solid(None)
   }
   set_dark(None)
 }
 
 ///|
-/// The middle of the thumb, where its name is drawn, while the level `i` of `labels` is shown.
-fn stops_middle(t : @ui.Tester, labels : Array[String], i : Int) -> Double {
-  let (nx, _, nw, _) = t.rect_of(labels[i]).unwrap()
-  nx + nw / 2.0
-}
-
-///|
-test "stops: every stop as far from the next, the first and last too, the thumb as wide on each, meeting the track's ends at the first and last, and the dots under its middle" {
+test "stops: 6pt track, solid accent fill, 38x24 white capsule flush at ends, even stop spacing and interior dots" {
   let labels = ["低", "中", "高", "超高", "最高"]
   let (chosen, state, picks) = (@signals.signal(0), Stops::new(), [])
   let t = stops_run(labels, chosen, state, picks)
   let (x, _, w, h) = t.get(@ui.Role::Slider, label="思考深度").rect
+  assert_true((h - @glass.slider_thumb_h).abs() < 0.5, msg="slider height must be 24pt, got \{h}")
   let middles = []
   let widths = []
-  // (its thumb, white over the track, as wide at every stop)
   let thumb = fn() {
-    t.drawn_rects().filter(fn(r) { r.4 == 0xFFFFFFFFL && r.3 == h }).map(fn(r) { (r.0, r.2) })
+    t.drawn_rects().filter(fn(r) { r.4 == 0xFFFFFFFFL && (r.3 - @glass.slider_thumb_h).abs() < 0.5 }).map(fn(r) {
+      (r.0, r.2)
+    })
   }
   for i in 0..<labels.length() {
     stops_told(t, fn() { chosen.set(i) })
     t.draw()
     t.run_for(@ui.move_most_ms)
-    middles.push(stops_middle(t, labels, i))
     let th = thumb()
     assert_eq(th.length(), 1, msg="\{Repr(t.drawn_rects())}")
     let (tx, tw) = th[0]
+    assert_true((tw - @glass.slider_thumb_w).abs() < 0.5, msg="thumb width must be 38pt, got \{tw}")
+    middles.push(tx + tw / 2.0)
     widths.push(tw)
+    assert_eq(stops_named(t, labels), [labels[i]])
     // (meeting the track's start at the first stop and its end at the last, a stop's middle its own)
     if i == 0 {
       assert_true((tx - x).abs() < 0.5, msg="first stop's thumb at \{tx}, the track at \{x}")
-      // (no fill at the first stop: the track alone, as high as it is, its round end under the thumb's)
-      let bars = t.drawn_rects().filter(fn(r) { r.3 == 10.0 && r.2 > 0.0 && (r.4 & 0xFFL) > 0L })
+      // (no fill at the first stop: 6pt track alone, its round end under the thumb's)
+      let bars = t.drawn_rects().filter(fn(r) { (r.3 - @glass.slider_track_h).abs() < 0.5 && r.2 > 0.0 && (r.4 & 0xFFL) > 0L })
       assert_eq(bars.length(), 1, msg="\{Repr(bars)}")
-      assert_true(bars[0].0 >= tx + 5.0, msg="track from \{bars[0].0}, the thumb from \{tx}")
+      assert_true(bars[0].0 >= tx + 3.0, msg="track from \{bars[0].0}, the thumb from \{tx}")
     }
     if i == labels.length() - 1 {
       assert_true((tx + tw - x - w).abs() < 0.5, msg="last stop's thumb to \{tx + tw}, the track to \{x + w}")
-      let track = t.drawn_rects().filter(fn(r) { r.3 == 10.0 && r.2 > w / 2.0 })
-      assert_true(track.iter().all(fn(r) { r.0 + r.2 <= tx + tw - 5.0 }), msg="\{Repr(track)} past the thumb to \{tx + tw}")
-      // (the fill on under the thumb: no track seen between the two)
-      assert_true(track.iter().any(fn(r) { (r.4 & 0xFFL) > 0L && r.0 + r.2 >= tx + 5.0 && r.0 + r.2 < x + w - 7.0 }), msg="\{Repr(track)} with the thumb from \{tx}")
+      let track = t.drawn_rects().filter(fn(r) { (r.3 - @glass.slider_track_h).abs() < 0.5 && r.2 > w / 2.0 })
+      assert_true(track.iter().all(fn(r) { r.0 + r.2 <= tx + tw - 3.0 }), msg="\{Repr(track)} past the thumb to \{tx + tw}")
+      // (solid accent fill under the thumb, full opacity, not 0.45 translucent)
+      let accent = theme().p.accent
+      assert_true(
+        track.iter().any(fn(r) { r.4 == accent && r.0 + r.2 >= tx + 3.0 && r.0 + r.2 < x + w - 5.0 }),
+        msg="expected solid accent fill \{accent} in \{Repr(track)}",
+      )
     }
-    assert_true((tx + tw / 2.0 - middles[i]).abs() < 0.5, msg="stop \{i}: thumb \{Repr(th)}, its name at \{middles[i]}")
   }
   assert_true(widths.iter().all(fn(tw) { (tw - widths[0]).abs() < 0.01 }), msg="\{Repr(widths)}")
   let step = (middles[labels.length() - 1] - middles[0]) / (labels.length() - 1).to_double()

@@ -1,7 +1,10 @@
 // One of a few levels in order as nodes of the window's tree (stops' made-once form, seg.mbt: how hard a model thinks
-// on a sheet): delegates to `@glass.liquid_slider_node(stops=..., thumb_label=...)` with sf-ui's optimistic `Stops`
-// state machine (`Stops::reset`), semantic label readout, and lazy-mounted clear refraction loupe (zero hidden glass
-// instances at rest, zero relayout during drag).
+// on a sheet): single-row standard pill `@glass.liquid_slider_node` (6pt track, 38x24 pure white capsule thumb, solid
+// accent fill, lazy-mounted 1.5x clear refraction loupe) paired with a fixed-width right-side current/preview stop
+// label, sf-ui's optimistic `Stops` state machine (`Stops::reset`), and semantic label readout.
+
+///|
+let stops_label_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=false)
 
 ///|
 /// The levels `labels` in `parent`, at `chosen()` (-1: none), `said` what a screen reader calls it, `state` what it
@@ -58,8 +61,7 @@ pub fn stops_node(
   let count = @signals.untracked(fn() { labels().length() })
   let last = dmax(1.0, (count - 1).to_double())
   let pad = @ui.Space::px(S1)
-  let high = @signals.untracked(button_height)
-  let thumb_h = dmax(20.0, high - 2.0 * pad)
+  let thumb_h = @glass.slider_thumb_h
   let init_v = dmax(0.0, @signals.untracked(fn() { shown.get() }).to_double())
   let dd = @glass.DampedDrag::new(init_v, lo=0.0, hi=last, held_scale=@glass.slider_thumb_held_scale)
   parent.box(made_for=loc, fn(wrap) {
@@ -68,42 +70,93 @@ pub fn stops_node(
     // under it stay the spacing scale's)
     let reach = dmax(0.0, @glass.slider_held_reach(thumb_h) - pad)
     let high_held = fn() { button_height() + 2.0 * reach }
-    style_node(wrap, fn() { stops_track.then(@ui.style(h=Fixed(high_held()))) }, in_row=true)
-    wrap.ground(Is(0L)).lines_up(Is(Some(Middle))).padding(Is((pad, pad + reach, pad, pad + reach))) |> ignore
+    style_node(wrap, fn() { stops_track }, in_row=true)
+    wrap
+    .ground(Is(0L))
+    .min_height(By(fn() { Some(high_held()) }))
+    .lines_up(Is(Some(Middle)))
+    .padding(Is((pad, pad + reach, pad, pad + reach)))
+    |> ignore
     wrap.reacts(at_start=false, fn() { (chosen(), state.resets.get()) }, fn(k) { told(k.0) })
-    let sl = @glass.liquid_slider_node(
-      wrap,
-      fn() { dmax(0.0, shown.get().to_double()) },
-      fn(v) { pick_it(v.round().to_int()) },
-      fn() { said },
-      least=0.0,
-      most=last,
-      track_h=10.0,
-      thumb_w_px=40.0,
-      thumb_h_px=thumb_h,
-      track_color=track_glass_ink,
-      fill_color=fn() { alpha(theme().p.accent, 0.45) },
-      stops=count,
-      thumb_label=fn(v) {
-        let a = shown.get()
-        if a < 0 && !dd.pressing() {
-          ""
-        } else {
-          labels().get(v.round().to_int()).unwrap_or("")
+    wrap
+    .by_room(fn(inner, room) {
+      let gap = @ui.Space::px(S2)
+      inner
+      .row(Is(true))
+      .lines_up(Is(Some(Middle)))
+      .gap(Is(gap))
+      |> ignore
+      let label_w = fn() -> Double {
+        inner.words_redone() |> ignore
+        let size = node_sp(inner, theme().t.meta)
+        let ls = labels()
+        let mut widest = 0.0
+        for s in ls {
+          if s != "" {
+            widest = dmax(widest, node_words_w(s, size, weight=500))
+          }
         }
-      },
-      stop_labels=labels,
-      drag=dd,
-      loc~,
-    )
-    sl
+        let room_w = room.width()
+        if widest <= 0.0 || room_w <= 0.0 {
+          0.0
+        } else {
+          let want = widest.ceil() + 2.0
+          let min_track = dmin(room_w * 0.65, dmax(96.0, count.to_double() * 24.0))
+          dmin(want, dmax(0.0, room_w - gap - min_track))
+        }
+      }
+      let sl = @glass.liquid_slider_node(
+        inner,
+        fn() { dmax(0.0, shown.get().to_double()) },
+        fn(v) { pick_it(v.round().to_int()) },
+        fn() { said },
+        least=0.0,
+        most=last,
+        track_h=@glass.slider_track_h,
+        thumb_w_px=@glass.slider_thumb_w,
+        thumb_h_px=thumb_h,
+        track_color=fn() { theme().p.line_strong },
+        fill_color=fn() { theme().p.accent },
+        stops=count,
+        flush=true,
+        value_bubble=None,
+        drag=dd,
+        loc~,
+      )
+      sl
+      .grow(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .says(By(fn() {
+        let ls = labels()
+        let a = shown.get()
+        let value = if a >= 0 && a < ls.length() { ls[a] } else { "" }
+        Some(@view.said(Slider, label=said, value~, range=(0.0, dmax(0.0, a.to_double()), last), actions=[Increment, Decrement]))
+      }))
+      |> ignore
+      inner.box(fn(lbl_box) {
+        lbl_box
+        .row(Is(true))
+        .shrink(Is(0.0))
+        .width(By(fn() { Some(label_w()) }))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(End))
+        |> ignore
+        let preview_text = fn() -> String {
+          let ls = labels()
+          let a = if dd.pressing() { dd.target().round().to_int() } else { shown.get() }
+          if a >= 0 && a < ls.length() { ls[a] } else { "" }
+        }
+        words_node(lbl_box, preview_text, fn() { stops_label_words })
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        .cuts(Is(true))
+        .allow_ellipsis(Is(true))
+        |> ignore
+      })
+      |> ignore
+    })
     .grow(Is(1.0))
-    .says(By(fn() {
-      let ls = labels()
-      let a = shown.get()
-      let value = if a >= 0 && a < ls.length() { ls[a] } else { "" }
-      Some(@view.said(Slider, label=said, value~, range=(0.0, dmax(0.0, a.to_double()), last), actions=[Increment, Decrement]))
-    }))
+    .min_width(Is(Some(0.0)))
     |> ignore
   })
 }

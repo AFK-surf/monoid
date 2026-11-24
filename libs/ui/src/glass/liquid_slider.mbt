@@ -211,17 +211,7 @@ fn liquid_slider_look_core(
     let along = fn() { dmax(0.0, w() - 2.0 * ends) }
     let span_at = fn(raw_at : Double) -> Double {
       let at = clamp(raw_at, 0.0, 1.0)
-      let raw = match look.travel_inset {
-        Some(_) => middle_at(at) - ends
-        None =>
-          if look.flush {
-            let left_t = clamp(at / 0.04, 0.0, 1.0)
-            dmax(0.0, middle_at(at) - ends) * left_t
-          } else {
-            middle_at(at) - ends
-          }
-      }
-      clamp(raw, 0.0, along())
+      clamp(middle_at(at) - ends, 0.0, along())
     }
     // 1. Track (with optional track_image, e.g. hue rainbow strip)
     inner.box(fn(track) {
@@ -292,7 +282,16 @@ fn liquid_slider_look_core(
           .width(By(fn() { Some(along()) }))
           .height(Is(Some(look.track_h)))
           .offset(Is((ends, (look.thumb_h - look.track_h) / 2.0)))
-          .alpha(By(fn() { if filled(fill) < 0.5 { 0.0 } else { 1.0 } }))
+          .alpha(By(fn() {
+            let at = clamp(progress(fill), 0.0, 1.0)
+            if filled(fill) < 0.5 {
+              0.0
+            } else if look.flush && look.travel_inset is None {
+              clamp(at / 0.04, 0.0, 1.0)
+            } else {
+              1.0
+            }
+          }))
           .radius(Is(look.track_h / 2.0))
           .ground(By(fc))
           .ground_drawn(By(fn() {
@@ -621,7 +620,6 @@ pub fn liquid_slider_node(
           live_stop.set(Some(nearest))
           if !hit_thumb {
             dd.update_value(leaned)
-            change(value_of_stop(nearest))
           }
         } else if !hit_thumb {
           let frac = if eff_flush {
@@ -682,9 +680,10 @@ pub fn liquid_slider_node(
           on_thumb.val = false
           if has_stops {
             live_stop.set(None)
-            dd.update_value(@signals.untracked(value))
+            dd.cancel_to(@signals.untracked(value))
+          } else {
+            dd.release()
           }
-          dd.release()
         }
     }
   }

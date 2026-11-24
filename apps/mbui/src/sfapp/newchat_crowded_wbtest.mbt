@@ -4,11 +4,11 @@
 
 ///|
 /// A phone as narrow as most get (`w` across), newchat-crowded's page (`mode`) risen over it.
-fn crowded(mode : String, w? : Double = crowded_w, h? : Double = crowded_h) -> @ui.Tester {
+fn crowded(mode : String, w? : Double = crowded_w, h? : Double = crowded_h, scale? : Double = 1.0) -> @ui.Tester {
   new_run()
   // (the chat's page made as both_pages runs it now, its new chat too: none outside one)
   let src = fixture(mode)
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=2, scale~)
   open_mode(mode)
   t.draw()
   t.run_for(@ui.move_most_ms)
@@ -546,6 +546,31 @@ test "narrow: how hard it thinks held in the model's sheet at either end, its th
     assert_true(
       t.drawn_glass_cut().iter().any(fn(c) { (c.0 - lx).abs() < 0.01 && (c.1 - ly).abs() < 0.01 && (c.2 - lw).abs() < 0.01 && (c.3 - lh).abs() < 0.01 }),
       msg="\{Repr(lens)} cut to \{Repr(t.drawn_glass_cut())}",
+    )
+    t.touch(2, at, mid)
+    t.run_for(@ui.move_most_ms)
+  }
+}
+
+///|
+test "narrow: 320pt + 1.3x font scale keeps effort slider operable and held lens unclipped at both ends" {
+  let t = crowded("newchat-crowded-model", w=crowded_narrowest, scale=1.3)
+  run_to_sheet_rest(t)
+  let sheet = t.get(@ui.Role::Dialog).rect
+  let (x, y, w, h) = t.get(Slider, label="思考深度").rect
+  assert_true(w > 38.0, msg="320pt + 1.3x effort slider width \{w} must exceed 38pt thumb")
+  assert_true(words_whole(t, "高", sheet) is Some(_), msg="current effort label must fit whole in 320pt + 1.3x sheet")
+  assert_true(t.words().iter().all(fn(wd) { wd.0 != "最高" }), msg="unselected effort stop must not be rendered")
+  let mid = y + h / 2.0
+  for at in [x + 8.0, x + w - 8.0] {
+    t.touch(0, at, mid)
+    t.run_for(@ui.move_most_ms)
+    let lens = t.drawn_glass().filter(fn(g) { g.4 == 6 && g.1 < mid && g.1 + g.3 > mid && g.2 < 100.0 })
+    assert_eq(lens.length(), 1, msg="320pt + 1.3x held must draw 1 clear lens: \{Repr(t.drawn_glass())}")
+    let (lx, ly, lw, lh, _, _) = lens[0]
+    assert_true(
+      t.drawn_glass_cut().iter().any(fn(c) { (c.0 - lx).abs() < 0.01 && (c.1 - ly).abs() < 0.01 && (c.2 - lw).abs() < 0.01 && (c.3 - lh).abs() < 0.01 }),
+      msg="320pt + 1.3x lens \{Repr(lens)} cut to \{Repr(t.drawn_glass_cut())}",
     )
     t.touch(2, at, mid)
     t.run_for(@ui.move_most_ms)
