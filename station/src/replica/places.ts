@@ -12,10 +12,11 @@ import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { type Fs, type Stat, direct } from "../drive/fs.ts";
 import { BATCH, GEN, HASH, STATION, WORKSPACE, type Head, asHead, genMade } from "./format.ts";
+import { type ResolvedManifest, loadTranscriptManifest, manifestAllRefs } from "./manifest.ts";
 
 /// What a place holds of one station's copies in a workspace: each generation (its head, its batches) and the files.
 export type Holding = { gen: string; head: Head | null; batches: string[] };
-export type Held = { gens: Holding[]; files: string[] };
+export type Held = { gens: Holding[]; files: string[]; hasUnverifiedHead?: boolean };
 export const nothingHeld = (): Held => ({ gens: [], files: [] });
 
 export const DROP_FILES_PAGE = 2000;
@@ -61,20 +62,37 @@ const MAX_META_ENTRIES = 512;
 const MAX_FILES_ENTRIES = 8;
 const MAX_CACHED_FILE_HASHES = 500_000;
 
-type HeadMeta = { mtimeMs: number; size: number; to: number; batches: string[] };
-type HeadFilesEntry = { mtimeMs: number; size: number; files: Record<string, number>; transcriptFiles?: Record<string, number>; count: number };
+type HeadMeta = { mtimeMs: number; size: number; to: number; partial: boolean; batches: string[] };
+type HeadFilesEntry = {
+  mtimeMs: number;
+  size: number;
+  files: Record<string, number>;
+  transcriptFiles?: Record<string, number>;
+  manifestRefs?: Set<string>;
+  count: number;
+};
 
-function countHeadFiles(head: Head): number {
+function countHeadFiles(head: Head, manifestRefs?: Set<string>): number {
   let count = 0;
   for (const h in head.files) if (Object.hasOwn(head.files, h)) count++;
   if (head.transcriptFiles !== undefined) {
     for (const h in head.transcriptFiles) if (Object.hasOwn(head.transcriptFiles, h)) count++;
   }
+  if (manifestRefs !== undefined) count += manifestRefs.size;
   return count;
 }
 
 function headFilesHas(entry: HeadFilesEntry, hash: string): boolean {
-  return Object.hasOwn(entry.files, hash) || (entry.transcriptFiles !== undefined && Object.hasOwn(entry.transcriptFiles, hash));
+  return (
+    Object.hasOwn(entry.files, hash) ||
+    (entry.transcriptFiles !== undefined && Object.hasOwn(entry.transcriptFiles, hash)) ||
+    (entry.manifestRefs !== undefined && entry.manifestRefs.has(hash))
+  );
+}
+
+function isMissingFsError(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
 }
 
 /// Where a station keeps what other stations send it (`<data>/replicas`), on its own disk.
@@ -136,18 +154,34 @@ export class FolderPlace implements Place {
     this.#cachedHashes += entry.count;
   }
 
-  #cacheHead(key: string, st: Stat, head: Head): { meta: HeadMeta; files: HeadFilesEntry } {
-    const meta: HeadMeta = { mtimeMs: st.mtimeMs, size: st.size, to: head.to, batches: [...head.batches] };
+  #cacheHead(key: string, st: Stat, head: Head, manifestRefs?: Set<string>): { meta: HeadMeta; files: HeadFilesEntry } {
+    const meta: HeadMeta = { mtimeMs: st.mtimeMs, size: st.size, to: head.to, partial: head.partial === true, batches: [...head.batches] };
     this.#setMeta(key, meta);
     const files: HeadFilesEntry = {
       mtimeMs: st.mtimeMs,
       size: st.size,
       files: head.files,
       ...(head.transcriptFiles !== undefined ? { transcriptFiles: head.transcriptFiles } : {}),
-      count: countHeadFiles(head),
+      ...(manifestRefs !== undefined ? { manifestRefs } : {}),
+      count: countHeadFiles(head, manifestRefs),
     };
     this.#setFiles(key, files);
     return { meta, files };
+  }
+
+  async #readManifestObject(ws: string, origin: string, hash: string): Promise<Buffer | null> {
+    const path = join(this.dir(ws, origin), "files", hash);
+    try {
+      return await this.fs.readAll(path);
+    } catch (e) {
+      if (isMissingFsError(e)) return null;
+      throw e;
+    }
+  }
+
+  async #resolveHeadManifest(ws: string, origin: string, head: Head): Promise<ResolvedManifest | null> {
+    if (head.transcriptManifest === undefined) return null;
+    return loadTranscriptManifest(head.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
   }
 
   dir(ws: string, origin: string): string {
@@ -192,13 +226,14 @@ export class FolderPlace implements Place {
     }
   }
 
-  async #headMeta(ws: string, origin: string, gen: string): Promise<HeadMeta | null> {
+  async #headMeta(ws: string, origin: string, gen: string, strict = false): Promise<HeadMeta | null> {
     const key = `${ws}\n${origin}\n${gen}`;
     const path = join(this.dir(ws, origin), gen, "head.json");
     let st: Stat;
     try {
       st = await this.fs.stat(path);
-    } catch {
+    } catch (e) {
+      if (strict && !isMissingFsError(e)) throw e;
       this.#meta.delete(key);
       this.#deleteFiles(key);
       return null;
@@ -213,18 +248,29 @@ export class FolderPlace implements Place {
     if (head === null) {
       this.#meta.delete(key);
       this.#deleteFiles(key);
+      if (strict) throw new Error(`corrupted head.json for ${ws}/${origin}/${gen}`);
       return null;
     }
-    return this.#cacheHead(key, st, head).meta;
+    let manifestRefs: Set<string> | undefined;
+    if (head.transcriptManifest !== undefined) {
+      try {
+        const resolved = await this.#resolveHeadManifest(ws, origin, head);
+        if (resolved !== null) manifestRefs = manifestAllRefs(resolved);
+      } catch (e) {
+        if (strict) throw e;
+      }
+    }
+    return this.#cacheHead(key, st, head, manifestRefs).meta;
   }
 
-  async #headFilesOf(ws: string, origin: string, gen: string): Promise<HeadFilesEntry | null> {
+  async #headFilesOfStrict(ws: string, origin: string, gen: string): Promise<HeadFilesEntry | null> {
     const key = `${ws}\n${origin}\n${gen}`;
     const path = join(this.dir(ws, origin), gen, "head.json");
     let st: Stat;
     try {
       st = await this.fs.stat(path);
-    } catch {
+    } catch (e) {
+      if (!isMissingFsError(e)) throw e;
       this.#meta.delete(key);
       this.#deleteFiles(key);
       return null;
@@ -236,12 +282,17 @@ export class FolderPlace implements Place {
       return cached;
     }
     const head = await this.#head(path);
-    if (head === null) {
+    if (head === null || head.gen !== gen || head.origin !== origin || head.workspace !== ws) {
       this.#meta.delete(key);
       this.#deleteFiles(key);
-      return null;
+      throw new Error(`corrupted head.json for ${ws}/${origin}/${gen}`);
     }
-    return this.#cacheHead(key, st, head).files;
+    let manifestRefs: Set<string> | undefined;
+    if (head.transcriptManifest !== undefined) {
+      const resolved = await this.#resolveHeadManifest(ws, origin, head);
+      if (resolved !== null) manifestRefs = manifestAllRefs(resolved);
+    }
+    return this.#cacheHead(key, st, head, manifestRefs).files;
   }
 
   async held(ws: string, origin: string): Promise<Held> {
@@ -267,13 +318,29 @@ export class FolderPlace implements Place {
     } else {
       const head = asHead(JSON.parse(bytes.toString("utf8")));
       if (head === null || head.gen !== gen || head.origin !== origin || head.workspace !== ws) throw new Error("not a head of this copy");
+      if (head.partial === true && head.transcriptManifest !== undefined) {
+        throw new Error("partial head must not reference transcriptManifest");
+      }
       await this.#withLock(ws, origin, async () => {
-        // A head never goes back: one older than what is held (another station's sending what it holds) is not taken.
+        // A head never goes back: one older than what is held (another station's sending what it holds) is not taken,
+        // and a partial head never overwrites a full head at the same `to`.
         const was = await this.#headMeta(ws, origin, gen);
-        if (was !== null && was.to > head.to) return;
+        if (was !== null && (was.to > head.to || (was.to === head.to && !was.partial && head.partial === true))) return;
         for (const b of head.batches) if (!(await this.#exists(join(dir, "log", b)))) throw new Error(`batch ${b} is not here yet`);
+        let manifestRefs: Set<string> | undefined;
+        if (head.transcriptManifest !== undefined) {
+          const resolved = await this.#resolveHeadManifest(ws, origin, head);
+          if (resolved === null) throw new Error("transcript manifest could not be resolved");
+          const filesDir = join(this.dir(ws, origin), "files");
+          for (const chunkHash in resolved.files) {
+            if (Object.hasOwn(resolved.files, chunkHash) && !(await this.#exists(join(filesDir, chunkHash)))) {
+              throw new Error(`transcript chunk ${chunkHash} is not here yet`);
+            }
+          }
+          manifestRefs = manifestAllRefs(resolved);
+        }
         const st = await this.#whole(join(dir, "head.json"), oneOf(bytes));
-        this.#cacheHead(`${ws}\n${origin}\n${gen}`, st, head);
+        this.#cacheHead(`${ws}\n${origin}\n${gen}`, st, head, manifestRefs);
       });
     }
   }
@@ -298,16 +365,16 @@ export class FolderPlace implements Place {
     check(ws, origin, gen);
     await this.#withLock(ws, origin, async () => {
       const dir = this.dir(ws, origin);
-      const meta = await this.#headMeta(ws, origin, gen);
+      const meta = await this.#headMeta(ws, origin, gen, true);
       for (const b of batches) if (BATCH.test(b) && !(meta?.batches ?? []).includes(b)) await this.fs.unlink(join(dir, gen, "log", b)).catch(() => {});
       if (files.length === 0) return;
-      // (a file stays while any generation held names it)
+      // (a file stays while any generation held names it; fail-closed if any head or manifest is corrupted)
       const liveGens = new Set<string>();
       const entries: HeadFilesEntry[] = [];
       for (const g of await this.#list(dir)) {
         if (!GEN.test(g)) continue;
         liveGens.add(g);
-        const e = await this.#headFilesOf(ws, origin, g);
+        const e = await this.#headFilesOfStrict(ws, origin, g);
         if (e !== null) entries.push(e);
       }
       const prefix = `${ws}\n${origin}\n`;
@@ -390,7 +457,13 @@ export class FolderPlace implements Place {
 
 /// The generation of this station's own copy being brought to a place: its head, its batches' bytes, where its files
 /// are now.
-export type Own = { head: Head; batch(name: string): Promise<Buffer>; sources(hashes: string[]): Promise<Map<string, string>> };
+export type Own = {
+  head: Head;
+  batch(name: string): Promise<Buffer>;
+  sources(hashes: string[]): Promise<Map<string, string>>;
+  /// Resolves a local compact `head.transcriptManifest` into its validated `chunkHash -> compSize` map.
+  loadTranscriptFiles?(): Promise<Record<string, number>>;
+};
 
 /// What a place holds of this station's generation, as this station last left it there (it alone writes that
 /// generation there): the batches, the files, the files the place's other generations name, how far its head went. Kept
@@ -404,6 +477,15 @@ export type Known = {
   hasUnverifiedHead?: boolean;
   to: number;
   made: number;
+  /// Confirmed manifest cache keyed by `(gen, strategy, rootHash)` to avoid re-expanding unchanged manifests.
+  manifest?: {
+    gen: string;
+    strategy: "with-transcripts" | "no-transcripts";
+    rootHash: string;
+    transcriptFiles: Record<string, number>;
+    tfCount: number;
+    complete: boolean;
+  };
 };
 
 /// What bringing a place level found: `behind` where the place holds what this station's own copy does not (this
@@ -436,16 +518,17 @@ export function behind(own: Head, held: Held): boolean {
 }
 
 /// `head` naming only the transcripts `held` (`partial`): what a place holds once the chats are sent and before the
-/// transcripts are, a whole copy for a restorer as far as it goes.
-function partialHead(head: Head, held: Set<string>): Head {
+/// transcripts are, a whole copy for a restorer as far as it goes. Always inline (never points at an unverified manifest).
+function partialHead(head: Head, held: Set<string>, resolvedTf?: Record<string, number>): Head {
   const transcriptFiles: Record<string, number> = {};
-  const tf = head.transcriptFiles;
+  const tf = resolvedTf ?? head.transcriptFiles;
   if (tf !== undefined) {
     for (const h in tf) {
       if (Object.hasOwn(tf, h) && (held.has(h) || Object.hasOwn(head.files, h))) transcriptFiles[h] = tf[h]!;
     }
   }
-  return { ...head, transcriptFiles, partial: true };
+  const { transcriptManifest: _, ...rest } = head;
+  return { ...rest, transcriptFiles, partial: true };
 }
 
 /// Brings `place` level with this station's own copy of `ws`: its batches and the chats' files first, a partial head
@@ -460,6 +543,7 @@ export async function level(
   opts: { includeTranscripts?: boolean; onPartial?: (to: number, lacking: number) => void; dropFilesPage?: number; onPruneError?: (err: unknown) => void } = {},
 ): Promise<Levelled> {
   const includeTranscripts = opts.includeTranscripts !== false;
+  const strategy = includeTranscripts ? "with-transcripts" : "no-transcripts";
   const origin = own.head.origin;
   let k = known;
   if (k === null || k.gen !== own.head.gen) {
@@ -467,7 +551,7 @@ export async function level(
     if (behind(own.head, held)) return { behind: true };
     const holding = held.gens.find((g) => g.gen === own.head.gen);
     const others = new Set<string>();
-    let hasUnverifiedHead = false;
+    let hasUnverifiedHead = held.hasUnverifiedHead === true;
     for (const g of held.gens) {
       if (g.gen === own.head.gen) continue;
       if (g.head === null) {
@@ -477,6 +561,9 @@ export async function level(
       for (const h in g.head.files) if (Object.hasOwn(g.head.files, h)) others.add(h);
       if (g.head.transcriptFiles !== undefined) {
         for (const h in g.head.transcriptFiles) if (Object.hasOwn(g.head.transcriptFiles, h)) others.add(h);
+      }
+      if (g.head.transcriptManifest !== undefined) {
+        others.add(g.head.transcriptManifest);
       }
     }
     k = {
@@ -495,21 +582,57 @@ export async function level(
     k.batches.add(b);
   }
   const ownFiles = own.head.files;
-  const ownTf = includeTranscripts ? own.head.transcriptFiles : undefined;
+  let resolvedTf: Record<string, number> | undefined;
+  let tfCount = 0;
+  let manifestCacheHit = false;
+  if (own.head.transcriptManifest !== undefined) {
+    const cached = k.manifest;
+    if (
+      cached !== undefined &&
+      cached.gen === own.head.gen &&
+      cached.strategy === strategy &&
+      cached.rootHash === own.head.transcriptManifest
+    ) {
+      resolvedTf = cached.transcriptFiles;
+      tfCount = cached.tfCount;
+      manifestCacheHit = cached.complete;
+    } else {
+      if (own.loadTranscriptFiles !== undefined) {
+        resolvedTf = await own.loadTranscriptFiles();
+      } else if (own.head.transcriptFiles !== undefined) {
+        resolvedTf = own.head.transcriptFiles;
+      } else {
+        throw new Error("own.loadTranscriptFiles is required to resolve compact transcriptManifest");
+      }
+      for (const h in resolvedTf) if (Object.hasOwn(resolvedTf, h)) tfCount++;
+    }
+  } else {
+    resolvedTf = own.head.transcriptFiles;
+    if (resolvedTf !== undefined) {
+      for (const h in resolvedTf) if (Object.hasOwn(resolvedTf, h)) tfCount++;
+    }
+  }
+  const ownTf = includeTranscripts ? resolvedTf : undefined;
   // (the chats' own files first, then the transcripts: a transcript a file also names is the chat's)
   const lackingChat: string[] = [];
   const lackingTranscripts: string[] = [];
   let wantedCount = 0;
+  let chatOverlapWithTf = 0;
   for (const h in ownFiles) {
     if (!Object.hasOwn(ownFiles, h)) continue;
     wantedCount++;
+    if (ownTf !== undefined && Object.hasOwn(ownTf, h)) chatOverlapWithTf++;
     if (!k.files.has(h)) lackingChat.push(h);
   }
   if (ownTf !== undefined) {
-    for (const h in ownTf) {
-      if (!Object.hasOwn(ownTf, h) || Object.hasOwn(ownFiles, h)) continue;
-      wantedCount++;
-      if (!k.files.has(h)) lackingTranscripts.push(h);
+    if (manifestCacheHit) {
+      wantedCount += tfCount - chatOverlapWithTf;
+    } else {
+      for (const h in ownTf) {
+        if (!Object.hasOwn(ownTf, h) || Object.hasOwn(ownFiles, h)) continue;
+        wantedCount++;
+        if (!k.files.has(h)) lackingTranscripts.push(h);
+      }
     }
   }
   const lackingCount = lackingChat.length + lackingTranscripts.length;
@@ -519,10 +642,12 @@ export async function level(
   let sendableTranscripts = 0;
   for (const h of lackingTranscripts) if (sources.has(h)) sendableTranscripts++;
   let missing = 0;
+  let missingTranscripts = 0;
   const send = async (hash: string, isTranscript: boolean): Promise<void> => {
     const source = sources.get(hash);
     if (source === undefined) {
       missing++;
+      if (isTranscript) missingTranscripts++;
       return;
     }
     try {
@@ -542,17 +667,36 @@ export async function level(
   // hundreds of thousands of files, and its chats waited behind them for a day (2026-11-23). This head names only the
   // transcripts the place holds, and says it is partial, so that the whole one is put after them.
   if (sendableTranscripts > 0 && k.to !== own.head.to) {
-    const partial = partialHead(own.head, k.files);
+    const partial = partialHead(own.head, k.files, resolvedTf);
     await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(partial, null, 1)), partial);
     k.to = own.head.to;
     k.made = -1;
     opts.onPartial?.(own.head.to, sendableTranscripts);
   }
   for (const hash of lackingTranscripts) await send(hash, true);
+  // D72a invariant: outgoing wire `put("head")` continues to carry inline `transcriptFiles` (never switches wire to
+  // `transcriptManifest`) so any rollback to an older station never misinterprets the head.
+  let wireHead: Head = own.head;
+  if (own.head.transcriptManifest !== undefined) {
+    const { transcriptManifest: _, ...rest } = own.head;
+    wireHead = resolvedTf !== undefined && tfCount > 0 ? { ...rest, transcriptFiles: resolvedTf } : rest;
+  }
   if (k.to !== own.head.to || k.made !== own.head.made) {
-    await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(own.head, null, 1)), own.head);
+    await place.put(ws, origin, own.head.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
     k.to = own.head.to;
     k.made = own.head.made;
+  }
+  if (own.head.transcriptManifest !== undefined && resolvedTf !== undefined) {
+    k.manifest = {
+      gen: own.head.gen,
+      strategy,
+      rootHash: own.head.transcriptManifest,
+      transcriptFiles: resolvedTf,
+      tfCount,
+      complete: !includeTranscripts || missingTranscripts === 0,
+    };
+  } else {
+    k.manifest = undefined;
   }
   const oldBatches = [...k.batches].filter((b) => !own.head.batches.includes(b));
   const oldFiles: string[] = [];
@@ -581,7 +725,7 @@ export async function level(
   }
   if (!k.hasUnverifiedHead) {
     try {
-      await place.pruneOrphans?.(ws, origin, own.head);
+      await place.pruneOrphans?.(ws, origin, wireHead);
     } catch (err) {
       // best-effort: head and drop already succeeded; retain remaining orphans for next sync
       opts.onPruneError?.(err);
@@ -590,11 +734,80 @@ export async function level(
   return { behind: false, to: own.head.to, missing, known: k };
 }
 
+function sameBatches(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+function sameFileMap(a: Record<string, number> | undefined, b: Record<string, number> | undefined): boolean {
+  let countA = 0;
+  if (a !== undefined) {
+    for (const k in a) {
+      if (!Object.hasOwn(a, k)) continue;
+      countA++;
+      if (b === undefined || !Object.hasOwn(b, k) || b[k] !== a[k]) return false;
+    }
+  }
+  let countB = 0;
+  if (b !== undefined) {
+    for (const k in b) if (Object.hasOwn(b, k)) countB++;
+  }
+  return countA === countB;
+}
+
+type ReadPlaceObject = (hash: string) => Promise<Uint8Array | null>;
+
+async function readStreamBytes(stream: AsyncIterable<Buffer>): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const c of stream) chunks.push(c);
+  return chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+}
+
+function placeObjectReader(place: Place, ws: string, origin: string): ReadPlaceObject | undefined {
+  if (place instanceof FolderPlace) {
+    return (hash) => place.read(ws, origin, null, hash);
+  }
+  const maybeRead = (place as { read?: (ws: string, origin: string, gen: string | null, name: string) => Promise<AsyncIterable<Buffer>> }).read;
+  if (typeof maybeRead === "function") {
+    return async (hash) => {
+      try {
+        return await readStreamBytes(await maybeRead.call(place, ws, origin, null, hash));
+      } catch {
+        return null;
+      }
+    };
+  }
+  return undefined;
+}
+
+/// Checks whether two heads are logically equivalent (same `gen`, `to`, `partial`, `batches`, `files`, and expanded
+/// transcript file map — even when one carries inline `transcriptFiles` and the other carries `transcriptManifest`).
+export async function headsLogicallyEqual(
+  a: Head,
+  b: Head,
+  readA?: ReadPlaceObject,
+  readB?: ReadPlaceObject,
+): Promise<boolean> {
+  if (a.gen !== b.gen || a.to !== b.to || (a.partial === true) !== (b.partial === true)) return false;
+  if (!sameBatches(a.batches, b.batches) || !sameFileMap(a.files, b.files)) return false;
+  const tfA = a.transcriptManifest !== undefined
+    ? (readA !== undefined ? (await loadTranscriptManifest(a.transcriptManifest, readA)).files : null)
+    : (a.transcriptFiles ?? {});
+  const tfB = b.transcriptManifest !== undefined
+    ? (readB !== undefined ? (await loadTranscriptManifest(b.transcriptManifest, readB)).files : null)
+    : (b.transcriptFiles ?? {});
+  if (tfA === null || tfB === null) return a.transcriptManifest !== undefined && a.transcriptManifest === b.transcriptManifest;
+  return sameFileMap(tfA, tfB);
+}
+
 /// Brings `to` level with what `from` holds of another station's copies (a station that holds them and is not one of
 /// those that should, handing them over): every generation, nothing dropped. Whether `to` holds all of it now.
 export async function handOver(from: FolderPlace, to: Place, ws: string, origin: string): Promise<boolean> {
   const mine = await from.held(ws, origin);
   const theirs = await to.held(ws, origin);
+  const readMine: ReadPlaceObject = (hash) => from.read(ws, origin, null, hash);
+  const readTheirs = placeObjectReader(to, ws, origin);
   const files = new Set(theirs.files);
   for (const hash of mine.files) {
     if (files.has(hash)) continue;
@@ -604,21 +817,99 @@ export async function handOver(from: FolderPlace, to: Place, ws: string, origin:
   for (const g of mine.gens) {
     if (g.head === null) continue;
     const t = theirs.gens.find((x) => x.gen === g.gen);
-    if ((t?.head?.to ?? -1) >= g.head.to) continue;
+    if (t?.head != null) {
+      const theirsFull = t.head.partial !== true;
+      const mineFull = g.head.partial !== true;
+      if (theirsFull && t.head.to > g.head.to) continue;
+      if (t.head.to === g.head.to && (!mineFull || theirsFull)) {
+        const same = await headsLogicallyEqual(g.head, t.head, readMine, readTheirs).catch(() => false);
+        if (same || (!mineFull && theirsFull)) continue;
+      }
+    }
     const has = new Set(t?.batches ?? []);
     for (const b of g.head.batches) {
       if (has.has(b)) continue;
       const bytes = await from.read(ws, origin, g.gen, b);
       if (bytes !== null) await to.put(ws, origin, g.gen, "batch", b, bytes);
     }
-    await to.put(ws, origin, g.gen, "head", "head.json", Buffer.from(JSON.stringify(g.head, null, 1)));
+    await to.put(ws, origin, g.gen, "head", "head.json", Buffer.from(JSON.stringify(g.head, null, 1)), g.head);
   }
-  return holdsAll(mine, await to.held(ws, origin));
+  return holdsAllLogical(mine, await to.held(ws, origin), { readMine, readTheirs });
 }
 
-/// Whether `theirs` holds as much as `mine`: each generation as far, and every file.
+/// Synchronous check whether `theirs` holds as much as `mine` for inline heads (strictly refuses `partial` for full).
 export function holdsAll(mine: Held, theirs: Held): boolean {
   const files = new Set(theirs.files);
   if (mine.files.some((f) => !files.has(f))) return false;
-  return mine.gens.every((g) => g.head === null || (theirs.gens.find((t) => t.gen === g.gen)?.head?.to ?? -1) >= g.head.to);
+  return mine.gens.every((g) => {
+    if (g.head === null) return true;
+    const t = theirs.gens.find((x) => x.gen === g.gen);
+    if (t?.head == null) return false;
+    if (g.head.partial !== true && t.head.partial === true) return false;
+    if (t.head.to < g.head.to) return false;
+    if (t.head.to > g.head.to) return true;
+    if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
+    if (g.head.partial !== true) {
+      if (g.head.transcriptManifest !== undefined || t.head.transcriptManifest !== undefined) {
+        return g.head.transcriptManifest !== undefined && g.head.transcriptManifest === t.head.transcriptManifest;
+      }
+      if (!sameFileMap(g.head.transcriptFiles, t.head.transcriptFiles)) return false;
+    }
+    return true;
+  });
+}
+
+/// Async logical check whether `theirs` holds as much as `mine`: strictly distinguishes `partial` vs full heads and
+/// compares expanded transcript maps so inline `transcriptFiles` and `transcriptManifest` representations are equivalent.
+export async function holdsAllLogical(
+  mine: Held,
+  theirs: Held,
+  opts: { readMine?: ReadPlaceObject; readTheirs?: ReadPlaceObject } = {},
+): Promise<boolean> {
+  const theirsFiles = new Set(theirs.files);
+  const mineManifestMeta = new Set<string>();
+  for (const g of mine.gens) {
+    if (g.head === null) continue;
+    const t = theirs.gens.find((x) => x.gen === g.gen);
+    if (t?.head == null) return false;
+    if (g.head.partial !== true && t.head.partial === true) return false;
+    if (t.head.to < g.head.to) return false;
+    let mineTf: Record<string, number>;
+    if (g.head.transcriptManifest !== undefined) {
+      if (opts.readMine === undefined) return false;
+      let resolved: ResolvedManifest;
+      try {
+        resolved = await loadTranscriptManifest(g.head.transcriptManifest, opts.readMine);
+      } catch {
+        return false;
+      }
+      mineManifestMeta.add(resolved.rootHash);
+      for (const lh of resolved.leafHashes) mineManifestMeta.add(lh);
+      mineTf = resolved.files;
+    } else {
+      mineTf = g.head.transcriptFiles ?? {};
+    }
+    if (t.head.to === g.head.to) {
+      if (!sameBatches(g.head.batches, t.head.batches) || !sameFileMap(g.head.files, t.head.files)) return false;
+      if (g.head.partial !== true) {
+        let theirsTf: Record<string, number>;
+        if (t.head.transcriptManifest !== undefined) {
+          if (opts.readTheirs === undefined) return false;
+          try {
+            theirsTf = (await loadTranscriptManifest(t.head.transcriptManifest, opts.readTheirs)).files;
+          } catch {
+            return false;
+          }
+        } else {
+          theirsTf = t.head.transcriptFiles ?? {};
+        }
+        if (!sameFileMap(mineTf, theirsTf)) return false;
+      }
+    }
+  }
+  for (const f of mine.files) {
+    if (mineManifestMeta.has(f)) continue;
+    if (!theirsFiles.has(f)) return false;
+  }
+  return true;
 }

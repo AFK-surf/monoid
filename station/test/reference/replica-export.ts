@@ -25,6 +25,7 @@ import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
 import { runtimeKind } from "../../src/agents/runtime.ts";
 import { type Places, type Passed, type Told, nothingTold } from "../../src/replica/export.ts";
+import { MANIFEST_GC_GRACE_MS, encodeTranscriptManifest } from "../../src/replica/manifest.ts";
 import { type Head, type Rec, type Row, BATCH, BATCH_BYTES, Folded, TABLES, VERSION, attachedPaths, batchName, batchSpan, decodeBatch, encodeBatch, genName, keyOf, runsOf } from "./replica-format.ts";
 import { type Look, type Looking, storage, transcriptSourcesLooking } from "./transcript-paths.ts";
 export * from "../../src/replica/export.ts";
@@ -238,6 +239,7 @@ export class Exporter {
   /// Whether a transcript scan was deferred or truncated by budget and must continue in the next pass.
   #transcriptsPending = false;
   readonly #tfCache = new Map<string, Record<string, number>>();
+  readonly #manifestCache = new Map<string, { rootHash: string; leafHashes: string[] }>();
   #closed = false;
   /// This run of the exporter: a generation's head lists the runs that wrote it (a copy that holds a run this station's
   /// own does not know was written by one rolled back).
@@ -303,6 +305,7 @@ export class Exporter {
     this.#known = false;
     this.#transcriptsPending = false;
     this.#tfCache.clear();
+    this.#manifestCache.clear();
   }
 
   setPlaces(places: Places): void {
@@ -334,6 +337,7 @@ export class Exporter {
     this.#state.prepare("DELETE FROM entering WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM transcript_files WHERE ws = ?").run(ws);
     this.#tfCache.delete(ws);
+    this.#manifestCache.delete(ws);
     return gen;
   }
 
@@ -364,6 +368,7 @@ export class Exporter {
     } catch (e) {
       this.#state.exec("ROLLBACK");
       this.#tfCache.clear();
+      this.#manifestCache.clear();
       throw e;
     }
   }
@@ -681,10 +686,11 @@ export class Exporter {
         this.#write(ws, out);
         wrote++;
       }
-      heads[ws] = out.head;
+      heads[ws] = this.#compactHead(ws, out.head);
     }
     if (scanTranscripts && !this.#transcriptsPending) {
       this.#gcTranscriptChunks();
+      this.#gcManifests(outs);
     }
     return { heads, more, wrote, read: this.#read };
   }
@@ -857,6 +863,10 @@ export class Exporter {
     const chunk = join(this.#o.replica, "chunks", hash);
     try {
       if (statSync(chunk).isFile()) return chunk; // sync: in the export's own thread (worker.ts)
+    } catch {}
+    const manifest = join(this.#o.replica, "manifests", hash);
+    try {
+      if (statSync(manifest).isFile()) return manifest; // sync: in the export's own thread (worker.ts)
     } catch {}
     return null;
   }
@@ -1204,6 +1214,7 @@ export class Exporter {
         active.add(path);
         this.#state.prepare("INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)").run(ws, path, room, size, mtime, mode, JSON.stringify(chunks));
         this.#tfCache.delete(ws);
+        this.#manifestCache.delete(ws);
         say(ws, { tr: path, room, size, mtime, mode, chunks });
         doneFiles++;
         doneBytes += readBytes;
@@ -1284,7 +1295,10 @@ export class Exporter {
           say(ws, { tr_del: row.path });
           doneDeletes++;
         }
-        if (deletedInWs) this.#tfCache.delete(ws);
+        if (deletedInWs) {
+          this.#tfCache.delete(ws);
+          this.#manifestCache.delete(ws);
+        }
       }
     }
     return truncated;
@@ -1367,6 +1381,79 @@ export class Exporter {
         this.#state.prepare("DELETE FROM transcript_chunks WHERE plain_hash = ?").run(row.plain_hash);
       }
     }
+  }
+
+  #compactHead(ws: string, head: Head): Head {
+    const tf = head.transcriptFiles;
+    let hasTf = false;
+    if (tf !== undefined) {
+      for (const _ in tf) {
+        hasTf = true;
+        break;
+      }
+    }
+    if (!hasTf || tf === undefined) {
+      this.#manifestCache.delete(ws);
+      const { transcriptManifest: _, ...rest } = head;
+      return rest;
+    }
+    const manifestsDir = join(this.#o.replica, "manifests");
+    const cached = this.#manifestCache.get(ws);
+    let rootHash: string;
+    if (cached !== undefined && existsSync(join(manifestsDir, cached.rootHash))) { // sync: in the export's own thread (worker.ts)
+      rootHash = cached.rootHash;
+    } else {
+      const enc = encodeTranscriptManifest(tf);
+      const leafHashes: string[] = [];
+      for (const [lh, { bytes }] of enc.leaves) {
+        leafHashes.push(lh);
+        const lp = join(manifestsDir, lh);
+        if (!existsSync(lp)) writeWhole(lp, bytes, true); // sync: in the export's own thread (worker.ts)
+      }
+      const rp = join(manifestsDir, enc.rootHash);
+      if (!existsSync(rp)) writeWhole(rp, enc.rootBytes, true); // sync: in the export's own thread (worker.ts)
+      this.#manifestCache.set(ws, { rootHash: enc.rootHash, leafHashes });
+      rootHash = enc.rootHash;
+    }
+    const { transcriptFiles: _, ...rest } = head;
+    return { ...rest, transcriptManifest: rootHash };
+  }
+
+  #gcManifests(outs: Map<string, Out>): void {
+    const now = this.#o.now();
+    const manifestsDir = join(this.#o.replica, "manifests");
+    const live = new Set<string>();
+    for (const [ws, out] of outs) {
+      const cached = this.#manifestCache.get(ws);
+      if (cached !== undefined) {
+        live.add(cached.rootHash);
+        for (const lh of cached.leafHashes) live.add(lh);
+      } else if (out.head.transcriptFiles !== undefined) {
+        let hasTf = false;
+        for (const _ in out.head.transcriptFiles) {
+          hasTf = true;
+          break;
+        }
+        if (hasTf) {
+          const enc = encodeTranscriptManifest(out.head.transcriptFiles);
+          live.add(enc.rootHash);
+          for (const lh of enc.leaves.keys()) live.add(lh);
+        }
+      }
+    }
+    try {
+      for (const name of readdirSync(manifestsDir)) { // sync: in the export's own thread (worker.ts)
+        if (live.has(name)) continue;
+        const p = join(manifestsDir, name);
+        try {
+          const st = statSync(p, { bigint: true }); // sync: in the export's own thread (worker.ts)
+          const mtimeMs = Number(st.mtimeNs / 1_000_000n);
+          if (now - mtimeMs >= MANIFEST_GC_GRACE_MS) {
+            rmSync(p, { force: true }); // sync: in the export's own thread (worker.ts)
+          }
+        } catch {}
+      }
+    } catch {}
   }
 
   /// The batches of a generation of this station's, by name (what is in its log directory).

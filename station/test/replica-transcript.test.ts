@@ -17,6 +17,7 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { claudeProject, resetTranscriptLocateCache } from "../src/read/transcript.ts";
 import type { NormalizedBackupConfig, NormalizedS3Target } from "../src/replica/backup-config.ts";
 import { Copies } from "../src/replica/copies.ts";
+import { loadLocalTranscriptFiles } from "../src/replica/manifest.ts";
 import { PeerPlace, serve } from "../src/replica/peers.ts";
 import { FolderPlace, level } from "../src/replica/places.ts";
 import { moved, takeBackSoon } from "../src/replica/restore.ts";
@@ -298,7 +299,7 @@ function makeTranscriptStation() {
   };
 }
 
-test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orphan chunk GC", () => {
+test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orphan chunk GC", async () => {
   const s = makeTranscriptStation();
   closing.push(async () => s.store.close());
   const replica = join(s.data, "replica");
@@ -318,7 +319,10 @@ test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orpha
   const p1 = exporter.pass(nothingTold());
   assert.equal(p1.wrote, 1);
   const head1 = p1.heads[HOME]!;
-  assert.ok(head1.transcriptFiles !== undefined);
+  assert.equal(head1.transcriptFiles, undefined, "compact IPC head omits inline transcriptFiles");
+  assert.ok(head1.transcriptManifest !== undefined, "compact IPC head carries transcriptManifest");
+  const head1Tf = await loadLocalTranscriptFiles(replica, head1);
+  assert.ok(Object.keys(head1Tf).length > 0);
 
   // Decode batch and inspect `tr` records
   const genDir = join(replica, "own", HOME, head1.gen);
@@ -360,7 +364,8 @@ test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orpha
   assert.equal(trRecs2[0].chunks[0], prefix0, "chunk 0 hash 100% reused");
   assert.equal(trRecs2[0].chunks[1], prefix1, "chunk 1 hash 100% reused");
   assert.notEqual(trRecs2[0].chunks[2], oldTail, "tail chunk updated");
-  assert.equal(head2.transcriptFiles?.[oldTail], undefined, "orphan tail chunk removed from head.transcriptFiles");
+  const head2Tf = await loadLocalTranscriptFiles(replica, head2);
+  assert.equal(head2Tf[oldTail], undefined, "orphan tail chunk removed from head transcripts");
   assert.ok(existsSync(join(replica, "chunks", oldTail)), "orphan tail chunk retained on disk during grace period");
   now += CHUNK_GC_GRACE_MS;
   exporter.pass({ ...nothingTold(), transcripts: true });
@@ -375,7 +380,8 @@ test("TS reference: transcript discovery whitelist, 4 KiB chunk dedup, and orpha
   const p3 = exporter.pass({ ...nothingTold(), removedSessions: [{ key: "chat:codex", ws: null }], transcripts: true });
   assert.equal(p3.wrote, 1);
   const head3 = p3.heads[HOME]!;
-  assert.equal(head3.transcriptFiles?.[codexChunk], undefined);
+  const head3Tf = await loadLocalTranscriptFiles(replica, head3);
+  assert.equal(head3Tf[codexChunk], undefined);
   assert.ok(existsSync(join(replica, "chunks", codexChunk)), "deleted session transcript chunk retained during grace period");
   now += CHUNK_GC_GRACE_MS;
   exporter.pass({ ...nothingTold(), transcripts: true });
@@ -722,11 +728,12 @@ test("incremental transcript pass budget (files & bytes) and safe tr_del / GC (T
   const recs3 = readBatchRecs(tsReplica, head3, head3.batches.length - 1);
   assert.equal(recs3.filter((r) => "tr" in r).length, 1, "pass 3 exports final 1 transcript file");
   assert.equal(recs3.filter((r) => "tr_del" in r).length, 0, "pass 3 emits no tr_del");
-  assert.equal(Object.keys(head3.transcriptFiles ?? {}).length, 5, "all 5 transcript chunks present in head");
+  const head3Tf = await loadLocalTranscriptFiles(tsReplica, head3);
+  assert.equal(Object.keys(head3Tf).length, 5, "all 5 transcript chunks present in head");
 
   // Delete 1 file and run a complete pass -> tr_del emitted and orphan chunk GC'd
   const deletedPath = tsSrc.files[4]!;
-  const chunksBefore = new Set(Object.keys(head3.transcriptFiles ?? {}));
+  const chunksBefore = new Set(Object.keys(head3Tf));
   rmSync(deletedPath);
   now += 1000;
   const p4 = exporter.pass({ ...nothingTold(), transcripts: true });
@@ -735,8 +742,8 @@ test("incremental transcript pass budget (files & bytes) and safe tr_del / GC (T
   const recs4 = readBatchRecs(tsReplica, head4, head4.batches.length - 1);
   const dels4 = recs4.filter((r) => "tr_del" in r).map((r) => r.tr_del);
   assert.deepEqual(dels4, [deletedPath], "complete pass emits tr_del for deleted file");
-  const chunksAfter = new Set(Object.keys(head4.transcriptFiles ?? {}));
-  assert.equal(chunksAfter.size, 4, "deleted file chunk removed from head.transcriptFiles");
+  const chunksAfter = new Set(Object.keys(await loadLocalTranscriptFiles(tsReplica, head4)));
+  assert.equal(chunksAfter.size, 4, "deleted file chunk removed from head transcripts");
   const orphaned = [...chunksBefore].filter((ch) => !chunksAfter.has(ch));
   assert.equal(orphaned.length, 1);
   for (const ch of orphaned) {
@@ -786,7 +793,7 @@ test("incremental transcript pass budget (files & bytes) and safe tr_del / GC (T
   bigExporter.setPlaces({ home: HOME, workspaces: [{ workspace: HOME, name: "big" }] });
   const bigPass = bigExporter.pass(nothingTold());
   assert.equal(bigPass.more, false, "single file exceeding transcriptPassBytes completes in 1 pass");
-  assert.equal(Object.keys(bigPass.heads[HOME]!.transcriptFiles ?? {}).length, 3, "2500B file split into 3 chunks of 1024B");
+  assert.equal(Object.keys(await loadLocalTranscriptFiles(join(bigData, "replica"), bigPass.heads[HOME]!)).length, 3, "2500B file split into 3 chunks of 1024B");
 
   // 3. MoonBit reader parity for transcriptPassFiles=2 (when binary is built)
   if (binary !== null) {
@@ -805,20 +812,20 @@ test("incremental transcript pass budget (files & bytes) and safe tr_del / GC (T
 
     const mp1 = await runner.pass(nothingTold());
     assert.equal(mp1.more, true, "MB pass 1 truncated by transcriptPassFiles=2");
-    assert.equal(Object.keys(mp1.heads[HOME]!.transcriptFiles ?? {}).length, 2);
+    assert.equal(Object.keys(await loadLocalTranscriptFiles(mbReplica, mp1.heads[HOME]!)).length, 2);
 
     const mp2 = await runner.pass(nothingTold());
     assert.equal(mp2.more, true, "MB pass 2 truncated by transcriptPassFiles=2");
-    assert.equal(Object.keys(mp2.heads[HOME]!.transcriptFiles ?? {}).length, 4);
+    assert.equal(Object.keys(await loadLocalTranscriptFiles(mbReplica, mp2.heads[HOME]!)).length, 4);
 
     const mp3 = await runner.pass(nothingTold());
     assert.equal(mp3.more, false, "MB pass 3 finishes remaining 1 file");
-    assert.equal(Object.keys(mp3.heads[HOME]!.transcriptFiles ?? {}).length, 5);
+    assert.equal(Object.keys(await loadLocalTranscriptFiles(mbReplica, mp3.heads[HOME]!)).length, 5);
 
     rmSync(mbSrc.files[4]!);
     const mp4 = await runner.pass({ ...nothingTold(), transcripts: true });
     assert.equal(mp4.more, false);
-    assert.equal(Object.keys(mp4.heads[HOME]!.transcriptFiles ?? {}).length, 4, "MB complete pass deletes and GCs orphan chunk");
+    assert.equal(Object.keys(await loadLocalTranscriptFiles(mbReplica, mp4.heads[HOME]!)).length, 4, "MB complete pass deletes and GCs orphan chunk");
   }
 });
 
@@ -1074,6 +1081,7 @@ async function runLongSyncGraceRegression(mode: "ts" | "mb") {
     head: head1,
     batch: (name) => readFile(join(genDir, "log", name)),
     sources: sourcesFn,
+    loadTranscriptFiles: () => loadLocalTranscriptFiles(replica, head1),
   });
   await oldTailReached;
 
@@ -1170,7 +1178,7 @@ async function runReReferencedChunkRegression(mode: "ts" | "mb") {
   writeFileSync(s.claudeTrPath, s.claudeInitial + JSON.stringify({ role: "assistant", text: "temp-append" }) + "\n");
   utimesSync(s.claudeTrPath, new Date(now), new Date(now));
   const p2 = await passFn({ ...nothingTold(), transcripts: true });
-  assert.equal(p2.heads[HOME]!.transcriptFiles?.[chunkC], undefined);
+  assert.equal((await loadLocalTranscriptFiles(replica, p2.heads[HOME]!))[chunkC], undefined);
   assert.ok(existsSync(join(replica, "chunks", chunkC)), "chunk C retained on disk at t0");
   assert.ok(readGcPending().includes(chunkC), "chunk C recorded in transcript_chunk_gc");
 
@@ -1179,14 +1187,14 @@ async function runReReferencedChunkRegression(mode: "ts" | "mb") {
   writeFileSync(s.claudeTrPath, s.claudeInitial);
   utimesSync(s.claudeTrPath, new Date(now), new Date(now));
   const p3 = await passFn({ ...nothingTold(), transcripts: true });
-  assert.notEqual(p3.heads[HOME]!.transcriptFiles?.[chunkC], undefined, "chunk C re-referenced in head.transcriptFiles");
+  assert.notEqual((await loadLocalTranscriptFiles(replica, p3.heads[HOME]!))[chunkC], undefined, "chunk C re-referenced in head transcripts");
   assert.ok(existsSync(join(replica, "chunks", chunkC)), "chunk C still on disk at t0 + 300s");
   assert.ok(!readGcPending().includes(chunkC), "chunk C cleared from transcript_chunk_gc on re-reference");
 
   // At t0 + 1_000_000 (past original grace deadline): chunk C must NOT be deleted and transcript_chunk_gc has no residue.
   now = t0 + 1_000_000;
   const p4 = await passFn({ ...nothingTold(), transcripts: true });
-  assert.notEqual(p4.heads[HOME]!.transcriptFiles?.[chunkC], undefined);
+  assert.notEqual((await loadLocalTranscriptFiles(replica, p4.heads[HOME]!))[chunkC], undefined);
   assert.ok(existsSync(join(replica, "chunks", chunkC)), "re-referenced chunk C survives past original grace deadline");
   assert.ok(!readGcPending().includes(chunkC), "no transcript_chunk_gc residue for chunk C");
 }
@@ -1234,8 +1242,8 @@ async function runTranscriptCacheConsistency(mode: "ts" | "mb") {
 
   // 1. Initial pass populates transcriptFiles and tfCache.
   const p1 = await passFn(nothingTold());
-  const tf1 = p1.heads[HOME]!.transcriptFiles as Record<string, number>;
-  assert.ok(tf1 && Object.keys(tf1).length >= 3);
+  const tf1 = await loadLocalTranscriptFiles(replica, p1.heads[HOME]!);
+  assert.ok(Object.keys(tf1).length >= 3);
 
   // 2. Non-transcript chat-only pass hits tfCache with zero drift.
   now += 10_000;
@@ -1243,14 +1251,14 @@ async function runTranscriptCacheConsistency(mode: "ts" | "mb") {
   s.store.insertMessage({ thread, ts: "c.cache.1", authorKind: "person", author: "p@x", text: "chat only" });
   const p2 = await passFn(nothingTold());
   assert.equal(p2.wrote, 1);
-  assert.deepEqual(p2.heads[HOME]!.transcriptFiles, tf1, "cached transcriptFiles matches on non-transcript pass");
+  assert.deepEqual(await loadLocalTranscriptFiles(replica, p2.heads[HOME]!), tf1, "cached transcriptFiles matches on non-transcript pass");
 
   // 3. Updating a transcript invalidates tfCache and updates head.transcriptFiles.
   now += 10_000;
   writeFileSync(s.claudeTrPath, s.claudeInitial + JSON.stringify({ role: "assistant", text: "cache-invalidation-append" }) + "\n");
   utimesSync(s.claudeTrPath, new Date(now), new Date(now));
   const p3 = await passFn({ ...nothingTold(), transcripts: true });
-  const tf3 = p3.heads[HOME]!.transcriptFiles as Record<string, number>;
+  const tf3 = await loadLocalTranscriptFiles(replica, p3.heads[HOME]!);
   assert.notDeepEqual(tf3, tf1, "transcript update invalidates cache");
 
   // 4. Failed pass with rollback clears tfCache; subsequent pass succeeds with exact state.
@@ -1272,26 +1280,26 @@ async function runTranscriptCacheConsistency(mode: "ts" | "mb") {
   now += 10_000;
   s.store.insertMessage({ thread, ts: "c.cache.2", authorKind: "person", author: "p@x", text: "after rollback" });
   const pAfterRollback = await passFn(nothingTold());
-  assert.deepEqual(pAfterRollback.heads[HOME]!.transcriptFiles, tf3, "rollback cleared tfCache so stale uncommitted transcripts are not leaked");
+  assert.deepEqual(await loadLocalTranscriptFiles(replica, pAfterRollback.heads[HOME]!), tf3, "rollback cleared tfCache so stale uncommitted transcripts are not leaked");
 
   // Now commit the codex transcript update.
   now += 10_000;
   const p4 = await passFn({ ...nothingTold(), transcripts: true });
-  const tf4 = p4.heads[HOME]!.transcriptFiles as Record<string, number>;
+  const tf4 = await loadLocalTranscriptFiles(replica, p4.heads[HOME]!);
   assert.notDeepEqual(tf4, tf3);
 
   // 5. Deleting a transcript (tr_del) invalidates tfCache.
   now += 10_000;
   rmSync(s.codexTrPath);
   const p5 = await passFn({ ...nothingTold(), transcripts: true });
-  const tf5 = p5.heads[HOME]!.transcriptFiles as Record<string, number>;
+  const tf5 = await loadLocalTranscriptFiles(replica, p5.heads[HOME]!);
   assert.notDeepEqual(tf5, tf4, "tr_del invalidates tfCache");
 
   // 6. newGenerations() clears tfCache and re-exports cleanly.
   now += 60_000;
   await newGenFn(now - 1);
   const p6 = await passFn(nothingTold());
-  assert.deepEqual(p6.heads[HOME]!.transcriptFiles, tf5, "newGenerations re-exports exact transcriptFiles");
+  assert.deepEqual(await loadLocalTranscriptFiles(replica, p6.heads[HOME]!), tf5, "newGenerations re-exports exact transcriptFiles");
 }
 
 test("TS reference: transcriptFiles cache stays consistent across chat-only pass, tr, tr_del, rollback, and newGenerations", () =>
@@ -1394,21 +1402,22 @@ test("D71: AGY brain exact pruning (no-descend) + restore parity + legacy backup
   }
 
   // 2. Restore TS export into a new dataDir -> all kept files restored, pruned caches absent
+  const diskHeadTs = JSON.parse(readFileSync(join(genDirTs, "head.json"), "utf8")) as typeof headTs;
   const restoreDir = dataDir("agy-d71-restore");
   Store.open(join(restoreDir, "stillfail.db"), join(restoreDir, "archive")).close();
   const copyDir = join(restoreDir, "restore", "copy");
   mkdirSync(join(copyDir, "files"), { recursive: true });
-  mkdirSync(join(copyDir, headTs.gen, "log"), { recursive: true });
-  writeFileSync(join(copyDir, headTs.gen, "head.json"), JSON.stringify(headTs));
-  for (const b of headTs.batches) {
-    writeFileSync(join(copyDir, headTs.gen, "log", b), readFileSync(join(genDirTs, "log", b)));
+  mkdirSync(join(copyDir, diskHeadTs.gen, "log"), { recursive: true });
+  writeFileSync(join(copyDir, diskHeadTs.gen, "head.json"), JSON.stringify(diskHeadTs));
+  for (const b of diskHeadTs.batches) {
+    writeFileSync(join(copyDir, diskHeadTs.gen, "log", b), readFileSync(join(genDirTs, "log", b)));
   }
-  for (const h of [...Object.keys(headTs.files), ...Object.keys(headTs.transcriptFiles ?? {})]) {
+  for (const h of [...Object.keys(diskHeadTs.files), ...Object.keys(diskHeadTs.transcriptFiles ?? {})]) {
     writeFileSync(join(copyDir, "files", h), readFileSync(exporter.sourceOf(h)!));
   }
   writeFileSync(
     join(restoreDir, "restore", "ready.json"),
-    JSON.stringify({ origin: originId, workspace: HOME, gen: headTs.gen, name: "src", from: "peer" }),
+    JSON.stringify({ origin: originId, workspace: HOME, gen: diskHeadTs.gen, name: "src", from: "peer" }),
   );
   takeBack(restoreDir, join(restoreDir, "stillfail.db"), now + 1000);
   for (const p of s.keptFiles) {
@@ -1425,11 +1434,11 @@ test("D71: AGY brain exact pruning (no-descend) + restore parity + legacy backup
   const legacyDir = dataDir("agy-d71-legacy-restore");
   Store.open(join(legacyDir, "stillfail.db"), join(legacyDir, "archive")).close();
   const legacyCopy = join(legacyDir, "restore", "copy");
-  const legacyChunkHash = Object.keys(headTs.transcriptFiles!)[0]!;
+  const legacyChunkHash = Object.keys(diskHeadTs.transcriptFiles!)[0]!;
   const legacyPath = join(s.brain, "scratch", "legacy.txt");
   const legacyGen = "1000-deadbeef";
   const legacyLines = [
-    ...headTs.batches.flatMap((b) => [...decodeBatch(readFileSync(join(genDirTs, "log", b))).lines]),
+    ...diskHeadTs.batches.flatMap((b) => [...decodeBatch(readFileSync(join(genDirTs, "log", b))).lines]),
     JSON.stringify({ tr: legacyPath, room: null, size: 12, mtime: now, mode: 0o644, chunks: [legacyChunkHash] }),
   ];
   const { encodeBatch, batchName } = await import("./reference/replica-format.ts");
@@ -1440,9 +1449,9 @@ test("D71: AGY brain exact pruning (no-descend) + restore parity + legacy backup
   writeFileSync(join(legacyCopy, legacyGen, "log", bName), batchBytes);
   writeFileSync(
     join(legacyCopy, legacyGen, "head.json"),
-    JSON.stringify({ ...headTs, gen: legacyGen, batches: [bName], to: 1 }),
+    JSON.stringify({ ...diskHeadTs, gen: legacyGen, batches: [bName], to: 1 }),
   );
-  for (const h of [...Object.keys(headTs.files), ...Object.keys(headTs.transcriptFiles ?? {})]) {
+  for (const h of [...Object.keys(diskHeadTs.files), ...Object.keys(diskHeadTs.transcriptFiles ?? {})]) {
     writeFileSync(join(legacyCopy, "files", h), readFileSync(exporter.sourceOf(h)!));
   }
   writeFileSync(

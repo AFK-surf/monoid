@@ -12,9 +12,11 @@ import type { Fibers } from "../ops/fibers.ts";
 import type { StoreChange } from "../store/rows.ts";
 import { type Places, type Told, nothingTold } from "./export.ts";
 import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
-import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAll, level } from "./places.ts";
-import { type Ask, COPIES, PeerPlace, keepers, ranked, serve } from "./peers.ts";
+import { loadLocalTranscriptFiles, loadTranscriptManifest } from "./manifest.ts";
+import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAllLogical, level } from "./places.ts";
+import { type Ask, COPIES, MOST, PeerPlace, keepers, ranked, serve } from "./peers.ts";
 import { Refused } from "../mesh/bus.ts";
+import { readBytes } from "../mesh/files.ts";
 import type { Traces } from "../mesh/traces.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } from "./restore.ts";
 import type { Runner, WorkPassed } from "./runner.ts";
@@ -1043,11 +1045,13 @@ export class Copies {
   }
 
   #own(head: Head) {
-    const dir = join(this.#d.data, "replica", "own", head.workspace, head.gen);
+    const replicaDir = join(this.#d.data, "replica");
+    const dir = join(replicaDir, "own", head.workspace, head.gen);
     return {
       head,
       batch: (name: string) => readFile(join(dir, "log", name)),
       sources: async (hashes: string[]) => new Map(Object.entries(await this.#d.runner.sources(hashes))),
+      loadTranscriptFiles: () => loadLocalTranscriptFiles(replicaDir, head),
     };
   }
 
@@ -1120,7 +1124,25 @@ export class Copies {
         }
         if (all) {
           // (each of them holds as much as this one did: asked again just before it goes)
-          const still = await Promise.all(should.map((p) => new PeerPlace(p, this.#d.ask).held(ws, origin).then((h) => holdsAll(mine, h), () => false)));
+          const readMine = (hash: string) => this.kept.read(ws, origin, null, hash);
+          const still = await Promise.all(
+            should.map(async (p) => {
+              const peerPlace = new PeerPlace(p, this.#d.ask);
+              try {
+                const h = await peerPlace.held(ws, origin);
+                const readTheirs = async (hash: string) => {
+                  try {
+                    return await readBytes(await peerPlace.read(ws, origin, null, hash), MOST);
+                  } catch {
+                    return null;
+                  }
+                };
+                return await holdsAllLogical(mine, h, { readMine, readTheirs });
+              } catch {
+                return false;
+              }
+            }),
+          );
           if (still.every((x) => x)) {
             if ((this.#activeWrites.get(key) ?? 0) > 0 || (this.#writeSeq.get(key) ?? 0) !== seqBefore) {
               left = true;
@@ -1468,23 +1490,72 @@ export class Copies {
     if (holding?.head == null) throw new Gone("that copy is not kept there");
     const head = holding.head;
     const heldFiles = new Set(held.files);
-    const wanted = new Set(Object.keys(head.files));
-    for (const h of Object.keys(head.transcriptFiles ?? {})) if (heldFiles.has(h)) wanted.add(h);
-    const names = [...wanted];
-    r.name = head.name;
-    r.total = head.batches.length + names.length;
-    this.#changed(0);
     const dir = copyDir(this.#d.data);
     await rm(dir, { recursive: true, force: true });
     await mkdir(join(dir, gen, "log"), { recursive: true });
     await mkdir(join(dir, "files"), { recursive: true });
+    // If head carries `transcriptManifest`, download and strictly verify root + all bucket leaves first
+    // (corrupt/missing manifest aborts restore; prefer manifest over inline `transcriptFiles` for download).
+    let transcriptMap: Record<string, number> | undefined;
+    if (head.transcriptManifest !== undefined) {
+      const manifestBlobs = new Map<string, Buffer>();
+      const readManifestBlob = async (hash: string): Promise<Buffer | null> => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const piece of await stream(null, hash)) chunks.push(piece);
+          const buf = chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks);
+          manifestBlobs.set(hash, buf);
+          return buf;
+        } catch {
+          return null;
+        }
+      };
+      const resolved = await loadTranscriptManifest(head.transcriptManifest, readManifestBlob);
+      transcriptMap = resolved.files;
+      for (const [hash, buf] of manifestBlobs) {
+        const target = join(dir, "files", hash);
+        const f = await open(`${target}.part`, "w");
+        try {
+          await f.write(buf);
+          await f.sync();
+        } finally {
+          await f.close();
+        }
+        await rename(`${target}.part`, target);
+      }
+    } else {
+      transcriptMap = head.transcriptFiles;
+    }
+    const chatWanted = new Set(Object.keys(head.files));
+    const transcriptWanted: string[] = [];
+    for (const h of Object.keys(transcriptMap ?? {})) {
+      if (!chatWanted.has(h) && heldFiles.has(h)) transcriptWanted.push(h);
+    }
+    r.name = head.name;
+    r.total = head.batches.length + chatWanted.size + transcriptWanted.length;
+    this.#changed(0);
     for (const b of head.batches) {
       await save(join(dir, gen, "log", b), gen, b);
       r.done++;
       this.#changed(TELL_RESTORE_MS);
     }
-    for (const hash of names) {
+    for (const hash of chatWanted) {
       await save(join(dir, "files", hash), null, hash);
+      r.done++;
+      this.#changed(TELL_RESTORE_MS);
+    }
+    // Chat-first fault tolerance: a missing individual transcript chunk does not block chat DB/attachments restore;
+    // takeBack records it in `missing`.
+    for (const hash of transcriptWanted) {
+      try {
+        await save(join(dir, "files", hash), null, hash);
+      } catch (e) {
+        const missingChunk =
+          isEnoent(e) ||
+          (e instanceof S3HttpError && e.status === 404) ||
+          (e instanceof Refused && /not kept here/i.test(e.message));
+        if (!missingChunk) throw e;
+      }
       r.done++;
       this.#changed(TELL_RESTORE_MS);
     }

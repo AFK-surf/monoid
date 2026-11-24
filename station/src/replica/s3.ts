@@ -6,6 +6,7 @@ import { wall } from "../ops/fibers.ts";
 import type { NormalizedS3Target } from "./backup-config.ts";
 import { parseEncryptionKey, sfb1Open, sfb1OpenStream, sfb1Seal, sfb1SealStream } from "./crypto.ts";
 import { BATCH, GEN, HASH, STATION, WORKSPACE, type Head, asHead, genMade } from "./format.ts";
+import { loadTranscriptManifest, manifestAllRefs } from "./manifest.ts";
 import type { Held, Holding, Place } from "./places.ts";
 
 export const MULTIPART_THRESHOLD = 16 * 1024 * 1024;
@@ -434,8 +435,8 @@ export class S3Place implements Place {
   readonly #orphanFileTags = new Map<string, Set<string>>();
   /// Per `${ws}\n${origin}` set of `gen`s whose `head/<gen>.enc` failed verification in `held()`.
   readonly #unverifiedGens = new Map<string, Set<string>>();
-  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files` and (for older gens) `transcriptFiles` hash maps (0-HMAC reference).
-  readonly #genRefHashes = new Map<string, Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number> }>>();
+  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files`, (for older gens) `transcriptFiles`, and verified `manifestRefs` (root + leaves + chunks).
+  readonly #genRefHashes = new Map<string, Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number>; manifestRefs?: Set<string> }>>();
   /// Last head reconciled against `#orphanFileTags` per `${ws}\n${origin}` (present ONLY while orphans are non-empty, for O(delta) incremental checks).
   readonly #lastOrphanHead = new Map<string, Head>();
 
@@ -471,6 +472,16 @@ export class S3Place implements Place {
 
   #fileKey(ws: string, origin: string, hash: string): string {
     return this.#prefixed(`${this.wsTag(ws)}/${this.originTag(origin)}/files/${this.fileTag(hash)}.enc`);
+  }
+
+  async #readManifestObject(ws: string, origin: string, hash: string): Promise<Buffer | null> {
+    try {
+      const enc = await this.client.getObject(this.#fileKey(ws, origin, hash));
+      return sfb1Open(this.#key, { ws, origin, logicalPath: `files/${hash}` }, enc);
+    } catch (e) {
+      if (e instanceof S3HttpError && e.status === 404) return null;
+      throw e;
+    }
   }
 
   async held(ws: string, origin: string): Promise<Held> {
@@ -533,16 +544,32 @@ export class S3Place implements Place {
     const presentHashes = new Set<string>();
     const referencedTags = new Set<string>();
     const unverified = new Set<string>();
-    for (const gen of headGens) {
-      if (headMap.get(gen) === null) unverified.add(gen);
-    }
+    const manifestRefsByGen = new Map<string, Set<string>>();
+    await Promise.all(
+      headGens.map(async (gen) => {
+        const head = headMap.get(gen) ?? null;
+        if (head === null) {
+          unverified.add(gen);
+          return;
+        }
+        if (head.transcriptManifest !== undefined) {
+          try {
+            const resolved = await loadTranscriptManifest(head.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
+            manifestRefsByGen.set(gen, manifestAllRefs(resolved));
+          } catch {
+            unverified.add(gen);
+          }
+        }
+      }),
+    );
     const allHeadsVerified = unverified.size === 0;
-    const byGen = new Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number> }>();
+    const byGen = new Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number>; manifestRefs?: Set<string> }>();
     for (const gen of allGens) {
       const head = headMap.get(gen) ?? null;
       const batches = (batchesByGen.get(gen) ?? []).sort();
       gens.push({ gen, head, batches });
       if (head !== null) {
+        const manifestRefs = manifestRefsByGen.get(gen);
         for (const h of Object.keys(head.files)) {
           const tag = this.fileTag(h);
           referencedTags.add(tag);
@@ -553,7 +580,18 @@ export class S3Place implements Place {
           referencedTags.add(tag);
           if (fileTags.has(tag)) presentHashes.add(h);
         }
-        byGen.set(gen, { files: head.files, transcriptFiles: head.transcriptFiles });
+        if (manifestRefs !== undefined) {
+          for (const h of manifestRefs) {
+            const tag = this.fileTag(h);
+            referencedTags.add(tag);
+            if (fileTags.has(tag)) presentHashes.add(h);
+          }
+        }
+        byGen.set(gen, {
+          files: head.files,
+          transcriptFiles: head.transcriptFiles,
+          ...(manifestRefs !== undefined ? { manifestRefs } : {}),
+        });
       }
     }
     const scopeKey = `${ws}\n${origin}`;
@@ -579,17 +617,17 @@ export class S3Place implements Place {
       this.#lastOrphanHead.delete(scopeKey);
     }
     gens.sort((a, b) => genMade(a.gen) - genMade(b.gen) || (a.gen < b.gen ? -1 : 1));
-    return { gens, files: [...presentHashes] };
+    return { gens, files: [...presentHashes], ...(unverified.size > 0 ? { hasUnverifiedHead: true } : {}) };
   }
 
-  #reconcileOrphans(scopeKey: string, head: Head): void {
+  #reconcileOrphans(scopeKey: string, head: Head, manifestRefs?: Set<string>): void {
     const orphans = this.#orphanFileTags.get(scopeKey);
     if (orphans === undefined || orphans.size === 0) {
       this.#lastOrphanHead.delete(scopeKey);
       return;
     }
     const prev = this.#lastOrphanHead.get(scopeKey);
-    const incremental = prev !== undefined && prev.gen === head.gen;
+    const incremental = prev !== undefined && prev.gen === head.gen && prev.transcriptManifest === head.transcriptManifest;
     for (const h in head.files) {
       if (!Object.hasOwn(head.files, h)) continue;
       if (incremental && Object.hasOwn(prev.files, h)) continue;
@@ -604,6 +642,14 @@ export class S3Place implements Place {
         orphans.delete(this.fileTag(h));
         if (orphans.size === 0) break;
       }
+    }
+    if (orphans.size > 0 && manifestRefs !== undefined) {
+      for (const h of manifestRefs) {
+        orphans.delete(this.fileTag(h));
+        if (orphans.size === 0) break;
+      }
+    } else if (orphans.size > 0 && head.transcriptManifest !== undefined) {
+      orphans.delete(this.fileTag(head.transcriptManifest));
     }
     if (orphans.size === 0) {
       this.#orphanFileTags.delete(scopeKey);
@@ -632,17 +678,35 @@ export class S3Place implements Place {
       const enc = sfb1Seal(this.#key, { ws, origin: ot, logicalPath: `head/${gen}` }, bytes);
       await this.client.putObject(this.#headKey(ws, origin, gen), enc);
       const scopeKey = `${ws}\n${origin}`;
-      const unverified = this.#unverifiedGens.get(scopeKey);
-      if (unverified !== undefined) {
-        unverified.delete(gen);
-        if (unverified.size === 0) this.#unverifiedGens.delete(scopeKey);
+      let manifestRefs: Set<string> | undefined;
+      let manifestOk = true;
+      if (parsed !== null && parsed.transcriptManifest !== undefined) {
+        try {
+          const resolved = await loadTranscriptManifest(parsed.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
+          manifestRefs = manifestAllRefs(resolved);
+        } catch {
+          manifestOk = false;
+        }
+      }
+      if (!manifestOk) {
+        let unverified = this.#unverifiedGens.get(scopeKey);
+        if (unverified === undefined) this.#unverifiedGens.set(scopeKey, (unverified = new Set()));
+        unverified.add(gen);
+        this.#orphanFileTags.delete(scopeKey);
+        this.#lastOrphanHead.delete(scopeKey);
+      } else {
+        const unverified = this.#unverifiedGens.get(scopeKey);
+        if (unverified !== undefined) {
+          unverified.delete(gen);
+          if (unverified.size === 0) this.#unverifiedGens.delete(scopeKey);
+        }
       }
       if (parsed !== null) {
         let byGen = this.#genRefHashes.get(scopeKey);
         if (byGen === undefined) this.#genRefHashes.set(scopeKey, (byGen = new Map()));
-        // Current gen only needs `files` protected in `drop()` (never retains 246k `transcriptFiles` in memory).
-        byGen.set(gen, { files: parsed.files });
-        this.#reconcileOrphans(scopeKey, parsed);
+        // Current gen only needs `files` (and verified `manifestRefs`) protected in `drop()` (never retains 246k inline `transcriptFiles`).
+        byGen.set(gen, { files: parsed.files, ...(manifestRefs !== undefined ? { manifestRefs } : {}) });
+        if (manifestOk) this.#reconcileOrphans(scopeKey, parsed, manifestRefs);
       }
     }
   }
@@ -669,6 +733,7 @@ export class S3Place implements Place {
       for (const [otherGen, refs] of byGen) {
         if (Object.hasOwn(refs.files, hash)) return true;
         if (otherGen !== gen && refs.transcriptFiles !== undefined && Object.hasOwn(refs.transcriptFiles, hash)) return true;
+        if (refs.manifestRefs !== undefined && refs.manifestRefs.has(hash)) return true;
       }
       return false;
     };
@@ -719,7 +784,25 @@ export class S3Place implements Place {
   async pruneOrphans(ws: string, origin: string, liveHead?: Head): Promise<void> {
     if (!WORKSPACE.test(ws) || !STATION.test(origin)) throw new Error("not a copy's name");
     const scopeKey = `${ws}\n${origin}`;
-    if (liveHead !== undefined) this.#reconcileOrphans(scopeKey, liveHead);
+    const unverified = this.#unverifiedGens.get(scopeKey);
+    if (unverified !== undefined && unverified.size > 0) return;
+    if (liveHead !== undefined) {
+      let manifestRefs: Set<string> | undefined;
+      if (liveHead.transcriptManifest !== undefined) {
+        try {
+          const resolved = await loadTranscriptManifest(liveHead.transcriptManifest, (h) => this.#readManifestObject(ws, origin, h));
+          manifestRefs = manifestAllRefs(resolved);
+        } catch {
+          let u = this.#unverifiedGens.get(scopeKey);
+          if (u === undefined) this.#unverifiedGens.set(scopeKey, (u = new Set()));
+          u.add(liveHead.gen);
+          this.#orphanFileTags.delete(scopeKey);
+          this.#lastOrphanHead.delete(scopeKey);
+          return;
+        }
+      }
+      this.#reconcileOrphans(scopeKey, liveHead, manifestRefs);
+    }
     const orphans = this.#orphanFileTags.get(scopeKey);
     if (orphans === undefined || orphans.size === 0) {
       this.#lastOrphanHead.delete(scopeKey);
