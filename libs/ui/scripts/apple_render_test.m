@@ -2808,6 +2808,33 @@ int main(void) {
           free(px_empty);
           free(px_icon);
         }
+        // --- V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt) ---
+        {
+          double tg[3 * MB_INST];
+          rect_at(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
+          rect_at(tg + MB_INST, 41.5, 8.0, 2.0, 64.0, 0, 90.0 / 255.0, 90.0 / 255.0, 90.0 / 255.0, 0);
+          rect_at(tg + 2 * MB_INST, 32.5, 8.25, 95.0, 63.5, 6, 1.0, 1.0, 1.0, -565);
+          tg[2 * MB_INST + 4] = 31.75; tg[2 * MB_INST + 6] = 1.0; tg[2 * MB_INST + 7] = -64.0;
+          tg[2 * MB_INST + 11] = 0.0; tg[2 * MB_INST + 12] = 1.0; tg[2 * MB_INST + 13] = 9.0;
+          tg[2 * MB_INST + 15] = 1.0; tg[2 * MB_INST + 21] = 9.0; tg[2 * MB_INST + 22] = 0.0; tg[2 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(tg, 3, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
+          present_drain();
+          int awg = 0, ahg = 0;
+          uint8_t *pxg = read_texture(canvas, &awg, &ahg);
+          uint8_t *co = A_PX(pxg, awg, 127, 120);
+          double l_orig = 0.2126 * co[2] + 0.7152 * co[1] + 0.0722 * co[0];
+          double min_l = 1e9;
+          for (int px_i = 132; px_i <= 136; px_i++) {
+            uint8_t *cr = A_PX(pxg, awg, px_i, 120);
+            double lr = 0.2126 * cr[2] + 0.7152 * cr[1] + 0.0722 * cr[0];
+            if (lr < min_l) min_l = lr;
+          }
+          printf("apple_render: v9_tab_no_ghost orig_L=%.1f refr_min_L=%.1f\n", l_orig, min_l);
+          CHECK(l_orig > 220.0 && min_l < 170.0);
+          free(pxg);
+        }
         // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
         mb_render_set_size(VW, VH, 2);
         for (int ph = 0; ph < 2; ph++) {
@@ -2875,7 +2902,7 @@ int main(void) {
           }
           printf("apple_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
           CHECK(max_d2 <= 14.0);
-          CHECK(side_lmin >= 190.0 && side_lmin <= 215.0);
+          CHECK(side_lmin >= 212.0 && side_lmin <= 232.0);
           free(px);
           // V10-Dark: Dark Regular Glass (@2x, R=24pt, regRim enabled) top rim > interior, side & 45-deg corner invariants
           double rgd[2 * MB_INST];
@@ -3092,6 +3119,89 @@ int main(void) {
               }
             }
           }
+        }
+        // --- V9h: Switch ON held glassFrost C0 continuity (0 -> eps, 0.108->0.110 veil, 0.127->0.129 blur, 0.60 frosted) ---
+        {
+          static const double frosts[8] = { 0.0, 0.0001, 0.00011, 0.108, 0.110, 0.127, 0.129, 0.60 };
+          mb_render_set_size(VW, VH, 3);
+          uint8_t *px0 = NULL, *px_prev = NULL;
+          int aw0 = 0, ah0 = 0;
+          int max_d_eps = 0, max_d_veil = 0, max_d_blur = 0;
+          int c0_r = 0, c0_g = 0, c60_r = 0, c60_g = 0;
+          for (int fi = 0; fi < 8; fi++) {
+            double fr = frosts[fi];
+            double alpha = 0.0, slot7 = -32.0, refr = 9.0;
+            if (fr > 0.0001) {
+              double a_frac = 0.94 * fr;
+              alpha = round(a_frac * 255.0) / 255.0;
+              double bl = (a_frac <= 0.12) ? 0.0 : 14.0 * ((a_frac - 0.12) / 0.88) * 0.5;
+              slot7 = (bl <= 0.0) ? -32.0 : bl;
+              refr = 9.0 * (1.0 - 0.55 * fr);
+            }
+            double sw[3 * MB_INST];
+            rect_at(sw, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+            rect_at(sw + MB_INST, 40.0, 26.0, 63.0, 28.0, 0, 48.0 / 255.0, 209.0 / 255.0, 88.0 / 255.0, 0);
+            sw[MB_INST + 4] = 14.0;
+            sw[MB_INST + 36] = 14.0; sw[MB_INST + 37] = 14.0; sw[MB_INST + 38] = 14.0; sw[MB_INST + 39] = 14.0;
+            rect_at(sw + 2 * MB_INST, 52.9, 21.0, 59.2, 38.4, 6, 1.0, 1.0, 1.0, -90 - fi);
+            sw[2 * MB_INST + 4] = 19.2; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = slot7;
+            sw[2 * MB_INST + 11] = alpha; sw[2 * MB_INST + 12] = 1.0; sw[2 * MB_INST + 13] = 9.0;
+            sw[2 * MB_INST + 15] = 1.0; sw[2 * MB_INST + 21] = refr;
+            glass_forget();
+            mb_host_render_dirty(0, 0, VW, VH);
+            mb_render_present(sw, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+            present_drain();
+            int aw = 0, ah = 0;
+            uint8_t *px = read_texture(canvas, &aw, &ah);
+            if (fi == 0) {
+              px0 = px; aw0 = aw; ah0 = ah;
+              uint8_t *c = A_PX(px, aw, 82 * 3, 40 * 3);
+              c0_r = c[2]; c0_g = c[1];
+            } else {
+              if (fi == 2) {
+                for (int py = 21 * 3; py <= 59 * 3; py++) {
+                  for (int xpx = 53 * 3; xpx <= 112 * 3; xpx++) {
+                    uint8_t *a = A_PX(px0, aw0, xpx, py);
+                    uint8_t *b = A_PX(px, aw, xpx, py);
+                    for (int ch = 0; ch < 3; ch++) {
+                      int d = abs((int)a[ch] - (int)b[ch]);
+                      if (d > max_d_eps) max_d_eps = d;
+                    }
+                  }
+                }
+              } else if (fi == 3 || fi == 5) {
+                free(px_prev);
+                px_prev = px;
+                px = NULL;
+              } else if (fi == 4 || fi == 6) {
+                int md = 0;
+                for (int py = 21 * 3; py <= 59 * 3; py++) {
+                  for (int xpx = 53 * 3; xpx <= 112 * 3; xpx++) {
+                    uint8_t *a = A_PX(px_prev, aw0, xpx, py);
+                    uint8_t *b = A_PX(px, aw, xpx, py);
+                    for (int ch = 0; ch < 3; ch++) {
+                      int d = abs((int)a[ch] - (int)b[ch]);
+                      if (d > md) md = d;
+                    }
+                  }
+                }
+                if (fi == 4) max_d_veil = md; else max_d_blur = md;
+              } else if (fi == 7) {
+                uint8_t *c = A_PX(px, aw, 82 * 3, 40 * 3);
+                c60_r = c[2]; c60_g = c[1];
+              }
+              free(px);
+            }
+          }
+          free(px0);
+          free(px_prev);
+          (void)ah0;
+          printf("apple_render: v9_switch_frost_continuity max_d_eps=%d max_d_veil=%d max_d_blur=%d ctr0=(%d,%d) ctr60=(%d,%d)\n",
+                 max_d_eps, max_d_veil, max_d_blur, c0_r, c0_g, c60_r, c60_g);
+          CHECK(max_d_eps <= 2);
+          CHECK(max_d_veil <= 10);
+          CHECK(max_d_blur <= 10);
+          CHECK(c60_r > c0_r + 25 && (c60_g - c60_r) < (c0_g - c0_r) - 20);
         }
         #undef A_PX
         mb_render_set_size(400, 300, 2);

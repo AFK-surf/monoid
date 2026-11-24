@@ -123,7 +123,7 @@ pub fn appearance_from_prefs(prefs : Json?, system_dark : Bool) -> Bool {
     _ => None
   })
   // liquid glass frost as this device is set (the prefs' `glassFrost`: 0..100), else 0 (default clear)
-  let frost_s = text(prefs, "glassFrost")
+  let frost_s = @settings.pref_from(prefs, "glassFrost")
   let frost_v = match parse_frost_pct(frost_s) {
     Some(n) => n.to_double() / 100.0
     None => 0.0

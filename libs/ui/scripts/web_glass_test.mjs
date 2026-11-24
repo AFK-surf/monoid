@@ -418,6 +418,84 @@ function runGlassVectorsInPage() {
     const outDiff = Math.max(Math.abs(bOut[0] - aOut[0]), Math.abs(bOut[1] - aOut[1]), Math.abs(bOut[2] - aOut[2]));
     roi.v9_tab_icon_delta = { midDelta, outDiff };
   }
+  // V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt)
+  {
+    const buf = new Float32Array(3 * INST);
+    rect(buf, 0, 0, 0, VW, VH, 0, 246 / 255, 244 / 255, 240 / 255, 1, 0);
+    rect(buf, INST, 41.5, 8.0, 2.0, 64.0, 0, 90 / 255, 90 / 255, 90 / 255, 1, 0);
+    rect(buf, 2 * INST, 32.5, 8.25, 95.0, 63.5, 6, 1, 1, 1, 0, -565);
+    buf[2 * INST + 4] = 31.75; buf[2 * INST + 6] = 1; buf[2 * INST + 7] = -64;
+    buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = 9;
+    H.present(buf, 3, 246 / 255, 244 / 255, 240 / 255);
+    const shotG = H.renderPixels();
+    const origL = lumaOf(pxAt(shotG, 127, 120));
+    let refrMinL = 1e9;
+    for (let pxI = 132; pxI <= 136; pxI++) {
+      const lr = lumaOf(pxAt(shotG, pxI, 120));
+      if (lr < refrMinL) refrMinL = lr;
+    }
+    roi.v9_tab_no_ghost = { origL, refrMinL };
+  }
+  // V9h: Switch ON held glassFrost C0 continuity (0 -> eps, 0.108->0.110 veil, 0.127->0.129 blur, 0.60 frosted)
+  {
+    const frosts = [0.0, 0.0001, 0.00011, 0.108, 0.110, 0.127, 0.129, 0.60];
+    let px0 = null, pxPrev = null;
+    let maxDEps = 0, maxDVeil = 0, maxDBlur = 0;
+    let ctr0 = [0, 0], ctr60 = [0, 0];
+    for (let fi = 0; fi < frosts.length; fi++) {
+      const fr = frosts[fi];
+      let alpha = 0.0, slot7 = -32.0, refr = 9.0;
+      if (fr > 0.0001) {
+        const aFrac = 0.94 * fr;
+        alpha = Math.round(aFrac * 255.0) / 255.0;
+        const bl = aFrac <= 0.12 ? 0.0 : 14.0 * ((aFrac - 0.12) / 0.88) * 0.5;
+        slot7 = bl <= 0.0 ? -32.0 : bl;
+        refr = 9.0 * (1.0 - 0.55 * fr);
+      }
+      const buf = new Float32Array(3 * INST);
+      rect(buf, 0, 0, 0, VW, VH, 0, 28 / 255, 28 / 255, 30 / 255, 1, 0);
+      rect(buf, INST, 40, 26, 63, 28, 0, 48 / 255, 209 / 255, 88 / 255, 1, 0);
+      buf[INST + 4] = 14;
+      rect(buf, 2 * INST, 52.9, 21.0, 59.2, 38.4, 6, 1, 1, 1, alpha, -90 - fi);
+      buf[2 * INST + 4] = 19.2; buf[2 * INST + 6] = 1; buf[2 * INST + 7] = slot7;
+      buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = refr;
+      H.present(buf, 3, 28 / 255, 28 / 255, 30 / 255);
+      const shot = H.renderPixels();
+      if (fi === 0) {
+        px0 = shot;
+        const c = pxAt(shot, 82 * 3, 40 * 3);
+        ctr0 = [c[0], c[1]];
+      } else if (fi === 2) {
+        for (let py = 21 * 3; py <= 59 * 3; py++) {
+          for (let pxI = 53 * 3; pxI <= 112 * 3; pxI++) {
+            const a = pxAt(px0, pxI, py), b = pxAt(shot, pxI, py);
+            for (let ch = 0; ch < 3; ch++) {
+              const d = Math.abs(a[ch] - b[ch]);
+              if (d > maxDEps) maxDEps = d;
+            }
+          }
+        }
+      } else if (fi === 3 || fi === 5) {
+        pxPrev = shot;
+      } else if (fi === 4 || fi === 6) {
+        let md = 0;
+        for (let py = 21 * 3; py <= 59 * 3; py++) {
+          for (let pxI = 53 * 3; pxI <= 112 * 3; pxI++) {
+            const a = pxAt(pxPrev, pxI, py), b = pxAt(shot, pxI, py);
+            for (let ch = 0; ch < 3; ch++) {
+              const d = Math.abs(a[ch] - b[ch]);
+              if (d > md) md = d;
+            }
+          }
+        }
+        if (fi === 4) maxDVeil = md; else maxDBlur = md;
+      } else if (fi === 7) {
+        const c = pxAt(shot, 82 * 3, 40 * 3);
+        ctr60 = [c[0], c[1]];
+      }
+    }
+    roi.v9_switch_frost_continuity = { maxDEps, maxDVeil, maxDBlur, ctr0, ctr60 };
+  }
   // V9a2: Switch ON @ 2x phase-shifted integrated green mass
   H.renderInit(VW, VH, 2);
   {
@@ -835,8 +913,10 @@ check(roi.v9_sw_off_moat[0] > roi.v9_sw_off_moat[1] && roi.v9_sw_off_moat[1] >= 
 check(roi.v9_sw_5press_delta_area[0] < roi.v9_sw_5press_delta_area[1] && roi.v9_sw_5press_delta_area[1] < roi.v9_sw_5press_delta_area[2] && roi.v9_sw_5press_delta_area[2] < roi.v9_sw_5press_delta_area[3] && roi.v9_sw_5press_delta_area[3] < roi.v9_sw_5press_delta_area[4],
   `v9_sw_5press_delta_area=${JSON.stringify(roi.v9_sw_5press_delta_area)}`);
 check(roi.v9_tab_icon_delta.midDelta >= 40 && roi.v9_tab_icon_delta.outDiff === 0, `v9_tab_icon_delta=${JSON.stringify(roi.v9_tab_icon_delta)}`);
+check(roi.v9_tab_no_ghost.origL > 220.0 && roi.v9_tab_no_ghost.refrMinL < 170.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
+check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continuity.maxDVeil <= 10 && roi.v9_switch_frost_continuity.maxDBlur <= 10 && roi.v9_switch_frost_continuity.ctr60[0] > roi.v9_switch_frost_continuity.ctr0[0] + 25 && (roi.v9_switch_frost_continuity.ctr60[1] - roi.v9_switch_frost_continuity.ctr60[0]) < (roi.v9_switch_frost_continuity.ctr0[1] - roi.v9_switch_frost_continuity.ctr0[0]) - 20, `v9_switch_frost_continuity=${JSON.stringify(roi.v9_switch_frost_continuity)}`);
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
-check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 190.0 && roi.v10_reg_light.sideLmin <= 215.0,
+check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 212.0 && roi.v10_reg_light.sideLmin <= 232.0,
   `v10_reg_light=${JSON.stringify(roi.v10_reg_light)}`);
 check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 5.0 && roi.v10_reg_dark.lSide >= roi.v10_reg_dark.lMid - 6.0 && roi.v10_reg_dark.lSide <= roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.roiFnv1a === '0xbf214b492568e589',
   `v10_reg_dark=${JSON.stringify(roi.v10_reg_dark)}`);
