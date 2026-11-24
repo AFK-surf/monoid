@@ -8,6 +8,26 @@
 D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"
 export APP=${APP:-stillfail}
+sha256_of() { if command -v shasum > /dev/null; then shasum -a 256; else sha256sum; fi | cut -d' ' -f1; }
+# What the app's link takes of the core's native parts (scripts/core.sh apple-native), by content: the engine's inputs
+# (engine()'s list there, its compiler, Hermes's headers) rather than libmbui_core.a, whose ar writes the time into it,
+# and the shell's and libghostty-vt's archives. Empty with no engine.
+apple_native_libs_key() {
+  local o=$A/out/core/aarch64-apple-darwin f
+  [ -f "$o/libmbui_core.a" ] || return 0
+  {
+    echo "macos ${MACOSX_DEPLOYMENT_TARGET:-}"
+    echo "cc $(xcrun --sdk macosx clang++ --version 2>/dev/null | head -1)"
+    echo "hermes $(readlink "$A/out/core/hermes" 2>/dev/null)"
+    for f in src/host/apple_core.mm engine/ready_queue.h src/host/apple_collate.h src/host/electron_sealed.h \
+      src/host/core_api.h src/host/listen_api.h scripts/core.sh; do
+      [ ! -f "$A/$f" ] || echo "$f $(sha256_of < "$A/$f")"
+    done
+    for f in libstillfail_shell.a libghostty-vt.a; do
+      [ ! -f "$o/$f" ] || echo "$f $(sha256_of < "$o/$f")"
+    done
+  } | sha256_of
+}
 [ "${1:-}" = login ] && export APP=coredemo
 if [ "${MBUI_CORE:-0}" != 0 ]; then export APP=coredemo; fi
 if [ $APP = coredemo ] || [ $APP = stillfail ]; then
@@ -104,12 +124,24 @@ EOF
       fi
       echo "mac.sh: pion core native parts in $((SECONDS - t0)) s (zero Hermes)"
     else
-      bash "$D/core.sh" apple-native aarch64-apple-darwin || exit 1
+      # (MBUI_APPLE_NATIVE_READY: the caller made them just before, .github/mac-release-prebuild.sh; 2-8 s again)
+      [ "${MBUI_APPLE_NATIVE_READY:-0}" = 1 ] || bash "$D/core.sh" apple-native aarch64-apple-darwin || exit 1
       echo "mac.sh: the core's native parts in $((SECONDS - t0)) s"
-      # (moon does not see the engine's archive: an app linked before it was made has its stub touched, so it is linked
-      # again)
-      if [ -f "$exe" ] && { [ "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || ! otool -L "$exe" 2>/dev/null | grep -qi hermes; }; then
-        touch "$A/src/$APP/core_engine.m"
+      # (moon does not see the engine's archive nor the libraries linked beside it: an app linked before they changed has
+      # its stub touched, so it is linked again. Told by what they are made of, kept beside the app ($exe.native-libs, in
+      # CI's moon cache with it), not by mtimes: a fresh runner's engine is always newer than the app its cache restored,
+      # and moon's mbc and link ran again every run, 40-50 s; the engine's mtime only for an app with no such mark)
+      native_key=$(apple_native_libs_key)
+      if [ -f "$exe" ]; then
+        relink=0
+        if ! otool -L "$exe" 2>/dev/null | grep -qi hermes; then
+          relink=1
+        elif [ -n "$native_key" ] && [ -f "$exe.native-libs" ]; then
+          [ "$(cat "$exe.native-libs")" = "$native_key" ] || relink=1
+        elif [ "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ]; then
+          relink=1
+        fi
+        [ $relink = 0 ] || touch "$A/src/$APP/core_engine.m"
       fi
       # (nor libghostty-vt's headers: src/stillfail/terminal_ghostty.c is its mark alone when they are not there, and moon
       # compiles a stub again only when its mtime changes, which scripts/moon-mtimes.sh makes its content's, so one
@@ -143,6 +175,8 @@ if [ $code = 0 ] && [ -n "${exe:-}" ] && [ $APP = stillfail ] && ! nm "$exe" 2>/
   echo "mac.sh: $exe has no libghostty-vt (src/stillfail/terminal_ghostty.c compiled without out/core/ghostty-vt/include)" >&2
   code=1
 fi
+# (the native parts this app was linked with, for the next build's check above)
+if [ $code = 0 ] && [ -f "$exe" ] && [ -n "${native_key:-}" ]; then printf '%s\n' "$native_key" > "$exe.native-libs"; fi
 t0=$SECONDS
 wait $hbc || { cat "$A/out/core/hermes.log"; echo "mac.sh: the core's bytecode was not made (scripts/core.sh hermes apple)" >&2; exit 1; }
 cat "$A/out/core/hermes.log"

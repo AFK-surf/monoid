@@ -2172,12 +2172,24 @@ jobs:
         run: |
           c=apps/mbui/_build/native/release/build/stillfail/stillfail/stillfail.c
           [ -s "$c" ] || { echo "moonc had not made the app's C: moon's build not kept"; exit 0; }
+          # (keyed by whether the app was linked too: a cut build's _build, of that C and no stillfail.exe, matched the
+          # key of the whole one after it, which was not saved, and every run after restored the cut one and linked the
+          # app again, ~61 s, main 45294094905. The state goes into the hash, not after it: cache-prune's kind_of takes a
+          # last part of 16 hex digits as the id)
+          exe=apps/mbui/_build/native/release/build/stillfail/stillfail/stillfail.exe
+          state=cut
+          [ "${{ steps.finish.outcome }}" != success ] || [ ! -x "$exe" ] || state=built
+          key="mbui-mac-moon-$( (printf '%s\n' "$state"; shasum -a 256 "$c") | shasum -a 256 | cut -c1-16)"
+          # (one the same as restored not saved: said before the .mbc are taken out, 9 s that carried main 45268661113
+          # past its five minutes with nothing to save)
+          [ "$key" != "${{ steps.moon.outputs.cache-matched-key }}" ] || { echo "moon's build unchanged ($key)"; exit 0; }
           # (its save takes ~16 s, 4 to make ready, 8 to upload, the post steps 2-4, as preview.yml's ios moon-room: main
-          # 136452385742 began it with 8 s left, its app already handed over, and was cut at 300 s, desktop skipped)
+          # 136452385742 began it with 8 s left, its app already handed over, and was cut at 300 s, desktop skipped;
+          # and the .mbc taken out first)
           left=$(( JOB_END - $(date +%s) ))
-          [ "$left" -ge 16 ] || { echo "moon's build not kept: ${left} s left"; exit 0; }
+          [ "$left" -ge 20 ] || { echo "moon's build not kept: ${left} s left"; exit 0; }
           find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
-          echo "MOON_KEY=mbui-mac-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_ENV"
+          echo "MOON_KEY=$key" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.MOON_KEY != '' && env.MOON_KEY != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
