@@ -346,11 +346,14 @@ pub fn Letters::step(
           Ok(n) => n
           Err(e) => return Err(builders_core::StepError::Sql(e))
         }
-        let overflow = match page_letter_dirty_overflow(tx_db, t, token) {
-          Ok(b) => b
-          Err(e) => return Err(e)
+        if rows.length() < limit {
+          let overflow = match page_letter_dirty_overflow(tx_db, t, token) {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+          return Ok(!overflow)
         }
-        return Ok(rows.length() < limit && !overflow)
+        return Ok(false)
       }
       let keys = match tx_db.all(
         "SELECT CAST(d.n AS TEXT) AS n FROM page_letter_dirty d WHERE d.thread=? AND d.token=? ORDER BY d.n LIMIT ?",

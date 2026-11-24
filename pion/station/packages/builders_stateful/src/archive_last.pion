@@ -32,7 +32,7 @@ let ARCHIVE_SLICE_FIRST : String = "SELECT CAST(e.n AS TEXT) AS n,CASE WHEN e.ki
 
 let ARCHIVE_SLICE_BEFORE : String = "SELECT CAST(e.n AS TEXT) AS n,CASE WHEN e.kind='message' THEN e.at END AS at FROM entries e WHERE e.thread=?1 AND e.n<CAST(?2 AS INTEGER) ORDER BY e.n DESC LIMIT ?3"
 
-pub fn str_contains(haystack : String, needle : String) -> Bool {
+fn str_contains(haystack : String, needle : String) -> Bool {
   let h = haystack.to_bytes()
   let n = needle.to_bytes()
   if n.length() == 0 {
