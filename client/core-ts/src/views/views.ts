@@ -1220,6 +1220,8 @@ export class Views implements Owner {
   /// Shown again while it was kept: a search asks its stations again (what they hold changes; station/sync.ts
   /// `searchShown`), what they found before shown meanwhile.
   resume(view: Topic): void {
+    // (one let go before its messages were looked for: looked for now, its value kept sent without them meanwhile)
+    if (this.#saidSkipped.delete(topicKey(view))) this.#core.store.invalidate(view);
     if (view.topic !== "search" && view.topic !== "archive" && view.topic !== "chatSubchats") return;
     const live = this.#views.get(topicKey(view));
     for (const key of live?.watches.keys() ?? []) {
@@ -2903,6 +2905,8 @@ export class Views implements Owner {
 
   /// The searches whose messages are looked for after their value went out (#foundMessages), by topic.
   readonly #saidAsked = new Set<string>();
+  /// Those let go before their turn came (#saidLater): looked for as they are shown again (`resume`).
+  readonly #saidSkipped = new Set<string>();
 
   #saidLater(asked: Topic, stations: string[], words: string[], limit: number): void {
     // (the search asks with how many messages it shows: views/search.ts)
@@ -2917,7 +2921,11 @@ export class Views implements Owner {
         yield* store.turn();
         this.#saidAsked.delete(key);
         // (words typed on meanwhile: those of before are not looked for, nothing shows them)
-        if (!this.#views.has(key) || !store.subscribed(view)) return;
+        if (!this.#views.has(key)) return;
+        if (!store.subscribed(view)) {
+          this.#saidSkipped.add(key);
+          return;
+        }
         untracked(() => this.#core.data.findSaid(stations, words, limit));
         store.invalidate(view);
       }),
