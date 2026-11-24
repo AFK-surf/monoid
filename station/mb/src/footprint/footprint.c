@@ -4,7 +4,6 @@
 // (test/footprint-reference.ts `answerNow`'s three looks, for what is made again). Each path is UTF-8, ended by a NUL. Called on the program's one
 // thread, a call each entry: none of it goes through the shell's JSON.
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "moonbit.h"
@@ -175,17 +174,40 @@ int sff_dir(moonbit_bytes_t path) {
   return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
-static FILE *open_read(const char *path) {
+/// The first `most` bytes of the regular file `path` into `buf` (fewer if it is shorter); -1 when it could not be read
+/// or is not a file on a disk (a directory, a pipe, a device: never waited on).
+static long head_read(const char *path, char *buf, size_t most) {
   wchar_t *w = wide(path, NULL);
-  if (w == NULL) return NULL;
-  FILE *f = _wfopen(w, L"rb");
+  if (w == NULL) return -1;
+  HANDLE h = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                         FILE_ATTRIBUTE_NORMAL, NULL);
   free(w);
-  return f;
+  if (h == INVALID_HANDLE_VALUE) return -1;
+  BY_HANDLE_FILE_INFORMATION info;
+  if (GetFileType(h) != FILE_TYPE_DISK || !GetFileInformationByHandle(h, &info) ||
+      (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    CloseHandle(h);
+    return -1;
+  }
+  size_t got = 0;
+  while (got < most) {
+    DWORD n = 0;
+    if (!ReadFile(h, buf + got, (DWORD)(most - got), &n, NULL)) {
+      CloseHandle(h);
+      return -1;
+    }
+    if (n == 0) break;
+    got += n;
+  }
+  CloseHandle(h);
+  return (long)got;
 }
 #else
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 static int failed(int e) {
   switch (e) {
@@ -267,24 +289,51 @@ int sff_dir(moonbit_bytes_t path) {
   return stat((const char *)path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-static FILE *open_read(const char *path) { return fopen(path, "rb"); }
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+#ifndef O_NOCTTY
+#define O_NOCTTY 0
 #endif
 
-/// The first `most` bytes of the file `path` (fewer if it is shorter); err[0] 1 when it could not be read.
+/// The first `most` bytes of the regular file `path` into `buf` (fewer if it is shorter); -1 when it could not be read
+/// or is not a regular file. Opened without blocking and asked what it is by its descriptor, so a FIFO with no writer
+/// (or a device) is refused at once, never waited on.
+static long head_read(const char *path, char *buf, size_t most) {
+  int fd;
+  do fd = open(path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC);
+  while (fd < 0 && errno == EINTR);
+  if (fd < 0) return -1;
+  struct stat st;
+  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+    close(fd);
+    return -1;
+  }
+  size_t got = 0;
+  while (got < most) {
+    ssize_t n = read(fd, buf + got, most - got);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      close(fd);
+      return -1;
+    }
+    if (n == 0) break;
+    got += (size_t)n;
+  }
+  close(fd);
+  return (long)got;
+}
+#endif
+
+/// The first `most` bytes of the file `path` (fewer if it is shorter); err[0] 1 when it could not be read or is not a
+/// regular file.
 moonbit_bytes_t sff_head(moonbit_bytes_t path, int32_t most, int32_t *err) {
   char buf[4096];
   if (most > (int32_t)sizeof buf) most = (int32_t)sizeof buf;
-  err[0] = 0;
-  FILE *f = open_read((const char *)path);
-  size_t got = 0;
-  if (f == NULL) {
-    err[0] = 1;
-  } else {
-    got = fread(buf, 1, (size_t)most, f);
-    if (ferror(f)) err[0] = 1;
-    fclose(f);
-  }
-  moonbit_bytes_t out = moonbit_make_bytes(err[0] ? 0 : (int32_t)got, 0);
-  if (!err[0] && got > 0) memcpy(out, buf, got);
+  if (most < 0) most = 0;
+  long got = head_read((const char *)path, buf, (size_t)most);
+  err[0] = got < 0;
+  moonbit_bytes_t out = moonbit_make_bytes(got > 0 ? (int32_t)got : 0, 0);
+  if (got > 0) memcpy(out, buf, (size_t)got);
   return out;
 }

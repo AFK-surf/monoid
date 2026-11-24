@@ -1,6 +1,6 @@
 // Workspace file helpers for automatic cleanup of archived sessions.
 import { execFile } from "node:child_process";
-import { access, lstat, open, realpath, stat } from "node:fs/promises";
+import { access, constants, lstat, open, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, normalize, sep } from "node:path";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
@@ -112,13 +112,17 @@ function* moonAbove(from: string): Generator<Probe, boolean, Answer> {
 
 /// The first bytes of a file a probe reads (a CACHEDIR.TAG is a few lines).
 export const HEAD_BYTES = 512;
+/// How a probe opens a file to read its head: without blocking, so a FIFO with no writer (or a device) opens at once
+/// and is refused as not a regular file by its descriptor's stat, never waited on.
+export const HEAD_OPEN = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0);
 
 const answerSoon = async (p: Probe): Promise<Answer> => {
   try {
     if ("there" in p) return await access(p.there).then(() => true, () => false);
     if ("dir" in p) return (await stat(p.dir)).isDirectory();
-    const f = await open(p.head, "r");
+    const f = await open(p.head, HEAD_OPEN);
     try {
+      if (!(await f.stat()).isFile()) return null;
       const buf = Buffer.alloc(HEAD_BYTES);
       return buf.subarray(0, (await f.read(buf, 0, HEAD_BYTES, 0)).bytesRead).toString("utf8");
     } finally {

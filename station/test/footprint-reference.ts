@@ -1,12 +1,12 @@
 // The measure of a directory's size as the station's main thread made it before it was the MoonBit program's
 // (src/sessions/footprint.ts, station/mb src/footprint): kept as the reference test/mb-footprint.test.ts holds the
 // program to, on the walk it used (src/ops/walk.ts `walkBounded`, `stat`). `now` is the tests' clock for its budget.
-import { type BigIntStats, closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { type BigIntStats, closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { wall } from "../src/ops/fibers.ts";
 import { fileName } from "../src/ops/paths.ts";
 import { walkBounded } from "../src/ops/walk.ts";
-import { type Answer, CARGO_TAG, HEAD_BYTES, type Probe, type Rebuilt, beside, decide, roomIn } from "../src/sessions/footprint.ts";
+import { type Answer, CARGO_TAG, HEAD_BYTES, HEAD_OPEN, type Probe, type Rebuilt, beside, decide, roomIn } from "../src/sessions/footprint.ts";
 
 const canonical = (path: string): string | null => {
   try {
@@ -32,8 +32,9 @@ const answerNow = (p: Probe): Answer => {
     // (most directories have neither: no exception thrown for each)
     if ("dir" in p) return statSync(p.dir, { throwIfNoEntry: false })?.isDirectory() === true;
     if (!existsSync(p.head)) return null;
-    const fd = openSync(p.head, "r");
+    const fd = openSync(p.head, HEAD_OPEN);
     try {
+      if (!fstatSync(fd).isFile()) return null;
       const buf = Buffer.alloc(HEAD_BYTES);
       return buf.subarray(0, readSync(fd, buf, 0, HEAD_BYTES, 0)).toString("utf8");
     } finally {

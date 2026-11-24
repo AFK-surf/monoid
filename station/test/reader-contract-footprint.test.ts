@@ -4,19 +4,18 @@
 // Set `STILLFAIL_READER_CANDIDATE=/path/to/stillfail-pion` to verify a candidate binary
 // with zero edits to this suite. Never silently skips when the binary is missing.
 //
-// Note: cancellation tests intentionally do NOT rely on blocking `CACHEDIR.TAG` FIFO open,
-// because blocking on a non-regular file is a `sff_head` missing-`S_ISREG` bug rather than
-// desired contract behavior (Wave 2 fixes `S_ISREG` and adds candidate injection to `mb-footprint.test.ts`).
+// A `CACHEDIR.TAG` that is not a regular file (a FIFO with no writer, or a link to one) is refused
+// at once and never read: no reader waits on it (`sff_head`, footprint.ts `answerSoon`).
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, sep } from "node:path";
 import { after, test } from "node:test";
 import { platform } from "../src/platform/index.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, measured, type Room } from "../src/sessions/footprint.ts";
-import { measureRoomReference, measuredReference, measuredUpToReference } from "./footprint-reference.ts";
+import { CARGO_TAG, MEASURE_ROOM, MEASURE_UP_TO, type MeasureBudget, measured, rebuildableSoon, type Room } from "../src/sessions/footprint.ts";
+import { measureRoomReference, measuredReference, measuredUpToReference, rebuildableKind } from "./footprint-reference.ts";
 
 const CHILD_TIMEOUT_MS = 15_000;
 
@@ -396,6 +395,50 @@ test("unreadable subdirectory (chmod 0o000): strict fails with EACCES, non-stric
   } finally {
     chmodSync(locked, 0o755);
   }
+});
+
+test("a CACHEDIR.TAG that is a FIFO (or a link to one) is refused at once; a regular one (or a link to one) still marks a Cargo target", async (t) => {
+  if (process.platform === "win32") return t.skip("mkfifo: no FIFOs on Windows");
+  const root = freshDir();
+  const cargoDir = (name: string) => {
+    writeSized(join(root, name, "debug/deps/app.d"), 2048);
+    writeSized(join(root, name, "debug/.fingerprint/app/hash"), 64);
+    writeFileSync(join(root, name, ".rustc_info.json"), "{}");
+    writeSized(join(root, name, "notes.bin"), 4096);
+    return join(root, name);
+  };
+  const fifoDir = cargoDir("fifo-target");
+  const made = spawnSync("mkfifo", [join(fifoDir, "CACHEDIR.TAG")]);
+  assert.equal(made.status, 0, `mkfifo failed: ${made.stderr}`);
+  const fifoLinkDir = cargoDir("fifo-link-target");
+  symlinkSync(join(fifoDir, "CACHEDIR.TAG"), join(fifoLinkDir, "CACHEDIR.TAG"));
+  const regularDir = cargoDir("regular-target");
+  writeFileSync(join(regularDir, "CACHEDIR.TAG"), `${CARGO_TAG.join("\n")}\n`);
+  const regularLinkDir = cargoDir("regular-link-target");
+  symlinkSync(join(regularDir, "CACHEDIR.TAG"), join(regularLinkDir, "CACHEDIR.TAG"));
+
+  // The station's own probe (off the thread) and the reference's (at once) each decide every directory.
+  for (const dir of [fifoDir, fifoLinkDir]) {
+    assert.equal(await rebuildableSoon(dir), null, `${dir}: a FIFO CACHEDIR.TAG is not a Cargo target's`);
+    assert.equal(rebuildableKind(dir), null, `${dir}: a FIFO CACHEDIR.TAG is not a Cargo target's (reference)`);
+  }
+  for (const dir of [regularDir, regularLinkDir]) {
+    assert.equal(await rebuildableSoon(dir), "found");
+    assert.equal(rebuildableKind(dir), "found");
+  }
+
+  // The reader (bounded by CHILD_TIMEOUT_MS: it must answer, not wait on the FIFO) matches the reference field for field.
+  const [gotRoom, refRoom] = [await candidateMeasureRoom(root), await measureRoomReference(root)];
+  assert.deepEqual(gotRoom, refRoom);
+  assert.equal(gotRoom.complete, true);
+  assert.deepEqual(gotRoom.rebuild.map(([p]) => p).sort(), [regularDir, regularLinkDir].sort());
+  assert.equal(await candidateMeasured(root), await measuredReference(root));
+  assert.deepEqual(
+    await candidateMeasuredUpTo(root, Number.MAX_SAFE_INTEGER),
+    await measuredUpToReference(root, Number.MAX_SAFE_INTEGER),
+  );
+  // The FIFO's directory measured on its own, as a room (its CACHEDIR.TAG only looked at, never waited on).
+  assert.deepEqual(await candidateMeasureRoom(fifoDir), await measureRoomReference(fifoDir));
 });
 
 test("cancellation and termination: pre-aborted AbortSignal, stdin EOF, and idle SIGTERM exit cleanly with zero zombies", async () => {
