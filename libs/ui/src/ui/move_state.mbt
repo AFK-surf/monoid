@@ -101,7 +101,7 @@ struct MoveRun {
 }
 
 ///|
-impl Moving for MoveRun with rest_at(self, now, frame) {
+fn MoveRun::rest_at(self : MoveRun, now : Double, frame : Int) -> Double {
   ignore(now)
   ignore(frame)
   self.ends()
@@ -160,7 +160,7 @@ fn MoveRun::count_far(self : MoveRun, on : FixedArray[Bool]?, from : FixedArray[
 /// moved on that much (nav_late_most at most each), as long as they are late one after another; the first on time, it
 /// waits no more. (Its new state may take more than one frame to build: a page built as it is brought over, then its
 /// native view made as it is laid where it goes; each late frame its clock ran past would show as a step skipped.)
-impl Moving for MoveRun with sample(self, now) {
+fn MoveRun::sample(self : MoveRun, now : Double) -> Unit {
   if !self.waits_late {
     return
   }
@@ -175,6 +175,12 @@ impl Moving for MoveRun with sample(self, now) {
       self.waits_late = false
     }
   }
+}
+
+///|
+/// What moves, as Ctx::moving is told it (Moving).
+fn MoveRun::as_moving(self : MoveRun) -> Moving {
+  Moving::new(fn(now, frame) { self.rest_at(now, frame) }, sample=fn(now) { self.sample(now) })
 }
 
 ///|
@@ -268,7 +274,7 @@ pub fn Ctx::move_state(
   }
   let what = "a move of \{list_text(names.keys().collect())} set out at \{loc}"
   who.what = what
-  self.moving_as(who, run as &Moving, what)
+  self.moving_as(who, run.as_moving(), what)
   self.move_runs.push(run)
 }
 

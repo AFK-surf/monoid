@@ -2665,7 +2665,7 @@ fn float_caret(c : Ctx, st : EditorState, kind : Int, x : Double, y : Double, t 
   }
   guard st.floating is Some(f) && f.let_go < 0.0 else { return }
   if kind == text_float_end {
-    f.let_go = c.set_out(f.mover, f, what="the keyboard's trackpad's caret sliding back to the caret")
+    f.let_go = c.set_out(f.mover, f.as_moving(), what="the keyboard's trackpad's caret sliding back to the caret")
     // (shown, not blinking, as it lands: blinking again from there)
     st.blink0 = f.let_go + float_caret_back_ms
     return

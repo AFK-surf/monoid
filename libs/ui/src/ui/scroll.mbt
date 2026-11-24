@@ -213,7 +213,7 @@ fn Ctx::spring_back(self : Ctx, st : ListState, v : Double, t0 : Double) -> Unit
   if t0 >= 0.0 {
     self.plan_back(st, t0)
   }
-  self.moving(st.ease_mover, st as &Moving, what="a list's overscroll going back")
+  self.moving(st.ease_mover, st.as_moving(), what="a list's overscroll going back")
 }
 
 ///|
@@ -297,7 +297,7 @@ fn Ctx::release(self : Ctx, st : ListState, v : Double, at : Double) -> Unit {
       st.fling_done = 0.0
       st.fling_from = None
       st.vel = v
-      self.moving(st.ease_mover, st as &Moving, what="a list's fling")
+      self.moving(st.ease_mover, st.as_moving(), what="a list's fling")
     } else if st.over_state == 1 {
       // no fling: a stretch left as it is goes back from now, as it was let go (or called off)
       self.spring_back(st, 0.0, at)
@@ -315,7 +315,7 @@ fn Ctx::release(self : Ctx, st : ListState, v : Double, at : Double) -> Unit {
       st.fling_done = 0.0
       st.fling_from = None
       st.vel = v
-      self.moving(st.ease_mover, st as &Moving, what="a list's fling")
+      self.moving(st.ease_mover, st.as_moving(), what="a list's fling")
     }
   } else if v.abs() >= 0.02 {
     // the desktop's coast sets out as the finger lets go
@@ -325,7 +325,7 @@ fn Ctx::release(self : Ctx, st : ListState, v : Double, at : Double) -> Unit {
     st.fling_done = 0.0
     st.fling_from = None
     st.vel = v
-    self.moving(st.ease_mover, st as &Moving, what="a list's coast")
+    self.moving(st.ease_mover, st.as_moving(), what="a list's coast")
   }
 }
 

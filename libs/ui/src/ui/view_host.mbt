@@ -494,7 +494,7 @@ fn view_made_now(make : (@view.View) -> Unit) -> Unit {
         None => Mover::new()
       }
       tree_glide_movers[column] = (who, ends)
-      g().moving(who, ({ ends, } : TreeGlide) as &Moving, what="a list's fling, the tree's")
+      g().moving(who, ({ ends, } : TreeGlide).as_moving(), what="a list's fling, the tree's")
     },
     fn(column) { tree_glide_movers.remove(column) },
   )
@@ -8806,8 +8806,14 @@ priv struct TreeGlide {
 }
 
 ///|
-impl Moving for TreeGlide with rest_at(self, _now, _frame) {
+fn TreeGlide::rest_at(self : TreeGlide, _now : Double, _frame : Int) -> Double {
   (self.ends)().unwrap_or(-1.0)
+}
+
+///|
+/// What moves, as Ctx::moving is told it (Moving).
+fn TreeGlide::as_moving(self : TreeGlide) -> Moving {
+  Moving::new(fn(now, frame) { self.rest_at(now, frame) })
 }
 
 ///|
@@ -8821,7 +8827,7 @@ fn view_moves(key : String, what : String, rest : (Double) -> Double) -> Unit {
       m
     }
   }
-  g().moving_as(who, ({ rest, } : TreeMoves) as &Moving, what)
+  g().moving_as(who, ({ rest, } : TreeMoves).as_moving(), what)
 }
 
 ///|
@@ -8831,8 +8837,14 @@ priv struct TreeMoves {
 }
 
 ///|
-impl Moving for TreeMoves with rest_at(self, now, _frame) {
+fn TreeMoves::rest_at(self : TreeMoves, now : Double, _frame : Int) -> Double {
   (self.rest)(now)
+}
+
+///|
+/// What moves, as Ctx::moving is told it (Moving).
+fn TreeMoves::as_moving(self : TreeMoves) -> Moving {
+  Moving::new(fn(now, frame) { self.rest_at(now, frame) })
 }
 
 ///|

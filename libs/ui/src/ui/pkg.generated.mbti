@@ -1580,8 +1580,8 @@ pub fn Ctx::moved(Self, String, Double) -> Double
 pub fn Ctx::moved_by(Self, Int32, (Double, Double) -> (Double, Double)) -> Unit
 pub fn Ctx::moved_ends(Self, String) -> Double?
 #callsite(autofill(loc))
-pub fn Ctx::moving(Self, Mover, &Moving, what? : String, loc~ : SourceLoc) -> Unit
-pub fn Ctx::moving_as(Self, Mover, &Moving, String, tell? : Bool) -> Unit
+pub fn Ctx::moving(Self, Mover, Moving, what? : String, loc~ : SourceLoc) -> Unit
+pub fn Ctx::moving_as(Self, Mover, Moving, String, tell? : Bool) -> Unit
 pub fn Ctx::narrow(Self) -> Bool
 pub fn Ctx::native(Self, NativeView, w? : Size, h? : Size, content? : (Double, Double, Double, Double)?, radius? : Double, corners? : (Double, Double, Double, Double)) -> Int32
 pub fn[P] Ctx::nav(Self, Nav[P], (P) -> Unit, bg? : Int64, edge? : Double, floor? : Int32, takes_back? : Bool) -> Int32
@@ -1674,7 +1674,7 @@ pub fn Ctx::set_direction(Self, Direction) -> Unit
 pub fn Ctx::set_full_screen(Self, Bool) -> Unit
 pub fn Ctx::set_look(Self, Int32, Look) -> Unit
 #callsite(autofill(loc))
-pub fn Ctx::set_out(Self, Mover, &Moving, what? : String, loc~ : SourceLoc) -> Double
+pub fn Ctx::set_out(Self, Mover, Moving, what? : String, loc~ : SourceLoc) -> Double
 pub fn Ctx::set_theme(Self, Theme, narrow? : Theme, narrow_below? : Double) -> Unit
 pub fn Ctx::shapes(Self, Array[@paint.Shape], w~ : Size, h~ : Size, name? : String, by_ink? : Bool) -> Int32
 pub fn Ctx::shortcut(Self, Char, shift? : Bool) -> Bool
@@ -2332,6 +2332,14 @@ pub fn Mover::told_as(Self, String, SourceLoc) -> Unit
 
 type MoverEntry
 
+pub struct Moving {
+  // private fields
+}
+pub fn Moving::keeps_time(Self) -> Bool
+pub fn Moving::new((Double, Int32) -> Double, sample? : (Double) -> Unit, keeps_time? : () -> Bool) -> Self
+pub fn Moving::rest_at(Self, Double, Int32) -> Double
+pub fn Moving::sample(Self, Double) -> Unit
+
 pub struct NativeCall {
   name : String
   host : @hostapi.NativeCall?
@@ -2881,7 +2889,6 @@ pub fn SpringPath::put(Self, Double) -> Unit
 pub fn SpringPath::target(Self) -> Double
 pub fn SpringPath::value(Self, Double) -> Double
 pub fn SpringPath::value_at(Self, Ctx) -> Double
-pub impl Moving for SpringPath
 
 #derive(Eq, @debug.Debug)
 pub(all) enum StepMoment {
@@ -3764,8 +3771,3 @@ pub using @paint {type Shape}
 pub using @view {type Side}
 
 // Traits
-pub(open) trait Moving {
-  fn rest_at(Self, Double, Int32) -> Double
-  fn sample(Self, Double) -> Unit = _
-  fn keeps_time(Self) -> Bool = _
-}

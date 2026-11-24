@@ -1452,7 +1452,7 @@ fn FloatCaret::follow(self : FloatCaret, tl : TextLayout, x : Double, y : Double
 
 ///|
 /// Let go, it is at rest once it has slid back to the caret; held, it is not said to move (it goes with the finger).
-impl Moving for FloatCaret with rest_at(self, now, frame) {
+fn FloatCaret::rest_at(self : FloatCaret, now : Double, frame : Int) -> Double {
   ignore(now)
   ignore(frame)
   if self.let_go < 0.0 {
@@ -1460,6 +1460,12 @@ impl Moving for FloatCaret with rest_at(self, now, frame) {
   } else {
     self.let_go + float_caret_back_ms
   }
+}
+
+///|
+/// What moves, as Ctx::moving is told it (Moving).
+fn FloatCaret::as_moving(self : FloatCaret) -> Moving {
+  Moving::new(fn(now, frame) { self.rest_at(now, frame) })
 }
 
 ///|
