@@ -402,37 +402,59 @@ test("production LiveLocator switches cleanly between real MB and real Pion wrap
       () => ({ readers: { "live-locator": modeCfg } }),
     );
     try {
-      // 1. Default / mb -> actually spawns MB wrapper with `--builder live-locator`, 0 Pion spawns
+      // 1. Default / mb + IN-FLIGHT hot-switch:
+      //    Start locate #1 on MB, flip `modeCfg = "pion"` mid-flight inside `profiles()` (before locate #1 finishes),
+      //    verify locate #1 completes cleanly on the existing MB worker without interruption (0 Pion spawns yet),
+      //    then trimIdle() and issue locate #2 -> verify locate #2 spawns Pion wrapper!
       assert.equal(resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "mb" } } }).primaryBinary, mbWrap);
-      const resMb = await locator.locate("ses-a");
-      assert.ok(resMb !== null && resMb.paths.length === 2);
-      assert.equal(readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length, 1, "MB wrapper must be spawned for live-locator");
-      assert.equal(readSpawns(pionLog).length, 0, "Pion wrapper must NOT be spawned or probed on mb");
-      assert.equal(locator.trimIdle(), 1);
-
-      // 2. Shadow forbidden -> falls back to mb
-      const shadowSel = resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "shadow" } } });
-      assert.equal(shadowSel.engine, "mb");
-      assert.equal(shadowSel.selection.reason, "shadow-forbidden");
-
-      // 3. Hot-reload to pion -> first lookup probes Pion wrapper (`--version`) AND actually spawns Pion wrapper (`--builder live-locator`)!
-      modeCfg = "pion";
-      const resPion = await locator.locate("ses-a");
-      assert.deepEqual(resPion, resMb);
-      const pionSpawns = readSpawns(pionLog);
-      assert.ok(pionSpawns.some((l) => l.includes("--version")), `expected Pion --version probe, got: ${JSON.stringify(pionSpawns)}`);
-      assert.equal(
-        pionSpawns.filter((l) => l.includes("--builder live-locator")).length,
-        1,
-        `expected production LiveLocator to actually spawn Pion --builder live-locator, got: ${JSON.stringify(pionSpawns)}`,
+      let flippedInFlight = false;
+      const inFlightLocator = new LiveLocator(
+        fx.dir,
+        (k) => fx.store.getSession(k),
+        () => {
+          if (!flippedInFlight && readSpawns(mbLog).some((l) => l.includes("--builder live-locator"))) {
+            flippedInFlight = true;
+            modeCfg = "pion";
+          }
+          return profiles;
+        },
+        undefined,
+        undefined,
+        () => ({ readers: { "live-locator": modeCfg } }),
       );
-      assert.equal(
-        readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length,
-        1,
-        "MB wrapper must NOT be spawned again after switching to pion",
-      );
-      const modes = await probePionSupportedModes(pionWrap);
-      assert.ok(modes?.has("live-locator"));
+      try {
+        const resMb = await inFlightLocator.locate("ses-a");
+        assert.ok(resMb !== null && resMb.paths.length === 2);
+        assert.equal(flippedInFlight, true, "config must have hot-reloaded to pion while locate #1 was in-flight");
+        assert.equal(readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length, 1, "MB wrapper must be spawned for locate #1");
+        assert.equal(readSpawns(pionLog).length, 0, "in-flight locate #1 must finish on old MB worker without spawning/probing Pion");
+
+        // 2. Shadow forbidden -> falls back to mb
+        const shadowSel = resolveReaderSelection("live-locator", { config: { readers: { "live-locator": "shadow" } } });
+        assert.equal(shadowSel.engine, "mb");
+        assert.equal(shadowSel.selection.reason, "shadow-forbidden");
+
+        // 3. After trimming idle MB worker, locate #2 probes Pion wrapper (`--version`) AND spawns Pion wrapper (`--builder live-locator`)!
+        assert.equal(inFlightLocator.trimIdle(), 1);
+        const resPion = await inFlightLocator.locate("ses-a");
+        assert.deepEqual(resPion, resMb);
+        const pionSpawns = readSpawns(pionLog);
+        assert.ok(pionSpawns.some((l) => l.includes("--version")), `expected Pion --version probe, got: ${JSON.stringify(pionSpawns)}`);
+        assert.equal(
+          pionSpawns.filter((l) => l.includes("--builder live-locator")).length,
+          1,
+          `expected production LiveLocator to actually spawn Pion --builder live-locator, got: ${JSON.stringify(pionSpawns)}`,
+        );
+        assert.equal(
+          readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length,
+          1,
+          "MB wrapper must NOT be spawned again after switching to pion",
+        );
+        const modes = await probePionSupportedModes(pionWrap);
+        assert.ok(modes?.has("live-locator"));
+      } finally {
+        await inFlightLocator.close();
+      }
     } finally {
       await locator.close();
       fx.store.close();

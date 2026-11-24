@@ -508,3 +508,12 @@ export function resolveReaderEngine(
     fallback: false,
   };
 }
+
+/// Test-only helper to temporarily toggle `READER_MODES[mode].pionImplemented` without changing production defaults.
+export function setReaderModeImplementedForTest(mode: ReaderMode, implemented: boolean): () => void {
+  const prev = READER_MODES[mode].pionImplemented;
+  (READER_MODES[mode] as { pionImplemented: boolean }).pionImplemented = implemented;
+  return () => {
+    (READER_MODES[mode] as { pionImplemented: boolean }).pionImplemented = prev;
+  };
+}

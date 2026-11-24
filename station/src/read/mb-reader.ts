@@ -35,7 +35,17 @@ export type Ready = { ready: { loadedMs: number; openedMs: number } };
 /// test may set its own): a builder, a measure and the agents' program each started asking it, every time a look at
 /// the disk on the main thread. Not found is looked for again, as a checkout may build it while the station runs.
 const foundBinary = new Map<string, string>();
+let mbReaderBinaryOverrideForTest: (() => string | null) | undefined;
+
+/// Test-only override for `mbReaderBinary()` so Pion-only cold-start tests stay deterministic
+/// even on developer machines that have a built `station/mb/_build/stillfail-reader-*`.
+export function setMbReaderBinaryOverrideForTest(fn?: () => string | null): void {
+  mbReaderBinaryOverrideForTest = fn;
+  foundBinary.clear();
+}
+
 export function mbReaderBinary(): string | null {
+  if (mbReaderBinaryOverrideForTest !== undefined) return mbReaderBinaryOverrideForTest();
   const envKey = process.env.STILLFAIL_MB_READER ?? "";
   const had = foundBinary.get(envKey);
   if (had !== undefined) return had;
@@ -209,6 +219,8 @@ export function probePionSupportedModes(binaryPath: string): Promise<ReadonlySet
 
 /// Clear cached binary lookups, `--version` capability probes, retry cooldowns, and deduped fallback warnings (tests only).
 export function resetReaderSelectionStateForTest(): void {
+  foundBinary.clear();
+  mbReaderBinaryOverrideForTest = undefined;
   foundPionBinary.clear();
   pionBinaryMissUntil = 0;
   probedPionModes.clear();

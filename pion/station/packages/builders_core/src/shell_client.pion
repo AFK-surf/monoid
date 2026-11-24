@@ -15,6 +15,68 @@ pub fn shell_error(msg : String) -> ShellError {
   ShellError::{ message: msg }
 }
 
+fn format_mb_json_error(raw : String, err : String) -> String {
+  if err == "unexpected end of JSON" {
+    return "Unexpected end of file"
+  }
+  let b = raw.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut line = 1
+  let mut col = 1
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 13 {
+      i = i + 1
+      col = col + 1
+    } else if c == 10 {
+      i = i + 1
+      line = line + 1
+      col = 1
+    } else {
+      break
+    }
+  }
+  if i >= n {
+    return "Unexpected end of file"
+  }
+  let kw : String = if err == "expected null" {
+    "null"
+  } else if err == "expected true" {
+    "true"
+  } else if err == "expected false" {
+    "false"
+  } else {
+    ""
+  }
+  if kw.length() > 0 {
+    let kb = kw.to_bytes()
+    for k in 0..<kb.length() {
+      if i + k >= n {
+        return "Unexpected end of file"
+      }
+      if b[i + k] != kb[k] {
+        let sb = StringBuilder::new()
+        sb.write_string("Invalid char '")
+        sb.write_byte(b[i + k])
+        sb.write_string("' at line ")
+        sb.write_string(line.to_string())
+        sb.write_string(", column ")
+        sb.write_string((col + k).to_string())
+        return sb.to_string()
+      }
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("Invalid char '")
+  sb.write_byte(b[i])
+  sb.write_string("' at line ")
+  sb.write_string(line.to_string())
+  sb.write_string(", column ")
+  sb.write_string(col.to_string())
+  sb.to_string()
+}
+
 /// Parse a synchronous `sth_shell_sync` JSON envelope, 1:1 aligned with `wire/wire.mbt:115-123`:
 /// 1. Non-JSON or empty string -> `Err(ShellError("the shell's answer is not JSON: ..."))`
 /// 2. Object with `"error": String(e)` (takes precedence over `"value"`) -> `Err(ShellError(e))` verbatim
@@ -24,7 +86,7 @@ pub fn parse_shell_sync_answer(raw : String) -> Result[base_codec::Json, ShellEr
   let parsed = match sql_db::parse_json(raw) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(err) => {
-      return Err(shell_error("the shell's answer is not JSON: " + err))
+      return Err(shell_error("the shell's answer is not JSON: " + format_mb_json_error(raw, err)))
     }
   }
   match json_get_last(parsed, "error") {

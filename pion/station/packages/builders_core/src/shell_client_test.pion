@@ -8,20 +8,27 @@ fn expect_sc(cond : Bool, msg : String) -> Unit {
 }
 
 test "parse_shell_sync_answer matches wire.mbt:115-123 all 4 branches" {
-  // 1. Non-JSON / empty string -> exact diagnostic prefix + parse reason
+  // 1. Non-JSON / empty string -> exact MB diagnostic format (`wire.mbt:116`)
   match parse_shell_sync_answer("") {
     Err(e) => {
-      let want = "the shell's answer is not JSON: unexpected end of JSON"
+      let want = "the shell's answer is not JSON: Unexpected end of file"
       expect_sc(e.message == want, "empty non-json error: got=" + e.message + " want=" + want)
     }
     Ok(_) => panic("empty must fail")
   }
   match parse_shell_sync_answer("not json") {
     Err(e) => {
-      let want = "the shell's answer is not JSON: expected null"
+      let want = "the shell's answer is not JSON: Invalid char 'o' at line 1, column 2"
       expect_sc(e.message == want, "bad chars non-json error: got=" + e.message + " want=" + want)
     }
     Ok(_) => panic("not json must fail")
+  }
+  match parse_shell_sync_answer("xyz") {
+    Err(e) => {
+      let want = "the shell's answer is not JSON: Invalid char 'x' at line 1, column 1"
+      expect_sc(e.message == want, "bad first char non-json error: got=" + e.message + " want=" + want)
+    }
+    Ok(_) => panic("xyz must fail")
   }
   // 2. error takes precedence over value and preserves message verbatim
   match parse_shell_sync_answer("{\"value\":123,\"error\":\"no such file or directory: ENOENT\"}") {

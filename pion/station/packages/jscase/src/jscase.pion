@@ -318,44 +318,86 @@ pub fn trim_end_white(s : String) -> String {
   trim_end_by(s, is_white_space)
 }
 
-fn is_utf16_space(cp : Int, space : (Int) -> Bool) -> Bool {
-  if cp < 0x10000 {
-    space(cp)
-  } else {
-    let v = cp - 0x10000
-    let hi = 0xD800 + (v >> 10)
-    let lo = 0xDC00 + (v & 0x3FF)
-    space(hi) || space(lo)
-  }
-}
-
-/// Split at runs of `space` (fed UTF-16 code units, 1:1 aligned with `jscase.mbt:225`),
-/// keeping empty parts at either end as JS split does.
-pub fn split_by(s : String, space : (Int) -> Bool) -> Array[String] {
+fn to_utf16_units(s : String) -> Array[Int] {
   let raw = s.to_bytes()
   let n = raw.length()
+  let units : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = raw[i].to_int() & 0xFF
+    if b0 == 0xED && i + 2 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      if b1 >= 0xA0 && b1 <= 0xBF && is_utf8_cont(b2) {
+        units.push(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F))
+        i = i + 3
+        continue
+      }
+    }
+    let (cp, next) = decode_utf8_at(raw, i, n)
+    if cp < 0x10000 {
+      units.push(cp)
+    } else {
+      let v = cp - 0x10000
+      units.push(0xD800 + (v >> 10))
+      units.push(0xDC00 + (v & 0x3FF))
+    }
+    i = next
+  }
+  units
+}
+
+fn from_utf16_slice(units : Array[Int], start : Int, end : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = start
+  while i < end {
+    let u = units[i]
+    if u >= 0xD800 && u <= 0xDBFF && i + 1 < end {
+      let lo = units[i + 1]
+      if lo >= 0xDC00 && lo <= 0xDFFF {
+        let cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
+        write_point(sb, cp)
+        i = i + 2
+        continue
+      }
+    }
+    // Encode BMP code units (including lone surrogates in WTF-8) losslessly.
+    if u < 0x80 {
+      sb.write_byte(u as Byte)
+    } else if u < 0x800 {
+      sb.write_byte((0xC0 | (u >> 6)) as Byte)
+      sb.write_byte((0x80 | (u & 0x3F)) as Byte)
+    } else {
+      sb.write_byte((0xE0 | (u >> 12)) as Byte)
+      sb.write_byte((0x80 | ((u >> 6) & 0x3F)) as Byte)
+      sb.write_byte((0x80 | (u & 0x3F)) as Byte)
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// Split at runs of `space` advancing strictly one UTF-16 code unit at a time
+/// (1:1 aligned with `station/mb/src/jscase/jscase.mbt:219-237`),
+/// keeping empty parts at either end as JS split does.
+pub fn split_by(s : String, space : (Int) -> Bool) -> Array[String] {
+  let units = to_utf16_units(s)
+  let n = units.length()
   let out : Array[String] = []
   let mut start = 0
   let mut i = 0
   while i < n {
-    let (cp, next) = decode_utf8_at(raw, i, n)
-    if is_utf16_space(cp, space) {
-      out.push(slice_bytes_str(raw, start, i))
-      i = next
-      while i < n {
-        let (cp2, next2) = decode_utf8_at(raw, i, n)
-        if is_utf16_space(cp2, space) {
-          i = next2
-        } else {
-          break
-        }
+    if space(units[i]) {
+      out.push(from_utf16_slice(units, start, i))
+      while i < n && space(units[i]) {
+        i = i + 1
       }
       start = i
     } else {
-      i = next
+      i = i + 1
     }
   }
-  out.push(slice_bytes_str(raw, start, n))
+  out.push(from_utf16_slice(units, start, n))
   out
 }
 

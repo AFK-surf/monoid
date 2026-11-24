@@ -76,11 +76,24 @@ test "trim, trim_white, split_by, has_cases, and in_ranges boundaries" {
   expect(parts.length() == 4, "split_by len 4")
   expect(parts[0] == "" && parts[1] == "a" && parts[2] == "b" && parts[3] == "", "split_by parts")
 
-  // split_by feeds UTF-16 code units to predicate (1:1 with jscase.mbt:225): non-BMP scalar never matches
+  // split_by advances strictly one UTF-16 code unit at a time (1:1 with jscase.mbt:225):
+  // - non-BMP scalar predicate never matches -> 1 part
+  // - matching only high surrogate 0xD83D splits and retains low surrogate 0xDE00 + 'b' in part 1
+  // - matching only low surrogate 0xDE00 splits and retains 'a' + high surrogate 0xD83D in part 0
   let emoji_scalar = split_by("a\u{1f600}b", fn(c : Int) -> Bool { c == 0x1F600 })
-  expect(emoji_scalar.length() == 1 && emoji_scalar[0] == "a\u{1f600}b", "split_by UTF-16 code unit semantics")
-  let emoji_surr = split_by("a\u{1f600}b", fn(c : Int) -> Bool { c == 0xD83D })
-  expect(emoji_surr.length() == 2 && emoji_surr[0] == "a" && emoji_surr[1] == "b", "split_by UTF-16 high surrogate")
+  expect(emoji_scalar.length() == 1 && emoji_scalar[0] == "a\u{1f600}b", "split_by scalar non-BMP")
+  let emoji_hi = split_by("a\u{1f600}b", fn(c : Int) -> Bool { c == 0xD83D })
+  expect(emoji_hi.length() == 2, "split_by hi len 2")
+  let hi0 = to_utf16_units(emoji_hi[0])
+  let hi1 = to_utf16_units(emoji_hi[1])
+  expect(hi0.length() == 1 && hi0[0] == 0x61, "split_by hi part 0 == [0x61]")
+  expect(hi1.length() == 2 && hi1[0] == 0xDE00 && hi1[1] == 0x62, "split_by hi part 1 == [0xDE00, 0x62]")
+  let emoji_lo = split_by("a\u{1f600}b", fn(c : Int) -> Bool { c == 0xDE00 })
+  expect(emoji_lo.length() == 2, "split_by lo len 2")
+  let lo0 = to_utf16_units(emoji_lo[0])
+  let lo1 = to_utf16_units(emoji_lo[1])
+  expect(lo0.length() == 2 && lo0[0] == 0x61 && lo0[1] == 0xD83D, "split_by lo part 0 == [0x61, 0xD83D]")
+  expect(lo1.length() == 1 && lo1[0] == 0x62, "split_by lo part 1 == [0x62]")
 
   expect(has_cases("abc"), "ascii letters have cases")
   expect(has_cases("123Σ"), "greek sigma has cases")
