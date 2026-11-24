@@ -21,7 +21,7 @@
   step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
   `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its app build's 35 on a branch and 25 on main, its replay build's 65 on main and 45 on a branch), JOB_END written by the
-  job's first step, less its 5 s of setting up. The units' stores of GitHub's Linux images are keyed by
+  job's first step, less its 5 s of setting up (preview's ios 8). The units' stores of GitHub's Linux images are keyed by
   their compiler (`IMG`, `cc` and 12 hex digits of clang, its `--version` and the C standard headers it preprocesses,
   not `linux-libc-dev`'s version, which moves weekly with the kernel), its Mac's
   by its `ImageVersion`: two compilers in turn kept only the last run's units in one, and four `ubuntu-24.04` images
@@ -75,7 +75,7 @@
 - An artifact uploaded for people to look at (pictures, logs, what moved) says `continue-on-error: true`: a runner's
   connection to GitHub's artifact service reset fails a check that had passed (main acb00686, 2026-11-01; #5157's
   `offscreen`, 2026-11-10). One a later job downloads does not: there the upload's failure is the job's, unless that
-  job does without it (mbui-size's measures and what they measure: `record` carries the one before's for a measure
+  job is skipped without it (monoid's betas, `monoid-upload`'s outcome in the job's outputs) or does without it (mbui-size's measures and what they measure: `record` carries the one before's for a measure
   missing). mbui-size downloads what it measures by `scripts/download-artifact.sh --optional`, not
   actions/download-artifact, which once ended 0 with half a zip on the disk (43955196994, 2026-11-16): a zip is
   checked by its size and digest, a cut one taken on by Range, and the directory is there only when it came whole.
