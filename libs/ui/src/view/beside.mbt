@@ -545,8 +545,10 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     let n = self.nodes[at]
     // (where it was last beside its anchor, kept: placed again by what changed of its own (its fading, its size), it
     // stays there, never where it is laid out; never placed beside it yet: kept out of sight rather than drawn at
-    // (0, 0) in its holder)
-    let stay = fn() {
+    // (0, 0) in its holder where its anchor is drawn but gives no place beside it yet (`hides`: no piece of it, not
+    // in the window's terms); where its anchor is gone, put by or drawn nowhere (a page parked, a button the system
+    // draws in its own bar), where it is laid out, as before)
+    let stay = fn(hides : Bool) {
       match n.beside_last {
         Some((lx, ly, px, py)) => {
           set_unplaced(at, false)
@@ -564,7 +566,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
             self.hits_bump()
           }
         }
-        None => if self.held_from_root(at) { set_unplaced(at, true) }
+        None => if hides && self.held_from_root(at) { set_unplaced(at, true) }
       }
       state[at] = 2
       true
@@ -575,7 +577,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
         self.sizes_due = true
       }
       n.went = None
-      return stay()
+      return stay(false)
     }
     // (leaving, or its anchor drawn nowhere (left out of its row, leaving): where it last was beside it, following
     // nothing on its way out)
@@ -585,7 +587,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       self.leaving_at(at) ||
       self.out_at(b.anchor.at) ||
       self.leaving_at(b.anchor.at) {
-      return stay()
+      return stay(false)
     }
     // (beside itself or what it holds: refused)
     let mut i = b.anchor.at
@@ -639,7 +641,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
     }
     // (where its anchor is drawn and how big, where what holds it is: in the window's terms as the scene is composed,
     // Tree::projected; it goes there as big as what holds it draws it, its own scale about where it went after)
-    guard self.window_place(b.anchor.at) is Some((ax, ay, ascale)) else { return stay() }
+    guard self.window_place(b.anchor.at) is Some((ax, ay, ascale)) else { return stay(true) }
     let a = self.nodes[b.anchor.at]
     let (hx, hy, hs) = match self.window_place(n.parent) {
       Some(p) => p
@@ -652,7 +654,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       Some(f) =>
         match @signals.untracked(fn() { f(a.lw, a.lh) }) {
           Some((x, y, w, h)) => (ax + x * ascale, ay + y * ascale, w * ascale, h * ascale)
-          None => return stay()
+          None => return stay(true)
         }
     }
     let (px, py) = self.pointer_xy

@@ -595,8 +595,8 @@ test "beside host: Left, Right, and Left->Right viewport flip clear outer host e
 }
 
 ///|
-test "beside: an overlay whose anchor is hidden or whose piece is None on its first frame is not drawn at (0, 0), and appears beside its anchor once placeable" {
-  let anchor_hidden = @signals.signal(true, same=fn(a, b) { a == b })
+test "beside: an overlay whose shown anchor gives no piece on its first frame is not drawn at (0, 0), and appears beside its anchor once placeable" {
+  let anchor_hidden = @signals.signal(false, same=fn(a, b) { a == b })
   let piece_ready = Ref(false)
   let ay = @signals.signal(100.0, same=fn(a, b) { a == b })
   let ids : Map[String, @view.NodeId] = Map([])
@@ -627,13 +627,13 @@ test "beside: an overlay whose anchor is hidden or whose piece is None on its fi
     },
     time=fn() { 0.0 },
   )
-  // Anchor hidden on first frame: never drawn at (0, 0)
-  t.frame(400.0, 300.0) |> ignore
-  assert_eq(t.drawn_of(ids["b"]), None, msg="hidden anchor: overlay must not draw at (0, 0)")
-  // Anchor becomes visible, but piece is still None: still never drawn at (0, 0)
-  t.event(10.0, fn() { anchor_hidden.set(false) })
+  // Anchor shown, but its piece is None on the first frame: never drawn at (0, 0)
   t.frame(400.0, 300.0) |> ignore
   assert_eq(t.drawn_of(ids["b"]), None, msg="missing piece on first placement: overlay must not draw at (0, 0)")
+  // Still no piece as the anchor moves: still not drawn
+  t.event(10.0, fn() { ay.set(105.0) })
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(t.drawn_of(ids["b"]), None, msg="still no piece: overlay stays out of sight")
   // Piece becomes available and anchor updates: overlay appears beside the piece
   piece_ready.val = true
   t.event(20.0, fn() { ay.set(110.0) })
