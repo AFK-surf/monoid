@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 | [3a33268d0](https://github.com/AFK-surf/monoid/commit/3a33268d0aa51d46ecefdda2a74244ad0a3f3ad5) fix(ci): set STILLFAIL_DIRECT_DNS in self-hosted d | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 | [995870604](https://github.com/AFK-surf/monoid/commit/99587060490aa1c7647e52d7cfdad4393bb08aac) feat(mbui): light the picked occurrence of Poke wo | 2.8 | 3.77 | 15.26 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 | [86a3bc937](https://github.com/AFK-surf/monoid/commit/86a3bc9371100592f434e8a80672598c3368823b) fix(ci): upload ci-1's MoonBit cache from ubuntu-2 | 2.8 | 3.77 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.74 | 66.69 | 100.52 | 128.91 |
 | [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
-| [9160e1497](https://github.com/AFK-surf/monoid/commit/9160e1497a87565145751f7f63019b3c1cd73bc2) feat(mbui): add line numbers and pick/note annotat | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.49 |
 | [3a33268d0](https://github.com/AFK-surf/monoid/commit/3a33268d0aa51d46ecefdda2a74244ad0a3f3ad5) fix(ci): set STILLFAIL_DIRECT_DNS in self-hosted d | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.46 |
 | [995870604](https://github.com/AFK-surf/monoid/commit/99587060490aa1c7647e52d7cfdad4393bb08aac) feat(mbui): light the picked occurrence of Poke wo | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.39 |
 | [86a3bc937](https://github.com/AFK-surf/monoid/commit/86a3bc9371100592f434e8a80672598c3368823b) fix(ci): upload ci-1's MoonBit cache from ubuntu-2 | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.48 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.62 |
 | [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.59 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.39 |
-| [9160e1497](https://github.com/AFK-surf/monoid/commit/9160e1497a87565145751f7f63019b3c1cd73bc2) feat(mbui): add line numbers and pick/note annotat | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.33 |
