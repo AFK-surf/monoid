@@ -1,7 +1,7 @@
 // `Core`: takes messages from connected UIs, answers calls, keeps subscriptions (core.rs for the
 // protocol). Construction opens the signed-in accounts' databases (data.ts), wires the modules together and starts the
 // sync (sync/), which keeps everything the core holds current by itself; subscriptions only read what is held.
-import { Cause, Effect, type Clock, type Fiber } from "effect";
+import { Cause, Deferred, Effect, type Clock, type Fiber } from "effect";
 import type { AccountView } from "./accounts.ts";
 import { type AccountProvider, type AccountProviderFactory, type AccountSessions, stillfailAccountProvider } from "./account-provider.ts";
 import * as brand from "./brand.ts";
@@ -140,6 +140,9 @@ export class Inner {
   host!: Host;
   runner!: Runner;
   tracer!: Tracer;
+  /// What a start reads of this device's keys once (`signer`: views/lock.ts `install`; `box`: views/vault.ts `install`),
+  /// told as each is read: the start's span (`startTrace`).
+  startRead: (what: "signer" | "box") => void = () => {};
   /// What people use, counted for still.fail's PostHog project where the app says so (use-counts.ts).
   useCounts!: UseCounts;
   /// What app the UI said it is (`client.device`'s `app`): the counts' `app`.
@@ -204,12 +207,21 @@ export class Inner {
   shownAccounts: AccountView[] = [];
 }
 
-/// The start's span (`core.start`): each step's ms as it ends (`step`), and once the person's own lock of every account is
-/// read from the device, or `START_TOLD_MS` passed, the whole of it (`ownLock`) with what the core's parts spent meanwhile.
+/// The start's span (`core.start`): each step's ms as it ends (`step`); then, once the person's own lock of every account
+/// and this device's keys are read from the device, or `START_TOLD_MS` passed, or the core stopped first, how long each
+/// took from the start (`ownLock`) with what the core's parts spent meanwhile. (The time before `Core.make`, the bundle
+/// loading, is not in it: the core does not know when its process started.)
 function startTrace(inner: Inner): { step: (name: string) => void; ownLock: () => void } {
   const span = inner.tracer.root("core.start", Kind.Internal);
   const t0 = inner.host.monotonicMs();
   const spentFrom = { ...spent };
+  const since = () => Math.round(inner.host.monotonicMs() - t0);
+  const keys = { signer: Deferred.makeUnsafe<void>(), box: Deferred.makeUnsafe<void>() };
+  inner.startRead = (what) => {
+    if (Deferred.isDoneUnsafe(keys[what])) return;
+    span.set(`stillfail.${what}_ms`, since());
+    Deferred.doneUnsafe(keys[what], Effect.void);
+  };
   let at = t0;
   return {
     step: (name) => {
@@ -221,17 +233,23 @@ function startTrace(inner: Inner): { step: (name: string) => void; ownLock: () =
       const subs = inner.accounts.list().map((a) => a.sub);
       span.set("stillfail.accounts", subs.length);
       const personal = inner.adb.personal();
-      const read = Effect.forEach(subs, (sub) => personal.whenLoaded(sub), { discard: true, concurrency: "unbounded" });
+      const own = Effect.tap(Effect.forEach(subs, (sub) => personal.whenLoaded(sub), { discard: true, concurrency: "unbounded" }), () =>
+        Effect.sync(() => span.set("stillfail.own_lock_ms", since())));
+      const all = Effect.all([own, Deferred.await(keys.signer), Deferred.await(keys.box)], { discard: true, concurrency: "unbounded" });
+      const told = (read: boolean) => {
+        span.set("stillfail.own_lock_read", read);
+        span.set("stillfail.start_ms", since());
+        for (const [part, ms] of spentSince(spentFrom)) span.set(`stillfail.part.${part}`, Math.round(ms));
+        span.end();
+      };
       inner.runner.fork(
-        Effect.andThen(
-          Effect.timeoutOption(read, START_TOLD_MS), // timer: a deadline, the start told though a lock is never read
-          (done) =>
-            Effect.sync(() => {
-              span.set("stillfail.own_lock_ms", Math.round(inner.host.monotonicMs() - t0));
-              span.set("stillfail.own_lock_read", done._tag === "Some");
-              for (const [part, ms] of spentSince(spentFrom)) span.set(`stillfail.part.${part}`, Math.round(ms));
-              span.end();
-            }),
+        Effect.onInterrupt(
+          Effect.andThen(
+            Effect.timeoutOption(all, START_TOLD_MS), // timer: a deadline, the start told though a read never ends
+            (done) => Effect.sync(() => told(done._tag === "Some")),
+          ),
+          // (the core stopped first, the app quit soon: told all the same, or the starts told would be those that lasted)
+          () => Effect.sync(() => told(false)),
         ),
       );
     },

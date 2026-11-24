@@ -705,7 +705,10 @@ export function install(inner: Inner): void {
   inner.runner.fork(Effect.ensuring(
     // (one that could not be read is none this run, not kept as none for the next: `signerShown`)
     Effect.map(Effect.result(Signer.load(inner.host)), (r) => (r._tag === "Success" ? signerKnown(inner, r.success?.id ?? null) : signerKnown(inner, null, false))),
-    Effect.sync(() => { Deferred.doneUnsafe(loaded, Effect.void); }),
+    Effect.sync(() => {
+      Deferred.doneUnsafe(loaded, Effect.void);
+      inner.startRead("signer");
+    }),
   ));
   // The workspace view says how far the cloud's lock goes and how many wait: read again when that changes.
   inner.data.onChange((topic) => {

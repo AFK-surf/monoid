@@ -4437,8 +4437,29 @@ test("a start is one span of its own: how long each step took, and till the pers
     const attrs = Object.fromEntries(start.attributes.map((a: J) => [a.key, Object.values(a.value)[0]]));
     for (const step of ["accounts", "db", "install", "attend", "rest"]) assert.ok(Number(attrs[`stillfail.ms.${step}`]) >= 0, `${step}: ${JSON.stringify(attrs)}`);
     assert.deepEqual([Number(attrs["stillfail.accounts"]), attrs["stillfail.own_lock_read"]], [1, true]);
-    assert.ok(Number(attrs["stillfail.own_lock_ms"]) >= 0);
+    for (const read of ["own_lock", "signer", "box", "start"]) assert.ok(Number(attrs[`stillfail.${read}_ms`]) >= 0, `${read}: ${JSON.stringify(attrs)}`);
     assert.ok(!JSON.stringify(start).includes("a@x.com"));
+  } finally {
+    core.close();
+  }
+});
+
+test("a start whose own lock is never read from the device is told at the deadline, as not read", async () => {
+  const { host, core } = await started(base(), 1, undefined, (x) => {
+    const get = x.host.storageGet.bind(x.host);
+    x.host.storageGet = (k) => (k.startsWith("personal-lock-") ? Effect.never : get(k));
+  });
+  try {
+    await host.time.pass(25_000);
+    await host.time.pass(EXPORT_MS + 100);
+    assert.equal(exports(host).flatMap(spansOf).filter((s) => s.name === "core.start").length, 0, "not told before the deadline");
+    await host.time.pass(5_000 + EXPORT_MS + 100);
+    const spans = exports(host).flatMap(spansOf).filter((s) => s.name === "core.start");
+    assert.equal(spans.length, 1);
+    const attrs = Object.fromEntries(spans[0]!.attributes.map((a: J) => [a.key, Object.values(a.value)[0]]));
+    assert.equal(attrs["stillfail.own_lock_read"], false);
+    assert.equal(attrs["stillfail.own_lock_ms"], undefined);
+    assert.ok(Number(attrs["stillfail.start_ms"]) >= 30_000, JSON.stringify(attrs));
   } finally {
     core.close();
   }
