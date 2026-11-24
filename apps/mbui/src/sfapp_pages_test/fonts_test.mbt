@@ -222,19 +222,13 @@ fn tap_place(t : @ui.Tester, place : String) -> Unit raise {
 }
 
 ///|
-/// Tap a script slot button in the 3-role pairing matrix (`role_idx`: 0=ui, 1=text, 2=code; `is_cjk`: false=primary, true=cjk).
-fn tap_matrix_slot(t : @ui.Tester, role_idx : Int, is_cjk : Bool) -> Unit {
-  let prefix = if is_cjk {
-    "中文 "
-  } else if role_idx == 2 {
-    "等宽 "
-  } else {
-    "西文 "
-  }
-  let matches = t.semantics().filter(fn(s) { s.role is Button && s.label.has_prefix(prefix) })
-  let idx = if is_cjk { role_idx } else if role_idx == 2 { 0 } else { role_idx }
-  let s = matches[idx]
-  t.tap(s.rect.0 + s.rect.2 / 2.0, s.rect.1 + s.rect.3 / 2.0)
+/// Switch role and script in the V5 unified font picker (`role_idx`: 0=ui, 1=text, 2=code; `is_cjk`: false=primary, true=cjk).
+fn tap_matrix_slot(t : @ui.Tester, role_idx : Int, is_cjk : Bool) -> Unit raise {
+  let roles = ["界面", "正文", "代码"]
+  tap_place(t, roles[role_idx])
+  t.draw()
+  let script_label = if is_cjk { "中文" } else if role_idx == 2 { "等宽" } else { "西文" }
+  t.tap_text(script_label)
 }
 
 ///|
@@ -256,7 +250,7 @@ test "pointing at an interface or text face tries it on the whole message, keepi
     // Distinguish the preview face without making the chat wrap and move the row out from under the pointer.
     t.face_wider(preview_faces_from + 2, 0.01)
     t.draw()
-    let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
+    let text_before = preview_width(t, "按钮的点击在表单提交之前被")
     let inline_before = preview_width(t, "preventDefault")
     let mine_before = preview_width(t, "登录页在 Safari 上点了没反应")
     let name_before = preview_width(t, "Claude")
@@ -264,7 +258,7 @@ test "pointing at an interface or text face tries it on the whole message, keepi
     t.move_to(x, y)
     t.draw()
     t.draw()
-    let text_after = preview_width(t, "Safari 和 Chrome 都试过了。")
+    let text_after = preview_width(t, "按钮的点击在表单提交之前被")
     let mine_after = preview_width(t, "登录页在 Safari 上点了没反应")
     let name_after = preview_width(t, "Claude")
     let row_after = t.query(Button, label="思源宋体").map(fn(s) { (s.rect.0, s.rect.1) })
@@ -273,7 +267,7 @@ test "pointing at an interface or text face tries it on the whole message, keepi
     t.move_to(x, 4.0)
     t.draw()
     t.draw()
-    assert_eq(preview_width(t, "Safari 和 Chrome 都试过了。"), text_before)
+    assert_eq(preview_width(t, "按钮的点击在表单提交之前被"), text_before)
   }
 }
 
@@ -284,14 +278,14 @@ test "pointing at a code face tries it on inline code and the code block, keepin
   t.draw()
   t.face_wider(preview_faces_from + 5, 0.3)
   t.draw()
-  let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
+  let text_before = preview_width(t, "按钮的点击在表单提交之前被")
   let inline_before = preview_width(t, "preventDefault")
   let block_before = preview_width(t, "form.onsubmit")
   let (x, y) = picker_row_center(t, "Fira Code")
   t.move_to(x, y)
   t.draw()
   t.draw()
-  assert_eq(preview_width(t, "Safari 和 Chrome 都试过了。"), text_before)
+  assert_eq(preview_width(t, "按钮的点击在表单提交之前被"), text_before)
   assert_true(preview_width(t, "preventDefault") > inline_before)
   assert_true(preview_width(t, "form.onsubmit") > block_before)
   t.move_to(x, 4.0)
@@ -322,18 +316,18 @@ test "pointing at 跟随界面 previews the interface face even when a different
   t.draw()
   assert_true(@ui.face_given(@hostapi.face_ui))
   assert_true(@ui.face_given(@hostapi.face_text))
-  let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
+  let text_before = preview_width(t, "按钮的点击在表单提交之前被")
   let mine_before = preview_width(t, "登录页在 Safari 上点了没反应")
   let (x, y) = picker_row_center(t, "跟随界面")
   t.move_to(x, y)
   t.draw()
   t.draw()
-  assert_true(preview_width(t, "Safari 和 Chrome 都试过了。") > text_before)
+  assert_true(preview_width(t, "按钮的点击在表单提交之前被") > text_before)
   assert_true(preview_width(t, "登录页在 Safari 上点了没反应") > mine_before)
   t.move_to(x, 4.0)
   t.draw()
   t.draw()
-  assert_eq(preview_width(t, "Safari 和 Chrome 都试过了。"), text_before)
+  assert_eq(preview_width(t, "按钮的点击在表单提交之前被"), text_before)
   assert_eq(preview_width(t, "登录页在 Safari 上点了没反应"), mine_before)
 }
 
@@ -346,13 +340,13 @@ test "pointing at an interface face leaves a separately chosen text face alone" 
   tap_place(t, "界面")
   t.face_wider(preview_faces_from + 2, 0.05)
   t.draw()
-  let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
+  let text_before = preview_width(t, "按钮的点击在表单提交之前被")
   let name_before = preview_width(t, "Claude")
   let (x, y) = picker_row_center(t, "思源宋体")
   t.move_to(x, y)
   t.draw()
   t.draw()
-  assert_eq(preview_width(t, "Safari 和 Chrome 都试过了。"), text_before)
+  assert_eq(preview_width(t, "按钮的点击在表单提交之前被"), text_before)
   assert_true(preview_width(t, "Claude") > name_before)
 }
 
@@ -489,7 +483,7 @@ test "hovering CJK row previews locally with 0 words_forgotten and never pollute
   t.face_wider(preview_faces_from + 2, 0.05)
   t.draw()
   let forgotten_before = @ui.words_forgotten_count()
-  let text_before = preview_width(t, "Safari 和 Chrome 都试过了。")
+  let text_before = preview_width(t, "按钮的点击在表单提交之前被")
   let inline_before = preview_width(t, "preventDefault")
   let (x, y) = picker_row_center(t, "思源宋体")
   t.move_to(x, y)
@@ -497,13 +491,13 @@ test "hovering CJK row previews locally with 0 words_forgotten and never pollute
   t.draw()
   // Zero global glyph invalidation!
   assert_eq(@ui.words_forgotten_count(), forgotten_before)
-  assert_true(preview_width(t, "Safari 和 Chrome 都试过了。") > text_before)
+  assert_true(preview_width(t, "按钮的点击在表单提交之前被") > text_before)
   assert_eq(preview_width(t, "preventDefault"), inline_before)
   t.move_to(x, 4.0)
   t.draw()
   t.draw()
   assert_eq(@ui.words_forgotten_count(), forgotten_before)
-  assert_eq(preview_width(t, "Safari 和 Chrome 都试过了。"), text_before)
+  assert_eq(preview_width(t, "按钮的点击在表单提交之前被"), text_before)
 }
 
 ///|
@@ -516,10 +510,10 @@ test "local font panel: smart filter pills (仅中文 / 仅等宽 / 全部) and 
   )
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
-  // Switch to 界面 · 中文 so smart default filter is 仅中文
+  // Switch to 界面 中文 so smart default filter is 仅中文
   tap_matrix_slot(t, 0, true)
   t.draw()
-  tap_picker_row(t, "本机字体")
+  t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
   // Smart default 仅中文 shows 苹方-简 and hides Helvetica
   assert_true(t.find("苹方-简") is Some(_))
@@ -550,10 +544,10 @@ test "collapsible advanced typography section: expand, toggle autospace & ligatu
   // Scroll down to collapsible section; collapsed by default so inner controls are not visible
   t.wheel(900.0, 520.0, 750.0)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("排版与字号细节") is Some(_))
+  assert_true(t.find("阅读与排版") is Some(_))
   assert_true(t.find("正文阅读字号") is None)
   // Expand
-  t.tap_text("排版与字号细节")
+  t.tap_text("阅读与排版")
   t.run_for(@ui.move_most_ms)
   t.wheel(900.0, 520.0, 600.0)
   t.run_for(@ui.move_most_ms)
@@ -642,15 +636,21 @@ test "chat typography scaling: enlarging textSize preserves at-foot state, exact
   assert_true(typography_version() > ver0)
   // Scaling typography does not trigger global glyph cache invalidation
   assert_eq(@ui.words_forgotten_count(), forgotten0)
-  // At-foot state preserved: last message stays pinned at the foot (its top rises slightly as its multi-line body grows at 130% + relaxed)
+  // At-foot state preserved strictly: last message stays pinned at the foot (wheeling down moves it by <= 2.0pt)
   let foot_after = t.find("第 2999 条")
-  let fy_str = match foot_after {
-    Some((_, fy)) => "\{fy}"
-    None => "none"
+  let fy_after = match foot_after {
+    Some((_, fy)) => fy
+    None => fail("第 2999 条 disappeared after scaling")
+  }
+  t.wheel(700.0, 360.0, 240.0)
+  t.run_for(@ui.move_most_ms)
+  let fy_pinned = match t.find("第 2999 条") {
+    Some((_, fy)) => fy
+    None => fail("第 2999 条 disappeared after foot wheel check")
   }
   assert_true(
-    foot_after is Some((_, fy)) && fy >= 300.0 && fy <= 760.0 && fy <= fy_before + 20.0,
-    msg="foot_after=\{fy_str} before=\{fy_before}",
+    (fy_after - fy_pinned).abs() <= 2.0,
+    msg="not strictly at foot after scaling: fy_after=\{fy_after} fy_pinned=\{fy_pinned} fy_before=\{fy_before}",
   )
   // (b) Scroll up into history (past long_reply), pick a FULL unique numbered message (e.g. "第 NNNN 条" / "第 NNNN 步"), scale typography, verify same unique message stays anchored within <= 40pt
   t.wheel(700.0, 360.0, -1400.0)
@@ -703,8 +703,8 @@ test "local hover triggers 0 words_forgotten; hovering Classic Default after loc
   t.run_for(@ui.move_most_ms)
   t.ui_face_wider(0.35)
   t.draw()
-  // Open local font panel and hover two consecutive families -> 0 global words_forgotten
-  tap_picker_row(t, "本机字体")
+  // Open inline local font tab and hover two consecutive families -> 0 global words_forgotten
+  t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
   let forgotten0 = @ui.words_forgotten_count()
   let (mx, my) = t.find("Menlo").unwrap()
@@ -744,11 +744,15 @@ test "short viewport 390x300 scrolls to and selects style cards and font rows; r
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
   // Scroll down past the non-sticky preview card to reach style cards
-  for _ in 0..<8 {
+  for _ in 0..<10 {
     match t.find("现代无衬线") {
-      Some((_, y)) if y >= 72.0 && y <= 260.0 => break
-      _ => {
-        t.wheel(195.0, 150.0, 120.0)
+      Some((_, y)) if y >= 72.0 && y <= 240.0 => break
+      Some((_, y)) => {
+        t.wheel(195.0, 150.0, if y > 240.0 { 80.0 } else { -80.0 })
+        t.run_for(@ui.move_most_ms)
+      }
+      None => {
+        t.wheel(195.0, 150.0, 80.0)
         t.run_for(@ui.move_most_ms)
       }
     }
@@ -800,20 +804,76 @@ test "cross-breakpoint resize 1280 -> 390 -> 1280 preserves slot selection and r
   t.draw()
   t.wheel(700.0, 520.0, 420.0)
   t.run_for(@ui.move_most_ms)
-  t.click(Button, label="本机字体")
+  t.tap_text("本机字体")
   t.run_for(@ui.move_most_ms)
   assert_true(@sfpages.local_open.untracked())
   t.resize(390.0, 820.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(@settings.fonts_at.untracked(), 1)
   assert_eq(@settings.fonts_script_at.untracked(), 1)
+  assert_true(@sfpages.local_open.untracked())
   t.resize(1280.0, 820.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(@settings.fonts_at.untracked(), 1)
   assert_eq(@settings.fonts_script_at.untracked(), 1)
-  t.wheel(700.0, 520.0, 420.0)
-  t.run_for(@ui.move_most_ms)
-  t.click(Button, label="本机字体")
-  t.run_for(@ui.move_most_ms)
   assert_true(@sfpages.local_open.untracked())
+}
+
+///|
+test "undo_reset emits core-ts typographyPut-safe payload (no *Own keys, preserves inherited textCjkScale/Weight as null)" {
+  new_run()
+  let base = fixture("settings")
+  // Set uiCjk + uiCjkScale=115 without setting textCjkScaleOwn -> textCjkScale inherits from uiCjkScale
+  (base.call)(
+    "prefs.set",
+    {
+      "fonts": { "ui": "inter", "uiCjk": "noto-sans-sc" },
+      "typography": { "textSize": 115, "uiCjkScale": 115 },
+    },
+    fn(_) {  },
+  )
+  let undo_payload : Ref[Json?] = Ref(None)
+  let recording = Ref(false)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if recording.val && name == "prefs.set" {
+        undo_payload.val = Some(params)
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=820.0, platform=0)
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="全部恢复默认")
+  t.run_for(@ui.move_most_ms)
+  recording.val = true
+  t.click(Button, label="撤销")
+  t.run_for(@ui.move_most_ms)
+  let typo = field(undo_payload.val, "typography")
+  assert_true(typo is Some(Object(_)))
+  assert_true(field(typo, "textCjkScaleOwn") is None)
+  assert_true(field(typo, "textCjkWeightOwn") is None)
+  assert_eq(field(typo, "textCjkScale"), Some(Json::null()))
+  assert_eq(field(typo, "textCjkWeight"), Some(Json::null()))
+  assert_eq(number(typo, "textSize").round().to_int(), 115)
+  assert_eq(number(typo, "uiCjkScale").round().to_int(), 115)
+}
+
+///|
+test "preview markdown_node scales prose and inline code synchronously when textSize changes" {
+  new_run()
+  let src = fixture("settings")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=820.0, platform=0)
+  app.nav.replace(Setting(@settings.Route::Fonts))
+  t.run_for(@ui.move_most_ms)
+  let prose_before = preview_width(t, "按钮的点击在表单提交之前被")
+  let inline_before = preview_width(t, "preventDefault")
+  (src.call)("prefs.set", { "typography": { "textSize": 125 } }, fn(_) {  })
+  t.run_for(@ui.move_most_ms)
+  let prose_after = preview_width(t, "按钮的点击在表单提交之前被")
+  let inline_after = preview_width(t, "preventDefault")
+  assert_true(prose_after > prose_before + 10.0, msg="prose_before=\{prose_before} prose_after=\{prose_after}")
+  assert_true(inline_after > inline_before + 5.0, msg="inline_before=\{inline_before} inline_after=\{inline_after}")
 }

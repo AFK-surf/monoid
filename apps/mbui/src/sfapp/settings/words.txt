@@ -1306,6 +1306,7 @@ web-pages.appearance.fonts.advanced.weightLight
 web-pages.appearance.fonts.cjkFollowUi
 web-pages.appearance.fonts.cjkNone
 web-pages.appearance.fonts.code
+web-pages.appearance.fonts.curated
 web-pages.appearance.fonts.default
 web-pages.appearance.fonts.description
 web-pages.appearance.fonts.followUi

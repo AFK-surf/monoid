@@ -515,15 +515,25 @@ static volatile LONG local_font_info_started = 0;
 
 static void local_font_info_wake(void *) { mb_host_request_frame(); }
 
+static WCHAR local_font_info_empty[2] = {L'[', L']'};
+
+static void local_font_info_finish_empty(bool wake) {
+  local_font_info_cache_len = 2;
+  InterlockedExchangePointer((PVOID *)&local_font_info_cache, local_font_info_empty);
+  if (wake) mb_app_call(local_font_info_wake, NULL);
+}
+
 static DWORD WINAPI local_font_info_worker(LPVOID) {
   IDWriteFactory *factory = NULL;
   if (FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
                                  (IUnknown **)&factory)) || !factory) {
+    local_font_info_finish_empty(true);
     return 0;
   }
   IDWriteFontCollection *fc = NULL;
   if (FAILED(factory->GetSystemFontCollection(&fc, FALSE)) || !fc) {
     factory->Release();
+    local_font_info_finish_empty(true);
     return 0;
   }
   WCHAR locale[LOCALE_NAME_MAX_LENGTH] = {0};
@@ -601,7 +611,11 @@ extern "C" moonbit_string_t mb_host_local_font_info(void) {
   if (!cached) {
     if (InterlockedCompareExchange(&local_font_info_started, 1, 0) == 0) {
       HANDLE th = CreateThread(NULL, 0, local_font_info_worker, NULL, 0, NULL);
-      if (th) CloseHandle(th);
+      if (th) {
+        CloseHandle(th);
+      } else {
+        local_font_info_finish_empty(false);
+      }
     }
     return moonbit_make_string_raw(0);
   }

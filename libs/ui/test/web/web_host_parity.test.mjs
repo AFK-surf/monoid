@@ -323,3 +323,30 @@ test('style_serif | style_words stays serif even when face_text (slot 2) is load
   assert.match(fontOf(b, 16), /"mbface2"/, 'style_words alone uses face_text');
   assert.equal(fontOf(b, 4 | 16).includes('mbface2'), false, 'style_serif | style_words exempt from face_text');
 });
+
+test('slot 8 dual-weight faceAddBytes keeps both 400 and 600 in document.fonts regardless of resolution order', async () => {
+  for (const order of [[0, 1], [1, 0]]) {
+    const b = browser({ deferLoad: true });
+    await task();
+    b.H.faceAddBytes(8, new Uint8Array(4), 400);
+    b.H.faceAddBytes(8, new Uint8Array(4), 600);
+    assert.equal(b.pending.length, 2);
+    b.pending[order[0]]();
+    await task();
+    b.pending[order[1]]();
+    await task();
+    const weights = [...b.fonts].filter((f) => f.family === 'mbface8').map((f) => f.weight).sort();
+    assert.deepEqual(weights, ['400', '600'], `order ${order.join(',')} keeps both weights`);
+  }
+});
+
+test('slot >= 7 async faceAddBytes completion bumps atlasGeneration so MoonBit reshapes off fallback', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  const gen0 = b.H.atlasGeneration();
+  b.H.faceAddBytes(10, new Uint8Array(4), 400);
+  assert.equal(b.pending.length, 1);
+  b.pending[0]();
+  await task();
+  assert.ok(b.H.atlasGeneration() > gen0, 'atlasGeneration bumped after async preview font load');
+});

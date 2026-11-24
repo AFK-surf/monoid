@@ -534,6 +534,43 @@ fn rich_kept_thin() -> Unit {
 }
 
 ///|
+/// Surgically drop cached rich paragraphs that reference `face` (via paragraph face, any run face, or local CJK
+/// override), leaving unrelated primary UI paragraphs intact.
+fn rich_forget_face(face : Int) -> Unit {
+  let gone : Array[Int64] = []
+  for key, k in rich_kept {
+    let r = k.r
+    let mut hit = @hostapi.face_of_style(r.faces) == face
+    if !hit {
+      match r.cjk_override {
+        Some(ov) if ov.face == face => hit = true
+        _ => ()
+      }
+    }
+    if !hit {
+      match r.code_cjk_override {
+        Some(ov) if ov.face == face => hit = true
+        _ => ()
+      }
+    }
+    if !hit {
+      for run in r.runs {
+        if run.face == Some(face) || @hostapi.face_of_style(r.run_style(run)) == face {
+          hit = true
+          break
+        }
+      }
+    }
+    if hit {
+      gone.push(key)
+    }
+  }
+  for key in gone {
+    rich_kept.remove(key)
+  }
+}
+
+///|
 /// Whether run `run` of paragraph `r` (in `style`, its r.run_style) is words that an eighth of an em parts from the
 /// words of the run beside it where a Han character or kana meets a Latin letter or a digit, as words_spaced_in parts
 /// them within one run: not a drawing, not code or on a ground of its own (its room round it parts it already), not in

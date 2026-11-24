@@ -670,6 +670,19 @@ fn clear_shapes() -> Unit {
 }
 
 ///|
+// kept across runs: empty placeholder for Array::release_unused on text_cache.fonts
+let font_shapes_gone : FontShapes = {
+  size: 0.0,
+  weight: 0,
+  style: 0,
+  spacing: 0.0,
+  cjk_slot: 0,
+  cjk_scale_pct: 100,
+  cjk_weight_off: 0,
+  map: Map([]),
+}
+
+///|
 /// Surgically evict shape, metric, and mark caches referencing preview/try `face` without incrementing
 /// `words_shaped_in` or evicting unrelated global window text caches.
 fn forget_words_for_face(face : Int) -> Unit {
@@ -690,7 +703,9 @@ fn forget_words_for_face(face : Int) -> Unit {
   for f in kept {
     text_cache.fonts.push(f)
   }
+  text_cache.fonts.release_unused(placeholder=font_shapes_gone)
   text_cache.shaped = shaped
+  rich_forget_face(face)
   let gone_metrics : Array[Int64] = []
   for k, _ in text_cache.metrics {
     if @hostapi.face_of_style((k & 8191L).to_int()) == face {

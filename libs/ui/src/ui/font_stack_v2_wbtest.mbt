@@ -432,3 +432,59 @@ test "font_v2: web_lines=true Rich prose without CJK + inline code 115% CJK pres
   let ov115 = layout_rich(make_mixed(Some({ face: @hostapi.face_code_cjk, scale: 1.15, weight_off: 0 })), 200.0)
   assert_true(ov115.h >= 23.0, msg="ov115.h=\{ov115.h} base=\{base_lay.h}")
 }
+
+///|
+test "font_v2: slot 7 consecutive family switch evicts slot-7 rich_kept without touching slot-1 rich_kept or global generation" {
+  let t = Tester::new(fn(c) { c.text("x") |> ignore })
+  assert_true(face_add(@hostapi.face_ui, "/fonts/ui.ttf"))
+  assert_true(face_add_family(7, "FamilyA"))
+  let make_rich = fn(face : Int) -> Rich {
+    {
+      runs: [@text.span("Hello preview", face=Some(face))],
+      size: 16.0,
+      weight: 400,
+      color: 0xFFFFFFFFL,
+      line: 22.0,
+      trim: false,
+      wrap: true,
+      link_color: 0L,
+      pressed_bg: 0L,
+      code_color: 0L,
+      code_bg: 0L,
+      code_scale: 1.0,
+      spacing: 0.0,
+      base: 0,
+      select: false,
+      max_lines: 0,
+      faces: 0,
+      shaped_in: words_shaped_in.untracked(),
+      cjk_override: None,
+      code_cjk_override: None,
+    }
+  }
+  let r1 = make_rich(@hostapi.face_ui)
+  let r7 = make_rich(7)
+  let lay1_before = layout_rich(r1, 300.0)
+  let lay7_a = layout_rich(r7, 300.0)
+  let key1 = rich_key(r1)
+  let key7 = rich_key(r7)
+  assert_true(rich_kept.contains(key1))
+  assert_true(rich_kept.contains(key7))
+  let gen_before = words_shaped_in.untracked()
+  let forgotten_before = words_forgotten_count()
+  // Switch slot 7 to a wider family B (global generation does NOT bump)
+  t.face_wider(7, 0.25)
+  face_clear(7)
+  assert_true(face_add_family(7, "FamilyB"))
+  assert_eq(words_shaped_in.untracked(), gen_before)
+  assert_eq(words_forgotten_count(), forgotten_before)
+  // Slot-7 rich_kept was evicted; slot-1 rich_kept stayed intact!
+  assert_false(rich_kept.contains(key7))
+  assert_true(rich_kept.contains(key1))
+  // Re-laying out slot 7 produces new wider width; slot 1 keeps identical width and glyph keys
+  let lay7_b = layout_rich(r7, 300.0)
+  let lay1_after = layout_rich(r1, 300.0)
+  assert_true(lay7_b.w > lay7_a.w + 1.0, msg="lay7_a=\{lay7_a.w} lay7_b=\{lay7_b.w}")
+  assert_eq(lay1_after.w, lay1_before.w)
+  assert_eq(lay1_after.keys, lay1_before.keys)
+}

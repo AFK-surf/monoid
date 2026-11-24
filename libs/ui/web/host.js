@@ -4806,11 +4806,17 @@
     entries.length = 0;
     keysStale = false;
   }
-  const faceGen = new Map();
+  const faceCancelGen = new Map();
+  const faceKeyGen = new Map();
   const faceNoLig = new Set();
-  const nextFaceGen = (face) => {
-    const g = (faceGen.get(face) || 0) + 1;
-    faceGen.set(face, g);
+  const nextFaceCancelGen = (face) => {
+    const g = (faceCancelGen.get(face) || 0) + 1;
+    faceCancelGen.set(face, g);
+    return g;
+  };
+  const nextFaceKeyGen = (face) => {
+    const g = (faceKeyGen.get(face) || 0) + 1;
+    faceKeyGen.set(face, g);
     return g;
   };
   // a face's descriptors: its weight (0: variable, all of them); the words' faces (1, 2) with Inter's single-storey a and
@@ -4827,15 +4833,15 @@
   // a face's file (a URL), for a weight (0: variable, all of them): drawn in once the page has loaded it
   H.faceAdd = (face, url, weight) => {
     if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
-    const gen = faceGen.get(face) || 0;
+    const gen = faceCancelGen.get(face) || 0;
     const ff = new FontFace(`mbface${face}`, `url(${JSON.stringify(url)})`, faceDescriptors(face, weight));
     faceFile(face, `url(${JSON.stringify(url)})`, weight);
     ff.load().then(() => {
-      if ((faceGen.get(face) || 0) !== gen) return;
+      if ((faceCancelGen.get(face) || 0) !== gen) return;
       document.fonts.add(ff);
       faces.add(face);
-      if (face >= FACE_TRY) nextFaceGen(face);
-      textChangedFor(face);
+      nextFaceKeyGen(face);
+      textChanged();
       H.requestFrame();
     }, () => {});
     return true;
@@ -4843,15 +4849,15 @@
   // the same, the file's bytes given
   H.faceAddBytes = (face, data, weight) => {
     if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
-    const gen = faceGen.get(face) || 0;
+    const gen = faceCancelGen.get(face) || 0;
     const ff = new FontFace(`mbface${face}`, data, faceDescriptors(face, weight));
     faceFile(face, data, weight);
     ff.load().then(() => {
-      if ((faceGen.get(face) || 0) !== gen) return;
+      if ((faceCancelGen.get(face) || 0) !== gen) return;
       document.fonts.add(ff);
       faces.add(face);
-      if (face >= FACE_TRY) nextFaceGen(face);
-      textChangedFor(face);
+      nextFaceKeyGen(face);
+      textChanged();
       H.requestFrame();
     }, () => {});
     return true;
@@ -4866,7 +4872,7 @@
     else faceNoLig.delete(face);
     const files = faceFiles.get(face);
     if (!files || !files.length || typeof FontFace !== 'function') return;
-    const gen = nextFaceGen(face);
+    const gen = nextFaceCancelGen(face);
     for (const ff of [...document.fonts]) {
       const fam = ff.family.replace(/"/g, '');
       if (fam === `mbface${face}`) document.fonts.delete(ff);
@@ -4874,13 +4880,14 @@
     Promise.all(files.map(([src, weight]) => {
       const ff = new FontFace(`mbface${face}`, src, faceDescriptors(face, weight));
       return ff.load().then(() => {
-        if (faceGen.get(face) !== gen) return;
+        if (faceCancelGen.get(face) !== gen) return;
         document.fonts.add(ff);
         faces.add(face);
       }, () => {});
     })).then(() => {
-      if (faceGen.get(face) !== gen) return;
-      textChangedFor(face);
+      if (faceCancelGen.get(face) !== gen) return;
+      nextFaceKeyGen(face);
+      textChanged();
       H.requestFrame();
     });
   };
@@ -4957,7 +4964,8 @@
     return true;
   };
   H.faceClear = (face) => {
-    nextFaceGen(face);
+    nextFaceCancelGen(face);
+    nextFaceKeyGen(face);
     faceNoLig.delete(face);
     faceFiles.delete(face);
     cjkForget(face);
@@ -4984,7 +4992,7 @@
   };
 
   const textKey = (c, size, weight, style) => {
-    const fg = faceGen.get(faceOf(style)) || 0;
+    const fg = faceKeyGen.get(faceOf(style)) || 0;
     const kk = fg ? c + '\x01' + size + '\x01' + weight + '\x01' + style + '\x01' + fg : c + '\x01' + size + '\x01' + weight + '\x01' + style;
     let key = keys.get(kk);
     if (key === undefined) {
