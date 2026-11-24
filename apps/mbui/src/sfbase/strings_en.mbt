@@ -197,7 +197,7 @@ let en : Map[String, String] = {
   "android-chat.newChat": "New chat",
   "android-chat.pdf.mark": "Note",
   "android-chat.pdf.marks.clear": "Clear notes",
-  "android-chat.pdf.marks.send": "Send notes ({n})",
+  "android-chat.pdf.marks.send": "Send from the message box",
   "android-chat.pdf.note.area": "Area",
   "android-chat.pdf.note.empty": "No note yet",
   "android-chat.pdf.note.page": "Page {page}",

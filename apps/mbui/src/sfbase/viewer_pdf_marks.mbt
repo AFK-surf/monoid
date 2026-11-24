@@ -1,8 +1,11 @@
 // Picking and marking a PDF where it is shown. The host draws each page as a picture; what the page says and where comes
 // from reading the file (@pdftext), so words are picked over the picture: dragged with a mouse, held and slid with a
 // finger (a finger that just moves scrolls). A drag that starts off the words frames an area instead, for a figure or a
-// scanned page. What is picked is copied, quoted into the chat's draft, or kept as a note on the page; the notes go into
-// the draft together, each a quote that says the file, the page, the words and what was said of them.
+// scanned page. What is picked is copied, quoted into the chat's draft, or kept as a note on the page. A note is a quote
+// in the chat's draft from the moment it is made (role `pdf`, with `mark`: this file and where on its pages), and the
+// draft is all there is of it: the pages mark the draft's quotes of this file and list them, what is said of one is its
+// comment there, one taken off the draft (or sent) is gone from the pages too. The core keeps the draft on the device,
+// so the notes are there again when the file is opened again, or the app is.
 
 ///|
 /// What is picked: words from a page's glyph to another's (not that glyph), or an area of one page, as fractions of it.
@@ -13,12 +16,13 @@ pub(all) enum PdfPicked {
 }
 
 ///|
-/// A note kept on the page, until it goes into the draft.
+/// A note on the page: a quote of the chat's draft (`id`, the draft's) of what it marks, its words and what is said of it.
+#derive(Eq)
 pub(all) struct PdfMark {
-  id : Int
+  id : String
   what : PdfPicked
   text : String
-  mut comment : String
+  comment : String
 }
 
 ///|
@@ -30,13 +34,11 @@ pub(all) struct PdfMarks {
   picked : @signals.Signal[PdfPicked?]
   /// the pointer has let what is picked go: what can be done with it shows
   settled : @signals.Signal[Bool]
-  marks : Array[PdfMark]
-  /// told as `marks` changes
-  told : @signals.Signal[Int]
-  /// the note being written (-1 none)
-  writing : @signals.Signal[Int]
+  /// the note being written (its quote's id; "" none)
+  writing : @signals.Signal[String]
   note : @ui.Field
-  mut next : Int
+  /// what reaches the chat's draft the notes are in: the stage's, said as it is made
+  mut src : Source?
   /// where the words being picked began: a page and a glyph
   mut words_from : (Int, Int)?
   /// where the area being framed began: a page and a point of it
@@ -54,11 +56,9 @@ fn PdfMarks::new() -> PdfMarks {
     read: false,
     picked: @signals.signal(None),
     settled: @signals.signal(false),
-    marks: [],
-    told: @signals.signal(0),
-    writing: @signals.signal(-1),
+    writing: @signals.signal(""),
     note: @ui.Field::new(),
-    next: 1,
+    src: None,
     words_from: None,
     area_from: None,
     held: false,
@@ -264,73 +264,185 @@ fn Viewer::pdf_quote_picked(self : Viewer) -> Unit {
 }
 
 ///|
-/// What is picked kept as a note on the page, its words to be written.
+/// Where `what` is, as a note's quote keeps it (`mark`): `w:` and the words' two ends, or `a:` and the area's page and
+/// corners (in hundred-thousandths of the page).
+pub fn pdf_mark_of(what : PdfPicked) -> String {
+  let at = fn(v : Double) { (v * pdf_mark_units).round().to_int() }
+  match what {
+    Words(pa, a, pb, b) => "w:\{pa},\{a},\{pb},\{b}"
+    Area(j, x0, y0, x1, y1) => "a:\{j},\{at(x0)},\{at(y0)},\{at(x1)},\{at(y1)}"
+  }
+}
+
+///|
+let pdf_mark_units : Double = 100000.0
+
+///|
+/// The whole numbers `s` says apart by commas from code unit `from` on; none where any is not one (empty, a sign, too
+/// long).
+fn pdf_mark_ints(s : String, from : Int) -> Array[Int]? {
+  let out : Array[Int] = []
+  let mut n = 0
+  let mut digits = 0
+  for i in from..<s.length() {
+    let c = s.unsafe_get(i).to_int()
+    if c == 44 {
+      guard digits > 0 else { return None }
+      out.push(n)
+      n = 0
+      digits = 0
+    } else if c >= 48 && c <= 57 && digits < 9 {
+      n = n * 10 + (c - 48)
+      digits += 1
+    } else {
+      return None
+    }
+  }
+  guard digits > 0 else { return None }
+  out.push(n)
+  Some(out)
+}
+
+///|
+/// What a note's `mark` (from code unit `from`) says it marks (pdf_mark_of); none where it says nothing that can be
+/// (another's, or damaged).
+pub fn pdf_what_of(mark : String, from? : Int = 0) -> PdfPicked? {
+  guard mark.length() > from + 2 else { return None }
+  let kind = mark.unsafe_get(from).to_int()
+  guard mark.unsafe_get(from + 1).to_int() == 58 && pdf_mark_ints(mark, from + 2) is Some(n) else { return None }
+  let share = fn(v : Int) { v.to_double() / pdf_mark_units }
+  if kind == 119 && n.length() == 4 {
+    Some(Words(n[0], n[1], n[2], n[3]))
+  } else if kind == 97 && n.length() == 5 && n[1:].iter().all(fn(v) { v.to_double() <= pdf_mark_units }) {
+    Some(Area(n[0], share(n[1]), share(n[2]), share(n[3]), share(n[4])))
+  } else {
+    None
+  }
+}
+
+///|
+/// Who this viewer's file is among the draft's notes: what starts each of its notes' `mark`.
+fn Viewer::pdf_mark_whose(self : Viewer) -> String {
+  "pdf:\{self.file.path}|\{self.file.name}|\{self.file.size}\n"
+}
+
+///|
+/// The chat's draft the notes are in; none where the viewer is of no chat, or before its stage is made.
+fn Viewer::pdf_draft(self : Viewer) -> (Source, Writing)? {
+  let key = self.draft_key()
+  match self.pdf_marks.src {
+    Some(src) if key != "" => Some((src, writing(src, key)))
+    _ => None
+  }
+}
+
+///|
+/// This file's notes, as the chat's draft has them now (followed as it changes): its quotes whose `mark` is of this
+/// file and says where; at most pdf_marks_most.
+pub fn Viewer::pdf_notes(self : Viewer) -> Array[PdfMark] {
+  guard self.pdf_draft() is Some((_, w)) else { return [] }
+  let whose = self.pdf_mark_whose()
+  let out : Array[PdfMark] = []
+  for q in w.quotes.get() {
+    let mark = text(Some(q), "mark")
+    guard text(Some(q), "role") == "pdf" && mark.has_prefix(whose) && out.length() < pdf_marks_most else { continue }
+    match pdf_what_of(mark, from=whose.length()) {
+      Some(what) => out.push({ id: text(Some(q), "id"), what, text: text(Some(q), "text"), comment: text(Some(q), "comment") })
+      None => ()
+    }
+  }
+  out
+}
+
+///|
+/// What is picked kept as a note on the page: a quote in the chat's draft at once, its words to be written.
 fn Viewer::pdf_mark_picked(self : Viewer) -> Unit {
   let m = self.pdf_marks
-  guard m.picked.untracked() is Some(what) && m.marks.length() < pdf_marks_most else { return }
-  let id = m.next
-  m.next += 1
-  m.marks.push({ id, what, text: pdf_words_of(m.doc, what), comment: "" })
+  guard m.picked.untracked() is Some(what) &&
+    self.pdf_draft() is Some((src, w)) &&
+    @signals.untracked(fn() { self.pdf_notes() }).length() < pdf_marks_most else {
+    return
+  }
+  self.pdf_note_done()
+  let words = pdf_words_of(m.doc, what)
+  let (whose, said, _) = pdf_quote(self.file.name, what, words, "")
+  let mark = self.pdf_mark_whose() + pdf_mark_of(what)
+  writing_quote(src, w, {
+    "author": Json::string(whose),
+    "text": Json::string(said),
+    "comment": Json::string(""),
+    "role": Json::string("pdf"),
+    "mark": Json::string(mark),
+  })
+  // (its comment line asks the composer for the focus; here the note's own field has it)
+  writing_focused(src, w)
+  let id = match @signals.untracked(fn() { w.quotes.get() }).iter().filter(fn(q) { text(Some(q), "mark") == mark }).last() {
+    Some(q) => text(Some(q), "id")
+    None => ""
+  }
   m.let_go()
-  m.told.set(m.told.untracked() + 1)
   m.note.set("")
   m.writing.set(id)
   m.note.focus()
 }
 
 ///|
-/// The note being written, done: what it says kept.
+/// The note being written, done: what it says its quote's comment in the draft.
 fn Viewer::pdf_note_done(self : Viewer) -> Unit {
   let m = self.pdf_marks
   let id = m.writing.untracked()
-  guard id >= 0 else { return }
+  guard id != "" else { return }
   let said = m.note.take().trim(chars=" \n\t").to_owned()
-  for x in m.marks {
-    if x.id == id {
-      x.comment = said
-    }
+  match self.pdf_draft() {
+    Some((src, w)) if @signals.untracked(fn() { self.pdf_notes() }).iter().any(fn(x) { x.id == id && x.comment != said }) =>
+      writing_comment(src, w, id, said)
+    _ => ()
   }
-  m.writing.set(-1)
+  m.writing.set("")
   m.note.let_go()
-  m.told.set(m.told.untracked() + 1)
+}
+
+///|
+/// Note `id` taken off the page: its quote out of the draft (the one being written closed with it).
+fn Viewer::pdf_note_drop(self : Viewer, id : String) -> Unit {
+  let m = self.pdf_marks
+  if m.writing.untracked() == id {
+    m.note.set("")
+    m.writing.set("")
+    m.note.let_go()
+  }
+  match self.pdf_draft() {
+    Some((src, w)) => writing_unquote(src, w, id)
+    None => ()
+  }
 }
 
 ///|
 /// The note being written taken off the page.
 fn Viewer::pdf_note_removed(self : Viewer) -> Unit {
-  let m = self.pdf_marks
-  let id = m.writing.untracked()
-  guard id >= 0 else { return }
-  match m.marks.search_by(fn(x) { x.id == id }) {
-    Some(k) => m.marks.remove(k) |> ignore
-    None => ()
-  }
-  m.note.set("")
-  m.writing.set(-1)
-  m.note.let_go()
-  m.told.set(m.told.untracked() + 1)
+  self.pdf_note_drop(self.pdf_marks.writing.untracked())
 }
 
 ///|
-/// Every note off the page.
+/// Every note of this file off the page and out of the draft.
 fn Viewer::pdf_marks_cleared(self : Viewer) -> Unit {
-  let m = self.pdf_marks
-  m.marks.clear()
-  m.note.set("")
-  m.writing.set(-1)
-  m.note.let_go()
-  m.told.set(m.told.untracked() + 1)
+  for x in @signals.untracked(fn() { self.pdf_notes() }) {
+    self.pdf_note_drop(x.id)
+  }
 }
 
 ///|
-/// Every note into the draft, as one quote each.
+/// The notes are in the draft already: what is being written kept, and back to the chat to send them with what is
+/// written there (a viewer over the whole window closed; one beside the chat, its composer there).
 fn Viewer::pdf_marks_sent(self : Viewer) -> Unit {
   self.pdf_note_done()
-  let m = self.pdf_marks
-  let quotes = m.marks.map(fn(x) { pdf_quote(self.file.name, x.what, x.text, x.comment) })
-  m.marks.clear()
-  m.told.set(m.told.untracked() + 1)
-  self.pdf_give(quotes)
+  match self.pdf_draft() {
+    Some((_, w)) => w.field.focus()
+    None => ()
+  }
+  if !self.beside {
+    self.shut_tree()
+  }
 }
 
 ///|
@@ -346,7 +458,7 @@ fn Viewer::pdf_key(self : Viewer, code : Int, mods : Int) -> Bool {
     return true
   }
   if code == @ui.key_escape && mods == 0 {
-    if m.writing.untracked() >= 0 {
+    if m.writing.untracked() != "" {
       self.pdf_note_done()
       return true
     }
@@ -360,10 +472,10 @@ fn Viewer::pdf_key(self : Viewer, code : Int, mods : Int) -> Bool {
 
 ///|
 /// Note `id` opened: brought into sight on its page and opened to be written, what was said of it in the field.
-fn Viewer::pdf_note_open(self : Viewer, id : Int) -> Unit {
+fn Viewer::pdf_note_open(self : Viewer, id : String) -> Unit {
   let m = self.pdf_marks
-  guard m.marks.search_by(fn(x) { x.id == id }) is Some(k) else { return }
-  let x = m.marks[k]
+  guard @signals.untracked(fn() { self.pdf_notes() }).iter().find_first(fn(x) { x.id == id }) is Some(x) else { return }
+  self.pdf_note_done()
   m.let_go()
   let (page, v) = match x.what {
     Words(pa, _, _, _) =>
@@ -376,23 +488,7 @@ fn Viewer::pdf_note_open(self : Viewer, id : Int) -> Unit {
   (m.locate)(page, v)
   m.note.set(x.comment)
   m.writing.set(id)
-  m.told.set(m.told.untracked() + 1)
   m.note.focus()
-}
-
-///|
-/// Note `id` taken off the page.
-fn Viewer::pdf_note_drop(self : Viewer, id : Int) -> Unit {
-  let m = self.pdf_marks
-  if m.writing.untracked() == id {
-    self.pdf_note_removed()
-    return
-  }
-  match m.marks.search_by(fn(x) { x.id == id }) {
-    Some(k) => m.marks.remove(k) |> ignore
-    None => ()
-  }
-  m.told.set(m.told.untracked() + 1)
 }
 
 ///|
@@ -426,8 +522,7 @@ fn Viewer::pdf_doc_notes(self : Viewer) -> DocNotes {
   let m = self.pdf_marks
   {
     notes: fn() {
-      m.told.get() |> ignore
-      m.marks.map(fn(x) { { id: x.id, place: pdf_place_label(x.what), excerpt: pdf_excerpt(x), comment: x.comment } })
+      self.pdf_notes().map(fn(x) { { id: x.id, place: pdf_place_label(x.what), excerpt: pdf_excerpt(x), comment: x.comment } })
     },
     current: fn() { m.writing.get() },
     open: fn(id) { self.pdf_note_open(id) },
@@ -485,9 +580,8 @@ fn pdf_page_marks_node(
     pdf_rects_node(
       b,
       fn() {
-        m.told.get() |> ignore
         let out = []
-        for x in m.marks {
+        for x in vw.pdf_notes() {
           out.append(pdf_rects_of(m.doc, x.what, i))
         }
         out
@@ -503,10 +597,9 @@ fn pdf_page_marks_node(
     pdf_rects_node(
       b,
       fn() {
-        m.told.get() |> ignore
         let id = m.writing.get()
-        match m.marks.search_by(fn(x) { x.id == id }) {
-          Some(k) => pdf_rects_of(m.doc, m.marks[k].what, i)
+        match vw.pdf_notes().iter().find_first(fn(x) { x.id == id }) {
+          Some(x) => pdf_rects_of(m.doc, x.what, i)
           None => []
         }
       },
@@ -625,7 +718,7 @@ fn pdf_page_marks_node(
       tap=fn(_) {
         if m.picked.untracked() is Some(_) {
           m.let_go()
-        } else if m.writing.untracked() >= 0 {
+        } else if m.writing.untracked() != "" {
           vw.pdf_note_done()
         } else if bars() {
           vw.toggle()
@@ -712,7 +805,7 @@ fn pdf_page_marks_node(
             mark: false,
             press: fn() { vw.pdf_quote_picked() },
           })
-          if m.marks.length() < pdf_marks_most {
+          if @signals.untracked(fn() { vw.pdf_notes() }).length() < pdf_marks_most {
             items.push({
               label: pv("android-chat.pdf.mark"),
               icon: "edit",
@@ -767,8 +860,7 @@ fn pdf_share(v : Double) -> Double {
 fn pdf_marks_bar_node(parent : @view.View, vw : Viewer, side : () -> Bool) -> Unit {
   let m = vw.pdf_marks
   let any = fn() {
-    m.told.get() |> ignore
-    m.marks.length() > 0
+    vw.pdf_notes().length() > 0
   }
   parent.show(any, fn(l) {
     // (nothing of its own to press but its keys: the pages under it keep the rest)
@@ -778,22 +870,19 @@ fn pdf_marks_bar_node(parent : @view.View, vw : Viewer, side : () -> Bool) -> Un
       r.padding(Is((12.0, 0.0, 12.0, 16.0))).lines_up(Is(Some(Middle))) |> ignore
       r.pick(
         fn() {
-          m.told.get() |> ignore
-          // (the note being written; else, where the notes stand at the side, nothing more here (-2); else the bar,
-          // with as many notes as it says (-1))
-          if m.writing.get() >= 0 {
+          // (the note being written; else, where the notes stand at the side, nothing more here; else the bar, with as
+          // many notes as it says)
+          if m.writing.get() != "" {
             (m.writing.get(), 0)
           } else if side() {
-            (-2, 0)
+            ("-side", 0)
           } else {
-            (-1, m.marks.length())
+            ("-bar", vw.pdf_notes().length())
           }
         },
         fn(holds, now) {
-          if now.0 >= 0 {
-            pdf_note_card_node(holds, vw)
-          } else if now.0 == -1 {
-            // (N 条标注 opens them in a sheet, to read, open, take off; 发送 puts them all in the draft)
+          if now.0 == "-bar" {
+            // (N 条标注 opens them in a sheet, to read, open, take off; the notes are in the draft already: back to it)
             @sf.pick_bar_node(holds, [
               {
                 label: pv_fill("android-chat.pdf.notes.count", [("n", "\{now.1}")]),
@@ -809,6 +898,8 @@ fn pdf_marks_bar_node(parent : @view.View, vw : Viewer, side : () -> Bool) -> Un
               },
             ])
             |> ignore
+          } else if now.0 != "-side" {
+            pdf_note_card_node(holds, vw)
           }
         },
       )
@@ -838,10 +929,9 @@ fn pdf_note_card_node(holds : @view.View, vw : Viewer) -> Unit {
     card.box(fn(t) {
       t.padding(Is((10.0, 0.0, 10.0, 0.0))) |> ignore
       doc_note_line(t, fn() {
-        m.told.get() |> ignore
         let id = m.writing.get()
-        match m.marks.search_by(fn(x) { x.id == id }) {
-          Some(k) => pdf_place_label(m.marks[k].what) + " · " + pdf_excerpt(m.marks[k])
+        match vw.pdf_notes().iter().find_first(fn(x) { x.id == id }) {
+          Some(x) => pdf_place_label(x.what) + " · " + pdf_excerpt(x)
           None => ""
         }
       }, 12.0, 400, 1, fn() { @sf.theme().p.muted })

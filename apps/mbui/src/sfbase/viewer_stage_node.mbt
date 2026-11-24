@@ -118,7 +118,7 @@ pub fn viewer_stage_node(n : @view.View, src : Source, vw : Viewer, width : () -
           None => ()
         }
       StagePdf => {
-        pdf_stage_node(taps(), vw, width)
+        pdf_stage_node(taps(), src, vw, width)
       }
       StageHtml => html_stage_node(p, vw, width)
       StageCsv(tab) => {
@@ -181,7 +181,7 @@ fn stage_note_node(parent : @view.View, words : () -> String) -> Unit {
 /// a block), as wide as the stage allows: as the web's, 76 down (under the bar), as wide as 1000 less 56 allows, 20
 /// apart; under 640, 60 down, 12 round them and between them; on white, raised, a page not drawn yet its shape on the
 /// neutral grey. One that cannot be opened, said so.
-fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Unit {
+fn pdf_stage_node(parent : @view.View, src : Source, vw : Viewer, width : () -> Double) -> Unit {
   let pdf = match vw.pdf {
     Some(p) => p
     None =>
@@ -204,10 +204,11 @@ fn pdf_stage_node(parent : @view.View, vw : Viewer, width : () -> Double) -> Uni
   let small = fn() { width() <= @sf.viewer_small_w }
   // (the notes at the side where the stage is wide enough: the pages narrowed and moved over for them)
   let m = vw.pdf_marks
-  let side = fn() {
-    m.told.get() |> ignore
-    doc_notes_side(width(), m.marks.length())
-  }
+  // (the notes are the chat's draft's quotes of this file: where to reach it; a note being written as the stage goes,
+  // kept)
+  m.src = Some(src)
+  parent.owns(fn() { vw.pdf_note_done() }) |> ignore
+  let side = fn() { doc_notes_side(width(), vw.pdf_notes().length()) }
   let side_room = fn() { if side() { doc_notes_side_room } else { 0.0 } }
   let page_w = fn() {
     let w = width() - side_room()

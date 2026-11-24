@@ -9,7 +9,7 @@
 /// area is), what was said of it ("" nothing yet).
 #derive(Eq)
 pub(all) struct DocNote {
-  id : Int
+  id : String
   place : String
   excerpt : String
   comment : String
@@ -17,13 +17,13 @@ pub(all) struct DocNote {
 
 ///|
 /// A document's notes and what can be done with them: `notes` and `current` are read as signals (the note being
-/// written or opened, -1 none); `open` brings a note into sight and opens it to be written; `remove` takes it off;
+/// written or opened, "" none); `open` brings a note into sight and opens it to be written; `remove` takes it off;
 /// `send` puts all of them into the chat's draft; `clear` takes all of them off.
 pub(all) struct DocNotes {
   notes : () -> Array[DocNote]
-  current : () -> Int
-  open : (Int) -> Unit
-  remove : (Int) -> Unit
+  current : () -> String
+  open : (String) -> Unit
+  remove : (String) -> Unit
   send : () -> Unit
   clear : () -> Unit
 }

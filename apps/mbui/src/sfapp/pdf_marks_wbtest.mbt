@@ -85,30 +85,78 @@ test "a drag off the words frames an area of the page" {
 }
 
 ///|
-test "a note kept on the page goes into the draft with its words, its file and its page" {
+/// What the chat's draft quotes of the PDF: its notes' quotes.
+fn pdf_draft_quotes() -> Array[Json] {
+  @sfbase.writing(preview_src.val.unwrap(), "ws1/st1:s-c1").quotes.get().filter(fn(q) { text(Some(q), "role") == "pdf" })
+}
+
+///|
+/// The same PDF opened again in the preview, its words read as the first time.
+fn pdf_reopened(t : @ui.Tester, file : @sfbase.Attachment) -> Viewer {
+  @sfbase.open_preview("ws1/st1", "s-c1", file, beside=false, steps=InChat(Some(1.0), "s-c1"))
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  let v = viewer.get().unwrap()
+  v.pdf_marks.doc = @pdftext.Doc::open(pdf_marks_file())
+  v.pdf_marks.read = true
+  t.draw()
+  v
+}
+
+///|
+test "a note is a quote in the chat's draft from the moment it is made; closed and opened again, the file shows it; out of the draft, it is gone" {
   let (t, v, x, y, w, h) = pdf_marks_tester()
   let src = preview_src.val.unwrap()
   t.drag(x + 100.5 / 600.0 * w, y + 100.0 / 800.0 * h, x + 199.5 / 600.0 * w, y + 100.0 / 800.0 * h)
   t.tap_text("批注")
-  assert_eq(v.pdf_marks.marks.length(), 1)
+  // (in the draft at once, before anything is said of it: its file and page, its words, where on the page)
+  let quotes = pdf_draft_quotes()
+  assert_eq(quotes.length(), 1, msg="in the draft as it is made")
+  assert_eq(text(Some(quotes[0]), "author"), "设计说明.pdf 第 1 页")
+  assert_eq(text(Some(quotes[0]), "text"), "first page")
+  assert_true(text(Some(quotes[0]), "mark").has_suffix("w:0,0,0,10"), msg="where: \{text(Some(quotes[0]), "mark")}")
+  assert_eq(v.pdf_notes().length(), 1)
   t.type_text("这里改一下")
   let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
   // (its card at the stage's foot, as a picture's note is: never over the words round what it is said of)
   let (_, wh) = t.size()
   assert_true(ky > y + 100.0 / 800.0 * h + 40.0 && ky + kh <= wh, msg="the note's card at the foot: \{ky} in \{wh}")
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
-  assert_eq(v.pdf_marks.marks[0].comment, "这里改一下")
-  assert_true(t.find("1 条标注") is Some(_) && t.find("发送") is Some(_), msg="what lists and sends the notes")
-  t.tap_text("发送")
-  assert_eq(v.pdf_marks.marks.length(), 0, msg="sent")
+  assert_eq(text(Some(pdf_draft_quotes()[0]), "comment"), "这里改一下", msg="what is said of it, the quote's comment")
+  assert_eq(v.pdf_notes()[0].comment, "这里改一下")
+  // (去发送: back to the chat, the notes in its draft already)
+  assert_true(t.find("1 条标注") is Some(_) && t.find("去发送") is Some(_), msg="what lists the notes and goes to send them")
+  let file = v.file
+  t.tap_text("去发送")
   t.run_for(@ui.move_most_ms)
+  assert_true(viewer.get() is None, msg="closed back to the chat")
+  assert_eq(pdf_draft_quotes().length(), 1, msg="still in the draft")
+  assert_eq(text(Some(pdf_draft_quotes()[0]), "role"), "pdf")
+  // (opened again: its note on the page and in the list, from the draft)
+  let v = pdf_reopened(t, file)
+  assert_eq(v.pdf_notes().map(fn(x) { (x.what, x.comment) }), [(Words(0, 0, 0, 10), "这里改一下")], msg="back on the page")
+  assert_true(t.find("1 条标注") is Some(_), msg="listed again")
+  // (taken out of the draft in the composer: gone from the page)
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_unquote(src, w, text(Some(pdf_draft_quotes()[0]), "id"))
   t.draw()
-  let quotes = @sfbase.writing(src, "ws1/st1:s-c1").quotes.get()
-  assert_eq(quotes.length(), 1)
-  assert_eq(text(Some(quotes[0]), "author"), "设计说明.pdf 第 1 页")
-  assert_eq(text(Some(quotes[0]), "text"), "first page")
-  assert_eq(text(Some(quotes[0]), "comment"), "这里改一下")
-  assert_eq(text(Some(quotes[0]), "role"), "pdf")
+  assert_eq(v.pdf_notes().length(), 0, msg="gone with its quote")
+  assert_true(t.find("1 条标注") is None, msg="nothing listed")
+}
+
+///|
+test "清除标注 takes this file's notes out of the draft, other quotes left in it" {
+  let (t, v, x, y, w, h) = pdf_marks_tester(w=1280.0)
+  let src = preview_src.val.unwrap()
+  let draft = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_quote(src, draft, { "author": Json::string("Willow"), "text": Json::string("别的引用"), "role": Json::string("agent") })
+  pdf_note_made(t, x, y, w, h, said="改短一点")
+  assert_eq(pdf_draft_quotes().length(), 1)
+  t.tap_text("清除标注")
+  t.draw()
+  assert_eq(pdf_draft_quotes().length(), 0, msg="the file's notes out of the draft")
+  assert_eq(draft.quotes.get().length(), 1, msg="the other quote left")
+  assert_eq(v.pdf_notes().length(), 0)
 }
 
 ///|
@@ -159,9 +207,9 @@ test "wide: the notes stand at the pages' side; a card opens its note, its bin t
   let page = t.drawn_images()[0]
   assert_true(page[0] + page[2] <= 1280.0 - @sfbase.doc_notes_side_w, msg="the page clear of the column: \{Repr(page)}")
   // (no bar at the foot: the column has the keys)
-  assert_true(t.find("发送 1 条标注") is Some(_))
+  assert_true(t.find("回到输入框发送") is Some(_))
   t.tap_text("改短一点")
-  assert_eq(v.pdf_marks.writing.get(), v.pdf_marks.marks[0].id, msg="the card opened its note")
+  assert_eq(v.pdf_marks.writing.get(), v.pdf_notes()[0].id, msg="the card opened its note")
   assert_eq(v.pdf_marks.note.text(), "改短一点")
   let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
@@ -169,7 +217,8 @@ test "wide: the notes stand at the pages' side; a card opens its note, its bin t
   assert_true(bins.length() >= 1, msg="the card's bin")
   let (bx, by, bw, bh) = bins[0].rect
   t.tap(bx + bw / 2.0, by + bh / 2.0)
-  assert_eq(v.pdf_marks.marks.length(), 0, msg="taken off")
+  assert_eq(v.pdf_notes().length(), 0, msg="taken off")
+  assert_eq(pdf_draft_quotes().length(), 0, msg="out of the draft")
   t.draw()
   assert_true(t.find("1 条标注") is None, msg="the column gone with the last note")
 }
@@ -191,14 +240,14 @@ test "narrow: a count at the foot opens the notes in a sheet; a row opens its no
   let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
   t.draw()
-  // (the foot: the count and 发送, no column at this width)
-  assert_true(t.find("1 条标注") is Some(_) && t.find("发送") is Some(_), msg="the foot's count and 发送")
+  // (the foot: the count and 去发送, no column at this width)
+  assert_true(t.find("1 条标注") is Some(_) && t.find("去发送") is Some(_), msg="the foot's count and 去发送")
   t.tap_text("1 条标注")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("第 1 页") is Some(_) && t.find("这里") is Some(_), msg="the sheet's row")
   t.tap_text("这里")
   t.run_for(@ui.move_most_ms)
-  assert_eq(v.pdf_marks.writing.get(), v.pdf_marks.marks[0].id, msg="the row opened its note")
+  assert_eq(v.pdf_marks.writing.get(), v.pdf_notes()[0].id, msg="the row opened its note")
   // (the sheet gone, its note's field still takes what is typed)
   t.type_text("，短些")
   assert_eq(v.pdf_marks.note.text(), "这里，短些", msg="written on as the sheet went")
