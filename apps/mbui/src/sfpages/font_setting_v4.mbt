@@ -315,7 +315,7 @@ fn fonts_page_v4_node(
         |> ignore
       } else {
         parent.box(fn(room) {
-          room.padding(Is((12.0, 0.0, 12.0, 0.0))) |> ignore
+          room.padding(Is((16.0, 0.0, 16.0, 0.0))) |> ignore
           make(room)
         })
         |> ignore
@@ -344,6 +344,7 @@ fn fonts_page_v4_node(
                 chat.val = Some(card_host)
                 font_preview_v4_node(
                   card_host,
+                  is_wide,
                   place,
                   script,
                   ui_face,
@@ -394,63 +395,66 @@ fn fonts_page_v4_node(
     p.box(fn(body_wrap) {
       body_wrap.grow(Is(1.0)).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
       body_wrap.scrolls(scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(inner) {
-        in_col(inner, fn(col) {
-          col.padding(By(fn() {
-            let foot = (if is_wide { 80.0 } else { 30.0 }) + frame().foot
-            (0.0, if is_wide { 16.0 } else { 12.0 }, 0.0, foot)
-          }))
-          .gap(Is(if is_wide { 18.0 } else { 14.0 }))
-          |> ignore
-          // Block 1: 4 visual style cards
-          font_style_cards_node(col, core, is_wide, all, files_state, chosen_of, shown_in)
-          // Block 2: 3-role × 2-script pairing matrix
-          font_pairing_matrix_node(col, is_wide, place, script, chosen_of, name_of_id)
-          // Block 3: Current-slot contextual font picker
-          col.box(fn(picker_sec) {
-            @sf.style_node(picker_sec, fn() { fp_v4_section })
-            @sf.words_node(
-              picker_sec,
-              fn() {
-                @sf.t(
-                  "web-pages.appearance.fonts.picker.forSlot",
-                  args=[
-                    ("place", @sf.t("web-pages.appearance.fonts." + place())),
-                    ("script", @sf.t(font_script_short_key(place(), script() == 1))),
-                  ],
-                )
-              },
-              fn() { fp_v4_sec_heading },
-            )
+        in_col(inner, fn(col_outer) {
+          col_outer.box(fn(col) {
+            col.padding(By(fn() {
+              let foot = (if is_wide { 80.0 } else { 30.0 }) + frame().foot
+              (0.0, if is_wide { 16.0 } else { 12.0 }, 0.0, foot)
+            }))
+            .gap(Is(if is_wide { 18.0 } else { 14.0 }))
             |> ignore
-            picker_sec.box(fn(faces) {
-              faces.points(Is(true)) |> ignore
-              faces.reacts(fn() { faces.pointed_in() }, fn(on) { over_faces.set(on) })
-              faces.owns(fn() { over_faces.set(false) }) |> ignore
-              @sf.group_node(faces, fn(g) {
-                g.pick(active_slot, fn(held, slot) {
-                  @sf.group_rows_node(held, fn(rows) {
-                    face_rows_node(
-                      rows,
-                      core,
-                      slot,
-                      place(),
-                      script() == 1,
-                      all,
-                      own,
-                      shown_in,
-                      files_state,
-                      chosen_of,
-                      name_of_id,
-                    )
+            // Block 1: 4 visual style cards
+            font_style_cards_node(col, core, is_wide, all, files_state, chosen_of, shown_in)
+            // Block 2: 3-role × 2-script pairing matrix
+            font_pairing_matrix_node(col, is_wide, place, script, chosen_of, name_of_id)
+            // Block 3: Current-slot contextual font picker
+            col.box(fn(picker_sec) {
+              @sf.style_node(picker_sec, fn() { fp_v4_section })
+              @sf.words_node(
+                picker_sec,
+                fn() {
+                  @sf.t(
+                    "web-pages.appearance.fonts.picker.forSlot",
+                    args=[
+                      ("place", @sf.t("web-pages.appearance.fonts." + place())),
+                      ("script", @sf.t(font_script_short_key(place(), script() == 1))),
+                    ],
+                  )
+                },
+                fn() { fp_v4_sec_heading },
+              )
+              |> ignore
+              picker_sec.box(fn(faces) {
+                faces.points(Is(true)) |> ignore
+                faces.reacts(fn() { faces.pointed_in() }, fn(on) { over_faces.set(on) })
+                faces.owns(fn() { over_faces.set(false) }) |> ignore
+                @sf.group_node(faces, fn(g) {
+                  g.pick(active_slot, fn(held, slot) {
+                    @sf.group_rows_node(held, fn(rows) {
+                      face_rows_node(
+                        rows,
+                        core,
+                        slot,
+                        place(),
+                        script() == 1,
+                        all,
+                        own,
+                        shown_in,
+                        files_state,
+                        chosen_of,
+                        name_of_id,
+                      )
+                    })
                   })
                 })
               })
+              |> ignore
             })
             |> ignore
+            // Block 4: Collapsible visual typography & ratio details
+            font_advanced_node(col, core, is_wide, place, faces_view, chosen_of, typo, ui_face, text_face, code_face, cjk_host_face)
           })
           |> ignore
-          // Block 4: Collapsible visual typography & ratio details
-          font_advanced_node(col, core, place, faces_view, chosen_of, typo, ui_face, text_face, code_face, cjk_host_face)
         })
       })
       |> ignore
@@ -521,6 +525,7 @@ fn font_sticky_header_node(
 /// and highlights it with a 2.5pt left accent bar (zero horizontal layout shift).
 fn font_preview_v4_node(
   parent : @view.View,
+  is_wide : Bool,
   place : () -> String,
   script : () -> Int,
   ui_face : () -> Int,
@@ -555,15 +560,15 @@ fn font_preview_v4_node(
       fn() { @sf.t("web-pages.appearance.fonts." + role_key) },
       fn(_) { select_role(role_idx) },
       fn(z) {
-        @sf.style_node(z, fn() { if active() { fp_v4_zone_on } else { fp_v4_zone } })
-        z.radius(Is(10.0)).min_width(Is(Some(0.0))) |> ignore
-        // Fixed 2.5pt left accent bar (transparent when inactive -> zero horizontal shift)
+        @sf.style_node(z, fn() { fp_v4_zone })
+        z.min_width(Is(Some(0.0))) |> ignore
+        // Fixed 2.5pt left accent bar (transparent when inactive -> zero horizontal shift, zero nested ground box)
         z.box(fn(bar) {
           bar
           .width(Is(Some(2.5)))
           .shrink(Is(0.0))
           .radius(Is(2.0))
-          .ground(By(fn() { if active() { @sf.theme().p.accent } else { 0L } }))
+          .ground(By(fn() { if active() { @sf.theme().p.accent_text } else { 0L } }))
           |> ignore
         })
         |> ignore
@@ -579,26 +584,37 @@ fn font_preview_v4_node(
   parent.box(fn(card) {
     @sf.style_node(card, fn() { fp_v4_preview_card })
     card.edge(By(fn() { (0.5, @sf.theme().p.line) })) |> ignore
-    // Zone 1: 界面 (agent header + timestamp + editing badge)
+    // Zone 1: 界面 (agent header + timestamp + editing label)
     zone_box(card, 0, "ui", fn(c) {
-      c.box(fn(top_row) {
-        @sf.style_node(top_row, fn() { fp_v4_who_row })
-        top_row.box(fn(who) {
+      if is_wide {
+        c.box(fn(top_row) {
+          @sf.style_node(top_row, fn() { fp_v4_who_row })
+          top_row.box(fn(who) {
+            @sf.style_node(who, fn() { fp_who_line })
+            who.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            face_in_node(who, fn() { "Claude" }, ui_face, fp_who_words, cjk=ui_cjk) |> ignore
+            face_in_node(who, fn() { @sf.t("web-pages.appearance.fonts.sampleTime") }, ui_face, fp_time_words, cjk=ui_cjk)
+            |> ignore
+          })
+          |> ignore
+          top_row.box(fn(badge) {
+            @sf.style_node(badge, fn() { fp_v4_edit_badge })
+            badge.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            @sf.words_node(badge, editing_badge, fn() { fp_v4_edit_badge_words }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      } else {
+        c.box(fn(who) {
           @sf.style_node(who, fn() { fp_who_line })
-          who.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           face_in_node(who, fn() { "Claude" }, ui_face, fp_who_words, cjk=ui_cjk) |> ignore
           face_in_node(who, fn() { @sf.t("web-pages.appearance.fonts.sampleTime") }, ui_face, fp_time_words, cjk=ui_cjk)
           |> ignore
         })
         |> ignore
-        top_row.box(fn(badge) {
-          @sf.style_node(badge, fn() { fp_v4_edit_badge })
-          badge.shrink(Is(0.0)) |> ignore
-          @sf.words_node(badge, editing_badge, fn() { fp_v4_edit_badge_words }) |> ignore
-        })
-        |> ignore
-      })
-      |> ignore
+        @sf.words_node(c, editing_badge, fn() { fp_v4_edit_badge_words }) |> ignore
+      }
     })
     // Zone 2: 正文 (user bubble + agent prose)
     zone_box(card, 1, "text", fn(c) {
@@ -753,7 +769,7 @@ fn font_style_cards_node(
             })
             |> ignore
             top.show(at_once=true, on, fn(ck) {
-              @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
+              @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
             })
             top.show(at_once=true, fn() { !on() && bytes() > 0.0 }, fn(sz) {
               @sf.words_node(sz, fn() { face_size(bytes()) }, fn() { fp_preset_size }) |> ignore
@@ -864,7 +880,11 @@ fn font_pairing_matrix_node(
         }))
         |> ignore
         @sf.words_node(btn, prefix, fn() { if active() { fp_v4_slot_tag_on } else { fp_v4_slot_tag } }) |> ignore
-        @sf.words_node(btn, val, fn() { if active() { fp_v4_slot_val_on } else { fp_v4_slot_val } }) |> ignore
+        btn.box(fn(vw) {
+          vw.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(vw, val, fn() { if active() { fp_v4_slot_val_on } else { fp_v4_slot_val } }) |> ignore
+        })
+        |> ignore
       },
     )
     |> ignore
@@ -884,15 +904,24 @@ fn font_pairing_matrix_node(
         let (idx, role, sub_key) = item
         card.box(fn(r) {
           @sf.style_node(r, fn() { if is_wide { fp_v4_matrix_row_wide } else { fp_v4_matrix_row_narrow } })
-          r.box(fn(meta) {
-            @sf.style_node(meta, fn() { if is_wide { fp_v4_matrix_meta_wide } else { fp_v4_matrix_meta_narrow } })
-            if is_wide {
-              meta.width(Is(Some(128.0))).shrink(Is(0.0)) |> ignore
-            }
-            @sf.words_node(meta, fn() { @sf.t("web-pages.appearance.fonts." + role) }, fn() { fp_v4_matrix_role })
-            |> ignore
-            @sf.words_node(meta, fn() { @sf.t(sub_key) }, fn() { fp_v4_matrix_sub }) |> ignore
-          })
+          @sf.action_box_node(
+            r,
+            fn() { @sf.t("web-pages.appearance.fonts." + role) },
+            fn(_) {
+              fonts_trying.set("")
+              @settings.fonts_at.set(idx)
+              @settings.fonts_script_at.set(0)
+            },
+            fn(meta) {
+              @sf.style_node(meta, fn() { if is_wide { fp_v4_matrix_meta_wide } else { fp_v4_matrix_meta_narrow } })
+              if is_wide {
+                meta.width(Is(Some(128.0))).shrink(Is(0.0)) |> ignore
+              }
+              @sf.words_node(meta, fn() { @sf.t("web-pages.appearance.fonts." + role) }, fn() { fp_v4_matrix_role })
+              |> ignore
+              @sf.words_node(meta, fn() { @sf.t(sub_key) }, fn() { fp_v4_matrix_sub }) |> ignore
+            },
+          )
           |> ignore
           r.box(fn(slots) {
             @sf.style_node(slots, fn() { fp_v4_matrix_slots })
@@ -911,7 +940,7 @@ fn font_pairing_matrix_node(
 }
 
 ///|
-/// 32×32 rounded glyph specimen badge (`Aa`, `字`, or `</>`) rendered in the font's own face.
+/// Pill glyph specimen badge (`Aa`, `字`, or `</>`) rendered in the font's own face (sized to stay uncut at 1.3× scale).
 fn face_glyph_badge_node(
   parent : @view.View,
   glyph : () -> String,
@@ -920,7 +949,7 @@ fn face_glyph_badge_node(
 ) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(b, fn() { if active() { fp_v4_glyph_badge_on } else { fp_v4_glyph_badge } })
-    b.width(Is(Some(28.0))).height(Is(Some(28.0))).shrink(Is(0.0)) |> ignore
+    b.min_width(Is(Some(36.0))).height(Is(Some(28.0))).shrink(Is(0.0)) |> ignore
     face_in_node(b, glyph, face, if active() { fp_v4_glyph_words_on } else { fp_v4_glyph_words }) |> ignore
   })
   |> ignore
@@ -980,22 +1009,30 @@ fn font_visual_slider_row_node(
 }
 
 ///|
-/// Visual 3-card line-height selector (`紧凑` / `标准` / `舒展`), each drawing 3 horizontal bars with 2px / 4px / 6px gaps.
+/// Compact inline 3-option line-height selector (`≡ 紧凑` | `≡ 标准` | `≡ 舒展`): single ~36pt row on Wide, stacked on
+/// Narrow; each option places a 3-bar spacing glyph (`14×12`) to the left of its label using `accent_text` when active.
 fn font_line_height_cards_node(
   parent : @view.View,
+  is_wide : Bool,
   label : () -> String,
   chosen : () -> String,
   choose : (String) -> Unit,
 ) -> Unit {
-  parent.box(fn(col) {
-    @sf.style_node(col, fn() { fp_v4_lh_col })
-    @sf.words_node(col, label, fn() { fp_adv_row_label }) |> ignore
-    col.box(fn(row) {
-      @sf.style_node(row, fn() { fp_v4_lh_row })
+  parent.box(fn(wrap) {
+    @sf.style_node(wrap, fn() { if is_wide { fp_v4_lh_inline_wide } else { fp_v4_lh_col } })
+    wrap.box(fn(lw) {
+      if is_wide {
+        lw.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      }
+      @sf.words_node(lw, label, fn() { fp_adv_row_label }) |> ignore
+    })
+    |> ignore
+    wrap.box(fn(row) {
+      @sf.style_node(row, fn() { if is_wide { fp_v4_lh_row_wide } else { fp_v4_lh_row } })
       let opts : Array[(String, String, Double)] = [
-        ("compact", "web-pages.appearance.fonts.advanced.lineCompact", 2.0),
-        ("normal", "web-pages.appearance.fonts.advanced.lineNormal", 4.0),
-        ("relaxed", "web-pages.appearance.fonts.advanced.lineRelaxed", 6.0),
+        ("compact", "web-pages.appearance.fonts.advanced.lineCompact", 1.5),
+        ("normal", "web-pages.appearance.fonts.advanced.lineNormal", 2.5),
+        ("relaxed", "web-pages.appearance.fonts.advanced.lineRelaxed", 3.5),
       ]
       for opt in opts {
         let (key, lkey, bar_gap) = opt
@@ -1007,18 +1044,21 @@ fn font_line_height_cards_node(
           row,
           fn() { @sf.t(lkey) },
           fn(_) { choose(key) },
-          fn(card) {
-            let hot = fn() { @sf.lit_node(card) }
-            @sf.style_node(card, fn() {
+          fn(btn) {
+            let hot = fn() { @sf.lit_node(btn) }
+            @sf.style_node(btn, fn() {
               if on() {
-                fp_v4_lh_card_on
+                fp_v4_lh_btn_on
               } else if hot() {
-                fp_v4_lh_card_hot
+                fp_v4_lh_btn_hot
               } else {
-                fp_v4_lh_card
+                fp_v4_lh_btn
               }
             })
-            card.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).edge(By(fn() {
+            if !is_wide {
+              btn.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            }
+            btn.edge(By(fn() {
               if on() {
                 (1.0, @sf.theme().p.accent)
               } else if hot() {
@@ -1028,23 +1068,24 @@ fn font_line_height_cards_node(
               }
             }))
             |> ignore
-            // 3-bar icon with exact 2px / 4px / 6px spacing
-            card.box(fn(bars) {
-              bars.gap(Is(bar_gap)).height(Is(Some(18.0))).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
-              for w in [22.0, 22.0, 15.0] {
+            // Compact 14×12 3-bar icon to the left of the label
+            btn.box(fn(bars) {
+              bars.gap(Is(bar_gap)).width(Is(Some(14.0))).height(Is(Some(12.0))).shrink(Is(0.0)).lies_along(Is(Middle))
+              |> ignore
+              for w in [14.0, 14.0, 10.0] {
                 bars.box(fn(line) {
                   line
                   .width(Is(Some(w)))
-                  .height(Is(Some(2.0)))
+                  .height(Is(Some(1.5)))
                   .radius(Is(1.0))
-                  .ground(By(fn() { if on() { @sf.theme().p.accent } else { @sf.theme().p.muted } }))
+                  .ground(By(fn() { if on() { @sf.theme().p.accent_text } else { @sf.theme().p.muted } }))
                   |> ignore
                 })
                 |> ignore
               }
             })
             |> ignore
-            @sf.words_node(card, fn() { @sf.t(lkey) }, fn() { if on() { fp_v4_slot_val_on } else { fp_v4_slot_val } })
+            @sf.words_node(btn, fn() { @sf.t(lkey) }, fn() { if on() { fp_v4_lh_label_on } else { fp_v4_lh_label } })
             |> ignore
           },
         )
@@ -1193,15 +1234,11 @@ let fp_v4_reset_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium,
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_preview_card : @ui.Style = @ui.css("w=Full p=S2 gap=S1 radius=Xl2 bg=Card")
+let fp_v4_preview_card : @ui.Style = @ui.css("w=Full p=S3 gap=S2 radius=Xl2 bg=Card")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_zone : @ui.Style = @ui.css("row w=Full gap=S2 p=S1 align=AStretch")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_v4_zone_on : @ui.Style = fp_v4_zone.then(@ui.css("bg=AccentBg"))
+let fp_v4_zone : @ui.Style = @ui.css("row w=Full gap=S2 align=AStretch")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1213,7 +1250,7 @@ let fp_v4_edit_badge : @ui.Style = @ui.css("px=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_edit_badge_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=AccentText, wrap=false)
+let fp_v4_edit_badge_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=AccentText, max_lines=1)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1321,27 +1358,27 @@ let fp_v4_slot_tag_on : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium,
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_slot_val : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, w=Full, max_lines=1)
+let fp_v4_slot_val : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, max_lines=1)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_slot_val_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, w=Full, max_lines=1)
+let fp_v4_slot_val_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, max_lines=1)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_glyph_badge : @ui.Style = @ui.css("mt=S2 radius=Full bg=Surface align=ACenter justify=JCenter")
+let fp_v4_glyph_badge : @ui.Style = @ui.css("mt=S2 px=S1_5 radius=Full bg=Surface align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_glyph_badge_on : @ui.Style = @ui.css("mt=S2 radius=Full bg=AccentBg align=ACenter justify=JCenter")
+let fp_v4_glyph_badge_on : @ui.Style = @ui.css("mt=S2 px=S1_5 radius=Full bg=AccentBg align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_glyph_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, wrap=false)
+let fp_v4_glyph_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Fg, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_glyph_words_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, wrap=false)
+let fp_v4_glyph_words_on : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=AccentText, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1361,19 +1398,55 @@ let fp_v4_lh_col : @ui.Style = @ui.css("w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_lh_row : @ui.Style = @ui.css("row w=Full gap=S2")
+let fp_v4_lh_inline_wide : @ui.Style = @ui.css("row w=Full gap=S3 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_lh_card : @ui.Style = @ui.css("py=S2 px=S2 gap=S1_5 radius=Lg bg=Surface align=ACenter justify=JCenter")
+let fp_v4_lh_row : @ui.Style = @ui.css("row w=Full gap=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_lh_card_hot : @ui.Style = @ui.css("py=S2 px=S2 gap=S1_5 radius=Lg bg=Hover align=ACenter justify=JCenter")
+let fp_v4_lh_row_wide : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_lh_card_on : @ui.Style = @ui.css("py=S2 px=S2 gap=S1_5 radius=Lg bg=AccentBg align=ACenter justify=JCenter")
+let fp_v4_lh_btn : @ui.Style = @ui.css("row px=S2_5 py=S1_5 gap=S1_5 radius=Md bg=Surface align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_lh_btn_hot : @ui.Style = @ui.css("row px=S2_5 py=S1_5 gap=S1_5 radius=Md bg=Hover align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_lh_btn_on : @ui.Style = @ui.css("row px=S2_5 py=S1_5 gap=S1_5 radius=Md bg=AccentBg align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_lh_label : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_lh_label_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_two_col_wide : @ui.Style = @ui.css("row w=Full gap=S4 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_two_col_narrow : @ui.Style = @ui.css("w=Full gap=S3")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_ratio_right : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_compact_sw_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let fp_v4_compact_sw_left : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1389,7 +1462,7 @@ let fp_v4_ratio_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium,
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_v4_cmp_row : @ui.Style = @ui.css("row gap=S1_5 pt=S1 align=ACenter")
+let fp_v4_cmp_row : @ui.Style = @ui.css("row gap=S1 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -1349,7 +1349,7 @@ let en : Map[String, String] = {
   "web-pages.appearance.fonts.code": "Code",
   "web-pages.appearance.fonts.default": "Default",
   "web-pages.appearance.fonts.description": "The fonts for the interface, messages and code",
-  "web-pages.appearance.fonts.followUi": "Same as interface",
+  "web-pages.appearance.fonts.followUi": "Follow UI",
   "web-pages.appearance.fonts.glyph": "Aa 字",
   "web-pages.appearance.fonts.local": "Installed fonts",
   "web-pages.appearance.fonts.localFilter.all": "All",

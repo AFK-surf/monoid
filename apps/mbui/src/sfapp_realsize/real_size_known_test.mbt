@@ -462,7 +462,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-lock-prompt-role": (1033, 676, 90),
   "phone settings-add-people": (711, 482, 80),
   "phone settings-workspace-mark": (855, 588, 71),
-  "phone settings-local-fonts": (637, 464, 119),
+  "phone settings-local-fonts": (642, 469, 131),
   "phone settings-policy": (474, 298, 47),
   "phone settings-policy-text": (520, 339, 52),
   "phone settings-policy-option": (525, 339, 51),
@@ -493,7 +493,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // (raised once, 2026-11-23: each card's network line says where its station's traffic leaves, 出口 …)
   "phone place-stations-devices": (499, 377, 86),
   "phone settings-station-devices": (572, 399, 68),
-  "phone settings-fonts": (637, 464, 119),
+  "phone settings-fonts": (642, 469, 131),
   "phone settings-fonts-code": (615, 448, 114),
   "phone settings-decisions": (369, 261, 33),
   "phone settings-completion": (376, 245, 32),

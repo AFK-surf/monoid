@@ -191,9 +191,11 @@ fn font_cjk_weight_key(place : String) -> String {
 
 ///|
 /// Collapsible V4 "排版与字号细节" section (collapsed by default; expanded by `settings-fonts-advanced` fixture).
+/// Wide uses a high-density 2-column layout (~250-280pt tall); Narrow degrades cleanly to a single column.
 fn font_advanced_node(
   parent : @view.View,
   core : Core,
+  is_wide : Bool,
   place : () -> String,
   faces_view : () -> Json?,
   chosen_of : (String) -> String,
@@ -241,6 +243,50 @@ fn font_advanced_node(
     let weight_off = font_typo_num(typo(), font_cjk_weight_key(p), 0.0).round().to_int()
     Some({ face: f, scale, weight_off })
   }
+  let two_col = fn(host : @view.View, left : (@view.View) -> Unit, right : (@view.View) -> Unit) {
+    host.box(fn(pair) {
+      @sf.style_node(pair, fn() { if is_wide { fp_v4_two_col_wide } else { fp_v4_two_col_narrow } })
+      pair.box(fn(l) {
+        if is_wide {
+          l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        }
+        left(l)
+      })
+      |> ignore
+      pair.box(fn(r) {
+        if is_wide {
+          r.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        }
+        right(r)
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+  let compact_switch = fn(
+    host : @view.View,
+    label : () -> String,
+    sample : (@view.View) -> Unit,
+    on : () -> Bool,
+    turn : (Bool) -> Unit,
+  ) {
+    host.box(fn(row) {
+      @sf.style_node(row, fn() { fp_v4_compact_sw_row })
+      row.box(fn(left) {
+        @sf.style_node(left, fn() { fp_v4_compact_sw_left })
+        left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(4.0))) |> ignore
+        @sf.words_node(left, label, fn() { fp_adv_row_label_inline }) |> ignore
+        sample(left)
+      })
+      |> ignore
+      row.box(fn(sw) {
+        sw.shrink(Is(0.0)) |> ignore
+        @sf.switch_node(sw, on, turn, label, small=true)
+      })
+      |> ignore
+    })
+    |> ignore
+  }
   @sf.group_node(parent, fn(g) {
     @sf.action_box_node(
       g,
@@ -269,79 +315,100 @@ fn font_advanced_node(
     |> ignore
     g.show(fn() { advanced_open.get() }, fn(inner) {
       @sf.style_node(inner, fn() { fp_adv_body })
-      // --- Reading & code layout group (visual sliders + 3-bar line-height cards + visual switch comparisons) ---
+      // --- Group 1: Reading & code layout (2-col on Wide, stacked on Narrow) ---
       inner.box(fn(read_sec) {
         @sf.style_node(read_sec, fn() { fp_adv_group })
         @sf.words_node(read_sec, fn() { @sf.t("web-pages.appearance.fonts.advanced.readingGroup") }, fn() { fp_adv_group_title })
         |> ignore
-        font_visual_slider_row_node(
+        // Row 1: textSize (left) | codeScale (right)
+        two_col(
           read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.textSize") },
-          "A",
-          "A",
-          fn() { text_size_drag.get().unwrap_or(font_typo_num(typo(), "textSize", 100.0)) },
-          fn(v) { text_size_drag.set(Some(v)) },
-          fn(v) {
-            text_size_drag.set(None)
-            @settings.set_typography(core, Json::object({ "textSize": ToJson::to_json(v.round().to_int()) }))
+          fn(l) {
+            font_visual_slider_row_node(
+              l,
+              fn() { @sf.t("web-pages.appearance.fonts.advanced.textSize") },
+              "A",
+              "A",
+              fn() { text_size_drag.get().unwrap_or(font_typo_num(typo(), "textSize", 100.0)) },
+              fn(v) { text_size_drag.set(Some(v)) },
+              fn(v) {
+                text_size_drag.set(None)
+                @settings.set_typography(core, Json::object({ "textSize": ToJson::to_json(v.round().to_int()) }))
+              },
+              min=85.0,
+              max=130.0,
+              step=5.0,
+            )
           },
-          min=85.0,
-          max=130.0,
-          step=5.0,
-        )
-        font_visual_slider_row_node(
-          read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.codeScale") },
-          "</>",
-          "</>",
-          fn() { code_scale_drag.get().unwrap_or(font_typo_num(typo(), "codeScale", 100.0)) },
-          fn(v) { code_scale_drag.set(Some(v)) },
-          fn(v) {
-            code_scale_drag.set(None)
-            @settings.set_typography(core, Json::object({ "codeScale": ToJson::to_json(v.round().to_int()) }))
+          fn(r) {
+            font_visual_slider_row_node(
+              r,
+              fn() { @sf.t("web-pages.appearance.fonts.advanced.codeScale") },
+              "</>",
+              "</>",
+              fn() { code_scale_drag.get().unwrap_or(font_typo_num(typo(), "codeScale", 100.0)) },
+              fn(v) { code_scale_drag.set(Some(v)) },
+              fn(v) {
+                code_scale_drag.set(None)
+                @settings.set_typography(core, Json::object({ "codeScale": ToJson::to_json(v.round().to_int()) }))
+              },
+              min=85.0,
+              max=110.0,
+              step=5.0,
+            )
           },
-          min=85.0,
-          max=110.0,
-          step=5.0,
         )
+        // Row 2: cjkAutoSpace (left) | codeLigatures (right; hidden on Web platform 4)
+        let autospace_on = fn() { font_typo_bool(typo(), "cjkAutoSpace", true) }
+        let render_autospace = fn(host : @view.View) {
+          compact_switch(
+            host,
+            fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") },
+            fn(e) { font_autospace_pills_node(e, autospace_on) },
+            autospace_on,
+            fn(on) { @settings.set_typography(core, Json::object({ "cjkAutoSpace": ToJson::to_json(on) })) },
+          )
+        }
+        if @ui.platform() != 4 {
+          two_col(
+            read_sec,
+            render_autospace,
+            fn(r) {
+              compact_switch(
+                r,
+                fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") },
+                fn(e) { font_ligature_sample_node(e, code_face) },
+                fn() { font_typo_bool(typo(), "codeLigatures", true) },
+                fn(on) { @settings.set_typography(core, Json::object({ "codeLigatures": ToJson::to_json(on) })) },
+              )
+            },
+          )
+        } else {
+          render_autospace(read_sec)
+        }
+        // Row 3: compact inline line-height strip (~36pt tall on Wide)
         font_line_height_cards_node(
           read_sec,
+          is_wide,
           fn() { @sf.t("web-pages.appearance.fonts.advanced.lineHeight") },
           fn() { text(typo(), "lineHeight") },
           fn(v) { @settings.set_typography(core, Json::object({ "lineHeight": ToJson::to_json(v) })) },
         )
-        let autospace_on = fn() { font_typo_bool(typo(), "cjkAutoSpace", true) }
-        font_switch_row_node(
-          read_sec,
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpace") },
-          fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkAutoSpaceNote") },
-          autospace_on,
-          fn(on) { @settings.set_typography(core, Json::object({ "cjkAutoSpace": ToJson::to_json(on) })) },
-          extra=fn(e) { font_autospace_pills_node(e, autospace_on) },
-        )
-        // Web Canvas 2D draws per-cluster and cannot render multi-character code ligatures; hide on Web (platform 4).
-        if @ui.platform() != 4 {
-          font_switch_row_node(
-            read_sec,
-            fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigatures") },
-            fn() { @sf.t("web-pages.appearance.fonts.advanced.codeLigaturesNote") },
-            fn() { font_typo_bool(typo(), "codeLigatures", true) },
-            fn(on) { @settings.set_typography(core, Json::object({ "codeLigatures": ToJson::to_json(on) })) },
-            extra=fn(e) {
-              e.box(fn(row) {
-                @sf.style_node(row, fn() { fp_v4_cmp_row })
-                font_ligature_sample_node(row, code_face)
-              })
-              |> ignore
-            },
-          )
-        }
       })
       |> ignore
       inner.box(fn(sep) { @sf.style_node(sep, fn() { @sf.rule_line }) }) |> ignore
-      // --- CJK-Latin optical ratio group with live `Aa 字体` comparison badge ---
+      // --- Group 2: CJK-Latin ratio (header with live `Aa 字体` pill + 2-col scale & weight) ---
       inner.box(fn(cjk_sec) {
         @sf.style_node(cjk_sec, fn() { fp_adv_group })
+        let text_overridden = fn() {
+          place() == "text" &&
+          chosen_of("textCjk") == "" &&
+          text(faces_view(), "uiCjk") != "" &&
+          (
+            font_typo_bool(typo(), "textCjkScaleOwn", false) ||
+            font_typo_bool(typo(), "textCjkWeightOwn", false)
+          )
+        }
         cjk_sec.box(fn(head) {
           @sf.style_node(head, fn() { fp_v4_ratio_head })
           head.box(fn(tw) {
@@ -359,7 +426,25 @@ fn font_advanced_node(
             |> ignore
           })
           |> ignore
-          font_cjk_ratio_badge_node(head, active_primary_face, active_cjk_preview)
+          head.box(fn(rh) {
+            @sf.style_node(rh, fn() { fp_v4_ratio_right })
+            rh.shrink(Is(0.0)) |> ignore
+            font_cjk_ratio_badge_node(rh, active_primary_face, active_cjk_preview)
+            rh.show(at_once=true, text_overridden, fn(rb) {
+              @sf.button_node(
+                rb,
+                fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkResetFollow") },
+                fn() {
+                  @settings.set_typography(
+                    core,
+                    Json::object({ "textCjkScale": Json::null(), "textCjkWeight": Json::null() }),
+                  )
+                },
+              )
+              |> ignore
+            })
+          })
+          |> ignore
         })
         |> ignore
         let has_cjk = fn() { text(faces_view(), font_cjk_slot_of(place())) != "" }
@@ -376,68 +461,54 @@ fn font_advanced_node(
                 _ => font_typo_num(typo(), k, 100.0)
               }
             }
-            font_slider_row_node(
-              p,
-              fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkScale") },
-              cjk_scale_val,
-              fn(v) { cjk_scale_drag.set(Some((@signals.untracked(scale_key), v))) },
-              fn(v) {
-                let k = @signals.untracked(scale_key)
-                cjk_scale_drag.set(None)
-                let n = v.round().to_int()
-                let m : Map[String, Json] = Map([])
-                m[k] = ToJson::to_json(n)
-                @settings.set_typography(core, Json::object(m))
-              },
-              min=85.0,
-              max=115.0,
-              step=5.0,
-            )
             let weight_index = fn() -> Int {
               let w = font_typo_num(typo(), weight_key(), 0.0).round().to_int()
               if w < 0 { 0 } else if w > 0 { 2 } else { 1 }
             }
-            font_seg_row_node(
+            two_col(
               p,
-              fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkWeight") },
-              fn() {
-                [
-                  @sf.t("web-pages.appearance.fonts.advanced.weightLight"),
-                  @sf.t("web-pages.appearance.fonts.advanced.weightAuto"),
-                  @sf.t("web-pages.appearance.fonts.advanced.weightBold"),
-                ]
+              fn(l) {
+                font_visual_slider_row_node(
+                  l,
+                  fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkScale") },
+                  "字",
+                  "字",
+                  cjk_scale_val,
+                  fn(v) { cjk_scale_drag.set(Some((@signals.untracked(scale_key), v))) },
+                  fn(v) {
+                    let k = @signals.untracked(scale_key)
+                    cjk_scale_drag.set(None)
+                    let n = v.round().to_int()
+                    let m : Map[String, Json] = Map([])
+                    m[k] = ToJson::to_json(n)
+                    @settings.set_typography(core, Json::object(m))
+                  },
+                  min=85.0,
+                  max=115.0,
+                  step=5.0,
+                )
               },
-              weight_index,
-              fn(idx) {
-                let w = if idx == 0 { -100 } else if idx == 2 { 100 } else { 0 }
-                let m : Map[String, Json] = Map([])
-                m[@signals.untracked(weight_key)] = ToJson::to_json(w)
-                @settings.set_typography(core, Json::object(m))
+              fn(r) {
+                font_seg_row_node(
+                  r,
+                  fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkWeight") },
+                  fn() {
+                    [
+                      @sf.t("web-pages.appearance.fonts.advanced.weightLight"),
+                      @sf.t("web-pages.appearance.fonts.advanced.weightAuto"),
+                      @sf.t("web-pages.appearance.fonts.advanced.weightBold"),
+                    ]
+                  },
+                  weight_index,
+                  fn(idx) {
+                    let w = if idx == 0 { -100 } else if idx == 2 { 100 } else { 0 }
+                    let m : Map[String, Json] = Map([])
+                    m[@signals.untracked(weight_key)] = ToJson::to_json(w)
+                    @settings.set_typography(core, Json::object(m))
+                  },
+                )
               },
             )
-            let text_overridden = fn() {
-              place() == "text" &&
-              chosen_of("textCjk") == "" &&
-              text(faces_view(), "uiCjk") != "" &&
-              (
-                font_typo_bool(typo(), "textCjkScaleOwn", false) ||
-                font_typo_bool(typo(), "textCjkWeightOwn", false)
-              )
-            }
-            p.show(at_once=true, text_overridden, fn(bar) {
-              @sf.style_node(bar, fn() { fp_adv_action_row })
-              @sf.button_node(
-                bar,
-                fn() { @sf.t("web-pages.appearance.fonts.advanced.cjkResetFollow") },
-                fn() {
-                  @settings.set_typography(
-                    core,
-                    Json::object({ "textCjkScale": Json::null(), "textCjkWeight": Json::null() }),
-                  )
-                },
-              )
-              |> ignore
-            })
           }
         })
         cjk_sec.show(at_once=true, fn() { custom_count() > 0 }, fn(bar) {
@@ -453,46 +524,6 @@ fn font_advanced_node(
       |> ignore
     })
   })
-}
-
-///|
-fn font_slider_row_node(
-  parent : @view.View,
-  label : () -> String,
-  value : () -> Double,
-  on_change : (Double) -> Unit,
-  on_commit : (Double) -> Unit,
-  min~ : Double,
-  max~ : Double,
-  step~ : Double,
-) -> Unit {
-  parent.box(fn(col) {
-    @sf.style_node(col, fn() { fp_slider_col })
-    col.box(fn(head) {
-      @sf.style_node(head, fn() { fp_slider_head })
-      head.box(fn(l) {
-        l.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-        @sf.words_node(l, label, fn() { fp_adv_row_label }) |> ignore
-      })
-      |> ignore
-      let val_w = @sf.words_node(head, fn() { "\{value().round().to_int()}%" }, fn() { fp_adv_row_value })
-      @sf.on_baseline(val_w, Body, Meta, weight=400, own_weight=500).words_tabular(Is(Some(true))) |> ignore
-    })
-    |> ignore
-    @sf.value_slider_node(
-      col,
-      label,
-      value,
-      on_change,
-      min~,
-      max~,
-      step~,
-      format=fn(n) { "\{n}%" },
-      on_commit~,
-    )
-    |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -512,37 +543,6 @@ fn font_seg_row_node(
     })
     |> ignore
     @sf.seg_node(row, options, chosen, choose, said=@signals.untracked(label)) |> ignore
-  })
-  |> ignore
-}
-
-///|
-fn font_switch_row_node(
-  parent : @view.View,
-  label : () -> String,
-  note : () -> String,
-  on : () -> Bool,
-  turn : (Bool) -> Unit,
-  extra? : (@view.View) -> Unit,
-) -> Unit {
-  parent.box(fn(row) {
-    @sf.style_node(row, fn() { fp_switch_row })
-    row.box(fn(left) {
-      @sf.style_node(left, fn() { fp_switch_left })
-      left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.words_node(left, label, fn() { fp_adv_row_label }) |> ignore
-      @sf.words_node(left, note, fn() { fp_adv_hint }) |> ignore
-      match extra {
-        Some(f) => f(left)
-        None => ()
-      }
-    })
-    |> ignore
-    row.box(fn(sw) {
-      sw.shrink(Is(0.0)) |> ignore
-      @sf.switch_node(sw, on, turn, label, small=true)
-    })
-    |> ignore
   })
   |> ignore
 }
@@ -1080,11 +1080,11 @@ pub let fp_sample_code : String = "```ts\nform.onsubmit = (e) => {\n  e.preventD
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_preset_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, wrap=false)
+let fp_preset_title : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=Fg, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let fp_preset_title_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, wrap=false)
+let fp_preset_title_on : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, color=AccentText, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1132,6 +1132,10 @@ let fp_adv_row_label : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, w=Ful
 
 ///|
 // kept across runs: a value (no field of it changes)
+let fp_adv_row_label_inline : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
 let fp_adv_row_value : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false)
 
 ///|
@@ -1145,14 +1149,6 @@ let fp_slider_head : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 ///|
 // kept across runs: a value (no field of it changes)
 let fp_control_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_switch_row : @ui.Style = @ui.css("row w=Full gap=S3 align=AStart")
-
-///|
-// kept across runs: a value (no field of it changes)
-let fp_switch_left : @ui.Style = @ui.css("gap=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
