@@ -1744,3 +1744,92 @@ test("25. R4: same-to partial <-> full bidirectional superset check rejects conf
   };
   assert.equal(holdsAll(dualMine, dualTheirsMissingInline), false, "sync holdsAll must check inline transcriptFiles superset even when transcriptManifest roots match");
 });
+
+test("26. R6: FolderPlace.put('head') fails closed on stat/readAll/corrupt existing head AND level() rejects on same-to partial conflict without advancing Known", async () => {
+  const origin = sid("a");
+  const gen = "100-aaaaaaaa";
+  const batch = "0000000001-0000000001-11111111.ndjson.zst";
+  const cCommon = hex64("11", "1");
+  const cUniquePartial = hex64("22", "2");
+  const cUniqueFull = hex64("33", "3");
+
+  // 26a. Existing head on disk, cold-cache FolderPlace: stat EIO, readAll EIO, and corrupted head.json MUST reject put('head') and preserve original bytes!
+  const rootA = dataDir("d72a-r6-failclosed");
+  const seed = new FolderPlace(rootA);
+  await seed.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await seed.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await seed.putFile(HOME, origin, cUniquePartial, Buffer.from("up"));
+  await seed.putFile(HOME, origin, cUniqueFull, Buffer.from("uf"));
+  const origHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cUniquePartial]: 2 }, to: 2, made: 2000 });
+  const origBytes = Buffer.from(JSON.stringify(origHead));
+  await seed.put(HOME, origin, gen, "head", "head.json", origBytes);
+  const headPath = join(seed.dir(HOME, origin), gen, "head.json");
+  const incomingHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cUniqueFull]: 2 }, to: 3, made: 3000 });
+  const incomingBytes = Buffer.from(JSON.stringify(incomingHead));
+
+  // (i) stat EIO on head.json
+  const statEioPlace = new FolderPlace(rootA, {
+    ...direct,
+    stat: async (p) => {
+      if (p === headPath) throw Object.assign(new Error("EIO: stat head failed"), { code: "EIO" });
+      return direct.stat(p);
+    },
+  });
+  await assert.rejects(() => statEioPlace.put(HOME, origin, gen, "head", "head.json", incomingBytes), /EIO/);
+  assert.deepEqual(readFileSync(headPath), origBytes, "original head.json bytes preserved after stat EIO");
+
+  // (ii) readAll EIO on head.json
+  const readEioPlace = new FolderPlace(rootA, {
+    ...direct,
+    readAll: async (p) => {
+      if (p === headPath) throw Object.assign(new Error("EIO: readAll head failed"), { code: "EIO" });
+      return direct.readAll(p);
+    },
+  });
+  await assert.rejects(() => readEioPlace.put(HOME, origin, gen, "head", "head.json", incomingBytes), /EIO/);
+  assert.deepEqual(readFileSync(headPath), origBytes, "original head.json bytes preserved after readAll EIO");
+
+  // (iii) corrupted bytes on disk in head.json -> cold-cache FolderPlace MUST reject and preserve disk bytes
+  const corruptedBytes = Buffer.from("{corrupted-head-json");
+  writeFileSync(headPath, corruptedBytes);
+  const coldCorruptPlace = new FolderPlace(rootA);
+  await assert.rejects(() => coldCorruptPlace.put(HOME, origin, gen, "head", "head.json", incomingBytes), /corrupted head\.json/);
+  assert.deepEqual(readFileSync(headPath), corruptedBytes, "corrupted head.json bytes untouched on fail-closed put('head')");
+
+  // 26b. level() hitting same-to partial conflict rejects (/head conflict:/), does NOT advance Known.to/made or clear unverifiedGens, and preserves destination partial head
+  const rootB = dataDir("d72a-r6-level-conflict");
+  const dstPlace = new FolderPlace(rootB);
+  await dstPlace.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await dstPlace.putFile(HOME, origin, cCommon, Buffer.from("cm"));
+  await dstPlace.putFile(HOME, origin, cUniquePartial, Buffer.from("up"));
+  const dstPartial = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cUniquePartial]: 2 }, partial: true, to: 2, made: 2000 });
+  await dstPlace.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(dstPartial)));
+
+  const ownHead = makeHead({ origin, gen, batches: [batch], transcriptFiles: { [cCommon]: 2, [cUniqueFull]: 2 }, to: 2, made: 2001 });
+  const cFullPath = join(rootB, "src-full-chunk");
+  writeFileSync(cFullPath, "uf");
+  const own: Own = {
+    head: ownHead,
+    batch: async () => Buffer.from("b"),
+    sources: async (hashes) => new Map(hashes.filter((h) => h === cUniqueFull).map((h) => [h, cFullPath])),
+  };
+  const known: Known = {
+    gen,
+    batches: new Set([batch]),
+    files: new Set([cCommon, cUniquePartial]),
+    others: new Set(),
+    hasUnverifiedHead: true,
+    unverifiedGens: new Set([gen]),
+    to: 2,
+    made: -1,
+  };
+
+  await assert.rejects(() => level(dstPlace, HOME, own, known), /head conflict:/);
+  assert.equal(known.to, 2, "known.to not advanced");
+  assert.equal(known.made, -1, "known.made not advanced");
+  assert.equal(known.hasUnverifiedHead, true, "known.hasUnverifiedHead not cleared");
+  assert.ok(known.unverifiedGens?.has(gen), "known.unverifiedGens not cleared");
+  const afterConflict = (await dstPlace.held(HOME, origin)).gens[0]!.head!;
+  assert.equal(afterConflict.partial, true, "destination partial head preserved");
+  assert.deepEqual(afterConflict.transcriptFiles, { [cCommon]: 2, [cUniquePartial]: 2 }, "cUniquePartial preserved on disk");
+});

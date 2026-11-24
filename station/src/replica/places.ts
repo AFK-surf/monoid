@@ -275,6 +275,20 @@ export class FolderPlace implements Place {
     }
   }
 
+  async #readHeadStrict(path: string, ws: string, origin: string, gen: string): Promise<Head> {
+    const raw = await this.fs.readAll(path);
+    let parsed: Head | null = null;
+    try {
+      parsed = asHead(JSON.parse(raw.toString("utf8")));
+    } catch {
+      parsed = null;
+    }
+    if (parsed === null || parsed.gen !== gen || parsed.origin !== origin || parsed.workspace !== ws) {
+      throw new Error(`corrupted head.json for ${ws}/${origin}/${gen}`);
+    }
+    return parsed;
+  }
+
   async #headMeta(ws: string, origin: string, gen: string, strict = false): Promise<HeadMeta | null> {
     const key = `${ws}\n${origin}\n${gen}`;
     const path = join(this.dir(ws, origin), gen, "head.json");
@@ -293,12 +307,22 @@ export class FolderPlace implements Place {
       this.#meta.set(key, cached);
       return cached;
     }
-    const head = await this.#head(path);
-    if (head === null) {
-      this.#meta.delete(key);
-      this.#deleteFiles(key);
-      if (strict) throw new Error(`corrupted head.json for ${ws}/${origin}/${gen}`);
-      return null;
+    let head: Head | null;
+    if (strict) {
+      try {
+        head = await this.#readHeadStrict(path, ws, origin, gen);
+      } catch (e) {
+        this.#meta.delete(key);
+        this.#deleteFiles(key);
+        throw e;
+      }
+    } else {
+      head = await this.#head(path);
+      if (head === null) {
+        this.#meta.delete(key);
+        this.#deleteFiles(key);
+        return null;
+      }
     }
     let manifestRefs: Set<string> | undefined;
     let cacheFiles = true;
@@ -423,7 +447,8 @@ export class FolderPlace implements Place {
       await this.#withLock(ws, origin, async () => {
         // A head never goes back: one older than what is held is not taken, and an existing full head at the
         // same or higher `to` is never overwritten (neither by a partial head nor by another conflicting full head).
-        const was = await this.#headMeta(ws, origin, gen);
+        // Strict mode: only ENOENT returns null; stat/readAll I/O errors, corrupted JSON, or corrupt manifests abort.
+        const was = await this.#headMeta(ws, origin, gen, true);
         if (was !== null && (was.to > head.to || (!was.partial && was.to >= head.to))) return;
         for (const b of head.batches) if (!(await this.#exists(join(dir, "log", b)))) throw new Error(`batch ${b} is not here yet`);
         let resolvedIncoming: ResolvedManifest | undefined;
@@ -441,27 +466,34 @@ export class FolderPlace implements Place {
           manifestRefs = manifestAllRefs(resolved);
         }
         if (was !== null && was.partial && was.to === head.to) {
-          // Under #withLock, verify the incoming head covers the live on-disk same-to partial head
-          // so a concurrent partial update between handOver's held() and put("head") can never be clobbered.
-          const existing = await this.#head(join(dir, "head.json"));
-          if (existing === null) return;
-          if (!sameBatches(head.batches, existing.batches) || !sameFileMap(head.files, existing.files)) return;
+          // Under #withLock, verify the incoming head strictly covers the live on-disk same-to partial head
+          // so a concurrent partial update between handOver's held() and put("head") can never be clobbered,
+          // and throw an explicit conflict error so level() never mistakes a refused write for a synced head.
+          const existing = await this.#readHeadStrict(join(dir, "head.json"), ws, origin, gen);
+          if (!sameBatches(head.batches, existing.batches) || !sameFileMap(head.files, existing.files)) {
+            throw new Error("head conflict: incoming head does not cover existing same-to partial head");
+          }
           let existingTf: Record<string, number>;
           if (existing.transcriptManifest !== undefined) {
+            let resolvedExisting: ResolvedManifest | null;
             try {
-              const resolvedExisting = await this.#resolveHeadManifest(ws, origin, existing);
-              if (resolvedExisting === null) return;
-              existingTf = { ...(existing.transcriptFiles ?? {}), ...resolvedExisting.files };
+              resolvedExisting = await this.#resolveHeadManifest(ws, origin, existing);
             } catch {
-              return;
+              throw new Error("head conflict: existing same-to partial head manifest unreadable");
             }
+            if (resolvedExisting === null) {
+              throw new Error("head conflict: existing same-to partial head manifest unreadable");
+            }
+            existingTf = { ...(existing.transcriptFiles ?? {}), ...resolvedExisting.files };
           } else {
             existingTf = existing.transcriptFiles ?? {};
           }
           const incomingTf = resolvedIncoming !== undefined
             ? { ...(head.transcriptFiles ?? {}), ...resolvedIncoming.files }
             : (head.transcriptFiles ?? {});
-          if (!isSubsetFileMap(existingTf, incomingTf)) return;
+          if (!isSubsetFileMap(existingTf, incomingTf)) {
+            throw new Error("head conflict: incoming head does not cover existing same-to partial head");
+          }
         }
         const st = await this.#whole(join(dir, "head.json"), oneOf(bytes));
         this.#cacheHead(`${ws}\n${origin}\n${gen}`, st, head, manifestRefs);
@@ -1075,7 +1107,12 @@ export async function handOver(from: FolderPlace, to: Place, ws: string, origin:
       }
       wireHead = hasTf ? { ...rest, transcriptFiles: tf } : rest;
     }
-    await to.put(ws, origin, g.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
+    try {
+      await to.put(ws, origin, g.gen, "head", "head.json", Buffer.from(JSON.stringify(wireHead, null, 1)), wireHead);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("head conflict:")) return false;
+      throw e;
+    }
   }
   return holdsAllLogical(mine, await to.held(ws, origin), { readMine, readTheirs });
 }
