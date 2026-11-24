@@ -1411,6 +1411,10 @@ static GLuint prog_now;
 static char prog_cache_dir[512];
 static int prog_bin_checked;
 static int prog_bin_ok;
+// (GL thread) what the cache did: programs loaded from it, compiled for want of one, written to it
+static int prog_cache_hits;
+static int prog_cache_misses;
+static int prog_cache_stores;
 
 static void gl_set_prog_cache_dir(const char *dir) {
   if (!dir || !dir[0]) {
@@ -1574,21 +1578,23 @@ static GLuint prog_cache_load(const char *path) {
     unlink(path);
     return 0;
   }
+  prog_cache_hits++;
   return p;
 }
 
-static void prog_cache_save(const char *path, GLuint p) {
+// (1: written)
+static int prog_cache_save(const char *path, GLuint p) {
   GLint blen = 0;
   glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &blen);
-  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return;
+  if (blen <= 0 || (uint32_t)blen > MB_GLBIN_MAX_BYTES) return 0;
   uint8_t *buf = (uint8_t *)malloc((size_t)blen);
-  if (!buf) return;
+  if (!buf) return 0;
   GLsizei got = 0;
   GLenum fmt = 0;
   glGetProgramBinary(p, blen, &got, &fmt, buf);
   if (got <= 0 || (uint32_t)got > MB_GLBIN_MAX_BYTES) {
     free(buf);
-    return;
+    return 0;
   }
   mkdir(prog_cache_dir, 0700);
   // (a name of its own: the GL thread and the one making programs ahead may write the same program's at once)
@@ -1596,12 +1602,15 @@ static void prog_cache_save(const char *path, GLuint p) {
   char tmp[700];
   snprintf(tmp, sizeof tmp, "%s.%ld.%u.tmp", path, (long)getpid(), __atomic_fetch_add(&tmp_seq, 1, __ATOMIC_RELAXED));
   FILE *f = fopen(tmp, "wb");
+  int saved = 0;
   if (f) {
     uint32_t hdr[3] = {MB_GLBIN_MAGIC, (uint32_t)fmt, (uint32_t)got};
     int ok = fwrite(hdr, sizeof(uint32_t), 3, f) == 3 && fwrite(buf, 1, (size_t)got, f) == (size_t)got;
-    if (!(fclose(f) == 0 && ok && rename(tmp, path) == 0)) unlink(tmp);
+    saved = fclose(f) == 0 && ok && rename(tmp, path) == 0;
+    if (!saved) unlink(tmp);
   }
   free(buf);
+  return saved;
 }
 
 static float *fbuf;
@@ -1813,6 +1822,7 @@ static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_he
     GLuint cached = prog_cache_load(path);
     if (cached) return cached;
     if (cache_only) return 0;
+    prog_cache_misses++;
   } else if (cache_only) {
     return 0;
   }
@@ -1827,7 +1837,7 @@ static GLuint link_prog_impl(const char *tag, GLuint *vs_slot, const char *vs_he
   if (use_cache) {
     GLint ok = 0;
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (ok == GL_TRUE) prog_cache_save(path, p);
+    if (ok == GL_TRUE && prog_cache_save(path, p)) prog_cache_stores++;
   }
   return p;
 }
