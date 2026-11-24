@@ -1,0 +1,116 @@
+// Pure-Pion unit tests for `builders_search` (no C FFI symbols so `pionc test` links cleanly):
+// search terms, UTF-16 lone-surrogate excerpting, UTF-16 ordering, visibility (`sees`),
+// `script_calls`, `timeline_of` across runtimes, ISO date bounds, `state_json` raw-bytes base64,
+// and `tail_utf16` overlap preservation.
+
+import "base_codec"
+import "js_json"
+
+fn expect_bs(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "terms splits JS whitespace, lowers with V8 rules, dedupes, caps at 8" {
+  let ws = terms("  PLAN\tİstanbul\u{3000}ΟΔΟΣ  plan  ")
+  expect_bs(ws.length() == 3, "3 unique terms")
+  expect_bs(ws[0] == "plan", "t0")
+  expect_bs(ws[1] == "i\u{307}stanbul", "t1 Turkish dotted I")
+  expect_bs(ws[2] == "οδο\u{3c2}", "t2 final sigma")
+  let capped = terms("a b c d e f g h i j k")
+  expect_bs(capped.length() == 8, "capped at 8")
+  expect_bs(terms("   \t\n  ").length() == 0, "blank query -> empty")
+}
+
+test "excerpt_units slices by UTF-16 code units and preserves lone surrogates until JSON stringify" {
+  // 2 'x' + 1 emoji 😀 (units 2, 3) + 79 'a' (units 4..83) + "needle" (at unit 83)
+  // from = 83 - 80 = 3 -> flat[3] is 0xDE00 (lone low surrogate)!
+  let sb = StringBuilder::new()
+  sb.write_string("xx")
+  sb.write_string("😀")
+  for _ in 0..<79 {
+    sb.write_string("a")
+  }
+  sb.write_string("needle")
+  let units = excerpt_units(sb.to_string(), ["needle"])
+  expect_bs(units[0] == 0x2026, "leading ellipsis")
+  expect_bs(units[1] == 0xDE00, "lone low surrogate preserved at UTF-16 cut")
+  let encoded = js_json::stringify_with_num(js_json::JValue::Str(units), fn(d : Double) -> String { d.to_string() })
+  expect_bs(encoded.contains("\\ude00"), "serialized lone surrogate escape: " + encoded)
+}
+
+test "compare_units uses UTF-16 code unit order (😀 < U+E000) and sees/has check visibility" {
+  expect_bs(compare_units("😀", "\u{E000}") < 0, "surrogate pair sorts before U+E000")
+  let asker = Asker::{ workspace: "W1", home: true, scopes: ["write"] }
+  expect_bs(sees(Some("W1"), None, asker), "own workspace visible")
+  expect_bs(sees(Some("*"), Some("write"), asker), "wildcard + matching scope visible")
+  expect_bs(!sees(Some("W2"), None, asker), "other workspace hidden")
+  expect_bs(!sees(Some("W1"), Some("admin"), asker), "missing scope hidden")
+  expect_bs(has("İstanbul ΟΔΟΣ plan", terms("i̇stanbul οδος")), "V8 case-insensitive has")
+}
+
+test "script_calls extracts Codex tools.<name>({...}) literals and detects only-calls" {
+  let (calls, only) = script_calls("text(await tools.web_search({query: \"deploy \\u00e9\", n: 1e2, ok: true}))")
+  expect_bs(calls.length() == 1, "1 call extracted")
+  expect_bs(only, "only wrapped tool call")
+  let (name, args) = calls[0]
+  expect_bs(name == "web_search", "tool name")
+  match args.get("query") {
+    Some(js_json::JValue::Str(u)) => expect_bs(js_json::sanitize_str(u) == "deploy é", "unescaped query")
+    _ => panic("expected query string")
+  }
+}
+
+test "date_parse strict_day and date_iso range check" {
+  expect_bs(
+    match date_parse("2026-11-01T10:00:00.123Z") {
+      Some(_) => true
+      None => false
+    },
+    "valid ISO parses",
+  )
+  expect_bs(
+    match date_parse("2026-02-30T00:00:00Z") {
+      None => true
+      Some(_) => false
+    },
+    "invalid calendar day rejected",
+  )
+  expect_bs(
+    match date_iso(9.0e15) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "out of JS date range rejected",
+  )
+}
+
+test "state_json encodes raw partial bytes as base64" {
+  let raw = Bytes::new(3)
+  raw[0] = 0xE2 as Byte
+  raw[1] = 0x82 as Byte
+  raw[2] = 0x00 as Byte
+  let st = TailState::{
+    path: "/tmp/t.jsonl",
+    runtime: Some("claude"),
+    offset: 123.to_int64(),
+    partial: raw,
+    count: 4,
+    inner: [("c1", 2)],
+    packed_stamp: None,
+  }
+  let j = state_json(st)
+  let s = base_codec::json_stringify(j)
+  expect_bs(s.contains("\"partial\":\"4oIA\""), "raw bytes base64 partial: " + s)
+  expect_bs(marks_dir("/", "/data") == "/data/transcript-marks", "marks_dir")
+}
+
+test "tail_utf16 preserves UTF-8 boundaries and caps at 1024 UTF-16 units" {
+  let sb = StringBuilder::new()
+  for _ in 0..<600 {
+    sb.write_string("😀") // 2 UTF-16 units each -> 1200 units
+  }
+  let t = tail_utf16(sb.to_string(), 1024)
+  expect_bs(js_json::utf16_len(t) == 1024, "exact 1024 UTF-16 units")
+}

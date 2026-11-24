@@ -10,6 +10,7 @@ members = [
   "packages/builders_core",
   "packages/transcript_io",
   "packages/locate",
+  "packages/builders_search",
   "packages/builders_index",
   "packages/builders_requested",
   "packages/builders_stateful",
@@ -37,6 +38,7 @@ station_conv = { path = "packages/station_conv" }
 builders_core = { path = "packages/builders_core" }
 transcript_io = { path = "packages/transcript_io" }
 locate = { path = "packages/locate" }
+builders_search = { path = "packages/builders_search" }
 builders_index = { path = "packages/builders_index" }
 builders_requested = { path = "packages/builders_requested" }
 builders_stateful = { path = "packages/builders_stateful" }

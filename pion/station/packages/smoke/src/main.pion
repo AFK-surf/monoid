@@ -13,6 +13,7 @@ import "builders_index"
 import "builders_legacy"
 import "builders_recent"
 import "builders_requested"
+import "builders_search"
 import "builders_stateful"
 import "builders_vault"
 import "footprint"
@@ -102,6 +103,7 @@ fn advertised_modes() -> Array[String] {
     "cc-index",
     "usage-check",
     "live-locator",
+    "search",
   ]
 }
 
@@ -1276,6 +1278,18 @@ fn main(world : World) -> Unit {
               None => "/"
             }
             host_shim::exit_process(locate::run_live_locator(db_path, data_dir, sep))
+          }
+          _ => usage_exit()
+        }
+      }
+      Some("search") => {
+        match (flag_value(argv, "--db"), flag_value(argv, "--data")) {
+          (Some(db_path), Some(data_dir)) => {
+            let sep = match flag_value(argv, "--sep") {
+              Some(s) => s
+              None => "/"
+            }
+            host_shim::exit_process(builders_search::run_search(db_path, data_dir, sep))
           }
           _ => usage_exit()
         }
