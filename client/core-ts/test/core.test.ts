@@ -603,6 +603,7 @@ test("back_on_screen_is_said_with_how_long_it_was_away", async () => {
     }),
   );
   const ui = core.connect();
+  call(core, ui, 8, "client.reports", { on: true });
   call(core, ui, 9, "client.wake", { away: 60_000 });
   call(core, ui, 10, "client.wake", { away: 0, network: true });
   await host.time.pass(0);
@@ -625,6 +626,7 @@ test("UI fault spans never include an arbitrary fault message", async () => {
   }));
   try {
     const ui = core.connect();
+    call(core, ui, 0, "client.reports", { on: true });
     call(core, ui, 1, "client.error", { source: "ui_fault", message: "Ctx::editor: /sentinel-private-folder/secret.txt" });
     call(core, ui, 2, "client.error", { source: "ui_fault", message: "editor field reused" });
     call(core, ui, 3, "client.error", { source: "android.decode", message: "a safe unrelated diagnostic" });
