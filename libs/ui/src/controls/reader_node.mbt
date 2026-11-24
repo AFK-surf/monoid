@@ -576,7 +576,7 @@ fn reader_chunk_node(
     // (its words said of this block for what is picked of them; the passages a page marks on it lent to its paragraphs)
     @ui.picked_of(m, reader_block_key(k)) |> ignore
     match marks {
-      Some(ms) => m.lends(md_lits, fn() { (ms.lits)(k) }) |> ignore
+      Some(ms) => m.lends(md_lits, fn() { (ms.lits)(k).map(fn(l) { (l.0, l.1, None) }) }) |> ignore
       None => ()
     }
     let words = if book.markdown {

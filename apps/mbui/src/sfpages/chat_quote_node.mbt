@@ -107,12 +107,30 @@ fn chat_intent_of(
     // (where the list has the room for a margin beside its column: kept on the words picked, lit there, its answer a
     // note in the margin beside their message (intent_note_room); else in a panel beside where it was pressed)
     if intent_notes_fit(width) && p.of.length() == 1 {
-      @sfbase.intent_note_ask(src, draft, p.of[0], r.station, thread, text, m.ts, author) |> ignore
+      // (which of the times its words are in the message was picked: by what its paragraph shows before them)
+      let before = if whole { None } else { Some(p.first_before) }
+      let at = chat_pick_at(m.text, p.first_before, text)
+      @sfbase.intent_note_ask(src, draft, p.of[0], at, before, r.station, thread, text, m.ts, author) |> ignore
     } else {
       open_selection_intent(src, r, thread, draft, text, m.ts, author, role, from~)
     }
   }
   @ui.picked_let_go()
+}
+
+///|
+/// Where in message text `text` words `picked` stand, shown after `before` (what their paragraph shows before them):
+/// found with as much of its end as the text has just before them (Markdown's marks are not shown), so that of the
+/// times they are in it, the one picked. -1 where it has them nowhere.
+fn chat_pick_at(text : String, before : String, picked : String) -> Int {
+  let cs = before.to_array()
+  for n = cs.length().min(16); n >= 0; n = n - 1 {
+    let tail = String::from_array(cs[cs.length() - n:])
+    if text.find(tail + picked) is Some(i) {
+      return i + tail.length()
+    }
+  }
+  -1
 }
 
 ///|

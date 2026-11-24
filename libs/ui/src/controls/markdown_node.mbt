@@ -332,8 +332,9 @@ priv struct MdNode {
   found_at : () -> Int?
   /// a passage lit where a paragraph's words have it, and its ground now (markdown_node's `lit`)
   lit : () -> (String, Int64)
-  /// passages kept marked where a paragraph's words have them, each with its ground (md_lits: a reader's notes)
-  lits : () -> Array[(String, Int64)]
+  /// passages kept marked where a paragraph's words have them, each with its ground and where (md_lits: a reader's
+  /// notes)
+  lits : () -> Array[(String, Int64, String?)]
   before : () -> Int
   on_link : (String) -> Unit
   on_link_hold : ((String, (Double, Double, Double, Double)) -> Unit)?
@@ -1037,7 +1038,7 @@ fn md_words_node(
         []
       } else {
         let now = runs()
-        let kept = lits.map(fn(l) { passage_marks(now, l) }).flatten()
+        let kept = lits.map(fn(l) { passage_marks(now, (l.0, l.1), before?=l.2) }).flatten()
         found() + kept + passage_marks(now, lit)
       }
     }))
@@ -1791,7 +1792,8 @@ fn md_image_rows_node(p : @view.View, md : MdNode, images : () -> Array[(String,
 
 ///|
 /// Passages what holds a Markdown text marks on its paragraphs where they have them, each with its ground (a reader's
-/// notes kept on its words: reader_marks; a chat message's words a note was asked of), read as a paragraph's marks are
-/// drawn.
+/// notes kept on its words: reader_marks; a chat message's words a note was asked of), and where in them it was
+/// picked where that is known (passage_marks' `before`: only that time the words are in them), read as a paragraph's
+/// marks are drawn.
 // kept across runs: what each node lends (View::lends), let go with it
-pub let md_lits : @view.Lent[() -> Array[(String, Int64)]] = @view.Lent::new()
+pub let md_lits : @view.Lent[() -> Array[(String, Int64, String?)]] = @view.Lent::new()
