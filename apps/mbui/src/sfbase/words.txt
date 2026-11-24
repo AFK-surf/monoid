@@ -848,6 +848,8 @@ web-main.chat.agentCard.cost
 web-main.chat.agentCard.plan
 web-main.chat.archive
 web-main.chat.hide
+web-main.chat.moveStarted
+web-main.chat.movingTo
 web-main.chat.unhide
 web-main.chat.hiddenNotice
 web-main.chat.unhiddenNotice

@@ -267,10 +267,11 @@ fn composer_node_of(
   }
   let w = @signals.untracked(fn() { writing(src, draft) })
   let head = fn() { if made is Some(_) { None } else { @sfbase.chat_view_now(src, r) } }
+  // (a new chat's while nothing can run it; a chat's while it goes to another station: shut, saying so in its place)
   let locked = fn() {
     match made {
       Some(m) => (m.locked)()
-      None => false
+      None => head().map(fn(h) { h.moving is Some(_) }).unwrap_or(false)
     }
   }
   let offline = fn() { locked() || head().map(fn(h) { h.offline }).unwrap_or(false) }
@@ -918,7 +919,7 @@ fn composer_box_node(
   let locked = fn() {
     match own {
       Some(m) => (m.locked)()
-      None => false
+      None => head().map(fn(h) { h.moving is Some(_) }).unwrap_or(false)
     }
   }
   // (what send does: a chat's into it; a new chat's its own)
@@ -969,7 +970,7 @@ fn composer_box_node(
       w.field.focus()
     }
     match (own, spec.send) {
-      (None, Some(send)) => composer_submit(src, w, r.station, locked=false, send) |> ignore
+      (None, Some(send)) => composer_submit(src, w, r.station, locked=@signals.untracked(locked), send) |> ignore
       _ => composer_node_submit(src, w, r.station, locked, send)
     }
   }
@@ -1016,7 +1017,7 @@ fn composer_box_node(
   // (and flying in from the new chat it was (`from_at`): away till it has landed, then back as at rest)
   let status_hint = fn() {
     match (own, head()) {
-      (None, Some(h)) if spec.chat => h.updating || h.offline || h.archived
+      (None, Some(h)) if spec.chat => h.moving is Some(_) || h.updating || h.offline || h.archived
       _ => false
     }
   }
@@ -1741,6 +1742,7 @@ fn composer_box_node(
             if spec.chat {
               Some(fn() {
                 match head() {
+                  Some({ moving: Some((_, said)), .. }) => said
                   Some(h) if h.updating => @sf.t("web-main.composer.placeholderUpdating")
                   Some(h) if h.offline => @sf.t("web-main.composer.placeholderOffline")
                   Some(h) if h.archived => @sf.t("web-main.composer.placeholderArchived")
@@ -2215,7 +2217,11 @@ fn composer_field_node(
     files=fn(files) {
       if @signals.untracked(no_files) {
         let why = if @signals.untracked(locked) {
-          @sf.t("web-main.composer.filesLocked")
+          match @signals.untracked(fn() { @sfbase.chat_view_now(src, r) }) {
+            // (a chat going to another station: that, as its composer says it)
+            Some({ moving: Some((_, said)), .. }) => said
+            _ => @sf.t("web-main.composer.filesLocked")
+          }
         } else {
           @sf.t("web-main.composer.filesOffline")
         }
