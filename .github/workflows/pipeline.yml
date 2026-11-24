@@ -1763,9 +1763,11 @@ jobs:
         run: sh .github/release.sh android
       # (what it weighs and takes once idle: mbui-size.yml, after this run, recorded, never a gate: its upload's failure
       # is not the release's. Studio's connection to GitHub's artifact service reset stopped a release that had built and
-      # signed its APK, main a3e59ea9 43157398296 and three times before on 2026-11-11 and 12)
+      # signed its APK, main a3e59ea9 43157398296 and three times before on 2026-11-11 and 12; timeout-minutes: 1 keeps a
+      # slow Mini1 proxy upload — 194 s in 45444450664, 134 s in 45439573958 — from cancelling the job before release-put)
       - uses: actions/upload-artifact@v4
         continue-on-error: true
+        timeout-minutes: 1
         with: { name: "mbui-apk-${{ github.sha }}", path: "${{ runner.temp }}/release/android/*.apk", retention-days: 1, compression-level: 0 }
       # Its files put (named by its version, nothing points at them until put writes the feed), then what is left handed
       # to put through the bucket, not a run artifact (scripts/release-put.sh --hand), beside monoid's beta Android app
@@ -1812,7 +1814,11 @@ jobs:
             ms=0; wait "$monoid" || ms=$?
             if [ "$ms" = 0 ]; then
               echo "::group::monoid's beta Android app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
-              echo "packed=1" >> "$GITHUB_OUTPUT"
+              if [ "$(( $(date +%s) - JOB_BEGAN ))" -le 225 ]; then
+                echo "packed=1" >> "$GITHUB_OUTPUT"
+              else
+                echo "::warning::monoid's beta Android app upload skipped: less than 75 s left in this job"
+              fi
             elif [ "$ms" = 124 ]; then
               cat "$RUNNER_TEMP/monoid.log"
               echo "::warning::monoid's beta Android app did not finish before the job's end and is left for the next release"
@@ -1822,12 +1828,13 @@ jobs:
           fi
           [ -z "$failed" ]
       # (not uploaded, monoid's beta is left for the next release, monoid-android skipped, as where it was not packed: a
-      # reset of the artifact service failed this job after still.fail's own was put, and held its put back, main
-      # 04d026f01's 45386684272, 2026-11-24)
+      # reset or stall of the artifact service failed or cancelled this job after still.fail's own was put, and held its
+      # put back, main 04d026f01's 45386684272 and 5dbd60b89's 45439573958, 2026-11-24)
       - if: vars.MONOID_CI == 'on' && steps.hand.outputs.packed == '1'
         id: monoid-upload
         uses: actions/upload-artifact@v4
         continue-on-error: true
+        timeout-minutes: 1
         with: { name: "monoid-android-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1, compression-level: 0 }
 
   # monoid's beta Android app (build.monoid.android.beta), built by android from its own build, put whole in monoid's
@@ -2614,6 +2621,7 @@ jobs:
         id: monoid-upload
         uses: actions/upload-artifact@v4
         continue-on-error: true
+        timeout-minutes: 1
         with: { name: "monoid-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1 }
       # (main's caches, however the build ended, last: after the release is put, never holding it back. One cut short
       # keeps what it compiled, what it left running (moon, mbc, clang-cl) stopped first and their locks taken out, so
@@ -2748,6 +2756,11 @@ jobs:
             rm -f .git/info/sparse-checkout .git/index
             git reset --hard HEAD
           fi
+          # (ci-1 does not run setup-linux here; set STILLFAIL_DIRECT_DNS so release-put.sh and node-here.sh reach
+          # Cloudflare's API directly instead of stalling over the proxy — deltas-station linux-x64 hung 286 s and
+          # deltas-desktop-win took 198 s in Put them on main 45444450664)
+          export STILLFAIL_DIRECT_DNS=223.5.5.5
+          echo "STILLFAIL_DIRECT_DNS=$STILLFAIL_DIRECT_DNS" >> "$GITHUB_ENV"
           echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
       - if: env.PART == 'desktop-win'
         uses: actions/download-artifact@v4
