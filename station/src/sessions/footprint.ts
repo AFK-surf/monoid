@@ -4,7 +4,7 @@ import { access, constants, lstat, open, realpath, stat } from "node:fs/promises
 import { basename, dirname, join, normalize, sep } from "node:path";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
 import { resolveReaderEngine } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
@@ -197,35 +197,17 @@ type Measured = { bytes: number; complete: boolean; reason?: string; rebuild?: [
 type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 
 const warnedReaderFallbacks = new Set<string>();
+const pendingShadows = new Set<Promise<void>>();
 
-/// The size of `path` and everything under it, on its file system, by the MoonBit program (`--builder footprint`,
-/// station/mb src/footprint), one process a measure under the system's background priority, so none of the walk's
-/// entries are the station's thread's or its heap's: links not followed (a link counted as itself), another file
-/// system mounted in it not gone into, at most 32 deep, each file once however many names it has, within `budget`
-/// (the walks of what it finds sharing it). With `finding`, directories that can be made again are listed (each
-/// counted whole, not looked into further for more); never in a `.git` or `uploads`. `strict`: an error of the file
-/// system but a path gone fails it (else what cannot be read is passed over). `signal` ends the process at once and
-/// fails the measure with its reason. There is no walk in TypeScript to fall back to: the one it replaced is
-/// station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the program to.
-function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
+function runMeasureBinary(
+  binary: string,
+  path: string,
+  ask: Ask,
+  budget: MeasureBudget,
+  signal?: AbortSignal,
+): Promise<Measured> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(signal.reason);
-    const selection = resolveReaderEngine("footprint", { hasPionBinary: false });
-    if (selection.fallback) {
-      const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
-      if (!warnedReaderFallbacks.has(dedupKey)) {
-        warnedReaderFallbacks.add(dedupKey);
-        log.warn("footprint", "reader engine fallback", {
-          mode: selection.mode,
-          engine: selection.engine,
-          requested: selection.requested,
-          source: selection.source,
-          reason: selection.reason,
-          detail: selection.detail,
-        });
-      }
-    }
-    const binary = readerBinary();
     const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
     let settled = false;
     const done = (f: () => void) => {
@@ -251,6 +233,123 @@ function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSi
       maxEntries: budget.maxEntries ?? MEASURE_ROOM.maxEntries, maxDurationMs: Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs),
     });
   });
+}
+
+type ShadowSnapshot =
+  | { ok: true; bytes: number; complete: boolean; reason?: string; rebuild?: [string, number][]; enough?: true }
+  | { ok: false; error: string; code?: string };
+
+function snapshotOf(res: PromiseSettledResult<Measured>): ShadowSnapshot {
+  if (res.status === "fulfilled") {
+    const v = res.value;
+    return {
+      ok: true,
+      bytes: v.bytes,
+      complete: v.complete,
+      ...(v.reason !== undefined ? { reason: v.reason } : {}),
+      ...(v.rebuild !== undefined ? { rebuild: v.rebuild } : {}),
+      ...(v.enough !== undefined ? { enough: v.enough } : {}),
+    };
+  }
+  const err = res.reason as NodeJS.ErrnoException | undefined;
+  return {
+    ok: false,
+    error: err instanceof Error ? err.message : String(res.reason),
+    ...(typeof err?.code === "string" ? { code: err.code } : {}),
+  };
+}
+
+function diffSnapshots(primary: ShadowSnapshot, shadow: ShadowSnapshot): string[] {
+  const diffs: string[] = [];
+  if (primary.ok !== shadow.ok) {
+    diffs.push(`status:${primary.ok ? "ok" : "err"}!=${shadow.ok ? "ok" : "err"}`);
+    return diffs;
+  }
+  if (!primary.ok && !shadow.ok) {
+    if (primary.code !== shadow.code) diffs.push(`code:${primary.code ?? ""}!= ${shadow.code ?? ""}`);
+    if (primary.error !== shadow.error) diffs.push(`error:${primary.error}!=${shadow.error}`);
+    return diffs;
+  }
+  if (primary.ok && shadow.ok) {
+    if (primary.bytes !== shadow.bytes) diffs.push(`bytes:${primary.bytes}!=${shadow.bytes}`);
+    if (primary.complete !== shadow.complete) diffs.push(`complete:${primary.complete}!=${shadow.complete}`);
+    if (primary.reason !== shadow.reason) diffs.push(`reason:${primary.reason ?? ""}!=${shadow.reason ?? ""}`);
+    if (primary.enough !== shadow.enough) diffs.push(`enough:${primary.enough ?? false}!=${shadow.enough ?? false}`);
+    const pRebuild = JSON.stringify(primary.rebuild ?? null);
+    const sRebuild = JSON.stringify(shadow.rebuild ?? null);
+    if (pRebuild !== sRebuild) diffs.push("rebuild:mismatch");
+  }
+  return diffs;
+}
+
+/// Wait for any in-flight background `shadow` comparisons to settle (for deterministic tests and clean shutdown).
+export async function waitForShadowMeasures(): Promise<void> {
+  while (pendingShadows.size > 0) {
+    await Promise.all([...pendingShadows]);
+  }
+}
+
+/// The size of `path` and everything under it, on its file system, by `--builder footprint` (`mb` MoonBit by default,
+/// or `pion` / `shadow` via `STILLFAIL_READER_FOOTPRINT` / `STILLFAIL_READER_ENGINE`), one process a measure under the
+/// system's background priority, so none of the walk's entries are the station's thread's or its heap's: links not
+/// followed (a link counted as itself), another file system mounted in it not gone into, at most 32 deep, each file
+/// once however many names it has, within `budget` (the walks of what it finds sharing it). With `finding`, directories
+/// that can be made again are listed (each counted whole, not looked into further for more); never in a `.git` or
+/// `uploads`. `strict`: an error of the file system but a path gone fails it (else what cannot be read is passed over).
+/// `signal` ends the process at once and fails the measure with its reason. There is no walk in TypeScript to fall back
+/// to: the one it replaced is station/test/footprint-reference.ts, which station/test/mb-footprint.test.ts holds the
+/// program to.
+function measure(path: string, ask: Ask, budget: MeasureBudget, signal?: AbortSignal): Promise<Measured> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  const pionBin = pionBinary();
+  const selection = resolveReaderEngine("footprint", { hasPionBinary: pionBin !== null });
+  if (selection.fallback) {
+    const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
+    if (!warnedReaderFallbacks.has(dedupKey)) {
+      warnedReaderFallbacks.add(dedupKey);
+      log.warn("footprint", "reader engine fallback", {
+        mode: selection.mode,
+        engine: selection.engine,
+        requested: selection.requested,
+        source: selection.source,
+        reason: selection.reason,
+        detail: selection.detail,
+      });
+    }
+  }
+  if (selection.engine === "pion" && pionBin !== null) {
+    return runMeasureBinary(pionBin, path, ask, budget, signal);
+  }
+  const primary = runMeasureBinary(readerBinary(), path, ask, budget, signal);
+  if (selection.engine !== "shadow" || pionBin === null) {
+    return primary;
+  }
+  const shadow = runMeasureBinary(pionBin, path, ask, budget, signal);
+  // Prevent unhandledRejection when shadow fails independently of primary.
+  shadow.catch(() => {});
+  const track = Promise.allSettled([primary, shadow])
+    .then(([pRes, sRes]) => {
+      if (signal?.aborted && pRes.status === "rejected" && sRes.status === "rejected") return;
+      const pSnap = snapshotOf(pRes);
+      const sSnap = snapshotOf(sRes);
+      const diffs = diffSnapshots(pSnap, sSnap);
+      if (diffs.length > 0) {
+        log.warn("footprint", "reader shadow diff", {
+          path,
+          finding: ask.finding,
+          strict: ask.strict,
+          diffs,
+          primary: pSnap,
+          shadow: sSnap,
+        });
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      pendingShadows.delete(track);
+    });
+  pendingShadows.add(track);
+  return primary;
 }
 
 /// Measures one chat's directory again (after something in it was cleaned).

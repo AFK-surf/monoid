@@ -273,3 +273,31 @@ test("missing Pion binary safely falls back to mb for pion and allowed shadow re
   assert.equal(mbReq.fallback, false);
   assert.equal(mbReq.reason, undefined);
 });
+
+test("STILLFAIL_READER_ENGINE acts as global env fallback below per-mode env and above config", () => {
+  const globalPion = resolveReaderEngine("footprint", {
+    config: { readers: { footprint: "mb" } },
+    env: { STILLFAIL_READER_ENGINE: "pion" },
+    hasPionBinary: true,
+  });
+  assert.equal(globalPion.engine, "pion");
+  assert.equal(globalPion.source, "env");
+  assert.equal(globalPion.fallback, false);
+
+  const perModeWins = resolveReaderEngine("footprint", {
+    env: { STILLFAIL_READER_ENGINE: "pion", STILLFAIL_READER_FOOTPRINT: "mb" },
+    hasPionBinary: true,
+  });
+  assert.equal(perModeWins.engine, "mb");
+  assert.equal(perModeWins.source, "env");
+  assert.equal(perModeWins.fallback, false);
+
+  // Global shadow is still blocked on non-footprint modes.
+  const blockedShadow = resolveReaderEngine("data", {
+    env: { STILLFAIL_READER_ENGINE: "shadow" },
+    hasPionBinary: true,
+  });
+  assert.equal(blockedShadow.engine, "mb");
+  assert.equal(blockedShadow.fallback, true);
+  assert.equal(blockedShadow.reason, "shadow-forbidden");
+});

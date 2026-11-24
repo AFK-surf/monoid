@@ -143,12 +143,15 @@ fi
   -c "$STATION_DIR/packages/host_shim/native/station_host.c" -o "$work/station_host.o"
 "${cc[@]}" -std=c11 -O2 "${cc_extra[@]}" -Wall -Wextra -Werror \
   -c "$STATION_DIR/packages/sqlite_ffi/native/station_sqlite.c" -o "$work/station_sqlite.o"
+"${cc[@]}" -std=c11 -O2 "${cc_extra[@]}" -Wall -Wextra -Werror \
+  -c "$STATION_DIR/packages/footprint/native/footprint_fs.c" -o "$work/footprint_fs.o"
 
 "${cc[@]}" -O2 "${cc_extra[@]}" -o "$out" \
   "$work/libsmoke.a" \
   "$work/pion_rt.o" \
   "$work/station_host.o" \
   "$work/station_sqlite.o" \
+  "$work/footprint_fs.o" \
   "$shell_lib" \
   "${libs[@]}"
 

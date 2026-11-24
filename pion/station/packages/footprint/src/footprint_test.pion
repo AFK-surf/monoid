@@ -1,0 +1,103 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "join_path matches POSIX and Windows separator semantics" {
+  expect(join_path("/", ".", "foo") == "foo", "dot base")
+  expect(join_path("/", "/", "foo") == "/foo", "root slash")
+  expect(join_path("/", "/a/b", "c") == "/a/b/c", "normal unix")
+  expect(join_path("/", "/a/b/", "c") == "/a/b/c", "trailing slash")
+  expect(join_path("\\", "C:\\", "foo") == "C:\\foo", "win root")
+  expect(join_path("\\", "C:\\a", "b") == "C:\\a\\b", "win normal")
+  expect(join_path("\\", "C:/a/", "b") == "C:/a/b", "win forward trailing")
+}
+
+test "path_up matches Node dirname and footprint.mbt Measure::up" {
+  expect(path_up("/", "/") == "/", "unix root")
+  expect(path_up("/", "///") == "/", "unix multi slash")
+  expect(path_up("/", "/a") == "/", "unix top child")
+  expect(path_up("/", "/a/") == "/", "unix top child trailing")
+  expect(path_up("/", "/a/b/c") == "/a/b", "unix nested")
+  expect(path_up("/", "/a//b/") == "/a", "unix collapsed")
+  expect(path_up("/", "a") == ".", "unix bare")
+  expect(path_up("/", ".") == ".", "unix dot")
+  expect(path_up("\\", "C:\\") == "C:\\", "win drive root")
+  expect(path_up("\\", "C:\\a") == "C:\\", "win top child")
+  expect(path_up("\\", "C:\\a\\b") == "C:\\a", "win nested")
+  expect(path_up("\\", "C:") == "C:", "win bare drive")
+  expect(path_up("\\", "a") == ".", "win bare")
+}
+
+test "cargo_said requires both exact Cargo CACHEDIR.TAG lines with LF or CRLF" {
+  let lf = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n"
+  let crlf = "Signature: 8a477f597d28d172789f06886806bc55\r\n# This file is a cache directory tag created by cargo.\r\n# extra\r\n"
+  let no_trailing = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo."
+  let wrong_line = "Signature: 8a477f597d28d172789f06886806bc55\n# made by something else\n"
+  let substring_only = "Signature: 8a477f597d28d172789f06886806bc55 extra\n# This file is a cache directory tag created by cargo.\n"
+  expect(cargo_said(lf), "lf")
+  expect(cargo_said(crlf), "crlf")
+  expect(cargo_said(no_trailing), "no trailing newline")
+  expect(!cargo_said(wrong_line), "wrong second line")
+  expect(!cargo_said(substring_only), "substring must not match")
+}
+
+test "parse_ask validates JSON errors and optional fields" {
+  match parse_ask("{not valid json") {
+    ParseAskResult::Err(msg, code) => {
+      expect(msg == "not JSON", "bad json msg")
+      expect(code == "EINVAL", "bad json code")
+    }
+    ParseAskResult::Ok(_) => panic("expected parse error")
+  }
+  match parse_ask("[1,2,3]") {
+    ParseAskResult::Err(msg, code) => {
+      expect(msg == "not an object", "non-object msg")
+      expect(code == "EINVAL", "non-object code")
+    }
+    ParseAskResult::Ok(_) => panic("expected non-object error")
+  }
+  match parse_ask("{\"finding\":true}") {
+    ParseAskResult::Err(msg, code) => {
+      expect(msg == "path is required", "missing path msg")
+      expect(code == "EINVAL", "missing path code")
+    }
+    ParseAskResult::Ok(_) => panic("expected missing path error")
+  }
+  match parse_ask("{\"path\":\"/tmp/x\",\"finding\":true,\"strict\":true,\"stopAfter\":1024,\"maxEntries\":50,\"maxDurationMs\":0}") {
+    ParseAskResult::Ok(req) => {
+      expect(req.path == "/tmp/x", "path")
+      expect(req.base == "/tmp/x", "default base")
+      expect(req.finding, "finding")
+      expect(req.strict, "strict")
+      expect(req.max_duration_ms == 0.0, "maxDurationMs")
+      match req.stop_after {
+        Some(v) => expect(v == 1024.0, "stopAfter")
+        None => panic("expected stopAfter")
+      }
+      match req.max_entries {
+        Some(v) => expect(v == 50.0, "maxEntries")
+        None => panic("expected maxEntries")
+      }
+    }
+    ParseAskResult::Err(msg, _) => panic("unexpected err: " + msg)
+  }
+}
+
+test "error_of maps all POSIX/Windows codes to Node errno names" {
+  let (c1, m1) = error_of(1)
+  expect(c1 == "ENOENT" && m1 == "no such file or directory", "ENOENT")
+  let (c2, m2) = error_of(2)
+  expect(c2 == "EACCES" && m2 == "permission denied", "EACCES")
+  let (c3, m3) = error_of(3)
+  expect(c3 == "EPERM" && m3 == "operation not permitted", "EPERM")
+  let (c4, m4) = error_of(4)
+  expect(c4 == "ENOTDIR" && m4 == "not a directory", "ENOTDIR")
+  let (c5, m5) = error_of(5)
+  expect(c5 == "ELOOP" && m5 == "too many symbolic links encountered", "ELOOP")
+  let (c6, m6) = error_of(6)
+  expect(c6 == "ENAMETOOLONG" && m6 == "name too long", "ENAMETOOLONG")
+  let (c7, m7) = error_of(7)
+  expect(c7 == "EIO" && m7 == "i/o error", "EIO")
+}

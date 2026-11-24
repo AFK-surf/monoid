@@ -737,7 +737,14 @@ void *sth_wait(int64_t ms, int64_t *out_len) {
     return out;
 }
 
-int32_t sth_write_stdout(const uint8_t *data, int64_t len) {
+static int32_t write_fd_all(
+#ifdef _WIN32
+    DWORD std_handle,
+#else
+    int fd,
+#endif
+    const uint8_t *data,
+    int64_t len) {
     if (len <= 0) {
         return 1;
     }
@@ -750,12 +757,12 @@ int32_t sth_write_stdout(const uint8_t *data, int64_t len) {
 #ifdef _WIN32
         DWORD n = 0;
         DWORD chunk = (total - done) > 0x7fffffffU ? 0x7fffffffU : (DWORD)(total - done);
-        if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), data + done, chunk, &n, NULL) || n == 0) {
+        if (!WriteFile(GetStdHandle(std_handle), data + done, chunk, &n, NULL) || n == 0) {
             return 0;
         }
         done += (size_t)n;
 #else
-        ssize_t n = write(1, data + done, total - done);
+        ssize_t n = write(fd, data + done, total - done);
         if (n < 0 && errno == EINTR) {
             continue;
         }
@@ -766,6 +773,22 @@ int32_t sth_write_stdout(const uint8_t *data, int64_t len) {
 #endif
     }
     return 1;
+}
+
+int32_t sth_write_stdout(const uint8_t *data, int64_t len) {
+#ifdef _WIN32
+    return write_fd_all(STD_OUTPUT_HANDLE, data, len);
+#else
+    return write_fd_all(1, data, len);
+#endif
+}
+
+int32_t sth_write_stderr(const uint8_t *data, int64_t len) {
+#ifdef _WIN32
+    return write_fd_all(STD_ERROR_HANDLE, data, len);
+#else
+    return write_fd_all(2, data, len);
+#endif
 }
 
 void sth_shell_call(

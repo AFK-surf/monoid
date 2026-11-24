@@ -266,6 +266,7 @@ export type ReaderSelection = {
 };
 
 export const READER_ENV_PREFIX = "STILLFAIL_READER_";
+export const READER_ENGINE_ENV = "STILLFAIL_READER_ENGINE";
 
 /** Compute the canonical environment variable name for a reader mode. */
 export function readerModeEnvKey(mode: ReaderMode): `STILLFAIL_READER_${string}` {
@@ -334,6 +335,7 @@ export function resolveReaderEngine(
   const env = opts.env ?? process.env;
   const envKey = readerModeEnvKey(mode);
   const rawEnv = env[envKey];
+  const rawGlobalEnv = env[READER_ENGINE_ENV];
 
   let source: ReaderSelectSource = "default";
   let rawInput: unknown = undefined;
@@ -341,6 +343,9 @@ export function resolveReaderEngine(
   if (typeof rawEnv === "string" && rawEnv.trim() !== "") {
     source = "env";
     rawInput = rawEnv;
+  } else if (typeof rawGlobalEnv === "string" && rawGlobalEnv.trim() !== "") {
+    source = "env";
+    rawInput = rawGlobalEnv;
   } else {
     const readers = opts.config?.readers;
     if (readers !== null && readers !== undefined && typeof readers === "object" && Object.hasOwn(readers, mode)) {
