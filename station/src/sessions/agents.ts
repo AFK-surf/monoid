@@ -692,6 +692,11 @@ export const AgentsLive = (control: Control) =>
         quotaReset: (id) => accounts.sharedQuotaReset(id),
         profileGone: (id) => hub.profileGone(id),
         itself: (station) => meshBus.cameHere(station),
+        // (what it tells the others of itself: on the workspace's whitelist, as remote.ts `describe` says it)
+        autoChats: () => {
+          const home = cloud.home();
+          return { accept: config.raw()?.acceptAutoChats === true, tasksOnly: home !== null && cloud.rigIn(home) !== null };
+        },
         readers: readerConfig,
       });
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));

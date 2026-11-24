@@ -17,8 +17,8 @@ pub fn liquid_lens_overlay_node(
   radius? : Double = 1.0e6,
   solid? : () -> Int64,
   shadow_color? : () -> Int64 = fn() { @ui.tree_theme().shadow },
-  shadow_blur? : Double = 6.0,
-  shadow_y? : Double = 2.0,
+  shadow_blur? : Double = 0.0,
+  shadow_y? : Double = 0.0,
   jelly? : (@view.View) -> (Double, Double),
   grow? : Double = 0.0,
   overhang_x? : Double = 0.0,
@@ -50,7 +50,34 @@ pub fn liquid_lens_overlay_node(
           Some(f) => f()
           None => clear
         }
-        Some(liquid_tab_lens_glass(p, solid=sol, droplet_role~))
+        if droplet_role == 3 {
+          let seg_sol = if sol != clear {
+            sol
+          } else if is_dark() {
+            0x242428FFL
+          } else {
+            0xFFFFFFFFL
+          }
+          Some(
+            @paint.Glass::liquid(
+              blur=0.0,
+              tint=0xFFFFFF00L,
+              solid=seg_sol,
+              saturation=1.0,
+              rim=1.0 * p,
+              bezel=9.0 * p,
+              refraction=9.0 * p,
+              chroma=0.04 * p,
+              merge=0.0,
+              adaptive=false,
+              spot=None,
+              zoom=1.0,
+              droplet_role=3,
+            ),
+          )
+        } else {
+          Some(liquid_tab_lens_glass(p, solid=sol, droplet_role~))
+        }
       } else {
         None
       }
@@ -60,8 +87,10 @@ pub fn liquid_lens_overlay_node(
       if p > 0.001 {
         if overhang_y > 0.0 {
           seg_lens_shadow(p)
-        } else {
+        } else if shadow_blur > 0.0 || shadow_y > 0.0 {
           (shadow_blur * p, shadow_y * p, shadow_color())
+        } else {
+          shadow_none
         }
       } else {
         shadow_none
@@ -134,8 +163,8 @@ pub fn liquid_loupe_node(
   lift? : Double = 92.0,
   side_inset? : Double = 8.0,
   grow? : Double = 1.25,
-  shadow_blur? : Double = 6.0,
-  shadow_y? : Double = 2.0,
+  shadow_blur? : Double = 0.0,
+  shadow_y? : Double = 0.0,
   loc~ : SourceLoc,
 ) -> Unit {
   let read : @signals.Signal[(Double, Double)?] = @signals.signal(None, same=fn(a, b) { a == b })
@@ -223,7 +252,7 @@ pub fn liquid_loupe_node(
           }))
           .shadow(By(fn() {
             let full = dmin(1.0, follow.held_shown(lens))
-            if full > 0.001 {
+            if full > 0.001 && (shadow_blur > 0.0 || shadow_y > 0.0) {
               (shadow_blur * full, shadow_y * full, shadow_color())
             } else {
               shadow_none

@@ -228,7 +228,7 @@ test "real slider, segmented, and tab lens controls emit exact drawlist slot 7 (
     let mut found = false
     for inst in t.drawn_instances() {
       if inst[5] == 6.0 && (inst[7] - -16.0).abs() < 0.01 {
-        assert_true(inst[21] > 2.0 && inst[21] <= 3.01, msg="slider slot21=\{inst[21]}")
+        assert_true(inst[21] > 7.5 && inst[21] <= 9.01, msg="slider slot21=\{inst[21]}")
         found = true
       }
     }

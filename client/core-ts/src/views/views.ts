@@ -343,7 +343,7 @@ export function profileRowKey(): string {
 /// station's decorated profile: what a station's rows keep of each (#profileRowsMade).
 const PROFILE_ROW_FIELDS = [
   "id", "name", "email", "runtime", "access", "enabled", "share", "trouble", "checkText", "checkTone", "usedBy", "serves", "workspaces", "machine",
-  "providerMark", "usesText", "kindText", "planText", "quota",
+  "providerMark", "usesText", "kindText", "planText", "quota", "shareable",
 ] as const;
 /// Of an allowance, what a row draws (RowQuota), its windows' `resetsAt` beside (what its refills are said of at read).
 const ROW_QUOTA_FIELDS = ["state", "detail", "creditsText", "windows"] as const;
@@ -368,7 +368,14 @@ function profileRowsOf(shown: J): J {
     }
     return row;
   });
-  return { profiles, sharing: get(shown, "sharing") ?? null, mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null };
+  // (whether a share of it can follow the workspace's whitelist, and whether it is on that whitelist, said only where
+  // so: every station's rows are read for the list and its overview, and these are false on most)
+  return {
+    profiles, sharing: get(shown, "sharing") ?? null,
+    ...(get(shown, "shareAllowAuto") === true ? { shareAllowAuto: true } : {}),
+    ...(get(get(shown, "autoChats"), "enabled") === true ? { autoChats: { enabled: true } } : {}),
+    mesh: isObject(get(shown, "mesh")) ? { reached: get(shown, "mesh").reached ?? null } : null,
+  };
 }
 
 /// What a window of a kept row says as it goes out: its refills in words, made of its `resetsAt` and now alone (present.ts
@@ -3727,7 +3734,9 @@ export class Views implements Owner {
       const logins = s.online ? this.#offeredOf(ins[i]!.overview, c) : [];
       return logins.length > 0 ? [{ station: s.address, stationName: s.name, logins }] : [];
     });
-    return { ok: { ...listed, items, machineLogins } };
+    // (whether the viewer manages the workspace, of what #stationsOr read of it: the list's 多选 is its owners' and admins')
+    const role = get(this.ok({ topic: "workspace", workspace: scope }), "role");
+    return { ok: { ...listed, items, machineLogins, ...(role === "owner" || role === "admin" ? { manages: true } : {}) } };
   }
 
   /// A station's own logins offered for a profile, as the list shows them beside its rows (#profileRowsView): its
