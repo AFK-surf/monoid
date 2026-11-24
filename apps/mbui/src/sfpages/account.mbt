@@ -29,6 +29,8 @@ pub fn me_node(
     let sub = here().sub
     if sub.has_prefix("em-") || sub.has_prefix("pw-") {
       @sf.t("web-pages.settings.account.email")
+    } else if sub.has_prefix("apple_") {
+      @sf.t("web-pages.settings.account.apple")
     } else {
       @sf.t("web-pages.settings.account.google")
     }

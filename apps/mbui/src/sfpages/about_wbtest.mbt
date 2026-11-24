@@ -22,6 +22,18 @@ test "关于, at each width and with either hand: this build, 更新日志, the 
 }
 
 ///|
+/// On monoid (its build's MBUI_PRODUCT), the terms are monoid.build's: in English under /en.
+test "关于 on monoid: 服务条款 opens monoid.build's terms, in English monoid.build/en's" {
+  let t = setting_tester(About, 390.0, platform=2, env=[("MBUI_PRODUCT", "monoid")])
+  t.tap_text("服务条款")
+  assert_true(t.opened().contains("https://monoid.build/terms"), msg=t.opened().join(","))
+  let t = setting_tester(About, 390.0, platform=2, env=[("MBUI_PRODUCT", "monoid"), ("MBUI_LOCALE", "en-US")])
+  t.tap_text("Terms of Service")
+  assert_true(t.opened().contains("https://monoid.build/en/terms"), msg=t.opened().join(","))
+  @sf.set_language(None)
+}
+
+///|
 test "关于 names the build for its channel" {
   for product in ["still.fail", "youdid.wtf"] {
     let t = setting_tester(About, 390.0, platform=2, over=fn(s) {

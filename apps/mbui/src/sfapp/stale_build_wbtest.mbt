@@ -82,6 +82,21 @@ test "stale build prompt on iOS (no update source) opens TestFlight via itms-bet
 }
 
 ///|
+/// The App Store's build (MBUI_STORE=appstore, apple_engine.m) with the same over-7-day prefs: no prompt, no TestFlight.
+test "stale build prompt on iOS from the App Store: none shown, TestFlight never opened" {
+  let t = wide_tester([], mode="home-stale-build", w=390.0, h=844.0, platform=1, env=[("MBUI_STORE", "appstore")], before=fn(_) {
+    set_update_source(None)
+    update_version.val = 0
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_false(stale_build_now())
+  assert_true(t.find("当前版本已超过 7 天，点此前往 TestFlight 更新。") is None)
+  assert_true(t.query(Button, label="打开 TestFlight") is None)
+  assert_true(t.find("版本已超过 7 天，前往 TestFlight") is None)
+  assert_true(!t.opened().contains("itms-beta://"), msg=t.opened().join(","))
+}
+
+///|
 test "stale build prompt on Web reloads the page via update_apply" {
   let t = wide_tester([], mode="home-stale-build", w=1280.0, h=800.0, platform=4, before=fn(_) {
     set_update_source(None)

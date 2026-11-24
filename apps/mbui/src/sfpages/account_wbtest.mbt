@@ -22,6 +22,63 @@ test "账号, at each width and with either hand: who it is, where it is signed 
 }
 
 ///|
+/// The fixture's account (lin@example.com, sub u1) signed in with Apple: its sub as Apple's sign-in makes it (apple_…).
+fn apple_signed_in(s : Source) -> Source {
+  let apple = fn(a : Json) -> Json {
+    match a {
+      Object(m) if m.get("sub") is Some(String("u1")) => {
+        let o = m.copy()
+        o["sub"] = Json::string("apple_001234.abcd")
+        Json::object(o)
+      }
+      _ => a
+    }
+  }
+  {
+    ..s,
+    topic_read: fn(name, params) {
+      let got = s.topic(name, params).get().snapshot()
+      match got.value {
+        Some(Array(accounts)) if name == "accounts" => { ..got, value: Some(Json::array(accounts.map(apple))) }
+        Some(Array(entries)) if name == "workspaces" =>
+          {
+            ..got,
+            value: Some(
+              Json::array(
+                entries.map(fn(e) {
+                  match e {
+                    Object(m) => {
+                      let o = m.copy()
+                      if m.get("account") is Some(acc) {
+                        o["account"] = apple(acc)
+                      }
+                      Json::object(o)
+                    }
+                    _ => e
+                  }
+                }),
+              ),
+            ),
+          }
+        _ => got
+      }
+    },
+  }
+}
+
+///|
+test "账号 signed in with Apple, at each width and with either hand: Apple 账号, not Google's" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Me, w, platform~, over=apple_signed_in)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("lin@example.com") is Some(_), msg=at)
+    assert_true(t.find("Apple 账号") is Some(_), msg=at)
+    assert_true(t.find("Google 账号") is None, msg=at)
+  }
+}
+
+///|
 /// 账号 over the made-up core, its account's `workspaces` entry saying it shows a picture of its own where `own`, the
 /// calls made of the core kept in `calls` (`account.*` answered at once), `others` signed in on this device as well.
 fn own_picture_tester(

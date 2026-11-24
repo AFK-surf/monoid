@@ -840,6 +840,7 @@
   "web-pages.roles.member": "成员",
   "web-pages.roles.owner": "Owner",
   "web-pages.settings.account.google": "Google 账号",
+  "web-pages.settings.account.apple": "Apple 账号",
   "web-pages.settings.account.email": "邮箱账号",
   "web-pages.settings.account.here": "当前",
   "web-pages.settings.account.revoke": "退出",

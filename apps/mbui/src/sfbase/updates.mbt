@@ -108,8 +108,10 @@ pub fn stale_build_now() -> Bool {
 
 ///|
 /// Updates `stale_build` from the core's `prefs` topic.
+/// Never in the App Store's build (MBUI_STORE=appstore, apple_engine.m): the App Store updates it, and it has no
+/// TestFlight to send anyone to.
 pub fn stale_build_from_prefs(prefs : Json?) -> Unit {
-  stale_build.set(flag(prefs, "staleBuild"))
+  stale_build.set(flag(prefs, "staleBuild") && @ui.env("MBUI_STORE") != "appstore")
 }
 
 ///|

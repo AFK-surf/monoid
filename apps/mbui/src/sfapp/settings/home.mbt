@@ -100,9 +100,14 @@ pub fn dark(prefs : Json?, system_dark : Bool) -> Bool {
 }
 
 ///|
-/// still.fail's terms or privacy policy on the web (the app speaks Chinese: no /en).
+/// The product's terms or privacy policy on the web: still.fail's (the app speaks Chinese: no /en), or monoid's on
+/// monoid.build, in English under /en when the app speaks English.
 pub fn legal_url(page : String) -> String {
-  "https://still.fail/" + page
+  if @sf.product() == "monoid" {
+    "https://monoid.build/" + (if @sf.language() == "en" { "en/" } else { "" }) + page
+  } else {
+    "https://still.fail/" + page
+  }
 }
 
 ///|

@@ -1599,6 +1599,7 @@ let zh : Map[String, String] = {
   "web-pages.settings.account.deleted": "已注销 {email}",
   "web-pages.settings.account.email": "邮箱账号",
   "web-pages.settings.account.google": "Google 账号",
+  "web-pages.settings.account.apple": "Apple 账号",
   "web-pages.settings.account.here": "当前",
   "web-pages.settings.account.revoke": "退出",
   "web-pages.settings.account.revoked": "已将该设备退出登录",

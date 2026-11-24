@@ -157,6 +157,20 @@ __attribute__((constructor)) static void device_model(void) {
   if (!sim && uname(&u) != 0) return;
   setenv("MBUI_DEVICE_MODEL", sim ? sim : u.machine, 0);
 }
+// Whether this is the App Store's build (MBUI_STORE=appstore): no prompt then to update from TestFlight
+// (updates.mbt stale_build), which is TestFlight's and a development build's alone. The App Store's receipt is
+// `receipt`, TestFlight's and a development build's `sandboxReceipt`; the simulator's none. Not over one given.
+__attribute__((constructor)) static void store_build(void) {
+#if !TARGET_OS_SIMULATOR
+  @autoreleasepool {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    NSURL *receipt = NSBundle.mainBundle.appStoreReceiptURL;
+#pragma clang diagnostic pop
+    if (receipt && ![receipt.lastPathComponent isEqualToString:@"sandboxReceipt"]) setenv("MBUI_STORE", "appstore", 0);
+  }
+#endif
+}
 #else
 #include <SystemConfiguration/SystemConfiguration.h>
 // The Mac's name as its owner knows it (系统设置 › 通用 › 关于本机: 左子健的 MacBook Air) in MBUI_DEVICE_NAME, the

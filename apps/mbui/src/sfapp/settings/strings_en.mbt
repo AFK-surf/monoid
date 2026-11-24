@@ -1627,6 +1627,7 @@ let en : Map[String, String] = {
   "web-pages.settings.account.deleted": "Deleted {email}",
   "web-pages.settings.account.email": "Email account",
   "web-pages.settings.account.google": "Google account",
+  "web-pages.settings.account.apple": "Apple account",
   "web-pages.settings.account.here": "This device",
   "web-pages.settings.account.revoke": "Sign out",
   "web-pages.settings.account.revoked": "Device signed out",

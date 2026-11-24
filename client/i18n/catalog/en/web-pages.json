@@ -870,6 +870,7 @@
   "web-pages.roles.member": "Member",
   "web-pages.roles.owner": "Owner",
   "web-pages.settings.account.google": "Google account",
+  "web-pages.settings.account.apple": "Apple account",
   "web-pages.settings.account.email": "Email account",
   "web-pages.settings.account.here": "This device",
   "web-pages.settings.account.revoke": "Sign out",

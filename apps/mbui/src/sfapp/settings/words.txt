@@ -1588,6 +1588,7 @@ web-pages.settings.account.deleteHereBody
 web-pages.settings.account.deleted
 web-pages.settings.account.email
 web-pages.settings.account.google
+web-pages.settings.account.apple
 web-pages.settings.account.here
 web-pages.settings.account.revoke
 web-pages.settings.account.revoked
