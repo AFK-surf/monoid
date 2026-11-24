@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3f5a8522b](https://github.com/AFK-surf/monoid/commit/3f5a8522b7da579d43297b5a870e3c0f0e834fef) feat(mbui): report a message sent from here that a | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.5 | 100.73 | 121.83 |
 | [209a0aaac](https://github.com/AFK-surf/monoid/commit/209a0aaace4722e2397bd1102b31552a445cc0ae) refactor(ui): unify check row boxes, markdown task | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.93 | 64.49 | 100.99 | 121.83 |
 | [11f11d4c6](https://github.com/AFK-surf/monoid/commit/11f11d4c6fa182a2401c34619b9c4fcfcaacba13) feat(ui): extract liquid_slider_look primitive and | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.93 | 64.49 | 100.99 | 121.83 |
 | [7c26737b5](https://github.com/AFK-surf/monoid/commit/7c26737b5426872b7b9547ef3c464cade377512c) fix(ci): serialize rustup toolchain and target set | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.86 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [67be246b5](https://github.com/AFK-surf/monoid/commit/67be246b5291e9c7094563d4e6eec8fde602916c) fix(station): let granted stations reach a rig's s | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.74 | 100.68 | 123.04 |
 | [e06b8f342](https://github.com/AFK-surf/monoid/commit/e06b8f342e1320a945260199cb82835a2e70370d) chore(farview): point at AFK-surf/farview-legacy ( | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.74 | 100.68 | 123.04 |
 | [973632d2b](https://github.com/AFK-surf/monoid/commit/973632d2bc8bd432788347a7f8bed0496feaba44) perf(core,station): cut steady-state overview push | 2.78 | 3.75 | 15.19 | 37.41 | 57.81 | 32.76 | 66.74 | 100.68 | 123.04 |
-| [4071ef70c](https://github.com/AFK-surf/monoid/commit/4071ef70c97c2aad6409fac6519c3bf6350e9774) feat(pion-station): migrate stateful archive-last  | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3f5a8522b](https://github.com/AFK-surf/monoid/commit/3f5a8522b7da579d43297b5a870e3c0f0e834fef) feat(mbui): report a message sent from here that a | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.74 |
 | [209a0aaac](https://github.com/AFK-surf/monoid/commit/209a0aaace4722e2397bd1102b31552a445cc0ae) refactor(ui): unify check row boxes, markdown task | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.64 |
 | [11f11d4c6](https://github.com/AFK-surf/monoid/commit/11f11d4c6fa182a2401c34619b9c4fcfcaacba13) feat(ui): extract liquid_slider_look primitive and | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.64 |
 | [7c26737b5](https://github.com/AFK-surf/monoid/commit/7c26737b5426872b7b9547ef3c464cade377512c) fix(ci): serialize rustup toolchain and target set | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [67be246b5](https://github.com/AFK-surf/monoid/commit/67be246b5291e9c7094563d4e6eec8fde602916c) fix(station): let granted stations reach a rig's s | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.44 |
 | [e06b8f342](https://github.com/AFK-surf/monoid/commit/e06b8f342e1320a945260199cb82835a2e70370d) chore(farview): point at AFK-surf/farview-legacy ( | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.16 |
 | [973632d2b](https://github.com/AFK-surf/monoid/commit/973632d2bc8bd432788347a7f8bed0496feaba44) perf(core,station): cut steady-state overview push | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.56 |
-| [4071ef70c](https://github.com/AFK-surf/monoid/commit/4071ef70c97c2aad6409fac6519c3bf6350e9774) feat(pion-station): migrate stateful archive-last  | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.53 |
