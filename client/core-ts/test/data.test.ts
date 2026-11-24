@@ -2030,42 +2030,96 @@ test("a_transcript_let_go_for_room_is_taken_again_while_a_page_reads_what_it_sai
   } finally { runner.shutdown(); }
 });
 
-test("a_burst_that_could_not_begin_is_ended_and_a_cursor_is_not_written_again_alone_when_its_burst_is_rolled_back", async () => {
+test("a_write_that_could_not_begin_leaves_no_burst_open_and_a_burst_that_failed_commits_nothing_alone", async () => {
   const { data, open, db, host, runner } = fresh();
   await open();
   try {
+    const heard = () => JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0]));
+    const failOnce = (at: (q: string) => boolean) => {
+      let fail = true;
+      db().failing = (q) => {
+        if (!at(q) || !fail) return null;
+        fail = false;
+        return new SqlError("database or disk is full", "full");
+      };
+    };
     data.put("heard", "w/a", "abc.1");
     await run(data.written);
     await run(data.roomGivenBack);
-    // No transaction could begin for a write that may wait: its burst is ended by its wait, nothing of it committed.
-    let fail = true;
-    db().failing = (q) => {
-      if (q !== "BEGIN IMMEDIATE" || !fail) return null;
-      fail = false;
-      return new SqlError("database or disk is full", "full");
-    };
+    // No transaction could begin for a write that may wait: no burst is left without a timer, and what the device
+    // does next is written in a transaction of its own, not lost and not outside one.
+    failOnce((q) => q === "BEGIN IMMEDIATE");
     db().statements.length = 0;
     data.put("heard", "w/a", "abc.2");
-    data.put("heard", "w/a", "abc.3");
-    assert.deepEqual(db().writes(), [], "nothing is run outside a transaction");
-    await host.time.pass(HEARD_FLUSH_MS);
-    await flush();
-    assert.equal(JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0])), "abc.1");
+    assert.deepEqual(db().statements, ["BEGIN IMMEDIATE"]);
+    data.putLocal("outbox", "w/a", "1", { text: "x" });
+    assert.deepEqual(db().statements.slice(1, 2), ["BEGIN IMMEDIATE"], "begun again for the next write");
+    await run(data.written);
+    assert.equal(db().all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 1, "what the device did is kept");
+    assert.equal(heard(), "abc.1");
+    // A statement fails for want of room, which ends SQLite's transaction: the cursor written after it in the same
+    // burst is rolled back with it, never committed alone past the items the burst lost.
     data.put("heard", "w/a", "abc.4");
     await run(data.written);
-    assert.equal(JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0])), "abc.4", "the next burst is written as any");
-    // A burst rolled back takes its cursor with it: the items it lost were not heard.
-    fail = true;
-    db().failing = (q) => {
-      if (q !== "COMMIT" || !fail) return null;
-      fail = false;
-      return new SqlError("database or disk is full", "full");
-    };
+    failOnce((q) => /INTO transcript/.test(q));
     data.putItemsSoon("w/a", "bg", [[0, { text: "lost" }]]);
     data.put("heard", "w/a", "abc.5");
+    data.putLocal("outbox", "w/a", "2", { text: "y" });
     await run(data.written);
     await flush();
     assert.equal(db().all("SELECT count(*) FROM transcript WHERE station = 'w/a' AND session = 'bg'")[0]![0], 0);
-    assert.equal(JSON.parse(String(db().all("SELECT json FROM workspace_pref WHERE key = 'heard:w/a'")[0]![0])), "abc.4", "not past what was rolled back");
+    assert.equal(heard(), "abc.4", "not past what was rolled back");
+    assert.equal(db().all("SELECT count(*) FROM outbox WHERE station = 'w/a'")[0]![0], 2, "what the device did is written again on its own");
+    // A commit that fails: the same.
+    failOnce((q) => q === "COMMIT");
+    data.putItemsSoon("w/a", "bg", [[0, { text: "lost" }]]);
+    data.put("heard", "w/a", "abc.6");
+    await run(data.written);
+    await flush();
+    assert.equal(db().all("SELECT count(*) FROM transcript WHERE station = 'w/a' AND session = 'bg'")[0]![0], 0);
+    assert.equal(heard(), "abc.4");
+  } finally { runner.shutdown(); }
+});
+
+test("room_is_made_past_fifty_transcripts_a_page_reads_and_room_again_is_not_told_by_another_account_s_commit", async () => {
+  const owners: Record<string, string[]> = { s1: ["w"], s2: ["v"] };
+  const host = new FakeHost();
+  const runner = new Runner(host.time.clock);
+  host.openDbHook = () => new NodeSql(new DatabaseSync(":memory:"), true);
+  const data = new Data(host, runner, { owner: (ws) => Object.entries(owners).find(([, l]) => l.includes(ws))?.[0] ?? null, kept: 1024 * 1024 });
+  await run(data.open(["s1", "s2"]));
+  try {
+    // Fifty small transcripts a page reads, used before one large one nothing reads.
+    const stops: (() => void)[] = [];
+    for (let i = 0; i < 50; i++) {
+      const id = `r${String(i).padStart(2, "0")}`;
+      data.putItems("transcript", "w/a", id, [[0, { kind: "user", text: "a" }]]);
+      stops.push(observe(() => void data.slackSaid("w/a", id), () => {}));
+    }
+    data.putItems("transcript", "w/a", "zz-large", Array.from({ length: 120 }, (_, i) => [i, { kind: "user", text: `${i} ${"字".repeat(4000)}` }] as [number, J]));
+    await run(data.written);
+    await flush();
+    assert.equal(data.logNumbers("transcript", "w/a", "zz-large").length, 0, "the one nothing reads is let go, though fifty before it are read");
+    assert.equal(data.logNumbers("transcript", "w/a", "r00").length, 1);
+    // Room owed in one account's database is not told as another's commits.
+    const again: number[] = [];
+    data.onRoomAgain = () => again.push(1);
+    data.set({ topic: "overview", station: "w/a" }, { counts: { running: 1 }, pad: "x".repeat(2_000_000) });
+    data.putItems("entry", "w/a", "1", [[1, { n: 1, kind: "message", text: "a", at: 1 }]]);
+    await run(data.written);
+    await host.time.pass(60_000, 10_000);
+    data.putItems("entry", "w/a", "1", [[2, { n: 2, kind: "message", text: "b", at: 2 }]]);
+    await run(data.written);
+    await flush();
+    assert.equal(data.transcriptOverBudget("w/a", "bg"), true);
+    // (its room made in a burst not committed yet, which may still be rolled back)
+    data.db("s1")!.soon(60_000, () => data.set({ topic: "overview", station: "w/a" }, { counts: { running: 1 } }));
+    assert.ok(data.db("s1")!.used() <= 1024 * 1024);
+    data.putItems("entry", "v/a", "1", [[1, { n: 1, kind: "message", text: "a", at: 1 }]]);
+    await run(data.db("s2")!.written);
+    assert.deepEqual(again, [], "another database's commit says nothing of this one");
+    await run(data.written);
+    assert.deepEqual(again, [1], "its own commit does");
+    for (const stop of stops) stop();
   } finally { runner.shutdown(); }
 });

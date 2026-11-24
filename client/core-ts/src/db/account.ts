@@ -98,8 +98,8 @@ export class AccountDb {
   readonly kept: KeptValues;
   readonly #runner: Runner;
   #inTx = false;
-  /// The burst under way has no transaction (its BEGIN failed): nothing more is run in it, and it is ended as one
-  /// that failed, so that no statement of it is committed alone.
+  /// The burst under way failed and no transaction could be begun again for the rest of it: nothing more of it is
+  /// run until one can, so that no statement of it is committed alone.
   #noTx = false;
   /// The burst under way holds only writes that may wait (`soon`): no commit is asked for yet.
   #waits = false;
@@ -233,31 +233,55 @@ export class AccountDb {
   #write(fn: () => void): void {
     if (this.readOnly || this.#closed) return;
     try {
-      if (this.#noTx) return;
       const soon = this.#soonMs;
       if (!this.#inTx) {
+        // (a burst is one only once its transaction began: where none can, nothing is left open, this write is not
+        // made, as ever, and the next one tries again)
+        this.sql.exec("BEGIN IMMEDIATE");
         this.#inTx = true;
-        // (asked for, or its wait's end set, before the transaction is begun: one that cannot begin is ended too)
         if (soon === null) Queue.offerUnsafe(this.#bursts, undefined);
         else {
           this.#waits = true;
           this.#waitEnd(soon);
         }
-        try {
+      } else {
+        if (this.#noTx) {
           this.sql.exec("BEGIN IMMEDIATE");
-        } catch (e) {
-          this.#noTx = true;
-          this.#hurry();
-          throw e;
+          this.#noTx = false;
         }
-      } else if (soon === null) this.#hurry();
-      else if (this.#waits) this.#waitEnd(soon);
+        if (soon === null) this.#hurry();
+        else if (this.#waits) this.#waitEnd(soon);
+      }
       fn();
     } catch (e) {
-      // SQLite could not write (no room, the file gone): the burst is rolled back as it is committed, and said.
       if (!(e instanceof SqlError)) throw e;
+      if (!this.#inTx) return this.#said(e);
+      // SQLite could not write (no room, the file gone): the burst is rolled back as it is committed, and said.
       this.#failed ??= e;
+      // SQLite may have ended the transaction itself (a full disk does): what the burst still runs is run in one
+      // begun again, rolled back with it, so that nothing of a burst that failed (a cursor past what it lost) is
+      // committed alone. Where none can be begun, nothing more of it is run until one can.
+      try {
+        this.sql.exec("ROLLBACK");
+      } catch {
+        // Ended already.
+      }
+      try {
+        this.sql.exec("BEGIN IMMEDIATE");
+        this.#noTx = false;
+      } catch {
+        this.#noTx = true;
+      }
+      this.#hurry();
     }
+  }
+
+  /// What SQLite could not do, said: a full disk as the database's note (until a burst is written again), else logged.
+  #said(error: SqlError): void {
+    if (error.kind === "full" && !this.#full) {
+      this.#full = true;
+      this.onFull(true, error.message);
+    } else if (error.kind !== "full") console.error("still.fail core: a write failed:", error.message);
   }
 
   /// Runs `fn`, whose writes may wait `ms` for their commit: they are in the burst under way, or open one that is
@@ -369,10 +393,7 @@ export class AccountDb {
           this.#unwritten = again;
         }
       }
-      if (error.kind === "full" && !this.#full) {
-        this.#full = true;
-        this.onFull(true, error.message);
-      } else if (error.kind !== "full") console.error("still.fail core: a write failed:", error.message);
+      this.#said(error);
     }
     this.onCommit(changes);
     this.#settled();

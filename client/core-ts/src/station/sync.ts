@@ -395,7 +395,8 @@ export class StationsSync {
       }
     }
     // (owed since its database had room again while it was not reached: `roomAgain`)
-    if (how.restored || this.#sweepOwed.delete(address)) this.#historyStart(address);
+    const owed = this.#sweepOwed.delete(address);
+    if (how.restored || owed) this.#historyStart(address);
   }
 
   // ── reading what a station holds ──

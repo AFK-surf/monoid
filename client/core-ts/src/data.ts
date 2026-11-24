@@ -465,7 +465,7 @@ export class Data {
         }
       }
       if (db.readOnly) note = { kind: "newer", detail: null };
-      db.onCommit = (changes) => this.#committed(changes);
+      db.onCommit = (changes) => this.#committed(db, changes);
       for (const [d, maker] of this.#makers) db.kept.made(d, maker);
       db.onFull = (full, error) => this.#setNote(sub, full ? { kind: "full", detail: error } : null);
       this.#dbs.set(sub, db);
@@ -582,10 +582,10 @@ export class Data {
     return this.#ofWorkspace(workspaceOf(station));
   }
 
-  #committed(changes: Changes): void {
-    // (asked at each commit while one is owed, a few numbers of SQLite's: the commit that made the room may be the
-    // last for long)
-    for (const db of [...this.#roomOwed]) {
+  #committed(db: AccountDb, changes: Changes): void {
+    // (asked at each commit of its own while one is owed, a few numbers of SQLite's: the commit that made the room
+    // may be the last for long; never as another database commits, its own burst maybe still to be rolled back)
+    if (this.#roomOwed.has(db)) {
       if (this.#dbs.get(db.sub) !== db) this.#roomOwed.delete(db);
       else if (db.used() <= this.#kept) {
         this.#roomOwed.delete(db);
@@ -1794,12 +1794,19 @@ export class Data {
         this.flushMd();
         const to = this.#kept * KEPT_TO;
         const gone = new Set<string>();
+        // (how many are asked for at once: more where all of those are shown or read, until none is left to ask for)
+        let most = 50;
         for (;;) {
-          const logs = db.transcriptsByUse(50).filter((l) => {
+          const asked = db.transcriptsByUse(most);
+          const logs = asked.filter((l) => {
             const key = `transcript\u0001${l.station}\u0001${l.id}`;
             return !this.#shown.has(key) && !gone.has(key) && !this.#transcriptRead(l.station, l.id);
           });
           if (logs.length === 0) {
+            if (asked.length >= most) {
+              most *= 4;
+              continue;
+            }
             exhausted = true;
             return;
           }
