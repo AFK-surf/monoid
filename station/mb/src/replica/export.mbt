@@ -114,6 +114,7 @@ priv struct Places {
 pub struct TestFaults {
   lstat_err : Set[String]
   readdir_err : Set[String]
+  finder_readdir_err : Set[String]
   forbid_readdir : Set[String]
   read_short : Set[String]
   read_short_after_first : Set[String]
@@ -133,6 +134,7 @@ pub fn TestFaults::from_jvalue(v : JValue) -> TestFaults? {
   Some({
     lstat_err: set_of("lstat_err"),
     readdir_err: set_of("readdir_err"),
+    finder_readdir_err: set_of("finder_readdir_err"),
     forbid_readdir: set_of("forbid_readdir"),
     read_short: set_of("read_short"),
     read_short_after_first: set_of("read_short_after_first"),
@@ -1470,7 +1472,16 @@ async fn Exporter::export_transcripts(
   ws_of_session : (JValue?) -> String,
   say : (String, JValue) -> Unit,
 ) -> Bool {
-  let finder = @locate.Finder::new(self.host, self.files.sep)
+  let finder_readdir_err : Set[String] = Set([])
+  if self.test_faults is Some(f) {
+    for d in f.readdir_err {
+      finder_readdir_err.add(d)
+    }
+    for d in f.finder_readdir_err {
+      finder_readdir_err.add(d)
+    }
+  }
+  let finder = @locate.Finder::new(self.host, self.files.sep, readdir_err=finder_readdir_err)
   let by_ws : Map[String, Map[String, String?]] = Map([])
   let unreadable_dirs_by_ws : Map[String, Set[String]] = Map([])
   let unreadable_paths_by_ws : Map[String, Set[String]] = Map([])
@@ -1532,6 +1543,11 @@ async fn Exporter::export_transcripts(
     let valid_sources = sources.filter(r => @locate.runtime_kind(r.runtime))
     if valid_sources.length() > 0 {
       let (located, _) = finder.sources(self.data_dir, [], valid_sources, places, anywhere=true)
+      for d in finder.take_failed_dirs() {
+        if !self.files.is_dir_missing(d) {
+          add_unreadable_dir(d)
+        }
+      }
       for t in located {
         let (path, kind) = t
         let actual = if self.files.exists(path) { path } else { path + ".zst" }

@@ -590,14 +590,16 @@ export class S3Place implements Place {
     }
     const prev = this.#lastOrphanHead.get(scopeKey);
     const incremental = prev !== undefined && prev.gen === head.gen;
-    for (const h of Object.keys(head.files)) {
+    for (const h in head.files) {
+      if (!Object.hasOwn(head.files, h)) continue;
       if (incremental && Object.hasOwn(prev.files, h)) continue;
       orphans.delete(this.fileTag(h));
       if (orphans.size === 0) break;
     }
     if (orphans.size > 0 && head.transcriptFiles !== undefined) {
       const prevTf = incremental ? prev.transcriptFiles : undefined;
-      for (const h of Object.keys(head.transcriptFiles)) {
+      for (const h in head.transcriptFiles) {
+        if (!Object.hasOwn(head.transcriptFiles, h)) continue;
         if (prevTf !== undefined && Object.hasOwn(prevTf, h)) continue;
         orphans.delete(this.fileTag(h));
         if (orphans.size === 0) break;

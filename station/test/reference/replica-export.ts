@@ -19,14 +19,14 @@
 //   and there no more): a `gone` record.
 // A batch is read inside one read transaction: what it says is the database at one moment.
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, opendirSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { zstdCompressSync } from "node:zlib";
 import { runtimeKind } from "../../src/agents/runtime.ts";
 import { type Places, type Passed, type Told, nothingTold } from "../../src/replica/export.ts";
 import { type Head, type Rec, type Row, BATCH, BATCH_BYTES, Folded, TABLES, VERSION, attachedPaths, batchName, batchSpan, decodeBatch, encodeBatch, genName, keyOf, runsOf } from "./replica-format.ts";
-import { storage, transcriptSources } from "./transcript-paths.ts";
+import { type Look, type Looking, storage, transcriptSourcesLooking } from "./transcript-paths.ts";
 export * from "../../src/replica/export.ts";
 
 export const CHUNK_PLAIN_BYTES = 4 * 1024 * 1024;
@@ -221,6 +221,7 @@ export type ExporterOptions = {
   testFaults?: {
     onReaddir?: (dir: string) => void;
     readdirError?: (path: string) => NodeJS.ErrnoException | null;
+    finderReaddirError?: (path: string) => NodeJS.ErrnoException | null;
     lstatError?: (path: string) => NodeJS.ErrnoException | null;
     readShort?: (path: string, offset: number) => boolean;
     otherKind?: (path: string) => boolean;
@@ -962,6 +963,74 @@ export class Exporter {
     }
   }
 
+  #lookTranscriptSources<T>(looking: Looking<T>, onUnreadableDir: (dir: string) => void): T {
+    const rolloutUnder = (dir: string, id: string): string | null => {
+      let entries;
+      try {
+        const finderFault = this.#o.testFaults?.finderReaddirError?.(dir);
+        if (finderFault) throw finderFault;
+        entries = this.#readdirEntries(dir);
+      } catch (e) {
+        if (!isMissingError(e)) onUnreadableDir(dir);
+        return null;
+      }
+      for (const entry of entries) {
+        const name = entry.name;
+        const p = join(dir, name);
+        let isSubDir = entry.isDirectory();
+        if (!isSubDir && !entry.isFile()) {
+          try {
+            isSubDir = statSync(p).isDirectory(); // sync: in the export's own thread (worker.ts)
+          } catch {
+            isSubDir = false;
+          }
+        }
+        if (isSubDir) {
+          const found = rolloutUnder(p, id);
+          if (found !== null) return found;
+        } else if (name.startsWith("rollout-") && name.endsWith(`${id}.jsonl`)) {
+          return p;
+        } else if (name.startsWith("rollout-") && name.endsWith(`${id}.jsonl.zst`)) {
+          return p.slice(0, -".zst".length);
+        }
+      }
+      return null;
+    };
+    const answer = (look: Look): unknown => {
+      switch (look.ask) {
+        case "there":
+          return existsSync(look.path); // sync: in the export's own thread (worker.ts)
+        case "file":
+          try {
+            return statSync(look.path).isFile(); // sync: in the export's own thread (worker.ts)
+          } catch {
+            return false;
+          }
+        case "names":
+          try {
+            this.#o.testFaults?.onReaddir?.(look.path);
+            const faultErr = this.#o.testFaults?.finderReaddirError?.(look.path) ?? this.#o.testFaults?.readdirError?.(look.path);
+            if (faultErr) throw faultErr;
+            return readdirSync(look.path); // sync: in the export's own thread (worker.ts)
+          } catch (e) {
+            if (!isMissingError(e)) onUnreadableDir(look.path);
+            return null;
+          }
+        case "real":
+          try {
+            return realpathSync(look.path); // sync: in the export's own thread (worker.ts)
+          } catch {
+            return null;
+          }
+        case "rollout":
+          return rolloutUnder(look.path, look.id);
+      }
+    };
+    for (let step = looking.next(); ; step = looking.next(answer(step.value))) {
+      if (step.done) return step.value;
+    }
+  }
+
   #exportTranscripts(
     outs: Map<string, Out>,
     sessRows: Row[],
@@ -1020,7 +1089,10 @@ export class Exporter {
         .filter((r) => runtimeKind(r.runtime) !== null)
         .map((r) => ({ id: r.id, runtime: runtimeKind(r.runtime)!, profile: r.profile }));
       if (validSources.length > 0) {
-        const found = transcriptSources(this.#o.dataDir, [], validSources, places, { anywhere: true });
+        const found = this.#lookTranscriptSources(
+          transcriptSourcesLooking(this.#o.dataDir, [], validSources, places, { anywhere: true }),
+          addUnreadableDir,
+        );
         for (const t of found.paths) {
           addPath(storage(t.path));
           if (t.runtime === "claude") {

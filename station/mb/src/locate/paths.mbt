@@ -19,11 +19,21 @@ pub struct Finder {
   priv elsewhere : Map[String, String?]
   priv rollouts : Map[String, String]
   priv said : Map[String, Map[String, Said]]
+  priv failed_dirs : Set[String]
+  priv readdir_err : Set[String]
 }
 
 ///|
-pub fn Finder::new(host : @host.Host, sep : String) -> Finder {
-  { host, sep, elsewhere: Map([]), rollouts: Map([]), said: Map([]) }
+pub fn Finder::new(host : @host.Host, sep : String, readdir_err? : Set[String] = Set([])) -> Finder {
+  { host, sep, elsewhere: Map([]), rollouts: Map([]), said: Map([]), failed_dirs: Set([]), readdir_err }
+}
+
+///|
+/// Returns and clears directories whose `fs.readdir` failed during discovery (for unreadable-path protection).
+pub fn Finder::take_failed_dirs(self : Finder) -> Array[String] {
+  let out = self.failed_dirs.iter().collect()
+  self.failed_dirs.clear()
+  out
 }
 
 ///|
@@ -69,21 +79,35 @@ fn Finder::kept(self : Finder, path : String) -> Bool {
 ///|
 /// A directory's names, none when it cannot be read.
 fn Finder::entries(self : Finder, dir : String) -> Array[String]? {
+  if self.readdir_err.contains(dir) {
+    self.failed_dirs.add(dir)
+    return None
+  }
   match (try { Ok(self.host.shell_sync("fs.readdir", { "path": Json::string(dir) })) } catch { e => Err(e) }) {
     Ok(Array(names)) => Some(names.filter_map(n => if n is String(s) { Some(s) } else { None }))
-    _ => None
+    _ => {
+      self.failed_dirs.add(dir)
+      None
+    }
   }
 }
 
 ///|
 /// A directory's names with their kinds as the directory says them ("file", "dir", "link", "other").
 fn Finder::typed_entries(self : Finder, dir : String) -> Array[(String, String)]? {
+  if self.readdir_err.contains(dir) {
+    self.failed_dirs.add(dir)
+    return None
+  }
   match (try { Ok(self.host.shell_sync("fs.readdir", { "path": Json::string(dir), "types": true })) } catch { e => Err(e) }) {
     Ok(Array(entries)) =>
       Some(
         entries.filter_map(e => if e is Array([String(name), String(kind)]) { Some((name, kind)) } else { None }),
       )
-    _ => None
+    _ => {
+      self.failed_dirs.add(dir)
+      None
+    }
   }
 }
 

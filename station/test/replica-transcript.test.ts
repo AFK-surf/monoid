@@ -14,7 +14,7 @@ import { TestClock } from "effect/testing";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { Fibers } from "../src/ops/fibers.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { claudeProject } from "../src/read/transcript.ts";
+import { claudeProject, resetTranscriptLocateCache } from "../src/read/transcript.ts";
 import type { NormalizedBackupConfig, NormalizedS3Target } from "../src/replica/backup-config.ts";
 import { Copies } from "../src/replica/copies.ts";
 import { PeerPlace, serve } from "../src/replica/peers.ts";
@@ -1568,6 +1568,30 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
   writeFileSync(claudeTrPath, '{"role":"user","text":"hello"}\n');
   writeFileSync(claudeSubPath, '{"sub":true}\n');
 
+  // Dedicated Claude session discovered via Finder scanning `transcripts/claude/` (workspace != slug)
+  const finderEioId = "cc-finder-eio";
+  const claudeProjectsDir = join(s.data, "transcripts", "claude");
+  const finderEioSlugDir = join(claudeProjectsDir, "-finder-eio-slug");
+  mkdirSync(finderEioSlugDir, { recursive: true });
+  const finderEioTrPath = join(finderEioSlugDir, `${finderEioId}.jsonl`);
+  writeFileSync(finderEioTrPath, '{"role":"user","text":"finder-eio-keep"}\n');
+  const finderEioRoom = join(s.data, "sessions", "chat", "chat:claude-finder-eio", "workspace");
+  mkdirSync(finderEioRoom, { recursive: true });
+  s.store.insertSession({
+    key: "chat:claude-finder-eio",
+    connect: "chat",
+    runtime: "claude",
+    profile: "cc",
+    workspace: finderEioRoom,
+    token: "tok-cc-finder-eio",
+    createdAt: 2,
+    lastActiveAt: 2,
+    ws: null,
+  });
+  s.store.setRuntimeSessionId("chat:claude-finder-eio", finderEioId);
+  const tFinderEio = s.store.openThread("chat", "C", "ts-cc-finder-eio", "Claude Finder EIO", "p@x").id;
+  s.store.joinThread(tFinderEio, "chat:claude-finder-eio", "chat");
+
   // Sibling dir notes2 to verify strict directory boundary matching (notes vs notes2)
   const notesDir = join(s.brain, "notes");
   const notes2File = join(s.brain, "notes2", "sibling.txt");
@@ -1590,6 +1614,7 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
   type FaultSpec = {
     lstat_err?: string[];
     readdir_err?: string[];
+    finder_readdir_err?: string[];
     forbid_readdir?: string[];
     read_short?: string[];
     read_short_after_first?: string[];
@@ -1599,6 +1624,7 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
   const runDeterministicSuite = async (mode: "ts" | "mb") => {
     const replica = join(s.data, `replica-faults-${mode}`);
     let activeFaults: FaultSpec = {};
+    const readdirVisited = new Set<string>();
     let exporter: Exporter | null = null;
     let mb: Awaited<ReturnType<typeof makeMbExportHelper>> | null = null;
     if (mode === "ts") {
@@ -1611,10 +1637,12 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
         chunkBytes: 16,
         testFaults: {
           onReaddir: (d) => {
+            readdirVisited.add(d);
             if (activeFaults.forbid_readdir?.includes(d)) throw new Error(`BUG: descended into forbidden directory ${d}`);
           },
           lstatError: (p) => (activeFaults.lstat_err?.includes(p) ? mkErr("EIO") : null),
           readdirError: (d) => (activeFaults.readdir_err?.includes(d) ? mkErr("EACCES") : null),
+          finderReaddirError: (d) => (activeFaults.finder_readdir_err?.includes(d) ? mkErr("EIO") : null),
           readShort: (p, offset) =>
             Boolean(activeFaults.read_short?.includes(p) || (offset > 0 && activeFaults.read_short_after_first?.includes(p))),
           otherKind: (p) => Boolean(activeFaults.other_kind?.includes(p)),
@@ -1742,6 +1770,7 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     now += 10_000;
     writeFileSync(otherFile, "other-file-content\n");
     writeFileSync(otherInside, "other-dir-inside-content\n");
+    readdirVisited.clear();
     await setFaults({
       other_kind: [otherFile, otherDir, otherBad, scratchDir],
       lstat_err: [otherBad],
@@ -1749,6 +1778,9 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     });
     const pOther = await pass({ ...nothingTold(), transcripts: true });
     assert.equal(pOther.wrote, 1);
+    if (mode === "ts") {
+      assert.equal(readdirVisited.has(scratchDir), false, "TS: other-kind scratch dir must have 0 readdir visits");
+    }
     const afterOther = readStatePaths(replica);
     assert.ok(afterOther.some((r) => r.path === otherFile), `${mode}: other-kind file exported via lstat dispatch`);
     assert.ok(afterOther.some((r) => r.path === otherInside), `${mode}: other-kind dir recursed via lstat dispatch`);
@@ -1774,12 +1806,28 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     const extTarget = dataDir(`d71-swap-ext-${mode}`);
     writeFileSync(join(extTarget, "a.txt"), "external-secret\n");
     symlinkSync(extTarget, swapDir);
+    readdirVisited.clear();
     await setFaults({ readdir_err: [extTarget, swapDir], forbid_readdir: [extTarget, swapDir] });
     const pSwap = await pass({ ...nothingTold(), transcripts: true });
     assert.equal(pSwap.wrote, 1);
+    if (mode === "ts") {
+      assert.equal(readdirVisited.has(extTarget), false, "TS: symlink external target must have 0 readdir visits");
+      assert.equal(readdirVisited.has(swapDir), false, "TS: symlinked dir must have 0 readdir visits");
+    }
     assert.ok(!readStatePaths(replica).some((r) => r.path === swapFile), `${mode}: dir replaced by symlink emits tr_del without following target`);
     await setFaults({});
     rmSync(swapDir, { force: true });
+
+    // (j) R3: Finder opendir succeeds (dir is 0o755!) but mid-iteration readdir hits EIO -> ONLY Finder failed_dirs
+    //     saves existing Claude transcript (dir_unreadable_checked sees 0o755 as readable!) -> 0 tr_del (root-safe, TS + MB)
+    assert.ok(readStatePaths(replica).some((r) => r.path === finderEioTrPath), `${mode}: baseline has finderEioTrPath`);
+    resetTranscriptLocateCache();
+    now += 10_000;
+    await setFaults({ finder_readdir_err: [claudeProjectsDir] });
+    const pFinderEio = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(pFinderEio.wrote, 0, `${mode}: Finder mid-iteration EIO on 0o755 dir preserves transcript with 0 tr_del`);
+    assert.ok(readStatePaths(replica).some((r) => r.path === finderEioTrPath));
+    await setFaults({});
   };
 
   await runDeterministicSuite("ts");
@@ -1839,8 +1887,10 @@ test("D71: unreadable directory / lstat / discovery-parent / fresh & mid short-r
     const convDir = join(s.cli, "conversations");
     const dbPath = join(convDir, `${s.agyId}.db`);
     try {
+      // Clear TS `elsewhere` cache so Finder must actually readdir `transcripts/claude` (no stale cache hit!)
+      resetTranscriptLocateCache();
       // chmod 0o111 on `transcripts/claude` (Finder's scan dir!): lstat on <slug> and <id>.jsonl SUCCEEDS,
-      // Finder's readdir FAILS, so ONLY ancestor dir readability check saves finderTrPath from tr_del!
+      // Finder's readdir FAILS, so ONLY Finder failed_dirs + ancestor dir readability check saves finderTrPath from tr_del!
       chmodSync(finderProjectsDir, 0o111);
       now += 10_000;
       assert.equal(expOsTs.pass({ ...nothingTold(), transcripts: true }).wrote, 0, "TS: chmod 0o111 on Finder projects dir preserves transcript");

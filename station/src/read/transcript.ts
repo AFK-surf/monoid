@@ -99,6 +99,12 @@ export function onTranscriptHintsChanged(listener: (id: string) => void): () => 
   return () => { hintListeners.delete(listener); };
 }
 
+/// Clears in-process `elsewhere` and `rollouts` caches (for tests verifying fresh Finder directory scans).
+export function resetTranscriptLocateCache(): void {
+  elsewhere.clear();
+  rollouts.clear();
+}
+
 /// Where a session's transcript is in a directory of the runtime's transcripts (a home's, `transcriptDir`, or the shared
 /// place), if it is there. `placed`: a Claude one was looked for in its session's places first. `anywhere`: one not
 /// found there yet is looked for in every project of the directory (read/transcript-soon.ts `transcriptPathsSoon`).
