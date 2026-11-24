@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.74 | 66.69 | 100.52 | 128.91 |
 | [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
 | [9160e1497](https://github.com/AFK-surf/monoid/commit/9160e1497a87565145751f7f63019b3c1cd73bc2) feat(mbui): add line numbers and pick/note annotat | 2.78 | 3.75 | 15.18 | 37.39 | 57.75 | 32.73 | 66.69 | 100.68 | 126 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2022be82c](https://github.com/AFK-surf/monoid/commit/2022be82c7ed168ca59ec597ae6f42210486f532) feat(station): add expected_card_seq CAS for Comma | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.98 | 129.73 |
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
 | [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 2.75 | 3.7 | 15 | 37.2 | 57.16 | 32.58 | 66.24 | 100.39 | 125.46 |
-| [a36442026](https://github.com/AFK-surf/monoid/commit/a3644202602ce7a3f5220f22546dc7e69c24a564) feat(pion-station): add pinned pionc toolchain, ho | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.57 | 132.4 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33f6343a7](https://github.com/AFK-surf/monoid/commit/33f6343a733c18611c050c36a5d60e3284d8c76f) fix(core): show a session's steps in flight only a | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.62 |
 | [d88076e26](https://github.com/AFK-surf/monoid/commit/d88076e26070dac0ba0a4db53614836354324ff8) ci(mbui-check): bound cache saves and let them fai | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.59 |
 | [edfc50ec5](https://github.com/AFK-surf/monoid/commit/edfc50ec59b0018d4a31d49492d139d7a471cf32) feat(pion-station): add sql_db, builder_loop, arch | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.39 |
 | [9160e1497](https://github.com/AFK-surf/monoid/commit/9160e1497a87565145751f7f63019b3c1cd73bc2) feat(mbui): add line numbers and pick/note annotat | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [2022be82c](https://github.com/AFK-surf/monoid/commit/2022be82c7ed168ca59ec597ae6f42210486f532) feat(station): add expected_card_seq CAS for Comma | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
 | [a5fea5652](https://github.com/AFK-surf/monoid/commit/a5fea565223d31ae38cfdc6c7e2d7ffc665c088a) fix(station): emit requesting phase after ACP tool | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
 | [373898795](https://github.com/AFK-surf/monoid/commit/373898795dbeb12b187a5d7efba8f726681c1d01) feat(mbui): use single-row floating liquid glass t | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.61 |
-| [a36442026](https://github.com/AFK-surf/monoid/commit/a3644202602ce7a3f5220f22546dc7e69c24a564) feat(pion-station): add pinned pionc toolchain, ho | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
