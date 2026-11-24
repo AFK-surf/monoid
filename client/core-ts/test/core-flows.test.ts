@@ -4424,3 +4424,22 @@ test("default TUI applies to new Claude chats and a manual override lasts for on
     again.close();
   }
 });
+
+test("a start is one span of its own: how long each step took, and till the person's own lock was read from the device", async () => {
+  const { host, core } = await started(base(), 1);
+  try {
+    await host.settle();
+    await host.time.pass(EXPORT_MS + 100);
+    const spans = exports(host).flatMap(spansOf).filter((s) => s.name === "core.start");
+    assert.equal(spans.length, 1, "told once");
+    const start = spans[0]!;
+    assert.equal(start.parentSpanId, undefined);
+    const attrs = Object.fromEntries(start.attributes.map((a: J) => [a.key, Object.values(a.value)[0]]));
+    for (const step of ["accounts", "db", "install", "attend", "rest"]) assert.ok(Number(attrs[`stillfail.ms.${step}`]) >= 0, `${step}: ${JSON.stringify(attrs)}`);
+    assert.deepEqual([Number(attrs["stillfail.accounts"]), attrs["stillfail.own_lock_read"]], [1, true]);
+    assert.ok(Number(attrs["stillfail.own_lock_ms"]) >= 0);
+    assert.ok(!JSON.stringify(start).includes("a@x.com"));
+  } finally {
+    core.close();
+  }
+});
