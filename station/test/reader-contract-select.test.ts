@@ -193,9 +193,9 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  const unimplEnv = resolveReaderEngine("usage-counter", {
-    config: { readers: { "usage-counter": "mb" } },
-    env: { STILLFAIL_READER_USAGE_COUNTER: "pion" },
+  const unimplEnv = resolveReaderEngine("search", {
+    config: { readers: { search: "mb" } },
+    env: { STILLFAIL_READER_SEARCH: "pion" },
     hasPionBinary: true,
   });
   assert.equal(unimplEnv.engine, "mb");
