@@ -368,6 +368,21 @@ impl @hostapi.Host for Native with local_font_families(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with face_set_ligatures(_, face, on) {
+  face_set_ligatures(face, on)
+}
+
+///|
+impl @hostapi.Host for Native with set_host_autospace(_, on) {
+  set_host_autospace(on)
+}
+
+///|
+impl @hostapi.Host for Native with local_font_info(_) {
+  local_font_info()
+}
+
+///|
 impl @hostapi.Host for Native with atlas_generation(_) {
   atlas_generation()
 }

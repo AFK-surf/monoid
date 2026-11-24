@@ -4548,7 +4548,7 @@
   // the face a style is set in: the one it names; else code's (style bit 2), what people wrote's (bit 16), the app's
   // words' (not the serif face's); 0 none
   const faceOf = (style) => {
-    const f = (style >> 8) & 15;
+    const f = (style >> 8) & 31;
     if (f) return faces.has(f) ? f : 0;
     if (style & 2) return faces.has(3) ? 3 : 0;
     if (style & 16 && faces.has(2)) return 2;
@@ -4628,18 +4628,32 @@
     entries.length = 0;
     keysStale = false;
   }
+  const faceGen = new Map();
+  const faceNoLig = new Set();
+  const nextFaceGen = (face) => {
+    const g = (faceGen.get(face) || 0) + 1;
+    faceGen.set(face, g);
+    return g;
+  };
   // a face's descriptors: its weight (0: variable, all of them); the words' faces (1, 2) with Inter's single-storey a and
   // open digits, as the Mac's host sets them (apple_text.m face_font: cv11, ss01; a face without them is as it is)
-  const faceDescriptors = (face, weight) => ({
-    weight: weight ? String(weight) : '1 1000',
-    ...(face === 1 || face === 2 ? { featureSettings: '"cv11" 1, "ss01" 1' } : {}),
-  });
+  const faceDescriptors = (face, weight) => {
+    const feats = [];
+    if (face === 1 || face === 2) feats.push('"cv11" 1, "ss01" 1');
+    if (faceNoLig.has(face)) feats.push('"calt" 0, "liga" 0, "clig" 0');
+    return {
+      weight: weight ? String(weight) : '1 1000',
+      ...(feats.length ? { featureSettings: feats.join(', ') } : {}),
+    };
+  };
   // a face's file (a URL), for a weight (0: variable, all of them): drawn in once the page has loaded it
   H.faceAdd = (face, url, weight) => {
-    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
+    const gen = faceGen.get(face) || 0;
     const ff = new FontFace(`mbface${face}`, `url(${JSON.stringify(url)})`, faceDescriptors(face, weight));
     faceFile(face, `url(${JSON.stringify(url)})`, weight);
     ff.load().then(() => {
+      if ((faceGen.get(face) || 0) !== gen) return;
       document.fonts.add(ff);
       faces.add(face);
       textChanged();
@@ -4649,10 +4663,12 @@
   };
   // the same, the file's bytes given
   H.faceAddBytes = (face, data, weight) => {
-    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
+    const gen = faceGen.get(face) || 0;
     const ff = new FontFace(`mbface${face}`, data, faceDescriptors(face, weight));
     faceFile(face, data, weight);
     ff.load().then(() => {
+      if ((faceGen.get(face) || 0) !== gen) return;
       document.fonts.add(ff);
       faces.add(face);
       textChanged();
@@ -4660,6 +4676,35 @@
     }, () => {});
     return true;
   };
+  // Note: Web Canvas 2D renders cluster-by-cluster via fillText so cross-character programming ligatures are not shown
+  // on web; we still track faceNoLig and reload FontFace descriptors for parity.
+  H.faceSetLigatures = (face, on) => {
+    if (!(face > 0 && face < 32)) return;
+    const noLig = !on;
+    if (faceNoLig.has(face) === noLig) return;
+    if (noLig) faceNoLig.add(face);
+    else faceNoLig.delete(face);
+    const files = faceFiles.get(face);
+    if (!files || !files.length || typeof FontFace !== 'function') return;
+    const gen = nextFaceGen(face);
+    for (const ff of [...document.fonts]) {
+      const fam = ff.family.replace(/"/g, '');
+      if (fam === `mbface${face}`) document.fonts.delete(ff);
+    }
+    Promise.all(files.map(([src, weight]) => {
+      const ff = new FontFace(`mbface${face}`, src, faceDescriptors(face, weight));
+      return ff.load().then(() => {
+        if (faceGen.get(face) !== gen) return;
+        document.fonts.add(ff);
+      }, () => {});
+    })).then(() => {
+      if (faceGen.get(face) !== gen) return;
+      textChanged();
+      H.requestFrame();
+    });
+  };
+  H.setHostAutospace = () => {};
+  H.localFontInfo = () => '';
   // A face's CJK companion (@webpage.set_cjk_face): the system's CJK faces drawn, within the face's family, for the
   // CJK marks alone (its unicode-range: Han, kana, bopomofo, CJK punctuation, full-width forms; the Latin quotes and
   // dashes left to the face itself), each of the nine weights set in the one `step` heavier (a Latin face's 400 beside
@@ -4696,7 +4741,7 @@
     cjkLoaded.delete(face);
   };
   H.setCjkFace = (face, weightStep, families) => {
-    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
     const step = Number.isFinite(weightStep) ? Math.round(weightStep / 100) * 100 : 100;
     const fams = Array.isArray(families) && families.length ? families.map(String) : CJK_FAMILIES;
     cjkForget(face);
@@ -4731,6 +4776,8 @@
     return true;
   };
   H.faceClear = (face) => {
+    nextFaceGen(face);
+    faceNoLig.delete(face);
     faceFiles.delete(face);
     cjkForget(face);
     narrowFaces.delete(face);
