@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [161c998db](https://github.com/AFK-surf/monoid/commit/161c998dbd4aa80f7c7614497057e2dc35fce660) fix(ui): open the paste bar on a tap at a field's  | 2.77 | 3.73 | 15.11 | 37.31 | 57.5 | 32.66 | 66.47 | 100.55 | 117.96 |
 | [e7300722f](https://github.com/AFK-surf/monoid/commit/e7300722fca7dc951cb3f09c5856262895cd61df) feat(mbui,station): allow cancelling sign-in cards | 2.77 | 3.73 | 15.11 | 37.3 | 57.49 | 32.66 | 66.47 | 100.55 | 127.16 |
 | [bc4226870](https://github.com/AFK-surf/monoid/commit/bc42268704fc17d0fa3fad77b4d0a0135168a560) ci: bound TCP SYN retries before checkout on remai | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 2.77 | 3.73 | 15.1 | 37.3 | 57.47 | 32.66 | 66.45 | 100.57 | 130.25 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d35704a0b](https://github.com/AFK-surf/monoid/commit/d35704a0bdb6f0b65f5979c4d94897174d21c646) test(station): pick an unbound usualPort in adb po | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [75f27a56e](https://github.com/AFK-surf/monoid/commit/75f27a56e9bcf2e5051976d9d7614f913ba213a0) ci: pass read-only GH_TOKEN to native-consuming jo | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 | [6d01358d6](https://github.com/AFK-surf/monoid/commit/6d01358d615fe146cd58a43a09095fbeb5cc2d68) perf(pion-rules): eliminate wasm-to-js boundary an | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
-| [2ffb45884](https://github.com/AFK-surf/monoid/commit/2ffb45884ea1350138fb869aa6315722d9987e3e) feat(pion-core): W27e pion-packages crypto-v0.4.1/ | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.48 | 133.3 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [161c998db](https://github.com/AFK-surf/monoid/commit/161c998dbd4aa80f7c7614497057e2dc35fce660) fix(ui): open the paste bar on a tap at a field's  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.59 |
 | [e7300722f](https://github.com/AFK-surf/monoid/commit/e7300722fca7dc951cb3f09c5856262895cd61df) feat(mbui,station): allow cancelling sign-in cards | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.35 |
 | [bc4226870](https://github.com/AFK-surf/monoid/commit/bc42268704fc17d0fa3fad77b4d0a0135168a560) ci: bound TCP SYN retries before checkout on remai | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.62 |
 | [da14e2943](https://github.com/AFK-surf/monoid/commit/da14e294301d815157916953b428544855a5567a) feat(pion-station): add Pion footprint worker, mb/ | 0.55 | 0.72 | 2.83 | 3.84 | 7 | 2.07 | 5.76 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d35704a0b](https://github.com/AFK-surf/monoid/commit/d35704a0bdb6f0b65f5979c4d94897174d21c646) test(station): pick an unbound usualPort in adb po | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
 | [75f27a56e](https://github.com/AFK-surf/monoid/commit/75f27a56e9bcf2e5051976d9d7614f913ba213a0) ci: pass read-only GH_TOKEN to native-consuming jo | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.46 |
 | [6d01358d6](https://github.com/AFK-surf/monoid/commit/6d01358d615fe146cd58a43a09095fbeb5cc2d68) perf(pion-rules): eliminate wasm-to-js boundary an | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.41 |
-| [2ffb45884](https://github.com/AFK-surf/monoid/commit/2ffb45884ea1350138fb869aa6315722d9987e3e) feat(pion-core): W27e pion-packages crypto-v0.4.1/ | 0.55 | 0.72 | 2.8 | 3.81 | 6.93 | 2.05 | 5.71 | 57.3 |
