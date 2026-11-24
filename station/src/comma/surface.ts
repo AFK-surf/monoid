@@ -361,7 +361,7 @@ export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
 /// itself (`task.say`, once per key).
 export type CommaChats = {
   read(ref: string, after: number, limit: number): Promise<Json>;
-  say(ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean): Promise<Json>;
+  say(ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number): Promise<Json>;
 };
 
 export class CommaSurface extends ConnectedSurface {
@@ -589,6 +589,7 @@ export class CommaSurface extends ConnectedSurface {
       tasks: TASKS_VERSION,
       task_models: models,
       ...(this.stats === null ? {} : { stats_index: 1, task_index: 1 }),
+      ...(this.chats === null ? {} : { task_say_cas: 1 }),
       ...(this.ownerEmail === null ? {} : { stillfail_owner_email: this.ownerEmail }),
       ...(activeAt === null ? {} : { stillfail_owner_active_at: activeAt }),
       ...(meta === null ? {} : { stillfail_workspace: meta }),
@@ -723,9 +724,16 @@ export class CommaSurface extends ConnectedSurface {
         if (this.chats === null || !this.inScope()) throw new Error("task.say is not something this station does in this workspace");
         const said = text(params, "text");
         if (said.trim() === "") throw new Error("text is required");
+        let expectedCardSeq: number | undefined;
+        if (params?.expected_card_seq !== undefined && params?.expected_card_seq !== null) {
+          if (typeof params.expected_card_seq !== "number" || !Number.isSafeInteger(params.expected_card_seq) || params.expected_card_seq <= 0) {
+            throw new Error("expected_card_seq must be a positive integer");
+          }
+          expectedCardSeq = params.expected_card_seq;
+        }
         // As people see who writes: its Group (several Comma workspaces and Agent Swarms may write here).
         const who = text(params, "requester_name") || text(params, "requester") || "Router";
-        const result = await this.chats.say(text(params, "task"), said, text(params, "key"), who, this.id, params?.close_card === true);
+        const result = await this.chats.say(text(params, "task"), said, text(params, "key"), who, this.id, params?.close_card === true, expectedCardSeq);
         if (!this.inScope()) throw new Error("the workspace changed while writing");
         return result;
       }

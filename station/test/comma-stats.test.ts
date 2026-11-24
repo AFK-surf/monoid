@@ -197,7 +197,7 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
   const asked: Json[] = [];
   const chats = {
     read: async (ref: string, after: number, limit: number) => (asked.push(["read", ref, after, limit]), { title: "Fix", messages: [], through: 3 }),
-    say: async (ref: string, text: string, key: string, requester: string, connect: string) => (asked.push(["say", ref, text, key, requester, connect]), { seq: 4 }),
+    say: async (ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number) => (asked.push(["say", ref, text, key, requester, connect, closeCard, expectedCardSeq]), { seq: 4 }),
   };
   const surface = new CommaSurface({ connect: "cm", server: base, token: "salix_conn_test123", name: "mac", tasks: new CommaTasks(join(dir, "tasks.json")), store: rig.store, models: () => [], stats, chats });
   const until = async (f: () => boolean) => {
@@ -215,7 +215,7 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
     assert.deepEqual([pages.length, tasks.length], [0, 0], "a locked index is retried before it is sent");
     old.exec("ROLLBACK"); locked = false;
     await until(() => metadata !== null && held.through > 0);
-    assert.deepEqual([metadata.capabilities.stats_index, metadata.capabilities.task_index], [1, 1]);
+    assert.deepEqual([metadata.capabilities.stats_index, metadata.capabilities.task_index, metadata.capabilities.task_say_cas], [1, 1, 1]);
     assert.equal(builds, 1, "connected: built once");
     const sent = pages.flatMap((p) => p.rows);
     assert.deepEqual(sent.map((r: Json) => [r.source, r.kind]), [["stillfail", "usage"], ["stillfail", "task"]]);
@@ -230,9 +230,10 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
       return answers.get(id);
     };
     assert.deepEqual((await request("r1", "task.read", { task: "7", after: 1, limit: 500 })).result, { title: "Fix", messages: [], through: 3 });
-    assert.deepEqual((await request("r2", "task.say", { task: "7", text: "选 main", key: "k1", requester: "Router", requester_name: "星火工作室" })).result, { seq: 4 });
+    assert.deepEqual((await request("r2", "task.say", { task: "7", text: "选 main", key: "k1", requester: "Router", requester_name: "星火工作室", expected_card_seq: 9 })).result, { seq: 4 });
     assert.match((await request("r3", "task.say", { task: "7", text: " " })).error, /text/);
-    assert.deepEqual(asked, [["read", "7", 1, 100], ["say", "7", "选 main", "k1", "星火工作室", "cm"]]);
+    assert.match((await request("r4", "task.say", { task: "7", text: "选 main", expected_card_seq: 0 })).error, /expected_card_seq/);
+    assert.deepEqual(asked, [["read", "7", 1, 100], ["say", "7", "选 main", "k1", "星火工作室", "cm", false, 9]]);
 
     // Changed: the next page carries only what changed.
     stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 2)], {}, [chat(7, "need_human")])], [], FROM);

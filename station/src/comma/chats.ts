@@ -24,12 +24,22 @@ class AlreadySaid extends Error {
   constructor(write: RouterWrite) { super("Router key already recorded"); this.write = write; }
 }
 
+export type RouterSay = {
+  thread: number;
+  text: string;
+  key: string;
+  requester: string;
+  connect: string;
+  closeCard?: boolean;
+  expectedCardSeq?: number;
+};
+
 /// The older process only knows the other database. Reject while it is still alive rather than letting a timed-out
 /// request take effect later, after its caller has already been told it failed.
 export function routerSaysAfter(hub: Hub, stats: CommaStats, previousExited: Promise<void>) {
   let ready = false;
   void previousExited.then(() => { ready = true; }, () => {});
-  return (workspace: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string; closeCard?: boolean }): number => {
+  return (workspace: string | null, w: RouterSay): number => {
     if (!ready) throw new Error("the previous station is still handing over; retry the write");
     return routerSays(hub, stats, workspace, w);
   };
@@ -89,7 +99,7 @@ export async function routerReads(stats: CommaStats, reads: Pick<WorkspaceReads,
 /// The Router's message in chat `thread` of this station, as `requester` of the Comma connect `connect` (named so in
 /// the chat, as a person of that connect is), once per `key`: its `n`. Only a chat of workspace `home` (one of the
 /// station's, the connect's) on the station's pages; a Slack or Feishu chat is answered where it is.
-export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string; closeCard?: boolean }): number {
+export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: RouterSay): number {
   try { return routerSaysOnce(hub, stats, home, w); }
   catch (error) {
     if (error instanceof MessageWriteBusy) throw new Error(w.key === "" ? "the station is busy; retry the write" : "the station is busy; retry the Router request with the same key");
@@ -97,7 +107,7 @@ export function routerSays(hub: Hub, stats: CommaStats, home: string | null, w: 
   }
 }
 
-function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { thread: number; text: string; key: string; requester: string; connect: string; closeCard?: boolean }): number {
+function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: RouterSay): number {
   const db = hub.store.db;
   const find = () => (db.prepare("SELECT CAST(id AS TEXT) AS id, thread, n, pending FROM comma_router_once WHERE key = ?").get(w.key) as RouterWrite | undefined) ?? null;
   const mirror = (written: RouterWrite) => {
@@ -136,6 +146,13 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { t
   // The Task index tells a chat the Router wrote in by this form of its author (read/outflow.ts routerWrote): durable
   // where comma_router_once is not, and for the writes without a key, which leave none.
   const author = `slack:${w.connect}:${w.requester}`;
+  const assertExpectedCard = () => {
+    if (w.expectedCardSeq === undefined) return;
+    const current = typeof hub.store.pendingCardHeader === "function" ? hub.store.pendingCardHeader(w.thread) : null;
+    if (current === null || current[0].n !== w.expectedCardSeq) {
+      throw new Error("stale_card: the card is no longer pending");
+    }
+  };
   // If the text matches an `action: "close"` choice on the thread's pending options card (or `closeCard` was
   // explicitly requested for a silent-close option), close that card silently without appending a message or waking
   // the agent.
@@ -150,6 +167,18 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { t
       const session = hub.store.getSession(m.session);
       return session === null || (hub.wsOf(session) ?? null) !== home;
     })) throw new Error("no such chat of the workspace");
+    if (w.expectedCardSeq !== undefined) {
+      if (pending === null || pending[0].n !== w.expectedCardSeq) {
+        throw new Error("stale_card: the card is no longer pending");
+      }
+      if (closeOption === undefined) {
+        throw new Error("stale_card: choice does not match pending card");
+      }
+      const closed = hub.store.closeCard(author, w.thread, pending[0].n, String(closeOption.label).trim());
+      if (!closed) throw new Error("stale_card: the card is no longer pending");
+      if (w.key !== "") stats.remember(w.key, pending[0].n);
+      return pending[0].n;
+    }
     if (pending !== null && closeOption !== undefined) {
       hub.store.closeCard(author, w.thread, pending[0].n, String(closeOption.label).trim());
       if (w.key !== "") stats.remember(w.key, pending[0].n);
@@ -159,6 +188,25 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { t
     return 0;
   }
   if (w.key === "") {
+    if (w.expectedCardSeq !== undefined) {
+      let targets: string[] = [];
+      return say(hub, w.thread, author, w.text, [], [], null, {
+        workspace: home,
+        before: () => {
+          const members = hub.store.threadSessions(w.thread);
+          if (members.length === 0) throw new Error("no such chat of the workspace");
+          targets = [];
+          for (const m of members) {
+            const session = hub.store.getSession(m.session);
+            if (session === null || hub.wsOf(session) !== home) throw new Error("no such chat of the workspace");
+            if (m.leftAt === null && session.archivedBy !== MANUAL) targets.push(m.session);
+          }
+          assertExpectedCard();
+        },
+        inserted: () => {},
+        targets: () => targets,
+      });
+    }
     const members = hub.store.threadSessions(w.thread);
     if (members.length === 0 || members.some((m) => (hub.wsOf(m.session) ?? null) !== home)) throw new Error("no such chat of the workspace");
     return say(hub, w.thread, author, w.text);
@@ -180,6 +228,7 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: { t
           if (session === null || hub.wsOf(session) !== home) throw new Error("no such chat of the workspace");
           if (m.leftAt === null && session.archivedBy !== MANUAL) targets.push(m.session);
         }
+        assertExpectedCard();
         encodedTargets = JSON.stringify(targets);
       },
       inserted: (n) => {

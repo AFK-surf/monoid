@@ -124,7 +124,7 @@ export function makeComma(options: CommaOptions) {
       };
       const chats: CommaChats | null = isIn ? {
         read: (ref, after, limit) => scoped().chats.read(ref, after, limit),
-        say: (ref, text, key, requester, connect, closeCard) => scoped().chats.say(ref, text, key, requester, connect, closeCard),
+        say: (ref, text, key, requester, connect, closeCard, expectedCardSeq) => scoped().chats.say(ref, text, key, requester, connect, closeCard, expectedCardSeq),
       } : null;
       return new CommaSurface({ connect: c.id, server: c.server, token: c.token, name: options.name?.(c.workspace ?? null) ?? hostname(), workspace, ownerEmail: c.resolvedOwnerEmail, tasks: t, store: options.store,
         models: () => options.models?.(c.id) ?? [], book, stats: isIn ? () => scoped().indexes : options.empty,

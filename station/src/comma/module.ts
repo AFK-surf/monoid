@@ -92,7 +92,24 @@ export const CommaLive = Layer.effectDiscard(
       if (typeof workspace !== "string" || !within(workspace)) throw new Error("not this workspace");
       const w = request?.say;
       if (typeof w?.thread !== "number" || typeof w?.text !== "string" || w.text.trim() === "") throw new Error("no such write");
-      return { seq: said(workspace, { thread: w.thread, text: w.text, key: String(w.key ?? ""), requester: String(w.requester ?? "Router"), connect: String(w.connect ?? "comma"), ...(w.closeCard === true ? { closeCard: true } : {}) }) };
+      let expectedCardSeq: number | undefined;
+      if (w.expectedCardSeq !== undefined && w.expectedCardSeq !== null) {
+        if (typeof w.expectedCardSeq !== "number" || !Number.isSafeInteger(w.expectedCardSeq) || w.expectedCardSeq <= 0) {
+          throw new Error("no such write");
+        }
+        expectedCardSeq = w.expectedCardSeq;
+      }
+      return {
+        seq: said(workspace, {
+          thread: w.thread,
+          text: w.text,
+          key: String(w.key ?? ""),
+          requester: String(w.requester ?? "Router"),
+          connect: String(w.connect ?? "comma"),
+          ...(w.closeCard === true ? { closeCard: true } : {}),
+          ...(expectedCardSeq !== undefined ? { expectedCardSeq } : {}),
+        }),
+      };
     });
     const scopes = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, { indexes: ReturnType<typeof workspaceIndex>["indexes"]; stats: CommaStats; chats: CommaChats }>()),
@@ -167,11 +184,19 @@ export const CommaLive = Layer.effectDiscard(
       const index = workspaceIndex(data, workspace, () => within(workspace), () => scopeVersion, workspaceRead(reads), usage);
       const chats: CommaChats = {
         read: (ref, after, limit) => routerReads(index.stats, reads, ref, after, limit),
-        say: async (ref, text, key, requester, connect, closeCard) => {
+        say: async (ref, text, key, requester, connect, closeCard, expectedCardSeq) => {
           if (!within(workspace)) throw new Error("the workspace changed while writing");
           const chat = chatOf(ref);
           if (chat === null) throw new Error("no such chat");
-          const w = { thread: chat.thread, text, key: key === "" ? "" : `${connect}:${key}`, requester, connect, ...(closeCard === true ? { closeCard: true } : {}) };
+          const w = {
+            thread: chat.thread,
+            text,
+            key: key === "" ? "" : `${connect}:${key}`,
+            requester,
+            connect,
+            ...(closeCard === true ? { closeCard: true } : {}),
+            ...(expectedCardSeq !== undefined ? { expectedCardSeq } : {}),
+          };
           if (chat.station === null) return { seq: said(workspace, w) };
           const got = await bus.ask(chat.station, { method: SAY, workspace, say: w });
           return { seq: got?.seq };

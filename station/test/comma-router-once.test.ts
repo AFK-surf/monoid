@@ -627,3 +627,149 @@ test("routerSays delivers a reply-action option normally to wake the agent", asy
     assert.deepEqual(rig.store.pendingMessages("a").map((m) => [m.message.n, m.message.text]), [[n, "Proceed"]]);
   } finally { stats.close(); await rig.close(); }
 });
+
+test("routerSays enforces expectedCardSeq CAS for replies and silent closes while preserving idempotent retries", async () => {
+  const rig = new Rig();
+  const stats = CommaStats.at(rig.dir, nothing, quiet);
+  try {
+    rig.hub.hold("drain");
+    member(rig, "a");
+    const thread = rig.store.openThreadOf("ember", "CHAT", "chat", "A chat", "ann@x", "a");
+    rig.store.joinThread(thread.id, "a", "ember");
+    const home = rig.hub.wsOf("a");
+    const card1 = {
+      type: "options",
+      assignee: "ann@x",
+      options: [
+        { label: "Proceed", action: "reply" },
+        { label: "Skip deploy", action: "close" },
+      ],
+    };
+    const [card1N] = rig.store.insertMessage({
+      thread: thread.id,
+      ts: "1.1",
+      at: 1000,
+      authorKind: "agent",
+      author: "a",
+      text: "Deploy v1?",
+      card: card1,
+    } as never);
+
+    // Wrong seq fails with stale_card without appending a message or waking the agent.
+    assert.throws(
+      () => routerSays(rig.hub, stats, home, {
+        thread: thread.id,
+        text: "Proceed",
+        key: "cm:cas-wrong",
+        requester: "Router",
+        connect: "cm",
+        expectedCardSeq: card1N + 99,
+      }),
+      /stale_card/,
+    );
+    assert.deepEqual(rig.store.entriesAfter(thread.id, card1N), []);
+    assert.deepEqual(rig.store.pendingMessages("a"), []);
+
+    // Matching seq succeeds; repeating with the SAME key returns the original seq even though the card is no longer pending.
+    const replyN = routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Proceed",
+      key: "cm:cas-reply-1",
+      requester: "Router",
+      connect: "cm",
+      expectedCardSeq: card1N,
+    });
+    assert.ok(replyN > card1N);
+    assert.equal(rig.store.pendingCardHeader(thread.id), null);
+    assert.equal(routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Proceed",
+      key: "cm:cas-reply-1",
+      requester: "Router",
+      connect: "cm",
+      expectedCardSeq: card1N,
+    }), replyN);
+
+    // A NEW request targeting the already-answered card1 fails with stale_card.
+    assert.throws(
+      () => routerSays(rig.hub, stats, home, {
+        thread: thread.id,
+        text: "Proceed",
+        key: "cm:cas-reply-2",
+        requester: "Router",
+        connect: "cm",
+        expectedCardSeq: card1N,
+      }),
+      /stale_card/,
+    );
+
+    // Post card2, then test silent-close CAS: stale card1N fails, matching card2N closes & retries idempotently.
+    const [card2N] = rig.store.insertMessage({
+      thread: thread.id,
+      ts: "1.2",
+      at: 2000,
+      authorKind: "agent",
+      author: "a",
+      text: "Deploy v2?",
+      card: card1,
+    } as never);
+    assert.throws(
+      () => routerSays(rig.hub, stats, home, {
+        thread: thread.id,
+        text: "Skip deploy",
+        key: "cm:cas-close-stale",
+        requester: "Router",
+        connect: "cm",
+        closeCard: true,
+        expectedCardSeq: card1N,
+      }),
+      /stale_card/,
+    );
+    assert.throws(
+      () => routerSays(rig.hub, stats, home, {
+        thread: thread.id,
+        text: "Proceed",
+        key: "cm:cas-close-mismatch",
+        requester: "Router",
+        connect: "cm",
+        closeCard: true,
+        expectedCardSeq: card2N,
+      }),
+      /stale_card/,
+    );
+    const closedN = routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Skip deploy",
+      key: "cm:cas-close-ok",
+      requester: "Router",
+      connect: "cm",
+      closeCard: true,
+      expectedCardSeq: card2N,
+    });
+    assert.equal(closedN, card2N);
+    assert.equal(rig.store.pendingCardHeader(thread.id), null);
+    // Retrying same key after card2 is closed returns card2N idempotently.
+    assert.equal(routerSays(rig.hub, stats, home, {
+      thread: thread.id,
+      text: "Skip deploy",
+      key: "cm:cas-close-ok",
+      requester: "Router",
+      connect: "cm",
+      closeCard: true,
+      expectedCardSeq: card2N,
+    }), card2N);
+    // New request against closed card2 fails with stale_card (does not silently return 0).
+    assert.throws(
+      () => routerSays(rig.hub, stats, home, {
+        thread: thread.id,
+        text: "Skip deploy",
+        key: "cm:cas-close-after",
+        requester: "Router",
+        connect: "cm",
+        closeCard: true,
+        expectedCardSeq: card2N,
+      }),
+      /stale_card/,
+    );
+  } finally { stats.close(); await rig.close(); }
+});
