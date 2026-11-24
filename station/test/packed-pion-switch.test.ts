@@ -1,20 +1,22 @@
-// Tests for `sessions/packed-mb.ts` engine switching:
-// - `mb` default (even when a Pion binary is available; zero main-thread statSync for pionBinary)
+// Tests for `sessions/packed-mb.ts` engine switching and real Pion binary E2E edge contracts:
+// - `mb` default (zero main-thread statSync / zero fallback warn even when STILLFAIL_PION_READER is broken)
 // - `pion` switch (`STILLFAIL_READER_PACKED=pion` and `STILLFAIL_READER_ENGINE=pion`) for both `PackedProgram` and `runPackedOnce`
 // - explicit `options.binary` always takes precedence over env engine selection
 // - missing Pion binary falls back safely to `mb` with deduped `pion-binary-missing` warning
 // - `shadow` is strictly refused (`allowShadow: false`) and falls back safely to `mb` with `shadow-forbidden` warning
 // - malformed JSON / non-object frames from child stdout are isolated with zero uncaughtException/unhandledRejection
-// - real `STILLFAIL_PION_READER` binary end-to-end `pion` mode verifies seek table, transcript pack/restore, and workspace pack/unpack
+// - real `STILLFAIL_PION_READER` binary E2E: table, pack/restore, workspace pack/unpack, >16 MiB lines,
+//   `\r\n` framing parity, lone UTF-16 surrogate rejection without invoking shell, and `runPackedOnce` abort
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
 import { pionBinary } from "../src/read/mb-reader.ts";
-import { PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
+import { PackAborted, PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
 import { seekTable } from "./reference/packed.ts";
 
 const tempDirs: string[] = [];
@@ -30,14 +32,11 @@ function freshDir(prefix = "packed-switch-"): string {
   return dir;
 }
 
+const skipPosixStubs = platform.os === "windows" ? "POSIX shell stubs are not directly spawnable without shell: true on Windows" : false;
+
 function makeStubBinary(dir: string, name: string, jsBody: string): string {
   const scriptPath = join(dir, `${name}.mjs`);
   writeFileSync(scriptPath, jsBody, "utf8");
-  if (platform.os === "windows") {
-    const cmdPath = join(dir, `${name}.cmd`);
-    writeFileSync(cmdPath, `@"${process.execPath}" "${scriptPath}" %*\r\n`, "utf8");
-    return cmdPath;
-  }
   const shPath = join(dir, name);
   writeFileSync(shPath, `#!/bin/sh\nexec "${process.execPath}" "${scriptPath}" "$@"\n`, "utf8");
   chmodSync(shPath, 0o755);
@@ -87,7 +86,7 @@ rl.on("line", (line) => {
 });
 `;
 
-test("mb default, pion switch, explicit binary override, missing-binary fallback, and shadow refusal", async () => {
+test("mb default, pion switch, explicit binary override, missing-binary fallback, and shadow refusal", { skip: skipPosixStubs }, async () => {
   const dir = freshDir();
   const mbStub = makeStubBinary(dir, "stub-mb", tagResponderBody("mb"));
   const pionStub = makeStubBinary(dir, "stub-pion", tagResponderBody("pion"));
@@ -97,7 +96,28 @@ test("mb default, pion switch, explicit binary override, missing-binary fallback
   const logs: Line[] = [];
   hearLines((l) => logs.push(l));
   try {
-    // 1. Default is `mb` even when a Pion binary is present (both PackedProgram and runPackedOnce).
+    // 1. Default is `mb` even when a Pion binary is present, AND does not probe broken STILLFAIL_PION_READER.
+    logs.length = 0;
+    await withEnv({
+      STILLFAIL_MB_READER: mbStub,
+      STILLFAIL_PION_READER: missingBin,
+      STILLFAIL_READER_PACKED: undefined,
+      STILLFAIL_READER_ENGINE: undefined,
+    }, async () => {
+      const p = new PackedProgram();
+      try {
+        assert.equal((await p.ask<{ tag: string }>("table", {})).tag, "mb");
+      } finally {
+        await p.close();
+      }
+      assert.equal((await runPackedOnce<{ tag: string }>("table", {})).tag, "mb");
+    });
+    assert.equal(
+      logs.filter((l) => l.message === "reader engine fallback").length,
+      0,
+      "default mb path must not probe STILLFAIL_PION_READER or emit fallback warnings",
+    );
+
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: pionStub,
@@ -130,7 +150,7 @@ test("mb default, pion switch, explicit binary override, missing-binary fallback
       assert.equal((await runPackedOnce<{ tag: string }>("table", {})).tag, "pion");
     });
 
-    // 3. STILLFAIL_READER_ENGINE=pion also routes packed to Pion, while explicit options.binary wins.
+    // 3. STILLFAIL_READER_ENGINE=pion routes both PackedProgram and runPackedOnce to Pion; explicit options.binary wins.
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: pionStub,
@@ -143,6 +163,7 @@ test("mb default, pion switch, explicit binary override, missing-binary fallback
       } finally {
         await p.close();
       }
+      assert.equal((await runPackedOnce<{ tag: string }>("table", {})).tag, "pion");
       const explicitP = new PackedProgram({ binary: explicitStub });
       try {
         assert.equal((await explicitP.ask<{ tag: string }>("table", {})).tag, "explicit");
@@ -194,7 +215,7 @@ test("mb default, pion switch, explicit binary override, missing-binary fallback
   }
 });
 
-test("malformed JSON and non-object stdout frames are isolated without uncaughtException or unhandledRejection", async () => {
+test("malformed JSON and non-object stdout frames are isolated without uncaughtException or unhandledRejection", { skip: skipPosixStubs }, async () => {
   const dir = freshDir();
   const noisyStub = makeStubBinary(dir, "stub-noisy", MALFORMED_THEN_OK_BODY);
 
@@ -224,9 +245,33 @@ test("malformed JSON and non-object stdout frames are isolated without uncaughtE
   }
 });
 
-test("real STILLFAIL_PION_READER binary end-to-end pion mode handles table, pack/restore, and workspace pack/unpack", async (t) => {
+/** Run raw stdin bytes through `binary --builder packed --shell-dir <dir>` and collect stdout lines. */
+function runRawPacked(binary: string, shellDir: string, stdinText: string): Promise<{ code: number | null; lines: string[]; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(binary, ["--builder", "packed", "--shell-dir", shellDir], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout!.on("data", (c: Buffer) => chunks.push(c));
+    child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      const text = Buffer.concat(chunks).toString("utf8");
+      const lines = text.length === 0 ? [] : text.replace(/\n$/, "").split("\n");
+      resolve({ code, lines, stderr });
+    });
+    child.stdin!.end(stdinText);
+  });
+}
+
+test("real STILLFAIL_PION_READER binary E2E: ops, >16 MiB lines, CRLF & lone-surrogate parity, and workspace.pack abort", async (t) => {
+  const explicitEnv = process.env.STILLFAIL_PION_READER?.trim();
   const realPion = pionBinary();
-  if (realPion === null) {
+  if (explicitEnv) {
+    assert.ok(realPion !== null, `STILLFAIL_PION_READER is set (${explicitEnv}) but resolved to null`);
+  } else if (realPion === null) {
     t.skip("STILLFAIL_PION_READER / built stillfail-pion binary not present in this environment");
     return;
   }
@@ -259,9 +304,22 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode handles table, pack
       assert.equal(seg.segmented, true);
       await p.ask("restore", { source: packedFile, temp: restored });
       assert.deepEqual(readFileSync(restored), content);
+
+      // >16 MiB valid request line (16,777,252+ bytes) must succeed without truncation or hang.
+      const bigPad = "x".repeat(16 * 1024 * 1024 + 64);
+      const bigResp = await p.ask<{ table: string }>("table", { frames: [[1, 2]], pad: bigPad });
+      assert.equal(bigResp.table, seekTable([{ packed: 1, size: 2 }]).toString("hex"));
     } finally {
       await p.close();
     }
+
+    // >16 MiB valid request via runPackedOnce as well.
+    const bigOnce = await runPackedOnce<{ table: string }>(
+      "table",
+      { frames: [[3, 4]], pad: "y".repeat(16 * 1024 * 1024 + 64) },
+      { shellDir: join(dir, "shell-big-once") },
+    );
+    assert.equal(bigOnce.table, seekTable([{ packed: 3, size: 4 }]).toString("hex"));
 
     await runPackedOnce("workspace.pack", { dir: ws, out: archive }, { shellDir: join(dir, "shell-once") });
     const unpacked = await runPackedOnce<{ refused: unknown[] }>(
@@ -271,5 +329,46 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode handles table, pack
     );
     assert.deepEqual(unpacked.refused, []);
     assert.equal(readFileSync(join(dest, "sub/hello.txt"), "utf8"), "hello workspace\n");
+
+    // Raw stdio framing parity: `\r\n` returns `{id:null,error:"no such ask"}` (not skipped),
+    // lone UTF-16 surrogates are rejected before shell dispatch, valid surrogate pair succeeds.
+    const surrogateOut = join(dir, "should-not-exist.zst");
+    const raw = await runRawPacked(
+      realPion,
+      join(dir, "shell-raw"),
+      [
+        "\r",
+        "",
+        `{"id":1,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${surrogateOut.replaceAll("\\", "\\\\")}\\ud800"}`,
+        `{"id":2,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${surrogateOut.replaceAll("\\", "\\\\")}\\udc00"}`,
+        `{"id":3,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${surrogateOut.replaceAll("\\", "\\\\")}\\ud800\\u0041"}`,
+        `{"id":"\\ud83d\\ude00","op":"table","frames":[[5,6]]}`,
+      ].join("\n") + "\n",
+    );
+    assert.equal(raw.code, 0, `raw packed exited ${raw.code}: ${raw.stderr}`);
+    assert.equal(raw.lines.length, 5, `expected 5 answers (CR-only + 3 lone surrogates + 1 valid), got ${raw.lines.length}`);
+    for (let i = 0; i < 4; i++) {
+      assert.deepEqual(JSON.parse(raw.lines[i]!), { id: null, error: "no such ask" }, `line ${i}`);
+    }
+    assert.deepEqual(JSON.parse(raw.lines[4]!), {
+      id: "😀",
+      table: seekTable([{ packed: 5, size: 6 }]).toString("hex"),
+    });
+    assert.equal(existsSync(surrogateOut), false, "lone surrogate request must never invoke shell");
+
+    // Mid-flight AbortSignal on real Pion `runPackedOnce("workspace.pack")` rejects cleanly with PackAborted.
+    const bigWs = join(dir, "big-ws");
+    mkdirSync(bigWs, { recursive: true });
+    const noisy = Buffer.alloc(4 * 1024 * 1024);
+    for (let i = 0; i < noisy.length; i++) noisy[i] = (i * 2654435761) >>> 24;
+    for (let k = 0; k < 12; k++) writeFileSync(join(bigWs, `blob-${k}.bin`), noisy);
+    const abortAc = new AbortController();
+    const packPromise = runPackedOnce(
+      "workspace.pack",
+      { dir: bigWs, out: join(dir, "aborted.tar.zst") },
+      { shellDir: join(dir, "shell-abort"), signal: abortAc.signal },
+    );
+    queueMicrotask(() => abortAc.abort());
+    await assert.rejects(packPromise, PackAborted);
   });
 });

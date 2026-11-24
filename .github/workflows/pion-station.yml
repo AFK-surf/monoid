@@ -7,6 +7,8 @@ on:
       - "pion/base/**"
       - "station/mb/src/footprint/**"
       - "station/mb/src/packed/**"
+      - "station/mb/src/reader/main.mbt"
+      - "station/mb/src/wire/**"
       - "station/src/sessions/footprint.ts"
       - "station/src/sessions/packed-mb.ts"
       - "station/src/read/mb-reader.ts"

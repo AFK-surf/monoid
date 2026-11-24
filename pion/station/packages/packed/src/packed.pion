@@ -125,16 +125,143 @@ pub fn stored(head : Bytes) -> Bool {
   head.length() >= 5 && le32(head, 0) == frame_magic() && (head[4].to_int() & 0xFF) == STORED_DESCRIPTOR
 }
 
-// ── JSON helpers & validation ──
+// ── JSON helpers, surrogate validation, and cross-platform Double -> Int64 saturation ──
 
-fn json_num_to_int64(d : Double, repr : String) -> Int64 {
-  if repr.length() > 0 {
-    match base_codec::parse_int64_str(repr) {
-      Some(v) => return v
-      None => ()
-    }
+fn int64_max() -> Int64 {
+  (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+}
+
+fn int64_min() -> Int64 {
+  -int64_max() - 1.to_int64()
+}
+
+/// Match MoonBit `Double::to_int64()` cross-platform saturating conversion (NaN -> 0,
+/// >= 2^63 -> INT64_MAX, <= -2^63 -> INT64_MIN, otherwise truncating toward zero).
+pub fn json_num_to_int64(d : Double) -> Int64 {
+  if d != d {
+    return 0.to_int64()
+  }
+  let bound = 9223372036854775808.0
+  if d >= bound {
+    return int64_max()
+  }
+  if d <= -bound {
+    return int64_min()
   }
   d.to_int64()
+}
+
+fn parse_hex4_at(s : String, pos : Int) -> Option[Int] {
+  if pos + 4 > s.length() {
+    return None
+  }
+  let mut v = 0
+  for k in 0..<4 {
+    match base_codec::hex_digit(s.code_unit_at(pos + k)) {
+      Some(d) => v = (v << 4) | d
+      None => return None
+    }
+  }
+  Some(v)
+}
+
+/// Return true if any JSON string literal in `line` contains an unpaired UTF-16 surrogate escape
+/// (`\uD800`..`\uDBFF` not immediately followed by `\uDC00`..`\uDFFF`, or a lone low surrogate).
+/// Mirrors MoonBit `@json.parse`, which rejects lone surrogates instead of replacing with U+FFFD.
+pub fn has_lone_surrogate(line : String) -> Bool {
+  let n = line.length()
+  let mut i = 0
+  let mut in_str = false
+  while i < n {
+    let c = line.code_unit_at(i)
+    if !in_str {
+      if c == 34 {
+        in_str = true
+      }
+      i = i + 1
+    } else if c == 34 {
+      in_str = false
+      i = i + 1
+    } else if c == 92 {
+      if i + 1 >= n {
+        return false
+      }
+      let esc = line.code_unit_at(i + 1)
+      if esc == 117 {
+        match parse_hex4_at(line, i + 2) {
+          None => i = i + 2
+          Some(u) => {
+            if u >= 0xD800 && u <= 0xDBFF {
+              if i + 12 <= n && line.code_unit_at(i + 6) == 92 && line.code_unit_at(i + 7) == 117 {
+                match parse_hex4_at(line, i + 8) {
+                  Some(lo) => {
+                    if lo >= 0xDC00 && lo <= 0xDFFF {
+                      i = i + 12
+                    } else {
+                      return true
+                    }
+                  }
+                  None => return true
+                }
+              } else {
+                return true
+              }
+            } else if u >= 0xDC00 && u <= 0xDFFF {
+              return true
+            } else {
+              i = i + 6
+            }
+          }
+        }
+      } else {
+        i = i + 2
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  false
+}
+
+/// Escape U+2028 (`\u2028`) and U+2029 (`\u2029`) in serialized JSON output to match MoonBit `Host::say`.
+/// Uses a zero-allocation fast path when no 0xE2 0x80 (0xA8|0xA9) UTF-8 sequence is present.
+pub fn escape_line_separators(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut found = false
+  let mut i = 0
+  while i + 2 < n {
+    if (raw[i].to_int() & 0xFF) == 0xE2 && (raw[i + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[i + 2].to_int() & 0xFF
+      if b2 == 0xA8 || b2 == 0xA9 {
+        found = true
+        break
+      }
+    }
+    i = i + 1
+  }
+  if !found {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < n {
+    if j + 2 < n && (raw[j].to_int() & 0xFF) == 0xE2 && (raw[j + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[j + 2].to_int() & 0xFF
+      if b2 == 0xA8 {
+        sb.write_string("\\u2028")
+        j = j + 3
+        continue
+      } else if b2 == 0xA9 {
+        sb.write_string("\\u2029")
+        j = j + 3
+        continue
+      }
+    }
+    sb.write_byte(raw[j])
+    j = j + 1
+  }
+  sb.to_string()
 }
 
 fn str_of(ask : base_codec::Json, key : String) -> Result[String, String] {
@@ -231,11 +358,11 @@ pub fn answer_table(ask : base_codec::Json) -> Result[base_codec::Json, String] 
               return Err("bad frame")
             }
             let packed = match pair[0] {
-              base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+              base_codec::Json::Num(d, _) => json_num_to_int64(d)
               _ => return Err("bad frame")
             }
             let size = match pair[1] {
-              base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+              base_codec::Json::Num(d, _) => json_num_to_int64(d)
               _ => return Err("bad frame")
             }
             sizes.push((packed, size))
@@ -250,19 +377,47 @@ pub fn answer_table(ask : base_codec::Json) -> Result[base_codec::Json, String] 
   Ok(base_codec::json_obj([("table", base_codec::json_str(hex))]))
 }
 
-// ── Event-loop state and shell RPC bridge ──
+// ── Unbounded `\n`-only line splitter & bounded FIFO queue (matching MoonBit `wire.mbt`) ──
 
-struct LoopState {
-  reader : host_shim::LineReader
-  mut pending : Array[host_shim::LineItem]
+/// Pure `\n`-delimited line accumulator without artificial 16 MiB truncation and without
+/// stripping `\r` (matching `station/mb/src/wire/wire.mbt` `Lines::push`).
+pub struct RawLines {
+  mut partial : Array[Byte]
+}
+
+pub fn RawLines::new() -> RawLines {
+  RawLines::{ partial: [] }
+}
+
+pub fn RawLines::push(self : RawLines, chunk : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<chunk.length() {
+    let b = chunk[i]
+    if b.to_int() == 10 {
+      let sb = StringBuilder::new()
+      for j in 0..<self.partial.length() {
+        sb.write_byte(self.partial[j])
+      }
+      self.partial = []
+      out.push(sb.to_string())
+    } else {
+      self.partial.push(b)
+    }
+  }
+  out
+}
+
+pub struct LoopState {
+  lines : RawLines
+  mut pending : Array[String]
   mut head : Int
   mut stdin_eof : Bool
   mut next_call_id : Int64
 }
 
-fn LoopState::new() -> LoopState {
+pub fn LoopState::new() -> LoopState {
   LoopState::{
-    reader: host_shim::LineReader::new(),
+    lines: RawLines::new(),
     pending: [],
     head: 0,
     stdin_eof: false,
@@ -270,24 +425,36 @@ fn LoopState::new() -> LoopState {
   }
 }
 
-fn LoopState::enqueue_chunk(self : LoopState, chunk : Bytes) -> Unit {
-  let items = self.reader.push(chunk)
+pub fn LoopState::enqueue_chunk(self : LoopState, chunk : Bytes) -> Unit {
+  let items = self.lines.push(chunk)
   for i in 0..<items.length() {
     self.pending.push(items[i])
   }
 }
 
-fn LoopState::pop_item(self : LoopState) -> Option[host_shim::LineItem] {
+pub fn LoopState::pop_line(self : LoopState) -> Option[String] {
   if self.head >= self.pending.length() {
     return None
   }
-  let item = self.pending[self.head]
+  let line = self.pending[self.head]
+  self.pending[self.head] = ""
   self.head = self.head + 1
   if self.head == self.pending.length() {
     self.pending = []
     self.head = 0
+  } else if self.head >= 64 && self.head * 2 >= self.pending.length() {
+    let compacted : Array[String] = []
+    for i in self.head..<self.pending.length() {
+      compacted.push(self.pending[i])
+    }
+    self.pending = compacted
+    self.head = 0
   }
-  Some(item)
+  Some(line)
+}
+
+pub fn LoopState::pending_storage_len(self : LoopState) -> Int {
+  self.pending.length()
 }
 
 /// Synchronously execute one async `libstillfail_shell.a` op while continuing to buffer any
@@ -298,12 +465,15 @@ fn shell_exec(
   args : Array[(String, base_codec::Json)],
   bytes : Option[Bytes],
 ) -> Result[base_codec::Json, String] {
+  if !host_shim::shell_active() {
+    return Err("no shell")
+  }
   let call_id = state.next_call_id
   state.next_call_id = call_id + 1.to_int64()
   let args_json = base_codec::json_stringify(base_codec::json_obj(args))
   host_shim::shell_call(call_id, op, args_json, bytes)
   while true {
-    match host_shim::wait(5000.to_int64()) {
+    match host_shim::wait((-1).to_int64()) {
       None => ()
       Some(host_shim::HostEvent::StdinData(chunk)) => state.enqueue_chunk(chunk)
       Some(host_shim::HostEvent::StdinEof) => state.stdin_eof = true
@@ -312,9 +482,11 @@ fn shell_exec(
           if done.error.length() > 0 {
             return Err(done.error)
           }
+          // Match MoonBit `wire.mbt:107`: non-JSON shell payloads decode as `null`
+          // so downstream callers report their standard domain error (e.g. `not there`).
           match base_codec::json_parse(done.json) {
             base_codec::JsonParseResult::Ok(j) => return Ok(j)
-            base_codec::JsonParseResult::Err(e) => return Err("shell json parse error: " + e)
+            base_codec::JsonParseResult::Err(_) => return Ok(base_codec::json_null())
           }
         }
       }
@@ -356,7 +528,7 @@ fn frames_of(state : LoopState, path : String) -> Result[Option[Array[Frame]], S
     Err(e) => return Err(e)
   }
   let size = match base_codec::json_get(meta, "size") {
-    Some(base_codec::Json::Num(d, r)) => json_num_to_int64(d, r)
+    Some(base_codec::Json::Num(d, _)) => json_num_to_int64(d)
     _ => return Err(path + ": not there")
   }
   if size < (8 + FOOTER).to_int64() {
@@ -431,11 +603,11 @@ fn segment_into(
           return Err("no frames made of " + path)
         }
         let packed = match pair[0] {
-          base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+          base_codec::Json::Num(d, _) => json_num_to_int64(d)
           _ => return Err("no frames made of " + path)
         }
         let size = match pair[1] {
-          base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+          base_codec::Json::Num(d, _) => json_num_to_int64(d)
           _ => return Err("no frames made of " + path)
         }
         sizes.push((packed, size))
@@ -681,27 +853,38 @@ fn answer(state : LoopState, ask : base_codec::Json) -> Result[base_codec::Json,
 /// Format an error response line with the given JSON `id`.
 pub fn error_response(id : base_codec::Json, message : String) -> String {
   let msg = if message.length() > 0 { message } else { "failed" }
-  base_codec::json_stringify(
-    base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))]),
+  escape_line_separators(
+    base_codec::json_stringify(
+      base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))]),
+    ),
   )
 }
 
 /// Attach `id` onto a successful answer JSON value and serialize as one line.
 pub fn ok_response(id : base_codec::Json, payload : base_codec::Json) -> String {
-  match payload {
+  let out = match payload {
     base_codec::Json::Obj(fields) => {
       base_codec::json_obj_set(fields, "id", id)
       base_codec::json_stringify(base_codec::Json::Obj(fields))
     }
     other => base_codec::json_stringify(other)
   }
+  escape_line_separators(out)
 }
 
-fn handle_line(state : LoopState, line : String) -> String {
-  let ask = match base_codec::json_parse(line) {
+/// Parse and answer one line. Rejects unpaired UTF-16 surrogates before parsing/dispatch.
+pub fn parse_ask_line(line : String) -> base_codec::Json {
+  if has_lone_surrogate(line) {
+    return base_codec::json_null()
+  }
+  match base_codec::json_parse(line) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(_) => base_codec::json_null()
   }
+}
+
+fn handle_line(state : LoopState, line : String) -> String {
+  let ask = parse_ask_line(line)
   let id = match base_codec::json_get(ask, "id") {
     Some(v) => v
     None => base_codec::json_null()
@@ -713,10 +896,15 @@ fn handle_line(state : LoopState, line : String) -> String {
 }
 
 /// Run the `--builder packed` line-JSON RPC loop until stdin EOF.
-/// Returns 0 on clean EOF, 1 on startup failure or stdout write error.
+/// Explicit empty `shell_dir == ""` starts stdin without a shell (subsequent shell ops return
+/// `"no shell"`, matching MoonBit `host.c:233`). Non-empty `shell_dir` startup failures write
+/// `"the shell did not start"` to stderr and exit 1. Stdout write failures explicitly exit 1
+/// so callers observe truncated/broken pipe delivery instead of a silent 0 exit.
 pub fn run(shell_dir : String) -> Int {
-  let dir = if shell_dir.length() > 0 { shell_dir } else { "." }
-  if !host_shim::start(dir, true) {
+  if !host_shim::start(shell_dir, true) {
+    if shell_dir.length() > 0 {
+      let _ = host_shim::write_stderr_line("the shell did not start")
+    }
     return 1
   }
   let state = LoopState::new()
@@ -725,19 +913,9 @@ pub fn run(shell_dir : String) -> Int {
 
   while running {
     while running {
-      match state.pop_item() {
+      match state.pop_line() {
         None => break
-        Some(host_shim::LineItem::TooLong(cap)) => {
-          let resp = error_response(
-            base_codec::json_null(),
-            "line exceeds max_bytes: " + cap.to_string(),
-          )
-          if !host_shim::write_stdout_line(resp) {
-            write_failed = true
-            running = false
-          }
-        }
-        Some(host_shim::LineItem::Line(line)) => {
+        Some(line) => {
           if line.length() == 0 {
             continue
           }
@@ -756,7 +934,7 @@ pub fn run(shell_dir : String) -> Int {
       running = false
       break
     }
-    match host_shim::wait(5000.to_int64()) {
+    match host_shim::wait((-1).to_int64()) {
       None => ()
       Some(host_shim::HostEvent::StdinData(chunk)) => state.enqueue_chunk(chunk)
       Some(host_shim::HostEvent::StdinEof) => state.stdin_eof = true
