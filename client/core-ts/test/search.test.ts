@@ -345,8 +345,11 @@ test("a_message_said_while_a_search_shows_keeps_what_it_found_shown_until_it_is_
   for (let i = 0; i < 10; i++) {
     await host.time.pass(50);
     await host.settle();
-    apply(host, values);
-    fewest = Math.min(fewest, v(values, 1).messages.length);
+    // (each value sent taken alone: one sent without its messages and made whole again in the same step is seen)
+    for (const one of host.takeEmitted()) {
+      apply({ takeEmitted: () => [one] } as J, values);
+      fewest = Math.min(fewest, v(values, 1).messages.length);
+    }
   }
   assert.ok(fewest >= 1, "what it found stays shown while it is looked through again");
   assert.deepEqual(v(values, 1).messages.map((m: J) => m.seq), [2, 1]);

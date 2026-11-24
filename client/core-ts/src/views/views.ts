@@ -1252,6 +1252,7 @@ export class Views implements Owner {
 
   stop(view: Topic): void {
     const key = topicKey(view);
+    this.#saidSkipped.delete(key);
     const live = this.#views.get(key);
     this.#views.delete(key);
     // (nothing holds the list any more: told again as it is asked again)
