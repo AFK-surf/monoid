@@ -9,6 +9,13 @@ rev = "bc974308dea0484bf571a03dbd68bb158577e8e0"
 subdir = "packages/base64"
 
 [[package]]
+name = "crypto"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:crypto-v0.4.1"
+rev = "2ecdcb749583446735af60504930bf1f63649f70"
+subdir = "packages/crypto"
+
+[[package]]
 name = "flate"
 git = "https://github.com/AFK-surf/pion-packages.git"
 ref = "tag:flate-v0.1.0"

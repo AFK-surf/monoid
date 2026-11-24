@@ -6,7 +6,9 @@ on:
       - "pion/station/**"
       - "pion/base/**"
       - "station/mb/src/footprint/**"
+      - "station/mb/src/memory/**"
       - "station/src/sessions/footprint.ts"
+      - "station/src/share/memory-mb.ts"
       - "station/src/read/mb-reader.ts"
       - "station/src/read/reader-select.ts"
       - "station/test/footprint-reference.ts"
@@ -14,6 +16,10 @@ on:
       - "station/test/reader-contract-footprint.test.ts"
       - "station/test/reader-contract-select.test.ts"
       - "station/test/footprint-pion-switch.test.ts"
+      - "station/test/reader-contract-memory.test.ts"
+      - "station/test/mb-memory-merge.test.ts"
+      - "station/test/memory-pion-switch.test.ts"
+      - "station/test/reference/memory-merge.ts"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 
@@ -208,11 +214,14 @@ jobs:
           "$BIN" --smoke-shell "$RUNNER_TEMP/shell-dir"
           "$BIN" --smoke-rc-soak 50000
 
-          # Black-box 0-diff contract gate for `--builder footprint`, including real dual-engine MB+Pion shadow.
+          # Black-box 0-diff contract gate for `--builder footprint` & `--builder memory`.
           pnpm --dir station install --frozen-lockfile --prefer-offline
           STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-footprint.test.ts
           STILLFAIL_MB_READER="$BIN" node --test station/test/mb-footprint.test.ts
           node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/footprint-pion-switch.test.ts
+          STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-memory.test.ts
+          STILLFAIL_MB_READER="$BIN" node --test station/test/mb-memory-merge.test.ts
+          STILLFAIL_PION_READER="$BIN" node --test station/test/memory-pion-switch.test.ts
 
       - name: Save Zig cache
         if: always() && steps.zig-cache.outputs.cache-hit != 'true'

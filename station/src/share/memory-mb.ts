@@ -8,10 +8,13 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { MbProcess, pionBinary, readerBinary } from "../read/mb-reader.ts";
+import { resolveReaderEngine } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
 export const IDLE_MS = 60_000;
+
+const warnedReaderFallbacks = new Set<string>();
 
 type Json = any;
 type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
@@ -62,16 +65,48 @@ export class MemoryProgram {
     });
   }
 
+  #resolveBinary(): string {
+    if (this.#binary !== null) return this.#binary;
+    // Probe engine intent first without touching disk (`pionBinary()`) so default `mb` does zero main-thread statSync.
+    // `memory` has write-fs side effects (`allowShadow: false`), so shadow is never executed.
+    const probe = resolveReaderEngine("memory", { hasPionBinary: true });
+    const pionBin = probe.engine === "pion" ? pionBinary() : null;
+    const selection = probe.engine === "pion"
+      ? resolveReaderEngine("memory", { hasPionBinary: pionBin !== null })
+      : probe;
+    if (selection.fallback) {
+      const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
+      if (!warnedReaderFallbacks.has(dedupKey)) {
+        warnedReaderFallbacks.add(dedupKey);
+        log.warn("memory", "reader engine fallback", {
+          mode: selection.mode,
+          engine: selection.engine,
+          requested: selection.requested,
+          source: selection.source,
+          reason: selection.reason,
+          detail: selection.detail,
+        });
+      }
+    }
+    if (selection.engine === "pion" && pionBin !== null) return pionBin;
+    return readerBinary();
+  }
+
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(this.#binary ?? readerBinary(), ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir]);
+    const child = new MbProcess(this.#resolveBinary(), ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir]);
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {
-      const waiting = typeof answer?.id === "number" ? this.#waiting.get(answer.id) : undefined;
+      if (answer === null || typeof answer !== "object" || Array.isArray(answer)) {
+        log.warn("memory", "the memory's program returned a malformed response");
+        return;
+      }
+      const waiting = typeof answer.id === "number" ? this.#waiting.get(answer.id) : undefined;
       if (!waiting) return;
       this.#waiting.delete(answer.id);
       if (typeof answer.error === "string") waiting.reject(new Error(answer.error));
+      else if (answer.error !== undefined) waiting.reject(new Error("the memory's program returned a malformed error"));
       else waiting.resolve(answer);
       this.#idleLater();
     });

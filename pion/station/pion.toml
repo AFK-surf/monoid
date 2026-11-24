@@ -3,13 +3,16 @@ members = [
   "packages/host_shim",
   "packages/sqlite_ffi",
   "packages/footprint",
+  "packages/memory",
   "packages/smoke",
 ]
 
 [workspace.dependencies]
 base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
+crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
 flate = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "flate-v0.1.0", subdir = "packages/flate" }
 base_codec = { path = "../base/packages/base_codec" }
 host_shim = { path = "packages/host_shim" }
 sqlite_ffi = { path = "packages/sqlite_ffi" }
 footprint = { path = "packages/footprint" }
+memory = { path = "packages/memory" }

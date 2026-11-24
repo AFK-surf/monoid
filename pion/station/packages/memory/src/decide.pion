@@ -1,0 +1,307 @@
+// Pure Pion port of station/mb/src/memory/decide.mbt:
+// Record JSON helpers and deterministic two-station record merge decision.
+
+import "base_codec"
+
+pub struct Rec {
+  pub hash : String
+  pub at : Double
+  pub by : String
+  pub prev : Array[String]
+  pub size : Double
+  pub mode : Double
+  pub origin : Bool
+}
+
+pub fn str_field(j : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+pub fn num_field(j : base_codec::Json, key : String) -> Option[Double] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+pub fn bool_field_true(j : base_codec::Json, key : String) -> Bool {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+pub fn strs_field(j : base_codec::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn object_field(j : base_codec::Json, key : String) -> Array[(String, base_codec::Json)] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Obj(fields)) => fields
+    _ => []
+  }
+}
+
+/// Format an integer-valued Double cleanly without `.0` or scientific notation.
+pub fn json_number_clean(v : Double) -> base_codec::Json {
+  let as_i64 = v.to_int64()
+  if as_i64.to_double() == v {
+    base_codec::json_int64(as_i64)
+  } else {
+    base_codec::json_num(v)
+  }
+}
+
+pub fn rec_of(j : base_codec::Json) -> Option[Rec] {
+  let hash = match str_field(j, "hash") {
+    Some(h) => h
+    None => return None
+  }
+  let at = match num_field(j, "at") {
+    Some(a) => a
+    None => return None
+  }
+  let by = match str_field(j, "by") {
+    Some(b) => b
+    None => return None
+  }
+  let size = match num_field(j, "size") {
+    Some(s) => s
+    None => 0.0
+  }
+  let mode = match num_field(j, "mode") {
+    Some(m) => m
+    None => 420.0 // 0o644
+  }
+  Some(Rec::{
+    hash: hash,
+    at: at,
+    by: by,
+    prev: strs_field(j, "prev"),
+    size: size,
+    mode: mode,
+    origin: bool_field_true(j, "origin"),
+  })
+}
+
+pub fn rec_json(r : Rec) -> base_codec::Json {
+  let prev_arr : Array[base_codec::Json] = []
+  for i in 0..<r.prev.length() {
+    prev_arr.push(base_codec::json_str(r.prev[i]))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("hash", base_codec::json_str(r.hash)),
+    ("at", json_number_clean(r.at)),
+    ("by", base_codec::json_str(r.by)),
+    ("prev", base_codec::json_arr(prev_arr)),
+    ("size", json_number_clean(r.size)),
+    ("mode", json_number_clean(r.mode)),
+  ]
+  if r.origin {
+    fields.push(("origin", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fields)
+}
+
+fn rec_newer(a : Rec, b : Rec) -> Bool {
+  if a.at != b.at {
+    a.at > b.at
+  } else if a.by != b.by {
+    js_after(a.by, b.by)
+  } else {
+    js_after(a.hash, b.hash)
+  }
+}
+
+fn rec_history(r : Rec) -> Array[String] {
+  let out : Array[String] = []
+  if r.hash != "" {
+    out.push(r.hash)
+  }
+  for i in 0..<r.prev.length() {
+    if r.prev[i] != "" {
+      out.push(r.prev[i])
+    }
+  }
+  out
+}
+
+fn make_merged_rec(w : Rec, l : Rec, at : Double, prev_most : Int, hash : String, size : Int) -> Rec {
+  let prev : Array[String] = []
+  let limit = prev_most * 2
+  let wh = rec_history(w)
+  let lh = rec_history(l)
+  for i in 0..<wh.length() {
+    let h = wh[i]
+    if !str_array_contains(prev, h) && prev.length() < limit {
+      prev.push(h)
+    }
+  }
+  for i in 0..<lh.length() {
+    let h = lh[i]
+    if !str_array_contains(prev, h) && prev.length() < limit {
+      prev.push(h)
+    }
+  }
+  Rec::{
+    hash: hash,
+    at: at,
+    by: w.by,
+    prev: prev,
+    size: size.to_double(),
+    mode: if w.hash != "" { w.mode } else { l.mode },
+    origin: false,
+  }
+}
+
+pub enum Outcome {
+  Keep
+  Take
+  Merge(Rec, Option[(String, Rec)])
+}
+
+pub fn lookup_content(blobs : Blobs, given : Map[String, String], hash : String) -> Option[Bytes] {
+  if hash == "" {
+    return None
+  }
+  match given.get(hash) {
+    Some(hex_str) => base_codec::hex_decode(hex_str)
+    None => blobs.content(hash)
+  }
+}
+
+pub fn decide_records(
+  path : String,
+  mine_opt : Option[Rec],
+  theirs : Rec,
+  blobs : Blobs,
+  given : Map[String, String],
+  names : Map[String, String],
+  prev_most : Int,
+) -> Result[Outcome, String] {
+  let mine = match mine_opt {
+    Some(m) => m
+    None => return Ok(Outcome::Take)
+  }
+  if mine.hash == theirs.hash {
+    return Ok(if rec_newer(theirs, mine) { Outcome::Take } else { Outcome::Keep })
+  }
+  if mine.hash != "" && str_array_contains(theirs.prev, mine.hash) {
+    return Ok(Outcome::Take)
+  }
+  if theirs.hash != "" && str_array_contains(mine.prev, theirs.hash) {
+    return Ok(Outcome::Keep)
+  }
+  if theirs.hash == "" && mine.hash == "" {
+    return Ok(if rec_newer(theirs, mine) { Outcome::Take } else { Outcome::Keep })
+  }
+  let (w, l) = if rec_newer(theirs, mine) { (theirs, mine) } else { (mine, theirs) }
+  let at = (if w.at > l.at { w.at } else { l.at }) + 1.0
+  if w.hash == "" || l.hash == "" {
+    let kept = if w.hash == "" { l } else { w }
+    let c = match lookup_content(blobs, given, kept.hash) {
+      Some(b) => b
+      None => return Ok(Outcome::Keep)
+    }
+    return Ok(Outcome::Merge(make_merged_rec(w, l, at, prev_most, kept.hash, c.length()), None))
+  }
+  let wc = match lookup_content(blobs, given, w.hash) {
+    Some(b) => b
+    None => return Ok(Outcome::Keep)
+  }
+  let lc = match lookup_content(blobs, given, l.hash) {
+    Some(b) => b
+    None => return Ok(Outcome::Keep)
+  }
+  let wh = rec_history(w)
+  let lh = rec_history(l)
+  let mut common : Option[String] = None
+  for i in 0..<lh.length() {
+    if str_array_contains(wh, lh[i]) {
+      common = Some(lh[i])
+      break
+    }
+  }
+  let base = match common {
+    Some(h) => lookup_content(blobs, given, h)
+    None => None
+  }
+  let name_of = fn(station : String) -> String {
+    match names.get(station) {
+      Some(nm) => nm
+      None => station
+    }
+  }
+  let mut text : Option[String] = None
+  if is_text(wc) && is_text(lc) {
+    let ws = text_of(wc)
+    let ls = text_of(lc)
+    match base {
+      Some(b) => {
+        if is_text(b) {
+          text = merge3(text_of(b), ws, ls)
+        } else {
+          // base is binary; fall through to common/path/alike rules
+          text = Some(union_lines(ws, ls, None, None))
+        }
+      }
+      None => {
+        match common {
+          Some(_) => {
+            text = Some(union_lines(ws, ls, None, None))
+          }
+          None => {
+            if path == "MEMORY.md" {
+              let wn = if w.origin { Some(name_of(w.by)) } else { None }
+              let ln = if l.origin { Some(name_of(l.by)) } else { None }
+              text = Some(union_lines(ws, ls, wn, ln))
+            } else if alike(ws, ls) {
+              text = Some(union_lines(ws, ls, None, None))
+            }
+          }
+        }
+      }
+    }
+  }
+  match text {
+    Some(t) => {
+      let bytes = t.to_bytes()
+      let kept_hash = match blobs.keep(bytes) {
+        Ok(h) => h
+        Err(e) => return Err(e)
+      }
+      return Ok(Outcome::Merge(make_merged_rec(w, l, at, prev_most, kept_hash, bytes.length()), None))
+    }
+    None => ()
+  }
+  let beside = Rec::{
+    hash: l.hash,
+    at: at,
+    by: w.by,
+    prev: [],
+    size: lc.length().to_double(),
+    mode: l.mode,
+    origin: false,
+  }
+  Ok(
+    Outcome::Merge(
+      make_merged_rec(w, l, at, prev_most, w.hash, wc.length()),
+      Some((conflict_path(path, name_of(l.by)), beside)),
+    ),
+  )
+}
