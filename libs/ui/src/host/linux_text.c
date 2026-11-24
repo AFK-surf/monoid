@@ -30,6 +30,7 @@ typedef struct {
   double size;
   int weight;
   int style;  // 1 italic, 2 the code face, … (style.mbt)
+  int fg;     // per-slot face generation (for preview slots >= MB_FACE_TRY)
   double w, h, ox, oy;
   int color;
 } glyph_entry;
@@ -143,9 +144,10 @@ static int face_id(int style) {
   return faces[1].has ? 1 : 0;
 }
 
+#define MB_FACE_TRY 7
+static int face_gen[MB_FACES];
 static int keys_stale;  // the keys made before forgotten as the next frame starts (keys_sweep)
-static void faces_changed(void) {
-  keys_stale = 1;
+static void face_changed(int f) {
   pango_fc_font_map_config_changed(PANGO_FC_FONT_MAP(fontmap));
   g_object_unref(ctx);
   ctx = NULL;
@@ -153,6 +155,11 @@ static void faces_changed(void) {
   fontmap = NULL;
   init();
   g_object_unref(fm);
+  if (f >= MB_FACE_TRY && f < MB_FACES) {
+    face_gen[f]++;
+    return;
+  }
+  keys_stale = 1;
   generation++;
 }
 
@@ -170,7 +177,7 @@ static int face_take(int f, const char *path) {
     faces[f].has = 1;
   }
   if (p) FcPatternDestroy(p);
-  if (ok) faces_changed();
+  if (ok) face_changed(f);
   return ok;
 }
 
@@ -228,7 +235,7 @@ void mb_host_face_clear(int32_t f) {
   faces[f].no_lig = 0;
   if (!faces[f].has) return;
   faces[f].has = 0;
-  faces_changed();
+  face_changed(f);
 }
 
 void mb_host_face_set_ligatures(int32_t f, int32_t on) {
@@ -236,7 +243,7 @@ void mb_host_face_set_ligatures(int32_t f, int32_t on) {
   int no_lig = on ? 0 : 1;
   if (faces[f].no_lig == no_lig) return;
   faces[f].no_lig = no_lig;
-  faces_changed();
+  face_changed(f);
 }
 
 void mb_host_set_host_autospace(int32_t on) { (void)on; }
@@ -257,7 +264,7 @@ int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
   if (ok) {
     strcpy(faces[f].family, name);
     faces[f].has = 1;
-    faces_changed();
+    face_changed(f);
   }
   free(name);
   return ok;
@@ -487,31 +494,33 @@ void mb_host_font_metrics(double size, int32_t weight, int32_t style, double *ou
 
 // ---- the clusters' keys ----
 
-static uint32_t hash(const uint16_t *s, int len, double size, int weight, int style) {
+static uint32_t hash(const uint16_t *s, int len, double size, int weight, int style, int fg) {
   uint32_t h = 2166136261u;
   for (int i = 0; i < len; i++) h = (h ^ s[i]) * 16777619u;
   h = (h ^ (uint32_t)(size * 64)) * 16777619u;
   h = (h ^ (uint32_t)style) * 16777619u;
+  h = (h ^ (uint32_t)fg) * 16777619u;
   return (h ^ (uint32_t)weight) * 16777619u;
 }
 
-static int same(const glyph_entry *e, const uint16_t *s, int len, double size, int weight, int style) {
-  return e->len == len && e->size == size && e->weight == weight && e->style == style &&
+static int same(const glyph_entry *e, const uint16_t *s, int len, double size, int weight, int style, int fg) {
+  return e->len == len && e->size == size && e->weight == weight && e->style == style && e->fg == fg &&
          memcmp(pool + e->off, s, (size_t)len * sizeof(uint16_t)) == 0;
 }
 
 static void table_put(int id) {
   glyph_entry *e = &entries[id];
-  size_t i = hash(pool + e->off, e->len, e->size, e->weight, e->style) & (table_cap - 1);
+  size_t i = hash(pool + e->off, e->len, e->size, e->weight, e->style, e->fg) & (table_cap - 1);
   while (table[i]) i = (i + 1) & (table_cap - 1);
   table[i] = id + 1;
 }
 
 static int intern(const uint16_t *s, int len, double size, int weight, int style) {
+  int fg = face_gen[face_id(style)];
   if (table_cap) {
-    size_t i = hash(s, len, size, weight, style) & (table_cap - 1);
+    size_t i = hash(s, len, size, weight, style, fg) & (table_cap - 1);
     for (; table[i]; i = (i + 1) & (table_cap - 1))
-      if (same(&entries[table[i] - 1], s, len, size, weight, style)) return table[i] - 1;
+      if (same(&entries[table[i] - 1], s, len, size, weight, style, fg)) return table[i] - 1;
   }
   if (n_entries == cap_entries) {
     cap_entries = cap_entries ? cap_entries * 2 : 1024;
@@ -523,7 +532,7 @@ static int intern(const uint16_t *s, int len, double size, int weight, int style
   }
   memcpy(pool + pool_len, s, (size_t)len * sizeof(uint16_t));
   int id = n_entries++;
-  entries[id] = (glyph_entry){(int)pool_len, len, size, weight, style, 0, 0, 0, 0, 0};
+  entries[id] = (glyph_entry){(int)pool_len, len, size, weight, style, fg, 0, 0, 0, 0, 0};
   pool_len += len;
   if ((size_t)n_entries * 2 > table_cap) {
     free(table);

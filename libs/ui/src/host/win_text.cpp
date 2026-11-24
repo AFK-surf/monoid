@@ -41,6 +41,7 @@ typedef struct {
   double size;
   int weight;
   int style;  // 1 italic, 2 the code face
+  int fg;     // per-slot face generation (for preview slots >= MB_FACE_TRY)
   double w, h, ox, oy;
   int color;
   // its ink across, from where it starts (punct_ink); known: worked out
@@ -309,7 +310,9 @@ static bool face_build(int f) {
   return ok;
 }
 
-static void faces_changed(void);
+#define MB_FACE_TRY 7
+static int face_gen[MB_FACES];
+static void face_changed(int32_t f);
 
 // A file of face `f`: its path, or its bytes (path NULL); made part of it if DirectWrite reads them as a font.
 static int32_t face_take(int32_t f, WCHAR *path, void *data, UINT32 size) {
@@ -333,7 +336,7 @@ static int32_t face_take(int32_t f, WCHAR *path, void *data, UINT32 size) {
     free(data);
     return 0;
   }
-  faces_changed();
+  face_changed(f);
   return 1;
 }
 
@@ -366,7 +369,7 @@ extern "C" void mb_host_face_clear(int32_t f) {
   if (faces[f].fc) faces[f].fc->Release();
   faces[f].fc = NULL;
   faces[f].system = false;
-  faces_changed();
+  face_changed(f);
 }
 
 extern "C" void mb_host_face_set_ligatures(int32_t f, int32_t on) {
@@ -374,7 +377,7 @@ extern "C" void mb_host_face_set_ligatures(int32_t f, int32_t on) {
   bool no_lig = !on;
   if (faces[f].no_lig == no_lig) return;
   faces[f].no_lig = no_lig;
-  faces_changed();
+  face_changed(f);
 }
 
 extern "C" void mb_host_set_host_autospace(int32_t on) { (void)on; }
@@ -403,7 +406,7 @@ extern "C" int32_t mb_host_face_add_family(int32_t f, moonbit_string_t family) {
   faces[f].fc = NULL;
   memcpy(faces[f].family, name, sizeof(name));
   faces[f].system = true;
-  faces_changed();
+  face_changed(f);
   return 1;
 }
 
@@ -902,31 +905,33 @@ extern "C" void mb_host_font_metrics(double size, int32_t weight, int32_t style,
   out[5] = 0;  // lines as asked, not on whole pixels
 }
 
-static uint32_t hash(const WCHAR *s, int len, double size, int weight, int style) {
+static uint32_t hash(const WCHAR *s, int len, double size, int weight, int style, int fg) {
   uint32_t h = 2166136261u;
   for (int i = 0; i < len; i++) h = (h ^ s[i]) * 16777619u;
   h = (h ^ (uint32_t)(size * 64)) * 16777619u;
   h = (h ^ (uint32_t)style) * 16777619u;
+  h = (h ^ (uint32_t)fg) * 16777619u;
   return (h ^ (uint32_t)weight) * 16777619u;
 }
 
-static int same(const glyph_entry *e, const WCHAR *s, int len, double size, int weight, int style) {
-  return e->len == len && e->size == size && e->weight == weight && e->style == style &&
+static int same(const glyph_entry *e, const WCHAR *s, int len, double size, int weight, int style, int fg) {
+  return e->len == len && e->size == size && e->weight == weight && e->style == style && e->fg == fg &&
          memcmp(pool + e->off, s, (size_t)len * sizeof(WCHAR)) == 0;
 }
 
 static void table_put(int id) {
   glyph_entry *e = &entries[id];
-  size_t i = hash(pool + e->off, e->len, e->size, e->weight, e->style) & (table_cap - 1);
+  size_t i = hash(pool + e->off, e->len, e->size, e->weight, e->style, e->fg) & (table_cap - 1);
   while (table[i]) i = (i + 1) & (table_cap - 1);
   table[i] = id + 1;
 }
 
 static int intern(const WCHAR *s, int len, double size, int weight, int style) {
+  int fg = face_gen[face_id(style)];
   if (table_cap) {
-    size_t i = hash(s, len, size, weight, style) & (table_cap - 1);
+    size_t i = hash(s, len, size, weight, style, fg) & (table_cap - 1);
     for (; table[i]; i = (i + 1) & (table_cap - 1))
-      if (same(&entries[table[i] - 1], s, len, size, weight, style)) return table[i] - 1;
+      if (same(&entries[table[i] - 1], s, len, size, weight, style, fg)) return table[i] - 1;
   }
   if (n_entries == cap_entries) {
     cap_entries = cap_entries ? cap_entries * 2 : 1024;
@@ -944,6 +949,7 @@ static int intern(const WCHAR *s, int len, double size, int weight, int style) {
   ge.size = size;
   ge.weight = weight;
   ge.style = style;
+  ge.fg = fg;
   entries[id] = ge;
   pool_len += len;
   if ((size_t)n_entries * 2 > table_cap) {
@@ -1105,16 +1111,20 @@ static void reset_atlas(void) {
 // What was measured and drawn before a face changed: its formats made again, its glyphs drawn again.
 static void ahead_forget(void);
 
-static void faces_changed(void) {
+static void face_changed(int32_t f) {
   layout_cache_clear();
   for (int i = 0; i < n_formats; i++) formats[i].f->Release();
   n_formats = 0;
+  ahead_forget();
+  if (f >= MB_FACE_TRY && f < MB_FACES) {
+    face_gen[f]++;
+    return;
+  }
   for (int i = 0; i < n_entries; i++) {
     entries[i].ink_known = false;
     entries[i].bounds = {};
     entries[i].subs_queued = 0;
   }
-  ahead_forget();
   reset_atlas();
   keys_stale = 1;
 }

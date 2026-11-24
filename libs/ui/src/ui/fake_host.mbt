@@ -717,15 +717,21 @@ impl @hostapi.Host for FakeHost with set_host_autospace(self, on) {
 
 ///|
 impl @hostapi.Host for FakeHost with local_font_info(self) {
+  if self.local_fonts_info != "" {
+    return self.local_fonts_info
+  }
   if self.live is Some(l) {
     return l.host.local_font_info()
   }
-  self.local_fonts_info
+  ""
 }
 
 ///|
 impl @hostapi.Host for FakeHost with has_async_local_font_info(self) {
-  self.live is Some(_) || self.local_fonts == ""
+  if self.local_fonts_info != "" {
+    return true
+  }
+  self.local_fonts == ""
 }
 
 ///|

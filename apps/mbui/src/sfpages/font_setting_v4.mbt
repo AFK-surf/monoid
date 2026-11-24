@@ -49,7 +49,7 @@ fn fonts_page_v4_node(
     fn(col, key) { fonts_block_v4_node(col, key, ctx, over_faces) },
     on_back~,
     frame~,
-    lead=fn() { @sf.t("web-pages.appearance.fonts.lead") },
+    lead=fn() { @sf.t("web-pages.appearance.fonts.description") },
     actions=fn(row) { fonts_header_actions_node(row, ctx) },
     sticky_head=fn(room) {
       let is_wide = @sf.look_node(room) is Wide // det-ok(page-look): V4 font preview adapts to Narrow/Wide
@@ -238,6 +238,7 @@ fn font_preview_v4_node(parent : @view.View, ctx : FontPageCtx, is_wide : Bool) 
         @sf.style_node(mine_row, fn() { fp_mine_room })
         mine_row.box(fn(bubble) {
           @sf.style_node(bubble, fn() { fp_v4_bubble })
+          bubble.radius(Is(10.0)) |> ignore
           face_in_node(
             bubble,
             fn() { @sf.t("web-pages.appearance.fonts.sampleMine") },
@@ -1135,9 +1136,9 @@ let fp_v4_reset_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium,
 // kept across runs: a value (no field of it changes)
 let fp_v4_undo_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=AccentText, wrap=false)
 // kept across runs: a value (no field of it changes)
-let fp_v4_preview_card : @ui.Style = @ui.css("w=Full p=S3 gap=S2 radius=Xl2 bg=Card")
+let fp_v4_preview_card : @ui.Style = @ui.css("w=Full p=S2 gap=S2 radius=Xl2 bg=Card")
 // kept across runs: a value (no field of it changes)
-let fp_v4_bubble : @ui.Style = @ui.css("px=S3 py=S1_5 radius=Lg bg=Surface")
+let fp_v4_bubble : @ui.Style = @ui.css("px=S3 py=S1_5 bg=Bg")
 // kept across runs: a value (no field of it changes)
 let fp_v4_zone : @ui.Style = @ui.css("row w=Full gap=S2 align=AStretch")
 // kept across runs: a value (no field of it changes)

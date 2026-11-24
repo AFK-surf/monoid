@@ -157,12 +157,15 @@ static CTFontRef face_font(int face, double size, int weight, bool tabular, bool
 static void ahead_forget(void);
 
 // What was shaped and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on).
+#define MB_FACE_TRY 7
+static int face_gen[MB_FACES];
 static int keys_stale;  // the keys made before forgotten as the next frame starts (keys_sweep)
 static CTFontRef last_attrs_font;
 static int last_attrs_style = -1;
 static CFDictionaryRef last_attrs;
+static void bmp_forget_face(int32_t face);
 
-static void faces_changed(void) {
+static void face_changed(int32_t face) {
   [fonts removeAllObjects];
   ahead_forget();
   last_size = -1;
@@ -172,8 +175,17 @@ static void faces_changed(void) {
     CFRelease(last_attrs);
     last_attrs = NULL;
   }
+  if (face >= MB_FACE_TRY && face < MB_FACES) {
+    face_gen[face]++;
+    bmp_forget_face(face);
+    return;
+  }
   generation++;
   keys_stale = 1;
+}
+
+static void faces_changed(void) {
+  face_changed(0);
 }
 
 // Drawn at this many pixels a point (the screen the window is on): a change draws every glyph again, as a face's does
@@ -200,7 +212,7 @@ int32_t mb_host_face_add(int32_t face, moonbit_string_t path, int32_t weight) {
   [face_descs[face] addObject:(__bridge id)CFArrayGetValueAtIndex(ds, 0)];
   [face_weights[face] addObject:@(weight)];
   CFRelease(ds);
-  faces_changed();
+  face_changed(face);
   return 1;
 }
 
@@ -216,7 +228,7 @@ int32_t mb_host_face_add_bytes(int32_t face, moonbit_bytes_t data, int32_t weigh
   }
   [face_descs[face] addObject:(__bridge_transfer id)desc];
   [face_weights[face] addObject:@(weight)];
-  faces_changed();
+  face_changed(face);
   return 1;
 }
 
@@ -253,7 +265,7 @@ int32_t mb_host_face_add_family(int32_t face, moonbit_string_t family) {
   if (descs.count == 0) return 0;
   face_descs[face] = descs;
   face_weights[face] = weights;
-  faces_changed();
+  face_changed(face);
   return 1;
 }
 
@@ -286,7 +298,7 @@ void mb_host_face_clear(int32_t face) {
   if (!face_descs[face].count) return;
   [face_descs[face] removeAllObjects];
   [face_weights[face] removeAllObjects];
-  faces_changed();
+  face_changed(face);
 }
 
 void mb_host_face_set_ligatures(int32_t face, int32_t on) {
@@ -294,7 +306,7 @@ void mb_host_face_set_ligatures(int32_t face, int32_t on) {
   bool no_lig = !on;
   if (face_no_lig[face] == no_lig) return;
   face_no_lig[face] = no_lig;
-  faces_changed();
+  face_changed(face);
 }
 
 void mb_host_request_frame(void);
@@ -491,8 +503,10 @@ static int intern_at(NSString *cluster, double size, int weight, int style, doub
     keys = [NSMutableDictionary new];
     texts = [NSMutableArray new];
   }
-  NSString *k = dx == 0 ? [NSString stringWithFormat:@"%@\x01%g\x01%d\x01%d", cluster, size, weight, style]
-                        : [NSString stringWithFormat:@"%@\x01%g\x01%d\x01%d\x01%.3f", cluster, size, weight, style, dx];
+  int fg = face_gen[face_id(style)];
+  NSString *k = (dx == 0 && fg == 0)
+                    ? [NSString stringWithFormat:@"%@\x01%g\x01%d\x01%d", cluster, size, weight, style]
+                    : [NSString stringWithFormat:@"%@\x01%g\x01%d\x01%d\x01%.3f\x01%d", cluster, size, weight, style, dx, fg];
   NSNumber *n = keys[k];
   if (n) return n.intValue;
   if (n_entries == cap_entries) {
@@ -519,6 +533,17 @@ typedef struct {
 } bmp_keys;
 static bmp_keys *bmp_cache;
 static int n_bmp, last_bmp = -1;
+
+static void bmp_forget_face(int32_t face) {
+  for (int i = 0; i < n_bmp; i++) {
+    if (((bmp_cache[i].style >> 8) & 31) == face) {
+      for (int p = 0; p < 256; p++) {
+        free(bmp_cache[i].pages[p]);
+        bmp_cache[i].pages[p] = NULL;
+      }
+    }
+  }
+}
 
 static bmp_keys *bmp_for(double size, int weight, int style) {
   if (last_bmp >= 0) {

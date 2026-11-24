@@ -237,11 +237,13 @@ final class MBText {
 
     /** The faces given (faceAdd, style.mbt): each a list of font files (a File, or a direct ByteBuffer of one) and the weight each is for (0: variable). */
     static final int FACES = 32;
+    static final int FACE_TRY = 7;
     @SuppressWarnings("unchecked")
     static final ArrayList<Object>[] faceFiles = new ArrayList[FACES];
     @SuppressWarnings("unchecked")
     static final ArrayList<Integer>[] faceWeights = new ArrayList[FACES];
     static final boolean[] faceNoLig = new boolean[FACES];
+    static final int[] faceGen = new int[FACES];
 
     /** The face a style is set in: the one it names; else code's, what people wrote's, the app's words' (not the serif face's); 0 none. */
     static int faceId(int style) {
@@ -345,7 +347,7 @@ final class MBText {
         }
         faceFiles[f].add(src);
         faceWeights[f].add(weight);
-        facesChanged();
+        faceChanged(f);
         return true;
     }
 
@@ -366,7 +368,7 @@ final class MBText {
         if (!given(f)) return;
         faceFiles[f].clear();
         faceWeights[f].clear();
-        facesChanged();
+        faceChanged(f);
     }
 
     static synchronized void faceSetLigatures(int f, boolean on) {
@@ -374,17 +376,26 @@ final class MBText {
         boolean noLig = !on;
         if (faceNoLig[f] == noLig) return;
         faceNoLig[f] = noLig;
-        facesChanged();
+        faceChanged(f);
     }
 
     /** What was measured and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on). */
-    static void facesChanged() {
+    static void faceChanged(int f) {
         paints.clear();
         lastPaint = null;
         typefaces.clear();
+        lastClusters = null;
+        if (f >= FACE_TRY && f < FACES) {
+            faceGen[f]++;
+            return;
+        }
         faces++;
         reset();
         keysStale = true;
+    }
+
+    static void facesChanged() {
+        faceChanged(0);
     }
 
     static Paint paint(float size, int weight, int style) {
@@ -743,7 +754,8 @@ final class MBText {
 
     /** A font's clusters and their keys. */
     static Clusters clusters(float size, int weight, int style) {
-        long k = fontKey(size, weight, style);
+        int slot = (style >>> 8) & 31;
+        long k = fontKey(size, weight, style) ^ ((long) faceGen[slot] * 0x9E3779B97F4A7C15L);
         Clusters m = lastClusters;
         if (m != null && lastClustersKey == k) return m;
         m = keys.get(k);

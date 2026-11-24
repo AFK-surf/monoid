@@ -721,10 +721,8 @@ fn forget_words_for_face(face : Int) -> Unit {
   presented.forget()
   let g = h_atlas_generation()
   if g != text_cache.generation {
-    glyphs_forget()
-    halos_forget()
-    atlas_said.val = Some(g)
-    text_cache.generation = g
+    words_forgotten()
+    return
   }
   view_words_rescaled()
 }

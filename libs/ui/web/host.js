@@ -4772,6 +4772,7 @@
   let keysStale = false;
   // (whether the generation was read since it last moved on: MoonBit may have shaped by the keys under it, textSweep)
   let generationRead = false;
+  const FACE_TRY = 7;
   const textChanged = () => {
     mctxFont = rctxFont = '';
     advCache.clear();
@@ -4779,6 +4780,15 @@
     generation++;
     generationRead = false;
     keysStale = true;
+  };
+  const textChangedFor = (face) => {
+    if (face >= FACE_TRY && face < 32) {
+      mctxFont = rctxFont = '';
+      advCache.clear();
+      held = null;
+      return;
+    }
+    textChanged();
   };
   // Between frames (each window's frame starts with it, resize): the glyphs' keys forgotten as text changed, or as
   // there came to be more than KEYS_MOST of them (each a glyph of a size, weight and style ever shaped: a page left
@@ -4824,7 +4834,8 @@
       if ((faceGen.get(face) || 0) !== gen) return;
       document.fonts.add(ff);
       faces.add(face);
-      textChanged();
+      if (face >= FACE_TRY) nextFaceGen(face);
+      textChangedFor(face);
       H.requestFrame();
     }, () => {});
     return true;
@@ -4839,7 +4850,8 @@
       if ((faceGen.get(face) || 0) !== gen) return;
       document.fonts.add(ff);
       faces.add(face);
-      textChanged();
+      if (face >= FACE_TRY) nextFaceGen(face);
+      textChangedFor(face);
       H.requestFrame();
     }, () => {});
     return true;
@@ -4868,7 +4880,7 @@
       }, () => {});
     })).then(() => {
       if (faceGen.get(face) !== gen) return;
-      textChanged();
+      textChangedFor(face);
       H.requestFrame();
     });
   };
@@ -4955,7 +4967,7 @@
       const fam = ff.family.replace(/"/g, '');
       if (fam === `mbface${face}` || fam === `mbface${face}n`) document.fonts.delete(ff);
     }
-    textChanged();
+    textChangedFor(face);
   };
 
   H.fontMetrics = (size, weight, style, out) => {
@@ -4972,7 +4984,8 @@
   };
 
   const textKey = (c, size, weight, style) => {
-    const kk = c + '\x01' + size + '\x01' + weight + '\x01' + style;
+    const fg = faceGen.get(faceOf(style)) || 0;
+    const kk = fg ? c + '\x01' + size + '\x01' + weight + '\x01' + style + '\x01' + fg : c + '\x01' + size + '\x01' + weight + '\x01' + style;
     let key = keys.get(kk);
     if (key === undefined) {
       key = entries.length;
