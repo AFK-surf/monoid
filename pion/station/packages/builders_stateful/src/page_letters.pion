@@ -396,6 +396,185 @@ pub fn Letters::step(
   )
 }
 
+/// One batch of reclaiming orphaned scopes and rows (`pageLetterGcStep`, matching
+/// `station/mb/src/letters/letters.mbt:225-264`): queues one stale-epoch scope into
+/// `page_letter_garbage`, deletes at most `limit` (1–64) rows across `page_letter_rows`
+/// and `page_letter_dirty` for one garbage scope, and returns whether nothing remains.
+pub fn Letters::gc_step(
+  self : Letters,
+  limit : Int = 64,
+) -> Result[Bool, builders_core::StepError] {
+  if limit < 1 || limit > 64 {
+    return Err(builders_core::StepError::App("page letter batch must be 1–64"))
+  }
+  let db = self.db
+  match self.install() {
+    Ok(true) => ()
+    Ok(false) => return Ok(true)
+    Err(e) => return Err(e)
+  }
+  let older = "FROM page_letter_scopes WHERE epoch<(SELECT epoch FROM page_letter_meta WHERE id=1)"
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, builders_core::StepError] {
+      match tx_db.first(
+        "SELECT CAST(thread AS TEXT) AS thread,token " +
+        older +
+        " ORDER BY page_letter_scopes.epoch,page_letter_scopes.thread LIMIT 1",
+        [],
+      ) {
+        Ok(Some(stale)) => {
+          let stale_key = [sql_db::row_val(stale, "thread"), sql_db::row_val(stale, "token")]
+          let _ = match tx_db.run(
+            "INSERT INTO page_letter_garbage(thread,token) SELECT CAST(?1 AS INTEGER),?2 WHERE NOT EXISTS (SELECT 1 FROM page_letter_garbage WHERE thread=CAST(?1 AS INTEGER) AND token=?2)",
+            stale_key,
+          ) {
+            Ok(n) => n
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let _ = match tx_db.run(
+            "DELETE FROM page_letter_scopes WHERE thread=CAST(? AS INTEGER) AND token=?",
+            stale_key,
+          ) {
+            Ok(n) => n
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+        }
+        Ok(None) => ()
+        Err(e) => return Err(builders_core::StepError::Sql(e))
+      }
+      let garbage = match tx_db.first(
+        "SELECT CAST(thread AS TEXT) AS thread,token FROM page_letter_garbage ORDER BY page_letter_garbage.thread,page_letter_garbage.token LIMIT 1",
+        [],
+      ) {
+        Ok(Some(g)) => g
+        Ok(None) => return Ok(true)
+        Err(e) => return Err(builders_core::StepError::Sql(e))
+      }
+      let g_thread = sql_db::row_val(garbage, "thread")
+      let g_token = sql_db::row_val(garbage, "token")
+      let rows = match tx_db.run(
+        "DELETE FROM page_letter_rows WHERE thread=CAST(?1 AS INTEGER) AND token=?2 AND n IN (SELECT n FROM page_letter_rows WHERE thread=CAST(?1 AS INTEGER) AND token=?2 ORDER BY n LIMIT ?3)",
+        [g_thread, g_token, base_codec::json_num(limit.to_double())],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(builders_core::StepError::Sql(e))
+      }
+      let dirty = if rows < limit {
+        match tx_db.run(
+          "DELETE FROM page_letter_dirty WHERE thread=CAST(?1 AS INTEGER) AND token=?2 AND n IN (SELECT n FROM page_letter_dirty WHERE thread=CAST(?1 AS INTEGER) AND token=?2 ORDER BY n LIMIT ?3)",
+          [g_thread, g_token, base_codec::json_num((limit - rows).to_double())],
+        ) {
+          Ok(n) => n
+          Err(e) => return Err(builders_core::StepError::Sql(e))
+        }
+      } else {
+        0
+      }
+      if rows + dirty < limit {
+        let _ = match tx_db.run(
+          "DELETE FROM page_letter_garbage WHERE thread=CAST(? AS INTEGER) AND token=?",
+          [g_thread, g_token],
+        ) {
+          Ok(n) => n
+          Err(e) => return Err(builders_core::StepError::Sql(e))
+        }
+      }
+      let has_garbage = match tx_db.first("SELECT 1 FROM page_letter_garbage LIMIT 1", []) {
+        Ok(Some(_)) => true
+        Ok(None) => false
+        Err(e) => return Err(builders_core::StepError::Sql(e))
+      }
+      let remaining = if has_garbage {
+        true
+      } else {
+        match tx_db.first("SELECT 1 " + older + " ORDER BY epoch,thread LIMIT 1", []) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(builders_core::StepError::Sql(e))
+        }
+      }
+      Ok(!remaining)
+    },
+    fn(e : sql_db::SqlError) -> builders_core::StepError { builders_core::StepError::Sql(e) },
+  )
+}
+
+/// Real-SQLite self-test for `Letters::gc_step` (bounds check, stale-epoch queuing, bounded rows+dirty deletion).
+pub fn run_gc_selftest() -> Result[Unit, String] {
+  let db = match sql_db::Db::create(":memory:", wait_ms=250) {
+    Ok(d) => d
+    Err(e) => return Err("gc_selftest create db: " + e.message)
+  }
+  let schema = "CREATE TABLE threads (id INTEGER PRIMARY KEY);" +
+  "CREATE TABLE entries (thread INTEGER, n INTEGER, kind TEXT, letter TEXT, ts TEXT);"
+  match db.exec(schema) {
+    Ok(_) => ()
+    Err(e) => { db.close(); return Err("gc_selftest schema: " + e.message) }
+  }
+  let l = Letters::new(db)
+  // 1. Out-of-bounds limit returns StepError::App("page letter batch must be 1–64").
+  match l.gc_step(limit=0) {
+    Err(builders_core::StepError::App(msg)) => {
+      if msg != "page letter batch must be 1–64" {
+        db.close()
+        return Err("gc_step limit=0 msg mismatch: " + msg)
+      }
+    }
+    _ => { db.close(); return Err("gc_step limit=0 should fail with App error") }
+  }
+  match l.gc_step(limit=65) {
+    Err(builders_core::StepError::App(msg)) => {
+      if msg != "page letter batch must be 1–64" {
+        db.close()
+        return Err("gc_step limit=65 msg mismatch: " + msg)
+      }
+    }
+    _ => { db.close(); return Err("gc_step limit=65 should fail with App error") }
+  }
+  // 2. Empty DB installs cleanly and returns Ok(true).
+  match l.gc_step(limit=4) {
+    Ok(true) => ()
+    _ => { db.close(); return Err("gc_step empty should return Ok(true)") }
+  }
+  // 3. Seed stale-epoch scope (epoch=1 while meta epoch=2) with 3 rows + 2 dirty = 5 items.
+  let _ = match db.run("UPDATE page_letter_meta SET epoch=2 WHERE id=1", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  let _ = match db.run("INSERT INTO page_letter_scopes VALUES(7,'oldtok',1,3,3,1)", []) {
+    Ok(n) => n
+    Err(e) => { db.close(); return Err(e.message) }
+  }
+  for i in 1..<4 {
+    let _ = match db.run("INSERT INTO page_letter_rows VALUES(7,'oldtok',?)", [base_codec::json_int(i)]) {
+      Ok(n) => n
+      Err(e) => { db.close(); return Err(e.message) }
+    }
+  }
+  for i in 1..<3 {
+    let _ = match db.run("INSERT INTO page_letter_dirty VALUES(7,'oldtok',?)", [base_codec::json_int(i)]) {
+      Ok(n) => n
+      Err(e) => { db.close(); return Err(e.message) }
+    }
+  }
+  // Step 1 (limit=4): moves stale scope to garbage, deletes 3 rows + 1 dirty = 4 (not < 4 -> garbage kept, returns false).
+  match l.gc_step(limit=4) {
+    Ok(false) => ()
+    _ => { db.close(); return Err("gc_step batch 1 should return Ok(false)") }
+  }
+  // Step 2 (limit=4): deletes remaining 1 dirty (< 4 -> removes garbage, returns true).
+  match l.gc_step(limit=4) {
+    Ok(true) => ()
+    _ => { db.close(); return Err("gc_step batch 2 should return Ok(true)") }
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("gc_selftest left transaction open")
+  }
+  db.close()
+  Ok(())
+}
+
 struct LettersCell {
   mut state : Option[Letters]
 }

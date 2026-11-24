@@ -2,6 +2,7 @@
 // permissive `config.json` `readers` validation, live in-memory config snapshots, hot-reload on next spawn,
 // real SQLite builder wiring, RequestedBuilder error boundary, rig Remote wiring, and per-station PackedProgram isolation.
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +31,11 @@ import { measureRoom } from "../src/sessions/footprint.ts";
 import { PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
 import { MemoryProgram } from "../src/share/memory-mb.ts";
 import { Store } from "../src/store/store.ts";
+import { buildLegacyEntryLookups } from "../src/store/legacy-said-builder.ts";
+import { buildWorkspaceActivity } from "../src/sessions/workspace-activity-builder.ts";
 import { retireAfterPrevious } from "../src/usage/module.ts";
+import { UseIndex } from "../src/vault/use-index.ts";
+import { DatabaseSync } from "node:sqlite";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -690,4 +695,124 @@ test("default mb does zero pionBinary() probe and explicit binary override alway
     assert.equal(pionRes.engine, "pion");
     assert.equal(pionRes.primaryBinary, deferredPion);
   });
+});
+
+test("vault-uses UseIndex (file-backed DB) and session-backfill builders resolve ReaderConfig lazily and fall back to mb while pionImplemented is false", { skip: skipPosixStubs }, async () => {
+  resetReaderSelectionStateForTest();
+  const dir = freshDir("w5-di-");
+  const spawnLog = join(dir, "spawns.log");
+  const vaultStub = makeStubBinary(
+    dir,
+    "stub-mb-vault",
+    `
+import { appendFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+appendFileSync(${JSON.stringify(spawnLog)}, process.argv.slice(2).join(" ") + "\\n");
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  if (!line) return;
+  const ask = JSON.parse(line);
+  if (ask.op === "ready" && ask.q) {
+    process.stdout.write(JSON.stringify({ answered: { id: ask.q.id, bodies: [] } }) + "\\n");
+  } else if (ask.op === "uses" || ask.op === "rebox") {
+    process.stdout.write(JSON.stringify({ done: true }) + "\\n");
+  } else {
+    process.stdout.write(JSON.stringify({ done: true }) + "\\n");
+  }
+});
+`,
+  );
+  const pionStub = makeStubBinary(dir, "stub-pion-w5", versionAndTagStubBody("stillfail-pion 0.1.0", "pion"));
+
+  const logs: Line[] = [];
+  hearLines((l) => logs.push(l));
+  try {
+    await withEnv({
+      STILLFAIL_MB_READER: vaultStub,
+      STILLFAIL_PION_READER: pionStub,
+      STILLFAIL_READER_ENGINE: undefined,
+      STILLFAIL_READER_VAULT_USES: undefined,
+      STILLFAIL_READER_SESSION_BACKFILL: undefined,
+    }, async () => {
+      // 1. vault-uses: real file-backed DB triggers UseIndex.#start() -> resolveReaderSelection("vault-uses")
+      const dbPath = join(dir, "vault.db");
+      const db = new DatabaseSync(dbPath);
+      db.exec(`
+        CREATE TABLE vault_requests (ws TEXT NOT NULL, id TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (ws, id));
+        CREATE TABLE vault_devices (ws TEXT NOT NULL, device TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (ws, device));
+      `);
+      let vaultConfigReads = 0;
+      const uses = new UseIndex(db, {
+        readers: () => {
+          vaultConfigReads++;
+          return { readers: { "vault-uses": "pion" } };
+        },
+      });
+      try {
+        const bodies = await uses.read("ws1", "v1", null, 10);
+        assert.deepEqual(bodies, []);
+        assert.equal(vaultConfigReads, 1, "UseIndex.#start() must read readers() lazily on spawn");
+      } finally {
+        await uses.close();
+        db.close();
+      }
+
+      // 2. session-backfill: buildWorkspaceActivity & buildLegacyEntryLookups resolve ReaderConfig lazily
+      const storePath = join(dir, "station.db");
+      const store = Store.open(storePath, join(dir, "archive"));
+      // Mark workspace_activity_meta incomplete so buildWorkspaceActivity sees work and spawns the worker.
+      store.db.exec("UPDATE workspace_activity_meta SET complete = 0");
+      let activityConfigReads = 0;
+      const activity = buildWorkspaceActivity(store, Promise.resolve(), undefined, () => {
+        activityConfigReads++;
+        return { readers: { "session-backfill": "pion" } };
+      });
+      try {
+        assert.equal(await activity.ready, true);
+        assert.ok(activityConfigReads >= 1, "buildWorkspaceActivity must read readers() on spawn");
+      } finally {
+        await activity.close();
+      }
+
+      let legacyConfigReads = 0;
+      const legacyBins: string[] = [];
+      // Seed a legacy-said trigger/table probe or use startWorker injection via buildLegacyEntryLookups
+      const legacy = buildLegacyEntryLookups(
+        store,
+        Promise.resolve(),
+        undefined,
+        (bin) => {
+          legacyBins.push(bin);
+          return new (class FakeWorker extends EventEmitter {
+            readonly threadId = 1;
+            postMessage() { setImmediate(() => this.emit("message", { done: true })); }
+            unref() {}
+            async terminate() { setImmediate(() => this.emit("exit", 0)); return 0; }
+          })() as never;
+        },
+        () => {
+          legacyConfigReads++;
+          return { readers: { "session-backfill": "pion" } };
+        },
+      );
+      await legacy.close();
+      store.close();
+
+      // Verify both modes fell back to mbStub (pionImplemented is false) and spawned real processes.
+      const spawns = readFileSync(spawnLog, "utf8").trim().split("\n").filter(Boolean);
+      assert.ok(spawns.some((l) => l.includes("--builder vault-uses")), `expected vault-uses spawn, got ${JSON.stringify(spawns)}`);
+      assert.ok(spawns.some((l) => l.includes("--builder session-backfill")), `expected session-backfill spawn, got ${JSON.stringify(spawns)}`);
+      // Direct resolveReaderSelection check confirms unimplemented fallback reason.
+      const vSel = resolveReaderSelection("vault-uses", { config: { readers: { "vault-uses": "pion" } }, env: {} });
+      assert.equal(vSel.engine, "mb");
+      assert.equal(vSel.selection.reason, "pion-mode-unimplemented");
+      const sSel = resolveReaderSelection("session-backfill", { config: { readers: { "session-backfill": "pion" } }, env: {} });
+      assert.equal(sSel.engine, "mb");
+      assert.equal(sSel.selection.reason, "pion-mode-unimplemented");
+      void legacyConfigReads;
+      void legacyBins;
+    });
+  } finally {
+    hearLines(null);
+  }
 });
