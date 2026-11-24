@@ -300,19 +300,14 @@ test('a face\'s CJK companion narrow among Latin letters as its face is (pwid), 
     'the one before gone, the new narrow too');
 });
 
-test('same-frame faceAddBytes + faceSetLigatures(face, false) registers face once ligature-off FontFace resolves', async () => {
-  const b = browser({ deferLoad: true });
+test('faceSetLigatures(face, false) applies calt/liga/clig off to subsequent faceAdd/faceAddBytes descriptors', async () => {
+  const b = browser();
   await task();
-  b.H.faceAddBytes(3, new Uint8Array(4), 400);
   b.H.faceSetLigatures(3, false);
-  assert.equal(b.pending.length, 2, 'initial load + ligature-off reload');
-  // Resolve both controlled promises: first is stale due to gen bump; second must register face 3 in faces
-  b.pending[0]();
-  b.pending[1]();
+  b.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
-  await task();
-  assert.match(fontOf(b, 3 << 8), /"mbface3"/, 'face 3 active after faceSetLigatures reload');
-  assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && /"calt" 0/.test(f.featureSettings || '')));
+  assert.match(fontOf(b, 3 << 8), /"mbface3"/, 'face 3 active after faceAddBytes');
+  assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && f.featureSettings === '"calt" 0, "liga" 0, "clig" 0'));
 });
 
 test('style_serif | style_words stays serif even when face_text (slot 2) is loaded', async () => {
@@ -351,22 +346,29 @@ test('slot >= 7 async faceAddBytes completion bumps atlasGeneration so MoonBit r
   assert.ok(b.H.atlasGeneration() > gen0, 'atlasGeneration bumped after async preview font load');
 });
 
-test('faceSetLigatures preserves CJK companion FontFaces and narrow CJK faces', async () => {
+test('faceSetLigatures preserves document.fonts order and CJK companions, and in-flight narrow CJK completion refreshes', async () => {
   const b = browser();
   await task();
   b.installed.add('PingFang SC Medium');
   b.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
   b.H.setCjkFace(3, 100, ['PingFang SC']);
-  fontOf(b, (3 << 8) | 64);
   await task();
-  const cjkBefore = [...b.fonts].filter((f) => f.unicodeRange === CJK_RANGE);
-  assert.ok(cjkBefore.length >= 2, 'regular and narrow CJK companion loaded');
+  // Trigger narrow load (primary + CJK) and verify it bumps atlasGeneration and requests a frame on completion.
+  const genBeforeNarrow = b.H.atlasGeneration();
+  let frames = 0;
+  const origReq = b.H.requestFrame;
+  b.H.requestFrame = () => { frames++; origReq(); };
+  fontOf(b, (3 << 8) | 64);
   b.H.faceSetLigatures(3, false);
   await task();
-  const cjkAfter = [...b.fonts].filter((f) => f.unicodeRange === CJK_RANGE);
-  assert.equal(cjkAfter.length, cjkBefore.length, 'CJK companion FontFaces preserved across faceSetLigatures');
-  assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && !f.unicodeRange && /"calt" 0/.test(f.featureSettings || '')));
-  assert.ok([...b.fonts].some((f) => f.family === 'mbface3n' && !f.unicodeRange && /"calt" 0/.test(f.featureSettings || '') && /"pwid" 1/.test(f.featureSettings || '')),
-    'primary narrow variant mbface3n reloaded with calt 0 and pwid 1');
+  assert.ok(b.H.atlasGeneration() > genBeforeNarrow, 'in-flight narrow CJK completion bumps atlasGeneration');
+  assert.ok(frames >= 1, 'in-flight narrow CJK completion requests a frame');
+  const snapshotBefore = [...b.fonts];
+  assert.ok(snapshotBefore.filter((f) => f.unicodeRange === CJK_RANGE).length >= 2, 'regular and narrow CJK companion loaded');
+  // Toggling ligatures must not delete, reload, or reorder already-loaded FontFaces.
+  b.H.faceSetLigatures(3, true);
+  b.H.faceSetLigatures(3, false);
+  await task();
+  assert.deepEqual([...b.fonts], snapshotBefore, 'document.fonts entries and order unchanged by faceSetLigatures');
 });

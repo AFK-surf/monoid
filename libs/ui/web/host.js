@@ -4823,6 +4823,7 @@
     const gen = faceCancelGen.get(face) || 0;
     const cjk = cjkFiles.get(face);
     const files = [...(faceFiles.get(face) || []), ...(cjk || [])];
+    let added = false;
     Promise.all(files.map(([src, weight, desc]) => {
       const d = desc ? { ...desc } : faceDescriptors(face, weight);
       d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
@@ -4837,13 +4838,15 @@
           return;
         }
         document.fonts.add(ff);
+        added = true;
       }, () => {});
     })).then(() => {
-      if ((faceCancelGen.get(face) || 0) !== gen) return;
-      if (narrowFaces.get(face) !== false) return;
-      narrowFaces.set(face, true);
-      textChanged();
-      H.requestFrame();
+      if (!added && (faceCancelGen.get(face) || 0) !== gen) return;
+      if (narrowFaces.get(face) === false) narrowFaces.set(face, true);
+      if (added || narrowFaces.get(face) === true) {
+        textChanged();
+        H.requestFrame();
+      }
     }, () => {});
     return false;
   };
@@ -4949,50 +4952,13 @@
     }, () => {});
     return true;
   };
-  // Note: Web Canvas 2D renders cluster-by-cluster via fillText so cross-character programming ligatures are not shown
-  // on web; we still track faceNoLig and reload FontFace descriptors for parity.
+  // Web Canvas 2D renders cluster-by-cluster via fillText so cross-character programming ligatures are not shown on
+  // web; keep faceNoLig for subsequent faceAdd/faceAddBytes descriptors without deleting or reloading already-loaded
+  // FontFaces (avoids flicker and preserves document.fonts order relative to CJK unicode-range companions).
   H.faceSetLigatures = (face, on) => {
     if (!(face > 0 && face < 32)) return;
-    const noLig = !on;
-    if (faceNoLig.has(face) === noLig) return;
-    if (noLig) faceNoLig.add(face);
-    else faceNoLig.delete(face);
-    const files = faceFiles.get(face);
-    if (!files || !files.length || typeof FontFace !== 'function') return;
-    const gen = nextFaceCancelGen(face);
-    const cjkSet = new Set(cjkLoaded.get(face) || []);
-    const hasNarrow = narrowFaces.has(face);
-    for (const ff of [...document.fonts]) {
-      if (cjkSet.has(ff)) continue;
-      const fam = ff.family.replace(/"/g, '');
-      if (fam === `mbface${face}` || fam === `mbface${face}n`) document.fonts.delete(ff);
-    }
-    const loads = files.map(([src, weight]) => {
-      const ff = new FontFace(`mbface${face}`, src, faceDescriptors(face, weight));
-      return ff.load().then(() => {
-        if (faceCancelGen.get(face) !== gen) return;
-        document.fonts.add(ff);
-        faces.add(face);
-      }, () => {});
-    });
-    if (hasNarrow) {
-      for (const [src, weight] of files) {
-        const d = faceDescriptors(face, weight);
-        d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
-        const ff = new FontFace(`mbface${face}n`, src, d);
-        loads.push(ff.load().then(() => {
-          if (faceCancelGen.get(face) !== gen) return;
-          document.fonts.add(ff);
-        }, () => {}));
-      }
-    }
-    Promise.all(loads).then(() => {
-      if (faceCancelGen.get(face) !== gen) return;
-      if (hasNarrow && narrowFaces.get(face) === false) narrowFaces.set(face, true);
-      nextFaceKeyGen(face);
-      textChanged();
-      H.requestFrame();
-    });
+    if (on) faceNoLig.delete(face);
+    else faceNoLig.add(face);
   };
   H.setHostAutospace = () => {};
   H.localFontInfo = () => '';
