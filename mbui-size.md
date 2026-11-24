@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c442651d2](https://github.com/AFK-surf/monoid/commit/c442651d201bf33ac7025d379eb2d4fdc2da87b1) refactor(ui): drop Blitter and Moving trait object | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [d2d0b0a9c](https://github.com/AFK-surf/monoid/commit/d2d0b0a9c5b2e41b4f7323abbe27893d7c5b7bc4) perf(ui): exact-phase glyph prewarm and Windows Di | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [7c4a08f16](https://github.com/AFK-surf/monoid/commit/7c4a08f162275db019f943730d5eb8310edb82ef) refactor(ui): drop priv traits and hostapi refs fo | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [0cf2e4fb3](https://github.com/AFK-surf/monoid/commit/0cf2e4fb3ceaeb12f2a57a9c2031a94abe63c9e3) fix(ci): make a push's Windows core below the app  | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 2.78 | 3.75 | 15.19 | 37.4 | 57.81 | 32.75 | 66.74 | 100.68 | 125.07 |
 | [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.65 | 127.41 |
 | [0f5041107](https://github.com/AFK-surf/monoid/commit/0f5041107ca0906f0ac433a02d252c283a3233b1) fix(mbui): wait for a notified message past the ch | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.58 | 137.62 |
-| [d4d7cf079](https://github.com/AFK-surf/monoid/commit/d4d7cf079cc732d783dd55d9978be5758c34e56e) fix(core-ts,ui,mbui): eliminate chat activity moti | 2.78 | 3.75 | 15.18 | 37.4 | 57.77 | 32.74 | 66.7 | 100.45 | 130.12 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c442651d2](https://github.com/AFK-surf/monoid/commit/c442651d201bf33ac7025d379eb2d4fdc2da87b1) refactor(ui): drop Blitter and Moving trait object | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.36 |
 | [d2d0b0a9c](https://github.com/AFK-surf/monoid/commit/d2d0b0a9c5b2e41b4f7323abbe27893d7c5b7bc4) perf(ui): exact-phase glyph prewarm and Windows Di | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.33 |
 | [7c4a08f16](https://github.com/AFK-surf/monoid/commit/7c4a08f162275db019f943730d5eb8310edb82ef) refactor(ui): drop priv traits and hostapi refs fo | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.43 |
 | [0cf2e4fb3](https://github.com/AFK-surf/monoid/commit/0cf2e4fb3ceaeb12f2a57a9c2031a94abe63c9e3) fix(ci): make a push's Windows core below the app  | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.8 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [27e3294c7](https://github.com/AFK-surf/monoid/commit/27e3294c7cef7cf98d25c71e2a078da32203f508) fix(ui,station): keep long and wide image previews | 0.56 | 0.73 | 2.85 | 3.85 | 7.08 | 2.09 | 5.84 | 57.57 |
 | [5f2f4f088](https://github.com/AFK-surf/monoid/commit/5f2f4f0884bd882f4d5e6e615148acbc0341f8c5) fix(ci): prevent preview ios 5m timeouts and drop  | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.2 |
 | [0f5041107](https://github.com/AFK-surf/monoid/commit/0f5041107ca0906f0ac433a02d252c283a3233b1) fix(mbui): wait for a notified message past the ch | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.59 |
-| [d4d7cf079](https://github.com/AFK-surf/monoid/commit/d4d7cf079cc732d783dd55d9978be5758c34e56e) fix(core-ts,ui,mbui): eliminate chat activity moti | 0.55 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.49 |
