@@ -176,3 +176,44 @@ int sfc_denied(moonbit_bytes_t path, int dir) {
   return errno == EACCES || errno == EPERM ? 1 : 0;
 #endif
 }
+
+/// Whether `path` is confirmed absent (ENOENT / ENOTDIR on POSIX; FILE_NOT_FOUND / PATH_NOT_FOUND / INVALID_NAME on
+/// Windows) rather than unreadable (EACCES / EIO / other). `follow`: stat vs lstat.
+int sfc_missing(moonbit_bytes_t path, int follow) {
+#ifdef _WIN32
+  (void)follow;
+  wchar_t *w = wide((const char *)path);
+  if (w == NULL) return 0;
+  DWORD attr = GetFileAttributesW(w);
+  free(w);
+  if (attr != INVALID_FILE_ATTRIBUTES) return 0;
+  DWORD e = GetLastError();
+  return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+#else
+  struct stat st;
+  int rc = follow ? stat((const char *)path, &st) : lstat((const char *)path, &st);
+  if (rc == 0) return 0;
+  return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
+#endif
+}
+
+/// Whether directory `path` is confirmed absent or not a directory (ENOENT / ENOTDIR) when opened for listing, rather
+/// than unreadable (EACCES / EIO / other).
+int sfc_dir_missing(moonbit_bytes_t path) {
+#ifdef _WIN32
+  wchar_t *w = wide((const char *)path);
+  if (w == NULL) return 0;
+  DWORD attr = GetFileAttributesW(w);
+  free(w);
+  if (attr != INVALID_FILE_ATTRIBUTES) return (attr & FILE_ATTRIBUTE_DIRECTORY) ? 0 : 1;
+  DWORD e = GetLastError();
+  return (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND || e == ERROR_INVALID_NAME) ? 1 : 0;
+#else
+  DIR *d = opendir((const char *)path);
+  if (d != NULL) {
+    closedir(d);
+    return 0;
+  }
+  return (errno == ENOENT || errno == ENOTDIR) ? 1 : 0;
+#endif
+}

@@ -62,6 +62,9 @@ class MockS3Server {
   readonly abortedUploads: string[] = [];
   readonly completedUploads: string[] = [];
   readonly puts: string[] = [];
+  readonly singleDeletes: string[] = [];
+  readonly batchDeletes: string[][] = [];
+  readonly failDeleteKeys = new Map<string, { code: string; message: string }>();
   maxListKeys = 1000;
   failPartNumber: number | null = null;
   requireAuth = true;
@@ -233,6 +236,32 @@ class MockS3Server {
       return;
     }
 
+    // DeleteObjects (POST /?delete)
+    if (req.method === "POST" && url.searchParams.has("delete")) {
+      const expectedMd5 = createHash("md5").update(body).digest("base64");
+      if (req.headers["content-md5"] !== expectedMd5) {
+        res.writeHead(400, { "content-type": "application/xml" });
+        res.end(`<Error><Code>InvalidDigest</Code><Message>Missing or mismatched Content-MD5</Message></Error>`);
+        return;
+      }
+      const keys = extractAllXmlTags(body.toString("utf8"), "Key");
+      this.batchDeletes.push(keys);
+      const deletedXml: string[] = [];
+      const errorXml: string[] = [];
+      for (const k of keys) {
+        const fail = this.failDeleteKeys.get(k);
+        if (fail !== undefined) {
+          errorXml.push(`<Error><Key>${escapeXml(k)}</Key><Code>${escapeXml(fail.code)}</Code><Message>${escapeXml(fail.message)}</Message></Error>`);
+        } else {
+          this.objects.delete(k);
+          deletedXml.push(`<Deleted><Key>${escapeXml(k)}</Key></Deleted>`);
+        }
+      }
+      res.writeHead(200, { "content-type": "application/xml" });
+      res.end(`<DeleteResult>${deletedXml.join("")}${errorXml.join("")}</DeleteResult>`);
+      return;
+    }
+
     // Standard object GET / PUT / DELETE
     if (req.method === "PUT") {
       this.objects.set(rawKey, body);
@@ -254,6 +283,7 @@ class MockS3Server {
     }
     if (req.method === "DELETE") {
       this.objects.delete(rawKey);
+      this.singleDeletes.push(rawKey);
       res.writeHead(204);
       res.end();
       return;
@@ -955,4 +985,99 @@ test("Backup history: peer & S3 sync persistence, error dedup & recovery, restor
   assert.equal(failHist[0]!.target, "missing-s3");
   assert.equal(failHist[0]!.status, "error");
   assert.equal(failHist[0]!.reason, "gone");
+});
+
+test("D71: S3Client.deleteObjects batches >1000 keys with Content-MD5/SigV4, handles partial errors, and S3Place reconciles post-crash orphans safely", async () => {
+  const s3 = new MockS3Server();
+  await s3.start();
+  const target = s3.target();
+  const client = new S3Client(target);
+
+  // 1. >1000 keys (2050) -> 3 DeleteObjects batches (1000 + 1000 + 50), 0 single DELETEs, XML special chars intact
+  const keys: string[] = [];
+  for (let i = 0; i < 2050; i++) {
+    const k = i === 7 ? "stillfail-backup/special&<key>.enc" : `stillfail-backup/k-${i}.enc`;
+    s3.objects.set(k, Buffer.from("x"));
+    keys.push(k);
+  }
+  const delRes = await client.deleteObjects(keys);
+  assert.equal(delRes.deleted.length, 2050);
+  assert.equal(delRes.errors.length, 0);
+  assert.deepEqual(s3.batchDeletes.map((b) => b.length), [1000, 1000, 50]);
+  assert.equal(s3.singleDeletes.length, 0);
+  assert.equal(s3.objects.size, 0);
+
+  // 2. S3Place.drop partial <Error>: AccessDenied throws & retains failed key; NoSuchKey treated as gone
+  const { level } = await import("../src/replica/places.ts");
+  const origin = sid("a");
+  const gen = "1000-aaaaaaaa";
+  const place = new S3Place(target);
+  const hOk = sid("1");
+  const hDenied = sid("2");
+  const hNoSuch = sid("3");
+  await place.putFile(HOME, origin, hOk, Buffer.from("ok"));
+  await place.putFile(HOME, origin, hDenied, Buffer.from("denied"));
+  const deniedKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hDenied)}.enc`;
+  const noSuchKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hNoSuch)}.enc`;
+  s3.failDeleteKeys.set(deniedKey, { code: "AccessDenied", message: "forbidden" });
+  s3.failDeleteKeys.set(noSuchKey, { code: "NoSuchKey", message: "gone" });
+  await assert.rejects(() => place.drop(HOME, origin, gen, [], [hOk, hDenied, hNoSuch]), /AccessDenied/);
+  assert.equal(s3.objects.has(`${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hOk)}.enc`), false);
+  assert.equal(s3.objects.has(deniedKey), true, "AccessDenied object stays in bucket");
+  s3.failDeleteKeys.clear();
+
+  // 3. Post-crash orphan reconciliation: write new head without calling drop, then fresh S3Place runs level()
+  const hLive = sid("4");
+  const hOrphan = sid("5");
+  const orphanKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hOrphan)}.enc`;
+  const liveKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/files/${place.fileTag(hLive)}.enc`;
+  await place.putFile(HOME, origin, hLive, Buffer.from("live"));
+  await place.putFile(HOME, origin, hOrphan, Buffer.from("orphan"));
+  const head = {
+    v: 1 as const,
+    origin,
+    workspace: HOME,
+    gen,
+    name: "a",
+    dataDir: "/d",
+    made: 1000,
+    to: 1,
+    batches: [],
+    files: { [hLive]: 4 },
+    chats: 1,
+    messages: 1,
+    bytes: 4,
+    runs: [{ run: "12345678", from: 1 }],
+  };
+  await place.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(head)));
+
+  // 3a. Corrupted second head present -> allHeadsVerified === false -> ZERO orphans deleted!
+  const corruptHeadKey = `${target.prefix}/${place.wsTag(HOME)}/${place.originTag(origin)}/head/2000-bbbbbbbb.enc`;
+  s3.objects.set(corruptHeadKey, Buffer.from("not-valid-sfb1-ciphertext"));
+  const placeWithCorrupt = new S3Place(target);
+  const resCorrupt = await level(placeWithCorrupt, HOME, {
+    head,
+    batch: async () => Buffer.alloc(0),
+    sources: async () => new Map(),
+  });
+  assert.equal(resCorrupt.behind, false);
+  assert.equal(s3.objects.has(orphanKey), true, "corrupted head disables orphan deletion");
+  assert.equal(s3.objects.has(deniedKey), true, "corrupted head disables orphan deletion for all unreferenced files");
+
+  // 3b. Remove corrupted head -> allHeadsVerified === true -> orphans batch-deleted via DeleteObjects, live kept!
+  s3.objects.delete(corruptHeadKey);
+  s3.batchDeletes.length = 0;
+  s3.singleDeletes.length = 0;
+  const placeClean = new S3Place(target);
+  const resClean = await level(placeClean, HOME, {
+    head,
+    batch: async () => Buffer.alloc(0),
+    sources: async () => new Map(),
+  });
+  assert.equal(resClean.behind, false);
+  assert.equal(s3.objects.has(orphanKey), false, "orphan file deleted once all heads verified");
+  assert.equal(s3.objects.has(deniedKey), false, "second orphan file deleted once all heads verified");
+  assert.equal(s3.objects.has(liveKey), true, "live referenced file preserved");
+  assert.equal(s3.batchDeletes.length, 1, "orphans reclaimed via DeleteObjects batch");
+  assert.equal(s3.singleDeletes.length, 0);
 });

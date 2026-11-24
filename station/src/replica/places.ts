@@ -18,6 +18,8 @@ export type Holding = { gen: string; head: Head | null; batches: string[] };
 export type Held = { gens: Holding[]; files: string[] };
 export const nothingHeld = (): Held => ({ gens: [], files: [] });
 
+export const DROP_FILES_PAGE = 2000;
+
 export interface Place {
   held(ws: string, origin: string): Promise<Held>;
   /// A batch or the head of a generation.
@@ -25,6 +27,8 @@ export interface Place {
   /// A file, by its hash, read from `source` (a path on this station) or given whole.
   putFile(ws: string, origin: string, hash: string, source: string | Buffer): Promise<void>;
   drop(ws: string, origin: string, gen: string, batches: string[], files: string[]): Promise<void>;
+  /// Optional post-head orphan file cleanup (e.g. S3Place after crash recovery when all heads are verified).
+  pruneOrphans?(ws: string, origin: string): Promise<void>;
 }
 
 function check(ws: string, origin: string, gen?: string): void {
@@ -440,7 +444,7 @@ function partialHead(head: Head, held: Set<string>): Head {
 /// while transcripts are lacking (`partialHead`), the transcripts, its head, then what is not named any more goes.
 /// `known`: what the place held after it was levelled last (null: asked of it now). `onPartial`: told as the partial
 /// head is put, how far it goes and how many transcripts are still to send.
-export async function level(place: Place, ws: string, own: Own, known: Known | null = null, opts: { includeTranscripts?: boolean; onPartial?: (to: number, lacking: number) => void } = {}): Promise<Levelled> {
+export async function level(place: Place, ws: string, own: Own, known: Known | null = null, opts: { includeTranscripts?: boolean; onPartial?: (to: number, lacking: number) => void; dropFilesPage?: number } = {}): Promise<Levelled> {
   const includeTranscripts = opts.includeTranscripts !== false;
   const origin = own.head.origin;
   let k = known;
@@ -531,11 +535,23 @@ export async function level(place: Place, ws: string, own: Own, known: Known | n
       }
     }
   }
+  const dropPage = opts.dropFilesPage !== undefined && opts.dropFilesPage > 0 ? opts.dropFilesPage : DROP_FILES_PAGE;
   if (oldBatches.length > 0 || oldFiles.length > 0) {
-    await place.drop(ws, origin, own.head.gen, oldBatches, oldFiles);
-    for (const b of oldBatches) k.batches.delete(b);
-    for (const f of oldFiles) k.files.delete(f);
+    if (oldFiles.length === 0) {
+      await place.drop(ws, origin, own.head.gen, oldBatches, []);
+      for (const b of oldBatches) k.batches.delete(b);
+    } else {
+      for (let i = 0; i < oldFiles.length; i += dropPage) {
+        const page = oldFiles.slice(i, i + dropPage);
+        await place.drop(ws, origin, own.head.gen, i === 0 ? oldBatches : [], page);
+        if (i === 0) {
+          for (const b of oldBatches) k.batches.delete(b);
+        }
+        for (const f of page) k.files.delete(f);
+      }
+    }
   }
+  await place.pruneOrphans?.(ws, origin);
   return { behind: false, to: own.head.to, missing, known: k };
 }
 

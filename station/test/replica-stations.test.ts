@@ -1323,3 +1323,117 @@ test("FolderPlace handles corrupted head.json in drop, enforces LRU cap on #head
   await place.put(HOME, origins[8]!, gen, "head", "head.json", Buffer.from(JSON.stringify({ ...makeHead(HOME, gen, 1, {}), origin: origins[8]! })));
   assert.equal(headReads.get(origin8Head), 1, "forget(ws) evicted cache entry");
 });
+
+test("D71: level() pages place.drop() by dropFilesPage, preserves remaining files on mid-page error, and drops batches-only", async () => {
+  const origin = id("a");
+  const gen = "1000-aaaaaaaa";
+  const b1 = "0000000001-0000000001-11111111.ndjson.zst";
+  const b2 = "0000000002-0000000002-22222222.ndjson.zst";
+  const oldFiles = ["1", "2", "3", "4", "5"].map(id);
+  const liveFile = id("9");
+
+  const makeHead = (to: number, batches: string[], files: Record<string, number>): Head => ({
+    v: 1,
+    origin,
+    workspace: HOME,
+    gen,
+    name: "n",
+    dataDir: "/d",
+    made: to * 1000,
+    to,
+    batches,
+    files,
+    chats: 1,
+    messages: to,
+    bytes: 0,
+    runs: [{ run: "12345678", from: 1 }],
+  });
+
+  // 1. 5 oldFiles, dropFilesPage=2, oldBatches=[b1] -> 3 calls: ([b1], 2), ([], 2), ([], 1)
+  const calls: { batches: string[]; files: string[] }[] = [];
+  const place1: Place = {
+    async held() {
+      return { gens: [{ gen, head: makeHead(1, [b1], { [liveFile]: 1 }), batches: [b1] }], files: [liveFile, ...oldFiles] };
+    },
+    async put() {},
+    async putFile() {},
+    async drop(_ws, _o, _g, batches, files) {
+      calls.push({ batches: [...batches], files: [...files] });
+    },
+  };
+  const r1 = await level(
+    place1,
+    HOME,
+    { head: makeHead(2, [b2], { [liveFile]: 1 }), batch: async () => Buffer.from("b2"), sources: async () => new Map() },
+    null,
+    { dropFilesPage: 2 },
+  );
+  assert.equal(r1.behind, false);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0], { batches: [b1], files: oldFiles.slice(0, 2) });
+  assert.deepEqual(calls[1], { batches: [], files: oldFiles.slice(2, 4) });
+  assert.deepEqual(calls[2], { batches: [], files: oldFiles.slice(4, 5) });
+  assert.deepEqual([...r1.known.batches], [b2]);
+  assert.deepEqual([...r1.known.files], [liveFile]);
+
+  // 2. Page 2 throws -> page 1's oldBatches and 2 files removed from k, remaining 3 files kept in k.files for retry
+  let callNum = 0;
+  const known2 = {
+    gen,
+    batches: new Set([b1, b2]),
+    files: new Set([liveFile, ...oldFiles]),
+    others: new Set<string>(),
+    to: 1,
+    made: 1000,
+  };
+  const place2: Place = {
+    async held() {
+      return nothingHeld();
+    },
+    async put() {},
+    async putFile() {},
+    async drop() {
+      callNum++;
+      if (callNum === 2) throw new Error("page 2 network failure");
+    },
+  };
+  await assert.rejects(
+    level(
+      place2,
+      HOME,
+      { head: makeHead(2, [b2], { [liveFile]: 1 }), batch: async () => Buffer.from("b2"), sources: async () => new Map() },
+      known2,
+      { dropFilesPage: 2 },
+    ),
+    /page 2 network failure/,
+  );
+  assert.equal(known2.batches.has(b1), false, "page 1 oldBatch removed before page 2 failed");
+  assert.equal(known2.files.has(oldFiles[0]!), false, "page 1 file 0 removed");
+  assert.equal(known2.files.has(oldFiles[1]!), false, "page 1 file 1 removed");
+  assert.equal(known2.files.has(oldFiles[2]!), true, "page 2 file 2 retained for retry");
+  assert.equal(known2.files.has(oldFiles[3]!), true, "page 2 file 3 retained for retry");
+  assert.equal(known2.files.has(oldFiles[4]!), true, "page 3 file 4 retained for retry");
+
+  // 3. oldFiles=[] and oldBatches=[b1] -> 1 call place.drop(..., [b1], [])
+  const batchOnlyCalls: { batches: string[]; files: string[] }[] = [];
+  const place3: Place = {
+    async held() {
+      return { gens: [{ gen, head: makeHead(1, [b1], { [liveFile]: 1 }), batches: [b1] }], files: [liveFile] };
+    },
+    async put() {},
+    async putFile() {},
+    async drop(_ws, _o, _g, batches, files) {
+      batchOnlyCalls.push({ batches: [...batches], files: [...files] });
+    },
+  };
+  const r3 = await level(
+    place3,
+    HOME,
+    { head: makeHead(2, [b2], { [liveFile]: 1 }), batch: async () => Buffer.from("b2"), sources: async () => new Map() },
+    null,
+    { dropFilesPage: 2 },
+  );
+  assert.equal(r3.behind, false);
+  assert.deepEqual(batchOnlyCalls, [{ batches: [b1], files: [] }]);
+  assert.deepEqual([...r3.known.batches], [b2]);
+});

@@ -32,9 +32,31 @@ export * from "../../src/replica/export.ts";
 export const CHUNK_PLAIN_BYTES = 4 * 1024 * 1024;
 export const TRANSCRIPT_PASS_FILES = 512;
 export const TRANSCRIPT_PASS_BYTES = 32 * 1024 * 1024;
+export const TRANSCRIPT_PASS_DELETES = 2000;
 export const CHUNK_GC_GRACE_MS = 10 * 60_000;
 
 const ONE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.@+-]*$/;
+
+function isMissingError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
+
+function isPrunedBrainRel(relParts: readonly string[]): boolean {
+  return (
+    (relParts.length === 1 && relParts[0] === "scratch") ||
+    (relParts.length === 2 && relParts[0] === ".system_generated" && relParts[1] === "steps") ||
+    (relParts.length === 3 && relParts[0] === ".system_generated" && relParts[1] === "logs" && relParts[2] === "chunks")
+  );
+}
+
+function pathUnderAnyDir(p: string, dirs: Set<string>): boolean {
+  for (const d of dirs) {
+    const prefix = d.endsWith(sep) ? d : d + sep;
+    if (p === d || p.startsWith(prefix)) return true;
+  }
+  return false;
+}
 
 function isTranscriptPath(dataDir: string, path: string): boolean {
   const rel = relative(dataDir, path);
@@ -167,10 +189,19 @@ export type ExporterOptions = {
   transcriptPassFiles?: number;
   /// Max changed transcript bytes processed per pass before yielding (default 32 MiB).
   transcriptPassBytes?: number;
+  /// Max deleted transcript records (`tr_del`) processed per pass before yielding (default 2000).
+  transcriptPassDeletes?: number;
   /// Grace period (ms) before orphan transcript chunks are removed from disk (default 10 minutes; 0 for immediate GC).
   chunkGcGraceMs?: number;
   /// False: batches left as they were written, never folded (a test's, to restore a generation from them as written).
   fold?: boolean;
+  /// Optional test-only hooks to inject deterministic filesystem faults (works even when running as root).
+  testFaults?: {
+    statError?: (path: string) => NodeJS.ErrnoException | null;
+    readdirError?: (path: string) => NodeJS.ErrnoException | null;
+    lstatError?: (path: string) => NodeJS.ErrnoException | null;
+    readShort?: (path: string, offset: number) => boolean;
+  };
 };
 
 export class Exporter {
@@ -201,6 +232,9 @@ export class Exporter {
   }
   get #transcriptPassBytes(): number {
     return this.#o.transcriptPassBytes !== undefined && this.#o.transcriptPassBytes > 0 ? this.#o.transcriptPassBytes : TRANSCRIPT_PASS_BYTES;
+  }
+  get #transcriptPassDeletes(): number {
+    return this.#o.transcriptPassDeletes !== undefined && this.#o.transcriptPassDeletes > 0 ? this.#o.transcriptPassDeletes : TRANSCRIPT_PASS_DELETES;
   }
   get #chunkGcGraceMs(): number {
     return this.#o.chunkGcGraceMs !== undefined && this.#o.chunkGcGraceMs >= 0 ? this.#o.chunkGcGraceMs : CHUNK_GC_GRACE_MS;
@@ -803,17 +837,61 @@ export class Exporter {
     return null;
   }
 
-  #walkTranscriptDir(dir: string, add: (path: string) => void): void {
+  #statDir(dir: string) {
+    const err = this.#o.testFaults?.statError?.(dir);
+    if (err) throw err;
+    return statSync(dir); // sync: in the export's own thread (worker.ts)
+  }
+
+  #lstatPath(p: string) {
+    const err = this.#o.testFaults?.lstatError?.(p);
+    if (err) throw err;
+    return lstatSync(p, { bigint: true }); // sync: in the export's own thread (worker.ts)
+  }
+
+  #walkTranscriptDir(dir: string, add: (path: string) => void, onError: (dir: string) => void = () => {}): void {
     let entries;
     try {
+      const err = this.#o.testFaults?.readdirError?.(dir);
+      if (err) throw err;
       entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
-    } catch {
+    } catch (e) {
+      if (!isMissingError(e)) onError(dir);
       return;
     }
     for (const e of entries) {
       const p = join(dir, e.name);
-      if (e.isDirectory()) this.#walkTranscriptDir(p, add);
+      if (e.isDirectory()) this.#walkTranscriptDir(p, add, onError);
       else if (e.isFile()) add(p);
+    }
+  }
+
+  #walkBrainDir(
+    brainRoot: string,
+    dir: string,
+    relParts: string[],
+    add: (path: string) => void,
+    onError: (dir: string) => void,
+  ): void {
+    if (isPrunedBrainRel(relParts)) return;
+    let entries;
+    try {
+      const err = this.#o.testFaults?.readdirError?.(dir);
+      if (err) throw err;
+      entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)); // sync: in the export's own thread (worker.ts)
+    } catch (e) {
+      if (!isMissingError(e)) onError(dir);
+      return;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        const nextRel = [...relParts, e.name];
+        if (isPrunedBrainRel(nextRel)) continue;
+        this.#walkBrainDir(brainRoot, p, nextRel, add, onError);
+      } else if (e.isFile()) {
+        add(p);
+      }
     }
   }
 
@@ -825,11 +903,19 @@ export class Exporter {
     say: (ws: string, rec: Rec) => void,
   ): boolean {
     const byWs = new Map<string, Map<string, string | null>>();
-    for (const ws of outs.keys()) byWs.set(ws, new Map());
+    const unreadableDirsByWs = new Map<string, Set<string>>();
+    for (const ws of outs.keys()) {
+      byWs.set(ws, new Map());
+      unreadableDirsByWs.set(ws, new Set());
+    }
     for (const sess of sessRows) {
       const ws = wsOfSession(sess.ws);
       const foundMap = byWs.get(ws);
       if (foundMap === undefined) continue;
+      const unreadableDirs = unreadableDirsByWs.get(ws)!;
+      const addUnreadableDir = (d: string) => {
+        unreadableDirs.add(d);
+      };
       const key = typeof sess.key === "string" ? sess.key : "";
       const sRuntime = typeof sess.runtime === "string" ? sess.runtime : "";
       const origRuntime = typeof sess.original_runtime === "string" ? sess.original_runtime : sRuntime;
@@ -868,8 +954,10 @@ export class Exporter {
             const id = t.path.slice(t.path.lastIndexOf(sep) + 1).replace(/\.jsonl$/, "");
             const sub = join(dirname(t.path), id);
             try {
-              if (statSync(sub).isDirectory()) this.#walkTranscriptDir(sub, addPath); // sync: in the export's own thread (worker.ts)
-            } catch {}
+              if (this.#statDir(sub).isDirectory()) this.#walkTranscriptDir(sub, addPath, addUnreadableDir);
+            } catch (e) {
+              if (!isMissingError(e)) addUnreadableDir(sub);
+            }
           }
         }
       }
@@ -881,37 +969,46 @@ export class Exporter {
         addPath(join(cli, "annotations", `${r.id}.pbtxt`));
         const brain = join(cli, "brain", r.id);
         try {
-          if (statSync(brain).isDirectory()) this.#walkTranscriptDir(brain, addPath); // sync: in the export's own thread (worker.ts)
-        } catch {}
+          if (this.#statDir(brain).isDirectory()) this.#walkBrainDir(brain, brain, [], addPath, addUnreadableDir);
+        } catch (e) {
+          if (!isMissingError(e)) addUnreadableDir(brain);
+        }
       }
     }
     const chunkBytes = this.#chunkBytes;
     const maxFiles = this.#transcriptPassFiles;
     const maxBytes = this.#transcriptPassBytes;
+    const maxDeletes = this.#transcriptPassDeletes;
     const chunksDir = join(this.#o.replica, "chunks");
     let doneFiles = 0;
     let doneBytes = 0;
+    let doneDeletes = 0;
     let truncated = false;
     for (const [ws, foundMap] of byWs) {
       if (truncated) break;
+      const unreadableDirs = unreadableDirsByWs.get(ws)!;
+      const unreadablePaths = new Set<string>();
       const paths = [...foundMap.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
       const active = new Set<string>();
       let wsTruncated = false;
       for (const path of paths) {
         let st;
         try {
-          st = lstatSync(path, { bigint: true }); // sync: in the export's own thread (worker.ts)
-        } catch {
+          st = this.#lstatPath(path);
+        } catch (e) {
+          if (!isMissingError(e)) unreadablePaths.add(path);
           continue;
         }
         if (!st.isFile()) continue;
-        active.add(path);
         const room = foundMap.get(path) ?? null;
         const size = Number(st.size);
         const mtime = Number(st.mtimeNs / 1_000_000n);
         const mode = Number(st.mode) & 0o777;
         const existing = this.#state.prepare("SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?").get(ws, path) as { room: string | null; size: number; mtime: number } | undefined;
-        if (existing !== undefined && existing.size === size && existing.mtime === mtime && existing.room === room) continue;
+        if (existing !== undefined && existing.size === size && existing.mtime === mtime && existing.room === room) {
+          active.add(path);
+          continue;
+        }
         if (doneFiles > 0 && (doneFiles >= maxFiles || doneBytes >= maxBytes)) {
           truncated = true;
           wsTruncated = true;
@@ -919,13 +1016,18 @@ export class Exporter {
         }
         const chunks: string[] = [];
         let readBytes = 0;
-        const fd = openSync(path, "r"); // sync: in the export's own thread (worker.ts)
+        let readFailed = false;
+        let fd: number | null = null;
         try {
+          fd = openSync(path, "r"); // sync: in the export's own thread (worker.ts)
           const buf = Buffer.allocUnsafe(Math.min(chunkBytes, Math.max(size, 1)));
           for (let offset = 0; offset < size; ) {
             const want = Math.min(chunkBytes, size - offset);
-            const n = readSync(fd, buf, 0, want, offset); // sync: in the export's own thread (worker.ts)
-            if (n <= 0) break;
+            const n = this.#o.testFaults?.readShort?.(path, offset) ? 0 : readSync(fd, buf, 0, want, offset); // sync: in the export's own thread (worker.ts)
+            if (n <= 0) {
+              readFailed = true;
+              break;
+            }
             const plain = buf.subarray(0, n);
             const plainHash = createHash("sha256").update(plain).digest("hex");
             const known = this.#state.prepare("SELECT chunk_hash FROM transcript_chunks WHERE plain_hash = ?").get(plainHash) as { chunk_hash: string } | undefined;
@@ -943,9 +1045,16 @@ export class Exporter {
             offset += n;
             readBytes = offset;
           }
+        } catch {
+          readFailed = true;
         } finally {
-          closeSync(fd); // sync: in the export's own thread (worker.ts)
+          if (fd !== null) closeSync(fd); // sync: in the export's own thread (worker.ts)
         }
+        if (readFailed || readBytes !== size) {
+          unreadablePaths.add(path);
+          continue;
+        }
+        active.add(path);
         this.#state.prepare("INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)").run(ws, path, room, size, mtime, mode, JSON.stringify(chunks));
         this.#tfCache.delete(ws);
         say(ws, { tr: path, room, size, mtime, mode, chunks });
@@ -953,13 +1062,19 @@ export class Exporter {
         doneBytes += readBytes;
       }
       if (!wsTruncated) {
+        let deletedInWs = false;
         for (const row of this.#state.prepare("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path").all(ws) as { path: string }[]) {
-          if (!active.has(row.path)) {
-            this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
-            this.#tfCache.delete(ws);
-            say(ws, { tr_del: row.path });
+          if (active.has(row.path) || unreadablePaths.has(row.path) || pathUnderAnyDir(row.path, unreadableDirs)) continue;
+          if (doneDeletes >= maxDeletes) {
+            truncated = true;
+            break;
           }
+          this.#state.prepare("DELETE FROM transcript_files WHERE ws = ? AND path = ?").run(ws, row.path);
+          deletedInWs = true;
+          say(ws, { tr_del: row.path });
+          doneDeletes++;
         }
+        if (deletedInWs) this.#tfCache.delete(ws);
       }
     }
     return truncated;
