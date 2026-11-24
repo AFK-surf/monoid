@@ -241,6 +241,8 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
     Archiving => reads_of([("settings", scope), stations])
     // (each station's backup summary is its row's, as it comes)
     Backup => reads_of([stations])
+    // (external sources are probed on the chosen online station via import.sources)
+    Import => reads_of([stations])
     // (nothing chosen to move yet, as it opens)
     StationMove(address) =>
       reads_of([

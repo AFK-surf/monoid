@@ -196,13 +196,13 @@ test "the settings' list dragged on past its end by a finger, counted taller bel
   let before = at()
   // (from low on the screen, far past its end: its cards and their room as tall as the ladder makes them)
   t.touch(0, 195.0, 800.0)
-  for k in 1..=15 {
+  for k in 1..=18 {
     t.advance(@ui.drag_step_ms)
     t.touch(1, 195.0, 800.0 - 40.0 * k.to_double())
     t.draw()
   }
   let held = at()
-  t.touch(2, 195.0, 200.0)
+  t.touch(2, 195.0, 80.0)
   // (let go: on to where it rests, as its glide says, and at rest there)
   let end = @ui.rest_of("a list's")
   if end > t.time() {

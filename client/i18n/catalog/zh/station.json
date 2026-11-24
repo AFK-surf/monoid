@@ -872,5 +872,12 @@
   "station.group.longName": "成员名称最多 {most} 个字",
   "station.speed.invalid": "请在支持速度设置的运行时选择标准、Fast 或 Ultrafast。",
   "station.speed.ultrafast_unavailable": "请选用支持 Ultrafast 的 Codex 模型和符合条件的 ChatGPT 订阅，也可选择标准或 Fast。",
-  "station.updates.overrideAutoRefused": "本地替换运行期间无法开启自动更新；请先设置等待条件或恢复官方版本"
+  "station.updates.overrideAutoRefused": "本地替换运行期间无法开启自动更新；请先设置等待条件或恢复官方版本",
+  "station.import.unknownSource": "未知导入来源：{source}",
+  "station.import.notFound": "来源中找不到会话：{id}",
+  "station.import.noProfile": "当前工作区没有可用的 Profile，请先在 Profile 中添加账号后再导入",
+  "station.import.noteResumedCwd": "已从 {source} 导入（{n} 条历史消息，已接续原上下文） · 原目录 {cwd}",
+  "station.import.noteResumed": "已从 {source} 导入（{n} 条历史消息，已接续原上下文）",
+  "station.import.noteHistoryCwd": "已从 {source} 导入（{n} 条历史消息，后续回复将开启新上下文） · 原目录 {cwd}",
+  "station.import.noteHistory": "已从 {source} 导入（{n} 条历史消息，后续回复将开启新上下文）"
 }

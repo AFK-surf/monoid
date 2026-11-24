@@ -22,6 +22,7 @@ import { routes as updates } from "./routes/updates.ts";
 import { routes as accounts } from "./routes/accounts.ts";
 import { routes as xshare } from "./routes/xshare.ts";
 import { routes as hub, movedAnswer, uploadPath } from "./routes/hub.ts";
+import { routes as imports } from "./routes/imports.ts";
 import { routes as deviceTools } from "./routes/tools.ts";
 import { routes as agentEnv } from "./routes/agent-env.ts";
 import { routes as networkSettings } from "./routes/network.ts";
@@ -170,7 +171,7 @@ export class Admin {
       cardChoice: (card) => deps.parts?.cardChoiceOf(card),
     };
     this.tools = tools;
-    this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),
+    this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools), ...imports(tools),
       ...(config ? networkSettings({ config, changed: () => deps.events?.overviewChanged(), ...(data !== undefined ? { restart: pageRestart(data, deps.restartFront) } : {}) }) : []),
       ...(config ? deviceTools({ config, changed: () => deps.events?.overviewChanged() }) : []),
       ...(cloud && data !== undefined ? workspaces({ cloud, data, changed: () => deps.events?.overviewChanged() }) : []),

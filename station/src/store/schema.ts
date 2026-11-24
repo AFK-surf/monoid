@@ -1495,6 +1495,20 @@ export function addConvColumn(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key;`);
 }
 
+/// External sessions imported into still.fail (imports/): maps `(source, external_id, ws)` to the created `sessions.key`.
+export function addImportedSessions(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE IF NOT EXISTS imported_sessions (
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    ws TEXT NOT NULL DEFAULT '',
+    session_key TEXT NOT NULL,
+    imported_at INTEGER NOT NULL,
+    PRIMARY KEY (source, external_id, ws)
+  );
+  CREATE INDEX IF NOT EXISTS imported_sessions_session ON imported_sessions (session_key);
+  CREATE INDEX IF NOT EXISTS imported_sessions_source_ws ON imported_sessions (source, ws);`);
+}
+
 /// The station's own chats as their names are now (rows.ts STILLFAIL_SURFACE, STILLFAIL_CONNECT): what stations wrote
 /// before the rename (FORMER_OWN_NAMES) written over once, here, as the database opens, and what was made of it then
 /// made again. The tables' triggers carry it into what is kept of them; nothing else reads the names of before.

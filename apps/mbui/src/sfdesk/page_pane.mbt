@@ -386,6 +386,10 @@ fn pane_made(
       made("station-backup/" + st, fn(a, core, here, _stint, frame, width) {
         @sfpages.station_backup_node(a, core, here, st, on_back=core.pop, frame~, width~)
       })
+    Setting(Import) =>
+      made("import", fn(a, core, here, _stint, frame, width) {
+        @sfpages.import_node(a, core, here, on_back=core.pop, frame~, width~)
+      })
     Setting(StationMove(st)) =>
       made("station-move/" + st, fn(a, core, here, _stint, frame, width) {
         @sfpages.station_move_node(a, core, here, st, on_back=core.pop, frame~, width~, tips~)

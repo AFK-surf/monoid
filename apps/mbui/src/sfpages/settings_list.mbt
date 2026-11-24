@@ -209,6 +209,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
       settings_row(Memories, "memory", "brain", @sf.t("android-settings.memory"), words=settings_words_memory),
       settings_row(Archiving, "archiving", "archive", @sf.t("web-pages.archiving.title"), words=settings_words_archiving),
       settings_row(Backup, "backup", "disk", @sf.t("web-pages.backup.title"), words=settings_words_backup),
+      settings_row(Import, "import", "download", @sf.t("web-pages.import.title"), words=settings_words_import),
       settings_row(Usage, "usage", "chart", @sf.t("android-settings.home.usage"), words=settings_words_usage),
     ],
   })
@@ -596,6 +597,10 @@ fn settings_children_of(
         ("unified", @sf.t("web-pages.backup.unified.title"), Backup, "统一备份设置 批量应用 自动互备 备份方式 unified backup mode"),
         ("s3", @sf.t("web-pages.stations.copies.s3Heading"), Backup, "R2 S3 Cloudflare 对象存储 加密密钥 恢复密钥 object storage"),
       ]
+    "import" =>
+      [
+        ("t3", "T3 Code", Import, "T3 Code t3 导入 迁移 会话 历史记录 import migrate sessions threads"),
+      ]
     "usage" => [("prices", @sf.t("android-misc.usage.prices"), UsagePrices(7), "价目表 模型单价 价格 计费 Token price rate model cost")]
     "appearance" => {
       let a : Array[(String, String, @settings.Route, String)] = [
@@ -791,6 +796,9 @@ let settings_words_archiving : String = "自动归档 归档会话 闲置 archiv
 
 ///|
 let settings_words_backup : String = "备份 恢复 互备 r2 s3 对象存储 backup restore"
+
+///|
+let settings_words_import : String = "导入 迁移 T3 T3 Code 会话 历史记录 聊天记录 import migrate sessions conversations"
 
 ///|
 let settings_words_usage : String = "费用 开销 花费 账单 统计 Token 成本 usage cost spend billing token"
