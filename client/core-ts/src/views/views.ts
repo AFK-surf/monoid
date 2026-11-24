@@ -33,6 +33,7 @@ import { chatOfLink, chatsLinked, personWords } from "../refLinks.ts";
 import { timed } from "../spent.ts";
 import type { Value, Watch } from "../store.ts";
 import { arr as arrU, deepFreeze, equal, get as getU, isObject, shaped, shapedAs, sharedValue } from "../util.ts";
+import { keptOs, osIcon } from "../station-os.ts";
 import { ofAddress } from "../workspace.ts";
 import { presentHistory } from "../history.ts";
 import { sentFrom, sentHead } from "../sent-from.ts";
@@ -122,7 +123,8 @@ type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
-export type StationInfo = { address: string; id: string; name: string; emoji: string | null; icon: string | null; online: boolean; lastSeen: J; version: J; joined: boolean };
+/// `icon` is its system's (station-os.ts) where its workspace gave it no mark: `osIcon` then.
+export type StationInfo = { address: string; id: string; name: string; emoji: string | null; icon: string | null; osIcon?: true; online: boolean; lastSeen: J; version: J; joined: boolean };
 
 /// Whether a station is taken for down: its link found it so, or — not found out yet this time — it was, last.
 export function down(link: J): boolean {
@@ -1685,11 +1687,16 @@ export class Views implements Owner {
   stations(scope: string): StationInfo[] | undefined {
     const v = this.value({ topic: "workspace", workspace: scope });
     if (v === undefined || !("ok" in v)) return v === undefined ? undefined : [];
+    const systems = keptOs(this.#core.data, scope);
     return arr(get(v.ok, "stations")).flatMap((s) => {
       const id = str(get(s, "id"));
       if (id === null) return [];
       const address = `${scope}/${id}`;
-      return [{ address, id, name: str(get(s, "name")) ?? id, emoji: str(get(s, "emoji")) || null, icon: str(get(s, "icon")) || null, online: this.#core.store.select({ topic: "link", station: address }, stationOnline), lastSeen: get(s, "last_seen") ?? null, version: get(s, "version") ?? null, joined: get(s, "joined") === true }];
+      const emoji = str(get(s, "emoji")) || null;
+      const own = str(get(s, "icon")) || null;
+      // None given it: its system's, where that is known (station-os.ts).
+      const os = emoji === null && own === null ? osIcon(systems[id]) : null;
+      return [{ address, id, name: str(get(s, "name")) ?? id, emoji, icon: own ?? os, ...(os !== null ? { osIcon: true as const } : {}), online: this.#core.store.select({ topic: "link", station: address }, stationOnline), lastSeen: get(s, "last_seen") ?? null, version: get(s, "version") ?? null, joined: get(s, "joined") === true }];
     });
   }
 
@@ -3899,6 +3906,7 @@ export class Views implements Owner {
         name: s.name,
         ...(s.emoji ? { emoji: s.emoji } : {}),
         ...(s.icon ? { icon: s.icon } : {}),
+        ...(s.osIcon ? { osIcon: true } : {}),
         summary,
         face: looks.face(s.online, overview),
         line: !s.online && cause === "lock" ? t("core-views.station.lock_short") : s.online && unreadable ? t("core-views.station.incompatible_short") : looks.stationLine(s.online, host),

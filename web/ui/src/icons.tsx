@@ -857,6 +857,18 @@ function StationPhone(props: IconProps) {
   return <Svg {...props}><rect x="6" y="2.5" width="12" height="19" rx="2.5" /><path d="M10 6H14 M11 18H13" /></Svg>;
 }
 
+function StationMacos(props: IconProps) {
+  return <Svg {...props}><path d="M19.4 8.9C18.4 7.5 16.9 6.9 15.4 7.1C14 7.2 12.9 8.1 12 8.1C11 8.1 9.9 7.2 8.5 7.3C5.8 7.4 4 9.6 4 12.6C4 15.5 5.6 18.7 7.3 20.4C8.2 21.3 9 21.5 10.2 21C11.6 20.4 12.6 20.2 14.1 20.9C15.4 21.5 16.4 21.2 17.4 20.1C18.5 18.9 19.4 17.4 19.9 16C16.2 14.6 15.9 11 19.4 8.9Z" /><path d="M12.3 5.3C12.4 3.6 13.9 2.3 15.8 2C15.6 3.8 14.2 5.2 12.3 5.3Z" /></Svg>;
+}
+
+function StationWindows(props: IconProps) {
+  return <Svg {...props}><path d="M3.5 5.7L9.4 4.8V10.4H3.5Z M13 4.2L20.5 3V10.4H13Z M3.5 13.6H9.4V19.2L3.5 18.3Z M13 13.6H20.5V21L13 19.8Z" /></Svg>;
+}
+
+function StationLinux(props: IconProps) {
+  return <Svg {...props}><path d="M4.8 17.7C4.2 14.2 7.7 11.5 7.7 8.5V7.3C7.7 4.5 9.4 2.8 12 2.8C14.6 2.8 16.3 4.5 16.3 7.3V8.5C16.3 11.5 19.8 14.2 19.2 17.7" /><circle cx="10.4" cy="6.9" r="0.8" fill="currentColor" stroke="none" /><circle cx="13.6" cy="6.9" r="0.8" fill="currentColor" stroke="none" /><path d="M10.1 9.8Q12 9.2 13.9 9.8L12 11Z M8.8 12.8Q7.6 14.5 7.6 16.6 M15.2 12.8Q16.4 14.5 16.4 16.6" /><path d="M9.6 19.8Q12 21 14.4 19.8 M4 19.4Q5.5 16.3 7.3 16.5Q9.1 16.6 9.7 19.7Q9.8 20.9 8.4 20.9L4.8 20.8Q3.3 20.7 4 19.4Z M20 19.4Q18.5 16.3 16.7 16.5Q14.9 16.6 14.3 19.7Q14.2 20.9 15.6 20.9L19.2 20.8Q20.7 20.7 20 19.4Z" /></Svg>;
+}
+
 function StationTerminal(props: IconProps) {
   return <Svg {...props}><rect x="2.5" y="4" width="19" height="16" rx="3" /><path d="M6.5 8.5L10 12L6.5 15.5 M13.5 15.5H17.5" /></Svg>;
 }
@@ -2100,6 +2112,9 @@ export const STATION_ICONS: readonly { emoji: string; name: string; words: strin
   { emoji: "🪟", name: "window", words: "window 窗口", Icon: StationWindow },
   { emoji: "🗄️", name: "mini", words: "mini 小主机", Icon: StationMini },
   { emoji: "📱", name: "phone", words: "phone 手机", Icon: StationPhone },
+  { emoji: "🍏", name: "macos", words: "macos 苹果 系统", Icon: StationMacos },
+  { emoji: "🪟", name: "windows", words: "windows 微软 系统", Icon: StationWindows },
+  { emoji: "🐧", name: "linux", words: "linux 企鹅 系统", Icon: StationLinux },
   { emoji: "⌨️", name: "terminal", words: "terminal 终端 命令行", Icon: StationTerminal },
   { emoji: "🧑‍💻", name: "code", words: "code 代码", Icon: StationCode },
   { emoji: "🌿", name: "branch", words: "branch 分支", Icon: StationBranch },

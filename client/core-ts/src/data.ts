@@ -1155,6 +1155,8 @@ export class Data {
     if (table === "ways") return [this.#ofWorkspace(key) ?? null, [key, "ways"]];
     // Its stations' names and marks as they keep them (views/station-marks.ts): in the workspace's, by its id.
     if (table === "stationMarks") return [this.#ofWorkspace(key) ?? null, [key, "stationMarks"]];
+    // The systems its stations run on as their host readings said (station-os.ts): in the workspace's, by its id.
+    if (table === "stationOs") return [this.#ofWorkspace(key) ?? null, [key, "stationOs"]];
     // Its person's presets as the device carries them, and which of its stations are from before (presets-kept.ts):
     // in the workspace's, by its id.
     if (table === "presetRecords") return [this.#ofWorkspace(key) ?? null, [key, "presetRecords"]];
