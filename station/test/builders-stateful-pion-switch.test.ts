@@ -258,9 +258,10 @@ class BuilderProc {
   async sigkill(): Promise<void> {
     this.#ending = true;
     this.#rejectAll(new Error("killed"));
-    this.#child.stdin!.destroy();
+    // Deliver SIGKILL before tearing down stdin so the child cannot observe EOF and exit 0 first.
     this.#child.kill("SIGKILL");
     const { signal } = await this.#closed;
+    this.#child.stdin!.destroy();
     assert.equal(signal, "SIGKILL", `expected SIGKILL exit, got signal=${signal}`);
   }
 }
@@ -378,8 +379,13 @@ function snapshotPageLetters(dbPath: string): string {
     for (const g of garbage) {
       assert.match(g.token, HEX32_RE, `garbage token must be 32-char hex, got ${g.token}`);
     }
-    // Map each active token to "active" and non-active tokens (e.g. from older epochs in garbage) to "stale".
+    // Map each active token to "active" and non-active tokens (e.g. from older epochs in garbage) to "stale",
+    // then sort deterministically by (thread, n, tok) so random hex token ordering never perturbs ties.
     const tagToken = (thread: string, token: string) => (tokenByThread.get(thread) === token ? "active" : "stale");
+    const cmpTagged = (
+      a: { thread: string; tok: string; n: number },
+      b: { thread: string; tok: string; n: number },
+    ) => (a.thread < b.thread ? -1 : a.thread > b.thread ? 1 : a.n - b.n || (a.tok < b.tok ? -1 : a.tok > b.tok ? 1 : 0));
     return JSON.stringify({
       master,
       meta,
@@ -391,8 +397,8 @@ function snapshotPageLetters(dbPath: string): string {
         end_n,
         complete,
       })),
-      rows: rows.map((r) => ({ thread: r.thread, tok: tagToken(r.thread, r.token), n: r.n })),
-      dirty: dirty.map((d) => ({ thread: d.thread, tok: tagToken(d.thread, d.token), n: d.n })),
+      rows: rows.map((r) => ({ thread: r.thread, tok: tagToken(r.thread, r.token), n: r.n })).sort(cmpTagged),
+      dirty: dirty.map((d) => ({ thread: d.thread, tok: tagToken(d.thread, d.token), n: d.n })).sort(cmpTagged),
       garbageCountByThread: garbage.reduce<Record<string, number>>((acc, g) => {
         acc[g.thread] = (acc[g.thread] ?? 0) + 1;
         return acc;
