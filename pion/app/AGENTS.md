@@ -14,7 +14,8 @@ Pure-Pion headless application state workspace connecting `pion/client-core` (`s
 ## Pinned Baselines
 
 - `AFK-surf/invar`: `main` rev `339c271e0bd4ea9e2680f13adcec8075d6da9cf3` (`signals`, `view`, `ui` — single repo-wide pin shared with `pion/ui/pion.toml`, zero package conflict with `effect-v0.1.0`).
-- `AFK-surf/pion-packages`: official release tags (`crypto-v0.2.0`, and `v0.1.0` for `base64`, `effect`, `flate`, `url`, `time`, `http1`, `json5`).
+- `AFK-surf/pion-packages`: official release tags (`crypto-v0.4.1`, `markdown-v0.3.0`, `regex-v0.1.0`, and `v0.1.0` for `base64`, `effect`, `flate`, `url`, `time`, `http1`, `json5`).
+- `packages/app_state` stays aligned with `pion/client-core` (`sync::ClientCore` / `store::MdStore`) compile and test contracts across `INVAR_TEST_FPS=60/120/24/7`.
 
 ## Rules
 

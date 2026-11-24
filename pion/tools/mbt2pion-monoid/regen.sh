@@ -15,13 +15,12 @@
 #   --mbt-compat <dir>         Path to `mbt_compat` package (defaults to $MBT_COMPAT_DIR if set)
 #   --package-manifest <path>  Optional package pion.toml for real Stage A.5 / Stage B check
 #   --dep <name=path>          Optional extra dependency (repeatable)
-#   --src-prefix <rel>         Repo-relative SourceLoc prefix (default: libs/ui/src/controls)
+#   --src-prefix <rel>         Repo-relative SourceLoc prefix (default: ui/src/controls)
 #   --with-tests               Include *_test.mbt / *_wbtest.mbt
-#   --check                    Verify 100% full-byte equality (including headers) against --out
-#   --no-probes                Disable Stage A.5 type-probe pass (only allowed in --mode audit)
+#   --check                    Verify 100% full-byte equality (including headers) without modifying disk
 #   --no-fmt                   Skip `pionc fmt` pass
-#   --assets                   Also regenerate native/web assets via gen_assets.mjs
-#   --assets-only              Only regenerate assets and verify single invar pin
+#   --assets                   Also regenerate (or with --check, verify read-only) native/web assets
+#   --assets-only              Only run assets step + single invar pin check
 #
 # Environment:
 #   MBT2PION_BIN               Path to compiled `mbt2pion` binary (or MBT2PION_CLI_DIR to build)
@@ -32,7 +31,10 @@ set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-export PATH="$HOME/.pion/bin:$HOME/.moon/bin:/opt/homebrew/bin:$PATH"
+export PATH="$HOME/.pion/bin:$HOME/.moon/bin:$PATH"
+if [ -d /opt/homebrew/bin ]; then
+  export PATH="/opt/homebrew/bin:$PATH"
+fi
 PIONC="${PIONC:-$(command -v pionc)}"
 
 SRC_DIR="$SCRIPT_DIR/pilot/mbt_transpile_src"
@@ -45,10 +47,9 @@ OVERLAY_DIR=""
 MBT_COMPAT_ARG="${MBT_COMPAT_DIR:-}"
 PKG_MANIFEST=""
 DEPS_LIST=""
-SRC_PREFIX="libs/ui/src/controls"
+SRC_PREFIX="ui/src/controls"
 WITH_TESTS=""
 CHECK_FLAG=""
-NO_PROBES=""
 NO_FMT=""
 RUN_ASSETS=0
 ASSETS_ONLY=0
@@ -82,12 +83,11 @@ $2"
     --run-report) RUN_REPORT_PATH="$2"; shift 2 ;;
     --with-tests) WITH_TESTS="--with-tests"; shift 1 ;;
     --check) CHECK_FLAG="--check"; shift 1 ;;
-    --no-probes) NO_PROBES="--no-probes"; shift 1 ;;
     --no-fmt) NO_FMT="--no-fmt"; shift 1 ;;
     --assets) RUN_ASSETS=1; shift 1 ;;
     --assets-only) RUN_ASSETS=1; ASSETS_ONLY=1; shift 1 ;;
     -h|--help)
-      sed -n '2,29p' "$0"
+      sed -n '2,28p' "$0"
       exit 0
       ;;
     *)
@@ -100,9 +100,13 @@ done
 # 1. Always enforce single repo-wide invar pin
 sh "$SCRIPT_DIR/check_single_invar_pin.sh"
 
-# 2. Optional asset regeneration
+# 2. Optional asset regeneration (or pure read-only verification when --check is set)
 if [ "$RUN_ASSETS" -eq 1 ]; then
-  node "$SCRIPT_DIR/gen_assets.mjs"
+  if [ -n "$CHECK_FLAG" ]; then
+    node "$SCRIPT_DIR/gen_assets.mjs" --check
+  else
+    node "$SCRIPT_DIR/gen_assets.mjs"
+  fi
   if [ "$ASSETS_ONLY" -eq 1 ]; then
     exit 0
   fi
@@ -191,9 +195,6 @@ if [ -n "$WITH_TESTS" ]; then
 fi
 if [ -n "$CHECK_FLAG" ]; then
   set -- "$@" "$CHECK_FLAG"
-fi
-if [ -n "$NO_PROBES" ]; then
-  set -- "$@" "$NO_PROBES"
 fi
 if [ -n "$NO_FMT" ]; then
   set -- "$@" "$NO_FMT"

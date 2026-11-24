@@ -5,7 +5,7 @@
   "summary": {
     "strict_invar_blockers": 58,
     "pure_logic_escape_hatch_candidates": 34,
-    "m13_frozen_tester_missing_methods": 44,
+    "m13_frozen_tester_missing_methods": 45,
     "m2_plus_deferred_examples": 2
   },
   "strict_invar_blockers": [
@@ -987,7 +987,7 @@
       "category": "controls_prod_missing_pure_logic",
       "source": "@ui.shape_of",
       "expected_invar": "ui::shape_of",
-      "source_sig": null,
+      "source_sig": "pub fn shape_of(Array[(Array[Double], Bool)], fill? : Int64, even_odd? : Bool, stroke? : Int64, width? : Double) -> @paint.Shape",
       "call_count": 6,
       "locations": [
         "libs/ui/src/controls/files.mbt:56",
@@ -1569,6 +1569,19 @@
         "libs/ui/src/controls/seg_node_wbtest.mbt:340",
         "libs/ui/src/controls/seg_node_wbtest.mbt:346",
         "libs/ui/src/controls/seg_fill_node_wbtest.mbt:8"
+      ],
+      "note": "Required by pre-frozen M1.3 interactive test matrix"
+    },
+    {
+      "category": "m13_frozen_tester_missing",
+      "source": "@ui.Tester::set_player",
+      "expected_invar": "ui::Tester::set_player",
+      "source_sig": "pub fn Tester::set_player(Self, Int32, duration? : Double, position? : Double, playing? : Bool, natural? : (Double, Double), shown? : Bool, buffering? : Bool, buffered? : Double, ended? : Bool) -> Unit",
+      "call_count": 3,
+      "locations": [
+        "libs/ui/src/controls/player_wbtest.mbt:150",
+        "libs/ui/src/controls/player_wbtest.mbt:257",
+        "libs/ui/src/controls/player_wbtest.mbt:260"
       ],
       "note": "Required by pre-frozen M1.3 interactive test matrix"
     },

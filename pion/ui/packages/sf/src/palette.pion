@@ -42,7 +42,7 @@ pub struct Palette {
 }
 
 pub fn palette_alpha(rgba : Int64, share : Double) -> Int64 {
-  let a = (share * 255.0 + 0.5).to_int64()
+  let a = ((rgba & 0xFFL).to_double() * share + 0.5).to_int64()
   let clamped = if a < 0L { 0L } else if a > 255L { 255L } else { a }
   (rgba & 0xFFFFFF00L) | clamped
 }

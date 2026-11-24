@@ -178,7 +178,7 @@ function emitNativeAssetsEntry() {
 }
 
 function main() {
-  fs.mkdirSync(OUT_SRC, { recursive: true });
+  const checkMode = process.argv.includes('--check');
 
   const ttf = decodeMbtBytesLiteral(path.join(CONTROLS_DIR, 'font_assets.mbt'));
   const ttfSha = sha256Hex(ttf);
@@ -204,19 +204,7 @@ function main() {
     throw new Error(`math-mac.textrec mismatch: len=${mathTextrec.length} sha=${mathTextrecSha}`);
   }
 
-  fs.writeFileSync(
-    path.join(OUT_SRC, 'font_assets.pion'),
-    emitBase64PionModule('code_face_ttf', 'JetBrains Mono TTF (libs/ui/src/controls/font_assets.mbt)', ttf, ttfSha),
-  );
-  fs.writeFileSync(
-    path.join(OUT_SRC, 'math_glyphs.pion'),
-    emitBase64PionModule('math_glyphs_gz', 'Gzipped math glyph outlines (libs/ui/src/controls/math_glyphs.mbt)', mathGz, mathSha),
-  );
-
   const icons = emitIconDataPion();
-  fs.writeFileSync(path.join(OUT_SRC, 'icon_data.pion'), icons.code);
-  fs.writeFileSync(path.join(OUT_SRC, 'palette_data.pion'), emitPaletteDataPion());
-  fs.writeFileSync(path.join(OUT_SRC, 'native_assets.pion'), emitNativeAssetsEntry());
 
   // Emit pre-build test fixtures (excluded from production build via _test.pion suffix)
   const fixturesCode = [
@@ -240,7 +228,44 @@ function main() {
     '}',
     '',
   ].join('\n');
-  fs.writeFileSync(path.join(OUT_SRC, 'fixtures_test.pion'), fixturesCode);
+
+  const expectedFiles = [
+    ['font_assets.pion', emitBase64PionModule('code_face_ttf', 'JetBrains Mono TTF (libs/ui/src/controls/font_assets.mbt)', ttf, ttfSha)],
+    ['math_glyphs.pion', emitBase64PionModule('math_glyphs_gz', 'Gzipped math glyph outlines (libs/ui/src/controls/math_glyphs.mbt)', mathGz, mathSha)],
+    ['icon_data.pion', icons.code],
+    ['palette_data.pion', emitPaletteDataPion()],
+    ['native_assets.pion', emitNativeAssetsEntry()],
+    ['fixtures_test.pion', fixturesCode],
+  ];
+
+  if (checkMode) {
+    let mismatches = 0;
+    for (const [name, expected] of expectedFiles) {
+      const targetPath = path.join(OUT_SRC, name);
+      if (!fs.existsSync(targetPath)) {
+        console.error(`gen_assets.mjs --check: missing file ${targetPath}`);
+        mismatches++;
+        continue;
+      }
+      const actual = fs.readFileSync(targetPath);
+      const expBuf = Buffer.from(expected, 'utf8');
+      if (!actual.equals(expBuf)) {
+        console.error(`gen_assets.mjs --check: byte mismatch in ${name} (actual=${actual.length} B, expected=${expBuf.length} B)`);
+        mismatches++;
+      }
+    }
+    if (mismatches > 0) {
+      console.error(`gen_assets.mjs --check: FAILED (${mismatches} file(s) out of sync; run node pion/tools/mbt2pion-monoid/gen_assets.mjs)`);
+      process.exit(1);
+    }
+    console.log(`OK: gen_assets.mjs --check verified all ${expectedFiles.length} asset files (${icons.count} icons)`);
+    return;
+  }
+
+  fs.mkdirSync(OUT_SRC, { recursive: true });
+  for (const [name, content] of expectedFiles) {
+    fs.writeFileSync(path.join(OUT_SRC, name), content);
+  }
 
   console.log(`Generated sf_assets_native:`);
   console.log(`  code_face_ttf:     ${ttf.length} B (sha256 ${ttfSha})`);

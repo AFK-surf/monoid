@@ -1,5 +1,6 @@
 // Real MoonBit pilot slice transpiled LIVE by `mbt2pion --mode publish`
-// during `run_pilot.sh` (zero hand-editing of generated `.pion` output!).
+// during `run_pilot.sh` (zero hand-editing of generated `.pion` output!),
+// AND compiled directly by `moon build --target wasm-gc` in `moon_pilot`.
 
 // 1. Value-returning `guard` false branch (aligned to `controls/player_parts.mbt:435`)
 pub fn film_facts_guard(w : Double, h : Double) -> String {
@@ -72,12 +73,12 @@ pub fn relay(base : Int, x? : Int) -> Int {
 
 // 4. Two distinct `#callsite(autofill(loc))` `SourceLoc` callsites (must never collapse)
 #callsite(autofill(loc))
-pub fn audit_fault(tag : String, loc~ : SourceLoc) -> String {
-  tag + "@" + loc
+pub fn audit_fault_loc(loc~ : SourceLoc) -> String {
+  loc.to_string()
 }
 
 pub fn audit_fault_pair() -> (String, String) {
-  let first = audit_fault("fault_a")
-  let second = audit_fault("fault_b")
+  let first = audit_fault_loc()
+  let second = audit_fault_loc()
   (first, second)
 }

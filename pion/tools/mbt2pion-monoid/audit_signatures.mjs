@@ -111,15 +111,27 @@ function parseMbti(mbtiText) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i].trim();
-    // pub fn Name(...) -> Ret  or  pub fn Type::method(...) -> Ret
-    let m = line.match(/^pub fn(?:\[[^\]]*\])?\s+([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?)\s*(\([^)]*\)\s*->\s*.*)$/);
-    if (m) {
-      decls.set(m[1], { kind: 'fn', name: m[1], sig: line });
-      i++;
-      continue;
+    // pub fn Name(...) -> Ret [raise ...] or pub fn[T] Type::method(...) -> Ret
+    const fnHead = line.match(/^pub fn(?:\[[^\]]*\])?\s+([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?)\s*\(/);
+    if (fnHead) {
+      const openIdx = line.indexOf('(', fnHead[0].length - 1);
+      let depth = 0;
+      let closeIdx = -1;
+      for (let k = openIdx; k < line.length; k++) {
+        if (line[k] === '(') depth++;
+        else if (line[k] === ')') {
+          depth--;
+          if (depth === 0) { closeIdx = k; break; }
+        }
+      }
+      if (closeIdx > openIdx && /^\s*->/.test(line.slice(closeIdx + 1))) {
+        decls.set(fnHead[1], { kind: 'fn', name: fnHead[1], sig: line });
+        i++;
+        continue;
+      }
     }
     // pub let name : Type
-    m = line.match(/^pub let\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+    let m = line.match(/^pub let\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
     if (m) {
       decls.set(m[1], { kind: 'const', name: m[1], sig: line });
       i++;
@@ -275,6 +287,39 @@ function parseFnSig(sig) {
     return { index: idx, name: `arg${idx}`, modifier: '', type: p.trim(), has_default: false };
   });
   return { params, ret };
+}
+
+// Normalize a MoonBit or Pion type string for position-by-position comparison.
+function normalizeTypeForCompare(raw) {
+  let s = String(raw || '').trim();
+  // Strip optional `raise ...` suffix on return types
+  s = s.replace(/\s+raise\b.*$/, '');
+  // Strip package qualifiers (`@pkg.` and `pkg::`)
+  s = s.replace(/@[A-Za-z0-9_\/]+\./g, '');
+  s = s.replace(/\b[a-z_][a-z0-9_]*::/g, '');
+  // Strip parameter names inside function types like `(a : Int, b : Int) -> Bool`
+  s = s.replace(/\b[a-z_][A-Za-z0-9_]*[~?]?\s*:\s*/g, '');
+  // Collapse whitespace
+  s = s.replace(/\s+/g, ' ').replace(/\s*,\s*/g, ',').replace(/\s*->\s*/g, '->').replace(/\(\s+/g, '(').replace(/\s+\)/g, ')').replace(/\[\s+/g, '[').replace(/\s+\]/g, ']');
+  // Iteratively rewrite postfix `T?` into `Option[T]`
+  for (let pass = 0; pass < 6; pass++) {
+    const next = s
+      .replace(/\(([^()]+)\)\?/g, 'Option[($1)]')
+      .replace(/([A-Za-z_][A-Za-z0-9_]*(?:\[[^\[\]]*\])?)\?/g, 'Option[$1]');
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+
+function typesCompatible(mType, pType, paramName, isAutofillLoc) {
+  const mNorm = normalizeTypeForCompare(mType);
+  const pNorm = normalizeTypeForCompare(pType);
+  if (mNorm === pNorm) return true;
+  if (isAutofillLoc && paramName === 'loc' && mNorm === 'SourceLoc' && pNorm === 'String') {
+    return true;
+  }
+  return false;
 }
 
 // String-offset / length Int unit classifier
@@ -697,6 +742,7 @@ function main() {
   let totalReachableCalls = 0;
   let exactMatchedSymbols = 0;
   let sigDiffSymbols = 0;
+  let missingSourceSigSymbols = 0;
   let missingSymbols = 0;
   let totalUnitAnnotatedInts = 0;
   let totalOrderedMapBoundaries = 0;
@@ -745,8 +791,12 @@ function main() {
       pionItem = null;
       missingSymbols++;
     } else if (pionItem) {
-      status = 'matched';
-      if (mbtiDecl) {
+      if (!mbtiDecl) {
+        status = 'missing_source_sig';
+        diffs.push('source_sig_missing: symbol not found in pkg.generated.mbti');
+        missingSourceSigSymbols++;
+      } else {
+        status = 'matched';
         if (mbtiDecl.kind === 'fn' && pionItem.kind === 'fn') {
           const mSig = parseFnSig(mbtiDecl.sig);
           const pSig = parseFnSig(pionItem.sig);
@@ -759,13 +809,21 @@ function main() {
             if (mLabels.join(',') !== pLabels.join(',')) {
               diffs.push(`param_labels: mbui=[${mLabels.join(', ')}] vs invar=[${pLabels.join(', ')}]`);
             }
-            if (mSig.ret.replace(/@[a-z_]+\./g, '') !== pSig.ret.replace(/[a-z_]+::/g, '')) {
+            const minLen = Math.min(mSig.params.length, pSig.params.length);
+            for (let pi = 0; pi < minLen; pi++) {
+              const mp = mSig.params[pi];
+              const pp = pSig.params[pi];
+              if (!typesCompatible(mp.type, pp.type, mp.name || pp.name, engineSig.autofill_loc)) {
+                diffs.push(`param_type[${pi}]: mbui=${mp.type} vs invar=${pp.type}`);
+              }
+            }
+            if (normalizeTypeForCompare(mSig.ret) !== normalizeTypeForCompare(pSig.ret)) {
               diffs.push(`return_type: mbui=${mSig.ret} vs invar=${pSig.ret}`);
             }
           }
         } else if (mbtiDecl.kind === 'struct' && pionItem.kind === 'struct') {
-          const mFields = (mbtiDecl.fields || []).map(f => `${f.name}:${f.type}`);
-          const pFields = parsePionStructFields(pionItem.sig).map(f => `${f.name}:${f.type}`);
+          const mFields = (mbtiDecl.fields || []).map(f => `${f.name}:${normalizeTypeForCompare(f.type)}`);
+          const pFields = parsePionStructFields(pionItem.sig).map(f => `${f.name}:${normalizeTypeForCompare(f.type)}`);
           if (mFields.join(';') !== pFields.join(';')) {
             diffs.push(`struct_fields: mbui=[${mFields.join(', ')}] vs invar=[${pFields.join(', ')}]`);
           }
@@ -776,12 +834,12 @@ function main() {
             diffs.push(`enum_variants: mbui=[${mVars.join(', ')}] vs invar=[${pVars.join(', ')}]`);
           }
         }
-      }
-      if (diffs.length > 0) {
-        status = 'signature_diff';
-        sigDiffSymbols++;
-      } else {
-        exactMatchedSymbols++;
+        if (diffs.length > 0) {
+          status = 'signature_diff';
+          sigDiffSymbols++;
+        } else {
+          exactMatchedSymbols++;
+        }
       }
     } else {
       missingSymbols++;
@@ -969,6 +1027,7 @@ function main() {
       source_reachable_calls: totalReachableCalls,
       target_signature_exact_matched: exactMatchedSymbols,
       target_signature_diff: sigDiffSymbols,
+      target_missing_source_sig: missingSourceSigSymbols,
       target_missing: missingSymbols,
       excluded_comment_hits: {
         '@kit.*': kitCommentHits,
@@ -1091,6 +1150,20 @@ function main() {
   }
   lines.push('');
   lines.push('[m1_1_vertical_pilot_samples]');
+  lines.push(`files = [`);
+  for (const s of [
+    'numbers.mbt',
+    'marked.mbt',
+    'tokens_data.mbt',
+    'clock_read_known.mbt',
+    'table_copy.mbt',
+    'reader_marks.mbt',
+  ]) {
+    lines.push(`  "${s}",`);
+  }
+  lines.push(`]`);
+  lines.push('');
+  lines.push('[m1_2_complex_target_samples]');
   lines.push(`files = [`);
   for (const s of [
     'tokens.mbt',

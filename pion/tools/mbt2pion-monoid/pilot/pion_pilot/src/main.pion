@@ -331,17 +331,61 @@ fn case_cross_pkg_ref_sourceloc(world : World) -> Unit {
   let alias_r = r
   alias_r.v = { x: 30, y: 40 }
   check(world, "ref.alias_updated", r.v.x == 30 && r.v.y == 40)
-  let (loc_a, loc_b) = audit_fault_pair()
+  let (raw_a, raw_b) = audit_fault_pair()
+  let loc_a = view::source_place(raw_a)
+  let loc_b = view::source_place(raw_b)
   check(
     world,
     "loc.distinct",
-    loc_a != loc_b && mc::str_has_prefix(loc_a, "fault_a@libs/ui/src/controls/pilot_core.mbt:") &&
-    mc::str_has_prefix(loc_b, "fault_b@libs/ui/src/controls/pilot_core.mbt:"),
+    loc_a != loc_b &&
+    mc::str_has_prefix(loc_a, "ui/src/controls/pilot_core.mbt:") &&
+    mc::str_has_prefix(loc_b, "ui/src/controls/pilot_core.mbt:"),
   )
   let layout = accept_live_align(.Is(1.0), .Middle)
   check(world, "xpkg.is_middle", layout == "Is(1)|Middle")
+  trace(world, "loc.a", loc_a)
+  trace(world, "loc.b", loc_b)
   trace(world, "xpkg.ref", r.v.x.to_string() + "," + r.v.y.to_string())
-  trace(world, "xpkg.layout", "Is(1.0)|Middle")
+  trace(world, "xpkg.layout", layout)
+}
+
+// --- 11. REAL transpiled `libs/ui/src/controls/{numbers,marked}.mbt` ---
+fn case_real_controls_numbers_marked(world : World) -> Unit {
+  let nan = 0.0 / 0.0
+  let mn1 = dmin(3.5, 2.0)
+  let mn_nan = dmin(nan, 5.0)
+  let mx1 = dmax(3.5, 2.0)
+  let cl_hi = dclamp(15.0, 0.0, 10.0)
+  let cl_lo = dclamp(-2.0, 0.0, 10.0)
+  let cl_mid = dclamp(4.5, 0.0, 10.0)
+  check(world, "real.dmin_basic", mn1 == 2.0)
+  check(world, "real.dmin_nan_rhs", mn_nan == 5.0)
+  check(world, "real.dmax_basic", mx1 == 3.5)
+  check(world, "real.dclamp_bounds", cl_hi == 10.0 && cl_lo == 0.0 && cl_mid == 4.5)
+  let meta = join_meta(["a", "", "b"])
+  check(world, "real.join_meta", meta == "a · b")
+  let icons = kind_icon("file") + "," + kind_icon("job") + "," + kind_icon("station") + "," + kind_icon("member") + "," + kind_icon("other")
+  check(world, "real.kind_icon", icons == "file,web,server,user,search")
+  trace(
+    world,
+    "real.nums",
+    mc::double_to_string(mn1) + "|" + mc::double_to_string(mn_nan) + "|" +
+    mc::double_to_string(mx1) + "|" + mc::double_to_string(cl_hi) + "|" +
+    mc::double_to_string(cl_lo),
+  )
+  trace(world, "real.meta", meta)
+  trace(world, "real.icons", icons)
+}
+
+// --- 12. REAL transpiled `libs/ui/src/controls/tokens_data.mbt` ---
+fn case_real_controls_tokens_layout(world : World) -> Unit {
+  check(world, "real.token_wide_body", token_wide_body == 14.0)
+  check(world, "real.token_pane_corner", token_pane_corner == 42.0)
+  trace(
+    world,
+    "real.tokens",
+    mc::double_to_string(token_wide_body) + "|" + mc::double_to_string(token_pane_corner),
+  )
 }
 
 // --- Hot-path overhead micro-benchmarks (informative, recorded in report) ---
@@ -417,6 +461,10 @@ pub fn main(world : World) -> Int {
     case_div_mod_nonzero(world)
   } else if c == "cross_pkg_ref_sourceloc" {
     case_cross_pkg_ref_sourceloc(world)
+  } else if c == "real_controls_numbers_marked" {
+    case_real_controls_numbers_marked(world)
+  } else if c == "real_controls_tokens_layout" {
+    case_real_controls_tokens_layout(world)
   } else if c == "bench" {
     run_bench(world)
   } else if mc::str_has_prefix(c, "div_") || mc::str_has_prefix(c, "mod_") {

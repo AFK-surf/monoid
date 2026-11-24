@@ -35,6 +35,8 @@ CASES = {
     "ordered_map_double": ("ok", 5),
     "div_mod_nonzero": ("ok", 5),
     "cross_pkg_ref_sourceloc": ("ok", 3),
+    "real_controls_numbers_marked": ("ok", 6),
+    "real_controls_tokens_layout": ("ok", 2),
     "div_i32_const_zero": ("panic:div_zero", 0),
     "div_i32_rt_zero": ("panic:div_zero", 0),
     "mod_i32_rt_zero": ("panic:rem_zero", 0),
@@ -137,6 +139,7 @@ def parse_lines(out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--moon-dir", required=True)
+    ap.add_argument("--moon-extra-src", action="append", default=[])
     ap.add_argument("--pion-dir", required=True)
     ap.add_argument("--moon-bin", default="moon")
     ap.add_argument("--pionc-bin", default="pionc")
@@ -148,6 +151,9 @@ def main():
     try:
         moon_work = os.path.join(work, "moon_pilot")
         shutil.copytree(args.moon_dir, moon_work)
+        moon_pkg_dir = os.path.join(moon_work, "src", "controls")
+        for extra in args.moon_extra_src:
+            shutil.copy2(extra, os.path.join(moon_pkg_dir, os.path.basename(extra)))
         native_bin = os.path.join(work, "pilot_native")
         wasm_bin = os.path.join(work, "pilot.wasm")
 
@@ -170,7 +176,7 @@ def main():
 
         for case, (expect_cls, expect_n) in CASES.items():
             # Run on all 3 engines
-            moon_r = run_cmd([args.moon_bin, "run", "--target", "wasm-gc", "main", "--", case], cwd=moon_work)
+            moon_r = run_cmd([args.moon_bin, "run", "--target", "wasm-gc", "src/controls", "--", case], cwd=moon_work)
             nat_r = run_cmd([native_bin, case])
             wasm_r = run_cmd([args.pionc_bin, "run", "--target", "wasm32", args.pion_dir, "--", case])
             results = {

@@ -49,11 +49,11 @@ utf16_to_scalar_fn = "mbt_compat::utf16_to_scalar_off"
 scalar_to_utf16_fn = "mbt_compat::scalar_to_utf16_off"
 hard_fail_on_untagged_offset = true
 
-# 7. SourceLoc repo-relative injection
+# 7. SourceLoc repo-relative injection (matches `view::source_place` `ui/src/controls/<file>.mbt:<line>`)
 [source_loc]
 strip_callsite_attr = true
 param_rewrite = "loc~ : String = \"\""
-repo_relative_prefix = "libs/ui/src/controls/"
+repo_relative_prefix = "ui/src/controls/"
 format = "{prefix}{file}:{line}:{col}"
 
 # 8. Physical-equality (9 sites in controls) handled via explicit declaration-granularity overlay

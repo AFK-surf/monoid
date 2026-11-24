@@ -9,15 +9,16 @@ App-agnostic pure-Pion UI component library workspace (`pion.toml`), mirroring `
 
 ## Packages
 
-- `packages/sf`: migrated `@sf` component library (`libs/ui/src/controls`), asset registration hooks (`assets.pion`), palette contract (`palette.pion`), and cross-workspace probe entrypoint (`probe.pion`).
-- `packages/sf_assets_native`: native/headless embedded asset package generated directly by `pion/tools/mbt2pion-monoid/gen_assets.mjs` (never transpiled via `mbt2pion`). Carries JetBrains Mono TTF (300,144 B), gzipped math glyph outlines (293,607 B), icon stroke table, and light/dark palettes.
-- `packages/sf_assets_web`: Web host-provider asset adapter supporting absent initial state, late-arrival registration with redraw callbacks, post-decompress cache release, and graceful fallback on missing/corrupt payloads (zero 2 MB embedded binary bloat on `wasm32`).
+- `packages/sf`: Wave M1.1 asset registration hooks (`assets.pion`, with `valid_math_glyph_table` binary-layout validation), palette contract (`palette.pion` + `palette_test.pion`), and cross-workspace probe entrypoint (`probe.pion`). Full 255-file `@sf` (`libs/ui/src/controls`) transpilation lands in Wave M1.2; M1.1 proves 6 real production controls live in `pion/tools/mbt2pion-monoid/pilot/` (where `pion/tools/mbt2pion-monoid/pilot/oracle.py` is strictly a test-oracle harness).
+- `packages/sf_assets_native`: native/headless embedded asset package generated directly by `pion/tools/mbt2pion-monoid/gen_assets.mjs` (never transpiled via `mbt2pion`). Carries JetBrains Mono TTF (300,144 B), gzipped math glyph outlines (293,607 B), 164-icon stroke table, and light/dark palettes.
+- `packages/sf_assets_web`: Web host-provider asset adapter supporting absent initial state, late-arrival registration with redraw callbacks, post-decompress cache release, and graceful fallback on missing/corrupt/invalid-table payloads (zero 2 MB embedded binary bloat on `wasm32`).
 
 ## Rules
 
-- Single repo-wide `AFK-surf/invar` pin: `pion/ui/pion.toml` and `pion/app/pion.toml` must pin the exact same 40-char `invar` commit SHA (`sh pion/tools/mbt2pion-monoid/check_single_invar_pin.sh`).
+- Single repo-wide `AFK-surf/invar` pin: every `pion/**/pion.toml`, `pion/**/pion.lock`, and `manifest.toml` must pin the exact same 40-char `invar` commit SHA (`sh pion/tools/mbt2pion-monoid/check_single_invar_pin.sh`).
 - Verify with:
   - `sh pion/tools/mbt2pion-monoid/check_single_invar_pin.sh`
+  - `node pion/tools/mbt2pion-monoid/gen_assets.mjs --check`
   - `pionc fmt --check pion/ui`
   - `pionc check --json pion/ui`
   - `pionc test --json pion/ui`

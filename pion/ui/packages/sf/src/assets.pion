@@ -123,7 +123,44 @@ pub fn reset_assets() -> Unit {
   }
 }
 
-/// Unzip the packed math glyph table once, releasing the compressed source via `drop`.
+/// Validate decoded packed math glyph table binary layout before caching or indexing.
+pub fn valid_math_glyph_table(t : Bytes) -> Bool {
+  let len = t.length()
+  if len < 16 {
+    return false
+  }
+  let n = math_u32(t, 0).reinterpret_as_int()
+  if n <= 0 || n > (len - 8) / 8 {
+    return false
+  }
+  // 1. Verify n glyph IDs at [4 .. 4 + 4*n) are strictly increasing
+  let mut prev_id = math_u32(t, 4)
+  for i in 1..<n {
+    let cur_id = math_u32(t, 4 + 4 * i)
+    if cur_id <= prev_id {
+      return false
+    }
+    prev_id = cur_id
+  }
+  // 2. Verify n+1 offsets at [4 + 4*n .. 8 + 8*n) start at 0, are non-decreasing,
+  //    and end at len - (8 + 8*n)
+  let off_base = 4 + 4 * n
+  let data_len = (len - (8 + 8 * n)).reinterpret_as_uint()
+  let mut prev_off = math_u32(t, off_base)
+  if prev_off != 0U {
+    return false
+  }
+  for i in 1..<(n + 1) {
+    let cur_off = math_u32(t, off_base + 4 * i)
+    if cur_off < prev_off || cur_off > data_len {
+      return false
+    }
+    prev_off = cur_off
+  }
+  prev_off == data_len
+}
+
+/// Unzip the packed math glyph table once, validating format before caching or releasing via `drop`.
 pub fn math_glyph_table() -> Option[Bytes] {
   match asset_state.v.math_outlines {
     Some(t) => Some(t)
@@ -135,6 +172,9 @@ pub fn math_glyph_table() -> Option[Bytes] {
       }
       match zip::gunzip(gz) {
         Some(t) => {
+          if !valid_math_glyph_table(t) {
+            return None
+          }
           asset_state.v.math_outlines = Some(t)
           let drop = asset_state.v.math_glyphs_drop
           drop()
@@ -180,6 +220,9 @@ pub fn math_outline(
   id : String,
   scale : Double,
 ) -> Option[Array[(Array[Double], Bool)]] {
+  if !valid_math_glyph_table(t) {
+    return None
+  }
   let want = match math_glyph_id(id) {
     Some(w) => w
     None => return None
