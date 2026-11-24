@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c08f26292](https://github.com/AFK-surf/monoid/commit/c08f26292ab15d842d07412250cc2b99f73a22df) feat(ui): Wave 3c iOS 27.0 Liquid Glass parity acr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [1e5f6c7e9](https://github.com/AFK-surf/monoid/commit/1e5f6c7e98f36d0b9fb2fc6b72623cd1859b5f68) ci(desktop-build): separate built/cut moon cache k | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.57 | 66.21 | 100.66 | 120.6 |
 | [4fc759d20](https://github.com/AFK-surf/monoid/commit/4fc759d2076e82c29b7b05d86e91f2932fa66d6b) fix(mbui): hide TestFlight prompt on App Store bui | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.57 | 66.21 | 100.42 | 120.6 |
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.54 | 66.16 | 100.42 | 120.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 | [9d9b96358](https://github.com/AFK-surf/monoid/commit/9d9b96358c94ecc736a542e2ed99e9a85e1f846e) refactor(ui,mbui): clean dead controls APIs and un | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.6 | 114.59 |
 | [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.48 | 127.55 |
-| [c4160616f](https://github.com/AFK-surf/monoid/commit/c4160616f52038080e27860eed80bdc1eab6592e) perf(station): keep the hub's config when a check  | 2.74 | 3.69 | 14.95 | 37.14 | 56.94 | 32.52 | 66.06 | 101.3 | 131.39 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c08f26292](https://github.com/AFK-surf/monoid/commit/c08f26292ab15d842d07412250cc2b99f73a22df) feat(ui): Wave 3c iOS 27.0 Liquid Glass parity acr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.51 |
 | [1e5f6c7e9](https://github.com/AFK-surf/monoid/commit/1e5f6c7e98f36d0b9fb2fc6b72623cd1859b5f68) ci(desktop-build): separate built/cut moon cache k | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.61 |
 | [4fc759d20](https://github.com/AFK-surf/monoid/commit/4fc759d2076e82c29b7b05d86e91f2932fa66d6b) fix(mbui): hide TestFlight prompt on App Store bui | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.07 |
 | [9d9b96358](https://github.com/AFK-surf/monoid/commit/9d9b96358c94ecc736a542e2ed99e9a85e1f846e) refactor(ui,mbui): clean dead controls APIs and un | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
 | [db2b6cdf5](https://github.com/AFK-surf/monoid/commit/db2b6cdf503a0fb378b372704da3c95cdf18c266) fix(pion-client-core): enforce lock genesis pinnin | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
-| [c4160616f](https://github.com/AFK-surf/monoid/commit/c4160616f52038080e27860eed80bdc1eab6592e) perf(station): keep the hub's config when a check  | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.85 |
