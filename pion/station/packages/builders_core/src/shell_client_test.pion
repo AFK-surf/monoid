@@ -7,6 +7,12 @@ fn expect_sc(cond : Bool, msg : String) -> Unit {
   }
 }
 
+fn cp_str(cp : Int) -> String {
+  let sb = StringBuilder::new()
+  write_cp_utf8(sb, cp)
+  sb.to_string()
+}
+
 test "parse_shell_sync_answer matches wire.mbt:115-123 all 4 branches" {
   // 1. Non-JSON / empty string -> exact 1:1 MB ParseError::Show diagnostics (`wire.mbt:116`)
   let err_cases : Array[(String, String)] = [
@@ -16,6 +22,14 @@ test "parse_shell_sync_answer matches wire.mbt:115-123 all 4 branches" {
     ("truex", "the shell's answer is not JSON: Invalid character 'x' at line 1, column 4"),
     ("{\"a\":1.}", "the shell's answer is not JSON: Invalid character '}' at line 1, column 7"),
     ("é", "the shell's answer is not JSON: Invalid character 'é' at line 1, column 0"),
+    ("n" + cp_str(0x000C), "the shell's answer is not JSON: Invalid character '\\u{0c}' at line 1, column 1"),
+    ("[1, 2, " + cp_str(0x000C) + "]", "the shell's answer is not JSON: Invalid character '\\u{0c}' at line 1, column 7"),
+    (cp_str(0x0001), "the shell's answer is not JSON: Invalid character '\\u{01}' at line 1, column 0"),
+    (cp_str(0x0085), "the shell's answer is not JSON: Invalid character '\\u{85}' at line 1, column 0"),
+    (cp_str(0x2028), "the shell's answer is not JSON: Invalid character '\\u{2028}' at line 1, column 0"),
+    (cp_str(0xFEFF) + "{}", "the shell's answer is not JSON: Invalid character '\\u{feff}' at line 1, column 0"),
+    ("{\"value\":\"\\ud800\"}", "the shell's answer is not JSON: Invalid character '\\\\' at line 1, column 10"),
+    ("{\"value\":\"\\ude00\"}", "the shell's answer is not JSON: Invalid character '\\\\' at line 1, column 10"),
   ]
   for i in 0..<err_cases.length() {
     let (raw, want) = err_cases[i]
@@ -23,6 +37,12 @@ test "parse_shell_sync_answer matches wire.mbt:115-123 all 4 branches" {
       Err(e) => expect_sc(e.message == want, "parse_shell_sync_answer(" + raw + "): got=" + e.message + " want=" + want)
       Ok(_) => panic("expected parse failure for: " + raw)
     }
+  }
+  // Valid surrogate pair must decode cleanly to the supplementary codepoint
+  match parse_shell_sync_answer("{\"value\":\"\\ud83d\\ude00\"}") {
+    Ok(base_codec::Json::Str(s)) => expect_sc(s == "😀", "surrogate pair emoji: " + s)
+    Ok(_) => panic("expected Str(\"😀\")")
+    Err(e) => panic("unexpected err for valid surrogate pair: " + e.message)
   }
   // 2. error takes precedence over value and preserves message verbatim
   match parse_shell_sync_answer("{\"value\":123,\"error\":\"no such file or directory: ENOENT\"}") {

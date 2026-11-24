@@ -416,9 +416,9 @@ test("production LiveLocator switches cleanly between real MB and real Pion wrap
         undefined,
         () => ({ readers: { "live-locator": modeCfg } }),
       );
-      let releaseHintsAck!: () => void;
+      const origPost = MbProcess.prototype.postMessage;
+      let releaseHintsAck: (() => void) | null = null;
       const hintsAckHeld = new Promise<void>((res) => {
-        const origPost = MbProcess.prototype.postMessage;
         let held = false;
         MbProcess.prototype.postMessage = function (this: MbProcess, msg: unknown) {
           if (!held && typeof msg === "object" && msg !== null && (msg as { type?: string }).type === "hints") {
@@ -438,14 +438,19 @@ test("production LiveLocator switches cleanly between real MB and real Pion wrap
           locate1Settled = true;
           return v;
         });
-        await hintsAckHeld;
+        await Promise.race([
+          hintsAckHeld,
+          locate1P.then(() => {
+            throw new Error("locate #1 settled before hints ACK was intercepted");
+          }),
+        ]);
         assert.equal(locate1Settled, false, "locate #1 must still be in-flight at hints ACK (not done)");
         assert.equal(readSpawns(mbLog).filter((l) => l.includes("--builder live-locator")).length, 1, "MB wrapper must be running for locate #1");
         assert.equal(readSpawns(pionLog).length, 0, "0 Pion spawns before hot-reload");
 
         // Hot-reload config to pion while locate #1 is paused mid-flight!
         modeCfg = "pion";
-        releaseHintsAck();
+        releaseHintsAck!();
         const resMb = await locate1P;
         assert.ok(resMb !== null && resMb.paths.length === 2);
         assert.equal(readSpawns(pionLog).length, 0, "in-flight locate #1 must finish on old MB worker without spawning/probing Pion");
@@ -474,6 +479,7 @@ test("production LiveLocator switches cleanly between real MB and real Pion wrap
         const modes = await probePionSupportedModes(pionWrap);
         assert.ok(modes?.has("live-locator"));
       } finally {
+        MbProcess.prototype.postMessage = origPost;
         await inFlightLocator.close();
       }
     } finally {
