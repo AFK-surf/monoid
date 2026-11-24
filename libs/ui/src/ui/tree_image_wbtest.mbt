@@ -456,9 +456,11 @@ test "a FitCover node with a stand-in judges readiness using image_px (short-sid
   }
   t.draw()
   // Once natural dimensions (1000x15000) are known, FitCover needs 15000 * (160/1000) * 2 = 4800px -> 8192 tier;
-  // view_picture's stand-in readiness path must upgrade to 8192 instead of stopping at 1024.
+  // image_ready starts the 8192 upgrade while returning the 1024 decode as progressive fallback (image.mbt:450,603).
+  assert_eq(drawn(), ["tall"], msg="progressive 1024px fallback shown while 8192px decode is pending")
   let asked = t.image_loads().filter(fn(l) { l.0 == "tall" }).map(fn(l) { l.1 })
   assert_true(asked.length() > 0 && asked[asked.length() - 1] == 8192, msg="expected 8192 for 1000x15000 FitCover in 160x300, got \{Repr(asked)}")
+  assert_true(t.pending().iter().any(fn(p) { p.0 == 1 && t.image_src(p.1) == "tall" }), msg="8192px decode must still be pending")
   for p in t.pending() {
     if p.0 == 1 && t.image_src(p.1) == "tall" {
       t.finish(1, p.1)
@@ -535,8 +537,10 @@ test "a FitCover node with image_in matte and stand-in judges readiness and deco
     }
   }
   t.draw()
+  assert_eq(drawn(), ["tall-matte"], msg="progressive 1024px fallback shown while 8192px decode is pending")
   let asked = t.image_loads().filter(fn(l) { l.0 == "tall-matte" }).map(fn(l) { l.1 })
   assert_true(asked.length() >= 2 && asked[asked.length() - 1] == 8192, msg="expected image_in matte to upgrade to 8192, got \{Repr(asked)}")
+  assert_true(t.pending().iter().any(fn(p) { p.0 == 1 && t.image_src(p.1) == "tall-matte" }), msg="8192px decode must still be pending")
   for p in t.pending() {
     if p.0 == 1 && t.image_src(p.1) == "tall-matte" {
       t.finish(1, p.1)

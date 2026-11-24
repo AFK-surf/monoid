@@ -2857,7 +2857,6 @@ fn Ctx::view_drawn(
 }
 
 ///|
-///|
 /// How content `c`'s picture fits its box (shared by Ctx::view_picture and Ctx::view_unseen so offscreen prefetches
 /// request the same decode tier as visible draws).
 fn view_image_fit(c : @view.Content) -> Fit {

@@ -39,7 +39,7 @@ struct Size {
 }
 const THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 320, max_long: 8192, suffix: "", of: 1, lossless: false };
 /// Strictly bounded 720×600 thumbnail without short-side floor (for inline-sized link previews).
-const BOX_THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 0, max_long: 0, suffix: "", of: 1, lossless: false };
+const BOX_THUMB: Size = Size { max_w: MAX_W, max_h: MAX_H, min_short: 0, max_long: 0, suffix: ".b", of: 1, lossless: false };
 /// Kept only at half the image or less: anything more saves too little of the wait to be worth a second read. A
 /// screenshot of text is often smaller as a lossless WebP than as a JPEG, and then has every edge as it was; a photo
 /// is the JPEG. (Not a lossy WebP: the `image` crate writes none, and the app's own decoder reads only lossless ones.)

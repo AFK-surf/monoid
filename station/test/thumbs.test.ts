@@ -456,15 +456,22 @@ test("preserves short side for extreme tall and wide thumbnails without upscalin
     assert.equal(alphaBytes[25], 6);
     assert.deepEqual(sizeOf(alphaBytes), [320, 960]);
 
-    // boxed=true strictly fits 720x600 (keeps link-preview inline thumbnails under 192 KiB).
+    // boxed=true strictly fits 720x600 (keeps link-preview inline thumbnails under 192 KiB),
+    // and uses the `.b` cache suffix so default THUMB in the same directory is never poisoned.
     const boxedSrc = join(tmp, "tall-boxed.png");
     writeFileSync(boxedSrc, noisy(500, 1500));
-    const boxedMade = await thumbnail(boxedSrc, join(tmp, "boxed-thumbs"), codecs, undefined, true);
+    const sameDir = join(tmp, "shared-thumbs");
+    const boxedMade = await thumbnail(boxedSrc, sameDir, codecs, undefined, true);
     assert.ok(boxedMade);
     assert.equal(boxedMade.type, "image/jpeg");
     const boxedBytes = readFileSync(boxedMade.path);
     assert.deepEqual(sizeOf(boxedBytes), [200, 600]);
     assert.ok(boxedBytes.length < 192 * 1024, `boxed tall.png should stay under 192 KiB, got ${boxedBytes.length}`);
+    const unboxedMade = await thumbnail(boxedSrc, sameDir, codecs);
+    assert.ok(unboxedMade);
+    assert.equal(unboxedMade.type, "image/jpeg");
+    assert.notEqual(unboxedMade.path, boxedMade.path, "boxed and default thumbnails must use distinct cache paths");
+    assert.deepEqual(sizeOf(readFileSync(unboxedMade.path)), [320, 960]);
 
     // EXIF-rotated tall JPEG (stored 1800x600 with orientation 6 -> seen as 600x1800 -> thumbnail 320x960).
     const rawWide = join(tmp, "raw-wide.png");
