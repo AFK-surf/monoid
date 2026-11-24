@@ -137,8 +137,14 @@ class Device {
 
   load(host: Host): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      for (const table of DEVICE_TABLES) {
-        const bytes = yield* Effect.orElseSucceed(host.storageGet(`device/${table}`), () => null);
+      // (read together and taken in order: at a start each read waits its turn on the host's disk behind what else is read
+      // or written then, and the first view waits on all of them; core.start `ms.db`)
+      const read = yield* Effect.all(
+        DEVICE_TABLES.map((table) => Effect.orElseSucceed(host.storageGet(`device/${table}`), () => null)),
+        { concurrency: "unbounded" },
+      );
+      for (const [i, table] of DEVICE_TABLES.entries()) {
+        const bytes = read[i];
         const v = bytes ? parseJson(bytes) : undefined;
         if (!isObject(v) || this.#tables.has(table)) continue;
         // Each value frozen, as `put` keeps it: shared by whoever reads it (`shared`).

@@ -1,7 +1,7 @@
 // `Core`: takes messages from connected UIs, answers calls, keeps subscriptions (core.rs for the
 // protocol). Construction opens the signed-in accounts' databases (data.ts), wires the modules together and starts the
 // sync (sync/), which keeps everything the core holds current by itself; subscriptions only read what is held.
-import { Cause, Deferred, Effect, type Clock, type Fiber } from "effect";
+import { Cause, Deferred, Effect, Fiber, type Clock } from "effect";
 import type { AccountView } from "./accounts.ts";
 import { type AccountProvider, type AccountProviderFactory, type AccountSessions, stillfailAccountProvider } from "./account-provider.ts";
 import * as brand from "./brand.ts";
@@ -328,6 +328,9 @@ export class Core {
       inner.data.onSignedOut = (sub, me) => inner.cloudSync?.signedOut(sub, me);
       inner.data.onNote = () => inner.status.setDb(inner.data.notes);
       inner.data.onRoomAgain = (kept) => inner.stations?.roomAgain(kept);
+      // (this device's notice settings read beside the databases, not after them: each read at a start waits its turn on
+      // the host's disk)
+      const attend = inner.runner.fork(Attend.load(inner.host));
       yield* inner.data.open(inner.accounts.list().map((a) => a.sub));
       start.step("db");
       // (signatures checked once on this device, kept with its own values: vault/verified.ts)
@@ -399,7 +402,7 @@ export class Core {
       downloads.install(inner);
       fill.install(inner);
       start.step("install");
-      inner.attention = new Attention(inner, yield* Attend.load(inner.host));
+      inner.attention = new Attention(inner, yield* Fiber.join(attend));
       start.step("attend");
       inner.router.owners.push(inner.attention);
       inner.router.after = (topic, value) => inner.attention.attended(topic, value);
