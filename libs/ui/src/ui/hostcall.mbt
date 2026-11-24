@@ -1215,8 +1215,8 @@ fn outside_let_go(kind : Int, id : Int) -> Unit {
 ///|
 /// What @hostapi waits on (its op's runs, its autofill's ask) waited on here: taken as the host's word comes.
 fn init {
-  @hostapi.outside_waits.val = fn(kind, id, take) { outside_takes(kind, id, take) }
-  @hostapi.outside_lets_go.val = fn(kind, id) { outside_let_go(kind, id) }
+  @hostapi.set_outside_waits(fn(kind, id, take) { outside_takes(kind, id, take) })
+  @hostapi.set_outside_lets_go(fn(kind, id) { outside_let_go(kind, id) })
 }
 
 ///|

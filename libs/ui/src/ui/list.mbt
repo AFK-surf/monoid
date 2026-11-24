@@ -86,7 +86,6 @@ fn ListState::unstretch(self : ListState) -> Unit {
   self.over = 0.0
   self.over_edge = 0
   self.over_state = 0
-  self.over_v = 0.0
 }
 
 ///|
@@ -480,7 +479,6 @@ pub fn Ctx::list(
         over: 0.0,
         over_edge: 0,
         over_state: 0,
-        over_v: 0.0,
         back: BackPath::new(),
         ease: 0.0,
         ease_v: 0.0,

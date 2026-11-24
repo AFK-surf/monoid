@@ -773,7 +773,6 @@ fn EditorState::put_text(
     self.delete_selection() |> ignore
     self.marked = s
     self.msel_a = a
-    self.msel_b = b
   } else if kind == 2 {
     let m = self.marked
     self.marked = ""
@@ -818,7 +817,6 @@ fn EditorState::text_set(self : EditorState, s : String, a : Int, b : Int) -> Un
     self.anchor = ca
     self.marked = sub(s, ca, cb)
     self.msel_a = sa - ca
-    self.msel_b = sa - ca
   } else {
     self.put_words(s)
     self.anchor = sa
@@ -1921,7 +1919,6 @@ fn EditorState::fresh(text : String, now : Double) -> EditorState {
     anchor: text.length(),
     marked: "",
     msel_a: 0,
-    msel_b: 0,
     handle: false,
     handle_on: false,
     handle_x: 0.0,

@@ -3,7 +3,6 @@ package "ui/hostapi"
 
 import {
   "moonbitlang/core/debug",
-  "moonbitlang/core/ref",
 }
 
 // Values
@@ -52,6 +51,8 @@ pub fn badge_shown() -> Bool
 pub fn bench_mode() -> Int32
 
 pub fn browser_login(path? : String, done? : String) -> BrowserLogin?
+
+pub fn call_polled() -> Unit
 
 pub let clip_file_max : Int32
 
@@ -331,10 +332,6 @@ pub fn open_tab(String) -> Bool
 
 pub fn open_url(String) -> Bool
 
-pub let outside_lets_go : @ref.Ref[(Int32, Int32) -> Unit]
-
-pub let outside_waits : @ref.Ref[(Int32, Int32, () -> Bool) -> Unit]
-
 pub fn over_done(open_app~ : Bool) -> Unit
 
 pub fn own_clock() -> Bool
@@ -382,8 +379,6 @@ pub fn pointer_delta_take() -> (Double, Double)
 pub fn pointer_locked() -> Bool
 
 pub fn pointing() -> Int32
-
-pub let polled : @ref.Ref[() -> Unit]
 
 pub fn post_next() -> (String, String, Bytes)?
 
@@ -447,9 +442,15 @@ pub fn set_ime(Bool, Double, Double, Double, Double, String, Int32, Int32) -> Un
 
 pub fn set_outside(FuncRef[(Int32, Int32, Int32) -> Unit]) -> Bool
 
+pub fn set_outside_lets_go((Int32, Int32) -> Unit) -> Unit
+
+pub fn set_outside_waits((Int32, Int32, () -> Bool) -> Unit) -> Unit
+
 pub fn set_perf(Bool) -> Unit
 
 pub fn set_pointer_lock(Bool) -> Unit
+
+pub fn set_polled(() -> Unit) -> Unit
 
 pub fn set_sideways(Bool) -> Unit
 

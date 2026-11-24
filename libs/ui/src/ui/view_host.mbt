@@ -7502,7 +7502,6 @@ fn Ctx::focus_spliced(self : Ctx) -> Array[Focusable] {
         id: tree_said_id(at.id),
         group: 0,
         layer: 0,
-        node: -1,
         keys: at.keys,
         on_press: false,
         island: None,

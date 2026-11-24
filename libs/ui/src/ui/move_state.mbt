@@ -84,7 +84,6 @@ struct MoveShown {
 /// Its start moved on by how late its first frame reached the screen: whether that is still to be, and that frame's
 /// time (-1: not drawn yet).
 struct MoveRun {
-  who : Mover
   mut start : Double
   /// how long: as said, or a Move's over the furthest any of its boxes goes (`far`, in points, found as they are
   /// built in the first frame that builds them anew, `far_frame`: its new state may come a frame or more after it is
@@ -255,7 +254,6 @@ pub fn Ctx::move_state(
   // (its first frame: this one, said in it; else the next drawn, as it is handed its time)
   let late_at = if self.in_frame() { start } else { -1.0 }
   let run : MoveRun = {
-    who,
     start,
     dur: duration.unwrap_or(move_ms(0.0)),
     far: 0.0,
