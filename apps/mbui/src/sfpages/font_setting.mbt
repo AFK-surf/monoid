@@ -359,18 +359,19 @@ fn FontPageCtx::preset_sample_latin(self : FontPageCtx, p : FontPreset) -> Int {
 }
 
 ///|
-/// Real CJK preview override for a curated style card's `Aa 字` specimen (shows true Sans / Serif / Kai strokes).
-fn FontPageCtx::preset_sample_cjk(self : FontPageCtx, p : FontPreset) -> @view.CjkOverride? {
+/// Real CJK preview face slot for a curated style card's `字` glyph (shows true Sans / Serif / Kai strokes directly).
+fn FontPageCtx::preset_sample_cjk_face(self : FontPageCtx, p : FontPreset) -> Int {
   let id = match p.text_cjk {
     Some(s) => Some(s)
     None => p.ui_cjk
   }
   match id {
-    Some(s) if s != "" => {
-      let f = self.cjk_host_face(s)
-      if f > 0 { Some({ face: f, scale: 1.0, weight_off: 0 }) } else { Some({ face: 0, scale: 1.0, weight_off: 0 }) }
-    }
-    _ => Some({ face: 0, scale: 1.0, weight_off: 0 })
+    Some(s) if s != "" =>
+      match self.cjk_host_face(s) {
+        0 => @hostapi.face_sys_default
+        f => f
+      }
+    _ => @hostapi.face_sys_default
   }
 }
 

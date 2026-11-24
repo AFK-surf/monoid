@@ -253,13 +253,20 @@ fn font_presets_strip_node(parent : @view.View, ctx : FontPageCtx) -> Unit {
             })) |> ignore
             card.box(fn(top) {
               @sf.style_node(top, fn() { fp_v6_preset_top })
-              face_in_node(
-                top,
-                fn() { @sf.t("web-pages.appearance.fonts.glyph") },
-                fn() { ctx.preset_sample_latin(preset) },
-                fp_v6_specimen_words,
-                cjk=fn() { ctx.preset_sample_cjk(preset) },
-              ) |> ignore
+              top.box(fn(w) {
+                w
+                .words_runs(By(fn() {
+                  let lat = ctx.preset_sample_latin(preset)
+                  let cjk = ctx.preset_sample_cjk_face(preset)
+                  [
+                    @ui.span("Aa ", face=if lat == 0 { None } else { Some(lat) }),
+                    @ui.span("字", face=if cjk == 0 { None } else { Some(cjk) }),
+                  ]
+                }))
+                .words_look(By(fn() { @ui.style_words(fp_v6_specimen_words) }))
+                .ink(By(fn() { @ui.style_ink(fp_v6_specimen_words) }))
+                |> ignore
+              }) |> ignore
               top.show(at_once=true, on, fn(chk) {
                 @sf.icon_node(chk, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
               })
