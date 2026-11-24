@@ -6155,6 +6155,15 @@ fn view_captures_off(at : Double, gone : (@view.NodeId?) -> Bool, back_gone? : (
     }
     _ => ()
   }
+  match c.forward_held {
+    Some(h) if gone(h.owner) => {
+      c.forward_held = None
+      c.forward_off = true
+      (h.f)(3, 0.0, h.w, at, -1.0)
+      said = true
+    }
+    _ => ()
+  }
   match view_held.val {
     Some(Old(part, island)) if gone(island) => {
       view_held.val = Some(Nowhere)
@@ -6652,6 +6661,52 @@ fn Ctx::back_open(self : Ctx, brought? : Bool = true) -> Bool {
     (Some(owner), None) => back_owner_open(owner)
     (None, None) => false
   }
+}
+
+///|
+/// What takes forward now (a trackpad left-swipe gesture's start): the topmost node of the window's tree that takes
+/// forward and may take input (Tree::forward_taker). None where nothing does.
+fn Ctx::forward_taker(self : Ctx, brought? : Bool = true) -> BackHeld? {
+  guard view_app.val is Some(tree) else { return None }
+  if brought {
+    tree.bring_to(view_moment())
+  }
+  match tree.forward_taker() {
+    Some(id) => {
+      let (left, w) = match tree.drawn_of(id) {
+        Some(d) => (d.x, d.w)
+        None => (0.0, self.width)
+      }
+      Some({
+        f: fn(kind, x, _w, t, _p) {
+          let step : BackStep = match kind {
+            0 => Began(x, t)
+            1 => Moved(x, t)
+            2 => LetGo(x, t)
+            3 => CalledOff
+            _ => Back
+          }
+          tree.forward_step(id, step, t) |> ignore
+        },
+        left,
+        w,
+        owner: Some(id),
+        tree: true,
+        done: fn(_x, t, _p) { tree.forward_step(id, Back, t) |> ignore },
+      })
+    }
+    None => None
+  }
+}
+
+///|
+/// Whether what takes forward now may take input (Tree::forward_taker).
+fn Ctx::forward_open(_self : Ctx, brought? : Bool = true) -> Bool {
+  guard view_app.val is Some(tree) else { return false }
+  if brought {
+    tree.bring_to(view_moment())
+  }
+  tree.forward_taker() is Some(_)
 }
 
 ///|

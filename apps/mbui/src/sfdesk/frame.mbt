@@ -697,6 +697,25 @@ pub fn wide_back(src : Source) -> (() -> Unit)? {
 }
 
 ///|
+/// Forward on the wide frame: on the tape, brings over the panel to the right (Page from Side, Panel from Page when open),
+/// falling back to the app's forward history when no panel lies ahead; off the tape, the next entry in the app's history
+/// (sfbase's app_history.mbt). None while a whole-window page is on top.
+pub fn wide_forward(src : Source) -> (() -> Unit)? {
+  let over_all = app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))
+  if over_all {
+    return None
+  }
+  if wide.tape.get() {
+    match tape_forward_to() {
+      Some(p) => Some(fn() { wide.tape_ask.set(Some(p)) })
+      None => @sfbase.history_forward_step(src)
+    }
+  } else {
+    @sfbase.history_forward_step(src)
+  }
+}
+
+///|
 /// How much shows on the tape of each panel beside the one in use, at the window's edge: a strip as wide as the rail
 /// (the user, 2026-10-26: what shows of those not in use smaller), a finger's width past the edge a phone's system takes
 /// for its back gesture, to be tapped or dragged over. The page or the side panel in use, those beside it show as much;
@@ -854,6 +873,20 @@ fn tape_back_to() -> TapePane? {
     Panel => Some(Page)
     Page => if page_back_pops() { None } else { Some(Side) }
     Side => None
+  }
+}
+
+///|
+/// Which panel forward brings over on the tape: the page from the sidebar, the side panel from the page when one is
+/// open; None where forward is not the tape's (over-all page, Panel in use, or Page without a side panel).
+fn tape_forward_to() -> TapePane? {
+  if !wide.tape.get() || app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_)) {
+    return None
+  }
+  match wide.tape_at.get() {
+    Side => Some(Page)
+    Page => if (tape_goes.panel_of)() is Some(_) { Some(Panel) } else { None }
+    Panel => None
   }
 }
 

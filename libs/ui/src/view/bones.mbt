@@ -36,6 +36,7 @@ pub fn View::bones(self : View, color : Live[Int64]) -> View {
         self.tree.hold_lost_in(self.at)
         self.tree.focus_lost_in(self.at)
         self.tree.back_lost_in(self.at)
+        self.tree.forward_lost_in(self.at)
       }
       self.tree.modals_told(within=self.at)
     }
