@@ -1010,24 +1010,25 @@ export class Hub {
     let key = bound ?? taken?.session ?? own ?? newSingleSessionKey(connect.id);
     const sessionRow = this.store.getSession(key);
     const exists = sessionRow !== null;
-    // Left (chat_leave), or archived by hand, the session or the whole thread: it hears the thread again only once
-    // someone mentions it.
+    // Left (chat_leave), or archived by hand, the session or the thread itself: it hears the thread again only once
+    // someone mentions it. What is said meanwhile is recorded.
     const left = members.some((m) => m.session === key && m.leftAt !== null);
-    const threadManuallyArchived = existing !== null && this.store.manuallyArchived(existing.id);
     const selfManuallyArchived = sessionRow?.archivedBy === MANUAL;
-    const out = left || selfManuallyArchived || threadManuallyArchived;
+    const threadHiddenByHand = existing !== null && existing.hiddenBy === MANUAL;
+    const out = left || selfManuallyArchived || threadHiddenByHand;
     const wanted = message.addressed || (!out && (single ? !connect.requireMention || (exists && members.some((m) => m.session === key)) : exists));
     // Chatter this connect is not part of, in a thread no session takes part in.
     if (!wanted && members.length === 0) return;
-    if (!message.addressed && threadManuallyArchived) return;
     const here: ThreadRef = { channel: message.channel, threadTs: message.threadTs };
-    if (message.addressed && (selfManuallyArchived || threadManuallyArchived)) {
+    let restored = false;
+    if (message.addressed && (selfManuallyArchived || (existing !== null && existing.hiddenAt !== null))) {
       // One this session was given before (a platform sends again what it was slow to hear of): no one mentions it anew.
       const seen = existing === null ? null : this.store.messageNumberAt(existing.id, message.ts);
       if (existing !== null && seen !== null && this.store.wasDelivered(existing.id, seen, key)) return;
       // Mentioned: shown again as by hand, its whole conversation. Another bot's first mention here leaves it archived.
       if (sessionRow !== null && sessionRow.archivedAt !== null) archive(this, key, false);
       if (existing !== null && existing.hiddenAt !== null) this.store.setThreadHidden(existing.id, false, MANUAL);
+      restored = true;
     }
     const createdBy = `slack:${connect.id}:${message.user}`;
     if (wanted && !exists) {
@@ -1061,18 +1062,35 @@ export class Hub {
     const thread = existing ?? (await this.openSlackThread(chat, surface, message, createdBy, key));
     if (wanted) this.store.joinThread(thread.id, key, connect.id);
     // Its files go where a session of the thread reads them; once (Slack sends a message again it was slow to hear of).
-    // Never, where another can, of one archived by hand: its workspace is put away.
-    const shown = wanted ? [] : members.filter((m) => this.store.getSession(m.session)?.archivedBy !== MANUAL);
-    const into = wanted ? key : ((shown.find((m) => m.leftAt === null) ?? shown[0] ?? members[0])?.session ?? key);
-    const first = this.store.messageNumberAt(thread.id, message.ts) === null;
-    let said = first ? await this.fetched(chat, into, message.text, message.files) : { text: message.text, attachments: [] };
-    if (first && wanted) said = await this.withQuoted(chat, thread.id, here, into, message, said);
+    // Never to one archived by hand, whose workspace is put away: with no other there, they are only named.
+    const shown = wanted || threadHiddenByHand ? [] : members.filter((m) => this.store.getSession(m.session)?.archivedBy !== MANUAL);
+    const into = wanted ? key : ((shown.find((m) => m.leftAt === null) ?? shown[0])?.session ?? null);
+    const at = this.store.messageNumberAt(thread.id, message.ts);
+    // Recorded with its files only named, and now one it mentions is there (another bot's connect saw it first).
+    const late = wanted && at !== null && this.unfetched.has(`${thread.id}:${at}`);
+    let said: { text: string; attachments: Attachment[] } = { text: message.text, attachments: [] };
+    if (into === null) said.text = [message.text, ...(message.files ?? []).map((f) => tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: tr(stationLang(), "station.slack.fileWhileArchived") }))].filter((t) => t !== "").join("\n\n");
+    else if (at === null || late) said = await this.fetched(chat, into, message.text, message.files);
+    if (into !== null && wanted && (at === null || late)) said = await this.withQuoted(chat, thread.id, here, into, message, said);
     const [n, fresh] = this.store.insertMessage({ thread: thread.id, ts: message.ts, authorKind: "person", author: message.user, ...said });
-    // A message seen by a second connect is already delivered to the thread; only a session it brings in lacks it.
-    const targets = fresh ? this.store.threadSessions(thread.id).map((m) => m.session) : wanted ? [key] : [];
+    if (late) {
+      this.store.completeMessage(thread.id, n, said.text, said.attachments);
+      this.unfetched.delete(`${thread.id}:${n}`);
+    } else if (fresh && into === null && ((message.files ?? []).length > 0 || message.quoted !== undefined)) {
+      this.unfetched.add(`${thread.id}:${n}`);
+      if (this.unfetched.size > 2000) this.unfetched.delete(this.unfetched.keys().next().value!);
+    }
+    // A message seen by a second connect is already delivered to the thread; only a session it brings in lacks it, and
+    // those restored with it. The thread itself archived by hand, no one is given it.
+    const everyone = restored || (fresh && (wanted || !threadHiddenByHand));
+    const targets = everyone ? this.store.threadSessions(thread.id).map((m) => m.session) : wanted ? [key] : [];
     // Its own words, never the quote's: a quoted `-stop` is no command.
     this.deliver(thread.id, n, targets, message.text);
   }
+
+  /// The messages recorded with what they carry (files, a quote) left out, no one there to read it, as `thread:n` (the newest;
+  /// a restart forgets them). Brought in should another connect of theirs bring an agent it mentions (`acceptInTurn`).
+  private readonly unfetched = new Set<string>();
 
   /// The quoted messages already brought in, as `thread:message` (the newest; a restart forgets them, and one is brought once more).
   private readonly quotedIn = new Set<string>();

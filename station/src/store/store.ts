@@ -1769,9 +1769,9 @@ export class Store {
     this.#with((changes) => this.#setArchived(key, archived, by, changes));
   }
 
-  /// Out of lists by hand: the chat archived itself, or its sessions archived with one of them by hand. It takes no
-  /// messages until shown again, by hand or (a platform's thread) by a mention of its agent there (hub `acceptInTurn`);
-  /// one archived by the station comes back with anything new said.
+  /// Out of lists by hand: the chat archived itself, or its sessions archived with one of them by hand. No one is given
+  /// what is said there until it is shown again, by hand or (a platform's thread) by a mention of its agent there (hub
+  /// `acceptInTurn`); one archived by the station comes back with anything new said.
   manuallyArchived(thread: number): boolean {
     const r = this.#one("SELECT hidden_by FROM threads WHERE id = ?", thread);
     if (r === undefined || !this.#outOfLists(thread)) return false;
@@ -2781,6 +2781,24 @@ export class Store {
         changes,
       );
       return message.thread;
+    });
+  }
+
+  /// Brings in what message n was recorded without (its files, the message it quotes): an edit entry, as a platform's.
+  completeMessage(thread: number, n: number, text: string, attachments: Attachment[]): void {
+    this.#with((changes) => {
+      const row = this.#one("SELECT * FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", thread, n);
+      if (row === undefined) return;
+      const message = toEntry(row);
+      if (message.text === text && attachments.length === 0) return;
+      this.#append(
+        {
+          agentIdentity: undefined, thread, n: 0, kind: "edit", target: n, ts: null,
+          authorKind: message.authorKind, author: message.author, text, attachments, quotes: message.quotes,
+          declared: null, client: null, profile: null, runtime: null, options: undefined, card: undefined, at: this.now(),
+        },
+        changes,
+      );
     });
   }
 
@@ -4885,11 +4903,12 @@ export class Store {
 
   /// Something new said in a thread brings what it is about back into lists: the chat, if the station archived it
   /// alone, and the sessions the station archived that hear it (every session of the thread) or said it. What was
-  /// archived by hand stays archived: it takes no messages (manuallyArchived).
+  /// archived by hand stays archived: it takes no messages. Where an agent archived by hand shares the thread with ones
+  /// the station archived, those still come back.
   #bringBack(entry: EntryRow, changes: Changes): void {
     if (entry.kind !== "message" || entry.authorKind === STATION_AUTHOR) return;
     const thread = this.getThread(entry.thread);
-    if (thread === null || this.manuallyArchived(thread.id)) return;
+    if (thread === null || thread.hiddenBy === MANUAL) return;
     const archived: string[] = this.#all(
       "SELECT key FROM sessions WHERE archived_at IS NOT NULL AND archived_by IS NOT ?1 AND (key IN (SELECT session FROM thread_sessions WHERE thread = ?2) OR key = ?3)",
       MANUAL,
@@ -4897,7 +4916,7 @@ export class Store {
       entry.authorKind === "agent" ? entry.author : null,
     ).map((r) => r.key);
     for (const key of archived) this.#setArchived(key, false, AUTO, changes);
-    if (thread.hiddenAt !== null && thread.home === null) this.#setThreadHidden(thread.id, false, AUTO, changes);
+    if (thread.hiddenAt !== null && thread.home === null && (archived.length > 0 || !this.manuallyArchived(thread.id))) this.#setThreadHidden(thread.id, false, AUTO, changes);
   }
 
   /// The last entry number known of a thread with no entries: 0 for a new one. One whose archive file was lost is

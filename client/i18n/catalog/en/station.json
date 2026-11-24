@@ -480,6 +480,7 @@
   "station.slack.chooseFirst": "Choose an option first",
   "station.slack.confirm": "Submit",
   "station.slack.fileNotFetched": "[Couldn't fetch file {name}: {error}]",
+  "station.slack.fileWhileArchived": "the chat was archived, so it was not downloaded",
   "station.chat.archived": "This chat was archived manually and can't receive messages. Restore it from the archive first.",
   "station.slack.standsDone": "Done: {done}",
   "station.slack.standsDoneBare": "Done",
