@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f2d09f531](https://github.com/AFK-surf/monoid/commit/f2d09f53181fc0f13ac58128f085f998925b0aea) perf(ui): fix Windows prewarm eviction race, add c | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [669ee5d70](https://github.com/AFK-surf/monoid/commit/669ee5d70e138679346606f9ce1ded16d7c3ef18) feat(stations): show a station with no mark by its | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.96 | 121.83 |
 | [f959ec7ab](https://github.com/AFK-surf/monoid/commit/f959ec7ab6b37494a74a93eee9c1ac90fac526fa) fix(core-ts): show the chats a search finds before | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 | [ce96d772e](https://github.com/AFK-surf/monoid/commit/ce96d772e6a0b25621062d194ab5fa39266bd657) docs(releases): 0.1.11216 stable notes (#8531) | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [40408f70c](https://github.com/AFK-surf/monoid/commit/40408f70c1100971cbaf09c07c102a987c6c8dfb) feat(pion-station): add Wave 5 foundation primitiv | 2.79 | 3.76 | 15.22 | 37.41 | 57.82 | 32.79 | 66.84 | 100.86 | 132.14 |
 | [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 | [8eaa7eeb3](https://github.com/AFK-surf/monoid/commit/8eaa7eeb3b0c312dd4fc5b773e992e2d97b93810) fix(ui): fix Role 4 Tab bevelGate ghosting, slim L | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
-| [208f9e2ff](https://github.com/AFK-surf/monoid/commit/208f9e2ffce41755590dfea1aa85464da8ecabc4) fix(mbui): let the chat scroll under an open Poke  | 2.79 | 3.75 | 15.19 | 37.41 | 57.82 | 32.76 | 66.75 | 100.73 | 132.14 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f2d09f531](https://github.com/AFK-surf/monoid/commit/f2d09f53181fc0f13ac58128f085f998925b0aea) perf(ui): fix Windows prewarm eviction race, add c | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.74 |
 | [669ee5d70](https://github.com/AFK-surf/monoid/commit/669ee5d70e138679346606f9ce1ded16d7c3ef18) feat(stations): show a station with no mark by its | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.62 |
 | [f959ec7ab](https://github.com/AFK-surf/monoid/commit/f959ec7ab6b37494a74a93eee9c1ac90fac526fa) fix(core-ts): show the chats a search finds before | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.82 |
 | [ce96d772e](https://github.com/AFK-surf/monoid/commit/ce96d772e6a0b25621062d194ab5fa39266bd657) docs(releases): 0.1.11216 stable notes (#8531) | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.66 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [40408f70c](https://github.com/AFK-surf/monoid/commit/40408f70c1100971cbaf09c07c102a987c6c8dfb) feat(pion-station): add Wave 5 foundation primitiv | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.1 | 5.84 | 57.38 |
 | [87f4dd70f](https://github.com/AFK-surf/monoid/commit/87f4dd70f451134171d9301ac3bff6f1655cd13d) fix(ui,mbui): fix quote card motion and particle s | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.44 |
 | [8eaa7eeb3](https://github.com/AFK-surf/monoid/commit/8eaa7eeb3b0c312dd4fc5b773e992e2d97b93810) fix(ui): fix Role 4 Tab bevelGate ghosting, slim L | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.1 | 5.84 | 57.48 |
-| [208f9e2ff](https://github.com/AFK-surf/monoid/commit/208f9e2ffce41755590dfea1aa85464da8ecabc4) fix(mbui): let the chat scroll under an open Poke  | 0.56 | 0.73 | 2.85 | 3.86 | 7.08 | 2.09 | 5.84 | 57.26 |
