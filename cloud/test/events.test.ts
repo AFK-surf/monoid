@@ -431,6 +431,7 @@ test("a release out, as the repository's releasing workflows say, is told to eve
     assert.equal(await send(await token({ workflow_ref: "elsewhere/r/.github/workflows/pipeline.yml@refs/heads/main" })), 401);
     assert.equal(await send(await token({ repository: "o/renamed", workflow_ref: "o/renamed/.github/workflows/pipeline.yml@refs/heads/main" })), 200);
     await expect(on, { alice: [{ type: "release" }, { type: "release" }, { type: "release" }], bob: [{ type: "release" }, { type: "release" }, { type: "release" }] }, "told");
+    assert.deepEqual(await (await h.object("DIRECTORY", "primary")).waiting(), [], "a hint, kept in no outbox");
   } finally {
     await h.close();
   }

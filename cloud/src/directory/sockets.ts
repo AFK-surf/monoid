@@ -19,6 +19,8 @@ export class DirectorySockets {
   /** Objects the step being run must have reached before its request answers (#delivered). */
   #urgent: string[] = [];
   #soon: Promise<void> | null = null;
+  /** Hints sent once, kept in no outbox (#deliverEphemeral): under way now. */
+  readonly #ephemeral = new Set<Promise<void>>();
 
   constructor(db: DirectoryDb, host: DirectoryHost, meshEvents: MeshRelayEvents) {
     this.#db = db;
@@ -60,6 +62,47 @@ export class DirectorySockets {
         }
       }
     }
+  }
+
+  /**
+   * Pushes events to every events socket of these accounts once, written to no outbox: for a hint to read again that
+   * the next one or a reconnect makes up for (the cron's `relays`), so it holds nothing behind a write.
+   */
+  tellEphemeral(subs: Iterable<string>, ...events: AccountEvent[]): void {
+    const frames = events.map((event) => JSON.stringify(event));
+    for (const sub of new Set(subs)) {
+      for (const ws of this.#db.ctx.getWebSockets(`sub:${sub}`)) {
+        for (const frame of frames) {
+          try {
+            ws.send(frame);
+          } catch {
+            // Closing already; its device reconnects and refetches.
+          }
+        }
+      }
+      this.#deliverEphemeral("account", sub, frames);
+    }
+  }
+
+  /**
+   * Sends an object holding a socket `frames` once, never through the outbox: a failure is not tried again (what it
+   * says is read again as the socket reconnects). Each outbox delivery is a write and a delete, and a release told to
+   * every object wrote and deleted a row each, holding every answer of this object behind them.
+   */
+  #deliverEphemeral(kind: "account" | "station", key: string, frames: string[]): void {
+    const row = this.#db.one("SELECT gen FROM live WHERE kind = ? AND key = ?", kind, key);
+    if (!row) return;
+    const gen = row.gen as number;
+    const p: Promise<void> = this.#host.send(kind, key, { frames }).then(
+      (said) => {
+        // It holds no socket: out of `live`, unless one opened since (a newer gen).
+        if (!said.live) this.#db.run("DELETE FROM live WHERE kind = ? AND key = ? AND gen <= ?", kind, key, gen);
+      },
+      () => {
+        // Not tried again: the next hint, or its reconnect, makes up for it.
+      },
+    ).finally(() => this.#ephemeral.delete(p));
+    this.#ephemeral.add(p);
   }
 
   /** `always`: whether or not it holds a socket (what its object keeps: an account's test channel, a station let go). */
@@ -140,7 +183,7 @@ export class DirectorySockets {
 
   /** Every delivery under way has got there or failed (the tests' barrier, instead of waiting a while). */
   async settled(): Promise<void> {
-    while (this.#soon !== null || this.#sending.size > 0) await Promise.all([this.#soon, ...this.#sending.values()]);
+    while (this.#soon !== null || this.#sending.size > 0 || this.#ephemeral.size > 0) await Promise.all([this.#soon, ...this.#sending.values(), ...this.#ephemeral]);
   }
 
   /**
@@ -167,8 +210,11 @@ export class DirectorySockets {
     this.#db.run("DELETE FROM live WHERE kind = 'account' AND key = ? AND gen = ?", sub, gen);
   }
 
-  /** Tells every connected device of every account `event`, and every connected station `station` (a release out). */
-  tellAll(event: AccountEvent, station: StationEvent | null): void {
+  /**
+   * Tells every connected device of every account `event`, and every connected station `station`. `ephemeral`: a hint
+   * (a release out) sent once, kept in no outbox (#deliverEphemeral); otherwise delivered until it gets there.
+   */
+  tellAll(event: AccountEvent, station: StationEvent | null, how: { ephemeral?: boolean } = {}): void {
     const frames = [JSON.stringify(event), station === null ? null : JSON.stringify(station)];
     for (const ws of this.#db.ctx.getWebSockets()) {
       const attachment = ws.deserializeAttachment() as Attachment;
@@ -182,7 +228,9 @@ export class DirectorySockets {
     }
     for (const r of this.#db.rows("SELECT kind, key FROM live")) {
       const frame = r.kind === "station" ? frames[1] : frames[0];
-      if (frame !== null) this.deliver(r.kind as "account" | "station", r.key as string, { frames: [frame] });
+      if (frame === null) continue;
+      if (how.ephemeral) this.#deliverEphemeral(r.kind as "account" | "station", r.key as string, [frame]);
+      else this.deliver(r.kind as "account" | "station", r.key as string, { frames: [frame] });
     }
   }
 

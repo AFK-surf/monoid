@@ -3,9 +3,13 @@
 // is, its peers, what is revoked: the `state` frame) stays the Directory's: this object reads it there as the socket
 // opens, is told it as it changes (directory.ts #deliver), and keeps nothing of it but that the station is enrolled. Whether a station is up is not the cloud's to say: devices find it out over the mesh.
 import { DurableObject } from "cloudflare:workers";
+import { nowSeconds } from "./auth";
 import { header } from "./compat";
 import { CLOSE, SILENT_MS, sockets, type Delivery } from "./directory";
 import type { Env } from "./env";
+
+/** How long a station's socket opening is taken as noted (`fetch`): one replacing it meanwhile, same version, only reads its state. */
+const STATION_SEEN_WINDOW_SEC = 300;
 
 /** `gen`: as the Directory counted this socket's opening (stationConnected), said back as it closes. `origin`: a
  * guest's it connected on (guests.ts), which its state frames name in this cloud's place, so it stays where it is. */
@@ -31,6 +35,13 @@ export class Station extends DurableObject<Env> {
   #framesMeanwhile: string[] = [];
   /** How many times it was let go while this object lives: an answer read before one is not kept after it. */
   #letGo = 0;
+  /**
+   * The version and when the Directory last noted a socket opening here (stationConnected), while one is open: a
+   * reconnect replacing a socket still open (the network blipped), of the same version within the window, only reads
+   * its state (stationState), as each noting is a write on the Directory, which every request waits behind.
+   */
+  #lastVersion: string | null = null;
+  #lastConnectedAt: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -70,7 +81,7 @@ export class Station extends DurableObject<Env> {
         this.#toldMeanwhile = false;
         this.#framesMeanwhile = [];
       }
-      said = await this.connected(station, header(request, "version"));
+      said = await this.#opened(station, header(request, "version"));
     } finally {
       this.#opening--;
     }
@@ -78,7 +89,7 @@ export class Station extends DurableObject<Env> {
       this.#gone();
       return Response.json({ error: "station_removed" }, { status: 404 });
     }
-    if (before === this.#letGo) this.ctx.storage.kv.put("enrolled", true);
+    if (before === this.#letGo && !this.ctx.storage.kv.get("enrolled")) this.ctx.storage.kv.put("enrolled", true);
     for (const old of this.#open()) this.#drop(old, CLOSE.replaced, "replaced");
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
@@ -89,6 +100,32 @@ export class Station extends DurableObject<Env> {
     if (this.#toldMeanwhile) await this.#sendState(station);
     if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + SILENT_MS); // timer: a heartbeat's check, the station's pings
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  /**
+   * What to tell a socket opening first, and its gen: read only, while the socket it replaces is still open, of the
+   * same version and noted within STATION_SEEN_WINDOW_SEC (that socket's gen is the Directory's still); noted otherwise.
+   */
+  async #opened(station: string, version: string | null): Promise<{ frame: string | null; gen: number }> {
+    const now = nowSeconds();
+    if (this.#open().length > 0 && (version === null || version === this.#lastVersion) && this.#lastConnectedAt !== null && now >= this.#lastConnectedAt && now - this.#lastConnectedAt < STATION_SEEN_WINDOW_SEC) {
+      const frame = await this.state(station);
+      if (frame === null) return { frame: null, gen: 0 };
+      // The socket it replaces may have gone while that was read (its close took it out of the Directory's `live`).
+      const still = this.#open()[0];
+      if (still) return { frame, gen: (still.deserializeAttachment() as Attachment).gen };
+    }
+    const said = await this.connected(station, version);
+    if (said.frame !== null) {
+      this.#lastVersion = version ?? this.#lastVersion;
+      this.#lastConnectedAt = nowSeconds();
+    }
+    return said;
+  }
+
+  /** Its state as the Directory has it, read only as a socket replaces one still open (a test makes its answer late). */
+  protected async state(station: string): Promise<string | null> {
+    return this.#directory().stationState(station);
   }
 
   /** The Directory notes its socket opening, and says what to tell it first (a test makes its answer late). */
@@ -122,6 +159,7 @@ export class Station extends DurableObject<Env> {
   /** In no workspace: no longer a station, its socket closed for good (4004: it stops reconnecting). */
   #gone(): void {
     this.#letGo++;
+    this.#lastConnectedAt = null;
     this.ctx.storage.kv.delete("enrolled");
     for (const ws of this.#open()) this.#drop(ws, CLOSE.removed, "station_removed");
   }
@@ -175,7 +213,9 @@ export class Station extends DurableObject<Env> {
   /** A socket gone that this side did not close: when the station was last here, and it holds none now. */
   async #left(ws: WebSocket): Promise<void> {
     const { station, gen, dropped } = ws.deserializeAttachment() as Attachment;
-    if (!dropped) await this.#directory().stationLeft(station, gen);
+    if (dropped) return;
+    this.#lastConnectedAt = null;
+    await this.#directory().stationLeft(station, gen);
   }
 
   // A station that vanishes without closing (power cut, network gone) can leave a socket the runtime keeps for a long
@@ -194,6 +234,7 @@ export class Station extends DurableObject<Env> {
       const answered = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0;
       if (now - Math.max(attachment.at, answered) > SILENT_MS) {
         this.#drop(ws, CLOSE.silent, "silent");
+        this.#lastConnectedAt = null;
         await this.#directory().stationLeft(attachment.station, attachment.gen);
       } else connected = true;
     }

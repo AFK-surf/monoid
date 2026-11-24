@@ -65,7 +65,8 @@ export class Directory extends DurableObject<Env> {
     this.#db = new DirectoryDb(ctx, env);
     const host: DirectoryHost = {
       tell: (subs, ...events) => this.#sockets.tell(subs, ...events),
-      tellAll: (event, station) => this.tellAll(event, station),
+      tellEphemeral: (subs, ...events) => this.#sockets.tellEphemeral(subs, ...events),
+      tellAll: (event, station, how) => this.tellAll(event, station, how),
       tellStations: (event) => this.tellStations(event),
       deliver: (kind, key, body, how) => this.#sockets.deliver(kind, key, body, how),
       delivered: () => this.#sockets.delivered(),
@@ -82,7 +83,7 @@ export class Directory extends DurableObject<Env> {
       setBeta: (sub, on) => this.setBeta(sub, on),
       setMayCreate: (sub, on) => this.setMayCreate(sub, on),
       inviteCodes: () => this.inviteCodes(),
-      keepCounts: () => this.#admin.keepCounts(),
+      keepCounts: (force) => this.#admin.keepCounts(force),
       changed: (workspace, list, also, only) => this.#workspaces.changed(workspace, list, also, only),
       view: (sub, id) => this.#workspaces.view(sub, id),
       removeWorkspace: (id) => this.#workspaces.remove(id),
@@ -162,8 +163,8 @@ export class Directory extends DurableObject<Env> {
     this.#sockets.closed(sub, gen);
   }
 
-  tellAll(event: AccountEvent, station: StationEvent | null): void {
-    this.#sockets.tellAll(event, station);
+  tellAll(event: AccountEvent, station: StationEvent | null, how: { ephemeral?: boolean } = {}): void {
+    this.#sockets.tellAll(event, station, how);
   }
 
   tellStations(event: StationEvent): void {

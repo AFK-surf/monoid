@@ -100,7 +100,8 @@ export class DirectoryDb {
 /** Cross-domain callbacks wired by `Directory` so domain modules stay acyclic. */
 export interface DirectoryHost {
   tell(subs: Iterable<string>, ...events: AccountEvent[]): void;
-  tellAll(event: AccountEvent, station: StationEvent | null): void;
+  tellEphemeral(subs: Iterable<string>, ...events: AccountEvent[]): void;
+  tellAll(event: AccountEvent, station: StationEvent | null, how?: { ephemeral?: boolean }): void;
   tellStations(event: StationEvent): void;
   deliver(kind: "account" | "station", key: string, body: Delivery, how?: { urgent?: boolean; always?: boolean }): void;
   delivered(): Promise<void>;
@@ -117,7 +118,7 @@ export interface DirectoryHost {
   setBeta(sub: string, on: boolean): { sub: string; beta: boolean };
   setMayCreate(sub: string, on: boolean): { sub: string; may_create: boolean };
   inviteCodes(): InviteCodeView[];
-  keepCounts(): void;
+  keepCounts(force?: boolean): void;
   changed(workspace: string, list: boolean, also?: Iterable<string>, only?: "lock" | "requests" | null): void;
   view(sub: string, id: string): WorkspaceView;
   removeWorkspace(id: string): void;

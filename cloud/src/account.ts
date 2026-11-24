@@ -15,6 +15,8 @@ type Retry = { hash: string; request: string; until: number; response: string };
 /** Why a session ended, kept a while (the last 32) for the span of a refresh that finds it gone. */
 type Ended = { id: string; at: number; why: "reused" | "logout" | "logout_all" | "removed" | "blocked" };
 const ENDED_KEPT = 32;
+/** How long an account holding an events socket is taken as seen (`events`): another socket opening meanwhile tells the Directory nothing. */
+const SEEN_WINDOW_SEC = 3600;
 type Session = {
   id: string;
   name: string;
@@ -40,6 +42,13 @@ export class Account extends DurableObject<Env> {
   /** Events sockets opening now (the Directory counts them already: `events`), and what it was told for them meanwhile. */
   #opening = 0;
   #toldMeanwhile: string[] = [];
+  /**
+   * When the Directory last noted a socket opening here (`events`), while one is open; and the noting under way, which
+   * a socket opening meanwhile waits on rather than noting again. Each noting is a write on the Directory, which every
+   * request waits behind: a second tab or device opening while one is open says nothing new.
+   */
+  #lastSeenAt: number | null = null;
+  #openingPromise: Promise<number> | null = null;
   /**
    * This minute's requests of each quota (`charge`), counted in memory and never stored: a write on every request held
    * each answer of this object behind the storage's output gate, and a burst of a person's devices asking for
@@ -110,6 +119,7 @@ export class Account extends DurableObject<Env> {
 
   /** What another cloud's moveExport said, in this one's place (what it does not say taken out). */
   moveImport(kept: Record<string, unknown>): void {
+    this.#lastSeenAt = null;
     for (const key of MOVED_KEYS) {
       if (key in kept) this.ctx.storage.kv.put(key, kept[key]);
       else this.ctx.storage.kv.delete(key);
@@ -418,18 +428,26 @@ export class Account extends DurableObject<Env> {
     if (!this.session(this.data(), claims)) return denied();
     if (header(request, "channel") === "beta" && !(await this.beta(claims.sub))) return reply({ error: "not_beta" }, 403);
     if (!this.charge()) return limited();
+    const now = nowSeconds();
+    // Another socket while one is open and was noted within the window: the Directory tells this object already, and
+    // nothing is awaited, so nothing can come between.
+    if (this.#liveSockets().length > 0 && this.ctx.storage.kv.get<number>("events-gen") !== undefined && this.#lastSeenAt !== null && now >= this.#lastSeenAt && now - this.#lastSeenAt < SEEN_WINDOW_SEC) {
+      return this.#accept(request, claims);
+    }
     this.#opening++;
     let gen: number;
     try {
-      gen = await this.opened(claims.sub);
+      gen = await this.#noteOpened(claims.sub);
     } catch (error) {
       if (--this.#opening === 0) this.#toldMeanwhile = [];
       throw error;
     }
     this.#opening--;
-    // The latest opening's, whichever answer came last.
-    const latest = Math.max(gen, this.ctx.storage.kv.get<number>("events-gen") ?? 0);
-    this.ctx.storage.kv.put("events-gen", latest);
+    this.#lastSeenAt = nowSeconds();
+    // The latest opening's, whichever answer came last (sockets opening together, given one, write it once).
+    const kept = this.ctx.storage.kv.get<number>("events-gen");
+    const latest = Math.max(gen, kept ?? 0);
+    if (latest !== kept) this.ctx.storage.kv.put("events-gen", latest);
     // A revocation may have completed while the Directory was noting this opening. Nothing queued for it may leak.
     if (!this.session(this.data(), claims)) {
       if (this.#opening === 0) {
@@ -438,12 +456,27 @@ export class Account extends DurableObject<Env> {
       }
       return denied();
     }
+    return this.#accept(request, claims);
+  }
+
+  /** The socket itself, told what came for the sockets opening meanwhile. */
+  #accept(request: Request, claims: { sub: string; sid: string }): Response {
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
     pair[1].serializeAttachment({ sub: claims.sub, sid: claims.sid });
     this.#send(pair[1], this.#toldMeanwhile);
     if (this.#opening === 0) this.#toldMeanwhile = [];
     return new Response(null, { status: 101, webSocket: pair[0], headers: { "sec-websocket-protocol": header(request, "protocol") ?? EVENTS_PROTOCOLS[0] } });
+  }
+
+  /** The Directory's noting under way, or a new one: sockets opening together are noted once. */
+  #noteOpened(sub: string): Promise<number> {
+    if (this.#openingPromise) return this.#openingPromise;
+    const p: Promise<number> = this.opened(sub).finally(() => {
+      if (this.#openingPromise === p) this.#openingPromise = null;
+    });
+    this.#openingPromise = p;
+    return p;
   }
 
   /** The Directory notes a socket opening here, and says which opening it is (a test makes its answer late). */
@@ -467,6 +500,7 @@ export class Account extends DurableObject<Env> {
   /** Its last socket gone: the Directory need not tell it what is for them (the latest opening's, so not one after). */
   async #closed(gone: WebSocket): Promise<void> {
     if (this.ctx.getWebSockets().some((ws) => ws !== gone && ws.readyState === WebSocket.OPEN)) return;
+    this.#lastSeenAt = null;
     const { sub } = gone.deserializeAttachment() as { sub: string };
     const gen = this.ctx.storage.kv.get<number>("events-gen");
     if (gen !== undefined) await this.env.DIRECTORY.getByName("primary").closed(sub, gen);

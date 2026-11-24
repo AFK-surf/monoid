@@ -8,6 +8,8 @@ import { AUDIT_KEPT, AUDIT_LISTED, HOURS_KEPT, LIST, MOVE_SKIPPED, OPERATOR_KEPT
 
 const ADMIN_KEY_PREFIX = "sfa_";
 const ADMIN_KEYS_MAX = 50;
+/** How often the cron's minute keeps what this object counted (keepCounts), in seconds: the console's read keeps it at once. */
+const KEEP_COUNTS_INTERVAL = 600;
 
 // ── operators, audit, cloud move, and admin console ─────────────────────
 
@@ -22,6 +24,9 @@ export class DirectoryAdmin {
   /** The console's lists that changed since this was last told, told once what changed now is done (a burst one event). */
   #adminLists = new Set<AdminList>();
 
+  /** When keepCounts last wrote the counts (null: not since this object started, or since a move). */
+  #lastKeptAt: number | null = null;
+
   constructor(db: DirectoryDb, host: DirectoryHost, getCounts: () => Map<string, number> | undefined) {
     this.#db = db;
     this.#host = host;
@@ -30,11 +35,13 @@ export class DirectoryAdmin {
 
   /**
    * Tells the operator's connected devices `event` (their console reads it again): its accounts, found by their email.
-   * The cron's, every minute: what this object counted of its requests is kept then too (#keepCounts).
+   * The cron's, every minute: what this object counted of its requests is kept then too, at most every
+   * KEEP_COUNTS_INTERVAL (keepCounts). A hint to read again, so not kept in the outbox: one that misses a device is
+   * followed by the next minute's (tellEphemeral).
    */
   tellAdmins(event: AccountEvent): void {
-    this.keepCounts();
-    this.#host.tell(this.adminSubs(), event);
+    this.keepCounts(false);
+    this.#host.tellEphemeral(this.adminSubs(), event);
   }
 
   /**
@@ -96,6 +103,7 @@ export class DirectoryAdmin {
   moveImport(tables: Record<string, Row[]>): Record<string, number> {
     this.#host.resetFixesMarked();
     this.#host.resetDevicesSeen();
+    this.#lastKeptAt = null;
     const here = new Set(this.#db.rows("SELECT name FROM sqlite_master WHERE type = 'table'").map((r) => r.name as string));
     return this.#db.ctx.storage.transactionSync(() => {
       const counts: Record<string, number> = {};
@@ -409,7 +417,7 @@ export class DirectoryAdmin {
    * they reconnect), the objects told what is for their sockets, deliveries waiting to be tried again, and its storage.
    */
   adminLoad(): DirectoryLoad {
-    this.keepCounts();
+    this.keepCounts(true);
     const now = nowSeconds();
     const first = Math.floor(now / 3600) - HOURS_KEPT + 1;
     const families: Record<string, number[]> = {};
@@ -428,18 +436,26 @@ export class DirectoryAdmin {
     };
   }
 
-  /** The calls counted since it last ran, kept (the cron's minute: tellAdmins; adminLoad), and the hours past HOURS_KEPT gone. */
-  keepCounts(): void {
+  /**
+   * The calls counted since it last ran, kept, and the hours past HOURS_KEPT gone: by the console's read (`force`), and
+   * by the cron's minute (tellAdmins) once KEEP_COUNTS_INTERVAL passed. Each write holds every answer of this object
+   * behind the storage's output gate, so the minute does not write each time: an object restarted (a deploy, an
+   * eviction) loses at most KEEP_COUNTS_INTERVAL of counts held in memory.
+   */
+  keepCounts(force = false): void {
     const counts = this.#getCounts();
     if (!counts?.size) return;
+    const now = nowSeconds();
+    if (!force && this.#lastKeptAt !== null && now >= this.#lastKeptAt && now - this.#lastKeptAt < KEEP_COUNTS_INTERVAL) return;
     this.#db.ctx.storage.transactionSync(() => {
       for (const [k, n] of counts) {
         const [hour, family] = k.split(" ");
         this.#db.run("INSERT INTO hits (hour, family, n) VALUES (?, ?, ?) ON CONFLICT (hour, family) DO UPDATE SET n = n + excluded.n", Number(hour), family!, n);
       }
-      this.#db.run("DELETE FROM hits WHERE hour <= ?", Math.floor(nowSeconds() / 3600) - HOURS_KEPT);
+      this.#db.run("DELETE FROM hits WHERE hour <= ?", Math.floor(now / 3600) - HOURS_KEPT);
     });
     counts.clear();
+    this.#lastKeptAt = now;
   }
 
   inviteCodes(): InviteCodeView[] {

@@ -198,7 +198,7 @@ export async function receiveReleased(request: Request, env: Env): Promise<Respo
   if (claims === undefined) return reply({ error: "not_found" }, 404);
   if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || !RELEASING.some((file) => claims.workflow_ref === `${claims.repository}/.github/workflows/${file}@refs/heads/main`)) return denied();
-  await env.DIRECTORY.getByName("primary").tellAll({ type: "release" }, { type: "release" });
+  await env.DIRECTORY.getByName("primary").tellAll({ type: "release" }, { type: "release" }, { ephemeral: true });
   return reply({ ok: true });
 }
 

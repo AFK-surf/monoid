@@ -130,6 +130,19 @@ export class Directory extends ProductionDirectory {
     if (this.#failing.has(`${kind} ${key}`)) return Promise.reject(new Error("network down (test)"));
     return super.send(kind, key, body);
   }
+  /** How many socket openings the Directory has noted (an account's `seen`, a station's `stationConnected`). */
+  openings(): number {
+    return this.ctx.storage.kv.get<number>("opened") ?? 0;
+  }
+  /** The calls kept of each family (keepCounts), summed over the hours. */
+  keptCalls(): Record<string, number> {
+    return Object.fromEntries(this.ctx.storage.sql.exec("SELECT family, SUM(n) AS n FROM hits GROUP BY family").toArray().map((r) => [r.family as string, r.n as number]));
+  }
+  /** When an account or a station was last seen, and a station's version. */
+  seenOf(kind: "account" | "station", id: string): { last_seen: number | null; version?: string | null } | null {
+    const query = kind === "account" ? "SELECT last_seen FROM users WHERE sub = ?" : "SELECT last_seen, version FROM stations WHERE id = ?";
+    return (this.ctx.storage.sql.exec(query, id).toArray()[0] as { last_seen: number | null; version?: string | null } | undefined) ?? null;
+  }
   /** What waits to be tried again: how many deliveries, to whom. */
   waiting() {
     return this.ctx.storage.sql.exec("SELECT kind, key, tries FROM outbox ORDER BY id").toArray();
@@ -366,6 +379,20 @@ export class Station extends ProductionStation {
   protected override connected(station: string, version: string | null) {
     return this.#late.through(super.connected(station, version));
   }
+  #lateState = new LateOpening();
+  /** Its state read as a socket replaces one still open (`state`), held: `holdState`, `stateHeld`, `letState` as above. */
+  holdState() {
+    this.#lateState.hold();
+  }
+  stateHeld() {
+    return this.#lateState.held();
+  }
+  letState() {
+    this.#lateState.go();
+  }
+  protected override state(station: string) {
+    return this.#lateState.through(super.state(station));
+  }
 }
 
 export class Account extends ProductionAccount {
@@ -385,6 +412,21 @@ export class Account extends ProductionAccount {
   }
   protected override opened(sub: string) {
     return this.#late.through(super.opened(sub));
+  }
+  /** Events sockets asked for so far, and those waiting for a count of them (`asked`). */
+  #asked = 0;
+  #askedWaiting: { n: number; resolve: () => void }[] = [];
+  /** Once `n` events sockets have been asked of this object (each reaches the Directory's noting, or its answer, as it is asked). */
+  asked(n: number): Promise<void> {
+    return this.#asked >= n ? Promise.resolve() : new Promise<void>((resolve) => this.#askedWaiting.push({ n, resolve }));
+  }
+  override fetch(request: Request) {
+    if (new URL(request.url).pathname === "/events") {
+      this.#asked++;
+      for (const w of this.#askedWaiting.filter((w) => w.n <= this.#asked)) w.resolve();
+      this.#askedWaiting = this.#askedWaiting.filter((w) => w.n > this.#asked);
+    }
+    return super.fetch(request);
   }
   expire(id: string, kind: "idle" | "absolute") {
     const account = this.ctx.storage.kv.get<any>("account");

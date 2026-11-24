@@ -25,7 +25,9 @@
   requests is kept off it: a device's `/v1/events` socket is on its account's object (`src/account.ts`, also its
   sessions and whether it is let into the test channel), a station's presence socket on the station's own
   (`src/station.ts`, also whether it is enrolled). After each change the Directory tells those objects from an outbox
-  (in order, again until it gets there); whatever keeps someone's access is awaited before the answer.
+  (in order, again until it gets there); whatever keeps someone's access is awaited before the answer. A hint to
+  read again that a reconnect or the next one makes up for (a release out, the console's minute) is sent once,
+  outside the outbox: every write there holds each answer of the Directory behind the storage's output gate.
   `DIRECTORY_SOCKETS=primary` puts the sockets back on the Directory, the way back while nothing else depends on the
   objects. Whether a station is up is not the cloud's to say: devices find out over the mesh.
 - A member's credential is a JWT the cloud signs (Ed25519, 30 days, bound to the device's key); stations check it
