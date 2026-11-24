@@ -243,13 +243,14 @@ export const overviewFormerlyOf = (j: string) => `CASE WHEN json_type(${j}, '$.c
 
 /// What the workspace's profiles read of a station's overview, the JSON `j` (views.ts `#profilesView`: profiles.ts
 /// `workspaceProfiles`, and the machines' own logins offered beside them), as SQL: its `profiles` in their order, its
-/// `sharing`, its `mesh` (whether still.fail cloud reached it) and its `machineLogins`, each as the overview has it, one
+/// `sharing` (and whether a share can follow the workspace's whitelist, `shareAllowAuto`, and whether it is on that whitelist,
+/// `autoChats`), its `mesh` (whether still.fail cloud reached it) and its `machineLogins`, each as the overview has it, one
 /// absent left out; NULL where the overview is not an object. Kept in a column of its own (`station_part.profiled`):
 /// the list read every station's whole overview and decorated a copy of it for these (15 of the 32 ms the core spent
 /// after a workspace was switched to on 小屏, in Hermes on a Mac Studio, 2026-11-12).
 export const overviewProfiledOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('profiles', 'sharing', 'mesh', 'machineLogins')))
+      WHERE o.key IN ('profiles', 'sharing', 'shareAllowAuto', 'autoChats', 'mesh', 'machineLogins')))
     END`;
 
 /// The station's own software of an overview, the JSON `j` (its `updates`' entry of id `station`), as SQL: what the
@@ -265,7 +266,7 @@ export const overviewSoftwareOf = (j: string) => `(SELECT json_object('version',
 
 /// The fields of an overview the workspace's profiles read (overviewProfiledOf), for where they are made of an overview
 /// in the core (one shown with what is being done to it here: data.ts overviewProfiled).
-export const OVERVIEW_PROFILED = ["profiles", "sharing", "mesh", "machineLogins"] as const;
+export const OVERVIEW_PROFILED = ["profiles", "sharing", "shareAllowAuto", "autoChats", "mesh", "machineLogins"] as const;
 
 /// What the connects' list and a connect's page read of a station's overview, the JSON `j` (views.ts connectsPartOf,
 /// #connectOf), as SQL: its `connects` and `slackApps` (each `[]` where not a list), whether it has a profile
@@ -332,12 +333,11 @@ const triggerPutTable = (table: string, cols: [string, (j: string) => string][])
 
 /// Guard for `station_part_profiles_set`: skip parsing/updating profile columns entirely when none of the fields
 /// `overviewProfilesOf` / `overviewProfiledOf` read changed.
+/// (each field of OVERVIEW_PROFILED, which holds `profiles` too: one added there is watched here, else the part would
+/// keep what it was, a station's whitelist turned on never reaching the profiles)
 const PROFILE_FIELDS_CHANGED =
   "(NOT json_valid(old.json) OR NOT json_valid(new.json) OR json_type(old.json) IS NOT 'object' OR json_type(new.json) IS NOT 'object'" +
-  " OR (old.json -> '$.profiles') IS NOT (new.json -> '$.profiles')" +
-  " OR (old.json -> '$.sharing') IS NOT (new.json -> '$.sharing')" +
-  " OR (old.json -> '$.mesh') IS NOT (new.json -> '$.mesh')" +
-  " OR (old.json -> '$.machineLogins') IS NOT (new.json -> '$.machineLogins'))";
+  OVERVIEW_PROFILED.map((k) => ` OR (old.json -> '$.${k}') IS NOT (new.json -> '$.${k}')`).join("") + ")";
 
 /// The triggers keeping each overview's hot (`station_part`) and cold profile (`station_part_profiles`) parts as it
 /// changes or goes, whoever writes it, by name, as sqlite_master keeps them (no `IF NOT EXISTS`: SQLite keeps the

@@ -669,6 +669,7 @@ fn view_forget() -> Unit {
   view_handed.val = None
   view_point.val = None
   view_over_words.val = false
+  view_point_owed.val = false
   cmd_hover_clear()
   view_fingers[0] = -1
   view_fingers[1] = -1
@@ -5630,7 +5631,7 @@ let event_depth : Ref[Int] = Ref(0)
 ///|
 /// One event (view_event's) whose own facts (`said`: what the host says it came by) are so as of its moment, told
 /// before it is taken (Tree::event_said).
-fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", input? : Bool = false) -> Unit {
+fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", input? : Bool = false, more? : Bool = false) -> Unit {
   let recording = event_depth.val == 0 && @hostapi.perf_recording()
   // (the outermost event between frames, into the window thread's journal: journal.mbt; one in a frame is the frame's)
   let journaled = event_depth.val == 0 && !frame_running.val
@@ -5643,7 +5644,7 @@ fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", 
   let in_frame = frame_running.val
   event_depth.val += 1
   match view_app.val {
-    Some(t) => t.event_said(h_event_time(), said, f, brings=input)
+    Some(t) => t.event_said(h_event_time(), said, f, brings=input, more~)
     None => {
       said()
       f()
@@ -5656,7 +5657,9 @@ fn view_event_said(said : () -> Unit, f : () -> Unit, what? : String = "event", 
   // the event has run. An event inside a frame leaves its handovers for the frame's end instead.
   if event_depth.val == 0 && !frame_running.val {
     frame_afters_run()
-    glyphs_ahead()
+    if !more {
+      glyphs_ahead()
+    }
   }
   if journaled {
     journal_event(what, start, c0~)
@@ -6882,6 +6885,17 @@ fn view_point_said(kind : Int, x : Double, y : Double) -> Unit {
 }
 
 ///|
+fn view_pointed_laid(tree : @view.Tree, laid~ : Bool) -> Unit {
+  // (over words of the tree's picked with the pointer, a press held nowhere: the pointer's shape over them,
+  // view_cursor_tell)
+  view_over_words.val = match (view_point.val, view_held.val) {
+    (Some((x, y)), None) => tree_words_under(x, y, laid~)
+    _ => false
+  }
+  view_point_tell(tree)
+}
+
+///|
 /// What a pointer's event left the pointer over, told as the event is taken: the tree brought to its moment (the moment
 /// of the event being taken: no other).
 fn view_pointed(bring? : Bool = true) -> Unit {
@@ -6890,13 +6904,7 @@ fn view_pointed(bring? : Bool = true) -> Unit {
       if bring {
         tree.bring_to(view_moment())
       }
-      // (over words of the tree's picked with the pointer, a press held nowhere: the pointer's shape over them,
-      // view_cursor_tell)
-      view_over_words.val = match (view_point.val, view_held.val) {
-        (Some((x, y)), None) => tree_words_under(x, y, laid=bring)
-        _ => false
-      }
-      view_point_tell(tree)
+      view_pointed_laid(tree, laid=bring)
     }
     None => ()
   }
@@ -7016,6 +7024,12 @@ fn view_old_pointed(at : (Double, Double)?) -> Unit {
 let view_point_seen : Ref[(Int, Bool, Int)] = Ref((-1, false, -1))
 
 ///|
+/// Whether a frame closed an unfinished `more=true` move batch and owes a full pointer+words refresh
+/// (`view_pointed_laid`) once `view_brought` has laid out the frame.
+// kept across runs: put back as a run begins (view_forget)
+let view_point_owed : Ref[Bool] = Ref(false)
+
+///|
 /// As a frame begins, the tree laid out as it has it (view_frame): what a still pointer is over where the old frame's
 /// layer over it changed or what it yields (by what it last drew, as the old views' own pointing is), before anything of
 /// the frame is built or drawn. What of the tree's a point hits is not looked at again here: the hand is worked out at
@@ -7023,6 +7037,8 @@ let view_point_seen : Ref[(Int, Bool, Int)] = Ref((-1, false, -1))
 /// (view_hand_at), never on a frame as something goes; what decides where a node takes it (View::takes) is followed by
 /// the tree itself (Tree::point_at).
 fn view_pointed_again() -> Unit {
+  let owed = view_point_owed.val
+  view_point_owed.val = false
   let tree = match view_app.val {
     Some(t) => t
     None => return
@@ -7032,12 +7048,14 @@ fn view_pointed_again() -> Unit {
   }
   match view_point.val {
     None =>
-      if tree.pointed_now() is Some(_) {
-        view_point_tell(tree)
+      if owed || tree.pointed_now() is Some(_) || view_over_words.val {
+        view_pointed_laid(tree, laid=true)
       }
     Some((x, y)) => {
       let (_, over, yields) = view_point_seen.val
-      if (over, yields) != (old_layer_over(x, y), yields_said.val) {
+      if owed || yields < 0 {
+        view_pointed_laid(tree, laid=true)
+      } else if (over, yields) != (old_layer_over(x, y), yields_said.val) {
         view_point_tell(tree)
       }
     }

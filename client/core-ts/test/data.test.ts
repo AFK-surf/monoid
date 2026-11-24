@@ -1720,6 +1720,25 @@ test("hot_overview_updates_do_not_rewrite_station_part_profiles_and_profile_upda
   } finally { runner.shutdown(); }
 });
 
+test("a station's whitelist turned on, or its shares able to follow it, alone reaches the profiles' part", async () => {
+  const { data, open, runner } = fresh();
+  await open();
+  try {
+    const base = { profiles: [{ id: "p1", name: "Claude" }], sharing: true, mesh: { name: "station-a" }, autoChats: { enabled: false, canEdit: true } };
+    data.set({ topic: "overview", station: "w/a" }, base);
+    await run(data.written);
+    assert.equal((data.overviewProfiled("w/a") as J)?.autoChats?.enabled, false);
+    // (only `autoChats` changed: nothing else the profiles read)
+    data.set({ topic: "overview", station: "w/a" }, { ...base, autoChats: { enabled: true, canEdit: true } });
+    await run(data.written);
+    assert.equal((data.overviewProfiled("w/a") as J)?.autoChats?.enabled, true, "the whitelist turned on reaches the part");
+    // (only `shareAllowAuto` changed)
+    data.set({ topic: "overview", station: "w/a" }, { ...base, autoChats: { enabled: true, canEdit: true }, shareAllowAuto: true });
+    await run(data.written);
+    assert.equal((data.overviewProfiled("w/a") as J)?.shareAllowAuto, true, "a share able to follow it reaches the part");
+  } finally { runner.shutdown(); }
+});
+
 test("chat_agent_trigger_skips_delete_rewrite_when_agents_unchanged", async () => {
   const { data, open, db, runner } = fresh();
   await open();

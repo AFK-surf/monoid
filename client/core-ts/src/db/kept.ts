@@ -112,7 +112,7 @@ export const KEPT = {
     source: { table: "station_part_profiles", owner: ["address"], by: "profiled" },
     policy: "read",
     each: "owner",
-    making: 3,
+    making: 4,
     told: "$overview-profiled",
     overlaid: true,
     put: (v) => [JSON.stringify(v)],

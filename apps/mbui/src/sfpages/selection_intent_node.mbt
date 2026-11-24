@@ -251,7 +251,7 @@ let intent_head : @ui.Style = @ui.css("row w=Full gap=S1 pt=S1 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_title_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, color=Fg, wrap=false, w=Full)
+let intent_title_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg, wrap=false, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -263,7 +263,7 @@ let intent_failed_column : @ui.Style = @ui.css("w=Full gap=S1 py=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_reply_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, leading=L5, w=Full)
+let intent_reply_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, leading=L4_75, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -271,7 +271,7 @@ let intent_meta_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_failed_title : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, weight=Medium, w=Full)
+let intent_failed_title : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, weight=Medium, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -858,6 +858,11 @@ export interface ProfileShare {
 	host: string;
 	/** The stations that may use it; absent: every station of the workspace. */
 	allow?: string[];
+	/**
+	 * Who may use it follows the workspace's whitelist (stations taking automatically assigned chats, and its host):
+	 * `allow` is then the stations that makes now. Absent: `allow` is a list chosen by hand (or every station).
+	 */
+	allowAuto?: boolean;
 	/** For a copy: whether its host answered lately (absent on the host). */
 	reachable?: boolean;
 	/** For a copy: its station pauses it (`profile.put` `enabled`), since 2026-11-11; absent on a station from before, which refuses that. */
@@ -1558,6 +1563,11 @@ export interface Overview {
 	machineLogins?: MachineLogin[];
 	/** It can share profiles and skills with the workspace's other stations. */
 	sharing?: boolean;
+	/**
+	 * A profile it shares can follow the workspace's whitelist (`profile.share` `allowAuto`); false from a station older
+	 * than it, which then is not offered.
+	 */
+	shareAllowAuto?: boolean;
 	/**
 	 * An OpenCode Go profile can be signed in to the OpenCode Console rather than given a key (false from a station
 	 * older than it: not offered).
