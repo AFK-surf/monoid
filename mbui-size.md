@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21b5451ae](https://github.com/AFK-surf/monoid/commit/21b5451ae519b17261bbd35ea4e5c54c078fb953) fix(ui): set emoji presentation sequences and keyc | 2.78 | 3.74 | 15.15 | 37.35 | 57.65 | 32.7 | 66.59 | 100.6 | 123.18 |
 | [61c98f1de](https://github.com/AFK-surf/monoid/commit/61c98f1de8298a5b6a8e940f35f96778d6bc9b60) feat(providers): add Command Code and Open Design  | 2.78 | 3.74 | 15.15 | 37.35 | 57.65 | 32.7 | 66.59 | 100.57 | 125.67 |
 | [eb460cf48](https://github.com/AFK-surf/monoid/commit/eb460cf482d57905c0b02b24c1b39bb375ac96fd) fix(ui,mbui): hide the quote pill while its words  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.59 | 100.57 | 129.4 |
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 2.78 | 3.74 | 15.14 | 37.35 | 57.65 | 32.7 | 66.57 | 100.6 | 122.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4fc759d20](https://github.com/AFK-surf/monoid/commit/4fc759d2076e82c29b7b05d86e91f2932fa66d6b) fix(mbui): hide TestFlight prompt on App Store bui | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.57 | 66.21 | 100.42 | 120.6 |
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.54 | 66.16 | 100.42 | 120.6 |
 | [f1eaf852b](https://github.com/AFK-surf/monoid/commit/f1eaf852b6cd86ee55e472cb617558a078504507) fix(ui): isolate per-window D3D11 vertex buffers a | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.54 | 66.16 | 100.42 | 108.37 |
-| [ad527d4f4](https://github.com/AFK-surf/monoid/commit/ad527d4f4ef9047d0475e16afb5b7f28c8d43442) fix(ui): allocate exact CF_UNICODETEXT buffer size | 2.75 | 3.7 | 14.97 | 37.17 | 57.06 | 32.54 | 66.16 | 100.42 | 108.37 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21b5451ae](https://github.com/AFK-surf/monoid/commit/21b5451ae519b17261bbd35ea4e5c54c078fb953) fix(ui): set emoji presentation sequences and keyc | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.44 |
 | [61c98f1de](https://github.com/AFK-surf/monoid/commit/61c98f1de8298a5b6a8e940f35f96778d6bc9b60) feat(providers): add Command Code and Open Design  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.46 |
 | [eb460cf48](https://github.com/AFK-surf/monoid/commit/eb460cf482d57905c0b02b24c1b39bb375ac96fd) fix(ui,mbui): hide the quote pill while its words  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.41 |
 | [51e982cfb](https://github.com/AFK-surf/monoid/commit/51e982cfbcd8bd0824e7861b8c89e3a74881f9e5) fix(station): leave a thread whose chat's station  | 0.55 | 0.72 | 2.83 | 3.84 | 7.01 | 2.07 | 5.78 | 57.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4fc759d20](https://github.com/AFK-surf/monoid/commit/4fc759d2076e82c29b7b05d86e91f2932fa66d6b) fix(mbui): hide TestFlight prompt on App Store bui | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
 | [6f91e40d4](https://github.com/AFK-surf/monoid/commit/6f91e40d40284f76d819a6d1135b4f47cf2d09cd) feat(mbui,core-ts): add pull-down search to sub-ch | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.38 |
 | [f1eaf852b](https://github.com/AFK-surf/monoid/commit/f1eaf852b6cd86ee55e472cb617558a078504507) fix(ui): isolate per-window D3D11 vertex buffers a | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.56 |
-| [ad527d4f4](https://github.com/AFK-surf/monoid/commit/ad527d4f4ef9047d0475e16afb5b7f28c8d43442) fix(ui): allocate exact CF_UNICODETEXT buffer size | 0.55 | 0.72 | 2.82 | 3.83 | 6.99 | 2.07 | 5.74 | 57.38 |
