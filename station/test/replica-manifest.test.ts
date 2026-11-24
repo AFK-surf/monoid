@@ -2136,4 +2136,76 @@ test("27. R7: warm-cached FolderPlace.put('head') re-verifies existing manifest 
     Buffer.from("old"),
     "older-gen exclusive transcript preserved on S3 after includeTranscripts: false",
   );
+
+  // 27c-iv: R11: pre-existing S3 transcriptManifest head (containing cCurOnlyTr + target-extra cDstOnly) with
+  //         includeTranscripts: false + known=null MUST drop cCurOnlyTr while keeping manifest root/leaves,
+  //         chat attachment fChat, older-gen cOldGenTr, AND target-extra cDstOnly; generic drop() without opts
+  //         MUST still protect cDstOnly!
+  const manifestToggleTarget: NormalizedS3Target = {
+    ...mock.target("66".repeat(32), true),
+    id: "t-r11-manifest-toggle",
+    prefix: "r11m",
+  };
+  const s3ManSeed = new S3Place(manifestToggleTarget);
+  await s3ManSeed.put(HOME, origin, genOld, "batch", batch, Buffer.from("b"));
+  await s3ManSeed.putFile(HOME, origin, cOldGenTr, Buffer.from("old"));
+  await s3ManSeed.put(HOME, origin, genOld, "head", "head.json", Buffer.from(JSON.stringify(oldGenHead)), oldGenHead);
+
+  const encToggle = encodeTranscriptManifest({ [cCurOnlyTr]: 3, [cDstOnly]: 2 });
+  await s3ManSeed.put(HOME, origin, gen, "batch", batch, Buffer.from("b"));
+  await s3ManSeed.putFile(HOME, origin, fChat, Buffer.from("chat"));
+  await s3ManSeed.putFile(HOME, origin, cCurOnlyTr, Buffer.from("cur"));
+  await s3ManSeed.putFile(HOME, origin, cDstOnly, Buffer.from("do"));
+  await s3ManSeed.putFile(HOME, origin, encToggle.rootHash, encToggle.rootBytes);
+  for (const [lh, { bytes }] of encToggle.leaves) {
+    await s3ManSeed.putFile(HOME, origin, lh, bytes);
+  }
+  const manifestToggleHead = makeHead({
+    origin,
+    gen,
+    batches: [batch],
+    files: { [fChat]: 4 },
+    transcriptManifest: encToggle.rootHash,
+    to: 2,
+    made: 2000,
+  });
+  await s3ManSeed.put(HOME, origin, gen, "head", "head.json", Buffer.from(JSON.stringify(manifestToggleHead)), manifestToggleHead);
+
+  const s3ManLevel = new S3Place(manifestToggleTarget);
+  const mRes = await level(s3ManLevel, HOME, ownToggle, null, { includeTranscripts: false });
+  assert.equal(mRes.behind, false);
+
+  const wtMan = s3ManLevel.wsTag(HOME);
+  const otMan = s3ManLevel.originTag(origin);
+  assert.equal(
+    mock.objects.has(`r11m/${wtMan}/${otMan}/files/${s3ManLevel.fileTag(cCurOnlyTr)}.enc`),
+    false,
+    "current-gen exclusive transcript chunk deleted from S3 manifest head when includeTranscripts: false",
+  );
+  const s3ManVerify = new S3Place(manifestToggleTarget);
+  await assert.rejects(() => readS3Bytes(s3ManVerify, cCurOnlyTr), "reading deleted current-gen manifest transcript rejects");
+  assert.deepEqual(
+    await readS3Bytes(s3ManVerify, encToggle.rootHash),
+    encToggle.rootBytes,
+    "manifest root preserved on S3 after includeTranscripts: false",
+  );
+  for (const [lh, { bytes }] of encToggle.leaves) {
+    assert.deepEqual(
+      await readS3Bytes(s3ManVerify, lh),
+      bytes,
+      `manifest leaf ${lh.slice(0, 8)} preserved on S3 after includeTranscripts: false`,
+    );
+  }
+  assert.deepEqual(await readS3Bytes(s3ManVerify, fChat), Buffer.from("chat"), "chat attachment preserved on S3 manifest head");
+  assert.deepEqual(await readS3Bytes(s3ManVerify, cOldGenTr), Buffer.from("old"), "older-gen transcript preserved on S3 manifest head");
+  assert.deepEqual(await readS3Bytes(s3ManVerify, cDstOnly), Buffer.from("do"), "target-extra cDstOnly preserved on S3 manifest head");
+
+  // Generic drop() without opts MUST still protect cDstOnly referenced by live manifest head!
+  await s3ManVerify.held(HOME, origin);
+  await s3ManVerify.drop(HOME, origin, gen, [], [cDstOnly]);
+  assert.deepEqual(
+    await readS3Bytes(new S3Place(manifestToggleTarget), cDstOnly),
+    Buffer.from("do"),
+    "generic S3Place.drop() without allowCurrentGenTranscripts still protects live manifest chunk cDstOnly",
+  );
 });

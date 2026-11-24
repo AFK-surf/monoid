@@ -27,7 +27,7 @@ export interface Place {
   put(ws: string, origin: string, gen: string, kind: "batch" | "head", name: string, bytes: Buffer, head?: Head): Promise<void>;
   /// A file, by its hash, read from `source` (a path on this station) or given whole.
   putFile(ws: string, origin: string, hash: string, source: string | Buffer): Promise<void>;
-  drop(ws: string, origin: string, gen: string, batches: string[], files: string[]): Promise<void>;
+  drop(ws: string, origin: string, gen: string, batches: string[], files: string[], opts?: { allowCurrentGenTranscripts?: boolean }): Promise<void>;
   /// Optional post-head orphan file cleanup (e.g. S3Place after crash recovery when all heads are verified).
   pruneOrphans?(ws: string, origin: string, liveHead?: Head): Promise<void>;
 }
@@ -1028,14 +1028,15 @@ export async function level(
     }
   }
   const dropPage = opts.dropFilesPage !== undefined && opts.dropFilesPage > 0 ? opts.dropFilesPage : DROP_FILES_PAGE;
+  const dropOpts = !includeTranscripts ? { allowCurrentGenTranscripts: true } : undefined;
   if (oldBatches.length > 0 || oldFiles.length > 0) {
     if (oldFiles.length === 0) {
-      await place.drop(ws, origin, own.head.gen, oldBatches, []);
+      await place.drop(ws, origin, own.head.gen, oldBatches, [], dropOpts);
       for (const b of oldBatches) k.batches.delete(b);
     } else {
       for (let i = 0; i < oldFiles.length; i += dropPage) {
         const page = oldFiles.slice(i, i + dropPage);
-        await place.drop(ws, origin, own.head.gen, i === 0 ? oldBatches : [], page);
+        await place.drop(ws, origin, own.head.gen, i === 0 ? oldBatches : [], page, dropOpts);
         if (i === 0) {
           for (const b of oldBatches) k.batches.delete(b);
         }

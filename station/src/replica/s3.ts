@@ -481,8 +481,11 @@ export class S3Place implements Place {
   readonly #orphanFileTags = new Map<string, Set<string>>();
   /// Per `${ws}\n${origin}` set of `gen`s whose `head/<gen>.enc` failed verification in `held()`.
   readonly #unverifiedGens = new Map<string, Set<string>>();
-  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files`, (for older gens) `transcriptFiles`, and verified `manifestRefs` (root + leaves + chunks).
-  readonly #genRefHashes = new Map<string, Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number>; manifestRefs?: Set<string> }>>();
+  /// Per `${ws}\n${origin}` -> `gen` -> referenced `files`, (for older gens) `transcriptFiles`, verified `manifestRefs` (root + leaves + chunks), and `manifestMeta` (root + leaves).
+  readonly #genRefHashes = new Map<
+    string,
+    Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number>; manifestRefs?: Set<string>; manifestMeta?: Set<string> }>
+  >();
   /// Last head reconciled against `#orphanFileTags` per `${ws}\n${origin}` (present ONLY while orphans are non-empty, for O(delta) incremental checks).
   readonly #lastOrphanHead = new Map<string, Head>();
 
@@ -597,6 +600,7 @@ export class S3Place implements Place {
     const referencedTags = new Set<string>();
     const unverified = new Set<string>();
     const manifestRefsByGen = new Map<string, Set<string>>();
+    const manifestMetaByGen = new Map<string, Set<string>>();
     await Promise.all(
       headGens.map(async (gen) => {
         const head = headMap.get(gen) ?? null;
@@ -614,6 +618,7 @@ export class S3Place implements Place {
               }
             }
             manifestRefsByGen.set(gen, refs);
+            manifestMetaByGen.set(gen, new Set([resolved.rootHash, ...resolved.leafHashes]));
           } catch {
             unverified.add(gen);
           }
@@ -621,13 +626,14 @@ export class S3Place implements Place {
       }),
     );
     const allHeadsVerified = unverified.size === 0;
-    const byGen = new Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number>; manifestRefs?: Set<string> }>();
+    const byGen = new Map<string, { files: Record<string, number>; transcriptFiles?: Record<string, number>; manifestRefs?: Set<string>; manifestMeta?: Set<string> }>();
     for (const gen of allGens) {
       const head = headMap.get(gen) ?? null;
       const batches = (batchesByGen.get(gen) ?? []).sort();
       gens.push({ gen, head, batches });
       if (head !== null) {
         const manifestRefs = manifestRefsByGen.get(gen);
+        const manifestMeta = manifestMetaByGen.get(gen);
         for (const h of Object.keys(head.files)) {
           const tag = this.fileTag(h);
           referencedTags.add(tag);
@@ -649,6 +655,7 @@ export class S3Place implements Place {
           files: head.files,
           transcriptFiles: head.transcriptFiles,
           ...(manifestRefs !== undefined ? { manifestRefs } : {}),
+          ...(manifestMeta !== undefined ? { manifestMeta } : {}),
         });
       }
     }
@@ -737,11 +744,13 @@ export class S3Place implements Place {
         }
       }
       let manifestRefs: Set<string> | undefined;
+      let manifestMeta: Set<string> | undefined;
       if (parsed !== null && parsed.transcriptManifest !== undefined) {
         // Verify the full 2-level manifest BEFORE overwriting the remote head object so a broken manifest
         // can never clobber a previously valid head/<gen>.enc.
         const resolved = await loadTranscriptManifest(parsed.transcriptManifest, (h, maxBytes) => this.#readManifestObject(ws, origin, h, maxBytes));
         manifestRefs = manifestAllRefs(resolved);
+        manifestMeta = new Set([resolved.rootHash, ...resolved.leafHashes]);
         // Dual-field head (transcriptManifest + inline transcriptFiles): union inline keys into manifestRefs
         // so current-gen inline-only chunks are never deleted by drop().
         if (parsed.transcriptFiles !== undefined) {
@@ -763,9 +772,13 @@ export class S3Place implements Place {
       if (parsed !== null) {
         let byGen = this.#genRefHashes.get(scopeKey);
         if (byGen === undefined) this.#genRefHashes.set(scopeKey, (byGen = new Map()));
-        // Current gen only needs `files` (and verified `manifestRefs`, which already unions any dual-field `transcriptFiles`)
+        // Current gen only needs `files` (and verified `manifestRefs`/`manifestMeta`, which already unions any dual-field `transcriptFiles`)
         // protected in `drop()` (never retains 246k inline `transcriptFiles` on inline-only heads).
-        byGen.set(gen, { files: parsed.files, ...(manifestRefs !== undefined ? { manifestRefs } : {}) });
+        byGen.set(gen, {
+          files: parsed.files,
+          ...(manifestRefs !== undefined ? { manifestRefs } : {}),
+          ...(manifestMeta !== undefined ? { manifestMeta } : {}),
+        });
         if (wasUnverified && !this.#unverifiedGens.has(scopeKey)) {
           // Last unverified gen just self-healed: rebuild orphan set from presentFileTags minus all verified gen refs
           // so pruneOrphans() can resume reclamation immediately without waiting for another held() roundtrip.
@@ -812,18 +825,31 @@ export class S3Place implements Place {
     this.#orphanFileTags.get(scopeKey)?.delete(tag);
   }
 
-  async drop(ws: string, origin: string, gen: string, batches: string[], files: string[]): Promise<void> {
+  async drop(
+    ws: string,
+    origin: string,
+    gen: string,
+    batches: string[],
+    files: string[],
+    opts?: { allowCurrentGenTranscripts?: boolean },
+  ): Promise<void> {
     if (!WORKSPACE.test(ws) || !STATION.test(origin) || !GEN.test(gen)) throw new Error("not a copy's name");
     const scopeKey = `${ws}\n${origin}`;
     const unverified = this.#unverifiedGens.get(scopeKey);
     const allVerified = unverified === undefined || unverified.size === 0;
     const byGen = this.#genRefHashes.get(scopeKey);
+    const allowCurrentGenTranscripts = opts?.allowCurrentGenTranscripts === true;
     const isProtectedHash = (hash: string): boolean => {
       if (byGen === undefined) return false;
       for (const [otherGen, refs] of byGen) {
         if (Object.hasOwn(refs.files, hash)) return true;
-        if (otherGen !== gen && refs.transcriptFiles !== undefined && Object.hasOwn(refs.transcriptFiles, hash)) return true;
-        if (refs.manifestRefs !== undefined && refs.manifestRefs.has(hash)) return true;
+        if (otherGen !== gen) {
+          if (refs.transcriptFiles !== undefined && Object.hasOwn(refs.transcriptFiles, hash)) return true;
+          if (refs.manifestRefs !== undefined && refs.manifestRefs.has(hash)) return true;
+        } else {
+          if (refs.manifestMeta !== undefined && refs.manifestMeta.has(hash)) return true;
+          if (!allowCurrentGenTranscripts && refs.manifestRefs !== undefined && refs.manifestRefs.has(hash)) return true;
+        }
       }
       return false;
     };
