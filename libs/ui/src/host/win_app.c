@@ -1721,17 +1721,9 @@ static void clipboard_html(const char *html) {
 // clipboard's history and of the cloud's (Win+V, its sync to the person's other devices: the formats Windows reads
 // for that, which other programs' secrets carry too). 1: put there
 static int clipboard_words_html(moonbit_string_t s, int secret, const char *html) {
-  int n = Moonbit_array_length(s), k = 0;
   // other Windows programs expect CR LF
-  HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE, ((size_t)n * 2 + 1) * sizeof(WCHAR));
+  HGLOBAL h = clipboard_utf16_crlf((const WCHAR *)s, Moonbit_array_length(s));
   if (!h) return 0;
-  WCHAR *p = (WCHAR *)GlobalLock(h);
-  for (int i = 0; i < n; i++) {
-    if (s[i] == '\n' && (i == 0 || s[i - 1] != '\r')) p[k++] = '\r';
-    p[k++] = s[i];
-  }
-  p[k] = 0;
-  GlobalUnlock(h);
   if (!OpenClipboard(hwnd)) {
     GlobalFree(h);
     return 0;

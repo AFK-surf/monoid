@@ -247,6 +247,32 @@ moonbit_bytes_t mb_host_clip_file(int32_t id, int32_t i) {
 
 // ---- the clipboard written: words (as @hostapi.clipboard_set), or a picture (no label on Windows) ----
 
+// UTF-16 words in moveable clipboard memory (CF_UNICODETEXT), bare LF turned to CR LF and sized to the exact output
+// length plus its NUL. Over-allocating leaves uninitialized heap bytes past the NUL, which clipboard sync tools that
+// read GlobalSize(h) (remote desktop clients) copy as trailing garbage.
+static HGLOBAL clipboard_utf16_crlf(const WCHAR *s, int n) {
+  if (n < 0) return NULL;
+  size_t out = (size_t)n;
+  for (int i = 0; i < n; i++) {
+    if (s[i] == L'\n' && (i == 0 || s[i - 1] != L'\r')) out++;
+  }
+  HGLOBAL h = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, (out + 1) * sizeof(WCHAR));
+  if (!h) return NULL;
+  WCHAR *p = (WCHAR *)GlobalLock(h);
+  if (!p) {
+    GlobalFree(h);
+    return NULL;
+  }
+  size_t k = 0;
+  for (int i = 0; i < n; i++) {
+    if (s[i] == L'\n' && (i == 0 || s[i - 1] != L'\r')) p[k++] = L'\r';
+    p[k++] = s[i];
+  }
+  p[k] = 0;
+  GlobalUnlock(h);
+  return h;
+}
+
 // A PNG on the clipboard, in place of what it held: under "PNG" (browsers, Office read it, its pixels as they are) and
 // as a bitmap, CF_DIB (Windows makes CF_BITMAP and CF_DIBV5 of it): what Paint, chat apps and the clipboard's history
 // (Win+V) take, none of which reads "PNG" (2026-10-27: 分享图片's 复制图片 put nothing they could paste). Either alone

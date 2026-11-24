@@ -62,6 +62,20 @@ static int mb_png_of_dib(const void *p, size_t n, unsigned char **png, size_t *l
 #define CreateThread test_thread
 #define CloseHandle test_close_handle
 #include "win_device.h"
+#undef GlobalSize
+
+static void check_utf16_crlf(const WCHAR *in, int in_len, const WCHAR *expected, int expected_len) {
+  HGLOBAL h = clipboard_utf16_crlf(in, in_len);
+  CHECK(h != NULL);
+  size_t want_bytes = ((size_t)expected_len + 1) * sizeof(WCHAR);
+  CHECK(GlobalSize(h) == want_bytes);
+  const WCHAR *p = (const WCHAR *)GlobalLock(h);
+  CHECK(p != NULL);
+  if (expected_len > 0) CHECK(memcmp(p, expected, (size_t)expected_len * sizeof(WCHAR)) == 0);
+  CHECK(p[expected_len] == 0);
+  GlobalUnlock(h);
+  GlobalFree(h);
+}
 
 static void said(int32_t kind, int32_t id, int32_t state) {
   CHECK(kind == MB_OUTSIDE_CLIP && state == 1); told++; told_id = id;
@@ -94,6 +108,14 @@ int main(void) {
   read_picture(CF_DIB, 40, 11266689, CLIP_PNG);  // the reported 4K PixPin screenshot's converted size
   read_picture(0xc001, FILE_MOST + 1, 0, CLIP_TOO_LARGE);
   read_picture(CF_DIB, 40, FILE_MOST + 1, CLIP_TOO_LARGE);
-  puts("clipboard: PNG and bitmap pictures over 8 MiB accepted; attachment bound retained");
+  check_utf16_crlf(L"account.apple.com", 17, L"account.apple.com", 17);
+  check_utf16_crlf(L"", 0, L"", 0);
+  check_utf16_crlf(L"\n", 1, L"\r\n", 2);
+  check_utf16_crlf(L"a\nb\n", 4, L"a\r\nb\r\n", 6);
+  check_utf16_crlf(L"a\r\nb\nc\r\n", 8, L"a\r\nb\r\nc\r\n", 9);
+  const WCHAR cjk_in[] = {0x4e2d, L'\n', 0x6587};
+  const WCHAR cjk_out[] = {0x4e2d, L'\r', L'\n', 0x6587};
+  check_utf16_crlf(cjk_in, 3, cjk_out, 4);
+  puts("clipboard: PNG and bitmap pictures over 8 MiB accepted; CF_UNICODETEXT sized to exact CR LF length");
   return 0;
 }
