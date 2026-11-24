@@ -311,6 +311,103 @@ test "a GIF scrolled away and shown again later, behind and ahead of where its d
 }
 
 ///|
+test "a GIF past gif_moving_budget streams: plays every frame across laps while keeping only frame 0 and the active window" {
+  let data = many_ways_gif()
+  let eager = gif_frames(data).unwrap()
+  let shown = Ref(false)
+  let t = shown_twice("mem:stream", shown)
+  gif_moving_budget.val = 50
+  add_image("mem:stream", data)
+  t.draw()
+  let m = moving_images.get("mem:stream").unwrap()
+  assert_true(m.streaming)
+  assert_eq(made_of(m), [true, false, false, false, false, false])
+  run_to_frame(t, m, 0, a_moment_short)
+  shown.val = true
+  t.draw()
+  t.run_for(a_moment_on)
+  for k in [0, 1, 2, 3, 4, 5, 0, 1, 2] {
+    if k != 0 || t.time() > m.ends[0] {
+      run_to_frame(t, m, k, 0.0)
+    }
+    holds_frame(t, "mem:stream", eager, k)
+    g().trim_images()
+    let next = (k + 1) % m.keys.length()
+    let mut made_n = 0
+    for j in 0..<m.keys.length() {
+      if m.made[j] {
+        made_n = made_n + 1
+      }
+      if j != 0 && j != k && j != next {
+        assert_true(!m.made[j], msg="frame \{j} kept at k=\{k}")
+        assert_true(!image_data.contains(m.keys[j]), msg="data \{j} kept at k=\{k}")
+        assert_true(!image_cache.contains(m.keys[j]), msg="cache \{j} kept at k=\{k}")
+      }
+    }
+    assert_true(made_n <= 3, msg="made_n=\{made_n} at k=\{k}")
+  }
+  // hidden: every frame past 0 and the decoder are let go
+  shown.val = false
+  t.draw()
+  t.frame()
+  g().trim_images()
+  assert_eq(made_of(m), [true, false, false, false, false, false])
+  assert_eq(gif_expanded_bytes.val, 0)
+  assert_true(m.decoder is None)
+  // shown again mid-loop: resumes cleanly
+  run_to_frame(t, m, 3, a_moment_short)
+  shown.val = true
+  t.draw()
+  t.run_for(a_moment_on)
+  holds_frame(t, "mem:stream", eager, 3)
+}
+
+///|
+/// A GIF of `w` by `h` with `count` frames (100 ms each, 1 by 1 sub-rect alternating red and blue).
+fn many_frames_gif(w : Int, h : Int, count : Int) -> Bytes {
+  let out : Array[Byte] = [
+    b'G', b'I', b'F', b'8', b'9', b'a',
+    (w & 0xFF).to_byte(), ((w >> 8) & 0xFF).to_byte(),
+    (h & 0xFF).to_byte(), ((h >> 8) & 0xFF).to_byte(),
+    b'\x80', b'\x00', b'\x00',
+    b'\xFF', b'\x00', b'\x00', b'\x00', b'\x00', b'\xFF',
+  ]
+  for k in 0..<count {
+    let code = if k % 2 == 0 { b'\x44' } else { b'\x4C' }
+    for b in [
+      b'\x21', b'\xF9', b'\x04', b'\x00', b'\x0A', b'\x00', b'\x00', b'\x00',
+      b'\x2C', b'\x00', b'\x00', b'\x00', b'\x00', b'\x01', b'\x00', b'\x01', b'\x00', b'\x00',
+      b'\x02', b'\x02', code, b'\x01', b'\x00',
+    ] {
+      out.push(b)
+    }
+  }
+  out.push(b'\x3B')
+  Bytes::from_array(out)
+}
+
+///|
+test "a GIF over 16M total pixels with a moderate frame size streams under the default budget" {
+  // 500 x 500 x 65 = 16.25M pixels (> 16M gif_moving_most), single frame 250K (<= 4M gif_streaming_frame_most)
+  let data = many_frames_gif(500, 500, 65)
+  assert_eq(gif_frame_count(data), 65)
+  assert_true(gif_frames(data) is None)
+  let shown = Ref(false)
+  let t = shown_twice("mem:over16m", shown)
+  add_image("mem:over16m", data)
+  t.draw()
+  let m = moving_images.get("mem:over16m").unwrap()
+  assert_true(m.streaming)
+  assert_eq(m.keys.length(), 65)
+  assert_true(m.made[0])
+  assert_true(!m.made[1])
+  // single frame over 4M pixels (4000 x 4000 x 2 = 32M total) is still shown still
+  let huge = many_frames_gif(4000, 4000, 2)
+  add_image("mem:huge-frame", huge)
+  assert_true(!moving_images.contains("mem:huge-frame"))
+}
+
+///|
 test "GIF frames decoded as before: a frame of each way drawn, and cut short anywhere" {
   let data = many_ways_gif()
   let now = gif_frames(data).unwrap()
