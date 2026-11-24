@@ -1206,7 +1206,7 @@ const SOURCES_POINT_MOST = 32
 /// read once for many, and each candidate stat'ed here rather than through the shell.
 pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> JValue raise {
   let by_hash : Map[String, Array[String]]? = if hashes.length() > SOURCES_POINT_MOST {
-    // (only the paths of the hashes asked kept: what is held grows with the question, not with the table)
+    // (the table's rows are read whole, once; only the paths of the hashes asked are kept past it)
     let m : Map[String, Array[String]] = Map([])
     for h in hashes {
       m[h] = []
@@ -1280,10 +1280,14 @@ extern "C" fn dir_readable_ffi(path : Bytes) -> Int = "sfc_dir_readable"
 extern "C" fn is_file_ffi(path : Bytes) -> Int = "sfc_is_file"
 
 ///|
-/// Whether `path` is a regular file, links followed (`kind(path) is Some("file")`, without asking the shell).
+/// Whether `path` is a regular file, links followed (`kind(path) is Some("file")`), asked of the shell only where the
+/// system's answer here may differ from its (a long Windows path).
 fn Files::is_regular_file(self : Files, path : String) -> Bool {
-  ignore(self)
-  is_file_ffi(c_path(path)) == 1
+  match is_file_ffi(c_path(path)) {
+    1 => true
+    0 => false
+    _ => self.kind(path) is Some("file")
+  }
 }
 
 ///|
