@@ -189,6 +189,7 @@ export const NOTES: [number, string][] = [
   [182, "chat_configure now takes for: \"me\" (lead a still.fail chat as your sub-chat) or \"person\" (hand a led sub-chat back to people), and reports led and leader when inspecting a session."],
   [183, "station_version now supports action: \"wait\" (until: [\"pr:N\", \"fix:FB-N\", \"commit:SHA\", \"version:0.1.N\", \"after:0.1.N\"], or clear: true) to auto-update once a release contains specified fixes; list also reports overridden, overrideBase, overrideKind, overrideNote, autoWhen and autoHeld when applicable."],
   [184, "Post brief progress updates with chat_post during long multi-step waits instead of looping silently; when a turn stays open after declaring waiting (such as a background command in agy), the station now wakes it once its waiting timer runs out."],
+  [185, "chat_post now takes kind waiting with for and seconds: a post saying what you started can end the turn itself. A need that says nothing is needed (无需操作) is refused: use waiting for your own running work."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only
