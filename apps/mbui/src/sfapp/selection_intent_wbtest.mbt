@@ -59,6 +59,16 @@ test "选中文本自动推测意图: off by default; when enabled, finger selec
   let asked = calls.filter(fn(c) { c.0 == "chat.selectionIntent" })
   assert_eq(asked.length(), 1, msg="expected one chat.selectionIntent call")
   assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="reply not shown")
+  let drawn = @ui.view_tree().unwrap().drawn()
+  guard drawn.iter().find_first(fn(d) { d.words.contains("轻量模型结合当前对话上下文") }) is Some(reply_d) else {
+    fail("reply node not drawn")
+  }
+  guard drawn.iter().find_first(fn(d) { d.words == "戳一下" }) is Some(title_d) else {
+    fail("title node not drawn")
+  }
+  assert_eq(reply_d.words_look.size, @sf.theme().t.meta, msg="poke reply uses meta size")
+  assert_eq(title_d.words_look.size, @sf.theme().t.meta, msg="poke title uses meta size")
+  assert_true(reply_d.words_look.size < @sfpages.body_size, msg="poke reply smaller than chat body prose")
   assert_true(t.query(Button, label="固定") is Some(_))
   assert_true(t.query(Button, label="复制") is Some(_))
 
