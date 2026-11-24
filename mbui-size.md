@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f8da05ca1](https://github.com/AFK-surf/monoid/commit/f8da05ca18dfab6cbf6de9e287f016f9a9813135) feat(ui): replace player sliders with thumb-free f | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 | [202432542](https://github.com/AFK-surf/monoid/commit/202432542292efed48867fefbf80743f29be8d6c) fix(ci): give stable the Farview deploy key again  | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [95d864545](https://github.com/AFK-surf/monoid/commit/95d8645458bd06355e97ab706ef52ce4cfd50467) feat(pion): W6-A builders_search (--builder search | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [6d1a704bb](https://github.com/AFK-surf/monoid/commit/6d1a704bbacee0040a4e2b5bf189ebfb8795ece2) docs(readme): refresh READMEs and architecture dia | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61be50e9d](https://github.com/AFK-surf/monoid/commit/61be50e9d4645f0e1d96e747240527f41b1bca82) fix(station): make the station's memory limits fro | 2.8 | 3.76 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 | [00b25b9e0](https://github.com/AFK-surf/monoid/commit/00b25b9e0b73cd1450440413390d6065ddac3272) feat(pion-station): migrate vault-uses SQLite buil | 2.8 | 3.76 | 15.25 | 37.49 | 58.04 | 32.81 | 66.92 | 100.89 | 132.16 |
 | [fe220a848](https://github.com/AFK-surf/monoid/commit/fe220a8482864df7977422f47192751d9253b0a9) fix(core,station): keep waiting writes in SQLite a | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.91 | 130.93 |
-| [56d4ffcb5](https://github.com/AFK-surf/monoid/commit/56d4ffcb54e7c88a08ec6c8e2ce8973da252bad4) docs(releases): 0.1.11211 stable notes (#8518) | 2.8 | 3.76 | 15.23 | 37.47 | 57.96 | 32.81 | 66.87 | 100.91 | 130.93 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f8da05ca1](https://github.com/AFK-surf/monoid/commit/f8da05ca18dfab6cbf6de9e287f016f9a9813135) feat(ui): replace player sliders with thumb-free f | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.54 |
 | [202432542](https://github.com/AFK-surf/monoid/commit/202432542292efed48867fefbf80743f29be8d6c) fix(ci): give stable the Farview deploy key again  | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.48 |
 | [95d864545](https://github.com/AFK-surf/monoid/commit/95d8645458bd06355e97ab706ef52ce4cfd50467) feat(pion): W6-A builders_search (--builder search | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.95 |
 | [6d1a704bb](https://github.com/AFK-surf/monoid/commit/6d1a704bbacee0040a4e2b5bf189ebfb8795ece2) docs(readme): refresh READMEs and architecture dia | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [61be50e9d](https://github.com/AFK-surf/monoid/commit/61be50e9d4645f0e1d96e747240527f41b1bca82) fix(station): make the station's memory limits fro | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.21 |
 | [00b25b9e0](https://github.com/AFK-surf/monoid/commit/00b25b9e0b73cd1450440413390d6065ddac3272) feat(pion-station): migrate vault-uses SQLite buil | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.28 |
 | [fe220a848](https://github.com/AFK-surf/monoid/commit/fe220a8482864df7977422f47192751d9253b0a9) fix(core,station): keep waiting writes in SQLite a | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.51 |
-| [56d4ffcb5](https://github.com/AFK-surf/monoid/commit/56d4ffcb54e7c88a08ec6c8e2ce8973da252bad4) docs(releases): 0.1.11211 stable notes (#8518) | 0.56 | 0.73 | 2.85 | 3.86 | 7.09 | 2.1 | 5.86 | 57.54 |
