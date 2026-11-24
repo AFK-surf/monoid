@@ -93,6 +93,9 @@ test "a note kept on the page goes into the draft with its words, its file and i
   assert_eq(v.pdf_marks.marks.length(), 1)
   t.type_text("这里改一下")
   let (kx, ky, kw, kh) = t.get(Button, label="完成").rect
+  // (its card at the stage's foot, as a picture's note is: never over the words round what it is said of)
+  let (_, wh) = t.size()
+  assert_true(ky > y + 100.0 / 800.0 * h + 40.0 && ky + kh <= wh, msg="the note's card at the foot: \{ky} in \{wh}")
   t.tap(kx + kw / 2.0, ky + kh / 2.0)
   assert_eq(v.pdf_marks.marks[0].comment, "这里改一下")
   assert_true(t.find("发送 1 条标注") is Some(_), msg="what sends the notes")
