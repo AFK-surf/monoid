@@ -293,7 +293,7 @@ export type ReaderSelectOptions = {
   readonly pionModeSupported?: boolean;
 };
 
-export type ReaderSelectSource = "default" | "config" | "env";
+export type ReaderSelectSource = "default" | "config" | "env" | "explicit";
 
 export type ReaderFallbackReason =
   | "invalid-value"

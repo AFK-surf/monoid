@@ -39,7 +39,7 @@ import { OUTFLOW_CHATS_PENDING } from "./outflow.ts";
 import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING } from "./store.ts";
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
-import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, readerBinary } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, readerBinary, resolveReaderSelection } from "./mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -382,7 +382,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/archivelast)
     const path = join(this.data, "stillfail.db");
-    this.archiveLast ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "archive-last", "--db", path] },
+    this.archiveLast ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("archive-last", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "archive-last", "--db", path] },
       "thread", "archive last message", (thread, cancel) => ({ thread, archiveLast: true, cancel }));
     return this.covered(this.archiveLast.ready(threads, signal), signal);
   }
@@ -393,7 +393,7 @@ export class Readers {
     // (by the MoonBit builder, station/mb's src/legacy; a store whose merged view must be switched first repaired by
     // the station's writer, `repairEdits`, and asked again)
     const path = join(this.data, "stillfail.db");
-    this.legacyEdits ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "legacy-edits", "--db", path],
+    this.legacyEdits ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-edits", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "legacy-edits", "--db", path],
       repair: () => {
         if (this.repairEdits !== null) return this.repairEdits();
         // (readers given no writer, a test's: a connection of its own for the repair, waiting for no lock)
@@ -417,7 +417,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/legacy)
     const path = join(this.data, "stillfail.db");
-    this.legacySaid ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "legacy-said", "--db", path] },
+    this.legacySaid ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-said", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "legacy-said", "--db", path] },
       "thread", "legacy said", (thread, cancel) => ({ thread, legacySaid: true, cancel }));
     return this.covered(this.legacySaid.ready([0], signal), signal);
   }
@@ -427,7 +427,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/letters)
     const path = join(this.data, "stillfail.db");
-    this.pageLetters ??= new RequestedBuilder(this.backfill, { binary: readerBinary(), args: ["--builder", "page-letters", "--db", path] },
+    this.pageLetters ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("page-letters", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "page-letters", "--db", path] },
       "thread", "old page letters", (thread, cancel) => ({ thread, pageLetters: true, cancel }));
     return this.covered(this.pageLetters.ready(threads, signal), signal);
   }

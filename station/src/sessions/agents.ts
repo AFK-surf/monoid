@@ -35,7 +35,7 @@ import { sweepRunners } from "../agents/runner.ts";
 import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { mcpPortFile, ownData, portsToTry, rememberedMcpPort } from "../ops/files.ts";
-import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, ReaderConfig, Readers, RigSide, ScreenRegistry, StationConfig, Store, Up, AgentsSide, MeshSide } from "../services.ts";
+import { AdminHost, ControlPlane, Events, Grants, HelperFolders, Key, Own, Parts, Paths, Peers, Previous, ReaderConfig, Readers, RigSide, ScreenRegistry, StationConfig, StationPacked, Store, Up, AgentsSide, MeshSide } from "../services.ts";
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
 import { permissionsView } from "../api/routes/permissions.ts";
 import { Net, measure } from "../jobs/load.ts";
@@ -228,6 +228,7 @@ export const AgentsLive = (control: Control) =>
       const run = join(data, "run");
       const config = yield* StationConfig;
       const readerConfig = yield* ReaderConfig;
+      const packed = yield* StationPacked;
       // An edit is taken only if it checks out as config.rs `parse_config` would have it.
       config.check = checkConfig;
       // What it starts for its agents runs with the variables set in it (ops/agent-env.ts).
@@ -296,7 +297,7 @@ export const AgentsLive = (control: Control) =>
       let connectHeld = async (_ws: string | null, _kind: string, _own: unknown): Promise<string | null> => null;
       const connectKinds = new Map<string, ConnectKind>();
       const along: Along[] = [];
-      const cold = new ColdRooms(() => hub, { readers: readerConfig });
+      const cold = new ColdRooms(() => hub, { readers: readerConfig, packed });
       // What the deployment adds to every session's instructions (STILLFAIL_SITE_INSTRUCTIONS), read once, as it starts.
       const siteInstructions = yield* Effect.promise(() => readSiteInstructions());
       if (siteInstructions !== "") log.info("agents", "the deployment's instructions are told to every session", { path: process.env.STILLFAIL_SITE_INSTRUCTIONS, chars: siteInstructions.length });
@@ -486,7 +487,7 @@ export const AgentsLive = (control: Control) =>
           case READ:
             return forPeer(hub, peer, request, ws);
           case FILE:
-            return fileForPeer(hub, request, ws, readerConfig);
+            return fileForPeer(hub, request, ws, packed);
           case PUT:
             return putForPeer(hub, peer, request, ws);
           case CREATE:
@@ -732,7 +733,7 @@ export const AgentsLive = (control: Control) =>
       // The program that puts transcripts and workspaces away (sessions/packed-mb.ts), when one was made: let go under the
       // machine's pressure while nothing is asked of it, and ended with the agents (an ask under way failed, as at a
       // handover: the next process does it again).
-      readers.onTrim(() => peekPackedProgram()?.trimIdle() ?? 0);
+      readers.onTrim(() => packed.trimIdle() + (peekPackedProgram()?.trimIdle() ?? 0));
       yield* Effect.addFinalizer(() => Effect.promise(() => peekPackedProgram()?.close() ?? Promise.resolve()));
       // Not asked of them before the process before has handed over: what it carries says where each reading stands.
       hub.live.handover = previous;

@@ -1,14 +1,18 @@
 // Tests for Wave 4-D' unified reader selection, Pion capability gate (static table + async `--version` probe),
-// permissive `config.json` `readers` validation, live in-memory config snapshots, and hot-reload on next spawn.
+// permissive `config.json` `readers` validation, live in-memory config snapshots, hot-reload on next spawn,
+// real SQLite builder wiring, RequestedBuilder error boundary, rig Remote wiring, and per-station PackedProgram isolation.
 import assert from "node:assert/strict";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
+import type { Jobs } from "../src/jobs/jobs.ts";
+import { Remote } from "../src/jobs/remote.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
+import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
   parsePionVersionModes,
   pionBinary,
@@ -23,6 +27,7 @@ import { makeReaderConfigSnapshot } from "../src/services.ts";
 import { measureRoom } from "../src/sessions/footprint.ts";
 import { PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
 import { MemoryProgram } from "../src/share/memory-mb.ts";
+import { Store } from "../src/store/store.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -65,6 +70,23 @@ async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () 
   }
 }
 
+function withEnvSync<T>(overrides: Record<string, string | undefined>, fn: () => T): T {
+  const saved = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(overrides)) {
+    saved.set(k, process.env[k]);
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 function versionAndTagStubBody(versionLine: string, tag: string, recordFile?: string): string {
   const recordSnippet = recordFile
     ? `import { appendFileSync } from "node:fs";\n`
@@ -95,9 +117,7 @@ rl.on("line", (line) => {
 }
 
 test("precedence matrix: per-mode env > config.readers[mode] > global env > mb", () => {
-  // 1. Default -> mb
   assert.equal(resolveReaderEngine("packed", { config: undefined, env: {}, hasPionBinary: true }).engine, "mb");
-  // 2. Global env -> pion
   const globalOnly = resolveReaderEngine("packed", {
     config: undefined,
     env: { STILLFAIL_READER_ENGINE: "pion" },
@@ -105,7 +125,6 @@ test("precedence matrix: per-mode env > config.readers[mode] > global env > mb",
   });
   assert.equal(globalOnly.engine, "pion");
   assert.equal(globalOnly.source, "env");
-  // 3. config.readers[mode] overrides global env
   const configWins = resolveReaderEngine("packed", {
     config: { readers: { packed: "mb" } },
     env: { STILLFAIL_READER_ENGINE: "pion" },
@@ -120,7 +139,6 @@ test("precedence matrix: per-mode env > config.readers[mode] > global env > mb",
   });
   assert.equal(configPionWins.engine, "pion");
   assert.equal(configPionWins.source, "config");
-  // 4. Per-mode env overrides config.readers[mode] and global env
   const perModeWins = resolveReaderEngine("packed", {
     config: { readers: { packed: "pion" } },
     env: { STILLFAIL_READER_ENGINE: "pion", STILLFAIL_READER_PACKED: "mb" },
@@ -128,7 +146,6 @@ test("precedence matrix: per-mode env > config.readers[mode] > global env > mb",
   });
   assert.equal(perModeWins.engine, "mb");
   assert.equal(perModeWins.source, "env");
-  // 5. Non-object config.readers (array/primitive) is ignored cleanly
   for (const badReaders of [["pion"], "pion", 42, true] as unknown[]) {
     const sel = resolveReaderEngine("packed", {
       config: { readers: badReaders as Record<string, unknown> },
@@ -150,39 +167,42 @@ test("checkConfig never rejects invalid/unknown/non-object readers so unrelated 
     null,
   ]) {
     const dir = freshDir("config-readers-");
-    writeFileSync(join(dir, "config.json"), JSON.stringify({ language: "zh", readers: readersValue }, null, 2), "utf8");
-    const cfg = new ConfigFile(dir);
-    cfg.check = checkConfig;
-
-    // Updating an unrelated setting (language / channel) must succeed 100% without throwing.
-    const updated = cfg.update((raw) => {
-      raw.language = "en";
-      raw.channel = "beta";
+    const cfgPath = join(dir, "config.json");
+    writeFileSync(cfgPath, JSON.stringify({ language: "zh", readers: readersValue }, null, 2), "utf8");
+    withEnvSync({ STILLFAIL_CONFIG: cfgPath }, () => {
+      const cfg = new ConfigFile(dir);
+      cfg.check = checkConfig;
+      const updated = cfg.update((raw) => {
+        raw.language = "en";
+        raw.channel = "beta";
+      });
+      assert.equal(updated.language, "en");
+      assert.equal(updated.channel, "beta");
+      assert.deepEqual(updated.readers, readersValue);
     });
-    assert.equal(updated.language, "en");
-    assert.equal(updated.channel, "beta");
-    assert.deepEqual(updated.readers, readersValue);
   }
 });
 
 test("same PackedProgram, MemoryProgram, and RequestedBuilder hot-switch from mb to pion on next spawn without disrupting in-flight work (Astra P1-1)", { skip: skipPosixStubs }, async () => {
   const dir = freshDir("hot-switch-");
   const cfgDir = freshDir("hot-switch-cfg-");
+  const cfgPath = join(cfgDir, "config.json");
   const shellDir = freshDir("hot-switch-shell-");
   const targetDir = freshDir("hot-switch-target-");
-  const builderLog = join(dir, "builder-spawns.txt");
+  const builderLog = join(dir, "requested-builder-spawns.txt");
 
-  const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb-reader 1.0", "mb", builderLog));
-  const pionStub = makeStubBinary(dir, "stub-pion", versionAndTagStubBody("stillfail-pion 0.1.0 modes:footprint,packed,memory", "pion", builderLog));
+  const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb-reader 1.0", "mb"));
+  const pionStub = makeStubBinary(dir, "stub-pion", versionAndTagStubBody("stillfail-pion 0.1.0 modes:footprint,packed,memory", "pion"));
+  const builderMbStub = makeStubBinary(dir, "builder-mb", versionAndTagStubBody("mb-reader 1.0", "mb", builderLog));
+  const builderPionStub = makeStubBinary(dir, "builder-pion", versionAndTagStubBody("stillfail-pion 0.1.0", "pion", builderLog));
 
-  // A stub that pauses its first response until released so we prove in-flight requests finish on the original mb child.
   const gateFile = join(dir, "release-gate");
   const gatedMbStub = makeStubBinary(
     dir,
     "stub-mb-gated",
     `
 import { existsSync, watch } from "node:fs";
-import { dirname, basename } from "node:path";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 const gate = ${JSON.stringify(gateFile)};
 const rl = createInterface({ input: process.stdin });
@@ -204,120 +224,262 @@ rl.on("line", (line) => {
 `,
   );
 
-  const cfg = new ConfigFile(cfgDir);
-  cfg.check = checkConfig;
-  const snap = makeReaderConfigSnapshot(cfg);
+  await withEnv({ STILLFAIL_CONFIG: cfgPath }, async () => {
+    const cfg = new ConfigFile(cfgDir);
+    cfg.check = checkConfig;
+    const snap = makeReaderConfigSnapshot(cfg);
+
+    try {
+      await withEnv({
+        STILLFAIL_MB_READER: gatedMbStub,
+        STILLFAIL_PION_READER: pionStub,
+        STILLFAIL_READER_PACKED: undefined,
+        STILLFAIL_READER_MEMORY: undefined,
+        STILLFAIL_READER_FOOTPRINT: undefined,
+        STILLFAIL_READER_ENGINE: undefined,
+      }, async () => {
+        const packed = new PackedProgram({ readers: snap.get });
+        try {
+          assert.equal((await packed.ask<{ tag: string }>("table", {})).tag, "mb");
+          assert.equal(packed.started, 1);
+
+          const inFlight = packed.ask<{ tag: string }>("wait-gate", {});
+          await cfg.updateSoon((raw) => {
+            raw.readers = { packed: "pion", memory: "pion", footprint: "pion" };
+          });
+          assert.equal(snap.get()?.readers?.packed, "pion");
+
+          writeFileSync(gateFile, "go", "utf8");
+          assert.equal((await inFlight).tag, "mb");
+          assert.equal(packed.started, 1);
+
+          assert.equal(packed.trimIdle(), 1);
+          assert.equal((await packed.ask<{ tag: string }>("table", {})).tag, "pion");
+          assert.equal(packed.started, 2);
+
+          assert.equal((await runPackedOnce<{ tag: string }>("table", {}, { readers: snap.get })).tag, "pion");
+        } finally {
+          await packed.close();
+        }
+      });
+
+      await cfg.updateSoon((raw) => {
+        raw.readers = { packed: "mb", memory: "mb", footprint: "mb" };
+      });
+
+      await withEnv({
+        STILLFAIL_MB_READER: mbStub,
+        STILLFAIL_PION_READER: pionStub,
+        STILLFAIL_READER_PACKED: undefined,
+        STILLFAIL_READER_MEMORY: undefined,
+        STILLFAIL_READER_FOOTPRINT: undefined,
+        STILLFAIL_READER_ENGINE: undefined,
+      }, async () => {
+        assert.equal((await measureRoom(targetDir, undefined, snap.get)).bytes, 1024);
+        await cfg.updateSoon((raw) => {
+          raw.readers = { memory: "mb", footprint: "pion" };
+        });
+        assert.equal((await measureRoom(targetDir, undefined, snap.get)).bytes, 2048);
+
+        const mem = new MemoryProgram(shellDir, { readers: snap.get });
+        try {
+          assert.deepEqual((await mem.ask<{ tags: string[] }>("tags", { names: ["a"] })).tags, ["mb"]);
+          assert.equal(mem.started, 1);
+
+          await cfg.updateSoon((raw) => {
+            raw.readers = { memory: "pion", footprint: "pion" };
+          });
+          assert.deepEqual((await mem.ask<{ tags: string[] }>("tags", { names: ["b"] })).tags, ["mb"]);
+          assert.equal(mem.started, 1);
+
+          assert.equal(mem.trimIdle(), 1);
+          assert.deepEqual((await mem.ask<{ tags: string[] }>("tags", { names: ["c"] })).tags, ["pion"]);
+          assert.equal(mem.started, 2);
+        } finally {
+          await mem.close();
+        }
+
+        await cfg.updateSoon((raw) => {
+          raw.readers = { "session-counts": "mb" };
+        });
+        const builder = new RequestedBuilder<string>(
+          { readers: snap.get },
+          {
+            binary: () => (snap.get()?.readers?.["session-counts"] === "pion" ? builderPionStub : builderMbStub),
+            args: ["--builder", "session-counts", "--db", join(dir, "fake.db")],
+          },
+          "scope",
+          "test dynamic builder",
+        );
+        try {
+          await builder.ready(["one"]);
+          await cfg.updateSoon((raw) => {
+            raw.readers = { "session-counts": "pion" };
+          });
+          assert.equal(builder.trimIdle(), true);
+          await builder.ready(["two"]);
+        } finally {
+          await builder.close();
+        }
+
+        // Exact full spawn sequence (dedicated builderLog, never slice(-2)).
+        const lines = readFileSync(builderLog, "utf8").trim().split("\n").filter(Boolean);
+        assert.deepEqual(lines, ["mb", "pion"]);
+      });
+    } finally {
+      snap.stop();
+    }
+  });
+});
+
+test("real ArchiveMarkBuilder wires config.readers (unimplemented fallback warn) and RequestedBuilder catches synchronous binary() throws cleanly", { skip: skipPosixStubs }, async () => {
+  resetReaderSelectionStateForTest();
+  const dir = freshDir("builder-wire-");
+  const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb-reader 1.0", "mb"));
+  const pionStub = makeStubBinary(dir, "stub-pion", versionAndTagStubBody("stillfail-pion 0.1.0", "pion"));
+
+  const unhandled: unknown[] = [];
+  const onUnhandled = (err: unknown) => unhandled.push(err);
+  process.on("unhandledRejection", onUnhandled);
+  const logs: Line[] = [];
+  hearLines((l) => logs.push(l));
 
   try {
-    await withEnv({
-      STILLFAIL_MB_READER: gatedMbStub,
-      STILLFAIL_PION_READER: pionStub,
-      STILLFAIL_READER_PACKED: undefined,
-      STILLFAIL_READER_MEMORY: undefined,
-      STILLFAIL_READER_FOOTPRINT: undefined,
-      STILLFAIL_READER_ENGINE: undefined,
-    }, async () => {
-      // 1. PackedProgram: start on mb, hold in-flight request, switch config to pion mid-flight,
-      //    verify in-flight finishes on mb, then trimIdle() -> next ask spawns pion!
-      const packed = new PackedProgram({ readers: snap.get });
-      try {
-        assert.equal((await packed.ask<{ tag: string }>("table", {})).tag, "mb");
-        assert.equal(packed.started, 1);
-
-        const inFlight = packed.ask<{ tag: string }>("wait-gate", {});
-        // Hot-update config.json while in-flight request is still running on mb.
-        await cfg.updateSoon((raw) => {
-          raw.readers = { packed: "pion", memory: "pion", footprint: "pion" };
-        });
-        assert.equal(snap.get()?.readers?.packed, "pion");
-
-        // Release gate -> in-flight finishes cleanly on mb.
-        writeFileSync(gateFile, "go", "utf8");
-        assert.equal((await inFlight).tag, "mb");
-        assert.equal(packed.started, 1);
-
-        // Idle termination -> next spawn picks up pion from live config snapshot.
-        assert.equal(packed.trimIdle(), 1);
-        assert.equal((await packed.ask<{ tag: string }>("table", {})).tag, "pion");
-        assert.equal(packed.started, 2);
-
-        // runPackedOnce & measureRoom also observe live config snapshot on each call.
-        assert.equal((await runPackedOnce<{ tag: string }>("table", {}, { readers: snap.get })).tag, "pion");
-      } finally {
-        await packed.close();
-      }
-    });
-
-    // Reset config back to mb for MemoryProgram + footprint + RequestedBuilder tests.
-    await cfg.updateSoon((raw) => {
-      raw.readers = { packed: "mb", memory: "mb", footprint: "mb" };
-    });
-
+    // 1. ArchiveMarkBuilder reads options.readers() on spawn, logs deduped pion-mode-unimplemented, and runs mb.
+    let readerCalls = 0;
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: pionStub,
-      STILLFAIL_READER_PACKED: undefined,
-      STILLFAIL_READER_MEMORY: undefined,
-      STILLFAIL_READER_FOOTPRINT: undefined,
+      STILLFAIL_READER_ARCHIVE_MARKS: undefined,
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
-      // 2. footprint: mb -> config update -> pion
-      assert.equal((await measureRoom(targetDir, undefined, snap.get)).bytes, 1024);
-      await cfg.updateSoon((raw) => {
-        raw.readers = { memory: "mb", footprint: "pion" };
-      });
-      assert.equal((await measureRoom(targetDir, undefined, snap.get)).bytes, 2048);
-
-      // 3. MemoryProgram: mb -> update config to pion -> trimIdle -> pion
-      const mem = new MemoryProgram(shellDir, { readers: snap.get });
-      try {
-        assert.deepEqual((await mem.ask<{ tags: string[] }>("tags", { names: ["a"] })).tags, ["mb"]);
-        assert.equal(mem.started, 1);
-
-        await cfg.updateSoon((raw) => {
-          raw.readers = { memory: "pion", footprint: "pion" };
-        });
-        // Still using warm mb child until idle.
-        assert.deepEqual((await mem.ask<{ tags: string[] }>("tags", { names: ["b"] })).tags, ["mb"]);
-        assert.equal(mem.started, 1);
-
-        assert.equal(mem.trimIdle(), 1);
-        assert.deepEqual((await mem.ask<{ tags: string[] }>("tags", { names: ["c"] })).tags, ["pion"]);
-        assert.equal(mem.started, 2);
-      } finally {
-        await mem.close();
-      }
-
-      // 4. RequestedBuilder with dynamic `binary: () => string`: mb -> update config -> trimIdle -> pion
-      await cfg.updateSoon((raw) => {
-        raw.readers = { "session-counts": "mb" };
-      });
-      const builder = new RequestedBuilder<string>(
-        { readers: snap.get },
-        {
-          binary: () => (snap.get()?.readers?.["session-counts"] === "pion" ? pionStub : mbStub),
-          args: ["--builder", "session-counts", "--db", join(dir, "fake.db")],
+      const builder = new ArchiveMarkBuilder(join(dir, "fake.db"), {
+        readers: () => {
+          readerCalls++;
+          return { readers: { "archive-marks": "pion" } };
         },
-        "scope",
-        "test dynamic builder",
-      );
+      });
       try {
-        await builder.ready(["one"]);
-        await cfg.updateSoon((raw) => {
-          raw.readers = { "session-counts": "pion" };
-        });
+        await builder.readyIndex();
         assert.equal(builder.trimIdle(), true);
-        await builder.ready(["two"]);
+        await builder.readyIndex();
       } finally {
         await builder.close();
       }
-
-      const lines = readFileSync(builderLog, "utf8").trim().split("\n").filter(Boolean);
-      assert.deepEqual(lines.slice(-2), ["mb", "pion"]);
     });
+    assert.equal(readerCalls, 2, "expected ArchiveMarkBuilder to read options.readers() on each spawn");
+    const unimplWarns = logs.filter(
+      (l) => l.level === "WARN" && l.at === "readers" && l.fields.mode === "archive-marks" && l.fields.reason === "pion-mode-unimplemented",
+    );
+    assert.equal(unimplWarns.length, 1, "expected exactly 1 deduped pion-mode-unimplemented warning");
+
+    // 2. RequestedBuilder dynamic binary() throw rejects ready() cleanly without unhandledRejection and allows retry.
+    let shouldThrow = true;
+    const flaky = new RequestedBuilder<string>(
+      {},
+      {
+        binary: () => {
+          if (shouldThrow) throw new Error("boom: reader binary unavailable");
+          return mbStub;
+        },
+        args: ["--builder", "archive-marks", "--db", join(dir, "fake.db")],
+      },
+      "scope",
+      "test throw recovery",
+    );
+    try {
+      await assert.rejects(flaky.ready(["first"]), /boom: reader binary unavailable/);
+      shouldThrow = false;
+      await flaky.ready(["second"]);
+    } finally {
+      await flaky.close();
+    }
+    assert.deepEqual(unhandled, [], "synchronous binary() throw must never produce unhandledRejection");
   } finally {
-    snap.stop();
+    hearLines(null);
+    process.off("unhandledRejection", onUnhandled);
   }
+});
+
+test("rig Remote wires live ReaderConfig into workspaceReader footprint measurements (Astra P1-2)", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("rig-remote-");
+  const dataDir = join(dir, "data");
+  const wsDir = freshDir("rig-ws-");
+  const cfgPath = join(dataDir, "config.json");
+  const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb", "mb"));
+  const pionStub = makeStubBinary(dir, "stub-pion", versionAndTagStubBody("stillfail-pion 0.1.0", "pion"));
+
+  await withEnv({
+    STILLFAIL_CONFIG: cfgPath,
+    STILLFAIL_MB_READER: mbStub,
+    STILLFAIL_PION_READER: pionStub,
+    STILLFAIL_READER_FOOTPRINT: undefined,
+    STILLFAIL_READER_ENGINE: undefined,
+  }, async () => {
+    const cfg = new ConfigFile(dataDir);
+    const snap = makeReaderConfigSnapshot(cfg);
+    const store = Store.open(":memory:", join(dataDir, "archive"));
+    const jobs = {
+      program: { shell() {}, call: async () => null },
+      onRemote() {},
+    } as unknown as Jobs;
+    const remote = new Remote({ data: dataDir, store, jobs, notify: () => {}, readers: snap.get });
+    try {
+      await cfg.updateSoon((raw) => {
+        raw.readers = { footprint: "pion" };
+      });
+      // Kick off measurement on workspaceReader (async queue, returns null first then caches size=2048 from pionStub).
+      assert.equal(remote.workspaceReader.size(wsDir, 10_000), null);
+      let reading: { bytes: number; complete: boolean } | null = null;
+      const deadline = Date.now() + 5_000;
+      while (reading === null && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+        reading = remote.workspaceReader.size(wsDir, 10_000);
+      }
+      assert.ok(reading !== null, "expected rig Remote workspaceReader to complete footprint measurement");
+      assert.equal(reading.bytes, 2048, "expected rig Remote workspaceReader to route footprint to Pion via ReaderConfig");
+    } finally {
+      await remote.close();
+      store.close();
+      snap.stop();
+    }
+  });
+});
+
+test("two independent station PackedProgram instances with distinct ReaderConfig snapshots never interfere (Astra P2-3)", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("packed-iso-");
+  const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb", "mb"));
+  const pionStub = makeStubBinary(dir, "stub-pion", versionAndTagStubBody("stillfail-pion 0.1.0", "pion"));
+
+  await withEnv({
+    STILLFAIL_MB_READER: mbStub,
+    STILLFAIL_PION_READER: pionStub,
+    STILLFAIL_READER_PACKED: undefined,
+    STILLFAIL_READER_ENGINE: undefined,
+  }, async () => {
+    const stationA = new PackedProgram({ readers: () => ({ readers: { packed: "mb" } }) });
+    const stationB = new PackedProgram({ readers: () => ({ readers: { packed: "pion" } }) });
+    try {
+      const [a1, b1] = await Promise.all([
+        stationA.ask<{ tag: string }>("table", {}),
+        stationB.ask<{ tag: string }>("table", {}),
+      ]);
+      assert.equal(a1.tag, "mb");
+      assert.equal(b1.tag, "pion");
+
+      assert.equal(stationA.trimIdle(), 1);
+      assert.equal(stationB.trimIdle(), 1);
+
+      const [a2, b2] = await Promise.all([
+        stationA.ask<{ tag: string }>("table", {}),
+        stationB.ask<{ tag: string }>("table", {}),
+      ]);
+      assert.equal(a2.tag, "mb");
+      assert.equal(b2.tag, "pion");
+    } finally {
+      await Promise.all([stationA.close(), stationB.close()]);
+    }
+  });
 });
 
 test("old stillfail-pion binary capability probe: baseline 3 modes work, unannounced SQL mode falls back to mb with deduped warn and no restart loop (Astra P1-2)", { skip: skipPosixStubs }, async () => {
@@ -335,8 +497,8 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
     "stub-pion-new",
     versionAndTagStubBody("stillfail-pion 0.3.0 modes:footprint,packed,memory,session-counts", "pion"),
   );
+  const failingPionStub = makeStubBinary(dir, "stub-pion-fail", "process.exit(1);\n");
 
-  // Unit check of parser
   assert.deepEqual([...parsePionVersionModes("stillfail-pion 0.1.0")].sort(), ["footprint", "memory", "packed"]);
   assert.deepEqual(
     [...parsePionVersionModes("stillfail-pion 0.3.0 modes:footprint,packed,memory,session-counts")].sort(),
@@ -346,13 +508,11 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
   const logs: Line[] = [];
   hearLines((l) => logs.push(l));
   try {
-    // 1. Old binary without `modes:` in `--version`:
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: oldPionStub,
       STILLFAIL_READER_ENGINE: undefined,
     }, async () => {
-      // Baseline 3 modes work immediately with zero probe.
       for (const mode of ["footprint", "packed", "memory"] as const) {
         const res = resolveReaderSelection(mode, {
           config: { readers: { [mode]: "pion" } },
@@ -362,7 +522,6 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
         assert.equal(res.primaryBinary, oldPionStub);
       }
 
-      // First call for a new SQL mode (with pionImplemented: true) triggers non-blocking async probe and safely runs mb.
       const first = resolveReaderSelection("session-counts", {
         config: { readers: { "session-counts": "pion" } },
         env: {},
@@ -372,14 +531,13 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
       assert.equal(first.engine, "mb");
       assert.equal(first.primaryBinary, mbStub);
 
-      // Await probe completion deterministically.
       const supported = await probePionSupportedModes(oldPionStub);
+      assert.ok(supported !== null);
       assert.equal(supported.has("footprint"), true);
       assert.equal(supported.has("packed"), true);
       assert.equal(supported.has("memory"), true);
       assert.equal(supported.has("session-counts"), false);
 
-      // Subsequent calls permanently fall back to mb with reason "pion-binary-unsupported-mode" and deduped warn.
       for (let i = 0; i < 3; i++) {
         const next = resolveReaderSelection("session-counts", {
           config: { readers: { "session-counts": "pion" } },
@@ -398,12 +556,12 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
       assert.equal(unsupportedWarns.length, 1, "expected exactly 1 deduped pion-binary-unsupported-mode warning");
     });
 
-    // 2. Partial binary declaring only baseline modes also rejects `post-blocks`.
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: partialPionStub,
     }, async () => {
       const supported = await probePionSupportedModes(partialPionStub);
+      assert.ok(supported !== null);
       assert.equal(supported.has("post-blocks"), false);
       const res = resolveReaderSelection("post-blocks", {
         config: { readers: { "post-blocks": "pion" } },
@@ -414,8 +572,6 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
       assert.equal(res.selection.reason, "pion-binary-unsupported-mode");
     });
 
-    // 3. New binary declaring `modes:footprint,packed,memory,session-counts`:
-    //    safe mb while probe is in flight, then switches to pion once probe completes!
     await withEnv({
       STILLFAIL_MB_READER: mbStub,
       STILLFAIL_PION_READER: newPionStub,
@@ -429,6 +585,7 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
       assert.equal(whileProbing.engine, "mb");
 
       const supported = await probePionSupportedModes(newPionStub);
+      assert.ok(supported !== null);
       assert.equal(supported.has("session-counts"), true);
 
       const afterProbe = resolveReaderSelection("session-counts", {
@@ -440,12 +597,18 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
       assert.equal(afterProbe.primaryBinary, newPionStub);
       assert.equal(afterProbe.selection.fallback, false);
     });
+
+    // Failing `--version` probe returns null (transient cooldown, not permanently cached as unsupported).
+    const failed = await probePionSupportedModes(failingPionStub);
+    assert.equal(failed, null);
+    assert.equal(pionSupportedModes(failingPionStub), null);
   } finally {
     hearLines(null);
   }
 });
 
-test("default mb does zero pionBinary() probe and explicit binary override always wins", { skip: skipPosixStubs }, async () => {
+test("default mb does zero pionBinary() probe and explicit binary override always wins with source=explicit", { skip: skipPosixStubs }, async () => {
+  resetReaderSelectionStateForTest();
   const dir = freshDir("zero-probe-");
   const mbStub = makeStubBinary(dir, "stub-mb", versionAndTagStubBody("mb", "mb"));
   const explicitStub = makeStubBinary(dir, "stub-explicit", versionAndTagStubBody("explicit", "explicit"));
@@ -457,20 +620,18 @@ test("default mb does zero pionBinary() probe and explicit binary override alway
     STILLFAIL_READER_ENGINE: undefined,
     STILLFAIL_READER_PACKED: undefined,
   }, async () => {
-    // Run resolveReaderSelection on default mb BEFORE deferredPion exists.
     const mbRes = resolveReaderSelection("packed", { config: undefined, env: {} });
     assert.equal(mbRes.engine, "mb");
     assert.equal(mbRes.primaryBinary, mbStub);
 
-    // Explicit binary override also skips pionBinary() probe even if env requests pion.
     const explicitRes = resolveReaderSelection("packed", {
       binary: explicitStub,
       config: { readers: { packed: "pion" } },
       env: { STILLFAIL_READER_PACKED: "pion" },
     });
     assert.equal(explicitRes.primaryBinary, explicitStub);
+    assert.equal(explicitRes.selection.source, "explicit");
 
-    // Now create deferredPion: if either call above had probed pionBinary(), its negative cache would return null.
     makeStubBinary(dir, "deferred-pion", versionAndTagStubBody("stillfail-pion 0.1.0", "pion"));
     assert.equal(pionBinary(), deferredPion);
     const pionRes = resolveReaderSelection("packed", {

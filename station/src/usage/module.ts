@@ -3,7 +3,7 @@
 // way it is shown is added up from that record: a chat's execution details and agent card (told as more is recorded,
 // on its live stream and in its session's summary, `usage`) and the usage page (GET /usage).
 import { Clock, Effect, Layer } from "effect";
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { wall } from "../ops/fibers.ts";
 import { usageRoutes } from "../api/routes/usage.ts";
@@ -87,7 +87,7 @@ function tryStopUsageIndexes(store: StationStore): boolean {
 /// An older station reads and writes the old statistics during handover. Stop their writers only after it actually
 /// exits, then free them and take in the calls from before the quarters (store/usage-15m.ts). `binary`: the MoonBit
 /// program, a test's own where it gives one. True once all of it is done.
-export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string, _readers?: () => ReaderSelectConfig) {
+export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string, readers?: () => ReaderSelectConfig) {
   let stopped = false;
   return Effect.gen(function* () {
     yield* Effect.tryPromise({ try: () => exited, catch: (error) => error });
@@ -102,7 +102,8 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
       return true;
     }
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
-    yield* Effect.tryPromise({ try: () => retireByProgram(store, binary ?? readerBinary(), path), catch: (error) => error });
+    const mb = resolveReaderSelection("usage-retire", { binary, config: readers, logAt: "readers" }).primaryBinary;
+    yield* Effect.tryPromise({ try: () => retireByProgram(store, mb, path), catch: (error) => error });
     return true;
   }).pipe(Effect.catch((error) => Effect.sync(() => {
     log.warn("usage", stopped ? "the old usage statistics could not be removed" : "the old usage statistics' writers could not be stopped", { error: (error as Error).message });

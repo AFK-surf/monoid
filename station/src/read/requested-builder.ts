@@ -170,8 +170,16 @@ export class RequestedBuilder<K extends number | string> {
       return;
     }
     if (this.#worker === null) {
-      const binary = typeof this.#mb.binary === "function" ? this.#mb.binary() : this.#mb.binary;
-      const mb = new MbProcess(binary, this.#mb.args);
+      let mb: MbProcess;
+      try {
+        const binary = typeof this.#mb.binary === "function" ? this.#mb.binary() : this.#mb.binary;
+        mb = new MbProcess(binary, this.#mb.args);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.warn("readers", "an old-state builder could not start", { error: err.message });
+        for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+        return;
+      }
       const owner = this.#owner = nextOwner++;
       this.#worker = mb;
       mb.on("message", (result: { done: boolean; error?: string }) => { if (this.#worker === mb) this.#answeredMb(mb, result); });

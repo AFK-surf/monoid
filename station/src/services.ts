@@ -27,6 +27,7 @@ import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
 import { KnownNames } from "./read/slack-known.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
+import { PackedProgram } from "./sessions/packed-mb.ts";
 import type { Rig } from "./rig/module.ts";
 import { platform } from "./platform/index.ts";
 import { ScreenHub } from "./screens/hub.ts";
@@ -369,6 +370,21 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
   );
 }
 
+/// Station-scoped `--builder packed` program bound to this station's `ReaderConfig` snapshot (isolated per station,
+/// never overwriting the config-free module singleton `packedProgram()`).
+export class StationPacked extends Context.Service<StationPacked, PackedProgram>()("stillfail/Packed") {
+  static readonly layer = Layer.effect(
+    StationPacked,
+    Effect.gen(function* () {
+      const readerConfig = yield* ReaderConfig;
+      return yield* Effect.acquireRelease(
+        Effect.sync(() => new PackedProgram({ readers: readerConfig })),
+        (program) => Effect.promise(() => program.close()),
+      );
+    }),
+  );
+}
+
 /// What is the station's own on this machine (ops/own.ts): its data and config, and what its parts add as they are made.
 export class Own extends Context.Service<Own, OwnPaths>()("stillfail/Own") {
   static readonly layer = Layer.effect(
@@ -503,10 +519,11 @@ export class AdminApi extends Context.Service<AdminApi, Admin>()("stillfail/Admi
       const side = yield* AgentsSide;
       const config = yield* StationConfig;
       const readerConfig = yield* ReaderConfig;
+      const packed = yield* StationPacked;
       const paths = yield* Paths;
       return new Admin(yield* Readers, {
         store: yield* Store, events: yield* Events, host: yield* AdminHost, agents: () => side.current ?? undefined, screens: yield* ScreenRegistry, helper: yield* Helper, grants: yield* Grants,
-        drive: yield* StationDrive, parts: yield* Parts, config, readerConfig, data: paths.data, cloud: (yield* ControlPlane).state,
+        drive: yield* StationDrive, parts: yield* Parts, config, readerConfig, packed, data: paths.data, cloud: (yield* ControlPlane).state,
         ...(paths.restartFront ? { restartFront: paths.restartFront } : {}),
       });
     }),

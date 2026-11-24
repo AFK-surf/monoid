@@ -1,4 +1,4 @@
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -12,7 +12,7 @@ export function buildSessionCounts(
   store: Store,
   previous: Promise<void>,
   binary?: string,
-  _readers?: () => ReaderSelectConfig,
+  readers?: () => ReaderSelectConfig,
 ): { ready: Promise<boolean>; close: () => Promise<void> } {
   const { promise: ready, resolve } = Promise.withResolvers<boolean>();
   const path = store.db.location();
@@ -36,7 +36,8 @@ export function buildSessionCounts(
     }
     let current: MbBackfill;
     try {
-      current = new MbBackfill(binary ?? readerBinary(), ["--builder", "session-counts", "--db", path], store.backfillPriority, 20);
+      const bin = resolveReaderSelection("session-counts", { binary, config: readers, logAt: "readers" }).primaryBinary;
+      current = new MbBackfill(bin, ["--builder", "session-counts", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {
       log.warn("hub", "the session count worker could not start", { error: (error as Error).message });

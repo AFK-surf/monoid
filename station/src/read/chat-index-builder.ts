@@ -3,7 +3,7 @@ import { Fibers } from "../ops/fibers.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
 import { outflowChatScopes } from "../store/outflow-index.ts";
 import type { InWorkspace } from "../store/rows.ts";
-import { type BackfillOptions, MbProcess, readerBinary } from "./mb-reader.ts";
+import { type BackfillOptions, MbProcess, resolveReaderSelection } from "./mb-reader.ts";
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void; done: () => void };
 const IDLE_MS = 5_000;
@@ -17,7 +17,7 @@ let nextOwner = 0x50000000;
 /// permit for it around each batch (read/requested-builder.ts does the same).
 export class OutflowChatIndex {
   #worker: MbProcess | null = null;
-  readonly #mb: string;
+  readonly #mb: string | undefined;
   #owner = 0;
   #holding = false;
   #current: string | null = null;
@@ -32,7 +32,7 @@ export class OutflowChatIndex {
   readonly #path: string;
   readonly #options: BackfillOptions;
 
-  constructor(path: string, options: BackfillOptions = {}, binary = readerBinary()) {
+  constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     this.#path = path;
     this.#options = options;
     this.#mb = binary;
@@ -94,7 +94,16 @@ export class OutflowChatIndex {
       return;
     }
     if (this.#worker === null) {
-      const mb = new MbProcess(this.#mb, ["--builder", "outflow-chats", "--db", this.#path]);
+      let mb: MbProcess;
+      try {
+        const binary = resolveReaderSelection("outflow-chats", { binary: this.#mb, config: this.#options.readers, logAt: "readers" }).primaryBinary;
+        mb = new MbProcess(binary, ["--builder", "outflow-chats", "--db", this.#path]);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        log.warn("outflow", "the chat order builder could not start", { error: err.message });
+        this.#fail(err);
+        return;
+      }
       const owner = this.#owner = nextOwner++;
       this.#worker = mb;
       mb.on("message", (result: { done: boolean; error?: string }) => {

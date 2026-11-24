@@ -30,7 +30,7 @@ import type { Control } from "../ops/launcher.ts";
 import { log } from "../ops/log.ts";
 import { becomeOther } from "../ops/restart.ts";
 import { stationLog } from "../ops/log-export.ts";
-import { AdminHost, AgentsSide, ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, RigSide, StationConfig, Store, Up } from "../services.ts";
+import { AdminHost, AgentsSide, ControlPlane, Key, MeshNative, MeshSide, Paths, Peers, Previous, ReaderConfig, RigSide, StationConfig, Store, Up } from "../services.ts";
 import { type AgentsDoor, openAgentsDoor } from "../tools/http.ts";
 import { McpEndpoint } from "../tools/mcp.ts";
 import { makeUpdates } from "../updates/updates.ts";
@@ -90,6 +90,7 @@ export const RigLive = (control: Control) =>
       const plane = yield* ControlPlane;
       const cloud = plane.state;
       const config = yield* StationConfig;
+      const readerConfig = yield* ReaderConfig;
       const host = yield* AdminHost;
       const up = yield* Up;
       const bus = yield* Peers;
@@ -105,7 +106,7 @@ export const RigLive = (control: Control) =>
         notify: () => {},
         link: () => null,
       });
-      const remote = new Remote({ data, store, jobs, notify: () => {}, bus });
+      const remote = new Remote({ data, store, jobs, notify: () => {}, bus, readers: readerConfig });
       const rig = new Rig({
         data, cloud, bus, fibers: time,
         busy: (workspace, station, session) => store.runningJobsAtLeast(ownerOf(workspace, station, session), 1),

@@ -28,7 +28,9 @@ import { walkBounded } from "../ops/walk.ts";
 import { link as symlinkOrStandIn } from "../ops/links.ts";
 import { platform } from "../platform/index.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
-import { PackAborted, packedProgram, runPackedOnce } from "./packed-mb.ts";
+import { PackAborted, type PackedProgram, packedProgram, runPackedOnce } from "./packed-mb.ts";
+
+export type ArchiveReaderOpts = { readers?: () => ReaderSelectConfig; program?: PackedProgram };
 
 // ── paths ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -177,21 +179,22 @@ async function ownerWritable(path: string): Promise<void> {
 
 /// Compress a transcript in place, leaving its filename discoverable as <original>.zst. Retry after a crash safely: an
 /// original still there always wins over the old compressed copy.
-export const packFile = (path: string, opts?: { readers?: () => ReaderSelectConfig }) => packFileIf(path, () => true, opts);
+export const packFile = (path: string, opts?: ArchiveReaderOpts) => packFileIf(path, () => true, opts);
 
-export async function packFileIf(path: string, ready: () => boolean, opts?: { readers?: () => ReaderSelectConfig }): Promise<void> {
+export async function packFileIf(path: string, ready: () => boolean, opts?: ArchiveReaderOpts): Promise<void> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
+    const program = opts?.program ?? packedProgram();
     if (!(await lstatOrNull(path))?.isFile()) {
       // Only the copy left: read through whole, its checksums verified.
-      if (await exists(packed(path))) await packedProgram(opts?.readers).ask("check", { path: packed(path) });
+      if (await exists(packed(path))) await program.ask("check", { path: packed(path) });
       return;
     }
     const dest = packed(path);
     const temp = withExtension(dest, "zst.writing");
     try {
       // In segments into `temp`, read back and found to be the transcript still, byte for byte.
-      await packedProgram(opts?.readers).ask("pack", { path, temp });
+      await program.ask("pack", { path, temp });
       if (!ready()) return;
       await renameRetrying(temp, dest);
       await syncDir(dirname(dest));
@@ -206,7 +209,7 @@ export async function packFileIf(path: string, ready: () => boolean, opts?: { re
 
 /// A transcript put away before it was in segments, or with its last segment stored as it is, put away again as
 /// `packFile` puts one away now: whether it was (not where it is in segments already).
-export async function segmentFile(path: string, opts?: { readers?: () => ReaderSelectConfig }): Promise<boolean> {
+export async function segmentFile(path: string, opts?: ArchiveReaderOpts): Promise<boolean> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     const source = packed(path);
@@ -214,7 +217,7 @@ export async function segmentFile(path: string, opts?: { readers?: () => ReaderS
     const temp = withExtension(source, "zst.writing");
     try {
       // (what it holds and what the copy holds the same, by their SHA-256)
-      const { segmented } = await packedProgram(opts?.readers).ask<{ segmented: boolean }>("segment", { path, source, temp });
+      const { segmented } = await (opts?.program ?? packedProgram()).ask<{ segmented: boolean }>("segment", { path, source, temp });
       if (!segmented) return false;
       await renameRetrying(temp, source);
       await syncDir(dirname(source));
@@ -227,7 +230,7 @@ export async function segmentFile(path: string, opts?: { readers?: () => ReaderS
   }
 }
 
-export async function restoreFile(path: string, opts?: { readers?: () => ReaderSelectConfig }): Promise<void> {
+export async function restoreFile(path: string, opts?: ArchiveReaderOpts): Promise<void> {
   const release = await fileLock(withExtension(path, "jsonl.archive-lock"));
   try {
     const source = packed(path);
@@ -236,7 +239,7 @@ export async function restoreFile(path: string, opts?: { readers?: () => ReaderS
     const temp = withExtension(path, "jsonl.restoring");
     try {
       // Written whole into `temp` (0600, on disk), every frame whole and checksummed.
-      await packedProgram(opts?.readers).ask("restore", { source, temp });
+      await (opts?.program ?? packedProgram()).ask("restore", { source, temp });
       await renameRetrying(temp, path);
       await syncDir(dirname(path));
       await unlink(source);
@@ -495,7 +498,7 @@ async function overlayEntries(source: string, dest: string, refused: Refused): P
 
 const isDir = async (path: string) => (await stat(path).catch(() => null))?.isDirectory() ?? false;
 
-export async function restoreWorkspace(room: string, opts?: { readers?: () => ReaderSelectConfig }): Promise<void> {
+export async function restoreWorkspace(room: string, opts?: ArchiveReaderOpts): Promise<void> {
   const archive = workspaceArchive(room);
   if (!(await exists(archive))) return unlockWorktrees(room);
   const stage = join(room, "workspace.restoring");
@@ -505,7 +508,7 @@ export async function restoreWorkspace(room: string, opts?: { readers?: () => Re
   const refused: Refused = new Map();
   try {
     // Made in `stage` by the shell (as the tar crate's Archive::unpack with its permissions), read to its checksum.
-    const made = await packedProgram(opts?.readers).ask<{ refused: [string, string][] }>("workspace.unpack", { path: archive, dest: stage });
+    const made = await (opts?.program ?? packedProgram()).ask<{ refused: [string, string][] }>("workspace.unpack", { path: archive, dest: stage });
     for (const [path, target] of made.refused) refused.set(path, target);
   } catch (error) {
     throw new Error(`restoring the archived workspace: ${(error as Error).message}`, { cause: error });
@@ -538,7 +541,7 @@ export async function restoreWorkspace(room: string, opts?: { readers?: () => Re
 /// of its archive and on the disk again; the rest of it is removed, packed or not, and its worktrees are let go (`git
 /// worktree prune` cleans them up). The caller holds the room's lock. The archive goes only once the uploads are out of
 /// it: one interrupted is done again from the start.
-export async function emptyWorkspace(room: string, opts?: { readers?: () => ReaderSelectConfig }): Promise<void> {
+export async function emptyWorkspace(room: string, opts?: ArchiveReaderOpts): Promise<void> {
   const workspace = join(room, "workspace");
   const archive = workspaceArchive(room);
   const rawRoom = clean(room);
@@ -551,7 +554,7 @@ export async function emptyWorkspace(room: string, opts?: { readers?: () => Read
     await mkdir(stage);
     await chmod(stage, 0o700);
     // Only its uploads' files and directories, the archive read whole all the same.
-    await packedProgram(opts?.readers).ask("workspace.unpack", { path: archive, dest: stage, prefix: "uploads" });
+    await (opts?.program ?? packedProgram()).ask("workspace.unpack", { path: archive, dest: stage, prefix: "uploads" });
     await takeUploads(stage, workspace);
     await unlink(archive);
     await removeTree(stage);
@@ -591,7 +594,7 @@ export async function holdsMore(room: string): Promise<boolean> {
 
 /// An archived attachment is read directly from the tar stream, without inflating the whole workspace on disk.
 /// `relative`: its path in the workspace.
-export async function workspaceFile(room: string, relative: string, opts?: { readers?: () => ReaderSelectConfig }): Promise<Buffer | null> {
+export async function workspaceFile(room: string, relative: string, opts?: ArchiveReaderOpts): Promise<Buffer | null> {
   const archive = workspaceArchive(room);
   if (!(await exists(archive))) return null;
   // The archive's names are `/`-separated; a path from Windows has `\` too.
@@ -600,7 +603,7 @@ export async function workspaceFile(room: string, relative: string, opts?: { rea
   // while a peer's read another).
   const out = `${archive}.reading-${++reads}`;
   try {
-    const { found } = await packedProgram(opts?.readers).ask<{ found: boolean }>("workspace.file", { path: archive, wanted, out });
+    const { found } = await (opts?.program ?? packedProgram()).ask<{ found: boolean }>("workspace.file", { path: archive, wanted, out });
     return found ? await readFile(out) : null;
   } finally {
     await rm(out, { force: true });

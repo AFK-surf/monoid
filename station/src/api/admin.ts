@@ -11,6 +11,7 @@ import { USER_TAB_ID } from "../screens/source.ts";
 import type { SimDebug } from "../screens/sim-debug.ts";
 import type { Readers } from "../read/pool.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
+import type { PackedProgram } from "../sessions/packed-mb.ts";
 import { HttpError } from "../read/views.ts";
 import { toEntry } from "../store/rows.ts";
 import { type Answer, type Request, error, json, queryPairs } from "./request.ts";
@@ -93,6 +94,8 @@ export type Tools = {
   cardChoice?(card: unknown): CardChoice | undefined;
   /// Live `config.json` `readers` snapshot getter for `--builder packed` reads.
   readerConfig?: () => ReaderSelectConfig;
+  /// Station-scoped `--builder packed` program bound to this station's `ReaderConfig`.
+  packed?: PackedProgram;
 };
 
 /// What the admin API answers with besides the readers: the write side, once there.
@@ -106,6 +109,8 @@ export type AdminDeps = {
   config?: ConfigFile;
   /// Live `config.json` `readers` snapshot getter.
   readerConfig?: () => ReaderSelectConfig;
+  /// Station-scoped `--builder packed` program.
+  packed?: PackedProgram;
   data?: string;
   /// Asks the launcher to start its front anew and hand over (ops/launcher.ts), where it can: the page's restart does.
   restartFront?: () => void;
@@ -174,6 +179,7 @@ export class Admin {
       },
       cardChoice: (card) => deps.parts?.cardChoiceOf(card),
       readerConfig: deps.readerConfig,
+      packed: deps.packed,
     };
     this.tools = tools;
     this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),

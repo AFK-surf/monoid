@@ -84,7 +84,7 @@ export function pionBinary(): string | null {
     return ok;
   }
   const had = foundPionBinary.get("");
-  if (had !== undefined && had !== null) return had;
+  if (had !== undefined) return had;
   const hostBuild = import.meta.url.endsWith(".ts") && platform.buildOs !== null
     ? fileURLToPath(new URL(`../../../pion/station/_build/${platform.exe(`stillfail-pion-${platform.buildOs}-${process.arch}`)}`, import.meta.url))
     : undefined;
@@ -93,15 +93,19 @@ export function pionBinary(): string | null {
     hostBuild,
   ];
   const found = candidates.find((p) => p !== undefined && p !== "" && isExecutableFile(p)) ?? null;
-  if (found !== null) foundPionBinary.set("", found);
+  foundPionBinary.set("", found);
   return found;
 }
 
 /// The three baseline modes supported by every version of `stillfail-pion` without needing a `--version` probe.
 export const PION_BASELINE_MODES: ReadonlySet<ReaderMode> = new Set<ReaderMode>(["footprint", "packed", "memory"]);
 
+/// Cooldown before retrying a failed or timed-out `--version` probe (transient load should not lock out Pion forever).
+const PION_PROBE_RETRY_COOLDOWN_MS = 30_000;
+
 const probedPionModes = new Map<string, ReadonlySet<string>>();
-const probingPionModes = new Map<string, Promise<ReadonlySet<string>>>();
+const probingPionModes = new Map<string, Promise<ReadonlySet<string> | null>>();
+const failedPionProbeUntil = new Map<string, number>();
 const warnedReaderFallbacks = new Set<string>();
 
 /// Parse supported modes from `stillfail-pion --version` output (`modes:a,b,c`).
@@ -118,45 +122,57 @@ export function parsePionVersionModes(stdout: string): ReadonlySet<string> {
   return modes;
 }
 
-/// Non-blocking asynchronous capability probe for `binaryPath` (`execFile(binaryPath, ["--version"], { timeout: 3000 })`).
-/// Returns the cached set of supported mode names once probed, or `null` while the first probe is in flight.
-/// Never called on default `mb` or for the 3 baseline modes (`footprint`, `packed`, `memory`).
+/// Non-blocking asynchronous capability probe for `binaryPath` (`execFile(binaryPath, ["--version"], { timeout: 3000, killSignal: "SIGKILL" })`).
+/// Returns the cached set of supported mode names once a clean exit-0 probe succeeds, or `null` while probing or during
+/// a transient-failure retry cooldown. Never called on default `mb` or for the 3 baseline modes (`footprint`, `packed`, `memory`).
 export function pionSupportedModes(binaryPath: string): ReadonlySet<string> | null {
   const key = resolve(binaryPath);
   const cached = probedPionModes.get(key);
   if (cached !== undefined) return cached;
+  const retryAfter = failedPionProbeUntil.get(key);
+  if (retryAfter !== undefined && wall.now() < retryAfter) return null;
   if (!probingPionModes.has(key)) {
-    const pending = new Promise<ReadonlySet<string>>((resolveProbe) => {
-      try {
-        execFile(key, ["--version"], { timeout: 3_000, windowsHide: true }, (err, stdout) => {
-          const supported = err ? new Set<string>(PION_BASELINE_MODES) : parsePionVersionModes(String(stdout ?? ""));
+    let settled = false;
+    const pending = new Promise<ReadonlySet<string> | null>((resolveProbe) => {
+      const finish = (supported: ReadonlySet<string> | null) => {
+        if (settled) return;
+        settled = true;
+        probingPionModes.delete(key);
+        if (supported !== null) {
+          failedPionProbeUntil.delete(key);
           probedPionModes.set(key, supported);
-          probingPionModes.delete(key);
-          resolveProbe(supported);
+        } else {
+          failedPionProbeUntil.set(key, wall.now() + PION_PROBE_RETRY_COOLDOWN_MS);
+        }
+        resolveProbe(supported);
+      };
+      try {
+        execFile(key, ["--version"], { timeout: 3_000, killSignal: "SIGKILL", windowsHide: true }, (err, stdout) => {
+          finish(err ? null : parsePionVersionModes(String(stdout ?? "")));
         });
       } catch {
-        const supported = new Set<string>(PION_BASELINE_MODES);
-        probedPionModes.set(key, supported);
-        probingPionModes.delete(key);
-        resolveProbe(supported);
+        finish(null);
       }
     });
-    probingPionModes.set(key, pending);
+    if (!settled) probingPionModes.set(key, pending);
   }
   return null;
 }
 
 /// Await the non-blocking `--version` capability probe for `binaryPath` (starts one if not yet cached).
-export function probePionSupportedModes(binaryPath: string): Promise<ReadonlySet<string>> {
+/// Returns the probed supported mode set, or `null` if the probe failed or timed out.
+export function probePionSupportedModes(binaryPath: string): Promise<ReadonlySet<string> | null> {
   const cached = pionSupportedModes(binaryPath);
   if (cached !== null) return Promise.resolve(cached);
-  return probingPionModes.get(resolve(binaryPath)) ?? Promise.resolve(new Set<string>(PION_BASELINE_MODES));
+  return probingPionModes.get(resolve(binaryPath)) ?? Promise.resolve(null);
 }
 
-/// Clear cached `--version` capability probes and deduped fallback warnings (tests only).
+/// Clear cached binary lookups, `--version` capability probes, retry cooldowns, and deduped fallback warnings (tests only).
 export function resetReaderSelectionStateForTest(): void {
+  foundPionBinary.clear();
   probedPionModes.clear();
   probingPionModes.clear();
+  failedPionProbeUntil.clear();
   warnedReaderFallbacks.clear();
 }
 
@@ -218,7 +234,7 @@ export function resolveReaderSelection(
         engine: "mb",
         requested: null,
         rawRequested: null,
-        source: "default",
+        source: "explicit",
         fallback: false,
       },
     };

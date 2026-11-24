@@ -131,11 +131,6 @@ export class PackedProgram {
     this.#readers = options.readers;
   }
 
-  /// Attach or update the live `config.json` `readers` snapshot getter used on subsequent spawns.
-  setReaders(readers: (() => ReaderSelectConfig) | undefined): void {
-    this.#readers = readers;
-  }
-
   /// Whether a program runs now.
   get running(): boolean { return this.#process !== null; }
 
@@ -239,13 +234,11 @@ let shared: PackedProgram | null = null;
 /// test's file) lets it go first, rather than leave it to find its stdin closed after: each time its loop runs out, not
 /// only the first (a test's file ran out between two tests, its program started again after and left running at its
 /// end; an idle program's process is let go of the loop).
-export function packedProgram(readers?: () => ReaderSelectConfig): PackedProgram {
+export function packedProgram(): PackedProgram {
   if (shared === null) {
-    const program = new PackedProgram(readers === undefined ? {} : { readers });
+    const program = new PackedProgram();
     shared = program;
     process.on("beforeExit", () => void program.trimIdle());
-  } else if (readers !== undefined) {
-    shared.setReaders(readers);
   }
   return shared;
 }
