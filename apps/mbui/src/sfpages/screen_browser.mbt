@@ -409,22 +409,20 @@ fn browser_count_square_shapes(color : Int64, outer_r : Double) -> Array[@ui.Sha
   let lo = 0.75
   let hi = 19.25
   let r = if outer_r - 0.75 > 0.5 { outer_r - 0.75 } else { 0.5 }
-  let steps = 4
+  let c1 = 0.9238795325112867
+  let s1 = 0.3826834323650898
+  let d = 0.7071067811865476
   let pts : Array[Double] = []
-  let corners : Array[(Double, Double, Double)] = [
-    (hi - r, lo + r, -@math.PI / 2.0),
-    (hi - r, hi - r, 0.0),
-    (lo + r, hi - r, @math.PI / 2.0),
-    (lo + r, lo + r, @math.PI),
-  ]
-  for c in corners {
-    let (cx, cy, a0) = c
-    for i in 0..<=steps {
-      let a = a0 + (@math.PI / 2.0) * i.to_double() / steps.to_double()
-      pts.push(cx + r * @math.cos(a))
-      pts.push(cy + r * @math.sin(a))
+  let push_arc = fn(cx : Double, cy : Double, dirs : Array[(Double, Double)]) {
+    for dir in dirs {
+      pts.push(cx + r * dir.0)
+      pts.push(cy + r * dir.1)
     }
   }
+  push_arc(hi - r, lo + r, [(0.0, -1.0), (s1, -c1), (d, -d), (c1, -s1), (1.0, 0.0)])
+  push_arc(hi - r, hi - r, [(1.0, 0.0), (c1, s1), (d, d), (s1, c1), (0.0, 1.0)])
+  push_arc(lo + r, hi - r, [(0.0, 1.0), (-s1, c1), (-d, d), (-c1, s1), (-1.0, 0.0)])
+  push_arc(lo + r, lo + r, [(-1.0, 0.0), (-c1, -s1), (-d, -d), (-s1, -c1), (0.0, -1.0)])
   [@ui.shape_of([(pts, true)], stroke=color, width=1.5)]
 }
 
