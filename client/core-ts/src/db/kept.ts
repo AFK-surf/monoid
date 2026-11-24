@@ -109,7 +109,7 @@ export const KEPT = {
     key: "key",
     columns: [["rows", "TEXT NOT NULL"]],
     older: ["profiled"],
-    source: { table: "station_part", owner: ["address"], by: "profiled" },
+    source: { table: "station_part_profiles", owner: ["address"], by: "profiled" },
     policy: "read",
     each: "owner",
     making: 3,
