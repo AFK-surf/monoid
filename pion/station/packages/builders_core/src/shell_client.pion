@@ -1,0 +1,266 @@
+// Unified synchronous & asynchronous `libstillfail_shell.a` client (`ShellClient`) over the
+// single process-wide unbounded `LineQueue`, 1:1 aligned with `station/mb/src/wire/wire.mbt:94-123`.
+// Never uses `host_shim::LineReader` (which has a 16 MiB line cap).
+
+import "base_codec"
+import "host_shim"
+import "sql_db"
+
+pub struct ShellError {
+  pub message : String
+}
+
+pub fn shell_error(msg : String) -> ShellError {
+  ShellError::{ message: msg }
+}
+
+/// Parse a synchronous `sth_shell_sync` JSON envelope, 1:1 aligned with `wire/wire.mbt:115-123`:
+/// 1. Non-JSON or empty string -> `Err(ShellError("the shell's answer is not JSON: ..."))`
+/// 2. Object with `"error": String(e)` (takes precedence over `"value"`) -> `Err(ShellError(e))` verbatim
+/// 3. Object with `"value": v` -> `Ok(v)`
+/// 4. Any other valid JSON -> `Ok(Json::Null)`
+pub fn parse_shell_sync_answer(raw : String) -> Result[base_codec::Json, ShellError] {
+  let parsed = match sql_db::parse_json(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(err) => {
+      return Err(shell_error("the shell's answer is not JSON: " + err))
+    }
+  }
+  match json_get_last(parsed, "error") {
+    Some(base_codec::Json::Str(msg)) => return Err(shell_error(msg))
+    _ => ()
+  }
+  match json_get_last(parsed, "value") {
+    Some(v) => Ok(v)
+    None => Ok(base_codec::json_null())
+  }
+}
+
+pub struct ShellClient {
+  pub queue : LineQueue
+  mut next_id : Int64
+  mut tmp_seq : Int
+}
+
+pub fn ShellClient::new() -> ShellClient {
+  ShellClient::{ queue: LineQueue::new(), next_id: 0.to_int64(), tmp_seq: 0 }
+}
+
+pub fn ShellClient::from_queue(queue : LineQueue) -> ShellClient {
+  ShellClient::{ queue: queue, next_id: 0.to_int64(), tmp_seq: 0 }
+}
+
+pub fn ShellClient::stdin_eof(self : ShellClient) -> Bool {
+  self.queue.stdin_eof
+}
+
+pub fn ShellClient::shell_sync_json(
+  self : ShellClient,
+  op : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ShellError] {
+  let _ = self.next_id
+  let raw = host_shim::shell_sync(op, sql_db::stringify_json(args))
+  parse_shell_sync_answer(raw)
+}
+
+/// Core testable wait loop for an in-flight async shell call (`wire/wire.mbt:94-107`):
+/// - Matches `HostEvent::ShellDone` strictly by `call_id`, discarding stale/mismatched completions.
+/// - Buffers every `HostEvent::StdinData` chunk in order into `self.queue` (never drops bytes)
+///   and records `HostEvent::StdinEof` into `self.queue.stdin_eof`.
+/// - Independently decodes `error` / `json` (invalid non-empty JSON -> `Some(Json::Null)`, empty -> `None`)
+///   / `bytes` (preserving `None` vs `Some(empty_bytes)`).
+pub fn ShellClient::shell_call_wait_with(
+  self : ShellClient,
+  call_id : Int64,
+  wait_event : () -> Option[host_shim::HostEvent],
+) -> Result[(Option[base_codec::Json], Option[Bytes]), ShellError] {
+  while true {
+    match wait_event() {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => self.queue.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => self.queue.stdin_eof = true
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id != call_id {
+          continue
+        }
+        if done.error.length() > 0 {
+          return Err(shell_error(done.error))
+        }
+        let j_opt : Option[base_codec::Json] = if done.json.length() == 0 {
+          None
+        } else {
+          match sql_db::parse_json(done.json) {
+            base_codec::JsonParseResult::Ok(j) => Some(j)
+            base_codec::JsonParseResult::Err(_) => Some(base_codec::json_null())
+          }
+        }
+        return Ok((j_opt, done.bytes))
+      }
+      Some(_) => ()
+    }
+  }
+  Err(shell_error("shell wait loop exited unexpectedly"))
+}
+
+pub fn ShellClient::shell_call_wait(
+  self : ShellClient,
+  op : String,
+  args : base_codec::Json,
+  payload : Option[Bytes],
+) -> Result[(Option[base_codec::Json], Option[Bytes]), ShellError] {
+  self.next_id = self.next_id + 1.to_int64()
+  let call_id = self.next_id
+  host_shim::shell_call(call_id, op, sql_db::stringify_json(args), payload)
+  self.shell_call_wait_with(call_id, fn() -> Option[host_shim::HostEvent] {
+    host_shim::wait((-1).to_int64())
+  })
+}
+
+/// Read the next complete `\n`-terminated line from `self.queue`, or `None` on EOF.
+/// Trailing unterminated partial bytes at EOF are NOT synthesized into a line.
+pub fn ShellClient::next_line_with(
+  self : ShellClient,
+  wait_event : () -> Option[host_shim::HostEvent],
+) -> Option[String] {
+  while true {
+    match self.queue.pop_line() {
+      Some(line) => return Some(line)
+      None => ()
+    }
+    if self.queue.stdin_eof {
+      return None
+    }
+    match wait_event() {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => self.queue.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => self.queue.stdin_eof = true
+      Some(_) => ()
+    }
+  }
+  None
+}
+
+pub fn ShellClient::next_line(self : ShellClient) -> Option[String] {
+  self.next_line_with(fn() -> Option[host_shim::HostEvent] {
+    host_shim::wait((-1).to_int64())
+  })
+}
+
+/// Write a single JSON line to stdout with U+2028/U+2029 escaped.
+pub fn ShellClient::say_line(self : ShellClient, line : String) -> Bool {
+  let _ = self.next_id
+  host_shim::write_stdout_line(escape_line_separators(line))
+}
+
+/// Sibling path in the same directory as `path`, 1:1 aligned with `main.mbt:544-553` `beside`.
+pub fn beside(path : String, name : String) -> String {
+  let raw = path.to_bytes()
+  let mut cut = -1
+  let mut i = raw.length() - 1
+  while i >= 0 {
+    let b = raw[i].to_int() & 0xFF
+    if b == 47 || b == 92 {
+      cut = i
+      break
+    }
+    i = i - 1
+  }
+  if cut < 0 {
+    return name
+  }
+  let sb = StringBuilder::new()
+  for j in 0..<(cut + 1) {
+    sb.write_byte(raw[j])
+  }
+  sb.write_string(name)
+  sb.to_string()
+}
+
+/// Generate a unique temporary sibling path for atomic writes.
+pub fn ShellClient::unique_tmp(self : ShellClient, path : String, tag : String) -> String {
+  self.tmp_seq = self.tmp_seq + 1
+  path + "." + tag + "." + host_shim::pid().to_string() + "." + self.tmp_seq.to_string() + ".tmp"
+}
+
+fn decode_hex_bytes(hex : String) -> Option[Bytes] {
+  let n = hex.length()
+  if (n % 2) != 0 {
+    return None
+  }
+  let out = Bytes::new(n / 2)
+  let mut i = 0
+  while i < n {
+    let hi = match base_codec::hex_digit(hex.code_unit_at(i)) {
+      Some(v) => v
+      None => return None
+    }
+    let lo = match base_codec::hex_digit(hex.code_unit_at(i + 1)) {
+      Some(v) => v
+      None => return None
+    }
+    out[i / 2] = ((hi << 4) | lo) as Byte
+    i = i + 2
+  }
+  Some(out)
+}
+
+fn encode_hex_bytes(data : Bytes) -> String {
+  let digits = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  for i in 0..<data.length() {
+    let b = data[i].to_int() & 0xFF
+    sb.write_byte(digits.code_unit_at((b >> 4) & 0xF) as Byte)
+    sb.write_byte(digits.code_unit_at(b & 0xF) as Byte)
+  }
+  sb.to_string()
+}
+
+/// Read raw bytes of `path` via synchronous `fs.bytes` (returns `Ok(None)` when absent).
+pub fn ShellClient::read_bytes(
+  self : ShellClient,
+  path : String,
+) -> Result[Option[Bytes], ShellError] {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("from", base_codec::json_int(0)),
+  ])
+  match self.shell_sync_json("fs.bytes", args) {
+    Ok(base_codec::Json::Str(hex)) => {
+      match decode_hex_bytes(hex) {
+        Some(b) => Ok(Some(b))
+        None => Err(shell_error("invalid hex in fs.bytes answer"))
+      }
+    }
+    Ok(_) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+/// Atomically write `data` to `path` via a unique temp file + `fs.rename` (cleans up on error).
+pub fn ShellClient::write_atomic(
+  self : ShellClient,
+  path : String,
+  data : Bytes,
+) -> Result[Unit, ShellError] {
+  let tmp = self.unique_tmp(path, "w")
+  let put_args = base_codec::json_obj([
+    ("path", base_codec::json_str(tmp)),
+    ("hex", base_codec::json_str(encode_hex_bytes(data))),
+  ])
+  match self.shell_sync_json("fs.put", put_args) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ren_args = base_codec::json_obj([
+    ("from", base_codec::json_str(tmp)),
+    ("to", base_codec::json_str(path)),
+  ])
+  match self.shell_sync_json("fs.rename", ren_args) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      let _ = self.shell_sync_json("fs.remove", base_codec::json_obj([("path", base_codec::json_str(tmp))]))
+      Err(e)
+    }
+  }
+}

@@ -21,6 +21,7 @@ import { type Mesh, loadMesh, withRelays } from "./mesh/native.ts";
 import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "../../shared/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
+import { warmPionProbeForConfig } from "./read/mb-reader.ts";
 import type { ReaderSelectConfig } from "./read/reader-select.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
@@ -365,6 +366,7 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
         Effect.sync(() => makeReaderConfigSnapshot(config)),
         (s) => Effect.sync(() => s.stop()),
       );
+      yield* Effect.promise(() => warmPionProbeForConfig(snap.get()));
       return snap.get;
     }),
   );

@@ -16,5 +16,6 @@ builders_legacy = { workspace = true }
 builders_recent = { workspace = true }
 builders_vault = { workspace = true }
 footprint = { workspace = true }
+locate = { workspace = true }
 memory = { workspace = true }
 packed = { workspace = true }

@@ -59,6 +59,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "footprint",
       "legacy-edits",
       "legacy-said",
+      "live-locator",
       "memory",
       "outflow-chats",
       "packed",
@@ -81,7 +82,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "widget-sources",
       "workspace-up-jobs",
     ],
-    "only the implemented baseline + builders_core + builders_index + builders_stateful + builders_legacy + builders_recent + builders_vault + builders_requested modes are currently enabled in Pion",
+    "only the implemented baseline + builders_core + builders_index + builders_stateful + builders_legacy + builders_recent + builders_vault + builders_requested + locate modes are currently enabled in Pion",
   );
 
   assert.equal(readerModeEnvKey("footprint"), "STILLFAIL_READER_FOOTPRINT");
@@ -389,6 +390,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "footprint",
     "legacy-edits",
     "legacy-said",
+    "live-locator",
     "memory",
     "outflow-chats",
     "packed",

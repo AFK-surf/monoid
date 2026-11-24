@@ -55,7 +55,7 @@ export const READER_MODES = {
   },
   "live-locator": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "read-with-side-effects",
     note: "Live transcript locator: attaches SQLite/shell_dir (--builder live-locator)",
   },
@@ -300,7 +300,9 @@ export type ReaderFallbackReason =
   | "shadow-forbidden"
   | "pion-mode-unimplemented"
   | "pion-binary-missing"
-  | "pion-binary-unsupported-mode";
+  | "pion-binary-unsupported-mode"
+  | "pion-probe-pending"
+  | "pion-probe-failed";
 
 export type ReaderSelection = {
   readonly mode: ReaderMode;
