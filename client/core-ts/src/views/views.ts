@@ -1509,7 +1509,6 @@ export class Views implements Owner {
           { topic: "chatRows", station },
           { topic: "archivedRows", station },
           { topic: "link", station },
-          { topic: "workspace", workspace: ws },
         ];
         const parent = this.#parentRow(station, u64(view.thread), str(view.session));
         const trimmed = String(view.q ?? "").trim();
@@ -3390,8 +3389,7 @@ export class Views implements Owner {
     const remoteBySession = new Map<string, { text: string; msg: boolean }>();
     let reading = false;
     for (const at of subStations) {
-      const st = this.stations(ofAddress(at))?.find((s) => s.address === at);
-      const online = st !== undefined ? st.online : this.link(at).state === "online";
+      const online = this.#core.store.select({ topic: "link", station: at }, stationOnline);
       if (!online) continue;
       const answer = this.value({ topic: "stationSearch", station: at, q: trimmed, kind: "chat,message", limit: 200 });
       if (answer === undefined) {

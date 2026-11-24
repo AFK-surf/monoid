@@ -109,6 +109,8 @@ pub struct Scroll {
   /// whether the scroll viewport is given an exact main-axis height (`Exactly`): only then does a short list need
   /// `tuck_room` at its foot; adaptive (`AtMost`/`Undefined`) containers size themselves without the tucked header
   priv tuck_exact : @signals.Signal[Bool]
+  /// whether `held.margin_bottom` subtracts `tuck` (true for `self.whole is None` or `adaptive_window`)
+  priv mut tuck_margin_sub : Bool
   /// how tall a page's list's foot is laid out (View::scrolls_window's `foot`: what is pinned over the foot of what
   /// shows), as it was last laid out: 0 where it holds none
   priv mut foot_tall : Double
@@ -325,6 +327,7 @@ fn Scroll::made(as_list : Bool, across? : Bool = false, rows_list? : Bool = fals
     tuck_owed: false,
     tuck_room: @signals.signal(0.0, same=fn(a, b) { a == b }),
     tuck_exact: @signals.signal(false, same=fn(a, b) { a == b }),
+    tuck_margin_sub: false,
     foot_tall: 0.0,
     tuck_in: None,
     tuck_kept: fn() { true },
@@ -785,6 +788,7 @@ pub fn Scroll::tucks(self : Scroll, v : View, cover : () -> Double, kept? : () -
   self.tuck_in = Some(host)
   let host_style = host.tree.nodes[host.at].flex.style
   let adaptive_window = self.whole is Some(_) && !self.across && host_style.grow == 0.0 && host_style.height_kind() == @flex.LEN_AUTO
+  self.tuck_margin_sub = self.whole is None || adaptive_window
   if self.whole is None {
     host.reacts(at_start=false, fn() { (self.tuck_at.get(), (self.tuck_kept)()) }, fn(_) {
       host.tree.layout_marked_at(host.at)
@@ -841,6 +845,7 @@ pub fn Scroll::tucks(self : Scroll, v : View, cover : () -> Double, kept? : () -
     match self.tuck_in {
       Some(h) if h.at == host.at && h.gen == host.gen => {
         self.tuck_owed = false
+        self.tuck_margin_sub = false
         self.tuck_room.set(0.0)
         self.tuck_in = None
         self.tuck_kept = fn() { true }
@@ -1298,9 +1303,10 @@ pub fn View::scrolls(
         None => @flex.measured_height(tree.nodes[held.at].flex, dmax(0.0, w - side))
       }
       let tuck = @signals.untracked(tucked_h)
-      // (`held.margin_bottom` subtracts `tuck` so flex sizes adaptive containers without the tucked header; add `tuck`
-      // back here for total scrollable `whole`, and subtract `tuck_room` + `tuck` for `natural` height)
-      let whole = held_h + along + tuck
+      // (`held.margin_bottom` subtracts `tuck` when `tuck_margin_sub` is set so flex sizes adaptive containers
+      // without the tucked header; add it back only then for total scrollable `whole`)
+      let tuck_margin = if s.tuck_margin_sub { tuck } else { 0.0 }
+      let whole = held_h + along + tuck_margin
       let natural = dmax(0.0, whole - s.tuck_room.untracked() - tuck)
       (whole, natural, if hm is Undefined { natural } else if hm is AtMost { dmin(natural, h) } else { h })
     }
@@ -1407,8 +1413,7 @@ pub fn View::scrolls(
     last_whole.val = natural
     let seen_now = Some(if across { (shown, h) } else { (w, shown) })
     let reach_now = Some(whole - shown)
-    let exact_now = s.whole is None &&
-      s.tuck_at.untracked() is Some(_) &&
+    let exact_now = s.tuck_at.untracked() is Some(_) &&
       (if across { wm is Exactly } else { hm is Exactly }) &&
       (adaptive_gen.val != @flex.computes() || tree.nodes[me].flex.style.grow > 0.0)
     let changed = @signals.untracked(fn() { s.seen.get() != seen_now || reach.get() != reach_now || s.tuck_exact.get() != exact_now })
