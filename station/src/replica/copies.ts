@@ -490,9 +490,13 @@ export class Copies {
     await this.#d.runner.places(places);
     const ins = new Set(places.workspaces.map((w) => w.workspace));
     // (a workspace this station is not in any more: nothing of it kept here)
-    for (const root of [keptDir(this.#d.data), join(this.#d.data, "replica", "own")]) {
+    const keptRoot = keptDir(this.#d.data);
+    for (const root of [keptRoot, join(this.#d.data, "replica", "own")]) {
       for (const ws of await readdir(root).catch(() => [] as string[])) {
-        if (WORKSPACE.test(ws) && !ins.has(ws)) await rm(join(root, ws), { recursive: true, force: true });
+        if (WORKSPACE.test(ws) && !ins.has(ws)) {
+          await rm(join(root, ws), { recursive: true, force: true });
+          if (root === keptRoot) this.kept.forget(ws);
+        }
       }
     }
     for (const k of [...this.#keeping.keys()]) if (!ins.has(k.split("\n")[0]!)) this.#keeping.delete(k);
@@ -1124,6 +1128,7 @@ export class Copies {
             try {
               await rename(join(wsDir, origin), dropping);
               renamed = true;
+              this.kept.forget(ws, origin);
               this.#lastWriteAt.delete(key);
             } catch (e) {
               if (!isEnoent(e)) throw e;
