@@ -1,0 +1,215 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "seek_table encodes skippable seekable footer and round-trips through table_length and frames_in" {
+  // Empty table: 8 + 0 + 9 = 17 bytes.
+  let empty = seek_table([])
+  expect(empty.length() == 17, "empty table length")
+  expect(base_codec::hex_encode(empty) == "5e2a4d18090000000000000000b1ea928f", "empty table exact bytes")
+
+  match table_length(17.to_int64(), empty.slice(8, 17)) {
+    Some((len, entry)) => {
+      expect(len == 17.to_int64() && entry == 8.to_int64(), "empty table_length")
+      match frames_in(17.to_int64(), empty, entry) {
+        Some(fs) => expect(fs.length() == 0, "empty frames_in")
+        None => panic("expected empty frames_in")
+      }
+    }
+    None => panic("expected empty table_length")
+  }
+
+  // Non-empty table including 32-bit unsigned boundary values (0xffffffff, 0xfffffffe).
+  let max32 = u32_const(0xFFFF, 0xFFFF)
+  let max32_minus1 = u32_const(0xFFFF, 0xFFFE)
+  let frames_spec : Array[(Int64, Int64)] = [
+    (max32, 0.to_int64()),
+    (1.to_int64(), max32_minus1),
+  ]
+  let tbl = seek_table(frames_spec)
+  expect(tbl.length() == 8 + 16 + 9, "2-frame table length")
+  let total_file_size = max32 + 1.to_int64() + tbl.length().to_int64()
+  let foot = tbl.slice(tbl.length() - FOOTER, tbl.length())
+  match table_length(total_file_size, foot) {
+    Some((len, entry)) => {
+      expect(len == tbl.length().to_int64() && entry == 8.to_int64(), "2-frame table_length")
+      match frames_in(total_file_size, tbl, entry) {
+        Some(fs) => {
+          expect(fs.length() == 2, "2 frames")
+          expect(fs[0].at == 0.to_int64() && fs[0].packed == max32 && fs[0].from == 0.to_int64() && fs[0].size == 0.to_int64(), "frame 0")
+          expect(fs[1].at == max32 && fs[1].packed == 1.to_int64() && fs[1].from == 0.to_int64() && fs[1].size == max32_minus1, "frame 1")
+        }
+        None => panic("expected 2 frames")
+      }
+    }
+    None => panic("expected table_length for 2 frames")
+  }
+
+  // Off-by-one file size rejected by frames_in.
+  match frames_in(total_file_size - 1.to_int64(), tbl, 8.to_int64()) {
+    None => ()
+    Some(_) => panic("expected None when frame sizes do not add up")
+  }
+}
+
+test "table_length rejects reserved bits, short files, and checksummed 12-byte entry detection" {
+  let tbl = seek_table([(5.to_int64(), 3.to_int64())])
+  let foot = tbl.slice(tbl.length() - FOOTER, tbl.length())
+  // Reserved bit 0x01 set in descriptor -> None.
+  let bad_foot = Bytes::new(FOOTER)
+  for i in 0..<FOOTER {
+    bad_foot[i] = foot[i]
+  }
+  bad_foot[4] = 0x01 as Byte
+  match table_length(100.to_int64(), bad_foot) {
+    None => ()
+    Some(_) => panic("expected None on reserved descriptor bit")
+  }
+
+  // Checksum flag 0x80 set -> 12-byte entry size.
+  let csum_foot = Bytes::new(FOOTER)
+  for i in 0..<FOOTER {
+    csum_foot[i] = foot[i]
+  }
+  csum_foot[4] = 0x80 as Byte
+  match table_length(100.to_int64(), csum_foot) {
+    Some((len, entry)) => expect(len == (8 + 12 + FOOTER).to_int64() && entry == 12.to_int64(), "12-byte entry")
+    None => panic("expected Some for checksummed footer")
+  }
+}
+
+test "stored detects 0.1.6800-0.1.6802 stored frame header" {
+  let h = Bytes::new(5)
+  put32(h, 0, frame_magic())
+  h[4] = 0xe0 as Byte
+  expect(stored(h), "stored frame header")
+
+  h[4] = 0x60 as Byte
+  expect(!stored(h), "compressed frame header")
+
+  expect(!stored(Bytes::new(4)), "short header")
+}
+
+test "answer_table validates frames and encodes exact hex" {
+  let ok_ask = match base_codec::json_parse("{\"op\":\"table\",\"frames\":[[9,0],[1,2]]}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match answer_table(ok_ask) {
+    Ok(j) => {
+      let want = base_codec::hex_encode(seek_table([(9.to_int64(), 0.to_int64()), (1.to_int64(), 2.to_int64())]))
+      match base_codec::json_get(j, "table") {
+        Some(base_codec::Json::Str(s)) => expect(s == want, "table hex match")
+        _ => panic("missing table string")
+      }
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Omitted frames -> empty table.
+  let no_frames = match base_codec::json_parse("{\"op\":\"table\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match answer_table(no_frames) {
+    Ok(j) => {
+      let want = base_codec::hex_encode(seek_table([]))
+      match base_codec::json_get(j, "table") {
+        Some(base_codec::Json::Str(s)) => expect(s == want, "empty table hex match")
+        _ => panic("missing table string")
+      }
+    }
+    Err(e) => panic("unexpected error: " + e)
+  }
+
+  // Bad frames rejected.
+  let bad_cases = [
+    "{\"op\":\"table\",\"frames\":[[1]]}",
+    "{\"op\":\"table\",\"frames\":[[\"1\",2]]}",
+    "{\"op\":\"table\",\"frames\":[5]}",
+  ]
+  for i in 0..<bad_cases.length() {
+    let ask = match base_codec::json_parse(bad_cases[i]) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => panic("parse")
+    }
+    match answer_table(ask) {
+      Err(_) => ()
+      Ok(_) => panic("expected error for bad frames case " + i.to_string())
+    }
+  }
+}
+
+test "workspace_call validates required fields and optional prefix" {
+  let pack_ok = match base_codec::json_parse("{\"dir\":\"/a\",\"out\":\"/b.tar.zst\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.pack", pack_ok) {
+    Ok((op, args)) => expect(op == "tar.pack" && args.length() == 2, "workspace.pack")
+    Err(e) => panic("unexpected err: " + e)
+  }
+
+  let unpack_null_prefix = match base_codec::json_parse("{\"path\":\"/a\",\"dest\":\"/b\",\"prefix\":null}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.unpack", unpack_null_prefix) {
+    Ok((op, args)) => expect(op == "tar.unpack" && args.length() == 2, "unpack null prefix omitted")
+    Err(e) => panic("unexpected err: " + e)
+  }
+
+  let unpack_str_prefix = match base_codec::json_parse("{\"path\":\"/a\",\"dest\":\"/b\",\"prefix\":\"uploads\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.unpack", unpack_str_prefix) {
+    Ok((op, args)) => expect(op == "tar.unpack" && args.length() == 3, "unpack string prefix included")
+    Err(e) => panic("unexpected err: " + e)
+  }
+
+  let unpack_bad_prefix = match base_codec::json_parse("{\"path\":\"/a\",\"dest\":\"/b\",\"prefix\":5}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.unpack", unpack_bad_prefix) {
+    Err(_) => ()
+    Ok(_) => panic("expected error on numeric prefix")
+  }
+
+  let file_bad_wanted = match base_codec::json_parse("{\"path\":\"/a\",\"wanted\":[\"f\",1],\"out\":\"/o\"}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  match workspace_call("workspace.file", file_bad_wanted) {
+    Err(_) => ()
+    Ok(_) => panic("expected error on non-string wanted element")
+  }
+}
+
+test "ok_response and error_response preserve arbitrary JSON ids" {
+  let complex_id = match base_codec::json_parse("{\"nested\":[1,\"中文\"]}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse")
+  }
+  let ok_line = ok_response(complex_id, base_codec::json_obj([("segmented", base_codec::json_bool(true))]))
+  let parsed_ok = match base_codec::json_parse(ok_line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse ok")
+  }
+  match base_codec::json_get(parsed_ok, "id") {
+    Some(got_id) => expect(base_codec::json_eq(got_id, complex_id), "ok id preserved")
+    None => panic("missing id")
+  }
+  let err_line = error_response(base_codec::json_str("req-1"), "no such ask")
+  let parsed_err = match base_codec::json_parse(err_line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse err")
+  }
+  match base_codec::json_get(parsed_err, "error") {
+    Some(base_codec::Json::Str(s)) => expect(s == "no such ask", "err message")
+    _ => panic("missing error")
+  }
+}

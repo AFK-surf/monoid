@@ -1,0 +1,769 @@
+// Production `--builder packed` worker in pure Pion over `host_shim` (`libstillfail_shell.a`).
+// Mirrors `station/mb/src/packed/{packed.mbt,answer.mbt}` and `station/mb/src/reader/main.mbt` `packed()`
+// byte for byte: segmented zstd seek-table format + workspace tar pack/unpack/file delegation.
+
+import "base_codec"
+import "host_shim"
+
+/// How much of a transcript a frame holds (16 MiB).
+pub let SEGMENT : Int = 16777216
+
+/// How long the seek table's footer is: frames count (4), descriptor (1), seekable magic (4).
+pub let FOOTER : Int = 9
+
+/// Frame header descriptor of a segment stored as it is (0.1.6800-0.1.6802).
+let STORED_DESCRIPTOR : Int = 0xe0
+
+fn u32_const(hi : Int, lo : Int) -> Int64 {
+  ((hi.to_int64() & 0xFFFF.to_int64()) << 16.to_int64()) | (lo.to_int64() & 0xFFFF.to_int64())
+}
+
+fn frame_magic() -> Int64 {
+  u32_const(0xfd2f, 0xb528)
+}
+
+fn skippable_magic() -> Int64 {
+  u32_const(0x184d, 0x2a5e)
+}
+
+fn seekable_magic() -> Int64 {
+  u32_const(0x8f92, 0xeab1)
+}
+
+/// A frame of a put-away transcript: where it is in the file (`at`, `packed` bytes) and what it
+/// holds of the transcript (`size` bytes from `from`).
+pub struct Frame {
+  pub at : Int64
+  pub packed : Int64
+  pub from : Int64
+  pub size : Int64
+}
+
+fn le32(b : Bytes, at : Int) -> Int64 {
+  let b0 = b[at].to_int().to_int64() & 0xFF.to_int64()
+  let b1 = b[at + 1].to_int().to_int64() & 0xFF.to_int64()
+  let b2 = b[at + 2].to_int().to_int64() & 0xFF.to_int64()
+  let b3 = b[at + 3].to_int().to_int64() & 0xFF.to_int64()
+  b0 | (b1 << 8.to_int64()) | (b2 << 16.to_int64()) | (b3 << 24.to_int64())
+}
+
+fn put32(out : Bytes, at : Int, v : Int64) -> Unit {
+  for i in 0..<4 {
+    let shift = (i * 8).to_int64()
+    out[at + i] = ((v >> shift) & 0xFF.to_int64()).to_int() as Byte
+  }
+}
+
+/// The table that ends a put-away transcript: each frame's size in the file and of the transcript.
+pub fn seek_table(frames : Array[(Int64, Int64)]) -> Bytes {
+  let length = 8 + frames.length() * 8 + FOOTER
+  let out = Bytes::new(length)
+  put32(out, 0, skippable_magic())
+  put32(out, 4, (length - 8).to_int64())
+  for i in 0..<frames.length() {
+    let (packed, size) = frames[i]
+    put32(out, 8 + i * 8, packed)
+    put32(out, 12 + i * 8, size)
+  }
+  let end = 8 + frames.length() * 8
+  put32(out, end, frames.length().to_int64())
+  out[end + 4] = 0 as Byte
+  put32(out, end + 5, seekable_magic())
+  out
+}
+
+/// How long the table at the end of a put-away transcript of `size` bytes is, and each entry of
+/// it, from its last `FOOTER` bytes: None without one.
+pub fn table_length(size : Int64, foot : Bytes) -> Option[(Int64, Int64)] {
+  let min_len = (8 + FOOTER).to_int64()
+  if size < min_len || foot.length() < FOOTER || le32(foot, 5) != seekable_magic() {
+    return None
+  }
+  let desc = foot[4].to_int() & 0xFF
+  if (desc & 0x7F) != 0 {
+    return None
+  }
+  let entry = if (desc & 0x80) != 0 { 12.to_int64() } else { 8.to_int64() }
+  let length = 8.to_int64() + le32(foot, 0) * entry + FOOTER.to_int64()
+  if length > size {
+    None
+  } else {
+    Some((length, entry))
+  }
+}
+
+/// The frames a table lists: None when they do not add up to the file of `size` bytes.
+pub fn frames_in(size : Int64, table : Bytes, entry : Int64) -> Option[Array[Frame]] {
+  let length = table.length().to_int64()
+  let min_len = (8 + FOOTER).to_int64()
+  if length < min_len || le32(table, 0) != skippable_magic() || le32(table, 4) != length - 8.to_int64() {
+    return None
+  }
+  let n = (length - 8.to_int64() - FOOTER.to_int64()) / entry
+  let frames : Array[Frame] = []
+  let mut at = 0.to_int64()
+  let mut from = 0.to_int64()
+  let mut i = 0.to_int64()
+  while i < n {
+    let off = (8.to_int64() + i * entry).to_int()
+    let packed = le32(table, off)
+    let each = le32(table, off + 4)
+    frames.push(Frame::{ at: at, packed: packed, from: from, size: each })
+    at = at + packed
+    from = from + each
+    i = i + 1.to_int64()
+  }
+  if at == size - length {
+    Some(frames)
+  } else {
+    None
+  }
+}
+
+/// Whether a frame whose first 5 bytes are `head` is a segment stored as it is (0.1.6800-0.1.6802).
+pub fn stored(head : Bytes) -> Bool {
+  head.length() >= 5 && le32(head, 0) == frame_magic() && (head[4].to_int() & 0xFF) == STORED_DESCRIPTOR
+}
+
+// ── JSON helpers & validation ──
+
+fn json_num_to_int64(d : Double, repr : String) -> Int64 {
+  if repr.length() > 0 {
+    match base_codec::parse_int64_str(repr) {
+      Some(v) => return v
+      None => ()
+    }
+  }
+  d.to_int64()
+}
+
+fn str_of(ask : base_codec::Json, key : String) -> Result[String, String] {
+  match base_codec::json_get(ask, key) {
+    Some(base_codec::Json::Str(s)) => Ok(s)
+    _ => Err("no " + key)
+  }
+}
+
+fn done_json() -> base_codec::Json {
+  base_codec::json_obj([])
+}
+
+/// Build the shell op and arguments for `workspace.pack`, `workspace.unpack`, `workspace.file`.
+pub fn workspace_call(
+  op : String,
+  ask : base_codec::Json,
+) -> Result[(String, Array[(String, base_codec::Json)]), String] {
+  if op == "workspace.pack" {
+    let dir = match str_of(ask, "dir") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let out = match str_of(ask, "out") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(("tar.pack", [("dir", base_codec::json_str(dir)), ("out", base_codec::json_str(out))]))
+  } else if op == "workspace.unpack" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let dest = match str_of(ask, "dest") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let args : Array[(String, base_codec::Json)] = [
+      ("path", base_codec::json_str(path)),
+      ("dest", base_codec::json_str(dest)),
+    ]
+    match base_codec::json_get(ask, "prefix") {
+      None => ()
+      Some(base_codec::Json::Null) => ()
+      Some(base_codec::Json::Str(prefix)) => args.push(("prefix", base_codec::json_str(prefix)))
+      Some(_) => return Err("no prefix")
+    }
+    Ok(("tar.unpack", args))
+  } else if op == "workspace.file" {
+    let wanted_items = match base_codec::json_get(ask, "wanted") {
+      Some(base_codec::Json::Arr(items)) => {
+        for i in 0..<items.length() {
+          match items[i] {
+            base_codec::Json::Str(_) => ()
+            _ => return Err("no wanted")
+          }
+        }
+        items
+      }
+      _ => return Err("no wanted")
+    }
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let out = match str_of(ask, "out") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(
+      (
+        "tar.file",
+        [
+          ("path", base_codec::json_str(path)),
+          ("wanted", base_codec::json_arr(wanted_items)),
+          ("out", base_codec::json_str(out)),
+        ],
+      ),
+    )
+  } else {
+    Err("no such ask")
+  }
+}
+
+/// Pure handler for the `table` op (also used directly in unit tests).
+pub fn answer_table(ask : base_codec::Json) -> Result[base_codec::Json, String] {
+  let sizes : Array[(Int64, Int64)] = []
+  match base_codec::json_get(ask, "frames") {
+    Some(base_codec::Json::Arr(listed)) => {
+      for i in 0..<listed.length() {
+        match listed[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() != 2 {
+              return Err("bad frame")
+            }
+            let packed = match pair[0] {
+              base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+              _ => return Err("bad frame")
+            }
+            let size = match pair[1] {
+              base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+              _ => return Err("bad frame")
+            }
+            sizes.push((packed, size))
+          }
+          _ => return Err("bad frame")
+        }
+      }
+    }
+    _ => ()
+  }
+  let hex = base_codec::hex_encode(seek_table(sizes))
+  Ok(base_codec::json_obj([("table", base_codec::json_str(hex))]))
+}
+
+// ── Event-loop state and shell RPC bridge ──
+
+struct LoopState {
+  reader : host_shim::LineReader
+  mut pending : Array[host_shim::LineItem]
+  mut head : Int
+  mut stdin_eof : Bool
+  mut next_call_id : Int64
+}
+
+fn LoopState::new() -> LoopState {
+  LoopState::{
+    reader: host_shim::LineReader::new(),
+    pending: [],
+    head: 0,
+    stdin_eof: false,
+    next_call_id: 1.to_int64(),
+  }
+}
+
+fn LoopState::enqueue_chunk(self : LoopState, chunk : Bytes) -> Unit {
+  let items = self.reader.push(chunk)
+  for i in 0..<items.length() {
+    self.pending.push(items[i])
+  }
+}
+
+fn LoopState::pop_item(self : LoopState) -> Option[host_shim::LineItem] {
+  if self.head >= self.pending.length() {
+    return None
+  }
+  let item = self.pending[self.head]
+  self.head = self.head + 1
+  if self.head == self.pending.length() {
+    self.pending = []
+    self.head = 0
+  }
+  Some(item)
+}
+
+/// Synchronously execute one async `libstillfail_shell.a` op while continuing to buffer any
+/// pipelined stdin chunks or EOF arriving on the shared host event queue.
+fn shell_exec(
+  state : LoopState,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+) -> Result[base_codec::Json, String] {
+  let call_id = state.next_call_id
+  state.next_call_id = call_id + 1.to_int64()
+  let args_json = base_codec::json_stringify(base_codec::json_obj(args))
+  host_shim::shell_call(call_id, op, args_json, bytes)
+  while true {
+    match host_shim::wait(5000.to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => state.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => state.stdin_eof = true
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == call_id {
+          if done.error.length() > 0 {
+            return Err(done.error)
+          }
+          match base_codec::json_parse(done.json) {
+            base_codec::JsonParseResult::Ok(j) => return Ok(j)
+            base_codec::JsonParseResult::Err(e) => return Err("shell json parse error: " + e)
+          }
+        }
+      }
+      Some(host_shim::HostEvent::Sys(_, _)) => ()
+    }
+  }
+  Err("shell loop exited unexpectedly")
+}
+
+fn bytes_at(state : LoopState, path : String, at : Int64, length : Int64) -> Result[Bytes, String] {
+  let v = match shell_exec(
+    state,
+    "fs.bytes",
+    [
+      ("path", base_codec::json_str(path)),
+      ("from", base_codec::json_int64(at)),
+      ("length", base_codec::json_int64(length)),
+      ("exact", base_codec::json_bool(true)),
+    ],
+    None,
+  ) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  match v {
+    base_codec::Json::Str(hex) => {
+      match base_codec::hex_decode(hex) {
+        Some(b) => Ok(b)
+        None => Err(path + ": invalid hex")
+      }
+    }
+    _ => Err(path + ": not there")
+  }
+}
+
+fn frames_of(state : LoopState, path : String) -> Result[Option[Array[Frame]], String] {
+  let meta = match shell_exec(state, "fs.meta", [("path", base_codec::json_str(path))], None) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let size = match base_codec::json_get(meta, "size") {
+    Some(base_codec::Json::Num(d, r)) => json_num_to_int64(d, r)
+    _ => return Err(path + ": not there")
+  }
+  if size < (8 + FOOTER).to_int64() {
+    return Ok(None)
+  }
+  let foot = match bytes_at(state, path, size - FOOTER.to_int64(), FOOTER.to_int64()) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let (length, entry) = match table_length(size, foot) {
+    Some(pair) => pair
+    None => return Ok(None)
+  }
+  let tbl = match bytes_at(state, path, size - length, length) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  Ok(frames_in(size, tbl, entry))
+}
+
+fn segmented(state : LoopState, path : String) -> Bool {
+  let frames = match frames_of(state, path) {
+    Ok(Some(fs)) => fs
+    _ => return false
+  }
+  for i in 0..<frames.length() {
+    let f = frames[i]
+    if f.packed < 5.to_int64() {
+      continue
+    }
+    match bytes_at(state, path, f.at, 5.to_int64()) {
+      Ok(head) => {
+        if stored(head) {
+          return false
+        }
+      }
+      Err(_) => return false
+    }
+  }
+  true
+}
+
+fn segment_into(
+  state : LoopState,
+  path : String,
+  out : String,
+  unzstd : Bool,
+) -> Result[Array[Frame], String] {
+  let made = match shell_exec(
+    state,
+    "zstd.segments",
+    [
+      ("path", base_codec::json_str(path)),
+      ("out", base_codec::json_str(out)),
+      ("unzstd", base_codec::json_bool(unzstd)),
+      ("segment", base_codec::json_int64(SEGMENT.to_int64())),
+    ],
+    None,
+  ) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let listed = match base_codec::json_get(made, "frames") {
+    Some(base_codec::Json::Arr(items)) => items
+    _ => return Err("no frames made of " + path)
+  }
+  let sizes : Array[(Int64, Int64)] = []
+  for i in 0..<listed.length() {
+    match listed[i] {
+      base_codec::Json::Arr(pair) => {
+        if pair.length() != 2 {
+          return Err("no frames made of " + path)
+        }
+        let packed = match pair[0] {
+          base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+          _ => return Err("no frames made of " + path)
+        }
+        let size = match pair[1] {
+          base_codec::Json::Num(d, r) => json_num_to_int64(d, r)
+          _ => return Err("no frames made of " + path)
+        }
+        sizes.push((packed, size))
+      }
+      _ => return Err("no frames made of " + path)
+    }
+  }
+  match shell_exec(
+    state,
+    "fs.put",
+    [("path", base_codec::json_str(out)), ("sync", base_codec::json_bool(true))],
+    Some(seek_table(sizes)),
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match frames_of(state, out) {
+    Ok(Some(frames)) => {
+      if frames.length() == sizes.length() {
+        Ok(frames)
+      } else {
+        Err(out + ": its table does not read back")
+      }
+    }
+    Ok(None) => Err(out + ": its table does not read back")
+    Err(e) => Err(e)
+  }
+}
+
+fn check_file(
+  state : LoopState,
+  path : String,
+  frames : Option[Array[Frame]],
+  into : Option[String],
+  same : Option[String],
+) -> Result[base_codec::Json, String] {
+  let args : Array[(String, base_codec::Json)] = [("path", base_codec::json_str(path))]
+  match frames {
+    Some(fs) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<fs.length() {
+        let f = fs[i]
+        arr.push(
+          base_codec::json_arr([
+            base_codec::json_int64(f.at),
+            base_codec::json_int64(f.packed),
+            base_codec::json_int64(f.size),
+          ]),
+        )
+      }
+      args.push(("frames", base_codec::json_arr(arr)))
+    }
+    None => ()
+  }
+  match into {
+    Some(s) => args.push(("into", base_codec::json_str(s)))
+    None => ()
+  }
+  match same {
+    Some(s) => args.push(("same", base_codec::json_str(s)))
+    None => ()
+  }
+  shell_exec(state, "zstd.check", args, None)
+}
+
+fn answer(state : LoopState, ask : base_codec::Json) -> Result[base_codec::Json, String] {
+  let op = match base_codec::json_get(ask, "op") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("no such ask")
+  }
+  if op == "pack" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let temp = match str_of(ask, "temp") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match segment_into(state, path, temp, false) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let checked = match check_file(state, temp, Some(frames), None, Some(path)) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(checked, "differs") {
+      Some(base_codec::Json::Str("shortened")) => Err("transcript shortened while archiving")
+      Some(base_codec::Json::Str(_)) => Err("transcript changed while archiving " + path)
+      _ => Ok(done_json())
+    }
+  } else if op == "check" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match frames_of(state, path) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    match check_file(state, path, frames, None, None) {
+      Ok(_) => Ok(done_json())
+      Err(e) => Err(e)
+    }
+  } else if op == "segment" {
+    let source = match str_of(ask, "source") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if segmented(state, source) {
+      return Ok(base_codec::json_obj([("segmented", base_codec::json_bool(false))]))
+    }
+    let theirs_frames = match frames_of(state, source) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let theirs = match check_file(state, source, theirs_frames, None, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    let temp = match str_of(ask, "temp") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match segment_into(state, source, temp, true) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let mine = match check_file(state, temp, Some(frames), None, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    let same_sha = match (base_codec::json_get(mine, "sha256"), base_codec::json_get(theirs, "sha256")) {
+      (Some(m), Some(t)) => base_codec::json_eq(m, t)
+      _ => false
+    }
+    if !same_sha {
+      let path = match str_of(ask, "path") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      return Err("transcript not the same in segments " + path)
+    }
+    Ok(base_codec::json_obj([("segmented", base_codec::json_bool(true))]))
+  } else if op == "restore" {
+    let source = match str_of(ask, "source") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match frames_of(state, source) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let temp = match str_of(ask, "temp") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match check_file(state, source, frames, Some(temp), None) {
+      Ok(_) => Ok(done_json())
+      Err(e) => Err(e)
+    }
+  } else if op == "segmented" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(base_codec::json_obj([("segmented", base_codec::json_bool(segmented(state, path)))]))
+  } else if op == "frames" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match frames_of(state, path) {
+      Ok(Some(frames)) => {
+        let arr : Array[base_codec::Json] = []
+        for i in 0..<frames.length() {
+          let f = frames[i]
+          arr.push(
+            base_codec::json_arr([
+              base_codec::json_int64(f.at),
+              base_codec::json_int64(f.packed),
+              base_codec::json_int64(f.from),
+              base_codec::json_int64(f.size),
+            ]),
+          )
+        }
+        Ok(base_codec::json_obj([("frames", base_codec::json_arr(arr))]))
+      }
+      Ok(None) => Ok(base_codec::json_obj([("frames", base_codec::json_null())]))
+      Err(e) => Err(e)
+    }
+  } else if op == "table" {
+    answer_table(ask)
+  } else if op == "workspace.pack" {
+    let (shell_op, args) = match workspace_call("workspace.pack", ask) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    match shell_exec(state, shell_op, args, None) {
+      Ok(_) => Ok(done_json())
+      Err(e) => Err(e)
+    }
+  } else if op == "workspace.unpack" {
+    let (shell_op, args) = match workspace_call("workspace.unpack", ask) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    let res = match shell_exec(state, shell_op, args, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(res, "refused") {
+      Some(base_codec::Json::Arr(refused)) =>
+      Ok(base_codec::json_obj([("refused", base_codec::json_arr(refused))]))
+      _ => {
+        let path = match str_of(ask, "path") {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        Err(path + ": not unpacked")
+      }
+    }
+  } else if op == "workspace.file" {
+    let (shell_op, args) = match workspace_call("workspace.file", ask) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    let res = match shell_exec(state, shell_op, args, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(res, "found") {
+      Some(base_codec::Json::Bool(true)) =>
+      Ok(base_codec::json_obj([("found", base_codec::json_bool(true))]))
+      _ => Ok(base_codec::json_obj([("found", base_codec::json_bool(false))]))
+    }
+  } else {
+    Err("no such ask")
+  }
+}
+
+/// Format an error response line with the given JSON `id`.
+pub fn error_response(id : base_codec::Json, message : String) -> String {
+  let msg = if message.length() > 0 { message } else { "failed" }
+  base_codec::json_stringify(
+    base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))]),
+  )
+}
+
+/// Attach `id` onto a successful answer JSON value and serialize as one line.
+pub fn ok_response(id : base_codec::Json, payload : base_codec::Json) -> String {
+  match payload {
+    base_codec::Json::Obj(fields) => {
+      base_codec::json_obj_set(fields, "id", id)
+      base_codec::json_stringify(base_codec::Json::Obj(fields))
+    }
+    other => base_codec::json_stringify(other)
+  }
+}
+
+fn handle_line(state : LoopState, line : String) -> String {
+  let ask = match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+  let id = match base_codec::json_get(ask, "id") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  match answer(state, ask) {
+    Ok(payload) => ok_response(id, payload)
+    Err(msg) => error_response(id, msg)
+  }
+}
+
+/// Run the `--builder packed` line-JSON RPC loop until stdin EOF.
+/// Returns 0 on clean EOF, 1 on startup failure or stdout write error.
+pub fn run(shell_dir : String) -> Int {
+  let dir = if shell_dir.length() > 0 { shell_dir } else { "." }
+  if !host_shim::start(dir, true) {
+    return 1
+  }
+  let state = LoopState::new()
+  let mut write_failed = false
+  let mut running = true
+
+  while running {
+    while running {
+      match state.pop_item() {
+        None => break
+        Some(host_shim::LineItem::TooLong(cap)) => {
+          let resp = error_response(
+            base_codec::json_null(),
+            "line exceeds max_bytes: " + cap.to_string(),
+          )
+          if !host_shim::write_stdout_line(resp) {
+            write_failed = true
+            running = false
+          }
+        }
+        Some(host_shim::LineItem::Line(line)) => {
+          if line.length() == 0 {
+            continue
+          }
+          let resp = handle_line(state, line)
+          if !host_shim::write_stdout_line(resp) {
+            write_failed = true
+            running = false
+          }
+        }
+      }
+    }
+    if !running {
+      break
+    }
+    if state.stdin_eof {
+      running = false
+      break
+    }
+    match host_shim::wait(5000.to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => state.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => state.stdin_eof = true
+      Some(_) => ()
+    }
+  }
+
+  host_shim::stop()
+  if write_failed { 1 } else { 0 }
+}

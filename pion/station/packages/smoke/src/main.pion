@@ -10,6 +10,7 @@
 import "base_codec"
 import "footprint"
 import "host_shim"
+import "packed"
 import "sqlite_ffi"
 
 fn json_int_field(j : base_codec::Json, key : String, fallback : Int) -> Int {
@@ -879,7 +880,7 @@ fn flag_value(argv : Array[String], name : String) -> Option[String] {
 
 fn usage_exit() -> Unit {
   let _ = host_shim::write_stderr_line(
-    "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>]]",
+    "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder packed [--shell-dir <dir>]]",
   )
   host_shim::exit_process(2)
 }
@@ -916,6 +917,13 @@ fn main(world : World) -> Unit {
           None => footprint::default_sep()
         }
         run_builder_footprint(sep)
+      }
+      Some("packed") => {
+        let shell_dir = match flag_value(argv, "--shell-dir") {
+          Some(d) => d
+          None => "."
+        }
+        host_shim::exit_process(packed::run(shell_dir))
       }
       _ => usage_exit()
     }

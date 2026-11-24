@@ -18,7 +18,8 @@ Standalone Pion station workspace (`pion.toml`) with pinned `AFK-surf/pion` tool
 - `packages/host_shim`: C11 POSIX + `_WIN32` host bridge (strict <= 16 MiB stdin backpressure, shell completion queue, stdout framing, args/pid/exit/RSS/fd-count) + Pion wrapper + C concurrency test (`packages/host_shim/native/host_shim_test.c`).
 - `packages/sqlite_ffi`: direct `sqlite3_*` C11 FFI bridge + Pion wrapper (`open`, `prepare`, `bind_*`, `step`, `column_*`, `reset`, `clear_bindings`, `finalize`, `exec`, `wal_checkpoint`, `wal_checkpoint_hard`).
 - `packages/footprint`: production disk footprint worker (`--builder footprint`) with thin cross-platform C11 FFI (`packages/footprint/native/footprint_fs.c`: `lstat`, sorted `readdir`, `exists`, `is_dir`, non-blocking regular-file-only `head`, monotonic clock) + pure Pion traversal/rebuildable/budget engine + C unit test (`packages/footprint/native/footprint_fs_test.c`).
-- `packages/smoke`: `stillfail-pion` binary (`--version`, `--smoke-stdio`, `--smoke-sqlite`, `--smoke-shell`, `--smoke-rc-soak`, `--builder footprint [--sep <sep>]`).
+- `packages/packed`: production cold-storage worker (`--builder packed [--shell-dir <dir>]`) in pure Pion over `host_shim` (`libstillfail_shell.a`: `fs.meta`, `fs.bytes`, `fs.put`, `zstd.segments`, `zstd.check`, `tar.pack`, `tar.unpack`, `tar.file`), matching `station/mb/src/packed` seek-table and streaming line-JSON RPC contracts.
+- `packages/smoke`: `stillfail-pion` binary (`--version`, `--smoke-stdio`, `--smoke-sqlite`, `--smoke-shell`, `--smoke-rc-soak`, `--builder footprint [--sep <sep>]`, `--builder packed [--shell-dir <dir>]`).
 
 ## Verification
 

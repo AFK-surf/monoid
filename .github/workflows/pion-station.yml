@@ -6,14 +6,21 @@ on:
       - "pion/station/**"
       - "pion/base/**"
       - "station/mb/src/footprint/**"
+      - "station/mb/src/packed/**"
       - "station/src/sessions/footprint.ts"
+      - "station/src/sessions/packed-mb.ts"
       - "station/src/read/mb-reader.ts"
       - "station/src/read/reader-select.ts"
       - "station/test/footprint-reference.ts"
       - "station/test/mb-footprint.test.ts"
+      - "station/test/mb-packed.test.ts"
       - "station/test/reader-contract-footprint.test.ts"
+      - "station/test/reader-contract-packed.test.ts"
       - "station/test/reader-contract-select.test.ts"
       - "station/test/footprint-pion-switch.test.ts"
+      - "station/test/packed-pion-switch.test.ts"
+      - "station/test/reference/packed.ts"
+      - "station/test/reference/workspace-archive.ts"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 
@@ -213,6 +220,11 @@ jobs:
           STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-footprint.test.ts
           STILLFAIL_MB_READER="$BIN" node --test station/test/mb-footprint.test.ts
           node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/footprint-pion-switch.test.ts
+
+          # Black-box 0-diff contract gate for `--builder packed`.
+          STILLFAIL_READER_CANDIDATE="$BIN" node --test station/test/reader-contract-packed.test.ts
+          STILLFAIL_MB_READER="$BIN" node --test station/test/mb-packed.test.ts
+          node scripts/native.ts run reader -- env STILLFAIL_PION_READER="$BIN" node --test station/test/packed-pion-switch.test.ts
 
       - name: Save Zig cache
         if: always() && steps.zig-cache.outputs.cache-hit != 'true'
