@@ -2032,6 +2032,8 @@ jobs:
           rm -f "$RUNNER_TEMP/posthog-kept.json"
       - if: steps.hbc.outputs.kept != 'true'
         uses: ./.github/actions/setup
+        # A pnpm post-job save took 17 s after the Mac bundle was uploaded and exhausted the job's time limit.
+        with: { save-pnpm-store: 'false' }
       - run: bash .github/mac-release-prebuild.sh packages
       - uses: actions/cache@v4
         with:
@@ -2121,7 +2123,8 @@ jobs:
             # (the app built, bundled and handed over: its store not saved where too little is left for it, rather
             # than the save carrying the job past its five minutes, its release skipped; a cut build's is always saved)
             left=$(( JOB_END - $(date +%s) ))
-            [ "$left" -ge 10 ] || { echo "the store not saved: ${left} s left"; exit 0; }
+            # Allow for preparing and uploading the store and the runner's remaining post steps.
+            [ "$left" -ge 20 ] || { echo "the store not saved: ${left} s left"; exit 0; }
           else
             # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
             # it had come to, main 6a896dd6, 202a54dc and 0ff80373 on 2026-11-16)
