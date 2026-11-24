@@ -1,0 +1,560 @@
+// Shared stdio builder event loop over `sql_db` + `host_shim`, matching
+// `station/mb/src/reader/main.mbt:493-515` (`builder`) and `wire.mbt` framing.
+
+import "base_codec"
+import "host_shim"
+import "sql_db"
+
+/// Distinguishes SQLite errors (eligible for `sql_db::is_busy` retry), application errors
+/// (always surfaced as `{"done":false,"error":...}` and never retried as busy), and
+/// `Fallback` (`{"fallback":true}`, used by `legacy-edits` when the writer must repair first).
+pub enum StepError {
+  Sql(sql_db::SqlError)
+  App(String)
+  Fallback
+}
+
+// ── Unbounded `\n`-only line accumulator + WHATWG lossy UTF-8 + slot-clearing FIFO queue ──
+
+pub fn decode_utf8_lossy_arr(buf : Array[Byte]) -> String {
+  let raw = Bytes::new(buf.length())
+  for i in 0..<buf.length() {
+    raw[i] = buf[i]
+  }
+  sql_db::decode_utf8_lossy_bytes(raw)
+}
+
+pub struct RawLines {
+  mut partial : Array[Byte]
+}
+
+pub fn RawLines::new() -> RawLines {
+  RawLines::{ partial: [] }
+}
+
+pub fn RawLines::push(self : RawLines, chunk : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<chunk.length() {
+    let b = chunk[i]
+    if b.to_int() == 10 {
+      out.push(decode_utf8_lossy_arr(self.partial))
+      self.partial = []
+    } else {
+      self.partial.push(b)
+    }
+  }
+  out
+}
+
+pub struct LineQueue {
+  lines : RawLines
+  mut pending : Array[String]
+  mut head : Int
+  mut stdin_eof : Bool
+}
+
+pub fn LineQueue::new() -> LineQueue {
+  LineQueue::{ lines: RawLines::new(), pending: [], head: 0, stdin_eof: false }
+}
+
+pub fn LineQueue::enqueue_chunk(self : LineQueue, chunk : Bytes) -> Unit {
+  let items = self.lines.push(chunk)
+  for i in 0..<items.length() {
+    self.pending.push(items[i])
+  }
+}
+
+pub fn LineQueue::pop_line(self : LineQueue) -> Option[String] {
+  if self.head >= self.pending.length() {
+    return None
+  }
+  let line = self.pending[self.head]
+  self.pending[self.head] = ""
+  self.head = self.head + 1
+  if self.head == self.pending.length() {
+    self.pending = []
+    self.head = 0
+  } else if self.head >= 64 && self.head * 2 >= self.pending.length() {
+    let compacted : Array[String] = []
+    for i in self.head..<self.pending.length() {
+      compacted.push(self.pending[i])
+    }
+    self.pending = compacted
+    self.head = 0
+  }
+  Some(line)
+}
+
+pub fn LineQueue::storage_len(self : LineQueue) -> Int {
+  self.pending.length()
+}
+
+// ── JSON line helpers (last-wins lookup, U+2028/U+2029 escaping, lone surrogate, cancel) ──
+
+/// Last-wins JSON object key lookup, matching MoonBit `@json.parse` Map semantics.
+pub fn json_get_last(j : base_codec::Json, key : String) -> Option[base_codec::Json] {
+  match j {
+    base_codec::Json::Obj(fields) => {
+      let mut i = fields.length() - 1
+      while i >= 0 {
+        let (k, v) = fields[i]
+        if k == key {
+          return Some(v)
+        }
+        i = i - 1
+      }
+      None
+    }
+    _ => None
+  }
+}
+
+fn parse_hex4_at(s : String, pos : Int) -> Option[Int] {
+  if pos + 4 > s.length() {
+    return None
+  }
+  let mut v = 0
+  for k in 0..<4 {
+    match base_codec::hex_digit(s.code_unit_at(pos + k)) {
+      Some(d) => v = (v << 4) | d
+      None => return None
+    }
+  }
+  Some(v)
+}
+
+pub fn has_lone_surrogate(line : String) -> Bool {
+  let n = line.length()
+  let mut i = 0
+  let mut in_str = false
+  while i < n {
+    let c = line.code_unit_at(i)
+    if !in_str {
+      if c == 34 {
+        in_str = true
+      }
+      i = i + 1
+    } else if c == 34 {
+      in_str = false
+      i = i + 1
+    } else if c == 92 {
+      if i + 1 >= n {
+        return false
+      }
+      let esc = line.code_unit_at(i + 1)
+      if esc == 117 {
+        match parse_hex4_at(line, i + 2) {
+          None => i = i + 2
+          Some(u) => {
+            if u >= 0xD800 && u <= 0xDBFF {
+              if i + 12 <= n && line.code_unit_at(i + 6) == 92 && line.code_unit_at(i + 7) == 117 {
+                match parse_hex4_at(line, i + 8) {
+                  Some(lo) => {
+                    if lo >= 0xDC00 && lo <= 0xDFFF {
+                      i = i + 12
+                    } else {
+                      return true
+                    }
+                  }
+                  None => return true
+                }
+              } else {
+                return true
+              }
+            } else if u >= 0xDC00 && u <= 0xDFFF {
+              return true
+            } else {
+              i = i + 6
+            }
+          }
+        }
+      } else {
+        i = i + 2
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  false
+}
+
+pub fn escape_line_separators(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut found = false
+  let mut i = 0
+  while i + 2 < n {
+    if (raw[i].to_int() & 0xFF) == 0xE2 && (raw[i + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[i + 2].to_int() & 0xFF
+      if b2 == 0xA8 || b2 == 0xA9 {
+        found = true
+        break
+      }
+    }
+    i = i + 1
+  }
+  if !found {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < n {
+    if j + 2 < n && (raw[j].to_int() & 0xFF) == 0xE2 && (raw[j + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[j + 2].to_int() & 0xFF
+      if b2 == 0xA8 {
+        sb.write_string("\\u2028")
+        j = j + 3
+        continue
+      } else if b2 == 0xA9 {
+        sb.write_string("\\u2029")
+        j = j + 3
+        continue
+      }
+    }
+    sb.write_byte(raw[j])
+    j = j + 1
+  }
+  sb.to_string()
+}
+
+/// Parse one stdin line as JSON (with MoonBit `@json.parse`-aligned numeric `repr` semantics);
+/// invalid JSON (or lone surrogate) becomes `Json::Null`.
+pub fn parse_ask_line(line : String) -> base_codec::Json {
+  if has_lone_surrogate(line) {
+    return base_codec::json_null()
+  }
+  match sql_db::parse_json(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+}
+
+/// Strict boolean `{"cancel": true}` check (last-wins, matching MB `ask is { "cancel": True, .. }`).
+pub fn is_cancel_ask(ask : base_codec::Json) -> Bool {
+  match json_get_last(ask, "cancel") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+/// Saturating Double -> Int64 conversion matching MoonBit `Double::to_int64()`:
+/// NaN -> 0, >= 2^63 -> INT64_MAX, <= -2^63 -> INT64_MIN, otherwise truncation toward zero.
+pub fn double_to_i64_saturating(d : Double) -> Int64 {
+  if d != d {
+    return 0.to_int64()
+  }
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  if d >= 9223372036854775808.0 {
+    return max64
+  }
+  if d <= -9223372036854775808.0 {
+    return min64
+  }
+  d.to_int64()
+}
+
+pub fn format_step_response(
+  name : String,
+  res : Result[Option[Bool], StepError],
+) -> String {
+  let answer = match res {
+    Ok(Some(done)) => base_codec::json_obj([("done", base_codec::json_bool(done))])
+    Ok(None) =>
+    base_codec::json_obj([
+      ("done", base_codec::json_bool(false)),
+      ("error", base_codec::json_str("invalid " + name + " preparation request")),
+    ])
+    Err(StepError::Fallback) => base_codec::json_obj([("fallback", base_codec::json_bool(true))])
+    Err(StepError::Sql(e)) => {
+      if sql_db::is_busy(e) {
+        base_codec::json_obj([("done", base_codec::json_bool(false))])
+      } else {
+        base_codec::json_obj([
+          ("done", base_codec::json_bool(false)),
+          ("error", base_codec::json_str(e.message)),
+        ])
+      }
+    }
+    Err(StepError::App(msg)) =>
+    base_codec::json_obj([
+      ("done", base_codec::json_bool(false)),
+      ("error", base_codec::json_str(msg)),
+    ])
+  }
+  escape_line_separators(base_codec::json_stringify(answer))
+}
+
+// ── Shared Permit state machine with deferred FIFO queue (matches MB `Permit`) ──
+
+/// Whether a parsed JSON object has key `key` (existence only, regardless of value).
+pub fn json_has_key(j : base_codec::Json, key : String) -> Bool {
+  match json_get_last(j, key) {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub struct Permit {
+  queue : LineQueue
+  is_mode_request : (base_codec::Json) -> Bool
+  mut holding : Bool
+  mut deferred : Array[String]
+  mut deferred_head : Int
+  mut eof : Bool
+}
+
+pub fn Permit::new(queue : LineQueue, is_mode_request : (base_codec::Json) -> Bool) -> Permit {
+  Permit::{
+    queue: queue,
+    is_mode_request: is_mode_request,
+    holding: false,
+    deferred: [],
+    deferred_head: 0,
+    eof: false,
+  }
+}
+
+pub fn Permit::is_holding(self : Permit) -> Bool {
+  self.holding
+}
+
+pub fn Permit::is_eof(self : Permit) -> Bool {
+  self.eof
+}
+
+pub fn Permit::release_implicit(self : Permit) -> Unit {
+  self.holding = false
+}
+
+fn Permit::pop_deferred(self : Permit) -> Option[String] {
+  if self.deferred_head >= self.deferred.length() {
+    return None
+  }
+  let line = self.deferred[self.deferred_head]
+  self.deferred[self.deferred_head] = ""
+  self.deferred_head = self.deferred_head + 1
+  if self.deferred_head == self.deferred.length() {
+    self.deferred = []
+    self.deferred_head = 0
+  } else if self.deferred_head >= 64 && self.deferred_head * 2 >= self.deferred.length() {
+    let compacted : Array[String] = []
+    for i in self.deferred_head..<self.deferred.length() {
+      compacted.push(self.deferred[i])
+    }
+    self.deferred = compacted
+    self.deferred_head = 0
+  }
+  Some(line)
+}
+
+fn read_stdin_line_from_host(queue : LineQueue) -> Option[String] {
+  while true {
+    match queue.pop_line() {
+      Some(line) => return Some(line)
+      None => ()
+    }
+    if queue.stdin_eof {
+      return None
+    }
+    match host_shim::wait((-1).to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => queue.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => queue.stdin_eof = true
+      Some(_) => ()
+    }
+  }
+  None
+}
+
+/// Testable next-line reader: drains `deferred` FIFO first, then reads via `read_line` until EOF.
+pub fn Permit::next_line_with(self : Permit, read_line : () -> Option[String]) -> Option[String] {
+  match self.pop_deferred() {
+    Some(line) => return Some(line)
+    None => ()
+  }
+  if self.eof {
+    return None
+  }
+  match read_line() {
+    Some(line) => Some(line)
+    None => {
+      self.eof = true
+      None
+    }
+  }
+}
+
+/// Testable permit acquisition:
+/// 1. JSON object with `"permit"` key (parsed via `sql_db::parse_json`, without lone-surrogate rejection):
+///    only literal `true` grants; any other value rejects immediately.
+/// 2. JSON object matching `is_mode_request(obj)`: deferred into FIFO queue while continuing to wait.
+/// 3. Any other line (empty `""`, unparseable JSON, non-object JSON, or object lacking `"permit"` and
+///    mode keys): consumed once and immediately rejected without hanging or replaying.
+/// 4. EOF: sets `eof = true` and rejects without dropping already-deferred complete requests.
+pub fn Permit::take_with(
+  self : Permit,
+  read_line : () -> Option[String],
+  write_line : (String) -> Bool,
+) -> Bool {
+  if self.holding {
+    return true
+  }
+  if self.eof {
+    return false
+  }
+  let _ = write_line("{\"take\":true}")
+  while true {
+    match read_line() {
+      None => {
+        self.eof = true
+        self.holding = false
+        return false
+      }
+      Some(line) => {
+        if line.length() == 0 {
+          self.holding = false
+          return false
+        }
+        let reply = parse_ask_line(line)
+        match reply {
+          base_codec::Json::Obj(_) => {
+            match json_get_last(reply, "permit") {
+              Some(base_codec::Json::Bool(true)) => {
+                self.holding = true
+                return true
+              }
+              Some(_) => {
+                self.holding = false
+                return false
+              }
+              None => {
+                if (self.is_mode_request)(reply) {
+                  self.deferred.push(line)
+                } else {
+                  self.holding = false
+                  return false
+                }
+              }
+            }
+          }
+          _ => {
+            self.holding = false
+            return false
+          }
+        }
+      }
+    }
+  }
+  false
+}
+
+pub fn Permit::give_with(self : Permit, write_line : (String) -> Bool) -> Unit {
+  if self.holding {
+    let _ = write_line("{\"give\":true}")
+    self.holding = false
+  }
+}
+
+pub fn Permit::next_line(self : Permit) -> Option[String] {
+  let q = self.queue
+  self.next_line_with(fn() -> Option[String] { read_stdin_line_from_host(q) })
+}
+
+pub fn Permit::take(self : Permit) -> Bool {
+  let q = self.queue
+  self.take_with(
+    fn() -> Option[String] { read_stdin_line_from_host(q) },
+    fn(line : String) -> Bool { host_shim::write_stdout_line(line) },
+  )
+}
+
+pub fn Permit::give(self : Permit) -> Unit {
+  self.give_with(fn(line : String) -> Bool { host_shim::write_stdout_line(line) })
+}
+
+/// Run a SQLite builder loop (`--builder <name> --db <db_path>`).
+/// Exits 1 immediately on DB attach/init failure (never enters stdin loop).
+/// Guards against leaked open transactions before every response.
+pub fn builder_loop(
+  db_path : String,
+  name : String,
+  step : (sql_db::Db, base_codec::Json) -> Result[Option[Bool], StepError],
+) -> Int {
+  let db = match sql_db::Db::attach(db_path, wait_ms=250) {
+    Ok(d) => d
+    Err(e) => {
+      let _ = host_shim::write_stderr_line(e.message)
+      return 1
+    }
+  }
+  match db.exec("PRAGMA synchronous = NORMAL") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      let _ = host_shim::write_stderr_line(e.message)
+      return 1
+    }
+  }
+  if !host_shim::start("", true) {
+    db.close()
+    let _ = host_shim::write_stderr_line("builder " + name + ": failed to start stdin loop")
+    return 1
+  }
+
+  let queue = LineQueue::new()
+  let mut running = true
+  let mut write_failed = false
+
+  while running {
+    while running {
+      match queue.pop_line() {
+        None => break
+        Some(line) => {
+          if line.length() == 0 {
+            continue
+          }
+          let ask = parse_ask_line(line)
+          if is_cancel_ask(ask) {
+            continue
+          }
+          let res = step(db, ask)
+          // Transaction leak guard: never emit a response or proceed to the next line with a held lock.
+          match db.rollback_if_in_tx() {
+            Ok(_) => ()
+            Err(e) => {
+              db.close()
+              let _ = host_shim::write_stderr_line(
+                "builder " + name + ": transaction remained open after ROLLBACK: " + e.message,
+              )
+              host_shim::stop()
+              return 1
+            }
+          }
+          let out = format_step_response(name, res)
+          if !host_shim::write_stdout_line(out) {
+            write_failed = true
+            running = false
+          }
+        }
+      }
+    }
+    if !running {
+      break
+    }
+    if queue.stdin_eof {
+      running = false
+      break
+    }
+    match host_shim::wait((-1).to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => queue.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => queue.stdin_eof = true
+      Some(_) => ()
+    }
+  }
+
+  db.close()
+  host_shim::stop()
+  if write_failed { 1 } else { 0 }
+}

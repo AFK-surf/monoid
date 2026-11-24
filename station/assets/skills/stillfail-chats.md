@@ -41,6 +41,7 @@ description: Work across chats and services: read another chat by its link, writ
 - A post held back (messages you had not read came first) keeps its text, files, card and title under its id: chat_post with to, send=<id> and the state the turn now ends with sends it as written; if more unread messages came meanwhile, it is held again under the same id.
 
 ## Waiting
+- A post that says what you started can end the turn itself: chat_post kind waiting with for and seconds. need_human with a need that asks for nothing (无需操作) is refused.
 - waiting needs something that brings you back when the work ends or fails: a background command or agent, a job (skill stillfail-jobs), or a loop polling CI that exits on its first failure (skill stillfail-github-ci). seconds is only a fallback for work that cannot be watched. Waiting on nothing but a watch of yours (a schedule, a monitor): add watch: true.
 
 ## Archive

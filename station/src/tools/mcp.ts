@@ -55,7 +55,7 @@ export const PRIORITY = [
 /// system cards replace secret_reask; station_move replaces station_retire).
 export const HIDDEN = ["adb_devices", "phone_use", "secret_reask", "station_retire"];
 
-/// What every turn calls: an agent's answer reaches people only through chat_post, and a turn ends with chat_state.
+/// What every turn calls: an agent's answer reaches people only through chat_post, and a turn ends with it or chat_state.
 export const EVERY_TURN = ["chat_post", "chat_state"];
 
 /// By which a session speaks or acts in chats as itself: it posts, ends its turn, writes to another chat's agent, opens

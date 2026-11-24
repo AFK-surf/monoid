@@ -420,3 +420,133 @@ test "a node's picture in a tree laid out once each change is told: drawn by the
   t.run_for(image_fade_ms)
   assert_eq(pictures_sized(60.0, 40.0).length(), 1)
 }
+
+///|
+test "a FitCover node with a stand-in judges readiness using image_px (short-side cover scale)" {
+  let t = Tester::new(fn(_c) {  }, images=[("tall", 1000, 15000), ("stand", 60, 40)], finish=false)
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(160.0)))
+      .height(Is(Some(300.0)))
+      .image(Is(Some(("tall", "stand", 8192))))
+      .image_covers(Is(true))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  // Finish stand-in first: while tall has no decode at all, stand-in is drawn.
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "stand" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  let drawn = fn() {
+    t.drawn_instances().filter(fn(i) { i[5] == 4.0 && i[2] == 160.0 && i[3] == 300.0 }).map(fn(i) { t.image_src(i[20].to_int()) })
+  }
+  assert_eq(drawn(), ["stand"], msg="stand-in shown before tall decodes")
+  // Finish the initial 1024px decode of tall (before natural 1000x15000 dimensions were known).
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  // Once natural dimensions (1000x15000) are known, FitCover needs 15000 * (160/1000) * 2 = 4800px -> 8192 tier;
+  // image_ready starts the 8192 upgrade while returning the 1024 decode as progressive fallback (image.mbt:450,603).
+  assert_eq(drawn(), ["tall"], msg="progressive 1024px fallback shown while 8192px decode is pending")
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall" }).map(fn(l) { l.1 })
+  assert_true(asked.length() > 0 && asked[asked.length() - 1] == 8192, msg="expected 8192 for 1000x15000 FitCover in 160x300, got \{Repr(asked)}")
+  assert_true(t.pending().iter().any(fn(p) { p.0 == 1 && t.image_src(p.1) == "tall" }), msg="8192px decode must still be pending")
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  t.run_for(image_fade_ms)
+  assert_eq(drawn(), ["tall"], msg="tall shown once 8192px decode completes")
+}
+
+///|
+test "an unseen FitCover tall picture prefetches at 8192 via view_unseen once natural dimensions are known" {
+  let seen = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let t = Tester::new(fn(_c) {  }, images=[("tall-unseen", 1000, 15000)], finish=false)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      h.alpha(By(fn() { seen.get() })) |> ignore
+      h.box(fn(n) {
+        n
+        .offset(Is((20.0, 20.0)))
+        .width(Is(Some(160.0)))
+        .height(Is(Some(300.0)))
+        .image(Is(Some(("tall-unseen", "", 8192))))
+        .image_covers(Is(true))
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  // First draw while transparent: initial 1024px decode asked via view_unseen.
+  t.draw()
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall-unseen" {
+      t.finish(1, p.1)
+    }
+  }
+  // Second draw still transparent (view_unseen path): natural 1000x15000 is now known, so view_unseen must prefetch 8192.
+  t.draw()
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall-unseen" }).map(fn(l) { l.1 })
+  assert_true(asked.length() >= 2 && asked[asked.length() - 1] == 8192, msg="expected view_unseen to prefetch 8192, got \{Repr(asked)}")
+}
+
+///|
+test "a FitCover node with image_in matte and stand-in judges readiness and decodes at 8192" {
+  let t = Tester::new(fn(_c) {  }, images=[("tall-matte", 1000, 15000), ("stand", 60, 40)], finish=false)
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .offset(Is((20.0, 20.0)))
+      .width(Is(Some(200.0)))
+      .height(Is(Some(320.0)))
+      .image(Is(Some(("tall-matte", "stand", 8192))))
+      .image_in(Is(Some(((20.0, 10.0, 160.0, 300.0), 0x111111FFL))))
+      .image_covers(Is(true))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "stand" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  let drawn = fn() {
+    t.drawn_instances().filter(fn(i) { i[5] == 4.0 && i[2] == 200.0 && i[3] == 320.0 }).map(fn(i) { t.image_src(i[20].to_int()) })
+  }
+  assert_eq(drawn(), ["stand"], msg="stand-in shown before tall-matte decodes")
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall-matte" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  assert_eq(drawn(), ["tall-matte"], msg="progressive 1024px fallback shown while 8192px decode is pending")
+  let asked = t.image_loads().filter(fn(l) { l.0 == "tall-matte" }).map(fn(l) { l.1 })
+  assert_true(asked.length() >= 2 && asked[asked.length() - 1] == 8192, msg="expected image_in matte to upgrade to 8192, got \{Repr(asked)}")
+  assert_true(t.pending().iter().any(fn(p) { p.0 == 1 && t.image_src(p.1) == "tall-matte" }), msg="8192px decode must still be pending")
+  for p in t.pending() {
+    if p.0 == 1 && t.image_src(p.1) == "tall-matte" {
+      t.finish(1, p.1)
+    }
+  }
+  t.draw()
+  t.run_for(image_fade_ms)
+  assert_eq(drawn(), ["tall-matte"], msg="tall-matte shown once 8192px decode completes")
+}

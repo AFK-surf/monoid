@@ -1,0 +1,256 @@
+// Usage retirement builder (`--builder usage-retire`), 1:1 aligned with
+// `station/mb/src/usagefill/usagefill.mbt` and `station/mb/src/reader/main.mbt:990-995`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+let USAGE_QUARTER_MS : Double = 900000.0
+
+let USAGE_RETIRED_TABLES : String = "(name = 'usage_detail' OR name GLOB 'usage_detail_*' OR name = 'usage_main_calls'\n  OR name = 'usage_minute' OR name IN ('usage_minute_all', 'usage_minute_seen', 'usage_minute_sessions')\n  OR name IN ('usage_day_quarters', 'usage_quarters') OR name = 'usage_compact' OR name GLOB 'usage_compact_*'\n  OR name GLOB 'usage_summary_*' OR name = 'usage_history' OR name GLOB 'usage_history_*' OR name = 'usage_retired_detail')"
+
+let USAGE_RETIRED_TRIGGERS : String = "(name GLOB 'usage_detail_*' OR name GLOB 'usage_daily_detail_*' OR name GLOB 'usage_main_calls_*'\n  OR name = 'usage_compactions_add' OR name GLOB 'usage_minute_*' OR name GLOB 'usage_quarters_*'\n  OR name GLOB 'usage_compact_*' OR name GLOB 'usage_summary_*' OR name GLOB 'usage_history_*')"
+
+fn quote_sql_ident(name : String) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(34 as Byte)
+  let raw = name.to_bytes()
+  for i in 0..<raw.length() {
+    let b = raw[i]
+    if b.to_int() == 34 {
+      sb.write_byte(34 as Byte)
+      sb.write_byte(34 as Byte)
+    } else {
+      sb.write_byte(b)
+    }
+  }
+  sb.write_byte(34 as Byte)
+  sb.to_string()
+}
+
+fn join_strings(items : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<items.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(items[i])
+  }
+  sb.to_string()
+}
+
+fn double_floor(x : Double) -> Double {
+  if sql_db::is_nan_or_inf(x) || x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+    return x
+  }
+  let i = x.to_int64()
+  let d = i.to_double()
+  if x < d { d - 1.0 } else { d }
+}
+
+fn double_ceil(x : Double) -> Double {
+  if sql_db::is_nan_or_inf(x) || x >= 4503599627370496.0 || x <= -4503599627370496.0 {
+    return x
+  }
+  let i = x.to_int64()
+  let d = i.to_double()
+  if x > d { d + 1.0 } else { d }
+}
+
+/// One bounded delete of a retired table, by its primary key; the table dropped once empty.
+/// Executed atomically inside a single `db.tx_err(...)` transaction so no concurrent write
+/// can land between an empty DELETE and DROP TABLE.
+pub fn usage_retire_drop_step(db : sql_db::Db, batch : Int = 256) -> Result[Bool, StepError] {
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      match tx_db.first(
+        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND " + USAGE_RETIRED_TRIGGERS + " LIMIT 1",
+        [],
+      ) {
+        Ok(Some(_)) => return Ok(true)
+        Ok(None) => ()
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let table = match tx_db.first(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND " +
+        USAGE_RETIRED_TABLES +
+        " ORDER BY name LIMIT 1",
+        [],
+      ) {
+        Ok(Some(row)) => {
+          match sql_db::row_val(row, "name") {
+            base_codec::Json::Str(t) => t
+            _ => return Ok(true)
+          }
+        }
+        Ok(None) => return Ok(true)
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let qtable = quote_sql_ident(table)
+      let columns = match tx_db.all("PRAGMA table_info(" + qtable + ")", []) {
+        Ok(c) => c
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let keyed : Array[(Double, String)] = []
+      for i in 0..<columns.length() {
+        let col = columns[i]
+        match sql_db::row_val(col, "pk") {
+          base_codec::Json::Num(p, _) => {
+            if p > 0.0 {
+              let col_name = match sql_db::row_val(col, "name") {
+                base_codec::Json::Str(n) => quote_sql_ident(n)
+                _ => "rowid"
+              }
+              keyed.push((p, col_name))
+            }
+          }
+          _ => ()
+        }
+      }
+      // Stable insertion sort by pk ascending (matching MB `keyed.sort_by(pa.compare(pb))`).
+      for i in 1..<keyed.length() {
+        let cur = keyed[i]
+        let mut j = i - 1
+        while j >= 0 && keyed[j].0 > cur.0 {
+          keyed[j + 1] = keyed[j]
+          j = j - 1
+        }
+        keyed[j + 1] = cur
+      }
+      let keys : Array[String] = []
+      for i in 0..<keyed.length() {
+        keys.push(keyed[i].1)
+      }
+      if keys.length() == 0 {
+        keys.push("rowid")
+      }
+      let key_list = join_strings(keys, ", ")
+      let tuple = if keys.length() == 1 { keys[0] } else { "(" + key_list + ")" }
+      let removed = match tx_db.run(
+        "DELETE FROM " +
+        qtable +
+        " WHERE " +
+        tuple +
+        " IN (SELECT " +
+        key_list +
+        " FROM " +
+        qtable +
+        " LIMIT ?)",
+        [base_codec::json_int(batch)],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      if removed == 0 {
+        match tx_db.exec("DROP TABLE IF EXISTS " + qtable) {
+          Ok(_) => ()
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      Ok(false)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// One batch of at least `batch` calls from before the quarters, or those left, and whole quarters,
+/// newest first, with the `since` it moves back to: true when none is left.
+pub fn usage_retire_fill_step(db : sql_db::Db, batch : Int = 256) -> Result[Bool, StepError] {
+  let has_meta = match db.has_schema("table", "usage_15m_meta") {
+    Ok(b) => b
+    Err(e) => return Err(StepError::Sql(e))
+  }
+  if !has_meta {
+    return Ok(true)
+  }
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let since = match tx_db.first("SELECT since FROM usage_15m_meta WHERE id = 1", []) {
+        Ok(Some(r)) => sql_db::row_val(r, "since")
+        Ok(None) => base_codec::json_null()
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let c = match since {
+        base_codec::Json::Num(v, _) => v
+        _ => return Ok(true)
+      }
+      let before = base_codec::json_num(double_ceil(c / USAGE_QUARTER_MS) * USAGE_QUARTER_MS)
+      let first_try = match tx_db.first(
+        "SELECT at FROM usage INDEXED BY usage_at WHERE at < ? ORDER BY at DESC LIMIT 1 OFFSET ?",
+        [before, base_codec::json_int(batch - 1)],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let next = match first_try {
+        Some(r) => Some(r)
+        None => {
+          match tx_db.first(
+            "SELECT at FROM usage INDEXED BY usage_at WHERE at < ? ORDER BY at LIMIT 1",
+            [before],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+      }
+      let n = match next {
+        Some(r) => r
+        None => {
+          let _ = match tx_db.run("UPDATE usage_15m_meta SET since = NULL WHERE id = 1", []) {
+            Ok(k) => k
+            Err(e) => return Err(StepError::Sql(e))
+          }
+          return Ok(true)
+        }
+      }
+      let at = match sql_db::row_val(n, "at") {
+        base_codec::Json::Num(v, _) => v
+        _ => return Err(StepError::App("a call has no time"))
+      }
+      let from = double_floor(at / USAGE_QUARTER_MS) * USAGE_QUARTER_MS
+      let _ = match tx_db.run(
+        "UPDATE usage INDEXED BY usage_at SET rollup_counted = 1 WHERE at >= ? AND at < ? AND rollup_counted = 0",
+        [base_codec::json_num(from), before],
+      ) {
+        Ok(k) => k
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      let _ = match tx_db.run(
+        "UPDATE usage_15m_meta SET since = ? WHERE id = 1",
+        [base_codec::json_num(if from < c { from } else { c })],
+      ) {
+        Ok(k) => k
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      Ok(false)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder usage-retire`
+/// (matches MB `{ "drop": True, .. } => drop_step(db), _ => fill_step(db)`).
+pub fn usage_retire_dispatch(
+  db : sql_db::Db,
+  ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match json_get_last(ask, "drop") {
+    Some(base_codec::Json::Bool(true)) => {
+      match usage_retire_drop_step(db, batch=256) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+    _ => {
+      match usage_retire_fill_step(db, batch=256) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+pub fn run_usage_retire(db_path : String) -> Int {
+  builder_loop(db_path, "usage retirement", usage_retire_dispatch)
+}

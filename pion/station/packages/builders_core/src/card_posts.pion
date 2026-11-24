@@ -1,0 +1,279 @@
+// Card-posts backfill builder (`--builder card-posts`), 1:1 aligned with
+// `station/mb/src/cards/cards.mbt` and `station/mb/src/reader/main.mbt:902-906`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+let CARD_POSTS_VERSION : Int = 1
+
+fn card_check(db : sql_db::Db) -> Result[Unit, StepError] {
+  let meta = match db.all("SELECT version FROM card_post_meta WHERE id=1", []) {
+    Ok(r) => r
+    Err(e) => return Err(StepError::Sql(e))
+  }
+  if meta.length() == 0 {
+    return Err(
+      StepError::App(
+        "card post index version missing is incompatible with " + CARD_POSTS_VERSION.to_string(),
+      ),
+    )
+  }
+  let m = meta[0]
+  let ver_ok = match m.get("version") {
+    Some(base_codec::Json::Num(v, _)) => v.to_int() == CARD_POSTS_VERSION
+    _ => false
+  }
+  if !ver_ok {
+    return Err(
+      StepError::App(
+        "card post index version " +
+        sql_db::stringify_json(sql_db::row_val(m, "version")) +
+        " is incompatible with " +
+        CARD_POSTS_VERSION.to_string(),
+      ),
+    )
+  }
+  Ok(())
+}
+
+fn card_scope_of(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Option[Map[String, base_codec::Json]], StepError] {
+  match db.all(
+    "SELECT CAST(last_n AS TEXT) AS last_n,CAST(end_n AS TEXT) AS end_n,phase FROM card_post_scopes WHERE thread=?",
+    [thread],
+  ) {
+    Ok(rows) => if rows.length() > 0 { Ok(Some(rows[0])) } else { Ok(None) }
+    Err(e) => Err(StepError::Sql(e))
+  }
+}
+
+fn card_phase(sc : Option[Map[String, base_codec::Json]]) -> Int {
+  match sc {
+    Some(s) => {
+      match s.get("phase") {
+        Some(base_codec::Json::Num(p, _)) => p.to_int()
+        _ => -1
+      }
+    }
+    None => -1
+  }
+}
+
+fn card_same_scope(
+  a : Option[Map[String, base_codec::Json]],
+  b : Map[String, base_codec::Json],
+) -> Bool {
+  match a {
+    Some(a_row) => {
+      base_codec::json_eq(sql_db::row_val(a_row, "last_n"), sql_db::row_val(b, "last_n")) &&
+      base_codec::json_eq(sql_db::row_val(a_row, "end_n"), sql_db::row_val(b, "end_n")) &&
+      base_codec::json_eq(sql_db::row_val(a_row, "phase"), sql_db::row_val(b, "phase"))
+    }
+    None => false
+  }
+}
+
+fn card_positions_query(column : Option[String], after : Bool) -> String {
+  let (index, predicate) = match column {
+    Some(c) => {
+      let idx_name = if c == "card" { "cards" } else { "options" }
+      (" INDEXED BY entries_" + idx_name, " AND " + c + " IS NOT NULL")
+    }
+    None => ("", "")
+  }
+  let range = if after {
+    "n>CAST(?2 AS INTEGER) AND n<=CAST(?3 AS INTEGER)"
+  } else {
+    "n<=CAST(?2 AS INTEGER)"
+  }
+  let lim_param = if after { "?4" } else { "?3" }
+  "SELECT CAST(n AS TEXT) AS n FROM (SELECT n FROM entries" +
+  index +
+  " WHERE thread=?1 AND " +
+  range +
+  predicate +
+  " ORDER BY n LIMIT " +
+  lim_param +
+  ")"
+}
+
+/// One batch of at most `limit` (128 at most) of `thread`'s old entries; whether all are prepared then.
+pub fn card_posts_step(
+  db : sql_db::Db,
+  thread : Int64,
+  limit : Int = 128,
+) -> Result[Bool, StepError] {
+  if limit < 1 || limit > 128 {
+    return Err(StepError::App("card post batch must be between 1 and 128"))
+  }
+  let t = base_codec::json_num(thread.to_double())
+  match card_check(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let initial = match card_scope_of(db, t) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  if card_phase(initial) == 2 {
+    return Ok(true)
+  }
+  let check_none = match card_scope_of(db, t) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match check_none {
+    None => {
+      match db.tx_err(
+        fn(tx_db : sql_db::Db) -> Result[Unit, StepError] {
+          let _ = match tx_db.run(
+            "INSERT INTO card_post_scopes(thread,last_n,end_n,phase) SELECT ?1,NULL,(SELECT n FROM entries WHERE thread=?1 ORDER BY n DESC LIMIT 1),0 WHERE NOT EXISTS (SELECT 1 FROM card_post_scopes WHERE thread=?1)",
+            [t],
+          ) {
+            Ok(n) => n
+            Err(e) => return Err(StepError::Sql(e))
+          }
+          Ok(())
+        },
+        fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Some(_) => ()
+  }
+  let before = match card_scope_of(db, t) {
+    Ok(Some(s)) => s
+    Ok(None) => return Err(StepError::App("card post scope is missing"))
+    Err(e) => return Err(e)
+  }
+  let at = card_phase(Some(before))
+  if at == 2 {
+    return Ok(true)
+  }
+  let indexes = match db.all(
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type='index' AND name IN ('entries_cards','entries_options')",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(StepError::Sql(e))
+  }
+  let indexed = indexes.length() > 0 &&
+  match indexes[0].get("n") {
+    Some(base_codec::Json::Num(n, _)) => n == 2.0
+    _ => false
+  }
+  if !indexed && at != 3 {
+    return db.tx_err(
+      fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+        let now = match card_scope_of(tx_db, t) {
+          Ok(s) => s
+          Err(e) => return Err(e)
+        }
+        if card_same_scope(now, before) {
+          let _ = match tx_db.run(
+            "UPDATE card_post_scopes SET last_n=NULL,phase=3 WHERE thread=?",
+            [t],
+          ) {
+            Ok(k) => k
+            Err(e) => return Err(StepError::Sql(e))
+          }
+        }
+        Ok(card_phase(now) == 2)
+      },
+      fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+    )
+  }
+  let column : Option[String] = if at == 3 {
+    None
+  } else if at == 0 {
+    Some("card")
+  } else {
+    Some("options")
+  }
+  let last = sql_db::row_val(before, "last_n")
+  let end = sql_db::row_val(before, "end_n")
+  let lim = base_codec::json_int(limit)
+  let rows = match last {
+    base_codec::Json::Null => {
+      match db.all(card_positions_query(column, false), [t, end, lim]) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+    }
+    _ => {
+      match db.all(card_positions_query(column, true), [t, last, end, lim]) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+    }
+  }
+  let add_sql = "INSERT INTO card_posts(thread,n) SELECT e.thread,e.n FROM entries e WHERE e.thread=?1 AND e.n=CAST(?2 AS INTEGER) AND e.kind='message' AND (e.card IS NOT NULL OR e.options IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM card_posts p WHERE p.thread=e.thread AND p.n=e.n)"
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let now = match card_scope_of(tx_db, t) {
+        Ok(s) => s
+        Err(e) => return Err(e)
+      }
+      if !card_same_scope(now, before) {
+        return Ok(card_phase(now) == 2)
+      }
+      for i in 0..<rows.length() {
+        let _ = match tx_db.run(add_sql, [t, sql_db::row_val(rows[i], "n")]) {
+          Ok(k) => k
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      let end_of_phase = rows.length() < limit
+      let next = if !end_of_phase {
+        at
+      } else {
+        match column {
+          None => 2
+          Some(_) => at + 1
+        }
+      }
+      let reached = if end_of_phase {
+        base_codec::json_null()
+      } else if rows.length() > 0 {
+        sql_db::row_val(rows[rows.length() - 1], "n")
+      } else {
+        base_codec::json_null()
+      }
+      let _ = match tx_db.run(
+        "UPDATE card_post_scopes SET last_n=CAST(? AS INTEGER),phase=? WHERE thread=?",
+        [reached, base_codec::json_int(next), t],
+      ) {
+        Ok(k) => k
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      Ok(next == 2)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder card-posts`
+/// (matches MB `{ "thread": Number(thread, ..), .. }`).
+pub fn card_posts_dispatch(
+  db : sql_db::Db,
+  ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match json_get_last(ask, "thread") {
+    Some(base_codec::Json::Num(thread, _)) => {
+      match card_posts_step(db, double_to_i64_saturating(thread), limit=128) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+    _ => Ok(None)
+  }
+}
+
+pub fn run_card_posts(db_path : String) -> Int {
+  builder_loop(db_path, "card post", card_posts_dispatch)
+}

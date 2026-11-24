@@ -67,12 +67,13 @@ function native(): Mesh | null {
 
 /// thumbs.rs `thumbnail`: the image's thumbnail and its type, made if it is not there yet (or made again when it is
 /// older than `since`, the image's time); null when the image is shown itself (small already, or not readable as an
-/// image).
-export async function thumbnail(image: string, thumbs: string, using: Codecs | null = native(), since?: number): Promise<Thumbnail | null> {
+/// image). When `boxed` is true, fits strictly within 720×600 without short-side preservation (`<id>.b.*`, for link
+/// previews in a temporary directory; `since` invalidation applies only to default unsuffixed thumbnails).
+export async function thumbnail(image: string, thumbs: string, using: Codecs | null = native(), since?: number, boxed = false): Promise<Thumbnail | null> {
   if (using === null) return null;
   if (since !== undefined) await kept(thumbs, idOf(image), since);
   try {
-    return await using.thumbnail(image, thumbs);
+    return boxed ? await using.thumbnail(image, thumbs, true) : await using.thumbnail(image, thumbs);
   } catch {
     return null;
   }

@@ -624,11 +624,15 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // window's tree's under the page and the block, what an old view says takes back (a page's own, a layer over all)
   // taking it before it; whose it is said at the cause that changes it, each step taken at its moment (wide_back_step)
   let held : Ref[WideBack?] = Ref(None)
+  let fwd_held : Ref[WideBack?] = Ref(None)
   let hint = back_hint_new(v)
   v.show(fn() { wide_takes_back(src) }, fn(b) {
     b.follows_back(fn(step) { wide_back_step(src, held, hint, step) }) |> ignore
     b.owns(fn() { wide_back_left(held, hint, v.cause_at()) }) |> ignore
   })
+  v.follows_forward(when=fn() { wide_takes_forward(src) }, fn(step) { wide_forward_step(src, fwd_held, hint, step) })
+  |> ignore
+  v.owns(fn() { wide_back_left(fwd_held, hint, v.cause_at()) }) |> ignore
   v.box(fn(row) {
     fold_goes.parts.clear()
     fold_goes.parts.push(row)

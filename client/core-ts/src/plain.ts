@@ -19,7 +19,7 @@ export function plainText(text: string, said: PlainWords): string {
       .replace(/<#[A-Z0-9]+\|([^>]+)>/g, "#$1")
       .replace(/<@[A-Z0-9]+\|([^>]+)>/g, "@$1")
       .replace(/<!(here|channel|everyone)(\|[^>]*)?>/g, "@$1")
-      .replace(/https?:\/\/[^\s<>()]+/g, () => words("link"))
+      .replace(/https?:\/\/[^\s<>()\uE000-\uF8FF]+/g, () => words("link"))
       .replace(/(\*\*|__|~~)(?=\S)([^\n]*?\S)\1/g, "$2")
       .replace(/(^|[^\w*])([*_])(?=[^\s*_])([^\n]*?[^\s*_])\2(?![\w*])/gm, "$1$3")
       .replace(/\\([\\`*_{}[\]()#+\-.!|~>])/g, "$1")
@@ -36,9 +36,24 @@ export function plainText(text: string, said: PlainWords): string {
         .replace(/^\s*\|(.*?)\|?\s*$/, (_, cells: string) => cells.split("|").map((c) => c.trim()).join(" "))
         .replace(/^ {0,3}([-*_]\s*){3,}$/, ""),
     );
-  // Code keeps its letters as they are: only what is outside it loses marks.
-  return lines.join("\n").split(/(`+)([^`]*?)\1/).map((part, i) => (i % 3 === 0 ? marks(part) : i % 3 === 2 ? part : "")).join("");
+  // Code keeps its letters as they are: only what is outside it loses marks. Each code span (and any letter of the
+  // private use area already there) stands as one such letter while the marks go, so that a mark around code (`**a `b`
+  // c**`) still pairs, and is put back after.
+  const kept: string[] = [];
+  const held = lines
+    .join("\n")
+    .replace(/(`+)([^`]*?)\1|[\uE000-\uF8FF]/g, (whole, _ticks: string | undefined, code: string | undefined) => {
+      // (past the area's last letter, code loses its marks too)
+      if (kept.length > LAST_HELD - HELD) return code ?? "";
+      kept.push(code ?? whole);
+      return String.fromCharCode(HELD + kept.length - 1);
+    });
+  return marks(held).replace(/[\uE000-\uF8FF]/g, (c) => kept[c.charCodeAt(0) - HELD] ?? c);
 }
+
+/// The first letter of the private use area: what code stands as while the marks around it go (plainText).
+const HELD = 0xe000;
+const LAST_HELD = 0xf8ff;
 
 /// What a link's address names as a picture.
 const IMAGE = /\.(png|jpe?g|gif|webp|svg|heic|avif)(\?[^)\s]*)?$/i;

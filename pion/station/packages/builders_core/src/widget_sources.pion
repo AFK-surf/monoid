@@ -1,0 +1,273 @@
+// Widget-sources backfill builder (`--builder widget-sources`), 1:1 aligned with
+// `station/mb/src/widgets/widgets.mbt` and `station/mb/src/reader/main.mbt:897-901`.
+// All write transactions go exclusively through `db.tx_err(...)` (never raw transaction SQL).
+
+import "base_codec"
+import "sql_db"
+
+let WIDGET_SOURCES_VERSION : Int = 1
+
+let WIDGET_VALID_ATTACHMENTS : String = "CASE WHEN json_valid(m.attachments) THEN m.attachments ELSE '[]' END"
+
+let WIDGET_PATH_OF : String = "CASE WHEN json_valid(a.value) THEN json_extract(a.value, '$.path') END"
+
+let WIDGET_NAME_OF : String = "CASE WHEN json_valid(a.value) THEN json_extract(a.value, '$.name') END"
+
+let WIDGET_MESSAGE : String = "SELECT ? AS thread, CAST(? AS INTEGER) AS n"
+
+fn widget_insert_rows_sql() -> String {
+  "INSERT INTO widget_source_rows (thread,n,slot,path,at,name) SELECT m.thread, m.n, a.id, " +
+  WIDGET_PATH_OF +
+  ", m.created_at, " +
+  WIDGET_NAME_OF +
+  " FROM (" +
+  WIDGET_MESSAGE +
+  ") k CROSS JOIN merged m ON m.thread = k.thread AND m.n = k.n CROSS JOIN json_each(" +
+  WIDGET_VALID_ATTACHMENTS +
+  ") a WHERE typeof(" +
+  WIDGET_PATH_OF +
+  ") = 'text' AND NOT EXISTS (SELECT 1 FROM widget_source_rows i WHERE i.thread = m.thread AND i.n = m.n AND i.slot = a.id)"
+}
+
+fn widget_insert_invalid_sql() -> String {
+  let inv = "(m.attachments IS NOT NULL AND (NOT json_valid(m.attachments) OR EXISTS (SELECT 1 FROM json_each(" +
+  WIDGET_VALID_ATTACHMENTS +
+  ") a WHERE a.value IS NOT NULL AND NOT json_valid(a.value))))"
+  "INSERT INTO widget_source_invalid (thread,n) SELECT m.thread, m.n FROM (" +
+  WIDGET_MESSAGE +
+  ") k CROSS JOIN merged m ON m.thread = k.thread AND m.n = k.n WHERE " +
+  inv +
+  " AND NOT EXISTS (SELECT 1 FROM widget_source_invalid i WHERE i.thread = m.thread AND i.n = m.n)"
+}
+
+fn widget_positions_query(after : Bool, indexed : Bool) -> String {
+  let range = if after {
+    "thread=?1 AND n>CAST(?2 AS INTEGER) AND n<=CAST(?3 AS INTEGER)"
+  } else {
+    "thread=?1 AND n<=CAST(?2 AS INTEGER)"
+  }
+  let limit = if after { "?4" } else { "?3" }
+  if !indexed {
+    return "SELECT CAST(entries.n AS TEXT) AS n FROM entries WHERE " +
+    range +
+    " ORDER BY entries.n LIMIT " +
+    limit
+  }
+  "SELECT CAST(n AS TEXT) AS n FROM ( SELECT n FROM entries INDEXED BY entries_said WHERE " +
+  range +
+  " AND kind='message' AND letter IS NULL UNION ALL SELECT n FROM entries INDEXED BY entries_letters WHERE " +
+  range +
+  " AND letter IS NOT NULL ORDER BY n LIMIT " +
+  limit +
+  " )"
+}
+
+fn widget_check(db : sql_db::Db) -> Result[Unit, StepError] {
+  let meta = match db.all("SELECT version FROM widget_source_meta WHERE id=1", []) {
+    Ok(r) => r
+    Err(e) => return Err(StepError::Sql(e))
+  }
+  if meta.length() == 0 {
+    return Err(
+      StepError::App(
+        "widget source index version missing is incompatible with " +
+        WIDGET_SOURCES_VERSION.to_string(),
+      ),
+    )
+  }
+  let m = meta[0]
+  let ver_ok = match m.get("version") {
+    Some(base_codec::Json::Num(v, _)) => v.to_int() == WIDGET_SOURCES_VERSION
+    _ => false
+  }
+  if !ver_ok {
+    return Err(
+      StepError::App(
+        "widget source index version " +
+        sql_db::stringify_json(sql_db::row_val(m, "version")) +
+        " is incompatible with " +
+        WIDGET_SOURCES_VERSION.to_string(),
+      ),
+    )
+  }
+  Ok(())
+}
+
+fn widget_scope_of(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Option[Map[String, base_codec::Json]], StepError] {
+  match db.all(
+    "SELECT CAST(last_n AS TEXT) AS last_n, CAST(end_n AS TEXT) AS end_n, complete FROM widget_source_scopes WHERE thread=?",
+    [thread],
+  ) {
+    Ok(rows) => if rows.length() > 0 { Ok(Some(rows[0])) } else { Ok(None) }
+    Err(e) => Err(StepError::Sql(e))
+  }
+}
+
+fn widget_scope_complete(sc : Option[Map[String, base_codec::Json]]) -> Bool {
+  match sc {
+    Some(s) => {
+      match s.get("complete") {
+        Some(base_codec::Json::Num(n, _)) => n == 1.0
+        _ => false
+      }
+    }
+    None => false
+  }
+}
+
+/// One batch of at most `limit` (128 at most) of `thread`'s old messages; whether all are prepared then.
+pub fn widget_sources_step(
+  db : sql_db::Db,
+  thread : Int64,
+  limit : Int = 128,
+) -> Result[Bool, StepError] {
+  if limit < 1 || limit > 128 {
+    return Err(StepError::App("widget source batch must be between 1 and 128"))
+  }
+  let t = base_codec::json_num(thread.to_double())
+  match widget_check(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let initial = match widget_scope_of(db, t) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  if widget_scope_complete(initial) {
+    return Ok(true)
+  }
+  let check_none = match widget_scope_of(db, t) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match check_none {
+    None => {
+      match db.tx_err(
+        fn(tx_db : sql_db::Db) -> Result[Unit, StepError] {
+          let _ = match tx_db.run(
+            "INSERT INTO widget_source_scopes (thread,last_n,end_n,complete) SELECT ?,NULL,(SELECT n FROM entries WHERE thread=? ORDER BY n DESC LIMIT 1),0 WHERE NOT EXISTS (SELECT 1 FROM widget_source_scopes WHERE thread=?)",
+            [t, t, t],
+          ) {
+            Ok(n) => n
+            Err(e) => return Err(StepError::Sql(e))
+          }
+          Ok(())
+        },
+        fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Some(_) => ()
+  }
+  let before = match widget_scope_of(db, t) {
+    Ok(Some(s)) => s
+    Ok(None) => return Err(StepError::App("widget source scope is missing"))
+    Err(e) => return Err(e)
+  }
+  if widget_scope_complete(Some(before)) {
+    return Ok(true)
+  }
+  let indexes = match db.all(
+    "SELECT count(*) AS n FROM sqlite_master WHERE type='index' AND name IN ('entries_said','entries_letters')",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(StepError::Sql(e))
+  }
+  let indexed = indexes.length() > 0 &&
+  match indexes[0].get("n") {
+    Some(base_codec::Json::Num(n, _)) => n == 2.0
+    _ => false
+  }
+  let last = sql_db::row_val(before, "last_n")
+  let end = sql_db::row_val(before, "end_n")
+  let lim = base_codec::json_int(limit)
+  let positions = match last {
+    base_codec::Json::Null => {
+      match db.all(widget_positions_query(false, indexed), [t, end, lim]) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+    }
+    _ => {
+      match db.all(widget_positions_query(true, indexed), [t, last, end, lim]) {
+        Ok(r) => r
+        Err(e) => return Err(StepError::Sql(e))
+      }
+    }
+  }
+  let ins_rows = widget_insert_rows_sql()
+  let ins_invalid = widget_insert_invalid_sql()
+  let before_complete = sql_db::row_val(before, "complete")
+  db.tx_err(
+    fn(tx_db : sql_db::Db) -> Result[Bool, StepError] {
+      let now = match widget_scope_of(tx_db, t) {
+        Ok(s) => s
+        Err(e) => return Err(e)
+      }
+      let same_scope = match now {
+        Some(n) => {
+          base_codec::json_eq(sql_db::row_val(n, "last_n"), last) &&
+          base_codec::json_eq(sql_db::row_val(n, "end_n"), end) &&
+          base_codec::json_eq(sql_db::row_val(n, "complete"), before_complete)
+        }
+        None => false
+      }
+      if !same_scope {
+        return Ok(widget_scope_complete(now))
+      }
+      for i in 0..<positions.length() {
+        let at = sql_db::row_val(positions[i], "n")
+        let _ = match tx_db.run(ins_rows, [t, at]) {
+          Ok(k) => k
+          Err(e) => return Err(StepError::Sql(e))
+        }
+        let _ = match tx_db.run(ins_invalid, [t, at]) {
+          Ok(k) => k
+          Err(e) => return Err(StepError::Sql(e))
+        }
+      }
+      let done = positions.length() < limit
+      let reached = if positions.length() > 0 {
+        sql_db::row_val(positions[positions.length() - 1], "n")
+      } else {
+        last
+      }
+      let _ = match tx_db.run(
+        "UPDATE widget_source_scopes SET last_n=CAST(? AS INTEGER), complete=? WHERE thread=?",
+        [reached, base_codec::json_int(if done { 1 } else { 0 }), t],
+      ) {
+        Ok(k) => k
+        Err(e) => return Err(StepError::Sql(e))
+      }
+      Ok(done)
+    },
+    fn(e : sql_db::SqlError) -> StepError { StepError::Sql(e) },
+  )
+}
+
+/// Request dispatcher for `--builder widget-sources`
+/// (matches MB `{ "thread": Number(thread, ..), .. }`).
+pub fn widget_sources_dispatch(
+  db : sql_db::Db,
+  ask : base_codec::Json,
+) -> Result[Option[Bool], StepError] {
+  match json_get_last(ask, "thread") {
+    Some(base_codec::Json::Num(thread, _)) => {
+      match widget_sources_step(db, double_to_i64_saturating(thread), limit=128) {
+        Ok(done) => Ok(Some(done))
+        Err(e) => Err(e)
+      }
+    }
+    _ => Ok(None)
+  }
+}
+
+pub fn run_widget_sources(db_path : String) -> Int {
+  builder_loop(db_path, "widget source", widget_sources_dispatch)
+}

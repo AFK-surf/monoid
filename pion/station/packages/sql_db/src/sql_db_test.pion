@@ -1,0 +1,125 @@
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "parse_int64_strict handles full Int64 range and rejects overflow/non-integers" {
+  match parse_int64_strict("0") {
+    Some(v) => expect(v == 0.to_int64(), "0")
+    None => panic("0")
+  }
+  match parse_int64_strict("-0") {
+    Some(v) => expect(v == 0.to_int64(), "-0")
+    None => panic("-0")
+  }
+  match parse_int64_strict("9007199254740993") {
+    Some(v) => expect(v == safe_most() + 2.to_int64(), "over safe")
+    None => panic("over safe")
+  }
+  match parse_int64_strict("9223372036854775807") {
+    Some(v) => expect(v.to_string() == "9223372036854775807", "INT64_MAX")
+    None => panic("INT64_MAX")
+  }
+  match parse_int64_strict("-9223372036854775808") {
+    Some(v) => expect(v.to_string() == "-9223372036854775808", "INT64_MIN")
+    None => panic("INT64_MIN")
+  }
+  // Overflows must return None (no silent wrap).
+  expect(match parse_int64_strict("9223372036854775808") { None => true, Some(_) => false }, "INT64_MAX+1")
+  expect(match parse_int64_strict("-9223372036854775809") { None => true, Some(_) => false }, "INT64_MIN-1")
+  expect(match parse_int64_strict("99999999999999999999999") { None => true, Some(_) => false }, "huge")
+  expect(match parse_int64_strict("1.5") { None => true, Some(_) => false }, "float")
+  expect(match parse_int64_strict("1e10") { None => true, Some(_) => false }, "exp")
+  expect(match parse_int64_strict("") { None => true, Some(_) => false }, "empty")
+  expect(match parse_int64_strict("-") { None => true, Some(_) => false }, "dash")
+}
+
+test "double_is_i64_integer and double_to_json handle NaN/Inf and integer bounds" {
+  expect(double_is_i64_integer(0.0), "0.0")
+  expect(double_is_i64_integer(-0.0), "-0.0")
+  expect(double_is_i64_integer(42.0), "42.0")
+  expect(double_is_i64_integer(-42.0), "-42.0")
+  expect(!double_is_i64_integer(1.5), "1.5")
+  expect(!double_is_i64_integer(-1.5), "-1.5")
+  let nan_v = 0.0 / 0.0
+  let inf_v = 1.0 / 0.0
+  expect(!double_is_i64_integer(nan_v), "NaN")
+  expect(!double_is_i64_integer(inf_v), "+Inf")
+  expect(!double_is_i64_integer(-inf_v), "-Inf")
+  expect(!double_is_i64_integer(9223372036854775808.0), "2^63 excluded")
+  expect(double_is_i64_integer(-9223372036854775808.0), "-2^63 included")
+  expect(base_codec::json_eq(double_to_json(nan_v), base_codec::json_null()), "NaN -> null")
+  expect(base_codec::json_eq(double_to_json(inf_v), base_codec::json_null()), "Inf -> null")
+}
+
+test "decode_utf8_lossy_bytes replaces invalid sequences per WHATWG maximal subpart" {
+  let b = Bytes::new(6)
+  b[0] = 0x61 as Byte // 'a'
+  b[1] = 0xFF as Byte // invalid -> U+FFFD
+  b[2] = 0xE2 as Byte // truncated 3-byte valid prefix -> 1 U+FFFD
+  b[3] = 0x82 as Byte
+  b[4] = 0x62 as Byte // 'b'
+  b[5] = 0x80 as Byte // lone continuation -> U+FFFD
+  let s = decode_utf8_lossy_bytes(b)
+  expect(s == "a\u{FFFD}\u{FFFD}b\u{FFFD}", "lossy decode: " + s)
+}
+
+test "is_busy matches SQLite busy and locked messages" {
+  expect(is_busy(sql_error(5, "database is locked")), "database is locked")
+  expect(is_busy(sql_error(6, "database table is locked")), "table is locked")
+  expect(!is_busy(sql_error(1, "no such table: foo")), "non-busy error")
+}
+
+test "row_val, row_int, json_blob_byte, and int64_to_json helpers" {
+  let row : Map[String, base_codec::Json] = Map::new()
+  row.set("n", base_codec::json_int(7))
+  row.set("s", base_codec::json_str("hi"))
+  expect(row_int(row, "n") == 7, "row_int present")
+  expect(row_int(row, "s") == -1, "row_int non-num")
+  expect(row_int(row, "missing") == -1, "row_int missing")
+  expect(base_codec::json_eq(row_val(row, "missing"), base_codec::json_null()), "row_val missing")
+  expect(json_blob_byte(base_codec::json_int(255)).to_int() == 255, "blob 255")
+  expect(json_blob_byte(base_codec::json_int(256)).to_int() == 0, "blob 256 wraps to 0")
+  expect(json_blob_byte(base_codec::json_num(9223372036854775808.0)).to_int() == 255, "blob 2^63 saturates to 255")
+  expect(json_blob_byte(base_codec::json_num(1.0 / 0.0)).to_int() == 255, "blob +Inf saturates to 255")
+  expect(json_blob_byte(base_codec::json_num(1.5)).to_int() == 0, "blob 1.5 -> 0")
+  expect(json_blob_byte(base_codec::json_int(-1)).to_int() == 0, "blob neg -> 0")
+  expect(json_blob_byte(base_codec::json_str("x")).to_int() == 0, "blob str -> 0")
+  let safe = safe_most()
+  match int64_to_json(safe) {
+    base_codec::Json::Num(_, repr) => expect(repr == "", "SAFE_MOST has empty repr")
+    _ => panic("expected Num")
+  }
+  let over = safe + 2.to_int64()
+  match int64_to_json(over) {
+    base_codec::Json::Num(_, repr) => expect(repr == "9007199254740993", "exact repr beyond SAFE_MOST")
+    _ => panic("expected Num")
+  }
+  expect(is_pure_integer_repr("42"), "42 pure int")
+  expect(is_pure_integer_repr("-0"), "-0 pure int")
+  expect(!is_pure_integer_repr("1.0"), "1.0 not pure int")
+  expect(!is_pure_integer_repr("1e2"), "1e2 not pure int")
+
+  // parse_json aligns repr with MoonBit @json.parse: keep repr only for non-finite or |int| > SAFE_MOST.
+  match parse_json("1.0") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, r)) => expect(d == 1.0 && r == "", "1.0 clears repr")
+    _ => panic("parse 1.0")
+  }
+  match parse_json("1e2") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, r)) => expect(d == 100.0 && r == "", "1e2 clears repr")
+    _ => panic("parse 1e2")
+  }
+  match parse_json("1e400") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, r)) => expect(is_nan_or_inf(d) && r == "1e400", "1e400 keeps repr")
+    _ => panic("parse 1e400")
+  }
+  match parse_json("9007199254740992") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(_, r)) => expect(r == "9007199254740992", "2^53 keeps repr")
+    _ => panic("parse 9007199254740992")
+  }
+  match parse_json("18446744073709551615") {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(_, r)) => expect(r == "18446744073709551615", "u64 max keeps repr")
+    _ => panic("parse 18446744073709551615")
+  }
+}

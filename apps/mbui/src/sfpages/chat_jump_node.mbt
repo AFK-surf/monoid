@@ -43,6 +43,7 @@ priv struct ChatJump {
   mut landing : Bool
   mut stood : (Double?, String, Double)
   mut around : Double
+  mut beyond : Double
   mut ask_to : Double
   asked_card : @signals.Signal[String]
   flashed : @signals.Signal[(String, Double, String)]
@@ -92,6 +93,7 @@ fn ChatJump::new() -> ChatJump {
     landing: false,
     stood: (None, "", 0.0),
     around: -1.0,
+    beyond: -1.0,
     ask_to: -1.0,
     asked_card: @signals.signal("", same=fn(a, b) { a == b }),
     flashed: @signals.signal(("", -1.0, ""), same=fn(a, b) { a == b }),
@@ -118,7 +120,7 @@ fn chat_top_in_sight(s : @view.Sight[String], rs : ChatBodyNow, k : String, slic
     return Some(s.tall - s.into)
   }
   guard slice == 0 && s.slice == rs.slices(s.first) - 1 else { return None }
-  match rs.keys.search(s.first) {
+  match rs.index_of(s.first) {
     Some(i) if rs.keys.get(i + 1) == Some(k) => Some(s.tall - s.into)
     _ => None
   }
@@ -152,7 +154,7 @@ fn chat_reader_at(
   cover : Double,
   top : Double,
 ) -> ChatReaderAt? {
-  guard rs.keys.search(s.first) is Some(i) else { return None }
+  guard rs.index_of(s.first) is Some(i) else { return None }
   // (the block looked at: its key's place among the rows, which slice of it, how far its top is under the window's top,
   // and whether it is the first in sight. Past the first in sight where little of it shows: the next slice of the same
   // key where it has one, else the next key's first, its top where the first's block ends)
@@ -232,7 +234,7 @@ fn chat_reader_at(
 /// The last message the list of rows `rs` has in sight (`s`; -1 none): what ⌘F starts at lies between it and the
 /// reader's (sfbase's Reading's bottom_seq).
 fn chat_bottom_in_sight(s : @view.Sight[String], rs : ChatBodyNow) -> Double {
-  guard rs.keys.search(s.last) is Some(j) else { return -1.0 }
+  guard rs.index_of(s.last) is Some(j) else { return -1.0 }
   let mut i = j
   while i >= 0 {
     match rs.get(rs.keys[i]).map(fn(row) { row.entry }) {
@@ -380,9 +382,7 @@ fn chat_goes_to(
   // (where the reader is said to be, chat `r`'s reading (sfbase's), as what shows `s` has it: as it is placed, and as
   // its page shows again with nothing of it moved (taken back from the stack's kept left, its reading let go of as it
   // left: chat.mbt's), where the list's sight is not told again)
-  let sync_reading = fn(s : @view.Sight[String]) {
-    let cv = @signals.untracked(view)
-    let rs = @signals.untracked(fn() { rows.read() })
+  let sync_reading_with = fn(s : @view.Sight[String], cv : ChatView, rs : ChatBodyNow) {
     let at_foot = s.at_foot || s.from_foot <= 0.5
     // (placed while it shows: sfbase's keep_place_of)
     let rd = @sfbase.reading_of(chat)
@@ -417,6 +417,11 @@ fn chat_goes_to(
     // (where the reader is, told: the rail's long tick)
     jump.reader.set((rd.top_seq, rd.at_end))
   }
+  let sync_reading = fn(s : @view.Sight[String]) {
+    let cv = @signals.untracked(view)
+    let rs = @signals.untracked(fn() { rows.read() })
+    sync_reading_with(s, cv, rs)
+  }
   place.on_sight(fn(s) {
     let cv = @signals.untracked(view)
     let rs = @signals.untracked(fn() { rows.read() })
@@ -431,9 +436,10 @@ fn chat_goes_to(
     }
     // (on its glide back to its end: there, the glide over short of it (what it holds changed under it), or going
     // further from it (the wheel's), no longer)
+    let mut stop_gliding = false
     if jump.gliding.untracked() {
       if at_foot || (!place.asking() && scroll.glides_till() is None) || s.from_foot > jump.glide_left + 0.5 {
-        jump.gliding.set(false)
+        stop_gliding = true
       } else {
         jump.glide_left = s.from_foot
       }
@@ -441,12 +447,24 @@ fn chat_goes_to(
     // (scrolled by the hand once it was in sight, shown: what floats over its foot comes and goes on its way; as it is
     // first in sight, at once, @view.transition)
     let away_now = !at_foot && s.from_foot > to_newest_away
-    if v.cause_at() > jump.sight_from && @signals.untracked(shows) {
-      @view.transition(fn() { jump.away.set(away_now) })
-    } else {
-      jump.away.set(away_now)
+    let sight_now = Some((s.first, s.last, s.last_slice))
+    if stop_gliding || away_now != jump.away.untracked() || sight_now != jump.sight.untracked() {
+      if v.cause_at() > jump.sight_from && @signals.untracked(shows) {
+        @view.transition(fn() {
+          if stop_gliding {
+            jump.gliding.set(false)
+          }
+          jump.away.set(away_now)
+          jump.sight.set(sight_now)
+        })
+      } else {
+        if stop_gliding {
+          jump.gliding.set(false)
+        }
+        jump.away.set(away_now)
+        jump.sight.set(sight_now)
+      }
     }
-    jump.sight.set(Some((s.first, s.last, s.last_slice)))
     // (where the page put it: there once what it asked is done, its block's top as it then stood; moved off it since,
     // the reader's (a message arriving or growing at the foot, a page before come in over it, a row over it measured
     // anew move none of it: the list holds what is read))
@@ -471,7 +489,7 @@ fn chat_goes_to(
         }
       _ => ()
     }
-    sync_reading(s)
+    sync_reading_with(s, cv, rs)
   })
   // (the hand on it: the reader's from then)
   v.reacts(
@@ -518,6 +536,7 @@ fn chat_goes_to(
     @sfbase.go_to_around.remove(chat)
     find_goes.remove(chat)
     jump.around = -1.0
+    jump.beyond = -1.0
     jump.ask_to = -1.0
     if said {
       @sfbase.toast_later(@sf.t("web-main.chat.messageGone"))
@@ -579,6 +598,7 @@ fn chat_goes_to(
         let card = jump.ask_to == target
         jump.ask_to = -1.0
         jump.around = -1.0
+        jump.beyond = -1.0
         // (the slice of a long message that holds what was meant in it: its block brought, View::sought's there)
         // (back where the reader was: the slice that was at the top, where the place said one and it is one still)
         let back_at = match (back, back_piece) {
@@ -648,6 +668,10 @@ fn chat_goes_to(
         chat_stand(jump, place, k, stand_at, c, slice=pk, glide=back is None && in_sight, sought=back is None)
       }
       None if first is Some(f) && last is Some(l) && target >= f && target <= l => give_up(true)
+      // (past all the device holds of the chat, none said to come after it: not on the device yet (a notification
+      // tapped before what it tells was brought), waited for as the chat's rows come, never said gone; the hand on the
+      // list lets it go)
+      None if !cv.newer && (match last { Some(l) => target > l; None => true }) => jump.beyond = target
       None => {
         let before = cv.more && (match first { Some(f) => target < f; None => true })
         let after = cv.newer && (match last { Some(l) => target > l; None => true })
@@ -681,6 +705,16 @@ fn chat_goes_to(
     }
   }
   v.reacts(fn() { ((rows.keys)(), @sfbase.go_tos_said.get()) }, fn(_) { goes() })
+  // (a message waited for past the chat's end, the reader's hand on the list meanwhile: let go of, unsaid)
+  v.reacts(
+    fn() { scroll.in_hand() },
+    fn(held) {
+      if held && jump.beyond >= 0.0 && @sfbase.go_tos.get(chat) == Some(jump.beyond) {
+        give_up(false)
+      }
+    },
+    at_start=false,
+  )
   // (its latest page come in place of a window short of the chat's end, asked: the list at its end)
   v.reacts(
     fn() { view().newer },
@@ -1460,29 +1494,37 @@ fn chat_ask_shown(jump : ChatJump, view : () -> ChatView, rows : ChatBodyList) -
     // asks_in_view, every one in view to hide it; the one the chat's end says it stands on (the core's `stateAsk`)
     // seen where that line is, not its post, as ask_rows_of has it)
     let seen : Array[Double] = []
-    let mut inside = false
-    for k in rs.keys {
-      if k == first {
-        inside = true
-      }
-      if inside {
-        match rs.get(k).map(fn(row) { row.entry }) {
-          Some(Said(m)) if asks.contains(m.seq) &&
-            v.state_ask != Some(m.seq) &&
-            !seen.contains(m.seq) &&
-            // (what it asks under its last slice: seen where that is, the last in sight's only where it is that slice)
-            (k != last || last_slice >= rs.slices(k) - 1) => seen.push(m.seq)
-          Some(State(_, _, _)) =>
-            match v.state_ask {
-              Some(seq) if asks.contains(seq) && !seen.contains(seq) => seen.push(seq)
+    match rs.index_of(first) {
+      Some(start) => {
+        let reversed = match rs.index_of(last) {
+          Some(end_idx) => end_idx < start
+          None => false
+        }
+        if !reversed {
+          let mut i = start
+          while i < rs.keys.length() {
+            let k = rs.keys[i]
+            match rs.get(k).map(fn(row) { row.entry }) {
+              Some(Said(m)) if asks.contains(m.seq) &&
+                v.state_ask != Some(m.seq) &&
+                !seen.contains(m.seq) &&
+                // (what it asks under its last slice: seen where that is, the last in sight's only where it is that slice)
+                (k != last || last_slice >= rs.slices(k) - 1) => seen.push(m.seq)
+              Some(State(_, _, _)) =>
+                match v.state_ask {
+                  Some(seq) if asks.contains(seq) && !seen.contains(seq) => seen.push(seq)
+                  _ => ()
+                }
               _ => ()
             }
-          _ => ()
+            if k == last {
+              break
+            }
+            i = i + 1
+          }
         }
       }
-      if k == last {
-        break
-      }
+      None => ()
     }
     asks.iter().any(fn(a) { !seen.contains(a) })
   }

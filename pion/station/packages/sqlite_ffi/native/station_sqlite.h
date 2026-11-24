@@ -11,6 +11,9 @@ extern "C" {
 // (bundled rusqlite), avoiding JSON serialization on hot SQLite paths.
 // Handles are generation-checked indices into private C tables (never raw pointers)
 // so double-close, double-finalize, and post-close calls fail safely without UAF.
+// Threading contract: the internal handle-table mutex protects slot allocation/release
+// only. Each SQLite connection handle and its prepared statement handles must be used
+// serially by a single owner thread (matching SQLITE_OPEN_NO_MUTEX).
 
 int64_t stq_open(const char *path, int32_t flags, int32_t busy_timeout_ms);
 int32_t stq_close(int64_t db);
@@ -32,6 +35,10 @@ int32_t stq_finalize(int64_t stmt);
 int32_t stq_reset(int64_t stmt);
 int32_t stq_clear_bindings(int64_t stmt);
 int32_t stq_step(int64_t stmt);
+// Single-owner thread contract: caller must serialize all calls on the same db/stmt handle.
+int32_t stq_stmt_readonly(int64_t stmt);
+// Single-owner thread contract: caller must serialize all calls on the same db/stmt handle.
+int32_t stq_bind_parameter_count(int64_t stmt);
 
 int32_t stq_bind_null(int64_t stmt, int32_t index);
 int32_t stq_bind_int64(int64_t stmt, int32_t index, int64_t value);
@@ -47,6 +54,7 @@ double stq_column_double(int64_t stmt, int32_t index);
 void *stq_column_text(int64_t stmt, int32_t index, int64_t *out_len);
 void *stq_column_blob(int64_t stmt, int32_t index, int64_t *out_len);
 
+void *stq_format_js_double(double value, int64_t *out_len);
 void stq_free(void *ptr);
 
 #ifdef __cplusplus

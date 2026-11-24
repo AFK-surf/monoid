@@ -514,13 +514,19 @@ jobs:
       # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
       # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
       # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
-      # (less the 1-5 s of "Set up job" before it, as windows'; the SDK checked in the same step, one step's start less)
+      # (less the 1-5 s of "Set up job" before it and what GitHub counts past them: less 5, 45386683892's JOB_END was 301 s
+      # after the job began, and cut 32 s before it the job was cancelled at 301 s; less 8, it is at 298. The SDK checked
+      # in the same step, one step's start less; and the compiler's version, for the engine's key below, asked while the
+      # machine is idle: asked beside moonc the key took 13 s there)
       - name: The job's end, its image and iOS's SDK 27.1 or later
         run: |
-          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 8 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
+          set -o pipefail
+          cc=$(xcrun --sdk iphoneos clang++ --version)
+          echo "IOS_CLANG_VERSION=${cc%%$'\n'*}" >> "$GITHUB_ENV"
           v=$(xcrun --sdk iphoneos --show-sdk-version)
           echo "iOS SDK $v ($(xcodebuild -version | head -1))"
           case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac
@@ -565,14 +571,26 @@ jobs:
           echo "$!" > "$B/pid"
       # (restored on every run; saved by main's alone: a branch's would be its own, and the cache has 10 GB; before the
       # setup: whether core.hbc is in it says whether the job needs pnpm, below)
+      # (the units alone: core.hbc, 33 MB of the 62-72, has its own cache below, and was taken and saved twice)
       - uses: actions/cache/restore@v4
         id: store
+        with:
+          path: .ci/mbc-store
+          key: mbui-ios-${{ env.IMG }}-${{ github.sha }}
+          # (this image's, else another's: each image's kept apart, above)
+          restore-keys: |
+            mbui-ios-${{ env.IMG }}-
+            mbui-ios-
+      # (until main's store is saved so: a cache is found by its path list too, so the stores kept with core.hbc beside
+      # the units answer only this one; without it the first runs compile all ~1000 units cold, more than a push's 5
+      # minutes. To go once main has saved one)
+      - uses: actions/cache/restore@v4
+        if: steps.store.outputs.cache-matched-key == ''
         with:
           path: |
             .ci/mbc-store
             .ci/hbc
           key: mbui-ios-${{ env.IMG }}-${{ github.sha }}
-          # (this image's, else another's: each image's kept apart, above)
           restore-keys: |
             mbui-ios-${{ env.IMG }}-
             mbui-ios-
@@ -649,8 +667,10 @@ jobs:
         id: ios-engine-key
         run: |
           set -o pipefail
-          # (its first line, cut here: a pipe into head could end clang++ on a closed pipe, and pipefail the step)
-          cc=$(xcrun --sdk iphoneos clang++ --version)
+          # (its first line, the job's first step's; asked here only where that is empty, and cut here: a pipe into head
+          # could end clang++ on a closed pipe, and pipefail the step)
+          cc=${IOS_CLANG_VERSION:-}
+          [ -n "$cc" ] || cc=$(xcrun --sdk iphoneos clang++ --version)
           cc=${cc%%$'\n'*}
           sources=$(shasum -a 256 apps/mbui/src/host/apple_core.mm apps/mbui/engine/ready_queue.h \
             apps/mbui/src/host/apple_collate.h apps/mbui/src/host/electron_sealed.h apps/mbui/src/host/core_api.h \
@@ -688,8 +708,10 @@ jobs:
       # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
       # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused), 14 s in main's jobs 135458429309 and
       # 135478118156 (16 s of the 30 left unused). Cut at 24 s, the store's and hbc's saves left moon-room 11-13 s, under
-      # its 18, and moon's build was never saved, each run's moonc 111 s again (44722052834): cut at 32 s, moon-room
-      # needs 14 (its save 10-11 s, the post steps 2-3). The core for a device first (its
+      # its 18, and moon's build was never saved, each run's moonc 111 s again (44722052834). Cut at 32 s, a slow runner's
+      # 45386683892 (the stop 1 s, the store's key and save 15, hbc's 4, the post steps 9) was cancelled at 301 s: cut at
+      # 36 s of a JOB_END 3 s earlier, 7 s more, and moon-room takes a cut build's with 20 left, where 45370310593 and
+      # 45355691252 would now have 25 and 28 (its key and save 9-10 s, the post steps 1-5). The core for a device first (its
       # engine, the shell's and libghostty-vt's headers; core.hbc, from the step that began it beside the restores or
       # HBC_CACHE's), beside moonc where that still runs, so that
       # ios.sh's own (app_libs, beside its mbc compile) only finds it and no unit reads ghostty/vt.h as it is copied;
@@ -699,7 +721,7 @@ jobs:
         id: build
         run: |
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 32)) bash -ec '
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 36)) bash -ec '
             bash apps/mbui/scripts/core.sh apple-native aarch64-apple-ios
             touch "$RUNNER_TEMP/ios-engine-made"
             H=$RUNNER_TEMP/ios-hermes
@@ -766,40 +788,62 @@ jobs:
             # store grew run after run, its save 29 s, 44370994879)
             [ ! -d .ci/mbc-store ] || find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
           fi
-          echo "STORE_KEY=mbui-ios-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
+          # (only with room for it: a save the job's end cuts is lost, and turns a job whose build went through cancelled)
+          left=$(( JOB_END - $(date +%s) ))
+          if [ "$left" -gt 20 ]; then
+            echo "STORE_KEY=mbui-ios-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store)" >> "$GITHUB_ENV"
+          else
+            echo "the units' store not saved (${left} s left)"
+          fi
       - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
+          path: .ci/mbc-store
           key: ${{ env.STORE_KEY }}
       # (main's core.hbc kept on its own, read by every image's runs: hbc above)
       - name: The core's bytecode's key
         if: always() && github.ref == 'refs/heads/main' && steps.start.outcome == 'success'
-        run: '[ -z "$(ls -A .ci/hbc 2>/dev/null)" ] || echo "HBC_KEY=mbui-ios-hbc-$(sh apps/mbui/scripts/held.sh .ci/hbc)" >> "$GITHUB_ENV"'
+        run: |
+          left=$(( JOB_END - $(date +%s) ))
+          if [ -z "$(ls -A .ci/hbc 2>/dev/null)" ]; then
+            echo "no core's bytecode to save"
+          elif [ "$left" -gt 20 ]; then
+            echo "HBC_KEY=mbui-ios-hbc-$(sh apps/mbui/scripts/held.sh .ci/hbc)" >> "$GITHUB_ENV"
+          else
+            echo "the core's bytecode not saved (${left} s left)"
+          fi
       - if: always() && !cancelled() && github.ref == 'refs/heads/main' && env.HBC_KEY != '' && env.HBC_KEY != steps.hbc.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: .ci/hbc
           key: ${{ env.HBC_KEY }}
       # (moon's build kept once moonc has made the app's C (stillfail.c), a cut build's too, as the linux job's moon-room:
       # saved only of a build that went through, every run cut in its -O2 C did moonc's ~90-120 s again and was cut again
       # (44334978946, 2026-11-18). Keyed by that C: one the same is not saved again; mbc's units are the store's. Only
-      # of a moonc that went through (its status 0): one stopped in the middle left its C half written.)
+      # of a moonc that went through (its status 0): one stopped in the middle left its C half written. After a build that
+      # went through, with 38 s left: 45376510165, its .ipa made and uploaded, saved it with 30 left at 4-6 MB/s, 3 s of
+      # key, 20 of save and 11 of post steps, and was cancelled at 302 s. After a cut one with 20: it is red already, and
+      # 38 is more than the 36 it is cut at, so it would never be saved, as 44722052834's)
       - id: moon-room
         if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
         run: |
           c=apps/mbui/out/ios-device/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
-          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt 14 ]; then
+          room=20; [ "${{ steps.build.outcome }}" != success ] || room=38
+          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt "$room" ]; then
             find apps/mbui/out/ios-device/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
             echo "key=mbui-ios-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
-            echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
+            echo "moon's build not saved: stillfail.c=${c} (${left} s left, ${room} needed)"
           fi
       - if: always() && steps.moon-room.outputs.key != '' && steps.moon-room.outputs.key != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: |
             apps/mbui/out/ios-device/_build
@@ -807,18 +851,22 @@ jobs:
           key: ${{ steps.moon-room.outputs.key }}
       # (main's, when it compiled the engine here: once core.sh apple-native went through, a build cut after it too, so a
       # run cut in moonc's C still spares the next its 34 s. Last, after moon's build, which is longer to make again: a
-      # 292 KB save, only with room left before the job is cut)
+      # 292 KB save, 1-3 s, only with room left before the job is cut: 18 s for it and the post steps' 10-14 after a build
+      # that went through, 12 after a cut one, which has 15-18 left after moon's build)
       - id: ios-engine-room
         if: always() && github.ref == 'refs/heads/main' && steps.ios-engine.outputs.cache-hit != 'true' && steps.build.outcome != 'skipped'
         run: |
           left=$(( JOB_END - $(date +%s) ))
-          if [ -f "$RUNNER_TEMP/ios-engine-made" ] && [ -s apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a ] && [ "$left" -gt 8 ]; then
+          room=12; [ "${{ steps.build.outcome }}" != success ] || room=18
+          if [ -f "$RUNNER_TEMP/ios-engine-made" ] && [ -s apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a ] && [ "$left" -gt "$room" ]; then
             echo "save=true" >> "$GITHUB_OUTPUT"
           else
-            echo "the iOS engine not saved (${left} s left)"
+            echo "the iOS engine not saved (${left} s left, ${room} needed)"
           fi
       - if: always() && steps.ios-engine-room.outputs.save == 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a
           key: ${{ steps.ios-engine-key.outputs.key }}

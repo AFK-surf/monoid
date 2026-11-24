@@ -87,7 +87,9 @@ export const BRIEF_MAX_MS = 8_000;
 /// `tasks` and `plan`: what it has going in the background (each with since when, on this device's clock) and its
 /// checklist, as its station last said them (none from a station from before it says them).
 /// `failed`: why its transcript's last read failed (it is read again while shown), till one answers.
-export type LiveView = { steps: unknown[]; phase: unknown | null; rate: number | null; usage: unknown; loaded: boolean; failed?: string; tasks?: unknown[]; plan?: unknown[] };
+/// `told`: how many entries its transcript has as its stream last said, whether or not they are taken here (none: it has
+/// not said): steps in flight go on from there, so they are shown only once what is held goes that far.
+export type LiveView = { steps: unknown[]; phase: unknown | null; rate: number | null; usage: unknown; loaded: boolean; failed?: string; tasks?: unknown[]; plan?: unknown[]; told?: number };
 
 /// Why a station taken for down is not reached, as far as the device can tell: `network`, still.fail cloud is not
 /// reached either (the device's own network, most likely); `station`, the cloud says it is not online; `unreached`, the

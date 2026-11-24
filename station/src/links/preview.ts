@@ -324,18 +324,16 @@ async function iconOf(href: string): Promise<string | null> {
 
 const PICTURE_EXT: Record<string, string> = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp" };
 
-/// A page's picture as a data: URL: itself when it is small, else its thumbnail (drive/thumbs.ts, made in a directory
-/// of its own, gone after); null when it is neither (too big, and no thumbnail made of it).
-async function picture(href: string): Promise<string | null> {
-  const found = await fetchImage(href, PICTURE_BYTES);
-  if (!found) return null;
+/// Downloaded picture bytes as an inline data: URL: itself when small, else a boxed 720×600 thumbnail (drive/thumbs.ts,
+/// made in a temporary directory and removed after); null when neither fits within PICTURE_INLINE.
+export async function inlinePicture(found: { type: string; bytes: Buffer }): Promise<string | null> {
   const ext = PICTURE_EXT[found.type];
   if (ext && found.bytes.length > PICTURE_INLINE) {
     const dir = await mkdtemp(join(tmpdir(), "stillfail-link-"));
     try {
       const file = join(dir, `picture.${ext}`);
       await writeFile(file, found.bytes);
-      const small = await thumbnail(file, dir);
+      const small = await thumbnail(file, dir, undefined, undefined, true);
       if (small) {
         const bytes = await readFile(small.path);
         return bytes.length > PICTURE_INLINE ? null : dataUrl(small.type, bytes);
@@ -345,6 +343,13 @@ async function picture(href: string): Promise<string | null> {
     }
   }
   return found.bytes.length > PICTURE_INLINE ? null : dataUrl(found.type, found.bytes);
+}
+
+/// A page's picture as a data: URL: itself when it is small, else its thumbnail (drive/thumbs.ts, made in a directory
+/// of its own, gone after); null when it is neither (too big, and no thumbnail made of it).
+async function picture(href: string): Promise<string | null> {
+  const found = await fetchImage(href, PICTURE_BYTES);
+  return found ? inlinePicture(found) : null;
 }
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };

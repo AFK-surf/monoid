@@ -34,9 +34,10 @@ export class EventLog<To> {
   /// This run of the log, in each event's id: a number of another run says nothing here.
   readonly run: string;
   #seq = 0;
-  /// What is kept, oldest first, how much it is, and the number of the last let go (nothing before it can be gone on
-  /// from).
+  /// What is kept, oldest first, from `#head` on, how much it is, and the number of the last let go (nothing before it
+  /// can be gone on from). Before `#head`, what was let go and not yet cut off the array (`#letGo`).
   #kept: Logged<To>[] = [];
+  #head = 0;
   #bytes = 0;
   #forgotten = 0;
   /// What is kept that says a thing whole, by the thing.
@@ -72,7 +73,9 @@ export class EventLog<To> {
 
   /// What it keeps, for the log that goes on from it in the next process (`from`).
   kept(): Kept<To> {
-    return { run: this.run, seq: this.#seq, forgotten: this.#forgotten, events: this.#kept.filter((e) => e.text !== "") };
+    const events: Logged<To>[] = [];
+    for (let i = this.#head; i < this.#kept.length; i++) if (this.#kept[i]!.text !== "") events.push(this.#kept[i]!);
+    return { run: this.run, seq: this.#seq, forgotten: this.#forgotten, events };
   }
 
   /// Appends an event, at `now`: the event as it goes out, with its id. `of`: the thing it says whole (a session, a
@@ -97,18 +100,28 @@ export class EventLog<To> {
   }
 
   /// Lets go of the oldest kept, while it keeps more than it may or they are older than it keeps them at `now`.
+  ///
+  /// A full log lets go of one at nearly every append: cutting the array (and looking through `#latest`) each time
+  /// copied its 20,000 and made an append 100 times slower (0.5 µs to 53 µs). What is let go is passed by `#head`, its
+  /// text dropped, and the array cut once that is half of it; of `#latest`, only what is let go is looked at (what it
+  /// holds is always kept: the last that said its thing).
   #letGo(now: number) {
     const { ms, most, bytes } = this.keeps;
-    let gone = 0;
+    let gone = this.#head;
     while (gone < this.#kept.length && (this.#kept.length - gone > most || this.#bytes > bytes || now - this.#kept[gone]!.at > ms)) {
-      this.#bytes -= this.#kept[gone]!.text.length;
+      const e = this.#kept[gone]!;
+      this.#bytes -= e.text.length;
+      if (e.of !== undefined && this.#latest.get(e.of) === e) this.#latest.delete(e.of);
+      e.text = "";
       gone++;
     }
-    if (gone > 0) {
+    if (gone > this.#head) {
       this.#forgotten = this.#kept[gone - 1]!.n;
-      this.#kept = this.#kept.slice(gone);
-      const from = this.#kept[0]?.n ?? Infinity;
-      for (const [thing, e] of this.#latest) if (e.n < from) this.#latest.delete(thing);
+      this.#head = gone;
+      if (this.#head * 2 >= this.#kept.length) {
+        this.#kept = this.#kept.slice(this.#head);
+        this.#head = 0;
+      }
     }
   }
 
@@ -128,7 +141,13 @@ export class EventLog<To> {
   /// when `since` cannot be gone on from.
   after(since: string): Logged<To>[] {
     const n = this.#from(since);
-    return n === null ? [] : this.#kept.filter((e) => e.n > n && e.text !== "");
+    if (n === null) return [];
+    const after: Logged<To>[] = [];
+    for (let i = this.#head; i < this.#kept.length; i++) {
+      const e = this.#kept[i]!;
+      if (e.n > n && e.text !== "") after.push(e);
+    }
+    return after;
   }
 
   /// Where the log is now (`<run>.<n>`): a stream told all that is appended from now on can go on from it.
@@ -139,6 +158,7 @@ export class EventLog<To> {
   /// Lets go of all that is kept (nobody followed for long): nothing before now can be gone on from.
   clear(): void {
     this.#kept = [];
+    this.#head = 0;
     this.#bytes = 0;
     this.#latest.clear();
     this.#forgotten = ++this.#seq;
@@ -146,6 +166,6 @@ export class EventLog<To> {
 
   /// How it stands, for the log line of a stream that could not go on.
   state(): { run: string; forgotten: number; told: number; kept: number; bytes: number } {
-    return { run: this.run, forgotten: this.#forgotten, told: this.#seq, kept: this.#kept.length, bytes: this.#bytes };
+    return { run: this.run, forgotten: this.#forgotten, told: this.#seq, kept: this.#kept.length - this.#head, bytes: this.#bytes };
   }
 }

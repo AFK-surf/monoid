@@ -13,6 +13,7 @@ test "SQLite open flags and result constants match C ABI" {
   expect((rw & OPEN_READWRITE) != 0, "OPEN_READWRITE")
   expect((rw & OPEN_CREATE) != 0, "OPEN_CREATE")
   expect((rw & OPEN_FULLMUTEX) != 0, "OPEN_FULLMUTEX")
+  expect(OPEN_NO_MUTEX == 32768, "OPEN_NO_MUTEX == 0x8000")
 }
 
 test "WAL checkpoint modes are validated" {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,28 @@ test("every part's key off one listing of the checkout is git's own, file by fil
     parts++;
   }
   assert.ok(parts > 40, `${parts} parts and targets`);
+});
+
+test("one part's key asks git of its own paths alone, and is the one off a listing of the checkout", (t) => {
+  const listed = tree(root);
+  const dir = mkdtempSync(join(tmpdir(), "native-one-key-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const calls = join(dir, "calls"), git = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  writeFileSync(join(dir, "git"), `#!/bin/sh\nprintf '%s ' "$@" >> "${calls}"; echo >> "${calls}"\nexec "${git}" "$@"\n`);
+  chmodSync(join(dir, "git"), 0o755);
+  for (const [part, target] of [["shell-apple", "ios-arm64"], ["reader", "darwin-arm64"]] as const) {
+    const ours = key(part, target);
+    assert.equal(ours, key(part, target, inputsByGit), `${part}:${target}`);
+    assert.equal(ours, key(part, target, (paths) => inputsIn(listed, paths)!), `${part}:${target}`);
+    rmSync(calls, { force: true });
+    const run = spawnSync(process.execPath, [join(root, "scripts/native.ts"), "key", part, target],
+      { cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${dir}:${process.env.PATH}` } });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), ours, `${part}:${target}`);
+    const lists = readFileSync(calls, "utf8").split("\n").filter((c) => c.startsWith("ls-files "));
+    assert.ok(lists.length >= 2, lists.join("\n"));
+    for (const c of lists) assert.match(c, / -- \S/, c);
+  }
 });
 
 test("a listing with changed, new, deleted, staged and ignored files is what git lists of each pathspec", (t) => {

@@ -369,14 +369,20 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   }
   let text = args.text === undefined ? "" : jsString(args.text).trim();
   const paths: string[] = Array.isArray(args.files) ? args.files.map(jsString) : [];
-  const given = stateArg(args.kind);
+  // A post that says what was started and ends the turn on it, in one call: with waiting only chat_state's, agents ended
+  // such a post need_human, the one kind it took that did not say the chat is done (and #8198 ends their turn there).
+  const wait = args.kind === "waiting" ? waitingArg(hub, key, args) : null;
+  const given: ReturnType<typeof stateArg> = wait ? [wait.kind, "now"] : stateArg(args.kind);
   const card = cardArg(args.card, args.options);
+  if (wait && card !== null) throw new Error('a card waits on a person: end with kind "need_human"');
   // need_decision, as said before cards: a post with a card that ends the turn need_help.
   if (given?.[1] === "decision" && card === null) {
     throw new Error('need_decision carries options: a card {"type": "options", "options": [...]} people pick from (or end with kind "need_human" and say in need what they have to decide)');
   }
   const kind = given?.[0] ?? null;
   let need = given ? needArg(args, given[0], given[1]) : needArg(args, { kind: "waiting", seconds: 0 }, "now");
+  // What the message keeps: a waiting post is a progress update there, its wait the turn's alone.
+  const declared = kind && !wait ? declaredStr(kind) : null;
   // Without a need of its own, a decision asked in the words from before needs what its post asks: its first line.
   if (need === null && given && given[0].kind === "need_help" && given[1] !== "now" && card !== null) {
     const line = firstLine(text);
@@ -440,10 +446,10 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   if (existing !== null && unseen.length > 0) {
     const thread = existing;
     const id = held.id ?? hold(hub, key);
-    const { kind: _k, need: _n, done: _d, about: _a, ...post } = held.args;
+    const { kind: _k, need: _n, done: _d, about: _a, for: _f, seconds: _s, watch: _w, ...post } = held.args;
     hub.heldPosts.get(key)!.set(id, post);
     const one = unseen.length === 1;
-    return `${NOT_POSTED} ${one ? "a message" : "messages"} you had not read came in ${threadAddress(thread.thread.channel, thread.thread.threadTs)} (ts ${unseen.join(", ")}), and ${one ? "it comes" : "they come"} to you next; no state was recorded. Held as ${id}. After reading ${one ? "it" : "them"}, if this post still stands as written, call chat_post with to, send="${id}" and the state the turn now ends with (kind, need, done, about), without writing it again; otherwise post what fits now.`;
+    return `${NOT_POSTED} ${one ? "a message" : "messages"} you had not read came in ${threadAddress(thread.thread.channel, thread.thread.threadTs)} (ts ${unseen.join(", ")}), and ${one ? "it comes" : "they come"} to you next; no state was recorded. Held as ${id}. After reading ${one ? "it" : "them"}, if this post still stands as written, call chat_post with to, send="${id}" and the state the turn now ends with (kind and what goes with it, about), without writing it again; otherwise post what fits now.`;
   }
   if (held.id !== null) hub.heldPosts.get(key)?.delete(held.id);
   // Slack gets the files in the thread below the text. An app made before it could upload (no files:write) links to
@@ -478,7 +484,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
     store.joinThread(row.id, key, connect);
     thread = { thread: row, connect };
     posted = begun.ts;
-    [n] = store.insertMessage({ thread: row.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared: kind ? declaredStr(kind) : null, card, agentIdentity: identity });
+    [n] = store.insertMessage({ thread: row.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared, card, agentIdentity: identity });
   } else {
     thread = existing;
     const here = { channel: thread.thread.channel, threadTs: thread.thread.threadTs };
@@ -494,7 +500,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
         text = kept;
       }
     } else posted = await chat.post(here, text, files, shown);
-    [n] = store.insertMessage({ thread: thread.thread.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared: kind ? declaredStr(kind) : null, card, agentIdentity: identity });
+    [n] = store.insertMessage({ thread: thread.thread.id, ts: posted, authorKind: "agent", author: key, text, attachments: files, declared, card, agentIdentity: identity });
   }
   const offered = card !== null ? `${cardSaid(card)} Card message ts: ${posted}.` : "";
   hub.shared(thread.thread.id, n, key, text);
@@ -504,7 +510,8 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   } else await actor?.postedNow();
   // A post with no state after one that ended the turn says it goes on: the end said before no longer stands.
   if (kind === null) await actor?.goesOn();
-  if (!guarded && need !== null) await actor?.need(need);
+  if (wait) await actor?.waitFor(wait.words, wait.watch);
+  else if (!guarded && need !== null) await actor?.need(need);
   let recorded = true;
   let stateError: string | null = null;
   if (kind !== null) {
@@ -548,7 +555,7 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   const place = threadAddress(thread.thread.channel, thread.thread.threadTs) + (opening !== null ? ` (added to the station's first message there, ts ${posted})` : existing === null ? " (now one of your conversations)" : "");
   const crossed = unreadBefore(hub, key, thread.thread.id, n);
   return kind !== null ? recorded
-    ? `Posted to ${place}, and recorded state ${saidAs(kind)}.${crossed}${titled}${offered}`
+    ? `Posted to ${place}, and recorded state ${stateSaid(kind, wait?.watch === true)}.${crossed}${titled}${offered}`
     : stateError !== null ? `Posted to ${place}, but its state was not recorded: ${stateError}.${crossed}${titled}${offered}`
       : `Posted to ${place}, but its turn ended before its state was recorded.${crossed}${titled}${offered}`
     : `Posted to ${place}.${crossed}${titled}${offered}`;
@@ -564,7 +571,7 @@ export type Held = { id: string | null; args: Args };
 /// title; its state is what this call gives, as the messages read meanwhile may change how the turn ends.
 export function unheld(hub: Hub, key: string, args: Args): Held {
   if (args.send === undefined) return { id: null, args };
-  if (Object.keys(args).some((k) => !SEND_KEYS.has(k))) throw new Error("send takes only to, send and the state (kind, need, done, about): the held post goes as it was written");
+  if (Object.keys(args).some((k) => !SEND_KEYS.has(k))) throw new Error("send takes only to, send and the state (kind and what goes with it, about): the held post goes as it was written");
   const id = jsString(args.send);
   const held = hub.heldPosts.get(key)?.get(id);
   if (held === undefined) throw new Error(`no held post ${id}: it was sent already, or the station restarted since; write the post again`);
@@ -574,7 +581,7 @@ export function unheld(hub: Hub, key: string, args: Args): Held {
 }
 
 /// What chat_post with send takes besides the held post.
-const SEND_KEYS = new Set(["to", "send", "kind", "need", "done", "about"]);
+const SEND_KEYS = new Set(["to", "send", "kind", "need", "done", "about", "for", "seconds", "watch"]);
 /// Held posts kept per session: the oldest goes beyond it.
 const HELD_KEPT = 20;
 
@@ -684,6 +691,30 @@ function stateAbout(hub: Hub, key: string, kind: DeclaredState, args: Args): [nu
   return last ? [last.thread, last.n, last.ts] : null;
 }
 
+/// A turn's end in waiting, with chat_post or chat_state: how long until it is asked again, what it waits for, and whether
+/// all it waits on is a watch of its own.
+function waitingArg(hub: Hub, key: string, args: Args): { kind: Extract<DeclaredState, { kind: "waiting" }>; words: string; watch: boolean } {
+  const seconds = args.seconds === undefined ? null : jsNumber(args.seconds);
+  if (seconds === null) throw new Error("seconds is required for waiting: how long until the work brings you back");
+  const words = args.for === undefined ? "" : jsString(args.for).trim();
+  if (words === "") throw new Error("for is required for waiting: what you wait for, in a few words people read");
+  if (args.watch !== undefined && typeof args.watch !== "boolean") throw new Error("watch must be true or false");
+  const watch = args.watch === true;
+  if (watch && !hub.store.hasSessionActiveWatch(key)) {
+    throw new Error("watch: true is for waiting on a watch of yours that runs (job_start with watch); none does: leave it out, or start the watch first");
+  }
+  const whole = Number.isNaN(seconds) ? 0 : Math.trunc(Math.max(0, seconds));
+  return { kind: { kind: "waiting", seconds: Math.min(MAX_WAIT_SECONDS, Math.max(MIN_WAIT_SECONDS, whole)) }, words, watch };
+}
+
+/// A recorded state as its agent is told it: a wait with what brings it back.
+function stateSaid(kind: DeclaredState, watch: boolean): string {
+  if (kind.kind !== "waiting") return saidAs(kind);
+  return watch
+    ? "waiting on your watch: its notices, its end or a message bring you back"
+    : `waiting: you are asked again in ${kind.seconds} seconds unless something brings you back first`;
+}
+
 /// chat_state: how this turn ends, recorded without posting.
 export async function chatState(hub: Hub, key: string, args: Args): Promise<string> {
   // Checked whole before anything is recorded: its words (what it waits for, needs, ends with) and what it is about.
@@ -691,18 +722,7 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
   let words: string | null;
   let watch = false;
   if (args.kind === "waiting") {
-    const seconds = args.seconds === undefined ? null : jsNumber(args.seconds);
-    if (seconds === null) throw new Error("seconds is required for waiting: how long until the work brings you back");
-    const what = args.for === undefined ? "" : jsString(args.for).trim();
-    if (what === "") throw new Error("for is required for waiting: what you wait for, in a few words people read");
-    if (args.watch !== undefined && typeof args.watch !== "boolean") throw new Error("watch must be true or false");
-    watch = args.watch === true;
-    if (watch && !hub.store.hasSessionActiveWatch(key)) {
-      throw new Error("watch: true is for waiting on a watch of yours that runs (job_start with watch); none does: leave it out, or start the watch first");
-    }
-    const whole = Number.isNaN(seconds) ? 0 : Math.trunc(Math.max(0, seconds));
-    kind = { kind: "waiting", seconds: Math.min(MAX_WAIT_SECONDS, Math.max(MIN_WAIT_SECONDS, whole)) };
-    words = what;
+    ({ kind, words, watch } = waitingArg(hub, key, args));
   } else {
     const given = stateArg(args.kind);
     if (given === null) throw new Error("kind is required");
@@ -750,10 +770,7 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
     }
   }
   if (kind.kind === "all_done") suggestArchive(hub, key);
-  if (kind.kind !== "waiting") return `Recorded state ${saidAs(kind)}.`;
-  return watch
-    ? "Recorded state waiting on your watch: its notices, its end or a message bring you back."
-    : `Recorded state waiting: you are asked again in ${kind.seconds} seconds unless something brings you back first.`;
+  return `Recorded state ${stateSaid(kind, watch)}.`;
 }
 
 /// chat_history: earlier messages of one of the session's conversations.

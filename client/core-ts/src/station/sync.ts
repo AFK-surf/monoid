@@ -260,7 +260,7 @@ export class StationsSync {
       now: () => core.host.monotonicMs(),
       firstWaiting: () => core.store.firstValuesPending(),
       turn: () => core.store.turn(),
-      answered: (channel, error, nothing) => this.#channelAnswered(channel, error, nothing),
+      answered: (channel, error, nothing, answer) => this.#channelAnswered(channel, error, nothing, answer),
     });
   }
 
@@ -282,6 +282,14 @@ export class StationsSync {
   /// Whether its link is up now (link.ts `online`).
   online(address: string): boolean {
     return this.#links.online(address);
+  }
+
+  /// Whether station `address`'s stream is currently catching up for `thread` after an absence, and its catch-up epoch.
+  catchUpState(address: string, thread: number | null): { catching: boolean; epoch: number } {
+    const link = this.#links.get(address);
+    const c = link?.catching;
+    const catching = c != null && (!c.tallied || (thread !== null && c.behind.has(thread)));
+    return { catching, epoch: link?.catchingEpoch ?? 0 };
   }
 
   /// Every station of every workspace an account reaches is linked, those no longer listed let go (link.ts).
@@ -330,7 +338,7 @@ export class StationsSync {
   }
 
   #transcriptLetGo(address: string, key: string): boolean {
-    return this.#core.data.evicted("transcript", address, key) || this.#transcriptSpared(address, key);
+    return this.#core.data.evicted("transcript", address, key) || this.#core.data.transcriptOverBudget(address, key) || this.#transcriptSpared(address, key);
   }
 
   /// A stream opened going on from where the device was in its station's events: nothing is read again but the
@@ -1674,14 +1682,14 @@ export class StationsSync {
 
   /// A read of a channel made in the background answered. A thread's: one that is gone goes with what is held of it; one
   /// not to be read (no longer this viewer's) says so while nothing of it is held.
-  #channelAnswered(channel: Channel, error: CoreError | null, nothing: boolean): void {
+  #channelAnswered(channel: Channel, error: CoreError | null, nothing: boolean, answer?: unknown): void {
     const link = this.#links.get(channel.station);
     if (!link) return;
     // A transcript read: what the station has of it is known (a history with nothing in it is not still loading). One
     // that failed is said, and asked again while it is shown: nothing else would ask (a stream that follows the sessions
     // at work tells nothing of one at rest, and it stays open).
     if (channel.kind === TRANSCRIPT) {
-      if (error === null) this.#transcriptKnown(link, channel.id);
+      if (error === null) this.#transcriptKnown(link, channel.id, u64(get(answer, "end")));
       else this.#transcriptFailed(link, channel.id, error);
       return;
     }
@@ -2780,6 +2788,13 @@ export class StationsSync {
       }
       const now = core.host.nowMs();
       const kind = str(get(message, "type")) ?? "";
+      if (kind === "timeline") {
+        const start = u64(get(message, "start")) ?? 0;
+        const entries = (get(message, "entries") as unknown[] | undefined) ?? [];
+        // How far it goes, said whether or not its items are taken here: what is held must reach it before the steps
+        // in flight are shown after it (topics.ts `live`).
+        view.told = start + entries.length;
+      }
       if (kind === "timeline" && this.#transcriptLetGo(address, key)) {
         // Let go for room or spared on cellular: its items are read when opened or when leaving cellular.
       } else if (kind === "timeline") {
@@ -2817,9 +2832,13 @@ export class StationsSync {
         if (event !== undefined) {
           const span = core.data.logSpan("transcript", address, key);
           const held = span ? span.max + 1 : 0;
-          applyStep(view, event, now, held);
-          // Those the transcript recorded since are let go.
-          view.steps = view.steps.filter((s) => stepShown(s, held));
+          // A step that ends is recorded after where the transcript goes now: as the station said it, not as far as
+          // what is held here goes (behind it, or let go, what is held stays put and would keep the step forever).
+          applyStep(view, event, now, Math.max(held, view.told ?? 0));
+          // Those the transcript recorded since are let go; all that ended, where its transcript is not taken here
+          // (its records come with the read that shows it).
+          const letGo = this.#transcriptLetGo(address, key);
+          view.steps = view.steps.filter((s) => (letGo ? get(s, "ended") !== true : stepShown(s, held)));
         }
       } else return;
       if (kind !== "clear") this.#core.sendTrace.onLive(address, key);
@@ -2828,11 +2847,22 @@ export class StationsSync {
   }
 
   /// A session's transcript was read, or told as it stands: its history is loaded (`loaded`), what it holds what there is.
-  #transcriptKnown(link: Link, key: string): void {
+  /// `end`: how many entries the read said it has (none: it did not say).
+  #transcriptKnown(link: Link, key: string, end: number | null = null): void {
     let view = link.lives.get(key);
     if (!view) link.lives.set(key, (view = { steps: [], phase: null, rate: null, usage: null, loaded: false }));
     this.#transcriptMisses.delete(`${link.address}\u0001${key}`);
-    if (view.loaded && view.failed === undefined) return;
+    // Read, it goes no further than the station said it goes now, whatever its stream said before (written anew
+    // shorter, a stream says nothing till it gains): the steps that ended past it have no record to wait there.
+    // (not below what is held: a read the station answered before its stream said more may come after that)
+    const span = this.#core.data.logSpan("transcript", link.address, key);
+    const goes = end === null ? null : Math.max(end, span ? span.max + 1 : 0);
+    const shorter = goes !== null && view.told !== undefined && view.told > goes;
+    if (shorter) {
+      view.told = goes;
+      view.steps = view.steps.filter((s) => !(get(s, "ended") === true && typeof get(s, "held") === "number" && (get(s, "held") as number) > goes!));
+    }
+    if (view.loaded && view.failed === undefined && !shorter) return;
     view.loaded = true;
     delete view.failed;
     this.onChange(link.address, "live", key);
