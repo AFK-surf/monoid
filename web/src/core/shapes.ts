@@ -1966,8 +1966,9 @@ export interface PrefsView {
 	 */
 	sendKey?: string;
 	/**
-	 * Whether what people use is counted and sent from this device where its host keeps no switch of its own
-	 * (设置 → 关于 → 发送使用统计和错误报告: macOS, Windows, Linux, the web; use-counts.ts): `off`, or none for on.
+	 * Whether what people use is counted and sent from this device, and its traces, where its host keeps no
+	 * switch of its own (设置 → 关于 → 发送使用统计和错误报告: macOS, Windows, Linux, the web; use-counts.ts, trace.ts): `off`,
+	 * or none for on.
 	 */
 	reports?: string;
 	/**
@@ -2055,6 +2056,11 @@ export interface PrefsView {
 	 * its own cloud); none: it sends nothing, and the app tells it nothing of it.
 	 */
 	counted?: boolean;
+	/**
+	 * Whether this device's core sends its traces (trace.ts), on any cloud; none: it sends none, and the app
+	 * tells it nothing of it (`client.reports`).
+	 */
+	traced?: boolean;
 	/** Whether this app build is older than 7 days (`STALE_BUILD_MS`). Absent when fresh or in dev. */
 	staleBuild?: boolean;
 	/** The product's name on this app's channel: still.fail or youdid.wtf (monoid or monoid.zone on monoid's cloud). */

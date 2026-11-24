@@ -708,14 +708,15 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // (what the app shows, by its kind alone, told the window thread's journal as it changes, on every host: what its
     // hang reports and the device's performance record say; no frame asks it)
     root.reacts(fn() { @sfbase.shown_kind(shown_now(src, root.window_w())) }, @ui.journal_shows)
-    // (to a core that counts what people use (client/core-ts's use-counts.ts: a build given still.fail's project, on
-    // its own cloud), whether to, as the settings say, and while it does what the app shows by that same kind alone,
-    // each as it changes; nothing to one that does not, as under a Tester or a replay)
-    root.reacts(fn() { @sfbase.counts_told(src, @sfbase.shown_kind(shown_now(src, root.window_w()))) }, fn(told) {
+    // (to a core that sends its traces (client/core-ts's trace.ts, on any cloud) or counts what people use (its
+    // use-counts.ts: a build given still.fail's project, on its own cloud), whether to, as the settings say, and while
+    // it counts, what the app shows by that same kind alone, each as it changes; nothing to one that does neither, as
+    // under a Tester or a replay. A core started again is told again by the client: Client::restarted)
+    root.reacts(fn() { @sfbase.reports_told(src, @sfbase.shown_kind(shown_now(src, root.window_w()))) }, fn(told) {
       match told {
         Some((on, kind)) => {
           (src.call)("client.reports", { "on": Json::boolean(on) }, @sfbase.answer_unread)
-          if on {
+          if kind != "" {
             (src.call)("client.shown", { "page": Json::string(kind) }, @sfbase.answer_unread)
           }
         }

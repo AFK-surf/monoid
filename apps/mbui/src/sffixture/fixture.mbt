@@ -2341,6 +2341,11 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
       if f.mode == "home-stale-build" {
         o["staleBuild"] = Json::boolean(true)
       }
+      // (关于 on monoid's web or desktop: a core that sends its traces, counts nothing, the host keeping no switch)
+      if f.mode == "settings-about-traced" {
+        o["traced"] = Json::boolean(true)
+        o["productName"] = Json::string("monoid")
+      }
       // the drive's ways, the files' page's tabs and favourites (browse_fixture.mbt)
       fix_browse_prefs_into(o)
       // whether what was opened and let go is brought, up to how big (downloads_fixture.mbt)

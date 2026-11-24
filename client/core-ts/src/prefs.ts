@@ -160,6 +160,19 @@ export function setCounted(on: boolean): void {
   counted = on;
 }
 
+/// Whether the prefs kept say this device sends no usage statistics, error reports or traces (`reports: off`: set where
+/// the host keeps no switch of its own; none says nothing, a host's switch may be off).
+export function reportsOff(data: Data): boolean {
+  return kept(data).reports === "off";
+}
+
+/// Whether this core sends its traces (trace.ts: one that records any), said with the prefs as `traced`: the app then
+/// tells it whether to (`client.reports`), on any cloud.
+let traced = false;
+export function setTraced(on: boolean): void {
+  traced = on;
+}
+
 /// The prefs as they go out: the current product name, the reader's settings whole, the bottom bars (each workspace's
 /// too), the faces, and the keymap and the rail.
 export function shown(v: unknown, c?: { now: number; reached?: (at: number, later?: boolean) => boolean }): unknown {
@@ -168,7 +181,7 @@ export function shown(v: unknown, c?: { now: number; reached?: (at: number, late
   const test = brand.isTestChannel();
   const built = ownBuiltAt();
   const staleBuild = built > 0 && (c?.reached ? c.reached(built + STALE_BUILD_MS, true) : isBuildStale(built, c?.now ?? 0));
-  return { ...v, productName: brand.name(), product: brand.current().name, testChannel: test, experimental: experimentalOf(v), features: featuresOf(v, test), experimentalItems: experimentalItemsOf(v, test), listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}), ...(staleBuild ? { staleBuild: true } : {}) };
+  return { ...v, productName: brand.name(), product: brand.current().name, testChannel: test, experimental: experimentalOf(v), features: featuresOf(v, test), experimentalItems: experimentalItemsOf(v, test), listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}), ...(traced ? { traced: true } : {}), ...(staleBuild ? { staleBuild: true } : {}) };
 }
 
 /// What is kept, as kept (no defaults filled in).

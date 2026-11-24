@@ -486,6 +486,45 @@ test("calls_are_traces_and_nothing_goes_out_when_tracing_is_off", async () => {
   core.close();
 });
 
+/// A core as an app starts it (no `reports` given): until the app says what its settings say (`client.reports`), its
+/// requests ask stations and the cloud to record nothing and its spans stay here; said on, they go; said off by the
+/// prefs it keeps (where the host keeps no switch of its own), a core started again sends none from its start.
+test("a_core_sends_no_trace_before_its_app_says_its_settings_and_none_from_the_start_where_they_say_off", async () => {
+  const s = stationHost({ ...base(), "GET /memory": { global: "" } });
+  const { host } = s;
+  const core = await Core.create(host, { clock: host.time.clock, sample: 1, wire: () => new HostWire(host) });
+  await host.time.pass(500);
+  const ui = core.connect();
+  call(core, ui, 1, "memory.get", { station: "ws/st" });
+  await host.settle();
+  await host.time.pass(EXPORT_MS * 3);
+  assert.equal(exports(host).length, 0, "nothing sent before it is told");
+  const before = host.requests.map((r) => header(r, "traceparent")).filter((p): p is string => p !== undefined);
+  assert.ok(before.length > 0 && before.every((p) => p.endsWith("-00")), JSON.stringify(before));
+  call(core, ui, 2, "client.reports", { on: true });
+  await host.settle();
+  await host.time.pass(EXPORT_MS + 100);
+  const names = exports(host).flatMap(spansOf).map((x) => x.name);
+  assert.ok(names.includes("memory.get") && names.includes("GET /admin/api/memory"), JSON.stringify(names));
+  // Off in the prefs it keeps: the next core started here sends nothing, told nothing.
+  call(core, ui, 3, "prefs.set", { reports: "off" });
+  await host.settle();
+  await core.close();
+  const sentBefore = exports(host).length;
+  const again = await Core.create(host, { clock: host.time.clock, sample: 1, wire: () => new HostWire(host) });
+  await host.time.pass(500);
+  const ui2 = again.connect();
+  const asked = host.requests.length;
+  call(again, ui2, 1, "memory.get", { station: "ws/st" });
+  await host.settle();
+  await host.time.pass(EXPORT_MS * 3);
+  assert.equal(exports(host).length, sentBefore, "said off by its prefs: nothing sent");
+  assert.equal(again.inner.tracer.on, false);
+  const after = host.requests.slice(asked).map((r) => header(r, "traceparent")).filter((p): p is string => p !== undefined);
+  assert.ok(after.every((p) => p.endsWith("-00")), JSON.stringify(after));
+  await again.close();
+});
+
 test("a_failure_let_go_of_is_a_failed_span_of_its_own", async () => {
   const { host, core } = await started({ ...base(), "GET /memory": { global: "" } }, 1);
   await host.time.pass(EXPORT_MS + 100);

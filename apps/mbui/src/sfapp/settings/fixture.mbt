@@ -1366,7 +1366,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-bars" => "bars"
     "settings-kept" | "settings-kept-many" | "settings-kept-fill" => "kept"
     "settings-changelog" => "changelog"
-    "settings-about-flow" => "about"
+    "settings-about-flow" | "settings-about-traced" => "about"
     "settings-fonts-coming" | "settings-fonts-code" => "fonts"
     "settings-prices" => "prices:7"
     "settings-add-people" | "settings-workspace-mark" | "settings-workspace-motion" => "workspace"

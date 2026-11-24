@@ -121,6 +121,9 @@ export type Options = {
   wire?: (inner: Inner) => StationWire;
   /// The share of traces recorded (0: none).
   sample?: number;
+  /// Whether this device sends its traces from the start, as if its app had said so (`client.reports`) before it
+  /// asked anything: a test's; none, the core waits for the app to say.
+  reports?: boolean;
   /// The clock the core's timers run on (a TestClock in tests).
   clock?: Clock.Clock;
   /// The iroh this host has (iroh.ts); none: stations are not reached over the mesh.
@@ -141,8 +144,9 @@ export class Inner {
   useCounts!: UseCounts;
   /// What app the UI said it is (`client.device`'s `app`): the counts' `app`.
   deviceApp = "";
-  /// Whether client telemetry (error/metric/send-trace spans) is enabled; controlled by `client.reports`.
-  reporting = true;
+  /// Whether client telemetry (error/metric/send-trace spans) is enabled; controlled by `client.reports` (null: not yet
+  /// told, the spans made then kept on this device until it is: trace.ts `Tracer.setOn`).
+  reporting: boolean | null = null;
   /// Counter for deterministic 20% `bar.switch` sampling.
   barSwitchCount = 0;
   /// End-to-end `chat.send` -> first live event tracer.
@@ -226,14 +230,17 @@ export class Core {
       brand.setTestChannel(inner.host.testChannel());
       brand.setCloud(inner.host.cloudOrigin());
       fonts.setOrigin(inner.host.cloudOrigin(), inner.host.testChannel());
-      inner.tracer = new Tracer(inner.host, inner.runner, options.sample ?? SAMPLE, TRACES);
-      inner.sendTrace = new SendTrace(inner.tracer, inner.runner, () => inner.host.monotonicMs(), () => inner.reporting);
+      // (sending nothing until the app has said, as its settings say, that it may: client.reports)
+      inner.tracer = new Tracer(inner.host, inner.runner, options.sample ?? SAMPLE, TRACES, options.reports ?? null);
+      inner.reporting = options.reports ?? null;
+      inner.sendTrace = new SendTrace(inner.tracer, inner.runner, () => inner.host.monotonicMs(), () => inner.reporting !== false);
       inner.useCounts = new UseCounts(inner.host, inner.runner, options.usage === undefined ? builtSink() : options.usage, () => inner.accounts.list()[0]?.sub ?? null, () => ({
         app: inner.deviceApp !== "" ? inner.deviceApp : service.os === "browser" ? "web" : "",
         os: service.os,
         build: ownBuild(),
       }));
       prefs.setCounted(inner.useCounts.sends);
+      prefs.setTraced((options.sample ?? SAMPLE) > 0);
       spentClock(() => inner.host.monotonicMs());
       // A failure let go of is a span of its own: Cloud Trace has it though nothing waited on it.
       inner.runner.onIgnored = (what, error) => {
@@ -268,6 +275,12 @@ export class Core {
       keepVerified({ get: (k) => inner.data.device.get("verified", k), put: (k, ok) => void inner.data.device.put("verified", k, ok) });
       // (checked by the host's own, where it has one: a native app's shell, libcrux)
       checkWith(inner.host.verify ? (alg, key, signature, message) => inner.host.verify!(alg, key, signature, message) : null);
+      // (a device whose prefs say it sends nothing (the settings' switch where the host keeps none of its own: macOS,
+      // Windows, Linux, the web) sends no trace from its start, before its app has said so)
+      if (prefs.reportsOff(inner.data)) {
+        inner.reporting = false;
+        inner.tracer.setOn(false);
+      }
       prefs.followLang(inner.data);
       prefs.followApp(inner.data);
       // What goes out is what the clients' types say (client/core-ts/src/shapes/schema.ts).
