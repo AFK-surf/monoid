@@ -132,7 +132,7 @@ fn is_mb_printable(cp : Int) -> Bool {
   if (cp >= 0x0600 && cp <= 0x0605) || (cp >= 0x0890 && cp <= 0x0891) {
     return false
   }
-  if (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x2028 && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F) {
+  if (cp >= 0x200B && cp <= 0x200F) || (cp >= 0x2028 && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x2064) || (cp >= 0x2066 && cp <= 0x206F) {
     return false
   }
   if (cp >= 0xD800 && cp <= 0xF8FF) || (cp >= 0xFDD0 && cp <= 0xFDEF) || (cp >= 0xFFF9 && cp <= 0xFFFB) {
@@ -144,7 +144,7 @@ fn is_mb_printable(cp : Int) -> Bool {
   if cp == 0x110BD || cp == 0x110CD || (cp >= 0x13430 && cp <= 0x1343F) || (cp >= 0x1BCA0 && cp <= 0x1BCA3) || (cp >= 0x1D173 && cp <= 0x1D17A) {
     return false
   }
-  if (cp >= 0xE0000 && cp <= 0xE007F) || cp >= 0xF0000 {
+  if cp == 0xE0001 || (cp >= 0xE0020 && cp <= 0xE007F) || cp >= 0xF0000 {
     return false
   }
   true
@@ -259,24 +259,42 @@ fn JsonErrScanner::check_string(self : JsonErrScanner) -> Option[String] {
           return Some(self.invalid_here())
         }
         if u1 >= 0xD800 && u1 <= 0xDBFF {
-          let mut paired = false
-          if self.pos + 6 <= self.n && (self.raw[self.pos].to_int() & 0xFF) == 92 && (self.raw[self.pos + 1].to_int() & 0xFF) == 117 {
-            let mut u2 = 0
-            let mut ok_hex = true
-            for j in 0..<4 {
-              match base_codec::hex_digit(self.raw[self.pos + 2 + j].to_int() & 0xFF) {
-                Some(d) => u2 = (u2 << 4) | d
-                None => ok_hex = false
-              }
-            }
-            if ok_hex && u2 >= 0xDC00 && u2 <= 0xDFFF {
-              paired = true
-              for _ in 0..<6 {
-                self.advance_byte()
-              }
-            }
+          if self.pos >= self.n {
+            return Some("Unexpected end of file")
           }
-          if !paired {
+          if (self.raw[self.pos].to_int() & 0xFF) == 92 {
+            self.advance_byte()
+            if self.pos >= self.n {
+              return Some("Unexpected end of file")
+            }
+            if (self.raw[self.pos].to_int() & 0xFF) == 117 {
+              self.advance_byte()
+              let mut u2 = 0
+              for _ in 0..<4 {
+                if self.pos >= self.n {
+                  return Some("Unexpected end of file")
+                }
+                match base_codec::hex_digit(self.raw[self.pos].to_int() & 0xFF) {
+                  Some(d) => {
+                    u2 = (u2 << 4) | d
+                    self.advance_byte()
+                  }
+                  None => return Some(self.invalid_here())
+                }
+              }
+              if u2 < 0xDC00 || u2 > 0xDFFF {
+                self.pos = bs_pos
+                self.line = bs_line
+                self.col = bs_col
+                return Some(self.invalid_here())
+              }
+            } else {
+              self.pos = bs_pos
+              self.line = bs_line
+              self.col = bs_col
+              return Some(self.invalid_here())
+            }
+          } else {
             self.pos = bs_pos
             self.line = bs_line
             self.col = bs_col
