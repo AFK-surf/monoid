@@ -326,7 +326,7 @@ fn chat_quote_node(
               fn(b) {
                 @sf.style_node(b, fn() { chat_quote_part })
                 @sf.hover_ground_node(b)
-                @sf.icon_node(b, "poke", chat_quote_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore
+                @sf.icon_node(b, "poke", chat_quote_icon, By(fn() { @sf.theme().p.text })) |> ignore
                 @sf.words_node(b, fn() { @sf.t("web-main.chat.inferIntent") }, fn() { chat_quote_words }) |> ignore
               },
             )
@@ -387,7 +387,8 @@ let chat_quote_part : @ui.Style = @ui.style(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chat_quote_sep : @ui.Style = @ui.css("w=SPx h=S3 bg=Line")
+/// (the one faint hairline down between a capsule's segments, as the finger's pick bar has: @sf.rule_down)
+let chat_quote_sep : @ui.Style = @sf.rule_down.then(@ui.css("h=S3"))
 
 ///|
 let chat_quote_icon : Double = 12.0

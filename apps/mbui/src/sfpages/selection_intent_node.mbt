@@ -15,11 +15,10 @@ fn open_selection_intent(
 ) -> Unit {
   @sfbase.selection_intent_ask(src, r.station, thread, draft, selection, message_ts, author, role)
   @sf.panel_nodes(
-    "",
-    fn(v, _) { selection_intent_body(v, src) },
+    @sf.t("web-main.chat.inferIntent.title"),
+    fn(v, _) { selection_intent_body(v) },
     from~,
-    heads_itself=true,
-    foot=fn(v, close) { selection_intent_foot(v, close) },
+    foot=fn(v, close) { selection_intent_foot(v, src, close) },
     gone=fn() { @sfbase.selection_intent_reset() },
   )
 }
@@ -33,8 +32,10 @@ priv enum IntentViewKind {
 }
 
 ///|
-fn selection_intent_body(v : @view.View, src : Source) -> Unit {
+fn selection_intent_body(v : @view.View) -> Unit {
   let s = @sfbase.selection_intent
+  // (its words text_in in from where the panel's grounds stand, on its title's line, as a small panel's words are)
+  let column = intent_column.then(@ui.style(px=@sf.room_of(@sf.text_in)))
   v.pick(
     fn() {
       if s.loading.get() {
@@ -46,7 +47,7 @@ fn selection_intent_body(v : @view.View, src : Source) -> Unit {
       }
     },
     fn(area, kind) {
-      @sf.style_node(area, fn() { intent_column })
+      @sf.style_node(area, fn() { column })
       match kind {
         Loading =>
           area.box(fn(row) {
@@ -56,20 +57,37 @@ fn selection_intent_body(v : @view.View, src : Source) -> Unit {
             |> ignore
           })
           |> ignore
-        Failed => {
-          @sf.words_node(area, fn() { s.error.get() }, fn() { intent_error_words }) |> ignore
-          area.box(fn(row) {
-            @sf.style_node(row, fn() { intent_retry_row })
-            @sf.button_node(
-              row,
-              fn() { @sf.t("web-main.chat.inferIntent.retry") },
-              fn() { @sfbase.selection_intent_retry(src) },
-              tone=Ghost,
+        Failed =>
+          area.box(fn(said) {
+            @sf.style_node(said, fn() { intent_failed_column })
+            @sf.words_node(
+              said,
+              fn() {
+                @sf.t(
+                  if intent_outdated() {
+                    "web-main.chat.inferIntent.outdated"
+                  } else {
+                    "web-main.chat.inferIntent.failed"
+                  },
+                )
+              },
+              fn() { intent_failed_title },
+            )
+            |> ignore
+            @sf.words_node(
+              said,
+              fn() {
+                if intent_outdated() {
+                  @sf.t("web-main.chat.inferIntent.outdatedHint")
+                } else {
+                  s.error.get()
+                }
+              },
+              fn() { intent_meta_words },
             )
             |> ignore
           })
           |> ignore
-        }
         Ready => @sf.words_node(area, fn() { s.reply.get() }, fn() { intent_reply_words }) |> ignore
       }
     },
@@ -77,35 +95,58 @@ fn selection_intent_body(v : @view.View, src : Source) -> Unit {
 }
 
 ///|
-fn selection_intent_foot(v : @view.View, close : () -> Unit) -> Unit {
+/// Whether the request failed because the chat's station predates 戳一下 (its answer `no route …`): trying again
+/// cannot help there, updating the station does.
+fn intent_outdated() -> Bool {
+  @sfbase.selection_intent.error.get().has_prefix("no route ")
+}
+
+///|
+fn selection_intent_foot(v : @view.View, src : Source, close : () -> Unit) -> Unit {
   let s = @sfbase.selection_intent
-  @sf.button_node(
-    v,
-    fn() { @sf.t("web-main.chat.inferIntent.pin") },
-    fn() {
-      if @sfbase.selection_intent_pin() {
-        @sfbase.toast_later(@sf.t("web-main.chat.inferIntent.pinned"))
-        close()
-      }
-    },
-    tone=Ghost,
-    icon="pin",
-    disabled=fn() { s.loading.get() || s.reply.get() == "" },
-  )
-  |> ignore
-  @sf.button_node(
-    v,
-    fn() { @sf.t("common.copy") },
-    fn() {
-      let reply = @signals.untracked(fn() { s.reply.get() })
-      if reply != "" {
-        @sfbase.copy_out(reply, said=@sf.t("common.copied"))
-      }
-    },
-    tone=Primary,
-    disabled=fn() { s.loading.get() || s.reply.get() == "" },
-  )
-  |> ignore
+  let failed = fn() { !s.loading.get() && s.error.get() != "" }
+  // (failed: 重试 in the place of 固定 and 复制, which have nothing to act on; none where the station must be updated)
+  v.show(along_row=true, fn() { !failed() }, fn(pin) {
+    @sf.button_node(
+      pin,
+      fn() { @sf.t("web-main.chat.inferIntent.pin") },
+      fn() {
+        if @sfbase.selection_intent_pin() {
+          @sfbase.toast_later(@sf.t("web-main.chat.inferIntent.pinned"))
+          close()
+        }
+      },
+      tone=Ghost,
+      icon="pin",
+      disabled=fn() { s.loading.get() || s.reply.get() == "" },
+    )
+    |> ignore
+  })
+  v.show(along_row=true, fn() { !failed() }, fn(copy) {
+    @sf.button_node(
+      copy,
+      fn() { @sf.t("common.copy") },
+      fn() {
+        let reply = @signals.untracked(fn() { s.reply.get() })
+        if reply != "" {
+          @sfbase.copy_out(reply, said=@sf.t("common.copied"))
+        }
+      },
+      tone=Primary,
+      disabled=fn() { s.loading.get() || s.reply.get() == "" },
+    )
+    |> ignore
+  })
+  v.show(along_row=true, fn() { failed() && !intent_outdated() }, fn(retry) {
+    @sf.button_node(
+      retry,
+      fn() { @sf.t("web-main.chat.inferIntent.retry") },
+      fn() { @sfbase.selection_intent_retry(src) },
+      tone=Primary,
+      icon="retry",
+    )
+    |> ignore
+  })
 }
 
 ///|
@@ -193,7 +234,7 @@ let intent_loading_row : @ui.Style = @ui.css("row w=Full gap=S2 py=S1 align=ACen
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_retry_row : @ui.Style = @ui.css("row w=Full")
+let intent_failed_column : @ui.Style = @ui.css("w=Full gap=S1 py=S1")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -205,7 +246,7 @@ let intent_meta_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted
 
 ///|
 // kept across runs: a value (no field of it changes)
-let intent_error_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, w=Full)
+let intent_failed_title : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, weight=Medium, w=Full)
 
 ///|
 // kept across runs: a value (no field of it changes)
