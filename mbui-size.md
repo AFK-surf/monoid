@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [c08f26292](https://github.com/AFK-surf/monoid/commit/c08f26292ab15d842d07412250cc2b99f73a22df) feat(ui): Wave 3c iOS 27.0 Liquid Glass parity acr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [1e5f6c7e9](https://github.com/AFK-surf/monoid/commit/1e5f6c7e98f36d0b9fb2fc6b72623cd1859b5f68) ci(desktop-build): separate built/cut moon cache k | 2.75 | 3.7 | 14.99 | 37.19 | 57.12 | 32.57 | 66.21 | 100.66 | 120.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.62 | 118.2 |
 | [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 2.74 | 3.69 | 14.95 | 37.15 | 56.98 | 32.53 | 66.11 | 100.39 | 121.54 |
-| [9d9b96358](https://github.com/AFK-surf/monoid/commit/9d9b96358c94ecc736a542e2ed99e9a85e1f846e) refactor(ui,mbui): clean dead controls APIs and un | 2.74 | 3.69 | 14.95 | 37.14 | 56.95 | 32.52 | 66.07 | 100.6 | 114.59 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.56 |
 | [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.57 |
 | [c08f26292](https://github.com/AFK-surf/monoid/commit/c08f26292ab15d842d07412250cc2b99f73a22df) feat(ui): Wave 3c iOS 27.0 Liquid Glass parity acr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.51 |
 | [1e5f6c7e9](https://github.com/AFK-surf/monoid/commit/1e5f6c7e98f36d0b9fb2fc6b72623cd1859b5f68) ci(desktop-build): separate built/cut moon cache k | 0.55 | 0.72 | 2.82 | 3.83 | 7 | 2.07 | 5.74 | 57.61 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [803c9e8ea](https://github.com/AFK-surf/monoid/commit/803c9e8ea2bb8e41487ff46c1f3afa81d7597bab) fix(station): report MiniMax and GLM plan quotas ( | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.16 |
 | [68fb3c249](https://github.com/AFK-surf/monoid/commit/68fb3c2497c138f1f8790687be24c2387b487cf3) test(mbui): hold a history group's steps at their  | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.23 |
 | [6eb1558df](https://github.com/AFK-surf/monoid/commit/6eb1558df72482940a2d8e16fe6292a29b78c145) fix(ui): grow start-indented content from its star | 0.55 | 0.72 | 2.8 | 3.81 | 6.92 | 2.05 | 5.69 | 57.07 |
-| [9d9b96358](https://github.com/AFK-surf/monoid/commit/9d9b96358c94ecc736a542e2ed99e9a85e1f846e) refactor(ui,mbui): clean dead controls APIs and un | 0.55 | 0.72 | 2.8 | 3.81 | 6.9 | 2.04 | 5.68 | 57.31 |
