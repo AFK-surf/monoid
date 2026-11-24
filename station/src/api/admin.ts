@@ -10,6 +10,8 @@ import { type ScreenHub, ScreenRefused } from "../screens/hub.ts";
 import { USER_TAB_ID } from "../screens/source.ts";
 import type { SimDebug } from "../screens/sim-debug.ts";
 import type { Readers } from "../read/pool.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
+import type { PackedProgram } from "../sessions/packed-mb.ts";
 import { HttpError } from "../read/views.ts";
 import { toEntry } from "../store/rows.ts";
 import { type Answer, type Request, error, json, queryPairs } from "./request.ts";
@@ -90,6 +92,10 @@ export type Tools = {
   agents?: AgentsParts;
   /// The part whose own kind of options card `card` is (parts.ts `cardChoice`): who may choose on it, and what then.
   cardChoice?(card: unknown): CardChoice | undefined;
+  /// Live `config.json` `readers` snapshot getter for `--builder packed` reads.
+  readerConfig?: () => ReaderSelectConfig;
+  /// Station-scoped `--builder packed` program bound to this station's `ReaderConfig`.
+  packed?: PackedProgram;
 };
 
 /// What the admin API answers with besides the readers: the write side, once there.
@@ -101,6 +107,10 @@ export type AdminDeps = {
   /// config.json, the data directory and where the station stands with its control plane, for the platform's routes
   /// (the drive, the device tools, the workspaces); the agents' when not given (tests).
   config?: ConfigFile;
+  /// Live `config.json` `readers` snapshot getter.
+  readerConfig?: () => ReaderSelectConfig;
+  /// Station-scoped `--builder packed` program.
+  packed?: PackedProgram;
   data?: string;
   /// Asks the launcher to start its front anew and hand over (ops/launcher.ts), where it can: the page's restart does.
   restartFront?: () => void;
@@ -168,6 +178,8 @@ export class Admin {
         return agentsNow();
       },
       cardChoice: (card) => deps.parts?.cardChoiceOf(card),
+      readerConfig: deps.readerConfig,
+      packed: deps.packed,
     };
     this.tools = tools;
     this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),

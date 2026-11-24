@@ -543,6 +543,59 @@ test("auto station allowlist: only acceptAutoChats stations enter the load-balan
   assert.equal(v.station.id, "mm2");
 });
 
+test("auto station allowlist: a station with fewer agents but its CPU full is passed over; when all are full the least busy is still picked", () => {
+  const { setStations, view } = makeAllowlistRig();
+  const cpu = (percent: number) => ({ identity: "", os: "", egressText: "", meters: [{ label: "CPU", short: "CPU", percent }, { label: "内存", short: "内存", percent: 10 }] });
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(96), overview: { counts: { running: 0 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(10), overview: { counts: { running: 2 } } },
+  ]);
+  assert.equal(view().station.id, "mm2");
+  // mm1 at 5% weighs 0, mm2 (shown) two agents at 10% weighs 2: two steps, mm1.
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(5), overview: { counts: { running: 0 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(10), overview: { counts: { running: 2 } } },
+  ]);
+  assert.equal(view().station.id, "mm1");
+  // Same agents, one 80% busy and one idle: the idle one.
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(80), overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(5), overview: { counts: { running: 1 } } },
+  ]);
+  assert.equal(view().station.id, "mm2");
+  // Both full: not refused, the lighter one.
+  setStations([
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(100), overview: { counts: { running: 3 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(95), overview: { counts: { running: 1 } } },
+  ]);
+  assert.equal(view().station.id, "mm2");
+});
+
+test("auto station allowlist: a CPU sample crossing a quarter does not swap the station shown; a whole step less busy does, and a used one rotates", () => {
+  const { choose, setStations, view } = makeAllowlistRig();
+  const cpu = (percent: number) => ({ identity: "", os: "", egressText: "", meters: [{ label: "CPU", short: "CPU", percent }] });
+  const rows = (a: number, b: number) => [
+    { id: "mm1", station: "ws1/mm1", name: "MM1", online: true, acceptAutoChats: true, host: cpu(a), overview: { counts: { running: 1 } } },
+    { id: "mm2", station: "ws1/mm2", name: "MM2", online: true, acceptAutoChats: true, host: cpu(b), overview: { counts: { running: 1 } } },
+  ];
+  setStations(rows(10, 14));
+  assert.equal(view().station.id, "mm1");
+  // mm1 crosses 12.5% (weight 2), mm2 drops under it (weight 1): one step, mm1 stays.
+  setStations(rows(14, 10));
+  assert.equal(view().station.id, "mm1");
+  setStations(rows(10, 14));
+  assert.equal(view().station.id, "mm1");
+  // mm1 at 40% (weight 3) against mm2 at 10% (weight 1): two steps, mm2.
+  setStations(rows(40, 10));
+  assert.equal(view().station.id, "mm2");
+  // Equal again: mm2, shown, stays; once a chat is made there, the next goes to mm1.
+  setStations(rows(10, 10));
+  const v = view();
+  assert.equal(v.station.id, "mm2");
+  choose.used("ws1/mm2", choose.create("ws1/mm2"), v.next);
+  assert.equal(view().station.id, "mm1");
+});
+
 test("auto station allowlist: new user with no last history picks least busy allowlisted station, never non-allowlisted online[0]", () => {
   const { setStations, view } = makeAllowlistRig();
   setStations([

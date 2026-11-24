@@ -1,0 +1,910 @@
+// Pure Pion port of station/mb/src/memory/merge.mbt:
+// UTF-8 validation/lossy decode, JS UTF-16 string comparison/trimming,
+// 3-way line merge (LCS up to 3000 differing lines), union_lines with station marks,
+// station_tag, conflict_path, front matter parsing, alike, and aside_of.
+
+let MOST_LINES : Int = 3000
+
+pub fn str_has_prefix(s : String, prefix : String) -> Bool {
+  let n = prefix.length()
+  if s.length() < n {
+    return false
+  }
+  for i in 0..<n {
+    if s.code_unit_at(i) != prefix.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_has_suffix(s : String, suffix : String) -> Bool {
+  let sn = s.length()
+  let pn = suffix.length()
+  if sn < pn {
+    return false
+  }
+  let off = sn - pn
+  for i in 0..<pn {
+    if s.code_unit_at(off + i) != suffix.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_contains_byte(s : String, b : Int) -> Bool {
+  for i in 0..<s.length() {
+    if s.code_unit_at(i) == b {
+      return true
+    }
+  }
+  false
+}
+
+pub fn str_rev_find_byte(s : String, b : Int) -> Int {
+  let mut i = s.length() - 1
+  while i >= 0 {
+    if s.code_unit_at(i) == b {
+      return i
+    }
+    i = i - 1
+  }
+  -1
+}
+
+pub fn str_replace_char(s : String, old_b : Int, new_s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c == old_b {
+      sb.write_string(new_s)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+pub fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+/// Whether `bytes` are valid UTF-8 with no NUL (matching Buffer UTF-8 round-trip).
+pub fn is_text(bytes : Bytes) -> Bool {
+  let n = bytes.length()
+  let mut i = 0
+  while i < n {
+    let b = bytes[i].to_int() & 0xFF
+    if b == 0 {
+      return false
+    }
+    if b < 0x80 {
+      i = i + 1
+      continue
+    }
+    let mut seq_len = 0
+    let mut lo = 0
+    let mut hi = 0
+    if b >= 0xC2 && b <= 0xDF {
+      seq_len = 2
+      lo = 0x80
+      hi = 0xBF
+    } else if b == 0xE0 {
+      seq_len = 3
+      lo = 0xA0
+      hi = 0xBF
+    } else if (b >= 0xE1 && b <= 0xEC) || b == 0xEE || b == 0xEF {
+      seq_len = 3
+      lo = 0x80
+      hi = 0xBF
+    } else if b == 0xED {
+      seq_len = 3
+      lo = 0x80
+      hi = 0x9F
+    } else if b == 0xF0 {
+      seq_len = 4
+      lo = 0x90
+      hi = 0xBF
+    } else if b >= 0xF1 && b <= 0xF3 {
+      seq_len = 4
+      lo = 0x80
+      hi = 0xBF
+    } else if b == 0xF4 {
+      seq_len = 4
+      lo = 0x80
+      hi = 0x8F
+    } else {
+      return false
+    }
+    if i + seq_len > n {
+      return false
+    }
+    let first = bytes[i + 1].to_int() & 0xFF
+    if first < lo || first > hi {
+      return false
+    }
+    for k in 2..<seq_len {
+      let c = bytes[i + k].to_int() & 0xFF
+      if c < 0x80 || c > 0xBF {
+        return false
+      }
+    }
+    i = i + seq_len
+  }
+  true
+}
+
+fn write_fffd(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / Buffer.toString("utf8") lossy UTF-8 decoder: maximal subpart -> U+FFFD, BOM kept.
+pub fn text_of(bytes : Bytes) -> String {
+  let sb = StringBuilder::new()
+  let n = bytes.length()
+  let mut i = 0
+  while i < n {
+    let b0 = bytes[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < n {
+        let b1 = bytes[i + 1].to_int() & 0xFF
+        if is_utf8_cont(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < n {
+        let b1 = bytes[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < n {
+            let b2 = bytes[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < n {
+        let b1 = bytes[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < n {
+            let b2 = bytes[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              if i + 3 < n {
+                let b3 = bytes[i + 3].to_int() & 0xFF
+                if is_utf8_cont(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else {
+      write_fffd(sb)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+/// Decode one UTF-8 code point at byte offset `i` of `s`; returns `(code_point, byte_len)`.
+pub fn utf8_at(s : String, i : Int) -> (Int, Int) {
+  let n = s.length()
+  let b0 = s.code_unit_at(i) & 0xFF
+  if b0 < 0x80 {
+    return (b0, 1)
+  }
+  if b0 >= 0xC2 && b0 <= 0xDF && i + 1 < n {
+    let b1 = s.code_unit_at(i + 1) & 0xFF
+    if is_utf8_cont(b1) {
+      return (((b0 & 0x1F) << 6) | (b1 & 0x3F), 2)
+    }
+  } else if b0 >= 0xE0 && b0 <= 0xEF && i + 2 < n {
+    let b1 = s.code_unit_at(i + 1) & 0xFF
+    let b2 = s.code_unit_at(i + 2) & 0xFF
+    if is_utf8_cont(b1) && is_utf8_cont(b2) {
+      return (((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F), 3)
+    }
+  } else if b0 >= 0xF0 && b0 <= 0xF4 && i + 3 < n {
+    let b1 = s.code_unit_at(i + 1) & 0xFF
+    let b2 = s.code_unit_at(i + 2) & 0xFF
+    let b3 = s.code_unit_at(i + 3) & 0xFF
+    if is_utf8_cont(b1) && is_utf8_cont(b2) && is_utf8_cont(b3) {
+      return (
+        ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F),
+        4,
+      )
+    }
+  }
+  (0xFFFD, 1)
+}
+
+/// Slice `s` to at most `max_units` UTF-16 code units.
+/// Intentional safety deviation vs JS/MoonBit: stops before splitting a supplementary
+/// code point (surrogate pair) at the `max_units` boundary so the output stays valid UTF-8
+/// and never emits a lone surrogate or triggers a UTF-8 encoding abort.
+pub fn slice_utf16(s : String, max_units : Int) -> String {
+  let n = s.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let (cp, blen) = utf8_at(s, i)
+    let u = if cp >= 0x10000 { 2 } else { 1 }
+    if units + u > max_units {
+      break
+    }
+    units = units + u
+    i = i + blen
+  }
+  s.slice(0, i)
+}
+
+/// JavaScript `\s` / `String.prototype.trim` whitespace & line terminators.
+pub fn js_space(c : Int) -> Bool {
+  c == 0x09 ||
+  c == 0x0A ||
+  c == 0x0B ||
+  c == 0x0C ||
+  c == 0x0D ||
+  c == 0x20 ||
+  c == 0xA0 ||
+  c == 0x1680 ||
+  (c >= 0x2000 && c <= 0x200A) ||
+  c == 0x2028 ||
+  c == 0x2029 ||
+  c == 0x202F ||
+  c == 0x205F ||
+  c == 0x3000 ||
+  c == 0xFEFF
+}
+
+pub fn js_trim_start(s : String) -> String {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let (cp, blen) = utf8_at(s, i)
+    if !js_space(cp) {
+      break
+    }
+    i = i + blen
+  }
+  s.slice(i, n)
+}
+
+pub fn js_trim(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n {
+    let (cp, blen) = utf8_at(s, start)
+    if !js_space(cp) {
+      break
+    }
+    start = start + blen
+  }
+  if start >= n {
+    return ""
+  }
+  let mut end = start
+  let mut i = start
+  while i < n {
+    let (cp, blen) = utf8_at(s, i)
+    i = i + blen
+    if !js_space(cp) {
+      end = i
+    }
+  }
+  s.slice(start, end)
+}
+
+/// JavaScript UTF-16 code unit lexicographic `a > b`.
+pub fn js_after(a : String, b : String) -> Bool {
+  let na = a.length()
+  let nb = b.length()
+  let mut ia = 0
+  let mut ib = 0
+  let mut low_a = -1
+  let mut low_b = -1
+  while true {
+    let mut ua = -1
+    if low_a >= 0 {
+      ua = low_a
+      low_a = -1
+    } else if ia < na {
+      let (cp, blen) = utf8_at(a, ia)
+      ia = ia + blen
+      if cp >= 0x10000 {
+        let v = cp - 0x10000
+        ua = 0xD800 + (v >> 10)
+        low_a = 0xDC00 + (v & 0x3FF)
+      } else {
+        ua = cp
+      }
+    }
+    let mut ub = -1
+    if low_b >= 0 {
+      ub = low_b
+      low_b = -1
+    } else if ib < nb {
+      let (cp, blen) = utf8_at(b, ib)
+      ib = ib + blen
+      if cp >= 0x10000 {
+        let v = cp - 0x10000
+        ub = 0xD800 + (v >> 10)
+        low_b = 0xDC00 + (v & 0x3FF)
+      } else {
+        ub = cp
+      }
+    }
+    if ua != ub {
+      return ua > ub
+    }
+    if ua < 0 {
+      return false
+    }
+  }
+  false
+}
+
+/// `s.split("\n")`: `""` -> `[""]`.
+pub fn lines_of(s : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = s.length()
+  let mut from = 0
+  for i in 0..<n {
+    if s.code_unit_at(i) == 10 {
+      out.push(s.slice(from, i))
+      from = i + 1
+    }
+  }
+  out.push(s.slice(from, n))
+  out
+}
+
+pub fn joined(lines : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<lines.length() {
+    if i > 0 {
+      sb.write_byte(10 as Byte)
+    }
+    sb.write_string(lines[i])
+  }
+  sb.to_string()
+}
+
+fn lcs_get(buf : Bytes, idx : Int) -> Int {
+  let off = idx * 2
+  (buf[off].to_int() & 0xFF) | ((buf[off + 1].to_int() & 0xFF) << 8)
+}
+
+fn lcs_set(buf : Bytes, idx : Int, v : Int) -> Unit {
+  let off = idx * 2
+  buf[off] = (v & 0xFF) as Byte
+  buf[off + 1] = ((v >> 8) & 0xFF) as Byte
+}
+
+/// Longest common subsequence of line indices (tie-breaking matches memory-merge.ts `matches`).
+pub fn matches(a : Array[String], b : Array[String]) -> Option[Array[(Int, Int)]] {
+  let mut start = 0
+  let la = a.length()
+  let lb = b.length()
+  while start < la && start < lb && a[start] == b[start] {
+    start = start + 1
+  }
+  let mut end_a = la
+  let mut end_b = lb
+  while end_a > start && end_b > start && a[end_a - 1] == b[end_b - 1] {
+    end_a = end_a - 1
+    end_b = end_b - 1
+  }
+  let n = end_a - start
+  let m = end_b - start
+  if n > MOST_LINES || m > MOST_LINES {
+    return None
+  }
+  let out : Array[(Int, Int)] = []
+  for i in 0..<start {
+    out.push((i, i))
+  }
+  if n > 0 && m > 0 {
+    let ids : Map[String, Int] = Map::new()
+    let mut next_id = 0
+    let xa : Array[Int] = []
+    for i in 0..<n {
+      let line = a[start + i]
+      match ids.get(line) {
+        Some(k) => xa.push(k)
+        None => {
+          let k = next_id
+          next_id = next_id + 1
+          ids.set(line, k)
+          xa.push(k)
+        }
+      }
+    }
+    let xb : Array[Int] = []
+    for j in 0..<m {
+      let line = b[start + j]
+      match ids.get(line) {
+        Some(k) => xb.push(k)
+        None => {
+          let k = next_id
+          next_id = next_id + 1
+          ids.set(line, k)
+          xb.push(k)
+        }
+      }
+    }
+    let width = m + 1
+    let lcs = Bytes::new((n + 1) * width * 2)
+    let mut i = n - 1
+    while i >= 0 {
+      let mut j = m - 1
+      let row_i = i * width
+      let row_next = (i + 1) * width
+      while j >= 0 {
+        let v = if xa[i] == xb[j] {
+          lcs_get(lcs, row_next + j + 1) + 1
+        } else {
+          let down = lcs_get(lcs, row_next + j)
+          let right = lcs_get(lcs, row_i + j + 1)
+          if down >= right { down } else { right }
+        }
+        lcs_set(lcs, row_i + j, v)
+        j = j - 1
+      }
+      i = i - 1
+    }
+    let mut pi = 0
+    let mut pj = 0
+    while pi < n && pj < m {
+      if xa[pi] == xb[pj] {
+        out.push((start + pi, start + pj))
+        pi = pi + 1
+        pj = pj + 1
+      } else if lcs_get(lcs, (pi + 1) * width + pj) >= lcs_get(lcs, pi * width + pj + 1) {
+        pi = pi + 1
+      } else {
+        pj = pj + 1
+      }
+    }
+  }
+  let mut k = 0
+  while end_a + k < la {
+    out.push((end_a + k, end_b + k))
+    k = k + 1
+  }
+  Some(out)
+}
+
+fn same_slice(xs : Array[String], a : Int, ea : Int, ys : Array[String], b : Int, eb : Int) -> Bool {
+  if ea - a != eb - b {
+    return false
+  }
+  for k in 0..<(ea - a) {
+    if xs[a + k] != ys[b + k] {
+      return false
+    }
+  }
+  true
+}
+
+fn push_range(out : Array[String], xs : Array[String], from : Int, to : Int) -> Unit {
+  for k in from..<to {
+    out.push(xs[k])
+  }
+}
+
+/// Three-way line merge (union on conflict, newer first). None if too far apart.
+pub fn merge3(base : String, newer : String, older : String) -> Option[String] {
+  let b = lines_of(base)
+  let w = lines_of(newer)
+  let l = lines_of(older)
+  let bw = match matches(b, w) {
+    Some(p) => p
+    None => return None
+  }
+  let bl = match matches(b, l) {
+    Some(p) => p
+    None => return None
+  }
+  let in_w : Map[Int, Int] = Map::new()
+  for i in 0..<bw.length() {
+    let (bi, wi) = bw[i]
+    in_w.set(bi, wi)
+  }
+  let in_l : Map[Int, Int] = Map::new()
+  for i in 0..<bl.length() {
+    let (bi, li) = bl[i]
+    in_l.set(bi, li)
+  }
+  let out : Array[String] = []
+  let mut pb = 0
+  let mut pw = 0
+  let mut pl = 0
+  for i in 0..<b.length() {
+    let iw = match in_w.get(i) {
+      Some(v) => v
+      None => continue
+    }
+    let il = match in_l.get(i) {
+      Some(v) => v
+      None => continue
+    }
+    if iw < pw || il < pl {
+      continue
+    }
+    if same_slice(w, pw, iw, b, pb, i) {
+      push_range(out, l, pl, il)
+    } else if same_slice(l, pl, il, b, pb, i) || same_slice(w, pw, iw, l, pl, il) {
+      push_range(out, w, pw, iw)
+    } else {
+      push_range(out, w, pw, iw)
+      push_range(out, l, pl, il)
+    }
+    out.push(b[i])
+    pb = i + 1
+    pw = iw + 1
+    pl = il + 1
+  }
+  let eb = b.length()
+  let ew = w.length()
+  let el = l.length()
+  if same_slice(w, pw, ew, b, pb, eb) {
+    push_range(out, l, pl, el)
+  } else if same_slice(l, pl, el, b, pb, eb) || same_slice(w, pw, ew, l, pl, el) {
+    push_range(out, w, pw, ew)
+  } else {
+    push_range(out, w, pw, ew)
+    push_range(out, l, pl, el)
+  }
+  Some(joined(out))
+}
+
+/// Byte offset where `/^(\s*(?:[-*+]|\d+\.)\s+|)/` ends (0 if none).
+fn lead_of(line : String) -> Int {
+  let n = line.length()
+  let mut i = 0
+  while i < n {
+    let (cp, blen) = utf8_at(line, i)
+    if !js_space(cp) {
+      break
+    }
+    i = i + blen
+  }
+  if i >= n {
+    return 0
+  }
+  let c = line.code_unit_at(i)
+  let mut j = i
+  if c == 45 || c == 42 || c == 43 {
+    // '-', '*', '+'
+    j = i + 1
+  } else if c >= 48 && c <= 57 {
+    while j < n && line.code_unit_at(j) >= 48 && line.code_unit_at(j) <= 57 {
+      j = j + 1
+    }
+    if j >= n || line.code_unit_at(j) != 46 {
+      // '.'
+      return 0
+    }
+    j = j + 1
+  } else {
+    return 0
+  }
+  let mut k = j
+  while k < n {
+    let (cp, blen) = utf8_at(line, k)
+    if !js_space(cp) {
+      break
+    }
+    k = k + blen
+  }
+  if k == j { 0 } else { k }
+}
+
+/// Byte offset past `\[[^\]\n]{1,80}\] ` starting at byte offset `at`, counting UTF-16 code units.
+fn tag_end(line : String, at : Int) -> Option[Int] {
+  let n = line.length()
+  if at >= n || line.code_unit_at(at) != 91 {
+    // '['
+    return None
+  }
+  let mut q = at + 1
+  let mut units = 0
+  while q < n {
+    let b = line.code_unit_at(q)
+    if b == 93 || b == 10 {
+      // ']' or '\n'
+      break
+    }
+    let (cp, blen) = utf8_at(line, q)
+    units = units + (if cp >= 0x10000 { 2 } else { 1 })
+    q = q + blen
+  }
+  if units < 1 || units > 80 || q + 1 >= n || line.code_unit_at(q) != 93 || line.code_unit_at(q + 1) != 32 {
+    return None
+  }
+  Some(q + 2)
+}
+
+fn mark_of(line : String) -> Option[(Int, Int)] {
+  let lead = lead_of(line)
+  if lead > 0 {
+    match tag_end(line, lead) {
+      Some(end) => return Some((lead, end))
+      None => ()
+    }
+  }
+  match tag_end(line, 0) {
+    Some(end) => Some((0, end))
+    None => None
+  }
+}
+
+fn unmarked(line : String) -> String {
+  match mark_of(line) {
+    Some((lead, end)) => line.slice(0, lead) + line.slice(end, line.length())
+    None => line
+  }
+}
+
+fn says(line : String) -> Bool {
+  let t = js_trim(line)
+  t != "" && !str_has_prefix(js_trim_start(line), "#") && t != "---"
+}
+
+fn marked(line : String, station : String) -> String {
+  if !says(line) || unmarked(line) != line {
+    return line
+  }
+  let lead = lead_of(line)
+  line.slice(0, lead) + "[" + station + "] " + line.slice(lead, line.length())
+}
+
+pub fn union_lines(
+  newer : String,
+  older : String,
+  newer_name : Option[String],
+  older_name : Option[String],
+) -> String {
+  let w = lines_of(newer)
+  let l = lines_of(older)
+  let wu : Array[String] = []
+  for i in 0..<w.length() {
+    wu.push(unmarked(w[i]))
+  }
+  let lu : Array[String] = []
+  for i in 0..<l.length() {
+    lu.push(unmarked(l[i]))
+  }
+  let pairs = match matches(wu, lu) {
+    Some(p) => p
+    None => []
+  }
+  let out : Array[String] = []
+  let mut pw = 0
+  let mut pl = 0
+  for i in 0..<pairs.length() {
+    let (iw, il) = pairs[i]
+    for k in pw..<iw {
+      match newer_name {
+        Some(name) => out.push(marked(w[k], name))
+        None => out.push(w[k])
+      }
+    }
+    for k in pl..<il {
+      match older_name {
+        Some(name) => out.push(marked(l[k], name))
+        None => out.push(l[k])
+      }
+    }
+    out.push(unmarked(w[iw]))
+    pw = iw + 1
+    pl = il + 1
+  }
+  for k in pw..<w.length() {
+    match newer_name {
+      Some(name) => out.push(marked(w[k], name))
+      None => out.push(w[k])
+    }
+  }
+  for k in pl..<l.length() {
+    match older_name {
+      Some(name) => out.push(marked(l[k], name))
+      None => out.push(l[k])
+    }
+  }
+  joined(out)
+}
+
+/// Station name sanitized to letters, digits, `_`, `-` (max 40 UTF-16 code units, "station" if empty).
+pub fn station_tag(station : String) -> String {
+  let sb = StringBuilder::new()
+  let n = station.length()
+  let mut i = 0
+  let mut run = false
+  while i < n {
+    let (cp, blen) = utf8_at(station, i)
+    let kept = cp == 95 || cp == 45 || word_char(cp)
+    if kept {
+      sb.write_string(station.slice(i, i + blen))
+      run = false
+    } else if !run {
+      sb.write_byte(45 as Byte)
+      run = true
+    }
+    i = i + blen
+  }
+  let s = sb.to_string()
+  let mut start = 0
+  let mut end = s.length()
+  while start < end && s.code_unit_at(start) == 45 {
+    start = start + 1
+  }
+  while end > start && s.code_unit_at(end - 1) == 45 {
+    end = end - 1
+  }
+  let trimmed = s.slice(start, end)
+  let tag = slice_utf16(trimmed, 40)
+  if tag == "" { "station" } else { tag }
+}
+
+pub fn conflict_path(path : String, station : String) -> String {
+  let slash = str_rev_find_byte(path, 47) // '/'
+  let dir = path.slice(0, slash + 1)
+  let name = path.slice(slash + 1, path.length())
+  let dot = str_rev_find_byte(name, 46) // '.'
+  let tag = station_tag(station)
+  if dot > 0 {
+    dir + name.slice(0, dot) + ".conflict-" + tag + name.slice(dot, name.length())
+  } else {
+    dir + name + ".conflict-" + tag
+  }
+}
+
+fn front_of(text : String) -> Option[(Int, String)] {
+  if !str_has_prefix(text, "---\n") {
+    return None
+  }
+  let n = text.length()
+  let mut k = 4
+  while k + 4 <= n {
+    if text.code_unit_at(k) == 10 &&
+    text.code_unit_at(k + 1) == 45 &&
+    text.code_unit_at(k + 2) == 45 &&
+    text.code_unit_at(k + 3) == 45 {
+      return Some((k + 4, text.slice(4, k)))
+    }
+    k = k + 1
+  }
+  None
+}
+
+pub fn body_of(text : String) -> String {
+  match front_of(text) {
+    Some((end, _)) => {
+      let past = if end < text.length() && text.code_unit_at(end) == 10 { end + 1 } else { end }
+      text.slice(past, text.length())
+    }
+    None => text
+  }
+}
+
+pub fn alike(a : String, b : String) -> Bool {
+  let la = lines_of(body_of(a))
+  let lb = lines_of(body_of(b))
+  let pairs = match matches(la, lb) {
+    Some(p) => p
+    None => return false
+  }
+  let mut said = 0
+  for i in 0..<pairs.length() {
+    let (ia, _) = pairs[i]
+    if js_trim(la[ia]) != "" {
+      said = said + 1
+    }
+  }
+  let mut ca = 0
+  for i in 0..<la.length() {
+    if js_trim(la[i]) != "" {
+      ca = ca + 1
+    }
+  }
+  let mut cb = 0
+  for i in 0..<lb.length() {
+    if js_trim(lb[i]) != "" {
+      cb = cb + 1
+    }
+  }
+  let least = if ca < cb { ca } else { cb }
+  least > 0 && said * 2 >= least
+}
+
+pub fn aside_of(text : String, skill : String) -> Option[String] {
+  let front = match front_of(text) {
+    Some((_, f)) => f
+    None => return None
+  }
+  let n = front.length()
+  let mut said : Option[String] = None
+  let mut p = 0
+  let mut at_line_start = true
+  while p < n {
+    if at_line_start && str_has_prefix(front.slice(p, n), "description: ") {
+      match tag_end(front, p + 13) {
+        Some(end) => {
+          said = Some(front.slice(p + 14, end - 2))
+          break
+        }
+        None => ()
+      }
+    }
+    let (cp, blen) = utf8_at(front, p)
+    at_line_start = cp == 0x0A || cp == 0x0D || cp == 0x2028 || cp == 0x2029
+    p = p + blen
+  }
+  let name = match said {
+    Some(nm) => nm
+    None => return None
+  }
+  let flines = lines_of(front)
+  let target = "name: " + skill
+  let mut has_name = false
+  for i in 0..<flines.length() {
+    if flines[i] == target {
+      has_name = true
+      break
+    }
+  }
+  if !has_name {
+    return None
+  }
+  Some(name)
+}

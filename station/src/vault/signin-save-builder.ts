@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -9,7 +9,7 @@ import { forgetSigninSave, installSigninSaveIndex, nextPendingSigninSave, queueS
 export class SigninSaveBuilder {
   readonly #db: DatabaseSync;
   readonly #path: string | null;
-  readonly #options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
+  readonly #options: BackfillOptions;
   readonly #answer: (pending: PendingSigninSave, body: string | null) => void;
   readonly #binary: string | undefined;
   readonly #timers = new Fibers("signin save index");
@@ -23,7 +23,7 @@ export class SigninSaveBuilder {
   #retryMs = 250;
 
   constructor(db: DatabaseSync, answer: (pending: PendingSigninSave, body: string | null) => void,
-    options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, binary?: string) {
+    options: BackfillOptions = {}, binary?: string) {
     this.#db = db; this.#path = db.location(); this.#answer = answer; this.#options = options; this.#binary = binary;
     installSigninSaveIndex(db);
     this.#pump();
@@ -88,7 +88,8 @@ export class SigninSaveBuilder {
       // (by the MoonBit builder, station/mb's src/signin: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        worker = new MbBackfill(this.#binary ?? readerBinary(), ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20);
+        const bin = resolveReaderSelection("signin-save", { binary: this.#binary, config: this.#options.readers, logAt: "readers" }).primaryBinary;
+        worker = new MbBackfill(bin, ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20);
       }
       catch (error) {
         log.warn("signin", "the sign-in index worker could not start", { error: (error as Error).message });

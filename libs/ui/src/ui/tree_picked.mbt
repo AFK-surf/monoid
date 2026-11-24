@@ -23,6 +23,10 @@ pub struct WordsPicked {
   ends_in : @view.NodeId
   /// the pointer let go at the start of what is picked, rather than its end
   ends_at_start : Bool
+  /// where in its first paragraph's words (in the page's order) what is picked begins, and where in its last it ends:
+  /// code units of what that paragraph's node shows (a code viewer's exact lines)
+  first_at : Int
+  last_at : Int
   /// picked by a finger (held on its words: its handles and the system's text menu over it)
   finger : Bool
   /// which selection it is (Ctx::selection_made): another number for each a press begins
@@ -226,6 +230,8 @@ fn picked_now_worked() -> WordsPicked? {
     strays,
     ends_in,
     ends_at_start: spot_cmp(from, to) > 0,
+    first_at: spans[0].1.a,
+    last_at: spans[spans.length() - 1].1.b,
     finger: picked.finger,
     made: picked.made,
   })

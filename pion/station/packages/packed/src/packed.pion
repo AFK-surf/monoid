@@ -1,0 +1,1039 @@
+// Production `--builder packed` worker in pure Pion over `host_shim` (`libstillfail_shell.a`).
+// Mirrors `station/mb/src/packed/{packed.mbt,answer.mbt}` and `station/mb/src/reader/main.mbt` `packed()`
+// byte for byte: segmented zstd seek-table format + workspace tar pack/unpack/file delegation.
+
+import "base_codec"
+import "host_shim"
+
+/// How much of a transcript a frame holds (16 MiB).
+pub let SEGMENT : Int = 16777216
+
+/// How long the seek table's footer is: frames count (4), descriptor (1), seekable magic (4).
+pub let FOOTER : Int = 9
+
+/// Frame header descriptor of a segment stored as it is (0.1.6800-0.1.6802).
+let STORED_DESCRIPTOR : Int = 0xe0
+
+fn u32_const(hi : Int, lo : Int) -> Int64 {
+  ((hi.to_int64() & 0xFFFF.to_int64()) << 16.to_int64()) | (lo.to_int64() & 0xFFFF.to_int64())
+}
+
+fn frame_magic() -> Int64 {
+  u32_const(0xfd2f, 0xb528)
+}
+
+fn skippable_magic() -> Int64 {
+  u32_const(0x184d, 0x2a5e)
+}
+
+fn seekable_magic() -> Int64 {
+  u32_const(0x8f92, 0xeab1)
+}
+
+/// A frame of a put-away transcript: where it is in the file (`at`, `packed` bytes) and what it
+/// holds of the transcript (`size` bytes from `from`).
+pub struct Frame {
+  pub at : Int64
+  pub packed : Int64
+  pub from : Int64
+  pub size : Int64
+}
+
+fn le32(b : Bytes, at : Int) -> Int64 {
+  let b0 = b[at].to_int().to_int64() & 0xFF.to_int64()
+  let b1 = b[at + 1].to_int().to_int64() & 0xFF.to_int64()
+  let b2 = b[at + 2].to_int().to_int64() & 0xFF.to_int64()
+  let b3 = b[at + 3].to_int().to_int64() & 0xFF.to_int64()
+  b0 | (b1 << 8.to_int64()) | (b2 << 16.to_int64()) | (b3 << 24.to_int64())
+}
+
+fn put32(out : Bytes, at : Int, v : Int64) -> Unit {
+  for i in 0..<4 {
+    let shift = (i * 8).to_int64()
+    out[at + i] = ((v >> shift) & 0xFF.to_int64()).to_int() as Byte
+  }
+}
+
+/// The table that ends a put-away transcript: each frame's size in the file and of the transcript.
+pub fn seek_table(frames : Array[(Int64, Int64)]) -> Bytes {
+  let length = 8 + frames.length() * 8 + FOOTER
+  let out = Bytes::new(length)
+  put32(out, 0, skippable_magic())
+  put32(out, 4, (length - 8).to_int64())
+  for i in 0..<frames.length() {
+    let (packed, size) = frames[i]
+    put32(out, 8 + i * 8, packed)
+    put32(out, 12 + i * 8, size)
+  }
+  let end = 8 + frames.length() * 8
+  put32(out, end, frames.length().to_int64())
+  out[end + 4] = 0 as Byte
+  put32(out, end + 5, seekable_magic())
+  out
+}
+
+/// How long the table at the end of a put-away transcript of `size` bytes is, and each entry of
+/// it, from its last `FOOTER` bytes: None without one.
+pub fn table_length(size : Int64, foot : Bytes) -> Option[(Int64, Int64)] {
+  let min_len = (8 + FOOTER).to_int64()
+  if size < min_len || foot.length() < FOOTER || le32(foot, 5) != seekable_magic() {
+    return None
+  }
+  let desc = foot[4].to_int() & 0xFF
+  if (desc & 0x7F) != 0 {
+    return None
+  }
+  let entry = if (desc & 0x80) != 0 { 12.to_int64() } else { 8.to_int64() }
+  let length = 8.to_int64() + le32(foot, 0) * entry + FOOTER.to_int64()
+  if length > size {
+    None
+  } else {
+    Some((length, entry))
+  }
+}
+
+/// The frames a table lists: None when they do not add up to the file of `size` bytes.
+pub fn frames_in(size : Int64, table : Bytes, entry : Int64) -> Option[Array[Frame]] {
+  let length = table.length().to_int64()
+  let min_len = (8 + FOOTER).to_int64()
+  if length < min_len || le32(table, 0) != skippable_magic() || le32(table, 4) != length - 8.to_int64() {
+    return None
+  }
+  let n = (length - 8.to_int64() - FOOTER.to_int64()) / entry
+  let frames : Array[Frame] = []
+  let mut at = 0.to_int64()
+  let mut from = 0.to_int64()
+  let mut i = 0.to_int64()
+  while i < n {
+    let off = (8.to_int64() + i * entry).to_int()
+    let packed = le32(table, off)
+    let each = le32(table, off + 4)
+    frames.push(Frame::{ at: at, packed: packed, from: from, size: each })
+    at = at + packed
+    from = from + each
+    i = i + 1.to_int64()
+  }
+  if at == size - length {
+    Some(frames)
+  } else {
+    None
+  }
+}
+
+/// Whether a frame whose first 5 bytes are `head` is a segment stored as it is (0.1.6800-0.1.6802).
+pub fn stored(head : Bytes) -> Bool {
+  head.length() >= 5 && le32(head, 0) == frame_magic() && (head[4].to_int() & 0xFF) == STORED_DESCRIPTOR
+}
+
+// ── JSON helpers, surrogate validation, and cross-platform Double -> Int64 saturation ──
+
+fn int64_max() -> Int64 {
+  (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+}
+
+fn int64_min() -> Int64 {
+  -int64_max() - 1.to_int64()
+}
+
+/// Match MoonBit `Double::to_int64()` cross-platform saturating conversion (NaN -> 0,
+/// >= 2^63 -> INT64_MAX, <= -2^63 -> INT64_MIN, otherwise truncating toward zero).
+pub fn json_num_to_int64(d : Double) -> Int64 {
+  if d != d {
+    return 0.to_int64()
+  }
+  let bound = 9223372036854775808.0
+  if d >= bound {
+    return int64_max()
+  }
+  if d <= -bound {
+    return int64_min()
+  }
+  d.to_int64()
+}
+
+fn parse_hex4_at(s : String, pos : Int) -> Option[Int] {
+  if pos + 4 > s.length() {
+    return None
+  }
+  let mut v = 0
+  for k in 0..<4 {
+    match base_codec::hex_digit(s.code_unit_at(pos + k)) {
+      Some(d) => v = (v << 4) | d
+      None => return None
+    }
+  }
+  Some(v)
+}
+
+/// Return true if any JSON string literal in `line` contains an unpaired UTF-16 surrogate escape
+/// (`\uD800`..`\uDBFF` not immediately followed by `\uDC00`..`\uDFFF`, or a lone low surrogate).
+/// Mirrors MoonBit `@json.parse`, which rejects lone surrogates instead of replacing with U+FFFD.
+pub fn has_lone_surrogate(line : String) -> Bool {
+  let n = line.length()
+  let mut i = 0
+  let mut in_str = false
+  while i < n {
+    let c = line.code_unit_at(i)
+    if !in_str {
+      if c == 34 {
+        in_str = true
+      }
+      i = i + 1
+    } else if c == 34 {
+      in_str = false
+      i = i + 1
+    } else if c == 92 {
+      if i + 1 >= n {
+        return false
+      }
+      let esc = line.code_unit_at(i + 1)
+      if esc == 117 {
+        match parse_hex4_at(line, i + 2) {
+          None => i = i + 2
+          Some(u) => {
+            if u >= 0xD800 && u <= 0xDBFF {
+              if i + 12 <= n && line.code_unit_at(i + 6) == 92 && line.code_unit_at(i + 7) == 117 {
+                match parse_hex4_at(line, i + 8) {
+                  Some(lo) => {
+                    if lo >= 0xDC00 && lo <= 0xDFFF {
+                      i = i + 12
+                    } else {
+                      return true
+                    }
+                  }
+                  None => return true
+                }
+              } else {
+                return true
+              }
+            } else if u >= 0xDC00 && u <= 0xDFFF {
+              return true
+            } else {
+              i = i + 6
+            }
+          }
+        }
+      } else {
+        i = i + 2
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  false
+}
+
+/// Escape U+2028 (`\u2028`) and U+2029 (`\u2029`) in serialized JSON output to match MoonBit `Host::say`.
+/// Uses a zero-allocation fast path when no 0xE2 0x80 (0xA8|0xA9) UTF-8 sequence is present.
+pub fn escape_line_separators(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut found = false
+  let mut i = 0
+  while i + 2 < n {
+    if (raw[i].to_int() & 0xFF) == 0xE2 && (raw[i + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[i + 2].to_int() & 0xFF
+      if b2 == 0xA8 || b2 == 0xA9 {
+        found = true
+        break
+      }
+    }
+    i = i + 1
+  }
+  if !found {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < n {
+    if j + 2 < n && (raw[j].to_int() & 0xFF) == 0xE2 && (raw[j + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[j + 2].to_int() & 0xFF
+      if b2 == 0xA8 {
+        sb.write_string("\\u2028")
+        j = j + 3
+        continue
+      } else if b2 == 0xA9 {
+        sb.write_string("\\u2029")
+        j = j + 3
+        continue
+      }
+    }
+    sb.write_byte(raw[j])
+    j = j + 1
+  }
+  sb.to_string()
+}
+
+fn str_of(ask : base_codec::Json, key : String) -> Result[String, String] {
+  match base_codec::json_get(ask, key) {
+    Some(base_codec::Json::Str(s)) => Ok(s)
+    _ => Err("no " + key)
+  }
+}
+
+fn done_json() -> base_codec::Json {
+  base_codec::json_obj([])
+}
+
+/// Build the shell op and arguments for `workspace.pack`, `workspace.unpack`, `workspace.file`.
+pub fn workspace_call(
+  op : String,
+  ask : base_codec::Json,
+) -> Result[(String, Array[(String, base_codec::Json)]), String] {
+  if op == "workspace.pack" {
+    let dir = match str_of(ask, "dir") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let out = match str_of(ask, "out") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(("tar.pack", [("dir", base_codec::json_str(dir)), ("out", base_codec::json_str(out))]))
+  } else if op == "workspace.unpack" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let dest = match str_of(ask, "dest") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let args : Array[(String, base_codec::Json)] = [
+      ("path", base_codec::json_str(path)),
+      ("dest", base_codec::json_str(dest)),
+    ]
+    match base_codec::json_get(ask, "prefix") {
+      None => ()
+      Some(base_codec::Json::Null) => ()
+      Some(base_codec::Json::Str(prefix)) => args.push(("prefix", base_codec::json_str(prefix)))
+      Some(_) => return Err("no prefix")
+    }
+    Ok(("tar.unpack", args))
+  } else if op == "workspace.file" {
+    let wanted_items = match base_codec::json_get(ask, "wanted") {
+      Some(base_codec::Json::Arr(items)) => {
+        for i in 0..<items.length() {
+          match items[i] {
+            base_codec::Json::Str(_) => ()
+            _ => return Err("no wanted")
+          }
+        }
+        items
+      }
+      _ => return Err("no wanted")
+    }
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let out = match str_of(ask, "out") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(
+      (
+        "tar.file",
+        [
+          ("path", base_codec::json_str(path)),
+          ("wanted", base_codec::json_arr(wanted_items)),
+          ("out", base_codec::json_str(out)),
+        ],
+      ),
+    )
+  } else {
+    Err("no such ask")
+  }
+}
+
+/// Pure handler for the `table` op (also used directly in unit tests).
+pub fn answer_table(ask : base_codec::Json) -> Result[base_codec::Json, String] {
+  let sizes : Array[(Int64, Int64)] = []
+  match base_codec::json_get(ask, "frames") {
+    Some(base_codec::Json::Arr(listed)) => {
+      for i in 0..<listed.length() {
+        match listed[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() != 2 {
+              return Err("bad frame")
+            }
+            let packed = match pair[0] {
+              base_codec::Json::Num(d, _) => json_num_to_int64(d)
+              _ => return Err("bad frame")
+            }
+            let size = match pair[1] {
+              base_codec::Json::Num(d, _) => json_num_to_int64(d)
+              _ => return Err("bad frame")
+            }
+            sizes.push((packed, size))
+          }
+          _ => return Err("bad frame")
+        }
+      }
+    }
+    _ => ()
+  }
+  let hex = base_codec::hex_encode(seek_table(sizes))
+  Ok(base_codec::json_obj([("table", base_codec::json_str(hex))]))
+}
+
+// ── Unbounded `\n`-only line splitter & bounded FIFO queue (matching MoonBit `wire.mbt`) ──
+
+fn write_fffd(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / MoonBit `@utf8.decode_lossy` decoder over a byte buffer (maximal subpart of
+/// ill-formed subsequence -> U+FFFD), with single-pass ASCII fast branch for large lines.
+pub fn decode_utf8_lossy_arr(buf : Array[Byte]) -> String {
+  let sb = StringBuilder::new()
+  let end = buf.length()
+  let mut i = 0
+  while i < end {
+    let b0 = buf[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if is_utf8_cont(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont(b2) {
+              if i + 3 < end {
+                let b3 = buf[i + 3].to_int() & 0xFF
+                if is_utf8_cont(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd(sb)
+      i = i + 1
+    } else {
+      write_fffd(sb)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+/// Pure `\n`-delimited line accumulator without artificial 16 MiB truncation and without
+/// stripping `\r` (matching `station/mb/src/wire/wire.mbt` `Lines::push` + `@utf8.decode_lossy`).
+pub struct RawLines {
+  mut partial : Array[Byte]
+}
+
+pub fn RawLines::new() -> RawLines {
+  RawLines::{ partial: [] }
+}
+
+pub fn RawLines::push(self : RawLines, chunk : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<chunk.length() {
+    let b = chunk[i]
+    if b.to_int() == 10 {
+      out.push(decode_utf8_lossy_arr(self.partial))
+      self.partial = []
+    } else {
+      self.partial.push(b)
+    }
+  }
+  out
+}
+
+pub struct LoopState {
+  lines : RawLines
+  mut pending : Array[String]
+  mut head : Int
+  mut stdin_eof : Bool
+  mut next_call_id : Int64
+}
+
+pub fn LoopState::new() -> LoopState {
+  LoopState::{
+    lines: RawLines::new(),
+    pending: [],
+    head: 0,
+    stdin_eof: false,
+    next_call_id: 1.to_int64(),
+  }
+}
+
+pub fn LoopState::enqueue_chunk(self : LoopState, chunk : Bytes) -> Unit {
+  let items = self.lines.push(chunk)
+  for i in 0..<items.length() {
+    self.pending.push(items[i])
+  }
+}
+
+pub fn LoopState::pop_line(self : LoopState) -> Option[String] {
+  if self.head >= self.pending.length() {
+    return None
+  }
+  let line = self.pending[self.head]
+  self.pending[self.head] = ""
+  self.head = self.head + 1
+  if self.head == self.pending.length() {
+    self.pending = []
+    self.head = 0
+  } else if self.head >= 64 && self.head * 2 >= self.pending.length() {
+    let compacted : Array[String] = []
+    for i in self.head..<self.pending.length() {
+      compacted.push(self.pending[i])
+    }
+    self.pending = compacted
+    self.head = 0
+  }
+  Some(line)
+}
+
+pub fn LoopState::pending_storage_len(self : LoopState) -> Int {
+  self.pending.length()
+}
+
+/// Synchronously execute one async `libstillfail_shell.a` op while continuing to buffer any
+/// pipelined stdin chunks or EOF arriving on the shared host event queue.
+fn shell_exec(
+  state : LoopState,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+) -> Result[base_codec::Json, String] {
+  if !host_shim::shell_active() {
+    return Err("no shell")
+  }
+  let call_id = state.next_call_id
+  state.next_call_id = call_id + 1.to_int64()
+  let args_json = base_codec::json_stringify(base_codec::json_obj(args))
+  host_shim::shell_call(call_id, op, args_json, bytes)
+  while true {
+    match host_shim::wait((-1).to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => state.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => state.stdin_eof = true
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == call_id {
+          if done.error.length() > 0 {
+            return Err(done.error)
+          }
+          // Match MoonBit `wire.mbt:107`: non-JSON shell payloads decode as `null`
+          // so downstream callers report their standard domain error (e.g. `not there`).
+          match base_codec::json_parse(done.json) {
+            base_codec::JsonParseResult::Ok(j) => return Ok(j)
+            base_codec::JsonParseResult::Err(_) => return Ok(base_codec::json_null())
+          }
+        }
+      }
+      Some(host_shim::HostEvent::Sys(_, _)) => ()
+    }
+  }
+  Err("shell loop exited unexpectedly")
+}
+
+fn bytes_at(state : LoopState, path : String, at : Int64, length : Int64) -> Result[Bytes, String] {
+  let v = match shell_exec(
+    state,
+    "fs.bytes",
+    [
+      ("path", base_codec::json_str(path)),
+      ("from", base_codec::json_int64(at)),
+      ("length", base_codec::json_int64(length)),
+      ("exact", base_codec::json_bool(true)),
+    ],
+    None,
+  ) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  match v {
+    base_codec::Json::Str(hex) => {
+      match base_codec::hex_decode(hex) {
+        Some(b) => Ok(b)
+        None => Err(path + ": invalid hex")
+      }
+    }
+    _ => Err(path + ": not there")
+  }
+}
+
+fn frames_of(state : LoopState, path : String) -> Result[Option[Array[Frame]], String] {
+  let meta = match shell_exec(state, "fs.meta", [("path", base_codec::json_str(path))], None) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let size = match base_codec::json_get(meta, "size") {
+    Some(base_codec::Json::Num(d, _)) => json_num_to_int64(d)
+    _ => return Err(path + ": not there")
+  }
+  if size < (8 + FOOTER).to_int64() {
+    return Ok(None)
+  }
+  let foot = match bytes_at(state, path, size - FOOTER.to_int64(), FOOTER.to_int64()) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let (length, entry) = match table_length(size, foot) {
+    Some(pair) => pair
+    None => return Ok(None)
+  }
+  let tbl = match bytes_at(state, path, size - length, length) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  Ok(frames_in(size, tbl, entry))
+}
+
+fn segmented(state : LoopState, path : String) -> Bool {
+  let frames = match frames_of(state, path) {
+    Ok(Some(fs)) => fs
+    _ => return false
+  }
+  for i in 0..<frames.length() {
+    let f = frames[i]
+    if f.packed < 5.to_int64() {
+      continue
+    }
+    match bytes_at(state, path, f.at, 5.to_int64()) {
+      Ok(head) => {
+        if stored(head) {
+          return false
+        }
+      }
+      Err(_) => return false
+    }
+  }
+  true
+}
+
+fn segment_into(
+  state : LoopState,
+  path : String,
+  out : String,
+  unzstd : Bool,
+) -> Result[Array[Frame], String] {
+  let made = match shell_exec(
+    state,
+    "zstd.segments",
+    [
+      ("path", base_codec::json_str(path)),
+      ("out", base_codec::json_str(out)),
+      ("unzstd", base_codec::json_bool(unzstd)),
+      ("segment", base_codec::json_int64(SEGMENT.to_int64())),
+    ],
+    None,
+  ) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let listed = match base_codec::json_get(made, "frames") {
+    Some(base_codec::Json::Arr(items)) => items
+    _ => return Err("no frames made of " + path)
+  }
+  let sizes : Array[(Int64, Int64)] = []
+  for i in 0..<listed.length() {
+    match listed[i] {
+      base_codec::Json::Arr(pair) => {
+        if pair.length() != 2 {
+          return Err("no frames made of " + path)
+        }
+        let packed = match pair[0] {
+          base_codec::Json::Num(d, _) => json_num_to_int64(d)
+          _ => return Err("no frames made of " + path)
+        }
+        let size = match pair[1] {
+          base_codec::Json::Num(d, _) => json_num_to_int64(d)
+          _ => return Err("no frames made of " + path)
+        }
+        sizes.push((packed, size))
+      }
+      _ => return Err("no frames made of " + path)
+    }
+  }
+  match shell_exec(
+    state,
+    "fs.put",
+    [("path", base_codec::json_str(out)), ("sync", base_codec::json_bool(true))],
+    Some(seek_table(sizes)),
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match frames_of(state, out) {
+    Ok(Some(frames)) => {
+      if frames.length() == sizes.length() {
+        Ok(frames)
+      } else {
+        Err(out + ": its table does not read back")
+      }
+    }
+    Ok(None) => Err(out + ": its table does not read back")
+    Err(e) => Err(e)
+  }
+}
+
+fn check_file(
+  state : LoopState,
+  path : String,
+  frames : Option[Array[Frame]],
+  into : Option[String],
+  same : Option[String],
+) -> Result[base_codec::Json, String] {
+  let args : Array[(String, base_codec::Json)] = [("path", base_codec::json_str(path))]
+  match frames {
+    Some(fs) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<fs.length() {
+        let f = fs[i]
+        arr.push(
+          base_codec::json_arr([
+            base_codec::json_int64(f.at),
+            base_codec::json_int64(f.packed),
+            base_codec::json_int64(f.size),
+          ]),
+        )
+      }
+      args.push(("frames", base_codec::json_arr(arr)))
+    }
+    None => ()
+  }
+  match into {
+    Some(s) => args.push(("into", base_codec::json_str(s)))
+    None => ()
+  }
+  match same {
+    Some(s) => args.push(("same", base_codec::json_str(s)))
+    None => ()
+  }
+  shell_exec(state, "zstd.check", args, None)
+}
+
+fn answer(state : LoopState, ask : base_codec::Json) -> Result[base_codec::Json, String] {
+  let op = match base_codec::json_get(ask, "op") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("no such ask")
+  }
+  if op == "pack" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let temp = match str_of(ask, "temp") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match segment_into(state, path, temp, false) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let checked = match check_file(state, temp, Some(frames), None, Some(path)) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(checked, "differs") {
+      Some(base_codec::Json::Str("shortened")) => Err("transcript shortened while archiving")
+      Some(base_codec::Json::Str(_)) => Err("transcript changed while archiving " + path)
+      _ => Ok(done_json())
+    }
+  } else if op == "check" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match frames_of(state, path) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    match check_file(state, path, frames, None, None) {
+      Ok(_) => Ok(done_json())
+      Err(e) => Err(e)
+    }
+  } else if op == "segment" {
+    let source = match str_of(ask, "source") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if segmented(state, source) {
+      return Ok(base_codec::json_obj([("segmented", base_codec::json_bool(false))]))
+    }
+    let theirs_frames = match frames_of(state, source) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let theirs = match check_file(state, source, theirs_frames, None, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    let temp = match str_of(ask, "temp") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match segment_into(state, source, temp, true) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let mine = match check_file(state, temp, Some(frames), None, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    let same_sha = match (base_codec::json_get(mine, "sha256"), base_codec::json_get(theirs, "sha256")) {
+      (Some(m), Some(t)) => base_codec::json_eq(m, t)
+      _ => false
+    }
+    if !same_sha {
+      let path = match str_of(ask, "path") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      return Err("transcript not the same in segments " + path)
+    }
+    Ok(base_codec::json_obj([("segmented", base_codec::json_bool(true))]))
+  } else if op == "restore" {
+    let source = match str_of(ask, "source") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let frames = match frames_of(state, source) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let temp = match str_of(ask, "temp") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match check_file(state, source, frames, Some(temp), None) {
+      Ok(_) => Ok(done_json())
+      Err(e) => Err(e)
+    }
+  } else if op == "segmented" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    Ok(base_codec::json_obj([("segmented", base_codec::json_bool(segmented(state, path)))]))
+  } else if op == "frames" {
+    let path = match str_of(ask, "path") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match frames_of(state, path) {
+      Ok(Some(frames)) => {
+        let arr : Array[base_codec::Json] = []
+        for i in 0..<frames.length() {
+          let f = frames[i]
+          arr.push(
+            base_codec::json_arr([
+              base_codec::json_int64(f.at),
+              base_codec::json_int64(f.packed),
+              base_codec::json_int64(f.from),
+              base_codec::json_int64(f.size),
+            ]),
+          )
+        }
+        Ok(base_codec::json_obj([("frames", base_codec::json_arr(arr))]))
+      }
+      Ok(None) => Ok(base_codec::json_obj([("frames", base_codec::json_null())]))
+      Err(e) => Err(e)
+    }
+  } else if op == "table" {
+    answer_table(ask)
+  } else if op == "workspace.pack" {
+    let (shell_op, args) = match workspace_call("workspace.pack", ask) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    match shell_exec(state, shell_op, args, None) {
+      Ok(_) => Ok(done_json())
+      Err(e) => Err(e)
+    }
+  } else if op == "workspace.unpack" {
+    let (shell_op, args) = match workspace_call("workspace.unpack", ask) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    let res = match shell_exec(state, shell_op, args, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(res, "refused") {
+      Some(base_codec::Json::Arr(refused)) =>
+      Ok(base_codec::json_obj([("refused", base_codec::json_arr(refused))]))
+      _ => {
+        let path = match str_of(ask, "path") {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        Err(path + ": not unpacked")
+      }
+    }
+  } else if op == "workspace.file" {
+    let (shell_op, args) = match workspace_call("workspace.file", ask) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    let res = match shell_exec(state, shell_op, args, None) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match base_codec::json_get(res, "found") {
+      Some(base_codec::Json::Bool(true)) =>
+      Ok(base_codec::json_obj([("found", base_codec::json_bool(true))]))
+      _ => Ok(base_codec::json_obj([("found", base_codec::json_bool(false))]))
+    }
+  } else {
+    Err("no such ask")
+  }
+}
+
+/// Format an error response line with the given JSON `id`.
+pub fn error_response(id : base_codec::Json, message : String) -> String {
+  let msg = if message.length() > 0 { message } else { "failed" }
+  escape_line_separators(
+    base_codec::json_stringify(
+      base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))]),
+    ),
+  )
+}
+
+/// Attach `id` onto a successful answer JSON value and serialize as one line.
+pub fn ok_response(id : base_codec::Json, payload : base_codec::Json) -> String {
+  let out = match payload {
+    base_codec::Json::Obj(fields) => {
+      base_codec::json_obj_set(fields, "id", id)
+      base_codec::json_stringify(base_codec::Json::Obj(fields))
+    }
+    other => base_codec::json_stringify(other)
+  }
+  escape_line_separators(out)
+}
+
+/// Parse and answer one line. Rejects unpaired UTF-16 surrogates before parsing/dispatch.
+pub fn parse_ask_line(line : String) -> base_codec::Json {
+  if has_lone_surrogate(line) {
+    return base_codec::json_null()
+  }
+  match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+}
+
+fn handle_line(state : LoopState, line : String) -> String {
+  let ask = parse_ask_line(line)
+  let id = match base_codec::json_get(ask, "id") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  match answer(state, ask) {
+    Ok(payload) => ok_response(id, payload)
+    Err(msg) => error_response(id, msg)
+  }
+}
+
+/// Run the `--builder packed` line-JSON RPC loop until stdin EOF.
+/// Explicit empty `shell_dir == ""` starts stdin without a shell (subsequent shell ops return
+/// `"no shell"`, matching MoonBit `host.c:233`). Non-empty `shell_dir` startup failures write
+/// `"the shell did not start"` to stderr and exit 1. Stdout write failures explicitly exit 1
+/// so callers observe truncated/broken pipe delivery instead of a silent 0 exit.
+pub fn run(shell_dir : String) -> Int {
+  if !host_shim::start(shell_dir, true) {
+    if shell_dir.length() > 0 {
+      let _ = host_shim::write_stderr_line("the shell did not start")
+    }
+    return 1
+  }
+  let state = LoopState::new()
+  let mut write_failed = false
+  let mut running = true
+
+  while running {
+    while running {
+      match state.pop_line() {
+        None => break
+        Some(line) => {
+          if line.length() == 0 {
+            continue
+          }
+          let resp = handle_line(state, line)
+          if !host_shim::write_stdout_line(resp) {
+            write_failed = true
+            running = false
+          }
+        }
+      }
+    }
+    if !running {
+      break
+    }
+    if state.stdin_eof {
+      running = false
+      break
+    }
+    match host_shim::wait((-1).to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => state.enqueue_chunk(chunk)
+      Some(host_shim::HostEvent::StdinEof) => state.stdin_eof = true
+      Some(_) => ()
+    }
+  }
+
+  host_shim::stop()
+  if write_failed { 1 } else { 0 }
+}

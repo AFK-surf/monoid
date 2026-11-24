@@ -824,3 +824,76 @@ test("malformed lines, unknown ops and missing fields are answered `{id, error}`
 test("stdin closed with nothing asked: exit 0, nothing said", { skip }, async () => {
   await withPacked(async () => {});
 });
+
+test("protocol edge parity: CRLF framing, lone UTF-16 surrogates, lossy UTF-8 raw bytes, and >16 MiB lines", { skip }, async () => {
+  // 1. Raw stdio byte-level check: `\r\n` is not skipped as empty, lone surrogates never invoke shell
+  //    (neither raw nor U+FFFD-replaced paths created), valid surrogate pairs succeed, and raw invalid
+  //    UTF-8 byte 0xff in `id` is decoded lossily to valid UTF-8 U+FFFD (`ef bf bd`) on stdout.
+  const dir = fresh("packed-edge-");
+  const transcript = join(dir, "t.jsonl");
+  writeFileSync(transcript, "line\n");
+  const surrogatePrefix = join(dir, "surrogate-out");
+  const escapedPrefix = surrogatePrefix.replaceAll("\\", "\\\\");
+
+  const stdinPayload = Buffer.concat([
+    Buffer.from("\r\n"),
+    Buffer.from("\n"),
+    Buffer.from(`{"id":1,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${escapedPrefix}\\ud800"}\n`),
+    Buffer.from(`{"id":2,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${escapedPrefix}\\udc00"}\n`),
+    Buffer.from(`{"id":3,"op":"pack","path":${JSON.stringify(transcript)},"temp":"${escapedPrefix}\\ud800\\u0041"}\n`),
+    Buffer.from(`{"id":"\\ud83d\\ude00","op":"table","frames":[[5,6]]}\n`),
+    Buffer.concat([Buffer.from('{"id":"bad-'), Buffer.from([0xff]), Buffer.from('","op":"table","frames":[]}\n')]),
+  ]);
+
+  const rawResult = await new Promise<{ code: number | null; stdout: Buffer; stderr: string }>((resolvePromise, rejectPromise) => {
+    const child = spawn(candidate(), ["--builder", "packed", "--shell-dir", fresh("packed-edge-shell-")], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    const outChunks: Buffer[] = [];
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectPromise(new Error(`raw edge parity timed out after ${ASK_TIMEOUT_MS} ms; stderr: ${stderr}`));
+    }, ASK_TIMEOUT_MS);
+    child.stdout!.on("data", (c: Buffer) => outChunks.push(c));
+    child.stderr!.on("data", (c: Buffer) => { stderr += c.toString("utf8"); });
+    child.on("error", (e) => { clearTimeout(timer); rejectPromise(e); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolvePromise({ code, stdout: Buffer.concat(outChunks), stderr });
+    });
+    child.stdin!.end(stdinPayload);
+  });
+
+  assert.equal(rawResult.code, 0, `edge parity process exited ${rawResult.code}; stderr: ${rawResult.stderr}`);
+  assert.equal(rawResult.stdout.includes(0xff), false, "stdout raw bytes must never contain raw 0xff");
+  assert.ok(rawResult.stdout.includes(Buffer.from([0xef, 0xbf, 0xbd])), "stdout raw bytes must contain valid UTF-8 U+FFFD (ef bf bd)");
+
+  const outLines = rawResult.stdout.toString("utf8").replace(/\n$/, "").split("\n");
+  assert.equal(outLines.length, 6, `expected 6 answers (CRLF + 3 lone surrogates + 1 valid pair + 1 lossy utf8), got ${outLines.length}`);
+  for (let i = 0; i < 4; i++) {
+    const ans = JSON.parse(outLines[i]!);
+    assert.deepEqual(Object.keys(ans).sort(), ["error", "id"], `line ${i}`);
+    assert.equal(ans.id, null, `line ${i} id`);
+    assert.ok(typeof ans.error === "string" && ans.error.length > 0, `line ${i} error`);
+  }
+  assert.deepEqual(JSON.parse(outLines[4]!), {
+    id: "😀",
+    table: tableHex([{ packed: 5, size: 6 }]),
+  });
+  assert.deepEqual(JSON.parse(outLines[5]!), {
+    id: "bad-\uFFFD",
+    table: tableHex([]),
+  });
+  assert.equal(existsSync(`${surrogatePrefix}\uFFFD`), false, "U+FFFD-replaced lone surrogate path must not be created");
+  assert.equal(existsSync(`${surrogatePrefix}\uFFFDA`), false, "U+FFFD-replaced high+non-low path must not be created");
+  assert.deepEqual(readdirSync(dir), ["t.jsonl"], "no files written by rejected lone surrogate asks");
+
+  // 2. Valid request line >16 MiB (past host_shim's 16 MiB LineReader cap) must succeed without truncation or hang.
+  await withPacked(async (p) => {
+    const pad = "x".repeat(16 * 1024 * 1024 + 64);
+    const big = await p.ok("table", { frames: [[1, 2]], pad });
+    assert.deepEqual(big, { table: tableHex([{ packed: 1, size: 2 }]) });
+  });
+});

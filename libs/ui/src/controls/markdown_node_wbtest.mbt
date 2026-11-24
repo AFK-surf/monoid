@@ -431,3 +431,138 @@ test "Markdown as nodes: a long table cut in three pieces keeping its columns to
     (1, 1, whole_measured, 3, 2 * 4 * 11),
   )
 }
+
+///|
+test "Markdown emphasis (*…*): upright muted text updating across live theme switches, preserving HTML emph flag, while inline code, links, file refs and chat mentions keep their own upright ink" {
+  let s = fn(x : String) { Json::string(x) }
+  let el = fn(name : String, kids : Array[Json]) { Json::array([s(name), Json::array(kids)]) }
+  let code = fn(c : String) { Json::array([s("code"), Json::array([]), Json::object({ "content": s(c) })]) }
+  let file_ref = fn(c : String, path : String) {
+    Json::array([s("code"), Json::array([]), Json::object({ "content": s(c), "path": s(path), "shown": s(c) })])
+  }
+  let a = fn(href : String, kids : Array[Json]) {
+    Json::array([s("a"), Json::array(kids), Json::object({ "href": s(href) })])
+  }
+  let chat_a = fn(href : String, kids : Array[Json]) {
+    Json::array([
+      s("a"),
+      Json::array(kids),
+      Json::object({ "href": s(href), "to": Json::object({ "chat": Json::boolean(true) }) }),
+    ])
+  }
+  let tree = Json::array([
+    el("p", [
+      s("正文 "),
+      el("i", [
+        s("附注 "),
+        code("packages/opentype"),
+        s(" 与 "),
+        file_ref("run.mbt", "src/text/run.mbt"),
+        s(" 与 "),
+        el("b", [s("粗体附注")]),
+        s(" 与 "),
+        el("s", [s("删去附注")]),
+        s(" 见 "),
+        a("https://example.com/a", [s("外链")]),
+        s(" 与 "),
+        chat_a("https://example.com/chats/demo", [s("讨论")]),
+      ]),
+      s(" 和 "),
+      a("https://example.com/b", [el("i", [s("链内强调")])]),
+    ]),
+  ])
+  // Reuse one node across a live light -> dark switch to confirm reactive theme ink updates.
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=600.0, h=400.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) { markdown_node(b, fn() { "emph-live-case" }, tree=fn() { Some(tree) }) |> ignore }) |> ignore
+  })
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    tt.draw()
+    let p = theme().p
+    let drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) { d.runs.length() > 0 })
+    assert_eq(drawn.length(), 1, msg="dark=\{dark}: drawn=\{drawn.length()}")
+    let runs = drawn[0].runs
+    // No run in Markdown emphasis may set italic (no synthetic oblique on CJK or code).
+    assert_true(runs.iter().all(fn(r) { !r.italic }), msg="dark=\{dark}: found italic run in \{Repr(runs)}")
+    let run_of = fn(word : String) -> @ui.Run {
+      match runs.iter().find_first(fn(r) { r.text == word }) {
+        Some(r) => r
+        None => @halt.saying("missing run \{word} in \{Repr(runs)}")
+      }
+    }
+    // Plain body prose inherits default ink (0L) without emph; emphasized prose takes muted ink + emph.
+    let body = run_of("正文 ")
+    assert_eq((body.color, body.emph), (0L, false))
+    let note = run_of("附注 ")
+    assert_eq((note.color, note.emph), (p.muted, true))
+    // Bold and strikethrough inside emphasis stay upright, styled, muted, and keep emph.
+    let bold_emph = run_of("粗体附注")
+    assert_eq((bold_emph.weight, bold_emph.color, bold_emph.emph), (700, p.muted, true))
+    let strike_emph = run_of("删去附注")
+    assert_eq((strike_emph.strike, strike_emph.color, strike_emph.emph), (true, p.muted, true))
+    // Inline code and FileRef fallback inside emphasis stay upright and keep code_ink (color == 0L).
+    let code_run = run_of("packages/opentype")
+    assert_eq((code_run.code, code_run.color, code_run.emph), (true, 0L, true))
+    let fref_run = run_of("run.mbt")
+    assert_eq((fref_run.code, fref_run.color, fref_run.emph), (true, 0L, true))
+    // Links inside emphasis, and emphasis inside links, keep link_color (color == 0L lets RunsLook.link apply).
+    let link_in_emph = run_of("外链")
+    assert_eq((link_in_emph.link, link_in_emph.color, link_in_emph.emph), ("https://example.com/a", 0L, true))
+    let emph_in_link = run_of("链内强调")
+    assert_eq((emph_in_link.link, emph_in_link.color, emph_in_link.emph), ("https://example.com/b", 0L, true))
+    // Chat mentions inside emphasis keep accent_text upright.
+    let chat_run = run_of("讨论")
+    assert_eq((chat_run.color, chat_run.emph), (p.accent_text, true))
+    // Verify drawn glyphs actually carry muted, code_ink, blue, and accent_text inks.
+    let inks = tt.drawn_glyphs().map(fn(g) { g.2 })
+    assert_true(inks.contains(p.muted), msg="dark=\{dark}: missing muted ink")
+    assert_true(inks.contains(p.code_ink), msg="dark=\{dark}: missing code_ink")
+    assert_true(inks.contains(p.blue), msg="dark=\{dark}: missing link blue ink")
+    assert_true(inks.contains(p.accent_text), msg="dark=\{dark}: missing chat accent ink")
+  }
+  set_dark(None)
+}
+
+///|
+test "Markdown emphasis (*…*) adapts to enclosing block ink: primary text inside muted quotes/steps, inherited inside red notices" {
+  let s = fn(x : String) { Json::string(x) }
+  let el = fn(name : String, kids : Array[Json]) { Json::array([s(name), Json::array(kids)]) }
+  let quote_tree = Json::array([el("quote", [el("p", [s("引用 "), el("i", [s("引用强调")])])])])
+  let step_tree = Json::array([el("p", [s("历史 "), el("i", [s("步骤强调")])])])
+  let err_tree = Json::array([el("p", [s("失败 "), el("i", [s("红字强调")])])])
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=600.0, h=400.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      markdown_node(b, fn() { "emph-quote" }, tree=fn() { Some(quote_tree) }) |> ignore
+      markdown_node(b, fn() { "emph-step" }, tree=fn() { Some(step_tree) }, ink=fn() { theme().p.muted }) |> ignore
+      markdown_node(b, fn() { "emph-err" }, tree=fn() { Some(err_tree) }, ink=fn() { theme().p.red }) |> ignore
+    })
+    |> ignore
+  })
+  for dark in [false, true] {
+    set_dark(Some(dark))
+    tt.draw()
+    let p = theme().p
+    let all_runs = @ui.view_tree().unwrap().drawn().fold(init=[], fn(acc : Array[@ui.Run], d) {
+      acc.append(d.runs)
+      acc
+    })
+    assert_true(all_runs.iter().all(fn(r) { !r.italic }), msg="dark=\{dark}: found italic run")
+    let run_of = fn(word : String) -> @ui.Run {
+      match all_runs.iter().find_first(fn(r) { r.text == word }) {
+        Some(r) => r
+        None => @halt.saying("missing run \{word}")
+      }
+    }
+    // Quote (web().muted) and muted history step (p.muted) flip emphasis to primary p.text.
+    assert_eq((run_of("引用强调").color, run_of("引用强调").emph), (p.text, true))
+    assert_eq((run_of("步骤强调").color, run_of("步骤强调").emph), (p.text, true))
+    // Semantic red notice keeps color == 0L so emphasis inherits red instead of turning gray.
+    assert_eq((run_of("红字强调").color, run_of("红字强调").emph), (0L, true))
+    assert_true(tt.drawn_glyphs().map(fn(g) { g.2 }).contains(p.red), msg="dark=\{dark}: missing red ink")
+  }
+  set_dark(None)
+}

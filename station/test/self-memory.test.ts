@@ -50,8 +50,10 @@ test("a program that stops reading its stdin is ended, not let grow the station'
   p.postMessage({ big: "x".repeat(2 * MiB) });
   assert.equal(await end, 1, "ended by a signal");
   assert.ok(!MbProcess.live().some((l) => l.args[0] === "30"));
-  // (what is posted after is dropped, not written to a process gone)
-  p.postMessage({ after: true });
+  // (what is posted after is dropped, not serialized or written to a process gone)
+  let serializedAfter = 0;
+  p.postMessage({ toJSON() { serializedAfter++; return { after: true }; } });
+  assert.equal(serializedAfter, 0, "messages dropped after exit are not serialized");
 });
 
 test("trimming lets idle readers go and never a read under way", { skip: binary === null ? "the MoonBit program is not built here" : false }, async () => {

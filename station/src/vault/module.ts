@@ -12,7 +12,7 @@ import { Browser } from "../browser/service.ts";
 import { Agents } from "../sessions/agents.ts";
 import { sender, senderTitleIfReady } from "../sessions/messages.ts";
 import { seenDevicesOf } from "../cloud/state.ts";
-import { ControlPlane, Events, Parts, Paths, Previous, Readers, Store } from "../services.ts";
+import { ControlPlane, Events, Parts, Paths, Previous, ReaderConfig, Readers, Store } from "../services.ts";
 import { vaultTools } from "./tool.ts";
 import { SignIns } from "./signin.ts";
 import { routes as signInRoutes } from "../api/routes/signins.ts";
@@ -46,6 +46,7 @@ export const VaultLive = Layer.effectDiscard(
     // What the process before held may come until it is gone (it gives it as it begins to hand over).
     let coming = true;
     const previous = yield* Previous;
+    const readerConfig = yield* ReaderConfig;
     const writes = vaultWriteGate(previous.pid === null ? null : previous.exited);
     yield* Effect.addFinalizer(() => Effect.sync(() => writes.close()));
     const browsers = yield* Browser;
@@ -82,7 +83,7 @@ export const VaultLive = Layer.effectDiscard(
     const covers = (hosts: string[], site: string) => ofSites(site, hosts) || hosts.some((h) => ofSites(h, [site]));
     const signIns = new SignIns({
       db: store.db, hub, cardOutcomes, now: () => wall.now(), after: (ms, f) => wall.after(ms, f),
-      backfill: { previousGone: previous.exited, priority: store.backfillPriority },
+      backfill: { previousGone: previous.exited, priority: store.backfillPriority, readers: readerConfig },
       workspace: (session) => store.sessionWs(session) ?? cloud.home(),
       screenLink: (tab) => {
         const s = pages();

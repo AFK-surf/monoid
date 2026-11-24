@@ -17,11 +17,14 @@ pub(all) struct DocNote {
 
 ///|
 /// A document's notes and what can be done with them: `notes` and `current` are read as signals (the note being
-/// written or opened, "" none); `open` brings a note into sight and opens it to be written; `remove` takes it off;
-/// `send` puts all of them into the chat's draft; `clear` takes all of them off.
+/// written or opened, "" none); `field` is what the current one is written in, `done` keeps what it says; `open` brings
+/// a note into sight and opens it to be written; `remove` takes it off; `send` puts all of them into the chat's draft;
+/// `clear` takes all of them off.
 pub(all) struct DocNotes {
   notes : () -> Array[DocNote]
   current : () -> String
+  field : @ui.Field
+  done : () -> Unit
   open : (String) -> Unit
   remove : (String) -> Unit
   send : () -> Unit
@@ -69,7 +72,14 @@ pub fn doc_notes_list_node(v : @view.View, of : DocNotes, opened : () -> Unit) -
         .radius(Is(@sf.row_corner))
         .padding(Is((10.0, 8.0, 6.0, 8.0)))
         .gap(Is(4.0))
-        .ground(By(fn() { if (of.current)() == n.get().id { @sf.alpha(0xF5C518FFL, 0.22) } else { 0L } }))
+        // (dark: fainter, or its muted words fall under 4.5:1 on it: 4.34:1 at 0.22)
+        .ground(By(fn() {
+          if (of.current)() == n.get().id {
+            @sf.alpha(0xF5C518FFL, if @sf.theme().dark { 0.16 } else { 0.22 })
+          } else {
+            0L
+          }
+        }))
         |> ignore
         @sf.hover_ground_node(b)
         doc_note_line(b, fn() { n.get().place }, 12.0, 600, 1, fn() { @sf.theme().p.muted })
@@ -182,4 +192,132 @@ pub fn doc_notes_sheet(of : DocNotes) -> Unit {
     from=Unanchored,
     foot=fn(v, close) { doc_notes_foot_keys(v, of, close) },
   )
+}
+
+///|
+/// The note card's corner: its round keys' (18) and the 6 round them.
+let doc_note_corner : Double = 24.0
+
+///|
+/// How wide the card a note is written in is.
+let doc_note_w : Double = 320.0
+
+///|
+/// The notes at the foot of `parent` (the stage), as the pick bar over words is (the same glass, the same buttons):
+/// how many (pressed, them in a sheet: doc_notes_sheet) and 发送; while one is written, its card there in their place,
+/// as a picture's note is written at its viewer's foot (note_box_node), never over the words round it. While `side()`,
+/// the notes stand at the stage's side (doc_notes_side_node) and only the card is here. None while there are none.
+pub fn doc_notes_foot_node(parent : @view.View, of : DocNotes, side : () -> Bool, hidden? : () -> Bool = fn() { false }) -> Unit {
+  let count = fn() { (of.notes)().length() }
+  // (`hidden`: what else stands at the stage's foot now (a reader's phone bars), the notes' bar away for it)
+  parent.show(fn() { count() > 0 && !hidden() }, fn(l) {
+    // (nothing of its own to press but its keys: what is under it keeps the rest)
+    l.over(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+    l.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    l.box(fn(r) {
+      r.padding(Is((12.0, 0.0, 12.0, 16.0))).lines_up(Is(Some(Middle))) |> ignore
+      r.pick(
+        fn() {
+          // (the note being written; else, where the notes stand at the side, nothing more here ("-side"); else the
+          // bar, with as many notes as it says ("-bar"))
+          if (of.current)() != "" {
+            ((of.current)(), 0)
+          } else if side() {
+            ("-side", 0)
+          } else {
+            ("-bar", count())
+          }
+        },
+        fn(holds, now) {
+          if now.0 == "-bar" {
+            // (N 条标注 opens them in a sheet, to read, open, take off; 发送 puts them all in the draft)
+            @sf.pick_bar_node(holds, [
+              {
+                label: pv_fill("android-chat.pdf.notes.count", [("n", "\{now.1}")]),
+                icon: "list",
+                mark: false,
+                press: fn() { doc_notes_sheet(of) },
+              },
+              { label: pv("android-chat.pdf.notes.send"), icon: "send", mark: false, press: fn() { (of.send)() } },
+            ])
+            |> ignore
+          } else if now.0 != "-side" {
+            doc_note_card_node(holds, of)
+          }
+        },
+      )
+    })
+    |> ignore
+  })
+}
+
+///|
+/// The note being written, at the stage's foot: as wide as there is room for, `doc_note_w` at most, in the pick bar's
+/// glass and ink; what it is of on a line over 删除批注, the field and 完成 in a row.
+fn doc_note_card_node(holds : @view.View, of : DocNotes) -> Unit {
+  holds.box(fn(card) {
+    @sf.glass_capsule_node(card, radius=Some(doc_note_corner), sharing=false, solid=fn() { @sf.panel_ground() })
+    .max_width(Is(Some(doc_note_w)))
+    .width(Is(Some(doc_note_w)))
+    .shrink(Is(1.0))
+    .padding(Is((6.0, 10.0, 6.0, 6.0)))
+    .gap(Is(2.0))
+    |> ignore
+    card
+    .edge(By(fn() { if card.glass_solid() { (@sf.control_edge_w, @sf.theme().p.line) } else { (0.0, 0L) } }))
+    .shadow(By(fn() { @sf.glass_control_shadow() }))
+    |> ignore
+    // (what it is said of, a line, over the field)
+    card.box(fn(t) {
+      t.padding(Is((10.0, 0.0, 10.0, 0.0))) |> ignore
+      doc_note_line(t, fn() {
+        let id = (of.current)()
+        match (of.notes)().search_by(fn(n) { n.id == id }) {
+          Some(k) => {
+            let n = (of.notes)()[k]
+            n.place + " · " + n.excerpt
+          }
+          None => ""
+        }
+      }, 12.0, 400, 1, fn() { @sf.theme().p.muted })
+    })
+    |> ignore
+    card.box(fn(row) {
+      row.row(Is(true)).lines_up(Is(Some(End))).gap(Is(4.0)) |> ignore
+      note_key_node(row, "trash", 17.0, 0L, @sf.theme().p.muted, pv("android-chat.annotate.remove"), fn() {
+        (of.remove)(@signals.untracked(of.current))
+      })
+      row.box(fn(f) {
+        f
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        .shrink(Is(1.0))
+        .padding(Is((8.0, 7.0, 8.0, 7.0)))
+        .min_height(Is(Some(36.0)))
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        |> ignore
+        @ui.field(
+          f,
+          of.field,
+          placeholder=pv("android-chat.annotate.write"),
+          font_size=16.0,
+          line=21.0,
+          max_lines=6,
+          color=@sf.theme().p.text,
+          placeholder_color=@sf.theme().p.muted,
+          caret_color=@sf.theme().p.accent,
+          enter_sends=false,
+        )
+        .grow(Is(1.0))
+        |> ignore
+      })
+      |> ignore
+      note_key_node(row, "check", 18.0, @sf.theme().p.text, @sf.theme().p.bg, pv("android-chat.annotate.done"), fn() {
+        (of.done)()
+      })
+    })
+    |> ignore
+  })
+  |> ignore
 }

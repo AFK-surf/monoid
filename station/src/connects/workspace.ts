@@ -18,6 +18,7 @@ import type { ConnectKind } from "../sessions/config.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
 import type { Store as StoreT } from "../store/store.ts";
+import { lessBusy } from "../../../shared/station-busy.ts";
 import type { NameBook } from "./names.ts";
 import { BOTS, CALL, EVENT, HOLDS, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
 
@@ -220,6 +221,13 @@ export class WorkspaceConnects {
   private inWorkspace(ws: string, station: string): boolean {
     return this.d.stations(ws).some((p) => p?.id === station);
   }
+  /// Station `station` is not in `ws`'s roster any more (removed): never while the roster is not known yet.
+  private gone(ws: string, station: string): boolean {
+    const roster = this.d.stations(ws);
+    return roster.length > 0 && !roster.some((p) => p?.id === station);
+  }
+  /// Threads (`connect\0channel\0threadTs`) told their chat's station is away, until an event gets there again.
+  private readonly awayTold = new Set<string>();
   private isTasksOnly(ws: string, station: string): boolean {
     const p = this.d.stations(ws).find((x) => x?.id === station);
     return p?.mode === "tasks" || (p?.rig !== undefined && p?.rig !== null);
@@ -523,12 +531,26 @@ export class WorkspaceConnects {
     const thread = threadOfEvent(event);
     return this.inTurn(`${id}\0${thread.channel}\0${thread.threadTs}`, async () => {
       const there = this.d.store.connectThreadStation(id, thread.channel, thread.threadTs);
-      if (there !== null) {
+      const key = `${id}\0${thread.channel}\0${thread.threadTs}`;
+      // (its station is no longer one of the workspace's: the thread is left, said once; what mentions the bot, this
+      // message too, starts a new conversation as in any thread it is not in)
+      if (there !== null && this.gone(ws, there)) {
+        this.d.store.dropConnectThreadStation(id, thread.channel, thread.threadTs);
+        this.awayTold.delete(key);
+        log.warn("connects", "a chat's station left the workspace; its thread is left", { connect: id, station: there });
+        if (event.type === "message") {
+          await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationGone", { station: this.nameOf(ws, there) })}`), []).catch(() => {});
+        }
+        if (event.type !== "message" || !event.message.addressed) return;
+      } else if (there !== null) {
         try {
           await this.forward(there, id, ws, event);
+          this.awayTold.delete(key);
         } catch (e) {
           log.warn("connects", "an event of a chat on another station did not get there", { connect: id, station: there, error: (e as Error).message });
-          if (event.type === "message") {
+          // (said once while it stays away, and again to each message that mentions the bot)
+          if (event.type === "message" && (!this.awayTold.has(key) || event.message.addressed)) {
+            this.awayTold.add(key);
             await this.own(id)?.post(thread, markNotice(`⚠️ ${tr(stationLang(), "station.connect.stationAway", { station: this.nameOf(ws, there) })}`), []).catch(() => {});
           }
         }
@@ -591,16 +613,23 @@ export class WorkspaceConnects {
           const total = load?.memory?.totalBytes;
           const avail = load?.memory?.availableBytes;
           const memRatio = typeof total === "number" && Number.isFinite(total) && total > 0 && typeof avail === "number" && Number.isFinite(avail) && avail >= 0 ? avail / total : -1;
-          return { station, idx, baseTurns, memRatio };
+          // Its CPUs too (shared/station-busy.ts): few agents on a machine held full by builds or tasks is no room.
+          const share = load?.cpuBusy?.share;
+          const cpu = typeof share === "number" && Number.isFinite(share) ? share : null;
+          const one = Array.isArray(load?.loadAvg) ? load.loadAvg[0] : null;
+          const cores = load?.cpus;
+          const loadPerCore = typeof one === "number" && Number.isFinite(one) && typeof cores === "number" && cores > 0 ? one / cores : null;
+          return { station, idx, baseTurns, memRatio, cpu, loadPerCore };
         }),
       );
       // Read `inflightCount` and `rrCursor` after the parallel probe settles so simultaneous arrivals spread at once.
       const cursor = pool.length > 0 ? (this.rrCursor.get(id) ?? 0) % pool.length : 0;
       const ranked = probed
-        .filter((x): x is { station: string; idx: number; baseTurns: number; memRatio: number } => x !== null)
+        .filter((x): x is NonNullable<typeof x> => x !== null)
         .map((x) => ({ ...x, turns: x.baseTurns + this.inflightCount(id, x.station) }))
         .sort((a, b) => {
-          if (a.turns !== b.turns) return a.turns - b.turns;
+          const by = lessBusy({ agents: a.turns, cpu: a.cpu, loadPerCore: a.loadPerCore }, { agents: b.turns, cpu: b.cpu, loadPerCore: b.loadPerCore });
+          if (by !== 0) return by;
           if (a.memRatio !== b.memRatio) return b.memRatio - a.memRatio;
           const da = (a.idx - cursor + pool.length) % pool.length;
           const db = (b.idx - cursor + pool.length) % pool.length;

@@ -1,0 +1,701 @@
+// Production `--builder memory` JSON-RPC dispatcher and streaming loop (pure Pion).
+// Mirrors station/mb/src/memory/answer.mbt and station/mb/src/reader/main.mbt `memory`.
+
+import "base_codec"
+import "host_shim"
+
+fn need_str(j : base_codec::Json, key : String) -> Result[String, String] {
+  match str_field(j, key) {
+    Some(s) => Ok(s)
+    None => Err("no " + key)
+  }
+}
+
+fn hex_field(j : base_codec::Json, key : String) -> Result[Bytes, String] {
+  let h = match str_field(j, key) {
+    Some(s) => s
+    None => return Err("no " + key)
+  }
+  match base_codec::hex_decode(h) {
+    Some(b) => Ok(b)
+    None => Err("invalid hex in " + key)
+  }
+}
+
+fn text_field(j : base_codec::Json, key : String) -> Result[String, String] {
+  match hex_field(j, key) {
+    Ok(b) => Ok(text_of(b))
+    Err(e) => Err(e)
+  }
+}
+
+fn hex_json(s : String) -> base_codec::Json {
+  base_codec::json_str(base_codec::hex_encode(s.to_bytes()))
+}
+
+fn map_str_object(fields : Array[(String, base_codec::Json)]) -> Map[String, String] {
+  let out : Map[String, String] = Map::new()
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    match v {
+      base_codec::Json::Str(s) => out.set(k, s)
+      _ => ()
+    }
+  }
+  out
+}
+
+pub fn answer(host : MemoryHost, ask : base_codec::Json, sep : String) -> Result[base_codec::Json, String] {
+  let op = match str_field(ask, "op") {
+    Some(s) => s
+    None => ""
+  }
+  let blobs_dir = match str_field(ask, "blobs") {
+    Some(s) => s
+    None => ""
+  }
+  let blobs = Blobs::new(host, blobs_dir, sep)
+
+  if op == "scan" {
+    let dir = match need_str(ask, "dir") {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+    let kept = map_str_object(object_field(ask, "kept"))
+    let file_most = match num_field(ask, "fileMost") {
+      Some(n) => n
+      None => 0.0
+    }
+    let skill_most = match num_field(ask, "skillMost") {
+      Some(n) => n
+      None => 0.0
+    }
+    let skill_files = match num_field(ask, "skillFiles") {
+      Some(n) => n.to_int()
+      None => 0
+    }
+    return scan(
+      blobs,
+      ScanAsk::{
+        dir: dir,
+        kept: kept,
+        builtin: strs_field(ask, "builtin"),
+        skipped: strs_field(ask, "skipped"),
+        file_most: file_most,
+        skill_most: skill_most,
+        skill_files: skill_files,
+      },
+    )
+  }
+
+  if op == "decide" {
+    let theirs = match base_codec::json_get(ask, "theirs") {
+      Some(t) =>
+      match rec_of(t) {
+        Some(r) => r
+        None => return Err("no record")
+      }
+      None => return Err("no record")
+    }
+    let mine = match base_codec::json_get(ask, "mine") {
+      Some(m) => rec_of(m)
+      None => None
+    }
+    let path = match need_str(ask, "path") {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    let names = map_str_object(object_field(ask, "names"))
+    let given = map_str_object(object_field(ask, "given"))
+    let prev_most = match num_field(ask, "prevMost") {
+      Some(n) => n.to_int()
+      None => 16
+    }
+    let outcome = match decide_records(path, mine, theirs, blobs, given, names, prev_most) {
+      Ok(o) => o
+      Err(e) => return Err(e)
+    }
+    match outcome {
+      Outcome::Keep => return Ok(base_codec::json_obj([("kind", base_codec::json_str("keep"))]))
+      Outcome::Take => {
+        let has_content = match lookup_content(blobs, given, theirs.hash) {
+          Some(_) => true
+          None => false
+        }
+        return Ok(
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("take")),
+            ("content", base_codec::json_bool(has_content)),
+          ]),
+        )
+      }
+      Outcome::Merge(rec, beside) => {
+        let beside_json = match beside {
+          Some((bp, br)) =>
+          base_codec::json_obj([("path", base_codec::json_str(bp)), ("rec", rec_json(br))])
+          None => base_codec::json_null()
+        }
+        return Ok(
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("merge")),
+            ("rec", rec_json(rec)),
+            ("beside", beside_json),
+          ]),
+        )
+      }
+    }
+  }
+
+  if op == "have" {
+    let hashes = strs_field(ask, "hashes")
+    let out : Array[base_codec::Json] = []
+    for i in 0..<hashes.length() {
+      out.push(base_codec::json_bool(blobs.has(hashes[i])))
+    }
+    return Ok(base_codec::json_obj([("have", base_codec::json_arr(out))]))
+  }
+
+  if op == "hash" {
+    let path = match need_str(ask, "path") {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    match hash_of(host, path) {
+      Some(h) => return Ok(base_codec::json_obj([("hash", base_codec::json_str(h))]))
+      None => return Ok(base_codec::json_obj([("hash", base_codec::json_null())]))
+    }
+  }
+
+  if op == "asides" {
+    let out : Array[base_codec::Json] = []
+    let skills = match base_codec::json_get(ask, "skills") {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => []
+    }
+    for i in 0..<skills.length() {
+      let s = skills[i]
+      let skill = match str_field(s, "skill") {
+        Some(v) => v
+        None => continue
+      }
+      let hash = match str_field(s, "hash") {
+        Some(v) => v
+        None => continue
+      }
+      let author = match str_field(s, "author") {
+        Some(v) => v
+        None => continue
+      }
+      let bytes = match blobs.content(hash) {
+        Some(b) => b
+        None => continue
+      }
+      let text = text_of(bytes)
+      let said = match aside_of(text, skill) {
+        Some(v) => v
+        None => continue
+      }
+      let tag = station_tag(said)
+      let suffix = "-" + tag
+      if !str_has_suffix(skill, suffix) || skill.length() == suffix.length() {
+        continue
+      }
+      let base_name = skill.slice(0, skill.length() - suffix.length())
+      out.push(
+        base_codec::json_obj([
+          ("skill", base_codec::json_str(skill)),
+          ("base", base_codec::json_str(base_name)),
+          ("tag", base_codec::json_str(tag)),
+          ("author", base_codec::json_str(station_tag(author))),
+          ("body", base_codec::json_str(body_of(text))),
+        ]),
+      )
+    }
+    return Ok(base_codec::json_obj([("asides", base_codec::json_arr(out))]))
+  }
+
+  if op == "alikeKept" {
+    let given = map_str_object(object_field(ask, "given"))
+    let ha = match str_field(ask, "a") {
+      Some(s) => s
+      None => ""
+    }
+    let hb = match str_field(ask, "b") {
+      Some(s) => s
+      None => ""
+    }
+    match (lookup_content(blobs, given, ha), lookup_content(blobs, given, hb)) {
+      (Some(a), Some(b)) =>
+      return Ok(base_codec::json_obj([("alike", base_codec::json_bool(alike(text_of(a), text_of(b))))]))
+      _ => return Ok(base_codec::json_obj([("alike", base_codec::json_null())]))
+    }
+  }
+
+  if op == "tags" {
+    let names = strs_field(ask, "names")
+    let out : Array[base_codec::Json] = []
+    for i in 0..<names.length() {
+      out.push(base_codec::json_str(station_tag(names[i])))
+    }
+    return Ok(base_codec::json_obj([("tags", base_codec::json_arr(out))]))
+  }
+
+  if op == "skillRead" {
+    let dir = match need_str(ask, "dir") {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+    let max_bytes = match num_field(ask, "maxBytes") {
+      Some(n) => n
+      None => 512.0 * 1024.0
+    }
+    let max_files = match num_field(ask, "maxFiles") {
+      Some(n) => n.to_int()
+      None => 200
+    }
+    let with_bytes = bool_field_true(ask, "bytes")
+    return skill_read(host, sep, dir, max_bytes, max_files, with_bytes)
+  }
+
+  if op == "skillWrite" {
+    let dir = match need_str(ask, "dir") {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+    let files = object_field(ask, "files")
+    let most = num_field(ask, "most")
+    let check = bool_field_true(ask, "check")
+    match skill_write(host, sep, dir, files, most, check) {
+      Ok(_) => return Ok(base_codec::json_obj([("written", base_codec::json_bool(true))]))
+      Err(e) => return Err(e)
+    }
+  }
+
+  if op == "skillConflict" {
+    let dir = match need_str(ask, "dir") {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+    let peer = match need_str(ask, "peer") {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    let content = match need_str(ask, "content") {
+      Ok(c) => c
+      Err(e) => return Err(e)
+    }
+    match skill_conflict(host, sep, dir, peer, content) {
+      Ok(_) => return Ok(base_codec::json_obj([("written", base_codec::json_bool(true))]))
+      Err(e) => return Err(e)
+    }
+  }
+
+  if op == "isText" {
+    let bytes = match hex_field(ask, "bytes") {
+      Ok(b) => b
+      Err(e) => return Err(e)
+    }
+    return Ok(base_codec::json_obj([("value", base_codec::json_bool(is_text(bytes)))]))
+  }
+
+  if op == "matches" {
+    let a = strs_field(ask, "a")
+    let b = strs_field(ask, "b")
+    match matches(a, b) {
+      Some(pairs) => {
+        let out : Array[base_codec::Json] = []
+        for i in 0..<pairs.length() {
+          let (ia, ib) = pairs[i]
+          out.push(base_codec::json_arr([base_codec::json_int(ia), base_codec::json_int(ib)]))
+        }
+        return Ok(base_codec::json_obj([("value", base_codec::json_arr(out))]))
+      }
+      None => return Ok(base_codec::json_obj([("value", base_codec::json_null())]))
+    }
+  }
+
+  if op == "merge3" {
+    let base = match text_field(ask, "base") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let newer = match text_field(ask, "newer") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let older = match text_field(ask, "older") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    match merge3(base, newer, older) {
+      Some(t) => return Ok(base_codec::json_obj([("value", hex_json(t))]))
+      None => return Ok(base_codec::json_obj([("value", base_codec::json_null())]))
+    }
+  }
+
+  if op == "union" {
+    let newer = match text_field(ask, "newer") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let older = match text_field(ask, "older") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let newer_name = str_field(ask, "newerName")
+    let older_name = str_field(ask, "olderName")
+    return Ok(base_codec::json_obj([("value", hex_json(union_lines(newer, older, newer_name, older_name)))]))
+  }
+
+  if op == "alike" {
+    let a = match text_field(ask, "a") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let b = match text_field(ask, "b") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    return Ok(base_codec::json_obj([("value", base_codec::json_bool(alike(a, b)))]))
+  }
+
+  if op == "conflictPath" {
+    let path = match need_str(ask, "path") {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    let station = match need_str(ask, "station") {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    return Ok(base_codec::json_obj([("value", base_codec::json_str(conflict_path(path, station)))]))
+  }
+
+  Err("unknown memory op " + op)
+}
+
+fn read_hex4_at(s : String, pos : Int) -> Option[Int] {
+  if pos + 4 > s.length() {
+    return None
+  }
+  let mut v = 0
+  for k in 0..<4 {
+    match base_codec::hex_digit(s.code_unit_at(pos + k)) {
+      Some(d) => v = (v << 4) | d
+      None => return None
+    }
+  }
+  Some(v)
+}
+
+/// Pre-check JSON string literals for lone UTF-16 surrogates (`\uD800`..`\uDFFF` unpaired)
+/// before `base_codec::json_parse` so paths or IDs are never silently replaced with U+FFFD.
+pub fn has_lone_surrogate(line : String) -> Bool {
+  let n = line.length()
+  let mut i = 0
+  let mut in_str = false
+  while i < n {
+    let c = line.code_unit_at(i)
+    if !in_str {
+      if c == 34 {
+        in_str = true
+      }
+      i = i + 1
+      continue
+    }
+    if c == 34 {
+      in_str = false
+      i = i + 1
+    } else if c == 92 {
+      // '\\'
+      if i + 1 >= n {
+        return false
+      }
+      let esc = line.code_unit_at(i + 1)
+      if esc == 117 {
+        // '\uXXXX'
+        match read_hex4_at(line, i + 2) {
+          None => return false
+          Some(u) => {
+            i = i + 6
+            if u >= 0xD800 && u <= 0xDBFF {
+              // High surrogate must be immediately followed by \uDC00..\uDFFF.
+              if i + 6 <= n && line.code_unit_at(i) == 92 && line.code_unit_at(i + 1) == 117 {
+                match read_hex4_at(line, i + 2) {
+                  Some(lo) => {
+                    if lo >= 0xDC00 && lo <= 0xDFFF {
+                      i = i + 6
+                    } else {
+                      return true
+                    }
+                  }
+                  None => return true
+                }
+              } else {
+                return true
+              }
+            } else if u >= 0xDC00 && u <= 0xDFFF {
+              return true
+            }
+          }
+        }
+      } else {
+        i = i + 2
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  false
+}
+
+/// Escape raw UTF-8 U+2028 (E2 80 A8) and U+2029 (E2 80 A9) in serialized JSON output
+/// so line-oriented JS consumers never split a JSON frame mid-string.
+pub fn escape_line_separators(s : String) -> String {
+  let n = s.length()
+  let mut found = false
+  let mut i = 0
+  while i + 2 < n {
+    if s.code_unit_at(i) == 0xE2 && s.code_unit_at(i + 1) == 0x80 {
+      let b2 = s.code_unit_at(i + 2)
+      if b2 == 0xA8 || b2 == 0xA9 {
+        found = true
+        break
+      }
+    }
+    i = i + 1
+  }
+  if !found {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut k = 0
+  while k < n {
+    if k + 2 < n && s.code_unit_at(k) == 0xE2 && s.code_unit_at(k + 1) == 0x80 {
+      let b2 = s.code_unit_at(k + 2)
+      if b2 == 0xA8 {
+        sb.write_string("\\u2028")
+        k = k + 3
+        continue
+      } else if b2 == 0xA9 {
+        sb.write_string("\\u2029")
+        k = k + 3
+        continue
+      }
+    }
+    sb.write_byte(s.code_unit_at(k) as Byte)
+    k = k + 1
+  }
+  sb.to_string()
+}
+
+fn skip_json_ws(s : String, start : Int) -> Int {
+  let n = s.length()
+  let mut i = start
+  while i < n {
+    let c = s.code_unit_at(i)
+    if c == 32 || c == 9 || c == 13 || c == 10 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  i
+}
+
+/// Advance past a JSON string literal starting at `start` (which must be `"`), returning
+/// the index right after the closing `"`, or `-1` if unterminated.
+fn scan_json_str(s : String, start : Int) -> Int {
+  let n = s.length()
+  if start >= n || s.code_unit_at(start) != 34 {
+    return -1
+  }
+  let mut i = start + 1
+  while i < n {
+    let c = s.code_unit_at(i)
+    if c == 34 {
+      return i + 1
+    } else if c == 92 {
+      i = i + 2
+    } else {
+      i = i + 1
+    }
+  }
+  -1
+}
+
+/// Advance past one JSON value starting at `start`, returning the index right after it, or `-1`.
+fn scan_json_val(s : String, start : Int) -> Int {
+  let n = s.length()
+  if start >= n {
+    return -1
+  }
+  let c = s.code_unit_at(start)
+  if c == 34 {
+    return scan_json_str(s, start)
+  }
+  if c == 123 || c == 91 {
+    // '{' or '['
+    let mut depth = 0
+    let mut i = start
+    while i < n {
+      let ch = s.code_unit_at(i)
+      if ch == 34 {
+        let next = scan_json_str(s, i)
+        if next < 0 {
+          return -1
+        }
+        i = next
+      } else if ch == 123 || ch == 91 {
+        depth = depth + 1
+        i = i + 1
+      } else if ch == 125 || ch == 93 {
+        depth = depth - 1
+        i = i + 1
+        if depth == 0 {
+          return i
+        }
+      } else {
+        i = i + 1
+      }
+    }
+    return -1
+  }
+  let mut i = start
+  while i < n {
+    let ch = s.code_unit_at(i)
+    if ch == 44 || ch == 125 || ch == 93 || ch == 32 || ch == 9 || ch == 13 || ch == 10 {
+      break
+    }
+    i = i + 1
+  }
+  if i == start { -1 } else { i }
+}
+
+/// Best-effort extraction of a top-level `"id"` JSON value from a line that failed the lone
+/// surrogate check, only returning it when the `"id"` value itself has no lone surrogate and
+/// parses cleanly as JSON; otherwise `Json::Null`.
+pub fn extract_safe_top_level_id(line : String) -> base_codec::Json {
+  let n = line.length()
+  let mut i = skip_json_ws(line, 0)
+  if i >= n || line.code_unit_at(i) != 123 {
+    return base_codec::json_null()
+  }
+  i = i + 1
+  let mut found : Option[base_codec::Json] = None
+  while i < n {
+    i = skip_json_ws(line, i)
+    if i >= n || line.code_unit_at(i) == 125 {
+      break
+    }
+    let key_end = scan_json_str(line, i)
+    if key_end < 0 {
+      break
+    }
+    let key_slice = line.slice(i, key_end)
+    i = skip_json_ws(line, key_end)
+    if i >= n || line.code_unit_at(i) != 58 {
+      break
+    }
+    i = skip_json_ws(line, i + 1)
+    let val_end = scan_json_val(line, i)
+    if val_end < 0 {
+      break
+    }
+    let is_id_key = if key_slice == "\"id\"" {
+      true
+    } else if !has_lone_surrogate(key_slice) {
+      match base_codec::json_parse(key_slice) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Str(k)) => k == "id"
+        _ => false
+      }
+    } else {
+      false
+    }
+    if is_id_key {
+      let val_slice = line.slice(i, val_end)
+      if !has_lone_surrogate(val_slice) {
+        match base_codec::json_parse(val_slice) {
+          base_codec::JsonParseResult::Ok(v) => {
+            found = Some(v)
+          }
+          _ => {
+            found = None
+          }
+        }
+      } else {
+        found = None
+      }
+    }
+    i = skip_json_ws(line, val_end)
+    if i < n && line.code_unit_at(i) == 44 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  match found {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+/// Streaming JSON-RPC loop for `--builder memory --shell-dir <dir> [--sep <sep>]`.
+pub fn run(shell_dir : String, sep : String) -> Unit {
+  if !host_shim::start(shell_dir, true) {
+    if shell_dir.length() > 0 {
+      let _ = host_shim::write_stderr_line("the shell did not start")
+    }
+    host_shim::exit_process(1)
+  }
+  let host = MemoryHost::new()
+  let mut write_failed = false
+
+  while true {
+    match host.next_line() {
+      None => break
+      Some(line) => {
+        if line.length() == 0 {
+          continue
+        }
+        let resp = if has_lone_surrogate(line) {
+          base_codec::json_obj([
+            ("id", extract_safe_top_level_id(line)),
+            ("error", base_codec::json_str("invalid UTF-16 surrogate")),
+          ])
+        } else {
+          match base_codec::json_parse(line) {
+            base_codec::JsonParseResult::Ok(base_codec::Json::Obj(ask_fields)) => {
+              let ask = base_codec::Json::Obj(ask_fields)
+              let id = match base_codec::json_get(ask, "id") {
+                Some(v) => v
+                None => base_codec::json_null()
+              }
+              match answer(host, ask, sep) {
+                Ok(base_codec::Json::Obj(fields)) => {
+                  base_codec::json_obj_set(fields, "id", id)
+                  base_codec::json_obj(fields)
+                }
+                Ok(other) => other
+                Err(msg) => base_codec::json_obj([("id", id), ("error", base_codec::json_str(msg))])
+              }
+            }
+            _ =>
+            base_codec::json_obj([
+              ("id", base_codec::json_null()),
+              ("error", base_codec::json_str("unknown memory op ")),
+            ])
+          }
+        }
+        let out_line = escape_line_separators(base_codec::json_stringify(resp))
+        if !host_shim::write_stdout_line(out_line) {
+          write_failed = true
+          break
+        }
+      }
+    }
+  }
+
+  host_shim::stop()
+  host_shim::exit_process(if write_failed { 1 } else { 0 })
+}

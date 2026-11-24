@@ -1,0 +1,710 @@
+// Pure Pion port of station/mb/src/memory/files.mbt + MemoryHost event loop over host_shim.
+// Uses libstillfail_shell.a `fs.*` calls via host_shim::shell_call while buffering concurrent
+// stdin chunks & EOF so pipelined JSON-RPC asks are never dropped or reordered.
+
+import "base_codec"
+import "host_shim"
+
+fn write_fffd_raw(sb : StringBuilder) -> Unit {
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBD as Byte)
+}
+
+fn is_utf8_cont_raw(b : Int) -> Bool {
+  (b & 0xC0) == 0x80
+}
+
+/// WHATWG / MoonBit `@utf8.decode_lossy` decoder over a byte array (maximal subpart of
+/// ill-formed subsequence -> U+FFFD), matching `wire.mbt:44`.
+pub fn decode_utf8_lossy_arr(buf : Array[Byte]) -> String {
+  let sb = StringBuilder::new()
+  let end = buf.length()
+  let mut i = 0
+  while i < end {
+    let b0 = buf[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      sb.write_byte(b0 as Byte)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if is_utf8_cont_raw(b1) {
+          sb.write_byte(b0 as Byte)
+          sb.write_byte(b1 as Byte)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd_raw(sb)
+      i = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont_raw(b2) {
+              sb.write_byte(b0 as Byte)
+              sb.write_byte(b1 as Byte)
+              sb.write_byte(b2 as Byte)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd_raw(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd_raw(sb)
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = buf[i + 1].to_int() & 0xFF
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end {
+            let b2 = buf[i + 2].to_int() & 0xFF
+            if is_utf8_cont_raw(b2) {
+              if i + 3 < end {
+                let b3 = buf[i + 3].to_int() & 0xFF
+                if is_utf8_cont_raw(b3) {
+                  sb.write_byte(b0 as Byte)
+                  sb.write_byte(b1 as Byte)
+                  sb.write_byte(b2 as Byte)
+                  sb.write_byte(b3 as Byte)
+                  i = i + 4
+                  continue
+                }
+              }
+              write_fffd_raw(sb)
+              i = i + 3
+              continue
+            }
+          }
+          write_fffd_raw(sb)
+          i = i + 2
+          continue
+        }
+      }
+      write_fffd_raw(sb)
+      i = i + 1
+    } else {
+      write_fffd_raw(sb)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+/// Pure `\n`-delimited line accumulator matching MoonBit `wire.mbt` & `MbProcess`:
+/// no 16 MiB line cap, preserves `\r` bytes verbatim, decodes each line with WHATWG lossy UTF-8
+/// (with an ASCII fast path), and drops unterminated trailing bytes at EOF.
+pub struct RawLines {
+  mut carry : Array[Byte]
+  mut all_ascii : Bool
+}
+
+pub fn RawLines::new() -> RawLines {
+  RawLines::{ carry: [], all_ascii: true }
+}
+
+pub fn RawLines::push(self : RawLines, chunk : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<chunk.length() {
+    let b = chunk[i]
+    let bi = b.to_int() & 0xFF
+    if bi == 10 {
+      let line = if self.all_ascii {
+        let sb = StringBuilder::new()
+        for k in 0..<self.carry.length() {
+          sb.write_byte(self.carry[k])
+        }
+        sb.to_string()
+      } else {
+        decode_utf8_lossy_arr(self.carry)
+      }
+      out.push(line)
+      self.carry = []
+      self.all_ascii = true
+    } else {
+      if bi >= 0x80 {
+        self.all_ascii = false
+      }
+      self.carry.push(b)
+    }
+  }
+  out
+}
+
+pub struct MemoryHost {
+  reader : RawLines
+  mut pending : Array[String]
+  mut pending_head : Int
+  mut stdin_eof : Bool
+  mut next_shell_id : Int64
+  mut blob_made : Int
+  mut skill_temps : Int
+}
+
+pub fn MemoryHost::new() -> MemoryHost {
+  MemoryHost::{
+    reader: RawLines::new(),
+    pending: [],
+    pending_head: 0,
+    stdin_eof: false,
+    next_shell_id: 0.to_int64(),
+    blob_made: 0,
+    skill_temps: 0,
+  }
+}
+
+fn MemoryHost::push_stdin(self : MemoryHost, chunk : Bytes) -> Unit {
+  let items = self.reader.push(chunk)
+  for i in 0..<items.length() {
+    self.pending.push(items[i])
+  }
+}
+
+fn MemoryHost::pop_pending(self : MemoryHost) -> Option[String] {
+  if self.pending_head >= self.pending.length() {
+    return None
+  }
+  let item = self.pending[self.pending_head]
+  self.pending[self.pending_head] = ""
+  self.pending_head = self.pending_head + 1
+  if self.pending_head >= self.pending.length() {
+    self.pending = []
+    self.pending_head = 0
+  } else if self.pending_head >= 64 && self.pending_head * 2 >= self.pending.length() {
+    let rest : Array[String] = []
+    for i in self.pending_head..<self.pending.length() {
+      rest.push(self.pending[i])
+    }
+    self.pending = rest
+    self.pending_head = 0
+  }
+  Some(item)
+}
+
+/// Next LF-terminated line from stdin; None once stdin reached EOF and all buffered lines drained.
+pub fn MemoryHost::next_line(self : MemoryHost) -> Option[String] {
+  match self.pop_pending() {
+    Some(item) => return Some(item)
+    None => ()
+  }
+  while !self.stdin_eof {
+    match host_shim::wait((-1).to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => {
+        self.push_stdin(chunk)
+        match self.pop_pending() {
+          Some(item) => return Some(item)
+          None => ()
+        }
+      }
+      Some(host_shim::HostEvent::StdinEof) => {
+        self.stdin_eof = true
+      }
+      Some(_) => ()
+    }
+  }
+  self.pop_pending()
+}
+
+/// Invoke `libstillfail_shell.a` async op and wait for its completion while buffering stdin.
+pub fn MemoryHost::shell(
+  self : MemoryHost,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+) -> Result[(base_codec::Json, Option[Bytes]), String] {
+  self.next_shell_id = self.next_shell_id + 1.to_int64()
+  let req_id = self.next_shell_id
+  let payload = base_codec::json_stringify(base_codec::json_obj(args))
+  host_shim::shell_call(req_id, op, payload, bytes)
+  while true {
+    match host_shim::wait((-1).to_int64()) {
+      None => ()
+      Some(host_shim::HostEvent::StdinData(chunk)) => self.push_stdin(chunk)
+      Some(host_shim::HostEvent::StdinEof) => {
+        self.stdin_eof = true
+      }
+      Some(host_shim::HostEvent::ShellDone(done)) => {
+        if done.id == req_id {
+          if done.error.length() > 0 {
+            return Err(done.error)
+          }
+          let parsed = if done.json.length() == 0 {
+            base_codec::json_null()
+          } else {
+            match base_codec::json_parse(done.json) {
+              base_codec::JsonParseResult::Ok(j) => j
+              base_codec::JsonParseResult::Err(e) => return Err("shell json parse error: " + e)
+            }
+          }
+          return Ok((parsed, done.bytes))
+        }
+      }
+      Some(_) => ()
+    }
+  }
+  Err("unreachable")
+}
+
+pub fn fs_call(
+  host : MemoryHost,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+) -> Result[base_codec::Json, String] {
+  match host.shell(op, args, bytes) {
+    Ok((json, _)) => Ok(json)
+    Err(e) => Err(e)
+  }
+}
+
+pub struct Stat {
+  pub kind : String
+  pub size : Double
+  pub mode : Int
+  pub mtime : Double
+}
+
+pub fn lstat(host : MemoryHost, path : String) -> Result[Option[Stat], String] {
+  let v = match fs_call(host, "fs.lstat", [("path", base_codec::json_str(path))], None) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  let kind = match str_field(v, "kind") {
+    Some(k) => k
+    None => return Ok(None)
+  }
+  let size = match num_field(v, "size") {
+    Some(n) => n
+    None => 0.0
+  }
+  let mode = match num_field(v, "mode") {
+    Some(n) => n.to_int()
+    None => 0
+  }
+  let mtime = match num_field(v, "mtimeMs") {
+    Some(n) => n
+    None => 0.0
+  }
+  Ok(Some(Stat::{ kind: kind, size: size, mode: mode, mtime: mtime }))
+}
+
+pub fn readdir(host : MemoryHost, path : String) -> Result[Option[Array[(String, String)]], String] {
+  let v = match fs_call(
+    host,
+    "fs.readdir",
+    [("path", base_codec::json_str(path)), ("types", base_codec::json_bool(true))],
+    None,
+  ) {
+    Ok(j) => j
+    Err(e) => return Err(e)
+  }
+  match v {
+    base_codec::Json::Arr(xs) => {
+      let out : Array[(String, String)] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(name), base_codec::Json::Str(kind)) => out.push((name, kind))
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      Ok(Some(out))
+    }
+    _ => Ok(None)
+  }
+}
+
+pub fn hash_of(host : MemoryHost, path : String) -> Option[String] {
+  match fs_call(host, "fs.hash", [("path", base_codec::json_str(path))], None) {
+    Ok(base_codec::Json::Str(h)) => Some(h)
+    _ => None
+  }
+}
+
+pub fn bytes_of(host : MemoryHost, path : String) -> Option[Bytes] {
+  match fs_call(host, "fs.bytes", [("path", base_codec::json_str(path))], None) {
+    Ok(base_codec::Json::Str(h)) => base_codec::hex_decode(h)
+    _ => None
+  }
+}
+
+pub struct Blobs {
+  pub host : MemoryHost
+  pub dir : String
+  pub sep : String
+}
+
+pub fn Blobs::new(host : MemoryHost, dir : String, sep : String) -> Blobs {
+  Blobs::{ host: host, dir: dir, sep: sep }
+}
+
+fn Blobs::path(self : Blobs, hash : String) -> String {
+  self.dir + self.sep + hash
+}
+
+pub fn Blobs::content(self : Blobs, hash : String) -> Option[Bytes] {
+  if hash == "" {
+    return None
+  }
+  let p = self.path(hash)
+  match hash_of(self.host, p) {
+    Some(h) => {
+      if h != hash {
+        return None
+      }
+    }
+    None => return None
+  }
+  bytes_of(self.host, p)
+}
+
+pub fn Blobs::has(self : Blobs, hash : String) -> Bool {
+  if hash == "" {
+    return false
+  }
+  match hash_of(self.host, self.path(hash)) {
+    Some(h) => h == hash
+    None => false
+  }
+}
+
+pub fn Blobs::keep(self : Blobs, bytes : Bytes) -> Result[String, String] {
+  match fs_call(self.host, "fs.mkdir", [("path", base_codec::json_str(self.dir))], None) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  self.host.blob_made = self.host.blob_made + 1
+  let temp = self.dir + self.sep + "." + host_shim::pid().to_string() + "-" + self.host.blob_made.to_string() + ".memory-tmp"
+  match fs_call(
+    self.host,
+    "fs.put",
+    [
+      ("path", base_codec::json_str(temp)),
+      ("offset", base_codec::json_int(0)),
+      ("truncate", base_codec::json_bool(true)),
+      ("sync", base_codec::json_bool(true)),
+      ("mode", base_codec::json_int(384)), // 0o600
+    ],
+    Some(bytes),
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let hash = match hash_of(self.host, temp) {
+    Some(h) => h
+    None => {
+      let _ = fs_call(self.host, "fs.remove", [("path", base_codec::json_str(temp))], None)
+      return Err("a blob of the memory was not written")
+    }
+  }
+  let existing = match lstat(self.host, self.path(hash)) {
+    Ok(st) => st
+    Err(e) => return Err(e)
+  }
+  match existing {
+    Some(_) => {
+      match fs_call(self.host, "fs.remove", [("path", base_codec::json_str(temp))], None) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => {
+      match fs_call(
+        self.host,
+        "fs.rename",
+        [("from", base_codec::json_str(temp)), ("to", base_codec::json_str(self.path(hash)))],
+        None,
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(hash)
+}
+
+pub fn empty_memory(bytes : Bytes) -> Bool {
+  if !is_text(bytes) {
+    return false
+  }
+  let t = js_trim(text_of(bytes))
+  t == "" || t == "# still.fail memory" || t == "# ember memory"
+}
+
+fn ascii_lower(c : Int) -> Int {
+  if c >= 65 && c <= 90 { c + 32 } else { c }
+}
+
+/// Whether `name` is a portable filename on every OS (station/src/ops/paths.ts `portableName`).
+pub fn portable_name(name : String) -> Bool {
+  let n = name.length()
+  if n == 0 || n > 255 || name.code_unit_at(0) == 46 {
+    return false
+  }
+  let last = name.code_unit_at(n - 1)
+  if last == 46 || last == 32 {
+    return false
+  }
+  for i in 0..<n {
+    let c = name.code_unit_at(i)
+    if c < 0x20 ||
+    c == 60 || // '<'
+    c == 62 || // '>'
+    c == 58 || // ':'
+    c == 34 || // '"'
+    c == 47 || // '/'
+    c == 92 || // '\\'
+    c == 124 || // '|'
+    c == 63 || // '?'
+    c == 42 {
+      // '*'
+      return false
+    }
+  }
+  if n >= 3 {
+    let c0 = ascii_lower(name.code_unit_at(0))
+    let c1 = ascii_lower(name.code_unit_at(1))
+    let c2 = ascii_lower(name.code_unit_at(2))
+    let is_con = c0 == 99 && c1 == 111 && c2 == 110
+    let is_prn = c0 == 112 && c1 == 114 && c2 == 110
+    let is_aux = c0 == 97 && c1 == 117 && c2 == 120
+    let is_nul = c0 == 110 && c1 == 117 && c2 == 108
+    if (is_con || is_prn || is_aux || is_nul) && (n == 3 || name.code_unit_at(3) == 46) {
+      return false
+    }
+    let is_com = c0 == 99 && c1 == 111 && c2 == 109
+    let is_lpt = c0 == 108 && c1 == 112 && c2 == 116
+    if (is_com || is_lpt) && n >= 4 {
+      let (d, dlen) = utf8_at(name, 3)
+      let after = 3 + dlen
+      if ((d >= 48 && d <= 57) || d == 0xB9 || d == 0xB2 || d == 0xB3) &&
+      (after == n || name.code_unit_at(after) == 46) {
+        return false
+      }
+    }
+  }
+  true
+}
+
+pub struct ScanAsk {
+  pub dir : String
+  pub kept : Map[String, String]
+  pub builtin : Array[String]
+  pub skipped : Array[String]
+  pub file_most : Double
+  pub skill_most : Double
+  pub skill_files : Int
+}
+
+struct FoundFile {
+  path : String
+  full : String
+  st : Stat
+}
+
+struct WalkFrame {
+  rel : String
+  entries : Array[(String, String)]
+  mut at : Int
+}
+
+fn str_array_contains(arr : Array[String], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+fn own_mode(mode : Int) -> Bool {
+  (mode & 0x3F) == 0 // 0o077 = 63 = 0x3F
+}
+
+fn shared_mode(mode : Int) -> Int {
+  if (mode & 0x40) != 0 { 493 } else { 420 } // 0o100=64, 0o755=493, 0o644=420
+}
+
+fn round_mtime_int64(mtime : Double) -> Int64 {
+  math_floor(mtime + 0.5).to_int64()
+}
+
+fn found_json(blobs : Blobs, ask : ScanAsk, f : FoundFile) -> Result[Option[base_codec::Json], String] {
+  let host = blobs.host
+  let hash = match hash_of(host, f.full) {
+    Some(h) => h
+    None => return Ok(None)
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("path", base_codec::json_str(f.path)),
+    ("hash", base_codec::json_str(hash)),
+    ("size", json_number_clean(f.st.size)),
+    ("mode", base_codec::json_int(shared_mode(f.st.mode))),
+    ("mtime", base_codec::json_int64(round_mtime_int64(f.st.mtime))),
+  ]
+  match ask.kept.get(f.path) {
+    Some(k) => {
+      if k == hash {
+        return Ok(Some(base_codec::json_obj(fields)))
+      }
+    }
+    None => {
+      if f.path == "MEMORY.md" {
+        let bytes = match bytes_of(host, f.full) {
+          Some(b) => b
+          None => return Ok(None)
+        }
+        if empty_memory(bytes) {
+          base_codec::json_obj_set(fields, "empty", base_codec::json_bool(true))
+          return Ok(Some(base_codec::json_obj(fields)))
+        }
+      }
+    }
+  }
+  if blobs.has(hash) {
+    return Ok(Some(base_codec::json_obj(fields)))
+  }
+  let bytes = match bytes_of(host, f.full) {
+    Some(b) => b
+    None => return Ok(None)
+  }
+  let kept_hash = match blobs.keep(bytes) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  base_codec::json_obj_set(fields, "hash", base_codec::json_str(kept_hash))
+  base_codec::json_obj_set(fields, "size", base_codec::json_int(bytes.length()))
+  Ok(Some(base_codec::json_obj(fields)))
+}
+
+pub fn scan(blobs : Blobs, ask : ScanAsk) -> Result[base_codec::Json, String] {
+  let host = blobs.host
+  let sep = blobs.sep
+  let out : Array[base_codec::Json] = []
+  let held : Array[base_codec::Json] = []
+
+  let memory_file = ask.dir + sep + "MEMORY.md"
+  let mem_stat = match lstat(host, memory_file) {
+    Ok(st) => st
+    Err(e) => return Err(e)
+  }
+  match mem_stat {
+    Some(st) => {
+      if st.kind == "file" {
+        if st.size <= ask.file_most {
+          let f = FoundFile::{ path: "MEMORY.md", full: memory_file, st: st }
+          match found_json(blobs, ask, f) {
+            Ok(Some(j)) => out.push(j)
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+        } else {
+          held.push(base_codec::json_str("MEMORY.md"))
+        }
+      }
+    }
+    None => ()
+  }
+
+  let skills_dir = ask.dir + sep + "skills"
+  let top_entries = match readdir(host, skills_dir) {
+    Ok(Some(es)) => es
+    Ok(None) => []
+    Err(e) => return Err(e)
+  }
+  for idx in 0..<top_entries.length() {
+    let (name, kind) = top_entries[idx]
+    let prefix = "skills/" + name + "/"
+    if str_array_contains(ask.builtin, name) || !portable_name(name) || str_array_contains(ask.skipped, name) {
+      continue
+    }
+    if kind != "dir" {
+      held.push(base_codec::json_str(prefix))
+      continue
+    }
+    let found : Array[FoundFile] = []
+    let mut bytes = 0.0
+    let mut over = false
+    let stack : Array[WalkFrame] = []
+    match readdir(host, skills_dir + sep + name) {
+      Ok(Some(es)) => stack.push(WalkFrame::{ rel: "", entries: es, at: 0 })
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+    while stack.length() > 0 {
+      let top_idx = stack.length() - 1
+      let frame = stack[top_idx]
+      if frame.at >= frame.entries.length() {
+        let _ = stack.pop()
+        continue
+      }
+      let (e, ekind) = frame.entries[frame.at]
+      frame.at = frame.at + 1
+      if over || !portable_name(e) || str_array_contains(ask.skipped, e) {
+        continue
+      }
+      let sub = if frame.rel == "" { e } else { frame.rel + "/" + e }
+      let full = skills_dir + sep + name + sep + str_replace_char(sub, 47, sep)
+      if ekind == "dir" {
+        match readdir(host, full) {
+          Ok(Some(inner)) => stack.push(WalkFrame::{ rel: sub, entries: inner, at: 0 })
+          Ok(None) => ()
+          Err(err) => return Err(err)
+        }
+      } else if ekind == "file" {
+        let st = match lstat(host, full) {
+          Ok(Some(s)) => s
+          Ok(None) => return Err("ENOENT: no such file or directory, lstat '" + full + "'")
+          Err(err) => return Err(err)
+        }
+        if own_mode(st.mode) {
+          continue
+        }
+        bytes = bytes + st.size
+        if st.size > ask.file_most || bytes > ask.skill_most || found.length() >= ask.skill_files {
+          over = true
+        } else {
+          found.push(FoundFile::{ path: prefix + sub, full: full, st: st })
+        }
+      }
+    }
+    let mut has_skill_md = false
+    let target_md = prefix + "SKILL.md"
+    for fi in 0..<found.length() {
+      if found[fi].path == target_md {
+        has_skill_md = true
+        break
+      }
+    }
+    if over || !has_skill_md {
+      held.push(base_codec::json_str(prefix))
+    } else {
+      for fi in 0..<found.length() {
+        let f = found[fi]
+        match found_json(blobs, ask, f) {
+          Ok(Some(j)) => out.push(j)
+          Ok(None) => return Err("ENOENT: no such file or directory, open '" + f.full + "'")
+          Err(err) => return Err(err)
+        }
+      }
+    }
+  }
+  Ok(base_codec::json_obj([("files", base_codec::json_arr(out)), ("held", base_codec::json_arr(held))]))
+}

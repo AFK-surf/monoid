@@ -50,13 +50,13 @@ fn parity_scene(dark : Bool) -> (@view.View) -> Unit {
     let seg_idx = @signals.signal(0)
     let dd_seg = @glass.DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=1.15)
     let sw_on = @signals.signal(true)
-    let dd_sw_on = @glass.DampedDrag::new(1.0, lo=0.0, hi=1.0, held_scale=1.45)
+    let dd_sw_on = @glass.DampedDrag::new(1.0, lo=0.0, hi=1.0, held_scale=@glass.thumb_held_scale)
     let sw_off = @signals.signal(false)
-    let dd_sw_off = @glass.DampedDrag::new(0.0, lo=0.0, hi=1.0, held_scale=1.45)
+    let dd_sw_off = @glass.DampedDrag::new(0.0, lo=0.0, hi=1.0, held_scale=@glass.thumb_held_scale)
     let sl1_val = @signals.signal(50.0)
-    let dd_sl1 = @glass.DampedDrag::new(50.0, lo=0.0, hi=100.0, held_scale=1.50)
+    let dd_sl1 = @glass.DampedDrag::new(50.0, lo=0.0, hi=100.0, held_scale=@glass.slider_thumb_held_scale)
     let sl2_val = @signals.signal(75.0)
-    let dd_sl2 = @glass.DampedDrag::new(75.0, lo=0.0, hi=100.0, held_scale=1.50)
+    let dd_sl2 = @glass.DampedDrag::new(75.0, lo=0.0, hi=100.0, held_scale=@glass.slider_thumb_held_scale)
 
     root.box(fn(page) {
       page.grow(Is(1.0)).ground(Is(page_bg)) |> ignore
@@ -273,31 +273,42 @@ fn parity_scene(dark : Bool) -> (@view.View) -> Unit {
           })
         }) |> ignore
 
-        // 7. Background text + colored pills beneath Floating Bottom Tab Bar (y=758..818)
-        // Verifies zero inverted text on upper bevel and zero neon bleed over saturated pills.
-        card_box(col, card_bg, fn(c) {
-          c.box(fn(w) {
-            w.words(Is("Display & Brightness"), look=@glass.words_at(15.0, weight=500)).ink(Is(txt_pri)) |> ignore
-          }) |> ignore
-          c.box(fn(w) {
-            w.words(Is("True Tone · Night Shift · Liquid Glass Material"), look=@glass.words_at(13.0, weight=400)).ink(Is(txt_sec)) |> ignore
-          }) |> ignore
-          c.box(fn(div) { div.width(Is(Some(330.0))).height(Is(Some(0.5))).ground(Is(sep_col)) |> ignore }) |> ignore
-          c.box(fn(w) {
-            w.words(Is("Accessibility · Reduce Transparency"), look=@glass.words_at(15.0, weight=400)).ink(Is(txt_pri)) |> ignore
-          }) |> ignore
-          c.box(fn(w) {
-            w.words(Is("Controls · Surfaces · Lenses · Settings"), look=@glass.words_at(13.0, weight=400)).ink(Is(txt_sec)) |> ignore
-          }) |> ignore
-          c.box(fn(pills) {
-            pills.width(Is(Some(330.0))).row(Is(true)).gap(Is(10.0)) |> ignore
-            for col_hex in [0xFF3B30FFL, 0x34C759FFL, 0x007AFFFFL, 0xFF9500FFL] {
-              pills.box(fn(p) {
-                p.width(Is(Some(64.0))).height(Is(Some(22.0))).radius(Is(11.0)).ground(Is(col_hex)) |> ignore
+        // 7. Native-style MENUS (UIMENU & .CONTEXTMENU) list card beneath Floating Bottom Tab Bar (y=758..818)
+        col.box(fn(sec) {
+          sec.gap(Is(6.0)) |> ignore
+          section_header(sec, "MENUS (UIMENU & .CONTEXTMENU)", txt_sec)
+          card_box(sec, card_bg, fn(c) {
+            c.box(fn(row) {
+              row.width(Is(Some(330.0))).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+              row.box(fn(w) {
+                w.grow(Is(1.0)).words(Is("Action Menu"), look=@glass.words_at(15.0, weight=500)).ink(Is(txt_pri)) |> ignore
               }) |> ignore
-            }
-          }) |> ignore
-        })
+              row.box(fn(w) {
+                w.words(Is("Default"), look=@glass.words_at(14.0, weight=400)).ink(Is(txt_sec)) |> ignore
+              }) |> ignore
+            }) |> ignore
+            c.box(fn(div) { div.width(Is(Some(330.0))).height(Is(Some(0.5))).ground(Is(sep_col)) |> ignore }) |> ignore
+            c.box(fn(row) {
+              row.width(Is(Some(330.0))).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+              row.box(fn(w) {
+                w.grow(Is(1.0)).words(Is("Context Menu Preview"), look=@glass.words_at(15.0, weight=400)).ink(Is(txt_pri)) |> ignore
+              }) |> ignore
+              row.box(fn(w) {
+                w.words(Is("Hold"), look=@glass.words_at(14.0, weight=400)).ink(Is(txt_sec)) |> ignore
+              }) |> ignore
+            }) |> ignore
+            c.box(fn(div) { div.width(Is(Some(330.0))).height(Is(Some(0.5))).ground(Is(sep_col)) |> ignore }) |> ignore
+            c.box(fn(row) {
+              row.width(Is(Some(330.0))).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+              row.box(fn(w) {
+                w.grow(Is(1.0)).words(Is("Share & Quick Actions"), look=@glass.words_at(15.0, weight=400)).ink(Is(txt_pri)) |> ignore
+              }) |> ignore
+              row.box(fn(w) {
+                w.words(Is("Menu"), look=@glass.words_at(14.0, weight=400)).ink(Is(txt_sec)) |> ignore
+              }) |> ignore
+            }) |> ignore
+          })
+        }) |> ignore
       }) |> ignore
 
       // Floating 4-tab Bottom Tab Bar overlay (y = 758..818, height = 60pt, lens_lift_h = 1.16)

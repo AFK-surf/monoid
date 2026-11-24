@@ -1,0 +1,521 @@
+// Pure Pion port of station/mb/src/memory/skills.mbt:
+// Shared skill directory reading, JS-ordered SHA-256 hashing, path-safe atomic writes,
+// and conflict file writes.
+
+import "base_codec"
+import "crypto"
+import "host_shim"
+
+struct SkillFile {
+  path : String
+  full : String
+}
+
+struct SkillWalkFrame {
+  rel : String
+  entries : Array[(String, String)]
+  mut at : Int
+}
+
+pub fn sha256_digest_hex(data : Bytes) -> String {
+  crypto::sha256_hex(data)
+}
+
+pub fn base64_bytes(text : String) -> Bytes {
+  base_codec::base64_decode_loose(text)
+}
+
+fn is_path_sep(c : Int, win : Bool) -> Bool {
+  c == 47 || (win && c == 92) // '/' or '\\'
+}
+
+/// Port of station/mb/src/nodepath/nodepath.mbt `relative_parts`, plus NUL byte rejection.
+pub fn relative_parts(sep : String, path : String) -> Option[Array[String]] {
+  let win = sep == "\\"
+  if path == "" ||
+  str_contains_byte(path, 0) ||
+  str_has_prefix(path, "/") ||
+  (win && (str_has_prefix(path, "\\") || str_contains_byte(path, 58))) {
+    return None
+  }
+  let parts : Array[String] = []
+  let n = path.length()
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i < n && !is_path_sep(path.code_unit_at(i), win) {
+      continue
+    }
+    let part = path.slice(start, i)
+    if part == ".." {
+      return None
+    }
+    parts.push(part)
+    start = i + 1
+  }
+  Some(parts)
+}
+
+pub fn skill_path(sep : String, path : String) -> Option[Array[String]] {
+  let parts = match relative_parts(sep, path) {
+    Some(p) => p
+    None => return None
+  }
+  for i in 0..<parts.length() {
+    if parts[i] == "." || parts[i] == "" {
+      return None
+    }
+  }
+  Some(parts)
+}
+
+/// In-place heapsort by JS UTF-16 code-unit order (`js_after`).
+fn sort_strings_js(arr : Array[String]) -> Unit {
+  let n = arr.length()
+  if n <= 1 {
+    return
+  }
+  let sift_down = fn(start_idx : Int, end_idx : Int) -> Unit {
+    let mut root = start_idx
+    while root * 2 + 1 <= end_idx {
+      let child = root * 2 + 1
+      let mut swap_idx = root
+      if js_after(arr[child], arr[swap_idx]) {
+        swap_idx = child
+      }
+      if child + 1 <= end_idx && js_after(arr[child + 1], arr[swap_idx]) {
+        swap_idx = child + 1
+      }
+      if swap_idx == root {
+        return
+      }
+      let tmp = arr[root]
+      arr[root] = arr[swap_idx]
+      arr[swap_idx] = tmp
+      root = swap_idx
+    }
+  }
+  let mut start = (n - 2) / 2
+  while start >= 0 {
+    sift_down(start, n - 1)
+    start = start - 1
+  }
+  let mut end = n - 1
+  while end > 0 {
+    let tmp = arr[end]
+    arr[end] = arr[0]
+    arr[0] = tmp
+    end = end - 1
+    sift_down(0, end)
+  }
+}
+
+pub fn skill_hash(paths : Array[String], hashes : Map[String, String]) -> String {
+  let sorted : Array[String] = []
+  for i in 0..<paths.length() {
+    sorted.push(paths[i])
+  }
+  sort_strings_js(sorted)
+  let sb = StringBuilder::new()
+  for i in 0..<sorted.length() {
+    if i > 0 {
+      sb.write_byte(10 as Byte)
+    }
+    let p = sorted[i]
+    sb.write_string(p)
+    sb.write_byte(0 as Byte)
+    match hashes.get(p) {
+      Some(h) => sb.write_string(h)
+      None => ()
+    }
+  }
+  sha256_digest_hex(sb.to_string().to_bytes())
+}
+
+fn skill_files(
+  host : MemoryHost,
+  sep : String,
+  dir : String,
+  max_bytes : Double,
+  max_files : Int,
+) -> Result[Option[Array[SkillFile]], String] {
+  let out : Array[SkillFile] = []
+  let mut bytes = 0.0
+  let top = match readdir(host, dir) {
+    Ok(Some(es)) => es
+    Ok(None) => return Err("ENOENT: no such file or directory, scandir '" + dir + "'")
+    Err(e) => return Err(e)
+  }
+  let stack : Array[SkillWalkFrame] = [SkillWalkFrame::{ rel: "", entries: top, at: 0 }]
+  while stack.length() > 0 {
+    let frame = stack[stack.length() - 1]
+    if frame.at >= frame.entries.length() {
+      let _ = stack.pop()
+      continue
+    }
+    let (name, kind) = frame.entries[frame.at]
+    frame.at = frame.at + 1
+    let sub = if frame.rel == "" { name } else { frame.rel + "/" + name }
+    let full = dir + sep + str_replace_char(sub, 47, sep)
+    if kind == "dir" {
+      let inner = match readdir(host, full) {
+        Ok(Some(es)) => es
+        Ok(None) => return Err("ENOENT: no such file or directory, scandir '" + full + "'")
+        Err(e) => return Err(e)
+      }
+      stack.push(SkillWalkFrame::{ rel: sub, entries: inner, at: 0 })
+    } else if kind == "file" {
+      if str_has_prefix(name, "SKILL.conflict-") {
+        continue
+      }
+      let st = match lstat(host, full) {
+        Ok(Some(s)) => s
+        Ok(None) => return Err("ENOENT: no such file or directory, lstat '" + full + "'")
+        Err(e) => return Err(e)
+      }
+      bytes = bytes + st.size
+      if bytes > max_bytes || out.length() >= max_files {
+        return Ok(None)
+      }
+      out.push(SkillFile::{ path: sub, full: full })
+    }
+  }
+  Ok(Some(out))
+}
+
+pub fn skill_read(
+  host : MemoryHost,
+  sep : String,
+  dir : String,
+  max_bytes : Double,
+  max_files : Int,
+  with_bytes : Bool,
+) -> Result[base_codec::Json, String] {
+  let found = match skill_files(host, sep, dir, max_bytes, max_files) {
+    Ok(Some(xs)) => xs
+    Ok(None) => return Ok(base_codec::json_obj([("tooLarge", base_codec::json_bool(true))]))
+    Err(e) => return Err(e)
+  }
+  let paths : Array[String] = []
+  let hashes : Map[String, String] = Map::new()
+  let files_obj : Array[(String, base_codec::Json)] = []
+  let mut has_skill_md = false
+  for i in 0..<found.length() {
+    let f = found[i]
+    if f.path == "SKILL.md" {
+      has_skill_md = true
+    }
+    if with_bytes {
+      let b = match bytes_of(host, f.full) {
+        Some(data) => data
+        None => return Err("ENOENT: no such file or directory, open '" + f.full + "'")
+      }
+      paths.push(f.path)
+      hashes.set(f.path, sha256_digest_hex(b))
+      files_obj.push((f.path, base_codec::json_str(base_codec::base64_encode(b))))
+    } else {
+      let h = match hash_of(host, f.full) {
+        Some(hv) => hv
+        None => return Err("ENOENT: no such file or directory, open '" + f.full + "'")
+      }
+      paths.push(f.path)
+      hashes.set(f.path, h)
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("hash", base_codec::json_str(skill_hash(paths, hashes))),
+    ("hasSkillMd", base_codec::json_bool(has_skill_md)),
+  ]
+  if with_bytes {
+    out.push(("files", base_codec::json_obj(files_obj)))
+  }
+  Ok(base_codec::json_obj(out))
+}
+
+fn join_parts(parts : Array[String], count : Int, sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<count {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+pub fn skill_given(
+  sep : String,
+  files : Array[(String, base_codec::Json)],
+  most : Option[Double],
+) -> Result[Array[(Array[String], Bytes)], String] {
+  let out : Array[(Array[String], Bytes)] = []
+  let file_paths : Map[String, Bool] = Map::new()
+  let dir_prefixes : Map[String, Bool] = Map::new()
+  let mut size = 0.0
+  for i in 0..<files.length() {
+    let (path, data) = files[i]
+    let parts = match skill_path(sep, path) {
+      Some(p) => p
+      None => return Err("bad path in a shared skill: " + path)
+    }
+    let norm = join_parts(parts, parts.length(), "/")
+    match dir_prefixes.get(norm) {
+      Some(true) => return Err("bad path in a shared skill: " + path)
+      _ => ()
+    }
+    match file_paths.get(norm) {
+      Some(true) => return Err("bad path in a shared skill: " + path)
+      _ => ()
+    }
+    file_paths.set(norm, true)
+    for k in 1..<parts.length() {
+      let prefix = join_parts(parts, k, "/")
+      match file_paths.get(prefix) {
+        Some(true) => return Err("bad path in a shared skill: " + path)
+        _ => ()
+      }
+      dir_prefixes.set(prefix, true)
+    }
+    let b64 = match data {
+      base_codec::Json::Str(s) => s
+      _ => return Err("bad file in a shared skill: " + path)
+    }
+    let bytes = base64_bytes(b64)
+    size = size + bytes.length().to_double()
+    out.push((parts, bytes))
+  }
+  match most {
+    Some(m) => {
+      if size > m {
+        return Err("the skill is too large to share")
+      }
+    }
+    None => ()
+  }
+  Ok(out)
+}
+
+fn cleanup_dir(host : MemoryHost, path : String) -> Unit {
+  let _ = fs_call(
+    host,
+    "fs.remove",
+    [("path", base_codec::json_str(path)), ("recursive", base_codec::json_bool(true))],
+    None,
+  )
+}
+
+/// Build a short dot-prefixed hidden sibling path inside `dir`'s parent so `scan`'s
+/// `portable_name` ignores it and long 240..255-byte skill names never hit `ENAMETOOLONG`.
+pub fn skill_hidden_sibling(sep : String, dir : String, kind : String, pid_s : String, seq : Int) -> String {
+  let win = sep == "\\"
+  let mut end = dir.length()
+  while end > 1 && is_path_sep(dir.code_unit_at(end - 1), win) {
+    end = end - 1
+  }
+  let mut slash = -1
+  let mut i = end - 1
+  while i >= 0 {
+    if is_path_sep(dir.code_unit_at(i), win) {
+      slash = i
+      break
+    }
+    i = i - 1
+  }
+  let parent = if slash < 0 { "" } else { dir.slice(0, slash) }
+  let name = ".stillfail-" + kind + "-" + pid_s + "-" + seq.to_string()
+  if parent == "" {
+    if slash == 0 {
+      sep + name
+    } else {
+      name
+    }
+  } else {
+    parent + sep + name
+  }
+}
+
+/// Allocate a dot-prefixed hidden sibling path verified unoccupied via `lstat`; never blindly
+/// deletes a pre-existing path whose ownership was not established.
+fn alloc_unique_sibling(
+  host : MemoryHost,
+  sep : String,
+  dir : String,
+  tag : String,
+  pid_s : String,
+) -> Result[String, String] {
+  for _ in 0..<4096 {
+    host.skill_temps = host.skill_temps + 1
+    let cand = skill_hidden_sibling(sep, dir, tag, pid_s, host.skill_temps)
+    match lstat(host, cand) {
+      Ok(None) => return Ok(cand)
+      Ok(Some(_)) => continue
+      Err(e) => return Err(e)
+    }
+  }
+  Err("could not allocate temporary skill directory")
+}
+
+pub fn skill_write(
+  host : MemoryHost,
+  sep : String,
+  dir : String,
+  files : Array[(String, base_codec::Json)],
+  most : Option[Double],
+  check : Bool,
+) -> Result[Unit, String] {
+  let given = match skill_given(sep, files, most) {
+    Ok(g) => g
+    Err(e) => return Err(e)
+  }
+  if check {
+    return Ok(())
+  }
+  let pid_s = host_shim::pid().to_string()
+  let temp = match alloc_unique_sibling(host, sep, dir, "tmp", pid_s) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  match fs_call(host, "fs.mkdir", [("path", base_codec::json_str(temp))], None) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  for i in 0..<given.length() {
+    let (parts, bytes) = given[i]
+    let full = temp + sep + join_parts(parts, parts.length(), sep)
+    let parent = if parts.length() == 1 {
+      temp
+    } else {
+      temp + sep + join_parts(parts, parts.length() - 1, sep)
+    }
+    match fs_call(host, "fs.mkdir", [("path", base_codec::json_str(parent))], None) {
+      Ok(_) => ()
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
+    }
+    match fs_call(
+      host,
+      "fs.put",
+      [
+        ("path", base_codec::json_str(full)),
+        ("offset", base_codec::json_int(0)),
+        ("truncate", base_codec::json_bool(true)),
+      ],
+      Some(bytes),
+    ) {
+      Ok(_) => ()
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
+    }
+  }
+  // Recoverable directory swap: if `dir` exists, move it to an unoccupied dot-prefixed hidden
+  // sibling backup first, rename `temp` into `dir`, restore `backup` on failure (surfacing any
+  // rollback error), and delete `backup` only after success.
+  let had_dest = match lstat(host, dir) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => {
+      cleanup_dir(host, temp)
+      return Err(e)
+    }
+  }
+  if had_dest {
+    let backup = match alloc_unique_sibling(host, sep, dir, "bak", pid_s) {
+      Ok(p) => p
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
+    }
+    match fs_call(
+      host,
+      "fs.rename",
+      [("from", base_codec::json_str(dir)), ("to", base_codec::json_str(backup))],
+      None,
+    ) {
+      Ok(_) => ()
+      Err(e) => {
+        cleanup_dir(host, temp)
+        return Err(e)
+      }
+    }
+    match fs_call(
+      host,
+      "fs.rename",
+      [("from", base_codec::json_str(temp)), ("to", base_codec::json_str(dir))],
+      None,
+    ) {
+      Ok(_) => {
+        match fs_call(
+          host,
+          "fs.remove",
+          [("path", base_codec::json_str(backup)), ("recursive", base_codec::json_bool(true))],
+          None,
+        ) {
+          Ok(_) => ()
+          Err(rm_err) => {
+            let _ = host_shim::write_stderr_line(
+              "memory skillWrite: failed to remove backup " + backup + ": " + rm_err,
+            )
+          }
+        }
+        Ok(())
+      }
+      Err(e) => {
+        let rb = fs_call(
+          host,
+          "fs.rename",
+          [("from", base_codec::json_str(backup)), ("to", base_codec::json_str(dir))],
+          None,
+        )
+        cleanup_dir(host, temp)
+        match rb {
+          Ok(_) => Err(e)
+          Err(rb_err) => Err(e + "; rollback from " + backup + " failed: " + rb_err)
+        }
+      }
+    }
+  } else {
+    match fs_call(
+      host,
+      "fs.rename",
+      [("from", base_codec::json_str(temp)), ("to", base_codec::json_str(dir))],
+      None,
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => {
+        cleanup_dir(host, temp)
+        Err(e)
+      }
+    }
+  }
+}
+
+pub fn skill_conflict_path(sep : String, dir : String, peer : String) -> String {
+  let short = slice_utf16(peer, 12)
+  dir + sep + "SKILL.conflict-" + short + ".md"
+}
+
+pub fn skill_conflict(
+  host : MemoryHost,
+  sep : String,
+  dir : String,
+  peer : String,
+  content : String,
+) -> Result[Unit, String] {
+  match fs_call(
+    host,
+    "fs.put",
+    [
+      ("path", base_codec::json_str(skill_conflict_path(sep, dir, peer))),
+      ("offset", base_codec::json_int(0)),
+      ("truncate", base_codec::json_bool(true)),
+    ],
+    Some(base64_bytes(content)),
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}

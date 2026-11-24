@@ -258,6 +258,12 @@ export type Snapshot = {
   notices: string[];
   waitingMs: number | null;
   waitingSeconds: number;
+  /// Remaining mid-turn wait when an in-flight turn declared waiting without ending yet (optional: a station from before does not say).
+  midWaitingMs?: number | null;
+  midWaitingSeconds?: number;
+  /// How long the current waiting chain has gone without posting in the chat, and how long since the last progress reminder (optional).
+  silentWaitingMs?: number | null;
+  progressRemindedMs?: number | null;
   nudges: number;
   stopRequested: boolean;
   /// Its allowance ran out with no account to move to: how long until it goes on (optional: a station from before

@@ -1,0 +1,318 @@
+// Pure Pion unit tests for `pion/station/packages/memory`.
+// Mirrors station/mb/src/memory/merge_wbtest.mbt and skills_wbtest.mbt plus UTF-16/UTF-8 edge cases.
+
+import "base_codec"
+
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+fn expect_some_str(opt : Option[String], want : String, msg : String) -> Unit {
+  match opt {
+    Some(s) => expect(s == want, msg + " (got: " + s + ")")
+    None => panic(msg + " (got None)")
+  }
+}
+
+fn expect_none_str(opt : Option[String], msg : String) -> Unit {
+  match opt {
+    None => ()
+    Some(s) => panic(msg + " (got Some: " + s + ")")
+  }
+}
+
+fn expect_some_parts(opt : Option[Array[String]], msg : String) -> Unit {
+  match opt {
+    Some(_) => ()
+    None => panic(msg + " (got None)")
+  }
+}
+
+fn expect_none_parts(opt : Option[Array[String]], msg : String) -> Unit {
+  match opt {
+    None => ()
+    Some(_) => panic(msg + " (got Some)")
+  }
+}
+
+fn hex_bytes(h : String) -> Bytes {
+  match base_codec::hex_decode(h) {
+    Some(b) => b
+    None => panic("bad test hex: " + h)
+  }
+}
+
+fn bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+test "is_text: UTF-8 with no NUL, rejecting surrogates, overlongs, and truncated sequences" {
+  expect(is_text(hex_bytes("")), "empty")
+  expect(is_text(hex_bytes("610ae4b8adf09f9880")), "ascii+cjk+emoji")
+  expect(is_text(hex_bytes("efbbbfefbfbd")), "bom+fffd")
+  expect(!is_text(hex_bytes("6100")), "nul")
+  expect(!is_text(hex_bytes("eda080")), "surrogate")
+  expect(!is_text(hex_bytes("c0af")), "overlong 2")
+  expect(!is_text(hex_bytes("e080af")), "overlong 3")
+  expect(!is_text(hex_bytes("f08fbfbf")), "overlong 4")
+  expect(!is_text(hex_bytes("e4b8")), "truncated")
+  expect(!is_text(hex_bytes("f4908080")), "past 10ffff")
+  expect(!is_text(hex_bytes("80")), "stray cont")
+}
+
+test "js_after: UTF-16 code unit ordering puts astral before U+FF5E" {
+  expect(js_after("b", "a"), "b > a")
+  expect(!js_after("a", "b"), "!(a > b)")
+  expect(!js_after("a", "a"), "!(a > a)")
+  expect(js_after("ab", "a"), "ab > a")
+  // U+FF5E (UTF-16 0xFF5E) > U+10000 (UTF-16 0xD800 0xDC00), opposite of UTF-8!
+  expect(js_after("\u{ff5e}", "\u{10000}"), "ff5e > 10000 in UTF-16")
+  expect(!js_after("\u{10000}", "\u{ff5e}"), "!(10000 > ff5e) in UTF-16")
+  expect(js_after("ｚ", "😀"), "fullwidth z > emoji in UTF-16")
+}
+
+test "matches: longest common subsequence with reference tie-breaking and 3000-line bound" {
+  match matches(["a", "b"], ["b", "a"]) {
+    Some(p) => {
+      expect(p.length() == 1, "len 1")
+      let (x, y) = p[0]
+      expect(x == 1 && y == 0, "pair (1, 0)")
+    }
+    None => panic("expected Some")
+  }
+  match matches(["a", "b", "c", "a", "b", "c"], ["c", "b", "a", "c", "b", "a"]) {
+    Some(p) => {
+      expect(p.length() == 3, "len 3")
+      let (x0, y0) = p[0]
+      let (x1, y1) = p[1]
+      let (x2, y2) = p[2]
+      expect(x0 == 2 && y0 == 0, "pair 0")
+      expect(x1 == 4 && y1 == 1, "pair 1")
+      expect(x2 == 5 && y2 == 3, "pair 2")
+    }
+    None => panic("expected Some")
+  }
+  let many : Array[String] = []
+  for i in 0..<3001 {
+    many.push("a" + i.to_string())
+  }
+  match matches(many, ["b"]) {
+    None => ()
+    Some(_) => panic("expected None past 3000 lines")
+  }
+}
+
+test "merge3: clean merge, conflict keeps newer first, delete vs edit" {
+  expect_some_str(merge3("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n"), "A\nb\nC\n", "clean 3-way")
+  expect_some_str(
+    merge3("- one\n", "- one\n- mine\n", "- one\n- theirs\n"),
+    "- one\n- mine\n- theirs\n",
+    "conflict newer first",
+  )
+  expect_some_str(merge3("a\nb\nc", "a\nc", "a\nB\nc"), "a\nB\nc", "delete vs edit")
+}
+
+test "union_lines: deduplicates lines and marks single-side lines" {
+  let got = union_lines(
+    "# m\n- x\n- y\n",
+    "# m\n- [ccvm] x\n- z\n1. n\n",
+    Some("Mini"),
+    Some("Studio"),
+  )
+  expect(got == "# m\n- x\n- [Mini] y\n- [Studio] z\n1. [Studio] n\n", "union_lines mismatch: " + got)
+}
+
+test "station_tag and conflict_path: unicode letters/digits and 40 UTF-16 code-unit cap" {
+  expect(station_tag("Mini 1 ✓ 中") == "Mini-1-中", "Mini-1-中")
+  expect(station_tag("😀") == "station", "emoji only -> station")
+  expect(station_tag("x²") == "x²", "superscript digit")
+  let mut s50 = ""
+  let mut s40 = ""
+  for i in 0..<50 {
+    s50 = s50 + "中"
+    if i < 40 {
+      s40 = s40 + "中"
+    }
+  }
+  expect(station_tag(s50) == s40, "40 CJK chars")
+  expect(conflict_path("skills/a/SKILL.md", "Mini 1") == "skills/a/SKILL.conflict-Mini-1.md", "SKILL.md")
+  expect(conflict_path("skills/a/run", "ccvm") == "skills/a/run.conflict-ccvm", "no ext")
+  expect(conflict_path("skills/a/.env", "ccvm") == "skills/a/.env.conflict-ccvm", "dotfile")
+}
+
+test "alike, aside_of, empty_memory, and portable_name" {
+  expect(alike("---\nname: a\n---\n- one\n- two\n", "---\nname: b\n---\n- one\n- three\n"), "alike true")
+  expect(!alike("x\n", "y\n"), "alike false")
+  expect_some_str(
+    aside_of("---\nname: s-Mini1\ndescription: [Mini1] own\n---\nbody", "s-Mini1"),
+    "Mini1",
+    "aside_of match",
+  )
+  expect_none_str(aside_of("---\nname: other\ndescription: [Mini1] own\n---\n", "s-Mini1"), "aside_of wrong name")
+  expect_none_str(aside_of("no front", "s"), "aside_of no front")
+
+  expect(empty_memory("# still.fail memory\n".to_bytes()), "empty still.fail")
+  expect(empty_memory("\u{feff}  # ember memory \n\n".to_bytes()), "empty ember with bom")
+  expect(empty_memory("".to_bytes()), "empty blank")
+  expect(!empty_memory("# still.fail memory\n- one\n".to_bytes()), "non-empty")
+  expect(!empty_memory(hex_bytes("23ff")), "invalid utf8 not empty")
+
+  expect(portable_name("proj"), "proj")
+  expect(portable_name("中文技能"), "cjk")
+  expect(!portable_name(".hidden"), "dot")
+  expect(!portable_name("trail."), "trailing dot")
+  expect(!portable_name("a:b"), "colon")
+  expect(!portable_name("CON"), "CON")
+  expect(!portable_name("com1.txt"), "com1.txt")
+  expect(!portable_name("com²"), "com superscript 2")
+  expect(portable_name("com10"), "com10")
+}
+
+test "sha256_digest_hex, skill_hash, base64_bytes, skill_path, and skill_conflict_path" {
+  expect(
+    sha256_digest_hex("".to_bytes()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sha256 empty",
+  )
+  expect(
+    sha256_digest_hex("abc".to_bytes()) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    "sha256 abc",
+  )
+  let paths : Array[String] = ["b", "a/x", "é", "😀", "ｚ", "SKILL.md"]
+  let vals : Array[String] = ["1", "2", "3", "4", "5", "6"]
+  let hashes : Map[String, String] = Map::new()
+  for i in 0..<paths.length() {
+    hashes.set(paths[i], sha256_digest_hex(vals[i].to_bytes()))
+  }
+  expect(
+    skill_hash(paths, hashes) == "854015444e8edb102e46cf992e00781d3408eefffd139dbdfb207d4fd91e7c4a",
+    "skill_hash JS UTF-16 order",
+  )
+
+  expect(bytes_eq(base64_bytes("YQ=="), "a".to_bytes()), "b64 YQ==")
+  expect(bytes_eq(base64_bytes("YQ"), "a".to_bytes()), "b64 YQ")
+  expect(bytes_eq(base64_bytes("Y Q = ="), "a".to_bytes()), "b64 spaces")
+  expect(bytes_eq(base64_bytes("-_8"), hex_bytes("fbff")), "b64 url")
+  expect(bytes_eq(base64_bytes("YWJj=ZA"), "abc".to_bytes()), "b64 stop at =")
+  expect(bytes_eq(base64_bytes("*"), Bytes::new(0)), "b64 invalid char")
+
+  expect_some_parts(skill_path("/", "SKILL.md"), "SKILL.md ok")
+  expect_some_parts(skill_path("/", "a/b.md"), "a/b.md ok")
+  expect_some_parts(skill_path("/", "a\\..\\b"), "backslash literal on posix")
+  expect_none_parts(skill_path("/", ""), "empty bad")
+  expect_none_parts(skill_path("/", "../escape"), "escape bad")
+  expect_none_parts(skill_path("/", "/abs"), "abs bad")
+  expect_none_parts(skill_path("/", "a//b"), "double slash bad")
+  expect_none_parts(skill_path("/", "./x"), "dot bad")
+  expect_none_parts(skill_path("/", "a/"), "trailing slash bad")
+  expect_none_parts(skill_path("/", "a/../b"), "dotdot bad")
+  expect_none_parts(skill_path("\\", "C:\\x"), "win drive bad")
+  expect_none_parts(skill_path("\\", "a\\..\\b"), "win dotdot bad")
+
+  expect(
+    skill_conflict_path("/", "/s/x", "0123456789abcdef") == "/s/x/SKILL.conflict-0123456789ab.md",
+    "conflict path ascii",
+  )
+  expect(
+    skill_conflict_path("/", "/s/x", "中文站点名字很长很长很长很长") == "/s/x/SKILL.conflict-中文站点名字很长很长很长.md",
+    "conflict path utf16 12 chars",
+  )
+
+  // Intentional non-BMP boundary safety: never split a surrogate pair (U+20000 = 2 UTF-16 code units).
+  let mut a39 = ""
+  for _ in 0..<39 {
+    a39 = a39 + "a"
+  }
+  expect(station_tag(a39 + "\u{20000}") == a39, "station_tag stops cleanly before splitting astral letter at 40 units")
+  expect(
+    skill_conflict_path("/", "/s/x", "aaaaaaaaaaa\u{20000}") == "/s/x/SKILL.conflict-aaaaaaaaaaa.md",
+    "skill_conflict_path stops cleanly before splitting astral char at 12 units",
+  )
+}
+
+test "has_lone_surrogate, escape_line_separators, RawLines, and skill_given safety checks" {
+  // Valid surrogate pair (😀 = \uD83D\uDE00) is accepted; lone high/low surrogates rejected.
+  expect(!has_lone_surrogate("{\"id\":\"\\uD83D\\uDE00\",\"op\":\"tags\"}"), "valid surrogate pair ok")
+  expect(!has_lone_surrogate("{\"s\":\"\\\\uD800\"}"), "escaped backslash before uD800 is literal text")
+  expect(has_lone_surrogate("{\"id\":\"\\uD800\",\"op\":\"tags\"}"), "lone high surrogate rejected")
+  expect(has_lone_surrogate("{\"id\":\"\\uDC00\",\"op\":\"tags\"}"), "lone low surrogate rejected")
+  expect(has_lone_surrogate("{\"id\":\"\\uD83D\\u0041\",\"op\":\"tags\"}"), "high followed by non-low rejected")
+
+  // U+2028 / U+2029 escaped in JSON output.
+  let raw_ls = "{\"a\":\"x\u{2028}y\u{2029}z\"}"
+  expect(escape_line_separators(raw_ls) == "{\"a\":\"x\\u2028y\\u2029z\"}", "U+2028/U+2029 escaped")
+  expect(escape_line_separators("{\"a\":\"plain\"}") == "{\"a\":\"plain\"}", "fast path unchanged")
+
+  // RawLines splits only on LF (0x0A), preserves CR (0x0D), decodes invalid UTF-8 lossily, drops EOF tail.
+  let rl = RawLines::new()
+  let out1 = rl.push("a\r\n\r\npartial".to_bytes())
+  expect(out1.length() == 2, "two lines emitted")
+  expect(out1[0] == "a\r", "CR preserved on line 0")
+  expect(out1[1] == "\r", "CR-only line preserved")
+
+  let rl2 = RawLines::new()
+  let out2 = rl2.push(hex_bytes("61ff62c0af63e4b8640ae4b8adf09f98800a"))
+  expect(out2.length() == 2, "lossy + valid utf8 lines emitted")
+  expect(out2[0] == "a\u{fffd}b\u{fffd}\u{fffd}c\u{fffd}d", "WHATWG maximal-subpart lossy UTF-8")
+  expect(out2[1] == "中😀", "valid multi-byte UTF-8 preserved")
+
+  // extract_safe_top_level_id preserves clean top-level id (including JSON-escaped key names) and nulls lone-surrogate or nested id.
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"id\":7,\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "7",
+    "numeric top-level id preserved",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"i\\u0064\":7,\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "7",
+    "escaped key name i\\u0064 decoded to id",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"op\":\"tags\",\"names\":[\"\\uD800\"],\"id\":\"ok-1\"}")) == "\"ok-1\"",
+    "string top-level id after lone surrogate preserved",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"id\":\"\\uD800\",\"op\":\"tags\"}")) == "null",
+    "lone-surrogate id replaced with null",
+  )
+  expect(
+    base_codec::json_stringify(extract_safe_top_level_id("{\"nested\":{\"id\":99},\"op\":\"tags\",\"names\":[\"\\uD800\"]}")) == "null",
+    "nested id not mistaken for top-level id",
+  )
+
+  // NUL in path, file/dir prefix collisions, and normalized duplicate paths rejected in skill_given.
+  expect_none_parts(skill_path("/", "a\u{0000}b"), "NUL in path rejected")
+  match skill_given("/", [("a", base_codec::json_str("YQ==")), ("a/b", base_codec::json_str("YQ=="))], None) {
+    Err(_) => ()
+    Ok(_) => panic("expected file/dir collision (a vs a/b) to be rejected")
+  }
+  match skill_given("/", [("a/b", base_codec::json_str("YQ==")), ("a", base_codec::json_str("YQ=="))], None) {
+    Err(_) => ()
+    Ok(_) => panic("expected dir/file collision (a/b vs a) to be rejected")
+  }
+  match skill_given("\\", [("a/b", base_codec::json_str("YQ==")), ("a\\b", base_codec::json_str("YQ=="))], None) {
+    Err(_) => ()
+    Ok(_) => panic("expected normalized duplicate path (a/b vs a\\b on win32) to be rejected")
+  }
+
+  // Hidden dot-prefixed temp/backup siblings use a short fixed prefix (never exceeding NAME_MAX even for 240-byte skill names)
+  // and fail portable_name so scan ignores them.
+  let sib_posix = skill_hidden_sibling("/", "/home/skills/demo", "tmp", "42", 1)
+  expect(sib_posix == "/home/skills/.stillfail-tmp-42-1", "posix hidden sibling: " + sib_posix)
+  expect(!portable_name(".stillfail-tmp-42-1"), "hidden sibling ignored by scan portable_name")
+  let sib_win = skill_hidden_sibling("\\", "C:\\skills\\demo\\", "bak", "42", 2)
+  expect(sib_win == "C:\\skills\\.stillfail-bak-42-2", "win hidden sibling: " + sib_win)
+  let mut long_name = ""
+  for _ in 0..<240 {
+    long_name = long_name + "a"
+  }
+  let sib_long = skill_hidden_sibling("/", "/home/skills/" + long_name, "tmp", "42", 3)
+  expect(sib_long == "/home/skills/.stillfail-tmp-42-3", "long skill name hidden sibling stays short: " + sib_long)
+}

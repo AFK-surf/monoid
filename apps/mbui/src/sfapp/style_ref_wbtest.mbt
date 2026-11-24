@@ -53,38 +53,39 @@ test "styles: the lock's waiting page, every state, drawn as before" {
     }
   }
   // Home narrow top bar only draws progressive scroll-edge glass over the status bar (skipped when status_top == 0).
+  // P0 Regular Liquid Glass optics fix restored recipe blur 2.0/2.2 on narrow floating/bar pills.
   inspect(out.to_string(), content=(
-    #|waiting narrow 28665:c3986e94
+    #|waiting narrow 28661:9dcc0326
     #|waiting wide 66023:4112183f
-    #|waiting-dark narrow 28584:b4229d3c
+    #|waiting-dark narrow 28580:2b9fb8ac
     #|waiting-dark wide 65852:4a6a3989
-    #|finding narrow 46466:1cc560f4
+    #|finding narrow 46462:1e66d4b0
     #|finding wide 84907:723ded1c
-    #|finding-dark narrow 46520:1c9ec5a
+    #|finding-dark narrow 46516:d2078460
     #|finding-dark wide 84871:17a7b16a
-    #|code narrow 32643:8af2e78f
+    #|code narrow 32639:62388e1f
     #|code wide 70141:42f542a3
-    #|code-dark narrow 32519:3c7b659f
+    #|code-dark narrow 32515:93b5b629
     #|code-dark wide 69927:72631d87
-    #|wrong narrow 28630:15db3512
+    #|wrong narrow 28626:966c6484
     #|wrong wide 66161:2649ae81
-    #|wrong-dark narrow 28733:7a0a0513
+    #|wrong-dark narrow 28729:dc736e03
     #|wrong-dark wide 66174:f25a5808
-    #|checking narrow 35735:6a6a0268
+    #|checking narrow 35731:39bd582a
     #|checking wide 74132:54bef3
-    #|checking-dark narrow 35828:dac7f845
+    #|checking-dark narrow 35824:2031e1dd
     #|checking-dark wide 74135:1e5e7a12
-    #|none narrow 39501:5d91a5d1
+    #|none narrow 39497:bf6a48fd
     #|none wide 77132:a85cd953
-    #|none-dark narrow 39380:ab69561e
+    #|none-dark narrow 39376:56079d44
     #|none-dark wide 76921:427c396c
-    #|failed narrow 23892:9f709614
+    #|failed narrow 23888:b2a8b2a6
     #|failed wide 60819:839fa92d
-    #|failed-dark narrow 23895:4f898f4a
+    #|failed-dark narrow 23891:82cc9622
     #|failed-dark wide 60732:1a404b71
-    #|nocode narrow 28665:c3986e94
+    #|nocode narrow 28661:9dcc0326
     #|nocode wide 66023:4112183f
-    #|nocode-dark narrow 28584:b4229d3c
+    #|nocode-dark narrow 28580:2b9fb8ac
     #|nocode-dark wide 65852:4a6a3989
     #|
 
@@ -166,16 +167,17 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // Adaptive liquid-glass back button icon bands encode center-relative offsets in slots 6-7 (+16 bytes on narrow screens).
   // iOS 27 pressed-lens calibration updated resting Switch shadow/track and Segmented track ground on wide station pages.
   // Narrow pushed page_node screens now use a single-row floating liquid glass top bar (circular < + inline title + glass trailing actions).
+  // P0 Regular Liquid Glass optics fix restored recipe blur 2.0/2.2 on narrow bars/pills.
   inspect(out.to_string(), content=(
-    #|settings narrow 101822:68cb371a
-    #|station narrow 97456:dd9a2107
-    #|me-reading narrow 31221:8154947e
+    #|settings narrow 101820:3e3cf699
+    #|station narrow 97452:5d754271
+    #|me-reading narrow 31219:805bd8af
     #|settings wide 204457:ab771352
     #|station wide 275577:348fb345
     #|me-reading wide 199176:3c1c9ea
-    #|settings-dark narrow 102090:c0590db8
-    #|station-dark narrow 97349:db566496
-    #|me-reading-dark narrow 31358:593d2ca5
+    #|settings-dark narrow 102088:e3484e7b
+    #|station-dark narrow 97345:e23d1360
+    #|me-reading-dark narrow 31356:3797369c
     #|settings-dark wide 204349:32841efe
     #|station-dark wide 275167:12aaf9fc
     #|me-reading-dark wide 199134:f5de9219

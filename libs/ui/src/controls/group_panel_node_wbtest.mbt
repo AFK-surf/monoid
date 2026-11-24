@@ -81,9 +81,9 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 176,561 38x5 841819172
     #|rect 22,654 346x168 606546701
     #|rect 278,686 64x28 2021161011
-    #|rect 280,688 40x24 4294967295
+    #|rect 280,688 37.587x24 4294967295
     #|rect 278,762 64x28 3428463871
-    #|rect 300,764 40x24 4294967295
+    #|rect 302.413,764 37.587x24 4294967295
     #|words 一组@30,578 32x24 a1
     #|words 打开@180,45 30x22 a1
     #|words 它说的话@30,612 330x18 a1
@@ -95,9 +95,9 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 176,571 38x5 841819172
     #|rect 22,654 346x168 606546701
     #|rect 278,686 64x28 2021161011
-    #|rect 280,688 40x24 4294967295
+    #|rect 280,688 37.587x24 4294967295
     #|rect 278,762 64x28 3428463871
-    #|rect 300,764 40x24 4294967295
+    #|rect 302.413,764 37.587x24 4294967295
     #|words 一组@30,588 32x24 a1
     #|words 打开@180,45 30x22 a1
     #|words 它说的话@30,622 330x18 a1
@@ -109,9 +109,9 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 176,587 38x5 841819172
     #|rect 22,670 346x152 606546701
     #|rect 306,701 36x22 2021161011
-    #|rect 308,703 22.5x18 4294967295
+    #|rect 308,703 21.143x18 4294967295
     #|rect 306,769 36x22 3428463871
-    #|rect 317.5,771 22.5x18 4294967295
+    #|rect 318.857,771 21.143x18 4294967295
     #|words 一组@30,604 32x24 a1
     #|words 打开@182,46 26x20 a1
     #|words 它说的话@30,638 330x18 a1
@@ -121,9 +121,9 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 40,40 720x32 3907312895
     #|rect 46,146 284x126 4294967295
     #|rect 270,169 36x22 2021161011
-    #|rect 272,171 22.5x18 4294967295
+    #|rect 272,171 21.143x18 4294967295
     #|rect 270,227 36x22 3428463871
-    #|rect 281.5,229 22.5x18 4294967295
+    #|rect 282.857,229 21.143x18 4294967295
     #|words 一组@62,90 252x20 a1
     #|words 打开@387,46 26x20 a1
     #|words 它说的话@62,114 252x18 a1
@@ -134,9 +134,9 @@ test "rows together in a panel's body as nodes: a sheet opened by nothing and by
     #|rect 0,0 800x600 320215859
     #|rect 156,289.5 488x128 606546701
     #|rect 582,314.5 36x22 2021161011
-    #|rect 584,316.5 22.5x18 4294967295
+    #|rect 584,316.5 21.143x18 4294967295
     #|rect 582,370.5 36x22 3428463871
-    #|rect 593.5,372.5 22.5x18 4294967295
+    #|rect 594.857,372.5 21.143x18 4294967295
     #|words 打开@387,46 26x20 a1
     #|words 一组@164,192.5 44x30 a1
     #|words 它说的话@164,241.5 472x18 a1

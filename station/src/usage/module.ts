@@ -3,14 +3,15 @@
 // way it is shown is added up from that record: a chat's execution details and agent card (told as more is recorded,
 // on its live stream and in its session's summary, `usage`) and the usage page (GET /usage).
 import { Clock, Effect, Layer } from "effect";
-import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
+import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { wall } from "../ops/fibers.ts";
 import { usageRoutes } from "../api/routes/usage.ts";
 import { usageNow } from "../read/usage.ts";
 import { Agents } from "../sessions/agents.ts";
 import { hubConfig } from "../sessions/config.ts";
 import type { LiveHub } from "../sessions/live.ts";
-import { Parts, Paths, Previous, Readers, StationConfig, Store } from "../services.ts";
+import { Parts, Paths, Previous, ReaderConfig, Readers, StationConfig, Store } from "../services.ts";
 import { log } from "../ops/log.ts";
 import type { Store as StationStore } from "../store/store.ts";
 import { giveBackfill, takeBackfill } from "../store/backfill.ts";
@@ -86,7 +87,7 @@ function tryStopUsageIndexes(store: StationStore): boolean {
 /// An older station reads and writes the old statistics during handover. Stop their writers only after it actually
 /// exits, then free them and take in the calls from before the quarters (store/usage-15m.ts). `binary`: the MoonBit
 /// program, a test's own where it gives one. True once all of it is done.
-export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string) {
+export function retireAfterPrevious(store: StationStore, exited: Promise<void>, binary?: string, readers?: () => ReaderSelectConfig) {
   let stopped = false;
   return Effect.gen(function* () {
     yield* Effect.tryPromise({ try: () => exited, catch: (error) => error });
@@ -101,7 +102,13 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
       return true;
     }
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
-    yield* Effect.tryPromise({ try: () => retireByProgram(store, binary ?? readerBinary(), path), catch: (error) => error });
+    yield* Effect.tryPromise({
+      try: () => {
+        const mb = resolveReaderSelection("usage-retire", { binary, config: readers, logAt: "readers" }).primaryBinary;
+        return retireByProgram(store, mb, path);
+      },
+      catch: (error) => error,
+    });
     return true;
   }).pipe(Effect.catch((error) => Effect.sync(() => {
     log.warn("usage", stopped ? "the old usage statistics could not be removed" : "the old usage statistics' writers could not be stopped", { error: (error as Error).message });
@@ -140,10 +147,10 @@ async function retireByProgram(store: StationStore, mb: string, path: string): P
 }
 
 /// Retry temporary installation or cleanup failures after stopping the old writers.
-export function retireUntilComplete(store: StationStore, exited: Promise<void>, binary?: string) {
+export function retireUntilComplete(store: StationStore, exited: Promise<void>, binary?: string, readers?: () => ReaderSelectConfig) {
   return Effect.gen(function* () {
     let retryMs = 250;
-    while (!(yield* retireAfterPrevious(store, exited, binary))) {
+    while (!(yield* retireAfterPrevious(store, exited, binary, readers))) {
       yield* Effect.sleep(retryMs);
       retryMs = Math.min(retryMs * 2, 30_000);
     }
@@ -198,8 +205,9 @@ export const UsageLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const { hub } = yield* Agents;
     const previous = yield* Previous;
+    const readerConfig = yield* ReaderConfig;
     const readers = yield* Readers;
-    yield* Effect.forkScoped(retireUntilComplete(store, previous.exited).pipe(Effect.provideService(Clock.Clock, hub.clock)));
+    yield* Effect.forkScoped(retireUntilComplete(store, previous.exited, undefined, readerConfig).pipe(Effect.provideService(Clock.Clock, hub.clock)));
     yield* Effect.acquireRelease(
       Effect.sync(() => drainUsageChats(store, previous.exited)),
       (drain) => Effect.sync(() => drain.stop()),

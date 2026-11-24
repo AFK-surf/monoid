@@ -65,7 +65,7 @@ build_number() { git -C "$REPO" rev-list --count HEAD; }
 # alone is no new package, and goes out with the next, its core made anew.
 APP_SRC=(apps/mbui/src apps/mbui/core apps/mbui/android apps/mbui/ios apps/mbui/windows apps/mbui/engine
   libs/ui/src libs/ui/android libs/ui/moon.mod apps/mbui/moon.mod apps/mbui/moon.work apps/mbui/farview.pin client media vendor
-  rules/js shared/release-keys.ts shared/moved-from.ts web/public/avatars/index.json
+  rules/js shared/release-keys.ts shared/moved-from.ts shared/station-busy.ts web/public/avatars/index.json
   ':(exclude,glob)**/test/**' ':(exclude,glob)**/tests/**' ':(exclude,glob)**/*_test.mbt' ':(exclude,glob)**/*_wbtest.mbt' ':(exclude,glob)**/*.test.*'
   ':(exclude,glob)**/*.md')
 # the commit PART's feed names now (versionCode n is main's nth commit); nothing when it has none

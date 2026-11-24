@@ -17,6 +17,7 @@ import type { CardOutcomeSaver } from "../store/card-outbox.ts";
 import { STILLFAIL_SURFACE, type SessionThread } from "../store/store.ts";
 import type { Driven, FormAsks, FormField, FormValues } from "../browser/signin-form.ts";
 import type { Request } from "./crypto.ts";
+import type { BackfillOptions } from "../read/mb-reader.ts";
 import { SigninSaveBuilder } from "./signin-save-builder.ts";
 
 const SCHEMA = `CREATE TABLE IF NOT EXISTS signin_asks (
@@ -92,7 +93,7 @@ export type SignInDeps = {
   /// `f` once, `ms` from now (the machine's time); the returned function calls it off.
   after(ms: number, f: () => void): () => void;
   id?(): string;
-  backfill?: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
+  backfill?: BackfillOptions;
 };
 
 export class Refused extends Error {}

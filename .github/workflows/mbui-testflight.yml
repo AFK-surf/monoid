@@ -170,6 +170,27 @@ jobs:
         with:
           path: ~/Library/Caches/stillfail-native/ghostty-vt
           key: ${{ steps.ghostty-key.outputs.key }}
+      # (the device's engine, libmbui_core.a, as preview.yml's ios job keeps it on main: the same key, so the same inputs
+      # alone; compiled here when it has none)
+      - name: The iOS engine's key
+        id: ios-engine-key
+        run: |
+          set -o pipefail
+          cc=$(xcrun --sdk iphoneos clang++ --version)
+          cc=${cc%%$'\n'*}
+          sources=$(shasum -a 256 apps/mbui/src/host/apple_core.mm apps/mbui/engine/ready_queue.h \
+            apps/mbui/src/host/apple_collate.h apps/mbui/src/host/electron_sealed.h apps/mbui/src/host/core_api.h \
+            apps/mbui/src/host/listen_api.h libs/ui/src/host/listen_api.h apps/mbui/scripts/core.sh)
+          key=$(printf '%s\n' 'ios 17.0' "$cc" '${{ steps.hermes.outputs.key }}' "$sources" | shasum -a 256 | cut -c1-16)
+          echo "key=mbui-ios-engine-$key" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: ios-engine
+        with:
+          path: apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a
+          key: ${{ steps.ios-engine-key.outputs.key }}
+      # (newer than every source, moon-mtimes.sh's above, and than core.sh, as engine() asks)
+      - if: steps.ios-engine.outputs.cache-hit == 'true'
+        run: touch apps/mbui/out/core/aarch64-apple-ios/libmbui_core.a
       - name: Device build dependencies
         run: |
           if [ "${{ steps.shell.outputs.cache-hit }}" != true ]; then

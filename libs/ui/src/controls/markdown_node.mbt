@@ -1,7 +1,7 @@
 // Markdown as nodes of the window's tree, made once (the web's `.markdown`): the blocks the
 // core read the words in (blocks_of over md_core's tree, asked of the core once for all that read the same words:
 // md_ask, md_answered), each as markdown draws it, as far apart as the larger of the margins between each two; each
-// paragraph's words in pieces as the core read them (runs_of: bold, italic, code, struck through, links, a chat's
+// paragraph's words in pieces as the core read them (runs_of: bold, muted emphasis, code, struck through, links, a chat's
 // mention), its links pressed where they lead. As the words or their reading change, the same nodes told anew; a block
 // of another kind made again in its place.
 
@@ -107,6 +107,10 @@ pub fn markdown_node(
       found,
       found_at,
       lit,
+      lits: match parent.lent(md_lits) {
+        Some(f) => f
+        None => fn() { [] }
+      },
       before: fn() { 0 },
       on_link,
       on_link_hold,
@@ -338,6 +342,8 @@ priv struct MdNode {
   found_at : () -> Int?
   /// a passage lit where a paragraph's words have it, and its ground now (markdown_node's `lit`)
   lit : () -> (String, Int64)
+  /// passages kept marked where a paragraph's words have them, each with its ground (md_lits: a reader's notes)
+  lits : () -> Array[(String, Int64)]
   before : () -> Int
   on_link : (String) -> Unit
   on_link_hold : ((String, (Double, Double, Double, Double)) -> Unit)?
@@ -830,7 +836,9 @@ fn md_block_node(
         },
         cell_images?=if md.places { Some(fn(cell) { md_cell_images(md, cell) }) } else { None },
         // (its cells' words as the message's are, measured as they are drawn: its files' chips, a bare link's title)
-        cell_runs=fn(cell) { md_inlines_runs(md, cell, 0) },
+        cell_runs=fn(cell, head) {
+          md_inlines_runs(md, cell, 0, block_ink=Some(if head { web().muted } else { theme().p.text }))
+        },
         line_share=md.line,
         prose_scale=Some(md.prose_scale),
         code_scale=Some(md.code_scale),
@@ -943,7 +951,12 @@ fn md_block_node(
 /// Words `now` of a message as the pieces they are drawn in (`weight`: 600 or more bold), as md_words_node and a table's
 /// cell draw them: a bare link to a screen or a chat read as its title, a file's chip where the message marks paths,
 /// what a find found in its weight, in the faces tried and the serif face where the message is told them (Md::words').
-fn md_inlines_runs(md : MdNode, now : Array[MdInline], weight : Int) -> Array[@ui.Run] {
+fn md_inlines_runs(
+  md : MdNode,
+  now : Array[MdInline],
+  weight : Int,
+  block_ink? : Int64? = None,
+) -> Array[@ui.Run] {
   let titles : Map[String, String] = Map([])
   // (a bare link to a screen reads as its title, a chat's too where the message says it: Md::words')
   match md.screens {
@@ -965,7 +978,11 @@ fn md_inlines_runs(md : MdNode, now : Array[MdInline], weight : Int) -> Array[@u
     }
   }
   let out = []
-  runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, titles, md.paths)
+  let ink = match block_ink {
+    Some(c) => c
+    None => (md.ink)()
+  }
+  runs_of(now, out, weight >= 600, false, false, "", theme().p.accent_text, emph_ink_for(ink), titles, md.paths)
   let runs = found_weight(out, (md.found)())
   // (in the faces tried, where it is told them: Md::words')
   let text_face = (md.text_face)()
@@ -1047,10 +1064,13 @@ fn md_words_node(
     // (no find and no passage lit, as nearly always: none, their words not read for it)
     w.runs_marks(By(fn() {
       let lit = (md.lit)()
-      if (md.found_at)() is None && lit.0 == "" {
+      let lits = (md.lits)()
+      if (md.found_at)() is None && lit.0 == "" && lits.is_empty() {
         []
       } else {
-        found() + passage_marks(runs(), lit)
+        let now = runs()
+        let kept = lits.map(fn(l) { passage_marks(now, l) }).flatten()
+        found() + kept + passage_marks(now, lit)
       }
     }))
     |> ignore
@@ -1818,3 +1838,9 @@ fn md_image_rows_node(p : @view.View, md : MdNode, images : () -> Array[(String,
   })
   |> ignore
 }
+
+///|
+/// Passages what holds a Markdown text marks on its paragraphs where they have them, each with its ground (a reader's
+/// notes kept on its words: reader_marks), read as a paragraph's marks are drawn.
+// kept across runs: what each node lends (View::lends), let go with it
+let md_lits : @view.Lent[() -> Array[(String, Int64)]] = @view.Lent::new()

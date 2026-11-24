@@ -255,6 +255,7 @@ fn seg_lens_overlay_node(
     overhang_x=18.0,
     overhang_y=16.0,
     active~,
+    droplet_role=3,
     loc~,
   )
 }

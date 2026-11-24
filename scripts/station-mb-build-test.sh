@@ -184,6 +184,24 @@ c2=$(cat "$t/log/cflags")
 case "$c1" in *"$t/moon"*) fail "mbc's cflags name a moon's own directory: $c1" ;; esac
 [ "$(compiles)" = 0 ] || fail "the second moon, its runtime the same: $(compiles) runtime files compiled, not 0"
 
+# 3b. A moon-include directory CI's cleanup (find -type f -mtime +3 -delete) left empty or short of a header: filled
+#     in place, never with the copy moved inside it (main 45350580866: 177 units without moonbit.h); headers reused
+#     get a fresh mtime so that cleanup spares them.
+inc_now=$(moon_include)
+rm -rf "$inc_now"; mkdir -p "$inc_now"
+fresh; run emptyinc || fail "build over an empty moon-include directory: $(cat "$t/log/build-emptyinc.out")"
+[ "$(moon_include)" = "$inc_now" ] || fail "empty moon-include: mbc given $(moon_include), not $inc_now"
+[ -f "$inc_now/moonbit.h" ] || fail "empty moon-include: moonbit.h not put in $inc_now ($(ls -A "$inc_now"))"
+cmp -s "$t/moon/include/extra.h" "$inc_now/extra.h" || fail "empty moon-include: extra.h not put in $inc_now"
+ls -d "$inc_now"/*.tmp.* > /dev/null 2>&1 && fail "empty moon-include: a copy moved inside $inc_now ($(ls -A "$inc_now"))"
+rm -f "$inc_now/extra.h"
+fresh; run partialinc || fail "build over a moon-include directory short of extra.h: $(cat "$t/log/build-partialinc.out")"
+cmp -s "$t/moon/include/extra.h" "$inc_now/extra.h" || fail "moon-include short of extra.h: not put back in $inc_now"
+ls -d "$inc_now"/*.tmp.* > /dev/null 2>&1 && fail "moon-include short of extra.h: a copy moved inside $inc_now ($(ls -A "$inc_now"))"
+touch -t 202001010000 "$inc_now/moonbit.h"
+fresh; run oldinc || fail "build over old headers: $(cat "$t/log/build-oldinc.out")"
+[ -z "$(find "$inc_now/moonbit.h" -mtime +3)" ] || fail "reused moonbit.h kept its 2020 mtime: CI's cleanup deletes it"
+
 # 4. moon's lock left by a build gone (killed where no trap ran): taken over, not waited on.
 sh -c 'exit 0' & dead=$!; wait "$dead"
 mkdir -p "$t/root/station/mb/_build/moon-gen.lock"; echo "$dead" > "$t/root/station/mb/_build/moon-gen.lock/pid"
@@ -286,4 +304,4 @@ kept_prepped=$(ls -1 "$prepped_ci"/prepped-*.c 2>/dev/null | wc -l | tr -d ' ')
 [ ! -e "$prepped_ci/prepped-recent-05.c" ] || fail "prepped prune: 5th oldest recent file not pruned"
 [ -f "$prepped_ci/prepped-recent-20.c" ] || fail "prepped prune: newest recent file removed"
 
-echo "station-mb-build-test: mbc's jobs by the builds side by side, the runtime kept until it changes, a gone build's lock taken over, --harness's program apart from the reader, reader-mbc-prepped pruned"
+echo "station-mb-build-test: mbc's jobs by the builds side by side, the runtime kept until it changes, a gone build's lock taken over, --harness's program apart from the reader, reader-mbc-prepped pruned, moon-include emptied by CI's cleanup filled again"

@@ -1423,6 +1423,7 @@ pub fn Tree::presses_here(Self, NodeId) -> Bool
 pub fn Tree::raised_blocks(Self) -> Array[(NodeId, NodeId)]
 pub fn Tree::reads_out(Self, NodeId) -> Bool
 pub fn Tree::reduces_motion(Self, () -> Bool) -> Unit
+pub fn Tree::repaint_node(Self, NodeId) -> Unit
 pub fn Tree::resident_next(Self) -> Double
 pub fn Tree::resident_read(Self) -> Bool
 pub fn Tree::reused_epoch_of(Self, Int32) -> Int32?

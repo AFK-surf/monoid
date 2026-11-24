@@ -807,7 +807,7 @@ pub fn sp_from(Double, Double) -> Double
 
 pub fn space_scale() -> Array[Space]
 
-pub fn span(String, weight? : Int32, bold? : Bool, italic? : Bool, code? : Bool, mono? : Bool, serif? : Bool, face? : Int32?, scale? : Double, color? : Int64, bg? : Int64, ground? : @text.Ground?, strike? : Bool, underline? : Bool, link? : String, drawing? : @text.InlineDrawing?) -> @text.Run
+pub fn span(String, weight? : Int32, bold? : Bool, italic? : Bool, emph? : Bool, code? : Bool, mono? : Bool, serif? : Bool, face? : Int32?, scale? : Double, color? : Int64, bg? : Int64, ground? : @text.Ground?, strike? : Bool, underline? : Bool, link? : String, drawing? : @text.InlineDrawing?) -> @text.Run
 
 pub fn stable_hash(String) -> Int64
 
@@ -1026,6 +1026,8 @@ pub fn words_into(@view.View, Field) -> @view.View
 pub fn words_over_closing_expected(Array[(String, String, String)]) -> Unit
 
 pub fn words_over_known(Array[(String, Int32)]) -> Unit
+
+pub fn words_cmd_pick(@view.View, () -> Bool, () -> Int64, (String, String) -> Unit) -> Unit
 
 pub fn words_picked(@view.View) -> Unit
 

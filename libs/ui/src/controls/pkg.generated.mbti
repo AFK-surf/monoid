@@ -2250,6 +2250,10 @@ pub let reader_bars_ms : Double
 
 pub fn reader_bindings() -> Array[@view.Binding]
 
+pub fn reader_block_key(Int32) -> String
+
+pub fn reader_block_of(String) -> Int32?
+
 pub fn reader_chapter(Book, (Int32, Double)) -> Int32
 
 pub fn reader_close_panel(Reading) -> Unit
@@ -2266,6 +2270,8 @@ pub fn reader_let_go(String) -> Unit
 pub let reader_lines : (Double, Double)
 
 pub let reader_margins : (Int32, Int32)
+
+pub fn reader_marks(@view.View, ReaderMarks) -> @view.View
 
 pub let reader_most : Int32
 
@@ -2871,6 +2877,8 @@ pub fn tab_bar_shadow() -> Raised
 pub fn tab_bar_surface_decorate(@view.View, () -> ((Double, Double)?, Double), share_when_unmerged? : Bool) -> @view.View
 
 pub let tab_lens_raised : Raised
+
+pub fn tab_lens_raised_for(Bool) -> Raised
 
 pub fn tab_lens_surface_decorate(@view.View, () -> Double, shadow? : (Double, Double, Int64)) -> @view.View
 
@@ -4074,6 +4082,12 @@ pub(all) enum ReaderHost {
   OwnPage
   Tab
   PanelTab
+}
+
+pub(all) struct ReaderMarks {
+  lits : (Int32) -> Array[(String, Int64)]
+  tapped : () -> Bool
+  bars : (() -> Bool, (Bool) -> Unit) -> Unit
 }
 
 #derive(Eq)

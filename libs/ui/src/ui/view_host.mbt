@@ -669,6 +669,7 @@ fn view_forget() -> Unit {
   view_handed.val = None
   view_point.val = None
   view_over_words.val = false
+  cmd_hover_clear()
   view_fingers[0] = -1
   view_fingers[1] = -1
   view_fingers[2] = 0
@@ -3493,6 +3494,8 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
         self.emit_rect(rect.0 + dx, rect.1, rect.2, rect.3, 0.0, desk.sel_color, 0.0, 0L, 1.0)
       }
     }
+    // (Cmd-hover quick-pick highlight + underline: words_cmd_pick)
+    paint_cmd_hover(self, c, lay, center_in)
     // (the link held, by its first run, its pressed ground under it alone: View::runs_pressed)
     let held = c.runs_pressed
     self.paint_run_grounds(
@@ -4812,8 +4815,17 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       false
     }
     // (a column under it gliding on by itself (flung, going back from past an end): the press catches it and presses
-    // nothing, view_caught)
+    // nothing, view_caught; words of the tree's a mouse picked let go all the same, as by any press that does not keep
+    // them (keeps_picked), their pill with them)
     (0, _) if button != 2 && view_caught(tree, x, y, at) => {
+      tree_field_menu_dismiss_if_outside(tree, x, y)
+      if tree_picking() && !picked.finger && !tree_keeps_picked_at(tree, x, y) {
+        select_none()
+      }
+      true
+    }
+    // (Cmd-hover quick-pick on words: clicking the highlighted sentence quotes it instead of starting selection or opening a link)
+    (0, _) if button != 2 && cmd_pick_press_down(x, y) => {
       tree_field_menu_dismiss_if_outside(tree, x, y)
       true
     }
@@ -4967,7 +4979,10 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       h_frame_owed()
       true
     }
-    (1, Some(_)) => true
+    (1, Some(_)) => {
+      cmd_pick_press_move(x, y)
+      true
+    }
     (1, None) => {
       // (a field of the tree's thumb pointed at or not as the pointer goes: tree_field.mbt)
       tree_fields_pointed(tree_field_at(x, y))
@@ -5110,16 +5125,21 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       true
     }
     (2 | 3, Some(held)) => {
-      view_held.val = None
-      // (on nothing, held by nothing since, never past a gesture's slop: a tap where it is let go as near to where it went
-      // down)
-      match (kind, held, view_nothing_down.val) {
-        (2, Nowhere, Some((x0, y0))) =>
-          tapped.val = (x - x0).abs() <= touch_slop() && (y - y0).abs() <= touch_slop()
-        _ => ()
+      if cmd_pick_press_up(kind == 2) {
+        view_nothing_down.val = None
+        true
+      } else {
+        view_held.val = None
+        // (on nothing, held by nothing since, never past a gesture's slop: a tap where it is let go as near to where it went
+        // down)
+        match (kind, held, view_nothing_down.val) {
+          (2, Nowhere, Some((x0, y0))) =>
+            tapped.val = (x - x0).abs() <= touch_slop() && (y - y0).abs() <= touch_slop()
+          _ => ()
+        }
+        view_nothing_down.val = None
+        true
       }
-      view_nothing_down.val = None
-      true
     }
     _ => {
       view_input_went(-1)
@@ -6837,6 +6857,7 @@ fn view_point_tell(tree : @view.Tree, over? : Bool) -> Unit {
     (None, None) => false
   }
   view_point_seen.val = (tree.hits_said(), over, yields_said.val)
+  cmd_hover_update(laid=false, over~)
   match view_point.val {
     // (gone, or under the old frame's layer: nothing of the tree's followed; the old views' as they have it)
     None => {
@@ -8160,7 +8181,9 @@ fn view_cursor_tell() -> Unit {
         OfOld => desk.old_shape
         OfGround => Cursor::Arrow.code()
       }
-      if k == Cursor::Arrow.code() && !(view_shape_of.val is OfOld) && view_over_words.val {
+      if !(view_shape_of.val is OfOld) && cmd_hover.val is Some(_) {
+        Cursor::Hand.code()
+      } else if k == Cursor::Arrow.code() && !(view_shape_of.val is OfOld) && view_over_words.val {
         Cursor::IBeam.code()
       } else {
         k

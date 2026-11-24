@@ -31,6 +31,7 @@ import { log } from "../ops/log.ts";
 import { portableName } from "../ops/paths.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS, workspaceAgentHome } from "../sessions/agent-home.ts";
 import { MemoryProgram } from "./memory-mb.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 type Json = any;
 
@@ -117,6 +118,8 @@ export type MemoryDeps = {
   watch?: Watch;
   /// Tests: the MoonBit program (readerBinary's where none is given).
   binary?: string;
+  /// Live `config.json` `readers` snapshot getter for `--builder memory`.
+  readers?: () => ReaderSelectConfig;
 };
 
 /// Whether the agents' home's directory at `rel` is followed: skills/ and what is shared of each skill in it, of the home
@@ -162,7 +165,10 @@ export class MemorySync {
   constructor(deps: MemoryDeps) {
     this.#deps = deps;
     this.#time = new Fibers("memory", deps.clock);
-    this.#program = new MemoryProgram(this.#root(), deps.binary === undefined ? {} : { binary: deps.binary });
+    this.#program = new MemoryProgram(this.#root(), {
+      ...(deps.binary === undefined ? {} : { binary: deps.binary }),
+      ...(deps.readers === undefined ? {} : { readers: deps.readers }),
+    });
   }
 
   /// The program let go if nothing is asked of it (read/pool.ts `onTrim`): 1, else 0.

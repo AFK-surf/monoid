@@ -68,7 +68,7 @@ test("a redelivered message does not fetch its files or merge its edits again", 
   } finally { await rig.close(); }
 });
 
-test("a manually archived thread only warns for an unseen message", async () => {
+test("a manually archived thread is shown again by an unseen mention only", async () => {
   const rig = new Rig();
   try {
     const m = say("<@UBOT> hello");
@@ -80,8 +80,9 @@ test("a manually archived thread only warns for an unseen message", async () => 
     rig.store.messageAt = () => { throw new Error("archive lookup merged edits"); };
     const posts = rig.chat.posts.length;
     await rig.accept(m);
-    assert.equal(rig.chat.posts.length, posts);
+    assert.equal(rig.store.manuallyArchived(thread.id), true);
     await rig.accept({ ...m, ts: "999999.1" });
-    assert.equal(rig.chat.posts.length, posts + 1);
+    assert.equal(rig.store.manuallyArchived(thread.id), false);
+    assert.equal(rig.chat.posts.length, posts);
   } finally { await rig.close(); }
 });

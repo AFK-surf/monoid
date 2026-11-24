@@ -140,3 +140,157 @@ test "liquid_slider_node: crisp 6pt track while held/dragged with laid == 0" {
   assert_true((done_fl.3 - 6.0).abs() < 0.05, msg="settled fill height must return to 6pt, got \{done_fl.3}")
   set_dark(None)
 }
+
+///|
+test "built-in droplet recipes assign exact unscaled droplet_role IDs (1..4) and public knob stays 0" {
+  assert_eq(slider_glass(1.0).droplet_role, 1)
+  assert_eq(slider_glass(1.0).at_strength(0.5).droplet_role, 1)
+  assert_eq(toggle_glass(1.0).droplet_role, 2)
+  assert_eq(toggle_glass(1.0).at_strength(0.5).droplet_role, 2)
+  assert_eq(ctrl_segmented_lens_glass(1.0).droplet_role, 3)
+  assert_eq(ctrl_segmented_compact_lens_glass(1.0).droplet_role, 3)
+  assert_eq(liquid_tab_lens_glass(1.0).droplet_role, 4)
+  assert_eq(liquid_tab_lens_glass(1.0, droplet_role=3).droplet_role, 3)
+  assert_eq(liquid_knob_glass().droplet_role, 0)
+}
+
+///|
+test "real liquid_toggle_node held: slot 7 (-32) and slot 21 survive 4-point frost round-trip, contrast=true, and glass_solid=true" {
+  let on = @signals.signal(true)
+  let t = glass_case(false, false, fn(page) {
+    liquid_toggle_node(page, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "Wi-Fi" }) |> ignore
+  })
+  t.run_for(glass_springs_out)
+  let sw = t.get(Switch, label="Wi-Fi").rect
+  t.press_at(sw.0 + sw.2 / 2.0, sw.1 + sw.3 / 2.0)
+  t.run_for(glass_ctrl_hold_ms)
+
+  let find_droplet = fn() -> (Double, Double)? {
+    for inst in t.drawn_instances() {
+      if inst[5] == 6.0 && inst[7] <= -8.0 {
+        return Some((inst[7], inst[21]))
+      }
+    }
+    None
+  }
+
+  // 4-point continuous frost round-trip: 0.00009 -> 0.00011 -> 0.5 -> 0.00009
+  for frost in [0.00009, 0.00011, 0.5, 0.00009] {
+    @ui.set_glass_frost(frost)
+    t.draw()
+    guard find_droplet() is Some((slot7, refr)) else {
+      fail("real liquid_toggle_node missing droplet at frost=\{frost}")
+    }
+    assert_true((slot7 - -32.0).abs() < 0.01, msg="frost=\{frost} slot7=\{slot7}")
+    assert_true(refr > 7.5 && refr <= 9.01, msg="frost=\{frost} slot21=\{refr}")
+  }
+
+  // contrast=true: droplet must NOT be exempted (receives contrast modulation -> blur > 0 so slot 7 > 0)
+  @ui.set_glass_frost(0.0)
+  t.set_increase_contrast(true)
+  t.draw()
+  let mut saw_contrast_glass = false
+  for inst in t.drawn_instances() {
+    if inst[5] == 6.0 {
+      assert_true(inst[7] >= 0.0, msg="contrast=true must not keep exempt role slot7=\{inst[7]}")
+      saw_contrast_glass = true
+    }
+  }
+  assert_true(saw_contrast_glass, msg="contrast=true must still draw modulated glass")
+  t.set_increase_contrast(false)
+
+  // glass_solid=true: zero kind-6 glass instances
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  assert_eq(t.drawn_glass().length(), 0, msg="glass_solid=true must emit 0 glass instances")
+  @ui.set_glass_solid(None)
+  @ui.set_glass_frost(0.0)
+  t.release(sw.0 + sw.2 / 2.0, sw.1 + sw.3 / 2.0)
+  t.run_for(glass_springs_out)
+  set_dark(None)
+}
+
+///|
+test "real slider, segmented, and tab lens controls emit exact drawlist slot 7 (-16, -48, -64) and slot 21" {
+  // 1. Real liquid_slider_node -> slot 7 == -16.0
+  {
+    let v = @signals.signal(50.0)
+    let t = glass_case(false, false, fn(page) {
+      page.box(fn(s) {
+        s.width(Is(Some(300.0))) |> ignore
+        liquid_slider_node(s, fn() { v.get() }, fn(x) { v.set(x) }, fn() { "Volume" }) |> ignore
+      }) |> ignore
+    })
+    t.run_for(glass_springs_out)
+    let r = t.get(Slider, label="Volume").rect
+    t.press_at(r.0 + r.2 * 0.5, r.1 + r.3 * 0.5)
+    t.run_for(glass_ctrl_hold_ms)
+    let mut found = false
+    for inst in t.drawn_instances() {
+      if inst[5] == 6.0 && (inst[7] - -16.0).abs() < 0.01 {
+        assert_true(inst[21] > 2.0 && inst[21] <= 3.01, msg="slider slot21=\{inst[21]}")
+        found = true
+      }
+    }
+    assert_true(found, msg="real liquid_slider_node must emit slot 7 == -16.0")
+    t.release(r.0 + r.2 * 0.5, r.1 + r.3 * 0.5)
+    t.run_for(glass_springs_out)
+  }
+  // 2. Real liquid_segmented_node -> slot 7 == -48.0
+  {
+    let idx = @signals.signal(0)
+    let t = glass_case(false, false, fn(page) {
+      liquid_segmented_node(
+        page,
+        fn() { ["One", "Two", "Three"] },
+        fn() { idx.get() },
+        fn(i) { idx.set(i) },
+        width=320.0,
+        height=36.0,
+        glass_track=false,
+      ) |> ignore
+    })
+    t.run_for(glass_springs_out)
+    let r = t.get(Tab, label="One").rect
+    t.press_at(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+    t.run_for(glass_ctrl_hold_ms)
+    let mut found = false
+    for inst in t.drawn_instances() {
+      if inst[5] == 6.0 && (inst[7] - -48.0).abs() < 0.01 {
+        assert_true(inst[21] > 7.0 && inst[21] <= 9.01, msg="segmented slot21=\{inst[21]}")
+        found = true
+      }
+    }
+    assert_true(found, msg="real liquid_segmented_node must emit slot 7 == -48.0")
+    t.release(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+    t.run_for(glass_springs_out)
+  }
+  // 3. Real bottom tab lens overlay (liquid_lens_overlay_node default droplet_role=4) -> slot 7 == -64.0
+  {
+    let lens = @signals.signal(0.0)
+    let t = glass_case(false, false, fn(page) {
+      page.box(fn(bar) {
+        bar.width(Is(Some(240.0))).height(Is(Some(54.0))) |> ignore
+        liquid_lens_overlay_node(
+          bar,
+          fn() { lens.get() },
+          fn() { 48.0 },
+          rect=fn() { Some((8.0, 3.0, 76.0, 48.0)) },
+          width=fn() { 76.0 },
+        )
+      }) |> ignore
+    })
+    t.draw()
+    lens.set(1.0)
+    t.draw()
+    let mut found = false
+    for inst in t.drawn_instances() {
+      if inst[5] == 6.0 && (inst[7] - -64.0).abs() < 0.01 {
+        assert_true(inst[21] > 8.5 && inst[21] <= 9.01, msg="tab lens slot21=\{inst[21]}")
+        found = true
+      }
+    }
+    assert_true(found, msg="real tab liquid_lens_overlay_node must emit slot 7 == -64.0")
+  }
+  set_dark(None)
+}

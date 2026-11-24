@@ -35,7 +35,7 @@ import { ErrorReports, builtKey } from "./ops/telemetry.ts";
 import { answer, langOfBrowser } from "./ops/loopback.ts";
 import { ownPorts } from "./ops/own.ts";
 import { version } from "./ops/version.ts";
-import { AdminApi, AgentsSide, AdminHost, CheckpointsLive, ControlPlane, DeviceSources, Events, Grants, Helper, HelperFolders, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, Readers, ReadersAndStore, RigSide, ScreenRegistry, StationConfig, StationDrive, Up } from "./services.ts";
+import { AdminApi, AgentsSide, AdminHost, CheckpointsLive, ControlPlane, DeviceSources, Events, Grants, Helper, HelperFolders, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ReaderConfig, Readers, ReadersAndStore, RigSide, ScreenRegistry, StationConfig, StationDrive, StationPacked, Up } from "./services.ts";
 import { VaultLive } from "./vault/module.ts";
 import { AdbLive } from "./adb/module.ts";
 import { TerminalsLive } from "./terminals/module.ts";
@@ -239,7 +239,8 @@ function run() {
   );
   const paths = Layer.succeed(Paths)({ data, app, beforeStore, ...(control.restartFront ? { restartFront: control.restartFront } : {}) });
   // still.fail Helper, one for the screens and the drive, and one look at its grants.
-  const base = Layer.mergeAll(StationConfig.layer, Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
+  const configLayer = StationPacked.layer.pipe(Layer.provideMerge(ReaderConfig.layer), Layer.provideMerge(StationConfig.layer));
+  const base = Layer.mergeAll(Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(configLayer), Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
   const parts = ControlPlane.layer.pipe(Layer.provideMerge(base));
   // A rig (a station that only runs tasks: cloud.json's `rig`, written by `enroll --rig`) is another program of the same release: of a station's
   // parts only what another station asks of it (rig/main.ts). What a machine is, is read once, as it starts; enrolled

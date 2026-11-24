@@ -23,10 +23,10 @@ export function titleCompletion(profile: RunOn, model: string | null, session: s
   return { endpoint: `${url.href.replace(/\/+$/, "")}/chat/completions`, key: key === "none" ? "" : key ?? "", model: chosen, headers };
 }
 
-export async function completeTitle(config: TitleCompletion, instructions: string, input: string, signal: AbortSignal): Promise<string> {
+export async function completeTitle(config: TitleCompletion, instructions: string, input: string, signal: AbortSignal, maxTokens = 128): Promise<string> {
   const headers: Record<string, string> = { ...config.headers, "content-type": "application/json" };
   if (config.key !== "") headers.authorization = `Bearer ${config.key}`;
-  const body = JSON.stringify({ model: config.model, stream: false, max_tokens: 128, messages: [{ role: "system", content: instructions }, { role: "user", content: input }] });
+  const body = JSON.stringify({ model: config.model, stream: false, max_tokens: maxTokens, messages: [{ role: "system", content: instructions }, { role: "user", content: input }] });
   const response = await profileFetch(config.endpoint, { method: "POST", headers, body, redirect: "manual", signal });
   if (!response.ok) throw new Error("title completion failed");
   const chunks: Buffer[] = [];

@@ -82,6 +82,17 @@ export const SOURCES: Source[] = [
     auth: "apiKey",
     sessionHeader: true,
   }),
+  // Command Code serves Claude models at /messages, OpenAI and open models at /chat/completions and /responses.
+  source("command-code", "Command Code", {
+    anthropic: "https://api.commandcode.ai/provider",
+    chat: "https://api.commandcode.ai/provider/v1",
+    responses: "https://api.commandcode.ai/provider/v1",
+  }),
+  source("open-design", "Open Design", {
+    anthropic: "https://amr-link.open-design.ai",
+    chat: "https://amr-link.open-design.ai/v1",
+    responses: "https://amr-link.open-design.ai/v1",
+  }),
   source("cloudflare-ai-gateway", "Cloudflare AI Gateway", { endpointRequired: true, protocols: ALL, auth: "both" }),
   // Cloud.
   source("azure-openai", "Azure OpenAI", { endpointRequired: true, protocols: ["responses"] }),
@@ -106,7 +117,7 @@ export const LEGACY: Record<string, "anthropic-api" | "opencode-go"> = { anthrop
 
 /// How the picker groups them (shapes `Group`): labs, gateways, hosted, local.
 export function groupOf(id: string): "labs" | "gateways" | "hosted" | "local" {
-  if (["openrouter", "vercel-ai-gateway", "opencode", "opencode-go", "cloudflare-ai-gateway"].includes(id)) return "gateways";
+  if (["openrouter", "vercel-ai-gateway", "opencode", "opencode-go", "command-code", "open-design", "cloudflare-ai-gateway"].includes(id)) return "gateways";
   if (["azure-openai", "groq", "together", "fireworks", "cerebras", "huggingface", "nvidia", "baseten", "cloudflare-workers-ai"].includes(id)) return "hosted";
   if (id === "ollama" || id === "custom") return "local";
   return "labs";

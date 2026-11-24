@@ -235,11 +235,123 @@ done:
   return srv;
 }
 
+// Uncompressed top-down 32-bit BI_RGB BMP or caller-owned BGRX buffer ("MBRAWPTR", address, width, height, pitch;
+// optionally followed by lifecycle hook fn + ctx): uploaded straight to a D3D11 texture without COM/WIC.
+static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px, int *w, int *h) {
+  if (n >= 28 && !memcmp(d, "MBRAWPTR", 8)) {
+    uint64_t at;
+    int32_t pw, ph, pitch;
+    memcpy(&at, d + 8, 8);
+    memcpy(&pw, d + 16, 4);
+    memcpy(&ph, d + 20, 4);
+    memcpy(&pitch, d + 24, 4);
+    if (!at || pw <= 0 || ph <= 0 || pitch < pw * 4 || (max_px > 0 && max_px < (pw > ph ? pw : ph))) return NULL;
+    D3D11_TEXTURE2D_DESC td = {};
+    td.Width = (UINT)pw;
+    td.Height = (UINT)ph;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8X8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_IMMUTABLE;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA init = {(const void *)(uintptr_t)at, (UINT)pitch, 0};
+    ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+    ID3D11Texture2D *tex = NULL;
+    ID3D11ShaderResourceView *srv = NULL;
+    if (dev && SUCCEEDED(dev->CreateTexture2D(&td, &init, &tex))) {
+      if (FAILED(dev->CreateShaderResourceView(tex, NULL, &srv))) srv = NULL;
+      tex->Release();
+    }
+    if (srv) *w = pw, *h = ph;
+    return srv;
+  }
+  if (n < 54 || d[0] != 'B' || d[1] != 'M') return NULL;
+  uint32_t off, hsize, comp;
+  int32_t bw, bh;
+  uint16_t bits;
+  memcpy(&off, d + 10, 4);
+  memcpy(&hsize, d + 14, 4);
+  memcpy(&bw, d + 18, 4);
+  memcpy(&bh, d + 22, 4);
+  memcpy(&bits, d + 28, 2);
+  memcpy(&comp, d + 30, 4);
+  if (hsize < 40 || bits != 32 || comp != 0 || bw <= 0 || bh >= 0) return NULL;
+  int rw = bw, rh = -bh;
+  int rbig = rw > rh ? rw : rh;
+  if ((max_px > 0 && max_px < rbig && (rbig > 4096 || rbig > max_px * 2)) || off > n || (size_t)rw * rh * 4 > n - off)
+    return NULL;
+  UINT mips = 1;
+  for (UINT m = (UINT)rbig; m > 1; m >>= 1) mips++;
+  if (mips > 16) mips = 16;
+  D3D11_SUBRESOURCE_DATA inits[16] = {};
+  uint8_t *mip_bufs[16] = {};
+  inits[0] = {d + off, (UINT)rw * 4, 0};
+  UINT mw = (UINT)rw, mh = (UINT)rh;
+  const uint8_t *prev = d + off;
+  for (UINT level = 1; level < mips; level++) {
+    UINT nw = mw > 1 ? (mw >> 1) : 1;
+    UINT nh = mh > 1 ? (mh >> 1) : 1;
+    uint8_t *dst = (uint8_t *)malloc((size_t)nw * nh * 4);
+    if (!dst) {
+      mips = level;
+      break;
+    }
+    mip_bufs[level] = dst;
+    for (UINT y = 0; y < nh; y++) {
+      UINT y0 = y * 2, y1 = y0 + 1 < mh ? y0 + 1 : y0;
+      const uint8_t *r0 = prev + (size_t)y0 * mw * 4;
+      const uint8_t *r1 = prev + (size_t)y1 * mw * 4;
+      uint8_t *out = dst + (size_t)y * nw * 4;
+      for (UINT x = 0; x < nw; x++) {
+        UINT x0 = x * 2, x1 = x0 + 1 < mw ? x0 + 1 : x0;
+        const uint8_t *p00 = r0 + x0 * 4, *p10 = r0 + x1 * 4;
+        const uint8_t *p01 = r1 + x0 * 4, *p11 = r1 + x1 * 4;
+        out[x * 4 + 0] = (uint8_t)((p00[0] + p10[0] + p01[0] + p11[0] + 2) >> 2);
+        out[x * 4 + 1] = (uint8_t)((p00[1] + p10[1] + p01[1] + p11[1] + 2) >> 2);
+        out[x * 4 + 2] = (uint8_t)((p00[2] + p10[2] + p01[2] + p11[2] + 2) >> 2);
+        out[x * 4 + 3] = 255;
+      }
+    }
+    inits[level] = {dst, nw * 4, 0};
+    prev = dst;
+    mw = nw;
+    mh = nh;
+  }
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = (UINT)rw;
+  td.Height = (UINT)rh;
+  td.MipLevels = mips;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_B8G8R8X8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_IMMUTABLE;
+  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  ID3D11Texture2D *tex = NULL;
+  ID3D11ShaderResourceView *srv = NULL;
+  if (dev && SUCCEEDED(dev->CreateTexture2D(&td, inits, &tex))) {
+    if (FAILED(dev->CreateShaderResourceView(tex, NULL, &srv))) srv = NULL;
+    tex->Release();
+  }
+  for (UINT level = 1; level < mips; level++) free(mip_bufs[level]);
+  if (srv) *w = rw, *h = rh;
+  return srv;
+}
+
+typedef void (*RawHook)(void *ctx, int op);
+static void raw_hook(const Job *j, int op) {
+  if (!j->data || j->len < 44 || memcmp(j->data, "MBRAWPTR", 8)) return;
+  uint64_t fn, ctx;
+  memcpy(&fn, j->data + 28, 8);
+  memcpy(&ctx, j->data + 36, 8);
+  if (fn) ((RawHook)(uintptr_t)fn)((void *)(uintptr_t)ctx, op);
+}
+
 static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
   Job *j = (Job *)arg;
   LARGE_INTEGER t0, t1, f;
   QueryPerformanceCounter(&t0);
-  CoInitializeEx(NULL, COINIT_MULTITHREADED);
   IWICImagingFactory *wic = NULL;
   IWICStream *stream = NULL;
   IWICBitmapDecoder *dec = NULL;
@@ -247,17 +359,22 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
   int w = 0, h = 0, ow = 0, oh = 0;
   wchar_t cached[MAX_PATH];
   const wchar_t *path = j->src;
-  if (path && (!wcsncmp(path, L"http://", 7) || !wcsncmp(path, L"https://", 8))) {
+  if (!j->pdf && j->data && (srv = raw_bmp(j->data, j->len, j->max_px, &w, &h)) != NULL) ow = w, oh = h;
+  raw_hook(j, 0);
+  HRESULT co = srv ? E_ABORT : CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  if (!srv && path && (!wcsncmp(path, L"http://", 7) || !wcsncmp(path, L"https://", 8))) {
     path = SUCCEEDED(URLDownloadToCacheFileW(NULL, path, cached, MAX_PATH, 0, NULL)) ? cached : NULL;
   } else if (path && !wcsncmp(path, L"file://", 7)) {
     path += 7;
   }
-  if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-                                 __uuidof(IWICImagingFactory), (void **)&wic))) {
+  if (!srv && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+                                         __uuidof(IWICImagingFactory), (void **)&wic))) {
     HRESULT hr = E_FAIL;
     if (j->pdf) {
       srv = pdf_draw(wic, j->pdf, j->page, j->max_px, &w, &h, &ow, &oh);
       hr = E_ABORT;  // (drawn: nothing more to decode)
+    } else if (j->data && j->len >= 8 && !memcmp(j->data, "MBRAWPTR", 8)) {
+      hr = E_ABORT;  // (caller-owned raw pixels could not become a texture: nothing for WIC)
     } else if (j->data) {
       if (SUCCEEDED(wic->CreateStream(&stream)) &&
           SUCCEEDED(stream->InitializeFromMemory(j->data, (DWORD)j->len)))
@@ -270,7 +387,7 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
   if (dec) dec->Release();
   if (stream) stream->Release();
   if (wic) wic->Release();
-  CoUninitialize();
+  if (SUCCEEDED(co)) CoUninitialize();
   if (log_times) {
     QueryPerformanceCounter(&t1);
     QueryPerformanceFrequency(&f);
@@ -298,6 +415,7 @@ static int start(Job *j) {
   LeaveCriticalSection(&lock);
   if (!TrySubmitThreadpoolCallback(work, j, &pool_env)) {
     finish(j->id, -1, 0, 0, 0, 0, NULL);
+    raw_hook(j, 0);
     int id = j->id;
     if (j->pdf) pdf_let_go(j->pdf);
     free(j->src);
@@ -325,6 +443,7 @@ int32_t mb_host_image_load_bytes(moonbit_bytes_t data, int32_t max_px) {
   j->len = Moonbit_array_length(data);
   j->data = (uint8_t *)malloc(j->len ? j->len : 1);
   memcpy(j->data, data, j->len);
+  raw_hook(j, 1);
   return start(j);
 }
 

@@ -158,14 +158,18 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
 
 ///|
 /// What needs seeing to now, beside the control (HistorySummary), as `a` says it: sfpages' history_attention_node in a
-/// row of its own.
+/// row of its own. Placed directly on the `show` node `v` so `wh_identity` shrinks text warnings before squeezing
+/// `model_triple_node`, while keeping quota-only chips unshrunk.
 fn wh_summary_node(v : @view.View, a : () -> Json?, tips : @sf.TipLayer) -> Unit {
-  v.box(fn(r) {
-    @sf.style_node(r, fn() { wh_summary_row }, in_row=true)
-    r.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    @sfpages.history_attention_node(r, a, tips, wh_amber, wh_red)
-  })
+  @sf.style_node(v, fn() { wh_summary_row }, in_row=true)
+  let shrinks = fn() {
+    items(a(), "attention").iter().any(fn(n) { !(field(Some(n), "quota") is Some(Object(_))) })
+  }
+  v
+  .shrink(By(fn() { if shrinks() { 100.0 } else { 0.0 } }))
+  .min_width(By(fn() { if shrinks() { Some(0.0) } else { None } }))
   |> ignore
+  @sfpages.history_attention_node(v, a, tips, wh_amber, wh_red)
 }
 
 ///|

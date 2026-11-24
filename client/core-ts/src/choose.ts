@@ -24,6 +24,7 @@ import { type PresetRecord, type Stars, isGone } from "./preset-records.ts";
 import { type Who, fromBefore, heldOf, starredKeys, starsHeld } from "./presets-kept.ts";
 import { work } from "./work.ts";
 import { ofAddress } from "./workspace.ts";
+import { full, weight, type Busy } from "../../../shared/station-busy.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -514,6 +515,9 @@ export class Choose implements Owner {
   readonly #next = new Map<string, { key: string; tui?: boolean }>();
   /// Most recently used station id per workspace in automatic assignment mode, used to break ties so consecutive chats spread.
   readonly #autoRecent = new Map<string, string>();
+  /// The station automatic assignment last showed per workspace: kept while another is not a whole step less busy, so a
+  /// CPU sample crossing a quarter (every 10 s) does not swap the station, and with it the model, under the person.
+  readonly #autoShown = new Map<string, string>();
 
   /// The preference on this device. A chat or preset with a model keeps its own choice.
   setDefaultTui(on: boolean): void {
@@ -640,16 +644,25 @@ export class Choose implements Owner {
     return online.filter((s) => s.acceptAutoChats === true && s.mode !== "tasks");
   }
 
-  /// The least busy station in `pool` that runs `pm` (or any station in `pool` when `pm` is null, without reading other stations' overviews).
+  /// The least busy station in `pool` (shared/station-busy.ts: agents running and CPU) that runs `pm` (or any station in `pool` when `pm` is null, without reading other stations' overviews).
   #pickBest(pool: J[], scope: string, pm: J | null = null): J | undefined {
     const runs = (s: J) => pm === null || (typeof s.station === "string" && this.#runsBound(s.station, pm));
     const list = pool.filter(runs);
     if (list.length === 0) return undefined;
     const recent = this.#autoRecent.get(scope);
+    const shown = this.#autoShown.get(scope);
+    // Full ones last (shared/station-busy.ts), then by weight, the one shown ahead by a step and a half unless just used.
+    const rank = new Map<J, [number, number]>();
+    for (const s of list) {
+      const b = busyOf(s);
+      const f = full(b);
+      rank.set(s, [f ? 1 : 0, weight(b) - (!f && s.id === shown && s.id !== recent ? 1.5 : 0)]);
+    }
     const sorted = [...list].sort((a, b) => {
-      const ra = typeof get(get(get(a, "overview"), "counts"), "running") === "number" ? a.overview.counts.running : 0;
-      const rb = typeof get(get(get(b, "overview"), "counts"), "running") === "number" ? b.overview.counts.running : 0;
-      if (ra !== rb) return ra - rb;
+      const [fa, wa] = rank.get(a)!;
+      const [fb, wb] = rank.get(b)!;
+      if (fa !== fb) return fa - fb;
+      if (wa !== wb) return wa - wb;
       if (recent !== undefined) {
         const aRecent = a.id === recent ? 1 : 0;
         const bRecent = b.id === recent ? 1 : 0;
@@ -657,6 +670,7 @@ export class Choose implements Owner {
       }
       return 0;
     });
+    if (typeof sorted[0].id === "string") this.#autoShown.set(scope, sorted[0].id);
     return sorted[0];
   }
 
@@ -2263,3 +2277,12 @@ export class Choose implements Owner {
 }
 
 export { Effect };
+
+/// How busy a station row is (shared/station-busy.ts): its agents running and its CPU meter (present.ts `host`: CPU busy,
+/// or its load per core where an older station tells no busy), as its row shows them.
+function busyOf(s: J): Busy {
+  const running = get(get(get(s, "overview"), "counts"), "running");
+  const cpu = arr(get(get(s, "host"), "meters")).find((m: J) => get(m, "short") === "CPU");
+  const percent = get(cpu, "percent");
+  return { agents: typeof running === "number" ? running : 0, cpu: typeof percent === "number" ? percent / 100 : null };
+}

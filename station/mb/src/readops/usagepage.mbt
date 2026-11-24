@@ -241,6 +241,22 @@ let sources : Array[Source] = [
     protocols: [],
   },
   {
+    id: "command-code",
+    chat: true,
+    responses: true,
+    anthropic: true,
+    at_address: false,
+    protocols: [],
+  },
+  {
+    id: "open-design",
+    chat: true,
+    responses: true,
+    anthropic: true,
+    at_address: false,
+    protocols: [],
+  },
+  {
     id: "cloudflare-ai-gateway",
     chat: false,
     responses: false,

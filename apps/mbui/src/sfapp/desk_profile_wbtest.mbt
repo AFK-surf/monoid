@@ -242,6 +242,34 @@ test "wide: adding a profile picks its provider from the core's groups, the mach
 }
 
 ///|
+test "wide: Command Code and Open Design are offered among the gateways with marks of their own" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="settings")
+  t.draw()
+  app.nav.push(Setting(@settings.Route::NewProfile("ws1/st1")))
+  t.run_for(@ui.move_most_ms)
+  for name in ["Command Code", "Open Design"] {
+    assert_true(t.find(name) is Some(_), msg="\{name} offered")
+  }
+  // (their marks drawn from their own drawables, in the page's ink)
+  for mark in ["maker_command_code", "maker_open_design"] {
+    assert_true(@sf.has_drawable(mark), msg="\{mark} registered")
+  }
+  // (what the rules find of their tiles: none)
+  let faults = t.audit().filter(fn(f) { f.contains("Command Code") || f.contains("Open Design") || f.contains("中转站") })
+  assert_true(faults.is_empty(), msg="\{Repr(faults)}")
+  match t.find("Command Code") {
+    Some((x, y)) => t.tap(x, y)
+    None => @halt.saying("no Command Code")
+  }
+  t.draw()
+  assert_true(
+    calls.iter().any(fn(m) { m.name == "profile.flow.edit" && text(field(Some(m.params), "input"), "provider") == "command-code" }),
+    msg="the provider told to the core",
+  )
+}
+
+///|
 test "wide: the station's Hermes profile can be selected from its custom variables" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="settings-new-profile-hermes")

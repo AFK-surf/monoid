@@ -12,10 +12,18 @@
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, readerBinary } from "../read/mb-reader.ts";
+import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
 export const IDLE_MS = 60_000;
+
+/// Resolve the binary for `--builder packed` (`mb` by default; `pion` via `STILLFAIL_READER_PACKED` /
+/// `config.json` `readers.packed` / `STILLFAIL_READER_ENGINE`; `shadow` is forbidden by
+/// `READER_MODES.packed.allowShadow === false`).
+function resolvePackedBinary(explicit?: string | null, readers?: () => ReaderSelectConfig): string {
+  return resolveReaderSelection("packed", { binary: explicit, config: readers, logAt: "archive" }).primaryBinary;
+}
 
 type Json = any;
 type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
@@ -31,13 +39,13 @@ export class PackAborted extends Error {}
 export function runPackedOnce<A = Json>(
   op: string,
   args: Record<string, unknown>,
-  options?: { binary?: string; shellDir?: string; background?: boolean; signal?: AbortSignal },
+  options?: { binary?: string; shellDir?: string; background?: boolean; signal?: AbortSignal; readers?: () => ReaderSelectConfig },
 ): Promise<A> {
   const signal = options?.signal;
   if (signal?.aborted) return Promise.reject(new PackAborted("workspace packing aborted"));
   return new Promise((resolve, reject) => {
     const p = new MbProcess(
-      options?.binary ?? readerBinary(),
+      resolvePackedBinary(options?.binary, options?.readers),
       ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
       { background: options?.background },
     );
@@ -63,7 +71,8 @@ export function runPackedOnce<A = Json>(
     };
     signal?.addEventListener("abort", stop, { once: true });
     p.on("message", (answer: Json) => {
-      if (answer?.id !== 1 || aborted) return;
+      if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return;
+      if (answer.id !== 1 || aborted) return;
       done(() => {
         finishChild();
         if (typeof answer.error === "string") reject(new Error(answer.error));
@@ -102,6 +111,7 @@ export class PackedProgram {
   readonly #binary: string | null;
   readonly #shellDir: string;
   readonly #after: (ms: number, f: () => void) => () => void;
+  #readers: (() => ReaderSelectConfig) | undefined;
   #process: MbProcess | null = null;
   #termination: Promise<number> | null = null;
   #next = 0;
@@ -113,11 +123,12 @@ export class PackedProgram {
 
   /// `shellDir`: where the program's shell would keep its own files (it asks for none: the system's temporary
   /// directory by default). `binary`: the program (readerBinary's where none is given). `after`: the timer of IDLE_MS
-  /// (a test's own; else the wall's).
-  constructor(options: { binary?: string; shellDir?: string; after?: (ms: number, f: () => void) => () => void } = {}) {
+  /// (a test's own; else the wall's). `readers`: live `config.json` `readers` snapshot getter read on each spawn.
+  constructor(options: { binary?: string; shellDir?: string; after?: (ms: number, f: () => void) => () => void; readers?: () => ReaderSelectConfig } = {}) {
     this.#binary = options.binary ?? null;
     this.#shellDir = options.shellDir ?? tmpdir();
     this.#after = options.after ?? wall.after;
+    this.#readers = options.readers;
   }
 
   /// Whether a program runs now.
@@ -144,11 +155,12 @@ export class PackedProgram {
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(this.#binary ?? readerBinary(), ["--builder", "packed", "--shell-dir", this.#shellDir]);
+    const child = new MbProcess(resolvePackedBinary(this.#binary, this.#readers), ["--builder", "packed", "--shell-dir", this.#shellDir]);
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {
-      const waiting = typeof answer?.id === "number" ? this.#waiting.get(answer.id) : undefined;
+      if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return;
+      const waiting = typeof answer.id === "number" ? this.#waiting.get(answer.id) : undefined;
       if (!waiting) return;
       this.#waiting.delete(answer.id);
       if (typeof answer.error === "string") waiting.reject(new Error(answer.error));

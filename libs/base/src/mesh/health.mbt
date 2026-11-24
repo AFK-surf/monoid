@@ -157,6 +157,9 @@ priv enum Grace {
 /// let go and nothing dialled until the next `link`. On a race begun for a missed ping (`race.missed`), if the new
 /// link opens while the old one is still usable and probing, switching waits at most `race_grace_ms` for the old
 /// link's control stream to finish a round trip (a race begun by `Mesh::wake` switches as soon as the new link opens).
+/// No new link to switch to, the old one is kept if it answered on its control stream since the race began, whatever
+/// began the race: its probe's time run out, it answered as the new dial still waited (a relay back between
+/// `probe_ms` and `connect_timeout_ms` after a wake: let go as that dial failed, it would cut what was read on it).
 ///
 /// The old link is asked the `Mesh::ping` way: its exchange is a fiber of the mesh's that nothing cuts short, in
 /// its turn on the control stream behind whatever exchange is out on it (the ping it missed), and what waits
@@ -166,7 +169,8 @@ priv enum Grace {
 async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) -> Unit {
   let old = race.old
   let before = old.control.answers
-  let recovered = () => race.missed && old.usable() && old.control.answers > before
+  let answered_since = () => old.usable() && old.control.answers > before
+  let recovered = () => race.missed && answered_since()
   let dialled : @effect.Deferred[Link?] = @effect.Deferred::new()
   race.dial = Some(
     self.scope.fork(name="mesh race dial", () => {
@@ -210,7 +214,7 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
     Probed(false) =>
       match dialled.wait() {
         Some(link) => if recovered() { Old } else { New(link) }
-        None => if recovered() { Old } else { Neither }
+        None => if answered_since() { Old } else { Neither }
       }
     Dialled(Some(link)) =>
       if recovered() {
@@ -245,11 +249,11 @@ async fn Mesh::race(self : Mesh, place : Place, opening : Opening, race : Race) 
         )
         match settled {
           OldAnswered => if old.usable() { Old } else if link.usable() { New(link) } else { Neither }
-          CandidateGone => if probed.wait() || recovered() { Old } else { Neither }
-          SwitchNow => if link.usable() { New(link) } else if probed.wait() || recovered() { Old } else { Neither }
+          CandidateGone => if probed.wait() || answered_since() { Old } else { Neither }
+          SwitchNow => if link.usable() { New(link) } else if probed.wait() || answered_since() { Old } else { Neither }
         }
       }
-    Dialled(None) => if probed.wait() || recovered() { Old } else { Neither }
+    Dialled(None) => if probed.wait() || answered_since() { Old } else { Neither }
   }
   // (ended from outside while this waited, this fiber was cut there and is not here: `Mesh::end_race`)
   race.probing = false

@@ -66,7 +66,7 @@ pub fn liquid_floating_glass(tint? : Int64?, solid? : Int64, spot? : (Double, Do
 pub fn liquid_knob_glass(solid? : Int64) -> @paint.Glass
 
 #callsite(autofill(loc))
-pub fn liquid_lens_overlay_node(@view.View, () -> Double, () -> Double, rect? : () -> (Double, Double, Double, Double)?, ground_drawn? : (@view.View) -> @view.GroundShape, width? : () -> Double, radius? : Double, solid? : () -> Int64, shadow_color? : () -> Int64, shadow_blur? : Double, shadow_y? : Double, jelly? : (@view.View) -> (Double, Double), grow? : Double, overhang_x? : Double, overhang_y? : Double, active? : () -> Bool, loc~ : SourceLoc) -> Unit
+pub fn liquid_lens_overlay_node(@view.View, () -> Double, () -> Double, rect? : () -> (Double, Double, Double, Double)?, ground_drawn? : (@view.View) -> @view.GroundShape, width? : () -> Double, radius? : Double, solid? : () -> Int64, shadow_color? : () -> Int64, shadow_blur? : Double, shadow_y? : Double, jelly? : (@view.View) -> (Double, Double), grow? : Double, overhang_x? : Double, overhang_y? : Double, active? : () -> Bool, droplet_role? : Int, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn liquid_lift_shell_decorate(@view.View, () -> Double, flat_ground? : (() -> Int64)?, glass? : () -> @paint.Glass, solid? : () -> Int64, radius? : Double?, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), loc~ : SourceLoc) -> Unit
@@ -128,7 +128,7 @@ pub fn liquid_tab_bar_glass(spot? : (Double, Double)?, merge? : Double, solid? :
 
 pub fn liquid_tab_bar_surface_decorate(@view.View, () -> ((Double, Double)?, Double), share_when_unmerged? : Bool) -> @view.View
 
-pub fn liquid_tab_lens_glass(Double, solid? : Int64, sharing? : Bool) -> @paint.Glass
+pub fn liquid_tab_lens_glass(Double, solid? : Int64, sharing? : Bool, droplet_role? : Int) -> @paint.Glass
 
 pub fn liquid_tab_lens_surface_decorate(@view.View, () -> Double, solid? : () -> Int64, shadow? : (Double, Double, Int64)) -> @view.View
 
@@ -235,7 +235,11 @@ pub let shadow_none : (Double, Double, Int64)
 
 pub let shadow_thumb : (Double, Double, Int64)
 
+pub let slider_thumb_h : Double
+
 pub let slider_thumb_held_scale : Double
+
+pub let slider_thumb_w : Double
 
 pub let slider_track_h : Double
 

@@ -73,7 +73,9 @@ fn tree_scope_live(scope_id : @view.NodeId) -> Bool {
 
 ///|
 /// If the current tree selection belongs to a scope that was destroyed or hidden (`shown_nowhere`), stop any active
-/// drag and drop `picked_now` while keeping the released selection snapshot for ⌘C copy until a press elsewhere.
+/// drag and drop `picked_now` while keeping the released selection snapshot for ⌘C copy until a press elsewhere. The
+/// scope alive, the words what is picked ends in (`ends_in`) let go of or shown nowhere (a step folded away, what holds
+/// them put by): `picked_now` worked out again the same way, so none stands beside words that show nowhere.
 fn sync_picked_scope_live() -> Unit {
   match picked.layer {
     TreeScope(_, scope_id) if !tree_scope_live(scope_id) => {
@@ -85,6 +87,11 @@ fn sync_picked_scope_live() -> Unit {
         picked_now_tell()
       }
     }
+    TreeScope(_, _) =>
+      match picked_now_said.val.untracked() {
+        Some(p) if !tree_scope_live(p.ends_in) => picked_now_tell()
+        _ => ()
+      }
     _ => ()
   }
 }
@@ -216,6 +223,7 @@ fn picked_told() -> Unit {
   })
   picked_finger_said.val.set(picked.finger)
   picked_now_tell()
+  cmd_sel_underline_update()
   @signals.end_batch()
   // (what no node reads any more let go)
   if picked_spans_said.length() > 64 {
@@ -660,6 +668,9 @@ fn tree_finger_down(tree : @view.Tree, x : Double, y : Double, at : Double) -> U
         // is, the words under it the hold's)
         Some(Dragging(id)) if words is Some(_) && tree.hold_goes_through(id) =>
           tree.drag_at(id, Off, x, y, view_moment(), finger=view_fingers[0]) |> ignore
+        // (a ground's press (View::as_ground: the page a tap on brings its bars, a reader's on 小屏) under words picked
+        // with the pointer: the hold the words', the ground's press called off, no tap as it is let go)
+        Some(Node(id)) if words is Some(_) && tree.is_ground(id) => tree.hold_lost_in(id.at)
         // (a node's own press, its own hold: its)
         _ => return
       }

@@ -107,6 +107,26 @@ test "a link raced at a wake whose peer answers neither it nor a new dial is let
   assert_eq(far.dials.length(), 2)
 }
 
+///|
+test "a link raced at a wake whose peer answers it again after its probe's time, the new dial still unanswered, is kept as that dial gives up" {
+  let (stood, far, mesh, old, _) = quick_link()
+  let told = stood.go(() => mesh.replaced(old))
+  // The peer answers a line 2 s after the probe's time ran out, and no dial.
+  far.takes = probe_ms + 2_000
+  far.away = true
+  mesh.wake()
+  stood.run()
+  assert_eq((mesh.racing.length(), far.dials), (1, [0L, 5000L]))
+  let before = old.control.answers
+  stood.rt.advance(probe_ms + 2_000)
+  assert_true(old.control.answers > before)
+  assert_eq(mesh.racing.length(), 1)
+  // The dial gives up: nothing to switch to, and the old link answered since the race began.
+  stood.rt.advance(connect_timeout_ms - probe_ms - 2_000)
+  assert_eq((mesh.racing.length(), far.closes.length(), ended_as(told)), (0, 0, "waiting"))
+  assert_true(mesh.current(peer) is Some(now) && physical_equal(now, old) && old.usable())
+}
+
 // ── a wake and the openings ──
 
 ///|

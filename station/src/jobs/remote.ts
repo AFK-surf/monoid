@@ -36,6 +36,8 @@ import { version as runningVersion } from "../ops/version.ts";
 import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
 import { Bulk, LINK, PACKED, patchOf } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
+import { MEASURE_UP_TO, measuredUpTo } from "../sessions/footprint.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { COLAB_GPUS, type ColabAccount, type ColabGpu, SANDBOX, SANDBOX_NAME_RE, type Sandbox, ensureIdentity, isColab, parseRemoteSandbox, sandboxDescribed } from "../agents/sandbox.ts";
 
 // The requests between stations are the platform's bus (mesh/bus.ts); its types, here as they always were.
@@ -89,6 +91,8 @@ export type RemoteOptions = {
   acceptAutoChats?: () => boolean;
   /// Active OTLP traces batcher for internal `station.task` spans.
   traces?: () => Traces | null;
+  /// Live `config.json` `readers` snapshot getter for `--builder footprint` workspace size reads.
+  readers?: () => ReaderSelectConfig;
 };
 
 /// A start that syncs a directory answers within this, synced or not (the sync goes on): an agent's tool call is given
@@ -368,7 +372,10 @@ export class Remote {
     this.acceptAutoChats = options.acceptAutoChats ?? null;
     this.traces = options.traces ?? null;
     this.store = options.store;
-    this.workspaceReader = new WorkspaceReader(() => this.store.now());
+    this.workspaceReader = new WorkspaceReader(
+      () => this.store.now(),
+      (path, limit, signal) => measuredUpTo(path, limit, signal, MEASURE_UP_TO, true, options.readers),
+    );
     this.jobs = options.jobs;
     this.notify = options.notify;
     this.places = options.places ?? new Places({ own: options.data });

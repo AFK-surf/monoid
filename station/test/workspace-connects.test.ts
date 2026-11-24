@@ -271,6 +271,61 @@ test("a message for a chat on a station that is off is not lost silently: the th
   await close();
 });
 
+test("a chat's station that stays off: the thread is told once, and again only when the bot is mentioned; once it answers again, told anew", async () => {
+  const { h, s, close } = workspace();
+  h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
+  const first = message({ text: "<@UBOT> go" });
+  await h.connects.receive("cl", { type: "message", message: first });
+  await settle();
+  s.up = false;
+  const told = () => h.rig.chat.texts().filter((t) => t.includes("desktop")).length;
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.1", "still there?", { addressed: false }) });
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.2", "hello?", { addressed: false }) });
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.3", "anyone?", { addressed: false }) });
+  assert.equal(told(), 1, "once while it stays off");
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.4", "<@UBOT> there?", { addressed: true }) });
+  assert.equal(told(), 2, "a mention is told again");
+  s.up = true;
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.5", "back", { addressed: false }) });
+  await settle();
+  s.up = false;
+  await h.connects.receive("cl", { type: "message", message: reply(first, "1702.6", "gone again?", { addressed: false }) });
+  assert.equal(told(), 3, "off again after it answered: told anew");
+  assert.equal(h.rig.store.connectThreadStation("cl", first.channel, first.threadTs), S, "still its chat's station");
+  await close();
+});
+
+test("a chat's station removed from the workspace: its thread is left with one notice, what follows unmentioned is not answered, and a mention starts a new conversation", async () => {
+  const { h, s, close } = workspace();
+  h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
+  const first = message({ text: "<@UBOT> go" });
+  await h.connects.receive("cl", { type: "message", message: first });
+  await settle();
+  // S removed: off, and no longer on the roster; the connect starts new conversations here again.
+  s.up = false;
+  delete h.rig.raw.connects.find((c: Json) => c.id === "cl").station;
+  const at = roster.findIndex((p) => p.id === S);
+  const [removed] = roster.splice(at, 1);
+  try {
+    const before = h.rig.chat.texts().length;
+    await h.connects.receive("cl", { type: "message", message: reply(first, "1703.1", "still there?", { addressed: false }) });
+    await settle();
+    assert.equal(h.rig.chat.texts().length, before + 1, "one notice");
+    assert.match(h.rig.chat.lastText(), /no longer in this workspace|已不在这个工作区/);
+    assert.equal(h.rig.store.connectThreadStation("cl", first.channel, first.threadTs), null, "the thread is left");
+    await h.connects.receive("cl", { type: "message", message: reply(first, "1703.2", "hello?", { addressed: false }) });
+    await settle();
+    assert.equal(h.rig.chat.texts().length, before + 1, "nothing more is said to what does not mention the bot");
+    assert.equal(h.rig.store.getSession(sessionKey("cl", first.channel, first.threadTs)), null, "and no chat begins here");
+    await h.connects.receive("cl", { type: "message", message: reply(first, "1703.3", "<@UBOT> start over", { addressed: true }) });
+    await settle();
+    assert.ok(h.rig.store.getSession(sessionKey("cl", first.channel, first.threadTs)), "a mention starts it here");
+  } finally {
+    roster.splice(at, 0, removed!);
+  }
+  await close();
+});
+
 test("a connect moved to another station runs there, under the id the workspace knows it by; the chats here go on through it", async () => {
   const { h, s, close } = workspace();
   const here = message({ text: "<@UBOT> hi" });
@@ -790,4 +845,52 @@ test("autoStation: dispatches only to online stations with acceptAutoChats===tru
   assert.equal(none.s2.rig.store.listSessions().length, 0);
   assert.match(none.h.rig.chat.lastText(), /⚠️/, "should post away notice when no allowlisted station is reachable");
   await none.close();
+});
+
+test("autoStation: a station with fewer agents but its CPUs full is passed over for a quieter one; when every one is full, the least busy still takes it", async () => {
+  let s1Busy = 0.97;
+  let s2Busy = 0.1;
+  let s1Load = [2, 2, 2];
+  const { h, s1, s2, close } = multiWorkspace({
+    [H]: () => ({ sessions: true, acceptAutoChats: false, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 95 } } }),
+    [S]: () => ({ sessions: true, acceptAutoChats: true, load: { cpus: 8, cpuBusy: { share: s1Busy, seconds: 60 }, loadAvg: s1Load, running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 90 } } }),
+    [S2]: () => ({ sessions: true, acceptAutoChats: true, load: { cpus: 8, cpuBusy: { share: s2Busy, seconds: 60 }, loadAvg: [1, 1, 1], running: { turns: 2 }, memory: { totalBytes: 100, availableBytes: 50 } } }),
+  });
+  const entry = h.rig.raw.connects.find((c: Json) => c.id === "cl");
+  entry.autoStation = true;
+  delete entry.station;
+  delete entry.stations;
+  const at = (m: Json) => h.rig.store.connectThreadStation("cl", m.channel, m.threadTs);
+
+  // S runs no agent but its CPUs are 97% busy: S2, two agents and 10% busy, takes it.
+  const m1 = message({ text: "<@UBOT> cpu 1", threadTs: "4101.1", ts: "4101.1" });
+  await h.connects.receive("cl", { type: "message", message: m1 });
+  await settle();
+  assert.equal(at(m1), S2);
+
+  // S's CPUs 30% busy but its run queue 2 per core (16 on 8 cores): still full.
+  s1Busy = 0.3;
+  s1Load = [16, 16, 16];
+  const m2 = message({ text: "<@UBOT> cpu 2", threadTs: "4101.2", ts: "4101.2" });
+  await h.connects.receive("cl", { type: "message", message: m2 });
+  await settle();
+  assert.equal(at(m2), S2);
+
+  // S quiet again (30%, 2 on 8 cores) weighs 0 + 1 against S2's 2 + 0: S.
+  s1Load = [2, 2, 2];
+  const m3 = message({ text: "<@UBOT> cpu 3", threadTs: "4101.3", ts: "4101.3" });
+  await h.connects.receive("cl", { type: "message", message: m3 });
+  await settle();
+  assert.equal(at(m3), S);
+
+  // Both full: never refused, the lighter of the two (S, no agent) takes it.
+  s1Busy = 0.95;
+  s2Busy = 0.95;
+  const m4 = message({ text: "<@UBOT> cpu 4", threadTs: "4101.4", ts: "4101.4" });
+  await h.connects.receive("cl", { type: "message", message: m4 });
+  await settle();
+  assert.equal(at(m4), S);
+  assert.equal(h.rig.store.listSessions().length, 0);
+  assert.ok(s1.rig.store.listSessions().length + s2.rig.store.listSessions().length >= 4);
+  await close();
 });

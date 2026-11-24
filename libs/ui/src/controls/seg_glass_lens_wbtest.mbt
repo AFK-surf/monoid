@@ -47,6 +47,7 @@ fn seg_glass_assert_cycle(
     let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
     assert_eq(lenses.length(), 1, msg="\{label}: pressed must emit 1 kind == 6 instance")
     assert_eq(lenses[0][14], 0.0, msg="\{label}: clear lens must have blur == 0")
+    assert_true((lenses[0][7] - -48.0).abs() < 0.01, msg="\{label}: segmented lens must emit droplet_role=3 (slot 7 == -48.0), got \{lenses[0][7]}")
     assert_true(lenses[0][21] > 0.0, msg="\{label}: clear lens must have refraction > 0")
   }
   let pressed_audits = t.audit()

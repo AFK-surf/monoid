@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <new>
 #include "win.h"
 #include "corner_sl.h"
 #include "contained.h"
@@ -39,6 +40,33 @@
 #pragma comment(lib, "ole32.lib")
 
 int mb_atlas_size = 4096;
+static int video_support = 1;
+static ID3D11Texture2D *atlas;
+
+static int valid_atlas_size(int size) {
+  return size >= 512 && size <= 4096 && (size & (size - 1)) == 0;
+}
+
+static void init_render_knobs(void) {
+  static int done;
+  if (done) return;
+  done = 1;
+  const wchar_t *a = mb_win_env(L"MBUI_ATLAS_SIZE");
+  if (a && *a) {
+    int sz = (int)wcstol(a, NULL, 10);
+    if (valid_atlas_size(sz)) mb_atlas_size = sz;
+  }
+  const wchar_t *nv = mb_win_env(L"MBUI_NO_VIDEO");
+  if (nv && *nv && *nv != L'0') video_support = 0;
+}
+
+extern "C" void mb_render_set_atlas_size(int size) {
+  if (valid_atlas_size(size) && !atlas) mb_atlas_size = size;
+}
+
+extern "C" void mb_render_set_video_support(int on) {
+  video_support = on != 0;
+}
 
 static ID3D11Device *dev;
 static ID3D11DeviceContext *ctx;
@@ -48,7 +76,6 @@ static ID3D11PixelShader *ps;
 static ID3D11PixelShader *ps_flat;
 static ID3D11InputLayout *layout;
 static ID3D11Buffer *ubuf;
-static ID3D11Texture2D *atlas;
 static ID3D11ShaderResourceView *atlas_srv;
 static ID3D11SamplerState *sampler;
 static ID3D11BlendState *blend;
@@ -91,6 +118,7 @@ static ID3D11ShaderResourceView *gsrv;
 // into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
 #define MB_PARTS 8
 struct RenderWin {
+  HWND target_hwnd;
   IDXGISwapChain1 *chain;
   ID3D11RenderTargetView *rtv;
   IDCompositionTarget *dtarget;
@@ -111,6 +139,8 @@ struct RenderWin {
   int dirty_n, dirty_whole, dirty_told;
   // a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
   int pictures_missing;
+  // transparent ground for borderless composed child windows (mb_render_set_clear)
+  int clear;
   level ad_tex[2];
   int ad_cur;
   MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
@@ -133,6 +163,7 @@ static struct RenderWinsMade {
     for (int k = 0; k < MB_WINS; k++) render_win_fresh(&render_wins[k]);
   }
 } render_wins_made;
+#define target_hwnd (rw->target_hwnd)
 #define chain (rw->chain)
 #define rtv (rw->rtv)
 #define dtarget (rw->dtarget)
@@ -164,6 +195,10 @@ static struct RenderWinsMade {
 // The window of the run drawn now (win_app.c's win_use): its swap chain, its size, its last frame and its canvas.
 void mb_render_use(int wid) {
   if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
+
+extern "C" void mb_render_set_clear(int wid, int on) {
+  if (wid >= 0 && wid < MB_WINS) render_wins[wid].clear = on ? 1 : 0;
 }
 
 // the numbers of an instance (src/ui/scene.mbt)
@@ -560,7 +595,7 @@ static const char *shader_src =
     "    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
     "    float clearBevel = min(rawBevel * lensScale, halfMinor * 0.72);\n"
     "    float clearAmount = min(rawAmount * lensScale, halfMinor * 0.58);\n"
-    "    float regBevel = min(rawBevel, 0.5 * halfMinor);\n"
+    "    float regBevel = min(rawBevel, 0.55 * halfMinor);\n"
     "    float regAmount = min(rawAmount, halfMinor);\n"
     "    float bevel = lerp(clearBevel, regBevel, regMix);\n"
     "    float amount = lerp(clearAmount, regAmount, regMix);\n"
@@ -595,12 +630,24 @@ static const char *shader_src =
     "      if (inward < bevel && bevel > 0.001 && amount > 0.0) {\n"
     "        float bevelX = 1.0 - saturate(inward / bevel);\n"
     "        float clearMag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
-    "        float regMag = min(amount, 0.45 * bevel) * bevelX * bevelX * shortening;\n"
+    "        float regMaxR = 0.80;\n"
+    "        if (bevel > 3.0) {\n"
+    "          float inv = 1.0 / (1.0 - 3.0 / bevel);\n"
+    "          float rCap = sqrt(max(inv * inv - 1.0, 0.0)) / (1.0 + abs(I.pd.z) * 0.5);\n"
+    "          regMaxR = min(regMaxR, rCap);\n"
+    "        }\n"
+    "        float regMag = min(amount, regMaxR * bevel) * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
     "        float mag = lerp(clearMag, regMag, regMix);\n"
     "        disp = surfaceNormal * (-mag);\n"
     "      }\n"
     "    }\n"
-    "    float lensZoom = (I.prm.w < 0.0) ? clamp(1.0 - I.prm.w, 1.0, 3.0) : 1.0;\n"
+    "    int dropRole = (I.prm.w <= -8.0) ? (int)floor((-I.prm.w + 4.0) / 16.0) : 0;\n"
+    "    float rawZoomDelta = (I.prm.w <= -8.0) ? ((-I.prm.w) - (float)dropRole * 16.0) : ((I.prm.w < 0.0) ? (-I.prm.w) : 0.0);\n"
+    "    float lensZoom = clamp(1.0 + rawZoomDelta, 1.0, 3.0);\n"
+    "    bool isRoleSlid = (dropRole == 1);\n"
+    "    bool isRoleSw = (dropRole == 2);\n"
+    "    bool isRoleSeg = (dropRole == 3);\n"
+    "    bool isRoleTab = (dropRole == 4);\n"
     "    float2 sampleBase = p;\n"
     "    if (lensZoom > 1.0001) {\n"
     "#if ONE_KIND == 13\n"
@@ -611,75 +658,84 @@ static const char *shader_src =
     "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
     "    }\n"
     "    float dropHairline = 0.0;\n"
-    "    float isPlatter = 0.0;\n"
-    "    float isBarTab = 0.0;\n"
+    "    float isPlatter = (isRoleSeg || isRoleTab) ? 1.0 : 0.0;\n"
+    "    float isBarTab = isRoleTab ? 1.0 : 0.0;\n"
+    "    float pressAmt = 0.0;\n"
     "    float menAA = 0.0;\n"
-    "    float menN = 0.0;\n"
     "    float barIconGate = 0.0;\n"
     "    float2 barCaDisp = float2(0.0, 0.0);\n"
     "    if (is_drop) {\n"
-    "      float pressAmt = saturate(I.c2.x);\n"
+    "      pressAmt = saturate(I.c2.x);\n"
     "      float pinchWeight = smoothstep(4.5, 6.5, rawAmount);\n"
-    "      isPlatter = smoothstep(39.0, 41.5, I.rect.w);\n"
-    "      isBarTab = smoothstep(54.0, 58.0, I.rect.w);\n"
     "      float2 lensCenter = I.rect.xy + I.rect.zw * 0.5;\n"
     "      float2 centered = (p - lensCenter) / max(I.rect.zw, float2(1.0, 1.0));\n"
     "      float2 absC = abs(centered) * 2.0;\n"
     "      float bevelX = (bevel > 0.001) ? (1.0 - saturate(inward / bevel)) : 0.0;\n"
     "      float2 paraxialDisp = -surfaceNormal * (bevelX * bevelX * 3.6 * pressAmt);\n"
-    "      float ax2 = absC.x * absC.x;\n"
-    "      float ay2 = absC.y * absC.y;\n"
-    "      float sqDist = sqrt(sqrt(ax2 * ax2 + ay2 * ay2));\n"
-    "      float pinchRamp = smoothstep(0.0, 1.0, sqDist);\n"
-    "      float pinchRimGate = smoothstep(1.8, 5.2, inward);\n"
-    "      float endYScale = 1.0 - 0.32 * smoothstep(0.55, 0.92, absC.x);\n"
-    "      float compactScale = clamp(I.rect.w / 38.33, 0.70, 1.15);\n"
-    "      float2 compactPinch = float2(centered.x * 0.72, centered.y * endYScale) * pinchRamp * pinchRimGate * (15.5 * compactScale);\n"
-    "      float cMenBand = smoothstep(0.30, 0.85, inward) * (1.0 - smoothstep(1.15, 1.85, inward));\n"
-    "      float menLobe = smoothstep(0.15, 0.85, dot(surfaceNormal, normalize(float2(0.55, 0.83))));\n"
-    "      float2 compactMeniscus = -surfaceNormal * (4.8 * cMenBand * menLobe) + surfaceNormal * (0.9 * cMenBand * (1.0 - menLobe));\n"
-    "      float tipDist = (0.5 - abs(centered.x)) * I.rect.z;\n"
-    "      float capAbsX = saturate(1.0 - tipDist / max(I.rect.w * 0.6514, 1.0));\n"
-    "      float barPinchHoriz = 1.0 - smoothstep(0.30, 0.94, capAbsX);\n"
-    "      float isSegLens = 1.0 - smoothstep(48.0, 52.0, I.rect.w);\n"
-    "      float barPinchVert = smoothstep(lerp(0.42, 0.28, isSegLens), lerp(0.76, 0.70, isSegLens), absC.y)\n"
-    "                         * smoothstep(1.35, 5.2, inward);\n"
-    "      float barPinchPx = lerp(0.245, 0.38, isSegLens) * I.rect.w * 0.40;\n"
-    "      float2 platterPinch = float2(0.0, centered.y * barPinchHoriz * barPinchVert * barPinchPx);\n"
-    "      float endCapX = smoothstep(0.32, 0.70, capAbsX);\n"
-    "      float pMenBand = smoothstep(0.22, 0.55, inward) * (1.0 - smoothstep(0.95, 1.35, inward));\n"
-    "      menAA = max(cMenBand, pMenBand) * pressAmt * pinchWeight;\n"
-    "      menN = cMenBand * pressAmt * pinchWeight;\n"
-    "      if (isBarTab > 0.01) {\n"
-    "        float iconBandY = 1.0 - smoothstep(0.66, 0.79, absC.y);\n"
-    "        barIconGate = iconBandY * endCapX * pressAmt * pinchWeight;\n"
-    "        float iconBevelX = smoothstep(0.45, 1.15, inward) * (1.0 - smoothstep(2.60, 9.40, inward));\n"
-    "        float iconBevelY = smoothstep(0.45, 1.25, inward) * (1.0 - smoothstep(2.20, 9.00, inward));\n"
-    "        float signX = (centered.x >= 0.0) ? 1.0 : -1.0;\n"
-    "        barCaDisp = float2(-signX * 5.2 * iconBevelX, -centered.y * 2.0 * 4.8 * iconBevelY) * barIconGate;\n"
+    "      dropHairline = (1.0 - smoothstep(0.18, 0.62, inward)) * pressAmt;\n"
+    "      float2 iosPinch = float2(0.0, 0.0);\n"
+    "      float2 dropDisp = paraxialDisp;\n"
+    "      if (isRoleSw) {\n"
+    "        float ax2 = absC.x * absC.x;\n"
+    "        float ay2 = absC.y * absC.y;\n"
+    "        float sqDist = sqrt(sqrt(ax2 * ax2 + ay2 * ay2));\n"
+    "        float pinchRamp = smoothstep(0.0, 1.0, sqDist);\n"
+    "        float pinchRimGate = smoothstep(1.35, 3.8, inward);\n"
+    "        float endYScale = 1.0 - 0.24 * smoothstep(0.55, 0.92, absC.x);\n"
+    "        float compactScale = clamp(I.rect.w / 38.4, 0.70, 1.15);\n"
+    "        float2 compactPinch = float2(centered.x * 0.85, centered.y * endYScale) * pinchRamp * pinchRimGate * (21.0 * compactScale);\n"
+    "        iosPinch = compactPinch * pressAmt * (1.0 - dropHairline);\n"
+    "        dropDisp = float2(0.0, 0.0);\n"
+    "      } else if (isRoleSlid) {\n"
+    "        float capDx = (0.5 - abs(centered.x)) * I.rect.z;\n"
+    "        float slFlare = exp(-max(capDx - 0.85, 0.0) / 1.85)\n"
+    "                      * (1.0 - smoothstep(4.4, 5.8, capDx))\n"
+    "                      * lerp(0.65, 1.0, smoothstep(0.0, 0.65, capDx));\n"
+    "        float slK = 1.0 - 0.50 * slFlare * pressAmt;\n"
+    "        float dyMid = p.y - lensCenter.y;\n"
+    "        float wY = 1.0 - smoothstep(6.5, 13.5, abs(dyMid));\n"
+    "        dropDisp = float2(0.0, -dyMid * (1.0 - slK) * wY);\n"
+    "        menAA = max(menAA, 0.55 * slFlare * pressAmt);\n"
+    "      } else if (isPlatter > 0.5) {\n"
+    "        float tipDist = (0.5 - abs(centered.x)) * I.rect.z;\n"
+    "        float capAbsX = saturate(1.0 - tipDist / max(I.rect.w * 0.6514, 1.0));\n"
+    "        float barPinchHoriz = 1.0 - smoothstep(0.30, 0.94, capAbsX);\n"
+    "        float barPinchVert = smoothstep(0.28, 0.70, absC.y) * smoothstep(1.35, 5.2, inward);\n"
+    "        float barPinchPx = 0.80 * I.rect.w * 0.42;\n"
+    "        float2 platterPinch = float2(0.0, centered.y * barPinchHoriz * barPinchVert * barPinchPx);\n"
+    "        float endCapX = smoothstep(0.32, 0.70, capAbsX);\n"
+    "        float pMenBand = smoothstep(0.22, 0.55, inward) * (1.0 - smoothstep(0.95, 1.35, inward));\n"
+    "        menAA = pMenBand * pressAmt * pinchWeight;\n"
+    "        if (isRoleTab) {\n"
+    "          float iconBandY = 1.0 - smoothstep(0.66, 0.79, absC.y);\n"
+    "          barIconGate = iconBandY * endCapX * pressAmt * pinchWeight;\n"
+    "          float iconBevelX = smoothstep(0.45, 1.15, inward) * (1.0 - smoothstep(2.60, 9.40, inward));\n"
+    "          float iconBevelY = smoothstep(0.45, 1.25, inward) * (1.0 - smoothstep(2.20, 9.00, inward));\n"
+    "          float signX = (centered.x >= 0.0) ? 1.0 : -1.0;\n"
+    "          barCaDisp = float2(-signX * 5.2 * iconBevelX, -centered.y * 2.0 * 4.8 * iconBevelY) * barIconGate;\n"
+    "        }\n"
+    "        float2 pMenReach = float2(3.9 + 1.2 * endCapX, 3.9 * endCapX);\n"
+    "        float2 platterMeniscus = -surfaceNormal * pMenReach * pMenBand;\n"
+    "        float capPinchBand = smoothstep(1.35, 4.40, inward) * (1.0 - smoothstep(5.40, 7.80, inward));\n"
+    "        float2 capOutward = float2(surfaceNormal.x, surfaceNormal.y * 0.45) * (5.5 * capPinchBand * endCapX);\n"
+    "        float2 barCapOutward = float2(surfaceNormal.x, surfaceNormal.y * 0.62) * (2.6 * capPinchBand * endCapX);\n"
+    "        float tabPinchHoriz = 1.0 - smoothstep(0.20, 0.96, capAbsX);\n"
+    "        float tabPinchVert = smoothstep(0.42, 0.74, absC.y) * smoothstep(1.35, 5.2, inward);\n"
+    "        float2 tabPinch = float2(0.0, centered.y * tabPinchHoriz * tabPinchVert * (0.245 * I.rect.w) * 0.28);\n"
+    "        float2 widePinch = isRoleTab ? tabPinch : platterPinch;\n"
+    "        iosPinch = widePinch * (pressAmt * pinchWeight) * (1.0 - dropHairline);\n"
+    "        float2 wideMen = isRoleTab ? ((platterMeniscus + barCapOutward) * (1.0 - dropHairline)) : (platterMeniscus + capOutward);\n"
+    "        dropDisp = lerp(paraxialDisp, wideMen, pressAmt * pinchWeight);\n"
+    "      } else {\n"
+    "        dropDisp = lerp(dropDisp, surfaceNormal * 0.85, dropHairline);\n"
     "      }\n"
-    "      float2 pMenReach = float2(3.9 + 1.2 * endCapX, 3.9 * endCapX);\n"
-    "      float2 platterMeniscus = -surfaceNormal * pMenReach * pMenBand;\n"
-    "      float capPinchBand = smoothstep(1.35, 4.40, inward) * (1.0 - smoothstep(5.40, 7.80, inward));\n"
-    "      float2 capOutward = float2(surfaceNormal.x, surfaceNormal.y * 0.45) * (2.8 * capPinchBand * endCapX);\n"
-    "      float2 barCapOutward = float2(surfaceNormal.x, surfaceNormal.y * 0.62) * (2.6 * capPinchBand * endCapX);\n"
-    "      float tabPinchHoriz = 1.0 - smoothstep(0.20, 0.96, capAbsX);\n"
-    "      float tabPinchVert = smoothstep(0.42, 0.74, absC.y) * smoothstep(1.35, 5.2, inward);\n"
-    "      float2 tabPinch = float2(0.0, centered.y * tabPinchHoriz * tabPinchVert * (0.245 * I.rect.w) * 0.28);\n"
-    "      dropHairline = (1.0 - smoothstep(0.30, 0.82, inward)) * pressAmt;\n"
-    "      float2 widePinch = lerp(platterPinch, tabPinch, isBarTab);\n"
-    "      float2 iosPinch = lerp(compactPinch, widePinch, isPlatter) * (pressAmt * pinchWeight) * (1.0 - dropHairline);\n"
-    "      float2 wideMen = lerp(platterMeniscus + capOutward, (platterMeniscus + barCapOutward) * (1.0 - dropHairline), isBarTab);\n"
-    "      float2 iosMen = lerp(compactMeniscus, wideMen, isPlatter);\n"
-    "      float2 dropDisp = lerp(paraxialDisp, iosMen, pressAmt * pinchWeight);\n"
-    "      dropDisp = lerp(dropDisp, surfaceNormal * 0.85, dropHairline * (1.0 - isPlatter));\n"
     "      float dLen = length(dropDisp);\n"
     "      if (dLen > halfMinor) dropDisp *= (halfMinor / dLen);\n"
     "      sampleBase = sampleBase + iosPinch * droplet;\n"
     "      disp = lerp(disp, dropDisp, droplet);\n"
     "    }\n"
     "    float3 refractColor;\n"
-    "    if (inward >= bevel || abs(I.pd.z) * amount * scale <= 0.25) {\n"
+    "    if (inward >= bevel || (isRoleSeg && inward >= 2.2) || abs(I.pd.z) * amount * scale <= 0.25) {\n"
     "      refractColor = backdrop(sampleBase + disp);\n"
     "    } else {\n"
     "      float ds = I.pd.z * 0.5;\n"
@@ -697,13 +753,20 @@ static const char *shader_src =
     "                     + backdrop(mc - nOff + tOff) + backdrop(mc - nOff - tOff)) * 0.25;\n"
     "      refractColor = lerp(refractColor, menAvg, menAA);\n"
     "    }\n"
-    "    if (menN > 0.001) {\n"
-    "      float menY = luma(refractColor);\n"
-    "      float outerBgY = luma(backdrop(p + surfaceNormal * 3.0));\n"
-    "      float lightCard = smoothstep(0.35, 0.65, outerBgY);\n"
-    "      refractColor = lerp(refractColor, lerp(menY.xxx, float3(1.0, 1.0, 1.0), 0.45 * lightCard), 0.60 * menN);\n"
+    "    if (is_drop && isRoleSw && pressAmt > 0.001) {\n"
+    "      float capArc = smoothstep(0.20, 0.70, abs(surfaceNormal.x));\n"
+    "      float tirLo = 0.333333;\n"
+    "      float tirHi = lerp(0.666667, 1.05, capArc);\n"
+    "      float pxPt = 1.0 / max(scale, 1.0);\n"
+    "      float tirCov = clamp(min(inward + 0.5 * pxPt, tirHi) - max(inward - 0.5 * pxPt, tirLo), 0.0, pxPt) / pxPt;\n"
+    "      float tirW = tirCov * pressAmt;\n"
+    "      if (tirW > 0.001) {\n"
+    "        float2 tirSamplePos = p - surfaceNormal * (5.4 * lerp(0.65, 1.0, abs(surfaceNormal.y)));\n"
+    "        float3 tirCol = backdrop(tirSamplePos);\n"
+    "        refractColor = lerp(refractColor, tirCol, tirW);\n"
+    "      }\n"
     "    }\n"
-    "    if (isBarTab > 0.5 && barIconGate > 0.01 && dropHairline < 0.99) {\n"
+    "    if (isRoleTab && barIconGate > 0.01 && dropHairline < 0.99) {\n"
     "      float bevelGate = barIconGate * smoothstep(0.45, 1.15, inward) * (1.0 - dropHairline);\n"
     "      if (bevelGate > 0.001) {\n"
     "        float refX = (p.x >= I.rect.x + I.rect.z * 0.5) ? 0.26 : 0.74;\n"
@@ -739,6 +802,11 @@ static const char *shader_src =
     "    float glintFaceGain;\n"
     "    float glintVib;\n"
     "    float fogT = 0.0;\n"
+    "    float3 lightEmSaved = float3(0.0, 0.0, 0.0);\n"
+    "    float3 darkEmSaved = float3(0.0, 0.0, 0.0);\n"
+    "    float darkMixSaved = 0.0;\n"
+    "    float lightExtra = 0.0;\n"
+    "    bool hasLightEm = false;\n"
     "    if (is_clear) {\n"
     "      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
     "      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
@@ -763,16 +831,16 @@ static const char *shader_src =
     "        float ar = ((k <= 0.0) ? max(min(I.rect.z, I.rect.w) * 0.5, 1.0) : max(min(ggb.z - ggb.x, ggb.w - ggb.y) * 0.5, 1.0)) * 0.5;\n"
     "#endif\n"
     "        float val = ad_sample(ac, ar, is_dark);\n"
-    "        float baseDens = (col.a > 0.41) ? col.a : 0.30;\n"
+    "        float baseDens = lerp(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
     "        if (is_dark) {\n"
     "          float brightT = val;\n"
     "          fogT = brightT;\n"
     "          float dens = max(baseDens, lerp(baseDens, 0.64, brightT));\n"
     "          float extra = saturate((dens - 0.30) / (1.0 - 0.30));\n"
-    "          emission = lerp(float3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), float3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), extra);\n"
-    "          transmittance = lerp(0.61, 0.0, extra);\n"
-    "          lift = lerp(0.60, 0.0, extra);\n"
-    "          chromaGain = lerp(0.92, 0.0, extra);\n"
+    "          emission = lerp(float3(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0), float3(24.0 / 255.0, 24.0 / 255.0, 24.0 / 255.0), extra);\n"
+    "          transmittance = lerp(0.50, 0.0, extra);\n"
+    "          lift = lerp(0.24, 0.0, extra);\n"
+    "          chromaGain = lerp(1.05, 0.0, extra);\n"
     "          contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "        } else {\n"
@@ -782,84 +850,110 @@ static const char *shader_src =
     "          float darkDens = max(baseDens, lerp(baseDens, 0.52, darkMix));\n"
     "          float darkExtra = saturate((darkDens - 0.30) / (1.0 - 0.30));\n"
     "          float3 lightEm = float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * baseDens;\n"
-    "          float3 darkEm = lerp(float3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), float3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), darkExtra);\n"
+    "          float3 darkEm = lerp(float3(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0), float3(24.0 / 255.0, 24.0 / 255.0, 24.0 / 255.0), darkExtra);\n"
+    "          lightEmSaved = lightEm; darkEmSaved = darkEm; darkMixSaved = darkMix; lightExtra = extra; hasLightEm = true;\n"
     "          emission = lerp(lightEm, darkEm, darkMix);\n"
-    "          transmittance = lerp(lerp(0.70, 0.0, extra), lerp(0.61, 0.0, darkExtra), darkMix);\n"
-    "          lift = lerp(lerp(0.16, 0.0, extra), lerp(0.60, 0.0, darkExtra), darkMix);\n"
-    "          chromaGain = lerp(lerp(0.85, 0.0, extra), lerp(0.92, 0.0, darkExtra), darkMix);\n"
+    "          transmittance = lerp(lerp(0.70, 0.0, extra), lerp(0.50, 0.0, darkExtra), darkMix);\n"
+    "          lift = lerp(lerp(0.16, 0.0, extra), lerp(0.24, 0.0, darkExtra), darkMix);\n"
+    "          chromaGain = lerp(lerp(1.18, 0.0, extra), lerp(1.05, 0.0, darkExtra), darkMix);\n"
     "          contourStr = lerp(0.43, 0.88, darkMix);\n"
     "          contourDirAmt = lerp(0.77, 1.0, darkMix);\n"
     "          bevelShadowStr = 0.036;\n"
     "          glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "        }\n"
     "      } else if (is_dark) {\n"
-    "        float darkDens = (col.a > 0.41) ? col.a : 0.30;\n"
+    "        float darkDens = lerp(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
     "        float extra = saturate((darkDens - 0.30) / (1.0 - 0.30));\n"
-    "        emission = lerp(float3(31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0), float3(22.0 / 255.0, 22.0 / 255.0, 22.0 / 255.0), extra);\n"
-    "        transmittance = lerp(0.61, 0.0, extra);\n"
-    "        lift = lerp(0.60, 0.0, extra);\n"
-    "        chromaGain = lerp(0.92, 0.0, extra);\n"
+    "        emission = lerp(float3(30.0 / 255.0, 30.0 / 255.0, 30.0 / 255.0), float3(24.0 / 255.0, 24.0 / 255.0, 24.0 / 255.0), extra);\n"
+    "        transmittance = lerp(0.50, 0.0, extra);\n"
+    "        lift = lerp(0.24, 0.0, extra);\n"
+    "        chromaGain = lerp(1.05, 0.0, extra);\n"
     "        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
     "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "      } else {\n"
-    "        float lightDens = (col.a > 0.41) ? col.a : 0.30;\n"
+    "        float lightDens = lerp(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
     "        float extra = saturate((lightDens - 0.30) / (1.0 - 0.30));\n"
     "        emission = float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightDens;\n"
+    "        lightEmSaved = emission; lightExtra = extra; hasLightEm = true;\n"
     "        transmittance = lerp(0.70, 0.0, extra);\n"
     "        lift = lerp(0.16, 0.0, extra);\n"
-    "        chromaGain = lerp(0.85, 0.0, extra);\n"
+    "        chromaGain = lerp(1.18, 0.0, extra);\n"
     "        contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;\n"
     "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "      }\n"
-    "      if (regMix < 1.0) {\n"
-    "        emission = lerp(float3(0.126, 0.126, 0.126), emission, regMix);\n"
-    "        transmittance = lerp(0.90, transmittance, regMix);\n"
-    "        lift = lerp(0.10, lift, regMix);\n"
-    "        chromaGain = lerp(1.0, chromaGain, regMix);\n"
-    "        contourStr = lerp(0.25, contourStr, regMix);\n"
-    "        contourDirAmt = lerp(0.77, contourDirAmt, regMix);\n"
-    "        bevelShadowStr = lerp(0.04, bevelShadowStr, regMix);\n"
-    "        glintLum = lerp(1.35, glintLum, regMix);\n"
-    "        glintFaceGain = lerp(0.25, glintFaceGain, regMix);\n"
-    "        glintVib = lerp(1.5, glintVib, regMix);\n"
-    "      }\n"
     "    }\n"
-    "    contourStr = lerp(contourStr, is_dark ? 0.54 : 0.0, regMix);\n"
-    "    if (is_dark && regMix > 0.001) {\n"
-    "      contourDirAmt = lerp(contourDirAmt, 0.65, regMix);\n"
-    "    }\n"
-    "    [branch] if (fogT > 0.001) {\n"
-    "      float r1 = fogT * 1.1;\n"
-    "      float r2 = fogT * 1.6;\n"
+    "    float3 lowC = refractColor;\n"
+    "    [branch] if (regMix > 0.001) {\n"
     "      float2 fc = sampleBase + disp;\n"
-    "      float3 fBlur = (refractColor * 2.0\n"
-    "        + (backdrop(fc + float2(r1, 0.0)) + backdrop(fc - float2(r1, 0.0))\n"
-    "         + backdrop(fc + float2(0.0, r1)) + backdrop(fc - float2(0.0, r1))) * 1.5\n"
-    "        + (backdrop(fc + float2(r2, r2)) + backdrop(fc + float2(-r2, r2))\n"
-    "         + backdrop(fc + float2(r2, -r2)) + backdrop(fc + float2(-r2, -r2)))) * (1.0 / 12.0);\n"
-    "      refractColor = lerp(refractColor, fBlur, fogT * 0.45);\n"
+    "      float rD = lerp(3.2, 4.2, fogT);\n"
+    "      float3 s1 = backdrop(fc + float2( rD,  rD));\n"
+    "      float3 s2 = backdrop(fc + float2(-rD,  rD));\n"
+    "      float3 s3 = backdrop(fc + float2( rD, -rD));\n"
+    "      float3 s4 = backdrop(fc + float2(-rD, -rD));\n"
+    "      lowC = (refractColor * 2.0 + s1 + s2 + s3 + s4) * (1.0 / 6.0);\n"
+    "      float interior = (bevel > 0.001) ? smoothstep(0.30 * bevel, 0.85 * bevel, inward) : 1.0;\n"
+    "      float y0 = luma(refractColor), y1 = luma(s1), y2 = luma(s2), y3 = luma(s3), y4 = luma(s4);\n"
+    "      float yMean = (y0 * 2.0 + y1 + y2 + y3 + y4) * (1.0 / 6.0);\n"
+    "      float yVar = ((y0 - yMean) * (y0 - yMean) * 2.0\n"
+    "                  + (y1 - yMean) * (y1 - yMean) + (y2 - yMean) * (y2 - yMean)\n"
+    "                  + (y3 - yMean) * (y3 - yMean) + (y4 - yMean) * (y4 - yMean)) * (1.0 / 6.0);\n"
+    "      float detailAmt = smoothstep(0.020, 0.095, sqrt(max(yVar, 0.0)));\n"
+    "      float dampW = interior * max(detailAmt * 0.65, fogT * 0.72) * regMix;\n"
+    "      refractColor = lerp(refractColor, lowC, dampW);\n"
     "    }\n"
+    "    if (hasLightEm) {\n"
+    "      float bgChroma = max(lowC.r, max(lowC.g, lowC.b)) - min(lowC.r, min(lowC.g, lowC.b));\n"
+    "      float lightVeilScale = lerp(1.0, 0.65, smoothstep(0.08, 0.40, bgChroma) * regMix * (1.0 - lightExtra));\n"
+    "      emission = lerp(lightEmSaved * lightVeilScale, darkEmSaved, darkMixSaved);\n"
+    "    }\n"
+    "    if (regMix > 0.0 && regMix < 1.0) {\n"
+    "      emission = lerp(float3(0.126, 0.126, 0.126), emission, regMix);\n"
+    "      transmittance = lerp(0.90, transmittance, regMix);\n"
+    "      lift = lerp(0.10, lift, regMix);\n"
+    "      chromaGain = lerp(1.0, chromaGain, regMix);\n"
+    "      contourStr = lerp(0.25, contourStr, regMix);\n"
+    "      contourDirAmt = lerp(0.77, contourDirAmt, regMix);\n"
+    "      bevelShadowStr = lerp(0.04, bevelShadowStr, regMix);\n"
+    "      glintLum = lerp(1.35, glintLum, regMix);\n"
+    "      glintFaceGain = lerp(0.25, glintFaceGain, regMix);\n"
+    "      glintVib = lerp(1.5, glintVib, regMix);\n"
+    "    }\n"
+    "    contourStr *= (1.0 - regMix);\n"
     "    float Y = luma(refractColor);\n"
     "    float transLum = saturate(Y * (1.0 + lift * (1.0 - Y)));\n"
-    "    float regChromaAtten = lerp(1.0, 1.0 - clamp(luma(emission), 0.0, 0.85), regMix);\n"
-    "    float3 chromaVec = (refractColor - Y.xxx) * (chromaGain * I.prm.z * regChromaAtten);\n"
+    "    float3 chromaVec = (refractColor - Y.xxx) * (chromaGain * I.prm.z);\n"
     "    float baseLum = saturate(transLum * transmittance);\n"
     "    float3 transmittedColor = baseLum.xxx + chromaVec;\n"
     "    float3 rawBase = emission + transmittedColor;\n"
+    "    // Exact Wave 3 legacy mapping for Clear / Lifted Lenses (regMix == 0)\n"
     "    float maxC = max(rawBase.r, max(rawBase.g, rawBase.b));\n"
-    "    float3 baseColor = rawBase;\n"
+    "    float3 legacyBase = rawBase;\n"
     "    if (maxC > 1.0) {\n"
-    "      float lumR = clamp(luma(emission) + baseLum, 0.0, 0.999);\n"
-    "      float s = saturate((1.0 - lumR) / max(maxC - lumR, 0.0001));\n"
-    "      baseColor = lumR.xxx + (rawBase - lumR.xxx) * s;\n"
+    "      float lumL = clamp(luma(emission) + baseLum, 0.0, 0.999);\n"
+    "      float sL = saturate((1.0 - lumL) / max(maxC - lumL, 0.0001));\n"
+    "      legacyBase = lumL.xxx + (rawBase - lumL.xxx) * sL;\n"
     "    }\n"
-    "    baseColor = saturate(baseColor);\n"
+    "    legacyBase = saturate(legacyBase);\n"
+    "    float3 baseColor = legacyBase;\n"
+    "    if (regMix > 0.001) {\n"
+    "      float lumR = clamp(luma(emission) + baseLum, 0.001, 0.999);\n"
+    "      float3 dC = rawBase - lumR.xxx;\n"
+    "      float s = 1.0;\n"
+    "      if (dC.r > 0.0001) s = min(s, (1.0 - lumR) / dC.r);\n"
+    "      else if (dC.r < -0.0001) s = min(s, lumR / (-dC.r));\n"
+    "      if (dC.g > 0.0001) s = min(s, (1.0 - lumR) / dC.g);\n"
+    "      else if (dC.g < -0.0001) s = min(s, lumR / (-dC.g));\n"
+    "      if (dC.b > 0.0001) s = min(s, (1.0 - lumR) / dC.b);\n"
+    "      else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));\n"
+    "      float3 regProjected = saturate(lumR.xxx + dC * saturate(s));\n"
+    "      baseColor = lerp(legacyBase, regProjected, regMix);\n"
+    "    }\n"
     "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
     "    float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "    if (colChroma > 0.08 && col.a > 0.001) {\n"
     "      float tintW = col.a <= 0.45\n"
     "        ? col.a * 0.5\n"
-    "        : lerp(0.225, 1.0, smoothstep(0.45, 0.80, col.a));\n"
+    "        : lerp(0.225, 0.86, smoothstep(0.45, 0.80, col.a));\n"
     "      baseColor = lerp(baseColor, col.rgb, tintW);\n"
     "    }\n"
     "    float spot = 0.0;\n"
@@ -918,14 +1012,16 @@ static const char *shader_src =
     "        float opp = max(-along, 0.0);\n"
     "        float lit2 = lit * lit;\n"
     "        float opp2 = opp * opp;\n"
-    "        float regLobe = (is_dark ? 0.95 : 1.0) * (lit2 * lit2) + (is_dark ? 0.95 : 0.85) * (opp2 * opp2) + 0.08;\n"
-    "        float regInset = max(0.0, inward - 0.10);\n"
-    "        float regCore = exp(-regInset / 0.80);\n"
-    "        float regTail = exp(-regInset / 2.67);\n"
+    "        float diag = abs(rn.x * rn.y) * 2.0;\n"
+    "        float regLobe = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.10 * (diag * diag * diag) + 0.03;\n"
+    "        float regInset = max(0.0, inward - 0.30);\n"
+    "        float regCore = exp(-regInset / 0.55);\n"
+    "        float regTail = exp(-inward / 2.0);\n"
     "        float regEase = pow(max(1.0 - luma(result), 0.0), 0.3);\n"
-    "        float regRimGain = (is_dark ? 1.15 : 1.0) * clamp(I.c2.x / 0.6, 0.0, 1.5);\n"
-    "        float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.035 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;\n"
-    "        result = lerp(result, float3(1.0, 1.0, 1.0), saturate(regRim));\n"
+    "        float regRimGain = 1.0 * clamp(I.c2.x / 0.6, 0.0, 1.5);\n"
+    "        float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.020 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;\n"
+    "        float3 rimTarget = saturate(float3(1.0, 1.0, 1.0) + (refractColor - Y.xxx) * 1.0);\n"
+    "        result = lerp(result, rimTarget, saturate(regRim));\n"
     "      }\n"
     "      if (regHairline > 0.001) {\n"
     "        float regShade = (is_dark ? 0.0 : 0.22) * regShadeMask;\n"
@@ -933,51 +1029,56 @@ static const char *shader_src =
     "      }\n"
     "    }\n"
     "    if (is_drop) {\n"
-    "      float pressAmt = saturate(I.c2.x);\n"
     "      float backdropLuma = saturate(Y);\n"
-    "      float tt = (inward - 4.0) / 3.0;\n"
-    "      float topTrough = exp(-tt * tt)\n"
-    "                      * smoothstep(0.3, 0.85, -surfaceNormal.y)\n"
-    "                      * smoothstep(1.5, 3.5, inward);\n"
-    "      float liftGain = lerp(lerp(0.105, 0.085, isPlatter), 0.035, isBarTab);\n"
-    "      float lensLift = liftGain * (1.0 - 0.45 * topTrough) * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);\n"
+    "      float brightBg = smoothstep(0.35, 0.75, backdropLuma);\n"
+    "      float liftGain = isRoleTab ? 0.025 : (isRoleSeg ? 0.008 : 0.101);\n"
+    "      float lensLift = liftGain * pressAmt * (1.0 - backdropLuma) * (1.0 - dropHairline);\n"
     "      result = saturate(result + lensLift.xxx);\n"
-    "      float keyShade = 0.025 * topTrough * backdropLuma * pressAmt * (1.0 - dropHairline);\n"
-    "      result = max(result - keyShade.xxx, float3(0.0, 0.0, 0.0));\n"
-    "      float dInnerSh = sd_rr(p - float2(0.0, 7.0), I.rect, s_rr);\n"
-    "      float innerShMask = smoothstep(-3.0, 3.0, dInnerSh) * smoothstep(0.85, 1.65, inward);\n"
-    "      result *= (1.0 - 0.085 * innerShMask * pressAmt);\n"
-    "      if (pressAmt > 0.001 && inward < 10.0) {\n"
-    "        float2 ld = float2(0.0, 1.0);\n"
-    "        float along = dot(surfaceNormal, ld);\n"
+    "      float domeScale = clamp(I.rect.w / 38.0, 0.85, 1.35);\n"
+    "      float sizeGate = smoothstep(28.0, 36.0, I.rect.w);\n"
+    "      float upperFace = smoothstep(0.0, 0.75, -surfaceNormal.y);\n"
+    "      float qDome = (inward - 9.2 * domeScale) / (5.6 * domeScale);\n"
+    "      float domeEnv = exp(-qDome * qDome) * upperFace * smoothstep(0.65, 1.85, inward);\n"
+    "      float domeStr = lerp(0.196, 0.086, brightBg) * sizeGate;\n"
+    "      result *= (1.0 - domeStr * domeEnv * pressAmt);\n"
+    "      float lightSh = smoothstep(0.75, 1.80, inward) * (1.0 - smoothstep(4.5, 8.5, inward))\n"
+    "                    * upperFace * brightBg * sizeGate;\n"
+    "      result *= (1.0 - 0.032 * lightSh * pressAmt);\n"
+    "      if (pressAmt > 0.001 && inward < 12.0) {\n"
+    "        float along = surfaceNormal.y;\n"
     "        float lit = max(along, 0.0);\n"
     "        float opp = max(-along, 0.0);\n"
-    "        float lobe = 0.84 * lit * lit * lit + 1.02 * opp * opp * opp;\n"
-    "        float insetPt = max(0.0, inward - 0.75);\n"
-    "        float core = exp(-insetPt / 0.50);\n"
-    "        float tail = exp(-insetPt / 2.67);\n"
-    "        float bodyLuma = saturate(luma(result));\n"
-    "        float ease = pow(max(1.0 - bodyLuma, 0.0), 0.30);\n"
-    "        float rimLight = pressAmt * 1.32 * lobe * ease * (0.175 * core + 0.055 * tail) * (1.0 - dropHairline);\n"
+    "        float lobe = 1.0 * (lit * lit * lit) + 1.0 * (opp * opp * opp) + 0.14;\n"
+    "        float insetPt = max(0.0, inward - 0.60);\n"
+    "        float core = exp(-insetPt / 0.48);\n"
+    "        float shoulder = exp(-insetPt / 1.8);\n"
+    "        float ease = pow(max(1.0 - saturate(luma(result)), 0.0), 0.30);\n"
+    "        float rimGain = isRoleSeg ? 0.85 : (isRoleTab ? 0.75 : 1.0);\n"
+    "        float rimLight = pressAmt * rimGain * lobe * ease * (0.205 * core + 0.025 * shoulder) * (1.0 - dropHairline);\n"
     "        result = lerp(result, float3(1.0, 1.0, 1.0), saturate(rimLight));\n"
     "      }\n"
-    "      if (isPlatter > 0.01 && pressAmt > 0.01) {\n"
-    "        float prismBand = smoothstep(0.55, 1.05, inward) * (1.0 - smoothstep(1.30, 2.00, inward)) * (1.0 - dropHairline) * isPlatter * pressAmt;\n"
+    "      if (isRoleSeg && pressAmt > 0.01) {\n"
+    "        float prismBand = smoothstep(0.40, 0.80, inward) * (1.0 - smoothstep(1.15, 1.85, inward))\n"
+    "                        * (1.0 - dropHairline) * pressAmt;\n"
     "        if (prismBand > 0.001) {\n"
-    "          float prismPhase = abs(surfaceNormal.y) * 0.45 + surfaceNormal.x * 0.35 + 0.52;\n"
-    "          float3 sp = 0.5 + 0.5 * cos(6.2831853 * (prismPhase * 1.2 + float3(0.0, 0.3333, 0.6667)));\n"
-    "          float spY = luma(sp);\n"
-    "          result = saturate(result + (sp - spY.xxx) * (0.080 * prismBand));\n"
+    "          float hW = smoothstep(0.35, 0.85, abs(surfaceNormal.x));\n"
+    "          float3 rawD = lerp(float3(-0.045, 0.015, 0.030), float3(0.075, -0.015, -0.060), hW);\n"
+    "          float rawDL = luma(rawD);\n"
+    "          float3 darkPrism = (rawD - rawDL.xxx) * 0.60 * prismBand;\n"
+    "          float3 lightPrism = lerp(float3(-0.068, 0.0, 0.0), float3(-0.055, -0.148, -0.188), hW) * prismBand;\n"
+    "          float3 pD = lerp(darkPrism, lightPrism, brightBg);\n"
+    "          float sP = 1.0;\n"
+    "          if (pD.r > 0.0001) sP = min(sP, (1.0 - result.r) / pD.r); else if (pD.r < -0.0001) sP = min(sP, result.r / (-pD.r));\n"
+    "          if (pD.g > 0.0001) sP = min(sP, (1.0 - result.g) / pD.g); else if (pD.g < -0.0001) sP = min(sP, result.g / (-pD.g));\n"
+    "          if (pD.b > 0.0001) sP = min(sP, (1.0 - result.b) / pD.b); else if (pD.b < -0.0001) sP = min(sP, result.b / (-pD.b));\n"
+    "          result = saturate(result + pD * saturate(sP));\n"
     "        }\n"
     "      }\n"
     "      if (dropHairline > 0.001) {\n"
-    "        float2 ld = float2(0.0, 1.0);\n"
-    "        float dl = dot(surfaceNormal, ld);\n"
-    "        float across = pow(max(1.0 - dl * dl, 0.0), 1.75);\n"
-    "        float brightBg = smoothstep(0.35, 0.70, backdropLuma);\n"
-    "        float effRimShade = lerp(0.38, 0.82, brightBg);\n"
-    "        float effShadeEnds = lerp(0.18, 0.68, brightBg);\n"
-    "        float shade = effRimShade * 0.28 * lerp(effShadeEnds, 1.0, across) * pressAmt;\n"
+    "        float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.75);\n"
+    "        float shadeTB = lerp(0.047, 0.161, brightBg);\n"
+    "        float shadeEnds = lerp(0.063, 0.239, brightBg);\n"
+    "        float shade = lerp(shadeTB, shadeEnds, across) * pressAmt;\n"
     "        result = max(result - (shade * dropHairline).xxx, float3(0.0, 0.0, 0.0));\n"
     "      }\n"
     "    }\n"
@@ -1244,7 +1345,9 @@ static const char *prog_src =
     "    return lv3.SampleLevel(samp, clamp(pos.xy * m3.xy, m3.xy * 4.0, m3.zw), 0);\n"
     "  }\n"
     "  float sig1 = pow(sp, 1.0 / kf);\n"
-    "  float rs = r * r * (3.0 - 2.0 * r);\n"
+    "  // the blur grows as the square of the way into the fade, not smoothstep's 3r^2 - 2r^3: words are unreadable from\n"
+    "  // a deviation of 1-2 pt, so smoothstep's quick start left two thirds of the band one flat frost\n"
+    "  float rs = r * r;\n"
     "  float target_px = sp * rs;\n"
     "  if (target_px <= sig1 || kf <= 1.05) {\n"
     "    float2 uv0_min = m0.xy * 0.5, uv0_max = m0.zw;\n"
@@ -1381,6 +1484,43 @@ static bool shader_path(wchar_t *out, size_t cap, UINT64 key) {
   return n > 0 && (size_t)n < cap;
 }
 
+// Local ID3DBlob for cached bytecode so reading shader cache never loads d3dcompiler_47.dll.
+struct KeptBlob : public ID3DBlob {
+  LONG refs = 1;
+  SIZE_T size = 0;
+  void *bytes = NULL;
+  static KeptBlob *made(SIZE_T n) {
+    KeptBlob *b = new (std::nothrow) KeptBlob();
+    if (!b) return NULL;
+    b->bytes = malloc(n ? n : 1);
+    if (!b->bytes) {
+      delete b;
+      return NULL;
+    }
+    b->size = n;
+    return b;
+  }
+  ~KeptBlob() { free(bytes); }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void **out) override {
+    if (!out) return E_POINTER;
+    if (id == __uuidof(IUnknown) || id == __uuidof(ID3D10Blob)) {
+      *out = static_cast<ID3DBlob *>(this);
+      AddRef();
+      return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)InterlockedIncrement(&refs); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    LONG n = InterlockedDecrement(&refs);
+    if (!n) delete this;
+    return (ULONG)n;
+  }
+  LPVOID STDMETHODCALLTYPE GetBufferPointer() override { return bytes; }
+  SIZE_T STDMETHODCALLTYPE GetBufferSize() override { return size; }
+};
+
 // The bytecode kept at `path`, whole and as it was written; NULL (the file deleted where it is there and is not that).
 static ID3DBlob *shader_kept(const wchar_t *path) {
   HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -1392,7 +1532,7 @@ static ID3DBlob *shader_kept(const wchar_t *path) {
   bool ok = GetFileSizeEx(f, &size) && ReadFile(f, &head, sizeof head, &got, NULL) && got == sizeof head &&
             memcmp(head.magic, "MBSH", 4) == 0 && head.size > 0 && head.size < (64u << 20) &&
             size.QuadPart == (LONGLONG)sizeof head + (LONGLONG)head.size &&
-            SUCCEEDED(D3DCreateBlob(head.size, &blob)) &&
+            (blob = KeptBlob::made(head.size)) != NULL &&
             ReadFile(f, blob->GetBufferPointer(), head.size, &got, NULL) && got == head.size &&
             shader_fnv(blob->GetBufferPointer(), head.size, shader_fnv_start) == head.hash;
   CloseHandle(f);
@@ -1424,6 +1564,24 @@ static void shader_keep(const wchar_t *path, ID3DBlob *code) {
 
 static ID3DBlob *compile(const char *entry, const char *target, const char *src = shader_src,
                          const D3D_SHADER_MACRO *defines = NULL) {
+  char *patched = NULL;
+  if (src == shader_src && mb_atlas_size != 4096) {
+    const char *needle = "/ 4096.0;";
+    const char *hit = strstr(src, needle);
+    if (hit) {
+      char repl[32];
+      snprintf(repl, sizeof repl, "/ %d.0;", mb_atlas_size);
+      size_t nlen = strlen(needle), rlen = strlen(repl), slen = strlen(src);
+      patched = (char *)malloc(slen - nlen + rlen + 1);
+      if (patched) {
+        size_t pre = (size_t)(hit - src);
+        memcpy(patched, src, pre);
+        memcpy(patched + pre, repl, rlen);
+        memcpy(patched + pre + rlen, hit + nlen, slen - pre - nlen + 1);
+        src = patched;
+      }
+    }
+  }
   UINT64 key = shader_fnv(src, strlen(src), shader_fnv_start);
   key = shader_fnv(entry, strlen(entry) + 1, key);
   key = shader_fnv(target, strlen(target) + 1, key);
@@ -1437,7 +1595,10 @@ static ID3DBlob *compile(const char *entry, const char *target, const char *src 
   bool kept = shader_path(path, MAX_PATH * 2, key);
   if (kept) {
     ID3DBlob *was = shader_kept(path);
-    if (was) return was;
+    if (was) {
+      free(patched);
+      return was;
+    }
   }
   ID3DBlob *code = NULL, *err = NULL;
   HRESULT hr = D3DCompile(src, strlen(src), "mbui", defines, NULL, entry, target,
@@ -1445,6 +1606,7 @@ static ID3DBlob *compile(const char *entry, const char *target, const char *src 
   if (FAILED(hr)) fprintf(stderr, "shader %s: %s\n", entry, err ? (char *)err->GetBufferPointer() : "?");
   if (err) err->Release();
   if (code && kept) shader_keep(path, code);
+  free(patched);
   return code;
 }
 
@@ -1524,8 +1686,9 @@ static int make_own_chain(HWND hwnd) {
 static void make_pipeline(void);
 
 int mb_render_init(void *hwnd) {
+  init_render_knobs();
   // (with its video side where the GPU has one: a remote screen decoded and shown by the GPU, win_stream.cpp)
-  if (FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, D3D11_CREATE_DEVICE_VIDEO_SUPPORT)) &&
+  if ((!video_support || FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, D3D11_CREATE_DEVICE_VIDEO_SUPPORT))) &&
       FAILED(make_device(D3D_DRIVER_TYPE_HARDWARE, 0)) && FAILED(make_device(D3D_DRIVER_TYPE_WARP, 0))) {
     fprintf(stderr, "no Direct3D 11 device\n");
     return 0;
@@ -1537,6 +1700,7 @@ int mb_render_init(void *hwnd) {
   xdev->GetAdapter(&adapter);
   adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
   flip_chain = 1;
+  target_hwnd = (HWND)hwnd;
   if (make_composed(xdev, (HWND)hwnd)) {
     // the composition's swap chain, made at the window's size (its first buffers' view: at the first frame's size)
     fb_w = fb_h = 0;
@@ -1557,6 +1721,7 @@ int mb_render_open(int wid, void *hwnd) {
   RenderWin *back = rw;
   rw = &render_wins[wid];
   render_win_fresh(rw);
+  target_hwnd = (HWND)hwnd;
   int ok;
   if (dcomp) {
     ok = make_composed(NULL, (HWND)hwnd);
@@ -1794,6 +1959,7 @@ void mb_render_set_size(int pw, int ph, double w, double h, double scale) {
   }
   fb_w = pw;
   fb_h = ph;
+  if (dcomp) commit_after_present = true;
 }
 
 #ifndef MB_WIN_ATLAS_UPDATE
@@ -2140,7 +2306,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       w->ad_slots[sid].seen_serial = serial;
     }
     MBAdSlot *s = &w->ad_slots[sid];
-    if (s->updated_serial == serial) continue;
+    if (!is_new && s->updated_serial == serial) continue;
     int need = is_new || backdrop_changed || s->settle_left > 0.0;
     if (need) {
       if (is_new) {
@@ -2308,11 +2474,44 @@ static void glass_idle_tick(void) {
   glass_drawn = 0;
 }
 
-// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels, made
-// again as a frame with glass is drawn.
+// The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the pixel
+// shader to read (segs, t3): as they are, 15 fours an instance.
+static ID3D11Buffer *segs_buf;
+static ID3D11ShaderResourceView *segs_srv;
+static size_t segs_cap;
+
+// What drawing holds beyond the frames given back (a window minimized or hidden: win_app.c): glass's levels,
+// transient shape-segment buffer, and hidden primary window's canvas/swapchain, made again as the next frame draws.
 void mb_render_trim(void) {
   glass_free();
   glass_idle_frames = 0;
+  if (segs_srv) segs_srv->Release(), segs_srv = NULL;
+  if (segs_buf) segs_buf->Release(), segs_buf = NULL;
+  segs_cap = 0;
+  RenderWin *back = rw;
+  rw = &render_wins[0];
+  if (target_hwnd && !IsWindowVisible(target_hwnd)) {
+    if (ctx) ctx->OMSetRenderTargets(0, NULL, NULL);
+    ensure_canvas(0, 0);
+    if (chain && (fb_w > 16 || fb_h > 16)) {
+      if (rtv) rtv->Release(), rtv = NULL;
+      chain->ResizeBuffers(0, 16, 16, DXGI_FORMAT_UNKNOWN, 0);
+      ID3D11Texture2D *back_tex = NULL;
+      if (SUCCEEDED(chain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void **)&back_tex))) {
+        dev->CreateRenderTargetView(back_tex, NULL, &rtv);
+        back_tex->Release();
+      }
+      fb_w = 16;
+      fb_h = 16;
+      if (rtv && ctx) {
+        float clear[4] = {0, 0, 0, 0};
+        ctx->ClearRenderTargetView(rtv, clear);
+        chain->Present(0, 0);
+      }
+    }
+    if (dcomp) dcomp->Commit();
+  }
+  rw = back;
 }
 
 static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
@@ -2879,11 +3078,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   return 1;
 }
 
-// The pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), for the pixel
-// shader to read (segs, t3): as they are, 15 fours an instance.
-static ID3D11Buffer *segs_buf;
-static ID3D11ShaderResourceView *segs_srv;
-static size_t segs_cap;
+// segs_buf / segs_srv / segs_cap declared above mb_render_trim
 
 static void segs_upload(const float *f, int32_t count) {
   if (!dev || !ctx || count <= 0) return;
@@ -2996,9 +3191,11 @@ static void draw_banded(const float *f, int32_t start, int32_t end, int32_t coun
 // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
 // the frame's in the vertex buffer, submit's); NULL, all of it, cleared to the ground.
 static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count, const float *bg,
-                   const float *f, const D3D11_RECT *part = NULL) {
+                   const float *f, const D3D11_RECT *part = NULL, int allow_clear = 1) {
   atlas_flush();
-  float clear[4] = {bg[0], bg[1], bg[2], 1};
+  int clear_win = allow_clear && rw->clear;
+  float clear[4] = {clear_win ? 0.0f : bg[0], clear_win ? 0.0f : bg[1], clear_win ? 0.0f : bg[2],
+                    clear_win ? 0.0f : 1.0f};
   encode_missing = 0;
   ctx->OMSetRenderTargets(1, &target, NULL);
   cut_on = part != NULL;
@@ -3424,7 +3621,10 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
   gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
-  gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
+  gr[8] = rw->clear ? 0.0f : (float)r;
+  gr[9] = rw->clear ? 0.0f : (float)g;
+  gr[10] = rw->clear ? 0.0f : (float)b;
+  gr[11] = rw->clear ? 0.0f : 1.0f;
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   ctx->Unmap(vbuf, 0);
   last_count = count;
@@ -3758,7 +3958,7 @@ static int write_png(const wchar_t *path, const uint8_t *bgra, int w, int h, int
 // Instances `f` (`count` of them) drawn on the ground `bg` into a texture of their own, `w` × `h`, and copied where the
 // CPU reads it (a staging texture, to Map; NULL where it could not be made). What the vertex buffer holds is drawn: the
 // caller has put `f` there.
-static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg, const float *f) {
+static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg, const float *f, int allow_clear = 0) {
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = (UINT)w;
   td.Height = (UINT)h;
@@ -3776,7 +3976,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
   }
   int prev_ad_mode = ad_mode;
   if (ad_mode > 0) ad_mode = 0;
-  encode(view, w, h, count, bg, f);
+  encode(view, w, h, count, bg, f, NULL, allow_clear);
   ad_mode = prev_ad_mode;
   td.Usage = D3D11_USAGE_STAGING;
   td.BindFlags = 0;
@@ -3791,7 +3991,7 @@ static ID3D11Texture2D *redrawn_of(int w, int h, int32_t count, const float *bg,
 // The last presented frame drawn again (its own vertex buffer holds it), as redrawn_of draws.
 static ID3D11Texture2D *redrawn(int w, int h) {
   if (!vbuf && !fill_vbuf(last_inst, last_count, last_bg)) return NULL;
-  return redrawn_of(w, h, last_count, last_bg, last_inst);
+  return redrawn_of(w, h, last_count, last_bg, last_inst, 1);
 }
 
 // `count` instances of `f` into the vertex buffer, grown to hold them (plus the partial-redraw ground rect at slot
@@ -3815,7 +4015,10 @@ static int fill_vbuf(const float *f, int32_t count, const float *bg) {
     float *gr = dst + (size_t)count * MB_INST;
     memset(gr, 0, stride_bytes);
     gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
-    gr[8] = bg[0]; gr[9] = bg[1]; gr[10] = bg[2]; gr[11] = 1.0f;
+    gr[8] = rw->clear ? 0.0f : bg[0];
+    gr[9] = rw->clear ? 0.0f : bg[1];
+    gr[10] = rw->clear ? 0.0f : bg[2];
+    gr[11] = rw->clear ? 0.0f : 1.0f;
     gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
   }
   ctx->Unmap(vbuf, 0);
@@ -3924,6 +4127,28 @@ int mb_render_snapshot(const wchar_t *path) {
       }
       px = out;
       stride = w * 4;
+    } else if (rw->clear) {
+      out = (uint8_t *)calloc((size_t)w * h, 4);
+      for (int y = 0; y < h; y++) {
+        const uint8_t *s = px + (size_t)y * stride;
+        uint8_t *d = out + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++, s += 4, d += 4) {
+          uint8_t a = s[3];
+          d[3] = a;
+          if (a == 0) {
+            d[0] = d[1] = d[2] = 0;
+          } else if (a == 255) {
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
+          } else {
+            for (int c = 0; c < 3; c++) {
+              int v = ((int)s[c] * 255 + (a / 2)) / a;
+              d[c] = (uint8_t)(v > 255 ? 255 : v);
+            }
+          }
+        }
+      }
+      px = out;
+      stride = w * 4;
     }
     ok = write_png(path, px, w, h, stride);
     free(out);
@@ -3931,6 +4156,44 @@ int mb_render_snapshot(const wchar_t *path) {
   }
   staging->Release();
   return ok;
+}
+
+extern "C" int mb_render_snap_win(int wid, const wchar_t *path) {
+  if (wid < 0 || wid >= MB_WINS || !dev || !path) return 0;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  int ok = 0;
+  if (last_inst && fb_w > 0 && fb_h > 0 && fill_vbuf(last_inst, last_count, last_bg)) {
+    ok = mb_render_snapshot(path);
+  }
+  rw = back;
+  if (last_inst) fill_vbuf(last_inst, last_count, last_bg);
+  return ok;
+}
+
+extern "C" int mb_render_pictures_missing(void) { return pictures_missing; }
+
+// Waits for the GPU to finish queued work (e.g. a window's first frame before reveal) using a reusable event query.
+extern "C" void mb_render_finish(void) {
+  static ID3D11Query *q;
+  static ID3D11Device *q_dev;
+  static HANDLE nap;
+  if (!dev || !ctx) return;
+  if (q && q_dev != dev) q->Release(), q = NULL;
+  if (!q) {
+    D3D11_QUERY_DESC qd = {D3D11_QUERY_EVENT, 0};
+    if (FAILED(dev->CreateQuery(&qd, &q)) || !q) return;
+    q_dev = dev;
+  }
+  if (!nap) nap = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  ctx->End(q);
+  ctx->Flush();
+  for (int i = 0; i < 4000 && ctx->GetData(q, NULL, 0, 0) == S_FALSE; i++) {
+    LARGE_INTEGER due;
+    due.QuadPart = -2500;  // 250 us
+    if (nap && SetWaitableTimer(nap, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(nap, 5);
+    else Sleep(0);
+  }
 }
 
 // The offscreen target as its frames left it (not the last frame drawn again: what drawing only the parts that differ

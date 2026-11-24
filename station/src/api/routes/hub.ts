@@ -43,6 +43,7 @@ import { sessionSeen } from "../seen.ts";
 import { runtimeKind } from "../../agents/runtime.ts";
 import { contextAsked } from "../../sessions/context-cap.ts";
 import { regenerateTitle, TitleError } from "../../sessions/regenerate-title.ts";
+import { inferSelectionIntent, IntentError } from "../../sessions/selection-intent.ts";
 
 /// A hub error the Rust maps to a status (`map_err(|e| http_error(status, e.to_string()))`).
 async function as<T>(status: number, f: () => T | Promise<T>): Promise<T> {
@@ -254,7 +255,7 @@ export function quotesOf(given: unknown): Quote[] {
     const o = q !== null && typeof q === "object" && !Array.isArray(q) ? (q as Record<string, unknown>) : {};
     const quote: Quote = { author: field(o, "author", "消息", 100), text: field(o, "text", "", 4000), comment: field(o, "comment", "", 4000) };
     if (typeof o.ts === "string" && /^[0-9]+\.[0-9]+$/.test(o.ts)) quote.ts = o.ts;
-    if (typeof o.role === "string" && ["agent", "person", "page", "image", "pdf"].includes(o.role)) quote.role = o.role;
+    if (typeof o.role === "string" && ["agent", "person", "page", "image", "pdf", "file"].includes(o.role)) quote.role = o.role;
     if (typeof o.file === "string" && o.file !== "") quote.file = chars(o.file, 200);
     if (quote.text.trim() !== "") out.push(quote);
   }
@@ -384,7 +385,7 @@ export const routes = (tools: Tools): Route[] => {
         const workspace = dirname(owner.dir);
         const room = await roomOfSoon(a.hub.config().dataDir, workspace);
         if (room !== null) {
-          const bytes = await withLock(room, () => workspaceFile(room, path.slice(workspace.length + 1)));
+          const bytes = await withLock(room, () => workspaceFile(room, path.slice(workspace.length + 1), { program: tools.packed }));
           if (bytes !== null) {
             await mkdir(dirname(path), { recursive: true });
             await writeFile(path, bytes);
@@ -429,6 +430,30 @@ export const routes = (tools: Tools): Route[] => {
           throw e;
         }
         return threadView(r, t.id);
+      }),
+    },
+    {
+      method: "POST",
+      pattern: /^\/*threads\/+([^/]+)\/+selection-intent\/*$/,
+      handle: (r, [raw]) => write(async (s, a) => {
+        const t = thread(s, segment(raw!));
+        const i = input(r);
+        const selection = said(i.selection).trim();
+        if (selection === "") throw new Refused(400, tr(r.lang, "station.intent.empty"));
+        const members = s.threadSessions(t.id).map((m) => s.getSession(m.session))
+          .filter((row): row is SessionRow => row !== null && sessionSeen(s, r.viewer, row.key));
+        try {
+          const result = await inferSelectionIntent(a.hub, t.id, members, {
+            selection,
+            messageTs: str(i.messageTs),
+            author: str(i.author),
+            lang: r.lang,
+          });
+          return ok(result);
+        } catch (e) {
+          if (e instanceof IntentError) throw new Refused(400, tr(r.lang, `station.intent.${e.problem}`));
+          throw e;
+        }
       }),
     },
     // Hands the station a chat message as if the connect had received it (development stations, for those who manage

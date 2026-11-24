@@ -433,6 +433,10 @@ export function Plus(props: IconProps) {
   return <Svg {...props}><path d="M12 4.5V19.5 M4.5 12H19.5" /></Svg>;
 }
 
+export function Poke(props: IconProps) {
+  return <Svg {...props}><path d="M10 13V4.5a1.5 1.5 0 0 1 3 0V11" /><path d="M13 10.5a1.5 1.5 0 0 1 3 0V12" /><path d="M16 11.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-2a6 6 0 0 1-5.2-3l-2.1-3.6a1.4 1.4 0 0 1 2.2-1.7L10 15.5V13" /></Svg>;
+}
+
 export function Power(props: IconProps) {
   return <Svg {...props}><path d="M12 3.5V11 M7 5.5C4.5 7 3.5 9 3.5 12C3.5 17.5 6.5 20.5 12 20.5C17.5 20.5 20.5 17.5 20.5 12C20.5 9 19.5 7 17 5.5" /></Svg>;
 }
@@ -772,6 +776,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "play": Play,
   "plug": Plug,
   "plus": Plus,
+  "poke": Poke,
   "power": Power,
   "quota": Quota,
   "quote-open": QuoteOpen,

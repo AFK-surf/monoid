@@ -191,10 +191,87 @@ int32_t mb_host_image_load(moonbit_string_t s, int32_t max_px) {
   });
 }
 
+typedef void (*MBRawHook)(void *ctx, int op);
+
+static void raw_hook(const uint8_t *d, size_t n, int op) {
+  if (!d || n < 44 || memcmp(d, "MBRAWPTR", 8) != 0) return;
+  uint64_t fn = 0, ctx = 0;
+  memcpy(&fn, d + 28, 8);
+  memcpy(&ctx, d + 36, 8);
+  if (fn) ((MBRawHook)(uintptr_t)fn)((void *)(uintptr_t)ctx, op);
+}
+
+// Fast-path upload for zero-copy MBRAWPTR or top-down 32-bit BI_RGB BGRA BMP (matching win_image.cpp):
+// skips ImageIO encode/decode and uploads straight into a BGRA8 Metal texture.
+static BOOL decode_raw_bgra(int iid, const uint8_t *d, size_t n, int max_px) {
+  if (n >= 28 && memcmp(d, "MBRAWPTR", 8) == 0) {
+    uint64_t at = 0;
+    int32_t pw = 0, ph = 0, pitch = 0;
+    memcpy(&at, d + 8, 8);
+    memcpy(&pw, d + 16, 4);
+    memcpy(&ph, d + 20, 4);
+    memcpy(&pitch, d + 24, 4);
+    if (!at || pw <= 0 || ph <= 0 || pitch < pw * 4) {
+      finish(iid, -1, 0, 0, 0, 0, nil);
+      return YES;
+    }
+    MTLTextureDescriptor *td = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:(NSUInteger)pw height:(NSUInteger)ph mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> tex = [mb_render_device() newTextureWithDescriptor:td];
+    if (!tex) {
+      finish(iid, -1, 0, 0, 0, 0, nil);
+      return YES;
+    }
+    [tex replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)pw, (NSUInteger)ph)
+           mipmapLevel:0
+             withBytes:(const void *)(uintptr_t)at
+           bytesPerRow:(NSUInteger)pitch];
+    finish(iid, 1, pw, ph, pw, ph, tex);
+    return YES;
+  }
+  if (n < 54 || d[0] != 'B' || d[1] != 'M') return NO;
+  uint32_t off = 0, hsize = 0, comp = 0;
+  int32_t bw = 0, bh = 0;
+  uint16_t bits = 0;
+  memcpy(&off, d + 10, 4);
+  memcpy(&hsize, d + 14, 4);
+  memcpy(&bw, d + 18, 4);
+  memcpy(&bh, d + 22, 4);
+  memcpy(&bits, d + 28, 2);
+  memcpy(&comp, d + 30, 4);
+  if (hsize < 40 || bits != 32 || comp != 0 || bw <= 0 || bh >= 0) return NO;
+  int rw = bw, rh = -bh;
+  int rbig = rw > rh ? rw : rh;
+  if ((max_px > 0 && max_px < rbig && (rbig > 4096 || rbig > max_px * 2)) || off > n || (size_t)rw * rh * 4 > n - off)
+    return NO;
+  MTLTextureDescriptor *td = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:(NSUInteger)rw height:(NSUInteger)rh mipmapped:NO];
+  td.usage = MTLTextureUsageShaderRead;
+  id<MTLTexture> tex = [mb_render_device() newTextureWithDescriptor:td];
+  if (!tex) {
+    finish(iid, -1, 0, 0, 0, 0, nil);
+    return YES;
+  }
+  [tex replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)rw, (NSUInteger)rh)
+         mipmapLevel:0
+           withBytes:d + off
+         bytesPerRow:(NSUInteger)rw * 4];
+  finish(iid, 1, rw, rh, rw, rh, tex);
+  return YES;
+}
+
 int32_t mb_host_image_load_bytes(moonbit_bytes_t data, int32_t max_px) {
-  NSData *d = [NSData dataWithBytes:data length:Moonbit_array_length(data)];
+  size_t len = (size_t)Moonbit_array_length(data);
+  NSData *d = [NSData dataWithBytes:data length:len];
+  raw_hook((const uint8_t *)d.bytes, len, 1);
   return start(^(int iid) {
-    decode(iid, CGImageSourceCreateWithData((__bridge CFDataRef)d, NULL), max_px);
+    const uint8_t *bytes = (const uint8_t *)d.bytes;
+    BOOL handled = decode_raw_bgra(iid, bytes, len, max_px);
+    raw_hook(bytes, len, 0);
+    if (!handled) {
+      decode(iid, CGImageSourceCreateWithData((__bridge CFDataRef)d, NULL), max_px);
+    }
   });
 }
 
@@ -215,6 +292,15 @@ int32_t mb_host_image_pixels(int32_t iid, moonbit_bytes_t out) {
   if (!im || im.state != 1 || !im.tex) return 0;
   if ((size_t)Moonbit_array_length(out) < (size_t)im.w * im.h * 4) return 0;
   [im.tex getBytes:out bytesPerRow:(NSUInteger)im.w * 4 fromRegion:MTLRegionMake2D(0, 0, im.w, im.h) mipmapLevel:0];
+  if (im.tex.pixelFormat == MTLPixelFormatBGRA8Unorm) {
+    uint8_t *p = (uint8_t *)out;
+    size_t n = (size_t)im.w * im.h;
+    for (size_t i = 0; i < n; i++, p += 4) {
+      uint8_t b = p[0];
+      p[0] = p[2];
+      p[2] = b;
+    }
+  }
   return 1;
 }
 

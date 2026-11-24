@@ -668,3 +668,173 @@ test "picked_now_worked returns None when the selection's ending paragraph node 
   assert_eq(picked_now(), None, msg="ending paragraph is shown_nowhere so picked_now must be None")
   assert_eq(pill.val, None, msg="quote pill must not mount when ending paragraph is hidden")
 }
+
+///|
+test "words of the tree's picked with the mouse and let go, the pill over their end, then the words they end in laid out nowhere (a step folded away): picked_now none, the pill gone, what was picked kept for a copy" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  let folded = @signals.signal(false, same=fn(a, b) { a == b })
+  let pill : Ref[@view.NodeId?] = Ref(None)
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.padding(Is((0.0, 40.0, 0.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+      words_picked(page)
+      page.box(fn(m1) {
+        picked_of(m1, "m1") |> ignore
+        m1.box(fn(n) {
+          n
+          .width(Is(Some(280.0)))
+          .laid_nowhere(By(fn() { folded.get() }))
+          .words_runs(Is([plain("folded step words")]), ink=0x333333FFL, look~)
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      page.show(fn() { picked_now() is Some(p) && !p.finger }, fn(holds) {
+        guard @signals.untracked(fn() { picked_now() }) is Some(p) else { return }
+        holds.box(fn(b) {
+          pill.val = Some(b.id())
+          keeps_picked(b)
+          .width(Is(Some(50.0)))
+          .height(Is(Some(26.0)))
+          .ground(Is(0x112233FFL))
+          .beside(p.ends_in, side=Top, offset=8.0, piece=picked_end_piece(p))
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  let next = dragged_at(t, 1.0, 51.0, 120.0, 51.0, t.time(), true)
+  t.frame_at(next)
+  let kept = t.ctx().selected_text()
+  assert_true(kept.contains("folded"), msg=kept)
+  assert_true(picked_now() is Some(_))
+  let id = pill.val.unwrap()
+  let tree = view_app.val.unwrap()
+  assert_true(tree.drawn_of(id) is Some(_), msg="the pill over the end")
+  // (the step the words are in folded away, the page as it was)
+  folded.set(true)
+  t.draw()
+  t.draw()
+  assert_eq(picked_now(), None, msg="the words it ends in show nowhere: picked_now none")
+  assert_eq(tree.drawn_of(id), None, msg="the pill gone with it, not left where it last stood")
+  assert_eq(t.ctx().selected_text(), kept, msg="what was picked kept for a copy till a press elsewhere")
+}
+
+///|
+test "words of the tree's picked with the mouse, the pill over them: Escape lets them go, the pill with them; a node that takes Escape (a panel open over the page) takes it first, the pick kept" {
+  let took : Array[(String, Array[String])] = []
+  let pill : Ref[@view.NodeId?] = Ref(None)
+  let (t, _, _) = quote_tester(took, pill)
+  let tree = view_app.val.unwrap()
+  let next = dragged_at(t, 1.0, 51.0, 300.0, 51.0, t.time(), true)
+  t.frame_at(next)
+  assert_true(picked_now() is Some(_))
+  let id = pill.val.unwrap()
+  assert_true(tree.drawn_of(id) is Some(_))
+  t.key(key_escape)
+  t.draw()
+  assert_eq(picked_now(), None, msg="Escape: picked_now none")
+  assert_eq(t.ctx().selected_text(), "", msg="Escape: what was picked let go")
+  assert_eq(tree.drawn_of(id), None, msg="Escape: the pill gone")
+  // (a panel open that takes Escape: its, first)
+  let open = @signals.signal(true, same=fn(a, b) { a == b })
+  let t2 = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t2.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.padding(Is((0.0, 40.0, 0.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+      words_picked(page)
+      page.box(fn(n) { n.width(Is(Some(280.0))).words_runs(Is([plain("panel under words")]), ink=0x333333FFL, look~) |> ignore })
+      |> ignore
+      page.show(fn() { open.get() }, fn(holds) {
+        holds.box(fn(panel) {
+          panel
+          .width(Is(Some(100.0)))
+          .height(Is(Some(40.0)))
+          .on_key(fn(k) {
+            guard k.code == key_escape else { return false }
+            open.set(false)
+            true
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  t2.draw()
+  t2.drawn_now()
+  let next = dragged_at(t2, 1.0, 51.0, 120.0, 51.0, t2.time(), true)
+  t2.frame_at(next)
+  let kept = t2.ctx().selected_text()
+  assert_true(kept != "")
+  t2.key(key_escape)
+  t2.draw()
+  assert_eq((open.get(), t2.ctx().selected_text()), (false, kept), msg="the panel's Escape first, the pick kept")
+  t2.key(key_escape)
+  t2.draw()
+  assert_eq(t2.ctx().selected_text(), "", msg="then Escape lets the pick go")
+}
+
+///|
+test "words of the tree's picked with the mouse beside a column flung on by itself: a press on the column catches it and lets the pick go, as any press elsewhere does" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  let s = @view.Scroll::new()
+  set_view_app(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)).width(Is(Some(400.0))).height(Is(Some(300.0))) |> ignore
+      row.box(fn(page) {
+        page.width(Is(Some(200.0))).padding(Is((0.0, 40.0, 0.0, 0.0))) |> ignore
+        words_picked(page)
+        page.box(fn(n) { n.width(Is(Some(180.0))).words_runs(Is([plain("picked beside")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+      row.box(fn(col) {
+        col
+        .width(Is(Some(200.0)))
+        .height(Is(Some(300.0)))
+        .scrolls(s, fn(held) {
+          for _ in 0..<60 {
+            held.box(fn(r) { r.width(Is(Some(200.0))).height(Is(Some(40.0))).ground(Is(0x101010FFL)) |> ignore }) |> ignore
+          }
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // (the column flung by the mouse dragging it, let go moving)
+  let next = dragged_at(t, 300.0, 280.0, 300.0, 40.0, t.time(), true)
+  t.frame_at(next)
+  // (picked beside it as it goes on by itself)
+  let next = dragged_at(t, 1.0, 51.0, 100.0, 51.0, next + double_click_ms, true)
+  t.frame_at(next)
+  let kept = t.ctx().selected_text()
+  assert_true(kept != "" && picked_now() is Some(_), msg="picked")
+  let tree = view_app.val.unwrap()
+  assert_true(tree.glide_end_of(s.shown_by().unwrap().id().at) is Some(end) && end > next, msg="the column goes on by itself")
+  // (pressed on it on its way: caught)
+  t.fake.time = next + input_step_ms
+  finger(0, 300.0, 150.0)
+  t.frame_at(t.fake.time)
+  t.fake.time = t.fake.time + input_step_ms
+  finger(2, 300.0, 150.0)
+  t.frame_at(t.fake.time)
+  assert_eq(t.ctx().selected_text(), "", msg="the press that caught the column let the pick go")
+  assert_eq(picked_now(), None)
+}

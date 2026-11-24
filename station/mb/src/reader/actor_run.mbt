@@ -70,6 +70,8 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         a.cap_wait_notified = false
         a.force_session_cap = false
         self.remove_cap_wait(a.key)
+        self.cancel_mid_wait(a)
+        self.clear_silent_wait(a)
         if a.codex_update is Some(_) {
           a.codex_update = None
           self.set_running(a, false)
@@ -78,12 +80,12 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           self.let_go(a)
         }
       })
-    "postedNow" => self.enqueue(a, async fn() { a.posted = true })
+    "postedNow" => self.enqueue(a, async fn() { self.note_posted(a) })
     "postedForTurn" => {
       let id = str_of(Some(arg(0)))
       self.enqueue(a, async fn() {
         if a.turn.map(t => t.id) == id && id is Some(_) {
-          a.posted = true
+          self.note_posted(a)
         }
       })
     }
@@ -109,6 +111,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         guard a.turn is Some(t) else { return }
         t.declared = Some(state)
         self.declare_turn(a, t.id, Some(state))
+        self.on_declared(a, t, state)
         recorded = true
       })
       return jbool(recorded)
@@ -118,6 +121,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       let watch = arg(1)
       self.enqueue(a, async fn() {
         if a.turn is Some(t) {
+          t.wait_watch = truthy(watch)
           ignore(self.store(a, "setWaitFor", [jstr(t.id), what, watch]))
         }
       })
@@ -438,6 +442,7 @@ async fn Actors::state_for_turn(self : Actors, a : Actor, args : Array[Json]) ->
       }
     }
     t.declared = Some(state)
+    self.on_declared(a, t, state)
     recorded = true
   })
   if failure is Some(e) {
@@ -474,6 +479,7 @@ async fn Actors::undeclare(self : Actors, a : Actor) -> Unit raise {
   guard a.turn is Some(t) && t.declared is Some(d) else { return }
   self.log(a, "info", "a message read after the turn said its state: the state no longer stands", fields={ "was": d.value("kind").unwrap_or(Json::null()) })
   t.declared = None
+  self.cancel_mid_wait(a)
   self.declare_turn(a, t.id, None)
 }
 
@@ -487,6 +493,7 @@ async fn Actors::stop(self : Actors, a : Actor) -> Json raise {
   a.deferred_end = None
   a.warm = false
   self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
   a.tools_restarts = 0
   a.paused_cap = false
   a.cap_wait_notified = false
@@ -775,6 +782,9 @@ async fn Actors::take_wait(self : Actors, a : Actor) -> Unit raise {
     return
   }
   let seconds = num_of(last.value("waitSeconds")).unwrap_or(0.0)
+  if !retrying(last) && !(last.value("waitWatch") is Some(True)) && a.silent_waiting_since is None {
+    a.silent_waiting_since = Some(num_of(last.value("endedAt")).unwrap_or(self.now))
+  }
   self.log(a, "info", "taking up a wait on record", fields={ "seconds": jnum(seconds) })
   self.wait_ms(a, seconds, num_of(last.value("endedAt")).unwrap_or(0.0) + seconds * 1000.0 - self.now)
 }
@@ -881,6 +891,9 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
   self.enqueue(a, async fn() {
     if a.waiting is Some(_) && a.waiting_until <= self.now {
       self.wait_ms(a, a.waiting_seconds, 0.0)
+    }
+    if a.mid_waiting is Some(_) && a.mid_waiting_until <= self.now && a.turn is Some(t) {
+      self.arm_mid_wait(a, t.id, a.mid_waiting_seconds, 0.0)
     }
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
@@ -1053,6 +1066,8 @@ async fn Actors::clear_now(
     return Some(self.t(a, "station.context.empty"))
   }
   ignore(self.stop_waiting(a, say=false, keep_jobs~))
+  self.cancel_mid_wait(a)
+  self.clear_silent_wait(a)
   let agent = a.agent
   let background = match agent {
     Some(g) => self.agent_do(a, g, "background", [])
@@ -1107,6 +1122,8 @@ async fn Actors::suspend(self : Actors, a : Actor, why? : String = "the station 
     a.warm = false
     a.deferred_end = None
     self.cancel_tools_retry(a)
+    self.cancel_mid_wait(a)
+    self.clear_silent_wait(a)
     a.starting_turn = false
     a.queued_retry = None
     self.remove_turn_wait(a.key)
@@ -1184,6 +1201,10 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
     "notices": Json::array(a.notices.map(jstr)),
     "waitingMs": if a.waiting is Some(_) { jnum(max0(a.waiting_until - self.now)) } else { Json::null() },
     "waitingSeconds": jnum(a.waiting_seconds),
+    "midWaitingMs": if a.mid_waiting is Some(_) { jnum(max0(a.mid_waiting_until - self.now)) } else { Json::null() },
+    "midWaitingSeconds": jnum(a.mid_waiting_seconds),
+    "silentWaitingMs": match a.silent_waiting_since { Some(s) => jnum(max0(self.now - s)); None => Json::null() },
+    "progressRemindedMs": if a.progress_reminded_at > 0.0 { jnum(max0(self.now - a.progress_reminded_at)) } else { Json::null() },
     "nudges": jnum(a.nudges.to_double()),
     "toolsRestarts": jnum(a.tools_restarts.to_double()),
     "toolsRetryMs": if a.tools_retry is Some(_) { jnum(max0(a.tools_retry_at - self.now)) } else if a.tools_retry_deferred { jnum(0.0) } else { Json::null() },
@@ -1236,6 +1257,8 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
         started_at: self.now,
         first_live_at: None,
         tools_count: 0,
+        last_tool_at: self.now,
+        wait_watch: false,
       })
     _ => None
   }
@@ -1270,6 +1293,29 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
   if num_of(snap.value("waitingMs")) is Some(ms) {
     self.wait_ms(a, num_of(snap.value("waitingSeconds")).unwrap_or(0.0), ms)
   }
+  if num_of(snap.value("silentWaitingMs")) is Some(ms) {
+    a.silent_waiting_since = Some(self.now - ms)
+  }
+  if num_of(snap.value("progressRemindedMs")) is Some(ms) {
+    a.progress_reminded_at = self.now - ms
+  }
+  if a.turn is Some(t) && kind_of(t.declared) == Some("waiting") {
+    let secs = match num_of(snap.value("midWaitingSeconds")) {
+      Some(s) if s > 0.0 => s
+      _ => num_of(t.declared.unwrap().value("seconds")).unwrap_or(0.0)
+    }
+    let ms = match num_of(snap.value("midWaitingMs")) {
+      Some(m) => m
+      None => secs * 1000.0
+    }
+    if secs > 0.0 {
+      let elapsed = secs * 1000.0 - ms
+      if elapsed > 0.0 {
+        t.last_tool_at = self.now - elapsed
+      }
+      self.arm_mid_wait(a, t.id, secs, ms)
+    }
+  }
   if num_of(snap.value("refillMs")) is Some(ms) {
     self.await_refill(a, self.now + ms)
   }
@@ -1290,6 +1336,8 @@ fn Actors::close(self : Actors, a : Actor) -> Unit {
   a.warm = false
   a.deferred_end = None
   self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
+  self.clear_silent_wait(a)
   a.starting_turn = false
   a.queued_retry = None
   a.paused_cap = false
@@ -1386,11 +1434,16 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
     }
     let n = a.notices.length()
     guard self.format_notices(a, a.notices) is Some(text) else { return }
-    let (handed, told) = self.with_choices(a, text)
+    let (reminder, reminded) = self.maybe_progress_reminder(a)
+    let body = match reminder { Some(r) => text + "\n\n" + r; None => text }
+    let (handed, told) = self.with_choices(a, body)
     // (taken once written: one not taken stays as it was, given with the next turn)
     if truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))])) {
       ignore(drain_notices(a, n))
       self.told(a, told)
+      if reminded {
+        a.progress_reminded_at = self.now
+      }
     }
     return
   }
@@ -1417,7 +1470,12 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
   // fails, times out, waits for room, is suspended or handed over keeps them for its next turn)
   let n = a.notices.length()
   if self.format_notices(a, a.notices) is Some(text) {
-    self.start_turn(a, "job", text, notices_taken=n)
+    let (reminder, reminded) = self.maybe_progress_reminder(a)
+    let body = match reminder { Some(r) => text + "\n\n" + r; None => text }
+    self.start_turn(a, "job", body, notices_taken=n)
+    if reminded {
+      a.progress_reminded_at = self.now
+    }
   }
 }
 
@@ -1716,6 +1774,7 @@ fn Actors::on_live(self : Actors, a : Actor, event : Json) -> Unit {
     }
     if kind == "start" && str_of(event.value("step")) == Some("tool") {
       t.tools_count += 1
+      t.last_tool_at = self.now
     }
   }
   if a.working_for.length() == 0 {
@@ -2099,6 +2158,10 @@ async fn Actors::refused_thread(self : Actors, a : Actor) -> Unit raise {
 async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, passive? : Bool = false, fresh? : Bool = false) -> Unit raise {
   a.queued_retry = None
   self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
+  if kind == "input" {
+    self.clear_silent_wait(a)
+  }
   if fresh || kind == "input" || kind == "job" {
     a.last_said = ""
     a.posted = false
@@ -2106,7 +2169,7 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json, 
   let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
   let asked_before = if kind == "job" { self.asked_now(a) } else { None }
   let is_passive = passive || kind == "title" || kind == "nudge"
-  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before, started_at: self.now, first_live_at: None, tools_count: 0 })
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", passive: is_passive, by, asked_before, started_at: self.now, first_live_at: None, tools_count: 0, last_tool_at: self.now, wait_watch: false })
   a.deferred_end = None
   a.warm = false
   a.phase = "running"
@@ -2698,6 +2761,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   self.idle_now(a)
   let turn = a.turn
   a.turn = None
+  self.cancel_mid_wait(a)
   if kind == "completed" && !a.stop_requested && turn is Some({ declared: None, .. }) {
     a.warm = true
   }
@@ -2825,6 +2889,17 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     if retry is Some(_) {
       ignore(self.store(a, "setWaitFor", [jstr(t.id), jstr(self.t(a, "station.wait.overloaded")), jbool(false)]))
     }
+  }
+  if kind == "completed" && kind_of(ends) == Some("waiting") && retry is None {
+    if turn is Some(t) {
+      if t.wait_watch {
+        self.clear_silent_wait(a)
+      } else {
+        self.track_silent_wait(a, t)
+      }
+    }
+  } else if kind != "completed" || kind_of(ends) is Some(_) {
+    self.clear_silent_wait(a)
   }
   // (a turn that said nothing, its process never having reached the station's tools at all: Antigravity CLI tells
   // nothing of an MCP server it could not connect, so no call of one failed; Node keeps what its token made, `toolsUnheard`)
@@ -3320,6 +3395,8 @@ async fn Actors::stop_waiting(self : Actors, a : Actor, say? : Bool = true, keep
   let waited = a.waiting is Some(_) || refill
   a.waiting = None
   a.refill = None
+  self.cancel_mid_wait(a)
+  self.clear_silent_wait(a)
   if a.phase == "waiting" {
     a.phase = "idle"
   }
@@ -3366,6 +3443,8 @@ async fn Actors::let_go(self : Actors, a : Actor) -> Unit raise {
   a.deferred_end = None
   a.warm = false
   self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
+  self.clear_silent_wait(a)
   self.mirror(a)
   a.nudges = 0
   let waited = a.waiting is Some(_)
@@ -3421,7 +3500,162 @@ async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Doubl
     return self.wait_ms(a, seconds, seconds * 1000.0)
   }
   self.log(a, "info", "the wait is over without word; asking again", fields={ "seconds": jnum(seconds) })
-  self.start_turn(a, "nudge", self.words(a, "waitOver", args=[jnum(seconds)]), fresh=true)
+  let base = self.words(a, "waitOver", args=[jnum(seconds)])
+  let (reminder, reminded) = self.maybe_progress_reminder(a)
+  let body = match reminder { Some(r) => base + "\n\n" + r; None => base }
+  self.start_turn(a, "nudge", body, fresh=true)
+  if reminded {
+    a.progress_reminded_at = self.now
+  }
+}
+
+///|
+/// How long a continuous waiting chain may go without posting in the chat before the next wakeup asks for a brief
+/// progress update (10 minutes).
+let progress_remind_ms : Double = 600000.0
+
+///|
+fn Actors::note_posted(self : Actors, a : Actor) -> Unit {
+  a.posted = true
+  a.last_post_at = self.now
+  if a.silent_waiting_since is Some(_) {
+    a.silent_waiting_since = Some(self.now)
+    a.progress_reminded_at = 0.0
+  }
+}
+
+///|
+fn Actors::clear_silent_wait(self : Actors, a : Actor) -> Unit {
+  ignore(self)
+  a.silent_waiting_since = None
+  a.progress_reminded_at = 0.0
+}
+
+///|
+fn Actors::track_silent_wait(self : Actors, a : Actor, t : Turn) -> Unit {
+  ignore(self)
+  if a.silent_waiting_since is None {
+    let since = if a.posted && a.last_post_at > 0.0 { a.last_post_at } else { t.started_at }
+    a.silent_waiting_since = Some(since)
+    a.progress_reminded_at = 0.0
+  }
+}
+
+///|
+/// When a session in a continuous waiting chain has not posted to the chat for at least `progress_remind_ms` (and has
+/// not been reminded within that same interval), returns a brief reminder to append to the next wakeup.
+async fn Actors::maybe_progress_reminder(self : Actors, a : Actor) -> (String?, Bool) raise {
+  guard a.silent_waiting_since is Some(since) else { return (None, false) }
+  let silent_ms = self.now - since
+  if silent_ms < progress_remind_ms {
+    return (None, false)
+  }
+  if a.progress_reminded_at > 0.0 && self.now - a.progress_reminded_at < progress_remind_ms {
+    return (None, false)
+  }
+  let minutes = (silent_ms / 60000.0).floor()
+  let words = self.words(a, "silentProgress", args=[jnum(minutes)]) catch { _ => "" }
+  if words == "" {
+    return (None, false)
+  }
+  (Some(words), true)
+}
+
+///|
+/// Called when the running turn declares a state: arms a mid-turn fallback timer for `waiting` (so a runtime that keeps
+/// its prompt open while background work hangs still wakes on time) and cancels it for any other state.
+fn Actors::on_declared(self : Actors, a : Actor, t : Turn, state : Json) -> Unit {
+  if kind_of(Some(state)) == Some("waiting") {
+    let seconds = num_of(state.value("seconds")).unwrap_or(0.0)
+    t.last_tool_at = self.now
+    self.arm_mid_wait(a, t.id, seconds, seconds * 1000.0)
+    if !t.wait_watch {
+      self.track_silent_wait(a, t)
+    }
+  } else {
+    self.cancel_mid_wait(a)
+  }
+}
+
+///|
+fn Actors::cancel_mid_wait(self : Actors, a : Actor) -> Unit {
+  a.mid_waiting = None
+  a.mid_waiting_until = 0.0
+  a.mid_waiting_seconds = 0.0
+  if a.timers.get("mid_wait") is Some(cancel) {
+    cancel()
+    a.timers.remove("mid_wait")
+  }
+}
+
+///|
+fn Actors::arm_mid_wait(self : Actors, a : Actor, turn_id : String, seconds : Double, ms : Double) -> Unit {
+  if seconds <= 0.0 {
+    self.cancel_mid_wait(a)
+    return
+  }
+  a.mid_waits += 1
+  let wait = a.mid_waits
+  a.mid_waiting = Some(wait)
+  a.mid_waiting_until = self.now + ms
+  a.mid_waiting_seconds = seconds
+  self.timer(a, "mid_wait", ms, async fn() { self.fire_mid_wait(a, wait, turn_id, seconds) })
+}
+
+///|
+/// Wakes a turn that declared `waiting` and stayed open past its declared wait (e.g. a runtime whose prompt does not
+/// return while a background command is hung) by steering `waitOver` into the running turn.
+async fn Actors::fire_mid_wait(self : Actors, a : Actor, wait : Int, turn_id : String, seconds : Double) -> Unit raise {
+  if a.mid_waiting != Some(wait) {
+    return
+  }
+  if self.held(a) {
+    return
+  }
+  a.mid_waiting = None
+  a.mid_waiting_until = 0.0
+  a.mid_waiting_seconds = 0.0
+  if self.archived(a) || a.compacting {
+    return
+  }
+  guard a.turn is Some(t) && t.id == turn_id && kind_of(t.declared) == Some("waiting") else {
+    return
+  }
+  let last = self.last_turn(a)
+  if !(last.value("waitWatch") is Some(False)) && truthy(self.store(a, "hasSessionActiveWatch", [jstr(a.key)])) {
+    return self.arm_mid_wait(a, turn_id, seconds, seconds * 1000.0)
+  }
+  // Slide the deadline while the model is actively making tool calls inside the same turn.
+  let wait_ms = seconds * 1000.0
+  let idle_ms = self.now - t.last_tool_at
+  if idle_ms < wait_ms {
+    return self.arm_mid_wait(a, turn_id, seconds, wait_ms - idle_ms)
+  }
+  let was = a.agent
+  let busy = self.busy_of(a, was)
+  guard still(a, was) else { return }
+  guard a.turn is Some(t2) && t2.id == turn_id && kind_of(t2.declared) == Some("waiting") else {
+    return
+  }
+  guard busy && was is Some(agent) else { return }
+  self.log(a, "info", "a turn declared waiting did not end before its wait ran out; steering it to check", fields={ "seconds": jnum(seconds) })
+  let base = self.words(a, "waitOver", args=[jnum(seconds)])
+  let (reminder, reminded) = self.maybe_progress_reminder(a)
+  let body = match reminder { Some(r) => base + "\n\n" + r; None => base }
+  let (handed, told) = self.with_choices(a, body)
+  let steered = truthy(self.agent_do(a, agent, "steer", [jstr(self.timed(a, handed))]))
+  if steered {
+    self.told(a, told)
+    if reminded {
+      a.progress_reminded_at = self.now
+    }
+    if a.turn is Some(t3) && t3.id == turn_id && kind_of(t3.declared) == Some("waiting") {
+      t3.declared = None
+      self.declare_turn(a, t3.id, None)
+    }
+  } else {
+    self.log(a, "warn", "could not steer a running turn whose waiting timer ran out", fields={ "seconds": jnum(seconds), "runtime": jstr(a.runtime) })
+  }
 }
 
 ///|
