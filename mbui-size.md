@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6641932f7](https://github.com/AFK-surf/monoid/commit/6641932f70c050d192449ce0bfb0d9cc7c668cce) fix(mbui): grow the soft scroll edge's blur as r²  | 2.78 | 3.74 | 15.16 | 37.37 | 57.71 | 32.72 | 66.65 | 100.62 | 126.7 |
 | [2d8645beb](https://github.com/AFK-surf/monoid/commit/2d8645beb6916175cbb7e43b09d3085d2e8ef566) feat(ui): add transparent/borderless child windows | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.72 | 66.65 | 100.62 | 127.5 |
 | [6d4fc31f6](https://github.com/AFK-surf/monoid/commit/6d4fc31f68db2092d7962d29f6ae0e2f15510012) fix(mbui): keep the history header model picker in | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.71 | 66.62 | 100.6 | 127.13 |
 | [434f6f625](https://github.com/AFK-surf/monoid/commit/434f6f62557761a0b68c98b0376b26b10666eec3) fix(ui,mbui): P0 Regular Liquid Glass optics fix a | 2.78 | 3.74 | 15.16 | 37.37 | 57.7 | 32.71 | 66.62 | 100.6 | 127.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.76 | 130.62 |
 | [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 | [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
-| [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 2.75 | 3.7 | 14.99 | 37.19 | 57.13 | 32.57 | 66.21 | 100.65 | 127.91 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6641932f7](https://github.com/AFK-surf/monoid/commit/6641932f70c050d192449ce0bfb0d9cc7c668cce) fix(mbui): grow the soft scroll edge's blur as r²  | 0.56 | 0.73 | 2.84 | 3.84 | 7.05 | 2.09 | 5.81 | 57.84 |
 | [2d8645beb](https://github.com/AFK-surf/monoid/commit/2d8645beb6916175cbb7e43b09d3085d2e8ef566) feat(ui): add transparent/borderless child windows | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.41 |
 | [6d4fc31f6](https://github.com/AFK-surf/monoid/commit/6d4fc31f68db2092d7962d29f6ae0e2f15510012) fix(mbui): keep the history header model picker in | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.09 | 5.81 | 57.66 |
 | [434f6f625](https://github.com/AFK-surf/monoid/commit/434f6f62557761a0b68c98b0376b26b10666eec3) fix(ui,mbui): P0 Regular Liquid Glass optics fix a | 0.56 | 0.73 | 2.84 | 3.85 | 7.05 | 2.08 | 5.79 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6cf351e14](https://github.com/AFK-surf/monoid/commit/6cf351e14d21cba606962a811f16795d4f1b1a71) fix(cloud,mbui): polish mobile sign-in, empty-work | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.49 |
 | [d9b612828](https://github.com/AFK-surf/monoid/commit/d9b612828bb58cf9c93d5bff0874a50988666bbf) fix(pion-views): pass now_ms to MdStore::get in pr | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.79 |
 | [d560d6d15](https://github.com/AFK-surf/monoid/commit/d560d6d156b22839338d1b11f92355afb8528fe0) perf(station): keep GET /profiles/pace's reads to  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.56 |
-| [3a1008e52](https://github.com/AFK-surf/monoid/commit/3a1008e520a376650db65262f02e21aa52ef5f3e) fix(station): let Claude Code skip permissions on  | 0.55 | 0.72 | 2.82 | 3.84 | 7 | 2.07 | 5.76 | 57.57 |
