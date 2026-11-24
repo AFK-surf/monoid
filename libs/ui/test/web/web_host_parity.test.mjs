@@ -11,7 +11,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/host.js', import.meta.url), 'utf8');
 
-function browser() {
+function browser({ deferLoad = false } = {}) {
   const element = () => ({
     style: {}, listeners: new Map(), attrs: {},
     addEventListener(name, f) { this.listeners.set(name, [...(this.listeners.get(name) || []), f]); },
@@ -34,6 +34,7 @@ function browser() {
   const fonts = new Set();
   const installed = new Set();
   const made = [];
+  const pending = [];
   class FontFace {
     constructor(family, src, descriptors) {
       Object.assign(this, { family, src, ...descriptors });
@@ -41,7 +42,10 @@ function browser() {
     }
     load() {
       // (a face's bytes, as the app gives its own: loaded)
-      if (typeof this.src !== 'string') return Promise.resolve(this);
+      if (typeof this.src !== 'string') {
+        if (deferLoad) return new Promise((resolve) => { pending.push(() => resolve(this)); });
+        return Promise.resolve(this);
+      }
       const names = [...String(this.src).matchAll(/local\("([^"]+)"\)/g)].map((m) => m[1]);
       return names.some((n) => installed.has(n)) ? Promise.resolve(this) : Promise.reject(new Error('no such font'));
     }
@@ -93,7 +97,7 @@ function browser() {
     return out;
   };
   return { H, win, document, theme, location, insets, visualViewport, timers, frames, clock, said, event, taken,
-    backs: () => backs, fonts, installed, made, fontsSet };
+    backs: () => backs, fonts, installed, made, pending, fontsSet };
 }
 
 const task = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -251,7 +255,7 @@ test('a face\'s CJK companion by the families given, the step said; none the sys
   assert.equal(b.H.atlasGeneration(), gen);
   assert.equal(asked, 0);
   assert.equal(b.H.setCjkFace(0, 100, []), false, 'no such face');
-  assert.equal(b.H.setCjkFace(16, 100, []), false, 'no such face');
+  assert.equal(b.H.setCjkFace(32, 100, []), false, 'no such face');
 });
 
 test('a face\'s CJK companion asked again takes the place of the one before; cleared with its face', async () => {
@@ -294,4 +298,55 @@ test('a face\'s CJK companion narrow among Latin letters as its face is (pwid), 
   assert.deepEqual(now.map((f) => [f.weight, f.featureSettings, f.src.slice(0, 27)]),
     [['400', '"pwid" 1', 'local("PingFang SC Regular"'], ['500', '"pwid" 1', 'local("PingFang SC Medium")']],
     'the one before gone, the new narrow too');
+});
+
+test('same-frame faceAddBytes + faceSetLigatures(face, false) registers face once ligature-off FontFace resolves', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  b.H.faceAddBytes(3, new Uint8Array(4), 400);
+  b.H.faceSetLigatures(3, false);
+  assert.equal(b.pending.length, 2, 'initial load + ligature-off reload');
+  // Resolve both controlled promises: first is stale due to gen bump; second must register face 3 in faces
+  b.pending[0]();
+  b.pending[1]();
+  await task();
+  await task();
+  assert.match(fontOf(b, 3 << 8), /"mbface3"/, 'face 3 active after faceSetLigatures reload');
+  assert.ok([...b.fonts].some((f) => f.family === 'mbface3' && /"calt" 0/.test(f.featureSettings || '')));
+});
+
+test('style_serif | style_words stays serif even when face_text (slot 2) is loaded', async () => {
+  const b = browser();
+  await task();
+  b.H.faceAddBytes(2, new Uint8Array(4), 400);
+  await task();
+  assert.match(fontOf(b, 16), /"mbface2"/, 'style_words alone uses face_text');
+  assert.equal(fontOf(b, 4 | 16).includes('mbface2'), false, 'style_serif | style_words exempt from face_text');
+});
+
+test('slot 8 dual-weight faceAddBytes keeps both 400 and 600 in document.fonts regardless of resolution order', async () => {
+  for (const order of [[0, 1], [1, 0]]) {
+    const b = browser({ deferLoad: true });
+    await task();
+    b.H.faceAddBytes(8, new Uint8Array(4), 400);
+    b.H.faceAddBytes(8, new Uint8Array(4), 600);
+    assert.equal(b.pending.length, 2);
+    b.pending[order[0]]();
+    await task();
+    b.pending[order[1]]();
+    await task();
+    const weights = [...b.fonts].filter((f) => f.family === 'mbface8').map((f) => f.weight).sort();
+    assert.deepEqual(weights, ['400', '600'], `order ${order.join(',')} keeps both weights`);
+  }
+});
+
+test('slot >= 7 async faceAddBytes completion bumps atlasGeneration so MoonBit reshapes off fallback', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  const gen0 = b.H.atlasGeneration();
+  b.H.faceAddBytes(10, new Uint8Array(4), 400);
+  assert.equal(b.pending.length, 1);
+  b.pending[0]();
+  await task();
+  assert.ok(b.H.atlasGeneration() > gen0, 'atlasGeneration bumped after async preview font load');
 });

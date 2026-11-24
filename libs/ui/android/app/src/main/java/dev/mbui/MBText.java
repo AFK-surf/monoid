@@ -236,19 +236,22 @@ final class MBText {
     }
 
     /** The faces given (faceAdd, style.mbt): each a list of font files (a File, or a direct ByteBuffer of one) and the weight each is for (0: variable). */
-    static final int FACES = 16;
+    static final int FACES = 32;
+    static final int FACE_TRY = 7;
     @SuppressWarnings("unchecked")
     static final ArrayList<Object>[] faceFiles = new ArrayList[FACES];
     @SuppressWarnings("unchecked")
     static final ArrayList<Integer>[] faceWeights = new ArrayList[FACES];
+    static final boolean[] faceNoLig = new boolean[FACES];
+    static final int[] faceGen = new int[FACES];
 
     /** The face a style is set in: the one it names; else code's, what people wrote's, the app's words' (not the serif face's); 0 none. */
     static int faceId(int style) {
-        int f = (style >> 8) & 15;
+        int f = (style >> 8) & 31;
         if (f > 0) return given(f) ? f : 0;
         if ((style & 2) != 0) return given(3) ? 3 : 0;
-        if ((style & 16) != 0 && given(2)) return 2;
         if ((style & 4) != 0) return 0;
+        if ((style & 16) != 0 && given(2)) return 2;
         return given(1) ? 1 : 0;
     }
 
@@ -295,7 +298,7 @@ final class MBText {
      * one (4), what people wrote (16), italic (1). Not letter spacing (8), tabular digits (32) or narrow marks (64),
      * which are the paint's font features, nor the size, the paint's too: fonts of every size and feature share one.
      */
-    static final int TYPEFACE_STYLE = 0xF17;
+    static final int TYPEFACE_STYLE = 0x1F17;
 
     /** A typeface's key: the faces' generation, the style bits it is chosen by and its weight. */
     static long typefaceKey(int facesGen, int style, int weight) {
@@ -344,7 +347,7 @@ final class MBText {
         }
         faceFiles[f].add(src);
         faceWeights[f].add(weight);
-        facesChanged();
+        faceChanged(f);
         return true;
     }
 
@@ -360,20 +363,39 @@ final class MBText {
     }
 
     static synchronized void faceClear(int f) {
-        if (f <= 0 || f >= FACES || !given(f)) return;
+        if (f <= 0 || f >= FACES) return;
+        faceNoLig[f] = false;
+        if (!given(f)) return;
         faceFiles[f].clear();
         faceWeights[f].clear();
-        facesChanged();
+        faceChanged(f);
+    }
+
+    static synchronized void faceSetLigatures(int f, boolean on) {
+        if (f <= 0 || f >= FACES) return;
+        boolean noLig = !on;
+        if (faceNoLig[f] == noLig) return;
+        faceNoLig[f] = noLig;
+        faceChanged(f);
     }
 
     /** What was measured and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on). */
-    static void facesChanged() {
+    static void faceChanged(int f) {
         paints.clear();
         lastPaint = null;
         typefaces.clear();
+        lastClusters = null;
+        if (f >= FACE_TRY && f < FACES) {
+            faceGen[f]++;
+            return;
+        }
         faces++;
         reset();
         keysStale = true;
+    }
+
+    static void facesChanged() {
+        faceChanged(0);
     }
 
     static Paint paint(float size, int weight, int style) {
@@ -399,7 +421,9 @@ final class MBText {
             // style & 32 (style.mbt style_tabular); a CJK face's marks narrow among Latin letters where style & 64
             // (style_proportional)
             StringBuilder fs = new StringBuilder();
-            if ((style & 8) != 0) fs.append(", 'liga' 0, 'clig' 0");
+            int f = faceId(style);
+            if (f > 0 && faceNoLig[f]) fs.append(", 'calt' 0, 'liga' 0, 'clig' 0");
+            else if ((style & 8) != 0) fs.append(", 'liga' 0, 'clig' 0");
             if ((style & 32) != 0) fs.append(", 'tnum' 1");
             if ((style & 64) != 0) fs.append(", 'pwid' 1");
             String features = fs.length() > 0 ? fs.substring(2) : "";
@@ -730,7 +754,8 @@ final class MBText {
 
     /** A font's clusters and their keys. */
     static Clusters clusters(float size, int weight, int style) {
-        long k = fontKey(size, weight, style);
+        int slot = (style >>> 8) & 31;
+        long k = fontKey(size, weight, style) ^ ((long) faceGen[slot] * 0x9E3779B97F4A7C15L);
         Clusters m = lastClusters;
         if (m != null && lastClustersKey == k) return m;
         m = keys.get(k);

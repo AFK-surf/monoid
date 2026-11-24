@@ -1006,6 +1006,8 @@ fn view_rich(
     max_lines: look.max_lines,
     faces: if set.words { faces_style(true, 0) } else { view_words_style(tabular~) },
     shaped_in: words_shaped_in.get(),
+    cjk_override: set.cjk,
+    code_cjk_override: set.code_cjk,
   }
 }
 

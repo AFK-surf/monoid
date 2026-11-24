@@ -661,6 +661,9 @@ fn tester_make(
     app_said: Map([]),
     app_told: [],
     local_fonts: "",
+    local_fonts_info: "",
+    face_ligatures: {},
+    host_autospace: true,
     families_given: {},
     unreadable_fonts: [],
     mods: 0,
@@ -1910,6 +1913,14 @@ pub fn Tester::set_app_said(self : Tester, name : String, said : String) -> Unit
 /// The font families installed here from now on, as a JSON array of their names (@ui.local_font_families); "" none.
 pub fn Tester::set_local_fonts(self : Tester, json : String) -> Unit {
   self.fake.local_fonts = json
+}
+
+///|
+/// Publish local font metadata JSON (@ui.local_font_info) and request a frame, simulating background scan completion.
+pub fn Tester::set_local_font_info(self : Tester, json : String) -> Unit {
+  self.fake.local_fonts_info = json
+  self.fake.wants = true
+  self.fake.paced = 0.0
 }
 
 ///|
