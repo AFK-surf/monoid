@@ -1765,7 +1765,7 @@ fn quotes_of(given : @jsjson.JValue?) -> Array[@jsjson.JValue] {
     if o.get("ts") is Some(Str(ts)) && ts_like(ts) {
       quote.push(("ts", Str(ts)))
     }
-    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image"].contains(role) {
+    if o.get("role") is Some(Str(role)) && ["agent", "person", "page", "image", "pdf"].contains(role) {
       quote.push(("role", Str(role)))
     }
     if o.get("file") is Some(Str(file)) && file.length() > 0 {
