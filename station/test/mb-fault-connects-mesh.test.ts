@@ -560,9 +560,15 @@ test("connects whose tokens Slack refuses (invalid_auth) say why in their state,
   // the refused socket asked again a backoff apart that doubles (slack/surface.mbt `connect_loop`, from a second), not
   // in a loop; a refused bot is asked again only as the connects are brought in line with the config (a change of it
   // or of the plane's word, connections.mbt `apply` as connections.ts's), never on a timer of its own
-  const gaps = socketAsks().slice(1).map((x, i) => x.at - socketAsks()[i]!.at);
-  assert.ok(gaps[0]! >= 800, `the first retry ${gaps[0]} ms after the refusal`);
-  for (let i = 1; i < gaps.length; i++) assert.ok(gaps[i]! >= gaps[i - 1]! * 1.5, `retries backing off: ${JSON.stringify(gaps)}`);
+  // each gap is checked against the schedule's floor, not the gap before it: start-up or CPU jitter only lengthens
+  // gaps[0], never shortens gaps[1], so a ratio of measured gaps fails on scheduling alone
+  const asks = socketAsks();
+  const gaps = asks.slice(1).map((x, i) => x.at - asks[i]!.at);
+  assert.ok(gaps.length >= 2, `expected at least two retry gaps: ${JSON.stringify(gaps)}`);
+  for (let i = 0; i < gaps.length; i++) {
+    const floor = Math.min(60_000, 1_000 * 2 ** i) * 0.8;
+    assert.ok(gaps[i]! >= floor, `retry ${i} backed off below ${floor} ms: ${JSON.stringify(gaps)}`);
+  }
   const bots = botAsks().length;
   assert.ok(bots >= 1);
   const quiet = Date.now();

@@ -449,9 +449,14 @@ test("Comma's socket refused with 409 says Comma's words in its state, asked aga
     return c !== undefined && c.state !== "connected" && /409/.test(JSON.stringify(c)) && JSON.stringify(c).includes(comma.why) ? c : null;
   }, said);
   assert.notEqual(refused.state, "connected", JSON.stringify(refused));
+  // each retry checked against the schedule's floor (1 s doubling to 60 s), not against the gap before it: a late
+  // timer lengthens one gap without shortening the next, so a ratio of measured gaps fails on scheduling alone
   const gaps = comma.upgrades.slice(1).map((u, i) => u.at - comma.upgrades[i]!.at);
-  assert.ok(gaps[0]! >= 800, `the first retry ${gaps[0]} ms after the refusal: ${said()}`);
-  for (let i = 1; i < gaps.length; i++) assert.ok(gaps[i]! >= gaps[i - 1]! * 1.5, `retries backing off: ${JSON.stringify(gaps)}`);
+  assert.ok(gaps.length >= 2, `expected at least two retry gaps: ${JSON.stringify(gaps)}; ${said()}`);
+  for (let i = 0; i < gaps.length; i++) {
+    const floor = Math.min(60_000, 1_000 * 2 ** i) * 0.8;
+    assert.ok(gaps[i]! >= floor, `retry ${i} backed off below ${floor} ms: ${JSON.stringify(gaps)}; ${said()}`);
+  }
   assert.equal((await http(s.door, "/admin-api/host")).status, 200, "the station serving while Comma refuses it");
 
   // ── taken once Comma lets it: connected, its requests answered ──
