@@ -400,19 +400,19 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   writeFileSync(join(failDir, "natives.r2.json"), JSON.stringify([
     { name: linuxName, sha256: linuxSha, chunks: [mkReceipt(0), mkReceipt(1)] },
   ]));
-  let siblingAborted = false;
+  let siblingAbortReason: unknown = null;
   globalThis.fetch = (async (at: string | URL, init?: RequestInit) => {
     const path = new URL(String(at)).pathname;
     if (path.endsWith("000000000000")) return new Response("missing", { status: 404 });
     return await new Promise<Response>((_, reject) => {
-      init?.signal?.addEventListener("abort", () => { siblingAborted = true; reject(init.signal!.reason); }, { once: true });
+      init?.signal?.addEventListener("abort", () => { siblingAbortReason = init.signal!.reason; reject(init.signal!.reason); }, { once: true });
     });
   }) as typeof fetch;
   await assert.rejects(
     () => restore(failDir, sha, { targets: "all", concurrency: 2, getTimeoutsMs: [10_000], backoffMs: () => 1 }),
     /HTTP 404/,
   );
-  assert.equal(siblingAborted, true, "sibling chunk fetch should abort immediately on fatal error");
+  assert.match(String(siblingAbortReason), /HTTP 404/, "sibling chunk fetch should abort with the 404 error, not TimeoutError");
 
   // CLI --targets flag works end-to-end and rejects unknown flags.
   const cliDir = mkdtempSync(join(tmpdir(), "native-handoff-cli-"));
