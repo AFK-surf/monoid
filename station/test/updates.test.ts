@@ -194,6 +194,7 @@ describe("updates", { concurrency: true }, () => {
   test("a version is read from what the command says", () => {
     assert.equal(versionIn("2.1.284 (Claude Code)"), "2.1.284");
     assert.equal(versionIn("codex-cli 0.46.0\n"), "0.46.0");
+    assert.equal(versionIn("GitHub Copilot CLI 1.0.114.\n"), "1.0.114");
     assert.equal(versionIn("nothing here"), null);
   });
 

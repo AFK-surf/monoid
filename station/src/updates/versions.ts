@@ -82,7 +82,7 @@ export function newer(current: string, latest: string): boolean {
 /// The first dotted version in what a command said ("2.1.284 (Claude Code)", "codex-cli 0.46.0").
 export function versionIn(text: string): string | null {
   for (const raw of text.split(/[\s(),]/)) {
-    const w = raw.replace(/^v+/, "");
+    const w = raw.replace(/^v+/, "").replace(/\.+$/, "");
     if (w.includes(".") && w.split(".").every((p) => p !== "" && /^[0-9]/.test(p))) return w;
   }
   return null;
