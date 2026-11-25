@@ -1,11 +1,33 @@
 // Only the test bundler imports this entry. Production exports no fixture routes.
-import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter } from "../src/index";
+import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter as ProductionTelemetryLimiter } from "../src/index";
 import { probeLines, relaySamples, seedConsole, SEED_RELAYS } from "./console-seed.ts";
 import { clock, signToken, nowSeconds, reply, readJson } from "../src/auth";
 import { sockets, type Delivery } from "../src/directory";
 import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
-export { LoginLimiter, ServiceStatus, TelemetryLimiter };
+export { LoginLimiter, ServiceStatus };
+
+export class TelemetryLimiter extends ProductionTelemetryLimiter {
+  #asked = 0;
+  #losing = 0;
+  /** The next `times` calls fail as ones whose object Cloudflare moved. */
+  lose(times: number) {
+    this.#losing = times;
+    this.#asked = 0;
+  }
+  /** How often it was asked since `lose`. */
+  asked() {
+    return this.#asked;
+  }
+  override consume(): boolean {
+    this.#asked++;
+    if (this.#losing > 0) {
+      this.#losing--;
+      throw new Error("Network connection lost.");
+    }
+    return super.consume();
+  }
+}
 
 export class RelayLoad extends ProductionRelayLoad {
   /** A day of the console's seeded relays' counters and what the probes found of them (dev.ts SEED=console). */
@@ -503,6 +525,11 @@ export default {
       later += Number((await readJson(request)).seconds) * 1000;
       return reply({ now: nowSeconds() });
     }
+    if (path === "/__test/cut-google") {
+      // Google Cloud's Telemetry API not reached (the fetch itself throws, which an outbound service cannot do), or again; answers the fetches cut so far.
+      googleCut = Boolean((await readJson(request)).cut);
+      return reply({ fetches: googleFetchesCut });
+    }
     if (path === "/__test/offline") {
       offline = !offline;
       return reply({ offline });
@@ -546,5 +573,16 @@ export default {
 };
 let offline = false;
 let loseRefreshResponse = false;
+
+let googleCut = false;
+let googleFetchesCut = 0;
+const networkFetch = globalThis.fetch;
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  if (googleCut && String(input instanceof Request ? input.url : input).startsWith("https://telemetry.googleapis.com/")) {
+    googleFetchesCut++;
+    return Promise.reject(new Error("Network connection lost."));
+  }
+  return networkFetch(input as RequestInfo, init);
+}) as typeof fetch;
 
 const deviceRequests: string[] = [];

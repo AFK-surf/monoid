@@ -110,12 +110,31 @@ export class TelemetryLimiter extends DurableObject<Env> {
   }
 }
 
+/**
+ * Whether `key`'s sender may send another batch this minute. Asked again on a new stub when the call to its object
+ * failed (Cloudflare moved or restarted the object), and let through when that failed too: the count it loses is one
+ * an eviction forgives as well. An answer of `false` is final.
+ */
+async function consumeTelemetryLimit(env: Env, key: string): Promise<boolean> {
+  try {
+    return await env.TELEMETRY_LIMITS.getByName(key).consume();
+  } catch {
+    // (asked again below; a stub whose call failed stays broken)
+  }
+  try {
+    return await env.TELEMETRY_LIMITS.getByName(key).consume();
+  } catch (error) {
+    console.warn(`telemetry limiter: ${errorMessage(error)}`);
+    return true;
+  }
+}
+
 type Resources = { resource?: { attributes?: unknown[] } }[];
 
 /**
  * A batch (OTLP JSON: `resourceSpans` or `resourceLogs`) sent to Google Cloud as GCP_TELEMETRY's service account, each
  * resource named with its project (`gcp.project_id`, which the Telemetry API files it under). False when there is no
- * account or Google did not take it.
+ * account, or Google did not take it or could not be reached: it never throws for the network's sake.
  */
 async function toGoogle(env: Env, kind: "traces" | "logs", value: { resourceSpans?: Resources; resourceLogs?: Resources }): Promise<boolean> {
   const account = serviceAccount(env.GCP_TELEMETRY);
@@ -125,17 +144,22 @@ async function toGoogle(env: Env, kind: "traces" | "logs", value: { resourceSpan
     const kept = (Array.isArray(resource.resource.attributes) ? resource.resource.attributes : []).filter((a) => (a as { key?: string })?.key !== "gcp.project_id");
     resource.resource.attributes = [...kept, { key: "gcp.project_id", value: { stringValue: account.project_id } }];
   }
-  const token = await accessToken(account, SCOPE);
-  if (!token) return false;
-  const response = await fetch(`${TELEMETRY}/${kind}`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify(value),
-  });
-  if (response.status === 401) dropToken(account, SCOPE);
-  if (!response.ok) console.warn(`telemetry ${kind}: ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
-  else await response.body?.cancel();
-  return response.ok;
+  try {
+    const token = await accessToken(account, SCOPE);
+    if (!token) return false;
+    const response = await fetch(`${TELEMETRY}/${kind}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(value),
+    });
+    if (response.status === 401) dropToken(account, SCOPE);
+    if (!response.ok) console.warn(`telemetry ${kind}: ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
+    else await response.body?.cancel();
+    return response.ok;
+  } catch (error) {
+    console.warn(`telemetry ${kind}: ${errorMessage(error)}`);
+    return false;
+  }
 }
 
 const hex = (bytes: ArrayBuffer | Uint8Array) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -169,7 +193,7 @@ export async function receiveTraces(request: Request, env: Env, account: string 
   }
   const sender = account ? `account:${account}` : await stationSender(request, env, body).then((s) => (s ? `station:${s}` : null));
   if (!sender) return reply({ error: "invalid_session" }, 401);
-  if (!(await env.TELEMETRY_LIMITS.getByName(sender).consume())) return reply({ error: "rate_limited" }, 429, { "retry-after": "60" });
+  if (!(await consumeTelemetryLimit(env, sender))) return reply({ error: "rate_limited" }, 429, { "retry-after": "60" });
   let spans = 0;
   let value: { resourceSpans?: { resource?: { attributes?: unknown[] }; scopeSpans?: { spans?: unknown[] }[] }[] };
   try {
@@ -232,7 +256,7 @@ export async function receiveLogs(request: Request, env: Env): Promise<Response>
   }
   const station = await stationSender(request, env, body);
   if (!station) return reply({ error: "invalid_session" }, 401);
-  if (!(await env.TELEMETRY_LIMITS.getByName(`station:${station}`).consume())) return reply({ error: "rate_limited" }, 429, { "retry-after": "60" });
+  if (!(await consumeTelemetryLimit(env, `station:${station}`))) return reply({ error: "rate_limited" }, 429, { "retry-after": "60" });
   let records = 0;
   let value: { resourceLogs?: { resource?: { attributes?: unknown[] }; scopeLogs?: { logRecords?: unknown[] }[] }[] };
   try {

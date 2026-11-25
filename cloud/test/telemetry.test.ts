@@ -570,3 +570,76 @@ test("telemetry's own calls refused, failing or slow are never a trace or a line
     await h.close();
   }
 });
+
+const logBatch = () => JSON.stringify({ resourceLogs: [{ resource: { attributes: [] }, scopeLogs: [{ scope: { name: "stillfail-station" }, logRecords: [{ timeUnixNano: "1", severityText: "INFO", body: { stringValue: "client connected" } }] }] }] });
+
+/** Both calls a batch comes by, each as a sender of its own: how one is sent, and the sender its budget is kept by. */
+async function senders(h: Harness) {
+  const tokens = await h.login("alice");
+  const { sub } = JSON.parse(Buffer.from(tokens.access_token.split(".")[1]!, "base64url").toString());
+  const station = await enrolled(h);
+  return [
+    { limiter: `account:${sub}`, send: () => post(h, batch(), { authorization: `Bearer ${tokens.access_token}` }) },
+    {
+      limiter: `station:${station.id}`,
+      send: async () => {
+        const body = logBatch();
+        return h.fetch("/v1/telemetry/logs", { method: "POST", headers: { "content-type": "application/json", ...(await signed(h, station, body)) }, body });
+      },
+    },
+  ];
+}
+
+test("Google not reached: a batch is refused (502), never an unhandled error logged through telemetry", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  const cut = async (on: boolean) => ((await (await h.fetch("/__test/cut-google", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cut: on }) })).json()) as any).fetches as number;
+  try {
+    const both = await senders(h);
+    await cut(true);
+    for (const { send } of both) {
+      const response = await send();
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { error: "telemetry_unavailable" });
+    }
+    assert.equal(await cut(false), 2, "each batch tried once, and no line of the failure");
+    assert.equal(google.got.length, 0);
+    for (const { send } of both) assert.equal((await send()).status, 202);
+    assert.deepEqual(google.got.map((g) => g.url), ["https://telemetry.googleapis.com/v1/traces", "https://telemetry.googleapis.com/v1/logs"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a sender's budget not reached is asked for once more, then let through; a spent one stays refused", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  try {
+    for (const { limiter, send } of await senders(h)) {
+      const budget = await h.object("TELEMETRY_LIMITS", limiter);
+      // Lost once: the second answer counts.
+      await budget.lose(1);
+      assert.equal((await send()).status, 202);
+      assert.equal(await budget.asked(), 2);
+      // Lost twice: let through, and not asked a third time.
+      await budget.lose(2);
+      assert.equal((await send()).status, 202);
+      assert.equal(await budget.asked(), 2);
+      // Only the first of those two was counted.
+      for (let i = 1; i < BATCHES_PER_MINUTE; i++) assert.equal(await budget.consume(), true);
+      // Spent: refused at the first answer, and at the second when the first was lost.
+      await budget.lose(0);
+      const spent = await send();
+      assert.equal(spent.status, 429);
+      assert.equal(spent.headers.get("retry-after"), "60");
+      assert.deepEqual(await spent.json(), { error: "rate_limited" });
+      assert.equal(await budget.asked(), 1);
+      await budget.lose(1);
+      assert.equal((await send()).status, 429);
+      assert.equal(await budget.asked(), 2);
+    }
+    assert.equal(google.got.length, 4);
+  } finally {
+    await h.close();
+  }
+});
