@@ -740,7 +740,10 @@ int main(void) {
     fake_media_time += 0.050;
     [(FakeDisplayLink *)s0.view.link fire];  // before wake_for: returns early
     CHECK(frame_calls_by_wid[0] == callsBeforeWake);
-    fake_media_time += 0.060;
+    fake_media_time += 0.04975;              // 0.25 ms before wake_for: still returns early (avoids resident double-wake)
+    [(FakeDisplayLink *)s0.view.link fire];
+    CHECK(frame_calls_by_wid[0] == callsBeforeWake);
+    fake_media_time += 0.01025;
     [(FakeDisplayLink *)s0.view.link fire];  // at/past wake_for: draws frame
     CHECK(frame_calls_by_wid[0] == callsBeforeWake + 1 && last_frame_late_by_wid[0] == 0.0);
 

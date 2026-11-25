@@ -866,3 +866,88 @@ test "liquid_segmented_node: unattached external DampedDrag binds on mount and s
   assert_eq(t.drawn_glass().length(), 0, msg="after dd.release() settles, drawn_glass must return to 0")
   set_dark(None)
 }
+
+///|
+test "liquid_slider_node: remote track tap to both ends travels smoothly without end-clamp kink (flush=false and flush=true)" {
+  for flush in [false, true] {
+    let v = @signals.signal(0.0)
+    let t = glass_case(false, false, fn(page) {
+      page.box(fn(s) {
+        s.width(Is(Some(320.0))) |> ignore
+        liquid_slider_node(s, fn() { v.get() }, fn(x) { v.set(x) }, fn() { "Brightness" }, flush~) |> ignore
+      })
+      |> ignore
+    })
+    t.run_for(glass_springs_out)
+    let sl = t.get(Slider, label="Brightness").rect
+    let cy = sl.1 + sl.3 / 2.0
+    // Full span tap 0 -> 100 (right edge hits 100% cleanly without clamp velocity kink)
+    t.tap(sl.0 + sl.2 - 2.0, cy)
+    t.run_for(glass_springs_out)
+    assert_eq(v.untracked(), 100.0, msg="flush=\{flush}: right-end tap must reach 100.0")
+    assert_eq(t.drawn_glass().length(), 0, msg="flush=\{flush}: settled glass must be 0 after 0->100 tap")
+    // Full span tap 100 -> 0 (left edge hits 0% cleanly without clamp velocity kink)
+    t.tap(sl.0 + 2.0, cy)
+    t.run_for(glass_springs_out)
+    assert_eq(v.untracked(), 0.0, msg="flush=\{flush}: left-end tap must reach 0.0")
+    assert_eq(t.drawn_glass().length(), 0, msg="flush=\{flush}: settled glass must be 0 after 100->0 tap")
+    // Mid-to-end tap 50 -> 100 and 50 -> 0
+    v.set(50.0)
+    t.run_for(glass_springs_out)
+    t.tap(sl.0 + sl.2 - 2.0, cy)
+    t.run_for(glass_springs_out)
+    assert_eq(v.untracked(), 100.0, msg="flush=\{flush}: 50->100 tap must reach 100.0")
+    v.set(50.0)
+    t.run_for(glass_springs_out)
+    t.tap(sl.0 + 2.0, cy)
+    t.run_for(glass_springs_out)
+    assert_eq(v.untracked(), 0.0, msg="flush=\{flush}: 50->0 tap must reach 0.0")
+    assert_eq(t.audit(), [], msg="flush=\{flush}: audit must stay empty")
+  }
+  // Exact 1:1 non-flush geometry: endpoints (-tw/4, w - 3*tw/4), midpoint (w/2 - tw/2), and linear interior
+  let w = 220.0
+  let tw = slider_thumb_w
+  assert_true((slider_thumb_x_for(w, tw, 0.0, false) - -tw / 4.0).abs() < 1.0e-9)
+  assert_true((slider_thumb_x_for(w, tw, 0.5, false) - (w / 2.0 - tw / 2.0)).abs() < 1.0e-9)
+  assert_true((slider_thumb_x_for(w, tw, 1.0, false) - (w - tw * 3.0 / 4.0)).abs() < 1.0e-9)
+  let x25 = slider_thumb_x_for(w, tw, 0.25, false)
+  let x75 = slider_thumb_x_for(w, tw, 0.75, false)
+  let expected_25 = tw / 4.0 + (w - tw / 2.0) * 0.25 - tw / 2.0
+  let expected_75 = tw / 4.0 + (w - tw / 2.0) * 0.75 - tw / 2.0
+  assert_true((x25 - expected_25).abs() < 1.0e-9)
+  assert_true((x75 - expected_75).abs() < 1.0e-9)
+  // Non-flush fill right edge aligns with thumb center at 0.25/0.5/0.75/1.0 and hides at 0.0
+  let fill_col = 0xD95B2BFFL
+  let prog = @signals.signal(0.0)
+  let tf = glass_case(false, false, fn(page) {
+    page.box(fn(host) {
+      host.width(Is(Some(w))).height(Is(Some(slider_thumb_h))) |> ignore
+      let look = SliderLook::new(
+        track_h=slider_track_h,
+        track_inset=0.0,
+        travel_inset=None,
+        thumb_w=tw,
+        thumb_h=slider_thumb_h,
+        flush=false,
+        track_color=fn() { 0x00000022L },
+        fill_color=Some(fn() { fill_col }),
+        lens_enabled=true,
+      )
+      liquid_slider_look(host, fn(_) { prog.get() }, fn(_) { 0.0 }, look)
+    })
+    |> ignore
+  })
+  prog.set(0.0)
+  tf.draw()
+  assert_eq(tf.drawn_rects().filter(fn(r) { r.4 == fill_col }).length(), 0, msg="non-flush fill at 0.0 must be hidden")
+  for at in [0.25, 0.5, 0.75, 1.0] {
+    prog.set(at)
+    tf.draw()
+    let rects = tf.drawn_rects().filter(fn(r) { r.4 == fill_col })
+    assert_eq(rects.length(), 1, msg="expected 1 non-flush fill rect at \{at}")
+    let expected_right = 24.0 + slider_travel_at(w, tw / 4.0, at)
+    let actual_right = rects[0].0 + rects[0].2
+    assert_true((actual_right - expected_right).abs() <= 0.1, msg="non-flush fill right at \{at}: \{actual_right} vs \{expected_right}")
+  }
+  set_dark(None)
+}

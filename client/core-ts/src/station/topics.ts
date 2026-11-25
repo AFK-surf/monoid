@@ -68,7 +68,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "hostLive", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -134,8 +134,18 @@ export class StationTopics implements Owner {
   /// What the station topics shown want of each station's stream: host samples, the logs shown, open live sessions, and rates.
   #wanted(address: string): { host: boolean; logs: [string, number][]; logins: string[]; open: string[]; rates: boolean } {
     const topics = this.#core.store.liveTopics().filter((t) => t.station === address);
+    const liveHost =
+      this.#core.store.subscribed({ topic: "host", station: address }) ||
+      this.#core.store.inUse({ topic: "net", station: address }) ||
+      this.#core.store.inUse({ topic: "hostLive", station: address });
+    const link = this.#sync.link(address);
+    // Passive `stations` list readers only need an initial/recovered host reading when none is cached yet;
+    // continuous ?host=1 streaming runs only while a live host-meter view (`station`, `stationNet`, `fleet`) or direct `host` subscriber is open.
+    const needInitialHost =
+      topics.some((t) => t.topic === "host") &&
+      (link === undefined || !link.memory.has("host") || link.hostUnreadable);
     return {
-      host: topics.some((t) => t.topic === "host"),
+      host: liveHost || needInitialHost,
       logs: topics.filter((t) => t.topic === "jobLog").map((t) => [t.job as string, t.lines as number] as [string, number]),
       logins: [...new Set(topics.filter((t) => t.topic === "machineLoginScreen").map((t) => t.id as string))],
       open: [...new Set(topics.filter((t) => t.topic === "live" && this.#core.store.inUse(t)).map((t) => t.key as string))].sort(),
@@ -230,7 +240,7 @@ export class StationTopics implements Owner {
     this.resume(topic);
     // A job's log: what it is now read once; from then on the station says how it grows, on its stream.
     if (topic.topic === "jobLog") this.#sync.readLog(station, topic.job as string, topic.lines as number);
-    if (["host", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
+    if (["host", "hostLive", "net", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
   }
 
   /// Shown, as it starts or again while kept after the last showed it: what is read only while shown is brought up to
@@ -265,12 +275,12 @@ export class StationTopics implements Owner {
       if (this.#sync.isSparing(station)) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
       this.#sync.openEvents(station, false);
     }
-    if (topic.topic === "stationRates") this.#sync.openEvents(station, false);
+    if (topic.topic === "stationRates" || topic.topic === "hostLive" || topic.topic === "host" || topic.topic === "net") this.#sync.openEvents(station, false);
   }
 
   idle(topic: Topic): void {
     if (topic.topic === "stationSearch") this.#sync.searchPaused(topic);
-    if (topic.topic === "live" || topic.topic === "stationRates") {
+    if (topic.topic === "live" || topic.topic === "stationRates" || topic.topic === "hostLive" || topic.topic === "host" || topic.topic === "net") {
       const station = this.#stationOf(topic);
       if (station !== null) this.#sync.openEvents(station, false);
     }
@@ -297,7 +307,7 @@ export class StationTopics implements Owner {
       this.#core.runner.interrupt(sampler as Fiber.Fiber<unknown, unknown>);
       this.#samplers.delete(key);
     }
-    if (["host", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
+    if (["host", "hostLive", "net", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
   }
 
   /// Whether a topic with no value yet waits on its station for what it shows (store.ts `waits`): a chat's messages
@@ -352,6 +362,8 @@ export class StationTopics implements Owner {
         const v = link?.memory.get("host");
         return v === undefined ? undefined : { ok: v };
       }
+      case "hostLive":
+        return undefined;
       case "screens":
         seen.read(station, "screens");
         // As the station said them last (kept: there as the app opens again, while it is reached anew); none while it

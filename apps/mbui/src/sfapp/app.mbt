@@ -74,6 +74,7 @@ pub fn reset() -> Unit {
   bar_reset()
   bar_timing.val = None
   bar_timed.val = None
+  first_page_timing.val = None
   place_switch.put(1.0)
   home_sheet_at_start.val = false
   peeks_reset()
@@ -819,7 +820,11 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // starting or failed, the splash: the window's tree's nodes (splash_tree)
         Starting | Failed => splash_tree(v, src, state)
         // signed out, the sign-in page: the window's tree's nodes (entry_tree.mbt)
-        SignedOut => signed_out_tree(v, src)
+        SignedOut => {
+          // (a first page come after signing in waited for the person too: not told, first_page_timing)
+          first_page_timing.val = None
+          signed_out_tree(v, src)
+        }
         SignedIn => {
         // where the app is, put in the history's entry now as the stack or the workspace in view changes, at that
         // change (sfbase's app_history.mbt: a person's act pushed an entry before it moved the stack, one for all the
@@ -1509,6 +1514,16 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
   v.reacts(fn() { first_shown.get() }, fn(shown) {
     if shown {
       (expiry.val)()
+      // (how long it took from the splash, when the workspace came into view, and whether the splash's second had gone
+      // by: told once a process, to the host's, src/stillfail's reports; not again as this node is built anew, signed
+      // in again or the core started again, first_shown still true)
+      match first_page_timing.val {
+        Some(told) if splash_from.val >= 0.0 && first_from.val >= 0.0 => {
+          first_page_timing.val = None
+          told(v.cause_at() - splash_from.val, first_from.val - splash_from.val, splash_waited.get())
+        }
+        _ => ()
+      }
     }
   })
   v.reacts(fn() { !first_shown.get() && first_from.val >= 0.0 && first_page_done() }, fn(done) {
@@ -1643,6 +1658,13 @@ let first_left : Ref[Bool] = Ref(false)
 /// (first_page_ready_by), the window resized across the breakpoint before it shows or not.
 // kept across runs: put back as a run begins (new_run)
 let first_wide : Ref[Bool?] = Ref(None)
+
+///|
+/// What the host is told as the first page shows (first_page_node), in ms from the app's first splash: as it shows, as
+/// the workspace came into view; and whether the splash's second had gone by (splash_waited). Set once as the app
+/// starts (src/stillfail's reports), let go of once told or once signed out before it (the person's signing in in it);
+/// None under a Tester (new_run), unless its test sets one.
+pub let first_page_timing : Ref[((Double, Double, Bool) -> Unit)?] = Ref(None)
 
 ///|
 /// Whether the app's first page has shown (first_page_shown).

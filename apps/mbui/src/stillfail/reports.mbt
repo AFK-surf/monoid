@@ -2,7 +2,8 @@
 // BarTiming.kt): the host's (android/app/src/main/java/dev/mbui: Crashes.java, BarTiming.java), told here what only
 // the app knows: the account signed in (the crashes kept since the last report go as it), the core failing and started
 // again (CoreFailed), what the UI could not do as asked (UiFault), the bottom bar's switches (src/sfapp/bar_timing.mbt)
-// and the topics their pages subscribe, the window thread's hangs (mbui's src/ui/journal.mbt). iOS's host takes them
+// and the topics their pages subscribe, the window thread's hangs (mbui's src/ui/journal.mbt), how long the first page
+// took from the splash (`first_page`: src/sfapp/app.mbt's first_page_timing). iOS's host takes them
 // too (src/host/apple_reports.m: MetricKit's crash and hang reports; the bar's timing not), and macOS's (the same file:
 // the window thread's hangs and the errors got past, no MetricKit). Sanitized summaries and metrics also mirror to the
 // core's Cloud Trace spans (`client.error`, `client.metric`) whenever user reporting is enabled.
@@ -236,6 +237,19 @@ fn reports_start() -> Unit {
         }
       }
       None => ()
+    }
+  })
+  // (how long the first page took from the splash: what a start slow to show says, beside the core's core.start)
+  @sfapp.first_page_timing.val = Some(fn(shown_ms, in_view_ms, waited) {
+    if reporting_allowed() {
+      @core.call(
+        "client.metric",
+        params={
+          "kind": "first_page",
+          "duration_ms": Json::number(shown_ms.round()),
+          "attrs": { "in_view_ms": Json::number(in_view_ms.round()), "waited": Json::boolean(waited) },
+        },
+      )
     }
   })
   if !has_host {

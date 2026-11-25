@@ -2283,6 +2283,78 @@ test("stations_list_uses_lightweight_wire_way_when_stationNet_is_not_open", asyn
   }
 });
 
+test("stations_list_drops_host_stream_after_initial_sample_until_a_live_meter_view_opens", async () => {
+  const { host, core, push, streams } = await started();
+  const ui = core.connect();
+  const values = new Map<number, J>();
+  const open = () => streams.filter((s) => !s.closed).map((s) => s.path);
+  const sample = (load: number) => ({
+    hostname: "studio",
+    os: "macOS 26",
+    arch: "arm64",
+    cpus: 8,
+    cpuModel: "M4",
+    load,
+    uptimeSec: 100,
+    memory: { totalBytes: 1024, usedBytes: 512, swapUsedBytes: null },
+    disk: { path: "/", totalBytes: 1024, freeBytes: 512 },
+    stationRssBytes: 10,
+    checkedAt: 1,
+  });
+  const station = () => (values.get(1) as J[]).find((s) => s.station === ST);
+  try {
+    // Subscribing `stations` when no host sample is cached yet requests ?host=1 for the initial sample.
+    subscribe(core, ui, 1, { topic: "stations", scope: "ws" });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+
+    // Once the first readable host sample arrives and is cached, the stream hands over back to ?host=0 (no overview refetch).
+    push("host", sample(0.2));
+    await host.settle();
+    await host.settle();
+    apply(host, values);
+    assert.equal(station()?.host?.os, "macOS 26");
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.equal(gets(host, "/admin/api/overview"), 1);
+
+    // Opening `stationNet` (Station tab / picker / peek) hands over to ?host=1 for live meter updates.
+    subscribe(core, ui, 2, { topic: "stationNet", station: ST });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    push("host", sample(0.8));
+    await host.settle();
+    apply(host, values);
+    assert.equal(station()?.host?.os, "macOS 26");
+
+    // Closing `stationNet` hands back to ?host=0 after grace while `stations` keeps its cached host reading.
+    core.receive(ui, { kind: "unsubscribe", id: 2, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.equal(station()?.host?.os, "macOS 26");
+
+    // Opening single-station detail (`station`) also turns on live ?host=1.
+    subscribe(core, ui, 3, { topic: "station", scope: "ws", station: ST });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    core.receive(ui, { kind: "unsubscribe", id: 3, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+
+    // Re-subscribing `stations` when host is already cached never reopens ?host=1.
+    core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    subscribe(core, ui, 4, { topic: "stations", scope: "ws" });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  } finally {
+    core.close();
+  }
+});
+
 test("a_stream_taking_over_asks_for_what_came_after_the_last_event_its_predecessor_gave", async () => {
   const { host, core, streams } = await started();
   const ui = core.connect();

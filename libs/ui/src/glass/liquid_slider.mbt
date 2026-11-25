@@ -29,22 +29,12 @@ fn slider_glass(p : Double) -> @paint.Glass {
 }
 
 ///|
-/// Where the thumb's left is along a track `w` wide at `progress` (0-1) of it: its middle there, held within a quarter
-/// of itself of the ends; or, `flush` (a labeled thumb, a value slider's), meeting either end of the track at the ends
-/// and evenly between, so the thumb stays in the track and every stop is as far from the next (a middle clamped short
-/// of the ends put the first and last stops nearer their neighbours than the rest).
+/// Where the thumb's left is along a track `w` wide at `progress` (0-1) of it: evenly between its ends so the thumb
+/// never slams into an end clamp mid-spring (`flush`: meeting either end of the track, inset `tw / 2`; non-flush:
+/// overhanging by a quarter of itself at either end, inset `tw / 4`).
 fn slider_thumb_x_for(w : Double, tw : Double, progress : Double, flush : Bool) -> Double {
-  if flush {
-    slider_travel_at(w, tw / 2.0, progress) - tw / 2.0
-  } else {
-    let hi = w - tw * 3.0 / 4.0
-    let lo = -tw / 4.0
-    if hi < lo {
-      lo
-    } else {
-      clamp(-tw / 2.0 + w * progress, lo, hi)
-    }
-  }
+  let half = if flush { tw / 2.0 } else { tw / 4.0 }
+  slider_travel_at(w, half, progress) - tw / 2.0
 }
 
 ///|
@@ -55,7 +45,7 @@ pub fn slider_held_reach(thumb_h : Double) -> Double {
 }
 
 ///|
-/// Where the middle of a flush thumb is at `progress` (0-1) of a track `w` wide, `half` in from either end at the ends.
+/// Where the middle of a thumb is at `progress` (0-1) of a track `w` wide, `half` in from either end at the ends.
 fn slider_travel_at(w : Double, half : Double, progress : Double) -> Double {
   let half = dmin(half, w / 2.0)
   half + (w - 2.0 * half) * clamp(progress, 0.0, 1.0)
@@ -193,12 +183,10 @@ fn liquid_slider_look_core(
     let middle_at = fn(p : Double) -> Double {
       match look.travel_inset {
         Some(inset) => slider_travel_at(w(), inset, p)
-        None =>
-          if look.flush {
-            slider_travel_at(w(), eff_tw() / 2.0, p)
-          } else {
-            w() * p
-          }
+        None => {
+          let half = if look.flush { eff_tw() / 2.0 } else { eff_tw() / 4.0 }
+          slider_travel_at(w(), half, p)
+        }
       }
     }
     let thumb_x = fn(tw : Double, p : Double) -> Double {
@@ -213,13 +201,12 @@ fn liquid_slider_look_core(
       let at = clamp(raw_at, 0.0, 1.0)
       let raw = match look.travel_inset {
         Some(_) => middle_at(at) - ends
-        None =>
-          if look.flush {
-            let left_t = clamp(at / 0.04, 0.0, 1.0)
-            dmax(0.0, middle_at(at) - ends) * left_t
-          } else {
-            middle_at(at) - ends
-          }
+        None => {
+          let u = clamp(at / 0.1, 0.0, 1.0)
+          let fade = (1.0 - u) * (1.0 - u)
+          let offset0 = dmax(0.0, middle_at(0.0) - ends)
+          dmax(0.0, middle_at(at) - ends - offset0 * fade)
+        }
       }
       clamp(raw, 0.0, along())
     }
@@ -601,8 +588,8 @@ pub fn liquid_slider_node(
     match d.kind {
       Down => {
         let cur_tw = thumb_w_at(d.w, @signals.untracked(value))
-        let half = cur_tw / 2.0
-        travel_px.val = dmax(1.0, d.w - cur_tw)
+        let half = dmin(if eff_flush { cur_tw / 2.0 } else { cur_tw / 4.0 }, d.w / 2.0)
+        travel_px.val = dmax(1.0, d.w - 2.0 * half)
         let tx = slider_thumb_x_for(d.w, cur_tw, (dd.target() - least) / span, eff_flush)
         let hit_thumb = d.x >= tx && d.x <= tx + cur_tw
         on_thumb.val = true
@@ -613,7 +600,7 @@ pub fn liquid_slider_node(
           let raw = if hit_thumb {
             @signals.untracked(value)
           } else {
-            let frac = if eff_flush { (d.x - half) / travel_px.val } else { d.x / d.w }
+            let frac = (d.x - half) / travel_px.val
             clamp(least + span * frac, least, most)
           }
           raw_drag_val.val = raw
@@ -625,11 +612,7 @@ pub fn liquid_slider_node(
             change(value_of_stop(nearest))
           }
         } else if !hit_thumb {
-          let frac = if eff_flush {
-            clamp((d.x - half) / travel_px.val, 0.0, 1.0)
-          } else {
-            clamp(d.x / d.w, 0.0, 1.0)
-          }
+          let frac = clamp((d.x - half) / travel_px.val, 0.0, 1.0)
           let to = snap_step(least + span * frac)
           raw_drag_val.val = to
           dd.update_value(to)
@@ -646,8 +629,7 @@ pub fn liquid_slider_node(
             did_drag.val = true
           }
           if has_stops {
-            let along = if eff_flush { travel_px.val } else { d.w }
-            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / along), least, most)
+            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / travel_px.val), least, most)
             let (nearest, leaned) = lean_value_for(raw_drag_val.val)
             if nearest != felt_stop.val {
               felt_stop.val = nearest
@@ -656,8 +638,7 @@ pub fn liquid_slider_node(
             }
             dd.update_value(leaned)
           } else {
-            let span_px = if eff_flush { travel_px.val } else { d.w }
-            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / span_px), least, most)
+            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / travel_px.val), least, most)
             let next = snap_step(raw_drag_val.val)
             if next != dd.target() {
               dd.update_value(next)
@@ -698,7 +679,7 @@ pub fn liquid_slider_node(
     max=most,
     step=eff_step,
     change,
-    thumb_room=if eff_flush { thumb_w_px } else { 0.0 },
+    thumb_room=if eff_flush { thumb_w_px } else { thumb_w_px / 2.0 },
     disabled~,
     value_text?,
     drag=hand,

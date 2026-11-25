@@ -234,3 +234,81 @@ test "value_slider_node: unified iOS 27 crisp 6pt track and ~60x36pt clear pill 
   assert_true((done_tr.3 - 6.0).abs() < 0.05, msg="settled track height must return to 6pt, got \{done_tr.3}")
   assert_true((done_fl.3 - 6.0).abs() < 0.05, msg="settled fill height must return to 6pt, got \{done_fl.3}")
 }
+
+///|
+test "value_slider_node: remote track taps to min and max endpoints settle at exact bounds with 0 glass" {
+  {
+    let v = @signals.signal(0.0)
+    let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=0)
+    t.check_looks(false)
+    @ui.set_view_app(
+      fn(root) {
+        root.box(fn(b) {
+          b.padding(Is((40.0, 80.0, 40.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+          b.box(fn(s) {
+            s.width(Is(Some(320.0))) |> ignore
+            value_slider_node(s, fn() { "音量" }, fn() { v.get() }, fn(x) { v.set(x) }, bubble=false) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      },
+      theme=ui_theme_now,
+    )
+    t.draw()
+    t.run_for(@ui.move_most_ms)
+    let sl = t.get(Slider, label="音量").rect
+    let cy = sl.1 + sl.3 / 2.0
+    t.tap(sl.0 + sl.2 - 2.0, cy)
+    t.run_for(slider_past_ms)
+    assert_eq(v.get(), 100.0)
+    assert_eq(t.drawn_glass().length(), 0)
+    t.tap(sl.0 + 2.0, cy)
+    t.run_for(slider_past_ms)
+    assert_eq(v.get(), 0.0)
+    assert_eq(t.drawn_glass().length(), 0)
+  }
+  // Also verify stepped range (85..115, step=5) mid -> max -> min remote taps reach exact bounds with 0 glass at rest.
+  {
+    let v2 = @signals.signal(100.0)
+    let t2 = @ui.Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=0)
+    t2.check_looks(false)
+    @ui.set_view_app(
+      fn(root) {
+        root.box(fn(b) {
+          b.padding(Is((40.0, 80.0, 40.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+          b.box(fn(s) {
+            s.width(Is(Some(320.0))) |> ignore
+            value_slider_node(
+              s,
+              fn() { "比例" },
+              fn() { v2.get() },
+              fn(x) { v2.set(x) },
+              min=85.0,
+              max=115.0,
+              step=5.0,
+              format=fn(n) { "\{n}%" },
+              bubble=false,
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      },
+      theme=ui_theme_now,
+    )
+    t2.draw()
+    t2.run_for(@ui.move_most_ms)
+    let sl2 = t2.get(Slider, label="比例").rect
+    let cy2 = sl2.1 + sl2.3 / 2.0
+    t2.tap(sl2.0 + sl2.2 - 2.0, cy2)
+    t2.run_for(slider_past_ms)
+    assert_eq(v2.get(), 115.0)
+    assert_eq(t2.drawn_glass().length(), 0)
+    t2.tap(sl2.0 + 2.0, cy2)
+    t2.run_for(slider_past_ms)
+    assert_eq(v2.get(), 85.0)
+    assert_eq(t2.drawn_glass().length(), 0)
+  }
+}

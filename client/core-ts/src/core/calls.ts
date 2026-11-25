@@ -38,7 +38,7 @@ export type Call =
   | { kind: "profileFlow"; topic: Topic; action: string; patch: unknown }
   | { kind: "slackTokens"; topic: Topic; action: string; patch: unknown }
   | { kind: "clientError"; source: string; message: string }
-  | { kind: "clientMetric"; metricKind: "bar_switch" | "ui_hang_summary"; durationMs: number; attrs: Record<string, string | number | boolean> }
+  | { kind: "clientMetric"; metricKind: "bar_switch" | "ui_hang_summary" | "first_page"; durationMs: number; attrs: Record<string, string | number | boolean> }
   | { kind: "clientReports"; on: boolean }
   | { kind: "clientShown"; page: string }
   | { kind: "clientNetwork"; cellular: boolean }
@@ -361,6 +361,8 @@ const METRIC_ATTR_ALLOWLIST = new Set([
   "stalls",
   "shown_s",
   "max_ms",
+  "in_view_ms",
+  "waited",
 ]);
 
 function form(name: string, params: unknown, prefix: string, actions: string[]): { topic: Topic; action: string; patch: unknown } | null {
@@ -505,7 +507,7 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["attrs", "value", "opt"],
       ]);
       const metricKind = p.kind as string;
-      if (metricKind !== "bar_switch" && metricKind !== "ui_hang_summary") {
+      if (metricKind !== "bar_switch" && metricKind !== "ui_hang_summary" && metricKind !== "first_page") {
         throw CoreError.invalid(t("core-misc.params.invalid", { error: `invalid metric kind: ${metricKind}` }));
       }
       const durationMs = Number.isFinite(p.duration_ms as number) && (p.duration_ms as number) >= 0 ? (p.duration_ms as number) : 0;
@@ -518,7 +520,7 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
           else if (typeof v === "string") attrs[k] = [...v].slice(0, 64).join("");
         }
       }
-      return { kind: "clientMetric", metricKind, durationMs, attrs };
+      return { kind: "clientMetric", metricKind: metricKind as "bar_switch" | "ui_hang_summary" | "first_page", durationMs, attrs };
     }
     // whether what people use is counted and sent from this device (use-counts.ts), as the app's settings say
     case "client.reports":

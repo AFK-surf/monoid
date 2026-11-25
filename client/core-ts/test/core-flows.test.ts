@@ -4444,6 +4444,22 @@ test("a start is one span of its own: how long each step took, and till the pers
   }
 });
 
+test("a start's span says what its host spent before the core, as the host measured it", async () => {
+  const s = stationHost(base());
+  const core = await Core.create(s.host, { clock: s.host.time.clock, sample: 1, reports: true, wire: () => new HostWire(s.host), boot: { before_ms: 640, shell_ms: 35, script_ms: 210 } });
+  try {
+    await s.host.time.pass(500);
+    await s.host.settle();
+    await s.host.time.pass(EXPORT_MS + 100);
+    const start = exports(s.host).flatMap(spansOf).find((x) => x.name === "core.start");
+    assert.ok(start !== undefined, "told");
+    const attrs = Object.fromEntries(start.attributes.map((a: J) => [a.key, Object.values(a.value)[0]]));
+    assert.deepEqual([attrs["stillfail.boot.before_ms"], attrs["stillfail.boot.shell_ms"], attrs["stillfail.boot.script_ms"]].map(Number), [640, 35, 210]);
+  } finally {
+    core.close();
+  }
+});
+
 test("a start reads this device's notice settings beside its databases, not after them", async () => {
   const s = stationHost(base());
   // (the notice settings and the device's values each answered 200 ms after they are asked, as a disk busy at a start answers)

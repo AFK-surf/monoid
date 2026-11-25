@@ -1,11 +1,12 @@
 // The core in a native app's JS engine, whichever it is (the Android app's Hermes: hermes-start.ts; JavaScriptCore on
 // Apple's systems: an app's own entry): the engine puts `__native` on the global object (its calls go to the Rust shell,
 // client/shell) and what JS has not, before this runs; the core is then started by `__stillfail.start(cloudOrigin,
-// beta[, os])`. The engine calls `__stillfail.connect()`, `.receive(client, json)` (`.receiveBytes(client, json,
+// beta[, os[, boot]])` (`boot`: what the start spent before it, as JSON: core.ts `Boot`). The engine calls `__stillfail.connect()`, `.receive(client, json)` (`.receiveBytes(client, json,
 // bytes)` for a call with bytes beside it), `.disconnect(client)` for the app, and `.complete(id, json, error, bytes)`
 // with the shell's answers; what the core says goes out through `__native.emit`.
 import { startBridged, type Native } from "./bridge.ts";
 import type { HermesNative } from "./hermes-globals.ts";
+import type { Boot } from "../core.ts";
 
 /// Puts `__stillfail` where the engine finds it; `os` is what the core says it runs on when the engine's `start` does
 /// not say.
@@ -33,8 +34,8 @@ export function startEngine(os: string): void {
   let core: ReturnType<typeof startBridged> | null = null;
 
   g.__stillfail = {
-    start(cloudOrigin: string, beta: boolean, said?: string) {
-      core = startBridged(shell, cloudOrigin, beta, said ?? os, (reason) => native.fatal(reason));
+    start(cloudOrigin: string, beta: boolean, said?: string, boot?: string) {
+      core = startBridged(shell, cloudOrigin, beta, said ?? os, (reason) => native.fatal(reason), bootOf(boot));
     },
     connect: (): number => core!.connect(),
     receive: (client: number, json: string) => core!.receive(client, json),
@@ -43,4 +44,23 @@ export function startEngine(os: string): void {
     complete: (id: number, json: string | null, error: string | null, bytes: ArrayBuffer | undefined) =>
       core!.bridge.complete(id, json, error, bytes === undefined ? null : new Uint8Array(bytes)),
   };
+}
+
+/// What the engine said the start spent before the core (each a whole number of ms, none it does not know): nothing
+/// else of it taken.
+function bootOf(said: string | undefined): Boot | undefined {
+  if (said === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(said);
+  } catch {
+    return undefined;
+  }
+  if (typeof parsed !== "object" || parsed === null) return undefined;
+  const boot: Boot = {};
+  for (const key of ["before_ms", "shell_ms", "script_ms"] as const) {
+    const v = (parsed as Record<string, unknown>)[key];
+    if (typeof v === "number" && Number.isFinite(v) && v >= 0) boot[key] = Math.round(v);
+  }
+  return boot;
 }

@@ -1,6 +1,7 @@
 // Deterministic tests for D54 + D55 telemetry:
 // - `client.error` new native/hang sources, 60s dedup, sanitization, and `client.reports` opt-out
-// - `client.metric` strict allowlist, 20%/slow/cut/failed `bar.switch` sampling, `ui.hang_summary` thresholds
+// - `client.metric` strict allowlist, 20%/slow/cut/failed `bar.switch` sampling, `ui.hang_summary` thresholds,
+//   `app.first_page` each told
 // - `chat.send.e2e` root span: ack -> live, POST failure, superseded by next send, 30s timeout, reporting opt-out
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -112,9 +113,20 @@ test("client.metric enforces strict allowlist, 20%/slow/cut/failed sampling for 
     core.receive(ui, { kind: "call", id: 31, call: "client.metric", params: { kind: "ui_hang_summary", duration_ms: 20000, attrs: { shown_s: 20, hangs: 1, stalls: 1, max_ms: 120 } } });
     core.receive(ui, { kind: "call", id: 32, call: "client.metric", params: { kind: "ui_hang_summary", duration_ms: 30000, attrs: { shown_s: 30, hangs: 3, stalls: 0, max_ms: 80 } } });
 
+    // first_page: each one told, with how long from the splash and its two allowed attributes alone.
+    const sinceCore = Math.round(host.monotonicMs() - core.inner.startedAt);
+    core.receive(ui, { kind: "call", id: 33, call: "client.metric", params: { kind: "first_page", duration_ms: 1480.4, attrs: { in_view_ms: 1210, waited: true, chat: "secret" } } });
+
     await host.time.pass(EXPORT_MS + 50, 50);
 
     const all = exportedSpans(bodies);
+    const firstPage = all.filter((s) => s.name === "app.first_page");
+    assert.equal(firstPage.length, 1);
+    assert.deepEqual(
+      [attrsOf(firstPage[0]!)["stillfail.duration_ms"], attrsOf(firstPage[0]!)["stillfail.in_view_ms"], attrsOf(firstPage[0]!)["stillfail.waited"], attrsOf(firstPage[0]!)["stillfail.chat"]],
+      [1480, 1210, true, undefined],
+    );
+    assert.equal(Number(attrsOf(firstPage[0]!)["stillfail.since_core_ms"]), sinceCore, "timed from the core's own first step too");
     const barSpans = all.filter((s) => s.name === "bar.switch");
     assert.equal(barSpans.length, 4, "1 sampled + slow + cut + failed");
     const firstAttrs = attrsOf(barSpans[0]!);

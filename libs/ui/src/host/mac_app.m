@@ -743,7 +743,7 @@ static void pump(void) {
   // to fire and the link wakes after it, a step a frame or two late by as much as they fall, so a resident cycle's
   // steps unevenly apart); the ticks before it draw nothing (ios_app.m's the same)
   if (!self.wantFrame && wake_for >= 0) {
-    if (mb_now_ms() < wake_for - 0.5) {
+    if (mb_now_ms() < wake_for) {
       self.lastTick = -1.0;
       return;
     }

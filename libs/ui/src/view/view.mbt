@@ -877,13 +877,8 @@ pub struct Tree {
   resident : @signals.Signal[Double]
   /// the nodes that read it (View::cycle_resident), each with its making and the step it last read: one reading it now
   /// has read the step it is on (each reading it is worked out again as it passes a step); its steps woken for only
-  /// while one such is drawn
+  /// while one such is drawn within the visible window and clip bounds
   resident_readers : Map[Int, (Int, Double)]
-  /// what Tree::resident_read last said, and what it said it of: how many times the order or what is drawn changed
-  /// (`draws_rev`), what is hit (`hits`: one left out of its row, or back), the step, and how many times a reader came
-  /// or read another step (`resident_rev`): said again only past one of them
-  priv mut resident_said : (Int, Int, Double, Int, Bool)
-  priv mut resident_rev : Int
   /// its keymap, the contexts and actions its nodes say, and a sequence of keys under way (keymap.mbt)
   keyed : KeyBook
   /// told each time what the root holds is put at another place in the window's stack of layers (View::stacked,
@@ -1647,8 +1642,6 @@ pub fn Tree::new(
     beat: @signals.signal(start, same=fn(a, b) { a == b }),
     resident: @signals.signal(resident_of(start), same=fn(a, b) { a == b }),
     resident_readers: {},
-    resident_said: (-1, -1, -1.0, -1, false),
-    resident_rev: 0,
     keyed: KeyBook::new(),
     places: @signals.signal(0),
     room_w: @signals.signal(0.0, same=fn(a, b) { a == b }),
@@ -2643,7 +2636,6 @@ pub fn View::cycle_resident(self : View, period : Double) -> Double {
   let read = (self.gen, t)
   if self.tree.resident_readers.get(self.at) != Some(read) {
     self.tree.resident_readers[self.at] = read
-    self.tree.resident_rev = self.tree.resident_rev + 1
   }
   if period <= 0.0 {
     return 0.0
@@ -2654,26 +2646,143 @@ pub fn View::cycle_resident(self : View, period : Double) -> Double {
 
 ///|
 /// Whether an endless decoration reads the resident clock (View::cycle_resident) where it is drawn now (one under a page
-/// over it, or left out, draws no step: none woken for it): what hosts the tree wakes for its next step then.
+/// over it, left out, zero-alpha, or scrolled/slid completely outside the window or its ancestors' clip bounds draws no
+/// step: none woken for it): what hosts the tree wakes for its next step then.
 pub fn Tree::resident_read(self : Tree) -> Bool {
-  if !self.resident.watched() {
+  if !self.resident.watched() || self.resident_readers.is_empty() {
     return false
   }
-  // (as last said, where nothing it reads changed since: the order, what is drawn, what is left out, the readers, the
-  // step)
-  let now = self.resident.untracked()
-  let (dr, hits, step, rr, said) = self.resident_said
-  if !self.order_due &&
-    !self.outs_changed &&
-    dr == self.draws_rev &&
-    hits == self.hits &&
-    step == now &&
-    rr == self.resident_rev {
-    return said
+  self.resident_found(self.resident.untracked())
+}
+
+///|
+/// Whether node `at` can draw anywhere inside the window and its ancestors' clip bounds at the moment's layout/offsets:
+/// a resident decoration slid off-screen (e.g. a closed sidebar panel) or scrolled past its clip rect draws zero pixels
+/// and need not wake the display link every step.
+fn Tree::resident_visible(self : Tree, at : Int) -> Bool {
+  if self.last_w <= 0.0 || self.last_h <= 0.0 {
+    return true
   }
-  let said = self.resident_found(now)
-  self.resident_said = (self.draws_rev, self.hits, now, self.resident_rev, said)
-  said
+  let chain = []
+  let mut i = at
+  while i >= 0 {
+    if !self.nodes[i].slot {
+      chain.push(i)
+    }
+    i = self.nodes[i].parent
+  }
+  if chain.is_empty() {
+    return false
+  }
+  let mut x = 0.0
+  let mut y = 0.0
+  let mut a = 1.0
+  let mut s = 1.0
+  let mut cx0 = 0.0
+  let mut cy0 = 0.0
+  let mut cx1 = self.last_w
+  let mut cy1 = self.last_h
+  let sticks = !self.stickies.is_empty()
+  let mut room_y = 0.0
+  let mut room_s = 1.0
+  let mut held_y = 0.0
+  let mut held_s = 1.0
+  let mut held_lh = 0.0
+  let mut extra = 0.0
+  for k = chain.length() - 1; k >= 0; k = k - 1 {
+    let idx = chain[k]
+    let m = self.nodes[idx]
+    if m.out {
+      return false
+    }
+    if sticks {
+      if m.scroll_off is Some(_) {
+        room_y = y
+        room_s = s
+        extra = 0.0
+      }
+      match self.sticky_extra.get(idx) {
+        Some((g, e)) if g == m.gen => extra = e
+        _ => ()
+      }
+      held_y = y
+      held_s = s
+      held_lh = if k < chain.length() - 1 { self.nodes[chain[k + 1]].lh } else { 0.0 }
+    }
+    let (sx, sy) = self.scroll_off_now(m)
+    let (ox, oy) = m.look.drawn_off
+    x = x + s * (m.lx + sx + ox + (1.0 - m.ls) * m.lpx)
+    y = y + s * (m.ly + sy + oy + (1.0 - m.ls) * m.lpy)
+    a = a * m.la * (if k < chain.length() - 1 && self.flights.length() > 0 { self.held_a(chain[k + 1]) } else { 1.0 })
+    s = s * m.ls
+    match m.lift {
+      Some(l) => {
+        let (fx, fy, fa, fs) = self.lifted_place(m, l)
+        x = fx
+        y = fy
+        a = fa
+        s = fs
+        cx0 = 0.0
+        cy0 = 0.0
+        cx1 = self.last_w
+        cy1 = self.last_h
+      }
+      None => if m.share_stays && self.stays_hidden(m) { a = 0.0 }
+    }
+    if sticks && k < chain.length() - 1 {
+      match self.stickies.get(idx) {
+        Some((g, off)) if g == m.gen => {
+          let most = dmax(0.0, held_y + (held_lh + extra) * held_s - m.lh * s - y)
+          let mut dy = dclamp(room_y + off * room_s - y, 0.0, most)
+          let grid = self.pixel_grid
+          if grid > 0.0 {
+            dy = (dy * grid).round() / grid
+          }
+          y = y + dy
+        }
+        _ => ()
+      }
+    }
+    if a <= 0.0001 || s <= 0.0 {
+      return false
+    }
+    if k > 0 && m.clips_said {
+      let my0 = y
+      let my1 = y + m.lh * s
+      if my0 > cy0 {
+        cy0 = my0
+      }
+      if my1 < cy1 {
+        cy1 = my1
+      }
+      if !m.clips_down {
+        let mx0 = x
+        let mx1 = x + m.lw * s
+        if mx0 > cx0 {
+          cx0 = mx0
+        }
+        if mx1 < cx1 {
+          cx1 = mx1
+        }
+      }
+      if cx1 <= cx0 || cy1 <= cy0 {
+        return false
+      }
+    }
+  }
+  let n = self.nodes[at]
+  if n.placed && (n.lw > 0.0 || n.lh > 0.0) {
+    // Generous pad keeps scaled/shadowed/overhanging marks animating right up to the clip edge.
+    let pad = 32.0 * s
+    let nx0 = x - pad
+    let ny0 = y - pad
+    let nx1 = x + n.lw * s + pad
+    let ny1 = y + n.lh * s + pad
+    if nx1 <= cx0 || nx0 >= cx1 || ny1 <= cy0 || ny0 >= cy1 {
+      return false
+    }
+  }
+  true
 }
 
 ///|
@@ -2721,7 +2830,7 @@ fn Tree::resident_found(self : Tree, now : Double) -> Bool {
         }
         h = self.order_holder[h]
       }
-      if hidden {
+      if hidden || !self.resident_visible(at) {
         continue
       }
       let mut i = p
@@ -2748,7 +2857,7 @@ fn Tree::resident_found(self : Tree, now : Double) -> Bool {
   self.each_drawn_scaled(fn(c, _, _, _, _) {
     let mut i = c.id.at
     while !seen && i >= 0 && !clear[i] {
-      if self.resident_readers.contains(i) {
+      if self.resident_readers.contains(i) && self.resident_visible(i) {
         seen = true
       }
       i = self.nodes[i].parent
