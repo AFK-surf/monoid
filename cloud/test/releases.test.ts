@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { harness } from "./harness.ts";
 import { releaseType, sharedRelease } from "../src/install.ts";
-import { VERSIONED, groupReads, parseRanges, serveRelease, type ReleaseBucket } from "../src/releases.ts";
+import { VERSIONED, groupReads, latestDownload, parseRanges, serveRelease, upstreamRelease, type ReleaseBucket } from "../src/releases.ts";
 
 // The releases bucket's files at /releases/<file>: whole, or the ranges asked for (one, or many as
 // multipart/byteranges, as the desktop app's updater asks for what changed between two zips).
@@ -122,6 +122,15 @@ test("a release's ranges resume only the representation named by If-Range", asyn
   }
 });
 
+/** Node has no FixedLengthStream (workerd's): a TransformStream that keeps no count stands in for it. */
+function withFixedLengthStream(t: { after(fn: () => void): void }) {
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "FixedLengthStream");
+  Object.defineProperty(globalThis, "FixedLengthStream", { configurable: true, value: class extends TransformStream<Uint8Array, Uint8Array> {
+    constructor(_length: number) { super(); }
+  } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, "FixedLengthStream", previous); else Reflect.deleteProperty(globalThis, "FixedLengthStream"); });
+}
+
 // The object is replaced at a chosen read, without relying on requests racing on a real bucket.
 function changingRelease(changeAt: number): ReleaseBucket {
   let reads = 0;
@@ -146,16 +155,131 @@ test("a release replaced after its head was read restarts a single range as the 
 });
 
 test("a release replaced between multipart reads cannot complete a mixed response", async (t) => {
-  // Node has no FixedLengthStream. The integration test above holds the byte count in workerd; this test
-  // controls the bucket's changes and needs only the stream's write/abort behavior.
-  const previous = Object.getOwnPropertyDescriptor(globalThis, "FixedLengthStream");
-  Object.defineProperty(globalThis, "FixedLengthStream", { configurable: true, value: class extends TransformStream<Uint8Array, Uint8Array> {
-    constructor(_length: number) { super(); }
-  } });
-  t.after(() => { if (previous) Object.defineProperty(globalThis, "FixedLengthStream", previous); else Reflect.deleteProperty(globalThis, "FixedLengthStream"); });
+  // The integration test above holds the byte count in workerd; this test controls the bucket's changes and needs
+  // only the stream's write/abort behavior.
+  withFixedLengthStream(t);
   const answer = await serveRelease(new Request("https://releases.test/file", { headers: { range: "bytes=0-1,70000-70001", "if-range": '"old"' } }), changingRelease(2), "file", "application/octet-stream");
   assert.equal(answer.status, 206);
   await assert.rejects(answer.arrayBuffer(), /changed while reading/);
+});
+
+// R2 fails a read now and then for a moment (as on 2026-11-25, `get: ... (10043)` while every station updated at once):
+// each read is tried once more, and a release that cannot be read twice is unavailable for now (503), never missing (404).
+const r2Down = () => new Error("get: Please look at https://www.cloudflarestatus.com for issues or contact customer support. (10043)");
+
+/** A bucket of one 100 000-byte file whose reads of each kind (head, whole, range) fail the first `fails[kind]` times. */
+function flakyRelease(fails: { head?: number; whole?: number; range?: number }): ReleaseBucket & { calls: string[] } {
+  const bytes = new Uint8Array(100_000).map((_, i) => i & 255);
+  const left = { head: 0, whole: 0, range: 0, ...fails };
+  const calls: string[] = [];
+  const fail = (kind: "head" | "whole" | "range") => {
+    calls.push(kind);
+    if (left[kind] > 0) {
+      left[kind]--;
+      throw r2Down();
+    }
+  };
+  return {
+    calls,
+    head: async () => (fail("head"), { size: bytes.length, httpEtag: '"v"' }),
+    get: async (_file, options) => {
+      const range = options?.range;
+      fail(range ? "range" : "whole");
+      return { body: new Response(range ? bytes.slice(range.offset, range.offset + range.length) : bytes).body!, size: bytes.length, httpEtag: '"v"' };
+    },
+  };
+}
+
+const ask = (range?: string) => new Request("https://releases.test/file", { headers: range ? { range } : {} });
+
+async function assertUnavailable(answer: Response) {
+  assert.equal(answer.status, 503);
+  assert.equal(answer.headers.get("retry-after"), "5");
+  assert.equal(answer.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await answer.json(), { error: "release_unavailable" });
+}
+
+test("a release whose read fails once is read again; failing twice, it is unavailable, not missing", async () => {
+  const whole = flakyRelease({ whole: 1 });
+  const once = await serveRelease(ask(), whole, "file", "application/octet-stream");
+  assert.equal(once.status, 200);
+  assert.equal((await once.arrayBuffer()).byteLength, 100_000);
+  assert.deepEqual(whole.calls, ["whole", "whole"]);
+  await assertUnavailable(await serveRelease(ask(), flakyRelease({ whole: 2 }), "file", "application/octet-stream"));
+
+  for (const fails of [{ head: 1 }, { range: 1 }]) {
+    const answer = await serveRelease(ask("bytes=10-19"), flakyRelease(fails), "file", "application/octet-stream");
+    assert.equal(answer.status, 206, JSON.stringify(fails));
+    assert.deepEqual(new Uint8Array(await answer.arrayBuffer()), new Uint8Array(10).map((_, i) => 10 + i));
+  }
+  for (const fails of [{ head: 2 }, { range: 2 }]) {
+    await assertUnavailable(await serveRelease(ask("bytes=10-19"), flakyRelease(fails), "file", "application/octet-stream"));
+  }
+  // none there is still none, read once
+  const none: ReleaseBucket = { head: async () => null, get: async () => null };
+  assert.equal((await serveRelease(ask(), none, "file", "application/octet-stream")).status, 404);
+  assert.equal((await serveRelease(ask("bytes=0-1"), none, "file", "application/octet-stream")).status, 404);
+});
+
+test("a multipart read that fails once is read again and the parts come whole; failing twice ends the response", async (t) => {
+  withFixedLengthStream(t);
+  const once = flakyRelease({ range: 1 });
+  const answer = await serveRelease(ask("bytes=0-1,90000-90001"), once, "file", "application/octet-stream");
+  assert.equal(answer.status, 206);
+  const boundary = /boundary=(\S+)$/.exec(answer.headers.get("content-type")!)![1]!;
+  const got = parts(new Uint8Array(await answer.arrayBuffer()), boundary);
+  assert.deepEqual(got.map((part) => [part.range, [...part.bytes]]), [["0-1", [0, 1]], ["90000-90001", [90000 & 255, 90001 & 255]]]);
+  assert.deepEqual(once.calls, ["head", "range", "range", "range"]);
+
+  const twice = await serveRelease(ask("bytes=0-1,90000-90001"), flakyRelease({ range: 2 }), "file", "application/octet-stream");
+  assert.equal(twice.status, 206);
+  await assert.rejects(twice.arrayBuffer(), /10043/);
+});
+
+test("an app's latest build is found though its feed's read fails once; failing twice, it is unavailable", async () => {
+  const feed = (fails: number): ReleaseBucket => {
+    let left = fails;
+    return {
+      head: async () => null,
+      get: async (key) => {
+        if (left-- > 0) throw r2Down();
+        return key === "mac/latest.json" ? { body: new Response(JSON.stringify({ file: "desktop/stillfail-0.1.1200-arm64-mac.zip" })).body!, size: 0, httpEtag: '"f"' } : null;
+      },
+    };
+  };
+  assert.deepEqual(await latestDownload(feed(0), "mac"), { kind: "ok", file: "desktop/stillfail-0.1.1200-arm64-mac.zip" });
+  assert.deepEqual(await latestDownload(feed(1), "mac"), { kind: "ok", file: "desktop/stillfail-0.1.1200-arm64-mac.zip" });
+  const down = await latestDownload(feed(2), "mac");
+  assert.equal(down.kind, "unavailable");
+  assert.deepEqual(await latestDownload(feed(0), "android"), { kind: "missing" });
+  assert.deepEqual(await latestDownload(feed(0), "windows"), { kind: "missing" });
+  assert.deepEqual(await latestDownload(undefined, "mac"), { kind: "missing" });
+});
+
+test("a release read upstream is asked again after a failure or a 5xx; failing twice, it is unavailable, its 404 still none", async (t) => {
+  const previous = globalThis.fetch;
+  t.after(() => { globalThis.fetch = previous; });
+  const answering = (...answers: (number | "error")[]) => {
+    let asked = 0;
+    globalThis.fetch = (async () => {
+      const answer = answers[Math.min(asked++, answers.length - 1)]!;
+      if (answer === "error") throw new TypeError("Network connection lost.");
+      return new Response(answer === 200 ? "station" : "no", { status: answer });
+    }) as typeof fetch;
+    return () => asked;
+  };
+  for (const first of ["error", 502] as const) {
+    const asked = answering(first, 200);
+    const answer = await upstreamRelease(ask(), "https://upstream.test/releases", "station.json");
+    assert.equal(answer.status, 200, String(first));
+    assert.equal(await answer.text(), "station");
+    assert.equal(asked(), 2);
+    answering(first, first);
+    await assertUnavailable(await upstreamRelease(ask(), "https://upstream.test/releases", "station.json"));
+  }
+  const asked = answering(404);
+  assert.equal((await upstreamRelease(ask(), "https://upstream.test/releases", "station.json")).status, 404);
+  assert.equal(asked(), 1);
 });
 
 test("a face's files: a page's stylesheet and slices, the Android app's file, cached for good and fetched from any origin", async () => {

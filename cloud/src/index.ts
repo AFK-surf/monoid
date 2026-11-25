@@ -7,7 +7,7 @@
 import { installScript, releaseType, sharedRelease } from "./install.ts";
 import { windowsInstallScript } from "./install-windows.ts";
 import { cloudProduct, requestLang, setCloud, tr } from "./i18n.ts";
-import { latestDownload, serveRelease, upstreamRelease } from "./releases.ts";
+import { latestDownload, serveRelease, unavailable, upstreamRelease } from "./releases.ts";
 import { appleConfigured } from "./apple";
 import { authConfigured, bearerToken, clock, denied, digest, readJson, readText, reply, validId, validSecret, verifyToken } from "./auth";
 import { devicePage, googleStart, consumeLoginRate, signedInPage } from "./login";
@@ -240,9 +240,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
     // The apps' latest builds at links that stay (the site's download buttons; under /releases/, which cloud's routes send here).
     const app = /^\/releases\/latest\/(mac|android|win|mac-beta|android-beta|win-beta|android-mbui|mac-mbui|win-mbui|linux-mbui|linux-arm64-mbui)$/.exec(path)?.[1];
     if (app) {
-      const file = await latestDownload(env.RELEASES, app);
-      if (!file || !releaseType(file)) return notFound();
-      return new Response(null, { status: 302, headers: { location: `/releases/${file}`, "cache-control": "no-store" } });
+      const latest = await latestDownload(env.RELEASES, app);
+      if (latest.kind === "unavailable") return unavailable(`latest/${app}`, latest.error);
+      if (latest.kind === "missing" || !releaseType(latest.file)) return notFound();
+      return new Response(null, { status: 302, headers: { location: `/releases/${latest.file}`, "cache-control": "no-store" } });
     }
   }
   const onConsole = adminOrigins(env).includes(url.origin);
