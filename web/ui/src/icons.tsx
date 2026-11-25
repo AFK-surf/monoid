@@ -174,27 +174,31 @@ export function Eye(props: IconProps) {
 }
 
 export function FileAudio(props: IconProps) {
-  return <Svg {...props}><path d="M7 3.5H13.5L20 10V17Q20 20.5 16.5 20.5H7.5Q4 20.5 4 17V7Q4 3.5 7 3.5Z M13.5 3.5V8Q13.5 10 15.5 10H20 M13 16.5V12.5L16 12" /><path d="M9 17a2 1.5 0 1 0 4 0a2 1.5 0 1 0 -4 0Z" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M8.25 12.5V15.25 M11.75 10V17.25 M15.5 12V15.75" /></Svg>;
 }
 
 export function FileCode(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10 12.5L8 14.75L10 17 M14 12.5L16 14.75L14 17" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M10 11.75L7.85 14.25L10 16.75 M14 11.75L16.15 14.25L14 16.75" /></Svg>;
 }
 
 export function FilePdf(props: IconProps) {
-  return <Svg {...props}><path d="M7 3.5H13.5L20 10V17Q20 20.5 16.5 20.5H7.5Q4 20.5 4 17V7Q4 3.5 7 3.5Z M13.5 3.5V8Q13.5 10 15.5 10H20" /><rect x="7.5" y="13.5" width="9" height="3.5" rx="1" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M9.5 17.25V11H12.5C16.5 11 16.5 15 12.5 15H9.5" /></Svg>;
 }
 
 export function FileText(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M8.5 13.5H15.5 M8.5 17H13" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M8.25 12.5H15.75 M8.25 16.25H13" /></Svg>;
 }
 
 export function FileVideo(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10.2 13Q10.2 12.2 10.9 12.6L14.4 14.7Q15.1 15.2 14.4 15.7L10.9 17.8Q10.2 18.2 10.2 17.4Z" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M9.08 11.88C9.08 10.05 9.82 9.62 11.41 10.53L14.98 12.61C16.57 13.52 16.57 14.38 14.98 15.29L11.41 17.37C9.82 18.28 9.08 17.85 9.08 16.02Z" fill="currentColor" stroke="none" /></Svg>;
+}
+
+export function FileZip(props: IconProps) {
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M8.75 6H10.5V7.75H8.75Z M10.5 7.75H12.25V9.5H10.5Z M8.75 9.5H10.5V11.25H8.75Z M10.5 11.25H12.25V13H10.5Z" fill="currentColor" stroke="none" /><path d="M9.75 12.9H11.25Q12.25 12.9 12.25 13.9V16.2Q12.25 17.2 11.25 17.2H9.75Q8.75 17.2 8.75 16.2V13.9Q8.75 12.9 9.75 12.9Z" /></Svg>;
 }
 
 export function File(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /></Svg>;
 }
 
 export function Filter(props: IconProps) {
@@ -716,6 +720,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "file-pdf": FilePdf,
   "file-text": FileText,
   "file-video": FileVideo,
+  "file-zip": FileZip,
   "file": File,
   "filter": Filter,
   "folder-plus": FolderPlus,

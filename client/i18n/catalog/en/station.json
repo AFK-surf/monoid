@@ -690,6 +690,7 @@
   "station.login.agyNoTerminal": "Antigravity CLI's sign-in needs a terminal, which this machine can't provide; sign in on another station",
   "station.login.agyCodeRefused": "The sign-in didn't finish with that code; start signing in again and paste the new code",
   "station.login.agyFailed": "Google couldn't finish signing in: {error}. Start signing in again; if it still fails, check that the Google Cloud project can be used",
+  "station.login.agyStopped": "agy took the code but didn't finish setting up; it stopped at: \"{screen}\". Start signing in again; if it stops there again, check that the Google Cloud project has Gemini Enterprise and billing set up",
   "station.context.busy": "A task is running; stop it and try again",
   "station.context.held": "This station can't run agents right now",
   "station.context.managersOnly": "Only workspace admins can change this setting",

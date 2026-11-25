@@ -1994,6 +1994,8 @@ export class Store {
           removed.push(thread);
           this.#run("DELETE FROM comma_router_once_targets WHERE id IN (SELECT id FROM comma_router_once WHERE thread = ?)", thread);
           this.#run("DELETE FROM comma_router_once WHERE thread = ?", thread);
+          this.#run("DELETE FROM comma_router_connects WHERE thread = ?", thread);
+          this.#run("DELETE FROM comma_task_participants WHERE thread = ?", thread);
           this.#run("DELETE FROM deliveries WHERE thread = ?", thread);
           this.#run("DELETE FROM entries WHERE thread = ?", thread);
           this.#run("DELETE FROM letter_deliveries WHERE thread = ?", thread);

@@ -309,10 +309,54 @@ let card_kinds : Array[String] = ["options", "text", "login", "secret", "device"
 let max_waits : Int = 8
 
 ///|
+let max_participants : Int = 32
+
+///|
+let max_router_connects : Int = 32
+
+///|
 let max_note : Int = 300
 
 ///|
 let max_url : Int = 500
+
+///|
+/// Canonical connect scope key: `<station_id>/<connect_id>` when `station_id` is non-empty, else `<connect_id>`.
+pub fn connect_scope(station_id : String?, connect_id : String) -> String {
+  match station_id {
+    Some(s) if s.length() > 0 => "\{s}/\{connect_id}"
+    _ => connect_id
+  }
+}
+
+///|
+/// Whether a stored connect scope entry matches a given `(connect_id, station_id)`.
+pub fn connect_matches(entry : String, connect_id : String, station_id : String?) -> Bool {
+  if entry.contains("/") {
+    match station_id {
+      Some(s) if s.length() > 0 => entry == "\{s}/\{connect_id}"
+      _ => false
+    }
+  } else {
+    entry == connect_id
+  }
+}
+
+///|
+/// Validates and normalizes an optional `requester_email` from `task.say` (trimmed lowercase email, <= max_text, no `:`).
+pub fn valid_requester_email(value : J?) -> String? {
+  match value {
+    Some(Str(u)) => {
+      let email = @jscase.lower(js_trim(u))
+      if email_like(email) && email.length() <= max_text && !email.contains(":") {
+        Some(email)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
 
 ///|
 /// /^[^\s@]+@[^\s@]+$/
@@ -373,6 +417,76 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
 }
 
 ///|
+/// Human participants of a chat as a Task index row's `participants`: each a lowercase email, distinct, at most
+/// MAX_PARTICIPANTS; None when absent or empty after normalization.
+fn participants_of(chat : J) -> J? {
+  guard arr_of(prop(Some(chat), "participants")) is Some(raw) else { return None }
+  let participants : Array[String] = []
+  for p in raw {
+    let email = match p {
+      Str(u) => @jscase.lower(js_trim(u))
+      _ => ""
+    }
+    if email_like(email) && email.length() <= max_text && participants.length() < max_participants && !participants.contains(email) {
+      participants.push(email)
+    }
+  }
+  if participants.length() > 0 { Some(Arr(participants.map(jstr))) } else { None }
+}
+
+///|
+/// Normalized connect scopes that wrote in this chat via Comma Router (`router_connects`), None when empty/missing.
+fn router_connects_of(chat : J) -> J? {
+  guard arr_of(prop(Some(chat), "routerConnects")) is Some(raw) else { return None }
+  let connects : Array[String] = []
+  for c in raw {
+    let trimmed = match c {
+      Str(u) => js_trim(u)
+      _ => ""
+    }
+    if trimmed != "" && trimmed.length() <= max_text && connects.length() < max_router_connects && !connects.contains(trimmed) {
+      connects.push(trimmed)
+    }
+  }
+  if connects.length() > 0 { Some(Arr(connects.map(jstr))) } else { None }
+}
+
+///|
+/// Per-connect participant emails recorded via `task.say` (`connect_participants`), None when empty/missing.
+fn connect_participants_of(chat : J) -> J? {
+  guard prop(Some(chat), "connectParticipants") is Some(Obj(entries)) else { return None }
+  let out : Array[(String, J)] = []
+  for pair in entries {
+    if out.length() >= max_router_connects {
+      break
+    }
+    let scope = js_trim(pair.0)
+    if scope == "" || scope.length() > max_text {
+      continue
+    }
+    guard pair.1 is Arr(list) else { continue }
+    let emails : Array[String] = []
+    for item in list {
+      let email = match item {
+        Str(u) => @jscase.lower(js_trim(u))
+        _ => ""
+      }
+      if email_like(email) &&
+        email.length() <= max_text &&
+        !email.contains(":") &&
+        emails.length() < max_participants &&
+        !emails.contains(email) {
+        emails.push(email)
+      }
+    }
+    if emails.length() > 0 {
+      out.push((scope, Arr(emails.map(jstr))))
+    }
+  }
+  if out.length() > 0 { Some(Obj(out)) } else { None }
+}
+
+///|
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
 fn url_of(url : J?) -> J? {
   match url {
@@ -412,7 +526,13 @@ pub fn task_rows_of(given : StationRows) -> Map[String, (String, String)] {
         ("station", given.station.map(jstr)),
       ] +
       attention_fields(c) +
-      [("url", url_of(prop(cc, "url"))), ("router", if prop(cc, "router") is Some(Bool(true)) { Some(Bool(true)) } else { None })],
+      [
+        ("url", url_of(prop(cc, "url"))),
+        ("router", if prop(cc, "router") is Some(Bool(true)) { Some(Bool(true)) } else { None }),
+        ("participants", participants_of(c)),
+        ("router_connects", router_connects_of(c)),
+        ("connect_participants", connect_participants_of(c)),
+      ],
     )
     rows[ref_] = ("task", json)
   }
@@ -1150,10 +1270,11 @@ pub let page_rows : Int = 200
 pub let page_bytes : Int = 61440
 
 ///|
-/// How rows go on the wire: the Stats index's, the Task index's, or another's.
+/// How rows go on the wire: the Stats index's, the Task index's (global or scoped to a connect), or another's.
 pub(all) enum Wire {
   StatsWire
   TaskWire
+  TaskWireFor(String, String?)
   OtherWire((IndexRow) -> J?)
 }
 
@@ -1162,13 +1283,14 @@ fn Wire::encode(self : Wire, row : IndexRow) -> J? {
   match self {
     StatsWire => stats_wire(row)
     TaskWire => task_wire(row)
+    TaskWireFor(connect_id, station_id) => task_wire_for(row, connect_id, station_id)
     OtherWire(f) => f(row)
   }
 }
 
 ///|
 fn Wire::built_in(self : Wire) -> Bool {
-  self is (StatsWire | TaskWire)
+  self is (StatsWire | TaskWire | TaskWireFor(_, _))
 }
 
 ///|
@@ -1208,11 +1330,7 @@ pub fn stats_wire(row : IndexRow) -> J? {
   ]))
 }
 
-///|
-/// A Task index row as `task.index` carries it: the Task's facts, never its messages; what it asks of whom only when
-/// it asks something, its agent's one sentence of it, its link when there is one, and `router` only when a Comma
-/// Router wrote in it (a station from before says nothing: absent is not known to be false).
-pub fn task_wire(row : IndexRow) -> J? {
+fn encode_task_wire(row : IndexRow, scope : (String, String?)?) -> J? {
   if row.removed {
     return Some(jobj([("thread", jstr(row.key)), ("rev", Num(row.rev)), ("removed", Bool(true))]))
   }
@@ -1230,6 +1348,55 @@ pub fn task_wire(row : IndexRow) -> J? {
   let labels : Array[J] = match (prop(tt, "attention"), prop(tt, "card")) {
     (Some(Str(att)), Some(Str(c))) if att == "need" && card_kinds.contains(c) => [jstr("card:\{c}")]
     _ => []
+  }
+  let router = match scope {
+    Some((connect_id, station_id)) =>
+      match prop(tt, "router_connects") {
+        Some(Arr(entries)) =>
+          entries.iter().any(e => match e {
+            Str(s) => connect_matches(s, connect_id, station_id)
+            _ => false
+          })
+        _ => prop(tt, "router") is Some(Bool(true))
+      }
+    None => prop(tt, "router") is Some(Bool(true))
+  }
+  let participants : J? = match scope {
+    Some((connect_id, station_id)) => {
+      let merged : Array[String] = []
+      let add = (v : J) => {
+        let email = match v {
+          Str(u) => @jscase.lower(js_trim(u))
+          _ => ""
+        }
+        if email_like(email) &&
+          email.length() <= max_text &&
+          merged.length() < max_participants &&
+          !merged.contains(email) {
+          merged.push(email)
+        }
+      }
+      if prop(tt, "participants") is Some(Arr(items)) {
+        for p in items {
+          add(p)
+        }
+      }
+      if prop(tt, "connect_participants") is Some(Obj(entries)) {
+        for pair in entries {
+          if connect_matches(pair.0, connect_id, station_id) && pair.1 is Arr(list) {
+            for p in list {
+              add(p)
+            }
+          }
+        }
+      }
+      if merged.length() > 0 { Some(Arr(merged.map(jstr))) } else { None }
+    }
+    None =>
+      match prop(tt, "participants") {
+        Some(Arr(items)) if items.length() > 0 => Some(Arr(items))
+        _ => None
+      }
   }
   Some(
     jo([
@@ -1266,9 +1433,25 @@ pub fn task_wire(row : IndexRow) -> J? {
           _ => None
         },
       ),
-      ("router", if prop(tt, "router") is Some(Bool(true)) { Some(Bool(true)) } else { None }),
+      ("router", if router { Some(Bool(true)) } else { None }),
+      ("participants", participants),
     ]),
   )
+}
+
+///|
+/// A Task index row as `task.index` carries it: the Task's facts, never its messages; what it asks of whom only when
+/// it asks something, its agent's one sentence of it, its link when there is one, and `router` only when a Comma
+/// Router wrote in it (a station from before says nothing: absent is not known to be false).
+pub fn task_wire(row : IndexRow) -> J? {
+  encode_task_wire(row, None)
+}
+
+///|
+/// A Task index row scoped to a specific Comma connect (`connect_id`, optional `station_id`), isolating `router: true`
+/// and merging connect-scoped `task.say` participants for that connect alone.
+pub fn task_wire_for(row : IndexRow, connect_id : String, station_id : String?) -> J? {
+  encode_task_wire(row, Some((connect_id, station_id)))
 }
 
 ///|

@@ -90,6 +90,8 @@ export type CommaOptions = ConnectsOptions & {
   ownerActiveAt?: (ws: string | null, ownerEmail: string | null) => number | null;
   /// Notifies when owner activity may have moved into a new 30-second bucket.
   onOwnerActiveChange?: (changed: () => void) => () => void;
+  /// This station's id (cloud.state?.station ?? null), used to scope connect-level task.index fields.
+  stationId?: () => string | null;
 };
 
 export type CommaParts = ReturnType<typeof makeComma>;
@@ -124,7 +126,7 @@ export function makeComma(options: CommaOptions) {
       };
       const chats: CommaChats | null = isIn ? {
         read: (ref, after, limit) => scoped().chats.read(ref, after, limit),
-        say: (ref, text, key, requester, connect, closeCard, expectedCardSeq) => scoped().chats.say(ref, text, key, requester, connect, closeCard, expectedCardSeq),
+        say: (ref, text, key, requester, connect, closeCard, expectedCardSeq, requesterEmail) => scoped().chats.say(ref, text, key, requester, connect, closeCard, expectedCardSeq, requesterEmail),
       } : null;
       return new CommaSurface({ connect: c.id, server: c.server, token: c.token, name: options.name?.(c.workspace ?? null) ?? hostname(), workspace, ownerEmail: c.resolvedOwnerEmail, tasks: t, store: options.store,
         models: () => options.models?.(c.id) ?? [], book, stats: isIn ? () => scoped().indexes : options.empty,
@@ -132,7 +134,8 @@ export function makeComma(options: CommaOptions) {
         workspaceMeta: isIn && options.workspaceMeta ? () => options.workspaceMeta!(c.workspace ?? null) : undefined,
         onWorkspaceMetaChange: isIn ? options.onWorkspaceMetaChange : undefined,
         ownerActiveAt: isIn && options.ownerActiveAt ? () => options.ownerActiveAt!(c.workspace ?? null, c.resolvedOwnerEmail) : undefined,
-        onOwnerActiveChange: isIn ? options.onOwnerActiveChange : undefined });
+        onOwnerActiveChange: isIn ? options.onOwnerActiveChange : undefined,
+        stationId: options.stationId });
     });
   const connects = makeConnects<ScopedConnect>(options, {
     kind: "comma",

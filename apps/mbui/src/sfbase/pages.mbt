@@ -1201,6 +1201,7 @@ fn setting_kind(r : @settings.Route) -> String {
     Changelog => "Changelog"
     About => "About"
     Shortcuts => "Shortcuts"
+    Network => "Network"
     LocalStation => "LocalStation"
     Notifications => "Notifications"
     Permissions => "Permissions"
@@ -1745,6 +1746,7 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::Archiving) => @sf.t("web-pages.archiving.title")
     Setting(@settings.Route::Backup) => @sf.t("web-pages.backup.title")
     Setting(@settings.Route::Shortcuts) => @sf.t("web-main.shortcuts.title")
+    Setting(@settings.Route::Network) => @sf.t("web-pages.settings.nav.network")
     Setting(@settings.Route::Usage) => @sf.t("web-pages.settings.nav.usage")
     Setting(@settings.Route::Security) => @sf.t("web-pages.security.title")
     Setting(@settings.Route::Vault) => @sf.t("web-pages.vault.title")

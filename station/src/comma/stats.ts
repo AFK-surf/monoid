@@ -112,8 +112,30 @@ export function statsRowsOf(given: StationRows, fromDay: string): Map<string, { 
 const ATTENTION = ["need", "done", "failed"];
 const CARD_KINDS = ["options", "text", "login", "secret", "device", "rig", "signin"];
 const MAX_WAITS = 8;
+const MAX_PARTICIPANTS = 32;
+const MAX_ROUTER_CONNECTS = 32;
 const MAX_NOTE = 300;
 const MAX_URL = 500;
+
+/// Canonical connect scope key: `<stationId>/<connectId>` when `stationId` is non-empty, else `<connectId>`.
+export function connectScope(stationId: string | null | undefined, connectId: string): string {
+  return typeof stationId === "string" && stationId !== "" ? `${stationId}/${connectId}` : connectId;
+}
+
+/// Whether a stored connect scope entry matches a given `(connectId, stationId)`.
+export function connectMatches(entry: string, connectId: string, stationId?: string | null): boolean {
+  if (entry.includes("/")) {
+    return typeof stationId === "string" && stationId !== "" && entry === `${stationId}/${connectId}`;
+  }
+  return entry === connectId;
+}
+
+/// Validates and normalizes an optional `requester_email` from `task.say` (trimmed lowercase email, <= MAX_TEXT, no `:`).
+export function validRequesterEmail(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const email = value.trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_TEXT && !email.includes(":") ? email : undefined;
+}
 
 /// What a chat asks of whom now as a Task index row's fields (outflow.ts attentionOf): none for an archived chat, or
 /// a station from before that says nothing; who it is for each a lowercase email, distinct, at most MAX_WAITS.
@@ -135,6 +157,54 @@ function attentionFields(chat: Json): Json {
   };
 }
 
+/// Human participants of a chat as a Task index row's `participants`: each a lowercase email, distinct, at most
+/// MAX_PARTICIPANTS; absent when missing or empty after normalization.
+function participantsFields(chat: Json): Json {
+  if (!Array.isArray(chat.participants)) return {};
+  const participants = new Set<string>();
+  for (const p of chat.participants) {
+    const email = typeof p === "string" ? p.trim().toLowerCase() : "";
+    if (/^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_TEXT && participants.size < MAX_PARTICIPANTS) participants.add(email);
+  }
+  return participants.size > 0 ? { participants: [...participants] } : {};
+}
+
+/// Normalized connect scopes that wrote in this chat via Comma Router (`router_connects`), absent when empty/missing.
+function routerConnectsFields(chat: Json): Json {
+  if (!Array.isArray(chat.routerConnects)) return {};
+  const connects = new Set<string>();
+  for (const c of chat.routerConnects) {
+    const trimmed = typeof c === "string" ? c.trim() : "";
+    if (trimmed !== "" && trimmed.length <= MAX_TEXT && connects.size < MAX_ROUTER_CONNECTS) connects.add(trimmed);
+  }
+  return connects.size > 0 ? { router_connects: [...connects] } : {};
+}
+
+/// Per-connect participant emails recorded via `task.say` (`connect_participants`), absent when empty/missing.
+function connectParticipantsFields(chat: Json): Json {
+  const raw = chat.connectParticipants;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string[]> = {};
+  let scopes = 0;
+  for (const [key, list] of Object.entries(raw as Record<string, unknown>)) {
+    if (scopes >= MAX_ROUTER_CONNECTS) break;
+    const scope = key.trim();
+    if (scope === "" || scope.length > MAX_TEXT || !Array.isArray(list)) continue;
+    const emails = new Set<string>();
+    for (const item of list) {
+      const email = typeof item === "string" ? item.trim().toLowerCase() : "";
+      if (/^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_TEXT && !email.includes(":") && emails.size < MAX_PARTICIPANTS) {
+        emails.add(email);
+      }
+    }
+    if (emails.size > 0) {
+      out[scope] = [...emails];
+      scopes++;
+    }
+  }
+  return scopes > 0 ? { connect_participants: out } : {};
+}
+
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
 const urlOf = (url: unknown): Json => (typeof url === "string" && url.startsWith("https://") && url.length <= MAX_URL ? { url } : {});
 
@@ -150,7 +220,8 @@ export function taskRowsOf(given: StationRows): Map<string, { kind: string; json
       created_by: cut(c.creator === null || c.creator === undefined ? null : who(c.creator, c.creator.ref ?? null), MAX_TEXT),
       created_at: c.createdAt ?? 0, last_activity_at: c.lastActiveAt ?? c.createdAt ?? 0,
       runtime: cut(agent?.runtime, 40), model: cut(agent?.model, 120), ...(given.station === undefined ? {} : { station: given.station }),
-      ...attentionFields(c), ...urlOf(c.url), ...(c.router === true ? { router: true } : {}),
+      ...attentionFields(c), ...urlOf(c.url), ...(c.router === true ? { router: true } : {}), ...participantsFields(c),
+      ...routerConnectsFields(c), ...connectParticipantsFields(c),
     };
     rows.set(ref, { kind: "task", json: JSON.stringify(row) });
   }
@@ -543,14 +614,40 @@ export function statsWire(row: IndexRow): Json | null {
   }
 }
 
-/// A Task index row as `task.index` carries it: the Task's facts, never its messages; what it asks of whom only when it
-/// asks something, its agent's one sentence of it, its link when there is one, and `router` only when a Comma Router
-/// wrote in it (a station from before says nothing: absent is not known to be false).
-export function taskWire(row: IndexRow): Json | null {
+function encodeTaskWire(row: IndexRow, scope?: { connectId: string; stationId: string | null }): Json | null {
   if (row.removed) return { thread: row.key, rev: row.rev, removed: true };
   try {
     const t = JSON.parse(row.json);
     const labels = t?.attention === "need" && typeof t.card === "string" && CARD_KINDS.includes(t.card) ? [`card:${t.card}`] : [];
+    let router = false;
+    if (scope !== undefined) {
+      if (Array.isArray(t.router_connects)) {
+        router = t.router_connects.some((e: unknown) => typeof e === "string" && connectMatches(e, scope.connectId, scope.stationId));
+      } else {
+        router = t.router === true;
+      }
+    } else {
+      router = t.router === true;
+    }
+    let participants: string[] | undefined;
+    if (scope !== undefined) {
+      const merged = new Set<string>();
+      const add = (value: unknown) => {
+        const email = typeof value === "string" ? value.trim().toLowerCase() : "";
+        if (/^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_TEXT && merged.size < MAX_PARTICIPANTS) merged.add(email);
+      };
+      if (Array.isArray(t.participants)) for (const p of t.participants) add(p);
+      const cp = t.connect_participants;
+      if (cp !== null && typeof cp === "object" && !Array.isArray(cp)) {
+        for (const [entry, list] of Object.entries(cp as Record<string, unknown>)) {
+          if (!connectMatches(entry, scope.connectId, scope.stationId) || !Array.isArray(list)) continue;
+          for (const p of list) add(p);
+        }
+      }
+      if (merged.size > 0) participants = [...merged];
+    } else if (Array.isArray(t.participants) && t.participants.length > 0) {
+      participants = t.participants;
+    }
     return {
       thread: row.key, rev: row.rev, task: t.task, title: t.title, status: t.status, created_by: t.created_by, created_at: t.created_at,
       last_activity_at: t.last_activity_at, runtime: t.runtime, model: t.model, labels,
@@ -558,11 +655,30 @@ export function taskWire(row: IndexRow): Json | null {
       ...(typeof t.attention === "string" && Array.isArray(t.waits_for) && t.waits_for.length > 0 ? { waits_for: t.waits_for } : {}),
       ...(typeof t.attention === "string" && typeof t.note === "string" ? { note: t.note } : {}),
       ...(typeof t.url === "string" ? { url: t.url } : {}),
-      ...(t.router === true ? { router: true } : {}),
+      ...(router ? { router: true } : {}),
+      ...(participants !== undefined ? { participants } : {}),
     };
   } catch {
     return null;
   }
+}
+
+/// A Task index row as `task.index` carries it: the Task's facts, never its messages; what it asks of whom only when it
+/// asks something, its agent's one sentence of it, its link when there is one, and `router` only when a Comma Router
+/// wrote in it (a station from before says nothing: absent is not known to be false).
+export function taskWire(row: IndexRow): Json | null {
+  return encodeTaskWire(row);
+}
+
+const builtinWires = new WeakSet<(row: IndexRow) => Json | null>([statsWire, taskWire]);
+const isBuiltinWire = (wire: (row: IndexRow) => Json | null): boolean => builtinWires.has(wire);
+
+/// A Task index wire encoder scoped to a specific Comma connect (`connectId`, optional `stationId`), isolating
+/// `router: true` and merging connect-scoped `task.say` participants for that connect alone.
+export function taskWireFor(connectId: string, stationId: string | null = null): (row: IndexRow) => Json | null {
+  const wire = (row: IndexRow) => encodeTaskWire(row, { connectId, stationId });
+  builtinWires.add(wire);
+  return wire;
 }
 
 /// The next page to send after Comma answered `held`; null once it holds all of the index.
@@ -586,7 +702,7 @@ function readNextPage(index: RevIndex, held: Held, wire: (row: IndexRow) => Json
     const reset = held.epoch !== epoch || forced;
     const since = reset ? 0 : held.through;
     let limit = reset ? PAGE_ROWS : requestedRows;
-    const omitRemoved = wire === statsWire || wire === taskWire;
+    const omitRemoved = isBuiltinWire(wire);
     let changed = !reset && since >= rev ? null : index.since(since, limit + 1, omitRemoved);
     // Do not introduce an earlier boundary within equal revisions: the receiver acknowledges only a revision.
     // Fall back in this same snapshot to the original page size when the adaptive boundary would split one.
@@ -644,13 +760,13 @@ export class IndexSync {
         (held.through < seen && (!this.#resetting || seen > this.#resetFloor)));
     };
     let result = readNextPage(index, held, this.#wire, resetIf, this.#pageRows);
-    if ((this.#wire === statsWire || this.#wire === taskWire) && result.limit < PAGE_ROWS && result.rowLimited) {
+    if (isBuiltinWire(this.#wire) && result.limit < PAGE_ROWS && result.rowLimited) {
       // Small rows have arrived. Discard the tentative page and read a complete page in a new snapshot, so the
       // receiver does not pay an extra page wait and no rows from different snapshots are combined.
       result = readNextPage(index, held, this.#wire, resetIf, PAGE_ROWS);
     }
     const page = result.page;
-    if (this.#wire === statsWire || this.#wire === taskWire) {
+    if (isBuiltinWire(this.#wire)) {
       // Learn from wire size, not stored JSON size: a large Task body can make a small wire row.
       if (result.byteLimited) this.#pageRows = Math.min(PAGE_ROWS, Math.max(8, 2 * (result.taken + 1)));
       else this.#pageRows = PAGE_ROWS;

@@ -1121,8 +1121,12 @@ test "本机缓存 with many chats: the ones keeping most first, all when asked,
   assert_true(shows("测试会话 1"))
   assert_true(built() > 0 && built() < 20)
   assert_eq(t.corner_faults(), [])
-  // the last row taps as any
-  t.tap_text("测试会话 1")
+  // the last row taps as any (by its own words: tap_text's find takes 测试会话 12 above the screen, laid out in the
+  // list's margin, for 测试会话 1)
+  match t.words().filter(fn(w) { w.0 == "测试会话 1" }) {
+    [w, ..] => t.tap(w.1 + w.3 / 2.0, w.2 + w.4 / 2.0)
+    [] => fail("no 测试会话 1 on screen")
+  }
   nav_rested(t)
   assert_true(t.find("测试会话 1") is Some(_))
   assert_true(t.find("消息记录") is Some(_))

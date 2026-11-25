@@ -646,6 +646,8 @@ fn narrow_made_as(
       made("shortcuts", fn(p, core, _here, frame, stint, _acts) {
         @sfpages.shortcuts_node(p, core, on_back=core.pop, frame~, active=fn() { app.nav.top_stay().1 == stint() })
       })
+    Setting(Network) =>
+      made("network", fn(p, core, _here, frame, _stint, _acts) { @sfpages.network_node(p, core, on_back=core.pop, frame~) })
     Setting(Notifications) =>
       made("notifications", fn(p, core, here, frame, stint, _acts) {
         @sfpages.notify_node(p, core, here, on_back=core.pop, frame~, stint~)

@@ -308,7 +308,10 @@ fn keeping_row(row : @view.View, src : Source, k : @signals.Signal[Json]) -> Uni
   }
   transfer_row_of(
     row,
-    fn(m) { @sf.icon_node(m, "download", transfer_icon, By(fn() { @sf.theme().p.muted })) |> ignore },
+    fn(m) {
+      @sf.icon_node(m, coming_mark(@signals.untracked(j)), transfer_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() { coming_mark(j()) })
+      |> ignore
+    },
     fn(w) {
       // (its words say it is kept here as it comes: 后台缓存 …; pressed, it is opened again where it was)
       opened_title(w, j, None)
@@ -346,6 +349,18 @@ fn opened_title(parent : @view.View, j : () -> Json?, way : (() -> String)?) -> 
       }
     },
   )
+}
+
+///|
+/// What comes (a download, a file being brought) marked by what it is (a video's, a sound's, an archive's …), so rows
+/// that all come here tell apart at a glance: a folder zipped is an archive.
+fn coming_mark(j : Json?) -> String {
+  if flag(j, "zip") {
+    "file-zip"
+  } else {
+    let name = text(j, "name")
+    @sf.file_mark(if name != "" { name } else { text(j, "title") })
+  }
 }
 
 ///|
@@ -478,10 +493,10 @@ fn download_row(row : @view.View, src : Source, d : @signals.Signal[Json]) -> Un
     fn(m) {
       @sf.icon_node(
         m,
-        if @signals.untracked(failed) { "retry" } else { "download" },
+        if @signals.untracked(failed) { "retry" } else { coming_mark(@signals.untracked(j)) },
         transfer_icon,
         By(fn() { if failed() { @sf.theme().p.red } else { @sf.theme().p.muted } }),
-        name_now=fn() { if failed() { "retry" } else { "download" } },
+        name_now=fn() { if failed() { "retry" } else { coming_mark(j()) } },
       )
       |> ignore
     },

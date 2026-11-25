@@ -287,6 +287,8 @@ export type Told = {
   ratesOpened(address: string, supported: boolean): void;
   /// A station is no longer linked.
   gone(address: string): void;
+  /// Whether the stations of `workspace` are linked now (all unless the device follows only the ones in view).
+  links(workspace: string): boolean;
 };
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -413,12 +415,13 @@ export class Links {
     return this.#links.get(address)?.state.state === "online";
   }
 
-  /// Every station of every workspace an account reaches, as the workspaces are held: those not linked yet are
-  /// linked, those no longer listed let go.
+  /// Every station of every workspace an account reaches, as the workspaces are held (only those in view where the
+  /// device follows no others, `Told.links`): those not linked yet are linked, those no longer listed let go.
   reconcile(): void {
     const core = this.#core;
     const wanted = new Set<string>();
     for (const [id] of core.workspaces.owned()) {
+      if (!this.#told.links(id)) continue;
       const workspace = core.data.shared({ topic: "workspace", workspace: id });
       for (const s of isObject(workspace) && Array.isArray(workspace.stations) ? workspace.stations : []) {
         if (isObject(s) && typeof s.id === "string") wanted.add(`${id}/${s.id}`);

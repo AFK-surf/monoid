@@ -120,7 +120,27 @@ async function signIn() {
   // A company's account (1.5.9): the second way (a Google Cloud project), Continue with Google Cloud; once its code is in,
   // its file written with only its token, then its licences (FAKE_AGY_LICENSES: one, chosen with Enter) or, with none, how
   // to pay (Pay As You Go, the second) and its project asked (`bad-project`: refused).
+  // 1.5.14 (FAKE_AGY_VERSION): how to pay asked first (Subscriptions, Enter), then its licences; with none, the project
+  // asked, then its region (`Choose region:`, global first), its licence assigned there (FAKE_AGY_SELF_ASSIGN) or none
+  // to be had, back (Esc) to the project and how to pay; Pay As You Go asks the project and its region again.
+  // FAKE_AGY_STUCK: once its region is chosen it goes no further.
+  const newer = process.env.FAKE_AGY_VERSION === '1.5.14';
+  let project = '';
+  let via = '';
+  const billing14 = () => process.stdout.write(' Select billing model:\n > 1. Subscriptions \u2013 Use Antigravity through your Gemini subscription.\n2. Pay As You Go \u2013 Pay only for the tokens you use, billed through Gemini platform.\n');
+  const projectAsked = (extra) => process.stdout.write(` Provide Google Cloud project:\n Your Antigravity use will be associated with provided project.\n > my-gcp-project\n${extra}`);
   process.stdin.on('data', (chunk) => {
+    if (chunk.toString('utf8') === '\u001b') {
+      if (dump) appendFileSync(dump + '.keys', JSON.stringify({ step, esc: true }) + '\n');
+      if (step === 'assign') {
+        step = 'project-sub';
+        projectAsked('');
+      } else if (step === 'project-sub') {
+        step = 'billing14';
+        billing14();
+      }
+      return;
+    }
     typed += chunk.toString('utf8');
     let enter;
     while ((enter = typed.indexOf('\r')) >= 0) {
@@ -141,6 +161,43 @@ async function signIn() {
         token({ token: { access_token: `ya29.${line}`, token_type: 'Bearer' }, auth_method: 'oauth', id_token_email: 'someone@gmail.com' });
         step = 'in';
         process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+      } else if (step === 'gcp-code' && line !== 'bad' && newer) {
+        access = `ya29.${line}`;
+        token({ token: { access_token: access, token_type: 'Bearer', refresh_token: 'refresh' }, auth_method: 'gcp', id_token_email: 'someone@company.com' });
+        step = 'billing14';
+        billing14();
+      } else if (step === 'billing14' && !down) {
+        process.stdout.write(' Fetching licenses...\n');
+        if (process.env.FAKE_AGY_LICENSES) {
+          step = 'license';
+          process.stdout.write(' Select available subscription:\n > 1. Gemini Enterprise Ultra (Project: company-project, Location: global)\n2. Can\'t find your subscription? Enter a Google Cloud project\n');
+        } else {
+          step = 'project-sub';
+          projectAsked(' No licenses found. Please enter project ID manually.\n');
+        }
+      } else if (step === 'billing14') {
+        step = 'project-pay';
+        projectAsked('');
+      } else if ((step === 'project-sub' || step === 'project-pay') && line !== '') {
+        [project, via] = [line, step];
+        step = 'region';
+        const region = ' Choose region:\n > global\nus\n   eu\n For a full list of available locations and deployment endpoints, please refer to the official documentation\n';
+        process.stdout.write(region);
+        // (drawn again a moment later, after its Enter too, as its spinner redraws it: still one question)
+        setTimeout(() => { if (step !== 'stuck') process.stdout.write(region); }, 20);
+      } else if (step === 'region' && process.env.FAKE_AGY_STUCK) {
+        process.stdout.write(' Setting up your project...\n');
+        step = 'stuck';
+      } else if (step === 'region' && via === 'project-sub' && process.env.FAKE_AGY_SELF_ASSIGN) {
+        signedIn({ project_id: project, region: 'global', user_tier: 'gcp-ge-standard-tier', tier_display_name: 'Gemini Enterprise' });
+      } else if (step === 'region' && via === 'project-sub') {
+        step = 'assign';
+        const none = ' Select subscription:\n Licenses are provided by your organization admin.\n No license available for this project and location. Contact your administrator to setup Gemini Enterprise for this project.\n   esc Back\n';
+        process.stdout.write(none);
+        // (drawn again, after its Esc too, while it is still on its way back)
+        setTimeout(() => { if (step === 'assign' || step === 'project-sub') process.stdout.write(none); }, 20);
+      } else if (step === 'region') {
+        signedIn({ project_id: project, region: 'global' });
       } else if (step === 'gcp-code' && line !== 'bad') {
         access = `ya29.${line}`;
         token({ token: { access_token: access, token_type: 'Bearer', refresh_token: 'refresh' }, auth_method: 'gcp', id_token_email: 'someone@company.com' });

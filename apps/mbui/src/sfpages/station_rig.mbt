@@ -47,12 +47,17 @@ fn rig_station_node(
     tips~,
     lead=fn() { @settings.rig_whose(rig()) + " · " + @settings.rig_state(rig()) },
     // (its devices' own section once it has any; adding one is in its more's rows: rig_more_node)
+    // (who may use it only once it has a row: its person's own waiting for its code has none yet)
     fn() {
-      if @settings.devices_listed(core, here()).iter().any(fn(d) { text(Some(d), "station") == id && text(Some(d), "via") == "rig" }) {
-        ["mode", "use", "devices", "more"]
-      } else {
-        ["mode", "use", "more"]
+      let keys = ["mode"]
+      if rig_use_shown(rig()) {
+        keys.push("use")
       }
+      if @settings.devices_listed(core, here()).iter().any(fn(d) { text(Some(d), "station") == id && text(Some(d), "via") == "rig" }) {
+        keys.push("devices")
+      }
+      keys.push("more")
+      keys
     },
     fn(b, key) {
       match key {
@@ -185,6 +190,19 @@ fn rig_vouch_body(v : @view.View, field : @ui.Field, said : () -> Unit) -> Unit 
 /// 核对安全码's command over its field, 12 apart.
 // kept across runs: a value (no field of it changes)
 let rig_vouch_column : @ui.Style = @ui.css("w=Full gap=S3")
+
+///|
+/// Whether who may use it has any row: 免批准 (its person's, once its code is compared; said to anyone else when on),
+/// the chats asking for it or using it, or 没有对话在使用 once that is known.
+fn rig_use_shown(rig : Json?) -> Bool {
+  let mine = flag(rig, "mine")
+  let open = flag(rig, "open")
+  (mine && flag(rig, "vouched")) ||
+  (!mine && open) ||
+  items(rig, "requests").length() > 0 ||
+  items(rig, "grants").length() > 0 ||
+  (flag(rig, "known") && !open)
+}
 
 ///|
 /// Who may use it: 免批准 (its person's switch; anyone else told when it is on), the chats asking for it (answered by

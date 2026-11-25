@@ -836,7 +836,17 @@ fn tray_words_x(w : Double, edge : Double, words : Double, pad : Double) -> Doub
   let rest = w - pad - words
   let dock = pad + row_mark_w() + row_mark_gap()
   let reach = tray_check_to_words() - 1.0
-  let raw = dmin(edge + reach, rest)
+  // (stopping at the slot's end as softly as it docks: a hard min there stopped it dead mid-spring, a frame's jump)
+  // (over as much of the way as the row's rest leaves it: at rest it stands at the end all the same)
+  let rk = dmin(24.0, dmax(1.0, pad + words + reach))
+  let a = edge + reach
+  let raw = if a <= rest - rk {
+    a
+  } else if a >= rest + rk {
+    rest
+  } else {
+    a - (a - rest + rk) * (a - rest + rk) / (4.0 * rk)
+  }
   let k = dmin(32.0, dmax(1.0, dock - reach))
   let u = raw - dock
   if u <= -k {

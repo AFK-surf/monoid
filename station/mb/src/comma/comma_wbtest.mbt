@@ -124,6 +124,63 @@ test "rows as the indexes keep them" {
 }
 
 ///|
+test "task_rows_of and task_wire normalize participants, cap at 32, omit empty/absent" {
+  let many : Array[J] = []
+  for i = 0; i < 40; i = i + 1 {
+    many.push(jstr("User\{i}@Example.COM"))
+  }
+  let long_email = String::make(200, 'x') + "@x"
+  let rows = task_rows_of({
+    station: None,
+    usage: Null,
+    chats: [
+      jobj([
+        ("thread", ji(1)),
+        ("title", jstr("A")),
+        (
+          "participants",
+          Arr([
+            jstr("  Ann@X "),
+            jstr("ann@x"),
+            jstr("Bob@Y"),
+            jstr("not an email"),
+            jstr("local"),
+            jstr("slack:cm:Router"),
+            jstr("a@b@c"),
+            jstr(long_email),
+            ji(42),
+            Null,
+            jstr(""),
+          ]),
+        ),
+      ]),
+      jobj([("thread", ji(2)), ("title", jstr("Cap")), ("participants", Arr(many))]),
+      jobj([("thread", ji(3)), ("title", jstr("Empty")), ("participants", Arr([]))]),
+      jobj([("thread", ji(4)), ("title", jstr("Invalid")), ("participants", Arr([jstr("bad"), jstr("local")]))]),
+      jobj([("thread", ji(5)), ("title", jstr("Legacy"))]),
+    ],
+  })
+
+  let row1 = rows.get("1").unwrap().1
+  let w1 = task_wire({ key: "1", source: "stillfail", kind: "task", rev: 1.0, removed: false, json: row1 }).unwrap()
+  assert_eq(prop(Some(w1), "participants").map(stringify), Some("[\"ann@x\",\"bob@y\"]"))
+
+  let row2 = rows.get("2").unwrap().1
+  let w2 = task_wire({ key: "2", source: "stillfail", kind: "task", rev: 2.0, removed: false, json: row2 }).unwrap()
+  let ps2 = arr_of(prop(Some(w2), "participants")).unwrap()
+  assert_eq(ps2.length(), 32)
+  assert_eq(str_of(Some(ps2[0])), Some("user0@example.com"))
+  assert_eq(str_of(Some(ps2[31])), Some("user31@example.com"))
+
+  for key in ["3", "4", "5"] {
+    let raw = rows.get(key).unwrap().1
+    assert_true(prop(Some(parse_json(raw)), "participants") is None)
+    let w = task_wire({ key, source: "stillfail", kind: "task", rev: 3.0, removed: false, json: raw }).unwrap()
+    assert_true(prop(Some(w), "participants") is None)
+  }
+}
+
+///|
 test "a question card" {
   let card = @jsjson.parse("{\"type\":\"options\",\"options\":[{\"label\":\" a \"},{\"label\":\"b\",\"recommended\":true}]}")
   assert_eq(
@@ -397,6 +454,7 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
       }),
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
@@ -461,6 +519,7 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
       }),
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
@@ -512,6 +571,7 @@ test "CommaSurface quantizes stillfail_owner_active_at to 30s buckets and pushes
           unsubscribed.val += 1
         }
       }),
+      station_id: None,
     },
     io,
     rt,
@@ -584,7 +644,7 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
   let rt = @effect.Runtime::new()
   let io = test_io()
   let tasks = CommaTasks::new("/tmp/comma-tasks-closecard-wbtest.json", io, rt)
-  let calls : Array[(String, String, Bool, Double?)] = []
+  let calls : Array[(String, String, Bool, Double?, String?)] = []
   let sent : Array[J] = []
   let sock : Socket = { id: 1, send: text => sent.push(parse_json(text)), on_close: _ => () => () }
   let surface = CommaSurface::new(
@@ -602,8 +662,8 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
       stats: None,
       chats: Some({
         read: async fn(_, _, _) { Null },
-        say: async fn(ref_, text, _, _, _, close_card, expected_card_seq) {
-          calls.push((ref_, text, close_card, expected_card_seq))
+        say: async fn(ref_, text, _, _, _, close_card, expected_card_seq, requester_email) {
+          calls.push((ref_, text, close_card, expected_card_seq, requester_email))
           jobj([("seq", ji(0))])
         },
       }),
@@ -613,6 +673,7 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
       on_workspace_meta_change: None,
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
@@ -641,6 +702,7 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
       on_workspace_meta_change: None,
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
@@ -662,7 +724,7 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
       surface.handle(
         "task.say",
         @jsjson.parse(
-          "{\"task\":\"5\",\"text\":\"Proceed\",\"key\":\"k2\",\"requester\":\"Router\",\"expected_card_seq\":null}",
+          "{\"task\":\"5\",\"text\":\"Proceed\",\"key\":\"k2\",\"requester\":\"Router\",\"requester_email\":\"  Alice@Example.COM \",\"expected_card_seq\":null}",
         ),
       ),
     )
@@ -670,7 +732,7 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
       surface.handle(
         "task.say",
         @jsjson.parse(
-          "{\"task\":\"5\",\"text\":\"Plain\",\"key\":\"k3\",\"requester\":\"Router\"}",
+          "{\"task\":\"5\",\"text\":\"Plain\",\"key\":\"k3\",\"requester\":\"Router\",\"requester_email\":\"not:valid@x\"}",
         ),
       ),
     )
@@ -698,7 +760,14 @@ test "CommaSurface advertises task_say_cas when chats enabled, validates expecte
     Some(Failed(e)) => fail("task.say failed: \{e}")
     _ => fail("task.say did not finish")
   }
-  assert_eq(calls, [("5", "Skip deploy", true, Some(9.0)), ("5", "Proceed", false, None), ("5", "Plain", false, None)])
+  assert_eq(
+    calls,
+    [
+      ("5", "Skip deploy", true, Some(9.0), None),
+      ("5", "Proceed", false, None, Some("alice@example.com")),
+      ("5", "Plain", false, None, None),
+    ],
+  )
   assert_eq(errors.length(), 6)
   for msg in errors {
     assert_eq(msg, "expected_card_seq must be a positive integer")
@@ -821,6 +890,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:wrong",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: false,
         expected_card_seq: Some(99.0),
       }),
@@ -833,6 +904,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:reply-1",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: false,
         expected_card_seq: Some(1.0),
       }),
@@ -845,6 +918,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:reply-1",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: false,
         expected_card_seq: Some(1.0),
       }),
@@ -857,6 +932,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:reply-2",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: false,
         expected_card_seq: Some(1.0),
       }),
@@ -869,6 +946,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: false,
         expected_card_seq: Some(1.0),
       }),
@@ -883,6 +962,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: false,
         expected_card_seq: Some(5.0),
       }),
@@ -897,6 +978,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:close-stale",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: Some(1.0),
       }),
@@ -909,6 +992,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:close-mismatch",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: Some(8.0),
       }),
@@ -922,6 +1007,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:close-raced",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: Some(8.0),
       }),
@@ -935,6 +1022,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:close-ok",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: Some(8.0),
       }),
@@ -947,6 +1036,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:close-ok",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: Some(8.0),
       }),
@@ -959,6 +1050,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:close-after",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: Some(8.0),
       }),
@@ -971,6 +1064,8 @@ test "router_says_with enforces expected_card_seq CAS for replies, silent closes
         key: "cm:legacy-close",
         requester: "Router",
         connect: "cm",
+        connect_scope: None,
+        requester_email: None,
         close_card: true,
         expected_card_seq: None,
       }),
@@ -1007,14 +1102,19 @@ test "mesh peer SAY serializes, validates, and propagates expectedCardSeq and st
     key: "cm:k1",
     requester: "Router",
     connect: "cm",
+    connect_scope: None,
+    requester_email: Some("alice@example.com"),
     close_card: false,
     expected_card_seq: Some(42.0),
   })
   assert_eq(num_of(prop(prop(Some(req), "say"), "expectedCardSeq")), Some(42.0))
-  let parsed = parse_peer_say(req)
+  assert_eq(str_of(prop(prop(Some(req), "say"), "requesterEmail")), Some("alice@example.com"))
+  let parsed = parse_peer_say("st-a", req)
   assert_eq(parsed.thread, 7.0)
   assert_eq(parsed.text, "Proceed")
   assert_eq(parsed.key, "cm:k1")
+  assert_eq(parsed.connect_scope, Some("st-a/cm"))
+  assert_eq(parsed.requester_email, Some("alice@example.com"))
   assert_eq(parsed.close_card, false)
   assert_eq(parsed.expected_card_seq, Some(42.0))
 
@@ -1025,11 +1125,15 @@ test "mesh peer SAY serializes, validates, and propagates expectedCardSeq and st
     key: "",
     requester: "Router",
     connect: "cm",
+    connect_scope: None,
+    requester_email: None,
     close_card: true,
     expected_card_seq: None,
   })
   assert_true(prop(prop(Some(req_none), "say"), "expectedCardSeq") is None)
-  let parsed_none = parse_peer_say(req_none)
+  let parsed_none = parse_peer_say("", req_none)
+  assert_eq(parsed_none.connect_scope, Some("cm"))
+  assert_eq(parsed_none.requester_email, None)
   assert_eq(parsed_none.close_card, true)
   assert_eq(parsed_none.expected_card_seq, None)
 
@@ -1037,7 +1141,7 @@ test "mesh peer SAY serializes, validates, and propagates expectedCardSeq and st
   for bad in ["0", "-2", "1.5", "\"42\"", "true", "9007199254740992"] {
     let raw = @jsjson.parse("{\"say\":{\"thread\":7,\"text\":\"Proceed\",\"expectedCardSeq\":\{bad}}}")
     let err = try {
-      ignore(parse_peer_say(raw))
+      ignore(parse_peer_say("st-a", raw))
       None
     } catch {
       e => Some(message_of(e))
@@ -1114,4 +1218,68 @@ test "valid_task_links validates Comma web and app URLs and rejects untrusted sc
   )
   assert_true(valid_task_links(Some(@jsjson.parse("{\"app\":\"comma://task\"}"))) is None)
   assert_true(valid_task_links(Some(@jsjson.parse("{\"app\":\"comma://task?x=1#frag\"}"))) is None)
+}
+
+///|
+test "connect_scope, connect_matches, task_rows_of, and task_wire_for isolate router and participants per connect" {
+  assert_eq(connect_scope(Some("stA"), "comma"), "stA/comma")
+  assert_eq(connect_scope(Some(""), "comma"), "comma")
+  assert_eq(connect_scope(None, "comma"), "comma")
+
+  assert_true(connect_matches("stA/comma", "comma", Some("stA")))
+  assert_false(connect_matches("stA/comma", "comma", Some("stB")))
+  assert_false(connect_matches("stA/comma", "comma", None))
+  assert_true(connect_matches("comma", "comma", Some("stA")))
+  assert_true(connect_matches("comma", "comma", None))
+  assert_false(connect_matches("comma", "comma-2", Some("stA")))
+
+  let rows = task_rows_of({
+    station: None,
+    usage: Null,
+    chats: [
+      jobj([
+        ("thread", ji(10)),
+        ("title", jstr("Scoped")),
+        ("router", Bool(true)),
+        ("routerConnects", Arr([jstr("stA/comma"), jstr("comma-legacy")])),
+        ("participants", Arr([jstr("direct@x")])),
+        (
+          "connectParticipants",
+          jobj([
+            ("stA/comma", Arr([jstr("Alice@X"), jstr("direct@x"), jstr("bad:email@x")])),
+            ("stB/comma", Arr([jstr("bob@x")])),
+            ("comma-legacy", Arr([jstr("carol@x")])),
+          ]),
+        ),
+      ]),
+      // Legacy peer without routerConnects still falls back to router: true.
+      jobj([("thread", ji(11)), ("title", jstr("OldPeer")), ("router", Bool(true))]),
+    ],
+  })
+  let raw10 = rows.get("10").unwrap().1
+  let idx10 : IndexRow = { key: "10", source: "stillfail", kind: "task", rev: 1.0, removed: false, json: raw10 }
+
+  let w_a = task_wire_for(idx10, "comma", Some("stA")).unwrap()
+  assert_true(prop(Some(w_a), "router") is Some(Bool(true)))
+  assert_eq(prop(Some(w_a), "participants").map(stringify), Some("[\"direct@x\",\"alice@x\"]"))
+
+  let w_b = task_wire_for(idx10, "comma", Some("stB")).unwrap()
+  assert_true(prop(Some(w_b), "router") is None)
+  assert_eq(prop(Some(w_b), "participants").map(stringify), Some("[\"direct@x\",\"bob@x\"]"))
+
+  let w_legacy = task_wire_for(idx10, "comma-legacy", Some("stB")).unwrap()
+  assert_true(prop(Some(w_legacy), "router") is Some(Bool(true)))
+  assert_eq(prop(Some(w_legacy), "participants").map(stringify), Some("[\"direct@x\",\"carol@x\"]"))
+
+  let w_other = task_wire_for(idx10, "comma-other", Some("stA")).unwrap()
+  assert_true(prop(Some(w_other), "router") is None)
+  assert_eq(prop(Some(w_other), "participants").map(stringify), Some("[\"direct@x\"]"))
+
+  let raw11 = rows.get("11").unwrap().1
+  let idx11 : IndexRow = { key: "11", source: "stillfail", kind: "task", rev: 2.0, removed: false, json: raw11 }
+  let w11 = task_wire_for(idx11, "comma", Some("stB")).unwrap()
+  assert_true(prop(Some(w11), "router") is Some(Bool(true)))
+
+  // Wire::TaskWireFor is recognized as built_in (omits removed bodies & uses adaptive paging).
+  assert_true(Wire::TaskWireFor("comma", Some("stA")).built_in())
 }

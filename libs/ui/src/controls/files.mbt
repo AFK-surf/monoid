@@ -58,13 +58,14 @@ pub fn file_tile_fill(scale : Double, part : Double, color : Int64) -> @ui.Shape
 
 ///|
 /// A file's line icon by what it is, from its name (drive.mbt dv_kind_icon's): a video's, a sound's, a picture's, a
-/// PDF's, words', code's, else a file's.
+/// PDF's, an archive's, words', code's, else a file's.
 pub fn file_mark(name : String) -> String {
   match extension_of(name) {
     "mp4" | "m4v" | "webm" | "mov" | "mkv" | "avi" | "ogv" => "file-video"
     "mp3" | "m4a" | "wav" | "flac" | "ogg" | "aac" | "opus" => "file-audio"
     "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "avif" | "bmp" | "heic" => "photo"
     "pdf" => "file-pdf"
+    "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" => "file-zip"
     "txt" | "md" | "markdown" | "log" | "rtf" | "srt" | "vtt" | "ass" | "ssa" => "file-text"
     "js" | "ts" | "tsx" | "jsx" | "json" | "py" | "rs" | "go" | "mbt" | "c" | "h" | "cpp" | "java" | "kt" | "swift"
     | "sh" | "yml" | "yaml" | "toml" | "html" | "css" | "csv" | "xml" | "sql" | "rb" | "php" => "file-code"

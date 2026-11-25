@@ -447,7 +447,7 @@ pub(all) struct CommaIndexes {
 /// (`task.say`, once per key).
 pub(all) struct CommaChats {
   read : async (String, Double, Double) -> J
-  say : async (String, String, String, String, String, Bool, Double?) -> J
+  say : async (String, String, String, String, String, Bool, Double?, String?) -> J
 }
 
 ///|
@@ -504,6 +504,8 @@ pub(all) struct SurfaceOptions {
   owner_active_at : (() -> Double?)?
   /// Subscribes to owner activity updates so an open socket pushes updated metadata frames when the 30s bucket advances.
   on_owner_active_change : ((() -> Unit) -> () -> Unit)?
+  /// This station's id (cloud.state?.station ?? null), used to scope connect-level task.index fields.
+  station_id : (() -> String?)?
 }
 
 ///|
@@ -535,6 +537,7 @@ pub struct CommaSurface {
   priv on_workspace_meta_change : ((() -> Unit) -> () -> Unit)?
   priv owner_active_at : (() -> Double?)?
   priv on_owner_active_change : ((() -> Unit) -> () -> Unit)?
+  priv station_id : (() -> String?)?
   priv io : Io
   priv runtime : @effect.Runtime
   /// Stays the same across the sockets of one process (Comma tells a process replaced from a socket dialed again).
@@ -586,6 +589,7 @@ pub fn CommaSurface::new(options : SurfaceOptions, io : Io, runtime : @effect.Ru
     on_workspace_meta_change: options.on_workspace_meta_change,
     owner_active_at: options.owner_active_at,
     on_owner_active_change: options.on_owner_active_change,
+    station_id: options.station_id,
     io,
     runtime,
     instance: (io.uuid)(),
@@ -676,7 +680,11 @@ pub fn CommaSurface::frame(self : CommaSurface, socket : Socket, frame : J, end 
         )
         ignore(
           self.runtime.fork_daemon("comma task index", on_error=e => self.io.warn("the task index was not sent", [("connect", Some(jstr(self.id))), ("error", Some(jstr(message_of(e))))]), async fn() {
-            self.send_index(socket, "task.index", TaskWire)
+            let station = match self.station_id {
+              Some(f) => f()
+              None => None
+            }
+            self.send_index(socket, "task.index", TaskWireFor(self.id, station))
           }),
         )
       }
@@ -1166,6 +1174,7 @@ async fn CommaSurface::handle(self : CommaSurface, method : String, params : J) 
           }
         n => n
       }
+      let requester_email = valid_requester_email(prop(p, "requester_email"))
       let result = (chats.say)(
         text(p, "task"),
         said,
@@ -1174,6 +1183,7 @@ async fn CommaSurface::handle(self : CommaSurface, method : String, params : J) 
         self.id,
         prop(p, "close_card") is Some(Bool(true)),
         expected_card_seq,
+        requester_email,
       )
       if !(self.in_scope)() {
         raise fail_("the workspace changed while writing")
