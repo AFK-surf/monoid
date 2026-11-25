@@ -288,6 +288,78 @@ test "wire-key semantics stay consistent across single, batched drop, and object
   ]
   assert_eq(@core.apply_delta(repr_old, repr_ops).stringify(), "[{\"id\":2}]")
   assert_eq(each_delta(repr_old, repr_ops).stringify(), "[{\"id\":2}]")
+
+  // 4) ES2015 OrdinaryOwnPropertyKeys ordering on Object keys (numeric array indices < 2^32-1 sorted first)
+  let js_ord_old = @json.parse("[{\"id\":{\"10\":10}}]")
+  let js_ord_ops : Array[Json] = [
+    @json.parse("{\"path\":[0,\"id\",\"2\"],\"set\":2}"),
+    @json.parse("{\"path\":[],\"key\":[\"id\"],\"patch\":{\"2\":2,\"10\":10},\"ops\":[{\"path\":[\"seen\"],\"set\":true}]}"),
+  ]
+  assert_eq(@core.apply_delta(js_ord_old, js_ord_ops).stringify(), "[{\"id\":{\"10\":10,\"2\":2},\"seen\":true}]")
+  assert_eq(each_delta(js_ord_old, js_ord_ops).stringify(), "[{\"id\":{\"10\":10,\"2\":2},\"seen\":true}]")
+
+  // Edge array-index boundaries: 0..4294967294 ascending numerically, then non-indices ("01", "4294967295", "a") in insertion order
+  let edge_old = @json.parse("[{\"id\":{\"4294967295\":1,\"a\":2,\"4294967294\":3,\"01\":4,\"10\":6,\"2\":5,\"0\":7}}]")
+  let edge_hit : Array[Json] = [
+    @json.parse("{\"path\":[],\"key\":[\"id\"],\"patch\":{\"0\":7,\"2\":5,\"10\":6,\"4294967294\":3,\"4294967295\":1,\"a\":2,\"01\":4},\"ops\":[{\"path\":[\"hit\"],\"set\":1}]}"),
+  ]
+  let edge_miss : Array[Json] = [
+    @json.parse("{\"path\":[],\"key\":[\"id\"],\"patch\":{\"0\":7,\"2\":5,\"10\":6,\"4294967294\":3,\"a\":2,\"4294967295\":1,\"01\":4},\"ops\":[{\"path\":[\"hit\"],\"set\":2}]}"),
+  ]
+  assert_eq(
+    @core.apply_delta(edge_old, edge_hit).stringify(),
+    "[{\"id\":{\"4294967295\":1,\"a\":2,\"4294967294\":3,\"01\":4,\"10\":6,\"2\":5,\"0\":7},\"hit\":1}]",
+  )
+  assert_eq(@core.apply_delta(edge_old, edge_miss).stringify(), edge_old.stringify())
+
+  // Same ES2015 object-key ordering on a 32+ indexed list
+  let idx_ord_items : Array[Json] = Array::makei(34, fn(i) {
+    if i == 0 {
+      Json::object({ "id": Json::object({ "10": 10 }) })
+    } else {
+      Json::object({ "id": Json::string("k\{i}") })
+    }
+  })
+  let idx_ord_old : Json = { "items": Json::array(idx_ord_items) }
+  let idx_ord_ops : Array[Json] = [
+    @json.parse("{\"path\":[\"items\",0,\"id\",\"2\"],\"set\":2}"),
+    @json.parse("{\"path\":[\"items\"],\"key\":[\"id\"],\"patch\":{\"2\":2,\"10\":10},\"ops\":[{\"path\":[\"seen\"],\"set\":true}]}"),
+    @json.parse("{\"path\":[\"items\"],\"key\":[\"id\"],\"patch\":{\"2\":2,\"10\":10},\"ops\":[{\"path\":[\"seen2\"],\"set\":true}]}"),
+  ]
+  let idx_ord_out = @core.apply_delta(idx_ord_old, idx_ord_ops)
+  assert_eq(idx_ord_out.stringify(), each_delta(idx_ord_old, idx_ord_ops).stringify())
+  guard idx_ord_out is Object(iom) && iom.get("items") is Some(Array(ioa)) else { fail("no items") }
+  assert_eq(ioa[0].stringify(), "{\"id\":{\"10\":10,\"2\":2},\"seen\":true,\"seen2\":true}")
+
+  // 5) Non-finite numbers (Infinity / NaN) normalize to JSON null wire key in both linear scan and indexed lookup
+  let inf_old : Json = [
+    Json::object({ "id": Json::number(1.0 / 0.0), "tag": "inf" }),
+    Json::object({ "id": Json::number(0.0 / 0.0), "tag": "nan" }),
+    Json::object({ "id": 1, "tag": "one" }),
+  ]
+  let inf_ops : Array[Json] = [
+    { "path": [], "key": ["id"], "drop": Json::null() },
+    { "path": [], "key": ["id"], "drop": Json::number(1.0 / 0.0) },
+  ]
+  assert_eq(@core.apply_delta(inf_old, inf_ops).stringify(), "[{\"id\":1,\"tag\":\"one\"}]")
+  assert_eq(each_delta(inf_old, inf_ops).stringify(), "[{\"id\":1,\"tag\":\"one\"}]")
+
+  let inf34_items : Array[Json] = Array::makei(34, fn(i) {
+    if i == 0 {
+      Json::object({ "id": Json::number(0.0 / 0.0), "n": 0 })
+    } else {
+      Json::object({ "id": Json::number(i.to_double()), "n": Json::number(i.to_double()) })
+    }
+  })
+  let inf34_old : Json = { "items": Json::array(inf34_items) }
+  let inf34_ops : Array[Json] = [
+    { "path": ["items"], "key": ["id"], "patch": Json::null(), "ops": [{ "path": ["n"], "set": 77 }] },
+    { "path": ["items"], "key": ["id"], "patch": Json::number(0.0 / 0.0), "ops": [{ "path": ["n"], "set": 88 }] },
+  ]
+  let inf34_out = @core.apply_delta(inf34_old, inf34_ops)
+  guard inf34_out is Object(i34m) && i34m.get("items") is Some(Array(i34a)) else { fail("no items") }
+  guard i34a[0] is Object(i34o) && i34o.get("n") is Some(Number(i34n, ..)) else { fail("no n") }
+  assert_eq(i34n, 88.0)
 }
 
 ///|
@@ -378,18 +450,60 @@ test "consecutive missed patches on a large keyed list preserve exact input iden
 ///|
 /// Independent naive reference applier mirroring `client/core-ts/src/collections.ts:applyKeyed`
 /// (one op at a time, no Cow overlay, no keyed_ats cache, no drop_run batching).
+fn ref_js_array_index(s : String) -> Int64? {
+  let len = s.length()
+  if len == 0 || len > 10 {
+    return None
+  }
+  if len == 1 {
+    let c = s.code_unit_at(0).to_int()
+    return if c >= 48 && c <= 57 { Some((c - 48).to_int64()) } else { None }
+  }
+  let c0 = s.code_unit_at(0).to_int()
+  if c0 < 49 || c0 > 57 {
+    return None
+  }
+  let mut v : Int64 = (c0 - 48).to_int64()
+  for i = 1; i < len; i = i + 1 {
+    let c = s.code_unit_at(i).to_int()
+    if c < 48 || c > 57 {
+      return None
+    }
+    v = v * 10L + (c - 48).to_int64()
+  }
+  if v <= 4294967294L { Some(v) } else { None }
+}
+
+///|
 fn ref_wire_text(j : Json) -> String {
   match j {
     Null => "null"
     True => "true"
     False => "false"
-    Number(d, ..) => Json::number(if d == 0.0 { 0.0 } else { d }).stringify()
+    Number(d, ..) =>
+      if !(d - d == 0.0) {
+        "null"
+      } else {
+        Json::number(if d == 0.0 { 0.0 } else { d }).stringify()
+      }
     String(_) => j.stringify()
     Array(xs) => "[" + xs.map(ref_wire_text).join(",") + "]"
     Object(m) => {
-      let parts : Array[String] = []
+      let idxs : Array[(Int64, String, Json)] = []
+      let rest : Array[(String, Json)] = []
       for k, v in m {
-        parts.push(Json::string(k).stringify() + ":" + ref_wire_text(v))
+        match ref_js_array_index(k) {
+          Some(n) => idxs.push((n, k, v))
+          None => rest.push((k, v))
+        }
+      }
+      idxs.sort_by(fn(a, b) { a.0.compare(b.0) })
+      let parts : Array[String] = []
+      for e in idxs {
+        parts.push(Json::string(e.1).stringify() + ":" + ref_wire_text(e.2))
+      }
+      for e in rest {
+        parts.push(Json::string(e.0).stringify() + ":" + ref_wire_text(e.1))
       }
       "{" + parts.join(",") + "}"
     }

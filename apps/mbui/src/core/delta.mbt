@@ -6,9 +6,10 @@
 // An op that does not fit its value (a path through what is not there) is skipped, as the core skips it.
 
 ///|
-/// Structural equality on `Json` matching MoonBit `Json::op_equal` (including `NaN != NaN` and `Number` repr
-/// insensitivity), while short-circuiting via `physical_equal` at every container and string node to avoid deep
-/// re-walks over unchanged subtrees shared across `apply_delta` updates.
+/// Structural equality on valid (finite) `Json` values matching MoonBit `Json::op_equal` (including `Number` repr
+/// insensitivity and `-0.0 == 0.0`), while short-circuiting via `physical_equal` at every container and string node to
+/// avoid deep re-walks over unchanged subtrees shared across `apply_delta` updates. Directly shared `NaN` leaves still
+/// return `false`; shared container subtrees are assumed to contain valid finite JSON (no `NaN`, per RFC 8259).
 fn json_same(a : Json, b : Json) -> Bool {
   match (a, b) {
     (Number(x, ..), Number(y, ..)) => x == y
@@ -630,7 +631,8 @@ fn cow_apply_op(
 
 ///|
 /// Look up the first index in `list` whose wire key matches `k`, using authoritative `idx` in O(1) when present
-/// and falling back to zero-allocation `key_match` linear scan when `idx` is `None`.
+/// (with an O(1) `key_match` hit verification so any external mutation self-heals) and falling back to
+/// zero-allocation `key_match` linear scan when `idx` is `None`.
 fn keyed_find_in(
   list : Array[Json],
   fields : Array[Json],
@@ -640,18 +642,18 @@ fn keyed_find_in(
   match idx {
     Some(at) =>
       match at.get(json_key_text(k)) {
-        Some(i) if i < list.length() => i
-        _ => -1
+        Some(i) if i < list.length() && key_match(list[i], fields, k) => return i
+        None => return -1
+        Some(_) => ()
       }
-    None => {
-      for i, item in list {
-        if key_match(item, fields, k) {
-          return i
-        }
-      }
-      -1
+    None => ()
+  }
+  for i, item in list {
+    if key_match(item, fields, k) {
+      return i
     }
   }
+  -1
 }
 
 ///|
@@ -826,18 +828,51 @@ fn index_of(seg : Json) -> Int? {
 }
 
 ///|
+/// Parse an ECMAScript canonical array index property name (`"0"` or non-zero-leading decimal integer in
+/// `[0, 2^32 - 2]`, per ES2015 `OrdinaryOwnPropertyKeys`), returning `None` for all other strings.
+fn js_array_index(s : String) -> Int64? {
+  let len = s.length()
+  if len == 0 || len > 10 {
+    return None
+  }
+  if len == 1 {
+    let c = s.code_unit_at(0).to_int()
+    return if c >= 48 && c <= 57 { Some((c - 48).to_int64()) } else { None }
+  }
+  let c0 = s.code_unit_at(0).to_int()
+  if c0 < 49 || c0 > 57 {
+    return None
+  }
+  let mut v : Int64 = (c0 - 48).to_int64()
+  for i = 1; i < len; i = i + 1 {
+    let c = s.code_unit_at(i).to_int()
+    if c < 48 || c > 57 {
+      return None
+    }
+    v = v * 10L + (c - 48).to_int64()
+  }
+  if v <= 4294967294L {
+    Some(v)
+  } else {
+    None
+  }
+}
+
+///|
 /// Canonical wire-key JSON text matching JS `JSON.stringify` (`client/core-ts/src/collections.ts:text`):
-/// - `Number` formats by its IEEE-754 `Double` value (normalizing `-0.0` to `0.0` and ignoring raw `repr`),
-/// - `Object` preserves insertion order,
-/// so `key_index`, `cow_drop_run`, `key_match`, and `same_key` all share one exact equivalence relation.
+/// - Finite `Number` formats by its IEEE-754 `Double` value (normalizing `-0.0` to `0.0`, ignoring raw `repr`);
+///   non-finite `Number` (`Infinity`, `NaN`, e.g. `1e400`) formats as `"null"` just like JS `JSON.stringify`.
+/// - `Object` enumerates ECMAScript array-index keys in ascending numeric order followed by remaining keys in
+///   insertion order (`OrdinaryOwnPropertyKeys`).
+/// So `key_index`, `cow_drop_run`, `key_match`, `same_key`, and `KeyedField` all share one exact equivalence relation.
 fn json_key_text(j : Json) -> String {
   match j {
     Null => "null"
     True => "true"
     False => "false"
     Number(d, ..) => {
-      if d != d {
-        return "NaN"
+      if !(d - d == 0.0) {
+        return "null"
       }
       let norm = if d == 0.0 { 0.0 } else { d }
       Json::number(norm).stringify()
@@ -856,17 +891,37 @@ fn json_key_text(j : Json) -> String {
       buf.to_string()
     }
     Object(m) => {
+      let idx_keys : Array[(Int64, String, Json)] = []
+      let str_keys : Array[(String, Json)] = []
+      for k, v in m {
+        match js_array_index(k) {
+          Some(n) => idx_keys.push((n, k, v))
+          None => str_keys.push((k, v))
+        }
+      }
+      if idx_keys.length() > 1 {
+        idx_keys.sort_by(fn(a, b) { a.0.compare(b.0) })
+      }
       let buf = StringBuilder()
       buf.write_char('{')
       let mut first = true
-      for k, v in m {
+      for e in idx_keys {
         if !first {
           buf.write_char(',')
         }
         first = false
-        buf.write_string(Json::string(k).stringify())
+        buf.write_string(Json::string(e.1).stringify())
         buf.write_char(':')
-        buf.write_string(json_key_text(v))
+        buf.write_string(json_key_text(e.2))
+      }
+      for e in str_keys {
+        if !first {
+          buf.write_char(',')
+        }
+        first = false
+        buf.write_string(Json::string(e.0).stringify())
+        buf.write_char(':')
+        buf.write_string(json_key_text(e.1))
       }
       buf.write_char('}')
       buf.to_string()
@@ -876,11 +931,17 @@ fn json_key_text(j : Json) -> String {
 
 ///|
 /// Wire-key equality matching `json_key_text(a) == json_key_text(b)` with zero allocation for primitive keys
-/// (`String`, `Number`, `Bool`, `Null`) and insertion-order sensitivity for `Object` keys.
+/// (`String`, `Number`, `Bool`, `Null`) and ES2015 property-order semantics for `Object` keys.
 fn key_val_eq(a : Json, b : Json) -> Bool {
   match (a, b) {
     (Null, Null) | (True, True) | (False, False) => true
-    (Number(x, ..), Number(y, ..)) => x == y
+    (Null, Number(y, ..)) | (Number(y, ..), Null) => !(y - y == 0.0)
+    (Number(x, ..), Number(y, ..)) =>
+      if x - x == 0.0 && y - y == 0.0 {
+        x == y
+      } else {
+        !(x - x == 0.0) && !(y - y == 0.0)
+      }
     (String(x), String(y)) => physical_equal(x, y) || x == y
     (Array(x), Array(y)) => {
       if physical_equal(x, y) {
