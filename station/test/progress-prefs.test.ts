@@ -123,13 +123,20 @@ test("a platform that does not answer holds a wake for seconds at most, and the 
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
   const session = r.claude.last();
-  (r.chat as any).userEmail = () => new Promise(() => {});
+  let looked = () => {};
+  const asked = new Promise<void>((go) => (looked = go));
+  (r.chat as any).userEmail = () => {
+    looked();
+    return new Promise(() => {});
+  };
   await r.call(key, "chat_state", { kind: "waiting", seconds: 3600, for: "run" });
   session.complete();
   await settle();
   t.mock.timers.tick(12 * 60_000);
   await r.hub.notify(key, "task ended");
-  for (let i = 0; i < 20; i++) await new Promise((go) => setImmediate(go));
+  // (asked by the program in its own time; its deadline is armed in the same turn it is asked)
+  await asked;
+  await new Promise((go) => setImmediate(go));
   t.mock.timers.tick(3_001);
   await settle();
   assert.ok(session.prompts.at(-1)!.includes("for 12 minutes. Before you wait again"), session.prompts.at(-1));
