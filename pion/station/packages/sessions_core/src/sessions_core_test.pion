@@ -834,3 +834,92 @@ test "sessions_core: direct Fiber.interrupt() on pending rpc_k evicts hub_asked,
   assert(gen.counters.active == 0)
   assert(mem.stdout_lines.length() == 2)
 }
+
+test "sessions_core: abandoned pack.open emits exact-once pack.close on rotation and direct cancel" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 1)
+
+  // Case 1: HubGen rotation while pack.open is in flight -> late ShellDone triggers pack.close
+  let mut got_int1 = false
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen.shell_k(
+      host,
+      "pack.open",
+      base_codec::json_obj([]),
+      None,
+      Some(AbandonedOp::ClosePackHandle),
+      None,
+      fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => {
+            got_int1 = true
+            done(effect::Exit::Interrupted)
+          }
+          _ => panic("expected interrupted on rotation")
+        }
+      },
+    )
+  })
+  host.tick()
+  assert(mem.shell_calls.length() == 1 && mem.shell_calls[0].op == "pack.open")
+  let open_id1 = mem.shell_calls[0].id
+  let gen2 = rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_int1)
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: open_id1,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  host.tick()
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "pack.close")
+  assert(mem.shell_calls[1].json == "{\"id\":99}")
+
+  // Case 2: Direct fiber interrupt in live generation -> late ShellDone triggers exact-once pack.close
+  let mut got_int2 = false
+  let f2 = host.rt.fork_named("pack_cancel", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen2.shell_k(
+      host,
+      "pack.open",
+      base_codec::json_obj([]),
+      None,
+      Some(AbandonedOp::ClosePackHandle),
+      None,
+      fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => {
+            got_int2 = true
+            done(effect::Exit::Succeeded(()))
+          }
+          _ => panic("expected interrupted on cancel")
+        }
+      },
+    )
+  })
+  host.tick()
+  assert(mem.shell_calls.length() == 3 && mem.shell_calls[2].op == "pack.open")
+  let open_id2 = mem.shell_calls[2].id
+  f2.interrupt()
+  host.tick()
+  assert(got_int2)
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: open_id2,
+      error: "",
+      json: "{\"id\":100}",
+      bytes: None,
+    }),
+  )
+  host.tick()
+  assert(mem.shell_calls.length() == 4)
+  assert(mem.shell_calls[3].op == "pack.close")
+  assert(mem.shell_calls[3].json == "{\"id\":100}")
+  assert(host.abandoned_ops.length() == 0)
+  let (h0, h1, h2, h3, h4, h5) = host.rt.holding()
+  assert(h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0)
+}

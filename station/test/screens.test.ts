@@ -7,19 +7,22 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { Events } from "../src/api/events.ts";
+import { screenSeen } from "../src/api/seen.ts";
+import { LoginPages } from "../src/logins/pages.ts";
+import type { InWorkspace } from "../src/store/rows.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import type { Stream } from "../src/mesh/native.ts";
-import { DGRAM_HEADER, FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, cursorPayload, frame, parseClip, parseInput, parseWindowPick } from "../src/mesh/screens.ts";
+import { DGRAM_HEADER, FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, clipPayload, cursorPayload, frame, parseClip, parseInput, parseWindowPick, revealAllowed } from "../src/mesh/screens.ts";
 import { ALPN, Reader, writeLine } from "../src/mesh/serve.ts";
-import { HELPER_APP, HelperApp } from "../src/helper/app.ts";
-import { Desktop, HelperView, TO_HELPER, helperClip, helperMessage } from "../src/screens/desktop.ts";
+import { HELPER_APP, HelperApp, install as installHelper } from "../src/helper/app.ts";
+import { Desktop, HelperView, MAX_HELPER_FRAME, TO_HELPER, helperClip, helperMessage } from "../src/screens/desktop.ts";
 import { dropFolder } from "../src/drive/drive.ts";
 import { ScreenHub, ScreenRefused } from "../src/screens/hub.ts";
 import { described, letGo } from "../src/tools/screen.ts";
@@ -31,6 +34,8 @@ import { WindowsDesktop, screenBinary } from "../src/screens/win-desktop.ts";
 import { KEYS, WinInput } from "../src/screens/win-input.ts";
 import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR_PNG_MAX, CURSOR_SHAPE, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor, cursorImageShape } from "../src/screens/source.ts";
 import { WINDOWS } from "../src/platform/index.ts";
+import { unix } from "../src/platform/unix.ts";
+import { windows } from "../src/platform/windows.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 import { LOSS_EVERY_MS, LOSS_WINDOW_MS, LinkLoss, type LinkPath, MAX_UNACKED, MOVING_SHARPEN_MS, QUEUE_MS, SEVERE_QUEUE_MS, SHARPEN_COOLDOWN_MS, START_RATE, START_UNACKED, STILL_MS, UP_AFTER_MS, UP_EVERY_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
 import type { Clock } from "effect";
@@ -167,14 +172,14 @@ async function link() {
 }
 
 /// A view opened as a client opens one: its head line, the station answering it (`served`), the answer's head.
-async function open(hub: ScreenHub, viewer: Viewer, screen: unknown = { maxWidth: 1920, maxHeight: 1080, codecs: ["h264", "jpeg"], control: true }, path = "/admin/api/screens/fake/view", clock?: Clock.Clock, paths?: () => LinkPath[]) {
+async function open(hub: ScreenHub, viewer: Viewer, screen: unknown = { maxWidth: 1920, maxHeight: 1080, codecs: ["h264", "jpeg"], control: true }, path = "/admin/api/screens/fake/view", clock?: Clock.Clock, paths?: () => LinkPath[], canSee?: (viewer: Viewer, source: ScreenSource) => boolean) {
   const { conn, theirs } = await link();
   const stream = await conn.openBi();
   await writeLine(stream, { method: "POST", path, headers: { "stillfail-lang": "en", "stillfail-build": "0.1.0" }, screen });
   const incoming = (await theirs.acceptBi())!;
   const heard = new Reader(incoming);
   const head = await heard.line();
-  const served = answerScreen(hub, incoming, heard.carry, head, viewer, () => true, clock, paths ? { paths } : undefined);
+  const served = answerScreen(hub, incoming, heard.carry, head, viewer, () => true, clock, paths ? { paths } : undefined, canSee);
   const client = new Reader(stream);
   const answer = await client.line();
   return { conn, stream, served, answer, client, frames: new FrameIn(stream, client.carry) };
@@ -1973,11 +1978,13 @@ class FakeHelperApp {
   /// (check-station (0) cancelled at 5 minutes on #6574, helper.sock left listening with 5 pipes, as on #6028).
   static readonly made = new Set<FakeHelperApp>();
   #closed = false;
-  launch = async (_app: string, env: Record<string, string>) => {
+  launch = async (app: string, env: Record<string, string>) => {
     // Closed with the test: a station still watching it must not have it listen again (the test would never end).
     if (this.#closed) throw new Error("the test's helper is closed");
     this.launches++;
-    this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token: env.STILLFAIL_HELPER_TOKEN! };
+    assert.equal(env.STILLFAIL_HELPER_TOKEN, undefined, "token must not be passed in launch env");
+    const token = readFileSync(join(dirname(app), "token"), "utf8").trim();
+    this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token };
     await this.#listen();
   };
   /// Never again once closed: a restart's listening again (`setImmediate`) or a launch still under way when the test
@@ -2555,24 +2562,55 @@ test("the clipboard's bounds and types: past its bound or of a type the source d
   assert.equal(MAX_IN, 64 * 1024, "other frames keep their bound");
 });
 
-test("reveal: a file shown in the file manager by a view that drives a source that can; not by one that cannot", async () => {
-  const hub = new ScreenHub();
-  const can = new FakeSource("can");
-  can.reveal = true;
-  const cannot = new FakeSource("cannot");
-  hub.add(can);
-  hub.add(cannot);
-  const a = await open(hub, member, undefined, "/admin/api/screens/can/view");
-  const b = await open(hub, member, undefined, "/admin/api/screens/cannot/view");
-  const reveal = (v: typeof a, path: unknown) => v.stream.write(frame(KIND.input, Buffer.from(JSON.stringify({ t: "reveal", path }))));
-  await reveal(a, "/Users/pat/Downloads/a.pdf");
-  await reveal(a, 7);
-  await reveal(b, "/Users/pat/Downloads/a.pdf");
-  await settle();
-  assert.deepEqual(can.views[0]!.asks, [{ reveal: "/Users/pat/Downloads/a.pdf" }]);
-  assert.deepEqual(cannot.views[0]!.asks, []);
-  for (const v of [a, b]) await v.stream.finish();
-  await Promise.all([a.served, b.served]);
+test("reveal: a file shown in the file manager by a view that drives a source that can; outside drop root and symlinks rejected", async () => {
+  const dropRoot = mkdtempSync(join(tmpdir(), "screen-reveal-drop-"));
+  const outsideRoot = mkdtempSync(join(tmpdir(), "screen-reveal-out-"));
+  const insideFile = join(dropRoot, "a.pdf");
+  const outsideFile = join(outsideRoot, "secret.txt");
+  const escapeLink = join(dropRoot, "escape.pdf");
+  writeFileSync(insideFile, "pdf");
+  writeFileSync(outsideFile, "secret");
+  symlinkSync(outsideFile, escapeLink);
+  try {
+    const hub = new ScreenHub({ drop: () => dropRoot });
+    const can = new FakeSource("can");
+    can.reveal = true;
+    const cannot = new FakeSource("cannot");
+    hub.add(can);
+    hub.add(cannot);
+    const a = await open(hub, member, undefined, "/admin/api/screens/can/view");
+    const b = await open(hub, member, undefined, "/admin/api/screens/cannot/view");
+    const reveal = (v: typeof a, path: unknown) => v.stream.write(frame(KIND.input, Buffer.from(JSON.stringify({ t: "reveal", path }))));
+    await reveal(a, insideFile);
+    await reveal(a, outsideFile);
+    await reveal(a, escapeLink);
+    await reveal(a, dropRoot);
+    await reveal(a, 7);
+    await reveal(b, insideFile);
+    await settle();
+    assert.deepEqual(can.views[0]!.asks, [{ reveal: realpathSync(insideFile) }]);
+    assert.deepEqual(cannot.views[0]!.asks, []);
+    // Platform-specific Windows checks: quotes, trailing backslash, control chars, relative paths and UNC/network paths rejected before fs calls.
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", 'C:\\Users\\pat\\Downloads\\a.pdf"', windows), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:\\Users\\pat\\Downloads\\a.pdf\\", windows), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:relative.txt", windows), null);
+    assert.equal(await revealAllowed(dropRoot, "\\\\server\\share\\a.pdf", windows), null);
+    assert.equal(await revealAllowed(dropRoot, "//server/share/a.pdf", unix), null);
+    assert.equal(await revealAllowed(dropRoot, "relative/a.pdf", unix), null);
+    assert.equal(await revealAllowed(dropRoot, `${insideFile}\n`, unix), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:\\Users\\pat\\Downloads\\..\\secret.txt", windows), null);
+    const quoted = join(dropRoot, 'my"file.txt');
+    if (!WINDOWS) {
+      writeFileSync(quoted, "ok");
+      assert.equal(await revealAllowed(dropRoot, quoted, unix), realpathSync(quoted));
+      assert.equal(await revealAllowed(dropRoot, quoted, windows), null);
+    }
+    for (const v of [a, b]) await v.stream.finish();
+    await Promise.all([a.served, b.served]);
+  } finally {
+    rmSync(dropRoot, { recursive: true, force: true });
+    rmSync(outsideRoot, { recursive: true, force: true });
+  }
 });
 
 test("a tab is closed from a person's app (POST /screens/<id>/close) and says which session opened it; the desktop is not closed", async () => {
@@ -3307,4 +3345,447 @@ test("answerScreen forwards quality to source.open and drives Pacer rate on JPEG
   assert.equal(view.keyframes, 0, "Sharpener must not call keyframe() on JPEG views");
   await v.stream.finish();
   await v.served;
+});
+
+test("private clipboard never downgrades to plaintext for legacy clients and preserves privacy transitions in dedup", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource("desktop");
+  source.clipboard = () => ["text"];
+  hub.add(source);
+
+  // Client WITHOUT privateClip: private copy is dropped (never sent as KIND.clipboard) and does not pollute dedup cache.
+  const legacy = await open(hub, member, { codecs: ["jpeg"], control: true }, "/admin/api/screens/desktop/view");
+  const legacyView = source.views[0]!;
+  const legacyClips: { kind: number; payload: Buffer }[] = [];
+  const collectLegacy = (async () => {
+    for (;;) {
+      const f = await legacy.frames.next();
+      if (f === null) break;
+      if (f.kind === KIND.clipboard || f.kind === KIND.privateClipboard) legacyClips.push(f);
+    }
+  })();
+  legacyView.copied!({ type: "text", text: "hunter2", privacy: "concealed" });
+  await settle();
+  assert.equal(legacyClips.length, 0, "private clip must be dropped for legacy client");
+  // Subsequent public copy of the same text MUST still be sent (dedup cache was not updated on drop).
+  legacyView.copied!({ type: "text", text: "hunter2" });
+  await settle();
+  assert.equal(legacyClips.length, 1);
+  assert.equal(legacyClips[0]!.kind, KIND.clipboard);
+  assert.equal(legacyClips[0]!.payload.subarray(1).toString("utf8"), "hunter2");
+  await legacy.stream.finish();
+  await Promise.all([legacy.served, collectLegacy]);
+
+  // Client WITH privateClip: same text switching public -> concealed -> public is delivered each time.
+  const modern = await open(hub, member, { codecs: ["jpeg"], control: true, privateClip: true }, "/admin/api/screens/desktop/view");
+  const modernView = source.views[1]!;
+  const modernClips: { kind: number; payload: Buffer }[] = [];
+  const collectModern = (async () => {
+    for (;;) {
+      const f = await modern.frames.next();
+      if (f === null) break;
+      if (f.kind === KIND.clipboard || f.kind === KIND.privateClipboard) modernClips.push(f);
+    }
+  })();
+  modernView.copied!({ type: "text", text: "same" });
+  modernView.copied!({ type: "text", text: "same" }); // duplicate public -> suppressed
+  modernView.copied!({ type: "text", text: "same", privacy: "concealed" });
+  modernView.copied!({ type: "text", text: "same", privacy: "concealed" }); // duplicate concealed -> suppressed
+  modernView.copied!({ type: "text", text: "same" });
+  await settle();
+  assert.deepEqual(
+    modernClips.map((c) => c.kind),
+    [KIND.clipboard, KIND.privateClipboard, KIND.clipboard],
+  );
+  // Inbound private setClipboard suppresses private echo, but NOT a subsequent public copy of the same text.
+  await modern.stream.write(frame(KIND.setClipboard, clipPayload({ type: "text", text: "inbound" }, 1 << 1)));
+  await settle();
+  modernView.copied!({ type: "text", text: "inbound", privacy: "concealed" });
+  modernView.copied!({ type: "text", text: "inbound" });
+  await settle();
+  assert.equal(modernClips.length, 4);
+  assert.equal(modernClips[3]!.kind, KIND.clipboard);
+  assert.equal(modernClips[3]!.payload.subarray(1).toString("utf8"), "inbound");
+  await modern.stream.finish();
+  await Promise.all([modern.served, collectModern]);
+});
+
+test("answerScreen cleans up #taking on open() failure so next non-taken reconnect does not inherit taken=true", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource("desktop");
+  hub.add(source);
+
+  // First attempt: taken=true, but source.open() fails.
+  const origOpen = source.open.bind(source);
+  source.open = async () => {
+    throw new ScreenRefused(503, "station.screen.failed", { said: "boom" });
+  };
+  const failed = await open(hub, member, { codecs: ["jpeg"], control: true, taken: true }, "/admin/api/screens/desktop/view");
+  assert.equal(failed.answer.status, 503);
+  await failed.served;
+
+  // Next attempt from same device WITHOUT taken: must NOT inherit taken=true.
+  source.open = origOpen;
+  const passive = await open(hub, member, { codecs: ["jpeg"], control: true, taken: false }, "/admin/api/screens/desktop/view");
+  assert.equal(passive.answer.status, 200);
+  await until(passive.frames, KIND.state);
+  assert.equal(hub.hasTakenView("desktop"), false, "passive reconnect must not inherit stale taken=true");
+  await passive.stream.finish();
+  await passive.served;
+
+  // Concurrent requests from the same device: one failing does not wipe the other's taken token,
+  // and a passive reconnect (no takenToken) does NOT steal an in-flight taken token.
+  const d1 = hub.drive("desktop", "dev-concurrent", true, "Pat");
+  const d2 = hub.drive("desktop", "dev-concurrent", true, "Pat");
+  d1.release();
+  const passiveOther = hub.join("desktop", { name: "Pat", device: "dev-concurrent", control: true, tell: () => {} });
+  assert.equal(hub.hasTakenView("desktop"), false, "join without takenToken must not steal concurrent taken token");
+  passiveOther();
+  const leave = hub.join("desktop", { name: "Pat", device: "dev-concurrent", control: true, takenToken: d2.takenToken, tell: () => {} });
+  assert.equal(hub.hasTakenView("desktop"), true);
+  leave();
+});
+
+test("HelperView closes cleanly without crashing on oversized, bad JSON, or truncated IPC frames", async () => {
+  const makePipe = () => {
+    const ee = new EventEmitter();
+    let destroyed = false;
+    const pipe = {
+      write: () => {},
+      destroy: () => {
+        destroyed = true;
+      },
+      on: (ev: string, fn: (...a: any[]) => void) => ee.on(ev, fn),
+      emitData: (buf: Buffer) => ee.emit("data", buf),
+      get destroyed() {
+        return destroyed;
+      },
+    };
+    return pipe;
+  };
+
+  // 1. Oversized frame (> MAX_HELPER_FRAME) before ready settles.
+  {
+    const pipe = makePipe();
+    let gone = 0;
+    const view = new HelperView("h264", pipe, () => gone++, undefined, "Test", true);
+    const readyErr = view.ready.catch((e) => e);
+    const nextRes = view.next();
+    const audioRes = view.nextAudio();
+    const head = Buffer.alloc(5);
+    head[0] = 3;
+    head.writeUInt32BE(MAX_HELPER_FRAME + 1, 1);
+    pipe.emitData(head);
+    assert.match(((await readyErr) as Error).message, /too large/);
+    assert.equal(await nextRes, null);
+    assert.equal(await audioRes, null);
+    assert.equal(pipe.destroyed, true);
+    assert.equal(gone, 1);
+  }
+
+  // 2. Malformed JSON in case 1 (info).
+  {
+    const pipe = makePipe();
+    const view = new HelperView("h264", pipe, () => {});
+    const readyErr = view.ready.catch((e) => e);
+    pipe.emitData(helperMessage(1, Buffer.from("{bad json")));
+    assert.match(((await readyErr) as Error).message, /malformed helper info/);
+    assert.equal(pipe.destroyed, true);
+  }
+
+  // 3. Truncated case 2 (config < 8 bytes) and case 3 (video < 9 bytes) after ready.
+  for (const [kind, payload, pattern] of [
+    [2, Buffer.alloc(4), /truncated helper config/],
+    [3, Buffer.alloc(5), /truncated helper video/],
+  ] as const) {
+    const pipe = makePipe();
+    const view = new HelperView("h264", pipe, () => {});
+    pipe.emitData(helperMessage(1, Buffer.from(JSON.stringify({ width: 100, height: 100 }))));
+    await view.ready;
+    const pendingFrame = view.next();
+    pipe.emitData(helperMessage(kind, payload));
+    assert.equal(await pendingFrame, null);
+    assert.equal(pipe.destroyed, true);
+    void pattern;
+  }
+});
+
+test("HelperApp installs symlinked .app as a real directory and launches without STILLFAIL_HELPER_TOKEN in env", { skip: WINDOWS }, async () => {
+  const root = mkdtempSync(join(tmpdir(), "helper-symlink-"));
+  try {
+    const realApp = join(root, "real", HELPER_APP);
+    mkdirSync(join(realApp, "Contents", "MacOS"), { recursive: true });
+    mkdirSync(join(realApp, "Contents", "_CodeSignature"), { recursive: true });
+    writeFileSync(join(realApp, "Contents", "MacOS", "stillfail-helper"), "bin");
+    writeFileSync(join(realApp, "Contents", "Info.plist"), "plist");
+    writeFileSync(join(realApp, "Contents", "_CodeSignature", "CodeResources"), "sig");
+    const linkApp = join(root, HELPER_APP);
+    symlinkSync(realApp, linkApp);
+
+    const dir = join(root, "installed");
+    const installed = await installHelper(linkApp, dir);
+    assert.equal(installed.replaced, true);
+    assert.equal(lstatSync(installed.path).isSymbolicLink(), false, "installed .app must be a real directory, not a symlink");
+    assert.equal(dirname(realpathSync(installed.path)), realpathSync(dir));
+
+    // Legacy symlink already present at installed path with identical contents must still be replaced with a real directory.
+    const legacyDir = join(root, "legacy-installed");
+    mkdirSync(legacyDir, { recursive: true });
+    symlinkSync(realApp, join(legacyDir, HELPER_APP));
+    const migrated = await installHelper(realApp, legacyDir);
+    assert.equal(migrated.replaced, true, "existing symlinked .app must be replaced");
+    assert.equal(lstatSync(migrated.path).isSymbolicLink(), false, "migrated .app must be a real directory");
+
+    const fake = new FakeHelperApp({ capture: true, control: true, display: { id: 1, width: 100, height: 100 } });
+    const helper = new HelperApp({ app: linkApp, dir, launch: fake.launch });
+    const hello = await helper.request({ op: "hello" });
+    assert.equal(hello.ok, true);
+    assert.equal(statSync(join(dir, "token")).mode & 0o777, 0o600);
+    await helper.quit();
+    fake.close();
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("multi-workspace screen isolation: GET /screens, /screens/:id/*, answerScreen, events.screens, loginTabs, and handover migration", async () => {
+  const sessionWsMap = new Map<string, string | null>([
+    ["sess-a", null], // home workspace
+    ["sess-b", "ws-b"], // joined workspace B
+  ]);
+  const fakeStore = {
+    sessionWs: (key: string) => sessionWsMap.get(key),
+    getSession: (key: string) => (sessionWsMap.has(key) ? { key } : null),
+  } as any;
+
+  const viewerA: Viewer = { sub: "ua", email: "a@example.com", name: "Alice", role: "member", workspace: "ws-a", home: true, device: "dev-a" };
+  const viewerB: Viewer = { sub: "ub", email: "b@example.com", name: "Bob", role: "member", workspace: "ws-b", home: false, device: "dev-b" };
+  const roB: Viewer = { sub: "uc", email: "c@example.com", name: "Cara", role: "viewer", workspace: "ws-b", home: false, device: "dev-c" };
+
+  let titleCalls = 0;
+  const desktop = new FakeSource("desktop");
+  const userTab = Object.assign(new FakeSource("browser:u_0123456789ab"), { userTab: true as const });
+  const tabA = Object.assign(new FakeSource("browser:tabA"), {
+    openedBy: () => "sess-a",
+    discard: async () => {},
+    reload: async () => {},
+    openUrl: async () => {},
+  });
+  const origTitle = tabA.title.bind(tabA);
+  tabA.title = () => {
+    titleCalls++;
+    return origTitle();
+  };
+  const farviewA = Object.assign(new FakeSource("browser:fvA"), { farview: true as const, openedBy: () => "sess-a" });
+  const tabB = Object.assign(new FakeSource("browser:tabB"), { openedBy: () => "sess-b" });
+  const loginTab = Object.assign(new FakeSource("browser:login1"), { workspace: () => null });
+
+  const hub = new ScreenHub();
+  for (const s of [desktop, userTab, tabA, farviewA, tabB, loginTab]) hub.add(s);
+
+  // Direct screenSeen checks.
+  assert.equal(screenSeen(fakeStore, viewerA, desktop), true);
+  assert.equal(screenSeen(fakeStore, viewerB, desktop), true);
+  assert.equal(screenSeen(fakeStore, viewerB, userTab), true);
+  assert.equal(screenSeen(fakeStore, viewerA, tabA), true);
+  assert.equal(screenSeen(fakeStore, viewerB, tabA), false);
+  assert.equal(screenSeen(fakeStore, roB, farviewA), false);
+  assert.equal(screenSeen(fakeStore, viewerA, loginTab), true);
+  assert.equal(screenSeen(fakeStore, viewerB, loginTab), false);
+
+  // GET /screens & /screens/:id/* via Admin.
+  const admin = new Admin({ names: new Map(), read: async () => "{}" } as any, { screens: hub, store: fakeStore });
+  const req = (viewer: Viewer, method: string, path: string, body = "") =>
+    admin.handle({ method, path, query: [], search: "", headers: {}, body: Buffer.from(body), viewer, lang: "en" });
+  const listA = JSON.parse(((await req(viewerA, "GET", "/screens")).body as Buffer).toString()).screens.map((s: any) => s.id);
+  const listB = JSON.parse(((await req(viewerB, "GET", "/screens")).body as Buffer).toString()).screens.map((s: any) => s.id);
+  const listRoB = JSON.parse(((await req(roB, "GET", "/screens")).body as Buffer).toString()).screens.map((s: any) => s.id);
+  assert.deepEqual(listA, ["desktop", "browser:u_0123456789ab", "browser:tabA", "browser:fvA", "browser:login1"]);
+  assert.deepEqual(listB, ["desktop", "browser:u_0123456789ab", "browser:tabB"]);
+  assert.deepEqual(listRoB, ["desktop", "browser:u_0123456789ab", "browser:tabB"]);
+
+  // /screens/:id/* routes return 404 to workspace B for workspace A's tab and loginTab.
+  for (const [method, path, body] of [
+    ["POST", "/screens/browser%3AtabA/close", ""],
+    ["POST", "/screens/browser%3AtabA/reload", ""],
+    ["POST", "/screens/browser%3AtabA/open-url", '{"url":"https://example.com"}'],
+    ["POST", "/screens/browser%3AtabA/views/end", ""],
+    ["POST", "/screens/browser%3Alogin1/close", ""],
+  ] as const) {
+    assert.equal((await req(viewerB, method, path, body)).status, 404, `${method} ${path} must 404 for ws-b`);
+    // Admin globally rejects all POSTs from read-only viewers with 403 before route dispatch (leaks nothing).
+    assert.equal((await req(roB, method, path, body)).status, 403, `${method} ${path} must 403 for read-only ws-b`);
+  }
+  // GET /screens/:id/* routes return 404 (not 403/405) for both member and read-only viewers of ws-b.
+  assert.equal((await req(viewerB, "GET", "/screens/browser%3AtabA/logs")).status, 404);
+  assert.equal((await req(roB, "GET", "/screens/browser%3AtabA/logs")).status, 404);
+  assert.equal((await req(roB, "GET", "/screens/browser%3AtabA/chrome/0/0")).status, 404);
+  assert.equal((await req(viewerA, "POST", "/screens/browser%3AtabA/reload")).status, 200);
+
+  // answerScreen with canSee returns 404 to workspace B, 200 to workspace A.
+  {
+    const blocked = await open(hub, viewerB, { codecs: ["jpeg"], control: true }, "/admin/api/screens/browser%3AtabA/view", undefined, undefined, (v, s) => screenSeen(fakeStore, v, s));
+    assert.equal(blocked.answer.status, 404);
+    await blocked.served;
+  }
+
+  // events.screens computes listedEntries(lang) ONCE per lang and projects to all workspaces (including offline ws-b).
+  const events = new Events({
+    readers: { read: async () => '{"rows":[]}' } as any,
+    said: () => [],
+    subscribe: () => () => {},
+    host: async () => ({}),
+    jobLog: () => null,
+    logNow: async () => null,
+    sessionExists: () => false,
+    workspaces: () => [
+      { workspace: "ws-a", home: true },
+      { workspace: "ws-b", home: false },
+    ],
+  });
+  const emitScreens = (langs?: Iterable<"zh" | "en">) =>
+    events.screens((lang) => {
+      const { browser, entries } = hub.listedEntries(lang);
+      return (v: InWorkspace) => ({
+        ...(browser ? { browser: true } : {}),
+        screens: entries.filter((e) => screenSeen(fakeStore, v, e.source)).map((e) => e.data),
+      });
+    }, langs);
+
+  const readEvent = async (body: AsyncIterableIterator<Buffer>, name: string) => {
+    for (;;) {
+      const text = (await body.next()).value!.toString();
+      const id = /^id: ([^\n]+)\n/m.exec(text)?.[1] ?? null;
+      const m = new RegExp(`event: ${name}\\ndata: (.*)\\n`).exec(text);
+      if (m) return { id, data: JSON.parse(m[1]!) };
+    }
+  };
+  const readId = async (body: AsyncIterableIterator<Buffer>) => {
+    for (;;) {
+      const text = (await body.next()).value!.toString();
+      const m = /^id: ([^\n]+)\n/m.exec(text);
+      if (m) return m[1]!;
+    }
+  };
+
+  const streamA = (await events.open(viewerA, "en", false, [], [])).body as AsyncIterableIterator<Buffer>;
+  const streamB1 = (await events.open(viewerB, "en", false, [], [])).body as AsyncIterableIterator<Buffer>;
+  const sinceB = await readId(streamB1);
+  // Disconnect B before emitting, so B must receive its filtered screens event on `since` resume!
+  await streamB1.return!();
+
+  titleCalls = 0;
+  emitScreens();
+  assert.equal(titleCalls, 1, "listedEntries(lang) must compute each source's title() once per lang across all workspaces");
+  const evA = await readEvent(streamA, "screens");
+  assert.deepEqual(evA.data.screens.map((s: any) => s.id), ["desktop", "browser:u_0123456789ab", "browser:tabA", "browser:fvA", "browser:login1"]);
+
+  const streamB2 = (await events.open(viewerB, "en", false, [], [], sinceB)).body as AsyncIterableIterator<Buffer>;
+  const evB = await readEvent(streamB2, "screens");
+  assert.deepEqual(evB.data.screens.map((s: any) => s.id), ["desktop", "browser:u_0123456789ab", "browser:tabB"]);
+  await streamA.return!();
+  await streamB2.return!();
+
+  // Offline language within replay window: zh stays online while en briefly disconnects; en still gets updates on resume.
+  const zhOnline = (await events.open(viewerA, "zh", false, [], [])).body as AsyncIterableIterator<Buffer>;
+  const enTemp = (await events.open(viewerB, "en", false, [], [])).body as AsyncIterableIterator<Buffer>;
+  const sinceEn = await readId(enTemp);
+  await enTemp.return!();
+  emitScreens();
+  const zhEv = await readEvent(zhOnline, "screens");
+  assert.ok(Array.isArray(zhEv.data.screens));
+  const enBack = (await events.open(viewerB, "en", false, [], [], sinceEn)).body as AsyncIterableIterator<Buffer>;
+  const enEv = await readEvent(enBack, "screens");
+  assert.deepEqual(enEv.data.screens.map((s: any) => s.id), ["desktop", "browser:u_0123456789ab", "browser:tabB"]);
+  await zhOnline.return!();
+  await enBack.return!();
+
+  // Joined workspace login tab: visible to ws-b, 404 to home ws-a, and LoginPages refuses cross-workspace key reuse.
+  const joinedLoginTab = Object.assign(new FakeSource("browser:loginB"), { workspace: () => "ws-b", reload: async () => {} });
+  const removeJoinedLogin = hub.add(joinedLoginTab);
+  assert.equal(screenSeen(fakeStore, viewerB, joinedLoginTab), true);
+  assert.equal(screenSeen(fakeStore, viewerA, joinedLoginTab), false);
+  assert.equal((await req(viewerB, "POST", "/screens/browser%3AloginB/reload")).status, 200);
+  assert.equal((await req(viewerA, "POST", "/screens/browser%3AloginB/reload")).status, 404);
+  removeJoinedLogin();
+  {
+    const opened: { url: string; workspace?: string | null }[] = [];
+    const live = new Set<string>();
+    const pages = new LoginPages(
+      {
+        available: () => true,
+        openTab: async (url, opts) => {
+          opened.push({ url, workspace: opts?.workspace });
+          live.add("login-t1");
+          return "login-t1";
+        },
+        hasTab: (id) => live.has(id),
+        closeTab: async (id) => void live.delete(id),
+      },
+      () => () => {},
+    );
+    assert.equal(await pages.open("machine:1", "https://example.com/auth", { workspace: "ws-b" }), "browser:login-t1");
+    assert.deepEqual(opened, [{ url: "https://example.com/auth", workspace: "ws-b" }]);
+    // Same workspace reuses the open login tab.
+    assert.equal(await pages.open("machine:1", "https://example.com/auth", { workspace: "ws-b" }), "browser:login-t1");
+    // Different workspace is refused rather than sharing the live login tab.
+    await assert.rejects(pages.open("machine:1", "https://example.com/auth", { workspace: null }), /another workspace/);
+    pages.close("machine:1");
+  }
+
+  // Handover migration: legacy unscoped `screens\0en` in events.json is dropped and replaced with workspace-scoped refresh.
+  const handoverDir = mkdtempSync(join(tmpdir(), "events-handover-"));
+  const handoverFile = join(handoverDir, "events.json");
+  try {
+    const legacyHanded = {
+      pid: 4242,
+      at: Date.now(),
+      log: {
+        run: "abcd1234",
+        seq: 2,
+        forgotten: 0,
+        events: [
+          { n: 1, to: { lang: "en" }, text: `id: abcd1234.1\nevent: screens\ndata: ${JSON.stringify({ screens: [{ id: "browser:tabA" }] })}\n\n`, at: Date.now(), of: "screens\0en" },
+        ],
+      },
+      overviews: [],
+      last: { viewer: viewerA, lang: "zh" },
+      langs: ["zh", "en"],
+      shared: { rows: [], until: Date.now() + 60_000 },
+    };
+    writeFileSync(handoverFile, JSON.stringify(legacyHanded));
+    let refreshedLangs: string[] = [];
+    let events2!: Events;
+    events2 = new Events({
+      readers: { read: async () => '{"rows":[]}' } as any,
+      said: () => [],
+      subscribe: () => () => {},
+      host: async () => ({}),
+      jobLog: () => null,
+      logNow: async () => null,
+      sessionExists: () => false,
+      workspaces: () => [
+        { workspace: "ws-a", home: true },
+        { workspace: "ws-b", home: false },
+      ],
+      handover: { file: handoverFile, previous: { pid: 4242, gone: Promise.resolve() } },
+      refreshScreens: (langs) => {
+        refreshedLangs = langs;
+        events2.screens((lang) => {
+          const { browser, entries } = hub.listedEntries(lang);
+          return (v: InWorkspace) => ({
+            ...(browser ? { browser: true } : {}),
+            screens: entries.filter((e) => screenSeen(fakeStore, v, e.source)).map((e) => e.data),
+          });
+        }, langs);
+      },
+    });
+    const resumedB = (await events2.open(viewerB, "en", false, [], [], "abcd1234.0")).body as AsyncIterableIterator<Buffer>;
+    assert.deepEqual(refreshedLangs, ["en"]);
+    const gotB = await readEvent(resumedB, "screens");
+    assert.deepEqual(gotB.data.screens.map((s: any) => s.id), ["desktop", "browser:u_0123456789ab", "browser:tabB"]);
+    await resumedB.return!();
+  } finally {
+    rmSync(handoverDir, { recursive: true, force: true });
+  }
 });

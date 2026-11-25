@@ -332,6 +332,8 @@ export class Computer {
   readonly #opening = new Map<string, Promise<AgentView>>();
   /// Each session's latest tree on a screen, by `session\nscreen`.
   readonly #trees = new Map<string, Tree>();
+  /// Lightweight agent activity registrations while `#byTree` write actions are in flight, by session.
+  readonly #treeOps = new Map<string, Set<() => void>>();
 
   constructor(parts: ComputerParts) {
     this.#p = parts;
@@ -348,10 +350,17 @@ export class Computer {
   closeSession(session: string) {
     for (const v of [...this.#views.values()]) if (v.session === session) v.close();
     for (const key of [...this.#trees.keys()]) if (key.startsWith(`${session}\n`)) this.#trees.delete(key);
+    const ops = this.#treeOps.get(session);
+    if (ops) {
+      this.#treeOps.delete(session);
+      for (const leave of [...ops]) leave();
+    }
   }
 
   closeAll() {
     for (const v of [...this.#views.values()]) v.close();
+    for (const ops of [...this.#treeOps.values()]) for (const leave of [...ops]) leave();
+    this.#treeOps.clear();
   }
 
   /// The link a person opens the screen with, and what to do with it.
@@ -420,10 +429,10 @@ export class Computer {
     if (!(COMPUTER.inputSchema.properties.action.enum as string[]).includes(action)) throw new Refused(`unknown action ${action}: ${COMPUTER.inputSchema.properties.action.enum.join(", ")}`);
     const id = typeof args.screen === "string" ? args.screen.trim() : "";
     const hub = this.#p.hub;
-    const there = () => hub.list().map((s) => s.id).join(", ") || "none";
+    const there = () => hub.list().filter((s) => !s.userTab).map((s) => s.id).join(", ") || "none";
     if (id === "") throw new Refused(`screen is required: the id of one of this station's screens (${there()}); the \`screen\` tool lists them.`);
     const source = hub.get(id);
-    if (source === undefined) throw new Refused(`no screen ${id} on this station (it has: ${there()})`);
+    if (source === undefined || source.userTab) throw new Refused(`no screen ${id} on this station (it has: ${there()})`);
     if (action === "tree" || action === "set" || str(args.ref) !== "" || (action === "key" && str(args.app) !== "")) return this.#byTree(session, source, action, args);
     const acting = action !== "screenshot" && action !== "wait";
 
@@ -471,11 +480,19 @@ export class Computer {
   async #byTree(session: string, source: ScreenSource, action: string, args: Record<string, unknown>): Promise<ToolReply> {
     const id = source.id;
     if (source.ui === undefined) throw new Refused(`The screen ${id} has no accessibility trees: use screenshots and coordinates there (trees are the desktop's).`);
+    const assertNotTaken = () => {
+      if (action === "tree" || !this.#p.hub.hasTakenView(id)) return;
+      const persons = this.#persons(id);
+      const who = persons.length > 0 ? `${persons.join(", ")} ${persons.length > 1 ? "have" : "has"}` : "A person has";
+      throw new Refused(`${who} taken control of ${id} right now, so your input was not sent: do not fight them. Wait until they leave it (\`screen\` shows who is on it). ${this.#letGo(id)}`);
+    };
+    assertNotTaken();
     if (source.access) {
       await this.#p.hub.refresh();
       const access = source.access();
       if (!access.control) throw new Refused(`${accessShown(access, "en")?.message ?? `The screen ${id} cannot be driven now.`}\n${this.#handOver(id)}`);
     }
+    assertNotTaken();
     const ui = (cmd: string[]) => source.ui!(cmd).catch((error) => {
       if (error instanceof Refused) throw error;
       throw new Refused(`The screen ${id}'s apps could not be read: ${error instanceof ScreenRefused ? (accessShown(error.access, "en")?.message ?? error.message) : (error as Error).message}`);
@@ -483,17 +500,21 @@ export class Computer {
     const key = `${session}\n${id}`;
     const latest = this.#trees.get(key);
     const ref = str(args.ref);
-    /// A ref as agent-desktop takes it: its snapshot's (`@s1:e12`), the latest tree's for a bare one.
+    const safeArg = (value: string, field: string): string => {
+      if (value.startsWith("-") || value.includes("\0")) throw new Refused(`${action}: invalid ${field} ${JSON.stringify(value)}`);
+      return value;
+    };
+    /// A ref as agent-desktop takes it: its snapshot's (`@s8f3k2p9:e12`), the latest tree's for a bare one.
     const qualified = () => {
-      if (ref.startsWith("@")) return ref;
+      if (/^@[A-Za-z0-9_-]{2,64}:e\d+$/.test(ref)) return ref;
       if (!/^e\d+$/.test(ref)) throw new Refused(`${action}: ref is an element's ref from the latest tree, e.g. e12`);
-      if (latest === undefined) throw new Refused(`${action}: no tree read yet on ${id}: call action=tree with app first`);
+      if (latest === undefined || !/^[A-Za-z0-9_-]{2,64}$/.test(latest.snapshot)) throw new Refused(`${action}: no tree read yet on ${id}: call action=tree with app first`);
       return `@${latest.snapshot}:${ref}`;
     };
 
     if (action === "tree") {
-      const app = str(args.app);
-      const window = str(args.window);
+      const app = safeArg(str(args.app), "app");
+      const window = safeArg(str(args.window), "window");
       if (app === "" && ref === "") return { content: [{ type: "text", text: this.#apps(answered(await ui(["list-apps"]), "apps")) }] };
       const at: Tree = ref === "" ? { snapshot: "", app, window } : { ...(latest ?? { snapshot: "", app, window }), ...(app ? { app } : {}) };
       return { content: [{ type: "text", text: await this.#read(key, at, ui, { root: ref === "" ? null : qualified(), skeleton: args.skeleton === true }) }] };
@@ -513,7 +534,8 @@ export class Computer {
       case "type":
       case "set": {
         if (typeof args.text !== "string" || (action === "type" && args.text === "")) throw new Refused(`${action}: text is required`);
-        cmd = action === "type" ? ["type", qualified(), args.text] : ["set-value", qualified(), args.text];
+        const verb = action === "type" ? "type" : "set-value";
+        cmd = args.text.startsWith("-") ? [verb, qualified(), "--", args.text] : [verb, qualified(), args.text];
         const shown = JSON.stringify(args.text.length > 80 ? `${args.text.slice(0, 80)}…` : args.text);
         said = action === "type" ? `Typed ${shown} into ${ref}.` : `Set ${ref} to ${shown}.`;
         break;
@@ -533,20 +555,40 @@ export class Computer {
       case "key": {
         const combo = str(args.key);
         if (combo === "") throw new Refused("key: key is required (e.g. Enter, cmd+c)");
+        const app = safeArg(str(args.app), "app");
         const mods = Array.isArray(args.mods) ? args.mods.filter((m): m is string => typeof m === "string") : [];
-        cmd = ["press", [...mods, combo].join("+"), "--app", str(args.app)];
-        said = `Pressed ${[...mods, combo].join("+")} in ${str(args.app)}.`;
+        if (mods.some((m) => !/^[A-Za-z0-9_]{1,24}$/.test(m))) throw new Refused("key: invalid modifier");
+        if (combo.length > 64 || /[\x00-\x20\x7f]/.test(combo) || (combo.startsWith("-") && combo !== "-")) {
+          throw new Refused(`key: invalid key ${JSON.stringify(combo)}`);
+        }
+        const full = [...mods, combo].join("+");
+        cmd = full.startsWith("-") ? ["press", "--app", app, "--", full] : ["press", full, "--app", app];
+        said = `Pressed ${full} in ${app}.`;
         break;
       }
       default:
         throw new Refused(`${action}: not by ref (by ref: click, type, set, scroll; key with app)`);
     }
-    answered(await ui(cmd), action);
-    // The app read again: its own tree, or the one named (key's).
-    const again: Tree | undefined = action === "key" ? (latest?.app === str(args.app) ? latest : { snapshot: "", app: str(args.app), window: "" }) : latest;
-    if (again === undefined || args.tree === false) return { content: [{ type: "text", text: said }] };
-    await this.#sleep(num(args.wait) ? Math.min(WAIT_MAX, Math.max(0, args.wait)) : TREE_SETTLE_MS);
-    return { content: [{ type: "text", text: `${said}\n${await this.#read(key, again, ui, { root: null, skeleton: false })}` }] };
+    assertNotTaken();
+    const leave = this.#p.hub.join(id, { name: this.#p.name(session), control: true, agent: true, tell: () => {} });
+    let ops = this.#treeOps.get(session);
+    if (!ops) {
+      ops = new Set();
+      this.#treeOps.set(session, ops);
+    }
+    ops.add(leave);
+    try {
+      answered(await ui(cmd), action);
+      // The app read again: its own tree, or the one named (key's).
+      const again: Tree | undefined = action === "key" ? (latest?.app === str(args.app) ? latest : { snapshot: "", app: str(args.app), window: "" }) : latest;
+      if (again === undefined || args.tree === false) return { content: [{ type: "text", text: said }] };
+      await this.#sleep(num(args.wait) ? Math.min(WAIT_MAX, Math.max(0, args.wait)) : TREE_SETTLE_MS);
+      return { content: [{ type: "text", text: `${said}\n${await this.#read(key, again, ui, { root: null, skeleton: false })}` }] };
+    } finally {
+      ops.delete(leave);
+      if (ops.size === 0 && this.#treeOps.get(session) === ops) this.#treeOps.delete(session);
+      leave();
+    }
   }
 
   /// An app's window read (or the part under `root`), kept as the session's latest tree: what an agent reads.

@@ -106,15 +106,96 @@ fn trim_slashes(s : String) -> String {
   s.slice(0, end)
 }
 
-fn sort_strings_js(arr : Array[String]) -> Unit {
-  for i in 1..<arr.length() {
-    let cur = arr[i]
-    let mut j = i - 1
-    while j >= 0 && js_json::js_compare(cur, arr[j]) < 0 {
-      arr[j + 1] = arr[j]
-      j = j - 1
+/// Stable bottom-up O(n log n) merge sort (`cmp(a, b) <= 0` preserves relative order).
+pub fn merge_sort_by[T](arr : Array[T], cmp : (T, T) -> Int) -> Unit {
+  let n = arr.length()
+  if n <= 1 {
+    return
+  }
+  let buf : Array[T] = []
+  for i in 0..<n {
+    buf.push(arr[i])
+  }
+  let mut width = 1
+  let mut src_is_arr = true
+  while width < n {
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + width * 2 < n { left + width * 2 } else { n }
+      let mut i = left
+      let mut j = mid
+      let mut k = left
+      if src_is_arr {
+        while i < mid && j < right {
+          if cmp(arr[i], arr[j]) <= 0 {
+            buf[k] = arr[i]
+            i = i + 1
+          } else {
+            buf[k] = arr[j]
+            j = j + 1
+          }
+          k = k + 1
+        }
+        while i < mid {
+          buf[k] = arr[i]
+          i = i + 1
+          k = k + 1
+        }
+        while j < right {
+          buf[k] = arr[j]
+          j = j + 1
+          k = k + 1
+        }
+      } else {
+        while i < mid && j < right {
+          if cmp(buf[i], buf[j]) <= 0 {
+            arr[k] = buf[i]
+            i = i + 1
+          } else {
+            arr[k] = buf[j]
+            j = j + 1
+          }
+          k = k + 1
+        }
+        while i < mid {
+          arr[k] = buf[i]
+          i = i + 1
+          k = k + 1
+        }
+        while j < right {
+          arr[k] = buf[j]
+          j = j + 1
+          k = k + 1
+        }
+      }
+      left = left + width * 2
     }
-    arr[j + 1] = cur
+    src_is_arr = !src_is_arr
+    width = width * 2
+  }
+  if !src_is_arr {
+    for i in 0..<n {
+      arr[i] = buf[i]
+    }
+  }
+}
+
+/// Stable O(n log n) UTF-16 code-unit sort with precomputed sort keys (one `utf16_units` per element).
+fn sort_strings_js(arr : Array[String]) -> Unit {
+  if arr.length() <= 1 {
+    return
+  }
+  let keyed : Array[(Array[Int], String)] = []
+  for i in 0..<arr.length() {
+    let s = arr[i]
+    keyed.push((js_json::utf16_units(s), s))
+  }
+  merge_sort_by(keyed, fn(a : (Array[Int], String), b : (Array[Int], String)) -> Int {
+    js_json::units_compare(a.0, b.0)
+  })
+  for i in 0..<keyed.length() {
+    arr[i] = keyed[i].1
   }
 }
 

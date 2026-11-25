@@ -931,20 +931,21 @@ static void test_v8_v9_droplet_roi_gates(void) {
     uint8_t *px = render_rgba_pixels_of(rg, 2, 242.0 / 255.0, 240.0 / 255.0, 236.0 / 255.0, 2.0, AW2, AH2);
     CHECK(px != NULL);
     if (px) {
-      double mins[64];
+      double masses[64];
       int n = 0;
+      const double bg_L = 0.2126 * 242.0 + 0.7152 * 240.0 + 0.0722 * 236.0;
       for (int py = 20 + 4; py <= 20 + 44; py++) {
-        double rm = 1e9;
+        double mass = 0.0;
         for (int xpx = 140 * 2 - 48; xpx <= 140 * 2 + 2; xpx++) {
           uint8_t *c = W_PX(px, AW2, xpx, py);
           double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-          if (L < rm) rm = L;
+          if (L < bg_L) mass += (bg_L - L);
         }
-        mins[n++] = rm;
+        masses[n++] = mass / 2.0;
       }
       double max_d2 = 0.0;
       for (int i = 1; i < n - 1; i++) {
-        double d2 = fabs(mins[i - 1] - 2.0 * mins[i] + mins[i + 1]);
+        double d2 = fabs(masses[i - 1] - 2.0 * masses[i] + masses[i + 1]);
         if (d2 > max_d2) max_d2 = d2;
       }
       double side_lmin = 1e9;
@@ -1273,19 +1274,19 @@ static void test_v8_v9_droplet_roi_gates(void) {
     CHECK(max_d_blur <= 10);
     CHECK(c60_r > c0_r + 25 && (c60_g - c60_r) < (c0_g - c0_r) - 20);
   }
-  // V11-Apple-Panel-Glass: Light 0xBF brightRelax chroma & 1..8pt cushion rim, and 0xFF solid zero leak
+  // V11-Unified-Panel-Glass: Light/Dark 0x80 overlay chroma, rim, white-backdrop WCAG >= 4.5:1, and 0xFF solid zero leak
   {
     int aw = VW * 2, ah = VH * 2;
     double pb[2 * MB_INST];
     fill_p0_rect(pb, 0, 0, VW, VH, 0, 211.0 / 255.0, 232.0 / 255.0, 253.0 / 255.0, 1.0, 0);
-    fill_p0_rect(pb + MB_INST, 20.0, 10.0, 120.0, 60.0, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0xBF / 255.0, -98);
-    pb[MB_INST + 4] = 22.0; pb[MB_INST + 6] = 1.0; pb[MB_INST + 7] = 6.0;
+    fill_p0_rect(pb + MB_INST, 20.0, 10.0, 120.0, 60.0, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x80 / 255.0, -98);
+    pb[MB_INST + 4] = 22.0; pb[MB_INST + 6] = 1.0; pb[MB_INST + 7] = 14.0;
     pb[MB_INST + 12] = 0.6; pb[MB_INST + 13] = 20.0; pb[MB_INST + 14] = 0.0;
-    pb[MB_INST + 15] = 1.0; pb[MB_INST + 21] = 26.0; pb[MB_INST + 22] = 0.03;
+    pb[MB_INST + 15] = 1.0; pb[MB_INST + 21] = 16.0; pb[MB_INST + 22] = 0.0;
     uint8_t *px = render_rgba_pixels_of(pb, 2, 211.0 / 255.0, 232.0 / 255.0, 253.0 / 255.0, 2.0, aw, ah);
     CHECK(px != NULL);
     if (px) {
-      uint8_t *rim = W_PX(px, aw, 80 * 2, 23);
+      uint8_t *rim = W_PX(px, aw, 80 * 2, 20);
       uint8_t *mid = W_PX(px, aw, 80 * 2, 68);
       int mid_br = (int)mid[2] - (int)mid[0];
       double rim_L = 0.2126 * rim[0] + 0.7152 * rim[1] + 0.0722 * rim[2];
@@ -1296,15 +1297,15 @@ static void test_v8_v9_droplet_roi_gates(void) {
       px = render_rgba_pixels_of(pb, 2, 211.0 / 255.0, 232.0 / 255.0, 253.0 / 255.0, 2.0, aw, ah);
       CHECK(px != NULL);
       if (px) {
-        uint8_t *sr = W_PX(px, aw, 80 * 2, 23);
+        uint8_t *sr = W_PX(px, aw, 80 * 2, 20);
         uint8_t *sm = W_PX(px, aw, 80 * 2, 68);
         double sr_L = 0.2126 * sr[0] + 0.7152 * sr[1] + 0.0722 * sr[2];
         double sm_L = 0.2126 * sm[0] + 0.7152 * sm[1] + 0.0722 * sm[2];
         free(px);
 
-        // Light brightRelax monotonicity: 0xBF and 0xCD (frost=0.3) over 0.72 grey vs 0.60 grey
+        // Light density monotonicity: 0x80 and 0xB3 (frost) over 0.72 grey vs 0.60 grey
         fill_p0_rect(pb, 0, 0, VW, VH, 0, 0.60, 0.60, 0.60, 1.0, 0);
-        pb[MB_INST + 11] = 0xBF / 255.0; pb[MB_INST + 20] = -100; pb[MB_INST + 22] = 0.03;
+        pb[MB_INST + 11] = 0x80 / 255.0; pb[MB_INST + 20] = -100; pb[MB_INST + 22] = 0.0;
         px = render_rgba_pixels_of(pb, 2, 0.60, 0.60, 0.60, 2.0, aw, ah);
         CHECK(px != NULL);
         double l60 = 0.0, l72 = 0.0, l60_cd = 0.0, l72_cd = 0.0;
@@ -1315,7 +1316,7 @@ static void test_v8_v9_droplet_roi_gates(void) {
         CHECK(px != NULL);
         if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); l72 = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]; free(px); }
         fill_p0_rect(pb, 0, 0, VW, VH, 0, 0.60, 0.60, 0.60, 1.0, 0);
-        pb[MB_INST + 11] = 0xCD / 255.0; pb[MB_INST + 20] = -105; pb[MB_INST + 22] = 0.03;
+        pb[MB_INST + 11] = 0xB3 / 255.0; pb[MB_INST + 20] = -105; pb[MB_INST + 22] = 0.0;
         px = render_rgba_pixels_of(pb, 2, 0.60, 0.60, 0.60, 2.0, aw, ah);
         CHECK(px != NULL);
         if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); l60_cd = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]; free(px); }
@@ -1325,22 +1326,24 @@ static void test_v8_v9_droplet_roi_gates(void) {
         CHECK(px != NULL);
         if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); l72_cd = 0.2126 * m[0] + 0.7152 * m[1] + 0.0722 * m[2]; free(px); }
 
-        // Dark 0xA8 chroma boost (chroma=0.03 vs chroma=0.0) & Dark 0xCC (chroma=0.0) zero drift over (60,120,210)
+        // Dark 0x80 vibrant chroma over (60,120,210), Dark 0xCC calmer chroma, and Dark 0x80 over pure white WCAG >= 4.5:1
         fill_p0_rect(pb, 0, 0, VW, VH, 0, 60.0 / 255.0, 120.0 / 255.0, 210.0 / 255.0, 1.0, 0);
         pb[MB_INST + 8] = 32.0 / 255.0; pb[MB_INST + 9] = 32.0 / 255.0; pb[MB_INST + 10] = 32.0 / 255.0;
-        pb[MB_INST + 11] = 0xA8 / 255.0; pb[MB_INST + 20] = -102; pb[MB_INST + 22] = 0.03;
+        pb[MB_INST + 11] = 0x80 / 255.0; pb[MB_INST + 20] = -102; pb[MB_INST + 22] = 0.0;
         px = render_rgba_pixels_of(pb, 2, 60.0 / 255.0, 120.0 / 255.0, 210.0 / 255.0, 2.0, aw, ah);
         CHECK(px != NULL);
-        int a8_br = 0, a8_base_br = 0, cc_br = 0;
-        if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); a8_br = (int)m[2] - (int)m[0]; free(px); }
-        pb[MB_INST + 20] = -103; pb[MB_INST + 22] = 0.0;
-        px = render_rgba_pixels_of(pb, 2, 60.0 / 255.0, 120.0 / 255.0, 210.0 / 255.0, 2.0, aw, ah);
-        CHECK(px != NULL);
-        if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); a8_base_br = (int)m[2] - (int)m[0]; free(px); }
+        int d80_br = 0, cc_br = 0;
+        double dark_white_L = 999.0;
+        if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); d80_br = (int)m[2] - (int)m[0]; free(px); }
         pb[MB_INST + 11] = 0xCC / 255.0; pb[MB_INST + 20] = -104; pb[MB_INST + 22] = 0.0;
         px = render_rgba_pixels_of(pb, 2, 60.0 / 255.0, 120.0 / 255.0, 210.0 / 255.0, 2.0, aw, ah);
         CHECK(px != NULL);
         if (px) { uint8_t *m = W_PX(px, aw, 80 * 2, 68); cc_br = (int)m[2] - (int)m[0]; free(px); }
+        fill_p0_rect(pb, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 1.0, 0);
+        pb[MB_INST + 11] = 0x80 / 255.0; pb[MB_INST + 20] = -107; pb[MB_INST + 22] = 0.0;
+        px = render_rgba_pixels_of(pb, 2, 1.0, 1.0, 1.0, 2.0, aw, ah);
+        CHECK(px != NULL);
+        if (px) { uint8_t *dw = W_PX(px, aw, 80 * 2, 68); dark_white_L = 0.2126 * dw[0] + 0.7152 * dw[1] + 0.0722 * dw[2]; free(px); }
 
         // Regular controls (chroma=0.06 vs 0.0) bit-exact zero-diff gate under Light 0x85/0xAB & Dark 0xAB
         int ctrl_max_diff = 0;
@@ -1381,15 +1384,15 @@ static void test_v8_v9_droplet_roi_gates(void) {
           free(p06); free(p00);
         }
 
-        printf("win_gpu: v11_apple_panel_glass mid_br=%d rim_L=%.1f mid_L=%.1f solid_dL=%.2f l60=%.1f l72=%.1f cd=%.1f->%.1f a8_br=%d/%d cc_br=%d ctrl_diff=%d ctrl_eq=%d\n",
-               mid_br, rim_L, mid_L, fabs(sr_L - sm_L), l60, l72, l60_cd, l72_cd, a8_br, a8_base_br, cc_br, ctrl_max_diff, ctrl_hash_eq);
-        CHECK(mid_br >= 22);
+        printf("win_gpu: v11_unified_panel_glass mid_br=%d rim_L=%.1f mid_L=%.1f solid_dL=%.2f l60=%.1f l72=%.1f b3=%.1f->%.1f d80_br=%d cc_br=%d dark_wt_L=%.1f ctrl_diff=%d ctrl_eq=%d\n",
+               mid_br, rim_L, mid_L, fabs(sr_L - sm_L), l60, l72, l60_cd, l72_cd, d80_br, cc_br, dark_white_L, ctrl_max_diff, ctrl_hash_eq);
+        CHECK(mid_br >= 24);
         CHECK(rim_L >= mid_L + 4.0);
-        CHECK(fabs(sr_L - sm_L) <= 3.0);
+        CHECK(fabs(sr_L - sm_L) <= 1.0);
         CHECK(l72 >= l60 + 2.0);
-        CHECK(l72_cd >= l60_cd);
-        CHECK(a8_br - a8_base_br >= 8);
-        CHECK(cc_br >= 43 && cc_br <= 47);
+        CHECK(l72_cd >= l60_cd + 1.0);
+        CHECK(d80_br >= 90 && cc_br < d80_br - 25);
+        CHECK(dark_white_L <= 102.0);
         CHECK(ctrl_max_diff == 0 && ctrl_hash_eq == 1);
       }
     }
@@ -1467,8 +1470,9 @@ static void test_v8_v9_droplet_roi_gates(void) {
     CHECK(gclr.dual_scale == 0 && gclr.k == 1 && gclr.sg > 0.3f);
     printf("win_gpu: v13_dual_k1 w44=%.3f w62=%.3f clr_k=%d clr_sg=%.2f\n",
            g44.dual_w, g62.dual_w, gclr.k, gclr.sg);
-    // V13c: effective-sigma continuity (no 1-frame sharpness pop) across menu morph & size sweep (14..20pt) at 2x & 3x.
+    // V13c: effective-sigma continuity (no 1-frame sharpness pop) across menu morph (legacy + v9 3-anchor) & size sweep (14..20pt) at 2x & 3x.
     double max_morph_dsig = 0.0, min_morph_dsig = 0.0, max_sz_dsig = 0.0;
+    double max_v9_dsig = 0.0, min_v9_dsig = 0.0;
     for (int sc_i = 2; sc_i <= 3; sc_i++) {
       vscale = (double)sc_i;
       double prev_se = -1.0;
@@ -1493,6 +1497,30 @@ static void test_v8_v9_droplet_roi_gates(void) {
         prev_se = se;
       }
       prev_se = -1.0;
+      for (int si = 0; si <= 240; si++) {
+        float t = (float)si / 240.0f;
+        float u = t <= 0.5f ? t * 2.0f : (t - 0.5f) * 2.0f;
+        float mb = t <= 0.5f ? (1.2f + 4.8f * u) : (6.0f + 8.0f * u);
+        float ma = t <= 0.5f ? (103.0f + 13.0f * u) / 255.0f : (116.0f + 12.0f * u) / 255.0f;
+        memset(mf, 0, sizeof mf);
+        mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 44.0f + 207.0f * t; mf[3] = 44.0f + 214.0f * t; mf[4] = 22.0f + 10.0f * t;
+        mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = mb;
+        mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f;
+        mf[11] = ma;
+        mf[12] = 0.6f; mf[13] = 14.0f + 6.0f * t; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -126.0f; mf[21] = 20.0f - 4.0f * t;
+        Grab gm;
+        CHECK(grab_of(&gm, mf, 0, 1, 1, VW * sc_i, VH * sc_i) == 1);
+        double pre = gm.k > 0 ? 0.75 * (1.0 - pow(0.25, (double)gm.k)) / 3.0 + 1.0 / 6.0 : 0.0;
+        double sgu = (gm.dual_scale && gm.k > 0) ? (gm.sg > 0.55f ? (double)gm.sg : 0.526) : (gm.sg > 0.3f ? (double)gm.sg : 0.0);
+        double se = (double)(1 << gm.k) * sqrt(sgu * sgu + pre);
+        if (prev_se >= 0.0) {
+          double d = se - prev_se;
+          if (fabs(d) > max_v9_dsig) max_v9_dsig = fabs(d);
+          if (d < min_v9_dsig) min_v9_dsig = d;
+        }
+        prev_se = se;
+      }
+      prev_se = -1.0;
       for (int si = 0; si <= 60; si++) {
         float dim = 14.0f + 6.0f * (float)si / 60.0f;
         memset(mf, 0, sizeof mf);
@@ -1513,10 +1541,12 @@ static void test_v8_v9_droplet_roi_gates(void) {
       }
     }
     vscale = 2.0;
-    printf("win_gpu: v13c_sigma_cont max_morph_dsig=%.3f min_morph_dsig=%.3f max_sz_dsig=%.3f\n",
-           max_morph_dsig, min_morph_dsig, max_sz_dsig);
+    printf("win_gpu: v13c_sigma_cont max_morph_dsig=%.3f min_morph_dsig=%.3f v9_3anchor=(%.3f,%.3f) max_sz_dsig=%.3f\n",
+           max_morph_dsig, min_morph_dsig, max_v9_dsig, min_v9_dsig, max_sz_dsig);
     CHECK(min_morph_dsig >= -1e-4);
     CHECK(max_morph_dsig <= 0.30);
+    CHECK(min_v9_dsig >= -1e-4);
+    CHECK(max_v9_dsig <= 0.45);
     CHECK(max_sz_dsig <= 0.30);
   }
   // V14-Opus-Gates: (1) Tinted capsule dark outer contour <= 14; (2) Light Regular rim on black/mid-grey/cream;
@@ -1659,6 +1689,197 @@ static void test_v8_v9_droplet_roi_gates(void) {
         CHECK(l_bar >= 185.0 && (l_wh - l_bar) <= 65.0);
         free(p1);
       }
+    }
+    // V15-Unified-V9-Gates: (1) 2x blur=4pt (k=2) flat 0.5 grey stays ~195 (no sRGB/linear mix corruption);
+    // (2) Light 0x67 over 10% white bars on pure black stays <= 150 (no linear over-bloom on dark backdrop);
+    // (3) Adaptive 0xFF solid over black vs white is identical (<= 1 LSB);
+    // (4) Shared capture Light+Dark vs Dark+Light order-invariant (0 LSB diff);
+    // (5) Dark 0x80 grayscale sweep Y=0..1 strictly monotonic & white <= 102;
+    // (6) Overlay outside-shadow top-edge vertical profile smooth (sh_jump < 2.5).
+    {
+      int aw2 = 160 * 2, ah2 = 80 * 2;
+      int aw3 = 160 * 3, ah3 = 80 * 3;
+      double fg[2 * MB_INST];
+      fill_p0_rect(fg, 0, 0, 160, 80, 0, 0.5, 0.5, 0.5, 1.0, 0);
+      fill_p0_rect(fg + MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67 / 255.0, -151);
+      fg[MB_INST + 4] = 31.0; fg[MB_INST + 6] = 1.0; fg[MB_INST + 7] = 4.0;
+      fg[MB_INST + 12] = 0.6; fg[MB_INST + 13] = 14.0;
+      fg[MB_INST + 15] = 1.0; fg[MB_INST + 21] = 20.0;
+      uint8_t *pfg = render_rgba_pixels_of(fg, 2, 0.5, 0.5, 0.5, 2.0, aw2, ah2);
+      CHECK(pfg != NULL);
+      int k2_g = 0;
+      if (pfg) { k2_g = W_PX(pfg, aw2, 80 * 2, 40 * 2)[1]; free(pfg); }
+
+      double wb[6 * MB_INST];
+      fill_p0_rect(wb, 0, 0, 160, 80, 0, 0.0, 0.0, 0.0, 1.0, 0);
+      for (int bi = 0; bi < 4; bi++) fill_p0_rect(wb + (1 + bi) * MB_INST, 0, 10 + bi * 20, 160, 2.0, 0, 1.0, 1.0, 1.0, 1.0, 0);
+      fill_p0_rect(wb + 5 * MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67 / 255.0, -152);
+      wb[5 * MB_INST + 4] = 31.0; wb[5 * MB_INST + 6] = 1.0; wb[5 * MB_INST + 7] = 1.2;
+      wb[5 * MB_INST + 12] = 0.6; wb[5 * MB_INST + 13] = 14.0;
+      wb[5 * MB_INST + 15] = 1.0; wb[5 * MB_INST + 21] = 20.0;
+      uint8_t *pwb = render_rgba_pixels_of(wb, 6, 0.0, 0.0, 0.0, 3.0, aw3, ah3);
+      CHECK(pwb != NULL);
+      int dark_bar_g = 999;
+      if (pwb) { dark_bar_g = W_PX(pwb, aw3, 80 * 3, 40 * 3)[1]; free(pwb); }
+
+      int ad_diff = 0;
+      uint8_t ad_c[2][3] = {{0}};
+      for (int bi = 0; bi < 2; bi++) {
+        double bgv = bi ? 1.0 : 0.0;
+        fill_p0_rect(fg, 0, 0, 160, 80, 0, bgv, bgv, bgv, 1.0, 0);
+        fill_p0_rect(fg + MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 1.0, -153 - bi);
+        fg[MB_INST + 4] = 24.0; fg[MB_INST + 6] = 1.0; fg[MB_INST + 7] = 1.2;
+        fg[MB_INST + 12] = 0.6; fg[MB_INST + 13] = 14.0;
+        fg[MB_INST + 14] = -1.0; fg[MB_INST + 15] = 1.0; fg[MB_INST + 21] = 20.0;
+        uint8_t *pad = render_rgba_pixels_of(fg, 2, bgv, bgv, bgv, 2.0, aw2, ah2);
+        CHECK(pad != NULL);
+        if (pad) {
+          uint8_t *cad = W_PX(pad, aw2, 80 * 2, 40 * 2);
+          ad_c[bi][0] = cad[0]; ad_c[bi][1] = cad[1]; ad_c[bi][2] = cad[2];
+          free(pad);
+        }
+      }
+      for (int c = 0; c < 3; c++) { int d = abs((int)ad_c[0][c] - (int)ad_c[1][c]); if (d > ad_diff) ad_diff = d; }
+
+      uint8_t *sord[2] = {NULL, NULL};
+      for (int oi = 0; oi < 2; oi++) {
+        double so[4 * MB_INST];
+        fill_p0_rect(so, 0, 0, 160, 80, 0, 0.95, 0.94, 0.91, 1.0, 0);
+        fill_p0_rect(so + MB_INST, 0, 36, 160, 8, 0, 0.05, 0.05, 0.05, 1.0, 0);
+        int li = oi == 0 ? 2 : 3, di = oi == 0 ? 3 : 2;
+        fill_p0_rect(so + li * MB_INST, 8, 9, 64, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, -156 - oi);
+        so[li * MB_INST + 4] = 31.0; so[li * MB_INST + 6] = 1.0; so[li * MB_INST + 7] = 1.2;
+        so[li * MB_INST + 12] = 0.6; so[li * MB_INST + 13] = 14.0;
+        so[li * MB_INST + 15] = 1.0; so[li * MB_INST + 21] = 20.0;
+        fill_p0_rect(so + di * MB_INST, 88, 9, 64, 62, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, -156 - oi);
+        so[di * MB_INST + 4] = 31.0; so[di * MB_INST + 6] = 1.0; so[di * MB_INST + 7] = 1.2;
+        so[di * MB_INST + 12] = 0.6; so[di * MB_INST + 13] = 14.0;
+        so[di * MB_INST + 15] = 1.0; so[di * MB_INST + 21] = 20.0;
+        sord[oi] = render_rgba_pixels_of(so, 4, 0.95, 0.94, 0.91, 2.0, aw2, ah2);
+        CHECK(sord[oi] != NULL);
+      }
+      int ord_diff = 0;
+      if (sord[0] && sord[1]) {
+        for (int i = 0; i < aw2 * ah2 * 4; i++) { int d = abs((int)sord[0][i] - (int)sord[1][i]); if (d > ord_diff) ord_diff = d; }
+      }
+      free(sord[0]); free(sord[1]);
+
+      int dark_mono_ok = 1;
+      double prev_dl = -1.0, dark_y20_L = 0.0, dark_y40_L = 0.0, dark_mid_L = 0.0, dark_wt_L2 = 999.0;
+      for (int gi = 0; gi <= 20; gi++) {
+        double gv = (double)gi / 20.0;
+        fill_p0_rect(fg, 0, 0, 160, 80, 0, gv, gv, gv, 1.0, 0);
+        fill_p0_rect(fg + MB_INST, 14, 9, 132, 62, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x80 / 255.0, -160 - gi);
+        fg[MB_INST + 4] = 24.0; fg[MB_INST + 6] = 1.0; fg[MB_INST + 7] = 14.0;
+        fg[MB_INST + 12] = 0.6; fg[MB_INST + 13] = 20.0;
+        fg[MB_INST + 14] = 0.0; fg[MB_INST + 15] = 1.0; fg[MB_INST + 21] = 16.0;
+        uint8_t *pd = render_rgba_pixels_of(fg, 2, gv, gv, gv, 2.0, aw2, ah2);
+        CHECK(pd != NULL);
+        if (pd) {
+          uint8_t *cd = W_PX(pd, aw2, 80 * 2, 40 * 2);
+          double dl = 0.2126 * cd[0] + 0.7152 * cd[1] + 0.0722 * cd[2];
+          if (prev_dl >= 0.0 && dl < prev_dl - 0.1) dark_mono_ok = 0;
+          prev_dl = dl;
+          if (gi == 4) dark_y20_L = dl;
+          if (gi == 8) dark_y40_L = dl;
+          if (gi == 11) dark_mid_L = dl;
+          if (gi == 20) dark_wt_L2 = dl;
+          free(pd);
+        }
+      }
+
+      int light_mono_ok = 1;
+      double prev_ll = -1.0, light_blk_L = 0.0, light_y60_L = 0.0, light_y80_L = 0.0;
+      for (int gi = 0; gi <= 20; gi++) {
+        double gv = (double)gi / 20.0;
+        fill_p0_rect(fg, 0, 0, 160, 80, 0, gv, gv, gv, 1.0, 0);
+        fill_p0_rect(fg + MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 0x80 / 255.0, -200 - gi);
+        fg[MB_INST + 4] = 24.0; fg[MB_INST + 6] = 1.0; fg[MB_INST + 7] = 14.0;
+        fg[MB_INST + 12] = 0.6; fg[MB_INST + 13] = 20.0;
+        fg[MB_INST + 14] = 0.0; fg[MB_INST + 15] = 1.0; fg[MB_INST + 21] = 16.0;
+        uint8_t *pl = render_rgba_pixels_of(fg, 2, gv, gv, gv, 2.0, aw2, ah2);
+        CHECK(pl != NULL);
+        if (pl) {
+          uint8_t *cl = W_PX(pl, aw2, 80 * 2, 40 * 2);
+          double ll = 0.2126 * cl[0] + 0.7152 * cl[1] + 0.0722 * cl[2];
+          if (prev_ll >= 0.0 && ll < prev_ll - 0.1) light_mono_ok = 0;
+          prev_ll = ll;
+          if (gi == 0) light_blk_L = ll;
+          if (gi == 12) light_y60_L = ll;
+          if (gi == 16) light_y80_L = ll;
+          free(pl);
+        }
+      }
+
+      double chk_cr_blk = 0.0, chk_cr_blu = 0.0;
+      {
+        double row_b[3 * MB_INST];
+        double acc_l = 0.2126 * pow((0x98/255.0 + 0.055)/1.055, 2.4)
+                     + 0.7152 * pow((0x2E/255.0 + 0.055)/1.055, 2.4)
+                     + 0.0722 * ((0x01/255.0) / 12.92);
+        for (int bi = 0; bi < 2; bi++) {
+          double br = 0.0, bg = bi ? (0x7A/255.0) : 0.0, bb = bi ? 1.0 : 0.0;
+          fill_p0_rect(row_b, 0, 0, 160, 80, 0, br, bg, bb, 1.0, 0);
+          fill_p0_rect(row_b + MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 0x80 / 255.0, -230 - bi);
+          row_b[MB_INST + 4] = 24.0; row_b[MB_INST + 6] = 1.0; row_b[MB_INST + 7] = 14.0;
+          row_b[MB_INST + 12] = 0.6; row_b[MB_INST + 13] = 20.0;
+          row_b[MB_INST + 14] = 0.0; row_b[MB_INST + 15] = 1.0; row_b[MB_INST + 21] = 16.0;
+          fill_p0_rect(row_b + 2 * MB_INST, 24, 22, 112, 36, 0, 0x24/255.0, 0x27/255.0, 0x2B/255.0, 0x0F / 255.0, 0);
+          row_b[2 * MB_INST + 4] = 14.0;
+          uint8_t *pr = render_rgba_pixels_of(row_b, 3, br, bg, bb, 2.0, aw2, ah2);
+          CHECK(pr != NULL);
+          if (pr) {
+            uint8_t *crp = W_PX(pr, aw2, 80 * 2, 40 * 2);
+            double cr_r = crp[0] / 255.0, cr_g = crp[1] / 255.0, cr_b = crp[2] / 255.0;
+            double lr = (cr_r <= 0.04045) ? cr_r / 12.92 : pow((cr_r + 0.055) / 1.055, 2.4);
+            double lg = (cr_g <= 0.04045) ? cr_g / 12.92 : pow((cr_g + 0.055) / 1.055, 2.4);
+            double lb = (cr_b <= 0.04045) ? cr_b / 12.92 : pow((cr_b + 0.055) / 1.055, 2.4);
+            double row_l = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+            double hi = row_l > acc_l ? row_l : acc_l, lo = row_l > acc_l ? acc_l : row_l;
+            double crv = (hi + 0.05) / (lo + 0.05);
+            if (bi == 0) chk_cr_blk = crv; else chk_cr_blu = crv;
+            free(pr);
+          }
+        }
+      }
+
+      int shw = 200 * 3, shh = 160 * 3;
+      double sh[3 * MB_INST];
+      fill_p0_rect(sh, 0, 0, 200, 160, 0, 244.0/255.0, 241.0/255.0, 234.0/255.0, 1.0, 0);
+      fill_p0_rect(sh + MB_INST, 20, 40 + 6, 160, 100, 2, 0.0, 0.0, 0.0, 0x18 / 255.0, 0);
+      sh[MB_INST + 4] = 24.0; sh[MB_INST + 7] = 14.0;
+      sh[MB_INST + 12] = 1.0; sh[MB_INST + 13] = 6.0;
+      sh[MB_INST + 18] = 200.0; sh[MB_INST + 19] = 160.0;
+      sh[MB_INST + 36] = 24.0; sh[MB_INST + 37] = 24.0; sh[MB_INST + 38] = 24.0; sh[MB_INST + 39] = 24.0;
+      fill_p0_rect(sh + 2 * MB_INST, 20, 40, 160, 100, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, 0x80 / 255.0, -190);
+      sh[2 * MB_INST + 4] = 24.0; sh[2 * MB_INST + 6] = 1.0; sh[2 * MB_INST + 7] = 14.0;
+      sh[2 * MB_INST + 12] = 0.6; sh[2 * MB_INST + 13] = 20.0;
+      sh[2 * MB_INST + 15] = 1.0; sh[2 * MB_INST + 18] = 200.0; sh[2 * MB_INST + 19] = 160.0; sh[2 * MB_INST + 21] = 16.0;
+      sh[2 * MB_INST + 36] = 24.0; sh[2 * MB_INST + 37] = 24.0; sh[2 * MB_INST + 38] = 24.0; sh[2 * MB_INST + 39] = 24.0;
+      uint8_t *psh = render_rgba_pixels_of(sh, 3, 244.0/255.0, 241.0/255.0, 234.0/255.0, 3.0, shw, shh);
+      CHECK(psh != NULL);
+      double sh_max_jump = 999.0;
+      if (psh) {
+        sh_max_jump = 0.0;
+        double sh_prev = -1.0;
+        for (int py = 60; py <= 114; py++) {
+          uint8_t *sp = W_PX(psh, shw, 100 * 3, py);
+          double sl = 0.2126 * sp[0] + 0.7152 * sp[1] + 0.0722 * sp[2];
+          if (sh_prev >= 0.0 && (sl - sh_prev) > sh_max_jump) sh_max_jump = sl - sh_prev;
+          sh_prev = sl;
+        }
+        free(psh);
+      }
+      printf("win_gpu: v15_unified_v9 k2_g=%d dark_bar_g=%d ad_ff_diff=%d ord_diff=%d dark_mono=%d d20=%.1f d40=%.1f mid55=%.1f wt=%.1f light_mono=%d blk=%.1f l60=%.1f l80=%.1f chk_blk=%.2f chk_blu=%.2f sh_jump=%.2f\n",
+             k2_g, dark_bar_g, ad_diff, ord_diff, dark_mono_ok, dark_y20_L, dark_y40_L, dark_mid_L, dark_wt_L2, light_mono_ok, light_blk_L, light_y60_L, light_y80_L, chk_cr_blk, chk_cr_blu, sh_max_jump);
+      CHECK(abs(k2_g - 195) <= 2);
+      CHECK(dark_bar_g <= 150);
+      CHECK(ad_diff <= 1);
+      CHECK(ord_diff == 0);
+      CHECK(dark_mono_ok == 1 && dark_wt_L2 <= 102.0 && (dark_wt_L2 - dark_y40_L) >= 6.0 && (dark_wt_L2 - dark_y20_L) >= 24.0);
+      CHECK(light_mono_ok == 1 && light_blk_L >= 198.0 && (light_y60_L - light_blk_L) >= 10.0 && (light_y80_L - light_blk_L) >= 26.0);
+      CHECK(chk_cr_blk >= 3.0 && chk_cr_blu >= 3.0);
+      CHECK(sh_max_jump < 2.5);
     }
   }
   #undef W_PX

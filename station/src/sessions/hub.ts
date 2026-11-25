@@ -223,7 +223,12 @@ export class Retiring extends Error {
 export const retiredWs = (ws: string) => `retired:${ws}`;
 export { comingWs, handedWs } from "../store/rows.ts";
 
+/// How long a wake waits for a platform to say who started its chat (`starterEmail`).
+const STARTER_EMAIL_MS = 3_000;
+
 export class Hub {
+  /// The emails platforms said of the people who started chats, by how they are named.
+  readonly #emails = new Map<string, string>();
   readonly options: HubOptions;
   readonly store: Store;
   readonly internal: InternalChat | null;
@@ -2528,6 +2533,20 @@ export class Hub {
       siteInstructions: () => this.options.siteInstructions ?? "",
       moveOn: () => this.options.moveOn?.() ?? true,
       projectsOn: () => this.projectsOn(),
+      homeWorkspace: () => this.homeWorkspace(),
+      starterEmail: async (key) => {
+        // (`slack:<connect>:<user>`: a platform's person, each platform's the same)
+        const by = this.store.getSession(key)?.createdBy ?? "";
+        const on = /^slack:([^:]+):(.+)$/.exec(by);
+        if (on === null) return null;
+        const known = this.#emails.get(by);
+        if (known !== undefined) return known;
+        // (a wake waits on it: not on a platform, or a station its connect is on, that does not answer)
+        const asked = this.chatOf(on[1]!)?.userEmail?.(on[2]!);
+        const email = asked === undefined ? null : await within(this.clock, STARTER_EMAIL_MS, asked, () => new Error("the platform did not say who started the chat"));
+        if (email !== null) this.#emails.set(by, email);
+        return email;
+      },
       untoldProjects: (key) => formatWorkspaceProjectsDelta(this, key, this.projectsTold),
       ownName: () => {
         const me = this.options.station?.() ?? null;

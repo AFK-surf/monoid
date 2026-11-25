@@ -369,6 +369,10 @@ fn pane_made(
       made("archiving", fn(a, core, here, stint, frame, width) {
         @sfpages.archiving_node(a, core, here, on_back=core.pop, frame~, stint~, width~)
       })
+    Setting(Progress) =>
+      made("progress", fn(a, core, here, _stint, frame, width) {
+        @sfpages.progress_node(a, core, here, on_back=core.pop, frame~, width~)
+      })
     Setting(AutoDecisions) =>
       made("auto-decisions", fn(a, core, here, _stint, frame, width) {
         @sfpages.decisions_node(a, core, here, on_back=core.pop, frame~, width~, tips~)

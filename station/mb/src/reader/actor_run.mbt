@@ -692,7 +692,9 @@ async fn Actors::cut_off_by_restart(self : Actors, a : Actor) -> Json raise {
       let latest = self.store(a, "latestTurn", [jstr(a.key)])
       let summary = latest.value("summary").unwrap_or(Json::null())
       if cut_off_by_restart(summary) {
-        self.notice(a, "⚠️ " + self.t(a, "station.notice.cutOffRestart"), about=str_of(latest.value("id")))
+        let said = "⚠️ " + self.t(a, "station.notice.cutOffRestart")
+        self.notice(a, said, about=str_of(latest.value("id")))
+        self.tell_opener_failed(a, said)
         interrupted = true
       }
     }
@@ -1732,6 +1734,7 @@ async fn Actors::warm_waited_on(self : Actors, a : Actor, e : Error) -> Bool rai
   }
   if !dup {
     self.notice(a, said)
+    self.tell_opener_failed(a, said)
   }
   true
 }
@@ -2006,6 +2009,7 @@ async fn Actors::start_turn(
       }
       if !dup {
         self.notice(a, said, runtime=if missing { jstr(a.runtime) } else { Json::null() }, about=turn.map(t => t.id))
+        self.tell_opener_failed(a, said)
       }
       raise e
     }
@@ -3381,11 +3385,26 @@ async fn Actors::give_up(self : Actors, a : Actor, turn : String?) -> Unit raise
   let said = if a.posted { "" } else { a.last_said }
   a.last_said = ""
   if said == "" {
-    return self.notice(a, "⚠️ " + self.t(a, "station.notice.noResult"), about=turn)
+    let words = "⚠️ " + self.t(a, "station.notice.noResult")
+    self.notice(a, words, about=turn)
+    return self.tell_opener_failed(a, words)
   }
   self.log(a, "info", "the turn reached nobody; its last words are shown in its place")
   let quoted = str_of(Some(self.rpc(a.key, "node.words", [jstr("quoted"), jstr(said)]))).unwrap_or("")
-  self.notice(a, "⚠️ " + self.t(a, "station.notice.noResultSaid") + "\n\n" + quoted, about=turn)
+  let words = "⚠️ " + self.t(a, "station.notice.noResultSaid") + "\n\n" + quoted
+  self.notice(a, words, about=turn)
+  self.tell_opener_failed(a, words)
+}
+
+///|
+/// The chat that leads it told it stopped on an error (`settled` `failed`, sessions/opened.ts): where what it did ends
+/// with no state of its own (it could not start, its turn said none and gave nothing, a restart cut it off), the
+/// ⚠️ notice is said only in its own chat, and the leader, waiting on it, would never hear it ended.
+async fn Actors::tell_opener_failed(self : Actors, a : Actor, said : String) -> Unit {
+  let words = if said.has_prefix("⚠️ ") { said.view(start_offset=("⚠️ ").length()).to_string() } else { said }
+  ignore(self.deps(a, "settled", [jstr(a.key), jstr("failed"), jstr(words)])) catch {
+    err => self.log(a, "warn", "the opener of its chat was not told", fields={ "error": jstr(err.to_string()) })
+  }
 }
 
 ///|
@@ -3510,11 +3529,6 @@ async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Doubl
 }
 
 ///|
-/// How long a continuous waiting chain may go without posting in the chat before the next wakeup asks for a brief
-/// progress update (10 minutes).
-let progress_remind_ms : Double = 600000.0
-
-///|
 fn Actors::note_posted(self : Actors, a : Actor) -> Unit {
   a.posted = true
   a.last_post_at = self.now
@@ -3542,19 +3556,14 @@ fn Actors::track_silent_wait(self : Actors, a : Actor, t : Turn) -> Unit {
 }
 
 ///|
-/// When a session in a continuous waiting chain has not posted to the chat for at least `progress_remind_ms` (and has
-/// not been reminded within that same interval), returns a brief reminder to append to the next wakeup.
+/// When a session in a continuous waiting chain has not posted to the chat for as long as the person who started it
+/// set (and has not been reminded within that same interval), returns what to append to the next wakeup: Node's words,
+/// none while it is not due (mb-actor.ts `silentProgress`).
 async fn Actors::maybe_progress_reminder(self : Actors, a : Actor) -> (String?, Bool) raise {
   guard a.silent_waiting_since is Some(since) else { return (None, false) }
   let silent_ms = self.now - since
-  if silent_ms < progress_remind_ms {
-    return (None, false)
-  }
-  if a.progress_reminded_at > 0.0 && self.now - a.progress_reminded_at < progress_remind_ms {
-    return (None, false)
-  }
-  let minutes = (silent_ms / 60000.0).floor()
-  let words = self.words(a, "silentProgress", args=[jnum(minutes)]) catch { _ => "" }
+  let reminded_ms = if a.progress_reminded_at > 0.0 { jnum(self.now - a.progress_reminded_at) } else { Json::null() }
+  let words = self.words(a, "silentProgress", args=[jnum(silent_ms), reminded_ms]) catch { _ => "" }
   if words == "" {
     return (None, false)
   }

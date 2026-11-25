@@ -2788,7 +2788,7 @@ fn triple_choices_node(
       e.basis(Is(None)).shrink(Is(0.0)) |> ignore
       e.pick(fn() { row.picked() }, fn(x, checked) {
         if checked {
-          @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
+          @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
         } else {
           x.box(fn(k) { @sf.style_node(k, fn() { triple_check_room }, in_row=true) }) |> ignore
         }
@@ -2852,7 +2852,7 @@ fn triple_option_node(
       if checks {
         e.pick(on, fn(x, checked) {
           if checked {
-            @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
+            @sf.icon_node(x, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
           }
         })
       }

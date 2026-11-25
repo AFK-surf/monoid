@@ -471,11 +471,16 @@ export class FarviewTabs {
     return { running: true, binary: "Farview", headless: true, pid: tabs[0]!.pid, tabs: tabs.length, viewing: tabs.reduce((k, h) => k + h.screen.viewing(), 0) };
   }
 
+  /// The port and owning session of the host whose tab is screen `id` (null: none runs).
+  clientTarget(id: string): { port: number; session: string } | null {
+    for (const [session, tabs] of this.#hosts) for (const host of tabs.values()) if (host.screen.id === id && groupAlive(host.pid)) return { port: host.port, session };
+    return null;
+  }
+
   /// The port of the host whose tab is screen `id` that a person's client speaks Farview's protocol on (null: none
   /// runs): an app that draws the tab itself is carried to it (`{"farview": …}` streams, module.ts).
   clientPort(id: string): number | null {
-    for (const tabs of this.#hosts.values()) for (const host of tabs.values()) if (host.screen.id === id && groupAlive(host.pid)) return host.port;
-    return null;
+    return this.clientTarget(id)?.port ?? null;
   }
 
   /// The agent port of `session`'s chat's tab `id` (its first where none is said), for the agent's `agent.exe` (null:

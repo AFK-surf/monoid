@@ -1205,6 +1205,7 @@ fn setting_kind(r : @settings.Route) -> String {
     LocalStation => "LocalStation"
     Notifications => "Notifications"
     Permissions => "Permissions"
+    Progress => "Progress"
     Archiving => "Archiving"
     StationArchiving(_) => "StationArchiving"
     Backup => "Backup"
@@ -1743,6 +1744,7 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::Memories) | Setting(@settings.Route::Memory(_)) => @sf.t("web-pages.settings.memory.title")
     Setting(@settings.Route::AutoDecisions) => @sf.t("web-pages.automaticDecisions.title")
     Setting(@settings.Route::AutoCompletion) => @sf.t("web-pages.automaticDecisions.completion")
+    Setting(@settings.Route::Progress) => @sf.t("web-pages.progress.title")
     Setting(@settings.Route::Archiving) => @sf.t("web-pages.archiving.title")
     Setting(@settings.Route::Backup) => @sf.t("web-pages.backup.title")
     Setting(@settings.Route::Shortcuts) => @sf.t("web-main.shortcuts.title")

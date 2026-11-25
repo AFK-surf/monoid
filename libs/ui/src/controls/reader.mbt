@@ -1057,7 +1057,7 @@ let paper_night_ink : Int64 = 0xECECEDFFL
 let paper_night_ink_share : Double = 0.88
 
 ///|
-let paper_night_muted : Int64 = 0x9A9DA3FFL
+let paper_night_muted : Int64 = 0xA4A7ADFFL
 
 ///|
 let paper_night_raised : Int64 = 0x2A2C31FFL

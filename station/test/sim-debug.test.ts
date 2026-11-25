@@ -2,7 +2,7 @@
 // read as a person reads them, what it says of its own left out, the stream started as it is first asked for and only
 // once, only an app a person installed started again. side/screen-simulator-debug.test.ts has the real one.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -271,4 +271,184 @@ test("a setting is set only to what simctl takes, and said back", async () => {
   assert.equal(await debug.setSetting("textSize", "accessibility-large"), true);
   assert.deepEqual(runs.at(-1), ["simctl", "ui", "U", "content_size", "accessibility-large"]);
   debug.close();
+});
+
+test("install rejects symlink escapes outside installFolder and uses a 0700 private directory", async () => {
+  const runs: string[][] = [];
+  const debug = new SimDebug(
+    "simctl",
+    "U",
+    async (file, args) => {
+      runs.push([file, ...args]);
+      return "";
+    },
+    async () => new Uint8Array(),
+    () => ({ stop: () => {} }),
+  );
+  const folder = debug.installFolder();
+  assert.ok(!folder.startsWith(join(tmpdir(), "stillfail-sim-install")), "installFolder must not use predictable /tmp path");
+  await mkdir(folder, { recursive: true, mode: 0o700 });
+  const outsideDir = mkdtempSync(join(tmpdir(), "sim-outside-"));
+  const outsideFile = join(outsideDir, "secret.ipa");
+  writeFileSync(outsideFile, "secret");
+  const link = join(folder, `escape-${Date.now()}.ipa`);
+  symlinkSync(outsideFile, link);
+  try {
+    assert.equal(await debug.install(link), null, "symlink pointing outside installFolder must be rejected");
+    assert.equal(runs.length, 0);
+    assert.equal(existsSync(outsideFile), true, "outside target must not be deleted");
+    if (process.platform !== "win32") {
+      assert.equal(statSync(folder).mode & 0o777, 0o700);
+    }
+  } finally {
+    rmSync(link, { force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+    debug.close();
+  }
+});
+
+test("concurrent recordStart on two simulators do not delete each other's recordings, and same-sim calls coalesce", async () => {
+  const asked1: string[][] = [];
+  const asked2: string[][] = [];
+  let resolveEnum!: () => void;
+  const enumGate = new Promise<void>((r) => (resolveEnum = r));
+  const d1 = new SimDebug(
+    "simctl",
+    "SIM-1111",
+    async () => {
+      await enumGate;
+      return "";
+    },
+    async () => new Uint8Array(),
+    () => ({ stop: () => {} }),
+    (args) => {
+      asked1.push(args);
+      writeFileSync(args.at(-1)!, "movie1");
+      return { started: Promise.resolve(), ended: Promise.resolve(), stop: () => {} };
+    },
+  );
+  const d2 = new SimDebug(
+    "simctl",
+    "SIM-2222",
+    async () => "",
+    async () => new Uint8Array(),
+    () => ({ stop: () => {} }),
+    (args) => {
+      asked2.push(args);
+      writeFileSync(args.at(-1)!, "movie2");
+      return { started: Promise.resolve(), ended: Promise.resolve(), stop: () => {} };
+    },
+  );
+  // Two concurrent recordStart calls on d1 before its first await finishes coalesce into one recording.
+  const p1a = d1.recordStart("inner");
+  const p1b = d1.recordStart("inner");
+  assert.equal(d1.recording, true);
+  resolveEnum();
+  await Promise.all([p1a, p1b]);
+  assert.equal(asked1.length, 1);
+
+  // Starting d2 while d1 is recording must NOT delete d1's recording file/directory.
+  await d2.recordStart(null);
+  assert.equal(asked2.length, 1);
+  const file1 = asked1[0]!.at(-1)!;
+  const file2 = asked2[0]!.at(-1)!;
+  assert.ok(existsSync(file1), "d1 recording must survive d2 recordStart");
+  assert.ok(existsSync(file2), "d2 recording must exist");
+  const r1 = (await d1.recordStop())!;
+  const r2 = (await d2.recordStop())!;
+  assert.notEqual(r1.root, r2.root);
+  assert.ok(existsSync(join(r1.root, r1.path)));
+  assert.ok(existsSync(join(r2.root, r2.path)));
+  rmSync(r1.root, { recursive: true, force: true });
+  rmSync(r2.root, { recursive: true, force: true });
+  d1.close();
+  d2.close();
+});
+
+test("recordStart/recordStop/close race: close aborts in-flight start and cleans up; new start waits for stop", async () => {
+  // 1. close() during in-flight recordStart() aborts without spawning recorder or leaking dir.
+  let resolveEnum!: () => void;
+  const enumGate = new Promise<void>((r) => (resolveEnum = r));
+  let spawned = 0;
+  const dClose = new SimDebug(
+    "simctl",
+    "SIM-CLOS",
+    async () => {
+      await enumGate;
+      return "";
+    },
+    async () => new Uint8Array(),
+    () => ({ stop: () => {} }),
+    () => {
+      spawned++;
+      return { started: Promise.resolve(), ended: Promise.resolve(), stop: () => {} };
+    },
+  );
+  const starting = dClose.recordStart("inner");
+  dClose.close();
+  resolveEnum();
+  await starting;
+  assert.equal(spawned, 0, "recorder must not spawn after close()");
+  // recordStart() after close() is a no-op.
+  await dClose.recordStart(null);
+  assert.equal(spawned, 0);
+
+  // 2. recordStart() racing with recordStop() waits for recordStop() before removing previous recording dir.
+  let finishChildEnd!: () => void;
+  const childEndGate = new Promise<void>((r) => (finishChildEnd = r));
+  let callCount = 0;
+  const dirs: string[] = [];
+  const dRace = new SimDebug(
+    "simctl",
+    "SIM-RACE",
+    async () => "",
+    async () => new Uint8Array(),
+    () => ({ stop: () => {} }),
+    (args) => {
+      callCount++;
+      const file = args.at(-1)!;
+      dirs.push(file);
+      writeFileSync(file, "movie");
+      if (callCount === 1) {
+        return { started: Promise.resolve(), ended: childEndGate, stop: () => {} };
+      }
+      return { started: Promise.resolve(), ended: Promise.resolve(), stop: () => {} };
+    },
+  );
+  await dRace.recordStart(null);
+  const stopPromise = dRace.recordStop();
+  const secondStart = dRace.recordStart(null);
+  // While first stop is still ending, first file must still exist and second recorder must not have started yet.
+  assert.equal(existsSync(dirs[0]!), true);
+  assert.equal(callCount, 1);
+  finishChildEnd();
+  await stopPromise;
+  await secondStart;
+  assert.equal(callCount, 2);
+  assert.equal(existsSync(dirs[0]!), false, "previous recording dir cleaned after stop completed");
+  dRace.close();
+
+  // 3. close() called while recordStop() is awaiting child.ended cleans up the recording dir when stop finishes.
+  let finishCloseStop!: () => void;
+  const closeStopGate = new Promise<void>((r) => (finishCloseStop = r));
+  let stopFile = "";
+  const dStopClose = new SimDebug(
+    "simctl",
+    "SIM-STCL",
+    async () => "",
+    async () => new Uint8Array(),
+    () => ({ stop: () => {} }),
+    (args) => {
+      stopFile = args.at(-1)!;
+      writeFileSync(stopFile, "movie");
+      return { started: Promise.resolve(), ended: closeStopGate, stop: () => {} };
+    },
+  );
+  await dStopClose.recordStart(null);
+  const stopping = dStopClose.recordStop();
+  dStopClose.close();
+  assert.equal(existsSync(stopFile), true, "file stays intact while recordStop is finishing");
+  finishCloseStop();
+  assert.equal(await stopping, null);
+  assert.equal(existsSync(stopFile), false, "recording dir cleaned up when stop finishes after close()");
 });

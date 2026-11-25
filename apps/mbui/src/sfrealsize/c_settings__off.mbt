@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"settings","scope":"ws"}
   let messages =
-    #|[{"value":{"decisionsOn":4,"decisionsText":"4 台 station 已启用","hintNoReview":false,"hintReviewText":"只有 Willow、Studio、Cedar 开启了归档建议；Maple 上的 chat 不会提示。"}}]
+    #|[[{"path":["decisionsOn"],"set":4},{"path":["decisionsText"],"set":"4 台 station 已启用"},{"path":["hintReviewText"],"set":"只有 Willow、Studio、Cedar 开启了归档建议；Maple 上的 chat 不会提示。"}]]
   put_changes(asked, "off", messages)
 }

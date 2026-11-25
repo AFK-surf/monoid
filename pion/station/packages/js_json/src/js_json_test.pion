@@ -327,3 +327,50 @@ test "js_compare, js_less, trim_js, js_utf8_len, points, without_mentions, prett
   expect(num_text_with(-1.0 / 0.0, fmt_simple) == "-Infinity", "num_text -Inf")
   expect(num_text_with(0.0, fmt_simple) == "0", "num_text 0")
 }
+
+test "utf16_len matches utf16_units(s).length() across valid and ill-formed UTF-8" {
+  let valid_cases = [
+    "",
+    "hello",
+    "éüñ",
+    "中文测试",
+    "🚀😀🎉",
+    "aé中🚀b\u{0000}\u{FFFF}\u{10000}\u{10FFFF}",
+  ]
+  for i in 0..<valid_cases.length() {
+    let s = valid_cases[i]
+    expect(utf16_len(s) == utf16_units(s).length(), "valid utf16_len mismatch at " + i.to_string())
+  }
+  expect(utf16_len("") == 0, "empty len 0")
+  expect(utf16_len("🚀") == 2, "emoji len 2")
+  expect(utf16_len("aé中🚀") == 5, "mixed len 5")
+
+  // Ill-formed UTF-8 sequences via StringBuilder::write_byte
+  let bad_seqs : Array[Array[Int]] = [
+    [0x80], // lone continuation
+    [0xFF], // invalid lead
+    [0xC0, 0x80], // overlong 2-byte
+    [0xC2], // truncated 2-byte
+    [0xC2, 0x41], // invalid 2nd byte
+    [0xE0, 0x80, 0x80], // overlong 3-byte
+    [0xE2, 0x82], // truncated 3-byte valid prefix -> 1 U+FFFD
+    [0xE2, 0x82, 0x41], // invalid 3rd byte -> 1 U+FFFD + 'A'
+    [0xED, 0xA0, 0x80], // UTF-16 surrogate in UTF-8 -> 3 U+FFFD
+    [0xF0, 0x80, 0x80, 0x80], // overlong 4-byte
+    [0xF0, 0x9F, 0x98], // truncated 4-byte valid prefix -> 1 U+FFFD
+    [0xF0, 0x9F, 0x98, 0x41], // invalid 4th byte -> 1 U+FFFD + 'A'
+    [0xF4, 0x90, 0x80, 0x80], // > U+10FFFF
+    [0x61, 0xF0, 0x9F, 0x9A, 0x80, 0xED, 0xA0, 0x80, 0x62], // mixed valid + surrogate + ascii
+  ]
+  for i in 0..<bad_seqs.length() {
+    let seq = bad_seqs[i]
+    let sb = StringBuilder::new()
+    for j in 0..<seq.length() {
+      sb.write_byte(seq[j] as Byte)
+    }
+    let s = sb.to_string()
+    let got = utf16_len(s)
+    let want = utf16_units(s).length()
+    expect(got == want, "ill-formed utf16_len mismatch at " + i.to_string() + ": got=" + got.to_string() + " want=" + want.to_string())
+  }
+}

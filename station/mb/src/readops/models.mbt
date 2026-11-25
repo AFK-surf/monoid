@@ -295,6 +295,25 @@ fn cost(g : Group) -> Json {
 }
 
 ///|
+/// `cost` with a per-call `model -> Price?` cache to avoid repeated `model_key` + `prices` scans across rows.
+fn cost_cached(g : Group, price_cache : Map[String, Price?]) -> Json {
+  guard g.model is String(model) else { return Json::null() }
+  let p = match price_cache.get(model) {
+    Some(cached) => cached
+    None => {
+      let computed = price(model)
+      price_cache[model] = computed
+      computed
+    }
+  }
+  guard p is Some(p) else { return Json::null() }
+  let tokens = g.input * p.input + g.cache_write * p.input * 1.25 + g.cache_write_long * p.input * 2.0 +
+    g.cache_read * p.cache_read +
+    g.output * p.output
+  Json::number(tokens / 1.0e6 * (if g.fast { 2.0 } else { 1.0 }))
+}
+
+///|
 /// usage.ts `priceTable`: the prices `cost` uses, of the station's table and of the models the rows name (what its
 /// numbers mean the client says: core-ts views/usage.ts).
 fn price_table(models : Array[Json]) -> Json {

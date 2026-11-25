@@ -7,9 +7,9 @@
 // not to the log, so it is not here.
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 
@@ -223,6 +223,9 @@ export class SimDebug {
   #closed = false;
   readonly #record: Recorder;
   #recording: { child: ReturnType<Recorder>; folder: string; name: string; turn: number; limit: () => void } | null = null;
+  #recordingStarting: Promise<void> | null = null;
+  #stoppingRecording: Promise<void> | null = null;
+  #lastRecordingDir: string | null = null;
 
   /// `picture`: the device's screen as a view has it (a JPEG): not `simctl io`'s, which of a foldable's screens it picks
   /// is not the one in use (an iPhone Duo's: black).
@@ -313,23 +316,37 @@ export class SimDebug {
     return true;
   }
 
-  /// Where a file to install on it goes up to (`install`): among the machine's temporary files, not Downloads, which macOS may
-  /// keep simctl from reading. Made there off the station's thread as it is named (a screen's listing names it before a
-  /// device puts a file in it).
+  /// Where a file to install on it goes up to (`install`): a stable user-private 0700 directory (never a fixed name in
+  /// shared `/tmp`, and not Downloads, which macOS may keep simctl from reading).
   installFolder(): string {
-    const folder = join(tmpdir(), "stillfail-sim-install");
-    void mkdir(folder, { recursive: true }).catch(() => undefined);
+    const folder = join(homedir(), ".cache", "stillfail", "sim-install");
+    void mkdir(folder, { recursive: true, mode: 0o700 })
+      .then(() => chmod(folder, 0o700))
+      .catch(() => undefined);
     return folder;
   }
 
   /// The app in `path` (an .ipa, or a .zip with a .app in it, in `installFolder`) installed and started, the file let go of:
   /// its bundle id; null when that is no such file or there is no app in it.
   async install(path: string): Promise<string | null> {
-    if (dirname(resolve(path)) !== this.installFolder() || !/\.(ipa|zip)$/i.test(path) || basename(path).startsWith("-")) return null;
+    if (!/\.(ipa|zip)$/i.test(path) || basename(path).startsWith("-")) return null;
+    const folder = this.installFolder();
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    await chmod(folder, 0o700).catch(() => undefined);
+    let realRoot: string;
+    let realPath: string;
+    try {
+      [realRoot, realPath] = await Promise.all([realpath(folder), realpath(path)]);
+      const info = await stat(realPath);
+      if (!info.isFile()) return null;
+    } catch {
+      return null;
+    }
+    if (dirname(realPath) !== realRoot || !/\.(ipa|zip)$/i.test(realPath) || basename(realPath).startsWith("-")) return null;
     const out = await mkdtemp(join(tmpdir(), "stillfail-sim-app-"));
     try {
       // (what does not unpack is no such file either)
-      if (!(await this.#run("ditto", ["-x", "-k", path, out]).then(() => true, () => false))) return null;
+      if (!(await this.#run("ditto", ["-x", "-k", realPath, out]).then(() => true, () => false))) return null;
       const app = await appIn(out, APP_DEPTH);
       if (app === null) return null;
       await this.#run(this.#simctl, ["install", this.#udid, app]);
@@ -338,7 +355,7 @@ export class SimDebug {
       await this.#run(this.#simctl, ["launch", "--terminate-running-process", this.#udid, id]);
       return id;
     } finally {
-      await Promise.all([rm(out, { recursive: true, force: true }), rm(path, { force: true })]);
+      await Promise.all([rm(out, { recursive: true, force: true }), rm(realPath, { force: true })]);
     }
   }
 
@@ -365,34 +382,81 @@ export class SimDebug {
 
   /// Starts recording its screen, `panel`'s where it has two ("inner" or "cover"); what it started before goes on.
   async recordStart(panel: string | null): Promise<void> {
-    if (this.#recording !== null) return;
-    const folder = join(tmpdir(), "stillfail-sim-recordings");
-    await rm(folder, { recursive: true, force: true });
-    await mkdir(folder, { recursive: true });
-    const name = `${this.#udid.slice(0, 8)}-${randomBytes(4).toString("hex")}.mp4`;
-    const file = join(folder, name);
-    const turn = panel === "inner" ? turnOf(await this.#run(this.#simctl, ["io", this.#udid, "enumerate"]), "primary-1") : 0;
-    const display = panel === null ? [] : [`--display=${panel === "inner" ? DISPLAY_INNER : DISPLAY_COVER}`];
-    const child = this.#record([this.#simctl, "io", this.#udid, "recordVideo", "--codec=h264", ...display, "--force", file]);
-    const limit = wall.after(RECORD_MS, () => child.stop());
-    this.#recording = { child, folder, name, turn, limit };
-    await child.started;
+    if (this.#closed || this.#recording !== null) return;
+    if (this.#recordingStarting !== null) return this.#recordingStarting;
+    const starting = (async () => {
+      if (this.#stoppingRecording !== null) await this.#stoppingRecording.catch(() => undefined);
+      if (this.#closed) return;
+      const prev = this.#lastRecordingDir;
+      this.#lastRecordingDir = null;
+      if (prev !== null) await rm(prev, { recursive: true, force: true }).catch(() => undefined);
+      if (this.#closed) return;
+      const base = join(homedir(), ".cache", "stillfail", "sim-recordings");
+      await mkdir(base, { recursive: true, mode: 0o700 });
+      await chmod(base, 0o700).catch(() => undefined);
+      if (this.#closed) return;
+      const folder = await mkdtemp(join(base, `${this.#udid.slice(0, 8)}-`));
+      await chmod(folder, 0o700).catch(() => undefined);
+      if (this.#closed) {
+        await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+        return;
+      }
+      const name = `${this.#udid.slice(0, 8)}-${randomBytes(4).toString("hex")}.mp4`;
+      const file = join(folder, name);
+      const turn = panel === "inner" ? turnOf(await this.#run(this.#simctl, ["io", this.#udid, "enumerate"]), "primary-1") : 0;
+      if (this.#closed) {
+        await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+        return;
+      }
+      const display = panel === null ? [] : [`--display=${panel === "inner" ? DISPLAY_INNER : DISPLAY_COVER}`];
+      const child = this.#record([this.#simctl, "io", this.#udid, "recordVideo", "--codec=h264", ...display, "--force", file]);
+      const limit = wall.after(RECORD_MS, () => child.stop());
+      this.#recording = { child, folder, name, turn, limit };
+      await child.started;
+      if (this.#closed && this.#recording?.folder === folder) {
+        const r = this.#recording;
+        this.#recording = null;
+        r.limit();
+        r.child.stop();
+        await r.child.ended.catch(() => undefined);
+        await rm(folder, { recursive: true, force: true }).catch(() => undefined);
+      }
+    })().finally(() => {
+      if (this.#recordingStarting === starting) this.#recordingStarting = null;
+    });
+    this.#recordingStarting = starting;
+    return starting;
   }
 
   get recording(): boolean {
-    return this.#recording !== null;
+    return this.#recording !== null || this.#recordingStarting !== null;
   }
 
   /// Ends the recording and says where its movie is, the drive's way (`root`, `path`); null when none goes on.
   async recordStop(): Promise<{ root: string; path: string } | null> {
+    if (this.#recordingStarting !== null) await this.#recordingStarting.catch(() => undefined);
     const r = this.#recording;
     if (r === null) return null;
     this.#recording = null;
-    r.limit();
-    r.child.stop();
-    await r.child.ended;
-    if (!(await turnMovie(join(r.folder, r.name), r.turn).catch(() => false))) throw new Error("nothing was recorded");
-    return { root: r.folder, path: r.name };
+    let finish!: () => void;
+    const stopping = new Promise<void>((resolve) => (finish = resolve));
+    this.#stoppingRecording = stopping;
+    try {
+      r.limit();
+      r.child.stop();
+      await r.child.ended;
+      const turned = await turnMovie(join(r.folder, r.name), r.turn).catch(() => false);
+      if (this.#closed) {
+        await rm(r.folder, { recursive: true, force: true }).catch(() => undefined);
+        return null;
+      }
+      this.#lastRecordingDir = r.folder;
+      if (!turned) throw new Error("nothing was recorded");
+      return { root: r.folder, path: r.name };
+    } finally {
+      if (this.#stoppingRecording === stopping) this.#stoppingRecording = null;
+      finish();
+    }
   }
 
   /// The device's screen as a PNG, in its own pixels.
@@ -410,9 +474,18 @@ export class SimDebug {
   /// The device shut down (or the station stops).
   close() {
     this.#closed = true;
-    this.#recording?.limit();
-    this.#recording?.child.stop();
+    const active = this.#recording;
     this.#recording = null;
+    if (active !== null) {
+      active.limit();
+      active.child.stop();
+      void active.child.ended
+        .catch(() => undefined)
+        .then(() => rm(active.folder, { recursive: true, force: true }).catch(() => undefined));
+    }
+    const last = this.#lastRecordingDir;
+    this.#lastRecordingDir = null;
+    if (last !== null) void rm(last, { recursive: true, force: true }).catch(() => undefined);
     this.#idle?.();
     this.#running?.stop();
     this.#running = null;

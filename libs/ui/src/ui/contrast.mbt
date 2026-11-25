@@ -454,6 +454,113 @@ fn ground_kind(a : FixedArray[Double], j : Int, px : Double, py : Double, own? :
 }
 
 ///|
+fn contrast_max(a : Double, b : Double) -> Double {
+  if a > b { a } else { b }
+}
+
+///|
+fn contrast_min(a : Double, b : Double) -> Double {
+  if a < b { a } else { b }
+}
+
+///|
+fn contrast_smoothstep(e0 : Double, e1 : Double, x : Double) -> Double {
+  let t = ((x - e0) / (e1 - e0)).clamp(min=0.0, max=1.0)
+  t * t * (3.0 - 2.0 * t)
+}
+
+///|
+/// Exact optical transfer of non-adaptive Regular Liquid Glass overlays (`kind == 6`, neutral tint, `col_a >= 0.46`)
+/// matching all four GPU renderers (Metal / GLES3 / D3D11 / WebGL2), including the symmetric `p=4` hard-knee floor/ceiling.
+/// Leaves `0x67` (`col_a = 0.404`) bar/pill controls on the existing linear model so untouched controls keep baseline parity.
+fn liquid_glass_ground(bg : Rgb, tint : Rgb, col_a : Double, vis_a : Double, sat : Double) -> Rgb {
+  let col_ch = contrast_max(tint.r, contrast_max(tint.g, tint.b)) -
+    contrast_min(tint.r, contrast_min(tint.g, tint.b))
+  if col_a < 0.46 || col_ch > 0.08 {
+    return Rgb::laid(bg, tint, col_a * vis_a)
+  }
+  let y = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b
+  let tint_y = 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b
+  let is_dark = tint_y < 0.35
+  let base_dens = 0.404 + (col_a - 0.404) * contrast_smoothstep(0.405, 0.46, col_a)
+  let extra = ((base_dens - 0.404) / (1.0 - 0.404)).clamp(min=0.0, max=1.0)
+  let overlay_knee = contrast_smoothstep(0.09, 0.16, extra)
+  let (em_r, em_g, em_b, trans, lift, chroma_gain, proj_mix) = if is_dark {
+    let dark_bump = 3.5 *
+      contrast_smoothstep(0.0, 0.16, extra) *
+      (1.0 - contrast_smoothstep(0.22, 0.38, extra))
+    let em0 = (34.0 + dark_bump) / 255.0
+    let ep = @dmath.pow(extra, 1.5)
+    let er = contrast_max(em0 + (tint.r - em0) * ep, 0.0)
+    let eg = contrast_max(em0 + (tint.g - em0) * ep, 0.0)
+    let eb = contrast_max(em0 + (tint.b - em0) * ep, 0.0)
+    let tr = 0.59 * (1.0 - extra)
+    let lf = 0.55 * (1.0 - extra)
+    let cg = 1.05 * (1.0 - @dmath.pow(extra, 1.05))
+    let pm = 0.25 + (0.35 - 0.25) * contrast_smoothstep(0.0, 0.18, extra)
+    (er, eg, eb, tr, lf, cg, pm)
+  } else {
+    let lp = @dmath.pow(extra, 1.35)
+    let ld = 0.525 + (1.0 - 0.525) * lp
+    let er = (253.0 / 255.0 + (tint.r - 253.0 / 255.0) * extra) * ld
+    let eg = (252.0 / 255.0 + (tint.g - 252.0 / 255.0) * extra) * ld
+    let eb = (253.0 / 255.0 + (tint.b - 253.0 / 255.0) * extra) * ld
+    let tr = 1.0 - ld
+    let lf = (0.04 + 0.10 * contrast_smoothstep(0.0, 0.16, extra)) *
+      (1.0 - contrast_smoothstep(0.40, 0.95, extra))
+    let cg = 1.0 - lp
+    let pm = 0.25 + (0.48 - 0.25) * contrast_smoothstep(0.0, 0.18, extra)
+    (er, eg, eb, tr, lf, cg, pm)
+  }
+  let trans_lum = (y * (1.0 + lift * (1.0 - y))).clamp(min=0.0, max=1.0)
+  let lt = (trans_lum * trans).clamp(min=0.0, max=1.0)
+  let (base_lum, knee_scale) = if is_dark {
+    let kt = trans_lum * 2.0
+    let kt2 = kt * kt
+    let k_denom = 1.0 + kt2 * kt2
+    let lc = lt * @dmath.pow(k_denom, -0.25)
+    let bl = lt + (lc - lt) * overlay_knee
+    let ks = 1.0 + (@dmath.pow(k_denom, -0.075) - 1.0) * overlay_knee
+    (bl, ks)
+  } else {
+    let d = contrast_max(trans - lt, 0.0)
+    let dt = d / 0.205
+    let dt2 = dt * dt
+    let d_inv = @dmath.pow(1.0 + dt2 * dt2, -0.25)
+    let dc = d * d_inv
+    let bl = lt + (contrast_max(trans - dc, 0.0) - lt) * overlay_knee
+    let ks = 1.0 + (d_inv - 1.0) * overlay_knee
+    (bl, ks)
+  }
+  let cs = chroma_gain * sat * knee_scale
+  let raw_r = em_r + base_lum + (bg.r - y) * cs
+  let raw_g = em_g + base_lum + (bg.g - y) * cs
+  let raw_b = em_b + base_lum + (bg.b - y) * cs
+  let em_y = 0.2126 * em_r + 0.7152 * em_g + 0.0722 * em_b
+  let lum_r = (em_y + base_lum).clamp(min=0.001, max=0.999)
+  let dr = raw_r - lum_r
+  let dg = raw_g - lum_r
+  let db = raw_b - lum_r
+  let mut s = 1.0
+  if dr > 0.0001 { s = contrast_min(s, (1.0 - lum_r) / dr) } else if dr < -0.0001 { s = contrast_min(s, lum_r / -dr) }
+  if dg > 0.0001 { s = contrast_min(s, (1.0 - lum_r) / dg) } else if dg < -0.0001 { s = contrast_min(s, lum_r / -dg) }
+  if db > 0.0001 { s = contrast_min(s, (1.0 - lum_r) / db) } else if db < -0.0001 { s = contrast_min(s, lum_r / -db) }
+  let sc = s.clamp(min=0.0, max=1.0)
+  let pr = (lum_r + dr * sc).clamp(min=0.0, max=1.0)
+  let pg = (lum_r + dg * sc).clamp(min=0.0, max=1.0)
+  let pb = (lum_r + db * sc).clamp(min=0.0, max=1.0)
+  let cl_r = raw_r.clamp(min=0.0, max=1.0)
+  let cl_g = raw_g.clamp(min=0.0, max=1.0)
+  let cl_b = raw_b.clamp(min=0.0, max=1.0)
+  let glass : Rgb = {
+    r: cl_r + (pr - cl_r) * proj_mix,
+    g: cl_g + (pg - cl_g) * proj_mix,
+    b: cl_b + (pb - cl_b) * proj_mix,
+  }
+  Rgb::laid(bg, glass, vis_a)
+}
+
+///|
 /// What the frame drew at (`px`, `py`) before instance `k`: the colour there, and each colour it was on the way up
 /// (the last whole one first: a sidebar's, a row's on it); None where that is a picture's, a video's or another app's
 /// (or on one, with nothing whole over it).
@@ -489,7 +596,12 @@ fn Ctx::ground_under(self : Ctx, k : Int, px : Double, py : Double) -> (Rgb, Arr
   for q in (from + 1)..<k {
     let (kind, o) = ground_kind(a, q, px, py, own~)
     if kind == 1 {
-      out = Rgb::laid(out, inst_rgb(a, q * inst_size), o)
+      let qb = q * inst_size
+      out = if a[qb + 5] == 6.0 && a[qb + 14] >= -0.5 {
+        liquid_glass_ground(out, inst_rgb(a, qb), a[qb + 11], a[qb + 15], a[qb + 6])
+      } else {
+        Rgb::laid(out, inst_rgb(a, qb), o)
+      }
       beneath.push(out)
     }
   }

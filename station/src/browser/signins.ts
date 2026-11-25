@@ -2,6 +2,7 @@
 // kept in the vault as an item of kind browser and put into a chat's browser while a grant for it lasts. Here: which cookies are a site's, the cookies
 // of a browser as they are set again (DevTools' Storage.getCookies gives more than Storage.setCookies takes).
 import { type Passkey, passkeyOf } from "./passkeys.ts";
+import { sameSiteHost } from "./psl.ts";
 
 /// A cookie as DevTools sets it (Network.CookieParam): what of a cookie it read is kept.
 export type CookieParam = {
@@ -9,11 +10,11 @@ export type CookieParam = {
   priority?: string; sourceScheme?: string; sourcePort?: number; partitionKey?: unknown;
 };
 
-/// Whether a cookie of `domain` is one of `sites`' (each with its subdomains: github.com takes .github.com and
-/// api.github.com, not notgithub.com).
+/// Whether a cookie of `domain` is one of `sites`' (each with its subdomains without crossing a nested private PSL
+/// suffix: github.com takes .github.com and api.github.com, not notgithub.com or bucket.s3.amazonaws.com for amazonaws.com).
 export function ofSites(domain: string, sites: string[]): boolean {
   const d = domain.toLowerCase().replace(/^\./, "");
-  return sites.some((s) => d === s || d.endsWith(`.${s}`));
+  return sites.some((s) => sameSiteHost(d, s));
 }
 
 /// The cookies among those DevTools read, as they are set again: a session cookie without its expiry.

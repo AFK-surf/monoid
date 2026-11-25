@@ -57,6 +57,84 @@ test "readops_core: cyrb53 32-bit imul wraparound and base36 vectors" {
   assert(base36(36.to_int64()) == "10")
 }
 
+fn cyrb53_ref(s : String) -> Int64 {
+  let units = js_json::utf16_units(s)
+  let mut h1 : Int64 = u32_pair(0xDEAD, 0xBEEF)
+  let mut h2 : Int64 = u32_pair(0x41C6, 0xCE57)
+  let c1 : Int64 = u32_pair(0x9E37, 0x79B1)
+  let c2 : Int64 = u32_pair(0x5F35, 0x6495)
+  for i in 0..<units.length() {
+    let c = units[i].to_int64()
+    h1 = imul32(h1 ^ c, c1)
+    h2 = imul32(h2 ^ c, c2)
+  }
+  let m1 : Int64 = u32_pair(0x85EB, 0xCA6B)
+  let m2 : Int64 = u32_pair(0xC2B2, 0xAE35)
+  h1 = imul32(h1 ^ (h1 >> 16.to_int64()), m1)
+  h1 = u32_mask(h1 ^ imul32(h2 ^ (h2 >> 13.to_int64()), m2))
+  h2 = imul32(h2 ^ (h2 >> 16.to_int64()), m1)
+  h2 = u32_mask(h2 ^ imul32(h1 ^ (h1 >> 13.to_int64()), m2))
+  ((2097151.to_int64() & h2) << 32.to_int64()) + u32_mask(h1)
+}
+
+fn bytes_to_raw_string(bs : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<bs.length() {
+    sb.write_byte(bs[i] as Byte)
+  }
+  sb.to_string()
+}
+
+test "readops_core: streaming cyrb53 matches utf16_units reference across valid and ill-formed UTF-8" {
+  let valid_cases : Array[String] = [
+    "",
+    "a",
+    "hello world 0123456789!@#$%^&*()",
+    "中文测试：你好世界",
+    "a😀b🚀🎉",
+    "\u{0000}\u{007F}\u{0080}\u{07FF}\u{0800}\u{D7FF}\u{E000}\u{FFFF}",
+    "\u{10000}\u{1F600}\u{10FFFF}",
+    "{\"day\":\"2026-11-25\",\"text\":\"混合ASCII+中文+🧪\",\"n\":42}",
+  ]
+  for i in 0..<valid_cases.length() {
+    let s = valid_cases[i]
+    assert(cyrb53(s) == cyrb53_ref(s))
+  }
+  // Ill-formed UTF-8 byte sequences: truncated 2/3/4-byte, overlong, UTF-8 lone surrogates,
+  // out-of-range code points (> U+10FFFF), bare continuation bytes, and mixed valid+invalid.
+  let raw_cases : Array[Array[Int]] = [
+    [0x80],
+    [0xBF],
+    [0xC0, 0x80],
+    [0xC1, 0xBF],
+    [0xC2],
+    [0xC2, 0x41],
+    [0xDF],
+    [0xE0, 0x80, 0x80],
+    [0xE0, 0x9F, 0xBF],
+    [0xE0, 0xA0],
+    [0xE0, 0xA0, 0x41],
+    [0xE2, 0x82],
+    [0xED, 0xA0, 0x80],
+    [0xED, 0xBF, 0xBF],
+    [0xED, 0x9F, 0xBF],
+    [0xF0, 0x80, 0x80, 0x80],
+    [0xF0, 0x8F, 0xBF, 0xBF],
+    [0xF0, 0x90],
+    [0xF0, 0x90, 0x80],
+    [0xF0, 0x90, 0x80, 0x41],
+    [0xF4, 0x8F, 0xBF, 0xBF],
+    [0xF4, 0x90, 0x80, 0x80],
+    [0xF5, 0x80, 0x80, 0x80],
+    [0xFE, 0xFF],
+    [0x41, 0xC2, 0xE2, 0x82, 0xAC, 0xED, 0xA0, 0x80, 0xF0, 0x9F, 0x98, 0x80, 0xF0, 0x90, 0x80, 0x5A],
+  ]
+  for i in 0..<raw_cases.length() {
+    let s = bytes_to_raw_string(raw_cases[i])
+    assert(cyrb53(s) == cyrb53_ref(s))
+  }
+}
+
 test "readops_core: canonical sorts object keys in UTF-16 order" {
   let obj = base_codec::json_obj([
     ("z", base_codec::json_int(1)),

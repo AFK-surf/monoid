@@ -54,6 +54,23 @@ test "double_is_i64_integer and double_to_json handle NaN/Inf and integer bounds
 }
 
 test "decode_utf8_lossy_bytes replaces invalid sequences per WHATWG maximal subpart" {
+  // Valid UTF-8 fast path: empty, ASCII, NUL, 2/3/4-byte including emoji & boundary code points
+  let valid_cases = [
+    "",
+    "hello world 123",
+    "a\u{0000}b",
+    "éüñ",
+    "中文测试",
+    "🚀😀🎉",
+    "\u{0080}\u{07FF}\u{0800}\u{D7FF}\u{E000}\u{FFFF}\u{10000}\u{10FFFF}",
+  ]
+  for i in 0..<valid_cases.length() {
+    let want = valid_cases[i]
+    let raw = want.to_bytes()
+    expect(first_invalid_utf8_offset(raw) == -1, "valid case " + i.to_string())
+    expect(decode_utf8_lossy_bytes(raw) == want, "valid fast-path decode " + i.to_string())
+  }
+
   let b = Bytes::new(6)
   b[0] = 0x61 as Byte // 'a'
   b[1] = 0xFF as Byte // invalid -> U+FFFD
@@ -61,8 +78,41 @@ test "decode_utf8_lossy_bytes replaces invalid sequences per WHATWG maximal subp
   b[3] = 0x82 as Byte
   b[4] = 0x62 as Byte // 'b'
   b[5] = 0x80 as Byte // lone continuation -> U+FFFD
+  expect(first_invalid_utf8_offset(b) == 1, "invalid bytes offset 1")
   let s = decode_utf8_lossy_bytes(b)
   expect(s == "a\u{FFFD}\u{FFFD}b\u{FFFD}", "lossy decode: " + s)
+
+  // Overlong 2/3/4-byte, UTF-16 surrogate 0xED 0xA0 0x80, > U+10FFFF 0xF4 0x90 0x80 0x80, truncated 4-byte
+  let mk = fn(xs : Array[Int]) -> Bytes {
+    let out = Bytes::new(xs.length())
+    for i in 0..<xs.length() {
+      out[i] = xs[i] as Byte
+    }
+    out
+  }
+  let overlong2 = mk([0xC0, 0x80])
+  expect(first_invalid_utf8_offset(overlong2) == 0, "overlong2 invalid")
+  expect(decode_utf8_lossy_bytes(overlong2) == "\u{FFFD}\u{FFFD}", "overlong2 -> 2xFFFD")
+
+  let overlong3 = mk([0xE0, 0x80, 0x80])
+  expect(first_invalid_utf8_offset(overlong3) == 0, "overlong3 invalid")
+  expect(decode_utf8_lossy_bytes(overlong3) == "\u{FFFD}\u{FFFD}\u{FFFD}", "overlong3 -> 3xFFFD")
+
+  let surrogate = mk([0xED, 0xA0, 0x80])
+  expect(first_invalid_utf8_offset(surrogate) == 0, "surrogate invalid")
+  expect(decode_utf8_lossy_bytes(surrogate) == "\u{FFFD}\u{FFFD}\u{FFFD}", "surrogate -> 3xFFFD")
+
+  let over_max = mk([0xF4, 0x90, 0x80, 0x80])
+  expect(first_invalid_utf8_offset(over_max) == 0, "> U+10FFFF invalid")
+  expect(decode_utf8_lossy_bytes(over_max) == "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}", "> U+10FFFF -> 4xFFFD")
+
+  let trunc4 = mk([0xF0, 0x9F, 0x98])
+  expect(first_invalid_utf8_offset(trunc4) == 0, "trunc4 invalid")
+  expect(decode_utf8_lossy_bytes(trunc4) == "\u{FFFD}", "trunc4 valid prefix -> 1xFFFD")
+
+  let bad_in_valid = mk([0xF0, 0x9F, 0x9A, 0x80, 0xED, 0xA0, 0x80, 0x61])
+  expect(first_invalid_utf8_offset(bad_in_valid) == 4, "mixed invalid offset 4 (valid 4-byte emoji prefix)")
+  expect(decode_utf8_lossy_bytes(bad_in_valid) == "🚀\u{FFFD}\u{FFFD}\u{FFFD}a", "mixed emoji+surrogate+ascii")
 }
 
 test "is_busy matches SQLite busy and locked messages" {

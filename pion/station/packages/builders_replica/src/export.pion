@@ -160,6 +160,8 @@ pub struct TestFaults {
   pub read_short_after_first : Map[String, Bool]
   pub other_kind : Map[String, Bool]
   pub other_kind_nonempty : Bool
+  /// The most a pass's transcript finder may ask the shell (`Finder::asked`): more fails the pass.
+  pub finder_asked_most : Option[Int]
 }
 
 fn map_from_jval_list(v : js_json::JValue, k : String) -> (Map[String, Bool], Array[String]) {
@@ -189,6 +191,10 @@ pub fn TestFaults::from_jvalue(v : js_json::JValue) -> Option[TestFaults] {
       let (read_short, _) = map_from_jval_list(v, "read_short")
       let (read_short_after_first, _) = map_from_jval_list(v, "read_short_after_first")
       let (other_kind, ok_keys) = map_from_jval_list(v, "other_kind")
+      let finder_asked_most = match jval_get(v, "finder_asked_most") {
+        Some(js_json::JValue::Num(n)) => Some(n.to_int())
+        _ => None
+      }
       Some(
         TestFaults::{
           lstat_err: lstat_err,
@@ -201,6 +207,7 @@ pub fn TestFaults::from_jvalue(v : js_json::JValue) -> Option[TestFaults] {
           read_short_after_first: read_short_after_first,
           other_kind: other_kind,
           other_kind_nonempty: ok_keys.length() > 0,
+          finder_asked_most: finder_asked_most,
         },
       )
     }
@@ -2883,9 +2890,6 @@ fn Exporter::walk_brain_dir(
   on_error : (String) -> Unit,
   on_unreadable_path : (String) -> Unit,
 ) -> Result[Unit, String] {
-  if is_pruned_brain_rel(rel_parts) {
-    return Ok(())
-  }
   let entries = match self.listing_checked(dir) {
     Ok(Some(es)) => es
     Ok(None) => return Ok(())
@@ -2895,19 +2899,24 @@ fn Exporter::walk_brain_dir(
       return Ok(())
     }
   }
+  let descend = fn(path : String, name : String) -> Result[Unit, String] {
+    rel_parts.push(name)
+    let res = if !is_pruned_brain_rel(rel_parts) {
+      self.walk_brain_dir(path, rel_parts, add, on_error, on_unreadable_path)
+    } else {
+      Ok(())
+    }
+    let _ = rel_parts.pop()
+    res
+  }
   for i in 0..<entries.length() {
     let (name, kind) = entries[i]
+    if name == "" || name == "." || name == ".." || name.contains(self.files.sep) {
+      continue
+    }
     let path = self.files.join([dir, name])
     if kind == "dir" {
-      let next_rel : Array[String] = []
-      for j in 0..<rel_parts.length() {
-        next_rel.push(rel_parts[j])
-      }
-      next_rel.push(name)
-      if is_pruned_brain_rel(next_rel) {
-        continue
-      }
-      match self.walk_brain_dir(path, next_rel, add, on_error, on_unreadable_path) {
+      match descend(path, name) {
         Ok(()) => ()
         Err(e) => return Err(e)
       }
@@ -2919,16 +2928,9 @@ fn Exporter::walk_brain_dir(
           if k == "file" {
             add(path)
           } else if k == "dir" {
-            let next_rel : Array[String] = []
-            for j in 0..<rel_parts.length() {
-              next_rel.push(rel_parts[j])
-            }
-            next_rel.push(name)
-            if !is_pruned_brain_rel(next_rel) {
-              match self.walk_brain_dir(path, next_rel, add, on_error, on_unreadable_path) {
-                Ok(()) => ()
-                Err(e) => return Err(e)
-              }
+            match descend(path, name) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
             }
           }
         }
@@ -2970,7 +2972,9 @@ fn Exporter::export_transcripts(
     }
     None => ()
   }
-  let finder = locate::Finder::new(self.files.client, self.files.sep)
+  // One finder for the pass, keeping what each directory holds: each session's look through every Claude project or
+  // Codex day reads them once in the pass, not once a session.
+  let finder = locate::Finder::new(self.files.client, self.files.sep, cache_dirs=true)
   finder.enable_failed_dir_tracking(finder_readdir_err)
 
   let by_ws : Map[String, WsTrState] = Map::new()
@@ -2981,12 +2985,18 @@ fn Exporter::export_transcripts(
     )
   }
 
+  // The brains walked in each workspace: sessions of one workspace sharing a brain walk it once.
+  let walked_brains : Map[String, Map[String, Bool]] = Map::new()
   for si in 0..<sess_rows.length() {
     let sess = sess_rows[si]
     let ws = ws_of_session(jval_get(sess, "ws"))
     let ws_st = match by_ws.get(ws) {
       Some(st) => st
       None => continue
+    }
+    // A workspace whose transcripts are all exported this sweep is not looked at again until the next one.
+    if map_has(self.transcript_ws_done, ws) {
+      continue
     }
     let add_unreadable_dir = fn(d : String) -> Unit { arr_push_unique_str(ws_st.unreadable_dirs, d) }
     let add_unreadable_path = fn(p : String) -> Unit { ws_st.unreadable_paths.set(p, true) }
@@ -3111,17 +3121,58 @@ fn Exporter::export_transcripts(
       add_path(self.files.join([cli, "conversations", r.id + ".db-wal"]))
       add_path(self.files.join([cli, "annotations", r.id + ".pbtxt"]))
       let brain = self.files.join([cli, "brain", r.id])
+      let walked = match walked_brains.get(ws) {
+        Some(w) => w
+        None => {
+          let w : Map[String, Bool] = Map::new()
+          walked_brains.set(ws, w)
+          w
+        }
+      }
+      if map_has(walked, brain) {
+        continue
+      }
+      walked.set(brain, true)
+      let add_found = fn(p : String) -> Unit {
+        match ws_st.found.get(p) {
+          Some(_) => ()
+          None => {
+            ws_st.found.set(p, room)
+            ws_st.found_keys.push(p)
+          }
+        }
+      }
       match self.lstat_checked(brain) {
         Ok(Some(("dir", _, _, _))) => {
-          match self.walk_brain_dir(brain, [], add_path, add_unreadable_dir, add_unreadable_path) {
-            Ok(()) => ()
-            Err(e) => return Err(e)
+          if self.files.is_transcript_path(self.data_dir, brain) {
+            match self.walk_brain_dir(brain, [], add_found, add_unreadable_dir, add_unreadable_path) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
           }
         }
         Ok(_) => ()
         Err(_) => add_unreadable_dir(brain)
       }
     }
+  }
+  match self.test_faults {
+    Some(f) => {
+      match f.finder_asked_most {
+        Some(most) => {
+          if finder.asked() > most {
+            return Err(
+              "BUG: the transcript finder asked the shell " +
+              finder.asked().to_string() +
+              " times in a pass, more than " +
+              most.to_string(),
+            )
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
   }
 
   let mut done_files = 0

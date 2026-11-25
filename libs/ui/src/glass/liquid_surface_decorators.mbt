@@ -451,9 +451,9 @@ pub fn liquid_sheet_surface_decorate(
 
 ///|
 /// Decorates an existing dialog container node `shell` in place (zero wrapper nodes) with symmetric dense
-/// `liquid_dialog_glass`, optional light-mode veil override (`tint_light`, e.g. `0xFDFCFDD1L` 82% so muted secondary
-/// text maintains WCAG >= 4.5:1 contrast), `shadow_outside(Is(true))`, `MBUI_GLASS=solid` 1pt hairline fallback, and
-/// optional `radius` / `clips`. Returns `shell` for chaining.
+/// `liquid_dialog_glass`, an optional light-mode tint override (`tint_light`: kept for callers outside; the library's
+/// dialogs take the unified 50% recipe as it is), `shadow_outside(Is(true))`, `MBUI_GLASS=solid` 1pt hairline
+/// fallback, and optional `radius` / `clips`. Returns `shell` for chaining.
 pub fn liquid_dialog_surface_decorate(
   shell : @view.View,
   radius? : Double,

@@ -6,6 +6,7 @@
 // functions). What the hub reads of an actor at once (where it stands, its queue run out) is what the program last
 // told of it (`mirror`). Its time is the hub's clock: said with every line (`now`), its waits that clock's (`after`,
 // told `due`), so a test's TestClock moves them as the rest.
+import { MINUTES_LEAST } from "../../../client/core-ts/src/progress-prefs.ts";
 import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
@@ -969,7 +970,7 @@ export class MbActor {
   }
 
   /// What instructions.ts and actor.ts say, by name.
-  #words(name: string, args: Json[]): Json {
+  #words(name: string, args: Json[]): Json | Promise<Json> {
     switch (name) {
       case "GO_ON_AFTER_AUTH": case "GO_ON_AFTER_CODEX_UPDATE": case "GO_ON_AFTER_FAILED": case "GO_ON_AFTER_OVERLOADED":
       case "GO_ON_AFTER_UNANSWERED": case "GO_ON_AFTER_REFILL": case "GO_ON_AFTER_SPENT": case "NUDGE": case "RESUME_AFTER_RESTART":
@@ -977,7 +978,7 @@ export class MbActor {
         return (instructions as Json)[name];
       case "nameUntitled": return instructions.nameUntitled(args[0]);
       case "waitOver": return instructions.waitOver(args[0]);
-      case "silentProgress": return instructions.silentProgress(args[0]);
+      case "silentProgress": return this.#silentProgress(args[0], args[1] ?? null);
       case "shownLimitOf": {
         const model = shownLimitOf(args[0] ?? null);
         return model === undefined ? null : { model };
@@ -995,6 +996,19 @@ export class MbActor {
       case "quoted": return chars(args[0], FALLBACK_MOST).split("\n").map((line) => `> ${line}`).join("\n");
     }
     throw new Error(`no words named ${name}`);
+  }
+
+  /// What a session silent in its waits for `silentMs` (last reminded `remindedMs` ago, null not yet) is told, as the
+  /// person who started it set it; null while it is not due.
+  async #silentProgress(silentMs: number, remindedMs: number | null): Promise<string | null> {
+    // (not due whatever the person set: nobody is looked up)
+    const least = MINUTES_LEAST * 60_000;
+    if (silentMs < least || (remindedMs !== null && remindedMs < least)) return null;
+    const email = (await this.#deps.starterEmail?.(this.key).catch(() => null)) ?? null;
+    const { minutes, strength } = this.#deps.store.progressOf(this.key, this.#deps.homeWorkspace?.() ?? null, email);
+    const every = minutes * 60_000;
+    if (silentMs < every || (remindedMs !== null && remindedMs < every)) return null;
+    return instructions.silentProgress(Math.floor(silentMs / 60_000), strength);
   }
 
   /// actor.ts `pendingAndFormat`, what each message is said to the program as it needs it.

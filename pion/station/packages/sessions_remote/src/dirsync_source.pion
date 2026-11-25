@@ -1,0 +1,1920 @@
+// Source side of remote task directory mirroring (1:1 port of `station/mb/src/reader/dirsync_source.mbt`).
+// Every file is listed, hashed, read and packed via `RemoteHost` async shell RPCs (`fs.scan`,
+// `zstd.pack`, `proc.run` for git) and `host.rnode_k("syncPacking"/"syncPut", ...)`.
+
+import "base_codec"
+import "effect"
+import "js_json"
+import "sessions_core"
+
+/// At most this many files in a directory synced.
+pub let MAX_FILES : Int = 200000
+
+/// A walk outside Git lists at most this many entries (directories too), at most this deep.
+pub let WALK_ENTRIES : Int = 2 * MAX_FILES
+pub let WALK_DEPTH : Int = 64
+
+/// A file goes in pieces of at most this much.
+pub let PIECE_BYTES : Int = 512 * 1024
+
+/// To a station from before bytes went after a request: a request's packed data at most (base64).
+pub let BODY_BYTES : Int = 720 * 1024
+
+/// Paths given the shell at once to list or hash (`fs.scan`, 8 at a time there).
+pub let SCAN_BATCH : Int = 2000
+
+/// How long a git asked for what a directory has may take.
+pub let GIT_MS : Double = 3600000.0
+
+fn is_ignored_dir(name : String) -> Bool {
+  name == ".git" ||
+  name == ".hg" ||
+  name == ".svn" ||
+  name == ".jj" ||
+  name == "node_modules" ||
+  name == "target" ||
+  name == "dist" ||
+  name == "build" ||
+  name == ".gradle" ||
+  name == ".next" ||
+  name == ".turbo" ||
+  name == ".cache" ||
+  name == "__pycache__" ||
+  name == ".venv"
+}
+
+fn is_ignored_file(name : String) -> Bool {
+  name == ".DS_Store"
+}
+
+/// What a path of the directory is on disk, as `fs.scan` with `hash` said it.
+enum OnDisk {
+  Got(DirsyncLocal)
+  Left(String)
+  Gone
+}
+
+fn on_disk(path : String, st : base_codec::Json) -> OnDisk {
+  match st {
+    base_codec::Json::Null => return OnDisk::Gone
+    _ => ()
+  }
+  let kind = kind_of_stat(st)
+  if kind == "link" {
+    let target = sessions_core::text_of(st, "link")
+    if !link_inside(path, target) {
+      OnDisk::Left("symbolic link leading out of the directory")
+    } else {
+      OnDisk::Got(DirsyncLocal::{
+        path: path,
+        hash: text_blob_id(target),
+        mode: LINK_MODE,
+        size: bytes_len(target),
+        indexed: false,
+      })
+    }
+  } else if kind == "dir" {
+    OnDisk::Gone
+  } else if kind == "file" {
+    let size = match sessions_core::num_of(sessions_core::jget(st, "size")) { Some(n) => n; None => 0.0 }
+    if size > MAX_FILE {
+      OnDisk::Left("larger than 1 GiB")
+    } else {
+      let mbits = match sessions_core::num_of(sessions_core::jget(st, "mode")) { Some(n) => n; None => 0.0 }
+      OnDisk::Got(DirsyncLocal::{
+        path: path,
+        hash: sessions_core::text_of(st, "hash"),
+        mode: mode_of_bits(mbits),
+        size: size.to_int(),
+        indexed: false,
+      })
+    }
+  } else {
+    OnDisk::Left("not a regular file")
+  }
+}
+
+/// What the shell says of each of `paths` (relative to `dir`), in their order.
+fn dirsync_scan_k(
+  host : RemoteHost,
+  dir : String,
+  paths : Array[String],
+  hash : Bool,
+  k : (effect::Exit[Array[base_codec::Json]]) -> Unit,
+) -> Unit {
+  let out : Array[base_codec::Json] = []
+  let mut i = 0
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if i >= paths.length() {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let end = if i + SCAN_BATCH < paths.length() { i + SCAN_BATCH } else { paths.length() }
+      let abs : Array[base_codec::Json] = []
+      for j in i..<end {
+        abs.push(sessions_core::jstr(dirsync_rjoin(host, [dir, paths[j]])))
+      }
+      let expected = end - i
+      i = end
+      dirsync_fs_k(
+        host,
+        "fs.scan",
+        [
+          ("paths", base_codec::json_arr(abs)),
+          ("hash", sessions_core::jbool(hash)),
+          ("most", sessions_core::jnum(MAX_FILE)),
+        ],
+        None,
+        fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(base_codec::Json::Arr(got)) => {
+              if got.length() == expected {
+                for j in 0..<got.length() {
+                  out.push(got[j])
+                }
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              } else {
+                sk(effect::Exit::Failed(refusal("the files of " + dir + " could not be listed")))
+              }
+            }
+            effect::Exit::Succeeded(_) => {
+              sk(effect::Exit::Failed(refusal("the files of " + dir + " could not be listed")))
+            }
+          }
+        },
+      )
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(out))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// `git -C dir args` (`GIT_OPTIONAL_LOCKS=0`): its output; `None` when it did not end well.
+fn dirsync_git_out_k(
+  host : RemoteHost,
+  dir : String,
+  args : Array[String],
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  let all : Array[base_codec::Json] = [sessions_core::jstr("-C"), sessions_core::jstr(dir)]
+  for i in 0..<args.length() {
+    all.push(sessions_core::jstr(args[i]))
+  }
+  dirsync_fs_k(
+    host,
+    "proc.run",
+    [
+      ("command", sessions_core::jstr("git")),
+      ("args", base_codec::json_arr(all)),
+      ("env", base_codec::json_obj([("GIT_OPTIONAL_LOCKS", sessions_core::jstr("0"))])),
+      ("timeoutMs", sessions_core::jnum(GIT_MS)),
+      ("maxBytes", sessions_core::jnum(1073741824.0)),
+    ],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(Some(s)))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(None))
+      }
+    },
+  )
+}
+
+fn dirsync_git_list_k(
+  host : RemoteHost,
+  dir : String,
+  args : Array[String],
+  k : (effect::Exit[Array[String]]) -> Unit,
+) -> Unit {
+  dirsync_git_out_k(host, dir, args, fn(ex : effect::Exit[Option[String]]) -> Unit {
+    match ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(None) => {
+        k(effect::Exit::Failed(refusal("git " + join_words(args) + " failed in " + dir)))
+      }
+      effect::Exit::Succeeded(Some(out)) => {
+        let parts = split_char(out, 0 as Byte)
+        let res : Array[String] = []
+        for i in 0..<parts.length() {
+          if parts[i] != "" {
+            res.push(parts[i])
+          }
+        }
+        k(effect::Exit::Succeeded(res))
+      }
+    }
+  })
+}
+
+fn too_many(dir : String) -> effect::EffectError {
+  refusal(dir + " has more than " + MAX_FILES.to_string() + " files to sync")
+}
+
+/// Stable O(n log n) UTF-16 code-unit sort with precomputed sort keys (one `utf16_units` per local file).
+fn sort_locals_js(arr : Array[DirsyncLocal]) -> Unit {
+  if arr.length() <= 1 {
+    return
+  }
+  let keyed : Array[(Array[Int], DirsyncLocal)] = []
+  for i in 0..<arr.length() {
+    let f = arr[i]
+    keyed.push((js_json::utf16_units(f.path), f))
+  }
+  merge_sort_by(keyed, fn(a : (Array[Int], DirsyncLocal), b : (Array[Int], DirsyncLocal)) -> Int {
+    js_json::units_compare(a.0, b.0)
+  })
+  for i in 0..<keyed.length() {
+    arr[i] = keyed[i].1
+  }
+}
+
+/// What of `dir` is synced: Git's files in a work tree, a bounded walk without `ignored_dirs` elsewhere.
+pub fn dirsync_list_local_k(
+  host : RemoteHost,
+  dir : String,
+  k : (effect::Exit[DirsyncListing]) -> Unit,
+) -> Unit {
+  dirsync_fs_k(
+    host,
+    "fs.scan",
+    [("paths", base_codec::json_arr([sessions_core::jstr(dir)])), ("follow", sessions_core::jbool(true))],
+    None,
+    fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+      match sex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(base_codec::Json::Arr(a)) => {
+          if a.length() != 1 {
+            k(effect::Exit::Failed(refusal(dir + " could not be read")))
+            return
+          }
+          match a[0] {
+            base_codec::Json::Null => {
+              k(effect::Exit::Failed(refusal("ENOENT: no such file or directory, stat '" + dir + "'")))
+              return
+            }
+            st => {
+              if kind_of_stat(st) != "dir" {
+                k(effect::Exit::Failed(refusal(dir + " is not a directory")))
+                return
+              }
+            }
+          }
+          let after_tree = fn(tree : Option[Array[String]]) -> Unit {
+            let files : Array[DirsyncLocal] = []
+            let skipped : Array[(String, String)] = []
+            let take = fn(path : String, got : OnDisk) -> Unit {
+              match got {
+                OnDisk::Got(l) => files.push(l)
+                OnDisk::Left(why) => skipped.push((path, why))
+                OnDisk::Gone => ()
+              }
+            }
+            let is_git_tree = match tree {
+              Some(lines) => lines.length() > 0 && lines[0] == "true"
+              None => false
+            }
+            if is_git_tree {
+              let prefix = match tree {
+                Some(lines) => {
+                  if lines.length() > 1 { lines[1] } else { "" }
+                }
+                None => ""
+              }
+              dirsync_git_list_k(host, dir, ["ls-files", "-z", "-m"], fn(mex : effect::Exit[Array[String]]) -> Unit {
+                match mex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(mod_list) => {
+                    let modified : Map[String, Bool] = Map::new()
+                    for i in 0..<mod_list.length() {
+                      modified.set(mod_list[i], true)
+                    }
+                    dirsync_git_list_k(host, dir, ["ls-files", "-z", "-s"], fn(stex : effect::Exit[Array[String]]) -> Unit {
+                      match stex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(stage_lines) => {
+                          let seen : Map[String, Bool] = Map::new()
+                          let hash : Array[String] = []
+                          let clean : Array[(String, String, String)] = []
+                          let links : Array[(String, String)] = []
+                          for i in 0..<stage_lines.length() {
+                            let line = stage_lines[i]
+                            let tab = line.index_of("\t")
+                            if tab < 0 {
+                              continue
+                            }
+                            let head = split_char(line.slice(0, tab), 32 as Byte)
+                            let path = line.slice(tab + 1, line.length())
+                            if seen.contains(path) {
+                              continue
+                            }
+                            seen.set(path, true)
+                            let mode = if head.length() > 0 { head[0] } else { "" }
+                            let id = if head.length() > 1 { head[1] } else { "" }
+                            let stage = if head.length() > 2 { head[2] } else { "" }
+                            if mode == "160000" {
+                              links.push((path, id))
+                              continue
+                            }
+                            if modified.contains(path) || stage != "0" || mode == LINK_MODE || (mode != FILE_MODE && mode != EXEC_MODE) {
+                              hash.push(path)
+                              continue
+                            }
+                            clean.push((path, id, mode))
+                            if clean.length() > MAX_FILES {
+                              k(effect::Exit::Failed(too_many(dir)))
+                              return
+                            }
+                          }
+                          let clean_paths : Array[String] = []
+                          for i in 0..<clean.length() {
+                            clean_paths.push(clean[i].0)
+                          }
+                          dirsync_scan_k(host, dir, clean_paths, false, fn(szex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+                            match szex {
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(sizes) => {
+                                for i in 0..<clean.length() {
+                                  let c = clean[i]
+                                  let st = sizes[i]
+                                  match st {
+                                    base_codec::Json::Null => continue
+                                    _ => ()
+                                  }
+                                  if kind_of_stat(st) != "file" {
+                                    hash.push(c.0)
+                                  } else {
+                                    let sz = match sessions_core::num_of(sessions_core::jget(st, "size")) {
+                                      Some(n) => n.to_int()
+                                      None => 0
+                                    }
+                                    files.push(DirsyncLocal::{
+                                      path: c.0,
+                                      hash: c.1,
+                                      mode: c.2,
+                                      size: sz,
+                                      indexed: true,
+                                    })
+                                  }
+                                }
+                                if files.length() > MAX_FILES {
+                                  k(effect::Exit::Failed(too_many(dir)))
+                                  return
+                                }
+                                dirsync_git_list_k(
+                                  host,
+                                  dir,
+                                  ["ls-files", "-z", "-o", "--exclude-standard"],
+                                  fn(oex : effect::Exit[Array[String]]) -> Unit {
+                                    match oex {
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Succeeded(others) => {
+                                        for i in 0..<others.length() {
+                                          let p = others[i]
+                                          if p.ends_with("/") {
+                                            skipped.push((p.slice(0, p.length() - 1), "nested repository"))
+                                          } else {
+                                            hash.push(p)
+                                          }
+                                        }
+                                        if files.length() + hash.length() > MAX_FILES {
+                                          k(effect::Exit::Failed(too_many(dir)))
+                                          return
+                                        }
+                                        dirsync_scan_k(host, dir, hash, true, fn(gex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+                                          match gex {
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(got) => {
+                                              for i in 0..<hash.length() {
+                                                take(hash[i], on_disk(hash[i], got[i]))
+                                              }
+                                              dirsync_submodules_of_k(host, dir, prefix, links, skipped, fn(subex : effect::Exit[Array[(String, String, String)]]) -> Unit {
+                                                match subex {
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Succeeded(submodules) => {
+                                                    sort_locals_js(files)
+                                                    k(
+                                                      effect::Exit::Succeeded(DirsyncListing::{
+                                                        files: files,
+                                                        git: true,
+                                                        prefix: prefix,
+                                                        skipped: skipped,
+                                                        submodules: submodules,
+                                                      }),
+                                                    )
+                                                  }
+                                                }
+                                              })
+                                            }
+                                          }
+                                        })
+                                      }
+                                    }
+                                  },
+                                )
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+              return
+            }
+            // Non-Git bounded BFS walk
+            let found : Array[String] = []
+            dirsync_fs_k(
+              host,
+              "fs.scan",
+              [("paths", base_codec::json_arr([sessions_core::jstr(dir)])), ("follow", sessions_core::jbool(true))],
+              None,
+              fn(rdex : effect::Exit[base_codec::Json]) -> Unit {
+                match rdex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(rd_res) => {
+                    let root_dev = match rd_res {
+                      base_codec::Json::Arr(a) => {
+                        if a.length() == 1 {
+                          match sessions_core::num_of(sessions_core::jget(a[0], "dev")) {
+                            Some(n) => n
+                            None => 0.0
+                          }
+                        } else {
+                          0.0
+                        }
+                      }
+                      _ => 0.0
+                    }
+                    let queue : Array[(String, String, Int)] = [(dir, "", 0)]
+                    let mut head = 0
+                    let mut visited = 1
+                    let mut deeper = false
+                    let entries_over = fn() -> effect::EffectError {
+                      refusal(dir + " has more than " + WALK_ENTRIES.to_string() + " entries to walk")
+                    }
+                    sessions_core::iter_sync_k(
+                      fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+                        if head >= queue.length() {
+                          sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                          return
+                        }
+                        let (path, rel, depth) = queue[head]
+                        head = head + 1
+                        if visited >= WALK_ENTRIES {
+                          sk(effect::Exit::Failed(entries_over()))
+                          return
+                        }
+                        dirsync_fs_k(
+                          host,
+                          "fs.readdir",
+                          [("path", sessions_core::jstr(path)), ("types", sessions_core::jbool(true))],
+                          None,
+                          fn(reex : effect::Exit[base_codec::Json]) -> Unit {
+                            match reex {
+                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(base_codec::Json::Arr(rows)) => {
+                                let listed : Array[(String, String)] = []
+                                let dirs : Array[String] = []
+                                for i in 0..<rows.length() {
+                                  match rows[i] {
+                                    base_codec::Json::Arr(r) => {
+                                      if r.length() >= 2 {
+                                        match (r[0], r[1]) {
+                                          (base_codec::Json::Str(n), base_codec::Json::Str(dk)) => {
+                                            listed.push((n, dk))
+                                            if dk == "dir" {
+                                              dirs.push(n)
+                                            }
+                                          }
+                                          _ => ()
+                                        }
+                                      }
+                                    }
+                                    _ => ()
+                                  }
+                                }
+                                dirsync_scan_k(host, path, dirs, false, fn(dsex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+                                  match dsex {
+                                    effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(dstats) => {
+                                      let stats : Map[String, base_codec::Json] = Map::new()
+                                      for i in 0..<dirs.length() {
+                                        stats.set(dirs[i], dstats[i])
+                                      }
+                                      for i in 0..<listed.length() {
+                                        let (name, kind) = listed[i]
+                                        if visited >= WALK_ENTRIES {
+                                          sk(effect::Exit::Failed(entries_over()))
+                                          return
+                                        }
+                                        let mut directory = kind == "dir"
+                                        let mut dev = root_dev
+                                        if directory {
+                                          match stats.get(name) {
+                                            Some(base_codec::Json::Null) => continue
+                                            None => continue
+                                            Some(st) => {
+                                              directory = kind_of_stat(st) == "dir"
+                                              dev = match sessions_core::num_of(sessions_core::jget(st, "dev")) {
+                                                Some(n) => n
+                                                None => 0.0
+                                              }
+                                            }
+                                          }
+                                        }
+                                        visited = visited + 1
+                                        let rel2 = if rel == "" { name } else { rel + "/" + name }
+                                        if !directory {
+                                          if !is_ignored_file(name) {
+                                            found.push(rel2)
+                                            if found.length() > MAX_FILES {
+                                              sk(effect::Exit::Failed(too_many(dir)))
+                                              return
+                                            }
+                                          }
+                                          continue
+                                        }
+                                        if is_ignored_dir(name) {
+                                          continue
+                                        }
+                                        if dev != root_dev {
+                                          skipped.push((rel2, "another file system"))
+                                          continue
+                                        }
+                                        if depth + 1 >= WALK_DEPTH {
+                                          deeper = true
+                                          continue
+                                        }
+                                        queue.push((dirsync_rjoin(host, [path, name]), rel2, depth + 1))
+                                      }
+                                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                                    }
+                                  }
+                                })
+                              }
+                              effect::Exit::Succeeded(_) => {
+                                sk(effect::Exit::Failed(refusal(path + " could not be read")))
+                              }
+                            }
+                          },
+                        )
+                      },
+                      fn(wex : effect::Exit[Unit]) -> Unit {
+                        match wex {
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(_) => {
+                            if deeper {
+                              k(effect::Exit::Failed(refusal(dir + " is deeper than " + WALK_DEPTH.to_string() + " directories")))
+                              return
+                            }
+                            dirsync_scan_k(host, dir, found, true, fn(gex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+                              match gex {
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(got) => {
+                                  for i in 0..<found.length() {
+                                    take(found[i], on_disk(found[i], got[i]))
+                                  }
+                                  sort_locals_js(files)
+                                  k(
+                                    effect::Exit::Succeeded(DirsyncListing::{
+                                      files: files,
+                                      git: false,
+                                      prefix: "",
+                                      skipped: skipped,
+                                      submodules: [],
+                                    }),
+                                  )
+                                }
+                              }
+                            })
+                          }
+                        }
+                      },
+                    )
+                  }
+                }
+              },
+            )
+          }
+          dirsync_git_out_k(host, dir, ["rev-parse", "--is-inside-work-tree", "--show-prefix"], fn(gex : effect::Exit[Option[String]]) -> Unit {
+            match gex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(None) => after_tree(None)
+              effect::Exit::Succeeded(Some(out)) => {
+                let lines = split_char(out, 10 as Byte)
+                if lines.length() > 1 && lines[0] == "true" && lines[1] != "" {
+                  dirsync_fs_k(
+                    host,
+                    "proc.run",
+                    [
+                      ("command", sessions_core::jstr("git")),
+                      (
+                        "args",
+                        base_codec::json_arr([
+                          sessions_core::jstr("-C"),
+                          sessions_core::jstr(dir),
+                          sessions_core::jstr("check-ignore"),
+                          sessions_core::jstr("-q"),
+                          sessions_core::jstr("."),
+                        ]),
+                      ),
+                      ("env", base_codec::json_obj([("GIT_OPTIONAL_LOCKS", sessions_core::jstr("0"))])),
+                      ("timeoutMs", sessions_core::jnum(GIT_MS)),
+                      ("code", sessions_core::jbool(true)),
+                    ],
+                    None,
+                    fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                      match cex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(res) => {
+                          let ignored = match sessions_core::num_of(sessions_core::jget(res, "code")) {
+                            Some(n) => n == 0.0
+                            None => false
+                          }
+                          if ignored {
+                            after_tree(None)
+                          } else {
+                            after_tree(Some(lines))
+                          }
+                        }
+                      }
+                    },
+                  )
+                } else {
+                  after_tree(Some(lines))
+                }
+              }
+            }
+          })
+        }
+        effect::Exit::Succeeded(_) => k(effect::Exit::Failed(refusal(dir + " could not be read")))
+      }
+    },
+  )
+}
+
+/// `git config -z` entries of `args` (`--get-regexp`'s): key -> value; none where git found none.
+fn dirsync_git_config_k(
+  host : RemoteHost,
+  dir : String,
+  args : Array[String],
+  k : (effect::Exit[Map[String, String]]) -> Unit,
+) -> Unit {
+  let all : Array[String] = ["config", "-z"]
+  for i in 0..<args.length() {
+    all.push(args[i])
+  }
+  dirsync_git_out_k(host, dir, all, fn(ex : effect::Exit[Option[String]]) -> Unit {
+    match ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(Map::new()))
+      effect::Exit::Succeeded(Some(text)) => {
+        let out : Map[String, String] = Map::new()
+        let entries = split_char(text, 0 as Byte)
+        for i in 0..<entries.length() {
+          let entry = entries[i]
+          let nl = entry.index_of("\n")
+          if nl >= 0 {
+            out.set(entry.slice(0, nl), entry.slice(nl + 1, entry.length()))
+          } else if entry != "" {
+            out.set(entry, "")
+          }
+        }
+        k(effect::Exit::Succeeded(out))
+      }
+    }
+  })
+}
+
+fn rev_find_byte(s : String, target : Byte) -> Option[Int] {
+  let bytes = s.to_bytes()
+  let mut i = bytes.length() - 1
+  while i >= 0 {
+    if bytes[i] == target {
+      return Some(i)
+    }
+    i = i - 1
+  }
+  None
+}
+
+/// A submodule's URL as Git takes it: one relative to the superproject's (`./`, `../`) against `base`
+/// (its origin's URL; none without one), each `../` taking off the last part of it.
+pub fn submodule_url(url : String, base : String) -> String {
+  if !url.starts_with("./") && !url.starts_with("../") {
+    return url
+  }
+  if base == "" {
+    return ""
+  }
+  let mut b = base
+  while b.ends_with("/") {
+    b = b.slice(0, b.length() - 1)
+  }
+  let mut u = url
+  while true {
+    if u.starts_with("./") {
+      u = u.slice(2, u.length())
+    } else if u.starts_with("../") {
+      u = u.slice(3, u.length())
+      let cut = match rev_find_byte(b, 47 as Byte) {
+        Some(i) => {
+          if i > 0 && !b.slice(0, i).ends_with("/") {
+            Some(i)
+          } else {
+            match rev_find_byte(b, 58 as Byte) {
+              Some(ci) => Some(ci + 1)
+              None => None
+            }
+          }
+        }
+        None => {
+          match rev_find_byte(b, 58 as Byte) {
+            Some(ci) => Some(ci + 1)
+            None => None
+          }
+        }
+      }
+      match cut {
+        Some(i) => b = b.slice(0, i)
+        None => return ""
+      }
+    } else {
+      break
+    }
+  }
+  if b.ends_with(":") { b + u } else { b + "/" + u }
+}
+
+/// The submodules among `links` (path, the index's commit) as the target is to check them out.
+fn dirsync_submodules_of_k(
+  host : RemoteHost,
+  dir : String,
+  prefix : String,
+  links : Array[(String, String)],
+  skipped : Array[(String, String)],
+  k : (effect::Exit[Array[(String, String, String)]]) -> Unit,
+) -> Unit {
+  if links.length() == 0 {
+    k(effect::Exit::Succeeded([]))
+    return
+  }
+  dirsync_git_config_k(
+    host,
+    dir,
+    ["--blob", ":.gitmodules", "--get-regexp", "^submodule\\..*\\.(path|url)$"],
+    fn(lex : effect::Exit[Map[String, String]]) -> Unit {
+      match lex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(listed) => {
+          dirsync_git_config_k(
+            host,
+            dir,
+            ["--get-regexp", "^submodule\\..*\\.url$"],
+            fn(oex : effect::Exit[Map[String, String]]) -> Unit {
+              match oex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(own) => {
+                  dirsync_git_out_k(host, dir, ["config", "--get", "remote.origin.url"], fn(orex : effect::Exit[Option[String]]) -> Unit {
+                    match orex {
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(origin_opt) => {
+                        let origin = match origin_opt {
+                          Some(s) => js_json::trim_js(s)
+                          None => ""
+                        }
+                        let named : Map[String, String] = Map::new()
+                        let lkeys = listed.keys()
+                        sort_strings_js(lkeys)
+                        for i in 0..<lkeys.length() {
+                          let key = lkeys[i]
+                          if key.starts_with("submodule.") && key.ends_with(".path") {
+                            match listed.get(key) {
+                              Some(value) => {
+                                named.set(value, key.slice(10, key.length() - 5))
+                              }
+                              None => ()
+                            }
+                          }
+                        }
+                        let head_paths : Array[String] = []
+                        for i in 0..<links.length() {
+                          head_paths.push(links[i].0 + "/.git")
+                        }
+                        dirsync_scan_k(host, dir, head_paths, false, fn(hex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+                          match hex {
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(heads) => {
+                              let out : Array[(String, String, String)] = []
+                              for_each_k(
+                                links,
+                                fn(i : Int, link : (String, String), lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                  let (path, index_id) = link
+                                  let url = match named.get(prefix + path) {
+                                    Some(name) => {
+                                      let given = match own.get("submodule." + name + ".url") {
+                                        Some(u) => u
+                                        None => {
+                                          match listed.get("submodule." + name + ".url") {
+                                            Some(u) => u
+                                            None => ""
+                                          }
+                                        }
+                                      }
+                                      submodule_url(given, origin)
+                                    }
+                                    None => ""
+                                  }
+                                  if url == "" {
+                                    skipped.push((path, "submodule with no URL in .gitmodules"))
+                                    lk(effect::Exit::Succeeded(()))
+                                    return
+                                  }
+                                  match heads[i] {
+                                    base_codec::Json::Null => {
+                                      out.push((path, index_id, url))
+                                      lk(effect::Exit::Succeeded(()))
+                                    }
+                                    _ => {
+                                      dirsync_git_out_k(
+                                        host,
+                                        dirsync_rjoin(host, [dir, path]),
+                                        ["rev-parse", "-q", "--verify", "HEAD^{commit}"],
+                                        fn(revex : effect::Exit[Option[String]]) -> Unit {
+                                          match revex {
+                                            effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(Some(h)) => {
+                                              let trimmed = js_json::trim_js(h)
+                                              let id = if is_blob_id(trimmed) { trimmed } else { index_id }
+                                              out.push((path, id, url))
+                                              lk(effect::Exit::Succeeded(()))
+                                            }
+                                            effect::Exit::Succeeded(None) => {
+                                              out.push((path, index_id, url))
+                                              lk(effect::Exit::Succeeded(()))
+                                            }
+                                          }
+                                        },
+                                      )
+                                    }
+                                  }
+                                },
+                                fn(ex : effect::Exit[Unit]) -> Unit {
+                                  match ex {
+                                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(out))
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  }
+                                },
+                              )
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                }
+              }
+            },
+          )
+        }
+      }
+    },
+  )
+}
+
+/// Pages of a manifest or of the base (`sync.manifest`, `sync.base`): path -> (id, mode).
+fn sync_pages_k(
+  ask_k : (String, Array[(String, base_codec::Json)], (effect::Exit[base_codec::Json]) -> Unit) -> Unit,
+  method : String,
+  id : String,
+  k : (effect::Exit[Map[String, (String, String)]]) -> Unit,
+) -> Unit {
+  let out : Map[String, (String, String)] = Map::new()
+  let mut after : Option[Double] = Some(0.0)
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      let a = match after {
+        Some(v) => v
+        None => {
+          sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          return
+        }
+      }
+      ask_k(
+        method,
+        [("id", sessions_core::jstr(id)), ("after", sessions_core::jnum(a))],
+        fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(page) => {
+              match sessions_core::field_of(page, "entries") {
+                base_codec::Json::Arr(entries) => {
+                  for i in 0..<entries.length() {
+                    match entries[i] {
+                      base_codec::Json::Arr(e) => {
+                        if e.length() >= 3 {
+                          match (e[0], e[1], e[2]) {
+                            (base_codec::Json::Str(path), base_codec::Json::Str(hash), base_codec::Json::Str(mode)) => {
+                              out.set(path, (hash, mode))
+                            }
+                            _ => ()
+                          }
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
+                }
+                _ => ()
+              }
+              after = match sessions_core::field_of(page, "next") {
+                base_codec::Json::Num(n, _) => Some(n)
+                _ => None
+              }
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+            }
+          }
+        },
+      )
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(out))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// Pages of `items`, each about `PAGE_BYTES` as JSON at most (its length as JavaScript UTF-16 counts it).
+pub fn sync_plan_pages(
+  js_text : (base_codec::Json) -> String,
+  items : Array[base_codec::Json],
+) -> Array[Array[base_codec::Json]] {
+  let out : Array[Array[base_codec::Json]] = [[]]
+  let mut size = 0
+  for i in 0..<items.length() {
+    let item = items[i]
+    let n = js_json::utf16_len(js_text(item)) + 1
+    if size + n > PAGE_BYTES && out[out.length() - 1].length() > 0 {
+      out.push([])
+      size = 0
+    }
+    out[out.length() - 1].push(item)
+    size = size + n
+  }
+  out
+}
+
+/// Brings the mirror on `station` of the task `key` up to date with `dir`: what it did (`Synced`),
+/// or `null` when the task started already.
+pub fn dirsync_sync_dir_k(
+  host : RemoteHost,
+  station : String,
+  workspace : String,
+  session : String,
+  key : String,
+  dir : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  (host.remote_now_k)(fn(t0ex : effect::Exit[Double]) -> Unit {
+    match t0ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(t0) => {
+        let ask_k = fn(
+          method : String,
+          more : Array[(String, base_codec::Json)],
+          ak : (effect::Exit[base_codec::Json]) -> Unit,
+        ) -> Unit {
+          let fields : Array[(String, base_codec::Json)] = [
+            ("workspace", sessions_core::jstr(workspace)),
+            ("session", sessions_core::jstr(session)),
+            ("key", sessions_core::jstr(key)),
+            ("method", sessions_core::jstr(method)),
+          ]
+          for i in 0..<more.length() {
+            fields.push(more[i])
+          }
+          (host.ask_k)(station, base_codec::json_obj(fields), ak)
+        }
+        ask_k("sync.begin", [("safe", sessions_core::jnum(1.0))], fn(bex : effect::Exit[base_codec::Json]) -> Unit {
+          match bex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(begun) => {
+              match sessions_core::field_of(begun, "started") {
+                base_codec::Json::Bool(true) => {
+                  k(effect::Exit::Succeeded(base_codec::json_null()))
+                  return
+                }
+                _ => ()
+              }
+              if !json_equal(sessions_core::field_of(begun, "safe"), sessions_core::jnum(1.0)) {
+                k(
+                  effect::Exit::Failed(
+                    refusal("the target cannot protect remote results during sync; update that station before starting"),
+                  ),
+                )
+                return
+              }
+              let id = match sessions_core::field_of(begun, "id") {
+                base_codec::Json::Str(s) => s
+                base_codec::Json::Null => ""
+                v => (host.js_text)(v)
+              }
+              dirsync_list_local_k(host, dir, fn(lex : effect::Exit[DirsyncListing]) -> Unit {
+                match lex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(listing) => {
+                    sync_pages_k(ask_k, "sync.manifest", id, fn(tex : effect::Exit[Map[String, (String, String)]]) -> Unit {
+                      match tex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(there) => {
+                          sync_pages_k(ask_k, "sync.base", id, fn(baex : effect::Exit[Map[String, (String, String)]]) -> Unit {
+                            match baex {
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(base) => {
+                                let same = fn(f : DirsyncLocal) -> Bool {
+                                  match base.get(f.path) {
+                                    Some((h, m)) => h == f.hash && m == f.mode
+                                    None => false
+                                  }
+                                }
+                                let again : Array[DirsyncLocal] = []
+                                let again_paths : Array[String] = []
+                                for i in 0..<listing.files.length() {
+                                  let f = listing.files[i]
+                                  if f.indexed && !same(f) {
+                                    again.push(f)
+                                    again_paths.push(f.path)
+                                  }
+                                }
+                                dirsync_scan_k(host, dir, again_paths, true, fn(gex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+                                  match gex {
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(got) => {
+                                      let gone : Map[String, Bool] = Map::new()
+                                      for i in 0..<again.length() {
+                                        let f = again[i]
+                                        match on_disk(f.path, got[i]) {
+                                          OnDisk::Got(l) => {
+                                            f.hash = l.hash
+                                            f.mode = l.mode
+                                            f.size = l.size
+                                            f.indexed = false
+                                          }
+                                          OnDisk::Left(why) => {
+                                            gone.set(f.path, true)
+                                            listing.skipped.push((f.path, why))
+                                          }
+                                          OnDisk::Gone => gone.set(f.path, true)
+                                        }
+                                      }
+                                      if gone.length() > 0 {
+                                        let kept_files : Array[DirsyncLocal] = []
+                                        for i in 0..<listing.files.length() {
+                                          if !gone.contains(listing.files[i].path) {
+                                            kept_files.push(listing.files[i])
+                                          }
+                                        }
+                                        listing.files = kept_files
+                                      }
+                                      let have : Map[String, Bool] = Map::new()
+                                      let tkeys = there.keys()
+                                      for i in 0..<tkeys.length() {
+                                        match there.get(tkeys[i]) {
+                                          Some((th, _)) => have.set(th, true)
+                                          None => ()
+                                        }
+                                      }
+                                      let set : Array[base_codec::Json] = []
+                                      let need_seen : Map[String, Bool] = Map::new()
+                                      let need_list : Array[DirsyncLocal] = []
+                                      let local : Map[String, Bool] = Map::new()
+                                      for i in 0..<listing.files.length() {
+                                        let f = listing.files[i]
+                                        local.set(f.path, true)
+                                        if same(f) {
+                                          continue
+                                        }
+                                        set.push(
+                                          base_codec::json_arr([
+                                            sessions_core::jstr(f.path),
+                                            sessions_core::jstr(f.hash),
+                                            sessions_core::jstr(f.mode),
+                                          ]),
+                                        )
+                                        if !have.contains(f.hash) && !need_seen.contains(f.hash) {
+                                          need_seen.set(f.hash, true)
+                                          need_list.push(f)
+                                        }
+                                      }
+                                      let bkeys = base.keys()
+                                      sort_strings_js(bkeys)
+                                      let remove : Array[String] = []
+                                      for i in 0..<bkeys.length() {
+                                        if !local.contains(bkeys[i]) {
+                                          remove.push(bkeys[i])
+                                        }
+                                      }
+                                      let req_base : Array[(String, base_codec::Json)] = [
+                                        ("workspace", sessions_core::jstr(workspace)),
+                                        ("session", sessions_core::jstr(session)),
+                                        ("key", sessions_core::jstr(key)),
+                                      ]
+                                      dirsync_send_blobs_k(host, station, req_base, id, dir, need_list, fn(sbex : effect::Exit[base_codec::Json]) -> Unit {
+                                        match sbex {
+                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(sent) => {
+                                            let plan : Array[base_codec::Json] = []
+                                            for i in 0..<set.length() {
+                                              plan.push(base_codec::json_obj([("s", set[i])]))
+                                            }
+                                            for i in 0..<remove.length() {
+                                              plan.push(base_codec::json_obj([("r", sessions_core::jstr(remove[i]))]))
+                                            }
+                                            let parts = sync_plan_pages(host.js_text, plan)
+                                            let mut answer = base_codec::json_null()
+                                            for_each_k(
+                                              parts,
+                                              fn(pi : Int, part : Array[base_codec::Json], pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                                let pset : Array[base_codec::Json] = []
+                                                let prem : Array[base_codec::Json] = []
+                                                for j in 0..<part.length() {
+                                                  match sessions_core::jget(part[j], "s") {
+                                                    Some(sv) => pset.push(sv)
+                                                    None => ()
+                                                  }
+                                                  match sessions_core::jget(part[j], "r") {
+                                                    Some(rv) => prem.push(rv)
+                                                    None => ()
+                                                  }
+                                                }
+                                                let is_last = pi == parts.length() - 1
+                                                let commit : Array[(String, base_codec::Json)] = [
+                                                  ("id", sessions_core::jstr(id)),
+                                                  ("set", base_codec::json_arr(pset)),
+                                                  ("remove", base_codec::json_arr(prem)),
+                                                  ("final", sessions_core::jbool(is_last)),
+                                                ]
+                                                if is_last && listing.submodules.length() > 0 {
+                                                  let subs : Array[base_codec::Json] = []
+                                                  for j in 0..<listing.submodules.length() {
+                                                    let (sp, sid, surl) = listing.submodules[j]
+                                                    subs.push(
+                                                      base_codec::json_arr([
+                                                        sessions_core::jstr(sp),
+                                                        sessions_core::jstr(sid),
+                                                        sessions_core::jstr(surl),
+                                                      ]),
+                                                    )
+                                                  }
+                                                  commit.push(("submodules", base_codec::json_arr(subs)))
+                                                }
+                                                ask_k("sync.commit", commit, fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                                                  match cex {
+                                                    effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                                                    effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                                                    effect::Exit::Succeeded(ans) => {
+                                                      answer = ans
+                                                      pk(effect::Exit::Succeeded(()))
+                                                    }
+                                                  }
+                                                })
+                                              },
+                                              fn(cex : effect::Exit[Unit]) -> Unit {
+                                                match cex {
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Succeeded(_) => {
+                                                    (host.remote_now_k)(fn(t1ex : effect::Exit[Double]) -> Unit {
+                                                      match t1ex {
+                                                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                        effect::Exit::Succeeded(t1) => {
+                                                          let skipped_cap = if listing.skipped.length() < 50 { listing.skipped.length() } else { 50 }
+                                                          let skipped_arr : Array[base_codec::Json] = []
+                                                          for i in 0..<skipped_cap {
+                                                            let (sp, why) = listing.skipped[i]
+                                                            skipped_arr.push(
+                                                              base_codec::json_obj([
+                                                                ("path", sessions_core::jstr(sp)),
+                                                                ("why", sessions_core::jstr(why)),
+                                                              ]),
+                                                            )
+                                                          }
+                                                          let written = match sessions_core::num_of(sessions_core::jget(answer, "written")) {
+                                                            Some(n) => n
+                                                            None => 0.0
+                                                          }
+                                                          let removed = match sessions_core::num_of(sessions_core::jget(answer, "removed")) {
+                                                            Some(n) => n
+                                                            None => 0.0
+                                                          }
+                                                          k(
+                                                            effect::Exit::Succeeded(
+                                                              base_codec::json_obj([
+                                                                ("files", sessions_core::jnum(listing.files.length().to_double())),
+                                                                ("git", sessions_core::jbool(listing.git)),
+                                                                ("sent", sent),
+                                                                ("written", sessions_core::jnum(written)),
+                                                                ("removed", sessions_core::jnum(removed)),
+                                                                ("skipped", base_codec::json_arr(skipped_arr)),
+                                                                ("skippedCount", sessions_core::jnum(listing.skipped.length().to_double())),
+                                                                ("submodules", sessions_core::jnum(listing.submodules.length().to_double())),
+                                                                ("prefix", sessions_core::jstr(listing.prefix)),
+                                                                ("ms", sessions_core::jnum(t1 - t0)),
+                                                              ]),
+                                                            ),
+                                                          )
+                                                        }
+                                                      }
+                                                    })
+                                                  }
+                                                }
+                                              },
+                                            )
+                                          }
+                                        }
+                                      })
+                                    }
+                                  }
+                                })
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+struct Piece {
+  hash : String
+  size : Int
+  offset : Int
+  length : Int
+  abs : String
+  path : String
+  link : Bool
+}
+
+struct Sending {
+  station : String
+  base : Array[(String, base_codec::Json)]
+  id : String
+  pack : base_codec::Json
+  mut after : Bool
+  mut ratio : Double
+  mut batch : Array[Piece]
+  mut raw : Int
+  mut bytes : Double
+  mut packed : Double
+  mut requests : Int
+  /// Shared cancellation flag across the entire recursive NoBytes halving tree.
+  mut cancelled : Bool
+  /// Number of in-flight `flush_pieces_k` daemons across the recursive tree.
+  mut inflight_flushes : Int
+  /// Signalled once `inflight_flushes` drops to 0 so `pack.close` never races `zstd.pack`.
+  mut flushes_drained : Option[effect::Deferred[Unit]]
+  /// Exact-once guard for `pack.close` across live-gen and post-rotation silent paths.
+  mut pack_closed : Bool
+  /// Deferred process-scope silent `pack.close` run once `inflight_flushes` drops to 0 after rotation.
+  mut pending_silent_close : Option[() -> Unit]
+}
+
+fn sending_enter_flush(s : Sending) -> Unit {
+  s.inflight_flushes = s.inflight_flushes + 1
+}
+
+fn sending_leave_flush(s : Sending) -> Unit {
+  s.inflight_flushes = s.inflight_flushes - 1
+  if s.inflight_flushes <= 0 {
+    s.inflight_flushes = 0
+    match s.flushes_drained {
+      Some(d) => {
+        s.flushes_drained = None
+        let _ = d.succeed(())
+      }
+      None => ()
+    }
+    match s.pending_silent_close {
+      Some(f) => {
+        s.pending_silent_close = None
+        f()
+      }
+      None => ()
+    }
+  }
+}
+
+fn put_request(s : Sending, blobs : Array[base_codec::Json]) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<s.base.length() {
+    fields.push(s.base[i])
+  }
+  fields.push(("method", sessions_core::jstr("sync.put")))
+  fields.push(("id", sessions_core::jstr(s.id)))
+  fields.push(("blobs", base_codec::json_arr(blobs)))
+  base_codec::json_obj(fields)
+}
+
+fn is_no_bytes_error(e : effect::EffectError) -> Bool {
+  match sessions_core::decode_asked_error(e) {
+    Some(a) => {
+      match sessions_core::jget(a.cause, "kind") {
+        Some(base_codec::Json::Str("NoBytes")) => true
+        _ => false
+      }
+    }
+    None => false
+  }
+}
+
+fn floor_nonneg(x : Double) -> Double {
+  let t = js_json::js_trunc(x)
+  if x < t { t - 1.0 } else { t }
+}
+
+fn slice_pieces(pieces : Array[Piece], start : Int, end : Int) -> Array[Piece] {
+  let out : Array[Piece] = []
+  for i in start..<end {
+    out.push(pieces[i])
+  }
+  out
+}
+
+/// Sends the contents in `need` in packed requests, each of `MAX_RAW` at most, its packed pieces
+/// after it; to a station from before, each within `BODY_BYTES`, base64 in it.
+/// Pieces are streamed lazily per `(file_idx, offset)` (matching MB `dirsync_source.mbt:659-674`),
+/// `pack.open` uses process-level `AbandonedOp::ClosePackHandle` for exact-once cleanup on both
+/// direct cancel and `rotate_hub_gen`, and `pack.close` waits for all recursive flushes to drain.
+fn dirsync_send_blobs_k(
+  host : RemoteHost,
+  station : String,
+  base : Array[(String, base_codec::Json)],
+  id : String,
+  dir : String,
+  need : Array[DirsyncLocal],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  dirsync_fs_k(host, "pack.open", [], None, fn(oex : effect::Exit[base_codec::Json]) -> Unit {
+    let opened = match oex {
+      effect::Exit::Failed(e) => {
+        k(effect::Exit::Failed(e))
+        return
+      }
+      effect::Exit::Interrupted => {
+        k(effect::Exit::Interrupted)
+        return
+      }
+      effect::Exit::Succeeded(v) => v
+    }
+    let pack = sessions_core::field_of(opened, "id")
+    let s = Sending::{
+      station: station,
+      base: base,
+      id: id,
+      pack: pack,
+      after: true,
+      ratio: 1.0,
+      batch: [],
+      raw: 0,
+      bytes: 0.0,
+      packed: 0.0,
+      requests: 0,
+      cancelled: false,
+      inflight_flushes: 0,
+      flushes_drained: None,
+      pack_closed: false,
+      pending_silent_close: None,
+    }
+    let close_pack_once_silent = fn() -> Unit {
+      if !s.pack_closed {
+        s.pack_closed = true
+        match sessions_core::num_of(Some(pack)) {
+          Some(n) => (host.close_pack_silent)(n.to_int())
+          None => ()
+        }
+      }
+    }
+    let schedule_silent_close = fn() -> Unit {
+      if s.inflight_flushes > 0 {
+        s.pending_silent_close = Some(close_pack_once_silent)
+      } else {
+        close_pack_once_silent()
+      }
+    }
+    let finish_with = fn(res : effect::Exit[base_codec::Json]) -> Unit {
+      match res {
+        effect::Exit::Interrupted => {
+          s.cancelled = true
+          // Wait for all in-flight recursive flushes to finish and delete their temp files
+          // (`inflight_flushes == 0`), then close `pack` exactly once — using process-scope
+          // `close_pack_silent` if the generation is sealed (`rotate_hub_gen`).
+          if (host.is_sealed)() {
+            schedule_silent_close()
+          } else {
+            let wait_drained = if s.inflight_flushes > 0 {
+              match s.flushes_drained {
+                Some(d) => Some(d)
+                None => {
+                  let d : effect::Deferred[Unit] = effect::Deferred::new()
+                  s.flushes_drained = Some(d)
+                  Some(d)
+                }
+              }
+            } else {
+              None
+            }
+            let spawned = (host.cleanup_k)(
+              "dirsync pack.close",
+              fn(dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                let do_close = fn() -> Unit {
+                  if (host.is_sealed)() {
+                    schedule_silent_close()
+                    dk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  if s.pack_closed {
+                    dk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  s.pack_closed = true
+                  dirsync_fs_k(host, "pack.close", [("id", pack)], None, fn(_cex : effect::Exit[base_codec::Json]) -> Unit {
+                    dk(effect::Exit::Succeeded(()))
+                  })
+                }
+                match wait_drained {
+                  Some(fd) => {
+                    if fd.is_done() {
+                      do_close()
+                    } else {
+                      fd.wait_k(fn(_fex : effect::Exit[Unit]) -> Unit { do_close() })
+                    }
+                  }
+                  None => do_close()
+                }
+              },
+            )
+            if !spawned {
+              schedule_silent_close()
+            }
+          }
+          k(effect::Exit::Interrupted)
+        }
+        _ => {
+          if (host.is_sealed)() {
+            schedule_silent_close()
+            k(effect::Exit::Interrupted)
+          } else {
+            s.pack_closed = true
+            dirsync_fs_k(host, "pack.close", [("id", pack)], None, fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+              match cex {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                _ => k(res)
+              }
+            })
+          }
+        }
+      }
+    }
+    // Stream pieces lazily per `(file_idx, offset)` without pre-allocating all pieces upfront.
+    let mut file_idx = 0
+    let mut offset = 0
+    sessions_core::iter_sync_k(
+      fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+        if s.cancelled {
+          sk(effect::Exit::Interrupted)
+          return
+        }
+        if file_idx >= need.length() {
+          sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          return
+        }
+        let f = need[file_idx]
+        let abs = dirsync_rjoin(host, [dir, f.path])
+        let piece = if f.mode == LINK_MODE {
+          file_idx = file_idx + 1
+          offset = 0
+          Piece::{
+            hash: f.hash,
+            size: f.size,
+            offset: 0,
+            length: f.size,
+            abs: abs,
+            path: f.path,
+            link: true,
+          }
+        } else {
+          let rem = f.size - offset
+          let length = if rem < PIECE_BYTES { rem } else { PIECE_BYTES }
+          let cur_off = offset
+          let next_off = cur_off + length
+          if next_off >= f.size {
+            file_idx = file_idx + 1
+            offset = 0
+          } else {
+            offset = next_off
+          }
+          Piece::{
+            hash: f.hash,
+            size: f.size,
+            offset: cur_off,
+            length: length,
+            abs: abs,
+            path: f.path,
+            link: false,
+          }
+        }
+        add_piece_k(host, s, piece, fn(aex : effect::Exit[Unit]) -> Unit {
+          match aex {
+            effect::Exit::Succeeded(_) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      fn(aex : effect::Exit[Unit]) -> Unit {
+        match aex {
+          effect::Exit::Failed(e) => finish_with(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => finish_with(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => {
+            let tail = s.batch
+            s.batch = []
+            s.raw = 0
+            flush_pieces_k(host, s, tail, fn(fex : effect::Exit[Unit]) -> Unit {
+              match fex {
+                effect::Exit::Failed(e) => finish_with(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => finish_with(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => {
+                  finish_with(
+                    effect::Exit::Succeeded(
+                      base_codec::json_obj([
+                        ("files", sessions_core::jnum(need.length().to_double())),
+                        ("bytes", sessions_core::jnum(s.bytes)),
+                        ("packed", sessions_core::jnum(s.packed)),
+                        ("requests", sessions_core::jnum(s.requests.to_double())),
+                      ]),
+                    ),
+                  )
+                }
+              }
+            })
+          }
+        }
+      },
+    )
+  })
+}
+
+fn add_piece_k(
+  host : RemoteHost,
+  s : Sending,
+  piece : Piece,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let budget = if s.after {
+    MAX_RAW.to_double()
+  } else {
+    let b = BODY_BYTES.to_double() * 0.7 / s.ratio
+    if b < MAX_RAW.to_double() { b } else { MAX_RAW.to_double() }
+  }
+  let push_and_done = fn() -> Unit {
+    s.batch.push(piece)
+    s.raw = s.raw + piece.length
+    s.bytes = s.bytes + piece.length.to_double()
+    k(effect::Exit::Succeeded(()))
+  }
+  if s.batch.length() > 0 && ((s.raw + piece.length).to_double() > budget || s.batch.length() >= MAX_PIECES) {
+    let pieces = s.batch
+    s.batch = []
+    s.raw = 0
+    flush_pieces_k(host, s, pieces, fn(fex : effect::Exit[Unit]) -> Unit {
+      match fex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => push_and_done()
+      }
+    })
+  } else {
+    push_and_done()
+  }
+}
+
+/// `pieces` packed by the shell into a file of Node's and sent in one request (`sync.put`):
+/// after it, or, to a station from before, base64 in it, in halves where that would not fit its message.
+/// Shares `s.cancelled` and `s.inflight_flushes` across the entire recursive halving tree so
+/// cancellation immediately halts sibling batches and `pack.close` never runs while any `zstd.pack`
+/// or `out` cleanup is still active.
+fn flush_pieces_k(
+  host : RemoteHost,
+  s : Sending,
+  pieces : Array[Piece],
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if pieces.length() == 0 {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  if s.cancelled {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  let step_done : effect::Deferred[effect::Exit[Unit]] = effect::Deferred::new()
+  sending_enter_flush(s)
+  let release_flush = fn(res : effect::Exit[Unit], dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sending_leave_flush(s)
+    let _ = step_done.succeed(res)
+    dk(effect::Exit::Succeeded(()))
+  }
+  let spawned = (host.cleanup_k)(
+    "dirsync flush_pieces",
+    fn(dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if s.cancelled {
+        release_flush(effect::Exit::Interrupted, dk)
+        return
+      }
+      host.rnode_k("syncPacking", [], fn(pex : effect::Exit[base_codec::Json]) -> Unit {
+        match pex {
+          effect::Exit::Failed(e) => release_flush(effect::Exit::Failed(e), dk)
+          effect::Exit::Interrupted => release_flush(effect::Exit::Interrupted, dk)
+          effect::Exit::Succeeded(base_codec::Json::Str(out)) => {
+            let cleanup_then = fn(res : effect::Exit[Unit]) -> Unit {
+              if (host.is_sealed)() {
+                (host.remove_path_silent)(out)
+                release_flush(res, dk)
+                return
+              }
+              (host.remove_k)(out, false, fn(_rmex : effect::Exit[Unit]) -> Unit {
+                release_flush(res, dk)
+              })
+            }
+            if s.cancelled {
+              cleanup_then(effect::Exit::Interrupted)
+              return
+            }
+            let index : Array[base_codec::Json] = []
+            for i in 0..<pieces.length() {
+              let p = pieces[i]
+              index.push(
+                base_codec::json_arr([
+                  sessions_core::jstr(p.abs),
+                  sessions_core::jnum(p.offset.to_double()),
+                  sessions_core::jnum(p.length.to_double()),
+                  sessions_core::jnum(p.size.to_double()),
+                  sessions_core::jstr(p.hash),
+                  sessions_core::jbool(p.link),
+                ]),
+              )
+            }
+            // Run `zstd.pack` in process scope (`proc_daemon_k` + `proc_shell_k`) so rotation
+            // never removes `out` or closes `pack` while the native compressor is still writing.
+            let pack_done : effect::Deferred[effect::Exit[base_codec::Json]] = effect::Deferred::new()
+            let mut handed_off = false
+            sending_enter_flush(s)
+            let pack_args = base_codec::json_obj([
+              ("id", s.pack),
+              ("out", sessions_core::jstr(out)),
+              ("pieces", base_codec::json_arr(index)),
+            ])
+            let pack_spawned = (host.proc_daemon_k)(
+              "dirsync zstd.pack",
+              fn(pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                (host.proc_shell_k)("zstd.pack", pack_args, None, fn(raw_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+                  let mex : effect::Exit[base_codec::Json] = match raw_ex {
+                    effect::Exit::Succeeded((j, _)) => effect::Exit::Succeeded(j)
+                    effect::Exit::Failed(e) => effect::Exit::Failed(e)
+                    effect::Exit::Interrupted => effect::Exit::Interrupted
+                  }
+                  match mex {
+                    effect::Exit::Interrupted => {
+                      sending_leave_flush(s)
+                      let _ = pack_done.succeed(effect::Exit::Interrupted)
+                      pk(effect::Exit::Interrupted)
+                    }
+                    _ => {
+                      if (host.is_sealed)() || s.cancelled {
+                        (host.remove_path_silent)(out)
+                        sending_leave_flush(s)
+                        let _ = pack_done.succeed(effect::Exit::Interrupted)
+                        pk(effect::Exit::Succeeded(()))
+                      } else {
+                        handed_off = true
+                        sending_leave_flush(s)
+                        let _ = pack_done.succeed(mex)
+                        pk(effect::Exit::Succeeded(()))
+                      }
+                    }
+                  }
+                })
+              },
+            )
+            if !pack_spawned {
+              sending_leave_flush(s)
+              release_flush(effect::Exit::Interrupted, dk)
+              return
+            }
+            let on_packed = fn(mex : effect::Exit[base_codec::Json]) -> Unit {
+              if s.cancelled {
+                cleanup_then(effect::Exit::Interrupted)
+                return
+              }
+              match mex {
+                effect::Exit::Failed(e) => cleanup_then(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => cleanup_then(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(made) => {
+                  match sessions_core::field_of(made, "changed") {
+                    base_codec::Json::Num(idx_d, _) => {
+                      let ci = idx_d.to_int()
+                      let cpath = if ci >= 0 && ci < pieces.length() { pieces[ci].path } else { "" }
+                      cleanup_then(effect::Exit::Failed(refusal(cpath + " changed while syncing; start again")))
+                      return
+                    }
+                    _ => ()
+                  }
+                  let raw = match sessions_core::num_of(sessions_core::jget(made, "raw")) { Some(n) => n; None => 0.0 }
+                  let packed = match sessions_core::num_of(sessions_core::jget(made, "packed")) { Some(n) => n; None => 0.0 }
+                  let blobs : Array[base_codec::Json] = []
+                  for i in 0..<pieces.length() {
+                    let p = pieces[i]
+                    blobs.push(
+                      base_codec::json_arr([
+                        sessions_core::jstr(p.hash),
+                        sessions_core::jnum(p.size.to_double()),
+                        sessions_core::jnum(p.offset.to_double()),
+                        sessions_core::jnum(p.length.to_double()),
+                      ]),
+                    )
+                  }
+                  let record_stats_and_done = fn() -> Unit {
+                    let denom = if raw > 1.0 { raw } else { 1.0 }
+                    let r = packed / denom
+                    s.ratio = if r > 0.02 { r } else { 0.02 }
+                    s.requests = s.requests + 1
+                    s.packed = s.packed + packed
+                    cleanup_then(effect::Exit::Succeeded(()))
+                  }
+                  let send_inline_k = fn() -> Unit {
+                    if s.cancelled {
+                      cleanup_then(effect::Exit::Interrupted)
+                      return
+                    }
+                    let data = floor_nonneg((packed + 2.0) / 3.0) * 4.0
+                    if data > BODY_BYTES.to_double() && pieces.length() > 1 {
+                      let half = (pieces.length() + 1) / 2
+                      let first_half = slice_pieces(pieces, 0, half)
+                      let second_half = slice_pieces(pieces, half, pieces.length())
+                      flush_pieces_k(host, s, first_half, fn(h1ex : effect::Exit[Unit]) -> Unit {
+                        if s.cancelled {
+                          cleanup_then(effect::Exit::Interrupted)
+                          return
+                        }
+                        match h1ex {
+                          effect::Exit::Failed(e) => cleanup_then(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => cleanup_then(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(_) => {
+                            flush_pieces_k(host, s, second_half, fn(h2ex : effect::Exit[Unit]) -> Unit {
+                              cleanup_then(h2ex)
+                            })
+                          }
+                        }
+                      })
+                      return
+                    }
+                    host.rnode_k(
+                      "syncPut",
+                      [sessions_core::jstr(s.station), put_request(s, blobs), sessions_core::jstr(out), sessions_core::jbool(false)],
+                      fn(spex : effect::Exit[base_codec::Json]) -> Unit {
+                        if s.cancelled {
+                          cleanup_then(effect::Exit::Interrupted)
+                          return
+                        }
+                        match spex {
+                          effect::Exit::Failed(e) => cleanup_then(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => cleanup_then(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(_) => record_stats_and_done()
+                        }
+                      },
+                    )
+                  }
+                  if s.after {
+                    host.rnode_k(
+                      "syncPut",
+                      [sessions_core::jstr(s.station), put_request(s, blobs), sessions_core::jstr(out), sessions_core::jbool(true)],
+                      fn(spex : effect::Exit[base_codec::Json]) -> Unit {
+                        if s.cancelled {
+                          cleanup_then(effect::Exit::Interrupted)
+                          return
+                        }
+                        match spex {
+                          effect::Exit::Interrupted => cleanup_then(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(_) => record_stats_and_done()
+                          effect::Exit::Failed(e) => {
+                            if is_no_bytes_error(e) {
+                              s.after = false
+                              send_inline_k()
+                            } else {
+                              cleanup_then(effect::Exit::Failed(e))
+                            }
+                          }
+                        }
+                      },
+                    )
+                  } else {
+                    send_inline_k()
+                  }
+                }
+              }
+            }
+            pack_done.wait_k(fn(wex : effect::Exit[effect::Exit[base_codec::Json]]) -> Unit {
+              match wex {
+                effect::Exit::Interrupted => {
+                  if handed_off {
+                    cleanup_then(effect::Exit::Interrupted)
+                  } else {
+                    // `proc_daemon_k` still owns `zstd.pack`, `out` removal, and its own flush slot.
+                    release_flush(effect::Exit::Interrupted, dk)
+                  }
+                }
+                effect::Exit::Failed(e) => {
+                  if handed_off {
+                    cleanup_then(effect::Exit::Failed(e))
+                  } else {
+                    release_flush(effect::Exit::Failed(e), dk)
+                  }
+                }
+                effect::Exit::Succeeded(inner) => on_packed(inner)
+              }
+            })
+          }
+          effect::Exit::Succeeded(_) => release_flush(effect::Exit::Failed(refusal("no place to pack a sync's pieces")), dk)
+        }
+      })
+    },
+  )
+  if !spawned {
+    sending_leave_flush(s)
+    k(effect::Exit::Interrupted)
+    return
+  }
+  step_done.wait_k(fn(ex : effect::Exit[effect::Exit[Unit]]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => {
+        s.cancelled = true
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(inner) => k(inner)
+    }
+  })
+}

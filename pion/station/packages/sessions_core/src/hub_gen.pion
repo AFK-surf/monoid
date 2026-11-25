@@ -238,8 +238,8 @@ pub fn HubGen::shell_k(
     fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
       if counters.sealed {
         match (ex, abandoned_op) {
-          (effect::Exit::Succeeded((j, _)), Some(AbandonedOp::CloseTcpHandle)) => {
-            sender.close_abandoned_tcp_handle_json(j)
+          (effect::Exit::Succeeded((j, _)), Some(aop)) => {
+            sender.close_abandoned_op_json(aop, j)
           }
           _ => ()
         }

@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_SKILL_BUDGET, agySkillBytes, agySkills, agySkillsFitted, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_SKILL_BUDGET, agySkillBytes, agySkills, agySkillsFitted, agyWithOmittedSkills, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -2062,8 +2062,9 @@ test("Antigravity CLI is declared the station's tools within what it keeps, chat
   // What `agy` makes of them (agents/agy.ts AGY_TOOL_BUDGET): each given its description's prefix and `toolSummary`.
   const wrapped = bytes + list.length * AGY_TOOL_WRAP;
   assert.ok(wrapped <= AGY_TOOL_CEILING, `${list.length} tools, ${bytes} B listed, come to ${wrapped} B in agy, over ${AGY_TOOL_CEILING}`);
-  // The tools every turn needs are declared whatever the rest weigh, chat_post (the heaviest) first of all.
-  for (const name of ["chat_post", "chat_state", ...CORE]) assert.ok(names.includes(name), `${name} is not declared`);
+  // The tools every turn needs are declared whatever the rest weigh, chat_post (the heaviest) first of all,
+  // and search stays declared directly so agy sessions can find skills left out of .agent/skills.
+  for (const name of ["chat_post", "chat_state", ...CORE, "search"]) assert.ok(names.includes(name), `${name} is not declared`);
   // And the rest are still reached, through station_tool.
   assert.equal(names.at(-1), INDIRECT);
   const indirect: string[] = list.at(-1).inputSchema.properties.name.enum;
@@ -2360,9 +2361,11 @@ test("agy is given the skills that fit beside the station's tools: the session's
     for (let i = 0; i < 149; i++) symlinkSync(join(shared, `skill-${i}`), join(ws, ".agents", "skills", `skill-${i}`), "dir");
     mkdirSync(join(ws, ".agents", "skills", "z-own"));
     writeFileSync(join(ws, ".agents", "skills", "z-own", "SKILL.md"), `---\nname: z-own\ndescription: ${"y".repeat(900)}\n---\n`);
-    await agySkills(ws, shared);
+    const result = await agySkills(ws, shared);
     const given = readdirSync(join(ws, ".agent", "skills"));
     assert.ok(given.includes("z-own"), "the session's own skill is given first");
+    assert.equal(result.kept, given.length);
+    assert.equal(result.left.length, 150 - given.length);
     const bytes = given.reduce((n, name) => n + agySkillBytes(readFileSync(join(ws, ".agent", "skills", name, "SKILL.md"), "utf8"), join(ws, ".agent", "skills", name, "SKILL.md")), 0);
     assert.ok(given.length > 10 && given.length < 149, `${given.length} given`);
     assert.ok(bytes <= AGY_SKILL_BUDGET, `${bytes} bytes`);
@@ -2370,4 +2373,50 @@ test("agy is given the skills that fit beside the station's tools: the session's
     rmSync(ws, { recursive: true, force: true });
     rmSync(shared, { recursive: true, force: true });
   }
+});
+
+test("agy tells the session when workspace skills are omitted from .agent/skills, on new and resumed sessions, and never on empty instructions", async () => {
+  assert.equal(agyWithOmittedSkills("Base.", 0), "Base.");
+  assert.equal(agyWithOmittedSkills("", 5), "");
+  assert.match(agyWithOmittedSkills("Base.", 1), /^Base\.\n\nNote: 1 additional workspace skill was omitted from \.agent\/skills[\s\S]*search with kinds=\["skill"\][\s\S]*skill_read/);
+  assert.match(agyWithOmittedSkills("Base.", 12), /^Base\.\n\nNote: 12 additional workspace skills were omitted from \.agent\/skills/);
+
+  const shared = mkdtempSync(join(data, "agy-omitted-shared-"));
+  const smallShared = mkdtempSync(join(data, "agy-fit-shared-"));
+  const ws = mkdtempSync(join(data, "agy-omitted-ws-"));
+  const smallWs = mkdtempSync(join(data, "agy-fit-ws-"));
+  const termWs = mkdtempSync(join(data, "agy-omitted-term-"));
+  for (let i = 0; i < 149; i++) {
+    mkdirSync(join(shared, `skill-${i}`));
+    writeFileSync(join(shared, `skill-${i}`, "SKILL.md"), `---\nname: skill-${i}\ndescription: ${"x".repeat(380)}\n---\nbody\n`);
+  }
+  mkdirSync(join(smallShared, "only-one"));
+  writeFileSync(join(smallShared, "only-one", "SKILL.md"), "---\nname: only-one\ndescription: tiny\n---\n");
+
+  const { options, driver, dump } = setup();
+  const s = await driver.open({ ...options, cwd: ws, skills: shared }, () => {});
+  const givenCount = readdirSync(join(ws, ".agent", "skills")).length;
+  const omitted = 149 - givenCount;
+  assert.ok(omitted > 0);
+  const opened = rpc(dump).find((m) => m.method === "session/new").params;
+  assert.equal(opened._meta.antigravity.systemPrompt.append, agyWithOmittedSkills(options.instructions, omitted));
+  const id = s.id();
+  await s.dispose();
+
+  const resumed = await driver.open({ ...options, cwd: ws, skills: shared, resume: id }, () => {});
+  const loaded = rpc(dump).filter((m) => m.method === "session/load").at(-1).params;
+  assert.equal(loaded._meta.antigravity.systemPrompt.append, agyWithOmittedSkills(options.instructions, omitted));
+  await resumed.dispose();
+
+  // When all skills fit, instructions stay untouched.
+  const fit = setup();
+  const sFit = await fit.driver.open({ ...fit.options, cwd: smallWs, skills: smallShared }, () => {});
+  assert.equal(rpc(fit.dump).find((m) => m.method === "session/new").params._meta.antigravity.systemPrompt.append, fit.options.instructions);
+  await sFit.dispose();
+
+  // Instructions-less (terminal) sessions stay untouched even when skills are omitted.
+  const term = setup();
+  const sTerm = await term.driver.open({ ...term.options, cwd: termWs, skills: shared, instructions: "" }, () => {});
+  assert.equal(rpc(term.dump).find((m) => m.method === "session/new").params._meta, undefined);
+  await sTerm.dispose();
 });

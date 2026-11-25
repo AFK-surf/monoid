@@ -59,25 +59,40 @@ test "LiquidMorphPhysics open/close springs, recoil pulse, and horizontal splash
   let g0 = liquid_menu_morph_glass(0.0, dark=false)
   let g5 = liquid_menu_morph_glass(0.5, dark=false)
   let g1 = liquid_menu_morph_glass(1.0, dark=false)
-  assert_eq(g0.tint & 0xFFL, 0x67L)
-  assert_true((g0.chroma - 0.06).abs() < 1.0e-9)
-  assert_eq(g5.tint & 0xFFL, 0x93L)
-  assert_true((g5.blur - 4.0).abs() < 1.0e-9)
-  assert_true((g5.refraction - 16.0).abs() < 1.0e-9)
-  assert_true((g5.chroma - 0.045).abs() < 1.0e-9)
-  assert_eq(g1.tint, 0xFDFCFDBFL)
-  assert_true((g1.blur - 6.0).abs() < 1.0e-9)
-  assert_true((g1.bezel - 20.0).abs() < 1.0e-9)
-  assert_true((g1.refraction - 26.0).abs() < 1.0e-9)
-  assert_true((g1.chroma - 0.03).abs() < 1.0e-9)
+  assert_eq(
+    (g0.tint, g0.blur, g0.bezel, g0.refraction, g0.rim, g0.chroma),
+    (0xFDFCFD67L, 1.2, 14.0, 20.0, 0.60, 0.0),
+  )
+  assert_eq(g5.tint, 0xFDFCFD74L)
+  assert_true((g5.blur - 6.0).abs() < 1.0e-9)
+  assert_true((g5.bezel - 18.0).abs() < 1.0e-9)
+  assert_true((g5.refraction - 18.0).abs() < 1.0e-9)
+  assert_true((g5.rim - 0.68).abs() < 1.0e-9)
+  assert_eq(g5.chroma, 0.0)
+  assert_eq(
+    (g1.tint, g1.blur, g1.bezel, g1.refraction, g1.rim, g1.chroma),
+    (0xFDFCFD80L, 14.0, 20.0, 16.0, 0.60, 0.0),
+  )
   let gd0 = liquid_menu_morph_glass(0.0, dark=true)
   let gd5 = liquid_menu_morph_glass(0.5, dark=true)
   let gd1 = liquid_menu_morph_glass(1.0, dark=true)
   assert_eq(gd0.tint, 0x20202067L)
-  assert_eq(gd5.tint, 0x20202088L)
-  assert_eq(gd1.tint, 0x202020A8L)
-  assert_true((gd1.blur - 6.0).abs() < 1.0e-9)
-  assert_true((gd1.chroma - 0.03).abs() < 1.0e-9)
+  assert_eq(gd5.tint, 0x20202074L)
+  assert_eq(gd1.tint, 0x20202080L)
+  // light and dark share every anchor but the tint's RGB
+  for pair in [(g0, gd0), (g5, gd5), (g1, gd1)] {
+    let (l, d) = pair
+    assert_eq(
+      (l.blur, l.bezel, l.refraction, l.rim, l.chroma, l.tint & 0xFFL),
+      (d.blur, d.bezel, d.refraction, d.rim, d.chroma, d.tint & 0xFFL),
+    )
+  }
+  // the resting anchor is the panel recipe's
+  let pl = liquid_panel_glass()
+  assert_eq(
+    (pl.blur, pl.bezel, pl.refraction, pl.rim, pl.chroma, pl.tint & 0xFFL),
+    (g1.blur, g1.bezel, g1.refraction, g1.rim, g1.chroma, g1.tint & 0xFFL),
+  )
 
   // 8. No NaN and close hugs top bar (my <= pill_h + 18pt) across 0..600ms sampling
   for i in 0..<=60 {

@@ -1417,6 +1417,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-fonts profiles/down": 6,
   "wide settings-fonts-code profiles/down": 6,
   "wide settings-decisions profiles/down": 6,
+  "wide settings-progress profiles/down": 6,
   "wide settings-completion profiles/down": 6,
   "wide settings-bars profiles/down": 6,
   "wide settings-about profiles/down": 6,

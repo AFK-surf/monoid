@@ -28,11 +28,12 @@ pub fn glass_menu(merge? : Double = 0.0) -> @ui.Glass {
 
 ///|
 /// Three-anchor continuous optical interpolation for iOS 27.0 in-place liquid-droplet popover morphing:
-/// - `stage == 0.0`: bar-pill anchor, bit-identical to `glass_bar_pill` (`a=0x67`, `blur=2.0`, `bezel=14`, `refr=20`, `rim=0.60`, `chroma=0.06`);
-/// - `stage == 0.5`: mid-flight translucent droplet (`a=0x93` light / `0x88` dark, `blur=4.0`, `bezel=18`, `refr=16`, `rim=0.78`, `chroma=0.045`;
-///   `refr/bezel=0.89 < 1.0` prevents fold-over while keeping backdrop text legible during morph);
-/// - `stage == 1.0`: resting translucent menu anchor, bit-identical to `glass_menu` (`a=0xBF` light / `0xA8` dark, `blur=6.0`, `bezel=20`, `refr=26`, `rim=0.60`, `chroma=0.03`).
-/// Alpha stays strictly within `0x67..0xBF` (at or above `kind == 6`'s `regMix` upper knee) for zero flash.
+/// - `stage == 0.0`: bar-pill anchor (`a=0x67`, `blur=1.2`, `bezel=14`, `refr=20`, `rim=0.60`, `chroma=0`);
+/// - `stage == 0.5`: mid-flight translucent droplet (`a=0x74`, `blur=6.0`, `bezel=18`, `refr=18`, `rim=0.68`, `chroma=0`);
+/// - `stage == 1.0`: resting menu anchor, bit-identical to `glass_menu` (`a=0x80`, `blur=14.0`, `bezel=20`, `refr=16`,
+///   `rim=0.60`, `chroma=0`).
+/// Light and dark share every anchor (only the tint's RGB differs); alpha rises monotonically `0x67..0x80` for zero
+/// flash.
 fn glass_menu_morph(
   stage : Double,
   merge? : Double = 0.0,
@@ -146,9 +147,9 @@ let sheet_under : Double = pane_corner
 pub let sheet_scrim : Int64 = 0x00000047L
 
 ///|
-/// A sheet or floating side drawer over the page: single-layer symmetric 80% iOS 26 liquid glass (`0xFDFCFDCC` in
-/// Light, `0x202020CC` in Dark, aligned with PR #8057 symmetric density curve; `blur=12`, `bezel=20`,
-/// `refraction=24`). Degrades to opaque `t.p.bg` under `MBUI_GLASS=solid`.
+/// A sheet over the page: single-layer symmetric 80% dense liquid glass (`@glass.liquid_sheet_glass`: `0xFDFCFDCC` in
+/// Light, `0x202020CC` in Dark; `blur=14`, `bezel=20`, `refraction=20`, no dispersion). Degrades to opaque `t.p.bg`
+/// under `MBUI_GLASS=solid`.
 pub fn glass_sheet() -> @ui.Glass {
   @glass.liquid_sheet_glass(solid=theme().p.bg)
 }

@@ -129,7 +129,7 @@ let corners_tape_rail : Array[String] = [
   "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people", "settings-workspace-mark", "settings-local-fonts",
   "settings-policy", "settings-policy-text", "settings-policy-option", "settings-security-join",
   "settings-security-off", "settings-security-open", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-fonts",
-  "settings-fonts-code", "settings-decisions", "settings-completion", "settings-bars", "settings-about",
+  "settings-fonts-code", "settings-decisions", "settings-progress", "settings-completion", "settings-bars", "settings-about",
   "settings-changelog", "settings-prices", "settings-notify-off", "settings-notify-denied", "share-card-poster",
   "share-card-receipt", "share-card-senren-adv", "share-card-senren-affection", "share-card-senren-cg",
   "share-card-senren-chat", "share-card-senren-chibi", "share-card-senren-ciallo", "share-card-senren-class",
