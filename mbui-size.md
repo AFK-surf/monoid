@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [1edeb8d91](https://github.com/AFK-surf/monoid/commit/1edeb8d91ba2068cfd57cbd468607d4d931ace2d) feat(pion-station): Wave 8 W8-B sessions_jobs_live | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [be4e447f2](https://github.com/AFK-surf/monoid/commit/be4e447f220b95e3645f28cba2a556d63e958e2b) fix(mbui): viewer controls never fade by themselve | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 | [a9403c5f7](https://github.com/AFK-surf/monoid/commit/a9403c5f758d891a20284a7b52ed34ed83d9160b) fix(lock,station): let admitted members verify off | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.11 | 65 | 100.96 | 130.04 |
 | [dd7cfdf75](https://github.com/AFK-surf/monoid/commit/dd7cfdf759b3bbf099eec36cbe12f3a28df77ad3) fix(station): hear spawn errors before touching ch | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 131.51 |
-| [686de55fb](https://github.com/AFK-surf/monoid/commit/686de55fbd0a4b4cd63ed6222a6d900f2181c2d2) fix(station): give agy only the skills that fit be | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 131.51 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.16 |
 | [1edeb8d91](https://github.com/AFK-surf/monoid/commit/1edeb8d91ba2068cfd57cbd468607d4d931ace2d) feat(pion-station): Wave 8 W8-B sessions_jobs_live | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.18 |
 | [be4e447f2](https://github.com/AFK-surf/monoid/commit/be4e447f220b95e3645f28cba2a556d63e958e2b) fix(mbui): viewer controls never fade by themselve | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.36 |
 | [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.26 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.23 |
 | [a9403c5f7](https://github.com/AFK-surf/monoid/commit/a9403c5f758d891a20284a7b52ed34ed83d9160b) fix(lock,station): let admitted members verify off | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.23 |
 | [dd7cfdf75](https://github.com/AFK-surf/monoid/commit/dd7cfdf759b3bbf099eec36cbe12f3a28df77ad3) fix(station): hear spawn errors before touching ch | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
-| [686de55fb](https://github.com/AFK-surf/monoid/commit/686de55fbd0a4b4cd63ed6222a6d900f2181c2d2) fix(station): give agy only the skills that fit be | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.25 |
