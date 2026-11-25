@@ -125,6 +125,7 @@ test("client.metric enforces strict allowlist, 20%/slow/cut/failed sampling for 
       [attrsOf(firstPage[0]!)["stillfail.duration_ms"], attrsOf(firstPage[0]!)["stillfail.in_view_ms"], attrsOf(firstPage[0]!)["stillfail.waited"], attrsOf(firstPage[0]!)["stillfail.chat"]],
       [1480, 1210, true, undefined],
     );
+    assert.ok(Number(attrsOf(firstPage[0]!)["stillfail.since_core_ms"]) >= 0, "timed from the core's own first step too");
     const barSpans = all.filter((s) => s.name === "bar.switch");
     assert.equal(barSpans.length, 4, "1 sampled + slow + cut + failed");
     const firstAttrs = attrsOf(barSpans[0]!);

@@ -1024,7 +1024,13 @@ static void run(void) {
   std::unique_ptr<facebook::hermes::HermesRuntime> rt;
   @autoreleasepool {
     secure_dir = [@(C.dataDir.c_str()) stringByAppendingPathComponent:@"secure"];
-    double before = since_process_ms();
+    // (the process's own start alone: not a core started again in it, nor one a push started before any app, nor a
+    // process the system launched ahead of the person, iOS's prewarming)
+    static bool ran = false;
+    const char *prewarm = getenv("ActivePrewarm");
+    bool for_push = C.on_message.load(std::memory_order_acquire) == nullptr;  // mb_core_start_alone's
+    double before = ran || for_push || (prewarm && strcmp(prewarm, "1") == 0) ? -1 : since_process_ms();
+    ran = true;
     double t0 = clock_ms(CLOCK_MONOTONIC);
     C.shell = sf_shell_start(C.dataDir.c_str(), on_complete, C.gate);
     if (!C.shell) fatal("the core's files cannot be kept: " + C.dataDir);

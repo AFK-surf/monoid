@@ -151,6 +151,9 @@ export class Inner {
   /// What a start reads of this device's keys once (`signer`: views/lock.ts `install`; `box`: views/vault.ts `install`),
   /// told as each is read: the start's span (`startTrace`).
   startRead: (what: "signer" | "box") => void = () => {};
+  /// When the core's own first step began (the host's monotonic ms; -1: not yet): the start's span's zero
+  /// (`startTrace`), what the app's first page is timed from too (`app.first_page` `since_core_ms`).
+  startedAt = -1;
   /// What people use, counted for still.fail's PostHog project where the app says so (use-counts.ts).
   useCounts!: UseCounts;
   /// What app the UI said it is (`client.device`'s `app`): the counts' `app`.
@@ -223,6 +226,7 @@ function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string
   const span = inner.tracer.root("core.start", Kind.Internal);
   for (const [key, ms] of Object.entries(boot ?? {})) span.set(`stillfail.boot.${key}`, ms);
   const t0 = inner.host.monotonicMs();
+  inner.startedAt = t0;
   const spentFrom = { ...spent };
   const since = () => Math.round(inner.host.monotonicMs() - t0);
   const keys = { signer: Deferred.makeUnsafe<void>(), box: Deferred.makeUnsafe<void>() };
