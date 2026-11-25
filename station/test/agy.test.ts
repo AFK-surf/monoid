@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_SKILL_BUDGET, agySkillBytes, agySkills, agySkillsFitted, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTokenReady, agyKeychain, goKeyringValue, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -2077,4 +2077,38 @@ test("agy subscription falls back to google-vertex when spent (notifying billedF
   const back = pool.runOn("s-fb");
   assert.equal(back.id, "ag-sub");
   assert.equal(sessions.get("s-fb").profile, "ag-sub");
+});
+
+test("agy is given the skills that fit beside the station's tools: the session's own first, then the shared ones smallest first", async () => {
+  assert.equal(agySkillBytes("---\nname: a\ndescription: bb\n---\nbody that is not declared", "/w/.agent/skills/a/SKILL.md"), "name: a\ndescription: bb".length + "/w/.agent/skills/a/SKILL.md".length + 64);
+  const { kept, left } = agySkillsFitted([
+    { name: "big", bytes: 600, own: false }, { name: "small", bytes: 200, own: false }, { name: "mine", bytes: 500, own: true }, { name: "mid", bytes: 300, own: false },
+  ], 1000);
+  assert.deepEqual([...kept], ["mine", "small", "mid"]);
+  assert.deepEqual(left, ["big"]);
+
+  // A workspace of 149 skills of some 400 bytes each (Hypershell's, 2026-11-25): what agy is given stays in the budget.
+  const ws = mkdtempSync(join(tmpdir(), "agy-ws-many-"));
+  const shared = mkdtempSync(join(tmpdir(), "agy-skills-many-"));
+  try {
+    for (let i = 0; i < 149; i++) {
+      mkdirSync(join(shared, `skill-${i}`));
+      writeFileSync(join(shared, `skill-${i}`, "SKILL.md"), `---\nname: skill-${i}\ndescription: ${"x".repeat(380)}\n---\nbody\n`);
+    }
+    // As a session has them (agent-home.ts `sessionSkills`): every shared skill linked into .agents/skills, beside one
+    // of its own that sorts last and is bigger than any shared one.
+    mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
+    for (let i = 0; i < 149; i++) symlinkSync(join(shared, `skill-${i}`), join(ws, ".agents", "skills", `skill-${i}`), "dir");
+    mkdirSync(join(ws, ".agents", "skills", "z-own"));
+    writeFileSync(join(ws, ".agents", "skills", "z-own", "SKILL.md"), `---\nname: z-own\ndescription: ${"y".repeat(900)}\n---\n`);
+    await agySkills(ws, shared);
+    const given = readdirSync(join(ws, ".agent", "skills"));
+    assert.ok(given.includes("z-own"), "the session's own skill is given first");
+    const bytes = given.reduce((n, name) => n + agySkillBytes(readFileSync(join(ws, ".agent", "skills", name, "SKILL.md"), "utf8"), join(ws, ".agent", "skills", name, "SKILL.md")), 0);
+    assert.ok(given.length > 10 && given.length < 149, `${given.length} given`);
+    assert.ok(bytes <= AGY_SKILL_BUDGET, `${bytes} bytes`);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+    rmSync(shared, { recursive: true, force: true });
+  }
 });
