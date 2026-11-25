@@ -109,8 +109,16 @@ const SKILL_DIRS_MOST = 200;
 /// time up to RETRY_MAX_MS (only while there is).
 const RETRY_MS = 60_000;
 const RETRY_MAX_MS = 30 * 60_000;
+/// How long a remote station's concurrency slot lease lasts without renewal (reclaims crashed borrowers automatically).
+const SLOT_LEASE_MS = 5 * 60_000;
+/// How often a borrower renews its active concurrency slot leases while holding at least one slot (no timer when idle).
+const SLOT_RENEW_MS = 2 * 60_000;
 const CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token";
+
+export type SlotClaimResult =
+  | { ok: true; fallback?: true }
+  | { ok: false; capped: true; active: number; cap: number; protection: boolean };
 
 export type ShareRole = "host" | "user";
 /// What the overview says of a shared profile or skill: for its host also the stations that have it (`users`); for a
@@ -174,6 +182,16 @@ export type SharingDeps = {
   readers?: () => ReaderSelectConfig;
   /// Service profile adapters for non-agent-runtime accounts (`access.kind === "service"`).
   services?: ServiceRegistry;
+  /// Canonical account key for a local profile id (e.g. `account:<email>` or `profile:<id>`).
+  accountKey?: (profileId: string) => string;
+  /// Effective active-session concurrency cap for a local profile id (undefined: unlimited).
+  accountCap?: (profileId: string) => number | undefined;
+  /// Whether the effective concurrency cap for a local profile id comes from new-account protection.
+  accountProtection?: (profileId: string) => boolean;
+  /// Locally active sessions on this station for the given canonical `accountKey`.
+  localActiveForAccount?: (accountKey: string) => number;
+  /// Called when a cross-station concurrency slot frees up so queued local sessions can drain.
+  onSlotFreed?: () => void;
 };
 
 /// `dir`: of a skill, its directory's device and inode (`dev:ino`), by which it is found again once renamed.
@@ -396,6 +414,28 @@ export class Sharing {
   /// What reads the skills shared from here and changes `state.hosted` by it (`syncHosted`, `takeEdit`, a skill
   /// sent): one at a time, so that what one read is not written over by another that read before it.
   private hostedTurn: Promise<unknown> = Promise.resolve();
+  /// Per-process epoch for cross-station concurrency slots: borrowers re-sync active slots when a host restarts.
+  private readonly slotEpoch = randomBytes(6).toString("hex");
+  /// Active concurrency slots held by remote borrower stations on profiles hosted here, keyed by `${peer}\0${session}`.
+  private hostedSlots = new Map<string, { peer: string; session: string; shareId: string; profileId: string; accountKey: string; expiresAt: number }>();
+  /// Earliest-deadline lease expiry timer for `hostedSlots` (null while no remote slots are held).
+  private slotExpiryCancel: (() => void) | null = null;
+  /// Last `${otherActive}:${cap}` pushed to each borrower (`${shareId}\0${peer}`), to avoid redundant pushes.
+  private lastToldSlots = new Map<string, string>();
+  /// Cached active session counts on other stations (host + other borrowers) for each borrowed `shareId`.
+  private borrowedOtherActive = new Map<string, number>();
+  /// Host-reported effective concurrency cap for each borrowed `shareId` (null: unlimited).
+  private borrowedHostCap = new Map<string, number | null>();
+  /// Active borrowed concurrency slots currently held by local sessions, keyed by local session key.
+  private borrowedHeldSlots = new Map<string, { host: string; shareId: string; profileId: string }>();
+  /// Last observed `slotEpoch` per host station (detects host restarts to re-register active slots).
+  private hostSlotEpoch = new Map<string, string>();
+  /// Hosts whose borrowed slot state has been reconciled once in this process run.
+  private slotSyncedHosts = new Set<string>();
+  /// Heartbeat timer renewing `borrowedHeldSlots` leases while at least one borrowed slot is held (null when idle).
+  private slotRenewCancel: (() => void) | null = null;
+  /// Older hosts that refused `share.slotClaim` / `share.slotRenew` with `unknown share request`.
+  private slotUnsupportedHosts = new Set<string>();
 
   constructor(deps: SharingDeps) {
     this.deps = deps;
@@ -816,6 +856,10 @@ export class Sharing {
     this.stopWatches();
     this.retry?.();
     this.retry = null;
+    this.slotExpiryCancel?.();
+    this.slotExpiryCancel = null;
+    this.slotRenewCancel?.();
+    this.slotRenewCancel = null;
     await this.time.close();
     await this.program.close();
     // (the links' turn, files alone, done; a pass still asking other stations is not waited for, its watches refused)
@@ -946,7 +990,10 @@ export class Sharing {
         }
       }
       if (peers.length > 0) await Promise.all(peers);
-      if (!this.shares().has(id) && Object.keys(hosted.told).length === 0) delete state.hosted[id];
+      if (!this.shares().has(id) && Object.keys(hosted.told).length === 0) {
+        delete state.hosted[id];
+        this.clearHostedSlotsForShare(id);
+      }
     }
     // Handed to another station: the stations told of it hear where it went.
     for (const [id, moved] of Object.entries(state.moved)) {
@@ -994,10 +1041,12 @@ export class Sharing {
         if (!had.stale && !had.profileUpdate) {
           const now = await this.deps.ask(had.host, this.askIn(had), { method: "share.version", id, ...(had.kind === "skill" ? { hidden: !(await this.skillLinked(id, had)) } : {}) });
           this.unreachable.delete(had.host);
+          if (typeof now?.slotEpoch === "string") this.noteHostSlotEpoch(had.host, now.slotEpoch);
           if (typeof now?.moved === "string") {
             had.host = now.moved;
             had.stale = true;
           } else if (now?.version === had.version) {
+            if (had.kind === "profile") this.ensureHostSlotsSynced(had.host);
             this.checked.add(id);
             continue;
           }
@@ -1011,6 +1060,9 @@ export class Sharing {
           // counted, twice)
           if (state.borrowed[id] !== had) continue;
           if (had.kind === "profile") {
+            if (typeof got?.slotEpoch === "string") this.noteHostSlotEpoch(had.host, got.slotEpoch);
+            this.applyBorrowedSlotSnapshot(id, got?.otherActive, got?.hostCap);
+            this.ensureHostSlotsSynced(had.host);
             await this.placedHome(await this.placeProfile(id, had, got));
             // (lent meanwhile, or heard of again, while it was placed: that one's copy in its place, as above)
             if (state.borrowed[id] !== had) continue;
@@ -1147,6 +1199,11 @@ export class Sharing {
   /// A copy taken away (already gone from the state): its profile, or its skill's link and files.
   private async drop(id: string, had: Borrowed) {
     if (had.kind === "profile") {
+      this.borrowedOtherActive.delete(id);
+      this.borrowedHostCap.delete(id);
+      for (const [session, held] of [...this.borrowedHeldSlots.entries()]) {
+        if (held.shareId === id) this.releaseBorrowedSlot(session);
+      }
       await this.deps.config.updateSoon((raw) => {
         raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((p: Json) => !(isObject(p?.share) && p.share.id === id && p.share.borrowed === true));
       });
@@ -1340,6 +1397,9 @@ export class Sharing {
       this.heardAuto(peer, request?.acceptAutoChats === true && request?.tasksOnly !== true);
       return { heard: true };
     }
+    if (method === "share.slots") return this.heardSlots(peer, id, request);
+    if (method === "share.slotRelease") return this.handleSlotRelease(peer, id, request);
+    if (method === "share.slotRenew") return this.handleSlotRenew(peer, request);
     const state = this.readState();
     const moved = state.moved[id];
     if (moved && method === "share.version") return { moved: moved.to };
@@ -1371,7 +1431,7 @@ export class Sharing {
         this.writeState(state);
         this.deps.changed();
       }
-      return { version };
+      return { version, slotEpoch: this.slotEpoch };
     }
     if (own.kind === "profile") {
       const p = own.profile!;
@@ -1384,8 +1444,13 @@ export class Sharing {
         const at = state.hosted[id]?.version ?? 0;
         // It has a copy now: it is told when this one changes.
         this.told(id, peer, at);
-        return { version: at, profile: portable(now.profile), email, allow: now.allow, ...(now.allowAuto ? { allowAuto: true } : {}), workspaces: this.sharedIn(now.profile), quotaRevision: state.hosted[id]?.quotaRevision ?? 0 };
+        const accountKey = this.resolveAccountKey(now.profile);
+        const hostCap = this.resolveAccountCap(now.profile) ?? null;
+        const otherActive = this.hostOtherActiveFor(accountKey, peer);
+        this.lastToldSlots.set(`${id}\0${peer}`, `${otherActive}:${hostCap ?? ""}`);
+        return { version: at, profile: portable(now.profile), email, allow: now.allow, ...(now.allowAuto ? { allowAuto: true } : {}), workspaces: this.sharedIn(now.profile), quotaRevision: state.hosted[id]?.quotaRevision ?? 0, otherActive, hostCap, slotEpoch: this.slotEpoch };
       }
+      if (method === "share.slotClaim") return this.handleSlotClaim(peer, id, p, request);
       if (method === "share.lend") {
         if (this.moving.has(id)) throw new Error("the login is being moved to another station");
         return this.lend(p, typeof request.rejected === "string" ? request.rejected : undefined);
@@ -1669,6 +1734,407 @@ export class Sharing {
     next.last_refresh = new Date(this.time.now()).toISOString();
     await writePrivateSoon(file, JSON.stringify(next, null, 2));
     return next;
+  }
+
+  // ── cross-station concurrency slots ──
+
+  private resolveAccountKey(p: Json): string {
+    if (this.deps.accountKey) return this.deps.accountKey(String(p.id));
+    if (typeof p?.share?.email === "string" && p.share.email !== "") return `account:${p.share.email}`;
+    return `profile:${p.id}`;
+  }
+
+  private resolveAccountCap(p: Json): number | undefined {
+    if (this.deps.accountCap) return this.deps.accountCap(String(p.id));
+    const cap = p?.maxConcurrentSessions;
+    return typeof cap === "number" && Number.isInteger(cap) && cap > 0 ? cap : undefined;
+  }
+
+  private resolveAccountProtection(p: Json, cap: number | undefined): boolean {
+    if (this.deps.accountProtection) return this.deps.accountProtection(String(p.id));
+    return cap !== undefined && p?.newAccountProtection === true;
+  }
+
+  private pruneExpiredSlots(): string[] {
+    const now = this.time.now();
+    const freed: string[] = [];
+    for (const [slotKey, entry] of [...this.hostedSlots.entries()]) {
+      if (entry.expiresAt <= now) {
+        this.hostedSlots.delete(slotKey);
+        freed.push(entry.accountKey);
+      }
+    }
+    return freed;
+  }
+
+  private scheduleSlotExpiry(): void {
+    this.slotExpiryCancel?.();
+    this.slotExpiryCancel = null;
+    if (this.closed || this.hostedSlots.size === 0) return;
+    let earliest = Number.POSITIVE_INFINITY;
+    for (const entry of this.hostedSlots.values()) {
+      if (entry.expiresAt < earliest) earliest = entry.expiresAt;
+    }
+    if (!Number.isFinite(earliest)) return;
+    const wait = Math.max(1, earliest - this.time.now());
+    this.slotExpiryCancel = this.time.after(wait, () => {
+      this.slotExpiryCancel = null;
+      const freed = this.pruneExpiredSlots();
+      this.scheduleSlotExpiry();
+      if (freed.length > 0) {
+        for (const key of new Set(freed)) this.broadcastSlotsForAccount(key);
+        this.deps.onSlotFreed?.();
+      }
+    });
+  }
+
+  private hostedRemoteActive(accountKey: string, excludePeer?: string): number {
+    const now = this.time.now();
+    let count = 0;
+    for (const entry of this.hostedSlots.values()) {
+      if (entry.accountKey === accountKey && entry.expiresAt > now && (excludePeer === undefined || entry.peer !== excludePeer)) count++;
+    }
+    return count;
+  }
+
+  private hostOtherActiveFor(accountKey: string, peer: string): number {
+    return (this.deps.localActiveForAccount?.(accountKey) ?? 0) + this.hostedRemoteActive(accountKey, peer);
+  }
+
+  private broadcastSlotsForAccount(accountKey: string, skipPeer?: string): void {
+    if (this.closed) return;
+    const state = this.readState();
+    for (const [id, own] of this.shares()) {
+      if (own.kind !== "profile" || !own.profile) continue;
+      if (this.resolveAccountKey(own.profile) !== accountKey) continue;
+      const hosted = state.hosted[id];
+      if (!hosted) continue;
+      const cap = this.resolveAccountCap(own.profile) ?? null;
+      for (const peer of Object.keys(hosted.told)) {
+        if (peer === skipPeer || this.deps.itself?.(peer) === true) continue;
+        const otherActive = this.hostOtherActiveFor(accountKey, peer);
+        const sig = `${otherActive}:${cap ?? ""}`;
+        const key = `${id}\0${peer}`;
+        if (this.lastToldSlots.get(key) === sig) continue;
+        this.lastToldSlots.set(key, sig);
+        void this.deps.ask(peer, null, { method: "share.slots", id, active: otherActive, cap, slotEpoch: this.slotEpoch }).catch(() => {
+          if (this.lastToldSlots.get(key) === sig) this.lastToldSlots.delete(key);
+        });
+      }
+    }
+  }
+
+  private clearHostedSlotsForShare(shareId: string): void {
+    const affected = new Set<string>();
+    for (const [slotKey, entry] of [...this.hostedSlots.entries()]) {
+      if (entry.shareId === shareId) {
+        this.hostedSlots.delete(slotKey);
+        affected.add(entry.accountKey);
+      }
+    }
+    for (const key of [...this.lastToldSlots.keys()]) {
+      if (key.startsWith(`${shareId}\0`)) this.lastToldSlots.delete(key);
+    }
+    this.scheduleSlotExpiry();
+    if (affected.size > 0) {
+      for (const key of affected) this.broadcastSlotsForAccount(key);
+      this.deps.onSlotFreed?.();
+    }
+  }
+
+  /// Called by the hub when local active sessions or profile caps change: pushes updated `otherActive` counts to
+  /// borrowers of hosted subscription profiles (deduplicated per peer, zero traffic when unchanged).
+  localActiveChanged(): void {
+    if (this.closed) return;
+    const keys = new Set<string>();
+    for (const [id, own] of this.shares()) {
+      if (own.kind !== "profile" || !own.profile) continue;
+      const cap = this.resolveAccountCap(own.profile);
+      const hasTold = [...this.lastToldSlots.keys()].some((k) => k.startsWith(`${id}\0`));
+      const accountKey = this.resolveAccountKey(own.profile);
+      if (cap !== undefined || hasTold || this.hostedRemoteActive(accountKey) > 0) keys.add(accountKey);
+    }
+    for (const key of keys) this.broadcastSlotsForAccount(key);
+  }
+
+  /// Active sessions on other stations sharing `profileId`'s underlying account:
+  /// on a host, the remote borrower slots; on a borrower, the host-reported count of all stations other than this one.
+  remoteActive(profileId: string): number {
+    const p = this.profiles().find((x) => x.id === profileId);
+    if (!p || !isObject(p.share) || typeof p.share.id !== "string") return 0;
+    if (p.share.borrowed === true) return this.borrowedOtherActive.get(p.share.id) ?? 0;
+    return this.hostedRemoteActive(this.resolveAccountKey(p));
+  }
+
+  /// Host-reported effective concurrency cap for a borrowed profile (when known and positive).
+  remoteCap(profileId: string): number | undefined {
+    const p = this.profiles().find((x) => x.id === profileId);
+    if (!p || !this.borrowedSubscription(p) || typeof p.share?.id !== "string") return undefined;
+    const cap = this.borrowedHostCap.get(p.share.id);
+    return typeof cap === "number" && Number.isInteger(cap) && cap > 0 ? cap : undefined;
+  }
+
+  /// Whether starting a turn on `profile` requires an authoritative slot claim on its host station.
+  needsRemoteSlot(profile: Json): boolean {
+    if (!this.borrowedSubscription(profile)) return false;
+    const shareId = typeof profile?.share?.id === "string" ? profile.share.id : null;
+    if (shareId === null) return false;
+    const cap = profile.maxConcurrentSessions;
+    if (typeof cap === "number" && Number.isInteger(cap) && cap > 0) return true;
+    const hostCap = this.borrowedHostCap.get(shareId);
+    return typeof hostCap === "number" && Number.isInteger(hostCap) && hostCap > 0;
+  }
+
+  private handleSlotClaim(peer: string, shareId: string, p: Json, request: Json): Json {
+    const session = typeof request?.session === "string" ? request.session : "";
+    if (session === "") throw new Error("missing session");
+    const force = request?.force === true;
+    const expired = this.pruneExpiredSlots();
+    if (expired.length > 0) {
+      for (const k of new Set(expired)) this.broadcastSlotsForAccount(k);
+      this.deps.onSlotFreed?.();
+    }
+    const accountKey = this.resolveAccountKey(p);
+    const cap = this.resolveAccountCap(p);
+    const protection = this.resolveAccountProtection(p, cap);
+    const slotKey = `${peer}\0${session}`;
+    const existing = this.hostedSlots.get(slotKey);
+    const now = this.time.now();
+    if (existing && existing.accountKey === accountKey) {
+      existing.shareId = shareId;
+      existing.profileId = String(p.id);
+      existing.expiresAt = now + SLOT_LEASE_MS;
+      this.scheduleSlotExpiry();
+      const otherActive = this.hostOtherActiveFor(accountKey, peer);
+      this.lastToldSlots.set(`${shareId}\0${peer}`, `${otherActive}:${cap ?? ""}`);
+      return { ok: true, otherActive, cap: cap ?? null, protection, slotEpoch: this.slotEpoch };
+    }
+    const localActive = this.deps.localActiveForAccount?.(accountKey) ?? 0;
+    const remoteActive = this.hostedRemoteActive(accountKey);
+    const totalActive = localActive + remoteActive;
+    if (!force && cap !== undefined && cap > 0 && totalActive >= cap) {
+      const otherActive = this.hostOtherActiveFor(accountKey, peer);
+      this.lastToldSlots.set(`${shareId}\0${peer}`, `${otherActive}:${cap}`);
+      return { ok: false, capped: true, active: totalActive, otherActive, cap, protection, slotEpoch: this.slotEpoch };
+    }
+    if (existing) {
+      this.hostedSlots.delete(slotKey);
+      this.broadcastSlotsForAccount(existing.accountKey);
+      this.deps.onSlotFreed?.();
+    }
+    this.hostedSlots.set(slotKey, { peer, session, shareId, profileId: String(p.id), accountKey, expiresAt: now + SLOT_LEASE_MS });
+    this.scheduleSlotExpiry();
+    const otherActive = this.hostOtherActiveFor(accountKey, peer);
+    this.lastToldSlots.set(`${shareId}\0${peer}`, `${otherActive}:${cap ?? ""}`);
+    this.broadcastSlotsForAccount(accountKey, peer);
+    return { ok: true, otherActive, cap: cap ?? null, protection, slotEpoch: this.slotEpoch };
+  }
+
+  private handleSlotRelease(peer: string, shareId: string, request: Json): Json {
+    const session = typeof request?.session === "string" ? request.session : "";
+    if (session === "") return { released: false };
+    const slotKey = `${peer}\0${session}`;
+    const existing = this.hostedSlots.get(slotKey);
+    if (existing && (shareId === "" || existing.shareId === shareId)) {
+      this.hostedSlots.delete(slotKey);
+      this.scheduleSlotExpiry();
+      this.broadcastSlotsForAccount(existing.accountKey);
+      this.deps.onSlotFreed?.();
+      return { released: true };
+    }
+    return { released: false };
+  }
+
+  private handleSlotRenew(peer: string, request: Json): Json {
+    const activeList = Array.isArray(request?.active) ? request.active : [];
+    const now = this.time.now();
+    const affected = new Set<string>(this.pruneExpiredSlots());
+    let freed = affected.size > 0;
+    const ownShares = this.shares();
+    const rosters = this.rosters();
+    const wanted = new Map<string, { shareId: string; session: string; profile: Json; accountKey: string }>();
+    for (const item of activeList) {
+      const id = typeof item?.id === "string" ? item.id : "";
+      const session = typeof item?.session === "string" ? item.session : "";
+      if (id === "" || session === "") continue;
+      const own = ownShares.get(id);
+      if (own?.kind === "profile" && own.profile && this.mayUse(own.allow, peer) && (rosters === null || this.reach(own, peer, rosters) !== null)) {
+        wanted.set(`${peer}\0${session}`, { shareId: id, session, profile: own.profile, accountKey: this.resolveAccountKey(own.profile) });
+      }
+    }
+    for (const [slotKey, entry] of [...this.hostedSlots.entries()]) {
+      if (entry.peer !== peer) continue;
+      const next = wanted.get(slotKey);
+      if (!next || next.accountKey !== entry.accountKey) {
+        this.hostedSlots.delete(slotKey);
+        affected.add(entry.accountKey);
+        freed = true;
+      }
+    }
+    for (const [slotKey, w] of wanted) {
+      const prev = this.hostedSlots.get(slotKey);
+      this.hostedSlots.set(slotKey, { peer, session: w.session, shareId: w.shareId, profileId: String(w.profile.id), accountKey: w.accountKey, expiresAt: now + SLOT_LEASE_MS });
+      if (!prev || prev.accountKey !== w.accountKey) affected.add(w.accountKey);
+    }
+    this.scheduleSlotExpiry();
+    for (const key of affected) this.broadcastSlotsForAccount(key, peer);
+    if (freed) this.deps.onSlotFreed?.();
+    const slots: Record<string, { otherActive: number; cap: number | null }> = {};
+    for (const [id, own] of ownShares) {
+      if (own.kind !== "profile" || !own.profile || !this.mayUse(own.allow, peer)) continue;
+      if (rosters !== null && this.reach(own, peer, rosters) === null) continue;
+      const accountKey = this.resolveAccountKey(own.profile);
+      const cap = this.resolveAccountCap(own.profile) ?? null;
+      const otherActive = this.hostOtherActiveFor(accountKey, peer);
+      this.lastToldSlots.set(`${id}\0${peer}`, `${otherActive}:${cap ?? ""}`);
+      slots[id] = { otherActive, cap };
+    }
+    return { ok: true, slots, slotEpoch: this.slotEpoch };
+  }
+
+  private applyBorrowedSlotSnapshot(shareId: string, active: unknown, cap: unknown): boolean {
+    const prevActive = this.borrowedOtherActive.get(shareId) ?? 0;
+    const prevCap = this.borrowedHostCap.get(shareId);
+    let opened = false;
+    if (typeof active === "number" && Number.isInteger(active) && active >= 0) {
+      this.borrowedOtherActive.set(shareId, active);
+      if (active < prevActive) opened = true;
+    }
+    if (cap === null) {
+      this.borrowedHostCap.set(shareId, null);
+      if (typeof prevCap === "number") opened = true;
+    } else if (typeof cap === "number" && Number.isInteger(cap) && cap > 0) {
+      this.borrowedHostCap.set(shareId, cap);
+      if (typeof prevCap === "number" && cap > prevCap) opened = true;
+    }
+    return opened;
+  }
+
+  private heardSlots(peer: string, id: string, request: Json): Json {
+    const state = this.readState();
+    const isHost = state.borrowed[id]?.host === peer || this.profiles().some((p) => p.share?.id === id && p.share?.borrowed === true && p.share?.host === peer);
+    if (!isHost) return { heard: false };
+    if (typeof request?.slotEpoch === "string") this.noteHostSlotEpoch(peer, request.slotEpoch);
+    if (this.applyBorrowedSlotSnapshot(id, request?.active, request?.cap)) this.deps.onSlotFreed?.();
+    return { heard: true };
+  }
+
+  private noteHostSlotEpoch(host: string, epoch: string): void {
+    const prev = this.hostSlotEpoch.get(host);
+    this.hostSlotEpoch.set(host, epoch);
+    this.slotUnsupportedHosts.delete(host);
+    if (prev !== undefined && prev !== epoch) {
+      const hasHeld = [...this.borrowedHeldSlots.values()].some((v) => v.host === host);
+      if (hasHeld) void this.renewBorrowedSlotsForHost(host);
+    }
+  }
+
+  private ensureHostSlotsSynced(host: string): void {
+    if (this.closed || this.slotSyncedHosts.has(host) || this.slotUnsupportedHosts.has(host)) return;
+    this.slotSyncedHosts.add(host);
+    void this.renewBorrowedSlotsForHost(host);
+  }
+
+  private ensureSlotRenewTimer(): void {
+    if (this.closed || this.slotRenewCancel !== null || this.borrowedHeldSlots.size === 0) return;
+    // timer: heartbeat renewing active borrowed concurrency slot leases while turns run
+    this.slotRenewCancel = this.time.after(SLOT_RENEW_MS, () => {
+      this.slotRenewCancel = null;
+      void this.renewAllBorrowedSlots().finally(() => this.ensureSlotRenewTimer());
+    });
+  }
+
+  private async renewAllBorrowedSlots(): Promise<void> {
+    if (this.closed) return;
+    const hosts = new Set([...this.borrowedHeldSlots.values()].map((v) => v.host));
+    await Promise.all([...hosts].map((host) => this.renewBorrowedSlotsForHost(host)));
+  }
+
+  private async renewBorrowedSlotsForHost(host: string): Promise<void> {
+    if (this.closed || this.slotUnsupportedHosts.has(host)) return;
+    const active = [...this.borrowedHeldSlots.entries()]
+      .filter(([, v]) => v.host === host)
+      .map(([session, v]) => ({ id: v.shareId, session }));
+    try {
+      const got = await this.deps.ask(host, null, { method: "share.slotRenew", active });
+      if (typeof got?.slotEpoch === "string") this.hostSlotEpoch.set(host, got.slotEpoch);
+      if (isObject(got?.slots)) {
+        let opened = false;
+        for (const [shareId, info] of Object.entries(got.slots)) {
+          if (this.applyBorrowedSlotSnapshot(shareId, (info as Json)?.otherActive, (info as Json)?.cap)) opened = true;
+        }
+        if (opened) this.deps.onSlotFreed?.();
+      }
+    } catch (e) {
+      if (e instanceof Refused && /unknown share request/i.test(e.message)) {
+        this.slotUnsupportedHosts.add(host);
+      }
+    }
+  }
+
+  private setBorrowedHeldSlot(session: string, next: { host: string; shareId: string; profileId: string }): void {
+    const prev = this.borrowedHeldSlots.get(session);
+    this.borrowedHeldSlots.set(session, next);
+    if (prev && (prev.host !== next.host || prev.shareId !== next.shareId) && !this.slotUnsupportedHosts.has(prev.host)) {
+      void this.deps.ask(prev.host, null, { method: "share.slotRelease", id: prev.shareId, session }).catch(() => {});
+    }
+    this.ensureSlotRenewTimer();
+  }
+
+  /// Atomically claims a concurrency slot on `profile`'s host station before starting a turn on a borrowed profile.
+  async claimBorrowedSlot(profile: Json, session: string, force = false): Promise<SlotClaimResult> {
+    const host = this.hostOf(profile);
+    const shareId = String(profile.share.id);
+    if (this.slotUnsupportedHosts.has(host)) return { ok: true, fallback: true };
+    try {
+      const got = await this.deps.ask(host, null, { method: "share.slotClaim", id: shareId, session, ...(force ? { force: true } : {}) });
+      this.applyBorrowedSlotSnapshot(shareId, got?.otherActive, got?.cap);
+      if (typeof got?.slotEpoch === "string") this.noteHostSlotEpoch(host, got.slotEpoch);
+      if (got?.ok === false && got?.capped === true) {
+        return { ok: false, capped: true, active: Number(got.active ?? 0), cap: Number(got.cap ?? 0), protection: got.protection === true };
+      }
+      this.setBorrowedHeldSlot(session, { host, shareId, profileId: String(profile.id) });
+      return { ok: true };
+    } catch (e) {
+      if (notOurs(e)) {
+        this.askAgain(shareId);
+        throw e;
+      }
+      if (e instanceof Refused && /unknown share request/i.test(e.message)) {
+        this.slotUnsupportedHosts.add(host);
+        return { ok: true, fallback: true };
+      }
+      log.warn("share", "host did not answer concurrency slot claim; falling back to local cap", { profile: profile.id, error: (e as Error).message });
+      this.setBorrowedHeldSlot(session, { host, shareId, profileId: String(profile.id) });
+      return { ok: true, fallback: true };
+    }
+  }
+
+  /// Registers an already-running session adopted across a station restart/handover and re-syncs with its host.
+  adoptBorrowedSlot(profile: Json, session: string): void {
+    if (!this.borrowedSubscription(profile)) return;
+    const host = this.hostOf(profile);
+    const shareId = String(profile.share.id);
+    this.setBorrowedHeldSlot(session, { host, shareId, profileId: String(profile.id) });
+    void this.renewBorrowedSlotsForHost(host);
+  }
+
+  hasBorrowedSlot(session: string): boolean {
+    return this.borrowedHeldSlots.has(session);
+  }
+
+  /// Releases a previously claimed borrowed concurrency slot once its turn ends or open fails.
+  releaseBorrowedSlot(session: string): void {
+    const held = this.borrowedHeldSlots.get(session);
+    if (!held) return;
+    this.borrowedHeldSlots.delete(session);
+    if (this.borrowedHeldSlots.size === 0) {
+      this.slotRenewCancel?.();
+      this.slotRenewCancel = null;
+    }
+    if (!this.slotUnsupportedHosts.has(held.host)) {
+      void this.deps.ask(held.host, null, { method: "share.slotRelease", id: held.shareId, session }).catch(() => {});
+    }
   }
 
   // ── borrowing (the agents' drivers) ──
@@ -2052,6 +2518,7 @@ export class Sharing {
       });
       const after = this.readState();
       delete after.hosted[id];
+      this.clearHostedSlotsForShare(id);
       // Fetched from the new host at once: the workspaces it shares it in are its to say now.
       if (keeps) after.borrowed[id] = { version: (was?.version ?? 0) + 1, hash: "", kind: "profile", name: String(p.name ?? p.id), host: to, allow, ...(auto ? { allowAuto: true } : {}), stale: true, quotaRevision: was?.quotaRevision ?? 0 };
       after.moved[id] = { to, tell: Object.keys(was?.told ?? {}) };

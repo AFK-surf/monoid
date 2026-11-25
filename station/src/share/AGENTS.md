@@ -24,3 +24,9 @@
 
 - A shared profile with `allowAuto` reaches its host and every station that says it takes automatically assigned chats (`acceptAutoChats`, not task-only). Stations push that as it changes (`share.autoChats`, sent on config and cloud changes); a host asks one it has not heard from this run with `describe`, never on a timer. A station never heard from is left out (no credentials go out on a guess); one that does not answer keeps what it said last and is refused for now, never with `NOT_FOR_IT`, so its copy is not dropped.
 - What goes out (`share.changed`, `share.get`, the overview's `allow`) is always the station list it makes now, so older stations and apps read a plain list; `allow` in config then holds only stations a move lent it to besides (`lendTo`).
+
+## Cross-station account concurrency limits
+
+- A shared subscription profile's `maxConcurrentSessions` applies across every station sharing that account, coordinated solely by its host station over `share.*` mesh RPCs (never through cloud, never by polling when idle).
+- Borrowers atomically claim a slot before starting a turn (`share.slotClaim`, with `force: true` for pinned profiles and manual jump-the-queue starts), release it when the turn ends or open fails (`share.slotRelease`), and send a lease heartbeat (`share.slotRenew`) only while holding active slots so crashed borrowers' slots expire after `SLOT_LEASE_MS` (5 min) or clear immediately on reconnect/restart.
+- Hosts push per-peer `otherActive` deltas (`share.slots`) on active-count changes so borrowers' synchronous `pickProfile` / `runOn` avoid saturated accounts and wake queued sessions (`drainCapQueue`) when slots open; older hosts refusing `share.slotClaim` with `unknown share request` fall back cleanly to local caps.

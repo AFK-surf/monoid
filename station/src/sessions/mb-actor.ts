@@ -158,8 +158,8 @@ export class ActorsProgram {
     this.#actors.set(shell.key, shell);
   }
 
-  actor(key: string, runtime: RuntimeKind, deps: SessionDeps): MbActor {
-    const actor = new MbActor(this, key, runtime, deps);
+  actor(key: string, runtime: RuntimeKind, deps: SessionDeps, onStateChange?: () => void): MbActor {
+    const actor = new MbActor(this, key, runtime, deps, onStateChange);
     this.#actors.set(key, actor);
     return actor;
   }
@@ -353,6 +353,7 @@ export class MbActor {
   runtime: RuntimeKind;
   readonly #program: ActorsProgram;
   readonly #deps: SessionDeps;
+  readonly #onStateChange?: () => void;
   #mirror: Mirror;
   /// Lines said of it to the program (`seen` in its mirror: how many of them it took in).
   #sent = 0;
@@ -379,11 +380,12 @@ export class MbActor {
   #adopting: { generation: number; pending: Array<() => void> } | null = null;
   readonly #codex = new Map<number, { version: string | null; matches: (() => Promise<boolean>) | undefined }>();
 
-  constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps) {
+  constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps, onStateChange?: () => void) {
     this.#program = program;
     this.key = key;
     this.runtime = runtime;
     this.#deps = deps;
+    this.#onStateChange = onStateChange;
     this.#mirror = { queued: 0, seen: 0, turn: null, warm: false, deferredEnd: false, codexUpdate: false, agent: null, idleSince: program.now(), notices: 0, waiting: false, refill: false, toolsRetry: false, startFailed: false, unread: [], identity: null, runtime, closed: false };
     this.#post({ runtime });
   }
@@ -405,8 +407,14 @@ export class MbActor {
 
   mirrored(state: Mirror) {
     if (state.seen < this.#readAt) state = { ...state, unread: [] };
+    const prev = this.processState();
     this.#mirror = state;
     this.runtime = state.runtime;
+    if (this.processState() !== prev || state.queued === 0) this.#onStateChange?.();
+  }
+
+  isOpening(): boolean {
+    return this.#openAborts.size > 0;
   }
 
   #session(): AgentSession | null {
@@ -599,6 +607,7 @@ export class MbActor {
     this.#formatAbort?.abort();
     this.#abortOpens();
     this.#program.forget(this.key, this);
+    this.#onStateChange?.();
   }
 
   /// Gives up every runtime session being opened for it (`open`), as `why` (the program's `openAbort`).
@@ -855,6 +864,7 @@ export class MbActor {
         }
         // (given up as it came: never its actor's, ended at once)
         if (abort.signal.aborted || this.#closed) {
+          deps.releaseClaim?.(this.key);
           await opened.session.dispose().catch(() => {});
           throw new OpenAborted(typeof abort.signal.reason === "string" ? abort.signal.reason : "closed");
         }
@@ -870,7 +880,7 @@ export class MbActor {
         if (!session) return null;
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
-      case "profileId": return deps.runOn(this.key, args[0] === true, true, args[1] === true).id;
+      case "profileId": return (deps.acquireRunOn ? await deps.acquireRunOn(this.key, args[0] === true, true, args[1] === true) : deps.runOn(this.key, args[0] === true, true, args[1] === true)).id;
       // A process this station opened whose turn ended saying nothing, that never once reached the station's tools
       // (not even to list them: its MCP connection failed as it opened, 2026-11-19 with the station out of file
       // handles), is one that lost them: why, else null. Not a Codex app-server's, shared by sessions and opened before.

@@ -61,7 +61,7 @@ type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: strin
 const made: Sharing[] = [];
 after(() => Promise.all(made.map((s) => s.close())));
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileAdded?: (id: string) => void; profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void>; clock?: any; recheck?: () => void; accountKey?: (id: string) => string; accountCap?: (id: string) => number | undefined; accountProtection?: (id: string) => boolean; localActiveForAccount?: (key: string) => number; onSlotFreed?: () => void } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -1352,4 +1352,187 @@ test("Sharing calls profileAdded on first reconcile and first borrow, and profil
   await a.sharing.close();
   await b.sharing.close();
   await c.sharing.close();
+});
+
+test("cross-station concurrency slots: host enforces account-wide cap across stations, pushes deltas, wakes queues, handles force and idempotency", async () => {
+  const C = "c".repeat(64);
+  const cloud = new FakeCloud();
+  cloud.peers = [{ id: A, name: "host" }, { id: B, name: "peer-b" }, { id: C, name: "peer-c" }];
+  const time = testClock();
+  const all = new Map<string, Station>();
+  let hostLocalActive = 1;
+  let hostFreed = 0;
+  let bFreed = 0;
+  let cFreed = 0;
+  const a = station(cloud, A, () => all, [{ ...SUB, maxConcurrentSessions: 2, newAccountProtection: true }], undefined, {
+    clock: time.clock,
+    localActiveForAccount: () => hostLocalActive,
+    onSlotFreed: () => { hostFreed++; },
+  });
+  const b = station(cloud, B, () => all, [], undefined, { clock: time.clock, onSlotFreed: () => { bFreed++; } });
+  const c = station(cloud, C, () => all, [], undefined, { clock: time.clock, onSlotFreed: () => { cFreed++; } });
+  all.set(A, a).set(B, b).set(C, c);
+
+  await a.sharing.shareProfile("max", true, null);
+  await settle(a, b, c);
+  const bProfile = b.config.raw().profiles[0];
+  const cProfile = c.config.raw().profiles[0];
+  assert.equal(b.sharing.needsRemoteSlot(bProfile), true);
+  assert.equal(b.sharing.remoteActive(bProfile.id), 1, "borrower receives initial host localActive=1 via share.get");
+  assert.equal(c.sharing.remoteActive(cProfile.id), 1);
+
+  // B claims 1 slot -> total is now 2/2 (host=1, B=1).
+  const r1 = await b.sharing.claimBorrowedSlot(bProfile, "b-s1");
+  assert.deepEqual(r1, { ok: true });
+  assert.equal(a.sharing.remoteActive("max"), 1, "host sees B's active slot");
+  assert.equal(b.sharing.remoteActive(bProfile.id), 1, "B's otherActive excludes B itself (host=1)");
+  await until(() => c.sharing.remoteActive(cProfile.id) === 2, "C receives push with otherActive=2 (host=1 + B=1)");
+
+  // Re-claiming same session on B is idempotent (no double-counting).
+  const r1Again = await b.sharing.claimBorrowedSlot(bProfile, "b-s1");
+  assert.deepEqual(r1Again, { ok: true });
+  assert.equal(a.sharing.remoteActive("max"), 1);
+
+  // C tries to claim -> rejected at 2/2 with protection=true!
+  const r2 = await c.sharing.claimBorrowedSlot(cProfile, "c-s1");
+  assert.deepEqual(r2, { ok: false, capped: true, active: 2, cap: 2, protection: true });
+
+  // C force-claims (manual jump-the-queue / pinned) -> succeeds and brings total to 3/2!
+  const r2Force = await c.sharing.claimBorrowedSlot(cProfile, "c-force", true);
+  assert.deepEqual(r2Force, { ok: true });
+  assert.equal(a.sharing.remoteActive("max"), 2);
+  await until(() => b.sharing.remoteActive(bProfile.id) === 2, "B sees host=1 + C=1");
+
+  // Releasing C's force slot + B's slot drops remoteActive back to 0 and fires onSlotFreed on host & peers.
+  const prevHostFreed = hostFreed;
+  const prevCFreed = cFreed;
+  c.sharing.releaseBorrowedSlot("c-force");
+  await until(() => a.sharing.remoteActive("max") === 1, "host saw C release");
+  b.sharing.releaseBorrowedSlot("b-s1");
+  await until(() => a.sharing.remoteActive("max") === 0, "host saw B release");
+  await until(() => c.sharing.remoteActive(cProfile.id) === 1, "C notified otherActive dropped to 1");
+  assert.ok(hostFreed > prevHostFreed, "host onSlotFreed fired");
+  assert.ok(cFreed > prevCFreed, "C onSlotFreed fired when otherActive decreased");
+
+  // Host local active drops from 1 -> 0 and notifies peers via localActiveChanged().
+  hostLocalActive = 0;
+  a.sharing.localActiveChanged();
+  await until(() => b.sharing.remoteActive(bProfile.id) === 0 && c.sharing.remoteActive(cProfile.id) === 0, "borrowers updated to 0 when host local active drops");
+
+  // C can now claim normally.
+  const r3 = await c.sharing.claimBorrowedSlot(cProfile, "c-s2");
+  assert.deepEqual(r3, { ok: true });
+  c.sharing.releaseBorrowedSlot("c-s2");
+
+  await a.sharing.close();
+  await b.sharing.close();
+  await c.sharing.close();
+});
+
+test("cross-station concurrency slots: long-turn lease renewal keeps slot alive, crashed borrower expires after 5m, cold restart clears immediately, and host restart re-syncs", async () => {
+  const C = "c".repeat(64);
+  const cloud = new FakeCloud();
+  cloud.peers = [{ id: A, name: "host" }, { id: B, name: "peer-b" }, { id: C, name: "peer-c" }];
+  const time = testClock();
+  const all = new Map<string, Station>();
+  let hostFreed = 0;
+  let cFreed = 0;
+  const a = station(cloud, A, () => all, [{ ...SUB, maxConcurrentSessions: 1 }], undefined, {
+    clock: time.clock,
+    onSlotFreed: () => { hostFreed++; },
+  });
+  const b = station(cloud, B, () => all, [], undefined, { clock: time.clock });
+  const c = station(cloud, C, () => all, [], undefined, { clock: time.clock, onSlotFreed: () => { cFreed++; } });
+  all.set(A, a).set(B, b).set(C, c);
+
+  await a.sharing.shareProfile("max", true, null);
+  await settle(a, b, c);
+  const bProfile = b.config.raw().profiles[0];
+  const cProfile = c.config.raw().profiles[0];
+
+  // B claims the single slot and runs for 10 minutes: 2m heartbeats keep the lease alive on Host A!
+  assert.deepEqual(await b.sharing.claimBorrowedSlot(bProfile, "b-long"), { ok: true });
+  for (let i = 0; i < 5; i++) {
+    await time.adjust(2 * 60_000);
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.equal(a.sharing.remoteActive("max"), 1, "active borrower lease stays alive past 10m via 2m heartbeats");
+  assert.deepEqual(await c.sharing.claimBorrowedSlot(cProfile, "c-blocked"), { ok: false, capped: true, active: 1, cap: 1, protection: false });
+
+  // Simulate B crashing (closing without releasing): after 5m lease TTL, Host A expires B's slot and wakes C!
+  await b.sharing.close();
+  const prevHostFreed = hostFreed;
+  const prevCFreed = cFreed;
+  await time.adjust(5 * 60_000 + 1_000);
+  await until(() => a.sharing.remoteActive("max") === 0, "crashed borrower slot expires after 5m TTL");
+  await until(() => c.sharing.remoteActive(cProfile.id) === 0, "C notified after expiry");
+  assert.ok(hostFreed > prevHostFreed);
+  assert.ok(cFreed > prevCFreed);
+
+  // C claims the slot; simulate C cold-restarting (sending empty slotRenew) -> immediately frees slot without waiting 5m!
+  assert.deepEqual(await c.sharing.claimBorrowedSlot(cProfile, "c-crash"), { ok: true });
+  assert.equal(a.sharing.remoteActive("max"), 1);
+  await a.sharing.handle(C, { method: "share.slotRenew", active: [] });
+  assert.equal(a.sharing.remoteActive("max"), 0, "empty slotRenew from restarted peer clears stale slots immediately");
+  // Drop local in-memory record on C to match the simulated cold restart before claiming the next session.
+  c.sharing.releaseBorrowedSlot("c-crash");
+
+  // Re-claim on C, then simulate Host A restarting (new slotEpoch pushed) -> C automatically re-registers its active slot!
+  assert.deepEqual(await c.sharing.claimBorrowedSlot(cProfile, "c-live"), { ok: true });
+  const a2 = station(cloud, A, () => all, a.config.raw().profiles, undefined, { clock: time.clock });
+  all.set(A, a2);
+  assert.equal(a2.sharing.remoteActive("max"), 0, "restarted host begins with empty slot table");
+  await c.sharing.handle(A, { method: "share.slots", id: cProfile.share.id, active: 0, cap: 1, slotEpoch: "new-epoch" });
+  await until(() => a2.sharing.remoteActive("max") === 1, "borrower re-registers active slot when host epoch changes");
+
+  await a.sharing.close();
+  await a2.sharing.close();
+  await c.sharing.close();
+});
+
+test("cross-station concurrency slots: older host refusing share.slotClaim falls back cleanly, and sibling profiles share one accountKey cap", async () => {
+  const cloud = new FakeCloud();
+  const time = testClock();
+  const all = new Map<string, Station>();
+  const a = station(
+    cloud,
+    A,
+    () => all,
+    [
+      { ...SUB, id: "p1", name: "Sub 1", maxConcurrentSessions: 2 },
+      { ...SUB, id: "p2", name: "Sub 2" },
+    ],
+    undefined,
+    {
+      clock: time.clock,
+      accountKey: () => "account:shared@example.com",
+      accountCap: () => 2,
+    },
+  );
+  const b = station(cloud, B, () => all, [], undefined, { clock: time.clock });
+  all.set(A, a).set(B, b);
+
+  await a.sharing.shareProfile("p1", true, null);
+  await a.sharing.shareProfile("p2", true, null);
+  await settle(a, b);
+  const bp1 = b.config.raw().profiles.find((p: any) => p.name === "Sub 1");
+  const bp2 = b.config.raw().profiles.find((p: any) => p.name === "Sub 2");
+  // p2 has no local maxConcurrentSessions, but host reported hostCap=2 via sibling accountKey!
+  assert.equal(b.sharing.needsRemoteSlot(bp2), true);
+  assert.equal(b.sharing.remoteCap(bp2.id), 2);
+  assert.deepEqual(await b.sharing.claimBorrowedSlot(bp1, "s1"), { ok: true });
+  assert.deepEqual(await b.sharing.claimBorrowedSlot(bp2, "s2"), { ok: true });
+  // 3rd session on either sibling profile is rejected at 2/2!
+  assert.deepEqual(await b.sharing.claimBorrowedSlot(bp1, "s3"), { ok: false, capped: true, active: 2, cap: 2, protection: false });
+
+  // Older host answering Refused("unknown share request share.slotClaim") falls back without throwing.
+  const origAsk = (b.sharing as any).deps.ask;
+  (b.sharing as any).deps.ask = async (_to: string, _ws: string | null, req: any) => {
+    if (req?.method === "share.slotClaim") throw new Refused("unknown share request share.slotClaim");
+    return origAsk(_to, _ws, req);
+  };
+  assert.deepEqual(await b.sharing.claimBorrowedSlot(bp1, "s-old-host"), { ok: true, fallback: true });
+
+  await a.sharing.close();
+  await b.sharing.close();
 });

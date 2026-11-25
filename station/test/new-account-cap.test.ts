@@ -9,6 +9,7 @@ import { Accounts as AccountManager, checkConfig, DEFAULT_NEW_SUBSCRIPTION_MAX_C
 import { ConfigFile } from "../src/ops/config.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { AccountCapError } from "../src/sessions/accounts.ts";
+import { type SlotCoordinator } from "../src/sessions/hub.ts";
 import { isSessionCapped, pickProfile } from "../src/sessions/pool.ts";
 import { portable } from "../src/share/index.ts";
 import { Store } from "../src/store/store.ts";
@@ -515,5 +516,182 @@ test("accounts: madeOfLogin defaults maxConcurrentSessions=8, putProfile sets/cl
     await accounts.close();
     store.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cross-station concurrency cap via Hub SlotCoordinator: enforces global cap across host and borrower, queues and drains on remote release, falls back on host rejection, and supports forceCap", async () => {
+  const time = testClock();
+  const hostRig = new Rig({ clock: time.clock });
+  const borrowerRig = new Rig({ clock: time.clock });
+  try {
+    hostRig.edit((raw) => {
+      raw.profiles[0].id = "sub-host";
+      raw.profiles[0].name = "共享订阅A";
+      raw.profiles[0].access = { kind: "subscription" };
+      raw.profiles[0].maxConcurrentSessions = 2;
+      raw.profiles[0].newAccountProtection = true;
+      raw.profiles[0].models = ["opus"];
+    });
+    borrowerRig.edit((raw) => {
+      raw.profiles[0].id = "sub-borrowed";
+      raw.profiles[0].name = "共享订阅A";
+      raw.profiles[0].access = { kind: "subscription" };
+      raw.profiles[0].maxConcurrentSessions = 2;
+      raw.profiles[0].newAccountProtection = true;
+      raw.profiles[0].models = ["opus"];
+      raw.profiles[0].share = { id: "sh-sub", borrowed: true, host: "host-a" };
+    });
+
+    // In-memory coordinator mirroring Host <-> Borrower slot ledger.
+    const remoteSlots = new Set<string>();
+    const syncDrain = (prevBorrowerOther: number) => {
+      const nextBorrowerOther = hostRig.hub.localActiveForAccount(hostRig.hub.accounts.accountKeyOf("sub-host"));
+      if (nextBorrowerOther < prevBorrowerOther) borrowerRig.hub.drainCapQueue();
+    };
+    let lastHostLocal = 0;
+    const hostCoord: SlotCoordinator = {
+      remoteActive: (id) => (id === "sub-host" ? remoteSlots.size : 0),
+      needsRemoteSlot: () => false,
+      claimBorrowedSlot: async () => ({ ok: true }),
+      adoptBorrowedSlot: () => {},
+      hasBorrowedSlot: () => false,
+      releaseBorrowedSlot: () => {},
+      localActiveChanged: () => {
+        const prev = lastHostLocal;
+        lastHostLocal = hostRig.hub.localActiveForAccount(hostRig.hub.accounts.accountKeyOf("sub-host"));
+        syncDrain(prev);
+      },
+    };
+    const borrowerCoord: SlotCoordinator = {
+      remoteActive: (id) => (id === "sub-borrowed" ? lastHostLocal : 0),
+      needsRemoteSlot: (p) => p.id === "sub-borrowed",
+      claimBorrowedSlot: async (_p, session, force) => {
+        const localOnHost = hostRig.hub.localActiveForAccount(hostRig.hub.accounts.accountKeyOf("sub-host"));
+        lastHostLocal = localOnHost;
+        if (remoteSlots.has(session)) return { ok: true };
+        const total = localOnHost + remoteSlots.size;
+        if (!force && total >= 2) {
+          return { ok: false, capped: true, active: total, cap: 2, protection: true };
+        }
+        remoteSlots.add(session);
+        return { ok: true };
+      },
+      adoptBorrowedSlot: (_p, session) => { remoteSlots.add(session); },
+      hasBorrowedSlot: (session) => remoteSlots.has(session),
+      releaseBorrowedSlot: (session) => {
+        if (remoteSlots.delete(session)) hostRig.hub.drainCapQueue();
+      },
+      localActiveChanged: () => {},
+    };
+    hostRig.hub.setSlotCoordinator(hostCoord);
+    borrowerRig.hub.setSlotCoordinator(borrowerCoord);
+
+    // 1. Host starts 1 session, Borrower starts 1 session -> global 2/2 reached!
+    await hostRig.accept(message({ ts: "1.0", threadTs: "1000.1", text: "host 1" }));
+    await settle();
+    assert.equal(hostRig.claude.sessions.length, 1);
+
+    await borrowerRig.accept(message({ ts: "2.0", threadTs: "2000.1", text: "borrower 1" }));
+    await settle();
+    assert.equal(borrowerRig.claude.sessions.length, 1);
+    assert.equal(remoteSlots.size, 1);
+
+    // 2. Both Borrower's 2nd session AND Host's 2nd session must queue at 2/2!
+    await borrowerRig.accept(message({ ts: "3.0", threadTs: "3000.1", text: "borrower 2" }));
+    await settle();
+    assert.equal(borrowerRig.claude.sessions.length, 1, "borrower 2nd session must queue at global 2/2");
+    const bNotice = borrowerRig.chat.posts.filter(([t]) => t.threadTs === "3000.1")[0]?.[1] ?? "";
+    assert.ok(bNotice.includes("共享订阅A") && bNotice.includes("2/2"), bNotice);
+
+    await hostRig.accept(message({ ts: "4.0", threadTs: "4000.1", text: "host 2" }));
+    await settle();
+    assert.equal(hostRig.claude.sessions.length, 1, "host 2nd session must also queue when borrower holds 1 slot");
+
+    // 3. Host's 1st session finishes -> wakes borrower's queued session (and/or host's queued session);
+    // once borrower's 1st session finishes too, both queued sessions have run without exceeding cap 2!
+    const h1 = hostRig.claude.sessions[0]!;
+    await hostRig.call(h1.options.route, "chat_post", { to: "C1/1000.1", text: "done h1", kind: "all_done", done: "finished host 1" });
+    h1.complete();
+    await settle();
+    assert.equal(hostRig.claude.sessions.length + borrowerRig.claude.sessions.length, 3, "exactly one queued session wakes when one global slot opens");
+
+    const b1 = borrowerRig.claude.sessions[0]!;
+    await borrowerRig.call(b1.options.route, "chat_post", { to: "C1/2000.1", text: "done b1", kind: "all_done", done: "finished borrower 1" });
+    b1.complete();
+    await settle();
+    assert.equal(hostRig.claude.sessions.length, 2, "host queued session ran once slot freed");
+    assert.equal(borrowerRig.claude.sessions.length, 2, "borrower queued session ran once slot freed");
+
+    // 4. Manual jump-the-queue on borrower bypasses global cap with force=true and still registers slot.
+    await borrowerRig.accept(message({ ts: "5.0", threadTs: "5000.1", text: "borrower 3" }));
+    await settle();
+    assert.equal(borrowerRig.claude.sessions.length, 2, "borrower 3 queued at global 2/2");
+    await borrowerRig.accept(message({ ts: "5.1", threadTs: "5000.1", text: "force now" }));
+    await settle();
+    assert.equal(borrowerRig.claude.sessions.length, 3, "manual reply jump-the-queue starts immediately with force=true");
+  } finally {
+    await hostRig.close();
+    await borrowerRig.close();
+  }
+});
+
+test("cross-station TOCTOU fallback: when host rejects borrowed profile claim as capped, borrower falls back to another uncapped profile without queueing", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  try {
+    r.edit((raw) => {
+      raw.profiles[0].id = "borrowed-full";
+      raw.profiles[0].name = "满载共享号";
+      raw.profiles[0].access = { kind: "subscription" };
+      raw.profiles[0].maxConcurrentSessions = 2;
+      raw.profiles[0].models = ["opus"];
+      raw.profiles[0].share = { id: "sh-full", borrowed: true, host: "host-x" };
+      raw.profiles.push({
+        id: "local-free",
+        name: "本地空闲号",
+        runtime: "claude",
+        access: { kind: "subscription" },
+        home: "homes/local-free",
+        models: ["opus"],
+      });
+    });
+
+    // Simulate stale remoteActive=0 so synchronous runOn initially picks borrowed-full,
+    // then host rejects claimBorrowedSlot with capped=true (2/2).
+    let otherActive = 0;
+    let claims = 0;
+    r.hub.setSlotCoordinator({
+      remoteActive: (id) => (id === "borrowed-full" ? otherActive : 0),
+      needsRemoteSlot: (p) => p.id === "borrowed-full",
+      claimBorrowedSlot: async () => {
+        claims++;
+        otherActive = 2;
+        return { ok: false, capped: true, active: 2, cap: 2, protection: false };
+      },
+      adoptBorrowedSlot: () => {},
+      hasBorrowedSlot: () => false,
+      releaseBorrowedSlot: () => {},
+      localActiveChanged: () => {},
+    });
+
+    // Pin initial session preference to borrowed-full (non-pinned) by starting with it in pool:
+    // give borrowed-full higher urgency so pickProfile chooses it first.
+    const now = time.clock.currentTimeMillisUnsafe();
+    r.hub.accounts.setHealth((id) => ({
+      check: { state: "ok" },
+      quota: id === "borrowed-full" ? okQuota(now, 5, 5, 5 * DAY) : okQuota(now, 70, 70, 5 * DAY),
+    }));
+
+    await r.accept(message({ ts: "1.0", threadTs: "8000.1", text: "fallback test" }));
+    await settle();
+    assert.equal(claims, 1, "host was probed once for borrowed-full");
+    assert.equal(r.claude.sessions.length, 1, "session started immediately on local-free after host rejected borrowed-full");
+    const k = r.claude.sessions[0]!.options.route;
+    assert.equal(r.session(k).profile, "local-free");
+    const posts = r.chat.posts.filter(([t]) => t.threadTs === "8000.1");
+    assert.equal(posts.some(([, text]) => text.includes("已进入排队")), false, "no cap pause notice posted when uncapped fallback succeeded");
+    assert.equal(posts.some(([, text]) => text.includes("已切换账号")), true, "normal account switch notice posted after fallback");
+  } finally {
+    await r.close();
   }
 });

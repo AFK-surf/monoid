@@ -713,8 +713,14 @@ export const AgentsLive = (control: Control) =>
           const home = cloud.home();
           return { accept: config.raw()?.acceptAutoChats === true, tasksOnly: home !== null && cloud.rigIn(home) !== null };
         },
+        accountKey: (profileId) => hub.accounts.accountKeyOf(profileId),
+        accountCap: (profileId) => hub.accounts.accountMaxSessions(profileId),
+        accountProtection: (profileId) => hub.accounts.accountInProtection(profileId),
+        localActiveForAccount: (accountKey) => hub.localActiveForAccount(accountKey),
+        onSlotFreed: () => hub.drainCapQueue(),
         readers: readerConfig,
       });
+      hub.setSlotCoordinator(sharing);
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();
       // (the program that reads its skills' files, idle, let go when the station is short of memory)
@@ -1154,6 +1160,7 @@ export const AgentsLive = (control: Control) =>
           maxConcurrentTurns = cfg.maxConcurrentTurns;
           hub.setMaxConcurrentTurns(maxConcurrentTurns);
         }
+        sharing?.localActiveChanged();
         hub.drainCapQueue();
       });
       time.after(120_000, reviewing);

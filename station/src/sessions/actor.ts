@@ -158,6 +158,10 @@ export type SessionDeps = {
   /// its process has work going in the background, kept on an account nearly full; `across`: before a turn, so another
   /// runtime's when none of its own can run it, accounts.ts `runOn`; `forceCap`: bypasses account concurrency caps).
   runOn(key: string, holding?: boolean, across?: boolean, forceCap?: boolean): Profile & { spelling?(model: string): string | null };
+  /// Async version of `runOn` that claims a cross-station concurrency slot when the chosen profile is borrowed.
+  acquireRunOn?(key: string, holding?: boolean, across?: boolean, forceCap?: boolean): Promise<Profile & { spelling?(model: string): string | null }>;
+  /// Releases an in-flight / borrowed concurrency slot claim if opening or starting a turn fails before running.
+  releaseClaim?(key: string): void;
   /// A turn ran into the allowance of `ranOn`, the profile its process was started on (null: the session's own), or
   /// `model`'s own limit there (that model alone passed over on it): the profile left and the one moved to, when it moved,
   /// or `{ paused: "session_cap", ... }` when only capped accounts remain.
@@ -432,7 +436,11 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
   how.runtime(was);
   // Its account first: none of its runtime's able to run it, it may go on on another runtime's (accounts.ts `runOn`),
   // whose driver then opens it, afresh.
-  const profile = deps.runOn(key, false, true, how.forceCap === true);
+  const profile = deps.acquireRunOn ? await deps.acquireRunOn(key, false, true, how.forceCap === true) : deps.runOn(key, false, true, how.forceCap === true);
+  if (how.signal?.aborted) {
+    deps.releaseClaim?.(key);
+    throw abortedBy(how.signal);
+  }
   // (a login found over as it opens is said as the profile it is of, for the program to go on on another: mb-actor.ts
   // `errorOf`, actor_run.mbt `open_over`)
   try {
@@ -511,6 +519,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
     if (stopped.length > 0) told.stoppedNote = backgroundStopped(stopped, resumable);
     return { ...told, session: agent, generation, identity: { runtime, model: row.model ?? null, effort: row.effort ?? null }, profile: profile.id };
   } catch (error) {
+    deps.releaseClaim?.(key);
     if (error instanceof RenewRefused && error.profileId === null) error.profileId = profile.id;
     throw error;
   }

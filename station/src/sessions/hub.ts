@@ -45,7 +45,20 @@ import { isNotice, markNotice } from "./chat.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
 import type { ChatListFilter, RecentChatList } from "../store/chat-list.ts";
-import { Accounts } from "./accounts.ts";
+import { AccountCapError, Accounts, type RunOn } from "./accounts.ts";
+import type { SlotClaimResult } from "../share/index.ts";
+
+/// Cross-station concurrency coordinator (`Sharing`) wired into `Hub`.
+export type SlotCoordinator = {
+  remoteActive(profileId: string): number;
+  remoteCap?(profileId: string): number | undefined;
+  needsRemoteSlot(profile: Profile): boolean;
+  claimBorrowedSlot(profile: Profile, session: string, force?: boolean): Promise<SlotClaimResult>;
+  adoptBorrowedSlot(profile: Profile, session: string): void;
+  hasBorrowedSlot(session: string): boolean;
+  releaseBorrowedSlot(session: string): void;
+  localActiveChanged(): void;
+};
 import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
@@ -369,6 +382,9 @@ export class Hub {
   private closedHook: ((key: string) => void) | null = null;
   private peersHook: ((station: string, request: Json) => Promise<Json>) | null = null;
   private outsideHook: ((ws: string | null) => OutsideChat[]) | null = null;
+  private slotCoordinator: SlotCoordinator | null = null;
+  /// In-flight turn opens/starts reserving a local concurrency slot before `processState()` becomes `"running"`.
+  private inFlightClaims = new Map<string, string>();
   onBilledFallback: ((info: BilledFallback) => void) | null = null;
   readonly deps: SessionDeps;
 
@@ -391,21 +407,14 @@ export class Hub {
       config: () => this.config(),
       store: this.store,
       running: (except) => [...this.actors.values()].filter((a) => a.key !== except && a.processState() !== "cold").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
-      active: (except) => [...this.actors.values()].filter((a) => a.key !== except && a.processState() === "running").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
+      active: (except) => this.activeProfileEntries(except).map(([, profile]) => profile),
+      remoteActive: (id) => this.slotCoordinator?.remoteActive(id) ?? 0,
+      remoteCap: (id) => this.slotCoordinator?.remoteCap?.(id),
       clock: this.clock,
       allows: (key, profile) => allowedIn(profile, this.wsOf(key), this.workspaces()[0] ?? null),
       // Moved to another account by the station (its allowance ran out, its login is over, its profile deleted): said in
       // its chat as a change by hand is (lifecycle.ts `configure`).
-      moved: (key, was) => {
-        const now = this.store.getSession(key);
-        // (one handed to another station as this one was retired says nothing here: it goes on there)
-        if (!now || this.handedOver(key)) return;
-        const named = (id: string) => {
-          const name = this.accounts.profile(id)?.name;
-          return typeof name === "string" ? name : null;
-        };
-        void this.actor(now).runChanged({ was: runShown(was, named), now: runShown(now, named) }).catch(() => {});
-      },
+      moved: (key, was) => this.notifyMoved(key, was),
       billedFallback: (info) => this.noteBilledFallback(info),
     });
     this.live = new LiveHub(
@@ -442,11 +451,13 @@ export class Hub {
           this.sessionProjectSig.set(change.key, sig);
           this.localProjectsCache.clear();
         }
+        this.syncActiveSlots(change.key);
       } else if (change.type === "sessionRemoved") {
         this.live.running(change.key, false);
         if (this.interruptedByRestart.delete(change.key)) this.interruptedHook?.();
         this.sessionProjectSig.delete(change.key);
         this.localProjectsCache.clear();
+        this.syncActiveSlots(change.key);
       } else if (change.type === "thread" && change.entries.length === 0) {
         // Ordinary message appends (`entries.length > 0`) never alter project/tag classification; keep cache hot!
         this.localProjectsCache.clear();
@@ -1020,6 +1031,7 @@ export class Hub {
       this.adopted.add(row.key);
       if (!snap.turn) this.idleNow(row.key);
     }
+    this.syncActiveSlots(row.key);
     if (snap.notices.length > 0) void actor.release();
   }
 
@@ -2222,6 +2234,156 @@ export class Hub {
     this.actorsProgram?.drainCapQueue();
   }
 
+  /// Wires cross-station account concurrency coordination (`Sharing`).
+  setSlotCoordinator(coordinator: SlotCoordinator | null) {
+    this.slotCoordinator = coordinator;
+  }
+
+  private activeProfileEntries(except?: string): [string, string][] {
+    const out = new Map<string, string>();
+    for (const a of this.actors.values()) {
+      if (a.key === except || a.processState() !== "running") continue;
+      const profile = this.store.getSession(a.key)?.profile;
+      if (profile) out.set(a.key, profile);
+    }
+    for (const [key, profile] of this.inFlightClaims) {
+      if (key === except || out.has(key)) continue;
+      out.set(key, profile);
+    }
+    return [...out.entries()];
+  }
+
+  /// Count of locally active sessions on this station whose profile maps to canonical `accountKey`.
+  localActiveForAccount(accountKey: string): number {
+    let count = 0;
+    for (const [, profile] of this.activeProfileEntries()) {
+      if (this.accounts.accountKeyOf(profile) === accountKey) count++;
+    }
+    return count;
+  }
+
+  private notifyMoved(key: string, was: SessionRow) {
+    const now = this.store.getSession(key);
+    // (one handed to another station as this one was retired says nothing here: it goes on there)
+    if (!now || this.handedOver(key)) return;
+    const named = (id: string) => {
+      const name = this.accounts.profile(id)?.name;
+      return typeof name === "string" ? name : null;
+    };
+    void this.actor(now).runChanged({ was: runShown(was, named), now: runShown(now, named) }).catch(() => {});
+  }
+
+  /// Releases any in-flight or borrowed concurrency slot for `key` when an open/start fails or aborts.
+  private releaseClaim(key: string) {
+    const hadInFlight = this.inFlightClaims.delete(key);
+    const actor = this.actors.get(key);
+    const running = actor !== undefined && actor.processState() === "running";
+    if (!running) this.slotCoordinator?.releaseBorrowedSlot(key);
+    if (hadInFlight || !running) this.slotCoordinator?.localActiveChanged();
+  }
+
+  /// Reconciles local in-flight claims, borrowed host slots, and hosted-profile pushes after an actor state change.
+  private syncActiveSlots(key: string) {
+    const actor = this.actors.get(key);
+    const running = actor !== undefined && actor.processState() === "running";
+    const opening = actor !== undefined && actor.isOpening();
+    if (running) {
+      this.inFlightClaims.delete(key);
+      if (this.slotCoordinator && !this.slotCoordinator.hasBorrowedSlot(key)) {
+        const row = this.store.getSession(key);
+        const profile = row ? this.config().profiles.find((p) => p.id === row.profile) : undefined;
+        if (profile && this.slotCoordinator.needsRemoteSlot(profile)) {
+          this.slotCoordinator.adoptBorrowedSlot(profile, key);
+        }
+      }
+    } else if (!opening && (actor === undefined || actor.settled())) {
+      this.inFlightClaims.delete(key);
+      this.slotCoordinator?.releaseBorrowedSlot(key);
+    }
+    this.slotCoordinator?.localActiveChanged();
+  }
+
+  /// Selects the profile for session `key` and, when the chosen profile is a capped borrowed subscription, atomically
+  /// claims a cross-station concurrency slot on its host station; if the host reports it full, falls back to any other
+  /// uncapped account before throwing `AccountCapError`.
+  private async acquireRunOn(key: string, holding = false, across = false, forceCap = false): Promise<RunOn> {
+    const coord = this.slotCoordinator;
+    if (!coord) {
+      const profile = this.accounts.runOn(key, holding, false, across, forceCap);
+      if (!billedPerUse(profile) && this.accounts.accountMaxSessions(profile.id) !== undefined) {
+        this.inFlightClaims.set(key, profile.id);
+      }
+      return profile;
+    }
+    const initialRow = this.store.getSession(key);
+    if (!initialRow) throw new Error(`unknown session ${key}`);
+    const rejectedCapped = new Set<string>();
+    let lastReject: { profile: string; profileId: string; active: number; cap: number; protection: boolean } | null = null;
+    const restoreInitial = () => {
+      const cur = this.store.getSession(key);
+      if (!cur) return;
+      if (cur.runtime !== initialRow.runtime) {
+        this.store.setSessionRuntime(key, initialRow.runtime, initialRow.profile, initialRow.profilePinned, initialRow.model, initialRow.effort, initialRow.fast, initialRow.context, initialRow.profiles ?? null);
+        if (cur.runtimeSessionId !== initialRow.runtimeSessionId) this.store.setRuntimeSessionId(key, initialRow.runtimeSessionId);
+      } else if (cur.profile !== initialRow.profile || cur.profilePinned !== initialRow.profilePinned || JSON.stringify(cur.profiles ?? null) !== JSON.stringify(initialRow.profiles ?? null)) {
+        this.store.setSessionProfile(key, initialRow.profile, initialRow.profilePinned, initialRow.profiles ?? null);
+      }
+    };
+    const maxAttempts = Math.max(1, this.config().profiles.length) + 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let profile: RunOn;
+      try {
+        profile = this.accounts.runOn(key, holding, true, across, forceCap, rejectedCapped.size > 0 ? rejectedCapped : undefined);
+      } catch (e) {
+        this.inFlightClaims.delete(key);
+        if (e instanceof AccountCapError && lastReject !== null && rejectedCapped.has(e.profileId) && e.active < lastReject.active) {
+          throw new AccountCapError(lastReject.profile, lastReject.profileId, lastReject.active, lastReject.cap, lastReject.protection);
+        }
+        throw e;
+      }
+      if (!coord.needsRemoteSlot(profile)) {
+        if (coord.hasBorrowedSlot(key)) coord.releaseBorrowedSlot(key);
+        if (!billedPerUse(profile) && this.accounts.accountMaxSessions(profile.id) !== undefined) {
+          this.inFlightClaims.set(key, profile.id);
+          coord.localActiveChanged();
+        }
+        this.finishRunOnNotice(key, initialRow, profile);
+        return profile;
+      }
+      const force = forceCap || holding || initialRow.profilePinned;
+      this.inFlightClaims.set(key, profile.id);
+      let claimed: SlotClaimResult;
+      try {
+        claimed = await coord.claimBorrowedSlot(profile, key, force);
+      } catch (e) {
+        this.inFlightClaims.delete(key);
+        restoreInitial();
+        throw e;
+      }
+      if (claimed.ok) {
+        this.finishRunOnNotice(key, initialRow, profile);
+        return profile;
+      }
+      this.inFlightClaims.delete(key);
+      restoreInitial();
+      rejectedCapped.add(profile.id);
+      lastReject = { profile: profile.name, profileId: profile.id, active: claimed.active, cap: claimed.cap, protection: claimed.protection };
+    }
+    if (lastReject) throw new AccountCapError(lastReject.profile, lastReject.profileId, lastReject.active, lastReject.cap, lastReject.protection);
+    throw new Error(`session ${key}: could not acquire profile`);
+  }
+
+  private finishRunOnNotice(key: string, initialRow: SessionRow, next: RunOn) {
+    if (next.id === initialRow.profile) return;
+    this.notifyMoved(key, initialRow);
+    const profiles = this.config().profiles;
+    const prev = profiles.find((p) => p.id === initialRow.profile);
+    const runtime = runtimeNamed(this.store.getSession(key)?.runtime ?? initialRow.runtime);
+    if (runtime && billedPerUse(next) && (!prev || !billedPerUse(prev)) && profiles.some((p) => p.runtimes.includes(runtime) && !billedPerUse(p))) {
+      this.noteBilledFallback({ session: key, workspace: initialRow.ws ?? null, runtime, profile: next });
+    }
+  }
+
   /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
   /// here).
   program(): ActorsProgram | null {
@@ -2240,7 +2402,7 @@ export class Hub {
     const program = this.program();
     // (the program is built for every system the station runs on: a checkout that did not build it cannot run a session)
     if (program === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no session can run");
-    const actor = program.actor(row.key, runtime, this.deps);
+    const actor = program.actor(row.key, runtime, this.deps, () => this.syncActiveSlots(row.key));
     this.actors.set(row.key, actor);
     return actor;
   }
@@ -2252,6 +2414,9 @@ export class Hub {
     const deadline = this.deadlines.get(key);
     if (deadline) this.interrupt(deadline);
     this.deadlines.delete(key);
+    this.inFlightClaims.delete(key);
+    this.slotCoordinator?.releaseBorrowedSlot(key);
+    this.slotCoordinator?.localActiveChanged();
     return actor;
   }
 
@@ -2292,6 +2457,8 @@ export class Hub {
       chat: (connect) => this.chatOf(connect),
       driver: (runtime) => this.sessionDriver(runtime),
       runOn: (key, holding, across, forceCap) => this.accounts.runOn(key, holding, false, across, forceCap),
+      acquireRunOn: (key, holding, across, forceCap) => this.acquireRunOn(key, holding, across, forceCap),
+      releaseClaim: (key) => this.releaseClaim(key),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile, force) => this.accounts.recheck(profile, force === true),
