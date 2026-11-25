@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dd7cfdf75](https://github.com/AFK-surf/monoid/commit/dd7cfdf759b3bbf099eec36cbe12f3a28df77ad3) fix(station): hear spawn errors before touching ch | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 131.51 |
 | [686de55fb](https://github.com/AFK-surf/monoid/commit/686de55fbd0a4b4cd63ed6222a6d900f2181c2d2) fix(station): give agy only the skills that fit be | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 131.51 |
 | [c2380f54e](https://github.com/AFK-surf/monoid/commit/c2380f54ebefbda921b5c1bbf9497cff1fc059c9) fix(mbui): anchor steps_seconds clock to eliminate | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.52 | 124.13 |
 | [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [973efe842](https://github.com/AFK-surf/monoid/commit/973efe84254621ae10ab2357785202523c2c3d54) fix(mbui): close the side panel on Esc with a file | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
 | [ed329b2b2](https://github.com/AFK-surf/monoid/commit/ed329b2b20a06afe3fd1bd50b6a99260676b27bc) fix(ui): unify GLES kind 11 path loop for SwiftSha | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
 | [2551adf7c](https://github.com/AFK-surf/monoid/commit/2551adf7c40279f71ec8b698c011f40a63b531e2) feat(pion-station): W7-D readops_views L2 package  | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 101.01 | 125.52 |
-| [c5360f5d9](https://github.com/AFK-surf/monoid/commit/c5360f5d9310088fb6c4f26c96eb29f88f76bdbc) fix(rules): only a web page's device runs out (#86 | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 101.01 | 125.52 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [dd7cfdf75](https://github.com/AFK-surf/monoid/commit/dd7cfdf759b3bbf099eec36cbe12f3a28df77ad3) fix(station): hear spawn errors before touching ch | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
 | [686de55fb](https://github.com/AFK-surf/monoid/commit/686de55fbd0a4b4cd63ed6222a6d900f2181c2d2) fix(station): give agy only the skills that fit be | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.25 |
 | [c2380f54e](https://github.com/AFK-surf/monoid/commit/c2380f54ebefbda921b5c1bbf9497cff1fc059c9) fix(mbui): anchor steps_seconds clock to eliminate | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57 |
 | [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [973efe842](https://github.com/AFK-surf/monoid/commit/973efe84254621ae10ab2357785202523c2c3d54) fix(mbui): close the side panel on Esc with a file | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
 | [ed329b2b2](https://github.com/AFK-surf/monoid/commit/ed329b2b20a06afe3fd1bd50b6a99260676b27bc) fix(ui): unify GLES kind 11 path loop for SwiftSha | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.71 |
 | [2551adf7c](https://github.com/AFK-surf/monoid/commit/2551adf7c40279f71ec8b698c011f40a63b531e2) feat(pion-station): W7-D readops_views L2 package  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.75 |
-| [c5360f5d9](https://github.com/AFK-surf/monoid/commit/c5360f5d9310088fb6c4f26c96eb29f88f76bdbc) fix(rules): only a web page's device runs out (#86 | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.95 |
