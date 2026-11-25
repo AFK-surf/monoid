@@ -2986,3 +2986,108 @@ test("D77: a pass reads each Claude project and Codex day once, finding what the
   assert.deepEqual([...ts].sort(), [...expected].sort(), "TS reference finds each transcript where it is");
   if (binary !== null) assert.deepEqual([...(await run("mb"))].sort(), [...ts].sort(), "MoonBit finds what the TS reference finds");
 });
+
+test("D78: cached Claude finder falls through EACCES, case aliases, and Unicode aliases without false tr_del or delete-protection", async () => {
+  const data = dataDir("d78-finder-edge");
+  const db = join(data, "stillfail.db");
+  const store = Store.open(db, join(data, "archive"));
+  closing.push(async () => store.close());
+  const now = 1_700_000_000_000;
+  const put = (p: string) => {
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, `content:${p}\n`);
+    utimesSync(p, new Date(now), new Date(now));
+  };
+  const session = (key: string, id: string) => {
+    const room = join(data, "sessions", "chat", key, "workspace");
+    mkdirSync(room, { recursive: true });
+    store.insertSession({ key, connect: "chat", runtime: "claude", profile: "p", workspace: room, token: `tok-${key}`, createdAt: 1, lastActiveAt: 1, ws: null });
+    store.setRuntimeSessionId(key, id);
+    store.joinThread(store.openThread("chat", "C", `ts-${key}`, key, "p@x").id, key, "chat");
+    return room;
+  };
+
+  const claudeRoot = join(data, "transcripts", "claude");
+  const projEacces = join(claudeRoot, "-00-eacces");
+  const projCaseAlias = join(claudeRoot, "-01-case-alias");
+  const projUniAlias = join(claudeRoot, "-02-uni-alias");
+  const projValid = join(claudeRoot, "-99-valid");
+
+  session("chat:d78-eacces", "s-eacces");
+  session("chat:d78-case", "s-case");
+  session("chat:d78-uni", "s-uni");
+  session("chat:d78-gone", "s-gone");
+
+  // Initial state: all valid transcripts live in projValid, plus s-gone in projUniAlias (which has a non-ASCII sibling).
+  put(join(projValid, "s-eacces.jsonl"));
+  put(join(projValid, "s-case.jsonl"));
+  put(join(projValid, "s-uni.jsonl"));
+  put(join(projCaseAlias, "S-CASE.JSONL"));
+  put(join(projUniAlias, "s-uni.j\u017fonl"));
+  put(join(projUniAlias, "s-gone.jsonl"));
+
+  // Create projEacces with s-eacces.jsonl and make it readable-only (0o444) when non-root POSIX so stat returns EACCES.
+  put(join(projEacces, "s-eacces.jsonl"));
+  const canTestEacces = process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0;
+  if (canTestEacces) {
+    chmodSync(projEacces, 0o444);
+    closing.push(async () => {
+      try { chmodSync(projEacces, 0o755); } catch {}
+    });
+  }
+
+  const wsList = [{ workspace: HOME, name: "src" }];
+  const rows = (replica: string) => {
+    const d = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+    try {
+      return new Set((d.prepare("SELECT ws, path FROM transcript_files").all() as { ws: string; path: string }[]).map((r) => `${r.ws}\0${r.path}`));
+    } finally {
+      d.close();
+    }
+  };
+
+  const run = async (mode: "ts" | "mb") => {
+    const replica = join(data, `replica-d78-${mode}`);
+    let pass: (told: ReturnType<typeof nothingTold>) => Promise<{ more: boolean; wrote: number }>;
+    if (mode === "ts") {
+      const exporter = new Exporter({ db, replica, dataDir: data, origin: sid("a"), now: () => now, chunkBytes: 4096 });
+      closing.push(async () => exporter.close());
+      exporter.setPlaces({ home: HOME, workspaces: wsList });
+      pass = async (told) => exporter.pass(told);
+    } else {
+      const mb = await makeMbExportHelper(db, replica, data, sid("a"), 4096);
+      await mb.places(now, wsList);
+      await mb.testFaults({ finder_asked_most: 200 } as unknown as Record<string, string[]>, now);
+      pass = (told) => mb.pass(told, now);
+    }
+    for (let i = 0; i < 10; i++) if (!(await pass(nothingTold())).more) break;
+    const before = rows(replica);
+    // Second pass with transcripts dirty must keep all found paths (zero spurious tr_del).
+    const second = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(second.wrote, 0, `${mode}: repeat pass writes nothing (no spurious tr_del)`);
+    assert.deepEqual(rows(replica), before, `${mode}: rows unchanged on repeat pass`);
+    return { before, pass, replica };
+  };
+
+  const ts = await run("ts");
+  if (canTestEacces) {
+    assert.ok(ts.before.has(`${HOME}\0${join(projValid, "s-eacces.jsonl")}`), "TS falls through EACCES proj-a to proj-valid");
+  }
+  const mbRes = binary !== null ? await run("mb") : null;
+  if (mbRes !== null) {
+    assert.deepEqual([...mbRes.before].sort(), [...ts.before].sort(), "engine matches TS reference on EACCES, case alias, and Unicode alias");
+  }
+
+  // Delete s-gone.jsonl from projUniAlias (which contains non-ASCII s-uni.jſonl):
+  // must actually remove s-gone.jsonl (proving non-ASCII sibling does NOT trigger failed_dirs delete protection).
+  rmSync(join(projUniAlias, "s-gone.jsonl"));
+  for (let i = 0; i < 10; i++) if (!(await ts.pass({ ...nothingTold(), transcripts: true })).more) break;
+  const tsAfter = rows(ts.replica);
+  assert.ok(!tsAfter.has(`${HOME}\0${join(projUniAlias, "s-gone.jsonl")}`), "TS deletes s-gone.jsonl from non-ASCII dir");
+  if (mbRes !== null) {
+    for (let i = 0; i < 10; i++) if (!(await mbRes.pass({ ...nothingTold(), transcripts: true })).more) break;
+    const mbAfter = rows(mbRes.replica);
+    assert.ok(!mbAfter.has(`${HOME}\0${join(projUniAlias, "s-gone.jsonl")}`), "engine deletes s-gone.jsonl (non-ASCII dir does not trigger failed_dirs protection)");
+    assert.deepEqual([...mbAfter].sort(), [...tsAfter].sort(), "engine matches TS reference after deleting s-gone.jsonl");
+  }
+});

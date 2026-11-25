@@ -100,8 +100,8 @@ pub fn decode_utf8_lossy_bytes(buf : Bytes) -> String {
     return buf.to_string()
   }
   let sb = StringBuilder::new()
-  if bad > 0 {
-    sb.write_bytes(buf.slice(0, bad))
+  for k in 0..<bad {
+    sb.write_byte(buf[k])
   }
   let end = buf.length()
   let mut i = bad

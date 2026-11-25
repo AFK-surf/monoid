@@ -41,10 +41,14 @@ struct Rollouts {
 /// A Claude transcripts directory read once: keyed by ASCII-lowercased session id stem,
 /// keeping all candidate projects `(project_idx, project_dir)` in strict directory order
 /// (so `EACCES` on an earlier project or case-only alias on a case-sensitive volume never hides
-/// a later valid project), plus projects whose `fs.readdir` failed.
+/// a later valid project), plus projects whose `fs.readdir` failed (`failed`) and projects whose
+/// listing contained any non-ASCII filename (`non_ascii_projects`, kept strictly separate from
+/// `failed` so non-ASCII filenames never trigger unreadable-directory delete protection).
 struct ClaudeIndex {
   candidates : Map[String, Array[(Int, String)]]
   failed : Array[(Int, String)]
+  non_ascii_projects : Array[(Int, String)]
+  all_projects : Array[(Int, String)]
 }
 
 /// Finds transcripts via synchronous shell `fs.stat` / `fs.readdir` / `fs.realpath`
@@ -645,6 +649,16 @@ fn Finder::gather_rollouts(self : Finder, dir : String, into : Rollouts) -> Unit
   }
 }
 
+fn has_non_ascii_byte(s : String) -> Bool {
+  let n = s.length()
+  for i in 0..<n {
+    if s.code_unit_at(i) >= 0x80 {
+      return true
+    }
+  }
+  false
+}
+
 fn ascii_lower_str(s : String) -> String {
   let n = s.length()
   let mut first_upper = -1
@@ -675,6 +689,9 @@ fn ascii_lower_str(s : String) -> String {
 
 /// The Claude transcripts directory `dir` read once: each project read, its candidate session ids
 /// indexed by ASCII-lowercased stem in strict project order (preserving multiple projects per stem).
+/// Projects with any non-ASCII entry are recorded in `non_ascii_projects` (separate from `failed`)
+/// so Unicode case-folding / NFC-NFD aliases on macOS APFS/HFS+ are still checked via `stat`
+/// without falsely triggering unreadable-directory delete protection.
 fn Finder::claude_index_with(
   self : Finder,
   dir : String,
@@ -703,13 +720,14 @@ fn Finder::claude_index_with(
       return None
     }
   }
-  let index = ClaudeIndex::{ candidates: Map::new(), failed: [] }
+  let index = ClaudeIndex::{ candidates: Map::new(), failed: [], non_ascii_projects: [], all_projects: [] }
   for i in 0..<projects.length() {
     let (project, pkind) = projects[i]
     let project_dir = self.join([dir, project])
     if !(pkind == "dir" || (pkind != "file" && self.is_dir_with(project_dir, sync_fn))) {
       continue
     }
+    index.all_projects.push((i, project_dir))
     let names = match self.typed_entries_with(project_dir, sync_fn) {
       Some(ns) => ns
       None => {
@@ -717,9 +735,13 @@ fn Finder::claude_index_with(
         continue
       }
     }
+    let mut has_non_ascii = false
     let added_in_proj : Map[String, Bool] = Map::new()
     for j in 0..<names.length() {
       let (name, kind) = names[j]
+      if has_non_ascii_byte(name) {
+        has_non_ascii = true
+      }
       if kind == "dir" {
         continue
       }
@@ -740,15 +762,19 @@ fn Finder::claude_index_with(
         None => index.candidates.set(fid_lower, [(i, project_dir)])
       }
     }
+    if has_non_ascii {
+      index.non_ascii_projects.push((i, project_dir))
+    }
   }
   self.claude_cache.set(dir, Some(index))
   Some(index)
 }
 
 /// `transcriptIn`'s look through every Claude project for `id`, over the directory read once:
-/// merges candidate projects and unreadable projects in strict project order, confirming each
-/// with `stat` using the caller's exact `id` spelling so `EACCES` on an earlier project or a
-/// case-only alias on a case-sensitive filesystem never hides a later valid project.
+/// merges candidate projects, unreadable projects, and non-ASCII-containing projects in strict
+/// project order, confirming each with `stat` using the caller's exact `id` spelling so `EACCES`,
+/// ASCII case aliases, and Unicode/APFS folding or NFC/NFD aliases all behave identically to
+/// sequential `stat` probing.
 fn Finder::claude_indexed_with(
   self : Finder,
   dir : String,
@@ -761,35 +787,71 @@ fn Finder::claude_indexed_with(
     Some(idx) => idx
     None => return None
   }
+  let failed = index.failed
+  if has_non_ascii_byte(id) {
+    for i in 0..<index.all_projects.length() {
+      let (_, project_dir) = index.all_projects[i]
+      let path = self.join([project_dir, id + ".jsonl"])
+      if self.kept_direct_with(path, sync_fn) {
+        self.set_elsewhere(at, Some(path))
+        return Some(path)
+      }
+    }
+    if placed && failed.length() == 0 {
+      self.set_elsewhere(at, None)
+    }
+    return None
+  }
   let id_lower = ascii_lower_str(id)
   let cands : Array[(Int, String)] = match index.candidates.get(id_lower) {
     Some(xs) => xs
     None => []
   }
-  let failed = index.failed
+  let non_ascii = index.non_ascii_projects
   let mut ci = 0
   let mut fi = 0
-  while ci < cands.length() || fi < failed.length() {
-    let project_dir = if fi >= failed.length() {
-      let (_, p) = cands[ci]
-      ci = ci + 1
-      p
-    } else if ci >= cands.length() {
-      let (_, p) = failed[fi]
-      fi = fi + 1
-      p
-    } else {
-      let (c_idx, c_dir) = cands[ci]
-      let (f_idx, f_dir) = failed[fi]
-      if c_idx < f_idx {
-        ci = ci + 1
-        c_dir
-      } else {
-        fi = fi + 1
-        f_dir
+  let mut ni = 0
+  while ci < cands.length() || fi < failed.length() || ni < non_ascii.length() {
+    let mut best_idx = -1
+    let mut best_dir = ""
+    if ci < cands.length() {
+      let (idx, p) = cands[ci]
+      best_idx = idx
+      best_dir = p
+    }
+    if fi < failed.length() {
+      let (idx, p) = failed[fi]
+      if best_idx < 0 || idx < best_idx {
+        best_idx = idx
+        best_dir = p
       }
     }
-    let path = self.join([project_dir, id + ".jsonl"])
+    if ni < non_ascii.length() {
+      let (idx, p) = non_ascii[ni]
+      if best_idx < 0 || idx < best_idx {
+        best_idx = idx
+        best_dir = p
+      }
+    }
+    if ci < cands.length() {
+      let (idx, _) = cands[ci]
+      if idx == best_idx {
+        ci = ci + 1
+      }
+    }
+    if fi < failed.length() {
+      let (idx, _) = failed[fi]
+      if idx == best_idx {
+        fi = fi + 1
+      }
+    }
+    if ni < non_ascii.length() {
+      let (idx, _) = non_ascii[ni]
+      if idx == best_idx {
+        ni = ni + 1
+      }
+    }
+    let path = self.join([best_dir, id + ".jsonl"])
     if self.kept_direct_with(path, sync_fn) {
       self.set_elsewhere(at, Some(path))
       return Some(path)
