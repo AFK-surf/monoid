@@ -25,6 +25,9 @@
 // What the kernel kills for memory itself (Linux's OOM killer, which can come before this watch sees any pressure: a
 // hypervisor out of memory for the guest, a cgroup's limit) is heard as the kernel logs it (/dev/kmsg, `kernelKills`):
 // the process is gone by then, so its agent is found in the last look's units (`#seen`) and told what was killed.
+// So that the kernel takes what the agents run before the station itself (Node is the biggest single process of the
+// service, every process of which has the service's oom_score_adj), each look raises its units' processes to
+// OOM_FIRST (`killFirst`); the runtimes and the station keep theirs.
 import { spawn } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { freemem, totalmem } from "node:os";
@@ -54,6 +57,8 @@ export const TOLD_PRESSED = 3;
 /// A runtime's command waits paused under pressure only from this big: a build, a proof, a test suite, never the small
 /// servers a runtime keeps (an MCP server, its browser), which it would hang on.
 export const PAUSED_MIN = 2 * 1024 ** 3;
+/// The oom_score_adj (Linux: -1000..1000, higher killed first) of what the agents run, over the station's own.
+export const OOM_FIRST = 500;
 
 /// A unit's agent told when it is over this: an eighth of the machine's memory, 2 GiB at least.
 export const limitOf = (totalBytes: number): number => Math.max(2 * 1024 ** 3, Math.floor(totalBytes / 8));
@@ -154,6 +159,8 @@ export type MemoryOptions = {
   kills?(heard: (kill: KernelKill) => void): () => void;
   /// The memory free now (bytes), for what an agent is told of a kill.
   freeBytes?(): number;
+  /// Makes the kernel kill these processes before the station's own when it runs out of memory (`oomFirst`).
+  killFirst?(pids: number[]): void;
 };
 
 /// A process the kernel's OOM killer killed: its pid and its name as the kernel gives it (at most 15 characters).
@@ -235,6 +242,7 @@ export class MemoryWatch {
     if (table === null) return pressure;
     const units = unitsOf(table, this.#o.jobs(), await this.#o.agents(), this.#o.self, this.#remembered).sort((a, b) => b.bytes - a.bytes);
     const present = new Set(units.map((u) => u.key));
+    this.#o.killFirst?.(units.flatMap((u) => u.pids));
     this.#seenBefore = this.#seen;
     this.#seen = new Map(units.flatMap((u) => u.pids.map((pid) => [pid, u] as const)));
     for (const key of this.#told.keys()) if (!present.has(key)) this.#told.delete(key);
@@ -540,7 +548,7 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
       } catch {}
     },
     self: process.pid,
-    ...(process.platform === "linux" ? { kills: kernelKills } : {}),
+    ...(process.platform === "linux" ? { kills: kernelKills, killFirst: oomFirst() } : {}),
     freeBytes: () => freemem(),
     savePaused: async (pids) => {
       if (pids.length === 0) await rm(pausedFile, { force: true });
@@ -603,5 +611,24 @@ export function kernelKills(heard: (kill: KernelKill) => void): () => void {
     ended = true;
     cancel();
     child?.kill();
+  };
+}
+
+/// Raises each process given to OOM_FIRST (/proc/<pid>/oom_score_adj: raising one's own processes needs no privilege),
+/// each once while it lives; one already higher is left as it is (Chrome's renderers set their own).
+export function oomFirst(): (pids: number[]) => void {
+  const done = new Set<number>();
+  return (pids) => {
+    const now = new Set(pids);
+    for (const pid of done) if (!now.has(pid)) done.delete(pid);
+    for (const pid of now) {
+      if (done.has(pid)) continue;
+      done.add(pid);
+      const file = `/proc/${pid}/oom_score_adj`;
+      void readFile(file, "utf8").then(
+        (adj) => (Number(adj.trim()) < OOM_FIRST ? writeFile(file, String(OOM_FIRST)) : undefined),
+        () => undefined,
+      ).catch(() => undefined);
+    }
   };
 }

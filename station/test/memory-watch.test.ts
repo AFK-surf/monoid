@@ -407,3 +407,22 @@ test("a kill heard just after a look that no longer saw its process is still its
     await watch.close();
   }
 });
+
+test("each look puts what the agents run first for the kernel's OOM killer: their jobs' and commands' processes, never a runtime or the station", async () => {
+  const first: number[][] = [];
+  const watch = new MemoryWatch({
+    pressure: async () => "normal",
+    table: async () => [p(10, 1, 10, 0.5, "node"), p(20, 1, 20, 0, "stillfail-runner"), p(21, 20, 20, 0.5, "claude"), p(22, 21, 22, 0.1, "/bin/sh"), p(23, 22, 22, 2, "cargo"),
+      p(30, 1, 30, 0.1, "sh"), p(31, 30, 30, 0.2, "server")],
+    totalBytes: () => 16 * GiB, cwds: async () => new Map(), sessionAt: () => null,
+    jobs: () => [{ id: "job_1", session: "s1", pgid: 30, label: "job" }], agents: async () => [{ pid: 21, session: "s2" }],
+    tell: () => {}, stopJob: async () => {}, signal: () => {}, self: 10,
+    killFirst: (pids) => first.push([...pids].sort((a, b) => a - b)),
+  });
+  try {
+    await watch.look();
+    assert.deepEqual(first, [[22, 23, 30, 31]]);
+  } finally {
+    await watch.close();
+  }
+});
