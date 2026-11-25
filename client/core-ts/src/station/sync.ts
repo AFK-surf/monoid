@@ -469,6 +469,7 @@ export class StationsSync {
   /// A UI's focus or workspace changed: where the device follows only the workspaces in view, the stations of one
   /// switched to are linked and those of one left let go.
   focusMoved(): void {
+    this.#core.meshNow()?.refreshIdle?.();
     if (prefs.otherWorkspacesOn(this.#core.data)) {
       this.#linkedFor = "";
       return;

@@ -39,7 +39,7 @@ export const CONNECT_TIMEOUT_MS = 10_000;
 /// (`onARelay`), and how often it looks: soon at first, as a relay is often reached within a few round trips, then less.
 export const ONTO_MAX_MS = 30_000;
 const ONTO_FIRST_RECHECK_MS = 10;
-const ONTO_RECHECK_MS = 250;
+const ONTO_RECHECK_MS = 1_500;
 export const PROBE_MS = 5_000;
 export const RACE_GRACE_MS = 1_000;
 /// How long a link is given to answer as the UI comes back from a short while away before a new one is dialled beside
@@ -50,12 +50,16 @@ export const RETIRE_MS = 10_000;
 export const REBIND_MS = 5_000;
 /// How often each way to a station is pinged (its credential presented again on it, answered by the station itself).
 export const TICK_MS = 5_000;
+/// How often a settled idle station's healthy main link is pinged while no UI views it (`MeshEnv.idle`).
+export const IDLE_TICK_MS = 30_000;
 /// A ping not answered by then counts as having taken this long, and as missed.
 export const PING_TIMEOUT_MS = 3_000;
 /// The ways kept open to a station: the one its requests go on, and up to two others (best interactive and best bulk).
 export const KEEP_WAYS = 3;
 /// How often the ways not kept open are dialled again, to see whether one became better.
 export const EXPLORE_MS = 5 * 60_000;
+/// How long a relay whose pinned endpoint timed out without ever connecting is skipped across stations (< EXPLORE_MS).
+export const DEAD_RELAY_MS = 4 * 60_000;
 /// Pings a way needs answered before it is compared with another.
 export const MIN_SAMPLES = 3;
 /// Ticks in a row a way must be clearly better than the one requests go on before they move to it.
@@ -69,11 +73,14 @@ const DEAD_PINGS = 3;
 /// Relay paths kept open per settled station on the main endpoint when the host exposes relay controls, and how long a
 /// station's main links must stay healthy since opening or last relaxing before narrowing.
 export const HOT_RELAYS = 2;
+export const IDLE_HOT_RELAYS = 1;
 export const HOT_SETTLE_MS = 30_000;
 /// How often the main endpoint dials a station again whose link on it is gone, while the station was reached direct
 /// within DIRECT_RECALL_MS: only it can go direct (each relay's own endpoint is on that relay alone), and waiting out
 /// EXPLORE_MS kept a phone on the station's LAN on a relay for minutes after a link of it went quiet (2026-10-17).
 export const REDIAL_MAIN_MS = 30_000;
+/// How often a station stuck on pinned relays without recent direct recall retries its main endpoint link.
+export const MAIN_RECOVER_MS = 60_000;
 export const DIRECT_RECALL_MS = 10 * 60_000;
 /// The `pinned` of a link on the endpoint that dials a station by its LAN addresses alone: no relay,
 /// no hole punching. A path iroh punched through to a station on the LAN stopped answering seconds after it opened, and
@@ -949,6 +956,12 @@ export type MeshEnv = {
   /// Relay paths kept open per settled station on the main endpoint when the host exposes `setDisabledRelays`,
   /// `insertRelay`, and `removeRelay` (unset or <= 0: disabled).
   hotRelays?: number;
+  /// Relay paths kept open per settled idle station (`idle` returns true for every open link of that station) on the
+  /// main endpoint when the host exposes relay controls (unset or <= 0: disabled).
+  idleHotRelays?: number;
+  /// Whether `addr` is currently idle (no UI viewing it and no recent foreground request): eligible for `idleHotRelays`
+  /// narrowing and slower control-stream keepalive pings (`IDLE_TICK_MS`).
+  idle?: (addr: string) => boolean;
   /// The key what its peers said of where they are dialled straight is kept under (`ADDRESSES_KEY` without).
   addressesKey?: string;
   /// The protocols the main endpoint takes connections on, and `incoming` what is done with each (an app, as a trusted
@@ -1013,6 +1026,9 @@ export class Mesh {
   /// The addresses whose one connection on the main endpoint was let go unanswered (`#choose`): the next dial goes on
   /// each relay's own endpoint beside it (`#dialAll`).
   readonly #lostMain = new Set<string>();
+  /// The addresses whose `#mainOn` dial fanned out to pinned rescue relays (`#unansweredAt` or `#lostMain`): retired
+  /// again once `main` is current and healthy (`#prune`).
+  readonly #rescued = new Set<string>();
   /// Dials under way on pinned endpoints (their endpoints are not let go meanwhile).
   #dialing = 0;
   /// Dials under way on the main endpoint (all official relays stay connected meanwhile).
@@ -1068,6 +1084,14 @@ export class Mesh {
   readonly #slowSeen = new Map<string, { bps: number; at: number }>();
   /// By address: when on-demand bulk relay exploration last ran.
   readonly #bulkExploredAt = new Map<string, number>();
+  /// By address: when bulk links were last used, so `#prune` keeps bulk relays while transfers continue.
+  readonly #bulkUsedAt = new Map<string, number>();
+  /// By relayKey: until when a relay whose pinned endpoint timed out without ever connecting is skipped across stations.
+  readonly #deadRelays = new Map<string, number>();
+  /// By relayKey: consecutive OpeningTimeout(!connected) failures on a relay that did report connected.
+  readonly #deadRelayFails = new Map<string, number>();
+  /// By address: wakes an idle `#steer` sleep immediately when the station becomes active or is dropped.
+  readonly #steerWakes = new Map<string, Deferred.Deferred<void>>();
   /// By address: the latest dial round's per-route outcomes (`#dialAll`, `diag`).
   readonly #diags = new Map<string, { at: number; attempts: DialAttempt[] }>();
 
@@ -1693,12 +1717,14 @@ export class Mesh {
     this.relays = relays;
     this.entries = fresh;
     this.entryTargets = targets;
+    this.#deadRelays.clear();
+    this.#deadRelayFails.clear();
     this.#relaxAllState();
     if (rebind) this.#env.runner.fork(Effect.asVoid(this.#rebind(true)));
     else if (!sameRoutes) {
       const setEntries = this.#endpoint.setRelayEntries?.bind(this.#endpoint);
       if (setEntries) {
-        const update = this.#hotBudget() > 0 ? Effect.andThen(setEntries(afterRoutes), this.#syncRelaysNow()) : setEntries(afterRoutes);
+        const update = this.#hasHotMode() ? Effect.andThen(setEntries(afterRoutes), this.#syncRelaysNow()) : setEntries(afterRoutes);
         this.#env.runner.fork(Effect.catch(update, () => Effect.asVoid(this.#rebind(true))));
       } else this.#env.runner.fork(Effect.asVoid(this.#rebind(true)));
     } else this.#scheduleSyncRelays();
@@ -1780,6 +1806,7 @@ export class Mesh {
 
   /// `setWays`; not `redial` where a request is opening the link itself (`link`), which dials it.
   #setWays(addr: string, theirs: readonly string[] | undefined, off: readonly string[] | undefined, redial: boolean): void {
+    const wasMainOn = this.#mainOn(addr);
     let changed = false;
     let more = false;
     if (theirs !== undefined) {
@@ -1799,6 +1826,7 @@ export class Mesh {
       }
     }
     if (!changed) return;
+    if (!wasMainOn && this.#mainOn(addr)) this.#mainDialledAt.set(addr, this.now());
     this.#relaxStationState(endpointId(addr));
     const cur = this.current(addr);
     const curOff = cur !== null && cur.usable() && this.#wayOff(addr, cur);
@@ -1845,7 +1873,7 @@ export class Mesh {
         // on the main endpoint, iroh told of the relays it is on.
         if (this.#mainOn(addr)) {
           const nextAddr = { id: endpointId(addr), relays: this.relaysFor(addr), ips: this.#straightAt(addr) };
-          if (this.#hotBudget() > 0) {
+          if (this.#hasHotMode()) {
             this.#env.runner.fork(
               Effect.andThen(
                 this.#syncRelaysNow(),
@@ -1875,10 +1903,64 @@ export class Mesh {
     );
   }
 
-  #hotBudget(): number {
-    const n = this.#env.hotRelays;
-    if (typeof n !== "number" || n <= 0 || !this.#hasRelayControls()) return 0;
-    return Math.floor(n);
+  #hasHotMode(): boolean {
+    if (!this.#hasRelayControls()) return false;
+    const active = this.#env.hotRelays;
+    const idle = this.#env.idleHotRelays;
+    return (typeof active === "number" && active > 0) || (typeof idle === "number" && idle > 0 && typeof this.#env.idle === "function");
+  }
+
+  #isIdle(addr: string): boolean {
+    return this.#env.idle?.(addr) === true;
+  }
+
+  #stationIdle(id: string): boolean {
+    const check = this.#env.idle;
+    if (typeof check !== "function") return false;
+    let any = false;
+    for (const [a, o] of this.#links) {
+      if (endpointId(a) !== id) continue;
+      if (o.result === null) return false;
+      if ("ok" in o.result && o.result.ok.usable()) {
+        any = true;
+        if (!check(a)) return false;
+      }
+    }
+    return any;
+  }
+
+  #hotBudgetFor(id: string): number {
+    if (!this.#hasRelayControls()) return 0;
+    const idle = this.#env.idleHotRelays;
+    if (typeof idle === "number" && idle > 0 && this.#stationIdle(id)) return Math.floor(idle);
+    const active = this.#env.hotRelays;
+    if (typeof active === "number" && active > 0) return Math.floor(active);
+    return 0;
+  }
+
+  #wakeSteer(addr: string): void {
+    const wake = this.#steerWakes.get(addr);
+    if (wake !== undefined) {
+      this.#steerWakes.delete(addr);
+      Deferred.doneUnsafe(wake, Effect.void);
+    }
+  }
+
+  /// Re-evaluates idle state for `addr` (or every linked station): an idle station turning active wakes its steer
+  /// timer and relaxes its narrowed relays at once.
+  refreshIdle(addr?: string): void {
+    if (this.#closed) return;
+    const addrs = addr !== undefined ? [addr] : [...this.#links.keys()];
+    for (const a of addrs) {
+      if (this.#isIdle(a)) continue;
+      this.#wakeSteer(a);
+      const id = endpointId(a);
+      const hot = this.#hot.get(id);
+      if (hot !== undefined) {
+        const budget = this.#hotBudgetFor(id);
+        if (budget <= 0 || hot.size < budget) this.#relaxStation(id);
+      }
+    }
   }
 
   #logicalRelay(url: string): string {
@@ -1946,7 +2028,7 @@ export class Mesh {
 
   #desiredDisabledForStation(id: string): string[] {
     const hot = this.#hot.get(id);
-    if (hot === undefined || !this.#stationEligibleForHot(id)) return [];
+    if (hot === undefined || this.#hotBudgetFor(id) <= 0 || !this.#stationEligibleForHot(id)) return [];
     return this.#allCandidateRelaysForStation(id).filter((u) => !hot.has(this.#logicalRelay(u)));
   }
 
@@ -1971,11 +2053,11 @@ export class Mesh {
   }
 
   #syncRelaysNow(): Effect.Effect<void> {
-    if (this.#closed || this.#hotBudget() <= 0) return Effect.void;
+    if (this.#closed || !this.#hasHotMode()) return Effect.void;
     this.#syncDirty = true;
     return this.#syncLock.withPermits(1)(
       Effect.gen({ self: this }, function* () {
-        while (this.#syncDirty && !this.#closed && this.#hotBudget() > 0) {
+        while (this.#syncDirty && !this.#closed && this.#hasHotMode()) {
           this.#syncDirty = false;
           const endpoint = this.#endpoint;
           if (!this.#hasRelayControls(endpoint)) return;
@@ -2038,7 +2120,7 @@ export class Mesh {
   }
 
   #scheduleSyncRelays(): void {
-    if (this.#closed || this.#hotBudget() <= 0) return;
+    if (this.#closed || !this.#hasHotMode()) return;
     this.#env.runner.fork(this.#syncRelaysNow());
   }
 
@@ -2051,7 +2133,7 @@ export class Mesh {
   }
 
   #relaxStationState(id: string): void {
-    if (this.#hotBudget() <= 0) return;
+    if (!this.#hasHotMode()) return;
     this.#hot.delete(id);
     if (this.#hasStationLinks(id)) this.#relaxedAt.set(id, this.now());
     else this.#relaxedAt.delete(id);
@@ -2059,19 +2141,19 @@ export class Mesh {
   }
 
   #relaxStation(id: string): void {
-    if (this.#hotBudget() <= 0) return;
+    if (!this.#hasHotMode()) return;
     this.#relaxStationState(id);
     this.#scheduleSyncRelays();
   }
 
   #relaxStationNow(id: string): Effect.Effect<void> {
-    if (this.#hotBudget() <= 0) return Effect.void;
+    if (!this.#hasHotMode()) return Effect.void;
     this.#relaxStationState(id);
     return this.#syncRelaysNow();
   }
 
   #relaxAllState(): void {
-    if (this.#hotBudget() <= 0) return;
+    if (!this.#hasHotMode()) return;
     const now = this.now();
     this.#hot.clear();
     this.#relaxedAt.clear();
@@ -2080,13 +2162,13 @@ export class Mesh {
   }
 
   #relaxAll(): void {
-    if (this.#hotBudget() <= 0) return;
+    if (!this.#hasHotMode()) return;
     this.#relaxAllState();
     this.#scheduleSyncRelays();
   }
 
   #pickHotForStation(id: string): void {
-    const budget = this.#hotBudget();
+    const budget = this.#hotBudgetFor(id);
     if (budget <= 0 || this.#hot.has(id) || this.#mainDialing > 0 || this.#dialing > 0) return;
     if (!this.#stationEligibleForHot(id)) return;
     const now = this.now();
@@ -2178,10 +2260,10 @@ export class Mesh {
   }
 
   #updateHotOnTick(addr: string): Effect.Effect<void> {
-    const budget = this.#hotBudget();
-    if (budget <= 0) return Effect.void;
+    if (!this.#hasHotMode()) return Effect.void;
     const id = endpointId(addr);
-    if (!this.#stationEligibleForHot(id)) {
+    const budget = this.#hotBudgetFor(id);
+    if (budget <= 0 || !this.#stationEligibleForHot(id)) {
       if (this.#hot.has(id)) return this.#relaxStationNow(id);
       return Effect.void;
     }
@@ -2194,6 +2276,12 @@ export class Mesh {
     }
     const hot = this.#hot.get(id);
     if (hot !== undefined) {
+      if (hot.size < budget) return this.#relaxStationNow(id);
+      if (hot.size > budget) {
+        this.#hot.delete(id);
+        this.#pickHotForStation(id);
+        return Effect.void;
+      }
       const disconnectedOfficial = this.#disconnectedOfficialRelayKeys();
       const liveInHot = new Set<string>();
       for (const p of cur.connPaths()) {
@@ -2219,7 +2307,7 @@ export class Mesh {
     ips: string[] = [],
     onDone?: (attempt: DialAttempt) => void,
   ): Effect.Effect<Link, CoreError> {
-    if (this.#hotBudget() <= 0) return open(this.#env, endpoint, relays, endpointId(addr), credentials, fresh, null, ctx, ips, addr, onDone);
+    if (!this.#hasHotMode()) return open(this.#env, endpoint, relays, endpointId(addr), credentials, fresh, null, ctx, ips, addr, onDone);
     return Effect.gen({ self: this }, function* () {
       this.#mainDialing++;
       this.#relaxStationState(endpointId(addr));
@@ -2378,6 +2466,8 @@ export class Mesh {
   dropLink(addr: string): void {
     const opening = this.#links.get(addr);
     this.#links.delete(addr);
+    this.#rescued.delete(addr);
+    this.#wakeSteer(addr);
     this.#notify();
     if (opening?.result && "ok" in opening.result) {
       opening.result.ok.conn.close(0, "woke");
@@ -2551,13 +2641,16 @@ export class Mesh {
         // 0.4 s (2026-11-09).
         const lost = this.#lostMain.delete(addr);
         if (!unanswered && !lost) return dial;
+        this.#rescued.add(addr);
+        this.#mainDialledAt.set(addr, this.now());
         main.push(dial);
-        pinned = (unanswered ? this.#waysFor(addr) : this.#pinnable(addr)).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
+        const candidates = unanswered ? this.#waysFor(addr) : this.#pinnable(addr);
+        pinned = this.#filterDeadRelays(candidates, main.length > 0).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
       } else {
-        pinned = this.#pinnable(addr).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
         // Where the station said (in a run before, perhaps) it is reached straight: dialled beside the relays, not
         // after one of them brought its answer again.
         at = AT_ADDRESSES.flatMap((kind) => this.#dialAt(addr, kind, credentials, fresh, onDone) ?? []);
+        pinned = this.#filterDeadRelays(this.#pinnable(addr), at.length > 0).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
       }
       const all = [...main, ...pinned, ...at];
       if (all.length === 0) return Effect.fail(meshError(t("core-logic.mesh.all_off")));
@@ -2611,14 +2704,59 @@ export class Mesh {
     return ways.filter((r) => own === undefined || !sameRelay(own, r));
   }
 
+  #isDeadRelay(relay: string): boolean {
+    const key = relayKey(relay);
+    const until = this.#deadRelays.get(key);
+    if (until === undefined) return false;
+    if (this.now() >= until) {
+      this.#deadRelays.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  #filterDeadRelays(relays: string[], hasOtherWays: boolean): string[] {
+    const live = relays.filter((r) => r === LAN || r === TAILNET || isFenced(r) || !this.#isDeadRelay(r));
+    return live.length > 0 || hasOtherWays ? live : relays;
+  }
+
   /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`); through a fence's relays, or a path
   /// punched through them, on the fence's.
   #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
+      const singleRelay = relay !== LAN && relay !== TAILNET && !isFenced(relay);
       this.#dialing++;
-      return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) =>
-        endpoint === null ? Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` })) : open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr, onDone),
-      ).pipe(Effect.ensuring(Effect.sync(() => this.#dialing--)));
+      return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) => {
+        if (endpoint === null) return Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` }));
+        return open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr, onDone).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (!singleRelay) return;
+              const k = relayKey(relay);
+              this.#deadRelays.delete(k);
+              this.#deadRelayFails.delete(k);
+            }),
+          ),
+          Effect.tapError((e) =>
+            Effect.sync(() => {
+              if (!singleRelay || !(e instanceof OpeningTimeout) || e.connected) return;
+              const k = relayKey(relay);
+              if (!endpointOnARelay(endpoint)) {
+                this.#deadRelays.set(k, this.now() + DEAD_RELAY_MS);
+                this.#deadRelayFails.delete(k);
+                return;
+              }
+              const fails = (this.#deadRelayFails.get(k) ?? 0) + 1;
+              if (fails >= 2) {
+                this.#deadRelays.set(k, this.now() + DEAD_RELAY_MS);
+                this.#deadRelayFails.delete(k);
+              } else {
+                this.#deadRelayFails.set(k, fails);
+              }
+            }),
+          ),
+        );
+      }).pipe(Effect.ensuring(Effect.sync(() => this.#dialing--)));
     });
   }
 
@@ -2700,7 +2838,7 @@ export class Mesh {
       const follow=Effect.andThen(link.admitted(),()=>this.#env.linked!(addr,link,link.endpoint!));
       this.#env.runner.fork(Effect.ignore(Effect.raceFirst(follow,Effect.asVoid(link.conn.closed())),{log:"Unhandled",message:"link transport admission"}));
     }
-    if (this.#hotBudget() > 0) {
+    if (this.#hasHotMode()) {
       if (link.pinned !== null && this.#hot.has(endpointId(addr))) this.#relaxStation(endpointId(addr));
       this.#env.runner.fork(
         Effect.andThen(
@@ -2899,6 +3037,18 @@ export class Mesh {
         return;
       }
     }
+    // Back to the main endpoint once it is healthy again and no worse than a pinned rescue relay.
+    if (this.#mainOn(addr) && mine.link.pinned !== null && mine.link.pinned !== LAN && mine.link.pinned !== TAILNET) {
+      const mainWay = up.find((w) => w.link.pinned === null && w.samples >= MIN_SAMPLES && w.missed === 0 && !this.#avoided(addr, w));
+      if (
+        mainWay !== undefined &&
+        !clearlyBetter(this.#score(addr, mainWay), this.#score(addr, mine)) &&
+        (mainWay.key() === mine.key() || now !== null || this.now() - (this.#movedAt.get(addr) ?? -Infinity) >= MIN_STAY_MS)
+      ) {
+        this.#promote(addr, mainWay, "main");
+        return;
+      }
+    }
     if (mine.samples < MIN_SAMPLES) return;
     if (now === null && this.now() - (this.#movedAt.get(addr) ?? -Infinity) < MIN_STAY_MS) return;
     const best = this.#best(addr, up.filter((w) => w.link !== cur && w.samples >= MIN_SAMPLES && !this.#avoided(addr, w)));
@@ -2992,6 +3142,18 @@ export class Mesh {
       this.#retire(addr, keep === w ? other : w);
       byKey.set(k, keep);
     }
+    // Once the main endpoint is current and healthy again after a rescue fan-out (and no bulk transfer recently
+    // explored pinned relays), retire leftover rescue pinned relay ways so unused pinned endpoints can close.
+    const mine = this.#live(addr).find((w) => w.link === cur);
+    const bulkActive = this.now() - Math.max(this.#bulkExploredAt.get(addr) ?? -Infinity, this.#bulkUsedAt.get(addr) ?? -Infinity) < BULK_EXPLORE_MS;
+    if (this.#rescued.has(addr) && this.#mainOn(addr) && cur !== null && cur.pinned === null && mine !== undefined && mine.samples >= MIN_SAMPLES && mine.missed === 0 && !bulkActive) {
+      this.#rescued.delete(addr);
+      for (const w of this.#live(addr)) {
+        if (w.link !== cur && w.link.pinned !== null && w.link.pinned !== LAN && w.link.pinned !== TAILNET) {
+          this.#retire(addr, w);
+        }
+      }
+    }
     // Keep up to KEEP_WAYS - 1 backups besides current: the best interactive backup first, then best bulk backups.
     const others = this.#live(addr).filter((w) => w.link !== cur && w.samples >= MIN_SAMPLES);
     const budget = Math.max(0, KEEP_WAYS - 1);
@@ -3026,7 +3188,12 @@ export class Mesh {
       // Not while the LAN endpoint reaches it: the requests keep off the main endpoint then (LAN_RECALL_MS).
       const onLan = this.now() - (this.#lanAt.get(addr) ?? -Infinity) < LAN_RECALL_MS;
       if (!have.has("main") && !onLan && this.#mainOn(addr)) tries.push(this.#dialMain(addr, this.#endpoint, relays, credentials, false, undefined));
-      if (!mainOnly) for (const r of this.#pinnable(addr)) if (!have.has(r)) tries.push(this.#dialPinned(addr, r, credentials, false, undefined));
+      if (!mainOnly) {
+        const candidates = this.#pinnable(addr).filter((r) => !have.has(r));
+        for (const r of this.#filterDeadRelays(candidates, tries.length > 0 || have.size > 0)) {
+          tries.push(this.#dialPinned(addr, r, credentials, false, undefined));
+        }
+      }
       yield* Effect.all(
         tries.map((attempt) => Effect.map(Effect.result(attempt), (r) => (r._tag === "Success" ? this.#adopt(addr, r.success) : undefined))),
         { concurrency: "unbounded" },
@@ -3067,28 +3234,66 @@ export class Mesh {
     if (live.some((w) => w.link.pinned === LAN && w.missed === 0 && w.samples > 0)) this.#lanAt.set(addr, this.now());
     if (live.some((w) => w.link.pinned === TAILNET && w.missed === 0 && w.samples > 0)) this.#tailnetAnswered.add(addr);
     const credentials = (this.current(addr) ?? live[0]?.link)?.credentials;
+    if (credentials === undefined) return;
     // One connection on the main endpoint: no other ways to dial, compare or move to (iroh moves its packets).
-    if (credentials === undefined || this.#mainOn(addr)) return;
+    // If a fallback left the station on pinned relays with no main link alive, periodically redial main to recover it.
+    if (this.#mainOn(addr)) {
+      if (
+        !live.some((w) => w.link.pinned === null) &&
+        // Not for the punched path while the LAN endpoint reaches it: the requests keep off that (LAN_RECALL_MS).
+        this.now() - (this.#lanAt.get(addr) ?? -Infinity) >= LAN_RECALL_MS
+      ) {
+        const recentDirect = this.now() - (this.#directAt.get(addr) ?? -Infinity) < DIRECT_RECALL_MS;
+        const interval = recentDirect ? REDIAL_MAIN_MS : MAIN_RECOVER_MS;
+        if (this.now() - (this.#mainDialledAt.get(addr) ?? -Infinity) >= interval) {
+          this.#env.runner.fork(this.#explore(addr, credentials, true));
+        }
+      }
+      return;
+    }
     for (const kind of AT_ADDRESSES) this.#dialAtIf(addr, kind, credentials);
     if (this.now() - (this.#exploredAt.get(addr) ?? 0) >= EXPLORE_MS) this.#env.runner.fork(this.#explore(addr, credentials));
-    else if (
-      this.#mainOn(addr) &&
-      !live.some((w) => w.link.pinned === null) &&
-      this.now() - (this.#directAt.get(addr) ?? -Infinity) < DIRECT_RECALL_MS &&
-      // Not for the punched path while the LAN endpoint reaches it: the requests keep off that (LAN_RECALL_MS).
-      this.now() - (this.#lanAt.get(addr) ?? -Infinity) >= LAN_RECALL_MS &&
-      this.now() - (this.#mainDialledAt.get(addr) ?? -Infinity) >= REDIAL_MAIN_MS
-    )
-      this.#env.runner.fork(this.#explore(addr, credentials, true));
   }
 
-  /// While the station has a way open: every TICK_MS each pinged, the requests moved to the best (`#choose`), the
-  /// ways not worth keeping let go (`#prune`), and every EXPLORE_MS the others dialled again (`#explore`); the main
-  /// endpoint's link, gone from a station reached direct within DIRECT_RECALL_MS, every REDIAL_MAIN_MS.
+  #steerSleepMs(addr: string): number {
+    if (!this.#isIdle(addr) || !this.#mainOn(addr)) return TICK_MS;
+    if (this.#racing.has(addr) || this.#exploring.has(addr)) return TICK_MS;
+    const cur = this.current(addr);
+    const live = this.#live(addr);
+    if (cur === null || !cur.usable() || cur.pinned !== null) return TICK_MS;
+    if (live.length !== 1 || live[0]!.link !== cur || live[0]!.samples < MIN_SAMPLES || live[0]!.missed !== 0) return TICK_MS;
+    const id = endpointId(addr);
+    const budget = this.#hotBudgetFor(id);
+    if (
+      budget > 0 &&
+      !this.#hot.has(id) &&
+      this.now() - cur.openedAt < HOT_SETTLE_MS + TICK_MS &&
+      this.now() - (this.#relaxedAt.get(id) ?? -Infinity) < HOT_SETTLE_MS + TICK_MS
+    ) {
+      return TICK_MS;
+    }
+    return IDLE_TICK_MS;
+  }
+
+  /// While the station has a way open: every TICK_MS (or IDLE_TICK_MS while settled and idle) each pinged, the requests
+  /// moved to the best (`#choose`), the ways not worth keeping let go (`#prune`), and every EXPLORE_MS the others
+  /// dialled again (`#explore`); the main endpoint's link, gone from a station on pinned relays, retried to recover it.
   #steer(addr: string): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       for (;;) {
-        yield* laterSleep(TICK_MS);
+        const waitMs = this.#steerSleepMs(addr);
+        const curBefore = this.current(addr);
+        if (waitMs > TICK_MS && curBefore !== null) {
+          const wake = Deferred.makeUnsafe<void>();
+          this.#steerWakes.set(addr, wake);
+          yield* Effect.raceFirst(
+            laterSleep(waitMs),
+            Effect.raceFirst(Deferred.await(wake), Effect.asVoid(curBefore.conn.closed())),
+          );
+          if (this.#steerWakes.get(addr) === wake) this.#steerWakes.delete(addr);
+        } else {
+          yield* laterSleep(TICK_MS);
+        }
         if (this.#closed || !this.#links.has(addr)) break;
         const cur = this.current(addr);
         const before = this.#live(addr);
@@ -3262,9 +3467,11 @@ export class Mesh {
   #exploreBulk(addr: string, credentials: CredentialSource, relays: string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       if (this.#exploring.has(addr)) return;
+      const targets = this.#filterDeadRelays(relays, true);
+      if (targets.length === 0) return;
       this.#exploring.add(addr);
       yield* Effect.all(
-        relays.map((r) => Effect.map(Effect.result(this.#dialPinned(addr, r, credentials, false, undefined)), (res) => (res._tag === "Success" ? this.#adopt(addr, res.success) : undefined))),
+        targets.map((r) => Effect.map(Effect.result(this.#dialPinned(addr, r, credentials, false, undefined)), (res) => (res._tag === "Success" ? this.#adopt(addr, res.success) : undefined))),
         { concurrency: "unbounded" },
       ).pipe(Effect.ensuring(Effect.sync(() => this.#exploring.delete(addr))));
     });
@@ -3273,6 +3480,7 @@ export class Mesh {
   /// Best link for a bulk transfer, opening the primary link first and exploring pinned relays on demand if slow.
   bulkLink(addr: string, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
     return Effect.map(this.link(addr, credentials, theirs, off, asker), (cur) => {
+      this.#bulkUsedAt.set(addr, this.now());
       this.#maybeExploreBulk(addr, credentials);
       return this.bulkLinks(addr)[0] ?? cur;
     });
@@ -3281,6 +3489,7 @@ export class Mesh {
   /// Bulk link for a striped lane, spreading concurrent parts across fast bulk ways (or alternate bulk ways on retry).
   bulkLinkAt(addr: string, lane: number, credentials: CredentialSource, theirs?: readonly string[], off?: readonly string[], asker?: string): Effect.Effect<Link, CoreError> {
     return Effect.map(this.link(addr, credentials, theirs, off, asker), (cur) => {
+      this.#bulkUsedAt.set(addr, this.now());
       this.#maybeExploreBulk(addr, credentials);
       const fast = this.fastBulkLinks(addr);
       if (fast.length >= 2 || (lane === 0 && fast.length > 0)) return fast[Math.abs(lane) % fast.length]!;
@@ -3329,6 +3538,8 @@ export class Mesh {
     return Effect.gen({ self: this }, function* () {
       const link = this.current(addr);
       if (link === null || !link.usable()) return yield* Effect.fail(meshError(t("core-logic.mesh.not_connected")));
+      this.#deadRelays.clear();
+    this.#deadRelayFails.clear();
       yield* this.#explore(addr, link.credentials);
       for (let i = 0; i <= MIN_SAMPLES; i++) yield* this.#sample(addr);
       this.#choose(addr, "asked");
@@ -3416,12 +3627,18 @@ export class Mesh {
         if (wake.checksConnections()) for (const [addr, link] of this.#openLinks()) this.#env.runner.fork(this.#checkWoken(addr, link));
         if (!wake.suspectsConnections()) continue;
         this.#relaxAll();
+        for (const addr of [...this.#steerWakes.keys()]) this.#wakeSteer(addr);
         this.#env.runner.fork(this.#endpoint.networkChange());
         recordDht(this.#env.host, this.#endpoint);
         record(this.#env.host, "conn network-change", () => `told the main endpoint (${wake.network ? "the network changed" : wake.retry ? "retry" : `the UI back after ${Math.round(wake.away / 1000)}s`}), ${this.#openLinks().length} link(s) open, ${this.#pinned.size} relay endpoint(s) not told`);
         // On another network, the speeds seen on the last say nothing of how fast each way is from here (a laptop taken
         // from home would keep the relay it was fast through there, however slowly it brings replies now): found anew.
         if (wake.network) this.#forgetSpeeds();
+        if (wake.network || wake.retry) {
+          this.#deadRelays.clear();
+    this.#deadRelayFails.clear();
+          this.#unansweredAt.clear();
+        }
         // On another network now, perhaps the station's: its LAN addresses are worth a try again.
         this.#tried.clear();
         // (and its tailnet: dialled again on it only once it answered there again)
@@ -3596,6 +3813,7 @@ export class Mesh {
   close(): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       this.#closed = true;
+      for (const addr of [...this.#steerWakes.keys()]) this.#wakeSteer(addr);
       for (const [, o] of this.#links) if (o.result && "ok" in o.result) o.result.ok.close();
       this.#links.clear();
       this.#notify();

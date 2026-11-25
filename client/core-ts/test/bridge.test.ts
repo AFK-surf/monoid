@@ -398,3 +398,55 @@ test("bridgeIroh_caches_relay_access_map_across_conn_paths_and_invalidates_on_re
     runner.shutdown();
   }
 });
+
+test("bridgeIroh_wires_relay_control_ops_to_shell_and_refreshes_access_cache", async () => {
+  const calls: { op: string; arg: J }[] = [];
+  let relayStatusCalls = 0;
+  let statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1.test/" }];
+  const fakeBridge = {
+    sync(op: string) {
+      if (op === "iroh.relayStatus") {
+        relayStatusCalls++;
+        return statuses;
+      }
+      if (op === "conn.paths") return [{ id: "p-r1", selected: true, relay: "https://r1.test", ip: null, rttMs: 20, txPackets: 1, lostPackets: 0 }];
+      if (op === "iroh.endpointId") return "ep-1";
+      return null;
+    },
+    call(op: string, arg: J) {
+      calls.push({ op, arg });
+      if (op === "iroh.bind") return Effect.succeed({ json: { id: 7 } });
+      if (op === "iroh.connect") return Effect.succeed({ json: { id: 8 } });
+      return Effect.succeed({ json: {} });
+    },
+  } as unknown as Parameters<typeof bridgeIroh>[0];
+
+  const iroh = bridgeIroh(fakeBridge);
+  const runner = new Runner();
+  try {
+    const ep = await runner.run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: ["https://r1.test/"], lookup: false, relayOnly: false }));
+    const conn = await runner.run(ep.connect({ id: "peer", relays: [], ips: [] }, new Uint8Array(), []));
+    assert.equal(conn.paths()[0]!.relay, "https://e1.test/");
+    assert.equal(relayStatusCalls, 1);
+
+    await runner.run(ep.setDisabledRelays!("deadbeef", ["https://r2.test/", "https://r3.test/"]));
+    statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1-inserted.test/" }];
+    await runner.run(ep.insertRelay!("https://r2.test/"));
+    assert.equal(conn.paths()[0]!.relay, "https://e1-inserted.test/");
+    assert.equal(relayStatusCalls, 2);
+
+    statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1-removed.test/" }];
+    await runner.run(ep.removeRelay!("https://r2.test/"));
+    assert.equal(conn.paths()[0]!.relay, "https://e1-removed.test/");
+    assert.equal(relayStatusCalls, 3);
+
+    const relayCalls = calls.filter((c) => c.op === "iroh.disabledRelays" || c.op === "iroh.insertRelay" || c.op === "iroh.removeRelay");
+    assert.deepEqual(relayCalls, [
+      { op: "iroh.disabledRelays", arg: { id: 7, peer: "deadbeef", relays: ["https://r2.test/", "https://r3.test/"] } },
+      { op: "iroh.insertRelay", arg: { id: 7, url: "https://r2.test/" } },
+      { op: "iroh.removeRelay", arg: { id: 7, url: "https://r2.test/" } },
+    ]);
+  } finally {
+    runner.shutdown();
+  }
+});

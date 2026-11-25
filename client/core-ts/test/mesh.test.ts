@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, IDLE_HOT_RELAYS, IDLE_TICK_MS, KEEP_WAYS, LAN, MAIN_RECOVER_MS, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { keptFirst } from "../src/station/calls.ts";
@@ -4727,6 +4727,152 @@ sim("steer_ticks_and_net_way_reads_deduplicate_sync_connection_ffi_calls", async
   } finally {
     await s.run(mesh.close(), 20_000);
     await station.close();
+  }
+});
+
+sim("pinned_rescue_redials_main_promotes_it_and_retires_pinned_relays", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 5 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 40 }, station: { ms: 20 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 60 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a, b, c]);
+  try {
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+    assert.equal(link.pinned, null);
+    // Force main loss so rescue fan-out moves requests onto a pinned relay while main is dead.
+    s.net.leg(a, "device").loss = 0.95;
+    await s.time.pass(12 * TICK_MS);
+    const rescued = mesh.current(id);
+    assert.ok(rescued !== null && rescued.usable());
+    // Restore relay a: main must recover, promote back to main, and retire leftover pinned rescue ways.
+    s.net.leg(a, "device").loss = 0;
+    await s.until(
+      () => mesh.current(id)?.pinned === null && mesh.ways(id).length === 1,
+      MAIN_RECOVER_MS + MIN_STAY_MS + 6 * TICK_MS + RETIRE_MS + 10_000,
+    );
+    assert.equal(mesh.current(id)?.pinned, null);
+    assert.equal(mesh.ways(id).length, 1);
+    assert.equal((await request(s, mesh.current(id)!, head("/admin/api/overview"))).status, 200);
+  } finally {
+    await close(s, station, mesh);
+  }
+});
+
+sim("onARelay_backs_off_beyond_250ms_when_relay_stays_offline", async (s) => {
+  let looks = 0;
+  const from = s.time.now();
+  await s.run(onARelay({ relayStatus: () => (looks++, [{ url: "relay", connected: false }]) }, false), ONTO_MAX_MS + 1_000);
+  assert.ok(s.time.now() - from >= ONTO_MAX_MS && s.time.now() - from <= ONTO_MAX_MS + 250);
+  assert.ok(looks <= 35, `expected exponential backoff <= 35 relayStatus calls over 30s, got ${looks}`);
+});
+
+sim("unreachable_pinned_relay_is_cached_across_stations_and_cleared_on_network_wake", async (s) => {
+  const good = s.relay("https://good.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const dead = s.relay("https://dead.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const st1 = await s.stationOn(good, [dead]);
+  const st2 = await s.stationOn(good, [dead]);
+  s.net.down(dead, 60 * 60_000);
+  const connects: { to: string; relays: string[] }[] = [];
+  const baseIroh = s.net.iroh({ relayControls: true });
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => {
+          connects.push({ to: addr.id, relays: [...(addr.relays ?? [])] });
+          return ep.connect(addr, alpn, additional, givenUp);
+        },
+      })),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [good, dead]));
+  try {
+    const addr1 = `w/${st1.id()}`;
+    const addr2 = `w/${st2.id()}`;
+    // Dial st1 off main (`off = [DIRECT]`) so pinned endpoints try both `good` and `dead`.
+    const l1 = await s.run(mesh.link(addr1, grants("ok", { n: 0 }), undefined, [DIRECT]), 60_000);
+    assert.equal(l1.usable(), true);
+    // Let the background pinned dial to `dead` time out and populate the cross-station negative cache.
+    await s.time.pass(ONTO_MAX_MS + CONNECT_TIMEOUT_MS + 2_000);
+    const deadTriesFor = (stationId: string) => connects.filter((c) => c.to === stationId && c.relays.some((r) => sameRelay(r, dead))).length;
+    assert.ok(deadTriesFor(st1.id()) >= 1, "first station must try dead relay once");
+    assert.equal(deadTriesFor(st2.id()), 0);
+
+    // Dialing st2 now must skip the cached dead relay while still connecting via `good`.
+    const l2 = await s.run(mesh.link(addr2, grants("ok", { n: 0 }), undefined, [DIRECT]), 60_000);
+    assert.equal(l2.usable(), true);
+    await s.time.pass(2_000);
+    assert.equal(deadTriesFor(st2.id()), 0, "second station must skip recently dead pinned relay");
+
+    // A network change clears the negative cache so subsequent exploration retries `dead`.
+    s.wakes.wake(network(s.host));
+    await s.time.pass(EXPLORE_MS + 2_000);
+    assert.ok(deadTriesFor(st2.id()) >= 1, "network wake must clear dead-relay cache");
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st1.close();
+    await st2.close();
+  }
+});
+
+sim("idle_stations_narrow_to_one_hot_relay_and_throttle_pings_while_active_stays_full", async (s) => {
+  const nativeBase = s.net.iroh({ relayControls: true });
+  s.iroh = nativeBase;
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const allRelays = [r0, r1, r2, r3];
+
+  const stActive = await s.stationOn(r0, [r1, r2, r3]);
+  const stIdle = await s.stationOn(r0, [r1, r2, r3]);
+  const addrActive = `w/${stActive.id()}`;
+  const addrIdle = `w/${stIdle.id()}`;
+  const idleSet = new Set<string>([addrIdle]);
+
+  const mesh = await s.run(
+    Mesh.make(
+      {
+        ...env(s),
+        lookup: false,
+        takes: [PAIR_ALPN],
+        idleHotRelays: IDLE_HOT_RELAYS,
+        idle: (addr) => idleSet.has(addr),
+      },
+      allRelays,
+    ),
+  );
+  try {
+    const linkActive = await s.run(mesh.link(addrActive, grants("ok", { n: 0 })));
+    const linkIdle = await s.run(mesh.link(addrIdle, grants("ok", { n: 0 })));
+    await s.time.pass(HOT_SETTLE_MS + 2 * TICK_MS);
+
+    // Active station keeps all 4 relay paths hot; idle station narrows to 1 hot relay; endpoint keeps all 4 relays for pairing.
+    assert.equal(linkActive.conn.paths().length, 4, "active station must keep all relay paths");
+    assert.equal(linkIdle.conn.paths().length, 1, "idle station must narrow to 1 hot relay");
+    assert.equal(mesh.endpoint().relayStatus().length, 4, "endpoint with takes must keep official relays connected");
+
+    // Over one IDLE_TICK_MS window, active pings every 5s while idle throttles to 30s.
+    const activeBefore = linkActive.controlAnswers();
+    const idleBefore = linkIdle.controlAnswers();
+    await s.time.pass(IDLE_TICK_MS);
+    const activeDelta = linkActive.controlAnswers() - activeBefore;
+    const idleDelta = linkIdle.controlAnswers() - idleBefore;
+    assert.ok(activeDelta >= 5, `expected active station to ping ~6 times in 30s, got ${activeDelta}`);
+    assert.ok(idleDelta <= 2, `expected idle station to ping <= 2 times in 30s, got ${idleDelta}`);
+
+    // Moving the idle station to active relaxes its relays immediately and wakes its steer timer without waiting 30s.
+    idleSet.delete(addrIdle);
+    mesh.refreshIdle(addrIdle);
+    await s.time.pass(200);
+    assert.equal(linkIdle.conn.paths().length, 4, "waking idle station must restore full relay paths immediately");
+
+    const resumedBefore = linkIdle.controlAnswers();
+    await s.time.pass(3 * TICK_MS);
+    const resumedDelta = linkIdle.controlAnswers() - resumedBefore;
+    assert.ok(resumedDelta >= 2, `expected resumed active station to ping every 5s, got ${resumedDelta} in 15s`);
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await stActive.close();
+    await stIdle.close();
   }
 });
 
