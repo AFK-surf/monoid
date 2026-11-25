@@ -307,6 +307,14 @@ fn parse_device(v : Option[form::Json], at : Double, c : Crypto) -> Result[Devic
       }
     }
   }
+  // (only a web page's device runs out, as rules/src/lock/lock.mbt `device` says why)
+  let runs_out = match exp {
+    Some(_) => true
+    None => false
+  }
+  if kind != "web" && runs_out {
+    return Err(LockError::Refused("only a web page's device runs out"))
+  }
   if kind == "web" && at > 0.0 {
     let bad_exp = match exp {
       None => true

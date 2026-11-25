@@ -122,6 +122,14 @@ test("who may sign what: admins manage, members add only their own devices, owne
   assert.throws(() => apply(off, signed(after(off, "member", { sub: "x", email: "x", role: "member" }), w.alice.signer), 2000), /turned off/);
 });
 
+test("only a web page's device runs out: an app's device with exp is refused, so no station judges a signer out by its own clock", () => {
+  const w = workspace();
+  const tablet = { signer: ed(), base: ed() };
+  const body = { id: tablet.base.hex, sub: "carol", kind: "app", label: "tablet", sign_key: tablet.signer.id };
+  assert.throws(() => apply(w.state, signed(after(w.state, "device", { ...body, exp: 3000 }), w.carol.signer), 2000), /only a web page's device runs out/);
+  assert.equal(apply(w.state, signed(after(w.state, "device", body), w.carol.signer), 2000).seq, w.state.seq + 1);
+});
+
 test("a person's own devices: an admin puts in only their first; one put in under someone else's name signs nothing", () => {
   const w = workspace();
   let s = w.state;
