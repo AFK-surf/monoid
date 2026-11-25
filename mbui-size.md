@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3c721caa7](https://github.com/AFK-surf/monoid/commit/3c721caa78fac2cd3fe647d833878c1c16895b6d) feat(station,app): set the backup upload limit in  | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [9b4644fec](https://github.com/AFK-surf/monoid/commit/9b4644fec99fec4d2fe14c41cd42420405580047) perf(mbui): move desktop URL and file launches off | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [1a4f2bb4f](https://github.com/AFK-surf/monoid/commit/1a4f2bb4fff0c4a60902d952dd0c4ba1601ec59c) fix(station): take the archive-marks busy test's l | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [2e7d48690](https://github.com/AFK-surf/monoid/commit/2e7d48690f586d1d7269d0d3b516609e8b6a7e90) fix(station): start the station's Chrome and Farvi | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
 | [5badca1bd](https://github.com/AFK-surf/monoid/commit/5badca1bd3f3f096a6fad209c44fe240c15059d7) feat(comma): report human participants in task.ind | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
-| [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.81 | 122.81 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3c721caa7](https://github.com/AFK-surf/monoid/commit/3c721caa78fac2cd3fe647d833878c1c16895b6d) feat(station,app): set the backup upload limit in  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.3 |
 | [9b4644fec](https://github.com/AFK-surf/monoid/commit/9b4644fec99fec4d2fe14c41cd42420405580047) perf(mbui): move desktop URL and file launches off | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.25 |
 | [1a4f2bb4f](https://github.com/AFK-surf/monoid/commit/1a4f2bb4fff0c4a60902d952dd0c4ba1601ec59c) fix(station): take the archive-marks busy test's l | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.64 |
 | [2e7d48690](https://github.com/AFK-surf/monoid/commit/2e7d48690f586d1d7269d0d3b516609e8b6a7e90) fix(station): start the station's Chrome and Farvi | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.9 |
 | [5badca1bd](https://github.com/AFK-surf/monoid/commit/5badca1bd3f3f096a6fad209c44fe240c15059d7) feat(comma): report human participants in task.ind | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.82 |
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
-| [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.57 |
