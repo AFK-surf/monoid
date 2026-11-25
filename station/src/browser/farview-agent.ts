@@ -75,7 +75,10 @@ class Reader {
     let shift = 0;
     let u = 0;
     for (;;) {
+      if (this.i >= this.b.length) throw new RangeError("truncated varint");
+      if (shift >= 35) throw new RangeError("varint overflow");
       const c = this.b[this.i++]!;
+      if (shift === 28 && ((c & 0x80) !== 0 || (c & 0xf0) !== 0)) throw new RangeError("varint overflow");
       u |= (c & 0x7f) << shift;
       shift += 7;
       if (c < 0x80) break;
@@ -85,6 +88,7 @@ class Reader {
   }
   string(): string {
     const n = this.int();
+    if (n < 0 || this.i + n > this.b.length) throw new RangeError("invalid string length");
     const s = this.b.subarray(this.i, this.i + n).toString("utf8");
     this.i += n;
     return s;
@@ -111,12 +115,15 @@ export function decodeAnswer(body: Buffer): AgentAnswer | null {
 
 /// How long an answer is waited for: the host waits on a script's promise up to 30 s of the page's time.
 const ANSWER_MS = 45_000;
+/// Maximum single frame size accepted from a Farview agent socket (32 MiB).
+export const MAX_AGENT_FRAME = 32 * 1024 * 1024;
+const MAX_AGENT_BUFFER = MAX_AGENT_FRAME + 4;
 
 /// `ask` of the tab whose agent port is `port`, on a connection of its own: its first answer.
 export function askTab(port: number, ask: AgentAsk): Promise<AgentAnswer> {
   return new Promise((resolve, reject) => {
     const s = connect({ host: "127.0.0.1", port });
-    let buf = Buffer.alloc(0);
+    let buf: Buffer = Buffer.alloc(0);
     let done = false;
     let unwait = () => {};
     const end = (f: () => void) => {
@@ -130,11 +137,23 @@ export function askTab(port: number, ask: AgentAsk): Promise<AgentAnswer> {
     unwait = wall.after(ANSWER_MS, () => end(() => reject(new Error("Farview's tab did not answer"))));
     s.once("connect", () => s.write(encodeAsk(ask)));
     s.on("data", (chunk: Buffer) => {
-      buf = Buffer.concat([buf, chunk]);
+      if (done) return;
+      if (buf.length + chunk.length > MAX_AGENT_BUFFER) {
+        return end(() => reject(new RangeError("Farview agent buffer limit exceeded")));
+      }
+      buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
       while (buf.length >= 4) {
         const n = buf.readUInt32BE(0);
+        if (n > MAX_AGENT_FRAME) {
+          return end(() => reject(new RangeError(`Farview agent frame too large (${n} bytes)`)));
+        }
         if (buf.length < 4 + n) break;
-        const answer = decodeAnswer(buf.subarray(4, 4 + n));
+        let answer: AgentAnswer | null;
+        try {
+          answer = decodeAnswer(buf.subarray(4, 4 + n));
+        } catch (e) {
+          return end(() => reject(e));
+        }
         buf = buf.subarray(4 + n);
         if (answer !== null) return end(() => resolve(answer));
       }

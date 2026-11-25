@@ -605,6 +605,10 @@ fn tape_made(
       made("archiving", fn(p, core, here, stint, told, _acts) {
         @sfpages.archiving_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~)
       })
+    Setting(Progress) =>
+      made("progress", fn(p, core, here, _stint, told, _acts) {
+        @sfpages.progress_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(AutoDecisions) =>
       made("auto-decisions", fn(p, core, here, _stint, told, _acts) {
         @sfpages.decisions_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)

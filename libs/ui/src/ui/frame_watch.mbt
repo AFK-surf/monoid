@@ -1333,40 +1333,77 @@ let gpu_frame_dropped : Ref[Int] = Ref(0)
 let gpu_frame_slow : Ref[Bool] = Ref(false)
 
 ///|
+/// Last GPU time observed (ms, -1 none) and cached GPU sample from background / before hide to ignore on resume (-1 none).
+// kept across runs: put back as a run begins (gpu_frames_reset)
+let gpu_last_seen_ms : Ref[Double] = Ref(-1.0)
+
+///|
+// kept across runs: put back as a run begins (gpu_frames_reset)
+let gpu_stale_ms : Ref[Double] = Ref(-1.0)
+
+///|
 /// A frame drawn, the GPU's time of the last the host finished `gms` (-1: not known) and the frames it never drew in
 /// all `dropped` (frame_drawn, as each frame is drawn).
 fn gpu_frames_count(gms : Double, dropped : Int) -> Unit {
+  let away = (journal_away.val && !journal_hidden.val) || @hostapi.frame_hidden()
+  if away {
+    if dropped > gpu_dropped_seen.val {
+      gpu_dropped_seen.val = dropped
+    }
+    if gms >= 0.0 {
+      gpu_last_seen_ms.val = gms
+      gpu_stale_ms.val = gms
+      if gms >= gpu_budget_hang_ms {
+        gpu_last_reported.val = gms
+      } else {
+        gpu_last_reported.val = -1.0
+      }
+    } else {
+      gpu_last_seen_ms.val = -1.0
+      gpu_stale_ms.val = -1.0
+    }
+    return
+  }
   let slot = shown_slot.val
   let base = slot * 6
   if gms >= 0.0 {
-    gpu_frame_ms.val = gms
-    gpu_counts[0] += 1
-    gpu_page_counts[base] += 1
-    if gms > gpu_budget_120_ms {
-      gpu_counts[1] += 1
-      gpu_page_counts[base + 1] += 1
-    }
-    if gms > gpu_budget_60_ms {
-      gpu_counts[2] += 1
-      gpu_page_counts[base + 2] += 1
-    }
-    if gms >= gpu_budget_hang_ms {
-      gpu_counts[3] += 1
-      gpu_page_counts[base + 3] += 1
-      if gms != gpu_last_reported.val {
-        gpu_last_reported.val = gms
-        gpu_frame_slow.val = true
-      }
+    if gpu_stale_ms.val >= 0.0 && gms == gpu_stale_ms.val {
+      ()
     } else {
-      gpu_last_reported.val = -1.0
+      gpu_stale_ms.val = -1.0
+      gpu_last_seen_ms.val = gms
+      gpu_frame_ms.val = gms
+      gpu_counts[0] += 1
+      gpu_page_counts[base] += 1
+      if gms > gpu_budget_120_ms {
+        gpu_counts[1] += 1
+        gpu_page_counts[base + 1] += 1
+      }
+      if gms > gpu_budget_60_ms {
+        gpu_counts[2] += 1
+        gpu_page_counts[base + 2] += 1
+      }
+      if gms >= gpu_budget_hang_ms {
+        gpu_counts[3] += 1
+        gpu_page_counts[base + 3] += 1
+        if gms != gpu_last_reported.val {
+          gpu_last_reported.val = gms
+          gpu_frame_slow.val = true
+        }
+      } else {
+        gpu_last_reported.val = -1.0
+      }
+      if gms > gpu_worst.val {
+        gpu_worst.val = gms
+      }
+      let tenths = (gms * 10.0).round().to_int()
+      if tenths > gpu_page_counts[base + 4] {
+        gpu_page_counts[base + 4] = tenths
+      }
     }
-    if gms > gpu_worst.val {
-      gpu_worst.val = gms
-    }
-    let tenths = (gms * 10.0).round().to_int()
-    if tenths > gpu_page_counts[base + 4] {
-      gpu_page_counts[base + 4] = tenths
-    }
+  } else {
+    gpu_stale_ms.val = -1.0
+    gpu_last_seen_ms.val = -1.0
   }
   if dropped > gpu_dropped_seen.val {
     let delta = dropped - gpu_dropped_seen.val
@@ -1427,6 +1464,9 @@ pub fn gpu_frames_take() -> GpuFrames {
   }
   gpu_counts.fill(0)
   gpu_worst.val = 0.0
+  if journal_away.val && gpu_last_seen_ms.val >= 0.0 {
+    gpu_stale_ms.val = gpu_last_seen_ms.val
+  }
   f
 }
 
@@ -1440,6 +1480,8 @@ fn gpu_frames_reset() -> Unit {
   gpu_frame_ms.val = -1.0
   gpu_frame_dropped.val = 0
   gpu_frame_slow.val = false
+  gpu_last_seen_ms.val = -1.0
+  gpu_stale_ms.val = -1.0
 }
 
 ///|

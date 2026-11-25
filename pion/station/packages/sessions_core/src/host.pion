@@ -47,8 +47,9 @@ pub fn ShellSender::alloc_shell_id(self : ShellSender) -> Int64 {
   self.next_shell_id
 }
 
-pub fn ShellSender::close_abandoned_tcp_handle_json(
+pub fn ShellSender::close_abandoned_handle_json(
   self : ShellSender,
+  close_op : String,
   j : base_codec::Json,
 ) -> Unit {
   let handle_opt : Option[base_codec::Json] = match j {
@@ -62,7 +63,7 @@ pub fn ShellSender::close_abandoned_tcp_handle_json(
       let close_args = base_codec::json_obj([("id", h)])
       (self.shell_call)(
         close_id,
-        "tcp.close",
+        close_op,
         base_codec::json_stringify(builders_core::normalize_json(close_args)),
         None,
       )
@@ -71,17 +72,43 @@ pub fn ShellSender::close_abandoned_tcp_handle_json(
   }
 }
 
-pub fn ShellSender::close_abandoned_tcp_handle(
+pub fn ShellSender::close_abandoned_op_json(
   self : ShellSender,
+  aop : AbandonedOp,
+  j : base_codec::Json,
+) -> Unit {
+  match aop {
+    AbandonedOp::CloseTcpHandle => self.close_abandoned_handle_json("tcp.close", j)
+    AbandonedOp::ClosePackHandle => self.close_abandoned_handle_json("pack.close", j)
+  }
+}
+
+pub fn ShellSender::close_abandoned_op(
+  self : ShellSender,
+  aop : AbandonedOp,
   done : host_shim::ShellDone,
 ) -> Unit {
   if done.error.length() > 0 || done.json.length() == 0 {
     return
   }
   match parse_json_strict(done.json) {
-    Ok(j) => self.close_abandoned_tcp_handle_json(j)
+    Ok(j) => self.close_abandoned_op_json(aop, j)
     Err(_) => ()
   }
+}
+
+pub fn ShellSender::close_abandoned_tcp_handle_json(
+  self : ShellSender,
+  j : base_codec::Json,
+) -> Unit {
+  self.close_abandoned_handle_json("tcp.close", j)
+}
+
+pub fn ShellSender::close_abandoned_tcp_handle(
+  self : ShellSender,
+  done : host_shim::ShellDone,
+) -> Unit {
+  self.close_abandoned_op(AbandonedOp::CloseTcpHandle, done)
 }
 
 /// Abstract host I/O & clock transport so production uses `host_shim` + `sql_db` while
@@ -296,6 +323,7 @@ pub enum ShellOwner {
 
 pub enum AbandonedOp {
   CloseTcpHandle
+  ClosePackHandle
 }
 
 /// Standalone per-call cancellation/settlement leaf with ZERO back-reference to `SessionHost`.
@@ -335,6 +363,8 @@ pub struct HubTimerEntry {
 
 pub struct SessionHost {
   pub rt : effect::Runtime
+  pub proc_scope : effect::EffectScope
+  pub mut proc_closed : Bool
   pub transport : HostTransport
   pub flags : HostFlags
   pub sender : ShellSender
@@ -345,6 +375,9 @@ pub struct SessionHost {
   pub abandoned_ops : Map[Int64, AbandonedOp]
   pub hub_asked : Map[Int, HubAskedEntry]
   pub hub_timers : Map[Int, HubTimerEntry]
+  /// Process-scope manifest publish barriers keyed by manifest path (zero back-reference to `HubGen`).
+  pub manifest_barriers : Map[String, effect::Deferred[Unit]]
+  manifest_barrier_seq : Map[String, Int]
   /// Monotonic process-scope RPC/timer ID counter (NEVER reset across `{"db": ...}`).
   pub mut next : Int
   pub mut exited : Bool
@@ -359,6 +392,8 @@ pub fn SessionHost::new(rt : effect::Runtime, transport : HostTransport) -> Sess
   let sender = ShellSender::new(transport.shell_call)
   let host = SessionHost::{
     rt: rt,
+    proc_scope: rt.new_scope(),
+    proc_closed: false,
     transport: transport,
     flags: flags,
     sender: sender,
@@ -369,6 +404,8 @@ pub fn SessionHost::new(rt : effect::Runtime, transport : HostTransport) -> Sess
     abandoned_ops: Map::new(),
     hub_asked: Map::new(),
     hub_timers: Map::new(),
+    manifest_barriers: Map::new(),
+    manifest_barrier_seq: Map::new(),
     next: 0,
     exited: false,
     exit_code: 0,
@@ -423,6 +460,184 @@ pub fn SessionHost::exit(self : SessionHost, code : Int) -> Unit {
   (self.transport.exit_process)(code)
 }
 
+/// Process-scope silent `pack.close` via `self.sender` (bypasses `HubGen::shell_k`,
+/// emits zero business RPCs, touches zero generation counters, zero RC cycles).
+pub fn SessionHost::close_pack_silent(self : SessionHost, id : Int) -> Unit {
+  self.sender.close_abandoned_op_json(AbandonedOp::ClosePackHandle, jint(id))
+}
+
+/// Process-scope silent `fs.remove` via `self.sender` (bypasses `HubGen::shell_k`,
+/// emits zero business RPCs, touches zero generation counters, zero RC cycles).
+pub fn SessionHost::remove_path_silent(self : SessionHost, path : String) -> Unit {
+  let call_id = self.sender.alloc_shell_id()
+  let args = base_codec::json_obj([
+    ("path", jstr(path)),
+    ("recursive", jbool(false)),
+  ])
+  (self.sender.shell_call)(
+    call_id,
+    "fs.remove",
+    base_codec::json_stringify(builders_core::normalize_json(args)),
+    None,
+  )
+}
+
+/// Process-scope shell call over `ShellOwner::Process` (survives `rotate_hub_gen`,
+/// emits zero business frames, touches zero generation counters, zero RC cycles).
+pub fn SessionHost::proc_shell_k(
+  self : SessionHost,
+  method : String,
+  args : base_codec::Json,
+  data : Option[Bytes],
+  k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+) -> Unit {
+  self.shell_k(ShellOwner::Process, method, args, data, None, None, k)
+}
+
+/// Spawn a process-scope daemon inside `self.proc_scope` (survives `rotate_hub_gen`,
+/// cancelled only on process exit). Returns `false` if `proc_scope` is already closed.
+pub fn SessionHost::proc_daemon_k(
+  self : SessionHost,
+  name : String,
+  body : ((effect::Exit[Unit]) -> Unit) -> Unit,
+) -> Bool {
+  if self.proc_closed {
+    return false
+  }
+  let _ = self.proc_scope.fork_daemon(name, body, fn(_e : effect::EffectError) -> Unit { () })
+  true
+}
+
+/// Process-scope silent atomic manifest publish (`fs.put(temp)` + `fs.rename(temp, path)`
+/// over `ShellOwner::Process` in `self.scope`, surviving `rotate_hub_gen` with zero business
+/// frames, zero SQLite writes, and zero old-generation counter mutations).
+pub fn SessionHost::publish_manifest_k(
+  self : SessionHost,
+  path : String,
+  temp : String,
+  json : String,
+  wait_before : Option[effect::Deferred[Unit]],
+) -> effect::Deferred[effect::Exit[Unit]] {
+  self.publish_manifest_lazy_k(path, temp, fn() -> String { json }, wait_before)
+}
+
+/// Lazy-JSON variant of `publish_manifest_k` so callers waiting on an in-flight mirror
+/// mutation (`wait_before`) serialize the final post-mutation manifest state right before `fs.put`.
+pub fn SessionHost::publish_manifest_lazy_k(
+  self : SessionHost,
+  path : String,
+  temp : String,
+  make_json : () -> String,
+  wait_before : Option[effect::Deferred[Unit]],
+) -> effect::Deferred[effect::Exit[Unit]] {
+  let prev = self.manifest_barriers.get(path)
+  let seq = self.alloc_id()
+  let barrier : effect::Deferred[Unit] = effect::Deferred::new()
+  let result : effect::Deferred[effect::Exit[Unit]] = effect::Deferred::new()
+  self.manifest_barriers.set(path, barrier)
+  self.manifest_barrier_seq.set(path, seq)
+  let release_barrier = fn(res : effect::Exit[Unit], dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    match self.manifest_barrier_seq.get(path) {
+      Some(cur) => {
+        if cur == seq {
+          let _ = self.manifest_barriers.remove(path)
+          let _ = self.manifest_barrier_seq.remove(path)
+        }
+      }
+      None => ()
+    }
+    let _ = barrier.succeed(())
+    let _ = result.succeed(res)
+    match res {
+      effect::Exit::Interrupted => dk(effect::Exit::Interrupted)
+      _ => dk(effect::Exit::Succeeded(()))
+    }
+  }
+  let _ = self.proc_scope.fork_daemon(
+    "publish manifest",
+    fn(dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let run_io = fn() -> Unit {
+        let json = make_json()
+        self.shell_k(
+          ShellOwner::Process,
+          "fs.put",
+          base_codec::json_obj([
+            ("path", jstr(temp)),
+            ("offset", jnum(0.0)),
+            ("exclusive", jbool(true)),
+            ("truncate", jbool(true)),
+            ("sync", jbool(true)),
+            ("mode", jnum(384.0)),
+          ]),
+          Some(json.to_bytes()),
+          None,
+          None,
+          fn(pex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+            match pex {
+              effect::Exit::Failed(e) => release_barrier(effect::Exit::Failed(e), dk)
+              effect::Exit::Interrupted => release_barrier(effect::Exit::Interrupted, dk)
+              effect::Exit::Succeeded(_) => {
+                self.shell_k(
+                  ShellOwner::Process,
+                  "fs.rename",
+                  base_codec::json_obj([("from", jstr(temp)), ("to", jstr(path))]),
+                  None,
+                  None,
+                  None,
+                  fn(rex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+                    match rex {
+                      effect::Exit::Succeeded(_) => release_barrier(effect::Exit::Succeeded(()), dk)
+                      effect::Exit::Interrupted => release_barrier(effect::Exit::Interrupted, dk)
+                      effect::Exit::Failed(e) => {
+                        self.remove_path_silent(temp)
+                        release_barrier(effect::Exit::Failed(e), dk)
+                      }
+                    }
+                  },
+                )
+              }
+            }
+          },
+        )
+      }
+      let after_prev = fn() -> Unit {
+        match wait_before {
+          Some(d) => {
+            if d.is_done() {
+              run_io()
+            } else {
+              d.wait_k(fn(wex : effect::Exit[Unit]) -> Unit {
+                match wex {
+                  effect::Exit::Interrupted => release_barrier(effect::Exit::Interrupted, dk)
+                  _ => run_io()
+                }
+              })
+            }
+          }
+          None => run_io()
+        }
+      }
+      match prev {
+        Some(pb) => {
+          if pb.is_done() {
+            after_prev()
+          } else {
+            pb.wait_k(fn(bex : effect::Exit[Unit]) -> Unit {
+              match bex {
+                effect::Exit::Interrupted => release_barrier(effect::Exit::Interrupted, dk)
+                _ => after_prev()
+              }
+            })
+          }
+        }
+        None => after_prev()
+      }
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  result
+}
+
 /// Read the next complete `\n`-terminated stdin line.
 /// Explicitly maps `Exit::Failed(EffectError::QueueShutdown)` -> `Exit::Succeeded(None)` (EOF);
 /// all other failures and `Exit::Interrupted` are propagated verbatim.
@@ -460,7 +675,7 @@ pub fn SessionHost::drain_cancelled_waiters(self : SessionHost) -> Unit {
         let _ = self.shell_waiters.remove(id)
         if !w.slot.closed {
           match abandoned_op {
-            Some(AbandonedOp::CloseTcpHandle) => self.abandoned_ops.set(id, AbandonedOp::CloseTcpHandle)
+            Some(aop) => self.abandoned_ops.set(id, aop)
             None => ()
           }
         }
@@ -517,9 +732,9 @@ pub fn SessionHost::shell_k(
         slot.cancelled = true
         if !slot.closed {
           match (slot.settled, abandoned_op) {
-            (Some(j), Some(AbandonedOp::CloseTcpHandle)) => {
+            (Some(j), Some(aop)) => {
               slot.closed = true
-              sender.close_abandoned_tcp_handle_json(j)
+              sender.close_abandoned_op_json(aop, j)
             }
             (None, _) => cancelled_ids.items.push((id, abandoned_op))
             _ => ()
@@ -616,9 +831,9 @@ pub fn SessionHost::dispatch_event(self : SessionHost, ev : host_shim::HostEvent
           if waiter.slot.cancelled {
             if !waiter.slot.closed {
               match waiter.abandoned_op {
-                Some(AbandonedOp::CloseTcpHandle) => {
+                Some(aop) => {
                   waiter.slot.closed = true
-                  self.sender.close_abandoned_tcp_handle(done)
+                  self.sender.close_abandoned_op(aop, done)
                 }
                 None => ()
               }
@@ -641,9 +856,9 @@ pub fn SessionHost::dispatch_event(self : SessionHost, ev : host_shim::HostEvent
         }
         None => {
           match self.abandoned_ops.get(done.id) {
-            Some(AbandonedOp::CloseTcpHandle) => {
+            Some(aop) => {
               let _ = self.abandoned_ops.remove(done.id)
-              self.sender.close_abandoned_tcp_handle(done)
+              self.sender.close_abandoned_op(aop, done)
             }
             None => ()
           }
@@ -721,6 +936,9 @@ pub fn run_host_loop(
     main_fiber.interrupt()
     host.tick()
   }
+  host.proc_closed = true
+  host.proc_scope.close_now()
+  host.tick()
   if host.exited {
     return host.exit_code
   }

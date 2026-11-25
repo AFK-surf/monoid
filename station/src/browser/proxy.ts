@@ -40,7 +40,7 @@ export type DoorBrowsers = {
 };
 
 /// The browser's route on the agents' door.
-export function browserDoor(browser: DoorBrowsers): DoorRoute {
+export function browserDoor(browser: DoorBrowsers, opts?: { hasSession?: (session: string) => boolean }): DoorRoute {
   const server = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: MAX });
   return {
     prefix: PREFIX,
@@ -50,6 +50,7 @@ export function browserDoor(browser: DoorBrowsers): DoorRoute {
     async upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
       const session = sessionOfPath(req.url ?? "");
       if (session === null) return refuseUpgrade(socket, 404, "the station's browser is /browser/<session>, as the browser tool gives it");
+      if (opts?.hasSession && !opts.hasSession(session)) return refuseUpgrade(socket, 404, "no such chat session");
       let opened: { ws: string; gate: GateParts };
       try {
         opened = await browser.open(session);

@@ -101,12 +101,20 @@ pub fn is_valid_sid(sid: &str) -> bool {
     count >= 2
 }
 
-/// Pipe DACL: SYSTEM full, Administrators full, owning user SID read/write only (no WRITE_DAC/WRITE_OWNER).
+/// The user's access to the pipe: read and write its data, attributes and extended attributes, READ_CONTROL,
+/// SYNCHRONIZE. Not GENERIC_WRITE: on a pipe that includes FILE_CREATE_PIPE_INSTANCE (0x4), with which the user could
+/// add a server instance of its own under the worker's pipe and its owner.
+pub const PIPE_USER_ACCESS: u32 = 0x0012_019b;
+
+/// Pipe security: owner LocalSystem, DACL SYSTEM full, Administrators full, the owning user `PIPE_USER_ACCESS` only (no
+/// WRITE_DAC/WRITE_OWNER, no new instances). The owner is explicit, as a LocalSystem token's default owner is
+/// Administrators. Clients (svc_pipe.rs `connect`) and the worker take only a pipe owned by LocalSystem or
+/// Administrators: a pipe a user process created first under this name would be owned by that user.
 pub fn pipe_sddl(user_sid: &str) -> Option<String> {
     if !is_valid_sid(user_sid) {
         return None;
     }
-    Some(format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{user_sid})"))
+    Some(format!("O:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x{PIPE_USER_ACCESS:08x};;;{user_sid})"))
 }
 
 /// Install directory DACL: SYSTEM full, Administrators full, Authenticated Users read/execute only.
@@ -114,7 +122,10 @@ pub fn dir_sddl() -> &'static str {
     "D:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GRGX;;;AU)"
 }
 
-/// Whether the connecting process image path is one of our own screen binaries.
+/// Whether the connecting process image path is one of our own screen binaries. Only the file name is checked: the view
+/// (`stillfail-screen.exe`) lives in the user's own `%USERPROFILE%\.stillfail\app\station\`, so a path check would
+/// refuse it. Which OS users may connect at all is the pipe DACL's (`pipe_sddl`); this only narrows that user's
+/// processes to ours.
 pub fn is_allowed_client_exe(path: &str) -> bool {
     let base = path.rsplit(['\\', '/']).next().unwrap_or("");
     base.eq_ignore_ascii_case("stillfail-screen.exe") || base.eq_ignore_ascii_case("stillfail-screen-svc.exe")
@@ -197,11 +208,18 @@ mod tests {
     fn validates_sids_and_builds_sddl() {
         let sid = "S-1-5-21-3623811015-3361044348-30300820-1001";
         assert!(is_valid_sid(sid));
-        assert_eq!(pipe_sddl(sid).unwrap(), format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;{sid})"));
+        assert_eq!(pipe_sddl(sid).unwrap(), format!("O:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x0012019b;;;{sid})"));
         assert!(!is_valid_sid("S-1-5-21)(A;;GA;;;WD"));
         assert!(!is_valid_sid("S-1-5"));
         assert!(!is_valid_sid(""));
         assert!(pipe_sddl("invalid").is_none());
+        assert!(pipe_sddl(sid).unwrap().starts_with("O:SYD:P("));
+        assert!(!pipe_sddl(sid).unwrap().contains("GW"));
+        // FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_EA | FILE_WRITE_EA | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES
+        // | READ_CONTROL | SYNCHRONIZE, and not FILE_CREATE_PIPE_INSTANCE.
+        assert_eq!(PIPE_USER_ACCESS, 0x1 | 0x2 | 0x8 | 0x10 | 0x80 | 0x100 | 0x2_0000 | 0x10_0000);
+        assert_eq!(PIPE_USER_ACCESS & 0x4, 0);
+        assert!(pipe_sddl("S-1-5-21)(A;;GA;;;WD").is_none());
     }
 
     #[test]

@@ -9,6 +9,7 @@ import { parseTopic, topicKey, type Topic } from "../src/protocol.ts";
 import { Runner } from "../src/runtime.ts";
 import { Store, type Source, type Value } from "../src/store.ts";
 import { FakeHost } from "../src/testing.ts";
+import { PROGRESS_DEFAULT } from "../src/progress-prefs.ts";
 import { Views, chatDerive, type ViewsEnv } from "../src/views/views.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -95,6 +96,7 @@ export function setup(options: RigOptions = {}) {
     emailOf: (ws) => (ws === "ws" ? "Me@x.com" : null),
     betaOf: (ws) => ws === "ws" && (data.record("me", "s1") as J)?.user?.beta === true,
     subOf: (ws) => (ws === "ws" ? "s1" : null),
+    progressOf: () => PROGRESS_DEFAULT,
     relayName: () => null,
     // How much of a chat is on the device, as station/topics.ts `held` says it: its entries held of as far as it is
     // known to go (its summary's last, or what is held past it); all of it once none is missing.

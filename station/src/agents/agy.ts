@@ -549,12 +549,21 @@ export function agySkillsFitted(skills: readonly { name: string; bytes: number; 
   return { kept, left };
 }
 
+/// Appends a short note to `instructions` when `agySkills` left workspace skills out of `.agent/skills` to keep within
+/// `AGY_SKILL_BUDGET`, so the model knows to discover them with `search` (`kinds: ["skill"]`) and read them with
+/// `skill_read`. Leaves empty instructions (terminal / instructions-less sessions) untouched.
+export function agyWithOmittedSkills(instructions: string, left: number): string {
+  if (left <= 0 || instructions === "") return instructions;
+  const noun = left === 1 ? "workspace skill was" : "workspace skills were";
+  return `${instructions}\n\nNote: ${left} additional ${noun} omitted from .agent/skills to stay within Antigravity CLI's declaration budget. Use search with kinds=["skill"] to find relevant skills and skill_read to read them in full.`;
+}
+
 /// Antigravity CLI confines workspace skills to paths inside the workspace (`pinnedEvalSymlinks` skips symbolic links in
 /// `.agents/skills/` that resolve outside `cwd`, 1.5.9). Materializes each skill of `<cwd>/.agents/skills/` (the
 /// workspace's and any preset's, `sessionSkills` and `keepCopy`) and `skillsDir` into `<cwd>/.agent/skills/<name>/` as a
 /// directory of its own with `SKILL.md` hard-linked (or copied across devices) and its sibling scripts and references
 /// linked beside it, without adding the shared skills directory to `Active Workspaces`.
-export async function agySkills(cwd: string, skillsDir?: string): Promise<void> {
+export async function agySkills(cwd: string, skillsDir?: string): Promise<{ kept: number; left: string[] }> {
   const sources = new Map<string, string>();
   const dotAgents = join(cwd, ".agents", "skills");
   for (const name of await readdir(dotAgents).catch(() => [] as string[])) {
@@ -589,7 +598,7 @@ export async function agySkills(cwd: string, skillsDir?: string): Promise<void> 
   for (const old of await readdir(root).catch(() => [] as string[])) {
     if (!valid.has(old)) await rm(join(root, old), { recursive: true, force: true });
   }
-  if (valid.size === 0) return;
+  if (valid.size === 0) return { kept: 0, left };
   await mkdir(root, { recursive: true });
   for (const [name, { dir, skillMd, stat: srcStat }] of valid) {
     const target = join(root, name);
@@ -618,6 +627,7 @@ export async function agySkills(cwd: string, skillsDir?: string): Promise<void> 
       }
     }
   }
+  return { kept: valid.size, left };
 }
 
 /// The thinking levels Antigravity's ACP models append to a family's name (`gemini-4-carbon-high`, `claude-opus-5-5-medium`).
@@ -860,13 +870,17 @@ export class AgyDriver extends AcpDriver<AgySession> {
     const until = borrowed ? await agyExpiry(options.profile.home) : null;
     // Failed here, before anything starts, so the session goes on in a new conversation and reads back.
     if (options.resume !== undefined) await this.ensureConversation(options.profile.home, options.resume);
+    let openOptions = options;
     if (!probe) {
       await agyHooks(options.profile.home);
-      if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
+      if (options.skills !== undefined) {
+        const { left } = await agySkills(options.cwd, options.skills);
+        if (left.length > 0) openOptions = { ...options, instructions: agyWithOmittedSkills(options.instructions, left.length) };
+      }
     }
     // (given up while it was made ready: no process started)
     if (options.signal?.aborted) throw new Error("open aborted");
-    const session = await super.begin(options, events, probe);
+    const session = await super.begin(openOptions, events, probe);
     session.signInUntil = until;
     session.signInOpenedAt = borrowed ? wall.now() : null;
     return session;

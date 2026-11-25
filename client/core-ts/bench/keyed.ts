@@ -27,7 +27,7 @@ function setup(keyed: boolean) {
   const data = new Data(host, runner);
   store.setHeld((topic) => data.shared(topic));
   data.onChange((topic) => store.changed(topic));
-  const views = new Views({ host, runner, store, data, emailOf: () => "me@x.com", betaOf: () => false, relayName: () => null });
+  const views = new Views({ host, runner, store, data, emailOf: () => "me@x.com", betaOf: () => false, progressOf: () => ({ minutes: 10, strength: "require" }), relayName: () => null });
   const source: Source = { start: (t) => VIEWS.has(t.topic) && views.start(t), stop: (t) => VIEWS.has(t.topic) && views.stop(t), compute: (t) => views.compute(t) };
   store.setSource(source);
   store.subscribe(1, 1, { topic: "chats", scope: "ws" }, keyed);

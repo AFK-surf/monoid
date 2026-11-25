@@ -19,6 +19,7 @@
 - Cap kept deletions per owner using `goneKept` (`client/core-ts/src/preset-records.ts`, grouping ownerless deletions together). `Presets.carry` ignores PUTs whose deletions would drop immediately so deletions do not loop. Include ownerless deletions in every `GET /presets/kept` so the creator's device claims them.
 - Agents see all presets on the station (`chat_create`). People see their own by default and others on demand (`GET /presets/others`). That is a UI filter, not a permission boundary.
 - A person's drafts of the board's 待派发 are carried the same way (`station/src/sessions/board-drafts.ts`, the rule `client/core-ts/src/board-drafts.ts`; `GET` and `PUT /board/drafts`), their files kept only by the station each draft is to run on and given to that person's devices alone (`GET /board/files`).
+- How a person's agents are asked for progress (设置 › 进度汇报, `GET` and `PUT /progress`, `client/core-ts/src/progress-prefs.ts`) is carried the same way, to every workspace of theirs. It goes by who started the session (`Store.progressOf`), read as a silent wait is woken, and never wakes a session itself.
 
 ## Profiles following the workspace's whitelist
 

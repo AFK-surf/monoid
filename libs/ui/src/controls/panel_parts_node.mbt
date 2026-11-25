@@ -344,8 +344,19 @@ pub fn panel_content_row_node(
   highlighted? : (@view.View) -> Bool = lit_in_node,
   loc~ : SourceLoc,
 ) -> Unit {
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   @headless.button(made_for=loc, parent, label, press, fn(row, _) {
-    hover_ground_node(row, lit=Some(fn() { highlighted(row) }))
+    hover_ground_node(
+      row,
+      lit=Some(fn() { highlighted(row) }),
+      color=fn() {
+        if in_overlay && theme().dark {
+          @ui.tree_theme().color(A(Fg, O5))
+        } else {
+          @ui.tree_theme().color(Hover)
+        }
+      },
+    )
     content(row)
   })
   |> ignore
@@ -510,7 +521,7 @@ fn panel_row_by(
         .words_look(By(fn() {
           { size: t().t.meta, weight: 400, line: -@ui.tree_theme().text_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
         }))
-        .ink(By(fn() { t().p.muted }))
+        .ink(By(overlay_muted_ink))
         |> ignore
       })
       if end != "" {
@@ -555,6 +566,7 @@ pub fn panel_said_row_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let t = fn() { theme() }
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   let quiet = fn() -> @view.WordsLook {
     { size: t().t.meta, weight: 400, line: -@ui.tree_theme().text_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
   }
@@ -568,13 +580,23 @@ pub fn panel_said_row_node(
       .words_look(By(fn() {
         { size: t().t.ui, weight: if chosen() { 500 } else { 400 }, line: panel_row_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
       }))
-      .ink(By(fn() { if chosen() { t().p.accent_text } else { t().p.text } }))
+      .ink(By(fn() {
+        if chosen() {
+          if in_overlay && t().dark {
+            @ui.tree_theme().color(Over(AccentText, A(Fg, O10)))
+          } else {
+            t().p.accent_text
+          }
+        } else {
+          t().p.text
+        }
+      }))
       .allow_ellipsis(Is(true))
       |> ignore
     })
     |> ignore
     into.show(fn() { end() != "" }, fn(e) {
-      e.shrink(Is(0.0)).words(By(end)).words_look(By(quiet)).ink(By(fn() { t().p.muted })) |> ignore
+      e.shrink(Is(0.0)).words(By(end)).words_look(By(quiet)).ink(By(overlay_muted_ink)) |> ignore
     })
   }
   // (the face in a column of its own before the words, a found row's before both its lines: the words of every row
@@ -590,7 +612,7 @@ pub fn panel_said_row_node(
         r.box(fn(lines) {
           lines.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(@ui.Space::px(S0_5))) |> ignore
           lines.box(fn(n) {
-            n.min_width(Is(Some(0.0))).words(By(name)).words_look(By(quiet)).ink(By(fn() { t().p.muted })).allow_ellipsis(Is(true))
+            n.min_width(Is(Some(0.0))).words(By(name)).words_look(By(quiet)).ink(By(overlay_muted_ink)).allow_ellipsis(Is(true))
             |> ignore
           })
           |> ignore

@@ -70,4 +70,205 @@ test "claude_project, runtime_kind, transcript_dir, Finder::use_hints/hints roun
   finder.use_hints(hints)
   let out = finder.hints()
   expect_loc(base_codec::json_eq(out, hints), "Finder hints roundtrip")
+
+  let cached_finder = Finder::new(client, "/", cache_dirs=true)
+  expect_loc(cached_finder.asked() == 0, "fresh Finder::asked is 0")
+  cached_finder.enable_failed_dir_tracking(Map::new())
+  cached_finder.failed_again(["/dir/a", "/dir/b", "/dir/a"])
+  let failed = cached_finder.take_failed_dirs()
+  expect_loc(failed.length() == 2 && failed[0] == "/dir/a" && failed[1] == "/dir/b", "failed_again deduplicates dirs")
+}
+
+fn mock_typed_arr(entries : Array[(String, String)]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<entries.length() {
+    let (name, kind) = entries[i]
+    out.push(base_codec::json_arr([base_codec::json_str(name), base_codec::json_str(kind)]))
+  }
+  base_codec::json_arr(out)
+}
+
+test "Finder cache_dirs: EACCES on non-searchable project A falls through to project B" {
+  // Project A is chmod 0444 (readdir returns file entry, but stat returns EACCES/None);
+  // Project B is readable and searchable and holds the same session id.
+  let dirs : Map[String, Array[(String, String)]] = Map::new()
+  dirs.set("/data/transcripts/claude", [("proj-a", "dir"), ("proj-b", "dir")])
+  dirs.set("/data/transcripts/claude/proj-a", [("s1.jsonl", "file")])
+  dirs.set("/data/transcripts/claude/proj-b", [("s1.jsonl", "file")])
+
+  let sync_fn = fn(op : String, args : base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError] {
+    let path = match base_codec::json_get(args, "path") {
+      Some(base_codec::Json::Str(p)) => p
+      _ => ""
+    }
+    if op == "fs.readdir" {
+      match dirs.get(path) {
+        Some(es) => Ok(mock_typed_arr(es))
+        None => Err(builders_core::shell_error("ENOENT"))
+      }
+    } else if op == "fs.stat" {
+      // proj-a/s1.jsonl fails with EACCES; proj-b/s1.jsonl succeeds.
+      if path == "/data/transcripts/claude/proj-b/s1.jsonl" {
+        Ok(base_codec::json_str("file"))
+      } else {
+        Err(builders_core::shell_error("EACCES"))
+      }
+    } else {
+      Err(builders_core::shell_error("unsupported"))
+    }
+  }
+
+  let finder = Finder::new(builders_core::ShellClient::new(), "/", cache_dirs=true)
+  let dir = "/data/transcripts/claude"
+  let found = finder.claude_indexed_with(dir, "s1", dir + "\u{0000}s1", false, sync_fn)
+  match found {
+    Some(p) => expect_loc(p == "/data/transcripts/claude/proj-b/s1.jsonl", "must fall through EACCES to proj-b, got: " + p)
+    None => panic("expected Some(proj-b/s1.jsonl), got None")
+  }
+  // Second lookup reuses cached directory listing (no extra fs.readdir calls)
+  let asked_before = finder.asked()
+  match finder.claude_indexed_with(dir, "s1", dir + "\u{0000}s1", false, sync_fn) {
+    Some(p) => expect_loc(p == "/data/transcripts/claude/proj-b/s1.jsonl", "second lookup hits proj-b")
+    None => panic("second lookup expected proj-b")
+  }
+  expect_loc(finder.asked() - asked_before == 3, "cached lookup skips readdir and only stats candidates")
+}
+
+test "Finder cache_dirs: case-sensitive vs case-insensitive volumes with alias before exact match" {
+  // proj-a has uppercase alias ABC-123.JSONL before proj-b's exact abc-123.jsonl.
+  let dirs : Map[String, Array[(String, String)]] = Map::new()
+  let root = "/data/transcripts/claude"
+  dirs.set(root, [("proj-a", "dir"), ("proj-b", "dir")])
+  dirs.set(root + "/proj-a", [("ABC-123.JSONL", "file")])
+  dirs.set(root + "/proj-b", [("abc-123.jsonl", "file")])
+
+  // 1. Case-sensitive FS (Linux): stat(proj-a/abc-123.jsonl) fails ENOENT -> falls through to proj-b!
+  let cs_sync = fn(op : String, args : base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError] {
+    let path = match base_codec::json_get(args, "path") {
+      Some(base_codec::Json::Str(p)) => p
+      _ => ""
+    }
+    if op == "fs.readdir" {
+      match dirs.get(path) {
+        Some(es) => Ok(mock_typed_arr(es))
+        None => Err(builders_core::shell_error("ENOENT"))
+      }
+    } else if op == "fs.stat" {
+      if path == root + "/proj-a/ABC-123.JSONL" || path == root + "/proj-b/abc-123.jsonl" {
+        Ok(base_codec::json_str("file"))
+      } else {
+        Err(builders_core::shell_error("ENOENT"))
+      }
+    } else {
+      Err(builders_core::shell_error("unsupported"))
+    }
+  }
+  let cs_finder = Finder::new(builders_core::ShellClient::new(), "/", cache_dirs=true)
+  match cs_finder.claude_indexed_with(root, "abc-123", root + "\u{0000}abc-123", false, cs_sync) {
+    Some(p) => expect_loc(p == root + "/proj-b/abc-123.jsonl", "case-sensitive must hit proj-b, got: " + p)
+    None => panic("case-sensitive expected proj-b")
+  }
+
+  // 2. Case-insensitive FS (macOS APFS): stat(proj-a/abc-123.jsonl) succeeds -> returns caller's spelling in proj-a!
+  let ci_sync = fn(op : String, args : base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError] {
+    let path = match base_codec::json_get(args, "path") {
+      Some(base_codec::Json::Str(p)) => p
+      _ => ""
+    }
+    if op == "fs.readdir" {
+      match dirs.get(path) {
+        Some(es) => Ok(mock_typed_arr(es))
+        None => Err(builders_core::shell_error("ENOENT"))
+      }
+    } else if op == "fs.stat" {
+      let lp = ascii_lower_str(path)
+      if lp == root + "/proj-a/abc-123.jsonl" || lp == root + "/proj-b/abc-123.jsonl" {
+        Ok(base_codec::json_str("file"))
+      } else {
+        Err(builders_core::shell_error("ENOENT"))
+      }
+    } else {
+      Err(builders_core::shell_error("unsupported"))
+    }
+  }
+  let ci_finder = Finder::new(builders_core::ShellClient::new(), "/", cache_dirs=true)
+  match ci_finder.claude_indexed_with(root, "abc-123", root + "\u{0000}abc-123", false, ci_sync) {
+    Some(p) => expect_loc(p == root + "/proj-a/abc-123.jsonl", "case-insensitive must hit proj-a with caller spelling, got: " + p)
+    None => panic("case-insensitive expected proj-a")
+  }
+}
+
+test "Finder cache_dirs: Unicode/APFS folding (.jſonl) & NFC/NFD aliases without polluting failed_dirs" {
+  let dirs : Map[String, Array[(String, String)]] = Map::new()
+  let root = "/data/transcripts/claude"
+  dirs.set(root, [("proj-uni", "dir"), ("proj-exact", "dir")])
+  // proj-uni holds U+017F long-s extension (.jſonl) and NFD cafe\u0301.jsonl
+  dirs.set(root + "/proj-uni", [("uuid-1.j\u{017F}onl", "file"), ("cafe\u{0301}.jsonl", "file")])
+  dirs.set(root + "/proj-exact", [("uuid-1.jsonl", "file"), ("caf\u{00E9}.jsonl", "file")])
+
+  // 1. APFS-like volume where stat("proj-uni/uuid-1.jsonl") matches "uuid-1.jſonl" and NFC "café.jsonl" matches NFD
+  let apfs_sync = fn(op : String, args : base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError] {
+    let path = match base_codec::json_get(args, "path") {
+      Some(base_codec::Json::Str(p)) => p
+      _ => ""
+    }
+    if op == "fs.readdir" {
+      match dirs.get(path) {
+        Some(es) => Ok(mock_typed_arr(es))
+        None => Err(builders_core::shell_error("ENOENT"))
+      }
+    } else if op == "fs.stat" {
+      if path == root + "/proj-uni/uuid-1.jsonl" ||
+      path == root + "/proj-exact/uuid-1.jsonl" ||
+      path == root + "/proj-uni/caf\u{00E9}.jsonl" ||
+      path == root + "/proj-exact/caf\u{00E9}.jsonl" {
+        Ok(base_codec::json_str("file"))
+      } else {
+        Err(builders_core::shell_error("ENOENT"))
+      }
+    } else {
+      Err(builders_core::shell_error("unsupported"))
+    }
+  }
+  let apfs_finder = Finder::new(builders_core::ShellClient::new(), "/", cache_dirs=true)
+  apfs_finder.enable_failed_dir_tracking(Map::new())
+  match apfs_finder.claude_indexed_with(root, "uuid-1", root + "\u{0000}uuid-1", false, apfs_sync) {
+    Some(p) => expect_loc(p == root + "/proj-uni/uuid-1.jsonl", "APFS Unicode folding must hit proj-uni first, got: " + p)
+    None => panic("APFS Unicode folding expected proj-uni")
+  }
+  match apfs_finder.claude_indexed_with(root, "caf\u{00E9}", root + "\u{0000}caf\u{00E9}", false, apfs_sync) {
+    Some(p) => expect_loc(p == root + "/proj-uni/caf\u{00E9}.jsonl", "APFS NFC/NFD must hit proj-uni first, got: " + p)
+    None => panic("APFS NFC/NFD expected proj-uni")
+  }
+  // Crucial: non-ASCII directory must NEVER be reported in failed_dirs (would falsely trigger delete protection!)
+  expect_loc(apfs_finder.take_failed_dirs().length() == 0, "non-ASCII project must not enter failed_dirs")
+
+  // 2. Linux byte-exact volume: proj-uni stat returns ENOENT -> falls through cleanly to proj-exact
+  let linux_sync = fn(op : String, args : base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError] {
+    let path = match base_codec::json_get(args, "path") {
+      Some(base_codec::Json::Str(p)) => p
+      _ => ""
+    }
+    if op == "fs.readdir" {
+      match dirs.get(path) {
+        Some(es) => Ok(mock_typed_arr(es))
+        None => Err(builders_core::shell_error("ENOENT"))
+      }
+    } else if op == "fs.stat" {
+      if path == root + "/proj-exact/uuid-1.jsonl" || path == root + "/proj-exact/caf\u{00E9}.jsonl" {
+        Ok(base_codec::json_str("file"))
+      } else {
+        Err(builders_core::shell_error("ENOENT"))
+      }
+    } else {
+      Err(builders_core::shell_error("unsupported"))
+    }
+  }
+  let linux_finder = Finder::new(builders_core::ShellClient::new(), "/", cache_dirs=true)
+  linux_finder.enable_failed_dir_tracking(Map::new())
+  match linux_finder.claude_indexed_with(root, "uuid-1", root + "\u{0000}uuid-1", false, linux_sync) {
+    Some(p) => expect_loc(p == root + "/proj-exact/uuid-1.jsonl", "Linux byte-exact must fall through to proj-exact, got: " + p)
+    None => panic("Linux byte-exact expected proj-exact")
+  }
+  expect_loc(linux_finder.take_failed_dirs().length() == 0, "Linux non-ASCII project must not enter failed_dirs")
 }

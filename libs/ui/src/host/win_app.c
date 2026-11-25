@@ -23,6 +23,7 @@
 #include <dwmapi.h>
 #include "post.h"
 #include "frame_late.h"
+#include "frame_pace.h"
 #include "term.h"
 #include "app_calls.h"  // the app's own calls
 #include "done_watch.h"
@@ -54,6 +55,11 @@ static int go_back(void) {
 // what is posted to the run's thread
 static HWND hwnd;
 static double wake_at = -1;  // mb_now_ms() of the earliest wake_after, or -1
+static double building_for = -1.0;  // mb_now_ms() of the visible frame currently building, or -1
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+static HANDLE wake_timer;
 
 // ---- the windows of one run (@hostapi.windows_in_process: mb_host_windows) ----
 // Each window the app opens beside its first is a window of this run: its own HWND, its swap chain, composition target
@@ -118,11 +124,14 @@ typedef struct WinSlot {
   POINT drag_at;
   // when this window's previous continuous app frame began (-1: none)
   double last_begin;
+  // mb_now_ms() of this window's next paced frame (-1: none) and its idle timer sleep margin (ms)
+  double paced_at;
+  double paced_margin;
   // whether this window visibly presented a frame in the current frames_round()
   int presented_this;
 } WinSlot;
 // (each beside the first made fresh as it opens: win_slot_fresh)
-static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0, .last_begin = -1.0}};
+static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0, .last_begin = -1.0, .paced_at = -1.0, .paced_margin = 0.0}};
 static WinSlot *ws = &win_slots[0];
 static int win_active;  // the window in place (0, the first, between frames and input)
 static int badge_now_app = 0;
@@ -142,6 +151,8 @@ static void win_slot_fresh(WinSlot *w) {
   w->scale = 1;
   w->window_content_zoom = 1.0;
   w->last_begin = -1.0;
+  w->paced_at = -1.0;
+  w->paced_margin = 0.0;
 }
 static void reset_all_last_begin(void) {
   for (int k = 0; k < MB_WINS; k++) win_slots[k].last_begin = -1.0;
@@ -321,6 +332,8 @@ static void draw_frame(void) {
   RECT rc;
   GetClientRect(ws->h, &rc);
   ws->want_frame = 0;
+  ws->paced_at = -1.0;
+  ws->paced_margin = 0.0;
   int outside = outside_asked;
   outside_asked = 0;
   mb_images_tell(outside_cb);
@@ -355,7 +368,10 @@ static void draw_frame(void) {
                      ws->scale * ws->window_content_zoom);
   double begins = mb_now_ms();
   frame_late = ws->last_begin >= 0.0 && !script ? mb_frame_late_from_begin(ws->last_begin, begins, display_period(), 0) : 0.0;
+  double prev_building = building_for;
+  building_for = begins;
   mb_cb.frame(ws->frame_w, ws->frame_h, ws->scale, begins);
+  building_for = prev_building;
   ws->last_begin = mb_frame_late_next(ws->want_frame, begins);
   frame_counted();
 }
@@ -1116,6 +1132,11 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         wake_at = -1;
         mb_host_request_frame();
       }
+      if (ws->paced_at >= 0.0 && mb_now_ms() >= ws->paced_at) {
+        ws->paced_at = -1.0;
+        ws->paced_margin = 0.0;
+        ws->want_frame = 1;
+      }
       if (ws->want_frame) {
         reset_all_last_begin();
         mb_render_mark_gap(-1);
@@ -1417,6 +1438,8 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   drop_start(0);
   free(given);
   ws->want_frame = 1;
+  wake_timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                      TIMER_MODIFY_STATE | SYNCHRONIZE);
 
   for (;;) {
     MSG m, move_msg;
@@ -1450,17 +1473,62 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
       DispatchMessageW(&move_msg);
     }
     double now = mb_now_ms();
-    if (wake_at >= 0 && now >= wake_at) {
-      wake_at = -1;
+    if (wake_at >= 0.0 && now >= wake_at) {
+      wake_at = -1.0;
       mb_host_request_frame();
+    }
+    for (int k = 0; k < MB_WINS; k++) {
+      if (win_slots[k].h && win_slots[k].paced_at >= 0.0 && now >= win_slots[k].paced_at) {
+        win_slots[k].paced_at = -1.0;
+        win_slots[k].paced_margin = 0.0;
+        win_slots[k].want_frame = 1;
+      }
     }
     // (each window's that wants one, then the display waited for: win_render.cpp mb_render_pace)
     if (frames_round()) continue;
-    DWORD timeout = wake_at < 0 ? INFINITE : (DWORD)ceil(wake_at - now);
     // (the frames stopped: the next is no later than its time for what the one before took)
     reset_all_last_begin();
     mb_render_mark_gap(-1);
-    MsgWaitForMultipleObjectsEx(0, NULL, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    double next_wake = wake_at;
+    for (int k = 0; k < MB_WINS; k++) {
+      if (win_slots[k].h && win_slots[k].paced_at >= 0.0) {
+        double sleep_at = win_slots[k].paced_at + win_slots[k].paced_margin;
+        if (next_wake < 0.0 || sleep_at < next_wake) next_wake = sleep_at;
+      }
+    }
+    if (next_wake < 0.0) {
+      MsgWaitForMultipleObjectsEx(0, NULL, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    } else {
+      double rem = next_wake - mb_now_ms();
+      if (rem <= 0.0) continue;
+      double clamped_ms = mb_frame_pace_clamp_wait_ms(rem, 86400000.0);
+      if (wake_timer != NULL && clamped_ms < 200.0) {
+        LARGE_INTEGER due;
+        LONGLONG ticks = (LONGLONG)ceil(clamped_ms * 10000.0);
+        if (ticks < 1) ticks = 1;
+        due.QuadPart = -ticks;
+        if (SetWaitableTimer(wake_timer, &due, 0, NULL, NULL, FALSE)) {
+          DWORD wr = MsgWaitForMultipleObjectsEx(1, &wake_timer, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+          if (wr == WAIT_FAILED) {
+            CloseHandle(wake_timer);
+            wake_timer = NULL;
+            DWORD timeout = (DWORD)ceil(clamped_ms);
+            if (timeout >= INFINITE) timeout = INFINITE - 1;
+            MsgWaitForMultipleObjectsEx(0, NULL, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+          }
+        } else {
+          CloseHandle(wake_timer);
+          wake_timer = NULL;
+          DWORD timeout = (DWORD)ceil(clamped_ms);
+          if (timeout >= INFINITE) timeout = INFINITE - 1;
+          MsgWaitForMultipleObjectsEx(0, NULL, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+        }
+      } else {
+        DWORD timeout = (DWORD)ceil(clamped_ms);
+        if (timeout >= INFINITE) timeout = INFINITE - 1;
+        MsgWaitForMultipleObjectsEx(0, NULL, timeout, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+      }
+    }
   }
 }
 
@@ -1747,21 +1815,69 @@ int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
       free(title);
       return 1;
     }
+    case 6:
+      ws->want_frame = 1;
+      return 1;
+    case 7:
+      return !presenting;
     default: return 0;
   }
 }
 
 double mb_app_scale(void) { return ws->scale; }
 
-// A frame for what moves on by the clock that needs fewer (@hostapi.frames_paced): not paced here, the next drawn.
+// Scripted, driven, benched, recorded, or shot-taking runs stay unpaced so every frame advances deterministically.
+static int looked_at_run(void) {
+  static int cached = -1;
+  if (cached >= 0) return cached;
+  cached = (script || shot_dir || getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64") ||
+            getenv("MBUI_BENCH") || getenv("MBUI_SHOT_DIR") || getenv("MBUI_WIN") || getenv("MBUI_RECORD"))
+               ? 1
+               : 0;
+  return cached;
+}
+
+// A frame for what moves on by the clock that needs fewer (@hostapi.frames_paced): scheduled on this window's
+// vblank grid via high-resolution waitable timer when display timing is available, else drawn on the next beat.
+// On pre-Win10-1803 where high-resolution waitable timers are unavailable, hz <= 30 falls back to system ms sleep.
 void mb_host_frames_paced(double hz) {
-  (void)hz;
-  mb_host_request_frame();
+  if (ws->want_frame) return;
+  if (looked_at_run() || building_for < 0.0 || (wake_timer == NULL && hz > 30.0)) {
+    ws->want_frame = 1;
+    return;
+  }
+  DWM_TIMING_INFO ti;
+  memset(&ti, 0, sizeof ti);
+  ti.cbSize = sizeof ti;
+  if (FAILED(DwmGetCompositionTimingInfo(NULL, &ti)) || !ti.qpcRefreshPeriod) {
+    ws->want_frame = 1;
+    return;
+  }
+  double refresh_ms = qpc_ms((LONGLONG)ti.qpcRefreshPeriod);
+  double period_ms = refresh_ms * (double)mb_frame_beats();
+  double top_hz = period_ms > 0.0 ? 1000.0 / period_ms : 0.0;
+  int every = mb_frame_pace_every(top_hz, hz);
+  if (every <= 1) {
+    ws->want_frame = 1;
+    return;
+  }
+  double target = mb_frame_pace_grid_target_ms(building_for, period_ms, every, 1, qpc_ms((LONGLONG)ti.qpcVBlank), refresh_ms);
+  if (target < 0.0) {
+    ws->want_frame = 1;
+    return;
+  }
+  if (ws->paced_at < 0.0 || target < ws->paced_at) {
+    ws->paced_at = target;
+    ws->paced_margin = mb_frame_pace_timer_margin_ms(refresh_ms);
+  }
 }
 
 void mb_host_wake_after(double ms) {
-  double t = mb_now_ms() + ms;
-  if (wake_at < 0 || t < wake_at) wake_at = t;
+  if (!isfinite(ms)) return;
+  if (ms < 0.0) ms = 0.0;
+  double base = building_for >= 0.0 ? building_for : mb_now_ms();
+  double t = base + ms;
+  if (isfinite(t) && (wake_at < 0.0 || t < wake_at)) wake_at = t;
 }
 
 // (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)

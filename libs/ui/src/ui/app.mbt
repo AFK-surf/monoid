@@ -2865,11 +2865,14 @@ fn app_state_taken(s : Int) -> Unit {
   if s == app_state.val {
     return
   }
-  app_state_is(s)
-  // (not shown: the window thread's interval closed as the event that said so ends, journal.mbt)
-  if (s & 1) == 0 {
+  let was_shown = (app_state.val & 1) != 0
+  let now_shown = (s & 1) != 0
+  journal_away.val = !now_shown
+  // (true falling edge to not shown: the window thread's interval closed as the event that said so ends, journal.mbt)
+  if was_shown && !now_shown {
     journal_hidden.val = true
   }
+  app_state_is(s)
   // (no longer in front: the fingers down called off, all of it (touches.mbt); a finger held on the window's tree let
   // go of now)
   if (s & 2) == 0 {

@@ -935,6 +935,11 @@ export class Remote {
     this.bus.on("memory.", memory);
   }
 
+  /// Where cross-station managed MCP requests go (mcp.*, tools/managed-mcp.ts): the stations of the workspace it is of.
+  setMcp(mcp: Inbox): void {
+    this.bus.on("mcp.", mcp);
+  }
+
   /// Where requests about chats shared across workspaces go (xshare.*, xshare/index.ts): `inside` those of this
   /// workspace's stations, `outside` every request of a station that is not of it (the transport lets those through
   /// only while there is one).

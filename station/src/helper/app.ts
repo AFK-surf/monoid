@@ -19,7 +19,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,7 +42,8 @@ export function helperApp(env: NodeJS.ProcessEnv = process.env): string | null {
   return candidates.find((p) => p && existsSync(join(p, "Contents/Info.plist"))) ?? null; // sync: once, as the station starts
 }
 
-/// How the app is started: by LaunchServices, a new instance, in the background, with its socket and token.
+/// How the app is started: by LaunchServices, a new instance, in the background, with its socket path (the auth token
+/// is read by the helper from `<dir>/token` mode 0600, never passed via `--env` or argv).
 export type Launch = (app: string, env: Record<string, string>) => Promise<void>;
 export const openApp: Launch = (app, env) =>
   new Promise((resolve, reject) => {
@@ -50,9 +51,7 @@ export const openApp: Launch = (app, env) =>
     execFile("open", args, { timeout: START_MS }, (error, _stdout, stderr) => (error ? reject(launchFailed(error, stderr)) : resolve()));
   });
 
-/// Why `open` failed, as it said it, without its command line: Node's message carries that whole, the token's
-/// `--env` with it, and the error goes to the station's log (2026-11-18: in every station's log where no one is signed
-/// in to the desktop, `open` refusing every 30 s).
+/// Why `open` failed, as it said it, without its command line (the error goes to the station's log).
 export function launchFailed(error: { signal?: NodeJS.Signals | string | null }, stderr: string): Error {
   return new Error(stderr.trim() || (error.signal ? `open was ended (${error.signal})` : "open failed"));
 }
@@ -64,18 +63,26 @@ const CODE = ["Contents/MacOS/stillfail-helper", "Contents/Info.plist", "Content
 /// thread: its code is megabytes, compared at every start of the app.
 export async function install(app: string, dir: string): Promise<{ path: string; replaced: boolean }> {
   const path = join(dir, basename(app));
-  const same = await Promise.all(CODE.map(async (f) => {
-    try {
-      const [ours, there] = await Promise.all([readFile(join(app, f)), readFile(join(path, f))]);
-      return ours.equals(there);
-    } catch {
-      return false;
-    }
-  }));
+  // If an existing installed `.app` is itself a symlink (from an older install), force replacing it with a real
+  // directory copy so `Bundle.main.bundleURL.deletingLastPathComponent()` resolves to `dir` where `token` lives.
+  const isLink = await lstat(path).then((s) => s.isSymbolicLink(), () => false);
+  const same = isLink
+    ? [false]
+    : await Promise.all(CODE.map(async (f) => {
+        try {
+          const [ours, there] = await Promise.all([readFile(join(app, f)), readFile(join(path, f))]);
+          return ours.equals(there);
+        } catch {
+          return false;
+        }
+      }));
   if (!same.includes(false)) return { path, replaced: false };
   await mkdir(dir, { recursive: true });
   const staging = join(dir, `.staging-${randomBytes(4).toString("hex")}`);
-  await cp(app, staging, { recursive: true, verbatimSymlinks: true });
+  // Dereference a top-level symlinked `.app` so the installed bundle is a real directory inside `dir`, keeping
+  // `Bundle.main.bundleURL.deletingLastPathComponent()` equal to `dir` while preserving internal bundle symlinks.
+  const source = await realpath(app);
+  await cp(source, staging, { recursive: true, verbatimSymlinks: true });
   const old = `${path}.old-${randomBytes(4).toString("hex")}`;
   await rename(path, old).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
   await rename(staging, path);
@@ -259,7 +266,7 @@ export class HelperApp {
     }
     await rm(this.socket, { force: true });
     log.info("helper", "starting still.fail Helper", { app: path });
-    await this.#launch(path, { STILLFAIL_HELPER_SOCKET: this.socket, STILLFAIL_HELPER_TOKEN: this.#token });
+    await this.#launch(path, { STILLFAIL_HELPER_SOCKET: this.socket });
     await this.back();
   }
 

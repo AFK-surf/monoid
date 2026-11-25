@@ -911,6 +911,7 @@ fn usage_answer(
 ) -> Json raise {
   let viewer = viewer_of(a.viewer)
   let visible = usage_groups(db, a.from, a.to, a.offset, viewer)
+  let price_cache : Map[String, Price?] = Map([])
   let rows = visible.map(g => {
     (
       {
@@ -926,7 +927,7 @@ fn usage_answer(
         "cacheRead": Json::number(g.cache_read),
         "cacheWrite": Json::number(g.cache_write + g.cache_write_long),
         "output": Json::number(g.output),
-        "cost": cost(g),
+        "cost": cost_cached(g, price_cache),
       } : Json)
   })
   let word = (k : String) => {
@@ -1154,65 +1155,38 @@ pub fn outflow_usage(
     asked_tz
   }
   let of = outflow_of(args.value("ws"))
-  let asked : Asked = {
-    from: from.to_int64(),
-    to: to.to_int64(),
-    offset: tz.to_int64(),
-    reading: false,
-    viewer: Some({ "workspace": of.0, "home": Json::boolean(of.1) }),
-    history: false,
-    history_range: None,
-    remote_from: from.to_int64(),
-    remote_runs: false,
-    metadata: false,
-  }
-  let read = usage_answer(
-    db,
-    Known::of(host, data, sep, ask),
-    asked,
-    Json::null(),
-  )
-  let teams_cache : Ref[Map[String, Team]?] = Ref(None)
-  let teams_of = () => {
-    match teams_cache.val {
-      Some(t) => t
-      None => {
-        let t = teams(host, data, sep)
-        teams_cache.val = Some(t)
-        t
-      }
-    }
-  }
-  let rows : Array[Json] = []
+  let viewer = viewer_of(Some({ "workspace": of.0, "home": Json::boolean(of.1) }))
+  let visible = usage_groups(db, from.to_int64(), to.to_int64(), tz.to_int64(), viewer)
+  let since = usage_since(db)
+  let price_cache : Map[String, Price?] = Map([])
+  let cache = OutflowCache::new()
+  let rows : Array[Json] = Array::new(capacity=visible.length())
   let people : Map[String, Json] = Map([])
-  if read.value("rows") is Some(Array(rs)) {
-    for r in rs {
-      let get = (k : String) => r.value(k).unwrap_or(Json::null())
-      rows.push({
-        "day": get("day"),
-        "thread": get("thread"),
-        "session": get("session"),
-        "person": get("person"),
-        "account": get("profile"),
-        "runtime": get("runtime"),
-        "model": get("model"),
-        "calls": get("calls"),
-        "input": get("input"),
-        "cacheRead": get("cacheRead"),
-        "cacheWrite": get("cacheWrite"),
-        "output": get("output"),
-        "cost": get("cost"),
-      })
-      if get("person") is String(p) && !people.contains(p) {
-        people[p] = outflow_person(host, data, sep, teams_of, p)
-      }
+  for g in visible {
+    rows.push({
+      "day": Json::string(g.day),
+      "thread": g.thread,
+      "session": g.session,
+      "person": g.person,
+      "account": g.profile,
+      "runtime": g.runtime,
+      "model": g.model,
+      "calls": Json::number(g.calls),
+      "input": Json::number(g.input),
+      "cacheRead": Json::number(g.cache_read),
+      "cacheWrite": Json::number(g.cache_write + g.cache_write_long),
+      "output": Json::number(g.output),
+      "cost": cost_cached(g, price_cache),
+    })
+    if g.person is String(p) && !people.contains(p) {
+      people[p] = outflow_person(host, data, sep, cache, p)
     }
   }
   {
     "from": Json::number(from),
     "to": Json::number(to),
     "tz": Json::number(tz),
-    "since": read.value("since").unwrap_or(Json::null()),
+    "since": since,
     "rows": Json::array(rows),
     "people": Json::object(people),
   }

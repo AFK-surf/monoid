@@ -16,7 +16,7 @@ let shown_known : Array[String] = [
   "Setting Stations", "Setting Station", "Setting StationMove", "Setting AdbShare", "Setting Profiles", "Setting Profile", "Setting ProfileAccount",
   "Setting NewProfile", "Setting Connects", "Setting Connect", "Setting Memory", "Setting MemoryDoc", "Setting Usage",
   "Setting Archive", "Setting KeptFiles", "Setting Fonts", "Setting AutoPolicy",
-  "Setting AutoDecisions", "Setting AutoCompletion", "Setting BarSettings", "Setting About", "Setting Changelog",
+  "Setting AutoDecisions", "Setting Progress", "Setting AutoCompletion", "Setting BarSettings", "Setting About", "Setting Changelog",
   "Setting UsagePrices", "Setting Notifications", "Setting Backup", "Setting StationBackup",
 ]
 

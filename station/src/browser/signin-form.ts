@@ -5,7 +5,7 @@
 // is on the site asked for (its address as the browser has it, never what the page says), on a connection of its own
 // (as a person's view is: view.ts), nothing of what is typed logged.
 import type { Cdp } from "./cdp.ts";
-import { ofSites } from "./signins.ts";
+import { isSecureAutofillUrl, sameSiteHost } from "./psl.ts";
 import { hostOf } from "./view.ts";
 
 /// What of a sign-in a page asks for, by its visible fields; `blocked`: something only a person can do is on it (a
@@ -47,6 +47,38 @@ export const LOOK_SCRIPT = `(() => { const f = ${FINDER}; return { username: !!f
 /// Focuses the field of `kind`, its text selected; whether there is one.
 export const pickScript = (kind: FormField) => `(() => { const el = ${FINDER}[${JSON.stringify(kind)}]; if (!el) return false; el.focus(); try { el.select(); } catch {} return document.activeElement === el || el.getRootNode().activeElement === el; })()`;
 
+/// Atomically verifies `expectedOrigin` (and secure scheme), optionally focuses/selects `kind`, and inserts `value`
+/// via `document.execCommand("insertText")` — falling back synchronously in the same isolated world to the native
+/// `HTMLInputElement.prototype.value` setter + `input`/`change` events — so navigation can never interleave between
+/// origin verification, focus, and text insertion. Returns `"done"`, `"missing"`, or `"mismatch"`.
+export const atomicTypeScript = (kind: FormField, value: string, expectedOrigin: string, focusField = true) => `((kind, value, expectedOrigin, focusField) => {
+  const secure = location.protocol === "https:" || (location.protocol === "http:" && /^(localhost|127\\.0\\.0\\.1|\\[::1\\])$/i.test(location.hostname));
+  if (!secure || location.origin !== expectedOrigin) return "mismatch";
+  let el = null;
+  if (focusField) {
+    el = ${FINDER}[kind];
+    if (!el) return "missing";
+    el.focus();
+    try { el.select(); } catch {}
+    if (document.activeElement !== el && el.getRootNode().activeElement !== el) return "missing";
+  }
+  try {
+    if (typeof document.execCommand === "function" && document.execCommand("insertText", false, value)) return "done";
+  } catch {}
+  let target = el;
+  if (!target) {
+    target = document.activeElement;
+    while (target && target.shadowRoot && target.shadowRoot.activeElement) target = target.shadowRoot.activeElement;
+  }
+  if (!target || target.tagName !== "INPUT" || target.disabled || target.readOnly) return "missing";
+  const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+  if (!desc || typeof desc.set !== "function") return "mismatch";
+  desc.set.call(target, focusField ? value : String(target.value || "") + value);
+  target.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+  target.dispatchEvent(new Event("change", { bubbles: true }));
+  return "done";
+})(${JSON.stringify(kind)}, ${JSON.stringify(value)}, ${JSON.stringify(expectedOrigin)}, ${focusField ? "true" : "false"})`;
+
 /// The button that sends the form the focus is in (or the page's only one): its middle, in CSS pixels; null for none.
 /// A submit button of its form, else a button whose words say it (sign in, next, continue, verify, 登录, 下一步…).
 export const BUTTON_SCRIPT = `(() => {
@@ -82,6 +114,7 @@ export class TabForm implements SignInForm {
   readonly #session: string;
   readonly #targetId: string;
   #world: { frame: string; context: number } | null = null;
+  #expectedOrigin: string | null = null;
 
   constructor(cdp: Cdp, session: string, targetId: string) {
     this.#cdp = cdp;
@@ -101,18 +134,31 @@ export class TabForm implements SignInForm {
     return String(targetInfo?.url ?? "");
   }
 
-  /// Whether the tab is on `site` (or a host under it).
+  /// Whether the tab is on `site` (or a host under it without crossing a private PSL boundary) over a secure origin,
+  /// locking `#expectedOrigin`.
   async on(site: string): Promise<boolean> {
-    const host = await this.host();
-    return host !== "" && ofSites(host, [site]);
+    const url = await this.url();
+    if (!isSecureAutofillUrl(url) || !sameSiteHost(hostOf(url), site)) {
+      this.#expectedOrigin = null;
+      return false;
+    }
+    this.#expectedOrigin = new URL(url).origin;
+    return true;
   }
 
-  /// Runs `expression` in the page's top frame, in a world of the station's own (made again as the page moves on).
-  async #run(expression: string): Promise<any> {
-    for (let tries = 0; tries < 2; tries++) {
+  /// Runs `expression` in the page's top frame, in a world of the station's own. When `allowRecreate` is false
+  /// (during credential typing), a destroyed or navigated world aborts immediately instead of recreating on a new page.
+  async #run(expression: string, opts?: { allowRecreate?: boolean }): Promise<any> {
+    const allowRecreate = opts?.allowRecreate ?? true;
+    const maxTries = allowRecreate ? 2 : 1;
+    for (let tries = 0; tries < maxTries; tries++) {
       const { frameTree } = await this.#cdp.send("Page.getFrameTree", {}, this.#session);
       const frame = String(frameTree?.frame?.id ?? "");
       if (this.#world?.frame !== frame || tries > 0) {
+        if (!allowRecreate && this.#world !== null && this.#world.frame !== frame) {
+          this.#world = null;
+          return undefined;
+        }
         const { executionContextId } = await this.#cdp.send("Page.createIsolatedWorld", { frameId: frame, worldName: "stillfail-signin" }, this.#session);
         this.#world = { frame, context: executionContextId };
       }
@@ -124,6 +170,7 @@ export class TabForm implements SignInForm {
         if (!/context|not found|destroyed/i.test((e as Error).message)) throw e;
       }
       this.#world = null;
+      if (!allowRecreate) return undefined;
     }
     return undefined;
   }
@@ -134,13 +181,25 @@ export class TabForm implements SignInForm {
     return { username: v?.username === true, password: v?.password === true, code: v?.code === true, blocked: v?.blocked === true };
   }
 
-  /// `value` typed into the page's field of `kind`, as Chrome puts text in (a code a digit at a time, so a code split
-  /// one to a box moves on as typed); whether there was one.
+  /// `value` typed into the page's field of `kind`, atomically checked against the locked origin in the isolated world
+  /// (a code a digit at a time, so a code split one to a box moves on as typed); whether it succeeded.
   async type(kind: FormField, value: string): Promise<boolean> {
-    if ((await this.#run(pickScript(kind))) !== true) return false;
-    if (kind === "code") for (const ch of value) await this.#cdp.send("Input.insertText", { text: ch }, this.#session);
-    else await this.#cdp.send("Input.insertText", { text: value }, this.#session);
-    return true;
+    let expectedOrigin = this.#expectedOrigin;
+    if (expectedOrigin === null) {
+      const url = await this.url();
+      if (!isSecureAutofillUrl(url)) return false;
+      expectedOrigin = new URL(url).origin;
+    }
+    if (kind === "code") {
+      const chars = [...value];
+      for (let i = 0; i < chars.length; i++) {
+        const res = await this.#run(atomicTypeScript(kind, chars[i]!, expectedOrigin, i === 0), { allowRecreate: false });
+        if (res !== "done") return false;
+      }
+      return chars.length > 0;
+    }
+    const res = await this.#run(atomicTypeScript(kind, value, expectedOrigin, true), { allowRecreate: false });
+    return res === "done";
   }
 
   /// Sends the form the focus is in: Enter, as a person presses it.

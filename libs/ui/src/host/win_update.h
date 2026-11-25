@@ -103,10 +103,24 @@ static void update_log(const WCHAR *fmt, ...) {
   fflush(stdout);
 }
 
+static int update_fmt_path(WCHAR *dst, size_t cap, const WCHAR *fmt, ...) {
+  if (!dst || cap == 0) return 0;
+  va_list a;
+  va_start(a, fmt);
+  int n = _vsnwprintf(dst, cap, fmt, a);
+  va_end(a);
+  if (n < 0 || (size_t)n >= cap) {
+    dst[0] = 0;
+    return 0;
+  }
+  return 1;
+}
+
 typedef struct {
   WCHAR *url, *name;
   char sha256[65];
   ULONGLONG size;
+  WCHAR app_id[MAX_PATH];
   WCHAR dir[MAX_PATH];
   char *delta;  // the JSON the core gave for a delta, "" none
 } update_job;
@@ -259,8 +273,7 @@ static unsigned char *update_old_file(void *root, const char *rel, size_t *size)
   if (n <= 0) return NULL;
   for (WCHAR *c = wrel; *c; c++)
     if (*c == L'/') *c = L'\\';
-  _snwprintf(path, MAX_PATH * 2, L"%ls\\%ls", (const WCHAR *)root, wrel);
-  path[MAX_PATH * 2 - 1] = 0;
+  if (!update_fmt_path(path, MAX_PATH * 2, L"%ls\\%ls", (const WCHAR *)root, wrel)) return NULL;
   // (the program running among them: read beside its loader, whatever else holds it)
   HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                          FILE_FLAG_SEQUENTIAL_SCAN, NULL);
@@ -318,17 +331,20 @@ static int update_by_delta(update_job *j, WCHAR *made, WCHAR *why) {
   // names: <name>.delta, and the installer it makes <name less .exe>.raw.exe (it is run: an .exe)
   size_t nn = wcslen(j->name);
   int exe = nn > 4 && !_wcsicmp(j->name + nn - 4, L".exe");
-  _snwprintf(delta, MAX_PATH, L"%ls.delta", j->name);
-  _snwprintf(delta_part, MAX_PATH, L"%ls.delta.part", j->name);
-  _snwprintf(raw, MAX_PATH, L"%.*ls.raw.exe", (int)(exe ? nn - 4 : nn), j->name);
-  _snwprintf(part, MAX_PATH, L"%ls.part", j->name);
-  delta[MAX_PATH - 1] = delta_part[MAX_PATH - 1] = raw[MAX_PATH - 1] = part[MAX_PATH - 1] = 0;
+  if (!update_fmt_path(delta, MAX_PATH, L"%ls.delta", j->name) ||
+      !update_fmt_path(delta_part, MAX_PATH, L"%ls.delta.part", j->name) ||
+      !update_fmt_path(raw, MAX_PATH, L"%.*ls.raw.exe", (int)(exe ? nn - 4 : nn), j->name) ||
+      !update_fmt_path(part, MAX_PATH, L"%ls.part", j->name) ||
+      !update_fmt_path(file, MAX_PATH * 2, L"%ls\\%ls", j->dir, j->name) ||
+      !update_fmt_path(made, MAX_PATH * 2, L"%ls\\%ls", j->dir, raw) ||
+      !update_fmt_path(dfile, MAX_PATH * 2, L"%ls\\%ls", j->dir, delta) ||
+      !update_fmt_path(mpart, MAX_PATH * 2, L"%ls.part", made)) {
+    lstrcpynW(why, L"update path too long", 300);
+    jv_free(&d);
+    return 0;
+  }
   const WCHAR *keep[] = {j->name, part, delta, delta_part, raw, NULL};
   update_leave_only(j->dir, keep);
-  _snwprintf(file, MAX_PATH * 2, L"%ls\\%ls", j->dir, j->name);
-  _snwprintf(made, MAX_PATH * 2, L"%ls\\%ls", j->dir, raw);
-  _snwprintf(dfile, MAX_PATH * 2, L"%ls\\%ls", j->dir, delta);
-  _snwprintf(mpart, MAX_PATH * 2, L"%ls.part", made);
   if (GetFileAttributesW(file) != INVALID_FILE_ATTRIBUTES) {
     jv_free(&d);
     return 0;
@@ -346,14 +362,20 @@ static int update_by_delta(update_job *j, WCHAR *made, WCHAR *why) {
     lstrcpynW(w, why, 300);
     _snwprintf(why, 300, L"not downloaded (%ls)", w);
     why[299] = 0;
-    _snwprintf(mpart, MAX_PATH * 2, L"%ls.part", dfile);
-    DeleteFileW(mpart);
+    if (update_fmt_path(mpart, MAX_PATH * 2, L"%ls.part", dfile)) DeleteFileW(mpart);
     jv_free(&d);
     return 0;
   }
   // the old files: the folder this program runs from
-  GetModuleFileNameW(NULL, root, MAX_PATH * 2);
-  if (wcsrchr(root, L'\\')) *wcsrchr(root, L'\\') = 0;
+  DWORD rlen = GetModuleFileNameW(NULL, root, MAX_PATH * 2);
+  WCHAR *rsep = (rlen > 0 && rlen < MAX_PATH * 2) ? wcsrchr(root, L'\\') : NULL;
+  if (!rsep) {
+    lstrcpynW(why, L"update path too long", 300);
+    DeleteFileW(dfile);
+    jv_free(&d);
+    return 0;
+  }
+  *rsep = 0;
   const char *e = NULL;
   size_t dn = 0;
   unsigned char *bytes = NULL;
@@ -396,9 +418,41 @@ static int update_by_delta(update_job *j, WCHAR *made, WCHAR *why) {
 static DWORD WINAPI update_thread(void *arg) {
   update_job *j = (update_job *)arg;
   WCHAR part[MAX_PATH], file[MAX_PATH * 2], why[300] = L"";
-  SHCreateDirectoryExW(NULL, j->dir, NULL);
-  _snwprintf(file, MAX_PATH * 2, L"%ls\\%ls", j->dir, j->name);
-  _snwprintf(part, MAX_PATH, L"%ls.part", j->name);
+  int dir_ok = 0, path_too_long = 0;
+  HRESULT co_hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  if (SUCCEEDED(co_hr) || co_hr == RPC_E_CHANGED_MODE) {
+    PWSTR local = NULL;
+    if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &local)) && local) {
+      if (!update_fmt_path(j->dir, MAX_PATH, L"%ls\\%ls\\updates", local, j->app_id)) {
+        path_too_long = 1;
+      } else {
+        int mk = SHCreateDirectoryExW(NULL, j->dir, NULL);
+        if (mk == ERROR_SUCCESS || mk == ERROR_ALREADY_EXISTS || mk == ERROR_FILE_EXISTS) dir_ok = 1;
+      }
+      CoTaskMemFree(local);
+    }
+    if (SUCCEEDED(co_hr)) CoUninitialize();
+  }
+  if (!dir_ok) {
+    const WCHAR *msg = path_too_long ? L"update path too long" : L"no updates folder";
+    update_log(L"failed: %ls", msg);
+    update_say("failed", -1, msg);
+    free(j->url);
+    free(j->name);
+    free(j->delta);
+    free(j);
+    return 0;
+  }
+  if (!update_fmt_path(file, MAX_PATH * 2, L"%ls\\%ls", j->dir, j->name) ||
+      !update_fmt_path(part, MAX_PATH, L"%ls.part", j->name)) {
+    update_log(L"failed: update path too long");
+    update_say("failed", -1, L"update path too long");
+    free(j->url);
+    free(j->name);
+    free(j->delta);
+    free(j);
+    return 0;
+  }
   update_log(L"%ls: %llu bytes to %ls", j->url, j->size, file);
   int got = 0;
   // the delta first, where there is one: on any trouble, said and left for the installer downloaded whole
@@ -406,7 +460,15 @@ static DWORD WINAPI update_thread(void *arg) {
     got = update_by_delta(j, file, why);
     if (!got && why[0]) update_log(L"delta not used: %ls", why);
     why[0] = 0;
-    if (!got) _snwprintf(file, MAX_PATH * 2, L"%ls\\%ls", j->dir, j->name);
+    if (!got && !update_fmt_path(file, MAX_PATH * 2, L"%ls\\%ls", j->dir, j->name)) {
+      update_log(L"failed: update path too long");
+      update_say("failed", -1, L"update path too long");
+      free(j->url);
+      free(j->name);
+      free(j->delta);
+      free(j);
+      return 0;
+    }
   }
   if (!got) {
     // what an earlier update left (another build's installer, its part, a delta's) gone; this one's, downloaded
@@ -446,7 +508,10 @@ static void update_at_quit(void) {
   update_ready[0] = 0;
   ReleaseSRWLockExclusive(&update_lock);
   if (!ready) return;
-  _snwprintf(command, MAX_PATH * 3, L"\"%ls\" --updated /S", file);
+  if (!update_fmt_path(command, MAX_PATH * 3, L"\"%ls\" --updated /S", file)) {
+    update_log(L"not run as this one quits: update path too long");
+    return;
+  }
   STARTUPINFOW si = {sizeof si};
   PROCESS_INFORMATION pi;
   if (CreateProcessW(file, command, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, dir, &si, &pi)) {
@@ -461,7 +526,10 @@ void mb_host_update_fetch(moonbit_string_t url, moonbit_string_t sha256, double 
   (void)now;  // (no network here is told apart as costing more)
   if (mb_host_app_version() <= 0 || InterlockedCompareExchange(&update_working, 1, 0) != 0) return;
   update_job *j = (update_job *)calloc(1, sizeof *j);
-  if (!j) return;
+  if (!j) {
+    InterlockedExchange(&update_working, 0);
+    return;
+  }
   int un = Moonbit_array_length(url), nn = Moonbit_array_length(name), sn = Moonbit_array_length(sha256);
   j->url = (WCHAR *)calloc((size_t)un + 1, sizeof(WCHAR));
   j->name = (WCHAR *)calloc((size_t)nn + 1, sizeof(WCHAR));
@@ -481,11 +549,12 @@ void mb_host_update_fetch(moonbit_string_t url, moonbit_string_t sha256, double 
     InterlockedExchange(&update_working, 0);
     return;
   }
-  // (ready already, or being put in place)
+  // (installing any build, or this build already ready)
   AcquireSRWLockShared(&update_lock);
-  int same = !wcscmp(j->name, update_file) && (!strcmp(update_phase, "ready") || !strcmp(update_phase, "installing"));
+  int skip = !strcmp(update_phase, "installing") ||
+             (!wcscmp(j->name, update_file) && !strcmp(update_phase, "ready"));
   ReleaseSRWLockShared(&update_lock);
-  if (same) {
+  if (skip) {
     free(j->url), free(j->name), free(j);
     InterlockedExchange(&update_working, 0);
     return;
@@ -496,6 +565,7 @@ void mb_host_update_fetch(moonbit_string_t url, moonbit_string_t sha256, double 
   ReleaseSRWLockExclusive(&update_lock);
   for (int i = 0; i < 64; i++) j->sha256[i] = (char)sha256[i];
   j->size = (ULONGLONG)size;
+  lstrcpynW(j->app_id, app_id(), MAX_PATH);
   // the delta's JSON as UTF-8 ("" none)
   int dn = Moonbit_array_length(delta);
   int du = dn ? WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)delta, dn, NULL, 0, NULL, NULL) : 0;
@@ -504,15 +574,16 @@ void mb_host_update_fetch(moonbit_string_t url, moonbit_string_t sha256, double 
     if (du) WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)delta, dn, j->delta, du, NULL, NULL);
     j->delta[du] = 0;
   }
-  PWSTR local = NULL;
-  if (SUCCEEDED(SHGetKnownFolderPath(&FOLDERID_LocalAppData, 0, NULL, &local))) {
-    _snwprintf(j->dir, MAX_PATH, L"%ls\\%ls\\updates", local, app_id());
-    CoTaskMemFree(local);
-  }
   update_say("downloading", -1, NULL);
   HANDLE t = CreateThread(NULL, 0, update_thread, j, 0, NULL);
   if (t) CloseHandle(t);
-  else update_say("failed", -1, L"no thread");
+  else {
+    free(j->url);
+    free(j->name);
+    free(j->delta);
+    free(j);
+    update_say("failed", -1, L"no thread");
+  }
 }
 
 void mb_host_update_apply(moonbit_string_t said) {
@@ -528,7 +599,11 @@ void mb_host_update_apply(moonbit_string_t said) {
   update_say("installing", -1, NULL);
   // the installer, run as the desktop app's updater ran it: it ends this app, puts the new one in its place, opens it
   WCHAR command[MAX_PATH * 3], why[300];
-  _snwprintf(command, MAX_PATH * 3, L"\"%ls\" --updated /S --force-run", file);
+  if (!update_fmt_path(command, MAX_PATH * 3, L"\"%ls\" --updated /S --force-run", file)) {
+    update_log(L"failed: update path too long");
+    update_say("failed", -1, L"update path too long");
+    return;
+  }
   STARTUPINFOW si = {sizeof si};
   PROCESS_INFORMATION pi;
   if (CreateProcessW(file, command, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, dir, &si, &pi)) {

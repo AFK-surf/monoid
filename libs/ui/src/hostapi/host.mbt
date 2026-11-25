@@ -55,6 +55,7 @@ pub(all) struct Host {
   mut request_frame : () -> Unit
   mut request_frame_on : (() -> Unit)?
   mut frames_paced : ((Double) -> Unit)?
+  mut frame_hidden : (() -> Bool)?
   mut wake_after : (Double) -> Unit
   mut font_metrics : (Double, Int, Int, FixedArray[Double]) -> Unit
   mut shape : (String, Double, Int, Int, FixedArray[Double]) -> Int
@@ -376,6 +377,7 @@ pub fn Host::noop() -> Host {
     request_frame: fn() { () },
     request_frame_on: None,
     frames_paced: None,
+    frame_hidden: None,
     wake_after: fn(_) { () },
     font_metrics: fn(_, _, _, _) { () },
     shape: fn(_, _, _, _, _) { 0 },
@@ -657,6 +659,14 @@ pub fn Host::frames_paced(self : Host, hz : Double) -> Unit {
   match self.frames_paced {
     Some(f) => f(hz)
     None => self.request_frame_on()
+  }
+}
+
+///|
+pub fn Host::frame_hidden(self : Host) -> Bool {
+  match self.frame_hidden {
+    Some(f) => f()
+    None => false
   }
 }
 
@@ -1083,6 +1093,13 @@ pub fn request_frame_on() -> Unit {
 /// the display's next and every frame again. A host with nothing for it draws the display's next (request_frame_on).
 pub fn frames_paced(hz : Double) -> Unit {
   current.val.frames_paced(hz)
+}
+
+///|
+/// Whether the frame currently being built is hidden / non-presenting (e.g. a minimized/tray window building
+/// an off-screen frame while another window of the process is visible).
+pub fn frame_hidden() -> Bool {
+  current.val.frame_hidden()
 }
 
 ///|

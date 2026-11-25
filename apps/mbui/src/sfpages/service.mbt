@@ -342,7 +342,7 @@ fn size_option_node(
     // (its check's column, the check in its middle while chosen: along the row, at once)
     o.box(fn(k) {
       k.width(By(fn() { Some(@sf.theme().rows.check) })).row(Is(true)).lies_along(Is(Middle)) |> ignore
-      k.show(checked, fn(i) { @sf.icon_node(i, "check", size_check_icon, By(fn() { @sf.theme().p.accent })) |> ignore })
+      k.show(checked, fn(i) { @sf.icon_node(i, "check", size_check_icon, By(fn() { @sf.theme().p.accent_text })) |> ignore })
     })
     |> ignore
     o.box(fn(n) {

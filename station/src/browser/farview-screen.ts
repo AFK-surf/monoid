@@ -48,13 +48,20 @@ export const DEFAULT_SIZE: Size = { width: 1280, height: 800, scale: 1 };
 /// JPEG quality of the frames asked for: 82 in JPEG fallback, 88 as H.264 source input.
 const JPEG_QUALITY = 82;
 const H264_JPEG_QUALITY = 88;
+/// Maximum JSON control line and binary frame payload sizes accepted on the Farview frame port.
+/// 8 MiB line cap accommodates JSON-escaped `CLIP_TEXT_MAX` (1 MiB -> up to ~6 MiB escaped) without false disconnects.
+export const MAX_FRAME_LINE_BYTES = 8 * 1024 * 1024;
+export const MAX_FRAME_BINARY_BYTES = 64 * 1024 * 1024;
+const MAX_FRAME_BUFFER_BYTES = MAX_FRAME_BINARY_BYTES + MAX_FRAME_LINE_BYTES;
+/// Human gesture window for accepting Farview `copied` clipboard events (aligned with Chrome `TabView`).
+const HUMAN_COPY_WINDOW_MS = 5_000;
 
 /// One connection to a host's frame port: its lines heard, a picture asked for and its bytes read.
 export class FrameLink {
   readonly #socket: Socket;
   #buffer: Buffer = Buffer.alloc(0);
   /// The picture whose bytes come next, and who waits for it.
-  #pending: { header: any; resolve: (f: { header: any; data: Buffer } | null) => void } | null = null;
+  #pending: { header: any; bytes: number; resolve: (f: { header: any; data: Buffer } | null) => void } | null = null;
   readonly #asked: ((f: { header: any; data: Buffer } | null) => void)[] = [];
   #closed = false;
   heard: (message: any) => void = () => {};
@@ -81,10 +88,15 @@ export class FrameLink {
   }
 
   #data(chunk: Buffer) {
+    if (this.#closed) return;
+    if (this.#buffer.length + chunk.length > MAX_FRAME_BUFFER_BYTES) {
+      this.close();
+      return;
+    }
     this.#buffer = this.#buffer.length === 0 ? chunk : Buffer.concat([this.#buffer, chunk]);
     for (;;) {
       if (this.#pending !== null) {
-        const n = Number(this.#pending.header.bytes);
+        const n = this.#pending.bytes;
         if (this.#buffer.length < n) return;
         const data = this.#buffer.subarray(0, n);
         this.#buffer = this.#buffer.subarray(n);
@@ -94,7 +106,14 @@ export class FrameLink {
         continue;
       }
       const nl = this.#buffer.indexOf(10);
-      if (nl < 0) return;
+      if (nl < 0) {
+        if (this.#buffer.length > MAX_FRAME_LINE_BYTES) this.close();
+        return;
+      }
+      if (nl > MAX_FRAME_LINE_BYTES) {
+        this.close();
+        return;
+      }
       const line = this.#buffer.subarray(0, nl).toString("utf8");
       this.#buffer = this.#buffer.subarray(nl + 1);
       let message: any;
@@ -106,11 +125,13 @@ export class FrameLink {
       if (message?.frame && typeof message.frame === "object") {
         const resolve = this.#asked.shift();
         const header = message.frame;
-        if (!(Number(header.bytes) >= 0)) {
+        const bytes = header.bytes;
+        if (typeof bytes !== "number" || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > MAX_FRAME_BINARY_BYTES) {
           resolve?.(null);
-          continue;
+          this.close();
+          return;
         }
-        this.#pending = { header, resolve: resolve ?? (() => {}) };
+        this.#pending = { header, bytes, resolve: resolve ?? (() => {}) };
         continue;
       }
       this.heard(message);
@@ -166,6 +187,7 @@ export class FarviewScreen implements ScreenSource {
   readonly #port: number;
   readonly #helper: HelperApp | null | undefined;
   readonly #createEncoder: BrowserVideoEncoderFactory | undefined;
+  readonly #now: () => number;
   #page: FramePage = { url: "", title: "" };
   #size: Size = DEFAULT_SIZE;
   #watch: FrameLink | null = null;
@@ -178,11 +200,12 @@ export class FarviewScreen implements ScreenSource {
   closedByPage: () => void = () => {};
 
   /// `n`: which of its chat's tabs (0 its first, whose id is the chat's alone).
-  constructor(o: { session: string; port: number; n?: number; helper?: HelperApp | null; createEncoder?: BrowserVideoEncoderFactory }) {
+  constructor(o: { session: string; port: number; n?: number; helper?: HelperApp | null; createEncoder?: BrowserVideoEncoderFactory; now?: () => number }) {
     this.#session = o.session;
     this.#port = o.port;
     this.#helper = o.helper;
     this.#createEncoder = o.createEncoder;
+    this.#now = o.now ?? (() => wall.now());
     this.id = `browser:fv_${chatDir(o.session)}${o.n ? `_${o.n}` : ""}`;
   }
 
@@ -268,7 +291,7 @@ export class FarviewScreen implements ScreenSource {
     if (encoder === null && !options.codecs.includes("jpeg")) {
       throw new Error("This tab needs H.264 or JPEG, and no H.264 encoder is available.");
     }
-    const view = new FarviewView(this, new FrameLink(this.#port), options, encoder, () => this.#views.delete(view));
+    const view = new FarviewView(this, new FrameLink(this.#port), options, encoder, this.#now, () => this.#views.delete(view));
     this.#views.add(view);
     return view;
   }
@@ -286,9 +309,13 @@ class FarviewView implements ScreenView {
   readonly #screen: FarviewScreen;
   readonly #gone: () => void;
   readonly #encoder: BrowserVideoEncoder | null;
+  readonly #now: () => number;
   #size: Size;
   /// Who hears what this view's person copies on the tab.
   #copied: ((clip: Clip) => void) | null = null;
+  /// Last human click/key/text timestamp; cleared on page navigation and close.
+  #lastHumanActionAt: number | null = null;
+  #lastUrl = "";
   /// The newest picture the host said it has, and the one last sent.
   #seq = 1;
   #sent = 0;
@@ -297,16 +324,32 @@ class FarviewView implements ScreenView {
   #closed = false;
   #ts = 0;
 
-  constructor(screen: FarviewScreen, link: FrameLink, o: ViewOptions, encoder: BrowserVideoEncoder | null, gone: () => void) {
+  constructor(screen: FarviewScreen, link: FrameLink, o: ViewOptions, encoder: BrowserVideoEncoder | null, now: () => number, gone: () => void) {
     this.#screen = screen;
     this.#link = link;
     this.#encoder = encoder;
+    this.#now = now;
     this.#gone = gone;
     this.peek = o.peek === true;
     this.#size = sizeFor(o);
     link.heard = (m) => {
+      if (m?.page && typeof m.page === "object") {
+        const nextUrl = String(m.page.url ?? "");
+        if (nextUrl !== "" && nextUrl !== this.#lastUrl) {
+          this.#lastUrl = nextUrl;
+          this.#lastHumanActionAt = null;
+        }
+      }
       screen.heard(m);
-      if (typeof m?.copied === "string" && m.copied !== "" && Buffer.byteLength(m.copied, "utf8") <= CLIP_TEXT_MAX) this.#copied?.({ type: "text", text: m.copied });
+      if (
+        typeof m?.copied === "string" &&
+        m.copied !== "" &&
+        Buffer.byteLength(m.copied, "utf8") <= CLIP_TEXT_MAX &&
+        this.#lastHumanActionAt !== null
+      ) {
+        const age = this.#now() - this.#lastHumanActionAt;
+        if (age >= 0 && age <= HUMAN_COPY_WINDOW_MS) this.#copied?.({ type: "text", text: m.copied });
+      }
       if (typeof m?.changed === "number" && m.changed > this.#seq) this.#seq = m.changed;
       // (the host tells the tab's viewport, never this view's scale: its pictures stay at the scale it asked, and a
       // person's pointer is of them. Taken as 1, every tap of a 2x view landed at half its place)
@@ -375,6 +418,13 @@ class FarviewView implements ScreenView {
   }
 
   async input(event: ScreenInput): Promise<void> {
+    if (
+      (event.t === "pointer" && (event.kind === "down" || event.kind === "up")) ||
+      (event.t === "key" && event.kind === "down") ||
+      (event.t === "text" && event.text !== "")
+    ) {
+      this.#lastHumanActionAt = this.#now();
+    }
     const m = inputOf(event, this.#size);
     if (m !== null) this.#link.send(m);
   }
@@ -410,6 +460,7 @@ class FarviewView implements ScreenView {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#lastHumanActionAt = null;
     this.#encoder?.close();
     this.#link.close();
     this.#gone();

@@ -138,9 +138,71 @@ pub fn utf16_units(s : String) -> Array[Int] {
   out
 }
 
-/// Number of UTF-16 code units in `s`.
+/// Number of UTF-16 code units in `s` (zero heap allocation, exact match with `utf16_units(s).length()`).
 pub fn utf16_len(s : String) -> Int {
-  utf16_units(s).length()
+  let end = s.length()
+  let mut count = 0
+  let mut i = 0
+  while i < end {
+    let b0 = s.code_unit_at(i)
+    if b0 < 0x80 {
+      count = count + 1
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end && is_utf8_cont(s.code_unit_at(i + 1)) {
+        count = count + 1
+        i = i + 2
+      } else {
+        count = count + 1
+        i = i + 1
+      }
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = s.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont(s.code_unit_at(i + 2)) {
+            count = count + 1
+            i = i + 3
+          } else {
+            count = count + 1
+            i = i + 2
+          }
+          continue
+        }
+      }
+      count = count + 1
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = s.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont(s.code_unit_at(i + 2)) {
+            if i + 3 < end && is_utf8_cont(s.code_unit_at(i + 3)) {
+              count = count + 2
+              i = i + 4
+            } else {
+              count = count + 1
+              i = i + 3
+            }
+            continue
+          }
+          count = count + 1
+          i = i + 2
+          continue
+        }
+      }
+      count = count + 1
+      i = i + 1
+    } else {
+      count = count + 1
+      i = i + 1
+    }
+  }
+  count
 }
 
 fn write_utf8_cp(sb : StringBuilder, cp : Int) -> Unit {

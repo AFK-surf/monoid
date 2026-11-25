@@ -201,7 +201,13 @@ let sw_newer : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sw_failed : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, color=Danger, wrap=false)
+let sw_failed : @ui.TextStyle = @ui.text_style(
+  size=Ui,
+  leading=L6,
+  color=Danger,
+  dark=@ui.text_patch(color=Over(Danger, A(Fg, O25))),
+  wrap=false,
+)
 
 ///|
 /// Why checking failed, in the foot: a line of its own, in lines where it is long.

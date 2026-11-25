@@ -390,7 +390,35 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.call("POST", "/profiles/sub/login");
     await wait("sub", "needs_code");
     assert.equal((await t.call("DELETE", "/profiles/sub/login"))[1].job.state, "cancelled");
+    // Cancelling an already-finished sign-in drops the stale job record (FB-64).
+    assert.equal((await t.call("DELETE", "/profiles/cxs/login"))[1].job, null);
+    assert.equal(t.view("cxs")!.login, null);
     await t.close();
+  });
+
+  test("a sign-in whose post-sign-in check still says login clears the stale done job (FB-64)", async () => {
+    const dir = temp("routes");
+    const approved = approval(dir);
+    let checks = 0;
+    const t = await rig({
+      data: dir,
+      approval: approved.path,
+      check: async () => {
+        checks++;
+        return { state: "login", detail: "需要重新登录", models: null, checkedAt: Date.now() };
+      },
+    });
+    try {
+      await t.call("PUT", "/profiles/cxs", { runtime: "codex", access: { kind: "subscription" } });
+      await t.call("POST", "/profiles/cxs/login");
+      await waitFor(t, "cxs", "needs_approval");
+      await approved.approve();
+      await until(() => checks > 0 && t.view("cxs")!.login === null, "stale done job cleared after check still says login");
+      assert.equal(t.view("cxs")!.check.state, "login");
+      assert.equal((await t.call("GET", "/profiles/cxs/login"))[1].job, null);
+    } finally {
+      await t.close();
+    }
   });
 
   /// The sign-in as its page reads it, once in `state`: read again each time the accounts say something changed.

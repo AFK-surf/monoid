@@ -551,3 +551,67 @@ test "narrow: how hard it thinks held in the model's sheet at either end, its th
     t.run_for(@ui.move_most_ms)
   }
 }
+
+///|
+test "narrow: model picker opened from chat agent sheet opens 全部模型 and maker steps, and still loads after a prior overlay" {
+  new_run()
+  let src = fixture("chat-agent-unsaid")
+  new_fix.crowded = true
+  new_fix.providers = true
+  new_fix.model = "deepseek-v4-1-flash"
+  new_fix.runtime = "dsh"
+  new_fix.effort = "high"
+  new_fix.d_model = "deepseek-v4-1-flash"
+  new_fix.d_runtime = "dsh"
+  new_fix.d_effort = "high"
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  open_fixture_over("chat-agent-unsaid", src)
+  t.run_for(@ui.move_most_ms)
+  run_to_sheet_rest(t)
+  let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+  let held = t.audit().map(bare)
+  // First open accounts from agent sheet (stacks an accounts sheet over the chained model sheet, advancing presented_count),
+  // then dismiss accounts and go back to agent sheet before reopening 模型.
+  t.click(Button, has="账号")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重新分配") is Some(_), msg="accounts sheet opened over model sheet")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重新分配") is None, msg="accounts sheet dismissed")
+  t.click(Button, label="返回")
+  t.run_for(@ui.move_most_ms)
+  // Reopen model picker from the agent sheet's 模型 row (pushed via panel_page onto the steps=false agent sheet).
+  t.click(Button, has="模型")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全部模型") is Some(_), msg="全部模型 button visible in chained model sheet")
+  assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="model sheet audit: \{t.audit().join("\n")}")
+  // Tap 全部模型 -> makers list
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="Anthropic") is Some(_), msg="全部模型 opened makers list")
+  assert_true(t.query(Button, label="OpenAI") is Some(_), msg="OpenAI maker listed")
+  assert_true(t.query(Button, label="全部模型") is None, msg="first level replaced by 全部模型")
+  assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="all models audit: \{t.audit().join("\n")}")
+  // Tap Anthropic -> Anthropic models
+  t.click(Button, label="Anthropic")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="Sonnet 5") is Some(_), msg="Anthropic models listed")
+  assert_true(t.query(Button, label="OpenAI") is None, msg="makers replaced by Anthropic models")
+  assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [], msg="maker models audit: \{t.audit().join("\n")}")
+  // Back unwinds Anthropic -> 全部模型 -> 模型 -> agent sheet
+  t.click(Button, label="返回")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="OpenAI") is Some(_) && t.query(Button, label="Sonnet 5") is None)
+  t.click(Button, label="返回")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全部模型") is Some(_) && t.query(Button, label="OpenAI") is None)
+  // Open 全部模型 again and pick a model
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="Anthropic")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="Sonnet 5")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(new_fix.model, "claude-sonnet-5")
+  assert_true(t.query(@ui.Role::Dialog) is None, msg="sheet closed after picking model")
+}

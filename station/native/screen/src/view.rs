@@ -23,6 +23,7 @@ use super::encode::H264;
 use super::image::{Images, Pixels};
 use super::pace::{self, Gate};
 use super::region::{self, Region};
+use super::reveal::is_safe_reveal_path;
 use super::svc_client::{ServiceCapture, ServiceInput};
 
 pub fn status() -> Value {
@@ -283,10 +284,11 @@ fn mic_loop(rx: Receiver<MicAsk>, wake: Sender<MicAsk>, out: Out) {
     }
 }
 
-/// A file shown selected in Explorer (one dropped into the view, put on the machine).
+/// A file shown selected in Explorer (one dropped into the view, put on the machine): only an existing file at a
+/// plain drive path (reveal.rs).
 fn reveal(path: &str) {
     use std::os::windows::process::CommandExt;
-    if path.is_empty() || path.contains('"') {
+    if !is_safe_reveal_path(path) || !std::path::Path::new(path).exists() {
         return;
     }
     let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{path}\"")).spawn();

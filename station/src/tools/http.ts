@@ -66,14 +66,12 @@ export function peerTarget(url: string): PeerTarget | null {
 }
 
 /// Why a /peer request is not taken (null: it is). Only programs on this machine: by a loopback name and the door's port
-/// (a page of any site, renamed to 127.0.0.1 by DNS rebinding, still says its own Host), and not a web page (one says
-/// its Origin; `Origin: null` only from outside a browser: a sandboxed frame's says where it is fetched from too).
+/// (a page of any site, renamed to 127.0.0.1 by DNS rebinding, still says its own Host), and not a web page (any
+/// `Origin` header, including `Origin: null`, is refused regardless of `Sec-Fetch-Site`).
 export function notFromHere(headers: IncomingMessage["headers"], ports: number[]): string | null {
   const host = /^(?:127\.0\.0\.1|localhost|\[::1\]):([0-9]{1,5})$/i.exec(headers.host ?? "");
   if (host === null || !ports.includes(Number(host[1]))) return `only programs on this machine reach other stations here, by http://127.0.0.1:${ports[0]}/peer/…`;
-  const origin = headers.origin;
-  const site = headers["sec-fetch-site"];
-  if (origin !== undefined && (origin !== "null" || (site !== undefined && site !== "none"))) return "web pages do not reach other stations through this one";
+  if (headers.origin !== undefined) return "web pages do not reach other stations through this one";
   return null;
 }
 

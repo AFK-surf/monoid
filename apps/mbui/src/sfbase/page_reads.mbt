@@ -233,7 +233,7 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
         ("vaultItems", { "workspace": of, "vault": Json::string(vault) }),
         ("vaultUses", { "workspace": of, "vault": Json::string(vault), "item": Json::string(item) }),
       ])
-    AutoDecisions => reads_of([("settings", scope)])
+    AutoDecisions | Progress => reads_of([("settings", scope)])
     // (the station whose rule it shows, the page's own choice among them)
     AutoCompletion => reads_of([stations])
     AutoPolicy(address) | StationArchiving(address) | StationBackup(address) => reads_of([station_ask(ws, address)])

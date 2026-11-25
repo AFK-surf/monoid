@@ -11,7 +11,7 @@ function page() {
   const context = createContext({ DOMException, AbortController, btoa, atob });
   const run = (s: string): any => runInContext(s, context);
   run(`globalThis.window = globalThis; window.top = window;
-    window.location = { hostname: "example.org" };
+    window.location = { origin: "https://example.org", hostname: "example.org" };
     window.addEventListener = () => {};
     window.PublicKeyCredential = class {};
     window.AuthenticatorAssertionResponse = class {};
@@ -207,7 +207,7 @@ test("silent conditional mediation is not intercepted, while large Google-sized 
 
 test("a viewer without host passkeys never hangs credentials.get, settles pending device asks, and reports platform availability from vault passkeys alone", async () => {
   const p = page();
-  p.run(`window.location = { hostname: "login.example.org" };
+  p.run(`window.location = { origin: "https://example.org", hostname: "login.example.org" };
     window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);`);
   // 1. Start with a passkey-capable viewer that leaves an assertion pending, then switch to a viewer without host passkeys.
   const desktop = p.viewer({ passkeys: true });

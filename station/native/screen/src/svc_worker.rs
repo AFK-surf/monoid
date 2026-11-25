@@ -14,8 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GENERIC_ALL, HANDLE, HLOCAL, HMODULE, INVALID_HANDLE_VALUE,
-    LocalFree, POINT,
+    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GENERIC_ALL, GetLastError, HANDLE, HLOCAL, HMODULE,
+    INVALID_HANDLE_VALUE, LocalFree, POINT,
 };
 use windows::Win32::Graphics::Direct3D::{
     D3D_DRIVER_TYPE_HARDWARE, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
@@ -204,8 +204,13 @@ pub fn run_worker(session_id: u32, user_sid: &str) -> Result<(), String> {
 
     let pipe_wide = HSTRING::from(PIPE_NAME);
     let connect_event = unsafe { CreateEventW(None, true, false, None) }.map_err(|e| format!("CreateEventW: {e}"))?;
+    let _event_guard = HandleGuard(connect_event);
 
-    loop {
+    // Creates an instance of the pipe and checks whose pipe it joined. When the name is already there, Windows adds the
+    // instance to that pipe, under that pipe's security: one a process of the user created first (owned by that user)
+    // is refused, and the worker serves nothing. One of a worker before this one (a client still holding it open) is
+    // LocalSystem's or Administrators', and taken up.
+    let create = || -> Result<HANDLE, Create> {
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd.0,
@@ -224,9 +229,37 @@ pub fn run_worker(session_id: u32, user_sid: &str) -> Result<(), String> {
             )
         };
         if pipe.is_invalid() || pipe == INVALID_HANDLE_VALUE {
-            std::thread::sleep(Duration::from_millis(250));
-            continue;
+            return Err(Create::Failed(unsafe { GetLastError() }.0));
         }
+        if let Err(e) = svc_pipe::pipe_owned_by_privileged(pipe) {
+            unsafe {
+                let _ = CloseHandle(pipe);
+            }
+            return Err(Create::NotOurs(format!("{PIPE_NAME} is not this worker's ({e}): refusing to serve on it")));
+        }
+        Ok(pipe)
+    };
+    // A pipe that is not the worker's ends the worker; any other failure to create one is retried, but the first.
+    let mut pending = match create() {
+        Ok(pipe) => Some(pipe),
+        Err(Create::NotOurs(e)) => return Err(e),
+        Err(Create::Failed(code)) => return Err(format!("CreateNamedPipeW: error {code}")),
+    };
+
+    loop {
+        let pipe = match pending.take() {
+            Some(pipe) => pipe,
+            // All 16 instances are taken by clients (ERROR_PIPE_BUSY) or creation failed: one frees when a client
+            // leaves.
+            None => match create() {
+                Ok(pipe) => pipe,
+                Err(Create::NotOurs(e)) => return Err(e),
+                Err(Create::Failed(_)) => {
+                    std::thread::sleep(Duration::from_millis(250));
+                    continue;
+                }
+            },
+        };
 
         let mut ov = OVERLAPPED { hEvent: connect_event, ..Default::default() };
         let connected = match unsafe { ConnectNamedPipe(pipe, Some(&mut ov)) } {
@@ -244,6 +277,19 @@ pub fn run_worker(session_id: u32, user_sid: &str) -> Result<(), String> {
             }
         };
 
+        // The next instance is made before this one may be closed, so the name never lapses between clients.
+        pending = match create() {
+            Ok(next) => Some(next),
+            Err(Create::NotOurs(e)) => {
+                unsafe {
+                    let _ = DisconnectNamedPipe(pipe);
+                    let _ = CloseHandle(pipe);
+                }
+                return Err(e);
+            }
+            Err(Create::Failed(_)) => None,
+        };
+
         if !connected || !verify_pipe_client(pipe) {
             unsafe {
                 let _ = DisconnectNamedPipe(pipe);
@@ -256,6 +302,24 @@ pub fn run_worker(session_id: u32, user_sid: &str) -> Result<(), String> {
         let _ = std::thread::Builder::new().name("svc-client".into()).spawn(move || {
             handle_client(handle, session_id);
         });
+    }
+}
+
+/// Why `run_worker` made no pipe instance.
+enum Create {
+    /// CreateNamedPipeW failed (its error).
+    Failed(u32),
+    /// The name is another process's pipe.
+    NotOurs(String),
+}
+
+struct HandleGuard(HANDLE);
+
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
     }
 }
 

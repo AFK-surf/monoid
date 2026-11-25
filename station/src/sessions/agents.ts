@@ -59,6 +59,11 @@ import { Forwards } from "../mesh/peer-forward.ts";
 import { nameOf, peerNamed } from "../mesh/peer-http.ts";
 import { stationMarksOf } from "../mesh/station-marks.ts";
 import { type Listing, McpEndpoint, UNBOUND_REFUSAL } from "../tools/mcp.ts";
+import { ManagedMcp } from "../tools/managed-mcp.ts";
+import { ManagedMcpAsks, mcpServerTools } from "../tools/managed-mcp-tool.ts";
+import { Refused } from "../mesh/bus.ts";
+import { STILLFAIL_SURFACE } from "../store/rows.ts";
+import { type CardHub, postCard } from "./card-place.ts";
 import { remoteTools } from "../tools/remote.ts";
 import { workspaceSizeTools } from "../tools/workspace-size.ts";
 import { relayTools } from "../tools/relays.ts";
@@ -137,6 +142,7 @@ export type AgentsParts = {
   jobs: Jobs;
   remote: Remote;
   mcp: McpEndpoint;
+  managedMcp?: ManagedMcp;
   config: ConfigFile;
   updates: Updates;
   accounts: Accounts;
@@ -649,19 +655,71 @@ export const AgentsLive = (control: Control) =>
         }
         return cloud.membership(ws) !== null && cloud.rigIn(ws) === null;
       };
+      // Station-managed third-party MCP servers (tools/managed-mcp.ts): started once this process takes over from its
+      // predecessor, exposed through the station's own `stillfail` MCP endpoint for every runtime (and shared across
+      // stations in the workspace over the mesh when `shared: true`).
+      const managedMcp = new ManagedMcp({
+        config,
+        clock: hub.clock,
+        onStatusChanged: () => events.overviewSoon(),
+        peers: (ws) => {
+          const selfId = cloud.state?.station ?? null;
+          return (cloud.membership(ws)?.peers ?? [])
+            .filter((p) => p.id !== selfId)
+            .map((p) => ({ id: p.id, name: p.name ?? p.id }));
+        },
+        ask: (station, req) => remote.ask(station, req),
+      });
+      remote.setMcp((peer, req) => managedMcp.handlePeer(peer, req as Record<string, unknown>));
+      const mcpAsks = new ManagedMcpAsks({
+        managedMcp,
+        config,
+        wsOf: (session) => hub.wsOf(session),
+        cards: {
+          post: async (session, text, card) => {
+            let thread = hub.store.latestThreadIfReady(session);
+            if (thread === undefined) {
+              await hub.prepareLatestThreads?.([session]);
+              thread = hub.store.latestThread(session);
+            }
+            if (thread === null) throw new Refused("this session has no chat to ask in");
+            if (thread.thread.surface !== STILLFAIL_SURFACE) {
+              throw new Refused("MCP server changes must be confirmed by a card in a still.fail chat of this workspace");
+            }
+            const ts = await postCard(hub as unknown as CardHub, session, thread, text, card, (why) => new Refused(why));
+            return ts === null ? null : { thread: thread.thread.id, ts };
+          },
+        },
+        notify: (session, text) => hub.notify(session, text),
+      });
+      parts.cardChoice("mcpServer", {
+        may: (viewer, card, at) => mcpAsks.may(viewer, card, at),
+        chosen: (viewer, card, option, at) => mcpAsks.chosen(viewer, card, option, at),
+      });
+      parts.tools(mcpServerTools(mcpAsks));
+      along.push({
+        // Bound startup wait so one slow/unreachable remote MCP server does not stall station recovery.
+        taken: () => Promise.race([managedMcp.start(), wall.sleep(2_000)]), // timer: a timeout or deadline (bound startup wait for managed MCP servers)
+        joined: () => Promise.race([managedMcp.start(), wall.sleep(2_000)]), // timer: a timeout or deadline (bound join wait for managed MCP servers)
+        left: () => managedMcp.stop(),
+      });
       // The agents' tools, and those the station's parts add as they are made (parts.ts).
       // A runtime that declares only so many bytes of tools to its model is given those that fit (Antigravity CLI); one
       // that keeps tools back until its model searches for them is told which every turn needs (Claude Code).
       const mcp = new McpEndpoint(
         (token) => store.sessionKeyByToken(token) ?? undefined,
-        () => [...tools, ...(projectsOn() ? projectTools(hub) : []), ...parts.allTools()],
+        () => [...tools, ...(projectsOn() ? projectTools(hub) : []), ...parts.allTools(), ...managedMcp.exposed()],
         (session) => (bound() && inItsWorkspace(session) ? undefined : UNBOUND_REFUSAL),
         (session) => {
           const row = store.getSession(session);
           const runtime = runtimeKind(row?.runtime);
           return runtime === undefined ? undefined : listingFor(runtime, row?.tui === true);
         },
-        { traces: () => meshSide.traces ?? null, runtimeOf: (session) => store.getSession(session)?.runtime ?? undefined },
+        {
+          traces: () => meshSide.traces ?? null,
+          runtimeOf: (session) => store.getSession(session)?.runtime ?? undefined,
+          dynamicTools: (session) => managedMcp.exposedFor(store.sessionWs(session) ?? cloud.home()),
+        },
       );
 
       let taken = false;
@@ -746,7 +804,7 @@ export const AgentsLive = (control: Control) =>
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
       xshare.start();
-      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
+      const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, mcpServers: () => managedMcp.view(), ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
       // And the fields the station's parts add (parts.ts).
       const view = async (viewer: Viewer, lang: Lang) => ({ ...((await platformView(viewer, lang)) as object), ...(await parts.overviewOf(viewer, lang)) });
 
@@ -856,6 +914,7 @@ export const AgentsLive = (control: Control) =>
         grants?.onChange(() => events.overviewChanged()) ?? (() => {}),
         config.listen((raw) => {
           hub.profilesChanged();
+          void managedMcp.syncConfig();
           events.overviewChanged();
           // Every chat row told again only where what the chat list is made with changed (read/views.ts `configOf`):
           // a profile shared or checked rewrites config.json, and `chat-changed` sent every device to read the whole
@@ -1196,6 +1255,7 @@ export const AgentsLive = (control: Control) =>
           unlistenRule();
           notifier.close();
           await door?.close(30_000);
+          await managedMcp.close();
           await forwards.close();
           try {
             await hub.handOver();
@@ -1214,7 +1274,7 @@ export const AgentsLive = (control: Control) =>
           }
         }),
       );
-      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
+      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, managedMcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
       // The admin API asks for the agents' side as a request comes (services.ts AgentsSide); its routes are a part.
       (yield* AgentsSide).current = self;
       // And what the mesh asks of it (services.ts MeshSide).

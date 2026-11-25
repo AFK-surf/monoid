@@ -258,8 +258,16 @@ fn journal_sample_mem() -> Unit {
 }
 
 ///|
-fn journal_maybe_roll_summary(seal : Seal, at : Double) -> Unit {
-  if seal != Hidden &&
+fn journal_is_away() -> Bool {
+  (journal_away.val && !journal_hidden.val) || @hostapi.frame_hidden()
+}
+
+///|
+fn journal_maybe_roll_summary(seal : Seal, at : Double, away? : Bool = false) -> Unit {
+  if !away &&
+    !journal_away.val &&
+    !@hostapi.frame_hidden() &&
+    seal != Hidden &&
     journal_counts[5] >= 0.0 &&
     at - journal_counts[5] >= journal_summary_roll_ms &&
     journal_counts[0] > 0.0 {
@@ -321,6 +329,11 @@ let journal_asked : Ref[Bool] = Ref(false)
 /// The app hidden by the event being handled: the interval closed as it ends.
 // kept across runs: put back as a run begins (journal_reset)
 let journal_hidden : Ref[Bool] = Ref(false)
+
+///|
+/// Whether the app is currently not shown (background/hidden/minimized).
+// kept across runs: put back as a run begins (journal_reset) and updated by app_state_taken
+let journal_away : Ref[Bool] = Ref(false)
 
 ///|
 /// Whether a frame has been presented (a hang before it is the app starting).
@@ -488,6 +501,7 @@ fn journal_reset() -> Unit {
   journal_dirty_at.val = -1.0
   journal_asked.val = false
   journal_hidden.val = false
+  journal_away.val = false
   journal_presented.val = false
   hangs_found.clear()
   journal_counts.fill(0.0)
@@ -592,11 +606,13 @@ fn journal_work(
   gpu_dropped? : Int = 0,
   taken_notes? : Array[(String, Double)]? = None,
 ) -> Unit {
-  if journal_counts[5] < 0.0 {
-    journal_counts[5] = start
-  }
   let wall_ms = end - start
-  journal_counts[4] += wall_ms
+  if !journal_is_away() {
+    if journal_counts[5] < 0.0 {
+      journal_counts[5] = start
+    }
+    journal_counts[4] += wall_ms
+  }
   // (what it went on, the longest first)
   // (a part 1 ms in all at least: its pieces summed by where it was made, each as short as work_part tells)
   let notes : Array[(String, Double)] = match taken_notes {
@@ -635,6 +651,9 @@ fn journal_work(
 ///|
 /// A frame asked of the host (h_request_frame, h_frame_owed, h_request_frame_on): the open interval waits on it.
 fn journal_wants() -> Unit {
+  if journal_away.val || @hostapi.frame_hidden() {
+    return
+  }
   if frame_running.val {
     journal_asked.val = true
   } else if journal_dirty_at.val < 0.0 {
@@ -652,11 +671,79 @@ fn journal_cpu_delta(c0 : Double, c1 : Double) -> Double {
 }
 
 ///|
+/// Reports a single slow piece from an off-screen/hidden window frame while another window of the process is visible,
+/// without mutating the shared foreground open interval (`journal_at[1]`, `journal_dirty_at`, `journal_counts`, `shown_counts`).
+fn journal_report_offscreen_piece(
+  what : Done,
+  start : Double,
+  end : Double,
+  cpu_ms? : Double = -1.0,
+  gpu_ms? : Double = -1.0,
+  gpu_dropped? : Int = 0,
+  taken_notes? : Array[(String, Double)]? = None,
+) -> Unit {
+  let wall_ms = end - start
+  let notes : Array[(String, Double)] = match taken_notes {
+    Some(ns) => ns
+    None => journal_take_notes()
+  }
+  let trigger = if wall_ms >= hang_stall_ms {
+    Stall
+  } else if wall_ms >= probe_slow_ms {
+    Blocking
+  } else {
+    return
+  }
+  if wall_ms >= 4.0 && cpu_ms >= 0.0 {
+    notes.push(("cpu", journal_ms(cpu_ms)))
+  }
+  if gpu_ms >= 0.0 {
+    notes.push(("gpu_ms", journal_ms(gpu_ms)))
+  }
+  if gpu_dropped > 0 {
+    notes.push(("gpu_dropped", gpu_dropped.to_double()))
+  }
+  let hang = {
+    trigger,
+    page: journal_shown(),
+    arranged: arranged_said.val.0,
+    window_w: arranged_said.val.1,
+    window_h: arranged_said.val.2,
+    sealed_by: Hidden,
+    startup: !journal_presented.val,
+    start,
+    end,
+    stall_ms: wall_ms,
+    work_ms: wall_ms,
+    pieces: 1,
+    small: 0,
+    small_ms: 0.0,
+    lost: 0,
+    contributors: [{ what, start, end, notes }],
+    elided: 0,
+  }
+  if hangs_found.length() >= hangs_kept_most {
+    hangs_found.remove(0) |> ignore
+  }
+  hangs_found.push(hang)
+  let line = hang.said()
+  h_log("HANG " + line)
+  @hostapi.perf_line("hang: " + line)
+  if hang_tell.val is Some(f) {
+    @signals.untracked(fn() { f(hang) })
+  }
+}
+
+///|
 /// An event from outside, the outermost, handled from `start` to now: kept, and where it left no frame asked for, the
 /// interval closed (idle; hidden where it hid the app).
 fn journal_event(what : String, start : Double, c0? : Double = -1.0) -> Unit {
   let end = work_now()
   let c1 = work_thread_cpu()
+  if @hostapi.frame_hidden() && !journal_away.val && !journal_hidden.val {
+    journal_report_offscreen_piece(Event(what), start, end, cpu_ms=journal_cpu_delta(c0, c1))
+    return
+  }
   if what == "touch-move" {
     journal_moved.val = true
   }
@@ -664,10 +751,15 @@ fn journal_event(what : String, start : Double, c0? : Double = -1.0) -> Unit {
   if journal_hidden.val {
     journal_hidden.val = false
     journal_dirty_at.val = -1.0
-    journal_seal(Hidden, end)
+    journal_asked.val = false
+    journal_seal(Hidden, end, away=false)
     journal_said_shown(end)
+  } else if journal_away.val {
+    journal_dirty_at.val = -1.0
+    journal_asked.val = false
+    journal_seal(Hidden, end, away=true)
   } else if journal_dirty_at.val < 0.0 {
-    journal_seal(Idle, end)
+    journal_seal(Idle, end, away=false)
   }
 }
 
@@ -717,49 +809,71 @@ fn journal_frame(
     }
     journal_again.val[i] = n
   }
-  journal_laid.val = journal_since(now.2, was.2) > 0
+  let offscreen = @hostapi.frame_hidden() && !journal_away.val && !journal_hidden.val
+  if !offscreen {
+    journal_laid.val = journal_since(now.2, was.2) > 0
+  }
+  let away = journal_is_away()
   let late = @hostapi.frame_late()
-  if late > 0.0 {
+  if !away && late > 0.0 {
     journal_late_bands[late_band(late)] += 1
     if late > journal_extra_ms[0] {
       journal_extra_ms[0] = late
     }
   }
   let (gms, gdrop, gslow) = gpu_frame_consume()
+  let frame_done = Frame({
+    tree: t0 - tw,
+    messages: msgs,
+    build: c.t_build - msgs,
+    layout: c.t_layout,
+    paint: c.t_paint,
+    nodes: c.count,
+    insts: c.ninst,
+    made: journal_since(now.0, was.0),
+    let_go: journal_since(now.1, was.1),
+    laid: journal_since(now.2, was.2),
+    measured: journal_since(now.3, was.3),
+    passes: journal_since(passes, passes_was),
+    again: again_said.join(" "),
+    bindings: journal_since(bindings, bindings_was),
+    why,
+  })
+  if offscreen {
+    journal_report_offscreen_piece(
+      frame_done,
+      tw,
+      t3,
+      cpu_ms=journal_cpu_delta(cw, c3),
+      gpu_ms=gms,
+      gpu_dropped=gdrop,
+      taken_notes=frame_notes,
+    )
+    journal_report_offscreen_piece(Present, t3, t4, cpu_ms=journal_cpu_delta(c3, c4))
+    return
+  }
   journal_work(
-    Frame({
-      tree: t0 - tw,
-      messages: msgs,
-      build: c.t_build - msgs,
-      layout: c.t_layout,
-      paint: c.t_paint,
-      nodes: c.count,
-      insts: c.ninst,
-      made: journal_since(now.0, was.0),
-      let_go: journal_since(now.1, was.1),
-      laid: journal_since(now.2, was.2),
-      measured: journal_since(now.3, was.3),
-      passes: journal_since(passes, passes_was),
-      again: again_said.join(" "),
-      bindings: journal_since(bindings, bindings_was),
-      why,
-    }),
+    frame_done,
     tw,
     t3,
     cpu_ms=journal_cpu_delta(cw, c3),
-    late_ms=late,
+    late_ms=if away { -1.0 } else { late },
     gpu_ms=gms,
     gpu_dropped=gdrop,
     taken_notes=frame_notes,
   )
   journal_work(Present, t3, t4, cpu_ms=journal_cpu_delta(c3, c4))
-  journal_counts[0] += 1.0
-  if journal_counts[0].to_int() % 60 == 1 {
-    journal_sample_mem()
+  if away {
+    journal_seal(Hidden, t4, away=true)
+  } else {
+    journal_counts[0] += 1.0
+    if journal_counts[0].to_int() % 60 == 1 {
+      journal_sample_mem()
+    }
+    shown_counts[shown_slot.val * 4] += 1
+    journal_seal(Presented, t4, gpu_slow=gslow, away=false)
+    journal_presented.val = true
   }
-  shown_counts[shown_slot.val * 4] += 1
-  journal_seal(Presented, t4, gpu_slow=gslow)
-  journal_presented.val = true
   journal_dirty_at.val = -1.0
 }
 
@@ -794,20 +908,34 @@ fn journal_since(now : Int, was : Int) -> Int {
 fn journal_frame_ended(t4 : Double, c4? : Double = -1.0) -> Unit {
   let end = work_now()
   let cend = work_thread_cpu()
+  if @hostapi.frame_hidden() && !journal_away.val && !journal_hidden.val {
+    journal_report_offscreen_piece(FrameEnd, t4, end, cpu_ms=journal_cpu_delta(c4, cend))
+    return
+  }
   journal_work(FrameEnd, t4, end, cpu_ms=journal_cpu_delta(c4, cend))
-  if journal_asked.val {
+  if journal_hidden.val {
+    journal_hidden.val = false
+    journal_asked.val = false
+    journal_dirty_at.val = -1.0
+    journal_seal(Hidden, end, away=false)
+    journal_said_shown(end)
+  } else if journal_away.val {
+    journal_asked.val = false
+    journal_dirty_at.val = -1.0
+    journal_seal(Hidden, end, away=true)
+  } else if journal_asked.val {
     journal_asked.val = false
     if journal_dirty_at.val < 0.0 {
       journal_dirty_at.val = t4
     }
   } else if journal_dirty_at.val < 0.0 {
-    journal_seal(Idle, end)
+    journal_seal(Idle, end, away=false)
   }
 }
 
 ///|
 /// The open interval closed by `seal` at `at`, looked over for a hang.
-fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
+fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false, away? : Bool = journal_away.val) -> Unit {
   journal_flush_small()
   let from = journal_at[1]
   let to = journal_at[0]
@@ -823,7 +951,7 @@ fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
   journal_put(Boundary(seal, at))
   journal_at[1] = journal_at[0]
   if to == from {
-    journal_maybe_roll_summary(seal, at)
+    journal_maybe_roll_summary(seal, at, away~)
     return
   }
   // (summed first with nothing made, as every frame closes one: what is kept of it only where it is a hang)
@@ -855,7 +983,7 @@ fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
     }
   }
   // (a frame presented, counted by what it waited on: every one, a hang or not)
-  if seal == Presented && lost == 0 {
+  if seal == Presented && lost == 0 && !away {
     let kind = (if moved { 2 } else { 0 }) + (if laid { 1 } else { 0 })
     journal_bands[kind * 6 + frame_band(waited + small_ms)] += 1
   }
@@ -863,14 +991,14 @@ fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
     Stall
   } else if seal == Presented {
     if lost > 0 || (waited + small_ms < probe_slow_ms && !gpu_slow) {
-      journal_maybe_roll_summary(seal, at)
+      journal_maybe_roll_summary(seal, at, away~)
       return
     }
     LateFrame
   } else if longest >= probe_slow_ms {
     Blocking
   } else {
-    journal_maybe_roll_summary(seal, at)
+    journal_maybe_roll_summary(seal, at, away~)
     return
   }
   let mut contributors : Array[Worked] = []
@@ -926,8 +1054,10 @@ fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
     LateFrame => 2
     Blocking => 3
   }
-  journal_counts[count] += 1.0
-  shown_counts[shown_slot.val * 4 + count] += 1
+  if !away {
+    journal_counts[count] += 1.0
+    shown_counts[shown_slot.val * 4 + count] += 1
+  }
   if hangs_found.length() >= hangs_kept_most {
     hangs_found.remove(0) |> ignore
   }
@@ -938,7 +1068,7 @@ fn journal_seal(seal : Seal, at : Double, gpu_slow? : Bool = false) -> Unit {
   if hang_tell.val is Some(f) {
     @signals.untracked(fn() { f(hang) })
   }
-  journal_maybe_roll_summary(seal, at)
+  journal_maybe_roll_summary(seal, at, away~)
 }
 
 ///|

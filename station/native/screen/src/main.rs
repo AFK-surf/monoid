@@ -106,6 +106,8 @@ mod mouse;
 mod region;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod resolution;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod reveal;
 mod scale;
 #[cfg(windows)]
 mod svc_client;

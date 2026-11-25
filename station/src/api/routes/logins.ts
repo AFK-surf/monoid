@@ -97,6 +97,7 @@ export const pageRoutes = (logins: () => Logins | undefined, accounts: () => Acc
     }
   };
   const segment = (s: string) => decodeURIComponent(s);
+  const wsOf = (r: Request): string | null => (r.viewer.home !== false ? null : r.viewer.workspace);
   return [
     {
       method: "POST",
@@ -105,7 +106,7 @@ export const pageRoutes = (logins: () => Logins | undefined, accounts: () => Acc
         answer(r, async () => {
           const l = logins();
           if (l === undefined) throw new Refused(503, "station starting");
-          return l.openPage(segment(login!), { email: r.viewer.email, name: r.viewer.name });
+          return l.openPage(segment(login!), { email: r.viewer.email, name: r.viewer.name }, r.viewer);
         }),
     },
     {
@@ -117,7 +118,7 @@ export const pageRoutes = (logins: () => Logins | undefined, accounts: () => Acc
           if (a === undefined) throw new Refused(503, "station starting");
           const profile = segment(id!);
           if (!a.profiles().some((p) => p.id === profile)) throw new Refused(404, `unknown profile ${profile}`);
-          return a.logins.openPage(profile, r.lang);
+          return a.logins.openPage(profile, r.lang, wsOf(r));
         }),
     },
     {
@@ -129,7 +130,7 @@ export const pageRoutes = (logins: () => Logins | undefined, accounts: () => Acc
           if (a === undefined) throw new Refused(503, "station starting");
           const login = segment(id!);
           if (!a.hasPending(login)) throw new Refused(404, `no route ${r.method} ${r.path}`);
-          return a.logins.openPage(login, r.lang);
+          return a.logins.openPage(login, r.lang, wsOf(r));
         }),
     },
   ];

@@ -148,14 +148,16 @@ jobs:
           sh scripts/release-put.sh --drop $HANDED
 
   # The Mac app is mbui's (apps/mbui, its `stable` variant: fail.still.desktop, signed by the same team, so an installed
-  # Electron app's updater moves it over, its data and sign-in kept), as the beta's became on 2026-10-26. 10 minutes (it
-  # runs by hand): the day before's main has no warm build, and its build and Apple's notary took 4m59s on 2026-11-12
-  # and were cut at 5 on 2026-11-13.
-  desktop:
+  # Electron app's updater moves it over, its data and sign-in kept), as the beta's became on 2026-10-26. Built warm on
+  # Mini1 and handed to macos-26 (`desktop`) through R2 (`--hand`): Mini1's home uplink aborted Apple's notarytool S3
+  # uploads (45671338999, 2026-11-25), just as pipeline.yml's beta desktop moved signing and notarization to macos-26.
+  desktop-build:
     needs: plan
     runs-on: [self-hosted, macos-ci]
     environment: production
     timeout-minutes: 10
+    outputs:
+      hand: ${{ steps.hand.outputs.key }}
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
@@ -163,7 +165,75 @@ jobs:
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/natives
-      - name: Publish the stable Mac app (mbui's) with its original signing identity
+      - name: Build the unsigned stable Mac app (mbui's) warm on Mini1
+        env:
+          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
+        run: |
+          set -eu
+          ph_dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/stillfail-posthog.XXXXXX")
+          trap 'rm -rf "$ph_dir"' EXIT
+          if [ -n "${POSTHOG_JSON:-}" ]; then
+            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$ph_dir/posthog.json")
+            export STILLFAIL_POSTHOG="$ph_dir/posthog.json"
+          fi
+          unset POSTHOG_JSON
+          build=$(git rev-list --count HEAD)
+          mbui_cache=${MBUI_MAC_CACHE:-$HOME/stillfail-ci/mbui-mac-stable}
+          rm -rf "$RUNNER_TEMP/unsigned"
+          MBUI_CACHE="$mbui_cache" bash apps/mbui/scripts/beta.sh tools
+          MBUI_CACHE="$mbui_cache" MBUI_TOOLS="$mbui_cache/tools" MBUI_VARIANT=stable \
+            UNSIGNED=1 MAC_SIGN_IDENTITY=- RELEASE_DIR="$RUNNER_TEMP/unsigned" \
+            bash apps/mbui/scripts/beta.sh mac
+          # Remove the warm tree's ad-hoc zip copy now that beta.sh copied it into $RUNNER_TEMP/unsigned.
+          rm -f "$mbui_cache/tree/apps/mbui/out/mac/stillfail-$build-arm64-mac.zip"
+      - name: Hand the unsigned Mac app to desktop via R2
+        id: hand
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -eu
+          set -o pipefail
+          # Keep macos-ci non-shallow (no --depth=1 / --filter) if the release checkout predates this workflow's commit.
+          git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --hand "$RUNNER_TEMP/unsigned" | tee "$RUNNER_TEMP/hand.out"
+          echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
+
+  # Sign, notarize, compute deltas and publish the stable Mac app on GitHub's macos-26 (fast AWS S3 notarytool + R2
+  # uploads, mirroring pipeline.yml's desktop and monoid-desktop below).
+  desktop:
+    needs: [plan, desktop-build]
+    if: ${{ !cancelled() && needs.desktop-build.result == 'success' }}
+    runs-on: macos-26
+    environment: production
+    timeout-minutes: 10
+    env:
+      MBUI_FRESH: 1
+      HANDED: ${{ needs.desktop-build.outputs.hand }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
+      - uses: ./.github/actions/setup
+      - name: Fetch and verify the unsigned stable Mac app
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -eu
+          [ -n "$HANDED" ] || { echo "no handoff key from desktop-build" >&2; exit 1; }
+          # No --depth=1: preserve full commit history for git rev-list --count HEAD.
+          git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch --filter=blob:none origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
+          # shellcheck disable=SC2086 # names, one word each
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --unhand "$RUNNER_TEMP/unsigned" $HANDED
+          zip="$RUNNER_TEMP/unsigned/mac/app-stable.zip"
+          [ -f "$zip" ] || { echo "missing handed-over app-stable.zip" >&2; exit 1; }
+          rm -rf "$RUNNER_TEMP/mac-unsigned" && mkdir -p "$RUNNER_TEMP/mac-unsigned"
+          ditto -x -k "$zip" "$RUNNER_TEMP/mac-unsigned"
+          plist="$RUNNER_TEMP/mac-unsigned/still.fail.app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleIdentifier raw "$plist")" = fail.still.desktop
+          test "$(plutil -extract CFBundleExecutable raw "$plist")" = still.fail
+          test "$(plutil -extract CFBundleVersion raw "$plist")" = "$(git rev-list --count HEAD)"
+      - name: Sign, notarize and publish the stable Mac app (mbui's) with its original signing identity
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
@@ -171,25 +241,15 @@ jobs:
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_2: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_2 }}
           KEYCHAIN_PASSWORD_AFK: ${{ secrets.KEYCHAIN_PASSWORD_AFK }}
+          MBUI_MAC_FROM: ${{ runner.temp }}/mac-unsigned/still.fail.app
         run: sh .github/release-desktop.sh --stable
-      # Only frees the runner's disk of the zip already put: it fetches the zip back from R2 to compare, which from mini1
-      # took past the job's 10 minutes after the release was out (0.1.8947, two attempts, 2026-11-15), so it never fails
-      # or holds back the release.
-      - name: Remove the uploaded Mac zip's local copy
+      - name: Drop the staged unsigned Mac handoff
         continue-on-error: true
-        timeout-minutes: 2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          build=$(git rev-list --count HEAD)
-          cache=${MBUI_MAC_CACHE:-"$HOME/stillfail-ci/mbui-mac-stable"}
-          # (where scripts/beta.sh of the release's checkout builds: beside libs/ui once mbui is there)
-          work=$cache/tree/apps/mbui; [ -d "$GITHUB_WORKSPACE/libs/ui" ] || work=$cache/work
-          work=${WORK:-$work}
-          if [ "${MBUI_FRESH:-}" = 1 ]; then work="$GITHUB_WORKSPACE/apps/mbui"; fi
-          # The checkout is the reviewed release, which can be older than this workflow. Use this workflow's helper.
-          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put-cleanup.sh"
-          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put-cleanup.sh" --clean-uploaded "desktop/stillfail-0.1.$build-arm64-mac.zip" "$work/out/mac/stillfail-$build-arm64-mac.zip"
+          # shellcheck disable=SC2086 # names, one word each
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --drop $HANDED
 
   # The Windows app is mbui's (apps/mbui, its `stable` variant: fail.still.desktop, its installer run by an installed
   # Electron app's updater, its data and sign-in kept), as the beta's became on 2026-10-26: built as the pipeline's

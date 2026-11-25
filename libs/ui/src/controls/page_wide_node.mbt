@@ -874,9 +874,14 @@ fn wide_control_row_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   let (title_look, note_look) = match looks {
     Some(l) => l
-    None => (fn() { if at.list { setting_title() } else { theme().rows.title } }, fn() { theme().rows.note })
+    None =>
+      (
+        fn() { if at.list { setting_title() } else { theme().rows.title } },
+        fn() { if in_overlay { panel_note_words } else { theme().rows.note } },
+      )
   }
   let row = fn(r : @view.View) {
     r

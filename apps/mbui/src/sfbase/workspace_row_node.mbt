@@ -84,7 +84,7 @@ pub fn workspace_row_node(
       }
       r.show(checked, fn(k) {
         k.shrink(Is(0.0)) |> ignore
-        @sf.first_line_node(k, Ui, fn(c) { @sf.icon_node(c, "check", ws_row_check, By(fn() { @sf.theme().p.accent })) |> ignore })
+        @sf.first_line_node(k, Ui, fn(c) { @sf.icon_node(c, "check", ws_row_check, By(fn() { @sf.theme().p.accent_text })) |> ignore })
         |> ignore
       })
     })

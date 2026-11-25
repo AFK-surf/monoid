@@ -11,8 +11,8 @@
 // (the part of the screen it shows, zoomed in: its frames are then of that part, as large as the client shows it, each
 // config saying which part); and the screen's clipboard both ways (`clipboard`), for a view that drives it
 // (the station sends it as it changes, the client to set it and paste; a copy an app marked private, a password
-// manager's, goes as `privateClipboard` to a client that asked `privateClip`, its mark first, and as `clipboard` to
-// one before it, whose reader takes no other first byte than the type's; the client's own mark rides in its flags). The source is asked for a frame only while the
+// manager's, goes as `privateClipboard` to a client that asked `privateClip`, its mark first, and is dropped for
+// clients before it rather than downgraded to plaintext `clipboard`; the client's own mark rides in its flags). The source is asked for a frame only while the
 // `Pacer` lets one go: as many as the link holds (a far one holds several), none while the oldest not acknowledged
 // waits longer than the link takes with no queue; and the source is asked for the bit rate the link carries
 // (screen-pace.ts). So a slow link lowers the bit rate, then the frame rate, rather than queueing frames.
@@ -20,11 +20,13 @@
 // A read-only member views, their input is dropped. The view ends when the client finishes its side (`ended:
 // "finished"`), the source goes (`"gone"`, also when it has no more frames), the station stops (`"stopping"`), or the
 // stream or its connection breaks (nothing more is written then); its source's capture stops with it.
+import { realpath } from "node:fs/promises";
 import { type Clock, Duration, Effect } from "effect";
 import { langOfCore } from "../api/request.ts";
 import { liveClock } from "../ops/fibers.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
+import { type Platform, platform } from "../platform/index.ts";
 import { type AccessShown, type ScreenHub, ScreenRefused, accessShown, addressShown } from "../screens/hub.ts";
 import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, CURSOR_IMAGES_MOST, GAMEPAD_BUTTONS, GAMEPADS_MOST, PRIVACY_CODE, clipFits, gamepadReleased, MIC_PCM_MAX, privacyOf, regionOf } from "../screens/source.ts";
 import { type Viewer, readOnly } from "./credential.ts";
@@ -130,6 +132,38 @@ export function parseVolume(v: any): number | null | undefined {
 /// What a client's input frame asks of the file manager (`{t: "reveal", path}`): the path, or null when it is not that.
 export function parseReveal(v: any): string | null {
   return v !== null && typeof v === "object" && v.t === "reveal" && typeof v.path === "string" && v.path !== "" && v.path.length <= 4096 ? v.path : null;
+}
+
+/// Validates that `target` is lexically and canonically strictly inside `folder` (the station's drop root), returning
+/// its canonical path or null if disallowed. Lexical checks run before any filesystem call to prevent UNC/network
+/// probes; on Windows, also rejects quotes, control chars and trailing backslashes (macOS keeps legal quoted names).
+export async function revealAllowed(
+  folder: string | null,
+  target: string,
+  plat: Pick<Platform, "os" | "paths"> = platform,
+): Promise<string | null> {
+  if (folder === null || folder === "" || target === "") return null;
+  if (/[\x00-\x1f]/.test(target)) return null;
+  if (target.startsWith("\\\\") || target.startsWith("//")) return null;
+  const isWin = plat.os === "windows";
+  if (isWin && (target.includes('"') || target.endsWith("\\"))) return null;
+  const absolute = (p: string) => (isWin ? plat.paths.isDrivePath(p) : plat.paths.rooted(p));
+  if (!absolute(folder) || !absolute(target)) return null;
+  const strictlyInside = (root: string, candidate: string) => {
+    const rel = plat.paths.relativeIn(plat.paths.clean(root), plat.paths.clean(candidate));
+    return rel !== null && rel !== "";
+  };
+  // Lexical containment check BEFORE touching the filesystem (blocks UNC/network probes and obvious traversal).
+  if (!strictlyInside(folder, target)) return null;
+  let realRoot: string;
+  let realTarget: string;
+  try {
+    [realRoot, realTarget] = await Promise.all([realpath(folder), realpath(target)]);
+  } catch {
+    return null;
+  }
+  if (!strictlyInside(realRoot, realTarget)) return null;
+  return realTarget;
 }
 
 /// What a client's input frame fills a login form with (`{t: "fill", host, username?, password?}`: from the person's own
@@ -313,7 +347,7 @@ function said<K extends string>(field: K, v: unknown, most: number): { [F in K]?
 /// A stream whose head says `"screen"` (serve.ts dispatches it): a view of a screen, for as long as both sides keep it.
 /// `carry`: what came after the head line; `conn`: the connection it came on, whose paths say what of the view's link was
 /// lost (none: nothing said of it) and where it goes (what the view starts at: `startRate`). Resolves once the view ended.
-export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer, head: any, viewer: Viewer, up: () => boolean, clock: Clock.Clock = liveClock, conn?: Pick<Connection, "paths">): Promise<void> {
+export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer, head: any, viewer: Viewer, up: () => boolean, clock: Clock.Clock = liveClock, conn?: Pick<Connection, "paths">, canSee?: (viewer: Viewer, source: ScreenSource) => boolean): Promise<void> {
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(head.headers ?? {})) if (typeof v === "string") headers[k] = v;
   const lang = langOfCore(headers);
@@ -334,7 +368,7 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
     return refuse(404, tr(lang, "station.screen.notFound"));
   }
   const source = hub.get(id);
-  if (source === undefined) return refuse(404, tr(lang, "station.screen.notFound"));
+  if (source === undefined || (canSee && !canSee(viewer, source))) return refuse(404, tr(lang, "station.screen.notFound"));
   const ask = asked(head.screen);
   if (ask.codecs.length === 0) return refuse(400, `screen.codecs: one of ${CODECS.join(", ")}`);
   if (ask.peek && !source.peek) return refuse(501, "this screen is not previewed");
@@ -344,54 +378,58 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   // said before may be from before the grant was given).
   const name = viewer.name || viewer.email;
   const drives = ask.control && !readOnly(viewer);
-  const driven = drives ? hub.drive(id, viewer.device, ask.taken === true, name) : { control: false, took: [] };
-  // Asked once before the view opens: a front's connection reads its paths anew as it is asked, so what the view's loss
-  // is counted from is the link's as the view begins, not as it was when last asked.
-  const initialPaths = conn?.paths?.();
-  // (a preview's at START_RATE: two pictures a second, no higher than the source's own)
-  const initialRate = ask.peek ? START_RATE : startRate(initialPaths);
-  const noPasskeys = ask.passkeys === false || (ask.passkeys === undefined && (ask.app === "ios" || ask.app === "android" || ask.app === "web"));
-  let view: ScreenView;
+  const driven = drives ? hub.drive(id, viewer.device, ask.taken === true, name) : { control: false, took: [], release: () => {} };
   try {
-    view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}), ...(ask.chroma444 ? { chroma: "444" as const } : {}), ...(ask.quality ? { quality: ask.quality } : {}) });
-  } catch (error) {
-    if (error instanceof ScreenRefused) {
-      // What is missing says it all, and where it is granted.
-      const access = accessShown(error.access, lang);
-      return refuse(error.status, access?.message ?? tr(lang, error.key, error.args), access ? { access } : {});
+    // Asked once before the view opens: a front's connection reads its paths anew as it is asked, so what the view's loss
+    // is counted from is the link's as the view begins, not as it was when last asked.
+    const initialPaths = conn?.paths?.();
+    // (a preview's at START_RATE: two pictures a second, no higher than the source's own)
+    const initialRate = ask.peek ? START_RATE : startRate(initialPaths);
+    const noPasskeys = ask.passkeys === false || (ask.passkeys === undefined && (ask.app === "ios" || ask.app === "android" || ask.app === "web"));
+    let view: ScreenView;
+    try {
+      view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: initialRate, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}), ...(driven.control && noPasskeys ? { passkeys: false } : {}), ...(ask.chroma444 ? { chroma: "444" as const } : {}), ...(ask.quality ? { quality: ask.quality } : {}) });
+    } catch (error) {
+      if (error instanceof ScreenRefused) {
+        // What is missing says it all, and where it is granted.
+        const access = accessShown(error.access, lang);
+        return await refuse(error.status, access?.message ?? tr(lang, error.key, error.args), access ? { access } : {});
+      }
+      return await refuse(503, tr(lang, "station.screen.failed", { said: (error as Error).message }));
     }
-    return refuse(503, tr(lang, "station.screen.failed", { said: (error as Error).message }));
+    // Gone while it opened.
+    if (hub.get(id) !== source) {
+      view.close();
+      return await refuse(404, tr(lang, "station.screen.notFound"));
+    }
+    // Its picture and sound as datagrams where the client takes them under its token and the link carries them (the
+    // reply says so: `x-screen-dgram`), else on the stream as before.
+    const datagrams = ask.datagrams !== undefined && stream.mediaDatagrams ? await stream.mediaDatagrams(ask.datagrams).catch(() => false) : false;
+    try {
+      await writeLine(stream, { status: 200, headers: { "content-type": SCREEN_TYPE, ...(datagrams ? { [DGRAM_HEADER]: String(ask.datagrams) } : {}) } });
+    } catch {
+      view.close();
+      return;
+    }
+    const access = accessShown(source.access?.(), lang);
+    // (as the source has it now it is open: a grant it found missing as it opened drives nothing)
+    const control = driven.control && access?.control !== false;
+    const took = control ? driven.took : [];
+    const now = () => Number(clock.monotonicTimeNanosUnsafe()) / 1e6;
+    // How long the loop stood still, on the host's own clock: what the pacer's times on the view's clock leave out only
+    // when that clock is the host's (the live one). On another (a TestClock) the host's stands are no part of its time,
+    // and taken from it they let a frame go past a queue the view's own time says is there (screens.test.ts, main
+    // 167113d7, 40953448608: 18 frames asked for, not 17, on a loaded runner).
+    const stall = clock === liveClock ? loopStall.use() : { stalled: () => 0, done: () => {} };
+    const pacer = new Pacer(now, initialRate, ask.fps, stall.stalled);
+    const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
+    const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
+    await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, ...(driven.takenToken !== undefined ? { takenToken: driven.takenToken } : {}), peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), ...(ask.fps ? { fps: ask.fps } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true, privateClip: ask.privateClip === true })
+      .run()
+      .finally(stall.done);
+  } finally {
+    driven.release();
   }
-  // Gone while it opened.
-  if (hub.get(id) !== source) {
-    view.close();
-    return refuse(404, tr(lang, "station.screen.notFound"));
-  }
-  // Its picture and sound as datagrams where the client takes them under its token and the link carries them (the
-  // reply says so: `x-screen-dgram`), else on the stream as before.
-  const datagrams = ask.datagrams !== undefined && stream.mediaDatagrams ? await stream.mediaDatagrams(ask.datagrams).catch(() => false) : false;
-  try {
-    await writeLine(stream, { status: 200, headers: { "content-type": SCREEN_TYPE, ...(datagrams ? { [DGRAM_HEADER]: String(ask.datagrams) } : {}) } });
-  } catch {
-    view.close();
-    return;
-  }
-  const access = accessShown(source.access?.(), lang);
-  // (as the source has it now it is open: a grant it found missing as it opened drives nothing)
-  const control = driven.control && access?.control !== false;
-  const took = control ? driven.took : [];
-  const now = () => Number(clock.monotonicTimeNanosUnsafe()) / 1e6;
-  // How long the loop stood still, on the host's own clock: what the pacer's times on the view's clock leave out only
-  // when that clock is the host's (the live one). On another (a TestClock) the host's stands are no part of its time,
-  // and taken from it they let a frame go past a queue the view's own time says is there (screens.test.ts, main
-  // 167113d7, 40953448608: 18 frames asked for, not 17, on a loaded runner).
-  const stall = clock === liveClock ? loopStall.use() : { stalled: () => 0, done: () => {} };
-  const pacer = new Pacer(now, initialRate, ask.fps, stall.stalled);
-  const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
-  const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
-  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), ...(ask.fps ? { fps: ask.fps } : {}), now, sleep, ...(conn?.paths ? { conn } : {}), startRate: initialRate, binaryCursor: ask.binaryCursor === true, customCursor: ask.customCursor === true, privateClip: ask.privateClip === true })
-    .run()
-    .finally(stall.done);
 }
 
 /// One view while it lasts.
@@ -471,6 +509,8 @@ class ViewSession {
   control: boolean;
   /// Whose views it took the screen from as it opened (its first state's `took`).
   readonly took: string[];
+  /// Per-call token from `hub.drive(..., taken: true, ...)` consumed by `hub.join`.
+  readonly #takenToken: symbol | undefined;
   /// A preview's: not among those on the screen.
   readonly peek: boolean;
   readonly audio: boolean;
@@ -495,7 +535,7 @@ class ViewSession {
   readonly #own: { maxWidth: number; maxHeight: number };
   #region: Region | null = null;
 
-  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; fps?: number; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean; privateClip?: boolean }) {
+  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; takenToken?: symbol; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; fps?: number; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths">; startRate?: number; binaryCursor?: boolean; customCursor?: boolean; privateClip?: boolean }) {
     this.hub = o.hub;
     this.id = o.id;
     this.source = o.source;
@@ -509,6 +549,7 @@ class ViewSession {
     this.app = o.app;
     this.control = o.control;
     this.took = o.took ?? [];
+    this.#takenToken = o.takenToken;
     this.peek = o.peek === true;
     this.audio = o.audio === true && !this.peek;
     this.access = o.access;
@@ -643,7 +684,7 @@ class ViewSession {
       ...(this.access ? { access: this.access } : {}),
       ...(video ? { video } : {}),
     });
-    if (!this.peek) this.#leave = this.hub.join(this.id, { name: this.name, device: this.device, ...(this.self ? { self: this.self } : {}), ...(this.client ? { client: this.client } : {}), ...(this.app ? { app: this.app } : {}), control: this.control, tell: (people) => void this.#state(people), end: (by) => this.#stop(tr(this.#lang, "station.screen.endedBy", { by })), watchOnly: (by) => this.#watchOnly(by) });
+    if (!this.peek) this.#leave = this.hub.join(this.id, { name: this.name, device: this.device, ...(this.self ? { self: this.self } : {}), ...(this.client ? { client: this.client } : {}), ...(this.app ? { app: this.app } : {}), control: this.control, ...(this.#takenToken !== undefined ? { takenToken: this.#takenToken } : {}), tell: (people) => void this.#state(people), end: (by) => this.#stop(tr(this.#lang, "station.screen.endedBy", { by })), watchOnly: (by) => this.#watchOnly(by) });
     const unwatch = this.hub.watch(() => {
       if (this.hub.get(this.id) !== this.source) return this.#stop("gone");
       const title = this.source.title();
@@ -673,12 +714,14 @@ class ViewSession {
     if (types.length > 0 && this.view.watchClipboard) {
       this.#unclip = this.view.watchClipboard((clip) => {
         if (this.#closed || !types.includes(clip.type) || !clipFits(clip)) return;
-        const payload = clipPayload(clip);
-        if (this.#clipKnown !== null && this.#clipKnown.equals(payload)) return;
-        this.#clipKnown = payload;
-        // Marked private (a password manager's): with its mark to a client that reads it, else as any copy.
-        if (clip.privacy !== undefined && this.#privateClip) void this.#send(KIND.privateClipboard, privateClipPayload({ ...clip, privacy: clip.privacy }));
-        else void this.#send(KIND.clipboard, payload);
+        // Marked private (a password manager's): drop without updating dedup cache when client lacks `privateClip`
+        // (never downgrade to plaintext `KIND.clipboard`).
+        if (clip.privacy !== undefined && !this.#privateClip) return;
+        const key = this.#clipKey(clip);
+        if (this.#clipKnown !== null && this.#clipKnown.equals(key)) return;
+        this.#clipKnown = key;
+        if (clip.privacy !== undefined) void this.#send(KIND.privateClipboard, privateClipPayload({ ...clip, privacy: clip.privacy }));
+        else void this.#send(KIND.clipboard, clipPayload(clip));
       });
     }
     // Whether an app on the screen holds the pointer (a game's), to a person who drives it: their app then sends moves
@@ -941,6 +984,11 @@ class ViewSession {
     this.#inputs = this.#inputs.then(f).catch((error) => log.info("screens", "input not posted", { screen: this.id, error: (error as Error).message }));
   }
 
+  /// Dedup/echo key for a clipboard item: includes the privacy mark so same text switching between public and private is never swallowed.
+  #clipKey(clip: Clip): Buffer {
+    return clipPayload(clip, clip.privacy ? PRIVACY_CODE[clip.privacy] : 0);
+  }
+
   /// What the client says, until it finishes.
   async #read() {
     try {
@@ -1042,7 +1090,13 @@ class ViewSession {
             }
             const reveal = parseReveal(raw);
             if (reveal !== null) {
-              if (this.source.reveal && this.view.reveal) this.#then(() => this.view.reveal!(reveal));
+              if (this.source.reveal && this.view.reveal) {
+                const folder = this.hub.dropFolder();
+                this.#then(async () => {
+                  const safe = await revealAllowed(folder, reveal);
+                  if (safe !== null) await this.view.reveal!(safe);
+                });
+              }
               break;
             }
             const fill = parseFill(raw);
@@ -1074,7 +1128,7 @@ class ViewSession {
             if (!this.control || !this.view.setClipboard) break;
             const asked = parseClip(got.payload);
             if (asked === null || !(this.source.clipboard?.() ?? []).includes(asked.clip.type)) break;
-            this.#clipKnown = clipPayload(asked.clip);
+            this.#clipKnown = this.#clipKey(asked.clip);
             this.#then(() => this.view.setClipboard!(asked.clip, asked.paste));
             break;
           }
