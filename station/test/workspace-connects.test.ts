@@ -149,10 +149,30 @@ test("slack_api posting through a connect that runs on another station: what is 
   assert.deepEqual(s.rig.said(started.id).map((m) => m.text), ["a new topic", "what do you think"]);
   assert.equal(h.rig.store.threadAt("slack:T1", "C2", "7777.1"), null, "H keeps no thread of it");
 
-  // A reply S's chat posts in a thread H's own chat has: that thread stays H's.
+  // A reply in a thread nobody's chat has: it is S's chat's too.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7779.2" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "C3", thread_ts: "7779.1", text: "joining in" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "C3", "7779.1"), S);
+  // A direct message begun by a person's id: routed by the channel Slack opened, where their replies come.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7780.1", channel: "D5" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "U5", text: "a word in private" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "D5", "7780.1"), S);
+  assert.ok(s.rig.thread("D5", "7780.1"), "S's chat is in the direct message's thread");
+
+  // A thread routed to a third station already stays there.
+  h.rig.store.setConnectThreadStation("cl", "C4", "7781.1", "cccc3333");
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7781.2" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "C4", thread_ts: "7781.1", text: "and me" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "C4", "7781.1"), "cccc3333");
+
+  // A reply S's chat posts in a thread H's own chat has: that thread stays H's, and what follows there goes to H's chat.
   h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7778.1" });
   await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: here.channel, thread_ts: here.threadTs, text: "from S" } });
   assert.equal(h.rig.store.connectThreadStation("cl", here.channel, here.threadTs), null);
+  await h.connects.receive("cl", { type: "message", message: reply(here, "7778.2", "still yours, H", { addressed: false }) });
+  await settle();
+  assert.ok(h.rig.said(h.rig.thread(here.channel, here.threadTs).id).some((m) => m.text === "still yours, H"));
+  assert.ok(!s.rig.said(s.rig.thread(here.channel, here.threadTs).id).some((m) => m.text === "still yours, H"), "not S's chat");
   await close();
 });
 
