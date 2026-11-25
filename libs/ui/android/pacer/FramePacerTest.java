@@ -1781,9 +1781,63 @@ public final class FramePacerTest {
                 && !FramePacer.isStalePacedPeriod(period16ms, 0f)
                 && !FramePacer.isStalePacedPeriod(period8ms, 0f);
 
-        check("AdpfState handles IME wake, 60 Hz cap, failed rate lift, vote release, and stale period matrix",
-                sc1 && sc2 && sc3 && sc4 && sc5,
-                "sc1=" + sc1 + ", sc2=" + sc2 + ", sc3=" + sc3 + ", sc4=" + sc4 + ", sc5=" + sc5);
+        // 6. Fixed 120 Hz screen (8.33ms, topRate=120) with lastFrameWorked 50 ms ago (< 250 ms):
+        //    beginTouchBoost(true) still returns true (bypasses 250 ms throttle) while keeping boostActive=false,
+        //    and wake() reports expectedTopTarget (5.83ms) without clamping.
+        st.reset();
+        st.onSessionCreated(expectedTopTarget, sess);
+        st.lastFrameWorkedNs = 4_000_000_000L;
+        targets.clear();
+        actuals.clear();
+        boolean fixedWakeAllowed = st.beginTouchBoost(true, 4_050_000_000L, period8ms, 120f);
+        st.wake(period8ms, 120f, false, true, 120f, false, sess);
+        boolean sc6 = fixedWakeAllowed && !st.boostActive
+                && targets.isEmpty()
+                && actuals.equals(List.of(expectedTopTarget));
+
+        check("AdpfState handles IME wake, 60 Hz cap, failed rate lift, vote release, stale matrix, and fixed-120 wake",
+                sc1 && sc2 && sc3 && sc4 && sc5 && sc6,
+                "sc1=" + sc1 + ", sc2=" + sc2 + ", sc3=" + sc3 + ", sc4=" + sc4 + ", sc5=" + sc5 + ", sc6=" + sc6);
+    }
+
+    /** 24. Picture-only redraw triggered from 20 Hz keeps picturedPaced even if posted recheckRate() lifts before takeRender(). */
+    static void picturedPacedSurvivesEarlyRecheckCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        // Enter 20 Hz paced mode.
+        long t1 = 12 * ph.period;
+        ph.pacer.wantPacedFrame();
+        ph.pacer.vsyncCame(t1, t1 + 2 * ph.period);
+        FramePacer.Taken tkInit = ph.pacer.takeRender();
+        FramePacer.Begun bInit = ph.pacer.begin(tkInit.vsyncAt, t1 + 200_000L, tkInit.external);
+        ph.pacer.applyRate(false, false, bInit.following, 20f, bInit.externalDemand);
+        ph.pacer.scheduleNext(false);
+        boolean inPaced = ph.pacer.isPacedActive();
+
+        // Picture arrives while paced: capture wasPaced, mark pictureActive, queue pictureFrame(wasPaced).
+        boolean wasPaced = ph.pacer.isPacedActive();
+        ph.pictureActive = true;
+        ph.pacer.pictureFrame(wasPaced);
+        // Simulate posted recheckRate() running on app thread BEFORE next vsync's frameOnApp().
+        ph.pacer.recheckRate();
+        boolean liftedEarly = !ph.pacer.isPacedActive() && ph.rate == 120f;
+
+        // Next vsync arrives -> takeRender() still carries picturedPaced=true so transition frame is attributed.
+        long t2 = 13 * ph.period;
+        ph.pacer.vsyncCame(t2, t2 + 2 * ph.period);
+        FramePacer.Taken tk1 = ph.pacer.takeRender();
+        boolean pacedBefore1 = ph.pacer.isPacedActive();
+        boolean ok1 = tk1.pictured && !tk1.app && tk1.picturedPaced && (pacedBefore1 || tk1.picturedPaced);
+
+        // Subsequent normal picture redraw after exit must NOT inherit picturedPaced.
+        ph.pacer.pictureFrame(ph.pacer.isPacedActive());
+        long t3 = 14 * ph.period;
+        ph.pacer.vsyncCame(t3, t3 + 2 * ph.period);
+        FramePacer.Taken tk2 = ph.pacer.takeRender();
+        boolean ok2 = tk2.pictured && !tk2.app && !tk2.picturedPaced;
+
+        check("pictureFrame from 20 Hz retains picturedPaced across early recheckRate() and clears on next frame",
+                inPaced && liftedEarly && ok1 && ok2,
+                "inPaced=" + inPaced + ", liftedEarly=" + liftedEarly + ", ok1=" + ok1 + ", ok2=" + ok2);
     }
 
     public static void main(String[] args) throws IOException {
@@ -1826,6 +1880,7 @@ public final class FramePacerTest {
         applyRateScheduleNextEquivalenceCase();
         cpuDeltaAndGlWorkNanosCase();
         adpfTargetNanosAndTouchBoostCase();
+        picturedPacedSurvivesEarlyRecheckCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

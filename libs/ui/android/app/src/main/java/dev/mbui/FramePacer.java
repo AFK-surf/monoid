@@ -137,13 +137,14 @@ final class FramePacer {
 
     /** Atomic snapshot of frame demand and vsync timeline taken by the drawing thread. */
     static final class Taken {
-        final boolean app, pictured, external;
+        final boolean app, pictured, external, picturedPaced;
         final long[] vsyncAt;
 
-        Taken(boolean app, boolean pictured, boolean external, long[] vsyncAt) {
+        Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt) {
             this.app = app;
             this.pictured = pictured;
             this.external = external;
+            this.picturedPaced = picturedPaced;
             this.vsyncAt = vsyncAt;
         }
     }
@@ -151,6 +152,8 @@ final class FramePacer {
     private final Object dispatchLock = new Object();
     /** Whether the current vsyncAt has been dispatched for an app frame (prevents stealing T+1's appWanted early). */
     private boolean appDispatched;
+    /** Whether a pending picture-only redraw originated while a low-rate paced vote was active (guarded by dispatchLock). */
+    private boolean picturedFromPaced;
 
     /** Atomically consumes pending frame flags, reads vsyncAt, and claims vsyncAt[0] when building an app frame. */
     Taken takeRender() {
@@ -161,10 +164,12 @@ final class FramePacer {
                 ahead.set(false);
             }
             boolean pictured = picturesOnly.getAndSet(false);
+            boolean picturedPaced = pictured && picturedFromPaced;
+            if (pictured) picturedFromPaced = false;
             boolean external = app && externalWanted.getAndSet(false);
             long[] at = vsyncAt;
             if (app && at[0] != 0) lastAppDispatchedVsyncNs.set(at[0]);
-            return new Taken(app, pictured, external, at);
+            return new Taken(app, pictured, external, picturedPaced, at);
         }
     }
 
@@ -437,7 +442,7 @@ final class FramePacer {
     }
 
     /** A frame wanted (atomically sets flags under dispatchLock, from any thread): drawn for the vsync kept, or the next. */
-    private void ask(boolean forApp, boolean isExternal) {
+    private void ask(boolean forApp, boolean isExternal, boolean fromPaced) {
         boolean renderNow = false;
         boolean postNext = false;
         synchronized (dispatchLock) {
@@ -446,6 +451,7 @@ final class FramePacer {
                 appWanted.set(true);
             } else {
                 picturesOnly.set(true);
+                if (fromPaced) picturedFromPaced = true;
             }
             boolean alreadyPendingForT = false;
             if (ahead.getAndSet(false) && p.nanoTime() - vsyncAt[0] < framePeriod) {
@@ -467,17 +473,22 @@ final class FramePacer {
 
     /** A frame at the next vsync (from any thread). */
     void wantFrame() {
-        ask(true, true);
+        ask(true, true, false);
     }
 
     /** A paced timer wakeup frame at the next vsync (from any thread): does not mark externalDemand. */
     void wantPacedFrame() {
-        ask(true, false);
+        ask(true, false, false);
     }
 
     /** Only a native view's picture to show again (from any thread): the last frame drawn again at the next vsync. */
     void pictureFrame() {
-        ask(false, false);
+        pictureFrame(pacedActive);
+    }
+
+    /** Picture-only redraw with caller-captured paced state (sampled before lifting a low-rate vote). */
+    void pictureFrame(boolean fromPaced) {
+        ask(false, false, fromPaced);
     }
 
     /**
@@ -717,8 +728,10 @@ final class FramePacer {
         }
 
         boolean beginTouchBoost(boolean fromPaced, long nowNs, long framePeriodNs, float topRate) {
-            if (fromPaced && isStalePacedPeriod(framePeriodNs, topRate)) {
-                boostActive = true;
+            if (fromPaced) {
+                if (isStalePacedPeriod(framePeriodNs, topRate)) {
+                    boostActive = true;
+                }
                 return true;
             }
             if (boostActive) return true;

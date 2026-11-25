@@ -1562,8 +1562,10 @@ moonbit_bytes_t mb_host_perf_read(void) { return moonbit_make_bytes(0, 0); }
 // The GL thread's work duration for the frame it drew last (in µs, -1 before any): for non-paced frames, full
 // draw + eglSwapBuffers wall time (preserving real GPU backpressure); for paced frames, GL thread CPU time (or
 // draw-end wall fallback) so intentional 20 Hz pacing sleep does not falsely trigger over_24ms/gpu_only hangs.
-// `gl_drawn_raw_wall_us` keeps the unmodified wall time and `gl_drawn_flags` records bit 0 = paced, bit 1 = swap_measured.
+// `gl_drawn_seq` is a single-writer seqlock (odd while the GL thread updates) so `mb_host_gpu_timing` reads a
+// coherent same-frame (work_ms, raw_wall_ms, flags) snapshot (flags: bit 0 = paced, bit 1 = swap_measured).
 // `gl_dropped` counts frames handed over that were replaced before being drawn (FrameMail.takeDropped).
+static uint32_t gl_drawn_seq = 0; // odd while GL thread updates (work, raw_wall, flags)
 static int64_t gl_drawn_us = -1;
 static int64_t gl_drawn_raw_wall_us = -1;
 static int32_t gl_drawn_flags = 0;
@@ -1572,10 +1574,14 @@ static int32_t gl_dropped;
 JNIEXPORT void JNICALL Java_dev_mbui_MBView_glDrawn(
     JNIEnv *env, jclass c, jdouble ms, jdouble raw_wall_ms, jboolean paced, jboolean swap_measured, jint dropped) {
   (void)env, (void)c;
+  uint32_t seq = __atomic_load_n(&gl_drawn_seq, __ATOMIC_RELAXED);
+  __atomic_store_n(&gl_drawn_seq, seq + 1, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
   __atomic_store_n(&gl_drawn_us, (int64_t)(ms * 1000.0), __ATOMIC_RELAXED);
   __atomic_store_n(&gl_drawn_raw_wall_us, (int64_t)(raw_wall_ms * 1000.0), __ATOMIC_RELAXED);
   int32_t flags = (paced ? 1 : 0) | (swap_measured ? 2 : 0);
   __atomic_store_n(&gl_drawn_flags, flags, __ATOMIC_RELAXED);
+  __atomic_store_n(&gl_drawn_seq, seq + 2, __ATOMIC_RELEASE);
   if (dropped > 0) __atomic_add_fetch(&gl_dropped, (int32_t)dropped, __ATOMIC_RELAXED);
 }
 
@@ -1584,15 +1590,24 @@ double mb_host_gpu_ms(void) {
   return us < 0 ? -1 : (double)us / 1000.0;
 }
 
-// Unmodified GL wall time of the last drawn frame in ms (-1 before any): includes paced eglSwapBuffers sleep,
-// paired with mb_host_gpu_flags() (bit 0 = paced, bit 1 = swap_measured) to distinguish pacing waits from GPU stalls.
-double mb_host_gpu_raw_wall_ms(void) {
-  int64_t us = __atomic_load_n(&gl_drawn_raw_wall_us, __ATOMIC_RELAXED);
-  return us < 0 ? -1 : (double)us / 1000.0;
+// Coherent snapshot of the last drawn GL frame's (work_ms, raw_wall_ms, flags); returns 1 if valid, 0 before first frame.
+int32_t mb_host_gpu_timing(double *work_ms, double *raw_wall_ms, int32_t *flags) {
+  for (;;) {
+    uint32_t s1 = __atomic_load_n(&gl_drawn_seq, __ATOMIC_ACQUIRE);
+    if (s1 & 1u) continue;
+    int64_t work_us = __atomic_load_n(&gl_drawn_us, __ATOMIC_RELAXED);
+    int64_t raw_us = __atomic_load_n(&gl_drawn_raw_wall_us, __ATOMIC_RELAXED);
+    int32_t f = __atomic_load_n(&gl_drawn_flags, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    uint32_t s2 = __atomic_load_n(&gl_drawn_seq, __ATOMIC_RELAXED);
+    if (s1 == s2) {
+      if (work_ms) *work_ms = work_us < 0 ? -1.0 : (double)work_us / 1000.0;
+      if (raw_wall_ms) *raw_wall_ms = raw_us < 0 ? -1.0 : (double)raw_us / 1000.0;
+      if (flags) *flags = f;
+      return work_us >= 0 ? 1 : 0;
+    }
+  }
 }
-
-// Measurement flags of the last drawn GL frame: bit 0 = paced, bit 1 = swap_measured (0 = draw-end fallback only).
-int32_t mb_host_gpu_flags(void) { return __atomic_load_n(&gl_drawn_flags, __ATOMIC_RELAXED); }
 
 int32_t mb_host_frames_dropped(void) { return __atomic_load_n(&gl_dropped, __ATOMIC_RELAXED); }
 

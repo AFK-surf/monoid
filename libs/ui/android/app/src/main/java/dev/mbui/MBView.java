@@ -588,7 +588,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             boolean pacedBefore = pacer.isPacedActive();
             notePictureActivity();
             pacer.recheckRate();
-            if (mail.redrawAsked(at[1], pacedBefore)) requestRender();
+            if (mail.redrawAsked(at[1], pacedBefore || tk.picturedPaced)) requestRender();
             NativeViews.framed(false);
             pacer.redrawn();
             return;
@@ -605,7 +605,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         StreamLayer.frameEnded();
         boolean pacedBefore = pacer.isPacedActive();
         boolean pacedNow = pacer.applyRate(more, later, b.following, pacedRate, b.externalDemand);
-        handOver(b.shows, pacedBefore || pacedNow);
+        handOver(b.shows, pacedBefore || pacedNow || tk.picturedPaced);
         pacer.scheduleNext(more || later);
         NativeViews.framed(more || later);
         frameWorked(System.nanoTime() - began, glWorked.getAndSet(0L));
@@ -1207,8 +1207,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      */
     void pictureFrame() {
         if (shotTaken) return;
+        boolean wasPaced = pacer.isPacedActive();
         notePictureActivity();
-        pacer.pictureFrame();
+        pacer.pictureFrame(wasPaced);
     }
 
 
