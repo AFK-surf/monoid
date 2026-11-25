@@ -562,6 +562,11 @@ jobs:
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
+      - if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
         if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
         run: |

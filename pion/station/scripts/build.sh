@@ -32,37 +32,37 @@ ENV_OUT="$(sh "$SCRIPT_DIR/ensure-pionc.sh" --print-env)" || exit $?
 eval "$ENV_OUT"
 PION_SHA="$PION_BUILD_SHA"
 
+if [ "${PION_REQUIRE_PINNED:-0}" = "1" ] && [ "$PION_BUILD_SHA" != "$PION_PINNED_SHA" ]; then
+  echo "build.sh: PION_REQUIRE_PINNED=1 refuses non-pinned toolchain ($PION_BUILD_SHA != $PION_PINNED_SHA)" >&2
+  exit 1
+fi
+
 # Serialize concurrent invocations sharing a cache or workspace directory using kernel-managed flock.
+# In all modes, clear FD_CLOEXEC and exec directly into the guarded command so the command itself
+# owns the lock fd until exit (zero wrapper-kill or signal-exit-code races).
 with_lock() {
   local lock_file="$1"
   shift
   mkdir -p "$(dirname "$lock_file")"
   if command -v flock >/dev/null 2>&1; then
     (
-      exec 9>"$lock_file"
-      flock 9
-      "$@"
+      exec 9>"$lock_file" && flock 9 && exec "$@"
     )
   elif command -v perl >/dev/null 2>&1; then
-    perl -MFcntl=:flock -e '
+    perl -MFcntl=:flock,F_SETFD -e '
       my $lf = shift @ARGV;
       open my $fh, ">>", $lf or die "open $lf: $!";
+      fcntl($fh, F_SETFD, 0) or die "fcntl F_SETFD $lf: $!";
       flock($fh, LOCK_EX) or die "flock $lf: $!";
-      my $rc = system(@ARGV);
-      if ($rc == -1) { die "exec $ARGV[0]: $!"; }
-      if ($rc & 127) { kill($rc & 127, $$); exit(128 + ($rc & 127)); }
-      exit($rc >> 8);
+      exec @ARGV or die "exec $ARGV[0]: $!";
     ' "$lock_file" "$@"
   elif command -v python3 >/dev/null 2>&1; then
     python3 -c '
-import fcntl, os, subprocess, sys
+import fcntl, os, sys
 fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o666)
-try:
-    fcntl.flock(fd, fcntl.LOCK_EX)
-    rc = subprocess.call(sys.argv[2:])
-    sys.exit(rc)
-finally:
-    os.close(fd)
+fcntl.flock(fd, fcntl.LOCK_EX)
+os.set_inheritable(fd, True)
+os.execvp(sys.argv[2], sys.argv[2:])
 ' "$lock_file" "$@"
   else
     echo "build.sh: flock, perl, or python3 is required to serialize shared build steps" >&2
@@ -103,7 +103,11 @@ ensure_zig() {
       tar -xf "$tmp" -C "$stage"
       rm -rf "$zdir"
       mv "$stage/zig-x86_64-linux-$zver" "$zdir"
-    ' _ "$zver" "$zsha" "$zbase" "$zdir" "$zbin"
+    ' _ "$zver" "$zsha" "$zbase" "$zdir" "$zbin" || return 1
+  fi
+  if [ ! -x "$zbin" ]; then
+    echo "build.sh: zig install failed: $zbin" >&2
+    return 1
   fi
   printf '%s\n' "$zbin"
 }
@@ -145,6 +149,14 @@ case "$target" in
     exit 2
     ;;
 esac
+
+if [ "${PION_REQUIRE_PINNED:-0}" = "1" ] && [ "$target" != "darwin-arm64" ]; then
+  zig_ver="$("$zig_exe" version)"
+  if [ "$zig_ver" != "0.16.0" ]; then
+    echo "build.sh: PION_REQUIRE_PINNED=1 requires zig 0.16.0 (got '$zig_ver' from $zig_exe)" >&2
+    exit 1
+  fi
+fi
 
 if [ -n "${SHELL_LIB:-}" ]; then
   shell_lib="$SHELL_LIB"

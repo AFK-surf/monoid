@@ -29,10 +29,10 @@ permissions:
 env:
   # The native parts a branch's checks and builds use, split between ci-1 (`BRANCH_NATIVES`: Linux, Windows cross-builds,
   # Wasm and Android) and macos-ci (`BRANCH_MAC_NATIVES`: Apple's darwin-arm64 parts).
-  BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 pion-reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
-  # Windows' reader, built in a job of its own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
+  BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
+  # Windows' readers, built in a job of their own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
   # each cold at -O2, took 244-253 s of natives' five minutes and its upload was cut (44208145437, 2026-11-18).
-  BRANCH_WIN_READER: reader:win32-x64
+  BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
   # The Mac's readers, built in a job of their own (natives-mac-reader) beside natives-mac: desktop-build uses none of them
   # and waits for natives-mac alone, never for the reader's minutes; check-mac, mac-build and the station wait for both.
@@ -127,6 +127,7 @@ jobs:
             all=$(node scripts/native.ts missing --linux --mac)
           else
             want="$BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS"
+            if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then want="$want pion-reader:linux-x64"; fi
             if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_NATIVES"; fi
             if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_READER"; fi
             # (where natives and natives-win-reader build, below)
@@ -142,7 +143,9 @@ jobs:
               missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
               missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
             else
-              missing=$(pick $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS)
+              missing_want="$BRANCH_NATIVES $BRANCH_HARNESS"
+              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64 $BRANCH_WIN_READER"; fi
+              missing=$(pick $missing_want)
               if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
               else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
               # (release_smoke's desktop-build uses no reader)
@@ -179,8 +182,10 @@ jobs:
               missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
               missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
             else
-              missing=$(pick $BRANCH_NATIVES)
-              # (only ui-windows uses Windows' reader, and only for a change to the station)
+              missing_want="$BRANCH_NATIVES"
+              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64"; fi
+              missing=$(pick $missing_want)
+              # (only ui-windows uses Windows' readers, and only for a change to the station)
               if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(pick $BRANCH_WIN_READER)
               else missing_win=""; fi
               # (only check-station and check-core run the harnesses)
@@ -293,12 +298,10 @@ jobs:
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/node
       - if: runner.environment != 'self-hosted'
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
-          key: pion-station-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pion/station/TOOLCHAIN') }}
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       - if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
@@ -418,12 +421,10 @@ jobs:
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/node
       - if: runner.environment != 'self-hosted'
-        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
-          key: pion-station-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pion/station/TOOLCHAIN') }}
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       - if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
@@ -789,7 +790,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
-          key: pion-station-toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pion/station/TOOLCHAIN') }}
+          key: pion-station-toolchain-darwin-arm64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       # (the reader's compiled MoonBit packages by their content, station/mb/build.sh's MBC_STORE: tens of MB, which
       # take its build from 72 s to about 20. Restored here and saved at the end whatever came of the build, a cut one
       # too: as one step, actions/cache saved nothing of a build cut at the job's five minutes, 134032580996. Main's -O2
@@ -973,6 +974,13 @@ jobs:
       # `stillfail-reader.exe` station_shim + Job Object orphan-free kill / detached-grandchild survival on Windows.
       - name: stillfail-reader station_shim on Windows
         run: cd station && node ../scripts/native.ts run reader -- node --test test/mb-station-shim.test.ts
+      # `stillfail-pion.exe` as Windows stations run it (cross-built on Linux: pion/station/scripts/build.sh).
+      - name: The Pion reader on Windows
+        run: |
+          out=$("$(node scripts/native.ts file pion-reader win32-x64)" --version)
+          echo "$out"
+          echo "$out" | grep -q 'modes:'
+          echo "$out" | grep -q 'target=win32-x64'
       # What the job started that is still running as it ends: the runner's clean-up of them took 52-237 s after the
       # last step of some runs (the rest 2-9 s), the release's job at 282 of its 300 (main 08c83003, 41537791777).
       - name: What it left running

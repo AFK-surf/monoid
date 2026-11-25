@@ -311,6 +311,23 @@ if [ "$GOT_SHA" != "$PINNED_SHA" ]; then
   exit 1
 fi
 
+# Neutralize the wall-clock multicore_bench timing gate in upstream scripts/bootstrap.sh
+# (keeps compiling multicore_bench.pion, full 3-stage bit-exact self-hosting, and all
+# functional tests intact, without producing random load-induced failures in CI).
+BOOTSTRAP_SH="$SRC_DIR/scripts/bootstrap.sh"
+if [ ! -f "$BOOTSTRAP_SH" ]; then
+  echo "ensure-pionc.sh: missing $BOOTSTRAP_SH in checked-out pion source" >&2
+  exit 1
+fi
+sed 's|^"\$TMP_DIR/multicore_bench"$|: # skipped multicore_bench wall-clock timing gate (ensure-pionc.sh)|' \
+  "$BOOTSTRAP_SH" > "${BOOTSTRAP_SH}.tmp"
+mv -f "${BOOTSTRAP_SH}.tmp" "$BOOTSTRAP_SH"
+if ! grep -q 'skipped multicore_bench wall-clock timing gate' "$BOOTSTRAP_SH" || \
+   grep -qx '"\$TMP_DIR/multicore_bench"' "$BOOTSTRAP_SH"; then
+  echo "ensure-pionc.sh: failed to neutralize multicore_bench execution in $BOOTSTRAP_SH" >&2
+  exit 1
+fi
+
 (
   cd "$SRC_DIR"
   sh scripts/install.sh --prefix "$STAGE_DIR" >&2

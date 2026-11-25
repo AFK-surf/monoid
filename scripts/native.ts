@@ -190,6 +190,7 @@ const PION_READER_INPUTS = [
   "pion/station/packages",
   "pion/base/packages/base_codec",
   ":(exclude,glob)pion/station/**/*_test.pion",
+  ":(exclude,glob)pion/station/**/*_test.c",
   ":(exclude,glob)pion/base/packages/base_codec/**/*_test.pion",
   ":(exclude,glob)pion/station/**/AGENTS.md",
   ":(exclude,glob)pion/station/**/README.md",
@@ -562,7 +563,9 @@ const PARTS: Record<string, Part> = {
         throw new Error(`the pion reader for ${t} is built on an Apple Silicon Mac${t !== "darwin-arm64" ? " or a Linux x86-64 machine" : ""}`);
       }
       const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
-      run("bash", [join(ROOT, "pion/station/scripts/build.sh"), t, join(out, exe("stillfail-pion")(t))], { env: { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a") } });
+      const env: NodeJS.ProcessEnv = { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a"), PION_REQUIRE_PINNED: "1" };
+      for (const k of ["PIONC", "PION_QBE", "PION_RT_DIR", "PION_REPO_URL", "ZIG_BIN"]) delete env[k];
+      run("bash", [join(ROOT, "pion/station/scripts/build.sh"), t, join(out, exe("stillfail-pion")(t))], { env });
     },
   },
   // The tests' program beside it (station/mb/src/reader_harness: every package's harness, `--builder harness-*`, which

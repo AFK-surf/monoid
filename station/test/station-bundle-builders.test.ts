@@ -33,6 +33,7 @@ test("the bundled Pion reader runs and reports its modes", { skip: !process.env.
   const run = spawnSync(pionProgram, ["--version"], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /modes:/);
+  assert.match(run.stdout, new RegExp(`target=${process.platform}-${process.arch}\\b`));
 });
 
 test("a release's live locator finds a transcript", { skip: !process.env.STATION_BUNDLE }, async () => {
