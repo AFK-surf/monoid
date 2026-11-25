@@ -209,20 +209,31 @@ async function transfer(url, options, consume, policy = {}) {
   const timeouts = policy.timeoutsMs ?? (method === "GET" ? getTimeoutsMs : writeTimeoutsMs);
   const maxAttempts = timeouts.length;
   const backoffMs = policy.backoffMs ?? ((attempt) => attempt * 1000);
+  const callerSignal = options.signal;
   for (let attempt = 1; ; attempt++) {
+    callerSignal?.throwIfAborted();
     try {
       // Directly, each route keeps a deadline of its own (fetchHandoff); otherwise GETs cut stalls fast and retry.
       const timeoutMs = timeouts[Math.min(attempt - 1, timeouts.length - 1)];
-      const response = await fetchHandoff(url, { ...options, redirect: "error", ...(direct ? {} : { signal: AbortSignal.timeout(timeoutMs) }) });
+      const signal = direct
+        ? callerSignal
+        : callerSignal
+          ? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal])
+          : AbortSignal.timeout(timeoutMs);
+      const response = await fetchHandoff(url, { ...options, redirect: "error", ...(signal ? { signal } : {}) });
       if (response.ok) return await consume(response);
       const text = (await response.text().catch(() => "")).trim().slice(0, 200);
       throw Object.assign(new Error("HTTP " + response.status + (text ? ": " + text : "")), { status: response.status });
     } catch (error) {
       const status = error?.status;
-      if (attempt >= maxAttempts || (status && status < 500 && status !== 429)) throw error;
+      if (callerSignal?.aborted || attempt >= maxAttempts || (status && status < 500 && status !== 429)) throw error;
       const delay = backoffMs(attempt);
       log(method + " " + new URL(url).pathname + " attempt " + attempt + " failed (" + reason(error) + "); again in " + (delay / 1000) + " s");
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { callerSignal?.removeEventListener("abort", stop); resolve(); }, delay);
+        const stop = () => { clearTimeout(timer); reject(callerSignal.reason); };
+        callerSignal?.addEventListener("abort", stop, { once: true });
+      });
     }
   }
 }
@@ -316,7 +327,8 @@ function receiptLocation(key) {
 export async function restore(dir, sha, options = {}) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Missing source commit for native artifacts");
   const allowed = resolveTargets(options.targets, options.host);
-  const concurrency = Math.max(1, options.concurrency ?? 4);
+  const rawConcurrency = options.concurrency ?? 4;
+  const concurrency = Number.isFinite(rawConcurrency) ? Math.max(1, Math.floor(rawConcurrency)) : 4;
   const policy = {
     ...(options.getTimeoutsMs ? { timeoutsMs: options.getTimeoutsMs } : {}),
     ...(options.backoffMs ? { backoffMs: options.backoffMs } : {}),
@@ -336,15 +348,19 @@ export async function restore(dir, sha, options = {}) {
       const results = new Array(chunks.length);
       let next = 0;
       let firstError = null;
+      const abort = new AbortController();
       const worker = async () => {
         while (firstError === null) {
           const index = next++;
           if (index >= chunks.length) break;
           const { endpoint: host, receipt: key } = receiptLocation(chunks[index]);
           try {
-            results[index] = Buffer.from(await transfer(host + "/" + key, {}, (r) => r.arrayBuffer(), policy));
+            results[index] = Buffer.from(await transfer(host + "/" + key, { signal: abort.signal }, (r) => r.arrayBuffer(), policy));
           } catch (error) {
-            if (firstError === null) firstError = error;
+            if (firstError === null) {
+              firstError = error;
+              abort.abort(error);
+            }
             break;
           }
         }

@@ -394,7 +394,48 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   // Duplicate linuxName entry in natives.r2.json must not be downloaded a second time (5 requests for linux incl. 1 retry + wasm + unknown = 7).
   assert.equal(requested.length, 7);
 
+  // Sibling chunks are aborted immediately on fatal error (no waiting for other chunks' retries).
+  const failDir = mkdtempSync(join(tmpdir(), "native-handoff-abort-"));
+  t.after(() => rmSync(failDir, { recursive: true, force: true }));
+  writeFileSync(join(failDir, "natives.r2.json"), JSON.stringify([
+    { name: linuxName, sha256: linuxSha, chunks: [mkReceipt(0), mkReceipt(1)] },
+  ]));
+  let siblingAborted = false;
+  globalThis.fetch = (async (at: string | URL, init?: RequestInit) => {
+    const path = new URL(String(at)).pathname;
+    if (path.endsWith("000000000000")) return new Response("missing", { status: 404 });
+    return await new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => { siblingAborted = true; reject(init.signal!.reason); }, { once: true });
+    });
+  }) as typeof fetch;
+  await assert.rejects(
+    () => restore(failDir, sha, { targets: "all", concurrency: 2, getTimeoutsMs: [10_000], backoffMs: () => 1 }),
+    /HTTP 404/,
+  );
+  assert.equal(siblingAborted, true, "sibling chunk fetch should abort immediately on fatal error");
+
   // CLI --targets flag works end-to-end and rejects unknown flags.
+  const cliDir = mkdtempSync(join(tmpdir(), "native-handoff-cli-"));
+  t.after(() => rmSync(cliDir, { recursive: true, force: true }));
+  writeFileSync(join(cliDir, "natives.r2.json"), JSON.stringify([
+    { name: macName, sha256: macSha, chunks: [mkReceipt(4)] },
+    { name: wasmName, sha256: wasmSha, chunks: [mkReceipt(5)] },
+  ]));
+  const cliMock = `
+    globalThis.fetch = async (at) => {
+      const p = new URL(String(at)).pathname;
+      if (p.endsWith("000000000005")) return new Response("wasm-bytes");
+      throw new Error("unexpected fetch " + p);
+    };`;
+  const cliOk = spawnSync(
+    process.execPath,
+    ["--import", "data:text/javascript," + encodeURIComponent(cliMock), script, "get", cliDir, sha, "--targets", "wasm32"],
+    { encoding: "utf8", env: { ...process.env, STILLFAIL_DIRECT_DNS: "" }, timeout: 10_000 },
+  );
+  assert.equal(cliOk.status, 0, cliOk.stderr);
+  assert.equal(readFileSync(join(cliDir, wasmName), "utf8"), "wasm-bytes");
+  assert.throws(() => readFileSync(join(cliDir, macName)), { code: "ENOENT" });
+
   const cliBad = spawnSync(process.execPath, [script, "get", dir, sha, "--bogus"], { encoding: "utf8" });
   assert.equal(cliBad.status, 1);
   assert.match(cliBad.stderr, /Usage: native-handoff\.mjs/);
