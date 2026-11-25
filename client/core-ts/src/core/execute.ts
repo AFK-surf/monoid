@@ -159,8 +159,9 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
           const span = inner.tracer.always("app.first_page", Kind.Internal);
           span.set("stillfail.duration_ms", Math.round(call.durationMs));
           for (const [k, v] of Object.entries(call.attrs)) span.set(`stillfail.${k}`, v);
-          // (from the core's own first step to now, the page shown just before: the splash's time before the core is
-          // what is left of duration_ms)
+          // (from the core's own first step to now, the page shown just before, this told behind whatever the core was
+          // doing then: duration_ms less it is about the splash's time before the core, below 0 where the core began
+          // before the splash, and longer by a core started again before the page)
           if (inner.startedAt >= 0) span.set("stillfail.since_core_ms", Math.round(inner.host.monotonicMs() - inner.startedAt));
           span.end();
           return Effect.succeed(null);

@@ -1019,6 +1019,14 @@ static double since_process_ms(void) {
   return now >= started ? now - started : -1;
 }
 
+// Whether iOS launched this process ahead of the person (prewarming), read as it loads: the system takes the word away
+// once the app has finished launching.
+static bool prewarmed = false;
+__attribute__((constructor)) static void read_prewarm(void) {
+  const char *said = getenv("ActivePrewarm");
+  prewarmed = said && strcmp(said, "1") == 0;
+}
+
 // The core's thread: the shell, the runtime, the script, then the loop until stopped.
 static void run(void) {
   std::unique_ptr<facebook::hermes::HermesRuntime> rt;
@@ -1027,9 +1035,8 @@ static void run(void) {
     // (the process's own start alone: not a core started again in it, nor one a push started before any app, nor a
     // process the system launched ahead of the person, iOS's prewarming)
     static bool ran = false;
-    const char *prewarm = getenv("ActivePrewarm");
     bool for_push = C.on_message.load(std::memory_order_acquire) == nullptr;  // mb_core_start_alone's
-    double before = ran || for_push || (prewarm && strcmp(prewarm, "1") == 0) ? -1 : since_process_ms();
+    double before = ran || for_push || prewarmed ? -1 : since_process_ms();
     ran = true;
     double t0 = clock_ms(CLOCK_MONOTONIC);
     C.shell = sf_shell_start(C.dataDir.c_str(), on_complete, C.gate);

@@ -114,6 +114,7 @@ test("client.metric enforces strict allowlist, 20%/slow/cut/failed sampling for 
     core.receive(ui, { kind: "call", id: 32, call: "client.metric", params: { kind: "ui_hang_summary", duration_ms: 30000, attrs: { shown_s: 30, hangs: 3, stalls: 0, max_ms: 80 } } });
 
     // first_page: each one told, with how long from the splash and its two allowed attributes alone.
+    const sinceCore = Math.round(host.monotonicMs() - core.inner.startedAt);
     core.receive(ui, { kind: "call", id: 33, call: "client.metric", params: { kind: "first_page", duration_ms: 1480.4, attrs: { in_view_ms: 1210, waited: true, chat: "secret" } } });
 
     await host.time.pass(EXPORT_MS + 50, 50);
@@ -125,7 +126,7 @@ test("client.metric enforces strict allowlist, 20%/slow/cut/failed sampling for 
       [attrsOf(firstPage[0]!)["stillfail.duration_ms"], attrsOf(firstPage[0]!)["stillfail.in_view_ms"], attrsOf(firstPage[0]!)["stillfail.waited"], attrsOf(firstPage[0]!)["stillfail.chat"]],
       [1480, 1210, true, undefined],
     );
-    assert.ok(Number(attrsOf(firstPage[0]!)["stillfail.since_core_ms"]) >= 0, "timed from the core's own first step too");
+    assert.equal(Number(attrsOf(firstPage[0]!)["stillfail.since_core_ms"]), sinceCore, "timed from the core's own first step too");
     const barSpans = all.filter((s) => s.name === "bar.switch");
     assert.equal(barSpans.length, 4, "1 sampled + slow + cut + failed");
     const firstAttrs = attrsOf(barSpans[0]!);
