@@ -84,12 +84,15 @@ priv struct Glyph {
 }
 
 ///|
-/// The strings shaped in one font (size, weight, style) with one letter spacing.
+/// The strings shaped in one font (size, weight, style) with one letter spacing and effective CJK companion config.
 priv struct FontShapes {
   size : Double
   weight : Int
   style : Int
   spacing : Double
+  cjk_slot : Int
+  cjk_scale_pct : Int
+  cjk_weight_off : Int
   map : Map[String, Shaped]
 }
 
@@ -119,6 +122,7 @@ priv struct TextCache {
   mut too_much : Bool
   buf : FixedArray[Double]
   mut part_buf : FixedArray[Double]?
+  mut seg_buf : FixedArray[Double]?
   gbuf : FixedArray[Double]
 }
 
@@ -139,6 +143,7 @@ let text_cache : TextCache = {
   too_much: false,
   buf: FixedArray::make(4 * 8192, 0.0),
   part_buf: None,
+  seg_buf: None,
   gbuf: FixedArray::make(8, 0.0),
 }
 
@@ -159,6 +164,7 @@ fn text_frame() -> Unit {
 /// As a frame begins, before the window's tree is brought (on_frame; frame_offscreen): what the host drew and measured
 /// before, forgotten where it is gone (@hostapi.atlas_generation moved on), what measured words told (words_shaped_in).
 fn text_arrive() -> Unit {
+  local_font_info_arrive()
   let g = atlas_now()
   if g != text_cache.generation {
     // (a host moves it on as its faces or its scale change, a face it was given is here (a page's, loaded later than
@@ -309,12 +315,20 @@ let words_zoom : Ref[Double] = Ref(1.0)
 /// The glyphs of words `text`, shaped as `s` is in `size`, `weight`, `style` and `spacing`, shaped again words_zoom
 /// times as large, cluster for cluster: a shot drawn at more pixels a point than the window's draws its words by them,
 /// each made by the host as crisp as that. None at 1, or where they do not come to as many clusters.
-fn zoomed_keys(text : String, s : Shaped, size : Double, weight : Int, style : Int, spacing : Double) -> Array[Int]? {
+fn zoomed_keys(
+  text : String,
+  s : Shaped,
+  size : Double,
+  weight : Int,
+  style : Int,
+  spacing : Double,
+  cjk_override? : @view.CjkOverride? = None,
+) -> Array[Int]? {
   let k = words_zoom.val
   if k == 1.0 {
     return None
   }
-  let big = shape(text, size * k, weight, style~, spacing=spacing * k)
+  let big = shape(text, size * k, weight, style~, spacing=spacing * k, cjk_override~)
   if big.keys.length() == s.keys.length() {
     Some(big.keys)
   } else {
@@ -367,10 +381,36 @@ pub fn set_web_lines(on : Bool) -> Unit {
 
 ///|
 /// A line's ascent and descent as it is set (`cjk`: Chinese in it): the first font's, the taller of it and the font Han
-/// falls back to with Chinese in it, as Android measures a line by the fonts it draws in; as a browser sets it
-/// (web_lines), the first font's alone, each on a whole point.
-fn line_metrics(size : Double, weight : Int, cjk : Bool, style? : Int = 0) -> (Double, Double) {
+/// falls back to (or the active CJK companion font) with Chinese in it, as Android measures a line by the fonts it
+/// draws in; as a browser sets it (web_lines), the first font's alone on a whole point, except when an active CJK
+/// companion scales or shifts weight (to prevent clipping enlarged CJK glyphs).
+fn line_metrics(
+  size : Double,
+  weight : Int,
+  cjk : Bool,
+  style? : Int = 0,
+  cjk_override? : @view.CjkOverride? = None,
+) -> (Double, Double) {
   let (a, d, _) = font_metrics(size, weight, style~)
+  if cjk {
+    match effective_cjk(style, cjk_override) {
+      Some((cjk_slot, cjk_scale, cjk_weight_off)) => {
+        if web_lines.val && cjk_scale == 1.0 && cjk_weight_off == 0 {
+          return (a.round(), d.round())
+        }
+        let cjk_size = size * cjk_scale
+        let cjk_weight = imin(imax(weight + cjk_weight_off, 100), 900)
+        let cjk_style = (style & @hostapi.style_face_bits.lnot()) | @hostapi.style_face(cjk_slot)
+        let (ca, cd, _) = font_metrics(cjk_size, cjk_weight, style=cjk_style)
+        return if web_lines.val {
+          (dmax(a, ca).round(), dmax(d, cd).round())
+        } else {
+          (dmax(a, ca), dmax(d, cd))
+        }
+      }
+      None => ()
+    }
+  }
   if web_lines.val {
     (a.round(), d.round())
   } else if cjk {
@@ -418,8 +458,8 @@ fn all_metrics(size : Double, weight : Int, style : Int) -> (Double, Double, Dou
   words_shaped_in.get() |> ignore
   // (the font's figures change no line of it: its metrics are the same either way)
   let style = style & @hostapi.style_tabular.lnot()
-  // (the size in tenths, the weight, the style's bits: faces and all, each in a field of its own)
-  let key = (((size * 10.0).to_int() * 1000 + weight).to_int64() << 12) | (style & 4095).to_int64()
+  // (the size in tenths, the weight, the style's bits: 5-bit faces and all, each in a field of its own)
+  let key = (((size * 10.0).to_int() * 1000 + weight).to_int64() << 13) | (style & 8191).to_int64()
   match text_cache.metrics.get(key) {
     Some(m) => m
     None => {
@@ -441,13 +481,53 @@ fn all_metrics(size : Double, weight : Int, style : Int) -> (Double, Double, Dou
 }
 
 ///|
-/// Whether the code unit starts a character set in a CJK font: Han, kana, Hangul, bopomofo, CJK and full-width
-/// punctuation (a surrogate: the supplementary ideographs).
+/// Whether the Unicode code point belongs to the unified CJK character set (Han, kana, Hangul, bopomofo, CJK and
+/// full-width punctuation, and Extension B..I ideographs U+20000..U+3FFFF).
+fn is_cjk_cp(cp : Int) -> Bool {
+  (cp >= 0x1100 && cp <= 0x11FF) ||
+  (cp >= 0x2E80 && cp <= 0x9FFF) ||
+  (cp >= 0xA960 && cp <= 0xA97F) ||
+  (cp >= 0xAC00 && cp <= 0xD7AF) ||
+  (cp >= 0xF900 && cp <= 0xFAFF) ||
+  (cp >= 0xFE10 && cp <= 0xFE1F) ||
+  (cp >= 0xFE30 && cp <= 0xFE4F) ||
+  (cp >= 0xFF00 && cp <= 0xFFEF) ||
+  (cp >= 0x20000 && cp <= 0x3FFFF)
+}
+
+///|
+/// Whether the code point is an East Asian Ambiguous punctuation mark that belongs to CJK when not in narrow context.
+fn is_ambiguous_cjk_punct(cp : Int) -> Bool {
+  cp == 0x2018 ||
+  cp == 0x2019 ||
+  cp == 0x201C ||
+  cp == 0x201D ||
+  cp == 0x2014 ||
+  cp == 0x2026 ||
+  cp == 0x00B7 ||
+  cp == 0x2022 ||
+  cp == 0x2027
+}
+
+///|
+/// Whether the grapheme cluster starting at UTF-16 offset `start` in `text` routes to the CJK companion font, given
+/// whether `@text.width_runs` marked its context as narrow (Latin).
+fn is_cjk_cluster(text : String, start : Int, is_narrow_ctx : Bool) -> Bool {
+  let cp = cp_at(text, start)
+  is_cjk_cp(cp) || (!is_narrow_ctx && is_ambiguous_cjk_punct(cp))
+}
+
+///|
+/// Whether the UTF-16 code unit starts a character set in a CJK font: Han, kana, Hangul, bopomofo, CJK and full-width
+/// punctuation (high surrogate 0xD840..0xD8BF covers supplementary ideographs U+20000..U+3FFFF).
 fn is_cjk(c : Int) -> Bool {
+  (c >= 0x1100 && c <= 0x11FF) ||
   (c >= 0x2E80 && c <= 0x9FFF) ||
+  (c >= 0xA960 && c <= 0xA97F) ||
   (c >= 0xAC00 && c <= 0xD7AF) ||
-  (c >= 0xD840 && c <= 0xD87F) ||
+  (c >= 0xD840 && c <= 0xD8BF) ||
   (c >= 0xF900 && c <= 0xFAFF) ||
+  (c >= 0xFE10 && c <= 0xFE1F) ||
   (c >= 0xFE30 && c <= 0xFE4F) ||
   (c >= 0xFF00 && c <= 0xFFEF)
 }
@@ -482,9 +562,15 @@ fn set_line(
   sc : Double,
   px : Bool,
   trim? : Bool = false,
+  cjk_fit? : Bool = false,
 ) -> (Double, Double, Double) {
   // as a browser: the room halved, rounded down above; a font taller than its line overflows it, the line as asked
+  // (except when an enlarged CJK companion is active and its ascent+descent exceeds the requested line, in which case
+  // keep enough extra box height so the final line is not clipped).
   if web_lines.val {
+    if cjk_fit && asc + desc > line {
+      return (line, asc, asc + desc - line)
+    }
     return (line, asc + ((line - asc - desc) / 2.0).floor(), 0.0)
   }
   let sc = if sc > 0.0 { sc } else { 1.0 }
@@ -506,15 +592,29 @@ fn set_line(
 }
 
 ///|
-/// The shapes of one font: looked up by the string alone, no key to build.
-fn font_shapes(size : Double, weight : Int, style : Int, spacing : Double) -> Map[String, Shaped] {
+/// The shapes of one font (with its effective CJK companion config): looked up by the string alone, no key to build.
+fn font_shapes(
+  size : Double,
+  weight : Int,
+  style : Int,
+  spacing : Double,
+  cjk_slot : Int,
+  cjk_scale_pct : Int,
+  cjk_weight_off : Int,
+) -> Map[String, Shaped] {
   for f in text_cache.fonts {
-    if f.size == size && f.weight == weight && f.style == style && f.spacing == spacing {
+    if f.size == size &&
+      f.weight == weight &&
+      f.style == style &&
+      f.spacing == spacing &&
+      f.cjk_slot == cjk_slot &&
+      f.cjk_scale_pct == cjk_scale_pct &&
+      f.cjk_weight_off == cjk_weight_off {
       return f.map
     }
   }
   let map = Map([])
-  text_cache.fonts.push({ size, weight, style, spacing, map })
+  text_cache.fonts.push({ size, weight, style, spacing, cjk_slot, cjk_scale_pct, cjk_weight_off, map })
   map
 }
 
@@ -565,7 +665,7 @@ fn clear_shapes() -> Unit {
   // (and who spaces words and how the host's face draws the marks set closer: found again as a run starts or the
   // faces change)
   spaced_said.val = None
-  spaced_stops_left.val = None
+  spaced_stops_left.clear()
   marks_narrow.clear()
   for f in text_cache.fonts {
     // a shape and its last layout refer to each other (reference counts
@@ -576,6 +676,79 @@ fn clear_shapes() -> Unit {
     f.map.clear()
   }
   text_cache.shaped = 0
+}
+
+///|
+// kept across runs: empty placeholder for Array::release_unused on text_cache.fonts
+let font_shapes_gone : FontShapes = {
+  size: 0.0,
+  weight: 0,
+  style: 0,
+  spacing: 0.0,
+  cjk_slot: 0,
+  cjk_scale_pct: 100,
+  cjk_weight_off: 0,
+  map: Map([]),
+}
+
+///|
+/// Surgically evict shape, metric, and mark caches referencing preview/try `face` without incrementing
+/// `words_shaped_in` or evicting unrelated global window text caches.
+fn forget_words_for_face(face : Int) -> Unit {
+  let kept : Array[FontShapes] = []
+  let mut shaped = 0
+  for f in text_cache.fonts {
+    if @hostapi.face_of_style(f.style) == face || f.cjk_slot == face {
+      for _, s in f.map {
+        s.lay = None
+      }
+      f.map.clear()
+    } else {
+      shaped = shaped + f.map.length()
+      kept.push(f)
+    }
+  }
+  text_cache.fonts.clear()
+  for f in kept {
+    text_cache.fonts.push(f)
+  }
+  text_cache.fonts.release_unused(placeholder=font_shapes_gone)
+  text_cache.shaped = shaped
+  rich_forget_face(face)
+  let gone_metrics : Array[Int64] = []
+  for k, _ in text_cache.metrics {
+    if @hostapi.face_of_style((k & 8191L).to_int()) == face {
+      gone_metrics.push(k)
+    }
+  }
+  for k in gone_metrics {
+    text_cache.metrics.remove(k)
+  }
+  let gone_marks : Array[Int] = []
+  for k, _ in marks_narrow {
+    if @hostapi.face_of_style(k >> 12) == face {
+      gone_marks.push(k)
+    }
+  }
+  for k in gone_marks {
+    marks_narrow.remove(k)
+  }
+  let gone_stops : Array[Int] = []
+  for k, _ in spaced_stops_left {
+    if (k >> 12) == face {
+      gone_stops.push(k)
+    }
+  }
+  for k in gone_stops {
+    spaced_stops_left.remove(k)
+  }
+  presented.forget()
+  let g = h_atlas_generation()
+  if g != text_cache.generation {
+    words_forgotten()
+    return
+  }
+  view_words_rescaled_for_face(face)
 }
 
 ///|
@@ -747,22 +920,25 @@ fn spaced_stop(i : Int) -> String {
 
 ///|
 /// Whether the host's face draws each of the marks that close a clause (spaced_stop) in the first half of its em (as a simplified Chinese face draws
-/// them all; a traditional one draws them in the middle, a Japanese one ：；), found of their glyphs once: where one is
+/// them all; a traditional one draws them in the middle, a Japanese one ：；), found of their glyphs once per `(cjk_slot, cjk_weight)`: where one is
 /// drawn in the middle, set half an em closer to the mark after it, the two marks' ink would meet (。」).
 // kept across runs: forgotten with the shapes (clear_shapes: a Tester's run, the host's faces changed)
-let spaced_stops_left : Ref[FixedArray[Bool]?] = Ref(None)
+let spaced_stops_left : Map[Int, FixedArray[Bool]] = Map([])
 
 ///|
-fn spaced_stop_left(i : Int) -> Bool {
-  let left = match spaced_stops_left.val {
+fn spaced_stop_left(i : Int, stop_style? : Int = 0, stop_weight? : Int = 400) -> Bool {
+  let slot = @hostapi.face_of_style(stop_style)
+  let cache_key = (slot << 12) | (stop_weight & 0xFFF)
+  let left = match spaced_stops_left.get(cache_key) {
     Some(l) => l
     None => {
       let size = 16.0
       let out = FixedArray::make(16 * 4, 0.0)
       let g = FixedArray::make(8, 0.0)
       let l = FixedArray::make(5, false)
+      let probe_style = if slot > 0 { @hostapi.style_face(slot) } else { 0 }
       for k in 0..<5 {
-        let n = h_shape(spaced_stop(k), size, 400, 0, out)
+        let n = h_shape(spaced_stop(k), size, stop_weight, probe_style, out)
         let key = if n == 1 { out[3].to_int() } else { -1 }
         l[k] = if n != 1 {
           // (not one cluster as a mark is: not known to be left)
@@ -776,7 +952,7 @@ fn spaced_stop_left(i : Int) -> Bool {
           g[2] == 0.0 || g[4] + g[2] <= size * 0.45
         }
       }
-      spaced_stops_left.val = Some(l)
+      spaced_stops_left[cache_key] = l
       l
     }
   }
@@ -818,12 +994,12 @@ fn spaced_mark(c : Int) -> Int {
 
 ///|
 /// Whether full-width mark `c` (spaced_mark's 1 or 3) has the second half of its em empty, in the host's face.
-fn spaced_mark_open_after(c : Int, m : Int) -> Bool {
+fn spaced_mark_open_after(c : Int, m : Int, stop_style? : Int = 0, stop_weight? : Int = 400) -> Bool {
   if m == 1 {
     return true
   }
   let i = spaced_stop_of(c)
-  i >= 0 && spaced_stop_left(i)
+  i >= 0 && spaced_stop_left(i, stop_style~, stop_weight~)
 }
 
 ///|
@@ -845,9 +1021,12 @@ fn words_spaced_in(
   out : FixedArray[Double],
   k : Int,
   space_words : Bool,
+  cjk_em? : Double = size,
+  stop_style? : Int = 0,
+  stop_weight? : Int = 400,
 ) -> Unit {
   let gap = size * 0.125
-  let tol = size * 0.05
+  let tol = cjk_em * 0.05
   for j in 0..<(k - 1) {
     let a = out[j * 4].to_int()
     let b = out[(j + 1) * 4].to_int()
@@ -869,13 +1048,13 @@ fn words_spaced_in(
     let closer = if ma == 2 {
       mb == 2
     } else {
-      ma != 0 && mb != 0 && spaced_mark_open_after(ca, ma)
+      ma != 0 && mb != 0 && spaced_mark_open_after(ca, ma, stop_style~, stop_weight~)
     }
     if !closer {
       continue
     }
-    if (out[j * 4 + 2] - size).abs() <= tol && (out[(j + 1) * 4 + 2] - size).abs() <= tol {
-      out[j * 4 + 2] = out[j * 4 + 2] - size / 2.0
+    if (out[j * 4 + 2] - cjk_em).abs() <= tol && (out[(j + 1) * 4 + 2] - cjk_em).abs() <= tol {
+      out[j * 4 + 2] = out[j * 4 + 2] - cjk_em / 2.0
     }
   }
 }
@@ -964,6 +1143,7 @@ fn shape(
   style? : Int = 0,
   spacing? : Double = 0.0,
   keep_tabular? : Bool = false,
+  cjk_override? : @view.CjkOverride? = None,
 ) -> Shaped {
   // (measured in what the host measures in now, followed: measured again as that changes)
   words_shaped_in.get() |> ignore
@@ -976,7 +1156,13 @@ fn shape(
   } else {
     style
   }
-  let shapes = font_shapes(size, weight, style, spacing)
+  let eff = effective_cjk(style, cjk_override)
+  let (cjk_slot, cjk_scale_pct, cjk_weight_off) = match eff {
+    Some((slot, sc, woff)) => (slot, (sc * 100.0).round().to_int(), woff)
+    None => (0, 100, 0)
+  }
+  let cjk_scale = cjk_scale_pct.to_double() / 100.0
+  let shapes = font_shapes(size, weight, style, spacing, cjk_slot, cjk_scale_pct, cjk_weight_off)
   match shapes.get(text) {
     Some(s) => {
       s.used = text_cache.frame
@@ -987,26 +1173,122 @@ fn shape(
         shapes_thin()
       }
       let out = text_cache.buf
+      let cjk_size = size * cjk_scale
+      let cjk_weight = imin(imax(weight + cjk_weight_off, 100), 900)
+      let cjk_style = if cjk_slot > 0 {
+        (style & @hostapi.style_face_bits.lnot()) | @hostapi.style_face(cjk_slot)
+      } else {
+        style
+      }
+      let out_cjk : Array[Bool] = []
+      let mut seg_count = 1
+      let seg_ends : Array[Int] = []
       let m = if text.length() == 0 {
         0
-      } else {
+      } else if cjk_slot == 0 {
         shape_widths(text, size, weight, style, out)
+      } else {
+        // Composite font stack segmentation: full-context width_runs + extended grapheme clusters
+        let wruns = @text.width_runs(text)
+        let gbs = @text.graphemes(text)
+        let segs : Array[(Int, Int, Bool)] = []
+        let mut r = 0
+        for gi in 0..<(gbs.length() - 1) {
+          let cs = gbs[gi]
+          let ce = gbs[gi + 1]
+          while r < wruns.length() - 1 && cs >= wruns[r].1 {
+            r = r + 1
+          }
+          let is_narrow = if r < wruns.length() { wruns[r].2 } else { false }
+          let is_c = is_cjk_cluster(text, cs, is_narrow)
+          let slen = segs.length()
+          if slen > 0 && segs[slen - 1].2 == is_c {
+            segs[slen - 1] = (segs[slen - 1].0, ce, is_c)
+          } else {
+            segs.push((cs, ce, is_c))
+          }
+        }
+        seg_count = segs.length()
+        if seg_count == 1 && !segs[0].2 {
+          shape_widths(text, size, weight, style, out)
+        } else {
+          let cap = out.length() / 4
+          let seg_buf = match text_cache.seg_buf {
+            Some(b) if b.length() >= out.length() => b
+            _ => {
+              let b = FixedArray::make(out.length(), 0.0)
+              text_cache.seg_buf = Some(b)
+              b
+            }
+          }
+          let mut k = 0
+          for seg in segs {
+            let (sa, sb, is_c) = seg
+            let sub = text.unsafe_substring(start=sa, end=sb)
+            let sm = if is_c {
+              shape_widths(sub, cjk_size, cjk_weight, cjk_style, seg_buf)
+            } else {
+              shape_widths(sub, size, weight, style, seg_buf)
+            }
+            for j in 0..<sm {
+              if k >= cap {
+                break
+              }
+              out[k * 4] = seg_buf[j * 4] + sa.to_double()
+              out[k * 4 + 1] = seg_buf[j * 4 + 1]
+              out[k * 4 + 2] = seg_buf[j * 4 + 2]
+              out[k * 4 + 3] = seg_buf[j * 4 + 3]
+              out_cjk.push(is_c)
+              k = k + 1
+            }
+            seg_ends.push(k)
+          }
+          k
+        }
       }
       if m > 1 &&
         (style & @hostapi.style_mono) == 0 &&
         @hostapi.face_of_style(style) != @hostapi.face_code &&
         spaced_now() != @hostapi.words_spaced_none {
+        let mode = spaced_now()
         words_spaced_in(
           text,
           size,
           out,
           m,
-          spaced_now() == @hostapi.words_spaced_here,
+          mode == @hostapi.words_spaced_here && cjk_autospace_on.val,
+          cjk_em=if out_cjk.length() > 0 { cjk_size } else { size },
+          stop_style=if out_cjk.length() > 0 { cjk_style } else { 0 },
+          stop_weight=if out_cjk.length() > 0 { cjk_weight } else { 400 },
         )
+        if mode == @hostapi.words_spaced_by_host && seg_count >= 2 && cjk_autospace_on.val {
+          // Cross-segment boundary spacing when host shaper only saw each segment individually
+          let gap = size * 0.125
+          for si in 0..<(seg_ends.length() - 1) {
+            let idx = seg_ends[si]
+            if idx > 0 && idx < m {
+              let a = out[(idx - 1) * 4].to_int()
+              let b = out[idx * 4].to_int()
+              if a < text.length() && b < text.length() {
+                if spaced_pair(text.at(a).to_int(), text.at(b).to_int()) {
+                  out[(idx - 1) * 4 + 2] = out[(idx - 1) * 4 + 2] + gap
+                }
+              }
+            }
+          }
+        }
       }
       // UAX #29's clusters: a host that cut one in two (a Thai vowel sign some segmenters leave on its own) is
       // made whole again. Where every unit is a standalone non-joining LTR cluster (ASCII and nearly all CJK:
       // unit_clusters), skip graphemes, joining, line_breaks and bidi_mixed.
+      let has_cjk_flags = out_cjk.length() == m && m > 0
+      let key_for = fn(sub : String, is_c : Bool) -> Int {
+        if is_c {
+          h_text_key(sub, cjk_size, cjk_weight, cjk_style)
+        } else {
+          h_text_key(sub, size, weight, style)
+        }
+      }
       let simple = unit_clusters(text)
       let mut lb : FixedArray[Int]? = None
       let starts = Array(capacity=m)
@@ -1014,6 +1296,7 @@ fn shape(
       let adv = Array(capacity=m)
       let keys = Array(capacity=m)
       let cu = Array(capacity=m)
+      let cjk_flags : Array[Bool] = if has_cjk_flags { Array(capacity=m) } else { [] }
       if simple {
         for i in 0..<m {
           let st = out[i * 4].to_int()
@@ -1022,6 +1305,9 @@ fn shape(
           adv.push(out[i * 4 + 2])
           keys.push(out[i * 4 + 3].to_int())
           cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
+          if has_cjk_flags {
+            cjk_flags.push(out_cjk[i])
+          }
         }
       } else {
         let gb = if m > 1 { Some(@text.graphemes(text)) } else { None }
@@ -1036,6 +1322,7 @@ fn shape(
         let mut i = 0
         while i < m {
           let st = out[i * 4].to_int()
+          let is_c = has_cjk_flags && out_cjk[i]
           // what joins it: the rest of its grapheme cluster, and the rest of a word in a joining script (which ends
           // where a line may break)
           let word = joining(text, st) && out[i * 4 + 3] != -1.0
@@ -1078,7 +1365,7 @@ fn shape(
               if k0 == -2 {
                 -2
               } else if drawn && !is_nl(text.at(st).to_int()) {
-                h_text_key(text.unsafe_substring(start=st, end~), size, weight, style)
+                key_for(text.unsafe_substring(start=st, end~), is_c)
               } else {
                 k0
               },
@@ -1090,6 +1377,9 @@ fn shape(
             keys.push(k0)
           }
           cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
+          if has_cjk_flags {
+            cjk_flags.push(is_c)
+          }
           i = j
         }
       }
@@ -1108,11 +1398,13 @@ fn shape(
         }
         if u < 0 || keys[u] < 0 {
           for k in c..<e {
-            keys[k] = h_text_key(text.unsafe_substring(start=starts[k], end=starts[k] + lens[k]), size, weight, style)
+            let is_c = has_cjk_flags && cjk_flags[k]
+            keys[k] = key_for(text.unsafe_substring(start=starts[k], end=starts[k] + lens[k]), is_c)
           }
         } else {
           let end = starts[e - 1] + lens[e - 1]
-          keys[u] = h_text_key(text.unsafe_substring(start=starts[u], end~), size, weight, style)
+          let is_c = has_cjk_flags && cjk_flags[u]
+          keys[u] = key_for(text.unsafe_substring(start=starts[u], end~), is_c)
           let mut a = 0.0
           for k in u..<e {
             a = a + adv[k]
@@ -1155,7 +1447,8 @@ fn shape(
               let c = text.at(starts[k]).to_int()
               let m = @text.mirror(c)
               if m != c {
-                keys[k] = h_text_key(Int::unsafe_to_char(m).to_string(), size, weight, style)
+                let is_c = has_cjk_flags && cjk_flags[k]
+                keys[k] = key_for(Int::unsafe_to_char(m).to_string(), is_c)
               }
             }
           }
@@ -1858,8 +2151,9 @@ fn layout_text(
   spacing? : Double = 0.0,
   style? : Int = 0,
   keep_tabular? : Bool = false,
+  cjk_override? : @view.CjkOverride? = None,
 ) -> TextLayout {
-  let s = shape(text, size, weight, style~, spacing~, keep_tabular~)
+  let s = shape(text, size, weight, style~, spacing~, keep_tabular~, cjk_override~)
   // greedy wrapping gives the same lines in any width from the widest
   // line up to the one they were made in (as Node::text_layout)
   if indent == 0.0 {
@@ -1953,10 +2247,19 @@ fn layout_text(
   }
   let lines = line_start.length()
   // a line as high as asked, the glyphs in its middle; measured by the first line's fonts, as Android measures them
-  // (Chinese in it: the CJK font's, taller), the lines after it set in the same place
+  // (Chinese in it: the CJK font's, taller), the lines after it set in the same place; when a CJK companion is active,
+  // scan all clusters 0..<n so enlarged CJK on later lines is never clipped.
   let (_, _, own_h) = font_metrics(size, weight)
+  let has_cjk_comp = effective_cjk(style, cjk_override) is Some(_)
   let mut cjk = false
-  if lines > 0 {
+  if has_cjk_comp {
+    for c in 0..<n {
+      if is_cjk(s.cu[c]) {
+        cjk = true
+        break
+      }
+    }
+  } else if lines > 0 {
     for c in line_start[0]..<line_end[0] {
       if is_cjk(s.cu[c]) {
         cjk = true
@@ -1964,7 +2267,15 @@ fn layout_text(
       }
     }
   }
-  let (asc, desc) = line_metrics(size, weight, cjk)
+  let (asc, desc) = if has_cjk_comp {
+    line_metrics(size, weight, cjk, style~, cjk_override~)
+  } else {
+    line_metrics(size, weight, cjk)
+  }
+  let cjk_enlarged = match effective_cjk(style, cjk_override) {
+    Some((_, sc, _)) => sc > 1.0
+    None => false
+  }
   let (line_h, ascent, extra) = set_line(
     if line > 0.0 {
       line
@@ -1976,6 +2287,7 @@ fn layout_text(
     g().scale,
     whole_pixel_lines(size, weight),
     trim~,
+    cjk_fit=cjk && cjk_enlarged,
   )
   // right to left: each line's clusters in their visual order
   let lv = match s.bidi {

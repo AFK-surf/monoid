@@ -143,11 +143,16 @@ final class MBText {
      * with no string made and none hashed.
      */
     static final class Clusters {
+        final int slotGen;
         final HashMap<String, Integer> map = new HashMap<>();
         final int[][] units = new int[256][];
         final float[][] unitAdv = new float[256][];
         float advScale;
         int advFaces;
+
+        Clusters(int slotGen) {
+            this.slotGen = slotGen;
+        }
     }
 
     // each font's clusters (fontKey: its size, weight and style)
@@ -217,19 +222,22 @@ final class MBText {
     }
 
     /** The faces given (faceAdd, style.mbt): each a list of font files (a File, or a direct ByteBuffer of one) and the weight each is for (0: variable). */
-    static final int FACES = 16;
+    static final int FACES = 32;
+    static final int FACE_TRY = 7;
     @SuppressWarnings("unchecked")
     static final ArrayList<Object>[] faceFiles = new ArrayList[FACES];
     @SuppressWarnings("unchecked")
     static final ArrayList<Integer>[] faceWeights = new ArrayList[FACES];
+    static final boolean[] faceNoLig = new boolean[FACES];
+    static final int[] faceGen = new int[FACES];
 
     /** The face a style is set in: the one it names; else code's, what people wrote's, the app's words' (not the serif face's); 0 none. */
     static int faceId(int style) {
-        int f = (style >> 8) & 15;
+        int f = (style >> 8) & 31;
         if (f > 0) return given(f) ? f : 0;
         if ((style & 2) != 0) return given(3) ? 3 : 0;
-        if ((style & 16) != 0 && given(2)) return 2;
         if ((style & 4) != 0) return 0;
+        if ((style & 16) != 0 && given(2)) return 2;
         return given(1) ? 1 : 0;
     }
 
@@ -272,11 +280,11 @@ final class MBText {
     }
 
     /**
-     * The style bits a typeface is chosen by (faceId, face, the slant): the face named (0xF00), code's (2), the serif
+     * The style bits a typeface is chosen by (faceId, face, the slant): the face named (0x1F00), code's (2), the serif
      * one (4), what people wrote (16), italic (1). Not letter spacing (8), tabular digits (32) or narrow marks (64),
      * which are the paint's font features, nor the size, the paint's too: fonts of every size and feature share one.
      */
-    static final int TYPEFACE_STYLE = 0xF17;
+    static final int TYPEFACE_STYLE = 0x1F17;
 
     /** A typeface's key: the faces' generation, the style bits it is chosen by and its weight. */
     static long typefaceKey(int facesGen, int style, int weight) {
@@ -325,7 +333,7 @@ final class MBText {
         }
         faceFiles[f].add(src);
         faceWeights[f].add(weight);
-        facesChanged();
+        faceChanged(f);
         return true;
     }
 
@@ -341,10 +349,20 @@ final class MBText {
     }
 
     static synchronized void faceClear(int f) {
-        if (f <= 0 || f >= FACES || !given(f)) return;
+        if (f <= 0 || f >= FACES) return;
+        faceNoLig[f] = false;
+        if (!given(f)) return;
         faceFiles[f].clear();
         faceWeights[f].clear();
-        facesChanged();
+        faceChanged(f);
+    }
+
+    static synchronized void faceSetLigatures(int f, boolean on) {
+        if (f <= 0 || f >= FACES) return;
+        boolean noLig = !on;
+        if (faceNoLig[f] == noLig) return;
+        faceNoLig[f] = noLig;
+        faceChanged(f);
     }
 
     /**
@@ -352,14 +370,23 @@ final class MBText {
      * Lock order: {@code MBText.class -> ahead.lock}. Never call {@link #typeface} or {@link #paintIn} while holding
      * {@code ahead.lock}.
      */
-    static void facesChanged() {
+    static void faceChanged(int f) {
         paints.clear();
         lastPaint = null;
         typefaces.clear();
+        lastClusters = null;
+        if (f >= FACE_TRY && f < FACES) {
+            faceGen[f]++;
+            return;
+        }
         faces++;
         ahead.forget(entries);
         reset();
         keysStale = true;
+    }
+
+    static void facesChanged() {
+        faceChanged(0);
     }
 
     static Paint paint(float size, int weight, int style) {
@@ -385,7 +412,9 @@ final class MBText {
             // style & 32 (style.mbt style_tabular); a CJK face's marks narrow among Latin letters where style & 64
             // (style_proportional)
             StringBuilder fs = new StringBuilder();
-            if ((style & 8) != 0) fs.append(", 'liga' 0, 'clig' 0");
+            int f = faceId(style);
+            if (f > 0 && faceNoLig[f]) fs.append(", 'calt' 0, 'liga' 0, 'clig' 0");
+            else if ((style & 8) != 0) fs.append(", 'liga' 0, 'clig' 0");
             if ((style & 32) != 0) fs.append(", 'tnum' 1");
             if ((style & 64) != 0) fs.append(", 'pwid' 1");
             String features = fs.length() > 0 ? fs.substring(2) : "";
@@ -699,12 +728,14 @@ final class MBText {
 
     /** A font's clusters and their keys. */
     static Clusters clusters(float size, int weight, int style) {
+        int slot = (style >>> 8) & 31;
+        int gen = faceGen[slot];
         long k = fontKey(size, weight, style);
         Clusters m = lastClusters;
-        if (m != null && lastClustersKey == k) return m;
+        if (m != null && lastClustersKey == k && m.slotGen == gen) return m;
         m = keys.get(k);
-        if (m == null) {
-            m = new Clusters();
+        if (m == null || m.slotGen != gen) {
+            m = new Clusters(gen);
             keys.put(k, m);
         }
         lastClustersKey = k;
@@ -1055,7 +1086,8 @@ final class MBText {
 
     /** The most glyphs asked for or drawn ahead and not placed yet (the oldest drawn let go past it). */
     static final int AHEAD_MOST = GlyphsAhead.AHEAD_MOST;
-    static final GlyphsAhead<Entry, Drawn> ahead = new GlyphsAhead<>(Drawn::release);
+    static final GlyphsAhead<Entry, Drawn> ahead =
+            new GlyphsAhead<>(Drawn::release, AHEAD_MOST, e -> faceGen[(e.style >>> 8) & 31]);
     // the threads ahead (the app's thread's), started as the first glyph is asked
     static Thread[] aheadThreads;
 
@@ -1094,7 +1126,7 @@ final class MBText {
      * begun: that phase no longer asked, drawn here). The app's thread.
      */
     static Drawn drawnAhead(Entry e, int sub, float sc) {
-        return ahead.takeDrawn(e, sub, sc, faces);
+        return ahead.takeDrawn(e, sub, sc, faces, faceGen[(e.style >>> 8) & 31]);
     }
 
     /**
@@ -1107,6 +1139,7 @@ final class MBText {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT);
         HashMap<Long, Paint> paints = new HashMap<>();
         int paintsFaces = -1;
+        int[] paintsSlotGen = new int[FACES];
         Scratch scratch = new Scratch();
         while (true) {
             GlyphsAhead.Claim<Entry> c;
@@ -1123,9 +1156,15 @@ final class MBText {
             int s = Integer.numberOfTrailingZeros(c.bit);
             Drawn d = null;
             try {
+                int slot = (e.style >>> 8) & 31;
                 if (c.faces != paintsFaces) {
                     paints.clear();
+                    Arrays.fill(paintsSlotGen, -1);
                     paintsFaces = c.faces;
+                    paintsSlotGen[slot] = c.slotGen;
+                } else if (c.slotGen != paintsSlotGen[slot]) {
+                    paints.clear();
+                    paintsSlotGen[slot] = c.slotGen;
                 }
                 d = draw(e, c.scale, subDx(s), paintIn(paints, e.size * c.scale, e.weight, e.style), c.faces, scratch);
             } catch (Throwable x) {

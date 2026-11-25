@@ -505,6 +505,7 @@ pub fn liquid_slider_node(
   flush? : Bool = false,
   value_bubble? : ((Double) -> String)? = None,
   drag? : DampedDrag,
+  on_commit? : (Double) -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
   let dd = match drag {
@@ -701,6 +702,7 @@ pub fn liquid_slider_node(
     disabled~,
     value_text?,
     drag=hand,
+    on_commit?,
     fn(s, sl) {
       dd.attach(s)
       s.height(Is(Some(thumb_h_px))) |> ignore

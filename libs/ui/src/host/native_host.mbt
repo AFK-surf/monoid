@@ -109,7 +109,14 @@ fn make_native_host() -> @hostapi.Host {
   h.face_add_bytes = fn(face, data, weight) { face_add_bytes(face, data, weight) }
   h.face_clear = fn(face) { face_clear(face) }
   h.face_add_family = fn(face, family) { face_add_family(face, family) }
+  h.has_local_fonts = fn() {
+    let p = platform()
+    p == 0 || p == 3 || p == 5
+  }
   h.local_font_families = fn() { local_font_families() }
+  h.face_set_ligatures = fn(face, on) { face_set_ligatures(face, on) }
+  h.set_host_autospace = fn(on) { set_host_autospace(on) }
+  h.local_font_info = fn() { local_font_info() }
   h.atlas_generation = fn() { atlas_generation() }
   h.present = fn(buf, count, r, g, b) { present(buf, count, r, g, b) }
   h.groups_here = fn() { groups_here() }

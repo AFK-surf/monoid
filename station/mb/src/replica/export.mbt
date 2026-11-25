@@ -172,6 +172,17 @@ pub struct Exporter {
   priv mut known : Bool
   priv mut transcripts_pending : Bool
   priv tf_cache : Map[String, Array[(String, JValue)]]
+  /// Where a transcript sweep cut short by the pass budget goes on, by workspace: the first path it did not get to.
+  /// The next pass starts there, not from the first path again: a session written all the time sorted early would
+  /// otherwise use the budget each pass and nothing after it would ever be exported.
+  priv transcript_cursor : Map[String, String]
+  /// Workspaces whose paths this sweep has gone through to the end; only their `tr_del`s may be left.
+  priv transcript_scan_done : Set[String]
+  /// Workspaces this sweep is done with, `tr_del`s too.
+  priv transcript_ws_done : Set[String]
+  /// A pass told of transcripts while a sweep was under way: what it told of may lie behind the cursor, so another
+  /// sweep follows this one.
+  priv mut transcript_resweep : Bool
   /// Each generation's `head.json` as last read or written, by its directory, with the size and mtime it had on disk:
   /// a head of many transcripts is megabytes of JSON, parsed again only when the file changed.
   priv head_cache : Map[String, (Double, Double, JValue)]
@@ -230,6 +241,10 @@ pub fn Exporter::new(
     known: false,
     transcripts_pending: false,
     tf_cache: Map([]),
+    transcript_cursor: Map([]),
+    transcript_scan_done: Set([]),
+    transcript_ws_done: Set([]),
+    transcript_resweep: false,
     head_cache: Map([]),
     manifest_cache: Map([]),
     manifest_live: Set([]),
@@ -285,11 +300,32 @@ fn Exporter::forget(self : Exporter) -> Unit raise {
   self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;")
   self.known = false
   self.transcripts_pending = false
+  self.forget_sweep()
   self.tf_cache.clear()
   self.head_cache.clear()
   self.manifest_cache.clear()
   self.manifest_live = Set([])
   self.manifest_superseded_at.clear()
+}
+
+///|
+/// The transcript sweep starts again from each workspace's first path.
+fn Exporter::forget_sweep(self : Exporter) -> Unit {
+  self.end_sweep()
+  self.transcript_resweep = false
+}
+
+///|
+/// A sweep over: the next starts from each workspace's first path.
+fn Exporter::end_sweep(self : Exporter) -> Unit {
+  self.transcript_cursor.clear()
+  self.transcript_scan_done.clear()
+  self.transcript_ws_done.clear()
+}
+
+///|
+fn Exporter::in_transcript_sweep(self : Exporter) -> Bool {
+  !self.transcript_cursor.is_empty() || !self.transcript_scan_done.is_empty() || !self.transcript_ws_done.is_empty()
 }
 
 ///|
@@ -381,11 +417,20 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   let now = (self.now)()
   let gen = gen_name(if now > after + 1.0 { now } else { after + 1.0 }, self.files.random(4))
   self.set_meta("gen:\{ws}", gen)
-  for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
+  for t in ["digests", "threads", "sent", "entering"] {
     ignore(self.state.run("DELETE FROM \{t} WHERE ws = ?", [s(ws)]))
   }
+  let dropped = self.state.run("DELETE FROM transcript_files WHERE ws = ?", [s(ws)])
   self.tf_cache.remove(ws)
   self.manifest_cache.remove(ws)
+  // Its transcripts are written again, all of them: none is behind a cursor of the generation before. A workspace
+  // with none exported (one with nothing written has no generation directory, so comes here every pass) asks for no scan.
+  self.transcript_cursor.remove(ws)
+  self.transcript_scan_done.remove(ws)
+  self.transcript_ws_done.remove(ws)
+  if dropped > 0 {
+    self.transcripts_pending = true
+  }
   gen
 }
 
@@ -407,6 +452,20 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 }
 
 ///|
+/// A pass failed: `export.db` goes back to before it, and what is kept of it in memory goes too.
+fn Exporter::roll_back(self : Exporter, known : Bool, pending : Bool) -> Unit {
+  self.state.exec("ROLLBACK") catch {
+    _ => ()
+  }
+  self.tf_cache.clear()
+  self.head_cache.clear()
+  self.manifest_cache.clear()
+  self.forget_sweep()
+  self.known = known
+  self.transcripts_pending = pending
+}
+
+///|
 /// One pass (`pass`): what changed, as told and as found, written as batches. Its answer as the TypeScript one's
 /// (`Passed` and whether the station has no chat of its own).
 pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
@@ -419,19 +478,22 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
       ("empty", Bool(self.empty())),
     ])
   }
+  // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
+  let known = self.known
+  let pending = self.transcripts_pending
   self.state.exec("BEGIN IMMEDIATE")
   let passed = self.pass_in(told, home) catch {
     e => {
-      self.state.exec("ROLLBACK") catch {
-        _ => ()
-      }
-      self.tf_cache.clear()
-      self.head_cache.clear()
-      self.manifest_cache.clear()
+      self.roll_back(known, pending)
       raise e
     }
   }
-  self.state.exec("COMMIT")
+  self.state.exec("COMMIT") catch {
+    e => {
+      self.roll_back(known, pending)
+      raise e
+    }
+  }
   set(passed, "empty", Bool(self.empty()))
 }
 
@@ -904,7 +966,11 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
       say(ws, Obj([("file", str(hash)), ("size", Num(size)), ("path", str(path))]))
     }
   }
+  let mut sweep_completed = false
   if scan_transcripts {
+    if want_transcripts && self.in_transcript_sweep() {
+      self.transcript_resweep = true
+    }
     if more {
       self.transcripts_pending = true
     } else {
@@ -919,7 +985,14 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
         self.transcripts_pending = true
         more = true
       } else {
-        self.transcripts_pending = false
+        sweep_completed = true
+        if self.transcript_resweep {
+          self.transcript_resweep = false
+          self.transcripts_pending = true
+          more = true
+        } else {
+          self.transcripts_pending = false
+        }
       }
     }
   }
@@ -936,7 +1009,8 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
   if self.compact_heads {
     self.gc_manifests(outs)
   }
-  if scan_transcripts && !self.transcripts_pending {
+  // After each whole sweep, a sweep to follow or not: never in the middle of one.
+  if sweep_completed {
     self.gc_transcript_chunks()
   }
   Obj([
@@ -1701,17 +1775,35 @@ async fn Exporter::export_transcripts(
   let mut truncated = false
   let parent_unreadable_cache : Map[String, Bool] = Map([])
   let ancestor_lstat_cache : Map[String, String] = Map([])
-  for ws, found_map in by_ws {
+  let ws_order : Array[String] = by_ws.keys().collect()
+  ws_order.sort_by(compare_units)
+  for ws in ws_order {
     if truncated {
       break
     }
+    if self.transcript_ws_done.contains(ws) {
+      continue
+    }
+    let found_map = by_ws.get(ws).unwrap_or(Map([]))
     let unreadable_dirs = unreadable_dirs_by_ws.get(ws).unwrap_or(Set([]))
     let unreadable_paths = unreadable_paths_by_ws.get(ws).unwrap_or(Set([]))
     let paths = found_map.keys().collect()
     paths.sort_by(compare_units)
+    // What `transcript_files` holds for the workspace, read once rather than a query a path.
+    let existing_by_path : Map[String, (String?, Double, Double)] = Map([])
+    for row in self.state.all("SELECT path, room, size, mtime FROM transcript_files WHERE ws = ?", [s(ws)]) {
+      let prev_room = match row.get("room") {
+        Some(String(r)) => Some(r)
+        _ => None
+      }
+      existing_by_path[field_text(row, "path")] = (prev_room, field_num(row, "size"), field_num(row, "mtime"))
+    }
     let active : Set[String] = Set([])
     let mut ws_truncated = false
+    let scan_done = self.transcript_scan_done.contains(ws)
+    let cursor = self.transcript_cursor.get(ws)
     for path in paths {
+      // A path is found whether or not it is there (a `.db-wal`, an annotation): one gone is not kept.
       let (kind, size, mode, mtime) = match self.lstat_checked(path) {
         Ok(Some(st)) => st
         Ok(None) => continue
@@ -1723,19 +1815,17 @@ async fn Exporter::export_transcripts(
       if kind != "file" {
         continue
       }
+      // Gone through already in this sweep: kept as found, not read again until the next sweep.
+      if scan_done || (cursor is Some(c) && compare_units(path, c) < 0) {
+        active.add(path)
+        continue
+      }
       let room = found_map.get(path).unwrap_or(None)
       let m = mode & 0o777
       let mtime_ms = @math.floor(mtime)
-      let existing = self.state.all("SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(path)])
-      let unchanged = match existing {
-        [row, ..] => {
-          let prev_room = match row.get("room") {
-            Some(String(r)) => Some(r)
-            _ => None
-          }
-          field_num(row, "size") == size && field_num(row, "mtime") == mtime_ms && prev_room == room
-        }
-        _ => false
+      let unchanged = match existing_by_path.get(path) {
+        Some((prev_room, prev_size, prev_mtime)) => prev_size == size && prev_mtime == mtime_ms && prev_room == room
+        None => false
       }
       if unchanged {
         active.add(path)
@@ -1744,6 +1834,7 @@ async fn Exporter::export_transcripts(
       if done_files > 0 && (done_files >= self.transcript_pass_files || done_bytes >= self.transcript_pass_bytes) {
         truncated = true
         ws_truncated = true
+        self.transcript_cursor[ws] = path
         break
       }
       let chunks : Array[String] = []
@@ -1838,10 +1929,34 @@ async fn Exporter::export_transcripts(
       done_files += 1
       done_bytes += offset
     }
-    if !ws_truncated {
+    let old_paths : Array[String] = existing_by_path.keys().collect()
+    old_paths.sort_by(compare_units)
+    if ws_truncated {
+      // The derived caches no longer exported go whatever else is found: by their path alone, so a sweep that keeps
+      // being cut short still lets them go. That path says it, not the disk: no readability check is needed.
       let mut deleted_in_ws = false
-      for row in self.state.all("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path", [s(ws)]) {
-        let old_path = field_text(row, "path")
+      for old_path in old_paths {
+        if active.contains(old_path) || !self.files.is_pruned_brain_path(self.data_dir, old_path) {
+          continue
+        }
+        if done_deletes >= self.transcript_pass_deletes {
+          break
+        }
+        ignore(self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(old_path)]))
+        deleted_in_ws = true
+        say(ws, Obj([("tr_del", str(old_path))]))
+        done_deletes += 1
+      }
+      if deleted_in_ws {
+        self.tf_cache.remove(ws)
+        self.manifest_cache.remove(ws)
+      }
+    } else {
+      self.transcript_cursor.remove(ws)
+      self.transcript_scan_done.add(ws)
+      let mut deleted_in_ws = false
+      let mut deletes_cut = false
+      for old_path in old_paths {
         if active.contains(old_path) || unreadable_paths.contains(old_path) || path_under_any_dir(old_path, unreadable_dirs, self.files.sep) {
           continue
         }
@@ -1917,6 +2032,7 @@ async fn Exporter::export_transcripts(
         }
         if done_deletes >= self.transcript_pass_deletes {
           truncated = true
+          deletes_cut = true
           break
         }
         ignore(self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [s(ws), s(old_path)]))
@@ -1928,7 +2044,13 @@ async fn Exporter::export_transcripts(
         self.tf_cache.remove(ws)
         self.manifest_cache.remove(ws)
       }
+      if !deletes_cut {
+        self.transcript_ws_done.add(ws)
+      }
     }
+  }
+  if !truncated {
+    self.end_sweep()
   }
   truncated
 }

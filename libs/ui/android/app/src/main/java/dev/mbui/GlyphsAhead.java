@@ -4,6 +4,7 @@ import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.function.ToIntFunction;
 
 /**
  * Pure Java state machine for background glyph rasterization ahead of paint ({@link MBText}):
@@ -29,10 +30,12 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
         final Object[] drawn = new Object[SUB_COUNT];
         float askScale;
         int askFaces;
+        int askSlotGen;
         // Deferred handoff when a stale entry still has in-flight workers (guarded by lock):
         int pendingWant, pendingFirst;
         float pendingScale;
         int pendingFaces;
+        int pendingSlotGen;
         // App-thread-only history (worker finish() must NEVER read or write these 4 fields):
         int subsQueued;
         float queuedScale;
@@ -46,12 +49,14 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
         final int bit;
         final float scale;
         final int faces;
+        final int slotGen;
 
-        Claim(S slot, int bit, float scale, int faces) {
+        Claim(S slot, int bit, float scale, int faces, int slotGen) {
             this.slot = slot;
             this.bit = bit;
             this.scale = scale;
             this.faces = faces;
+            this.slotGen = slotGen;
         }
     }
 
@@ -69,14 +74,20 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
     int aheadCount;
 
     private final Releaser<D> releaser;
+    private final ToIntFunction<S> slotGenOf;
 
     GlyphsAhead(Releaser<D> releaser) {
-        this(releaser, AHEAD_MOST);
+        this(releaser, AHEAD_MOST, s -> 0);
     }
 
     GlyphsAhead(Releaser<D> releaser, int aheadMost) {
+        this(releaser, aheadMost, s -> 0);
+    }
+
+    GlyphsAhead(Releaser<D> releaser, int aheadMost, ToIntFunction<S> slotGenOf) {
         this.releaser = releaser;
         this.aheadMost = aheadMost;
+        this.slotGenOf = slotGenOf;
     }
 
     @SuppressWarnings("unchecked")
@@ -106,7 +117,8 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
                 }
                 boolean moved = e.subsQueued != 0 && (e.subsQueued & bit) == 0;
                 int want = moved ? (SUB_ALL & ~e.subsQueued) : bit;
-                if (enqueueLocked(e, want, bit, sc, faces)) any = true;
+                int sg = slotGenOf.applyAsInt(e);
+                if (enqueueLocked(e, want, bit, sc, faces, sg)) any = true;
             }
             if (any) lock.notifyAll();
         }
@@ -117,18 +129,19 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
     boolean aheadOne(S e, int want, float sc, int faces) {
         boolean any;
         synchronized (lock) {
-            any = enqueueLocked(e, want, 0, sc, faces);
+            any = enqueueLocked(e, want, 0, sc, faces, slotGenOf.applyAsInt(e));
             if (any) lock.notify();
         }
         return any;
     }
 
-    private boolean enqueueLocked(S e, int want, int firstBit, float sc, int faces) {
+    private boolean enqueueLocked(S e, int want, int firstBit, float sc, int faces, int sg) {
         if (asked(e)) {
-            if (e.askScale == sc && e.askFaces == faces) {
-                // Case 1: active at the same scale/faces. Clear any stale deferred handoff (A->B->A).
+            if (e.askScale == sc && e.askFaces == faces && e.askSlotGen == sg) {
+                // Case 1: active at the same scale/faces/slotGen. Clear any stale deferred handoff (A->B->A).
                 e.pendingWant = 0;
                 e.pendingFirst = 0;
+                e.pendingSlotGen = 0;
                 int unskip = want & e.drawing & e.skip;
                 if (unskip != 0) e.skip &= ~unskip;
                 boolean woke = false;
@@ -160,7 +173,7 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
                 e.subsQueued |= want;
                 return woke;
             }
-            // Case 2: stale scale/faces. Drop stale buffered bitmaps and queued work.
+            // Case 2: stale scale/faces/slotGen. Drop stale buffered bitmaps and queued work.
             dropDrawn(e);
             removeListed(e);
             e.want = 0;
@@ -168,12 +181,13 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
             if (e.drawing != 0) {
                 e.skip |= e.drawing;
                 if (want != 0) {
-                    if (e.pendingWant != 0 && e.pendingScale == sc && e.pendingFaces == faces) {
+                    if (e.pendingWant != 0 && e.pendingScale == sc && e.pendingFaces == faces && e.pendingSlotGen == sg) {
                         e.pendingWant |= want;
                         e.pendingFirst |= (want & firstBit);
                     } else {
                         e.pendingScale = sc;
                         e.pendingFaces = faces;
+                        e.pendingSlotGen = sg;
                         e.pendingWant = want;
                         e.pendingFirst = want & firstBit;
                     }
@@ -181,26 +195,29 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
                 } else {
                     e.pendingWant = 0;
                     e.pendingFirst = 0;
+                    e.pendingSlotGen = 0;
                 }
                 return false;
             }
             e.pendingWant = 0;
             e.pendingFirst = 0;
+            e.pendingSlotGen = 0;
             aheadCount--;
             // Fall through to Case 3 (now inactive).
         }
         // Case 3: idle or freshly released stale slot.
         if (want == 0) return false;
         if (!roomAhead()) return false;
-        ask(e, want, want & firstBit, sc, faces);
+        ask(e, want, want & firstBit, sc, faces, sg);
         return true;
     }
 
-    private void ask(S e, int want, int first, float sc, int faces) {
+    private void ask(S e, int want, int first, float sc, int faces, int sg) {
         e.want = want;
         e.first = first;
         e.askScale = sc;
         e.askFaces = faces;
+        e.askSlotGen = sg;
         e.subsQueued |= want;
         if (first != 0 && !e.inFirst) {
             e.inFirst = true;
@@ -252,14 +269,19 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
 
     /** Takes a pre-rasterized phase if ready, or cancels/skips queued/in-flight work (app thread). */
     D takeDrawn(S e, int sub, float sc, int faces) {
+        return takeDrawn(e, sub, sc, faces, slotGenOf.applyAsInt(e));
+    }
+
+    /** Takes a pre-rasterized phase if ready at the given {@code slotGen}, or cancels/skips queued/in-flight work. */
+    D takeDrawn(S e, int sub, float sc, int faces, int slotGen) {
         int bit = 1 << sub;
         synchronized (lock) {
-            if (e.pendingWant != 0 && e.pendingScale == sc && e.pendingFaces == faces) {
+            if (e.pendingWant != 0 && e.pendingScale == sc && e.pendingFaces == faces && e.pendingSlotGen == slotGen) {
                 e.pendingWant &= ~bit;
                 e.pendingFirst &= ~bit;
             }
             if (!asked(e)) return null;
-            if (e.askScale != sc || e.askFaces != faces) {
+            if (e.askScale != sc || e.askFaces != faces || e.askSlotGen != slotGen) {
                 dropDrawn(e);
                 removeListed(e);
                 e.want = 0;
@@ -317,7 +339,7 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
                 e.first &= ~bit;
                 e.drawing |= bit;
                 e.skip &= ~bit;
-                return new Claim<>(e, bit, e.askScale, e.askFaces);
+                return new Claim<>(e, bit, e.askScale, e.askFaces, e.askSlotGen);
             }
         }
     }
@@ -334,7 +356,7 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
             e.drawing &= ~bit;
             boolean skipped = (e.skip & bit) != 0;
             e.skip &= ~bit;
-            boolean stale = e.askScale != c.scale || e.askFaces != c.faces;
+            boolean stale = e.askScale != c.scale || e.askFaces != c.faces || e.askSlotGen != c.slotGen;
             if (result != null) {
                 if (skipped || stale) {
                     releaser.release(result);
@@ -352,10 +374,12 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
             if (e.drawing == 0 && e.pendingWant != 0) {
                 e.askScale = e.pendingScale;
                 e.askFaces = e.pendingFaces;
+                e.askSlotGen = e.pendingSlotGen;
                 e.want = e.pendingWant;
                 e.first = e.pendingFirst;
                 e.pendingWant = 0;
                 e.pendingFirst = 0;
+                e.pendingSlotGen = 0;
                 if (e.first != 0 && !e.inFirst) {
                     e.inFirst = true;
                     askedFirst.add(e);
@@ -394,6 +418,7 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
                 e.first = 0;
                 e.pendingWant = 0;
                 e.pendingFirst = 0;
+                e.pendingSlotGen = 0;
                 if (wasAsked && !asked(e)) aheadCount--;
             }
         }

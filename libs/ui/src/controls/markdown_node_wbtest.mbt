@@ -654,3 +654,43 @@ test "md_task_node: 1x/1.3x baseline alignment, radius md_task_side/3, light/dar
   t.tab()
   assert_eq(t.focused().map(fn(s) { s.label }), Some("后按钮"), msg="Tab skips read-only markdown task checkboxes")
 }
+
+///|
+test "markdown_node MdTypography prose_scale scales heading, paragraph, code block, and table uniformly" {
+  let s = fn(x : String) { Json::string(x) }
+  let el = fn(name : String, kids : Array[Json]) { Json::array([s(name), Json::array(kids)]) }
+  let row = fn(words : Array[String]) { el("tr", words.map(fn(w) { el("td", [s(w)]) })) }
+  let doc = Json::array([
+    Json::array([s("h"), Json::array([s("HeadingScale")]), Json::object({ "depth": Json::number(2.0) })]),
+    el("p", [s("ParagraphScale")]),
+    Json::array([s("pre"), Json::array([]), Json::object({ "code": s("CodeScaleSample"), "lang": s("sh"), "ink": s("") })]),
+    el("table", [row(["TableHead"]), row(["TableCell"])]),
+  ])
+  let typo = @signals.signal(MdTypography::default())
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=480.0, h=600.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(
+    fn(root) {
+      @ui.set_tree_theme(ui_theme_now)
+      root.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      markdown_node(root, fn() { "scale-doc" }, tree=fn() { Some(doc) }, typography=fn() { typo.get() }, copy=false)
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  let (_, _, _, h1) = t.rect_of("HeadingScale").unwrap()
+  let (_, _, _, p1) = t.rect_of("ParagraphScale").unwrap()
+  let (_, _, _, c1) = t.rect_of("CodeScaleSample").unwrap()
+  let (_, _, _, tb1) = t.rect_of("TableCell").unwrap()
+  typo.set({ ..MdTypography::default(), prose_scale: 1.30 })
+  t.draw()
+  let (_, _, _, h2) = t.rect_of("HeadingScale").unwrap()
+  let (_, _, _, p2) = t.rect_of("ParagraphScale").unwrap()
+  let (_, _, _, c2) = t.rect_of("CodeScaleSample").unwrap()
+  let (_, _, _, tb2) = t.rect_of("TableCell").unwrap()
+  assert_true(h2 > h1 * 1.20 && h2 < h1 * 1.40, msg="heading height \{h1} -> \{h2}")
+  assert_true(p2 > p1 * 1.20 && p2 < p1 * 1.40, msg="paragraph height \{p1} -> \{p2}")
+  assert_true(c2 > c1 * 1.20 && c2 < c1 * 1.40, msg="code height \{c1} -> \{c2}")
+  assert_true(tb2 > tb1 * 1.20 && tb2 < tb1 * 1.40, msg="table height \{tb1} -> \{tb2}")
+}

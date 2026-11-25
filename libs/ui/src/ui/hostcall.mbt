@@ -198,6 +198,9 @@ struct FakeHost {
   /// the font families installed as its host would say them (Tester::set_local_fonts), JSON; the families given to
   /// faces, by face (@ui.face_add_family)
   mut local_fonts : String
+  mut local_fonts_info : String
+  face_ligatures : Map[Int, Bool]
+  mut host_autospace : Bool
   families_given : Map[Int, String]
   /// the font files (by where they are) its host could not read as a font (Tester::set_unreadable_font)
   unreadable_fonts : Array[String]
@@ -697,6 +700,21 @@ fn h_face_add_family(face : Int, family : String) -> Bool {
 ///|
 fn h_face_clear(face : Int) -> Unit {
   @hostapi.face_clear(face)
+}
+
+///|
+fn h_face_set_ligatures(face : Int, on : Bool) -> Unit {
+  @hostapi.face_set_ligatures(face, on)
+}
+
+///|
+fn h_set_host_autospace(on : Bool) -> Unit {
+  @hostapi.set_host_autospace(on)
+}
+
+///|
+fn h_local_font_info() -> String {
+  @hostapi.local_font_info()
 }
 
 ///|

@@ -26,6 +26,8 @@ const DEFAULTS: Prefs = {
   experimental: {}, features: {}, experimentalItems: [],
   // As the core fills it in (prefs.ts readerOf), before it has answered.
   reader: { size: 16, line: 1.7, margin: 22, face: "sans", indent: true, paper: "follow" },
+  // As the core fills it in (prefs.ts typographyOf), before it has answered.
+  typography: { textSize: 100, codeScale: 100, lineHeight: "normal", uiCjkScale: 100, textCjkScale: 100, textCjkScaleOwn: false, codeCjkScale: 100, uiCjkWeight: 0, textCjkWeight: 0, textCjkWeightOwn: false, codeCjkWeight: 0, cjkAutoSpace: true, codeLigatures: true },
   // As the core fills it in (prefs.ts barsOf).
   bars: { sets: [["chats", "files", "profiles", "stations"], ["remote", "archive", "usage", "connects"]], current: 0 },
   device: { app: "", phone: false, handoff: false },

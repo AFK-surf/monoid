@@ -403,6 +403,40 @@ public final class GlyphsAheadTest {
         check(!d0.released && ga.takeDrawn(entries.get(0), 0, 2f, 1) == d0, "unskipped e0p0 preserved");
     }
 
+    /** 9. Per-slot slotGen change (same scale, same faces) invalidates drawn results and triggers deferred handoff. */
+    static void slotGenInvalidationAndDeferredHandoff() {
+        final int[] slotGen = {1};
+        GlyphsAhead<TestSlot, FakeDrawn> ga = new GlyphsAhead<>(FakeDrawn::release, 16, s -> slotGen[0]);
+        List<TestSlot> entries = new ArrayList<>();
+        entries.add(new TestSlot(0));
+        TestSlot e = entries.get(0);
+
+        // (a) Drawn result at slotGen=1 is stale when taken at slotGen=2 (same scale, same faces): released, count=0.
+        check(ga.ahead(entries, new int[] {key(0, 0)}, 1, 2f, 1, 0), "slotGen=1 enqueued");
+        GlyphsAhead.Claim<TestSlot> c1 = claim(ga);
+        check(c1 != null && c1.slotGen == 1, "claimed with slotGen=1");
+        FakeDrawn d1 = new FakeDrawn("sg1");
+        ga.finish(c1, d1);
+        slotGen[0] = 2;
+        check(ga.takeDrawn(e, 0, 2f, 1, 2) == null, "takeDrawn at slotGen=2 rejects slotGen=1 result");
+        check(d1.released && ga.aheadCount == 0, "stale slotGen=1 result released and aheadCount=0");
+
+        // (b) In-flight worker at slotGen=2 -> slotGen bumps to 3 -> deferred handoff releases old, dispatches slotGen=3.
+        check(ga.ahead(entries, new int[] {key(0, 0)}, 1, 2f, 1, 0), "slotGen=2 enqueued");
+        GlyphsAhead.Claim<TestSlot> c2 = claim(ga);
+        check(c2 != null && c2.slotGen == 2 && ga.aheadCount == 1, "claimed with slotGen=2");
+        slotGen[0] = 3;
+        ga.ahead(entries, new int[] {key(0, 0)}, 1, 2f, 1, 0);
+        check(e.pendingSlotGen == 3 && e.pendingWant == 1 && ga.aheadCount == 1, "deferred handoff queued for slotGen=3");
+        FakeDrawn d2 = new FakeDrawn("sg2-stale");
+        check(ga.finish(c2, d2) && d2.released && ga.aheadCount == 1, "old slotGen=2 released and handed off");
+        GlyphsAhead.Claim<TestSlot> c3 = claim(ga);
+        check(c3 != null && c3.slotGen == 3 && c3.bit == 1, "re-claimed with slotGen=3");
+        FakeDrawn d3 = new FakeDrawn("sg3-fresh");
+        check(!ga.finish(c3, d3) && !d3.released, "slotGen=3 stored");
+        check(ga.takeDrawn(e, 0, 2f, 1, 3) == d3 && ga.aheadCount == 0, "slotGen=3 consumed and aheadCount=0");
+    }
+
     public static void main(String[] args) {
         evictionReenqueue();
         movedExpandsRemainingPhases();
@@ -412,6 +446,7 @@ public final class GlyphsAheadTest {
         consecutiveSweepsPreserveCount();
         twoWorkersSameEntryConcurrent();
         fullCapacityDoesNotSkipAskedOrStale();
+        slotGenInvalidationAndDeferredHandoff();
         if (failed > 0) {
             System.err.println("GlyphsAheadTest: " + failed + " failed");
             System.exit(1);
