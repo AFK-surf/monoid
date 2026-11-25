@@ -15,9 +15,9 @@ import { Choose } from "../src/choose.ts";
 import type { Inner } from "../src/core.ts";
 import { handlers } from "../src/core/execute.ts";
 import { CoreError } from "../src/error.ts";
-import { GONE_KEPT, type KeptRecord, type PresetRecord, canonical, isGone } from "../src/preset-records.ts";
-import { TABLE, heldOf, starredKeys, starsHeld } from "../src/presets-kept.ts";
-import { OTHERS_WAIT_MS, PresetViews, carryAll, install, likedKey, whoIn } from "../src/views/presets.ts";
+import { GONE_KEPT, type KeptRecord, type PresetProjects, type PresetRecord, canonical, isGone, mergePresetProjects, presetProjectsOf } from "../src/preset-records.ts";
+import { TABLE, heldOf, presetProjectsHeld, starredKeys, starsHeld } from "../src/presets-kept.ts";
+import { OTHERS_WAIT_MS, PresetViews, carryAll, install, likedKey, presetProjectsKey, whoIn } from "../src/views/presets.ts";
 import { overview } from "./station-fixture.ts";
 import { Runner } from "../src/runtime.ts";
 import { FakeHost } from "../src/testing.ts";
@@ -83,13 +83,45 @@ function served(handlePromise: Promise<number>, told: string[] | null, viewer: V
     );
 }
 
-/// A station of today, on its own code: its presets in a folder of its own, its stars in memory.
+/// A station of today, on its own code: its presets in a folder of its own, its stars in memory,
+/// and its per-user `/preset-projects` (served by Node Station; frozen `reader-harness` predates it).
 function station(id: string): Rig {
   const home = mkdtempSync(join(tmpdir(), "prc-home-"));
   const repos = mkdtempSync(join(tmpdir(), "prc-repos-"));
   const handle = harness.call<{ handle: number }>("createPresets", { stationId: id, workspace: WS, home, repos, legacy: false, nowMs: clock.now }).then((r) => r.handle);
   const told: string[] = [];
-  return { id, address: `${WS}/${id}`, presets: presetsProxy(handle), told, home, answer: (viewer) => served(handle, told, viewer) };
+  const ppBySub = new Map<string, PresetProjects>();
+  return {
+    id,
+    address: `${WS}/${id}`,
+    presets: presetsProxy(handle),
+    told,
+    home,
+    answer: (viewer) => {
+      const base = served(handle, told, viewer);
+      return (method, path, body) => {
+        if (path === "/preset-projects") {
+          const sub = viewer.sub ?? "";
+          if (sub === "") return Effect.fail(new CoreError("http_403", "viewer sub required", 403));
+          if (method === "GET") {
+            return Effect.succeed({ presetProjects: ppBySub.get(sub) ?? {} });
+          }
+          if (method === "PUT") {
+            try {
+              const incoming = presetProjectsOf((body as { presetProjects?: unknown } | null)?.presetProjects ?? {});
+              const merged = mergePresetProjects(ppBySub.get(sub) ?? {}, incoming);
+              ppBySub.set(sub, merged);
+              told.push(sub);
+              return Effect.succeed({ presetProjects: merged });
+            } catch (e) {
+              return Effect.fail(new CoreError("http_400", (e as Error).message, 400));
+            }
+          }
+        }
+        return base(method, path, body);
+      };
+    },
+  };
 }
 
 /// A station from before: GET /presets lists every preset of the workspace (none of `owner`, `rev`, `home`), POST,
@@ -619,7 +651,7 @@ test("a core updated to this, its stream restored from the cursor its last one k
   d.away(a);
   const at = d.asked.length;
   await d.resumed(a);
-  assert.deepEqual(d.asked.slice(at), [`GET ${a.address} /presets/kept`, `GET ${a.address} /stars`], "each read once, nothing brought");
+  assert.deepEqual(d.asked.slice(at), [`GET ${a.address} /presets/kept`, `GET ${a.address} /stars`, `GET ${a.address} /preset-projects`], "each read once, nothing brought");
   const choose = new Choose({ store: d.inner.store, data: d.inner.data, now: () => clock.now, agent: () => null, who: (s) => whoIn(d.inner, s) });
   const listed = (choose as unknown as { compute(t: unknown): { ok: { presets: { id: string }[] } } }).compute({ topic: "newChat", scope: WS }).ok.presets;
   assert.deepEqual(listed.map((p) => p.id), [made.id], "listed on the new chat's page");
@@ -627,4 +659,92 @@ test("a core updated to this, its stream restored from the cursor its last one k
   const again = d.asked.length;
   await d.resumed(a);
   assert.deepEqual(d.asked.slice(again), [], "met: nothing asked the next time");
+});
+
+test("preset.setProject carries per-user /preset-projects between stations without mutating PresetRecord, retains null key on reset, and tolerates legacy 404 stations", async () => {
+  const a = station("a");
+  const b = station("b");
+  const old = before("old");
+  const d = device(ME, [a, b, old]);
+  await d.open(a);
+  await d.open(b);
+  await d.open(old);
+  const made = ok(await d.call("add", a.address, { name: "Monoid Dev", dirs: [] })) as { id: string; rev: number };
+  assert.equal(made.rev, 1);
+
+  // Set preset project via preset.setProject operation (b away to test owed + resume)
+  d.away(b);
+  const res1 = await Effect.runPromise(
+    Effect.result(handlers.presets!(d.inner, { kind: "presets", name: "setProject", scope: WS, params: { scope: WS, presetId: made.id, project: "monoid" } } as never, (() => {}) as never, ["c", 1] as never, null as never)),
+  );
+  ok(res1);
+  await d.settle();
+  // PresetRecord rev was NOT bumped (no PresetRecord mutation)
+  assert.equal((await stationRecords(a)).find((r) => r.id === made.id)?.rev, 1);
+  // Kept locally and owed to b
+  assert.equal(presetProjectsHeld(d.records.get(`choice:${presetProjectsKey(WS)}`))?.[made.id]?.project, "monoid");
+  assert.deepEqual(d.held().owedPresetProjects, ["b"]);
+  // Exposed on preset view and newChat presets
+  const one = (d.views.compute({ topic: "preset", scope: WS, id: made.id }) as { ok: { id: string; project?: string | null } }).ok;
+  assert.equal(one.project, "monoid");
+  const choose = new Choose({ store: d.inner.store, data: d.inner.data, now: () => clock.now, agent: () => null, who: (s) => whoIn(d.inner, s) });
+  const newChatPresets = (choose as unknown as { compute(t: unknown): { ok: { presets: { id: string; project?: string | null }[] } } }).compute({ topic: "newChat", scope: WS }).ok.presets;
+  assert.equal(newChatPresets.find((p) => p.id === made.id)?.project, "monoid");
+
+  // b comes back resumed -> receives carried /preset-projects
+  await d.resumed(b);
+  assert.deepEqual(d.held().owedPresetProjects, []);
+  const phone = device(ME, [b]);
+  await phone.open(b);
+  assert.equal(presetProjectsHeld(phone.records.get(`choice:${presetProjectsKey(WS)}`))?.[made.id]?.project, "monoid");
+
+  // Resetting to null increments rev and retains key across stations
+  clock.now += 50;
+  const res2 = await Effect.runPromise(
+    Effect.result(handlers.presets!(d.inner, { kind: "presets", name: "setProject", scope: WS, params: { scope: WS, presetId: made.id, project: null } } as never, (() => {}) as never, ["c", 2] as never, null as never)),
+  );
+  ok(res2);
+  await d.settle();
+  await phone.open(b);
+  const afterReset = presetProjectsHeld(phone.records.get(`choice:${presetProjectsKey(WS)}`))?.[made.id];
+  assert.equal(afterReset?.project, null);
+  assert.equal(afterReset?.rev, 2);
+
+  // R17: optional `ren` validation, `(rev, at, ren ?? 0, project)` merge total order, and explicit setProject clears `ren` & bumps `rev`
+  const { mergePresetProjects, presetProjectsOf, RecordRefusal } = await import("../src/preset-records.ts");
+  assert.throws(() => presetProjectsOf({ p1: { project: "A", rev: 1, at: 10, ren: -1 } }), RecordRefusal);
+  assert.throws(() => presetProjectsOf({ p1: { project: "A", rev: 1, at: 10, ren: 1.5 } }), RecordRefusal);
+  const parsedWithRen = presetProjectsOf({ p1: { project: "Beta", rev: 1, at: 90, ren: 102 }, p2: { project: "Plain", rev: 1, at: 90 } });
+  assert.equal(parsedWithRen.p1?.ren, 102);
+  assert.equal("ren" in parsedWithRen.p2!, false);
+  // Higher ren beats lower ren / no ren for same (rev, at), even when project name is lex-smaller ("Beta" < "Zulu")
+  const mRen = mergePresetProjects(
+    { p1: { project: "Zulu", rev: 1, at: 90, ren: 101 } },
+    { p1: { project: "Beta", rev: 1, at: 90, ren: 102 } },
+  );
+  assert.equal(mRen.p1?.project, "Beta");
+  assert.equal(mRen.p1?.ren, 102);
+  // Higher at beats higher ren for same rev; higher rev beats everything
+  const mAt = mergePresetProjects(
+    { p1: { project: "Beta", rev: 1, at: 90, ren: 500 } },
+    { p1: { project: "NewerAt", rev: 1, at: 95 } },
+  );
+  assert.equal(mAt.p1?.project, "NewerAt");
+  const mRev = mergePresetProjects(
+    { p1: { project: "Beta", rev: 1, at: 500, ren: 900 } },
+    { p1: { project: "UserEdit", rev: 2, at: 90 } },
+  );
+  assert.equal(mRev.p1?.project, "UserEdit");
+  // Seed a server-migrated entry with `ren` locally, then explicit setProject clears `ren` and bumps `rev`
+  d.inner.data.put("choice", presetProjectsKey(WS), { [made.id]: { project: "Beta", rev: 2, at: clock.now, ren: clock.now + 5 } }, false);
+  clock.now += 10;
+  ok(
+    await Effect.runPromise(
+      Effect.result(handlers.presets!(d.inner, { kind: "presets", name: "setProject", scope: WS, params: { scope: WS, presetId: made.id, project: "Fresh" } } as never, (() => {}) as never, ["c", 3] as never, null as never)),
+    ),
+  );
+  const afterExplicit = presetProjectsHeld(d.records.get(`choice:${presetProjectsKey(WS)}`))?.[made.id];
+  assert.equal(afterExplicit?.project, "Fresh");
+  assert.equal(afterExplicit?.rev, 3);
+  assert.equal(afterExplicit?.ren, undefined, "explicit setProject must clear server ren watermark");
 });

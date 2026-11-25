@@ -54,6 +54,9 @@ const ASKED: J = {
   to: 1_790_086_400_000,
   offset: 480 * 60_000,
   day: 86_400_000,
+  project: "monoid",
+  projectMode: 2,
+  tag: "bug",
 };
 
 type Step = { id: number; parent: number; detail: string };
@@ -68,10 +71,11 @@ function access(step: Step): Access | null {
   return { step, of: m[2], covering: m[3] === "COVERING INDEX", byRowid: m[3] === "INTEGER PRIMARY KEY" && terms.includes("rowid=?"), index: m[3] !== undefined, equal };
 }
 
-/// The names `chat` goes by in a statement: its own and its aliases (`chat AS c`), not `chat_row` and the like.
+/// The names `chat` (and its tag index table `chat_tag`) goes by in a statement: its own and its aliases (`chat AS c`,
+/// `chat_tag AS t`), not `chat_row` and the like.
 function chatNames(sql: string): Set<string> {
   const out = new Set<string>();
-  for (const m of sql.matchAll(/\b(?:FROM|JOIN)\s+chat\b(?!_)(?:\s+AS\s+(\w+))?/gi)) out.add(m[1] ?? "chat");
+  for (const m of sql.matchAll(/\b(?:FROM|JOIN)\s+(?:chat(?!_)|chat_tag\b)(?:\s+AS\s+(\w+))?/gi)) out.add(m[1] ?? (m[0].toLowerCase().includes("chat_tag") ? "chat_tag" : "chat"));
   return out;
 }
 
@@ -148,6 +152,13 @@ test("every_declared_read_of_the_chat_table_does_the_work_its_bound_says_in_sqli
     }
     for (const name of Object.keys(OVER_PLAN)) if (!(name in CHAT_READS)) failed.push(`${name}: no such read: take it out of OVER_PLAN`);
     assert.equal(failed.join("\n"), "");
+    // Explicit regression assertions: atWork keeps exact (station, archived, state) seek; new project/tag reads all use COVERING INDEX.
+    const atWorkPlan = shown(planOf(sql, CHAT_READS.atWork));
+    assert.match(atWorkPlan, /station=\? AND archived=\? AND state=\?/, `atWork must seek (station, archived, state): ${atWorkPlan}`);
+    for (const key of ["windowProject", "windowUnclassified", "windowTag", "countsProject", "countsTag", "projectSummary", "tagSummary"] as const) {
+      const p = shown(planOf(sql, CHAT_READS[key]));
+      assert.match(p, /USING COVERING INDEX/, `${key} must use COVERING INDEX: ${p}`);
+    }
   } finally {
     runner.shutdown();
   }

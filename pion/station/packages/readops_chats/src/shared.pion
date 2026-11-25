@@ -1474,17 +1474,40 @@ pub fn shared_rows(
       ("people", base_codec::json_arr(people)),
       ("ws", ws_val),
     ]
+    let t_locked = match readops_core::field(t.thread, "project_locked") {
+      base_codec::Json::Num(n, _) => n == 1.0
+      _ => false
+    }
     match readops_core::field(t.thread, "project") {
-      base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
+      base_codec::Json::Str(p) => {
+        row.push(("project", base_codec::json_str(p)))
+        if t_locked {
+          row.push(("projectLocked", base_codec::json_bool(true)))
+        }
+      }
       _ => {
-        match from_opt {
-          Some(f) => {
-            match readops_core::field(f.thread, "project") {
-              base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
-              _ => ()
+        if t_locked {
+          // Own thread is explicitly locked as unclassified (project = NULL, project_locked = 1):
+          // NEVER inherit `project` or `projectLocked` from `from`.
+          row.push(("projectLocked", base_codec::json_bool(true)))
+        } else {
+          match from_opt {
+            Some(f) => {
+              match readops_core::field(f.thread, "project") {
+                base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
+                _ => ()
+              }
+              match readops_core::field(f.thread, "project_locked") {
+                base_codec::Json::Num(n, _) => {
+                  if n == 1.0 {
+                    row.push(("projectLocked", base_codec::json_bool(true)))
+                  }
+                }
+                _ => ()
+              }
             }
+            None => ()
           }
-          None => ()
         }
       }
     }
@@ -1829,6 +1852,14 @@ pub fn shared_rows(
       Some(f) => {
         match readops_core::field(f.thread, "project") {
           base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
+          _ => ()
+        }
+        match readops_core::field(f.thread, "project_locked") {
+          base_codec::Json::Num(n, _) => {
+            if n == 1.0 {
+              row.push(("projectLocked", base_codec::json_bool(true)))
+            }
+          }
           _ => ()
         }
         match readops_core::parsed_thread_tags(readops_core::field(f.thread, "tags")) {

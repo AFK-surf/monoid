@@ -198,6 +198,8 @@ export type HubOptions = {
   isRig?: (ws: string | null) => boolean;
   /// Fired whenever `PROJECTS.jsonl` changes locally so `/events` pushes `"projects"` to clients.
   onProjectsChanged?: (ws: string | null) => void;
+  /// Fired whenever a user's `preset_projects` changes locally (e.g. during project rename/merge).
+  onPresetProjectsChanged?: (ws: string, sub: string) => void;
   /// Reader for `<data>/upkeep-state.json` (default: `ops/upkeep-state.ts` `readUpkeepState`).
   readUpkeepState?: (dataDir: string) => Promise<UpkeepState>;
   /// Called when a session automatically falls back to a pay-as-you-go profile while subscriptions exist.
@@ -636,6 +638,11 @@ export class Hub {
   notifyProjectsChanged(ws: string | null): void {
     this.invalidateProjectsCache(ws);
     this.options.onProjectsChanged?.(ws);
+  }
+
+  /// Notifies a user's clients that their `preset_projects` row changed locally (e.g. after project rename/merge).
+  notifyPresetProjectsChanged(ws: string, sub: string): void {
+    this.options.onPresetProjectsChanged?.(ws, sub);
   }
 
   getPeerProjectsCache(wsKey: string, now: number, ttlMs: number): string[] | null {

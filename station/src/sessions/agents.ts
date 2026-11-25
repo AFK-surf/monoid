@@ -319,6 +319,7 @@ export const AgentsLive = (control: Control) =>
           return w !== null && cloud.rigIn(w) !== null;
         },
         onProjectsChanged: (ws) => events.projectsChanged(ws),
+        onPresetProjectsChanged: (ws, sub) => events.tell("presetProjects", { workspace: ws }, `presetProjects\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }),
         taking: () => control.taking(),
         store,
         previous,

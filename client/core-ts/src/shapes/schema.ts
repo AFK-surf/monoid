@@ -23,6 +23,7 @@ import { DEVICE_SHAPES } from "./devices.ts";
 import { PREF_SHAPES } from "./prefs.ts";
 import { USAGE_SHAPES } from "./usage.ts";
 import { HISTORY_SHAPES } from "./history.ts";
+import { PROJECT_SHAPES } from "./projects.ts";
 
 export { LISTED_CHAT } from "./chat.ts";
 
@@ -42,6 +43,7 @@ export const SHAPES: Record<string, Shape> = {
   ...PREF_SHAPES,
   ...USAGE_SHAPES,
   ...HISTORY_SHAPES,
+  ...PROJECT_SHAPES,
 };
 
 /// Each topic's shape: what present.ts conforms its value to before it goes out (topics with none go as they are).
@@ -72,6 +74,9 @@ export const TOPIC_SHAPES: Record<string, Ty> = {
   newChat: "NewChatView",
   preset: "PresetOne",
   otherPresets: "OtherPresetsView",
+  projects: "ProjectsView",
+  project: "ProjectDetailView",
+  tags: "TagsView",
   boardDrafts: "BoardDraftsView",
   shareIn: "ShareInView",
   pick: "PickView",

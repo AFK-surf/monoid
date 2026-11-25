@@ -43,6 +43,7 @@ import { stationFeature } from "../features.ts";
 import { markdown, markdownHere, mdKey, type MdStore } from "../markdown.ts";
 import { heardFiles, type Said } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
+import { type HostCollate, makeCollator, projectDetailView, projectsView, tagsView } from "./projects.ts";
 import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, thingsOf, wordsOf } from "../things.ts";
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
@@ -109,7 +110,7 @@ export const WINDOW_UNTOLD = 50;
 const unknownSeen = new Marks();
 onUnknownWords((tys) => unknownSeen.touch(...tys));
 
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays", "projects", "project", "tags"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -483,7 +484,26 @@ function madeDay(d: J, n: number): J {
 /// What a chat list is made of that no station's link says (Views #chatsMade): its stations, its days, how many more it
 /// has and how many in all, which stations' rows run and how many rows do, the stations not read yet, and each station's
 /// rows read (`ok`) or failed; or, its stations not known, what the workspace says (`value`).
-type ChatsMade = { value: Value | undefined } | { stations: StationInfo[]; me: J; days: J[]; more: number; total: number; running: Set<string>; runningRows: number; unread: string[]; reads: Map<string, "ok" | { err: J }> };
+type ChatFilter = {
+  project?: string;
+  unclassified?: boolean;
+  tag?: string;
+  groupBy?: "time" | "project";
+};
+
+const filterKey = (f: ChatFilter): string =>
+  `${f.project === undefined ? "" : `p:${f.project}`}\u0002${f.unclassified === true ? "u" : ""}\u0002${f.tag ?? ""}\u0002${f.groupBy ?? "time"}`;
+
+const filterOfTopic = (view: Topic): ChatFilter => ({
+  ...(typeof view.project === "string" ? { project: view.project } : {}),
+  ...(view.unclassified === true ? { unclassified: true } : {}),
+  ...(typeof view.tag === "string" && view.tag !== "" ? { tag: view.tag } : {}),
+  ...(view.groupBy === "project" ? { groupBy: "project" as const } : {}),
+});
+
+type ChatsMade =
+  | { value: Value | undefined }
+  | { stations: StationInfo[]; me: J; days: J[]; groups?: J[]; more: number; total: number; running: Set<string>; runningRows: number; unread: string[]; reads: Map<string, "ok" | { err: J }> };
 /// How many lists' #chatsMade are kept (those shown, a rail's count, a search's whole list, and the last ones left).
 const CHATS_MADE_KEPT = 8;
 
@@ -491,7 +511,124 @@ const CHATS_MADE_KEPT = 8;
 /// Which chats a list is of: those shown (`visible`), those hidden, both (`all`), or both and those an agent leads too
 /// (`found`: a search typed into, the one way to them besides their opener's info; the user, 2026-11-17).
 type Visibility = "visible" | "hidden" | "all" | "found";
-const windowKey = (list: Topic): string => JSON.stringify([list.scope, list.mine === true, list.watching === true, list.hidden === true]);
+const windowKey = (list: Topic): string =>
+  JSON.stringify([
+    list.scope,
+    list.mine === true,
+    list.watching === true,
+    list.hidden === true,
+    typeof list.project === "string" ? list.project : null,
+    list.unclassified === true,
+    typeof list.tag === "string" ? list.tag : null,
+    list.groupBy === "project" ? "project" : "time",
+  ]);
+
+type GroupCounts = { chatCount: number; runningCount: number; askingCount: number; unreadCount: number; latestActiveAt: number };
+
+function matchesClassification(row: J, filter: ChatFilter): boolean {
+  const proj = get(row, "project");
+  if (filter.unclassified === true && typeof proj === "string") return false;
+  if (filter.unclassified !== true && filter.project !== undefined && proj !== filter.project) return false;
+  if (filter.tag !== undefined) {
+    const tags = get(row, "tags");
+    if (!Array.isArray(tags) || !tags.includes(filter.tag)) return false;
+  }
+  return true;
+}
+
+function groupKeyOfRow(row: J): string {
+  if (get(row, "pinned") === true || typeof get(row, "pinned") === "number") return "pinned";
+  const proj = get(row, "project");
+  if (typeof proj !== "string") return "unclassified";
+  if (proj === "") return "cross";
+  return `project:${proj}`;
+}
+
+function addRowToGroupTotals(totals: Map<string, GroupCounts>, row: J): void {
+  const key = groupKeyOfRow(row);
+  const prev = totals.get(key) ?? { chatCount: 0, runningCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 };
+  const unread = get(row, "unread");
+  const at = u64(get(row, "lastActiveAt")) ?? 0;
+  totals.set(key, {
+    chatCount: prev.chatCount + 1,
+    runningCount: prev.runningCount + (get(row, "state") === "run" ? 1 : 0),
+    askingCount: prev.askingCount + (get(row, "tone") === "wait" || get(row, "stage") === "wait" || get(row, "asks") === 1 ? 1 : 0),
+    unreadCount: prev.unreadCount + (unread === true || (typeof unread === "number" && unread > 0) ? 1 : 0),
+    latestActiveAt: at > prev.latestActiveAt ? at : prev.latestActiveAt,
+  });
+}
+
+function projectGroupsOf(
+  items: readonly J[],
+  fullTotals: ReadonlyMap<string, GroupCounts> | null,
+  collate?: HostCollate,
+): J[] {
+  const pinned: J[] = [];
+  const unclassified: J[] = [];
+  const cross: J[] = [];
+  const byProject = new Map<string, J[]>();
+  for (const item of items) {
+    if (get(item, "pinned") === true) {
+      pinned.push(item);
+      continue;
+    }
+    const proj = get(item, "project");
+    if (typeof proj !== "string") {
+      unclassified.push(item);
+    } else if (proj === "") {
+      cross.push(item);
+    } else {
+      let list = byProject.get(proj);
+      if (list === undefined) byProject.set(proj, (list = []));
+      list.push(item);
+    }
+  }
+  const makeGroup = (key: string, kind: "pinned" | "unclassified" | "project" | "cross", label: string, list: J[], project?: string): J => {
+    const agg = fullTotals?.get(key);
+    let chatCount = agg?.chatCount ?? 0;
+    let runningCount = agg?.runningCount ?? 0;
+    let askingCount = agg?.askingCount ?? 0;
+    let unreadCount = agg?.unreadCount ?? 0;
+    let latestActiveAt = agg?.latestActiveAt ?? 0;
+    if (agg === undefined) {
+      chatCount = list.length;
+      for (const r of list) {
+        if (get(r, "state") === "run") runningCount++;
+        if (get(r, "tone") === "wait" || get(r, "stage") === "wait") askingCount++;
+        if (get(r, "unread") === true) unreadCount++;
+        const at = u64(get(r, "lastActiveAt")) ?? 0;
+        if (at > latestActiveAt) latestActiveAt = at;
+      }
+    } else {
+      if (list.length > chatCount) chatCount = list.length;
+      for (const r of list) {
+        const at = u64(get(r, "lastActiveAt")) ?? 0;
+        if (at > latestActiveAt) latestActiveAt = at;
+      }
+    }
+    return {
+      key,
+      kind,
+      label,
+      ...(project !== undefined ? { project } : {}),
+      chatCount,
+      runningCount,
+      askingCount,
+      unreadCount,
+      latestActiveAt,
+      items: list,
+    };
+  };
+  const out: J[] = [];
+  if (pinned.length > 0) out.push(makeGroup("pinned", "pinned", t("core-views.pinned"), pinned));
+  if (unclassified.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
+  const projectGroups = [...byProject.entries()].map(([name, list]) => makeGroup(`project:${name}`, "project", name, list, name));
+  const cmp = makeCollator(projectGroups.map((g) => g.label as string), collate);
+  projectGroups.sort((a, b) => (b.latestActiveAt as number) - (a.latestActiveAt as number) || cmp(a.label as string, b.label as string));
+  out.push(...projectGroups);
+  if (cross.length > 0) out.push(makeGroup("cross", "cross", t("core-views.projects.cross"), cross, ""));
+  return out;
+}
 
 /// The list with its first `window` rows, in their days, and how many more it has (`more`): what a page shows of it,
 /// its window raised as it is scrolled to the rest (a list of 1400 chats went whole as the app opened, 2026-11-08).
@@ -1400,6 +1537,12 @@ export class Views implements Owner {
         scope = (view.scope ?? view.workspace) as string;
         perStation = (s) => [{ topic: "chatRows", station: s }, { topic: "overview", station: s }, { topic: "link", station: s }];
         break;
+      case "projects":
+      case "project":
+      case "tags":
+        scope = view.scope as string;
+        perStation = (s) => [{ topic: "chatRows", station: s }];
+        break;
       case "chatRow":
         // (one chat's row whole: its record is read alone, by its key, not the station's rows; the viewer's workspaces
         // its menu names, the prefs its archive hint is of)
@@ -2030,9 +2173,31 @@ export class Views implements Owner {
   #compute(view: Topic): Value | undefined {
     switch (view.topic) {
       case "chats": {
-        const chats = this.#chats(view.scope as string, view.mine === true, view.watching === true, view.hidden === true ? "hidden" : "visible", this.chatsWindow(view));
+        const chats = this.#chats(
+          view.scope as string,
+          view.mine === true,
+          view.watching === true,
+          view.hidden === true ? "hidden" : "visible",
+          this.chatsWindow(view),
+          filterOfTopic(view),
+        );
         // (its days are the window's first rows made already, #chatsOf: `firstRows` of them again would give them as they are)
         return chats;
+      }
+      case "projects": {
+        const stations = this.#stationsOr(view.scope as string);
+        if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
+        return { ok: projectsView(this.#core.data, stations, view.scope as string, typeof view.cursor === "string" ? view.cursor : undefined, (names) => this.#core.host.collate?.(names) ?? null) };
+      }
+      case "project": {
+        const stations = this.#stationsOr(view.scope as string);
+        if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
+        return { ok: projectDetailView(this.#core.data, stations, view.scope as string, view.name as string, typeof view.cursor === "string" ? view.cursor : undefined) };
+      }
+      case "tags": {
+        const stations = this.#stationsOr(view.scope as string);
+        if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
+        return { ok: tagsView(this.#core.data, stations, typeof view.cursor === "string" ? view.cursor : undefined, (names) => this.#core.host.collate?.(names) ?? null) };
       }
       case "chatRow":
         return this.#wholeRow(view.station as string, view.session as string);
@@ -2475,15 +2640,15 @@ export class Views implements Owner {
 
   /// A scope's chat list as a page shows it: its first `first` rows (its window), and how many more it has (`more`). Read
   /// as a window over the index, never a station's rows whole (#chatsOf `windowed`).
-  #chats(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number): Value | undefined {
-    return this.#chatsOf(scope, mine, watching, visibility, first, true).value;
+  #chats(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, filter: ChatFilter = {}): Value | undefined {
+    return this.#chatsOf(scope, mine, watching, visibility, first, true, filter).value;
   }
 
   /// A scope's chat list whole, every row of it: what search, chatSearch and a share's choice read till each chat has
   /// what finds it kept beside it (scripts/whole-lists.ts). `first`: how many rows a page shows of it first, what is read
   /// of its stations' records for its first screen while they are not loaded (#head).
   #chatsWhole(scope: string, mine: boolean, watching: boolean, visibility: Visibility = "visible", first = WINDOW_UNTOLD): Value | undefined {
-    return this.#chatsOf(scope, mine, watching, visibility, first, false).value;
+    return this.#chatsOf(scope, mine, watching, visibility, first, false, {}).value;
   }
 
   /// `windowed`: its first `first` rows alone, read as the list's order has them through the index (data.ts chatFound,
@@ -2494,22 +2659,22 @@ export class Views implements Owner {
   /// Its rows and days are made apart from what its stations' links say (#chatsMade, a computed kept by the list and its
   /// window), so that a link's state, its catching up (each batch of it on its way back, 14 in a minute, each making a
   /// phone's list again whole: 1,170 ms, 2026-11-18) or its speed makes again only what is said of the stations here.
-  #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): { value: Value | undefined; running: number } {
+  #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean, filter: ChatFilter = {}): { value: Value | undefined; running: number } {
     // (and by the local day and the zone's offset: its days are made again as either is another, #daysOf, whatever made
     // the list again then, the clock's turn at midnight, a zone changed)
     const host = this.#core.host;
     const nowMs = host.nowMs();
     const offset = host.utcOffsetMin(nowMs);
-    const key = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}\u0001${first}\u0001${Math.floor((nowMs + offset * 60_000) / DAY_MS)}\u0001${offset}`;
+    const key = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}\u0001${first}\u0001${filterKey(filter)}\u0001${Math.floor((nowMs + offset * 60_000) / DAY_MS)}\u0001${offset}`;
     let kept = this.#chatsMadeKept.get(key);
-    if (kept === undefined) kept = computed(() => this.#chatsMade(scope, mine, watching, visibility, first, windowed));
+    if (kept === undefined) kept = computed(() => this.#chatsMade(scope, mine, watching, visibility, first, windowed, filter));
     this.#chatsMadeKept.delete(key);
     this.#chatsMadeKept.set(key, kept);
     // (a few lists': those shown, and the last ones left)
     for (const k of this.#chatsMadeKept.keys()) if (this.#chatsMadeKept.size > CHATS_MADE_KEPT) this.#chatsMadeKept.delete(k);
     const made = kept.get();
     if ("value" in made) return { value: made.value, running: 0 };
-    const { stations, me, days, more, total, running, runningRows, unread, reads } = made;
+    const { stations, me, days, groups, more, total, running, runningRows, unread, reads } = made;
     const data = this.#core.data;
     const states: J[] = [];
     // Each station in trouble: its state, its line, the words said once when every one says the same (the device's
@@ -2606,14 +2771,33 @@ export class Views implements Owner {
       });
       interrupted.push({ station: s.address, stationName: s.name, count, chats });
     }
-    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}), ...(interrupted.length > 0 ? { interrupted } : {}) } }, running: runningRows };
+    return {
+      value: {
+        ok: {
+          me,
+          stations: states,
+          loading,
+          days,
+          ...(groups !== undefined ? { groups } : {}),
+          trouble,
+          members: count,
+          leading: "agents",
+          glyph,
+          note,
+          ...(syncing !== null ? { syncing } : {}),
+          ...(more > 0 ? { more } : {}),
+          ...(interrupted.length > 0 ? { interrupted } : {}),
+        },
+      },
+      running: runningRows,
+    };
   }
 
   /// What #chatsOf makes of a list that no station's link says: its stations, its days (its first `first` rows where
   /// `windowed`) and how many more it has, how many it has and which stations' rows run, and whether each station's
   /// rows were read (`reads`: read, its error, or not yet). Read in a computed (#chatsMadeKept), it reads no link: what
   /// the stations' links say is said of it by #chatsOf alone.
-  #chatsMade(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): ChatsMade {
+  #chatsMade(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean, filter: ChatFilter = {}): ChatsMade {
     const stations = this.#stationsOr(scope);
     if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined };
     let runningRows = 0;
@@ -2627,7 +2811,7 @@ export class Views implements Owner {
     const reads = new Map<string, "ok" | { err: J }>();
     const rows: J[] = [];
     // The rows each station's records made last time (`keptBetween`), and which of them changed since.
-    const listKey = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}`;
+    const listKey = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}\u0001${filterKey(filter)}`;
     let keptLists = this.#chatsKept.get(listKey);
     if (keptLists) {
       this.#chatsKept.delete(listKey);
@@ -2658,6 +2842,7 @@ export class Views implements Owner {
       if ((visibility === "visible" || visibility === "hidden") && (get(shown, "hidden") === true) !== (visibility === "hidden")) return false;
       // (a chat an agent leads is in no list but a search: its opener's info leads to it, the user 2026-11-17)
       if (visibility !== "found" && decisions.led(shown)) return false;
+      if (!matchesClassification(shown, filter)) return false;
       return !watching || present.watches(arr(get(shown, "agents")));
     };
     // (the key each station's rows are kept by beside their records, where they are read so: listRowKey)
@@ -2667,10 +2852,11 @@ export class Views implements Owner {
       : null;
     // The window: what it reads of each station, its rows in the list's order (a row kept beside its record, else its
     // record) then those overlaid here; each station's count and whether one of its rows runs, but those overlaid.
-    const win = windowed ? this.#window(stations.filter((s) => known.includes(s.address)), mine, watching, visibility, first, watching ? new Map() : new Map(stations.filter((s) => known.includes(s.address)).map((s) => [s.address, keyOf(s)]))) : null;
+    const win = windowed ? this.#window(stations.filter((s) => known.includes(s.address)), mine, watching, visibility, first, watching ? new Map() : new Map(stations.filter((s) => known.includes(s.address)).map((s) => [s.address, keyOf(s)])), filter) : null;
     // (what the window shows of each station, and which stations' rows run: those overlaid and asked here added below)
     let total = 0;
     const running = new Set<string>();
+    const groupTotals = filter.groupBy === "project" && win !== null ? new Map<string, GroupCounts>(win.groupTotals) : null;
     for (const s of stations) {
       const read = win !== null
         ? (data.listed(s.address, "chats") ? ({ ok: win.items.get(s.address) ?? [] } as Value) : this.listKnown(s.address, "chats"))
@@ -2728,6 +2914,7 @@ export class Views implements Owner {
           if (visibility === "visible" && whole.hidden === true) return null;
           if (visibility === "hidden" && whole.hidden !== true) return null;
           if (visibility !== "found" && decisions.led(whole)) return null;
+          if (!matchesClassification(whole, filter)) return null;
           const standIn: J = { lastActiveAt: whole.lastActiveAt, station: s.address, state: h.row!.state };
           if (h.pinnedAt !== null) {
             pinnedAt.set(standIn, h.pinnedAt);
@@ -2751,6 +2938,7 @@ export class Views implements Owner {
           if (visibility === "visible" && get(shown, "hidden") === true) return null;
           if (visibility === "hidden" && get(shown, "hidden") !== true) return null;
           if (visibility !== "found" && decisions.led(shown)) return null;
+          if (!matchesClassification(shown, filter)) return null;
           // Only a frozen row (db/account.ts) is surely as it was when its row was made.
           const keepable = isObject(shown) && Object.isFrozen(shown);
           const kept = keepable ? this.#rowsMade.get(shown) : undefined;
@@ -2836,6 +3024,7 @@ export class Views implements Owner {
           if (row !== null) {
             rows.push(row);
             total++;
+            if (groupTotals !== null) addRowToGroupTotals(groupTotals, unmade.get(row)?.() ?? row);
             if (get(row, "state") === "run") {
               running.add(s.address);
               runningRows++;
@@ -2852,6 +3041,7 @@ export class Views implements Owner {
           listed.forEach((raw, i) => {
             if (!win.apart.has(raw) || made[i] === null) return;
             total++;
+            if (groupTotals !== null) addRowToGroupTotals(groupTotals, unmade.get(made[i])?.() ?? made[i]);
             if (get(made[i], "state") !== "run") return;
             running.add(s.address);
             runningRows++;
@@ -2868,6 +3058,11 @@ export class Views implements Owner {
       const shown = days.reduce((n, d) => n + arr(get(d, "items")).length, 0);
       more = total - shown;
     }
+    if (filter.groupBy === "project") {
+      const flat = days.flatMap((d) => arr(get(d, "items")));
+      const groups = projectGroupsOf(flat, groupTotals, (names) => this.#core.host.collate?.(names) ?? null);
+      return { stations, me, days: [], groups, more, total, running, runningRows, unread, reads };
+    }
     return { stations, me, days, more, total, running, runningRows, unread, reads };
   }
 
@@ -2875,7 +3070,7 @@ export class Views implements Owner {
   /// (`items`: a row kept beside its record under its station's key in `keys`, as a HeadRow, else its record; at most
   /// `first` of them in all), then its rows overlaid here (`apart`: what local.ts overlaid names, every one, each its
   /// record); and of each its count and whether one of its rows runs, of the rows the window is of but those overlaid.
-  #window(stations: StationInfo[], mine: boolean, watching: boolean, visibility: Visibility, first: number, keys: Map<string, string>): { items: Map<string, J[]>; apart: Set<J>; counts: Map<string, { n: number; runs: boolean; running: number }> } {
+  #window(stations: StationInfo[], mine: boolean, watching: boolean, visibility: Visibility, first: number, keys: Map<string, string>, filter: ChatFilter = {}): { items: Map<string, J[]>; apart: Set<J>; counts: Map<string, { n: number; runs: boolean; running: number }>; groupTotals: Map<string, GroupCounts> } {
     const data = this.#core.data;
     const addresses = stations.map((s) => s.address);
     const threads: string[] = [];
@@ -2888,8 +3083,9 @@ export class Views implements Owner {
     const p = { stations: addresses, mine, hidden: visibility === "hidden" ? 1 : visibility === "all" || visibility === "found" ? 2 : 0, watching, threads, sessions, limit: first } as const;
     const items = new Map<string, J[]>();
     const counts = new Map<string, { n: number; runs: boolean; running: number }>();
+    const groupTotals = new Map<string, GroupCounts>();
     const apart = new Set<J>();
-    if (addresses.length === 0) return { items, apart, counts };
+    if (addresses.length === 0) return { items, apart, counts, groupTotals };
     // (each station's in its own order, as its rows were listed whole: by their place, then their ids)
     const placed = new Map<string, { item: J; ord: number; id: string }[]>();
     const put = (station: string, item: J, ord: SqlValue, id: string) => {
@@ -2902,7 +3098,14 @@ export class Views implements Owner {
     // (the stations' rows in the list's order, across their databases: each read its own first. The window's answer is
     // of their keys and columns alone, read again only as a write changes what of a row it reads (chat-reads.ts `by`):
     // each row's record or kept row is taken by its own key, so a chat that changes and moves nothing is told by its key)
-    const found = data.chatFound(CHAT_READS.window, p, () => false);
+    const projectMode: 0 | 1 | 2 = filter.unclassified === true ? 1 : filter.project !== undefined ? 2 : 0;
+    const found = filter.tag !== undefined
+      ? data.chatFound(CHAT_READS.windowTag, { ...p, tag: filter.tag, projectMode, ...(filter.project !== undefined ? { project: filter.project } : {}) }, () => false)
+      : projectMode === 1
+        ? data.chatFound(CHAT_READS.windowUnclassified, p, () => false)
+        : projectMode === 2
+          ? data.chatFound(CHAT_READS.windowProject, { ...p, project: filter.project! }, () => false)
+          : data.chatFound(CHAT_READS.window, p, () => false);
     const place = new Map(addresses.map((a, i) => [a, i]));
     const shown = [...found].sort((a, b) => {
       const pa = typeof a.cols[0] === "number";
@@ -2937,10 +3140,35 @@ export class Views implements Owner {
     }
     // (each station's counted alone, kept by itself: one station's chat starting its work reads that station's again)
     for (const station of addresses) {
-      const r = data.chatCounted(CHAT_READS.counts, { station, mine, hidden: p.hidden, watching, threads, sessions })[0];
+      const r = filter.tag !== undefined
+        ? data.chatCounted(CHAT_READS.countsTag, { station, tag: filter.tag, mine, hidden: p.hidden, watching, projectMode, ...(filter.project !== undefined ? { project: filter.project } : {}), threads, sessions })[0]
+        : projectMode !== 0
+          ? data.chatCounted(CHAT_READS.countsProject, { station, mine, hidden: p.hidden, watching, projectMode, ...(filter.project !== undefined ? { project: filter.project } : {}), threads, sessions })[0]
+          : data.chatCounted(CHAT_READS.counts, { station, mine, hidden: p.hidden, watching, threads, sessions })[0];
       if (r !== undefined) counts.set(station, { n: Number(r[0] ?? 0), runs: r[1] === 1, running: Number(r[2] ?? 0) });
+      if (filter.groupBy === "project") {
+        const gRows = filter.tag !== undefined
+          ? data.chatCounted(CHAT_READS.groupSummaryTag, { station, tag: filter.tag, mine, hidden: p.hidden, watching, projectMode, ...(filter.project !== undefined ? { project: filter.project } : {}), threads, sessions })
+          : data.chatCounted(CHAT_READS.groupSummary, { station, mine, hidden: p.hidden, watching, projectMode, ...(filter.project !== undefined ? { project: filter.project } : {}), threads, sessions });
+        for (const gr of gRows) {
+          const kindNum = Number(gr[0]);
+          const proj = typeof gr[1] === "string" ? gr[1] : "";
+          const gKey = kindNum === 0 ? "pinned" : kindNum === 1 ? "unclassified" : kindNum === 3 ? "cross" : `project:${proj}`;
+          let acc = groupTotals.get(gKey);
+          if (acc === undefined) {
+            acc = { chatCount: 0, runningCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 };
+            groupTotals.set(gKey, acc);
+          }
+          acc.chatCount += Number(gr[2] ?? 0);
+          acc.runningCount += Number(gr[3] ?? 0);
+          acc.askingCount += Number(gr[4] ?? 0);
+          acc.unreadCount += Number(gr[5] ?? 0);
+          const at = Number(gr[6] ?? 0);
+          if (at > acc.latestActiveAt) acc.latestActiveAt = at;
+        }
+      }
     }
-    return { items, apart, counts };
+    return { items, apart, counts, groupTotals };
   }
 
   /// The messages a search's words find in the chats the sidebar lists (those `refs.search` would list, by the same
@@ -3230,6 +3458,15 @@ export class Views implements Owner {
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
     else delete row.opener;
+    if (typeof raw.project === "string") row.project = raw.project;
+    else delete row.project;
+    if (raw.projectLocked === true) row.projectLocked = true;
+    else delete row.projectLocked;
+    if (Array.isArray(raw.tags) && raw.tags.length > 0) {
+      const tags = raw.tags.filter((x: unknown): x is string => typeof x === "string" && x !== "");
+      if (tags.length > 0) row.tags = tags;
+      else delete row.tags;
+    } else delete row.tags;
     if (typeof raw.pinned === "number") pinnedAt.set(row, raw.pinned);
     return row;
   }
@@ -3314,6 +3551,15 @@ export class Views implements Owner {
     Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
+    if (typeof raw.project === "string") row.project = raw.project;
+    else delete row.project;
+    if (raw.projectLocked === true) row.projectLocked = true;
+    else delete row.projectLocked;
+    if (Array.isArray(raw.tags) && raw.tags.length > 0) {
+      const tags = raw.tags.filter((x: unknown): x is string => typeof x === "string" && x !== "");
+      if (tags.length > 0) row.tags = tags;
+      else delete row.tags;
+    } else delete row.tags;
     if (typeof raw.pinned === "number") pinnedAt.set(row, raw.pinned);
     return row;
   }
@@ -4433,6 +4679,20 @@ export class Views implements Owner {
     const archived = this.local.archivedChanging(station, id, null);
     if (archived !== null) view.archived = archived;
     if (row !== undefined && row.pinned !== undefined) view.pinned = typeof row.pinned === "number";
+    const overlaid = this.local.asChanging(station, row ?? { thread: id });
+    const hasOverlay = overlaid !== (row ?? undefined) && ("project" in overlaid || "projectLocked" in overlaid || "tags" in overlaid);
+    const chatProject = hasOverlay && "project" in overlaid
+      ? (typeof overlaid.project === "string" ? overlaid.project : undefined)
+      : (typeof thread.project === "string" ? thread.project : typeof row?.project === "string" ? row.project : undefined);
+    if (chatProject !== undefined) view.project = chatProject;
+    if ((hasOverlay && overlaid.projectLocked === true) || thread.projectLocked === true || row?.projectLocked === true) view.projectLocked = true;
+    const rawTags = hasOverlay && "tags" in overlaid
+      ? (Array.isArray(overlaid.tags) ? overlaid.tags : null)
+      : (Array.isArray(thread.tags) ? thread.tags : Array.isArray(row?.tags) ? row.tags : null);
+    if (rawTags !== null && rawTags.length > 0) {
+      const tags = rawTags.filter((x: unknown): x is string => typeof x === "string" && x !== "");
+      if (tags.length > 0) view.tags = tags;
+    }
     const archivedRow = found === null ? this.#archivedRow(station, thread) : undefined;
     const lineage = this.#lineageRow(thread, row, archivedRow);
     const opener = lineage !== undefined ? this.#opener(station, lineage) : null;

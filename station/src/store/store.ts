@@ -1233,6 +1233,8 @@ export class Store {
     s = { ...s, connect: ownName(s.connect) };
     const list = s.profiles !== undefined ? (s.profiles && s.profiles.length > 0 ? s.profiles : null) : (s.profilePinned ? [s.profile] : null);
     const pinned = list !== null ? list.length === 1 : (s.profilePinned ?? false);
+    const sub = typeof s.createdBySub === "string" && s.createdBySub.trim() !== "" ? s.createdBySub.trim() : null;
+    const emailLower = typeof s.createdBy === "string" && s.createdBy.trim() !== "" ? s.createdBy.trim().toLowerCase() : null;
     this.#with((changes) => {
       this.#run(
         `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed, tui)
@@ -1242,6 +1244,9 @@ export class Store {
         // A new session begins with today's instructions: no note is news to it.
         latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
       );
+      if (sub !== null) {
+        this.#run("INSERT OR REPLACE INTO session_creators (session_key, email_lower, sub) VALUES (?1, ?2, ?3)", s.key, emailLower, sub);
+      }
       changes.push({ type: "session", key: s.key });
       this.#sessionWorkspaceChanged();
     });
@@ -1381,6 +1386,601 @@ export class Store {
   /// The models `sub` starred in workspace `ws`, kept as `stars` (JSON).
   putModelStars(ws: string, sub: string, stars: string): void {
     this.#run("INSERT INTO model_stars (ws, sub, stars) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET stars = excluded.stars", ws, sub, stars);
+  }
+
+  /// The default project preferences per preset for `sub` in workspace `ws` (api/routes/preset-projects.ts), as JSON; null before any.
+  presetProjects(ws: string, sub: string): string | null {
+    const row = this.#one("SELECT json FROM preset_projects WHERE workspace = ?1 AND sub = ?2", ws, sub);
+    return row === undefined || row === null ? null : String(row.json);
+  }
+
+  /// The default project preferences per preset for `sub` in workspace `ws` along with internal server-only rename watermark `meta`.
+  presetProjectsWithMeta(ws: string, sub: string): { json: string; meta: string | null } | null {
+    const row = this.#one("SELECT json, meta FROM preset_projects WHERE workspace = ?1 AND sub = ?2", ws, sub);
+    if (row === undefined || row === null) return null;
+    return { json: String(row.json), meta: typeof row.meta === "string" ? row.meta : null };
+  }
+
+  /// The default project preferences per preset for `sub` in workspace `ws`, kept as `json` (and optional server-only `meta`).
+  putPresetProjects(ws: string, sub: string, json: string, meta: string | null = null): void {
+    this.#run(
+      "INSERT INTO preset_projects (workspace, sub, json, meta) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (workspace, sub) DO UPDATE SET json = excluded.json, meta = excluded.meta",
+      ws, sub, json, meta,
+    );
+  }
+
+  /// All `(sub, json)` rows in `preset_projects` for workspace `ws` (used by rename/merge to rewrite stale defaults).
+  listPresetProjectsForWorkspace(ws: string): [string, string][] {
+    return this.#all("SELECT sub, json FROM preset_projects WHERE workspace = ?1", ws).map((r) => [String(r.sub), String(r.json)]);
+  }
+
+  /// Records a new project rename/merge event and returns its monotonic `seq`.
+  insertProjectRenameEvent(
+    ws: string,
+    from: string,
+    to: string,
+    renamedAt: number,
+    opKey: string | null,
+    pendingPeers: readonly string[],
+    opts?: { action?: "rename" | "merge"; opId?: string | null; originSeq?: number; wallAt?: number; pendingRoster?: boolean; pendingInfo?: boolean | 0 | 1 | 2 | 3 },
+  ): number {
+    const infoState = typeof opts?.pendingInfo === "number" ? opts.pendingInfo : opts?.pendingInfo ? 1 : 0;
+    this.#run(
+      `INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+      ws,
+      opts?.action ?? "rename",
+      from,
+      to,
+      renamedAt,
+      opts?.wallAt ?? renamedAt,
+      opts?.originSeq ?? 0,
+      opKey,
+      opts?.opId ?? null,
+      JSON.stringify(pendingPeers),
+      opts?.pendingRoster ? 1 : 0,
+      infoState,
+    );
+    const seq = Number(this.#one("SELECT last_insert_rowid() AS seq")?.seq ?? 0);
+    if (opts?.originSeq === undefined && seq > 0) {
+      this.#run("UPDATE project_rename_events SET origin_seq = ?1 WHERE seq = ?1", seq);
+    }
+    if (opKey !== null && seq > 0) {
+      this.#run("INSERT OR IGNORE INTO project_rename_op_keys (workspace, op_key, event_seq) VALUES (?1, ?2, ?3)", ws, opKey, seq);
+    }
+    return seq;
+  }
+
+  /// Persistently binds a scoped `opKey` (including a takeover retry key) to rename event `seq`.
+  bindProjectRenameOpKey(ws: string, opKey: string, eventSeq: number): void {
+    this.#run(
+      "INSERT OR IGNORE INTO project_rename_op_keys (workspace, op_key, event_seq) VALUES (?1, ?2, ?3)",
+      ws, opKey, eventSeq,
+    );
+  }
+
+  /// Updates the remaining unfinished progress flags for rename event `seq`.
+  updateProjectRenameProgress(
+    seq: number,
+    patch: { pendingPeers?: readonly string[]; pendingRoster?: boolean; pendingInfo?: boolean },
+  ): void {
+    const sets: string[] = [];
+    const args: (string | number)[] = [];
+    if (patch.pendingPeers !== undefined) {
+      sets.push("pending_peers = ?");
+      args.push(JSON.stringify(patch.pendingPeers));
+    }
+    if (patch.pendingRoster !== undefined) {
+      sets.push("pending_roster = ?");
+      args.push(patch.pendingRoster ? 1 : 0);
+    }
+    if (patch.pendingInfo !== undefined) {
+      sets.push("pending_info = ?");
+      args.push(patch.pendingInfo ? 1 : 0);
+    }
+    if (sets.length === 0) return;
+    args.push(seq);
+    this.#run(`UPDATE project_rename_events SET ${sets.join(", ")} WHERE seq = ?`, ...args);
+  }
+
+  /// Reads a single project rename event row by `seq`.
+  getProjectRenameEvent(seq: number) {
+    const r = this.#one(
+      "SELECT seq, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated FROM project_rename_events WHERE seq = ?1",
+      seq,
+    );
+    return r === undefined || r === null ? null : this.#parseRenameEventRow(r);
+  }
+
+  /// Monotonically transitions `pending_roster` from 1 -> 0 and seeds `pending_peers` once.
+  /// Returns true if this caller claimed the roster transition, false if already claimed.
+  claimRenameRosterResult(seq: number, initialPeers: readonly string[]): boolean {
+    return this.#tx(() => {
+      const r = this.#one("SELECT pending_roster FROM project_rename_events WHERE seq = ?1", seq);
+      if (r === undefined || r === null || Number(r.pending_roster ?? 0) !== 1) return false;
+      this.#run(
+        "UPDATE project_rename_events SET pending_roster = 0, pending_peers = ?1 WHERE seq = ?2 AND pending_roster = 1",
+        JSON.stringify(initialPeers), seq,
+      );
+      return true;
+    });
+  }
+
+  /// Atomically removes `resolvedPeerIds` from `pending_peers` AND (when `anyRemoteUpdated` is true) records
+  /// `remote_updated = 1` and upgrades `pending_info` from `0`/`2` -> `3` inside ONE SQLite transaction.
+  /// Failed peers are NEVER re-added, so a late failing request cannot revert a takeover's completion.
+  markRenamePeersResolved(seq: number, resolvedPeerIds: readonly string[], anyRemoteUpdated = false): void {
+    if (resolvedPeerIds.length === 0 && !anyRemoteUpdated) return;
+    const resolved = new Set(resolvedPeerIds);
+    this.#tx(() => {
+      const r = this.#one("SELECT pending_peers, pending_info, remote_updated FROM project_rename_events WHERE seq = ?1", seq);
+      if (r === undefined || r === null) return;
+      let current: string[] = [];
+      try {
+        const parsed = JSON.parse(String(r.pending_peers ?? "[]"));
+        if (Array.isArray(parsed)) current = parsed.filter((x): x is string => typeof x === "string");
+      } catch {}
+      const nextPeers = resolved.size > 0 ? current.filter((id) => !resolved.has(id)) : current;
+      const peersChanged = nextPeers.length !== current.length;
+      const curInfo = Number(r.pending_info ?? 0);
+      const nextInfo = anyRemoteUpdated && (curInfo === 0 || curInfo === 2) ? 3 : curInfo;
+      const nextRemote = anyRemoteUpdated ? 1 : Number(r.remote_updated ?? 0);
+      if (peersChanged || nextInfo !== curInfo || nextRemote !== Number(r.remote_updated ?? 0)) {
+        this.#run(
+          "UPDATE project_rename_events SET pending_peers = ?1, pending_info = ?2, remote_updated = ?3 WHERE seq = ?4",
+          JSON.stringify(nextPeers),
+          nextInfo,
+          nextRemote,
+          seq,
+        );
+      }
+    });
+  }
+
+  /// Returns all `op_id` values in workspace `ws` that still have `pending_info = 1` so `PROJECTS.jsonl`
+  /// pins them against eviction until SQLite confirms completion.
+  listPendingRenameInfoOpIds(ws: string): Set<string> {
+    const out = new Set<string>();
+    for (const r of this.#all(
+      "SELECT op_id FROM project_rename_events WHERE workspace = ?1 AND pending_info = 1 AND op_id IS NOT NULL",
+      ws,
+    )) {
+      const id = String(r.op_id).trim();
+      if (id !== "") out.add(id);
+    }
+    return out;
+  }
+
+  /// Updates `pending_info` to exact state `0 | 1 | 2 | 3` for `seq`.
+  markRenameInfoState(seq: number, state: 0 | 1 | 2 | 3): void {
+    this.#run("UPDATE project_rename_events SET pending_info = ?1 WHERE seq = ?2", state, seq);
+  }
+
+  /// Monotonically marks `pending_info = 0` for `seq`.
+  markRenameInfoDone(seq: number): void {
+    this.markRenameInfoState(seq, 0);
+  }
+
+  /// Atomically records `remote_updated = 1` and upgrades `pending_info` from `2` or `0` to `3` (must register target project)
+  /// once at least one remote peer reports `updated > 0`. Even when `pending_info === 1`, `remote_updated = 1` is persisted!
+  upgradeRenameInfoToRegister(seq: number): void {
+    this.#tx(() => {
+      const r = this.#one("SELECT pending_info FROM project_rename_events WHERE seq = ?1", seq);
+      if (r === undefined || r === null) return;
+      const cur = Number(r.pending_info ?? 0);
+      if (cur === 2 || cur === 0) {
+        this.#run("UPDATE project_rename_events SET remote_updated = 1, pending_info = 3 WHERE seq = ?1", seq);
+      } else {
+        this.#run("UPDATE project_rename_events SET remote_updated = 1 WHERE seq = ?1", seq);
+      }
+    });
+  }
+
+  /// Indexed O(log N) check whether workspace `ws` currently has at least one local thread with `project = name`.
+  hasLocalProject(ws: string, name: string, home: string | null = null): boolean {
+    const norm = normalizeProject(name);
+    if (norm === "") return false;
+    const isHome = ws === "" || (home !== null && ws === home);
+    const wsCond = ws === "" ? "s.ws IS NULL" : isHome ? "(s.ws IS NULL OR s.ws = ?)" : "s.ws = ?";
+    const wsArgs: (string | number)[] = ws === "" ? [] : [ws];
+    const r = this.#one(
+      `SELECT 1 AS ok
+       FROM threads t INDEXED BY threads_project
+       WHERE t.project = ? AND t.project IS NOT NULL AND t.project != ''
+         AND EXISTS (
+           SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session
+           WHERE m.thread = t.id AND ${wsCond}
+         )
+       LIMIT 1`,
+      norm, ...wsArgs,
+    );
+    return r !== undefined && r !== null;
+  }
+
+  /// True when an unfinished local rename/merge already targets `toName` in `ws`.
+  hasPendingProjectTarget(ws: string, toName: string): boolean {
+    const r = this.#one(
+      "SELECT 1 AS ok FROM project_rename_events WHERE workspace = ?1 AND to_name = ?2 AND (pending_peers != '[]' OR pending_roster = 1 OR pending_info != 0) LIMIT 1",
+      ws, toName,
+    );
+    return r !== undefined && r !== null;
+  }
+
+  /// True when an earlier rename/merge from `fromName` to a DIFFERENT target still has pending peers, roster, or local info move (`pending_info = 1`).
+  hasUnfinishedRenameFrom(ws: string, fromName: string, excludeTo: string): boolean {
+    const r = this.#one(
+      "SELECT 1 AS ok FROM project_rename_events WHERE workspace = ?1 AND from_name = ?2 AND to_name != ?3 AND (pending_peers != '[]' OR pending_roster = 1 OR pending_info = 1) LIMIT 1",
+      ws, fromName, excludeTo,
+    );
+    return r !== undefined && r !== null;
+  }
+
+  /// Highest `renamed_at` recorded in `project_rename_events` for workspace `ws` (0 if none).
+  /// Used to guarantee strictly monotonic logical `renamedAt` timestamps across sequential renames in the same millisecond.
+  maxProjectRenameAt(ws: string): number {
+    const r = this.#one("SELECT max(renamed_at) AS m FROM project_rename_events WHERE workspace = ?1", ws);
+    return r !== undefined && r !== null && typeof r.m === "number" && Number.isFinite(r.m) ? r.m : 0;
+  }
+
+  #parseRenameEventRow(r: Record<string, unknown>): {
+    seq: number;
+    action: "rename" | "merge";
+    from: string;
+    to: string;
+    renamedAt: number;
+    wallAt: number;
+    originSeq: number;
+    opKey: string | null;
+    opId: string | null;
+    pendingPeers: string[];
+    pendingRoster: boolean;
+    pendingInfo: boolean;
+    pendingInfoState: 0 | 1 | 2 | 3;
+    localUpdated: number;
+    remoteUpdated: boolean;
+  } {
+    let pendingPeers: string[] = [];
+    try {
+      const parsed = JSON.parse(String(r.pending_peers ?? "[]"));
+      if (Array.isArray(parsed)) pendingPeers = parsed.filter((x): x is string => typeof x === "string");
+    } catch {}
+    const renamedAt = Number(r.renamed_at);
+    const rawWall = Number(r.wall_at ?? 0);
+    const rawInfo = Number(r.pending_info ?? 0);
+    const pendingInfoState = (rawInfo === 1 || rawInfo === 2 || rawInfo === 3 ? rawInfo : 0) as 0 | 1 | 2 | 3;
+    return {
+      seq: Number(r.seq),
+      action: r.action === "merge" ? "merge" : "rename",
+      from: String(r.from_name),
+      to: String(r.to_name),
+      renamedAt,
+      wallAt: rawWall > 0 ? rawWall : renamedAt,
+      originSeq: Number(r.origin_seq ?? r.seq),
+      opKey: typeof r.op_key === "string" ? r.op_key : null,
+      opId: typeof r.op_id === "string" ? r.op_id : null,
+      pendingPeers,
+      pendingRoster: Number(r.pending_roster ?? 0) === 1,
+      pendingInfo: pendingInfoState !== 0,
+      pendingInfoState,
+      localUpdated: Number(r.local_updated ?? 0),
+      remoteUpdated: Number(r.remote_updated ?? 0) === 1,
+    };
+  }
+
+  /// Looks up a rename event by `(ws, opKey)` via `project_rename_op_keys` (or direct `op_key` column).
+  findProjectRenameByOpKey(ws: string, opKey: string) {
+    const mapped = this.#one(
+      `SELECT e.seq, e.action, e.from_name, e.to_name, e.renamed_at, e.wall_at, e.origin_seq, e.op_key, e.op_id, e.pending_peers, e.pending_roster, e.pending_info, e.local_updated, e.remote_updated
+       FROM project_rename_op_keys k
+       JOIN project_rename_events e ON e.seq = k.event_seq
+       WHERE k.workspace = ?1 AND k.op_key = ?2`,
+      ws, opKey,
+    );
+    if (mapped !== undefined && mapped !== null) return this.#parseRenameEventRow(mapped);
+    const r = this.#one(
+      "SELECT seq, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated FROM project_rename_events WHERE workspace = ?1 AND op_key = ?2",
+      ws, opKey,
+    );
+    return r === undefined || r === null ? null : this.#parseRenameEventRow(r);
+  }
+
+  /// Looks up the latest UNFINISHED (`pending_peers != '[]' OR pending_roster = 1 OR pending_info != 0`) rename event for `(ws, action, from, to)`.
+  findUnfinishedProjectRename(ws: string, action: "rename" | "merge", from: string, to: string) {
+    const r = this.#one(
+      `SELECT seq, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated
+       FROM project_rename_events
+       WHERE workspace = ?1 AND action = ?2 AND from_name = ?3 AND to_name = ?4
+         AND (pending_peers != '[]' OR pending_roster = 1 OR pending_info != 0)
+       ORDER BY seq DESC LIMIT 1`,
+      ws, action, from, to,
+    );
+    return r === undefined || r === null ? null : this.#parseRenameEventRow(r);
+  }
+
+  /// Returns all recorded project rename events for workspace `ws` ordered by causal `(renamed_at ASC, origin_seq ASC, seq ASC)`.
+  listProjectRenameEvents(ws: string): { seq: number; from: string; to: string; renamedAt: number; wallAt: number; originSeq: number; opId: string | null }[] {
+    return this.#all(
+      "SELECT seq, from_name, to_name, renamed_at, wall_at, origin_seq, op_id FROM project_rename_events WHERE workspace = ?1 ORDER BY renamed_at ASC, origin_seq ASC, seq ASC",
+      ws,
+    ).map((r) => {
+      const renamedAt = Number(r.renamed_at);
+      const rawWall = Number(r.wall_at ?? 0);
+      return {
+        seq: Number(r.seq),
+        from: String(r.from_name),
+        to: String(r.to_name),
+        renamedAt,
+        wallAt: rawWall > 0 ? rawWall : renamedAt,
+        originSeq: Number(r.origin_seq ?? r.seq),
+        opId: typeof r.op_id === "string" ? r.op_id : null,
+      };
+    });
+  }
+
+  /// Atomically records the `project_rename_events` row (with `op_id` dedup & `origin_seq`), rewrites local `threads` (`from -> effectiveTo`),
+  /// and rewrites older local `preset_projects` (`entry.at < renamedAt`) inside ONE SQLite `#tx` transaction.
+  /// Any SQLite write error aborts and rolls back the entire transaction; notifications are emitted ONLY after commit.
+  commitLocalProjectRenameAtomic(input: {
+    ws: string | null;
+    home: string | null;
+    action: "rename" | "merge";
+    from: string;
+    to: string;
+    effectiveTo?: string;
+    effectiveWatermark?: { at: number; wallAt?: number; originSeq: number; seq: number };
+    renamedAt: number;
+    wallAt?: number;
+    originSeq?: number;
+    opKey: string | null;
+    opId: string | null;
+    pendingPeers: readonly string[];
+    pendingRoster: boolean;
+    pendingInfo: boolean;
+  }): {
+    seq: number;
+    originSeq: number;
+    alreadyApplied: boolean;
+    local: { updated: number; skippedLocked: number };
+    presetNotifies: [string, string][];
+  } {
+    const from = normalizeProject(input.from);
+    const to = normalizeProject(input.to);
+    const effectiveTo = normalizeProject(input.effectiveTo ?? input.to);
+    const wsKey = input.ws ?? input.home ?? "";
+    const isHome = input.ws === null || input.home === null || input.ws === input.home;
+    const wsCond = isHome
+      ? (input.home !== null ? "(s.ws IS NULL OR s.ws = ?)" : "s.ws IS NULL")
+      : "s.ws = ?";
+    const wsArgs: (string | number)[] = isHome ? (input.home !== null ? [input.home] : []) : [input.ws!];
+
+    return this.#with((changes) => {
+      const pending: StoreChange[] = [];
+      const presetNotifies: [string, string][] = [];
+      const res = this.#tx(() => {
+        if (input.opId !== null) {
+          const dup = this.#one(
+            "SELECT seq, origin_seq, local_updated FROM project_rename_events WHERE workspace = ?1 AND op_id = ?2",
+            wsKey, input.opId,
+          );
+          if (dup !== undefined && dup !== null) {
+            return {
+              seq: Number(dup.seq),
+              originSeq: Number(dup.origin_seq ?? dup.seq),
+              alreadyApplied: true,
+              local: { updated: Number(dup.local_updated ?? 0), skippedLocked: 0 },
+            };
+          }
+        }
+        const wallAt = input.wallAt ?? input.renamedAt;
+        this.#run(
+          `INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
+          wsKey,
+          input.action,
+          from,
+          to,
+          input.renamedAt,
+          wallAt,
+          input.originSeq ?? 0,
+          input.opKey,
+          input.opId,
+          JSON.stringify(input.pendingPeers),
+          input.pendingRoster ? 1 : 0,
+          input.pendingInfo ? 1 : 0,
+        );
+        const seq = Number(this.#one("SELECT last_insert_rowid() AS seq")?.seq ?? 0);
+        const originSeq = input.originSeq !== undefined ? input.originSeq : seq;
+        if (input.originSeq === undefined && seq > 0) {
+          this.#run("UPDATE project_rename_events SET origin_seq = ?1 WHERE seq = ?1", seq);
+        }
+        if (input.opKey !== null && seq > 0) {
+          this.#run(
+            "INSERT OR IGNORE INTO project_rename_op_keys (workspace, op_key, event_seq) VALUES (?1, ?2, ?3)",
+            wsKey, input.opKey, seq,
+          );
+        }
+        if ((input.ws === null || input.ws === input.home) && wsKey !== "") {
+          this.#run(
+            `INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info)
+             VALUES ('', ?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, '[]', 0, 0)`,
+            input.action, from, to, input.renamedAt, wallAt, originSeq,
+          );
+        }
+
+        let updated = 0;
+        if (from !== effectiveTo) {
+          let lastId = 0;
+          for (;;) {
+            const rows = this.#all(
+              `SELECT t.id
+               FROM threads t INDEXED BY threads_project
+               WHERE t.project = ? AND t.project IS NOT NULL AND t.project != '' AND t.id > ?
+                 AND EXISTS (
+                   SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session
+                   WHERE m.thread = t.id AND ${wsCond}
+                 )
+               ORDER BY t.id
+               LIMIT 500`,
+              from, lastId, ...wsArgs,
+            );
+            if (rows.length === 0) break;
+            for (const r of rows) {
+              const id = Number(r.id);
+              lastId = id;
+              this.#run("UPDATE threads SET project = ? WHERE id = ?", effectiveTo, id);
+              updated++;
+              pending.push({ type: "thread", id, entries: [] });
+            }
+          }
+          const wsKeys = new Set<string>([wsKey]);
+          if (input.ws === null || input.ws === input.home) wsKeys.add("");
+          for (const wk of wsKeys) {
+            for (const r of this.#all("SELECT sub, json, meta FROM preset_projects WHERE workspace = ?1", wk)) {
+              const sub = String(r.sub);
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(String(r.json));
+              } catch {
+                // Leave unparseable preset_projects row untouched; SQLite write errors below are NEVER caught!
+                continue;
+              }
+              if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+              const obj = parsed as Record<string, { project?: unknown; rev?: unknown; at?: unknown; ren?: unknown }>;
+              const meta: Record<string, { at: number; wallAt?: number; originSeq: number; seq: number }> = Object.create(null);
+              if (typeof r.meta === "string" && r.meta !== "") {
+                try {
+                  const mp = JSON.parse(r.meta);
+                  if (mp !== null && typeof mp === "object" && !Array.isArray(mp)) {
+                    for (const pid of Object.keys(mp)) {
+                      const v = (mp as Record<string, unknown>)[pid];
+                      if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+                        const vr = v as Record<string, unknown>;
+                        if (typeof vr.at === "number" && typeof vr.originSeq === "number" && typeof vr.seq === "number") {
+                          meta[pid] = {
+                            at: vr.at,
+                            ...(typeof vr.wallAt === "number" && Number.isFinite(vr.wallAt) ? { wallAt: vr.wallAt } : {}),
+                            originSeq: vr.originSeq,
+                            seq: vr.seq,
+                          };
+                        }
+                      }
+                    }
+                  }
+                } catch {}
+              }
+              let changed = false;
+              for (const pid of Object.keys(obj)) {
+                const entry = obj[pid];
+                if (!entry || typeof entry !== "object" || entry.project !== from) continue;
+                const wm = Object.hasOwn(meta, pid) ? meta[pid] : undefined;
+                const entryAt = Number(entry.at ?? 0);
+                const entryRen = typeof entry.ren === "number" && Number.isFinite(entry.ren) ? entry.ren : undefined;
+                const afterWm =
+                  (wm !== undefined
+                    ? input.renamedAt > wm.at ||
+                      (input.renamedAt === wm.at && (originSeq > wm.originSeq || (originSeq === wm.originSeq && seq > wm.seq)))
+                    : true) &&
+                  (entryRen === undefined || input.renamedAt > entryRen);
+                const eligible = afterWm && (entryAt < wallAt || (entryAt === wallAt && entryAt < input.renamedAt));
+                if (eligible) {
+                  // Auto-migration NEVER mutates `entry.at` or `entry.rev`; it only advances logical `entry.ren`
+                  // and records the true causal watermark (`effectiveWatermark ?? current event`, with `wallAt`) in server-only `meta[pid]`.
+                  const nextWm = input.effectiveWatermark
+                    ? {
+                        at: input.effectiveWatermark.at,
+                        wallAt: input.effectiveWatermark.wallAt ?? input.effectiveWatermark.at,
+                        originSeq: input.effectiveWatermark.originSeq,
+                        seq: input.effectiveWatermark.seq,
+                      }
+                    : { at: input.renamedAt, wallAt, originSeq, seq };
+                  obj[pid] = { project: effectiveTo, rev: Number(entry.rev ?? 0), at: entryAt, ren: nextWm.at };
+                  meta[pid] = nextWm;
+                  changed = true;
+                }
+              }
+              if (changed) {
+                const nextMeta = Object.keys(meta).length > 0 ? JSON.stringify(meta) : null;
+                this.#run(
+                  "INSERT INTO preset_projects (workspace, sub, json, meta) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (workspace, sub) DO UPDATE SET json = excluded.json, meta = excluded.meta",
+                  wk, sub, JSON.stringify(obj), nextMeta,
+                );
+                presetNotifies.push([wk, sub]);
+              }
+            }
+          }
+        }
+        if (updated > 0 && seq > 0) {
+          this.#run("UPDATE project_rename_events SET local_updated = ?1 WHERE seq = ?2", updated, seq);
+        }
+        return { seq, originSeq, alreadyApplied: false, local: { updated, skippedLocked: 0 } };
+      });
+      changes.push(...pending);
+      return { ...res, presetNotifies };
+    });
+  }
+
+  /// Returns the persisted creator subject (`sub`) recorded for `key` in `session_creators`, or `null`.
+  sessionCreatorSub(key: string): string | null {
+    const row = this.#one("SELECT sub FROM session_creators WHERE session_key = ?1", key);
+    if (row === undefined || typeof row.sub !== "string") return null;
+    const sub = row.sub.trim();
+    return sub !== "" ? sub : null;
+  }
+
+  /// Resolves `sub` previously recorded for `email` (case-insensitive) via `session_creators_by_email`.
+  /// Distinguishes `"unique"`, `"none"`, and `"ambiguous"` (>= 2 distinct subs).
+  lookupCreatorSubByEmail(email: string): { kind: "unique"; sub: string } | { kind: "none" } | { kind: "ambiguous" } {
+    const norm = email.trim().toLowerCase();
+    if (norm === "") return { kind: "none" };
+    const rows = this.#all(
+      "SELECT DISTINCT sub FROM session_creators WHERE email_lower = ?1 AND sub != '' LIMIT 2",
+      norm,
+    );
+    if (rows.length === 0) return { kind: "none" };
+    if (rows.length > 1) return { kind: "ambiguous" };
+    const sub = String(rows[0]!.sub).trim();
+    return sub !== "" ? { kind: "unique", sub } : { kind: "none" };
+  }
+
+  /// Atomically opens a still.fail chat thread, joins `session`, and applies optional `initialProject`
+  /// inside ONE SQLite `#tx` transaction (emits notifications only after commit succeeds).
+  openChatAtomic(
+    surface: string,
+    channel: string,
+    threadTs: string,
+    title: string | null,
+    createdBy: string,
+    home: string | null,
+    session: string,
+    connect: string,
+    initialProject?: string | null,
+  ): ThreadRow {
+    const ownSurface = ownName(surface);
+    const ownConnect = ownName(connect);
+    const normProject = initialProject !== undefined && initialProject !== null ? normalizeProject(initialProject) : null;
+    return this.#with((changes) => {
+      const pending: StoreChange[] = [];
+      const out = this.#tx(() => {
+        const now = this.now();
+        this.#run(THREAD_INSERT_IF_ABSENT, ownSurface, channel, threadTs, title, createdBy, now, home);
+        const thread = this.threadAt(ownSurface, channel, threadTs);
+        if (thread === null) throw new Error(`thread ${ownSurface} ${channel}/${threadTs} not made`);
+        const joined = this.#run(MEMBER_JOIN_IF_NEEDED, thread.id, session, ownConnect, now) > 0;
+        if (joined) {
+          pending.push({ type: "session", key: session });
+          pending.push({ type: "thread", id: thread.id, entries: [] });
+        }
+        if (normProject !== null) {
+          this.#run("UPDATE threads SET project = ?, project_locked = 0 WHERE id = ?", normProject, thread.id);
+          pending.push({ type: "thread", id: thread.id, entries: [] });
+          const updated = this.#one("SELECT * FROM threads WHERE id = ?", thread.id);
+          return updated ? toThread(updated) : thread;
+        }
+        return thread;
+      });
+      changes.push(...pending);
+      return out;
+    });
   }
 
   /// `sub`'s drafts of 待派发 in workspace `ws` as kept (sessions/board-drafts.ts), as JSON; null before any.
@@ -1983,6 +2583,7 @@ export class Store {
         this.#run("DELETE FROM transcript_lengths WHERE session = ?", key);
         this.#run("DELETE FROM session_usage WHERE session = ?", key);
         this.#run("DELETE FROM pending_proposals WHERE author = ?", key);
+        this.#run("DELETE FROM session_creators WHERE session_key = ?", key);
         this.#run("DELETE FROM sessions WHERE key = ?", key);
         this.#wsOf.delete(key);
         for (const [token, of] of this.#tokenKey) if (of === key) this.#tokenKey.delete(token);

@@ -260,6 +260,8 @@
   "core-views.new_chat": "New chat",
   "core-views.outbox.uploading": "Uploading {percent}%",
   "core-views.pinned": "Pinned",
+  "core-views.projects.unclassified": "Unclassified",
+  "core-views.projects.cross": "Cross-project / Other",
   "core-views.rates.active": "{n} sessions generating",
   "core-views.rates.basis": "Estimated from model output; each session includes its concurrent subagents.",
   "core-views.rates.empty": "No sessions generating right now",

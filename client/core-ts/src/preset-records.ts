@@ -263,3 +263,84 @@ export function mergeStars(kept: Stars, given: Stars): Stars {
   for (const k of keys) out[k] = all[k]!;
   return out;
 }
+
+// ── preset default project preferences ──
+
+/// A person's default project preference for a preset: `project` null = auto (let agent decide), "" = explicit
+/// cross-project (no project), non-empty = pre-filled project name; `rev` counts explicit edits from 1;
+/// `at` is the immutable wall-clock time of the user's choice; optional `ren` is the server logical rename watermark.
+export type PresetProject = { project: string | null; rev: number; at: number; ren?: number };
+export type PresetProjects = Record<string, PresetProject>;
+
+/// A person keeps at most this many preset project preferences in a workspace; project names at most 80 UTF-16 code units.
+export const PRESET_PROJECTS_MOST = 200;
+export const PRESET_PROJECT_MAX = 80;
+const FORBIDDEN_PROJECT_CHAR = /[\x00-\x1f\x7f,]/;
+
+/// Total order for two preferences of one preset: `(rev, at, ren ?? 0, canonical JSON)`.
+export function newerPresetProject(a: PresetProject, b: PresetProject): PresetProject {
+  if (a.rev !== b.rev) return a.rev > b.rev ? a : b;
+  if (a.at !== b.at) return a.at > b.at ? a : b;
+  const aRen = a.ren ?? 0;
+  const bRen = b.ren ?? 0;
+  if (aRen !== bRen) return aRen > bRen ? a : b;
+  return canonical(a) >= canonical(b) ? a : b;
+}
+
+/// Validates and normalizes a person's preset project preferences; throws `RecordRefusal` on invalid input.
+export function presetProjectsOf(raw: unknown): PresetProjects {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) throw new RecordRefusal("presetProjects: an object of presets' project preferences");
+  const out: PresetProjects = Object.create(null);
+  const keys = Object.keys(raw as object);
+  if (keys.length > PRESET_PROJECTS_MOST) throw new RecordRefusal(`presetProjects: ${PRESET_PROJECTS_MOST} presets at most`);
+  for (const k of keys) {
+    if (!Object.hasOwn(raw as object, k)) continue;
+    if (!ID.test(k)) throw new RecordRefusal("presetProjects: preset id must be 1 to 64 letters, digits, - or _");
+    const v = (raw as Record<string, any>)[k];
+    if (v === null || typeof v !== "object" || Array.isArray(v) || !count(v.rev, 1) || !count(v.at, 0)) {
+      throw new RecordRefusal(`presetProjects: ${k} is {project, rev, at}`);
+    }
+    let ren: number | undefined;
+    if (v.ren !== undefined) {
+      if (!count(v.ren, 0)) throw new RecordRefusal(`presetProjects: ${k}.ren must be a non-negative integer`);
+      ren = v.ren;
+    }
+    let project: string | null;
+    if (v.project === null) {
+      project = null;
+    } else if (typeof v.project === "string") {
+      const trimmed = v.project.trim();
+      if (trimmed.length > PRESET_PROJECT_MAX) throw new RecordRefusal(`presetProjects: ${k} project is ${PRESET_PROJECT_MAX} characters at most`);
+      if (FORBIDDEN_PROJECT_CHAR.test(trimmed)) throw new RecordRefusal(`presetProjects: ${k} project must not contain control characters or commas`);
+      project = trimmed;
+    } else {
+      throw new RecordRefusal(`presetProjects: ${k}.project must be a string or null`);
+    }
+    out[k] = ren !== undefined ? { project, rev: v.rev, at: v.at, ren } : { project, rev: v.rev, at: v.at };
+  }
+  return out;
+}
+
+/// Merges `given` into `kept` preset by preset using `newerPresetProject`; past `PRESET_PROJECTS_MOST`, evicts the
+/// oldest `project === null` entries first, then the oldest entries by `at`. Output keys are sorted for stability.
+export function mergePresetProjects(kept: PresetProjects, given: PresetProjects): PresetProjects {
+  const all: PresetProjects = Object.create(null);
+  for (const k of Object.keys(kept)) {
+    if (Object.hasOwn(kept, k)) all[k] = kept[k]!;
+  }
+  for (const k of Object.keys(given)) {
+    if (!Object.hasOwn(given, k)) continue;
+    all[k] = Object.hasOwn(all, k) ? newerPresetProject(all[k]!, given[k]!) : given[k]!;
+  }
+  let keys = Object.keys(all).sort();
+  if (keys.length > PRESET_PROJECTS_MOST) {
+    const going = [...keys].sort(
+      (a, b) => (all[a]!.project === null ? 0 : 1) - (all[b]!.project === null ? 0 : 1) || all[a]!.at - all[b]!.at || (a < b ? -1 : a > b ? 1 : 0),
+    );
+    const gone = new Set(going.slice(0, keys.length - PRESET_PROJECTS_MOST));
+    keys = keys.filter((k) => !gone.has(k));
+  }
+  const out: PresetProjects = Object.create(null);
+  for (const k of keys) out[k] = all[k]!;
+  return out;
+}

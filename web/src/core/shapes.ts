@@ -2634,6 +2634,20 @@ export interface ChatSentElsewhere {
 	time?: Record<string, SaidAt>;
 }
 
+/** Silent inline project-creation proposal carried on an agent message (never a blocking card). */
+export interface MessageProposal {
+	id: string;
+	name: string;
+	note?: string;
+	refs?: string[];
+	proposer?: string;
+	/** pending | accepted | reassigned | dismissed */
+	status: string;
+	resolvedProject?: string;
+	resolvedBy?: string;
+	resolvedAt?: number;
+}
+
 /**
  * A message of a chat, with what the core decides of it: the viewer's (their bubble), still.fail's own notice, who said
  * it, and whether its agents have yet to take it.
@@ -2742,6 +2756,8 @@ export interface ChatMessage {
 	 * agent wrote it to the other. Absent in a chat's page, which has no letters.
 	 */
 	way?: string;
+	/** Silent inline project-creation proposal carried on this message. Absent otherwise. */
+	proposal?: MessageProposal;
 }
 
 /** An attachment a snapshot may take. */

@@ -30,7 +30,22 @@ import type { Owner } from "../core/routing.ts";
 import { CoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import * as ops from "../ops.ts";
-import { type KeptRecord, type PresetRecord, RecordRefusal, type Stars, canonical, isGone, mergeStars, newerRecord, recordOf, recordsKept, starsOf } from "../preset-records.ts";
+import {
+  type KeptRecord,
+  type PresetProjects,
+  type PresetRecord,
+  RecordRefusal,
+  type Stars,
+  canonical,
+  isGone,
+  mergePresetProjects,
+  mergeStars,
+  newerRecord,
+  presetProjectsOf,
+  recordOf,
+  recordsKept,
+  starsOf,
+} from "../preset-records.ts";
 import {
   type Held,
   TABLE,
@@ -40,6 +55,8 @@ import {
   heldOf,
   lacking,
   presetId,
+  presetProjectsHeld,
+  presetProjectsLacking,
   recordsOf,
   starsHeld,
   starsLacking,
@@ -69,6 +86,8 @@ export const fromBeforeRoute = (e: CoreError) => e.status === 404 && e.message.s
 
 /// The `choice` record the stars are kept in.
 export const likedKey = (ws: string) => `ws:${ws}:liked`;
+/// The `choice` record the preset project preferences are kept in.
+export const presetProjectsKey = (ws: string) => `ws:${ws}:presetProjects`;
 
 /// Who the device is in `ws`: the account that reaches it, its sub and email; null while none does.
 export function whoIn(inner: Inner, ws: string): Who | null {
@@ -108,29 +127,33 @@ function markBefore(inner: Inner, ws: string, id: string, before: boolean): void
   write(inner, ws, { ...held, before: before ? [...held.before, id] : held.before.filter((x) => x !== id) });
 }
 
-/// Station `id` of `ws` owed a carry of the records (`presets`) or the stars (or not any more): kept beside the records,
-/// where it changed, so that it holds across a restart.
-export function markOwed(inner: Inner, ws: string, id: string, what: "presets" | "stars", owed: boolean): void {
+/// Station `id` of `ws` owed a carry of the records (`presets`), stars or presetProjects (or not any more): kept beside
+/// the records, where it changed, so that it holds across a restart.
+export function markOwed(inner: Inner, ws: string, id: string, what: "presets" | "stars" | "presetProjects", owed: boolean): void {
   const held = heldOf(inner.data, ws);
-  const key = what === "presets" ? "owed" : "owedStars";
+  const key = what === "presets" ? "owed" : what === "stars" ? "owedStars" : "owedPresetProjects";
   if (held[key].includes(id) === owed) return;
   write(inner, ws, { ...held, [key]: owed ? [...held[key], id] : held[key].filter((x) => x !== id) });
 }
 
-/// Station `id` of `ws` read once of its records (`presets`) or its stars: met, kept beside the records.
-function markMet(inner: Inner, ws: string, id: string, what: "presets" | "stars"): void {
+/// Station `id` of `ws` read once of its records (`presets`), stars or presetProjects: met, kept beside the records.
+function markMet(inner: Inner, ws: string, id: string, what: "presets" | "stars" | "presetProjects"): void {
   const held = heldOf(inner.data, ws);
-  const key = what === "presets" ? "met" : "metStars";
+  const key = what === "presets" ? "met" : what === "stars" ? "metStars" : "metPresetProjects";
   if (!held[key].includes(id)) write(inner, ws, { ...held, [key]: [...held[key], id] });
 }
 
-/// Whether station `address` is owed a carry of either, or not met yet (never read here of it: so a core that updated
+/// Whether station `address` is owed a carry of any, or not met yet (never read here of it: so a core that updated
 /// to this, coming back on the cursor its last one kept, reads each station once): views/presets.ts `resumed`.
-export function owedTo(inner: Inner, address: string): { presets: boolean; stars: boolean } {
+export function owedTo(inner: Inner, address: string): { presets: boolean; stars: boolean; presetProjects: boolean } {
   const held = heldOf(inner.data, ofAddress(address));
   const id = stationId(address);
   const before = held.before.includes(id);
-  return { presets: held.owed.includes(id) || (!before && !held.met.includes(id)), stars: held.owedStars.includes(id) || (!before && !held.metStars.includes(id)) };
+  return {
+    presets: held.owed.includes(id) || (!before && !held.met.includes(id)),
+    stars: held.owedStars.includes(id) || (!before && !held.metStars.includes(id)),
+    presetProjects: held.owedPresetProjects.includes(id) || (!before && !held.metPresetProjects.includes(id)),
+  };
 }
 
 /// `given` taken into what is kept of `ws` where newer (read anew: nothing waits between this read and its write).
@@ -223,8 +246,81 @@ function keepStars(inner: Inner, ws: string, given: Stars): void {
   inner.data.put("choice", likedKey(ws), merged, false);
 }
 
+/// The person's preset project preferences carried to station `address`, mirroring `carryStars`.
+export function carryPresetProjects(inner: Inner, address: string): Effect.Effect<void, CoreError> {
+  return Effect.gen(function* () {
+    if (!reached(inner, address)) return;
+    const ws = ofAddress(address);
+    if (whoIn(inner, ws) === null) return;
+    const id = stationId(address);
+    const said = yield* Effect.result(ask(inner, address, "GET", "/preset-projects"));
+    if (said._tag === "Failure") {
+      if (fromBeforeRoute(said.failure) || said.failure.status === 403) {
+        markMet(inner, ws, id, "presetProjects");
+        return markOwed(inner, ws, id, "presetProjects", false);
+      }
+      return markOwed(inner, ws, id, "presetProjects", true);
+    }
+    markMet(inner, ws, id, "presetProjects");
+    const there = presetProjectsSaid(get(said.success, "presetProjects"));
+    const took = keepPresetProjects(inner, ws, there);
+    if (took) {
+      inner.presets?.changed(ws);
+      carryAll(inner, ws, "presetProjects", address);
+    }
+    const held = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws)));
+    const bring = held === null ? {} : presetProjectsLacking(held, there);
+    if (Object.keys(bring).length > 0) {
+      const put = yield* Effect.result(ask(inner, address, "PUT", "/preset-projects", { presetProjects: bring }));
+      if (put._tag === "Failure") {
+        if (put.failure.status === 403) {
+          // Read-only / demoted viewer: roll back ONLY the rejected keys in `bring` whose local value has not moved on,
+          // preserving any concurrent local edits on unrelated keys.
+          const nowHeld = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws))) ?? Object.create(null);
+          const reconciled: PresetProjects = Object.create(null);
+          for (const k of Object.keys(nowHeld)) {
+            if (Object.hasOwn(nowHeld, k)) reconciled[k] = nowHeld[k]!;
+          }
+          for (const k of Object.keys(bring)) {
+            if (!Object.hasOwn(bring, k)) continue;
+            if (Object.hasOwn(reconciled, k) && canonical(reconciled[k]!) === canonical(bring[k]!)) {
+              if (Object.hasOwn(there, k)) reconciled[k] = there[k]!;
+              else delete reconciled[k];
+            }
+          }
+          if (canonical(reconciled) !== canonical(nowHeld)) {
+            inner.data.put("choice", presetProjectsKey(ws), reconciled, false);
+            inner.presets?.changed(ws);
+          }
+          return markOwed(inner, ws, id, "presetProjects", false);
+        }
+        return markOwed(inner, ws, id, "presetProjects", true);
+      }
+      if (keepPresetProjects(inner, ws, presetProjectsSaid(get(put.success, "presetProjects")))) inner.presets?.changed(ws);
+    }
+    markOwed(inner, ws, id, "presetProjects", false);
+  });
+}
+
+const presetProjectsSaid = (raw: unknown): PresetProjects => {
+  try {
+    return presetProjectsOf(raw ?? {});
+  } catch {
+    return {};
+  }
+};
+
+function keepPresetProjects(inner: Inner, ws: string, given: PresetProjects): boolean {
+  const held = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws)));
+  if (held === null && Object.keys(given).length === 0) return false;
+  const merged = mergePresetProjects(held ?? {}, given);
+  if (held !== null && canonical(merged) === canonical(held)) return false;
+  inner.data.put("choice", presetProjectsKey(ws), merged, false);
+  return true;
+}
+
 /// Everything of the person's carried to every station of `ws` reached now (a change made here).
-export function carryAll(inner: Inner, ws: string, what: "presets" | "stars", besides: string | null = null): void {
+export function carryAll(inner: Inner, ws: string, what: "presets" | "stars" | "presetProjects", besides: string | null = null): void {
   for (const s of stationsOf(inner, ws)) {
     if (s.address === besides) continue;
     // (one not reached is owed it: brought as its link opens or its stream comes back)
@@ -232,7 +328,8 @@ export function carryAll(inner: Inner, ws: string, what: "presets" | "stars", be
       if (!heldOf(inner.data, ws).before.includes(s.id)) markOwed(inner, ws, s.id, what, true);
       continue;
     }
-    inner.scheduler.enqueue(s.address, `${what}/${s.address}`, Priority.background, Effect.ignore(what === "presets" ? carry(inner, s.address) : carryStars(inner, s.address)));
+    const work = what === "presets" ? carry(inner, s.address) : what === "stars" ? carryStars(inner, s.address) : carryPresetProjects(inner, s.address);
+    inner.scheduler.enqueue(s.address, `${what}/${s.address}`, Priority.background, Effect.ignore(work));
   }
 }
 
@@ -419,6 +516,8 @@ export class PresetViews implements Owner {
     }
     const nameOf = (address: string) => names.get(address) ?? stationId(address);
     const meta = presetMeta(r, names);
+    const prefs = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws)));
+    const prefProject = prefs?.[r.id]?.project ?? null;
     return {
       ok: {
         id: r.id,
@@ -429,6 +528,7 @@ export class PresetViews implements Owner {
         station: r.station ?? "",
         stations: r.stations ?? [],
         ...(r.model ? { model: r.model } : {}),
+        ...(prefProject !== null ? { project: prefProject } : {}),
         ...(meta.summary !== undefined ? { summary: meta.summary } : {}),
         ...(meta.maker !== undefined ? { maker: meta.maker } : {}),
         mine: own !== null,
@@ -511,7 +611,9 @@ const answered = (r: PresetRecord) => ({ ...r });
 function run(inner: Inner, views: PresetViews, c: Of, progress: Parameters<Handler>[2], at: Parameters<Handler>[3], ctx: Parameters<Handler>[4]): Effect.Effect<unknown, CoreError> {
   return Effect.gen(function* () {
     const address = c.station;
-    const ws = ofAddress(address);
+    const ws = c.name === "setProject"
+      ? (c.scope ?? (typeof c.params.scope === "string" ? c.params.scope : ofAddress(address)))
+      : ofAddress(address);
     const who = whoIn(inner, ws);
     if (who === null) return yield* Effect.fail(CoreError.invalid(t("core-misc.presets.signedOut")));
     const now = inner.host.nowMs();
@@ -569,6 +671,31 @@ function run(inner: Inner, views: PresetViews, c: Of, progress: Parameters<Handl
         keep(r);
         return answered(r);
       }
+      case "setProject": {
+        const wsShared = inner.data.shared({ topic: "workspace", workspace: ws });
+        const viewerRole = get(wsShared, "role") ?? arr(get(wsShared, "members")).find((m: J) => get(m, "sub") === who.sub)?.role;
+        if (viewerRole === "viewer") {
+          return yield* Effect.fail(new CoreError("http_403", t("core-misc.presets.readOnly"), 403));
+        }
+        const roleKnown = typeof viewerRole === "string" && viewerRole !== "";
+        const presetIdVal = typeof p.presetId === "string" ? p.presetId : "";
+        const projectVal = p.project === undefined ? null : p.project;
+        const current = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws))) ?? Object.create(null);
+        const prev = Object.hasOwn(current, presetIdVal) ? current[presetIdVal] : undefined;
+        const nextRev = (prev?.rev ?? 0) + 1;
+        let checked: PresetProjects;
+        try {
+          checked = presetProjectsOf({ [presetIdVal]: { project: projectVal, rev: nextRev, at: now } });
+        } catch (e) {
+          return yield* Effect.fail(CoreError.invalid(e instanceof Error ? e.message : String(e)));
+        }
+        const entry = checked[presetIdVal]!;
+        const merged = mergePresetProjects(current, { [presetIdVal]: entry });
+        inner.data.put("choice", presetProjectsKey(ws), merged, false);
+        views.changed(ws);
+        carryAll(inner, ws, "presetProjects");
+        return { ok: true, presetId: presetIdVal, project: entry.project, rev: entry.rev, ...(!roleKnown ? { synced: false } : {}) };
+      }
     }
   });
 }
@@ -578,7 +705,11 @@ export function install(inner: Inner): PresetViews {
   inner.router.owners.push(views);
   handlers.presets = (core, call, progress, at, ctx) => run(core, views, call as Of, progress, at, ctx);
   inner.stations.also.push({
-    read: (address) => Effect.andThen(Effect.ignore(carry(inner, address)), Effect.ignore(carryStars(inner, address))),
+    read: (address) =>
+      Effect.andThen(
+        Effect.andThen(Effect.ignore(carry(inner, address)), Effect.ignore(carryStars(inner, address))),
+        Effect.ignore(carryPresetProjects(inner, address)),
+      ),
     event: (address, name, data) => {
       const ws = ofAddress(address);
       if (name === "presets") {
@@ -586,6 +717,9 @@ export function install(inner: Inner): PresetViews {
         if (inner.store.inUse({ topic: "otherPresets", scope: ws })) views.readOthers(ws);
       }
       if (name === "stars" && get(data, "workspace") === ws) inner.scheduler.enqueue(address, `stars/${address}`, Priority.background, Effect.ignore(carryStars(inner, address)));
+      if (name === "presetProjects" && get(data, "workspace") === ws) {
+        inner.scheduler.enqueue(address, `presetProjects/${address}`, Priority.background, Effect.ignore(carryPresetProjects(inner, address)));
+      }
     },
     // A stream come back resumed is told again what it missed (the station logs `presets` and `stars`, events.ts), so
     // it is asked only what this device owes it (a change made here while it was not reached, a carry that failed) or
@@ -593,7 +727,13 @@ export function install(inner: Inner): PresetViews {
     resumed: (address) =>
       Effect.suspend(() => {
         const owed = owedTo(inner, address);
-        return Effect.andThen(owed.presets ? Effect.ignore(carry(inner, address)) : Effect.void, owed.stars ? Effect.ignore(carryStars(inner, address)) : Effect.void);
+        return Effect.andThen(
+          Effect.andThen(
+            owed.presets ? Effect.ignore(carry(inner, address)) : Effect.void,
+            owed.stars ? Effect.ignore(carryStars(inner, address)) : Effect.void,
+          ),
+          owed.presetProjects ? Effect.ignore(carryPresetProjects(inner, address)) : Effect.void,
+        );
       }),
   });
   return views;

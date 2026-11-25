@@ -109,7 +109,19 @@ export const TOPICS: Record<string, Spec> = {
   adminOverview: { account: S },
   adminRelays: { account: S, range: ["string", "skip"] },
   // (how many of its rows go out is no part of it: its window, `chats.window`, views.ts Views `chatsWindow`)
-  chats: { scope: S, mine: ["bool", "def"], watching: ["bool", "skipFalse"], hidden: ["bool", "skipFalse"] },
+  chats: {
+    scope: S,
+    mine: ["bool", "def"],
+    watching: ["bool", "skipFalse"],
+    hidden: ["bool", "skipFalse"],
+    project: ["string", "skip"],
+    unclassified: ["bool", "skipFalse"],
+    tag: ["string", "skip"],
+    groupBy: ["string", "skip"],
+  },
+  projects: { scope: S, cursor: ["string", "skip"] },
+  project: { scope: S, name: S, cursor: ["string", "skip"] },
+  tags: { scope: S, cursor: ["string", "skip"] },
   // One chat's row whole (ChatItem), as the list made it before its rows were what they draw (ListedChat): what a row
   // offers only as it is pressed, held, swiped or pointed at (its menu, its swipe's question, its time), asked as that
   // begins and held while it is open (apps/mbui sfbase rows.mbt `whole_row`). Null where the station lists no such chat.
@@ -260,6 +272,7 @@ export function parseTopic(raw: unknown): Topic | null {
     out[name] = value;
   }
   if (out.topic === "stationPart" && !STATION_PARTS.includes(out.part as string)) return null;
+  if (out.topic === "chats" && out.groupBy !== undefined && out.groupBy !== "time" && out.groupBy !== "project") return null;
   return out;
 }
 
@@ -273,7 +286,7 @@ export function sameTopic(a: Topic, b: Topic): boolean {
 }
 
 const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "hostLive", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
-const VIEWS = new Set(["chats", "chatRow", "stations", "station", "stationPart", "profiles", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "chatSearch", "search", "archive", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "workspaceMarks", "decisions", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEWS = new Set(["chats", "chatRow", "stations", "station", "stationPart", "profiles", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "chatSearch", "search", "archive", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "workspaceMarks", "decisions", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays", "projects", "project", "tags"]);
 
 /// The station a station topic belongs to; null for the account topics, the core's own and the views.
 export function topicStation(topic: Topic): string | null {
