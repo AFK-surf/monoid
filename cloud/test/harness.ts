@@ -386,6 +386,8 @@ export async function harness(
     throw error;
   }
   const fetch = (path: string, init?: RequestInit) => mf.dispatchFetch(origin + path, init as any);
+  /** The next calls of the releases bucket fail, as many of each method as said, as R2's do for a moment; answers the calls since last set. */
+  const failBucket = async (fails: { get?: number; put?: number; list?: number } = {}) => ((await (await fetch("/__test/bucket", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(fails) })).json()) as { calls: string[] }).calls;
   /** A request to the console's host. */
   const fetchAdmin = (path: string, init?: RequestInit) => mf.dispatchFetch(adminOrigin + path, init as any);
   const fetchPreview = (path: string, init?: RequestInit) => mf.dispatchFetch(previewOrigin + path, init as any);
@@ -531,6 +533,7 @@ export async function harness(
     appleRevoked,
     mails,
     fetch,
+    failBucket,
     fetchAdmin,
     fetchPreview,
     fetchBeta,

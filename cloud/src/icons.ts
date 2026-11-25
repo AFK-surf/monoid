@@ -2,6 +2,7 @@
 // as before); it is kept in the bucket under icons/<its hash>.<kind> and the workspace keeps its address, served from
 // /v1/icons/, so a workspace's views stay small however large its pictures are. A GIF keeps moving.
 import type { Env } from "./env";
+import { retryRead, unavailable, Unavailable } from "./releases";
 
 /** The part of R2Bucket this needs. */
 export interface IconBucket {
@@ -24,7 +25,7 @@ export const isIconUrl = (origin: string, value: string) => value.startsWith(`${
 
 /**
  * A picture sent as a data URL, put in the bucket: its address. Fails (invalid_icon) for one that is not a PNG, WebP,
- * JPEG or GIF of up to ICON_FILE_BYTES. Without a bucket the data URL is given back (directory.ts cleanIcon takes a small one).
+ * JPEG or GIF of up to ICON_FILE_BYTES, and (Unavailable) while the bucket cannot keep it. Without a bucket the data URL is given back (directory.ts cleanIcon takes a small one).
  */
 export async function keptIcon(env: Env, icon: string): Promise<string> {
   const bucket = env.RELEASES as IconBucket | undefined;
@@ -35,7 +36,9 @@ export async function keptIcon(env: Env, icon: string): Promise<string> {
   if (!m || bytes.length > ICON_FILE_BYTES || !looksLike(kind, bytes)) throw new Error("invalid_icon");
   const hash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].slice(0, 16).map((b) => b.toString(16).padStart(2, "0")).join("");
   const name = `${hash}.${kind}`;
-  await bucket.put(`icons/${name}`, bytes, { httpMetadata: { contentType: TYPES[kind]!, cacheControl: CACHE } });
+  // (named by its bytes: putting it again puts the same)
+  const got = await retryRead(() => bucket.put(`icons/${name}`, bytes, { httpMetadata: { contentType: TYPES[kind]!, cacheControl: CACHE } }));
+  if (!got.ok) throw new Unavailable(`icons/${name}`, got.error);
   return iconUrl(env.PUBLIC_ORIGIN, name);
 }
 
@@ -44,7 +47,9 @@ export async function serveIcon(env: Env, name: string): Promise<Response | null
   const m = /^[0-9a-f]{32}\.(png|webp|jpeg|gif)$/.exec(name);
   const bucket = env.RELEASES as IconBucket | undefined;
   if (!m || !bucket) return null;
-  const file = await bucket.get(`icons/${name}`);
+  const got = await retryRead(() => bucket.get(`icons/${name}`));
+  if (!got.ok) return unavailable(`icons/${name}`, got.error);
+  const file = got.value;
   if (!file) return null;
   return new Response(file.body, { headers: { "content-type": TYPES[m[1]!]!, "cache-control": CACHE, etag: file.httpEtag, "access-control-allow-origin": "*", "x-content-type-options": "nosniff" } });
 }

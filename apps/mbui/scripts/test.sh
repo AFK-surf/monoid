@@ -601,7 +601,13 @@ for t in $targets; do
           # 2/4 179 s, 3/4 112 s, 4/4 178 s; 45432308828 4/4 240 s; 45431574527 1/4 192 s and 4/4 218 s; main
           # 45428591108 (-O2) 130, 113, 99 and 144 s. Groups 1 and 2 reckoned 640, 3 and 4 560. By the table: 501, 523,
           # 625 and 603 s of pages (was 643, 483, 443 and 683).
-          *) specs="4,4,640,1 4,4,640,1 4,4,560,1 4,4,560,1" ;;
+          # Then 3/4 was the slow end: 45682080112 (-O0) took 114, 200, 265 and 142 s, its 102 page files 1042 s where
+          # the table said 578. On twelve runs of 2026-11-25 each group's test.sh was its pages' file-seconds over four
+          # (they run as one four-program run beside the others), and its pages ran 0.98-1.03 times the table written
+          # again from them, whatever ran beside (the first's others 123-217 s of runs, the third's 78-203): the others
+          # cost no runner more than another, so all four reckoned alike and the pages split evenly. By the table: 503,
+          # 502, 508 and 501 s of pages (was 462, 462, 548 and 542 by the new table, 506, 481, 578 and 579 by the old).
+          *) specs="4,4,600,1 4,4,600,1 4,4,600,1 4,4,600,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do

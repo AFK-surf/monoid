@@ -62,3 +62,40 @@ test("an account's own picture is shown in place of its sign-in's until it takes
     await h.close();
   }
 });
+
+test("a picture the bucket fails to keep or read is tried once more; failing twice, it is unavailable, and nothing changes", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const unavailable = async (answer: { status: number; headers: { get(name: string): string | null }; json(): Promise<unknown> }) => {
+      assert.deepEqual([answer.status, answer.headers.get("retry-after"), answer.headers.get("cache-control")], [503, "5", "no-store"]);
+      assert.deepEqual(await answer.json(), { error: "release_unavailable" });
+    };
+    await h.failBucket({ put: 2 });
+    await unavailable(await alice("PUT", "/v1/me/picture", { picture }));
+    assert.equal((await h.failBucket({ put: 1 })).length, 2);
+    assert.equal(((await (await alice("GET", "/v1/me")).json()) as any).user.picture, GOOGLE);
+    const put = await alice("PUT", "/v1/me/picture", { picture });
+    assert.equal(put.status, 200);
+    const path = ((await put.json()) as any).picture.slice(h.origin.length) as string;
+    assert.equal((await h.failBucket({ get: 1 })).length, 2);
+
+    const served = await h.fetch(path);
+    assert.equal(served.status, 200);
+    assert.deepEqual(new Uint8Array(await served.arrayBuffer()), jpeg);
+    assert.equal((await h.failBucket({ get: 2 })).length, 2);
+    await unavailable(await h.fetch(path));
+    // One not there is an answer: read once.
+    await h.failBucket();
+    assert.equal((await h.fetch("/v1/icons/0123456789abcdef0123456789abcdef.gif")).status, 404);
+    assert.equal((await h.failBucket()).length, 1);
+
+    // A workspace's icon is kept the same way.
+    const w = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
+    await h.failBucket({ put: 2 });
+    await unavailable(await alice("PATCH", `/v1/workspaces/${w}`, { icon: picture }));
+    assert.equal((await alice("PATCH", `/v1/workspaces/${w}`, { icon: picture })).status, 200);
+  } finally {
+    await h.close();
+  }
+});

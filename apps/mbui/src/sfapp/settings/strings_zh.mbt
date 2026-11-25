@@ -1535,7 +1535,7 @@ let zh : Map[String, String] = {
   "web-pages.profiles.workspaces.for": "同时用于 {name}",
   "web-pages.profiles.workspaces.off": "{name} 中的对话无法使用此账号",
   "web-pages.profiles.workspaces.on": "{name} 中的对话可使用此账号运行 agent",
-  "web-pages.profiles.workspaces.title": "Workspace",
+  "web-pages.profiles.workspaces.title": "其他 workspace",
   "web-pages.profiles.workspaces.turnedOff": "已停止用于 {name}",
   "web-pages.profiles.workspaces.turnedOn": "已开放给 {name}",
   "web-pages.profiles.workspaces.what": "更改 Profile 可用的 workspace",

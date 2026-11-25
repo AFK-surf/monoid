@@ -1563,7 +1563,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.workspaces.for": "Also for {name}",
   "web-pages.profiles.workspaces.off": "Chats in {name} can't use this account",
   "web-pages.profiles.workspaces.on": "Chats in {name} can run agents on this account",
-  "web-pages.profiles.workspaces.title": "Workspaces",
+  "web-pages.profiles.workspaces.title": "Other workspaces",
   "web-pages.profiles.workspaces.turnedOff": "No longer available to {name}",
   "web-pages.profiles.workspaces.turnedOn": "Now available to {name}",
   "web-pages.profiles.workspaces.what": "change which workspaces use the profile",

@@ -64,9 +64,11 @@ export type ProgramShell = {
   readonly uncounted?: boolean;
 };
 
+const CLEANUP_AFTER_FORGET_RPCS = new Set(["store.markUndelivered", "node.stateWrite", "agent.dispose", "agent.steer"]);
+
 /// The program, one a hub (`ActorsProgram.open`).
 export class ActorsProgram {
-  readonly #proc: SessionsProgram;
+  readonly #proc: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">;
   /// What it is to the program (agents/mb-program.ts): the actors' part.
   readonly #user: ProgramUser = {
     actors: true,
@@ -75,6 +77,13 @@ export class ActorsProgram {
   };
   readonly #clock: Clock.Clock;
   readonly #actors = new Map<string, MbActor | ProgramShell>();
+  readonly #retired = new Map<string, Set<MbActor | ProgramShell>>();
+  readonly #retiredIdleOrder = new Set<MbActor | ProgramShell>();
+  readonly #retiredRetainIfIdle = new Set<MbActor | ProgramShell>();
+  readonly #handleOwners = new Map<number, MbActor>();
+  #nextHandle = 0;
+  readonly #stateWriteOwners = new Map<number, MbActor>();
+  #nextStateWrite = 0;
   readonly #timers = new Map<number, Fiber.Fiber<void>>();
   /// Lines said to it, those it said it took in, and whether something of it runs (`active`): `busy`.
   #sent = 0;
@@ -83,15 +92,25 @@ export class ActorsProgram {
   #closed = false;
   /// What actors asked of it, waiting for its answer (`returned`).
   #next = 0;
-  readonly #calls = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void }>();
+  readonly #calls = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void; actor?: MbActor | ProgramShell }>();
+  readonly #pendingCalls = new Map<MbActor | ProgramShell, number>();
+  readonly #answeringByActor = new Map<MbActor | ProgramShell, number>();
+  readonly #provisionalDeliveries = new Map<number, MbActor | ProgramShell>();
+  readonly #provisionalByActor = new Map<MbActor | ProgramShell, Set<number>>();
 
   readonly #store: { told(changes: any[]): void } | null;
 
-  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null, maxConcurrentTurns = 0) {
+  private constructor(
+    data: string,
+    clock: Clock.Clock,
+    store: { told(changes: any[]): void; db: any } | null,
+    maxConcurrentTurns = 0,
+    procOverride?: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">,
+  ) {
     this.#clock = clock;
     this.#store = store;
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
-    this.#proc = SessionsProgram.of(data, true)!;
+    this.#proc = procOverride ?? SessionsProgram.of(data, true)!;
     this.#proc.use(this.#user);
     programs.add(this);
     endAll();
@@ -100,6 +119,15 @@ export class ActorsProgram {
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
     this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
     if (maxConcurrentTurns > 0) this.setMaxConcurrentTurns(maxConcurrentTurns);
+  }
+
+  /// Test-only constructor backed by an in-process stub `SessionsProgram`.
+  static openForTest(
+    proc: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">,
+    clock: Clock.Clock,
+    store: { told(changes: any[]): void; db: any } | null = null,
+  ): ActorsProgram {
+    return new ActorsProgram("", clock, store, 0, proc);
   }
 
   #lost(code: number) {
@@ -119,7 +147,7 @@ export class ActorsProgram {
 
   /// The program it is: where a runtime session's process read there gives its events its actor (`MbActor` `route`).
   get program(): SessionsProgram {
-    return this.#proc;
+    return this.#proc as SessionsProgram;
   }
 
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
@@ -151,6 +179,30 @@ export class ActorsProgram {
 
   /// What it asked that is being answered here: its actor waits on it.
   #answering = 0;
+
+  /// Allocates a program-wide unique runtime session handle owned by `owner`.
+  allocHandle(owner: MbActor): number {
+    const handle = ++this.#nextHandle;
+    this.#handleOwners.set(handle, owner);
+    return handle;
+  }
+
+  /// Releases ownership of `handle` once its runtime session has been disposed or detached.
+  unregisterHandle(handle: number, owner: MbActor) {
+    if (this.#handleOwners.get(handle) === owner) this.#handleOwners.delete(handle);
+  }
+
+  /// Allocates a program-wide unique stateWrite token owned by `owner`.
+  allocStateWrite(owner: MbActor): number {
+    const token = ++this.#nextStateWrite;
+    this.#stateWriteOwners.set(token, owner);
+    return token;
+  }
+
+  /// Releases ownership of a `stateWrite` token once consumed or settled.
+  unregisterStateWrite(token: number, owner: MbActor) {
+    if (this.#stateWriteOwners.get(token) === owner) this.#stateWriteOwners.delete(token);
+  }
 
   /// What answers for `shell.key` that is no session's (the jobs, jobs/jobs.ts: `#jobs`): what the program asks of it
   /// and tells it.
@@ -189,12 +241,23 @@ export class ActorsProgram {
   }
 
   /// Asks it `method` of actor `key`: what it answers (null where it is gone).
-  call(key: string, method: string, args: Json[]): Promise<Json> {
+  call(key: string, method: string, args: Json[], owner?: MbActor | ProgramShell): Promise<Json> {
     const id = ++this.#next;
+    const actor = owner ?? this.#actors.get(key);
     return new Promise((resolve, reject) => {
-      this.#calls.set(id, { resolve, reject });
+      this.#calls.set(id, { resolve, reject, ...(actor === undefined ? {} : { actor }) });
+      if (actor !== undefined) {
+        this.#pendingCalls.set(actor, (this.#pendingCalls.get(actor) ?? 0) + 1);
+        this.#retiredIdleOrder.delete(actor);
+      }
       if (!this.post({ call: id, actor: key, method, args })) {
         this.#calls.delete(id);
+        if (actor !== undefined) {
+          const left = (this.#pendingCalls.get(actor) ?? 1) - 1;
+          if (left <= 0) this.#pendingCalls.delete(actor);
+          else this.#pendingCalls.set(actor, left);
+          this.#maybePruneRetired(actor);
+        }
         resolve(null);
       }
     });
@@ -204,11 +267,105 @@ export class ActorsProgram {
   #ended() {
     this.#closed = true;
     programs.delete(this);
+    this.#retired.clear();
+    this.#retiredIdleOrder.clear();
+    this.#retiredRetainIfIdle.clear();
+    this.#handleOwners.clear();
+    this.#stateWriteOwners.clear();
+    this.#pendingCalls.clear();
+    this.#answeringByActor.clear();
+    this.#provisionalDeliveries.clear();
+    this.#provisionalByActor.clear();
     for (const fiber of this.#timers.values()) Effect.runFork(Fiber.interrupt(fiber));
     this.#timers.clear();
     const calls = [...this.#calls.values()];
     this.#calls.clear();
     for (const call of calls) call.resolve(null);
+  }
+
+  #latestRetired(key: string): MbActor | ProgramShell | undefined {
+    const set = this.#retired.get(key);
+    if (!set || set.size === 0) return undefined;
+    let last: MbActor | ProgramShell | undefined;
+    for (const item of set) last = item;
+    return last;
+  }
+
+  #removeRetired(actor: MbActor | ProgramShell) {
+    this.#retiredIdleOrder.delete(actor);
+    this.#retiredRetainIfIdle.delete(actor);
+    const set = this.#retired.get(actor.key);
+    if (!set) return;
+    set.delete(actor);
+    if (set.size === 0) this.#retired.delete(actor.key);
+  }
+
+  #evictIdleRetired() {
+    while (this.#retiredIdleOrder.size > 512) {
+      const oldest = this.#retiredIdleOrder.values().next().value;
+      if (oldest === undefined) break;
+      this.#removeRetired(oldest);
+    }
+  }
+
+  #registerProvisionalDelivery(batchId: number, owner: MbActor | ProgramShell) {
+    const prev = this.#provisionalDeliveries.get(batchId);
+    if (prev !== undefined && prev !== owner) {
+      this.#clearProvisionalDelivery(batchId);
+    }
+    this.#provisionalDeliveries.set(batchId, owner);
+    let set = this.#provisionalByActor.get(owner);
+    if (!set) {
+      set = new Set();
+      this.#provisionalByActor.set(owner, set);
+    }
+    set.add(batchId);
+    this.#retiredIdleOrder.delete(owner);
+  }
+
+  #clearProvisionalDelivery(batchId: number) {
+    const owner = this.#provisionalDeliveries.get(batchId);
+    if (owner === undefined) return;
+    this.#provisionalDeliveries.delete(batchId);
+    const set = this.#provisionalByActor.get(owner);
+    if (set) {
+      set.delete(batchId);
+      if (set.size === 0) this.#provisionalByActor.delete(owner);
+    }
+    this.#maybePruneRetired(owner);
+  }
+
+  #clearActorProvisionalDeliveries(actor: MbActor | ProgramShell) {
+    const set = this.#provisionalByActor.get(actor);
+    if (!set) return;
+    for (const batchId of set) {
+      if (this.#provisionalDeliveries.get(batchId) === actor) {
+        this.#provisionalDeliveries.delete(batchId);
+      }
+    }
+    this.#provisionalByActor.delete(actor);
+    this.#maybePruneRetired(actor);
+  }
+
+  #maybePruneRetired(actor?: MbActor | ProgramShell) {
+    if (actor === undefined) return;
+    if (this.#actors.get(actor.key) === actor) return;
+    if (
+      (this.#pendingCalls.get(actor) ?? 0) > 0 ||
+      (this.#answeringByActor.get(actor) ?? 0) > 0 ||
+      (this.#provisionalByActor.get(actor)?.size ?? 0) > 0
+    ) {
+      return;
+    }
+    if (!this.#retiredRetainIfIdle.has(actor)) {
+      this.#removeRetired(actor);
+      return;
+    }
+    if (this.#retired.get(actor.key)?.has(actor)) {
+      this.#retiredIdleOrder.delete(actor);
+      this.#retiredIdleOrder.add(actor);
+      this.#evictIdleRetired();
+    }
   }
 
   #said(said: Json) {
@@ -246,10 +403,20 @@ export class ActorsProgram {
       if (fiber) Effect.runFork(Fiber.interrupt(fiber));
       return;
     }
-    const actor = typeof said?.actor === "string" ? this.#actors.get(said.actor) : typeof said?.mirror === "string" ? this.#actors.get(said.mirror) : undefined;
+    if (said?.tell === "store.deliverySettled" && Array.isArray(said.args) && typeof said.args[0] === "number") {
+      this.#clearProvisionalDelivery(said.args[0]);
+      return;
+    }
+    let actor = typeof said?.actor === "string" ? this.#actors.get(said.actor) : typeof said?.mirror === "string" ? this.#actors.get(said.mirror) : undefined;
     if (typeof said?.returned === "number") {
       const call = this.#calls.get(said.returned);
       this.#calls.delete(said.returned);
+      if (call?.actor !== undefined) {
+        const left = (this.#pendingCalls.get(call.actor) ?? 1) - 1;
+        if (left <= 0) this.#pendingCalls.delete(call.actor);
+        else this.#pendingCalls.set(call.actor, left);
+        this.#maybePruneRetired(call.actor);
+      }
       if (typeof said.error === "string") {
         const first = typeof said.cause?.id === "number" ? errors.get(said.cause.id) : undefined;
         if (first !== undefined) errors.delete(said.cause.id);
@@ -257,15 +424,88 @@ export class ActorsProgram {
       } else call?.resolve(said.value ?? null);
       return;
     }
+    if (typeof said?.rpc === "number") {
+      if (
+        (said.fn === "agent.dispose" || said.fn === "agent.steer") &&
+        Array.isArray(said.args) &&
+        typeof said.args[0] === "number"
+      ) {
+        const owner = this.#handleOwners.get(said.args[0]);
+        if (owner !== undefined) actor = owner;
+      } else if (
+        said.fn === "node.stateWrite" &&
+        Array.isArray(said.args) &&
+        typeof said.args[2] === "number"
+      ) {
+        const owner = this.#stateWriteOwners.get(said.args[2]);
+        if (owner !== undefined) actor = owner;
+      } else if (
+        said.fn === "store.markUndelivered" &&
+        Array.isArray(said.args) &&
+        typeof said.args[2] === "number"
+      ) {
+        const owner = this.#provisionalDeliveries.get(said.args[2]);
+        if (owner !== undefined) actor = owner;
+      }
+      if (
+        actor === undefined &&
+        typeof said.actor === "string" &&
+        typeof said.fn === "string" &&
+        CLEANUP_AFTER_FORGET_RPCS.has(said.fn)
+      ) {
+        actor = this.#latestRetired(said.actor);
+      }
+      if (actor === undefined) {
+        this.post({ answer: said.rpc, error: { message: "actor closed", actorClosed: true } });
+        return;
+      }
+    }
     if (actor === undefined) return;
     if (said.mirror !== undefined) (actor as MbActor).mirrored?.(said.state);
     else if (typeof said.rpc === "number") {
       const id = said.rpc;
-      const counted = !(actor instanceof MbActor) && actor.uncounted === true ? 0 : 1;
+      const target = actor;
+      const counted = !(target instanceof MbActor) && target.uncounted === true ? 0 : 1;
       this.#answering += counted;
-      actor.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
-        (value) => { this.#answering -= counted; this.post({ answer: id, value: value === undefined ? null : value }); },
-        (error) => { this.#answering -= counted; this.post({ answer: id, error: errorOf(error, actor.runtime) }); },
+      this.#answeringByActor.set(target, (this.#answeringByActor.get(target) ?? 0) + 1);
+      this.#retiredIdleOrder.delete(target);
+      const done = () => {
+        this.#answering -= counted;
+        const left = (this.#answeringByActor.get(target) ?? 1) - 1;
+        if (left <= 0) this.#answeringByActor.delete(target);
+        else this.#answeringByActor.set(target, left);
+        this.#maybePruneRetired(target);
+      };
+      if (
+        said.fn === "store.markDelivered" &&
+        Array.isArray(said.args) &&
+        Array.isArray(said.args[1]) &&
+        said.args[1].length > 0 &&
+        typeof said.args[2] === "number"
+      ) {
+        this.#registerProvisionalDelivery(said.args[2], target);
+      }
+      target.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
+        (value) => {
+          if (said.fn === "store.markUndelivered" && Array.isArray(said.args) && typeof said.args[2] === "number") {
+            this.#clearProvisionalDelivery(said.args[2]);
+          } else if ((said.fn === "agent.steer" && Boolean(value)) || said.fn === "agent.prompt") {
+            this.#clearActorProvisionalDeliveries(target);
+          }
+          done();
+          this.post({ answer: id, value: value === undefined ? null : value });
+        },
+        (error) => {
+          if (
+            (said.fn === "store.markDelivered" || said.fn === "store.markUndelivered") &&
+            Array.isArray(said.args) &&
+            typeof said.args[2] === "number"
+          ) {
+            this.#clearProvisionalDelivery(said.args[2]);
+          }
+          done();
+          this.post({ answer: id, error: errorOf(error, target.runtime) });
+        },
       );
     } else if (typeof said.tell === "string") {
       try {
@@ -276,8 +516,32 @@ export class ActorsProgram {
     }
   }
 
-  forget(key: string, actor: MbActor | ProgramShell) {
-    if (this.#actors.get(key) === actor) this.#actors.delete(key);
+  forget(key: string, actor: MbActor | ProgramShell, retainIfIdle = true) {
+    if (this.#actors.get(key) === actor) {
+      this.#actors.delete(key);
+      const hasObligation =
+        (this.#pendingCalls.get(actor) ?? 0) > 0 ||
+        (this.#answeringByActor.get(actor) ?? 0) > 0 ||
+        (this.#provisionalByActor.get(actor)?.size ?? 0) > 0;
+      if (!hasObligation && !retainIfIdle) {
+        this.#retiredRetainIfIdle.delete(actor);
+        return;
+      }
+      if (retainIfIdle) this.#retiredRetainIfIdle.add(actor);
+      else this.#retiredRetainIfIdle.delete(actor);
+      let set = this.#retired.get(key);
+      if (!set) {
+        set = new Set();
+        this.#retired.set(key, set);
+      }
+      set.delete(actor);
+      set.add(actor);
+      if (!hasObligation) {
+        this.#retiredIdleOrder.delete(actor);
+        this.#retiredIdleOrder.add(actor);
+        this.#evictIdleRetired();
+      }
+    }
   }
 
   async close() {
@@ -398,7 +662,7 @@ export class MbActor {
   #call(method: string, args: Json[] = []): Promise<Json> {
     if (this.#closed) return Promise.resolve(null);
     this.#sent++;
-    return this.#program.call(this.key, method, args);
+    return this.#program.call(this.key, method, args, this);
   }
 
   /// What it had been given that its model had not read, read as its model is asked (`requesting`): so at once here,
@@ -488,10 +752,13 @@ export class MbActor {
   goesOn() { return this.#call("goesOn").then(() => undefined); }
   async stateForTurn(id: string, state: DeclaredState, words: string | null, about: [number, number, string] | null,
     watch = false, record?: (write: (about: [number, number, string] | null) => void) => void): Promise<boolean> {
-    const token = ++this.#next;
+    const token = this.#program.allocStateWrite(this);
     this.#records.set(token, { words, about, watch, record });
     try { return (await this.#call("stateForTurn", [id, state, token])) === true; }
-    finally { this.#records.delete(token); }
+    finally {
+      this.#records.delete(token);
+      this.#program.unregisterStateWrite(token, this);
+    }
   }
   toolsAt(url: string) { return this.#call("toolsAt", [url]).then(() => undefined); }
   declare(state: DeclaredState): Promise<boolean> { return this.#call("declare", [state]).then((v) => v === true); }
@@ -539,7 +806,11 @@ export class MbActor {
     const deps = this.#deps;
     const toolsUnheard = entry?.heard !== undefined && this.runtime !== "codex" && deps.toolsHeard !== undefined && deps.toolsHeard(this.key) === entry.heard;
     const nudgeUnheard = entry?.nudgeHeard !== undefined && deps.toolsHeard !== undefined && deps.toolsHeard(this.key) === entry.nudgeHeard;
-    this.#closing();
+    this.#closing(false);
+    if (typeof snap.agent === "number") {
+      this.#agents.delete(snap.agent);
+      this.#program.unregisterHandle(snap.agent, this);
+    }
     const agent = held?.snapshot() ?? null;
     held?.detach();
     return { ...snap, agent, ...(toolsUnheard ? { toolsUnheard: true } : {}), ...(nudgeUnheard ? { nudgeUnheard: true } : {}) } as Snapshot;
@@ -567,7 +838,7 @@ export class MbActor {
       const deps = this.#deps;
       const heard = snap?.toolsUnheard === true && this.runtime !== "codex" && deps.toolsHeard !== undefined ? deps.toolsHeard(this.key) : undefined;
       const nudgeHeard = snap?.nudgeUnheard === true && deps.toolsHeard !== undefined ? deps.toolsHeard(this.key) : undefined;
-      const handle = ++this.#next;
+      const handle = this.#program.allocHandle(this);
       this.#agents.set(handle, {
         generation: this.#generation,
         session: agent,
@@ -605,11 +876,11 @@ export class MbActor {
     this.#closing();
   }
 
-  #closing() {
+  #closing(retainIfIdle = true) {
     this.#closed = true;
     this.#formatAbort?.abort();
     this.#abortOpens();
-    this.#program.forget(this.key, this);
+    this.#program.forget(this.key, this, retainIfIdle);
     this.#onStateChange?.();
   }
 
@@ -624,9 +895,10 @@ export class MbActor {
     await this.#call("dispose");
     this.#closing();
     // (what the program did not end, gone before it could: ended here)
-    const left = [...this.#agents.values()];
+    const left = [...this.#agents.entries()];
     this.#agents.clear();
-    await Promise.all(left.map((a) => a.session.dispose()));
+    for (const [handle] of left) this.#program.unregisterHandle(handle, this);
+    await Promise.all(left.map(([, a]) => a.session.dispose()));
   }
 
   // ── its runtime sessions' events ─────────────────────────────────────────────────────────────────────────────
@@ -738,6 +1010,8 @@ export class MbActor {
         deps.emitTrace?.(args[0]);
         return;
       }
+      case "store.deliverySettled":
+        return;
     }
     log.warn("session", "a session told the station what it does not know", { session: this.key, tell: f });
   }
@@ -750,6 +1024,9 @@ export class MbActor {
     const [part, name] = dot < 0 ? [f, ""] : [f.slice(0, dot), f.slice(dot + 1)];
     if (part === "store") {
       if (typeof store[name] !== "function") return null;
+      if (name === "markDelivered" || name === "markUndelivered") {
+        return store[name](args[0], args[1]);
+      }
       return store[name](...args);
     }
     if (part === "deps") {
@@ -769,6 +1046,7 @@ export class MbActor {
         case "canCompact": return typeof session.compact === "function";
         case "dispose":
           this.#agents.delete(handle);
+          this.#program.unregisterHandle(handle, this);
           this.#unroute(session);
           await session.dispose();
           return null;
@@ -871,7 +1149,7 @@ export class MbActor {
           await opened.session.dispose().catch(() => {});
           throw new OpenAborted(typeof abort.signal.reason === "string" ? abort.signal.reason : "closed");
         }
-        const handle = ++this.#next;
+        const handle = this.#program.allocHandle(this);
         this.#agents.set(handle, { generation, session: opened.session, ...(heard === undefined ? {} : { heard }) });
         this.#route(opened.session, generation);
         const { session: _, ...rest } = opened;
@@ -926,7 +1204,9 @@ export class MbActor {
       case "stateWrite": {
         const [id, state, token] = args as [string, DeclaredState, number];
         const r = this.#records.get(token);
-        if (r === undefined) return null;
+        if (r === undefined) throw new Error(`no stateWrite record ${token}`);
+        this.#records.delete(token);
+        this.#program.unregisterStateWrite(token, this);
         const write = (current: [number, number, string] | null) => {
           if (r.words !== null) {
             if (state.kind === "waiting") deps.store.setWaitFor(id, r.words, r.watch);

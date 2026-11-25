@@ -25,7 +25,8 @@ const PASSED = ["content-type", "content-length", "content-range", "accept-range
  * A read of the bucket or of another cloud's releases, which only reads: tried once more when it fails. R2 fails a
  * read now and then for a moment (10001, 10043; 10058 when many read one object at once, as at a release), and the
  * next read gets it. Its null (no such file) is an answer, not a failure. Failing twice, it is unavailable: a 503 that
- * tells the client to come back (`unavailable`), never a 404 that would say there is none.
+ * tells the client to come back (`unavailable`), never a 404 that would say there is none. A write of the same bytes
+ * (in memory, never a stream) under the same key is as safe to try again (icons.ts, move.ts).
  */
 export async function retryRead<T>(run: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
   try {
@@ -43,6 +44,15 @@ export async function retryRead<T>(run: () => Promise<T>): Promise<{ ok: true; v
 export function unavailable(file: string, error: unknown): Response {
   console.error(`release ${file} unavailable:`, error);
   return Response.json({ error: "release_unavailable" }, { status: 503, headers: { "cache-control": "no-store", "retry-after": "5" } });
+}
+
+/** Thrown where an answer cannot be given yet (icons.ts keptIcon): answered `unavailable` (api.ts directory). */
+export class Unavailable extends Error {
+  readonly file: string;
+  constructor(file: string, cause: unknown) {
+    super("release_unavailable", { cause });
+    this.file = file;
+  }
 }
 
 /** `file` from another cloud's releases (`upstream`, its /releases), the range asked for passed on; its 404 when it has none. */
