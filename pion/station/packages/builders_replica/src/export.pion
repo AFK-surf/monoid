@@ -33,6 +33,8 @@ fn small_tables() -> Array[String] {
     "thread_sessions",
     "runtime_sessions",
     "closed_cards",
+    "entry_proposals",
+    "proposal_outcomes",
     "reads",
     "hidden_chats",
     "muted_chats",
@@ -1343,6 +1345,14 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
     Ok(None) => 0.0
     Err(e) => return Err(e)
   }
+  let has_ep = match self.db.all_ordered("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'", []) {
+    Ok(rs) => rs.length() > 0
+    Err(_) => false
+  }
+  let has_po = match self.db.all_ordered("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'", []) {
+    Ok(rs) => rs.length() > 0
+    Err(_) => false
+  }
   let thread_rows = fn(ws : String, thread : Double) -> Result[Unit, String] {
     let ts = match all("SELECT * FROM threads WHERE id = ?", [sql_db::double_to_json(thread)]) {
       Ok(rs) => rs
@@ -1372,6 +1382,30 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       match changed(ws, "closed_cards", ccs[i]) {
         Ok(()) => ()
         Err(e) => return Err(e)
+      }
+    }
+    if has_ep {
+      let eps = match all("SELECT * FROM entry_proposals WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      for i in 0..<eps.length() {
+        match changed(ws, "entry_proposals", eps[i]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    if has_po {
+      let pos = match all("SELECT * FROM proposal_outcomes WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      for i in 0..<pos.length() {
+        match changed(ws, "proposal_outcomes", pos[i]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
       }
     }
     let marks = thread_marks()
@@ -1641,6 +1675,9 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         let sm_tables = small_tables()
         for ti in 0..<sm_tables.length() {
           let table = sm_tables[ti]
+          if (table == "entry_proposals" && !has_ep) || (table == "proposal_outcomes" && !has_po) {
+            continue
+          }
           let mut after = 0.0
           while true {
             let rows = match all(page_of(table), [sql_db::double_to_json(after), base_codec::json_int(PAGE_SIZE)]) {

@@ -15,6 +15,7 @@ import { type ColdStorage, Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { answerFiles } from "../src/slack/surface.ts";
 import { chatTools } from "../src/tools/chat.ts";
+import { projectTools } from "../src/tools/projects.ts";
 import { type Attachment, Store } from "../src/store/store.ts";
 import { letterMessage } from "../src/store/rows.ts";
 import { CcIndexPreparation } from "./reference/backfill/cc-thread-index.ts";
@@ -339,7 +340,7 @@ export const reply = (to: InboundMessage, ts: string, text: string, over: Partia
 
 /// `workspaces`: those the station is in, its home one first; a session's link names its own.
 /// `askToName`: asked to name an untitled chat as its turn ends (off unless a test looks at it).
-export type Setup = { maxNudges?: number; askToName?: boolean; maxWarmClaude?: number; maxConcurrentTurns?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; place?: { workspace: string; station: string }; workspaces?: string[]; fileStore?: boolean; toolsHeard?: Map<string, number> };
+export type Setup = { maxNudges?: number; askToName?: boolean; maxWarmClaude?: number; maxConcurrentTurns?: number; warmMinutes?: number; teamRequireMention?: boolean; link?: boolean; cold?: ColdStorage; clock?: Clock.Clock; place?: { workspace: string; station: string }; workspaces?: string[]; fileStore?: boolean; toolsHeard?: Map<string, number>; projectsOn?: () => boolean; isRig?: (ws: string | null) => boolean };
 
 /// A TestClock for a rig (its hub's, its store's, its sessions'): `adjust(ms)` moves it on, and what was due by then runs.
 /// `asked()` counts the waits begun on it; `begun(n)` resolves once `n` have, each then sleeping on it (an adjust
@@ -420,6 +421,8 @@ export class Rig {
     this.place = o.place ?? { workspace: "ws", station: "st" };
     this.toolsHeard = o.toolsHeard;
     this.workspaces = o.workspaces;
+    this.projectsOn = o.projectsOn;
+    this.isRig = o.isRig;
     this.hub = this.newHub({ chats: (id) => chats.get(id), link: o.link, cold: o.cold });
     openRigs.add(this);
   }
@@ -427,6 +430,8 @@ export class Rig {
   /// The workspace and station its links name.
   place: { workspace: string; station: string };
   workspaces: string[] | undefined;
+  projectsOn: (() => boolean) | undefined;
+  isRig: ((ws: string | null) => boolean) | undefined;
   /// The requests each session's token made of the station's tools, where a test counts them (mcp.ts `heard`).
   toolsHeard: Map<string, number> | undefined;
 
@@ -440,6 +445,8 @@ export class Rig {
       drivers: o.drivers ?? [this.claude, this.codex],
       mcpUrl: o.mcpUrl ?? "http://127.0.0.1:1/mcp",
       ...(heard ? { toolsHeard: (session: string) => heard.get(session) ?? 0 } : {}),
+      ...(this.projectsOn ? { projectsOn: this.projectsOn } : {}),
+      ...(this.isRig ? { isRig: this.isRig } : {}),
       internal: o.internal === false ? null : new InternalChat(),
       link: o.link ? (key) => `https://ember.test/o/${this.hub?.wsOf(key) ?? this.place.workspace}/${this.place.station}/${key.replaceAll(":", "%3A")}` : undefined,
       workspaces: this.workspaces ? () => this.workspaces! : undefined,
@@ -475,7 +482,7 @@ export class Rig {
     await this.hub.accept(connect, m);
   }
   call(key: string, name: string, args: Json): Promise<string> {
-    const tool = chatTools(this.hub).find((t) => t.name === name);
+    const tool = [...chatTools(this.hub), ...projectTools(this.hub)].find((t) => t.name === name);
     if (!tool) throw new Error(`no tool ${name}`);
     return tool.run(key, args);
   }

@@ -23,6 +23,8 @@ pub fn restore_order() -> Array[String] {
     "turns",
     "runtime_sessions",
     "closed_cards",
+    "entry_proposals",
+    "proposal_outcomes",
     "reads",
     "hidden_chats",
     "muted_chats",
@@ -38,7 +40,7 @@ pub fn former_own_names() -> Array[String] {
 }
 
 pub fn own_log_tables() -> Array[String] {
-  ["entries", "letters", "closed_cards", "dismissed", "reads"]
+  ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "dismissed", "reads"]
 }
 
 pub fn thread_of_col(table : String) -> Option[String] {
@@ -48,6 +50,8 @@ pub fn thread_of_col(table : String) -> Option[String] {
   table == "entries" ||
   table == "letters" ||
   table == "closed_cards" ||
+  table == "entry_proposals" ||
+  table == "proposal_outcomes" ||
   table == "reads" ||
   table == "hidden_chats" ||
   table == "muted_chats" ||
@@ -60,7 +64,7 @@ pub fn thread_of_col(table : String) -> Option[String] {
 }
 
 pub fn thread_of_tbls() -> Array[Int] {
-  [0, 2, 3, 4, 7, 8, 9, 10, 11, 12]
+  [0, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14]
 }
 
 pub fn thread_column_of(table : String) -> Option[String] {
@@ -68,6 +72,8 @@ pub fn thread_column_of(table : String) -> Option[String] {
   table == "entries" ||
   table == "letters" ||
   table == "closed_cards" ||
+  table == "entry_proposals" ||
+  table == "proposal_outcomes" ||
   table == "reads" ||
   table == "hidden_chats" ||
   table == "muted_chats" ||
@@ -96,7 +102,7 @@ pub fn session_of_col(table : String) -> Option[String] {
 }
 
 pub fn session_of_tbls() -> Array[Int] {
-  [1, 2, 5, 6, 13, 14]
+  [1, 2, 5, 6, 15, 16]
 }
 
 pub fn order_of(table : String) -> Int {
@@ -116,7 +122,7 @@ pub fn key_columns(table : String) -> Result[Array[String], String] {
     Ok(["key"])
   } else if table == "thread_sessions" {
     Ok(["thread", "session"])
-  } else if table == "entries" || table == "letters" || table == "closed_cards" {
+  } else if table == "entries" || table == "letters" || table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" {
     Ok(["thread", "n"])
   } else if table == "runtime_sessions" {
     Ok(["session_key", "id"])

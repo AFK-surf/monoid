@@ -2,12 +2,13 @@
 package "station/replica_coord"
 
 import {
-  "ui/effect",
   "moonbitlang/core/ref",
   "station/host",
   "station/jsjson",
   "station/session_chats",
   "station/session_storage",
+  "station/vault_crypto",
+  "ui/effect",
 }
 
 // Values
@@ -15,11 +16,15 @@ pub let accounts_wait_ms : Double
 
 pub fn after_of(String, @jsjson.JValue) -> @jsjson.JValue
 
+pub fn apply_backup_update(@jsjson.JValue, @jsjson.JValue, (Int32) -> String) -> (@jsjson.JValue, Array[(String, String)]) raise
+
 pub fn as_head(@jsjson.JValue) -> @jsjson.JValue?
 
 pub fn at(@jsjson.JValue, String) -> @jsjson.JValue?
 
 pub fn backoff(Double, Int32, Double) -> Double
+
+pub fn backup_view_json(BackupConfig, Array[BackupPeerView], (String) -> S3TargetStatus) -> @jsjson.JValue
 
 pub fn base36(Double) -> String
 
@@ -36,6 +41,8 @@ pub fn carried_to(Fs, String, String, String, String?) -> String
 pub let changed_words : String
 
 pub let chat_tables : Array[String]
+
+pub fn check_backup_config(@jsjson.JValue?) -> Unit raise
 
 pub fn claude_project(String) -> String?
 
@@ -55,9 +62,19 @@ pub let copies_tell_ms : Double
 
 pub fn copy_dir(Fs, String) -> String
 
+pub let default_backup_prefix : String
+
+pub let default_backup_region : String
+
+pub fn encode_s3_path(String) -> String
+
 pub fn ends_with(String, String) -> Bool
 
 pub fn entries(@jsjson.JValue?) -> Array[(String, @jsjson.JValue)]
+
+pub fn extract_all_xml_tags(String, String) -> Array[String]
+
+pub fn extract_xml_tag(String, String) -> String?
 
 pub fn failed(String) -> Thrown
 
@@ -68,6 +85,8 @@ pub let floor_min : Double
 pub fn floor_of(Double?) -> Double
 
 pub let floor_share : Double
+
+pub fn format_amz_date(Double) -> (String, String)
 
 pub let format_version : Double
 
@@ -85,7 +104,11 @@ pub async fn hand_over(FolderPlace, Place, String, String) -> Bool
 
 pub async fn handover_id(Fs, Array[String], String, Double) -> String
 
+pub let handover_quiet_ms : Double
+
 pub let hash_most : Double
+
+pub fn head_all_files(@jsjson.JValue, include_transcripts? : Bool) -> Array[String]
 
 pub fn head_batches(@jsjson.JValue) -> Array[String]
 
@@ -101,13 +124,21 @@ pub fn head_runs(@jsjson.JValue) -> Array[(String, Double)]
 
 pub fn head_to(@jsjson.JValue) -> Double
 
+pub fn head_transcript_files(@jsjson.JValue) -> Array[String]
+
 pub let headroom : Double
+
+pub fn history_file(Fs, String) -> String
+
+pub let history_max : Int32
 
 pub fn holds_all(Held, Held) -> Bool
 
 pub fn is_ask_again(Error) -> Bool
 
 pub fn is_batch(String) -> Bool
+
+pub fn is_enc_key(String) -> Bool
 
 pub fn is_gen(String) -> Bool
 
@@ -118,6 +149,10 @@ pub fn is_hash(String) -> Bool
 pub fn is_nullish(@jsjson.JValue?) -> Bool
 
 pub fn is_refused(Error) -> Bool
+
+pub fn is_s3_bucket(String) -> Bool
+
+pub fn is_s3_id(String) -> Bool
 
 pub fn is_said(Error) -> Bool
 
@@ -161,6 +196,8 @@ pub fn keepers(String, String, Array[String]) -> Array[String]
 
 pub fn kept_dir(Fs, String) -> String
 
+pub fn key_fingerprint(String) -> String
+
 pub fn kind_of(Error) -> String
 
 pub fn known_json((String, String)) -> @jsjson.JValue
@@ -171,13 +208,15 @@ pub let lack_most : Int32
 
 pub async fn lacking_in(Fs, String, Array[String]) -> Array[String]
 
-pub async fn level(Place, String, Own, known? : Known?) -> Levelled
+pub async fn level(Place, String, Own, known? : Known?, include_transcripts? : Bool, on_partial? : (Double, Int32) -> Unit) -> Levelled
 
 pub fn list_file(Fs, String, String) -> String
 
 pub fn local_of((String, String), String) -> String
 
 pub let marks_tables : Array[String]
+
+pub fn mask_value(String) -> String
 
 pub fn memory_mark(String) -> String
 
@@ -198,6 +237,10 @@ pub fn moved_note(Fs, String, String, @jsjson.JValue, @jsjson.JValue, String, St
 pub fn moved_said(String, String, Double?, String?, String?) -> String
 
 pub fn new_ctx(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn normalize_prefix(@jsjson.JValue?) -> String raise
+
+pub fn normalize_s3_target(@jsjson.JValue, Int32) -> S3TargetConfig raise
 
 pub fn not_empty() -> Thrown
 
@@ -227,6 +270,8 @@ pub fn pairs_json(Array[(String, String)]) -> @jsjson.JValue
 
 pub fn parse(String) -> @jsjson.JValue raise @jsjson.SyntaxError
 
+pub fn parse_encryption_key(String) -> Bytes raise
+
 pub let peer_most : Double
 
 pub async fn peer_origins(World, String, String) -> Array[(String, Array[@jsjson.JValue])]
@@ -237,13 +282,15 @@ pub async fn peer_read(World, String, String, String, String?, String) -> Body
 
 pub let previous_limit_ms : Double
 
-pub fn process_runner(() -> ExportProcess raise, () -> Double) -> Runner
+pub fn process_runner(() -> ExportProcess raise, () -> Double, close_grace_ms? : Double) -> Runner
 
 pub fn program_runner(Fs, String, String, String, String, () -> Double) -> Runner
 
 pub let quiet_unreached_ms : Double
 
 pub fn ranked(String, String, Array[String]) -> Array[String]
+
+pub fn read_backup_config(@jsjson.JValue) -> BackupConfig
 
 pub fn ready_file(Fs, String) -> String
 
@@ -271,9 +318,17 @@ pub let retire_starts : Bool
 
 pub let retire_tell_ms : Double
 
+pub fn rfc3986_encode(String) -> String
+
+pub let s3_multipart_part_size : Int32
+
+pub let s3_multipart_threshold : Int32
+
 pub fn said(String) -> Thrown
 
 pub fn say_of(World, Error, String) -> String
+
+pub fn select_backup_targets(String, String, Array[String], BackupConfig, Map[String, Bool], (String) -> Bool) -> Array[String]
 
 pub async fn send_gathered(Fs, @jsjson.JValue, Sending, Bool, jobs? : Array[@jsjson.JValue], indexed? : Bool) -> String?
 
@@ -281,7 +336,35 @@ pub async fn serve(Serving, String, @jsjson.JValue, Body?, String?) -> Answer
 
 pub fn set(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
 
+pub let sfb1_flag_final : Byte
+
+pub let sfb1_flag_more : Byte
+
+pub fn sfb1_frame_aad(String, String, String, Int32, Bool) -> Bytes
+
+pub let sfb1_frame_header_len : Int32
+
+pub fn sfb1_frame_nonce(Bytes, Bytes, Int32) -> Bytes
+
+pub let sfb1_frame_plain_max : Int32
+
+pub let sfb1_header_len : Int32
+
+pub let sfb1_magic : Bytes
+
+pub fn sfb1_open(@vault_crypto.Crypto, Bytes, String, String, String, Bytes) -> Bytes raise
+
+pub let sfb1_salt_len : Int32
+
+pub fn sfb1_seal(@vault_crypto.Crypto, Bytes, String, String, String, Bytes, salt? : Bytes, frame_max? : Int32) -> Bytes raise
+
+pub fn sfb1_seal_stream(@vault_crypto.Crypto, Bytes, String, String, String, async () -> Bytes?, salt? : Bytes, frame_max? : Int32) -> (async () -> Bytes?) raise
+
+pub let sfb1_tag_len : Int32
+
 pub fn sha256_text(String) -> String
+
+pub fn sign_s3_request(S3TargetConfig, String, String, Array[(String, String)], Bytes, Double, extra_headers? : Array[(String, String)]) -> SignedS3Request
 
 pub fn starts_with(String, String) -> Bool
 
@@ -307,9 +390,13 @@ pub fn text_at(@jsjson.JValue, String) -> String
 
 pub async fn there(Fs, String) -> Bool
 
+pub let transcript_gather_ms : Double
+
 pub let turn_wait_ms : Double
 
 pub fn unanswered(String) -> Bool
+
+pub fn unescape_xml(String) -> String
 
 pub fn uniq(Array[String]) -> Array[String]
 
@@ -318,6 +405,10 @@ pub fn unset(@jsjson.JValue, String) -> @jsjson.JValue
 pub let usage_tables : Array[String]
 
 pub async fn used_connects(Fs, String, String, Bool) -> Array[String]
+
+pub fn validate_bucket(@jsjson.JValue?) -> String raise
+
+pub fn validate_endpoint(@jsjson.JValue?) -> String raise
 
 pub let went_words : String
 
@@ -351,6 +442,38 @@ pub(all) struct AsksDeps {
   manages : (@jsjson.JValue) -> Bool
 }
 
+pub(all) struct BackupConfig {
+  mode : String
+  stations : Array[String]
+  accept_others : Bool
+  s3 : Array[S3TargetConfig]
+}
+pub fn BackupConfig::default() -> Self
+
+pub(all) struct BackupPeerView {
+  station : String
+  name : String
+  accept_others : Bool
+  online : Bool
+}
+
+pub(all) struct BackupRecord {
+  id : String
+  at : Double
+  kind : String
+  target_kind : String
+  target : String
+  target_name : String
+  status : String
+  chats : Int32
+  messages : Int32
+  batches : Int32
+  bytes : Double
+  reason : String?
+  error : String?
+}
+pub fn BackupRecord::to_json(Self) -> @jsjson.JValue
+
 pub(all) enum Body {
   Whole(Bytes)
   File(String, Double, Double)
@@ -368,10 +491,6 @@ pub struct Copies {
   w : World
   d : CopiesDeps
   kept : FolderPlace
-  mut told : Told
-  mut gathering : (() -> Unit)?
-  mut passing : Run?
-  mut again : Bool
   mut closed : Bool
   mut passed : @jsjson.JValue?
   keeping : Map[String, Keeping]
@@ -380,20 +499,30 @@ pub struct Copies {
   mut hand_again : (() -> Unit)?
   mut hand_tries : Int32
   mut restoring : Restoring?
-  mut export_error : String?
-  mut export_tries : Int32
   old : Map[String, Bool]
+  peer_accepts : Map[String, Bool]
+  online : Map[String, Bool]
+  s3_places : Map[String, (String, S3Place)]
   mut telling : (() -> Unit)?
+  history_by_ws : Map[String, Array[BackupRecord]]
+  mut history_seq : Int32
+  mut saving_history : Run?
+  mut save_history_again : Bool
   restored : @jsjson.JValue?
   was : Array[String]
   levelling : Map[String, Run]
   begun : Map[String, (String, Run)]
   looked : Map[String, (Array[@jsjson.JValue], Double, Bool)]
+  // private fields
 }
 pub async fn Copies::answer(Self, String, @jsjson.JValue, Body?, String?) -> Answer
+pub fn Copies::backup_view(Self, String) -> @jsjson.JValue
 pub async fn Copies::bring_to(Self, String, String) -> String
 pub async fn Copies::close(Self) -> Unit
-pub fn Copies::heard(Self, String, String, Array[String]) -> Array[String]
+pub fn Copies::config_changed(Self) -> Unit
+pub fn Copies::heard(Self, String, String, Array[String], accept_copies? : Bool) -> Array[String]
+pub fn Copies::history(Self, String, limit? : Int32) -> Array[BackupRecord]
+pub fn Copies::history_json(Self, String, limit? : Int32) -> @jsjson.JValue
 pub fn Copies::in_workspace(Self, String, String) -> Bool
 pub async fn Copies::look(Self, String) -> Unit
 pub async fn Copies::new(World, CopiesDeps) -> Self
@@ -401,11 +530,12 @@ pub fn Copies::now(Self, String?, String) -> String
 pub fn Copies::overview(Self, String, manage? : Bool) -> @jsjson.JValue
 pub async fn Copies::places_changed(Self) -> Unit
 pub async fn Copies::restorable(Self, String) -> Array[@jsjson.JValue]
-pub async fn Copies::restore(Self, String, String, String, String, merge? : (Array[(String, String)], String?)?) -> Unit
+pub async fn Copies::restore(Self, String, String, String, String, from_s3? : Bool, merge? : (Array[(String, String)], String?)?) -> Unit
 pub async fn Copies::settle(Self) -> Unit
 pub async fn Copies::settle_export(Self) -> Unit
 pub async fn Copies::start(Self) -> Unit
 pub async fn Copies::take_over(Self, String, String, String, Array[(String, String)], String?) -> Unit
+pub fn Copies::targets(Self, String) -> Array[String]
 pub fn Copies::told(Self, @jsjson.JValue) -> Unit
 
 pub(all) struct CopiesDeps {
@@ -417,6 +547,7 @@ pub(all) struct CopiesDeps {
   changed : () -> Unit
   restart : async () -> (async () -> Unit)?
   taking : (() -> Array[String])?
+  backup : (() -> BackupConfig)?
 }
 
 pub struct CopiesPart {
@@ -437,13 +568,14 @@ pub struct Driver {
 pub(all) struct ExportProcess {
   write : (Bytes) -> Bool
   end_input : () -> Unit
+  kill : (String) -> Unit
   next : async () -> ExportSaid
 }
 
 pub(all) enum ExportSaid {
   Said(Bytes)
   Other
-  Ended(Int?, String?)
+  Ended(Int32?, String?)
 }
 
 pub struct FolderPlace {
@@ -817,6 +949,63 @@ pub(all) struct Runner {
   close : async () -> Unit
 }
 
+pub struct S3Client {
+  target : S3TargetConfig
+  host : @host.Host
+  now : () -> Double
+  multipart_threshold : Int32
+  multipart_part_size : Int32
+}
+pub async fn S3Client::delete_object(Self, String) -> Unit
+pub async fn S3Client::get_object(Self, String) -> Bytes
+pub async fn S3Client::list_prefix(Self, String) -> Array[String]
+pub fn S3Client::new(S3TargetConfig, @host.Host, () -> Double, multipart_threshold? : Int32, multipart_part_size? : Int32) -> Self
+pub async fn S3Client::put_object(Self, String, Bytes) -> Unit
+pub async fn S3Client::put_stream(Self, String, async () -> Bytes?) -> Unit
+pub async fn S3Client::test_connection(Self) -> Unit
+
+pub struct S3Place {
+  target : S3TargetConfig
+  client : S3Client
+  crypto : @vault_crypto.Crypto
+  fs : Fs
+  key : Bytes
+  present_file_tags : Map[String, Map[String, Bool]]
+}
+pub async fn S3Place::drop(Self, String, String, String, Array[String], Array[String]) -> Unit
+pub fn S3Place::file_tag(Self, String) -> String
+pub async fn S3Place::held(Self, String, String) -> Held
+pub fn S3Place::new(S3TargetConfig, World) -> Self raise
+pub fn S3Place::origin_tag(Self, String) -> String
+pub async fn S3Place::origins(Self, String) -> Array[(String, Array[@jsjson.JValue])]
+pub fn S3Place::place(Self) -> Place
+pub async fn S3Place::put(Self, String, String, String, String, String, Bytes) -> Unit
+pub async fn S3Place::put_file(Self, String, String, String, String) -> Unit
+pub async fn S3Place::read(Self, String, String, String?, String) -> Body
+pub fn S3Place::ws_tag(Self, String) -> String
+
+pub(all) struct S3TargetConfig {
+  id : String
+  name : String
+  endpoint : String
+  region : String
+  bucket : String
+  prefix : String
+  force_path_style : Bool
+  access_key_id : String
+  secret_access_key : String
+  encryption_key : String
+  include_transcripts : Bool
+}
+pub fn S3TargetConfig::to_json(Self) -> @jsjson.JValue
+
+pub(all) struct S3TargetStatus {
+  to : Double
+  at : Double?
+  error : String?
+  reason : String?
+}
+
 pub struct Sending {
   lacking : async (Array[String], Array[Sent]) -> @jsjson.JValue
   put : async (String, Body, String, Double) -> @jsjson.JValue
@@ -843,13 +1032,20 @@ pub fn Sent::to_json(Self) -> @jsjson.JValue
 pub struct Serving {
   place : FolderPlace
   in_workspace : (String, String) -> Bool
-  hello : (String, String, Array[String]) -> Array[String]
+  hello : (String, String, Array[String], Bool) -> Array[String]
+  accept_others : (() -> Bool)?
+  guard_write : (async (String, String, async () -> Unit) -> Unit)?
 }
 
 pub(all) struct SessionReads {
   session : async (String) -> @jsjson.JValue?
   home_members : async (String) -> Array[String]?
   ran_on : async (String) -> Array[String]
+}
+
+pub struct SignedS3Request {
+  url : String
+  headers : Array[(String, String)]
 }
 
 type Taking
@@ -860,6 +1056,7 @@ pub struct Told {
   removed_sessions : Array[@jsjson.JValue]
   removed_threads : Array[@jsjson.JValue]
   marks : Array[@jsjson.JValue]
+  mut transcripts : Bool
 }
 pub fn Told::nothing() -> Self
 pub fn Told::to_json(Self) -> @jsjson.JValue

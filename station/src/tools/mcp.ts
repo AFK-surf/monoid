@@ -8,7 +8,7 @@ import type { Traces } from "../mesh/traces.ts";
 /// people (chat_post, into still.fail chats and Slack, with its files), slack_api (as the workspace's Slack bot) and
 /// job_start, and the peer stations' tools (peer_forward too). The rest only read the station's own records, record the turn's state
 /// (chat_state) or stop something (job_stop), and stay open.
-export const OUTWARD = ["chat_post", "slack_api", "job_start", "station_list", "station_task", "station_file", "peer_forward"];
+export const OUTWARD = ["chat_post", "slack_api", "job_start", "station_list", "station_task", "station_file", "peer_forward", "project_manage"];
 
 /// What a refused outward call says.
 export const UNBOUND_REFUSAL =
@@ -65,7 +65,7 @@ export const EVERY_TURN = ["chat_post", "chat_state"];
 /// subagents from these (agents/claude.ts `SILENT_SUBAGENTS`). Not OUTWARD, which is where a call lands whoever makes
 /// it: a subagent starts a job or a task as its parent would, and chat_state lands nowhere outside the station.
 /// A new tool is sorted into these or out of them in test/speaks.test.ts.
-export const SPEAKS = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure"];
+export const SPEAKS = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure", "project_manage"];
 /// The one that speaks only where its method writes (a post, an edit, a reaction, a direct message, as the session's
 /// Slack bot): its own agent's alone as those above are, while a subagent reads Slack as its parent does, so a driver
 /// keeps its subagents from the writes and lets the rest through.

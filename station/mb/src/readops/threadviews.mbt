@@ -215,6 +215,18 @@ fn listed_thread_json(t : Map[String, Json]) -> Map[String, Json] {
     Some(l) => v["links"] = l
     None => ()
   }
+  match field(t, "project") {
+    String(p) => v["project"] = Json::string(p)
+    _ => ()
+  }
+  match field(t, "project_locked") {
+    Number(n, ..) if n == 1.0 => v["projectLocked"] = Json::boolean(true)
+    _ => ()
+  }
+  match parsed_thread_tags(field(t, "tags")) {
+    Some(ts) => v["tags"] = ts
+    None => ()
+  }
   v
 }
 

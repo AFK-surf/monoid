@@ -181,6 +181,189 @@ const history = (r: Rec) => [r.hash, ...r.prev].filter((h) => h !== "");
 
 export type Outcome = { kind: "keep" } | { kind: "take"; rec: Rec } | { kind: "merge"; rec: Rec; content: Buffer | null; beside: { path: string; rec: Rec; content: Buffer } | null };
 
+export function compactProjectsJsonl(text: string): string {
+  const maxDel = new Map<string, number>();
+  const parsedLive: {
+    name: string;
+    at: number;
+    hasAt: boolean;
+    note: string;
+    noteAt: number;
+    hasNoteAt: boolean;
+    refsWithAt: [string, number][];
+    hasRefsAt: boolean;
+    noteClearedAt?: number;
+    refsClearedAt?: number;
+  }[] = [];
+  const extra: string[] = [];
+  // Pass 1: parse lines and collect max deletion watermarks.
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === "") continue;
+    try {
+      const obj = JSON.parse(line);
+      if (obj && typeof obj === "object" && !Array.isArray(obj) && typeof obj.name === "string" && obj.name !== "") {
+        const hasAt = typeof obj.updatedAt === "number" && Number.isFinite(obj.updatedAt);
+        const at = hasAt ? obj.updatedAt : -1;
+        if (obj.deleted === true) {
+          const delAt = hasAt ? at : 0;
+          const prev = maxDel.get(obj.name);
+          if (prev === undefined || delAt > prev) maxDel.set(obj.name, delAt);
+          continue;
+        }
+        if (typeof obj.deletedAt === "number" && Number.isFinite(obj.deletedAt)) {
+          const prev = maxDel.get(obj.name);
+          if (prev === undefined || obj.deletedAt > prev) maxDel.set(obj.name, obj.deletedAt);
+        }
+        const hasOwnNoteAt = typeof obj.noteAt === "number" && Number.isFinite(obj.noteAt);
+        const noteAt = hasOwnNoteAt ? obj.noteAt : at;
+        const hasNoteAt = hasOwnNoteAt || hasAt;
+        const hasOwnRefsFallback = typeof obj.refsAt === "number" && Number.isFinite(obj.refsAt);
+        const refsFallback = hasOwnRefsFallback ? obj.refsAt : at;
+        const hasRefsFallback = hasOwnRefsFallback || hasAt;
+        const noteClearedAt = typeof obj.noteClearedAt === "number" && Number.isFinite(obj.noteClearedAt) ? obj.noteClearedAt : undefined;
+        const refsClearedAt = typeof obj.refsClearedAt === "number" && Number.isFinite(obj.refsClearedAt) ? obj.refsClearedAt : undefined;
+        const note = typeof obj.note === "string" ? obj.note : "";
+        const rawRefAts = obj.refAts && typeof obj.refAts === "object" && !Array.isArray(obj.refAts)
+          ? (obj.refAts as Record<string, unknown>)
+          : null;
+        const refsWithAt: [string, number][] = [];
+        const seenRefs = new Set<string>();
+        let hasRefsAt = false;
+        if (Array.isArray(obj.refs)) {
+          for (const x of obj.refs) {
+            if (typeof x === "string" && x !== "" && !seenRefs.has(x)) {
+              seenRefs.add(x);
+              const rawV = rawRefAts !== null && Object.prototype.hasOwnProperty.call(rawRefAts, x) ? rawRefAts[x] : undefined;
+              const own = typeof rawV === "number" && Number.isFinite(rawV) ? rawV : undefined;
+              if (own !== undefined || hasRefsFallback) hasRefsAt = true;
+              refsWithAt.push([x, own !== undefined ? own : refsFallback]);
+            }
+          }
+        }
+        parsedLive.push({ name: obj.name, at, hasAt, note, noteAt, hasNoteAt, refsWithAt, hasRefsAt, noteClearedAt, refsClearedAt });
+        continue;
+      }
+    } catch {}
+    extra.push(line);
+  }
+  // Filter surviving live rows (at > maxDel) and collect field-level clear watermarks.
+  const surviving: typeof parsedLive = [];
+  const maxNoteCleared = new Map<string, number>();
+  const maxRefsCleared = new Map<string, number>();
+  for (const item of parsedLive) {
+    const delAt = maxDel.get(item.name);
+    if (delAt !== undefined && item.at <= delAt) continue;
+    surviving.push(item);
+    if (item.noteClearedAt !== undefined) {
+      const prev = maxNoteCleared.get(item.name);
+      if (prev === undefined || item.noteClearedAt > prev) maxNoteCleared.set(item.name, item.noteClearedAt);
+    }
+    if (item.refsClearedAt !== undefined) {
+      const prev = maxRefsCleared.get(item.name);
+      if (prev === undefined || item.refsClearedAt > prev) maxRefsCleared.set(item.name, item.refsClearedAt);
+    }
+  }
+  // Pass 2: filter cleared fields by max(clear watermark, project deletion watermark) & per-ref `refAts`, and merge associatively.
+  const byName = new Map<string, { at: number; hasAt: boolean; note: string; noteAt: number; hasNoteAt: boolean; refAts: Map<string, number>; hasRefsAt: boolean }>();
+  for (const item of surviving) {
+    const delCut = maxDel.get(item.name);
+    const nc = maxNoteCleared.get(item.name);
+    const rc = maxRefsCleared.get(item.name);
+    const noteCut = nc !== undefined && delCut !== undefined ? Math.max(nc, delCut) : (nc ?? delCut);
+    const refsCut = rc !== undefined && delCut !== undefined ? Math.max(rc, delCut) : (rc ?? delCut);
+    const keepNote = item.note !== "" && (noteCut === undefined || item.noteAt > noteCut);
+    const note = keepNote ? item.note : "";
+    const noteAt = keepNote ? item.noteAt : -1;
+    const hasNoteAt = keepNote && item.hasNoteAt;
+    const rowRefAts = new Map<string, number>();
+    let rowHasRefsAt = false;
+    for (const [r, rAt] of item.refsWithAt) {
+      if (refsCut !== undefined && rAt <= refsCut) continue;
+      const prevRa = rowRefAts.get(r);
+      if (prevRa === undefined || rAt > prevRa) rowRefAts.set(r, rAt);
+      if (item.hasRefsAt) rowHasRefsAt = true;
+    }
+    const prev = byName.get(item.name);
+    if (!prev) {
+      byName.set(item.name, { at: item.at, hasAt: item.hasAt, note, noteAt, hasNoteAt, refAts: rowRefAts, hasRefsAt: rowHasRefsAt });
+    } else {
+      let mergedNote = prev.note;
+      let mergedNoteAt = prev.noteAt;
+      let mergedHasNoteAt = prev.hasNoteAt;
+      if (note !== "" && prev.note !== "") {
+        const inWins = noteAt !== prev.noteAt ? noteAt > prev.noteAt : note > prev.note;
+        if (inWins) {
+          mergedNote = note;
+          mergedNoteAt = noteAt;
+          mergedHasNoteAt = hasNoteAt;
+        }
+      } else if (note !== "") {
+        mergedNote = note;
+        mergedNoteAt = noteAt;
+        mergedHasNoteAt = hasNoteAt;
+      }
+      for (const [r, rAt] of rowRefAts) {
+        const oldRa = prev.refAts.get(r);
+        if (oldRa === undefined || rAt > oldRa) prev.refAts.set(r, rAt);
+      }
+      byName.set(item.name, {
+        at: Math.max(item.at, prev.at),
+        hasAt: item.hasAt || prev.hasAt,
+        note: mergedNote,
+        noteAt: mergedNoteAt,
+        hasNoteAt: mergedHasNoteAt,
+        refAts: prev.refAts,
+        hasRefsAt: rowHasRefsAt || prev.hasRefsAt,
+      });
+    }
+  }
+  const allNames = [...new Set([...byName.keys(), ...maxDel.keys()])].sort();
+  const out: string[] = [];
+  for (const name of allNames) {
+    const e = byName.get(name);
+    const delAt = maxDel.get(name);
+    if (e) {
+      const rec: Record<string, unknown> = { name };
+      if (e.note !== "") {
+        rec.note = e.note;
+        if (e.hasNoteAt) rec.noteAt = e.noteAt;
+      }
+      const sortedRefs = [...e.refAts.keys()].sort((a, b) => {
+        const da = e.refAts.get(a)!;
+        const db = e.refAts.get(b)!;
+        if (da !== db) return db - da;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      if (sortedRefs.length > 0) {
+        rec.refs = sortedRefs;
+        if (e.hasRefsAt) {
+          let maxRa = -1;
+          const orderedAts: Record<string, number> = {};
+          for (const r of sortedRefs) {
+            const v = e.refAts.get(r)!;
+            if (v > maxRa) maxRa = v;
+            orderedAts[r] = v;
+          }
+          if (maxRa >= 0) rec.refsAt = maxRa;
+          rec.refAts = orderedAts;
+        }
+      }
+      if (e.hasAt) rec.updatedAt = e.at;
+      if (delAt !== undefined) rec.deletedAt = delAt;
+      const nc = maxNoteCleared.get(name);
+      if (nc !== undefined) rec.noteClearedAt = nc;
+      const rc = maxRefsCleared.get(name);
+      if (rc !== undefined) rec.refsClearedAt = rc;
+      out.push(JSON.stringify(rec));
+    } else if (delAt !== undefined) {
+      out.push(JSON.stringify({ name, deleted: true, updatedAt: delAt }));
+    }
+  }
+  for (const line of extra) out.push(line);
+  return out.length === 0 ? "" : `${out.join("\n")}\n`;
+}
+
 export function decide(path: string, mine: Rec | undefined, theirs: Rec, contentOf: (hash: string) => Buffer | null, nameOf: (station: string) => string): Outcome {
   if (mine === undefined) return { kind: "take", rec: theirs };
   if (mine.hash === theirs.hash) return newer(theirs, mine) ? { kind: "take", rec: theirs } : { kind: "keep" };
@@ -212,8 +395,12 @@ export function decide(path: string, mine: Rec | undefined, theirs: Rec, content
   const base = common === undefined ? null : contentOf(common);
   let text: string | null = null;
   if (isText(wc) && isText(lc)) {
-    if (base !== null && isText(base)) text = merge3(base.toString("utf8"), wc.toString("utf8"), lc.toString("utf8"));
-    else if (common !== undefined) {
+    if (base !== null && isText(base)) {
+      text = merge3(base.toString("utf8"), wc.toString("utf8"), lc.toString("utf8"));
+      if (text === null && path === "PROJECTS.jsonl") {
+        text = unionLines(wc.toString("utf8"), lc.toString("utf8"), null, null);
+      }
+    } else if (common !== undefined || path === "PROJECTS.jsonl") {
       text = unionLines(wc.toString("utf8"), lc.toString("utf8"), null, null);
     } else if (path === "MEMORY.md") {
       text = unionLines(wc.toString("utf8"), lc.toString("utf8"), w.origin ? nameOf(w.by) : null, l.origin ? nameOf(l.by) : null);
@@ -222,7 +409,11 @@ export function decide(path: string, mine: Rec | undefined, theirs: Rec, content
     }
   }
   if (text !== null) {
-    const content = Buffer.from(text, "utf8");
+    let content = Buffer.from(text, "utf8");
+    if (path === "PROJECTS.jsonl" && content.length > FILE_MOST) {
+      content = Buffer.from(compactProjectsJsonl(text), "utf8");
+      if (content.length > FILE_MOST) return { kind: "keep" };
+    }
     return { kind: "merge", rec: made(content, [w, l]), content, beside: null };
   }
   const besidePath = conflictPath(path, nameOf(l.by));
@@ -240,6 +431,12 @@ export async function readMemory(dir: string): Promise<{ files: Map<string, { by
     if (!st.isFile()) {}
     else if (st.size <= FILE_MOST) files.set("MEMORY.md", { bytes: await readFile(join(dir, "MEMORY.md")), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
     else held.add("MEMORY.md");
+  } catch {}
+  try {
+    const st = await lstat(join(dir, "PROJECTS.jsonl"));
+    if (!st.isFile()) {}
+    else if (own(st.mode) || st.size > FILE_MOST) held.add("PROJECTS.jsonl");
+    else files.set("PROJECTS.jsonl", { bytes: await readFile(join(dir, "PROJECTS.jsonl")), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
   } catch {}
   let skills: Dirent[] = [];
   try {

@@ -293,7 +293,7 @@ fn open_chat_beside(r : ChatRef) -> Unit {
     for k = pages.length() - 1; k >= 0; k = k - 1 {
       match pages[k] {
         Chat(open) if open.station == r.station && open.session == r.session => return
-        Chat(_) => break
+        Chat(_) | NewChat => break
         _ => ()
       }
     }

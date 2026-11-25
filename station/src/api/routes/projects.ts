@@ -1,0 +1,255 @@
+// Member HTTP routes for chat classification (project & tags), inline project-creation proposal resolution,
+// and workspace-shared project metadata (`PROJECTS.jsonl`).
+// None of these write routes are in `OWN_MARKS`, so `admin.ts` automatically rejects read-only members (403).
+import { join } from "node:path";
+import type { Route, Tools } from "../admin.ts";
+import { type Answer, type Request, error, json } from "../request.ts";
+import {
+  applyProposalInfoSync,
+  ensureProjectRegistered,
+  normalizeNote,
+  normalizeRefs,
+  readProjectsInfoLenient,
+  updateProjectInfo,
+} from "../../projects/info.ts";
+import { normalizeProject, normalizeTags } from "../../store/rows.ts";
+import type { Cloud } from "../../cloud/state.ts";
+
+const BODY_MOST = 256 * 1024;
+
+function parseBody(r: Request): Record<string, unknown> | null {
+  if (r.body.length > BODY_MOST) return null;
+  try {
+    const parsed = JSON.parse(r.body.toString("utf8") || "{}");
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function agentHomeOf(tools: Tools): string | null {
+  const fromHub = tools.agents?.hub.config().agentHome;
+  if (typeof fromHub === "string" && fromHub !== "") return fromHub;
+  if (typeof tools.data === "string" && tools.data !== "") return join(tools.data, "agent");
+  return null;
+}
+
+function validateNoteArg(raw: unknown): { ok: true; value: string | null | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: raw };
+  if (typeof raw !== "string") return { ok: false, error: "note must be a string or null" };
+  return { ok: true, value: raw };
+}
+
+function validateRefsArg(raw: unknown): { ok: true; value: string[] | null | undefined } | { ok: false; error: string } {
+  if (raw === undefined || raw === null) return { ok: true, value: raw };
+  if (!Array.isArray(raw) || raw.some((x) => typeof x !== "string")) {
+    return { ok: false, error: "refs must be an array of strings or null" };
+  }
+  return { ok: true, value: raw as string[] };
+}
+
+export function routes(tools: Tools, cloud?: Cloud): Route[] {
+  const homeWs = () => cloud?.home() ?? tools.agents?.cloud?.home() ?? null;
+  const viewerWs = (r: Request): string | null => r.viewer.workspace || homeWs();
+  const notifyProjectsChanged = (ws: string | null) => {
+    tools.events?.projectsChanged(ws);
+    tools.agents?.hub.invalidateProjectsCache(ws);
+  };
+
+  return [
+    {
+      method: "POST",
+      pattern: /^\/threads\/([^/]+)\/proposals\/([^/]+)\/resolve$/,
+      handle: async (r: Request, [rawThread, rawEntry]: string[]): Promise<Answer> => {
+        if (!tools.store) return error(503, "station store is not ready");
+        if (!/^\d+$/.test(rawThread!) || !/^\d+$/.test(rawEntry!)) return error(400, "thread and entry must be positive integers");
+        const body = parseBody(r);
+        if (body === null) return error(r.body.length > BODY_MOST ? 413 : 400, r.body.length > BODY_MOST ? "request too large" : "invalid JSON body");
+        const action = body.action;
+        if (action !== "accept" && action !== "reassign" && action !== "dismiss") {
+          return error(400, 'action must be "accept", "reassign" or "dismiss"');
+        }
+        if (body.name !== undefined && typeof body.name !== "string") return error(400, "name must be a string");
+        if (body.target !== undefined && typeof body.target !== "string") return error(400, "target must be a string");
+        const noteCheck = validateNoteArg(body.note);
+        if (!noteCheck.ok) return error(400, noteCheck.error);
+        const refsCheck = validateRefsArg(body.refs);
+        if (!refsCheck.ok) return error(400, refsCheck.error);
+        const name = body.name as string | undefined;
+        const target = body.target as string | undefined;
+        // Distinguish omitted (`undefined` -> inherit proposal's value) from explicit clear (`null` / "" / []).
+        let normalizedNote: string | null | undefined;
+        let normalizedRefs: string[] | null | undefined;
+        try {
+          if ("note" in body && body.note !== undefined) {
+            if (body.note === null) {
+              normalizedNote = null;
+            } else {
+              normalizedNote = normalizeNote(body.note, true) ?? null;
+            }
+          }
+          if ("refs" in body && body.refs !== undefined) {
+            if (body.refs === null) {
+              normalizedRefs = null;
+            } else {
+              normalizedRefs = normalizeRefs(body.refs, true) ?? null;
+            }
+          }
+        } catch (e) {
+          return error(400, (e as Error).message);
+        }
+        const markCross = body.markCross === true;
+        const resolvedBy = r.viewer.email || r.viewer.sub || "member";
+
+        let res;
+        try {
+          res = tools.store.resolveProposal(Number(rawThread), Number(rawEntry), {
+            action,
+            ...(name !== undefined ? { name } : {}),
+            ...(target !== undefined ? { target } : {}),
+            ...(normalizedNote !== undefined ? { note: normalizedNote } : {}),
+            ...(normalizedRefs !== undefined ? { refs: normalizedRefs } : {}),
+            markCross,
+            resolvedBy,
+          });
+        } catch (e) {
+          const msg = (e as Error).message;
+          const status = /^unknown (thread|entry)|has no project proposal/.test(msg) ? 404 : 400;
+          return error(status, msg);
+        }
+
+        // Persist project registration/metadata into shared PROJECTS.jsonl atomically inside file lock
+        // using DB-recorded intent (`proposal_outcomes.info_note`, `info_refs`, `info_synced`).
+        // On file write failure after DB commit, keep `info_synced = 0` and return 200 with `infoError`
+        // (matching PUT /classification) so retries can reconcile without losing the DB decision.
+        let infoError: string | undefined;
+        const agentHome = agentHomeOf(tools);
+        if (agentHome !== null && res.infoSync.needed) {
+          const ws = viewerWs(r);
+          const targetProject = res.proposal.resolvedProject;
+          if (targetProject !== undefined && targetProject !== "") {
+            try {
+              const resolvedAt = typeof res.proposal.resolvedAt === "number" ? res.proposal.resolvedAt : tools.store.now();
+              const synced = await applyProposalInfoSync(agentHome, ws, homeWs(), {
+                name: targetProject,
+                ...(res.infoSync.note !== undefined ? { note: res.infoSync.note } : {}),
+                ...(res.infoSync.refs !== undefined ? { refs: res.infoSync.refs } : {}),
+                resolvedAt,
+                isReplay: res.alreadyResolved,
+              });
+              if (synced.changed) notifyProjectsChanged(ws);
+              tools.store.markProposalInfoSynced(Number(rawThread), Number(rawEntry));
+            } catch (e) {
+              infoError = (e as Error).message;
+            }
+          }
+        }
+
+        const answer = json(200, JSON.stringify({
+          proposal: res.proposal,
+          thread: res.thread,
+          alreadyResolved: res.alreadyResolved,
+          ...(infoError !== undefined ? { infoError } : {}),
+        }));
+        if (infoError !== undefined) answer.noCache = true;
+        return answer;
+      },
+    },
+    {
+      method: "PUT",
+      pattern: /^\/threads\/([^/]+)\/classification$/,
+      handle: async (r: Request, [rawThread]: string[]): Promise<Answer> => {
+        if (!tools.store) return error(503, "station store is not ready");
+        if (!/^\d+$/.test(rawThread!)) return error(400, "thread must be a positive integer");
+        const body = parseBody(r);
+        if (body === null) return error(r.body.length > BODY_MOST ? 413 : 400, r.body.length > BODY_MOST ? "request too large" : "invalid JSON body");
+
+        const change: { project?: string | null; tags?: string[] | null; lock: boolean; force: boolean } = { lock: true, force: true };
+        try {
+          if ("project" in body) {
+            if (body.project !== null && typeof body.project !== "string") return error(400, "project must be a string or null");
+            change.project = body.project === null ? null : normalizeProject(body.project);
+          }
+          if ("tags" in body) {
+            if (body.tags !== null && !Array.isArray(body.tags)) return error(400, "tags must be an array of strings or null");
+            change.tags = body.tags === null ? null : normalizeTags(body.tags, true);
+          }
+        } catch (e) {
+          return error(400, (e as Error).message);
+        }
+
+        let res;
+        try {
+          res = tools.store.setThreadClassification(Number(rawThread), change);
+        } catch (e) {
+          const msg = (e as Error).message;
+          return error(msg.startsWith("unknown thread") ? 404 : 400, msg);
+        }
+
+        let infoError: string | undefined;
+        if (typeof change.project === "string" && change.project !== "") {
+          const agentHome = agentHomeOf(tools);
+          if (agentHome !== null) {
+            const ws = viewerWs(r);
+            try {
+              const reg = await ensureProjectRegistered(agentHome, ws, homeWs(), { name: change.project, now: tools.store.now() });
+              if (reg.changed) notifyProjectsChanged(ws);
+            } catch (e) {
+              infoError = (e as Error).message;
+            }
+          }
+        }
+
+        const answer = json(200, JSON.stringify({ thread: res.thread, changed: res.changed, ...(infoError !== undefined ? { infoError } : {}) }));
+        if (infoError !== undefined) answer.noCache = true;
+        return answer;
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/projects\/info$/,
+      handle: async (r: Request): Promise<Answer> => {
+        const agentHome = agentHomeOf(tools);
+        if (agentHome === null) return json(200, JSON.stringify({ projects: {} }));
+        try {
+          const { projects, corruptLines } = await readProjectsInfoLenient(agentHome, viewerWs(r), homeWs());
+          return json(200, JSON.stringify({ projects, ...(corruptLines > 0 ? { corruptLines } : {}) }));
+        } catch (e) {
+          return error(500, (e as Error).message);
+        }
+      },
+    },
+    {
+      method: "PUT",
+      pattern: /^\/projects\/info$/,
+      handle: async (r: Request): Promise<Answer> => {
+        const agentHome = agentHomeOf(tools);
+        if (agentHome === null) return error(503, "station agent home is not configured");
+        const body = parseBody(r);
+        if (body === null) return error(r.body.length > BODY_MOST ? 413 : 400, r.body.length > BODY_MOST ? "request too large" : "invalid JSON body");
+        if (typeof body.name !== "string") return error(400, "provide name (single project update)");
+        const noteCheck = validateNoteArg(body.note);
+        if (!noteCheck.ok) return error(400, noteCheck.error);
+        const refsCheck = validateRefsArg(body.refs);
+        if (!refsCheck.ok) return error(400, refsCheck.error);
+        const ws = viewerWs(r);
+        const now = tools.store?.now() ?? 0;
+        try {
+          const { doc } = await updateProjectInfo(agentHome, ws, homeWs(), {
+            name: body.name,
+            ...(noteCheck.value !== undefined ? { note: noteCheck.value } : {}),
+            ...(refsCheck.value !== undefined ? { refs: refsCheck.value } : {}),
+            ...(body.delete === true ? { delete: true } : {}),
+            now,
+          });
+          notifyProjectsChanged(ws);
+          return json(200, JSON.stringify(doc));
+        } catch (e) {
+          const msg = (e as Error).message;
+          const status = /corrupt|invalid PROJECTS\.jsonl|exceeds/i.test(msg) ? 500 : 400;
+          return error(status, msg);
+        }
+      },
+    },
+  ];
+}

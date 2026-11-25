@@ -185,6 +185,10 @@ export type SessionDeps = {
   ownName?(): string;
   /// Whether moving to another station is on here (every station's; a test's may say not): its skill named in the instructions.
   moveOn?(): boolean;
+  /// Whether workspace project classification (`FEATURES.projects`) is active on this station.
+  projectsOn?(): boolean;
+  /// Compact (<= 1 KB) workspace projects/tags delta header for normal message delivery when first seen or changed.
+  untoldProjects?(key: string): Promise<{ text: string; markTold: () => void } | null>;
   maxNudges(): number;
   /// The chat session `key` last heard from (its address), when it has no title and nobody is at work in it.
   untitled?(key: string): string | null;
@@ -443,7 +447,7 @@ export async function openAgent(deps: SessionDeps, key: string, how: OpenHow): P
     // Its context cleared by hand (clear): no runtime session now, those before on record. A new one, told so; one
     // continued from a terminal is given still.fail's instructions as a new session is (no cache of its own to keep).
     const wasCleared = row.runtimeSessionId === null && (store.runtimeSessions?.(key).length ?? 0) > 0;
-    if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true);
+    if (wasCleared && row.cwd) base.instructions = sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false);
     // A runtime started where the station may not read exits at once with nothing to say why (macOS privacy protection
     // on a session continued in ~/Documents): told as it is instead. A directory someone named (one continued from a
     // terminal) is looked at as ops/places.ts does, never on this thread in a folder macOS protects (still.fail Helper
@@ -532,7 +536,7 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
   const store = deps.store;
   const row = store.getSession(key);
   // A session begun in a terminal and continued here: its first turn here says so, with how still.fail works.
-  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true)) : null;
+  const continued = row && row.cwd && !store.hasTurns(key) ? continuedHere(sessionInstructions(row.workspace, row.cwd, deps.reposDir(), deps.memoryPath(key), await deps.linkSkills(row), deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false)) : null;
   let prompt = lost ? `${(await deps.resumeLost?.(key)) ?? resumeLost(key, [])}\n\n${handed}` : handed;
   if (stopped !== null) prompt = `${stopped}\n\n${prompt}`;
   // Gone on in a new conversation, or compacted: in a long chat, told to read back what people said in it.
@@ -541,18 +545,21 @@ export async function promptFor(deps: SessionDeps, key: string, now: number, han
   if (afresh !== null) prompt = `${afresh}\n\n${prompt}`;
   if (continued !== null) prompt = `${continued}\n\n${prompt}`;
   // What changed in how it works since it was last told (migrations): once, before what it is handed.
-  const told = store.toldNotes(key) ?? latestNote();
-  if (told < latestNote()) {
+  const projectsOn = deps.projectsOn?.() ?? false;
+  const latest = latestNote({ projectsOn });
+  const told = store.toldNotes(key) ?? latest;
+  if (told < latest) {
     const full = row ? join(row.workspace, ".stillfail-instructions.md") : "";
     if (row) {
       try {
         const preset = row.cwd ? null : await presetCopyOf(row.workspace);
         const memory = await deps.linkSkills(row);
-        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true) + (preset ? presetInstructions(preset) : ""));
+        await writeFile(full, sessionInstructions(row.workspace, row.cwd ?? null, deps.reposDir(), deps.memoryPath(key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, projectsOn) + (preset ? presetInstructions(preset) : ""));
       } catch {}
     }
-    store.setToldNotes(key, latestNote());
-    prompt = `${untold(told, full)}\n\n${prompt}`;
+    store.setToldNotes(key, latest);
+    const notesText = untold(told, full, { projectsOn });
+    if (notesText !== "") prompt = `${notesText}\n\n${prompt}`;
   }
   return timed(prompt, now);
 }
@@ -630,13 +637,19 @@ export async function formatDelivery(deps: SessionDeps, key: string, said: any[]
 /// was sent then, so it has not heard: store.ts closeCard), and what marks those told once it has been handed.
 export async function handedWithChoices(deps: SessionDeps, key: string, now: number, text: string): Promise<[string, () => void]> {
   const store = deps.store;
+  const projects = deps.projectsOn?.() === true && deps.untoldProjects ? await deps.untoldProjects(key).catch(() => null) : null;
+  const withProjects = (rest: string, told: () => void): [string, () => void] => {
+    if (projects === null) return [rest, told];
+    return [rest === "" ? projects.text : `${projects.text}\n\n${rest}`, () => (told(), projects.markTold())];
+  };
   // (its chat moved here from a station retired: said once, before the rest)
   const moved = store.untoldMovedNote?.(key) ?? null;
   if (moved !== null) {
     const [rest, told] = await choicesWith(deps, key, now, text);
-    return [rest === "" ? moved : `${moved}\n\n${rest}`, () => (told(), store.markMovedNoteTold?.(key))];
+    return withProjects(rest === "" ? moved : `${moved}\n\n${rest}`, () => (told(), store.markMovedNoteTold?.(key)));
   }
-  return choicesWith(deps, key, now, text);
+  const [rest, told] = await choicesWith(deps, key, now, text);
+  return withProjects(rest, told);
 }
 
 async function choicesWith(deps: SessionDeps, key: string, now: number, text: string): Promise<[string, () => void]> {
@@ -692,7 +705,7 @@ export async function linkSkills(row: any, deps: Pick<SessionDeps, "memoryPath">
 }
 
 /// `memory`: its workspace's memory as `linkSkills` gave it.
-export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName" | "moveOn">, memory: string): Promise<OpenOptions> {
+export async function openOptions(row: any, profile: Profile & { spelling?(model: string): string | null }, deps: Pick<SessionDeps, "mcpUrl" | "reposDir" | "memoryPath" | "siteInstructions" | "ownName" | "moveOn" | "projectsOn">, memory: string): Promise<OpenOptions> {
   const skills = row.cwd ? undefined : join(dirname(deps.memoryPath(row.key)), "skills");
   // The model as this profile spells it (openai/gpt-6-astra on a router for gpt-6-astra).
   const model = row.model ? (profile.spelling?.(row.model) ?? row.model) : undefined;
@@ -709,7 +722,7 @@ export async function openOptions(row: any, profile: Profile & { spelling?(model
     ...(row.tui ? { tui: true } : {}),
     ...(typeof row.fast === "boolean" ? { fast: row.fast } : {}),
     // A session continued from a terminal keeps the system prompt it began with (its cache holds).
-    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true) + (preset ? presetInstructions(preset) : ""),
+    instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true, deps.projectsOn?.() ?? false) + (preset ? presetInstructions(preset) : ""),
     ...(skills !== undefined ? { skills } : {}),
     mcpToken: row.token,
     mcpUrl: deps.mcpUrl(),

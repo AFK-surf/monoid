@@ -2038,8 +2038,8 @@ fn draft_card(
 
 ///|
 /// Draft `id`'s panel, opened by its card `from` (beside it; a sheet from the foot on 小屏): its words, the pictures and
-/// files it carries, where it runs (the workspace's stations; kept to its own while it carries files, as they went up
-/// there) and on what (the one model control, picked for it alone: `board:<id>`); at its foot 完成 and 派发 (`start`).
+/// files it carries, where it runs (the workspace's stations; kept to its own while it carries files this device does
+/// not hold) and on what (the one model control, picked for it alone: `board:<id>`); at its foot 完成 and 派发 (`start`).
 /// What is changed is kept as it closes, however it closes: 完成, 派发, Escape, back or a press outside; words left
 /// empty with nothing carried keep the words it had.
 fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, start : () -> Unit) -> Unit {
@@ -2059,10 +2059,16 @@ fn draft_panel(src : Source, own : BoardOwn, id : String, from : @view.View, sta
     // (the next one written goes where this one was sent last)
     if st != d0.station { own.station.set(st) }
   }
-  // (where it may go: the workspace's stations, or its own alone while it carries files gone up there)
+  // (where it may go: the workspace's stations while this device holds every file it carries, as its composer goes up
+  // to whichever station it is sent to; else its own alone, the station that keeps the files it was given)
   let stations = fn() {
     let all = (own.stations)()
-    if d0.files.is_empty() { all } else { all.filter(fn(s) { s.station == d0.station }) }
+    let here = @sfbase.writing(src, @sfbase.board_file_key(ws, id)).files.get().map(fn(f) { text(Some(f), "id") })
+    if d0.files.iter().all(fn(f) { here.contains(f.id) }) {
+      all
+    } else {
+      all.filter(fn(s) { s.station == d0.station })
+    }
   }
   @sf.panel_nodes(
     board_words("edit"),

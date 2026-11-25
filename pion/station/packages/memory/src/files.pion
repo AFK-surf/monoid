@@ -623,6 +623,29 @@ pub fn scan(blobs : Blobs, ask : ScanAsk) -> Result[base_codec::Json, String] {
     None => ()
   }
 
+  let projects_file = ask.dir + sep + "PROJECTS.jsonl"
+  let proj_stat = match lstat(host, projects_file) {
+    Ok(st) => st
+    Err(e) => return Err(e)
+  }
+  match proj_stat {
+    Some(st) => {
+      if st.kind == "file" {
+        if own_mode(st.mode) || st.size > ask.file_most {
+          held.push(base_codec::json_str("PROJECTS.jsonl"))
+        } else {
+          let f = FoundFile::{ path: "PROJECTS.jsonl", full: projects_file, st: st }
+          match found_json(blobs, ask, f) {
+            Ok(Some(j)) => out.push(j)
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+
   let skills_dir = ask.dir + sep + "skills"
   let top_entries = match readdir(host, skills_dir) {
     Ok(Some(es)) => es

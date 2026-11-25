@@ -185,7 +185,7 @@ export function tell(t: Told, change: StoreChange): boolean {
       return true;
     case "thread":
       // (its entries are found by their rowid; only what else of it changed is read by its id)
-      if (change.entries.length === 0 || change.closed !== undefined) t.threads.push(change.id);
+      if (change.entries.length === 0 || change.closed !== undefined || change.proposalResolved !== undefined) t.threads.push(change.id);
       return true;
     case "letters":
       return true;

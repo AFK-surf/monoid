@@ -677,6 +677,30 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       Some(x) => field(x, "ws")
       None => match all.get(js_text(agents[0].value("key").unwrap())) { Some(x) => field(x, "ws"); None => Json::null() }
     }
+    match field(t.thread, "project") {
+      String(p) => row["project"] = Json::string(p)
+      _ =>
+        match from {
+          Some(f) =>
+            match field(f.thread, "project") {
+              String(p) => row["project"] = Json::string(p)
+              _ => ()
+            }
+          None => ()
+        }
+    }
+    match parsed_thread_tags(field(t.thread, "tags")) {
+      Some(ts) => row["tags"] = ts
+      None =>
+        match from {
+          Some(f) =>
+            match parsed_thread_tags(field(f.thread, "tags")) {
+              Some(ts) => row["tags"] = ts
+              None => ()
+            }
+          None => ()
+        }
+    }
     row["named"] = named
     let mine_of : Array[Json] = [creator] + people + starters
     for a in agents {
@@ -840,6 +864,19 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       "creator": starter,
     }
     row["ws"] = field(ax, "ws")
+    match from {
+      Some(f) => {
+        match field(f.thread, "project") {
+          String(p) => row["project"] = Json::string(p)
+          _ => ()
+        }
+        match parsed_thread_tags(field(f.thread, "tags")) {
+          Some(ts) => row["tags"] = ts
+          None => ()
+        }
+      }
+      None => ()
+    }
     row["named"] = named
     row["mineOf"] = Json::array(mine_of.filter(p => !(p is Null)))
     if archived {

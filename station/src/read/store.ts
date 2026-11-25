@@ -182,18 +182,29 @@ export function statePendingCard(s: Store, threads: number[]): [number, number, 
 export type StateQuestion =
   | { kind: "missing" }
   | { kind: "invalid" }
+  | { kind: "proposal" }
   | { kind: "answered" }
   | { kind: "found"; about: [number, number, string] };
 
 export function stateQuestion(s: Store, key: string, threads: number[], ts: string): StateQuestion {
   s.db.exec("SAVEPOINT state_question_read");
   try {
+    const hasProposal = one(s, "SELECT 1 AS x FROM pragma_table_info('entries') WHERE name = 'proposal' LIMIT 1") !== undefined;
+    const hasSidecar = one(s, "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals' LIMIT 1") !== undefined;
+    const sql = hasProposal && hasSidecar
+      ? "SELECT e.n, e.card, e.options, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+      : hasProposal
+        ? "SELECT n, card, options, proposal FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+        : hasSidecar
+          ? "SELECT e.n, e.card, e.options, ep.proposal AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+          : "SELECT n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'";
     for (const thread of threads) {
-      const entry = one(s, "SELECT n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'", thread, ts);
+      const entry = one(s, sql, thread, ts);
       if (!entry) continue;
       // A missing native index must be replaced even if the recent tail could answer this one question: confirmation
       // after unrelated concurrent writes also needs a bounded lookup.
       if (legacyMergedNeedsRepair(s.db)) throw new LegacyEditsUnavailable();
+      if ((hasProposal || hasSidecar) && entry.proposal != null) return { kind: "proposal" };
       let m: MessageRow | null;
       if (legacyMergedReadReady(s.db)) {
         const row = one(s, "SELECT * FROM merged WHERE thread = ? AND n = ?", thread, entry.n);

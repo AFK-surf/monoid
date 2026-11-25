@@ -292,15 +292,33 @@ fn require_card_posts(db : @sql.Db, threads : Array[Json]) -> Unit raise {
 /// store.ts `askingMessage`: the message an agent's need without a card asks with, while no person has written after
 /// it, with the two before it.
 fn asking_message(db : @sql.Db, thread : Json, about : Json, from : Json, to : Json) -> (Json, Array[Json])? raise {
+  let has_prop = has_proposal_column(db)
+  let has_sidecar = exists_in(db, "table", "entry_proposals")
   let n = match about {
     Null =>
       {
         let legacy = @legacy.has_legacy_agent(db)
-        match one(db, if legacy { legacy_asked_during_sql } else { asked_during_sql }, [thread, from, to]) {
+        let during_sql = if legacy {
+          legacy_asked_during_sql
+        } else if has_prop && has_sidecar {
+          "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at >= ? AND at <= ?"
+        } else if has_prop {
+          "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at >= ? AND at <= ?"
+        } else {
+          asked_during_sql
+        }
+        let latest_sql = if has_prop && has_sidecar {
+          "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at <= ? ORDER BY at DESC LIMIT 1"
+        } else if has_prop {
+          "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at <= ? ORDER BY at DESC LIMIT 1"
+        } else {
+          asked_latest_sql
+        }
+        match one(db, during_sql, [thread, from, to]) {
           Some(r) if !(field(r, "n") is Null) => field(r, "n")
           // (none in its turn: the agent's latest before it ended, card-kinds.ts ASKED_LATEST)
           _ if !legacy =>
-            match one(db, asked_latest_sql, [thread, to]) {
+            match one(db, latest_sql, [thread, to]) {
               Some(r) => field(r, "n")
               None => Json::null()
             }
@@ -313,7 +331,14 @@ fn asking_message(db : @sql.Db, thread : Json, about : Json, from : Json, to : J
     return None
   }
   let answered = one(db, answer_after_sql, [thread, n]) is Some(_)
-  let carded = one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", [thread, n]) is Some(_)
+  let carded_sql = if has_prop && has_sidecar {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL OR EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n))"
+  } else if has_prop {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL)"
+  } else {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)"
+  }
+  let carded = one(db, carded_sql, [thread, n]) is Some(_)
   if answered || carded {
     return None
   }

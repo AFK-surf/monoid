@@ -17,6 +17,8 @@ let tables : Array[(String, Array[String])] = [
   ("turns", ["id"]),
   ("runtime_sessions", ["session_key", "id"]),
   ("closed_cards", ["thread", "n"]),
+  ("entry_proposals", ["thread", "n"]),
+  ("proposal_outcomes", ["thread", "n"]),
   ("reads", ["viewer", "thread"]),
   ("hidden_chats", ["viewer", "thread"]),
   ("muted_chats", ["viewer", "thread"]),
@@ -29,7 +31,7 @@ let tables : Array[(String, Array[String])] = [
 ///|
 /// The order a restore puts them in: what a row points at before it.
 pub let restore_order : Array[String] = [
-  "threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "reads",
+  "threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads",
   "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats",
 ]
 
@@ -41,6 +43,8 @@ let thread_of : Array[(String, String)] = [
   ("entries", "thread"),
   ("letters", "thread"),
   ("closed_cards", "thread"),
+  ("entry_proposals", "thread"),
+  ("proposal_outcomes", "thread"),
   ("reads", "thread"),
   ("hidden_chats", "thread"),
   ("muted_chats", "thread"),
@@ -56,6 +60,8 @@ let thread_columns : Array[(String, String)] = [
   ("entries", "thread"),
   ("letters", "thread"),
   ("closed_cards", "thread"),
+  ("entry_proposals", "thread"),
+  ("proposal_outcomes", "thread"),
   ("reads", "thread"),
   ("hidden_chats", "thread"),
   ("muted_chats", "thread"),
@@ -66,7 +72,7 @@ let thread_columns : Array[(String, String)] = [
 
 ///|
 /// The tables numbered by a thread's own log (format.ts `OWN_LOG`).
-let own_log : Array[String] = ["entries", "letters", "closed_cards", "dismissed", "reads"]
+let own_log : Array[String] = ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "dismissed", "reads"]
 
 ///|
 /// still.fail's own chats' surface (store/rows.ts `STILLFAIL_SURFACE`): each station mints their ts itself.

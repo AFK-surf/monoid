@@ -290,12 +290,14 @@ export const READS = {
   thread: "SELECT * FROM threads WHERE id = ?",
   threadSessions: "SELECT * FROM thread_sessions WHERE thread = ?",
   threadCards: "SELECT * FROM closed_cards WHERE thread = ?",
+  threadEntryProposals: "SELECT * FROM entry_proposals WHERE thread = ?",
+  threadProposals: "SELECT * FROM proposal_outcomes WHERE thread = ?",
   threadEntries: "SELECT rowid AS _rowid, * FROM entries WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
   threadLetters: "SELECT rowid AS _rowid, * FROM letters WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
 } as const;
 
 /// The small tables read whole as the exporter starts, a page at a time by rowid.
-export const SMALL = ["sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"] as const;
+export const SMALL = ["sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"] as const;
 export const pageOf = (table: string) => `SELECT rowid AS _rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`;
 /// A viewer's marks of one thread (or pins of one session): the table's viewers one by one (a few), each its row by key.
 export const marksOf = (table: string, column: string) => `WITH RECURSIVE viewers(viewer) AS (
@@ -688,6 +690,12 @@ export class Exporter {
       if (t !== undefined) changed(ws, "threads", t);
       for (const r of all(READS.threadSessions, thread)) changed(ws, "thread_sessions", r);
       for (const r of all(READS.threadCards, thread)) changed(ws, "closed_cards", r);
+      if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'").get() !== undefined) {
+        for (const r of all(READS.threadEntryProposals, thread)) changed(ws, "entry_proposals", r);
+      }
+      if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'").get() !== undefined) {
+        for (const r of all(READS.threadProposals, thread)) changed(ws, "proposal_outcomes", r);
+      }
       for (const table of THREAD_MARKS) for (const r of all(marksOf(table, "thread"), thread)) changed(ws, table, r);
     };
     // (its logs up to there a page at a time, in this pass and those after it, as a batch has room: `entering`)

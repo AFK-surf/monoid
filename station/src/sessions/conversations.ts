@@ -53,6 +53,9 @@ function checkQuestion(hub: Hub, key: string, m: MessageRow): void {
     throw new Error("need_human about must point to your visible question, not a person's message or another agent's post");
   }
   const entry = hub.store.entriesBetween(m.thread, m.n, m.n)[0];
+  if (entry?.proposal !== undefined) {
+    throw new Error("a project proposal is not a blocking question; do not end with need_human about it");
+  }
   const carded = entry && (entry.card != null || entry.options != null);
   if (carded ? hub.store.pendingCard(m.thread)?.[0].n !== m.n : hub.store.askingMessage(m.thread, m.n, [0, 0]) === null) {
     throw new Error("that question is no longer pending. Read what the person said; if a decision is still needed, ask again with a new card");
@@ -73,6 +76,7 @@ function messageForAbout(hub: Hub, key: string, thread: number, ts: string, ques
 
 function questionResult(found: ReturnType<typeof readStateQuestion>): [number, number, string] | null {
   if (found.kind === "missing") return null;
+  if (found.kind === "proposal") throw new Error("a project proposal is not a blocking question; do not end with need_human about it");
   if (found.kind === "invalid") throw new Error("need_human about must point to your visible question, not a person's message or another agent's post");
   if (found.kind === "answered") throw new Error("that question is no longer pending. Read what the person said; if a decision is still needed, ask again with a new card");
   return found.about;

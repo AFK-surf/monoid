@@ -483,6 +483,15 @@ export class Events {
     this.emit("presets", {}, {}, "presets");
   }
 
+  /// Shared workspace project metadata (`PROJECTS.jsonl`) changed locally or via peer sync.
+  projectsChanged(workspace: string | null) {
+    if (workspace !== null && workspace !== "") {
+      this.emit("projects", { workspace }, { workspace }, `projects\0${workspace}`);
+    } else {
+      this.emit("projects", {}, {}, "projects");
+    }
+  }
+
   /// Something the overview shows changed (config, accounts, connects, cloud, updates).
   overviewChanged() {
     this.dirty.overview = true;
@@ -879,9 +888,13 @@ export class Events {
       case "thread": {
         // Told as one who follows (or did last) would have it.
         const who = this.clients[0] ?? this.last;
-        if (this.listening() && who && change.entries.length > 0) {
-          // What was said, as GET /threads/:id/entries has it, at once.
-          this.tellSaid("thread", change.id, change.entries, who.lang);
+        if (this.listening() && who) {
+          if (change.entries.length > 0) {
+            // What was said, as GET /threads/:id/entries has it, at once.
+            this.tellSaid("thread", change.id, change.entries, who.lang);
+          } else if (change.proposalResolved !== undefined) {
+            this.tellSaid("thread", change.id, [change.proposalResolved], who.lang);
+          }
         }
         // What was said is told (`thread`): a device puts it in its rows. Its sessions changing is not (nor what else
         // changes which rows there are and what they say): told so (`chat-changed`), it reads its rows.

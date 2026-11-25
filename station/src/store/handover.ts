@@ -16,10 +16,10 @@ type Row = Record<string, unknown>;
 /// The tables a chat's rows are in, in the order they are put in (what a row names before it).
 /// What its agents spent (`usage`, `usage_files`, `session_usage`) last, sent only to a station that says it takes them
 /// (`handover.begin`'s `usage`).
-export const CHAT_TABLES = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage"] as const;
+export const CHAT_TABLES = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage"] as const;
 export type ChatTable = (typeof CHAT_TABLES)[number];
 /// Of each thread: its own rows (by its log's number), and each viewer's marks of it.
-export const BY_N: readonly ChatTable[] = ["entries", "letters", "closed_cards"];
+export const BY_N: readonly ChatTable[] = ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes"];
 export const MARKS: readonly ChatTable[] = ["reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed"];
 /// What a session's calls are, sent after its other rows: their threads there are known by then.
 export const USAGE_TABLES: readonly ChatTable[] = ["usage", "usage_files", "session_usage"];
@@ -52,6 +52,8 @@ export function chatPage(db: DatabaseSync, table: ChatTable, of: number | string
     case "entries":
     case "letters":
     case "closed_cards":
+    case "entry_proposals":
+    case "proposal_outcomes":
       return all(`SELECT * FROM ${table} WHERE thread = ? AND n > ? ORDER BY n LIMIT ?`, of as number, (after as number | null) ?? -1, limit);
     case "reads":
     case "hidden_chats":
@@ -100,6 +102,8 @@ export function afterOf(table: ChatTable, row: Row): After {
     case "entries":
     case "letters":
     case "closed_cards":
+    case "entry_proposals":
+    case "proposal_outcomes":
       return row.n;
     case "reads":
     case "hidden_chats":
@@ -136,7 +140,18 @@ export function chatThreads(db: DatabaseSync, keys: readonly string[], after: nu
 /// A thread of the copy as it is put in here: its id here, whether this put it in (`fresh`), and how its log goes on:
 /// `linear` while each entry put in kept its number (its log here was this chat's own as it was left, or none), the
 /// numbers it was given where not (`ns`, `ls`: the copy's to here's, of entries and of letters).
-export type ThreadThere = { id: number; fresh: boolean; linear: boolean; lettersLinear: boolean; ns: Record<string, number>; ls: Record<string, number> };
+export type ThreadThere = {
+  id: number;
+  fresh: boolean;
+  linear: boolean;
+  lettersLinear: boolean;
+  preLocked?: boolean;
+  lastProject?: string | null;
+  lastLocked?: number;
+  lastTags?: string | null;
+  ns: Record<string, number>;
+  ls: Record<string, number>;
+};
 
 /// What was put in, kept on the station it goes to until it is shown (so that a hand-over that fails takes it out):
 /// each session (as it was before: null, put in anew), the entries and letters (by thread, ranges of numbers), the
@@ -238,6 +253,7 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
     else if (table === "dismissed") told({ type: "dismissed", viewer: k.viewer, card: { thread: k.thread, n: k.n } });
     else if (table === "pins") told({ type: "pins", viewer: k.viewer, session: k.session, at: null });
     else if (table === "closed_cards") told({ type: "thread", id: k.thread, entries: [], closed: k.n });
+    else if (table === "entry_proposals" || table === "proposal_outcomes") told({ type: "thread", id: k.thread, entries: [] });
     else if (table === "turns" || table === "runtime_sessions") touched.sessions.add(String(k.session_key ?? ""));
   };
   for (const r0 of rows) {
@@ -246,6 +262,42 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
       case "threads": {
         const was = Number(r.id);
         delete r.id;
+        const already = ctx.threads[String(was)];
+        if (already !== undefined) {
+          // Catch-up re-send: preserve `ctx.threads[was]` (id, fresh, linear, lettersLinear, ns, ls, preLocked)!
+          // Skip if target was already locked before round 1 (`preLocked`), OR if a target member newly locked/changed
+          // classification during handover (`curLocked === 1` and differs from our post-round-1 snapshot).
+          if (already.preLocked !== true) {
+            const have = columnsOf(db, "threads");
+            if (have.has("project") && have.has("project_locked") && have.has("tags")) {
+              const cur = db.prepare("SELECT * FROM threads WHERE id = ?").get(already.id) as Row | undefined;
+              if (cur !== undefined) {
+                const curLocked = Number(cur.project_locked ?? 0) === 1 ? 1 : 0;
+                const curProject = cur.project === undefined ? null : (cur.project as string | null);
+                const curTags = typeof cur.tags === "string" && cur.tags !== "" ? cur.tags : null;
+                const targetLockedDuringMove = curLocked === 1 && (
+                  curProject !== (already.lastProject ?? null)
+                  || curLocked !== (already.lastLocked ?? 0)
+                  || curTags !== (already.lastTags ?? null)
+                );
+                if (!targetLockedDuringMove) {
+                  const inLocked = Number(r.project_locked ?? 0) === 1 ? 1 : 0;
+                  const inProject = r.project === undefined ? null : (r.project as string | null);
+                  const inTags = typeof r.tags === "string" && r.tags !== "" ? r.tags : null;
+                  if (inProject !== curProject || inLocked !== curLocked || inTags !== curTags) {
+                    if (!already.fresh) madeBefore(ctx, "threads", "id", cur);
+                    db.prepare("UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?").run(inProject, inLocked, inTags, already.id);
+                  }
+                  already.lastProject = inProject;
+                  already.lastLocked = inLocked;
+                  already.lastTags = inTags;
+                }
+              }
+            }
+          }
+          touched.threads.add(already.id);
+          break;
+        }
         r.surface = surfaceHere(String(r.surface), ctx.connects);
         const at = (ts: unknown) => db.prepare("SELECT id, home FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?").get(r.surface as string, r.channel as string, ts as string) as { id: number; home: string | null } | undefined;
         let here = at(r.thread_ts);
@@ -258,10 +310,42 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
           here = undefined;
         }
         if (here !== undefined) {
-          ctx.threads[String(was)] = { id: here.id, fresh: false, linear: true, lettersLinear: true, ns: {}, ls: {} };
+          // Merge classification columns on an existing external thread: `project_locked = 1` wins.
+          let preLocked = false;
+          let lastProject: string | null = null;
+          let lastLocked = 0;
+          let lastTags: string | null = null;
+          const have = columnsOf(db, "threads");
+          if (have.has("project") && have.has("project_locked") && have.has("tags")) {
+            const cur = db.prepare("SELECT * FROM threads WHERE id = ?").get(here.id) as Row | undefined;
+            if (cur !== undefined) {
+              const curLocked = Number(cur.project_locked ?? 0) === 1;
+              preLocked = curLocked;
+              const inLocked = Number(r.project_locked ?? 0) === 1;
+              const inProject = r.project === undefined ? null : (r.project as string | null);
+              const curProject = cur.project === undefined ? null : (cur.project as string | null);
+              const curTags = typeof cur.tags === "string" && cur.tags !== "" ? cur.tags : null;
+              const inTags = typeof r.tags === "string" && r.tags !== "" ? r.tags : null;
+              // When either side is locked, take that side's (project, tags) as a whole (including NULL tags!).
+              const nextProject = curLocked ? curProject : (inLocked ? inProject : (curProject !== null ? curProject : inProject));
+              const nextLocked = curLocked || inLocked ? 1 : 0;
+              const nextTags = curLocked ? curTags : (inLocked ? inTags : (curTags ?? inTags));
+              if (nextProject !== curProject || nextLocked !== (curLocked ? 1 : 0) || nextTags !== curTags) {
+                madeBefore(ctx, "threads", "id", cur);
+                db.prepare("UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?").run(nextProject, nextLocked, nextTags, here.id);
+              }
+              lastProject = nextProject;
+              lastLocked = nextLocked;
+              lastTags = nextTags;
+            }
+          }
+          ctx.threads[String(was)] = { id: here.id, fresh: false, linear: true, lettersLinear: true, preLocked, lastProject, lastLocked, lastTags, ns: {}, ls: {} };
         } else {
           const made = insert(db, "threads", r);
-          ctx.threads[String(was)] = { id: made.id, fresh: true, linear: true, lettersLinear: true, ns: {}, ls: {} };
+          const lastProject = r.project === undefined ? null : (r.project as string | null);
+          const lastLocked = Number(r.project_locked ?? 0) === 1 ? 1 : 0;
+          const lastTags = typeof r.tags === "string" && r.tags !== "" ? r.tags : null;
+          ctx.threads[String(was)] = { id: made.id, fresh: true, linear: true, lettersLinear: true, preLocked: false, lastProject, lastLocked, lastTags, ns: {}, ls: {} };
         }
         touched.threads.add(ctx.threads[String(was)]!.id);
         break;
@@ -397,13 +481,29 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         break;
       }
       case "closed_cards":
+      case "entry_proposals":
+      case "proposal_outcomes":
       case "dismissed": {
         const t = thread(r.thread);
         if (t === undefined) break;
         r.thread = t.id;
         r.n = n(t, r.n);
         if (insert(db, table, r, " OR IGNORE").changes > 0) keep(table === "dismissed" ? { viewer: r.viewer, thread: r.thread, n: r.n } : { thread: r.thread, n: r.n });
-        else ctx.counts.rows[table] = (ctx.counts.rows[table] ?? 0) + 1;
+        else {
+          if (table === "proposal_outcomes" && Number(r.info_synced ?? 0) === 1 && columnsOf(db, "proposal_outcomes").has("info_synced")) {
+            const existing = db.prepare("SELECT * FROM proposal_outcomes WHERE thread = ? AND n = ?").get(r.thread as number, r.n as number) as Row | undefined;
+            if (
+              existing !== undefined
+              && Number(existing.info_synced ?? 0) === 0
+              && existing.status === r.status
+              && (existing.project ?? null) === (r.project ?? null)
+            ) {
+              madeBeforeKeys(ctx, "proposal_outcomes", ["thread", "n"], existing);
+              db.prepare("UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ? AND info_synced = 0").run(r.thread as number, r.n as number);
+            }
+          }
+          ctx.counts.rows[table] = (ctx.counts.rows[table] ?? 0) + 1;
+        }
         break;
       }
       case "reads": {
@@ -486,7 +586,11 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
 /// Row `was` of `table` (by its key `key`) as it was before this hand-over first put one of its key in: kept once, so
 /// that what was there before, not what a page of this one put, is put back.
 function madeBefore(ctx: ImportCtx, table: string, key: string, was: Row): void {
-  const ours = (rows: Row[] | undefined) => rows?.some((x) => x[key] === was[key]) === true;
+  madeBeforeKeys(ctx, table, [key], was);
+}
+
+function madeBeforeKeys(ctx: ImportCtx, table: string, keys: readonly string[], was: Row): void {
+  const ours = (rows: Row[] | undefined) => rows?.some((x) => keys.every((k) => x[k] === was[k])) === true;
   if (ours(ctx.made.rows[table]) || ours(ctx.made.before?.[table])) return;
   ((ctx.made.before ??= {})[table] ??= []).push(was);
 }
@@ -535,10 +639,32 @@ export function dropImport(db: DatabaseSync, ctx: ImportCtx): string[] {
     }
   }
   for (const [thread, session] of ctx.made.members) run("DELETE FROM thread_sessions WHERE thread = ? AND session = ?", thread, session);
-  // (what a row put in replaced, as it was)
+  // (what a row put in replaced, as it was — for threads, preserve any classification/lock a target member changed during handover)
   for (const [table, rows] of Object.entries(ctx.made.before ?? {})) {
     for (const row of rows) {
       const have = columnsOf(db, table);
+      if (table === "threads" && have.has("project") && have.has("project_locked") && have.has("tags")) {
+        const cur = db.prepare("SELECT * FROM threads WHERE id = ?").get(row.id as SQLInputValue) as Row | undefined;
+        const meta = Object.values(ctx.threads).find((t) => t.id === Number(row.id));
+        if (cur !== undefined && meta !== undefined) {
+          const curProj = cur.project === undefined ? null : (cur.project as string | null);
+          const curLocked = Number(cur.project_locked ?? 0) === 1 ? 1 : 0;
+          const curTags = typeof cur.tags === "string" && cur.tags !== "" ? cur.tags : null;
+          const untouchedLocally = curProj === (meta.lastProject ?? null)
+            && curLocked === (meta.lastLocked ?? 0)
+            && curTags === (meta.lastTags ?? null);
+          if (untouchedLocally) {
+            run(
+              "UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?",
+              (row.project ?? null) as SQLInputValue,
+              Number(row.project_locked ?? 0),
+              (row.tags ?? null) as SQLInputValue,
+              row.id as SQLInputValue,
+            );
+          }
+          continue;
+        }
+      }
       const cols = Object.keys(row).filter((c) => have.has(c));
       run(`INSERT OR REPLACE INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, ...cols.map((c) => row[c] as SQLInputValue));
     }
@@ -558,7 +684,7 @@ export function dropEmptyThreads(db: DatabaseSync, ctx: ImportCtx): number[] {
   const gone: number[] = [];
   for (const t of Object.values(ctx.threads)) {
     if (!t.fresh || db.prepare("SELECT 1 FROM thread_sessions WHERE thread = ? LIMIT 1").get(t.id) !== undefined) continue;
-    for (const table of ["entries", "letters", "closed_cards", "deliveries"]) db.prepare(`DELETE FROM ${table} WHERE thread = ?`).run(t.id);
+    for (const table of ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deliveries"]) db.prepare(`DELETE FROM ${table} WHERE thread = ?`).run(t.id);
     db.prepare("DELETE FROM threads WHERE id = ?").run(t.id);
     gone.push(t.id);
   }

@@ -12,7 +12,7 @@ import { ConnectedSurface, MEMBERS_MS } from "../connects/surface.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import type { Attachment } from "../store/store.ts";
-import type { ChatEvent, ChatMessage, Handler, InboundFile, Member, Person, Place, ThreadRef } from "../sessions/chat.ts";
+import { type ChatEvent, type ChatMessage, type Handler, type InboundFile, type Member, type Person, type Place, type ThreadRef, isNotice, matchesProposalNotice } from "../sessions/chat.ts";
 import { type CardEnd, endedWords } from "../connects/card-ends.ts";
 import { type Answer, answeredCard, endedCard, inline, questionCard, textPosts } from "./cards.ts";
 import { CONTROL, DATA, type Frame, Parts, decode, encode, header } from "./frame.ts";
@@ -125,6 +125,7 @@ const EMAIL_AGAIN_MS = 24 * 60 * 60_000;
 export class FeishuSurface extends ConnectedSurface {
   protected readonly kind = "feishu";
   readonly connect: string;
+  private readonly appId: string;
   readonly client: FeishuClient;
   readonly domain: Domain;
   private threads: FeishuThreads;
@@ -144,6 +145,7 @@ export class FeishuSurface extends ConnectedSurface {
     if (options.appId === "" || options.appSecret === "") throw new Error("feishu.appId and feishu.appSecret are required");
     super({ ...options, pingMs: options.pingMs ?? PING_MS, staleMs: options.staleMs ?? STALE_MS });
     this.connect = options.connect;
+    this.appId = options.appId;
     this.domain = options.domain;
     this.client = options.client ?? new FeishuClient(options.appId, options.appSecret, options.domain);
     this.threads = options.threads;
@@ -562,6 +564,70 @@ export class FeishuSurface extends ConnectedSurface {
 
   async channelName(channel: string): Promise<string | null> {
     return (await this.chatInfo(channel)).name;
+  }
+
+  /// Scans Feishu message history in either `thread` (topic/thread) or `chat` (direct/group chat) container for an
+  /// own-app station notice matching `opts.proposalId` / `opts.marker`, returning a resumable `page_token` cursor.
+  async findNoticeInHistory(
+    thread: ThreadRef,
+    opts: { proposalId?: string; marker?: string; sinceSec: number; cursor: string | null; maxPages: number },
+  ): Promise<{ ts: string | null; cursor: string | null; done: boolean }> {
+    const bot = this.botUserId();
+    if (this.appId === "" && bot === "") return { ts: null, cursor: null, done: true };
+    let containerType: "thread" | "chat" = "chat";
+    let containerId = thread.channel;
+    if (thread.threadTs.startsWith("omt_")) {
+      containerType = "thread";
+      containerId = thread.threadTs;
+    } else if (this.threads.topicRoot(this.connect, thread.threadTs) !== null) {
+      const resolved = text((await this.client.api("GET", `/open-apis/im/v1/messages/${encodeURIComponent(thread.threadTs)}`))?.data?.items?.[0]?.thread_id);
+      if (resolved !== "") {
+        containerType = "thread";
+        containerId = resolved;
+      }
+    }
+    const maxPages = Math.max(1, Math.floor(opts.maxPages));
+    let token = opts.cursor && opts.cursor !== "" ? opts.cursor : "";
+    const buildQuery = (tok: string): Record<string, string> => ({
+      container_id_type: containerType,
+      container_id: containerId,
+      sort_type: "ByCreateTimeAsc",
+      page_size: "50",
+      ...(containerType === "chat" ? { start_time: String(opts.sinceSec) } : {}),
+      ...(tok !== "" ? { page_token: tok } : {}),
+    });
+    for (let pageIdx = 0; pageIdx < maxPages; pageIdx++) {
+      let d: Json;
+      try {
+        d = (await this.client.api("GET", "/open-apis/im/v1/messages", null, buildQuery(token)))?.data ?? {};
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (token !== "" && /page_token|invalid.*token|230001/i.test(msg)) {
+          token = "";
+          d = (await this.client.api("GET", "/open-apis/im/v1/messages", null, buildQuery("")))?.data ?? {};
+        } else {
+          throw err;
+        }
+      }
+      for (const item of Array.isArray(d.items) ? d.items : []) {
+        if (text(item?.sender?.sender_type) !== "app") continue;
+        const senderId = text(item?.sender?.id) || text(item?.sender?.sender_id?.open_id);
+        const trusted = (this.appId !== "" && senderId === this.appId) || (bot !== "" && senderId === bot);
+        if (!trusted) continue;
+        const event = listedAsEvent(item);
+        event.sender.sender_type = "user";
+        event.sender.sender_id = { open_id: senderId || bot || "app" };
+        if (text(event.message?.chat_id) === "") event.message.chat_id = thread.channel;
+        const m = messageOf(event, bot);
+        if (m === null) continue;
+        if (!isNotice(m.text) || !matchesProposalNotice(m.text, opts)) continue;
+        const id = text(item?.message_id);
+        if (id !== "") return { ts: id, cursor: null, done: true };
+      }
+      token = text(d.page_token);
+      if (d.has_more !== true || token === "") return { ts: null, cursor: null, done: true };
+    }
+    return { ts: null, cursor: token !== "" ? token : null, done: false };
   }
 
   /// What a topic or a thread said before `before` (a chat's conversation begins with the message the station first

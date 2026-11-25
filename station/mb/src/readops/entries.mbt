@@ -218,6 +218,9 @@ fn entry_json(r : Map[String, Json], letter_log : Bool) -> Json {
   if !letter_log && change_of(field(r, "change")) is Some(c) {
     v["change"] = c
   }
+  if !letter_log && parsed_proposal(field(r, "proposal")) is Some(p) {
+    v["proposal"] = p
+  }
   Json::object(v)
 }
 
@@ -227,10 +230,56 @@ fn entry_views(db : @sql.Db, known : Known, thread : Json, rows : Array[Map[Stri
   let names = known.author_names(db, thread)
   let sessions : Map[String, Map[String, Json]?] = Map([])
   let origins : Map[String, Json] = Map([])
+  let sidecar_proposals : Map[String, Json] = Map([])
+  let outcomes : Map[String, Map[String, Json]] = Map([])
+  if !letter_log {
+    let missing_ns : Array[Json] = []
+    let proposal_ns : Array[Json] = []
+    for r in rows {
+      if !(field(r, "proposal") is Null) {
+        proposal_ns.push(field(r, "n"))
+      } else {
+        missing_ns.push(field(r, "n"))
+      }
+    }
+    if missing_ns.length() > 0 && exists_in(db, "table", "entry_proposals") {
+      for ep in db.all(
+        "SELECT CAST(n AS TEXT) AS n, proposal FROM entry_proposals WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+        [thread, ids_json(missing_ns)],
+      ) {
+        if parsed_proposal(field(ep, "proposal")) is Some(p) {
+          let ns = js_text(field(ep, "n"))
+          sidecar_proposals[ns] = p
+          proposal_ns.push(field(ep, "n"))
+        }
+      }
+    }
+    if proposal_ns.length() > 0 && exists_in(db, "table", "proposal_outcomes") {
+      for o in db.all(
+        "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+        [thread, ids_json(proposal_ns)],
+      ) {
+        outcomes[js_text(field(o, "n"))] = o
+      }
+    }
+  }
   let out : Array[Json] = []
   for r in rows {
     guard entry_json(r, letter_log) is Object(o) else { continue }
     let v = Map::from_array(o.to_array())
+    if !letter_log {
+      let n_key = js_text(field(r, "n"))
+      if v.get("proposal") is None {
+        if sidecar_proposals.get(n_key) is Some(sp) {
+          v["proposal"] = sp
+        }
+      }
+      if v.get("proposal") is Some(p) {
+        if outcomes.get(n_key) is Some(outcome) {
+          v["proposal"] = merge_proposal_outcome(p, outcome)
+        }
+      }
+    }
     let kind = js_text(v.get("authorKind").unwrap_or(Json::null()))
     let author = js_text(field(r, "author"))
     v["authorName"] = names.name(kind, author)

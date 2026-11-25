@@ -335,6 +335,20 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
     const chosen = bound !== null ? bound.choice : model === null ? chosenHere(hub, createdBy, row.ws ?? null, runtime as RuntimeName | null) : choice;
     const more = { ...(preset !== null ? { preset: preset.id } : {}), fast, ...(speed ? { speed } : {}), context, ...bound?.more };
     const [child, chat] = await makeChat(hub, { ...choice, ...chosen, title, createdBy, ws: row.ws ?? null }, more);
+    if (preset === null) {
+      let parentThread = hub.store.latestDeliveredThread(key);
+      if (parentThread === null) {
+        try {
+          parentThread = sessionThreadOf(hub, key).thread;
+        } catch {
+          parentThread = hub.store.latestThread(key)?.thread ?? null;
+        }
+      }
+      const parentProject = parentThread?.project;
+      if (parentProject !== undefined) {
+        hub.store.setThreadClassification(chat.id, { project: parentProject, force: true });
+      }
+    }
     const link = hub.link(child) ?? null;
     hub.store.insertOpened({ childStation: "", child, parentStation: "", parent: key, key: k, title, link, openerTitle: from, led });
     const thread: SessionThread = { thread: chat, connect: INTERNAL_CONNECT };
@@ -347,12 +361,25 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   // `choose`: the station it is opened on picks the model (`runtimeGiven`: of that runtime); one from before it runs the
   // runtime's default there.
   // With a preset, its copy (`presetCopy`), whose model configuration, where it names one, the station there runs.
+  let parentProject: string | undefined;
+  if (preset === null) {
+    let parentThread = hub.store.latestDeliveredThread(key);
+    if (parentThread === null) {
+      try {
+        parentThread = sessionThreadOf(hub, key).thread;
+      } catch {
+        parentThread = hub.store.latestThread(key)?.thread ?? null;
+      }
+    }
+    parentProject = parentThread?.project;
+  }
   const request: Json = {
     method: preset?.model?.tui ? CREATE_PRESET_TUI : preset !== null ? (speed !== null || preset.model?.speed ? CREATE_PRESET_SPEED : CREATE_PRESET) : speed !== null ? CREATE_SPEED : CREATE,
     session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led,
     ...(fast !== null ? { fast } : {}),
     ...(speed !== null ? { speed } : {}),
     ...(context !== null ? { context } : {}),
+    ...(parentProject !== undefined ? { project: parentProject } : {}),
     ...(preset !== null ? { presetCopy: copyFor(hub.presets, preset, hub.station() ?? "", there) } : {}),
   };
   let made: Json;
@@ -420,7 +447,12 @@ async function createForPeerNow(hub: Hub, peer: string, request: Json, ws: strin
     ...(copy !== null ? { presetCopy: copy } : {}),
     ...bound?.more,
   };
-  const [child] = await makeChat(hub, { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, ws }, more);
+  const [child, childChat] = await makeChat(hub, { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, ws }, more);
+  if (copy === null && typeof request?.project === "string") {
+    try {
+      hub.store.setThreadClassification(childChat.id, { project: request.project, force: true });
+    } catch {}
+  }
   // What its opener was called (its chat's way back to it says so while that chat is not in the viewer's list).
   const openerTitle = typeof request?.from?.title === "string" && request.from.title !== "" ? (request.from.title as string) : null;
   // (a station from before `for` sends none: told and asked as before it, led)

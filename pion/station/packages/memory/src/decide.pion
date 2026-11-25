@@ -169,6 +169,458 @@ fn make_merged_rec(w : Rec, l : Rec, at : Double, prev_most : Int, hash : String
   }
 }
 
+fn dedup_refs_pion(a : Array[String], b : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<a.length() {
+    let r = a[i]
+    if r != "" && !str_array_contains(out, r) {
+      out.push(r)
+    }
+  }
+  for i in 0..<b.length() {
+    let r = b[i]
+    if r != "" && !str_array_contains(out, r) {
+      out.push(r)
+    }
+  }
+  out
+}
+
+fn sort_names_merge(arr : Array[String]) -> Array[String] {
+  let n = arr.length()
+  if n <= 1 {
+    return arr
+  }
+  let mid = n / 2
+  let left : Array[String] = []
+  let right : Array[String] = []
+  for i in 0..<mid {
+    left.push(arr[i])
+  }
+  for i in mid..<n {
+    right.push(arr[i])
+  }
+  let sl = sort_names_merge(left)
+  let sr = sort_names_merge(right)
+  let out : Array[String] = []
+  let mut li = 0
+  let mut ri = 0
+  while li < sl.length() && ri < sr.length() {
+    if js_after(sl[li], sr[ri]) {
+      out.push(sr[ri])
+      ri = ri + 1
+    } else {
+      out.push(sl[li])
+      li = li + 1
+    }
+  }
+  while li < sl.length() {
+    out.push(sl[li])
+    li = li + 1
+  }
+  while ri < sr.length() {
+    out.push(sr[ri])
+    ri = ri + 1
+  }
+  out
+}
+
+fn sort_refs_by_at_pion(names : Array[String], ats : Array[Double]) -> (Array[String], Array[Double]) {
+  let n = names.length()
+  if n <= 1 {
+    return (names, ats)
+  }
+  let mid = n / 2
+  let ln : Array[String] = []
+  let la : Array[Double] = []
+  let rn : Array[String] = []
+  let ra : Array[Double] = []
+  for i in 0..<mid {
+    ln.push(names[i])
+    la.push(ats[i])
+  }
+  for i in mid..<n {
+    rn.push(names[i])
+    ra.push(ats[i])
+  }
+  let (sln, sla) = sort_refs_by_at_pion(ln, la)
+  let (srn, sra) = sort_refs_by_at_pion(rn, ra)
+  let on : Array[String] = []
+  let oa : Array[Double] = []
+  let mut li = 0
+  let mut ri = 0
+  while li < sln.length() && ri < srn.length() {
+    let right_first = if sla[li] != sra[ri] {
+      sra[ri] > sla[li]
+    } else {
+      js_after(sln[li], srn[ri])
+    }
+    if right_first {
+      on.push(srn[ri])
+      oa.push(sra[ri])
+      ri = ri + 1
+    } else {
+      on.push(sln[li])
+      oa.push(sla[li])
+      li = li + 1
+    }
+  }
+  while li < sln.length() {
+    on.push(sln[li])
+    oa.push(sla[li])
+    li = li + 1
+  }
+  while ri < srn.length() {
+    on.push(srn[ri])
+    oa.push(sra[ri])
+    ri = ri + 1
+  }
+  (on, oa)
+}
+
+fn compact_projects_jsonl(text : String) -> String {
+  let max_del : Map[String, Double] = Map::new()
+  let parsed_names : Array[String] = []
+  let parsed_ats : Array[Double] = []
+  let parsed_has_ats : Array[Bool] = []
+  let parsed_notes : Array[String] = []
+  let parsed_note_ats : Array[Double] = []
+  let parsed_has_note_ats : Array[Bool] = []
+  let parsed_ref_names : Array[Array[String]] = []
+  let parsed_ref_ats : Array[Array[Double]] = []
+  let parsed_has_refs_ats : Array[Bool] = []
+  let parsed_note_cleared : Array[Option[Double]] = []
+  let parsed_refs_cleared : Array[Option[Double]] = []
+  let extra : Array[String] = []
+  let lines = text.split("\n")
+  // Pass 1: parse and collect max deletion watermarks.
+  for i in 0..<lines.length() {
+    let trimmed = lines[i].trim()
+    if trimmed == "" {
+      continue
+    }
+    match base_codec::json_parse(trimmed) {
+      Ok(obj) => {
+        match str_field(obj, "name") {
+          Some(name) if name != "" => {
+            let (at, has_at) = match num_field(obj, "updatedAt") {
+              Some(n) => (n, true)
+              None => (-1.0, false)
+            }
+            if bool_field_true(obj, "deleted") {
+              let del_at = if has_at { at } else { 0.0 }
+              match max_del.get(name) {
+                Some(prev) if prev >= del_at => ()
+                _ => max_del.set(name, del_at)
+              }
+              continue
+            }
+            match num_field(obj, "deletedAt") {
+              Some(del_at) => {
+                match max_del.get(name) {
+                  Some(prev) if prev >= del_at => ()
+                  _ => max_del.set(name, del_at)
+                }
+              }
+              None => ()
+            }
+            let (note_at, has_note_at) = match num_field(obj, "noteAt") {
+              Some(n) => (n, true)
+              None => (at, has_at)
+            }
+            let (refs_fallback, has_refs_fallback) = match num_field(obj, "refsAt") {
+              Some(n) => (n, true)
+              None => (at, has_at)
+            }
+            let note = match str_field(obj, "note") {
+              Some(s) => s
+              None => ""
+            }
+            let raw_refs = dedup_refs_pion(strs_field(obj, "refs"), [])
+            let r_names : Array[String] = []
+            let r_ats : Array[Double] = []
+            let mut has_any_ref_at = false
+            let ref_ats_opt = base_codec::json_get(obj, "refAts")
+            for k in 0..<raw_refs.length() {
+              let r = raw_refs[k]
+              let (ra, rhas) = match ref_ats_opt {
+                Some(m) => {
+                  match num_field(m, r) {
+                    Some(v) => (v, true)
+                    None => (refs_fallback, has_refs_fallback)
+                  }
+                }
+                None => (refs_fallback, has_refs_fallback)
+              }
+              if rhas {
+                has_any_ref_at = true
+              }
+              r_names.push(r)
+              r_ats.push(ra)
+            }
+            parsed_names.push(name)
+            parsed_ats.push(at)
+            parsed_has_ats.push(has_at)
+            parsed_notes.push(note)
+            parsed_note_ats.push(note_at)
+            parsed_has_note_ats.push(has_note_at)
+            parsed_ref_names.push(r_names)
+            parsed_ref_ats.push(r_ats)
+            parsed_has_refs_ats.push(has_any_ref_at)
+            parsed_note_cleared.push(num_field(obj, "noteClearedAt"))
+            parsed_refs_cleared.push(num_field(obj, "refsClearedAt"))
+          }
+          _ => extra.push(trimmed)
+        }
+      }
+      Err(_) => extra.push(trimmed)
+    }
+  }
+  // Filter surviving live rows (at > max_del) and collect field-level clear watermarks.
+  let max_note_cleared : Map[String, Double] = Map::new()
+  let max_refs_cleared : Map[String, Double] = Map::new()
+  let surv_idx : Array[Int] = []
+  for i in 0..<parsed_names.length() {
+    let name = parsed_names[i]
+    let at = parsed_ats[i]
+    match max_del.get(name) {
+      Some(del_at) if at <= del_at => continue
+      _ => ()
+    }
+    surv_idx.push(i)
+    match parsed_note_cleared[i] {
+      Some(v) => {
+        match max_note_cleared.get(name) {
+          Some(prev) if prev >= v => ()
+          _ => max_note_cleared.set(name, v)
+        }
+      }
+      None => ()
+    }
+    match parsed_refs_cleared[i] {
+      Some(v) => {
+        match max_refs_cleared.get(name) {
+          Some(prev) if prev >= v => ()
+          _ => max_refs_cleared.set(name, v)
+        }
+      }
+      None => ()
+    }
+  }
+  // Pass 2: filter cleared fields by `noteAt` and per-ref `refAts`, and merge associatively.
+  let index_by_name : Map[String, Int] = Map::new()
+  let all_names_seen : Map[String, Bool] = Map::new()
+  let all_names : Array[String] = []
+  let ats : Array[Double] = []
+  let has_ats : Array[Bool] = []
+  let notes : Array[String] = []
+  let note_ats : Array[Double] = []
+  let has_note_ats : Array[Bool] = []
+  let merged_ref_names : Array[Array[String]] = []
+  let merged_ref_ats : Array[Array[Double]] = []
+  let has_refs_ats : Array[Bool] = []
+  for j in 0..<surv_idx.length() {
+    let i = surv_idx[j]
+    let name = parsed_names[i]
+    let at = parsed_ats[i]
+    let has_at = parsed_has_ats[i]
+    let raw_note = parsed_notes[i]
+    let raw_note_at = parsed_note_ats[i]
+    let raw_has_note_at = parsed_has_note_ats[i]
+    let del_cut = max_del.get(name)
+    let eff_note_cut = match max_note_cleared.get(name) {
+      Some(a) => match del_cut {
+        Some(b) => Some(if a > b { a } else { b })
+        None => Some(a)
+      }
+      None => del_cut
+    }
+    let eff_refs_cut = match max_refs_cleared.get(name) {
+      Some(a) => match del_cut {
+        Some(b) => Some(if a > b { a } else { b })
+        None => Some(a)
+      }
+      None => del_cut
+    }
+    let note_suppressed = match eff_note_cut {
+      Some(cut) if raw_note_at <= cut => true
+      _ => false
+    }
+    let note = if raw_note != "" && !note_suppressed { raw_note } else { "" }
+    let note_at = if note != "" { raw_note_at } else { -1.0 }
+    let has_note_at = note != "" && raw_has_note_at
+    let r_names_in = parsed_ref_names[i]
+    let r_ats_in = parsed_ref_ats[i]
+    let raw_has_refs_at = parsed_has_refs_ats[i]
+    let kept_rn : Array[String] = []
+    let kept_ra : Array[Double] = []
+    for k in 0..<r_names_in.length() {
+      let r = r_names_in[k]
+      let ra = r_ats_in[k]
+      let suppressed = match eff_refs_cut {
+        Some(cut) if ra <= cut => true
+        _ => false
+      }
+      if !suppressed {
+        kept_rn.push(r)
+        kept_ra.push(ra)
+      }
+    }
+    let row_has_refs_at = kept_rn.length() > 0 && raw_has_refs_at
+    match index_by_name.get(name) {
+      Some(found) => {
+        let prev_at = ats[found]
+        let prev_has_at = has_ats[found]
+        let prev_note = notes[found]
+        let prev_note_at = note_ats[found]
+        let prev_has_note_at = has_note_ats[found]
+        if note != "" && prev_note != "" {
+          let in_wins = if note_at != prev_note_at { note_at > prev_note_at } else { js_after(note, prev_note) }
+          if in_wins {
+            notes[found] = note
+            note_ats[found] = note_at
+            has_note_ats[found] = has_note_at
+          }
+        } else if note != "" {
+          notes[found] = note
+          note_ats[found] = note_at
+          has_note_ats[found] = has_note_at
+        }
+        let dst_rn = merged_ref_names[found]
+        let dst_ra = merged_ref_ats[found]
+        for k in 0..<kept_rn.length() {
+          let r = kept_rn[k]
+          let ra = kept_ra[k]
+          let mut pos = -1
+          for m in 0..<dst_rn.length() {
+            if dst_rn[m] == r {
+              pos = m
+              break
+            }
+          }
+          if pos >= 0 {
+            if ra > dst_ra[pos] {
+              dst_ra[pos] = ra
+            }
+          } else {
+            dst_rn.push(r)
+            dst_ra.push(ra)
+          }
+        }
+        has_refs_ats[found] = has_refs_ats[found] || row_has_refs_at
+        has_ats[found] = has_at || prev_has_at
+        ats[found] = if at > prev_at { at } else { prev_at }
+      }
+      None => {
+        index_by_name.set(name, ats.length())
+        ats.push(at)
+        has_ats.push(has_at)
+        notes.push(note)
+        note_ats.push(note_at)
+        has_note_ats.push(has_note_at)
+        merged_ref_names.push(kept_rn)
+        merged_ref_ats.push(kept_ra)
+        has_refs_ats.push(row_has_refs_at)
+        if !all_names_seen.contains(name) {
+          all_names_seen.set(name, true)
+          all_names.push(name)
+        }
+      }
+    }
+  }
+  // Ensure tombstone-only names are also included in sorted output.
+  for i in 0..<lines.length() {
+    let trimmed = lines[i].trim()
+    if trimmed == "" {
+      continue
+    }
+    match base_codec::json_parse(trimmed) {
+      Ok(obj) => {
+        match str_field(obj, "name") {
+          Some(name) if name != "" && max_del.contains(name) && !all_names_seen.contains(name) => {
+            all_names_seen.set(name, true)
+            all_names.push(name)
+          }
+          _ => ()
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  let sorted_names = sort_names_merge(all_names)
+  let out : Array[String] = []
+  for k in 0..<sorted_names.length() {
+    let nm = sorted_names[k]
+    match index_by_name.get(nm) {
+      Some(idx) => {
+        let fields : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(nm))]
+        if notes[idx] != "" {
+          fields.push(("note", base_codec::json_str(notes[idx])))
+          if has_note_ats[idx] {
+            fields.push(("noteAt", json_number_clean(note_ats[idx])))
+          }
+        }
+        let raw_rn = merged_ref_names[idx]
+        let raw_ra = merged_ref_ats[idx]
+        if raw_rn.length() > 0 {
+          let (srn, sra) = sort_refs_by_at_pion(raw_rn, raw_ra)
+          let arr : Array[base_codec::Json] = []
+          for r in 0..<srn.length() {
+            arr.push(base_codec::json_str(srn[r]))
+          }
+          fields.push(("refs", base_codec::json_arr(arr)))
+          if has_refs_ats[idx] {
+            let mut max_ra = -1.0
+            let ra_fields : Array[(String, base_codec::Json)] = []
+            for r in 0..<srn.length() {
+              if sra[r] > max_ra {
+                max_ra = sra[r]
+              }
+              ra_fields.push((srn[r], json_number_clean(sra[r])))
+            }
+            if max_ra >= 0.0 {
+              fields.push(("refsAt", json_number_clean(max_ra)))
+            }
+            fields.push(("refAts", base_codec::json_obj(ra_fields)))
+          }
+        }
+        if has_ats[idx] {
+          fields.push(("updatedAt", json_number_clean(ats[idx])))
+        }
+        match max_del.get(nm) {
+          Some(del_at) => fields.push(("deletedAt", json_number_clean(del_at)))
+          None => ()
+        }
+        match max_note_cleared.get(nm) {
+          Some(nc) => fields.push(("noteClearedAt", json_number_clean(nc)))
+          None => ()
+        }
+        match max_refs_cleared.get(nm) {
+          Some(rc) => fields.push(("refsClearedAt", json_number_clean(rc)))
+          None => ()
+        }
+        out.push(base_codec::json_stringify(base_codec::json_obj(fields)))
+      }
+      None => {
+        match max_del.get(nm) {
+          Some(del_at) => {
+            out.push(base_codec::json_stringify(base_codec::json_obj([
+              ("name", base_codec::json_str(nm)),
+              ("deleted", base_codec::json_bool(true)),
+              ("updatedAt", json_number_clean(del_at)),
+            ])))
+          }
+          None => ()
+        }
+      }
+    }
+  }
+  for i in 0..<extra.length() {
+    out.push(extra[i])
+  }
+  if out.length() == 0 { "" } else { out.join("\n") + "\n" }
+}
+
 pub enum Outcome {
   Keep
   Take
@@ -255,6 +707,9 @@ pub fn decide_records(
       Some(b) => {
         if is_text(b) {
           text = merge3(text_of(b), ws, ls)
+          if text is None && path == "PROJECTS.jsonl" {
+            text = Some(union_lines(ws, ls, None, None))
+          }
         } else {
           // base is binary; fall through to common/path/alike rules
           text = Some(union_lines(ws, ls, None, None))
@@ -266,7 +721,9 @@ pub fn decide_records(
             text = Some(union_lines(ws, ls, None, None))
           }
           None => {
-            if path == "MEMORY.md" {
+            if path == "PROJECTS.jsonl" {
+              text = Some(union_lines(ws, ls, None, None))
+            } else if path == "MEMORY.md" {
               let wn = if w.origin { Some(name_of(w.by)) } else { None }
               let ln = if l.origin { Some(name_of(l.by)) } else { None }
               text = Some(union_lines(ws, ls, wn, ln))
@@ -280,7 +737,13 @@ pub fn decide_records(
   }
   match text {
     Some(t) => {
-      let bytes = t.to_bytes()
+      let mut bytes = t.to_bytes()
+      if path == "PROJECTS.jsonl" && bytes.length() > 512 * 1024 {
+        bytes = compact_projects_jsonl(t).to_bytes()
+        if bytes.length() > 512 * 1024 {
+          return Ok(Outcome::Keep)
+        }
+      }
       let kept_hash = match blobs.keep(bytes) {
         Ok(h) => h
         Err(e) => return Err(e)

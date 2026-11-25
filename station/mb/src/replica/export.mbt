@@ -58,7 +58,7 @@ let state_schema : String =
 
 ///|
 let small_tables : Array[String] = [
-  "sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats",
+  "sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats",
   "kept_chats", "dismissed", "pins", "opened_chats",
 ]
 
@@ -952,6 +952,8 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
   }
   let cursor_entries = @string.parse_double(self.meta("entries").unwrap_or("0")) catch { _ => 0.0 }
   let cursor_letters = @string.parse_double(self.meta("letters").unwrap_or("0")) catch { _ => 0.0 }
+  let has_entry_proposals = self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'", []).length() > 0
+  let has_proposal_outcomes = self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'", []).length() > 0
   let thread_rows = (ws : String, thread : Double) => {
     match all("SELECT * FROM threads WHERE id = ?", [Json::number(thread)]) {
       [t, ..] => changed(ws, "threads", t)
@@ -962,6 +964,16 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     }
     for r in all("SELECT * FROM closed_cards WHERE thread = ?", [Json::number(thread)]) {
       changed(ws, "closed_cards", r)
+    }
+    if has_entry_proposals {
+      for r in all("SELECT * FROM entry_proposals WHERE thread = ?", [Json::number(thread)]) {
+        changed(ws, "entry_proposals", r)
+      }
+    }
+    if has_proposal_outcomes {
+      for r in all("SELECT * FROM proposal_outcomes WHERE thread = ?", [Json::number(thread)]) {
+        changed(ws, "proposal_outcomes", r)
+      }
     }
     for table in thread_marks {
       for r in all(marks_of(table, "thread"), [Json::number(thread)]) {

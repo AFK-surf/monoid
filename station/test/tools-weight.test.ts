@@ -16,7 +16,7 @@ import { stationTools } from "./station-tools.ts";
 
 /// The factories the list (test/station-tools.ts `stationTools`) is made of, by the names their callers call them by.
 const FACTORIES = [
-  "chatTools", "archiveTools", "remoteTools", "workspaceSizeTools", "jobTools", "screenTools", "permissionTools", "computerTools", "forwardTools", "relayTools",
+  "chatTools", "projectTools", "archiveTools", "remoteTools", "workspaceSizeTools", "jobTools", "screenTools", "permissionTools", "computerTools", "forwardTools", "relayTools",
   "phoneTools", "adbTools", "browserTools", "deviceTools", "feedbackTools", "feishuTools", "loginTools", "retireTools", "rigTools", "searchTools", "vaultTools", "moveTools", "versionTools",
 ];
 /// How many times the parts give tools (`parts.tools(`, anywhere in src/): one a factory above but adb's, which also

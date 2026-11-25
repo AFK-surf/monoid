@@ -11,7 +11,7 @@ import { ConnectedSurface, MEMBERS_MS } from "../connects/surface.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import type { Attachment } from "../store/store.ts";
-import { type ChatEvent, type ChatMessage, type Handler, type InboundFile, type Member, type ModelChoice, type Person, type Place, type ThreadRef, splitForSlack } from "../sessions/chat.ts";
+import { type ChatEvent, type ChatMessage, type Handler, type InboundFile, type Member, type ModelChoice, type Person, type Place, type ThreadRef, isNotice, matchesProposalNotice, splitForSlack } from "../sessions/chat.ts";
 import { type CardEnd, endedWords } from "../connects/card-ends.ts";
 import { type Stands, type Words, answerOf, answeredBlocks, endedBlocks, loginBlocks, loginCodeOf, loginEnteredBlocks, markdown, questionBlocks, standsBlock, standsText } from "./cards.ts";
 import { NEW_CHAT_COMMAND } from "./apps.ts";
@@ -189,13 +189,31 @@ export function toEvent(event: Json, botUserId: string, botId: string): ChatEven
   if (kind === "message" && subtype === "message_deleted") return null;
   if (kind !== "app_mention" && kind !== "message") return null;
   // Message subtypes that are someone talking: a person, or another app's bot.
-  if (![null, "file_share", "thread_broadcast", "bot_message"].includes(subtype) || own(event)) return null;
-  // Its bot user when Slack gives one, else its bot id.
-  const by = event.user !== undefined && event.user !== null ? event.user : event.bot_id;
-  const user = text(by);
-  if (user === "") return null;
+  if (![null, "file_share", "thread_broadcast", "bot_message"].includes(subtype)) return null;
   const body = messageText(event);
   const ts = text(event.ts);
+  // Its bot user when Slack gives one, else its bot id.
+  const by = event.user !== undefined && event.user !== null ? event.user : event.bot_id;
+  if (own(event)) {
+    // Pass through this bot's own station notices (`NOTICE_MARK`) as a dedicated `ownNotice` event solely for
+    // in-flight proposal echo reconciliation: skips `heard()`, `knownPerson()`, and agent delivery completely.
+    if (kind !== "message" || !isNotice(body) || ts === "") return null;
+    const user = botUserId !== "" ? botUserId : text(by);
+    if (user === "") return null;
+    return {
+      type: "ownNotice",
+      message: {
+        channel: text(event.channel),
+        threadTs: typeof event.thread_ts === "string" ? event.thread_ts : ts,
+        ts,
+        user,
+        text: body,
+        addressed: false,
+      },
+    };
+  }
+  const user = text(by);
+  if (user === "") return null;
   const files = messageFiles(event);
   return {
     type: "message",
@@ -1043,8 +1061,87 @@ export class SlackSurface extends ConnectedSurface {
     return name;
   }
 
+  botId(): string {
+    return this.me?.botId ?? "";
+  }
+
+  async findNoticeInHistory(
+    thread: ThreadRef,
+    opts: { proposalId?: string; marker?: string; sinceSec: number; cursor: string | null; maxPages: number },
+  ): Promise<{ ts: string | null; cursor: string | null; done: boolean }> {
+    const bot = this.botUserId();
+    const botId = this.me?.botId ?? "";
+    const maxPages = Math.max(1, Math.floor(opts.maxPages));
+    let cursor: string | null = null;
+    let savedSince: string | null = null;
+    if (opts.cursor && opts.cursor !== "") {
+      try {
+        const parsed = JSON.parse(opts.cursor);
+        if (parsed !== null && typeof parsed === "object" && typeof parsed.c === "string" && parsed.c !== "") {
+          cursor = parsed.c;
+          if (typeof parsed.s === "string" && parsed.s !== "") savedSince = parsed.s;
+        } else {
+          cursor = opts.cursor;
+        }
+      } catch {
+        cursor = opts.cursor;
+      }
+    }
+    let oldestParam = String(opts.sinceSec);
+    for (let pageIdx = 0; pageIdx < maxPages; pageIdx++) {
+      const params: Params = [
+        ["channel", thread.channel],
+        ["ts", thread.threadTs],
+        ["limit", "200"],
+        ["oldest", oldestParam],
+      ];
+      if (cursor !== null) params.push(["cursor", cursor]);
+      let page: Json;
+      try {
+        page = await this.client.api("conversations.replies", params, this.botToken);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (cursor !== null && /invalid_cursor/i.test(msg)) {
+          cursor = null;
+          oldestParam = savedSince ?? String(opts.sinceSec);
+          const retryParams: Params = [
+            ["channel", thread.channel],
+            ["ts", thread.threadTs],
+            ["limit", "200"],
+            ["oldest", oldestParam],
+          ];
+          page = await this.client.api("conversations.replies", retryParams, this.botToken);
+        } else {
+          throw err;
+        }
+      }
+      const messages = Array.isArray(page?.messages) ? page.messages : [];
+      for (const m of messages) {
+        const ts = text(m?.ts);
+        if (ts !== "" && (savedSince === null || (number(ts) ?? 0) > (number(savedSince) ?? 0))) {
+          savedSince = ts;
+        }
+      }
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        const body = messageText(m);
+        if (!isNotice(body) || !matchesProposalNotice(body, opts)) continue;
+        const isOwn = (botId !== "" && m?.bot_id === botId) || (bot !== "" && m?.user === bot);
+        if (!isOwn) continue;
+        const ts = text(m?.ts);
+        if (ts !== "") return { ts, cursor: null, done: true };
+      }
+      const next = page?.response_metadata?.next_cursor;
+      cursor = typeof next === "string" && next !== "" ? next : null;
+      if (cursor === null) return { ts: null, cursor: null, done: true };
+    }
+    const encoded = cursor !== null ? JSON.stringify({ c: cursor, ...(savedSince !== null ? { s: savedSince } : {}) }) : null;
+    return { ts: null, cursor: encoded, done: false };
+  }
+
   history(thread: ThreadRef, before: string, limit: number): Promise<ChatMessage[]> {
     const bot = this.botUserId();
+    const botId = this.me?.botId ?? "";
     return (async () => {
       const all: ChatMessage[] = [];
       let cursor: string | null = null;
@@ -1057,8 +1154,9 @@ export class SlackSurface extends ConnectedSurface {
         if (cursor !== null) params.push(["cursor", cursor]);
         const page = await this.client.api("conversations.replies", params, this.botToken);
         for (const m of Array.isArray(page?.messages) ? page.messages : []) {
+          const isOwn = (botId !== "" && m?.bot_id === botId) || (bot !== "" && m?.user === bot);
           const by = m?.user !== undefined && m?.user !== null ? m.user : m?.bot_id;
-          const user = typeof by === "string" ? by : "unknown";
+          const user = isOwn && bot !== "" ? bot : (typeof by === "string" ? by : "unknown");
           const fromBot = (m?.bot_id !== undefined && m?.bot_id !== null) || user === bot;
           const files = messageFiles(m);
           all.push({ ts: text(m?.ts), user, text: messageText(m), fromBot, ...(files.length > 0 ? { files } : {}) });

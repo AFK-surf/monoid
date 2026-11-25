@@ -197,6 +197,10 @@ function threadJson(t: ThreadRow): Json {
   if (t.hiddenAt !== null) v.hiddenAt = t.hiddenAt;
   if (t.hiddenBy !== null) v.hiddenBy = t.hiddenBy;
   if (t.shownAt !== null) v.shownAt = t.shownAt;
+  if (t.links !== undefined && t.links !== null) v.links = t.links;
+  if (t.project !== undefined) v.project = t.project;
+  if (t.projectLocked === true) v.projectLocked = true;
+  if (t.tags !== undefined && t.tags.length > 0) v.tags = t.tags;
   return v;
 }
 

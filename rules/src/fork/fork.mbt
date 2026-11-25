@@ -7,7 +7,9 @@
 // children's own. Proved (fork.mbtp, `moon prove`): it is a strict total order on children of distinct hashes
 // (`ahead_itself`, `ahead_both`, `ahead_through`, `ahead_either`), and `best` picks the one child that comes before
 // every other (`best`, `same_choice`), so every keeper with the same children picks the same, in whatever order it
-// has them. Not proved: that the text order of tie values and hashes is a total order (MoonBit's `String` compare), and
+// has them; and a keeper that holds only part of the children picks the same one where it holds it
+// (`chosen_in_any_part`), and never picks one that another child it holds beats (`beaten_never_chosen`). Not proved:
+// that the text order of tie values and hashes is a total order (MoonBit's `String` compare), and
 // what the caller weighs.
 
 ///|
@@ -128,4 +130,32 @@ pub fn same_choice(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[
   proof_ensure: result => holds(result),
 } {
   b == c
+}
+
+///|
+/// Proved: the child chosen among all children is chosen among any part of them that holds it. A keeper that lacks some
+/// children of a parent, or let some go, picks the child every keeper holding all of them picks, as long as it holds that
+/// one.
+pub fn chosen_in_any_part(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], part : FixedArray[Int], k : Int) -> Bool where {
+  proof_require: same_length(ws, rs, ts, hs),
+  proof_require: in_part(ws.length(), part),
+  proof_require: distinct_part(part),
+  proof_require: in_range(part.length(), k),
+  proof_require: chosen(ws, rs, ts, hs, part[k]),
+  proof_ensure: result => chosen_in_part(ws, rs, ts, hs, part, k),
+} {
+  true
+}
+
+///|
+/// Proved: a child another child comes before is chosen among no children that hold both. What a keeper holds aside
+/// because a child it holds beat it is on no keeper's chain that holds that child too, so letting it go (`ASIDE_MOST`,
+/// shared/log-keep.ts) changes no chain.
+pub fn beaten_never_chosen(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], c : Int, x : Int) -> Bool where {
+  proof_require: same_length(ws, rs, ts, hs),
+  proof_require: two_in(ws.length(), c, x),
+  proof_require: beats(ws, rs, ts, hs, c, x),
+  proof_ensure: result => not_chosen(ws, rs, ts, hs, x),
+} {
+  true
 }

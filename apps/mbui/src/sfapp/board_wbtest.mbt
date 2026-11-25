@@ -601,6 +601,51 @@ test "待派发: a pasted picture is kept with an image-only task and sent after
 }
 
 ///|
+test "待派发: a task carrying a picture pasted here goes to another station chosen in its panel, its picture with it" {
+  new_run()
+  let sent : Array[Json] = []
+  let base = fixture("board")
+  let src : Source = { ..base, call: fn(name, params, done) {
+    if name == "chat.send" { sent.push(params) }
+    (base.call)(name, params, done)
+  } }
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("换台机器跑")
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  t.hold_mods(0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="添加")
+  t.run_for(@ui.move_most_ms)
+  let before = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
+  assert_eq((before.title, before.station, before.files.length()), ("换台机器跑", "ws1/st1", 1))
+  // (its panel: where it runs a choice of the workspace's stations, not its own alone)
+  t.click(Button, label="换台机器跑")
+  t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.get(Button, label="在哪台机器上运行: Willow").rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(MenuItemRadio, label="Maple")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="完成")
+  t.run_for(@ui.move_most_ms)
+  let after = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
+  assert_eq((after.id, after.station, after.station_name, after.files.length()), (before.id, "ws1/st2", "Maple", 1))
+  // (started, its chat made on the station chosen, its picture sent with its words)
+  let (x2, y2, w2, h2) = t.all(Button, label="开始")[0].rect
+  t.tap(x2 + w2 / 2.0, y2 + h2 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0]), "station"), "ws1/st2")
+  assert_eq(items(Some(sent[0]), "attachments").length() + items(Some(sent[0]), "uploads").length(), 1)
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "待派发: removing a pasted picture leaves the words and sends no file" {
   let (t, src) = board_at("board", 1440.0, 900.0)
   t.click(Button, label="新待办")

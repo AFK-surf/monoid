@@ -663,6 +663,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
           // route everything else through remote.handle (where rig.#guard enforces the explicit rig method allowlist).
           : !localIsRig && typeof method === "string" && method.startsWith("stationMarks.") ? answerMarks(stationMarksOf(cloud), envelope.request, envelope.workspace ?? cloud.home() ?? "")
           : !localIsRig && (method === "meshScopes.exchange" || method === "meshRelays.exchange" || method === "meshRelays.revoke") && meshDirectory ? await meshDirectory(peer, envelope.workspace ?? cloud.home() ?? "", envelope.request)
+          : localIsRig && (method === "projects.names" || method === "thread.classify") ? (() => { throw new Error(`a rig does not answer ${method}`); })()
           : await remote.handle(envelope.workspace, peer, envelope.request ?? null);
         // (a person's chain it took answered once it is on disk: person-chains.ts `written`)
         if (method === "lock.person.put" || method === "lock.person.offer") await personChainsOf(cloud).written();

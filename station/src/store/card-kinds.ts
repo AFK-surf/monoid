@@ -72,6 +72,10 @@ export const SYSTEM_CARD_KEPT = "SELECT 1 AS x FROM pending_system_cards WHERE t
 /// entries_agent_at): what a need with no message in its turn asks with (`askingMessage`), the question asked before
 /// and not answered since (a turn that woke for its background work and needs the same, 2026-11-16).
 export const ASKED_LATEST = "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at <= ? ORDER BY at DESC LIMIT 1";
+/// Same as ASKED_DURING / ASKED_LATEST / carded check, excluding inline & sidecar (`entry_proposals`) project proposals (non-blocking).
+export const ASKED_DURING_NO_PROPOSAL = "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at >= ? AND at <= ?";
+export const ASKED_LATEST_NO_PROPOSAL = "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at <= ? ORDER BY at DESC LIMIT 1";
+export const CARDED_OR_PROPOSAL_AT = "SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL OR EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n))";
 
 /// The person whose message came last before ?2 in thread ?1 (the partial index of people's messages): whom an agent's
 /// need with no card asks, the person it was answering (a need's `decider`, read/views; the station's notice of it).

@@ -139,6 +139,8 @@ export type Out = {
   /// chat's rows go in a request or two, not one a table (real run, 2026-11-20: a chat of 3 entries held 30 s toward a
   /// busy station, a dozen round trips of 2-3 s each).
   batched?: boolean;
+  /// The station it goes to supports project classification columns and `proposal_outcomes` (`handover.begin`'s `projects`).
+  projects?: boolean;
 };
 /// A step of one on the station it goes to: being put in (`coming`), shown (`shown`), taken out (`dropped`).
 /// `stoppedFor`: it arrives stopped, waiting for that; `bindings`: the single-session connects (as known here) bound to
@@ -234,7 +236,7 @@ export type HandoverDeps = {
   /// The messages written under a client's key to these threads here, each to its thread there (api/admin.ts
   /// `keptSends`), and those of a chat handed here kept as if written here (`keepSends`).
   keptSends?: (threads: ReadonlyMap<number, number>) => KeptSend[];
-  keepSends?: (sends: readonly KeptSend[]) => void;
+  keepSends?: (sends: readonly KeptSend[], ws?: string | null) => void;
   /// What keeps the station from updating itself while a chat comes here (updates/holds.ts `hold`): its let-go.
   hold?: () => () => void;
   /// Chats `keys` shown here (what their connect kept for them while they were on their way, taken: move/station.ts).
@@ -917,6 +919,35 @@ export class Handover {
         // `#syncHandedUsage`)
         o.usage = begun?.usage === true;
         o.batched = begun?.rows === ROWS_BATCHED;
+        o.projects = begun?.projects === true;
+        if (!o.projects) {
+          let hasClassificationOrProposal = false;
+          let scanAfter = 0;
+          for (;;) {
+            const page = this.#d.store.chatThreads(o.keys, scanAfter, 200);
+            for (const tid of page) {
+              const t = this.#d.store.getThread(tid);
+              if (t !== null && (t.project !== undefined || (t.tags !== undefined && t.tags.length > 0))) {
+                hasClassificationOrProposal = true;
+                break;
+              }
+              const propRow = this.#d.store.db.prepare("SELECT 1 FROM entries WHERE thread = ? AND proposal IS NOT NULL LIMIT 1").get(tid)
+                ?? this.#d.store.db.prepare("SELECT 1 FROM entry_proposals WHERE thread = ? LIMIT 1").get(tid);
+              if (propRow !== undefined) {
+                hasClassificationOrProposal = true;
+                break;
+              }
+            }
+            if (hasClassificationOrProposal || page.length < 200) break;
+            scanAfter = page.at(-1)!;
+          }
+          if (hasClassificationOrProposal) {
+            log.warn("handover", "target station does not support chat project/tag classification or proposals yet: classification metadata will not be preserved there until it updates", {
+              id: o.id,
+              to: o.to.slice(0, 12),
+            });
+          }
+        }
         this.#mark(o, "first");
         await this.#files(o, begun, opts.progress, false);
         this.#mark(o, "turn");
@@ -1187,7 +1218,9 @@ export class Handover {
         const lastE = await pages("entries", t, from === null ? null : was.entries);
         const lastL = await pages("letters", t, from === null ? null : was.letters);
         o.sent[String(t)] = { entries: Math.max(was.entries, Number(lastE?.n ?? 0)), letters: Math.max(was.letters, Number(lastL?.n ?? 0)) };
-        if (from === null) for (const table of [...BY_N.filter((x) => x === "closed_cards"), ...MARKS]) await pages(table, t);
+        if (from === null) {
+          for (const table of [...BY_N.filter((x) => x === "closed_cards" || ((x === "entry_proposals" || x === "proposal_outcomes") && o.projects === true)), ...MARKS]) await pages(table, t);
+        }
       }
       if (threads.length < 200) break;
       after = threads.at(-1)!;
@@ -1650,7 +1683,7 @@ export class Handover {
     await this.#saveIn(i);
     const [room, git] = await Promise.all([(this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null, total: null })), (this.#d.hasGit ?? (async () => true))().catch(() => false)]);
     // (`usage`: its calls are taken with its rows, and a chat's handed before as `handover.usage` brings them)
-    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true, rows: ROWS_BATCHED };
+    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true, rows: ROWS_BATCHED, projects: true };
   }
 
   async #place(i: In, carry: string): Promise<Json> {
@@ -1754,7 +1787,7 @@ export class Handover {
     // (asked again after it was shown, too: what is kept of its messages there may have grown)
     // (only of its own threads here: another's are not this hand-over's to keep)
     const homes = new Set(i.keys.map((k) => this.#d.store.homeChat(k)?.id));
-    this.#d.keepSends?.(sends.filter((x) => typeof x?.thread === "number" && homes.has(x.thread)));
+    this.#d.keepSends?.(sends.filter((x) => typeof x?.thread === "number" && homes.has(x.thread)), i.ws);
     // (shown again, after what was said where it was meanwhile came: taken up)
     if (i.step === "shown") {
       for (const k of i.keys) this.#d.hub.wakeChat(k);

@@ -218,7 +218,7 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     const [silent] = settings.hooks.PreToolUse;
     assert.equal(settings.hooks.PreToolUse.length, 1);
     assert.equal(silent.matcher, [...SPEAKS, "slack_api"].map((tool) => `mcp__stillfail__${tool}`).join("|"));
-    assert.equal(silent.matcher, "mcp__stillfail__chat_post|mcp__stillfail__chat_state|mcp__stillfail__session_send|mcp__stillfail__chat_create|mcp__stillfail__chat_leave|mcp__stillfail__chat_archive|mcp__stillfail__chat_configure|mcp__stillfail__slack_api");
+    assert.equal(silent.matcher, "mcp__stillfail__chat_post|mcp__stillfail__chat_state|mcp__stillfail__session_send|mcp__stillfail__chat_create|mcp__stillfail__chat_leave|mcp__stillfail__chat_archive|mcp__stillfail__chat_configure|mcp__stillfail__project_manage|mcp__stillfail__slack_api");
     // One command, the hook's file by the station's Node, told the Slack methods that write as one quoted word, and
     // given up on (the call let through) after seconds, not Claude Code's ten minutes.
     assert.deepEqual(silent.hooks, [{ type: "command", command: hookCommand(SUBAGENT_HOOK, SLACK_SPOKEN.join(",")), timeout: 10 }]);

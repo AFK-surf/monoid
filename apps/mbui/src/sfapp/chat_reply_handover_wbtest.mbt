@@ -76,3 +76,67 @@ test "reply under a pending card stays drawn whichever way the core hands it ove
     (111.0, [clear]),
   ])
 }
+
+///|
+/// The Windows app's POST answered 92 ms after it was sent (1 ms of it the core's echo).
+let rv_post_answered_ms : Double = 91.0
+
+///|
+/// The Windows app's message come 141 ms after it was sent.
+let rv_message_after_ms : Double = 49.0
+
+///|
+/// Past a chat switch: the chat let go of parks, the one opened comes in, and the core's change reaches it.
+let rv_switch_past_ms : Double = 500.0
+
+///|
+test "reply under a pending card delivered while parked stays drawn after waking at unread line" {
+  let other : ChatRef = { station: "ws1/st1", session: "s-c2", title: "首页的列表改成按天分组", station_name: "Willow" }
+  let (t, held) = rk_open("t1")
+  // Park s-c1 by switching to another chat.
+  @ui.view_tree().unwrap().event(t.time(), fn() { open_chat(other) })
+  t.run_for(rv_switch_past_ms)
+  // Deliver an unread line on the pending card while s-c1 is parked so waking stands at "line" (s.x != infinity).
+  rk_change(held, [
+    { "path": ["unreadLine"], "set": Json::number(337.0) },
+    { "path": ["unread"], "set": Json::number(1.0) },
+    {
+      "path": ["asks"],
+      "set": [{ "seq": 337, "card": true, "mine": true, "text": "请选择方案" }],
+    },
+    { "path": ["askClear"], "set": Json::boolean(true) },
+  ])
+  t.run_for(rv_switch_past_ms)
+  // Wake s-c1: chat_body_node's staged_keys will read scroll.follows_now() -> at_foot_now -> laid.get() while keys
+  // is mid-update (RECURSED_CHECK).
+  @ui.view_tree().unwrap().event(t.time(), fn() { open_chat(rk_ref) })
+  t.run_for(rv_switch_past_ms)
+  let before_count = rk_chat_list().unwrap().count
+  let agent_q : Json = { "path": ["agents"], "set": Json::array([rk_agent_json("queued", "t1")]) }
+  let agent_r : Json = { "path": ["agents"], "set": Json::array([rk_agent_json("running", "t2")]) }
+  let out0 : Json = { "path": ["outbox"], "set": Json::array([rk_out1_json(Json::null())]) }
+  let out338 : Json = { "path": ["outbox"], "set": Json::array([rk_out1_json(Json::number(338.0))]) }
+  let clear : Json = { "path": ["outbox"], "set": Json::array([]) }
+  let asks_clear : Json = { "path": ["asks"], "set": Json::array([]) }
+  let ask_clear_off : Json = { "path": ["askClear"], "set": Json::boolean(false) }
+  let put : Json = { "path": ["messages"], "key": ["seq", "outgoing"], "put": rv_m338(true) }
+  rv_send(t)
+  // (the POST answered first, then the message with the outbox let go in one change, as the first test's "answer
+  // first": the Windows app's 92 ms and 141 ms)
+  let steps : Array[(Double, Array[Json])] = [
+    (rk_core_echo_ms, [out0, agent_q, asks_clear, ask_clear_off]),
+    (rv_post_answered_ms, [out338]),
+    (rv_message_after_ms, [put, clear, rv_card_resolved(), agent_r]),
+  ]
+  for s in steps {
+    t.run_for(s.0)
+    rk_change(held, s.1)
+    t.draw()
+  }
+  t.run_for(@ui.move_most_ms + rk_settle_extra_ms)
+  let seen = rk_reply_drawn()
+  assert_eq(seen.length(), 1, msg="parked-wake: expected reply drawn once, got \{seen.length()}")
+  assert_true(seen[0].alpha > 0.99 && seen[0].h > 10.0, msg="parked-wake: expected full alpha and height")
+  assert_eq(rk_chat_list().unwrap().count, before_count + 2, msg="parked-wake: expected reply + working row in list")
+  t.run_for(rv_past_check_ms)
+}
