@@ -60,6 +60,7 @@ pub struct PItem {
 pub struct LPlan {
   pub mut items : Array[PItem]
   pub creating : Map[String, PItem]
+  pub creating_order : Array[String]
 }
 
 pub struct LOne {
@@ -95,6 +96,26 @@ pub struct LTakeUp {
   pub mut begun : Bool
 }
 
+/// Ticket state for `in_read_k` serialization, coordinating single-reader cancellation and handoff.
+pub enum ReadTicketState {
+  Queued
+  Handed
+  Cancelled
+}
+
+pub struct LReadTicket {
+  pub id : Int
+  pub mut state : ReadTicketState
+  pub turn : effect::Deferred[Unit]
+}
+
+/// Pure-value timer actions for `#live` (ZERO closures, ZERO `host.hub_timers` cycles).
+pub enum LiveTimerAction {
+  RateDeadline(String, Int)
+  ReleaseHold(String)
+  SoonRead(String)
+}
+
 pub struct LWatched {
   pub n : Int
   pub mut tail : Option[LTail]
@@ -104,7 +125,7 @@ pub struct LWatched {
   pub mut behind : Bool
   pub mut announce : Bool
   pub mut read_held : Bool
-  pub read_queue : Array[effect::Deferred[Unit]]
+  pub read_queue : Array[LReadTicket]
   pub mut locating : Bool
   pub mut following : Int
   pub mut follow_again : Bool
@@ -122,17 +143,25 @@ pub struct LiveState {
   pub tasks : Map[String, Array[base_codec::Json]]
   pub plans : Map[String, LPlan]
   pub plan_at : Map[String, Int]
+  pub plan_at_order : Array[String]
   pub plan_back : Map[String, Array[base_codec::Json]]
   pub said_plans : Map[String, base_codec::Json]
   pub listeners : Map[String, Array[LSub]]
   pub watched : Map[String, LWatched]
+  pub watched_order : Array[String]
   pub stood : Map[String, Array[base_codec::Json]]
   pub stood_order : Array[String]
   pub mut took_tails : Bool
+  /// Protocol-visible monotonic counter (strictly 4 MB sites: watch n, held id, follow pending, live_end).
   pub mut next : Int
+  /// Internal identity counter (PItem.tag, LSub.seq, LRate.gen_id, LReadTicket.id).
+  pub mut internal_seq : Int
   pub holds : Map[String, Int]
+  pub holds_order : Array[String]
   /// Value timer IDs for `running(key, false)` delayed releases (ZERO closures).
   pub releases : Map[String, Int]
+  /// Epoch-tagged pure-value timer actions (`timer_id -> (epoch, action)`).
+  pub timer_actions : Map[Int, (Int, LiveTimerAction)]
   pub length_told : Map[String, Int]
   pub ends : Map[Int, effect::Deferred[Unit]]
   pub mut pending : Int
@@ -146,16 +175,21 @@ pub fn LiveState::new() -> LiveState {
     tasks: Map::new(),
     plans: Map::new(),
     plan_at: Map::new(),
+    plan_at_order: [],
     plan_back: Map::new(),
     said_plans: Map::new(),
     listeners: Map::new(),
     watched: Map::new(),
+    watched_order: [],
     stood: Map::new(),
     stood_order: [],
     took_tails: false,
     next: 0,
+    internal_seq: 0,
     holds: Map::new(),
+    holds_order: [],
     releases: Map::new(),
+    timer_actions: Map::new(),
     length_told: Map::new(),
     ends: Map::new(),
     pending: 0,
@@ -220,9 +254,122 @@ fn take_chars(text : String, n : Int) -> String {
   chars_of(text, n)
 }
 
+fn order_set(order : Array[String], key : String) -> Unit {
+  for i in 0..<order.length() {
+    if order[i] == key {
+      return
+    }
+  }
+  order.push(key)
+}
+
+fn order_remove(order : Array[String], key : String) -> Unit {
+  let kept : Array[String] = []
+  let mut removed = false
+  for i in 0..<order.length() {
+    if order[i] == key {
+      removed = true
+    } else {
+      kept.push(order[i])
+    }
+  }
+  if removed {
+    order.clear()
+    for i in 0..<kept.length() {
+      order.push(kept[i])
+    }
+  }
+}
+
+fn hex_val(b : Int) -> Int {
+  if b >= 48 && b <= 57 {
+    b - 48
+  } else if b >= 65 && b <= 70 {
+    b - 55
+  } else if b >= 97 && b <= 102 {
+    b - 87
+  } else {
+    -1
+  }
+}
+
+fn parse_u4(raw : Bytes, idx : Int) -> Int {
+  if idx + 4 > raw.length() {
+    return -1
+  }
+  let h0 = hex_val(raw[idx].to_int())
+  let h1 = hex_val(raw[idx + 1].to_int())
+  let h2 = hex_val(raw[idx + 2].to_int())
+  let h3 = hex_val(raw[idx + 3].to_int())
+  if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 {
+    return -1
+  }
+  h0 * 4096 + h1 * 256 + h2 * 16 + h3
+}
+
+/// Reject JSON strings containing unpaired UTF-16 surrogate escapes (`\uD800`..`\uDFFF`)
+/// to match MoonBit `core/json.parse` strictness (`live.mbt:196,440`).
+fn has_lone_surrogate_escape(src : String) -> Bool {
+  let raw = src.to_bytes()
+  let n = raw.length()
+  let mut in_str = false
+  let mut i = 0
+  while i < n {
+    let b = raw[i].to_int()
+    if !in_str {
+      if b == 34 {
+        in_str = true
+      }
+      i = i + 1
+      continue
+    }
+    if b == 34 {
+      in_str = false
+      i = i + 1
+      continue
+    }
+    if b == 92 {
+      if i + 1 >= n {
+        return false
+      }
+      let next = raw[i + 1].to_int()
+      if next == 117 {
+        let code = parse_u4(raw, i + 2)
+        if code >= 0xD800 && code <= 0xDBFF {
+          // High surrogate MUST be followed immediately by a low surrogate \uDC00..\uDFFF.
+          if i + 11 < n && raw[i + 6].to_int() == 92 && raw[i + 7].to_int() == 117 {
+            let low = parse_u4(raw, i + 8)
+            if low >= 0xDC00 && low <= 0xDFFF {
+              i = i + 12
+              continue
+            }
+          }
+          return true
+        }
+        if code >= 0xDC00 && code <= 0xDFFF {
+          return true
+        }
+        i = i + 6
+        continue
+      }
+      i = i + 2
+      continue
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn parse_json_no_lone_surrogates(raw : String) -> Result[base_codec::Json, String] {
+  if has_lone_surrogate_escape(raw) {
+    return Err("lone surrogate")
+  }
+  sessions_core::parse_json_strict(raw)
+}
+
 /// A call's input as a step carries it (`live.ts` `briefInput`).
 pub fn brief_input(input : String) -> String {
-  let parsed = match sessions_core::parse_json_strict(input) {
+  let parsed = match parse_json_no_lone_surrogates(input) {
     Ok(v) => v
     Err(_) => return take_chars(input, INPUT_CHARS)
   }
@@ -555,8 +702,8 @@ fn says_whole(e : base_codec::Json) -> Bool {
 }
 
 fn LiveCtx::alloc_tag(self : LiveCtx) -> Int {
-  self.state.next = self.state.next + 1
-  self.state.next
+  self.state.internal_seq = self.state.internal_seq + 1
+  self.state.internal_seq
 }
 
 fn LiveCtx::read_plan(
@@ -584,6 +731,7 @@ fn LiveCtx::read_plan(
         None => continue
       }
       let _ = p.creating.remove(call)
+      order_remove(p.creating_order, call)
       let text = match sessions_core::str_of(sessions_core::jget(e, "text")) {
         Some(s) => s
         None => ""
@@ -619,7 +767,7 @@ fn LiveCtx::read_plan(
       Some(s) => s
       None => ""
     }
-    let args = match sessions_core::parse_json_strict(raw_text) {
+    let args = match parse_json_no_lone_surrogates(raw_text) {
       Ok(base_codec::Json::Obj(f)) => base_codec::Json::Obj(f)
       _ => continue
     }
@@ -663,6 +811,7 @@ fn LiveCtx::read_plan(
       }
       p.items = next_items
       p.creating.clear()
+      p.creating_order.clear()
       changed = true
     } else if tool == "TaskCreate" {
       let subject = match sessions_core::str_of(sessions_core::jget(args, "subject")) {
@@ -680,7 +829,10 @@ fn LiveCtx::read_plan(
       }
       p.items.push(item)
       match sessions_core::str_of(sessions_core::jget(e, "callId")) {
-        Some(call) => p.creating.set(call, item)
+        Some(call) => {
+          p.creating.set(call, item)
+          order_set(p.creating_order, call)
+        }
         None => ()
       }
       changed = true
@@ -727,7 +879,7 @@ fn LiveCtx::read_plan(
           None => was.text
         }
         let item = PItem::{
-          tag: was.tag,
+          tag: self.alloc_tag(),
           text: next_text,
           status: next_status,
           id: was.id,
@@ -781,17 +933,17 @@ fn LiveCtx::llog(
   ])
 }
 
-fn LiveCtx::after(
+fn LiveCtx::after_action(
   self : LiveCtx,
   ms : Double,
   on : Option[String],
-  then : () -> Unit,
+  action : LiveTimerAction,
 ) -> Int {
   if self.gen.counters.sealed {
     return 0
   }
   let id = self.host.alloc_id()
-  self.gen.register_timer(self.host, id, then)
+  self.state.timer_actions.set(id, (self.gen.counters.epoch, action))
   let delay = if ms < 0.0 { 0.0 } else { ms }
   let fields : Array[(String, base_codec::Json)] = [
     ("after", sessions_core::jint(id)),
@@ -809,14 +961,43 @@ fn LiveCtx::cancel_timer(self : LiveCtx, id : Int) -> Unit {
   if id == 0 || self.gen.counters.sealed {
     return
   }
-  match self.host.hub_timers.get(id) {
-    Some(entry) => {
-      if entry.epoch == self.gen.counters.epoch {
-        let _ = self.host.hub_timers.remove(id)
+  match self.state.timer_actions.get(id) {
+    Some((epoch, _)) => {
+      if epoch == self.gen.counters.epoch {
+        let _ = self.state.timer_actions.remove(id)
         self.gen.say_node([("cancel", sessions_core::jint(id))])
       }
     }
     None => ()
+  }
+}
+
+/// Dispatch a Node `{"due": id}` event for `#live` timers using the current value-passed context.
+/// Returns `true` if `id` belonged to this generation's `#live` timer table.
+pub fn LiveCtx::handle_due(self : LiveCtx, id : Int) -> Bool {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return false
+  }
+  match self.state.timer_actions.get(id) {
+    Some((epoch, action)) => {
+      if epoch != counters.epoch {
+        return false
+      }
+      let _ = self.state.timer_actions.remove(id)
+      counters.active = counters.active + 1
+      match action {
+        LiveTimerAction::RateDeadline(key, rate_gen) => self.run_rate_deadline(key, rate_gen)
+        LiveTimerAction::ReleaseHold(key) => self.run_release_hold(key)
+        LiveTimerAction::SoonRead(key) => self.run_soon_read(key)
+      }
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+      true
+    }
+    None => false
   }
 }
 
@@ -1013,35 +1194,37 @@ fn LiveCtx::rate_deadline(self : LiveCtx, key : String, rate_gen : Int, ms : Dou
       if rate.gen_id != rate_gen {
         return
       }
-      let tid = self.after(ms, None, fn() -> Unit {
-        match self.state.rates.get(key) {
-          Some(cur) => {
-            if cur.gen_id != rate_gen {
-              return
-            }
-            let left = cur.last_delta + RATE_WINDOW_MS - self.gen.counters.now
-            if left > 0.0 {
-              self.rate_deadline(key, rate_gen, left)
-            } else {
-              cur.quiet_timer_id = None
-              cur.buckets = []
-              cur.told_at = 0.0
-              if cur.told > 0 {
-                cur.told = 0
-                self.lemit(
-                  key,
-                  base_codec::json_obj([
-                    ("type", sessions_core::jstr("rate")),
-                    ("tokensPerSecond", sessions_core::jnum(0.0)),
-                  ]),
-                )
-              }
-            }
-          }
-          None => ()
-        }
-      })
+      let tid = self.after_action(ms, None, LiveTimerAction::RateDeadline(key, rate_gen))
       rate.quiet_timer_id = Some(tid)
+    }
+    None => ()
+  }
+}
+
+fn LiveCtx::run_rate_deadline(self : LiveCtx, key : String, rate_gen : Int) -> Unit {
+  match self.state.rates.get(key) {
+    Some(cur) => {
+      if cur.gen_id != rate_gen {
+        return
+      }
+      let left = cur.last_delta + RATE_WINDOW_MS - self.gen.counters.now
+      if left > 0.0 {
+        self.rate_deadline(key, rate_gen, left)
+      } else {
+        cur.quiet_timer_id = None
+        cur.buckets = []
+        cur.told_at = 0.0
+        if cur.told > 0 {
+          cur.told = 0
+          self.lemit(
+            key,
+            base_codec::json_obj([
+              ("type", sessions_core::jstr("rate")),
+              ("tokensPerSecond", sessions_core::jnum(0.0)),
+            ]),
+          )
+        }
+      }
     }
     None => ()
   }
@@ -1489,10 +1672,9 @@ pub fn LiveCtx::live_ended_k(
 }
 
 fn LiveCtx::tell_held(self : LiveCtx) -> Unit {
-  let keys = self.state.holds.keys()
   let arr : Array[base_codec::Json] = []
-  for i in 0..<keys.length() {
-    arr.push(sessions_core::jstr(keys[i]))
+  for i in 0..<self.state.holds_order.length() {
+    arr.push(sessions_core::jstr(self.state.holds_order[i]))
   }
   self.tell(live_key, "held", [base_codec::json_arr(arr)])
 }
@@ -1513,6 +1695,7 @@ fn LiveCtx::live_running(self : LiveCtx, key : String, on : Bool) -> Unit {
     l.next = l.next + 1
     let id = -l.next
     l.holds.set(key, id)
+    order_set(l.holds_order, key)
     self.tell_held()
     self.live_subscribe(key, 9007199254740991.0, None, id, true, true)
     return
@@ -1520,18 +1703,22 @@ fn LiveCtx::live_running(self : LiveCtx, key : String, on : Bool) -> Unit {
   if !l.holds.contains(key) || l.releases.contains(key) {
     return
   }
-  let tid = self.after(HELD_AFTER_MS, Some(live_key), fn() -> Unit {
-    let _ = l.releases.remove(key)
-    match l.holds.get(key) {
-      Some(id) => {
-        let _ = l.holds.remove(key)
-        self.tell_held()
-        self.live_unsubscribe(key, id)
-      }
-      None => ()
-    }
-  })
+  let tid = self.after_action(HELD_AFTER_MS, Some(live_key), LiveTimerAction::ReleaseHold(key))
   l.releases.set(key, tid)
+}
+
+fn LiveCtx::run_release_hold(self : LiveCtx, key : String) -> Unit {
+  let l = self.state
+  let _ = l.releases.remove(key)
+  match l.holds.get(key) {
+    Some(id) => {
+      let _ = l.holds.remove(key)
+      order_remove(l.holds_order, key)
+      self.tell_held()
+      self.live_unsubscribe(key, id)
+    }
+    None => ()
+  }
 }
 
 // ── Listeners ──
@@ -1778,41 +1965,103 @@ fn LiveCtx::current_watch(self : LiveCtx, key : String, watch_n : Int) -> Bool {
   }
 }
 
-/// Clear `LWatched.waiters`, reset `take_up = None`, and wake all `read_queue` waiters
-/// using the `in_read` `active += 1` + `succeed(())` invariant.
+fn remove_read_ticket(queue : Array[LReadTicket], id : Int) -> Unit {
+  let kept : Array[LReadTicket] = []
+  let mut removed = false
+  for i in 0..<queue.length() {
+    if queue[i].id == id {
+      removed = true
+    } else {
+      kept.push(queue[i])
+    }
+  }
+  if removed {
+    queue.clear()
+    for i in 0..<kept.length() {
+      queue.push(kept[i])
+    }
+  }
+}
+
+/// Hand off read ownership to the next live (`Queued`) ticket, or release `read_held = false`.
+/// Returns `true` if handed off to a live waiter, `false` if queue is empty.
+fn LiveCtx::handoff_next_reader(self : LiveCtx, w : LWatched) -> Bool {
+  while w.read_queue.length() > 0 {
+    let ticket = pop_front(w.read_queue)
+    match ticket.state {
+      ReadTicketState::Queued => {
+        ticket.state = ReadTicketState::Handed
+        if !self.gen.counters.sealed {
+          self.gen.counters.active = self.gen.counters.active + 1
+        }
+        let _ = ticket.turn.succeed(())
+        return true
+      }
+      _ => ()
+    }
+  }
+  w.read_held = false
+  false
+}
+
+/// Clear `LWatched.waiters`, reset `take_up = None`, and wake live `read_queue` waiters
+/// using the `in_read` `active += 1` + `succeed(())` invariant (or drop silently if sealed).
 fn LiveCtx::cleanup_watch(self : LiveCtx, w : LWatched) -> Unit {
   w.ready = false
   w.waiters.clear()
   w.take_up = None
   w.following = 0
   w.follow_again = false
+  if self.gen.counters.sealed {
+    w.read_queue.clear()
+    w.read_held = false
+    return
+  }
   while w.read_queue.length() > 0 {
-    let next = pop_front(w.read_queue)
-    if !self.gen.counters.sealed {
-      self.gen.counters.active = self.gen.counters.active + 1
+    let ticket = pop_front(w.read_queue)
+    match ticket.state {
+      ReadTicketState::Queued => {
+        ticket.state = ReadTicketState::Handed
+        self.gen.counters.active = self.gen.counters.active + 1
+        let _ = ticket.turn.succeed(())
+      }
+      _ => ()
     }
-    let _ = next.succeed(())
   }
 }
 
-/// Serialize reads of `w` (`live.mbt:1088-1108`):
-/// - Waiting in queue: `active -= 1; quiet()` before `turn.wait_k`.
-/// - Handing off to next waiter: `active += 1` before `next.succeed(())`.
+/// Serialize reads of `(key, watch_n)` (`live.mbt:1088-1108`) with ticket-based single-reader
+/// cancellation & handoff safety (ZERO `w <-> read_queue` continuation capture):
+/// - Queuing: `active -= 1; quiet()` before `ticket.turn.wait_k`.
+/// - Handing off: `active += 1` before `ticket.turn.succeed(())`.
+/// - Single-reader cancel while `Queued`: removes ticket, preserves `active`, propagates `Interrupted`.
+/// - Single-reader cancel after `Handed` before resume: undoes `active += 1`, hands off to next live
+///   ticket (or releases `read_held = false` + `quiet()`), propagates `Interrupted`.
 fn LiveCtx::in_read_k(
   self : LiveCtx,
-  w : LWatched,
+  key : String,
+  watch_n : Int,
   work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
+  let w = match self.state.watched.get(key) {
+    Some(x) => if x.n == watch_n { x } else {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
   let release_and_finish = fn(ex : effect::Exit[Unit]) -> Unit {
-    if w.read_queue.length() > 0 {
-      let next = pop_front(w.read_queue)
-      if !self.gen.counters.sealed {
-        self.gen.counters.active = self.gen.counters.active + 1
+    match self.state.watched.get(key) {
+      Some(cur) => {
+        if cur.n == watch_n {
+          let _ = self.handoff_next_reader(cur)
+        }
       }
-      let _ = next.succeed(())
-    } else {
-      w.read_held = false
+      None => ()
     }
     k(ex)
   }
@@ -1831,16 +2080,64 @@ fn LiveCtx::in_read_k(
     })
   }
   if w.read_held {
+    let tid = self.alloc_tag()
     let turn : effect::Deferred[Unit] = effect::Deferred::new()
-    w.read_queue.push(turn)
+    let ticket = LReadTicket::{ id: tid, state: ReadTicketState::Queued, turn: turn }
+    w.read_queue.push(ticket)
     if !self.gen.counters.sealed {
       self.gen.counters.active = self.gen.counters.active - 1
       self.gen.quiet()
     }
     turn.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
       match ex {
-        effect::Exit::Succeeded(_) => run_body()
-        other => k(other)
+        effect::Exit::Succeeded(_) => {
+          match ticket.state {
+            ReadTicketState::Cancelled => k(effect::Exit::Interrupted)
+            _ => run_body()
+          }
+        }
+        effect::Exit::Interrupted => {
+          let was_handed = match ticket.state {
+            ReadTicketState::Handed => true
+            _ => false
+          }
+          ticket.state = ReadTicketState::Cancelled
+          match self.state.watched.get(key) {
+            Some(cur) => {
+              if cur.n == watch_n {
+                remove_read_ticket(cur.read_queue, tid)
+                if was_handed {
+                  if !self.gen.counters.sealed {
+                    self.gen.counters.active = self.gen.counters.active - 1
+                  }
+                  let handed = self.handoff_next_reader(cur)
+                  if !handed && !self.gen.counters.sealed {
+                    self.gen.quiet()
+                  }
+                }
+              }
+            }
+            None => {
+              if was_handed && !self.gen.counters.sealed {
+                self.gen.counters.active = self.gen.counters.active - 1
+                self.gen.quiet()
+              }
+            }
+          }
+          k(effect::Exit::Interrupted)
+        }
+        other => {
+          ticket.state = ReadTicketState::Cancelled
+          match self.state.watched.get(key) {
+            Some(cur) => {
+              if cur.n == watch_n {
+                remove_read_ticket(cur.read_queue, tid)
+              }
+            }
+            None => ()
+          }
+          k(other)
+        }
       }
     })
   } else {
@@ -1879,24 +2176,29 @@ fn LiveCtx::ready_now(self : LiveCtx, key : String, w : LWatched) -> Unit {
   }
 }
 
-fn LiveCtx::keep_stood(self : LiveCtx, key : String, states : Array[base_codec::Json]) -> Unit {
+fn LiveCtx::stood_remove(self : LiveCtx, key : String) -> Unit {
   let _ = self.state.stood.remove(key)
-  let next_order : Array[String] = []
-  for i in 0..<self.state.stood_order.length() {
-    if self.state.stood_order[i] != key {
-      next_order.push(self.state.stood_order[i])
-    }
-  }
-  next_order.push(key)
+  order_remove(self.state.stood_order, key)
+}
+
+fn LiveCtx::keep_stood(self : LiveCtx, key : String, states : Array[base_codec::Json]) -> Unit {
+  self.stood_remove(key)
   self.state.stood.set(key, states)
-  while next_order.length() > 256 {
-    let first = pop_front(next_order)
+  self.state.stood_order.push(key)
+  while self.state.stood_order.length() > 256 {
+    let first = pop_front(self.state.stood_order)
     let _ = self.state.stood.remove(first)
   }
-  self.state.stood_order.clear()
-  for i in 0..<next_order.length() {
-    self.state.stood_order.push(next_order[i])
-  }
+}
+
+fn LiveCtx::plan_at_set(self : LiveCtx, key : String, at : Int) -> Unit {
+  self.state.plan_at.set(key, at)
+  order_set(self.state.plan_at_order, key)
+}
+
+fn LiveCtx::plan_at_remove(self : LiveCtx, key : String) -> Unit {
+  let _ = self.state.plan_at.remove(key)
+  order_remove(self.state.plan_at_order, key)
 }
 
 fn LiveCtx::note_length(self : LiveCtx, key : String, tail : LTail) -> Unit {
@@ -1945,15 +2247,15 @@ fn LiveCtx::read_for_plan(
   let state = match l.plans.get(key) {
     Some(s) => s
     None => {
-      let s = LPlan::{ items: [], creating: Map::new() }
+      let s = LPlan::{ items: [], creating: Map::new(), creating_order: [] }
       l.plans.set(key, s)
       s
     }
   }
   if opt_int_is(l.plan_at.get(key), start) {
-    l.plan_at.set(key, start + entries.length())
+    self.plan_at_set(key, start + entries.length())
   } else {
-    let _ = l.plan_at.remove(key)
+    self.plan_at_remove(key)
   }
   if self.read_plan(state, entries) && !l.said_plans.contains(key) {
     self.lemit(key, self.work_now(key))
@@ -2039,7 +2341,7 @@ fn LiveCtx::read_plan_back(self : LiveCtx, key : String, end : Int) -> Unit {
                 }
                 effect::Exit::Succeeded(false) => {
                   let _ = l.plan_back.remove(key)
-                  let _ = l.plan_at.remove(key)
+                  self.plan_at_remove(key)
                   self.read_plan_back(key, end)
                   wk(effect::Exit::Succeeded(()))
                 }
@@ -2170,15 +2472,13 @@ fn LiveCtx::plan_read(
   }
   let state = match from {
     Some(s) => s
-    None => LPlan::{ items: [], creating: Map::new() }
+    None => LPlan::{ items: [], creating: Map::new(), creating_order: [] }
   }
   let _ = self.read_plan(state, past)
   let _ = self.read_plan(state, meanwhile)
   match end {
-    Some(e) => l.plan_at.set(key, e + meanwhile.length())
-    None => {
-      let _ = l.plan_at.remove(key)
-    }
+    Some(e) => self.plan_at_set(key, e + meanwhile.length())
+    None => self.plan_at_remove(key)
   }
   l.plans.set(key, state)
   let after = base_codec::json_stringify(builders_core::normalize_json(plan_items(state)))
@@ -2299,6 +2599,7 @@ fn LiveCtx::lwatch(self : LiveCtx, key : String) -> Bool {
     armed: None,
   }
   l.watched.set(key, w)
+  order_set(l.watched_order, key)
   self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
     sessions_core::catch_k(
       fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -2358,13 +2659,23 @@ fn LiveCtx::lgone(self : LiveCtx, key : String) -> Unit {
   match self.state.watched.get(key) {
     Some(w) => {
       let _ = self.state.watched.remove(key)
+      order_remove(self.state.watched_order, key)
       w.take_up = None
+      if self.gen.counters.sealed {
+        w.read_queue.clear()
+        w.read_held = false
+        return
+      }
       while w.read_queue.length() > 0 {
-        let next = pop_front(w.read_queue)
-        if !self.gen.counters.sealed {
-          self.gen.counters.active = self.gen.counters.active + 1
+        let ticket = pop_front(w.read_queue)
+        match ticket.state {
+          ReadTicketState::Queued => {
+            ticket.state = ReadTicketState::Handed
+            self.gen.counters.active = self.gen.counters.active + 1
+            let _ = ticket.turn.succeed(())
+          }
+          _ => ()
         }
-        let _ = next.succeed(())
       }
     }
     None => ()
@@ -2419,7 +2730,7 @@ fn LiveCtx::lstart_k(
   }
   w.behind = w.behind || is_false_opt(sessions_core::jget(at, "current"))
   let stood = l.stood.get(key)
-  let _ = l.stood.remove(key)
+  self.stood_remove(key)
   let carried = w.carried
   w.carried = None
   match stood {
@@ -2546,6 +2857,7 @@ pub fn LiveCtx::unwatch(self : LiveCtx, key : String, preserve : Bool) -> Unit {
     }
   }
   let _ = self.state.watched.remove(key)
+  order_remove(self.state.watched_order, key)
   self.cleanup_watch(w)
   self.tell(live_key, "watching", [sessions_core::jstr(key), sessions_core::jbool(false)])
   match w.armed {
@@ -2573,14 +2885,23 @@ fn LiveCtx::read_now_k(
     }
     Some(_) => ()
   }
+  let watch_n = w.n
   self.in_read_k(
-    w,
+    key,
+    watch_n,
     fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      if !self.current_watch(key, w.n) {
+      if !self.current_watch(key, watch_n) {
         wk(effect::Exit::Succeeded(()))
         return
       }
-      let tail = match w.tail {
+      let cur_w = match self.state.watched.get(key) {
+        Some(x) => x
+        None => {
+          wk(effect::Exit::Succeeded(()))
+          return
+        }
+      }
+      let tail = match cur_w.tail {
         Some(t) => t
         None => {
           wk(effect::Exit::Succeeded(()))
@@ -2592,7 +2913,7 @@ fn LiveCtx::read_now_k(
         self.read_soon_k(tail, fn(ex : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
           match ex {
             effect::Exit::Succeeded((start, entries)) => {
-              if !self.current_watch(key, w.n) {
+              if !self.current_watch(key, watch_n) {
                 wk(effect::Exit::Succeeded(()))
                 return
               }
@@ -2605,9 +2926,9 @@ fn LiveCtx::read_now_k(
           }
         })
       }
-      if w.behind {
-        self.stop_follow(key, w)
-        self.follow_now_k(key, w, fn(ex_f : effect::Exit[Unit]) -> Unit {
+      if cur_w.behind {
+        self.stop_follow(key, cur_w)
+        self.follow_now_k(key, cur_w, fn(ex_f : effect::Exit[Unit]) -> Unit {
           match ex_f {
             effect::Exit::Succeeded(_) => do_read()
             other => wk(other)
@@ -2688,12 +3009,12 @@ fn LiveCtx::follow_later(self : LiveCtx, key : String, w : LWatched) -> Unit {
   let pending = self.state.next
   w.following = pending
   let watch_n = w.n
-  let finished = fn() -> Unit {
-    let again = w.follow_again
-    w.follow_again = false
-    w.following = 0
-    if again && w.behind {
-      self.follow_later(key, w)
+  let finished = fn(cur_w : LWatched) -> Unit {
+    let again = cur_w.follow_again
+    cur_w.follow_again = false
+    cur_w.following = 0
+    if again && cur_w.behind {
+      self.follow_later(key, cur_w)
     }
   }
   self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -2705,13 +3026,20 @@ fn LiveCtx::follow_later(self : LiveCtx, key : String, w : LWatched) -> Unit {
           match ex {
             effect::Exit::Succeeded(at) => {
               self.in_read_k(
-                w,
+                key,
+                watch_n,
                 fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
-                  if !self.current_watch(key, watch_n) || w.following != pending {
-                    rk(effect::Exit::Succeeded(()))
-                    return
+                  let cur_w = match self.state.watched.get(key) {
+                    Some(x) => if x.n == watch_n && x.following == pending { x } else {
+                      rk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                    None => {
+                      rk(effect::Exit::Succeeded(()))
+                      return
+                    }
                   }
-                  let tail = match w.tail {
+                  let tail = match cur_w.tail {
                     Some(t) => t
                     None => {
                       rk(effect::Exit::Succeeded(()))
@@ -2719,7 +3047,7 @@ fn LiveCtx::follow_later(self : LiveCtx, key : String, w : LWatched) -> Unit {
                     }
                   }
                   if is_null(at) {
-                    finished()
+                    finished(cur_w)
                     rk(effect::Exit::Succeeded(()))
                     return
                   }
@@ -2729,11 +3057,11 @@ fn LiveCtx::follow_later(self : LiveCtx, key : String, w : LWatched) -> Unit {
                     _ => []
                   }
                   let changed = tail.go_on(paths)
-                  w.behind = is_false_opt(sessions_core::jget(at, "current"))
+                  cur_w.behind = is_false_opt(sessions_core::jget(at, "current"))
                   if tail.path() != path {
-                    self.arm(key, w)
+                    self.arm(key, cur_w)
                   }
-                  finished()
+                  finished(cur_w)
                   if changed {
                     self.lsoon(key)
                   }
@@ -2748,13 +3076,18 @@ fn LiveCtx::follow_later(self : LiveCtx, key : String, w : LWatched) -> Unit {
         })
       },
       fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
-        if self.current_watch(key, watch_n) && w.following == pending {
-          w.behind = true
-          self.llog("warn", "a transcript's new location could not be read", [
-            ("session", sessions_core::jstr(key)),
-            ("error", sessions_core::jstr(sessions_core::error_message(e))),
-          ])
-          finished()
+        match self.state.watched.get(key) {
+          Some(cur_w) => {
+            if cur_w.n == watch_n && cur_w.following == pending {
+              cur_w.behind = true
+              self.llog("warn", "a transcript's new location could not be read", [
+                ("session", sessions_core::jstr(key)),
+                ("error", sessions_core::jstr(sessions_core::error_message(e))),
+              ])
+              finished(cur_w)
+            }
+          }
+          None => ()
         }
         rk(effect::Exit::Succeeded(()))
       },
@@ -2778,13 +3111,20 @@ fn LiveCtx::live_moved(self : LiveCtx, key : String) -> Unit {
   let watch_n = w.n
   self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
     self.in_read_k(
-      w,
+      key,
+      watch_n,
       fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
-        if !self.current_watch(key, watch_n) {
-          rk(effect::Exit::Succeeded(()))
-          return
+        let cur_w = match self.state.watched.get(key) {
+          Some(x) => if x.n == watch_n { x } else {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
+          None => {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
         }
-        let tail = match w.tail {
+        let tail = match cur_w.tail {
           Some(t) => t
           None => {
             rk(effect::Exit::Succeeded(()))
@@ -2800,9 +3140,9 @@ fn LiveCtx::live_moved(self : LiveCtx, key : String) -> Unit {
                 return
               }
               self.gained(key, start, entries, tail.read_bytes() != before)
-              w.behind = true
-              self.stop_follow(key, w)
-              self.follow_later(key, w)
+              cur_w.behind = true
+              self.stop_follow(key, cur_w)
+              self.follow_later(key, cur_w)
               self.lsoon(key)
               rk(effect::Exit::Succeeded(()))
             }
@@ -2835,65 +3175,75 @@ fn LiveCtx::lsoon(self : LiveCtx, key : String) -> Unit {
     return
   }
   w.reading = true
-  let _ = self.after(40.0, Some(live_key), fn() -> Unit {
-    let now_w = match self.state.watched.get(key) {
-      Some(x) => x
-      None => return
-    }
-    now_w.reading = false
-    match now_w.tail {
-      None => {
-        if now_w.ready {
-          now_w.waiters.push(LWaiter::Soon(now_w.n))
-        }
-        return
+  let _ = self.after_action(40.0, Some(live_key), LiveTimerAction::SoonRead(key))
+}
+
+fn LiveCtx::run_soon_read(self : LiveCtx, key : String) -> Unit {
+  let now_w = match self.state.watched.get(key) {
+    Some(x) => x
+    None => return
+  }
+  now_w.reading = false
+  match now_w.tail {
+    None => {
+      if now_w.ready {
+        now_w.waiters.push(LWaiter::Soon(now_w.n))
       }
-      Some(_) => ()
+      return
     }
-    let announce = now_w.announce
-    now_w.announce = false
-    if now_w.behind {
-      self.follow_later(key, now_w)
-    }
-    let watch_n = now_w.n
-    self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      self.in_read_k(
-        now_w,
-        fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          if !self.current_watch(key, watch_n) {
+    Some(_) => ()
+  }
+  let announce = now_w.announce
+  now_w.announce = false
+  if now_w.behind {
+    self.follow_later(key, now_w)
+  }
+  let watch_n = now_w.n
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.in_read_k(
+      key,
+      watch_n,
+      fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if !self.current_watch(key, watch_n) {
+          rk(effect::Exit::Succeeded(()))
+          return
+        }
+        let cur_w = match self.state.watched.get(key) {
+          Some(x) => x
+          None => {
             rk(effect::Exit::Succeeded(()))
             return
           }
-          let tail = match now_w.tail {
-            Some(t) => t
-            None => {
-              rk(effect::Exit::Succeeded(()))
-              return
-            }
+        }
+        let tail = match cur_w.tail {
+          Some(t) => t
+          None => {
+            rk(effect::Exit::Succeeded(()))
+            return
           }
-          let before = tail.read_bytes()
-          self.read_soon_k(tail, fn(ex : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
-            match ex {
-              effect::Exit::Succeeded((start, entries)) => {
-                if !self.current_watch(key, watch_n) {
-                  rk(effect::Exit::Succeeded(()))
-                  return
-                }
-                self.note_length(key, tail)
-                self.gained(key, start, entries, tail.read_bytes() != before)
-                if entries.length() == 0 && announce {
-                  self.lemit(key, timeline(start, entries))
-                }
+        }
+        let before = tail.read_bytes()
+        self.read_soon_k(tail, fn(ex : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded((start, entries)) => {
+              if !self.current_watch(key, watch_n) {
                 rk(effect::Exit::Succeeded(()))
+                return
               }
-              effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
-              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+              self.note_length(key, tail)
+              self.gained(key, start, entries, tail.read_bytes() != before)
+              if entries.length() == 0 && announce {
+                self.lemit(key, timeline(start, entries))
+              }
+              rk(effect::Exit::Succeeded(()))
             }
-          })
-        },
-        wk,
-      )
-    })
+            effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      wk,
+    )
   })
 }
 
@@ -2913,8 +3263,8 @@ pub fn LiveCtx::live_forget(self : LiveCtx, key : String) -> Unit {
   let l = self.state
   let _ = l.tasks.remove(key)
   let _ = l.plans.remove(key)
-  let _ = l.plan_at.remove(key)
-  let _ = l.stood.remove(key)
+  self.plan_at_remove(key)
+  self.stood_remove(key)
   let _ = l.plan_back.remove(key)
   let _ = l.said_plans.remove(key)
   let _ = l.steps.remove(key)
@@ -2930,6 +3280,7 @@ pub fn LiveCtx::live_forget(self : LiveCtx, key : String) -> Unit {
   }
   if l.holds.contains(key) {
     let _ = l.holds.remove(key)
+    order_remove(l.holds_order, key)
     self.tell_held()
   }
   let _ = l.length_told.remove(key)
@@ -2937,49 +3288,61 @@ pub fn LiveCtx::live_forget(self : LiveCtx, key : String) -> Unit {
   self.unwatch(key, false)
 }
 
-/// Full Hub `reset`: cancels all `rate.quiet` and `releases` timers, cleans up every `LWatched`
-/// (`waiters.clear()`, `take_up = None`, wakes `read_queue`), and clears all maps.
+/// Full Hub `reset`: cleans up all rates, releases, timer actions, watched entries, and maps.
+/// In production (`rotate_hub_gen` -> `reset()`), `self.gen.counters.sealed` is already `true`,
+/// so no extra `{"cancel": id}` frames are emitted and old `active` is untouched.
 pub fn LiveCtx::reset(self : LiveCtx) -> Unit {
   let l = self.state
-  let rkeys = l.rates.keys()
-  for i in 0..<rkeys.length() {
-    self.rate_clear(rkeys[i])
-  }
-  let rel_keys = l.releases.keys()
-  for i in 0..<rel_keys.length() {
-    match l.releases.get(rel_keys[i]) {
-      Some(tid) => self.cancel_timer(tid)
-      None => ()
+  if self.gen.counters.sealed {
+    l.rates.clear()
+    l.releases.clear()
+    l.timer_actions.clear()
+  } else {
+    let rkeys = l.rates.keys()
+    for i in 0..<rkeys.length() {
+      self.rate_clear(rkeys[i])
     }
+    let rel_keys = l.releases.keys()
+    for i in 0..<rel_keys.length() {
+      match l.releases.get(rel_keys[i]) {
+        Some(tid) => self.cancel_timer(tid)
+        None => ()
+      }
+    }
+    l.releases.clear()
+    l.timer_actions.clear()
   }
-  l.releases.clear()
-  let wkeys = l.watched.keys()
-  for i in 0..<wkeys.length() {
-    match l.watched.get(wkeys[i]) {
+  for i in 0..<l.watched_order.length() {
+    match l.watched.get(l.watched_order[i]) {
       Some(w) => self.cleanup_watch(w)
       None => ()
     }
   }
   l.watched.clear()
+  l.watched_order.clear()
   l.steps.clear()
   l.phase.clear()
   l.tasks.clear()
   l.plans.clear()
   l.plan_at.clear()
+  l.plan_at_order.clear()
   l.plan_back.clear()
   l.said_plans.clear()
   l.listeners.clear()
   l.stood.clear()
   l.stood_order.clear()
   l.holds.clear()
+  l.holds_order.clear()
   l.length_told.clear()
-  let ekeys = l.ends.keys()
-  for i in 0..<ekeys.length() {
-    match l.ends.get(ekeys[i]) {
-      Some(d) => {
-        let _ = d.succeed(())
+  if !self.gen.counters.sealed {
+    let ekeys = l.ends.keys()
+    for i in 0..<ekeys.length() {
+      match l.ends.get(ekeys[i]) {
+        Some(d) => {
+          let _ = d.succeed(())
+        }
+        None => ()
       }
-      None => ()
     }
   }
   l.ends.clear()
@@ -2990,9 +3353,8 @@ pub fn LiveCtx::reset(self : LiveCtx) -> Unit {
 
 fn LiveCtx::carried_plans(self : LiveCtx) -> base_codec::Json {
   let out : Array[base_codec::Json] = []
-  let keys = self.state.plan_at.keys()
-  for ki in 0..<keys.length() {
-    let key = keys[ki]
+  for ki in 0..<self.state.plan_at_order.length() {
+    let key = self.state.plan_at_order[ki]
     let at = match self.state.plan_at.get(key) {
       Some(a) => a
       None => continue
@@ -3005,9 +3367,8 @@ fn LiveCtx::carried_plans(self : LiveCtx) -> base_codec::Json {
       None => continue
     }
     let creating : Array[base_codec::Json] = []
-    let ckeys = state.creating.keys()
-    for ci in 0..<ckeys.length() {
-      let id = ckeys[ci]
+    for ci in 0..<state.creating_order.length() {
+      let id = state.creating_order[ci]
       match state.creating.get(id) {
         Some(made) => {
           for ii in 0..<state.items.length() {
@@ -3089,6 +3450,7 @@ fn LiveCtx::take_plans(self : LiveCtx, carried : base_codec::Json) -> Unit {
       })
     }
     let made : Map[String, PItem] = Map::new()
+    let made_order : Array[String] = []
     for j in 0..<raw_creating.length() {
       match raw_creating[j] {
         base_codec::Json::Arr(pair) => {
@@ -3098,6 +3460,7 @@ fn LiveCtx::take_plans(self : LiveCtx, carried : base_codec::Json) -> Unit {
                 let idx = idx_d.to_int()
                 if idx >= 0 && idx < items.length() {
                   made.set(id, items[idx])
+                  order_set(made_order, id)
                 }
               }
               _ => ()
@@ -3107,29 +3470,37 @@ fn LiveCtx::take_plans(self : LiveCtx, carried : base_codec::Json) -> Unit {
         _ => ()
       }
     }
-    self.state.plans.set(key, LPlan::{ items: items, creating: made })
-    self.state.plan_at.set(key, at)
+    self.state.plans.set(key, LPlan::{ items: items, creating: made, creating_order: made_order })
+    self.plan_at_set(key, at)
   }
 }
 
 fn LiveCtx::carried_tails(self : LiveCtx) -> base_codec::Json {
   let out : Map[String, Array[base_codec::Json]] = Map::new()
-  let skeys = self.state.stood.keys()
-  for i in 0..<skeys.length() {
-    let key = skeys[i]
+  let out_order : Array[String] = []
+  for i in 0..<self.state.stood_order.length() {
+    let key = self.state.stood_order[i]
     match self.state.stood.get(key) {
-      Some(st) => out.set(key, st)
+      Some(st) => {
+        out.set(key, st)
+        order_set(out_order, key)
+      }
       None => ()
     }
   }
-  let wkeys = self.state.watched.keys()
-  for i in 0..<wkeys.length() {
-    let key = wkeys[i]
+  for i in 0..<self.state.watched_order.length() {
+    let key = self.state.watched_order[i]
     match self.state.watched.get(key) {
       Some(w) => {
         match (w.tail, w.carried) {
-          (Some(tail), _) => out.set(key, tail.snapshot())
-          (None, Some(c)) => out.set(key, c)
+          (Some(tail), _) => {
+            out.set(key, tail.snapshot())
+            order_set(out_order, key)
+          }
+          (None, Some(c)) => {
+            out.set(key, c)
+            order_set(out_order, key)
+          }
           _ => ()
         }
       }
@@ -3137,9 +3508,8 @@ fn LiveCtx::carried_tails(self : LiveCtx) -> base_codec::Json {
     }
   }
   let arr : Array[base_codec::Json] = []
-  let okeys = out.keys()
-  for i in 0..<okeys.length() {
-    let key = okeys[i]
+  for i in 0..<out_order.length() {
+    let key = out_order[i]
     match out.get(key) {
       Some(states) => {
         arr.push(base_codec::json_obj([
