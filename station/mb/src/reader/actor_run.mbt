@@ -692,7 +692,9 @@ async fn Actors::cut_off_by_restart(self : Actors, a : Actor) -> Json raise {
       let latest = self.store(a, "latestTurn", [jstr(a.key)])
       let summary = latest.value("summary").unwrap_or(Json::null())
       if cut_off_by_restart(summary) {
-        self.notice(a, "⚠️ " + self.t(a, "station.notice.cutOffRestart"), about=str_of(latest.value("id")))
+        let said = "⚠️ " + self.t(a, "station.notice.cutOffRestart")
+        self.notice(a, said, about=str_of(latest.value("id")))
+        self.tell_opener_failed(a, said)
         interrupted = true
       }
     }
@@ -1732,6 +1734,7 @@ async fn Actors::warm_waited_on(self : Actors, a : Actor, e : Error) -> Bool rai
   }
   if !dup {
     self.notice(a, said)
+    self.tell_opener_failed(a, said)
   }
   true
 }
@@ -2006,6 +2009,7 @@ async fn Actors::start_turn(
       }
       if !dup {
         self.notice(a, said, runtime=if missing { jstr(a.runtime) } else { Json::null() }, about=turn.map(t => t.id))
+        self.tell_opener_failed(a, said)
       }
       raise e
     }
@@ -3381,11 +3385,26 @@ async fn Actors::give_up(self : Actors, a : Actor, turn : String?) -> Unit raise
   let said = if a.posted { "" } else { a.last_said }
   a.last_said = ""
   if said == "" {
-    return self.notice(a, "⚠️ " + self.t(a, "station.notice.noResult"), about=turn)
+    let words = "⚠️ " + self.t(a, "station.notice.noResult")
+    self.notice(a, words, about=turn)
+    return self.tell_opener_failed(a, words)
   }
   self.log(a, "info", "the turn reached nobody; its last words are shown in its place")
   let quoted = str_of(Some(self.rpc(a.key, "node.words", [jstr("quoted"), jstr(said)]))).unwrap_or("")
-  self.notice(a, "⚠️ " + self.t(a, "station.notice.noResultSaid") + "\n\n" + quoted, about=turn)
+  let words = "⚠️ " + self.t(a, "station.notice.noResultSaid") + "\n\n" + quoted
+  self.notice(a, words, about=turn)
+  self.tell_opener_failed(a, words)
+}
+
+///|
+/// The chat that leads it told it stopped on an error (`settled` `failed`, sessions/opened.ts): where what it did ends
+/// with no state of its own (it could not start, its turn said none and gave nothing, a restart cut it off), the
+/// ⚠️ notice is said only in its own chat, and the leader, waiting on it, would never hear it ended.
+async fn Actors::tell_opener_failed(self : Actors, a : Actor, said : String) -> Unit {
+  let words = if said.has_prefix("⚠️ ") { said.view(start_offset=("⚠️ ").length()).to_string() } else { said }
+  ignore(self.deps(a, "settled", [jstr(a.key), jstr("failed"), jstr(words)])) catch {
+    err => self.log(a, "warn", "the opener of its chat was not told", fields={ "error": jstr(err.to_string()) })
+  }
 }
 
 ///|
