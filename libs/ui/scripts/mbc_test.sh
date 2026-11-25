@@ -135,6 +135,16 @@ let greeting : String = "hello from a global"
 
 let table : Map[String, Int] = { "one": 1, "two": 2, "three": 3 }
 
+fn total_of(bs : Array[Bytes]) -> Int {
+  let mut n = 0
+  for b in bs {
+    for i in 0..<b.length() {
+      n = n + b[i].to_int()
+    }
+  }
+  n
+}
+
 trait Shape {
   area(Self) -> Double
 }
@@ -155,12 +165,18 @@ fn main {
     sum = sum + f(10)
   }
   println("sum \{sum}")
+  for i in 0..<3 {
+    let kept = [held, held]
+    println("held \{i} \{held.length()} \{total_of(kept)} \{held[1].to_int()}")
+  }
   println("two is \{table.get("two")}")
   println("area \{total([Square(2.0), Square(3.0)])}")
 }
 MBT
+  # (a Bytes literal of 5,000 bytes: mbc carry's)
+  awk 'BEGIN { printf "let held : Bytes = b\""; for (i = 0; i < 5000; i++) printf "\\x%02x", (i * 7 + 3) % 256; print "\"" }' > "$T/m/src/main/held.mbt"
   c=$("$MBC" gen --dir "$T/m" src/main 2>"$T/gen.log" | tail -1) || { cat "$T/gen.log"; fail "mbc gen"; }
-  case "$c" in *main.c) ;; *) fail "mbc gen printed $c";; esac
+  case "$c" in *main.c) ;; *) cat "$T/gen.log"; fail "mbc gen printed $c";; esac
   MH=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
   flags="-I$MH/include -fwrapv -fno-strict-aliasing -Wno-unused-value -O2 -DMOONBIT_ALLOCATOR=MOONBIT_ALLOCATOR_SYSTEM"
   opt=""
@@ -174,5 +190,47 @@ MBT
   [ "$out" = "$("$T/msplit")" ] || fail "moon's program whole and split differ"
   [ "$("$MBC" check --cc "$CC" "--cflags=$flags" --obj "$T/mk" "$c" 2>/dev/null)" = ok ] || fail "mbc check"
   ok "a MoonBit program whole and split: the same output, the same symbols"
+
+  # mbc carry: the same program with its literal in a file of its own, read as the host reads it (a Mac's program has
+  # the host's own, src/host/apple_carried.m; elsewhere a stand-in): the same output
+  cc=$("$MBC" carry --min 4096 --out "$T/carried" "$c" 2>"$T/last.log") || fail "mbc carry"
+  [ "$(ls "$T/carried/files" | wc -l | tr -d ' ')" = 1 ] || fail "not one literal carried"
+  grep -q 'data\[500[0-9]\]' "$c" && ! grep -q 'data\[500[0-9]\]' "$cc" || fail "the literal is still in the carried C"
+  if [ "$(uname)" = Darwin ]; then
+    host="$D/../src/host/apple_carried.m"; libs="-framework Foundation"
+  else
+    host=$T/carried_host.c; libs=
+    cat > "$host" <<'HOST'
+#include <moonbit.h>
+#include <moonbit_runtime.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+moonbit_bytes_t mbui_carried(char const *name, int32_t len) {
+  static char *held;
+  if (!held) {
+    char p[4096];
+    ssize_t n = readlink("/proc/self/exe", p, sizeof p - 1);
+    p[n < 0 ? 0 : n] = 0;
+    char *slash = strrchr(p, '/');
+    snprintf(slash, sizeof p - (size_t)(slash - p), "/carried/%s", name);
+    FILE *f = fopen(p, "rb");
+    held = malloc((size_t)len + 9);
+    if (!f || fread(held, 1, (size_t)len + 9, f) != (size_t)len + 9) abort();
+    fclose(f);
+    ((int32_t *)held)[0] = Moonbit_make_static_rc(moonbit_BLOCK_KIND_VAL_ARRAY);
+    ((uint32_t *)held)[1] = (uint32_t)len;
+  }
+  return (moonbit_bytes_t)(held + 8);
+}
+HOST
+  fi
+  objs=$("$MBC" compile --cc "$CC" "--cflags=$flags" --obj "$T/mc" $opt --extra "$host" "$cc") || fail "mbc compile of the carried C"
+  mkdir -p "$T/app" && "$CC" $objs -lm $libs -o "$T/app/m" || fail "the carried link"
+  cp -R "$T/carried/files" "$T/app/carried"
+  [ "$out" = "$("$T/app/m")" ] || fail "the carried program said $("$T/app/m")"
+  case "$out" in *"held 2 5000 "*) ;; *) fail "the program did not read its literal: $out";; esac
+  ok "a MoonBit program with its literal carried: the same output"
 fi
 echo "mbc_test: $n passed"

@@ -23,6 +23,8 @@ APP_EXTRA="--extra=src/core/core_native.c --extra=src/$PKG/core_engine.m"
 if [ "$PKG" = stillfail ]; then
   APP_EXTRA="$APP_EXTRA --extra=src/stillfail/terminal_ghostty.c"
   APP_LINK_TERM="out/core/$CORE_TARGET/libghostty-vt.a"
+  # mermaid's bytecode (sfbase's mermaid_hbc.mbt, 2.5 MB, read as a chart is first drawn), its one literal this large
+  APP_CARRY=1000000
   CFLAGS="${CFLAGS:-} -Iout/core/ghostty-vt/include"
 fi
 # the engine, the shell (and what it needs of the system: scripts/core.sh shell's native-static-libs for iOS), Hermes
@@ -39,6 +41,8 @@ app_bundle() {
   mkdir -p $APPDIR/Frameworks
   rm -rf $APPDIR/Frameworks/hermes.framework
   cp -R $HERMES_SLICE/hermes.framework $APPDIR/Frameworks/
+  # (a device's without its local symbols, half of it; what links to it stays. Its signature, if any, is the packer's)
+  [ "${IOS_SDK:-iphonesimulator}" != iphoneos ] || xcrun strip -x $APPDIR/Frameworks/hermes.framework/hermes
   for lproj in "$H"/../ios/*.lproj; do
     [ -d "$lproj" ] || continue
     rm -rf "$APPDIR/$(basename "$lproj")"

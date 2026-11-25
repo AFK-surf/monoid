@@ -201,6 +201,7 @@ fn main {
     "wrap" => cmd_wrap(rest)
     "link" => cmd_link(rest)
     "shim" => cmd_shim(rest)
+    "carry" => cmd_carry(rest)
     "check" => cmd_check(rest)
     "work" => cmd_work(rest)
     "mirror" => cmd_mirror(rest)

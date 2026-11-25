@@ -8,6 +8,9 @@
 //  FILE.c split into units and compiled with the extra C/Objective-C files, all at once (-j, default the
 //         cores); prints the objects. An object whose command and inputs (its depfile's, by content) did not change
 //         is kept. --optional files that do not compile are left out (as the runtime's that a platform lacks).
+//     mbc carry --min BYTES --out DIR FILE.c
+//         FILE.c without its Bytes literals of BYTES or more, each in a file of DIR/files the app carries (carry.mbt);
+//         prints the C it wrote. (iOS)
 //     mbc wrap --real CC -- ARGS…
 //         A C compiler for moon itself (`mbc shim` puts one first on PATH): every command goes to CC as is, except
 //         the one that compiles and links moonc's C into the program, which is split, compiled in parallel and linked

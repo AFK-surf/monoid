@@ -233,6 +233,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_EXTERNAL: ${{ inputs.external }}
+      # The program before its symbols were stripped (libs/ui/scripts/ios.sh): what atos reads this build's crash
+      # reports by, found by its UUID. Also where the upload failed: Apple may have taken the build.
+      - name: Keep the symbols its crash reports are read by
+        if: always() && hashFiles('apps/mbui/out/ios-device/symbols/mbui') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-symbols-${{ matrix.product }}-${{ inputs.version }}-${{ inputs.build }}
+          path: apps/mbui/out/ios-device/symbols/mbui
+          retention-days: 90
+          overwrite: true
       - name: Clean temporary signing material (also on failure/cancellation)
         if: always()
         shell: bash

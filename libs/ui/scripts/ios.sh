@@ -25,7 +25,9 @@
 #     program a .wasm of its own): the host, APP_EXTRA, src/host/wasm_shell.c, those thunks, MBUI_WASM_STUBS and
 #     wasmtime (Frameworks/libwasmtime.dylib, built from its source: wasmtime_lib)
 #   MBUI_IOS_HOOK    a script sourced here that adds to the build (still.fail's core: its apps/mbui/scripts/ios-core.sh):
-#     APP_EXTRA (more C or Objective-C for the app: --extra=FILE ...), APP_LINK (its link flags), APP_ENTITLEMENTS (a
+#     APP_CARRY (the app's Bytes literals of that many bytes or more carried as files of their own, carried/, which an
+#     update of the app sends again only when they change: scripts/mbc carry), APP_EXTRA (more C or Objective-C for
+#     the app: --extra=FILE ...), APP_LINK (its link flags), APP_ENTITLEMENTS (a
 #     plist the app is signed with), and the functions app_libs (before the link: what APP_LINK names made),
 #     app_bundle (after the link: into $APPDIR, as frameworks in $APPDIR/Frameworks, signed with it) and app_cmd
 #     (commands of its own)
@@ -60,7 +62,7 @@ CLANG=$(xcrun --sdk $IOS_SDK -f clang)
 CC="$CLANG -arch arm64 $MIN -isysroot $SDK"
 CFLAGS="-I$MOON_HOME/include -I$ROOT/src/host -I$ROOT/ios/shim -fwrapv -fno-strict-aliasing -Wno-unused-value -O2 -DMOONBIT_ALLOCATOR=MOONBIT_ALLOCATOR_SYSTEM"
 
-APP_EXTRA= APP_LINK= APP_ENTITLEMENTS=
+APP_EXTRA= APP_LINK= APP_ENTITLEMENTS= APP_CARRY=
 [ -z "${MBUI_IOS_HOOK:-}" ] || . "$MBUI_IOS_HOOK"
 
 # wasmtime's C API for the app's Wasm shell (Apache-2.0): no release of it is built for iOS, so its source release
@@ -185,7 +187,7 @@ case "${1:-build}" in
     fi
     R=$MOON_HOME/lib/runtime
     EXTRA=
-    for f in apple_render apple_text apple_image apple_listen apple_browser_login apple_passwords apple_views apple_stream ios_app; do
+    for f in apple_render apple_text apple_image apple_listen apple_browser_login apple_passwords apple_views apple_stream apple_carried ios_app; do
       EXTRA="$EXTRA --extra=$ROOT/src/host/$f.m"
     done
     # (mbui's film, none on a phone: src/host/film_none.c)
@@ -204,6 +206,7 @@ case "${1:-build}" in
       GEN=$("$D/mbc" gen --target-dir $OUT/_build src/$PKG 2>$OUT/moon.log) \
         || { "$D/chk" errs < $OUT/moon.log; grep '^mbc:' $OUT/moon.log; exit 1; }
       "$D/chk" errs < $OUT/moon.log | grep -v '^errors: 0' || true
+      [ -z "$APP_CARRY" ] || GEN=$("$D/mbc" carry --min "$APP_CARRY" --out $OUT/carried "$GEN")
       "$D/mbc" compile "--cc=$CC" "--cflags=$CFLAGS" --objc-flags=-fobjc-arc --obj=$OUT/obj \
         --link-flags=$OUT/link-flags.txt \
         --optional=$R/runtime.c --optional=$R/env.c --optional=$R/utf.c --optional=$R/sync_io.c --optional=$R/backtrace.c \
@@ -227,6 +230,14 @@ case "${1:-build}" in
       -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit -framework Photos -framework PhotosUI \
       -framework SafariServices -framework UserNotifications -framework Network -framework UniformTypeIdentifiers -framework GameController \
       -lm $SECT $APP_LINK
+    # A device's program without its own symbols' names, a fifth of it, which nothing on a device reads: a report names a
+    # binary's UUID and offset (strip changes neither). The whole one, which atos reads them by, is kept beside the app.
+    if [ $IOS_SDK = iphoneos ]; then
+      mkdir -p $OUT/symbols
+      cp $APPDIR/mbui $OUT/symbols/mbui
+      xcrun --sdk $IOS_SDK strip -x $APPDIR/mbui
+    fi
+    if [ -z "${MBUI_WASM_THUNKS:-}" ] && [ -n "$APP_CARRY" ]; then cp -R $OUT/carried/files $APPDIR/carried; fi
     cp ${MBUI_IOS_PLIST:-$ROOT/ios/Info.plist} $APPDIR/Info.plist
     plutil -replace CFBundleIdentifier -string $BID $APPDIR/Info.plist
     # the host's display link asks for up to 120 frames a second (ios_app.m): an iPhone with ProMotion lets an app have
