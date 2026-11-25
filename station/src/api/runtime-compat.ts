@@ -30,6 +30,24 @@ function entriesView(value: unknown, supported: Set<string>): unknown {
   }) };
 }
 
+/// Who an agent's message says it is (`agentIdentity`: its runtime, model and effort) rides beside the message wherever
+/// one goes: a thread's entries, a chat's last message in rows, lists and threads, search hits, live events. A core
+/// builds the message's author from it (core views.ts `by.runtime`) and an older one refuses a runtime it does not
+/// know, failing the whole page: so any `agentIdentity` naming such a runtime is left out of whatever is answered or
+/// told it, wherever it stands (the message keeps its author and text; the core falls back to the session's runtime).
+/// Only answers that say the word are walked.
+const IDENTITY = '"agentIdentity"';
+export function identitiesView(value: unknown, supported: Set<string>): unknown {
+  if (Array.isArray(value)) return value.map(v => identitiesView(v, supported));
+  if (!object(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (k === "agentIdentity" && object(v) && typeof v.runtime === "string" && !supported.has(v.runtime)) continue;
+    out[k] = identitiesView(v, supported);
+  }
+  return out;
+}
+
 function shapeFor(path: string): Ty | undefined {
   if (path === "/overview") return "Overview";
   if (path === "/sessions") return { vec: "Session" };
@@ -46,9 +64,11 @@ function frame(text: string, supported: Set<string>, supportsServices: boolean):
   const event = lines.find(l => l.startsWith("event: "))?.slice(7);
   const i = lines.findIndex(l => l.startsWith("data: "));
   const type = event && EVENTS[event];
-  if (i < 0 || (!type && event !== "thread")) return text;
+  const named = text.includes(IDENTITY);
+  if (i < 0 || (!type && event !== "thread" && !named)) return text;
   const value = JSON.parse(lines[i]!.slice(6));
-  const view = event === "thread" ? entriesView(value, supported) : runtimeView(type!, value, supported, supportsServices);
+  let view = event === "thread" ? entriesView(value, supported) : type ? runtimeView(type, value, supported, supportsServices) : value;
+  if (named && view !== OMIT) view = identitiesView(view, supported);
   if (view === OMIT && event === "session") {
     // Keep the event's id for resumable streams and remove an obsolete cached session.
     lines[lines.findIndex(l => l.startsWith("event: "))] = "event: session-removed";
@@ -71,7 +91,7 @@ function eventOf(text: string): string | undefined {
 /// Whether `frame` changes a frame at all: the rest (live rates, shared chats, jobs, pings) goes out as it came.
 const projected = (text: string) => {
   const event = eventOf(text);
-  return event === "thread" || (event !== undefined && Object.hasOwn(EVENTS, event));
+  return event === "thread" || (event !== undefined && Object.hasOwn(EVENTS, event)) || text.includes(IDENTITY);
 };
 
 /// What older clients of the same vocabulary are told of one event is the same text: made once for all their streams,
@@ -177,13 +197,17 @@ export function runtimeCompatible(r: Request, answer: Answer): Answer {
   // not be broken by an unrelated account edit either. Files/preview/module replies never enter this branch.
   const entries = /^\/threads\/[^/]+\/entries$/.test(path);
   const account = /^\/(profiles|logins|automatic-decisions|archiving|auto-chats|connects|slack|feishu|group|me\/slack)(\/|$)/.test(path);
-  if (!type && !account && !entries) return answer;
-  const raw = JSON.parse(answer.body.toString("utf8"));
+  const text = answer.body.toString("utf8");
+  const named = text.includes(IDENTITY);
+  if (!type && !account && !entries && !named) return answer;
+  const raw = JSON.parse(text);
   let view: unknown;
   if (entries) view = entriesView(raw, supported);
   else if (account && object(raw)) {
     view = "overview" in raw ? { ...raw, overview: runtimeView("Overview", raw.overview, supported, supportsServices) } : runtimeView("Overview", raw, supported, supportsServices);
-  } else view = runtimeView(type!, raw, supported, supportsServices);
+  } else if (type) view = runtimeView(type, raw, supported, supportsServices);
+  else view = raw;
+  if (named && view !== OMIT) view = identitiesView(view, supported);
   if (view === OMIT) return error(426, tr(r.lang, "station.admin.updateClientForRuntime"));
   const headers = { ...answer.headers }; delete headers["content-length"];
   return { ...answer, headers, body: Buffer.from(JSON.stringify(view)) };
