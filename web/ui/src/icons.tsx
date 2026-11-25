@@ -174,31 +174,31 @@ export function Eye(props: IconProps) {
 }
 
 export function FileAudio(props: IconProps) {
-  return <Svg {...props}><path d="M7 3.5H13.5L20 10V17Q20 20.5 16.5 20.5H7.5Q4 20.5 4 17V7Q4 3.5 7 3.5Z M13.5 3.5V8Q13.5 10 15.5 10H20 M13 16.5V12.5L16 12" /><path d="M9 17a2 1.5 0 1 0 4 0a2 1.5 0 1 0 -4 0Z" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M8.25 12.5V15.25 M11.75 10V17.25 M15.5 12V15.75" /></Svg>;
 }
 
 export function FileCode(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10 12.5L8 14.75L10 17 M14 12.5L16 14.75L14 17" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M10 11.75L7.85 14.25L10 16.75 M14 11.75L16.15 14.25L14 16.75" /></Svg>;
 }
 
 export function FilePdf(props: IconProps) {
-  return <Svg {...props}><path d="M7 3.5H13.5L20 10V17Q20 20.5 16.5 20.5H7.5Q4 20.5 4 17V7Q4 3.5 7 3.5Z M13.5 3.5V8Q13.5 10 15.5 10H20" /><rect x="7.5" y="13.5" width="9" height="3.5" rx="1" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M9.5 17.25V11H12.5C16.5 11 16.5 15 12.5 15H9.5" /></Svg>;
 }
 
 export function FileText(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M8.5 13.5H15.5 M8.5 17H13" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M8.25 12.5H15.75 M8.25 16.25H13" /></Svg>;
 }
 
 export function FileVideo(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10.2 13Q10.2 12.2 10.9 12.6L14.4 14.7Q15.1 15.2 14.4 15.7L10.9 17.8Q10.2 18.2 10.2 17.4Z" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M9.75 10.5Q9.75 9.85 10.35 10.2L15.95 13.55Q16.55 13.9 15.95 14.25L10.35 17.6Q9.75 17.95 9.75 17.3Z" fill="currentColor" stroke="none" /></Svg>;
 }
 
 export function FileZip(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10.5 6.5H12 M10.5 10.5H12 M9 8.5H10.5 M9 12.5H10.5 M9.5 15H11.5Q12 15 12 15.5V17.5Q12 18 11.5 18H9.5Q9 18 9 17.5V15.5Q9 15 9.5 15Z" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M8.75 6H10.5V7.75H8.75Z M10.5 7.75H12.25V9.5H10.5Z M8.75 9.5H10.5V11.25H8.75Z M10.5 11.25H12.25V13H10.5Z" fill="currentColor" stroke="none" /><path d="M9.75 12.9H11.25Q12.25 12.9 12.25 13.9V16.2Q12.25 17.2 11.25 17.2H9.75Q8.75 17.2 8.75 16.2V13.9Q8.75 12.9 9.75 12.9Z" /></Svg>;
 }
 
 export function File(props: IconProps) {
-  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /></Svg>;
 }
 
 export function Filter(props: IconProps) {
