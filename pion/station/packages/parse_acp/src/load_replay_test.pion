@@ -1,0 +1,341 @@
+// 1:1 port of `station/mb/src/acp/load_replay_test.mbt`.
+
+import "js_json"
+import "live_wire"
+
+fn lr_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn lr_j(s : String) -> js_json::JValue {
+  match js_json::parse(s) {
+    Ok(v) => v
+    Err(e) => panic("bad json: " + e + " in " + s)
+  }
+}
+
+fn lr_types_of(events : Array[js_json::JValue]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<events.length() {
+    match live_wire::str(events[i].get("type")) {
+      Some(t) => out.push(t)
+      None => out.push("")
+    }
+  }
+  out
+}
+
+fn lr_has_type(types : Array[String], target : String) -> Bool {
+  for i in 0..<types.length() {
+    if types[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+fn lr_has_kept(events : Array[js_json::JValue]) -> Bool {
+  for i in 0..<events.length() {
+    if live_wire::is_str(events[i].get("type"), "kept") {
+      return true
+    }
+  }
+  false
+}
+
+fn lr_has_kept_field(events : Array[js_json::JValue], key : String, expected : String) -> Bool {
+  for i in 0..<events.length() {
+    if live_wire::is_str(events[i].get("type"), "kept") &&
+    live_wire::is_str(live_wire::field(events[i].get("line"), key), expected) {
+      return true
+    }
+  }
+  false
+}
+
+fn lr_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("assertion failed: " + msg)
+  }
+}
+
+fn lr_assert_opt_eq(got : Option[String], want : Option[String], msg : String) -> Unit {
+  let ok = match (got, want) {
+    (None, None) => true
+    (Some(a), Some(b)) => a == b
+    _ => false
+  }
+  if !ok {
+    panic("opt mismatch: " + msg)
+  }
+}
+
+test "parse_acp: agy session/load ghost replay discards staged kept lines and emits loadReplay once" {
+  let mut t = 1000.0
+  let now = fn() -> Double { t }
+  let s = Session::new("agy", true)
+  s.session = js_json::utf16_units("conv-1")
+  s.opened(resumed=true)
+  let p1 = s.prompted(
+    js_json::utf16_units("prompt:p1"),
+    js_json::utf16_units("real question"),
+    now=Some(now),
+  )
+  lr_assert(lr_has_kept_field(p1, "type", "user"), "user line written immediately")
+
+  t = 1200.0
+  let u1 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"g1\",\"title\":\"view_file\",\"status\":\"in_progress\",\"rawInput\":{\"path\":\"/old\"}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let u2 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"g1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"old output\"}}]}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let u3 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"old text\"}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(!lr_has_kept(u1.events), "u1 staged")
+  lr_assert(!lr_has_kept(u2.events), "u2 staged")
+  lr_assert(!lr_has_kept(u3.events), "u3 staged")
+
+  t = 1400.0
+  let end1 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p1\",\"result\":{\"stopReason\":\"end_turn\"}}"),
+    now,
+    lr_fmt_num,
+  )
+  let end1_types = lr_types_of(end1.events)
+  lr_assert(lr_has_type(end1_types, "loadReplay"), "loadReplay emitted")
+  lr_assert(!lr_has_type(end1_types, "turnEnded"), "no turnEnded")
+  lr_assert(!lr_has_type(end1_types, "answered"), "no answered")
+  lr_assert(!lr_has_type(end1_types, "kept"), "no kept")
+  lr_assert(s.turn.busy, "turn stays busy")
+
+  let r = s.resent(js_json::utf16_units("prompt:p2"))
+  lr_assert(!lr_has_kept(r), "no duplicate user line")
+
+  t = 2000.0
+  let _ = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"fresh answer\"}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let end2 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p2\",\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":100,\"outputTokens\":20}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let end2_types = lr_types_of(end2.events)
+  lr_assert(!lr_has_type(end2_types, "loadReplay"), "no second loadReplay")
+  lr_assert(lr_has_type(end2_types, "turnEnded"), "turnEnded emitted")
+  lr_assert(lr_has_kept_field(end2.events, "text", "fresh answer"), "fresh answer kept")
+  lr_assert(!s.turn.busy, "turn not busy")
+}
+
+test "parse_acp: agy session/load fast real turn with usage flushes staged kept and does not resend" {
+  let mut t = 1000.0
+  let now = fn() -> Double { t }
+  let s = Session::new("agy", true)
+  s.session = js_json::utf16_units("conv-2")
+  s.opened(resumed=true)
+  let _ = s.prompted(
+    js_json::utf16_units("prompt:p1"),
+    js_json::utf16_units("quick ask"),
+    now=Some(now),
+  )
+  t = 1100.0
+  let _ = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-2\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t1\",\"title\":\"view_file\",\"status\":\"in_progress\",\"rawInput\":{}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let u = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-2\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"t1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"real tool\"}}]}}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(!lr_has_kept(u.events), "still staged before end_turn")
+  t = 1200.0
+  let end = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p1\",\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"inputTokens\":50,\"outputTokens\":10}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let types = lr_types_of(end.events)
+  lr_assert(!lr_has_type(types, "loadReplay"), "no loadReplay")
+  lr_assert(lr_has_type(types, "turnEnded"), "turnEnded")
+  lr_assert(lr_has_kept_field(end.events, "result", "real tool"), "real tool flushed")
+}
+
+test "parse_acp: agy session/load flushes staged kept after 5s or on usage_update" {
+  let mut t = 1000.0
+  let now = fn() -> Double { t }
+  let s = Session::new("agy", true)
+  s.session = js_json::utf16_units("conv-3")
+  s.opened(resumed=true)
+  let _ = s.prompted(
+    js_json::utf16_units("prompt:p1"),
+    js_json::utf16_units("long ask"),
+    now=Some(now),
+  )
+  t = 1200.0
+  let _ = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-3\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t1\",\"title\":\"shell\",\"status\":\"in_progress\",\"rawInput\":{}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let staged = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-3\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"t1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"staged tool\"}}]}}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(!lr_has_kept(staged.events), "staged under 5s")
+
+  t = 6000.0
+  let flushed = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-3\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"still working\"}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(lr_has_kept_field(flushed.events, "result", "staged tool"), "flushed after 5s")
+
+  let s2 = Session::new("agy", true)
+  s2.session = js_json::utf16_units("conv-3b")
+  s2.opened(resumed=true)
+  t = 1000.0
+  let _ = s2.prompted(
+    js_json::utf16_units("prompt:p1"),
+    js_json::utf16_units("ask"),
+    now=Some(now),
+  )
+  t = 1100.0
+  let _ = s2.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-3b\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t2\",\"title\":\"shell\",\"status\":\"in_progress\",\"rawInput\":{}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let _ = s2.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-3b\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"t2\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"tool2\"}}]}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let on_usage = s2.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-3b\",\"update\":{\"sessionUpdate\":\"usage_update\",\"used\":500,\"size\":1000}}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(lr_has_kept_field(on_usage.events, "result", "tool2"), "flushed on usage_update")
+}
+
+test "parse_acp: agy session/load resends at most once and session/new never guards" {
+  let mut t = 1000.0
+  let now = fn() -> Double { t }
+  let s = Session::new("agy", true)
+  s.session = js_json::utf16_units("conv-4")
+  s.opened(resumed=true)
+  let _ = s.prompted(
+    js_json::utf16_units("prompt:p1"),
+    js_json::utf16_units("ask"),
+    now=Some(now),
+  )
+  let end1 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p1\",\"result\":{\"stopReason\":\"end_turn\"}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(lr_has_type(lr_types_of(end1.events), "loadReplay"), "first loadReplay")
+  let _ = s.resent(js_json::utf16_units("prompt:p2"))
+  let end2 = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p2\",\"result\":{\"stopReason\":\"end_turn\"}}"),
+    now,
+    lr_fmt_num,
+  )
+  let types2 = lr_types_of(end2.events)
+  lr_assert(!lr_has_type(types2, "loadReplay"), "no second loadReplay")
+  lr_assert(lr_has_type(types2, "turnEnded"), "second end_turn ends turn")
+
+  let fresh = Session::new("agy", true)
+  fresh.session = js_json::utf16_units("conv-new")
+  fresh.opened(resumed=false)
+  let _ = fresh.prompted(
+    js_json::utf16_units("prompt:n1"),
+    js_json::utf16_units("ask"),
+    now=Some(now),
+  )
+  t = 1100.0
+  let end_new = fresh.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:n1\",\"result\":{\"stopReason\":\"end_turn\"}}"),
+    now,
+    lr_fmt_num,
+  )
+  let types_new = lr_types_of(end_new.events)
+  lr_assert(!lr_has_type(types_new, "loadReplay"), "fresh never guards")
+  lr_assert(lr_has_type(types_new, "turnEnded"), "fresh ends turn")
+}
+
+test "parse_acp: agy Verification Required is classified as auth failure even under load_replay_guard" {
+  lr_assert(classify("agy", "Verification Required") == "auth", "classify Verification Required")
+  lr_assert_opt_eq(notice_failure("⚠ Verification Required"), Some("auth"), "notice Verification Required")
+  lr_assert_opt_eq(
+    notice_failure("partial text\n⚠ Verification Required\n"),
+    Some("auth"),
+    "notice trailing Verification Required",
+  )
+  lr_assert_opt_eq(
+    notice_failure("All 7 lines are still running.\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h46m59s.\n"),
+    Some("rate_limit"),
+    "notice quota reached",
+  )
+  lr_assert_opt_eq(
+    notice_failure("⚠ Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/p/locations/global/publishers/google/models/gemini-4-carbon' (or it may not exist)."),
+    Some("auth"),
+    "notice permission denied",
+  )
+  lr_assert_opt_eq(
+    notice_failure("partial\n⚠ Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/p'."),
+    None,
+    "notice multiline permission denied ignored",
+  )
+
+  let now = fn() -> Double { 1000.0 }
+  let s = Session::new("agy", true)
+  s.session = js_json::utf16_units("conv-5")
+  s.opened(resumed=true)
+  let _ = s.prompted(
+    js_json::utf16_units("prompt:p1"),
+    js_json::utf16_units("ask"),
+    now=Some(now),
+  )
+  let _ = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"conv-5\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"⚠ Verification Required\"}}}}"),
+    now,
+    lr_fmt_num,
+  )
+  let end = s.line_with(
+    lr_j("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p1\",\"result\":{\"stopReason\":\"end_turn\"}}"),
+    now,
+    lr_fmt_num,
+  )
+  lr_assert(!lr_has_type(lr_types_of(end.events), "loadReplay"), "no loadReplay on auth notice")
+  let mut found_auth_fail = false
+  for i in 0..<end.events.length() {
+    let e = end.events[i]
+    if live_wire::is_str(e.get("type"), "turnEnded") &&
+    live_wire::is_str(live_wire::field(e.get("outcome"), "kind"), "failed") &&
+    live_wire::is_str(live_wire::field(e.get("outcome"), "reason"), "auth") {
+      found_auth_fail = true
+    }
+  }
+  lr_assert(found_auth_fail, "turnEnded failed auth")
+}

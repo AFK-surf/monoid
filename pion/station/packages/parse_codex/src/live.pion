@@ -1,0 +1,248 @@
+// Codex app-server live step state machine
+// (1:1 port of `station/mb/src/codex/live.mbt` using lossless UTF-16 `Array[Int]`).
+
+import "js_json"
+import "live_wire"
+
+fn text_u16(v : Option[js_json::JValue]) -> Array[Int] {
+  match v {
+    Some(js_json::JValue::Str(u)) => u
+    _ => []
+  }
+}
+
+fn u16_concat(a : Array[Int], b : Array[Int]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  for i in 0..<b.length() {
+    out.push(b[i])
+  }
+  out
+}
+
+fn u16_join(parts : Array[Array[Int]], sep : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<parts.length() {
+    if i > 0 {
+      out.push(sep)
+    }
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out.push(p[j])
+    }
+  }
+  out
+}
+
+fn u16_contains(list : Array[Array[Int]], item : Array[Int]) -> Bool {
+  for i in 0..<list.length() {
+    if live_wire::u16_eq(list[i], item) {
+      return true
+    }
+  }
+  false
+}
+
+fn str_in(list : Array[String], item : String) -> Bool {
+  for i in 0..<list.length() {
+    if list[i] == item {
+      return true
+    }
+  }
+  false
+}
+
+/// The items a turn works on (live.ts `TOOL_ITEMS`).
+let tool_items : Array[String] = [
+  "commandExecution",
+  "fileChange",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "webSearch",
+]
+
+/// The methods of a step's deltas (what it writes as it goes).
+pub let delta_methods : Array[String] = [
+  "item/agentMessage/delta",
+  "item/reasoning/textDelta",
+  "item/reasoning/summaryTextDelta",
+  "item/plan/delta",
+  "item/commandExecution/outputDelta",
+]
+
+/// A thread's live steps (live.ts `LiveFromCodex`, lossless UTF-16).
+pub struct Live {
+  pub open : Array[Array[Int]]
+  pub mut phase : Option[Array[Int]]
+}
+
+pub fn Live::new() -> Live {
+  Live::{ open: [], phase: None }
+}
+
+/// What `state` said (a station's before, or this one's after a crash).
+pub fn Live::of_state(state : js_json::JValue) -> Live {
+  let live = Live::new()
+  match state.get("open") {
+    Some(js_json::JValue::Arr(ids)) => {
+      for i in 0..<ids.length() {
+        match ids[i] {
+          js_json::JValue::Str(s) => {
+            if !u16_contains(live.open, s) {
+              live.open.push(s)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match state.get("phase") {
+    Some(js_json::JValue::Str(p)) => {
+      live.phase = Some(p)
+    }
+    _ => ()
+  }
+  live
+}
+
+/// What a station taking the session up goes on from (`CodexLiveState`).
+pub fn Live::state(self : Live) -> js_json::JValue {
+  let open_arr : Array[js_json::JValue] = []
+  for i in 0..<self.open.length() {
+    open_arr.push(live_wire::jstr_u16(self.open[i]))
+  }
+  live_wire::obj([
+    ("open", js_json::JValue::Arr(open_arr)),
+    ("phase", live_wire::opt_str_json_u16(self.phase)),
+  ])
+}
+
+fn Live::close(self : Live, id : Array[Int]) -> Bool {
+  for i in 0..<self.open.length() {
+    if live_wire::u16_eq(self.open[i], id) {
+      let mut j = i
+      while j + 1 < self.open.length() {
+        self.open[j] = self.open[j + 1]
+        j = j + 1
+      }
+      let _ = self.open.pop()
+      return true
+    }
+  }
+  false
+}
+
+fn Live::to_phase(self : Live, next : String, out : Array[js_json::JValue]) -> Unit {
+  let next_u = js_json::utf16_units(next)
+  let same = match self.phase {
+    Some(p) => live_wire::u16_eq(p, next_u)
+    None => false
+  }
+  if !same {
+    self.phase = Some(next_u)
+    out.push(live_wire::obj([("kind", live_wire::jstr("phase")), ("phase", live_wire::jstr(next))]))
+  }
+}
+
+/// Pure-Pion `Live::feed` with custom number formatter.
+pub fn Live::feed_with(
+  self : Live,
+  method : String,
+  params : js_json::JValue,
+  fmt_num : (Double) -> String,
+) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  let item = live_wire::field(Some(params), "item")
+  let item_type = match live_wire::str(live_wire::field(item, "type")) {
+    Some(s) => s
+    None => ""
+  }
+  if method == "turn/started" {
+    self.to_phase("requesting", out)
+  } else if method == "turn/completed" {
+    self.phase = None
+  } else if method == "item/agentMessage/delta" || method.starts_with("item/reasoning/") {
+    self.to_phase("responding", out)
+  } else if method == "item/started" && str_in(tool_items, item_type) {
+    self.to_phase("working", out)
+  } else if method == "item/completed" && str_in(tool_items, item_type) {
+    self.to_phase("requesting", out)
+  }
+  if method == "item/started" {
+    let id : Array[Int] = match live_wire::field(item, "id") {
+      Some(js_json::JValue::Str(s)) => s
+      Some(js_json::JValue::Num(d)) => {
+        js_json::utf16_units(js_json::stringify_with_num(js_json::JValue::Num(d), fmt_num))
+      }
+      _ => []
+    }
+    let begun : Option[(String, Option[Array[Int]], Option[Array[Int]])] = match item_type {
+      "agentMessage" => Some(("text", None, None))
+      "reasoning" => Some(("thinking", None, None))
+      "commandExecution" => Some(("tool", Some(js_json::utf16_units("shell")), Some(text_u16(live_wire::field(item, "command")))))
+      "fileChange" => {
+        let paths : Array[Array[Int]] = []
+        match live_wire::field(item, "changes") {
+          Some(js_json::JValue::Arr(cs)) => {
+            for i in 0..<cs.length() {
+              paths.push(text_u16(live_wire::field(Some(cs[i]), "path")))
+            }
+          }
+          _ => ()
+        }
+        Some(("tool", Some(js_json::utf16_units("apply_patch")), Some(u16_join(paths, 0x0A))))
+      }
+      "mcpToolCall" => {
+        let srv = text_u16(live_wire::field(item, "server"))
+        let tl = text_u16(live_wire::field(item, "tool"))
+        let tool_name = u16_concat(u16_concat(srv, [0x2E]), tl)
+        let args_s = live_wire::pretty_with_num(live_wire::field(item, "arguments"), fmt_num)
+        Some(("tool", Some(tool_name), Some(js_json::utf16_units(args_s))))
+      }
+      "dynamicToolCall" => {
+        let tl = text_u16(live_wire::field(item, "tool"))
+        let args_s = live_wire::pretty_with_num(live_wire::field(item, "arguments"), fmt_num)
+        Some(("tool", Some(tl), Some(js_json::utf16_units(args_s))))
+      }
+      "webSearch" => Some(("tool", Some(js_json::utf16_units("web_search")), Some(text_u16(live_wire::field(item, "query")))))
+      _ => None
+    }
+    if id.length() > 0 {
+      match begun {
+        Some((step, tool, input)) => {
+          if !u16_contains(self.open, id) {
+            self.open.push(id)
+          }
+          out.push(live_wire::start_u16(id, step, tool, input))
+        }
+        None => ()
+      }
+    }
+  } else if str_in(delta_methods, method) {
+    let id = text_u16(live_wire::field(Some(params), "itemId"))
+    let delta = text_u16(live_wire::field(Some(params), "delta"))
+    if u16_contains(self.open, id) && delta.length() > 0 {
+      let f = if method == "item/commandExecution/outputDelta" { "output" } else { "text" }
+      out.push(live_wire::delta_u16(id, f, delta))
+    }
+  } else if method == "item/completed" {
+    let id = text_u16(live_wire::field(item, "id"))
+    if self.close(id) {
+      out.push(live_wire::end_event_u16(id))
+    }
+  }
+  out
+}
+
+/// A notification's live steps (`LiveFromCodex.feed`).
+pub fn Live::feed(
+  self : Live,
+  method : String,
+  params : js_json::JValue,
+) -> Array[js_json::JValue] {
+  self.feed_with(method, params, js_json::num_text)
+}

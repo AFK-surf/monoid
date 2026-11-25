@@ -1,0 +1,581 @@
+// DeepSeek Harness bridge line parser & live step state machine
+// (1:1 port of `station/mb/src/dsh/dsh.mbt` using lossless UTF-16 `Array[Int]`).
+
+import "js_json"
+import "live_wire"
+import "parse_claude"
+
+fn u16_concat(a : Array[Int], b : Array[Int]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  for i in 0..<b.length() {
+    out.push(b[i])
+  }
+  out
+}
+
+fn u16_join(parts : Array[Array[Int]], sep : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<parts.length() {
+    if i > 0 {
+      out.push(sep)
+    }
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out.push(p[j])
+    }
+  }
+  out
+}
+
+fn u16_remove_first(list : Array[Array[Int]], item : Array[Int]) -> Bool {
+  for i in 0..<list.length() {
+    if live_wire::u16_eq(list[i], item) {
+      let mut j = i
+      while j + 1 < list.length() {
+        list[j] = list[j + 1]
+        j = j + 1
+      }
+      let _ = list.pop()
+      return true
+    }
+  }
+  false
+}
+
+fn remove_entry_at(entries : Array[(Array[Int], Array[Int])], idx : Int) -> Unit {
+  let mut j = idx
+  while j + 1 < entries.length() {
+    entries[j] = entries[j + 1]
+    j = j + 1
+  }
+  let _ = entries.pop()
+}
+
+/// A session's live steps (live.ts `LiveFromDsh`, lossless UTF-16).
+pub struct Live {
+  pub open : Array[(Array[Int], Array[Int])]
+  pub calls : Array[(Array[Int], Array[Int])]
+  pub mut phase : Option[Array[Int]]
+}
+
+pub fn Live::new() -> Live {
+  Live::{ open: [], calls: [], phase: None }
+}
+
+/// What `state` said: live.ts `DshLiveState`.
+pub fn Live::of_state(state : js_json::JValue) -> Live {
+  let live = Live::new()
+  live_wire::load_entries_u16(state, "open", live.open)
+  live_wire::load_entries_u16(state, "calls", live.calls)
+  match state.get("phase") {
+    Some(js_json::JValue::Str(p)) => live.phase = Some(p)
+    _ => ()
+  }
+  live
+}
+
+pub fn Live::state(self : Live) -> js_json::JValue {
+  live_wire::obj([
+    ("open", live_wire::entries_json_u16(self.open)),
+    ("calls", live_wire::entries_json_u16(self.calls)),
+    ("phase", live_wire::opt_str_json_u16(self.phase)),
+  ])
+}
+
+fn Live::to_phase(self : Live, next : String, out : Array[js_json::JValue]) -> Unit {
+  let next_u = js_json::utf16_units(next)
+  let same = match self.phase {
+    Some(p) => live_wire::u16_eq(p, next_u)
+    None => false
+  }
+  if !same {
+    self.phase = Some(next_u)
+    out.push(live_wire::obj([("kind", live_wire::jstr("phase")), ("phase", live_wire::jstr(next))]))
+  }
+}
+
+/// A prompt was given: the turn is with the model.
+pub fn Live::prompted(self : Live) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  self.to_phase("requesting", out)
+  out
+}
+
+/// Pure-Pion `Live::feed` with custom number formatter.
+pub fn Live::feed_with(
+  self : Live,
+  message : js_json::JValue,
+  fmt_num : (Double) -> String,
+) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  let m = Some(message)
+  if live_wire::is_str(live_wire::field(m, "ev"), "stream") {
+    self.stream_with(live_wire::field(m, "frame"), out, fmt_num)
+  } else if live_wire::is_str(live_wire::field(m, "ev"), "event") {
+    let kind = match live_wire::str(live_wire::field(m, "type")) {
+      Some(s) => s
+      None => ""
+    }
+    self.event_with(
+      kind,
+      Some(live_wire::or_else(live_wire::field(m, "data"), js_json::JValue::Obj([]))),
+      out,
+      fmt_num,
+    )
+  }
+  out
+}
+
+/// The live steps a message says (live.ts `feed`).
+pub fn Live::feed(self : Live, message : js_json::JValue) -> Array[js_json::JValue] {
+  self.feed_with(message, js_json::num_text)
+}
+
+fn Live::stream_with(
+  self : Live,
+  frame : Option[js_json::JValue],
+  out : Array[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> Unit {
+  let attempt = match live_wire::str_u16(live_wire::field(frame, "attemptId")) {
+    Some(u) => u
+    None => []
+  }
+  if live_wire::is_str(live_wire::field(frame, "type"), "start") {
+    self.to_phase("requesting", out)
+    return
+  }
+  if live_wire::is_str(live_wire::field(frame, "type"), "end") {
+    if !live_wire::is_str(live_wire::field(live_wire::field(frame, "outcome"), "kind"), "committed") {
+      live_wire::end_non_tool_prefix_u16(self.open, u16_concat(attempt, [0x23]), out)
+    }
+    return
+  }
+  let chunk = live_wire::field(frame, "chunk")
+  if !live_wire::is_str(live_wire::field(frame, "type"), "chunk") || !js_json::jval_truthy(chunk) {
+    return
+  }
+  let index = match live_wire::field(chunk, "index") {
+    Some(js_json::JValue::Num(n)) => js_json::stringify_with_num(js_json::JValue::Num(n), fmt_num)
+    _ => ""
+  }
+  let block = u16_concat(u16_concat(attempt, [0x23]), js_json::utf16_units(index))
+  let kind = match live_wire::str(live_wire::field(chunk, "type")) {
+    Some(s) => s
+    None => ""
+  }
+  let block_type = live_wire::field(chunk, "blockType")
+  if kind == "block-start" &&
+  (live_wire::is_str(block_type, "text") || live_wire::is_str(block_type, "reasoning")) {
+    let step = if live_wire::is_str(block_type, "text") { "text" } else { "thinking" }
+    live_wire::set_entry_u16(self.open, block, js_json::utf16_units(step))
+    out.push(live_wire::start_u16(block, step, None, None))
+  } else if kind == "text-delta" || kind == "reasoning-delta" {
+    let text = match live_wire::str_u16(live_wire::field(chunk, "text")) {
+      Some(u) => u
+      None => []
+    }
+    match live_wire::find_entry_u16(self.open, block) {
+      None => return
+      Some(_) => ()
+    }
+    if text.length() == 0 {
+      return
+    }
+    self.to_phase("responding", out)
+    out.push(live_wire::delta_u16(block, "text", text))
+  } else if kind == "tool-call-delta" {
+    let mut call : Option[Array[Int]] = match live_wire::find_entry_u16(self.calls, block) {
+      Some(i) => {
+        let (_, v) = self.calls[i]
+        Some(v)
+      }
+      None => None
+    }
+    let id = live_wire::non_empty_u16(live_wire::field(chunk, "id"))
+    match (call, id) {
+      (None, Some(cid)) => {
+        call = Some(cid)
+        self.calls.push((block, cid))
+        live_wire::set_entry_u16(self.open, cid, js_json::utf16_units("tool"))
+        self.to_phase("responding", out)
+        let name = match live_wire::str_u16(live_wire::field(chunk, "name")) {
+          Some(u) => u
+          None => []
+        }
+        out.push(live_wire::start_u16(cid, "tool", Some(name), Some([])))
+      }
+      _ => ()
+    }
+    let d = match live_wire::str_u16(live_wire::field(chunk, "argumentsDelta")) {
+      Some(u) => u
+      None => []
+    }
+    match call {
+      Some(c) => {
+        if d.length() > 0 {
+          out.push(live_wire::delta_u16(c, "input", d))
+        }
+      }
+      None => ()
+    }
+  } else if kind == "block-end" {
+    live_wire::end_entry_u16(self.open, block, out)
+    match live_wire::find_entry_u16(self.calls, block) {
+      Some(i) => remove_entry_at(self.calls, i)
+      None => ()
+    }
+  }
+}
+
+fn Live::event_with(
+  self : Live,
+  kind : String,
+  data : Option[js_json::JValue],
+  out : Array[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> Unit {
+  if kind == "tool/call" {
+    let id = match live_wire::non_empty_u16(live_wire::field(data, "callId")) {
+      Some(u) => u
+      None => return
+    }
+    self.to_phase("working", out)
+    match live_wire::find_entry_u16(self.open, id) {
+      None => {
+        live_wire::set_entry_u16(self.open, id, js_json::utf16_units("tool"))
+        let raw = match live_wire::str_u16(live_wire::field(data, "arguments")) {
+          Some(u) => u
+          None => []
+        }
+        let input_u16 = match js_json::parse_units(raw) {
+          Ok(v) => js_json::utf16_units(live_wire::pretty_with_num(Some(v), fmt_num))
+          Err(_) => raw
+        }
+        let name = match live_wire::str_u16(live_wire::field(data, "name")) {
+          Some(u) => u
+          None => []
+        }
+        out.push(
+          live_wire::start_u16(
+            id,
+            "tool",
+            Some(name),
+            Some(parse_claude::chars_u16(input_u16, live_wire::INPUT_MOST)),
+          ),
+        )
+      }
+      Some(_) => ()
+    }
+  } else if kind == "tool/result" {
+    let result = Some(live_wire::or_else(live_wire::field(data, "message"), js_json::JValue::Obj([])))
+    let id = match live_wire::non_empty_u16(live_wire::field(result, "toolCallId")) {
+      Some(u) => u
+      None => return
+    }
+    match live_wire::find_entry_u16(self.open, id) {
+      None => return
+      Some(_) => ()
+    }
+    let output = live_wire::content_text_u16(live_wire::field(result, "content"), allow_str=false)
+    if output.length() > 0 {
+      out.push(live_wire::delta_u16(id, "output", output))
+    }
+    live_wire::end_entry_u16(self.open, id, out)
+    if !live_wire::has_open_tool_u16(self.open) {
+      self.to_phase("requesting", out)
+    }
+  } else if kind == "turn/end" {
+    let ended = self.ended()
+    for i in 0..<ended.length() {
+      out.push(ended[i])
+    }
+  }
+}
+
+/// The turn ended: whatever is still open ends with it.
+pub fn Live::ended(self : Live) -> Array[js_json::JValue] {
+  let out = live_wire::end_open_u16(self.open)
+  self.calls.clear()
+  self.phase = None
+  out
+}
+
+/// Where a session's turn stands (dsh.ts `Turn`).
+pub struct Turn {
+  pub mut busy : Bool
+  pub mut prompted : Bool
+  pub mut aborting : Bool
+}
+
+pub fn Turn::json(self : Turn) -> js_json::JValue {
+  live_wire::obj([
+    ("busy", js_json::JValue::Bool(self.busy)),
+    ("prompted", js_json::JValue::Bool(self.prompted)),
+    ("aborting", js_json::JValue::Bool(self.aborting)),
+  ])
+}
+
+pub fn Turn::of_json(v : js_json::JValue) -> Turn {
+  let busy = match v.get("busy") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  let prompted = match v.get("prompted") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  let aborting = match v.get("aborting") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  Turn::{ busy: busy, prompted: prompted, aborting: aborting }
+}
+
+/// A session as the program reads its process.
+pub struct Session {
+  pub turn : Turn
+  pub live : Live
+  pub calls : Array[Array[Int]]
+}
+
+pub fn Session::new(turn : Turn, live : Live) -> Session {
+  Session::{ turn: turn, live: live, calls: [] }
+}
+
+/// What a line of its output comes to: the runtime's events, and whether Node reads the line.
+pub struct Said {
+  pub events : Array[js_json::JValue]
+  pub node : Bool
+}
+
+/// dsh.ts `classifyFailure`: what failed a turn, from dsh's error (its code first).
+pub fn classify_failure(code : String, text : String) -> String {
+  parse_claude::failure_of(
+    code + " " + text,
+    auth_codes=["auth", "missing_credential", "invalid_credential"],
+    limit=["insufficient balance"],
+  )
+}
+
+/// Pure-Pion `outcome_of` with custom number formatter.
+pub fn outcome_of_with(
+  reason : Option[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> js_json::JValue {
+  if live_wire::is_str(live_wire::field(reason, "kind"), "aborted") {
+    return live_wire::aborted()
+  }
+  if live_wire::is_str(live_wire::field(reason, "kind"), "error") {
+    let err_val = live_wire::or_else(live_wire::field(reason, "error"), js_json::JValue::Obj([]))
+    let error = Some(err_val)
+    let msg_u16 = match live_wire::field(error, "message") {
+      Some(js_json::JValue::Str(s)) => s
+      _ => js_json::utf16_units(js_json::stringify_with_num(err_val, fmt_num))
+    }
+    let code_u16 = live_wire::str_or_js_u16_with(live_wire::field(error, "code"), fmt_num)
+    return live_wire::failed_u16(
+      classify_failure(js_json::sanitize_str(code_u16), js_json::sanitize_str(msg_u16)),
+      parse_claude::chars_u16(msg_u16, 1000),
+    )
+  }
+  live_wire::completed()
+}
+
+/// dsh.ts `outcomeOf`: how a turn/end's reason ends the turn.
+pub fn outcome_of(reason : Option[js_json::JValue]) -> js_json::JValue {
+  outcome_of_with(reason, js_json::num_text)
+}
+
+fn Session::tools_lost_with(
+  self : Session,
+  kind : String,
+  data : Option[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> Option[Array[Int]] {
+  if kind == "tool/call" {
+    match live_wire::str_u16(live_wire::field(data, "callId")) {
+      Some(id) => {
+        let name = js_json::sanitize_str(live_wire::str_or_js_u16_with(live_wire::field(data, "name"), fmt_num))
+        if live_wire::station_tool(name) {
+          self.calls.push(id)
+        }
+      }
+      None => ()
+    }
+  }
+  if kind != "tool/result" {
+    return None
+  }
+  let result = Some(live_wire::or_else(live_wire::field(data, "message"), js_json::JValue::Obj([])))
+  let id = live_wire::str_or_js_u16_with(live_wire::field(result, "toolCallId"), fmt_num)
+  if !u16_remove_first(self.calls, id) {
+    return None
+  }
+  let is_err = match live_wire::field(result, "isError") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  if !is_err {
+    return None
+  }
+  let parts : Array[Array[Int]] = []
+  match live_wire::field(result, "content") {
+    Some(js_json::JValue::Arr(items)) => {
+      for i in 0..<items.length() {
+        match live_wire::str_u16(live_wire::field(Some(items[i]), "text")) {
+          Some(t) => parts.push(t)
+          None => parts.push([])
+        }
+      }
+    }
+    _ => ()
+  }
+  let text_u16 = u16_join(parts, 0x0A)
+  if parse_claude::unreachable_u16(text_u16) {
+    Some(parse_claude::chars_u16(text_u16, 300))
+  } else {
+    None
+  }
+}
+
+/// Pure-Pion `Session::line` with custom number formatter.
+pub fn Session::line_with(
+  self : Session,
+  message : js_json::JValue,
+  fmt_num : (Double) -> String,
+) -> Said {
+  let m = Some(message)
+  let events : Array[js_json::JValue] = []
+  let ev = match live_wire::field(m, "ev") {
+    Some(e) => e
+    None => {
+      match (live_wire::str_u16(live_wire::field(m, "error")), live_wire::str_u16(live_wire::field(m, "id"))) {
+        (Some(err_u16), Some(id_u16)) => {
+          if live_wire::u16_has_prefix(id_u16, js_json::utf16_units("prompt:")) && self.turn.prompted {
+            self.turn.prompted = false
+            events.push(
+              live_wire::turn_ended(live_wire::failed_u16("other", parse_claude::chars_u16(err_u16, 1000))),
+            )
+          }
+        }
+        _ => ()
+      }
+      return Said::{ events: events, node: true }
+    }
+  }
+  let event = live_wire::is_str(Some(ev), "event")
+  let kind = if event {
+    match live_wire::str(live_wire::field(m, "type")) {
+      Some(s) => s
+      None => ""
+    }
+  } else {
+    ""
+  }
+  if event && kind == "turn/start" {
+    let ours = self.turn.prompted
+    self.turn.prompted = false
+    self.turn.busy = true
+    if !ours {
+      events.push(live_wire::turn_started())
+    }
+  }
+  let fed = self.live.feed_with(message, fmt_num)
+  for i in 0..<fed.length() {
+    events.push(live_wire::live(fed[i]))
+  }
+  if event {
+    match self.tools_lost_with(
+      kind,
+      Some(live_wire::or_else(live_wire::field(m, "data"), js_json::JValue::Obj([]))),
+      fmt_num,
+    ) {
+      Some(why) => {
+        events.push(live_wire::obj([("type", live_wire::jstr("toolsLost")), ("why", live_wire::jstr_u16(why))]))
+      }
+      None => ()
+    }
+  }
+  if event && kind == "turn/end" {
+    self.turn.busy = false
+    self.turn.aborting = false
+    events.push(
+      live_wire::turn_ended(outcome_of_with(live_wire::field(live_wire::field(m, "data"), "reason"), fmt_num)),
+    )
+  }
+  Said::{ events: events, node: false }
+}
+
+/// What a line says (dsh.ts `heard`).
+pub fn Session::line(self : Session, message : js_json::JValue) -> Said {
+  self.line_with(message, js_json::num_text)
+}
+
+/// A prompt of Node's is asked for (dsh.ts `prompt`).
+pub fn Session::prompted(self : Session) -> Array[js_json::JValue] {
+  self.turn.prompted = true
+  let fed = self.live.prompted()
+  let out : Array[js_json::JValue] = []
+  for i in 0..<fed.length() {
+    out.push(live_wire::live(fed[i]))
+  }
+  out
+}
+
+/// Its process went away during a turn: its steps end with it (dsh.ts `cutShort`).
+pub fn Session::cut_short(self : Session) -> Array[js_json::JValue] {
+  if self.turn.busy || self.turn.prompted {
+    let ended = self.live.ended()
+    let out : Array[js_json::JValue] = []
+    for i in 0..<ended.length() {
+      out.push(live_wire::live(ended[i]))
+    }
+    out
+  } else {
+    []
+  }
+}
+
+/// What a station that crashed had read of its output, read again (dsh.ts `crashed`).
+pub struct Replay {
+  pub mut session : Option[Array[Int]]
+  pub turn : Turn
+  pub live : Live
+}
+
+pub fn Replay::new() -> Replay {
+  Replay::{
+    session: None,
+    turn: Turn::{ busy: false, prompted: false, aborting: false },
+    live: Live::new(),
+  }
+}
+
+pub fn Replay::line_with(
+  self : Replay,
+  message : js_json::JValue,
+  fmt_num : (Double) -> String,
+) -> Unit {
+  let m = Some(message)
+  if live_wire::is_str(live_wire::field(m, "id"), "open") {
+    match live_wire::str_u16(live_wire::field(m, "session")) {
+      Some(s) => self.session = Some(s)
+      None => ()
+    }
+  }
+  if live_wire::is_str(live_wire::field(m, "ev"), "event") && live_wire::is_str(live_wire::field(m, "type"), "turn/start") {
+    self.turn.busy = true
+  }
+  if live_wire::is_str(live_wire::field(m, "ev"), "event") && live_wire::is_str(live_wire::field(m, "type"), "turn/end") {
+    self.turn.busy = false
+  }
+  let _ = self.live.feed_with(message, fmt_num)
+}
+
+pub fn Replay::line(self : Replay, message : js_json::JValue) -> Unit {
+  self.line_with(message, js_json::num_text)
+}

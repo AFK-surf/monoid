@@ -1,0 +1,340 @@
+// 1:1 port of `station/mb/src/pi/pi_test.mbt` + lone-surrogate UTF-16 round-trip tests.
+
+import "js_json"
+
+fn pi_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn pparse(s : String) -> js_json::JValue {
+  match js_json::parse(s) {
+    Ok(v) => v
+    Err(e) => panic("bad json: " + e + " in " + s)
+  }
+}
+
+fn pstr(v : js_json::JValue) -> String {
+  js_json::stringify_with_num(v, pi_fmt_num)
+}
+
+fn assert_eq_pi(got : String, want : String, ctx : String) -> Unit {
+  if got != want {
+    panic(ctx + "\n got:\n" + got + "\n want:\n" + want)
+  }
+}
+
+fn said(session : Session, lines : Array[String]) -> String {
+  let out = StringBuilder::new()
+  for i in 0..<lines.length() {
+    let s = session.line_with(pparse(lines[i]), pi_fmt_num)
+    for j in 0..<s.events.length() {
+      out.write_string(pstr(s.events[j]))
+      out.write_string("\n")
+    }
+    if s.node {
+      out.write_string("node\n")
+    }
+  }
+  out.write_string("turn " + pstr(session.turn.json()))
+  out.to_string()
+}
+
+fn fresh() -> Session {
+  Session::new(Turn::new(), Live::new())
+}
+
+test "parse_pi: a turn of ours: words, a call and its result, words, settled" {
+  let s = fresh()
+  let begun = s.prompted()
+  assert_eq_pi(
+    pstr(js_json::JValue::Arr(begun)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}}]",
+    "prompted",
+  )
+  let got = said(
+    s,
+    [
+      "{\"id\":\"prompt:1\",\"type\":\"response\",\"command\":\"prompt\",\"success\":true,\"data\":{\"disposition\":\"started\"}}",
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"turn_start\"}",
+      "{\"type\":\"message_start\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"run echo hi\"}]}}",
+      "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"pending\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_start\",\"contentIndex\":0}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"Let me look. \"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_start\",\"contentIndex\":1,\"id\":\"call_1\",\"toolName\":\"bash\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_delta\",\"contentIndex\":1,\"delta\":\"\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_delta\",\"contentIndex\":1,\"delta\":\"{\\\"command\\\":\\\"echo hi\\\"}\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_end\",\"contentIndex\":0,\"content\":\"Let me look. \"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_end\",\"contentIndex\":1,\"toolCall\":{\"type\":\"toolCall\",\"id\":\"call_1\",\"name\":\"bash\",\"arguments\":{\"command\":\"echo hi\"}}}}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"toolUse\"}}",
+      "{\"type\":\"tool_execution_start\",\"toolCallId\":\"call_1\",\"toolName\":\"bash\",\"args\":{\"command\":\"echo hi\"}}",
+      "{\"type\":\"tool_execution_update\",\"toolCallId\":\"call_1\",\"toolName\":\"bash\",\"args\":{\"command\":\"echo hi\"},\"partialResult\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\\n\"}]}}",
+      "{\"type\":\"tool_execution_end\",\"toolCallId\":\"call_1\",\"toolName\":\"bash\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\\n\"}]},\"isError\":false}",
+      "{\"type\":\"turn_end\",\"message\":{\"role\":\"assistant\"},\"toolResults\":[]}",
+      "{\"type\":\"turn_start\"}",
+      "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"pending\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_start\",\"contentIndex\":0}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_delta\",\"contentIndex\":0,\"delta\":\"Done.\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_end\",\"contentIndex\":0,\"content\":\"Done.\"}}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Done.\"}],\"stopReason\":\"stop\"}}",
+      "{\"type\":\"agent_end\",\"messages\":[],\"willRetry\":false}",
+      "{\"type\":\"agent_settled\",\"aborted\":false}",
+    ],
+  )
+  let want = "node\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"m1#0\",\"step\":\"text\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"responding\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"m1#0\",\"field\":\"text\",\"text\":\"Let me look. \"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"call_1\",\"step\":\"tool\",\"tool\":\"bash\",\"input\":\"\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"call_1\",\"field\":\"input\",\"text\":\"{\\\"command\\\":\\\"echo hi\\\"}\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"m1#0\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"working\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"call_1\",\"field\":\"output\",\"text\":\"hi\\n\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"call_1\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"m2#0\",\"step\":\"text\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"responding\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"m2#0\",\"field\":\"text\",\"text\":\"Done.\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"m2#0\"}}\n" +
+  "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "turn of ours")
+}
+
+test "parse_pi: a failed answer fails the turn as its provider's error says (an account's)" {
+  let s = fresh()
+  let _ = s.prompted()
+  let got = said(
+    s,
+    [
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"error\"}}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"error\",\"errorMessage\":\"401: {\\\"message\\\":\\\"Incorrect API key provided\\\",\\\"code\\\":\\\"invalid_api_key\\\"}\"}}",
+      "{\"type\":\"agent_settled\"}",
+    ],
+  )
+  let want = "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401: {\\\"message\\\":\\\"Incorrect API key provided\\\",\\\"code\\\":\\\"invalid_api_key\\\"}\"}}\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "failed answer")
+}
+
+test "parse_pi: a retry that went through clears the failure before it" {
+  let s = fresh()
+  let _ = s.prompted()
+  let got = said(
+    s,
+    [
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"error\",\"errorMessage\":\"529 overloaded\"}}",
+      "{\"type\":\"agent_end\",\"messages\":[],\"willRetry\":true}",
+      "{\"type\":\"auto_retry_start\",\"attempt\":1,\"maxAttempts\":3,\"delayMs\":2000,\"errorMessage\":\"529 overloaded\"}",
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stopReason\":\"stop\"}}",
+      "{\"type\":\"agent_settled\",\"aborted\":false}",
+    ],
+  )
+  let want = "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "retry clears failure")
+}
+
+test "parse_pi: a turn stopped ends aborted, what it said so far ended" {
+  let s = fresh()
+  let _ = s.prompted()
+  let got = said(
+    s,
+    [
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"pending\"}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"thinking_start\",\"contentIndex\":0}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"thinking_delta\",\"contentIndex\":0,\"delta\":\"hmm\"}}",
+      "{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"content\":[],\"stopReason\":\"aborted\"}}",
+      "{\"type\":\"agent_settled\",\"aborted\":true}",
+      "{\"type\":\"response\",\"command\":\"abort\",\"success\":true}",
+    ],
+  )
+  let want = "{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"m1#0\",\"step\":\"thinking\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"responding\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"m1#0\",\"field\":\"text\",\"text\":\"hmm\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"m1#0\"}}\n" +
+  "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"aborted\"}}\n" +
+  "node\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "turn stopped")
+}
+
+test "parse_pi: a prompt refused ends the turn asked for; a run of its own is a turn started" {
+  let s = fresh()
+  let _ = s.prompted()
+  let got = said(
+    s,
+    [
+      "{\"id\":\"prompt:2\",\"type\":\"response\",\"command\":\"prompt\",\"success\":false,\"error\":\"Agent is already processing.\"}",
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"agent_settled\",\"aborted\":false}",
+      "{\"type\":\"extension_ui_request\",\"id\":\"u1\",\"method\":\"confirm\",\"title\":\"Sure?\"}",
+    ],
+  )
+  let want = "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"other\",\"message\":\"Agent is already processing.\"}}\n" +
+  "node\n" +
+  "{\"type\":\"turnStarted\"}\n" +
+  "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}\n" +
+  "node\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "prompt refused")
+}
+
+test "parse_pi: the station's tools out of reach, and the context compacted" {
+  let s = fresh()
+  let _ = s.prompted()
+  let got = said(
+    s,
+    [
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"tool_execution_start\",\"toolCallId\":\"c9\",\"toolName\":\"mcp__stillfail__chat_post\",\"args\":{\"text\":\"hi\"}}",
+      "{\"type\":\"tool_execution_end\",\"toolCallId\":\"c9\",\"toolName\":\"mcp__stillfail__chat_post\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"fetch failed: connect ECONNREFUSED 127.0.0.1:4100\"}]},\"isError\":true}",
+      "{\"type\":\"compaction_start\",\"reason\":\"threshold\"}",
+      "{\"type\":\"compaction_end\",\"reason\":\"threshold\",\"result\":{\"summary\":\"…\",\"firstKeptEntryId\":\"a1\",\"tokensBefore\":150000},\"aborted\":false,\"willRetry\":false}",
+      "{\"type\":\"agent_settled\",\"aborted\":false}",
+    ],
+  )
+  let want = "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"working\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"c9\",\"step\":\"tool\",\"tool\":\"mcp__stillfail__chat_post\",\"input\":\"{\\n  \\\"text\\\": \\\"hi\\\"\\n}\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"c9\",\"field\":\"output\",\"text\":\"fetch failed: connect ECONNREFUSED 127.0.0.1:4100\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"c9\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}}\n" +
+  "{\"type\":\"toolsLost\",\"why\":\"fetch failed: connect ECONNREFUSED 127.0.0.1:4100\"}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"working\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}}\n" +
+  "{\"type\":\"compacted\"}\n" +
+  "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "tools lost and compacted")
+}
+
+test "parse_pi: live steps as a station hands them over, taken up again" {
+  let s = fresh()
+  let _ = s.prompted()
+  let _ = said(
+    s,
+    [
+      "{\"type\":\"agent_start\"}",
+      "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}",
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_start\",\"contentIndex\":0,\"id\":\"call_7\",\"toolName\":\"read\"}}",
+    ],
+  )
+  let state = s.live.state()
+  assert_eq_pi(
+    pstr(state),
+    "{\"open\":[[\"call_7\",\"tool\"]],\"calls\":[[\"m1#0\",\"call_7\"]],\"message\":1,\"phase\":\"responding\"}",
+    "handover state",
+  )
+  let again = Session::new(Turn::of_json(s.turn.json()), Live::of_state(state))
+  let got = said(
+    again,
+    [
+      "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"toolcall_delta\",\"contentIndex\":0,\"delta\":\"{\\\"path\\\":\\\"a\\\"}\"}}",
+      "{\"type\":\"agent_settled\",\"aborted\":false}",
+    ],
+  )
+  let want = "{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"call_7\",\"field\":\"input\",\"text\":\"{\\\"path\\\":\\\"a\\\"}\"}}\n" +
+  "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"call_7\"}}\n" +
+  "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}\n" +
+  "turn {\"busy\":false,\"prompted\":false,\"aborting\":false}"
+  assert_eq_pi(got, want, "handover resumed")
+}
+
+test "parse_pi: a crash's output read again: the turn running and its steps" {
+  let r = Replay::new()
+  let lines : Array[String] = [
+    "{\"id\":\"open\",\"type\":\"response\",\"command\":\"get_state\",\"success\":true,\"data\":{}}",
+    "{\"type\":\"agent_start\"}",
+    "{\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"content\":[]}}",
+    "{\"type\":\"message_update\",\"assistantMessageEvent\":{\"type\":\"text_start\",\"contentIndex\":0}}",
+  ]
+  for i in 0..<lines.length() {
+    r.line_with(pparse(lines[i]), pi_fmt_num)
+  }
+  assert_eq_pi(
+    pstr(r.session.turn.json()) + " " + pstr(r.session.live.state()),
+    "{\"busy\":true,\"prompted\":false,\"aborting\":false} {\"open\":[[\"m1#0\",\"text\"]],\"calls\":[],\"message\":1,\"phase\":null}",
+    "replay state",
+  )
+}
+
+test "parse_pi: what failed a turn, as Pi words its provider's errors" {
+  let inputs : Array[(String, String)] = [
+    ("401: {\"message\":\"Incorrect API key provided\"}", "auth"),
+    ("429 Too Many Requests: rate limit reached", "rate_limit"),
+    ("529 overloaded", "overloaded"),
+    ("context overflow: prompt is too long", "context"),
+    ("fetch failed: getaddrinfo ENOTFOUND api.example.com", "network"),
+    ("500 internal error", "model"),
+  ]
+  for i in 0..<inputs.length() {
+    let (text, want) = inputs[i]
+    assert_eq_pi(classify_failure(text), want, "classify_failure:" + text)
+  }
+}
+
+test "parse_pi: lone surrogate round-trip preserves distinct \\ud800 and \\ud801" {
+  let s = fresh()
+  let _ = s.prompted()
+  let _ = s.line_with(pparse("{\"type\":\"agent_start\"}"), pi_fmt_num)
+  let _ = s.line_with(
+    pparse("{\"type\":\"tool_execution_start\",\"toolCallId\":\"c\\ud800\",\"toolName\":\"bash\",\"args\":{}}"),
+    pi_fmt_num,
+  )
+  let _ = s.line_with(
+    pparse("{\"type\":\"tool_execution_start\",\"toolCallId\":\"c\\ud801\",\"toolName\":\"bash\",\"args\":{}}"),
+    pi_fmt_num,
+  )
+  let sb = StringBuilder::new()
+  js_json::write_utf8_with_num(sb, s.live.state(), pi_fmt_num)
+  assert_eq_pi(
+    sb.to_string(),
+    "{\"open\":[[\"c\\ud800\",\"tool\"],[\"c\\ud801\",\"tool\"]],\"calls\":[],\"message\":0,\"phase\":\"working\"}",
+    "pi lone surrogate state",
+  )
+  let again = Session::new(Turn::of_json(s.turn.json()), Live::of_state(pparse(sb.to_string())))
+  let res = again.line_with(
+    pparse("{\"type\":\"tool_execution_end\",\"toolCallId\":\"c\\ud800\",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"out\\udc00\"}]}}"),
+    pi_fmt_num,
+  )
+  assert_eq_pi(
+    pstr(js_json::JValue::Arr(res.events)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"c\\ud800\",\"field\":\"output\",\"text\":\"out\\udc00\"}},{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"c\\ud800\"}}]",
+    "pi close only ud800",
+  )
+  if again.live.open.length() != 1 {
+    panic("expected c\\ud801 still open")
+  }
+
+  // Turn.error preserves lone surrogates through Turn::json -> Turn::of_json -> agent_settled
+  let s2 = fresh()
+  let _ = s2.prompted()
+  let _ = s2.line_with(pparse("{\"type\":\"agent_start\"}"), pi_fmt_num)
+  let _ = s2.line_with(
+    pparse("{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"errorMessage\":\"err\\ud800and\\ud801\"}}"),
+    pi_fmt_num,
+  )
+  let tjson = pstr(s2.turn.json())
+  assert_eq_pi(
+    tjson,
+    "{\"busy\":true,\"prompted\":false,\"aborting\":false,\"error\":\"err\\ud800and\\ud801\"}",
+    "pi Turn.error json lone surrogate",
+  )
+  let s3 = Session::new(Turn::of_json(pparse(tjson)), Live::new())
+  let settled = s3.line_with(pparse("{\"type\":\"agent_settled\",\"aborted\":false}"), pi_fmt_num)
+  assert_eq_pi(
+    pstr(js_json::JValue::Arr(settled.events)),
+    "[{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"err\\ud800and\\ud801\"}}]",
+    "pi Turn.error settled lone surrogate",
+  )
+}

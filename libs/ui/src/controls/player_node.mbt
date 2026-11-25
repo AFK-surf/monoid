@@ -47,7 +47,6 @@ priv struct PlayerNode {
   inset : Double
   pl : PlayList
   mut root : @view.View?
-  mut idle_off : () -> Unit
   mut ui_scrubs : Int
   mut lock_epoch : Int
   focused_controls : Map[@view.NodeId, Unit]
@@ -109,7 +108,6 @@ fn PlayerNode::new(p : @player.Media, v : PlayerView, embedded : Bool, inset : D
     inset,
     pl,
     root: None,
-    idle_off: fn() {  },
     ui_scrubs: 0,
     lock_epoch: 0,
     focused_controls: Map([]),
@@ -204,7 +202,7 @@ fn PlayerNode::plays(self : PlayerNode) -> Bool {
 }
 
 ///|
-/// Unified lock predicate: while any of these holds, player chrome stays visible and never auto-fades.
+/// Unified lock predicate: while any of these holds, player chrome stays visible, a tap or click hiding it not.
 /// Deliberately excludes `self.p.scrubbing() is Some(_)` so stage `AlongTime` scrubbing never raises the bottom bar.
 fn PlayerNode::chrome_locked(self : PlayerNode) -> Bool {
   if self.embedded {
@@ -232,63 +230,9 @@ fn PlayerNode::chrome_locked(self : PlayerNode) -> Bool {
 }
 
 ///|
-/// Idle auto-fade deadline for the current input mode and playback phase: desktop pointer auto-fades after 2000 ms
-/// in both Playing and Paused; touch auto-fades after 3000 ms while Playing and respects the user's state while Paused.
-fn PlayerNode::auto_fade_ms(self : PlayerNode) -> Double? {
-  if pointer_rests() {
-    Some(player_desk_idle_ms)
-  } else {
-    let ph = self.phase(self.status())
-    if ph == Playing {
-      Some(player_touch_idle_ms)
-    } else {
-      None
-    }
-  }
-}
-
-///|
-/// Whether its controls come: locked or awake (both Playing and Paused support auto-fade).
+/// Whether its controls come: locked or awake (never faded by themselves: only a tap or click hides them).
 fn PlayerNode::wanted(self : PlayerNode) -> Bool {
   self.chrome_locked() || self.awake.get()
-}
-
-///|
-/// Cancel any pending single-shot idle auto-fade timer owned by the preview root.
-fn PlayerNode::cancel_idle(self : PlayerNode) -> Unit {
-  (self.idle_off)()
-  self.idle_off = fn() {  }
-}
-
-///|
-/// Arm the single-shot idle auto-fade timer on the preview root `n` with `later=true` so idle assertions pass.
-fn PlayerNode::arm_idle(self : PlayerNode, n : @view.View, ms : Double) -> Unit {
-  self.cancel_idle()
-  self.idle_off = n.at_moment(
-    n.cause_at() + ms,
-    later=true,
-    fn() {
-      self.idle_off = fn() {  }
-      let locked = @signals.untracked(fn() { self.chrome_locked() })
-      let can_fade = @signals.untracked(fn() { self.auto_fade_ms() is Some(_) })
-      if !locked && can_fade {
-        self.awake.set(false)
-      }
-    },
-  )
-}
-
-///|
-/// Refresh the idle auto-fade deadline on root `n` if unlocked and eligible to auto-fade.
-fn PlayerNode::bump_idle(self : PlayerNode, n : @view.View) -> Unit {
-  if @signals.untracked(fn() { self.chrome_locked() }) {
-    self.cancel_idle()
-    return
-  }
-  match @signals.untracked(fn() { self.auto_fade_ms() }) {
-    Some(ms) => self.arm_idle(n, ms)
-    None => self.cancel_idle()
-  }
 }
 
 ///|
@@ -299,14 +243,10 @@ fn PlayerNode::rates_open(self : PlayerNode, on : Bool) -> Unit {
 }
 
 ///|
-/// Its controls brought back, refreshing the idle auto-fade deadline.
+/// Its controls brought back.
 fn PlayerNode::wake(self : PlayerNode) -> Unit {
   self.lock_epoch = self.lock_epoch + 1
   self.awake.set(true)
-  match self.root {
-    Some(n) => self.bump_idle(n)
-    None => ()
-  }
 }
 
 ///|
@@ -357,17 +297,12 @@ fn PlayerNode::show_note(self : PlayerNode, note : @player.MediaNote, ms : Doubl
 }
 
 ///|
-/// Toggle play/pause without waking hidden controls: when hidden, stays hidden and shows 450 ms center feedback;
-/// when visible, refreshes the idle deadline.
+/// Toggle play/pause without waking hidden controls: when hidden, stays hidden and shows 450 ms center feedback.
 fn PlayerNode::play_pause_quiet(self : PlayerNode) -> Unit {
   let was = @signals.untracked(fn() { self.plays() })
   self.act(fn() { self.p.play_pause() })
-  if self.awake.untracked() {
-    match self.root {
-      Some(n) => self.bump_idle(n)
-      None => ()
-    }
-  } else {
+  // (what is seen: shown by a lock, they say it themselves)
+  if !@signals.untracked(fn() { self.wanted() }) {
     self.show_note(if was { Paused } else { Played }, player_quiet_note_ms)
   }
 }
@@ -376,7 +311,6 @@ fn PlayerNode::play_pause_quiet(self : PlayerNode) -> Unit {
 /// Clean up transient timers, a tap waiting for its second, temporary 2× held speed, and any active `AlongTime` scrub
 /// (on episode switch or unmount).
 fn PlayerNode::reset_transient(self : PlayerNode) -> Unit {
-  self.cancel_idle()
   (self.single)()
   self.single = fn() {  }
   self.pending = false
@@ -398,18 +332,11 @@ fn PlayerNode::reset_transient(self : PlayerNode) -> Unit {
 }
 
 ///|
-/// A tap waiting for its second (PlayerNode::tapped) forgotten, doing nothing: the idle fade it held off armed again.
+/// A tap waiting for its second (PlayerNode::tapped) forgotten, doing nothing.
 fn PlayerNode::tap_forgot(self : PlayerNode) -> Unit {
-  let was_pending = self.pending
   (self.single)()
   self.single = fn() {  }
   self.pending = false
-  if was_pending && self.awake.untracked() {
-    match self.root {
-      Some(r) => self.bump_idle(r)
-      None => ()
-    }
-  }
 }
 
 ///|
@@ -419,10 +346,7 @@ fn PlayerNode::tap_forgot(self : PlayerNode) -> Unit {
 fn PlayerNode::cancel_stage_gesture(self : PlayerNode) -> Unit {
   (self.hold_end)()
   self.hold_end = fn() {  }
-  let was_pending = self.pending
-  (self.single)()
-  self.single = fn() {  }
-  self.pending = false
+  self.tap_forgot()
   if self.drag.untracked() == AlongTime {
     self.act(fn() { self.p.scrub_done() })
     self.scrub_gear.set(0)
@@ -446,12 +370,6 @@ fn PlayerNode::cancel_stage_gesture(self : PlayerNode) -> Unit {
   self.down = (0.0, 0.0)
   self.last = (0.0, 0.0)
   self.pinch = (0.0, 0.0, 0.0)
-  if was_pending && self.awake.untracked() {
-    match self.root {
-      Some(r) => self.bump_idle(r)
-      None => ()
-    }
-  }
 }
 
 ///|
@@ -569,16 +487,10 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
       }
     }
     self.show_note(note, note_ms)
-    if self.awake.untracked() {
-      match self.root {
-        Some(r) => self.bump_idle(r)
-        None => ()
-      }
-    }
   } else {
-    let want_show = !self.awake.untracked()
+    // (what is seen now flipped: shown by a lock, a tap hides them once it lets go)
+    let want_show = !@signals.untracked(fn() { self.wanted() })
     let tap_epoch = self.lock_epoch
-    self.cancel_idle()
     self.pending = true
     self.single = n.at_moment(at + double_ms, fn() {
       self.pending = false
@@ -589,7 +501,6 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
       if want_show {
         self.wake()
       } else if !@signals.untracked(fn() { self.chrome_locked() }) {
-        self.cancel_idle()
         self.awake.set(false)
       }
     })
@@ -600,8 +511,8 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
 /// What the player's nodes follow of it in `n`, from as it is made (what Media::frame did each frame, at the moments
 /// of their causes): ready as its host says it is (the place it opens at sought once more there: Media::take_ready);
 /// its decoder given up once it has waited media_decode_wait_ms from when all its bytes came; its controls coming
-/// over wake_ms and going over sleep_ms from the moment that changed, gone (taking no press) once they have; idle
-/// auto-fade armed on `n` with `later=true` and re-armed whenever the last chrome lock clears; what it waits on said
+/// over wake_ms and going over sleep_ms from the moment that changed, gone (taking no press) once they have, never
+/// gone by themselves for the hand resting; what it waits on said
 /// once it has waited wait_ms, and how fast its bytes come each whole second of it after the first; a frame asked to
 /// be saved taken as the host answers.
 fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit {
@@ -644,42 +555,10 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
       fade_end.val = n.at_moment(pn.shown.end(), fn() { pn.faded.set(true) })
     }
   })
-  // When any chrome lock engages, mark awake=true so releasing the last lock re-arms a fresh full idle deadline
-  // even if controls had auto-faded before the lock engaged (e.g. sustained buffering or screen reader toggled on).
-  n.reacts(
-    at_start=false,
-    fn() { pn.chrome_locked() },
-    fn(locked) {
-      pn.lock_epoch = pn.lock_epoch + 1
-      if locked {
-        pn.awake.set(true)
-      }
-    },
-  )
-  // When the last chrome lock clears (or phase/input becomes eligible to auto-fade), arm a fresh full idle deadline.
-  n.reacts(
-    at_start=false,
-    fn() { pn.chrome_locked() || pn.auto_fade_ms() is None },
-    fn(hold) {
-      if hold {
-        pn.cancel_idle()
-      } else if pn.awake.untracked() {
-        match @signals.untracked(fn() { pn.auto_fade_ms() }) {
-          Some(ms) => pn.arm_idle(n, ms)
-          None => ()
-        }
-      }
-    },
-  )
-  // Initial idle deadline if already ready and unlocked at mount.
-  pn.bump_idle(n)
-  // Pointer leaving the window immediately fades unlocked desktop chrome.
-  n.reacts(at_start=false, fn() { n.pointer_within() }, fn(within) {
-    if !within && pointer_rests() && !@signals.untracked(fn() { pn.chrome_locked() }) {
-      pn.cancel_idle()
-      pn.awake.set(false)
-    }
-  })
+  // A chrome lock engaging or releasing calls off a tap waiting for its second (its hide or show what the lock did
+  // in between, lock_epoch); released, the controls go back to what the last tap left them (awake), the hand moving
+  // over the stage waking them never: only a tap or click shows or hides them (zuozijian, 2026-11-25).
+  n.reacts(at_start=false, fn() { pn.chrome_locked() }, fn(_) { pn.lock_epoch = pn.lock_epoch + 1 })
   let wait_end : Ref[() -> Unit] = Ref(fn() {  })
   n.reacts(
     fn() {
@@ -2071,12 +1950,6 @@ fn desk_player_node(
       .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1 - pn.inset)) } else { None } }))
       .clips(Is(embedded))
-      .on_pointer_moved(fn() {
-        // (a click waiting for its second stands: the hand moving on after it never calls it off)
-        if pointer_rests() && !pn.pending {
-          pn.wake()
-        }
-      })
       .on_drag(fn(d) { stage_gesture(s, pn, d, stage, back) }, fingers=2, whole=true)
       .on_wheel(fn(w) {
         if !picture() || z.nw <= 0.0 || (w.dx == 0.0 && w.dy == 0.0) {
@@ -2768,12 +2641,6 @@ fn phone_player_node(
       .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
       .height(By(hand_h))
       .clips(Is(embedded))
-      .on_pointer_moved(fn() {
-        // (a click waiting for its second stands: the hand moving on after it never calls it off)
-        if pointer_rests() && !pn.pending {
-          pn.wake()
-        }
-      })
       .on_drag(fn(d) { stage_gesture(s, pn, d, stage, back) }, fingers=2, whole=true)
       .on_wheel(fn(w) {
         if !picture() || z.nw <= 0.0 || (w.dx == 0.0 && w.dy == 0.0) {

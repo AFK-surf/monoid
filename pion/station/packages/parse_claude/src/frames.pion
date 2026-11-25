@@ -1,0 +1,937 @@
+// Claude Code stream-json frame parser & live step state machine
+// (1:1 port of `station/mb/src/claude/frames.mbt` using lossless UTF-16 `Array[Int]`).
+
+import "js_json"
+import "jscase"
+import "live_wire"
+
+fn is_true(v : Option[js_json::JValue]) -> Bool {
+  match v {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+}
+
+/// `Number.isInteger(v)`.
+fn integer(v : Option[js_json::JValue]) -> Option[Double] {
+  match v {
+    Some(js_json::JValue::Num(d)) => if js_json::is_integer(d) { Some(d) } else { None }
+    _ => None
+  }
+}
+
+/// At most `n` characters (live.ts `chars`: Array.from, a lone surrogate one).
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `chars_u16`.
+pub fn chars(text : String, n : Int) -> String {
+  js_json::sanitize_str(js_json::chars(js_json::utf16_units(text), n))
+}
+
+/// Lossless UTF-16 `chars`: preserves lone surrogates verbatim.
+pub fn chars_u16(units : Array[Int], n : Int) -> Array[Int] {
+  js_json::chars(units, n)
+}
+
+fn u16_concat(a : Array[Int], b : Array[Int]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  for i in 0..<b.length() {
+    out.push(b[i])
+  }
+  out
+}
+
+fn u16_join(parts : Array[Array[Int]], sep : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<parts.length() {
+    if i > 0 {
+      out.push(sep)
+    }
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out.push(p[j])
+    }
+  }
+  out
+}
+
+fn u16_is_blank(u : Array[Int]) -> Bool {
+  for i in 0..<u.length() {
+    if !jscase::is_space(u[i]) {
+      return false
+    }
+  }
+  true
+}
+
+fn u16_contains(list : Array[Array[Int]], item : Array[Int]) -> Bool {
+  for i in 0..<list.length() {
+    if live_wire::u16_eq(list[i], item) {
+      return true
+    }
+  }
+  false
+}
+
+fn u16_remove_first(list : Array[Array[Int]], item : Array[Int]) -> Bool {
+  for i in 0..<list.length() {
+    if live_wire::u16_eq(list[i], item) {
+      let mut j = i
+      while j + 1 < list.length() {
+        list[j] = list[j + 1]
+        j = j + 1
+      }
+      let _ = list.pop()
+      return true
+    }
+  }
+  false
+}
+
+fn number_text_with(d : Double, fmt_num : (Double) -> String) -> String {
+  js_json::stringify_with_num(js_json::JValue::Num(d), fmt_num)
+}
+
+/// A task it runs, as claude.ts `Task` keeps it (lossless UTF-16 strings).
+pub struct Task {
+  pub id : Array[Int]
+  pub kind : String
+  pub description : Array[Int]
+  pub background : Bool
+  pub started_at : Option[Double]
+}
+
+/// Where its turn stands (claude.ts `Turn`).
+pub struct Turn {
+  pub mut busy : Bool
+  pub mut aborting : Bool
+  pub mut auth_failure : Option[Array[Int]]
+  pub mut closed : Bool
+  pub mut renews : Option[Bool]
+  pub mut renewed : Option[Bool]
+  /// by id, as the object keeps them (Object.values' order: `ordered`)
+  pub mut tasks : Option[Array[(Array[Int], Task)]]
+  pub mut compacting : Option[Bool]
+  pub mut compact_error : Option[Array[Int]]
+}
+
+pub fn Turn::new() -> Turn {
+  Turn::{
+    busy: false,
+    aborting: false,
+    auth_failure: None,
+    closed: false,
+    renews: None,
+    renewed: None,
+    tasks: None,
+    compacting: None,
+    compact_error: None,
+  }
+}
+
+/// An object's entries in JS order: array indices first (ascending), then insertion order.
+fn ordered(entries : Array[(Array[Int], Task)]) -> Array[(Array[Int], Task)] {
+  let indexed : Array[(Int64, (Array[Int], Task))] = []
+  let rest : Array[(Array[Int], Task)] = []
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    let (k, _) = e
+    match js_json::index_key(k) {
+      Some(idx) => indexed.push((idx, e))
+      None => rest.push(e)
+    }
+  }
+  // Insertion sort on indexed (typically tiny; stable)
+  for i in 1..<indexed.length() {
+    let cur = indexed[i]
+    let (cur_idx, _) = cur
+    let mut j = i
+    while j > 0 {
+      let (prev_idx, _) = indexed[j - 1]
+      if prev_idx > cur_idx {
+        indexed[j] = indexed[j - 1]
+        j = j - 1
+      } else {
+        break
+      }
+    }
+    indexed[j] = cur
+  }
+  let out : Array[(Array[Int], Task)] = []
+  for i in 0..<indexed.length() {
+    let (_, e) = indexed[i]
+    out.push(e)
+  }
+  for i in 0..<rest.length() {
+    out.push(rest[i])
+  }
+  out
+}
+
+/// `{ ...tasks, [id]: task }`: in its place where it was there, else after the rest.
+fn put_task(
+  entries : Array[(Array[Int], Task)],
+  id : Array[Int],
+  task : Task,
+) -> Array[(Array[Int], Task)] {
+  let out = ordered(entries)
+  for i in 0..<out.length() {
+    let (k, _) = out[i]
+    if live_wire::u16_eq(k, id) {
+      out[i] = (id, task)
+      return out
+    }
+  }
+  out.push((id, task))
+  out
+}
+
+/// claude.ts `backgroundOf`: what of its tasks runs in the background.
+pub fn background_of(turn : Turn) -> js_json::JValue {
+  let out : Array[js_json::JValue] = []
+  let list = match turn.tasks {
+    Some(ts) => ordered(ts)
+    None => []
+  }
+  for i in 0..<list.length() {
+    let (_, t) = list[i]
+    if !t.background {
+      continue
+    }
+    let fields : Array[(String, js_json::JValue)] = [
+      ("id", live_wire::jstr_u16(t.id)),
+      ("kind", live_wire::jstr(t.kind)),
+      ("description", live_wire::jstr_u16(t.description)),
+    ]
+    match t.started_at {
+      Some(at) => fields.push(("startedAt", js_json::JValue::Num(at)))
+      None => ()
+    }
+    out.push(live_wire::obj(fields))
+  }
+  js_json::JValue::Arr(out)
+}
+
+let RENEW_ATTEMPTS : Double = 2.0
+
+/// Pure-Pion `on_frame` with custom number formatter (used by `on_frame` and tests).
+pub fn on_frame_with(
+  frame : js_json::JValue,
+  turn : Turn,
+  emit : (js_json::JValue) -> Unit,
+  interrupt : () -> Unit,
+  now : () -> Double,
+  note : (String) -> Unit,
+  fmt_num : (Double) -> String,
+) -> Unit {
+  let before = js_json::stringify_with_num(background_of(turn), fmt_num)
+  frame_does(frame, turn, emit, interrupt, now, note, fmt_num)
+  let tasks = background_of(turn)
+  if js_json::stringify_with_num(tasks, fmt_num) != before {
+    emit(
+      live_wire::live(
+        live_wire::obj([("kind", live_wire::jstr("tasks")), ("tasks", tasks)]),
+      ),
+    )
+  }
+}
+
+/// What a frame does to the turn (claude.ts `turnAfter`).
+pub fn on_frame(
+  frame : js_json::JValue,
+  turn : Turn,
+  emit : (js_json::JValue) -> Unit,
+  interrupt : () -> Unit,
+  now : () -> Double,
+  note : (String) -> Unit,
+) -> Unit {
+  on_frame_with(frame, turn, emit, interrupt, now, note, js_json::num_text)
+}
+
+fn opt_bool_eq(a : Option[Bool], b : Bool) -> Bool {
+  match a {
+    Some(x) => x == b
+    None => false
+  }
+}
+
+fn frame_does(
+  frame : js_json::JValue,
+  turn : Turn,
+  emit : (js_json::JValue) -> Unit,
+  interrupt : () -> Unit,
+  now : () -> Double,
+  note : (String) -> Unit,
+  fmt_num : (Double) -> String,
+) -> Unit {
+  let f = Some(frame)
+  let kind = match live_wire::str(live_wire::field(f, "type")) {
+    Some(s) => s
+    None => ""
+  }
+  let subtype_u16 = match live_wire::str_u16(live_wire::field(f, "subtype")) {
+    Some(u) => u
+    None => []
+  }
+  let subtype = match live_wire::str(live_wire::field(f, "subtype")) {
+    Some(s) => s
+    None => ""
+  }
+  let system = kind == "system"
+  if kind == "control_response" &&
+  live_wire::is_str(live_wire::field(live_wire::field(f, "response"), "subtype"), "error") {
+    note("claude refused a control request")
+  }
+  if system && subtype == "init" {
+    let was = turn.busy
+    turn.busy = true
+    if !was {
+      emit(live_wire::turn_started())
+    }
+  } else if system && subtype == "api_retry" {
+    let status = match integer(live_wire::field(f, "error_status")) {
+      Some(d) => d
+      None => 0.0
+    }
+    let attempt = match integer(live_wire::field(f, "attempt")) {
+      Some(d) => d
+      None => 1.0
+    }
+    let renewing = status == 401.0 &&
+    opt_bool_eq(turn.renews, true) &&
+    !opt_bool_eq(turn.renewed, true) &&
+    attempt <= RENEW_ATTEMPTS
+    let no_auth_failure = match turn.auth_failure {
+      None => true
+      Some(_) => false
+    }
+    if (status == 401.0 || status == 403.0) && no_auth_failure && !renewing {
+      let error_u16 = match live_wire::field(f, "error") {
+        None => js_json::utf16_units("authentication failed")
+        Some(js_json::JValue::Str(u)) => u
+        Some(v) => js_json::utf16_units(js_json::stringify_with_num(v, fmt_num))
+      }
+      let prefix = js_json::utf16_units(number_text_with(status, fmt_num) + " ")
+      turn.auth_failure = Some(u16_concat(prefix, error_u16))
+      interrupt()
+      turn.aborting = true
+    }
+  } else if system &&
+  subtype == "task_started" &&
+  !is_true(live_wire::field(f, "owned_by_subagent")) {
+    match live_wire::str_u16(live_wire::field(f, "task_id")) {
+      Some(id) => {
+        let description = match live_wire::str_u16(live_wire::field(f, "description")) {
+          Some(u) => u
+          None => []
+        }
+        let task_kind = if live_wire::is_str(live_wire::field(f, "task_type"), "local_agent") {
+          "agent"
+        } else {
+          "command"
+        }
+        let task = Task::{
+          id: id,
+          kind: task_kind,
+          description: description,
+          background: is_true(live_wire::field(f, "is_backgrounded")),
+          started_at: Some(now()),
+        }
+        let prev = match turn.tasks {
+          Some(ts) => ts
+          None => []
+        }
+        turn.tasks = Some(put_task(prev, id, task))
+      }
+      None => ()
+    }
+  } else if system && (subtype == "task_notification" || subtype == "task_updated") {
+    match (live_wire::str_u16(live_wire::field(f, "task_id")), turn.tasks) {
+      (Some(id), Some(tasks)) => {
+        let mut found : Option[Task] = None
+        for i in 0..<tasks.length() {
+          let (k, t) = tasks[i]
+          if live_wire::u16_eq(k, id) {
+            found = Some(t)
+            break
+          }
+        }
+        match found {
+          Some(task) => {
+            let notified = subtype == "task_notification"
+            let status = if notified {
+              live_wire::field(f, "status")
+            } else {
+              live_wire::field(live_wire::field(f, "patch"), "status")
+            }
+            let ord = ordered(tasks)
+            let rest : Array[(Array[Int], Task)] = []
+            for i in 0..<ord.length() {
+              let (k, t) = ord[i]
+              if !live_wire::u16_eq(k, id) {
+                rest.push((k, t))
+              }
+            }
+            let ended = live_wire::is_str(status, "completed") ||
+            live_wire::is_str(status, "failed") ||
+            live_wire::is_str(status, "killed") ||
+            live_wire::is_str(status, "stopped")
+            if notified || ended {
+              turn.tasks = Some(rest)
+            } else if is_true(live_wire::field(live_wire::field(f, "patch"), "is_backgrounded")) {
+              let updated = Task::{
+                id: task.id,
+                kind: task.kind,
+                description: task.description,
+                background: true,
+                started_at: task.started_at,
+              }
+              turn.tasks = Some(put_task(rest, id, updated))
+            }
+          }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+  } else if system &&
+  subtype == "status" &&
+  opt_bool_eq(turn.compacting, true) &&
+  live_wire::is_str(live_wire::field(f, "compact_result"), "failed") {
+    turn.compact_error = match live_wire::str_u16(live_wire::field(f, "compact_error")) {
+      Some(e) => if e.length() > 0 { Some(e) } else { Some(js_json::utf16_units("compaction failed")) }
+      None => Some(js_json::utf16_units("compaction failed"))
+    }
+  } else if system && subtype == "compact_boundary" {
+    emit(live_wire::obj([("type", live_wire::jstr("compacted"))]))
+  } else if kind == "result" {
+    let errors : Array[Array[Int]] = []
+    match live_wire::field(f, "errors") {
+      Some(js_json::JValue::Arr(all)) => {
+        for i in 0..<all.length() {
+          match all[i] {
+            js_json::JValue::Str(u) => {
+              if !u16_is_blank(u) {
+                errors.push(u)
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let text_u16 = match live_wire::str_u16(live_wire::field(f, "result")) {
+      Some(r) => {
+        if !u16_is_blank(r) {
+          r
+        } else if errors.length() > 0 {
+          u16_join(errors, 0x0A)
+        } else {
+          subtype_u16
+        }
+      }
+      None => if errors.length() > 0 { u16_join(errors, 0x0A) } else { subtype_u16 }
+    }
+    let outcome = match turn.auth_failure {
+      Some(failure) => auth_outcome_u16(failure)
+      None => {
+        if turn.aborting {
+          live_wire::aborted()
+        } else if is_true(live_wire::field(f, "is_error")) {
+          error_outcome_u16(text_u16)
+        } else {
+          match turn.compact_error {
+            Some(e) => {
+              if e.length() > 0 {
+                live_wire::failed_u16("other", chars_u16(e, 1000))
+              } else {
+                live_wire::completed()
+              }
+            }
+            None => live_wire::completed()
+          }
+        }
+      }
+    }
+    turn.busy = false
+    turn.aborting = false
+    turn.auth_failure = None
+    turn.renewed = Some(false)
+    turn.compacting = Some(false)
+    turn.compact_error = None
+    match turn.tasks {
+      Some(tasks) => {
+        let ord = ordered(tasks)
+        let kept : Array[(Array[Int], Task)] = []
+        for i in 0..<ord.length() {
+          let (k, t) = ord[i]
+          if t.background {
+            kept.push((k, t))
+          }
+        }
+        turn.tasks = Some(kept)
+      }
+      None => ()
+    }
+    emit(live_wire::turn_ended(outcome))
+  }
+}
+
+/// The station's calls of its own tools not answered yet, and what a frame says of those tools
+/// out of reach (claude.ts `toolsLostIn`). Lossless UTF-16.
+pub fn tools_lost_in(
+  frame : js_json::JValue,
+  calls : Array[Array[Int]],
+) -> Option[Array[Int]] {
+  let f = Some(frame)
+  let kind = live_wire::field(f, "type")
+  let content = match live_wire::field(live_wire::field(f, "message"), "content") {
+    Some(js_json::JValue::Arr(c)) => c
+    _ => []
+  }
+  let mcp_prefix = js_json::utf16_units("mcp__stillfail__")
+  if live_wire::is_str(kind, "system") && live_wire::is_str(live_wire::field(f, "subtype"), "init") {
+    match live_wire::field(f, "mcp_servers") {
+      Some(js_json::JValue::Arr(servers)) => {
+        for i in 0..<servers.length() {
+          let s = Some(servers[i])
+          if live_wire::is_str(live_wire::field(s, "name"), "stillfail") {
+            if live_wire::is_str(live_wire::field(s, "status"), "failed") {
+              return Some(js_json::utf16_units("the stillfail MCP server failed to connect"))
+            }
+            break
+          }
+        }
+      }
+      _ => ()
+    }
+  } else if live_wire::is_str(kind, "assistant") {
+    for i in 0..<content.length() {
+      let cc = Some(content[i])
+      if live_wire::is_str(live_wire::field(cc, "type"), "tool_use") {
+        match (live_wire::str_u16(live_wire::field(cc, "id")), live_wire::str_u16(live_wire::field(cc, "name"))) {
+          (Some(id), Some(name)) => {
+            if live_wire::u16_has_prefix(name, mcp_prefix) && !u16_contains(calls, id) {
+              calls.push(id)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  } else if live_wire::is_str(kind, "user") {
+    for i in 0..<content.length() {
+      let cc = Some(content[i])
+      if !live_wire::is_str(live_wire::field(cc, "type"), "tool_result") {
+        continue
+      }
+      let deleted = match live_wire::str_u16(live_wire::field(cc, "tool_use_id")) {
+        Some(id) => u16_remove_first(calls, id)
+        None => false
+      }
+      if !deleted || !is_true(live_wire::field(cc, "is_error")) {
+        continue
+      }
+      let text_u16 = match live_wire::field(cc, "content") {
+        Some(js_json::JValue::Str(u)) => u
+        Some(js_json::JValue::Arr(parts)) => {
+          let out : Array[Array[Int]] = []
+          for j in 0..<parts.length() {
+            match live_wire::str_u16(live_wire::field(Some(parts[j]), "text")) {
+              Some(t) => out.push(t)
+              None => out.push([])
+            }
+          }
+          u16_join(out, 0x0A)
+        }
+        _ => []
+      }
+      if unreachable_u16(text_u16) {
+        return Some(chars_u16(text_u16, 300))
+      }
+    }
+  }
+  None
+}
+
+/// A content block of the model's response being said (live.ts `Block`, lossless UTF-16).
+pub struct Block {
+  pub id : Array[Int]
+  pub step : String
+  pub tool : Option[Array[Int]]
+  pub mut input : Option[Array[Int]]
+  pub subagent : Option[Array[Int]]
+}
+
+/// Claude Code's partial messages as live steps (live.ts `LiveFromClaude`, lossless UTF-16).
+pub struct Live {
+  pub mut message : Array[Int]
+  /// by index, as a Map keeps them
+  pub mut blocks : Array[(Int, Block)]
+  pub mut tools : Array[Array[Int]]
+}
+
+pub fn Live::new() -> Live {
+  Live::{ message: [], blocks: [], tools: [] }
+}
+
+fn start_claude(
+  id : Array[Int],
+  step : String,
+  tool : Option[Array[Int]],
+  input : Option[Array[Int]],
+  parent : Option[Array[Int]],
+) -> js_json::JValue {
+  let fields : Array[(String, js_json::JValue)] = [
+    ("kind", live_wire::jstr("start")),
+    ("id", live_wire::jstr_u16(id)),
+    ("step", live_wire::jstr(step)),
+  ]
+  match tool {
+    Some(t) => fields.push(("tool", live_wire::jstr_u16(t)))
+    None => ()
+  }
+  match input {
+    Some(inp) => fields.push(("input", live_wire::jstr_u16(inp)))
+    None => ()
+  }
+  match parent {
+    Some(p) => {
+      fields.push(("subagent", js_json::JValue::Bool(true)))
+      fields.push(("parent", live_wire::jstr_u16(p)))
+    }
+    None => ()
+  }
+  live_wire::obj(fields)
+}
+
+fn Live::block(self : Live, index : Int) -> Option[Block] {
+  for i in 0..<self.blocks.length() {
+    let (idx, b) = self.blocks[i]
+    if idx == index {
+      return Some(b)
+    }
+  }
+  None
+}
+
+fn phase_event(p : String) -> js_json::JValue {
+  live_wire::obj([("kind", live_wire::jstr("phase")), ("phase", live_wire::jstr(p))])
+}
+
+/// Pure-Pion `Live::feed` with custom number formatter.
+pub fn Live::feed_with(
+  self : Live,
+  frame : js_json::JValue,
+  now : () -> Double,
+  fmt_num : (Double) -> String,
+) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  let f = Some(frame)
+  let kind = match live_wire::str(live_wire::field(f, "type")) {
+    Some(s) => s
+    None => ""
+  }
+  if kind == "system" &&
+  live_wire::is_str(live_wire::field(f, "subtype"), "status") &&
+  live_wire::is_str(live_wire::field(f, "status"), "requesting") {
+    out.push(phase_event("requesting"))
+  } else if kind == "stream_event" {
+    let e = match live_wire::field(f, "event") {
+      None => None
+      Some(js_json::JValue::Null) => None
+      some => some
+    }
+    let parent = live_wire::non_empty_u16(live_wire::field(f, "parent_tool_use_id"))
+    let has_parent = match parent {
+      Some(_) => true
+      None => false
+    }
+    let event = match live_wire::str(live_wire::field(e, "type")) {
+      Some(s) => s
+      None => ""
+    }
+    if event == "message_stop" && !has_parent {
+      out.push(phase_event("working"))
+    }
+    let index = match integer(live_wire::field(e, "index")) {
+      Some(i) => i.to_int()
+      None => -1
+    }
+    if event == "message_start" {
+      self.message = match live_wire::str_u16(live_wire::field(live_wire::field(e, "message"), "id")) {
+        Some(id) => id
+        None => js_json::utf16_units(number_text_with(now(), fmt_num))
+      }
+      self.blocks = []
+      if !has_parent {
+        out.push(phase_event("responding"))
+      }
+    } else if event == "content_block_start" {
+      let b = live_wire::field(e, "content_block")
+      let step = match live_wire::str(live_wire::field(b, "type")) {
+        Some("text") => "text"
+        Some("thinking") => "thinking"
+        Some("tool_use") => "tool"
+        _ => return out
+      }
+      let id = if step == "tool" {
+        match live_wire::str_u16(live_wire::field(b, "id")) {
+          Some(id) => id
+          None => u16_concat(self.message, js_json::utf16_units(":" + number_text_with(index.to_double(), fmt_num)))
+        }
+      } else {
+        u16_concat(self.message, js_json::utf16_units(":" + number_text_with(index.to_double(), fmt_num)))
+      }
+      let tool = if step == "tool" {
+        match live_wire::str_u16(live_wire::field(b, "name")) {
+          Some(n) => Some(n)
+          None => Some(js_json::utf16_units("tool"))
+        }
+      } else {
+        None
+      }
+      if step == "tool" && !u16_contains(self.tools, id) {
+        self.tools.push(id)
+      }
+      out.push(start_claude(id, step, tool, None, parent))
+      let init_input : Option[Array[Int]] = match tool {
+        Some(_) => Some([])
+        None => None
+      }
+      let block = Block::{ id: id, step: step, tool: tool, input: init_input, subagent: parent }
+      let mut placed = false
+      for i in 0..<self.blocks.length() {
+        let (k, _) = self.blocks[i]
+        if k == index {
+          self.blocks[i] = (index, block)
+          placed = true
+          break
+        }
+      }
+      if !placed {
+        self.blocks.push((index, block))
+      }
+    } else if event == "content_block_delta" {
+      let block = match self.block(index) {
+        Some(b) => b
+        None => return out
+      }
+      let d = live_wire::field(e, "delta")
+      match live_wire::str(live_wire::field(d, "type")) {
+        Some("text_delta") => {
+          match live_wire::non_empty_u16(live_wire::field(d, "text")) {
+            Some(text) => out.push(live_wire::delta_u16(block.id, "text", text))
+            None => ()
+          }
+        }
+        Some("thinking_delta") => {
+          match live_wire::non_empty_u16(live_wire::field(d, "thinking")) {
+            Some(text) => out.push(live_wire::delta_u16(block.id, "text", text))
+            None => {
+              match live_wire::field(d, "estimated_tokens") {
+                Some(js_json::JValue::Num(n)) => {
+                  if n > 0.0 {
+                    out.push(
+                      live_wire::obj([
+                        ("kind", live_wire::jstr("delta")),
+                        ("id", live_wire::jstr_u16(block.id)),
+                        ("field", live_wire::jstr("text")),
+                        ("text", live_wire::jstr("")),
+                        ("tokens", js_json::JValue::Num(n)),
+                      ]),
+                    )
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
+        }
+        Some("input_json_delta") => {
+          match live_wire::non_empty_u16(live_wire::field(d, "partial_json")) {
+            Some(partial) => {
+              match block.input {
+                Some(inp) => {
+                  if inp.length() < live_wire::INPUT_MOST {
+                    block.input = Some(u16_concat(inp, partial))
+                  }
+                }
+                None => ()
+              }
+              out.push(live_wire::delta_u16(block.id, "input", partial))
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    } else if event == "content_block_stop" {
+      match self.block(index) {
+        Some(block) => {
+          if block.step != "tool" {
+            out.push(live_wire::end_event_u16(block.id))
+          } else {
+            match block.input {
+              Some(inp) => {
+                if inp.length() > 0 {
+                  out.push(start_claude(block.id, "tool", block.tool, Some(inp), block.subagent))
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+  } else if kind == "user" {
+    let content = match live_wire::field(live_wire::field(f, "message"), "content") {
+      Some(js_json::JValue::Arr(c)) => c
+      _ => []
+    }
+    for i in 0..<content.length() {
+      let cc = Some(content[i])
+      let id = match live_wire::str_u16(live_wire::field(cc, "tool_use_id")) {
+        Some(u) => u
+        None => []
+      }
+      if !live_wire::is_str(live_wire::field(cc, "type"), "tool_result") || !u16_contains(self.tools, id) {
+        continue
+      }
+      let text_u16 = match live_wire::field(cc, "content") {
+        Some(js_json::JValue::Str(u)) => u
+        Some(js_json::JValue::Arr(parts)) => {
+          let out_parts : Array[Array[Int]] = []
+          for j in 0..<parts.length() {
+            match live_wire::str_u16(live_wire::field(Some(parts[j]), "text")) {
+              Some(t) => out_parts.push(t)
+              None => out_parts.push([])
+            }
+          }
+          u16_join(out_parts, 0x0A)
+        }
+        _ => []
+      }
+      if text_u16.length() > 0 {
+        out.push(live_wire::delta_u16(id, "output", chars_u16(text_u16, 8000)))
+      }
+      out.push(live_wire::end_event_u16(id))
+      let _ = u16_remove_first(self.tools, id)
+    }
+  }
+  out
+}
+
+/// The live steps a frame says (live.ts `feed`); `now` names a message that says no id.
+pub fn Live::feed(
+  self : Live,
+  frame : js_json::JValue,
+  now : () -> Double,
+) -> Array[js_json::JValue] {
+  self.feed_with(frame, now, js_json::num_text)
+}
+
+/// What it keeps between frames (live.ts `state`), as lossless JSON.
+pub fn Live::state(self : Live) -> js_json::JValue {
+  let blocks : Array[js_json::JValue] = []
+  for i in 0..<self.blocks.length() {
+    let (idx, k) = self.blocks[i]
+    let fields : Array[(String, js_json::JValue)] = [
+      ("id", live_wire::jstr_u16(k.id)),
+      ("step", live_wire::jstr(k.step)),
+    ]
+    match k.tool {
+      Some(t) => fields.push(("tool", live_wire::jstr_u16(t)))
+      None => ()
+    }
+    match k.input {
+      Some(inp) => fields.push(("input", live_wire::jstr_u16(inp)))
+      None => ()
+    }
+    match k.subagent {
+      Some(s) => fields.push(("subagent", live_wire::jstr_u16(s)))
+      None => ()
+    }
+    blocks.push(
+      js_json::JValue::Arr([js_json::JValue::Num(idx.to_double()), live_wire::obj(fields)]),
+    )
+  }
+  let tools : Array[js_json::JValue] = []
+  for i in 0..<self.tools.length() {
+    tools.push(live_wire::jstr_u16(self.tools[i]))
+  }
+  live_wire::obj([
+    ("message", live_wire::jstr_u16(self.message)),
+    ("blocks", js_json::JValue::Arr(blocks)),
+    ("tools", js_json::JValue::Arr(tools)),
+  ])
+}
+
+/// The live state a snapshot said (live.ts's constructor).
+pub fn Live::of_state(state : js_json::JValue) -> Live {
+  let s = Some(state)
+  let blocks : Array[(Int, Block)] = []
+  match live_wire::field(s, "blocks") {
+    Some(js_json::JValue::Arr(all)) => {
+      for i in 0..<all.length() {
+        match all[i] {
+          js_json::JValue::Arr(pair) => {
+            if pair.length() == 2 {
+              match (pair[0], pair[1]) {
+                (js_json::JValue::Num(idx), js_json::JValue::Obj(_)) => {
+                  let bb = Some(pair[1])
+                  let step = if live_wire::is_str(live_wire::field(bb, "step"), "tool") {
+                    "tool"
+                  } else if live_wire::is_str(live_wire::field(bb, "step"), "thinking") {
+                    "thinking"
+                  } else {
+                    "text"
+                  }
+                  let id = match live_wire::str_u16(live_wire::field(bb, "id")) {
+                    Some(u) => u
+                    None => []
+                  }
+                  blocks.push(
+                    (
+                      idx.to_int(),
+                      Block::{
+                        id: id,
+                        step: step,
+                        tool: live_wire::str_u16(live_wire::field(bb, "tool")),
+                        input: live_wire::str_u16(live_wire::field(bb, "input")),
+                        subagent: live_wire::str_u16(live_wire::field(bb, "subagent")),
+                      },
+                    ),
+                  )
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let tools : Array[Array[Int]] = []
+  match live_wire::field(s, "tools") {
+    Some(js_json::JValue::Arr(all)) => {
+      for i in 0..<all.length() {
+        match live_wire::str_u16(Some(all[i])) {
+          Some(u) => tools.push(u)
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let message = match live_wire::str_u16(live_wire::field(s, "message")) {
+    Some(u) => u
+    None => []
+  }
+  Live::{ message: message, blocks: blocks, tools: tools }
+}

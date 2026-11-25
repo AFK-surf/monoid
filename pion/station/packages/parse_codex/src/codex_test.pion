@@ -1,0 +1,251 @@
+// 1:1 port of `station/mb/src/codex/codex_test.mbt` + lone-surrogate UTF-16 round-trip tests.
+
+import "js_json"
+
+fn expand_sci_decimal(s : String) -> String {
+  let bs = s.to_bytes()
+  let n = bs.length()
+  let mut e_pos = -1
+  for i in 0..<n {
+    let c = bs[i].to_int() & 0xFF
+    if c == 0x65 || c == 0x45 {
+      e_pos = i
+      break
+    }
+  }
+  if e_pos < 0 {
+    return s
+  }
+  let mut neg = false
+  let mut start = 0
+  if n > 0 && (bs[0].to_int() & 0xFF) == 0x2D {
+    neg = true
+    start = 1
+  }
+  let digits : Array[Byte] = []
+  let mut dot_pos = -1
+  for i in start..<e_pos {
+    let b = bs[i]
+    if (b.to_int() & 0xFF) == 0x2E {
+      dot_pos = digits.length()
+    } else {
+      digits.push(b)
+    }
+  }
+  if dot_pos < 0 {
+    dot_pos = digits.length()
+  }
+  let mut exp_neg = false
+  let mut ei = e_pos + 1
+  if ei < n && (bs[ei].to_int() & 0xFF) == 0x2D {
+    exp_neg = true
+    ei = ei + 1
+  } else if ei < n && (bs[ei].to_int() & 0xFF) == 0x2B {
+    ei = ei + 1
+  }
+  let mut exp = 0
+  while ei < n {
+    exp = exp * 10 + ((bs[ei].to_int() & 0xFF) - 0x30)
+    ei = ei + 1
+  }
+  let signed_exp = if exp_neg { -exp } else { exp }
+  let new_dot = dot_pos + signed_exp
+  let sb = StringBuilder::new()
+  if neg {
+    sb.write_byte(0x2D as Byte)
+  }
+  if new_dot <= 0 {
+    sb.write_string("0.")
+    for _ in 0..<(-new_dot) {
+      sb.write_byte(0x30 as Byte)
+    }
+    for i in 0..<digits.length() {
+      sb.write_byte(digits[i])
+    }
+  } else if new_dot >= digits.length() {
+    for i in 0..<digits.length() {
+      sb.write_byte(digits[i])
+    }
+    for _ in 0..<(new_dot - digits.length()) {
+      sb.write_byte(0x30 as Byte)
+    }
+  } else {
+    for i in 0..<new_dot {
+      sb.write_byte(digits[i])
+    }
+    sb.write_byte(0x2E as Byte)
+    for i in new_dot..<digits.length() {
+      sb.write_byte(digits[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn codex_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    return "0"
+  }
+  if js_json::is_safe_integer(d) {
+    return d.to_int64().to_string()
+  }
+  let abs_d = if d < 0.0 { -d } else { d }
+  let s = d.to_string()
+  if abs_d >= 1.0e-6 && abs_d < 1.0e21 {
+    expand_sci_decimal(s)
+  } else {
+    s
+  }
+}
+
+fn cparse(s : String) -> js_json::JValue {
+  match js_json::parse(s) {
+    Ok(v) => v
+    Err(e) => panic("bad json: " + e + " in " + s)
+  }
+}
+
+fn cstr(v : js_json::JValue) -> String {
+  js_json::stringify_with_num(v, codex_fmt_num)
+}
+
+fn same_json(said : String) -> String {
+  match js_json::parse(said) {
+    Ok(v) => cstr(v)
+    Err(_) => "(not JSON: " + said + ")"
+  }
+}
+
+fn assert_eq_codex(got : String, want : String, ctx : String) -> Unit {
+  if got != want {
+    panic(ctx + "\n got  " + got + "\n want " + want)
+  }
+}
+
+test "parse_codex: each notification's events and live steps, as the TypeScript station said them" {
+  let live = Live::new()
+  let notices = notices_said()
+  for i in 0..<notices.length() {
+    let (method, params, said, state) = notices[i]
+    let got = events_with(live, method, cparse(params), codex_fmt_num)
+    assert_eq_codex(
+      cstr(js_json::JValue::Arr(got)),
+      same_json(said),
+      "notice " + i.to_string() + " (" + method + "): its events",
+    )
+    assert_eq_codex(
+      cstr(live.state()),
+      same_json(state),
+      "notice " + i.to_string() + " (" + method + "): the live steps after it",
+    )
+    assert_eq_codex(
+      cstr(Live::of_state(live.state()).state()),
+      same_json(state),
+      "notice " + i.to_string() + " (" + method + "): state roundtrip",
+    )
+  }
+}
+
+test "parse_codex: each failure's reason, as the TypeScript station said it" {
+  let errs = errors_said()
+  for i in 0..<errs.length() {
+    let (info, message, reason) = errs[i]
+    let msg = match cparse(message) {
+      js_json::JValue::Str(u) => js_json::sanitize_str(u)
+      _ => panic("a message is a string")
+    }
+    assert_eq_codex(
+      classify_error(Some(cparse(info)), msg),
+      reason,
+      "error " + i.to_string() + ": " + info + " " + msg,
+    )
+  }
+}
+
+test "parse_codex: the live steps of a station from before, and none" {
+  let live = Live::of_state(cparse("{\"open\":[\"a\",\"b\",\"a\"],\"phase\":\"working\"}"))
+  assert_eq_codex(cstr(live.state()), "{\"open\":[\"a\",\"b\"],\"phase\":\"working\"}", "dedup open")
+  assert_eq_codex(cstr(Live::of_state(js_json::JValue::Null).state()), "{\"open\":[],\"phase\":null}", "null state")
+}
+
+test "parse_codex: lone surrogate round-trip preserves distinct \\ud800 and \\ud801" {
+  let live = Live::new()
+  let ev1 = events_with(
+    live,
+    "item/started",
+    cparse("{\"item\":{\"type\":\"agentMessage\",\"id\":\"m\\ud800\"}}"),
+    codex_fmt_num,
+  )
+  let ev2 = events_with(
+    live,
+    "item/started",
+    cparse("{\"item\":{\"type\":\"agentMessage\",\"id\":\"m\\ud801\"}}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(ev1)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"m\\ud800\",\"step\":\"text\"}}]",
+    "start ud800",
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(ev2)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"m\\ud801\",\"step\":\"text\"}}]",
+    "start ud801",
+  )
+  let sb = StringBuilder::new()
+  js_json::write_utf8_with_num(sb, live.state(), codex_fmt_num)
+  assert_eq_codex(sb.to_string(), "{\"open\":[\"m\\ud800\",\"m\\ud801\"],\"phase\":null}", "state both open")
+
+  // Round-trip through of_state and close only m\ud800
+  let again = Live::of_state(cparse(sb.to_string()))
+  let end1 = events_with(
+    again,
+    "item/completed",
+    cparse("{\"item\":{\"type\":\"agentMessage\",\"id\":\"m\\ud800\"}}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(end1)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"m\\ud800\"}}]",
+    "end ud800 only",
+  )
+  assert_eq_codex(cstr(again.state()), "{\"open\":[\"m\\ud801\"],\"phase\":null}", "ud801 still open")
+
+  // turn/completed failure message preserves lone surrogate
+  let fail_ev = events_with(
+    again,
+    "turn/completed",
+    cparse("{\"turn\":{\"status\":\"failed\",\"error\":{\"message\":\"boom \\ud800 \\ud801\"}}}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(fail_ev)),
+    "[{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"boom \\ud800 \\ud801\"}}]",
+    "failed message lone surrogate",
+  )
+}
+
+test "parse_codex: numeric item id 0.00001 formats in JS decimal and matches delta itemId" {
+  let live = Live::new()
+  let ev1 = events_with(
+    live,
+    "item/started",
+    cparse("{\"item\":{\"type\":\"agentMessage\",\"id\":0.00001}}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(ev1)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"0.00001\",\"step\":\"text\"}}]",
+    "numeric id 0.00001 start",
+  )
+  let ev2 = events_with(
+    live,
+    "item/agentMessage/delta",
+    cparse("{\"itemId\":\"0.00001\",\"delta\":\"hello\"}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(ev2)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"responding\"}},{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"0.00001\",\"field\":\"text\",\"text\":\"hello\"}}]",
+    "numeric id 0.00001 delta match",
+  )
+}

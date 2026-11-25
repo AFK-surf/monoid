@@ -3626,7 +3626,7 @@ export class Mesh {
       for (;;) {
         const wake = yield* this.#env.wakes.next;
         if (wake.checksConnections()) for (const [addr, link] of this.#openLinks()) this.#env.runner.fork(this.#checkWoken(addr, link));
-        if (!wake.suspectsLinks()) continue;
+        if (!wake.suspectsConnections()) continue;
         this.#relaxAll();
         for (const addr of [...this.#steerWakes.keys()]) this.#wakeSteer(addr);
         this.#env.runner.fork(this.#endpoint.networkChange());

@@ -1,6 +1,17 @@
 // Wave 27 · Track V deterministic tests: full-bleed stage, per-gesture input dispatch,
-// desktop clicks as taps (alone: controls; two: play/pause, back, on) & 2000ms auto-fade with lock-release re-arm, subtitle laid==0 offset,
+// desktop clicks as taps (alone: controls; two: play/pause, back, on), controls never fading by themselves, subtitle laid==0 offset,
 // touch AlongTime 3-gear VFR frame scrubbing & safe second-finger handoff, and Esc priority.
+
+///|
+/// A long rest of the hand: the controls never fade by themselves however long it is.
+let long_rest_ms : Double = 10000.0
+
+///|
+/// Its controls hidden by a click or tap alone at (`x`, `y`), gone once a double tap's time and their fade have passed.
+fn hide_by_tap(t : @ui.Tester, x : Double, y : Double) -> Unit {
+  t.tap(x, y)
+  t.run_for(@ui.double_tap_ms + @player.media_sleep_ms + 10.0)
+}
 
 ///|
 fn count_controls(t : @ui.Tester, op : Int, value? : String = "") -> Int {
@@ -39,59 +50,39 @@ fn vfr_frames(t : @ui.Tester, playing? : Bool = false) -> Unit {
 
 ///|
 test "wave27 V1/V3: ready static video passes assert_idle() with controls visible; Opening phase stays locked" {
-  // Ready, paused static fixture: idle_off uses later=true so assert_idle() passes immediately with controls visible.
+  // Ready, paused static fixture: nothing pending, so assert_idle() passes immediately with controls visible.
   let t = player_tester(false, "a.mp4", [], [], [], pin={ ..pinned(2000.0), playing: false })
   t.host_says_finger(Some(false))
   t.draw()
   t.assert_idle()
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="controls visible at rest")
-  // Opening phase (state == 0): locked, never auto-fades past 2000ms + sleep_ms.
+  // Opening phase (state == 0): locked, a click alone does not hide them.
   let to = player_tester(false, "a.mp4", [], [], [], pin={ ..pinned(0.0), state: 0, playing: false })
   to.host_says_finger(Some(false))
   to.draw()
-  to.run_for(player_desk_idle_ms + @player.media_sleep_ms + 500.0)
+  hide_by_tap(to, 640.0, 400.0)
   assert_true(to.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="Opening keeps controls visible")
 }
 
 ///|
-test "wave27 V3: desktop 2000ms auto-fade exact boundaries (1999ms / 2000ms / 2000+sleep_ms) in Playing and Paused, re-wake cancels old timer, pointer leave fades" {
+test "wave27 V3: controls never fade by themselves, Playing or Paused, mouse or touch, nor as the pointer leaves" {
   let sleep_ms = @player.media_sleep_ms
-  let step_ms = 1.0
-  for is_playing in [true, false] {
-    let t = player_tester(false, "a.mp4", [], [], [], pin={ ..pinned(2000.0), playing: is_playing })
-    t.host_says_finger(Some(false))
-    t.draw()
-    t.assert_idle()
-    assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_))
-    // 1999ms: still visible
-    t.run_for(player_desk_idle_ms - step_ms)
-    assert_true(
-      t.query(Slider, label="web-pages.drive.player.position") is Some(_),
-      msg="playing=\{is_playing}: still visible at 1999ms",
-    )
-    // 2000ms: fade starts (awake becomes false), still fading until sleep_ms elapses
-    t.run_for(step_ms)
-    // 2000 + sleep_ms: completely hidden (faded = true, slider not pressable/visible)
-    t.run_for(sleep_ms + step_ms)
-    assert_true(
-      t.query(Slider, label="web-pages.drive.player.position") is None,
-      msg="playing=\{is_playing}: hidden at 2000+sleep_ms",
-    )
+  for narrow in [true, false] {
+    for is_playing in [true, false] {
+      let t = player_tester(narrow, "a.mp4", [], [], [], pin={ ..pinned(2000.0), playing: is_playing })
+      if !narrow {
+        t.host_says_finger(Some(false))
+      }
+      t.draw()
+      t.assert_idle()
+      t.run_for(long_rest_ms)
+      assert_true(
+        t.query(Slider, label="web-pages.drive.player.position") is Some(_),
+        msg="narrow=\{narrow} playing=\{is_playing}: still shown after a long rest",
+      )
+    }
   }
-  // Re-wake at 1000ms cancels old 2000ms timer
-  let tr = player_tester(false, "a.mp4", [], [], [], pin=pinned(2000.0))
-  tr.host_says_finger(Some(false))
-  tr.draw()
-  tr.run_for(player_desk_idle_ms / 2.0)
-  tr.move_to(640.0, 400.0)
-  tr.draw()
-  // Advance past old deadline (1000 + 1500 = 2500ms > 2000 + sleep_ms): still visible!
-  tr.run_for(player_desk_idle_ms * 0.75)
-  assert_true(tr.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="re-wake cancelled old timer")
-  // Advance remaining 500ms + sleep_ms: now hidden
-  tr.run_for(player_desk_idle_ms * 0.25 + sleep_ms + step_ms)
-  assert_true(tr.query(Slider, label="web-pages.drive.player.position") is None, msg="faded after refreshed deadline")
-  // Pointer leaving window immediately fades unlocked controls
+  // Pointer leaving the window: they stay
   let tl = player_tester(false, "a.mp4", [], [], [], pin=pinned(2000.0))
   tl.host_says_finger(Some(false))
   tl.draw()
@@ -99,13 +90,12 @@ test "wave27 V3: desktop 2000ms auto-fade exact boundaries (1999ms / 2000ms / 20
   tl.draw()
   tl.move_to(-10.0, -10.0)
   tl.run_for(sleep_ms + 1.0)
-  assert_true(tl.query(Slider, label="web-pages.drive.player.position") is None, msg="pointer leave fades immediately")
+  assert_true(tl.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="pointer leaving keeps them")
 }
 
 ///|
-test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arms a full 2000ms deadline" {
-  let sleep_ms = @player.media_sleep_ms
-  // 1. Tab focus in bottom bar locks across 2000ms; leaving focus (to an outside button) re-arms a full 2000ms
+test "wave27 V3: chrome_locked keeps controls a click alone would hide, and they stay once it is released" {
+  // 1. Tab focus in bottom bar holds them; leaving focus (to an outside button) leaves them shown
   set_viewer_host(viewer_host_default())
   set_words(fn(key, args) {
     args.fold(init=test_words.get(key).unwrap_or(key), fn(said, a) { said.replace_all(old="{" + a.0 + "}", new=a.1) })
@@ -153,7 +143,7 @@ test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arm
     }
   }
   assert_true(focused_tl, msg="Tab reached timeline slider")
-  t.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  t.run_for(long_rest_ms)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="bar_focused locks chrome")
   // Tab focus out of the bar to the outside button (pure unlock without clicking stage)
   let mut focused_out = false
@@ -166,23 +156,18 @@ test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arm
   }
   assert_true(focused_out, msg="Tab moved focus out of controls bar")
   t.draw()
-  // Unlock re-arms full 2000ms: still visible at 1999ms after unlock
-  t.run_for(player_desk_idle_ms - 1.0)
+  // Unlocked: still shown after a long rest
+  t.run_for(long_rest_ms)
   assert_true(
     t.query(Slider, label="web-pages.drive.player.position") is Some(_),
-    msg="unlock must re-arm full 2000ms (still visible at 1999ms)",
-  )
-  t.run_for(1.0 + sleep_ms + 1.0)
-  assert_true(
-    t.query(Slider, label="web-pages.drive.player.position") is None,
-    msg="faded after full 2000ms + sleep_ms from unlock",
+    msg="unlocked: still shown after a long rest",
   )
   // 2. screen_reader_on, Buffering, Failed, Ended, near_top, near_foot, rates, listing, audio all lock chrome
   let ta = player_tester(false, "a.mp4", [], [], [], pin=pinned(2000.0))
   ta.host_says_finger(Some(false))
   ta.set_screen_reader(true)
   ta.draw()
-  ta.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  hide_by_tap(ta, 640.0, 400.0)
   assert_true(ta.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="screen_reader_on locks chrome")
   for pin_case in [
     { ..pinned(2000.0), buffering: true },
@@ -192,7 +177,9 @@ test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arm
     let tp = player_tester(false, "a.mp4", [], [], [], pin=pin_case)
     tp.host_says_finger(Some(false))
     tp.draw()
-    tp.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+    // (a stall locks only once it has waited)
+    tp.run_for(long_rest_ms)
+    hide_by_tap(tp, 640.0, 400.0)
     assert_true(tp.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="phase lock holds chrome")
   }
   // near_top & near_foot
@@ -200,17 +187,17 @@ test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arm
   th.host_says_finger(Some(false))
   th.draw()
   th.move_to(640.0, 20.0)
-  th.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  th.run_for(long_rest_ms)
   assert_true(th.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="near_top locks chrome")
   th.move_to(640.0, 760.0)
-  th.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  th.run_for(long_rest_ms)
   assert_true(th.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="near_foot locks chrome")
-  // rates menu open (modal menu covers slider in a11y tree; verify controls time text + menu stay visible, and closing menu leaves controls visible for a full 2000ms)
+  // rates menu open (modal menu covers slider in a11y tree; verify controls time text + menu stay visible, and closing menu leaves controls visible)
   let tm = player_tester(false, "a.mp4", [], [], [], keyed=true, pin=pinned(2000.0))
   tm.host_says_finger(Some(false))
   tm.draw()
   tm.click(Button, label="web-pages.drive.player.rate")
-  tm.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  tm.run_for(long_rest_ms)
   assert_true(speeds_open() && tm.find("0:02 / 0:10") is Some(_), msg="rates menu locks chrome")
   tm.key(@ui.key_escape)
   tm.draw()
@@ -220,22 +207,22 @@ test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arm
   tl.host_says_finger(Some(false))
   tl.draw()
   tl.click(Button, label="web-pages.drive.player.list")
-  tl.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  tl.run_for(long_rest_ms)
   assert_true(tl.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="listing locks chrome")
-  // bottom bar timeline drag (scrubbing_ui) locks chrome across 2000ms
+  // bottom bar timeline drag (scrubbing_ui) locks chrome
   let ts = player_tester(false, "a.mp4", [], [], [], pin=pinned(2000.0))
   ts.host_says_finger(Some(false))
   ts.draw()
   let sl = ts.get(Slider, label="web-pages.drive.player.position").rect
   ts.press_at(sl.0 + sl.2 * 0.4, sl.1 + sl.3 / 2.0)
-  ts.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  ts.run_for(long_rest_ms)
   assert_true(ts.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="scrubbing_ui locks chrome")
   ts.release(sl.0 + sl.2 * 0.4, sl.1 + sl.3 / 2.0)
   // audio stays visible
   let tau = player_tester(false, "song.mp3", [], [], [], kind="audio", pin=pinned(2000.0))
   tau.host_says_finger(Some(false))
   tau.draw()
-  tau.run_for(player_desk_idle_ms + sleep_ms + 500.0)
+  hide_by_tap(tau, 640.0, 400.0)
   assert_true(tau.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="audio locks chrome")
 }
 
@@ -248,10 +235,10 @@ test "wave27 V3: desktop click alone shows or hides controls, a double click pla
   t.draw()
   t.set_player(1, position=2000.0, duration=10000.0, playing=true)
   t.draw()
-  // Position stationary pointer on stage, then let controls auto-fade out
+  // Position stationary pointer on stage, then hide the controls by a click alone
   t.move_to(640.0, 400.0)
   t.draw()
-  t.run_for(player_desk_idle_ms + sleep_ms + 10.0)
+  hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden")
   // 1. A click alone while hidden: no play/pause; the controls come once a double click's time has gone with no second
   let c0 = count_play_pause(t)
@@ -284,14 +271,13 @@ test "wave27 V3: desktop click alone shows or hides controls, a double click pla
   t.key(@ui.key_of_char('k'))
   assert_eq(count_play_pause(t), c1 + 2, msg="K toggles play/pause")
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="K does not wake hidden controls")
-  // Let controls fade again, then verify non-silent shortcut (J) wakes hidden controls
-  t.run_for(player_desk_idle_ms + sleep_ms + 10.0)
+  // Still hidden, then verify non-silent shortcut (J) wakes hidden controls
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden before J")
   t.key(@ui.key_of_char('j'))
   t.draw()
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="J wakes hidden controls")
   // Shift+Tab also wakes hidden controls
-  t.run_for(player_desk_idle_ms + sleep_ms + 10.0)
+  hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden before Shift+Tab")
   t.key(@ui.key_tab, mods=@ui.mod_shift_key)
   t.run_for(viewer_bar_ms + 10.0)
@@ -359,13 +345,14 @@ test "wave27 V2: wide touch gets AlongTime without raising bottom bar; narrow mo
 ///|
 test "wave27 V1: cue_node paint-layer offset has laid == 0 on fade-out and mid-fade reversal, dual-line and listing zero overlap" {
   let sleep_ms = @player.media_sleep_ms
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], [], [], pin=pinned(2000.0))
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], [], [], keyed=true, pin=pinned(2000.0))
   t.host_says_finger(Some(false))
   playing_for("k").media.set_subtitle(true, [{ from: 0.0, to: 10000.0, text: "第一行字幕\n第二行字幕" }])
   t.draw()
   let y_up = t.find("第一行字幕").unwrap().1
-  // Wait to 2000ms (fade starts), then measure laid == 0 during fade-out
-  t.run_for(player_desk_idle_ms)
+  // A click alone hides the controls once a double click's time has gone (fade starts), then measure laid == 0
+  t.tap(640.0, 400.0)
+  t.run_for(@ui.double_tap_ms)
   t.tree_frames_from_now()
   t.run_for(sleep_ms / 2.0)
   for f in t.tree_frames() {
@@ -373,8 +360,8 @@ test "wave27 V1: cue_node paint-layer offset has laid == 0 on fade-out and mid-f
   }
   let y_mid = t.find("第一行字幕").unwrap().1
   assert_true(y_mid > y_up + 5.0, msg="cue moved down mid-fade: y_up=\{y_up}, y_mid=\{y_mid}")
-  // Reverse mid-fade by moving pointer -> laid == 0 and moves back up smoothly
-  t.move_to(640.0, 400.0)
+  // Reverse mid-fade by a key that wakes them (J) -> laid == 0 and moves back up smoothly
+  t.key(@ui.key_of_char('j'))
   t.tree_frames_from_now()
   t.run_for(@player.media_wake_ms + 10.0)
   for f in t.tree_frames() {
@@ -529,12 +516,12 @@ test "wave27 V4: touch AlongTime VFR frame stepping, zero downgrade jump, empty-
 }
 
 ///|
-test "wave27 V4: touch single tap toggles awake in Paused too; touch Playing auto-fades at 3000ms while Paused stays" {
+test "wave27 V4: touch single tap toggles awake in Paused and Playing; neither fades by itself" {
   let sleep_ms = @player.media_sleep_ms
   // Touch Paused: does NOT auto-fade, but single tap hides and shows
   let tp = player_tester(true, "a.mp4", [], [], [], pin={ ..pinned(2000.0), playing: false })
   tp.draw()
-  tp.run_for(player_touch_idle_ms + sleep_ms + 500.0)
+  tp.run_for(long_rest_ms)
   assert_true(tp.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="touch Paused does not auto-fade")
   tp.tap(195.0, 400.0)
   tp.run_for(playing_for("k").media.times().1 + sleep_ms + 20.0)
@@ -542,13 +529,13 @@ test "wave27 V4: touch single tap toggles awake in Paused too; touch Playing aut
   tp.tap(195.0, 400.0)
   tp.run_for(playing_for("k").media.times().1 + @player.media_wake_ms + 20.0)
   assert_true(tp.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="touch Paused tap brings controls back")
-  // Touch Playing: auto-fades at 3000ms (still visible at 2999ms, hidden at 3000 + sleep_ms)
+  // Touch Playing: never fades by itself either; a tap hides it
   let tplay = player_tester(true, "a.mp4", [], [], [], pin=pinned(2000.0))
   tplay.draw()
-  tplay.run_for(player_touch_idle_ms - 1.0)
-  assert_true(tplay.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="touch Playing visible at 2999ms")
-  tplay.run_for(1.0 + sleep_ms + 1.0)
-  assert_true(tplay.query(Slider, label="web-pages.drive.player.position") is None, msg="touch Playing hidden at 3000+sleep_ms")
+  tplay.run_for(long_rest_ms)
+  assert_true(tplay.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="touch Playing still shown after a long rest")
+  hide_by_tap(tplay, 195.0, 400.0)
+  assert_true(tplay.query(Slider, label="web-pages.drive.player.position") is None, msg="touch Playing tap hides controls")
 }
 
 ///|
@@ -598,14 +585,15 @@ test "wave27 R1: Buffering never raises chrome during AlongTime or brief stall; 
   t.draw()
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="buffering during AlongTime must not raise bottom bar")
   t.release(180.0, 300.0)
-  // 2. Playing hidden state: brief buffering (< wait_ms) does NOT wake; > wait_ms wakes & locks; recovery re-arms full 2000ms
+  // 2. Playing hidden state: brief buffering (< wait_ms) does NOT wake; > wait_ms wakes & locks; recovery hides them
+  // again, as the tap left them
   let td = player_tester(false, "a.mp4", [], [], [])
   td.host_says_finger(Some(false))
   td.draw()
   let d_wait = playing_for("k").media.times().0
   td.set_player(1, position=2000.0, duration=10000.0, playing=true)
   td.draw()
-  td.run_for(player_desk_idle_ms + sleep_ms + step_ms)
+  hide_by_tap(td, 640.0, 400.0)
   assert_true(td.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden before brief stall")
   td.set_player(1, position=2000.0, duration=10000.0, playing=true, buffering=true)
   td.run_for(d_wait / 2.0)
@@ -616,20 +604,17 @@ test "wave27 R1: Buffering never raises chrome during AlongTime or brief stall; 
   td.set_player(1, position=2000.0, duration=10000.0, playing=true, buffering=true)
   td.run_for(d_wait + @player.media_wake_ms + step_ms)
   assert_true(td.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="buffering > wait_ms wakes and locks controls")
-  // Recovery re-arms full 2000ms
+  // Recovery: back to hidden, as the tap left them
   td.set_player(1, position=2000.0, duration=10000.0, playing=true, buffering=false)
-  td.draw()
-  td.run_for(player_desk_idle_ms - step_ms)
-  assert_true(td.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still visible at 1990ms after buffering ends")
-  td.run_for(step_ms + sleep_ms + step_ms)
-  assert_true(td.query(Slider, label="web-pages.drive.player.position") is None, msg="faded after full 2000ms + sleep_ms")
+  td.run_for(@player.media_sleep_ms + step_ms)
+  assert_true(td.query(Slider, label="web-pages.drive.player.position") is None, msg="hidden again after buffering ends")
 }
 
 ///|
-test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome; Tab focus on top back button locks and re-arms" {
+test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome; Tab focus on top back button locks" {
   let sleep_ms = @player.media_sleep_ms
   let step_ms = 10.0
-  // 1. Mouse press & drag on timeline slider and volume slider, then move pointer back to stage -> fades normally
+  // 1. Mouse press & drag on timeline slider and volume slider, then a click alone on the stage still hides them
   let t = player_tester(false, "a.mp4", [], [], [], keyed=true, pin=pinned(2000.0))
   t.host_says_finger(Some(false))
   t.draw()
@@ -645,11 +630,11 @@ test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome;
     None => fail("timeline slider must exist")
   }
   t.move_to(640.0, 400.0)
-  t.run_for(player_desk_idle_ms + sleep_ms + step_ms)
+  hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="timeline mouse drag must not leave focus lock")
-  // Wake and repeat with volume slider
-  t.move_to(640.0, 420.0)
-  t.run_for(@player.media_wake_ms + step_ms)
+  // Wake by a click alone and repeat with volume slider
+  t.tap(640.0, 420.0)
+  t.run_for(@ui.double_tap_ms + @player.media_wake_ms + step_ms)
   match t.query(Slider, label="web-pages.drive.player.volume") {
     Some(vol) => {
       let (rx, ry, rw, rh) = vol.rect
@@ -662,9 +647,9 @@ test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome;
     None => fail("volume slider must exist")
   }
   t.move_to(640.0, 400.0)
-  t.run_for(player_desk_idle_ms + sleep_ms + step_ms)
+  hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="volume mouse drag must not leave focus lock")
-  // 2. Keyboard Tab focus on desktop top-bar back button locks chrome past 2000ms; blurring re-arms full 2000ms
+  // 2. Keyboard Tab focus on desktop top-bar back button locks chrome; a click on the stage clears it and hides them
   t.key(@ui.key_tab)
   t.run_for(@player.media_wake_ms + step_ms)
   // Advance Tab until focused element is the top-bar back button ("影片")
@@ -682,7 +667,7 @@ test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome;
     }
   }
   assert_true(on_back_btn, msg="Tab must reach desktop top-bar back button")
-  t.run_for(player_desk_idle_ms + sleep_ms + step_ms)
+  t.run_for(long_rest_ms)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="keyboard focus on back button locks chrome")
   // Clear visible keyboard focus by clicking stage (pointer click clears focus_shown): the lock gone, that click alone
   // hides the controls once a double click's time has gone
@@ -703,8 +688,9 @@ test "wave27 R1: timeline disabled during fade-out does not call scrub_done for 
   t.draw()
   t.set_player(1, position=2000.0, duration=10000.0, playing=true)
   t.draw()
-  // Trigger fade-out at 3000ms, advance halfway through sleep_ms (fading, not yet faded=true)
-  t.run_for(player_touch_idle_ms + sleep_ms / 2.0)
+  // A tap alone starts the fade-out once a double tap's time has gone; halfway through sleep_ms (fading, not faded)
+  t.tap(195.0, 400.0)
+  t.run_for(@ui.double_tap_ms + sleep_ms / 2.0)
   let s0 = count_controls(t, 9, value="0")
   // Start AlongTime horizontal drag during the fade-out window and hold past fade completion
   t.press_at(100.0, 300.0)
@@ -759,59 +745,25 @@ test "wave27 R1: crossing wide/narrow breakpoint mid-AlongTime and mid-2x-hold c
 }
 
 ///|
-test "wave27 R1: plain set_a11y does not lock chrome; reactive set_screen_reader wakes faded controls without manual draw and re-arms 2000ms" {
-  let sleep_ms = @player.media_sleep_ms
+test "wave27 R1: plain set_a11y does not lock chrome; reactive set_screen_reader shows hidden controls without manual draw while on" {
   let step_ms = 20.0
-  // 1. Plain set_a11y(true) (non-screen-reader AX/UIA client) must NOT lock controls: fades normally at 2000ms
+  // 1. Plain set_a11y(true) (non-screen-reader AX/UIA client) must NOT lock controls: a click alone hides them
   let t = player_tester(false, "a.mp4", [], [], [], pin={ ..pinned(2000.0), playing: false })
   t.host_says_finger(Some(false))
   t.set_a11y(true)
   t.draw()
-  t.run_for(player_desk_idle_ms + sleep_ms + step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="plain set_a11y(true) must not prevent 2000ms auto-fade")
-  // 2. On the same paused faded instance, set_screen_reader(true) without manual draw() wakes & locks via frame step
+  hide_by_tap(t, 640.0, 400.0)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="plain set_a11y(true) must not lock controls")
+  // 2. On the same paused hidden instance, set_screen_reader(true) without manual draw() wakes & locks via frame step
   t.set_screen_reader(true)
   t.run_for(@player.media_wake_ms + step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="set_screen_reader(true) proactively wakes faded controls")
-  t.run_for(player_desk_idle_ms + sleep_ms + step_ms)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="set_screen_reader(true) proactively wakes hidden controls")
+  hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="set_screen_reader(true) keeps controls locked")
-  // 3. Turn screen reader off: re-arms full 2000ms
+  // 3. Turn screen reader off: back to hidden, as the click left them
   t.set_screen_reader(false)
-  t.run_for(player_desk_idle_ms - 100.0)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still visible at 1900ms after screen reader off")
-  t.run_for(100.0 + sleep_ms + step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="faded after full 2000ms + sleep_ms")
-}
-
-///|
-test "wave27 R2: touch 2999ms single-tap hides without 3000ms idle inversion; 2999ms double-tap seeks and re-arms idle" {
-  let sleep_ms = @player.media_sleep_ms
-  let step_ms = 10.0
-  // 1. Playing, visible, unlocked -> advance to 2999ms -> single tap -> crosses 3000ms & 3299ms+sleep_ms: stays hidden!
-  let t = player_tester(true, "a.mp4", [], [], [], pin=pinned(2000.0))
-  t.draw()
-  let double_ms = playing_for("k").media.times().1
-  t.run_for(player_touch_idle_ms - 1.0)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="visible at 2999ms before tap")
-  t.tap(195.0, 400.0)
-  // Cross 3000ms (old idle deadline was cancelled) and double_ms + sleep_ms (single tap hides)
-  t.run_for(double_ms + sleep_ms + step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="2999ms single-tap intent must stay hidden, never inverted")
-  // 2. At 2999ms, double-tap on right third still seeks +15s and re-arms 3000ms idle (not permanently locked)
-  let td = player_tester(true, "a.mp4", [], [], [])
-  td.draw()
-  td.set_player(1, position=2000.0, duration=30000.0, playing=true)
-  td.draw()
-  let d_double = playing_for("k").media.times().1
-  td.run_for(player_touch_idle_ms - 1.0)
-  let s0 = count_controls(td, 3) + count_controls(td, 11)
-  td.tap(320.0, 400.0)
-  td.run_for(d_double / 3.0)
-  td.tap(320.0, 400.0)
-  td.draw()
-  assert_true(count_controls(td, 3) + count_controls(td, 11) > s0, msg="2999ms double-tap right third seeks ahead")
-  td.run_for(player_touch_idle_ms + sleep_ms + step_ms)
-  assert_true(td.query(Slider, label="web-pages.drive.player.position") is None, msg="2999ms double-tap re-arms idle and fades")
+  t.run_for(@player.media_sleep_ms + step_ms)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="hidden again after screen reader off")
 }
 
 ///|
@@ -845,10 +797,9 @@ test "wave27 R2: cancel_stage_gesture clears pending single-tap across wide/narr
 }
 
 ///|
-test "wave27 R3: playing tap + breakpoint cross restores 3000ms idle; lock engaging mid-double_ms preserves awake for full 3000ms" {
-  let sleep_ms = @player.media_sleep_ms
+test "wave27 R3: playing tap + breakpoint cross leaves the controls, firing nothing; a lock engaging mid-double_ms keeps them" {
   let step_ms = 10.0
-  // 1. Playing single tap -> cross wide/narrow breakpoint within double_ms -> no further input: auto-fades at 3000ms + sleep_ms
+  // 1. Playing single tap -> cross wide/narrow breakpoint within double_ms -> no further input: the tap forgotten
   let t = player_tester(true, "a.mp4", [], [], [])
   t.draw()
   t.set_player(1, position=5000.0, duration=30000.0, playing=true)
@@ -861,13 +812,12 @@ test "wave27 R3: playing tap + breakpoint cross restores 3000ms idle; lock engag
   t.resize(1280.0, 800.0)
   t.host_says_finger(Some(true))
   t.draw()
-  // No further input: idle timer was restored by cancel_stage_gesture, so controls fade after 3000ms + sleep_ms
-  t.run_for(player_touch_idle_ms + sleep_ms + step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="playing tap + breakpoint cross must restore 3000ms auto-fade")
+  t.run_for(long_rest_ms)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="the tap forgotten across the breakpoint: still shown")
   assert_eq(count_play_pause(t), pp0, msg="zero play/pause fired")
   assert_eq(count_controls(t, 3) + count_controls(t, 11), sk0, msg="zero seek fired")
 
-  // 2. Playing single tap on visible bar -> at 100ms set_screen_reader(true) -> cross double_ms -> set_screen_reader(false) -> full 3000ms!
+  // 2. Playing single tap on visible bar -> at 100ms set_screen_reader(true) -> cross double_ms -> off: still shown
   let t2 = player_tester(true, "a.mp4", [], [], [], pin=pinned(5000.0))
   t2.draw()
   let d2 = playing_for("k").media.times().1
@@ -877,13 +827,11 @@ test "wave27 R3: playing tap + breakpoint cross restores 3000ms idle; lock engag
   t2.run_for(d2 + step_ms) // single-tap callback fires while chrome_locked() is true -> must NOT overwrite awake=false
   assert_true(t2.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="controls remain locked while screen reader on")
   t2.set_screen_reader(false)
-  t2.run_for(player_touch_idle_ms - 100.0)
-  assert_true(t2.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still visible at 2900ms after unlock")
-  t2.run_for(100.0 + sleep_ms + step_ms)
-  assert_true(t2.query(Slider, label="web-pages.drive.player.position") is None, msg="faded after full 3000ms + sleep_ms")
+  t2.run_for(long_rest_ms)
+  assert_true(t2.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still shown after unlock")
 
   // 3. Playing single tap on visible bar -> lock engages at 100ms AND releases at 200ms (all within double_ms=300ms):
-  // stale single-tap hide at 300ms must be invalidated by lock_epoch, keeping the full 3000ms deadline from 200ms!
+  // stale single-tap hide at 300ms must be invalidated by lock_epoch
   let t3 = player_tester(true, "a.mp4", [], [], [], pin=pinned(5000.0))
   t3.draw()
   let d3 = playing_for("k").media.times().1
@@ -894,31 +842,8 @@ test "wave27 R3: playing tap + breakpoint cross restores 3000ms idle; lock engag
   t3.set_screen_reader(false)
   t3.run_for(d3 / 3.0 + step_ms) // ~310ms: past 300ms single-tap deadline; bar MUST remain visible!
   assert_true(t3.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="stale hide invalidated when lock engaged and released mid-double_ms")
-  // Advance to 2900ms after unlock (~200ms + 2900ms = 3100ms; we already ran d3/3 + step_ms since unlock)
-  let elapsed_since_unlock = d3 / 3.0 + step_ms
-  t3.run_for(player_touch_idle_ms - 100.0 - elapsed_since_unlock)
-  assert_true(t3.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still visible at 2900ms after mid-tap unlock")
-  t3.run_for(100.0 + sleep_ms + step_ms)
-  assert_true(t3.query(Slider, label="web-pages.drive.player.position") is None, msg="faded after full 3000ms + sleep_ms from unlock")
-
-  // 4. Faded state 0ms tap -> 100ms set_screen_reader(true) -> 200ms set_screen_reader(false):
-  // stale single-tap want_show at 300ms must NOT postpone the 200ms + 3000ms deadline to 3300ms!
-  let t4 = player_tester(true, "a.mp4", [], [], [], pin=pinned(5000.0))
-  t4.draw()
-  let d4 = playing_for("k").media.times().1
-  t4.run_for(player_touch_idle_ms + sleep_ms + step_ms)
-  assert_true(t4.query(Slider, label="web-pages.drive.player.position") is None, msg="controls faded before 0ms tap")
-  t4.tap(195.0, 400.0)
-  t4.run_for(d4 / 3.0) // 100ms
-  t4.set_screen_reader(true)
-  t4.run_for(d4 / 3.0) // 200ms
-  t4.set_screen_reader(false)
-  // Advance to 2900ms after unlock (200ms + 2900ms = 3100ms): still visible
-  t4.run_for(player_touch_idle_ms - 100.0)
-  assert_true(t4.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="faded-start: still visible at 2900ms after unlock")
-  // Advance 100ms + sleep_ms + step_ms (200ms + 3000ms + sleep_ms, BEFORE 3300ms + sleep_ms!): already faded!
-  t4.run_for(100.0 + sleep_ms + step_ms)
-  assert_true(t4.query(Slider, label="web-pages.drive.player.position") is None, msg="faded-start: stale want_show must not postpone deadline to 3300ms")
+  t3.run_for(long_rest_ms)
+  assert_true(t3.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still shown long after mid-tap unlock")
 }
 
 ///|
@@ -1006,6 +931,11 @@ test "wave27 V5: desktop click hides the controls though the pointer moves on wi
   tt.move_to(660.0, 400.0)
   tt.run_for(double_ms + sleep_ms + 10.0)
   assert_true(tt.query(Slider, label="web-pages.drive.player.position") is None, msg="the click hid the controls")
+  // The hand moving over the stage after: they stay hidden (only a click shows them)
+  tt.move_to(500.0, 300.0)
+  tt.move_to(700.0, 450.0)
+  tt.run_for(long_rest_ms)
+  assert_true(tt.query(Slider, label="web-pages.drive.player.position") is None, msg="the pointer moving never shows them")
   // A double click on the left third: back by its nudge; on the right third: on by it
   let back = t(
     "android-misc.drive.player.back",

@@ -71,9 +71,8 @@ pub let player_speeds : Array[Double] = [0.1, 0.25, 0.5, 1.0, 1.25, 1.5, 2.0]
 
 ///|
 /// A player for a page (`key` keeps its widgets apart from another's), its waits said once they have waited later_ms;
-/// its controls auto-fade after idle (2000 ms for desktop pointer in playing or paused state, 3000 ms for touch while
-/// playing; deterministic `at_moment(later=true)`, never auto-fading while `@hostapi.a11y_on()`), superseding the
-/// earlier never-auto-hide rule (zuozijian, 2026-11-25).
+/// its controls never fade by themselves for the hand resting or leaving the window: a tap or click alone shows or hides
+/// them (zuozijian, 2026-11-25: the idle auto-fade and the hide on leaving taken out again).
 pub fn new_media(key : String) -> @player.Media {
   @player.Media::new(key~, speeds=player_speeds, wait_ms=later_ms)
 }
@@ -625,14 +624,7 @@ let player_second_ms : Double = 1000.0
 let player_speeds_w : Double = 120.0
 
 ///|
-/// Idle auto-fade durations (desktop pointer: 2000 ms in playing or paused; touch while playing: 3000 ms) and quiet
-/// play/pause center feedback duration (450 ms).
-let player_desk_idle_ms : Double = 2000.0
-
-///|
-let player_touch_idle_ms : Double = 3000.0
-
-///|
+/// Quiet play/pause center feedback duration (450 ms).
 let player_quiet_note_ms : Double = 450.0
 
 ///|

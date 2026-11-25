@@ -1,0 +1,262 @@
+// Codex app-server outcome, toolsLost, compaction, and event sink
+// (1:1 port of `station/mb/src/codex/outcome.mbt` using lossless UTF-16 `Array[Int]`).
+
+import "js_json"
+import "live_wire"
+import "parse_claude"
+
+fn word_unit_codex(c : Int) -> Bool {
+  (c >= 0x30 && c <= 0x39) ||
+  (c >= 0x41 && c <= 0x5A) ||
+  (c >= 0x61 && c <= 0x7A) ||
+  c == 0x5F
+}
+
+fn boundary_codex(s : Bytes, at : Int) -> Bool {
+  let before = at > 0 && word_unit_codex(s[at - 1].to_int() & 0xFF)
+  let after = at < s.length() && word_unit_codex(s[at].to_int() & 0xFF)
+  before != after
+}
+
+fn at_is_codex(s : Bytes, at : Int, w : Bytes) -> Bool {
+  let wl = w.length()
+  if at < 0 || at + wl > s.length() {
+    return false
+  }
+  for j in 0..<wl {
+    if s[at + j] != w[j] {
+      return false
+    }
+  }
+  true
+}
+
+/// `/\b(?:401|unauthorized|token_revoked)\b|invalidated oauth token/i.test(s)`.
+fn says_unauthorized(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let b = StringBuilder::new()
+  for i in 0..<n {
+    let c = raw[i].to_int() & 0xFF
+    if c >= 0x41 && c <= 0x5A {
+      b.write_byte((c + 32) as Byte)
+    } else {
+      b.write_byte(raw[i])
+    }
+  }
+  let folded = b.to_string().to_bytes()
+  let fl = folded.length()
+  let w_oauth = "invalidated oauth token".to_bytes()
+  let words : Array[Bytes] = [
+    "401".to_bytes(),
+    "unauthorized".to_bytes(),
+    "token_revoked".to_bytes(),
+  ]
+  for i in 0..<fl {
+    if at_is_codex(folded, i, w_oauth) {
+      return true
+    }
+    if !boundary_codex(folded, i) {
+      continue
+    }
+    for k in 0..<words.length() {
+      let w = words[k]
+      if at_is_codex(folded, i, w) && boundary_codex(folded, i + w.length()) {
+        return true
+      }
+    }
+  }
+  false
+}
+
+fn first_obj_key(entries : Array[(Array[Int], js_json::JValue)]) -> Option[Array[Int]] {
+  if entries.length() == 0 {
+    return None
+  }
+  // JS Object.keys order: array indices ascending first, else first insertion key
+  let mut best_idx : Option[Int64] = None
+  let mut best_key : Option[Array[Int]] = None
+  for i in 0..<entries.length() {
+    let (k, _) = entries[i]
+    match js_json::index_key(k) {
+      Some(idx) => {
+        match best_idx {
+          Some(cur) => {
+            if idx < cur {
+              best_idx = Some(idx)
+              best_key = Some(k)
+            }
+          }
+          None => {
+            best_idx = Some(idx)
+            best_key = Some(k)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  match best_key {
+    Some(k) => Some(k)
+    None => {
+      let (k0, _) = entries[0]
+      Some(k0)
+    }
+  }
+}
+
+/// Why a Codex turn failed (codex.ts `classifyCodexError`).
+pub fn classify_error(info : Option[js_json::JValue], message : String) -> String {
+  let code_u16 : Option[Array[Int]] = match info {
+    Some(js_json::JValue::Str(s)) => Some(s)
+    Some(js_json::JValue::Obj(entries)) => first_obj_key(entries)
+    _ => None
+  }
+  let code : Option[String] = match code_u16 {
+    Some(u) => Some(js_json::sanitize_str(u))
+    None => None
+  }
+  match code {
+    Some("unauthorized") => return "auth"
+    Some("usageLimitExceeded") => return "rate_limit"
+    Some("rateLimitExceeded") => return "rate_limit"
+    Some("serverOverloaded") => return "overloaded"
+    Some("contextWindowExceeded") => return "context"
+    _ => ()
+  }
+  let held : Option[js_json::JValue] = match (code_u16, info) {
+    (Some(c), Some(o)) => o.get_units(c)
+    _ => None
+  }
+  let status : Option[Double] = match held {
+    Some(js_json::JValue::Obj(_)) => {
+      match live_wire::field(held, "httpStatusCode") {
+        Some(js_json::JValue::Num(n)) => Some(n)
+        _ => None
+      }
+    }
+    _ => None
+  }
+  match status {
+    Some(n) => {
+      if n == 401.0 || n == 403.0 || n == 429.0 || n == 529.0 {
+        return parse_claude::failure_of(n.to_int().to_string() + " " + message)
+      }
+    }
+    None => ()
+  }
+  if says_unauthorized(message) {
+    return "auth"
+  }
+  let code_s = match code {
+    Some(c) => c
+    None => ""
+  }
+  if code_s == "httpConnectionFailed" ||
+  code_s == "responseStreamConnectionFailed" ||
+  code_s == "responseStreamDisconnected" {
+    let ok = match status {
+      Some(n) => n >= 500.0
+      None => true
+    }
+    if ok {
+      return "network"
+    }
+  }
+  parse_claude::failure_of(message)
+}
+
+let tool_servers : Array[String] = ["stillfail"]
+
+/// What a notification says of the station's tools being out of reach (codex.ts `codexToolsLost`).
+pub fn tools_lost(method : String, params : js_json::JValue) -> Option[Array[Int]] {
+  let item = live_wire::field(Some(params), "item")
+  if method != "item/completed" || !live_wire::is_str(live_wire::field(item, "type"), "mcpToolCall") {
+    return None
+  }
+  let server_ok = match live_wire::str(live_wire::field(item, "server")) {
+    Some(s) => str_in(tool_servers, s)
+    None => false
+  }
+  if !server_ok || !live_wire::is_str(live_wire::field(item, "status"), "failed") {
+    return None
+  }
+  let error_u16 = text_u16(live_wire::field(live_wire::field(item, "error"), "message"))
+  if parse_claude::unreachable_u16(error_u16) {
+    Some(parse_claude::chars_u16(error_u16, 300))
+  } else {
+    None
+  }
+}
+
+/// Whether a notification says its thread compacted its context (codex.ts `codexCompacted`).
+pub fn compacted(method : String, params : js_json::JValue) -> Bool {
+  method == "item/completed" &&
+  live_wire::is_str(live_wire::field(live_wire::field(Some(params), "item"), "type"), "contextCompaction")
+}
+
+/// A turn's outcome as its `turn/completed` says it (lossless UTF-16 message).
+pub fn outcome(params : js_json::JValue) -> js_json::JValue {
+  let turn = live_wire::field(Some(params), "turn")
+  let status = live_wire::field(turn, "status")
+  if live_wire::is_str(status, "interrupted") {
+    return live_wire::aborted()
+  }
+  if live_wire::is_str(status, "failed") {
+    let error = live_wire::field(turn, "error")
+    let msg_u16 = live_wire::str_u16(live_wire::field(error, "message"))
+    let info = live_wire::field(error, "codexErrorInfo")
+    let msg_for_classify = match msg_u16 {
+      Some(u) => js_json::sanitize_str(u)
+      None => ""
+    }
+    let msg_for_out = match msg_u16 {
+      Some(u) => u
+      None => js_json::utf16_units("turn failed")
+    }
+    return live_wire::failed_u16(
+      classify_error(info, msg_for_classify),
+      parse_claude::chars_u16(msg_for_out, 1000),
+    )
+  }
+  live_wire::completed()
+}
+
+/// Pure-Pion `events` with custom number formatter.
+pub fn events_with(
+  live : Live,
+  method : String,
+  params : js_json::JValue,
+  fmt_num : (Double) -> String,
+) -> Array[js_json::JValue] {
+  let fed = live.feed_with(method, params, fmt_num)
+  let out : Array[js_json::JValue] = []
+  for i in 0..<fed.length() {
+    out.push(live_wire::live(fed[i]))
+  }
+  match tools_lost(method, params) {
+    Some(why) => {
+      out.push(live_wire::obj([("type", live_wire::jstr("toolsLost")), ("why", live_wire::jstr_u16(why))]))
+    }
+    None => ()
+  }
+  if compacted(method, params) {
+    out.push(live_wire::obj([("type", live_wire::jstr("compacted"))]))
+  }
+  if method == "turn/started" {
+    let fields : Array[(String, js_json::JValue)] = [("type", live_wire::jstr("turnStarted"))]
+    match live_wire::str_u16(live_wire::field(live_wire::field(Some(params), "turn"), "id")) {
+      Some(id) => fields.push(("turnId", live_wire::jstr_u16(id)))
+      None => ()
+    }
+    out.push(live_wire::obj(fields))
+  } else if method == "turn/completed" {
+    out.push(live_wire::turn_ended(outcome(params)))
+  }
+  out
+}
+
+/// What a thread's notification comes to for its session (codex.ts `CodexSession.sink`).
+pub fn events(live : Live, method : String, params : js_json::JValue) -> Array[js_json::JValue] {
+  events_with(live, method, params, js_json::num_text)
+}

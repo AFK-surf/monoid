@@ -94,7 +94,7 @@ test "both players, a phone's: opened, played; the film edge to edge in the midd
 }
 
 ///|
-test "both players, a phone's and a desktop's: played, left alone past idle deadline, controls auto-fade" {
+test "both players, a phone's and a desktop's: played, left alone however long, controls stay" {
   for narrow in [true, false] {
     let seen = both("left alone", fn(node) { either_player(node, narrow, "a.mp4", []) }, fn(t, m) {
       if !narrow {
@@ -102,11 +102,10 @@ test "both players, a phone's and a desktop's: played, left alone past idle dead
       }
       m.pin({ ..pinned(1000.0), playing: true })
       t.draw()
-      let idle_ms = if narrow { player_touch_idle_ms } else { player_desk_idle_ms }
-      t.run_for(idle_ms + @player.media_sleep_ms + 50.0)
-      t.query(Slider, label="web-pages.drive.player.position") is None
+      t.run_for(long_rest_ms)
+      t.query(Slider, label="web-pages.drive.player.position") is Some(_)
     })
-    assert_true(seen, msg="narrow \{narrow}: controls auto-faded")
+    assert_true(seen, msg="narrow \{narrow}: controls stayed")
   }
 }
 
