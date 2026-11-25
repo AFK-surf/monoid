@@ -9,12 +9,24 @@
 // 新建终端 nor bar's ＋ apart from the stations' headings)
 
 ///|
-// kept across runs: reset via `remote_agent_seen_reset` (wired in `init`)
+// kept across runs: reset via `init`
 let remote_agent_seen : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
 
 ///|
+// kept across runs: last known `chat_screens_driven` per station, cleared in `init`
+let remote_agent_station : Map[String, Bool] = Map([])
+
+///|
+// kept across runs: last known `chat_screens_driven` per workspace, cleared in `init`
+let remote_agent_last : Map[String, Bool] = Map([])
+
+///|
 fn init {
-  @ui.on_reset(fn() { remote_agent_seen.clear() })
+  @ui.on_reset(fn() {
+    remote_agent_seen.clear()
+    remote_agent_station.clear()
+    remote_agent_last.clear()
+  })
 }
 
 ///|
@@ -24,10 +36,19 @@ pub fn remote_agent_lit(src : Source, ws : String) -> Bool {
     return true
   }
   match @sfbase.app.nav.top() {
-    Chat(r) =>
+    Chat(r) if r.station.has_prefix(ws + "/") =>
       match @sfbase.chat_view_now(src, r) {
-        Some(v) => @sfbase.chat_screens_driven(v.screens)
-        None => false
+        Some(v) => {
+          let lit = @sfbase.chat_screens_driven(v.screens)
+          remote_agent_station[r.station] = lit
+          remote_agent_last[ws] = lit
+          lit
+        }
+        None =>
+          match remote_agent_station.get(r.station) {
+            Some(lit) => lit
+            None => remote_agent_last.get(ws).unwrap_or(false)
+          }
       }
     _ => false
   }
@@ -674,15 +695,26 @@ pub fn remote_list_node(
     fn() {
       let cur_ws = ws()
       let mut any_agent = false
+      let by_station : Array[(String, Bool)] = []
       for st in remote_online_stations(src, cur_ws) {
         let sval = src.topic("screens", { "station": Json::string(st.0) }).get().value
-        if items(sval, "screens").any(fn(sc) { flag(Some(sc), "agent") }) {
-          any_agent = true
+        if sval is Some(_) {
+          let driven = items(sval, "screens").any(fn(sc) { flag(Some(sc), "agent") })
+          by_station.push((st.0, driven))
+          if driven {
+            any_agent = true
+          }
         }
       }
-      (cur_ws, any_agent)
+      (cur_ws, any_agent, by_station)
     },
-    fn(pair) { remote_agent_seen.set(pair.0, pair.1) },
+    fn(t) {
+      remote_agent_seen.set(t.0, t.1)
+      remote_agent_last[t.0] = t.1
+      for p in t.2 {
+        remote_agent_station[p.0] = p.1
+      }
+    },
   )
   let lines = @signals.computed(fn(_) { remote_lines(src, ws(), asks_t) }, same=fn(a, b) { a == b })
   // (what the workbench beside a side column's list shows: its selected row)
