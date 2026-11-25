@@ -1,0 +1,77 @@
+// Wave 8 `js_json` additions:
+// - `write_utf8` / `write_utf8_with_num`: streaming lossless UTF-16 JSON serialization to a
+//   `StringBuilder` with U+2028/U+2029 escaped (1:1 `station/mb/src/jsjson/jsjson.mbt:608`).
+// - `js_string` / `js_string_with`: `String(v)` on `JValue` (1:1 `jsjson.mbt:731`).
+// - `jval_from_json`: convert `base_codec::Json` to `JValue` (matching `@replica.of_json`).
+
+import "base_codec"
+import "sqlite_ffi"
+
+/// Write `v` as UTF-8 JSON bytes into `out` with U+2028/U+2029 escaped and custom number formatter.
+/// 1:1 aligned with `station/mb/src/jsjson/jsjson.mbt:608` (`write_utf8`).
+pub fn write_utf8_with_num(
+  out : StringBuilder,
+  v : JValue,
+  fmt_num : (Double) -> String,
+) -> Unit {
+  write_value(out, v, true, fmt_num)
+}
+
+/// Write `v` as UTF-8 JSON bytes into `out` with U+2028/U+2029 escaped and JS number formatting.
+/// 1:1 aligned with `station/mb/src/jsjson/jsjson.mbt:608` (`write_utf8`).
+pub fn write_utf8(out : StringBuilder, v : JValue) -> Unit {
+  write_value(out, v, true, sqlite_ffi::format_js_double)
+}
+
+/// `String(v)` on `JValue` with a caller-provided finite-number formatter (`jsjson.mbt:731`).
+pub fn js_string_with(v : JValue, fmt_num : (Double) -> String) -> String {
+  match v {
+    JValue::Str(u) => sanitize_str(u)
+    JValue::Null => "null"
+    JValue::Arr(items) => {
+      let sb = StringBuilder::new()
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        match items[i] {
+          JValue::Null => ()
+          item => sb.write_string(js_string_with(item, fmt_num))
+        }
+      }
+      sb.to_string()
+    }
+    JValue::Obj(_) => "[object Object]"
+    other => stringify_with_num(other, fmt_num)
+  }
+}
+
+/// `String(v)` on `JValue` (`jsjson.mbt:731`).
+pub fn js_string(v : JValue) -> String {
+  js_string_with(v, sqlite_ffi::format_js_double)
+}
+
+/// Convert `base_codec::Json` to lossless `JValue` (matching `@replica.of_json`).
+pub fn jval_from_json(j : base_codec::Json) -> JValue {
+  match j {
+    base_codec::Json::Null => JValue::Null
+    base_codec::Json::Bool(b) => JValue::Bool(b)
+    base_codec::Json::Num(d, _) => JValue::Num(d)
+    base_codec::Json::Str(s) => JValue::Str(utf16_units(s))
+    base_codec::Json::Arr(items) => {
+      let out : Array[JValue] = []
+      for i in 0..<items.length() {
+        out.push(jval_from_json(items[i]))
+      }
+      JValue::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(Array[Int], JValue)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((utf16_units(k), jval_from_json(v)))
+      }
+      JValue::Obj(out)
+    }
+  }
+}

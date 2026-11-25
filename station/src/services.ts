@@ -22,6 +22,7 @@ import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "../../shared/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
 import { warmPionProbeForConfig } from "./read/mb-reader.ts";
+import { registerSessionsReaderConfig } from "./agents/mb-program.ts";
 import type { ReaderSelectConfig } from "./read/reader-select.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
@@ -366,10 +367,15 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
   static readonly layer = Layer.effect(
     ReaderConfig,
     Effect.gen(function* () {
+      const { data } = yield* Paths;
       const config = yield* StationConfig;
       const snap = yield* Effect.acquireRelease(
         Effect.sync(() => makeReaderConfigSnapshot(config)),
         (s) => Effect.sync(() => s.stop()),
+      );
+      yield* Effect.acquireRelease(
+        Effect.sync(() => registerSessionsReaderConfig(data, snap.get)),
+        (unregister) => Effect.sync(() => unregister()),
       );
       yield* Effect.promise(() => warmPionProbeForConfig(snap.get()));
       return snap.get;

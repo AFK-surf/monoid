@@ -30,12 +30,18 @@ members = [
   "packages/footprint",
   "packages/memory",
   "packages/packed",
+  "packages/live_wire",
+  "packages/pieces",
+  "packages/admit",
+  "packages/sessions_core",
+  "packages/reader_sessions",
   "packages/smoke",
 ]
 
 [workspace.dependencies]
 base64 = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "base64-v0.1.0", subdir = "packages/base64" }
 crypto = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "crypto-v0.4.1", subdir = "packages/crypto" }
+effect = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "effect-v0.1.0", subdir = "packages/effect" }
 flate = { git = "https://github.com/AFK-surf/pion-packages.git", tag = "flate-v0.1.0", subdir = "packages/flate" }
 base_codec = { path = "../base/packages/base_codec" }
 host_shim = { path = "packages/host_shim" }
@@ -68,3 +74,8 @@ reader_serve = { path = "packages/reader_serve" }
 footprint = { path = "packages/footprint" }
 memory = { path = "packages/memory" }
 packed = { path = "packages/packed" }
+live_wire = { path = "packages/live_wire" }
+pieces = { path = "packages/pieces" }
+admit = { path = "packages/admit" }
+sessions_core = { path = "packages/sessions_core" }
+reader_sessions = { path = "packages/reader_sessions" }

@@ -1,0 +1,73 @@
+// Pure-Pion unit tests for Wave 8 `js_json` additions (`write_utf8_with_num`, `js_string_with`,
+// `jval_from_json`, and `js_compare` UTF-16 ordering parity with `search.compare_units`).
+
+import "base_codec"
+
+fn w8_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+test "js_json: write_utf8_with_num escapes U+2028/U+2029 and preserves lone surrogates" {
+  let sb = StringBuilder::new()
+  sb.write_string("{\"lines\":1,\"events\":[")
+  // String with U+2028, U+2029, surrogate pair (U+1F600), lone high surrogate (0xD800), control char (0x01)
+  let units : Array[Int] = [0x61, 0x2028, 0x62, 0x2029, 0xD83D, 0xDE00, 0xD800, 0x01]
+  let jv = JValue::Obj([
+    (utf16_units("b"), JValue::Num(1.0)),
+    (utf16_units("2"), JValue::Str(units)),
+    (utf16_units("0"), JValue::Null),
+    (utf16_units("nan"), JValue::Num(0.0 / 0.0)),
+    (utf16_units("inf"), JValue::Num(1.0 / 0.0)),
+  ])
+  write_utf8_with_num(sb, jv, w8_fmt_num)
+  sb.write_string("]}")
+  let got = sb.to_string()
+  let want = "{\"lines\":1,\"events\":[{\"0\":null,\"2\":\"a\\u2028b\\u2029😀\\ud800\\u0001\",\"b\":1,\"nan\":null,\"inf\":null}]}"
+  assert(got == want)
+}
+
+test "js_json: write_utf8_with_num streams multiple values into one buffer" {
+  let sb = StringBuilder::new()
+  write_utf8_with_num(sb, JValue::Bool(true), w8_fmt_num)
+  sb.write_byte(0x2C as Byte)
+  write_utf8_with_num(sb, JValue::Bool(false), w8_fmt_num)
+  sb.write_byte(0x2C as Byte)
+  write_utf8_with_num(sb, JValue::Arr([JValue::Num(42.0), JValue::Str(utf16_units("ok\n\"\\"))]), w8_fmt_num)
+  assert(sb.to_string() == "true,false,[42,\"ok\\n\\\"\\\\\"]")
+}
+
+test "js_json: js_string_with matches JS String(v)" {
+  assert(js_string_with(JValue::Null, w8_fmt_num) == "null")
+  assert(js_string_with(JValue::Bool(true), w8_fmt_num) == "true")
+  assert(js_string_with(JValue::Num(42.0), w8_fmt_num) == "42")
+  assert(js_string_with(JValue::Str(utf16_units("hi")), w8_fmt_num) == "hi")
+  assert(js_string_with(JValue::Obj([]), w8_fmt_num) == "[object Object]")
+  assert(
+    js_string_with(JValue::Arr([JValue::Num(1.0), JValue::Null, JValue::Str(utf16_units("a"))]), w8_fmt_num) ==
+    "1,,a",
+  )
+}
+
+test "js_json: jval_from_json round-trip" {
+  let j = base_codec::json_obj([
+    ("b", base_codec::json_int(2)),
+    ("0", base_codec::json_str("first")),
+    ("arr", base_codec::json_arr([base_codec::json_bool(true), base_codec::json_null()])),
+  ])
+  let jv = jval_from_json(j)
+  assert(stringify_with_num(jv, w8_fmt_num) == "{\"0\":\"first\",\"b\":2,\"arr\":[true,null]}")
+}
+
+test "js_json: js_compare matches UTF-16 code-unit order (non-BMP < U+E000)" {
+  assert(js_compare("😀", "\u{E000}") < 0)
+  assert(js_compare("\u{E000}", "😀") > 0)
+  assert(js_compare("abc", "abc") == 0)
+  assert(js_compare("ab", "abc") < 0)
+  assert(js_compare("abc", "ab") > 0)
+}

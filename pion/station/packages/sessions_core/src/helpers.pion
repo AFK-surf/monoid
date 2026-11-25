@@ -1,0 +1,296 @@
+// Shared helpers, error types, Exit combinators, and same-task iterative trampoline
+// for `--sessions` subsystems (1:1 aligned with `wave8-plan.md` v5 §2.1 & §2.5).
+
+import "base_codec"
+import "builders_core"
+import "effect"
+import "js_json"
+import "nodepath"
+import "sql_db"
+import "transcript_io"
+
+/// Sentinel far-future timestamp matching `station/mb/src/reader/live.mbt:170`.
+pub let NEVER : Double = 1.0e300
+
+/// Convert an optional JSON number to `Int` (0 when missing or non-numeric; `serve.mbt:364`).
+pub fn int_of(v : Option[base_codec::Json]) -> Int {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => 0
+  }
+}
+
+pub fn jstr(s : String) -> base_codec::Json {
+  base_codec::json_str(s)
+}
+
+pub fn jnum(n : Double) -> base_codec::Json {
+  if js_json::is_safe_integer(n) {
+    base_codec::json_int64(n.to_int64())
+  } else {
+    base_codec::json_num(n)
+  }
+}
+
+pub fn jint(n : Int) -> base_codec::Json {
+  base_codec::json_int(n)
+}
+
+pub fn jbool(b : Bool) -> base_codec::Json {
+  base_codec::json_bool(b)
+}
+
+pub fn str_of(v : Option[base_codec::Json]) -> Option[String] {
+  match v {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+pub fn num_of(v : Option[base_codec::Json]) -> Option[Double] {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+pub fn truthy(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Null => false
+    base_codec::Json::Bool(b) => b
+    base_codec::Json::Num(n, _) => n != 0.0 && n == n
+    base_codec::Json::Str(s) => s.length() > 0
+    _ => true
+  }
+}
+
+pub fn jget(v : base_codec::Json, key : String) -> Option[base_codec::Json] {
+  builders_core::json_get_last(v, key)
+}
+
+pub fn field_of(v : base_codec::Json, key : String) -> base_codec::Json {
+  match jget(v, key) {
+    Some(found) => found
+    None => base_codec::json_null()
+  }
+}
+
+pub fn text_of(v : base_codec::Json, key : String) -> String {
+  match jget(v, key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+/// JSON.stringify of `v` with custom number formatter (for pure-Pion unit tests).
+pub fn js_text_with(v : base_codec::Json, fmt_num : (Double) -> String) -> String {
+  js_json::stringify_with_num(js_json::jval_from_json(v), fmt_num)
+}
+
+/// JSON.stringify of `v` (keys in JS order, numbers and strings as JavaScript writes them; `remote_files.mbt:39`).
+pub fn js_text(v : base_codec::Json) -> String {
+  js_json::stringify(js_json::jval_from_json(v))
+}
+
+/// SHA-256 of compact JSON with custom number formatter (for pure-Pion unit tests).
+pub fn rhash_with(v : base_codec::Json, fmt_num : (Double) -> String) -> String {
+  transcript_io::sha256_utf8_hex(js_text_with(v, fmt_num))
+}
+
+/// `remote.ts` `hash`: SHA-256 of the value as compact JS JSON, lowercase hex (`remote_files.mbt:45`).
+pub fn rhash(v : base_codec::Json) -> String {
+  transcript_io::sha256_utf8_hex(js_text(v))
+}
+
+/// Node `path.join` for separator `sep` (`remote_files.mbt:52`).
+pub fn rjoin(sep : String, parts : Array[String]) -> String {
+  nodepath::join(sep, parts)
+}
+
+/// Node `path.dirname` for separator `sep` (`remote_files.mbt:57`).
+pub fn rdirname(sep : String, path : String) -> String {
+  nodepath::dirname(sep, path)
+}
+
+/// Node `path.basename` for separator `sep` (`remote_files.mbt:62`).
+pub fn rbasename(sep : String, path : String) -> String {
+  nodepath::basename(sep, path)
+}
+
+/// Strict JSON parser returning `Result[base_codec::Json, String]`.
+pub fn parse_json_strict(raw : String) -> Result[base_codec::Json, String] {
+  match sql_db::parse_json(raw) {
+    base_codec::JsonParseResult::Ok(j) => Ok(j)
+    base_codec::JsonParseResult::Err(e) => Err(e)
+  }
+}
+
+// ── Errors (AskedError, FsError) & EffectError encoding ──
+
+let ASKED_PREFIX : String = "__ASKED__:"
+let FS_ERR_PREFIX : String = "__FSERR__:"
+
+pub struct AskedError {
+  pub cause : base_codec::Json
+}
+
+pub fn AskedError::new(cause : base_codec::Json) -> AskedError {
+  AskedError::{ cause: cause }
+}
+
+pub fn AskedError::message(self : AskedError) -> String {
+  match jget(self.cause, "message") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => base_codec::json_stringify(builders_core::normalize_json(self.cause))
+  }
+}
+
+pub fn AskedError::to_effect_error(self : AskedError) -> effect::EffectError {
+  effect::EffectError::Custom(
+    ASKED_PREFIX + base_codec::json_stringify(builders_core::normalize_json(self.cause)),
+  )
+}
+
+pub fn decode_asked_error(e : effect::EffectError) -> Option[AskedError] {
+  match e {
+    effect::EffectError::Custom(s) => {
+      if s.starts_with(ASKED_PREFIX) {
+        let payload = s.slice(ASKED_PREFIX.length(), s.length())
+        match parse_json_strict(payload) {
+          Ok(j) => Some(AskedError::{ cause: j })
+          Err(_) => Some(AskedError::{ cause: jstr(payload) })
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+pub struct FsError {
+  pub message : String
+}
+
+pub fn FsError::new(msg : String) -> FsError {
+  FsError::{ message: msg }
+}
+
+pub fn FsError::to_effect_error(self : FsError) -> effect::EffectError {
+  effect::EffectError::Custom(FS_ERR_PREFIX + self.message)
+}
+
+pub fn decode_fs_error(e : effect::EffectError) -> Option[FsError] {
+  match e {
+    effect::EffectError::Custom(s) => {
+      if s.starts_with(FS_ERR_PREFIX) {
+        Some(FsError::{ message: s.slice(FS_ERR_PREFIX.length(), s.length()) })
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Human-readable error message matching `Asked::message` / `FsError::of`.
+pub fn error_message(e : effect::EffectError) -> String {
+  match decode_asked_error(e) {
+    Some(a) => return a.message()
+    None => ()
+  }
+  match decode_fs_error(e) {
+    Some(f) => return f.message
+    None => ()
+  }
+  match e {
+    effect::EffectError::IoError(m) => m
+    effect::EffectError::Custom(m) => m
+    _ => effect::effect_error_to_string(e)
+  }
+}
+
+// ── Interrupt-preserving Exit combinators (`try_k` / `catch_k`) ──
+
+/// Run `body_k`; convert `Succeeded(x)` -> `Succeeded(Ok(x))`, `Failed(e)` -> `Succeeded(Err(e))`,
+/// and ALWAYS propagate `Exit::Interrupted` untouched.
+pub fn try_k[X](
+  body_k : ((effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[Result[X, effect::EffectError]]) -> Unit,
+) -> Unit {
+  body_k(fn(ex : effect::Exit[X]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(x) => k(effect::Exit::Succeeded(Ok(x)))
+      effect::Exit::Failed(e) => k(effect::Exit::Succeeded(Err(e)))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Run `body_k`; on `Failed(e)` run `recover_k(e, k)`; ALWAYS propagate `Exit::Interrupted` untouched.
+pub fn catch_k[X](
+  body_k : ((effect::Exit[X]) -> Unit) -> Unit,
+  recover_k : (effect::EffectError, (effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[X]) -> Unit,
+) -> Unit {
+  body_k(fn(ex : effect::Exit[X]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(x) => k(effect::Exit::Succeeded(x))
+      effect::Exit::Failed(e) => recover_k(e, k)
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+// ── Same-task iterative CPS trampoline (`iter_sync_k`) ──
+
+pub enum IterStep {
+  Continue
+  Stop
+}
+
+struct SyncTrampolineState {
+  mut in_step : Bool
+  mut sync_result : Option[effect::Exit[IterStep]]
+}
+
+/// Drives a continuation-returning loop step without stack growth and WITHOUT calling `pause_k`.
+/// Synchronous `IterStep::Continue` completions loop immediately inside the same task;
+/// asynchronous suspensions unwind cleanly and resume in a fresh `iter_sync_k` frame.
+pub fn iter_sync_k(
+  step : ((effect::Exit[IterStep]) -> Unit) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  while true {
+    let st = SyncTrampolineState::{ in_step: true, sync_result: None }
+    step(fn(ex : effect::Exit[IterStep]) -> Unit {
+      if st.in_step {
+        st.sync_result = Some(ex)
+      } else {
+        match ex {
+          effect::Exit::Succeeded(IterStep::Continue) => iter_sync_k(step, k)
+          effect::Exit::Succeeded(IterStep::Stop) => k(effect::Exit::Succeeded(()))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      }
+    })
+    st.in_step = false
+    match st.sync_result {
+      Some(effect::Exit::Succeeded(IterStep::Continue)) => continue
+      Some(effect::Exit::Succeeded(IterStep::Stop)) => {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
+      Some(effect::Exit::Failed(e)) => {
+        k(effect::Exit::Failed(e))
+        return
+      }
+      Some(effect::Exit::Interrupted) => {
+        k(effect::Exit::Interrupted)
+        return
+      }
+      None => return
+    }
+  }
+}

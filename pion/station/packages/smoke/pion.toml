@@ -26,6 +26,7 @@ readops_usage = { workspace = true }
 front = { workspace = true }
 reader_data = { workspace = true }
 reader_serve = { workspace = true }
+reader_sessions = { workspace = true }
 footprint = { workspace = true }
 locate = { workspace = true }
 memory = { workspace = true }

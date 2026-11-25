@@ -1,0 +1,403 @@
+// Deterministic unit tests for `sessions_core` (`wave8-plan.md` v5 §2.1, §2.2, §2.5).
+// All tests use `SessionHost::for_test` (`effect::Runtime::new_at(None, 0L)`, NEVER seeded!).
+
+import "base_codec"
+import "effect"
+import "host_shim"
+import "js_json"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn opt_double_eq(a : Option[Double], b : Option[Double]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn test_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+test "sessions_core: helpers, rhash, path ops, and try_k/catch_k interrupt propagation" {
+  assert(int_of(Some(jint(42))) == 42)
+  assert(int_of(Some(jstr("42"))) == 0)
+  assert(int_of(None) == 0)
+  assert(NEVER == 1.0e300)
+  assert(truthy(jbool(true)))
+  assert(!truthy(jbool(false)))
+  assert(!truthy(base_codec::json_null()))
+  assert(!truthy(jint(0)))
+  assert(truthy(jint(1)))
+  assert(!truthy(jstr("")))
+  assert(truthy(jstr("x")))
+
+  let obj = base_codec::json_obj([("a", jstr("hi")), ("n", jint(7))])
+  assert(text_of(obj, "a") == "hi")
+  assert(text_of(obj, "missing") == "")
+  assert(opt_double_eq(num_of(jget(obj, "n")), Some(7.0)))
+
+  let h1 = rhash_with(base_codec::json_obj([("b", jint(2)), ("0", jstr("x"))]), test_fmt_num)
+  let h2 = rhash_with(base_codec::json_obj([("0", jstr("x")), ("b", jint(2))]), test_fmt_num)
+  assert(h1 == h2)
+  assert(h1.length() == 64)
+
+  assert(rjoin("/", ["a", "b", "c"]) == "a/b/c")
+  assert(rdirname("/", "a/b/c") == "a/b")
+  assert(rbasename("/", "a/b/c") == "c")
+
+  let ae = AskedError::new(base_codec::json_obj([("message", jstr("boom")), ("code", jint(500))]))
+  assert(ae.message() == "boom")
+  let eff_ae = ae.to_effect_error()
+  assert(error_message(eff_ae) == "boom")
+
+  let fe = FsError::new("ENOENT: /missing")
+  let eff_fe = fe.to_effect_error()
+  assert(error_message(eff_fe) == "ENOENT: /missing")
+
+  let mut try_interrupted = false
+  try_k(
+    fn(k : (effect::Exit[Int]) -> Unit) -> Unit { k(effect::Exit::Interrupted) },
+    fn(ex : effect::Exit[Result[Int, effect::EffectError]]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => try_interrupted = true
+        _ => ()
+      }
+    },
+  )
+  assert(try_interrupted)
+
+  let mut catch_interrupted = false
+  let mut recover_called = false
+  catch_k(
+    fn(k : (effect::Exit[Int]) -> Unit) -> Unit { k(effect::Exit::Interrupted) },
+    fn(_e : effect::EffectError, k : (effect::Exit[Int]) -> Unit) -> Unit {
+      recover_called = true
+      k(effect::Exit::Succeeded(0))
+    },
+    fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => catch_interrupted = true
+        _ => ()
+      }
+    },
+  )
+  assert(catch_interrupted)
+  assert(!recover_called)
+}
+
+test "sessions_core: iter_sync_k 10000 synchronous steps without stack overflow" {
+  let mut count = 0
+  let mut finished = false
+  iter_sync_k(
+    fn(k : (effect::Exit[IterStep]) -> Unit) -> Unit {
+      count = count + 1
+      if count < 10000 {
+        k(effect::Exit::Succeeded(IterStep::Continue))
+      } else {
+        k(effect::Exit::Succeeded(IterStep::Stop))
+      }
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => finished = true
+        _ => ()
+      }
+    },
+  )
+  assert(count == 10000)
+  assert(finished)
+}
+
+test "sessions_core: 65+ lines in single stdin chunk are all enqueued and processed" {
+  let mem = MemHostTransport::new()
+  let sb = StringBuilder::new()
+  for i in 0..<70 {
+    sb.write_string("{\"line\":" + i.to_string() + "}\n")
+  }
+  mem.push_stdin(sb.to_string())
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let seen : Array[String] = []
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              seen.push(line)
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => {
+              h.exit(0)
+              sk(effect::Exit::Succeeded(IterStep::Stop))
+            }
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code == 0)
+  assert(seen.length() == 70)
+  assert(seen[0] == "{\"line\":0}")
+  assert(seen[69] == "{\"line\":69}")
+  assert(mem.exit_codes.length() == 1)
+  assert(mem.exit_codes[0] == 0)
+}
+
+test "sessions_core: 65 consecutive host events drain across two outer rounds (64 + 1)" {
+  let mem = MemHostTransport::new()
+  for i in 0..<65 {
+    mem.push_stdin("ev-" + i.to_string() + "\n")
+  }
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let seen : Array[String] = []
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              seen.push(line)
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => {
+              h.exit(0)
+              sk(effect::Exit::Succeeded(IterStep::Stop))
+            }
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code == 0)
+  assert(seen.length() == 65)
+  assert(seen[0] == "ev-0")
+  assert(seen[64] == "ev-64")
+}
+
+test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked and retires once" {
+  let mem = MemHostTransport::new()
+  mem.push_stdin("{\"db\":null}\n{\"afterDb\":1}\n")
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+  let old_res = gen.resources
+  let mut delayed_fin_ran = false
+  let fin_gate : effect::Deferred[Unit] = effect::Deferred::new()
+
+  gen.fibers.add_finalizer(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    fin_gate.wait_k(fn(_ex : effect::Exit[Unit]) -> Unit {
+      delayed_fin_ran = true
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+
+  gen.spawn_work(host, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen.rpc_k(host, "s1", "node.test", [], fn(_k : String) -> Unit { () }, fn(_r : effect::Exit[base_codec::Json]) -> Unit {
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+
+  let processed : Array[String] = []
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              if line.starts_with("{\"db\":") {
+                gen = rotate_hub_gen(h, gen, base_codec::json_null())
+                gen.quiet(h)
+              } else {
+                processed.push(line)
+                let _ = fin_gate.succeed(())
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  host.rt.tick()
+
+  assert(code == 0)
+  assert(processed.length() == 1)
+  assert(processed[0] == "{\"afterDb\":1}")
+  assert(delayed_fin_ran)
+  assert(old_res.retired)
+  assert(old_res.retire_count == 1)
+  assert(mem.stderr_lines.length() == 0)
+  assert(gen.active >= 0)
+  assert(gen.epoch == 1)
+}
+
+test "sessions_core: two consecutive db rotations in one chunk preserve next counter and zero stderr" {
+  let mem = MemHostTransport::new()
+  mem.push_stdin("{\"db\":null}\n{\"db\":null}\n")
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let id_before = host.alloc_id()
+  assert(id_before == 1)
+  let mut gen = HubGen::new(host, 0)
+  let res0 = gen.resources
+  let mut res1_opt : Option[HubGenResources] = None
+
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              if line.starts_with("{\"db\":") {
+                gen = rotate_hub_gen(h, gen, base_codec::json_null())
+                if gen.epoch == 1 {
+                  res1_opt = Some(gen.resources)
+                }
+                gen.quiet(h)
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  host.rt.tick()
+
+  assert(code == 0)
+  assert(gen.epoch == 2)
+  assert(res0.retire_count == 1)
+  match res1_opt {
+    Some(res1) => assert(res1.retire_count == 1)
+    None => panic("expected res1")
+  }
+  assert(host.alloc_id() == 2)
+  assert(mem.stderr_lines.length() == 0)
+}
+
+test "sessions_core: late unix.open completion after abandonment emits exactly one tcp.close" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+
+  let mut opened_shell_id : Int64 = 0.to_int64()
+  gen.spawn_work(host, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen.shell_k(
+      host,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/test.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { opened_shell_id = id }),
+      fn(_res : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        wk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+
+  host.rt.tick()
+  assert(opened_shell_id > 0.to_int64())
+  assert(mem.shell_calls.length() == 1)
+  assert(mem.shell_calls[0].op == "unix.open")
+
+  gen = rotate_hub_gen(host, gen, base_codec::json_null())
+  host.rt.tick()
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: opened_shell_id,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "tcp.close")
+  assert(mem.shell_calls[1].json == "{\"id\":99}")
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: opened_shell_id,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 2)
+}
+
+test "sessions_core: Process-scoped shell waiters survive HubGen rotation" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+
+  let mut proc_id : Int64 = 0.to_int64()
+  let mut proc_done = false
+  let _ = host.rt.fork_named("agent", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "tcp.read",
+      base_codec::json_obj([("id", jint(7))]),
+      None,
+      None,
+      Some(fn(id : Int64) -> Unit { proc_id = id }),
+      fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => proc_done = true
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.rt.tick()
+  assert(proc_id > 0.to_int64())
+
+  gen = rotate_hub_gen(host, gen, base_codec::json_null())
+  host.rt.tick()
+  assert(!proc_done)
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: proc_id,
+      error: "",
+      json: "{\"eof\":false}",
+      bytes: Some("hello".to_bytes()),
+    }),
+  )
+  host.rt.tick()
+  assert(proc_done)
+  assert(gen.epoch == 1)
+}

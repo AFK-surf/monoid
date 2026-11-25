@@ -1,0 +1,519 @@
+// Process-scope host event loop (`SessionHost`, `HostTransport`, `MemHostTransport`,
+// `run_host_loop`), 1:1 aligned with `station/mb/src/host/host.mbt:173-269` and
+// `wave8-plan.md` v5 §2.1 & §2.2.
+
+import "base_codec"
+import "builders_core"
+import "effect"
+import "host_shim"
+import "sql_db"
+
+/// Maximum host events drained per outer pump iteration (`host.mbt:254`: 1 + up to 63).
+pub let MAX_HOST_EVENTS_PER_ROUND : Int = 64
+
+/// Abstract host I/O & clock transport so production uses `host_shim` + `sql_db` while
+/// deterministic unit tests inject `MemHostTransport` without touching OS FDs or wall clocks.
+pub struct HostTransport {
+  pub now_ms : () -> Int64
+  pub wall_ms : () -> Int64
+  pub wait : (Int64) -> Option[host_shim::HostEvent]
+  pub shell_call : (Int64, String, String, Option[Bytes]) -> Unit
+  pub shell_sync : (String, String) -> String
+  pub write_stdout_line : (String) -> Bool
+  pub write_stdout_bytes : (Bytes) -> Bool
+  pub write_stderr_line : (String) -> Bool
+  pub exit_process : (Int) -> Unit
+  pub attach_db : (String, Int) -> Result[sql_db::Db, sql_db::SqlError]
+  pub close_db : (sql_db::Db) -> Unit
+}
+
+pub fn HostTransport::live() -> HostTransport {
+  HostTransport::{
+    now_ms: host_shim::now_ms,
+    wall_ms: host_shim::wall_ms,
+    wait: host_shim::wait,
+    shell_call: host_shim::shell_call,
+    shell_sync: host_shim::shell_sync,
+    write_stdout_line: fn(line : String) -> Bool {
+      host_shim::write_stdout_line(builders_core::escape_line_separators(line))
+    },
+    write_stdout_bytes: host_shim::write_stdout,
+    write_stderr_line: host_shim::write_stderr_line,
+    exit_process: host_shim::exit_process,
+    attach_db: sql_db::Db::attach,
+    close_db: fn(db : sql_db::Db) -> Unit { db.close() },
+  }
+}
+
+// ── Public in-memory test transport (`MemHostTransport`) ──
+
+pub struct MemShellCall {
+  pub id : Int64
+  pub op : String
+  pub json : String
+  pub bytes : Option[Bytes]
+}
+
+pub struct MemHostTransport {
+  pub stdout_lines : Array[String]
+  pub stdout_raw : Array[Bytes]
+  pub stderr_lines : Array[String]
+  pub shell_calls : Array[MemShellCall]
+  pub shell_sync_calls : Array[(String, String)]
+  pub exit_codes : Array[Int]
+  pub wait_log : Array[Int64]
+  pub events : Array[host_shim::HostEvent]
+  pub mut event_head : Int
+  pub mut now : Int64
+  pub mut wall : Int64
+  pub mut shell_sync_handler : Option[(String, String) -> String]
+  pub mut attach_db_handler : Option[(String, Int) -> Result[sql_db::Db, sql_db::SqlError]]
+  pub mut db_attach_calls : Array[(String, Int)]
+  pub mut db_close_count : Int
+  pub mut auto_advance_wait : Bool
+}
+
+pub fn MemHostTransport::new() -> MemHostTransport {
+  MemHostTransport::{
+    stdout_lines: [],
+    stdout_raw: [],
+    stderr_lines: [],
+    shell_calls: [],
+    shell_sync_calls: [],
+    exit_codes: [],
+    wait_log: [],
+    events: [],
+    event_head: 0,
+    now: 0.to_int64(),
+    wall: 0.to_int64(),
+    shell_sync_handler: None,
+    attach_db_handler: None,
+    db_attach_calls: [],
+    db_close_count: 0,
+    auto_advance_wait: true,
+  }
+}
+
+pub fn MemHostTransport::push_event(self : MemHostTransport, ev : host_shim::HostEvent) -> Unit {
+  self.events.push(ev)
+}
+
+pub fn MemHostTransport::push_stdin(self : MemHostTransport, text : String) -> Unit {
+  self.events.push(host_shim::HostEvent::StdinData(text.to_bytes()))
+}
+
+pub fn MemHostTransport::push_eof(self : MemHostTransport) -> Unit {
+  self.events.push(host_shim::HostEvent::StdinEof)
+}
+
+pub fn MemHostTransport::push_shell_done(
+  self : MemHostTransport,
+  id : Int64,
+  json : String,
+  error : String = "",
+  bytes : Option[Bytes] = None,
+) -> Unit {
+  self.events.push(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: id,
+      error: error,
+      json: json,
+      bytes: bytes,
+    }),
+  )
+}
+
+pub fn MemHostTransport::advance_now(self : MemHostTransport, delta_ms : Int64) -> Unit {
+  self.now = self.now + delta_ms
+  self.wall = self.wall + delta_ms
+}
+
+pub fn MemHostTransport::transport(self : MemHostTransport) -> HostTransport {
+  HostTransport::{
+    now_ms: fn() -> Int64 { self.now },
+    wall_ms: fn() -> Int64 { self.wall },
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      self.wait_log.push(ms)
+      if self.event_head < self.events.length() {
+        let ev = self.events[self.event_head]
+        self.event_head = self.event_head + 1
+        return Some(ev)
+      }
+      if ms > 0.to_int64() && self.auto_advance_wait {
+        self.now = self.now + ms
+        self.wall = self.wall + ms
+      }
+      None
+    },
+    shell_call: fn(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
+      self.shell_calls.push(MemShellCall::{ id: id, op: op, json: json, bytes: bytes })
+    },
+    shell_sync: fn(op : String, json : String) -> String {
+      self.shell_sync_calls.push((op, json))
+      match self.shell_sync_handler {
+        Some(f) => f(op, json)
+        None => "{\"value\":null}"
+      }
+    },
+    write_stdout_line: fn(line : String) -> Bool {
+      self.stdout_lines.push(builders_core::escape_line_separators(line))
+      true
+    },
+    write_stdout_bytes: fn(bytes : Bytes) -> Bool {
+      self.stdout_raw.push(bytes)
+      true
+    },
+    write_stderr_line: fn(line : String) -> Bool {
+      self.stderr_lines.push(line)
+      true
+    },
+    exit_process: fn(code : Int) -> Unit {
+      self.exit_codes.push(code)
+    },
+    attach_db: fn(path : String, wait_ms : Int) -> Result[sql_db::Db, sql_db::SqlError] {
+      self.db_attach_calls.push((path, wait_ms))
+      match self.attach_db_handler {
+        Some(f) => f(path, wait_ms)
+        None => Err(sql_db::sql_error(1, "MemHostTransport: no attach_db_handler"))
+      }
+    },
+    close_db: fn(_db : sql_db::Db) -> Unit {
+      self.db_close_count = self.db_close_count + 1
+    },
+  }
+}
+
+// ── Shell ownership & abandoned-op handle cleanup ──
+
+pub enum ShellOwner {
+  Process
+  Hub(Int)
+}
+
+pub enum AbandonedOp {
+  CloseTcpHandle
+}
+
+pub struct ShellWaiter {
+  pub owner : ShellOwner
+  pub abandoned_op : Option[AbandonedOp]
+  pub done : effect::Deferred[(base_codec::Json, Option[Bytes])]
+}
+
+// ── Process-scope SessionHost ──
+
+pub struct SessionHost {
+  pub rt : effect::Runtime
+  pub transport : HostTransport
+  pub lines : effect::Queue[String]
+  input : builders_core::RawLines
+  pub shell_waiters : Map[Int64, ShellWaiter]
+  pub abandoned_ops : Map[Int64, AbandonedOp]
+  pub mut next_shell_id : Int64
+  /// Monotonic process-scope RPC/timer ID counter (NEVER reset across `{"db": ...}`).
+  pub mut next : Int
+  pub mut failed : Bool
+  pub mut exited : Bool
+}
+
+pub fn SessionHost::new(rt : effect::Runtime, transport : HostTransport) -> SessionHost {
+  let host = SessionHost::{
+    rt: rt,
+    transport: transport,
+    lines: effect::Queue::unbounded(),
+    input: builders_core::RawLines::new(),
+    shell_waiters: Map::new(),
+    abandoned_ops: Map::new(),
+    next_shell_id: 0.to_int64(),
+    next: 0,
+    failed: false,
+    exited: false,
+  }
+  rt.on_defect(fn(e : effect::EffectError) -> Unit {
+    host.note("failed: " + effect::effect_error_to_string(e))
+    host.failed = true
+  })
+  host
+}
+
+pub fn SessionHost::live() -> SessionHost {
+  let tr = HostTransport::live()
+  let rt = effect::Runtime::live(tr.now_ms)
+  SessionHost::new(rt, tr)
+}
+
+/// Deterministic test host using `effect::Runtime::new_at(None, 0L)` (NEVER seeded!).
+pub fn SessionHost::for_test(mem : MemHostTransport) -> SessionHost {
+  let rt = effect::Runtime::new_at(None, 0.to_int64())
+  SessionHost::new(rt, mem.transport())
+}
+
+pub fn SessionHost::alloc_id(self : SessionHost) -> Int {
+  self.next = self.next + 1
+  self.next
+}
+
+pub fn SessionHost::say(self : SessionHost, text : String) -> Unit {
+  let _ = (self.transport.write_stdout_line)(text)
+}
+
+pub fn SessionHost::say_bytes(self : SessionHost, bytes : Bytes) -> Unit {
+  let _ = (self.transport.write_stdout_bytes)(bytes)
+  let _ = (self.transport.write_stdout_bytes)("\n".to_bytes())
+}
+
+pub fn SessionHost::out(self : SessionHost, bytes : Bytes) -> Unit {
+  let _ = (self.transport.write_stdout_bytes)(bytes)
+}
+
+pub fn SessionHost::note(self : SessionHost, text : String) -> Unit {
+  let _ = (self.transport.write_stderr_line)(text)
+}
+
+pub fn SessionHost::exit(self : SessionHost, code : Int) -> Unit {
+  self.exited = true
+  (self.transport.exit_process)(code)
+}
+
+/// Read the next complete `\n`-terminated stdin line.
+/// Explicitly maps `Exit::Failed(EffectError::QueueShutdown)` -> `Exit::Succeeded(None)` (EOF);
+/// all other failures and `Exit::Interrupted` are propagated verbatim.
+pub fn SessionHost::line_k(
+  self : SessionHost,
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  self.lines.take_k(fn(ex : effect::Exit[String]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(line) => k(effect::Exit::Succeeded(Some(line)))
+      effect::Exit::Failed(effect::EffectError::QueueShutdown) => k(effect::Exit::Succeeded(None))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Synchronous shell call (`host.mbt:73`).
+pub fn SessionHost::shell_sync(
+  self : SessionHost,
+  op : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, builders_core::ShellError] {
+  let raw = (self.transport.shell_sync)(op, base_codec::json_stringify(builders_core::normalize_json(args)))
+  builders_core::parse_shell_sync_answer(raw)
+}
+
+/// Asynchronous shell call (`host.mbt:83-104`) with ownership tagging and late-handle cleanup.
+pub fn SessionHost::shell_k(
+  self : SessionHost,
+  owner : ShellOwner,
+  op : String,
+  args : base_codec::Json,
+  bytes : Option[Bytes],
+  abandoned_op : Option[AbandonedOp],
+  on_called : Option[(Int64) -> Unit],
+  k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+) -> Unit {
+  self.next_shell_id = self.next_shell_id + 1.to_int64()
+  let id = self.next_shell_id
+  match on_called {
+    Some(f) => f(id)
+    None => ()
+  }
+  let done : effect::Deferred[(base_codec::Json, Option[Bytes])] = effect::Deferred::new()
+  self.shell_waiters.set(id, ShellWaiter::{ owner: owner, abandoned_op: abandoned_op, done: done })
+  let json_str = base_codec::json_stringify(builders_core::normalize_json(args))
+  (self.transport.shell_call)(id, op, json_str, bytes)
+  done.wait_k(fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => {
+        match self.shell_waiters.get(id) {
+          Some(w) => {
+            let _ = self.shell_waiters.remove(id)
+            match w.abandoned_op {
+              Some(aop) => self.abandoned_ops.set(id, aop)
+              None => ()
+            }
+          }
+          None => ()
+        }
+        k(effect::Exit::Interrupted)
+      }
+      other => k(other)
+    }
+  })
+}
+
+/// Drop (without failing) all `ShellOwner::Hub(epoch)` waiters during `{"db": ...}` rotation,
+/// transferring any handle-producing calls to `abandoned_ops`. Never touches `ShellOwner::Process`.
+pub fn SessionHost::abandon_hub_waiters(self : SessionHost, epoch : Int) -> Unit {
+  let keys = self.shell_waiters.keys()
+  for i in 0..<keys.length() {
+    let id = keys[i]
+    match self.shell_waiters.get(id) {
+      Some(w) => {
+        match w.owner {
+          ShellOwner::Hub(ep) => {
+            if ep == epoch {
+              let _ = self.shell_waiters.remove(id)
+              match w.abandoned_op {
+                Some(aop) => self.abandoned_ops.set(id, aop)
+                None => ()
+              }
+            }
+          }
+          ShellOwner::Process => ()
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+fn SessionHost::close_abandoned_tcp_handle(self : SessionHost, done : host_shim::ShellDone) -> Unit {
+  if done.error.length() > 0 || done.json.length() == 0 {
+    return
+  }
+  match parse_json_strict(done.json) {
+    Ok(j) => {
+      let handle_opt : Option[base_codec::Json] = match j {
+        base_codec::Json::Num(_, _) => Some(j)
+        base_codec::Json::Obj(_) => jget(j, "id")
+        _ => None
+      }
+      match handle_opt {
+        Some(h) => {
+          self.next_shell_id = self.next_shell_id + 1.to_int64()
+          let close_id = self.next_shell_id
+          let close_args = base_codec::json_obj([("id", h)])
+          (self.transport.shell_call)(
+            close_id,
+            "tcp.close",
+            base_codec::json_stringify(builders_core::normalize_json(close_args)),
+            None,
+          )
+        }
+        None => ()
+      }
+    }
+    Err(_) => ()
+  }
+}
+
+/// Dispatch one host event (`host.mbt:173-200`).
+pub fn SessionHost::dispatch_event(self : SessionHost, ev : host_shim::HostEvent) -> Unit {
+  match ev {
+    host_shim::HostEvent::StdinData(chunk) => {
+      // Enqueue ALL complete `\n`-terminated lines in this chunk (never truncated at 64 lines).
+      let items = self.input.push(chunk)
+      for i in 0..<items.length() {
+        let _ = self.lines.try_offer(items[i])
+      }
+    }
+    host_shim::HostEvent::StdinEof => {
+      // Shutdown queue without synthesizing an unterminated trailing partial line.
+      self.lines.shutdown()
+    }
+    host_shim::HostEvent::ShellDone(done) => {
+      match self.shell_waiters.get(done.id) {
+        Some(waiter) => {
+          let _ = self.shell_waiters.remove(done.id)
+          match builders_core::decode_shell_done(done) {
+            Ok((j_opt, b_opt)) => {
+              let j = match j_opt {
+                Some(v) => v
+                None => base_codec::json_null()
+              }
+              let _ = waiter.done.succeed((j, b_opt))
+            }
+            Err(err) => {
+              let _ = waiter.done.fail(effect::EffectError::IoError(err.message))
+            }
+          }
+        }
+        None => {
+          match self.abandoned_ops.get(done.id) {
+            Some(AbandonedOp::CloseTcpHandle) => {
+              let _ = self.abandoned_ops.remove(done.id)
+              self.close_abandoned_tcp_handle(done)
+            }
+            None => ()
+          }
+        }
+      }
+    }
+    host_shim::HostEvent::Sys(_, _) => ()
+  }
+}
+
+/// Run the 1:1 `host.mbt:228-272` outer pump loop over `SessionHost`.
+pub fn run_host_loop(
+  host : SessionHost,
+  main_fn : (SessionHost, (effect::Exit[Unit]) -> Unit) -> Unit,
+) -> Int {
+  let main_fiber = host.rt.fork_named("main", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    main_fn(host, k)
+  })
+  while true {
+    // Unconditionally tick once per round so expired timers fire even when `rt.idle()` is true.
+    host.rt.tick()
+    if main_fiber.is_done() || host.exited {
+      break
+    }
+    let wait_ms : Int64 = if !host.rt.idle() {
+      0.to_int64()
+    } else {
+      match host.rt.next_timer() {
+        Some(at) => {
+          let left = at - (host.transport.now_ms)()
+          if left < 0.to_int64() { 0.to_int64() } else { left }
+        }
+        None => (-1).to_int64()
+      }
+    }
+    match (host.transport.wait)(wait_ms) {
+      Some(first) => {
+        host.dispatch_event(first)
+        let mut drained = 1
+        while drained < MAX_HOST_EVENTS_PER_ROUND {
+          match (host.transport.wait)(0.to_int64()) {
+            Some(more) => {
+              host.dispatch_event(more)
+              drained = drained + 1
+            }
+            None => break
+          }
+        }
+      }
+      None => {
+        // When using a non-blocking test transport with no remaining events and no timers/ready tasks,
+        // stop instead of spinning forever.
+        if wait_ms < 0.to_int64() {
+          break
+        }
+        // For virtual-time tests where `wait(ms)` advanced `mem.now` without a host event, loop to tick timers.
+        if wait_ms > 0.to_int64() {
+          let after = (host.transport.now_ms)()
+          match host.rt.next_timer() {
+            Some(at) => {
+              if after < at {
+                break
+              }
+            }
+            None => break
+          }
+        }
+      }
+    }
+  }
+  if host.exited {
+    return 0
+  }
+  match main_fiber.poll() {
+    Some(effect::Exit::Failed(e)) => {
+      host.note("failed: " + effect::effect_error_to_string(e))
+      1
+    }
+    Some(_) => if host.failed { 1 } else { 0 }
+    None => 1
+  }
+}

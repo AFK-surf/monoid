@@ -1,0 +1,60 @@
+// Deterministic tests for the `reader_sessions` walking skeleton.
+
+import "sessions_core"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "reader_sessions: emits ready without active/seen, handles db:null, quiet, and clean EOF 0" {
+  let mem = sessions_core::MemHostTransport::new()
+  mem.push_stdin("{\"db\":null}\n")
+  mem.push_eof()
+
+  let host = sessions_core::SessionHost::for_test(mem)
+  let app = SessionsApp::new(host, "/", sessions_core::SessionDispatch::stub())
+  assert(app.has_stubs())
+
+  let code = sessions_core::run_host_loop(host, fn(_h : sessions_core::SessionHost, k) -> Unit {
+    serve_sessions_k(app, k)
+  })
+  assert(code == 0)
+  assert(mem.stderr_lines.length() == 0)
+  assert(mem.exit_codes.length() == 1)
+  assert(mem.exit_codes[0] == 0)
+  assert(mem.stdout_lines.length() == 2)
+  assert(mem.stdout_lines[0] == "{\"ready\":true}")
+  assert(mem.stdout_lines[1] == "{\"quiet\":true,\"active\":0,\"seen\":1}")
+}
+
+test "reader_sessions: non-actor lines route to agents_told without emitting quiet" {
+  let mem = sessions_core::MemHostTransport::new()
+  mem.push_stdin("{\"wall\":12345}\n")
+  mem.push_eof()
+
+  let seen_agents : Array[String] = []
+  let stub = sessions_core::SessionDispatch::stub()
+  let dispatch = sessions_core::SessionDispatch::{
+    mirror_actor: stub.mirror_actor,
+    live_event: stub.live_event,
+    live_end: stub.live_end,
+    live_called: stub.live_called,
+    jobs_called_k: stub.jobs_called_k,
+    jstore_get_job_k: stub.jstore_get_job_k,
+    remote_called_k: stub.remote_called_k,
+    remote_changed_k: stub.remote_changed_k,
+    agents_told: fn(line : String) -> Unit { seen_agents.push(line) },
+    agents_take: stub.agents_take,
+    is_stub: true,
+  }
+
+  let host = sessions_core::SessionHost::for_test(mem)
+  let code = run_sessions_with_host(host, "/", dispatch)
+  assert(code == 0)
+  assert(seen_agents.length() == 1)
+  assert(seen_agents[0] == "{\"wall\":12345}")
+  assert(mem.stdout_lines.length() == 1)
+  assert(mem.stdout_lines[0] == "{\"ready\":true}")
+}
