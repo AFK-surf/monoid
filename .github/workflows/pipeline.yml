@@ -1996,6 +1996,11 @@ jobs:
           fi
       - if: github.ref != 'refs/heads/main'
         run: echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
+      - if: startsWith(github.ref, 'refs/heads/release/')
+        run: |
+          # Older release trees have few matching C units in main's store. Use the same cold -O0 layout as the hosted reader.
+          echo "MBC_UNIT_KB=8192" >> "$GITHUB_ENV"
+          echo "MBC_INIT_SPLIT=0" >> "$GITHUB_ENV"
       - id: hermes
         run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
