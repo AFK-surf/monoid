@@ -10,11 +10,12 @@ let cover_mouse_hold_ms : Double = 500.0
 let cover_drag_step_ms : Double = 16.0
 
 ///|
-fn composer_cover_tester(
+fn composer_cover_tester_src(
   pointing? : @ui.Pointing = Mouse,
   platform? : Int = 0,
   over_tall? : Double = 0.0,
-) -> @ui.Tester {
+  h? : Double = 500.0,
+) -> (@ui.Tester, Source) {
   new_run()
   let src = fixture("chat")
   let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
@@ -31,7 +32,7 @@ fn composer_cover_tester(
       let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
       let tips = @sf.TipLayer::new(fn() { Some(popup) })
       root.box(fn(page) {
-        page.width(Is(Some(600.0))).height(Is(Some(500.0))) |> ignore
+        page.width(Is(Some(600.0))).height(Is(Some(h))) |> ignore
         @ui.words_picked(page)
         page.scrolls_window(
           @view.Scroll::new(),
@@ -73,14 +74,24 @@ fn composer_cover_tester(
       |> ignore
     },
     w=600.0,
-    h=500.0,
+    h~,
     platform~,
     pointing~,
   )
   t.draw()
   t.ctx().blur()
   t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
-  t
+  (t, src)
+}
+
+///|
+fn composer_cover_tester(
+  pointing? : @ui.Pointing = Mouse,
+  platform? : Int = 0,
+  over_tall? : Double = 0.0,
+  h? : Double = 500.0,
+) -> @ui.Tester {
+  composer_cover_tester_src(pointing~, platform~, over_tall~, h~).0
 }
 
 ///|
@@ -243,6 +254,43 @@ test "composer adaptive glass shows its backdrop fade only when expanded and kee
   let (multi_gy, multi_fy) = check_tight("multiline")
   assert_true(multi_gy < open_gy - 10.0, msg="expected multiline composer top to rise")
   assert_true(multi_fy < open_fy - 10.0, msg="expected fade top to rise with multiline composer")
+}
+
+///|
+test "tall multiline composer on a tall viewport stays covered to its bottom edge by its backdrop blur" {
+  let (t, src) = composer_cover_tester_src(h=1200.0)
+  let (lx, ly) = composer_cover_line_hit(t)
+  t.tap(lx, ly)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composer_focused())
+  // Reuses a kept 20-line (560-char) draft from src/sfkept so the test emits zero kept-answers-ask entries.
+  let buf = StringBuilder()
+  for _ in 0..<20 {
+    buf.write_string("这是一段很长的输入，需要在键盘弹出时仍能看到发送按钮。\n")
+  }
+  t.type_text(buf.to_string())
+  let draft = @sfbase.writing(src, "ws1/st1:s-c1")
+  for i in 0..<5 {
+    @sfbase.writing_quote(src, draft, {
+      "author": "Claude",
+      "text": "其余的行按估计的高度占位",
+      "ts": Json::string("ts\{i}"),
+    })
+  }
+  t.run_for(@ui.move_most_ms)
+  let (_, gy, _, gh) = composer_cover_glass_box(t)
+  guard composer_cover_backdrop(t) is [a, ..] else {
+    fail("expected backdrop blur behind tall multiline composer")
+  }
+  assert_true(gh > 620.0, msg="expected tall composer (>620pt), got \{gh}")
+  assert_true(
+    a[1] + a[3] >= gy + gh,
+    msg="expected backdrop bottom (\{a[1] + a[3]}) >= composer bottom (\{gy + gh})",
+  )
+  assert_true(
+    a[1] + a[3] >= 1200.0,
+    msg="expected backdrop bottom (\{a[1] + a[3]}) to reach viewport bottom (1200)",
+  )
 }
 
 ///|

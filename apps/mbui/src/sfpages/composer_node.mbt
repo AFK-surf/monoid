@@ -725,7 +725,7 @@ fn composer_foot_scrim_node(
       scrim.box(fn(band) {
         band
         .width_share(Is(1.0))
-        .height(Is(Some(320.0)))
+        .height(By(fn() { Some(band.window_h()) }))
         .offset(By(fn() { (0.0, backdrop_top(band)) }))
         .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
         .points(Is(false))
@@ -745,7 +745,8 @@ fn composer_foot_scrim_node(
     }
     // Single pure progressive-blur band for soft keyboards: smoothly interpolates top offset and fade height
     // between rest seam (t=0) and keyboard-up lift (t=1) so every frame has strictly 1 bottom progressive blur.
-    // Fixed height avoids 1-frame drawn-height jumps when foot shrinks on send (e.g. shared link card cleared).
+    // Viewport height covers arbitrarily tall expanded composers while avoiding 1-frame drawn-height jumps when
+    // foot shrinks on send (e.g. shared link card cleared in 48-share).
     let typing = @motion.NodeWay::new(if @signals.untracked(fn() { scrim.keyboard_inset() }) > 0.0 { 1.0 } else { 0.0 })
     scrim.reacts(fn() { scrim.keyboard_inset() > 0.0 }, fn(up) {
       if up {
@@ -757,7 +758,7 @@ fn composer_foot_scrim_node(
     scrim.box(fn(band) {
       band
       .width_share(Is(1.0))
-      .height(Is(Some(320.0)))
+      .height(By(fn() { Some(band.window_h()) }))
       .offset(By(fn() {
         let t = typing.shown(band)
         let y0 = seam_backdrop_top(band)
