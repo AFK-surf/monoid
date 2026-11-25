@@ -4172,6 +4172,55 @@ int main(void) {
     fb_w = saved_fb_w; fb_h = saved_fb_h; cur_w = saved_w; cur_h = saved_h; cur_scale = saved_s;
   }
 
+  // Batched kind 11 (MB_PROG_PATH) fill + stroke in one instanced draw call: guards the unified segment loop
+  // required for Android SwiftShader 4.0.0.1 (where split if/else texelFetch loops dropped strokes completely).
+  {
+    gl_setup();
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+    double sh[3 * MB_INST];
+    // 0: red filled square at (10, 10, 20 x 20), segs 0..3
+    rect_at(sh, 10, 10, 20, 20, 11, 1.0, 0.2, 0.2, 0);
+    sh[4] = 0.0;
+    sh[12] = 0.0; sh[13] = 4.0; sh[14] = 0.0;
+    // 1: blue stroked L-polyline at (40, 20, 40 x 30), hw = 3.0, segs 4..5
+    rect_at(sh + MB_INST, 40, 20, 40, 30, 11, 0.08, 0.35, 0.77, 0);
+    sh[MB_INST + 4] = 3.0;
+    sh[MB_INST + 12] = 4.0; sh[MB_INST + 13] = 2.0; sh[MB_INST + 14] = 0.0;
+    // 2: kind 12 data instance holding all 6 segments in slots {0, 2, 3, 4, 6, 7}
+    double *d = sh + 2 * MB_INST;
+    memset(d, 0, MB_INST * sizeof(double));
+    d[5] = 12.0;
+    // fill square edges (0..3)
+    d[0] = 0.0; d[1] = 0.0; d[2] = 1.0; d[3] = 0.0;
+    d[8] = 1.0; d[9] = 0.0; d[10] = 1.0; d[11] = 1.0;
+    d[12] = 1.0; d[13] = 1.0; d[14] = 0.0; d[15] = 1.0;
+    d[16] = 0.0; d[17] = 1.0; d[18] = 0.0; d[19] = 0.0;
+    // stroke L segments (4..5): (44,26)->(76,26)->(76,44)
+    d[24] = 0.1; d[25] = 0.2; d[26] = 0.9; d[27] = 0.2;
+    d[28] = 0.9; d[29] = 0.2; d[30] = 0.9; d[31] = 0.8;
+
+    gl_present(sh, 3, 1.0, 1.0, 1.0);
+    CHECK(progs[MB_PROG_PATH].p != 0);
+    CHECK(glGetError() == GL_NO_ERROR);
+    unsigned char *px = pixels_of_fb(surface);
+    #define PATH_AT(xpt, ypt) (px + ((size_t)(fb_h - 1 - (int)((ypt) * S)) * fb_w + (int)((xpt) * S)) * 4)
+    unsigned char *fill_in = PATH_AT(20, 20);
+    unsigned char *fill_out = PATH_AT(5, 20);
+    unsigned char *st_h = PATH_AT(60, 26);
+    unsigned char *st_c = PATH_AT(76, 26);
+    unsigned char *st_v = PATH_AT(76, 35);
+    unsigned char *st_out = PATH_AT(60, 35);
+    CHECK(fill_in[0] > 240 && fill_in[1] < 70 && fill_in[2] < 70);
+    CHECK(fill_out[0] > 250 && fill_out[1] > 250 && fill_out[2] > 250);
+    CHECK(st_h[0] < 40 && st_h[1] > 70 && st_h[1] < 110 && st_h[2] > 180);
+    CHECK(st_c[0] < 40 && st_c[1] > 70 && st_c[1] < 110 && st_c[2] > 180);
+    CHECK(st_v[0] < 40 && st_v[1] > 70 && st_v[1] < 110 && st_v[2] > 180);
+    CHECK(st_out[0] > 250 && st_out[1] > 250 && st_out[2] > 250);
+    #undef PATH_AT
+    free(px);
+    printf("gles_render: path fill+stroke batch ok\n");
+  }
+
   if (!failed) printf("gles_render: ok\n");
   return failed;
 }
