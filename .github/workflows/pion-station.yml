@@ -1102,6 +1102,9 @@ jobs:
             station/test/mb-reader-notices.test.ts \
             station/test/mb-reader-open-jobs.test.ts \
             station/test/mb-reader-outflow-chats.test.ts \
+            station/test/mb-reader-shared-chats.test.ts \
+            station/test/mb-reader-shared-rows-perf.test.ts \
+            station/test/mb-reader-timeline.test.ts \
             station/test/mb-idle-programs.test.ts \
             station/test/live-reader-close.test.ts 2>&1)"; then
             printf '%s\n' "$DATA1_OUT"
@@ -1129,7 +1132,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 7 data-2 gate (remaining 14 mb-reader-* suites forced Pion + dual-engine switch/foundation/tail)
+      - name: Run Wave 7 data-2 gate (remaining 11 mb-reader-* suites forced Pion + dual-engine switch/foundation/tail)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
@@ -1154,6 +1157,7 @@ jobs:
           }
 
           if ! DATA2_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap \
+            station/test/mb-reader-usage-page.test.ts \
             station/test/mb-reader-outflow.test.ts \
             station/test/mb-reader-pages.test.ts \
             station/test/mb-reader-recent-chats.test.ts \
@@ -1161,12 +1165,8 @@ jobs:
             station/test/mb-reader-session-files.test.ts \
             station/test/mb-reader-session-place.test.ts \
             station/test/mb-reader-sessions.test.ts \
-            station/test/mb-reader-shared-chats.test.ts \
-            station/test/mb-reader-shared-rows-perf.test.ts \
             station/test/mb-reader-thread-list.test.ts \
             station/test/mb-reader-threads.test.ts \
-            station/test/mb-reader-timeline.test.ts \
-            station/test/mb-reader-usage-page.test.ts \
             station/test/mb-reader-usage.test.ts 2>&1)"; then
             printf '%s\n' "$DATA2_OUT"
             exit 1

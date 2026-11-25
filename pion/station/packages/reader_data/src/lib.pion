@@ -518,16 +518,44 @@ pub fn run_data(data : String, sep : String) -> Int {
   if write_failed { 1 } else { 0 }
 }
 
-/// Native-linked selftest exercised by `--smoke-readops`: verifies `Reader::db_now` and
-/// `Reader::read_text_for_serve` preserve numeric key order, lone-surrogate keys, and >2^53 `at`
-/// losslessly on `policyChecks` against real SQLite.
-pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
-  let db_path = temp_dir + "/stillfail.db"
+fn pragma_busy_timeout(db : sql_db::Db) -> Result[Int, String] {
+  match db.all("PRAGMA busy_timeout", []) {
+    Ok(rows) => {
+      if rows.length() == 0 {
+        return Err("PRAGMA busy_timeout returned 0 rows")
+      }
+      match rows[0].get("timeout") {
+        Some(base_codec::Json::Num(d, _)) => Ok(d.to_int())
+        _ => Err("PRAGMA busy_timeout unexpected value")
+      }
+    }
+    Err(e) => Err("PRAGMA busy_timeout query failed: " + e.message)
+  }
+}
+
+fn count_sessions_rows(db : sql_db::Db) -> Result[Int, String] {
+  match db.all("SELECT COUNT(*) AS c FROM sessions", []) {
+    Ok(rows) => {
+      if rows.length() == 0 {
+        return Err("COUNT(*) returned 0 rows")
+      }
+      match rows[0].get("c") {
+        Some(base_codec::Json::Num(d, _)) => Ok(d.to_int())
+        _ => Err("COUNT(*) returned non-number")
+      }
+    }
+    Err(e) => Err("SELECT COUNT(*) failed: " + e.message)
+  }
+}
+
+fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Result[Int, String] {
+  let db_path = sub_dir + "/stillfail.db"
   let init_db = match sql_db::Db::create(db_path) {
     Ok(d) => d
     Err(e) => return Err("reader_data selftest create db: " + e.message)
   }
-  let schema_sql = "CREATE TABLE IF NOT EXISTS sessions (key TEXT PRIMARY KEY, connect TEXT, ws TEXT);" +
+  let schema_sql = "PRAGMA journal_mode = WAL;" +
+  "CREATE TABLE IF NOT EXISTS sessions (key TEXT PRIMARY KEY, connect TEXT, ws TEXT);" +
   "CREATE TABLE IF NOT EXISTS decision_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, created_at INTEGER NOT NULL, result TEXT NOT NULL);" +
   "CREATE INDEX IF NOT EXISTS decision_checks_lately ON decision_checks(created_at);" +
   "CREATE INDEX IF NOT EXISTS decision_checks_session ON decision_checks(session, id);" +
@@ -546,15 +574,16 @@ pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
   }
   init_db.close()
 
-  let client = builders_core::ShellClient::new()
-  let reader = Reader::new(client, temp_dir, "/")
-  match reader.db_now() {
-    Ok(_) => ()
+  let reader = Reader::new(client, sub_dir, "/")
+  // 1. Reader::db_now
+  let read_db = match reader.db_now() {
+    Ok(d) => d
     Err(e) => {
       reader.close()
       return Err("reader_data selftest db_now: " + readops_core::read_error_message(e))
     }
   }
+  // 2. Reader::read_text_for_serve("policyChecks", ...) lossless wire parity
   let ask = base_codec::json_obj([
     ("lang", base_codec::json_str("en")),
     ("now", base_codec::json_num(1795580000000.0)),
@@ -581,10 +610,158 @@ pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
       )
     }
   }
-  reader.close()
   let expected = "{\"checked\":5,\"failed\":0,\"options\":{\"10\":{\"count\":1,\"chats\":[{\"session\":\"s10\",\"at\":9007199254740993,\"recommended\":true}]},\"\u{FFFD}\":{\"count\":1,\"chats\":[{\"session\":\"sf\",\"at\":4,\"recommended\":true}]},\"\\ud800\":{\"count\":1,\"chats\":[{\"session\":\"sl\",\"at\":3,\"recommended\":false}]},\"2\":{\"count\":1,\"chats\":[{\"session\":\"s2\",\"at\":2,\"recommended\":false}]},\"1\":{\"count\":1,\"chats\":[{\"session\":\"s1\",\"at\":1,\"recommended\":true}]}}}"
   if wire != expected {
+    reader.close()
     return Err("reader_data selftest read_text_for_serve(policyChecks) mismatch: " + wire)
   }
-  Ok(2)
+
+  // 3. checkpoint(hard=true) Ok path restores PRAGMA busy_timeout === 0 on reader.writer
+  match reader.checkpoint(hard=true) {
+    Ok(_) => ()
+    Err(e) => {
+      reader.close()
+      return Err("reader_data selftest checkpoint(hard) ok path: " + readops_core::read_error_message(e))
+    }
+  }
+  let writer_db = match reader.writer {
+    Some(w) => w
+    None => {
+      reader.close()
+      return Err("reader_data selftest writer connection missing after checkpoint(hard)")
+    }
+  }
+  match pragma_busy_timeout(writer_db) {
+    Ok(0) => ()
+    Ok(t) => {
+      reader.close()
+      return Err("reader_data selftest busy_timeout after hard ok expected 0, got " + t.to_string())
+    }
+    Err(e) => {
+      reader.close()
+      return Err(e)
+    }
+  }
+
+  // 4. checkpoint(hard=true) SQLite error path (read txn active on writer -> SQLITE_LOCKED)
+  //    MUST still restore PRAGMA busy_timeout === 0 on reader.writer.
+  let err_check : Result[Unit, readops_core::ReadError] = writer_db.read_snapshot_err(
+    readops_core::map_sql_err,
+    fn() -> Result[Unit, readops_core::ReadError] {
+      match writer_db.all("SELECT 1 FROM sessions LIMIT 1", []) {
+        Ok(_) => ()
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+      match reader.checkpoint(hard=true) {
+        Ok(_) => Err(readops_core::ReadError::App("expected checkpoint(hard) error inside active read txn"))
+        Err(_) => Ok(())
+      }
+    },
+  )
+  match err_check {
+    Ok(_) => ()
+    Err(e) => {
+      reader.close()
+      return Err("reader_data selftest checkpoint(hard) err path: " + readops_core::read_error_message(e))
+    }
+  }
+  match pragma_busy_timeout(writer_db) {
+    Ok(0) => ()
+    Ok(t) => {
+      reader.close()
+      return Err("reader_data selftest busy_timeout after hard err expected 0, got " + t.to_string())
+    }
+    Err(e) => {
+      reader.close()
+      return Err(e)
+    }
+  }
+
+  // 5. True read snapshot isolation: SELECT inside read_snapshot_err -> external writer commits
+  //    INSERT -> second SELECT inside SAME snapshot still sees old count (5) -> new snapshot sees 6.
+  let ext_w = match sql_db::Db::attach(db_path, wait_ms=5000) {
+    Ok(d) => d
+    Err(e) => {
+      reader.close()
+      return Err("reader_data selftest attach ext_w: " + e.message)
+    }
+  }
+  let iso_res : Result[Unit, readops_core::ReadError] = read_db.read_snapshot_err(
+    readops_core::map_sql_err,
+    fn() -> Result[Unit, readops_core::ReadError] {
+      match count_sessions_rows(read_db) {
+        Ok(5) => ()
+        Ok(n) => return Err(readops_core::ReadError::App("snapshot before expected 5, got " + n.to_string()))
+        Err(m) => return Err(readops_core::ReadError::App(m))
+      }
+      match ext_w.tx(fn(tx_db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        tx_db.exec("INSERT INTO sessions(key, connect, ws) VALUES ('s_iso', 'c1', 'ws1')")
+      }) {
+        Ok(_) => ()
+        Err(e) => return Err(readops_core::ReadError::App("ext_w insert failed: " + e.message))
+      }
+      match count_sessions_rows(read_db) {
+        Ok(5) => Ok(())
+        Ok(n) => Err(readops_core::ReadError::App("same snapshot saw uncommitted/new count " + n.to_string()))
+        Err(m) => Err(readops_core::ReadError::App(m))
+      }
+    },
+  )
+  ext_w.close()
+  match iso_res {
+    Ok(_) => ()
+    Err(e) => {
+      reader.close()
+      return Err("reader_data selftest snapshot isolation: " + readops_core::read_error_message(e))
+    }
+  }
+  let after_res : Result[Int, readops_core::ReadError] = read_db.read_snapshot_err(
+    readops_core::map_sql_err,
+    fn() -> Result[Int, readops_core::ReadError] {
+      match count_sessions_rows(read_db) {
+        Ok(n) => Ok(n)
+        Err(m) => Err(readops_core::ReadError::App(m))
+      }
+    },
+  )
+  reader.close()
+  match after_res {
+    Ok(6) => Ok(5)
+    Ok(n) => Err("reader_data selftest new snapshot expected 6, got " + n.to_string())
+    Err(e) => Err("reader_data selftest new snapshot: " + readops_core::read_error_message(e))
+  }
+}
+
+/// Native-linked selftest exercised by `--smoke-readops`: creates an isolated `<temp_dir>/reader_data_selftest`
+/// subdir (never touching any existing `<temp_dir>/stillfail.db`), verifies `Reader::db_now`,
+/// lossless `Reader::read_text_for_serve("policyChecks")`, `checkpoint(hard)` `busy_timeout === 0`
+/// restoration on both Ok and SQLite-error paths, and true same-snapshot read isolation, then cleans up.
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let started_shell = if !host_shim::shell_active() {
+    if !host_shim::start(temp_dir, false) {
+      return Err("reader_data selftest host_shim::start failed")
+    }
+    true
+  } else {
+    false
+  }
+  let client = builders_core::ShellClient::new()
+  let sub_dir = temp_dir + "/reader_data_selftest"
+  let _ = client.shell_sync_json(
+    "fs.remove",
+    base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
+  )
+  let mk = client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(sub_dir))]))
+  let res = match mk {
+    Ok(_) => run_selftest_in(client, sub_dir)
+    Err(e) => Err("reader_data selftest fs.mkdir failed: " + e.message)
+  }
+  let _ = client.shell_sync_json(
+    "fs.remove",
+    base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
+  )
+  if started_shell {
+    host_shim::stop()
+  }
+  res
 }

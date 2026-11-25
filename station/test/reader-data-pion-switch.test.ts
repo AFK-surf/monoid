@@ -5,9 +5,11 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   appendFileSync,
+  chmodSync,
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   unlinkSync,
@@ -882,7 +884,7 @@ test("positive prepareWorkspaceUpJobs and prepareUpJobs emission, reset on next 
   assert.equal(pAfterSessErr.head.prepareUpJobs, undefined);
 });
 
-test("dual-connection snapshot/write contention and checkpoint(hard) busy=1 & busy_timeout recovery", async (t) => {
+test("wire checkpoint(hard) busy=1 contention, post-unlock PASSIVE completion, and external commit visibility", async (t) => {
   const bins = resolveDualBinaries();
   if (!bins) return;
 
@@ -919,7 +921,8 @@ test("dual-connection snapshot/write contention and checkpoint(hard) busy=1 & bu
   assert.equal(hardRow.busy, 1, `expected hard checkpoint busy=1 while snapshot held, got ${hardWhileHeld.body}`);
   assert.ok(hardRow.checkpointed < hardRow.log, `expected partial checkpoint while held: ${hardWhileHeld.body}`);
 
-  // Release holder and run passive checkpoint (busy_timeout restored to 0) -> completes all frames
+  // Release holder and run passive checkpoint -> completes all frames
+  // (PRAGMA busy_timeout === 0 restoration on ok/err paths & same-snapshot isolation are verified in native reader_data::run_selftest)
   holder.exec("COMMIT");
   holder.close();
 
@@ -929,7 +932,7 @@ test("dual-connection snapshot/write contention and checkpoint(hard) busy=1 & bu
   assert.equal(passiveRow.busy, 0);
   assert.equal(passiveRow.checkpointed, passiveRow.log);
 
-  // Verify snapshot read isolation against concurrent external writer commit
+  // Verify subsequent read snapshot sees an external writer's committed row
   const beforeCount = (JSON.parse((await pion.ask({ id: 3, op: "threadList", args: {} })).body!) as unknown[]).length;
   writer
     .prepare(
@@ -955,6 +958,7 @@ test("Readers pool & OwnReader cold-start, cooldown, explicit override, hot-relo
 
   // 1. Cold-start Pion via Readers pool -> LiveProgram.binary === bins.pion
   const readers = new Readers(fx.dataDir, 1, undefined, 1, { readers: () => cfg });
+  t.after(() => readers.close());
   const r1 = JSON.parse(await readers.read("threadList", {}, "en"));
   assert.ok(Array.isArray(r1));
   const live1 = MbProcess.live().filter((p) => p.args.includes(fx.dataDir));
@@ -995,19 +999,50 @@ test("Readers pool & OwnReader cold-start, cooldown, explicit override, hot-relo
     resetReaderSelectionStateForTest();
   }
 
-  // 5. OwnReader (standalone tailRead) switches cleanly between Pion and MB with verified resolved binaries
-  let ownCfg: ReaderSelectConfig = { readers: { data: "pion" } };
-  const selPion = await resolveReaderSelectionAsync("data", { config: ownCfg });
-  assert.equal(realpathSync(selPion.primaryBinary), bins.pion);
-  const own = new OwnReader(() => ownCfg);
-  t.after(() => own.close());
-  const tPion = await own.tailRead("claude", { path: fx.transcriptPath });
-  assert.ok(Array.isArray(tPion.entries) && tPion.entries.length >= 2);
-  ownCfg = { readers: { data: "mb" } };
-  const selMb = await resolveReaderSelectionAsync("data", { config: ownCfg });
-  assert.equal(realpathSync(selMb.primaryBinary), bins.mb);
-  const tMb = await own.tailRead("claude", { path: fx.transcriptPath });
-  assert.deepEqual(tMb, tPion);
+  // 5. OwnReader (standalone tailRead) actually spawns BIN_PION then BIN_MB (verified via thin exec-logging wrappers)
+  const spawnLog = join(root, "own-reader-spawns.log");
+  const makeWrapper = (name: string, targetBin: string): string => {
+    const p = join(root, name);
+    const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    writeFileSync(
+      p,
+      `#!/bin/sh\nif [ "$1" != "--version" ]; then\n  printf '%s\\t%s\\n' ${q(targetBin)} "$*" >> ${q(spawnLog)}\nfi\nexec ${q(targetBin)} "$@"\n`,
+      "utf8",
+    );
+    chmodSync(p, 0o755);
+    return p;
+  };
+  const wrapPion = makeWrapper("wrap-pion.sh", bins.pion);
+  const wrapMb = makeWrapper("wrap-mb.sh", bins.mb);
+  const prevPionEnv = process.env.STILLFAIL_PION_READER;
+  const prevMbEnv = process.env.STILLFAIL_MB_READER;
+  process.env.STILLFAIL_PION_READER = wrapPion;
+  process.env.STILLFAIL_MB_READER = wrapMb;
+  resetReaderSelectionStateForTest();
+  try {
+    const ownPion = new OwnReader(() => ({ readers: { data: "pion" } }));
+    t.after(() => ownPion.close());
+    const tPion = await ownPion.tailRead("claude", { path: fx.transcriptPath });
+    assert.ok(Array.isArray(tPion.entries) && tPion.entries.length >= 2);
+    await ownPion.close();
+
+    const ownMb = new OwnReader(() => ({ readers: { data: "mb" } }));
+    t.after(() => ownMb.close());
+    const tMb = await ownMb.tailRead("claude", { path: fx.transcriptPath });
+    assert.deepEqual(tMb, tPion);
+    await ownMb.close();
+
+    const lines = readFileSync(spawnLog, "utf8").trim().split("\n").filter(Boolean);
+    assert.equal(lines.length, 2, `expected exactly 2 OwnReader spawns, got: ${JSON.stringify(lines)}`);
+    assert.ok(lines[0]!.startsWith(`${bins.pion}\t`), `1st OwnReader spawn must exec BIN_PION, got: ${lines[0]}`);
+    assert.ok(lines[1]!.startsWith(`${bins.mb}\t`), `2nd OwnReader spawn must exec BIN_MB, got: ${lines[1]}`);
+  } finally {
+    if (prevPionEnv === undefined) delete process.env.STILLFAIL_PION_READER;
+    else process.env.STILLFAIL_PION_READER = prevPionEnv;
+    if (prevMbEnv === undefined) delete process.env.STILLFAIL_MB_READER;
+    else process.env.STILLFAIL_MB_READER = prevMbEnv;
+    resetReaderSelectionStateForTest();
+  }
 });
 
 test("mixed-mode LiveHub: un-overridden Readers({ data: pion }) runs BIN_PION alongside real MB --sessions (BIN_MB)", async (t) => {
