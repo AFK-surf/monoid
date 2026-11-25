@@ -2728,12 +2728,13 @@
   "web-pages.projects.empty_tags": "暂无标签",
   "web-pages.projects.note_label": "项目说明",
   "web-pages.projects.note_placeholder": "记录背景、范围、规范或目标…",
-  "web-pages.projects.refs_label": "关联仓库与链接",
-  "web-pages.projects.refs_placeholder": "如 AFK-surf/monoid 或 https://…",
+  "web-pages.projects.refs_label": "参考链接与目录（可选）",
+  "web-pages.projects.refs_placeholder": "如文档链接、仓库或目录路径…",
   "web-pages.projects.refs_add": "添加",
   "web-pages.projects.save": "保存",
   "web-pages.projects.saved": "已保存",
   "web-pages.projects.loading_detail": "正在加载完整项目说明…",
+  "web-pages.projects.name_label": "项目名称",
   "web-pages.projects.rename": "重命名",
   "web-pages.projects.rename_title": "重命名项目",
   "web-pages.projects.rename_placeholder": "输入新项目名称…",
@@ -2751,8 +2752,9 @@
   "web-pages.projects.draft_conflict": "此项目说明已在其他地方更新",
   "web-pages.projects.draft_reload": "重新载入并放弃草稿",
   "web-pages.projects.draft_overwrite": "覆盖保存",
-  "web-pages.projects.merge_into_cross": "并入「跨项目 / 其他」",
+  "web-pages.projects.merge_into_cross": "移出项目（设为未归类）",
   "web-pages.projects.merge_confirm_body": "将「{from}」的所有对话合并到「{to}」，此操作不可撤销。",
-  "web-pages.projects.merge_cross_confirm_body": "将「{from}」的所有对话并入「跨项目 / 其他」，此操作不可撤销。",
-  "web-pages.projects.manage_section": "管理操作"
+  "web-pages.projects.merge_cross_confirm_body": "将「{from}」的所有对话移出项目并设为未归类，此操作不可撤销。",
+  "web-pages.projects.manage_section": "管理操作",
+  "web-pages.projects.save_first_before_manage": "请先保存当前修改"
 }

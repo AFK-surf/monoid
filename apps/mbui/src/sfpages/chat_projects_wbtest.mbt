@@ -247,10 +247,11 @@ test "proposal actions: create sends accept+entryN; edit panel exposes rename-cr
   assert_eq(calls.length(), 1)
   assert_eq(calls[0].0, "proposal.resolve")
   assert_eq(@sfbase.text(Some(calls[0].1), "action"), "accept")
+  assert_eq(@sfbase.text(Some(calls[0].1), "name"), "chat-projects")
   assert_eq(@sfbase.number(Some(calls[0].1), "entryN"), 12.0)
-  assert_true(cp_has_substr(t1, "已创建并归入项目「chat-projects」"))
+  assert_true(cp_has_substr(t1, "已创建项目「chat-projects」"))
 
-  // 2. 编辑 panel -> top-level 创建并归入 / 改归已有项目 / 设为跨项目 / 其他
+  // 2. 编辑 panel -> top-level 改名创建 / 改归已有 / 设为未归类
   calls.clear()
   let cv2 = cp_chat_view(true, [cp_proposal_msg(13)])
   let view2 = @signals.signal(cv2)
@@ -262,7 +263,7 @@ test "proposal actions: create sends accept+entryN; edit panel exposes rename-cr
   t2.run_for(@ui.move_most_ms)
   assert_true(cp_find_word(t2, "改名创建") is Some(_))
   assert_true(cp_find_word(t2, "改归已有") is Some(_))
-  assert_true(cp_find_word(t2, "设为跨项目 / 其他") is Some(_))
+  assert_true(cp_find_word(t2, "不归入项目") is Some(_))
   assert_true(cp_find_word(t2, "board") is Some(_))
   // Click 改名创建 -> accept + name
   let rc = cp_find_word(t2, "改名创建").unwrap()
@@ -290,7 +291,7 @@ test "proposal actions: create sends accept+entryN; edit panel exposes rename-cr
   assert_eq(@sfbase.text(Some(calls[0].1), "target"), "board")
   assert_true(cp_has_substr(t3, "已归入项目「board」"))
 
-  // 4. 编辑 -> 设为跨项目 / 其他 -> dismiss + markCross:true
+  // 4. 编辑 -> 设为未归类 -> dismiss + markCross:true
   calls.clear()
   let cv4 = cp_chat_view(true, [cp_proposal_msg(15)])
   let view4 = @signals.signal(cv4)
@@ -300,13 +301,13 @@ test "proposal actions: create sends accept+entryN; edit panel exposes rename-cr
   let e4 = cp_find_word(t4, "编辑").unwrap()
   t4.tap(e4.1 + e4.3 / 2.0, e4.2 + e4.4 / 2.0)
   t4.run_for(@ui.move_most_ms)
-  let cross_row = cp_find_word(t4, "设为跨项目 / 其他").unwrap()
+  let cross_row = cp_find_word(t4, "不归入项目").unwrap()
   t4.tap(cross_row.1 + cross_row.3 / 2.0, cross_row.2 + cross_row.4 / 2.0)
   t4.run_for(@ui.move_most_ms)
   assert_eq(calls.length(), 1)
   assert_eq(@sfbase.text(Some(calls[0].1), "action"), "dismiss")
   assert_true(@sfbase.flag(Some(calls[0].1), "markCross"))
-  assert_true(cp_has_substr(t4, "已设为跨项目 / 其他"))
+  assert_true(cp_has_substr(t4, "已忽略项目建议"))
 }
 
 ///|
@@ -604,4 +605,66 @@ test "English locale and 1.3x text scale render cleanly with zero audit faults" 
   assert_true(edit_box.1 >= 0.0 && edit_box.1 + edit_box.3 <= 320.0 - 12.0)
   assert_eq(t.audit(), [])
   @sf.set_language(None)
+}
+
+///|
+test "proposal accept with infoError stays retryable until PROJECTS.jsonl sync succeeds" {
+  cp_reset()
+  let attempt : Ref[Int] = Ref(0)
+  let src = cp_source(fn(name, _, done) {
+    if name == "proposal.resolve" {
+      attempt.val += 1
+      if attempt.val == 1 {
+        done(
+          Ok(
+            Json::object({
+              "proposal": Json::object({
+                "status": Json::string("pending"),
+                "resolvedProject": Json::string("chat-projects"),
+              }),
+              "alreadyResolved": Json::boolean(false),
+              "infoError": Json::string("EACCES: PROJECTS.jsonl locked"),
+            }),
+          ),
+        )
+      } else {
+        done(
+          Ok(
+            Json::object({
+              "proposal": Json::object({
+                "status": Json::string("accepted"),
+                "resolvedProject": Json::string("chat-projects"),
+              }),
+              "alreadyResolved": Json::boolean(true),
+            }),
+          ),
+        )
+      }
+    } else {
+      done(Ok(Json::object({ "ok": Json::boolean(true) })))
+    }
+  })
+  let cv = cp_chat_view(true, [cp_proposal_msg(55)])
+  let view = @signals.signal(cv)
+  let entries = @signals.signal(@sfbase.entries_of(cv))
+  let t = body_new(src, 900.0, 700.0, 0, view, entries)
+  t.run_for(@ui.move_most_ms)
+  // First click returns 200 + infoError -> bar MUST stay retryable even across a server refresh / reopen!
+  let c1 = cp_find_word(t, "创建").unwrap()
+  t.tap(c1.1 + c1.3 / 2.0, c1.2 + c1.4 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  // Simulate server refresh / chat reopen still returning status: "pending" while info_synced = 0
+  let cv_reopen = cp_chat_view(true, [cp_proposal_msg(55)])
+  view.set(cv_reopen)
+  entries.set(@sfbase.entries_of(cv_reopen))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(attempt.val, 1)
+  assert_true(cp_find_word(t, "创建") is Some(_), msg="infoError must keep proposal bar retryable after refresh")
+  assert_false(cp_has_substr(t, "已创建项目「chat-projects」"))
+  // Second click replays idempotent resolve -> succeeds cleanly and converges!
+  let c2 = cp_find_word(t, "创建").unwrap()
+  t.tap(c2.1 + c2.3 / 2.0, c2.2 + c2.4 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(attempt.val, 2)
+  assert_true(cp_has_substr(t, "已创建项目「chat-projects」"))
 }

@@ -74,7 +74,6 @@ pub fn chats_params_query(scope : String, q : ListQuery) -> Map[String, Json] {
   match q.project {
     All => ()
     Unclassified => params["unclassified"] = Json::boolean(true)
-    Cross => params["project"] = Json::string("")
     Named(name) => params["project"] = Json::string(name)
   }
   match q.tag {
@@ -90,7 +89,6 @@ pub fn chats_query_cache_key(scope : String, q : ListQuery) -> String {
   let pf = match q.project {
     All => ""
     Unclassified => "u"
-    Cross => "c"
     Named(n) => "p:" + n
   }
   let tf = q.tag.unwrap_or("")

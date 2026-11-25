@@ -190,9 +190,10 @@ fn fx_decorate_chat_item(raw : Json, idx : Int) -> Json {
 ///|
 fn fx_item_matches_filters(item : Json, params : Map[String, Json]) -> Bool {
   let s = Some(item)
-  if params.get("unclassified") is Some(True) {
-    if field(s, "project") is Some(String(_)) {
-      return false
+  if params.get("unclassified") is Some(True) || params.get("project") is Some(String("")) {
+    match field(s, "project") {
+      Some(String(p)) if p != "" => return false
+      _ => ()
     }
   } else if params.get("project") is Some(String(want)) {
     match field(s, "project") {
@@ -214,21 +215,14 @@ fn fx_item_matches_filters(item : Json, params : Map[String, Json]) -> Bool {
 
 ///|
 fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
-  let pinned : Array[Json] = []
   let by_proj : Map[String, Array[Json]] = Map([])
   let proj_order : Array[String] = []
   let unclass : Array[Json] = []
-  let cross : Array[Json] = []
+  // Pinned chats stay inside their own project group (or unified unclassified), pinned first.
   for item in all_items {
     let s = Some(item)
-    if flag(s, "pinned") {
-      pinned.push(item)
-      continue
-    }
     match field(s, "project") {
-      None => unclass.push(item)
-      Some(String("")) => cross.push(item)
-      Some(String(p)) =>
+      Some(String(p)) if p != "" =>
         match by_proj.get(p) {
           Some(arr) => arr.push(item)
           None => {
@@ -240,24 +234,41 @@ fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
     }
   }
   let mk = fn(key : String, kind : String, label : String, proj : String?, rows : Array[Json]) -> Json {
+    // Ensure pinned rows appear first within the group.
+    let sorted_rows : Array[Json] = []
+    for r in rows {
+      if flag(Some(r), "pinned") {
+        sorted_rows.push(r)
+      }
+    }
+    for r in rows {
+      if !flag(Some(r), "pinned") {
+        sorted_rows.push(r)
+      }
+    }
     let mut running = 0
+    let mut alert = 0
     let mut asking = 0
     let mut unread = 0
-    for r in rows {
+    for r in sorted_rows {
       let rs = Some(r)
-      if text(rs, "state") == "run" { running += 1 }
-      if text(rs, "stateLead") == "need" { asking += 1 }
-      if flag(rs, "unread") { unread += 1 }
+      let tone = text(rs, "tone")
+      let st = text(rs, "state")
+      if tone == "busy" || st == "run" { running += 1 }
+      if tone == "alert" || st == "failed" { alert += 1 }
+      if tone == "wait" || st == "block" || text(rs, "stateLead") == "need" { asking += 1 }
+      if flag(rs, "unread") || tone == "done" { unread += 1 }
     }
     let m : Map[String, Json] = {
       "key": Json::string(key),
       "kind": Json::string(kind),
       "label": Json::string(label),
-      "chatCount": Json::number(rows.length().to_double()),
+      "chatCount": Json::number(sorted_rows.length().to_double()),
       "runningCount": Json::number(running.to_double()),
+      "alertCount": Json::number(alert.to_double()),
       "askingCount": Json::number(asking.to_double()),
       "unreadCount": Json::number(unread.to_double()),
-      "items": Json::array(rows),
+      "items": Json::array(sorted_rows),
     }
     match proj {
       Some(p) => m["project"] = Json::string(p)
@@ -266,9 +277,6 @@ fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
     Json::object(m)
   }
   let groups : Array[Json] = []
-  if !pinned.is_empty() {
-    groups.push(mk("pinned", "pinned", "已固定", None, pinned))
-  }
   for p in proj_order {
     match by_proj.get(p) {
       Some(rows) => groups.push(mk("project:" + p, "project", p, Some(p), rows))
@@ -277,9 +285,6 @@ fn fx_build_groups(all_items : Array[Json]) -> Array[Json] {
   }
   if !unclass.is_empty() {
     groups.push(mk("unclassified", "unclassified", "未归类", None, unclass))
-  }
-  if !cross.is_empty() {
-    groups.push(mk("cross", "cross", "跨项目 / 其他", Some(""), cross))
   }
   groups
 }
@@ -398,8 +403,8 @@ fn fx_projects_topic(name : String, params : Map[String, Json]) -> Json? {
       let out : Map[String, Json] = {
         "items": Json::array(filtered),
         "total": Json::number(3.0),
-        "unclassifiedCount": Json::number(2.0),
-        "crossCount": Json::number(1.0),
+        "unclassifiedCount": Json::number(3.0),
+        "crossCount": Json::number(0.0),
       }
       if cur == "" && q == "" {
         out["nextCursor"] = Json::string("p2")

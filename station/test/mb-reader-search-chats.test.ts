@@ -40,6 +40,8 @@ test("the MoonBit reader searches chat_list as the worker does", { skip: binary 
     for (const text of said) first ??= say(t, "p@x", text);
     if (key === "b" && first !== null) store.editMessage("ember", "CHAT", "b", first, "Find the flaky TEST, edited");
     if (key === "d") store.db.prepare("UPDATE threads SET auto_title = 'Quarterly Report' WHERE id = ?").run(t);
+    if (key === "a" || key === "e") store.setThreadClassification(t, { project: "alpha", force: true });
+    if (key === "c") store.setThreadClassification(t, { project: "", force: true });
   }
   const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
@@ -49,6 +51,10 @@ test("the MoonBit reader searches chat_list as the worker does", { skip: binary 
     for (const query of ["release", "changelog", "flaky test", "edited", "clock", "σίγμα", "τέλος", "quarterly", "alpha-1", "deploy", "i̇stanbul", "ghost", "", "nothing like it"])
       for (const [ws, home, limit] of [[null, null, 50], ["home", "home", 50], ["w", "home", 1], [null, null, 0]] as const)
         out.push(await read(readers, "searchChatList", { ws, home, limit, query }));
+    // Project filter (unified unclassified `""` matching NULL + `""`, named `"alpha"`, missing `"none"`) and offset pagination
+    for (const project of ["", "alpha", "none"])
+      for (const offset of [0, 1, 2, 99])
+        out.push(await read(readers, "searchChatList", { ws: null, home: null, limit: 2, query: "", project, offset }));
     return out;
   };
   try {

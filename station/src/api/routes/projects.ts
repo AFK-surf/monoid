@@ -6,9 +6,11 @@ import type { Route, Tools } from "../admin.ts";
 import { type Answer, type Request, Refused, error, json } from "../request.ts";
 import {
   applyProposalInfoSync,
+  checkProposalInfoApplied,
   ensureProjectRegistered,
   normalizeNote,
   normalizeRefs,
+  pruneAppliedOpIds,
   readProjectsInfoLenient,
   stripInternalProjectInfo,
   updateProjectInfo,
@@ -50,12 +52,29 @@ function validateRefsArg(raw: unknown): { ok: true; value: string[] | null | und
   return { ok: true, value: raw as string[] };
 }
 
-export function routes(tools: Tools, cloud?: Cloud): Route[] {
+export function routes(tools: Tools, cloud?: Cloud, syncProposalInfo = applyProposalInfoSync): Route[] {
   const homeWs = () => cloud?.home() ?? tools.agents?.cloud?.home() ?? null;
   const viewerWs = (r: Request): string | null => r.viewer.workspace || homeWs();
   const notifyProjectsChanged = (ws: string | null) => {
     tools.events?.projectsChanged(ws);
     tools.agents?.hub.invalidateProjectsCache(ws);
+  };
+  // Serialize resolve -> PROJECTS.jsonl sync -> markProposalInfoSynced per `(thread, entry)` so concurrent
+  // resolve requests on the same proposal can never interleave DB replacement with stale sync completion.
+  const proposalLocks = new Map<string, Promise<void>>();
+  const withProposalLock = async <T>(lockKey: string, fn: () => Promise<T>): Promise<T> => {
+    const prev = proposalLocks.get(lockKey) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => { release = resolve; });
+    const tail = prev.then(() => next);
+    proposalLocks.set(lockKey, tail);
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (proposalLocks.get(lockKey) === tail) proposalLocks.delete(lockKey);
+    }
   };
 
   return [
@@ -65,6 +84,11 @@ export function routes(tools: Tools, cloud?: Cloud): Route[] {
       handle: async (r: Request, [rawThread, rawEntry]: string[]): Promise<Answer> => {
         if (!tools.store) return error(503, "station store is not ready");
         if (!/^\d+$/.test(rawThread!) || !/^\d+$/.test(rawEntry!)) return error(400, "thread and entry must be positive integers");
+        const threadId = Number(rawThread);
+        const entryN = Number(rawEntry);
+        if (!Number.isSafeInteger(threadId) || threadId <= 0 || !Number.isSafeInteger(entryN) || entryN <= 0) {
+          return error(400, "thread and entry must be positive integers");
+        }
         const body = parseBody(r);
         if (body === null) return error(r.body.length > BODY_MOST ? 413 : 400, r.body.length > BODY_MOST ? "request too large" : "invalid JSON body");
         const action = body.action;
@@ -103,58 +127,133 @@ export function routes(tools: Tools, cloud?: Cloud): Route[] {
         const markCross = body.markCross === true;
         const resolvedBy = r.viewer.email || r.viewer.sub || "member";
 
-        let res;
-        try {
-          res = tools.store.resolveProposal(Number(rawThread), Number(rawEntry), {
-            action,
-            ...(name !== undefined ? { name } : {}),
-            ...(target !== undefined ? { target } : {}),
-            ...(normalizedNote !== undefined ? { note: normalizedNote } : {}),
-            ...(normalizedRefs !== undefined ? { refs: normalizedRefs } : {}),
-            markCross,
-            resolvedBy,
-          });
-        } catch (e) {
-          const msg = (e as Error).message;
-          const status = /^unknown (thread|entry)|has no project proposal/.test(msg) ? 404 : 400;
-          return error(status, msg);
+        const agentHome = agentHomeOf(tools);
+        if (action === "accept" && agentHome === null) {
+          return error(503, "agent home is not configured");
         }
 
-        // Persist project registration/metadata into shared PROJECTS.jsonl atomically inside file lock
-        // using DB-recorded intent (`proposal_outcomes.info_note`, `info_refs`, `info_synced`).
-        // On file write failure after DB commit, keep `info_synced = 0` and return 200 with `infoError`
-        // (matching PUT /classification) so retries can reconcile without losing the DB decision.
-        let infoError: string | undefined;
-        const agentHome = agentHomeOf(tools);
-        if (agentHome !== null && res.infoSync.needed) {
+        return withProposalLock(`${threadId}:${entryN}`, async () => {
           const ws = viewerWs(r);
-          const targetProject = res.proposal.resolvedProject;
-          if (targetProject !== undefined && targetProject !== "") {
+          // Crash-recovery reconciliation: if a previous `accept` persisted its receipt `opId` in `PROJECTS.jsonl`
+          // before a crash/restart left `info_synced = 0` in SQLite, verify against `PROJECTS.jsonl` BEFORE allowing
+          // any follow-up decision to replace or dismiss it. If `agentHome` is missing or `PROJECTS.jsonl` cannot be
+          // read right now, return a retryable 503 instead of guessing `false` and overwriting an on-disk registration.
+          const unsynced = tools.store!.getUnsyncedAcceptOutcome(threadId, entryN);
+          if (unsynced !== null) {
+            if (agentHome === null) {
+              const ans = error(503, "agent home is not configured; cannot verify pending project registration");
+              ans.noCache = true;
+              return ans;
+            }
+            let receiptState: "applied" | "absent" | "uncertain";
             try {
-              const resolvedAt = typeof res.proposal.resolvedAt === "number" ? res.proposal.resolvedAt : tools.store.now();
-              const synced = await applyProposalInfoSync(agentHome, ws, homeWs(), {
-                name: targetProject,
-                ...(res.infoSync.note !== undefined ? { note: res.infoSync.note } : {}),
-                ...(res.infoSync.refs !== undefined ? { refs: res.infoSync.refs } : {}),
-                resolvedAt,
-                isReplay: res.alreadyResolved,
-              });
-              if (synced.changed) notifyProjectsChanged(ws);
-              tools.store.markProposalInfoSynced(Number(rawThread), Number(rawEntry));
+              receiptState = await checkProposalInfoApplied(agentHome, ws, homeWs(), unsynced.opId);
             } catch (e) {
-              infoError = (e as Error).message;
+              const ans = error(503, `cannot verify pending project registration: ${(e as Error).message}`);
+              ans.noCache = true;
+              return ans;
+            }
+            if (receiptState === "applied") {
+              const marked = tools.store!.markProposalInfoSynced(threadId, entryN, {
+                status: "accepted",
+                project: unsynced.project,
+                resolvedAt: unsynced.resolvedAt,
+                opId: unsynced.opId,
+              });
+              if (marked) {
+                const keepOpIds = tools.store!.listPendingRenameInfoOpIds(ws ?? homeWs() ?? "");
+                await pruneAppliedOpIds(agentHome, ws, homeWs(), [unsynced.opId], keepOpIds).catch(() => {});
+              }
+            } else if (receiptState === "uncertain") {
+              const sameIntent = tools.store!.isSameUnsyncedAcceptIntent(threadId, entryN, {
+                action,
+                ...(name !== undefined ? { name } : {}),
+                ...(normalizedNote !== undefined ? { note: normalizedNote } : {}),
+                ...(normalizedRefs !== undefined ? { refs: normalizedRefs } : {}),
+              });
+              if (!sameIntent) {
+                const ans = error(503, "PROJECTS.jsonl contains unparseable lines; cannot verify pending project registration before replacing it");
+                ans.noCache = true;
+                return ans;
+              }
             }
           }
-        }
 
-        const answer = json(200, JSON.stringify({
-          proposal: res.proposal,
-          thread: res.thread,
-          alreadyResolved: res.alreadyResolved,
-          ...(infoError !== undefined ? { infoError } : {}),
-        }));
-        if (infoError !== undefined) answer.noCache = true;
-        return answer;
+          let res;
+          try {
+            res = tools.store!.resolveProposal(threadId, entryN, {
+              action,
+              ...(name !== undefined ? { name } : {}),
+              ...(target !== undefined ? { target } : {}),
+              ...(normalizedNote !== undefined ? { note: normalizedNote } : {}),
+              ...(normalizedRefs !== undefined ? { refs: normalizedRefs } : {}),
+              markCross,
+              resolvedBy,
+            });
+          } catch (e) {
+            const msg = (e as Error).message;
+            const status = /^unknown (thread|entry)|has no project proposal/.test(msg) ? 404 : 400;
+            return error(status, msg);
+          }
+
+          // Persist project registration/metadata into shared PROJECTS.jsonl atomically inside file lock
+          // using DB-recorded intent (`proposal_outcomes.info_note`, `info_refs`, `info_synced`, `info_op_id`).
+          // On file write failure after DB commit, keep `info_synced = 0` and return 200 with `infoError`
+          // (matching PUT /classification) so retries can reconcile without losing the DB decision.
+          let infoError: string | undefined;
+          if (res.infoSync.needed) {
+            const targetProject = res.proposal.resolvedProject;
+            if (targetProject !== undefined && targetProject !== "") {
+              if (agentHome === null) {
+                infoError = "agent home is not configured";
+              } else {
+                try {
+                  const resolvedAt = typeof res.proposal.resolvedAt === "number" ? res.proposal.resolvedAt : tools.store!.now();
+                  const synced = await syncProposalInfo(agentHome, ws, homeWs(), {
+                    name: targetProject,
+                    ...(res.infoSync.note !== undefined ? { note: res.infoSync.note } : {}),
+                    ...(res.infoSync.refs !== undefined ? { refs: res.infoSync.refs } : {}),
+                    resolvedAt,
+                    isReplay: res.alreadyResolved,
+                    ...(res.infoSync.opId !== undefined ? { opId: res.infoSync.opId } : {}),
+                  });
+                  if (synced.changed) notifyProjectsChanged(ws);
+                  const marked = tools.store!.markProposalInfoSynced(threadId, entryN, {
+                    status: res.proposal.status,
+                    project: targetProject,
+                    ...(typeof res.proposal.resolvedAt === "number" ? { resolvedAt: res.proposal.resolvedAt } : {}),
+                    ...(res.infoSync.opId !== undefined ? { opId: res.infoSync.opId } : {}),
+                  });
+                  if (!marked) {
+                    const curEntry = tools.store!.getEntry(threadId, entryN);
+                    const curThread = tools.store!.getThread(threadId);
+                    if (curEntry?.proposal !== undefined && curThread !== null) {
+                      res = { ...res, proposal: curEntry.proposal, thread: curThread, alreadyResolved: true };
+                    }
+                  } else if (res.infoSync.opId !== undefined) {
+                    const keepOpIds = tools.store!.listPendingRenameInfoOpIds(ws ?? homeWs() ?? "");
+                    await pruneAppliedOpIds(agentHome, ws, homeWs(), [res.infoSync.opId], keepOpIds).catch(() => {});
+                  }
+                } catch (e) {
+                  infoError = (e as Error).message;
+                }
+              }
+            }
+          }
+
+          const clientProposal =
+            infoError !== undefined && res.proposal.status === "accepted"
+              ? { ...res.proposal, status: "pending" as const }
+              : res.proposal;
+          const answer = json(200, JSON.stringify({
+            proposal: clientProposal,
+            thread: res.thread,
+            alreadyResolved: res.alreadyResolved,
+            ...(infoError !== undefined ? { infoError } : {}),
+          }));
+          if (infoError !== undefined) answer.noCache = true;
+          return answer;
+        });
       },
     },
     {

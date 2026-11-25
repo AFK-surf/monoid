@@ -3414,6 +3414,7 @@ web-main.projects.preset_auto
 web-main.projects.preset_local_only
 web-main.projects.preset_viewer_denied
 web-pages.projects.title
+web-pages.projects.name_label
 web-pages.projects.tab_projects
 web-pages.projects.tab_tags
 web-pages.projects.search_placeholder
@@ -3456,3 +3457,4 @@ web-pages.projects.merge_into_cross
 web-pages.projects.merge_confirm_body
 web-pages.projects.merge_cross_confirm_body
 web-pages.projects.manage_section
+web-pages.projects.save_first_before_manage

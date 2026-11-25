@@ -65,6 +65,7 @@ test "grouped chats decode, collision-free '已固定' project key, and held_ord
         "project": "已固定",
         "chatCount": 5,
         "runningCount": 0,
+        "alertCount": 1,
         "askingCount": 2,
         "unreadCount": 1,
         "items": [
@@ -80,19 +81,19 @@ test "grouped chats decode, collision-free '已固定' project key, and held_ord
         ],
       },
       {
-        "key": "cross",
-        "kind": "cross",
-        "label": "跨项目 / 其他",
-        "project": "",
+        "key": "unclassified",
+        "kind": "unclassified",
+        "label": "未归类",
         "chatCount": 1,
         "runningCount": 0,
+        "alertCount": 0,
         "askingCount": 0,
         "unreadCount": 0,
         "items": [
           {
             "id": "c-cross",
             "session": "c-cross",
-            "title": "Cross chat",
+            "title": "Unclassified chat",
             "station": "ws/s1",
             "stationName": "S1",
             "project": "",
@@ -109,16 +110,18 @@ test "grouped chats decode, collision-free '已固定' project key, and held_ord
   assert_eq(view.days[0].key, "pinned")
   assert_eq(view.days[1].key, "project:已固定")
   assert_eq(view.days[1].chat_count, 5)
+  assert_eq(view.days[1].alert_count, 1)
   assert_eq(view.days[1].asking_count, 2)
   assert_eq(view.days[2].items[0].project, Some(""))
   let lines = day_keys(view.days)
   assert_true(lines.contains("h/pinned"))
   assert_true(lines.contains("h/project:已固定"))
-  assert_true(lines.contains("h/cross"))
+  assert_true(lines.contains("h/unclassified"))
   let held = @sfbase.held_order("test-grp-key", view.days, true)
   assert_eq(held.length(), 3)
   assert_eq(held[1].key, "project:已固定")
   assert_eq(held[1].chat_count, 5)
+  assert_eq(held[1].alert_count, 1)
   assert_eq(held[1].asking_count, 2)
 }
 
@@ -1008,7 +1011,7 @@ test "R4 regressions: live A->B tail no-reset, external member tag update + late
   t_det.run_for(@ui.move_most_ms)
   assert_true(t_det.find("Y") is Some(_))
   // User adds Z and clicks normal 保存 -> must send [X, Y, Z] (preserving Y)!
-  match t_det.find("如 AFK-surf/monoid") {
+  match t_det.find("如文档链接、仓库或目录路径") {
     Some(p) => {
       t_det.tap(p.0, p.1)
       t_det.type_text("Z")
@@ -1033,4 +1036,162 @@ test "R4 regressions: live A->B tail no-reset, external member tag update + late
   assert_eq(p_calls.length(), 2)
   let saved_refs = items(Some(p_calls[1]), "refs").map(fn(x) { match x { String(s) => s; _ => "" } })
   assert_eq(saved_refs, ["X", "Y", "Z"])
+}
+
+///|
+test "collapsed project keeps active chat visible and detail rename uses native top dialog" {
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+
+  // 1. Project detail top 项目名称 row opens native rename dialog (no dangling bottom inline form)
+  let td = setting_tester(
+    Project("monoid"),
+    390.0,
+    platform=2,
+    ready=fn() { @sffixture.fx_projects_on.val = true },
+  )
+  td.run_for(@ui.move_most_ms)
+  assert_true(td.find("项目名称") is Some(_))
+  assert_true(td.find("重命名") is None)
+  let name_row = td.find("项目名称").unwrap()
+  td.tap(name_row.0, name_row.1)
+  td.run_for(@ui.move_most_ms)
+  assert_true(td.find("重命名项目") is Some(_))
+  assert_eq(td.audit(), [])
+
+  // 2. Collapsed project keeps active chat visible while hiding non-active sibling chats
+  @sfbase.reset()
+  reset()
+  @sffixture.fixture_reset()
+  @sf.set_words(@sfbase.fill)
+  @sffixture.fx_projects_on.val = true
+  @sffixture.fx_set_list_group("ws1", "project")
+  let src_grp = @sffixture.fixture("projects-grouped")
+  app.nav.push(Chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }))
+  @sfbase.set_group_collapsed("ws1", "project:monoid", true)
+  let t_side = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let frame : ListsNodeFrame = {
+        top: fn() { 0.0 },
+        under: fn() { 0.0 },
+        foot: fn() { 0.0 },
+        ground: fn() { @sf.theme().p.bg },
+        before: fn(_, _) { [] },
+        after: fn(_, _) { [] },
+        others: [],
+        shown: fn() { 0 },
+        at: Side,
+        watched: fn() { true },
+      }
+      root.box(fn(col) {
+        col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chats_lists_node(col, src_grp, fn() { Some(rig_workspace) }, frame, tips, fn() { 0 })
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=280.0,
+    h=700.0,
+    platform=0,
+    scale=2.0,
+  )
+  t_side.run_for(@ui.move_most_ms)
+  assert_true(t_side.find("monoid") is Some(_))
+  assert_true(t_side.find("整理发布清单") is Some(_), msg="active chat must remain visible when its project group is collapsed")
+  assert_true(t_side.find("和 Ana 一起看新版的引导页") is None, msg="non-active sibling chat must stay hidden when collapsed")
+  assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="listed.val must omit hidden siblings when collapsed")
+  // Expanding and re-collapsing (pure collapse toggle without revision/open_chat change) must refresh `listed.val`!
+  @sfbase.set_group_collapsed("ws1", "project:monoid", false)
+  t_side.run_for(@ui.move_most_ms)
+  assert_true(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="expanding group must include siblings in listed.val")
+  @sfbase.set_group_collapsed("ws1", "project:monoid", true)
+  t_side.run_for(@ui.move_most_ms)
+  assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="re-collapsing group must immediately drop hidden siblings from listed.val")
+  assert_eq(t_side.audit(), [])
+}
+
+///|
+test "project detail blocks rename while unsaved draft is dirty or info save is in flight" {
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  let held_save : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+  let rename_calls : Ref[Int] = Ref(0)
+  let detail_json : Json = {
+    "name": "monoid",
+    "note": "Initial note",
+    "refs": ["https://github.com/AFK-surf/monoid"],
+    "updatedAt": 1000.0,
+    "infoRevision": "rev-1",
+    "chatCount": 3.0,
+  }
+  let t = setting_tester(
+    Project("monoid"),
+    390.0,
+    platform=2,
+    over=fn(base_src) {
+      {
+        ..base_src,
+        topic_read: fn(name, params) {
+          if name == "project" {
+            { value: Some(detail_json), error: None, version: 1 }
+          } else if name == "chats" {
+            { value: Some({ "projects": true, "projectsWritable": true, "days": [] }), error: None, version: 1 }
+          } else {
+            (base_src.topic_read)(name, params)
+          }
+        },
+        call: fn(name, body, done) {
+          if name == "project.updateInfo" {
+            held_save.val = Some(done)
+          } else if name == "project.rename" {
+            rename_calls.val += 1
+            done(Ok({ "ok": true }))
+          } else {
+            (base_src.call)(name, body, done)
+          }
+        },
+      }
+    },
+    ready=fn() { @sffixture.fx_projects_on.val = true },
+  )
+  t.run_for(@ui.move_most_ms)
+  // 1. Add a ref to make draft dirty -> tapping 项目名称 must toast instead of opening rename dialog
+  let ref_in = t.find("如文档链接、仓库或目录路径").unwrap()
+  t.tap(ref_in.0, ref_in.1)
+  t.type_text("https://example.com/new")
+  t.run_for(@ui.move_most_ms)
+  let add_btn = t.find("添加").unwrap()
+  t.tap(add_btn.0, add_btn.1)
+  t.run_for(@ui.move_most_ms)
+  let name_row = t.find("项目名称").unwrap()
+  t.tap(name_row.0, name_row.1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重命名项目") is None, msg="dirty draft must not open rename dialog")
+  assert_true(@sfbase.toast_words().contains("请先保存当前修改"), msg="dirty draft must toast save-first warning")
+  // 2. Tap 保存 -> while save is in flight (`saving == true`), tapping 项目名称 must NOT open rename dialog
+  let save_btn = t.find("保存").unwrap()
+  t.tap(save_btn.0, save_btn.1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(held_save.val is Some(_), msg="save request must be in flight")
+  t.tap(name_row.0, name_row.1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重命名项目") is None, msg="in-flight save must block rename dialog")
+  assert_eq(rename_calls.val, 0)
+  // 3. Complete save -> now 项目名称 opens rename dialog cleanly
+  match held_save.val {
+    Some(done) => done(Ok({ "ok": true }))
+    None => ()
+  }
+  t.run_for(@ui.move_most_ms)
+  t.tap(name_row.0, name_row.1)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("重命名项目") is Some(_))
 }

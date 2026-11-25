@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
   info_note TEXT,
   info_refs TEXT,
   info_synced INTEGER NOT NULL DEFAULT 0,
+  info_op_id TEXT,
   PRIMARY KEY (thread, n)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS entries_ts ON entries (thread, ts) WHERE ts IS NOT NULL;
@@ -1607,6 +1608,7 @@ export function addProjectColumns(db: DatabaseSync): void {
     info_note TEXT,
     info_refs TEXT,
     info_synced INTEGER NOT NULL DEFAULT 0,
+    info_op_id TEXT,
     PRIMARY KEY (thread, n)
   );
   CREATE INDEX IF NOT EXISTS threads_project ON threads (project, id) WHERE project IS NOT NULL AND project != '';
@@ -1615,6 +1617,7 @@ export function addProjectColumns(db: DatabaseSync): void {
   if (!has(db, "proposal_outcomes", "info_refs")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_refs TEXT");
   // Existing resolved outcomes from older schemas default to 1 so an upgrade never resurrects deleted projects.
   if (!has(db, "proposal_outcomes", "info_synced")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_synced INTEGER NOT NULL DEFAULT 1");
+  if (!has(db, "proposal_outcomes", "info_op_id")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_op_id TEXT");
 
   // Append-only sidecar table for proposals attached when external echo landed before insertMessage (replicated with CHAT_TABLES).
   db.exec(`CREATE TABLE IF NOT EXISTS entry_proposals (

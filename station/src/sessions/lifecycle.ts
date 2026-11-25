@@ -56,7 +56,7 @@ export type NewChat = {
   createdBy: string;
   /// The creator's account `sub` (for reading per-person carried preset project preferences).
   createdBySub?: string | null;
-  /// Explicit project override (`""` cross-project, non-empty project name, `null` unclassified); undefined defers to preset preference / agent.
+  /// Explicit project override (`""` or `null` unclassified, non-empty project name); undefined defers to preset preference / agent.
   project?: string | null;
   /// The key the asking client knows it by until it is made (`clientKey`): the sidebar's rows say it for a while.
   clientKey?: string | null;

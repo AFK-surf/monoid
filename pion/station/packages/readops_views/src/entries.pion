@@ -431,8 +431,22 @@ fn entry_views(
         Err(e) => return Err(e)
       }
       if has_po {
+        let has_info_synced = match readops_core::one(
+          db,
+          "SELECT 1 AS x FROM pragma_table_info('proposal_outcomes') WHERE name = 'info_synced' LIMIT 1",
+          [],
+        ) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        let po_sql = if has_info_synced {
+          "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?)) AND NOT (status = 'accepted' AND COALESCE(info_synced, 1) = 0)"
+        } else {
+          "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))"
+        }
         let po_rows = match db.all(
-          "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+          po_sql,
           [thread, readops_core::ids_json(proposal_ns)],
         ) {
           Ok(rs) => rs

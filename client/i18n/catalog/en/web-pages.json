@@ -2782,12 +2782,13 @@
   "web-pages.projects.empty_tags": "No tags yet",
   "web-pages.projects.note_label": "Project notes",
   "web-pages.projects.note_placeholder": "Notes, scope, conventions, or goals…",
-  "web-pages.projects.refs_label": "Repositories & Links",
-  "web-pages.projects.refs_placeholder": "e.g. AFK-surf/monoid or https://…",
+  "web-pages.projects.refs_label": "Related Links & Paths (optional)",
+  "web-pages.projects.refs_placeholder": "e.g. doc URL, repo, or folder path…",
   "web-pages.projects.refs_add": "Add",
   "web-pages.projects.save": "Save",
   "web-pages.projects.saved": "Saved",
   "web-pages.projects.loading_detail": "Loading full project details…",
+  "web-pages.projects.name_label": "Project name",
   "web-pages.projects.rename": "Rename",
   "web-pages.projects.rename_title": "Rename project",
   "web-pages.projects.rename_placeholder": "Enter new project name…",
@@ -2805,8 +2806,9 @@
   "web-pages.projects.draft_conflict": "Project info was updated elsewhere",
   "web-pages.projects.draft_reload": "Reload & discard draft",
   "web-pages.projects.draft_overwrite": "Overwrite & save",
-  "web-pages.projects.merge_into_cross": "Merge into Cross-project / Other",
+  "web-pages.projects.merge_into_cross": "Move to Unclassified",
   "web-pages.projects.merge_confirm_body": "Merge all chats from \"{from}\" into \"{to}\". This cannot be undone.",
-  "web-pages.projects.merge_cross_confirm_body": "Move all chats from \"{from}\" into Cross-project / Other. This cannot be undone.",
-  "web-pages.projects.manage_section": "Management"
+  "web-pages.projects.merge_cross_confirm_body": "Move all chats from \"{from}\" to Unclassified. This cannot be undone.",
+  "web-pages.projects.manage_section": "Management",
+  "web-pages.projects.save_first_before_manage": "Save your current changes first"
 }

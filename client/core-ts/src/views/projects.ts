@@ -311,7 +311,7 @@ export function projectsView(
 ): { items: J[]; total: number; unclassifiedCount: number; crossCount: number; nextCursor?: string; staleCursor?: boolean } {
   let unclassifiedCount = 0;
   let crossCount = 0;
-  const agg = new Map<string, { chatCount: number; runningCount: number; latestActiveAt: number }>();
+  const agg = new Map<string, { chatCount: number; runningCount: number; alertCount: number; askingCount: number; unreadCount: number; latestActiveAt: number }>();
   for (const s of stations) {
     if (!data.listed(s.address, "chats")) continue;
     for (const row of data.chatCounted(CHAT_READS.projectSummary, { station: s.address })) {
@@ -319,17 +319,21 @@ export function projectsView(
       const count = Number(row[1] ?? 0);
       const running = Number(row[2] ?? 0);
       const latest = Number(row[3] ?? 0);
-      if (proj === null || proj === undefined) {
+      const alert = Number(row[4] ?? 0);
+      const asking = Number(row[5] ?? 0);
+      const unread = Number(row[6] ?? 0);
+      if (proj === null || proj === undefined || proj === "") {
         unclassifiedCount += count;
-      } else if (proj === "") {
-        crossCount += count;
       } else if (typeof proj === "string") {
         const cur = agg.get(proj);
         if (cur === undefined) {
-          agg.set(proj, { chatCount: count, runningCount: running, latestActiveAt: latest });
+          agg.set(proj, { chatCount: count, runningCount: running, alertCount: alert, askingCount: asking, unreadCount: unread, latestActiveAt: latest });
         } else {
           cur.chatCount += count;
           cur.runningCount += running;
+          cur.alertCount += alert;
+          cur.askingCount += asking;
+          cur.unreadCount += unread;
           if (latest > cur.latestActiveAt) cur.latestActiveAt = latest;
         }
       }
@@ -337,7 +341,7 @@ export function projectsView(
   }
   const infoMap = normalizeInfoMap(data.record("choice", projectsInfoKey(scope)));
   for (const name of Object.keys(infoMap)) {
-    if (Object.hasOwn(infoMap, name) && !agg.has(name)) agg.set(name, { chatCount: 0, runningCount: 0, latestActiveAt: 0 });
+    if (Object.hasOwn(infoMap, name) && !agg.has(name)) agg.set(name, { chatCount: 0, runningCount: 0, alertCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 });
   }
   const nq = typeof q === "string" ? q.trim().toLowerCase() : "";
   const matchedNames = nq === "" ? [...agg.keys()] : [...agg.keys()].filter((name) => name.toLowerCase().includes(nq));
@@ -386,6 +390,9 @@ export function projectsView(
       name,
       chatCount: stats.chatCount,
       runningCount: stats.runningCount,
+      ...(stats.alertCount > 0 ? { alertCount: stats.alertCount } : {}),
+      ...(stats.askingCount > 0 ? { askingCount: stats.askingCount } : {}),
+      ...(stats.unreadCount > 0 ? { unreadCount: stats.unreadCount } : {}),
       latestActiveAt: stats.latestActiveAt,
       hasInfo,
     };

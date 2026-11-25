@@ -151,7 +151,7 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
       mkRow("c1", { pinned: now + 100, project: "alpha", tags: ["bug"], lastActiveAt: now - 500 }),
       mkRow("c2", { project: "alpha", tags: ["bug", "perf"], lastActiveAt: now - 200, agents: [{ key: "c2", runtime: "claude", process: "running" }] }),
       mkRow("c3", { project: "beta", tags: ["feat"], lastActiveAt: now - 100, unread: true }),
-      mkRow("c4", { project: "", tags: ["bug"], lastActiveAt: now - 300 }),
+      mkRow("c4", { project: "", tags: ["bug"], lastActiveAt: now - 300, agents: [{ key: "c4", runtime: "claude", process: "cold", lastTurn: { endedAt: now - 300, outcome: "failed" } }] }),
       mkRow("c5", { lastActiveAt: now - 400 }), // unclassified
     ]);
 
@@ -164,17 +164,17 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     assert.equal(uAlpha.value.days[0].items[0].project, "alpha");
     assert.deepEqual(uAlpha.value.days[0].items[0].tags, ["bug"]);
 
-    // 2. project="" (cross-project)
+    // 2. project="" and unclassified=true BOTH return unified unclassified (null + "")
     const uCross = ui();
     t.subscribe(2, { topic: "chats", scope: "ws", mine: false, project: "" });
     await t.read(uCross, 2);
-    assert.deepEqual(uCross.value.days.flatMap((d: J) => d.items.map((x: J) => x.id)), ["c4"]);
+    assert.deepEqual(uCross.value.days.flatMap((d: J) => d.items.map((x: J) => x.id)), ["c4", "c5"]);
 
     // 3. unclassified=true
     const uUn = ui();
     t.subscribe(3, { topic: "chats", scope: "ws", mine: false, unclassified: true });
     await t.read(uUn, 3);
-    assert.deepEqual(uUn.value.days.flatMap((d: J) => d.items.map((x: J) => x.id)), ["c5"]);
+    assert.deepEqual(uUn.value.days.flatMap((d: J) => d.items.map((x: J) => x.id)), ["c4", "c5"]);
 
     // 4. tag="bug"
     const uTag = ui();
@@ -188,7 +188,8 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     await t.read(uBoth, 5);
     assert.deepEqual(uBoth.value.days.flatMap((d: J) => d.items.map((x: J) => x.id)), ["c1", "c2"]);
 
-    // 6. groupBy="project": pinned -> unclassified -> beta (newer) -> alpha (older) -> cross
+    // 6. groupBy="project": named projects by latest activity (pinned stays INSIDE its project sorted first),
+    //    then unified unclassified (null + "") at bottom, with canonical alertCount/runningCount/unreadCount!
     const uGrp = ui();
     t.subscribe(6, { topic: "chats", scope: "ws", mine: false, groupBy: "project" });
     await t.read(uGrp, 6);
@@ -196,10 +197,22 @@ test("chats topic filters by project/unclassified/tag and groups by project in 4
     const groups = uGrp.value.groups as J[];
     assert.deepEqual(
       groups.map((g) => g.key),
-      ["pinned", "unclassified", "project:beta", "project:alpha", "cross"],
+      ["project:beta", "project:alpha", "unclassified"],
     );
-    assert.equal(groups[2].unreadCount, 1);
-    assert.equal(groups[3].runningCount, 1);
+    assert.equal(groups[0].unreadCount, 1);
+    assert.equal(groups[1].chatCount, 2);
+    assert.equal(groups[1].runningCount, 1);
+    assert.deepEqual(groups[1].items.map((x: J) => x.id), ["c1", "c2"], "pinned c1 must stay inside project:alpha sorted first");
+    assert.equal(groups[2].chatCount, 2);
+    assert.equal(groups[2].alertCount, 1);
+    assert.deepEqual(groups[2].items.map((x: J) => x.id), ["c4", "c5"], "unclassified must unify empty-string and null projects");
+
+    // 7. projects view folds project="" into unclassifiedCount (crossCount === 0)
+    const uProjs = ui();
+    t.subscribe(7, { topic: "projects", scope: "ws" });
+    await t.read(uProjs, 7);
+    assert.equal(uProjs.value.unclassifiedCount, 2);
+    assert.equal(uProjs.value.crossCount, 0);
   } finally {
     t.store.runner.shutdown();
   }
@@ -1659,5 +1672,151 @@ test("R1 Core-TS regressions: protocol q search finds page-2+ projects/tags, uni
     assert.equal(setOffRes._tag, "Failure", "setProject must fail when no eligible online full station exists");
   } finally {
     t2.store.runner.shutdown();
+  }
+});
+
+test("R3 status counts parity: mine=false failed chat matches across groupSummary, groupSummaryTag, overlay rowGroupFlags, and projectSummary", async () => {
+  const t = setup();
+  t.router.all = true;
+  try {
+    t.set(workspace(), { id: "ws", name: "Parity", stations: [{ id: "s1", name: "S1", online: true }] });
+    t.set(overview("ws/s1"), { connects: [], profiles: [], features: ["projects"] });
+    t.set({ topic: "chatRows", station: "ws/s1" }, [
+      {
+        id: "c-fail-other",
+        session: "c-fail-other",
+        thread: 101,
+        title: "Colleague failed",
+        lastActiveAt: 5000,
+        mine: false,
+        unread: false,
+        project: "monoid",
+        tags: ["ops"],
+        agents: [{ key: "c-fail-other", runtime: "claude", process: "cold", lastTurn: { endedAt: 5000, outcome: "failed" } }],
+      },
+      {
+        id: "c-run",
+        session: "c-run",
+        thread: 102,
+        title: "Running chat",
+        lastActiveAt: 4000,
+        mine: true,
+        unread: false,
+        project: "monoid",
+        tags: ["ops"],
+        agents: [{ key: "c-run", runtime: "claude", process: "running" }],
+      },
+      {
+        id: "c-unread",
+        session: "c-unread",
+        thread: 103,
+        title: "Unread chat",
+        lastActiveAt: 3000,
+        mine: true,
+        unread: true,
+        project: "monoid",
+        tags: ["ops"],
+        agents: [{ key: "c-unread", runtime: "claude", process: "cold" }],
+      },
+    ]);
+
+    // 1. Grouped chats SQL (`groupSummary`)
+    const u1 = ui();
+    t.subscribe(991, { topic: "chats", scope: "ws", filter: "all", groupBy: "project" });
+    await t.read(u1, 991);
+    const g1 = u1.value.groups.find((g: any) => g.key === "project:monoid");
+    assert.equal(g1.runningCount, 1);
+    assert.equal(g1.alertCount, 1, "mine=false failed chat must count in groupSummary.alertCount");
+    assert.equal(g1.unreadCount, 1);
+
+    // 2. Grouped + tag SQL (`groupSummaryTag`)
+    const u2 = ui();
+    t.subscribe(992, { topic: "chats", scope: "ws", filter: "all", groupBy: "project", tag: "ops" });
+    await t.read(u2, 992);
+    const g2 = u2.value.groups.find((g: any) => g.key === "project:monoid");
+    assert.equal(g2.runningCount, 1);
+    assert.equal(g2.alertCount, 1, "mine=false failed chat must count in groupSummaryTag.alertCount");
+    assert.equal(g2.unreadCount, 1);
+
+    // 3. Settings `projects` topic (`projectSummary`)
+    const u3 = ui();
+    t.subscribe(993, { topic: "projects", scope: "ws" });
+    await t.read(u3, 993);
+    const p3 = u3.value.items.find((p: any) => p.name === "monoid");
+    assert.equal(p3.runningCount, 1);
+    assert.equal(p3.alertCount, 1, "mine=false failed chat must count in projects.alertCount");
+    assert.equal(p3.unreadCount, 1);
+
+    // 4. Local overlay on `c-fail-other` (pin toggle) -> `rowGroupFlags` must match SQL counts identically!
+    t.views.local.changing("ws/s1", 101, "c-fail-other", { pinned: 99_999 }, null);
+    await t.read(u1, 991);
+    const g1Overlay = u1.value.groups.find((g: any) => g.key === "project:monoid");
+    assert.equal(g1Overlay.runningCount, 1);
+    assert.equal(g1Overlay.alertCount, 1, "overlaid mine=false failed chat must keep identical alertCount");
+    assert.equal(g1Overlay.unreadCount, 1);
+  } finally {
+    t.store.runner.shutdown();
+  }
+});
+
+test("R4 Astra P1-2: colleague-assigned pending card keeps askingCount 1->1->1 before/during/after pin overlay for both assignee and colleague", async () => {
+  for (const viewerEmail of ["alice@x.com", "bob@x.com"]) {
+    const t = setup();
+    t.router.all = true;
+    try {
+      t.set(workspace(), {
+        id: "ws",
+        name: "CardParity",
+        stations: [{ id: "s1", name: "S1", online: true }],
+        members: [
+          { sub: "u-alice", email: "alice@x.com", name: "Alice" },
+          { sub: "u-bob", email: "bob@x.com", name: "Bob" },
+        ],
+      });
+      t.set(overview("ws/s1"), {
+        viewer: { email: viewerEmail },
+        connects: [],
+        profiles: [],
+        features: ["projects"],
+      });
+      t.set({ topic: "chatRows", station: "ws/s1" }, [
+        {
+          id: "c-card",
+          session: "c-card",
+          thread: 201,
+          title: "Card assigned to Alice",
+          lastActiveAt: 5000,
+          mine: viewerEmail === "alice@x.com",
+          unread: false,
+          project: "monoid",
+          tags: ["ops"],
+          agents: [{ key: "c-card", runtime: "claude", process: "cold" }],
+          card: {
+            seq: 5,
+            card: { type: "options", assignee: "alice@x.com", options: [{ label: "Yes" }] },
+            message: { text: "Approve?" },
+          },
+        },
+      ]);
+      const u = ui();
+      t.subscribe(995, { topic: "chats", scope: "ws", filter: "all", groupBy: "project" });
+      await t.read(u, 995);
+      const before = u.value.groups.find((g: any) => g.key === "project:monoid");
+      assert.equal(before.askingCount, 1, `[${viewerEmail}] SQL askingCount before overlay must be 1`);
+
+      // Pin overlay -> row moves to `win.apart`, counted by `addRowToGroupTotals` (`rowGroupFlags`)
+      const changeId = t.views.local.changing("ws/s1", 201, "c-card", { pinned: 99_999 }, null);
+      await t.read(u, 995);
+      const during = u.value.groups.find((g: any) => g.key === "project:monoid");
+      assert.equal(during.askingCount, 1, `[${viewerEmail}] overlay askingCount must stay 1 (no 1->0->1 flicker)`);
+
+      // Release overlay -> back to SQL
+      t.views.local.changed(changeId, false, 0);
+      await t.read(u, 995);
+      const after = u.value.groups.find((g: any) => g.key === "project:monoid");
+      assert.equal(after.askingCount, 1, `[${viewerEmail}] post-overlay askingCount must remain 1`);
+    } finally {
+      t.store.runner.shutdown();
+    }
   }
 });

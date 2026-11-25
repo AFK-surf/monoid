@@ -734,6 +734,45 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
+  // Migrated proposal_outcomes schema with info_synced column: accepted + info_synced=0 must surface as pending until synced!
+  match run_sql(db, "ALTER TABLE proposal_outcomes ADD COLUMN info_synced INTEGER NOT NULL DEFAULT 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE proposal_outcomes SET info_synced = 0 WHERE thread = 2 AND n = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ent_unsynced = match thread_entries(db, client, data_dir, "/", ask_entries) {
+    Ok(v) => v
+    Err(e) => return Err("thread_entries unsynced failed: " + readops_core::read_error_message(e))
+  }
+  let unsynced_arr = match readops_core::json_val(ent_unsynced, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("unsynced entries array missing")
+  }
+  let u1_prop = readops_core::json_val_or_null(unsynced_arr[0], "proposal")
+  match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(u1_prop, "status")), "pending", "entries unsynced accepted outcome stays pending") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = 2 AND n = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ent_synced = match thread_entries(db, client, data_dir, "/", ask_entries) {
+    Ok(v) => v
+    Err(e) => return Err("thread_entries synced failed: " + readops_core::read_error_message(e))
+  }
+  let synced_arr = match readops_core::json_val(ent_synced, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("synced entries array missing")
+  }
+  let s1_prop = readops_core::json_val_or_null(synced_arr[0], "proposal")
+  match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(s1_prop, "status")), "accepted", "entries synced accepted outcome surfaces accepted") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
   match parsed_proposal(base_codec::json_str("{\"id\":\"pr4\",\"name\":\"Big\",\"status\":\"accepted\",\"resolvedAt\":9007199254740993}")) {
     Some(p) => {
       match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(p, "resolvedAt")), "9007199254740992", "entries parsed_proposal resolvedAt 9007199254740993 -> 9007199254740992") {

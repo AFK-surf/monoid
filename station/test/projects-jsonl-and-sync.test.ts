@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROJECTS_INFO_FILE,
+  applyProposalInfoSync,
+  checkProposalInfoApplied,
   parseProjectsJsonl,
   projectsInfoPath,
   readProjectsInfoBestEffort,
@@ -243,6 +245,16 @@ test("tx rollback leaks zero StoreChange notifications, leftAt blocks propose, r
     // 2. Propose & resolve writes proposal_outcomes without mutating entries, and handover carries proposal_outcomes cleanly!
     const prop = JSON.parse(await r.call(session, "project_manage", { action: "propose", args: { name: "new-p", note: "n1" } }));
     r.store.resolveProposal(thread.id, prop.n, { action: "accept", name: "new-p", resolvedBy: "ada@example.com" });
+    // Before markProposalInfoSynced (info_synced = 0), both TS store and MoonBit reader still surface status: "pending"!
+    assert.equal(r.store.entriesBetween(thread.id, prop.n, prop.n)[0]?.proposal?.status, "pending");
+    const unsyncedReaders = new Readers(r.dir, 1, undefined, 1);
+    try {
+      const mbUnsynced = JSON.parse(await unsyncedReaders.read("entries", { thread: thread.id, params: {} }, "en"));
+      assert.equal(mbUnsynced.entries.find((e: any) => e.n === prop.n)?.proposal?.status, "pending");
+    } finally {
+      await unsyncedReaders.close();
+    }
+    r.store.markProposalInfoSynced(thread.id, prop.n);
 
     // Handover threads + entries + proposal_outcomes into rDest.
     const ctx = handover.newCtx({ from: "st1", fromData: r.dir, toData: rDest.dir, connects: {}, profiles: {}, ws: "ws-1" });
@@ -262,6 +274,11 @@ test("tx rollback leaks zero StoreChange notifications, leftAt blocks propose, r
       const mbProp = mbEntries.entries.find((e: any) => e.n === prop.n);
       assert.equal(mbProp?.proposal?.status, "accepted");
       assert.equal(mbProp?.proposal?.resolvedProject, "new-p");
+      // Legacy schema without info_synced column must still read accepted cleanly in MoonBit reader!
+      rDest.store.db.exec("PRAGMA legacy_alter_table = ON; DROP TRIGGER IF EXISTS open_proposals_outcomes_ai; DROP TRIGGER IF EXISTS open_proposals_outcomes_ad; CREATE TABLE proposal_outcomes_old(thread INTEGER NOT NULL, n INTEGER NOT NULL, status TEXT NOT NULL, project TEXT, resolved_by TEXT, resolved_at INTEGER NOT NULL, PRIMARY KEY(thread, n)); INSERT INTO proposal_outcomes_old SELECT thread, n, status, project, resolved_by, resolved_at FROM proposal_outcomes; DROP TABLE proposal_outcomes; ALTER TABLE proposal_outcomes_old RENAME TO proposal_outcomes; PRAGMA legacy_alter_table = OFF;");
+      const mbLegacy = JSON.parse(await readers.read("entries", { thread: destThreadId, params: {} }, "en"));
+      const mbLegacyProp = mbLegacy.entries.find((e: any) => e.n === prop.n);
+      assert.equal(mbLegacyProp?.proposal?.status, "accepted", "MoonBit reader must read accepted on legacy proposal_outcomes without info_synced column");
     } finally {
       await readers.close();
     }
@@ -499,6 +516,7 @@ test("R3 P0-1: handover catch-up preserves ctx.threads.ns, updates A->B, maps pr
     // Before catch-up: source updates project to "B" and resolves proposal n=1!
     srcStore.setThreadClassification(srcThread.id, { project: "B", lock: true, force: true });
     srcStore.resolveProposal(srcThread.id, srcPropN, { action: "accept", name: "B", resolvedBy: "ada@example.com" });
+    srcStore.markProposalInfoSynced(srcThread.id, srcPropN);
 
     // Catch-up re-sends threads + proposal_outcomes!
     handover.importRows(dstDb, ctx, "threads", handover.chatPage(srcDb, "threads", srcThread.id, null), mkTouched());
@@ -927,6 +945,10 @@ test("R4-4, R4-5, R4-6, R4-7: explicit clear on resolve, tombstone prevents resu
     const wsFile = projectsInfoPath(agentHome, "ws-1", null);
     const savedBefore = await readFile(wsFile, "utf8");
     await writeFile(wsFile, `${JSON.stringify({ name: "huge", note: "x".repeat(FILE_MOST + 10) })}\n`, "utf8");
+    const pushed: any[] = [];
+    const offPush = store.subscribe((c) => {
+      if (c.type === "thread" && c.proposalResolved) pushed.push(c.proposalResolved);
+    });
     const errAns = await postResolve.handle(
       { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "accept" })) } as any,
       [String(t3.id), String(p3)],
@@ -934,16 +956,604 @@ test("R4-4, R4-5, R4-6, R4-7: explicit clear on resolve, tombstone prevents resu
     assert.equal(errAns.status, 200, "resolve after DB commit must return 200 + infoError on file failure");
     const errBody = JSON.parse((errAns.body as Buffer).toString("utf8"));
     assert.ok(typeof errBody.infoError === "string" && errBody.infoError.length > 0);
+    assert.equal(errBody.proposal.status, "pending", "accept with infoError must keep HTTP proposal pending");
+    assert.equal(pushed.length, 0, "accept with infoError must NOT emit premature proposalResolved push");
+    assert.equal(store.getEntry(t3.id, p3)?.proposal?.status, "pending", "reopen while info_synced=0 must read pending");
     assert.equal(((store as any).db.prepare("SELECT info_synced FROM proposal_outcomes WHERE thread = ? AND n = ?").get(t3.id, p3) as any).info_synced, 0);
-    // Recover file and retry -> succeeds and sets info_synced = 1!
+    // Recover file and retry -> succeeds, sets info_synced = 1, emits proposalResolved, and reads accepted!
     await writeFile(wsFile, savedBefore, "utf8");
     const recAns = await postResolve.handle(
       { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "accept" })) } as any,
       [String(t3.id), String(p3)],
     );
+    offPush();
     assert.equal(recAns.status, 200);
-    assert.equal(JSON.parse((recAns.body as Buffer).toString("utf8")).infoError, undefined);
+    const recBody = JSON.parse((recAns.body as Buffer).toString("utf8"));
+    assert.equal(recBody.infoError, undefined);
+    assert.equal(recBody.proposal.status, "accepted");
+    assert.equal(pushed.length, 1, "retry sync completion must emit deferred proposalResolved push exactly once");
+    assert.equal(pushed[0]?.proposal?.status, "accepted");
+    assert.equal(store.getEntry(t3.id, p3)?.proposal?.status, "accepted");
     assert.equal(((store as any).db.prepare("SELECT info_synced FROM proposal_outcomes WHERE thread = ? AND n = ?").get(t3.id, p3) as any).info_synced, 1);
+
+    // 3b. R4 regressions:
+    //   (i) After accept("stale-A") fails with infoError, a second user can rename to "fresh-B" or dismiss (never silently registering stale-A!).
+    //   (ii) reassign emits proposalResolved ONCE (not twice on markProposalInfoSynced).
+    //   (iii) agentHome === null on accept returns 503 without mutating proposal_outcomes or emitting push.
+    const t3b = store.openThread("stillfail", "CHAT", "600.3b", null, "ada@example.com");
+    const [p3b] = store.insertMessage({
+      thread: t3b.id, ts: "600.3b", authorKind: "agent", author: "chat:c-3b", text: "propose", attachments: [],
+      proposal: { id: "prop-replace", name: "stale-A", status: "pending" },
+    });
+    await writeFile(wsFile, `${JSON.stringify({ name: "huge", note: "x".repeat(FILE_MOST + 10) })}\n`, "utf8");
+    const failA = await postResolve.handle(
+      { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "accept" })) } as any,
+      [String(t3b.id), String(p3b)],
+    );
+    assert.equal(failA.status, 200);
+    assert.ok(JSON.parse((failA.body as Buffer).toString("utf8")).infoError);
+    // Recover file, then second user renames to "fresh-B"!
+    await writeFile(wsFile, savedBefore, "utf8");
+    const pushedB: any[] = [];
+    const offB = store.subscribe((c) => {
+      if (c.type === "thread" && c.proposalResolved) pushedB.push(c.proposalResolved);
+    });
+    const okB = await postResolve.handle(
+      { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "fresh-B" })) } as any,
+      [String(t3b.id), String(p3b)],
+    );
+    offB();
+    assert.equal(okB.status, 200);
+    const okBBody = JSON.parse((okB.body as Buffer).toString("utf8"));
+    assert.equal(okBBody.infoError, undefined);
+    assert.equal(okBBody.proposal.status, "accepted");
+    assert.equal(okBBody.proposal.resolvedProject, "fresh-B");
+    assert.equal(pushedB.length, 1);
+    const infoAfterB = await readProjectsInfoStrict(agentHome, "ws-1", null);
+    assert.equal("fresh-B" in infoAfterB.projects, true, "second user's renamed project fresh-B must be registered");
+    assert.equal("stale-A" in infoAfterB.projects, false, "failed stale-A must NOT be registered after override");
+
+    // (ii) reassign emits proposalResolved exactly ONCE (not duplicated by markProposalInfoSynced)
+    const t3c = store.openThread("stillfail", "CHAT", "600.3c", null, "ada@example.com");
+    const [p3c] = store.insertMessage({
+      thread: t3c.id, ts: "600.3c", authorKind: "agent", author: "chat:c-3c", text: "propose", attachments: [],
+      proposal: { id: "prop-reass", name: "x", status: "pending" },
+    });
+    const pushedReass: any[] = [];
+    const offReass = store.subscribe((c) => {
+      if (c.type === "thread" && c.proposalResolved) pushedReass.push(c.proposalResolved);
+    });
+    const reassAns = await postResolve.handle(
+      { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "reassign", target: "fresh-B" })) } as any,
+      [String(t3c.id), String(p3c)],
+    );
+    offReass();
+    assert.equal(reassAns.status, 200);
+    assert.equal(pushedReass.length, 1, "reassign must emit proposalResolved exactly once");
+
+    // (iii) agentHome === null on accept returns 503 cleanly without mutating DB
+    const noHomeRoutes = projectRoutes({ store } as any);
+    const noHomePost = noHomeRoutes.find((r) => r.method === "POST" && r.pattern.test("/threads/1/proposals/1/resolve"))!;
+    const t3d = store.openThread("stillfail", "CHAT", "600.3d", null, "ada@example.com");
+    const [p3d] = store.insertMessage({
+      thread: t3d.id, ts: "600.3d", authorKind: "agent", author: "chat:c-3d", text: "propose", attachments: [],
+      proposal: { id: "prop-nohome", name: "nohome-p", status: "pending" },
+    });
+    const ans503 = await noHomePost.handle(
+      { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "accept" })) } as any,
+      [String(t3d.id), String(p3d)],
+    );
+    assert.equal(ans503.status, 503, "accept without agentHome must return 503");
+    assert.equal(store.getEntry(t3d.id, p3d)?.proposal?.status, "pending");
+
+    // 3c. R5 Astra P1-1 & P1-2 deterministic regressions:
+    //   (i) Direct CAS guard: record A -> replace with B -> stale A markProposalInfoSynced returns false and leaves B unsynced!
+    const t3e = store.openThread("stillfail", "CHAT", "600.3e", null, "ada@example.com");
+    const [p3e] = store.insertMessage({
+      thread: t3e.id, ts: "600.3e", authorKind: "agent", author: "chat:c-3e", text: "propose", attachments: [],
+      proposal: { id: "prop-cas", name: "cas-A", status: "pending" },
+    });
+    const resCasA = store.resolveProposal(t3e.id, p3e, { action: "accept", name: "cas-A", resolvedBy: "ada@example.com" });
+    store.resolveProposal(t3e.id, p3e, { action: "accept", name: "cas-B", resolvedBy: "bob@example.com" });
+    const casPushed: any[] = [];
+    const offCas = store.subscribe((c) => {
+      if (c.type === "thread" && c.proposalResolved) casPushed.push(c.proposalResolved);
+    });
+    const staleMarked = store.markProposalInfoSynced(t3e.id, p3e, {
+      status: resCasA.proposal.status,
+      project: resCasA.proposal.resolvedProject ?? null,
+      resolvedAt: resCasA.proposal.resolvedAt,
+    });
+    offCas();
+    assert.equal(staleMarked, false, "stale A completion must NOT mark replacement B as synced");
+    assert.equal(casPushed.length, 0, "stale A completion must emit zero pushes");
+    const casRow = (store as any).db.prepare("SELECT project, info_synced FROM proposal_outcomes WHERE thread = ? AND n = ?").get(t3e.id, p3e) as any;
+    assert.equal(casRow.project, "cas-B");
+    assert.equal(casRow.info_synced, 0);
+
+    //   (ii) Concurrent POST /resolve barrier: suspend A inside file sync -> fire B and dismiss -> release A ->
+    //        per-proposal lock serializes B & dismiss behind A, registering only A with 1 push and zero corruption!
+    let aEnteredSync!: () => void;
+    const aEnteredP = new Promise<void>((resolve) => { aEnteredSync = resolve; });
+    let releaseSyncA!: () => void;
+    const syncBarrierA = new Promise<void>((resolve) => { releaseSyncA = resolve; });
+    let syncCalls = 0;
+    const barrierRoutes = projectRoutes(
+      { store, data: dir, agents: { hub: { config: () => ({ agentHome }), invalidateProjectsCache: () => {} } } } as any,
+      undefined,
+      async (ah, ws, home, input) => {
+        syncCalls++;
+        if (syncCalls === 1) {
+          aEnteredSync();
+          await syncBarrierA;
+        }
+        return applyProposalInfoSync(ah, ws, home, input);
+      },
+    );
+    const barrierPost = barrierRoutes.find((r) => r.method === "POST" && r.pattern.test("/threads/1/proposals/1/resolve"))!;
+    const t3f = store.openThread("stillfail", "CHAT", "600.3f", null, "ada@example.com");
+    const [p3f] = store.insertMessage({
+      thread: t3f.id, ts: "600.3f", authorKind: "agent", author: "chat:c-3f", text: "propose", attachments: [],
+      proposal: { id: "prop-barrier", name: "lock-A", status: "pending" },
+    });
+    const barrierPushed: any[] = [];
+    const offBarrier = store.subscribe((c) => {
+      if (c.type === "thread" && c.proposalResolved) barrierPushed.push(c.proposalResolved);
+    });
+    const pA = barrierPost.handle(
+      { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "lock-A" })) } as any,
+      [String(t3f.id), String(p3f)],
+    );
+    await aEnteredP;
+    // Use leading-zero text forms ("0<id>") to verify lock key uses canonical integer IDs matching SQLite PK!
+    const pB = barrierPost.handle(
+      { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "lock-B" })) } as any,
+      [`0${t3f.id}`, `00${p3f}`],
+    );
+    const pD = barrierPost.handle(
+      { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "dismiss" })) } as any,
+      [`000${t3f.id}`, `0${p3f}`],
+    );
+    // Give B/D a microtask tick to queue on the lock, verify DB still holds lock-A (not overwritten by B or dismiss)
+    await new Promise((r) => setTimeout(r, 15));
+    const midRow = (store as any).db.prepare("SELECT status, project, info_synced FROM proposal_outcomes WHERE thread = ? AND n = ?").get(t3f.id, p3f) as any;
+    assert.equal(midRow.status, "accepted");
+    assert.equal(midRow.project, "lock-A");
+    assert.equal(midRow.info_synced, 0);
+    releaseSyncA();
+    const [ansA, ansB, ansD] = await Promise.all([pA, pB, pD]);
+    offBarrier();
+    assert.equal(ansA.status, 200);
+    assert.equal(JSON.parse((ansA.body as Buffer).toString("utf8")).proposal.resolvedProject, "lock-A");
+    assert.equal(JSON.parse((ansB.body as Buffer).toString("utf8")).alreadyResolved, true);
+    assert.equal(JSON.parse((ansB.body as Buffer).toString("utf8")).proposal.resolvedProject, "lock-A");
+    assert.equal(JSON.parse((ansD.body as Buffer).toString("utf8")).alreadyResolved, true);
+    assert.equal(barrierPushed.length, 1, "serialized concurrent resolves must emit exactly 1 proposalResolved push");
+    assert.equal(barrierPushed[0]?.proposal?.resolvedProject, "lock-A");
+    const infoBarrier = await readProjectsInfoStrict(agentHome, "ws-1", null);
+    assert.equal("lock-A" in infoBarrier.projects, true);
+    assert.equal("lock-B" in infoBarrier.projects, false);
+
+    //   (iii) Original proposal disp-A -> rename to renamed-B fails -> reopen -> primary button (omitted name) registers disp-A, NOT renamed-B!
+    const t3g = store.openThread("stillfail", "CHAT", "600.3g", null, "ada@example.com");
+    const [p3g] = store.insertMessage({
+      thread: t3g.id, ts: "600.3g", authorKind: "agent", author: "chat:c-3g", text: "propose", attachments: [],
+      proposal: { id: "prop-disp", name: "disp-A", note: "orig-note", refs: ["r1"], status: "pending" },
+    });
+    await writeFile(wsFile, `${JSON.stringify({ name: "huge", note: "x".repeat(FILE_MOST + 10) })}\n`, "utf8");
+    const failRenameB = await postResolve.handle(
+      { viewer: { workspace: "ws-1", email: "ada@example.com", sub: "u1" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "renamed-B" })) } as any,
+      [String(t3g.id), String(p3g)],
+    );
+    assert.ok(JSON.parse((failRenameB.body as Buffer).toString("utf8")).infoError);
+    await writeFile(wsFile, savedBefore, "utf8");
+    // Second user sees pending disp-A and clicks primary button (omitting name) -> must register disp-A, NEVER renamed-B!
+    const okDispA = await postResolve.handle(
+      { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept" })) } as any,
+      [String(t3g.id), String(p3g)],
+    );
+    const okDispBody = JSON.parse((okDispA.body as Buffer).toString("utf8"));
+    assert.equal(okDispBody.infoError, undefined);
+    assert.equal(okDispBody.proposal.resolvedProject, "disp-A", "omitted name must accept displayed original name disp-A, not failed renamed-B");
+    const infoDisp = await readProjectsInfoStrict(agentHome, "ws-1", null);
+    assert.equal("disp-A" in infoDisp.projects, true);
+    assert.equal("renamed-B" in infoDisp.projects, false);
+
+    //   (iv) Explicit identical note/refs replay preserves original resolvedAt and alreadyResolved=true!
+    const t3h = store.openThread("stillfail", "CHAT", "600.3h", null, "ada@example.com");
+    const [p3h] = store.insertMessage({
+      thread: t3h.id, ts: "600.3h", authorKind: "agent", author: "chat:c-3h", text: "propose", attachments: [],
+      proposal: { id: "prop-replay-eq", name: "eq-A", note: "n0", refs: ["r0"], status: "pending" },
+    });
+    const rFirst = store.resolveProposal(t3h.id, p3h, { action: "accept", name: "eq-A", note: "n1", refs: ["r1"], resolvedBy: "ada@example.com" });
+    const rReplay = store.resolveProposal(t3h.id, p3h, { action: "accept", name: "eq-A", note: "n1", refs: ["r1"], resolvedBy: "bob@example.com" });
+    assert.equal(rReplay.alreadyResolved, true, "explicit identical name/note/refs must be treated as idempotent replay");
+    assert.equal(rReplay.proposal.resolvedAt, rFirst.proposal.resolvedAt, "idempotent replay must preserve original resolvedAt");
+
+    //   (v) R6/R7 Astra P1-1 & P1-2 crash-between-file-write-and-markSynced:
+    //       - PROJECTS.jsonl already has crash-A with its unique proposal opId, SQLite still has (accepted, crash-A, info_synced=0).
+    //       - 65+ other opIds + normal metadata write with empty keepOpIds (e.g. from another station) MUST NOT evict the unconfirmed proposal receipt!
+    //       - Missing agentHome OR unreadable PROJECTS.jsonl after restart MUST return retryable 503 (noCache) without mutating DB or pushing!
+    //       - Once readable again, accept(crash-B) & dismiss BOTH converge to accepted crash-A, emit 1 push, and prune the confirmed proposal opId!
+    const crashDir = await mkdtemp(join(tmpdir(), "stillfail-r6-crash-"));
+    const crashAgentHome = join(crashDir, "agent");
+    await mkdir(crashAgentHome, { recursive: true });
+    const crashDbPath = join(crashDir, "s.db");
+    let crashThreadId = 0;
+    let crashPropN = 0;
+    let crashOpId = "";
+    {
+      const s1 = Store.open(crashDbPath);
+      try {
+        const ct = s1.openThread("stillfail", "CHAT", "700.1", null, "ada@example.com");
+        crashThreadId = ct.id;
+        const [cn] = s1.insertMessage({
+          thread: ct.id, ts: "700.2", authorKind: "agent", author: "chat:c-crash", text: "propose", attachments: [],
+          proposal: { id: "prop-crash-sync", name: "crash-A", status: "pending" },
+        });
+        crashPropN = cn;
+        const cr = s1.resolveProposal(ct.id, cn, { action: "accept", name: "crash-A", resolvedBy: "ada@example.com" });
+        assert.ok(typeof cr.infoSync.opId === "string" && cr.infoSync.opId.startsWith("proposal:"));
+        crashOpId = cr.infoSync.opId;
+        // File write succeeded (with proposal decision opId receipt), then process crashed BEFORE markProposalInfoSynced (info_synced remains 0)!
+        await applyProposalInfoSync(crashAgentHome, "ws-1", null, {
+          name: "crash-A",
+          resolvedAt: cr.proposal.resolvedAt!,
+          isReplay: false,
+          opId: crashOpId,
+        });
+        // Simulate 65+ subsequent non-proposal opIds on the same project + a normal metadata update with empty keepOpIds
+        // (matching another station's PUT /projects/info with no pending renames).
+        const crashFile = projectsInfoPath(crashAgentHome, "ws-1", null);
+        const rawAfterWrite = await readFile(crashFile, "utf8");
+        const parsedRow = JSON.parse(rawAfterWrite.trim());
+        parsedRow.appliedOpIds = [crashOpId, ...Array.from({ length: 65 }, (_, i) => `rename-op-${i}`)];
+        await writeFile(crashFile, `${JSON.stringify(parsedRow)}\n`, "utf8");
+        await updateProjectInfo(crashAgentHome, "ws-1", null, {
+          name: "crash-A",
+          note: "peer-metadata-update",
+          now: (cr.proposal.resolvedAt ?? 1000) + 10,
+          keepOpIds: new Set(),
+        });
+        const afterMetaWrite = await readProjectsInfoStrict(crashAgentHome, "ws-1", null);
+        assert.equal(
+          afterMetaWrite.projects["crash-A"]?.appliedOpIds?.includes(crashOpId),
+          true,
+          "normal metadata write with keepOpIds must NOT evict unconfirmed proposal receipt even past 64 opIds",
+        );
+      } finally {
+        s1.close();
+      }
+    }
+    const s2 = Store.open(crashDbPath);
+    try {
+      const crashPushed: any[] = [];
+      const offCrash = s2.subscribe((c) => {
+        if (c.type === "thread" && c.proposalResolved) crashPushed.push(c.proposalResolved);
+      });
+      // (v-a) Missing agentHome while unsynced accept exists -> retryable 503, DB untouched, 0 pushes!
+      const rNoHome = projectRoutes({ store: s2 } as any);
+      const pNoHome = rNoHome.find((r) => r.method === "POST" && r.pattern.test("/threads/1/proposals/1/resolve"))!;
+      const ansNoHome = await pNoHome.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "dismiss" })) } as any,
+        [String(crashThreadId), String(crashPropN)],
+      );
+      assert.equal(ansNoHome.status, 503, "missing agentHome with unsynced accept must return retryable 503");
+      assert.equal(ansNoHome.noCache, true);
+      assert.equal(s2.getUnsyncedAcceptOutcome(crashThreadId, crashPropN)?.project, "crash-A");
+      assert.equal(crashPushed.length, 0);
+
+      // (v-b) Temporarily unreadable/oversize PROJECTS.jsonl -> dismiss & accept(crash-B) BOTH return 503, DB untouched, 0 pushes!
+      const r2 = projectRoutes({ store: s2, data: crashDir, agents: { hub: { config: () => ({ agentHome: crashAgentHome }), invalidateProjectsCache: () => {} } } } as any);
+      const p2Post = r2.find((r) => r.method === "POST" && r.pattern.test("/threads/1/proposals/1/resolve"))!;
+      const crashFile = projectsInfoPath(crashAgentHome, "ws-1", null);
+      const savedCrashFile = await readFile(crashFile, "utf8");
+      await writeFile(crashFile, `${JSON.stringify({ name: "oversize", note: "x".repeat(FILE_MOST + 16) })}\n`, "utf8");
+      const ansUnreadableDismiss = await p2Post.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "dismiss" })) } as any,
+        [String(crashThreadId), String(crashPropN)],
+      );
+      const ansUnreadableB = await p2Post.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "crash-B" })) } as any,
+        [String(crashThreadId), String(crashPropN)],
+      );
+      assert.equal(ansUnreadableDismiss.status, 503, "unreadable PROJECTS.jsonl must NOT allow dismiss to overwrite unsynced accept");
+      assert.equal(ansUnreadableDismiss.noCache, true);
+      assert.equal(ansUnreadableB.status, 503, "unreadable PROJECTS.jsonl must NOT allow accept(crash-B) to overwrite unsynced accept");
+      assert.equal(ansUnreadableB.noCache, true);
+      assert.equal(s2.getUnsyncedAcceptOutcome(crashThreadId, crashPropN)?.project, "crash-A");
+      assert.equal(crashPushed.length, 0);
+
+      // (v-c) Restore file -> attempt to replace with crash-B & dismiss -> BOTH converge to accepted crash-A, 1 push, opId pruned!
+      await writeFile(crashFile, savedCrashFile, "utf8");
+      const ansB2 = await p2Post.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "crash-B" })) } as any,
+        [String(crashThreadId), String(crashPropN)],
+      );
+      const ansD2 = await p2Post.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "dismiss" })) } as any,
+        [String(crashThreadId), String(crashPropN)],
+      );
+      offCrash();
+      assert.equal(ansB2.status, 200);
+      const b2Body = JSON.parse((ansB2.body as Buffer).toString("utf8"));
+      assert.equal(b2Body.alreadyResolved, true);
+      assert.equal(b2Body.proposal.status, "accepted");
+      assert.equal(b2Body.proposal.resolvedProject, "crash-A");
+      const d2Body = JSON.parse((ansD2.body as Buffer).toString("utf8"));
+      assert.equal(d2Body.alreadyResolved, true);
+      assert.equal(d2Body.proposal.status, "accepted");
+      assert.equal(d2Body.proposal.resolvedProject, "crash-A");
+      assert.equal(crashPushed.length, 1, "reconciliation must emit exactly 1 proposalResolved push for crash-A");
+      assert.equal(crashPushed[0]?.proposal?.resolvedProject, "crash-A");
+      assert.equal(s2.getEntry(crashThreadId, crashPropN)?.proposal?.status, "accepted");
+      assert.equal(s2.getEntry(crashThreadId, crashPropN)?.proposal?.resolvedProject, "crash-A");
+      const crashInfo = await readProjectsInfoStrict(crashAgentHome, "ws-1", null);
+      assert.equal("crash-A" in crashInfo.projects, true);
+      assert.equal("crash-B" in crashInfo.projects, false);
+      assert.equal(
+        crashInfo.projects["crash-A"]?.appliedOpIds?.includes(crashOpId) ?? false,
+        false,
+        "confirmed proposal receipt opId must be pruned from PROJECTS.jsonl once SQLite confirms",
+      );
+    } finally {
+      s2.close();
+      await rm(crashDir, { recursive: true, force: true });
+    }
+
+    //   (vi) R7 Astra P2 cross-station receipt uniqueness:
+    //        Two independent Stores with identical (threadId=1, entryN=1) and identical fixed clock accepting the same project
+    //        generate distinct persisted opIds, retries reuse the same opId, and Station B never confuses Station A's receipt!
+    const xDir = await mkdtemp(join(tmpdir(), "stillfail-r7-xstation-"));
+    const xAgentHome = join(xDir, "agent");
+    await mkdir(xAgentHome, { recursive: true });
+    const stA = Store.open(join(xDir, "a.db"));
+    const stB = Store.open(join(xDir, "b.db"));
+    (stA as any).now = () => 555555;
+    (stB as any).now = () => 555555;
+    try {
+      const tA = stA.openThread("stillfail", "CHAT", "800.1", null, "ada@example.com");
+      const [nA] = stA.insertMessage({
+        thread: tA.id, ts: "800.2", authorKind: "agent", author: "chat:a", text: "p", attachments: [],
+        proposal: { id: "prop-xa", name: "shared-proj", status: "pending" },
+      });
+      const tB = stB.openThread("stillfail", "CHAT", "800.1", null, "ada@example.com");
+      const [nB] = stB.insertMessage({
+        thread: tB.id, ts: "800.2", authorKind: "agent", author: "chat:b", text: "p", attachments: [],
+        proposal: { id: "prop-xb", name: "shared-proj", status: "pending" },
+      });
+      assert.equal(tA.id, tB.id);
+      assert.equal(nA, nB);
+
+      const resA = stA.resolveProposal(tA.id, nA, { action: "accept", name: "shared-proj", resolvedBy: "ada@example.com" });
+      const resB = stB.resolveProposal(tB.id, nB, { action: "accept", name: "shared-proj", resolvedBy: "ada@example.com" });
+      assert.equal(resA.proposal.resolvedAt, resB.proposal.resolvedAt);
+      assert.ok(resA.infoSync.opId && resB.infoSync.opId);
+      assert.notEqual(resA.infoSync.opId, resB.infoSync.opId, "distinct stations at identical thread/entry/ms must get distinct opIds");
+      const resBReplay = stB.resolveProposal(tB.id, nB, { action: "accept", name: "shared-proj", resolvedBy: "ada@example.com" });
+      assert.equal(resBReplay.alreadyResolved, true);
+      assert.equal(resBReplay.infoSync.opId, resB.infoSync.opId, "retry on Station B must reuse persisted opId");
+
+      // Station A writes its receipt to the shared PROJECTS.jsonl; Station B never wrote its receipt -> must NOT falsely match!
+      await applyProposalInfoSync(xAgentHome, "ws-1", null, {
+        name: "shared-proj",
+        resolvedAt: resA.proposal.resolvedAt!,
+        isReplay: false,
+        opId: resA.infoSync.opId,
+      });
+      assert.equal(await checkProposalInfoApplied(xAgentHome, "ws-1", null, resA.infoSync.opId), "applied");
+      assert.equal(await checkProposalInfoApplied(xAgentHome, "ws-1", null, resB.infoSync.opId), "absent");
+    } finally {
+      stA.close();
+      stB.close();
+      await rm(xDir, { recursive: true, force: true });
+    }
+
+    //   (vii) R8 Astra P1-1 legacy pre-upgrade unsynced accept (`info_synced=0, info_op_id=NULL`, thread already locked to legacy-A):
+    //         After upgrading schema (`ALTER TABLE ADD COLUMN info_op_id`), dismiss / accept(legacy-B) MUST treat it as an
+    //         immutable already-decided accept, preserve the existing thread project/lock, replay original metadata to PROJECTS.jsonl,
+    //         and NEVER dismiss or register legacy-B!
+    const legDir = await mkdtemp(join(tmpdir(), "stillfail-r8-legacy-"));
+    const legAgentHome = join(legDir, "agent");
+    await mkdir(legAgentHome, { recursive: true });
+    const legDbPath = join(legDir, "leg.db");
+    let legThreadId = 0;
+    let legPropN = 0;
+    {
+      const sOld = Store.open(legDbPath);
+      try {
+        const lt = sOld.openThread("stillfail", "CHAT", "900.1", null, "ada@example.com");
+        legThreadId = lt.id;
+        const [ln] = sOld.insertMessage({
+          thread: lt.id, ts: "900.2", authorKind: "agent", author: "chat:leg", text: "p", attachments: [],
+          proposal: { id: "prop-leg", name: "legacy-A", note: "orig-note", refs: ["orig-ref"], status: "pending" },
+        });
+        legPropN = ln;
+        // Recreate exact baseline `ef316b5633` state: `proposal_outcomes` WITHOUT `info_op_id`, `info_synced=0`,
+        // AND thread already assigned & locked to `legacy-A` on first accept!
+        const db = (sOld as any).db;
+        db.exec("UPDATE threads SET project = 'legacy-A', project_locked = 1 WHERE id = " + lt.id);
+        db.exec(`
+          DROP TABLE proposal_outcomes;
+          CREATE TABLE proposal_outcomes (
+            thread INTEGER NOT NULL,
+            n INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            project TEXT,
+            resolved_by TEXT NOT NULL,
+            resolved_at INTEGER NOT NULL,
+            info_note TEXT,
+            info_refs TEXT,
+            info_synced INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (thread, n)
+          );
+        `);
+        db.prepare(
+          "INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced) VALUES (?, ?, 'accepted', 'legacy-A', 'ada@example.com', 99000, 'orig-note', '[\"orig-ref\"]', 0)",
+        ).run(lt.id, ln);
+      } finally {
+        sOld.close();
+      }
+    }
+    const sUpgraded = Store.open(legDbPath);
+    try {
+      const rLeg = projectRoutes({ store: sUpgraded, data: legDir, agents: { hub: { config: () => ({ agentHome: legAgentHome }), invalidateProjectsCache: () => {} } } } as any);
+      const pLegPost = rLeg.find((r) => r.method === "POST" && r.pattern.test("/threads/1/proposals/1/resolve"))!;
+      // Dismiss on upgraded legacy unsynced accept -> MUST NOT dismiss; replays original legacy-A metadata & preserves lock!
+      const ansLegDismiss = await pLegPost.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "dismiss" })) } as any,
+        [String(legThreadId), String(legPropN)],
+      );
+      const legDismissBody = JSON.parse((ansLegDismiss.body as Buffer).toString("utf8"));
+      assert.equal(ansLegDismiss.status, 200);
+      assert.equal(legDismissBody.alreadyResolved, true);
+      assert.equal(legDismissBody.proposal.status, "accepted");
+      assert.equal(legDismissBody.proposal.resolvedProject, "legacy-A");
+      assert.equal(legDismissBody.thread.project, "legacy-A");
+      assert.equal(legDismissBody.thread.projectLocked, true);
+      // Follow-up accept(legacy-B) also converges to legacy-A and never creates legacy-B!
+      const ansLegB = await pLegPost.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "legacy-B" })) } as any,
+        [String(legThreadId), String(legPropN)],
+      );
+      const legBBody = JSON.parse((ansLegB.body as Buffer).toString("utf8"));
+      assert.equal(legBBody.alreadyResolved, true);
+      assert.equal(legBBody.proposal.resolvedProject, "legacy-A");
+      const legInfo = await readProjectsInfoStrict(legAgentHome, "ws-1", null);
+      assert.equal(legInfo.projects["legacy-A"]?.note, "orig-note");
+      assert.deepEqual(legInfo.projects["legacy-A"]?.refs, ["orig-ref"]);
+      assert.equal("legacy-B" in legInfo.projects, false);
+    } finally {
+      sUpgraded.close();
+      await rm(legDir, { recursive: true, force: true });
+    }
+
+    //   (viii) R8 Astra P1-2 handover `proposal_outcomes` conflict merge:
+    //          Different UUID, different metadata, or legacy opId-less row MUST NOT mark target's UUID decision as synced;
+    //          exact matching UUID + metadata cleanly propagates `info_synced = 1`!
+    const hoDir = await mkdtemp(join(tmpdir(), "stillfail-r8-handover-"));
+    const hoSrc = Store.open(join(hoDir, "src.db"));
+    const hoDst = Store.open(join(hoDir, "dst.db"));
+    (hoSrc as any).now = () => 777000;
+    (hoDst as any).now = () => 777000;
+    try {
+      const srcT = hoSrc.openThread("stillfail", "CHAT", "950.1", null, "ada@example.com");
+      const [srcN] = hoSrc.insertMessage({
+        thread: srcT.id, ts: "950.2", authorKind: "agent", author: "chat:ho", text: "p", attachments: [],
+        proposal: { id: "prop-ho", name: "ho-A", note: "n1", status: "pending" },
+      });
+      const dstT = hoDst.openThread("stillfail", "CHAT", "950.1", null, "ada@example.com");
+      const [dstN] = hoDst.insertMessage({
+        thread: dstT.id, ts: "950.2", authorKind: "agent", author: "chat:ho", text: "p", attachments: [],
+        proposal: { id: "prop-ho", name: "ho-A", note: "n1", status: "pending" },
+      });
+      const dstRes = hoDst.resolveProposal(dstT.id, dstN, { action: "accept", name: "ho-A", note: "n-target", resolvedBy: "ada@example.com" });
+      assert.ok(dstRes.infoSync.opId);
+      const dstDb = (hoDst as any).db;
+      const srcDb = (hoSrc as any).db;
+      const runImport = (row: Record<string, unknown>) => {
+        const ctx = handover.newCtx({ from: "st-s", here: "st-d", fromData: hoDir, toData: hoDir, connects: {}, profiles: {}, ws: "ws-1" });
+        const mkT = () => ({ sessions: new Set<string>(), threads: new Set<number>() });
+        handover.importRows(dstDb, ctx, "threads", handover.chatPage(srcDb, "threads", srcT.id, null), mkT());
+        handover.importRows(dstDb, ctx, "proposal_outcomes", [row], mkT());
+      };
+      // 1) Same project, DIFFERENT UUID -> must NOT mark target synced!
+      runImport({
+        thread: srcT.id, n: srcN, status: "accepted", project: "ho-A",
+        resolved_by: "ada@example.com", resolved_at: dstRes.proposal.resolvedAt,
+        info_note: "n-target", info_refs: null, info_synced: 1, info_op_id: "proposal:other-uuid",
+      });
+      assert.equal(hoDst.getUnsyncedAcceptOutcome(dstT.id, dstN)?.opId, dstRes.infoSync.opId, "different UUID must NOT mark target synced");
+      // 2) Same UUID, DIFFERENT note -> must NOT mark target synced!
+      runImport({
+        thread: srcT.id, n: srcN, status: "accepted", project: "ho-A",
+        resolved_by: "ada@example.com", resolved_at: dstRes.proposal.resolvedAt,
+        info_note: "n-other", info_refs: null, info_synced: 1, info_op_id: dstRes.infoSync.opId,
+      });
+      assert.equal(hoDst.getUnsyncedAcceptOutcome(dstT.id, dstN)?.opId, dstRes.infoSync.opId, "different metadata must NOT mark target synced");
+      // 3) Legacy opId-less row -> must NOT mark target UUID decision synced!
+      runImport({
+        thread: srcT.id, n: srcN, status: "accepted", project: "ho-A",
+        resolved_by: "ada@example.com", resolved_at: dstRes.proposal.resolvedAt,
+        info_note: "n-target", info_refs: null, info_synced: 1, info_op_id: null,
+      });
+      assert.equal(hoDst.getUnsyncedAcceptOutcome(dstT.id, dstN)?.opId, dstRes.infoSync.opId, "legacy opId-less row must NOT mark UUID decision synced");
+      // 4) Exact matching UUID + metadata -> propagates info_synced = 1!
+      runImport({
+        thread: srcT.id, n: srcN, status: "accepted", project: "ho-A",
+        resolved_by: "ada@example.com", resolved_at: dstRes.proposal.resolvedAt,
+        info_note: "n-target", info_refs: null, info_synced: 1, info_op_id: dstRes.infoSync.opId,
+      });
+      assert.equal(hoDst.getUnsyncedAcceptOutcome(dstT.id, dstN), null, "exact matching UUID + metadata must mark target synced");
+    } finally {
+      hoSrc.close();
+      hoDst.close();
+      await rm(hoDir, { recursive: true, force: true });
+    }
+
+    //   (ix) R8 Astra P2 corrupt line in PROJECTS.jsonl while unsynced accept exists:
+    //        checkProposalInfoApplied returns "uncertain" -> dismiss / accept(corrupt-B) return 503 (noCache) without mutating DB,
+    //        while replaying the exact SAME accept(corrupt-A) succeeds and preserves the unrelated corrupt line!
+    const corDir = await mkdtemp(join(tmpdir(), "stillfail-r8-corrupt-"));
+    const corAgentHome = join(corDir, "agent");
+    await mkdir(corAgentHome, { recursive: true });
+    const corStore = Store.open(join(corDir, "c.db"));
+    try {
+      const ct = corStore.openThread("stillfail", "CHAT", "980.1", null, "ada@example.com");
+      const [cn] = corStore.insertMessage({
+        thread: ct.id, ts: "980.2", authorKind: "agent", author: "chat:cor", text: "p", attachments: [],
+        proposal: { id: "prop-cor", name: "corrupt-A", note: "cn1", status: "pending" },
+      });
+      const cr = corStore.resolveProposal(ct.id, cn, { action: "accept", name: "corrupt-A", resolvedBy: "ada@example.com" });
+      assert.ok(cr.infoSync.opId);
+      const corFile = projectsInfoPath(corAgentHome, "ws-1", null);
+      await mkdir(join(corAgentHome, "workspaces", "ws-1"), { recursive: true });
+      await writeFile(corFile, `${JSON.stringify({ name: "other-proj", updatedAt: 1 })}\n{broken-corrupt-line\n`, "utf8");
+      assert.equal(await checkProposalInfoApplied(corAgentHome, "ws-1", null, cr.infoSync.opId), "uncertain");
+
+      const corPushed: any[] = [];
+      const offCor = corStore.subscribe((c) => {
+        if (c.type === "thread" && c.proposalResolved) corPushed.push(c.proposalResolved);
+      });
+      const rCor = projectRoutes({ store: corStore, data: corDir, agents: { hub: { config: () => ({ agentHome: corAgentHome }), invalidateProjectsCache: () => {} } } } as any);
+      const pCorPost = rCor.find((r) => r.method === "POST" && r.pattern.test("/threads/1/proposals/1/resolve"))!;
+
+      // Replacement decisions (dismiss & accept corrupt-B) MUST be blocked with 503!
+      const ansCorDismiss = await pCorPost.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "dismiss" })) } as any,
+        [String(ct.id), String(cn)],
+      );
+      const ansCorB = await pCorPost.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "corrupt-B" })) } as any,
+        [String(ct.id), String(cn)],
+      );
+      assert.equal(ansCorDismiss.status, 503);
+      assert.equal(ansCorDismiss.noCache, true);
+      assert.equal(ansCorB.status, 503);
+      assert.equal(ansCorB.noCache, true);
+      assert.equal(corStore.getUnsyncedAcceptOutcome(ct.id, cn)?.project, "corrupt-A");
+      assert.equal(corPushed.length, 0);
+
+      // Idempotent replay of the SAME accept(corrupt-A) MUST still succeed & preserve the unrelated corrupt line!
+      const ansCorSame = await pCorPost.handle(
+        { viewer: { workspace: "ws-1", email: "bob@example.com", sub: "u2" }, body: Buffer.from(JSON.stringify({ action: "accept", name: "corrupt-A" })) } as any,
+        [String(ct.id), String(cn)],
+      );
+      offCor();
+      assert.equal(ansCorSame.status, 200);
+      const sameBody = JSON.parse((ansCorSame.body as Buffer).toString("utf8"));
+      assert.equal(sameBody.infoError, undefined);
+      assert.equal(sameBody.proposal.status, "accepted");
+      assert.equal(sameBody.proposal.resolvedProject, "corrupt-A");
+      assert.equal(corStore.getUnsyncedAcceptOutcome(ct.id, cn), null);
+      const rawAfterCor = await readFile(corFile, "utf8");
+      assert.ok(rawAfterCor.includes("{broken-corrupt-line"), "unrelated corrupt line must be preserved");
+      assert.ok(rawAfterCor.includes('"name":"corrupt-A"'), "same-intent replay must register corrupt-A");
+      assert.equal(rawAfterCor.includes(cr.infoSync.opId), false, "confirmed opId must be pruned");
+    } finally {
+      corStore.close();
+      await rm(corDir, { recursive: true, force: true });
+    }
 
     // 4. External proposal outbox 4 scenarios + stale-cache rename rejection + NULL delivered thread inheritance!
     const r = new Rig({ link: true, workspaces: ["ws-1"], place: { workspace: "ws-1", station: "st-r4" }, projectsOn: () => true });

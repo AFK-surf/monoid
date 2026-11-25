@@ -258,35 +258,48 @@ export const CHAT_HISTORY = {
 export const CHAT_LIST = {
   name: "chat_list",
   description:
-    "List conversations on this station (or another/all stations of the workspace), latest first: each with address, title, agents (runtime, model, effort, creator, running), last message and link; then chats shared by other workspaces. Filter by query, model, created_by or archived.",
+    "List chats on this or another/all stations, latest first, with title, agents, project, last message and link. Filter by query/model/created_by/archived/project; paginate with offset; compact for bulk scans.",
   inputSchema: {
     "type": "object",
     "properties": {
       "query": {
         "type": "string",
-        "description": "Only conversations whose title, last message or agents contain this (case-insensitive)."
+        "description": "Match title, last message or agents."
       },
       "model": {
         "type": "string",
-        "description": "Only conversations with an agent whose model contains this (case-insensitive, e.g. carbon)."
+        "description": "Match agent model."
       },
       "created_by": {
         "type": "string",
-        "description": "Only conversations started by this email (or \"me\" for whoever started your chat)."
+        "description": "Starter email or \"me\"."
       },
       "archived": {
         "type": "boolean",
-        "description": "false: only active (unarchived) chats; true: only archived chats. Omit for both."
+        "description": "false: active; true: archived; omit: both."
+      },
+      "project": {
+        "type": "string",
+        "description": "Project name, or \"\" for unclassified."
       },
       "station": {
         "type": "string",
-        "description": "Another station of the workspace (name or id), or \"all\" for every station. Omit for this station."
+        "description": "Station name/id, \"all\", or omit for here."
+      },
+      "offset": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Skip N chats (default 0)."
+      },
+      "compact": {
+        "type": "boolean",
+        "description": "One-line summary (limit up to 500)."
       },
       "limit": {
         "type": "integer",
         "minimum": 1,
-        "maximum": 100,
-        "description": "Default 20."
+        "maximum": 500,
+        "description": "Default 20 (max 100, or 500 if compact)."
       }
     },
     "additionalProperties": false
@@ -465,7 +478,7 @@ export const CHAT_CONFIGURE = {
       preset: { type: "string", description: "Apply a preset's model config from this station by name or id (cannot combine with runtime/model/effort/speed/fast/context)." },
       repick: { type: "boolean", description: "Hand account selection back to the station and repick now." },
       for: { type: "string", enum: ["me", "person"], description: "Change ownership: \"me\" to lead this chat as your sub-chat, \"person\" to hand it back to people." },
-      project: { type: "string", description: "Set chat project name (\"\" for cross-project). Silent; cannot combine with model/for changes." },
+      project: { type: "string", description: "Set chat project name (\"\" for unclassified). Silent; cannot combine with model/for changes." },
       tags: { type: "array", items: { type: "string" }, description: "Replace chat tags (max 3)." },
       tags_add: { type: "array", items: { type: "string" }, description: "Add tags (max 3 total)." },
       tags_remove: { type: "array", items: { type: "string" }, description: "Remove tags." },

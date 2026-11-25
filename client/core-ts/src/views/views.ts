@@ -524,12 +524,16 @@ const windowKey = (list: Topic): string =>
     list.groupBy === "project" ? "project" : "time",
   ]);
 
-type GroupCounts = { chatCount: number; runningCount: number; askingCount: number; unreadCount: number; latestActiveAt: number };
+type GroupCounts = { chatCount: number; runningCount: number; alertCount: number; askingCount: number; unreadCount: number; latestActiveAt: number };
 
 function matchesClassification(row: J, filter: ChatFilter): boolean {
   const proj = get(row, "project");
-  if (filter.unclassified === true && typeof proj === "string") return false;
-  if (filter.unclassified !== true && filter.project !== undefined && proj !== filter.project) return false;
+  const isUnassigned = typeof proj !== "string" || proj === "";
+  if (filter.unclassified === true || filter.project === "") {
+    if (!isUnassigned) return false;
+  } else if (filter.project !== undefined && proj !== filter.project) {
+    return false;
+  }
   if (filter.tag !== undefined) {
     const tags = get(row, "tags");
     if (!Array.isArray(tags) || !tags.includes(filter.tag)) return false;
@@ -538,23 +542,35 @@ function matchesClassification(row: J, filter: ChatFilter): boolean {
 }
 
 function groupKeyOfRow(row: J): string {
-  if (get(row, "pinned") === true || typeof get(row, "pinned") === "number") return "pinned";
   const proj = get(row, "project");
-  if (typeof proj !== "string") return "unclassified";
-  if (proj === "") return "cross";
+  if (typeof proj !== "string" || proj === "") return "unclassified";
   return `project:${proj}`;
 }
 
-function addRowToGroupTotals(totals: Map<string, GroupCounts>, row: J): void {
+function rowGroupFlags(row: J, raw?: J): { running: boolean; alert: boolean; asking: boolean; unread: boolean } {
+  const unreadVal = get(row, "unread");
+  const tone = get(row, "tone");
+  const state = get(row, "state");
+  const running = state === "run";
+  const alert = get(row, "unsent") === true || state === "failed" || tone === "alert";
+  const hasPendingDecision = isObject(get(row, "decision")) && get(get(row, "decision"), "dismissed") !== true;
+  // Match SQL `c.asks = 1` (`chatDerive.asks`: any undismissed card or need waiting for someone) across SQL, overlay, and fallback paths.
+  const asking = raw !== undefined ? chatDerive.asks(raw) : (tone === "wait" || hasPendingDecision);
+  const unread = unreadVal === true || (typeof unreadVal === "number" && unreadVal > 0) || tone === "done";
+  return { running, alert, asking, unread };
+}
+
+function addRowToGroupTotals(totals: Map<string, GroupCounts>, row: J, raw?: J): void {
   const key = groupKeyOfRow(row);
-  const prev = totals.get(key) ?? { chatCount: 0, runningCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 };
-  const unread = get(row, "unread");
+  const prev = totals.get(key) ?? { chatCount: 0, runningCount: 0, alertCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 };
+  const f = rowGroupFlags(row, raw);
   const at = u64(get(row, "lastActiveAt")) ?? 0;
   totals.set(key, {
     chatCount: prev.chatCount + 1,
-    runningCount: prev.runningCount + (get(row, "state") === "run" ? 1 : 0),
-    askingCount: prev.askingCount + (get(row, "tone") === "wait" || get(row, "stage") === "wait" || get(row, "asks") === 1 ? 1 : 0),
-    unreadCount: prev.unreadCount + (unread === true || (typeof unread === "number" && unread > 0) ? 1 : 0),
+    runningCount: prev.runningCount + (f.running ? 1 : 0),
+    alertCount: prev.alertCount + (f.alert ? 1 : 0),
+    askingCount: prev.askingCount + (f.asking ? 1 : 0),
+    unreadCount: prev.unreadCount + (f.unread ? 1 : 0),
     latestActiveAt: at > prev.latestActiveAt ? at : prev.latestActiveAt,
   });
 }
@@ -564,39 +580,36 @@ function projectGroupsOf(
   fullTotals: ReadonlyMap<string, GroupCounts> | null,
   collate?: HostCollate,
 ): J[] {
-  const pinned: J[] = [];
   const unclassified: J[] = [];
-  const cross: J[] = [];
   const byProject = new Map<string, J[]>();
+  // `items` comes from `days` (pinned rows first, then newest active), so pushing in order keeps pinned chats
+  // at the top of each project group (and at the top of unified unclassified) without a separate top pinned group.
   for (const item of items) {
-    if (get(item, "pinned") === true) {
-      pinned.push(item);
-      continue;
-    }
     const proj = get(item, "project");
-    if (typeof proj !== "string") {
+    if (typeof proj !== "string" || proj === "") {
       unclassified.push(item);
-    } else if (proj === "") {
-      cross.push(item);
     } else {
       let list = byProject.get(proj);
       if (list === undefined) byProject.set(proj, (list = []));
       list.push(item);
     }
   }
-  const makeGroup = (key: string, kind: "pinned" | "unclassified" | "project" | "cross", label: string, list: J[], project?: string): J => {
+  const makeGroup = (key: string, kind: "unclassified" | "project", label: string, list: J[], project?: string): J => {
     const agg = fullTotals?.get(key);
     let chatCount = agg?.chatCount ?? 0;
     let runningCount = agg?.runningCount ?? 0;
+    let alertCount = agg?.alertCount ?? 0;
     let askingCount = agg?.askingCount ?? 0;
     let unreadCount = agg?.unreadCount ?? 0;
     let latestActiveAt = agg?.latestActiveAt ?? 0;
     if (agg === undefined) {
       chatCount = list.length;
       for (const r of list) {
-        if (get(r, "state") === "run") runningCount++;
-        if (get(r, "tone") === "wait" || get(r, "stage") === "wait") askingCount++;
-        if (get(r, "unread") === true) unreadCount++;
+        const f = rowGroupFlags(r);
+        if (f.running) runningCount++;
+        if (f.alert) alertCount++;
+        if (f.asking) askingCount++;
+        if (f.unread) unreadCount++;
         const at = u64(get(r, "lastActiveAt")) ?? 0;
         if (at > latestActiveAt) latestActiveAt = at;
       }
@@ -614,6 +627,7 @@ function projectGroupsOf(
       ...(project !== undefined ? { project } : {}),
       chatCount,
       runningCount,
+      alertCount,
       askingCount,
       unreadCount,
       latestActiveAt,
@@ -621,13 +635,11 @@ function projectGroupsOf(
     };
   };
   const out: J[] = [];
-  if (pinned.length > 0) out.push(makeGroup("pinned", "pinned", t("core-views.pinned"), pinned));
-  if (unclassified.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
   const projectGroups = [...byProject.entries()].map(([name, list]) => makeGroup(`project:${name}`, "project", name, list, name));
   const cmp = makeCollator(projectGroups.map((g) => g.label as string), collate);
   projectGroups.sort((a, b) => (b.latestActiveAt as number) - (a.latestActiveAt as number) || cmp(a.label as string, b.label as string));
   out.push(...projectGroups);
-  if (cross.length > 0) out.push(makeGroup("cross", "cross", t("core-views.projects.cross"), cross, ""));
+  if (unclassified.length > 0) out.push(makeGroup("unclassified", "unclassified", t("core-views.projects.unclassified"), unclassified));
   return out;
 }
 
@@ -3067,7 +3079,7 @@ export class Views implements Owner {
           if (row !== null) {
             rows.push(row);
             total++;
-            if (groupTotals !== null) addRowToGroupTotals(groupTotals, unmade.get(row)?.() ?? row);
+            if (groupTotals !== null) addRowToGroupTotals(groupTotals, unmade.get(row)?.() ?? row, this.local.asChanging(s.address, raw));
             if (get(row, "state") === "run") {
               running.add(s.address);
               runningRows++;
@@ -3084,7 +3096,7 @@ export class Views implements Owner {
           listed.forEach((raw, i) => {
             if (!win.apart.has(raw) || made[i] === null) return;
             total++;
-            if (groupTotals !== null) addRowToGroupTotals(groupTotals, unmade.get(made[i])?.() ?? made[i]);
+            if (groupTotals !== null) addRowToGroupTotals(groupTotals, unmade.get(made[i])?.() ?? made[i], this.local.asChanging(s.address, raw));
             if (get(made[i], "state") !== "run") return;
             running.add(s.address);
             runningRows++;
@@ -3141,11 +3153,15 @@ export class Views implements Owner {
     // (the stations' rows in the list's order, across their databases: each read its own first. The window's answer is
     // of their keys and columns alone, read again only as a write changes what of a row it reads (chat-reads.ts `by`):
     // each row's record or kept row is taken by its own key, so a chat that changes and moves nothing is told by its key)
-    const projectMode: 0 | 1 | 2 = filter.unclassified === true ? 1 : filter.project !== undefined ? 2 : 0;
+    const wantUnassigned = filter.unclassified === true || filter.project === "";
+    const projectMode: 0 | 1 | 2 = wantUnassigned ? 1 : filter.project !== undefined ? 2 : 0;
     const found = filter.tag !== undefined
-      ? data.chatFound(CHAT_READS.windowTag, { ...p, tag: filter.tag, projectMode, ...(filter.project !== undefined ? { project: filter.project } : {}) }, () => false)
+      ? data.chatFound(CHAT_READS.windowTag, { ...p, tag: filter.tag, projectMode, ...(projectMode === 2 ? { project: filter.project } : {}) }, () => false)
       : projectMode === 1
-        ? data.chatFound(CHAT_READS.windowUnclassified, p, () => false)
+        ? [
+            ...data.chatFound(CHAT_READS.windowUnclassified, p, () => false),
+            ...data.chatFound(CHAT_READS.windowProject, { ...p, project: "" }, () => false),
+          ]
         : projectMode === 2
           ? data.chatFound(CHAT_READS.windowProject, { ...p, project: filter.project! }, () => false)
           : data.chatFound(CHAT_READS.window, p, () => false);
@@ -3158,7 +3174,13 @@ export class Views implements Owner {
       const la = typeof a.cols[1] === "number" ? a.cols[1] : 0;
       const lb = typeof b.cols[1] === "number" ? b.cols[1] : 0;
       if (la !== lb) return lb - la;
-      return (place.get(a.station) ?? -1) - (place.get(b.station) ?? -1);
+      const sa = place.get(a.station) ?? -1;
+      const sb = place.get(b.station) ?? -1;
+      if (sa !== sb) return sa - sb;
+      const oa = typeof a.cols[2] === "number" ? a.cols[2] : 0;
+      const ob = typeof b.cols[2] === "number" ? b.cols[2] : 0;
+      if (oa !== ob) return oa - ob;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
     }).slice(0, first);
     for (const f of shown) f.record = data.heldChat(f.station, f.id);
     const notHeld = shown.filter((f) => f.record === undefined);
@@ -3196,10 +3218,10 @@ export class Views implements Owner {
         for (const gr of gRows) {
           const kindNum = Number(gr[0]);
           const proj = typeof gr[1] === "string" ? gr[1] : "";
-          const gKey = kindNum === 0 ? "pinned" : kindNum === 1 ? "unclassified" : kindNum === 3 ? "cross" : `project:${proj}`;
+          const gKey = kindNum === 1 ? "unclassified" : `project:${proj}`;
           let acc = groupTotals.get(gKey);
           if (acc === undefined) {
-            acc = { chatCount: 0, runningCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 };
+            acc = { chatCount: 0, runningCount: 0, alertCount: 0, askingCount: 0, unreadCount: 0, latestActiveAt: 0 };
             groupTotals.set(gKey, acc);
           }
           acc.chatCount += Number(gr[2] ?? 0);
@@ -3208,6 +3230,7 @@ export class Views implements Owner {
           acc.unreadCount += Number(gr[5] ?? 0);
           const at = Number(gr[6] ?? 0);
           if (at > acc.latestActiveAt) acc.latestActiveAt = at;
+          acc.alertCount += Number(gr[7] ?? 0);
         }
       }
     }

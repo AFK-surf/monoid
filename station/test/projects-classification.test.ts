@@ -139,8 +139,9 @@ test("options card -> propose -> normal message -> accept/reassign/dismiss prese
     assert.equal(accJson.alreadyResolved, false);
     assert.equal(accJson.proposal.status, "accepted");
     assert.equal(accJson.proposal.resolvedProject, "billing-v2");
-    assert.equal(accJson.thread.project, "billing-v2");
-    assert.equal(accJson.thread.projectLocked, true);
+    // Accepting a project creation proposal creates the project without auto-assigning/locking the current chat.
+    assert.equal(accJson.thread.project, undefined);
+    assert.equal(accJson.thread.projectLocked, undefined);
 
     // Shared PROJECTS.jsonl was updated with note & refs, while raw entries.proposal remains immutable ("pending")!
     const info = await readProjectsInfo(r.hub.config().agentHome, "ws-1", "ws-1");
@@ -162,7 +163,7 @@ test("options card -> propose -> normal message -> accept/reassign/dismiss prese
     const accAgainJson = JSON.parse(accAgain.body.toString("utf8"));
     assert.equal(accAgainJson.alreadyResolved, true);
     assert.equal(accAgainJson.proposal.status, "accepted");
-    assert.equal(accAgainJson.thread.project, "billing-v2");
+    assert.equal(accAgainJson.thread.project, undefined);
 
     const staleAccept = await admin.handle(makeReq("POST", `/threads/${thread.id}/proposals/${propRes.n}/resolve`, {
       action: "accept",
@@ -211,7 +212,7 @@ test("options card -> propose -> normal message -> accept/reassign/dismiss prese
       await disReaders.close();
     }
 
-    // Resolve second proposal with dismiss + markCross -> sets project="" and projectLocked=true.
+    // Resolve second proposal with dismiss + markCross -> records resolvedProject="" in outcome WITHOUT locking thread.
     const dis = await admin.handle(makeReq("POST", `/threads/${thread.id}/proposals/${prop2.n}/resolve`, {
       action: "dismiss",
       markCross: true,
@@ -220,8 +221,12 @@ test("options card -> propose -> normal message -> accept/reassign/dismiss prese
     const disJson = JSON.parse(dis.body.toString("utf8"));
     assert.equal(disJson.proposal.status, "dismissed");
     assert.equal(disJson.proposal.resolvedProject, "");
-    assert.equal(disJson.thread.project, "");
-    assert.equal(disJson.thread.projectLocked, true);
+    assert.equal(disJson.thread.project, undefined, "dismiss+markCross must not trap thread in empty project");
+    assert.equal(disJson.thread.projectLocked, undefined, "dismiss+markCross must not lock thread against future classification");
+    // Agent can still classify the thread afterward!
+    const afterDis = JSON.parse(await r.call(session, "chat_configure", { project: "billing-v2" }));
+    assert.equal(afterDis.updated, true);
+    assert.equal(afterDis.project, "billing-v2");
     // And options card opt2N is STILL pending!
     assert.equal(r.store.pendingCard(thread.id)?.[0].n, opt2N);
   } finally {
@@ -728,5 +733,264 @@ test("MoonBit stillfail-reader emits project, projectLocked, tags, and proposal 
   } finally {
     await readers.close();
     await r.close();
+  }
+});
+
+test("chat_list supports project filter (unifying null and empty), offset pagination, compact bulk mode, and displays project/tags", async () => {
+  const r = withModels(new Rig({ link: true, workspaces: ["ws-1"], projectsOn: () => true }));
+  try {
+    await updateProjectInfo(r.hub.config().agentHome, "ws-1", "ws-1", { name: "monoid", note: "core", now: 1000 });
+    const [sCaller, tCaller] = await newSession(r.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const [sNull, tNull] = await newSession(r.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const [sCross, tCross] = await newSession(r.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const [sNamed, tNamed] = await newSession(r.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    r.store.setThreadTitle(tCaller.id, "Caller Chat");
+    r.store.setThreadTitle(tNull.id, "Null Unclassified");
+    r.store.setThreadTitle(tCross.id, "Empty Unclassified");
+    r.store.setThreadTitle(tNamed.id, "Named Monoid");
+    r.store.setThreadClassification(tCross.id, { project: "", force: true });
+    r.store.setThreadClassification(tNamed.id, { project: "monoid", tags: ["bug"], force: true });
+    await settle();
+
+    // 1. project="" returns unified unclassified (both NULL and ""), excluding named "monoid",
+    //    and compact mode emits exact thread addresses (disambiguating multi-thread sessions).
+    const tExtra = r.store.openThreadOf("slack", "CMULTI01", "1700000009.000100", "Second Thread Same Session", "ada@example.com", null);
+    r.store.joinThread(tExtra.id, sNull, "slack");
+    const unclass = await r.call(sCaller, "chat_list", { project: "", compact: true, limit: 100 });
+    assert.match(unclass, /Null Unclassified/);
+    assert.match(unclass, /Empty Unclassified/);
+    assert.match(unclass, /Second Thread Same Session/);
+    assert.doesNotMatch(unclass, /Named Monoid/);
+    assert.ok(unclass.includes(`${tNull.channel}/${tNull.threadTs}`));
+    assert.ok(unclass.includes(`${tCross.channel}/${tCross.threadTs}`));
+    assert.ok(unclass.includes("CMULTI01/1700000009.000100"));
+
+    // Round-trip: reclassifying the second thread by its compact address mutates ONLY that thread, not tNull!
+    const rt = JSON.parse(await r.call(sCaller, "project_manage", {
+      action: "reclassify",
+      args: { items: [{ chat: "CMULTI01/1700000009.000100", project: "monoid" }] },
+    }));
+    assert.equal(rt.ok, 1);
+    assert.equal(r.store.getThread(tExtra.id)?.project, "monoid");
+    assert.equal(r.store.getThread(tNull.id)?.project, undefined);
+
+    // 2. project="monoid" returns only monoid chats and verbose output includes project & tags.
+    const named = await r.call(sCaller, "chat_list", { project: "monoid" });
+    assert.match(named, /Named Monoid/);
+    assert.match(named, /project: monoid/);
+    assert.match(named, /tags: bug/);
+    assert.doesNotMatch(named, /Null Unclassified/);
+
+    // 3. offset pagination slices cleanly and reports next offset when more exist.
+    const page1 = await r.call(sCaller, "chat_list", { compact: true, limit: 2, offset: 0 });
+    assert.match(page1, /next offset=2/);
+    const page2 = await r.call(sCaller, "chat_list", { compact: true, limit: 2, offset: 2 });
+    assert.notEqual(page1, page2);
+    const pageEnd = await r.call(sCaller, "chat_list", { compact: true, limit: 10, offset: 2 });
+    assert.doesNotMatch(pageEnd, /next offset=/);
+  } finally {
+    await r.close();
+  }
+});
+
+test("project_manage reclassify batches per station, resolves station names & {station,chat}, falls back for older peers, and skips tasks-only rigs", async () => {
+  const peerNew = withModels(new Rig({ link: true, workspaces: ["ws-1"], place: { workspace: "ws-1", station: "st-new" }, projectsOn: () => true }));
+  const peerLegacy = withModels(new Rig({ link: true, workspaces: ["ws-1"], place: { workspace: "ws-1", station: "st-legacy" }, projectsOn: () => true }));
+  const local = withModels(new Rig({ link: true, workspaces: ["ws-1"], place: { workspace: "ws-1", station: "st-local" }, projectsOn: () => true }));
+
+  const peerCalls: Array<{ target: string; method: string; batchLen?: number }> = [];
+  local.hub.onPeer(async (target: string, request: any, ws?: string | null) => {
+    if (target === "" && request?.method === "peers") {
+      return {
+        workspace: ws ?? "ws-1",
+        current: true,
+        stations: [
+          { id: "st-local", name: "local", online: true, mode: "full" },
+          { id: "st-new", name: "Tokyo", online: true, mode: "full" },
+          { id: "st-legacy", name: "Legacy", online: true, mode: "full" },
+          { id: "st-tasks-rig", name: "zwg-rig", online: true, mode: "tasks" },
+          { id: "st-rig-prop", name: "RigProp", online: true, rig: { kind: "worker" } },
+        ],
+        rigs: [{ id: "st-rig-list", name: "MacRig", online: true }],
+      };
+    }
+    peerCalls.push({ target, method: request?.method, batchLen: Array.isArray(request?.batch) ? request.batch.length : undefined });
+    if (target === "st-tasks-rig" || target === "st-rig-list" || target === "st-rig-prop") {
+      throw new Error("tasks-only rig must never be called for project queries or mutations");
+    }
+    if (target === "st-new") {
+      if (request?.method === "session.list") return { text: "- CHAT/x \"Remote\" [monoid]", filtered: true };
+      if (request?.method === PROJECTS_NAMES) return projectNamesForPeer(peerNew.hub, ws ?? "ws-1");
+      if (request?.method === THREAD_CLASSIFY) return classifyForPeer(peerNew.hub, request, ws ?? "ws-1");
+    }
+    if (target === "st-legacy") {
+      // Simulate older peer that ignores project/offset and omits `filtered: true` on session.list
+      if (request?.method === "session.list") return { text: "- CHAT/y \"Unfiltered Page 1\"" };
+      if (request?.method === PROJECTS_NAMES) return projectNamesForPeer(peerLegacy.hub, ws ?? "ws-1");
+      if (request?.method === THREAD_CLASSIFY) {
+        if (Array.isArray(request?.batch)) {
+          // Simulate older station that expects single-item `chat`
+          throw new Error("chat is required");
+        }
+        return classifyForPeer(peerLegacy.hub, request, ws ?? "ws-1");
+      }
+    }
+    throw new Error(`unexpected peer call ${target} ${request?.method}`);
+  });
+
+  try {
+    await updateProjectInfo(local.hub.config().agentHome, "ws-1", "ws-1", { name: "monoid", note: "core", now: 1000 });
+    await updateProjectInfo(peerNew.hub.config().agentHome, "ws-1", "ws-1", { name: "monoid", note: "core", now: 1000 });
+    await updateProjectInfo(peerLegacy.hub.config().agentHome, "ws-1", "ws-1", { name: "monoid", note: "core", now: 1000 });
+    const [l1] = await newSession(local.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const [pNew1, tNew1] = await newSession(peerNew.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const [pNew2, tNew2] = await newSession(peerNew.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const [pOld1, tOld1] = await newSession(peerLegacy.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    await settle();
+
+    // 1. project_manage(list) never calls tasks-only rigs!
+    const listed = JSON.parse(await local.call(l1, "project_manage", { action: "list" }));
+    assert.ok(listed.projects.some((p: any) => p.name === "monoid"));
+
+    // 2. reclassify with 2 chats on Tokyo (by station name + {station, chat}) and 1 on Legacy ->
+    //    Tokyo receives ONE single batch RPC of length 2; Legacy falls back to per-item RPC cleanly!
+    peerCalls.length = 0;
+    const res = JSON.parse(await local.call(l1, "project_manage", {
+      action: "reclassify",
+      args: {
+        items: [
+          { station: "Tokyo", chat: pNew1, project: "monoid", tags: ["ops"] },
+          { station: "Tokyo", chat: pNew2, project: "monoid" },
+          { station: "Legacy", chat: pOld1, project: "monoid" },
+        ],
+      },
+    }));
+    assert.equal(res.updated, 3);
+    assert.equal(res.failed, 0);
+    assert.equal(peerNew.store.getThread(tNew1.id)?.project, "monoid");
+    assert.deepEqual(peerNew.store.getThread(tNew1.id)?.tags, ["ops"]);
+    assert.equal(peerNew.store.getThread(tNew2.id)?.project, "monoid");
+    assert.equal(peerLegacy.store.getThread(tOld1.id)?.project, "monoid");
+
+    const tokyoClassifyCalls = peerCalls.filter((c) => c.target === "st-new" && c.method === THREAD_CLASSIFY);
+    assert.equal(tokyoClassifyCalls.length, 1, "Tokyo must receive exactly ONE batched thread.classify RPC");
+    assert.equal(tokyoClassifyCalls[0]!.batchLen, 2);
+
+    const legacyClassifyCalls = peerCalls.filter((c) => c.target === "st-legacy" && c.method === THREAD_CLASSIFY);
+    assert.equal(legacyClassifyCalls.length, 2, "Legacy tries batch once then falls back to per-item");
+
+    // 3. reclassify rejects missing/blank chat instead of silently mutating caller's own thread.
+    const blankRes = JSON.parse(await local.call(l1, "project_manage", {
+      action: "reclassify",
+      args: { items: [{ chat: "", project: "monoid" }] },
+    }));
+    assert.equal(blankRes.failed, 1);
+    assert.match(blankRes.results[0].error, /chat is required/);
+
+    // 4. Mixed-version chat_list rejects old peer omitting `filtered: true` when project/offset/compact option is requested.
+    const allFiltered = await local.call(l1, "chat_list", { station: "all", project: "monoid" });
+    assert.match(allFiltered, /## Tokyo\n- CHAT\/x/);
+    assert.match(allFiltered, /## Legacy\nNot listed: station is not updated yet \(does not support project\/offset\/compact options\)/);
+    await assert.rejects(() => local.call(l1, "chat_list", { station: "Legacy", offset: 2 }), /does not support project\/offset\/compact options/);
+    const allCompact = await local.call(l1, "chat_list", { station: "all", compact: true });
+    assert.match(allCompact, /## Legacy\nNot listed: station is not updated yet \(does not support project\/offset\/compact options\)/);
+    await assert.rejects(() => local.call(l1, "chat_list", { station: "Legacy", compact: true }), /does not support project\/offset\/compact options/);
+
+    // 4b. Reclassify batch PeerStopped marks items uncertain:true; legacy fallback executes sequentially and halts with notSent:true on uncertain failure!
+    const legacyCallOrder: string[] = [];
+    local.hub.onPeer(async (target: string, request: any, ws?: string | null) => {
+      if (target === "" && request?.method === "peers") {
+        return {
+          workspace: ws ?? "ws-1",
+          current: true,
+          stations: [
+            { id: "st-local", name: "local", online: true, mode: "full" },
+            { id: "st-new", name: "Tokyo", online: true, mode: "full" },
+            { id: "st-legacy", name: "Legacy", online: true, mode: "full" },
+          ],
+        };
+      }
+      if (target === "st-new" && request?.method === THREAD_CLASSIFY) {
+        throw new Error("PeerStopped: the other station's process stopped or handed over");
+      }
+      if (target === "st-legacy" && request?.method === THREAD_CLASSIFY) {
+        if (Array.isArray(request?.batch)) throw new Error("chat is required");
+        legacyCallOrder.push(String(request?.chat));
+        if (legacyCallOrder.length === 1) throw new Error("PeerStopped: process stopped or handed over");
+        return { updated: true };
+      }
+      if (target === "st-new" && request?.method === PROJECTS_NAMES) return projectNamesForPeer(peerNew.hub, ws ?? "ws-1");
+      if (target === "st-legacy" && request?.method === PROJECTS_NAMES) return projectNamesForPeer(peerLegacy.hub, ws ?? "ws-1");
+      throw new Error(`unexpected ${target} ${request?.method}`);
+    });
+    const uncRes = JSON.parse(await local.call(l1, "project_manage", {
+      action: "reclassify",
+      args: {
+        items: [
+          { station: "Tokyo", chat: pNew1, project: "monoid" },
+          { station: "Legacy", chat: pOld1, project: "monoid" },
+          { station: "Legacy", chat: `${tOld1.channel}/${tOld1.threadTs}`, project: "" },
+        ],
+      },
+    }));
+    assert.equal(uncRes.failed, 3);
+    assert.equal(uncRes.results[0].uncertain, true, "batch PeerStopped must set uncertain:true");
+    assert.equal(uncRes.results[1].uncertain, true, "legacy per-item PeerStopped must set uncertain:true");
+    assert.equal(uncRes.results[2].notSent, true, "subsequent item on same legacy peer must not be sent after uncertain failure");
+    assert.equal(legacyCallOrder.length, 1, "legacy fallback must halt after first uncertain failure");
+
+    // 4c. Dismissing a proposal with markCross:true on an already classified & locked chat must preserve its existing project & lock!
+    const lockedT = local.store.openThread("stillfail", "CHAT", "999.1", null, "ada@example.com");
+    local.store.setThreadClassification(lockedT.id, { project: "monoid", lock: true, force: true });
+    const [lockedPropN] = local.store.insertMessage({
+      thread: lockedT.id, ts: "999.2", authorKind: "agent", author: l1, text: "propose", attachments: [],
+      proposal: { id: "prop-locked-dismiss", name: "other-proj", status: "pending" },
+    });
+    const dismissRes = local.store.resolveProposal(lockedT.id, lockedPropN, {
+      action: "dismiss", markCross: true, resolvedBy: "ada@example.com",
+    });
+    assert.equal(dismissRes.proposal.status, "dismissed");
+    assert.equal(local.store.getThread(lockedT.id)?.project, "monoid");
+    assert.equal(local.store.getThread(lockedT.id)?.projectLocked, true);
+
+    // 5. Merge peer timeout is recorded as "error" (NOT "offline") and stays pending in pendingPeers for retry!
+    let timeoutOnce = true;
+    local.hub.onPeer(async (target: string, request: any, ws?: string | null) => {
+      if (target === "" && request?.method === "peers") {
+        return {
+          workspace: ws ?? "ws-1",
+          current: true,
+          stations: [
+            { id: "st-local", name: "local", online: true, mode: "full" },
+            { id: "st-new", name: "Tokyo", online: true, mode: "full" },
+          ],
+        };
+      }
+      if (target === "st-new" && request?.method === THREAD_CLASSIFY && request?.rename) {
+        if (timeoutOnce) {
+          timeoutOnce = false;
+          throw new Error("peer st-new timed out");
+        }
+        return classifyForPeer(peerNew.hub, request, ws ?? "ws-1");
+      }
+      if (target === "st-new" && request?.method === PROJECTS_NAMES) return projectNamesForPeer(peerNew.hub, ws ?? "ws-1");
+      throw new Error(`unexpected ${target} ${request?.method}`);
+    });
+    await updateProjectInfo(local.hub.config().agentHome, "ws-1", "ws-1", { name: "merge-src", now: 1001 });
+    await updateProjectInfo(local.hub.config().agentHome, "ws-1", "ws-1", { name: "merge-dst", now: 1002 });
+    const mergeRes = JSON.parse(await local.call(l1, "project_manage", {
+      action: "merge",
+      args: { from: "merge-src", to: "merge-dst" },
+    }));
+    assert.equal(mergeRes.peers[0].status, "error");
+    const evs = local.store.listProjectRenameEvents("ws-1");
+    const mergeEv = evs.find((e) => e.from === "merge-src" && e.to === "merge-dst");
+    assert.ok(mergeEv, "merge event recorded");
+    const mergeFull = local.store.getProjectRenameEvent(mergeEv!.seq);
+    assert.deepEqual(mergeFull?.pendingPeers, ["st-new"], "timed-out peer must remain pending for continuation retry");
+  } finally {
+    await local.close();
+    await peerNew.close();
+    await peerLegacy.close();
   }
 });

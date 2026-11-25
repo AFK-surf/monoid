@@ -305,18 +305,29 @@ function resolveCreator(hub: Hub, key: string, raw: string): string {
 
 /// chat_list on this station for workspace `ws`.
 async function chatListHere(hub: Hub, key: string, args: Args, ws: string | null, signal?: AbortSignal): Promise<string> {
+  const compact = args.compact === true;
+  const maxLimit = compact ? 500 : 100;
   const given = args.limit === undefined ? null : jsNumber(args.limit);
-  const limit = given === null ? 20 : Number.isNaN(given) ? 0 : Math.trunc(Math.min(100, Math.max(1, given)));
+  const limit = given === null ? (compact ? 200 : 20) : Number.isNaN(given) ? 0 : Math.trunc(Math.min(maxLimit, Math.max(1, given)));
+  const givenOffset = args.offset === undefined ? null : jsNumber(args.offset);
+  const offset = givenOffset === null || Number.isNaN(givenOffset) ? 0 : Math.trunc(Math.max(0, givenOffset));
   const query = (args.query === undefined ? "" : jsString(args.query)).trim().toLowerCase();
   const model = (args.model === undefined ? "" : jsString(args.model)).trim().toLowerCase();
   const createdBy = args.created_by === undefined ? "" : resolveCreator(hub, key, jsString(args.created_by)).toLowerCase();
   const archived = typeof args.archived === "boolean" ? args.archived : undefined;
+  const project = typeof args.project === "string" ? args.project.trim() : undefined;
   const filter: ChatListFilter | undefined =
-    model !== "" || createdBy !== "" || archived !== undefined
-      ? { ...(model !== "" ? { model } : {}), ...(createdBy !== "" ? { createdBy } : {}), ...(archived !== undefined ? { archived } : {}) }
+    model !== "" || createdBy !== "" || archived !== undefined || project !== undefined || offset > 0
+      ? {
+          ...(model !== "" ? { model } : {}),
+          ...(createdBy !== "" ? { createdBy } : {}),
+          ...(archived !== undefined ? { archived } : {}),
+          ...(project !== undefined ? { project } : {}),
+          ...(offset > 0 ? { offset } : {}),
+        }
       : undefined;
   const home = hub.wsOf(null);
-  // The reader counts and selects before returning the page. A search or filter still checks each scoped chat.
+  // The reader counts and selects before returning the page. A search, filter or non-zero offset checks each scoped chat.
   const listed = query === "" && filter === undefined
     ? hub.recentChatList != null ? await hub.recentChatList(ws, home, limit, signal)
       : hub.threadList == null ? hub.store.recentChatList(ws, home, limit) : null
@@ -331,6 +342,7 @@ async function chatListHere(hub: Hub, key: string, args: Args, ws: string | null
   threads.sort((a, b) => when(b) - when(a));
   const lines: string[] = [];
   let matched = listed?.total ?? 0;
+  let seenMatches = 0;
   for (const t of threads) {
     const titles = [t.thread.title, t.thread.autoTitle, t.firstText, ...t.sessions.map((m) => sessions.get(m.session)?.title ?? null)].filter((x): x is string => x !== null);
     const last = t.lastMessage?.text ?? "";
@@ -347,11 +359,24 @@ async function chatListHere(hub: Hub, key: string, args: Args, ws: string | null
         if (!haystack.includes(query)) continue;
       }
       matched++;
+      seenMatches++;
+      if (seenMatches <= offset) continue;
     }
     if (lines.length >= limit) continue;
     const address = threadAddress(t.thread.channel, t.thread.threadTs);
-    const place = t.thread.surface === STILLFAIL_SURFACE ? "still.fail chat" : "Slack thread";
     const title = titles.length > 0 ? line(titles[0]!, 80) : "(untitled)";
+    const link = t.sessions[0] ? hub.link(t.sessions[0].session) : undefined;
+    const projName = typeof t.thread.project === "string" && t.thread.project !== "" ? t.thread.project : "";
+    const threadTags = Array.isArray(t.thread.tags) && t.thread.tags.length > 0 ? t.thread.tags : [];
+    if (compact) {
+      const metaParts: string[] = [projName !== "" ? projName : "unclassified"];
+      if (threadTags.length > 0) metaParts.push(threadTags.map((tg) => `#${tg}`).join(" "));
+      if (t.thread.projectLocked === true) metaParts.push("locked");
+      // Always emit exact thread address (never session link) so multi-thread sessions target the exact thread in reclassify.
+      lines.push(`- ${address} "${title}" [${metaParts.join(" | ")}]`);
+      continue;
+    }
+    const place = t.thread.surface === STILLFAIL_SURFACE ? "still.fail chat" : "Slack thread";
     const agents = t.sessions.map((m) => `${m.session}${m.session === key ? " (you)" : ""}${(sessions.get(m.session)?.archivedAt ?? null) !== null ? " archived" : ""}`);
     const at = iso(t.lastMessage?.createdAt ?? t.thread.createdAt);
     const hidden = t.thread.hiddenAt !== null ? ", archived" : "";
@@ -371,14 +396,15 @@ async function chatListHere(hub: Hub, key: string, args: Args, ws: string | null
     const details: string[] = [];
     if (runInfo.length > 0) details.push(`model: ${runInfo.join(", ")}`);
     if (creator) details.push(`by: ${creator}`);
+    if (projName !== "") details.push(`project: ${projName}`);
+    if (threadTags.length > 0) details.push(`tags: ${threadTags.join(", ")}`);
     if (details.length > 0) entry += `\n  ${details.join("; ")}`;
     // Its link: what to give people, who cannot open an address or a session key.
-    const link = t.sessions[0] ? hub.link(t.sessions[0].session) : undefined;
     if (link) entry += `\n  link: ${link}`;
     lines.push(entry);
   }
   // Chats other workspaces share with this one: read with chat_read, written to with session_send where allowed.
-  const outside = filter !== undefined
+  const outside = filter !== undefined || compact
     ? []
     : hub.outsideChats(ws).filter((c) => query === "" || `${c.title} ${c.workspaceName} ${c.link}`.toLowerCase().includes(query));
   const shared = outside.slice(0, limit).map((c) => `- ${c.link} (shared from workspace "${line(c.workspaceName, 40)}", ${c.write ? "you may send to it" : "read only"}) "${line(c.title, 80)}"`);
@@ -392,7 +418,12 @@ async function chatListHere(hub: Hub, key: string, args: Args, ws: string | null
         : "No conversation matches the filter.";
     return empty + sharedPart;
   }
-  const more = matched > lines.length ? `\n(${matched - lines.length} more; raise limit or narrow query)` : "";
+  const remaining = matched - offset - lines.length;
+  const more = remaining > 0
+    ? compact || offset > 0
+      ? `\n(${remaining} more of ${matched}; next offset=${offset + lines.length})`
+      : `\n(${remaining} more; raise limit or narrow query)`
+    : "";
   return `${lines.join("\n")}${more}${sharedPart}`;
 }
 
@@ -407,6 +438,9 @@ export async function chatList(hub: Hub, key: string, args: Args, signal?: Abort
     ...(args.model !== undefined ? { model: args.model } : {}),
     ...(resolvedCreator !== "" ? { created_by: resolvedCreator } : {}),
     ...(typeof args.archived === "boolean" ? { archived: args.archived } : {}),
+    ...(typeof args.project === "string" ? { project: args.project } : {}),
+    ...(args.offset !== undefined ? { offset: args.offset } : {}),
+    ...(typeof args.compact === "boolean" ? { compact: args.compact } : {}),
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
   };
   const link = hub.link(key);
@@ -418,11 +452,24 @@ export async function chatList(hub: Hub, key: string, args: Args, signal?: Abort
     throw new Error("other stations cannot be reached from this one yet: leave station out to list this station");
   }
   const roster: Json = await call("", { method: "peers" });
-  const stations: { id: string; name: string }[] = (Array.isArray(roster?.stations) ? roster.stations : [])
+  const rigIds = new Set<string>();
+  for (const r of [...(Array.isArray(roster?.rigs) ? roster.rigs : []), ...(Array.isArray(roster?.rigsWaiting) ? roster.rigsWaiting : [])]) {
+    if (typeof r?.id === "string" && r.id !== "") rigIds.add(r.id);
+  }
+  const stations: { id: string; name: string; isRig: boolean }[] = (Array.isArray(roster?.stations) ? roster.stations : [])
     .filter((s: Json) => typeof s?.id === "string" && s.id !== "")
-    .map((s: Json) => ({ id: s.id as string, name: typeof s.name === "string" && s.name !== "" ? (s.name as string) : (s.id as string) }));
+    .map((s: Json) => ({
+      id: s.id as string,
+      name: typeof s.name === "string" && s.name !== "" ? (s.name as string) : (s.id as string),
+      isRig: rigIds.has(s.id as string) || s.rig != null || s.mode === "tasks" || s.mode === "rig",
+    }));
+  const wantsNewFilter =
+    typeof args.project === "string" ||
+    args.compact === true ||
+    (args.offset !== undefined && Math.trunc(Math.max(0, Number(args.offset) || 0)) > 0);
   if (station.toLowerCase() === "all") {
-    const targets = stations.some((s) => s.id === here) ? stations : [{ id: here ?? "", name: "this station" }, ...stations];
+    const fullStations = stations.filter((s) => !s.isRig);
+    const targets = fullStations.some((s) => s.id === here) ? fullStations : [{ id: here ?? "", name: "this station", isRig: false }, ...fullStations];
     const parts = await Promise.all(
       targets.map(async (s) => {
         const isHere = s.id === "" || (here !== null && s.id === here);
@@ -431,6 +478,7 @@ export async function chatList(hub: Hub, key: string, args: Args, signal?: Abort
           if (isHere) return `${header}\n${await chatListHere(hub, key, forwarded, ws, signal)}`;
           const answer = await wall.within(LIST_WAIT_MS, call(s.id, { method: LIST, session: key, args: forwarded }), `did not answer within ${LIST_WAIT_MS / 1000} s`);
           if (typeof answer?.text !== "string") return `${header}\nNot listed: station answered without a list`;
+          if (wantsNewFilter && answer.filtered !== true) return `${header}\nNot listed: station is not updated yet (does not support project/offset/compact options)`;
           return `${header}\n${answer.text}`;
         } catch (error) {
           const why = (error as Error).message;
@@ -457,13 +505,14 @@ export async function chatList(hub: Hub, key: string, args: Args, signal?: Abort
     throw new Error(`not listed from station ${found.name}: ${why}`);
   }
   if (typeof answer?.text !== "string") throw new Error(`station ${found.name} answered without a list`);
+  if (wantsNewFilter && answer.filtered !== true) throw new Error(`station ${found.name} is not updated yet (does not support project/offset/compact options)`);
   return answer.text;
 }
 
 /// Another station's agent lists this station's chats in workspace `ws`.
-export async function listForPeer(hub: Hub, request: Json, ws: string | null = null): Promise<{ text: string }> {
+export async function listForPeer(hub: Hub, request: Json, ws: string | null = null): Promise<{ text: string; filtered: true }> {
   const args: Args = request?.args !== null && typeof request?.args === "object" && !Array.isArray(request.args) ? request.args : {};
-  return { text: await chatListHere(hub, "", args, ws) };
+  return { text: await chatListHere(hub, "", args, ws), filtered: true };
 }
 
 /// chat_read: the messages of any conversation of the station that workspace `ws` reaches (`named`). `seen` gets the

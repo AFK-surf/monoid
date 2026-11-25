@@ -199,7 +199,7 @@ fn open_project_filter_panel(src : Source, ws : String, from : @sf.Anchor) -> Un
       chain.bind(pv, src)
       let snap = fn() { chain.read(src) }
       let keys = fn() {
-        let out = ["all", "unclassified", "cross", "sep"]
+        let out = ["all", "unclassified", "sep"]
         for r in snap().items {
           out.push("p/" + r.name)
         }
@@ -228,16 +228,6 @@ fn open_project_filter_panel(src : Source, ws : String, from : @sf.Anchor) -> Un
             row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
             @sf.words_node(row, fn() { @sf.t("web-main.projects.unclassified") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
             row.show(fn() { cur() == Unclassified }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
-          })
-          |> ignore
-        } else if k == "cross" {
-          @sf.action_box_node(r, fn() { @sf.t("web-main.projects.cross_project") }, fn(_) {
-            @sfbase.set_project_filter(ws, Cross)
-            close()
-          }, fn(row) {
-            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
-            @sf.words_node(row, fn() { @sf.t("web-main.projects.cross_project") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
-            row.show(fn() { cur() == Cross }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
           })
           |> ignore
         } else if k == "sep" {

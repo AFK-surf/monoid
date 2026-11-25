@@ -13,6 +13,8 @@ export const MAX_PROJECT_NOTE = 2000;
 export const MAX_PROJECT_REFS = 32;
 export const MAX_PROJECT_REF_LEN = 512;
 const MAX_APPLIED_OP_IDS = 64;
+const PROPOSAL_OP_ID_PREFIX = "proposal:";
+const isProposalReceiptOpId = (id: string): boolean => id.startsWith(PROPOSAL_OP_ID_PREFIX);
 /// Shared 512 KiB size ceiling (same constant as `share/memory.ts` `FILE_MOST`).
 export const PROJECTS_INFO_MAX_BYTES = 512 * 1024;
 const FILE_MOST = PROJECTS_INFO_MAX_BYTES;
@@ -59,6 +61,8 @@ function mergeOpIdsLossless(lists: readonly (readonly string[] | undefined)[]): 
 /// Caps non-pinned opIds to the latest `MAX_APPLIED_OP_IDS` when the caller supplies the authoritative `keepOpIds`
 /// pending set from SQLite; when `keepOpIds` is omitted (a caller without DB access), preserves all opIds losslessly
 /// so unrelated pending opIds are never accidentally evicted.
+/// Proposal decision receipts (`proposal:*`) are always protected from generic eviction across stations and are
+/// removed only via explicit `pruneAppliedOpIds` after their origin station durably confirms SQLite (`info_synced = 1`).
 function normalizeOpIds(raw: unknown, keepOpIds?: ReadonlySet<string>): string[] | undefined {
   const dedup = dedupOpIds(raw);
   if (dedup === undefined) return undefined;
@@ -66,7 +70,7 @@ function normalizeOpIds(raw: unknown, keepOpIds?: ReadonlySet<string>): string[]
   const pinned: string[] = [];
   const rest: string[] = [];
   for (const id of dedup) {
-    if (keepOpIds.has(id)) pinned.push(id);
+    if (keepOpIds.has(id) || isProposalReceiptOpId(id)) pinned.push(id);
     else rest.push(id);
   }
   const keptRest = rest.length > MAX_APPLIED_OP_IDS ? rest.slice(rest.length - MAX_APPLIED_OP_IDS) : rest;
@@ -809,7 +813,7 @@ export async function applyProposalInfoSync(
   agentHome: string,
   ws: string | null,
   home: string | null,
-  input: { name: string; note?: string | null; refs?: string[] | null; resolvedAt: number; isReplay: boolean },
+  input: { name: string; note?: string | null; refs?: string[] | null; resolvedAt: number; isReplay: boolean; opId?: string },
 ): Promise<{ doc: ProjectsInfoDoc; changed: boolean; skipped: boolean }> {
   const name = normalizeProject(input.name);
   if (name === "") throw new Error("project name is required");
@@ -850,6 +854,9 @@ export async function applyProposalInfoSync(
       }
 
       delta.updatedAt = deltaUpdatedAt;
+      if (typeof input.opId === "string" && input.opId !== "") {
+        delta.appliedOpIds = [input.opId];
+      }
 
       const singleProjects = emptyProjectsMap();
       if (existing !== undefined) singleProjects[name] = existing;
@@ -870,6 +877,35 @@ export async function applyProposalInfoSync(
     }
     throw new Error("PROJECTS.jsonl changed concurrently too many times");
   });
+}
+
+export type ProposalReceiptCheck = "applied" | "absent" | "uncertain";
+
+/// Checks whether the specific proposal decision receipt `opId` is already persisted in `PROJECTS.jsonl`
+/// (on any live entry or tombstone, including after cross-station renames or deletions).
+/// Returns:
+/// - `"applied"` when `opId` is found on a valid live entry or tombstone;
+/// - `"absent"` when `PROJECTS.jsonl` does not exist or parses cleanly with no corrupt lines and lacks `opId`;
+/// - `"uncertain"` when `opId` was not found in valid lines AND unparseable (`preservedRawLines`) lines exist,
+///   so callers can block replacement decisions while still allowing an idempotent replay of the same accept intent.
+/// Throws when `PROJECTS.jsonl` is unreadable or exceeds size limits.
+export async function checkProposalInfoApplied(
+  agentHome: string,
+  ws: string | null,
+  home: string | null,
+  opId: string,
+): Promise<ProposalReceiptCheck> {
+  const trimmed = opId.trim();
+  if (trimmed === "") return "absent";
+  const path = projectsInfoPath(agentHome, ws, home);
+  const { doc, tombstoneOpIds, preservedRawLines } = await readProjectsForWrite(path);
+  for (const name of Object.keys(doc.projects)) {
+    if (doc.projects[name]?.appliedOpIds?.includes(trimmed)) return "applied";
+  }
+  for (const name of Object.keys(tombstoneOpIds)) {
+    if (tombstoneOpIds[name]?.includes(trimmed)) return "applied";
+  }
+  return preservedRawLines.length > 0 ? "uncertain" : "absent";
 }
 
 /// Ensures `name` is registered in `PROJECTS.jsonl` (optionally updating note/refs); no-op if already registered with same metadata.

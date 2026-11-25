@@ -275,13 +275,14 @@ pub(all) struct ChatDay {
   /// Stable key: in time mode equals `label`; in project group mode equals `group.key`.
   key : String
   label : String
-  /// "" in time mode; "pinned" | "project" | "unclassified" | "cross" in project group mode.
+  /// "" in time mode; "project" | "unclassified" in project group mode.
   group_kind : String
-  /// Project name for group_kind == "project", Some("") for "cross", None otherwise.
+  /// Project name for group_kind == "project", None otherwise.
   group_project : String?
   /// Full count across all chats in this group (even beyond the current list window).
   chat_count : Int
   running_count : Int
+  alert_count : Int
   asking_count : Int
   unread_count : Int
   items : Array[ChatItem]
@@ -545,6 +546,7 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
           _ => row_items.length()
         },
         running_count: number(gs, "runningCount").to_int(),
+        alert_count: number(gs, "alertCount").to_int(),
         asking_count: number(gs, "askingCount").to_int(),
         unread_count: number(gs, "unreadCount").to_int(),
         items: row_items,
@@ -561,6 +563,7 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
         group_project: None,
         chat_count: row_items.length(),
         running_count: 0,
+        alert_count: 0,
         asking_count: 0,
         unread_count: 0,
         items: row_items,
