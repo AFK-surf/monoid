@@ -1620,3 +1620,18 @@ test("TabView.rate respects original, peek, and qhd constraints in JPEG fallback
   assert.deepEqual({ q: last.quality, w: last.maxWidth, h: last.maxHeight }, { q: 72, w: 2560, h: 1440 });
   v.close();
 });
+
+test("a tab that crashes is told with Chrome's word for it; a target no tab is, is not", async () => {
+  const cdp = new FakeCdp();
+  const crashed: [string, string][] = [];
+  const t = new Tabs({ cdp, now: () => 0, activity: () => {}, connect: async () => new FakeCdp(), crashed: (targetId, status) => crashed.push([targetId, status]) });
+  cdp.answers["Target.setDiscoverTargets"] = () => {
+    cdp.emit("Target.targetCreated", { targetInfo: { targetId: "A", type: "page", title: "x", url: "https://example.com/", attached: false } });
+    return {};
+  };
+  await t.start();
+  cdp.emit("Target.targetCrashed", { targetId: "A", status: "killed", errorCode: 9 });
+  cdp.emit("Target.targetCrashed", { targetId: "W", status: "crashed", errorCode: 11 });
+  assert.deepEqual(crashed, [["A", "killed"]]);
+  t.close();
+});

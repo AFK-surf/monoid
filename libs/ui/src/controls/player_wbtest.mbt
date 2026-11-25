@@ -293,7 +293,7 @@ test "a phone's song: its mark and name in the middle, on the page's colours, th
 }
 
 ///|
-test "a desktop's: a pointer click immediately plays or pauses it; a genuine double click swallows the second Up" {
+test "a desktop's: a pointer click alone never plays or pauses it; a double click in its middle does, once" {
   let t = player_tester(false, "E1.mp4", [], [], [])
   t.host_says_finger(Some(false))
   t.draw()
@@ -305,10 +305,12 @@ test "a desktop's: a pointer click immediately plays or pauses it; a genuine dou
     }).length()
   }
   let before = plays()
-  // Single click: 0ms immediate play/pause
+  // A click alone: its controls, never its play
   t.tap(640.0, 400.0)
-  assert_eq(plays(), before + 1)
-  // Rapid second click at the same spot within double-click window: swallowed (0 reversal)
+  t.run_for(@ui.double_tap_ms + 10.0)
+  assert_eq(plays(), before)
+  // A second click at the same spot within a double click's time: played or paused at that second, once
+  t.tap(640.0, 400.0)
   t.advance(@ui.double_tap_ms / 2.0)
   t.tap(640.0, 400.0)
   t.draw()

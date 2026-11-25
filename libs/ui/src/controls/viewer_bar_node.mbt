@@ -6,6 +6,28 @@
 // come between; taking no press while it goes or is gone.
 
 ///|
+/// Whether a viewer's bars and the ways beside its picture (viewer_bar_node, viewer_head_node, viewer_steps_node) come
+/// and go at once at a change's moment, as the viewer lending it says of that moment (a picture's bars a tap toggled:
+/// no fade); none lent, over their times.
+let viewer_bars_at_once_lent : @view.Lent[(Double) -> Bool] = @view.Lent::new()
+
+///|
+/// Lends what is under `parent` whether its viewer's bars come and go at once at a change's moment (`at_once` of that
+/// moment): see viewer_bars_at_once_lent.
+pub fn viewer_bars_at_once_lend(parent : @view.View, at_once : (Double) -> Bool) -> Unit {
+  parent.lends(viewer_bars_at_once_lent, at_once) |> ignore
+}
+
+///|
+/// Whether a viewer's bar or way in `n` comes or goes at once at the moment of the change being told.
+fn viewer_bars_at_once(n : @view.View) -> Bool {
+  match n.lent(viewer_bars_at_once_lent) {
+    Some(f) => f(n.cause_at())
+    None => false
+  }
+}
+
+///|
 /// The bar across the top in `parent` (a layer over the viewer's, all of its room): the file's ground (`ink`) at 82%
 /// over a 20 blur, saturated, 45 high under the room's top (`top`: a tablet's status bar, its ground on under it); the
 /// way back first (`back`'s words after the chevron, `went` as it is pressed), clear of the window's buttons where they
@@ -15,7 +37,8 @@
 /// last as far in from the window's side as a page's bar's last (`capsule_end`: a capsule of words, past the window's
 /// corner as far as a long capsule stands: window_corner_past; `capsule_now`: while it says so, followed). There while `hidden` holds not (gone up its height and
 /// faded over 240 ms, eased out, from where it is at the moment it is told, and back so; at once with motion
-/// reduced), as far in as `shown` says of the node as it is drawn (the viewer's fade). A press on it where nothing of it
+/// reduced or where its viewer says so: viewer_bars_at_once), as far in as `shown` says of the node as it is drawn (the
+/// viewer's fade). A press on it where nothing of it
 /// takes one is its own, moving the window while it has none of the system's title bar (the app's own top row). Its
 /// tips in `tips`. The bar's node.
 #callsite(autofill(loc))
@@ -47,7 +70,14 @@ pub fn viewer_bar_node(
   let mut bar : @view.View? = None
   parent.box(made_for=loc, fn(room) {
     room.over(Is(true)) |> ignore
-    room.reacts(hidden, fn(off) { gone.go_ms(room, if off { 1.0 } else { 0.0 }, viewer_bar_ms) })
+    room.reacts(hidden, fn(off) {
+      let to = if off { 1.0 } else { 0.0 }
+      if viewer_bars_at_once(room) {
+        gone.put(to)
+      } else {
+        gone.go_ms(room, to, viewer_bar_ms)
+      }
+    })
     let b = room.box(fn(b) {
       let bar_over = fn() { window_keys_bar_over_now() }
       b

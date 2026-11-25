@@ -1512,15 +1512,22 @@ fn opened_named(
   base_codec::json_obj(out)
 }
 
-/// `store.ts` `openers` and `openedChats` of some sessions (none: of all).
-pub fn openers_opened_ordered(
+/// `store.ts` `openers` of some sessions (none: of all), preserving SQL first-seen key order;
+/// none on a database from before.
+pub fn openers_of_ordered(
   db : sql_db::Db,
   ids : Option[Array[String]],
-) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
+) -> Array[(String, base_codec::Json)] {
   let openers : Array[(String, base_codec::Json)] = []
   let openers_idx : Map[String, Int] = Map::new()
-  let opened : Array[(String, Array[base_codec::Json])] = []
-  let opened_idx : Map[String, Int] = Map::new()
+  match ids {
+    Some(arr) => {
+      if arr.length() == 0 {
+        return openers
+      }
+    }
+    None => ()
+  }
   let list : Array[base_codec::Json] = match ids {
     Some(arr) => {
       let js : Array[base_codec::Json] = []
@@ -1536,7 +1543,6 @@ pub fn openers_opened_ordered(
     None => false
   }
   let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
-  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
   let station_of = fn(v : base_codec::Json) -> base_codec::Json {
     if base_codec::json_eq(v, base_codec::json_str("")) {
       base_codec::json_null()
@@ -1570,6 +1576,62 @@ pub fn openers_opened_ordered(
       }
     }
     Err(_) => ()
+  }
+  openers
+}
+
+/// `store.ts` `openers` of some sessions (none: of all): by session, the chat it was opened from;
+/// none on a database from before.
+pub fn openers_of(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Map[String, base_codec::Json] {
+  let openers_arr = openers_of_ordered(db, ids)
+  let openers : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<openers_arr.length() {
+    let (k, v) = openers_arr[i]
+    openers.set(k, v)
+  }
+  openers
+}
+
+/// `store.ts` `openers` and `openedChats` of some sessions (none: of all).
+pub fn openers_opened_ordered(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
+  let openers = openers_of_ordered(db, ids)
+  let opened : Array[(String, Array[base_codec::Json])] = []
+  let opened_idx : Map[String, Int] = Map::new()
+  match ids {
+    Some(arr) => {
+      if arr.length() == 0 {
+        return Ok((openers, opened))
+      }
+    }
+    None => ()
+  }
+  let list : Array[base_codec::Json] = match ids {
+    Some(arr) => {
+      let js : Array[base_codec::Json] = []
+      for i in 0..<arr.length() {
+        js.push(base_codec::json_str(arr[i]))
+      }
+      [readops_core::ids_json(js)]
+    }
+    None => []
+  }
+  let has_ids = match ids {
+    Some(_) => true
+    None => false
+  }
+  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
+  let station_of = fn(v : base_codec::Json) -> base_codec::Json {
+    if base_codec::json_eq(v, base_codec::json_str("")) {
+      base_codec::json_null()
+    } else {
+      v
+    }
   }
   let od_sql = if has_ids {
     readops_core::OPENED_OF_SQL

@@ -21,14 +21,23 @@
 //
 // Looked at every WATCH_MS, every PRESSED_MS under pressure, when the memory is read exactly (macOS: the processes'
 // footprint, which counts what is compressed or swapped out, where resident memory does not).
+//
+// What the kernel kills for memory itself (Linux's OOM killer, which can come before this watch sees any pressure: a
+// hypervisor out of memory for the guest, a cgroup's limit) is heard as the kernel logs it (/dev/kmsg, `kernelKills`):
+// the process is gone by then, so its agent is found in the last look's units (`#seen`) and told what was killed.
+// So that the kernel takes what the agents run before the station itself (Node is the biggest single process of the
+// service, every process of which has the service's oom_score_adj), each look raises its units' processes to
+// OOM_FIRST (`killFirst`); the runtimes and the station keep theirs.
+import { spawn } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { totalmem } from "node:os";
+import { freemem, totalmem } from "node:os";
+import { createInterface } from "node:readline";
 import { join } from "node:path";
 import type { Clock } from "effect";
 import { runnerId } from "../agents/process.ts";
 import { liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
-import { Fibers } from "../ops/fibers.ts";
+import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type ProcessInfo, platform, treeOf } from "../platform/index.ts";
 import type { Store } from "../store/store.ts";
@@ -48,6 +57,8 @@ export const TOLD_PRESSED = 3;
 /// A runtime's command waits paused under pressure only from this big: a build, a proof, a test suite, never the small
 /// servers a runtime keeps (an MCP server, its browser), which it would hang on.
 export const PAUSED_MIN = 2 * 1024 ** 3;
+/// The oom_score_adj (Linux: -1000..1000, higher killed first) of what the agents run, over the station's own.
+export const OOM_FIRST = 500;
 
 /// A unit's agent told when it is over this: an eighth of the machine's memory, 2 GiB at least.
 export const limitOf = (totalBytes: number): number => Math.max(2 * 1024 ** 3, Math.floor(totalBytes / 8));
@@ -144,7 +155,23 @@ export type MemoryOptions = {
   self: number;
   /// Writes down what is paused (the pids), so another station or this one started again lets them go on.
   savePaused?(pids: number[]): Promise<void>;
+  /// Hears each process the kernel kills for memory (`kernelKills`); the returned function stops hearing.
+  kills?(heard: (kill: KernelKill) => void): () => void;
+  /// The memory free now (bytes), for what an agent is told of a kill.
+  freeBytes?(): number;
+  /// Makes the kernel kill these processes before the station's own when it runs out of memory (`oomFirst`).
+  killFirst?(pids: number[]): void;
 };
+
+/// A process the kernel's OOM killer killed: its pid and its name as the kernel gives it (at most 15 characters).
+export type KernelKill = { pid: number; name: string };
+
+/// A kill in one record of /dev/kmsg (`<priority>,<sequence>,<microseconds since boot>,<flags>;<text>`), with when it
+/// was logged; null for any other record.
+export function kmsgKill(record: string): (KernelKill & { usec: number }) | null {
+  const m = /^\d+,\d+,(\d+),[^;]*;(?:Memory cgroup out of memory|Out of memory)[^:]*: Killed process (\d+) \((.*?)\)/.exec(record);
+  return m ? { usec: Number(m[1]), pid: Number(m[2]), name: m[3]! } : null;
+}
 
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
@@ -165,6 +192,11 @@ export class MemoryWatch {
   #looks = 0;
   /// The commands paused under pressure (SIGSTOP), by their units' keys.
   #paused = new Map<string, { pids: number[]; label: string; session: string | null; bytes: number }>();
+  /// Every process of the last look's units, and of the look before (a kill the kernel logs just after a look that
+  /// no longer saw the process), with its unit: whose a process the kernel kills was.
+  #seen = new Map<number, Unit>();
+  #seenBefore = new Map<number, Unit>();
+  #unhear: () => void = () => {};
 
   constructor(options: MemoryOptions) {
     this.#o = options;
@@ -173,6 +205,7 @@ export class MemoryWatch {
 
   /// Looks every WATCH_MS (PRESSED_MS under pressure) until closed.
   start(): void {
+    this.#unhear = this.#o.kills?.((kill) => void this.killed(kill)) ?? (() => {});
     const next = (ms: number) =>
       this.#fibers.after(ms, async () => {
         let pressure: Pressure | null = null;
@@ -192,6 +225,7 @@ export class MemoryWatch {
 
   /// What is paused goes on: nothing is left stopped behind a station that ends.
   async close(): Promise<void> {
+    this.#unhear();
     for (const p of this.#paused.values()) for (const pid of p.pids) this.#o.signal(pid, "SIGCONT");
     if (this.#paused.size > 0) {
       this.#paused.clear();
@@ -208,6 +242,9 @@ export class MemoryWatch {
     if (table === null) return pressure;
     const units = unitsOf(table, this.#o.jobs(), await this.#o.agents(), this.#o.self, this.#remembered).sort((a, b) => b.bytes - a.bytes);
     const present = new Set(units.map((u) => u.key));
+    this.#o.killFirst?.(units.flatMap((u) => u.pids));
+    this.#seenBefore = this.#seen;
+    this.#seen = new Map(units.flatMap((u) => u.pids.map((pid) => [pid, u] as const)));
     for (const key of this.#told.keys()) if (!present.has(key)) this.#told.delete(key);
     this.#looks++;
     for (const key of this.#since.keys()) if (!present.has(key)) this.#since.delete(key);
@@ -270,6 +307,20 @@ export class MemoryWatch {
       }
     }
     return pressure;
+  }
+
+  /// The kernel killed `kill` for memory: its unit's agent told (the unit as the last look saw it), else only logged.
+  async killed(kill: KernelKill): Promise<void> {
+    const seen = this.#seen.get(kill.pid) ?? this.#seenBefore.get(kill.pid);
+    // Its directory is asked of a process of it still alive: the one killed has none now.
+    const u = seen === undefined ? undefined : { ...seen, pids: seen.pids.filter((pid) => pid !== kill.pid) };
+    if (u !== undefined && u.session === null) u.session = this.#remembered.get(kill.pid)?.session ?? null;
+    if (u !== undefined && u.pids.length > 0) await this.#whose([u]);
+    log.warn("memory", "the kernel killed a process for memory", { pid: kill.pid, name: kill.name, unit: u?.key ?? null, session: u?.session ?? null });
+    if (u === undefined) return;
+    const free = this.#o.freeBytes?.();
+    const left = free === undefined ? "" : ` The machine had ${gib(free)} free of ${gib(this.#o.totalBytes())} just after.`;
+    this.#tell(u, `The machine ran out of memory and the kernel killed ${kill.name} (pid ${kill.pid}), a process of your ${u.label}.${left} If you still need it, run it again with less at once, or on another station (station_task).`);
   }
 
   /// The sessions of commands their runtime does not say (a runtime shared by sessions): the one whose directory each
@@ -497,6 +548,8 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
       } catch {}
     },
     self: process.pid,
+    ...(platform.os === "linux" ? { kills: kernelKills, killFirst: oomFirst() } : {}),
+    freeBytes: () => freemem(),
     savePaused: async (pids) => {
       if (pids.length === 0) await rm(pausedFile, { force: true });
       else await writeFile(pausedFile, JSON.stringify(pids));
@@ -511,4 +564,71 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
     () => undefined,
   ).catch((error) => log.warn("memory", "what was paused not read", { error: (error as Error).message }));
   return watch;
+}
+
+/// The processes the kernel kills for memory from now on, as it logs them (Linux's /dev/kmsg, read by `cat`: a read of
+/// it waits for the next record, which would hold one of Node's file threads the whole while). What was logged before
+/// the station started is passed over, and what was heard already when `cat` is started again. `cat` ends when the
+/// kernel's ring overwrote records it had not read yet (EPIPE): it is started again, a while later each time it ends at
+/// once. Where the kernel's log is not readable (`kernel.dmesg_restrict`), nothing is heard.
+export function kernelKills(heard: (kill: KernelKill) => void): () => void {
+  let child: ReturnType<typeof spawn> | null = null;
+  let ended = false;
+  let cancel: () => void = () => {};
+  let heardTo = 0;
+  let quick = 0;
+  const notRead = (why: Record<string, unknown>) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", why);
+  const follow = () => {
+    if (ended) return;
+    let records = 0;
+    let said = "";
+    const cat = spawn("cat", ["/dev/kmsg"], { stdio: ["ignore", "pipe", "pipe"] });
+    child = cat;
+    cat.stderr.on("data", (b: Buffer) => (said += b.toString()));
+    cat.on("error", (error) => notRead({ error: error.message }));
+    cat.on("close", (code) => {
+      child = null;
+      if (ended) return;
+      if (/not permitted|permission denied|no such file/i.test(said)) return notRead({ code, said: said.trim().slice(0, 200) });
+      quick = records > 0 ? 0 : quick + 1;
+      if (quick > 5) return notRead({ code, said: said.trim().slice(0, 200), again: quick });
+      // timer: a retry after a failure, with a backoff
+      cancel = wall.after(1000 * 2 ** quick, follow);
+    });
+    createInterface({ input: cat.stdout }).on("line", (record) => {
+      records++;
+      const kill = kmsgKill(record);
+      if (kill === null || kill.usec <= heardTo) return;
+      heardTo = kill.usec;
+      heard({ pid: kill.pid, name: kill.name });
+    });
+  };
+  void readFile("/proc/uptime", "utf8").then((uptime) => {
+    heardTo = Number(uptime.split(" ")[0]) * 1e6;
+    follow();
+  }, (error) => notRead({ error: (error as Error).message }));
+  return () => {
+    ended = true;
+    cancel();
+    child?.kill();
+  };
+}
+
+/// Raises each process given to OOM_FIRST (/proc/<pid>/oom_score_adj: raising one's own processes needs no privilege),
+/// each once while it lives; one already higher is left as it is (Chrome's renderers set their own).
+export function oomFirst(): (pids: number[]) => void {
+  const done = new Set<number>();
+  return (pids) => {
+    const now = new Set(pids);
+    for (const pid of done) if (!now.has(pid)) done.delete(pid);
+    for (const pid of now) {
+      if (done.has(pid)) continue;
+      done.add(pid);
+      const file = `/proc/${pid}/oom_score_adj`;
+      void readFile(file, "utf8").then(
+        (adj) => (Number(adj.trim()) < OOM_FIRST ? writeFile(file, String(OOM_FIRST)) : undefined),
+        () => undefined,
+      ).catch(() => undefined);
+    }
+  };
 }

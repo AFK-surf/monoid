@@ -3744,8 +3744,7 @@ pub(all) struct Viewer {
   mut menu_open : Bool
   mut manual_hidden : Bool
   mut pointer_left : Bool
-  mut tap_paused_idle : Bool
-  mut lock_epoch : Int32
+  mut bars_tapped_at : Double
   mut idle_off : () -> Unit
   mut down_pointer : Bool
   zoom : @motion.Zoom

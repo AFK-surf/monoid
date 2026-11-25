@@ -227,11 +227,8 @@ pub(all) struct Viewer {
   mut manual_hidden : Bool
   /// desktop pointer has left the viewer window (suppresses lock-clear rebound until pointer re-enters or user acts)
   mut pointer_left : Bool
-  /// desktop single-tap double-click window paused `idle_off`; if a second press ends in `Off` or drag without
-  /// committing a tap or double-tap, restore `1800ms` idle auto-fade
-  mut tap_paused_idle : Bool
-  /// monotonic epoch incremented on `bars_locked` transitions and `wake()` to invalidate stale pending tap intents
-  mut lock_epoch : Int
+  /// the moment a tap last showed or hid its bars: what changes then comes and goes at once (viewer_bars_at_once_lend)
+  mut bars_tapped_at : Double
   /// single idle auto-fade timer handle owned by the viewer root node (`later=true`)
   mut idle_off : () -> Unit
   /// whether the current press started from a resting pointer (`@sf.pointer_rests()` recorded at `Down`)
@@ -343,9 +340,7 @@ pub(all) struct Viewer {
   fingers : Map[Int, (Double, Double)]
   speed : @ui.Velocity
   mut hold_off : () -> Unit
-  /// what calls off a tap's close waited for (a second tap zooms instead), and a trackpad's pull let go of (back, once
-  /// its wheel rests)
-  mut tap_off : () -> Unit
+  /// what calls off a trackpad's pull let go of (back, once its wheel rests)
   mut wheel_off : () -> Unit
   /// how far the picture is lifted over the keyboard while marking (its way said as the keyboard or what is written
   /// changes, at that moment: viewer_tree.mbt)
@@ -971,8 +966,7 @@ pub fn new_viewer(
     menu_open: false,
     manual_hidden: false,
     pointer_left: false,
-    tap_paused_idle: false,
-    lock_epoch: 0,
+    bars_tapped_at: -1.0,
     idle_off: fn() {  },
     down_pointer: false,
     // (a tab's fitted as the whole window's is, but always as on a narrow stage: tab_picture_node lays it out so)
@@ -1048,7 +1042,6 @@ pub fn new_viewer(
     fingers: Map([]),
     speed: @ui.Velocity::new(),
     hold_off: fn() {  },
-    tap_off: fn() {  },
     wheel_off: fn() {  },
     lift: @motion.Way::new(0.0),
     beside,
@@ -2259,9 +2252,9 @@ pub fn Viewer::toggle(self : Viewer) -> Unit {
 }
 
 ///|
-/// Commit a deterministic single-tap bar visibility target captured at `Up` before the `twice_ms` double-tap window,
-/// preventing an expiring idle timer during `twice_ms` from inverting the user's intent.
-fn Viewer::set_bars_after_tap(self : Viewer, show : Bool, desktop~ : Bool) -> Unit {
+/// Its bars shown or hidden by a tap at its moment `at` (at once: Viewer::bars_tapped_at).
+fn Viewer::set_bars_after_tap(self : Viewer, show : Bool, desktop~ : Bool, at~ : Double) -> Unit {
+  self.bars_tapped_at = at
   if show {
     self.awake = true
     self.manual_hidden = false
@@ -2282,7 +2275,6 @@ pub fn Viewer::wake(self : Viewer) -> Unit {
     self.awake = true
     self.manual_hidden = false
     self.pointer_left = false
-    self.lock_epoch += 1
     self.awake_said()
   }
 }

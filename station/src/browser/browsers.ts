@@ -55,13 +55,15 @@ export class Browsers {
   #used: (session: string, host: string) => void = () => {};
   #agentAct: (session: string, target: string, method: string) => string | null = () => null;
   #stopped: (session: string) => void = () => {};
+  #crashed: (session: string, tab: { url: string; status: string }) => void = () => {};
   /// The chats' Farview, where the config makes it their browser.
   #farview: FarviewTabs | null = null;
 
   constructor(o: BrowserOptions) {
     this.#dir = o.dir;
     this.#fibers = new Fibers("browsers", o.clock);
-    this.station = new StationBrowser({ ...o, contextOwner: (ctx) => this.#ownerOf(ctx), usedTab: (session, target) => this.used(session, target) });
+    this.station = new StationBrowser({ ...o, contextOwner: (ctx) => this.#ownerOf(ctx), usedTab: (session, target) => this.used(session, target),
+      crashedTab: (session, tab) => this.#crashed(session, tab) });
     const kept = this.#read();
     if (kept !== null) {
       this.#ws = kept.ws;
@@ -121,6 +123,9 @@ export class Browsers {
 
   /// `session`'s browser context was stopped or closed.
   onStopped(f: (session: string) => void) { this.#stopped = f; }
+
+  /// A tab of `session`'s crashed (its renderer killed, by the kernel for memory too).
+  onCrashed(f: (session: string, tab: { url: string; status: string }) => void) { this.#crashed = f; }
 
   used(session: string, target: string, url?: string) {
     const address = url ?? this.tabs(session).find((t) => t.id === target)?.url;

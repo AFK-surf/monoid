@@ -55,6 +55,8 @@ export type TabsParts = {
   userTabs?: UserTabHooks;
   /// macOS still.fail Helper for hardware H.264 browser encoding (`frames.encode`).
   helper?: HelperApp | null;
+  /// Tab `targetId` crashed (Chrome's `status`: `killed` when its renderer was killed, by the kernel for memory too).
+  crashed?: (targetId: string, status: string) => void;
 };
 
 /// Chrome tells of a tab's new address, not of its title, which the page sets after (Chrome 155): the titles are read
@@ -417,6 +419,11 @@ export class Tabs {
         known.tab.info = { targetId: info.targetId, title: info.title ?? "", url: info.url ?? "", attached: Boolean(info.attached) };
         if (known.tab.title() !== before || known.tab.info.url !== beforeUrl) this.#retitled(known);
         activity();
+        return;
+      }
+      case "Target.targetCrashed": {
+        const targetId = e.params?.targetId;
+        if (typeof targetId === "string" && this.#tabs.has(targetId)) this.#p.crashed?.(targetId, String(e.params?.status ?? ""));
         return;
       }
       case "Target.targetDestroyed": {

@@ -50,9 +50,9 @@ function* stored(path: string): Looking<boolean> {
 
 /// Where in a home a runtime keeps its transcripts: Claude Code's projects/, Codex's sessions/, DeepSeek Harness's
 /// dsh-sessions/ as dsh.ts sets it, Grok Build's grok/sessions/, Cursor's and Devin's cursor/sessions/ and devin/sessions/
-/// as cursor.ts and devin.ts keep them, Pi's pi/sessions/ as pi.ts names them. In a home the station keeps it is a link
+/// as cursor.ts and devin.ts keep them, Pi's pi/sessions/ as pi.ts names them, Copilot's copilot/sessions/ as copilot.ts keeps them. In a home the station keeps it is a link
 /// to the runtime's shared place (`sharedTranscripts`, sessions/agent-home.ts `linkTranscripts`).
-export const transcriptDir = (runtime: string) => (runtime === "claude" ? "projects" : runtime === "codex" ? "sessions" : runtime === "grok" ? "grok/sessions" : runtime === "cursor" ? "cursor/sessions" : runtime === "devin" ? "devin/sessions" : runtime === "hermes" ? "hermes/sessions" : runtime === "agy" ? "agy/sessions" : runtime === "pi" ? "pi/sessions" : "dsh-sessions");
+export const transcriptDir = (runtime: string) => (runtime === "claude" ? "projects" : runtime === "codex" ? "sessions" : runtime === "grok" ? "grok/sessions" : runtime === "cursor" ? "cursor/sessions" : runtime === "devin" ? "devin/sessions" : runtime === "hermes" ? "hermes/sessions" : runtime === "agy" ? "agy/sessions" : runtime === "pi" ? "pi/sessions" : runtime === "copilot" ? "copilot/sessions" : "dsh-sessions");
 
 /// The one place a runtime's transcripts are kept on the station, whichever account's home wrote them.
 export const sharedTranscripts = (dataDir: string, runtime: string) => join(dataDir, "transcripts", runtime);
@@ -111,7 +111,7 @@ export function resetTranscriptLocateCache(): void {
 export function* transcriptInLooking(runtime: RuntimeKind, dir: string, id: string, placed = false, anywhere = true): Looking<string | null> {
   if (runtime === "dsh") return yield* dshTranscript(dir, id);
   if (runtime === "grok") return yield* grokTranscript(dir, id);
-  if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy" || runtime === "pi") {
+  if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy" || runtime === "pi" || runtime === "copilot") {
     const path = join(dir, `${id}.jsonl`);
     return (yield* stored(path)) ? path : null;
   }

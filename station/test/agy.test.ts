@@ -27,7 +27,7 @@ import { callsOf } from "./usage-counter-reference.ts";
 import { CHAT_CREATE } from "../src/tools/chat.ts";
 import { failureOf } from "../src/agents/runtime.ts";
 import { cannotStartWords } from "../src/sessions/actor.ts";
-import { testClock } from "./hub-fakes.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 import { CORE, HIDDEN, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
 import { stationTools } from "./station-tools.ts";
 
@@ -1052,11 +1052,13 @@ test("agy stopped after its code: what it shows is said, not the code blamed; a 
   // (its clock moved on a little as each look is taken, as the sign-in's own waits are on it)
   const ticking = (f: () => boolean) => until(async () => (await time.adjust(50), f()));
   const wait = async (id: string, state: LoginState) => ticking(() => logins.get(id)?.state === state);
-  // (the clock moved on past its wait, the sign-in's look at its file each half second given its turn)
+  // (each 1 s step waits for look()'s async readFile/CloseReq on libuv to settle before advancing TestClock again;
+  // capped at 100 s so it crosses AGY_WAIT_MS = 90 s without ever approaching the 15-minute login TIMEOUT_MS)
   const pastWait = async (id: string) => {
-    for (let i = 0; i < 200 && logins.get(id)?.state === "verifying"; i++) {
+    await settle(5);
+    for (let i = 0; i < 100 && logins.get(id)?.state === "verifying"; i++) {
       await time.adjust(1000);
-      await new Promise((r) => setImmediate(r));
+      await settle(5);
     }
   };
   try {
@@ -1065,7 +1067,9 @@ test("agy stopped after its code: what it shows is said, not the code blamed; a 
     await logins.submitCode("s14", "4/0Ab-stuck", "en");
     await wait("s14", "needs_project");
     await logins.submitCode("s14", "my-project", "en");
-    await ticking(() => existsSync(join(data, "stuck14-dump.keys")) && readFileSync(join(data, "stuck14-dump.keys"), "utf8").includes('"step":"region"'));
+    await ticking(() => existsSync(join(data, "stuck14-dump.keys"))
+      && readFileSync(join(data, "stuck14-dump.keys"), "utf8").includes('"step":"region"')
+      && String((logins as any).jobs.get("s14")?.output ?? "").includes("Setting up your project"));
     await pastWait("s14");
     assert.equal(logins.get("s14")?.state, "failed");
     const error = logins.get("s14")!.error ?? "";

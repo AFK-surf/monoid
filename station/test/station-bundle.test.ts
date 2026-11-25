@@ -40,7 +40,7 @@ esac
     file("mock-bin/pnpm", `#!/bin/sh
 set -eu
 for name in main.js future/another-worker.js \\
-  skills/example.md dsh-bridge.mjs cursor-bridge.mjs sandbox-bridge.mjs colab-sandbox.mjs scrcpy-server linux-portal.py linux-x11.py linux-gamepad.py; do
+  skills/example.md dsh-bridge.mjs cursor-bridge.mjs copilot-bridge.mjs sandbox-bridge.mjs colab-sandbox.mjs scrcpy-server linux-portal.py linux-x11.py linux-gamepad.py; do
   mkdir -p "dist/$(dirname "$name")"
   printf '%s' "$name" > "dist/$name"
 done

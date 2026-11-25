@@ -3169,6 +3169,8 @@ pub fn viewer_bar_under() -> Double
 
 pub fn viewer_bar_watch_back(@view.View, (@view.View) -> Unit) -> Unit
 
+pub fn viewer_bars_at_once_lend(@view.View, (Double) -> Bool) -> Unit
+
 #callsite(autofill(loc))
 pub fn viewer_coming_node(@view.View, () -> (Double, Double?)?, () -> Double, () -> ViewerInk, lead? : Bool, track? : Double, loc~ : SourceLoc) -> @view.View
 

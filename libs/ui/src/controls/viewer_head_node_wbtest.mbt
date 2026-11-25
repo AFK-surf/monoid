@@ -9,6 +9,8 @@ struct HeadState {
   tools : @signals.Signal[Array[String]]
   awake : @signals.Signal[Bool]
   closed : Ref[Int]
+  /// whether its viewer says it comes and goes at once (viewer_bars_at_once_lend)
+  at_once : Ref[Bool]
 }
 
 ///|
@@ -18,6 +20,7 @@ fn HeadState::new(name : String, tools : Array[String]) -> HeadState {
     tools: @signals.signal(tools, same=fn(a, b) { a == b }),
     awake: @signals.signal(true, same=fn(a, b) { a == b }),
     closed: Ref(0),
+    at_once: Ref(false),
   }
 }
 
@@ -33,6 +36,7 @@ fn head_tester(s : HeadState, w? : Double = 390.0) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w~, h=300.0, platform=0)
   t.check_looks(false)
   @ui.set_view_app(fn(root) {
+    viewer_bars_at_once_lend(root, fn(_) { s.at_once.val })
     viewer_head_node(
         root,
         fn() { s.name.get() },
@@ -198,6 +202,20 @@ test "the floating head as nodes going as it sleeps and coming as it wakes, from
   for i, w in want {
     let got = head_alpha(new[i].1)
     assert_true((got - w).abs() < 0.001, msg="\{new[i].0}: \{got}, its way says \{w}")
+  }
+}
+
+///|
+test "the floating head as nodes, its viewer saying so, gone and back at once at the moment it is told (a tap's)" {
+  let new = head_run("photo.png", ["copy"], [
+    ("told at once", fn(s) { s.at_once.val = true }, -1.0),
+    ("asleep", fn(s) { s.awake.set(false) }, 1.0),
+    ("awake", fn(s) { s.awake.set(true) }, 1.0),
+  ])
+  let want = [1.0, 0.0, 1.0]
+  for i, w in want {
+    let got = head_alpha(new[i].1)
+    assert_true((got - w).abs() < 0.001, msg="\{new[i].0}: \{got}, at once \{w}")
   }
 }
 
