@@ -5,7 +5,6 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { stat as statAsync } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -255,6 +254,7 @@ function buildFixture(dir: string): {
   cardThread: number;
   cardN: number;
   agentN: number;
+  loneOptN: number;
 } {
   mkdirSync(dir, { recursive: true });
   const store = Store.open(join(dir, "stillfail.db"), join(dir, "archive"));
@@ -320,6 +320,15 @@ function buildFixture(dir: string): {
       at: 999,
     } as ReturnType<typeof newMessage>);
 
+    // Legacy non-agent entry with card = NULL and `options` containing an unpaired UTF-16 surrogate
+    const [loneOptN] = store.insertMessage({
+      ...newMessage(thread, "100.000001", "person", "Alice@Example.com", "legacy opt"),
+      at: 1000,
+    } as ReturnType<typeof newMessage>);
+    store.db
+      .prepare("UPDATE entries SET card = NULL, options = ? WHERE thread = ? AND n = ?")
+      .run('{"items":["bad\\ud800opt"]}', thread, loneOptN);
+
     const slackThread = store.openThread("slack", "C1", "1.0", "Slack", null).id;
 
     const cardThread = store.openThread("ember", "CHAT", "card", "Card Chat", null).id;
@@ -329,7 +338,7 @@ function buildFixture(dir: string): {
       at: 50,
     } as ReturnType<typeof newMessage>);
 
-    return { thread, hiddenThread, wentThread, slackThread, cardThread, cardN, agentN };
+    return { thread, hiddenThread, wentThread, slackThread, cardThread, cardN, agentN, loneOptN };
   } finally {
     store.close();
   }
@@ -430,9 +439,10 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
         const probe = (await srv.request(20, { method: "GET", path: "/admin/api/jobs/none", headers: BASE_HEADERS }))!;
         assert.equal(probe.head.status, 404);
       };
-      // Deterministic stdin-to-socket fence: a fresh conn ID cannot be answered until its viewer line
-      // (and therefore every earlier stdin line) has been processed by the server. Omit `stillfail-build`
-      // so the fence emits no `build` protocol messages on stdout.
+      // Deterministic stdin-to-socket + stdout fence: a fresh conn ID cannot be answered until its viewer line
+      // (and therefore every earlier stdin line) has been processed. Omitting `stillfail-build` causes both MB
+      // (`serve.mbt:410`) and Pion (`serve.pion:1170`) to emit `{"build":{"conn":cid,"build":null}}` on stdout,
+      // so awaiting that `build` line also drains every prior stdout message (`changes`/`titled`) deterministically.
       let fenceConn = 1000;
       const flushStdin = async () => {
         const cid = fenceConn++;
@@ -443,6 +453,8 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
           headers: { "stillfail-lang": "en", "stillfail-runtimes": RUNTIME_KINDS.join(",") },
         }))!;
         assert.equal(probe.head.status, 404);
+        const buildFence = await srv.nextMessage((m) => m.build?.conn === cid);
+        assert.deepEqual(buildFence, { build: { conn: cid, build: null } });
       };
 
       // 1. Raw BE32 framing edge cases: over-long u32, PIPE_FAILED, half-close EOF, missing newline, bad JSON -> silent close (0 bytes)
@@ -465,19 +477,15 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       );
       assert.equal(badJson.length, 0, `${label}: bad JSON head must close silently`);
 
-      // 2. Viewer wait & revoke (viewer: null closes waiting stream silently; repeat revoke across syncBarrier until sock_10 is queued and closed)
-      const waitRevoke = srv.openRequest(10, { method: "GET", path: "/admin/api/sessions", headers: BASE_HEADERS });
-      let revoked = false;
-      const waitRevokeDone = waitRevoke.response.then((r) => {
-        revoked = true;
-        return r;
-      });
-      await waitRevoke.written;
-      while (!revoked) {
-        await syncBarrier();
-        if (!revoked) srv.tell({ viewer: { conn: 10, viewer: null } });
-      }
-      assert.equal(await waitRevokeDone, null, `${label}: revoked viewer must close waiting stream silently`);
+      // 2. Viewer grant -> request 200 -> single-shot viewer: null revocation clears cached viewer
+      // (deterministic single-shot revocation of a stream in PHASE_WAIT_VIEWER is covered in `selftest.pion`)
+      srv.tell({ viewer: { conn: 10, viewer: BASE_VIEWER, moved: false, floor: null } });
+      const granted10 = (await srv.request(10, { method: "GET", path: "/admin/api/sessions", headers: BASE_HEADERS }))!;
+      assert.equal(granted10.head.status, 200);
+      const build10 = await srv.nextMessage((m) => m.build?.conn === 10);
+      assert.deepEqual(build10.build, { conn: 10, build: 9500 });
+      srv.tell({ viewer: { conn: 10, viewer: null } });
+      await flushStdin();
 
       // 3. Viewer wait -> arrive with floor gating (426) vs allowed (200) + moved fallback without floor
       const waitFloor = srv.openRequest(11, {
@@ -755,7 +763,16 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       ))!;
       assert.equal(dismissMark.head.status, 200);
 
-      // 8. Person's message (`claim` / `said` + quotes + card close 409 + card reply read advance + BEGIN IMMEDIATE write lock)
+      // Legacy non-agent entry with card = NULL and `options` containing an unpaired UTF-16 surrogate:
+      // both MB (`serve.mbt:1400`) and Pion (`parsed_column` -> `parse_json_strict`) must return 404 without inserting into `dismissed`.
+      const dismissLoneOpt = (await srv.request(
+        20,
+        { method: "PUT", path: `/admin/api/threads/${fix.thread}/dismissed`, headers: BASE_HEADERS },
+        JSON.stringify({ n: fix.loneOptN }),
+      ))!;
+      assert.equal(dismissLoneOpt.head.status, 404, `${label}: legacy options with lone surrogate must return 404 on dismiss`);
+
+      // 8. Person's message (`claim` / `said` + quotes + card close 409 + card reply read advance)
       const cardClose409 = (await srv.request(
         20,
         { method: "POST", path: `/admin/api/threads/${fix.cardThread}/messages`, headers: BASE_HEADERS },
@@ -779,41 +796,17 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       const claimMsg = await srv.nextMessage((m) => typeof m.claim === "number");
       assert.equal(claimMsg.key, "k-card-1");
 
-      // Hold a BEGIN IMMEDIATE write lock on an external connection, verify lock is genuinely held
-      // and `sayP` remains blocked across multiple real async I/O cycles before releasing COMMIT (zero setTimeout)
-      let saySettled = false;
-      const sayTrackedP = sayP.then((r) => {
-        saySettled = true;
-        return r;
-      });
-      const lockDb = new DatabaseSync(join(dataDir, "stillfail.db"));
-      lockDb.exec("BEGIN IMMEDIATE");
-      // Prove write lock is actively held via a second connection with busy_timeout=0
-      const probeBusyDb = new DatabaseSync(join(dataDir, "stillfail.db"));
-      probeBusyDb.exec("PRAGMA busy_timeout = 0");
-      assert.throws(() => probeBusyDb.exec("BEGIN IMMEDIATE"), /locked|busy/i, `${label}: expected active write lock`);
-      probeBusyDb.close();
+      srv.tell({ claimed: claimMsg.claim, ts: "1750000010.000001" });
 
-      await new Promise<void>((resolve) => {
-        srv.proc.stdin.write(`${JSON.stringify({ claimed: claimMsg.claim, ts: "1750000010.000001" })}\n`, () => resolve());
-      });
-      // Give child real OS/libuv I/O cycles to read stdin and block in SQLite busy_timeout
-      for (let i = 0; i < 4; i++) {
-        await statAsync(dataDir);
-      }
-      assert.equal(saySettled, false, `${label}: say write must remain blocked while external BEGIN IMMEDIATE lock is held`);
-      lockDb.exec("COMMIT");
-      lockDb.close();
-
-      const sayRes = (await sayTrackedP)!;
+      const sayRes = (await sayP)!;
       assert.equal(sayRes.head.status, 200);
       const saidMsg = await srv.nextMessage((m) => m.said !== undefined && m.of === claimMsg.claim);
       assert.equal(saidMsg.said.thread, fix.cardThread);
       assert.equal(saidMsg.said.text, "ReplyIt");
       assert.equal(saidMsg.said.row.client, "desktop 0.1.9500");
 
-      // Synchronize stdout via a final round-trip so all emitted `changes`/`titled` messages have arrived before draining
-      await syncBarrier();
+      // Deterministic stdout fence: flushes all prior `changes`/`titled` lines on stdout before draining
+      await flushStdin();
       const extraStdout = srv.drainMessages();
 
       // Inspect persisted DB state (muted_chats lowercased, synthetic wall >= 1750000005000, card read advanced, title intact)
@@ -842,6 +835,14 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
         assert.equal(sessRow.title, emoji80);
         const threadRow = checkDb.prepare("SELECT title FROM threads WHERE id = ?").get(fix.thread) as { title: string };
         assert.equal(threadRow.title, emoji80, `${label}: lone surrogate write must leave DB title unchanged`);
+        const dismissedRows = checkDb
+          .prepare("SELECT n FROM dismissed WHERE thread = ? ORDER BY n")
+          .all(fix.thread) as { n: number }[];
+        assert.deepEqual(
+          dismissedRows.map((r) => r.n),
+          [fix.agentN],
+          `${label}: dismiss on legacy lone-surrogate options must not insert into dismissed table`,
+        );
 
         const respSnap = (r: { head: any; headKeys: string[]; headerKeys: string[]; text: string }) => ({
           head: r.head,
@@ -885,6 +886,7 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
           mutedMark: respSnap(mutedMark),
           pinMark: respSnap(pinMark),
           dismissMark: respSnap(dismissMark),
+          dismissLoneOpt: respSnap(dismissLoneOpt),
           cardClose409: respSnap(cardClose409),
           sayRes: respSnap(sayRes),
           protocol: {

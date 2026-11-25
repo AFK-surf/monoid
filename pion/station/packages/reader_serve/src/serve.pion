@@ -341,7 +341,7 @@ fn obj_set_field(
 fn parsed_column(v : Option[base_codec::Json]) -> Option[base_codec::Json] {
   match v {
     Some(base_codec::Json::Str(text)) => {
-      match sql_db::parse_json(text) {
+      match parse_json_strict(text) {
         base_codec::JsonParseResult::Ok(j) => Some(j)
         base_codec::JsonParseResult::Err(_) => None
       }

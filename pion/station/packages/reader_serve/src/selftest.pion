@@ -5,6 +5,7 @@ import "base_codec"
 import "builders_core"
 import "host_shim"
 import "reader_data"
+import "readops_core"
 import "sql_db"
 
 struct MockCall {
@@ -259,7 +260,220 @@ fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Res
     return Err("reader_serve selftest: zstd.stream failure stream not cleaned up")
   }
 
-  // Test 3: Mock accept transient error containing "closed" retries after 100ms & recovers;
+  // Test 3: Deterministic single-shot viewer: null revocation while stream is in PHASE_WAIT_VIEWER
+  let mut accept_wait_v = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      accept_wait_v = env.calls[i].id
+    }
+  }
+  env.push_done(accept_wait_v, "{\"id\":22}")
+  let _ = runner.step(0.to_int64())
+  let mut read_wait_v = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.read" {
+      read_wait_v = env.calls[i].id
+    }
+  }
+  let req_wait = make_req_bytes(
+    9.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/admin/api/sessions\",\"headers\":{\"stillfail-build\":\"0.1.9500\",\"stillfail-lang\":\"en\"}}",
+    "",
+  )
+  env.push_done(read_wait_v, "{}", bytes=Some(req_wait))
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 1 {
+    reader.close()
+    return Err("reader_serve selftest: stream should be queued in PHASE_WAIT_VIEWER")
+  }
+  let calls_before_revoke = env.calls.length()
+  // Single viewer: null line (no retry): must immediately close sock 22 and empty waiting queue
+  env.push_stdin("{\"viewer\":{\"conn\":9,\"viewer\":null}}")
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 0 {
+    reader.close()
+    return Err("reader_serve selftest: single viewer:null must immediately clear waiting stream")
+  }
+  let mut saw_close_22 = false
+  for i in calls_before_revoke..<env.calls.length() {
+    if env.calls[i].op == "tcp.close" && str_contains(env.calls[i].json_str, "22") {
+      saw_close_22 = true
+    }
+  }
+  if !saw_close_22 {
+    reader.close()
+    return Err("reader_serve selftest: single viewer:null must emit tcp.close for sock 22")
+  }
+
+  // Test 4: Genuine SQLITE_BUSY write contention on reader_serve write path + clean retry after COMMIT
+  let db_path = sub_dir + "/stillfail.db"
+  let ext_db = match sql_db::Db::create(db_path, wait_ms=250) {
+    Ok(d) => d
+    Err(e) => {
+      reader.close()
+      return Err("reader_serve selftest: create db failed: " + e.message)
+    }
+  }
+  let init_sql = "PRAGMA journal_mode = WAL; " +
+  "CREATE TABLE threads (id INTEGER PRIMARY KEY, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT); " +
+  "CREATE TABLE sessions (key TEXT PRIMARY KEY, ws TEXT); " +
+  "CREATE TABLE thread_sessions (thread INTEGER NOT NULL, session TEXT NOT NULL); " +
+  "CREATE TABLE handed_over (session TEXT, station TEXT, ws TEXT, thread INTEGER, there INTEGER, at INTEGER); " +
+  "CREATE TABLE reads (viewer TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (viewer, thread)); " +
+  "INSERT INTO threads (id, surface, channel, thread_ts, title) VALUES (1, 'chat', 'CHAT', 't1', 'T1');"
+  match ext_db.exec(init_sql) {
+    Ok(_) => ()
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: init schema failed: " + e.message)
+    }
+  }
+  match reader.db_now() {
+    Ok(wdb) => {
+      match wdb.exec("PRAGMA busy_timeout = 50") {
+        Ok(_) => ()
+        Err(e) => {
+          ext_db.close()
+          reader.close()
+          return Err("reader_serve selftest: set busy_timeout failed: " + e.message)
+        }
+      }
+    }
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: reader.db_now failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // Hold an external BEGIN IMMEDIATE write lock via ext_db.tx_err while runner executes PUT /threads/1/read
+  let busy_res : Result[Unit, String] = ext_db.tx_err(
+    fn(_tx : sql_db::Db) -> Result[Unit, String] {
+      let mut acc_busy = 0.to_int64()
+      for i in 0..<env.calls.length() {
+        if env.calls[i].op == "tcp.accept" {
+          acc_busy = env.calls[i].id
+        }
+      }
+      env.push_done(acc_busy, "{\"id\":23}")
+      let _ = runner.step(0.to_int64())
+      let mut rd_busy = 0.to_int64()
+      for i in 0..<env.calls.length() {
+        if env.calls[i].op == "tcp.read" {
+          rd_busy = env.calls[i].id
+        }
+      }
+      let req_busy = make_req_bytes(
+        8.to_int64(),
+        "{\"method\":\"PUT\",\"path\":\"/admin/api/threads/1/read\",\"headers\":{\"stillfail-build\":\"0.1.9500\",\"stillfail-runtimes\":\"claude\",\"stillfail-lang\":\"en\"}}",
+        "{\"n\":3}",
+      )
+      env.push_done(rd_busy, "{}", bytes=Some(req_busy))
+      let _ = runner.step(0.to_int64())
+      let busy_write = env.calls[env.calls.length() - 1]
+      if busy_write.op != "tcp.write" {
+        return Err("reader_serve selftest: expected tcp.write 500 on SQLITE_BUSY, got " + busy_write.op)
+      }
+      match busy_write.payload {
+        Some(p) => {
+          let s = sql_db::decode_utf8_lossy_bytes(p)
+          if !str_contains(s, "\"status\":500") {
+            return Err("reader_serve selftest: expected 500 on SQLITE_BUSY, got: " + s)
+          }
+        }
+        None => return Err("reader_serve selftest: missing 500 payload on SQLITE_BUSY")
+      }
+      env.push_done(busy_write.id, "{}")
+      let _ = runner.step(0.to_int64())
+      Ok(())
+    },
+    fn(e : sql_db::SqlError) -> String { e.message },
+  )
+  match busy_res {
+    Ok(_) => ()
+    Err(m) => {
+      ext_db.close()
+      reader.close()
+      return Err(m)
+    }
+  }
+  // Confirm zero rows left in `reads` after SQLITE_BUSY failure
+  match ext_db.all("SELECT n FROM reads WHERE viewer = 'a@b' AND thread = 1", []) {
+    Ok(rs) => {
+      if rs.length() != 0 {
+        ext_db.close()
+        reader.close()
+        return Err("reader_serve selftest: expected 0 reads rows after SQLITE_BUSY")
+      }
+    }
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: verify empty reads failed: " + e.message)
+    }
+  }
+  // Lock is now released (COMMITted): re-send identical write -> must succeed 200 and persist n=3
+  let mut acc_ok = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      acc_ok = env.calls[i].id
+    }
+  }
+  env.push_done(acc_ok, "{\"id\":24}")
+  let _ = runner.step(0.to_int64())
+  let mut rd_ok = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.read" {
+      rd_ok = env.calls[i].id
+    }
+  }
+  let req_ok = make_req_bytes(
+    8.to_int64(),
+    "{\"method\":\"PUT\",\"path\":\"/admin/api/threads/1/read\",\"headers\":{\"stillfail-build\":\"0.1.9500\",\"stillfail-runtimes\":\"claude\",\"stillfail-lang\":\"en\"}}",
+    "{\"n\":3}",
+  )
+  env.push_done(rd_ok, "{}", bytes=Some(req_ok))
+  let _ = runner.step(0.to_int64())
+  let ok_write = env.calls[env.calls.length() - 1]
+  if ok_write.op != "tcp.write" {
+    ext_db.close()
+    reader.close()
+    return Err("reader_serve selftest: expected tcp.write 200 after lock release, got " + ok_write.op)
+  }
+  match ok_write.payload {
+    Some(p) => {
+      let s = sql_db::decode_utf8_lossy_bytes(p)
+      if !str_contains(s, "\"status\":200") {
+        ext_db.close()
+        reader.close()
+        return Err("reader_serve selftest: expected 200 after lock release, got: " + s)
+      }
+    }
+    None => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: missing 200 payload after lock release")
+    }
+  }
+  env.push_done(ok_write.id, "{}")
+  let _ = runner.step(0.to_int64())
+  match ext_db.all("SELECT n FROM reads WHERE viewer = 'a@b' AND thread = 1", []) {
+    Ok(rs) => {
+      if rs.length() != 1 || sql_db::row_int(rs[0], "n") != 3 {
+        ext_db.close()
+        reader.close()
+        return Err("reader_serve selftest: expected persisted reads.n=3 after lock release")
+      }
+    }
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: verify persisted reads failed: " + e.message)
+    }
+  }
+  ext_db.close()
+
+  // Test 5: Mock accept transient error containing "closed" retries after 100ms & recovers;
   // permanent error ("no handle 10") exits cleanly.
   let mut accept_before_transient = 0.to_int64()
   for i in 0..<env.calls.length() {
@@ -289,7 +503,7 @@ fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Res
   if runner.is_running() || runner.exit_code() != 0 {
     return Err("reader_serve selftest: permanent 'no handle' accept error must exit 0")
   }
-  Ok(5)
+  Ok(7)
 }
 
 pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
