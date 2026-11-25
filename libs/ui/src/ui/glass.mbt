@@ -336,7 +336,7 @@ fn Ctx::glass_inst(
   )
   let b = (self.ninst - 1) * inst_size
   let a = self.inst
-  a[b + 21] = gl.refraction
+  a[b + 21] = if gl.refraction > 0.0 { gl.refraction } else { 0.0 }
   a[b + 22] = if gl.liquid { gl.chroma } else if gl.progressive { -1.0 } else { 0.0 }
   a[b + 23] = gl.merge
 }

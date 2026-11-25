@@ -257,3 +257,27 @@ test "droplet_role: frost=0 keeps clear switch lens (slot7=-32), frost>0 monoton
   set_glass_frost(0.0)
   t.set_increase_contrast(false)
 }
+
+///|
+test "slot 21: a negative refraction is written as 0.0 (the renderers' reach of what is outside the glass never goes inward), a positive one as it is" {
+  for entry in [(-20.0, 0.0), (-0.5, 0.0), (0.0, 0.0), (16.0, 16.0)] {
+    let (refraction, want) = entry
+    let gl = Glass::liquid(blur=14.0, tint=0xFDFCFD80L, refraction~)
+    let t = Tester::tree(w=200.0, h=120.0, fn(root) {
+      root.box(fn(b) { b.width(Is(Some(80.0))).height(Is(Some(40.0))).glass(Is(Some(gl))) |> ignore })
+      |> ignore
+    })
+    t.draw()
+    let c = the_ctx.val
+    let mut found = false
+    for i in 0..<c.ninst {
+      let b = i * inst_size
+      if c.inst[b + 5] == 6.0 {
+        assert_true(c.inst[b + 21] == want, msg="refraction=\{refraction} slot21=\{c.inst[b + 21]}")
+        found = true
+        break
+      }
+    }
+    assert_true(found, msg="expected kind 6 for refraction=\{refraction}")
+  }
+}
