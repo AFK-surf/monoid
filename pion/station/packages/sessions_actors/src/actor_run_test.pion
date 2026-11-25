@@ -2654,3 +2654,169 @@ test "R5 verify: close after sending mark before Node reads it must settle kick"
     s.actors.host.hub_asked.length().to_string(),
   )
 }
+
+test "R6 verify: replacement handle may reuse turn id and runtime generation" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "agent.steer") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"t1\",\"declared\":\"all_done\"}},{\"handle\":2,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0 && !s.has_rpc("store.markWidgetModelsTold"),
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+test "R6 verify: adopted turn survives old widget receipt" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "store.markWidgetModelsTold" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "store.markWidgetModelsTold") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"new\",\"declared\":\"all_done\"}},{\"handle\":2,\"generation\":2},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0,
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+test "R6 verify: widget reply cannot change previously verified adopted state" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "store.markWidgetModelsTold" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "store.markWidgetModelsTold") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"new\",\"declared\":\"all_done\"}},{\"handle\":2,\"generation\":2},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(respond)
+  let replacement = get_actor(s.actors, "s1")
+  match replacement.turn {
+    Some(t) => assert_run(t.id == "new" && replacement.steered.length() == 0, "replacement must start clean")
+    None => panic("missing replacement turn")
+  }
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0,
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}

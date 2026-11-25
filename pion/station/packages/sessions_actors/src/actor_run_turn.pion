@@ -1122,14 +1122,13 @@ fn ActorsGen::pump_steer_k(
   if added > 0 {
     self.mirror(a)
   }
-  let attempt_gen = agent.generation
   let attempt_turn_id : Option[String] = match a.turn {
     Some(t) => Some(t.id)
     None => None
   }
   let attempt_same = fn() -> Bool {
     a.phase != "closed" &&
-    self.is_current(a, attempt_gen) &&
+    still(a, Some(agent)) &&
     match (a.turn, attempt_turn_id) {
       (Some(t), Some(id)) => t.id == id
       (None, None) => true
@@ -1405,6 +1404,10 @@ fn ActorsGen::pump_steer_k(
                                               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                               effect::Exit::Succeeded(_) => {
+                                                if !attempt_same() {
+                                                  k(effect::Exit::Interrupted)
+                                                  return
+                                                }
                                                 self.work_for(a, d.pending)
                                                 self.store_k(
                                                   a,
@@ -1415,6 +1418,10 @@ fn ActorsGen::pump_steer_k(
                                                       effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                                       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                                       effect::Exit::Succeeded(_) => {
+                                                        if !attempt_same() {
+                                                          k(effect::Exit::Interrupted)
+                                                          return
+                                                        }
                                                         for i in 0..<d.pending.length() {
                                                           a.steered.push(
                                                             sessions_core::field_of(d.pending[i], "handed"),

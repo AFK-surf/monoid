@@ -567,6 +567,8 @@ function r5RoutingFixture() {
     const session = {
       steer() { events.push(`${label}/steer`); return false; },
       dispose() { events.push(`${label}/dispose`); },
+      snapshot() { return null; },
+      detach() {},
     };
     const ready = actor.adopt({ runtime: "claude" } as any, session as any, "");
     const adoption = posted.at(-1);
@@ -661,6 +663,157 @@ test("W8-E2 R5: stateForTurn dispatched before close receives a terminal stateWr
     assert.equal(reply?.answer, 105);
     await f.program.close();
     await saving;
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R6: pending stateWrite after replacement uses the original record", async () => {
+  let receive!: (frame: any) => void;
+  const frames: any[] = [];
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(x: any) { frames.push(x); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 100 } as any,
+  );
+  const rows: any[] = [];
+  const store = {
+    getSession() { return { runtime: "claude" }; },
+    setAbout() {},
+    declareTurn() {},
+    setNeed(id: string, words: string) { rows.push([id, words]); },
+    markUndelivered() { rows.push(["undo"]); },
+  };
+  const answer = async (id: number) => {
+    await new Promise((r) => setImmediate(r));
+    const reply = frames.find((f) => f.answer === id);
+    assert.ok(reply, "missing terminal answer");
+    return reply;
+  };
+  try {
+    const old = program.actor("s", "claude", { store } as any);
+    const first = old.stateForTurn("old-turn", { kind: "need_human" } as any, "old words", null);
+    const req = frames.at(-1);
+    old.close();
+    const current = program.actor("s", "claude", { store } as any);
+    const second = current.stateForTurn("new-turn", { kind: "need_human" } as any, "new words", null);
+    receive({ rpc: 201, actor: "s", fn: "node.stateWrite", args: req.args });
+    const reply = await answer(201);
+    assert.ok(!reply.error, JSON.stringify(reply));
+    assert.deepEqual(rows, [["old-turn", "old words"]]);
+    // Consumed token must fail explicitly if replayed instead of silently succeeding.
+    receive({ rpc: 202, actor: "s", fn: "node.stateWrite", args: req.args });
+    const replay = await answer(202);
+    assert.ok(replay.error, "replayed stateWrite token must fail explicitly");
+    await program.close();
+    await Promise.all([first, second]);
+  } finally {
+    await program.close();
+  }
+});
+
+test("W8-E2 R6: autonomous steer keeps its store cleanup available across negative receipt", async () => {
+  let receive!: (frame: any) => void;
+  const frames: any[] = [];
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(x: any) { frames.push(x); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 100 } as any,
+  );
+  const rows: any[] = [];
+  const store = {
+    getSession() { return { runtime: "claude" }; },
+    markUndelivered() { rows.push(["undo"]); },
+  };
+  const answer = async (id: number) => {
+    await new Promise((r) => setImmediate(r));
+    const reply = frames.find((f) => f.answer === id);
+    assert.ok(reply, "missing terminal answer");
+    return reply;
+  };
+  try {
+    const old = program.actor("s", "claude", { store } as any);
+    let rejectSteer!: () => void;
+    const ready = old.adopt(
+      { runtime: "claude" } as any,
+      { steer: () => new Promise((resolve) => { rejectSteer = () => resolve(false); }) } as any,
+      "",
+    );
+    const adopt = frames.at(-1);
+    receive({ returned: adopt.call, value: null });
+    await ready;
+    receive({ rpc: 210, actor: "s", fn: "agent.steer", args: [adopt.args[1].handle, "text"] });
+    assert.equal(typeof rejectSteer, "function");
+    old.close();
+    const close = frames.at(-1);
+    assert.equal(close.method, "close");
+    receive({ returned: close.call, value: null });
+    rejectSteer();
+    assert.equal((await answer(210)).value, false);
+    receive({ rpc: 211, actor: "s", fn: "store.markUndelivered", args: ["s", [{ thread: "th", n: 1 }]] });
+    const reply = await answer(211);
+    assert.deepEqual({ rows, error: reply.error?.message }, { rows: [["undo"]], error: undefined });
+  } finally {
+    await program.close();
+  }
+});
+
+test("W8-E2 R6 NN1: close is returned before its compensation is asked", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    const close = f.posted.at(-1);
+    assert.equal(close.method, "close");
+    await f.deliver({ returned: close.call, value: null });
+    const reply = await f.deliver({ rpc: 201, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.error, undefined, JSON.stringify(reply));
+    assert.deepEqual(f.events, ["old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R6 NN2: steer refused after close, then its compensation", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    const close = f.posted.at(-1);
+    await f.deliver({ rpc: 301, actor: "s", fn: "agent.steer", args: [old.handle, "x"] });
+    await f.deliver({ returned: close.call, value: null });
+    const reply = await f.deliver({ rpc: 302, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.error, undefined, JSON.stringify(reply));
+    assert.deepEqual(f.events, ["old/steer", "old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R6 NN3: snapshot hands over and nothing of the old reaches its session", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const snapping = old.actor.snapshot();
+    const call = f.posted.at(-1);
+    await f.deliver({ returned: call.call, value: { agent: old.handle } });
+    await snapping;
+    const reply = await f.deliver({ rpc: 401, actor: "s", fn: "agent.dispose", args: [old.handle] });
+    assert.equal(reply?.error?.actorClosed, true, JSON.stringify(reply));
+    assert.deepEqual(f.events, []);
   } finally {
     await f.program.close();
   }

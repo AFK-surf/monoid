@@ -79,8 +79,11 @@ export class ActorsProgram {
   readonly #actors = new Map<string, MbActor | ProgramShell>();
   readonly #retired = new Map<string, Set<MbActor | ProgramShell>>();
   readonly #retiredIdleOrder = new Set<MbActor | ProgramShell>();
+  readonly #retiredRetainIfIdle = new Set<MbActor | ProgramShell>();
   readonly #handleOwners = new Map<number, MbActor>();
   #nextHandle = 0;
+  readonly #stateWriteOwners = new Map<number, MbActor>();
+  #nextStateWrite = 0;
   readonly #timers = new Map<number, Fiber.Fiber<void>>();
   /// Lines said to it, those it said it took in, and whether something of it runs (`active`): `busy`.
   #sent = 0;
@@ -186,6 +189,18 @@ export class ActorsProgram {
     if (this.#handleOwners.get(handle) === owner) this.#handleOwners.delete(handle);
   }
 
+  /// Allocates a program-wide unique stateWrite token owned by `owner`.
+  allocStateWrite(owner: MbActor): number {
+    const token = ++this.#nextStateWrite;
+    this.#stateWriteOwners.set(token, owner);
+    return token;
+  }
+
+  /// Releases ownership of a `stateWrite` token once consumed or settled.
+  unregisterStateWrite(token: number, owner: MbActor) {
+    if (this.#stateWriteOwners.get(token) === owner) this.#stateWriteOwners.delete(token);
+  }
+
   /// What answers for `shell.key` that is no session's (the jobs, jobs/jobs.ts: `#jobs`): what the program asks of it
   /// and tells it.
   shell(shell: ProgramShell) {
@@ -251,7 +266,9 @@ export class ActorsProgram {
     programs.delete(this);
     this.#retired.clear();
     this.#retiredIdleOrder.clear();
+    this.#retiredRetainIfIdle.clear();
     this.#handleOwners.clear();
+    this.#stateWriteOwners.clear();
     this.#pendingCalls.clear();
     this.#answeringByActor.clear();
     for (const fiber of this.#timers.values()) Effect.runFork(Fiber.interrupt(fiber));
@@ -271,17 +288,34 @@ export class ActorsProgram {
 
   #removeRetired(actor: MbActor | ProgramShell) {
     this.#retiredIdleOrder.delete(actor);
+    this.#retiredRetainIfIdle.delete(actor);
     const set = this.#retired.get(actor.key);
     if (!set) return;
     set.delete(actor);
     if (set.size === 0) this.#retired.delete(actor.key);
   }
 
+  #evictIdleRetired() {
+    while (this.#retiredIdleOrder.size > 512) {
+      const oldest = this.#retiredIdleOrder.values().next().value;
+      if (oldest === undefined) break;
+      this.#removeRetired(oldest);
+    }
+  }
+
   #maybePruneRetired(actor?: MbActor | ProgramShell) {
     if (actor === undefined) return;
     if (this.#actors.get(actor.key) === actor) return;
     if ((this.#pendingCalls.get(actor) ?? 0) > 0 || (this.#answeringByActor.get(actor) ?? 0) > 0) return;
-    this.#removeRetired(actor);
+    if (!this.#retiredRetainIfIdle.has(actor)) {
+      this.#removeRetired(actor);
+      return;
+    }
+    if (this.#retired.get(actor.key)?.has(actor)) {
+      this.#retiredIdleOrder.delete(actor);
+      this.#retiredIdleOrder.add(actor);
+      this.#evictIdleRetired();
+    }
   }
 
   #said(said: Json) {
@@ -344,6 +378,13 @@ export class ActorsProgram {
       ) {
         const owner = this.#handleOwners.get(said.args[0]);
         if (owner !== undefined) actor = owner;
+      } else if (
+        said.fn === "node.stateWrite" &&
+        Array.isArray(said.args) &&
+        typeof said.args[2] === "number"
+      ) {
+        const owner = this.#stateWriteOwners.get(said.args[2]);
+        if (owner !== undefined) actor = owner;
       }
       if (
         actor === undefined &&
@@ -391,7 +432,12 @@ export class ActorsProgram {
     if (this.#actors.get(key) === actor) {
       this.#actors.delete(key);
       const hasObligation = (this.#pendingCalls.get(actor) ?? 0) > 0 || (this.#answeringByActor.get(actor) ?? 0) > 0;
-      if (!hasObligation && !retainIfIdle) return;
+      if (!hasObligation && !retainIfIdle) {
+        this.#retiredRetainIfIdle.delete(actor);
+        return;
+      }
+      if (retainIfIdle) this.#retiredRetainIfIdle.add(actor);
+      else this.#retiredRetainIfIdle.delete(actor);
       let set = this.#retired.get(key);
       if (!set) {
         set = new Set();
@@ -402,11 +448,7 @@ export class ActorsProgram {
       if (!hasObligation) {
         this.#retiredIdleOrder.delete(actor);
         this.#retiredIdleOrder.add(actor);
-        while (this.#retiredIdleOrder.size > 512) {
-          const oldest = this.#retiredIdleOrder.values().next().value;
-          if (oldest === undefined) break;
-          this.#removeRetired(oldest);
-        }
+        this.#evictIdleRetired();
       }
     }
   }
@@ -619,10 +661,13 @@ export class MbActor {
   goesOn() { return this.#call("goesOn").then(() => undefined); }
   async stateForTurn(id: string, state: DeclaredState, words: string | null, about: [number, number, string] | null,
     watch = false, record?: (write: (about: [number, number, string] | null) => void) => void): Promise<boolean> {
-    const token = ++this.#next;
+    const token = this.#program.allocStateWrite(this);
     this.#records.set(token, { words, about, watch, record });
     try { return (await this.#call("stateForTurn", [id, state, token])) === true; }
-    finally { this.#records.delete(token); }
+    finally {
+      this.#records.delete(token);
+      this.#program.unregisterStateWrite(token, this);
+    }
   }
   toolsAt(url: string) { return this.#call("toolsAt", [url]).then(() => undefined); }
   declare(state: DeclaredState): Promise<boolean> { return this.#call("declare", [state]).then((v) => v === true); }
@@ -1063,7 +1108,9 @@ export class MbActor {
       case "stateWrite": {
         const [id, state, token] = args as [string, DeclaredState, number];
         const r = this.#records.get(token);
-        if (r === undefined) return null;
+        if (r === undefined) throw new Error(`no stateWrite record ${token}`);
+        this.#records.delete(token);
+        this.#program.unregisterStateWrite(token, this);
         const write = (current: [number, number, string] | null) => {
           if (r.words !== null) {
             if (state.kind === "waiting") deps.store.setWaitFor(id, r.words, r.watch);
