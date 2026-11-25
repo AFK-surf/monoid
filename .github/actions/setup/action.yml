@@ -1,6 +1,9 @@
 name: setup
 description: Reproducible toolchains on disposable GitHub-hosted runners
 inputs:
+  node:
+    description: Install the pinned Node (false when a job already installed it in an earlier setup step)
+    default: 'true'
   native:
     description: Install Rust and WebAssembly tooling
     default: 'false'
@@ -10,11 +13,15 @@ inputs:
   pnpm:
     description: pnpm and its store (false for a job that installs no packages, as mbui's Apple jobs when the core's bytecode is kept)
     default: 'true'
+  pnpm-save:
+    description: Save pnpm store cache on miss (false on tight-budget release builds that must not spend 15-30 s in Post Run saving 140 MB)
+    default: 'true'
 runs:
   using: composite
   steps:
     # The pinned Node (.github/actions/node: the tool cache's, the Actions cache's, or nodejs.org's once a version)
-    - uses: ./.github/actions/node
+    - if: inputs.node == 'true'
+      uses: ./.github/actions/node
     # Windows' pnpm.exe kept in the Actions cache by its version: github.com's release fetched once a version, not every
     # run's (one run's fetch could not connect to github.com for 21 s, main c6764347, 40661676439)
     - id: win-pnpm
@@ -58,12 +65,24 @@ runs:
     # in the background from before this step, and hashFiles failed on a file it removed, 39538551764). A new
     # lockfile is added here. (Not for a job without pnpm: mbui's mac job spent 6-22 s restoring its ~58 MB for packages
     # it did not install, 2026-10-24, 40076678382.)
-    - if: inputs.pnpm == 'true'
+    - if: inputs.pnpm == 'true' && inputs.pnpm-save == 'true'
       uses: actions/cache@v4
       with:
         path: ${{ env.PNPM_STORE }}
         key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'client/core-ts/pnpm-lock.yaml', 'cloud/pnpm-lock.yaml', 'station/pnpm-lock.yaml') }}
         restore-keys: pnpm-${{ runner.os }}-
+    - id: pnpm-restore
+      if: inputs.pnpm == 'true' && inputs.pnpm-save == 'false'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ env.PNPM_STORE }}
+        key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'client/core-ts/pnpm-lock.yaml', 'cloud/pnpm-lock.yaml', 'station/pnpm-lock.yaml') }}
+        restore-keys: pnpm-${{ runner.os }}-
+    - if: inputs.pnpm == 'true' && inputs.pnpm-save == 'false'
+      shell: bash
+      run: |
+        echo "PNPM_CACHE_HIT=${{ steps.pnpm-restore.outputs.cache-hit }}" >> "$GITHUB_ENV"
+        echo "PNPM_CACHE_KEY=pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'client/core-ts/pnpm-lock.yaml', 'cloud/pnpm-lock.yaml', 'station/pnpm-lock.yaml') }}" >> "$GITHUB_ENV"
     - if: inputs.native == 'true'
       shell: bash
       run: |
