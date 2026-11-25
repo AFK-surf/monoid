@@ -65,7 +65,7 @@ pub fn file_mark(name : String) -> String {
     "mp3" | "m4a" | "wav" | "flac" | "ogg" | "aac" | "opus" => "file-audio"
     "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "avif" | "bmp" | "heic" => "photo"
     "pdf" => "file-pdf"
-    "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" => "archive"
+    "zip" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "7z" | "rar" => "file-zip"
     "txt" | "md" | "markdown" | "log" | "rtf" | "srt" | "vtt" | "ass" | "ssa" => "file-text"
     "js" | "ts" | "tsx" | "jsx" | "json" | "py" | "rs" | "go" | "mbt" | "c" | "h" | "cpp" | "java" | "kt" | "swift"
     | "sh" | "yml" | "yaml" | "toml" | "html" | "css" | "csv" | "xml" | "sql" | "rb" | "php" => "file-code"

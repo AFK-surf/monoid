@@ -356,7 +356,7 @@ fn opened_title(parent : @view.View, j : () -> Json?, way : (() -> String)?) -> 
 /// that all come here tell apart at a glance: a folder zipped is an archive.
 fn coming_mark(j : Json?) -> String {
   if flag(j, "zip") {
-    "archive"
+    "file-zip"
   } else {
     let name = text(j, "name")
     @sf.file_mark(if name != "" { name } else { text(j, "title") })

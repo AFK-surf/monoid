@@ -193,6 +193,10 @@ export function FileVideo(props: IconProps) {
   return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10.2 13Q10.2 12.2 10.9 12.6L14.4 14.7Q15.1 15.2 14.4 15.7L10.9 17.8Q10.2 18.2 10.2 17.4Z" /></Svg>;
 }
 
+export function FileZip(props: IconProps) {
+  return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19 M10.5 6.5H12 M10.5 10.5H12 M9 8.5H10.5 M9 12.5H10.5 M9.5 15H11.5Q12 15 12 15.5V17.5Q12 18 11.5 18H9.5Q9 18 9 17.5V15.5Q9 15 9.5 15Z" /></Svg>;
+}
+
 export function File(props: IconProps) {
   return <Svg {...props}><path d="M13.5 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V9L13.5 3.5Z M13 4V7.5Q13 10 15.5 10H19" /></Svg>;
 }
@@ -716,6 +720,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "file-pdf": FilePdf,
   "file-text": FileText,
   "file-video": FileVideo,
+  "file-zip": FileZip,
   "file": File,
   "filter": Filter,
   "folder-plus": FolderPlus,
