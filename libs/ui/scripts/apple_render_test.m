@@ -2786,6 +2786,88 @@ int main(void) {
           CHECK(px[gidx+2] < 70 && px[iidx+2] > 200 && settling == 0);
           free(px);
         }
+        // R6-1: Same capsule raises tint alpha 0x67 -> 0xA8 under partial dirty (98,16,164,42) across 50 frames
+        {
+          double pa[4 * MB_INST];
+          rect_at(pa, 0, 0, 216, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(pa + MB_INST, 216, 0, 184, 300, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(pa + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -68);
+          pa[2 * MB_INST + 4] = 18.0; pa[2 * MB_INST + 6] = 1.0; pa[2 * MB_INST + 7] = 1.2;
+          pa[2 * MB_INST + 11] = 0xA8 / 255.0; pa[2 * MB_INST + 12] = 0.6; pa[2 * MB_INST + 13] = 14.0;
+          pa[2 * MB_INST + 14] = -1.0; pa[2 * MB_INST + 15] = 1.0;
+          pa[2 * MB_INST + 21] = 20.0; pa[2 * MB_INST + 22] = 0.06; pa[2 * MB_INST + 23] = 0.0;
+          rect_at(pa + 3 * MB_INST, 232, 32, 12, 12, 10, 0.93, 0.93, 0.93, 0);
+          pa[3 * MB_INST + 4] = 4.0;
+          pa[3 * MB_INST + 12] = 0.1; pa[3 * MB_INST + 13] = 0.5; pa[3 * MB_INST + 14] = 0.9; pa[3 * MB_INST + 15] = 0.5;
+          pa[3 * MB_INST + 21] = 180.0; pa[3 * MB_INST + 22] = 38.0; pa[3 * MB_INST + 23] = 18.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(pa, 3, 0.08, 0.08, 0.08);
+          present_drain();
+          int bcw = 0, bch = 0;
+          uint8_t *bgx = read_texture(canvas, &bcw, &bch);
+          int bidx = (76 * bcw + 476) * 4;
+          double gl = wcag_luma_u8(bgx[bidx+2], bgx[bidx+1], bgx[bidx+0]);
+          pa[2 * MB_INST + 11] = 0x67 / 255.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(pa, 4, 0.08, 0.08, 0.08);
+          present_drain();
+          mb_host_render_dirty(98, 16, 164, 42);
+          mb_render_present(pa, 4, 0.08, 0.08, 0.08);
+          present_drain();
+          pa[2 * MB_INST + 11] = 0xA8 / 255.0;
+          double min_cr = 999.0;
+          for (int f = 0; f < 50; f++) {
+            mb_host_render_dirty(98, 16, 164, 42);
+            mb_render_present(pa, 4, 0.08, 0.08, 0.08);
+            present_drain();
+            int cw = 0, ch = 0;
+            uint8_t *px = read_texture(canvas, &cw, &ch);
+            int idx = (76 * cw + 476) * 4;
+            double il = wcag_luma_u8(px[idx+2], px[idx+1], px[idx+0]);
+            double cr = ((il > gl ? il : gl) + 0.05) / ((il > gl ? gl : il) + 0.05);
+            if (cr < min_cr) min_cr = cr;
+            CHECK(il > 0.70 && cr >= 4.5);
+            free(px);
+          }
+          printf("apple_render: dark adaptive 0x67->0xA8 partial-dirty 50f min_cr=%.2f\n", min_cr);
+          free(bgx);
+        }
+        // R6-2: Narrow bright edge (split x=242, capsule 100..260) + p.muted (#A8AAAE) icon at (250,38) -> CR >= 4.5
+        {
+          double nm[4 * MB_INST];
+          rect_at(nm, 0, 0, 242, 300, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(nm + MB_INST, 242, 0, 158, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(nm + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -69);
+          nm[2 * MB_INST + 4] = 18.0; nm[2 * MB_INST + 6] = 1.0; nm[2 * MB_INST + 7] = 1.2;
+          nm[2 * MB_INST + 11] = 0x67 / 255.0; nm[2 * MB_INST + 12] = 0.6; nm[2 * MB_INST + 13] = 14.0;
+          nm[2 * MB_INST + 14] = -1.0; nm[2 * MB_INST + 15] = 1.0;
+          nm[2 * MB_INST + 21] = 20.0; nm[2 * MB_INST + 22] = 0.06; nm[2 * MB_INST + 23] = 0.0;
+          rect_at(nm + 3 * MB_INST, 244, 32, 12, 12, 10, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          nm[3 * MB_INST + 4] = 4.0;
+          nm[3 * MB_INST + 12] = 0.1; nm[3 * MB_INST + 13] = 0.5; nm[3 * MB_INST + 14] = 0.9; nm[3 * MB_INST + 15] = 0.5;
+          nm[3 * MB_INST + 21] = 180.0; nm[3 * MB_INST + 22] = 38.0; nm[3 * MB_INST + 23] = 18.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(nm, 3, 0.08, 0.08, 0.08);
+          present_drain();
+          int bcw = 0, bch = 0, cw = 0, ch = 0;
+          uint8_t *bgx = read_texture(canvas, &bcw, &bch);
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(nm, 4, 0.08, 0.08, 0.08);
+          present_drain();
+          uint8_t *px = read_texture(canvas, &cw, &ch);
+          int idx = (76 * cw + 500) * 4;
+          double gl = wcag_luma_u8(bgx[idx+2], bgx[idx+1], bgx[idx+0]);
+          double il = wcag_luma_u8(px[idx+2], px[idx+1], px[idx+0]);
+          double cr = ((il > gl ? il : gl) + 0.05) / ((il > gl ? gl : il) + 0.05);
+          printf("apple_render: dark adaptive narrow-bright p.muted glass=(%d,%d,%d) icon=(%d,%d,%d) cr=%.2f\n",
+                 bgx[idx+2], bgx[idx+1], bgx[idx+0], px[idx+2], px[idx+1], px[idx+0], cr);
+          CHECK(cr >= 4.5);
+          free(bgx); free(px);
+        }
       }
       mb_render_set_size(400, 300, 2);
       glass_forget();

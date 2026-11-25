@@ -602,11 +602,20 @@
       if (capHalf.x <= 0.0) return rgb;
       int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));
       if (code < 48 || code > 208) return rgb;
-      if (capsuleDarkT >= 0.5) {
+      if (code >= 96) {
         float darkL = clamp(1.0 - origL, 0.06, 0.10);
         return vec3(darkL);
       }
-      float liftW = smoothstep(0.03, 0.08, capsuleBgL);
+      float bgL = capsuleBgL;
+      if (origL < 0.94) {
+        vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
+        if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
+        vec2 guv = samplePos * u_map.xy + u_map.zw;
+        if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
+          bgL = max(bgL, vs_backdrop_luma_rect(samplePos, vec2(10.0, 8.0)));
+        }
+      }
+      float liftW = smoothstep(0.03, 0.08, bgL);
       return mix(rgb, max(rgb, vec3(0.95)), liftW);
     }
     float darkT = capsuleDarkT;
@@ -1184,7 +1193,12 @@
         }
       }
       if (best >= 0) {
-        return mb_unpack16(texelFetch(u_ad, ivec2(best, 0), 0).rg);
+        vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
+        if (is_dark_glass) {
+          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
+          if (code >= 48 && code <= 208) return (code >= 96) ? 1.0 : 0.0;
+        }
+        return mb_unpack16(px.rg);
       }
     }
     float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
@@ -2378,7 +2392,7 @@
       target = latch;
     }
     float nextT;
-    if (is_dark > 0.5 || is_new > 0.5 || dt >= 1.0) nextT = target;
+    if (is_new > 0.5 || dt >= 1.0) nextT = target;
     else if (dt <= 0.0) nextT = prevT;
     else {
       nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));
@@ -2663,18 +2677,20 @@
     }
     const pend = [];
     for (const it of items) {
-      let sid = -1, isNew = 0;
+      let sid = -1, isNew = 0, modeChanged = false;
       for (let i = 0; i < AD_MAX; i++) {
         const s = adSlots[i];
-        if (s.active && s.seenSerial === serial && s.isDark === it.isDark && Math.hypot(it.cx - s.cx, it.cy - s.cy) <= 2.0) {
-          sid = i; break;
+        if (s.active && s.seenSerial === serial && ((s.isDark > 0) === (it.isDark > 0)) && Math.hypot(it.cx - s.cx, it.cy - s.cy) <= 2.0) {
+          sid = i;
+          if (s.isDark !== it.isDark) { s.isDark = it.isDark; modeChanged = true; }
+          break;
         }
       }
       if (sid < 0) {
         let bestD = AD_MATCH_DIST + 1e-3;
         for (let i = 0; i < AD_MAX; i++) {
           const s = adSlots[i];
-          if (!s.active || s.seenSerial === serial || s.isDark !== it.isDark) continue;
+          if (!s.active || s.seenSerial === serial || ((s.isDark > 0) !== (it.isDark > 0))) continue;
           const d = Math.hypot(it.cx - s.cx, it.cy - s.cy);
           if (d <= bestD) { bestD = d; sid = i; }
         }
@@ -2692,16 +2708,19 @@
           isNew = 1;
           const s = adSlots[sid];
           s.active = true; s.isDark = it.isDark; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
+        } else if (adSlots[sid].isDark !== it.isDark) {
+          adSlots[sid].isDark = it.isDark;
+          modeChanged = true;
         }
         const s = adSlots[sid];
         s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
       }
       const s = adSlots[sid];
-      if (!isNew && s.updatedSerial === serial) continue;
-      const slotChanged = backdropChanged || (s.lastBd !== curBd);
+      if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
+      const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
       if (isNew || slotChanged || s.settleLeft > 0) {
         if (isNew) s.settleLeft = 0;
-        else if (slotChanged) s.settleLeft = (s.isDark > 0) ? 0 : AD_SETTLE_SEC;
+        else if (slotChanged) s.settleLeft = AD_SETTLE_SEC;
         else s.settleLeft = Math.max(0, s.settleLeft - dt);
         s.lastBd = curBd;
         s.updatedSerial = serial;

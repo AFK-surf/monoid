@@ -185,11 +185,20 @@ static const char *VS =
     "    if (capHalf.x <= 0.0) return rgb;\n"
     "    int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));\n"
     "    if (code < 48 || code > 208) return rgb;\n"
-    "    if (capsuleDarkT >= 0.5) {\n"
+    "    if (code >= 96) {\n"
     "      float darkL = clamp(1.0 - origL, 0.06, 0.10);\n"
     "      return vec3(darkL);\n"
     "    }\n"
-    "    float liftW = smoothstep(0.03, 0.08, capsuleBgL);\n"
+    "    float bgL = capsuleBgL;\n"
+    "    if (origL < 0.94) {\n"
+    "      vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
+    "      if (capHalf.y <= 28.0) samplePos.y = capCenter.y;\n"
+    "      vec2 guv = samplePos * u_map.xy + u_map.zw;\n"
+    "      if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {\n"
+    "        bgL = max(bgL, vs_backdrop_luma_rect(samplePos, vec2(10.0, 8.0)));\n"
+    "      }\n"
+    "    }\n"
+    "    float liftW = smoothstep(0.03, 0.08, bgL);\n"
     "    return mix(rgb, max(rgb, vec3(0.95)), liftW);\n"
     "  }\n"
     "  float darkT = capsuleDarkT;\n"
@@ -481,7 +490,12 @@ static const char *FS =
     "      }\n"
     "    }\n"
     "    if (best >= 0) {\n"
-    "      return mb_unpack16(texelFetch(u_ad, ivec2(best, 0), 0).rg);\n"
+    "      vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);\n"
+    "      if (is_dark_glass) {\n"
+    "        int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
+    "        if (code >= 48 && code <= 208) return (code >= 96) ? 1.0 : 0.0;\n"
+    "      }\n"
+    "      return mb_unpack16(px.rg);\n"
     "    }\n"
     "  }\n"
     "  float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
@@ -1695,7 +1709,7 @@ static const char *AD_FS =
     "    target = latch;\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_dark > 0.5 || is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -3212,12 +3226,13 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
   }
   int n_upd = 0;
   for (int k = 0; k < ni; k++) {
-    int sid = -1, is_new = 0;
+    int sid = -1, is_new = 0, mode_changed = 0;
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
       mb_ad_slot *s = &ad_slots[i];
-      if (s->active && s->seen_serial == serial && s->is_dark == items[k].is_dark &&
+      if (s->active && s->seen_serial == serial && ((s->is_dark > 0) == (items[k].is_dark > 0)) &&
           hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
         sid = i;
+        if (s->is_dark != items[k].is_dark) { s->is_dark = items[k].is_dark; mode_changed = 1; }
         break;
       }
     }
@@ -3225,7 +3240,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       float best_d = (float)MB_AD_MATCH_DIST + 1e-3f;
       for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
         mb_ad_slot *s = &ad_slots[i];
-        if (!s->active || s->seen_serial == serial || s->is_dark != items[k].is_dark) continue;
+        if (!s->active || s->seen_serial == serial || ((s->is_dark > 0) != (items[k].is_dark > 0))) continue;
         float d = hypotf(items[k].cx - s->cx, items[k].cy - s->cy);
         if (d <= best_d) { best_d = d; sid = i; }
       }
@@ -3247,6 +3262,9 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
         memset(&ad_slots[sid], 0, sizeof ad_slots[sid]);
         ad_slots[sid].active = 1;
         ad_slots[sid].is_dark = items[k].is_dark;
+      } else if (ad_slots[sid].is_dark != items[k].is_dark) {
+        ad_slots[sid].is_dark = items[k].is_dark;
+        mode_changed = 1;
       }
       ad_slots[sid].cx = items[k].cx;
       ad_slots[sid].cy = items[k].cy;
@@ -3255,8 +3273,8 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       ad_slots[sid].seen_serial = serial;
     }
     mb_ad_slot *s = &ad_slots[sid];
-    if (!is_new && s->updated_serial == serial) continue;
-    int slot_changed = backdrop_changed || (s->last_bd != cur_bd);
+    if (!is_new && !mode_changed && s->updated_serial == serial) continue;
+    int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     if (!is_new && !slot_changed && s->settle_left > 0.0 && ad_conv_serial[sid] >= s->settle_serial) {
       s->settle_left = 0.0;
     }
@@ -3266,7 +3284,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
         s->settle_left = 0.0;
         s->settle_serial = serial;
       } else if (slot_changed) {
-        s->settle_left = (s->is_dark > 0) ? 0.0 : MB_AD_SETTLE_SEC;
+        s->settle_left = MB_AD_SETTLE_SEC;
         s->settle_serial = serial;
       } else {
         s->settle_left -= dt;

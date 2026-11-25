@@ -373,11 +373,20 @@ static const char *shader_src =
     "    if (capHalf.x <= 0.0) return rgb;\n"
     "    int code = int(floor(saturate(capsuleLatch) * 255.0 + 0.5));\n"
     "    if (code < 48 || code > 208) return rgb;\n"
-    "    if (capsuleDarkT >= 0.5) {\n"
+    "    if (code >= 96) {\n"
     "      float darkL = clamp(1.0 - origL, 0.06, 0.10);\n"
     "      return float3(darkL, darkL, darkL);\n"
     "    }\n"
-    "    float liftW = smoothstep(0.03, 0.08, capsuleBgL);\n"
+    "    float bgL = capsuleBgL;\n"
+    "    [branch] if (origL < 0.94) {\n"
+    "      float2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
+    "      if (capHalf.y <= 28.0) samplePos.y = capCenter.y;\n"
+    "      float2 guv = samplePos * gmap.xy + gmap.zw;\n"
+    "      if (guvc.z > guvc.x && guvc.w > guvc.y && guv.x >= guvc.x && guv.x <= guvc.z && guv.y >= guvc.y && guv.y <= guvc.w) {\n"
+    "        bgL = max(bgL, mb_backdrop_luma_rect(samplePos, float2(10.0, 8.0)));\n"
+    "      }\n"
+    "    }\n"
+    "    float liftW = smoothstep(0.03, 0.08, bgL);\n"
     "    return lerp(rgb, max(rgb, float3(0.95, 0.95, 0.95)), liftW);\n"
     "  }\n"
     "  float darkT = capsuleDarkT;\n"
@@ -582,7 +591,12 @@ static const char *shader_src =
     "      }\n"
     "    }\n"
     "    if (best >= 0) {\n"
-    "      return mb_unpack16(ad_tex.Load(int3(best, 0, 0)).rg);\n"
+    "      float4 px = ad_tex.Load(int3(best, 0, 0));\n"
+    "      if (is_dark_glass) {\n"
+    "        int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
+    "        if (code >= 48 && code <= 208) return (code >= 96) ? 1.0 : 0.0;\n"
+    "      }\n"
+    "      return mb_unpack16(px.rg);\n"
     "    }\n"
     "  }\n"
     "  float bgL = mb_backdrop_luma_rect(ac, float2(max(fallback_r, 1.0), max(fallback_r, 1.0)));\n"
@@ -1628,7 +1642,7 @@ static const char *ad_src =
     "    target = latch;\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_dark > 0.5 || is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = lerp(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -2636,12 +2650,13 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
   }
   int n_upd = 0;
   for (int k = 0; k < ni; k++) {
-    int sid = -1, is_new = 0;
+    int sid = -1, is_new = 0, mode_changed = 0;
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
       MBAdSlot *s = &w->ad_slots[i];
-      if (s->active && s->seen_serial == serial && s->is_dark == items[k].is_dark &&
+      if (s->active && s->seen_serial == serial && ((s->is_dark > 0) == (items[k].is_dark > 0)) &&
           hypotf(items[k].cx - s->cx, items[k].cy - s->cy) <= 2.0f) {
         sid = i;
+        if (s->is_dark != items[k].is_dark) { s->is_dark = items[k].is_dark; mode_changed = 1; }
         break;
       }
     }
@@ -2649,7 +2664,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       float best_d = (float)MB_AD_MATCH_DIST + 1e-3f;
       for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
         MBAdSlot *s = &w->ad_slots[i];
-        if (!s->active || s->seen_serial == serial || s->is_dark != items[k].is_dark) continue;
+        if (!s->active || s->seen_serial == serial || ((s->is_dark > 0) != (items[k].is_dark > 0))) continue;
         float d = hypotf(items[k].cx - s->cx, items[k].cy - s->cy);
         if (d <= best_d) { best_d = d; sid = i; }
       }
@@ -2671,6 +2686,9 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
         memset(&w->ad_slots[sid], 0, sizeof w->ad_slots[sid]);
         w->ad_slots[sid].active = 1;
         w->ad_slots[sid].is_dark = items[k].is_dark;
+      } else if (w->ad_slots[sid].is_dark != items[k].is_dark) {
+        w->ad_slots[sid].is_dark = items[k].is_dark;
+        mode_changed = 1;
       }
       w->ad_slots[sid].cx = items[k].cx;
       w->ad_slots[sid].cy = items[k].cy;
@@ -2679,14 +2697,14 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       w->ad_slots[sid].seen_serial = serial;
     }
     MBAdSlot *s = &w->ad_slots[sid];
-    if (!is_new && s->updated_serial == serial) continue;
-    int slot_changed = backdrop_changed || (s->last_bd != cur_bd);
+    if (!is_new && !mode_changed && s->updated_serial == serial) continue;
+    int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
       if (is_new) {
         s->settle_left = 0.0;
       } else if (slot_changed) {
-        s->settle_left = (s->is_dark > 0) ? 0.0 : MB_AD_SETTLE_SEC;
+        s->settle_left = MB_AD_SETTLE_SEC;
       } else {
         s->settle_left -= dt;
         if (s->settle_left <= 0.0) s->settle_left = 0.0;
