@@ -183,12 +183,10 @@ fn liquid_slider_look_core(
     let middle_at = fn(p : Double) -> Double {
       match look.travel_inset {
         Some(inset) => slider_travel_at(w(), inset, p)
-        None =>
-          if look.flush {
-            slider_travel_at(w(), eff_tw() / 2.0, p)
-          } else {
-            w() * p
-          }
+        None => {
+          let half = if look.flush { eff_tw() / 2.0 } else { eff_tw() / 4.0 }
+          slider_travel_at(w(), half, p)
+        }
       }
     }
     let thumb_x = fn(tw : Double, p : Double) -> Double {
@@ -203,15 +201,12 @@ fn liquid_slider_look_core(
       let at = clamp(raw_at, 0.0, 1.0)
       let raw = match look.travel_inset {
         Some(_) => middle_at(at) - ends
-        None =>
-          if look.flush {
-            let u = clamp(at / 0.2, 0.0, 1.0)
-            let fade = (1.0 - u) * (1.0 - u)
-            let offset0 = dmax(0.0, middle_at(0.0) - ends)
-            dmax(0.0, middle_at(at) - ends - offset0 * fade)
-          } else {
-            middle_at(at) - ends
-          }
+        None => {
+          let u = clamp(at / 0.1, 0.0, 1.0)
+          let fade = (1.0 - u) * (1.0 - u)
+          let offset0 = dmax(0.0, middle_at(0.0) - ends)
+          dmax(0.0, middle_at(at) - ends - offset0 * fade)
+        }
       }
       clamp(raw, 0.0, along())
     }
@@ -304,7 +299,7 @@ fn liquid_slider_look_core(
       None => ()
     }
     match between_fill_and_thumb {
-      Some(f) => f(inner, fn(p) { thumb_x(eff_tw(), p) + eff_tw() / 2.0 })
+      Some(f) => f(inner, middle_at)
       None => ()
     }
     // 4. Thumb (solid capsule + optional lazy-mounted clear droplet loupe)

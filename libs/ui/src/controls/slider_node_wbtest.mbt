@@ -236,10 +236,9 @@ test "value_slider_node: unified iOS 27 crisp 6pt track and ~60x36pt clear pill 
 }
 
 ///|
-test "value_slider_node: remote track tap to min and max endpoints settles smoothly without motion kink" {
-  // Stepped typography-style range (85..115, step=5, mid -> max -> min) and full 0..100 span
+test "value_slider_node: full-span remote track tap 0->100->0 settles smoothly without flush-fill motion kink" {
   {
-    let v = @signals.signal(100.0)
+    let v = @signals.signal(0.0)
     let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=0)
     t.check_looks(false)
     @ui.set_view_app(
@@ -247,18 +246,10 @@ test "value_slider_node: remote track tap to min and max endpoints settles smoot
         root.box(fn(b) {
           b.padding(Is((40.0, 80.0, 40.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
           b.box(fn(s) {
-            s.width(Is(Some(224.0))) |> ignore
-            value_slider_node(
-              s,
-              fn() { "比例" },
-              fn() { v.get() },
-              fn(x) { v.set(x) },
-              min=85.0,
-              max=115.0,
-              step=5.0,
-              format=fn(n) { "\{n}%" },
-            )
-            |> ignore
+            // 340pt wide track: 100 -> 0 remote tap crosses the left fade band fast enough to fail 60fps sizes_across
+            // under the old piecewise-linear 4% ramp.
+            s.width(Is(Some(340.0))) |> ignore
+            value_slider_node(s, fn() { "音量" }, fn() { v.get() }, fn(x) { v.set(x) }, bubble=false) |> ignore
           })
           |> ignore
         })
@@ -268,20 +259,6 @@ test "value_slider_node: remote track tap to min and max endpoints settles smoot
     )
     t.draw()
     t.run_for(@ui.move_most_ms)
-    let sl = t.get(Slider, label="比例").rect
-    let cy = sl.1 + sl.3 / 2.0
-    t.tap(sl.0 + sl.2 - 2.0, cy)
-    t.run_for(slider_past_ms)
-    assert_eq(v.get(), 115.0)
-    assert_eq(t.drawn_glass().length(), 0)
-    t.tap(sl.0 + 2.0, cy)
-    t.run_for(slider_past_ms)
-    assert_eq(v.get(), 85.0)
-    assert_eq(t.drawn_glass().length(), 0)
-  }
-  {
-    let v = @signals.signal(0.0)
-    let t = slider_case(v)
     let sl = t.get(Slider, label="音量").rect
     let cy = sl.1 + sl.3 / 2.0
     t.tap(sl.0 + sl.2 - 2.0, cy)
@@ -292,5 +269,48 @@ test "value_slider_node: remote track tap to min and max endpoints settles smoot
     t.run_for(slider_past_ms)
     assert_eq(v.get(), 0.0)
     assert_eq(t.drawn_glass().length(), 0)
+  }
+  // Also verify stepped range (85..115, step=5) mid -> max -> min remote taps reach exact bounds with 0 glass at rest.
+  {
+    let v2 = @signals.signal(100.0)
+    let t2 = @ui.Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=0)
+    t2.check_looks(false)
+    @ui.set_view_app(
+      fn(root) {
+        root.box(fn(b) {
+          b.padding(Is((40.0, 80.0, 40.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+          b.box(fn(s) {
+            s.width(Is(Some(320.0))) |> ignore
+            value_slider_node(
+              s,
+              fn() { "比例" },
+              fn() { v2.get() },
+              fn(x) { v2.set(x) },
+              min=85.0,
+              max=115.0,
+              step=5.0,
+              format=fn(n) { "\{n}%" },
+              bubble=false,
+            )
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      },
+      theme=ui_theme_now,
+    )
+    t2.draw()
+    t2.run_for(@ui.move_most_ms)
+    let sl2 = t2.get(Slider, label="比例").rect
+    let cy2 = sl2.1 + sl2.3 / 2.0
+    t2.tap(sl2.0 + sl2.2 - 2.0, cy2)
+    t2.run_for(slider_past_ms)
+    assert_eq(v2.get(), 115.0)
+    assert_eq(t2.drawn_glass().length(), 0)
+    t2.tap(sl2.0 + 2.0, cy2)
+    t2.run_for(slider_past_ms)
+    assert_eq(v2.get(), 85.0)
+    assert_eq(t2.drawn_glass().length(), 0)
   }
 }

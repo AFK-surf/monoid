@@ -916,5 +916,38 @@ test "liquid_slider_node: remote track tap to both ends travels smoothly without
   let expected_75 = tw / 4.0 + (w - tw / 2.0) * 0.75 - tw / 2.0
   assert_true((x25 - expected_25).abs() < 1.0e-9)
   assert_true((x75 - expected_75).abs() < 1.0e-9)
+  // Non-flush fill right edge aligns with thumb center at 0.25/0.5/0.75/1.0 and hides at 0.0
+  let fill_col = 0xD95B2BFFL
+  let prog = @signals.signal(0.0)
+  let tf = glass_case(false, false, fn(page) {
+    page.box(fn(host) {
+      host.width(Is(Some(w))).height(Is(Some(slider_thumb_h))) |> ignore
+      let look = SliderLook::new(
+        track_h=slider_track_h,
+        track_inset=0.0,
+        travel_inset=None,
+        thumb_w=tw,
+        thumb_h=slider_thumb_h,
+        flush=false,
+        track_color=fn() { 0x00000022L },
+        fill_color=Some(fn() { fill_col }),
+        lens_enabled=true,
+      )
+      liquid_slider_look(host, fn(_) { prog.get() }, fn(_) { 0.0 }, look)
+    })
+    |> ignore
+  })
+  prog.set(0.0)
+  tf.draw()
+  assert_eq(tf.drawn_rects().filter(fn(r) { r.4 == fill_col }).length(), 0, msg="non-flush fill at 0.0 must be hidden")
+  for at in [0.25, 0.5, 0.75, 1.0] {
+    prog.set(at)
+    tf.draw()
+    let rects = tf.drawn_rects().filter(fn(r) { r.4 == fill_col })
+    assert_eq(rects.length(), 1, msg="expected 1 non-flush fill rect at \{at}")
+    let expected_right = 24.0 + slider_travel_at(w, tw / 4.0, at)
+    let actual_right = rects[0].0 + rects[0].2
+    assert_true((actual_right - expected_right).abs() <= 0.1, msg="non-flush fill right at \{at}: \{actual_right} vs \{expected_right}")
+  }
   set_dark(None)
 }
