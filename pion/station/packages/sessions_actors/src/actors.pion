@@ -75,13 +75,19 @@ pub struct ActorTimerRef {
   pub gen : Int
 }
 
-/// Generation-scoped actor timer entry stored in `ActorsGen.actor_timers` (never in `host.hub_timers`),
-/// eliminating any `host.hub_timers -> closure -> ActorsGen -> host` cycle.
+/// Pure-value action tag for actor timers (zero closures capturing `ActorsGen` or `Actor`,
+/// eliminating any `ActorsGen -> actor_timers -> closure -> ActorsGen` RC cycle).
+pub enum ActorTimerAction {
+  Named(String, base_codec::Json)
+}
+
+/// Generation-scoped actor timer entry stored in `ActorsGen.actor_timers` (never in `host.hub_timers`).
+/// Holds only pure values (strings, ints, `ActorTimerAction`) — zero closures, zero RC cycles.
 pub struct PendingActorTimer {
   pub actor_key : String
   pub name : String
   pub gen : Int
-  pub then_k : ((effect::Exit[Unit]) -> Unit) -> Unit
+  pub action : ActorTimerAction
 }
 
 pub enum TaskOutcome {
@@ -104,6 +110,7 @@ pub struct ActorTask {
 
 pub struct Actor {
   pub key : String
+  pub gen_epoch : Int
   pub mut runtime : String
   /// Bounded FIFO queue with immediate `None` slot clearing on pop and periodic compaction.
   pub task_queue : Array[Option[ActorTask]]
@@ -273,6 +280,9 @@ pub fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
 }
 
 pub fn Actors::close(self : Actors, a : Actor) -> Unit {
+  if a.gen_epoch != self.current.gen.counters.epoch {
+    return
+  }
   self.current.close(a)
 }
 
@@ -423,16 +433,16 @@ pub fn ActorsGen::cancel_actor_timer(self : ActorsGen, a : Actor, name : String)
 }
 
 /// Arm a named actor timer (`actor_run.mbt:3791-3800`): replaces any older timer of the same name.
-/// Stores `PendingActorTimer` in `self.actor_timers` and registers a zero-capture `noop_timer` in
-/// `host.hub_timers`, so `host.hub_timers` NEVER captures `ActorsGen` or `Actor` (zero RC cycle).
+/// Stores pure-value `PendingActorTimer` in `self.actor_timers` and registers zero-capture `noop_timer`
+/// in `host.hub_timers` (zero closures capturing `ActorsGen` or `Actor`, zero RC cycle).
 pub fn ActorsGen::arm_actor_timer(
   self : ActorsGen,
   a : Actor,
   name : String,
   ms : Double,
-  then_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  action : ActorTimerAction = ActorTimerAction::Named("", base_codec::json_null()),
 ) -> Unit {
-  if self.gen.counters.sealed {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
     return
   }
   self.cancel_actor_timer(a, name)
@@ -440,6 +450,15 @@ pub fn ActorsGen::arm_actor_timer(
   let my_gen = a.timer_gen
   let tid = self.after_id(ms, noop_timer, None)
   if tid > 0 {
+    let resolved = match action {
+      ActorTimerAction::Named(tag, payload) => {
+        if tag == "" {
+          ActorTimerAction::Named(name, payload)
+        } else {
+          ActorTimerAction::Named(tag, payload)
+        }
+      }
+    }
     a.timers.set(name, ActorTimerRef::{ timer_id: tid, gen: my_gen })
     self.actor_timers.set(
       tid,
@@ -447,7 +466,7 @@ pub fn ActorsGen::arm_actor_timer(
         actor_key: a.key,
         name: name,
         gen: my_gen,
-        then_k: then_k,
+        action: resolved,
       },
     )
   }
@@ -493,6 +512,7 @@ pub fn ActorsGen::actor(self : ActorsGen, key : String, runtime : String) -> Act
     None => {
       let a = Actor::{
         key: key,
+        gen_epoch: self.gen.counters.epoch,
         runtime: runtime,
         task_queue: [],
         task_head: 0,
@@ -910,6 +930,9 @@ pub fn ActorsGen::cancel_mid_wait(self : ActorsGen, a : Actor) -> Unit {
 ///   decrementing `a.queued`, mirroring, and completing `done`);
 /// - Retains the closed `Actor` placeholder in `self.actors` until `{"db": ...}` rotation.
 pub fn ActorsGen::close(self : ActorsGen, a : Actor) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    return
+  }
   let had_slot = is_some(a.turn) || a.starting_turn
   let _ = self.abort_open(a, "closed")
   a.phase = "closed"
@@ -1160,6 +1183,7 @@ pub fn ActorsGen::drain_cap_queue(self : ActorsGen) -> Unit {
   self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     let blocked_runtimes : Array[String] = []
     let mut idx = 0
+    let mut saw_interrupted = false
     sessions_core::iter_sync_k(
       fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
         if gen.counters.sealed {
@@ -1195,23 +1219,22 @@ pub fn ActorsGen::drain_cap_queue(self : ActorsGen) -> Unit {
                 return
               }
               match ex {
-                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
-                _ => {
-                  if actor.paused_cap {
-                    if !array_contains_str(blocked_runtimes, actor.runtime) {
-                      blocked_runtimes.push(actor.runtime)
-                    }
-                    match array_index_of_str(gen.resources.cap_wait_queue, key) {
-                      Some(pos) => idx = pos + 1
-                      None => ()
-                    }
-                  } else {
-                    self.remove_cap_wait(key)
-                    actor.cap_wait_notified = false
-                  }
-                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
-                }
+                effect::Exit::Interrupted => saw_interrupted = true
+                _ => ()
               }
+              if actor.paused_cap {
+                if !array_contains_str(blocked_runtimes, actor.runtime) {
+                  blocked_runtimes.push(actor.runtime)
+                }
+                match array_index_of_str(gen.resources.cap_wait_queue, key) {
+                  Some(pos) => idx = pos + 1
+                  None => ()
+                }
+              } else {
+                self.remove_cap_wait(key)
+                actor.cap_wait_notified = false
+              }
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
             })
           }
         }
@@ -1222,7 +1245,16 @@ pub fn ActorsGen::drain_cap_queue(self : ActorsGen) -> Unit {
           gen.counters.drain_cap_again = false
           self.drain_cap_queue()
         }
-        k(ex)
+        match ex {
+          effect::Exit::Succeeded(_) => {
+            if saw_interrupted {
+              k(effect::Exit::Interrupted)
+            } else {
+              k(effect::Exit::Succeeded(()))
+            }
+          }
+          other => k(other)
+        }
       },
     )
   })
@@ -1423,9 +1455,16 @@ fn ActorsGen::handle_due_id(self : ActorsGen, id : Int) -> Unit {
             Some(cur) => {
               if cur.timer_id == id && cur.gen == entry.gen {
                 let _ = a.timers.remove(entry.name)
-                let then_k = entry.then_k
+                let timer_name = entry.name
+                let timer_action = entry.action
                 self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-                  self.enqueue_k(a, then_k, k)
+                  self.enqueue_k(
+                    a,
+                    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      (self.handlers.on_timer_k)(self, a, timer_name, timer_action, tk)
+                    },
+                    k,
+                  )
                 })
               }
             }

@@ -32,6 +32,13 @@ pub struct ActorRunHandlers {
     Option[String],
     (effect::Exit[Unit]) -> Unit,
   ) -> Unit
+  pub on_timer_k : (
+    ActorsGen,
+    Actor,
+    String,
+    ActorTimerAction,
+    (effect::Exit[Unit]) -> Unit,
+  ) -> Unit
   /// `true` while stub handlers remain (`W8-F` asserts `false` on production assembly).
   pub is_stub : Bool
 }
@@ -76,6 +83,15 @@ pub fn ActorRunHandlers::stub() -> ActorRunHandlers {
       _a : Actor,
       _id : Int,
       _why : Option[String],
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    on_timer_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      _name : String,
+      _action : ActorTimerAction,
       k : (effect::Exit[Unit]) -> Unit,
     ) -> Unit {
       k(effect::Exit::Succeeded(()))
