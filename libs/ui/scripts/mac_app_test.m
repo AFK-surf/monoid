@@ -83,6 +83,7 @@ static id test_make_display_link(NSView *view, id target, SEL sel) {
 // (the system's apps for a URL and its opening, never a browser or another app launched from a test)
 static int url_app_asks, url_opens;
 static NSURL *url_app_said;
+static NSURL *url_last_opened;
 static NSError *url_open_fails;
 static NSURL *test_url_app(NSURL *u) {
   (void)u;
@@ -90,7 +91,7 @@ static NSURL *test_url_app(NSURL *u) {
   return url_app_said;
 }
 static void test_open_url_async(NSURL *u, void (^cb)(NSRunningApplication *, NSError *)) {
-  (void)u;
+  url_last_opened = u;
   url_opens++;
   cb(nil, url_open_fails);
 }
@@ -966,6 +967,43 @@ int main(void) {
     CHECK(strstr(said, "open-url failed: https://example.com/c: no launch\n") != NULL);
     url_open_fails = nil;
     url_app_said = nil;
+    url_last_opened = nil;
+
+    // 12b. System Settings Notifications (mb_host_notice_state(3)):
+    //      scripted runs open nothing and query nothing; normal mode skips MB_MAC_URL_APP and opens asynchronously;
+    //      async launch failure logs "open-url failed:".
+    int asks_before = url_app_asks;
+    int opens_before = url_opens;
+    for (int i = 0; i < 3; i++) {
+      setenv(keys[i], "1", 1);
+      CHECK(mb_host_notice_state(3) == 1);
+      unsetenv(keys[i]);
+    }
+    CHECK(url_app_asks == asks_before && url_opens == opens_before);
+
+    CHECK(mb_host_notice_state(3) == 1);
+    CHECK(url_app_asks == asks_before);
+    CHECK(url_opens == opens_before + 1);
+    CHECK([url_last_opened.absoluteString isEqualToString:@"x-apple.systempreferences:com.apple.preference.notifications"]);
+
+    url_open_fails = [NSError errorWithDomain:NSCocoaErrorDomain code:2 userInfo:@{NSLocalizedDescriptionKey : @"prefs failed"}];
+    int nfds[2];
+    CHECK(pipe(nfds) == 0);
+    fflush(stdout);
+    int nout = dup(1);
+    dup2(nfds[1], 1);
+    int32_t nopened = mb_host_notice_state(3);
+    fflush(stdout);
+    dup2(nout, 1);
+    close(nout);
+    close(nfds[1]);
+    char nsaid[1024] = {0};
+    ssize_t nn = read(nfds[0], nsaid, sizeof nsaid - 1);
+    close(nfds[0]);
+    CHECK(nopened == 1 && url_app_asks == asks_before && url_opens == opens_before + 2 && nn > 0);
+    CHECK(strstr(nsaid, "open-url failed: x-apple.systempreferences:com.apple.preference.notifications: prefs failed\n") != NULL);
+    url_open_fails = nil;
+    url_last_opened = nil;
     for (int i = 0; i < 3; i++) {
       if (kept[i]) setenv(keys[i], kept[i], 1);
       free(kept[i]);

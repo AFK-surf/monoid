@@ -220,7 +220,7 @@ int32_t mb_host_browser_login_open(int32_t id, moonbit_string_t url) {
     else fprintf(stderr, "browser login: BROWSER did not start (%lu)\n", GetLastError());
     free(cmd);
   } else {
-    ok = (INT_PTR)ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL) > 32;
+    ok = mb_win_launch_url(w);
   }
   free(w);
   free(u);

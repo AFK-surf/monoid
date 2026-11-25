@@ -4522,6 +4522,20 @@ int32_t mb_host_notice_state(int32_t what) {
   }
   if (what == 3) {
     NSURL *u = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.notifications"];
+    fprintf(stdout, "open-url: %s\n", u.absoluteString.UTF8String);
+    fflush(stdout);
+    if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) return 1;
+    if (@available(macOS 10.15, *)) {
+      MB_MAC_OPEN_URL_ASYNC(u, ^(NSRunningApplication *app, NSError *err) {
+        (void)app;
+        if (err) {
+          fprintf(stdout, "open-url failed: %s: %s\n", u.absoluteString.UTF8String,
+                  err.localizedDescription.UTF8String);
+          fflush(stdout);
+        }
+      });
+      return 1;
+    }
     return [NSWorkspace.sharedWorkspace openURL:u] ? 1 : 0;
   }
   if (what != 1) return 0;

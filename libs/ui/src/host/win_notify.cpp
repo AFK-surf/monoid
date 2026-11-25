@@ -29,10 +29,12 @@
 #include <windows.ui.notifications.h>
 #include <windows.data.xml.dom.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string>
 #include <vector>
 #include "win.h"
 #include "win_badge_sched.h"
+#include "win_launch_queue.h"
 #include "win_notify_queue.h"
 
 #pragma comment(lib, "runtimeobject.lib")
@@ -397,7 +399,9 @@ int32_t mb_host_notice_state(int32_t what) {
     case 1: return 0;
     case 2: return -1;
     // the system's settings of notifications opened
-    case 3: return (INT_PTR)ShellExecuteW(NULL, L"open", L"ms-settings:notifications", NULL, NULL, SW_SHOWNORMAL) > 32 ? 1 : 0;
+    case 3:
+      if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) return 1;
+      return mb_win_launch_url(L"ms-settings:notifications");
     // the number on the app's icon: not shown here (the taskbar's overlay is not drawn)
     default: return 0;
   }
@@ -598,6 +602,148 @@ void mb_win_badge_closed(void *hwnd) {
   if (badge_worker->sched.on_window_closed((uintptr_t)hwnd) && badge_worker->thread_started && badge_worker->wake_ev) {
     SetEvent(badge_worker->wake_ev);
   }
+}
+
+}  // extern "C"
+
+// ---- background shell launch queue (URLs and file reveals on a dedicated STA thread) ----
+
+namespace {
+
+struct WinLaunchOps {
+  void open_url(const std::wstring &url) {
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOASYNC;
+    sei.lpVerb = L"open";
+    sei.lpFile = url.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) {
+      DWORD err = GetLastError();
+      fprintf(stderr, "launch url failed (%lu)\n", (unsigned long)err);
+      fflush(stderr);
+    }
+  }
+
+  void reveal_file(const std::wstring &path) {
+    PIDLIST_ABSOLUTE item = ILCreateFromPathW(path.c_str());
+    if (!item) {
+      DWORD err = GetLastError();
+      fprintf(stderr, "reveal file failed (%lu)\n", (unsigned long)err);
+      fflush(stderr);
+      return;
+    }
+    HRESULT hr = SHOpenFolderAndSelectItems(item, 0, NULL, 0);
+    ILFree(item);
+    if (FAILED(hr)) {
+      fprintf(stderr, "reveal file failed (%08lx)\n", (unsigned long)hr);
+      fflush(stderr);
+    }
+  }
+
+  void pump_messages() {
+    MSG msg;
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
+
+  void on_failed(const mb::WinLaunchOp &op) {
+    fprintf(stderr, "launch %s failed (worker init failed)\n",
+            op.kind == mb::WinLaunchOpKind::OpenUrl ? "url" : "reveal");
+    fflush(stderr);
+  }
+};
+
+// Heap-allocated and intentionally never destroyed so exit(0) never tears down STA COM state mid-flight.
+struct LaunchWorker {
+  mb::WinLaunchQueue<WinLaunchOps> queue;
+  WinLaunchOps ops;
+  HANDLE wake_ev = NULL;
+  HANDLE thread = NULL;
+  bool ready = false;
+};
+
+INIT_ONCE launch_init_once = INIT_ONCE_STATIC_INIT;
+LaunchWorker *launch_worker = NULL;
+
+DWORD WINAPI launch_worker_proc(LPVOID arg) {
+  LaunchWorker *w = static_cast<LaunchWorker *>(arg);
+  HRESULT hr = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  if (FAILED(hr)) {
+    fprintf(stderr, "LAUNCH worker CoInitializeEx failed (%08lx)\n", (unsigned long)hr);
+    fflush(stderr);
+    w->queue.on_init_failed(w->ops);
+    return 0;
+  }
+  for (;;) {
+    w->queue.drain(w->ops);
+    w->ops.pump_messages();
+    DWORD r = MsgWaitForMultipleObjectsEx(1, &w->wake_ev, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    if (r == WAIT_FAILED) {
+      DWORD err = GetLastError();
+      fprintf(stderr, "LAUNCH worker MsgWaitForMultipleObjectsEx failed (%lu)\n", (unsigned long)err);
+      fflush(stderr);
+      w->queue.on_init_failed(w->ops);
+      return 0;
+    }
+    if (r == WAIT_OBJECT_0 + 1) {
+      w->ops.pump_messages();
+    }
+  }
+}
+
+BOOL CALLBACK launch_init_cb(PINIT_ONCE, PVOID, PVOID *) {
+  LaunchWorker *w = new LaunchWorker();
+  w->wake_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
+  if (!w->wake_ev) {
+    fprintf(stderr, "LAUNCH worker CreateEventW failed (%lu)\n", (unsigned long)GetLastError());
+    fflush(stderr);
+    w->queue.on_init_failed(w->ops);
+    launch_worker = w;
+    return TRUE;
+  }
+  w->thread = CreateThread(NULL, 0, launch_worker_proc, w, 0, NULL);
+  if (!w->thread) {
+    fprintf(stderr, "LAUNCH worker CreateThread failed (%lu)\n", (unsigned long)GetLastError());
+    fflush(stderr);
+    CloseHandle(w->wake_ev);
+    w->wake_ev = NULL;
+    w->queue.on_init_failed(w->ops);
+    launch_worker = w;
+    return TRUE;
+  }
+  w->ready = true;
+  launch_worker = w;
+  return TRUE;
+}
+
+LaunchWorker *ensure_launch_worker() {
+  InitOnceExecuteOnce(&launch_init_once, launch_init_cb, NULL, NULL);
+  return (launch_worker && launch_worker->ready) ? launch_worker : NULL;
+}
+
+}  // namespace
+
+extern "C" {
+
+int32_t mb_win_launch_url(const wchar_t *url) {
+  if (!url || !*url) return 0;
+  LaunchWorker *w = ensure_launch_worker();
+  if (!w) return 0;
+  if (!w->queue.enqueue(mb::WinLaunchOpKind::OpenUrl, std::wstring(url))) return 0;
+  SetEvent(w->wake_ev);
+  return 1;
+}
+
+int32_t mb_win_reveal_file(const wchar_t *path) {
+  if (!path || !*path) return 0;
+  LaunchWorker *w = ensure_launch_worker();
+  if (!w) return 0;
+  if (!w->queue.enqueue(mb::WinLaunchOpKind::RevealFile, std::wstring(path))) return 0;
+  SetEvent(w->wake_ev);
+  return 1;
 }
 
 }  // extern "C"

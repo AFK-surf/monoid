@@ -188,6 +188,17 @@ int32_t mb_host_browser_login_port(int32_t id) {
   return port;
 }
 
+static void on_login_url_done(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)source;
+  (void)data;
+  GError *err = NULL;
+  if (!g_app_info_launch_default_for_uri_finish(res, &err)) {
+    fprintf(stderr, "browser login: open failed (%s)\n", err ? err->message : "?");
+    fflush(stderr);
+    g_clear_error(&err);
+  }
+}
+
 int32_t mb_host_browser_login_open(int32_t id, moonbit_string_t url) {
   (void)id;
   char *u = utf8(url);
@@ -204,7 +215,8 @@ int32_t mb_host_browser_login_open(int32_t id, moonbit_string_t url) {
     if (e) g_error_free(e);
     g_free(first);
   } else {
-    ok = g_app_info_launch_default_for_uri(u, NULL, NULL);
+    g_app_info_launch_default_for_uri_async(u, NULL, NULL, on_login_url_done, NULL);
+    ok = 1;
   }
   free(u);
   return ok;
