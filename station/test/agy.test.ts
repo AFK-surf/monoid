@@ -976,6 +976,110 @@ test("a company's Google account with no licence: Pay As You Go chosen, its Goog
   }
 });
 
+// agy 1.5.14 asks how to pay before it looks for licences, and asks a project's region (FB-62).
+const agy14 = (name: string, extra: Record<string, string> = {}) => {
+  const dump = join(data, `${name}-dump`);
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: dump, FAKE_AGY_VERSION: "1.5.14", ...extra } as Record<string, string>;
+  const keys = () => readFileSync(dump + ".keys", "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((k) => (k.esc ? [k.step, "esc"] : [k.step, k.down]));
+  return { home: join(data, name), env, keys };
+};
+
+test("agy 1.5.14, a company's Google account: Subscriptions chosen first, then its licence", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const { home, env, keys } = agy14("company14", { FAKE_AGY_LICENSES: "1" });
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("c")?.state === state);
+  try {
+    await logins.start({ id: "c", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("c", "4/0Ab-company", "en");
+    await wait("done");
+    assert.deepEqual(keys(), [["menu", true], ["cloud", false], ["gcp-code", false], ["billing14", false], ["license", false]]);
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.user_tier], ["company-project", "gcp-ge-ultra-tier"]);
+  } finally {
+    await logins.close();
+  }
+});
+
+test("agy 1.5.14, a company's Google account with no licence listed: the project asked, its region (global) chosen, its licence assigned there", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const { home, env, keys } = agy14("assign14", { FAKE_AGY_SELF_ASSIGN: "1" });
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("a")?.state === state);
+  try {
+    await logins.start({ id: "a", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("a", "4/0Ab-assign", "en");
+    await wait("needs_project");
+    await logins.submitCode("a", " my-project ", "en");
+    await wait("done");
+    assert.deepEqual(keys().slice(-3), [["billing14", false], ["project-sub", false], ["region", false]]);
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.region, file.user_tier], ["my-project", "global", "gcp-ge-standard-tier"]);
+  } finally {
+    await logins.close();
+  }
+});
+
+test("agy 1.5.14, no licence to be had for the project: back to how to pay, Pay As You Go, the same project typed again", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const { home, env, keys } = agy14("paygo14");
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  const wait = async (state: LoginState) => until(() => logins.get("p")?.state === state);
+  try {
+    await logins.start({ id: "p", runtime: "agy", home, enterprise: true }, "en");
+    await wait("needs_code");
+    await logins.submitCode("p", "4/0Ab-paygo14", "en");
+    await wait("needs_project");
+    await logins.submitCode("p", "my-project", "en");
+    await wait("done");
+    assert.deepEqual(keys().slice(3), [
+      ["billing14", false], ["project-sub", false], ["region", false], ["assign", "esc"], ["project-sub", "esc"],
+      ["billing14", true], ["project-pay", false], ["region", false],
+    ]);
+    const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+    assert.deepEqual([file.project_id, file.region, file.auth_method, file.user_tier], ["my-project", "global", "gcp", undefined]);
+  } finally {
+    await logins.close();
+  }
+});
+
+test("agy stopped after its code: what it shows is said, not the code blamed; a code it never took still is", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const { home, env } = agy14("stuck14", { FAKE_AGY_STUCK: "1" });
+  const time = testClock();
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env, time.clock);
+  // (its clock moved on a little as each look is taken, as the sign-in's own waits are on it)
+  const ticking = (f: () => boolean) => until(async () => (await time.adjust(50), f()));
+  const wait = async (id: string, state: LoginState) => ticking(() => logins.get(id)?.state === state);
+  // (the clock moved on past its wait, the sign-in's look at its file each half second given its turn)
+  const pastWait = async (id: string) => {
+    for (let i = 0; i < 200 && logins.get(id)?.state === "verifying"; i++) {
+      await time.adjust(1000);
+      await new Promise((r) => setImmediate(r));
+    }
+  };
+  try {
+    await logins.start({ id: "s", runtime: "agy", home, enterprise: true }, "en");
+    await wait("s", "needs_code");
+    await logins.submitCode("s", "4/0Ab-stuck", "en");
+    await wait("s", "needs_project");
+    await logins.submitCode("s", "my-project", "en");
+    await ticking(() => existsSync(join(data, "stuck14-dump.keys")) && readFileSync(join(data, "stuck14-dump.keys"), "utf8").includes('"step":"region"'));
+    await pastWait("s");
+    assert.equal(logins.get("s")?.state, "failed");
+    const error = logins.get("s")!.error ?? "";
+    assert.notEqual(error, tr("en", "station.login.agyCodeRefused"));
+    assert.match(error, /Setting up your project/);
+    assert.match(error, /^agy took the code but didn't finish setting up/);
+
+    await logins.start({ id: "b", runtime: "agy", home: join(data, "bad14"), enterprise: true }, "en");
+    await wait("b", "needs_code");
+    await logins.submitCode("b", "bad", "en");
+    await pastWait("b");
+    assert.equal(logins.get("b")?.error, tr("en", "station.login.agyCodeRefused"));
+  } finally {
+    await logins.close();
+  }
+});
+
 test("a company's Google account through the accounts: made a profile that remembers it, signed in again the same way; its plan as `agy` says it", { skip: process.platform === "win32" && "no terminal to sign in in" }, async (t) => {
   const dir = join(data, "company-accounts");
   mkdirSync(dir, { recursive: true });
