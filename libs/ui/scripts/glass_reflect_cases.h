@@ -290,16 +290,20 @@ static void glass_reflect_cases(void) {
       gr_free(px);
     }
     static const char *edge[4] = {"top", "foot", "left", "right"};
+    // Pre-reflection baseline on main (6c37aaacb8) for orange-in + white-out across Metal & GLES3
+    // (foot12 is 4.443 on Metal / 4.404 on GLES3 due to 1 LSB green rounding; the other 7 points match identically).
+    static const double orange_base[8] = {4.575, 4.404, 4.465, 4.488, 4.481, 4.397, 4.434, 4.458};
     double worst = 99;
     for (int i = 0; i < 8; i++) {
       if (crs[0][i] < worst) worst = crs[0][i];
-      printf("glass_reflect: gate7 %s%d ground_white=%.3f orange_white=%.3f orange_orange=%.3f\n", edge[i % 4],
-             insets[i / 4], crs[0][i], crs[1][i], crs[2][i]);
+      printf("glass_reflect: gate7 %s%d ground_white=%.3f orange_white=%.3f orange_orange=%.3f base=%.3f\n", edge[i % 4],
+             insets[i / 4], crs[0][i], crs[1][i], crs[2][i], orange_base[i]);
       CHECK(crs[1][i] >= crs[2][i] - 0.01);
+      CHECK(crs[1][i] >= orange_base[i] - 0.01);
     }
     printf("glass_reflect: gate7 ground worst_cr=%.3f\n", worst);
     CHECK(worst >= 4.50);
-    // (orange's top 16 points in, 4.48 here, as before the reflection: printed above, its bar not yet settled)
+    // Keep the top-edge inset12 absolute 4.5:1 bar alongside the 8-point pre-reflection baseline above.
     CHECK(crs[1][0] >= 4.50);
   }
 
