@@ -3,8 +3,9 @@
 
 ///|
 /// Esc in the open chat, after the frame's (not taken by what the frame opened), at its moment: to ⌘F's bar (the
-/// keyboard let go: `blur`), then what is picked, then the side panel's tabs all closed (keymap.ts panel.close), but
-/// where a file in the viewer is in front (sfbase's viewer_tab.mbt). Whether it took it.
+/// keyboard let go: `blur`), then what is picked, then the side panel's tabs all closed (keymap.ts panel.close), a
+/// file's in front too, as its close button and ⌘W close them (what a file's tab has open takes Escape first: its
+/// marking, its find; sfbase's viewer_tab.mbt). Whether it took it.
 fn chat_escape(src : Source, blur : () -> Unit) -> Bool {
   guard app.nav.top() is Chat(r) else { return false }
   if find_chat() != "" {
@@ -12,8 +13,7 @@ fn chat_escape(src : Source, blur : () -> Unit) -> Bool {
     blur()
   } else if @sfbase.pk.ts != "" {
     @sfbase.pick_clear()
-  } else if side_now(src, r).0.length() > 0 && @sfbase.view_tab_file(side_now(src, r).1) is None {
-    // (a file in the viewer in front stays: Escape is the whole window's preview's way out, not its tab's)
+  } else if side_now(src, r).0.length() > 0 {
     side_change(src, r, "clear", None)
   } else {
     return false
