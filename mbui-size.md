@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [47097061b](https://github.com/AFK-surf/monoid/commit/47097061b5bd44afb3e63b2b22a194506b85cd34) feat(station): add mb vs pion reader engine compar | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [df214c830](https://github.com/AFK-surf/monoid/commit/df214c8303070f7f785dede0c7225463bca5896c) fix(station): eliminate Linux ephemeral port race  | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [ba5068703](https://github.com/AFK-surf/monoid/commit/ba50687035bf07a94a6ef377e5359578536320af) fix(pion-station): sync readops parity for #8625 a | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 2.54 | 3.43 | 14.17 | 36.71 | 55.44 | 32.06 | 64.85 | 100.84 | 131.87 |
 | [f20305d93](https://github.com/AFK-surf/monoid/commit/f20305d93d413a5bd147f8b076b7accd8fd61498) perf(profiles): eliminate overview freezes via pac | 2.54 | 3.43 | 14.17 | 36.71 | 55.44 | 32.06 | 64.85 | 100.84 | 131.87 |
 | [4d3015d7b](https://github.com/AFK-surf/monoid/commit/4d3015d7bf4d64f699a96a2cc54110c68f6e689b) feat(ui): redesign video viewer with full-bleed st | 2.53 | 3.41 | 14.09 | 36.63 | 55.14 | 31.99 | 64.64 | 101.01 | 128.65 |
-| [37699ee04](https://github.com/AFK-surf/monoid/commit/37699ee04412dd4433c9f786773079894972d966) fix(mbui): fade adjacent stations list dividers on | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 100.84 | 128.89 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.31 |
 | [47097061b](https://github.com/AFK-surf/monoid/commit/47097061b5bd44afb3e63b2b22a194506b85cd34) feat(station): add mb vs pion reader engine compar | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.26 |
 | [df214c830](https://github.com/AFK-surf/monoid/commit/df214c8303070f7f785dede0c7225463bca5896c) fix(station): eliminate Linux ephemeral port race  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.2 |
 | [ba5068703](https://github.com/AFK-surf/monoid/commit/ba50687035bf07a94a6ef377e5359578536320af) fix(pion-station): sync readops parity for #8625 a | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.02 |
 | [f20305d93](https://github.com/AFK-surf/monoid/commit/f20305d93d413a5bd147f8b076b7accd8fd61498) perf(profiles): eliminate overview freezes via pac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.02 |
 | [4d3015d7b](https://github.com/AFK-surf/monoid/commit/4d3015d7bf4d64f699a96a2cc54110c68f6e689b) feat(ui): redesign video viewer with full-bleed st | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.49 |
-| [37699ee04](https://github.com/AFK-surf/monoid/commit/37699ee04412dd4433c9f786773079894972d966) fix(mbui): fade adjacent stations list dividers on | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.54 |
