@@ -2,7 +2,7 @@
 // workspaces' own relays put in before it is kept on them, and iroh's public relays, which the process before may have
 // turned on, taken off by the first check that finds still.fail's answering. The relays' pings are this test's fetch.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -544,8 +544,9 @@ test("a kept cooldown long over, or from the future, is not kept; one out of bou
   assert.deepEqual(long.recovered, [60 * MIN]);
 });
 
-test("the cooldown's file: written whole, read back, removed; one unreadable is none", async () => {
+test("the cooldown's file: written whole, read back, removed; one unreadable is none", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "relay-recover-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, "run", "relay-probe-recover.json");
   const store = fileRecoverStore(path);
   assert.equal(await store.load(), null, "none yet");

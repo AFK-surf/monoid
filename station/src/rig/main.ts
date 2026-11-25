@@ -8,7 +8,7 @@
 import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
+import { Clock, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { measure } from "../jobs/load.ts";
 import { liveMemory } from "../jobs/memory.ts";
@@ -21,7 +21,7 @@ import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts
 import { DeviceRefused, PEER_HTTP_ALPN, rigAllowed, serveHttp } from "../mesh/peer-http.ts";
 import { fileRecoverStore, keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
-import { Fibers, wall } from "../ops/fibers.ts";
+import { Fibers } from "../ops/fibers.ts";
 import { DISK_EVERY_MS, diskEvery, diskSoft, diskTier } from "../ops/disk.ts";
 import { Upkeep, diskOf } from "../ops/storage.ts";
 import { sweepRunners } from "../agents/runner.ts";
@@ -279,6 +279,8 @@ export const RigMeshLive = Layer.effectDiscard(
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
       // An endpoint found stuck by its relays' probes (mesh/relays.ts `PROBE`): the front restarted, or closed and bound anew.
       // Reached end to end through a relay (a connection taken through one, `accept` below) is the probe passed.
+      // (on the clock the probes go by)
+      const clock = yield* Clock.Clock;
       let lastRelayReachAt: number | null = null;
       yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, {
         onUnhealthy: restartFront ? () => restartFront() : () => void endpoint.close(),
@@ -301,7 +303,7 @@ export const RigMeshLive = Layer.effectDiscard(
       yield* accept(endpoint, {
         // (a station: what this one keeps to it, from before it started again, asked whether it is still there)
         arrived: (conn) => {
-          if (conn.via?.() === "relay") lastRelayReachAt = wall.now();
+          if (conn.via?.() === "relay") lastRelayReachAt = clock.currentTimeMillisUnsafe();
           call.arrived(conn);
         },
         serve: (conn) =>

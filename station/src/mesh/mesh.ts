@@ -9,7 +9,7 @@ import { ScopeSync } from "./scope-sync.ts";
 import { RelayEnrollment } from "./enrollment.ts";
 import { EnrollmentDoor, ENROLLMENT_ALPN, workspaceScope } from "./enrollment-door.ts";
 import { closePeerRelays } from "./peer-relays.ts";
-import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
+import { Cause, Clock, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ReaderConfig, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
@@ -101,6 +101,8 @@ export const MeshLive = Layer.effectDiscard(
       // over to the new one; where there is no front, closed, so its `accept` ends this run and keptRunning binds anew.
       // Reached end to end through a relay (a connection taken through one, `accept` below) is the probe passed (`PROBE`).
       const stuck = endpoint;
+      // (on the clock the probes go by)
+      const clock = yield* Clock.Clock;
       let lastRelayReachAt: number | null = null;
       yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, {
         onUnhealthy: restartFront ? () => restartFront() : () => void stuck.close(),
@@ -310,7 +312,7 @@ export const MeshLive = Layer.effectDiscard(
       yield* accept(endpoint, {
         connections,
         arrived: (conn) => {
-          if (conn.via?.() === "relay") lastRelayReachAt = wall.now();
+          if (conn.via?.() === "relay") lastRelayReachAt = clock.currentTimeMillisUnsafe();
           storms.watch(conn);
           if (conn.alpn().equals(ALPN)) void superseded.arrived(conn);
           // (another station: what this one keeps to it, from before it started again, asked whether it is still there)

@@ -149,8 +149,13 @@ export function fileRecoverStore(path: string): RecoverStore {
         }
         await mkdir(dirname(path), { recursive: true });
         const tmp = `${path}.${process.pid}.${++seq}.tmp`;
-        await writeFile(tmp, JSON.stringify(state));
-        await rename(tmp, path);
+        try {
+          await writeFile(tmp, JSON.stringify(state));
+          await rename(tmp, path);
+        } catch (e) {
+          await unlink(tmp).catch(() => {});
+          throw e;
+        }
       } catch (e) {
         log.warn("mesh", "the relays' probe cooldown was not kept", { error: (e as Error).message });
       }
