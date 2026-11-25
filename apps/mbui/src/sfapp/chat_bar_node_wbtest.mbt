@@ -1064,3 +1064,21 @@ test "小屏聊天条：仅后台任务时不显示 web 胶囊，ⓘ 对话信�
   assert_true(t_svc.find("盯 CI") is None, msg="services sheet must not show background job")
   assert_eq(t_svc.audit().filter(fn(f) { f.contains("chat_bar_node") || f.contains("sheets.mbt") }), [])
 }
+
+///|
+test "小屏顶栏：默认纯光学渐进模糊（kind=5, tint=0, sat=1.0, slot22=-1）并在 MBUI_GLASS=solid 下退化为 kind=0" {
+  let (t, _) = chat_bar_node_tester("纯渐进模糊验证")
+  let top_prog = t.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 5.0 && a[1] < 20.0 })
+  assert_true(top_prog.length() >= 1, msg="expected top progressive scroll-edge blur")
+  let p = top_prog[0]
+  assert_eq(p[11], 0.0, msg="expected zero tint alpha on pure progressive blur")
+  assert_eq(p[6], 1.0, msg="expected saturation 1.0 on pure progressive blur")
+  assert_eq(p[22], -1.0, msg="expected slot 22 == -1.0 progressive marker")
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  let solid_prog = t.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 5.0 && a[1] < 20.0 })
+  assert_eq(solid_prog.length(), 0, msg="expected zero kind=5 under MBUI_GLASS=solid")
+  let solid_bg = t.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 0.0 && a[1] < 20.0 && a[55] > 0.0 })
+  assert_true(solid_bg.length() >= 1, msg="expected kind=0 solid fade fallback under MBUI_GLASS=solid")
+  @ui.set_glass_solid(None)
+}

@@ -741,7 +741,10 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
     match inst_by(k) {
       Node(id) => {
         let kind = a[b + 5]
-        let is_words = kind == 1.0
+        let is_words = kind == 1.0 || (kind == 7.0 && {
+          let ink = inst_rgb(a, b)
+          dmax(dmax(ink.r, ink.g), ink.b) - dmin(dmin(ink.r, ink.g), ink.b) > 0.08
+        })
         // (a shape's piece: checked as the whole shape it is of is, an icon or a line, as made: inst_owners' `mark`)
         let mark = if !is_words && kind == 11.0 { inst_mark_of(k) } else { 0 }
         if !is_words && mark == 0 {
@@ -823,7 +826,10 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
     }
     let n = self.nodes[o]
     let kind = a[b + 5]
-    let is_words = kind == 1.0 &&
+    let is_words = (kind == 1.0 || (kind == 7.0 && {
+        let ink = inst_rgb(a, b)
+        dmax(dmax(ink.r, ink.g), ink.b) - dmin(dmin(ink.r, ink.g), ink.b) > 0.08
+      })) &&
       (n.kind == kind_text || n.kind == kind_rich || n.kind == kind_editor)
     let is_line = kind == 10.0 || kind == 11.0 || is_words
     // (a page's bones: each is what has nothing in it, whatever drew it, bones.mbt)

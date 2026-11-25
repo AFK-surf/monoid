@@ -273,13 +273,24 @@ test "composer backdrop fade stays off when compact and tight above the composer
 test "the messages fade behind the composer only while the soft keyboard is up, eased in and out" {
   let t = composer_cover_tester(pointing=Finger, platform=2)
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="none with the keyboard down")
-  assert_eq(
-    t.drawn_glass().filter(fn(g) { g.4 == 5 && g.1 > 100.0 }).length(),
-    0,
-    msg="expected zero bottom scroll-edge glass on single-line phone composer at rest",
-  )
+  let bottom_prog = fn() {
+    t.drawn_instances().filter(fn(a) { a.length() >= 56 && a[5] == 5.0 && a[1] > 100.0 && a[22] == -1.0 })
+  }
+  let check_single = fn(phase : String) raise {
+    let cur = bottom_prog()
+    assert_eq(cur.length(), 1, msg="\{phase}: expected strictly 1 bottom progressive blur, got \{cur.length()}")
+    assert_true(cur[0][15] > 0.99, msg="\{phase}: expected full alpha > 0.99, got \{cur[0][15]}")
+    assert_eq(cur[0][11], 0.0, msg="\{phase}: expected zero tint alpha")
+    assert_eq(cur[0][6], 1.0, msg="\{phase}: expected saturation 1.0")
+  }
+  check_single("rest")
   t.set_ime_inset(300.0)
+  t.frame()
+  check_single("ime-up-0ms")
+  t.run_for(100.0)
+  check_single("ime-up-100ms")
   t.run_for(@ui.move_most_ms)
+  check_single("ime-up-end")
   let (_, gy, _, _) = composer_cover_glass_box(t)
   guard composer_cover_backdrop(t) is [a, ..] else {
     fail("no fade behind the composer with the keyboard up")
@@ -290,8 +301,13 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
     msg="expected fade top ~16pt above composer with soft keyboard up (gy=\{gy}, fade_y=\{a[1]})",
   )
   t.set_ime_inset(0.0)
+  t.frame()
+  check_single("ime-down-0ms")
+  t.run_for(100.0)
+  check_single("ime-down-100ms")
   t.run_for(@ui.move_most_ms)
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="gone as the keyboard goes")
+  check_single("ime-down-end")
 }
 
 ///|

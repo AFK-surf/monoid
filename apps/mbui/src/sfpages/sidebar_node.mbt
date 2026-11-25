@@ -615,27 +615,28 @@ fn chats_pane_node(
         "foot" => line.height(By(fn() { Some((frame.foot)() + @sf.list_foot_in(frame.at)) })) |> ignore
         "search" => {
           let tucked = @signals.computed(fn(_) { search_tucked(read().0) })
+          let reveal_at = fn(cover : () -> Double) {
+            if !tucked.get() {
+              1.0
+            } else {
+              let band = @sf.theme().chat_list
+              let vis_bottom = (frame.top)() + band.top_in + band.band_h - scroll.drawn(line.tree)
+              let emerged = vis_bottom - cover()
+              if emerged <= 0.5 {
+                0.0
+              } else if emerged >= 22.5 {
+                1.0
+              } else {
+                (emerged - 0.5) / 22.0
+              }
+            }
+          }
           let reveal = match frame.at {
             Whole => {
-              let revealed = @signals.computed(fn(_) {
-                if !tucked.get() {
-                  1.0
-                } else {
-                  let band = @sf.theme().chat_list
-                  let vis_bottom = (frame.top)() + band.top_in + band.band_h - scroll.drawn(line.tree)
-                  let emerged = vis_bottom - (frame.under)()
-                  if emerged <= 0.5 {
-                    0.0
-                  } else if emerged >= 22.5 {
-                    1.0
-                  } else {
-                    (emerged - 0.5) / 22.0
-                  }
-                }
-              })
+              let revealed = @signals.computed(fn(_) { reveal_at(frame.under) })
               fn() { revealed.get() }
             }
-            Side | Tape => fn() { 1.0 }
+            Side | Tape => fn() { reveal_at(frame.top) }
           }
           let field = search_field_node(line, frame.at, reveal~)
           // the list's first time with its rows: the search tucked over them out of view, the first line after it at the

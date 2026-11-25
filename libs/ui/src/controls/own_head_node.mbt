@@ -310,7 +310,7 @@ pub fn head_actions_node(
           p.row(Is(true)).gap(Is(head_actions_narrow_gap)).lines_up(Is(Some(Middle))) |> ignore
           if busy {
             if p.lent(back_bar_lent).unwrap_or(false) && !@glass.in_liquid_pill(p) {
-              bar_pill_group_node(loc~, p, height=pg_back_pill_h, pad=3.0, gap=0.0, fn(pill) {
+              bar_pill_group_node(loc~, p, height=pg_back_pill_h, pad=3.0, gap=0.0, adaptive=true, fn(pill) {
                 pill.box(fn(c) {
                   c.width(Is(Some(34.0))).height(Is(Some(34.0))).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
                   spinner_node(c, size=spinner_inline) |> ignore

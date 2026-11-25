@@ -293,8 +293,8 @@ fn lists_band_node(
     }
   }
   o.box(fn(band) {
-    // (on the tape the block's ground, a step darker behind the panel in use as the lists under it are: tape_side_ground)
-    band.ground(By(fn() {
+    // Pure progressive variable-blur scroll-edge over the lists (solid fallback keeps the sidebar's mixed ground).
+    let band_bg = fn() {
       let a = at()
       let bg = if a.tape {
         match ground {
@@ -305,12 +305,14 @@ fn lists_band_node(
         apart_ground()
       }
       @sf.mix(bg, a.band, @sf.theme().p.sidebar)
-    }))
-    |> ignore
+    }
+    band.adaptive_ink(Is(true)).fades(Is((0.0, 0.0, 0.0, 14.0))) |> ignore
     // (its top row the window's title bar where the window's buttons are in the app's top row, under what is in it: as
-    // tall as their row however short the band's own top is (no buttons at its left: a Windows window), not folded)
+    // tall as their row however short the band's own top is (no buttons at its left: a Windows window), not folded;
+    // reuse this over-box for the pure progressive-blur scroll-edge fill so zero extra nodes are added)
     band.box(fn(o) {
-      o.over(Is(true)) |> ignore
+      o.over(Is(true)).width_share(Is(1.0)).height_share(Is(1.0)) |> ignore
+      @sf.scroll_edge_fill_decorate(o, band_bg) |> ignore
       o.box(fn(row) {
         row
         .width(By(fn() { Some(at().laid_w) }))
@@ -324,6 +326,7 @@ fn lists_band_node(
     |> ignore
     side_top_node(band, fn() { band_at().brand })
     band.box(fn(line) {
+      line.drawn_clear_of(band) |> ignore
       @sf.style_node(line, fn() {
         let a = band_at()
         if a.tape {
@@ -454,6 +457,7 @@ fn lists_band_node(
     |> ignore
     // 待处理 under 新建对话 where the rail has no bell
     band.show(at_once=true, fn() { workspace().map(fn(w) { todo_shown(src, w) }).unwrap_or(false) }, fn(t) {
+      t.drawn_clear_of(band) |> ignore
       @sf.style_node(t, fn() { todo_box })
       // (what 待处理's panel opens under: attention_node.mbt)
       side_attention.val = Some(t)
@@ -626,7 +630,7 @@ fn remote_band_h(at : BandAt) -> Double {
 /// sidebar's own ground, its top row (the window's buttons' row, dragging it).
 fn remote_band_node(o : @view.View, at : () -> SideAt, ground? : () -> Int64) -> Unit {
   o.box(fn(band) {
-    band.ground(By(fn() {
+    let band_bg = fn() {
       let a = at()
       let bg = if a.tape {
         match ground {
@@ -637,7 +641,17 @@ fn remote_band_node(o : @view.View, at : () -> SideAt, ground? : () -> Int64) ->
         apart_ground()
       }
       @sf.mix(bg, a.band, @sf.theme().p.sidebar)
-    }))
+    }
+    band.fades(Is((0.0, 0.0, 0.0, 14.0))) |> ignore
+    band.box(fn(scrim) {
+      scrim
+      .over(Is(true))
+      .width_share(Is(1.0))
+      .height_share(Is(1.0))
+      |> ignore
+      @signals.untracked(fn() { scrim.pointed() }) |> ignore
+      @sf.scroll_edge_fill_decorate(scrim, band_bg) |> ignore
+    })
     |> ignore
     side_top_node(band, fn() { at().brand })
   })

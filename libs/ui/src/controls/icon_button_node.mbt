@@ -73,7 +73,7 @@ fn icon_button_by(
   let in_back_bar = parent.lent(back_bar_lent).unwrap_or(false)
   if in_back_bar && !@glass.in_liquid_pill(parent) {
     let btn_v : Ref[@view.View?] = Ref(None)
-    bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=3.0, gap=0.0, fn(pill) {
+    bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=3.0, gap=0.0, adaptive=true, fn(pill) {
       btn_v.val = Some(
         icon_button_by(
           loc~,

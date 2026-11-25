@@ -104,7 +104,7 @@ pub fn bar_actions_pill_node(
       None => ()
     }
     parent.show(shown, at_once=true, fn(slot) {
-      bar_pill_group_node(loc~, slot, height=pg_back_pill_h, pad=pg_bar_pill_pad, gap=pg_bar_pill_gap, body) |> ignore
+      bar_pill_group_node(loc~, slot, height=pg_back_pill_h, pad=pg_bar_pill_pad, gap=pg_bar_pill_gap, adaptive=true, body) |> ignore
     })
   } else {
     body(parent)

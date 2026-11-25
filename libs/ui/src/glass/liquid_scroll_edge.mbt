@@ -19,7 +19,7 @@ pub fn liquid_scroll_edge_fill_decorate(
   fill.glass(
     By(fn() {
       if active() {
-        Some(liquid_scroll_edge_glass(bg=bg()))
+        Some(liquid_scroll_edge_glass(bg=bg(), pure=true))
       } else {
         None
       }
@@ -44,7 +44,7 @@ pub fn liquid_scroll_edge_node(
   bg_by? : (@view.View) -> Int64,
   from_top? : Bool = false,
   shield? : Bool = true,
-  pure? : Bool = false,
+  pure? : Bool = true,
   loc~ : SourceLoc,
 ) -> @view.View {
   let build_scrim = fn(scrim : @view.View) {

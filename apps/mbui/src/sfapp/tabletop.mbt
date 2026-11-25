@@ -78,8 +78,6 @@ fn chat_foot_node(
   n.box(fn(bar) {
     bar
     .height(By(fn() { Some(nav_foot()) }))
-    .ground(By(fn() { if @ui.system_tabletop() is Some(_) { 0L } else { @sf.theme().p.bg } }))
-    .alpha(Is(254.0 / 255.0))
     .points(Is(false))
     |> ignore
   })

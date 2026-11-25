@@ -953,12 +953,13 @@ fn place_top_bar_glass(
         .row(Is(true))
         .lines_up(Is(Some(Middle)))
         .alpha(By(fn() { title_alpha(t) }))
+        .adaptive_ink(Is(true))
         |> ignore
         @sf.top_bar_title_node(t, fn() { place_label(place()) }) |> ignore
       })
       |> ignore
       row.show(fn() { actions() is Some(_) }, fn(a) {
-        a.row(Is(true)).shrink(Is(1.0)).alpha(By(fn() { title_alpha(a) })) |> ignore
+        a.row(Is(true)).shrink(Is(1.0)).alpha(By(fn() { title_alpha(a) })).adaptive_ink(Is(true)) |> ignore
         a.pick(
           fn() {
             match actions() {
@@ -977,7 +978,7 @@ fn place_top_bar_glass(
         )
       })
       // settings at the right edge, as at Home's: standalone 40pt liquid glass circle
-      @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=0.0, fn(set_pill) {
+      @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=0.0, adaptive=true, fn(set_pill) {
         @sf.round_key_node(set_pill, "settings", fn() { tr("android-chat.home.settings") }, fn() {
           @sfbase.history_push()
           app.nav.push(Settings)

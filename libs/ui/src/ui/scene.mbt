@@ -1407,7 +1407,7 @@ fn Ctx::emit_text(
       let b = (self.ninst - 1) * inst_size
       self.inst[b + 21] = glass_paint.ink_x
       self.inst[b + 22] = glass_paint.ink_y
-      self.inst[b + 23] = glass_paint.ink_r
+      self.inst[b + 23] = if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r }
     }
   }
   if rec_whole.val {
@@ -1861,12 +1861,13 @@ fn Ctx::paint_node(self : Ctx, i : Int, alpha_in : Double) -> Unit {
     glass_run_break()
     glass_paint.in_group = glass_paint.in_group + 1
   }
-  let ink = (glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r)
+  let ink = (glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare)
   match n.glass {
     Some(gl) if gl.liquid && gl.adaptive && !glass_paint.solid => {
       glass_paint.ink_x = n.x + n.fw / 2.0
       glass_paint.ink_y = n.y + n.fh / 2.0
       glass_paint.ink_r = dmax(dmin(n.fw, n.fh) / 2.0, 1.0)
+      glass_paint.ink_bare = false
     }
     _ =>
       if glass_paint.ink_r > 0.0 && n.bg != 0L && (n.bg & 0xFFL) >= 0xC0L {
@@ -1885,6 +1886,7 @@ fn Ctx::paint_node(self : Ctx, i : Int, alpha_in : Double) -> Unit {
   glass_paint.ink_x = ink.0
   glass_paint.ink_y = ink.1
   glass_paint.ink_r = ink.2
+  glass_paint.ink_bare = ink.3
   if group {
     glass_paint.in_group = glass_paint.in_group - 1
   }

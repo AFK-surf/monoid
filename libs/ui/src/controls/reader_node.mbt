@@ -1319,10 +1319,18 @@ fn reader_narrow_chrome(
     }
   }
   let pct = fn() { "\{(share() * 100.0).round().to_int()}%" }
-  // the page's top bar (a phone's clock and icons) on the paper, not over the text read on up under it
+  // the page's top bar (a phone's clock and icons) on the paper while chrome is away, fading out smoothly as the
+  // progressive top scroll-edge blur appears so no hard edge cuts across the status bar
   parent.box(made_for=loc, fn(top) {
     top.over(Is(true)) |> ignore
-    top.box(fn(b) { b.height(By(fn() { Some(room().0) })).ground(By(fn() { paper().ground })) |> ignore }) |> ignore
+    top.box(fn(b) {
+      b
+      .height(By(fn() { Some(room().0) }))
+      .ground(By(fn() { paper().ground }))
+      .alpha(By(fn() { desk_whole - shown(b) }))
+      |> ignore
+    })
+    |> ignore
   })
   |> ignore
   // how far through it is while they are away (made as they go, let go once they are whole)
@@ -1719,7 +1727,7 @@ fn reader_sheet_note(r : Reading) -> String {
 /// Single-layer liquid glass for a phone reader's floating top bar and search-hit capsules,
 /// preserving the paper's opaque solid fallback under `MBUI_GLASS=solid`.
 fn narrow_pill_glass(p : ReaderPaper) -> @ui.Glass {
-  @glass.liquid_bar_pill_glass(solid=over(p.ground, alpha(p.raised, desk_glass_share)), sharing=true)
+  @glass.liquid_bar_pill_glass(solid=over(p.ground, alpha(p.raised, desk_glass_share)), sharing=true, adaptive=true)
 }
 
 ///|

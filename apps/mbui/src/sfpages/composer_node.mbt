@@ -569,11 +569,16 @@ fn composer_node_of(
       foot_shift.shown(u) -
       composer_backdrop_over
     }
+    let seam_backdrop_top = fn(u : @view.View) -> Double {
+      let one_line = @sf.dmax(@sf.theme().round.side, node_field_line(u.words_scale()))
+      let shut_h = one_line + 2.0 * stand.place().capsule_pad
+      lift_backdrop_top(u) + composer_backdrop_over + shut_h - 6.0 - composer_seam_fade
+    }
     composer_foot_scrim_node(
       foot,
       roomy,
       made,
-      fn() { stand.at(fn() { composer_foot_at(rest_wide()) }) },
+      seam_backdrop_top,
       backdrop_top,
       lift_backdrop_top,
       fn(u) { shared.morph.shown(u) > 0.001 },
@@ -680,7 +685,7 @@ fn composer_foot_scrim_node(
   foot : @view.View,
   roomy : () -> Bool,
   made : ComposerNodeFor?,
-  seam_h : () -> Double,
+  seam_backdrop_top : (@view.View) -> Double,
   backdrop_top : (@view.View) -> Double,
   lift_backdrop_top : (@view.View) -> Double,
   expanded : (@view.View) -> Bool,
@@ -739,26 +744,8 @@ fn composer_foot_scrim_node(
       |> ignore
       return
     }
-    scrim.box(fn(band) {
-      band
-      .width_share(Is(1.0))
-      .height(By(fn() { Some(seam_h() + 6.0 + composer_seam_fade) }))
-      .fades(Is((0.0, composer_seam_fade, 0.0, 0.0)))
-      .points(Is(false))
-      |> ignore
-      band.box(fn(fill) {
-        fill
-        .width_share(Is(1.0))
-        .height_share(Is(1.0))
-        .points(Is(false))
-        .ground(By(fill_ground))
-        .alpha(Is(254.0 / 255.0))
-        |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
-    // (the soft keyboard's fade: eased in as it comes up and out as it goes)
+    // Single pure progressive-blur band for soft keyboards: smoothly interpolates top offset and fade height
+    // between rest seam (t=0) and keyboard-up lift (t=1) so every frame has strictly 1 bottom progressive blur.
     let typing = @motion.NodeWay::new(if @signals.untracked(fn() { scrim.keyboard_inset() }) > 0.0 { 1.0 } else { 0.0 })
     scrim.reacts(fn() { scrim.keyboard_inset() > 0.0 }, fn(up) {
       if up {
@@ -767,36 +754,33 @@ fn composer_foot_scrim_node(
         typing.go_ms(scrim, 0.0, composer_backdrop_out_ms, ease=Leave)
       }
     })
-    // (made only while the keyboard is up, and as it fades out once it goes: nothing more on a chat opened without it)
-    scrim.show(fn() { scrim.keyboard_inset() > 0.0 }, leave=composer_backdrop_out_ms, fn(lift) {
-      lift
-      .over(Is(true))
+    scrim.box(fn(band) {
+      band
       .width_share(Is(1.0))
       .height_share(Is(1.0))
-      .lies_along(Is(End))
+      .offset(By(fn() {
+        let t = typing.shown(band)
+        let y0 = seam_backdrop_top(band)
+        let y1 = lift_backdrop_top(band)
+        (0.0, y0 + (y1 - y0) * t)
+      }))
+      .fades(By(fn() {
+        let t = typing.shown(band)
+        (0.0, composer_seam_fade + (composer_backdrop_fade - composer_seam_fade) * t, 0.0, 0.0)
+      }))
       .points(Is(false))
-      .alpha(By(fn() { typing.shown(lift) }))
       |> ignore
-      lift.box(fn(band) {
-        band
+      band.box(fn(fill) {
+        @sf.scroll_edge_fill_decorate(fill, fill_ground, active=fill_active)
         .width_share(Is(1.0))
         .height_share(Is(1.0))
-        .offset(By(fn() { (0.0, lift_backdrop_top(band)) }))
-        .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
         .points(Is(false))
-        |> ignore
-        band.box(fn(fill) {
-          @sf.scroll_edge_fill_decorate(fill, fill_ground, active=fill_active)
-          .width_share(Is(1.0))
-          .height_share(Is(1.0))
-          .points(Is(false))
-          .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
-          |> ignore
-        })
+        .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
         |> ignore
       })
       |> ignore
     })
+    |> ignore
   })
   |> ignore
 }

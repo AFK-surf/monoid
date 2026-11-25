@@ -1850,3 +1850,75 @@ test "大屏: the bar's empty parts beside its title drag a Windows window; unde
   t.frame()
   assert_eq(t.window_drags() - before, 1)
 }
+
+///|
+test "大屏侧栏: 静止时收在顶部横带下的搜索框 alpha 为 0，下拉后才淡入可见" {
+  let calls : Array[Made] = []
+  let t = wide_bar_at(calls)
+  let search_text = @sf.t("android-chat.search.field")
+  // At rest, tucked search field under the top pure progressive-blur band must be invisible (no visible glyphs)
+  assert_eq(t.rect_of(search_text), None, msg="tucked search field must have alpha == 0 at rest under sidebar band")
+  // Pulling/scrolling the sidebar list (x < 300) up reveals the search field
+  let (rx, ry, rw, rh) = side_row_at(t, "整理发布清单", 300.0).unwrap()
+  t.wheel(rx + rw / 2.0, ry + rh / 2.0, -180.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.rect_of(search_text) is Some(_), msg="search field must fade in once scrolled down into view")
+}
+
+///|
+test "大屏侧栏底部状态带: 空白处拦截点击，不穿透到下方聊天行" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="home-foot", h=320.0)
+  t.run_for(@ui.move_most_ms)
+  // Find the foot band's progressive blur scrim at the bottom of the sidebar
+  let foot_scrims = t
+    .drawn_instances()
+    .filter(fn(a) { a.length() >= 56 && a[5] == 5.0 && a[22] == -1.0 && a[0] < 100.0 && a[1] > 200.0 && a[2] > 150.0 })
+  assert_true(foot_scrims.length() >= 1, msg="expected visible lists_foot_node progressive blur scrim at sidebar bottom")
+  let f = foot_scrims[0]
+  // Tap the blank bottom-padding strip of the foot band (strictly below both controls, inside foot scrim body where fades_ramp >= 0.2)
+  let (tx, ty, tw, th) = t.rect_of("Maple 离线").unwrap()
+  let (cx, _, _, _) = t.rect_of("运行中 1").unwrap()
+  let mx = (tx + tw + cx) * 0.5
+  let my = f[1] + f[3] - 4.0
+  assert_true(mx > tx + tw && mx < cx && my > ty + th, msg="blank point must lie strictly outside both foot controls")
+  assert_true(mx > f[0] && mx < f[0] + f[2] && my > f[1] && my < f[1] + f[3], msg="blank point must lie inside foot scrim")
+  // Confirm (mx, my) does not fall inside any visible Button hit rect (including pill padding)
+  let on_button = t
+    .semantics()
+    .iter()
+    .any(fn(s) {
+      s.role == @ui.Role::Button &&
+      !s.hidden &&
+      s.rect.0 <= mx &&
+      mx <= s.rect.0 + s.rect.2 &&
+      s.rect.1 <= my &&
+      my <= s.rect.1 + s.rect.3
+    })
+  assert_false(on_button, msg="precondition: blank point must lie outside all visible Button hit rects")
+  // Confirm a sidebar chat row sits directly behind (mx, my)
+  let has_row_at = fn() {
+    t
+      .semantics()
+      .iter()
+      .any(fn(s) {
+        s.role == @ui.Role::Link &&
+        !s.hidden &&
+        s.rect.0 <= mx &&
+        mx <= s.rect.0 + s.rect.2 &&
+        s.rect.1 <= my &&
+        my <= s.rect.1 + s.rect.3
+      })
+  }
+  if !has_row_at() {
+    t.wheel(f[0] + f[2] * 0.5, 160.0, 200.0)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(has_row_at(), msg="precondition: clickable chat row must sit behind (mx, my)")
+  let top_before = app.nav.top()
+  let calls_before = calls.length()
+  t.tap(mx, my)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == top_before, msg="blank area of lists_foot_node must shield clicks from rows behind it")
+  assert_eq(calls.length(), calls_before, msg="blank area of lists_foot_node must not trigger navigation calls")
+}

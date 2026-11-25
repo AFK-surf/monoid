@@ -195,7 +195,7 @@ fn home_top_bar_node(
           _ => false
         })
       }
-      let left_pill = @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=2.0, fn(pill) {
+      let left_pill = @sf.bar_pill_group_node(row, height=40.0, pad=3.0, gap=2.0, adaptive=true, fn(pill) {
         pill.fits(Is(true)) |> ignore
         // 待处理, first on the bar: as a system's bar has it (no rail here to hold its bell)
         if bell {
@@ -309,7 +309,7 @@ fn home_top_bar_node(
         let open = fn(s : @view.View) {
           @sfpages.open_workspaces(src, @sf.Anchor::Node(s), along=End)
         }
-        @sf.bar_pill_group_node(end, height=40.0, pad=3.0, gap=0.0, fn(ws_pill) {
+        @sf.bar_pill_group_node(end, height=40.0, pad=3.0, gap=0.0, adaptive=true, fn(ws_pill) {
           @sf.action_box_node(ws_pill, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, open, fn(s) {
             s
             .row(Is(true))
@@ -362,7 +362,7 @@ fn home_top_bar_node(
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
-        @sf.bar_pill_group_node(end, height=40.0, pad=3.0, gap=0.0, fn(set_pill) {
+        @sf.bar_pill_group_node(end, height=40.0, pad=3.0, gap=0.0, adaptive=true, fn(set_pill) {
           @sf.round_key_node(set_pill, "settings", fn() { tr("android-chat.home.settings") }, fn() {
             @sfbase.history_push()
             app.nav.push(Settings)

@@ -331,7 +331,7 @@ static NSString *shader_src = @
 "  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
 "  return (hi * 256.0 + lo) / 65535.0;\n"
 "}\n"
-"static float2 ad_sample_ink(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float2 ac, float fallback_r, thread float2& capCenter, thread float2& capHalf) {\n"
+"static float3 ad_sample_ink(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float2 ac, float fallback_r, thread float2& capCenter, thread float2& capHalf) {\n"
 "  int ad_n = int(g.ad_meta.x + 0.5);\n"
 "  if (ad_n > 0) {\n"
 "    int best = -1;\n"
@@ -356,41 +356,59 @@ static NSString *shader_src = @
 "      float4 px = ad_tex.read(uint2(uint(best), 0));\n"
 "      capCenter = g.ad_box[best].xy;\n"
 "      capHalf = g.ad_box[best].zw;\n"
-"      return float2(mb_unpack16(px.rg), px.a);\n"
+"      return float3(mb_unpack16(px.rg), px.a, px.b);\n"
 "    }\n"
 "  }\n"
 "  capCenter = ac;\n"
 "  capHalf = float2(0.0);\n"
 "  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
-"  return float2(1.0 - smoothstep(0.12, 0.21, bgL), bgL);\n"
+"  return float3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);\n"
 "}\n"
 "static float mb_srgb_to_lin(float c) {\n"
 "  return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);\n"
+"}\n"
+"static float mb_wcag_luma(float3 c) {\n"
+"  return 0.2126 * mb_srgb_to_lin(c.r) + 0.7152 * mb_srgb_to_lin(c.g) + 0.0722 * mb_srgb_to_lin(c.b);\n"
+"}\n"
+"static float mb_backdrop_wcag_luma_rect(texture2d<float> bd, constant G& g, float2 c, float2 h) {\n"
+"  float sum = 0.0;\n"
+"  float mx1 = -1.0, mx2 = -1.0;\n"
+"  float mn1 = 2.0, mn2 = 2.0;\n"
+"  for (int iy = -1; iy <= 1; iy++) {\n"
+"    float py = c.y + float(iy) * (h.y * 0.60);\n"
+"    for (int ix = -2; ix <= 2; ix++) {\n"
+"      float px = c.x + float(ix) * (h.x * 0.38);\n"
+"      float y = mb_wcag_luma(backdrop(bd, g, float2(px, py)));\n"
+"      sum += y;\n"
+"      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
+"      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
+"    }\n"
+"  }\n"
+"  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
 "}\n"
 "static float mb_lin_to_srgb(float y) {\n"
 "  y = clamp(y, 0.0, 1.0);\n"
 "  return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);\n"
 "}\n"
-"static float3 mb_bare_adaptive_ink_at(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float hr) {\n"
+"static float3 mb_bare_adaptive_ink_at(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 h) {\n"
 "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
 "  if (ch > 0.08) return rgb;\n"
 "  float origL = luma(rgb);\n"
-"  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(hr, 1.0)));\n"
-"  float c_bg = sqrt(max(bgL, 0.0));\n"
-"  float Lbg = mb_srgb_to_lin(c_bg);\n"
+"  float origY = mb_wcag_luma(rgb);\n"
+"  float Lbg = mb_backdrop_wcag_luma_rect(bd, g, ac, max(h, float2(1.0)));\n"
 "  float target = 4.65;\n"
 "  float out_c;\n"
 "  if (Lbg >= 0.1792) {\n"
 "    float pref = origL < 0.5 ? origL : clamp(1.0 - origL, 0.02, 0.45);\n"
-"    float y_pref = mb_srgb_to_lin(pref);\n"
+"    float y_pref = origL < 0.5 ? origY : mb_srgb_to_lin(pref);\n"
 "    float y_max = max(0.0, (Lbg + 0.05) / target - 0.05);\n"
-"    if (origL < 0.5 && y_pref <= y_max) return rgb;\n"
+"    if (origL < 0.5 && origY <= y_max) return rgb;\n"
 "    out_c = mb_lin_to_srgb(min(y_pref, y_max));\n"
 "  } else {\n"
 "    float pref = origL >= 0.5 ? origL : clamp(1.06 - origL, 0.55, 0.98);\n"
-"    float y_pref = mb_srgb_to_lin(pref);\n"
+"    float y_pref = origL >= 0.5 ? origY : mb_srgb_to_lin(pref);\n"
 "    float y_min = min(1.0, target * (Lbg + 0.05) - 0.05);\n"
-"    if (origL >= 0.5 && y_pref >= y_min) return rgb;\n"
+"    if (origL >= 0.5 && origY >= y_min) return rgb;\n"
 "    out_c = mb_lin_to_srgb(max(y_pref, y_min));\n"
 "  }\n"
 "  return float3(out_c);\n"
@@ -398,11 +416,22 @@ static NSString *shader_src = @
 "static float3 mb_adaptive_ink_at(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float3 rgb, float2 ac, float fallback_r, float4 rect, float2 sample_off, bool is_icon) {\n"
 "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
 "  float origL = luma(rgb);\n"
-"  if (ch > 0.08 || origL >= 0.5) return rgb;\n"
+"  if (ch > 0.08) return rgb;\n"
 "  float2 capCenter, capHalf;\n"
-"  float2 cap = ad_sample_ink(bd, ad_tex, g, ac, fallback_r, capCenter, capHalf);\n"
+"  float3 cap = ad_sample_ink(bd, ad_tex, g, ac, fallback_r, capCenter, capHalf);\n"
 "  float capsuleDarkT = cap.x;\n"
 "  float capsuleBgL = cap.y;\n"
+"  float capsuleLatch = cap.z;\n"
+"  if (origL >= 0.5) {\n"
+"    if (capHalf.x <= 0.0) return rgb;\n"
+"    int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));\n"
+"    if (code < 48 || code > 208) return rgb;\n"
+"    if (capsuleDarkT >= 0.65) {\n"
+"      float darkL = clamp(1.0 - origL, 0.06, 0.14);\n"
+"      return float3(darkL);\n"
+"    }\n"
+"    return rgb;\n"
+"  }\n"
 "  float darkT = capsuleDarkT;\n"
 "  float localBoost = 0.0;\n"
 "  bool is_large = (capHalf.x >= 140.0 && capHalf.y >= 19.0);\n"
@@ -456,12 +485,16 @@ static NSString *shader_src = @
 "  float4 col = I.color;\n"
 "  if (kind == 7) {\n"
 "    col.rgb = I.pad.w < 0.0\n"
-"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.pad.yz, -I.pad.w * 0.5)\n"
+"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w, I.rect.z), max(max(-I.pad.w * 0.5, I.rect.w), 1.0)))\n"
 "      : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, false);\n"
-"  } else if (kind == 10 && I.pad.w > 0.0) {\n"
-"    col.rgb = mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, float2(0.0), true);\n"
-"  } else if (kind == 11 && I.pad.w > 0.0) {\n"
-"    col.rgb = mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, true);\n"
+"  } else if (kind == 10 && I.pad.w != 0.0) {\n"
+"    col.rgb = I.pad.w < 0.0\n"
+"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w * 0.5, 1.0)))\n"
+"      : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, float2(0.0), true);\n"
+"  } else if (kind == 11 && I.pad.w != 0.0) {\n"
+"    col.rgb = I.pad.w < 0.0\n"
+"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pad.w * 0.5, 1.0)))\n"
+"      : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, true);\n"
 "  } else if (kind == 0 && I.pad.w < 0.0) {\n"
 "    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
 "    float2 capCenter, capHalf;\n"
@@ -609,7 +642,7 @@ MB_CORNER_SL
 "    }\n"
 "  }\n"
 "  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
-"  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.12, 0.21, bgL));\n"
+"  return is_dark_glass ? smoothstep(0.20, 0.26, bgL) : (1.0 - smoothstep(0.12, 0.21, bgL));\n"
 "}\n"
 "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
 "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it\n"
@@ -895,6 +928,7 @@ MB_CORNER_SL
 "    float glintFaceGain;\n"
 "    float glintVib;\n"
 "    float fogT = 0.0;\n"
+"    float darkAdGlareW = 0.0;\n"
 "    float3 lightEmSaved = float3(0.0);\n"
 "    float3 darkEmSaved = float3(0.0);\n"
 "    float darkMixSaved = 0.0;\n"
@@ -923,15 +957,19 @@ MB_CORNER_SL
 "      float val = ad_sample(bd, ad_tex, g, ac, ar, is_dark);\n"
 "      float baseDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
 "      if (is_dark) {\n"
-"        float brightT = val;\n"
+"        float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
+"        float brightT = val * (1.0 - extra);\n"
 "        fogT = brightT;\n"
-"        float dens = max(baseDens, mix(baseDens, mix(0.64, 0.34, regCtrl), brightT));\n"
-"        float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
 "        float ctrlW = (1.0 - smoothstep(0.0, 0.45, extra)) * regCtrl;\n"
-"        emission = mix(float3((30.0 + 4.0 * ctrlW) / 255.0), float3(24.0 / 255.0), extra);\n"
-"        transmittance = mix(0.50 + 0.09 * ctrlW, 0.0, extra);\n"
-"        lift = mix(0.24 + 0.31 * ctrlW, 0.0, extra);\n"
-"        chromaGain = mix(1.05, 0.0, extra);\n"
+"        float3 darkEm = mix(float3((30.0 + 4.0 * ctrlW) / 255.0), float3(24.0 / 255.0), extra);\n"
+"        float darkTrans = mix(0.50 + 0.09 * ctrlW, 0.0, extra);\n"
+"        float darkLift = mix(0.24 + 0.31 * ctrlW, 0.0, extra);\n"
+"        float darkChroma = mix(1.05, 0.0, extra);\n"
+"        emission = mix(darkEm, float3(0.495), brightT);\n"
+"        transmittance = mix(darkTrans, 0.187, brightT);\n"
+"        lift = mix(darkLift, 0.04, brightT);\n"
+"        chromaGain = mix(darkChroma, 0.45, brightT);\n"
+"        darkAdGlareW = (1.0 - brightT) * (1.0 - extra);\n"
 "        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
 "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
 "      } else {\n"
@@ -1030,6 +1068,13 @@ MB_CORNER_SL
 "    float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);\n"
 "    float3 chromaVec = (refractColor - float3(Y)) * (chromaGain * I.p.z);\n"
 "    float baseLum = clamp(transLum * transmittance, 0.0, 1.0);\n"
+"    if (darkAdGlareW > 0.001 && baseLum > 0.18) {\n"
+"      float over = baseLum - 0.18;\n"
+"      float capped = 0.18 + 0.115 * (over / (over + 0.115));\n"
+"      float newLum = mix(baseLum, capped, darkAdGlareW);\n"
+"      chromaVec *= (newLum / max(baseLum, 0.0001));\n"
+"      baseLum = newLum;\n"
+"    }\n"
 "    float3 transmittedColor = float3(baseLum) + chromaVec;\n"
 "    float3 rawBase = emission + transmittedColor;\n"
 "    // Exact Wave 3 legacy mapping for zero-veil lenses (col.a == 0); channel-clamped saturation for Clear glass\n"
@@ -1679,8 +1724,12 @@ MB_CORNER_SL
 "  float is_dark = u.param.x, is_new = u.param.y, dt = u.param.z;\n"
 "  float latch, target;\n"
 "  if (is_dark > 0.5) {\n"
-"    target = smoothstep(0.35, 0.85, bgL);\n"
-"    latch = target;\n"
+"    int code = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));\n"
+"    bool had_dark = (is_new <= 0.5) && (code >= 48 && code <= 208);\n"
+"    bool prev_on = had_dark && (code >= 96);\n"
+"    bool on = prev_on ? (bgL > 0.20) : (bgL >= 0.26);\n"
+"    target = on ? 1.0 : 0.0;\n"
+"    latch = on ? (128.0 / 255.0) : (64.0 / 255.0);\n"
 "  } else {\n"
 "    if (is_new > 0.5) latch = (bgL < 0.14) ? 1.0 : 0.0;\n"
 "    else if (prev.b > 0.5) latch = (bgL > 0.21) ? 0.0 : 1.0;\n"
@@ -2121,23 +2170,34 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
         x1 = fmaxf(x1, fminf(b[0] + b[2], b[18])); y1 = fmaxf(y1, fminf(b[1] + b[3], b[19]));
       }
     }
-    for (int32_t i = end; i < count; i++) {
-      const float *b = f + i * MB_INST;
-      int bk = (int)(b[5] + 0.5f);
-      if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-      if (bk == 7 && b[23] < 0.0f) {
-        float hr = -b[23] * 0.5f;
-        x0 = fminf(x0, b[21] - hr); y0 = fminf(y0, b[22] - hr);
-        x1 = fmaxf(x1, b[21] + hr); y1 = fmaxf(y1, b[22] + hr);
+  }
+  float cap_x0 = x0, cap_y0 = y0, cap_x1 = x1, cap_y1 = y1;
+  for (int32_t i = end; i < count; i++) {
+    const float *b = f + i * MB_INST;
+    int bk = (int)(b[5] + 0.5f);
+    if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
+    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f) {
+      float cx, cy, hx, hy;
+      if (bk == 7) {
+        cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
+        hx = fmaxf(-b[23], b[2]); hy = fmaxf(fmaxf(-b[23] * 0.5f, b[3]), 1.0f);
+      } else if (bk == 10) {
+        cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
+        hx = hy = fmaxf(-b[23] * 0.5f, 1.0f);
+      } else {
+        cx = b[0] + b[2] * 0.5f + b[6]; cy = b[1] + b[3] * 0.5f + b[7];
+        hx = hy = fmaxf(-b[23] * 0.5f, 1.0f);
       }
+      cap_x0 = fminf(cap_x0, cx - hx); cap_y0 = fminf(cap_y0, cy - hy);
+      cap_x1 = fmaxf(cap_x1, cx + hx); cap_y1 = fmaxf(cap_y1, cy + hy);
     }
   }
   m->g.misc[0] = (float)n;
   m->g.misc[1] = in_through(at_through_tid, at_through_n, a[20]) ? 1.0f : 0.0f;
   m->g.gb[0] = x0 - 2; m->g.gb[1] = y0 - 2; m->g.gb[2] = x1 + 2; m->g.gb[3] = y1 + 2;
   float sc = (float)at_scale;
-  int px0 = (int)floorf((x0 - margin) * sc), py0 = (int)floorf((y0 - margin) * sc);
-  int px1 = (int)ceilf((x1 + margin) * sc), py1 = (int)ceilf((y1 + margin) * sc);
+  int px0 = (int)floorf((cap_x0 - margin) * sc), py0 = (int)floorf((cap_y0 - margin) * sc);
+  int px1 = (int)ceilf((cap_x1 + margin) * sc), py1 = (int)ceilf((cap_y1 + margin) * sc);
   if (px0 < 0) px0 = 0;
   if (py0 < 0) py0 = 0;
   if (px1 > tw) px1 = tw;
@@ -2807,7 +2867,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
       float tid = bi[20];
       int k = (int)(bi[5] + 0.5f);
       int is_glass = tid < 0.0f;
-      int is_ad = k == 7 || ((k == 10 || k == 11) && bi[23] > 0.0f);
+      int is_ad = k == 7 || ((k == 10 || k == 11) && bi[23] != 0.0f);
       if (!is_glass && !is_ad) continue;
       int32_t run = i;
       if (is_glass) {
@@ -2863,9 +2923,24 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
           if (ey1 > dep[3]) { dep[3] = ey1; grew = 1; }
         }
       } else {
-        float rad = fabsf(bi[23]) + 4.0f;
-        float ex0 = bi[21] - rad, ey0 = bi[22] - rad;
-        float ex1 = bi[21] + rad, ey1 = bi[22] + rad;
+        float ex0, ey0, ex1, ey1;
+        if (bi[23] < 0.0f) {
+          float cx, cy, hx, hy;
+          if (k == 7) {
+            cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
+            hx = fmaxf(-bi[23], bi[2]) + 4.0f; hy = fmaxf(fmaxf(-bi[23] * 0.5f, bi[3]), 1.0f) + 4.0f;
+          } else if (k == 10) {
+            cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
+            hx = hy = fmaxf(-bi[23] * 0.5f, 1.0f) + 4.0f;
+          } else {
+            cx = bi[0] + bi[2] * 0.5f + bi[6]; cy = bi[1] + bi[3] * 0.5f + bi[7];
+            hx = hy = fmaxf(-bi[23] * 0.5f, 1.0f) + 4.0f;
+          }
+          ex0 = cx - hx; ey0 = cy - hy; ex1 = cx + hx; ey1 = cy + hy;
+        } else {
+          float rad = fabsf(bi[23]) + 4.0f;
+          ex0 = bi[21] - rad; ey0 = bi[22] - rad; ex1 = bi[21] + rad; ey1 = bi[22] + rad;
+        }
         if (ex0 < dep[0]) { dep[0] = ex0; grew = 1; }
         if (ey0 < dep[1]) { dep[1] = ey0; grew = 1; }
         if (ex1 > dep[2]) { dep[2] = ex1; grew = 1; }

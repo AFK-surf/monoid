@@ -185,11 +185,10 @@ pub fn liquid_capsule_glass(solid? : Int64 = clear) -> @paint.Glass {
 /// across the host node's `View::fades` band (`blur=8.5`, `progressive=true`),
 /// degrading to a solid `bg` alpha fade under `MBUI_GLASS=solid`.
 ///
-/// When `pure=true` (full-bleed media viewers), emits zero tint (`tint=clear`, `saturation=1.0`) so dark
-/// photos/videos are never washed out by a light-mode scrim. Otherwise (`pure=false`, default for bare-title
-/// chat/settings bars), applies a 50% `bg` tint veil (`alpha(resolved, 0.50)`, `saturation=1.25`) to preserve
-/// bare-text readability over scrolled content.
-pub fn liquid_scroll_edge_glass(bg? : Int64 = clear, pure? : Bool = false) -> @paint.Glass {
+/// When `pure=true` (default across all scroll-edge bars), emits zero tint (`tint=clear`, `saturation=1.0`) so
+/// scrolled photos/videos/cards are never washed out by a light/dark scrim veil; bare text/icons rely on
+/// `View::adaptive_ink` for contrast. When `pure=false` (explicit low-level opt-in), applies a 50% `bg` tint veil.
+pub fn liquid_scroll_edge_glass(bg? : Int64 = clear, pure? : Bool = true) -> @paint.Glass {
   let resolved = if bg != clear {
     bg
   } else if is_dark() {

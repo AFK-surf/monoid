@@ -56,8 +56,19 @@ fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, a
   let jobs = fn() { foot_jobs_of(src, workspace) }
   o.show(at_once=true, fn() { trouble() is Some(_) || jobs() > 0 }, fn(band) {
     @sf.style_node(band, fn() { foot_band })
-    band.ground(By(fn() { @sf.mix(apart_ground(), at().band, @sf.theme().p.sidebar) })) |> ignore
+    band.adaptive_ink(Is(true)).fades(Is((0.0, 14.0, 0.0, 0.0))) |> ignore
+    band.box(fn(scrim) {
+      scrim
+      .over(Is(true))
+      .width_share(Is(1.0))
+      .height_share(Is(1.0))
+      |> ignore
+      @signals.untracked(fn() { scrim.pointed() }) |> ignore
+      @sf.scroll_edge_fill_decorate(scrim, fn() { @sf.mix(apart_ground(), at().band, @sf.theme().p.sidebar) }) |> ignore
+    })
+    |> ignore
     band.show(at_once=true, fn() { trouble() is Some(_) }, fn(k) {
+      k.drawn_clear_of(band) |> ignore
       // (what the band's row leaves to the chip at its end is the trouble's: its row w=Full in it, as the old foot's)
       k.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       let words = fn() { text(trouble(), "text") }
@@ -88,6 +99,7 @@ fn lists_foot_node(o : @view.View, src : Source, workspace : () -> Workspace?, a
       |> ignore
     })
     band.show(at_once=true, fn() { jobs() > 0 }, fn(k) {
+      k.drawn_clear_of(band) |> ignore
       // (@sf.count_chip_node's Small, a plain button: its press opens or closes the 运行中 list beside it, presented
       // over it; its dot the online green)
       let chip = @sf.count_chip_node(

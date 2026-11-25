@@ -52,40 +52,39 @@ test "styles: the lock's waiting page, every state, drawn as before" {
       }
     }
   }
-  // Home narrow top bar only draws progressive scroll-edge glass over the status bar (skipped when status_top == 0).
-  // iOS 27.0 Regular Liquid Glass calibration sets full-res blur=1.2 on narrow floating/bar pills.
+  // Home narrow top bar uses pure progressive scroll-edge glass + adaptive ink/pills.
   inspect(out.to_string(), content=(
-    #|waiting narrow 28665:c3986e94
+    #|waiting narrow 28740:fe38e6d9
     #|waiting wide 66023:4112183f
-    #|waiting-dark narrow 28584:b4229d3c
+    #|waiting-dark narrow 28659:c8554067
     #|waiting-dark wide 65852:4a6a3989
-    #|finding narrow 46466:1cc560f4
+    #|finding narrow 46541:447aedfb
     #|finding wide 84907:723ded1c
-    #|finding-dark narrow 46520:1c9ec5a
+    #|finding-dark narrow 46595:53883c63
     #|finding-dark wide 84871:17a7b16a
-    #|code narrow 32643:8af2e78f
+    #|code narrow 32718:54f00286
     #|code wide 70141:42f542a3
-    #|code-dark narrow 32519:3c7b659f
+    #|code-dark narrow 32594:9ab800e0
     #|code-dark wide 69927:72631d87
-    #|wrong narrow 28630:15db3512
+    #|wrong narrow 28705:894df07b
     #|wrong wide 66161:2649ae81
-    #|wrong-dark narrow 28733:7a0a0513
+    #|wrong-dark narrow 28808:a66a7d2e
     #|wrong-dark wide 66174:f25a5808
-    #|checking narrow 35735:6a6a0268
+    #|checking narrow 35810:c522aa8d
     #|checking wide 74132:54bef3
-    #|checking-dark narrow 35828:dac7f845
+    #|checking-dark narrow 35903:f9d5cfd4
     #|checking-dark wide 74135:1e5e7a12
-    #|none narrow 39501:5d91a5d1
+    #|none narrow 39576:f3f46d2c
     #|none wide 77132:a85cd953
-    #|none-dark narrow 39380:ab69561e
+    #|none-dark narrow 39455:ebf0e07
     #|none-dark wide 76921:427c396c
-    #|failed narrow 23892:9f709614
+    #|failed narrow 23967:58b14959
     #|failed wide 60819:839fa92d
-    #|failed-dark narrow 23895:4f898f4a
+    #|failed-dark narrow 23970:4557bf59
     #|failed-dark wide 60732:1a404b71
-    #|nocode narrow 28665:c3986e94
+    #|nocode narrow 28740:fe38e6d9
     #|nocode wide 66023:4112183f
-    #|nocode-dark narrow 28584:b4229d3c
+    #|nocode-dark narrow 28659:c8554067
     #|nocode-dark wide 65852:4a6a3989
     #|
 
@@ -170,16 +169,17 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // P0 Regular Liquid Glass optics fix restored recipe blur 2.0/2.2 on narrow bars/pills.
   // iOS 27.0 resting segmented/pill thumb aligned to #68686E dark fill with zero border/shadow in Light and Dark.
   // iOS 27.0 Regular Liquid Glass calibration sets full-res blur=1.2 on narrow bars/pills.
+  // Pure progressive scroll-edge blur + bare adaptive ink + adaptive bar pills on narrow page_node bars.
   inspect(out.to_string(), content=(
-    #|settings narrow 101822:68cb371a
-    #|station narrow 97471:e6064415
-    #|me-reading narrow 31221:8154947e
+    #|settings narrow 101788:28db1cae
+    #|station narrow 97469:2987ccf7
+    #|me-reading narrow 31187:43d2c218
     #|settings wide 208705:aa1d9d1c
     #|station wide 279941:90c60101
     #|me-reading wide 203424:d1d4b002
-    #|settings-dark narrow 102090:c0590db8
-    #|station-dark narrow 97282:52010a7c
-    #|me-reading-dark narrow 31358:593d2ca5
+    #|settings-dark narrow 102053:6661d64a
+    #|station-dark narrow 97277:c47c7a1e
+    #|me-reading-dark narrow 31321:8f3392df
     #|settings-dark wide 208585:278a13a9
     #|station-dark wide 279559:6ef28ef5
     #|me-reading-dark wide 203370:c81f248c

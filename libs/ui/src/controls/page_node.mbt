@@ -816,11 +816,12 @@ fn narrow_page_node(
               .lies_along(Is(Middle))
               |> ignore
               mid.box(fn(w) {
+                w.adaptive_ink(Is(true)) |> ignore
                 styled_words(w, title, fn() { nav_title_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
               })
               |> ignore
               mid.show(fn() { small() != "" }, fn(sub) {
-                sub.clips(Is(true)).min_width(Is(Some(0.0))) |> ignore
+                sub.clips(Is(true)).min_width(Is(Some(0.0))).adaptive_ink(Is(true)) |> ignore
                 styled_words(sub, small, fn() { nav_sub_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
               })
             })
@@ -978,7 +979,7 @@ fn nav_back_circle_node(
   back : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=0.0, gap=0.0, fn(pill) {
+  bar_pill_group_node(loc~, parent, height=pg_back_pill_h, pad=0.0, gap=0.0, adaptive=true, fn(pill) {
     pill.box(made_for=loc, fn(b) {
       b
       .width(Is(Some(pg_back_pill_h)))

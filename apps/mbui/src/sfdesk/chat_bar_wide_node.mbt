@@ -380,7 +380,7 @@ fn wide_bar_breadcrumb(
   row.show(fn() { openers().length() > 0 }, at_once=true, fn(wrap) {
     wrap.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
     wrap.pick(at_once=true, key_of, fn(bc, _) {
-      bc.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).shrink(Is(0.0)) |> ignore
+      bc.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)).shrink(Is(0.0)).adaptive_ink(Is(true)) |> ignore
       let list = @signals.untracked(openers)
       let n = list.length()
       guard n > 0 else { return }
@@ -525,7 +525,7 @@ fn wide_bar_title(
     // (42% of the bar at most, 80 at least; giving way with ⌘F's field once the people have left, down to 4 of its
     // letters)
     @sf.style_node(t, fn() { chat_title_room.then(@ui.style(max_w=Fixed(dmax(chat_title_least, across() * chat_title_part)))) }, in_row=true)
-    t.shrink(Is(1.0)) |> ignore
+    t.shrink(Is(1.0)).adaptive_ink(Is(true)) |> ignore
     @sf.words_node(
       t,
       title,
@@ -537,6 +537,7 @@ fn wide_bar_title(
   })
   |> ignore
   row.show(fn() { renaming() != "" || failed() is Some(_) }, along_row=true, fn(d) {
+    d.adaptive_ink(Is(true)) |> ignore
     @sfpages.doing_mark_node(d, fn() { renaming() != "" }, failed, size=wide_doing_mark)
     @sf.tip_node(
       tips,
@@ -1039,7 +1040,7 @@ fn wide_bar_keys(
       },
       along_row=true,
       fn(b) {
-        @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, fn(p) {
+        @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, adaptive=true, fn(p) {
           @sf.icon_button_node(p, "archive", fn() { @sf.t("web-pages.chat.archive") }, fn() {
             match (@signals.untracked(view), @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 })) {
               (Some(v), Some(w)) => archive_asked(src, w, r, v, @signals.untracked(chat))
@@ -1052,7 +1053,7 @@ fn wide_bar_keys(
       },
     )
     // grouped action pill: idle remote screens, info, more (active jobs, driven screen, and led subchats live in wide_composer_bar_node)
-    @sf.bar_pill_group_node(slot, height=36.0, pad=2.0, gap=2.0, fn(k) {
+    @sf.bar_pill_group_node(slot, height=36.0, pad=2.0, gap=2.0, adaptive=true, fn(k) {
       // idle remote screens entry stays in the top bar; when an agent actively drives a screen, it moves above the composer
       k.show(
         fn() {
@@ -1107,7 +1108,7 @@ fn wide_bar_keys(
       panel_closed_with_switch,
       along_row=true,
       fn(b) {
-        @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, fn(p) {
+        @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, adaptive=true, fn(p) {
           @sf.icon_button_node(p, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
             match @signals.untracked(view) {
               Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))

@@ -259,8 +259,8 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         (@sfpages.chat_find_list(r).forget)()
         @sfpages.find_close()
       }
-      // back (40pt standalone liquid glass circle, its chevron 22 in the accent's ink): the find closed first while it is open
-      @sf.bar_pill_group_node(row, height=40.0, pad=0.0, gap=0.0, fn(back_pill) {
+      // back (40pt standalone adaptive liquid glass circle, its chevron 22 in neutral text ink matching nav_back_circle_node): the find closed first while it is open
+      @sf.bar_pill_group_node(row, height=40.0, pad=0.0, gap=0.0, adaptive=true, fn(back_pill) {
         @sf.round_key_node(
           back_pill,
           "chevron-left",
@@ -274,7 +274,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
           },
           side=40.0,
           icon_size=22.0,
-          ink=fn() { @sf.theme().p.accent_text },
+          ink=fn() { @sf.theme().p.text },
         )
       })
       |> ignore
@@ -406,6 +406,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
                   { size: th.t.title, weight: 600, line: chat_title_line, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
                 }))
                 .ink(By(fn() { @sf.theme().p.text }))
+                .adaptive_ink(Is(true))
                 |> ignore
               })
               p2.reacts(fn() { (rr2.tall(t2), can_toggle()) }, fn(cur) {
@@ -521,6 +522,7 @@ fn bar_middle_node(
             { size: th.t.title, weight: 600, line: chat_title_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
           }))
           .ink(By(fn() { @sf.theme().p.text }))
+          .adaptive_ink(Is(true))
           .fit_whole(By(fn() { !expanded() }))
           .cuts(Is(true))
           .allow_ellipsis(Is(true))
@@ -669,7 +671,7 @@ fn bar_end_node(
       .alpha(By(s))
       .presses(By(archivable))
       |> ignore
-      @sf.bar_pill_group_node(b, height=40.0, pad=3.0, gap=0.0, fn(arch_pill) {
+      @sf.bar_pill_group_node(b, height=40.0, pad=3.0, gap=0.0, adaptive=true, fn(arch_pill) {
         arch_pill.box(fn(inner) {
           inner
           .width(Is(Some(nav_key_side)))
@@ -706,7 +708,7 @@ fn bar_end_node(
   })
   |> ignore
   // right liquid glass pill: info + more (active jobs, driven screen, and led subchats live in chat_composer_bar_node)
-  @sf.bar_pill_group_node(e, height=40.0, pad=3.0, gap=2.0, fn(pill) {
+  @sf.bar_pill_group_node(e, height=40.0, pad=3.0, gap=2.0, adaptive=true, fn(pill) {
     // what it is (its info's sheet), then what is done with it ("…": the menu a row of the list has)
     pill.box(fn(k) {
       slides(k)
@@ -869,6 +871,7 @@ fn bar_small_breadcrumb_node(s : @view.View, openers : () -> Array[@sfbase.Opene
   .gap(Is(4.0))
   .lines_up(Is(Some(Middle)))
   .min_height(Is(Some(36.0)))
+  .adaptive_ink(Is(true))
   |> ignore
   @sf.icon_node(s, "spawned", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
   s.pick(at_once=true, key_of, fn(bc, _) {

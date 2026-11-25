@@ -4020,10 +4020,10 @@ fn Ctx::view_blit(
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
         s.unsafe_set(b + 23, if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r })
-      } else if !glass_paint.ink_bare && (kind == 10.0 || kind == 11.0) {
+      } else if kind == 10.0 || kind == 11.0 {
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
-        s.unsafe_set(b + 23, glass_paint.ink_r)
+        s.unsafe_set(b + 23, if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r })
       } else if !glass_paint.ink_bare &&
         kind == 0.0 &&
         s.unsafe_get(b + 6) <= 0.0 &&

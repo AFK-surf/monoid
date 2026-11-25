@@ -213,42 +213,63 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       board_beside_page(page, src, r, tips, serial)
     })
     |> ignore
+    let high = fn() { @sf.wide_bar_h + (ends.over)() }
     col.box(fn(bar) {
       bar
       .over(Is(true))
-      .height(Is(Some(chat_bar_room(in_pane=false))))
+      .height(By(fn() { Some(high()) }))
       .row(Is(true))
-      .gap(Is(4.0))
       .lines_up(Is(Some(Middle)))
-      // (its title as far in from its start as × is seen from its end: the button's room at the end's, its icon of 16
-      // in its middle)
-      .padding(By(fn() {
-        let end = (ends.end)(false, false)
-        (end + (@sf.icon_button_side - 16.0) / 2.0, 0.0, end, 0.0)
-      }))
-      .ground(By(fn() { @sf.theme().p.bg }))
+      .padding(By(fn() { (0.0, (ends.over)(), 0.0, 1.0) }))
       // (its empty part drags the window, as a chat's bar does)
       .presses(Is(true))
       .moves_window(By(fn() { @ui.window_inset() }))
       |> ignore
-      bar.box(fn(t) {
-        t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-        @sf.words_node(t, fn() {
-          // (its head alone, as the bar of the chat's page made as nodes reads it: a message patched in place reads
-          // none of it again)
-          match @sfbase.chat_view_now(src, r) {
-            Some(v) => v.title
-            None => r.title
-          }
-        }, fn() { beside_title_look }) |> ignore
+      @sf.top_scroll_edge_by_node(
+        bar,
+        fn(_) { high() + 16.0 },
+        fn(s) { if s.glass_solid() { 16.0 } else { high() + 16.0 } },
+        fn(_) { @sf.theme().p.bg },
+        from_top=true,
+        shield=true,
+      )
+      |> ignore
+      bar.box(fn(inner) {
+        inner
+        .row(Is(true))
+        .grow(Is(1.0))
+        .basis(Is(Some(0.0)))
+        .min_width(Is(Some(0.0)))
+        .gap(Is(8.0))
+        .lines_up(Is(Some(Middle)))
+        .padding(By(fn() {
+          let end = dmax(12.0, (ends.end)(false, false))
+          (end, 0.0, end, 0.0)
+        }))
+        |> ignore
+        inner.box(fn(t) {
+          t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).adaptive_ink(Is(true)) |> ignore
+          @sf.words_node(t, fn() {
+            // (its head alone, as the bar of the chat's page made as nodes reads it: a message patched in place reads
+            // none of it again)
+            match @sfbase.chat_view_now(src, r) {
+              Some(v) => v.title
+              None => r.title
+            }
+          }, fn() { beside_title_look }) |> ignore
+        })
+        |> ignore
+        @sf.bar_pill_group_node(inner, height=36.0, pad=2.0, gap=2.0, adaptive=true, fn(pill) {
+          @sf.icon_button_node(pill, "expand", fn() { @sf.t("web-main.board.full") }, fn() {
+            @sfbase.board_set(src, false)
+            open_page(Chat(r))
+          }, tips~)
+          |> ignore
+          @sf.icon_button_node(pill, "close", fn() { @sf.t("web-main.board.close") }, fn() { @sfbase.board_pick.set(None) }, tips~)
+          |> ignore
+        })
+        |> ignore
       })
-      |> ignore
-      @sf.icon_button_node(bar, "expand", fn() { @sf.t("web-main.board.full") }, fn() {
-        @sfbase.board_set(src, false)
-        open_page(Chat(r))
-      }, tips~, linked=ends.linked)
-      |> ignore
-      @sf.icon_button_node(bar, "close", fn() { @sf.t("web-main.board.close") }, fn() { @sfbase.board_pick.set(None) }, tips~, linked=ends.linked)
       |> ignore
     })
     |> ignore
