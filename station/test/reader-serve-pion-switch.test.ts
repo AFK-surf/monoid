@@ -430,6 +430,20 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
         const probe = (await srv.request(20, { method: "GET", path: "/admin/api/jobs/none", headers: BASE_HEADERS }))!;
         assert.equal(probe.head.status, 404);
       };
+      // Deterministic stdin-to-socket fence: a fresh conn ID cannot be answered until its viewer line
+      // (and therefore every earlier stdin line) has been processed by the server. Omit `stillfail-build`
+      // so the fence emits no `build` protocol messages on stdout.
+      let fenceConn = 1000;
+      const flushStdin = async () => {
+        const cid = fenceConn++;
+        srv.tell({ viewer: { conn: cid, viewer: BASE_VIEWER, moved: false, floor: null } });
+        const probe = (await srv.request(cid, {
+          method: "GET",
+          path: "/admin/api/sessions/__stdin_fence__",
+          headers: { "stillfail-lang": "en", "stillfail-runtimes": RUNTIME_KINDS.join(",") },
+        }))!;
+        assert.equal(probe.head.status, 404);
+      };
 
       // 1. Raw BE32 framing edge cases: over-long u32, PIPE_FAILED, half-close EOF, missing newline, bad JSON -> silent close (0 bytes)
       const overLong = await srv.sendRaw(Buffer.concat([encodeStreamHead(1), be32(PIPE_MOST + 1)]));
@@ -498,6 +512,7 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
 
       // 4. Local reads, zstd <512 uncompressed vs >=512 compressed, changed, batch, and unseen 404/409
       srv.tell({ viewer: { conn: 20, viewer: BASE_VIEWER, moved: false, floor: null }, wall: 1750000005000 });
+      await flushStdin();
 
       const smallRead = (await srv.request(20, {
         method: "GET",
@@ -553,6 +568,7 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
 
       // 5. Refused pending fallback vs direct status (custom pending prefix)
       srv.tell({ set: { ...DEFAULT_SET, pending: ["no job "] } });
+      await flushStdin();
       const pendingFbP = srv.request(20, {
         method: "GET",
         path: "/admin/api/jobs/missing-job",
@@ -570,6 +586,7 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       assert.deepEqual(JSON.parse(pendingFbRes.text), { fromFallback: true });
       // Restore default pending -> direct 404 without fallback
       srv.tell({ set: DEFAULT_SET });
+      await flushStdin();
       const direct404 = (await srv.request(20, {
         method: "GET",
         path: "/admin/api/jobs/missing-job",
