@@ -220,21 +220,306 @@ test "the keyboard types into it once it is pressed; ⌘V pastes this device's c
 }
 
 ///|
-test "Windows driving a Mac: Win K and Win Shift K send Command, Ctrl K stays Control" {
+test "Windows driving a Mac: cross-OS mapping swaps Ctrl and Meta by default and respects screenKeyMap off" {
   let r = screen_rig(w=1280.0, h=800.0, platform=3, os="macOS 26")
   r.t.run_for(@sf.later_ms)
   driven(r)
   r.tap_at(0.5, 0.5)
   let from = r.inputs().length()
+  // Default ON: Ctrl+A/K/Shift+Z -> ⌘, Win+K -> ⌃, Ctrl+Alt+I -> ⌥⌘I, F5/F12/Insert pass through
+  for pair in [
+    (@ui.key_of_char('a'), @ui.mod_ctrl),
+    (@ui.key_of_char('k'), @ui.mod_ctrl),
+    (@ui.key_of_char('z'), @ui.mod_ctrl | @ui.mod_shift_key),
+    (@ui.key_of_char('k'), @ui.mod_cmd),
+    (@ui.key_of_char('i'), @ui.mod_ctrl | @ui.mod_alt),
+    (@ui.key_code_f5, 0),
+    (@ui.key_code_f12, 0),
+    (@ui.key_code_insert, 0),
+  ] {
+    r.t.key(pair.0, mods=pair.1)
+  }
+  let keys = r.inputs()[from:].to_owned()
+  assert_eq(
+    keys.map(fn(k) { (text(Some(k), "kind"), text(Some(k), "code"), number(Some(k), "mods")) }),
+    [
+      ("down", "KeyA", 4.0),
+      ("up", "KeyA", 4.0),
+      ("down", "KeyK", 4.0),
+      ("up", "KeyK", 4.0),
+      ("down", "KeyZ", 12.0),
+      ("up", "KeyZ", 12.0),
+      ("down", "KeyK", 2.0),
+      ("up", "KeyK", 2.0),
+      ("down", "KeyI", 5.0),
+      ("up", "KeyI", 5.0),
+      ("down", "F5", 0.0),
+      ("up", "F5", 0.0),
+      ("down", "F12", 0.0),
+      ("up", "F12", 0.0),
+      ("down", "Insert", 0.0),
+      ("up", "Insert", 0.0),
+    ],
+  )
+  // Ctrl+V pastes this device's clipboard on Mac; Win+V sends raw ⌃V without pasting
+  r.t.clipboard_gives("from win")
+  let before_paste = r.inputs().length()
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_ctrl)
+  r.t.draw()
+  assert_eq(r.told("screen.clipboard").length(), 1)
+  assert_eq(r.inputs().length(), before_paste)
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  let ctrl_v = r.inputs()[before_paste:].to_owned()
+  assert_eq(ctrl_v.map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }), [("KeyV", 2.0), ("KeyV", 2.0)])
+  // Ctrl+Click and Ctrl+Wheel send MetaLeft on Mac
+  let (mx, my) = r.at(0.4, 0.4)
+  let before_click = r.inputs().length()
+  r.t.hold_mods(@ui.mod_ctrl)
+  r.t.tap(mx, my)
+  r.t.wheel_with(mx, my, 0.0, 30.0, 0)
+  r.t.hold_mods(0)
+  let ptr_mods = r.inputs()[before_click:]
+    .to_owned()
+    .filter(fn(k) { text(Some(k), "t") == "key" })
+    .map(fn(k) { (text(Some(k), "kind"), text(Some(k), "code")) })
+  assert_eq(ptr_mods, [("down", "MetaLeft"), ("up", "MetaLeft"), ("down", "MetaLeft"), ("up", "MetaLeft")])
+  // Semantic text editing & navigation on Win -> Mac:
+  // Home/End (+Shift) -> ⌘+←/→, Ctrl+←/→ (+Shift) -> ⌥+←/→, Ctrl+Backspace/Delete -> ⌥+Backspace/Delete, Ctrl+Home/End (+Shift) -> ⌘+↑/↓
+  let from_nav = r.inputs().length()
+  for pair in [
+    (@ui.key_code_home, 0),
+    (@ui.key_code_end, @ui.mod_shift_key),
+    (@ui.key_code_left, @ui.mod_ctrl),
+    (@ui.key_code_right, @ui.mod_ctrl | @ui.mod_shift_key),
+    (@ui.key_code_backspace, @ui.mod_ctrl),
+    (@ui.key_code_delete, @ui.mod_ctrl),
+    (@ui.key_code_home, @ui.mod_ctrl),
+    (@ui.key_code_end, @ui.mod_ctrl | @ui.mod_shift_key),
+  ] {
+    r.t.key(pair.0, mods=pair.1)
+  }
+  assert_eq(
+    r.inputs()[from_nav:].to_owned().map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }),
+    [
+      ("ArrowLeft", 4.0),
+      ("ArrowLeft", 4.0),
+      ("ArrowRight", 12.0),
+      ("ArrowRight", 12.0),
+      ("ArrowLeft", 1.0),
+      ("ArrowLeft", 1.0),
+      ("ArrowRight", 9.0),
+      ("ArrowRight", 9.0),
+      ("Backspace", 1.0),
+      ("Backspace", 1.0),
+      ("Delete", 1.0),
+      ("Delete", 1.0),
+      ("ArrowUp", 4.0),
+      ("ArrowUp", 4.0),
+      ("ArrowDown", 12.0),
+      ("ArrowDown", 12.0),
+    ],
+  )
+  // Turn mapping off: Ctrl stays Control, Win stays Command, Win+V pastes, Ctrl+V sends raw ⌃V, Ctrl+Backspace raw
+  r.key_map.set("off")
+  r.t.draw()
+  let from_off = r.inputs().length()
   for mods in [@ui.mod_cmd, @ui.mod_cmd | @ui.mod_shift_key, @ui.mod_ctrl] {
     r.t.key(@ui.key_of_char('k'), mods~)
   }
-  let keys = r.inputs()[from:].to_owned()
-  assert_eq(keys.length(), 6)
-  assert_eq(keys.map(fn(k) { text(Some(k), "code") }), ["KeyK", "KeyK", "KeyK", "KeyK", "KeyK", "KeyK"])
-  assert_eq(keys.map(fn(k) { number(Some(k), "mods") }), [4.0, 4.0, 12.0, 12.0, 2.0, 2.0])
-  assert_eq(keys.map(fn(k) { text(Some(k), "kind") }), ["down", "up", "down", "up", "down", "up"])
+  r.t.key(@ui.key_code_backspace, mods=@ui.mod_ctrl)
+  let raw = r.inputs()[from_off:].to_owned()
+  assert_eq(raw.map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }), [
+    ("KeyK", 4.0),
+    ("KeyK", 4.0),
+    ("KeyK", 12.0),
+    ("KeyK", 12.0),
+    ("KeyK", 2.0),
+    ("KeyK", 2.0),
+    ("Backspace", 2.0),
+    ("Backspace", 2.0),
+  ])
+  let before_off_v = r.inputs().length()
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_ctrl)
+  let off_ctrl_v = r.inputs()[before_off_v:].to_owned()
+  assert_eq(off_ctrl_v.map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }), [("KeyV", 2.0), ("KeyV", 2.0)])
+  assert_eq(r.told("screen.clipboard").length(), 1)
+  r.t.clipboard_gives("win+v raw")
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  r.t.draw()
+  assert_eq(r.told("screen.clipboard").length(), 2)
   mouse_done(r)
+}
+
+///|
+test "Mac driving Windows: ⌘ maps to Ctrl, ⌃ stays Ctrl by default (or maps to Win when keepCtrl off), semantic text nav, ⌘V pastes" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, os="Windows 11 Pro")
+  r.t.run_for(@sf.later_ms)
+  driven(r)
+  r.tap_at(0.5, 0.5)
+  let from = r.inputs().length()
+  // Default (screenKeyMap on, screenKeepCtrl on): ⌘ -> Ctrl, ⌃ stays Ctrl (safe for terminals)
+  for pair in [
+    (@ui.key_of_char('a'), @ui.mod_cmd),
+    (@ui.key_of_char('l'), @ui.mod_cmd),
+    (@ui.key_of_char('w'), @ui.mod_cmd),
+    (@ui.key_of_char('c'), @ui.mod_ctrl),
+    (@ui.key_of_char('d'), @ui.mod_ctrl),
+  ] {
+    r.t.key(pair.0, mods=pair.1)
+  }
+  let keys = r.inputs()[from:].to_owned()
+  assert_eq(
+    keys.map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }),
+    [
+      ("KeyA", 2.0),
+      ("KeyA", 2.0),
+      ("KeyL", 2.0),
+      ("KeyL", 2.0),
+      ("KeyW", 2.0),
+      ("KeyW", 2.0),
+      ("KeyC", 2.0),
+      ("KeyC", 2.0),
+      ("KeyD", 2.0),
+      ("KeyD", 2.0),
+    ],
+  )
+  // Semantic text editing & navigation on Mac -> Win:
+  // ⌥+←/→ (+Shift) -> Ctrl+←/→, ⌥+Backspace/Delete -> Ctrl+Backspace/Delete,
+  // ⌘+←/→ (+Shift) -> Home/End, ⌘+↑/↓ (+Shift) -> Ctrl+Home/End
+  let from_nav = r.inputs().length()
+  for pair in [
+    (@ui.key_code_left, @ui.mod_alt),
+    (@ui.key_code_right, @ui.mod_alt | @ui.mod_shift_key),
+    (@ui.key_code_backspace, @ui.mod_alt),
+    (@ui.key_code_delete, @ui.mod_alt),
+    (@ui.key_code_left, @ui.mod_cmd),
+    (@ui.key_code_right, @ui.mod_cmd | @ui.mod_shift_key),
+    (@ui.key_code_up, @ui.mod_cmd),
+    (@ui.key_code_down, @ui.mod_cmd | @ui.mod_shift_key),
+  ] {
+    r.t.key(pair.0, mods=pair.1)
+  }
+  assert_eq(
+    r.inputs()[from_nav:].to_owned().map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }),
+    [
+      ("ArrowLeft", 2.0),
+      ("ArrowLeft", 2.0),
+      ("ArrowRight", 10.0),
+      ("ArrowRight", 10.0),
+      ("Backspace", 2.0),
+      ("Backspace", 2.0),
+      ("Delete", 2.0),
+      ("Delete", 2.0),
+      ("Home", 0.0),
+      ("Home", 0.0),
+      ("End", 8.0),
+      ("End", 8.0),
+      ("Home", 2.0),
+      ("Home", 2.0),
+      ("End", 10.0),
+      ("End", 10.0),
+    ],
+  )
+  // Modifier released before remapped key: ⌘+ArrowLeft down -> Home down, then ArrowLeft up with mods=0 still sends Home up
+  let from_rel = r.inputs().length()
+  r.key_in(true, "ArrowLeft", "ArrowLeft", mod_meta)
+  r.key_in(false, "ArrowLeft", "ArrowLeft", 0)
+  assert_eq(
+    r.inputs()[from_rel:].to_owned().map(fn(k) { (kind_of_input(k), text(Some(k), "code"), number(Some(k), "mods")) }),
+    [("down", "Home", 0.0), ("up", "Home", 0.0)],
+  )
+  // ⌘V pastes on Windows; ⌃V sends raw Ctrl+V without hijacking Vim/terminal into clipboard paste
+  r.t.clipboard_gives("from mac")
+  let before_v = r.inputs().length()
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  r.t.draw()
+  assert_eq(r.told("screen.clipboard").length(), 1)
+  assert_eq(r.inputs().length(), before_v)
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_ctrl)
+  let raw_ctrl_v = r.inputs()[before_v:].to_owned()
+  assert_eq(raw_ctrl_v.map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }), [("KeyV", 2.0), ("KeyV", 2.0)])
+  assert_eq(r.told("screen.clipboard").length(), 1)
+  // Turn screenKeepCtrl OFF: ⌃ now maps to Win (Meta), ⌃V sends Win+V, Ctrl-right-click still never leaks Win
+  r.keep_ctrl.set("off")
+  r.t.draw()
+  let from_win = r.inputs().length()
+  r.t.key(@ui.key_of_char('d'), mods=@ui.mod_ctrl)
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_ctrl)
+  assert_eq(
+    r.inputs()[from_win:].to_owned().map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }),
+    [("KeyD", 4.0), ("KeyD", 4.0), ("KeyV", 4.0), ("KeyV", 4.0)],
+  )
+  assert_eq(r.told("screen.clipboard").length(), 1)
+  // ⌘+Click and ⌘+Wheel send ControlLeft; macOS Ctrl+Click right-click strips Ctrl before remap (no MetaLeft!)
+  let (mx, my) = r.at(0.4, 0.4)
+  let before_ptr = r.inputs().length()
+  r.t.hold_mods(@ui.mod_cmd)
+  r.t.tap(mx, my)
+  r.t.wheel_with(mx, my, 0.0, 30.0, 0)
+  r.t.hold_mods(@ui.mod_ctrl)
+  r.t.right_click(mx, my)
+  r.t.hold_mods(0)
+  let ptr_keys = r.inputs()[before_ptr:]
+    .to_owned()
+    .filter(fn(k) { text(Some(k), "t") == "key" })
+    .map(fn(k) { (text(Some(k), "kind"), text(Some(k), "code")) })
+  assert_eq(ptr_keys, [("down", "ControlLeft"), ("up", "ControlLeft"), ("down", "ControlLeft"), ("up", "ControlLeft")])
+  // Turn mapping off: ⌘ sends raw Win (Meta), ⌥← sends raw Alt+ArrowLeft
+  r.key_map.set("off")
+  r.t.draw()
+  let from_off = r.inputs().length()
+  r.t.key(@ui.key_of_char('l'), mods=@ui.mod_cmd)
+  r.t.key(@ui.key_code_left, mods=@ui.mod_alt)
+  assert_eq(
+    r.inputs()[from_off:].to_owned().map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }),
+    [("KeyL", 4.0), ("KeyL", 4.0), ("ArrowLeft", 1.0), ("ArrowLeft", 1.0)],
+  )
+  mouse_done(r)
+}
+
+///|
+test "same-OS, Android emulator on Mac, iOS Simulator on Windows, and touch combos" {
+  // Mac -> Mac: untouched 1:1, ⌃V sends ⌃V rather than pasting
+  let mac_mac = screen_rig(w=1280.0, h=800.0, platform=0, os="macOS 26")
+  mac_mac.t.run_for(@sf.later_ms)
+  driven(mac_mac)
+  mac_mac.tap_at(0.5, 0.5)
+  let f0 = mac_mac.inputs().length()
+  mac_mac.t.key(@ui.key_of_char('a'), mods=@ui.mod_cmd)
+  mac_mac.t.key(@ui.key_of_char('v'), mods=@ui.mod_ctrl)
+  assert_eq(
+    mac_mac.inputs()[f0:].to_owned().map(fn(k) { (text(Some(k), "code"), number(Some(k), "mods")) }),
+    [("KeyA", 4.0), ("KeyA", 4.0), ("KeyV", 2.0), ("KeyV", 2.0)],
+  )
+  assert_eq(mac_mac.told("screen.clipboard").length(), 0)
+  mouse_done(mac_mac)
+
+  // Mac -> Android emulator hosted on a Mac: Android uses Ctrl, so ⌘A maps to Ctrl+A
+  let mac_and = screen_rig(w=1280.0, h=800.0, platform=0, screen="android:emulator-5554", os="macOS 26")
+  mac_and.t.run_for(@sf.later_ms)
+  driven(mac_and)
+  mac_and.tap_at(0.5, 0.5)
+  let f1 = mac_and.inputs().length()
+  mac_and.t.key(@ui.key_of_char('a'), mods=@ui.mod_cmd)
+  assert_eq(mac_and.inputs()[f1:].to_owned().map(fn(k) { number(Some(k), "mods") }), [2.0, 2.0])
+  mouse_done(mac_and)
+
+  // Windows -> iOS Simulator: Simulator uses ⌘, so Ctrl+A maps to ⌘A, and held touch modifiers stay untouched
+  let win_sim = screen_rig(w=1280.0, h=800.0, platform=3, screen="sim:iphone", os="macOS 26")
+  win_sim.t.run_for(@sf.later_ms)
+  win_sim.state("live", others=[], more={ "kind": Json::string("simulator") })
+  win_sim.config()
+  win_sim.frame(1000.0)
+  win_sim.tap_at(0.5, 0.5)
+  let f2 = win_sim.inputs().length()
+  win_sim.t.key(@ui.key_of_char('a'), mods=@ui.mod_ctrl)
+  assert_eq(win_sim.inputs()[f2:].to_owned().map(fn(k) { number(Some(k), "mods") }), [4.0, 4.0])
+  // Touch keys row (u.held) sends remote-native modifiers without double-swapping
+  let f3 = win_sim.inputs().length()
+  win_sim.ui().held.toggle(mod_ctrl)
+  win_sim.t.type_text("c")
+  assert_eq(win_sim.inputs()[f3:].to_owned().map(fn(k) { number(Some(k), "mods") }), [2.0, 2.0])
+  mouse_done(win_sim)
 }
 
 ///|

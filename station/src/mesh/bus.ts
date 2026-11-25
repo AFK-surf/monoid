@@ -92,6 +92,11 @@ export class PeerBus {
     for (const f of this.onAttach.splice(0)) f();
   }
 
+  /// Whether the transport is there: off it, no other station can be asked.
+  isAttached(): boolean {
+    return this.call !== null;
+  }
+
   /// The round trip of each connection to another station now (none before the transport is there).
   rtts(): Rtt[] {
     return this.call?.rtts?.() ?? [];

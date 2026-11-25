@@ -5,9 +5,7 @@
 
 // ---- a key catcher (@hostapi.key_catch) ----
 
-static int key_catching;
-
-void mb_host_key_catch(int32_t on) { key_catching = on != 0; }
+void mb_host_key_catch(int32_t on) { ws->key_catching = on != 0; }
 
 // The framework's code of a named key (src/ui/desktop.mbt), 0 for another.
 static int named_key(guint keyval) {
@@ -25,6 +23,19 @@ static int named_key(guint keyval) {
     case GDK_KEY_Page_Down: case GDK_KEY_KP_Page_Down: return 16;
     case GDK_KEY_Escape: return 17;
     case GDK_KEY_Tab: case GDK_KEY_ISO_Left_Tab: case GDK_KEY_KP_Tab: return 18;
+    case GDK_KEY_Insert: case GDK_KEY_KP_Insert: return 41;
+    case GDK_KEY_F1: return 42;
+    case GDK_KEY_F2: return 43;
+    case GDK_KEY_F3: return 44;
+    case GDK_KEY_F4: return 45;
+    case GDK_KEY_F5: return 46;
+    case GDK_KEY_F6: return 47;
+    case GDK_KEY_F7: return 48;
+    case GDK_KEY_F8: return 49;
+    case GDK_KEY_F9: return 50;
+    case GDK_KEY_F10: return 51;
+    case GDK_KEY_F11: return 52;
+    case GDK_KEY_F12: return 53;
     default: return 0;
   }
 }
@@ -36,10 +47,10 @@ static int key_char(guint keyval) {
 }
 
 // A key down with the focus a key catcher's: the named keys, a character with Ctrl, Alt or Super held as its key
-// (1000 + it, lower case; Ctrl with Alt is AltGr, a character typed). 0: not the catcher's as a key.
+// (1000 + it, lower case). GTK4 maps AltGr to ISO_Level3_Shift rather than GDK_ALT_MASK, so Ctrl+Alt stays a shortcut.
 static int catch_key(guint keyval, int mods) {
   int code = named_key(keyval);
-  if (!code && (mods & (2 | 4 | 8)) && (mods & (2 | 4)) != (2 | 4)) {
+  if (!code && (mods & (2 | 4 | 8))) {
     int ch = key_char(keyval);
     if (ch) code = 1000 + ch;
   }

@@ -1,0 +1,1716 @@
+// Core session actors runtime (`station/mb/src/reader/actors.mbt` 1:1 + `wave8-plan.md` v5 §2.2-§2.4):
+// - Immutable per-generation `ActorsGen` binding `(gen, store_db, actors, actor_timers)` so old-generation
+//   fibers can NEVER write to a new Hub's SQLite DB, emit frames to a new Hub, or corrupt `active`.
+// - On-demand single-consumer serial task pump (`task_queue : Array[Option[ActorTask]]` + `task_running`)
+//   with immediate slot release + compaction, forked on `gen.fibers` without incrementing `active`.
+// - Per-task once-only settlement (`Ran` / `SkippedClosed` / `Interrupted`) distinguishing live single-task
+//   interruption (propagates `Interrupted` to caller and keeps pumping B) from sealed/retired generation
+//   teardown (drains and interrupts all remaining items, clearing `task_queue` to break RC cycles).
+// - Zero `SessionDispatch` field stored on `Actors`/`ActorsGen` (passed by value on `heard`/`routed`),
+//   and value-only timer dispatch (`host.hub_timers` never captures `Actors` or `ActorsGen`).
+// - Strict UTF-16 surrogate validation on `heard` JSON lines; MB-exact `close` `tools_retry`/`mid_wait` order.
+
+import "base_codec"
+import "builders_core"
+import "effect"
+import "js_json"
+import "sessions_core"
+
+pub let LIVE_KEY : String = "#live"
+pub let JOBS_KEY : String = "#jobs"
+pub let REMOTE_KEY : String = "#remote"
+
+pub struct Turn {
+  pub id : String
+  pub mut declared : Option[base_codec::Json]
+  pub auth_retried : Bool
+  pub mut codex_retried : Bool
+  pub passive : Bool
+  pub by : base_codec::Json
+  pub asked_before : Option[base_codec::Json]
+  pub started_at : Double
+  pub mut first_live_at : Option[Double]
+  pub mut tools_count : Int
+  pub mut last_tool_at : Double
+  pub mut wait_watch : Bool
+}
+
+pub struct QueuedRetry {
+  pub kind : String
+  pub text : String
+  pub by : base_codec::Json
+  pub codex_retried : Bool
+}
+
+pub struct DeferredEnd {
+  pub lost : Bool
+  pub unheard : Bool
+  pub recorded : Option[String]
+}
+
+pub struct Working {
+  pub connect : String
+  pub channel : String
+  pub thread_ts : String
+  pub mut ts : base_codec::Json
+  pub first_ts : base_codec::Json
+  pub since : Double
+}
+
+pub struct Agent {
+  pub generation : Int
+  pub handle : Int
+}
+
+pub struct CodexUpdate {
+  pub id : Int
+  pub by : base_codec::Json
+  pub turn : String
+  pub mut finished : Bool
+}
+
+/// Pure value timer identity stored in `Actor.timers` (zero closure capturing `Actor`).
+pub struct ActorTimerRef {
+  pub timer_id : Int
+  pub gen : Int
+}
+
+/// Pure-value action tag for actor timers (zero closures capturing `ActorsGen` or `Actor`,
+/// eliminating any `ActorsGen -> actor_timers -> closure -> ActorsGen` RC cycle).
+pub enum ActorTimerAction {
+  Named(String, base_codec::Json)
+}
+
+/// Generation-scoped actor timer entry stored in `ActorsGen.actor_timers` (never in `host.hub_timers`).
+/// Holds only pure values (strings, ints, `ActorTimerAction`) — zero closures, zero RC cycles.
+pub struct PendingActorTimer {
+  pub actor_key : String
+  pub name : String
+  pub gen : Int
+  pub action : ActorTimerAction
+}
+
+pub enum TaskOutcome {
+  Ran
+  SkippedClosed
+  Interrupted
+}
+
+/// Once-only settlement credential attached to each queued `ActorTask`.
+pub struct TaskSettlement {
+  pub mut settled : Bool
+  pub mut outcome : Option[TaskOutcome]
+}
+
+pub struct ActorTask {
+  pub body_k : ((effect::Exit[Unit]) -> Unit) -> Unit
+  pub done : effect::Deferred[TaskOutcome]
+  pub settlement : TaskSettlement
+}
+
+pub struct Actor {
+  pub key : String
+  pub gen_epoch : Int
+  pub mut runtime : String
+  /// Bounded FIFO queue with immediate `None` slot clearing on pop and periodic compaction.
+  pub task_queue : Array[Option[ActorTask]]
+  pub mut task_head : Int
+  pub mut task_running : Bool
+  /// Diagnostic count of pump fiber forks for this actor (verifies strict single-consumer pump).
+  pub mut pump_starts : Int
+  /// Tasks queued or running.
+  pub mut queued : Int
+  /// Lines Node said for this actor (`settled`).
+  pub mut seen : Int
+  pub mut agent : Option[Agent]
+  pub mut stale : Bool
+  pub mut restart : Bool
+  pub mut change_seq : Int
+  pub mut restart_seq : Int
+  pub mut profile : base_codec::Json
+  pub mut running_identity : base_codec::Json
+  pub mut read_back : Bool
+  pub mut phase : String
+  pub mut turn : Option[Turn]
+  pub mut warm : Bool
+  pub mut deferred_end : Option[DeferredEnd]
+  pub mut starting_turn : Bool
+  pub mut queued_retry : Option[QueuedRetry]
+  pub mut auth_tried : Array[String]
+  pub mut codex_update : Option[CodexUpdate]
+  pub mut codex_next : Int
+  pub mut codex_reloaded : Option[String]
+  pub mut nudges : Int
+  pub asked_to_name : Array[String]
+  pub mut overloads : Int
+  pub mut tools_lost : Option[String]
+  pub mut tools_lost_heard : Option[Double]
+  pub mut tools_restarts : Int
+  pub mut tools_retry : Option[Int]
+  pub mut tools_retries : Int
+  pub mut tools_retry_at : Double
+  pub mut tools_retry_deferred : Bool
+  pub mut saying : Option[(String, String)]
+  pub mut last_said : String
+  pub mut turn_text : String
+  pub mut posted : Bool
+  pub mut stop_requested : Bool
+  pub mut resume_lost : Bool
+  pub mut afresh : Option[String]
+  pub mut compacted_untold : Bool
+  pub mut compacting : Bool
+  pub mut over_while_compacting : Bool
+  pub stopped : Array[base_codec::Json]
+  pub mut stopped_note : Option[String]
+  pub mut idle_since : Double
+  pub mut open_kind : String
+  pub mut working_for : Array[Working]
+  pub mut ended_for : Array[Working]
+  pub mut tools : Array[(String, String)]
+  pub mut notices : Array[String]
+  pub mut waiting : Option[Int]
+  pub mut waits : Int
+  pub mut waiting_until : Double
+  pub mut waiting_seconds : Double
+  pub mut mid_waiting : Option[Int]
+  pub mut mid_waits : Int
+  pub mut mid_waiting_until : Double
+  pub mut mid_waiting_seconds : Double
+  pub mut last_post_at : Double
+  pub mut silent_waiting_since : Option[Double]
+  pub mut progress_reminded_at : Double
+  pub mut refill : Option[Int]
+  pub mut refills : Int
+  pub mut refill_at : Double
+  pub mut steered : Array[base_codec::Json]
+  pub mut steered_for : Array[Working]
+  pub mut unread : Array[base_codec::Json]
+  pub mut unread_preparing : Int
+  pub mut delivery_interruptions : Int
+  pub mut recoveries : Int
+  pub mut recovery_deferred : Bool
+  pub mut start_failures : Int
+  pub mut failed_handed : String
+  pub mut paused_cap : Bool
+  pub mut force_session_cap : Bool
+  pub mut cap_wait_notified : Bool
+  pub mut opening_rpc : Option[Int]
+  /// Value-only timer references by name (`(timer_id, gen)` — NEVER closures capturing `Actor`).
+  pub timers : Map[String, ActorTimerRef]
+  pub mut timer_gen : Int
+  pub mut mirrored : String
+}
+
+/// Immutable per-generation actor context. Every fiber, pump, timer, and store call binds
+/// directly to its creation-time `ActorsGen` and can never observe a newer generation's `HubGen` or DB.
+pub struct ActorsGen {
+  pub host : sessions_core::SessionHost
+  pub gen : sessions_core::HubGen
+  pub sep : String
+  pub handlers : ActorRunHandlers
+  pub actors : Map[String, Actor]
+  pub store_db : Option[StoreDb]
+  pub actor_timers : Map[Int, PendingActorTimer]
+}
+
+pub fn ActorsGen::new_with_store(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  sep : String,
+  handlers : ActorRunHandlers,
+  store_db : Option[StoreDb],
+) -> ActorsGen {
+  ActorsGen::{
+    host: host,
+    gen: gen,
+    sep: sep,
+    handlers: handlers,
+    actors: Map::new(),
+    store_db: store_db,
+    actor_timers: Map::new(),
+  }
+}
+
+/// Process-lifetime outer shell holding the active `ActorsGen` (replaced on `{"db": place}`).
+/// Never stores `SessionDispatch` (passed by value at `heard` / `routed`).
+pub struct Actors {
+  pub host : sessions_core::SessionHost
+  pub sep : String
+  pub handlers : ActorRunHandlers
+  pub mut current : ActorsGen
+  store_db_provider : (sessions_core::HubGen) -> Option[StoreDb]
+}
+
+pub fn Actors::new_with_store_provider(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  sep : String,
+  handlers : ActorRunHandlers,
+  store_db_provider : (sessions_core::HubGen) -> Option[StoreDb],
+) -> Actors {
+  let sdb = store_db_provider(gen)
+  Actors::{
+    host: host,
+    sep: sep,
+    handlers: handlers,
+    current: ActorsGen::new_with_store(host, gen, sep, handlers, sdb),
+    store_db_provider: store_db_provider,
+  }
+}
+
+pub fn Actors::new(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  sep : String,
+  handlers : ActorRunHandlers,
+) -> Actors {
+  Actors::new_with_store_provider(host, gen, sep, handlers, default_sql_store_db)
+}
+
+pub fn Actors::has_stubs(self : Actors) -> Bool {
+  self.handlers.is_stub
+}
+
+pub fn Actors::gen(self : Actors) -> sessions_core::HubGen {
+  self.current.gen
+}
+
+pub fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
+  self.current.actor(key, runtime)
+}
+
+pub fn Actors::close(self : Actors, a : Actor) -> Unit {
+  if a.gen_epoch != self.current.gen.counters.epoch {
+    return
+  }
+  self.current.close(a)
+}
+
+pub fn Actors::quiet(self : Actors) -> Unit {
+  self.current.quiet()
+}
+
+// ── Per-generation `ActorsGen` primitives ──
+
+pub fn ActorsGen::say_node(self : ActorsGen, fields : Array[(String, base_codec::Json)]) -> Unit {
+  self.gen.say_node(fields)
+}
+
+pub fn ActorsGen::quiet(self : ActorsGen) -> Unit {
+  self.gen.quiet()
+}
+
+pub fn ActorsGen::mirror_by_key(self : ActorsGen, key : String) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  match self.actors.get(key) {
+    Some(a) => self.mirror(a)
+    None => ()
+  }
+}
+
+/// Ask Node `f` with `args` (`actors.mbt:264-280`), mirroring `key` first and decrementing `active`.
+pub fn ActorsGen::rpc_k(
+  self : ActorsGen,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  self.gen.rpc_k(
+    self.host,
+    key,
+    f,
+    args,
+    fn(k_actor : String) -> Unit { self.mirror_by_key(k_actor) },
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      if self.gen.counters.sealed {
+        k(effect::Exit::Interrupted)
+      } else {
+        k(ex)
+      }
+    },
+  )
+}
+
+/// Cancel an in-flight RPC (`actors.mbt:285-295`), restoring `active` before waking the waiter.
+pub fn ActorsGen::cancel_rpc(self : ActorsGen, id : Int, err : base_codec::Json) -> Bool {
+  self.gen.cancel_rpc(self.host, id, err)
+}
+
+/// Fire-and-forget notification to Node (`actors.mbt:299-304`), mirroring `key` first.
+pub fn ActorsGen::tell(
+  self : ActorsGen,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  self.mirror_by_key(key)
+  self.say_node([
+    ("tell", sessions_core::jstr(f)),
+    ("actor", sessions_core::jstr(key)),
+    ("args", base_codec::json_arr(args)),
+  ])
+}
+
+/// Side-channel telemetry trace span without mirroring intermediate actor state (`actors.mbt:308-310`).
+pub fn ActorsGen::tell_trace(self : ActorsGen, key : String, payload : base_codec::Json) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  self.say_node([
+    ("tell", sessions_core::jstr("trace")),
+    ("actor", sessions_core::jstr(key)),
+    ("args", base_codec::json_arr([payload])),
+  ])
+}
+
+fn noop_timer() -> Unit {
+  ()
+}
+
+/// Schedule a Node clock wait (`after`, `actors.mbt:314-329`), returning its value timer ID.
+pub fn ActorsGen::after_id(
+  self : ActorsGen,
+  ms : Double,
+  then : () -> Unit,
+  on : Option[String] = None,
+) -> Int {
+  if self.gen.counters.sealed {
+    return 0
+  }
+  let id = self.host.alloc_id()
+  self.gen.register_timer(self.host, id, then)
+  let clamped = if ms < 0.0 { 0.0 } else { ms }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("after", sessions_core::jint(id)),
+    ("ms", sessions_core::jnum(clamped)),
+  ]
+  match on {
+    Some(key) => fields.push(("on", sessions_core::jstr(key)))
+    None => ()
+  }
+  self.say_node(fields)
+  id
+}
+
+/// Cancel a pending Node clock wait by ID (`actors.mbt:323-328`).
+pub fn ActorsGen::cancel_timer(self : ActorsGen, id : Int) -> Bool {
+  if self.gen.counters.sealed || id <= 0 {
+    return false
+  }
+  let _ = self.actor_timers.remove(id)
+  match self.host.hub_timers.get(id) {
+    Some(entry) => {
+      if entry.epoch != self.gen.counters.epoch {
+        return false
+      }
+      let _ = self.host.hub_timers.remove(id)
+      self.say_node([("cancel", sessions_core::jint(id))])
+      true
+    }
+    None => false
+  }
+}
+
+/// Cancel a named actor timer (`a.timers` stores only value `(timer_id, gen)`).
+pub fn ActorsGen::cancel_actor_timer(self : ActorsGen, a : Actor, name : String) -> Unit {
+  match a.timers.get(name) {
+    Some(tref) => {
+      let _ = a.timers.remove(name)
+      let _ = self.cancel_timer(tref.timer_id)
+    }
+    None => ()
+  }
+}
+
+/// Arm a named actor timer (`actor_run.mbt:3791-3800`): replaces any older timer of the same name.
+/// Stores pure-value `PendingActorTimer` in `self.actor_timers` and registers zero-capture `noop_timer`
+/// in `host.hub_timers` (zero closures capturing `ActorsGen` or `Actor`, zero RC cycle).
+pub fn ActorsGen::arm_actor_timer(
+  self : ActorsGen,
+  a : Actor,
+  name : String,
+  ms : Double,
+  action : ActorTimerAction = ActorTimerAction::Named("", base_codec::json_null()),
+) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    return
+  }
+  self.cancel_actor_timer(a, name)
+  a.timer_gen = a.timer_gen + 1
+  let my_gen = a.timer_gen
+  let tid = self.after_id(ms, noop_timer, None)
+  if tid > 0 {
+    let resolved = match action {
+      ActorTimerAction::Named(tag, payload) => {
+        if tag == "" {
+          ActorTimerAction::Named(name, payload)
+        } else {
+          ActorTimerAction::Named(tag, payload)
+        }
+      }
+    }
+    a.timers.set(name, ActorTimerRef::{ timer_id: tid, gen: my_gen })
+    self.actor_timers.set(
+      tid,
+      PendingActorTimer::{
+        actor_key: a.key,
+        name: name,
+        gen: my_gen,
+        action: resolved,
+      },
+    )
+  }
+}
+
+/// Spawn a generation-scoped work fiber counted in `self.gen.counters.active`.
+/// Checks `self.gen.counters.sealed` at entry; on live-generation `Exit::Interrupted`, decrements
+/// `active` and emits `quiet()` before propagating `Exit::Interrupted`.
+pub fn ActorsGen::spawn_work(
+  self : ActorsGen,
+  work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+) -> Unit {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return
+  }
+  self.gen.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    if counters.sealed {
+      k(effect::Exit::Interrupted)
+      return
+    }
+    work_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(()) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => {
+          if !counters.sealed {
+            counters.active = counters.active - 1
+            counters.quiet()
+          }
+          k(effect::Exit::Interrupted)
+        }
+      }
+    })
+  })
+}
+
+/// Look up or create an `Actor` (`actors.mbt:353-451`).
+/// Does NOT fork a resident daemon fiber: the serial pump is forked on demand by `enqueue_k`.
+pub fn ActorsGen::actor(self : ActorsGen, key : String, runtime : String) -> Actor {
+  match self.actors.get(key) {
+    Some(a) => a
+    None => {
+      let a = Actor::{
+        key: key,
+        gen_epoch: self.gen.counters.epoch,
+        runtime: runtime,
+        task_queue: [],
+        task_head: 0,
+        task_running: false,
+        pump_starts: 0,
+        queued: 0,
+        seen: 0,
+        agent: None,
+        stale: false,
+        restart: false,
+        change_seq: 0,
+        restart_seq: 0,
+        profile: base_codec::json_null(),
+        running_identity: base_codec::json_null(),
+        read_back: false,
+        phase: "idle",
+        turn: None,
+        warm: false,
+        deferred_end: None,
+        starting_turn: false,
+        queued_retry: None,
+        auth_tried: [],
+        codex_update: None,
+        codex_next: 0,
+        codex_reloaded: None,
+        nudges: 0,
+        asked_to_name: [],
+        overloads: 0,
+        tools_lost: None,
+        tools_lost_heard: None,
+        tools_restarts: 0,
+        tools_retry: None,
+        tools_retries: 0,
+        tools_retry_at: 0.0,
+        tools_retry_deferred: false,
+        saying: None,
+        last_said: "",
+        turn_text: "",
+        posted: false,
+        stop_requested: false,
+        resume_lost: false,
+        afresh: None,
+        compacted_untold: false,
+        compacting: false,
+        over_while_compacting: false,
+        stopped: [],
+        stopped_note: None,
+        idle_since: self.gen.counters.now,
+        open_kind: "other",
+        working_for: [],
+        ended_for: [],
+        tools: [],
+        notices: [],
+        waiting: None,
+        waits: 0,
+        waiting_until: 0.0,
+        waiting_seconds: 0.0,
+        mid_waiting: None,
+        mid_waits: 0,
+        mid_waiting_until: 0.0,
+        mid_waiting_seconds: 0.0,
+        last_post_at: 0.0,
+        silent_waiting_since: None,
+        progress_reminded_at: 0.0,
+        refill: None,
+        refills: 0,
+        refill_at: 0.0,
+        steered: [],
+        steered_for: [],
+        unread: [],
+        unread_preparing: 0,
+        delivery_interruptions: 0,
+        recoveries: 0,
+        recovery_deferred: false,
+        start_failures: 0,
+        failed_handed: "",
+        paused_cap: false,
+        force_session_cap: false,
+        cap_wait_notified: false,
+        opening_rpc: None,
+        timers: Map::new(),
+        timer_gen: 0,
+        mirrored: "",
+      }
+      self.actors.set(key, a)
+      a
+    }
+  }
+}
+
+fn array_contains_str(arr : Array[String], needle : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+fn array_index_of_str(arr : Array[String], needle : String) -> Option[Int] {
+  for i in 0..<arr.length() {
+    if arr[i] == needle {
+      return Some(i)
+    }
+  }
+  None
+}
+
+fn array_remove_at_str(arr : Array[String], idx : Int) -> String {
+  let removed = arr[idx]
+  let mut i = idx
+  while i + 1 < arr.length() {
+    arr[i] = arr[i + 1]
+    i = i + 1
+  }
+  let _ = arr.pop()
+  removed
+}
+
+fn is_some[T](opt : Option[T]) -> Bool {
+  match opt {
+    Some(_) => true
+    None => false
+  }
+}
+
+/// Emit `{"mirror": key, "state": ...}` whenever observable actor state changes (`actors.mbt:455-485`).
+pub fn ActorsGen::mirror(self : ActorsGen, a : Actor) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  let turn_json = match a.turn {
+    Some(t) => sessions_core::jstr(t.id)
+    None => base_codec::json_null()
+  }
+  let agent_json = match a.agent {
+    Some(g) => sessions_core::jint(g.handle)
+    None => base_codec::json_null()
+  }
+  let unread_items : Array[base_codec::Json] = []
+  for i in 0..<a.unread.length() {
+    let m = a.unread[i]
+    unread_items.push(
+      base_codec::json_arr([
+        sessions_core::field_of(m, "thread"),
+        sessions_core::field_of(m, "n"),
+        sessions_core::field_of(m, "ts"),
+      ]),
+    )
+  }
+  let start_failed = a.failed_handed != "" &&
+  !a.paused_cap &&
+  !array_contains_str(self.gen.resources.turn_wait_queue, a.key)
+  let state = base_codec::json_obj([
+    ("queued", sessions_core::jint(a.queued)),
+    ("seen", sessions_core::jint(a.seen)),
+    ("turn", turn_json),
+    ("warm", sessions_core::jbool(a.warm)),
+    ("deferredEnd", sessions_core::jbool(is_some(a.deferred_end))),
+    ("codexUpdate", sessions_core::jbool(is_some(a.codex_update))),
+    ("agent", agent_json),
+    ("idleSince", sessions_core::jnum(a.idle_since)),
+    ("notices", sessions_core::jint(a.notices.length())),
+    ("waiting", sessions_core::jbool(is_some(a.waiting))),
+    ("refill", sessions_core::jbool(is_some(a.refill))),
+    ("toolsRetry", sessions_core::jbool(is_some(a.tools_retry) || a.tools_retry_deferred)),
+    ("startFailed", sessions_core::jbool(start_failed)),
+    ("unread", base_codec::json_arr(unread_items)),
+    ("identity", a.running_identity),
+    ("runtime", sessions_core::jstr(a.runtime)),
+    ("closed", sessions_core::jbool(a.phase == "closed")),
+  ])
+  let said = base_codec::json_stringify(builders_core::normalize_json(state))
+  if said == a.mirrored {
+    return
+  }
+  a.mirrored = said
+  self.say_node([("mirror", sessions_core::jstr(a.key)), ("state", state)])
+}
+
+/// Settle an `ActorTask` at most once: decrements `a.queued`, mirrors (unless sealed), and completes `item.done`.
+fn ActorsGen::settle_task(self : ActorsGen, a : Actor, item : ActorTask, outcome : TaskOutcome) -> Unit {
+  if item.settlement.settled {
+    return
+  }
+  item.settlement.settled = true
+  item.settlement.outcome = Some(outcome)
+  if a.queued > 0 {
+    a.queued = a.queued - 1
+  }
+  if !self.gen.counters.sealed {
+    self.mirror(a)
+  }
+  let _ = item.done.succeed(outcome)
+}
+
+/// Pop next task from `a.task_queue`, immediately clearing the consumed slot to `None`
+/// and compacting once `task_head >= 16 && task_head * 2 >= len`.
+fn pop_actor_task(a : Actor) -> Option[ActorTask] {
+  while a.task_head < a.task_queue.length() {
+    let slot = a.task_queue[a.task_head]
+    a.task_queue[a.task_head] = None
+    a.task_head = a.task_head + 1
+    if a.task_head >= a.task_queue.length() {
+      a.task_queue.clear()
+      a.task_head = 0
+    } else if a.task_head >= 16 && a.task_head * 2 >= a.task_queue.length() {
+      let kept : Array[Option[ActorTask]] = []
+      for i in a.task_head..<a.task_queue.length() {
+        kept.push(a.task_queue[i])
+      }
+      a.task_queue.clear()
+      for i in 0..<kept.length() {
+        a.task_queue.push(kept[i])
+      }
+      a.task_head = 0
+    }
+    match slot {
+      Some(item) => return Some(item)
+      None => ()
+    }
+  }
+  a.task_queue.clear()
+  a.task_head = 0
+  None
+}
+
+/// Interrupt and clear all remaining queued tasks on `a` during generation retirement (`{"db"}`),
+/// breaking any `Actor -> task_queue -> body_k -> Actor` RC cycle immediately.
+fn ActorsGen::drain_retire_actor(self : ActorsGen, a : Actor) -> Unit {
+  while true {
+    match pop_actor_task(a) {
+      Some(item) => self.settle_task(a, item, TaskOutcome::Interrupted)
+      None => break
+    }
+  }
+  a.task_running = false
+  a.timers.clear()
+}
+
+/// Synchronously retire this generation on `{"db": place}` BEFORE `actors.clear()`.
+fn ActorsGen::retire_all(self : ActorsGen) -> Unit {
+  self.gen.counters.sealed = true
+  let keys = self.actors.keys()
+  for i in 0..<keys.length() {
+    match self.actors.get(keys[i]) {
+      Some(a) => self.drain_retire_actor(a)
+      None => ()
+    }
+  }
+  self.actors.clear()
+  self.actor_timers.clear()
+}
+
+/// On-demand single-consumer serial pump (`wave8-plan.md` v5 §2.4.1).
+/// Forked on `self.gen.fibers` WITHOUT incrementing `gen.counters.active`.
+/// - When `self.gen.counters.sealed`: interrupts current + all remaining queued items and clears `task_queue`.
+/// - When a single task returns `Exit::Interrupted` in a LIVE generation (`!sealed`): settles that task as
+///   `TaskOutcome::Interrupted` (propagated to its `enqueue_k` caller) and CONTINUES pumping subsequent tasks!
+fn ActorsGen::start_actor_pump(self : ActorsGen, a : Actor) -> Unit {
+  let gen = self.gen
+  a.pump_starts = a.pump_starts + 1
+  let _ = gen.fibers.fork_daemon(
+    "actor",
+    fn(pump_k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      sessions_core::iter_sync_k(
+        fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+          if gen.counters.sealed {
+            self.drain_retire_actor(a)
+            sk(effect::Exit::Interrupted)
+            return
+          }
+          let item = match pop_actor_task(a) {
+            Some(it) => it
+            None => {
+              a.task_running = false
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+              return
+            }
+          }
+          if a.phase == "closed" {
+            self.settle_task(a, item, TaskOutcome::SkippedClosed)
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+            return
+          }
+          (item.body_k)(fn(ex : effect::Exit[Unit]) -> Unit {
+            if gen.counters.sealed {
+              self.settle_task(a, item, TaskOutcome::Interrupted)
+              self.drain_retire_actor(a)
+              sk(effect::Exit::Interrupted)
+              return
+            }
+            match ex {
+              effect::Exit::Succeeded(_) => {
+                self.settle_task(a, item, TaskOutcome::Ran)
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              }
+              effect::Exit::Failed(e) => {
+                let fields : Array[(String, base_codec::Json)] = [
+                  ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                  ("runtime", sessions_core::jstr(a.runtime)),
+                ]
+                match sessions_core::str_of(sessions_core::jget(a.running_identity, "model")) {
+                  Some(m) => {
+                    if m != "" {
+                      fields.push(("model", sessions_core::jstr(m)))
+                    }
+                  }
+                  None => ()
+                }
+                self.log(a, "error", "session task failed", fields)
+                self.settle_task(a, item, TaskOutcome::Ran)
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              }
+              effect::Exit::Interrupted => {
+                // Single task interrupted while generation is still live: settle this item as
+                // `Interrupted` (never `Ran`), keep `task_running = true`, and continue pumping!
+                self.settle_task(a, item, TaskOutcome::Interrupted)
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              }
+            }
+          })
+        },
+        pump_k,
+      )
+    },
+    fn(e : effect::EffectError) -> Unit {
+      gen.counters.note("actor failed: " + effect::effect_error_to_string(e))
+    },
+  )
+}
+
+/// Queue `task_k` on `a`'s serial pump (`actors.mbt:489-517` + `wave8-plan.md` v5 §2.4.1).
+/// Never runs `task_k` synchronously inside `enqueue_k`; forks a pump ONLY when `!a.task_running`.
+/// Propagates `TaskOutcome::Interrupted` as `Exit::Interrupted` (never falsely `Succeeded`).
+pub fn ActorsGen::enqueue_k(
+  self : ActorsGen,
+  a : Actor,
+  task_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  a.queued = a.queued + 1
+  self.mirror(a)
+  let done : effect::Deferred[TaskOutcome] = effect::Deferred::new()
+  let settlement = TaskSettlement::{ settled: false, outcome: None }
+  a.task_queue.push(Some(ActorTask::{ body_k: task_k, done: done, settlement: settlement }))
+  if !a.task_running {
+    a.task_running = true
+    self.start_actor_pump(a)
+  }
+  done.wait_k(fn(ex : effect::Exit[TaskOutcome]) -> Unit {
+    if self.gen.counters.sealed {
+      k(effect::Exit::Interrupted)
+      return
+    }
+    match ex {
+      effect::Exit::Succeeded(TaskOutcome::Interrupted) => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Abort an in-flight `node.open` RPC (`actor_run.mbt:2260-2269`), cancelling the RPC and telling
+/// Node `node.cancelOpen`.
+pub fn ActorsGen::abort_open(self : ActorsGen, a : Actor, why : String) -> Bool {
+  let id = match a.opening_rpc {
+    Some(v) => v
+    None => return false
+  }
+  a.opening_rpc = None
+  if !self.cancel_rpc(
+    id,
+    base_codec::json_obj([
+      ("openAbort", sessions_core::jstr(why)),
+      ("message", sessions_core::jstr("open " + why)),
+    ]),
+  ) {
+    return false
+  }
+  self.log(a, "info", "opening its runtime given up", [("why", sessions_core::jstr(why))])
+  self.tell(a.key, "node.cancelOpen", [sessions_core::jint(id)])
+  true
+}
+
+/// 1:1 `actor_run.mbt:3726-3737`: cancels `tools_retry` timer, preserves `tools_retry_at`,
+/// and immediately emits `mirror(a)` when `had == true`.
+pub fn ActorsGen::cancel_tools_retry(self : ActorsGen, a : Actor) -> Unit {
+  let had = is_some(a.tools_retry) || a.tools_retry_deferred
+  a.tools_retry = None
+  a.tools_retry_deferred = false
+  self.cancel_actor_timer(a, "tools_retry")
+  if had {
+    self.mirror(a)
+  }
+}
+
+/// 1:1 `actor_run.mbt:3581-3589`: clears mid-wait state and cancels `mid_wait` timer.
+pub fn ActorsGen::cancel_mid_wait(self : ActorsGen, a : Actor) -> Unit {
+  a.mid_waiting = None
+  a.mid_waiting_until = 0.0
+  a.mid_waiting_seconds = 0.0
+  self.cancel_actor_timer(a, "mid_wait")
+}
+
+/// Close an actor for shutdown or handover (`actor_run.mbt:1331-1356`):
+/// - Cancels `a.opening_rpc` (`node.cancelOpen`), then `cancel_tools_retry`, `cancel_mid_wait`,
+///   and remaining named `a.timers` in exact MB order;
+/// - Does NOT clear `a.task_queue` (the pump drains each queued task with `SkippedClosed`,
+///   decrementing `a.queued`, mirroring, and completing `done`);
+/// - Retains the closed `Actor` placeholder in `self.actors` until `{"db": ...}` rotation.
+pub fn ActorsGen::close(self : ActorsGen, a : Actor) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    return
+  }
+  let had_slot = is_some(a.turn) || a.starting_turn
+  let _ = self.abort_open(a, "closed")
+  a.phase = "closed"
+  a.turn = None
+  a.warm = false
+  a.deferred_end = None
+  self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
+  a.silent_waiting_since = None
+  a.progress_reminded_at = 0.0
+  a.starting_turn = false
+  a.queued_retry = None
+  a.paused_cap = false
+  a.cap_wait_notified = false
+  a.force_session_cap = false
+  self.remove_turn_wait(a.key)
+  self.remove_cap_wait(a.key)
+  let timer_names = a.timers.keys()
+  for i in 0..<timer_names.length() {
+    self.cancel_actor_timer(a, timer_names[i])
+  }
+  a.timers.clear()
+  self.mirror(a)
+  if had_slot {
+    self.drain_turn_queue(true)
+  }
+}
+
+/// Filter live events passed to actors (`actors.mbt:594-615`).
+pub fn live_for_actor(e : base_codec::Json) -> Option[base_codec::Json] {
+  let kind = sessions_core::text_of(e, "kind")
+  if kind == "tasks" || kind == "plan" {
+    return None
+  }
+  if kind == "delta" && sessions_core::text_of(e, "field") != "text" {
+    return None
+  }
+  if kind == "start" && sessions_core::text_of(e, "step") == "thinking" {
+    return None
+  }
+  if kind == "start" && sessions_core::text_of(e, "step") == "tool" {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("kind", sessions_core::jstr(kind)),
+      ("step", sessions_core::jstr("tool")),
+    ]
+    match sessions_core::jget(e, "id") {
+      Some(v) => fields.push(("id", v))
+      None => ()
+    }
+    match sessions_core::jget(e, "tool") {
+      Some(v) => fields.push(("tool", v))
+      None => ()
+    }
+    return Some(base_codec::json_obj(fields))
+  }
+  Some(e)
+}
+
+fn filter_obj_fields(
+  fields : Array[(String, base_codec::Json)],
+  drop_keys : Array[String],
+  override_key : Option[String],
+  override_val : Option[base_codec::Json],
+) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  let mut replaced = false
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    if array_contains_str(drop_keys, k) {
+      continue
+    }
+    match (override_key, override_val) {
+      (Some(ok), Some(ov)) => {
+        if k == ok {
+          out.push((k, ov))
+          replaced = true
+          continue
+        }
+      }
+      _ => ()
+    }
+    out.push((k, v))
+  }
+  if !replaced {
+    match (override_key, override_val) {
+      (Some(ok), Some(ov)) => out.push((ok, ov))
+      _ => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+/// Dispatch a routed batch from `Agents` to `a` (`actors.mbt:543-589`), taking `dispatch` by value.
+pub fn ActorsGen::routed(
+  self : ActorsGen,
+  a : Actor,
+  n : Int,
+  k_batch : Int,
+  generation : Int,
+  said : base_codec::Json,
+  dispatch : sessions_core::SessionDispatch,
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  let events = match (dispatch.agents_take)(n, k_batch) {
+    Some((evs, _)) => evs
+    None => return
+  }
+  for i in 0..<events.length() {
+    let event = events[i].to_json()
+    let mut read = base_codec::json_null()
+    let ev_type = sessions_core::text_of(event, "type")
+    if ev_type == "live" {
+      (dispatch.live_event)(a.key, sessions_core::field_of(event, "event"))
+    } else if ev_type == "turnEnded" {
+      read = base_codec::json_obj([("live", sessions_core::jint((dispatch.live_end)(a.key)))])
+    }
+    let forwarded_opt : Option[base_codec::Json] = match event {
+      base_codec::Json::Obj(fields) => {
+        if ev_type == "turnEnded" {
+          Some(
+            filter_obj_fields(
+              fields,
+              ["turn", "from", "to"],
+              Some("outcome"),
+              sessions_core::jget(said, "outcome"),
+            ),
+          )
+        } else if ev_type == "turnStarted" {
+          Some(filter_obj_fields(fields, ["turn", "turnId", "from", "to"], None, None))
+        } else if ev_type == "live" {
+          match live_for_actor(sessions_core::field_of(event, "event")) {
+            Some(ev) => Some(base_codec::json_obj([("type", sessions_core::jstr("live")), ("event", ev)]))
+            None => None
+          }
+        } else if ev_type == "renew" || ev_type == "kept" || ev_type == "answered" || ev_type == "usage" {
+          None
+        } else {
+          Some(event)
+        }
+      }
+      _ => Some(event)
+    }
+    let forwarded = match forwarded_opt {
+      Some(ev) => ev
+      None => continue
+    }
+    let read_val = read
+    self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      (self.handlers.on_event_k)(self, a, generation, forwarded, read_val, fn(ex : effect::Exit[Unit]) -> Unit {
+        if self.gen.counters.sealed {
+          k(effect::Exit::Interrupted)
+          return
+        }
+        match ex {
+          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+          effect::Exit::Failed(e) => {
+            self.log(a, "error", "session event failed", [
+              ("error", sessions_core::jstr(sessions_core::error_message(e))),
+            ])
+            k(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    })
+  }
+}
+
+// ── Concurrency slots & turn/cap wait queues (`actors.mbt:619-783`) ──
+
+pub fn holds_turn_slot(a : Actor) -> Bool {
+  a.phase != "closed" && (is_some(a.turn) || a.starting_turn)
+}
+
+pub fn ActorsGen::active_turn_slots(self : ActorsGen) -> Int {
+  let mut n = 0
+  let keys = self.actors.keys()
+  for i in 0..<keys.length() {
+    match self.actors.get(keys[i]) {
+      Some(a) => {
+        if holds_turn_slot(a) {
+          n = n + 1
+        }
+      }
+      None => ()
+    }
+  }
+  n
+}
+
+pub fn ActorsGen::turn_slots_full(self : ActorsGen, a : Actor) -> Bool {
+  if self.gen.counters.max_concurrent_turns <= 0 || holds_turn_slot(a) {
+    return false
+  }
+  self.active_turn_slots() >= self.gen.counters.max_concurrent_turns
+}
+
+pub fn ActorsGen::enqueue_turn_wait(self : ActorsGen, a : Actor) -> Unit {
+  if a.phase == "closed" || self.gen.counters.sealed {
+    return
+  }
+  if !array_contains_str(self.gen.resources.turn_wait_queue, a.key) {
+    self.gen.resources.turn_wait_queue.push(a.key)
+  }
+}
+
+pub fn ActorsGen::remove_turn_wait(self : ActorsGen, key : String) -> Unit {
+  match array_index_of_str(self.gen.resources.turn_wait_queue, key) {
+    Some(i) => {
+      let _ = array_remove_at_str(self.gen.resources.turn_wait_queue, i)
+    }
+    None => ()
+  }
+}
+
+pub fn ActorsGen::enqueue_cap_wait(self : ActorsGen, a : Actor) -> Unit {
+  if a.phase == "closed" || self.gen.counters.sealed {
+    return
+  }
+  if !array_contains_str(self.gen.resources.cap_wait_queue, a.key) {
+    self.gen.resources.cap_wait_queue.push(a.key)
+  }
+}
+
+pub fn ActorsGen::remove_cap_wait(self : ActorsGen, key : String) -> Unit {
+  match array_index_of_str(self.gen.resources.cap_wait_queue, key) {
+    Some(i) => {
+      let _ = array_remove_at_str(self.gen.resources.cap_wait_queue, i)
+    }
+    None => ()
+  }
+}
+
+/// Serially drain `cap_wait_queue` in strict FIFO order, skipping runtimes already known full
+/// in this pass (`actors.mbt:679-734`).
+pub fn ActorsGen::drain_cap_queue(self : ActorsGen) -> Unit {
+  let gen = self.gen
+  if gen.counters.sealed || gen.resources.cap_wait_queue.length() == 0 {
+    return
+  }
+  if gen.counters.draining_cap {
+    gen.counters.drain_cap_again = true
+    return
+  }
+  gen.counters.draining_cap = true
+  self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let blocked_runtimes : Array[String] = []
+    let mut idx = 0
+    let mut saw_interrupted = false
+    sessions_core::iter_sync_k(
+      fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+        if gen.counters.sealed {
+          sk(effect::Exit::Interrupted)
+          return
+        }
+        let q = gen.resources.cap_wait_queue
+        if idx >= q.length() {
+          sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          return
+        }
+        let key = q[idx]
+        match self.actors.get(key) {
+          None => {
+            let _ = array_remove_at_str(q, idx)
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+          }
+          Some(actor) => {
+            if actor.phase == "closed" || holds_turn_slot(actor) || !actor.paused_cap {
+              let _ = array_remove_at_str(q, idx)
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              return
+            }
+            if array_contains_str(blocked_runtimes, actor.runtime) {
+              idx = idx + 1
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              return
+            }
+            actor.paused_cap = false
+            (self.handlers.wake_cap_queued_k)(self, actor, fn(ex : effect::Exit[Unit]) -> Unit {
+              if gen.counters.sealed {
+                sk(effect::Exit::Interrupted)
+                return
+              }
+              match ex {
+                effect::Exit::Interrupted => saw_interrupted = true
+                _ => ()
+              }
+              if actor.paused_cap {
+                if !array_contains_str(blocked_runtimes, actor.runtime) {
+                  blocked_runtimes.push(actor.runtime)
+                }
+                match array_index_of_str(gen.resources.cap_wait_queue, key) {
+                  Some(pos) => idx = pos + 1
+                  None => ()
+                }
+              } else {
+                self.remove_cap_wait(key)
+                actor.cap_wait_notified = false
+              }
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+            })
+          }
+        }
+      },
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        gen.counters.draining_cap = false
+        if !gen.counters.sealed && gen.counters.drain_cap_again {
+          gen.counters.drain_cap_again = false
+          self.drain_cap_queue()
+        }
+        match ex {
+          effect::Exit::Succeeded(_) => {
+            if saw_interrupted {
+              k(effect::Exit::Interrupted)
+            } else {
+              k(effect::Exit::Succeeded(()))
+            }
+          }
+          other => k(other)
+        }
+      },
+    )
+  })
+}
+
+pub fn ActorsGen::set_max_concurrent_turns(self : ActorsGen, next : Int) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  let prev = self.gen.counters.max_concurrent_turns
+  self.gen.counters.max_concurrent_turns = if next > 0 { next } else { 0 }
+  if self.gen.counters.max_concurrent_turns == 0 ||
+  (prev > 0 && self.gen.counters.max_concurrent_turns > prev) {
+    self.drain_turn_queue(true)
+  }
+}
+
+/// Wake up to the available slot budget of queued sessions in strict FIFO order (`actors.mbt:750-783`).
+/// On live-generation `Exit::Interrupted` without acquiring `actor.turn`, releases `starting_turn`
+/// and continues draining queued actors before propagating `Exit::Interrupted`.
+pub fn ActorsGen::drain_turn_queue(self : ActorsGen, drain_cap : Bool = true) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  let q = self.gen.resources.turn_wait_queue
+  let mut budget = if self.gen.counters.max_concurrent_turns <= 0 {
+    q.length()
+  } else {
+    self.gen.counters.max_concurrent_turns - self.active_turn_slots()
+  }
+  while budget > 0 && q.length() > 0 {
+    let key = array_remove_at_str(q, 0)
+    match self.actors.get(key) {
+      Some(actor) => {
+        if actor.phase == "closed" || holds_turn_slot(actor) {
+          continue
+        }
+        actor.starting_turn = true
+        budget = budget - 1
+        self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          (self.handlers.wake_queued_k)(self, actor, fn(ex : effect::Exit[Unit]) -> Unit {
+            if self.gen.counters.sealed {
+              actor.starting_turn = false
+              k(effect::Exit::Interrupted)
+              return
+            }
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+              effect::Exit::Failed(e) => {
+                actor.starting_turn = false
+                self.log(actor, "error", "queued session wake failed", [
+                  ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                ])
+                match actor.turn {
+                  None => self.drain_turn_queue(true)
+                  Some(_) => ()
+                }
+                k(effect::Exit::Succeeded(()))
+              }
+              effect::Exit::Interrupted => {
+                match actor.turn {
+                  None => {
+                    actor.starting_turn = false
+                    self.drain_turn_queue(true)
+                  }
+                  Some(_) => ()
+                }
+                k(effect::Exit::Interrupted)
+              }
+            }
+          })
+        })
+      }
+      None => ()
+    }
+  }
+  if drain_cap {
+    self.drain_cap_queue()
+  }
+}
+
+fn build_returned_error(id : Double, e : effect::EffectError) -> Array[(String, base_codec::Json)] {
+  let out : Array[(String, base_codec::Json)] = [
+    ("returned", sessions_core::jnum(id)),
+    ("error", sessions_core::jstr(sessions_core::error_message(e))),
+  ]
+  match sessions_core::decode_asked_error(e) {
+    Some(ae) => out.push(("cause", ae.cause))
+    None => ()
+  }
+  out.push(("value", base_codec::json_null()))
+  out
+}
+
+fn build_returned_interrupted(id : Double) -> Array[(String, base_codec::Json)] {
+  [
+    ("returned", sessions_core::jnum(id)),
+    ("error", sessions_core::jstr("interrupted")),
+    ("value", base_codec::json_null()),
+  ]
+}
+
+// ── Strict JSON lone-surrogate escape validator (1:1 MoonBit `@json.parse`) ──
+
+fn hex_nibble(c : Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 65 && c <= 70 {
+    c - 55
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+fn parse_hex4(s : String, pos : Int) -> Int {
+  if pos + 4 > s.length() {
+    return -1
+  }
+  let h0 = hex_nibble(s.code_unit_at(pos))
+  let h1 = hex_nibble(s.code_unit_at(pos + 1))
+  let h2 = hex_nibble(s.code_unit_at(pos + 2))
+  let h3 = hex_nibble(s.code_unit_at(pos + 3))
+  if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 {
+    return -1
+  }
+  (h0 << 12) | (h1 << 8) | (h2 << 4) | h3
+}
+
+/// Returns `true` if `raw` contains an unpaired `\uD800..\uDBFF` or `\uDC00..\uDFFF` inside a
+/// JSON string literal (valid surrogate pairs `\uD800..\uDBFF\uDC00..\uDFFF` return `false`).
+pub fn json_has_lone_surrogate_escape(raw : String) -> Bool {
+  let n = raw.length()
+  let mut i = 0
+  let mut in_str = false
+  while i < n {
+    let c = raw.code_unit_at(i)
+    if !in_str {
+      if c == 34 {
+        in_str = true
+      }
+      i = i + 1
+      continue
+    }
+    if c == 34 {
+      in_str = false
+      i = i + 1
+      continue
+    }
+    if c == 92 {
+      if i + 1 >= n {
+        return false
+      }
+      let next = raw.code_unit_at(i + 1)
+      if next == 117 {
+        let u = parse_hex4(raw, i + 2)
+        if u >= 0xD800 && u <= 0xDBFF {
+          // High surrogate: MUST be immediately followed by `\uDC00..\uDFFF`.
+          if i + 11 < n && raw.code_unit_at(i + 6) == 92 && raw.code_unit_at(i + 7) == 117 {
+            let lo = parse_hex4(raw, i + 8)
+            if lo >= 0xDC00 && lo <= 0xDFFF {
+              i = i + 12
+              continue
+            }
+          }
+          return true
+        }
+        if u >= 0xDC00 && u <= 0xDFFF {
+          return true
+        }
+        i = i + 6
+        continue
+      }
+      i = i + 2
+      continue
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Handle `{"due": id}`: first checks `self.actor_timers` (value-only actor timer table),
+/// otherwise delegates to `self.gen.handle_due(self.host, id)`.
+fn ActorsGen::handle_due_id(self : ActorsGen, id : Int) -> Unit {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return
+  }
+  match self.actor_timers.get(id) {
+    Some(entry) => {
+      let _ = self.actor_timers.remove(id)
+      let _ = self.host.hub_timers.remove(id)
+      counters.active = counters.active + 1
+      match self.actors.get(entry.actor_key) {
+        Some(a) => {
+          match a.timers.get(entry.name) {
+            Some(cur) => {
+              if cur.timer_id == id && cur.gen == entry.gen {
+                let _ = a.timers.remove(entry.name)
+                let timer_name = entry.name
+                let timer_action = entry.action
+                self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  self.enqueue_k(
+                    a,
+                    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      (self.handlers.on_timer_k)(self, a, timer_name, timer_action, tk)
+                    },
+                    k,
+                  )
+                })
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+    }
+    None => self.gen.handle_due(self.host, id)
+  }
+}
+
+/// Handle one Node-to-actors stdin line (`actors.mbt:793-953`), taking `dispatch` by value.
+pub fn Actors::heard(
+  self : Actors,
+  line : String,
+  dispatch : sessions_core::SessionDispatch,
+) -> Unit {
+  let ctx = self.current
+  ctx.gen.counters.seen = ctx.gen.counters.seen + 1
+  if json_has_lone_surrogate_escape(line) {
+    return
+  }
+  let said = match sessions_core::parse_json_strict(line) {
+    Ok(j) => j
+    Err(_) => return
+  }
+  match sessions_core::num_of(sessions_core::jget(said, "now")) {
+    Some(now) => ctx.gen.counters.now = now
+    None => ()
+  }
+  match sessions_core::jget(said, "db") {
+    Some(place) => {
+      ctx.retire_all()
+      let new_gen = sessions_core::rotate_hub_gen(self.host, ctx.gen, place)
+      let new_sdb = (self.store_db_provider)(new_gen)
+      self.current = ActorsGen::new_with_store(self.host, new_gen, self.sep, self.handlers, new_sdb)
+      return
+    }
+    None => ()
+  }
+  match sessions_core::jget(said, "maxConcurrentTurns") {
+    Some(base_codec::Json::Num(n, _)) => {
+      let pos_inf = 1.0 / 0.0
+      let neg_inf = -1.0 / 0.0
+      let next = if n != n || n == pos_inf || n == neg_inf || n <= 0.0 { 0 } else { n.to_int() }
+      ctx.set_max_concurrent_turns(next)
+      return
+    }
+    _ => ()
+  }
+  match sessions_core::jget(said, "drainCapQueue") {
+    Some(base_codec::Json::Bool(true)) => {
+      ctx.drain_cap_queue()
+      return
+    }
+    _ => ()
+  }
+  match sessions_core::jget(said, "answer") {
+    Some(base_codec::Json::Num(id, _)) => {
+      ctx.gen.handle_answer(ctx.host, id.to_int(), said)
+      return
+    }
+    _ => ()
+  }
+  match sessions_core::jget(said, "due") {
+    Some(base_codec::Json::Num(id, _)) => {
+      ctx.handle_due_id(id.to_int())
+      return
+    }
+    _ => ()
+  }
+  let key = match sessions_core::str_of(sessions_core::jget(said, "actor")) {
+    Some(k) => k
+    None => return
+  }
+  if key == LIVE_KEY {
+    match (sessions_core::jget(said, "call"), sessions_core::str_of(sessions_core::jget(said, "method"))) {
+      (Some(base_codec::Json::Num(id, _)), Some(method)) => {
+        let args = match sessions_core::jget(said, "args") {
+          Some(base_codec::Json::Arr(xs)) => xs
+          _ => []
+        }
+        let counters = ctx.gen.counters
+        counters.active = counters.active + 1
+        (dispatch.live_called)(id, method, args)
+        if !counters.sealed {
+          counters.active = counters.active - 1
+          counters.quiet()
+        }
+      }
+      _ => ()
+    }
+    return
+  }
+  if key == JOBS_KEY || key == REMOTE_KEY {
+    match (sessions_core::jget(said, "call"), sessions_core::str_of(sessions_core::jget(said, "method"))) {
+      (Some(base_codec::Json::Num(id, _)), Some(method)) => {
+        let args = match sessions_core::jget(said, "args") {
+          Some(base_codec::Json::Arr(xs)) => xs
+          _ => []
+        }
+        let is_jobs = key == JOBS_KEY
+        ctx.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          let on_done = fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            if ctx.gen.counters.sealed {
+              k(effect::Exit::Interrupted)
+              return
+            }
+            match ex {
+              effect::Exit::Succeeded(res_v) => {
+                ctx.say_node([("returned", sessions_core::jnum(id)), ("value", res_v)])
+                k(effect::Exit::Succeeded(()))
+              }
+              effect::Exit::Failed(e) => {
+                ctx.say_node(build_returned_error(id, e))
+                k(effect::Exit::Succeeded(()))
+              }
+              effect::Exit::Interrupted => {
+                ctx.say_node(build_returned_interrupted(id))
+                k(effect::Exit::Interrupted)
+              }
+            }
+          }
+          if is_jobs {
+            (dispatch.jobs_called_k)(method, args, on_done)
+          } else {
+            (dispatch.remote_called_k)(method, args, on_done)
+          }
+        })
+      }
+      _ => ()
+    }
+    return
+  }
+  let a = match sessions_core::str_of(sessions_core::jget(said, "runtime")) {
+    Some(runtime) => ctx.actor(key, runtime)
+    None => {
+      match ctx.actors.get(key) {
+        Some(existing) => existing
+        None => return
+      }
+    }
+  }
+  a.seen = a.seen + 1
+  match (sessions_core::jget(said, "call"), sessions_core::str_of(sessions_core::jget(said, "method"))) {
+    (Some(base_codec::Json::Num(id, _)), Some(method)) => {
+      let args = match sessions_core::jget(said, "args") {
+        Some(base_codec::Json::Arr(xs)) => xs
+        _ => []
+      }
+      // `returned` belongs exclusively to this `call` dispatcher (`actors.mbt:919-933`).
+      ctx.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        (ctx.handlers.called_k)(ctx, a, method, args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          if ctx.gen.counters.sealed {
+            k(effect::Exit::Interrupted)
+            return
+          }
+          match ex {
+            effect::Exit::Succeeded(res_v) => {
+              ctx.mirror(a)
+              ctx.say_node([("returned", sessions_core::jnum(id)), ("value", res_v)])
+              k(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => {
+              ctx.mirror(a)
+              ctx.say_node(build_returned_error(id, e))
+              k(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Interrupted => {
+              ctx.mirror(a)
+              ctx.say_node(build_returned_interrupted(id))
+              k(effect::Exit::Interrupted)
+            }
+          }
+        })
+      })
+      ctx.mirror(a)
+      return
+    }
+    _ => ()
+  }
+  match (sessions_core::jget(said, "event"), sessions_core::jget(said, "generation")) {
+    (Some(ev), Some(base_codec::Json::Num(generation, _))) => {
+      let read = sessions_core::field_of(said, "read")
+      ctx.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        (ctx.handlers.on_event_k)(ctx, a, generation.to_int(), ev, read, fn(ex : effect::Exit[Unit]) -> Unit {
+          if ctx.gen.counters.sealed {
+            k(effect::Exit::Interrupted)
+            return
+          }
+          match ex {
+            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+            effect::Exit::Failed(e) => {
+              ctx.log(a, "error", "session event failed", [
+                ("error", sessions_core::jstr(sessions_core::error_message(e))),
+              ])
+              k(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        })
+      })
+      ctx.mirror(a)
+      return
+    }
+    _ => ()
+  }
+  match (
+    sessions_core::jget(said, "routed"),
+    sessions_core::jget(said, "batch"),
+    sessions_core::jget(said, "generation"),
+  ) {
+    (
+      Some(base_codec::Json::Num(n, _)),
+      Some(base_codec::Json::Num(k_batch, _)),
+      Some(base_codec::Json::Num(generation, _)),
+    ) => {
+      ctx.routed(a, n.to_int(), k_batch.to_int(), generation.to_int(), said, dispatch)
+      ctx.mirror(a)
+      return
+    }
+    _ => ()
+  }
+  match sessions_core::jget(said, "codexUpdated") {
+    Some(base_codec::Json::Num(id, _)) => {
+      let why = sessions_core::str_of(sessions_core::jget(said, "why"))
+      let cid = id.to_int()
+      ctx.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        ctx.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            (ctx.handlers.codex_updated_k)(ctx, a, cid, why, tk)
+          },
+          k,
+        )
+      })
+      ctx.mirror(a)
+      return
+    }
+    _ => ()
+  }
+  ctx.mirror(a)
+}

@@ -5750,6 +5750,13 @@
     takePresses = presses;
     presses(canvas);
     const keymap = { Backspace: 1, Delete: 2, ArrowLeft: 3, ArrowRight: 4, ArrowUp: 5, ArrowDown: 6, Enter: 7, Home: 8, End: 9, PageUp: 15, PageDown: 16, Escape: 17, Tab: 18 };
+    // Function/Insert keys belong to focused key catchers (remote screen, terminal) only, so browser F5/F3/F6/F7 keep working elsewhere.
+    const catchKeymap = { Insert: 41, F1: 42, F2: 43, F3: 44, F4: 45, F5: 46, F6: 47, F7: 48, F8: 49, F9: 50, F10: 51, F11: 52, F12: 53 };
+    const codeChar = (code) => {
+      if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+      if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+      return ({ Space: ' ', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '`' })[code] || '';
+    };
     // the browser's own shortcuts left to it (reload, close, a new tab or window, the address bar, quit, zoom)
     const browsers = new Set(['r', 'w', 't', 'n', 'l', 'q', 'v']);
     // Modifier-only keys are input too. Other keys keep their normal path, including browser shortcuts.
@@ -5774,9 +5781,17 @@
     on(ta, 'keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       const mods = modsOf(e);
-      // a key catcher's focus (device, below): Alt too makes a shortcut; select all, copy, cut are its keys
+      // a key catcher's focus (device, below): F1-F12/Insert and Alt/Ctrl/Meta shortcuts go to the catcher
+      if (catching && catchKeymap[e.key]) {
+        cb.key(catchKeymap[e.key], mods);
+        e.preventDefault();
+        return;
+      }
       if (catching && (e.metaKey || e.ctrlKey || e.altKey) && !keymap[e.key]) {
-        const c = e.key.length === 1 ? e.key.toLowerCase() : '';
+        // AltGr on Windows/Linux browsers types a character through input; leave it alone.
+        if (e.getModifierState?.('AltGraph') && !e.metaKey) return;
+        const ascii = e.key.length === 1 && e.key.charCodeAt(0) >= 32 && e.key.charCodeAt(0) < 127;
+        const c = ascii ? e.key.toLowerCase() : codeChar(e.code);
         if (c && !browserKey(e, c)) { cb.key(1000 + c.charCodeAt(0), mods); e.preventDefault(); }
         return;
       }

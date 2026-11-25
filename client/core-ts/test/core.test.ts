@@ -1007,6 +1007,30 @@ test("a_screen_s_picture_size_is_kept_on_the_device", async () => {
   await host.settle();
   apply(host, values);
   assert.equal(v(values, 1).screenMouse, undefined);
+  // Cross-OS shortcut mapping on a station's screen: off, or none (swapped); nothing else.
+  call(core, ui, 11, "prefs.set", { screenKeyMap: "off" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenKeyMap, "off");
+  call(core, ui, 12, "prefs.set", { screenKeyMap: "on" });
+  await host.settle();
+  assert.equal(host.takeEmitted().filter(([, m]) => "error" in m && m.id === 12).length, 1);
+  call(core, ui, 13, "prefs.set", { screenKeyMap: null });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenKeyMap, undefined);
+  // Keep physical Control as Ctrl on Mac -> Windows/Linux/Android: off, or none (keep Ctrl); nothing else.
+  call(core, ui, 14, "prefs.set", { screenKeepCtrl: "off" });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenKeepCtrl, "off");
+  call(core, ui, 15, "prefs.set", { screenKeepCtrl: "on" });
+  await host.settle();
+  assert.equal(host.takeEmitted().filter(([, m]) => "error" in m && m.id === 15).length, 1);
+  call(core, ui, 16, "prefs.set", { screenKeepCtrl: null });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).screenKeepCtrl, undefined);
 });
 
 test("the_language_is_as_chosen_else_as_the_device_is", async () => {

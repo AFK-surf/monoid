@@ -8,14 +8,14 @@ import { mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/p
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../ops/log.ts";
-import type { Fibers } from "../ops/fibers.ts";
+import { type Fibers, wall } from "../ops/fibers.ts";
 import type { StoreChange } from "../store/rows.ts";
 import { type Places, type Told, nothingTold } from "./export.ts";
-import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
+import { GEN, type Head, STATION, VERSION, WORKSPACE, genMade } from "./format.ts";
 import { loadLocalTranscriptFiles, loadTranscriptManifest, readStreamBounded } from "./manifest.ts";
 import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAllLogical, level } from "./places.ts";
 import { type Ask, COPIES, MOST, PeerPlace, keepers, ranked, serve } from "./peers.ts";
-import { Refused, type Rtt, bytesOf, withBytes } from "../mesh/bus.ts";
+import { NoLink, Refused, type Rtt, bytesOf, withBytes } from "../mesh/bus.ts";
 import { Pace, bytesPerSecond } from "./pace.ts";
 import { readBytes } from "../mesh/files.ts";
 import type { Traces } from "../mesh/traces.ts";
@@ -23,6 +23,8 @@ import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } f
 import type { Runner, WorkPassed } from "./runner.ts";
 import { type BackupView, type NormalizedBackupConfig, type NormalizedS3Target, buildBackupView } from "./backup-config.ts";
 import { type S3ClientOptions, S3HttpError, S3Place } from "./s3.ts";
+import { type ChatCopy, type ChatReading, newestWhole, readChatSoon } from "./chat.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 const DEFAULT_BACKUP: NormalizedBackupConfig = { mode: "auto", stations: [], acceptOthers: true, s3: [] };
 export type RestoreFrom = { station: string } | { s3: string };
@@ -150,16 +152,31 @@ export type CopiesDeps = {
   s3ClientOptions?: S3ClientOptions;
   /// Active OTLP traces batcher for `replica.export` and `replica.level` spans.
   traces?: () => Traces | null;
+  /// Live `config.json` `readers` snapshot or getter for `replica-chat` engine selection; `chatBinary`: a test's program.
+  readers?: ReaderSelectConfig | (() => ReaderSelectConfig);
+  chatBinary?: string;
 };
+
+/// How many chats read from kept copies are kept as read once done (`Copies.chat`): one asked again after a timed-out
+/// request gets the same reading. One still being read is never let go.
+const CHATS_KEPT = 4;
+/// How many readings of chats may wait at once (one runs, the others queue behind it); one more is refused, busy.
+const CHAT_READS_WAITING = 3;
+/// How long one reading may take before its program is killed, so that one stuck never holds up those after it.
+export const CHAT_READ_MS = 120_000;
+/// The scratch databases of readings, by name: the ones a station ended in the middle of are let go as it starts.
+const CHAT_WORK = /^chat-[0-9a-f]{12}\.db(-wal|-shm|-journal)?$/;
 
 /// How a place for this station's copies stands: how far it goes, when it was brought level last, what went wrong.
 /// `known`: what it holds, as this station left it (null: to be asked); `head`: the head it was brought level with.
 /// How it stands at a place (`to`, `at`: as far as the place's head goes and when it went there): `partial` while that
 /// head is a partial one, the chats there and `lacking` transcripts still to send (places.ts `partialHead`).
-type Keeping = { to: number; at: number | null; error: string | null; reason: Reason | null; missing: number; busy: boolean; again: (() => void) | null; tries: number; asked: boolean; known: Known | null; head: string | null; partial: boolean; lacking: number };
+/// `answers`: its last try failed, but it answers (`#failedWhy`): slow, still counted among those that hold the copy.
+/// `whole`: brought level at least once since this station started (else its next try may be a whole first copy).
+type Keeping = { to: number; at: number | null; error: string | null; reason: Reason | null; missing: number; busy: boolean; again: (() => void) | null; tries: number; asked: boolean; known: Known | null; head: string | null; partial: boolean; lacking: number; answers: boolean; whole: boolean };
 
 /// Why a station is not brought level, as the settings say it: it is not reached, it is from before copies (it answers
-/// none of `replica.*`), or something else (its words in the log).
+/// none of `replica.*`), or something else (its words in the log), a keeper that answers but whose copy timed out too.
 export type Reason = "offline" | "old" | "error";
 
 /// A restore under way, as the station's settings show it; one that failed says why (`reason`; `error` the log's words).
@@ -290,6 +307,8 @@ export class Copies {
   readonly #peerAccepts = new Map<string, boolean>();
   /// Peers recently heard from (online).
   readonly #online = new Set<string>();
+  /// The stand-in whose first copy is being brought, by workspace (`#level`): one at a time.
+  readonly #standingIn = new Map<string, string>();
   /// Cached S3Place instances keyed by target id + config signature.
   readonly #s3Places = new Map<string, { sig: string; place: S3Place }>();
   #telling: (() => void) | null = null;
@@ -298,6 +317,13 @@ export class Copies {
   #historySeq = 0;
   #savingHistory: Promise<void> | null = null;
   #saveHistoryAgain = false;
+  /// The chats read from kept copies, by copy (generation, how far it goes) and chat: those being read, and the last
+  /// CHATS_KEPT done; the reading under way, which the next waits for (one fold at a time); how many wait; and the
+  /// scratch databases in use.
+  readonly #chats = new Map<string, { reading: Promise<ChatCopy>; done: boolean }>();
+  #chatTurn: Promise<unknown> = Promise.resolve();
+  #chatsWaiting = 0;
+  readonly #chatWork = new Set<string>();
 
   /// What came of the restore this station was started again for (null: none): written before its store opened and
   /// never after, so read once.
@@ -339,7 +365,18 @@ export class Copies {
   async start(): Promise<void> {
     // (what each place holds asked of it again as this station starts)
     for (const k of this.#keeping.values()) k.known = null;
+    await this.#sweepChatWork();
     await this.placesChanged();
+  }
+
+  /// The scratch databases of chat readings a station ended in the middle of, let go: none of them is in use.
+  async #sweepChatWork(): Promise<void> {
+    const scratch = join(this.#d.data, "replica");
+    const names = await readdir(scratch).catch(() => [] as string[]);
+    for (const name of names) {
+      if (!CHAT_WORK.test(name) || this.#chatWork.has(name.replace(/-(wal|shm|journal)$/, ""))) continue;
+      await rm(join(scratch, name), { force: true }).catch(() => {});
+    }
   }
 
   async close(): Promise<void> {
@@ -612,27 +649,38 @@ export class Copies {
     for (const { workspace: ws } of this.#d.places().workspaces) {
       for (const s of this.#d.roster(ws) ?? []) {
         if (s.id === here) continue;
-        void this.#d.ask(s.id, { method: "replica.hello", workspace: ws, formerly, acceptCopies }).then(
-          (answer) => {
-            this.#old.delete(s.id);
-            this.#online.add(s.id);
-            const accepts = answer?.acceptCopies !== false;
-            const prev = this.#peerAccepts.get(s.id);
-            this.#peerAccepts.set(s.id, accepts);
-            this.#heardFormerly(ws, s.id, Array.isArray(answer?.formerly) ? answer.formerly : []);
-            if (prev !== accepts) {
-              this.#changed(0);
-              if (!accepts && this.#backup().mode === "auto") this.#levelAll(ws);
-            }
-          },
-          (e) => {
-            // (one that answers with a refusal is up but knows no `replica.*`: from before copies)
-            if (e instanceof Refused) this.#old.add(s.id);
-            else this.#online.delete(s.id);
-          },
-        );
+        void this.#sayHello(ws, s.id, formerly, acceptCopies);
       }
     }
+  }
+
+  /// `peer` told this station is up in `ws` (`replica.hello`, a few bytes its station's process answers): "up" where it
+  /// answers, "old" where it refuses as a station from before copies does, "away" where the request fails.
+  #sayHello(ws: string, peer: string, formerly = this.#was, acceptCopies = this.#backup().acceptOthers): Promise<"up" | "old" | "away"> {
+    return this.#d.ask(peer, { method: "replica.hello", workspace: ws, formerly, acceptCopies }).then(
+      (answer) => {
+        this.#old.delete(peer);
+        this.#online.add(peer);
+        const accepts = answer?.acceptCopies !== false;
+        const prev = this.#peerAccepts.get(peer);
+        this.#peerAccepts.set(peer, accepts);
+        this.#heardFormerly(ws, peer, Array.isArray(answer?.formerly) ? answer.formerly : []);
+        if (prev !== accepts) {
+          this.#changed(0);
+          if (!accepts && this.#backup().mode === "auto") this.#levelAll(ws);
+        }
+        return "up" as const;
+      },
+      (e) => {
+        // (one that answers with a refusal is up but knows no `replica.*`: from before copies)
+        if (e instanceof Refused) {
+          this.#old.add(peer);
+          return "old" as const;
+        }
+        this.#online.delete(peer);
+        return "away" as const;
+      },
+    );
   }
 
   #heardFormerly(ws: string, station: string, formerly: string[]): void {
@@ -700,7 +748,110 @@ export class Copies {
       hello: (peer, ws, formerly, acceptCopies) => this.heard(peer, ws, formerly, acceptCopies),
       acceptOthers: () => this.#backup().acceptOthers,
       guardWrite: (ws, origin, fn) => this.#guardWrite(ws, origin, fn),
+      chat: (ws, origin, thread) => this.chat(ws, origin, thread),
     });
+  }
+
+  // ── one chat of a copy this station keeps (handoff.ts) ──
+
+  /// Whether `station` answers now: it says so to `replica.hello`, or refuses it as one from before copies does (it is
+  /// up all the same). One that does not answer may still run, cut off: nothing here takes it for gone.
+  async answering(ws: string, station: string): Promise<boolean> {
+    try {
+      const answer = await this.#d.ask(station, { method: "replica.hello", workspace: ws, formerly: this.#was, acceptCopies: this.#backup().acceptOthers });
+      this.#old.delete(station);
+      this.#online.add(station);
+      this.#peerAccepts.set(station, answer?.acceptCopies !== false);
+      this.#heardFormerly(ws, station, Array.isArray(answer?.formerly) ? answer.formerly : []);
+      return true;
+    } catch (e) {
+      if (e instanceof Refused) {
+        this.#old.add(station);
+        return true;
+      }
+      this.#online.delete(station);
+      return false;
+    }
+  }
+
+  /// What this station keeps of `origin`'s copy in `ws`: each generation's head and the batches here (places.ts).
+  held(ws: string, origin: string): Promise<Held> {
+    return this.kept.held(ws, origin);
+  }
+
+  /// The chat `thread` of `origin`'s copy kept here in `ws`, read from its newest generation (chat.ts): "none" where no
+  /// copy of `origin` is kept here, "newer" where its newest head is of a format newer than this station reads. One
+  /// reading at a time, CHAT_READS_WAITING at most waiting (one more refused, busy); the same chat of the same copy asked
+  /// again gets the reading under way or done.
+  async chat(ws: string, origin: string, thread: number): Promise<ChatReading> {
+    if (!WORKSPACE.test(ws) || !STATION.test(origin) || !Number.isSafeInteger(thread)) return "none";
+    const held = await this.kept.held(ws, origin);
+    // (the newest generation's head not read: of a newer format, this station to be updated; else not there yet)
+    const last = held.gens.at(-1);
+    if (last !== undefined && last.head === null && (await this.#newerHead(ws, origin, last.gen))) return "newer";
+    const newest = newestWhole(held, ws, origin);
+    if (newest === undefined) return "none";
+    const head = newest.head;
+    const key = JSON.stringify([ws, origin, newest.gen, head.to, head.made, thread]);
+    const had = this.#chats.get(key);
+    if (had !== undefined) return had.reading;
+    if (this.#chatsWaiting >= CHAT_READS_WAITING) throw new Refused("busy reading other chats from copies: try again in a minute");
+    const dir = join(this.kept.dir(ws, origin), newest.gen);
+    this.#chatsWaiting++;
+    const reading = this.#chatTurn
+      .then(() => this.#readChat(dir, thread))
+      .then((chat) => {
+        if (chat.origin !== origin || chat.gen !== newest.gen) throw new Error("the reading was of another copy");
+        return chat;
+      })
+      .finally(() => void this.#chatsWaiting--);
+    this.#chatTurn = reading.catch(() => {});
+    const entry = { reading, done: false };
+    this.#chats.set(key, entry);
+    reading.then(
+      () => {
+        entry.done = true;
+        // (the oldest done let go past CHATS_KEPT; one being read never)
+        const done = [...this.#chats].filter(([, e]) => e.done);
+        for (const [k] of done.slice(0, Math.max(0, done.length - CHATS_KEPT))) this.#chats.delete(k);
+      },
+      () => {
+        // (one that failed is read again when asked again)
+        if (this.#chats.get(key) === entry) this.#chats.delete(key);
+      },
+    );
+    return await reading;
+  }
+
+  /// Whether generation `gen` of `origin`'s copy kept here has a head of a format newer than this station reads.
+  async #newerHead(ws: string, origin: string, gen: string): Promise<boolean> {
+    try {
+      const v = JSON.parse(await readFile(join(this.kept.dir(ws, origin), gen, "head.json"), "utf8"));
+      return typeof v?.v === "number" && v.v > VERSION;
+    } catch {
+      return false;
+    }
+  }
+
+  /// One reading, its program killed if it takes longer than CHAT_READ_MS, its scratch database gone after.
+  async #readChat(dir: string, thread: number): Promise<ChatCopy> {
+    const scratch = join(this.#d.data, "replica");
+    await mkdir(scratch, { recursive: true });
+    const name = `chat-${randomBytes(6).toString("hex")}.db`;
+    const work = join(scratch, name);
+    this.#chatWork.add(name);
+    const stop = new AbortController();
+    const reading = readChatSoon({ dir, work, thread, shellDir: join(this.#d.data, "shell"), readers: this.#d.readers, binary: this.#d.chatBinary, signal: stop.signal });
+    try {
+      return await wall.within(CHAT_READ_MS, reading, "the chat's reading took too long");
+    } catch (e) {
+      stop.abort();
+      await reading.catch(() => {});
+      throw e;
+    } finally {
+      await rm(work, { force: true }).catch(() => {});
+      this.#chatWork.delete(name);
+    }
   }
 
   // ── this station's copies, at the stations that keep them ──
@@ -716,7 +867,8 @@ export class Copies {
 
   /// The stations that should hold this station's copies in `ws` now: in manual mode, the configured station ids in
   /// the roster; in auto mode, those it falls to (`keepers`, skipping peers with `acceptOthers === false`) and, while
-  /// one of them is not reached, the next in the same order (`ranked`), so that COPIES reached ones hold it.
+  /// one of them is not reached, the next in the same order (`ranked`), so that COPIES reached ones hold it. A keeper
+  /// whose last try failed but that answers (`answers`, `#failedWhy`) is reached: slow, not away.
   #targets(ws: string): string[] {
     const here = this.#d.here();
     const roster = this.#d.roster(ws);
@@ -731,10 +883,39 @@ export class Copies {
     for (const s of ranked(ws, here, roster.map((r) => r.id))) {
       if (this.#peerAccepts.get(s) === false) continue;
       out.push(s);
-      if (this.#keeping.get(`${ws}\n${s}`)?.error == null) reached++;
+      const k = this.#keeping.get(`${ws}\n${s}`);
+      if (k === undefined || k.error === null || k.answers) reached++;
       if (reached >= COPIES) break;
     }
     return out;
+  }
+
+  /// The stand-ins of `ws`: the stations `#targets` names past the COPIES it falls to, while some of those are not
+  /// reached.
+  #standIns(ws: string): string[] {
+    return this.#backup().mode === "auto" ? this.#targets(ws).slice(COPIES) : [];
+  }
+
+  /// Why `error` kept `peer` from being brought level, and whether it answers all the same. Only a keeper that does not
+  /// answer is one not reached, for which the next station holds the copy (`#targets`). A request that got no answer in
+  /// time, bytes the other end took nothing of for 30 s, a stream reset or a connection found gone say nothing of that:
+  /// over this station's own slow uplink a keeper that is up fails so too, and each such failure brought one more
+  /// station a whole first copy over that same uplink, so more timed out (2026-11-25: 29 of 50 copies to 6 stations in
+  /// 11 hours failed, most of them timeouts). So such a failure is followed by a `replica.hello`, a few bytes that
+  /// keeper's process answers (`#sayHello`): taken back, the keeper is up and slow. It is said as an error, not offline,
+  /// stays among those that hold the copy, and is tried again with the backoff. A request no link for which would open
+  /// (`NoLink`, the mesh's one failure that says a station is not there now) needs no hello, nor does a keeper found away
+  /// on its last try (`wasAway`) and not heard from since (`#online`, which its own `replica.hello` puts it back in): a
+  /// station away a month is asked once a try, not twice.
+  async #failedWhy(ws: string, peer: string, error: unknown, wasAway: boolean): Promise<{ reason: Reason; answers: boolean }> {
+    if (error instanceof Refused || this.#old.has(peer)) return { reason: this.#reason(peer, error), answers: false };
+    if (error instanceof NoLink || (wasAway && !this.#online.has(peer))) {
+      this.#online.delete(peer);
+      return { reason: "offline", answers: false };
+    }
+    const said = await this.#sayHello(ws, peer);
+    if (said === "up") return { reason: "error", answers: true };
+    return { reason: said === "old" ? "old" : "offline", answers: false };
   }
 
   /// Why `error` kept a place from being brought level, as the settings say it.
@@ -759,7 +940,7 @@ export class Copies {
     const now = o.now === true;
     const key = `${ws}\n${peer}`;
     let k = this.#keeping.get(key);
-    if (k === undefined) this.#keeping.set(key, (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null, partial: false, lacking: 0 }));
+    if (k === undefined) this.#keeping.set(key, (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null, partial: false, lacking: 0, answers: false, whole: false }));
     if (k.busy) {
       k.asked = true;
       return;
@@ -775,6 +956,14 @@ export class Copies {
     // (a place level with this head already: nothing to send)
     const said = headSaid(head);
     if (k.known !== null && k.head === said && k.error === null) return;
+    // (a stand-in's first copy is the whole copy, over the uplink the keepers it stands in for share: one at a time in
+    // a workspace, the next begun as it ends)
+    const standingIn = !k.whole && this.#standIns(ws).includes(peer);
+    if (standingIn) {
+      const other = this.#standingIn.get(ws);
+      if (other !== undefined && other !== peer) return;
+      this.#standingIn.set(ws, peer);
+    }
     k.busy = true;
     const keeping = k;
     const wasError = k.error;
@@ -832,6 +1021,8 @@ export class Copies {
         keeping.missing = done.missing;
         keeping.at = this.#d.fibers.now();
         keeping.error = null;
+        keeping.answers = false;
+        keeping.whole = true;
         keeping.tries = 0;
         keeping.partial = false;
         keeping.lacking = 0;
@@ -852,10 +1043,10 @@ export class Copies {
         });
         if (span && traces) traces.endInternal(span, "replica.level", [["stillfail.target_kind", "station"], ["stillfail.missing", done.missing]], false, { alwaysKeep: false, slowMs: 500 });
       } catch (e) {
-        const reason = this.#reason(peer, e);
+        const { reason, answers } = await this.#failedWhy(ws, peer, e, wasError !== null && prevReason === "offline");
         if (span && traces) {
           const msg = ((e as Error).message ?? "").toLowerCase();
-          const errType = msg.includes("enoent") || msg.includes("no such") ? "enoent" : reason === "offline" || msg.includes("network") || msg.includes("timeout") || msg.includes("unreached") || msg.includes("reset") ? "network" : reason === "old" ? "old" : "other";
+          const errType = msg.includes("enoent") || msg.includes("no such") ? "enoent" : reason === "offline" || answers || msg.includes("network") || msg.includes("timeout") || msg.includes("unreached") || msg.includes("reset") ? "network" : reason === "old" ? "old" : "other";
           traces.endInternal(span, "replica.level", [["stillfail.target_kind", "station"], ["error.type", errType]], true, { alwaysKeep: false, slowMs: 500 });
         }
         // (one from before copies, which knows no `replica.*`: nothing to say or retry until it says it is up, as
@@ -864,6 +1055,7 @@ export class Copies {
         else if (keeping.error === null) log.warn("copies", "a place not brought level", { ws, place: peer, error: (e as Error).message });
         keeping.error = (e as Error).message;
         keeping.reason = reason;
+        keeping.answers = answers;
         keeping.known = null;
         if (wasError === null || reason !== prevReason) {
           this.#record(ws, {
@@ -890,8 +1082,9 @@ export class Copies {
             this.#level(ws, peer, { now: true, fresh: true });
           });
         }
-        // (one not reached: the next station after those this one's copies fall to holds them meanwhile)
-        if (wasError === null && this.#backup().mode === "auto") this.#levelAll(ws);
+        // (one not reached: the next station after those this one's copies fall to holds them meanwhile; one that
+        // answers is still among those that hold them)
+        if (wasError === null && !answers && this.#backup().mode === "auto") this.#levelAll(ws);
       } finally {
         keeping.busy = false;
         this.#changed(keeping.error === wasError ? TELL_MS : 0);
@@ -900,6 +1093,11 @@ export class Copies {
     this.#levelling.set(key, run);
     void run.then(() => {
       if (this.#levelling.get(key) === run) this.#levelling.delete(key);
+      // (a stand-in's first copy over, done or not: the next one waiting begun)
+      if (standingIn && this.#standingIn.get(ws) === peer) {
+        this.#standingIn.delete(ws);
+        if (!this.#closed) this.#levelAll(ws);
+      }
       if (keeping.asked && !this.#closed) {
         keeping.asked = false;
         if (this.#targets(ws).includes(peer)) this.#level(ws, peer, { now: keeping.error === null });
@@ -931,7 +1129,7 @@ export class Copies {
     if (k === undefined) {
       this.#keeping.set(
         key,
-        (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null, partial: false, lacking: 0 }),
+        (k = { to: 0, at: null, error: null, reason: null, missing: 0, busy: false, again: null, tries: 0, asked: false, known: null, head: null, partial: false, lacking: 0, answers: false, whole: false }),
       );
     }
     if (k.busy) {

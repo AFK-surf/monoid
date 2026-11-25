@@ -18,6 +18,7 @@ import type { ConnectKind } from "../sessions/config.ts";
 import type { Hub } from "../sessions/hub.ts";
 import { ControlPlane, Parts, Paths, Peers, StationConfig, Store } from "../services.ts";
 import type { Store as StoreT } from "../store/store.ts";
+import { isSlackWrite } from "../tools/mcp.ts";
 import { lessBusy } from "../../../shared/station-busy.ts";
 import type { NameBook } from "./names.ts";
 import { BOTS, CALL, EVENT, HOLDS, LIST, MOVED, ROUTE, ROUTED, RemoteConnects, RemoteSurface, TAKE, type Described, type Known, answerCall, describe, knownIn, knownOf, localOf, threadOfEvent } from "./remote.ts";
@@ -142,6 +143,27 @@ export class WorkspaceConnects {
         if (entry !== undefined && ROUTED.includes(kindOf(entry) as never) && entry.mode !== "single-session" &&
           typeof thread?.channel === "string" && thread.channel !== "" && typeof thread?.threadTs === "string" && thread.threadTs !== "") {
           this.routeHere(id, thread.channel, thread.threadTs, peer);
+        }
+      }
+      // A write another station's chat made here with slack_api in a thread it names, or a new message it posted: that
+      // chat took part in its thread (conversations.ts `slackApi`), so what is said there goes to that station too, unless
+      // the thread is a chat's here or another station's already.
+      if (request?.op === "api" && peer !== "self" && peer !== d.here()) {
+        const known = knownIn(request?.connect);
+        const id = known === null ? "" : localOf(known, d.here());
+        const entry = this.entryOf(id);
+        const [method, params] = Array.isArray(request?.args) ? request.args : [];
+        const posted = answered?.result?.answer;
+        const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+        const named = text(params?.thread_ts);
+        const fresh = method === "chat.postMessage" ? text(posted?.ts) : null;
+        // (a new message's channel as Slack says it: a person's id given opens their direct message)
+        const channel = (fresh !== null ? text(posted?.channel) : null) ?? text(params?.channel) ?? text(params?.channel_id);
+        const threadTs = named ?? fresh;
+        if (entry !== undefined && kindOf(entry) === "slack" && entry.mode !== "single-session" && typeof method === "string" && isSlackWrite(method) &&
+          channel !== null && threadTs !== null && this.d.store.connectThreadStation(id, channel, threadTs) === null) {
+          const here = this.d.store.threadAt(this.d.hub().surface(id), channel, threadTs);
+          if (here === null || this.d.store.threadSessions(here.id).every((m) => m.connect !== id)) this.routeHere(id, channel, threadTs, peer);
         }
       }
       return answered;

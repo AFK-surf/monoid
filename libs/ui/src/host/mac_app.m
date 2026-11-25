@@ -51,6 +51,7 @@ static void go_back(void) {
 
 @interface MBView : NSView <NSTextInputClient>
 @property(nonatomic) BOOL imeActive;
+@property(nonatomic) int keyCatching;
 @property(nonatomic) NSRect caretRect;
 @property(nonatomic, copy) NSString *mirror;  // the field's text, for the input method
 @property(nonatomic) NSRange sel;
@@ -998,8 +999,10 @@ static NSCursor *cursor_of(int kind) {
                                               NSEventModifierFlagOption | NSEventModifierFlagCommand);
   NSString *c = e.charactersIgnoringModifiers.lowercaseString;
   NSEventModifierFlags cmd = NSEventModifierFlagCommand;
-  BOOL system = (m == cmd && ([c isEqualToString:@"q"] || [c isEqualToString:@"w"] || [c isEqualToString:@"h"] ||
-                              [c isEqualToString:@"m"])) ||
+  // Only a remote-screen key catcher (mode >= 2) keeps ⌘W; a terminal catcher (mode 1) still lets ⌘W close its panel/window.
+  BOOL catchClose = self.keyCatching >= 2 && self.imeActive && self.markedLen == 0;
+  BOOL system = (m == cmd && ([c isEqualToString:@"q"] || (!catchClose && [c isEqualToString:@"w"]) ||
+                              [c isEqualToString:@"h"] || [c isEqualToString:@"m"])) ||
                 (m == (cmd | NSEventModifierFlagOption) && [c isEqualToString:@"h"]) ||
                 (m == (cmd | NSEventModifierFlagControl) && [c isEqualToString:@"f"]);
   if (system && NSApp.mainMenu) return NO;
@@ -1023,7 +1026,7 @@ static NSCursor *cursor_of(int kind) {
 - (void)cut:(id)sender { mb_cb.key(14, 8); }
 - (void)copy:(id)sender { mb_cb.key(13, 8); }
 - (void)paste:(id)sender {
-  if (key_catching && self.imeActive && self.markedLen == 0) {
+  if (self.keyCatching && self.imeActive && self.markedLen == 0) {
     mb_cb.key(1000 + 'v', 8);
     return;
   }
@@ -1067,7 +1070,7 @@ static int mac_char_key_code(NSEvent *e, NSEventModifierFlags m) {
 - (void)keyDown:(NSEvent *)e {
   clear_stale_sleep_if_active(self.window);
   // a key catcher's focus (apple_device.h): its keys (a composition under way keeps them)
-  if (key_catching && self.imeActive && self.markedLen == 0 && catch_key_down(e)) return;
+  if (self.keyCatching && self.imeActive && self.markedLen == 0 && catch_key_down(e)) return;
   NSEventModifierFlags m = e.modifierFlags;
   int mods = ((m & NSEventModifierFlagShift) ? 1 : 0) | ((m & NSEventModifierFlagControl) ? 2 : 0) |
              ((m & NSEventModifierFlagOption) ? 4 : 0) | ((m & NSEventModifierFlagCommand) ? 8 : 0);

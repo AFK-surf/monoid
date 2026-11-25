@@ -44,6 +44,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  id-token: write
 jobs:
   # The mbui app's check and tests (apps/mbui/scripts/check.sh, test.sh: still.fail's design system and pages over the
   # fixtures, the screens, the media screens, the core client, and the end-to-end flows seen again over their recorded
@@ -379,6 +380,23 @@ jobs:
           rm -rf "$local_dir" && mkdir -p "$(dirname "$local_dir")"
           cp -a "$RUNNER_TEMP/app-test" "$local_dir"
           find "$HOME/stillfail-ci/app-test" -mindepth 1 -maxdepth 1 -type d -mmin +120 -exec rm -rf {} + 2>/dev/null || true
+      # On self-hosted non-main pipeline runs (e.g. release/* on ci-1), stage the built test binary dir in Cloudflare R2
+      # via scripts/native-handoff.mjs and leave only ~1 KB natives.r2.json for actions/upload-artifact@v4, avoiding
+      # 5-minute Azure Blob upload stalls over congested egress (release/2026-11-26 run 45648336081).
+      - name: Stage mbui test binaries in R2 (self-hosted non-main pipeline)
+        if: ${{ !cancelled() && runner.environment == 'self-hosted' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.workflow == 'pipeline' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.tests.outcome }}" = success ] && [ "${GROUP:-}" = build ]; then
+            case "${PART:-}" in
+              app)        bash scripts/mbui-artifact-handoff.sh put app "$RUNNER_TEMP/app-test" "$GITHUB_SHA" ;;
+              realsize)   bash scripts/mbui-artifact-handoff.sh put realsize "$RUNNER_TEMP/realsize-test" "$GITHUB_SHA" ;;
+              pages_test) bash scripts/mbui-artifact-handoff.sh put pages_test "$RUNNER_TEMP/pages-test" "$GITHUB_SHA" ;;
+              replay)     bash scripts/mbui-artifact-handoff.sh put replay "$RUNNER_TEMP/replay-test" "$GITHUB_SHA" ;;
+            esac
+          elif [ "${GROUP:-}" = pkgs ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ]; then
+            bash scripts/mbui-artifact-handoff.sh put pkgs "$RUNNER_TEMP/pkgs-test" "$GITHUB_SHA"
+          fi
       - if: env.GROUP == 'build' && env.PART == 'app'
         uses: actions/upload-artifact@v4
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test", retention-days: 1, compression-level: 6 }
@@ -690,6 +708,7 @@ jobs:
       - name: The flows seen again (native${{ matrix.fps && format(', at {0} fps', matrix.fps) || '' }}, on replay-build's program)
         run: |
           set -o pipefail
+          bash scripts/mbui-artifact-handoff.sh get "$RUNNER_TEMP/replay-test" "$GITHUB_SHA"
           chmod +x "$RUNNER_TEMP/replay-test/flows.blackbox_test.exe" "$RUNNER_TEMP/replay-test/testexe"
           TESTEXE="$RUNNER_TEMP/replay-test/testexe" \
           REPLAY_EXE="$RUNNER_TEMP/replay-test/flows.blackbox_test.exe" REPLAY_INFO="$RUNNER_TEMP/replay-test/__blackbox_test_info.json" \
@@ -776,6 +795,8 @@ jobs:
         id: tests
         run: |
           set -o pipefail
+          bash scripts/mbui-artifact-handoff.sh get "$RUNNER_TEMP/app-test" "$GITHUB_SHA"
+          [ "$PKGS" != yes ] || bash scripts/mbui-artifact-handoff.sh get "$RUNNER_TEMP/pkgs-test" "$GITHUB_SHA"
           chmod +x "$RUNNER_TEMP/app-test/sfapp.whitebox_test.exe" "$RUNNER_TEMP/app-test/testexe"
           [ "$PKGS" != yes ] || find "$RUNNER_TEMP/pkgs-test" -type f \( -name '*.exe' -o -name testexe \) -exec chmod +x {} +
           # (each of FPS's rates in its turn, MBUI_TEST_FPS; none said: once, as by default)
@@ -912,6 +933,7 @@ jobs:
       - name: The real-size tests (native${{ matrix.fps && format(', at {0} fps', matrix.fps) || '' }}, on realsize-build's program)
         run: |
           set -o pipefail
+          bash scripts/mbui-artifact-handoff.sh get "$RUNNER_TEMP/realsize-test" "$GITHUB_SHA"
           chmod +x "$RUNNER_TEMP/realsize-test/sfapp_realsize.blackbox_test.exe" "$RUNNER_TEMP/realsize-test/testexe"
           code=0
           for r in ${FPS:-default}; do
@@ -982,6 +1004,7 @@ jobs:
       - name: The pages tests (native${{ matrix.fps && format(', at {0} fps', matrix.fps) || '' }}, on pages-test-build's program)
         run: |
           set -o pipefail
+          bash scripts/mbui-artifact-handoff.sh get "$RUNNER_TEMP/pages-test" "$GITHUB_SHA"
           chmod +x "$RUNNER_TEMP/pages-test/sfapp_pages_test.blackbox_test.exe" "$RUNNER_TEMP/pages-test/testexe"
           code=0
           for r in ${FPS:-default}; do
@@ -1122,6 +1145,10 @@ jobs:
         run: |
           set -o pipefail
           app="$RUNNER_TEMP/app-test" pk="$RUNNER_TEMP/pkgs-test" rs="$RUNNER_TEMP/realsize-test" pt="$RUNNER_TEMP/pages-test"
+          [ "$APP_FILES" = none ] || bash scripts/mbui-artifact-handoff.sh get "$app" "$GITHUB_SHA"
+          [ -z "$PKGS_FILES" ] || bash scripts/mbui-artifact-handoff.sh get "$pk" "$GITHUB_SHA"
+          [ -z "$REALSIZE_FILES" ] || bash scripts/mbui-artifact-handoff.sh get "$rs" "$GITHUB_SHA"
+          [ -z "$PAGES_TEST_FILES" ] || bash scripts/mbui-artifact-handoff.sh get "$pt" "$GITHUB_SHA"
           find "$app" "$pk" "$rs" "$pt" -type f \( -name '*.exe' -o -name testexe \) -exec chmod +x {} + 2>/dev/null || true
           if [ "$APP_FILES" != none ]; then t=$app/testexe; e=$app/sfapp.whitebox_test.exe
           elif [ -n "$REALSIZE_FILES" ]; then t=$rs/testexe; e=none

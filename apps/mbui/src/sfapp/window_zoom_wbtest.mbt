@@ -343,3 +343,25 @@ test "window zoom: a short rail keeps settings visible and scrolls its places" {
   assert_true(after.1 < before.1, msg="places did not scroll: \{Repr(before)} → \{Repr(after)}")
   assert_eq(t.query(Button, label=@sf.t("web-pages.settings.title")).unwrap().rect, gear)
 }
+
+///|
+test "window zoom: focused remote screen key catcher keeps ⌘-/=/0 and ⌘W instead of zooming or closing" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="screen-live", w=1280.0, h=800.0, before=fn(src) {
+    open_fixture_over("screen-live", src)
+  })
+  t.run_for(@sf.later_ms + @ui.move_most_ms)
+  assert_true(@ui.key_catching())
+  assert_true(@ui.key_catching_close())
+  let zoom0 = @ui.window_zoom()
+  let width0 = t.ctx().window_size().0
+  t.key(@ui.key_of_char('-'), mods=@ui.mod_cmd)
+  t.key(@ui.key_of_char('='), mods=@ui.mod_cmd)
+  t.key(@ui.key_of_char('0'), mods=@ui.mod_cmd)
+  t.key(@ui.key_of_char('w'), mods=@ui.mod_cmd)
+  t.frame()
+  assert_eq(@ui.window_zoom(), zoom0)
+  assert_true((t.ctx().window_size().0 - width0).abs() < 0.01)
+  assert_eq(named(calls, "prefs.set").length(), 0)
+  assert_true(named(calls, "screen.input").length() > 0)
+}

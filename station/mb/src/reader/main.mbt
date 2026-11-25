@@ -1155,6 +1155,35 @@ fn main {
         }
         host.say(line)
       })
+    (Some("replica-chat"), _, _) =>
+      // (one chat of a copy this station keeps, read for a handoff (replica/chat.ts): a line `{"chat": …}` or
+      // `{"error"}`; the fold in `--work`, gone after; the shell's own files in `--shell-dir`)
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => {
+        let int_of = (name : String, d : Int) => match flag(name) {
+          Some(n) => @string.parse_int(n) catch { _ => d }
+          None => d
+        }
+        let line = try {
+          let thread = @string.parse_double(flag("--thread").unwrap_or("")) catch { _ => fail("--thread is a chat's id") }
+          let chat = @replica.read_chat(
+            host,
+            flag("--sep").unwrap_or("/"),
+            flag("--dir").unwrap_or(""),
+            flag("--work").unwrap_or(""),
+            thread,
+            int_of("--entries", @replica.chat_entries_most),
+            int_of("--text", @replica.chat_text_most),
+            int_of("--bytes", @replica.chat_bytes_most),
+          )
+          "{\"chat\":\{@jsjson.stringify(chat)}}"
+        } catch {
+          e => {
+            let failed : Json = { "error": Json::string(message(e)) }
+            failed.stringify()
+          }
+        }
+        host.say(line)
+      })
     (Some("replica-carry"), _, _) =>
       // (the shell's own files, which this asks for none of, in `--shell-dir`)
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => replica_carry(host, flag("--sep").unwrap_or("/")))
@@ -1270,7 +1299,7 @@ fn main {
         }
       })
     _ => {
-      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
+      @host.note("usage: stillfail-reader --data <dir> | --builder archive-marks|session-bindings|session-up-jobs|workspace-up-jobs|widget-sources|card-posts|session-list|outflow-chats|turn-counts|said|archive-last|page-letters|cc-index|usage-check|recent-chat|closed-cards|people-since|legacy-edits|legacy-said|session-counts|session-backfill|post-blocks|usage-retire|usage-counter|signin-save|vault-uses|replica-export --db <file> | --builder replica-restore --db <file> --data <dir> | --builder replica-chat --dir <gen> --work <file> --thread <id> | --builder replica-carry | --builder footprint | --builder memory | --builder packed")
       2
     }
   }

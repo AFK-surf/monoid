@@ -76,6 +76,16 @@ let real_size_chat_ways : Array[String] = [
 let real_size_chat_modes : Array[String] = ["chat", "chat-working", "chat-job", "chat-agent", "chat-jobs"]
 
 ///|
+/// The chat's modes that only put 在其他 station 接着做's "…" or one of its dialogs up over the chat's page (sfpages
+/// chat_handoff.mbt): what they hold over it is a menu's few rows or the workspace's stations, the same few whatever
+/// else the workspace holds, and the page under them is the chat's, swept as `chat`. Not opened by the sweep, as the
+/// chat's "…" over a station that answers (chat-actions) is not; what they put over the chat is held below to what it
+/// puts over the fixture's.
+let real_size_over_chat_modes : Array[String] = [
+  "chat-handoff", "chat-handoff-pick", "chat-handoff-confirm", "chat-handoff-busy", "chat-handoff-refused",
+]
+
+///|
 /// The most one frame of what the journal holds since the Tester began did: made, laid out, measured.
 fn real_size_most() -> (Int, Int, Int) {
   let mut most = (0, 0, 0)
@@ -283,8 +293,10 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   // The test below holds their work to newchat-model exactly, whose opening and changes have their bars here.
   // (chat-info-bare differs from chat-info only in its chat's and chatThings' values: the same screen here. board-add
   // is the same board with its composer open; its opening is checked against the board's bar below.)
+  // (the modes that only put something over the chat's page: real_size_over_chat_modes, held by the test below)
   let distinct = @sfapptest.corner_modes().filter(fn(m) {
-    m != "newchat-station-models" && m != "newchat-station-empty" && m != "newchat-borrow-model" && m != "chat-info-bare" && m != "board-add"
+    m != "newchat-station-models" && m != "newchat-station-empty" && m != "newchat-borrow-model" && m != "chat-info-bare" && m != "board-add" &&
+    !real_size_over_chat_modes.contains(m)
   })
   let modes = distinct.filter(fn(m) { m == "home" }) + distinct.filter(fn(m) { m != "home" })
   for mode in modes {
@@ -404,6 +416,34 @@ test "the board with a new draft open stays within the board's opening bar" {
     let ((made, laid, words), _) = real_size_screen("board-add", win, fn(_) { false })
     let (m, l, w) = real_size_known["\{win.0} board"]
     assert_true(!real_size_over(made, m) && !real_size_over(laid, l) && !real_size_over(words, w), msg=win.0)
+  }
+}
+
+///|
+/// The most one frame of the opening of `mode` in `win` did on the fixture's own few rows (made, laid, measured).
+fn fixture_opening_most(mode : String, win : (String, Double, Double, Int, String)) -> (Int, Int, Int) {
+  @sfapptest.screen_in(mode, win, "zh", moves_held=false) |> ignore
+  real_size_most()
+}
+
+///|
+test "what 在其他 station 接着做's menu and dialogs put over the chat's page is as much on the workspace of real size as on the fixture's" {
+  for win in real_size_windows {
+    let ((cm, cl, cw), _) = real_size_screen("chat", win, fn(_) { false })
+    let (fm, fl, fw) = fixture_opening_most("chat", win)
+    for mode in real_size_over_chat_modes {
+      let ((m, l, w), _) = real_size_screen(mode, win, fn(_) { false })
+      let (om, ol, ow) = fixture_opening_most(mode, win)
+      let real = (m - cm, l - cl, w - cw)
+      let fixture = (om - fm, ol - fl, ow - fw)
+      let said = "\{win.0} \{mode}: over the chat's page, made, laid out and measured \{Repr(real)} on the workspace of real size, \{Repr(fixture)} on the fixture's"
+      assert_true(
+        !real_size_change_over(real.0, fixture.0) &&
+        !real_size_change_over(real.1, fixture.1) &&
+        !real_size_change_over(real.2, fixture.2),
+        msg=said,
+      )
+    }
   }
 }
 

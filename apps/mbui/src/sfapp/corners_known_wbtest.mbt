@@ -68,7 +68,10 @@ let corners_tape_rail : Array[String] = [
   "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app", "place", "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
   "chat-agent-working", "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose",
   "chat-download", "chat-failed", "chat-feedback", "chat-image-coming", "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice",
-  "chat-history-side", "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job", "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters",
+  "chat-history-side",
+  // (its station away, gone on with on another: the "…" and the dialogs over the chat, the rail behind them)
+  "chat-handoff", "chat-handoff-pick", "chat-handoff-confirm", "chat-handoff-busy", "chat-handoff-refused",
+  "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job", "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters",
   "chat-letters-info", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-things",
   "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-long", "chat-md",
   "chat-model-pop", "chat-model-accounts", "chat-need", "chat-peek", "chat-pick", "chat-preview-apk",

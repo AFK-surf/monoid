@@ -1,0 +1,445 @@
+// What an actor asks of Node, in its own words (`station/mb/src/reader/actor_base.mbt` 1:1):
+// the store's (`store_k`), the hub's deps' (`deps_k`), its runtime session's (`agent_do_k`),
+// the station's localized words (`t_k`), and pure turn/working-state predicates.
+//
+// Helper names (`rpc_k`, `deps_k`, `store_k`, `agent_do_k`, `tell`) and literal first-arg forms
+// strictly match `station/test/mb-reader-contracts.test.ts`.
+// All methods operate on the immutable per-generation `ActorsGen` and refuse work if `sealed`.
+
+import "base_codec"
+import "effect"
+import "sessions_core"
+
+/// Query or mutate the station store: handled locally on this generation's SQLite DB when attached
+/// (`actor_store.pion`), otherwise asked of Node via `store.<f>` RPC.
+/// Refuses immediately with `Exit::Interrupted` if `self.gen.counters.sealed` is true.
+pub fn ActorsGen::store_k(
+  self : ActorsGen,
+  a : Actor,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  match self.local_store(f, args) {
+    Ok(Some(v)) => {
+      if self.gen.counters.sealed {
+        k(effect::Exit::Interrupted)
+        return
+      }
+      self.mirror(a)
+      k(effect::Exit::Succeeded(v))
+    }
+    Ok(None) => self.rpc_k(a.key, "store." + f, args, k)
+    Err(e) => k(effect::Exit::Failed(effect::EffectError::IoError(e.message)))
+  }
+}
+
+/// Ask a hub dependency (`deps.<f>`).
+pub fn ActorsGen::deps_k(
+  self : ActorsGen,
+  a : Actor,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.rpc_k(a.key, "deps." + f, args, k)
+}
+
+/// Call a method on the actor's runtime session (`agent.<f>`).
+pub fn ActorsGen::agent_do_k(
+  self : ActorsGen,
+  a : Actor,
+  agent : Agent,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let full : Array[base_codec::Json] = [sessions_core::jint(agent.handle)]
+  for i in 0..<args.length() {
+    full.push(args[i])
+  }
+  self.rpc_k(a.key, "agent." + f, full, k)
+}
+
+pub fn ActorsGen::busy_of_k(
+  self : ActorsGen,
+  a : Actor,
+  agent : Option[Agent],
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  match agent {
+    Some(g) => {
+      self.agent_do_k(a, g, "busy", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => k(effect::Exit::Succeeded(sessions_core::truthy(v)))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    }
+    None => k(effect::Exit::Succeeded(false))
+  }
+}
+
+/// Whether `a`'s runtime session is still `agent` (None and None too; `actor_base.mbt:76`).
+pub fn still(a : Actor, agent : Option[Agent]) -> Bool {
+  match (a.agent, agent) {
+    (Some(now), Some(was)) => now.handle == was.handle && now.generation == was.generation
+    (None, None) => true
+    _ => false
+  }
+}
+
+/// `a`'s runtime session where Node says it is busy and it is still `a`'s once Node answered.
+pub fn ActorsGen::busy_agent_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Option[Agent]]) -> Unit,
+) -> Unit {
+  let agent = a.agent
+  self.busy_of_k(a, agent, fn(ex : effect::Exit[Bool]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(busy) => {
+        if busy && still(a, agent) {
+          k(effect::Exit::Succeeded(agent))
+        } else {
+          k(effect::Exit::Succeeded(None))
+        }
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// The station's words in its language (`actor.ts` `t`).
+pub fn ActorsGen::t_k(
+  self : ActorsGen,
+  a : Actor,
+  key : String,
+  args : base_codec::Json,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  self.rpc_k(a.key, "t", [sessions_core::jstr(key), args], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(s))
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(key))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn ActorsGen::log(
+  self : ActorsGen,
+  a : Actor,
+  level : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)] = [],
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  let mut has_session = false
+  for i in 0..<fields.length() {
+    let (fk, fv) = fields[i]
+    if fk == "session" {
+      out.push(("session", sessions_core::jstr(a.key)))
+      has_session = true
+    } else {
+      out.push((fk, fv))
+    }
+  }
+  if !has_session {
+    out.push(("session", sessions_core::jstr(a.key)))
+  }
+  self.tell(a.key, "log", [
+    sessions_core::jstr(level),
+    sessions_core::jstr(message),
+    base_codec::json_obj(out),
+  ])
+}
+
+pub fn ActorsGen::held_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.deps_k(a, "held", [sessions_core::jstr(a.key)], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(v) => k(effect::Exit::Succeeded(sessions_core::truthy(v)))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn ActorsGen::archived_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.store_k(a, "getSession", [sessions_core::jstr(a.key)], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(row) => {
+        let is_arch = match row {
+          base_codec::Json::Obj(_) => {
+            match sessions_core::jget(row, "archivedAt") {
+              None => false
+              Some(base_codec::Json::Null) => false
+              Some(_) => true
+            }
+          }
+          _ => false
+        }
+        k(effect::Exit::Succeeded(is_arch))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn ActorsGen::has_pending_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.store_k(a, "hasPending", [sessions_core::jstr(a.key)], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(v) => k(effect::Exit::Succeeded(sessions_core::truthy(v)))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn ActorsGen::notify_store_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.store_k(a, "notify", [sessions_core::jstr(a.key)], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn ActorsGen::set_running_k(
+  self : ActorsGen,
+  a : Actor,
+  on : Bool,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.store_k(
+    a,
+    "setRunning",
+    [sessions_core::jstr(a.key), sessions_core::jbool(on)],
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+pub fn ActorsGen::last_turn_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.store_k(a, "lastTurn", [sessions_core::jstr(a.key)], k)
+}
+
+// ── Pure turn & working-state helpers (`actor_base.mbt:143-273`) ──
+
+fn opt_str_eq(a : Option[String], b : String) -> Bool {
+  match a {
+    Some(s) => s == b
+    None => false
+  }
+}
+
+fn is_missing_or_null(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    None => true
+    Some(base_codec::Json::Null) => true
+    _ => false
+  }
+}
+
+/// `actor.ts` `retrying`: a turn the provider had no room for, waiting to be tried again.
+pub fn retrying(turn : base_codec::Json) -> Bool {
+  opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "outcome")), "failed") &&
+  opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "declared")), "waiting") &&
+  sessions_core::text_of(turn, "detail").starts_with("overloaded")
+}
+
+pub fn failed_again(turn : base_codec::Json) -> Bool {
+  if !opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "outcome")), "failed") {
+    return false
+  }
+  if !is_missing_or_null(sessions_core::jget(turn, "declared")) {
+    return false
+  }
+  let detail = sessions_core::text_of(turn, "detail")
+  detail.starts_with("network:") ||
+  detail.starts_with("model:") ||
+  detail.starts_with("other:") ||
+  detail.starts_with("exited:")
+}
+
+/// A turn Codex's backend refused with nothing but `{"detail":"Bad Request"}` (FB-26).
+pub fn bare_bad_request(message : String) -> Bool {
+  match sessions_core::parse_json_strict(message) {
+    Ok(base_codec::Json::Obj(fields)) => {
+      if fields.length() != 1 {
+        return false
+      }
+      let (k, v) = fields[0]
+      if k != "detail" {
+        return false
+      }
+      match v {
+        base_codec::Json::Str(s) => s == "Bad Request"
+        _ => false
+      }
+    }
+    _ => false
+  }
+}
+
+pub fn refused_bad_request(turn : base_codec::Json) -> Bool {
+  if !opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "outcome")), "failed") {
+    return false
+  }
+  match sessions_core::str_of(sessions_core::jget(turn, "detail")) {
+    Some(d) => {
+      if d.starts_with("model: ") {
+        bare_bad_request(d.slice(7, d.length()))
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+}
+
+pub fn given_up(turn : base_codec::Json) -> Bool {
+  opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "outcome")), "completed") &&
+  is_missing_or_null(sessions_core::jget(turn, "declared"))
+}
+
+pub fn cut_off_by_restart(turn : base_codec::Json) -> Bool {
+  opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "outcome")), "aborted") &&
+  is_missing_or_null(sessions_core::jget(turn, "declared")) &&
+  opt_str_eq(sessions_core::str_of(sessions_core::jget(turn, "detail")), "other: cut off by restart")
+}
+
+pub fn retryable(turn : base_codec::Json) -> Bool {
+  failed_again(turn) || given_up(turn) || cut_off_by_restart(turn)
+}
+
+/// `actor.ts` `retryAfter`.
+pub fn retry_after(n : Int) -> Double {
+  let mut v = 30.0
+  let mut i = 0
+  while i < n && v < 600.0 {
+    v = v * 2.0
+    i = i + 1
+  }
+  if v > 600.0 { 600.0 } else { v }
+}
+
+/// A declared state (`{kind, seconds?}`) as `actor.ts` `parseDeclared` reads a kind.
+pub fn parse_declared(kind : String, wait : Double) -> Option[base_codec::Json] {
+  if kind == "all_done" || kind == "final" {
+    return Some(base_codec::json_obj([("kind", sessions_core::jstr("all_done"))]))
+  }
+  if kind == "need_human" || kind == "need_help" || kind == "block" || kind == "need_decision" {
+    return Some(base_codec::json_obj([("kind", sessions_core::jstr("need_help"))]))
+  }
+  if kind == "waiting" {
+    return Some(
+      base_codec::json_obj([
+        ("kind", sessions_core::jstr("waiting")),
+        ("seconds", sessions_core::jnum(wait)),
+      ]),
+    )
+  }
+  None
+}
+
+pub fn kind_of(d : Option[base_codec::Json]) -> Option[String] {
+  match d {
+    Some(v) => sessions_core::str_of(sessions_core::jget(v, "kind"))
+    None => None
+  }
+}
+
+pub fn settled_state(d : base_codec::Json) -> Bool {
+  !opt_str_eq(sessions_core::str_of(sessions_core::jget(d, "kind")), "waiting")
+}
+
+/// `actor.ts` `endedIn`.
+pub fn ended_in(declared : Option[base_codec::Json], outcome : String) -> Option[base_codec::Json] {
+  match declared {
+    Some(d) => {
+      if opt_str_eq(kind_of(Some(d)), "waiting") && outcome != "completed" {
+        None
+      } else {
+        Some(d)
+      }
+    }
+    None => None
+  }
+}
+
+pub fn working_json(w : Working) -> base_codec::Json {
+  base_codec::json_obj([
+    ("connect", sessions_core::jstr(w.connect)),
+    ("channel", sessions_core::jstr(w.channel)),
+    ("threadTs", sessions_core::jstr(w.thread_ts)),
+    ("ts", w.ts),
+    ("firstTs", w.first_ts),
+    ("since", sessions_core::jnum(w.since)),
+  ])
+}
+
+pub fn working_of(v : base_codec::Json) -> Working {
+  let ts = sessions_core::field_of(v, "ts")
+  let first_ts = match sessions_core::jget(v, "firstTs") {
+    Some(f) => f
+    None => ts
+  }
+  let since = match sessions_core::num_of(sessions_core::jget(v, "since")) {
+    Some(n) => n
+    None => 0.0
+  }
+  Working::{
+    connect: sessions_core::text_of(v, "connect"),
+    channel: sessions_core::text_of(v, "channel"),
+    thread_ts: sessions_core::text_of(v, "threadTs"),
+    ts: ts,
+    first_ts: first_ts,
+    since: since,
+  }
+}
+
+pub fn turn_for_nobody() -> base_codec::Json {
+  base_codec::json_obj([
+    ("profile", base_codec::json_null()),
+    ("person", base_codec::json_null()),
+    ("thread", base_codec::json_null()),
+  ])
+}

@@ -123,6 +123,46 @@ pub let key_code_delete_paragraph_on : Int = 35
 pub let key_forward : Int = 40
 
 ///|
+/// Insert and function keys F1–F12, as hosts send them to a key catcher (device.mbt named_key).
+pub let key_code_insert : Int = 41
+
+///|
+pub let key_code_f1 : Int = 42
+
+///|
+pub let key_code_f2 : Int = 43
+
+///|
+pub let key_code_f3 : Int = 44
+
+///|
+pub let key_code_f4 : Int = 45
+
+///|
+pub let key_code_f5 : Int = 46
+
+///|
+pub let key_code_f6 : Int = 47
+
+///|
+pub let key_code_f7 : Int = 48
+
+///|
+pub let key_code_f8 : Int = 49
+
+///|
+pub let key_code_f9 : Int = 50
+
+///|
+pub let key_code_f10 : Int = 51
+
+///|
+pub let key_code_f11 : Int = 52
+
+///|
+pub let key_code_f12 : Int = 53
+
+///|
 /// Whether a focused field takes key `code` as its own (its moves and deletions, Enter, select all, copy, cut), not
 /// Escape, Tab or a character's key.
 fn field_key(code : Int) -> Bool {

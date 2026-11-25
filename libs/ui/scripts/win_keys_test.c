@@ -113,13 +113,31 @@ int main(void) {
   catch_keys_focus(1);
   CHECK(installs == 3);
 
-  // Ordinary Ctrl, text and AltGr keep their previous routes, while a full queue does not swallow a character.
+  // Ordinary Ctrl, Left Ctrl + Left Alt, F1-F12/Insert, text and AltGr (Right Alt) keep their routes, while a full queue does not swallow a character.
   held[VK_CONTROL] = -32768;
   CHECK(catch_vk('K') == 1000 + 'k' && told_code == 1000 + 'k' && told_mods == 2);
+  // Left Ctrl + Left Alt is a shortcut (e.g. Ctrl+Alt+I -> Option+Cmd+I on remote Mac).
   held[VK_MENU] = -32768;
+  held[VK_LMENU] = -32768;
+  CHECK(catch_vk('K') == 1000 + 'k' && told_code == 1000 + 'k' && told_mods == 6);
+  // Right Alt + Ctrl is AltGr on European layouts: falls through to WM_CHAR.
+  held[VK_LMENU] = 0;
+  held[VK_RMENU] = -32768;
   CHECK(catch_vk('K') == 0);
   memset(held, 0, sizeof held);
   CHECK(catch_vk('K') == 0 && catch_vk(VK_RETURN) == 7);
+  CHECK(catch_vk(VK_INSERT) == 41 && told_code == 41 && told_mods == 0);
+  // Shift+Insert must stay untouched by catch_vk so win_app.c's local paste (Raycast / clipboard managers) still fires.
+  held[VK_SHIFT] = -32768;
+  CHECK(catch_vk(VK_INSERT) == 0);
+  held[VK_SHIFT] = 0;
+  CHECK(catch_vk(VK_F1) == 42 && catch_vk(VK_F5) == 46 && catch_vk(VK_F12) == 53);
+  // Alt+F4 (without Ctrl/Win) must fall through to DefWindowProc to close the window; Ctrl+Alt+F4 stays caught.
+  held[VK_MENU] = -32768;
+  CHECK(catch_vk(VK_F4) == 0);
+  held[VK_CONTROL] = -32768;
+  CHECK(catch_vk(VK_F4) == 45 && told_code == 45 && told_mods == 6);
+  memset(held, 0, sizeof held);
   CHECK(press(VK_LWIN, 1) == 1);
   post_ok = 0;
   CHECK(press('K', 1) == 7);

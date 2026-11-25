@@ -277,6 +277,9 @@ pub fn HubGen::rpc_k(
     ("fn", jstr(f)),
     ("args", base_codec::json_arr(args)),
   ])
+  let epoch = self.counters.epoch
+  let counters = self.counters
+  let hub_asked = host.hub_asked
   d.wait_k(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
     match ex {
       effect::Exit::Succeeded(answer) => {
@@ -286,7 +289,20 @@ pub fn HubGen::rpc_k(
         }
       }
       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Interrupted => {
+        match hub_asked.get(id) {
+          Some(entry) => {
+            if entry.epoch == epoch {
+              let _ = hub_asked.remove(id)
+              if !counters.sealed {
+                counters.active = counters.active + 1
+              }
+            }
+          }
+          None => ()
+        }
+        k(effect::Exit::Interrupted)
+      }
     }
   })
 }

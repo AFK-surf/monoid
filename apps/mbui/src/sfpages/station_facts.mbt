@@ -14,12 +14,15 @@ fn station_words() -> @ui.TextStyle {
 let station_words_hug : @ui.TextStyle = @ui.text_style(w=Hug)
 
 ///|
-/// Its agents at work: the accent's words.
+/// An agent and how many are at work, 4 apart.
 // kept across runs: a value (no field of it changes)
-let station_busy : @ui.TextStyle = @ui.text_style(color=AccentText)
+let station_running_box : @ui.Style = @ui.css("row gap=S1 align=ACenter")
 
 ///|
-/// The dot and what follows it, 5 apart.
+let station_running_icon : Double = 15.0
+
+///|
+/// What it says and the dot after it, 5 apart: the dot last, so every row's dot ends at the same edge.
 // kept across runs: a value (no field of it changes)
 let station_state_box : @ui.Style = @ui.css("row gap=S1_25 align=ACenter")
 
@@ -43,35 +46,38 @@ fn rig_up(r : Json?) -> Bool {
 }
 
 ///|
-/// At the end of a task-only station's name (rig `r()`), as a station's is: the rail's dot while it is up; the ring and
-/// how it is while not.
+/// At the end of a task-only station's name (rig `r()`), as a station's is: the rail's dot while it is up; how it is
+/// and the ring while not.
 pub fn rig_state_node(parent : @view.View, r : () -> Json?) -> Unit {
   parent.box(fn(b) {
     @sf.style_node(b, fn() { station_state_box })
-    @sf.state_dot_node(b, fn() { if rig_up(r()) { "up" } else { "offline" } }, size=station_dot_side)
     b.show(fn() { !rig_up(r()) }, fn(w) { @sf.words_node(w, fn() { @settings.rig_state(r()) }, station_words) |> ignore })
+    @sf.state_dot_node(b, fn() { if rig_up(r()) { "up" } else { "offline" } }, size=station_dot_side)
   })
   |> ignore
 }
 
 ///|
-/// station_state's, as nodes, in `parent` (a row: the end of a station's name's line), of station `s` as it is now: up
-/// or away (the rail's dot), then its agents at work (in the accent) or, away, when it was last seen.
+/// station_state's, as nodes, in `parent` (a row: the end of a station's name's line), of station `s` as it is now: its
+/// agents at work (in the accent) or, away, when it was last seen, then up or away (the rail's dot) last.
 pub fn station_state_node(parent : @view.View, s : () -> Json?) -> Unit {
   let online = fn() { flag(s(), "online") }
   let running = fn() { number(field(field(s(), "overview"), "counts"), "running") }
   parent.box(fn(b) {
     @sf.style_node(b, fn() { station_state_box })
-    @sf.state_dot_node(b, fn() { if online() { "up" } else { "offline" } }, size=station_dot_side)
     b.show(fn() { !online() }, fn(w) { @sf.words_node(w, fn() { text(s(), "summary") }, station_words) |> ignore })
+    // (its chats at work: a chat and how many, quiet: work going on is no alarm, the warnings beside it are)
     b.show(fn() { online() && running() > 0.0 }, fn(w) {
-      @sf.words_node(
-        w,
-        fn() { @sf.t("web-pages.stations.page.runningShort", args=[("n", running().to_int().to_string())]) },
-        fn() { station_words().then(station_busy) },
-      )
+      @sf.style_node(w, fn() { station_running_box })
+      // (read out whole: 2 个运行中)
+      w.says(By(fn() {
+        Some(@view.said(Image, label=@sf.t("web-pages.stations.page.runningShort", args=[("n", running().to_int().to_string())])))
+      }))
       |> ignore
+      @sf.icon_node(w, "chat", station_running_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+      @sf.words_node(w, fn() { running().to_int().to_string() }, station_words) |> ignore
     })
+    @sf.state_dot_node(b, fn() { if online() { "up" } else { "offline" } }, size=station_dot_side)
   })
   |> ignore
 }

@@ -268,7 +268,8 @@ fn row_menu_offered(item : ChatItem) -> Bool {
 /// `share_from` (where the menu was opened), where there are two or more of them (左子健, 2026-11-09: 菜单有点太多了，只把分享收进一个).
 /// `here`: a row's of a list made once, its 归档 said where the row was (archive_row's `here`). `asks_rename`: 重命名
 /// asked over the page on every input, where its chat shows no title of a row's to be its field (a board's card);
-/// `archived` done as it is archived from here, before it is (a board's card's: its chat no more beside the board).
+/// `archived` done as it is archived from here, before it is (a board's card's: its chat no more beside the board). `goes_on`:
+/// 在其他 station 接着做, with where it moves (chat_handoff_item: the page's, its station not answering).
 fn chat_menu_items(
   src : Source,
   item : ChatItem,
@@ -278,6 +279,7 @@ fn chat_menu_items(
   asks_rename? : Bool = false,
   archived? : () -> Unit = fn() {  },
   along? : @ui.Along = Start,
+  goes_on? : @sf.MenuItem,
 ) -> Array[@sf.MenuItem?] {
   let r = row_ref(item)
   let items : Array[@sf.MenuItem?] = []
@@ -432,6 +434,10 @@ fn chat_menu_items(
     items.push(
       Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.menu"), icon="move", further=true, fn() { open_chat_move(src, item, from=share_from()) })),
     )
+  }
+  // its station not answering: gone on with on another (chat_handoff.mbt), its page's alone
+  if goes_on is Some(g) {
+    items.push(Some(g))
   }
   // what shares it or takes it elsewhere: one 分享 where there are two or more
   let shared : Array[@sf.MenuItem?] = []
@@ -856,8 +862,9 @@ fn chat_menu_whole(
     (Some(_), _) | (_, Some(_)) => None
     _ => return None
   }
+  let goes_on = chat_handoff_item(src, r, from=share_from)
   let items : Array[@sf.MenuItem?] = match found {
-    Some(item) => chat_menu_items(src, item, share_from~, page=extra, along~)
+    Some(item) => chat_menu_items(src, item, share_from~, page=extra, along~, goes_on?)
     None => {
       let link = @sfbase.chat_link(r.station, r.session)
       let shared : Array[@sf.MenuItem?] = []
@@ -871,7 +878,11 @@ fn chat_menu_whole(
         )
       }
       shared.append(extra)
-      share_menu(shared, share_from, along~)
+      let own : Array[@sf.MenuItem?] = match goes_on {
+        Some(g) => [Some(g)]
+        None => []
+      }
+      own + share_menu(shared, share_from, along~)
     }
   }
   let reports = feedback_reports(src, r)

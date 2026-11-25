@@ -941,8 +941,10 @@ export async function slackApi(hub: Hub, key: string, method: string, params: Re
     // Its thread is the session's now: a new message starts one.
     const resultTs = typeof result?.ts === "string" ? (result.ts as string) : null;
     const root = threadTs ?? resultTs;
+    // (a new message's channel as Slack says it: a person's id given opens their direct message, where replies come)
+    const where = threadTs === null && typeof result?.channel === "string" && result.channel !== "" ? (result.channel as string) : channel;
     if (root !== null) {
-      const thread = store.openThread(surface, channel, root, null, key);
+      const thread = store.openThread(surface, where, root, null, key);
       if (store.joinThread(thread.id, key, connect)) log.info("hub", "session took part in a thread through slack_api", { session: key, channel, threadTs: root, method });
       if (resultTs !== null && method === "chat.postMessage") {
         const [n] = store.insertMessage({ thread: thread.id, ts: resultTs, authorKind: "agent", author: key, text: postedText, agentIdentity: identity });

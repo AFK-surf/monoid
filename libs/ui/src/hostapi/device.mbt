@@ -124,6 +124,12 @@ pub fn key_catch(on : Bool) -> Unit {
 }
 
 ///|
+/// Key-catcher mode: 0 off, 1 focused catcher (terminal), 2 focused catcher that also captures macOS ⌘W (remote screen).
+pub fn key_catch_mode(mode : Int) -> Unit {
+  dv_key_catch(mode)
+}
+
+///|
 /// How far the soft keyboard reaches over the window's foot, in points, as it moves (0: down, or none). The window
 /// is laid out above it already (Android's view; iOS's view, or the frame where the app is edge to edge).
 pub fn ime_inset() -> Double {

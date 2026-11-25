@@ -127,6 +127,55 @@ test("a new conversation of a connect that names another station runs there; wha
   await close();
 });
 
+test("slack_api posting through a connect that runs on another station: what is said in the thread it starts or posts in comes back to its chat; a thread a chat there has stays there", async () => {
+  const { h, s, close } = workspace();
+  const here = message({ text: "<@UBOT> stay on H" });
+  await h.connects.receive("cl", { type: "message", message: here });
+  h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
+  const first = message({ text: "<@UBOT> tell the channel" });
+  await h.connects.receive("cl", { type: "message", message: first });
+  await settle();
+  const key = sessionKey(`cl@${H}`, first.channel, first.threadTs);
+  assert.ok(s.rig.store.getSession(key), "the session is S's");
+
+  // A new message from S's chat: its thread is that chat's, on S's side and on H's.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7777.1" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "C2", text: "a new topic" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "C2", "7777.1"), S);
+  // A reply in it that does not mention the bot reaches S's chat.
+  await h.connects.receive("cl", { type: "message", message: message({ channel: "C2", threadTs: "7777.1", ts: "7777.2", text: "what do you think", addressed: false }) });
+  await settle();
+  const started = s.rig.thread("C2", "7777.1");
+  assert.deepEqual(s.rig.said(started.id).map((m) => m.text), ["a new topic", "what do you think"]);
+  assert.equal(h.rig.store.threadAt("slack:T1", "C2", "7777.1"), null, "H keeps no thread of it");
+
+  // A reply in a thread nobody's chat has: it is S's chat's too.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7779.2" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "C3", thread_ts: "7779.1", text: "joining in" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "C3", "7779.1"), S);
+  // A direct message begun by a person's id: routed by the channel Slack opened, where their replies come.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7780.1", channel: "D5" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "U5", text: "a word in private" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "D5", "7780.1"), S);
+  assert.ok(s.rig.thread("D5", "7780.1"), "S's chat is in the direct message's thread");
+
+  // A thread routed to a third station already stays there.
+  h.rig.store.setConnectThreadStation("cl", "C4", "7781.1", "cccc3333");
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7781.2" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "C4", thread_ts: "7781.1", text: "and me" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "C4", "7781.1"), "cccc3333");
+
+  // A reply S's chat posts in a thread H's own chat has: that thread stays H's, and what follows there goes to H's chat.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7778.1" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: here.channel, thread_ts: here.threadTs, text: "from S" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", here.channel, here.threadTs), null);
+  await h.connects.receive("cl", { type: "message", message: reply(here, "7778.2", "still yours, H", { addressed: false }) });
+  await settle();
+  assert.ok(h.rig.said(h.rig.thread(here.channel, here.threadTs).id).some((m) => m.text === "still yours, H"));
+  assert.ok(!s.rig.said(s.rig.thread(here.channel, here.threadTs).id).some((m) => m.text === "still yours, H"), "not S's chat");
+  await close();
+});
+
 test("feishu_api of a chat whose Feishu connect runs on another station: its JSON with and without to=, and a message's image saved in that chat's own uploads", async () => {
   const { h, s, close } = workspace();
   const fake = await FakeFeishu.start();

@@ -1550,17 +1550,19 @@ test "the stations' list says each machine's CPU the way this device has turned 
     t.run_for(@ui.move_most_ms)
     let at = "\{w} \{platform}"
     let said = fn(words : String) { t.words().iter().any(fn(x) { x.0.contains(words) }) }
-    assert_true(said("空闲 72%") || said("72%"), msg="idle at first: \{at}")
+    // (the CPU's an icon on the row, what it says read out: its label)
+    let cpu = fn(words : String) { t.semantics().iter().any(fn(n) { n.label == words && !n.hidden }) }
+    assert_true(cpu("CPU 空闲 72%"), msg="idle at first: \{at}")
     let src = made.val.unwrap()
     (src.call)("prefs.set", { "cpuDial": "busy" }, @sfbase.answer_unread)
     t.run_for(@ui.move_most_ms)
-    assert_true(said("占用 28%") || said("28%"), msg="busy: \{at} " + t.words().map(fn(x) { x.0 }).join("|"))
-    assert_true(!said("空闲 72%") && !said("72%"), msg="idle no longer: \{at}")
+    assert_true(cpu("CPU 占用 28%"), msg="busy: \{at} " + t.semantics().map(fn(n) { n.label }).join("|"))
+    assert_true(!cpu("CPU 空闲 72%"), msg="idle no longer: \{at}")
     // (the memory's says what is left whichever way)
     assert_true(said("剩 5.8 G") || said("5.8G"), msg="memory: \{at}")
     (src.call)("prefs.set", { "cpuDial": Json::null() }, @sfbase.answer_unread)
     t.run_for(@ui.move_most_ms)
-    assert_true(said("空闲 72%") || said("72%"), msg="idle again: \{at}")
+    assert_true(cpu("CPU 空闲 72%"), msg="idle again: \{at}")
     assert_eq(t.audit(), [], msg=at)
   }
 }

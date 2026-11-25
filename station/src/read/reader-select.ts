@@ -107,6 +107,12 @@ export const READER_MODES = {
     sideEffect: "write-fs",
     note: "Migration file gather/place operations (--builder replica-carry)",
   },
+  "replica-chat": {
+    allowShadow: false,
+    pionImplemented: false,
+    sideEffect: "write-fs",
+    note: "One chat read from a kept copy, folded in a scratch database (--builder replica-chat)",
+  },
   "vault-uses": {
     allowShadow: false,
     pionImplemented: true,

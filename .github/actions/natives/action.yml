@@ -8,6 +8,10 @@ inputs:
     description: Targets to restore from R2 manifests ('host' for current OS/arch + wasm32, 'all', or comma-separated targets)
     required: false
     default: host
+  harness:
+    description: Include reader-harness archives ('true' for check-station, check-core, and side workflows; 'false' skips them)
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -24,4 +28,8 @@ runs:
       shell: bash
       env:
         TARGETS: ${{ inputs.targets }}
-      run: node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets "$TARGETS"
+        HARNESS: ${{ inputs.harness }}
+      run: |
+        extra=()
+        if [ "$HARNESS" != true ]; then extra=(--exclude-parts reader-harness); fi
+        node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets "$TARGETS" ${extra[@]+"${extra[@]}"}
