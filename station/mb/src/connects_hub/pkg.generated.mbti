@@ -742,7 +742,7 @@ pub async fn WorkspaceConnects::move_route(Self, String, String, String, String?
 pub async fn WorkspaceConnects::move_to(Self, String, String, String?, lang? : String?, locals_to? : String?, awaiting? : Array[String]) -> Unit
 pub fn WorkspaceConnects::moved_away(Self, String) -> Array[@jsjson.JValue]
 pub fn WorkspaceConnects::named_in(Self, String) -> Array[@jsjson.JValue]
-pub async fn WorkspaceConnects::new(WorkspaceDeps, connects_ready? : async () -> Unit, ready_timeout_ms? : Int32) -> Self
+pub async fn WorkspaceConnects::new(WorkspaceDeps) -> Self
 pub fn WorkspaceConnects::own_ids(Self) -> Array[String]
 pub fn WorkspaceConnects::own_in(Self, String) -> Array[String]
 pub fn WorkspaceConnects::own_kinds(Self, String) -> Array[@jsjson.JValue]

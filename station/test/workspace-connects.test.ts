@@ -970,7 +970,7 @@ function starting(entries: Json[]) {
   });
   const surface = { channelName: async (c: string) => `#${c}` } as unknown as ChatSurface;
   const call = (id: string) => inboxes.get("connect.call")!(S, { method: "connect.call", connect: { id, origin: H }, op: "channel", args: ["C1"] }, "ws");
-  return { connects, live, ready, slept, deadline, surface, call, close: () => rm(dir, { recursive: true, force: true }) };
+  return { connects, entries, live, ready, slept, deadline, surface, call, close: () => rm(dir, { recursive: true, force: true }) };
 }
 
 /// Whether `p` has settled by the time every queued microtask and I/O callback of now ran.
@@ -1009,5 +1009,28 @@ test("a call of a connect that does not connect before the deadline is refused o
   t.deadline.resolve();
   await assert.rejects(answered, /that connect does not run on this station/);
   assert.deepEqual(t.slept, [15_000]);
+  await t.close();
+});
+
+test("a call that waited is refused when its connect left config.json or its workspace meanwhile, though its surface is still here", async () => {
+  for (const change of ["removed", "moved"] as const) {
+    const t = starting([{ id: "cl", kind: "slack", enabled: true, workspace: "ws" }]);
+    const answered = t.call("cl");
+    assert.equal(await settledYet(answered), false);
+    if (change === "removed") t.entries.splice(0, 1);
+    else t.entries[0].workspace = "ws2";
+    t.live.set("cl", t.surface);
+    t.ready.resolve();
+    await assert.rejects(answered, /that connect does not run on this station/, change);
+    await t.close();
+  }
+});
+
+test("once the station connected its connects, a call of one still not connected is refused at once, with no new wait", async () => {
+  const t = starting([{ id: "cl", kind: "slack", enabled: true, workspace: "ws" }]);
+  t.ready.resolve();
+  await t.ready.promise;
+  await assert.rejects(t.call("cl"), /that connect does not run on this station/);
+  assert.deepEqual(t.slept, [], "nothing waited");
   await t.close();
 });
