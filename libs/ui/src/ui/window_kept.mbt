@@ -162,6 +162,10 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(known_pass, fn() { 0 }),
     kept_map(cycle_frame),
     kept_ref(cycle_tagged, fn() { 0 }),
+    kept_ref(journal_tree_work, fn() { (0, 0, 0, 0) }),
+    kept_ref(journal_passes, fn() { 0 }),
+    kept_ref(journal_bindings, fn() { 0 }),
+    kept_ref(journal_again, fn() { FixedArray::make(8, 0) }),
   ]
 }
 

@@ -1056,3 +1056,45 @@ test "foreground no-sample clears stale GPU cache and background fast sample res
   let (_, _, slow2) = gpu_frame_consume()
   assert_true(slow2)
 }
+
+///|
+test "hidden main window does not skew visible sibling window's journal tree-work baseline" {
+  let t = Tester::new(fn(_c) {  })
+  t.check_looks(false)
+  t.set_windows_in_process(true)
+  set_view_app(fn(root) {
+    root.box(fn(b) { b.words(Is("main")) |> ignore }) |> ignore
+  })
+  set_window_tree(fn(_wid, _) {
+    fn(root) {
+      for i in 0..<12 {
+        root.box(fn(b) { b.words(Is(i.to_string())) |> ignore }) |> ignore
+      }
+    }
+  })
+  let wid = window_open_here("sibling")
+  let h = @hostapi.host()
+  let old = h.frame_hidden
+  defer { h.frame_hidden = old }
+  h.frame_hidden = Some(fn() { current_window_id() == 0 })
+  t.clock_frame(ms=first_frame_ms)
+  t.clock_frame(ms=first_frame_ms)
+  let get_laid = fn() {
+    let laid = Ref(0)
+    t.in_window(wid, fn() {
+      if view_app.val is Some(tree) { laid.val = tree.work().laid }
+    })
+    laid.val
+  }
+  let before = get_laid()
+  t.clock_frame(ms=first_frame_ms)
+  let expected = get_laid() - before
+  let logs = journal().filter_map(fn(e) {
+    match e {
+      Work({ what: Frame(f), .. }) => Some(f.laid)
+      _ => None
+    }
+  })
+  assert_eq(expected, 0)
+  assert_eq(logs[logs.length() - 1], expected)
+}
