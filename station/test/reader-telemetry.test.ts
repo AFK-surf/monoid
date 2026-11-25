@@ -795,6 +795,27 @@ test("background wrapper exec failure (bad shebang) stays uncredited even across
       assert.equal(bucket.spawns, 1, `real exit ${exitCode} keeps spawns=1`);
       assert.equal(bucket.unexpectedExits, 1, `real exit ${exitCode} keeps unexpectedExits=1`);
     }
+
+    // 3. Real runnable script under background: true that writes a wrapper-like stderr line followed by a normal
+    // stderr line (no stdout) and exits with 66/127 MUST commit its spawn and still record unexpectedExits=1.
+    const wrapperLikeLine = process.platform === "darwin"
+      ? "taskpolicy: posix_spawn: simulated child message"
+      : "nice: simulated child message";
+    const wrapperExitCode = process.platform === "darwin" ? 66 : 127;
+    const mixedStderrScript = makeFakeExecutable(
+      dir,
+      "mixed-stderr-exit",
+      `process.stderr.write(${JSON.stringify(`${wrapperLikeLine}\nnormal target stderr\n`)});
+process.exit(${wrapperExitCode});`,
+    );
+    const mixed = new MbProcess(mixedStderrScript, ["--builder", "bg-mixed-stderr"], { background: true });
+    await new Promise<void>((resolve) => mixed.once("exit", () => resolve()));
+    const flushedMixed = readerTelemetry.flushWindow(181_000);
+    const mixedBucket = flushedMixed.find((s) => s.engine === "mb" && s.mode === "bg-mixed-stderr");
+    assert.ok(mixedBucket, "bg-mixed-stderr bucket present");
+    assert.equal(mixedBucket.spawns, 1);
+    assert.equal(mixedBucket.stderrLines, 2);
+    assert.equal(mixedBucket.unexpectedExits, 1);
   } finally {
     hearLines(null);
     if (prevPion === undefined) delete process.env.STILLFAIL_PION_READER;

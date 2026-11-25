@@ -624,6 +624,7 @@ export class MbProcess extends EventEmitter {
   #commitWrappedSpawn(): void {
     if (!this.#pendingWrappedSpawn) return;
     this.#pendingWrappedSpawn = false;
+    this.#wrapperStderr.length = 0;
     readerTelemetry.recordSpawn(this.engine, this.mode);
     if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
     for (let i = 0; i < this.#pendingStderrCount; i++) {
@@ -634,7 +635,8 @@ export class MbProcess extends EventEmitter {
 
   /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say;
   /// `stdinMost`: STDIN_MOST but in tests; `engine`/`mode`: explicit telemetry identity when known at spawn;
-  /// `fallbackMode`: when set, records one fallback once the OS child actually emits `"spawn"`.
+  /// `fallbackMode`: when set, records one fallback once the OS child actually emits `"spawn"` (for wrapped
+  /// background spawns, deferred until target execution is confirmed).
   constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number; engine?: TelemetryEngine; mode?: string; fallbackMode?: string } = {}) {
     super();
     const identity = classifyProgram(binary, args);
@@ -693,6 +695,7 @@ export class MbProcess extends EventEmitter {
       if (
         this.#spawned &&
         this.#wrapped &&
+        this.#pendingWrappedSpawn &&
         !this.#sawStdout &&
         !this.#intentionalStop &&
         isBackgroundWrapperExecFailure(command, code, signal, this.#wrapperStderr)
