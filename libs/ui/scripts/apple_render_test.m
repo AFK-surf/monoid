@@ -2908,6 +2908,73 @@ int main(void) {
           CHECK(wd <= 1 && crl >= 4.5 && crr >= 4.5);
           free(bgx); free(px);
         }
+        // R8-1: Wide 320pt capsule (40..360) with 16pt white stripe sweeping across icon (238,38) and
+        // short muted word (center 212, last glyph 239)
+        {
+          double sw[6 * MB_INST];
+          rect_at(sw, 0, 0, 400, 300, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(sw + MB_INST, 224, 0, 16, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(sw + 2 * MB_INST, 40, 20, 320, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -71);
+          sw[2 * MB_INST + 4] = 18.0; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = 1.2;
+          sw[2 * MB_INST + 11] = 0x67 / 255.0; sw[2 * MB_INST + 12] = 0.6; sw[2 * MB_INST + 13] = 14.0;
+          sw[2 * MB_INST + 14] = -1.0; sw[2 * MB_INST + 15] = 1.0;
+          sw[2 * MB_INST + 21] = 20.0; sw[2 * MB_INST + 22] = 0.06; sw[2 * MB_INST + 23] = 0.0;
+          rect_at(sw + 3 * MB_INST, 232, 32, 12, 12, 10, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          sw[3 * MB_INST + 4] = 4.0;
+          sw[3 * MB_INST + 12] = 0.1; sw[3 * MB_INST + 13] = 0.5; sw[3 * MB_INST + 14] = 0.9; sw[3 * MB_INST + 15] = 0.5;
+          sw[3 * MB_INST + 21] = 200.0; sw[3 * MB_INST + 22] = 38.0; sw[3 * MB_INST + 23] = 18.0;
+          rect_at(sw + 4 * MB_INST, 179, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          sw[4 * MB_INST + 6] = 27.0; sw[4 * MB_INST + 7] = 0.0;
+          sw[4 * MB_INST + 12] = 16.0; sw[4 * MB_INST + 13] = 16.0; sw[4 * MB_INST + 14] = 16.0; sw[4 * MB_INST + 15] = 16.0;
+          sw[4 * MB_INST + 21] = 200.0; sw[4 * MB_INST + 22] = 38.0; sw[4 * MB_INST + 23] = 18.0;
+          rect_at(sw + 5 * MB_INST, 233, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          sw[5 * MB_INST + 6] = -27.0; sw[5 * MB_INST + 7] = 0.0;
+          sw[5 * MB_INST + 12] = 16.0; sw[5 * MB_INST + 13] = 16.0; sw[5 * MB_INST + 14] = 16.0; sw[5 * MB_INST + 15] = 16.0;
+          sw[5 * MB_INST + 21] = 200.0; sw[5 * MB_INST + 22] = 38.0; sw[5 * MB_INST + 23] = 18.0;
+          double min_icr = 999.0, min_wcr = 999.0;
+          int max_wd = 0;
+          for (int sx = 224; sx <= 240; sx += 4) {
+            sw[MB_INST + 0] = (double)sx;
+            glass_forget();
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(sw, 3, 0.08, 0.08, 0.08);
+            present_drain();
+            int bcw = 0, bch = 0, cw = 0, ch = 0;
+            uint8_t *bgx = read_texture(canvas, &bcw, &bch);
+            glass_forget();
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(sw, 4, 0.08, 0.08, 0.08);
+            present_drain();
+            uint8_t *ipx = read_texture(canvas, &cw, &ch);
+            int iidx = (76 * cw + 476) * 4;
+            double li = wcag_luma_u8(bgx[iidx+2], bgx[iidx+1], bgx[iidx+0]);
+            double fi = wcag_luma_u8(ipx[iidx+2], ipx[iidx+1], ipx[iidx+0]);
+            double icr = ((fi > li ? fi : li) + 0.05) / ((fi > li ? li : fi) + 0.05);
+            if (icr < min_icr) min_icr = icr;
+            CHECK(icr >= 4.5);
+            free(ipx);
+            double sww[5 * MB_INST];
+            memcpy(sww, sw, 3 * MB_INST * sizeof(double));
+            memcpy(sww + 3 * MB_INST, sw + 4 * MB_INST, 2 * MB_INST * sizeof(double));
+            glass_forget();
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(sww, 5, 0.08, 0.08, 0.08);
+            present_drain();
+            uint8_t *wpx = read_texture(canvas, &cw, &ch);
+            int ilx = (76 * cw + 370) * 4, irx = (76 * cw + 478) * 4;
+            double ll = wcag_luma_u8(bgx[ilx+2], bgx[ilx+1], bgx[ilx+0]), fl = wcag_luma_u8(wpx[ilx+2], wpx[ilx+1], wpx[ilx+0]);
+            double lr = wcag_luma_u8(bgx[irx+2], bgx[irx+1], bgx[irx+0]), fr = wcag_luma_u8(wpx[irx+2], wpx[irx+1], wpx[irx+0]);
+            double crl = ((fl > ll ? fl : ll) + 0.05) / ((fl > ll ? ll : fl) + 0.05);
+            double crr = ((fr > lr ? fr : lr) + 0.05) / ((fr > lr ? lr : fr) + 0.05);
+            if (crl < min_wcr) min_wcr = crl;
+            if (crr < min_wcr) min_wcr = crr;
+            for (int c = 0; c < 3; c++) { int d = abs((int)wpx[ilx+c] - (int)wpx[irx+c]); if (d > max_wd) max_wd = d; }
+            CHECK(crl >= 4.5 && crr >= 4.5 && max_wd <= 1);
+            free(wpx); free(bgx);
+          }
+          printf("apple_render: dark adaptive 320pt 16pt-stripe sweep min_icon_cr=%.2f min_word_cr=%.2f max_wd=%d\n",
+                 min_icr, min_wcr, max_wd);
+        }
       }
       mb_render_set_size(400, 300, 2);
       glass_forget();

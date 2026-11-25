@@ -3160,6 +3160,72 @@ int main(void) {
           free(bgx); free(px);
         }
 
+        // R8-1: Wide 320pt capsule (40..360) with 16pt white stripe sweeping across icon (238,38) and
+        // short muted word (center 212, last glyph 239): every stripe position keeps CR >= 4.5 & word_diff <= 1
+        {
+          double sw[6 * MB_INST];
+          rect_at(sw, 0, 0, 400, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(sw + MB_INST, 224, 0, 16, 120, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(sw + 2 * MB_INST, 40, 20, 320, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -71);
+          sw[2 * MB_INST + 4] = 18.0; sw[2 * MB_INST + 6] = 1.0; sw[2 * MB_INST + 7] = 1.2;
+          sw[2 * MB_INST + 11] = 0x67 / 255.0; sw[2 * MB_INST + 12] = 0.6; sw[2 * MB_INST + 13] = 14.0;
+          sw[2 * MB_INST + 14] = -1.0; sw[2 * MB_INST + 15] = 1.0;
+          sw[2 * MB_INST + 21] = 20.0; sw[2 * MB_INST + 22] = 0.06; sw[2 * MB_INST + 23] = 0.0;
+          // Muted icon at (238, 38)
+          rect_at(sw + 3 * MB_INST, 232, 32, 12, 12, 10, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          sw[3 * MB_INST + 4] = 4.0;
+          sw[3 * MB_INST + 12] = 0.1; sw[3 * MB_INST + 13] = 0.5; sw[3 * MB_INST + 14] = 0.9; sw[3 * MB_INST + 15] = 0.5;
+          sw[3 * MB_INST + 21] = 200.0; sw[3 * MB_INST + 22] = 38.0; sw[3 * MB_INST + 23] = 18.0;
+          // Muted short word glyphs: left (185, 38) and right (239, 38), both with sample_off pointing to word center 212
+          rect_at(sw + 4 * MB_INST, 179, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          sw[4 * MB_INST + 6] = 27.0; sw[4 * MB_INST + 7] = 0.0;
+          sw[4 * MB_INST + 12] = 16.0; sw[4 * MB_INST + 13] = 16.0; sw[4 * MB_INST + 14] = 16.0; sw[4 * MB_INST + 15] = 16.0;
+          sw[4 * MB_INST + 21] = 200.0; sw[4 * MB_INST + 22] = 38.0; sw[4 * MB_INST + 23] = 18.0;
+          rect_at(sw + 5 * MB_INST, 233, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          sw[5 * MB_INST + 6] = -27.0; sw[5 * MB_INST + 7] = 0.0;
+          sw[5 * MB_INST + 12] = 16.0; sw[5 * MB_INST + 13] = 16.0; sw[5 * MB_INST + 14] = 16.0; sw[5 * MB_INST + 15] = 16.0;
+          sw[5 * MB_INST + 21] = 200.0; sw[5 * MB_INST + 22] = 38.0; sw[5 * MB_INST + 23] = 18.0;
+          for (int i = 0; i < 6; i++) { sw[i * MB_INST + 18] = 400.0; sw[i * MB_INST + 19] = 120.0; }
+          int r38 = fb_h - 1 - 38;
+          double min_icr = 999.0, min_wcr = 999.0;
+          int max_wd = 0;
+          for (int sx = 224; sx <= 240; sx += 4) {
+            sw[MB_INST + 0] = (double)sx;
+            glass_forget();
+            gl_present(sw, 3, 0.08, 0.08, 0.08);
+            unsigned char *bgx = pixels_of_fb(wt_fb);
+            glass_forget();
+            gl_present(sw, 4, 0.08, 0.08, 0.08);
+            unsigned char *ipx = pixels_of_fb(wt_fb);
+            unsigned char *bg_i = bgx + (r38 * fb_w + 238) * 4, *fg_i = ipx + (r38 * fb_w + 238) * 4;
+            double li = wcag_luma_u8(bg_i[0], bg_i[1], bg_i[2]), fi = wcag_luma_u8(fg_i[0], fg_i[1], fg_i[2]);
+            double icr = ((fi > li ? fi : li) + 0.05) / ((fi > li ? li : fi) + 0.05);
+            if (icr < min_icr) min_icr = icr;
+            CHECK(icr >= 4.5);
+            free(ipx);
+            // Word (draw sw[0..2] + sw[4..5] by copying sw[4..5] into slots 3..4 temporarily via separate array)
+            double sww[5 * MB_INST];
+            memcpy(sww, sw, 3 * MB_INST * sizeof(double));
+            memcpy(sww + 3 * MB_INST, sw + 4 * MB_INST, 2 * MB_INST * sizeof(double));
+            glass_forget();
+            gl_present(sww, 5, 0.08, 0.08, 0.08);
+            unsigned char *wpx = pixels_of_fb(wt_fb);
+            unsigned char *bgl = bgx + (r38 * fb_w + 185) * 4, *bgr = bgx + (r38 * fb_w + 239) * 4;
+            unsigned char *fgl = wpx + (r38 * fb_w + 185) * 4, *fgr = wpx + (r38 * fb_w + 239) * 4;
+            double ll = wcag_luma_u8(bgl[0], bgl[1], bgl[2]), fl = wcag_luma_u8(fgl[0], fgl[1], fgl[2]);
+            double lr = wcag_luma_u8(bgr[0], bgr[1], bgr[2]), fr = wcag_luma_u8(fgr[0], fgr[1], fgr[2]);
+            double crl = ((fl > ll ? fl : ll) + 0.05) / ((fl > ll ? ll : fl) + 0.05);
+            double crr = ((fr > lr ? fr : lr) + 0.05) / ((fr > lr ? lr : fr) + 0.05);
+            if (crl < min_wcr) min_wcr = crl;
+            if (crr < min_wcr) min_wcr = crr;
+            for (int c = 0; c < 3; c++) { int d = abs((int)fgl[c] - (int)fgr[c]); if (d > max_wd) max_wd = d; }
+            CHECK(crl >= 4.5 && crr >= 4.5 && max_wd <= 1);
+            free(wpx); free(bgx);
+          }
+          printf("gles_render: dark adaptive 320pt 16pt-stripe sweep min_icon_cr=%.2f min_word_cr=%.2f max_wd=%d\n",
+                 min_icr, min_wcr, max_wd);
+        }
+
         target_fb = pb_fb; fb_w = fbw_save; fb_h = fbh_save; cur_w = w_save; cur_h = h_save; cur_scale = sc_save;
         glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
         glDeleteFramebuffers(1, &wt_fb);

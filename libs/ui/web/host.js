@@ -608,13 +608,19 @@
       }
       float bgL = capsuleBgL;
       if (origL < 0.94 && u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y) {
+        vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
+        if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
+        float stepX = is_icon ? 4.0 : 8.0;
+        int halfN = is_icon ? 2 : 6;
         for (int iy = -1; iy <= 1; iy++) {
-          float py = capCenter.y + float(iy) * (capHalf.y * 0.65);
-          for (int ix = -2; ix <= 2; ix++) {
-            float px = capCenter.x + float(ix) * (capHalf.x * 0.47);
-            vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;
-            if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
-              bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));
+          float py = samplePos.y + float(iy) * 5.0;
+          for (int ix = -6; ix <= 6; ix++) {
+            float px = samplePos.x + float(ix) * stepX;
+            if (abs(ix) <= halfN && px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {
+              vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;
+              if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
+                bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));
+              }
             }
           }
         }
