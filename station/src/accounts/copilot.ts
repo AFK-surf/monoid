@@ -1,7 +1,7 @@
-// GitHub's OAuth device grant for a Copilot profile (the Copilot CLI's OAuth app): a code the person
-// enters at github.com/login/device, then the token the profile keeps. The Copilot SDK takes that token
-// as its `github` token; a fine-grained PAT works the same way.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// GitHub's OAuth device grant for a Copilot profile (the Copilot CLI's OAuth app): a code the person enters at
+// github.com/login/device, then the token the profile keeps. Its sessions are given that token alone (agents/copilot.ts);
+// a fine-grained PAT works the same way.
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Device, DeviceAnswer } from "./console.ts";
 import { copilotHome } from "../agents/copilot.ts";
@@ -49,22 +49,12 @@ export async function copilotDeviceToken(deviceCode: string): Promise<DeviceAnsw
   return { error };
 }
 
-/// Where a Copilot profile keeps its GitHub token (beside its SDK home, in its own home).
+/// Where a Copilot profile keeps its GitHub token (in its own home, beside what the station keeps of Copilot there).
 export const copilotTokenFile = (home: string) => join(copilotHome(home), "github-token");
 
 /// Writes the token the sign-in gave, readable by its owner alone.
-export function writeCopilotToken(home: string, token: string): void {
+export async function writeCopilotToken(home: string, token: string): Promise<void> {
   const file = copilotTokenFile(home);
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${token}\n`, { mode: 0o600 });
-}
-
-/// The token a sign-in kept, when it did.
-export function readCopilotToken(home: string): string | null {
-  try {
-    const token = readFileSync(copilotTokenFile(home), "utf8").trim();
-    return token === "" ? null : token;
-  } catch {
-    return null;
-  }
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${token}\n`, { mode: 0o600 });
 }

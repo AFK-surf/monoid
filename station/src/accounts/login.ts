@@ -465,10 +465,8 @@ export class LoginManager {
     });
   }
 
-  /// Starts signing a Kimi Code profile in to the person's Kimi account the same way (kimi.ts), for a device of its own:
-  /// the one it signed in on before where it has one (Kimi renews a token only for the device it was given to).
-  /// Starts signing a Copilot profile in to GitHub (the Copilot CLI's OAuth app): a code for
-  /// github.com/login/device, then the token the profile keeps for its SDK sessions.
+  /// Starts signing a Copilot profile in to GitHub the same way (copilot.ts, the Copilot CLI's OAuth app): a code for
+  /// github.com/login/device, then the token the profile keeps for its sessions.
   startCopilot(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
     return this.deviceSignIn(profile, "copilot", lang, {
       start: () => startCopilotDevice(),
@@ -477,6 +475,8 @@ export class LoginManager {
     });
   }
 
+  /// Starts signing a Kimi Code profile in to the person's Kimi account the same way (kimi.ts), for a device of its own:
+  /// the one it signed in on before where it has one (Kimi renews a token only for the device it was given to).
   async startKimi(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
     const deviceId = (await readKimi(profile.home))?.deviceId ?? newDeviceId();
     return this.deviceSignIn(profile, "kimi", lang, {

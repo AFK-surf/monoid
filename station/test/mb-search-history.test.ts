@@ -74,7 +74,7 @@ async function station() {
     line({ type: "assistant", content: "deploy said", tool_calls: [{ name: "use_tool", id: "u1", arguments: "{\"tool_name\":\"srv__deploy\",\"tool_input\":{\"a\":1}}" }, { name: "x", arguments: "not json deploy" }] }),
     line({ type: "tool_result", content: { deploy: [1, 2] }, tool_call_id: "u1" }),
   ].join(""));
-  for (const [key, rt] of [["cu", "cursor"], ["dv", "devin"], ["hm", "hermes"], ["ag", "agy"]] as const) {
+  for (const [key, rt] of [["cu", "cursor"], ["dv", "devin"], ["hm", "hermes"], ["ag", "agy"], ["cp", "copilot"]] as const) {
     session(key, rt, "W1", [`${key}1`]);
     put(join(t(rt), `${key}1.jsonl`), [
       line({ type: "user", time: 1_700_000_000_000, text: `deploy ${rt}` }),

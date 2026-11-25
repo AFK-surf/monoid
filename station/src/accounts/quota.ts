@@ -353,7 +353,7 @@ export async function checkQuota(profile: Profile, env: Env, codexRateLimits: Co
 /// GitHub Copilot's allowance: the premium-request window its account reports (chat and completions may be unlimited,
 /// which no window shows). `quota_reset_date` is a date, not a time: its end is when the month's requests come back.
 async function copilotQuota(profile: Profile, lang: Lang): Promise<ProfileQuota> {
-  const token = copilotToken(profile);
+  const token = await copilotToken(profile);
   if (token === undefined) return quota("unsupported", [], tr(lang, "station.profile.signedOut"));
   const answer = await fetch("https://api.github.com/copilot_internal/user", {
     headers: { authorization: `token ${token}`, accept: "application/json", "user-agent": "stillfail-station" },
