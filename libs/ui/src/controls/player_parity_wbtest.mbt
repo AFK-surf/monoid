@@ -102,7 +102,7 @@ test "both players, a phone's and a desktop's: played, left alone however long, 
       }
       m.pin({ ..pinned(1000.0), playing: true })
       t.draw()
-      t.run_for(10000.0)
+      t.run_for(long_rest_ms)
       t.query(Slider, label="web-pages.drive.player.position") is Some(_)
     })
     assert_true(seen, msg="narrow \{narrow}: controls stayed")

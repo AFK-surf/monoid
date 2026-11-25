@@ -102,7 +102,7 @@ test "desk: bars never fade by themselves, click on image toggles bars, double-c
   // never fading by itself, however long the pointer rests
   t.move_to(640.0, 400.0)
   t.draw()
-  t.run_for(10000.0)
+  t.run_for(hand_rest_ms)
   assert_true(v.bars_shown())
   // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still (the first's hiding
   // of the bars at once standing)

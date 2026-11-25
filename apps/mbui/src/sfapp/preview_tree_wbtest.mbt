@@ -3032,7 +3032,7 @@ test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer 
   t.run_for(@sf.sleep_ms * 2.0)
   assert_true(!v.near_bar, msg="the pointer not back along the top")
   assert_true(v.bars_shown(), msg="marking left: bars stay shown")
-  t.run_for(10000.0)
+  t.run_for(hand_rest_ms)
   assert_eq(head_drawn(), 1.0, msg="marking left, a long rest after: still shown")
 }
 
