@@ -68,17 +68,23 @@ test "dialog_surface_decorate draws the unified 50% dialog glass in light and da
 }
 
 ///|
-test "dark menu danger row stays clean at rest (no resting box), brightens on hover, and keeps readable contrast" {
+test "dark menu danger row & heading hierarchy: clean glass, >= 4.5:1 on app/scene glass, clear heading hierarchy" {
   let th = ui_theme_of(theme_of(true, false))
-  let danger_ink = th.color(Danger)
-  // Real dark app glass surfaces (dark page #232325, dark card #2F2F32, dark elevated #3A3A3C)
-  let dark_surfaces : Array[Int64] = [0x232325FFL, 0x2F2F32FFL, 0x3A3A3CFFL]
+  let danger_ink = th.color(Over(Danger, A(Fg, O25)))
+  let heading_ink = th.color(Over(Muted, A(Fg, O55)))
   let normal_hover = th.color(A(Fg, O5))
+  // Real dark app glass surfaces (#232325, #2F2F32, #3C3D40) + mid-bright scene glass (#4F5053)
+  let dark_surfaces : Array[Int64] = [0x232325FFL, 0x2F2F32FFL, 0x3C3D40FFL]
   for g in dark_surfaces {
     assert_true(@ui.contrast_ratio(danger_ink, g) >= 4.5, msg="danger rest on \{g}")
     assert_true(@ui.contrast_ratio(danger_ink, @ui.over(g, normal_hover)) >= 4.5, msg="danger hover on \{g}")
+    assert_true(@ui.contrast_ratio(heading_ink, g) >= 4.5, msg="heading on \{g}")
   }
-  // Real menu component check: opening a dark desktop menu with enabled "删除对话" emits Danger ink with no resting pill box
+  assert_true(@ui.contrast_ratio(danger_ink, 0x4F5053FFL) >= 4.5, msg="danger rest on #4F5053 >= 4.5")
+  assert_true(@ui.contrast_ratio(danger_ink, @ui.over(0x636363FFL, normal_hover)) >= 3.0, msg="danger hover on pure white glass >= 3.0")
+  // Heading stays visibly quieter than primary Fg ink in dark menus
+  assert_true(@ui.contrast_ratio(heading_ink, 0x3C3D40FFL) + 1.0 < @ui.contrast_ratio(th.color(Fg), 0x3C3D40FFL))
+  // Real menu component check: opening a dark desktop menu emits lifted Danger ink & quieter heading with 0 contrast faults
   presenters_reset()
   let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, dark=true, platform=0)
   set_dark(Some(true))
@@ -88,7 +94,11 @@ test "dark menu danger row stays clean at rest (no resting box), brightens on ho
       page.grow(Is(1.0)).ground(By(fn() { ui_theme_now().bg })) |> ignore
       button_node(page, fn() { "打开" }, fn() {
         menu(
-          [Some(menu_item_of("重命名", fn() {  })), Some(menu_item_of("删除对话", fn() {  }, danger=true))],
+          [
+            Some(menu_item_of("这个对话", fn() {  }, heading=true)),
+            Some(menu_item_of("重命名", fn() {  })),
+            Some(menu_item_of("删除对话", fn() {  }, danger=true)),
+          ],
           from=at_point(400.0, 200.0),
         )
       })
@@ -101,8 +111,8 @@ test "dark menu danger row stays clean at rest (no resting box), brightens on ho
   t.tap_text("打开")
   t.run_for(@ui.move_most_ms)
   t.draw()
-  let del_inks = inks_of(t, "删除对话")
-  assert_eq(del_inks, [danger_ink])
+  assert_eq(inks_of(t, "删除对话"), [danger_ink])
+  assert_eq(inks_of(t, "这个对话"), [heading_ink])
   let faults = t.contrast_faults()
   set_dark(None)
   assert_eq(faults, [])

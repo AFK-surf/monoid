@@ -566,6 +566,7 @@ pub fn panel_said_row_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let t = fn() { theme() }
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   let quiet = fn() -> @view.WordsLook {
     { size: t().t.meta, weight: 400, line: -@ui.tree_theme().text_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
   }
@@ -581,7 +582,7 @@ pub fn panel_said_row_node(
       }))
       .ink(By(fn() {
         if chosen() {
-          if t().dark {
+          if in_overlay && t().dark {
             @ui.tree_theme().color(Over(AccentText, A(Fg, O10)))
           } else {
             t().p.accent_text
