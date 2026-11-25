@@ -447,7 +447,7 @@ pub(all) struct CommaIndexes {
 /// (`task.say`, once per key).
 pub(all) struct CommaChats {
   read : async (String, Double, Double) -> J
-  say : async (String, String, String, String, String, Bool) -> J
+  say : async (String, String, String, String, String, Bool, Double?) -> J
 }
 
 ///|
@@ -917,6 +917,7 @@ fn CommaSurface::capabilities(self : CommaSurface) -> J {
     ("task_models", Some(Obj(models))),
     ("stats_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
     ("task_index", if self.stats is Some(_) { Some(ji(1)) } else { None }),
+    ("task_say_cas", if self.chats is Some(_) { Some(ji(1)) } else { None }),
     ("stillfail_owner_email", self.owner_email.map(jstr)),
     ("stillfail_owner_active_at", active_at.map(v => Num(v))),
     ("stillfail_workspace", meta),
@@ -1151,6 +1152,11 @@ async fn CommaSurface::handle(self : CommaSurface, method : String, params : J) 
       if js_trim(said) == "" {
         raise fail_("text is required")
       }
+      let expected_card_seq : Double? = match prop(p, "expected_card_seq") {
+        None | Some(Null) => None
+        Some(Num(n)) as v if safe_int(v) && n > 0.0 => Some(n)
+        _ => raise fail_("expected_card_seq must be a positive integer")
+      }
       // As people see who writes: its Group (several Comma workspaces and Agent Swarms may write here).
       let who = match text(p, "requester_name") {
         "" =>
@@ -1160,7 +1166,15 @@ async fn CommaSurface::handle(self : CommaSurface, method : String, params : J) 
           }
         n => n
       }
-      let result = (chats.say)(text(p, "task"), said, text(p, "key"), who, self.id, prop(p, "close_card") is Some(Bool(true)))
+      let result = (chats.say)(
+        text(p, "task"),
+        said,
+        text(p, "key"),
+        who,
+        self.id,
+        prop(p, "close_card") is Some(Bool(true)),
+        expected_card_seq,
+      )
       if !(self.in_scope)() {
         raise fail_("the workspace changed while writing")
       }

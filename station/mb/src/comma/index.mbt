@@ -266,7 +266,9 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
   let chats : CommaChats? = if is_in {
     Some({
       read: async fn(ref_, after, limit) { (scoped().1.read)(ref_, after, limit) },
-      say: async fn(ref_, text, key, requester, connect, close_card) { (scoped().1.say)(ref_, text, key, requester, connect, close_card) },
+      say: async fn(ref_, text, key, requester, connect, close_card, expected_card_seq) {
+        (scoped().1.say)(ref_, text, key, requester, connect, close_card, expected_card_seq)
+      },
     })
   } else {
     None

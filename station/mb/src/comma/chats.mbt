@@ -153,6 +153,7 @@ pub(all) struct RouterSay {
   requester : String
   connect : String
   close_card : Bool
+  expected_card_seq : Double?
 }
 
 ///|
@@ -284,6 +285,18 @@ fn write_of(row : J) -> RouterWrite? {
 
 ///|
 async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w : RouterSay, io : Io) -> Double {
+  router_says_with(hub, k => stats.said(k), (k, n) => stats.remember(k, n), home, w, io)
+}
+
+///|
+async fn router_says_with(
+  hub : RouterHub,
+  said_lookup : (String) -> Double? raise,
+  remember : (String, Double) -> Unit raise,
+  home : String?,
+  w : RouterSay,
+  io : Io,
+) -> Double {
   let find = async fn() -> RouterWrite? {
     write_of(
       (hub.get)("SELECT CAST(id AS TEXT) AS id, thread, n, pending FROM comma_router_once WHERE key = ?", [
@@ -297,8 +310,8 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
       _ => raise fail_("the Router's recorded write changed; retry")
     }
     // Keep old stations' lookup in step, too. A failed write can be retried without recording the message again.
-    if stats.said(w.key) is None {
-      stats.remember(w.key, written.n)
+    if said_lookup(w.key) is None {
+      remember(w.key, written.n)
     }
     written.n
   }
@@ -365,7 +378,7 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
     Some(r) => return finish(r)
     None => ()
   }
-  let had = if w.key == "" { None } else { stats.said(w.key) }
+  let had = if w.key == "" { None } else { said_lookup(w.key) }
   match had {
     Some(n) => return n
     None => ()
@@ -373,11 +386,30 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
   // The Task index tells a chat the Router wrote in by this form of its author (read/outflow.ts routerWrote): durable
   // where comma_router_once is not, and for the writes without a key, which leave none.
   let author = "slack:\{w.connect}:\{w.requester}"
+  let assert_expected_card = async fn() -> Unit {
+    match w.expected_card_seq {
+      None => ()
+      Some(expected) => {
+        let current = (hub.pending_card_header)(w.thread)
+        let current_n = match current {
+          Arr([header, _]) => num_of(prop(Some(header), "n"))
+          _ => None
+        }
+        if current_n != Some(expected) {
+          raise fail_("stale_card: the card is no longer pending")
+        }
+      }
+    }
+  }
   // If the text matches an `action: "close"` choice on the thread's pending options card (or `close_card` was
   // explicitly requested for a silent-close option), close that card silently without appending a message or waking
   // the agent.
   let trimmed = js_trim(w.text)
   let pending = (hub.pending_card_header)(w.thread)
+  let pending_n : Double? = match pending {
+    Arr([header, _]) => num_of(prop(Some(header), "n"))
+    _ => None
+  }
   let matched_close : (Double, String)? = match pending {
     Arr([header, card]) =>
       match (num_of(prop(Some(header), "n")), str_of(prop(Some(card), "type")), arr_of(prop(Some(card), "options"))) {
@@ -413,23 +445,71 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
     if foreign {
       raise fail_("no such chat of the workspace")
     }
-    match matched_close {
-      Some((n, lbl)) => {
-        ignore((hub.close_card)(author, w.thread, n, lbl))
+    match w.expected_card_seq {
+      Some(expected) => {
+        if pending_n != Some(expected) {
+          raise fail_("stale_card: the card is no longer pending")
+        }
+        guard matched_close is Some((n, lbl)) else {
+          raise fail_("stale_card: choice does not match pending card")
+        }
+        let closed = (hub.close_card)(author, w.thread, n, lbl)
+        if !closed {
+          raise fail_("stale_card: the card is no longer pending")
+        }
         if w.key != "" {
-          stats.remember(w.key, n)
+          remember(w.key, n)
         }
         return n
       }
-      None => {
-        if w.key != "" {
-          stats.remember(w.key, 0.0)
+      None =>
+        match matched_close {
+          Some((n, lbl)) => {
+            ignore((hub.close_card)(author, w.thread, n, lbl))
+            if w.key != "" {
+              remember(w.key, n)
+            }
+            return n
+          }
+          None => {
+            if w.key != "" {
+              remember(w.key, 0.0)
+            }
+            return 0.0
+          }
         }
-        return 0.0
-      }
     }
   }
   if w.key == "" {
+    if w.expected_card_seq is Some(_) {
+      let targets : Ref[Array[String]] = Ref([])
+      let hooks : SayHooks = {
+        workspace: home,
+        before: async fn() {
+          let members = (hub.thread_sessions)(w.thread)
+          if members.length() == 0 {
+            raise fail_("no such chat of the workspace")
+          }
+          let list = []
+          for m in members {
+            let key = str_of(prop(Some(m), "session")).unwrap_or("")
+            let session = (hub.get_session)(key)
+            if session is Null || (hub.ws_of)(session) != home {
+              raise fail_("no such chat of the workspace")
+            }
+            if prop(Some(m), "leftAt") is (Some(Null) | None) &&
+              str_of(prop(Some(session), "archivedBy")) != Some(manual) {
+              list.push(key)
+            }
+          }
+          targets.val = list
+          assert_expected_card()
+        },
+        inserted: async fn(_) { () },
+        targets: async fn() { targets.val },
+      }
+      return (hub.say)(w.thread, author, w.text, Some(hooks))
+    }
     let members = (hub.thread_sessions)(w.thread)
     let mut foreign = members.length() == 0
     for m in members {
@@ -472,6 +552,7 @@ async fn router_says_once(hub : RouterHub, stats : CommaStats, home : String?, w
           targets.push(key)
         }
       }
+      assert_expected_card()
       encoded_targets.val = stringify(Arr(targets.map(jstr)))
     },
     inserted: async fn(n) {

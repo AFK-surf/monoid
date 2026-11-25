@@ -2,11 +2,11 @@
 package "station/comma"
 
 import {
-  "ui/effect",
   "moonbitlang/core/json",
   "station/host",
   "station/jsjson",
   "station/sql",
+  "ui/effect",
 }
 
 // Values
@@ -198,6 +198,8 @@ pub fn utext(Array[Int32]) -> String
 
 pub fn utf8_of(String) -> Bytes
 
+pub fn valid_task_links(@jsjson.JValue?) -> @jsjson.JValue?
+
 pub fn workspace_db_name(String) -> String
 
 pub fn workspace_index(String, String, () -> Bool, () -> Int32, async (Double, Double) -> ReadRows, ((Bool) -> Unit) -> () -> Unit, Io, @effect.Runtime) -> (CommaStats, CommaIndexes) raise
@@ -229,7 +231,7 @@ pub fn Attachment::of_j(@jsjson.JValue) -> Self
 
 pub(all) struct CommaChats {
   read : async (String, Double, Double) -> @jsjson.JValue
-  say : async (String, String, String, String, String, Bool) -> @jsjson.JValue
+  say : async (String, String, String, String, String, Bool, Double?) -> @jsjson.JValue
 }
 
 pub(all) struct CommaConnect {
@@ -353,7 +355,9 @@ pub fn CommaTasks::get_j(Self, String, String) -> @jsjson.JValue?
 pub fn CommaTasks::given(Self, String, String, Double?, Double?) -> Unit
 pub fn CommaTasks::invited(Self, String, String, Start, Double) -> @jsjson.JValue
 pub fn CommaTasks::left(Self, String, String) -> Unit
+pub fn CommaTasks::links_of(Self, String, String) -> @jsjson.JValue?
 pub fn CommaTasks::new(String, Io, @effect.Runtime) -> Self
+pub fn CommaTasks::set_links(Self, String, String, @jsjson.JValue) -> Unit
 pub fn CommaTasks::taking(Self, String) -> Array[Task]
 pub fn CommaTasks::taking_j(Self, String) -> Array[@jsjson.JValue]
 pub async fn CommaTasks::written(Self) -> Unit
@@ -504,6 +508,7 @@ pub(all) struct RouterSay {
   requester : String
   connect : String
   close_card : Bool
+  expected_card_seq : Double?
 }
 
 type RouterWrite
@@ -569,6 +574,7 @@ pub(all) struct SurfaceStore {
   pending_count : async (String) -> Double
   thread_at : async (String, String, String) -> @jsjson.JValue
   leave_thread : async (Double, String) -> Unit
+  set_thread_links : (async (Double, @jsjson.JValue) -> Unit)?
   handler : async (@jsjson.JValue) -> Unit
   book_person : (async (String, @jsjson.JValue) -> Unit)?
   book_known : (async (String) -> @jsjson.JValue)?
