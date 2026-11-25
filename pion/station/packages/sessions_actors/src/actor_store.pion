@@ -1,7 +1,8 @@
 // Local SQLite store operations for `sessions_actors` (`station/mb/src/reader/actor_store.mbt` 1:1).
 //
 // All 3 explicit write transactions (`endTurn`, `endCutOff`, `markDelivered`) go strictly through
-// `sql_db::Db::tx_err` (zero raw transaction SQL in this file — verified by `pion-sqlite-tx-scanner`).
+// `sql_db::Db::tx_err` (zero raw transaction SQL in this file; unified `pion-sqlite-tx-scanner`
+// directory gate and `--smoke-sessions-actors-store` CLI hook are wired in `W8-F`).
 // This intentionally fixes MoonBit's unrolled-back `COMMIT` failure: on body error OR `COMMIT` error
 // OR external `BUSY` lock, `Db::tx_err` rolls back cleanly so subsequent `tx_err` calls succeed, and
 // `changes` is emitted ONLY after commit succeeds.
@@ -158,8 +159,8 @@ pub fn session_of(r : Map[String, base_codec::Json]) -> base_codec::Json {
   ])
 }
 
-fn Actors::changed_store(self : Actors, changes : Array[base_codec::Json]) -> Unit {
-  if changes.length() > 0 {
+fn ActorsGen::changed_store(self : ActorsGen, changes : Array[base_codec::Json]) -> Unit {
+  if changes.length() > 0 && !self.gen.counters.sealed {
     self.say_node([("changes", base_codec::json_arr(changes))])
   }
 }
@@ -200,33 +201,32 @@ pub fn default_sql_store_db(gen : sessions_core::HubGen) -> Option[StoreDb] {
   }
 }
 
-/// Resolve the active `StoreDb` for `self.gen`.
-fn Actors::active_store_db(self : Actors) -> Option[StoreDb] {
-  (self.store_db_provider)(self.gen)
-}
-
-/// Execute `f` with `args` locally on SQLite when handled here; returns `Ok(None)` to fall back to Node RPC.
-pub fn Actors::local_store(
-  self : Actors,
+/// Execute `f` with `args` locally on this generation's bound SQLite DB;
+/// returns `Ok(None)` when no DB is bound or `f` is handled by Node RPC.
+pub fn ActorsGen::local_store(
+  self : ActorsGen,
   f : String,
   args : Array[base_codec::Json],
 ) -> Result[Option[base_codec::Json], sql_db::SqlError] {
   if self.gen.counters.sealed {
     return Ok(None)
   }
-  let sdb = match self.active_store_db() {
+  let sdb = match self.store_db {
     Some(d) => d
     None => return Ok(None)
   }
   self.local_store_with_db(sdb, f, args)
 }
 
-pub fn Actors::local_store_with_db(
-  self : Actors,
+pub fn ActorsGen::local_store_with_db(
+  self : ActorsGen,
   sdb : StoreDb,
   f : String,
   args : Array[base_codec::Json],
 ) -> Result[Option[base_codec::Json], sql_db::SqlError] {
+  if self.gen.counters.sealed {
+    return Ok(None)
+  }
   let key = str_val(arg_at(args, 0))
   let now = sessions_core::jnum(self.gen.counters.now)
 
@@ -724,11 +724,16 @@ pub fn Actors::local_store_with_db(
   Ok(None)
 }
 
-/// Native SQLite selftest verifying `Db::tx_err` rollback & recovery on real SQLite:
-/// 1) second-write failure rolls back and leaves autocommit clean;
-/// 2) `COMMIT` failure (deferred FK constraint) rolls back and leaves autocommit clean;
-/// 3) external `BUSY` write lock from a second connection fails `BEGIN IMMEDIATE` cleanly and
-///    recovers once released.
+/// Native SQLite selftest exercising production `local_store_with_db(StoreDb::from_db(db), ...)`
+/// across all 3 explicit write transactions (`endTurn`, `endCutOff`, `markDelivered`) under real
+/// SQLite failure modes:
+/// 1) `endTurn` second-write failure (via trigger) rolls back first write, emits 0 `changes`,
+///    leaves `autocommit() == true`, and recovers on next `endTurn` with exact row values + 1 `changes`.
+/// 2) `endCutOff` deferred FK violation fails at `COMMIT`, rolls back row, emits 0 `changes`,
+///    leaves `autocommit() == true`, and recovers on next `endCutOff` with exact row values + 1 `changes`.
+/// 3) `markDelivered` external `BUSY` write lock from a second connection fails `BEGIN IMMEDIATE`,
+///    emits 0 `changes`, leaves `autocommit() == true`, and recovers once lock releases with exact
+///    `delivered_at` row value + 1 `changes` carrying `pending`.
 pub fn run_store_selftest(temp_db_path : String) -> Result[Unit, String] {
   let db = match sql_db::Db::create(temp_db_path, wait_ms=0) {
     Ok(d) => d
@@ -739,68 +744,183 @@ pub fn run_store_selftest(temp_db_path : String) -> Result[Unit, String] {
     "CREATE TABLE sessions (key TEXT PRIMARY KEY, runtime TEXT, profile TEXT, profile_pinned INTEGER, model TEXT, effort TEXT, runtime_session_id TEXT, context_before TEXT, archived_at REAL, running INTEGER, last_active_at REAL, compactions INTEGER);",
     "CREATE TABLE turns (id TEXT PRIMARY KEY, session_key TEXT, kind TEXT, started_at REAL, ended_at REAL, outcome TEXT, detail TEXT, declared TEXT, wait_seconds REAL, wait_for TEXT, wait_watch INTEGER, need TEXT, about_thread TEXT, about_n INTEGER, about_ts TEXT, profile TEXT, person TEXT, thread TEXT);",
     "CREATE TABLE closed_cards (thread TEXT, n INTEGER);",
-    "CREATE TABLE parents (id INTEGER PRIMARY KEY);",
-    "CREATE TABLE children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parents(id) DEFERRABLE INITIALLY DEFERRED);",
+    "CREATE TABLE deliveries (thread TEXT, n INTEGER, session TEXT, delivered_at REAL);",
+    "CREATE INDEX deliveries_pending ON deliveries(session, delivered_at);",
+    "CREATE TABLE letter_deliveries (thread TEXT, n INTEGER, session TEXT, delivered_at REAL);",
+    "CREATE TABLE fk_parents (id INTEGER PRIMARY KEY);",
+    "CREATE TABLE fk_children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES fk_parents(id) DEFERRABLE INITIALLY DEFERRED);",
+    "CREATE TABLE fail_flags (name TEXT PRIMARY KEY, on_flag INTEGER);",
+    "INSERT INTO fail_flags VALUES ('fail_end_second', 1), ('fail_cutoff_commit', 1);",
+    "INSERT INTO closed_cards VALUES ('th1', 1);",
+    "INSERT INTO turns (id, session_key, kind, started_at, declared, about_thread, about_n, about_ts) VALUES ('t-end', 's1', 'user', 10, 'need_help', 'th1', 1, '1.0');",
+    "INSERT INTO turns (id, session_key, kind, started_at, declared) VALUES ('t-cut', 's2', 'user', 20, 'waiting');",
+    "INSERT INTO deliveries VALUES ('th1', 1, 's3', NULL), ('th1', 2, 's3', NULL);",
+    "CREATE TRIGGER tr_fail_end_second BEFORE UPDATE OF declared ON turns WHEN NEW.id = 't-end' AND NEW.declared = 'final' AND EXISTS (SELECT 1 FROM fail_flags WHERE name = 'fail_end_second' AND on_flag = 1) BEGIN SELECT RAISE(ABORT, 'injected second-write failure'); END;",
+    "CREATE TRIGGER tr_fail_cutoff_commit AFTER UPDATE OF outcome ON turns WHEN NEW.id = 't-cut' AND NEW.outcome = 'aborted' AND EXISTS (SELECT 1 FROM fail_flags WHERE name = 'fail_cutoff_commit' AND on_flag = 1) BEGIN INSERT INTO fk_children (id, parent_id) VALUES (1, 999); END;",
   ]
   for i in 0..<setup_sqls.length() {
     match db.exec(setup_sqls[i]) {
       Ok(_) => ()
       Err(e) => {
         db.close()
-        return Err("setup failed: " + e.message)
+        return Err("setup failed at " + i.to_string() + ": " + e.message)
       }
     }
   }
 
-  // 1) Second-write failure inside `tx_err` rolls back cleanly.
-  let r1 = db.tx_err(
-    fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-      match tx.run("INSERT INTO parents (id) VALUES (?)", [sessions_core::jint(1)]) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-      match tx.run("INSERT INTO parents (id) VALUES (?)", [sessions_core::jint(1)]) {
-        Ok(_) => Ok(())
-        Err(e) => Err(e)
-      }
-    },
-    fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
-  )
-  match r1 {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  gen.counters.now = 1000.0
+  let sdb = StoreDb::from_db(db)
+  let ctx = ActorsGen::new_with_store(host, gen, "/", ActorRunHandlers::stub(), Some(sdb))
+
+  // 1) `endTurn`: 2nd write fails -> 1st write rolled back, 0 changes, autocommit clean.
+  match ctx.local_store_with_db(
+    sdb,
+    "endTurn",
+    [
+      sessions_core::jstr("t-end"),
+      sessions_core::jstr("completed"),
+      base_codec::json_null(),
+      sessions_core::jstr("need_help"),
+      base_codec::json_null(),
+    ],
+  ) {
+    Err(_) => ()
     Ok(_) => {
       db.close()
-      return Err("expected second write to fail")
+      return Err("expected endTurn 2nd write to fail")
     }
-    Err(_) => ()
   }
   if !db.autocommit() {
     db.close()
-    return Err("connection not in autocommit after second-write rollback")
+    return Err("autocommit false after endTurn rollback")
+  }
+  if mem.stdout_lines.length() != 0 {
+    db.close()
+    return Err("expected 0 changes on failed endTurn")
+  }
+  match db.all("SELECT ended_at FROM turns WHERE id = 't-end'", []) {
+    Ok(rows) => {
+      match col(rows[0], "ended_at") {
+        base_codec::Json::Null => ()
+        _ => {
+          db.close()
+          return Err("endTurn first write was not rolled back")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify endTurn rollback query failed: " + e.message)
+    }
+  }
+  // Clear trigger flag and verify recovery on same connection.
+  match db.exec("UPDATE fail_flags SET on_flag = 0 WHERE name = 'fail_end_second';") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("clear fail_end_second failed: " + e.message)
+    }
+  }
+  match ctx.local_store_with_db(
+    sdb,
+    "endTurn",
+    [
+      sessions_core::jstr("t-end"),
+      sessions_core::jstr("completed"),
+      base_codec::json_null(),
+      sessions_core::jstr("need_help"),
+      base_codec::json_null(),
+    ],
+  ) {
+    Ok(Some(_)) => ()
+    _ => {
+      db.close()
+      return Err("endTurn recovery failed")
+    }
+  }
+  if mem.stdout_lines.length() != 1 {
+    db.close()
+    return Err("expected 1 changes after endTurn recovery")
+  }
+  match db.all("SELECT declared, outcome FROM turns WHERE id = 't-end'", []) {
+    Ok(rows) => {
+      if str_val(col(rows[0], "declared")) != "final" || str_val(col(rows[0], "outcome")) != "completed" {
+        db.close()
+        return Err("endTurn recovered row mismatch")
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify endTurn recovery failed: " + e.message)
+    }
   }
 
-  // 2) Deferred FK violation fails at `COMMIT` and `Db::tx_err` rolls back cleanly.
-  let r2 = db.tx_err(
-    fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-      match tx.run("INSERT INTO children (id, parent_id) VALUES (?, ?)", [sessions_core::jint(1), sessions_core::jint(999)]) {
-        Ok(_) => Ok(())
-        Err(e) => Err(e)
-      }
-    },
-    fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
-  )
-  match r2 {
+  // 2) `endCutOff`: deferred FK fails at COMMIT -> rolled back, 0 new changes, autocommit clean.
+  match ctx.local_store_with_db(sdb, "endCutOff", [sessions_core::jstr("s2")]) {
+    Err(_) => ()
     Ok(_) => {
       db.close()
-      return Err("expected deferred FK COMMIT to fail")
+      return Err("expected endCutOff COMMIT failure")
     }
-    Err(_) => ()
   }
   if !db.autocommit() {
     db.close()
-    return Err("connection not in autocommit after COMMIT failure rollback")
+    return Err("autocommit false after endCutOff COMMIT failure")
+  }
+  if mem.stdout_lines.length() != 1 {
+    db.close()
+    return Err("expected 0 new changes on failed endCutOff")
+  }
+  match db.all("SELECT ended_at FROM turns WHERE id = 't-cut'", []) {
+    Ok(rows) => {
+      match col(rows[0], "ended_at") {
+        base_codec::Json::Null => ()
+        _ => {
+          db.close()
+          return Err("endCutOff was not rolled back on COMMIT error")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify endCutOff rollback failed: " + e.message)
+    }
+  }
+  match db.exec("UPDATE fail_flags SET on_flag = 0 WHERE name = 'fail_cutoff_commit';") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("clear fail_cutoff_commit failed: " + e.message)
+    }
+  }
+  match ctx.local_store_with_db(sdb, "endCutOff", [sessions_core::jstr("s2")]) {
+    Ok(Some(v)) => {
+      if sessions_core::int_of(Some(v)) != 1 {
+        db.close()
+        return Err("expected endCutOff recovery count 1")
+      }
+    }
+    _ => {
+      db.close()
+      return Err("endCutOff recovery failed")
+    }
+  }
+  if mem.stdout_lines.length() != 2 {
+    db.close()
+    return Err("expected 2 total changes after endCutOff recovery")
   }
 
-  // 3) External `BUSY` write lock from a second connection fails `BEGIN IMMEDIATE`, then recovers.
+  // 3) `markDelivered`: external BUSY write lock fails BEGIN IMMEDIATE -> 0 new changes, then recovers.
+  let handed = base_codec::json_arr([
+    base_codec::json_obj([
+      ("thread", sessions_core::jstr("th1")),
+      ("n", sessions_core::jint(1)),
+      ("apart", sessions_core::jbool(false)),
+    ]),
+  ])
   let locker = match sql_db::Db::attach(temp_db_path, wait_ms=0) {
     Ok(d) => d
     Err(e) => {
@@ -811,15 +931,7 @@ pub fn run_store_selftest(temp_db_path : String) -> Result[Unit, String] {
   let mut busy_hit = false
   let _ = locker.tx_err(
     fn(_ltx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-      match db.tx_err(
-        fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-          match tx.run("INSERT INTO parents (id) VALUES (?)", [sessions_core::jint(2)]) {
-            Ok(_) => Ok(())
-            Err(e) => Err(e)
-          }
-        },
-        fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
-      ) {
+      match ctx.local_store_with_db(sdb, "markDelivered", [sessions_core::jstr("s3"), handed]) {
         Err(e) => {
           busy_hit = sql_db::is_busy(e)
           Ok(())
@@ -832,27 +944,42 @@ pub fn run_store_selftest(temp_db_path : String) -> Result[Unit, String] {
   locker.close()
   if !busy_hit {
     db.close()
-    return Err("expected BUSY on contended BEGIN IMMEDIATE")
+    return Err("expected BUSY on contended markDelivered")
   }
   if !db.autocommit() {
     db.close()
-    return Err("connection not in autocommit after BUSY")
+    return Err("autocommit false after BUSY markDelivered")
   }
-
-  // 4) Subsequent `tx_err` succeeds after all 3 failure modes.
-  match db.tx_err(
-    fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-      match tx.run("INSERT INTO parents (id) VALUES (?)", [sessions_core::jint(42)]) {
-        Ok(_) => Ok(())
-        Err(e) => Err(e)
+  if mem.stdout_lines.length() != 2 {
+    db.close()
+    return Err("expected 0 new changes on BUSY markDelivered")
+  }
+  match ctx.local_store_with_db(sdb, "markDelivered", [sessions_core::jstr("s3"), handed]) {
+    Ok(Some(v)) => {
+      if sessions_core::int_of(Some(v)) != 1 {
+        db.close()
+        return Err("expected markDelivered recovery count 1")
       }
-    },
-    fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
-  ) {
-    Ok(_) => ()
+    }
+    _ => {
+      db.close()
+      return Err("markDelivered recovery failed")
+    }
+  }
+  if mem.stdout_lines.length() != 3 {
+    db.close()
+    return Err("expected 3 total changes after markDelivered recovery")
+  }
+  match db.all("SELECT delivered_at FROM deliveries WHERE thread = 'th1' AND n = 1 AND session = 's3'", []) {
+    Ok(rows) => {
+      if sessions_core::int_of(Some(col(rows[0], "delivered_at"))) != 1000 {
+        db.close()
+        return Err("markDelivered delivered_at mismatch")
+      }
+    }
     Err(e) => {
       db.close()
-      return Err("recovery tx_err failed: " + e.message)
+      return Err("verify markDelivered row failed: " + e.message)
     }
   }
   db.close()

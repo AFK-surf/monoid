@@ -4,22 +4,32 @@
 //
 // Helper names (`rpc_k`, `deps_k`, `store_k`, `agent_do_k`, `tell`) and literal first-arg forms
 // strictly match `station/test/mb-reader-contracts.test.ts`.
+// All methods operate on the immutable per-generation `ActorsGen` and refuse work if `sealed`.
 
 import "base_codec"
 import "effect"
 import "sessions_core"
 
-/// Query or mutate the station store: handled locally on SQLite when `db` is attached
+/// Query or mutate the station store: handled locally on this generation's SQLite DB when attached
 /// (`actor_store.pion`), otherwise asked of Node via `store.<f>` RPC.
-pub fn Actors::store_k(
-  self : Actors,
+/// Refuses immediately with `Exit::Interrupted` if `self.gen.counters.sealed` is true.
+pub fn ActorsGen::store_k(
+  self : ActorsGen,
   a : Actor,
   f : String,
   args : Array[base_codec::Json],
   k : (effect::Exit[base_codec::Json]) -> Unit,
 ) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
   match self.local_store(f, args) {
     Ok(Some(v)) => {
+      if self.gen.counters.sealed {
+        k(effect::Exit::Interrupted)
+        return
+      }
       self.mirror(a)
       k(effect::Exit::Succeeded(v))
     }
@@ -29,8 +39,8 @@ pub fn Actors::store_k(
 }
 
 /// Ask a hub dependency (`deps.<f>`).
-pub fn Actors::deps_k(
-  self : Actors,
+pub fn ActorsGen::deps_k(
+  self : ActorsGen,
   a : Actor,
   f : String,
   args : Array[base_codec::Json],
@@ -40,8 +50,8 @@ pub fn Actors::deps_k(
 }
 
 /// Call a method on the actor's runtime session (`agent.<f>`).
-pub fn Actors::agent_do_k(
-  self : Actors,
+pub fn ActorsGen::agent_do_k(
+  self : ActorsGen,
   a : Actor,
   agent : Agent,
   f : String,
@@ -55,8 +65,8 @@ pub fn Actors::agent_do_k(
   self.rpc_k(a.key, "agent." + f, full, k)
 }
 
-pub fn Actors::busy_of_k(
-  self : Actors,
+pub fn ActorsGen::busy_of_k(
+  self : ActorsGen,
   a : Actor,
   agent : Option[Agent],
   k : (effect::Exit[Bool]) -> Unit,
@@ -85,8 +95,8 @@ pub fn still(a : Actor, agent : Option[Agent]) -> Bool {
 }
 
 /// `a`'s runtime session where Node says it is busy and it is still `a`'s once Node answered.
-pub fn Actors::busy_agent_k(
-  self : Actors,
+pub fn ActorsGen::busy_agent_k(
+  self : ActorsGen,
   a : Actor,
   k : (effect::Exit[Option[Agent]]) -> Unit,
 ) -> Unit {
@@ -107,8 +117,8 @@ pub fn Actors::busy_agent_k(
 }
 
 /// The station's words in its language (`actor.ts` `t`).
-pub fn Actors::t_k(
-  self : Actors,
+pub fn ActorsGen::t_k(
+  self : ActorsGen,
   a : Actor,
   key : String,
   args : base_codec::Json,
@@ -124,13 +134,16 @@ pub fn Actors::t_k(
   })
 }
 
-pub fn Actors::log(
-  self : Actors,
+pub fn ActorsGen::log(
+  self : ActorsGen,
   a : Actor,
   level : String,
   message : String,
   fields : Array[(String, base_codec::Json)] = [],
 ) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
   let out : Array[(String, base_codec::Json)] = []
   let mut has_session = false
   for i in 0..<fields.length() {
@@ -152,8 +165,8 @@ pub fn Actors::log(
   ])
 }
 
-pub fn Actors::held_k(
-  self : Actors,
+pub fn ActorsGen::held_k(
+  self : ActorsGen,
   a : Actor,
   k : (effect::Exit[Bool]) -> Unit,
 ) -> Unit {
@@ -166,8 +179,8 @@ pub fn Actors::held_k(
   })
 }
 
-pub fn Actors::archived_k(
-  self : Actors,
+pub fn ActorsGen::archived_k(
+  self : ActorsGen,
   a : Actor,
   k : (effect::Exit[Bool]) -> Unit,
 ) -> Unit {
@@ -192,8 +205,8 @@ pub fn Actors::archived_k(
   })
 }
 
-pub fn Actors::has_pending_k(
-  self : Actors,
+pub fn ActorsGen::has_pending_k(
+  self : ActorsGen,
   a : Actor,
   k : (effect::Exit[Bool]) -> Unit,
 ) -> Unit {
@@ -206,8 +219,8 @@ pub fn Actors::has_pending_k(
   })
 }
 
-pub fn Actors::notify_store_k(
-  self : Actors,
+pub fn ActorsGen::notify_store_k(
+  self : ActorsGen,
   a : Actor,
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
@@ -220,8 +233,8 @@ pub fn Actors::notify_store_k(
   })
 }
 
-pub fn Actors::set_running_k(
-  self : Actors,
+pub fn ActorsGen::set_running_k(
+  self : ActorsGen,
   a : Actor,
   on : Bool,
   k : (effect::Exit[Unit]) -> Unit,
@@ -240,8 +253,8 @@ pub fn Actors::set_running_k(
   )
 }
 
-pub fn Actors::last_turn_k(
-  self : Actors,
+pub fn ActorsGen::last_turn_k(
+  self : ActorsGen,
   a : Actor,
   k : (effect::Exit[base_codec::Json]) -> Unit,
 ) -> Unit {
