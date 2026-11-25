@@ -57,7 +57,9 @@ export function createAccessCache<S extends { url: string; access?: string }>(
     resolveAll: (relays) => {
       if (!relays.some((r) => r != null)) return relays.map(() => null);
       let fresh = false;
-      if (map === null || now() - at >= ttlMs) {
+      // A wall clock set back (NTP) gives a negative age: read again rather than keep the map until it catches up.
+      const age = now() - at;
+      if (map === null || age < 0 || age >= ttlMs) {
         readStatus();
         fresh = true;
       }

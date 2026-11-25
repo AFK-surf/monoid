@@ -470,6 +470,13 @@ test("createAccessCache_reads_relay_status_only_for_relay_paths_and_reuses_it_wi
   t = ACCESS_CACHE_MS;
   assert.deepEqual(access.resolveAll(["https://r1.test"]), ["https://e1.test/"]);
   assert.equal(reads, 2);
+
+  // A clock set back reads again at once, not only when it is past the last read again.
+  t = ACCESS_CACHE_MS - 10_000;
+  access.resolveAll(["https://r1.test"]);
+  assert.equal(reads, 3);
+  access.resolveAll(["https://r1.test"]);
+  assert.equal(reads, 3);
 });
 
 test("createAccessCache_follows_an_entrance_iroh_switches_to_after_the_first_read", () => {
