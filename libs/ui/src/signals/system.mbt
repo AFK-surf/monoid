@@ -282,11 +282,19 @@ fn propagate(start : Link, inner_write : Bool) -> Unit {
 }
 
 ///|
-fn check_dirty(start : Link, start_sub : ReactiveNode) -> Bool {
+priv enum CheckDirty {
+  Clean
+  Dirty
+  HoldPending
+}
+
+///|
+fn check_dirty(start : Link, start_sub : ReactiveNode) -> CheckDirty {
   let mut link = start
   let mut sub = start_sub
   let mut check_depth = 0
   let mut dirty = false
+  let mut recursed = false
   while true {
     let dep = link.dep
     let flags = dep.flags
@@ -308,6 +316,11 @@ fn check_dirty(start : Link, start_sub : ReactiveNode) -> Bool {
       sub = dep
       check_depth += 1
       continue
+    } else if (flags & (MUTABLE | RECURSED_CHECK)) == (MUTABLE | RECURSED_CHECK) {
+      // A dependency is mid-update on the call stack (e.g. an untracked read of a downstream computed from inside an
+      // upstream computed's getter). Do not clear PENDING on `sub` or its ancestors: once that dependency finishes
+      // and changes, shallow_propagate needs PENDING still set on its subscribers to mark them DIRTY.
+      recursed = true
     }
     if !dirty {
       match link.next_dep {
@@ -339,7 +352,7 @@ fn check_dirty(start : Link, start_sub : ReactiveNode) -> Bool {
           continue
         }
         dirty = false
-      } else {
+      } else if !recursed {
         sub.flags = sub.flags & PENDING.lnot()
       }
       sub = link.sub
@@ -355,9 +368,15 @@ fn check_dirty(start : Link, start_sub : ReactiveNode) -> Bool {
     if to_top {
       continue
     }
-    return dirty && sub.flags != 0
+    return if dirty && sub.flags != 0 {
+      Dirty
+    } else if recursed {
+      HoldPending
+    } else {
+      Clean
+    }
   }
-  false
+  Clean
 }
 
 ///|

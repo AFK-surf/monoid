@@ -690,7 +690,7 @@ fn run_effect(e : ReactiveNode) -> Unit {
       (
         (flags & PENDING) != 0 &&
         (match e.deps {
-          Some(d) => check_dirty(d, e)
+          Some(d) => check_dirty(d, e) is Dirty
           None => false
         })
       )
@@ -708,7 +708,7 @@ fn run_effect(e : ReactiveNode) -> Unit {
     o.marked_by = None
     return
   }
-  if (flags & DIRTY) != 0 || ((flags & PENDING) != 0 && check_dirty(e.deps.unwrap(), e)) {
+  if (flags & DIRTY) != 0 || ((flags & PENDING) != 0 && check_dirty(e.deps.unwrap(), e) is Dirty) {
     if (flags & HAS_CHILD_EFFECT) != 0 {
       let mut link = e.deps_tail
       while true {
@@ -883,11 +883,13 @@ pub fn[T] Computed::get(self : Computed[T]) -> T {
   let stale = if (flags & DIRTY) != 0 {
     true
   } else if (flags & PENDING) != 0 {
-    if check_dirty(node.deps.unwrap(), node) {
-      true
-    } else {
-      node.flags = flags & PENDING.lnot()
-      false
+    match check_dirty(node.deps.unwrap(), node) {
+      Dirty => true
+      Clean => {
+        node.flags = flags & PENDING.lnot()
+        false
+      }
+      HoldPending => false
     }
   } else {
     false
@@ -1406,7 +1408,7 @@ pub fn[T] Watch::read(self : Watch, f : () -> T) -> T {
   if (e.flags & (DIRTY | PENDING)) != 0 {
     let dirty = (e.flags & DIRTY) != 0 ||
       (match e.deps {
-        Some(d) => check_dirty(d, e)
+        Some(d) => check_dirty(d, e) is Dirty
         None => false
       })
     e.flags = WATCHING
@@ -1579,16 +1581,16 @@ pub fn Watch::changed_now(self : Watch) -> Bool {
   if (flags & PENDING) == 0 {
     return false
   }
-  let dirty = match e.deps {
+  let res = match e.deps {
     Some(d) => check_dirty(d, e)
-    None => false
+    None => Clean
   }
   // (looked at and found the same: watching again, as a watch told is as it runs (run_effect), so that what changes
   // next in the same batch marks it again; its place in the queue, if it has one, runs to nothing)
-  if !dirty {
+  if res is Clean {
     e.flags = WATCHING
   }
-  dirty
+  res is Dirty
 }
 
 ///|
