@@ -27,12 +27,8 @@ root=${STILLFAIL_RELEASE_TOOLS_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}
 direct_ips=""
 # (every curl to Cloudflare's API given up when its connection is not made in 15 s or stalls under 1 KB/s for 20 s,
 # the put tried again or wrangler's after: a TLS handshake to the direct address that never finished held the curl
-# for its own default of 300 s, the release's Android and Mac puts 5 minutes each, 2026-10-31. Direct addresses also
-# require at least 256 KB/s over 20 s so a trickling Cloudflare edge IP fails over to the next address or the machine's
-# own DNS instead of holding a 43 MB transfer past a 5-minute job, main 45607690010; small API replies finish well under
-# 20 s and are unaffected)
+# for its own default of 300 s, the release's Android and Mac puts 5 minutes each, 2026-10-31)
 limits="--connect-timeout 15 --speed-limit 1024 --speed-time 20"
-direct_limits="--connect-timeout 15 --speed-limit 262144 --speed-time 20"
 if [ -n "${STILLFAIL_DIRECT_DNS:-}" ]; then
   # (two addresses, the second tried when the first's connection is not made: one alone timed out, main a1159d02f)
   direct_ips=$(dig +short +time=3 +tries=2 @"$STILLFAIL_DIRECT_DNS" api.cloudflare.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -2 | tr '\n' ' ') || direct_ips=""
@@ -42,8 +38,8 @@ fi
 # curl to Cloudflare's API: at each direct address in turn, then through the machine's own DNS when none answered.
 cf_curl() {
   for ip in $direct_ips; do
-    # shellcheck disable=SC2086 # direct_limits is words
-    curl --resolve "api.cloudflare.com:443:$ip" $direct_limits "$@" && return 0
+    # shellcheck disable=SC2086 # limits is words
+    curl --resolve "api.cloudflare.com:443:$ip" $limits "$@" && return 0
   done
   # shellcheck disable=SC2086 # limits is words
   curl $limits "$@"

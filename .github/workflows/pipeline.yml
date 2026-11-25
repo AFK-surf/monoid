@@ -2859,8 +2859,6 @@ jobs:
   deltas-desktop:
     needs: [plan, desktop]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop.result == 'success' }}
-    # (on ubuntu-24.04, idle by then: it is let go with deltas-station, and on ci-1 the station's four held it 234 s,
-    # main 44695551492)
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5

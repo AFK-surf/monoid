@@ -85,7 +85,7 @@
   a part that needs more is made faster, split (the station's, a job a platform: `--platform`, put's `--merge`) or gets
   fewer bases, not longer (10 bases: the owner, 2026-11-11). All `deltas-*` jobs (`deltas-android`, its `javac`
   `ubuntu-24.04`'s JDK, `deltas-desktop`, `deltas-desktop-win`, and the station's four platforms) run on `ubuntu-24.04`:
-  fast R2 transfers keep them around 55–77 s, whereas running `deltas-station` on `ci-1` stalled 200–304 s downloading
+  fast R2 transfers keep them around 53–77 s, whereas running `deltas-station` on `ci-1` stalled 200–304 s downloading
   staged archives over Shanghai international egress.
 - Stable (`workflows/stable.yml`) runs from main's head against the release's older checkout: a step that needs newer
   scripts takes them from `$GITHUB_SHA` (`git show`, a sparse checkout). Its station is built into a directory and
