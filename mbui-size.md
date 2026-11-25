@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d8051674f](https://github.com/AFK-surf/monoid/commit/d8051674f4057ed1411a045676ad85c18a2fe5e0) feat(pion-station): W8-F zero-stub reader_sessions | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [fe21ea979](https://github.com/AFK-surf/monoid/commit/fe21ea9792544802abee0f3e097cd6f03766a464) perf(ci): cut cloud and root test time in check-li | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [6c37aaacb](https://github.com/AFK-surf/monoid/commit/6c37aaacb80de3719d622e3e2168cfc319733bee) feat(mbui): add cross-screen chat projects and tag | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [771a84655](https://github.com/AFK-surf/monoid/commit/771a846551385d1cde773b0790c1c013fe538280) fix(station): wait for own connects before refusin | 2.56 | 3.46 | 14.31 | 36.92 | 55.88 | 32.25 | 65.22 | 101.04 | 125.82 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b9c8a4280](https://github.com/AFK-surf/monoid/commit/b9c8a42804079619d16d10671845e4ff67eb8d5f) fix(station): let backups give way by the delay th | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [bd99b367c](https://github.com/AFK-surf/monoid/commit/bd99b367c777a9ec85411246d786b09c789baaca) fix(cloud): retry a failed release read once and a | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [5c67aea1c](https://github.com/AFK-surf/monoid/commit/5c67aea1ce6cca79985064a48a603c1e78cb4d14) fix(core): ask the station links first after up to | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
-| [9cafa2118](https://github.com/AFK-surf/monoid/commit/9cafa21182dec33db8873e52342b018f489183b3) fix(mesh,android): enable hot-relay narrowing on n | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d8051674f](https://github.com/AFK-surf/monoid/commit/d8051674f4057ed1411a045676ad85c18a2fe5e0) feat(pion-station): W8-F zero-stub reader_sessions | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.41 |
 | [fe21ea979](https://github.com/AFK-surf/monoid/commit/fe21ea9792544802abee0f3e097cd6f03766a464) perf(ci): cut cloud and root test time in check-li | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.39 |
 | [6c37aaacb](https://github.com/AFK-surf/monoid/commit/6c37aaacb80de3719d622e3e2168cfc319733bee) feat(mbui): add cross-screen chat projects and tag | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.33 |
 | [771a84655](https://github.com/AFK-surf/monoid/commit/771a846551385d1cde773b0790c1c013fe538280) fix(station): wait for own connects before refusin | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.53 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [b9c8a4280](https://github.com/AFK-surf/monoid/commit/b9c8a42804079619d16d10671845e4ff67eb8d5f) fix(station): let backups give way by the delay th | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.51 |
 | [bd99b367c](https://github.com/AFK-surf/monoid/commit/bd99b367c777a9ec85411246d786b09c789baaca) fix(cloud): retry a failed release read once and a | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57 |
 | [5c67aea1c](https://github.com/AFK-surf/monoid/commit/5c67aea1ce6cca79985064a48a603c1e78cb4d14) fix(core): ask the station links first after up to | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.2 |
-| [9cafa2118](https://github.com/AFK-surf/monoid/commit/9cafa21182dec33db8873e52342b018f489183b3) fix(mesh,android): enable hot-relay narrowing on n | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.2 |
