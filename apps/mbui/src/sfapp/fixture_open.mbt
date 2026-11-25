@@ -468,6 +468,12 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 /// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
 pub fn fixture_app(mode : String) -> Source {
   new_run()
+  if mode.has_prefix("projects-") {
+    @sffixture.fx_projects_on.val = true
+    if mode == "projects-grouped" {
+      @sffixture.fx_set_list_group("ws1", "project")
+    }
+  }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   src
@@ -925,6 +931,18 @@ pub fn open_mode(mode : String) -> Unit {
   } else if mode == "home-sheet" || mode == "home-accounts" {
     // (home-accounts: two accounts signed in, what a new workspace asks which of)
     home_sheet_at_start.val = true
+  } else if mode == "projects-filtered" {
+    @sfbase.set_project_filter("ws1", Named("monoid"))
+    @sfbase.set_tag_filter("ws1", Some("ui-review"))
+  } else if mode == "projects-chat" {
+    app.nav.push(Chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }))
+  } else if mode == "projects-settings" {
+    open_setting("projects")
+  } else if mode == "projects-detail" {
+    open_setting("project:monoid")
+  } else if mode == "projects-preset" {
+    @sfpages.new_chat_ask("preset-edit")
+    app.nav.rise(NewChat)
   }
 }
 

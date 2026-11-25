@@ -14,8 +14,8 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { isBuildStale, ownBuiltAt, setOwnBuild, setOwnBuiltAt, STALE_BUILD_MS } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
-const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
+const MAPS = ["listFilter", "listGroups", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
@@ -24,6 +24,7 @@ const FAILS_GONE_KEPT = 200;
 /// The drafts a workspace's 待派发 keeps on this device: the newest of them.
 const BOARD_DRAFTS_KEPT = 200;
 const BOARD_GROUPS = ["state", "station", "person"];
+const LIST_GROUPS = ["project"];
 
 /// A workspace's drafts as given, each whole and within its bounds (newest first, the newest kept), or null where one
 /// is not.
@@ -336,6 +337,8 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
           const was = Array.isArray(map[key]) ? (map[key] as unknown[]) : [];
           entry = [...new Set([...was, ...entry])].slice(-FAILS_GONE_KEPT);
         }
+        // A workspace's list grouping: `project` (none: default `time`).
+        if (field === "listGroups" && !LIST_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `listGroups.${key}` }));
         // A workspace's board: shown as one, grouped otherwise than by state, its drafts (none: as without).
         if (field === "boardViews" && entry !== "board") throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardViews.${key}` }));
         if (field === "boardGroups" && !BOARD_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardGroups.${key}` }));

@@ -141,14 +141,38 @@ pub fn chat_page_body_node(
   // told left (chat_read_left reads it once more): read untracked, it held the chat; worked out anew as it is read
   // again, from what it last was)
   let read_rest = fn() { if !read.watched() { read.dispose() } }
+  let tag_visit : Ref[(Double, Int)?] = Ref(None)
+  let leave_tag_visit = fn() {
+    match tag_visit.val {
+      Some((th, vis)) => {
+        @sfbase.classify_leave_chat(r.station, th, vis)
+        tag_visit.val = None
+      }
+      None => ()
+    }
+  }
+  let enter_tag_visit = fn() {
+    match @signals.untracked(fn() { read.get() }) {
+      Some((cv, _)) if cv.projects =>
+        match cv.thread {
+          Some(th) if tag_visit.val is None =>
+            tag_visit.val = Some((th, @sfbase.classify_enter_chat(r.station, th)))
+          _ => ()
+        }
+      _ => ()
+    }
+  }
+  v.on_leaving(leave_tag_visit) |> ignore
   v.on_rest(
     fn() {
       at_rest.val = true
+      leave_tag_visit()
       read_rest()
     },
     wake=fn() {
       at_rest.val = false
       woken.set(woken.untracked() + 1)
+      enter_tag_visit()
       // (shown again from where it was put by, its `shows` the same as it rested so the reaction under tells nothing:
       // its pictures that could not be had asked again, as it comes into view)
       src.images.again(r.station)
@@ -174,6 +198,7 @@ pub fn chat_page_body_node(
   v.reacts(fn() { read.get() is Some(_) }, fn(loaded) {
     if loaded {
       feedback_held.get() |> ignore
+      enter_tag_visit()
     }
   })
   // (its rows by the width it is given, never one worked out of the shell's state)

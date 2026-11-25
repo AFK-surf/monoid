@@ -6,7 +6,13 @@
 /// The chats of workspace `scope` in list `filter` (all, mine, watching) as the core's view says them, worked out once
 /// for each version of it; what went wrong reading it.
 pub fn chats_of(src : Source, scope : String, filter : String) -> (ChatsView?, String?) {
-  let (params, said) = chats_asked_said(scope, filter)
+  chats_of_query(src, scope, default_list_query(filter))
+}
+
+///|
+/// The chats of workspace `scope` matching `q` (filter + optional groupBy="project" + optional project/tag filter).
+pub fn chats_of_query(src : Source, scope : String, q : ListQuery) -> (ChatsView?, String?) {
+  let (params, said) = chats_asked_said_query(scope, q)
   let (read, topic) = chats_read.read_said(src, params, said)
   let error = match topic.error {
     Some(e) => Some(text(Some(e), "message"))
@@ -20,7 +26,14 @@ pub fn chats_of(src : Source, scope : String, filter : String) -> (ChatsView?, S
 /// let go of (`lasting`, shown again at once till the core answers: TopicState::kept) nor nothing yet. What changes in
 /// it is the list changing only from then (sfpages' RowsMotion: the answer's first value taken at once).
 pub fn chats_live(src : Source, scope : String, filter : String) -> Bool {
-  let (_, topic) = chats_read.read(src, chats_params(scope, filter))
+  chats_live_query(src, scope, default_list_query(filter))
+}
+
+///|
+/// Whether list `q` of workspace `scope` shows what the core answered it now.
+pub fn chats_live_query(src : Source, scope : String, q : ListQuery) -> Bool {
+  let (params, said) = chats_asked_said_query(scope, q)
+  let (_, topic) = chats_read.read_said(src, params, said)
   topic.value is Some(_) && topic.version >= -1
 }
 
@@ -51,26 +64,76 @@ fn chats_params(scope : String, filter : String) -> Map[String, Json] {
 }
 
 ///|
+/// Topic parameters for `chats` with a full `ListQuery`. Default `ListQuery` produces the exact same keys as
+/// `chats_params(scope, filter)` (never emitting `groupBy` unless `group_by == "project"`).
+pub fn chats_params_query(scope : String, q : ListQuery) -> Map[String, Json] {
+  let params = chats_params(scope, q.filter)
+  if q.group_by == "project" {
+    params["groupBy"] = Json::string("project")
+  }
+  match q.project {
+    All => ()
+    Unclassified => params["unclassified"] = Json::boolean(true)
+    Cross => params["project"] = Json::string("")
+    Named(name) => params["project"] = Json::string(name)
+  }
+  match q.tag {
+    Some(t) if t != "" => params["tag"] = Json::string(t)
+    _ => ()
+  }
+  params
+}
+
+///|
+/// Stable cache key for `chats_asked_kept` (bounded to 64 entries).
+pub fn chats_query_cache_key(scope : String, q : ListQuery) -> String {
+  let pf = match q.project {
+    All => ""
+    Unclassified => "u"
+    Cross => "c"
+    Named(n) => "p:" + n
+  }
+  let tf = q.tag.unwrap_or("")
+  scope + "\u{1}" + q.filter + "\u{1}" + q.group_by + "\u{1}" + pf + "\u{1}" + tf
+}
+
+///|
 /// List `filter` of workspace `scope` as it is asked of the core (chats_params) and its topic's key (topic_key), each
 /// made once and read again after: what reads the list reads it many times a frame (each row's binding, the bar, the
 /// list: 19-33 times a frame on Home, each a map made and written out as JSON), and what is read is the same each
 /// time. Never written into by what reads it.
 fn chats_asked_said(scope : String, filter : String) -> (Map[String, Json], String) {
-  match chats_asked_kept.get((scope, filter)) {
+  chats_asked_said_query(scope, default_list_query(filter))
+}
+
+///|
+/// Bounded cached `(params, topic_key)` for `chats_params_query`.
+fn chats_asked_said_query(scope : String, q : ListQuery) -> (Map[String, Json], String) {
+  let ck = chats_query_cache_key(scope, q)
+  match chats_asked_kept.get(ck) {
     Some(k) => k
     None => {
-      let params = chats_params(scope, filter)
+      if chats_asked_order.length() >= 64 {
+        let oldest = chats_asked_order.remove(0)
+        chats_asked_kept.remove(oldest)
+      }
+      let params = chats_params_query(scope, q)
       let k = (params, topic_key("chats", params))
-      chats_asked_kept[(scope, filter)] = k
+      chats_asked_kept[ck] = k
+      chats_asked_order.push(ck)
       k
     }
   }
 }
 
 ///|
-// kept across runs: worked out of its key alone, the same in any run; a few for each workspace (its filters)
-/// What chats_asked_said made, by workspace and filter.
-let chats_asked_kept : Map[(String, String), (Map[String, Json], String)] = Map([])
+// kept across runs: worked out of its key alone, the same in any run; bounded to 64 entries
+/// What chats_asked_said_query made, by cache key.
+let chats_asked_kept : Map[String, (Map[String, Json], String)] = Map([])
+
+///|
+// kept across runs: FIFO eviction order for chats_asked_kept (max 64)
+let chats_asked_order : Array[String] = []
 
 ///|
 // kept across runs: put back as a run begins (reset), set by the app's tree as it is given its window (sfapp app_tree)
@@ -154,14 +217,36 @@ let windows_asked : Map[String, Int] = Map([])
 /// How many rows list `filter` of workspace `scope` was last told its window grows to (windows_asked's; 0, none asked
 /// since it was asked anew): what tells a page more that comes from rows that arrive (the sidebar's RowsMotion).
 pub fn chats_window_asked(scope : String, filter : String) -> Int {
-  windows_asked.get(list_window_key(chats_params(scope, filter))).unwrap_or(0)
+  chats_window_asked_query(scope, default_list_query(filter))
 }
 
 ///|
-/// A chat list's key among windows_asked: its workspace and filter as asked.
+/// How many rows list `q` of workspace `scope` was last told its window grows to.
+pub fn chats_window_asked_query(scope : String, q : ListQuery) -> Int {
+  windows_asked.get(list_window_key(chats_params_query(scope, q))).unwrap_or(0)
+}
+
+///|
+/// A chat list's key among windows_asked: its workspace, filter, groupBy, project, unclassified, and tag as asked.
 fn list_window_key(p : Map[String, Json]) -> String {
   let on = fn(k : String) { if p.get(k) is Some(True) { "1" } else { "0" } }
-  text(Some(Json::object(p)), "scope") + "\u{1}" + on("mine") + on("watching") + on("hidden")
+  let j = Some(Json::object(p))
+  let proj = match p.get("project") {
+    Some(String(s)) => "p:" + s
+    _ => ""
+  }
+  text(j, "scope") +
+  "\u{1}" +
+  on("mine") +
+  on("watching") +
+  on("hidden") +
+  on("unclassified") +
+  "\u{1}" +
+  text(j, "groupBy") +
+  "\u{1}" +
+  proj +
+  "\u{1}" +
+  text(j, "tag")
 }
 
 ///|
@@ -177,7 +262,7 @@ pub fn chats_told_before(name : String, topic : Json) -> Array[(String, Json)] {
   }
   guard name == "chats" && topic is Object(t) else { return [] }
   let params : Map[String, Json] = Map([])
-  for k in ["scope", "mine", "watching", "hidden"] {
+  for k in ["scope", "mine", "watching", "hidden", "groupBy", "project", "unclassified", "tag"] {
     match t.get(k) {
       Some(v) => params[k] = v
       None => ()
@@ -216,7 +301,13 @@ fn chat_told_before(topic : Json) -> Array[(String, Json)] {
 ///|
 /// How many rows list `filter` of workspace `scope` has past those the core sent (its `more`).
 pub fn chats_more(src : Source, scope : String, filter : String) -> Int {
-  let (params, said) = chats_asked_said(scope, filter)
+  chats_more_query(src, scope, default_list_query(filter))
+}
+
+///|
+/// How many rows list `q` of workspace `scope` has past those the core sent (its `more`).
+pub fn chats_more_query(src : Source, scope : String, q : ListQuery) -> Int {
+  let (params, said) = chats_asked_said_query(scope, q)
   match field(src.topic_said("chats", params, said).get().value, "more") {
     Some(Number(n, ..)) => n.to_int()
     _ => 0
@@ -224,10 +315,10 @@ pub fn chats_more(src : Source, scope : String, filter : String) -> Int {
 }
 
 ///|
-/// List `filter` of workspace `scope` told a window of `rows` (`chats.window`), where it holds fewer (`has`), the core
+/// List `q` of workspace `scope` told a window of `rows` (`chats.window`), where it holds fewer (`has`), the core
 /// has more (`more`) and it was not told as many already: what it shows grows by the rows added.
-fn chats_window_at_least(src : Source, scope : String, filter : String, rows : Int, has : Int, more : Int) -> Unit {
-  let params = chats_params(scope, filter)
+fn chats_window_at_least_query(src : Source, scope : String, q : ListQuery, rows : Int, has : Int, more : Int) -> Unit {
+  let params = chats_params_query(scope, q)
   let key = list_window_key(params)
   if more <= 0 || rows <= has || rows <= windows_asked.get(key).unwrap_or(0) {
     return
@@ -250,14 +341,26 @@ pub fn chats_held(view : ChatsView?) -> Int {
 /// List `filter` of workspace `scope`, holding `has` rows with `more` past them, scrolled near its foot: its window a
 /// step more (window_step) than the rows it holds, asked once for them.
 pub fn chats_grow(src : Source, scope : String, filter : String, has : Int, more : Int) -> Unit {
-  chats_window_at_least(src, scope, filter, has + window_step(window_tall.val), has, more)
+  chats_grow_query(src, scope, default_list_query(filter), has, more)
+}
+
+///|
+/// List `q` of workspace `scope`, holding `has` rows with `more` past them, scrolled near its foot.
+pub fn chats_grow_query(src : Source, scope : String, q : ListQuery, has : Int, more : Int) -> Unit {
+  chats_window_at_least_query(src, scope, q, has + window_step(window_tall.val), has, more)
 }
 
 ///|
 /// List `filter` of workspace `scope`, holding `has` rows with `more` past them, shown in a window `tall` points high:
 /// told the first window of that where it holds fewer (a window made taller).
 pub fn chats_window_for(src : Source, scope : String, filter : String, tall : Double, has : Int, more : Int) -> Unit {
-  chats_window_at_least(src, scope, filter, first_window(tall), has, more)
+  chats_window_for_query(src, scope, default_list_query(filter), tall, has, more)
+}
+
+///|
+/// List `q` of workspace `scope`, holding `has` rows with `more` past them, shown in a window `tall` points high.
+pub fn chats_window_for_query(src : Source, scope : String, q : ListQuery, tall : Double, has : Int, more : Int) -> Unit {
+  chats_window_at_least_query(src, scope, q, first_window(tall), has, more)
 }
 
 ///|
@@ -269,10 +372,17 @@ pub fn chats_topic(src : Source, scope : String) -> Topic {
 }
 
 ///|
-/// What workspace `ws`'s chats' list opens on as it is filtered (Home's, the wide frame's sidebar's: chats_of's), asked
-/// of `ask` (opens_answered's): answered once the core gave it or said why not.
+/// What workspace `ws`'s chats' list opens on as it is filtered and grouped (Home's, the wide frame's sidebar's), asked
+/// of `ask` (opens_answered's): cold-start 3-state gate waits for `prefs` and fixed-params base `"all"` list first;
+/// if `projects` is `On` and `listGroups[ws] == "project"`, also waits for the grouped query's first answer so the
+/// very first rendered frame is already grouped with zero flicker.
 pub fn list_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> TopicState) -> Bool {
-  opens_answered(ask("chats", chats_params(ws, filter_of(src, ws))))
+  let prefs_ok = opens_answered(ask("prefs", {}))
+  let base_ok = opens_answered(ask("chats", chats_params(ws, "all")))
+  if !prefs_ok || !base_ok {
+    return false
+  }
+  opens_answered(ask("chats", chats_params_query(ws, active_list_query(src, ws))))
 }
 
 ///|
@@ -303,7 +413,12 @@ priv struct ChatsRead {
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
 let chats_read : Derived[ChatsRead] = Derived::new_ref("chats", fn(v, was) {
   let jsons : Array[Json] = []
-  for d in items(Some(v), "days") {
+  let buckets = if field(Some(v), "groups") is Some(Array(_)) {
+    items(Some(v), "groups")
+  } else {
+    items(Some(v), "days")
+  }
+  for d in buckets {
     for j in items(Some(d), "items") {
       jsons.push(j)
     }
@@ -475,13 +590,15 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
     return shown
   }
   let fresh : Map[String, ChatItem] = Map([])
+  let meta : Map[String, ChatDay] = Map([])
   for d in days {
+    meta[d.key] = d
     for item in d.items {
       fresh[row_name(item)] = item
     }
   }
   let held : Map[String, Bool] = Map([])
-  let out : Array[(String, Array[ChatItem])] = shown.map(fn(d) {
+  let out : Array[(ChatDay, Array[ChatItem])] = shown.map(fn(d) {
     let items : Array[ChatItem] = []
     for item in d.items {
       match fresh.get(row_name(item)) {
@@ -492,20 +609,21 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
         None => ()
       }
     }
-    (d.label, items)
+    let head = meta.get(d.key).unwrap_or(d)
+    (head, items)
   })
   for di, d in days {
     for i, item in d.items {
       if held.contains(row_name(item)) {
         continue
       }
-      let into = match out.search_by(fn(o) { o.0 == d.label }) {
+      let into = match out.search_by(fn(o) { o.0.key == d.key }) {
         Some(k) => k
         None => {
           // before the first day shown that comes after it now
           let mut at = out.length()
           for k, o in out {
-            let later = days.search_by(fn(x) { x.label == o.0 })
+            let later = days.search_by(fn(x) { x.key == o.0.key })
             match later {
               Some(j) if j > di => {
                 at = k
@@ -514,7 +632,7 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
               _ => ()
             }
           }
-          out.insert(at, (d.label, []))
+          out.insert(at, (d, []))
           at
         }
       }
@@ -522,7 +640,7 @@ pub fn held_order(key : String, days : Array[ChatDay], hold : Bool) -> Array[Cha
       items.insert(if i < items.length() { i } else { items.length() }, item)
     }
   }
-  let result = out.filter(fn(o) { o.1.length() > 0 }).map(fn(o) { ChatDay::{ label: o.0, items: o.1 } })
+  let result = out.filter(fn(o) { o.1.length() > 0 }).map(fn(o) { { ..o.0, items: o.1 } })
   shown_days[key] = result
   held_from[key] = days
   result

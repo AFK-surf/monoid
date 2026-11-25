@@ -424,7 +424,7 @@ fn lists_band_node(
           let now = @signals.untracked(shown)
           @sfpages.filter_menu(Node(f), if now == "chats" { "all" } else { now }, fn(pick) {
             rail_go_told(src, w, if pick == "all" { "chats" } else { pick }, fn(_, g) { g() })
-          })
+          }, src=Some(src), ws=w.id)
           opener.mark()
         }, expanded=fn() { opener.open() }, fn(f) {
           let hot = @motion.hover_fade(f, fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, duration_ms=@sf.dur_ms)

@@ -254,8 +254,19 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
       |> ignore
     })
     |> ignore
+    let projects_on = fn() {
+      match view() {
+        Some(cv) => cv.projects
+        None => false
+      }
+    }
     // divider between header/facts and the first visible section
-    info_rule_node(col, fn() { agents().length() > 0 || opened_any() || tools() || holds.get().any() || bg_count() > 0 })
+    info_rule_node(col, fn() { projects_on() || agents().length() > 0 || opened_any() || tools() || holds.get().any() || bg_count() > 0 })
+    // classification section ("项目与标签"), strictly gated on cv.projects
+    col.show(projects_on, at_once=true, fn(p) {
+      @sfpages.chat_info_projects_section_node(p, src, r, view, in_sheet=true)
+      info_rule_node(p, fn() { agents().length() > 0 || opened_any() || tools() || holds.get().any() || bg_count() > 0 })
+    })
     // its agents, each a flat row: its mark, its name, how it is and its allowance, a tap to its card
     // (kept by their session's key once, each row reading its own, told only as that one changes: an agent come or
     // gone makes or lets go its row alone)

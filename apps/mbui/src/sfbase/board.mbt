@@ -665,7 +665,7 @@ pub fn board_card_own(i : ChatItem) -> Bool {
 /// same card as its pending row and the station's row after it).
 pub fn board_items(src : Source, ws : String) -> Array[ChatItem] {
   let all : Array[ChatItem] = []
-  match chats_of(src, ws, board_filter_of(src, ws)).0 {
+  match chats_of_query(src, ws, board_list_query(src, ws)).0 {
     Some(v) =>
       for d in v.days {
         for i in d.items {
@@ -676,15 +676,20 @@ pub fn board_items(src : Source, ws : String) -> Array[ChatItem] {
       }
     None => ()
   }
+  // When filtering by a specific named project, cross-project, or tag, local drafts (which have no project/tags) do not match.
+  let hide_drafts = projects_cap(src, ws) == On &&
+    (project_filter_of(ws) is (Named(_) | Cross) || tag_filter_of(ws) is Some(_))
   // (stood in for till the core lists it: from then on the core's alone, gone with it as it goes)
   let coming : Array[ChatItem] = []
-  for s in board_started.get() {
-    let name = s.draft.station + "/" + s.key
-    guard s.ws == ws && !board_seen_here.contains(name) else { continue }
-    if all.iter().any(fn(i) { row_name(i) == name }) {
-      board_seen_here[name] = true
-    } else {
-      coming.push(board_coming(s))
+  if !hide_drafts {
+    for s in board_started.get() {
+      let name = s.draft.station + "/" + s.key
+      guard s.ws == ws && !board_seen_here.contains(name) else { continue }
+      if all.iter().any(fn(i) { row_name(i) == name }) {
+        board_seen_here[name] = true
+      } else {
+        coming.push(board_coming(s))
+      }
     }
   }
   coming + all
@@ -734,7 +739,7 @@ pub fn board_title_of(item : ChatItem) -> String {
 pub fn board_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> TopicState) -> Bool {
   guard board_on_of(src, ws) else { return true }
   let (name, params) = station_rows_ask(ws)
-  let chats = opens_answered(ask("chats", chats_params(ws, board_filter_of(src, ws))))
+  let chats = opens_answered(ask("chats", chats_params_query(ws, board_list_query(src, ws))))
   let stations = opens_answered(ask(name, params))
   chats && stations
 }

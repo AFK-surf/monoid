@@ -1649,6 +1649,9 @@ export interface BoardDraft {
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */
 export type ListFilter = "all" | "mine" | "watching" | "hidden" | "archive";
 
+/** How a workspace's chat list is grouped on this device: by project (`project`), or none (default `time`). */
+export type ListGroup = "project";
+
 /**
  * Whose pictures lead a chat's row: by how many people the scope has (the default), or always the agents', or the
  * people's.
@@ -1914,6 +1917,8 @@ export interface PrefsView {
 	 * (one filter for all, as devices kept it before).
 	 */
 	listFilter?: Record<string, ListFilter>;
+	/** How a workspace's chat list is grouped on this device, by workspace (`project`; none: default `time`). */
+	listGroups?: Record<string, ListGroup>;
 	appearance?: Appearance;
 	/**
 	 * The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `rainbow` (picks a colour automatically

@@ -182,6 +182,7 @@ export function ensureSaid(sql: Sql): void {
 export const overviewPartOf = (j: string) => `json_object(
   'running', ${j} -> '$.counts.running',
   'interrupted', ${j} -> '$.interrupted',
+  'features', ${j} -> '$.features',
   'slackUsers', CASE WHEN json_type(${j}, '$.slackUsers') = 'array'
     THEN json((SELECT json_group_array(u.value ORDER BY u.key) FROM json_each(${j}, '$.slackUsers') AS u WHERE u.type = 'text'))
     ELSE json_array() END,
@@ -205,7 +206,7 @@ export const overviewPartOf = (j: string) => `json_object(
 /// station for 0.8-1.1 KB (the real-size workspace), and the list's first answer later by as much.
 export const overviewRowOf = (j: string) => `CASE WHEN json_type(${j}) = 'object'
     THEN json((SELECT json_group_object(o.key, ${j} -> o.fullkey) FROM json_each(${j}) AS o
-      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive', 'autoChats') AND o.type <> 'null')))
+      WHERE o.key IN ('viewer', 'counts') OR (o.key IN ('disk', 'drive', 'autoChats', 'features') AND o.type <> 'null')))
     END`;
 
 /// What a chat's page reads of its station's overview, the JSON `j` (views.ts #chatOverview: its agents' connects,

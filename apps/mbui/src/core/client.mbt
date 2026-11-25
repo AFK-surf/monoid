@@ -638,6 +638,10 @@ pub fn Client::refresh_topic(self : Client, topic : String, params? : Map[String
         if sub == old_id { self.echo_waits[call] = (id, answered, seen) }
       }
       (self.send)(({ "id": Json::number(old_id.to_double()), "unsubscribe": true } : Json).stringify())
+      if s.error is Some(_) {
+        s.error = None
+        s.changes.set(s.changes.untracked() + 1)
+      }
       self.ask(s)
       self.retire_if_unused(s)
     }

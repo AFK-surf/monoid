@@ -368,7 +368,15 @@ pub fn board_node(
     }
   })
   let items = fn() { items_now.get() }
-  let drafts_now = @signals.computed(fn(_) { @sfbase.board_drafts_of(src, ws()) })
+  let drafts_now = @signals.computed(fn(_) {
+    let w = ws()
+    if @sfbase.workspace_projects_on(src, w) &&
+      (@sfbase.project_filter_of(w) is (Named(_) | Cross) || @sfbase.tag_filter_of(w) is Some(_)) {
+      []
+    } else {
+      @sfbase.board_drafts_of(src, w)
+    }
+  })
   let drafts = fn() { drafts_now.get() }
   let drafts_map = @signals.computed(fn(_) { Map::from_array(drafts().map(fn(d) { (d.id, d) })) })
   let stations_now = @signals.computed(fn(_) {
@@ -845,28 +853,64 @@ fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
   let src = own.src
   let open = fn(k : @view.View) {
     guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
-    filter_menu(Node(k), @sfbase.board_filter_of(src, w.id), fn(f) { board_filter_go(src, w, f, own.archived) }, in_board=true)
+    filter_menu(Node(k), @sfbase.board_filter_of(src, w.id), fn(f) { board_filter_go(src, w, f, own.archived) }, in_board=true, src=Some(src), ws=w.id)
   }
-  bar.pick(fn() { @sfbase.board_filter_of(src, (own.ws)()) == "mine" }, at_once=true, fn(p, mine) {
-    if mine {
-      @sf.button_opens_node(p, fn() { @sf.t("web-main.filter.chats.mine") }, open, icon="filter") |> ignore
-    } else {
-      let key : Ref[@view.View?] = Ref(None)
-      key.val = Some(
-        @sf.icon_button_node(
+  bar.pick(
+    fn() {
+      let w = (own.ws)()
+      @sfbase.board_filter_of(src, w) == "mine" || (@sfbase.workspace_projects_on(src, w) && @sfbase.has_active_list_filters(w))
+    },
+    at_once=true,
+    fn(p, active) {
+      if active {
+        @sf.button_opens_node(
           p,
-          "filter",
-          fn() { @sf.t("web-main.filter.chats.named", args=[("named", @sf.t("web-main.filter.all"))]) },
           fn() {
-            if key.val is Some(k) {
-              open(k)
+            let w = (own.ws)()
+            if @sfbase.board_filter_of(src, w) == "mine" {
+              @sf.t("web-main.filter.chats.mine")
+            } else {
+              match (@sfbase.project_filter_of(w), @sfbase.tag_filter_of(w)) {
+                (Named(pn), _) => @sf.t("web-main.projects.project_prefix", args=[("name", pn)])
+                (Unclassified, _) => @sf.t("web-main.projects.unclassified")
+                (Cross, _) => @sf.t("web-main.projects.cross_project")
+                (All, Some(tg)) => "#" + tg
+                (All, None) => @sf.t("web-main.projects.filter_project")
+              }
             }
           },
-          size=@sf.button_h,
-        ),
-      )
-    }
-  })
+          open,
+          icon="filter",
+        )
+        |> ignore
+        p.show(fn() { @sfbase.workspace_projects_on(src, (own.ws)()) && @sfbase.has_active_list_filters((own.ws)()) }, along_row=true, fn(cl) {
+          @sf.icon_button_node(
+            cl,
+            "close",
+            fn() { @sf.t("web-main.projects.filter_clear") },
+            fn() { @sfbase.clear_list_filters(@signals.untracked(own.ws)) },
+            size=@sf.button_h,
+          )
+          |> ignore
+        })
+      } else {
+        let key : Ref[@view.View?] = Ref(None)
+        key.val = Some(
+          @sf.icon_button_node(
+            p,
+            "filter",
+            fn() { @sf.t("web-main.filter.chats.named", args=[("named", @sf.t("web-main.filter.all"))]) },
+            fn() {
+              if key.val is Some(k) {
+                open(k)
+              }
+            },
+            size=@sf.button_h,
+          ),
+        )
+      }
+    },
+  )
 }
 
 ///|

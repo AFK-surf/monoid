@@ -937,6 +937,9 @@ priv struct PresetEditing {
   clone_busy : @signals.Signal[Bool]
   then : @signals.Signal[String]
   mut depth : Int
+  project : @signals.Signal[String?]
+  initial_project : Ref[String?]
+  created_id : @signals.Signal[String]
 }
 
 ///|
@@ -981,6 +984,9 @@ fn preset_dialog(
     clone_busy: @signals.signal(false, same=fn(a, b) { a == b }),
     then: @signals.signal(then, same=fn(a, b) { a == b }),
     depth: 1,
+    project: @signals.signal(None, same=fn(a, b) { a == b }),
+    initial_project: Ref(None),
+    created_id: @signals.signal("", same=fn(a, b) { a == b }),
   }
   let title = if id == "" { @sf.t("web-main.preset.new") } else { @sf.t("web-main.preset.edit") }
   @sf.panel_nodes(
@@ -1069,6 +1075,12 @@ fn preset_fields(
     e.station.set(text(Some(p), "station"))
     e.stations.set(items(Some(p), "stations").filter_map(fn(s) { if s is String(str) && str != "" { Some(str) } else { None } }))
     e.initial_model.set(field(Some(p), "model"))
+    let init_proj : String? = match field(Some(p), "project") {
+      Some(String(pr)) => Some(pr)
+      _ => None
+    }
+    e.initial_project.val = init_proj
+    e.project.set(init_proj)
   })
   // its name: the first folder's until one is typed
   v.reacts(
@@ -1115,18 +1127,149 @@ fn preset_fields(
   })
   v.box(fn(col) {
     @sf.style_node(col, fn() { preset_form })
+    let step1_locked = fn() { id == "" && e.created_id.get() != "" }
     @sf.field_node(col, fn() { @sf.t("web-main.preset.name") }, fn(b) {
-      let f = @sf.input_node(b, e.name, placeholder=@sf.t("web-main.preset.namePlaceholder"))
+      let f = @sf.input_node(b, e.name, placeholder=@sf.t("web-main.preset.namePlaceholder"), disabled=step1_locked)
       if id == "" {
         @sf.panel_search_at_hand_node(f)
       }
     })
-    preset_capsules_node(col, src, address, stations, e)
+    col.box(fn(cb) {
+      cb.in_use(By(fn() { !step1_locked() })) |> ignore
+      preset_capsules_node(cb, src, address, stations, e)
+    })
+    |> ignore
+    // Linear 极简单行默认项目选择器（仅 projects_on 时显示；1:1 沿用上方 preset_capsule_pill 原生胶囊样式）
+    col.show(fn() { @sfbase.workspace_projects_on(src, scope) }, fn(pbox) {
+      let writable = fn() { @sfbase.workspace_projects_writable(src, scope) }
+      @sf.field_node(
+        pbox,
+        fn() { @sf.t("web-main.projects.preset_default_project") },
+        hint=fn() {
+          if !writable() {
+            @sf.t("web-main.projects.read_only_hint")
+          } else {
+            ""
+          }
+        },
+        fn(slot) {
+          let has_proj = fn() { e.project.get() is Some(_) }
+          let label = fn() {
+            match e.project.get() {
+              None => @sf.t("web-main.projects.preset_auto")
+              Some("") => @sf.t("web-main.projects.cross_project")
+              Some(p) => p
+            }
+          }
+          slot.box(fn(bar) {
+            @sf.style_node(bar, fn() { preset_simple_capsules })
+            bar.wraps(Is(Some(8.0))) |> ignore
+            preset_capsule_pill(
+              bar,
+              fn(l) {
+                @sf.icon_node(
+                  l,
+                  "folder",
+                  15.0,
+                  By(fn() { if has_proj() { @sf.theme().p.text } else { @sf.theme().p.muted } }),
+                )
+                |> ignore
+              },
+              label,
+              has_proj,
+              fn(btn) {
+                if !@signals.untracked(writable) || e.saving.untracked() {
+                  return
+                }
+                @sf.panel_nodes(
+                  @sf.t("web-main.projects.preset_default_project"),
+                  from=Node(btn),
+                  tall=preset_steps_tall,
+                  fn(pv, pclose) {
+                    let chain = @sfbase.ProjectListChain::new(scope)
+                    chain.bind(pv, src)
+                    let snap = fn() { chain.read(src) }
+                    let keys = fn() {
+                      let out = ["auto", "cross", "sep"]
+                      for r in snap().items {
+                        out.push("p/" + r.name)
+                      }
+                      if snap().has_more {
+                        out.push("more")
+                      }
+                      out
+                    }
+                    @sf.panel_list_node(pv, keys, est=44.0, fills=true, fn(r, k) {
+                      if k == "auto" {
+                        let chosen = fn() { e.project.get() is None }
+                        @sf.action_box_node(r, fn() { @sf.t("web-main.projects.preset_auto") }, fn(_) {
+                          e.project.set(None)
+                          pclose()
+                        }, fn(row) {
+                          row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+                          @sf.words_node(row, fn() { @sf.t("web-main.projects.preset_auto") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+                          row.show(chosen, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+                        })
+                        |> ignore
+                      } else if k == "cross" {
+                        let chosen = fn() { e.project.get() == Some("") }
+                        @sf.action_box_node(r, fn() { @sf.t("web-main.projects.cross_project") }, fn(_) {
+                          e.project.set(Some(""))
+                          pclose()
+                        }, fn(row) {
+                          row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+                          @sf.words_node(row, fn() { @sf.t("web-main.projects.cross_project") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+                          row.show(chosen, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+                        })
+                        |> ignore
+                      } else if k == "sep" {
+                        r.box(fn(sep) {
+                          @sf.style_node(sep, fn() { @sf.rule_line })
+                          sep.margin(Is((proj_pad_x, proj_s1, proj_pad_x, proj_s1))) |> ignore
+                        })
+                        |> ignore
+                      } else if k == "more" {
+                        @sf.action_box_node(r, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) { chain.load_more(src) }, fn(row) {
+                          row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+                          @sf.words_node(row, fn() { @sf.t("web-pages.projects.load_more") }, fn() { proj_summary_words }) |> ignore
+                        })
+                        |> ignore
+                      } else if k.has_prefix("p/") {
+                        let pname = k.exact_view(start=2).to_owned()
+                        let chosen = fn() { e.project.get() == Some(pname) }
+                        @sf.action_box_node(r, fn() { pname }, fn(_) {
+                          e.project.set(Some(pname))
+                          pclose()
+                        }, fn(row) {
+                          row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+                          @sf.words_node(row, fn() { pname }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+                          row.show(chosen, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+                        })
+                        |> ignore
+                      }
+                    })
+                    |> ignore
+                  },
+                )
+              },
+              fn() { @sf.t("web-main.projects.preset_clear_project") },
+              fn() {
+                if @signals.untracked(writable) && !e.saving.untracked() {
+                  e.project.set(None)
+                }
+              },
+            )
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
     // (why it was not saved under it: a folder the station has not, say)
     @sf.field_node(col, fn() { @sf.t("web-main.preset.instructionsTitle") }, hint=fn() { @sf.t("web-main.preset.instructionsHint") }, error=fn() {
       e.error.get()
     }, fn(b) {
-      @sf.textarea_node(b, e.instructions, rows=4, most=10, placeholder=@sf.t("web-main.preset.instructionsPlaceholder")) |> ignore
+      @sf.textarea_node(b, e.instructions, rows=4, most=10, placeholder=@sf.t("web-main.preset.instructionsPlaceholder"), disabled=step1_locked) |> ignore
     })
     @sf.field_node(col, fn() { @sf.t("web-main.preset.dirs") }, hint=fn() {
       if e.dirs.get().length() == 0 && e.clones.get().length() == 0 {
@@ -1134,7 +1277,13 @@ fn preset_fields(
       } else {
         ""
       }
-    }, fn(b) { preset_dirs_node(b, src, address, stations, e, close) })
+    }, fn(b) {
+      b.box(fn(db) {
+        db.in_use(By(fn() { !step1_locked() })) |> ignore
+        preset_dirs_node(db, src, address, stations, e, close)
+      })
+      |> ignore
+    })
   })
   |> ignore
 }
@@ -1570,20 +1719,64 @@ fn preset_foot(
         }
         params["model"] = Json::object(pm)
       }
+      let save_project_step = fn(target_id : String) {
+        let proj = e.project.untracked()
+        let need_set = if id == "" { proj is Some(_) } else { proj != e.initial_project.val }
+        if !need_set {
+          e.saving.set(false)
+          close()
+          return
+        }
+        if !@signals.untracked(fn() { @sfbase.workspace_projects_on(src, w.id) }) {
+          e.saving.set(false)
+          e.error.set(@sf.t("web-main.projects.preset_project_unsaved", args=[("detail", @sf.t("web-main.projects.read_only_hint"))]))
+          return
+        }
+        @sfbase.preset_set_project(src, w.id, target_id, proj, on_done=fn(res) {
+          e.saving.set(false)
+          if res.ok {
+            if !res.synced {
+              @sfbase.toast_later(@sf.t("web-main.projects.preset_local_only"))
+            }
+            close()
+          } else {
+            let detail = if res.forbidden {
+              @sf.t("web-main.projects.preset_viewer_denied")
+            } else {
+              res.error
+            }
+            e.error.set(
+              if id == "" || e.created_id.untracked() != "" {
+                @sf.t("web-main.projects.preset_project_unsaved", args=[("detail", detail)])
+              } else {
+                detail
+              },
+            )
+          }
+        })
+      }
+      // If step 1 (preset.add) already succeeded earlier, retry step 2 directly without ever calling preset.put.
+      if id == "" && e.created_id.untracked() != "" {
+        save_project_step(e.created_id.untracked())
+        return
+      }
       if id != "" {
         params["id"] = Json::string(id)
       }
       (src.call)(if id == "" { "preset.add" } else { "preset.put" }, Json::object(params), fn(r) {
-        e.saving.set(false)
         match r {
           Ok(made) => {
-            // made: the one the station's new chats are opened with
+            let target_id = if id == "" { text(Some(made), "id") } else { id }
             if id == "" {
-              @sfbase.pick_new(src, w.id, { "preset": Json::string(text(Some(made), "id")), "presetStation": Json::string(address) })
+              e.created_id.set(target_id)
+              @sfbase.pick_new(src, w.id, { "preset": Json::string(target_id), "presetStation": Json::string(address) })
             }
-            close()
+            save_project_step(target_id)
           }
-          Err(err) => e.error.set(text(Some(err), "message"))
+          Err(err) => {
+            e.saving.set(false)
+            e.error.set(text(Some(err), "message"))
+          }
         }
       })
     },
@@ -1592,6 +1785,152 @@ fn preset_foot(
     disabled=fn() { !ready() },
   )
   |> ignore
+}
+
+///|
+/// Shared native Station directory picker (reused by Project Detail's `+ 添加目录 >`):
+/// lists recommended directories from all online stations in workspace `ws` + `浏览文件夹`,
+/// invoking `on_pick(station_name, path)` when a directory is chosen.
+fn open_station_dir_picker(
+  src : Source,
+  ws : String,
+  on_pick : (String, String) -> Unit,
+) -> Unit {
+  let q_field = @ui.Field::new()
+  @sf.panel_nodes(
+    @sf.t("web-main.preset.add"),
+    fn(v, close) {
+      let stations = fn() -> Array[Json] {
+        match src.topic("stations", { "scope": Json::string(ws) }).get().value {
+          Some(Array(a)) => a.filter(fn(s) { flag(Some(s), "online") })
+          _ => []
+        }
+      }
+      let address = fn() -> String {
+        match stations().get(0) {
+          Some(s) => text(Some(s), "station")
+          None => ""
+        }
+      }
+      let browse = fn() {
+        let sts = @signals.untracked(stations)
+        let addr = @signals.untracked(address)
+        close()
+        if sts.is_empty() {
+          return
+        }
+        (@sfbase.folder_pick_asked.val)(src, {
+          title: @sf.t("web-main.preset.pickFolder"),
+          note: "",
+          stations: preset_station_choices(sts),
+          station: addr,
+          at: "",
+          action: fn(name) { @sf.t("web-main.preset.choose", args=[("name", name)]) },
+          taken: fn(_, _) { false },
+          taken_words: "",
+          pick: fn(station, here, _, _) {
+            let st_name = preset_station_name(station, "", sts)
+            on_pick(st_name, here)
+            @sf.panel_back() |> ignore
+          },
+        })
+      }
+      let keys = fn() -> Array[String] {
+        let sts = stations()
+        let addr = address()
+        let q = q_field.text().trim(chars=" ").to_owned().to_lower()
+        let out : Array[String] = []
+        if !sts.is_empty() {
+          out.push("a\nbrowse")
+        }
+        let mut shown = ""
+        for o in offered_dirs(src, addr, sts) {
+          let one = Some(o)
+          let k = dir_key(one)
+          let station = dir_station(one, addr)
+          let station_name = preset_station_name(station, text(one, "stationName"), sts)
+          let (name, repo) = (text(one, "name"), text(one, "repo"))
+          if q != "" && !name.to_lower().contains(q) && !repo.to_lower().contains(q) && !text(one, "where").to_lower().contains(q) && !station_name.to_lower().contains(q) {
+            continue
+          }
+          if shown != station {
+            out.push("h\n" + station)
+            shown = station
+          }
+          out.push("o\n" + k)
+        }
+        out.push("z")
+        out
+      }
+      v.box(fn(fb) {
+        @sf.style_node(fb, fn() { preset_search_at.then(@sf.panel_field_in_node(fb)) })
+        @sf.input_node(
+          fb,
+          q_field,
+          placeholder=@sf.t("web-main.preset.search"),
+          small=true,
+          lead=fn(l) { @sf.icon_node(l, "search", preset_search_icon, By(fn() { @sf.theme().p.muted })) |> ignore },
+        )
+        |> @sf.panel_search_at_hand_node
+      })
+      |> ignore
+      @sf.panel_list_node(
+        v,
+        keys,
+        fills=true,
+        fn(r, k) {
+          if k == "z" {
+            r.box(fn(z) { @sf.style_node(z, fn() { preset_list_end }) }) |> ignore
+          } else if k == "a\nbrowse" {
+            preset_action_row(r, "folder", fn() { @sf.t("web-main.preset.browse") }, browse)
+          } else if k.has_prefix("h\n") {
+            let s = k.exact_view(start=2).to_owned()
+            let saved = @signals.untracked(fn() {
+              let sts = stations()
+              let addr = address()
+              match offered_dirs(src, addr, sts).iter().find_first(fn(o) { dir_station(Some(o), addr) == s }) {
+                Some(o) => text(Some(o), "stationName")
+                None => ""
+              }
+            })
+            @sf.panel_heading_node(r, fn() { preset_station_name(s, saved, stations()) })
+          } else {
+            let at = k.exact_view(start=2).to_owned()
+            let find = fn() {
+              let sts = stations()
+              let addr = address()
+              offered_dirs(src, addr, sts).iter().find_first(fn(o) { dir_key(Some(o)) == at })
+            }
+            guard @signals.untracked(find) is Some(was) else { return }
+            let one = fn() { Some(find().unwrap_or(was)) }
+            preset_dir_row(
+              r,
+              fn() { text(one(), "name") },
+              fn() { text(one(), "repo") },
+              fn() { text(one(), "icon") },
+              fn() { dir_note(one(), true) },
+              press=fn() {
+                let sts = @signals.untracked(stations)
+                let addr = @signals.untracked(address)
+                let picked = @signals.untracked(one)
+                let st = dir_station(picked, addr)
+                let st_name = preset_station_name(st, text(picked, "stationName"), sts)
+                let path = text(picked, "path")
+                if path != "" {
+                  on_pick(st_name, path)
+                }
+                close()
+              },
+            )
+          }
+        },
+        est=preset_row_est,
+      )
+      |> ignore
+    },
+    from=Unanchored,
+    tall=preset_steps_tall,
+  )
 }
 
 ///|

@@ -422,6 +422,10 @@ fn pane_made(
       made("appearance", fn(a, core, _here, _stint, frame, width) { @sfpages.appearance_node(a, core, on_back=core.pop, frame~, width~) })
     Setting(Experimental) =>
       made("experimental", fn(a, core, _here, _stint, frame, width) { @sfpages.experimental_node(a, core, on_back=core.pop, frame~, width~) })
+    Setting(Projects) =>
+      made("projects", fn(a, core, here, _stint, frame, width) { @sfpages.projects_page_node(a, src, core, here(), on_back=core.pop, frame~, width~) })
+    Setting(Project(name)) =>
+      made("project/" + name, fn(a, core, here, _stint, frame, width) { @sfpages.project_detail_page_node(a, src, core, here(), name, on_back=core.pop, frame~, width~) })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt)
     Setting(Stations) =>

@@ -353,6 +353,7 @@ fn wide_bar_title_row(
         wide_people(q, src, @signals.untracked(people), 5, tips, stint)
       })
     })
+    @sfpages.chat_bar_project_attrs_node(row, src, r, view, tips)
   })
   |> ignore
 }

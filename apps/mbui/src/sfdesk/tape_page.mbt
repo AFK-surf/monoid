@@ -485,6 +485,14 @@ fn tape_made(
       made("experimental", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.experimental_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Projects) =>
+      made("projects", fn(p, core, here, _stint, told, _acts) {
+        @sfpages.projects_page_node(p, src, core, here(), on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    Setting(Project(name)) =>
+      made("project/" + name, fn(p, core, here, _stint, told, _acts) {
+        @sfpages.project_detail_page_node(p, src, core, here(), name, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt), their ＋ in the bar; made in every case, as they have no
     // old view

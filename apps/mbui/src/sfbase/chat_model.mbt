@@ -484,6 +484,24 @@ pub(all) struct Message {
   notice_sides : RunSides?
   /// the chats its words link to that their lists have (archived ones too)
   chats : Array[LinkedChat]
+  /// Silent project creation proposal attached to this message (`project_manage propose`).
+  proposal : MessageProposal?
+}
+
+///|
+/// A silent project proposal embedded in a message (`MessageProposal`).
+#derive(Eq)
+pub(all) struct MessageProposal {
+  id : String
+  name : String
+  note : String
+  refs : Array[String]
+  proposer : String
+  /// "pending" | "accepted" | "reassigned" | "dismissed"
+  status : String
+  resolved_project : String?
+  resolved_by : String
+  resolved_at : Double?
 }
 
 ///|
@@ -730,6 +748,29 @@ pub fn message_of(m : Json) -> Message {
       let c = Some(c)
       { href: text(c, "href"), title: text(c, "title"), archived: flag(c, "archived"), note: text(c, "note"), thread: opt_number(c, "thread") }
     }),
+    proposal: match field(s, "proposal") {
+      Some(Object(_)) as p =>
+        Some({
+          id: text(p, "id"),
+          name: text(p, "name"),
+          note: text(p, "note"),
+          refs: items(p, "refs").filter_map(fn(r) {
+            match r {
+              String(u) => Some(u)
+              _ => None
+            }
+          }),
+          proposer: text(p, "proposer"),
+          status: text(p, "status"),
+          resolved_project: match field(p, "resolvedProject") {
+            Some(String(rp)) => Some(rp)
+            _ => None
+          },
+          resolved_by: text(p, "resolvedBy"),
+          resolved_at: opt_number(p, "resolvedAt"),
+        })
+      _ => None
+    },
   }
 }
 
@@ -901,6 +942,15 @@ pub(all) struct ChatView {
   /// the chats its agent made, the first first, and how many in words (创建了 3 个对话): its info's list of them
   opened : Array[OpenedChat]
   opened_text : String
+  /// Chat classification: Some(name) = named project, Some("") = cross-project/other, None = unclassified.
+  project : String?
+  /// Locked by a member (agent will not auto-reclassify).
+  project_locked : Bool
+  /// Up to 3 reusable short tags.
+  tags : Array[String]
+  /// Whether this chat's station advertises the `projects` feature.
+  projects : Bool
+  projects_writable : Bool
 }
 
 ///|
@@ -1087,6 +1137,21 @@ fn chat_view_of(v : Json, messages : Array[Message], was : (Json, ChatView)?) ->
     },
     opened: chat_part(v, was, "opened", fn(w) { w.opened }, fn() { opened_of(s) }),
     opened_text: text(s, "openedText"),
+    project: match field(s, "project") {
+      Some(String(p)) => Some(p)
+      _ => None
+    },
+    project_locked: flag(s, "projectLocked"),
+    tags: chat_part(v, was, "tags", fn(w) { w.tags }, fn() {
+      items(s, "tags").filter_map(fn(t) {
+        match t {
+          String(str) => Some(str)
+          _ => None
+        }
+      })
+    }),
+    projects: flag(s, "projects"),
+    projects_writable: flag(s, "projectsWritable"),
   }
 }
 

@@ -662,7 +662,7 @@ const wholeRows = (chats: J): J => firstRows(chats, Infinity);
 /// What a station's row reads of its overview (OverviewRow), of what the database keeps of it beside it
 /// (`station_part.row`: db/schema.ts overviewRowOf, those four as the overview has them): its row is made again only as
 /// these change, not with each of its profiles' quota or its decisions.
-const rowOf = (o: J): J => ({ viewer: o.viewer, counts: o.counts, ...(o.disk != null ? { disk: o.disk } : {}), ...(o.drive != null ? { drive: o.drive } : {}) });
+const rowOf = (o: J): J => ({ viewer: o.viewer, counts: o.counts, ...(o.disk != null ? { disk: o.disk } : {}), ...(o.drive != null ? { drive: o.drive } : {}), ...(Array.isArray(o.features) ? { features: o.features } : {}) });
 
 /// The id of what judges whether this core can read a station's overview, its verdicts kept by it (db/kept.ts
 /// KEPT.overviewFit): how an overview is judged (its `making`: `unreadable`, decorated, then put through `Overview`;
@@ -2151,6 +2151,8 @@ export class Views implements Owner {
     if (screens.length > 0) v.screens = screens;
     if (v.offline !== true && get(screensHeld, "browser") === true && get(screensHeld, "control") === true) v.canBrowser = true;
     if (v.offline !== true && stationFeature(overview, "terminal") && role !== "viewer") v.canTerminal = true;
+    if (stationFeature(overview, "projects")) v.projects = true;
+    if (v.offline !== true && stationFeature(overview, "projects") && role !== "viewer") v.projectsWritable = true;
     if (v.offline === true) {
       v.offlineNote = looks.offlineNote(v.link, this.stationName(station));
       if (get(v.link, "cause") === "updating") v.updating = true;
@@ -2191,7 +2193,16 @@ export class Views implements Owner {
       case "projects": {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
-        return { ok: projectsView(this.#core.data, stations, view.scope as string, typeof view.cursor === "string" ? view.cursor : undefined, (names) => this.#core.host.collate?.(names) ?? null) };
+        return {
+          ok: projectsView(
+            this.#core.data,
+            stations,
+            view.scope as string,
+            typeof view.cursor === "string" ? view.cursor : undefined,
+            (names) => this.#core.host.collate?.(names) ?? null,
+            typeof view.q === "string" ? view.q : undefined,
+          ),
+        };
       }
       case "project": {
         const stations = this.#stationsOr(view.scope as string);
@@ -2201,7 +2212,15 @@ export class Views implements Owner {
       case "tags": {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
-        return { ok: tagsView(this.#core.data, stations, typeof view.cursor === "string" ? view.cursor : undefined, (names) => this.#core.host.collate?.(names) ?? null) };
+        return {
+          ok: tagsView(
+            this.#core.data,
+            stations,
+            typeof view.cursor === "string" ? view.cursor : undefined,
+            (names) => this.#core.host.collate?.(names) ?? null,
+            typeof view.q === "string" ? view.q : undefined,
+          ),
+        };
       }
       case "chatRow":
         return this.#wholeRow(view.station as string, view.session as string);
@@ -2691,6 +2710,21 @@ export class Views implements Owner {
     // how many chats are left to bring the latest of.
     let checking = false;
     let behind = 0;
+    const ws = this.ok({ topic: "workspace", workspace: scope });
+    const wsRole = str(get(ws, "role")) ?? (() => {
+      const email = this.#core.emailOf(scope)?.toLowerCase();
+      if (!email) return null;
+      const m = arr(get(ws, "members")).find((x) => typeof get(x, "email") === "string" && x.email.toLowerCase() === email);
+      return str(get(m, "role"));
+    })();
+    const rigIds = new Set(
+      arr(get(ws, "stations"))
+        .filter((x) => get(x, "mode") === "tasks" || get(x, "mode") === "rig")
+        .map((x) => str(get(x, "id")))
+        .filter((x): x is string => x !== null),
+    );
+    let projects = false;
+    let projectsWritable = false;
     for (const s of stations) {
       const read = reads.get(s.address);
       const part = data.overviewPart(s.address);
@@ -2710,6 +2744,10 @@ export class Views implements Owner {
           if (linkState === "error") [state, message] = ["error", link.message];
           else state = "connecting";
         }
+      }
+      if (!rigIds.has(s.id) && stationFeature(part, "projects")) {
+        projects = true;
+        if (state === "online" && wsRole !== "viewer") projectsWritable = true;
       }
       if (s.online) {
         const link = this.link(s.address);
@@ -2756,7 +2794,6 @@ export class Views implements Owner {
     }
     const glyph = windowed ? looks.glyphOf(states, stations.map((s) => s.address).filter((a) => running.has(a))) : looks.glyph(states, days);
     const note = looks.listNote(states, windowed ? total > 0 : days.length > 0, loading, unread);
-    const ws = this.ok({ topic: "workspace", workspace: scope });
     const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
     // (one station still to say: how many are left is not known yet)
     const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
@@ -2791,6 +2828,8 @@ export class Views implements Owner {
           ...(syncing !== null ? { syncing } : {}),
           ...(more > 0 ? { more } : {}),
           ...(interrupted.length > 0 ? { interrupted } : {}),
+          ...(projects ? { projects: true } : {}),
+          ...(projectsWritable ? { projectsWritable: true } : {}),
         },
       },
       running: runningRows,

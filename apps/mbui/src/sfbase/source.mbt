@@ -466,6 +466,9 @@ let views_kept : Array[(String, Int)] = [
   ("pick", 12),
   ("drivePlace", 24),
   ("chatOutline", 8),
+  ("projects", 8),
+  ("project", 16),
+  ("tags", 8),
 ]
 
 ///|

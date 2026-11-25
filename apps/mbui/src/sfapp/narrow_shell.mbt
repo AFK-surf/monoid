@@ -666,6 +666,10 @@ fn narrow_made_as(
       made("appearance", fn(p, core, _here, frame, _stint, _acts) { @sfpages.appearance_node(p, core, on_back=core.pop, frame~) })
     Setting(Experimental) =>
       made("experimental", fn(p, core, _here, frame, _stint, _acts) { @sfpages.experimental_node(p, core, on_back=core.pop, frame~) })
+    Setting(Projects) =>
+      made("projects", fn(p, core, here, frame, _stint, _acts) { @sfpages.projects_page_node(p, src, core, here(), on_back=core.pop, frame~) })
+    Setting(Project(name)) =>
+      made("project/" + name, fn(p, core, here, frame, _stint, _acts) { @sfpages.project_detail_page_node(p, src, core, here(), name, on_back=core.pop, frame~) })
     Setting(LocalStation) =>
       made("local-station", fn(p, core, _here, frame, _stint, _acts) { @sfpages.local_station_node(p, core, on_back=core.pop, frame~) })
     Setting(Permissions) =>

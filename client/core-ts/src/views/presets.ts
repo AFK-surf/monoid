@@ -28,6 +28,8 @@ import type { Call } from "../core/calls.ts";
 import { type Handler, handlers } from "../core/execute.ts";
 import type { Owner } from "../core/routing.ts";
 import { CoreError } from "../error.ts";
+import { hasEligibleProjectsStation, isProjectsStationEligible, viewerRoleIn } from "./projects.ts";
+import { stationFeature } from "../features.ts";
 import { t } from "../i18n.ts";
 import * as ops from "../ops.ts";
 import {
@@ -97,10 +99,23 @@ export function whoIn(inner: Inner, ws: string): Who | null {
 }
 
 /// The stations of `ws` as its view lists them: id, name, address.
-function stationsOf(inner: Inner, ws: string): { id: string; name: string; address: string }[] {
+function stationsOf(inner: Inner, ws: string): { id: string; name: string; address: string; rig: boolean }[] {
   return arr(get(inner.data.shared({ topic: "workspace", workspace: ws }), "stations")).flatMap((s: J) =>
-    typeof get(s, "id") === "string" ? [{ id: s.id as string, name: typeof s.name === "string" ? s.name : "", address: `${ws}/${s.id}` }] : [],
+    typeof get(s, "id") === "string"
+      ? [{ id: s.id as string, name: typeof s.name === "string" ? s.name : "", address: `${ws}/${s.id}`, rig: get(s, "mode") === "tasks" || get(s, "mode") === "rig" }]
+      : [],
   );
+}
+
+/// Whether station `address` is a full (non-rig) station that advertises the `projects` feature.
+/// Returns `null` when the station is non-rig but its features list is not yet cached.
+function stationProjectsEligible(inner: Inner, ws: string, address: string): boolean | null {
+  const s = stationsOf(inner, ws).find((x) => x.address === address);
+  if (s === undefined || s.rig) return false;
+  const part = inner.data.overviewPart(address);
+  const ov = isObject(part) && Array.isArray(part.features) ? part : inner.store.get({ topic: "overview", station: address });
+  if (!isObject(ov) || !Array.isArray(ov.features)) return null;
+  return stationFeature(ov, "projects");
 }
 
 /// Whose a record is as people read it: the member's name where the workspace's members say it, else their email.
@@ -252,6 +267,7 @@ export function carryPresetProjects(inner: Inner, address: string): Effect.Effec
     if (!reached(inner, address)) return;
     const ws = ofAddress(address);
     if (whoIn(inner, ws) === null) return;
+    if (stationProjectsEligible(inner, ws, address) !== true) return;
     const id = stationId(address);
     const said = yield* Effect.result(ask(inner, address, "GET", "/preset-projects"));
     if (said._tag === "Failure") {
@@ -271,6 +287,32 @@ export function carryPresetProjects(inner: Inner, address: string): Effect.Effec
     const held = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws)));
     const bring = held === null ? {} : presetProjectsLacking(held, there);
     if (Object.keys(bring).length > 0) {
+      const wsSharedNow = inner.data.shared({ topic: "workspace", workspace: ws });
+      const whoNow = whoIn(inner, ws);
+      const roleNow = viewerRoleIn(inner, ws) ?? (whoNow === null ? null : str(get(arr(get(wsSharedNow, "members")).find((m: J) => get(m, "sub") === whoNow.sub), "role")));
+      if (roleNow === "viewer") {
+        // Demoted to viewer after GET: roll back rejected local keys without issuing PUT.
+        const nowHeld = presetProjectsHeld(inner.data.record("choice", presetProjectsKey(ws))) ?? Object.create(null);
+        const reconciled: PresetProjects = Object.create(null);
+        for (const k of Object.keys(nowHeld)) {
+          if (Object.hasOwn(nowHeld, k)) reconciled[k] = nowHeld[k]!;
+        }
+        for (const k of Object.keys(bring)) {
+          if (!Object.hasOwn(bring, k)) continue;
+          if (Object.hasOwn(reconciled, k) && canonical(reconciled[k]!) === canonical(bring[k]!)) {
+            if (Object.hasOwn(there, k)) reconciled[k] = there[k]!;
+            else delete reconciled[k];
+          }
+        }
+        if (canonical(reconciled) !== canonical(nowHeld)) {
+          inner.data.put("choice", presetProjectsKey(ws), reconciled, false);
+          inner.presets?.changed(ws);
+        }
+        return markOwed(inner, ws, id, "presetProjects", false);
+      }
+      if (!isProjectsStationEligible(inner, ws, address)) {
+        return markOwed(inner, ws, id, "presetProjects", true);
+      }
       const put = yield* Effect.result(ask(inner, address, "PUT", "/preset-projects", { presetProjects: bring }));
       if (put._tag === "Failure") {
         if (put.failure.status === 403) {
@@ -321,13 +363,16 @@ function keepPresetProjects(inner: Inner, ws: string, given: PresetProjects): bo
 
 /// Everything of the person's carried to every station of `ws` reached now (a change made here).
 export function carryAll(inner: Inner, ws: string, what: "presets" | "stars" | "presetProjects", besides: string | null = null): void {
+  if (what === "presetProjects" && viewerRoleIn(inner, ws) === "viewer") return;
   for (const s of stationsOf(inner, ws)) {
     if (s.address === besides) continue;
+    if (what === "presetProjects" && (s.rig || stationProjectsEligible(inner, ws, s.address) === false)) continue;
     // (one not reached is owed it: brought as its link opens or its stream comes back)
     if (!reached(inner, s.address)) {
       if (!heldOf(inner.data, ws).before.includes(s.id)) markOwed(inner, ws, s.id, what, true);
       continue;
     }
+    if (what === "presetProjects" && !isProjectsStationEligible(inner, ws, s.address)) continue;
     const work = what === "presets" ? carry(inner, s.address) : what === "stars" ? carryStars(inner, s.address) : carryPresetProjects(inner, s.address);
     inner.scheduler.enqueue(s.address, `${what}/${s.address}`, Priority.background, Effect.ignore(work));
   }
@@ -673,9 +718,12 @@ function run(inner: Inner, views: PresetViews, c: Of, progress: Parameters<Handl
       }
       case "setProject": {
         const wsShared = inner.data.shared({ topic: "workspace", workspace: ws });
-        const viewerRole = get(wsShared, "role") ?? arr(get(wsShared, "members")).find((m: J) => get(m, "sub") === who.sub)?.role;
+        const viewerRole = viewerRoleIn(inner, ws) ?? arr(get(wsShared, "members")).find((m: J) => get(m, "sub") === who.sub)?.role;
         if (viewerRole === "viewer") {
           return yield* Effect.fail(new CoreError("http_403", t("core-misc.presets.readOnly"), 403));
+        }
+        if (!hasEligibleProjectsStation(inner, ws)) {
+          return yield* Effect.fail(new CoreError("offline", t("core-misc.projects.noStation")));
         }
         const roleKnown = typeof viewerRole === "string" && viewerRole !== "";
         const presetIdVal = typeof p.presetId === "string" ? p.presetId : "";
@@ -717,7 +765,7 @@ export function install(inner: Inner): PresetViews {
         if (inner.store.inUse({ topic: "otherPresets", scope: ws })) views.readOthers(ws);
       }
       if (name === "stars" && get(data, "workspace") === ws) inner.scheduler.enqueue(address, `stars/${address}`, Priority.background, Effect.ignore(carryStars(inner, address)));
-      if (name === "presetProjects" && get(data, "workspace") === ws) {
+      if (name === "presetProjects" && get(data, "workspace") === ws && stationProjectsEligible(inner, ws, address) === true) {
         inner.scheduler.enqueue(address, `presetProjects/${address}`, Priority.background, Effect.ignore(carryPresetProjects(inner, address)));
       }
     },
@@ -732,7 +780,9 @@ export function install(inner: Inner): PresetViews {
             owed.presets ? Effect.ignore(carry(inner, address)) : Effect.void,
             owed.stars ? Effect.ignore(carryStars(inner, address)) : Effect.void,
           ),
-          owed.presetProjects ? Effect.ignore(carryPresetProjects(inner, address)) : Effect.void,
+          owed.presetProjects && stationProjectsEligible(inner, ofAddress(address), address) === true
+            ? Effect.ignore(carryPresetProjects(inner, address))
+            : Effect.void,
         );
       }),
   });

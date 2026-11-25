@@ -512,7 +512,8 @@ fn chat_body_shape(here : MessageNodeHere, r : ChatBodyRow, piece : @sf.MdPiece?
   } else if m.author_kind == "person" {
     2
   } else {
-    guard m.card is None && m.options is None && !m.asked else { return None }
+    let projects_on = @signals.untracked(here.view).projects
+    guard m.card is None && m.options is None && !m.asked && !(projects_on && m.proposal is Some(_)) else { return None }
     match chat_body_piece_make(piece) {
       4 => return None
       p => 3 + p

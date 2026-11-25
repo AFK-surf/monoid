@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"project","scope":"ws","name":"monoid"}
   let messages =
-    #|[[{"path":["note"],"set":"still.fail client core, station and classification"}]]
+    #|[[{"path":["infoRevision"],"set":"24f1e700b0da04f8"},{"path":["note"],"set":"still.fail client core, station and classification"}]]
   put_changes(asked, "projectInfo", messages)
 }

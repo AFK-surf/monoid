@@ -25,6 +25,7 @@ export const PROJECT_SHAPES: Record<string, Shape> = {
     ["runningCount", "i64", { client: "I54" }],
     ["latestActiveAt", "i64", { client: "I54" }],
     ["hasInfo", "bool"],
+    ["infoRevision", opt("String"), { doc: "Deterministic 16-char content fingerprint of normalized note + ordered refs shared across all pages of a snapshot." }],
     ["nextCursor", opt("String"), { doc: "Opaque pagination cursor for the next page of `refs`; absent on the last page." }],
   ], { doc: "Byte-budgeted (<= 32 KB) detail view for a single project (`project` topic), loaded on demand for settings and preset editors." }),
   TagSummary: struct([

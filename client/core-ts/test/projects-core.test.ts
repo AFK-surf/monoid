@@ -839,6 +839,8 @@ test("R3 Core-TS regressions: host.collate private receiver, 4KiB note delta & 2
         { id: "s2", name: "S2", online: true, mode: "full" },
       ],
     });
+    t2.set(overview("ws/s1"), { connects: [], profiles: [], features: ["projects"] });
+    t2.set(overview("ws/s2"), { connects: [], profiles: [], features: ["projects"] });
     // Seed offline persisted cache on disk before cold-start (legacy key only)
     t2.data.put("choice", projectsInfoKey("ws"), { offlineProj: { note: "Offline Note", updatedAt: 50 } }, false);
 
@@ -1104,6 +1106,8 @@ test("R4 Core-TS regressions: deterministic hash cursor + staleCursor, <=4KiB no
         { id: "sB", name: "B", online: true },
       ],
     });
+    t2.set(overview("ws/sA"), { connects: [], profiles: [], features: ["projects"] });
+    t2.set(overview("ws/sB"), { connects: [], profiles: [], features: ["projects"] });
     t2.data.put("choice", projectsInfoKey("ws"), { gone: { note: "Old", updatedAt: 10 } }, false);
     let resolvePut403: ((v: unknown) => void) | null = null;
     const triggerPut403 = () => {
@@ -1292,6 +1296,367 @@ test("R5 Core-TS regressions: 80-CJK name + 512x\\u0001 ref zero-truncation <= 4
     await Effect.runPromise(hook.resumed("ws-up/sOld"));
     assert.equal(oldFetches, 2, "upgraded station with features: ['projects'] must clear st.before and fetch /projects/info");
     assert.equal((t2.data.record("choice", projectsInfoKey("ws-up")) as any)?.upProj?.note, "Upgraded");
+  } finally {
+    t2.store.runner.shutdown();
+  }
+});
+
+test("PR 3 Step 0: projects/projectsWritable gating, zero full overview reads, no stable fallback, listGroups prefs, and infoRevision", async () => {
+  // 1. Cold-open chats & chat read ONLY lightweight overviewPart (zero full overview reads) + projects/projectsWritable matrix
+  const t = setup();
+  t.router.all = true;
+  try {
+    t.set({ topic: "workspace", workspace: "ws-mix" }, {
+      id: "ws-mix",
+      name: "Mix",
+      stations: [
+        { id: "stable", name: "Stable", online: true, mode: "full" },
+        { id: "beta", name: "Beta", online: false, mode: "full" },
+      ],
+    });
+    t.set({ topic: "link", station: "ws-mix/stable" }, { state: "online" });
+    t.set({ topic: "link", station: "ws-mix/beta" }, { state: "offline" });
+    t.set(overview("ws-mix/stable"), { connects: [], profiles: [], features: [] });
+    t.set(overview("ws-mix/beta"), { connects: [], profiles: [], features: ["projects"] });
+    t.set({ topic: "chatRows", station: "ws-mix/beta" }, [
+      { id: "c1", session: "c1", thread: 1, title: "T", lastActiveAt: 1000, mine: true, unread: false, agents: [] },
+    ]);
+
+    // Spy on full overview reads
+    let fullOverviewReads = 0;
+    const origRecord = t.data.record.bind(t.data);
+    (t.data as any).record = (kind: string, key: string) => {
+      if (kind === "overview") fullOverviewReads++;
+      return origRecord(kind as any, key);
+    };
+
+    const uMix = ui();
+    t.subscribe(9901, { topic: "chats", scope: "ws-mix", mine: false });
+    await t.read(uMix, 9901);
+    t.set({ topic: "link", station: "ws-mix/stable" }, { state: "online" });
+    t.set({ topic: "link", station: "ws-mix/beta" }, { state: "offline", last: "offline" });
+    await t.read(uMix, 9901);
+    assert.equal(uMix.value.projects, true, "offline beta full station still exposes projects=true");
+    assert.equal(!!uMix.value.projectsWritable, false, "online stable + offline beta => projectsWritable=false");
+    assert.equal(fullOverviewReads, 0, "chats cold-open must NOT read full overview");
+
+    // Only beta rig => projects=false
+    t.set({ topic: "workspace", workspace: "ws-rig" }, {
+      id: "ws-rig",
+      name: "RigOnly",
+      stations: [{ id: "rig1", name: "Rig", online: true, mode: "tasks" }],
+    });
+    t.set({ topic: "link", station: "ws-rig/rig1" }, { state: "online" });
+    t.set(overview("ws-rig/rig1"), { connects: [], profiles: [], features: ["projects"] });
+    const uRig = ui();
+    t.subscribe(9902, { topic: "chats", scope: "ws-rig", mine: false });
+    await t.read(uRig, 9902);
+    assert.equal(!!uRig.value.projects, false, "only beta rig => projects=false");
+    assert.equal(!!uRig.value.projectsWritable, false, "only beta rig => projectsWritable=false");
+
+    // Viewer role on online beta => projects=true, projectsWritable=false
+    t.set({ topic: "workspace", workspace: "ws-view" }, {
+      id: "ws-view",
+      name: "Viewer",
+      role: "viewer",
+      stations: [{ id: "beta", name: "Beta", online: true, mode: "full" }],
+    });
+    t.set({ topic: "link", station: "ws-view/beta" }, { state: "online" });
+    t.set(overview("ws-view/beta"), { connects: [], profiles: [], features: ["projects"] });
+    t.set({ topic: "chatRows", station: "ws-view/beta" }, []);
+    const uView = ui();
+    t.subscribe(9903, { topic: "chats", scope: "ws-view", mine: false });
+    await t.read(uView, 9903);
+    assert.equal(uView.value.projects, true);
+    assert.equal(!!uView.value.projectsWritable, false, "viewer must have projectsWritable=false");
+
+    // Member on online beta => projects=true, projectsWritable=true
+    t.set({ topic: "workspace", workspace: "ws-ok" }, {
+      id: "ws-ok",
+      name: "Member",
+      role: "member",
+      stations: [{ id: "beta", name: "Beta", online: true, mode: "full" }],
+    });
+    t.set({ topic: "link", station: "ws-ok/beta" }, { state: "online" });
+    t.set(overview("ws-ok/beta"), { connects: [], profiles: [], features: ["projects"] });
+    t.set({ topic: "chatRows", station: "ws-ok/beta" }, []);
+    t.set(overview("ws-ok/beta"), { connects: [], profiles: [], features: ["projects"] });
+    const uOk = ui();
+    t.subscribe(9904, { topic: "chats", scope: "ws-ok", mine: false });
+    await t.read(uOk, 9904);
+    assert.equal(uOk.value.projects, true);
+    assert.equal(uOk.value.projectsWritable, true);
+    assert.equal(fullOverviewReads, 0, "all chats views must read only lightweight overviewPart");
+  } finally {
+    t.store.runner.shutdown();
+  }
+
+  // 2. Beta offline + stable online: updateInfo must NOT hit stable; both online: presetProjects must NOT hit stable
+  const t2 = setup();
+  try {
+    t2.set(workspace(), {
+      id: "ws",
+      name: "Gate",
+      stations: [
+        { id: "stable", name: "Stable", online: true, mode: "full" },
+        { id: "beta", name: "Beta", online: false, mode: "full" },
+      ],
+    });
+    t2.set(overview("ws/stable"), { connects: [], profiles: [], features: [] });
+    t2.set(overview("ws/beta"), { connects: [], profiles: [], features: ["projects"] });
+
+    const calls: string[] = [];
+    const inner = {
+      provider: { kind: "stillfail" },
+      data: t2.data,
+      views: t2.views,
+      store: t2.store,
+      host: t2.host,
+      router: { owners: [] },
+      workspaces: { owner: () => "u1" },
+      accounts: { list: () => [{ sub: "u1", email: "u1@x.com" }] },
+      scheduler: { enqueue: () => {} },
+      presets: { changed: () => {} },
+      stations: {
+        also: [] as any[],
+        link: (a: string) => ({ addr: { toString: () => a } }),
+        reachable: (a: string) => a === "ws/stable",
+        requests: {
+          call: (addr: { toString(): string }, method: string, path: string) => {
+            calls.push(`${addr.toString()} ${method} ${path}`);
+            if (method === "GET" && path === "/preset-projects") return Effect.succeed({ presetProjects: {} });
+            if (method === "PUT" && path === "/preset-projects") return Effect.succeed({ presetProjects: {} });
+            return Effect.fail(new CoreError("http_404", "not found", 404));
+          },
+        },
+      },
+    } as any;
+
+    const putOffline = await Effect.runPromise(
+      Effect.result(handlers.projects!(inner, { kind: "projects", name: "updateInfo", scope: "ws", params: { scope: "ws", name: "p", note: "x" } } as any, (() => {}) as any, ["c", 1] as any, null as any)),
+    );
+    assert.equal(putOffline._tag, "Failure", "offline beta must fail updateInfo instead of falling back to stable");
+    assert.equal(calls.filter((c) => c.startsWith("ws/stable")).length, 0, "stable station must receive 0 calls");
+
+    // Both online: carryPresetProjects on stable must do 0 calls; on beta hits only beta
+    t2.set(workspace(), {
+      id: "ws",
+      name: "Gate",
+      stations: [
+        { id: "stable", name: "Stable", online: true, mode: "full" },
+        { id: "beta", name: "Beta", online: true, mode: "full" },
+      ],
+    });
+    inner.stations.reachable = () => true;
+    t2.data.put("choice", presetProjectsKey("ws"), { p1: { project: "alpha", rev: 1, at: 100 } }, false);
+    await Effect.runPromise(carryPresetProjects(inner, "ws/stable"));
+    assert.equal(calls.filter((c) => c.startsWith("ws/stable")).length, 0, "carryPresetProjects must never call stable station");
+    await Effect.runPromise(carryPresetProjects(inner, "ws/beta"));
+    assert.ok(calls.some((c) => c === "ws/beta PUT /preset-projects"), "beta station receives PUT /preset-projects");
+    assert.equal(calls.filter((c) => c.startsWith("ws/stable")).length, 0, "stable still has 0 calls");
+  } finally {
+    t2.store.runner.shutdown();
+  }
+
+  // 3. prefs.listGroups: persistence, dual-workspace isolation, invalid value rejected keeping old value
+  const t3 = setup();
+  try {
+    const prefs = await import("../src/prefs.ts");
+    const readPrefs = () => (t3.data.record("prefs", "device") as J) ?? {};
+    prefs.set(t3.data, { listGroups: { wsA: "project" } }, false, 1000);
+    assert.equal(readPrefs().listGroups?.wsA, "project");
+    assert.equal(readPrefs().listGroups?.wsB, undefined);
+
+    // Invalid value rejected, old value kept
+    assert.throws(() => prefs.set(t3.data, { listGroups: { wsA: "invalid" } }, false, 1001));
+    assert.equal(readPrefs().listGroups?.wsA, "project", "invalid listGroups must preserve previous value");
+
+    // Persistence in store (read back via shown)
+    const shownPrefs = prefs.shown(readPrefs()) as J;
+    assert.equal(shownPrefs.listGroups?.wsA, "project", "listGroups persists and is exposed by shown()");
+    assert.equal(shownPrefs.listGroups?.wsB, undefined, "dual-workspace isolation preserved");
+
+    // Clear with null
+    prefs.set(t3.data, { listGroups: { wsA: null } }, false, 1002);
+    assert.equal(readPrefs().listGroups?.wsA, undefined, "null clears listGroups entry");
+  } finally {
+    t3.store.runner.shutdown();
+  }
+
+  // 4. ProjectDetailView.infoRevision: same updatedAt/len/cursor, different content => different infoRevision;
+  //    80-CJK name + 512x\u0001 ref exact equality + full frame & delta <= 4096 B
+  const t4 = setup();
+  t4.router.all = true;
+  try {
+    t4.set(workspace(), { id: "ws", name: "Rev", stations: [{ id: "s1", name: "S1", online: true }] });
+    const name80 = "项".repeat(80);
+    const refA = "\u0001".repeat(511) + "a";
+    const refB = "\u0001".repeat(511) + "b";
+    t4.set({ topic: "chatRows", station: "ws/s1" }, [
+      { id: "c1", session: "c1", thread: 1, title: "R", lastActiveAt: 1000, mine: true, unread: false, project: name80, agents: [] },
+    ]);
+    t4.data.put("choice", projectsInfoKey("ws"), { [name80]: { refs: [refA], updatedAt: 500 } }, false);
+    const u = ui();
+    t4.subscribe(9910, { topic: "project", scope: "ws", name: name80 });
+    await t4.read(u, 9910);
+    const snapA = structuredClone(u.value);
+    assert.equal(snapA.refs[0], refA);
+    assert.ok(typeof snapA.infoRevision === "string" && snapA.infoRevision.length > 0);
+    const fullBytes = new TextEncoder().encode(JSON.stringify({ id: 9910, value: snapA })).length;
+    assert.ok(fullBytes <= 4096, `full frame with infoRevision exceeded 4096 B: ${fullBytes} B`);
+
+    // Same updatedAt=500, same length, same cursor, different content (refA -> refB)
+    t4.data.put("choice", projectsInfoKey("ws"), { [name80]: { refs: [refB], updatedAt: 500 } }, false);
+    await t4.read(u, 9910);
+    assert.equal(u.value.refs[0], refB);
+    assert.notEqual(u.value.infoRevision, snapA.infoRevision, "same updatedAt/len with different content must produce different infoRevision");
+    const deltaBytes = new TextEncoder().encode(JSON.stringify({ id: 9910, delta: jsonDiff(snapA, u.value) })).length;
+    assert.ok(deltaBytes <= 4096, `delta with infoRevision exceeded 4096 B: ${deltaBytes} B`);
+  } finally {
+    t4.store.runner.shutdown();
+  }
+});
+
+test("R1 Core-TS regressions: protocol q search finds page-2+ projects/tags, unified eligibility on offline/unknown/demotion/rig-switch", async () => {
+  // 1. Protocol-level `q` search finds page-2+ project & tag across 1000 items
+  const t = setup();
+  t.router.all = true;
+  try {
+    t.set(workspace(), { id: "ws", name: "QSearch", stations: [{ id: "s1", name: "S1", online: true }] });
+    const rows: J[] = [];
+    for (let i = 0; i < 1000; i++) {
+      rows.push({
+        id: `q-${i}`,
+        session: `q-${i}`,
+        thread: i + 1,
+        title: `Q ${i}`,
+        lastActiveAt: 100_000 - i,
+        mine: true,
+        unread: false,
+        project: i === 995 ? "needle-page2-project" : `proj-q-${String(i).padStart(4, "0")}`,
+        tags: [i === 995 ? "needle-page2-tag" : `tag-q-long-${String(i).padStart(4, "0")}-${"x".repeat(24)}`],
+        agents: [],
+      });
+    }
+    t.set({ topic: "chatRows", station: "ws/s1" }, rows);
+    // Page 1 unfiltered does not contain needle-page2-*
+    const uP1 = ui();
+    t.subscribe(9920, { topic: "projects", scope: "ws" });
+    await t.read(uP1, 9920);
+    assert.ok(uP1.value.nextCursor, "projects must paginate");
+    assert.equal((uP1.value.items as J[]).some((x: J) => x.name === "needle-page2-project"), false);
+    // Protocol `q` finds page-2+ project directly
+    const uPQ = ui();
+    t.subscribe(9921, { topic: "projects", scope: "ws", q: "NEEDLE-PAGE2" });
+    await t.read(uPQ, 9921);
+    assert.deepEqual((uPQ.value.items as J[]).map((x: J) => x.name), ["needle-page2-project"]);
+    assert.equal(uPQ.value.total, 1);
+    // Protocol `q` finds page-2+ tag directly
+    const uTQ = ui();
+    t.subscribe(9922, { topic: "tags", scope: "ws", q: "needle-page2-tag" });
+    await t.read(uTQ, 9922);
+    assert.deepEqual((uTQ.value.items as J[]).map((x: J) => x.name), ["needle-page2-tag"]);
+    assert.equal(uTQ.value.total, 1);
+  } finally {
+    t.store.runner.shutdown();
+  }
+
+  // 2. Unified eligibility: offline beta, explicit unknown station, demoted viewer after GET, station turning rig before retry
+  const t2 = setup();
+  try {
+    let wsRole = "member";
+    let s1Reachable = true;
+    let s2Mode = "full";
+    let s1HasFeatures = true;
+    const called: string[] = [];
+    t2.data.put("choice", presetProjectsKey("ws"), { p1: { project: "localA", rev: 2, at: 200 } }, false);
+    const fakeInner = {
+      provider: { kind: "stillfail" },
+      data: {
+        ...t2.data,
+        record: (table: string, key: string) => t2.data.record(table, key),
+        put: (table: string, key: string, v: unknown, notify?: boolean) => t2.data.put(table, key, v, notify),
+        shared: (tp: { topic: string; workspace?: string }) =>
+          tp.topic === "workspace" && tp.workspace === "ws"
+            ? {
+                id: "ws",
+                role: wsRole,
+                stations: [
+                  { id: "s1", name: "S1", mode: "full" },
+                  { id: "s2", name: "S2", mode: s2Mode },
+                ],
+                members: [{ sub: "u1", email: "u1@x.com", role: wsRole }],
+              }
+            : undefined,
+        overviewPart: (addr: string) =>
+          addr === "ws/s1" ? (s1HasFeatures ? { features: ["projects"] } : {}) : { features: ["projects"] },
+      },
+      views: t2.views,
+      store: { get: () => undefined, inUse: () => false },
+      host: t2.host,
+      router: { owners: [] },
+      workspaces: { owner: () => "u1" },
+      accounts: { list: () => [{ sub: "u1", email: "u1@x.com" }] },
+      scheduler: { enqueue: () => {} },
+      presets: { changed: () => {} },
+      stations: {
+        also: [] as any[],
+        link: (a: string) => ({ addr: { toString: () => a } }),
+        reachable: (a: string) => (a === "ws/s1" ? s1Reachable : true),
+        requests: {
+          call: (addr: { toString(): string }, method: string, path: string) => {
+            const a = addr.toString();
+            called.push(`${method} ${a} ${path}`);
+            if (method === "GET" && path === "/preset-projects") {
+              // Demote to viewer between GET and PUT
+              wsRole = "viewer";
+              return Effect.succeed({ presetProjects: { p1: { project: "serverOld", rev: 1, at: 100 } } });
+            }
+            if (method === "PUT" && path === "/projects/info" && a === "ws/s1") {
+              // Turn s2 into rig before retry!
+              s2Mode = "rig";
+              return Effect.fail(new CoreError("http_404", "no route", 404));
+            }
+            return Effect.succeed({ ok: true });
+          },
+        },
+      },
+    } as any;
+
+    installProjects(fakeInner);
+    installPresets(fakeInner);
+
+    // (a) Explicit station with unknown capabilities must fail
+    s1HasFeatures = false;
+    const unknownRes = await Effect.runPromise(
+      Effect.result(handlers.projects!(fakeInner, { kind: "projects", name: "updateInfo", scope: "ws", params: { scope: "ws", station: "ws/s1", name: "monoid", note: "hi" } } as any, (() => {}) as any, ["c", 1] as any, null as any)),
+    );
+    assert.equal(unknownRes._tag, "Failure", "explicit station with unknown features must be rejected");
+    s1HasFeatures = true;
+
+    // (b) Retry loop re-checks eligibility: s1 404s and s2 turned rig -> s2 must NOT be called
+    called.length = 0;
+    const retryRes = await Effect.runPromise(
+      Effect.result(handlers.projects!(fakeInner, { kind: "projects", name: "updateInfo", scope: "ws", params: { scope: "ws", name: "monoid", note: "hi" } } as any, (() => {}) as any, ["c", 2] as any, null as any)),
+    );
+    assert.equal(retryRes._tag, "Failure");
+    assert.equal(called.some((c) => c.includes("ws/s2")), false, "s2 turned rig before retry must not be called");
+
+    // (c) carryPresetProjects: demoted to viewer after GET -> must NOT send PUT and must roll back local key
+    s2Mode = "full";
+    called.length = 0;
+    await Effect.runPromise(carryPresetProjects(fakeInner, "ws/s1"));
+    assert.equal(called.some((c) => c.startsWith("PUT ")), false, "demoted viewer must not send PUT /preset-projects");
+    assert.equal((t2.data.record("choice", presetProjectsKey("ws")) as any)?.p1?.project, "serverOld", "demoted viewer local key rolled back");
+
+    // (d) preset.setProject fails when only eligible beta station goes offline
+    wsRole = "member";
+    s1Reachable = false;
+    s2Mode = "rig";
+    const setOffRes = await Effect.runPromise(
+      Effect.result(handlers.presets!(fakeInner, { kind: "presets", name: "setProject", scope: "ws", params: { scope: "ws", presetId: "p1", project: "monoid" } } as any, (() => {}) as any, ["c", 3] as any, null as any)),
+    );
+    assert.equal(setOffRes._tag, "Failure", "setProject must fail when no eligible online full station exists");
   } finally {
     t2.store.runner.shutdown();
   }

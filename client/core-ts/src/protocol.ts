@@ -119,9 +119,9 @@ export const TOPICS: Record<string, Spec> = {
     tag: ["string", "skip"],
     groupBy: ["string", "skip"],
   },
-  projects: { scope: S, cursor: ["string", "skip"] },
+  projects: { scope: S, cursor: ["string", "skip"], q: ["string", "skip"] },
   project: { scope: S, name: S, cursor: ["string", "skip"] },
-  tags: { scope: S, cursor: ["string", "skip"] },
+  tags: { scope: S, cursor: ["string", "skip"], q: ["string", "skip"] },
   // One chat's row whole (ChatItem), as the list made it before its rows were what they draw (ListedChat): what a row
   // offers only as it is pressed, held, swiped or pointed at (its menu, its swipe's question, its time), asked as that
   // begins and held while it is open (apps/mbui sfbase rows.mbt `whole_row`). Null where the station lists no such chat.

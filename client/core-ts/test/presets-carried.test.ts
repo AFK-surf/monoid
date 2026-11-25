@@ -172,6 +172,7 @@ function device(who: { sub: string; email: string; name: string }, stations: Rig
       put: (table: string, key: string, value: unknown) => void records.set(`${table}:${key}`, value),
       shared: (topic: { workspace?: string }) =>
         topic.workspace === WS ? { name: "W", stations: stations.map((s) => ({ id: s.id, name: s.id.toUpperCase() })), members: [ME, YOU].map((m) => ({ ...m, role: "member" })) } : undefined,
+      overviewPart: (address: string) => ({ features: address.endsWith("/old") ? [] : ["projects"] }),
     },
     stations: {
       also: [] as { read: (a: string) => Effect.Effect<void, CoreError>; event: (a: string, n: string, d: unknown) => void }[],

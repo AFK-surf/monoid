@@ -129,6 +129,12 @@ pub(all) struct ChatItem {
   opener_led : Bool
   /// ended, nothing left in it, read, and started by the viewer: 待收口's 归档已读 puts it away (the core's archiveRead)
   archive_read : Bool
+  /// Chat classification: Some(name) = named project, Some("") = cross-project/other, None = unclassified.
+  project : String?
+  /// Locked by a member (agent will not auto-reclassify).
+  project_locked : Bool
+  /// Up to 3 reusable short tags.
+  tags : Array[String]
 }
 
 ///|
@@ -263,10 +269,21 @@ pub fn openers_of(v : Json?) -> Array[Opener] {
 }
 
 ///|
-/// A day of the list with its heading (今天, 昨天, 已固定…).
+/// A day or project group of the list with its heading (今天, 昨天, 已固定, or a project group).
 #derive(Eq)
 pub(all) struct ChatDay {
+  /// Stable key: in time mode equals `label`; in project group mode equals `group.key`.
+  key : String
   label : String
+  /// "" in time mode; "pinned" | "project" | "unclassified" | "cross" in project group mode.
+  group_kind : String
+  /// Project name for group_kind == "project", Some("") for "cross", None otherwise.
+  group_project : String?
+  /// Full count across all chats in this group (even beyond the current list window).
+  chat_count : Int
+  running_count : Int
+  asking_count : Int
+  unread_count : Int
   items : Array[ChatItem]
 }
 
@@ -310,6 +327,12 @@ pub(all) struct ChatsView {
   syncing : String?
   /// stations with turns cut off by a non-update restart awaiting manual resume or dismissal
   interrupted : Array[InterruptedStation]
+  /// Workspace has at least one non-rig station advertising the `projects` feature.
+  projects : Bool
+  /// Workspace has at least one online non-rig non-viewer station advertising `projects`.
+  projects_writable : Bool
+  /// True when this view came from `groups` (groupBy="project") rather than `days`.
+  grouped : Bool
 }
 
 ///|
@@ -417,6 +440,17 @@ pub fn chat_item(v : Json) -> ChatItem {
     subchats: text(s, "subchats"),
     opener_led: flag(field(s, "opener"), "led"),
     archive_read: flag(s, "archiveRead"),
+    project: match field(s, "project") {
+      Some(String(p)) => Some(p)
+      _ => None
+    },
+    project_locked: flag(s, "projectLocked"),
+    tags: items(s, "tags").filter_map(fn(t) {
+      match t {
+        String(s) => Some(s)
+        _ => None
+      }
+    }),
   }
 }
 
@@ -488,11 +522,54 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
       })
     _ => None
   }
+  let grouped = field(s, "groups") is Some(Array(_))
+  let days = if grouped {
+    items(s, "groups").map(fn(g) {
+      let gs = Some(g)
+      let row_items = items(gs, "items").map(item)
+      let label = text(gs, "label")
+      let key = match text(gs, "key") {
+        "" => label
+        k => k
+      }
+      {
+        key,
+        label,
+        group_kind: text(gs, "kind"),
+        group_project: match field(gs, "project") {
+          Some(String(p)) => Some(p)
+          _ => None
+        },
+        chat_count: match field(gs, "chatCount") {
+          Some(Number(n, ..)) => n.to_int()
+          _ => row_items.length()
+        },
+        running_count: number(gs, "runningCount").to_int(),
+        asking_count: number(gs, "askingCount").to_int(),
+        unread_count: number(gs, "unreadCount").to_int(),
+        items: row_items,
+      }
+    })
+  } else {
+    items(s, "days").map(fn(d) {
+      let label = text(Some(d), "label")
+      let row_items = items(Some(d), "items").map(item)
+      {
+        key: label,
+        label,
+        group_kind: "",
+        group_project: None,
+        chat_count: row_items.length(),
+        running_count: 0,
+        asking_count: 0,
+        unread_count: 0,
+        items: row_items,
+      }
+    })
+  }
   {
     stations: items(s, "stations").length(),
-    days: items(s, "days").map(fn(d) {
-      { label: text(Some(d), "label"), items: items(Some(d), "items").map(item) }
-    }),
+    days,
     leading: match text(s, "leading") {
       "" => "agents"
       l => l
@@ -520,6 +597,9 @@ fn chats_view_by(v : Json, item : (Json) -> ChatItem) -> ChatsView {
       })
       Some({ station, station_name: text(v, "stationName"), count, chats })
     }),
+    projects: flag(s, "projects"),
+    projects_writable: flag(s, "projectsWritable"),
+    grouped,
   }
 }
 

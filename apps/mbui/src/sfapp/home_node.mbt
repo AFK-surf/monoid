@@ -249,7 +249,7 @@ fn home_top_bar_node(
             fn() {
               guard @signals.untracked(workspace) is Some(w) else { return }
               let board = @sfbase.board_on_now(src)
-              @sfpages.filter_menu(Node(f), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board, along=Start)
+              @sfpages.filter_menu(Node(f), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board, along=Start, src=Some(src), ws=w.id)
               opener.mark()
             },
             icon_size=20.0,

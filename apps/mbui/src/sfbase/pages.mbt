@@ -1171,6 +1171,8 @@ fn setting_kind(r : @settings.Route) -> String {
     Me => "Me"
     Appearance => "Appearance"
     Experimental => "Experimental"
+    Projects => "Projects"
+    Project(_) => "Project"
     Fonts => "Fonts"
     Workspace => "Workspace"
     Security => "Security"
@@ -1645,6 +1647,7 @@ pub fn reset() -> Unit {
   kept_reset()
   // how many rows each chats' list was told to grow to, the window's height they are worked out of (rows.mbt)
   chat_windows_reset()
+  projects_reset()
   open_titled.val = ""
   shown_days.clear()
   held_from.clear()

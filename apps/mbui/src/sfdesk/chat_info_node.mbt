@@ -21,6 +21,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, view : () -> ChatVi
   // changes: a word come into a message runs none of what shows them)
   let facts = @signals.computed(fn(_) { info_facts_said(chat(), view()) })
   v.show(fn() { facts.get().known }, fn(f) { info_facts_node(f, src, fn() { facts.get() }, tips, stint, done) })
+  @sfpages.chat_info_projects_section_node(v, src, r, view, in_sheet=false)
   let agents = fn() { items(chat(), "agents") }
   v.show(fn() { agents().length() > 0 }, fn(a) { info_agents_node(a, agents) })
   let opened = @signals.computed(fn(_) {

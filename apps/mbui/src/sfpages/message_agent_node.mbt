@@ -105,6 +105,7 @@ fn agent_said_node(
           |> ignore
           if last {
             agent_asks_node(col, src, here, m, core, sought=ask_sought)
+            agent_proposal_node(col, src, here, m)
           }
         })
         |> ignore
@@ -209,8 +210,10 @@ fn agent_said_node(
         // (what it asks under it: its last piece's; of one arrived live, while it is that)
         if live_said {
           agent_asks_node(b, src, here, m, core, sought=ask_sought, only_while=last_now)
+          agent_proposal_node(b, src, here, m, only_while=last_now)
         } else if last {
           agent_asks_node(b, src, here, m, core, sought=ask_sought)
+          agent_proposal_node(b, src, here, m)
         }
       },
       share~,

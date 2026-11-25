@@ -163,7 +163,7 @@ pub fn neighbour(src : Source, w : Workspace, way : Int) -> Unit {
     return
   }
   let rows : Array[ChatItem] = []
-  let key = "chats/" + w.id + "/" + filter_of(src, w.id)
+  let key = @sfbase.pane_scroll_key(src, w.id, filter_of(src, w.id))
   for d in shown_days.get(key).unwrap_or([]) {
     rows.append(d.items)
   }

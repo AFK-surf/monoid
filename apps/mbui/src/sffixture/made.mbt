@@ -97,6 +97,7 @@ pub fn fixture_reset() -> Unit {
   fixture_pictures.clear()
   fix_threads.clear()
   fix_browse_reset()
+  fx_projects_reset()
   fix_ctx.val = None
   fix_clock.val = None
   fix_serial.val = 0

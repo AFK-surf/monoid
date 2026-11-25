@@ -31,6 +31,7 @@ pub fn filter_at(src : Source, w : Workspace) -> Int {
 ///|
 fn sidebar_reset() -> Unit {
   list_scrolls.clear()
+  list_scroll_order.clear()
   rows_rest_at.val = -1.0
   filter_menu_serial.val = -1
   archived_here.set(None)
@@ -109,27 +110,75 @@ pub fn filter_menu(
   go : (String) -> Unit,
   in_board? : Bool = false,
   along? : @ui.Along = End,
+  src? : Source? = None,
+  ws? : String = "",
 ) -> Unit {
   let item = fn(key : String, words : String) -> @sf.MenuItem? {
     Some(@sf.menu_item_of(@sf.t(words), chosen=shown == key, fn() { go(key) }))
   }
-  let items = if in_board {
-    [
-      item("all", "web-main.filter.chats.all"),
-      item("mine", "web-main.filter.chats.mine"),
-      None,
-      item("hidden", "web-main.filter.hidden"),
-      item("archive", "web-main.filter.archived"),
-    ]
+  let items : Array[@sf.MenuItem?] = []
+  let projects_on = match src {
+    Some(s) if ws != "" => @signals.untracked(fn() { @sfbase.workspace_projects_on(s, ws) })
+    _ => false
+  }
+  if projects_on && !in_board {
+    match src {
+      Some(s) => {
+        let grouped = @signals.untracked(fn() { @sfbase.list_group_by(s, ws) == "project" })
+        items.push(Some(@sf.menu_item_of(@sf.t("web-main.projects.group_by_time"), chosen=!grouped, fn() {
+          @sfbase.set_list_group_by(s, ws, "")
+        })))
+        items.push(Some(@sf.menu_item_of(@sf.t("web-main.projects.group_by_project"), chosen=grouped, fn() {
+          @sfbase.set_list_group_by(s, ws, "project")
+        })))
+        items.push(None)
+      }
+      None => ()
+    }
+  }
+  if in_board {
+    items.push(item("all", "web-main.filter.chats.all"))
+    items.push(item("mine", "web-main.filter.chats.mine"))
+    items.push(None)
+    items.push(item("hidden", "web-main.filter.hidden"))
+    items.push(item("archive", "web-main.filter.archived"))
   } else {
-    [
-      item("all", "web-main.filter.chats.all"),
-      item("mine", "web-main.filter.chats.mine"),
-      item("watching", "web-main.filter.watching"),
-      item("hidden", "web-main.filter.hidden"),
-      None,
-      item("archive", "web-main.filter.archived"),
-    ]
+    items.push(item("all", "web-main.filter.chats.all"))
+    items.push(item("mine", "web-main.filter.chats.mine"))
+    items.push(item("watching", "web-main.filter.watching"))
+    items.push(item("hidden", "web-main.filter.hidden"))
+    items.push(None)
+    items.push(item("archive", "web-main.filter.archived"))
+  }
+  if projects_on {
+    match src {
+      Some(s) => {
+        items.push(None)
+        let anchor : @sf.Anchor = match from {
+          Node(v) => Node(v)
+          _ => Unanchored
+        }
+        items.push(
+          Some(
+            @sf.menu_item_of(
+              @sf.t("web-main.projects.filter_project"),
+              further=true,
+              fn() { open_project_filter_panel(s, ws, anchor) },
+            ),
+          ),
+        )
+        items.push(
+          Some(
+            @sf.menu_item_of(
+              @sf.t("web-main.projects.filter_tag"),
+              further=true,
+              fn() { open_tag_filter_panel(s, ws, anchor) },
+            ),
+          ),
+        )
+      }
+      None => ()
+    }
   }
   @sf.menu(
     items,
@@ -138,6 +187,162 @@ pub fn filter_menu(
   )
   filter_menu_serial.val = @sf.last_presented()
   filter_menu_opened.set(filter_menu_opened.untracked() + 1)
+}
+
+///|
+/// Open park-safe project filter picker panel (`ProjectListChain`).
+fn open_project_filter_panel(src : Source, ws : String, from : @sf.Anchor) -> Unit {
+  @sf.panel_nodes(
+    @sf.t("web-main.projects.filter_project"),
+    fn(pv, close) {
+      let chain = @sfbase.ProjectListChain::new(ws)
+      chain.bind(pv, src)
+      let snap = fn() { chain.read(src) }
+      let keys = fn() {
+        let out = ["all", "unclassified", "cross", "sep"]
+        for r in snap().items {
+          out.push("p/" + r.name)
+        }
+        if snap().has_more {
+          out.push("more")
+        }
+        out
+      }
+      @sf.panel_list_node(pv, keys, est=44.0, fills=true, fn(r, k) {
+        let cur = fn() { @sfbase.project_filter_of(ws) }
+        if k == "all" {
+          @sf.action_box_node(r, fn() { @sf.t("web-main.projects.filter_all") }, fn(_) {
+            @sfbase.set_project_filter(ws, All)
+            close()
+          }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-main.projects.filter_all") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+            row.show(fn() { cur() == All }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+          })
+          |> ignore
+        } else if k == "unclassified" {
+          @sf.action_box_node(r, fn() { @sf.t("web-main.projects.unclassified") }, fn(_) {
+            @sfbase.set_project_filter(ws, Unclassified)
+            close()
+          }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-main.projects.unclassified") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+            row.show(fn() { cur() == Unclassified }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+          })
+          |> ignore
+        } else if k == "cross" {
+          @sf.action_box_node(r, fn() { @sf.t("web-main.projects.cross_project") }, fn(_) {
+            @sfbase.set_project_filter(ws, Cross)
+            close()
+          }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-main.projects.cross_project") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+            row.show(fn() { cur() == Cross }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+          })
+          |> ignore
+        } else if k == "sep" {
+          r.box(fn(sep) {
+            @sf.style_node(sep, fn() { @sf.rule_line })
+            sep.margin(Is((proj_pad_x, proj_s1, proj_pad_x, proj_s1))) |> ignore
+          })
+          |> ignore
+        } else if k == "more" {
+          @sf.action_box_node(r, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) { chain.load_more(src) }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-pages.projects.load_more") }, fn() { proj_summary_words }) |> ignore
+          })
+          |> ignore
+        } else if k.has_prefix("p/") {
+          let pname = k.exact_view(start=2).to_owned()
+          @sf.action_box_node(r, fn() { pname }, fn(_) {
+            @sfbase.set_project_filter(ws, Named(pname))
+            close()
+          }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s2)).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { pname }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+            @sf.words_node(
+              row,
+              fn() { snap().items.iter().find_first(fn(x) { x.name == pname }).map_or("", fn(x) { x.chat_count.to_string() }) },
+              fn() { proj_row_count },
+            )
+            |> ignore
+            row.show(fn() { cur() == Named(pname) }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    },
+    from~,
+  )
+}
+
+///|
+/// Open park-safe tag filter picker panel (`TagListChain`).
+fn open_tag_filter_panel(src : Source, ws : String, from : @sf.Anchor) -> Unit {
+  @sf.panel_nodes(
+    @sf.t("web-main.projects.filter_tag"),
+    fn(pv, close) {
+      let chain = @sfbase.TagListChain::new(ws)
+      chain.bind(pv, src)
+      let snap = fn() { chain.read(src) }
+      let keys = fn() {
+        let out = ["all", "sep"]
+        for r in snap().items {
+          out.push("t/" + r.tag)
+        }
+        if snap().has_more {
+          out.push("more")
+        }
+        out
+      }
+      @sf.panel_list_node(pv, keys, est=44.0, fills=true, fn(r, k) {
+        let cur = fn() { @sfbase.tag_filter_of(ws) }
+        if k == "all" {
+          @sf.action_box_node(r, fn() { @sf.t("web-main.projects.filter_all") }, fn(_) {
+            @sfbase.set_tag_filter(ws, None)
+            close()
+          }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-main.projects.filter_all") }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+            row.show(fn() { cur() is None }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+          })
+          |> ignore
+        } else if k == "sep" {
+          r.box(fn(sep) {
+            @sf.style_node(sep, fn() { @sf.rule_line })
+            sep.margin(Is((proj_pad_x, proj_s1, proj_pad_x, proj_s1))) |> ignore
+          })
+          |> ignore
+        } else if k == "more" {
+          @sf.action_box_node(r, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) { chain.load_more(src) }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { @sf.t("web-pages.projects.load_more") }, fn() { proj_summary_words }) |> ignore
+          })
+          |> ignore
+        } else if k.has_prefix("t/") {
+          let tname = k.exact_view(start=2).to_owned()
+          @sf.action_box_node(r, fn() { "#" + tname }, fn(_) {
+            @sfbase.set_tag_filter(ws, Some(tname))
+            close()
+          }, fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s2)).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(row, fn() { "#" + tname }, fn() { proj_row_name }).grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+            @sf.words_node(
+              row,
+              fn() { snap().items.iter().find_first(fn(x) { x.tag == tname }).map_or("", fn(x) { x.chat_count.to_string() }) },
+              fn() { proj_row_count },
+            )
+            |> ignore
+            row.show(fn() { cur() == Some(tname) }, fn(ck) { @sf.icon_node(ck, "check", 14.0, By(fn() { @sf.theme().p.text })) |> ignore })
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    },
+    from~,
+  )
 }
 
 ///|

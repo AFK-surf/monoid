@@ -32,6 +32,7 @@ pub fn chat_row_node(
   list_ground? : () -> Int64 = fn() { @sf.theme().p.bg },
   more? : Bool = false,
   kept? : () -> Bool,
+  show_project? : () -> Bool,
 ) -> @view.View {
   let t = fn() { @sf.theme() }
   // (a finger rests on nothing: a press reads ahead, a hold shows the time; a pointer's over it shows them)
@@ -382,8 +383,15 @@ pub fn chat_row_node(
               None => item().decision_text
             }
           }
+          if show_project is Some(_) {
+            m.fits(Is(true)) |> ignore
+          }
           m.box(fn(s) {
-            s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+            if show_project is Some(_) {
+              s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(By(fn() { Some(@sf.node_sp(row, 140.0)) })) |> ignore
+            } else {
+              s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+            }
             // (its state or its last message: the one in the other's place at once, the row's line no way of its own)
             s.switch_by(fn() { state() is Some(_) }, fn(p, has) {
               if has {
@@ -407,6 +415,33 @@ pub fn chat_row_node(
             })
           })
           |> ignore
+          // Featherweight project micro-badge (ONLY added when workspace has projects enabled; 0 nodes/bindings when off).
+          match show_project {
+            Some(sp) =>
+              m.show(
+                fn() {
+                  sp() &&
+                  !shows_time() &&
+                  (match item().project {
+                    Some(p) if p != "" => true
+                    _ => false
+                  })
+                },
+                along_row=true,
+                fn(pb) {
+                  pb.max_width(By(fn() { Some(@sf.node_sp(row, 84.0)) })).shrink(Is(1.0)).min_width(Is(Some(0.0))).drops(Is(1)) |> ignore
+                  @sf.words_node(
+                    pb,
+                    fn() { item().project.unwrap_or("") },
+                    fn() { row_time },
+                  )
+                  .cuts(Is(true))
+                  .allow_ellipsis(Is(true))
+                  |> ignore
+                },
+              )
+            None => ()
+          }
           // (its day and time while pointed at, held or its menu open; else, across the whole screen, who is in it)
           m.pick(fn() { if shows_time() { 1 } else if at == Whole { 2 } else { 0 } }, fn(e, which) {
             match which {

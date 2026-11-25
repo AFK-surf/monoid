@@ -55,9 +55,27 @@ const DETAIL_NOTE_PAGE_BYTES = 3200;
 const MIN_ITEM_TEXT_BYTES = 64;
 /// Maximum bounded LRU pagination snapshots retained per `(Data, kind, scope)` so dynamic reorders never drop or duplicate items.
 const MAX_PAGE_SNAPSHOTS = 16;
+/// Global LRU cap on total snapshot buckets per `Data` so arbitrary search queries `q` cannot grow memory unbounded.
+const MAX_PAGE_SNAPSHOT_BUCKETS = 32;
 
 const enc = new TextEncoder();
 const utf8Bytes = (v: unknown): number => enc.encode(JSON.stringify(v)).length;
+
+/// Deterministic 16-char hex content fingerprint over normalized `(note, refs)` (Hermes-safe, zero Node/crypto deps).
+/// Changes whenever full `note` or ordered `refs` differ, even when `updatedAt`, page length, and cursor match.
+function infoRevisionOf(note: string | undefined, refs: readonly string[]): string {
+  const bytes = enc.encode(JSON.stringify([note ?? null, refs]));
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i]!;
+    h1 = Math.imul(h1 ^ b, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ ((b + i) & 0xff), 0x85ebca6b) >>> 0;
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 0x85ebca6b) >>> 0;
+  h2 = Math.imul(h2 ^ (h2 >>> 13), 0xc2b2ae35) >>> 0;
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
 
 /// Slices `s` starting at UTF-16 code-unit `start` so that `JSON.stringify(chunk)` is at most `maxBytes` UTF-8 bytes,
 /// never splitting a UTF-16 surrogate pair.
@@ -203,9 +221,18 @@ function savePageSnapshot(data: Data, bucket: string, names: readonly string[]):
     pageSnapshots.set(data, byBucket);
   }
   let list = byBucket.get(bucket);
-  if (list === undefined) {
+  if (list !== undefined) {
+    // Refresh bucket LRU position
+    byBucket.delete(bucket);
+    byBucket.set(bucket, list);
+  } else {
     list = [];
     byBucket.set(bucket, list);
+    while (byBucket.size > MAX_PAGE_SNAPSHOT_BUCKETS) {
+      const oldest = byBucket.keys().next().value;
+      if (oldest === undefined) break;
+      byBucket.delete(oldest);
+    }
   }
   const id = hashOrderedNames(names);
   const existingIdx = list.findIndex((s) => s.id === id);
@@ -220,8 +247,12 @@ function savePageSnapshot(data: Data, bucket: string, names: readonly string[]):
 }
 
 function getPageSnapshot(data: Data, bucket: string, id: string): PageSnap | undefined {
-  const list = pageSnapshots.get(data)?.get(bucket);
-  if (list === undefined) return undefined;
+  const byBucket = pageSnapshots.get(data);
+  const list = byBucket?.get(bucket);
+  if (byBucket === undefined || list === undefined) return undefined;
+  // Refresh bucket LRU position
+  byBucket.delete(bucket);
+  byBucket.set(bucket, list);
   const idx = list.findIndex((s) => s.id === id);
   if (idx === -1) return undefined;
   const [hit] = list.splice(idx, 1);
@@ -276,6 +307,7 @@ export function projectsView(
   scope: string,
   cursor?: string,
   collate?: HostCollate,
+  q?: string,
 ): { items: J[]; total: number; unclassifiedCount: number; crossCount: number; nextCursor?: string; staleCursor?: boolean } {
   let unclassifiedCount = 0;
   let crossCount = 0;
@@ -307,7 +339,10 @@ export function projectsView(
   for (const name of Object.keys(infoMap)) {
     if (Object.hasOwn(infoMap, name) && !agg.has(name)) agg.set(name, { chatCount: 0, runningCount: 0, latestActiveAt: 0 });
   }
-  const bucket = `projects:${scope}`;
+  const nq = typeof q === "string" ? q.trim().toLowerCase() : "";
+  const matchedNames = nq === "" ? [...agg.keys()] : [...agg.keys()].filter((name) => name.toLowerCase().includes(nq));
+  const totalCount = matchedNames.length;
+  const bucket = `projects:${scope}:${nq}`;
   let snapId: string;
   let orderedNames: readonly string[];
   let startOffset: number;
@@ -317,7 +352,7 @@ export function projectsView(
     if (parsed === null || existingSnap === undefined) {
       return {
         items: [],
-        total: agg.size,
+        total: totalCount,
         unclassifiedCount,
         crossCount,
         staleCursor: true,
@@ -327,16 +362,15 @@ export function projectsView(
     orderedNames = existingSnap.names;
     startOffset = Math.min(parsed.offset, orderedNames.length);
   } else {
-    const allNames = [...agg.keys()];
-    const cmp = makeCollator(allNames, collate);
-    orderedNames = allNames.sort((a, b) => (agg.get(b)!.latestActiveAt - agg.get(a)!.latestActiveAt) || cmp(a, b));
-    snapId = savePageSnapshot(data, bucket, orderedNames);
+    const cmp = makeCollator(matchedNames, collate);
+    orderedNames = matchedNames.sort((a, b) => (agg.get(b)!.latestActiveAt - agg.get(a)!.latestActiveAt) || cmp(a, b));
+    snapId = hashOrderedNames(orderedNames);
     startOffset = 0;
   }
 
   const items: J[] = [];
   const worstCursor = `s:${snapId}:${orderedNames.length}`;
-  const envelopeBase = utf8Bytes({ items: [], total: agg.size, unclassifiedCount, crossCount, nextCursor: worstCursor });
+  const envelopeBase = utf8Bytes({ items: [], total: totalCount, unclassifiedCount, crossCount, nextCursor: worstCursor });
   let used = envelopeBase;
   let idx = startOffset;
   while (idx < orderedNames.length) {
@@ -367,12 +401,16 @@ export function projectsView(
     used += itemBytes;
     idx++;
   }
+  const hasMore = idx < orderedNames.length;
+  if (hasMore && (typeof cursor !== "string" || cursor === "")) {
+    snapId = savePageSnapshot(data, bucket, orderedNames);
+  }
   return {
     items,
-    total: agg.size,
+    total: totalCount,
     unclassifiedCount,
     crossCount,
-    ...(idx < orderedNames.length ? { nextCursor: `s:${snapId}:${idx}` } : {}),
+    ...(hasMore ? { nextCursor: `s:${snapId}:${idx}` } : {}),
   };
 }
 
@@ -384,7 +422,7 @@ export function projectDetailView(
   scope: string,
   name: string,
   cursor?: string,
-): { name: string; note?: string; refs: string[]; chatCount: number; runningCount: number; latestActiveAt: number; hasInfo: boolean; nextCursor?: string } {
+): { name: string; note?: string; refs: string[]; chatCount: number; runningCount: number; latestActiveAt: number; hasInfo: boolean; infoRevision: string; nextCursor?: string } {
   let chatCount = 0;
   let runningCount = 0;
   let latestActiveAt = 0;
@@ -403,6 +441,7 @@ export function projectDetailView(
   const rawNote = meta?.note;
   const allRefs = meta?.refs ?? [];
   const hasInfo = rawNote !== undefined || allRefs.length > 0;
+  const infoRevision = infoRevisionOf(rawNote, allRefs);
 
   const safeName = truncateJsonString(name, 512);
   const parsed = parseDetailCursor(cursor);
@@ -422,6 +461,7 @@ export function projectDetailView(
           runningCount,
           latestActiveAt,
           hasInfo,
+          infoRevision,
           nextCursor: `n:${sliced.nextOffset}`,
         };
       }
@@ -439,6 +479,7 @@ export function projectDetailView(
     runningCount,
     latestActiveAt,
     hasInfo,
+    infoRevision,
     nextCursor: `r:${allRefs.length}`,
   });
 
@@ -469,6 +510,7 @@ export function projectDetailView(
     runningCount,
     latestActiveAt,
     hasInfo,
+    infoRevision,
     ...(idx < allRefs.length ? { nextCursor: `r:${idx}` } : {}),
   };
 }
@@ -480,6 +522,7 @@ export function tagsView(
   stations: readonly StationListed[],
   cursor?: string,
   collate?: HostCollate,
+  q?: string,
 ): { items: J[]; total: number; nextCursor?: string; staleCursor?: boolean } {
   const counts = new Map<string, number>();
   for (const s of stations) {
@@ -492,7 +535,10 @@ export function tagsView(
       }
     }
   }
-  const bucket = `tags:${stations.map((s) => s.address).sort().join(",")}`;
+  const nq = typeof q === "string" ? q.trim().toLowerCase() : "";
+  const matchedNames = nq === "" ? [...counts.keys()] : [...counts.keys()].filter((name) => name.toLowerCase().includes(nq));
+  const totalCount = matchedNames.length;
+  const bucket = `tags:${stations.map((s) => s.address).sort().join(",")}:${nq}`;
   let snapId: string;
   let orderedNames: readonly string[];
   let startOffset: number;
@@ -502,7 +548,7 @@ export function tagsView(
     if (parsed === null || existingSnap === undefined) {
       return {
         items: [],
-        total: counts.size,
+        total: totalCount,
         staleCursor: true,
       };
     }
@@ -510,16 +556,15 @@ export function tagsView(
     orderedNames = existingSnap.names;
     startOffset = Math.min(parsed.offset, orderedNames.length);
   } else {
-    const allNames = [...counts.keys()];
-    const cmp = makeCollator(allNames, collate);
-    orderedNames = allNames.sort((a, b) => (counts.get(b)! - counts.get(a)!) || cmp(a, b));
-    snapId = savePageSnapshot(data, bucket, orderedNames);
+    const cmp = makeCollator(matchedNames, collate);
+    orderedNames = matchedNames.sort((a, b) => (counts.get(b)! - counts.get(a)!) || cmp(a, b));
+    snapId = hashOrderedNames(orderedNames);
     startOffset = 0;
   }
 
   const items: J[] = [];
   const worstCursor = `s:${snapId}:${orderedNames.length}`;
-  let used = utf8Bytes({ items: [], total: counts.size, nextCursor: worstCursor });
+  let used = utf8Bytes({ items: [], total: totalCount, nextCursor: worstCursor });
   let idx = startOffset;
   while (idx < orderedNames.length) {
     const name = orderedNames[idx]!;
@@ -540,10 +585,14 @@ export function tagsView(
     used += itemBytes;
     idx++;
   }
+  const hasMore = idx < orderedNames.length;
+  if (hasMore && (typeof cursor !== "string" || cursor === "")) {
+    snapId = savePageSnapshot(data, bucket, orderedNames);
+  }
   return {
     items,
-    total: counts.size,
-    ...(idx < orderedNames.length ? { nextCursor: `s:${snapId}:${idx}` } : {}),
+    total: totalCount,
+    ...(hasMore ? { nextCursor: `s:${snapId}:${idx}` } : {}),
   };
 }
 
@@ -637,7 +686,9 @@ const reached = (inner: Inner, address: string) =>
   inner.provider.kind === "stillfail" && inner.stations.link(address) !== undefined && inner.stations.reachable(address);
 
 function overviewOf(inner: Inner, address: string): unknown {
-  return inner.store.get({ topic: "overview", station: address }) ?? inner.data.overviewPart(address);
+  const part = inner.data.overviewPart(address);
+  if (isObject(part) && Array.isArray(part.features)) return part;
+  return inner.store.get({ topic: "overview", station: address }) ?? part;
 }
 
 function stationProjectsEnabled(inner: Inner, address: string): boolean | null {
@@ -645,6 +696,11 @@ function stationProjectsEnabled(inner: Inner, address: string): boolean | null {
   if (!isObject(ov)) return null;
   if (!Array.isArray(ov.features)) return null;
   return stationFeature(ov, "projects");
+}
+
+export function viewerRoleIn(inner: Inner, ws: string): string | null {
+  const wsShared = inner.data.shared({ topic: "workspace", workspace: ws });
+  return str(get(wsShared, "role"));
 }
 
 function stationsOf(inner: Inner, ws: string): { address: string; rig: boolean }[] {
@@ -656,22 +712,34 @@ function stationsOf(inner: Inner, ws: string): { address: string; rig: boolean }
     .filter((s) => s.address !== "");
 }
 
+/// Shared eligibility check for workspace project/preset-project writes:
+/// non-rig station in workspace `ws`, currently reachable, and explicitly advertising `"projects"`.
+export function isProjectsStationEligible(inner: Inner, ws: string, address: string): boolean {
+  const found = stationsOf(inner, ws).find((s) => s.address === address);
+  return found !== undefined && !found.rig && reached(inner, address) && stationProjectsEnabled(inner, address) === true;
+}
+
+export function hasEligibleProjectsStation(inner: Inner, ws: string): boolean {
+  return stationsOf(inner, ws).some((s) => !s.rig && reached(inner, s.address) && stationProjectsEnabled(inner, s.address) === true);
+}
+
 function pickOnlineStations(inner: Inner, ws: string, preferred?: string): Effect.Effect<string[], CoreError> {
+  if (viewerRoleIn(inner, ws) === "viewer") {
+    return Effect.fail(new CoreError("http_403", t("core-misc.presets.readOnly"), 403));
+  }
   const list = stationsOf(inner, ws);
   if (typeof preferred === "string" && preferred !== "") {
-    if (ofAddress(preferred) !== ws || !list.some((s) => s.address === preferred) || !reached(inner, preferred)) {
+    const found = list.find((s) => s.address === preferred);
+    if (ofAddress(preferred) !== ws || found === undefined || !reached(inner, preferred)) {
       return Effect.fail(new CoreError("invalid_params", t("core-misc.projects.stationMismatch")));
+    }
+    if (found.rig || stationProjectsEnabled(inner, preferred) !== true) {
+      return Effect.fail(new CoreError("offline", t("core-misc.projects.noStation")));
     }
     return Effect.succeed([preferred]);
   }
-  const online = list.filter((s) => reached(inner, s.address));
+  const online = list.filter((s) => !s.rig && reached(inner, s.address) && stationProjectsEnabled(inner, s.address) === true);
   if (online.length === 0) return Effect.fail(new CoreError("offline", t("core-misc.projects.noStation")));
-  // Prefer non-rig/tasks stations that explicitly advertise `projects` feature.
-  const score = (s: { address: string; rig: boolean }) => {
-    const enabled = stationProjectsEnabled(inner, s.address);
-    return (s.rig ? 0 : 4) + (enabled === true ? 2 : enabled === null ? 1 : 0);
-  };
-  online.sort((a, b) => score(b) - score(a));
   return Effect.succeed(online.map((s) => s.address));
 }
 
@@ -684,19 +752,23 @@ function askWorkspace(
   body: unknown,
 ): Effect.Effect<{ station: string; res: unknown }, CoreError> {
   return Effect.gen(function* () {
-    const candidates = yield* pickOnlineStations(inner, ws, preferred);
+    const tried = new Set<string>();
     let lastErr: CoreError | null = null;
-    for (let i = 0; i < candidates.length; i++) {
-      const station = candidates[i]!;
+    while (true) {
+      const candidates = yield* pickOnlineStations(inner, ws, preferred);
+      const station = candidates.find((s) => !tried.has(s));
+      if (station === undefined) {
+        return yield* Effect.fail(lastErr ?? new CoreError("offline", t("core-misc.projects.noStation")));
+      }
+      tried.add(station);
       const r = yield* Effect.result(ask(inner, station, method, path, body));
       if (r._tag === "Success") return { station, res: r.success };
       lastErr = r.failure;
       // Fall back to another full station when caller did not pin a station and the station lacks the route (404) or is a tasks/rig station (403).
       const isTasksRefusal = r.failure.status === 403 && /rig|tasks/i.test(r.failure.message);
-      if (preferred === undefined && (fromBeforeRoute(r.failure) || isTasksRefusal) && i + 1 < candidates.length) continue;
+      if (preferred === undefined && (fromBeforeRoute(r.failure) || isTasksRefusal)) continue;
       return yield* Effect.fail(r.failure);
     }
-    return yield* Effect.fail(lastErr ?? new CoreError("offline", t("core-misc.projects.noStation")));
   });
 }
 

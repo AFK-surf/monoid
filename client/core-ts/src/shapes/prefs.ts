@@ -5,6 +5,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
   Appearance: words(["system","light","dark"], { doc: "How the pages look: as the system does (the default), or always light, or always dark.", default: "system" }),
   RowPictureSetting: words(["auto","agents","people"], { doc: "Whose pictures lead a chat's row: by how many people the scope has (the default), or always the agents', or the\npeople's.", default: "auto" }),
   ListFilter: words(["all","mine","watching","hidden","archive"], { doc: "What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档).", default: "all" }),
+  ListGroup: words(["project"], { doc: "How a workspace's chat list is grouped on this device: by project (`project`), or none (default `time`)." }),
   BoardGroup: words(["state","station","person"], { doc: "How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it." }),
   BoardFile: struct([
     ["id", "String"],
@@ -44,6 +45,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["boardShowEmpty", map("bool"), { default: true, doc: "A workspace's board leaving out its empty columns on this device, by workspace: `false`; none: shown." }],
     ["boardDrafts", map(vec("BoardDraft")), { default: true, doc: "Unstarted tasks a workspace's 待派发 kept on this device before they were carried (by workspace):\ntaken into the `boardDrafts` topic's once and left out of here." }],
     ["listFilter", map("ListFilter"), { default: true, doc: "The list filter chosen in each workspace, by workspace; one not there goes by `only_mine` and `only_watching`\n(one filter for all, as devices kept it before)." }],
+    ["listGroups", map("ListGroup"), { default: true, doc: "How a workspace's chat list is grouped on this device, by workspace (`project`; none: default `time`)." }],
     ["appearance", "Appearance", { default: true }],
     ["accent", opt("String"), { doc: "The app's colour theme on this device: `blue`, `teal`, `purple`, `pink`, `rainbow` (picks a colour automatically\neach time the app opens), `custom:<hue>` (0 to 359: a theme the app makes of that hue), or none for still.fail's\norange." }],
     ["windowZoom", opt("String"), { default: true, doc: "The window's content size on this device, as a percentage; none means 100%." }],

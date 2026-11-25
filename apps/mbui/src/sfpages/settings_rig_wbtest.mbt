@@ -119,6 +119,8 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     AutoPolicy(st) => policy_node(p, core, here, st, on_back=core.pop, frame~, width~)
     Appearance => appearance_node(p, core, on_back=core.pop, frame~, width~)
     Experimental => experimental_node(p, core, on_back=core.pop, frame~, width~)
+    Projects => projects_page_node(p, src, core, here(), on_back=core.pop, frame~, width~)
+    Project(name) => project_detail_page_node(p, src, core, here(), name, on_back=core.pop, frame~, width~)
     LocalStation => local_station_node(p, core, on_back=core.pop, frame~, width~)
     Permissions => permissions_node(p, core, on_back=core.pop, frame~, width~)
     Security => security_node(p, core, here, on_back=core.pop, frame~, width~)

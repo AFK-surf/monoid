@@ -146,6 +146,8 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["note", opt("ListNote")],
     ["syncing", opt("String"), { said: true, doc: "While what changed since the device was last with the stations is still being brought (station/sync.ts\n`#catching`), what the mark at the list's top beside its filter says (its tip, and to a screen reader): 正在同步 while a\nstation has yet to say what changed, then how many chats are left (正在同步 · 还剩 12 个对话). Stations not reached are\nleft out (the list says so where it says what is wrong with them). Absent once all is here, and from a core before it." }],
     ["interrupted", opt(vec("InterruptedStation")), { doc: "Stations in this workspace with turns cut off by a non-update restart awaiting manual resume or dismissal. Absent when none." }],
+    ["projects", opt("bool"), { doc: "True when any non-rig station in this workspace advertises the `projects` feature." }],
+    ["projectsWritable", opt("bool"), { doc: "True when at least one online non-rig station advertises `projects` and the viewer is not a read-only viewer." }],
   ], { keepNone: true }),
   InterruptedChat: struct([
     ["key", "String"],
@@ -374,6 +376,8 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["project", opt("String"), { doc: "Project classification (\"\" cross-project, non-empty project name; absent when unclassified)." }],
     ["projectLocked", opt("bool"), { doc: "True when a member explicitly set or resolved this chat's project (agents cannot overwrite)." }],
     ["tags", opt(vec("String")), { doc: "Up to 3 orthogonal tags on this chat. Absent when none." }],
+    ["projects", opt("bool"), { doc: "True when this chat's host station advertises the `projects` feature." }],
+    ["projectsWritable", opt("bool"), { doc: "True when this chat's host station is online, advertises `projects`, and the viewer is not a read-only member." }],
   ], { doc: "An item's page: its chat (with the viewer's read position), or its agent before it has one." }),
   ThreadShown: struct([
     ["id", "i64", { client: "I54" }],

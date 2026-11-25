@@ -181,6 +181,8 @@ pub fn chats_lists_node(
 ///|
 /// One of the lists (chats_pane's) of workspace `id` filtered by `filter` in node `v`: its states (being read, failing,
 /// empty) and its days under the room `frame` keeps over them; `current`, the one shown.
+/// Isolates `scroll`, `held_order`, `viewer_moved`, and `RowsMotion` by the full query cache key so switching grouping
+/// or project/tag filters never leaks stale group headers, scroll positions, or hover-held order.
 fn chats_pane_node(
   v : @view.View,
   src : Source,
@@ -191,9 +193,38 @@ fn chats_pane_node(
   tips : @sf.TipLayer,
   stint : () -> Int,
 ) -> Unit {
-  let key = "chats/" + id + "/" + filter
-  let read = fn() { @sfbase.chats_of(src, id, filter) }
+  // Keyed solely on the effective ListQuery key so cold-start `projects: false -> true` with an unchanged query
+  // never rebuilds the sidebar pane.
+  let pane_key = fn() -> String { @sfbase.pane_scroll_key(src, id, filter) }
+  v.pick(at_once=true, pane_key, fn(pane, key) {
+    pane.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    chats_pane_body_node(pane, src, id, filter, key, frame, current, tips, stint)
+  })
+}
+
+///|
+fn chats_pane_body_node(
+  v : @view.View,
+  src : Source,
+  id : String,
+  filter : String,
+  key : String,
+  frame : ListsNodeFrame,
+  current : () -> Bool,
+  tips : @sf.TipLayer,
+  stint : () -> Int,
+) -> Unit {
+  let query = fn() { @sfbase.pane_list_query(src, id, filter) }
+  let read = fn() { @sfbase.chats_of_query(src, id, query()) }
   let scroll = list_scroll(key)
+  let collapse_animating : Ref[Bool] = Ref(false)
+  let on_toggle_collapse = fn(gk : String) {
+    collapse_animating.val = true
+    @view.transition(within=v, fn() {
+      @sfbase.toggle_group_collapsed(id, gk)
+    })
+    v.at_moment(v.cause_at() + @ui.move_most_ms, fn() { collapse_animating.val = false }) |> ignore
+  }
   // (while the hand is on the list or it glides, its rows keep their places; a row the viewer moved goes at once)
   let held = fn() { v.pointed_in() || scroll.in_hand() || scroll.goes_on() }
   // its days in the order shown, and its rows by their names: worked out once as what is read, or the hand on it,
@@ -230,8 +261,8 @@ fn chats_pane_node(
         stamp.val += 1
       }
       // (and its page's stay on top: what changed while it was off the top said as it is put back there, RowsMotion::said;
-      // and whether it is the core's answer now or what it said before it was let go of: chats_live)
-      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter), syncing)
+      // and whether it is the core's answer now or what it said before it was let go of: chats_live_query)
+      (stamp.val, held(), stint(), @sfbase.chats_live_query(src, id, query()), syncing)
     },
     fn(at) {
       let days = seen.val
@@ -266,6 +297,7 @@ fn chats_pane_node(
         recorded_rows.val = by_name.length()
         @hostapi.perf_line("chat-list: filter=\{filter} rows=\{recorded_rows.val}")
       }
+      collapse_animating.val = false
       motion.said(
         v,
         lines,
@@ -273,7 +305,7 @@ fn chats_pane_node(
         @signals.untracked(current),
         @signals.untracked(current) && @signals.untracked(frame.watched) && !let_go,
         at.2,
-        @sfbase.chats_window_asked(id, filter),
+        @sfbase.chats_window_asked_query(id, @signals.untracked(query)),
         at.3,
         at.4,
       )
@@ -303,6 +335,9 @@ fn chats_pane_node(
     for p in (frame.before)(filter, view) {
       out.push("part/" + p.key)
     }
+    if @sfbase.workspace_projects_on(src, id) && @sfbase.has_active_list_filters(id) {
+      out.push("filter_bar")
+    }
     match view {
       None => {
         out.push("wait")
@@ -324,12 +359,69 @@ fn chats_pane_node(
       }
     }
   })
-  // its lines' keys: those before its days, its days, its foot
+  let more = @signals.computed(fn(_) { @sfbase.chats_more_query(src, id, query()) })
+  // (a window made taller: the list told the first window of it, where it holds fewer and the core has more; it never
+  // shrinks)
+  let held_rows = @signals.computed(fn(_) { @sfbase.chats_held(read().0) })
+  v.reacts(fn() { (v.window_h(), more.get(), held_rows.get()) }, fn(at) {
+    @sfbase.chats_window_for_query(src, id, @signals.untracked(query), at.0, at.2, at.1)
+  })
+  // its lines' keys: those before its days, its visible days (collapse applied AFTER held_order), optional load_more, its foot
   let keys = fn() {
     let (lead, has_days) = lead_lines.get()
     let out = lead.copy()
     if has_days {
-      out.append(motion.lines(day_lines.get()))
+      let grouped = match read().0 {
+        Some(vw) => vw.grouped
+        None => false
+      }
+      if !grouped {
+        out.append(motion.lines(day_lines.get()))
+      } else {
+        // Walk `motion.lines(day_lines.get())` so archived-undo rows stay visible in grouped mode too.
+        let cur_days = days()
+        let day_by_key : Map[String, ChatDay] = Map([])
+        for d in cur_days {
+          day_by_key[d.key] = d
+        }
+        let mlines = motion.lines(day_lines.get())
+        let mut cur_gkey = ""
+        let mut cur_collapsed = false
+        let mut any_collapsed = false
+        let mut vis_rows = 0
+        let flush_gmore = fn(gk : String, col : Bool) {
+          if gk != "" && !col {
+            match day_by_key.get(gk) {
+              Some(d) if d.group_kind != "pinned" && d.chat_count > d.items.length() =>
+                out.push("gmore/" + gk)
+              _ => ()
+            }
+          }
+        }
+        for lk in mlines {
+          if lk.has_prefix("h/") {
+            flush_gmore(cur_gkey, cur_collapsed)
+            cur_gkey = lk.exact_view(start=2).to_owned()
+            cur_collapsed = @sfbase.group_collapsed(id, cur_gkey)
+            if cur_collapsed {
+              any_collapsed = true
+            }
+            out.push(lk)
+          } else if lk.has_prefix("r/") {
+            if !cur_collapsed || motion.gone_item(lk) is Some(_) {
+              out.push(lk)
+              vis_rows += 1
+            }
+          } else {
+            out.push(lk)
+          }
+        }
+        flush_gmore(cur_gkey, cur_collapsed)
+        // Reachability when all/most groups are collapsed and more rows remain beyond the current window.
+        if more.get() > 0 && any_collapsed && vis_rows < 8 {
+          out.push("load_more")
+        }
+      }
     }
     out.push("foot")
     out
@@ -527,14 +619,6 @@ fn chats_pane_node(
       None => "agents"
     }
   }
-  // (how many more the core has, read anew only as its list changes, not each time the column is scrolled)
-  let more = @signals.computed(fn(_) { @sfbase.chats_more(src, id, filter) })
-  // (a window made taller: the list told the first window of it, where it holds fewer and the core has more; it never
-  // shrinks)
-  let held_rows = @signals.computed(fn(_) { @sfbase.chats_held(read().0) })
-  v.reacts(fn() { (v.window_h(), more.get(), held_rows.get()) }, fn(at) {
-    @sfbase.chats_window_for(src, id, filter, at.0, at.2, at.1)
-  })
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   // (a chat's row in line `line`, its key as it is now (`key`: "r/" and its name, another's as the row is taken for
   // another, View::scrolls_window's reused): as its chat is now, the last it was where it is gone from the list (its
@@ -568,6 +652,15 @@ fn chats_pane_node(
     }
     // (gone from the list: its line closing its room where it was (the list's `goes`), drawn as it was; archived from
     // it, its line kept, the row's own node showing its tray there, till that is over and its room closes so)
+    let show_proj : (() -> Bool)? = if @signals.untracked(fn() { @sfbase.workspace_projects_on(src, id) }) {
+      Some(fn() {
+        @sfbase.workspace_projects_on(src, id) &&
+        !read().0.map_or(false, fn(vw) { vw.grouped }) &&
+        @sfbase.project_filter_of(id) == All
+      })
+    } else {
+      None
+    }
     chat_row_node(
       line,
       src,
@@ -580,6 +673,7 @@ fn chats_pane_node(
       list_ground=frame.ground,
       more=true,
       kept=fn() { motion.kept_line(key()) },
+      show_project?=show_proj,
     )
     |> ignore
   }
@@ -595,17 +689,17 @@ fn chats_pane_node(
     bar_clear=fn() { ((frame.top)(), (frame.foot)()) },
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
     // RowsMotion says which)
-    comes=fn(k) { motion.comes(k) },
+    comes=fn(k) { motion.comes(k) || (collapse_animating.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     // (and a part at its top a person's act took away (a restart's card let go of, in a transition): closing its room
     // as it goes, the rows under it not jumping up into it; one the data took away goes at once, outside a transition)
-    goes=fn(k) { motion.goes(k) || k.has_prefix("part/") },
+    goes=fn(k) { motion.goes(k) || k.has_prefix("part/") || (collapse_animating.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     reorders=fn(k) { motion.moves(k) },
     // scrolled to within a screen of its foot while the core has more of its rows: its window a step more, the rows
     // added coming into the list it holds. A screen, not a screen and a half: its first window is what its room shows
     // and a screen more (sfbase's first_window), its foot a screen and a little below at rest, which a screen and a
     // half would have grown the moment it opened
     near_foot=(1.0, fn() { more.get() > 0 }, fn() {
-      @sfbase.chats_grow(src, id, filter, @signals.untracked(fn() { held_rows.get() }), @signals.untracked(fn() { more.get() }))
+      @sfbase.chats_grow_query(src, id, @signals.untracked(query), @signals.untracked(fn() { held_rows.get() }), @signals.untracked(fn() { more.get() }))
     }),
     fn(b, k) {
     b.box(fn(line) {
@@ -655,6 +749,52 @@ fn chats_pane_node(
         }
         "wait" => list_waiting_node(line, src, read, frame.at, tips, stint)
         "empty" => list_empty_node(line, read, filter, frame.at)
+        "filter_bar" => list_filter_bar_node(line, id, frame.at)
+        "load_more" =>
+          @sf.action_box_node(line, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) {
+            @sfbase.chats_grow_query(src, id, @signals.untracked(query), @signals.untracked(fn() { held_rows.get() }), @signals.untracked(fn() { more.get() }))
+          }, fn(r) {
+            r.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s2, proj_pad_x, proj_s2))) |> ignore
+            @sf.words_node(r, fn() { @sf.t("web-pages.projects.load_more") }, fn() { proj_summary_words }) |> ignore
+          })
+          |> ignore
+        _ if k.has_prefix("gmore/") => {
+          let gkey = k.exact_view(start=6).to_owned()
+          let day_of = fn() { days().iter().find_first(fn(d) { d.key == gkey }) }
+          @sf.action_box_node(line, fn() { @sf.t("web-pages.projects.load_more") }, fn(_) {
+            match @signals.untracked(day_of) {
+              Some(d) =>
+                match d.group_kind {
+                  "project" =>
+                    match d.group_project {
+                      Some(p) if p != "" => @sfbase.set_project_filter(id, Named(p))
+                      _ => ()
+                    }
+                  "unclassified" => @sfbase.set_project_filter(id, Unclassified)
+                  "cross" => @sfbase.set_project_filter(id, Cross)
+                  _ => ()
+                }
+              None => ()
+            }
+          }, fn(r) {
+            r.row(Is(true)).lines_up(Is(Some(Middle))).padding(Is((proj_pad_x, proj_s1_5, proj_pad_x, proj_s1_5))) |> ignore
+            @sf.words_node(
+              r,
+              fn() {
+                match day_of() {
+                  Some(d) => {
+                    let rem = d.chat_count - d.items.length()
+                    if rem > 0 { @sf.t("web-main.projects.group_more", args=[("n", rem.to_string())]) } else { "" }
+                  }
+                  None => ""
+                }
+              },
+              fn() { proj_summary_words },
+            )
+            |> ignore
+          })
+          |> ignore
+        }
         _ if k.has_prefix("part/") => {
           let part = k.exact_view(start=5).to_owned()
           let (view, _) = @signals.untracked(read)
@@ -664,7 +804,7 @@ fn chats_pane_node(
             None => ()
           }
         }
-        _ if k.has_prefix("h/") => @sf.list_heading_node(line, fn() { k.exact_view(start=2).to_owned() }, frame.at)
+        _ if k.has_prefix("h/") => list_day_or_group_heading_node(line, id, fn() { k.exact_view(start=2).to_owned() }, days, read, frame.at, tips, on_toggle_collapse)
         // (a row of the list's, or one archived from it whose line is kept, its 撤销 there)
         _ => row_line(line, fn() { k })
       }
@@ -686,7 +826,7 @@ fn chats_pane_node(
       b.box(fn(line) {
         @sf.style_node(line, fn() { @sf.list_line(frame.at) })
         if b.reused_kind() == Some(1) {
-          @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
+          list_day_or_group_heading_node(line, id, fn() { key().exact_view(start=2).to_owned() }, days, read, frame.at, tips, on_toggle_collapse)
         } else {
           row_line(line, key)
         }
@@ -823,6 +963,13 @@ fn list_empty_node(v : @view.View, read : () -> (ChatsView?, String?), filter : 
 let list_scrolls : Map[String, @view.Scroll] = Map([])
 
 ///|
+// kept across runs: put back as a run begins (sidebar_reset)
+let list_scroll_order : Array[String] = []
+
+///|
+let list_scroll_max : Int = 32
+
+///|
 /// Each of the lists made once at its top (what is tucked over its rows in view): as a recording's list at its top
 /// (sfapp's tape: listTop) has it.
 pub fn lists_top() -> Unit {
@@ -832,13 +979,27 @@ pub fn lists_top() -> Unit {
 }
 
 ///|
-/// List `key`'s scroll (list_scrolls'), made the first time it is asked for.
+/// List `key`'s scroll (list_scrolls'), made the first time it is asked for, with bounded LRU eviction (max 32).
 fn list_scroll(key : String) -> @view.Scroll {
   match list_scrolls.get(key) {
-    Some(s) => s
+    Some(s) => {
+      match list_scroll_order.search(key) {
+        Some(idx) => {
+          list_scroll_order.remove(idx) |> ignore
+          list_scroll_order.push(key)
+        }
+        None => list_scroll_order.push(key)
+      }
+      s
+    }
     None => {
       let s = @view.Scroll::list()
       list_scrolls[key] = s
+      list_scroll_order.push(key)
+      while list_scroll_order.length() > list_scroll_max {
+        let oldest = list_scroll_order.remove(0)
+        list_scrolls.remove(oldest)
+      }
       s
     }
   }
@@ -909,16 +1070,171 @@ fn RowsMotion::new() -> RowsMotion {
 }
 
 ///|
-/// The days `days` as lines (a heading and its rows each), by their keys.
+/// The days `days` as lines (a heading and its rows each), by their stable collision-free keys (`d.key`).
 fn day_keys(days : Array[ChatDay]) -> Array[String] {
   let out = []
   for d in days {
-    out.push("h/" + d.label)
+    out.push("h/" + d.key)
     for item in d.items {
       out.push("r/" + @sfbase.row_name(item))
     }
   }
   out
+}
+
+///|
+/// Active filter bar (`[项目：{name} ×]`, `[#{tag} ×]`, `清除`) shown above list rows when filters are active.
+fn list_filter_bar_node(line : @view.View, ws : String, _at : @sf.ListAt) -> Unit {
+  line.box(fn(bar) {
+    bar
+    .row(Is(true))
+    .wraps(Is(Some(proj_s1_5)))
+    .lines_up(Is(Some(Middle)))
+    .gap(Is(proj_s1_5))
+    .padding(Is((proj_pad_x, proj_s1, proj_pad_x, proj_s1_5)))
+    |> ignore
+    bar.show(fn() { @sfbase.project_filter_of(ws) != All }, along_row=true, fn(pill) {
+      let label = fn() {
+        match @sfbase.project_filter_of(ws) {
+          All => ""
+          Unclassified => @sf.t("web-main.projects.project_prefix", args=[("name", @sf.t("web-main.projects.unclassified"))])
+          Cross => @sf.t("web-main.projects.project_prefix", args=[("name", @sf.t("web-main.projects.cross_project"))])
+          Named(p) => @sf.t("web-main.projects.project_prefix", args=[("name", p)])
+        }
+      }
+      @sf.action_box_node(pill, label, fn(_) { @sfbase.set_project_filter(ws, All) }, fn(b) {
+        b
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .gap(Is(proj_s1))
+        .padding(Is((proj_s2, proj_s1, proj_s1_5, proj_s1)))
+        .radius(Is(@sf.small_corner))
+        .ground(By(fn() { @sf.theme().p.hover }))
+        |> ignore
+        @sf.words_node(b, label, fn() { proj_summary_words }).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+        @sf.icon_node(b, "close", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      })
+      |> ignore
+    })
+    bar.show(fn() { @sfbase.tag_filter_of(ws) is Some(_) }, along_row=true, fn(pill) {
+      let label = fn() {
+        match @sfbase.tag_filter_of(ws) {
+          Some(t) => "#" + t
+          None => ""
+        }
+      }
+      @sf.action_box_node(pill, label, fn(_) { @sfbase.set_tag_filter(ws, None) }, fn(b) {
+        b
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .gap(Is(proj_s1))
+        .padding(Is((proj_s2, proj_s1, proj_s1_5, proj_s1)))
+        .radius(Is(@sf.small_corner))
+        .ground(By(fn() { @sf.theme().p.hover }))
+        |> ignore
+        @sf.words_node(b, label, fn() { proj_summary_words }).cuts(Is(true)).allow_ellipsis(Is(true)) |> ignore
+        @sf.icon_node(b, "close", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+      })
+      |> ignore
+    })
+    @sf.action_box_node(bar, fn() { @sf.t("web-main.projects.filter_clear") }, fn(_) { @sfbase.clear_list_filters(ws) }, fn(b) {
+      b.padding(Is((proj_s1, proj_s1, proj_s1, proj_s1))) |> ignore
+      @sf.words_node(b, fn() { @sf.t("web-main.projects.filter_clear") }, fn() { proj_summary_words }) |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Single-line truncation patch for project group headings aligned with `@sf.list_heading_node`.
+// kept across runs: immutable style
+let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, max_lines=1)
+
+///|
+/// Render either a plain time-mode day heading (`@sf.list_heading_node`) or an interactive collapsible project group header.
+/// Reuses `@sf.theme().chat_list.heading.then(@sf.list_heading_in(at))` so the group name left edge and right-side count/chevron
+/// align pixel-for-pixel with time headings (`今天`) and chat rows.
+fn list_day_or_group_heading_node(
+  line : @view.View,
+  ws : String,
+  gkey : () -> String,
+  days : () -> Array[ChatDay],
+  read : () -> (ChatsView?, String?),
+  at : @sf.ListAt,
+  tips : @sf.TipLayer,
+  on_toggle_collapse : (String) -> Unit,
+) -> Unit {
+  let day_of = fn() { days().iter().find_first(fn(d) { d.key == gkey() }) }
+  let grouped = fn() { read().0.map_or(false, fn(vw) { vw.grouped }) }
+  line.switch_by(grouped, fn(p, is_grp) {
+    if !is_grp {
+      @sf.list_heading_node(p, fn() { day_of().map_or(gkey(), fn(d) { d.label }) }, at)
+    } else {
+      let collapsed = fn() { @sfbase.group_collapsed(ws, gkey()) }
+      let label = fn() { day_of().map_or(gkey(), fn(d) { d.label }) }
+      let count_text = fn() { day_of().map_or("0", fn(d) { d.chat_count.to_string() }) }
+      let btn = @sf.action_box_node(
+        p,
+        fn() { label() + " " + count_text() },
+        fn(_) { on_toggle_collapse(@signals.untracked(gkey)) },
+        fn(row) {
+          @sf.style_node(row, fn() { @sf.theme().chat_list.heading.then(@sf.list_heading_in(at)) })
+          row
+          .row(Is(true))
+          .lines_up(Is(Some(Middle)))
+          .gap(Is(proj_s1_5))
+          |> ignore
+          @sf.words_node(row, label, fn() { proj_group_heading_style })
+          .grow(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .cuts(Is(true))
+          .allow_ellipsis(Is(true))
+          |> ignore
+          // Collapsed status dots (running blue / asking red / unread muted)
+          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.running_count > 0 }) }, along_row=true, fn(dot) {
+            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @sf.theme().p.blue })) |> ignore
+            @sf.tip_node(tips, dot, fn() { day_of().map_or("", fn(d) { d.running_count.to_string() }) }, within=true) |> ignore
+          })
+          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.asking_count > 0 }) }, along_row=true, fn(dot) {
+            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @sf.theme().p.red })) |> ignore
+            @sf.tip_node(tips, dot, fn() { day_of().map_or("", fn(d) { d.asking_count.to_string() }) }, within=true) |> ignore
+          })
+          row.show(fn() { collapsed() && day_of().map_or(false, fn(d) { d.unread_count > 0 }) }, along_row=true, fn(dot) {
+            dot.width(Is(Some(6.0))).height(Is(Some(6.0))).radius(Is(3.0)).ground(By(fn() { @sf.theme().p.muted })) |> ignore
+          })
+          @sf.words_node(row, count_text, fn() { proj_row_count }).shrink(Is(0.0)) |> ignore
+          row.switch_by(collapsed, fn(ic, is_col) {
+            @sf.icon_node(ic, if is_col { "chevron-right" } else { "chevron-down" }, 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+          })
+        },
+      )
+      btn.on_menu(fn(m) {
+        match @signals.untracked(day_of) {
+          Some(d) if d.group_kind == "project" =>
+            match d.group_project {
+              Some(pname) if pname != "" =>
+                @sf.menu(
+                  [
+                    Some(@sf.menu_item_of(@sf.t("web-main.projects.filter_only_project"), fn() {
+                      @sfbase.set_project_filter(ws, Named(pname))
+                    })),
+                    Some(@sf.menu_item_of(@sf.t("web-main.projects.manage_project"), further=true, fn() {
+                      open_page(Setting(@settings.Route::Project(pname)))
+                    })),
+                  ],
+                  from=@sf.at_point(m.wx, m.wy),
+                )
+              _ => ()
+            }
+          _ => ()
+        }
+      })
+      |> ignore
+    }
+  })
 }
 
 ///|

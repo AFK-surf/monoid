@@ -1950,7 +1950,7 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       fixture_with_tabs(f, params, with_opened(value))
     "chat" if f.mode.has_prefix("chat-opener") && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_opener(value))
-    "chat" => fixture_with_tabs(f, params, value)
+    "chat" => fixture_with_tabs(f, params, value).map(fn(v) { fx_decorate_chat(v, params) })
     "chatSubchats" => {
       let q = text(Some(Json::object(params)), "q").trim().to_owned()
       let chat_p : Map[String, Json] = Map([])
@@ -2313,6 +2313,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "workspace": Json::string(f.workspace),
         "chatTabs": Json::object(f.chat_tabs),
         "listFilter": Json::object(lf),
+        "listGroups": fx_list_groups_json(),
         "sidebars": Json::object(f.sidebars),
         "remoteTabs": Json::object(f_remote_tabs(f)),
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
@@ -2394,7 +2395,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           _ => base
         }
       })
-    "chats" => fixture_chats(f, params).map(listed_chats)
+    "chats" => fixture_chats(f, params).map(fn(v) { fx_decorate_chats(listed_chats(v), params) })
+    "projects" | "project" | "tags" => fx_projects_topic(name, params)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
     "fleet" => Some(fixture_fleet(f))
@@ -3530,6 +3532,8 @@ pub fn fixture(mode : String) -> Source {
           f.changed()
           done(Ok(Json::object({})))
         }
+        "chat.classify" | "proposal.resolve" | "preset.setProject" | "project.updateInfo" | "project.rename" | "project.merge" =>
+          fx_projects_call(f, name, params, done) |> ignore
         "prefs.set" => {
           match field(Some(params), "windowZoom") {
             Some(String(z)) => f.window_zoom = z
@@ -3599,6 +3603,7 @@ pub fn fixture(mode : String) -> Source {
               }
             _ => ()
           }
+          fx_apply_prefs_list_groups(params)
           match field(Some(params), "sidebars") {
             Some(Object(m)) =>
               for k, v in m {
