@@ -1203,14 +1203,19 @@ fn list_filter_bar_node(line : @view.View, ws : String, _at : @sf.ListAt) -> Uni
 }
 
 ///|
-/// Single-line truncation patch for project group headings aligned with `@sf.list_heading_node`.
+/// A project group header's name: one line, cut short with an ellipsis.
 // kept across runs: immutable style
 let proj_group_heading_style : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, color=Muted, wrap=false, w=Cut)
 
 ///|
+/// How big a project group header's chevron is.
+let group_chevron : Double = 12.0
+
+///|
 /// Render either a plain time-mode day heading (`@sf.list_heading_node`) or an interactive collapsible project group header.
-/// Reuses `@sf.theme().chat_list.heading.then(@sf.list_heading_in(at))` so the group name left edge and right-side count/chevron
-/// align pixel-for-pixel with time headings (`今天`) and chat rows.
+/// The header is a pressable row over its chats, so it lines up with them, not with a time heading (20 in on both sides
+/// across the whole screen): its name as far in as their titles (`@sf.list_row_in`), its chevron centred in the column
+/// their last marks stand in (`@sf.list_end_column`).
 fn list_day_or_group_heading_node(
   line : @view.View,
   ws : String,
@@ -1234,7 +1239,12 @@ fn list_day_or_group_heading_node(
         fn() { label() + " " + count_text() },
         fn(_) { on_toggle_collapse(@signals.untracked(gkey)) },
         fn(row) {
-          @sf.style_node(row, fn() { @sf.theme().chat_list.heading.then(@sf.list_heading_in(at)) })
+          // (its chevron centred in the rows' end column, where their last marks stand)
+          @sf.style_node(row, fn() {
+            @sf.theme().chat_list.heading
+            .then(@sf.list_row_in(at))
+            .then(@sf.list_end_column_in(group_chevron))
+          })
           row
           .row(Is(true))
           .lines_up(Is(Some(Middle)))
@@ -1263,7 +1273,7 @@ fn list_day_or_group_heading_node(
           })
           @sf.words_node(row, count_text, fn() { proj_row_count }).shrink(Is(0.0)) |> ignore
           row.switch_by(collapsed, fn(ic, is_col) {
-            @sf.icon_node(ic, if is_col { "chevron-right" } else { "chevron-down" }, 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+            @sf.icon_node(ic, if is_col { "chevron-right" } else { "chevron-down" }, group_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
           })
         },
       )

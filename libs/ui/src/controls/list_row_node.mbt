@@ -55,10 +55,9 @@ pub fn list_row_node(
       line.box(fn(h) {
         style_node(h, fn() { list_looks(h).head })
         let reach = fn() {
-          let l = theme().chat_list
           if end_slot > 0.0 {
             let inset = if at == Whole { @ui.Space::S4.px() } else { band_pad_in(at) }
-            inset + end_slot / 2.0 - (l.aside_end + l.face_d / 2.0)
+            inset + end_slot / 2.0 - list_end_column()
           } else {
             0.0
           }

@@ -337,6 +337,23 @@ pub fn list_row_in(at : ListAt) -> @ui.Style {
 }
 
 ///|
+/// How far in from a list's row's end the centre of its end column is: the column its rows' last marks stand in (a
+/// chat's station, its people and agents, concentric with the row's corner: list_row_node's `end_slot`), for what else
+/// in the list ends in it (a group's header's chevron).
+pub fn list_end_column() -> Double {
+  let l = theme().chat_list
+  l.aside_end + l.face_d / 2.0
+}
+
+///|
+/// A row's end padding that puts what stands last in it, `mark` across, centred in its list's end column
+/// (list_end_column).
+pub fn list_end_column_in(mark : Double) -> @ui.Style {
+  let pad = list_end_column() - mark / 2.0
+  @ui.style(pr=room(pad))
+}
+
+///|
 // kept across runs: a value (no field of it changes)
 let whole_row_in : @ui.Style = @ui.style(pl=phone_row_in, pr=S4)
 

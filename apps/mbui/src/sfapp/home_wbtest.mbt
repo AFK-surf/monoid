@@ -1706,3 +1706,22 @@ test "Home's list: two new chats arriving back-to-back while the first is still 
   }
   assert_true(mid > 100.0 && prev > mid + 20.0, msg="moved smoothly down: \{mid} -> \{prev}")
 }
+
+///|
+/// On 小屏 a project group's header lines up with its chats: its name where their titles start, its chevron centred in
+/// the column their last marks stand in (not a time heading's 20 in on both sides).
+test "home grouped by project: group headers line up with their chat rows" {
+  let src = fixture_app("projects-grouped")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  let words = t.words()
+  let at = fn(s : String) { words.iter().find_first(fn(w) { w.0 == s }).unwrap() }
+  let head = at("board")
+  let title = at("和 Ana 一起看新版的引导页")
+  assert_eq(head.1, title.1)
+  // (its count, the header's gap, then the chevron centred in the end column: as the rows' station marks are)
+  let count = words.iter().find_first(fn(w) { w.0 == "2" && w.2 == head.2 }).unwrap()
+  let chevron_mid = count.1 + count.3 + @ui.Space::S1_5.px() + 6.0
+  assert_eq(chevron_mid, 390.0 - @sf.list_end_column())
+  assert_eq(t.audit(), [])
+}
