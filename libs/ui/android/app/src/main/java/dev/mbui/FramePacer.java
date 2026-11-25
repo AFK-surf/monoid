@@ -139,13 +139,15 @@ final class FramePacer {
     static final class Taken {
         final boolean app, pictured, external, picturedPaced;
         final long[] vsyncAt;
+        final long continuityGen;
 
-        Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt) {
+        Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt, long continuityGen) {
             this.app = app;
             this.pictured = pictured;
             this.external = external;
             this.picturedPaced = picturedPaced;
             this.vsyncAt = vsyncAt;
+            this.continuityGen = continuityGen;
         }
     }
 
@@ -154,6 +156,48 @@ final class FramePacer {
     private boolean appDispatched;
     /** Whether a pending picture-only redraw originated while a low-rate paced vote was active (guarded by dispatchLock). */
     private boolean picturedFromPaced;
+    /** Monotonic continuity boundary counter (incremented on pause/resume/surface destroy under dispatchLock). */
+    private volatile long continuityGen;
+    /** Minimum valid vsync timestamp (ns) after resume; older timestamps are treated as 0 (written under dispatchLock). */
+    private volatile long minValidVsyncNs;
+    /** Last continuity generation observed by the drawing thread in begin(). */
+    private long seenContinuityGen;
+
+    /**
+     * Resets frame-continuity state across pause/resume or surface destruction (safe from main/lifecycle thread).
+     * Clears stale vsync/dispatch state and advances the continuity generation without dropping pending wakes,
+     * appWanted/externalWanted demand, or leaving wanted stuck true when a deferred Choreographer callback was cleared.
+     */
+    void resetContinuity(long nowNs) {
+        boolean postNext = false;
+        synchronized (dispatchLock) {
+            boolean hadDeferredFromVsync = deferredVsync && deferredFromVsync;
+            boolean hadDeferredWake = deferredWakeApp;
+            long deferredT = deferredVsyncT;
+            if (deferredWakeApp) {
+                if (deferredWakeExternal) externalWanted.set(true);
+                appWanted.set(true);
+            }
+            vsyncAt = new long[] {0, 0};
+            ahead.set(false);
+            appDispatched = false;
+            deferredVsync = false;
+            deferredFromVsync = false;
+            deferredWakeApp = false;
+            deferredWakeExternal = false;
+            if (hadDeferredFromVsync) {
+                clearWantedForLocked(deferredT);
+            }
+            continuityGen++;
+            if (nowNs > 0 && nowNs > minValidVsyncNs) {
+                minValidVsyncNs = nowNs;
+            }
+            if ((hadDeferredFromVsync || hadDeferredWake) && (appWanted.get() || picturesOnly.get())) {
+                postNext = claimPostVsyncLocked();
+            }
+        }
+        if (postNext) postVsyncOutOfLock();
+    }
 
     /** Atomically consumes pending frame flags, reads vsyncAt, and claims vsyncAt[0] when building an app frame. */
     Taken takeRender() {
@@ -168,8 +212,9 @@ final class FramePacer {
             if (pictured) picturedFromPaced = false;
             boolean external = app && externalWanted.getAndSet(false);
             long[] at = vsyncAt;
+            long gen = continuityGen;
             if (app && at[0] != 0) lastAppDispatchedVsyncNs.set(at[0]);
-            return new Taken(app, pictured, external, picturedPaced, at);
+            return new Taken(app, pictured, external, picturedPaced, at, gen);
         }
     }
 
@@ -538,15 +583,27 @@ final class FramePacer {
 
     /** The app's frame beginning now (drawing thread), at {@code began} (the system's clock), for {@code at} (vsyncAt). */
     Begun begin(long[] at, long began) {
-        return begin(at, began, externalWanted.getAndSet(false));
+        return begin(at, began, externalWanted.getAndSet(false), continuityGen);
     }
 
     /** The app's frame beginning now (drawing thread) with {@code externalDemand} atomically taken by {@link #takeRender()}. */
     Begun begin(long[] at, long began, boolean externalDemand) {
+        return begin(at, began, externalDemand, continuityGen);
+    }
+
+    /** The app's frame beginning now (drawing thread) with {@code externalDemand} and {@code gen} from {@link #takeRender()}. */
+    Begun begin(long[] at, long began, boolean externalDemand, long gen) {
+        if (seenContinuityGen != gen) {
+            seenContinuityGen = gen;
+            lastVsync = 0;
+            askedAtEnd = false;
+        }
         // (the frame before asked for this one: the one after it asked for now, before this one's work: askAhead)
         if (askedAtEnd) askAhead();
         // the vsync's time; a frame the system asked for (a resize) has none, and time never goes back
         long v = at[0];
+        long minV = minValidVsyncNs;
+        if (v != 0 && minV != 0 && v < minV) v = 0;
         double now = v != 0 ? v / 1e6 : began / 1e6;
         if (now < lastFrame) now = lastFrame;
         lastFrame = now;
@@ -565,7 +622,7 @@ final class FramePacer {
         // drawn at the vsync after the frame before's: the hand moving what it holds, a frame each vsync
         boolean following = v > lastVsync && lastVsync != 0 && v - lastVsync < framePeriod * 3 / 2;
         lastVsync = v;
-        return new Begun(v, at[1], now, late, following, externalDemand);
+        return new Begun(v, v != 0 ? at[1] : 0, now, late, following, externalDemand);
     }
 
     /**

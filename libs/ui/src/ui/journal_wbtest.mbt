@@ -774,3 +774,240 @@ test "paint glyphs telemetry records exact cache-miss ms on full and paint-only 
   assert_eq(pg4.length(), 1, msg="expected paint glyphs note on incremental frame")
   assert_eq(journal_ms(pg4[0].1), 8.0)
 }
+
+///|
+test "background app-state transitions emit one summary, isolate 27-min messages, report real background stalls separately, and resume cleanly" {
+  let clock = Ref(1000.0)
+  let slow_frame = Ref(false)
+  let t = Tester::new(fn(c) {
+    journal_scene(c)
+    if slow_frame.val {
+      clock.val += 30.0
+    }
+  })
+  journal_reset()
+  set_work_clock(Some(fn() { clock.val }))
+  defer set_work_clock(None)
+  let hangs_said : Array[Hang] = []
+  let summaries : Array[HangSummary] = []
+  hangs_told(Some(fn(h) { hangs_said.push(h) }))
+  hang_summary_told(Some(fn(s) { summaries.push(s) }))
+  journal_shows("Chat")
+  // Foreground active (3 = shown | front)
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  clock.val += 5.0
+  t.clock_frame()
+  assert_eq(summaries.length(), 0)
+  // 1. Falling edge 3 -> 0 emits exactly 1 summary; subsequent hidden states 4 -> 0 emit no duplicate summaries
+  clock.val += 100.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 1)
+  assert_eq(summaries[0].frames, 1)
+  clock.val += 100.0
+  view_event_said(fn() {  }, fn() { on_app_state(4) }, what="app-state")
+  clock.val += 100.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 1)
+
+  // 2. Background messages over 27 minutes (1,620,000 ms), each 10ms and requesting a frame:
+  //    never splice into a single interval, zero false hangs, zero summary roll
+  for i in 0..<6 {
+    ignore(i)
+    clock.val += 270000.0
+    view_event_said(fn() {  }, fn() {
+      clock.val += 10.0
+      h_request_frame()
+    }, what="messages")
+  }
+  assert_eq(hangs_said.length(), 0)
+  assert_eq(summaries.length(), 1)
+
+  // 3. Real single-piece background hangs (60ms Stall and 30ms Blocking) are reported independently
+  //    without polluting shown_ms / work_ms / by_page of the next foreground summary
+  clock.val += 10000.0
+  view_event_said(fn() {  }, fn() { clock.val += 60.0 }, what="messages")
+  assert_eq(hangs_said.length(), 1)
+  assert_eq(hangs_said[0].trigger, Stall)
+  assert_eq(hangs_said[0].sealed_by, Hidden)
+  assert_true(hangs_said[0].end - hangs_said[0].start < 100.0)
+
+  clock.val += 10000.0
+  view_event_said(fn() {  }, fn() { clock.val += 30.0 }, what="messages")
+  assert_eq(hangs_said.length(), 2)
+  assert_eq(hangs_said[1].trigger, Blocking)
+  assert_eq(hangs_said[1].sealed_by, Hidden)
+  assert_true(hangs_said[1].end - hangs_said[1].start < 100.0)
+
+  // 5. Return to foreground (3): first frame timed normally without background shown_ms/work_ms bleed,
+  //    and subsequent real slow frame is reported normally
+  clock.val += 10000.0
+  let fg_start = clock.val
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  clock.val += 5.0
+  t.clock_frame()
+  assert_eq(hangs_said.length(), 2)
+  // Real slow foreground frame (30ms)
+  slow_frame.val = true
+  clock.val += 16.0
+  t.clock_frame()
+  slow_frame.val = false
+  assert_eq(hangs_said.length(), 3)
+  assert_eq(hangs_said[2].trigger, LateFrame)
+  // Hide again: summary must only cover the foreground window since fg_start (not the 27-min background span)
+  clock.val += 100.0
+  let fg_end = clock.val
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 2)
+  assert_true(summaries[1].shown_ms <= fg_end - fg_start + 1.0, msg="shown_ms=\{summaries[1].shown_ms}")
+  assert_eq(summaries[1].frames, 2)
+  assert_eq(summaries[1].stalls, 0)
+  assert_eq(summaries[1].blocking, 0)
+  assert_eq(summaries[1].late, 1)
+}
+
+///|
+test "synchronous hide during frame closes cleanly in journal_frame_ended and emits summary" {
+  let clock = Ref(1000.0)
+  let hide_this_frame = Ref(false)
+  let t = Tester::new(fn(c) {
+    c.text("sync hide") |> ignore
+    if hide_this_frame.val {
+      hide_this_frame.val = false
+      on_app_state(0)
+    }
+  })
+  journal_reset()
+  set_work_clock(Some(fn() { clock.val }))
+  defer set_work_clock(None)
+  let summaries : Array[HangSummary] = []
+  hang_summary_told(Some(fn(s) { summaries.push(s) }))
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  clock.val += 10.0
+  t.clock_frame()
+  assert_eq(summaries.length(), 0)
+  // Hide synchronously inside the next frame's build
+  hide_this_frame.val = true
+  clock.val += 16.0
+  t.clock_frame()
+  assert_eq(summaries.length(), 1)
+  assert_eq(summaries[0].frames, 2)
+  assert_false(journal_hidden.val)
+  assert_true(journal_away.val)
+}
+
+///|
+test "falling-edge hide preserves pending visible-interval stall in HangSummary" {
+  let (_, clock) = journal_start()
+  defer set_work_clock(None)
+  let hangs_said : Array[Hang] = []
+  let summaries : Array[HangSummary] = []
+  hangs_told(Some(fn(h) { hangs_said.push(h) }))
+  hang_summary_told(Some(fn(s) { summaries.push(s) }))
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  // Visible 60ms message asks for a frame, then app hides before that frame draws
+  view_event_said(fn() {  }, fn() {
+    clock.val += 60.0
+    h_request_frame()
+  }, what="messages")
+  assert_eq(hangs_said.length(), 0)
+  clock.val += 10.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(hangs_said.length(), 1)
+  assert_eq(hangs_said[0].trigger, Stall)
+  assert_eq(hangs_said[0].sealed_by, Hidden)
+  assert_eq(summaries.length(), 1)
+  assert_eq(summaries[0].stalls, 1)
+}
+
+///|
+test "frame_hidden off-screen window frame does not pollute visible multi-window HangSummary" {
+  let clock = Ref(1000.0)
+  let slow = Ref(false)
+  let t = Tester::new(fn(c) {
+    journal_scene(c)
+    if slow.val {
+      clock.val += 60.0
+    }
+  })
+  journal_reset()
+  set_work_clock(Some(fn() { clock.val }))
+  defer set_work_clock(None)
+  let hangs_said : Array[Hang] = []
+  let summaries : Array[HangSummary] = []
+  hangs_told(Some(fn(h) { hangs_said.push(h) }))
+  hang_summary_told(Some(fn(s) { summaries.push(s) }))
+  journal_shows("Main")
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  clock.val += 5.0
+  t.clock_frame()
+  // Simulate hidden window (presenting=0) building an off-screen frame with a 60ms stall while another window is visible
+  let hidden_flag = Ref(true)
+  let h = @hostapi.host()
+  let prev_hidden = h.frame_hidden
+  h.frame_hidden = Some(fn() { hidden_flag.val })
+  defer { h.frame_hidden = prev_hidden }
+  slow.val = true
+  clock.val += 16.0
+  t.clock_frame()
+  slow.val = false
+  hidden_flag.val = false
+  assert_eq(hangs_said.length(), 1)
+  assert_eq(hangs_said[0].trigger, Stall)
+  assert_eq(hangs_said[0].sealed_by, Hidden)
+  // Hide app and verify foreground summary excludes the hidden-window frame and stall
+  clock.val += 20.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 1)
+  assert_eq(summaries[0].frames, 1)
+  assert_eq(summaries[0].stalls, 0)
+  assert_eq(summaries[0].by_page, [("Main", 1, 0, 0, 0)])
+}
+
+///|
+test "stale cached slow GPU sample from background is ignored on first foreground frame, new sample counted" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  let gpu_val = Ref(-1.0)
+  let h = @hostapi.host()
+  let prev_gpu = h.gpu_ms
+  h.gpu_ms = fn() { gpu_val.val }
+  defer { h.gpu_ms = prev_gpu }
+  let hangs_said : Array[Hang] = []
+  let summaries : Array[HangSummary] = []
+  hangs_told(Some(fn(h) { hangs_said.push(h) }))
+  hang_summary_told(Some(fn(s) { summaries.push(s) }))
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  clock.val += 5.0
+  t.clock_frame()
+  // Go to background and record a cached 30.0ms GPU sample
+  clock.val += 10.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 1)
+  gpu_val.val = 30.0
+  clock.val += 16.0
+  t.clock_frame()
+  // Return to foreground: host still returns cached 30.0ms -> must be ignored (no gpu.timed, no fake LateFrame)
+  clock.val += 100.0
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  clock.val += 16.0
+  t.clock_frame()
+  assert_eq(hangs_said.length(), 0)
+  clock.val += 10.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 2)
+  assert_eq(summaries[1].gpu.timed, 0)
+  assert_eq(summaries[1].gpu.over_hang, 0)
+  // Return again with a fresh 31.0ms GPU sample -> counted and triggers LateFrame
+  clock.val += 100.0
+  view_event_said(fn() {  }, fn() { on_app_state(3) }, what="app-state")
+  gpu_val.val = 31.0
+  clock.val += 16.0
+  t.clock_frame()
+  assert_eq(hangs_said.length(), 1)
+  assert_eq(hangs_said[0].trigger, LateFrame)
+  clock.val += 10.0
+  view_event_said(fn() {  }, fn() { on_app_state(0) }, what="app-state")
+  assert_eq(summaries.length(), 3)
+  assert_eq(summaries[2].gpu.timed, 1)
+  assert_eq(summaries[2].gpu.over_hang, 1)
+}

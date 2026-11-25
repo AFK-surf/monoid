@@ -136,6 +136,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** Its surface made: the streams' layers (StreamLayer) put under it, where it is the host's. */
     @Override
     public void surfaceCreated(android.view.SurfaceHolder holder) {
+        pacer.resetContinuity(System.nanoTime());
         super.surfaceCreated(holder);
         if (Host.view == this) StreamLayer.parentFrom(this);
     }
@@ -145,6 +146,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     public void surfaceDestroyed(android.view.SurfaceHolder holder) {
         glAlive = false;
         glSettling = false;
+        pacer.resetContinuity(0L);
         postToApp(pacer::surfaceReset);
         StreamLayer.parentGone(this);
         super.surfaceDestroyed(holder);
@@ -160,6 +162,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             Host.main.post(() -> Choreographer.getInstance().removeFrameCallback(settleVsync));
         }
         pacer.setImeMoving(false);
+        pacer.resetContinuity(0L);
         // queued before the GL thread pauses (it takes its queue first): its context still current there
         trim();
         if (!ONE && logic != null) {
@@ -173,8 +176,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** Its drawing resumed: ADPF session recreated before the first frame so PowerHAL raises uclamp promptly. */
     @Override
     public void onResume() {
-        super.onResume();
-        paused = false;
+        if (ONE) {
+            pacer.resetContinuity(System.nanoTime());
+            super.onResume();
+            paused = false;
+        } else {
+            super.onResume();
+            pacer.resetContinuity(System.nanoTime());
+            paused = false;
+        }
         glWorked.set(0L);
         if (!ONE && logic != null) {
             logic.post(this::wakeHints);
@@ -353,7 +363,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     public void onSurfaceChanged(GL10 gl, int w, int h) {
         // a surface again, its context kept from before it went (setPreserveEGLContextOnPause: onSurfaceCreated is not
         // told again as the app comes back from the background), so the GL thread draws again from here
+        boolean wasAlive = glAlive;
         glAlive = true;
+        if (!wasAlive) pacer.resetContinuity(System.nanoTime());
         Native.resize(w, h);
         // (a new surface, told after it is made, or the same at another size: whatever was said of the rate, nothing said)
         if (ONE) {
@@ -547,7 +559,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             return;
         }
         long began = System.nanoTime();
-        FramePacer.Begun b = pacer.begin(at, began, tk.external);
+        FramePacer.Begun b = pacer.begin(at, began, tk.external, tk.continuityGen);
         // the system's back said before this frame's vsync (back(), below); what was said after it, the next frame's
         boolean later = takeBacks(b.vsync != 0 ? b.vsync : began);
         // (what it waits for said again by the frame, if it still does: Host.wakeAfter, from its time)
@@ -594,7 +606,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             return;
         }
         long began = System.nanoTime();
-        FramePacer.Begun b = pacer.begin(at, began, tk.external);
+        FramePacer.Begun b = pacer.begin(at, began, tk.external, tk.continuityGen);
         boolean later = takeBacks(b.vsync != 0 ? b.vsync : began);
         pacer.clearWake();
         buildingFor = b.now;

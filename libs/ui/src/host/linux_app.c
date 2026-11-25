@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include "linux.h"
 #include "linux_launch.h"
+#include "frame_pace.h"
 #include "post.h"
 #include "term.h"
 #include "app_calls.h"  // the app's own calls
@@ -34,6 +35,7 @@ static int go_back(void) {
 }
 
 static double wake_at = -1;  // mb_now_ms() of the earliest wake_after, or -1
+static double building_for = -1.0;  // mb_now_ms() of the frame currently building, or -1
 
 // ---- the windows of one run (@hostapi.windows_in_process: mb_host_windows) ----
 // Each window the app opens beside its first is a window of this run: its own GtkWindow, its canvas (drawn with the
@@ -79,8 +81,10 @@ typedef struct WinSlot {
   int opened;
   double min_w, min_h;
   int inset;
+  // mb_now_ms() of this window's next paced frame (-1: none)
+  double paced_at;
 } WinSlot;
-static WinSlot win_slots[MB_WINS] = {{.scale = 1}};
+static WinSlot win_slots[MB_WINS] = {{.scale = 1, .paced_at = -1.0}};
 static WinSlot *ws = &win_slots[0];
 static int win_active;  // the window in place (0, the first, between frames and input)
 static int win_of_area(GtkWidget *a) {
@@ -492,7 +496,11 @@ static gboolean on_render(GtkGLArea *a, GdkGLContext *c, gpointer data) {
   mb_render_target(ws->fb_pw, ws->fb_ph, w, h, ws->scale);
   GdkFrameClock *clock = gtk_widget_get_frame_clock(GTK_WIDGET(a));
   double now = clock ? gdk_frame_clock_get_frame_time(clock) / 1000.0 : mb_now_ms();
+  ws->paced_at = -1.0;
+  double prev_building = building_for;
+  building_for = mb_now_ms();
   mb_cb.frame(w, h, ws->scale, now);
+  building_for = prev_building;
   // (a scripted run's steps go by the first window's frames)
   if (win_active == 0) {
     frames_drawn++;
@@ -1119,9 +1127,19 @@ static void run_loop(void) {
   GPollFD *fds = NULL;
   gint alloc = 0;
   for (;;) {
-    if (wake_at >= 0 && mb_now_ms() >= wake_at) {
-      wake_at = -1;
+    double now = mb_now_ms();
+    if (wake_at >= 0.0 && now >= wake_at) {
+      wake_at = -1.0;
       schedule_all();
+    }
+    for (int k = 0; k < MB_WINS; k++) {
+      if (win_slots[k].win && win_slots[k].paced_at >= 0.0 && now >= win_slots[k].paced_at) {
+        win_slots[k].paced_at = -1.0;
+        int back = win_active;
+        win_use(k);
+        schedule();
+        win_put_back(back);
+      }
     }
     gint prio = 0, timeout = -1, n;
     g_main_context_prepare(ctx, &prio);
@@ -1129,8 +1147,16 @@ static void run_loop(void) {
       alloc = n;
       fds = g_renew(GPollFD, fds, alloc);
     }
-    if (wake_at >= 0) {
-      gint ms = (gint)ceil(wake_at - mb_now_ms());
+    double next_wake = wake_at;
+    for (int k = 0; k < MB_WINS; k++) {
+      if (win_slots[k].win && win_slots[k].paced_at >= 0.0 &&
+          (next_wake < 0.0 || win_slots[k].paced_at < next_wake))
+        next_wake = win_slots[k].paced_at;
+    }
+    if (next_wake >= 0.0) {
+      double clamped = mb_frame_pace_clamp_wait_ms(next_wake - mb_now_ms(), (double)G_MAXINT);
+      double c = ceil(clamped);
+      gint ms = c >= (double)G_MAXINT ? G_MAXINT : (gint)c;
       if (ms < 0) ms = 0;
       if (timeout < 0 || ms < timeout) timeout = ms;
     }
@@ -1357,6 +1383,7 @@ static void win_closed(GtkWidget *w, gpointer data) {
   if (o->im) g_object_unref(o->im);
   memset(o, 0, sizeof *o);
   o->scale = 1;
+  o->paced_at = -1.0;
   g_idle_add(win_closed_told, GINT_TO_POINTER(wid));
 }
 
@@ -1391,6 +1418,7 @@ static int win_open(moonbit_string_t what) {
   WinSlot *o = &win_slots[wid];
   memset(o, 0, sizeof *o);
   o->scale = first->scale;
+  o->paced_at = -1.0;
   snprintf(o->role, sizeof o->role, "%s", jtext(&spec, "role"));
   o->min_w = jnum(&spec, "minW", 0) > 0 ? jnum(&spec, "minW", 0) : setup_min_w;
   o->min_h = jnum(&spec, "minH", 0) > 0 ? jnum(&spec, "minH", 0) : setup_min_h;
@@ -1462,6 +1490,9 @@ int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
       g_free(title);
       return 1;
     }
+    case 6:
+      schedule();
+      return 1;
     default: return 0;
   }
 }
@@ -1495,16 +1526,49 @@ int32_t mb_host_platform(void) { return 5; }
 // A frame asked for: of every window of the run where there are several, else the one.
 void mb_host_request_frame(void) { schedule_all(); }
 
-// A frame for what moves on by the clock that needs fewer (@hostapi.frames_paced): not paced here, the next drawn.
+double mb_host_display_hz(void);
+
+// Scripted, driven, benched, recorded, or shot-taking runs stay unpaced so every frame advances deterministically.
+static int looked_at_run(void) {
+  static int cached = -1;
+  if (cached >= 0) return cached;
+  cached = (script || shot_dir || getenv("MBUI_BENCH") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64") ||
+            getenv("MBUI_SHOT_DIR") || getenv("MBUI_WIN") || getenv("MBUI_RECORD"))
+               ? 1
+               : 0;
+  return cached;
+}
+
+// A frame for what moves on by the clock that needs fewer (@hostapi.frames_paced): wakes this window half a
+// refresh before the target GTK frame-clock slot when display refresh is known, else schedules the next tick.
 void mb_host_frames_paced(double hz) {
-  (void)hz;
-  mb_host_request_frame();
+  if (ws->want_frame) return;
+  if (looked_at_run() || building_for < 0.0) {
+    schedule();
+    return;
+  }
+  double top = mb_host_display_hz();
+  int every = mb_frame_pace_every(top, hz);
+  if (every <= 1) {
+    schedule();
+    return;
+  }
+  double wake_ms = mb_frame_pace_tick_wake_ms(1000.0 / top, every);
+  double target = building_for + wake_ms;
+  if (!isfinite(target)) {
+    schedule();
+    return;
+  }
+  if (ws->paced_at < 0.0 || target < ws->paced_at) ws->paced_at = target;
 }
 
 // (the loop waits no longer than it: run_loop)
 void mb_host_wake_after(double ms) {
-  double t = mb_now_ms() + ms;
-  if (wake_at < 0 || t < wake_at) wake_at = t;
+  if (!isfinite(ms)) return;
+  if (ms < 0.0) ms = 0.0;
+  double base = building_for >= 0.0 ? building_for : mb_now_ms();
+  double t = base + ms;
+  if (isfinite(t) && (wake_at < 0.0 || t < wake_at)) wake_at = t;
 }
 
 // (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)
@@ -2071,7 +2135,19 @@ double mb_host_thread_cpu_ms(void) {
 }
 
 // The display's refresh rate in Hz (@hostapi.display_hz; 0: unknown).
-double mb_host_display_hz(void) { return 0.0; }
+double mb_host_display_hz(void) {
+  if (!ws || !ws->win) return 0.0;
+  GtkNative *nat = gtk_widget_get_native(ws->win);
+  if (!nat) return 0.0;
+  GdkSurface *surf = gtk_native_get_surface(nat);
+  if (!surf) return 0.0;
+  GdkDisplay *disp = gdk_surface_get_display(surf);
+  if (!disp) return 0.0;
+  GdkMonitor *mon = gdk_display_get_monitor_at_surface(disp, surf);
+  if (!mon) return 0.0;
+  int mhz = gdk_monitor_get_refresh_rate(mon);
+  return mhz > 0 ? (double)mhz / 1000.0 : 0.0;
+}
 
 double mb_host_mem_bytes(void) {
   long pages = 0, resident = 0;
