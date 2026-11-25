@@ -321,11 +321,11 @@ impl Os for System {
         if let Some(front) = &mut self.front {
             return match front.decide_transition(&self.options.app, &self.options.data) {
                 crate::front::FrontDecision::Keep => FrontSwitch::NoChange,
-                crate::front::FrontDecision::SwitchTo(want) => {
+                crate::front::FrontDecision::SwitchTo(resolved) => {
                     let old = self.front.take().unwrap();
-                    log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
+                    log::info(&format!("the front (pid {}) engine changed ({} -> {}): replacing it before handover", old.pid, old.engine(), resolved.engine));
                     old.end();
-                    self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+                    self.front = crate::front::Front::start_resolved(resolved, &self.options.app, &self.options.data);
                     if self.front.is_some() { FrontSwitch::Started } else { FrontSwitch::Failed }
                 }
                 crate::front::FrontDecision::EndForDirectBind => {
@@ -718,6 +718,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     // This launcher is the release's (it was run from there).
     let own = hash_of(&options.app.join(LAUNCHER_IN_APP));
     let Resumed { lock, mcp, admin, parent, front, node, version, served, heartbeats } = resumed;
+    let had_resumed_front = front.is_some();
     // None handed on (a launcher from before the front, or one whose front would not run), or one handing streams as
     // a release before this one: one started here, before the Node the handover starts, so a station that only ever
     // updates comes to have one without being started again.
@@ -729,6 +730,9 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
+    if had_resumed_front && !station.os.has_front() {
+        station.mark_front_gone_from_resume();
+    }
     if wanted {
         station.schedule_front_retry();
     }

@@ -87,16 +87,17 @@ impl PionStamp {
         })
     }
 
-    fn to_json(&self) -> Value {
-        json!({
-            "path": self.path,
+    fn to_json(&self) -> Option<Value> {
+        let path = self.path.to_str()?;
+        Some(json!({
+            "path": path,
             "dev": self.dev,
             "ino": self.ino,
             "mtimeSec": self.mtime_sec,
             "mtimeNsec": self.mtime_nsec,
             "size": self.size,
             "mode": self.mode,
-        })
+        }))
     }
 
     fn from_json(v: &Value) -> Option<PionStamp> {
@@ -112,13 +113,22 @@ impl PionStamp {
     }
 }
 
+/// A resolved front binary ready to launch (carries already-probed Pion metadata to avoid duplicate `--version` probes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedProgram {
+    pub engine: String,
+    program: PathBuf,
+    requested: String,
+    fallback_pion_stamp: Option<PionStamp>,
+}
+
 /// Decision for a running front at a `SIGUSR2` handover or launcher `renew`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrontDecision {
     /// Keep the currently running front untouched.
     Keep,
-    /// End the running front and start one for this target engine (`"mb"` or `"pion"`).
-    SwitchTo(String),
+    /// End the running front and start this already-resolved target program.
+    SwitchTo(ResolvedProgram),
     /// End the running front and leave no front running so the next Node binds the endpoint directly.
     EndForDirectBind,
 }
@@ -192,8 +202,13 @@ impl Front {
                 self.fallback_pion_stamp = None;
                 return FrontDecision::Keep;
             }
-            if mb_program_with(app, mb_var).is_some() {
-                return FrontDecision::SwitchTo(ENGINE_MB.to_string());
+            if let Some(mb_program) = mb_program_with(app, mb_var) {
+                return FrontDecision::SwitchTo(ResolvedProgram {
+                    engine: ENGINE_MB.to_string(),
+                    program: mb_program,
+                    requested: ENGINE_MB.to_string(),
+                    fallback_pion_stamp: None,
+                });
             }
             return FrontDecision::EndForDirectBind;
         }
@@ -205,8 +220,13 @@ impl Front {
                 self.fallback_pion_stamp = None;
                 return FrontDecision::Keep;
             }
-            if mb_program_with(app, mb_var).is_some() {
-                return FrontDecision::SwitchTo(ENGINE_MB.to_string());
+            if let Some(mb_program) = mb_program_with(app, mb_var) {
+                return FrontDecision::SwitchTo(ResolvedProgram {
+                    engine: ENGINE_MB.to_string(),
+                    program: mb_program,
+                    requested: ENGINE_PION.to_string(),
+                    fallback_pion_stamp: PionStamp::of(&pion_path),
+                });
             }
             return FrontDecision::EndForDirectBind;
         }
@@ -225,8 +245,20 @@ impl Front {
             return FrontDecision::Keep;
         }
         match probe_pion_mesh_support(&pion_path, PROBE_VERSION_WITHIN) {
-            Ok(()) => FrontDecision::SwitchTo(ENGINE_PION.to_string()),
-            Err(reason) => {
+            Ok(()) => FrontDecision::SwitchTo(ResolvedProgram {
+                engine: ENGINE_PION.to_string(),
+                program: pion_path,
+                requested: ENGINE_PION.to_string(),
+                fallback_pion_stamp: None,
+            }),
+            Err(ProbeError::TimedOut(reason)) => {
+                // Transient timeout: keep healthy MB front without locking `fallback_pion_stamp` so the next handover can retry.
+                if warn {
+                    log::warn(&format!("front mesh requested \"pion\" but {} capability probe timed out ({reason}); keeping running \"mb\" front", pion_path.display()));
+                }
+                FrontDecision::Keep
+            }
+            Err(ProbeError::Deterministic(reason)) => {
                 if warn {
                     log::warn(&format!("front mesh requested \"pion\" but {} failed capability probe ({reason}); keeping running \"mb\" front", pion_path.display()));
                 }
@@ -280,12 +312,24 @@ impl Front {
             pion_var.as_deref(),
             true,
         )?;
+        Self::start_resolved_with(resolved, app, mb_var.as_deref(), data)
+    }
+
+    /// Starts an already-resolved front program without re-running `--version` probing (used by `SIGUSR2` switching
+    /// after `decide_transition` already probed Pion). Falls back once to MoonBit if Pion fails to spawn or listen.
+    pub fn start_resolved(resolved: ResolvedProgram, app: &Path, data: &Path) -> Option<Front> {
+        clean_orphans(data, None);
+        let mb_var = std::env::var_os(PROGRAM_VAR);
+        Self::start_resolved_with(resolved, app, mb_var.as_deref(), data)
+    }
+
+    fn start_resolved_with(resolved: ResolvedProgram, app: &Path, mb_var: Option<&OsStr>, data: &Path) -> Option<Front> {
         if let Some(front) = spawn_front(&resolved.program, &resolved.engine, &resolved.requested, resolved.fallback_pion_stamp.clone(), data) {
             return Some(front);
         }
         if resolved.engine == ENGINE_PION {
             let stamp = PionStamp::of(&resolved.program);
-            if let Some(mb_program) = mb_program_with(app, mb_var.as_deref()) {
+            if let Some(mb_program) = mb_program_with(app, mb_var) {
                 log::warn(&format!("the front (engine pion, {}) failed to start or listen; falling back to \"mb\" ({})", resolved.program.display(), mb_program.display()));
                 return spawn_front(&mb_program, ENGINE_MB, ENGINE_PION, stamp, data);
             }
@@ -317,8 +361,8 @@ impl Front {
             "engine": self.engine,
             "requested": self.requested,
         });
-        if let Some(stamp) = &self.fallback_pion_stamp {
-            state["fallbackPionStamp"] = stamp.to_json();
+        if let Some(stamp) = self.fallback_pion_stamp.as_ref().and_then(PionStamp::to_json) {
+            state["fallbackPionStamp"] = stamp;
         }
         #[cfg(target_os = "macos")]
         {
@@ -407,8 +451,8 @@ impl Front {
             log::warn(&format!("the front (pid {}) hands streams as {} and this release as {STREAMS}: ending it for the release's", self.pid, self.streams));
         } else {
             match decision {
-                FrontDecision::SwitchTo(want) => {
-                    log::warn(&format!("the front (pid {}) runs engine {} and desired engine is {want}: ending it to switch", self.pid, self.engine));
+                FrontDecision::SwitchTo(resolved) => {
+                    log::warn(&format!("the front (pid {}) runs engine {} and desired engine is {}: ending it to switch", self.pid, self.engine, resolved.engine));
                     self.end();
                     return None;
                 }
@@ -718,19 +762,25 @@ fn version_supports_mesh(stdout: &str) -> bool {
     false
 }
 
+#[derive(Debug)]
+enum ProbeError {
+    TimedOut(String),
+    Deterministic(String),
+}
+
 /// Runs `<program> --version` with a bounded timeout so a broken or wedged binary can never block launcher startup.
-fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Result<(), String> {
+fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Result<(), ProbeError> {
     let mut child = Command::new(program)
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("spawn failed: {e}"))?;
+        .map_err(|e| ProbeError::Deterministic(format!("spawn failed: {e}")))?;
     let Some(mut out) = child.stdout.take() else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err("missing stdout pipe".to_string());
+        return Err(ProbeError::Deterministic("missing stdout pipe".to_string()));
     };
     let deadline = Instant::now() + within;
     let mut buf = Vec::new();
@@ -767,7 +817,7 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
                 drop(out);
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("read failed: {e}"));
+                return Err(ProbeError::Deterministic(format!("read failed: {e}")));
             }
         }
     }
@@ -775,12 +825,12 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
     if overflowed {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(format!("--version output exceeded {PROBE_STDOUT_LIMIT} bytes"));
+        return Err(ProbeError::Deterministic(format!("--version output exceeded {PROBE_STDOUT_LIMIT} bytes")));
     }
     if timed_out {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(format!("--version timed out after {} ms", within.as_millis()));
+        return Err(ProbeError::TimedOut(format!("--version timed out after {} ms", within.as_millis())));
     }
     let status = loop {
         match child.try_wait() {
@@ -789,32 +839,25 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(format!("--version did not exit within {} ms", within.as_millis()));
+                    return Err(ProbeError::TimedOut(format!("--version did not exit within {} ms", within.as_millis())));
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("wait failed: {e}"));
+                return Err(ProbeError::Deterministic(format!("wait failed: {e}")));
             }
         }
     };
     if !status.success() {
-        return Err(format!("--version exited with {status}"));
+        return Err(ProbeError::Deterministic(format!("--version exited with {status}")));
     }
     let text = String::from_utf8_lossy(&buf);
     if !version_supports_mesh(&text) {
-        return Err(format!("--version modes list does not include mesh ({})", text.trim()));
+        return Err(ProbeError::Deterministic(format!("--version modes list does not include mesh ({})", text.trim())));
     }
     Ok(())
-}
-
-struct ResolvedProgram {
-    engine: String,
-    program: PathBuf,
-    requested: String,
-    fallback_pion_stamp: Option<PionStamp>,
 }
 
 fn resolve_program_full(
@@ -830,8 +873,8 @@ fn resolve_program_full(
     let mut fallback_pion_stamp = None;
     if requested == ENGINE_PION {
         let pion_path = pion_candidate_with(app, pion_var);
-        fallback_pion_stamp = PionStamp::of(&pion_path);
         if !is_executable_file(&pion_path) {
+            fallback_pion_stamp = PionStamp::of(&pion_path);
             if warn {
                 log::warn(&format!("front mesh requested \"pion\" but {} is missing or not executable; falling back to \"mb\"", pion_path.display()));
             }
@@ -845,7 +888,14 @@ fn resolve_program_full(
                         fallback_pion_stamp: None,
                     });
                 }
-                Err(reason) => {
+                Err(ProbeError::TimedOut(reason)) => {
+                    // Transient timeout: fall back to MB for now without locking `fallback_pion_stamp`.
+                    if warn {
+                        log::warn(&format!("front mesh requested \"pion\" but {} capability probe timed out ({reason}); falling back to \"mb\"", pion_path.display()));
+                    }
+                }
+                Err(ProbeError::Deterministic(reason)) => {
+                    fallback_pion_stamp = PionStamp::of(&pion_path);
                     if warn {
                         log::warn(&format!("front mesh requested \"pion\" but {} failed capability probe ({reason}); falling back to \"mb\"", pion_path.display()));
                     }
@@ -856,8 +906,8 @@ fn resolve_program_full(
     mb_program_with(app, mb_var).map(|program| ResolvedProgram {
         engine: ENGINE_MB.to_string(),
         program,
-        requested: requested.to_string(),
-        fallback_pion_stamp: if requested == ENGINE_PION { fallback_pion_stamp } else { None },
+        requested: if fallback_pion_stamp.is_some() { ENGINE_PION.to_string() } else { ENGINE_MB.to_string() },
+        fallback_pion_stamp,
     })
 }
 
@@ -1264,9 +1314,9 @@ fn connect_now(socket: &Path) -> Option<std::os::unix::net::UnixStream> {
 #[cfg(test)]
 mod engine_tests {
     use super::{
-        ENGINE_MB, ENGINE_PION, Front, FrontDecision, PROBE_STDOUT_LIMIT, PionStamp, STREAMS,
-        infer_engine_from_args, mb_program_with, probe_pion_mesh_support, read_config_mesh_at,
-        resolve_override_path, resolve_program_with, select_requested_engine,
+        ENGINE_MB, ENGINE_PION, Front, FrontDecision, PROBE_STDOUT_LIMIT, PionStamp, ProbeError,
+        STREAMS, infer_engine_from_args, mb_program_with, probe_pion_mesh_support,
+        read_config_mesh_at, resolve_override_path, resolve_program_with, select_requested_engine,
         version_supports_mesh,
     };
     use serde_json::json;
@@ -1389,13 +1439,15 @@ mod engine_tests {
         let _exec = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = temp_dir("probe-edge");
 
-        // 1. 200ms timeout kills slow binary cleanly.
+        // 1. 200ms timeout kills slow binary cleanly and classifies as ProbeError::TimedOut (transient, never locks stamp).
         let slow = dir.join("pion-slow");
         write_script(&slow, "#!/bin/sh\nsleep 5\n", true);
-        let err = probe_pion_mesh_support(&slow, Duration::from_millis(200)).unwrap_err();
-        assert!(err.contains("timed out"), "{err}");
+        match probe_pion_mesh_support(&slow, Duration::from_millis(200)) {
+            Err(ProbeError::TimedOut(msg)) => assert!(msg.contains("timed out"), "{msg}"),
+            other => panic!("expected ProbeError::TimedOut, got {other:?}"),
+        }
 
-        // 2. Output exceeding 64 KiB right across `modes:mesh2` boundary must fail (never truncate to `mesh`).
+        // 2. Output exceeding 64 KiB right across `modes:mesh2` boundary must fail deterministically (never truncate to `mesh`).
         let big = dir.join("pion-big");
         let pad_len = PROBE_STDOUT_LIMIT - "modes:mesh".len();
         write_script(
@@ -1403,14 +1455,18 @@ mod engine_tests {
             &format!("#!/bin/sh\nawk 'BEGIN{{for(i=0;i<{pad_len};i++) printf \" \"; printf \"modes:mesh2\\n\"}}'\n"),
             true,
         );
-        let err = probe_pion_mesh_support(&big, Duration::from_secs(3)).unwrap_err();
-        assert!(err.contains("exceeded"), "{err}");
+        match probe_pion_mesh_support(&big, Duration::from_secs(3)) {
+            Err(ProbeError::Deterministic(msg)) => assert!(msg.contains("exceeded"), "{msg}"),
+            other => panic!("expected ProbeError::Deterministic(exceeded), got {other:?}"),
+        }
 
-        // 3. Valid modes:mesh output but exit 1 must fail.
+        // 3. Valid modes:mesh output but exit 1 must fail deterministically.
         let exit1 = dir.join("pion-exit1");
         write_script(&exit1, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:mesh'\nexit 1\n", true);
-        let err = probe_pion_mesh_support(&exit1, Duration::from_secs(3)).unwrap_err();
-        assert!(err.contains("exited"), "{err}");
+        match probe_pion_mesh_support(&exit1, Duration::from_secs(3)) {
+            Err(ProbeError::Deterministic(msg)) => assert!(msg.contains("exited"), "{msg}"),
+            other => panic!("expected ProbeError::Deterministic(exited), got {other:?}"),
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1694,11 +1750,80 @@ mod engine_tests {
         std::fs::set_permissions(&chmod_pion, std::fs::Permissions::from_mode(0o755)).unwrap();
         let stamp_after = PionStamp::of(&chmod_pion).expect("stamp after chmod");
         assert_ne!(stamp_before.mode, stamp_after.mode);
-        assert_eq!(
+        assert!(matches!(
             waiting_mb.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), false),
-            FrontDecision::SwitchTo(ENGINE_PION.to_string())
-        );
+            FrontDecision::SwitchTo(ref r) if r.engine == ENGINE_PION
+        ));
         waiting_mb.end();
+
+        // 6. Single `--version` probe on MB -> Pion switch (`decide_transition_with` + `start_resolved_with` runs `--version` only once).
+        let probe_count_file = dir.join("probe-count");
+        let counting_pion = dir.join("counting-pion");
+        write_script(
+            &counting_pion,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 1 >> '{}'\n  echo 'stillfail-pion 0.1.0 modes:mesh'\n  exit 0\nfi\nprintf '{{\"listening\":\"%s\",\"streams\":8}}\\n' \"$4\"\nexec cat > /dev/null\n",
+                probe_count_file.display()
+            ),
+            true,
+        );
+        let (pid6, input6) = spawn_cat();
+        let mut mb_switch = Front {
+            pid: pid6,
+            input: input6,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS,
+            engine: ENGINE_MB.to_string(),
+            requested: ENGINE_MB.to_string(),
+            fallback_pion_stamp: None,
+            #[cfg(target_os = "macos")]
+            launcher_uuid: super::executable_uuid(),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        let resolved = match mb_switch.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(counting_pion.as_os_str()), false) {
+            FrontDecision::SwitchTo(r) => r,
+            other => panic!("expected SwitchTo, got {other:?}"),
+        };
+        mb_switch.end();
+        let started_pion = Front::start_resolved_with(resolved, &app, None, &data).expect("started pion");
+        assert_eq!(started_pion.engine(), ENGINE_PION);
+        started_pion.end();
+        let probes = std::fs::read_to_string(&probe_count_file).unwrap().lines().count();
+        assert_eq!(probes, 1, "MB -> Pion switch must run --version exactly once");
+
+        // 7. Non-UTF-8 `PionStamp.path` omits `fallbackPionStamp` cleanly in `Front::state()` without panicking.
+        let non_utf8_stamp = PionStamp {
+            path: PathBuf::from(OsStr::from_bytes(b"/tmp/\xff/stillfail-pion")),
+            dev: 1,
+            ino: 2,
+            mtime_sec: 3,
+            mtime_nsec: 4,
+            size: 5,
+            mode: 0o100755,
+        };
+        assert_eq!(non_utf8_stamp.to_json(), None);
+        let (pid7, input7) = spawn_cat();
+        let non_utf8_front = Front {
+            pid: pid7,
+            input: input7,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS,
+            engine: ENGINE_MB.to_string(),
+            requested: ENGINE_PION.to_string(),
+            fallback_pion_stamp: Some(non_utf8_stamp),
+            #[cfg(target_os = "macos")]
+            launcher_uuid: None,
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        let state = non_utf8_front.state();
+        assert!(state.get("fallbackPionStamp").is_none());
+        non_utf8_front.end();
 
         let _ = std::fs::remove_dir_all(&dir);
     }

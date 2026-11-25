@@ -231,6 +231,8 @@ pub struct Node<P> {
     heartbeat_at: Option<Instant>,
     /// Killed for saying nothing.
     hung: bool,
+    /// Whether this Node was started linked to a running front (`STILLFAIL_MESH_FRONT`).
+    linked_front: bool,
 }
 
 impl<P> Node<P> {
@@ -273,6 +275,8 @@ pub struct Lifecycle<O: Os> {
     front_gone: bool,
     /// When the next direct-binding handover attempt for `front_gone` may run (backoff after a failed direct-bind Next).
     front_gone_at: Option<Instant>,
+    /// Independent exponential backoff step for `front_gone` direct-bind retries (never inflates Node crash `backoff_step`).
+    front_gone_step: u32,
     /// Gone so: when one is started again (Times::front_retry), and how many tries did not start one.
     front_retry_at: Option<Instant>,
     front_retries: u32,
@@ -310,6 +314,7 @@ impl<O: Os> Lifecycle<O> {
             exit: 0,
             front_gone: false,
             front_gone_at: None,
+            front_gone_step: 0,
             front_retry_at: None,
             front_retries: 0,
             renewed: false,
@@ -321,8 +326,8 @@ impl<O: Os> Lifecycle<O> {
         }
     }
 
-    fn node(process: O::Node) -> Node<O::Node> {
-        Node { process, ready: None, version: String::new(), served: vec![], take_by: None, taken: false, handed: false, given_up: false, heartbeats: false, heartbeat_at: None, hung: false }
+    fn node(process: O::Node, linked_front: bool) -> Node<O::Node> {
+        Node { process, ready: None, version: String::new(), served: vec![], take_by: None, taken: false, handed: false, given_up: false, heartbeats: false, heartbeat_at: None, hung: false, linked_front }
     }
 
     /// The Node serving has taken over once it serves every entrance and the one before it is gone: station.json says
@@ -386,7 +391,26 @@ impl<O: Os> Lifecycle<O> {
             self.os.route(name, Some(*port));
         }
         let now = self.os.now();
-        self.current = Some(Node { process, ready: Some(now), version, served, take_by: None, taken: true, handed: false, given_up: false, heartbeats, heartbeat_at: heartbeats.then_some(now), hung: false });
+        let linked_front = self.os.has_front();
+        self.current = Some(Node { process, ready: Some(now), version, served, take_by: None, taken: true, handed: false, given_up: false, heartbeats, heartbeat_at: heartbeats.then_some(now), hung: false, linked_front });
+    }
+
+    /// Marks that `resume()` ended the adopted Node's old front without starting a replacement, so if the subsequent
+    /// direct-binding handover fails before ready, the launcher retries direct-binding handover with backoff.
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn mark_front_gone_from_resume(&mut self) {
+        if let Some(node) = self.current.as_mut() {
+            node.linked_front = true;
+        }
+        self.front_gone = true;
+        self.front_gone_at = None;
+        self.front_gone_step = 0;
+    }
+
+    fn schedule_front_gone_backoff(&mut self) {
+        let delay = self.times.backoff.saturating_mul(1 << self.front_gone_step.min(16)).min(self.times.backoff_max);
+        self.front_gone_step += 1;
+        self.front_gone_at = Some(self.os.now() + delay);
     }
 
     /// Whether the release's launcher took this one's place (Windows' `Os::renew`): it does nothing more.
@@ -407,7 +431,8 @@ impl<O: Os> Lifecycle<O> {
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("Node started (pid {})", process.pid()));
-                self.current = Some(Self::node(process));
+                let linked_front = self.os.has_front();
+                self.current = Some(Self::node(process, linked_front));
             }
             Err(error) => {
                 log::error(&format!("{} did not start: {error}", self.os.program()));
@@ -661,9 +686,12 @@ impl<O: Os> Lifecycle<O> {
     fn hand_over(&mut self) {
         let Some((mut next, _, _)) = self.next.take() else { return };
         self.restart_at = None;
-        if !self.os.has_front() {
+        // Only clear `front_gone` when the Node taking over was itself started for direct binding (not linked to a
+        // front that died while this handover was in flight).
+        if !next.linked_front {
             self.front_gone = false;
             self.front_gone_at = None;
+            self.front_gone_step = 0;
         }
         next.handed = true;
         next.take_by = Some(self.os.now() + self.times.take);
@@ -730,6 +758,7 @@ impl<O: Os> Lifecycle<O> {
                     self.front_probe_at = Some(self.os.now() + self.times.front_probe);
                     self.front_gone = false;
                     self.front_gone_at = None;
+                    self.front_gone_step = 0;
                     self.front_retry_at = None;
                     self.front_retries = 0;
                     (false, false)
@@ -760,14 +789,13 @@ impl<O: Os> Lifecycle<O> {
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("handover: Node {} started beside the one serving", process.pid()));
-                self.next = Some((Self::node(process), self.os.now() + self.times.ready, false));
+                let linked_front = self.os.has_front();
+                self.next = Some((Self::node(process, linked_front), self.os.now() + self.times.ready, false));
             }
             Err(error) => {
                 self.handoff_failed(&format!("{} did not start: {error}", self.os.program()));
                 if (self.front_gone || hold_front_gone) && self.stopping.is_none() && self.current.is_some() {
-                    let delay = self.times.backoff.saturating_mul(1 << self.backoff_step.min(16)).min(self.times.backoff_max);
-                    self.backoff_step += 1;
-                    self.front_gone_at = Some(self.os.now() + delay);
+                    self.schedule_front_gone_backoff();
                 }
             }
         }
@@ -929,9 +957,7 @@ impl<O: Os> Lifecycle<O> {
                 }
                 drop(node);
                 if self.front_gone && self.stopping.is_none() && self.current.is_some() {
-                    let delay = self.times.backoff.saturating_mul(1 << self.backoff_step.min(16)).min(self.times.backoff_max);
-                    self.backoff_step += 1;
-                    self.front_gone_at = Some(self.os.now() + delay);
+                    self.schedule_front_gone_backoff();
                 }
                 if self.current.is_none() && self.stopping.is_none() && self.restart_at.is_none() {
                     self.schedule_restart();
@@ -1103,6 +1129,7 @@ impl<O: Os> Lifecycle<O> {
                 log::info("the front listens again");
                 self.front_gone = false;
                 self.front_gone_at = None;
+                self.front_gone_step = 0;
                 // The Node serving binds the endpoint itself: it hands over to one linked to the front (spawn).
                 if self.current.is_some() {
                     log::info("the Node serving hands over to one linked to the front");
@@ -2493,5 +2520,64 @@ mod tests {
         station_direct.pass(s(1));
         assert_eq!(station_direct.last(), direct1 + 1);
         assert!(station_direct.front_retry_at.is_none());
+    }
+
+    #[test]
+    fn front_dying_during_linked_next_handover_still_triggers_direct_bind_recovery() {
+        let mut station = station("frontdiesmidhandover", false);
+        station.os.front = true;
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        // Start handover while front is still alive: Next is linked to that front (`linked_front == true`).
+        station.start_next();
+        let linked_next = station.last();
+        assert_ne!(linked_next, old);
+        // Front dies before Next becomes ready.
+        station.os.front = false;
+        station.front_gone();
+        // Linked Next becomes ready and old retires: because Next was linked to the dead front, `front_gone` MUST
+        // remain set so tick() immediately hands over to a direct-binding Node.
+        station.said(Slot::Next, ready("0.2.0"));
+        station.ended(old, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        station.tick();
+        let direct = station.last();
+        assert_eq!(direct, linked_next + 1, "must hand over to a direct-binding Node");
+        // Once the direct-binding Node takes over, `front_gone` clears and no further handover happens.
+        station.said(Slot::Next, ready("0.2.0"));
+        station.ended(linked_next, EXITED_0);
+        station.serves(Slot::Current, 7000);
+        station.pass(s(10));
+        assert_eq!(station.last(), direct);
+    }
+
+    #[test]
+    fn resume_with_ended_front_retries_direct_bind_with_independent_backoff_step() {
+        let mut station = station("resumefrontended", false);
+        station.current = None;
+        let told = Rc::new(RefCell::new(vec![]));
+        station.os.told.push((50, told.clone()));
+        station.os.front = false;
+        station.adopt(FakeNode { pid: 50, told }, "0.1.0".into(), vec![("admin".into(), 5002), ("mcp".into(), 5001)], true);
+        station.mark_front_gone_from_resume();
+        station.start_next_after_resume();
+        let direct1 = station.last();
+        assert_eq!(station.backoff_step, 0);
+        // First direct-binding Next exits before ready: retries after independent front_gone_step backoff without
+        // inflating Node crash `backoff_step`.
+        station.ended(direct1, EXITED_1);
+        assert_eq!(station.backoff_step, 0, "front_gone backoff must not inflate Node crash backoff_step");
+        assert_eq!(station.front_gone_step, 1);
+        station.pass(s(1) - MS);
+        assert_eq!(station.last(), direct1);
+        station.pass(MS);
+        let direct2 = station.last();
+        assert_eq!(direct2, direct1 + 1);
+        station.said(Slot::Next, ready("0.2.0"));
+        station.ended(50, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        assert_eq!(station.front_gone_step, 0);
+        station.pass(s(10));
+        assert_eq!(station.last(), direct2);
     }
 }
