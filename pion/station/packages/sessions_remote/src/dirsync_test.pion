@@ -1,0 +1,3379 @@
+// Deterministic vector and protocol tests for W8-C2 `dirsync.pion` + `dirsync_source.pion`
+// over `real_dirsync_port()` / `RemoteCtx::new_default` with virtual clock and in-memory shell/VFS.
+
+import "base_codec"
+import "effect"
+import "host_shim"
+import "js_json"
+import "sessions_core"
+
+// ── Pure helper vector tests ──
+
+test "dirsync_pure_helpers_vectors" {
+  // mode_of_bits
+  assert(mode_of_bits(420.0) == FILE_MODE) // 0o644
+  assert(mode_of_bits(493.0) == EXEC_MODE) // 0o755
+  assert(mode_of_bits(64.0) == EXEC_MODE) // 0o100
+
+  // text_blob_id: git hash-object -t blob of "hello\n" == ce013625030ba8dba906f756967f9e9ca394464a
+  assert(text_blob_id("hello\n") == "ce013625030ba8dba906f756967f9e9ca394464a")
+  assert(is_blob_id("ce013625030ba8dba906f756967f9e9ca394464a"))
+  assert(!is_blob_id("CE013625030BA8DBA906F756967F9E9CA394464A"))
+  assert(!is_blob_id("short"))
+
+  // link_inside
+  assert(link_inside("a/b/link", "../c"))
+  assert(link_inside("a/b/link", "../../c"))
+  assert(!link_inside("a/b/link", "../../../c"))
+  assert(!link_inside("a/link", "/etc/passwd"))
+  assert(!link_inside("a/link", "\\windows\\sys"))
+  assert(!link_inside("a/link", "C:foo"))
+  assert(!link_inside("a/link", ""))
+  assert(link_inside("a/b/link", "./sibling"))
+
+  // submodule_path_ok
+  assert(submodule_path_ok("vendor/lib"))
+  assert(!submodule_path_ok(""))
+  assert(!submodule_path_ok("/abs"))
+  assert(!submodule_path_ok("-flag"))
+  assert(!submodule_path_ok("a/../b"))
+  assert(!submodule_path_ok("a/.git/b"))
+  assert(!submodule_path_ok("a:b"))
+  assert(!submodule_path_ok("a\\b"))
+
+  // submodule_url
+  assert(submodule_url("https://github.com/org/sub.git", "") == "https://github.com/org/sub.git")
+  assert(submodule_url("../sub.git", "https://github.com/org/repo.git") == "https://github.com/org/sub.git")
+  assert(submodule_url("./sub.git", "https://github.com/org/repo/") == "https://github.com/org/repo/sub.git")
+  assert(submodule_url("../sub.git", "git@github.com:org/repo.git") == "git@github.com:org/sub.git")
+  assert(submodule_url("../sub.git", "") == "")
+
+  // sh_word
+  assert(sh_word("plain") == "'plain'")
+  assert(sh_word("a'b") == "'a'\\''b'")
+
+  // listed_entries + page_of deterministic UTF-16 order
+  let files : Map[String, base_codec::Json] = Map::new()
+  let h1 = "1111111111111111111111111111111111111111"
+  let h2 = "2222222222222222222222222222222222222222"
+  files.set("z.txt", base_codec::json_arr([sessions_core::jstr(h2), sessions_core::jstr(FILE_MODE)]))
+  files.set("a.txt", base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jstr(EXEC_MODE)]))
+  let port = real_dirsync_port()
+  assert(!port.is_stub)
+  let entries = (port.listed_entries)(files)
+  assert(entries.length() == 2)
+  assert(json_equal(entries[0], base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(h1), sessions_core::jstr(EXEC_MODE)])))
+  assert(json_equal(entries[1], base_codec::json_arr([sessions_core::jstr("z.txt"), sessions_core::jstr(h2), sessions_core::jstr(FILE_MODE)])))
+  let page = (port.page_of)(entries, 0)
+  assert(json_equal(sessions_core::field_of(page, "next"), base_codec::json_null()))
+
+  // plan_part validation
+  let good_plan = base_codec::json_obj([
+    ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(h1), sessions_core::jstr(FILE_MODE)])])),
+    ("remove", base_codec::json_arr([sessions_core::jstr("old.txt")])),
+  ])
+  match (port.plan_part)(good_plan) {
+    Ok(_) => ()
+    Err(_) => assert(false)
+  }
+  let bad_plan = base_codec::json_obj([
+    ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr("not-a-hash"), sessions_core::jstr(FILE_MODE)])])),
+  ])
+  match (port.plan_part)(bad_plan) {
+    Ok(_) => assert(false)
+    Err(e) => assert(sessions_core::error_message(e) == "bad plan")
+  }
+
+  // submodules_part validation
+  let good_subs = base_codec::json_obj([
+    ("submodules", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("deps/x"), sessions_core::jstr(h1), sessions_core::jstr("https://example.com/x.git")])])),
+  ])
+  match (port.submodules_part)(good_subs) {
+    Ok(s) => assert(s.length() == 1 && s[0].0 == "deps/x")
+    Err(_) => assert(false)
+  }
+  let bad_subs = base_codec::json_obj([
+    ("submodules", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("../escape"), sessions_core::jstr(h1), sessions_core::jstr("https://example.com/x.git")])])),
+  ])
+  match (port.submodules_part)(bad_subs) {
+    Ok(_) => assert(false)
+    Err(e) => assert(sessions_core::error_message(e) == "bad submodule")
+  }
+}
+
+// ── Rich in-memory VFS for dirsync target + source protocol tests ──
+
+struct DirsyncVfs {
+  files : Map[String, String]
+  modes : Map[String, Double]
+  links : Map[String, String]
+  dirs : Map[String, Bool]
+  dir_devs : Map[String, Double]
+  packed_files : Map[String, Bytes]
+  git_responses : Map[String, String]
+  mut pack_seq : Int
+  mut mtime_seq : Double
+  sep : String
+}
+
+fn DirsyncVfs::new() -> DirsyncVfs {
+  let v = DirsyncVfs::{
+    files: Map::new(),
+    modes: Map::new(),
+    links: Map::new(),
+    dirs: Map::new(),
+    dir_devs: Map::new(),
+    packed_files: Map::new(),
+    git_responses: Map::new(),
+    pack_seq: 0,
+    mtime_seq: 2000.0,
+    sep: "/",
+  }
+  v.dirs.set("/", true)
+  v.dir_devs.set("/", 1.0)
+  v
+}
+
+fn DirsyncVfs::add_dir(self : DirsyncVfs, path : String, dev : Double) -> Unit {
+  if !self.dirs.contains(path) {
+    self.dirs.set(path, true)
+    self.dir_devs.set(path, dev)
+    let parent = sessions_core::rdirname(self.sep, path)
+    if parent != "" && parent != path {
+      self.add_dir(parent, 1.0)
+    }
+  }
+}
+
+fn DirsyncVfs::add_file(self : DirsyncVfs, path : String, content : String, mode : Double) -> Unit {
+  let _ = self.links.remove(path)
+  self.files.set(path, content)
+  self.modes.set(path, mode)
+  let dir = sessions_core::rdirname(self.sep, path)
+  if dir != "" && dir != path {
+    self.add_dir(dir, 1.0)
+  }
+}
+
+fn DirsyncVfs::add_link(self : DirsyncVfs, path : String, target : String) -> Unit {
+  let _ = self.files.remove(path)
+  self.links.set(path, target)
+  let dir = sessions_core::rdirname(self.sep, path)
+  if dir != "" && dir != path {
+    self.add_dir(dir, 1.0)
+  }
+}
+
+fn DirsyncVfs::stat_of(self : DirsyncVfs, path : String, with_hash : Bool) -> base_codec::Json {
+  match self.links.get(path) {
+    Some(target) => {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("kind", sessions_core::jstr("link")),
+        ("size", sessions_core::jnum(bytes_len(target).to_double())),
+        ("mtimeMs", sessions_core::jnum(1000.0)),
+        ("ino", sessions_core::jnum(10.0)),
+        ("ctimeMs", sessions_core::jnum(1000.0)),
+      ]
+      if with_hash {
+        fields.push(("link", sessions_core::jstr(target)))
+      }
+      return base_codec::json_obj(fields)
+    }
+    None => ()
+  }
+  match self.files.get(path) {
+    Some(content) => {
+      let mode = match self.modes.get(path) { Some(m) => m; None => 420.0 }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("kind", sessions_core::jstr("file")),
+        ("size", sessions_core::jnum(bytes_len(content).to_double())),
+        ("mode", sessions_core::jnum(mode)),
+        ("mtimeMs", sessions_core::jnum(1000.0)),
+        ("ino", sessions_core::jnum(20.0)),
+        ("ctimeMs", sessions_core::jnum(1000.0)),
+      ]
+      if with_hash {
+        fields.push(("hash", sessions_core::jstr(text_blob_id(content))))
+      }
+      return base_codec::json_obj(fields)
+    }
+    None => ()
+  }
+  if self.dirs.contains(path) {
+    let dev = match self.dir_devs.get(path) { Some(d) => d; None => 1.0 }
+    return base_codec::json_obj([
+      ("kind", sessions_core::jstr("dir")),
+      ("size", sessions_core::jnum(0.0)),
+      ("dev", sessions_core::jnum(dev)),
+      ("mtimeMs", sessions_core::jnum(1000.0)),
+      ("ino", sessions_core::jnum(30.0)),
+      ("ctimeMs", sessions_core::jnum(1000.0)),
+    ])
+  }
+  base_codec::json_null()
+}
+
+fn DirsyncVfs::children_typed(self : DirsyncVfs, dir : String) -> Array[(String, String)] {
+  let prefix = if dir.ends_with("/") { dir } else { dir + "/" }
+  let kind_by_name : Map[String, String] = Map::new()
+  let dkeys = self.dirs.keys()
+  for i in 0..<dkeys.length() {
+    let k = dkeys[i]
+    if k.starts_with(prefix) {
+      let rest = k.slice(prefix.length(), k.length())
+      let idx = rest.index_of("/")
+      let seg = if idx >= 0 { rest.slice(0, idx) } else { rest }
+      if seg != "" {
+        kind_by_name.set(seg, "dir")
+      }
+    }
+  }
+  let fkeys = self.files.keys()
+  for i in 0..<fkeys.length() {
+    let k = fkeys[i]
+    if k.starts_with(prefix) {
+      let rest = k.slice(prefix.length(), k.length())
+      let idx = rest.index_of("/")
+      if idx >= 0 {
+        kind_by_name.set(rest.slice(0, idx), "dir")
+      } else if rest != "" {
+        kind_by_name.set(rest, "file")
+      }
+    }
+  }
+  let lkeys = self.links.keys()
+  for i in 0..<lkeys.length() {
+    let k = lkeys[i]
+    if k.starts_with(prefix) {
+      let rest = k.slice(prefix.length(), k.length())
+      let idx = rest.index_of("/")
+      if idx >= 0 {
+        kind_by_name.set(rest.slice(0, idx), "dir")
+      } else if rest != "" {
+        kind_by_name.set(rest, "link")
+      }
+    }
+  }
+  let names = kind_by_name.keys()
+  sort_strings_js(names)
+  let out : Array[(String, String)] = []
+  for i in 0..<names.length() {
+    let n = names[i]
+    match kind_by_name.get(n) {
+      Some(k) => out.push((n, k))
+      None => ()
+    }
+  }
+  out
+}
+
+fn DirsyncVfs::handle_shell(self : DirsyncVfs, call : sessions_core::MemShellCall) -> (String, String, Option[Bytes]) {
+  let args = match sessions_core::parse_json_strict(call.json) {
+    Ok(j) => j
+    Err(_) => base_codec::json_obj([])
+  }
+  let op = call.op
+  if op == "fs.lstat" {
+    let path = sessions_core::text_of(args, "path")
+    return (sessions_core::js_text_with(self.stat_of(path, false), test_fmt_num), "", None)
+  }
+  if op == "fs.scan" {
+    let with_hash = sessions_core::truthy(sessions_core::field_of(args, "hash"))
+    let out : Array[base_codec::Json] = []
+    match sessions_core::field_of(args, "paths") {
+      base_codec::Json::Arr(ps) => {
+        for i in 0..<ps.length() {
+          match ps[i] {
+            base_codec::Json::Str(p) => out.push(self.stat_of(p, with_hash))
+            _ => out.push(base_codec::json_null())
+          }
+        }
+      }
+      _ => ()
+    }
+    return (sessions_core::js_text_with(base_codec::json_arr(out), test_fmt_num), "", None)
+  }
+  if op == "fs.read" {
+    let path = sessions_core::text_of(args, "path")
+    match self.files.get(path) {
+      Some(content) => return (base_codec::json_stringify(sessions_core::jstr(content)), "", None)
+      None => return ("null", "", None)
+    }
+  }
+  if op == "fs.readlink" {
+    let path = sessions_core::text_of(args, "path")
+    match self.links.get(path) {
+      Some(t) => return (base_codec::json_stringify(sessions_core::jstr(t)), "", None)
+      None => return ("null", "", None)
+    }
+  }
+  if op == "fs.gitblob" {
+    let path = sessions_core::text_of(args, "path")
+    let expected = match sessions_core::num_of(sessions_core::jget(args, "size")) { Some(n) => n.to_int(); None => -1 }
+    match self.files.get(path) {
+      Some(content) => {
+        if expected >= 0 && bytes_len(content) != expected {
+          return ("null", "", None)
+        }
+        return (base_codec::json_stringify(sessions_core::jstr(text_blob_id(content))), "", None)
+      }
+      None => return ("null", "", None)
+    }
+  }
+  if op == "fs.readdir" {
+    let path = sessions_core::text_of(args, "path")
+    let typed = sessions_core::truthy(sessions_core::field_of(args, "types"))
+    let rows = self.children_typed(path)
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<rows.length() {
+      if typed {
+        arr.push(base_codec::json_arr([sessions_core::jstr(rows[i].0), sessions_core::jstr(rows[i].1)]))
+      } else {
+        arr.push(sessions_core::jstr(rows[i].0))
+      }
+    }
+    return (base_codec::json_stringify(base_codec::json_arr(arr)), "", None)
+  }
+  if op == "fs.mkdir" {
+    self.add_dir(sessions_core::text_of(args, "path"), 1.0)
+    return ("null", "", None)
+  }
+  if op == "fs.put" {
+    let path = sessions_core::text_of(args, "path")
+    let offset = match sessions_core::num_of(sessions_core::jget(args, "offset")) { Some(n) => n.to_int(); None => 0 }
+    let chunk = match call.bytes { Some(b) => b.to_string(); None => "" }
+    if offset == 0 {
+      self.add_file(path, chunk, 420.0)
+    } else {
+      let prev = match self.files.get(path) { Some(s) => s; None => "" }
+      self.add_file(path, prev.slice(0, offset) + chunk, 420.0)
+    }
+    return ("null", "", None)
+  }
+  if op == "fs.copy" {
+    let from = sessions_core::text_of(args, "from")
+    let to = sessions_core::text_of(args, "to")
+    match self.files.get(from) {
+      Some(content) => {
+        let m = match self.modes.get(from) { Some(x) => x; None => 420.0 }
+        self.add_file(to, content, m)
+        return ("null", "", None)
+      }
+      None => return ("", "ENOENT: " + from, None)
+    }
+  }
+  if op == "fs.symlink" {
+    self.add_link(sessions_core::text_of(args, "path"), sessions_core::text_of(args, "target"))
+    return ("null", "", None)
+  }
+  if op == "fs.chmod" {
+    let path = sessions_core::text_of(args, "path")
+    let mode = match sessions_core::num_of(sessions_core::jget(args, "mode")) { Some(m) => m; None => 420.0 }
+    self.modes.set(path, mode)
+    return ("null", "", None)
+  }
+  if op == "fs.rename" {
+    let from = sessions_core::text_of(args, "from")
+    let to = sessions_core::text_of(args, "to")
+    match self.links.get(from) {
+      Some(target) => {
+        let _ = self.links.remove(from)
+        self.add_link(to, target)
+        return ("null", "", None)
+      }
+      None => ()
+    }
+    match self.files.get(from) {
+      Some(content) => {
+        let m = match self.modes.get(from) { Some(x) => x; None => 420.0 }
+        let _ = self.files.remove(from)
+        let _ = self.modes.remove(from)
+        self.add_file(to, content, m)
+        return ("null", "", None)
+      }
+      None => return ("", "ENOENT: " + from, None)
+    }
+  }
+  if op == "fs.remove" {
+    let path = sessions_core::text_of(args, "path")
+    let rec = sessions_core::truthy(sessions_core::field_of(args, "recursive"))
+    if !rec && self.dirs.contains(path) {
+      if self.children_typed(path).length() > 0 {
+        return ("", "ENOTEMPTY: " + path, None)
+      }
+    }
+    let _ = self.files.remove(path)
+    let _ = self.modes.remove(path)
+    let _ = self.links.remove(path)
+    let _ = self.dirs.remove(path)
+    if rec {
+      let prefix = if path.ends_with("/") { path } else { path + "/" }
+      let fkeys = self.files.keys()
+      for i in 0..<fkeys.length() {
+        if fkeys[i].starts_with(prefix) {
+          let _ = self.files.remove(fkeys[i])
+        }
+      }
+      let lkeys = self.links.keys()
+      for i in 0..<lkeys.length() {
+        if lkeys[i].starts_with(prefix) {
+          let _ = self.links.remove(lkeys[i])
+        }
+      }
+      let dkeys = self.dirs.keys()
+      for i in 0..<dkeys.length() {
+        if dkeys[i].starts_with(prefix) {
+          let _ = self.dirs.remove(dkeys[i])
+        }
+      }
+    }
+    return ("null", "", None)
+  }
+  if op == "pack.open" {
+    self.pack_seq = self.pack_seq + 1
+    return ("{\"id\":" + self.pack_seq.to_string() + "}", "", None)
+  }
+  if op == "pack.close" {
+    return ("null", "", None)
+  }
+  if op == "zstd.pack" {
+    let out_path = sessions_core::text_of(args, "out")
+    let sb = StringBuilder::new()
+    let mut raw = 0
+    match sessions_core::field_of(args, "pieces") {
+      base_codec::Json::Arr(pieces) => {
+        for i in 0..<pieces.length() {
+          match pieces[i] {
+            base_codec::Json::Arr(p) => {
+              let abs = match p[0] { base_codec::Json::Str(s) => s; _ => "" }
+              let offset = match p[1] { base_codec::Json::Num(n, _) => n.to_int(); _ => 0 }
+              let length = match p[2] { base_codec::Json::Num(n, _) => n.to_int(); _ => 0 }
+              let is_link = match p[5] { base_codec::Json::Bool(b) => b; _ => false }
+              let data = if is_link {
+                match self.links.get(abs) { Some(t) => t; None => "" }
+              } else {
+                match self.files.get(abs) { Some(c) => c; None => "" }
+              }
+              let slice = data.slice(offset, offset + length)
+              sb.write_string(slice)
+              raw = raw + length
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let packed_bytes = sb.to_string().to_bytes()
+    self.packed_files.set(out_path, packed_bytes)
+    self.add_file(out_path, sb.to_string(), 420.0)
+    return ("{\"raw\":" + raw.to_string() + ",\"packed\":" + packed_bytes.length().to_string() + "}", "", None)
+  }
+  if op == "zstd.unpack" {
+    match sessions_core::jget(args, "path") {
+      Some(base_codec::Json::Str(p)) => {
+        match self.packed_files.get(p) {
+          Some(b) => return ("null", "", Some(b))
+          None => return ("", "ENOENT: " + p, None)
+        }
+      }
+      _ => {
+        // Inline bytes (identity in test mock)
+        return ("null", "", call.bytes)
+      }
+    }
+  }
+  if op == "proc.run" {
+    let key_sb = StringBuilder::new()
+    match sessions_core::field_of(args, "args") {
+      base_codec::Json::Arr(a) => {
+        for i in 0..<a.length() {
+          if i > 0 {
+            key_sb.write_string(" ")
+          }
+          match a[i] {
+            base_codec::Json::Str(s) => key_sb.write_string(s)
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let k = key_sb.to_string()
+    match self.git_responses.get(k) {
+      Some(resp) => {
+        if sessions_core::truthy(sessions_core::field_of(args, "code")) {
+          return ("{\"code\":" + resp + "}", "", None)
+        }
+        return (base_codec::json_stringify(sessions_core::jstr(resp)), "", None)
+      }
+      None => return ("null", "", None)
+    }
+  }
+  if op == "crypto.random" {
+    let n = sessions_core::int_of(sessions_core::jget(args, "bytes"))
+    let sb = StringBuilder::new()
+    for i in 0..<n {
+      let _ = i
+      sb.write_string("ab")
+    }
+    return (base_codec::json_stringify(sessions_core::jstr(sb.to_string())), "", None)
+  }
+  ("null", "", None)
+}
+
+fn opt_double_eq(a : Option[Double], b : Double) -> Bool {
+  match a {
+    Some(x) => x == b
+    None => false
+  }
+}
+
+fn drain_dirsync_vfs(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  mem : sessions_core::MemHostTransport,
+  vfs : DirsyncVfs,
+  cur : PumpCursor,
+  on_rpc : (String, Array[base_codec::Json]) -> base_codec::Json,
+  tells_out : Array[(String, Array[base_codec::Json])],
+) -> Unit {
+  let mut guard_steps = 0
+  while guard_steps < 2500 {
+    guard_steps = guard_steps + 1
+    host.tick()
+    let mut progressed = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (res, err, bytes_opt) = vfs.handle_shell(sc)
+      host.dispatch_event(
+        host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+          id: sc.id,
+          error: err,
+          json: res,
+          bytes: bytes_opt,
+        }),
+      )
+      progressed = true
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_d, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              let args = match sessions_core::field_of(msg, "args") {
+                base_codec::Json::Arr(a) => a
+                _ => []
+              }
+              let reply = on_rpc(f, args)
+              gen.handle_answer(host, id_d.to_int(), reply)
+              progressed = true
+            }
+            _ => ()
+          }
+          match sessions_core::jget(msg, "tell") {
+            Some(base_codec::Json::Str(tname)) => {
+              let args = match sessions_core::field_of(msg, "args") {
+                base_codec::Json::Arr(a) => a
+                _ => []
+              }
+              tells_out.push((tname, args))
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    if !progressed && host.rt.idle() {
+      break
+    }
+  }
+}
+
+// ── Target-side tests: sync_begin, put_blobs (packed + base64), sync_commit, version/base conflicts, sync_changes, with_submodules ──
+
+test "dirsync_target_full_lifecycle_conflicts_and_submodules" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  let noop_rpc = fn(_f : String, _args : Array[base_codec::Json]) -> base_codec::Json {
+    base_codec::json_obj([("value", base_codec::json_null())])
+  }
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing, 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let rhost = ctx.remote_host()
+  let port = ctx.dirsync
+
+  // 1. sync_begin on empty mirror -> version 0
+  let mut ver0 = -1.0
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_begin_k)(rhost, manifest_path, mirror_root, syncing, fn(ex : effect::Exit[Double]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          ver0 = v
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(ver0 == 0.0)
+
+  // 2. put_blobs (packed path + legacy base64)
+  let body_a = "hello\n"
+  let hash_a = text_blob_id(body_a)
+  let body_link = "a.txt"
+  let hash_link = text_blob_id(body_link)
+  let packed_path = "/tmp/pack1.zst"
+  vfs.packed_files.set(packed_path, body_a.to_bytes())
+
+  let mut put_n = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let idx = base_codec::json_arr([
+      base_codec::json_arr([sessions_core::jstr(hash_a), sessions_core::jnum(6.0), sessions_core::jnum(0.0), sessions_core::jnum(6.0)]),
+    ])
+    (port.put_blobs_k)(rhost, syncing + "/blobs", idx, Some(packed_path), base_codec::json_null(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => {
+          put_n = n
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(put_n == 1)
+  assert(opt_str_eq(vfs.files.get(syncing + "/blobs/" + hash_a), "hello\n"))
+
+  // Legacy base64 put_blobs for link target
+  let mut put_b64 = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let idx = base_codec::json_arr([
+      base_codec::json_arr([sessions_core::jstr(hash_link), sessions_core::jnum(5.0), sessions_core::jnum(0.0), sessions_core::jnum(5.0)]),
+    ])
+    let b64 = base_codec::base64_encode(body_link.to_bytes())
+    (port.put_blobs_k)(rhost, syncing + "/blobs", idx, None, sessions_core::jstr(b64), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => {
+          put_b64 = n
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(put_b64 == 1)
+
+  // 3. sync_commit writes files + symlink + manifest silently (no writing/wrote tells)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(hash_a), sessions_core::jstr(EXEC_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("l.txt"), sessions_core::jstr(hash_link), sessions_core::jstr(LINK_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+  let sub_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let subs = [("deps/foo", sub_id, "https://github.com/AFK-surf/foo.git")]
+  let tells_before_commit = tells.length()
+  let mut commit_res = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src/repo", subs, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          commit_res = v
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(sessions_core::int_of(sessions_core::jget(commit_res, "written")) == 2)
+  assert(sessions_core::int_of(sessions_core::jget(commit_res, "version")) == 1)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "hello\n"))
+  assert(opt_double_eq(vfs.modes.get(mirror_root + "/a.txt"), 493.0))
+  assert(opt_str_eq(vfs.links.get(mirror_root + "/l.txt"), "a.txt"))
+  // Verify silent write_whole_k emitted zero writing/wrote tells
+  for i in tells_before_commit..<tells.length() {
+    assert(tells[i].0 != "writing" && tells[i].0 != "wrote")
+  }
+
+  // 4. sync_commit version conflict
+  let mut conflict_msg = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src/repo", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          conflict_msg = sessions_core::error_message(e)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(conflict_msg == "the mirror changed while this sync went on; start again")
+
+  // 5. with_submodules: with submodule -> wrapped script; without -> None
+  let mut wrapped : Option[String] = None
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.with_submodules_k)(rhost, manifest_path, "make test", fn(ex : effect::Exit[Option[String]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(w) => {
+          wrapped = w
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  match wrapped {
+    Some(script) => {
+      assert(str_contains(script, "sf_submodule()"))
+      assert(str_contains(script, "'deps/foo'"))
+      assert(str_contains(script, "'/data/repos/AFK-surf/foo'"))
+      assert(str_contains(script, "'/data/repos/foo'"))
+      assert(script.ends_with("\nmake test"))
+    }
+    None => assert(false)
+  }
+
+  let mut no_sub_res : Option[String] = Some("unexpected")
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.with_submodules_k)(rhost, "/data/remote/sessions/s1/mirrors/missing.json", "echo hi", fn(ex : effect::Exit[Option[String]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(w) => {
+          no_sub_res = w
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  match no_sub_res {
+    None => ()
+    Some(_) => assert(false)
+  }
+
+  // 6. Remote modifies a.txt -> sync_changes detects it; source also modifying a.txt -> base/mirror conflict
+  vfs.add_file(mirror_root + "/a.txt", "remote-edited\n", 493.0)
+  let mut changes_res = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_changes_k)(rhost, manifest_path, mirror_root, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          changes_res = v
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  match sessions_core::field_of(changes_res, "changes") {
+    base_codec::Json::Arr(ch) => {
+      assert(ch.length() == 1)
+      assert(sessions_core::text_of(ch[0], "path") == "a.txt")
+      assert(sessions_core::text_of(ch[0], "old") == hash_a)
+      assert(sessions_core::text_of(ch[0], "hash") == text_blob_id("remote-edited\n"))
+    }
+    _ => assert(false)
+  }
+
+  // Begin sync v1 -> base has hash_a, actual has remote-edited; plan tries to set source-edited -> conflict!
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_begin_k)(rhost, manifest_path, mirror_root, syncing, fn(ex : effect::Exit[Double]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          assert(v == 1.0)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  let src_edit_hash = text_blob_id("source-edited\n")
+  let conflict_plan = sessions_core::js_text_with(
+    base_codec::json_obj([
+      ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(src_edit_hash), sessions_core::jstr(EXEC_MODE)])])),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", conflict_plan + "\n", 420.0)
+  let mut base_conflict_msg = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(1.0), "/src/repo", subs, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          base_conflict_msg = sessions_core::error_message(e)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(str_contains(base_conflict_msg, "source and remote both changed"))
+
+  assert(state.lanes.length() == 0)
+  assert(state.writing.length() == 0)
+  assert_holding_zero(host)
+}
+
+// ── Source-side tests: listLocal (Git + non-Git), sync_dir, NoBytes fallback vs Refused non-fallback ──
+
+test "dirsync_source_list_local_git_and_non_git" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  let noop_rpc = fn(_f : String, _args : Array[base_codec::Json]) -> base_codec::Json {
+    base_codec::json_obj([("value", base_codec::json_null())])
+  }
+
+  // Git worktree directory
+  let repo = "/work/repo"
+  vfs.add_dir(repo, 1.0)
+  vfs.add_file(repo + "/clean.txt", "clean\n", 420.0)
+  vfs.add_file(repo + "/mod.txt", "mod\n", 493.0)
+  vfs.add_link(repo + "/escape", "../../etc/passwd")
+  vfs.add_dir(repo + "/sub/.git", 1.0)
+
+  let h_clean = text_blob_id("clean\n")
+  let sub_idx_id = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let sub_head_id = "cccccccccccccccccccccccccccccccccccccccc"
+  vfs.git_responses.set("-C /work/repo rev-parse --is-inside-work-tree --show-prefix", "true\n")
+  vfs.git_responses.set("-C /work/repo ls-files -z -m", "mod.txt\u{0000}")
+  vfs.git_responses.set(
+    "-C /work/repo ls-files -z -s",
+    "100644 " + h_clean + " 0\tclean.txt\u{0000}100755 " + h_clean + " 0\tmod.txt\u{0000}160000 " + sub_idx_id + " 0\tsub\u{0000}",
+  )
+  vfs.git_responses.set("-C /work/repo ls-files -z -o --exclude-standard", "escape\u{0000}nested/\u{0000}")
+  vfs.git_responses.set(
+    "-C /work/repo config -z --blob :.gitmodules --get-regexp ^submodule\\..*\\.(path|url)$",
+    "submodule.sub.path\nsub\u{0000}submodule.sub.url\n../sub.git\u{0000}",
+  )
+  vfs.git_responses.set("-C /work/repo config -z --get-regexp ^submodule\\..*\\.url$", "")
+  vfs.git_responses.set("-C /work/repo config --get remote.origin.url", "https://github.com/AFK-surf/repo.git\n")
+  vfs.git_responses.set("-C /work/repo/sub rev-parse -q --verify HEAD^{commit}", sub_head_id + "\n")
+
+  let mut git_listing = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k("listLocal", [sessions_core::jstr(repo)], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          git_listing = v
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(sessions_core::truthy(sessions_core::field_of(git_listing, "git")))
+  match sessions_core::field_of(git_listing, "files") {
+    base_codec::Json::Arr(fs) => {
+      assert(fs.length() == 2)
+      assert(sessions_core::text_of(fs[0], "path") == "clean.txt")
+      assert(sessions_core::truthy(sessions_core::field_of(fs[0], "indexed")))
+      assert(sessions_core::text_of(fs[1], "path") == "mod.txt")
+      assert(sessions_core::text_of(fs[1], "mode") == EXEC_MODE)
+    }
+    _ => assert(false)
+  }
+  match sessions_core::field_of(git_listing, "submodules") {
+    base_codec::Json::Arr(subs) => {
+      assert(subs.length() == 1)
+      assert(sessions_core::text_of(subs[0], "path") == "sub")
+      assert(sessions_core::text_of(subs[0], "id") == sub_head_id)
+      assert(sessions_core::text_of(subs[0], "url") == "https://github.com/AFK-surf/sub.git")
+    }
+    _ => assert(false)
+  }
+
+  // Non-Git bounded BFS walk
+  let plain = "/work/plain"
+  vfs.add_dir(plain, 1.0)
+  vfs.add_file(plain + "/b.txt", "b", 420.0)
+  vfs.add_file(plain + "/a.txt", "a", 420.0)
+  vfs.add_file(plain + "/.DS_Store", "junk", 420.0)
+  vfs.add_file(plain + "/node_modules/pkg/index.js", "ignored", 420.0)
+  vfs.add_dir(plain + "/mnt", 99.0)
+
+  let mut plain_listing = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k("listLocal", [sessions_core::jstr(plain)], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          plain_listing = v
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop_rpc, tells)
+  assert(!sessions_core::truthy(sessions_core::field_of(plain_listing, "git")))
+  match sessions_core::field_of(plain_listing, "files") {
+    base_codec::Json::Arr(fs) => {
+      assert(fs.length() == 2)
+      assert(sessions_core::text_of(fs[0], "path") == "a.txt")
+      assert(sessions_core::text_of(fs[1], "path") == "b.txt")
+    }
+    _ => assert(false)
+  }
+  match sessions_core::field_of(plain_listing, "skipped") {
+    base_codec::Json::Arr(sk) => {
+      assert(sk.length() == 1)
+      assert(sessions_core::text_of(sk[0], "path") == "mnt")
+      assert(sessions_core::text_of(sk[0], "why") == "another file system")
+    }
+    _ => assert(false)
+  }
+
+  assert_holding_zero(host)
+}
+
+test "dirsync_source_sync_dir_nobytes_fallback_and_refused_discrimination" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let tells : Array[(String, Array[base_codec::Json])] = []
+
+  let dir = "/work/src"
+  vfs.add_dir(dir, 1.0)
+  vfs.add_file(dir + "/x.txt", "payload-x", 420.0)
+
+  // Case 1: target returns structured {kind: "NoBytes"} on syncPut(..., true) -> retries with false!
+  let sync_put_flags : Array[Bool] = []
+  let mut pack_counter = 0
+  let mut now_ms = 1000.0
+  let mut sync_out = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_dir_k)(ctx.remote_host(), "peer-1", "ws-1", "sess-1", "k1", dir, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          sync_out = v
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(
+    host,
+    gen,
+    mem,
+    vfs,
+    cur,
+    fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+      if f == "store.now" {
+        now_ms = now_ms + 25.0
+        return base_codec::json_obj([("value", sessions_core::jnum(now_ms))])
+      }
+      if f == "node.ask" {
+        let req = args[1]
+        let m = sessions_core::text_of(req, "method")
+        if m == "sync.begin" {
+          return base_codec::json_obj([("value", base_codec::json_obj([("id", sessions_core::jstr("sid-1")), ("safe", sessions_core::jnum(1.0))]))])
+        }
+        if m == "sync.manifest" || m == "sync.base" {
+          return base_codec::json_obj([("value", base_codec::json_obj([("entries", base_codec::json_arr([])), ("next", base_codec::json_null())]))])
+        }
+        if m == "sync.commit" {
+          return base_codec::json_obj([("value", base_codec::json_obj([("written", sessions_core::jnum(1.0)), ("removed", sessions_core::jnum(0.0))]))])
+        }
+        return base_codec::json_obj([("value", base_codec::json_null())])
+      }
+      if f == "node.syncPacking" {
+        pack_counter = pack_counter + 1
+        return base_codec::json_obj([("value", sessions_core::jstr("/tmp/sync-pack-" + pack_counter.to_string()))])
+      }
+      if f == "node.syncPut" {
+        assert(args.length() == 4)
+        let after = sessions_core::truthy(args[3])
+        sync_put_flags.push(after)
+        if after {
+          return base_codec::json_obj([
+            ("error", base_codec::json_obj([("kind", sessions_core::jstr("NoBytes")), ("message", sessions_core::jstr("old station"))])),
+          ])
+        }
+        return base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(1.0))]))])
+      }
+      base_codec::json_obj([("value", base_codec::json_null())])
+    },
+    tells,
+  )
+  assert(sync_put_flags.length() == 2)
+  assert(sync_put_flags[0] == true)
+  assert(sync_put_flags[1] == false)
+  assert(sessions_core::int_of(sessions_core::jget(sync_out, "written")) == 1)
+  assert(sessions_core::int_of(sessions_core::jget(sync_out, "ms")) == 25)
+
+  // Case 2: target returns {kind: "Refused", message: "NoBytes"} -> MUST NOT fall back!
+  let refused_put_flags : Array[Bool] = []
+  let mut refused_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_dir_k)(ctx.remote_host(), "peer-1", "ws-1", "sess-1", "k2", dir, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          refused_err = sessions_core::error_message(e)
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(
+    host,
+    gen,
+    mem,
+    vfs,
+    cur,
+    fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+      if f == "store.now" {
+        now_ms = now_ms + 10.0
+        return base_codec::json_obj([("value", sessions_core::jnum(now_ms))])
+      }
+      if f == "node.ask" {
+        let req = args[1]
+        let m = sessions_core::text_of(req, "method")
+        if m == "sync.begin" {
+          return base_codec::json_obj([("value", base_codec::json_obj([("id", sessions_core::jstr("sid-2")), ("safe", sessions_core::jnum(1.0))]))])
+        }
+        return base_codec::json_obj([("value", base_codec::json_obj([("entries", base_codec::json_arr([])), ("next", base_codec::json_null())]))])
+      }
+      if f == "node.syncPacking" {
+        pack_counter = pack_counter + 1
+        return base_codec::json_obj([("value", sessions_core::jstr("/tmp/sync-pack-" + pack_counter.to_string()))])
+      }
+      if f == "node.syncPut" {
+        assert(args.length() == 4)
+        refused_put_flags.push(sessions_core::truthy(args[3]))
+        return base_codec::json_obj([
+          ("error", base_codec::json_obj([("kind", sessions_core::jstr("Refused")), ("message", sessions_core::jstr("NoBytes"))])),
+        ])
+      }
+      base_codec::json_obj([("value", base_codec::json_null())])
+    },
+    tells,
+  )
+  assert(refused_put_flags.length() == 1)
+  assert(refused_put_flags[0] == true)
+  assert(refused_err == "NoBytes")
+
+  assert_holding_zero(host)
+}
+
+// ── R2 Regression Tests: O(n log n) merge sort, UTF-16 order, interrupt cleanup, & all 8 P1-1 branches ──
+
+test "dirsync_r2_merge_sort_complexity_stability_and_utf16_order" {
+  // 1. Counting comparator on reversed & pseudo-shuffled inputs of size 64 and 256
+  //    must satisfy comps <= n * ceil(log2(n)) (64 * 6 = 384, 256 * 8 = 2048).
+  let rev64 : Array[(Int, Int)] = []
+  for i in 0..<64 {
+    rev64.push((63 - i, i))
+  }
+  let mut comps64 = 0
+  merge_sort_by(rev64, fn(a : (Int, Int), b : (Int, Int)) -> Int {
+    comps64 = comps64 + 1
+    a.0 - b.0
+  })
+  assert(comps64 <= 64 * 6)
+  for i in 0..<64 {
+    assert(rev64[i].0 == i)
+  }
+
+  // Shuffled with duplicate keys to verify stability + O(n log n) bound
+  let shuf256 : Array[(Int, Int)] = []
+  for i in 0..<256 {
+    let key = (i * 73 + 19) % 32
+    shuf256.push((key, i))
+  }
+  let mut comps256 = 0
+  merge_sort_by(shuf256, fn(a : (Int, Int), b : (Int, Int)) -> Int {
+    comps256 = comps256 + 1
+    a.0 - b.0
+  })
+  assert(comps256 <= 256 * 8)
+  for i in 1..<256 {
+    assert(shuf256[i - 1].0 <= shuf256[i].0)
+    if shuf256[i - 1].0 == shuf256[i].0 {
+      // Stability: original index must remain ascending for equal keys.
+      assert(shuf256[i - 1].1 < shuf256[i].1)
+    }
+  }
+
+  // 2. UTF-16 code-unit order with non-BMP (U+1F600 = 0xD83D 0xDE00) vs U+E000 vs ASCII:
+  //    In UTF-16: "a" (0x0061) < "😀" (0xD83D) < "\u{E000}" (0xE000).
+  let h = "1111111111111111111111111111111111111111"
+  let files : Map[String, base_codec::Json] = Map::new()
+  files.set("\u{E000}.txt", base_codec::json_arr([sessions_core::jstr(h), sessions_core::jstr(FILE_MODE)]))
+  files.set("😀.txt", base_codec::json_arr([sessions_core::jstr(h), sessions_core::jstr(FILE_MODE)]))
+  files.set("a.txt", base_codec::json_arr([sessions_core::jstr(h), sessions_core::jstr(FILE_MODE)]))
+  let entries = dirsync_listed_entries(files)
+  assert(entries.length() == 3)
+  assert(json_equal(entry_at(entries[0], 0), sessions_core::jstr("a.txt")))
+  assert(json_equal(entry_at(entries[1], 0), sessions_core::jstr("😀.txt")))
+  assert(json_equal(entry_at(entries[2], 0), sessions_core::jstr("\u{E000}.txt")))
+
+  // 3. Cross-page ordering via dirsync_page_of when entries exceed PAGE_BYTES
+  let big_pad_sb = StringBuilder::new()
+  for _i in 0..<200000 {
+    big_pad_sb.write_string("x")
+  }
+  let big_pad = big_pad_sb.to_string()
+  let big_files : Map[String, base_codec::Json] = Map::new()
+  big_files.set("c_" + big_pad, base_codec::json_arr([sessions_core::jstr(h), sessions_core::jstr(FILE_MODE)]))
+  big_files.set("a_" + big_pad, base_codec::json_arr([sessions_core::jstr(h), sessions_core::jstr(FILE_MODE)]))
+  big_files.set("b_" + big_pad, base_codec::json_arr([sessions_core::jstr(h), sessions_core::jstr(FILE_MODE)]))
+  let big_entries = dirsync_listed_entries(big_files)
+  let p0 = dirsync_page_of(big_entries, 0)
+  let next0 = sessions_core::int_of(sessions_core::jget(p0, "next"))
+  assert(next0 == 2)
+  let p1 = dirsync_page_of(big_entries, next0)
+  assert(json_equal(sessions_core::field_of(p1, "next"), base_codec::json_null()))
+  match (sessions_core::field_of(p0, "entries"), sessions_core::field_of(p1, "entries")) {
+    (base_codec::Json::Arr(e0), base_codec::Json::Arr(e1)) => {
+      assert(e0.length() == 2 && e1.length() == 1)
+      assert(json_equal(entry_at(e0[0], 0), sessions_core::jstr("a_" + big_pad)))
+      assert(json_equal(entry_at(e0[1], 0), sessions_core::jstr("b_" + big_pad)))
+      assert(json_equal(entry_at(e1[0], 0), sessions_core::jstr("c_" + big_pad)))
+    }
+    _ => assert(false)
+  }
+}
+
+test "dirsync_r2_send_blobs_interrupt_cleanup_pack_and_temp_out" {
+  // Case 1: cancel while waiting for node.syncPut reply -> temp out deleted + pack.close sent + Exit::Interrupted
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+
+  let dir = "/work/src"
+  vfs.add_dir(dir, 1.0)
+  vfs.add_file(dir + "/f.txt", "hello-interrupt", 420.0)
+
+  let mut open_packs = 0
+  let mut pending_put_id = -1
+  let mut got_interrupted = false
+
+  let fiber = host.rt.fork_named("send_blobs_cancel", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_dir_k)(ctx.remote_host(), "peer-1", "ws-1", "sess-1", "k-int", dir, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  // Pump until node.syncPut is parked in flight
+  let mut steps = 0
+  while steps < 200 && pending_put_id < 0 {
+    steps = steps + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "pack.open" {
+        open_packs = open_packs + 1
+      } else if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_d, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              let args = match sessions_core::field_of(msg, "args") { base_codec::Json::Arr(a) => a; _ => [] }
+              if f == "store.now" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jnum(1000.0))]))
+              } else if f == "node.ask" {
+                let m = sessions_core::text_of(args[1], "method")
+                if m == "sync.begin" {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("id", sessions_core::jstr("s1")), ("safe", sessions_core::jnum(1.0))]))]))
+                } else {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("entries", base_codec::json_arr([])), ("next", base_codec::json_null())]))]))
+                }
+              } else if f == "node.syncPacking" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jstr("/tmp/sync-pack-int-1"))]))
+              } else if f == "node.syncPut" {
+                pending_put_id = id_d.to_int()
+              }
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+  }
+  assert(pending_put_id > 0)
+  assert(open_packs == 1)
+  assert(vfs.files.contains("/tmp/sync-pack-int-1"))
+
+  // Interrupt caller while syncPut is in flight!
+  fiber.interrupt()
+  host.tick()
+  assert(got_interrupted)
+
+  // Now deliver the in-flight syncPut reply and pump cleanup daemons
+  gen.handle_answer(host, pending_put_id, base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(1.0))]))]))
+  let mut csteps = 0
+  while csteps < 200 {
+    csteps = csteps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "pack.open" {
+        open_packs = open_packs + 1
+      } else if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(open_packs == 0)
+  assert(!vfs.files.contains("/tmp/sync-pack-int-1"))
+  assert_holding_zero(host)
+
+  // Case 2: cancel while pack.open itself is in flight -> late pack.open is immediately closed!
+  let mut late_open_id = (-1).to_int64()
+  let mut late_interrupted = false
+  let f2 = host.rt.fork_named("pack_open_cancel", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    dirsync_send_blobs_k(ctx.remote_host(), "peer-1", [], "s2", dir, [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          late_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  host.tick()
+  assert(cur.shell_cursor < mem.shell_calls.length())
+  let open_call = mem.shell_calls[cur.shell_cursor]
+  cur.shell_cursor = cur.shell_cursor + 1
+  assert(open_call.op == "pack.open")
+  late_open_id = open_call.id
+  f2.interrupt()
+  host.tick()
+  assert(late_interrupted)
+  // Deliver late pack.open success -> must trigger pack.close
+  open_packs = open_packs + 1
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: late_open_id, error: "", json: "{\"id\":99}", bytes: None }))
+  let mut lsteps = 0
+  while lsteps < 50 {
+    lsteps = lsteps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(open_packs == 0)
+  assert_holding_zero(host)
+}
+
+test "dirsync_r2_apply_plan_interrupt_waits_inflight_rename_and_writes_partial_manifest" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let hb = text_blob_id("bbb")
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/blobs/" + hb, "bbb", 420.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("b.txt"), sessions_core::jstr(hb), sessions_core::jstr(FILE_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  // Pause right at the first fs.rename into mirror_root/a.txt
+  let mut paused_rename : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  let fiber = host.rt.fork_named("commit_cancel_mid_rename", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.rename" && str_contains(sc.json, mirror_root + "/a.txt") {
+        paused_rename = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held_rename = match paused_rename {
+    Some(c) => c
+    None => panic("expected paused rename")
+  }
+
+  // Cancel caller while fs.rename into a.txt is still in flight
+  fiber.interrupt()
+  host.tick()
+  assert(got_interrupted)
+
+  // Start a subsequent read_manifest_k right away; it must wait behind the manifest write barrier!
+  let mut read_manifest : Option[base_codec::Json] = None
+  let mut read_done = false
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.read_manifest_k)(rhost, manifest_path, fn(ex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(m) => {
+          read_manifest = m
+          read_done = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  host.tick()
+  // Reader must still be parked waiting for the rename + partial manifest write!
+  assert(!read_done)
+
+  // Release the paused fs.rename and drain to completion
+  let (rres, rerr, rbopt) = vfs.handle_shell(held_rename)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held_rename.id, error: rerr, json: rres, bytes: rbopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, fn(_f, _a) { base_codec::json_obj([("value", base_codec::json_null())]) }, tells)
+
+  assert(read_done)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "aaa"))
+  assert(!vfs.files.contains(mirror_root + "/b.txt"))
+  match read_manifest {
+    Some(m) => {
+      assert(sessions_core::int_of(sessions_core::jget(m, "version")) == 1)
+      let mf = files_of(Some(m))
+      assert(mf.contains("a.txt"))
+      assert(!mf.contains("b.txt"))
+    }
+    None => assert(false)
+  }
+  assert_holding_zero(host)
+}
+
+test "dirsync_r2_target_conflicts_removals_put_blobs_and_changes_cap" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  let noop = fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json {
+    base_codec::json_obj([("value", base_codec::json_null())])
+  }
+  let rhost = ctx.remote_host()
+  let port = ctx.dirsync
+
+  let work = "/data/remote/sessions/s2/work"
+  let mirror = "m2"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s2/syncing"
+  let manifest_path = "/data/remote/sessions/s2/mirrors/m2.json"
+  vfs.add_dir(mirror_root, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s2/mirrors", 1.0)
+
+  // (1) Symlink escape refusal via blob AND via by_hash
+  let esc_target = "../../outside"
+  let esc_hash = text_blob_id(esc_target)
+  vfs.add_file(syncing + "/blobs/" + esc_hash, esc_target, 420.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  let esc_plan = sessions_core::js_text_with(
+    base_codec::json_obj([
+      ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("l.lnk"), sessions_core::jstr(esc_hash), sessions_core::jstr(LINK_MODE)])])),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", esc_plan + "\n", 420.0)
+  let mut esc_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { esc_err = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(esc_err == "l.lnk is a symbolic link leading out of the directory")
+
+  // Symlink escape via by_hash (existing link at a/b/ok -> ../x is inside a/b, reused at top-level bad -> ../x escapes!)
+  let rel_target = "../x"
+  let rel_hash = text_blob_id(rel_target)
+  let _ = vfs.files.remove(syncing + "/blobs/" + rel_hash)
+  vfs.add_link(mirror_root + "/a/b/ok", rel_target)
+  let base_with_link = sessions_core::js_text_with(
+    base_codec::json_obj([
+      ("a/b/ok", base_codec::json_arr([sessions_core::jstr(rel_hash), sessions_core::jstr(LINK_MODE), sessions_core::jnum(4.0), sessions_core::jnum(1000.0), sessions_core::jnum(10.0), sessions_core::jnum(1000.0)])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/base.json", base_with_link, 420.0)
+  vfs.add_file(
+    syncing + "/plan.jsonl",
+    sessions_core::js_text_with(
+      base_codec::json_obj([
+        ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("bad"), sessions_core::jstr(rel_hash), sessions_core::jstr(LINK_MODE)])])),
+        ("remove", base_codec::json_arr([])),
+      ]),
+      test_fmt_num,
+    ) + "\n",
+    420.0,
+  )
+  let mut esc_err2 = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(1.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { esc_err2 = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(esc_err2 == "bad is a symbolic link leading out of the directory")
+
+  // (2) Untracked existing remote path conflict: non-regular dir AND symlink parent (file_path failure)
+  let h1 = text_blob_id("one")
+  vfs.add_dir(mirror_root + "/existing_dir", 1.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  vfs.add_file(
+    syncing + "/plan.jsonl",
+    sessions_core::js_text_with(
+      base_codec::json_obj([
+        ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("existing_dir"), sessions_core::jstr(h1), sessions_core::jstr(FILE_MODE)])])),
+        ("remove", base_codec::json_arr([])),
+      ]),
+      test_fmt_num,
+    ) + "\n",
+    420.0,
+  )
+  let mut untracked_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(2.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { untracked_err = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(untracked_err == "sync conflict at existing_dir: an existing remote path would be overwritten")
+
+  vfs.add_link(mirror_root + "/symdir", "other")
+  vfs.add_file(
+    syncing + "/plan.jsonl",
+    sessions_core::js_text_with(
+      base_codec::json_obj([
+        ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("symdir/f.txt"), sessions_core::jstr(h1), sessions_core::jstr(FILE_MODE)])])),
+        ("remove", base_codec::json_arr([])),
+      ]),
+      test_fmt_num,
+    ) + "\n",
+    420.0,
+  )
+  let mut symdir_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(2.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { symdir_err = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(symdir_err == "sync conflict at symdir/f.txt: an existing remote path would be overwritten")
+
+  // (3) Remote file changed before removal + normal removal with prune_empty_k
+  vfs.add_file(mirror_root + "/deep/sub/del.txt", "changed-remotely", 420.0)
+  vfs.add_file(
+    syncing + "/base.json",
+    sessions_core::js_text_with(
+      base_codec::json_obj([
+        ("deep/sub/del.txt", base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jstr(FILE_MODE), sessions_core::jnum(3.0), sessions_core::jnum(1000.0), sessions_core::jnum(20.0), sessions_core::jnum(1000.0)])),
+      ]),
+      test_fmt_num,
+    ),
+    420.0,
+  )
+  vfs.add_file(
+    syncing + "/plan.jsonl",
+    sessions_core::js_text_with(
+      base_codec::json_obj([("set", base_codec::json_arr([])), ("remove", base_codec::json_arr([sessions_core::jstr("deep/sub/del.txt")]))]),
+      test_fmt_num,
+    ) + "\n",
+    420.0,
+  )
+  let mut rem_conflict = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(2.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { rem_conflict = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(rem_conflict == "sync conflict at deep/sub/del.txt: the remote file changed before removal")
+
+  // Restore original content -> removal succeeds and prunes deep/sub and deep!
+  vfs.add_file(mirror_root + "/deep/sub/del.txt", "one", 420.0)
+  let mut rem_res = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(2.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => { rem_res = v; done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(sessions_core::int_of(sessions_core::jget(rem_res, "removed")) == 1)
+  assert(!vfs.files.contains(mirror_root + "/deep/sub/del.txt"))
+  assert(!vfs.dirs.contains(mirror_root + "/deep/sub"))
+  assert(!vfs.dirs.contains(mirror_root + "/deep"))
+  assert(vfs.dirs.contains(mirror_root))
+
+  // (4) apply_plan mid-way normal failure still writes partial manifest via finish_k:
+  //     Phase 3 writes `a_link` (valid inside symlink) first, then fails on `a_link/child.txt`
+  //     because `a_link` is now a symbolic link; `finish_k` persists `a_link` in manifest v4.
+  let h_lnk = text_blob_id("sub")
+  let h_fail = text_blob_id("fail-part")
+  vfs.add_file(syncing + "/blobs/" + h_lnk, "sub", 420.0)
+  vfs.add_file(syncing + "/blobs/" + h_fail, "fail-part", 420.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  vfs.add_file(
+    syncing + "/plan.jsonl",
+    sessions_core::js_text_with(
+      base_codec::json_obj([
+        (
+          "set",
+          base_codec::json_arr([
+            base_codec::json_arr([sessions_core::jstr("a_link"), sessions_core::jstr(h_lnk), sessions_core::jstr(LINK_MODE)]),
+            base_codec::json_arr([sessions_core::jstr("a_link/child.txt"), sessions_core::jstr(h_fail), sessions_core::jstr(FILE_MODE)]),
+          ]),
+        ),
+        ("remove", base_codec::json_arr([])),
+      ]),
+      test_fmt_num,
+    ) + "\n",
+    420.0,
+  )
+  let mut partial_err = ""
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(3.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => { partial_err = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(partial_err == "cannot write a_link/child.txt on the target: file path contains a symbolic link")
+  // Verify a_link was persisted to manifest v4 despite the mid-way error!
+  let mut m_after : Option[base_codec::Json] = None
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.read_manifest_k)(rhost, manifest_path, fn(ex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(m) => { m_after = m; done(effect::Exit::Succeeded(())) }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  match m_after {
+    Some(m) => {
+      assert(sessions_core::int_of(sessions_core::jget(m, "version")) == 4)
+      assert(files_of(Some(m)).contains("a_link"))
+    }
+    None => assert(false)
+  }
+
+  // (5) put_blobs all refusal & resume/skip paths + mid-way Exit::Interrupted
+  let blobs_dir = syncing + "/blobs_test"
+  let expect_put_err = fn(idx : base_codec::Json, packed : Option[String], data : base_codec::Json, want : String) -> Unit {
+    let mut got = ""
+    fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+      (port.put_blobs_k)(rhost, blobs_dir, idx, packed, data, fn(ex : effect::Exit[Int]) -> Unit {
+        match ex {
+          effect::Exit::Failed(e) => { got = sessions_core::error_message(e); done(effect::Exit::Succeeded(())) }
+          _ => assert(false)
+        }
+      })
+    })
+    drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+    assert(got == want)
+  }
+  expect_put_err(base_codec::json_null(), None, sessions_core::jstr(""), "bad pieces")
+  expect_put_err(base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("bad"), sessions_core::jnum(1.0), sessions_core::jnum(0.0), sessions_core::jnum(1.0)])]), None, sessions_core::jstr(""), "bad piece")
+  expect_put_err(base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jnum(2.0), sessions_core::jnum(1.0), sessions_core::jnum(2.0)])]), None, sessions_core::jstr(""), "bad piece")
+  expect_put_err(base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jnum(20000000.0), sessions_core::jnum(0.0), sessions_core::jnum(17000000.0)])]), None, sessions_core::jstr(""), "too much in one request")
+  expect_put_err(base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jnum(5.0), sessions_core::jnum(0.0), sessions_core::jnum(5.0)])]), None, sessions_core::jstr(base_codec::base64_encode("hi".to_bytes())), "pieces do not match their data")
+  expect_put_err(base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jnum(5.0), sessions_core::jnum(2.0), sessions_core::jnum(3.0)])]), None, sessions_core::jstr(base_codec::base64_encode("abc".to_bytes())), "a content's pieces came out of order")
+  // Hash mismatch deletes .part and refuses
+  expect_put_err(base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jnum(3.0), sessions_core::jnum(0.0), sessions_core::jnum(3.0)])]), None, sessions_core::jstr(base_codec::base64_encode("zzz".to_bytes())), "a content sent does not match its id")
+  assert(!vfs.files.contains(blobs_dir + "/" + h1 + ".part"))
+
+  // Multi-piece .part resume + done skip
+  let h_multi = text_blob_id("abcdef")
+  let mut p_ok = 0
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let idx = base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h_multi), sessions_core::jnum(6.0), sessions_core::jnum(0.0), sessions_core::jnum(3.0)])])
+    (port.put_blobs_k)(rhost, blobs_dir, idx, None, sessions_core::jstr(base_codec::base64_encode("abc".to_bytes())), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(n) => { p_ok = n; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(p_ok == 1 && opt_str_eq(vfs.files.get(blobs_dir + "/" + h_multi + ".part"), "abc"))
+  // Second piece resumes .part and renames to done
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let idx = base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h_multi), sessions_core::jnum(6.0), sessions_core::jnum(3.0), sessions_core::jnum(3.0)])])
+    (port.put_blobs_k)(rhost, blobs_dir, idx, None, sessions_core::jstr(base_codec::base64_encode("def".to_bytes())), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(n) => { p_ok = n; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(opt_str_eq(vfs.files.get(blobs_dir + "/" + h_multi), "abcdef"))
+  // Already done -> skipped cleanly even if re-sent
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let idx = base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h_multi), sessions_core::jnum(6.0), sessions_core::jnum(0.0), sessions_core::jnum(6.0)])])
+    (port.put_blobs_k)(rhost, blobs_dir, idx, None, sessions_core::jstr(base_codec::base64_encode("abcdef".to_bytes())), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(n) => { assert(n == 1); done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+
+  // (8) put_blobs mid-way Exit::Interrupted propagated untouched
+  let mut put_int = false
+  let f_put = host.rt.fork_named("put_blobs_int", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let idx = base_codec::json_arr([base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jnum(3.0), sessions_core::jnum(0.0), sessions_core::jnum(3.0)])])
+    (port.put_blobs_k)(rhost, blobs_dir, idx, None, sessions_core::jstr(base_codec::base64_encode("one".to_bytes())), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Interrupted => { put_int = true; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+    })
+  })
+  host.tick()
+  f_put.interrupt()
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(put_int)
+
+  // (7) sync_changes 1000-entry cap (more: true) + symlink "link" field
+  let cap_manifest = "/data/remote/sessions/s2/mirrors/cap.json"
+  let cap_base = "/data/remote/sessions/s2/work/cap"
+  vfs.add_dir(cap_base, 1.0)
+  vfs.add_link(cap_base + "/f0000", "target-link")
+  let mf_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<1002 {
+    let num_s = i.to_string()
+    let pad = if i < 10 { "000" + num_s } else if i < 100 { "00" + num_s } else if i < 1000 { "0" + num_s } else { num_s }
+    mf_fields.push(("f" + pad, base_codec::json_arr([sessions_core::jstr(h1), sessions_core::jstr(FILE_MODE), sessions_core::jnum(3.0), sessions_core::jnum(1000.0), sessions_core::jnum(20.0), sessions_core::jnum(1000.0)])))
+  }
+  vfs.add_file(
+    cap_manifest,
+    sessions_core::js_text_with(
+      base_codec::json_obj([("dir", sessions_core::jstr("/src")), ("name", sessions_core::jstr("cap")), ("version", sessions_core::jnum(1.0)), ("files", base_codec::json_obj(mf_fields))]),
+      test_fmt_num,
+    ),
+    420.0,
+  )
+  let mut cap_res = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (port.sync_changes_k)(rhost, cap_manifest, cap_base, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex { effect::Exit::Succeeded(v) => { cap_res = v; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+    })
+  })
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, noop, tells)
+  assert(sessions_core::truthy(sessions_core::field_of(cap_res, "more")))
+  match sessions_core::field_of(cap_res, "changes") {
+    base_codec::Json::Arr(ch) => {
+      assert(ch.length() == 1000)
+      assert(sessions_core::text_of(ch[0], "path") == "f0000")
+      assert(sessions_core::text_of(ch[0], "link") == "target-link")
+    }
+    _ => assert(false)
+  }
+
+  assert_holding_zero(host)
+}
+
+test "dirsync_r2_source_again_rehash_inline_split_and_streaming_pieces" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let tells : Array[(String, Array[base_codec::Json])] = []
+
+  // (6a) Source `again` rehash path: indexed clean files that differ from base get rehashed,
+  //      plus Left (escaping symlink on disk) and Gone (missing on disk) handled cleanly.
+  let repo = "/work/again_repo"
+  vfs.add_dir(repo, 1.0)
+  vfs.add_file(repo + "/rehash.txt", "disk-crlf\r\n", 420.0)
+  vfs.add_link(repo + "/escaped.txt", "../../secret")
+  // gone.txt is in ls-files -s, initially statted, then absent on rehash
+  let h_idx = "dddddddddddddddddddddddddddddddddddddddd"
+  vfs.git_responses.set("-C /work/again_repo rev-parse --is-inside-work-tree --show-prefix", "true\n")
+  vfs.git_responses.set("-C /work/again_repo ls-files -z -m", "")
+  vfs.git_responses.set(
+    "-C /work/again_repo ls-files -z -s",
+    "100644 " + h_idx + " 0\trehash.txt\u{0000}100644 " + h_idx + " 0\tescaped.txt\u{0000}",
+  )
+  vfs.git_responses.set("-C /work/again_repo ls-files -z -o --exclude-standard", "")
+
+  let mut pack_count = 0
+  let mut sync_res = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_dir_k)(ctx.remote_host(), "peer-1", "ws-1", "sess-1", "k-again", repo, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex { effect::Exit::Succeeded(v) => { sync_res = v; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+    })
+  })
+  drain_dirsync_vfs(
+    host,
+    gen,
+    mem,
+    vfs,
+    cur,
+    fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+      if f == "store.now" {
+        return base_codec::json_obj([("value", sessions_core::jnum(1000.0))])
+      }
+      if f == "node.ask" {
+        let m = sessions_core::text_of(args[1], "method")
+        if m == "sync.begin" {
+          return base_codec::json_obj([("value", base_codec::json_obj([("id", sessions_core::jstr("sa")), ("safe", sessions_core::jnum(1.0))]))])
+        }
+        if m == "sync.commit" {
+          return base_codec::json_obj([("value", base_codec::json_obj([("written", sessions_core::jnum(1.0)), ("removed", sessions_core::jnum(0.0))]))])
+        }
+        return base_codec::json_obj([("value", base_codec::json_obj([("entries", base_codec::json_arr([])), ("next", base_codec::json_null())]))])
+      }
+      if f == "node.syncPacking" {
+        pack_count = pack_count + 1
+        return base_codec::json_obj([("value", sessions_core::jstr("/tmp/again-pack-" + pack_count.to_string()))])
+      }
+      if f == "node.syncPut" {
+        return base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(1.0))]))])
+      }
+      base_codec::json_obj([("value", base_codec::json_null())])
+    },
+    tells,
+  )
+  assert(sessions_core::int_of(sessions_core::jget(sync_res, "files")) == 1)
+  assert(sessions_core::int_of(sessions_core::jget(sync_res, "skippedCount")) == 1)
+  assert(!vfs.files.contains("/tmp/again-pack-1"))
+
+  // (6b) Legacy base64 > BODY_BYTES halving split: 2 pieces whose combined packed size exceeds
+  //      BODY_BYTES*3/4 -> splits into 2 leaf syncPut(..., false) requests, removes all temp outs, closes pack!
+  let split_dir = "/work/split"
+  vfs.add_dir(split_dir, 1.0)
+  // 400 KiB each -> combined 800 KiB -> base64 ~1.06 MiB > 720 KiB BODY_BYTES, each half ~533 KiB <= 720 KiB
+  let chunk_sb = StringBuilder::new()
+  for _i in 0..<4096 {
+    chunk_sb.write_string("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123")
+  }
+  let big_content = chunk_sb.to_string() // 409,600 bytes
+  let hb1 = text_blob_id(big_content)
+  let big_content2 = "Z" + big_content.slice(1, big_content.length())
+  let hb2 = text_blob_id(big_content2)
+  vfs.add_file(split_dir + "/p1.bin", big_content, 420.0)
+  vfs.add_file(split_dir + "/p2.bin", big_content2, 420.0)
+
+  let mut split_pack_id = 0
+  let leaf_put_counts : Array[Int] = []
+  let mut split_sent = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    dirsync_send_blobs_k(
+      ctx.remote_host(),
+      "peer-old",
+      [("workspace", sessions_core::jstr("ws")), ("session", sessions_core::jstr("s")), ("key", sessions_core::jstr("k"))],
+      "sid-split",
+      split_dir,
+      [
+        DirsyncLocal::{ path: "p1.bin", hash: hb1, mode: FILE_MODE, size: bytes_len(big_content), indexed: false },
+        DirsyncLocal::{ path: "p2.bin", hash: hb2, mode: FILE_MODE, size: bytes_len(big_content2), indexed: false },
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex { effect::Exit::Succeeded(v) => { split_sent = v; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+      },
+    )
+  })
+  drain_dirsync_vfs(
+    host,
+    gen,
+    mem,
+    vfs,
+    cur,
+    fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+      if f == "node.syncPacking" {
+        split_pack_id = split_pack_id + 1
+        return base_codec::json_obj([("value", sessions_core::jstr("/tmp/split-pack-" + split_pack_id.to_string()))])
+      }
+      if f == "node.syncPut" {
+        let after = sessions_core::truthy(args[3])
+        if after {
+          return base_codec::json_obj([("error", base_codec::json_obj([("kind", sessions_core::jstr("NoBytes")), ("message", sessions_core::jstr("legacy"))]))])
+        }
+        let blobs_len = match sessions_core::field_of(args[1], "blobs") {
+          base_codec::Json::Arr(a) => a.length()
+          _ => 0
+        }
+        leaf_put_counts.push(blobs_len)
+        return base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(blobs_len.to_double()))]))])
+      }
+      base_codec::json_obj([("value", base_codec::json_null())])
+    },
+    tells,
+  )
+  // 2 leaf requests (1 piece each), ratio/requests updated only on leaves -> requests == 2!
+  assert(leaf_put_counts.length() == 2 && leaf_put_counts[0] == 1 && leaf_put_counts[1] == 1)
+  assert(sessions_core::int_of(sessions_core::jget(split_sent, "requests")) == 2)
+  // All 3 temp pack files (1 outer + 2 halves) cleaned up
+  assert(!vfs.files.contains("/tmp/split-pack-1"))
+  assert(!vfs.files.contains("/tmp/split-pack-2"))
+  assert(!vfs.files.contains("/tmp/split-pack-3"))
+
+  // (6c) Streaming Piece production: a 20 MiB virtual file (> 16 MiB MAX_RAW = 32 pieces of 512 KiB)
+  //      flushes the first 16 MiB batch (32 pieces) BEFORE producing remaining pieces (offset 32..39).
+  let stream_batches : Array[Int] = []
+  let mut stream_pack_id = 0
+  let stream_need = [
+    DirsyncLocal::{
+      path: "huge.bin",
+      hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      mode: FILE_MODE,
+      size: 20 * 1024 * 1024,
+      indexed: false,
+    },
+  ]
+  let mut stream_sent = base_codec::json_null()
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    dirsync_send_blobs_k(
+      ctx.remote_host(),
+      "peer-new",
+      [("workspace", sessions_core::jstr("ws")), ("session", sessions_core::jstr("s")), ("key", sessions_core::jstr("k"))],
+      "sid-stream",
+      split_dir,
+      stream_need,
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex { effect::Exit::Succeeded(v) => { stream_sent = v; done(effect::Exit::Succeeded(())) }; _ => assert(false) }
+      },
+    )
+  })
+  // Custom pump that handles zstd.pack without needing 20 MiB string in VFS
+  let mut st_steps = 0
+  while st_steps < 200 {
+    st_steps = st_steps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "zstd.pack" {
+        let j = match sessions_core::parse_json_strict(sc.json) { Ok(v) => v; Err(_) => base_codec::json_null() }
+        let n_pieces = match sessions_core::field_of(j, "pieces") { base_codec::Json::Arr(a) => a.length(); _ => 0 }
+        stream_batches.push(n_pieces)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: "", json: "{\"raw\":1000,\"packed\":100}", bytes: None }))
+      } else {
+        let (res, err, bopt) = vfs.handle_shell(sc)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      }
+      prog = true
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_d, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              if f == "node.syncPacking" {
+                stream_pack_id = stream_pack_id + 1
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jstr("/tmp/stream-pack-" + stream_pack_id.to_string()))]))
+              } else if f == "node.syncPut" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(1.0))]))]))
+              }
+              prog = true
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(stream_batches.length() == 2 && stream_batches[0] == 32 && stream_batches[1] == 8)
+  assert(sessions_core::int_of(sessions_core::jget(stream_sent, "requests")) == 2)
+  assert_holding_zero(host)
+}
+
+// ── R3 Regression Tests: Astra R2 4 cancellation & rotation boundaries (positive assertions) ──
+
+test "dirsync_r3_manifest_persisted_after_final_put_cancel" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let hb = text_blob_id("bbb")
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/blobs/" + hb, "bbb", 420.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("b.txt"), sessions_core::jstr(hb), sessions_core::jstr(FILE_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut paused_put : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  let fiber = host.rt.fork_named("commit_cancel_final_put", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.put" && str_contains(sc.json, "/mirrors/") {
+        paused_put = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held = match paused_put {
+    Some(c) => c
+    None => panic("expected paused manifest fs.put")
+  }
+
+  fiber.interrupt()
+  host.tick()
+  assert(got_interrupted)
+
+  let (res, err, bopt) = vfs.handle_shell(held)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, fn(_f, _a) { base_codec::json_obj([("value", base_codec::json_null())]) }, tells)
+
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "aaa"))
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/b.txt"), "bbb"))
+  let txt = match vfs.files.get(manifest_path) {
+    Some(t) => t
+    None => panic("manifest must be published even after caller cancel during final fs.put")
+  }
+  let manifest = match sessions_core::parse_json_strict(txt) {
+    Ok(j) => j
+    Err(_) => panic("parse manifest")
+  }
+  assert(sessions_core::int_of(sessions_core::jget(manifest, "version")) == 1)
+  let mf = files_of(Some(manifest))
+  assert(mf.contains("a.txt") && mf.contains("b.txt"))
+  assert_holding_zero(host)
+}
+
+test "dirsync_r3_pack_open_rotation_closes_late_handle" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    dirsync_send_blobs_k(ctx.remote_host(), "peer", [], "s", "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => done(effect::Exit::Interrupted)
+        _ => assert(false)
+      }
+    })
+  })
+  host.tick()
+  assert(mem.shell_calls.length() == 1 && mem.shell_calls[0].op == "pack.open")
+  let opened = mem.shell_calls[0].id
+  let _ = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: opened, error: "", json: "{\"id\":99}", bytes: None }))
+  host.tick()
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "pack.close")
+  assert(mem.shell_calls[1].json == "{\"id\":99}")
+  assert_holding_zero(host)
+}
+
+test "dirsync_r3_remove_before_ack_cancel_omits_removed_from_partial_manifest" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  vfs.add_file(mirror_root + "/a.txt", "aaa", 420.0)
+  let entry = base_codec::json_arr([sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)])
+  let base = base_codec::json_obj([("a.txt", entry)])
+  vfs.add_file(syncing + "/base.json", sessions_core::js_text_with(base, test_fmt_num), 420.0)
+  vfs.add_file(
+    manifest_path,
+    sessions_core::js_text_with(base_codec::json_obj([("files", base), ("version", sessions_core::jnum(0.0))]), test_fmt_num),
+    420.0,
+  )
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([("set", base_codec::json_arr([])), ("remove", base_codec::json_arr([sessions_core::jstr("a.txt")]))]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut paused_rm : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  let fiber = host.rt.fork_named("commit_cancel_mid_remove", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.remove" && str_contains(sc.json, mirror_root + "/a.txt") {
+        paused_rm = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held = match paused_rm {
+    Some(c) => c
+    None => panic("expected paused fs.remove")
+  }
+
+  fiber.interrupt()
+  host.tick()
+  assert(got_interrupted)
+
+  let (res, err, bopt) = vfs.handle_shell(held)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  drain_dirsync_vfs(host, gen, mem, vfs, cur, fn(_f, _a) { base_codec::json_obj([("value", base_codec::json_null())]) }, tells)
+
+  assert(!vfs.files.contains(mirror_root + "/a.txt"))
+  let txt = match vfs.files.get(manifest_path) {
+    Some(t) => t
+    None => panic("missing partial manifest")
+  }
+  let manifest = match sessions_core::parse_json_strict(txt) {
+    Ok(j) => j
+    Err(_) => panic("parse")
+  }
+  assert(sessions_core::int_of(sessions_core::jget(manifest, "version")) == 1)
+  assert(!files_of(Some(manifest)).contains("a.txt"))
+  assert_holding_zero(host)
+}
+
+test "dirsync_r3_recursive_flush_cancel_halts_siblings_before_pack_close" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let mut stream_pack_id = 0
+  let stream_need = [
+    DirsyncLocal::{
+      path: "huge.bin",
+      hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      mode: FILE_MODE,
+      size: 2 * 1024 * 1024,
+      indexed: false,
+    },
+  ]
+  let mut cancelled = false
+  let mut did_interrupt = false
+  let mut closed = false
+  let mut used_closed = false
+  let fiber = host.rt.fork_named("recursive_flush_cancel", fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    dirsync_send_blobs_k(ctx.remote_host(), "peer", [], "sid", "/src", stream_need, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          cancelled = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  let mut st_steps = 0
+  while st_steps < 200 {
+    st_steps = st_steps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "zstd.pack" {
+        let j = match sessions_core::parse_json_strict(sc.json) { Ok(v) => v; Err(_) => base_codec::json_null() }
+        let n_pieces = match sessions_core::field_of(j, "pieces") { base_codec::Json::Arr(a) => a.length(); _ => 0 }
+        if closed {
+          used_closed = true
+        }
+        let amount = n_pieces * 524288
+        let answer = base_codec::json_stringify(
+          base_codec::json_obj([
+            ("raw", sessions_core::jnum(amount.to_double())),
+            ("packed", sessions_core::jnum(amount.to_double())),
+          ]),
+        )
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: "", json: answer, bytes: None }))
+      } else {
+        if sc.op == "pack.close" {
+          closed = true
+        }
+        let (res, err, bopt) = vfs.handle_shell(sc)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      }
+      prog = true
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_d, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              if f == "node.syncPacking" {
+                stream_pack_id = stream_pack_id + 1
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jstr("/tmp/stream-pack-" + stream_pack_id.to_string()))]))
+              } else if f == "node.syncPut" {
+                let args = match sessions_core::field_of(msg, "args") { base_codec::Json::Arr(a) => a; _ => [] }
+                if sessions_core::truthy(args[3]) {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("error", base_codec::json_obj([("kind", sessions_core::jstr("NoBytes"))]))]))
+                } else {
+                  if !did_interrupt {
+                    did_interrupt = true
+                    fiber.interrupt()
+                    host.tick()
+                  }
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(1.0))]))]))
+                }
+              }
+              prog = true
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(cancelled && closed && !used_closed)
+  assert_holding_zero(host)
+}
+
+// ── R4 Regression Tests: Process-scope rotation boundaries (positive assertions) ──
+
+test "dirsync_r4_rotate_after_mirror_mutations_publishes_manifest_and_blocks_next_gen" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let hb = text_blob_id("bbb")
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/blobs/" + hb, "bbb", 420.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("b.txt"), sessions_core::jstr(hb), sessions_core::jstr(FILE_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut paused_put : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.put" && str_contains(sc.json, "/mirrors/") {
+        paused_put = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held = match paused_put {
+    Some(c) => c
+    None => panic("expected paused manifest fs.put")
+  }
+
+  let stdout_before_rotate = mem.stdout_lines.length()
+  let next = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_interrupted)
+  // Old generation emitted zero business frames after rotation, and manifest barrier is active.
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+  assert(host.manifest_barriers.contains(manifest_path))
+
+  // Start next-gen sync_begin_k BEFORE delivering held fs.put to prove it waits on manifest_barriers!
+  let new_state = RemoteState::new_with_fmt(test_fmt_num)
+  new_state.root = "/data/remote"
+  let next_ctx = RemoteCtx::new_default(host, next, "/", new_state, sessions_core::SessionDispatch::stub())
+  let next_hash = text_blob_id("changed-at-source")
+  vfs.add_file(syncing + "/blobs/" + next_hash, "changed-at-source", 420.0)
+  let replacement = base_codec::json_obj([
+    (
+      "set",
+      base_codec::json_arr([
+        base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(next_hash), sessions_core::jstr(FILE_MODE)]),
+      ]),
+    ),
+    ("remove", base_codec::json_arr([])),
+  ])
+  let mut saw_begin_version = -1.0
+  let mut commit_version = -1
+  let mut commit_written = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (next_ctx.dirsync.sync_begin_k)(next_ctx.remote_host(), manifest_path, mirror_root, syncing, fn(bex : effect::Exit[Double]) -> Unit {
+      match bex {
+        effect::Exit::Succeeded(version) => {
+          saw_begin_version = version
+          vfs.add_file(syncing + "/plan.jsonl", sessions_core::js_text_with(replacement, test_fmt_num) + "\n", 420.0)
+          (next_ctx.dirsync.sync_commit_k)(next_ctx.remote_host(), work, mirror, syncing, manifest_path, sessions_core::jnum(version), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(v) => {
+                commit_version = sessions_core::int_of(sessions_core::jget(v, "version"))
+                commit_written = sessions_core::int_of(sessions_core::jget(v, "written"))
+                done(effect::Exit::Succeeded(()))
+              }
+              _ => assert(false)
+            }
+          })
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  // Tick once while held fs.put is still in flight: next-gen sync_begin_k must still be blocked on barrier.
+  host.tick()
+  assert(saw_begin_version == -1.0)
+
+  // Now deliver the paused manifest fs.put -> process-scope publish finishes fs.rename -> unblocks next-gen!
+  let (res, err, bopt) = vfs.handle_shell(held)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  drain_dirsync_vfs(host, next, mem, vfs, cur, fn(_f, _a) { base_codec::json_obj([("value", base_codec::json_null())]) }, tells)
+
+  assert(saw_begin_version == 1.0)
+  assert(commit_version == 2)
+  assert(commit_written == 1)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "changed-at-source"))
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/b.txt"), "bbb"))
+  assert(vfs.files.contains(manifest_path))
+  assert(!host.manifest_barriers.contains(manifest_path))
+  assert_holding_zero(host)
+}
+
+test "dirsync_r4_rotate_after_pack_transferred_closes_pack_and_removes_temp" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+
+  let dir = "/work/src"
+  vfs.add_dir(dir, 1.0)
+  vfs.add_file(dir + "/f.txt", "hello-interrupt", 420.0)
+
+  let mut open_packs = 0
+  let mut opened_pack_id = -1
+  let mut pack_close_count = 0
+  let mut closed_pack_id = -1
+  let mut pending_put_id = -1
+  let mut got_interrupted = false
+
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_dir_k)(ctx.remote_host(), "peer-1", "ws-1", "sess-1", "k-int", dir, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  // Pump until node.syncPut is parked in flight
+  let mut steps = 0
+  while steps < 200 && pending_put_id < 0 {
+    steps = steps + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      if sc.op == "pack.open" {
+        open_packs = open_packs + 1
+        match sessions_core::parse_json_strict(res) {
+          Ok(j) => opened_pack_id = sessions_core::int_of(sessions_core::jget(j, "id"))
+          Err(_) => ()
+        }
+      } else if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+        pack_close_count = pack_close_count + 1
+        match sessions_core::parse_json_strict(sc.json) {
+          Ok(j) => closed_pack_id = sessions_core::int_of(sessions_core::jget(j, "id"))
+          Err(_) => ()
+        }
+      }
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_d, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              let args = match sessions_core::field_of(msg, "args") { base_codec::Json::Arr(a) => a; _ => [] }
+              if f == "store.now" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jnum(1000.0))]))
+              } else if f == "node.ask" {
+                let m = sessions_core::text_of(args[1], "method")
+                if m == "sync.begin" {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("id", sessions_core::jstr("s1")), ("safe", sessions_core::jnum(1.0))]))]))
+                } else {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("entries", base_codec::json_arr([])), ("next", base_codec::json_null())]))]))
+                }
+              } else if f == "node.syncPacking" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jstr("/tmp/sync-pack-int-1"))]))
+              } else if f == "node.syncPut" {
+                pending_put_id = id_d.to_int()
+              }
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+  }
+  assert(pending_put_id > 0)
+  assert(open_packs == 1 && opened_pack_id > 0)
+  assert(vfs.files.contains("/tmp/sync-pack-int-1"))
+
+  // Rotate hub generation while syncPut is in flight!
+  let stdout_before_rotate = mem.stdout_lines.length()
+  let _ = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_interrupted)
+
+  // Deliver the in-flight syncPut reply and pump process-scope silent cleanup shell calls
+  gen.handle_answer(host, pending_put_id, base_codec::json_obj([("value", base_codec::json_obj([("pieces", sessions_core::jnum(1.0))]))]))
+  let mut csteps = 0
+  while csteps < 200 {
+    csteps = csteps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "pack.open" {
+        open_packs = open_packs + 1
+      } else if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+        pack_close_count = pack_close_count + 1
+        match sessions_core::parse_json_strict(sc.json) {
+          Ok(j) => closed_pack_id = sessions_core::int_of(sessions_core::jget(j, "id"))
+          Err(_) => ()
+        }
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  // Old generation stayed completely silent on stdout, pack closed exactly once with exact ID, temp out removed!
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+  assert(open_packs == 0)
+  assert(pack_close_count == 1 && closed_pack_id == opened_pack_id)
+  assert(!vfs.files.contains("/tmp/sync-pack-int-1"))
+  assert_holding_zero(host)
+}
+
+// ── R5 Regression Tests: In-flight native I/O (mirror rename & zstd.pack) across rotation ──
+
+test "dirsync_r5_rotate_while_mirror_rename_pending_records_file_and_next_gen_updates" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let hb = text_blob_id("bbb")
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/blobs/" + hb, "bbb", 420.0)
+  vfs.add_file(syncing + "/base.json", "{}", 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("b.txt"), sessions_core::jstr(hb), sessions_core::jstr(FILE_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut paused_rename : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.rename" && str_contains(sc.json, mirror_root + "/a.txt") {
+        paused_rename = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held = match paused_rename {
+    Some(c) => c
+    None => panic("expected pending mirror rename")
+  }
+
+  let stdout_before_rotate = mem.stdout_lines.length()
+  let next = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_interrupted)
+  // Old generation stayed silent and manifest barrier is active while rename is still pending.
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+  assert(host.manifest_barriers.contains(manifest_path))
+
+  // Deliver the in-flight mirror rename; process-scope daemon runs lstat, updates files, and publishes v1 manifest.
+  let (res, err, bopt) = vfs.handle_shell(held)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  let noop = fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json {
+    base_codec::json_obj([("value", base_codec::json_null())])
+  }
+  drain_dirsync_vfs(host, next, mem, vfs, cur, noop, tells)
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "aaa"))
+  let manifest_text = match vfs.files.get(manifest_path) { Some(t) => t; None => panic("missing manifest") }
+  let manifest = match sessions_core::parse_json_strict(manifest_text) { Ok(j) => j; Err(_) => panic("bad JSON") }
+  assert(sessions_core::int_of(sessions_core::jget(manifest, "version")) == 1)
+  assert(files_of(Some(manifest)).contains("a.txt"))
+  assert(!host.manifest_barriers.contains(manifest_path))
+
+  // Next generation reads v1 baseline and updates a.txt cleanly to v2 with zero false conflict!
+  let new_state = RemoteState::new_with_fmt(test_fmt_num)
+  new_state.root = "/data/remote"
+  let next_ctx = RemoteCtx::new_default(host, next, "/", new_state, sessions_core::SessionDispatch::stub())
+  let next_hash = text_blob_id("changed-at-source")
+  vfs.add_file(syncing + "/blobs/" + next_hash, "changed-at-source", 420.0)
+  let replacement = base_codec::json_obj([
+    (
+      "set",
+      base_codec::json_arr([
+        base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(next_hash), sessions_core::jstr(FILE_MODE)]),
+      ]),
+    ),
+    ("remove", base_codec::json_arr([])),
+  ])
+  let mut saw_begin_version = -1.0
+  let mut commit_version = -1
+  let mut commit_written = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (next_ctx.dirsync.sync_begin_k)(next_ctx.remote_host(), manifest_path, mirror_root, syncing, fn(bex : effect::Exit[Double]) -> Unit {
+      match bex {
+        effect::Exit::Succeeded(version) => {
+          saw_begin_version = version
+          vfs.add_file(syncing + "/plan.jsonl", sessions_core::js_text_with(replacement, test_fmt_num) + "\n", 420.0)
+          (next_ctx.dirsync.sync_commit_k)(next_ctx.remote_host(), work, mirror, syncing, manifest_path, sessions_core::jnum(version), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(v) => {
+                commit_version = sessions_core::int_of(sessions_core::jget(v, "version"))
+                commit_written = sessions_core::int_of(sessions_core::jget(v, "written"))
+                done(effect::Exit::Succeeded(()))
+              }
+              _ => assert(false)
+            }
+          })
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, next, mem, vfs, cur, noop, tells)
+  assert(saw_begin_version == 1.0)
+  assert(commit_version == 2)
+  assert(commit_written == 1)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "changed-at-source"))
+  assert_holding_zero(host)
+}
+
+test "dirsync_r5_rotate_while_zstd_pack_pending_cleans_temp_after_pack_and_closes_once" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+
+  let dir = "/work/src"
+  vfs.add_dir(dir, 1.0)
+  vfs.add_file(dir + "/f.txt", "hello-interrupt", 420.0)
+
+  let mut open_packs = 0
+  let mut opened_pack_id = -1
+  let mut pack_close_count = 0
+  let mut closed_pack_id = -1
+  let mut remove_out_count = 0
+  let mut pending_put_id = -1
+  let mut pending_pack : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_dir_k)(ctx.remote_host(), "peer-1", "ws-1", "sess-1", "k-int", dir, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  // Hold zstd.pack before its native worker finishes writing /tmp/sync-pack-int-1.
+  let mut steps = 0
+  while steps < 200 && (match pending_pack { None => true; Some(_) => false }) {
+    steps = steps + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "zstd.pack" {
+        pending_pack = Some(sc)
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      if sc.op == "pack.open" {
+        open_packs = open_packs + 1
+        match sessions_core::parse_json_strict(res) {
+          Ok(j) => opened_pack_id = sessions_core::int_of(sessions_core::jget(j, "id"))
+          Err(_) => ()
+        }
+      } else if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+        pack_close_count = pack_close_count + 1
+        match sessions_core::parse_json_strict(sc.json) {
+          Ok(j) => closed_pack_id = sessions_core::int_of(sessions_core::jget(j, "id"))
+          Err(_) => ()
+        }
+      }
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_d, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              let args = match sessions_core::field_of(msg, "args") { base_codec::Json::Arr(a) => a; _ => [] }
+              if f == "store.now" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jnum(1000.0))]))
+              } else if f == "node.ask" {
+                let m = sessions_core::text_of(args[1], "method")
+                if m == "sync.begin" {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("id", sessions_core::jstr("s1")), ("safe", sessions_core::jnum(1.0))]))]))
+                } else {
+                  gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("entries", base_codec::json_arr([])), ("next", base_codec::json_null())]))]))
+                }
+              } else if f == "node.syncPacking" {
+                gen.handle_answer(host, id_d.to_int(), base_codec::json_obj([("value", sessions_core::jstr("/tmp/sync-pack-int-1"))]))
+              } else if f == "node.syncPut" {
+                pending_put_id = id_d.to_int()
+              }
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+  }
+  assert(pending_put_id < 0)
+  let held = match pending_pack { Some(sc) => sc; None => panic("pack did not start") }
+  assert(open_packs == 1 && opened_pack_id > 0)
+  assert(!vfs.files.contains("/tmp/sync-pack-int-1"))
+
+  // Rotate while zstd.pack is still pending on the native worker!
+  let stdout_before_rotate = mem.stdout_lines.length()
+  let _ = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_interrupted)
+
+  // Before zstd.pack completes, NEITHER fs.remove(out) NOR pack.close may have been emitted!
+  while cur.shell_cursor < mem.shell_calls.length() {
+    let sc = mem.shell_calls[cur.shell_cursor]
+    cur.shell_cursor = cur.shell_cursor + 1
+    if sc.op == "pack.close" {
+      pack_close_count = pack_close_count + 1
+    } else if sc.op == "fs.remove" && str_contains(sc.json, "/tmp/sync-pack-int-1") {
+      remove_out_count = remove_out_count + 1
+    }
+  }
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+  assert(remove_out_count == 0)
+  assert(pack_close_count == 0 && open_packs == 1)
+
+  // Now the native compressor completes and writes /tmp/sync-pack-int-1.
+  let (res, err, bopt) = vfs.handle_shell(held)
+  assert(vfs.files.contains("/tmp/sync-pack-int-1"))
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+
+  let mut csteps = 0
+  while csteps < 200 {
+    csteps = csteps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "pack.open" {
+        open_packs = open_packs + 1
+      } else if sc.op == "pack.close" {
+        open_packs = open_packs - 1
+        pack_close_count = pack_close_count + 1
+        match sessions_core::parse_json_strict(sc.json) {
+          Ok(j) => closed_pack_id = sessions_core::int_of(sessions_core::jget(j, "id"))
+          Err(_) => ()
+        }
+      } else if sc.op == "fs.remove" && str_contains(sc.json, "/tmp/sync-pack-int-1") {
+        remove_out_count = remove_out_count + 1
+      }
+      let (r2, e2, b2) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: e2, json: r2, bytes: b2 }))
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  // After zstd.pack finished: out removed, pack.close sent exactly once with exact ID, zero stdout, holding == 0!
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+  assert(remove_out_count == 1)
+  assert(!vfs.files.contains("/tmp/sync-pack-int-1"))
+  assert(open_packs == 0)
+  assert(pack_close_count == 1 && closed_pack_id == opened_pack_id)
+  assert_holding_zero(host)
+}
+
+// ── R6 Regression Tests: Link/dir replacement preflight lstat, unlink->rename, and rename-fail partial manifest ──
+
+test "dirsync_r6_rotate_during_link_preflight_lstat_skips_unlink_and_next_gen_succeeds" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let old_target = "old.txt"
+  let old_hash = text_blob_id(old_target)
+  vfs.add_link(mirror_root + "/a.txt", old_target)
+  let base = base_codec::json_obj([("a.txt", base_codec::json_arr([sessions_core::jstr(old_hash), sessions_core::jstr(LINK_MODE)]))])
+  vfs.add_file(manifest_path, sessions_core::js_text_with(base_codec::json_obj([("files", base), ("version", sessions_core::jnum(0.0))]), test_fmt_num), 420.0)
+  let hb = text_blob_id("bbb")
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/blobs/" + hb, "bbb", 420.0)
+  vfs.add_file(syncing + "/base.json", sessions_core::js_text_with(base, test_fmt_num), 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("b.txt"), sessions_core::jstr(hb), sessions_core::jstr(FILE_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut paused_call : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      let process_owned = match host.shell_waiters.get(sc.id) {
+        Some(w) => match w.owner { sessions_core::ShellOwner::Process => true; _ => false }
+        None => false
+      }
+      if process_owned && sc.op == "fs.lstat" && str_contains(sc.json, mirror_root + "/a.txt") {
+        paused_call = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held = match paused_call {
+    Some(c) => c
+    None => panic("expected pending mirror preflight lstat")
+  }
+
+  assert(opt_str_eq(vfs.links.get(mirror_root + "/a.txt"), old_target))
+  let before = mem.shell_calls.length()
+  let stdout_before_rotate = mem.stdout_lines.length()
+  let next = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_interrupted)
+
+  let (res, err, bopt) = vfs.handle_shell(held)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  let noop = fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json {
+    base_codec::json_obj([("value", base_codec::json_null())])
+  }
+  drain_dirsync_vfs(host, next, mem, vfs, cur, noop, tells)
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+
+  // Must NOT issue fs.remove after rotation during preflight lstat; old symlink remains intact on disk & in v1 manifest.
+  let mut late_unlink = false
+  for i in before..<mem.shell_calls.length() {
+    let call = mem.shell_calls[i]
+    if call.op == "fs.remove" && str_contains(call.json, mirror_root + "/a.txt") {
+      late_unlink = true
+    }
+  }
+  assert(!late_unlink)
+  assert(opt_str_eq(vfs.links.get(mirror_root + "/a.txt"), old_target))
+  let manifest_text = match vfs.files.get(manifest_path) { Some(t) => t; None => panic("missing manifest") }
+  let manifest = match sessions_core::parse_json_strict(manifest_text) { Ok(j) => j; Err(_) => panic("bad JSON") }
+  assert(sessions_core::int_of(sessions_core::jget(manifest, "version")) == 1)
+  let kept = match files_of(Some(manifest)).get("a.txt") { Some(v) => v; None => panic("expected original link baseline") }
+  assert(json_equal(entry_at(kept, 0), sessions_core::jstr(old_hash)))
+  assert(!host.manifest_barriers.contains(manifest_path))
+
+  // Next generation retries the same replacement plan cleanly to v2!
+  let new_state = RemoteState::new_with_fmt(test_fmt_num)
+  new_state.root = "/data/remote"
+  let next_ctx = RemoteCtx::new_default(host, next, "/", new_state, sessions_core::SessionDispatch::stub())
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  let replacement = base_codec::json_obj([
+    (
+      "set",
+      base_codec::json_arr([
+        base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+      ]),
+    ),
+    ("remove", base_codec::json_arr([])),
+  ])
+  let mut saw_begin_version = -1.0
+  let mut commit_version = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (next_ctx.dirsync.sync_begin_k)(next_ctx.remote_host(), manifest_path, mirror_root, syncing, fn(bex : effect::Exit[Double]) -> Unit {
+      match bex {
+        effect::Exit::Succeeded(version) => {
+          saw_begin_version = version
+          vfs.add_file(syncing + "/plan.jsonl", sessions_core::js_text_with(replacement, test_fmt_num) + "\n", 420.0)
+          (next_ctx.dirsync.sync_commit_k)(next_ctx.remote_host(), work, mirror, syncing, manifest_path, sessions_core::jnum(version), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(v) => {
+                commit_version = sessions_core::int_of(sessions_core::jget(v, "version"))
+                done(effect::Exit::Succeeded(()))
+              }
+              _ => assert(false)
+            }
+          })
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, next, mem, vfs, cur, noop, tells)
+  assert(saw_begin_version == 1.0)
+  assert(commit_version == 2)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "aaa"))
+  assert(!vfs.links.contains(mirror_root + "/a.txt"))
+  assert_holding_zero(host)
+}
+
+test "dirsync_r6_rotate_during_link_unlink_completes_rename_and_next_gen_succeeds" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let old_target = "old.txt"
+  let old_hash = text_blob_id(old_target)
+  vfs.add_link(mirror_root + "/a.txt", old_target)
+  let base = base_codec::json_obj([("a.txt", base_codec::json_arr([sessions_core::jstr(old_hash), sessions_core::jstr(LINK_MODE)]))])
+  vfs.add_file(manifest_path, sessions_core::js_text_with(base_codec::json_obj([("files", base), ("version", sessions_core::jnum(0.0))]), test_fmt_num), 420.0)
+  let hb = text_blob_id("bbb")
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/blobs/" + hb, "bbb", 420.0)
+  vfs.add_file(syncing + "/base.json", sessions_core::js_text_with(base, test_fmt_num), 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      (
+        "set",
+        base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+          base_codec::json_arr([sessions_core::jstr("b.txt"), sessions_core::jstr(hb), sessions_core::jstr(FILE_MODE)]),
+        ]),
+      ),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut paused_call : Option[sessions_core::MemShellCall] = None
+  let mut got_interrupted = false
+  gen.spawn_work(fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut found = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      let process_owned = match host.shell_waiters.get(sc.id) {
+        Some(w) => match w.owner { sessions_core::ShellOwner::Process => true; _ => false }
+        None => false
+      }
+      if process_owned && sc.op == "fs.remove" && str_contains(sc.json, mirror_root + "/a.txt") {
+        paused_call = Some(sc)
+        found = true
+        break
+      }
+      let (res, err, bopt) = vfs.handle_shell(sc)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+    }
+    if found {
+      break
+    }
+  }
+  let held = match paused_call {
+    Some(c) => c
+    None => panic("expected pending mirror unlink")
+  }
+
+  assert(opt_str_eq(vfs.links.get(mirror_root + "/a.txt"), old_target))
+  let stdout_before_rotate = mem.stdout_lines.length()
+  let next = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(got_interrupted)
+
+  let (res, err, bopt) = vfs.handle_shell(held)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held.id, error: err, json: res, bytes: bopt }))
+  let tells : Array[(String, Array[base_codec::Json])] = []
+  let noop = fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json {
+    base_codec::json_obj([("value", base_codec::json_null())])
+  }
+  drain_dirsync_vfs(host, next, mem, vfs, cur, noop, tells)
+  assert(mem.stdout_lines.length() == stdout_before_rotate)
+
+  // Unlink already ran -> process-scope daemon completes rename + lstat + v1 manifest with a.txt = aaa!
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "aaa"))
+  assert(!vfs.links.contains(mirror_root + "/a.txt"))
+  let manifest_text = match vfs.files.get(manifest_path) { Some(t) => t; None => panic("missing manifest") }
+  let manifest = match sessions_core::parse_json_strict(manifest_text) { Ok(j) => j; Err(_) => panic("bad JSON") }
+  assert(sessions_core::int_of(sessions_core::jget(manifest, "version")) == 1)
+  let kept = match files_of(Some(manifest)).get("a.txt") { Some(v) => v; None => panic("expected updated a.txt") }
+  assert(json_equal(entry_at(kept, 0), sessions_core::jstr(ha)))
+  assert(json_equal(entry_at(kept, 1), sessions_core::jstr(FILE_MODE)))
+  assert(!host.manifest_barriers.contains(manifest_path))
+
+  // Next generation retries cleanly to v2 with zero false conflict!
+  let new_state = RemoteState::new_with_fmt(test_fmt_num)
+  new_state.root = "/data/remote"
+  let next_ctx = RemoteCtx::new_default(host, next, "/", new_state, sessions_core::SessionDispatch::stub())
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  let replacement = base_codec::json_obj([
+    (
+      "set",
+      base_codec::json_arr([
+        base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)]),
+      ]),
+    ),
+    ("remove", base_codec::json_arr([])),
+  ])
+  let mut saw_begin_version = -1.0
+  let mut commit_version = -1
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (next_ctx.dirsync.sync_begin_k)(next_ctx.remote_host(), manifest_path, mirror_root, syncing, fn(bex : effect::Exit[Double]) -> Unit {
+      match bex {
+        effect::Exit::Succeeded(version) => {
+          saw_begin_version = version
+          vfs.add_file(syncing + "/plan.jsonl", sessions_core::js_text_with(replacement, test_fmt_num) + "\n", 420.0)
+          (next_ctx.dirsync.sync_commit_k)(next_ctx.remote_host(), work, mirror, syncing, manifest_path, sessions_core::jnum(version), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(v) => {
+                commit_version = sessions_core::int_of(sessions_core::jget(v, "version"))
+                done(effect::Exit::Succeeded(()))
+              }
+              _ => assert(false)
+            }
+          })
+        }
+        _ => assert(false)
+      }
+    })
+  })
+  drain_dirsync_vfs(host, next, mem, vfs, cur, noop, tells)
+  assert(saw_begin_version == 1.0)
+  assert(commit_version == 2)
+  assert(opt_str_eq(vfs.files.get(mirror_root + "/a.txt"), "aaa"))
+  assert_holding_zero(host)
+}
+
+test "dirsync_r6_link_unlink_then_rename_fail_drops_stale_link_from_partial_manifest" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let ctx = RemoteCtx::new_default(host, gen, "/", state, sessions_core::SessionDispatch::stub())
+  let vfs = DirsyncVfs::new()
+  let cur = PumpCursor::new()
+  let rhost = ctx.remote_host()
+
+  let work = "/data/remote/sessions/s1/work"
+  let mirror = "m1"
+  let mirror_root = work + "/" + mirror
+  let syncing = "/data/remote/sessions/s1/syncing"
+  let manifest_path = "/data/remote/sessions/s1/mirrors/m1.json"
+  vfs.add_dir(work, 1.0)
+  vfs.add_dir(syncing + "/blobs", 1.0)
+  vfs.add_dir("/data/remote/sessions/s1/mirrors", 1.0)
+
+  let ha = text_blob_id("aaa")
+  let old_target = "old.txt"
+  let old_hash = text_blob_id(old_target)
+  vfs.add_link(mirror_root + "/a.txt", old_target)
+  let base = base_codec::json_obj([("a.txt", base_codec::json_arr([sessions_core::jstr(old_hash), sessions_core::jstr(LINK_MODE)]))])
+  vfs.add_file(manifest_path, sessions_core::js_text_with(base_codec::json_obj([("files", base), ("version", sessions_core::jnum(0.0))]), test_fmt_num), 420.0)
+  vfs.add_file(syncing + "/blobs/" + ha, "aaa", 420.0)
+  vfs.add_file(syncing + "/base.json", sessions_core::js_text_with(base, test_fmt_num), 420.0)
+  let plan_line = sessions_core::js_text_with(
+    base_codec::json_obj([
+      ("set", base_codec::json_arr([base_codec::json_arr([sessions_core::jstr("a.txt"), sessions_core::jstr(ha), sessions_core::jstr(FILE_MODE)])])),
+      ("remove", base_codec::json_arr([])),
+    ]),
+    test_fmt_num,
+  )
+  vfs.add_file(syncing + "/plan.jsonl", plan_line + "\n", 420.0)
+
+  let mut saw_rename_err = false
+  fork_test(host, fn(done : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (ctx.dirsync.sync_commit_k)(rhost, work, mirror, syncing, manifest_path, sessions_core::jnum(0.0), "/src", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => {
+          saw_rename_err = str_contains(sessions_core::error_message(e), "EIO: simulated rename failure")
+          done(effect::Exit::Succeeded(()))
+        }
+        _ => assert(false)
+      }
+    })
+  })
+
+  // Inject an I/O error on the mirror fs.rename right after the old link was unlinked.
+  let mut steps = 0
+  while steps < 200 {
+    steps = steps + 1
+    host.tick()
+    let mut prog = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let sc = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      if sc.op == "fs.rename" && str_contains(sc.json, mirror_root + "/a.txt") {
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: "EIO: simulated rename failure", json: "", bytes: None }))
+      } else {
+        let (res, err, bopt) = vfs.handle_shell(sc)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: sc.id, error: err, json: res, bytes: bopt }))
+      }
+      prog = true
+    }
+    if !prog && host.rt.idle() {
+      break
+    }
+  }
+  assert(saw_rename_err)
+  assert(!vfs.links.contains(mirror_root + "/a.txt"))
+  assert(!vfs.files.contains(mirror_root + "/a.txt"))
+  let manifest_text = match vfs.files.get(manifest_path) { Some(t) => t; None => panic("missing partial manifest") }
+  let manifest = match sessions_core::parse_json_strict(manifest_text) { Ok(j) => j; Err(_) => panic("bad JSON") }
+  assert(sessions_core::int_of(sessions_core::jget(manifest, "version")) == 1)
+  // Stale link entry MUST NOT remain in partial manifest after unlink succeeded and rename failed!
+  assert(!files_of(Some(manifest)).contains("a.txt"))
+  assert_holding_zero(host)
+}
