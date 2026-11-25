@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c5baeb5e9](https://github.com/AFK-surf/monoid/commit/c5baeb5e943b57e2ce83574874989d529ed134dc) fix(cloud): handle telemetry network and DO dropou | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 100.84 | 128.89 |
 | [0fa688540](https://github.com/AFK-surf/monoid/commit/0fa688540da1a5ede59dc566d8567c2e16d0144d) feat(station): enforce account concurrency caps ac | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 101.09 | 126.08 |
 | [eebe4c08b](https://github.com/AFK-surf/monoid/commit/eebe4c08bc5c0a056da6cd6a94802c1761353c74) fix(mbui): close the board chat on Esc (#8618) | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 101.09 | 126.08 |
 | [352566952](https://github.com/AFK-surf/monoid/commit/352566952d0319900c610590a715a0af1e2278bb) fix(app): line up a board draft's panel and put wh | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.59 | 100.94 | 110.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [95d864545](https://github.com/AFK-surf/monoid/commit/95d8645458bd06355e97ab706ef52ce4cfd50467) feat(pion): W6-A builders_search (--builder search | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [6d1a704bb](https://github.com/AFK-surf/monoid/commit/6d1a704bbacee0040a4e2b5bf189ebfb8795ece2) docs(readme): refresh READMEs and architecture dia | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [264aa0c6c](https://github.com/AFK-surf/monoid/commit/264aa0c6cc81ef2e01a767d20039f8b8411046f5) perf(core): read a person's own lock from the devi | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
-| [8660d4d6f](https://github.com/AFK-surf/monoid/commit/8660d4d6f8c63b55bcd94b1c14760f36d8d76c0e) feat(pion): port --builder usage-counter to Pion ( | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c5baeb5e9](https://github.com/AFK-surf/monoid/commit/c5baeb5e943b57e2ce83574874989d529ed134dc) fix(cloud): handle telemetry network and DO dropou | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.41 |
 | [0fa688540](https://github.com/AFK-surf/monoid/commit/0fa688540da1a5ede59dc566d8567c2e16d0144d) feat(station): enforce account concurrency caps ac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.77 |
 | [eebe4c08b](https://github.com/AFK-surf/monoid/commit/eebe4c08bc5c0a056da6cd6a94802c1761353c74) fix(mbui): close the board chat on Esc (#8618) | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.64 |
 | [352566952](https://github.com/AFK-surf/monoid/commit/352566952d0319900c610590a715a0af1e2278bb) fix(app): line up a board draft's panel and put wh | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [95d864545](https://github.com/AFK-surf/monoid/commit/95d8645458bd06355e97ab706ef52ce4cfd50467) feat(pion): W6-A builders_search (--builder search | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.95 |
 | [6d1a704bb](https://github.com/AFK-surf/monoid/commit/6d1a704bbacee0040a4e2b5bf189ebfb8795ece2) docs(readme): refresh READMEs and architecture dia | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.82 |
 | [264aa0c6c](https://github.com/AFK-surf/monoid/commit/264aa0c6cc81ef2e01a767d20039f8b8411046f5) perf(core): read a person's own lock from the devi | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.53 |
-| [8660d4d6f](https://github.com/AFK-surf/monoid/commit/8660d4d6f8c63b55bcd94b1c14760f36d8d76c0e) feat(pion): port --builder usage-counter to Pion ( | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.69 |
