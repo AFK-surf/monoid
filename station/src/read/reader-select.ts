@@ -67,7 +67,7 @@ export const READER_MODES = {
   },
   serve: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "network",
     note: "Device request server over Unix socket (--serve)",
   },

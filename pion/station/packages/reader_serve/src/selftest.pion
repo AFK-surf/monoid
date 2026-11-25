@@ -1,0 +1,239 @@
+// Native-linked selftest for `reader_serve` (`--smoke-readops`), exercising `ServeRunner`
+// over a mock `MuxTransport` with an isolated atomic subdir (`fs.mkdir(recursive: false)`).
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "reader_data"
+import "sql_db"
+
+struct MockCall {
+  id : Int64
+  op : String
+  json_str : String
+  payload : Option[Bytes]
+}
+
+struct MockServeEnv {
+  calls : Array[MockCall]
+  stdout : Array[String]
+  events : Array[host_shim::HostEvent]
+  mut ev_head : Int
+  mut now : Int64
+  mut wall : Int64
+}
+
+fn MockServeEnv::new() -> MockServeEnv {
+  MockServeEnv::{
+    calls: [],
+    stdout: [],
+    events: [],
+    ev_head: 0,
+    now: 1000.to_int64(),
+    wall: 1700000000.to_int64() * 1000.to_int64(),
+  }
+}
+
+fn MockServeEnv::transport(self : MockServeEnv) -> builders_core::MuxTransport {
+  builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json_str : String, payload : Option[Bytes]) -> Unit {
+      self.calls.push(MockCall::{ id: id, op: op, json_str: json_str, payload: payload })
+    },
+    call_sync: fn(_op : String, _json_str : String) -> String { "{\"value\":null}" },
+    write_stdout_line: fn(line : String) -> Bool {
+      self.stdout.push(line)
+      true
+    },
+    write_stdout_frame: fn(_head : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { self.now },
+    wall_ms: fn() -> Int64 { self.wall },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      if self.ev_head >= self.events.length() {
+        return None
+      }
+      let ev = self.events[self.ev_head]
+      self.ev_head = self.ev_head + 1
+      Some(ev)
+    },
+  }
+}
+
+fn MockServeEnv::push_done(
+  self : MockServeEnv,
+  id : Int64,
+  json : String,
+  bytes : Option[Bytes] = None,
+  error : String = "",
+) -> Unit {
+  self.events.push(
+    host_shim::HostEvent::ShellDone(
+      host_shim::ShellDone::{ id: id, json: json, bytes: bytes, error: error },
+    ),
+  )
+}
+
+fn MockServeEnv::push_stdin(self : MockServeEnv, line : String) -> Unit {
+  self.events.push(host_shim::HostEvent::StdinData((line + "\n").to_bytes()))
+}
+
+fn make_req_bytes(conn_id : Int64, head_json : String, body : String) -> Bytes {
+  let req = (head_json + "\n" + body).to_bytes()
+  let out = Bytes::new(25 + 4 + req.length() + 4)
+  for i in 0..<8 {
+    let shift = ((7 - i) * 8).to_int64()
+    out[i] = ((conn_id >> shift) & 0xFF.to_int64()).to_int() as Byte
+  }
+  let lhdr = be32(req.length().to_int64())
+  out[25] = lhdr[0]
+  out[26] = lhdr[1]
+  out[27] = lhdr[2]
+  out[28] = lhdr[3]
+  for i in 0..<req.length() {
+    out[29 + i] = req[i]
+  }
+  let ehdr = be32(PIPE_END)
+  let base = 29 + req.length()
+  out[base] = ehdr[0]
+  out[base + 1] = ehdr[1]
+  out[base + 2] = ehdr[2]
+  out[base + 3] = ehdr[3]
+  out
+}
+
+fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Result[Int, String] {
+  let env = MockServeEnv::new()
+  let mux = builders_core::ShellMux::new(env.transport(), start_stdin=true)
+  let reader = reader_data::Reader::new(client, sub_dir, "/")
+  let runner = ServeRunner::new(mux, reader, sub_dir + "/serve.sock", fn(_m : String) -> Unit {})
+  runner.start()
+  if env.calls.length() != 1 || env.calls[0].op != "unix.listen" {
+    reader.close()
+    return Err("reader_serve selftest: expected unix.listen")
+  }
+  env.push_done(env.calls[0].id, "{\"id\":10}")
+  let _ = runner.step(0.to_int64())
+  if env.stdout.length() != 1 || !str_contains(env.stdout[0], "\"listening\"") {
+    reader.close()
+    return Err("reader_serve selftest: expected listening line")
+  }
+  env.push_stdin(
+    "{\"set\":{\"words\":{\"en\":{\"updateApp\":\"Update app\"}},\"oldestCore\":5000,\"countedFrom\":1000,\"movedFromBuild\":9000,\"build\":\"0.1.9500\",\"runtimes\":[\"claude\"]},\"wall\":1800000000000}",
+  )
+  let _ = runner.step(0.to_int64())
+  env.now = 1250.to_int64()
+  if runner.now() != 1800000000.to_int64() * 1000.to_int64() + 250.to_int64() {
+    reader.close()
+    return Err("reader_serve selftest: synthetic wall mismatch")
+  }
+  // Accept stream + feed request before viewer arrives
+  let accept_id = env.calls[1].id
+  env.push_done(accept_id, "{\"id\":20}")
+  let _ = runner.step(0.to_int64())
+  let read_id = env.calls[env.calls.length() - 1].id
+  let req1 = make_req_bytes(
+    7.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/admin/api/chats\",\"headers\":{\"stillfail-build\":\"0.1.8999\",\"stillfail-lang\":\"en\"}}",
+    "",
+  )
+  env.push_done(read_id, "{}", bytes=Some(req1))
+  let _ = runner.step(0.to_int64())
+  // Viewer arrives with floor=9000 -> 426 update
+  env.push_stdin("{\"viewer\":{\"conn\":7,\"viewer\":{\"email\":\"a@b\"},\"moved\":true,\"floor\":9000}}")
+  let _ = runner.step(0.to_int64())
+  let last_call = env.calls[env.calls.length() - 1]
+  if last_call.op != "tcp.write" {
+    reader.close()
+    return Err("reader_serve selftest: expected tcp.write for 426")
+  }
+  match last_call.payload {
+    Some(p) => {
+      let s = sql_db::decode_utf8_lossy_bytes(p)
+      if !str_contains(s, "\"status\":426") || !str_contains(s, "\"update\":true") {
+        reader.close()
+        return Err("reader_serve selftest: unexpected 426 body: " + s)
+      }
+    }
+    None => {
+      reader.close()
+      return Err("reader_serve selftest: missing 426 payload")
+    }
+  }
+  env.push_done(last_call.id, "{}")
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 0 {
+    reader.close()
+    return Err("reader_serve selftest: stream not cleaned up")
+  }
+  env.events.push(host_shim::HostEvent::StdinEof)
+  let _ = runner.step(0.to_int64())
+  reader.close()
+  if runner.is_running() || runner.exit_code() != 0 {
+    return Err("reader_serve selftest: clean EOF exit failed")
+  }
+  Ok(3)
+}
+
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let started_shell = if !host_shim::shell_active() {
+    if !host_shim::start(temp_dir, false) {
+      return Err("reader_serve selftest host_shim::start failed")
+    }
+    true
+  } else {
+    false
+  }
+  let client = builders_core::ShellClient::new()
+  let pid_str = host_shim::pid().to_string()
+  let wall_str = host_shim::wall_ms().to_string()
+  let mut sub_dir = ""
+  let mut created = false
+  let mut seq = 0
+  while seq < 100 {
+    let candidate = temp_dir + "/reader_serve_selftest-" + pid_str + "-" + wall_str + "-" + seq.to_string()
+    match client.shell_sync_json(
+      "fs.mkdir",
+      base_codec::json_obj([
+        ("path", base_codec::json_str(candidate)),
+        ("recursive", base_codec::json_bool(false)),
+      ]),
+    ) {
+      Ok(_) => {
+        sub_dir = candidate
+        created = true
+        break
+      }
+      Err(e) => {
+        match client.shell_sync_json("fs.stat", base_codec::json_obj([("path", base_codec::json_str(candidate))])) {
+          Ok(base_codec::Json::Null) => {
+            if started_shell {
+              host_shim::stop()
+            }
+            return Err("reader_serve selftest fs.mkdir failed: " + e.message)
+          }
+          Ok(_) => seq = seq + 1
+          Err(_) => {
+            if started_shell {
+              host_shim::stop()
+            }
+            return Err("reader_serve selftest fs.mkdir failed: " + e.message)
+          }
+        }
+      }
+    }
+  }
+  let res = if created {
+    run_selftest_in(client, sub_dir)
+  } else {
+    Err("reader_serve selftest could not allocate unique subdir")
+  }
+  if created {
+    let _ = client.shell_sync_json(
+      "fs.remove",
+      base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
+    )
+  }
+  if started_shell {
+    host_shim::stop()
+  }
+  res
+}
