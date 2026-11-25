@@ -3415,6 +3415,15 @@ export class Views implements Owner {
     return 3;
   }
 
+  /// The archived record of a thread's chat, found by its agents' sessions (`chat_session`), as no list holds it.
+  #archivedRow(station: string, thread: number, sessions: string[]): J | undefined {
+    for (const key of sessions) {
+      const found = this.#core.data.chatNamed(station, key);
+      if (found?.archived === true && isObject(found.row) && get(found.row, "thread") === thread) return found.row;
+    }
+    return undefined;
+  }
+
   /// Resolves a parent chat's row by thread or session (including pending `new:` keys and archived chats).
   #parentRow(station: string, thread: number | null, session: string | null): J | null | undefined {
     const resolvedThread = thread !== null ? thread : session !== null ? (session.startsWith(PENDING_PREFIX) ? (this.local.pendingThread(station, session) ?? null) : this.boundThread(station, session)) : null;
@@ -4379,12 +4388,14 @@ export class Views implements Owner {
     const archived = this.local.archivedChanging(station, id, null);
     if (archived !== null) view.archived = archived;
     if (row !== undefined && row.pinned !== undefined) view.pinned = typeof row.pinned === "number";
-    const opener = row !== undefined ? this.#opener(station, row) : null;
+    // (archived, it is in no list: who opened it and what it opened are its archived record's)
+    const own = row ?? (found === null ? this.#archivedRow(station, id, members(thread)) : undefined);
+    const opener = own !== undefined ? this.#opener(station, own) : null;
     if (opener !== null) view.opener = opener;
-    const openers = row !== undefined ? this.#openers(station, row) : [];
+    const openers = own !== undefined ? this.#openers(station, own) : [];
     if (openers.length > 0) view.openers = openers;
     // the chats it opened, each where it stands, for its bar's list of them
-    const opened = row !== undefined ? this.#opened(station, row) : [];
+    const opened = own !== undefined ? this.#opened(station, own) : [];
     if (opened.length > 0) {
       view.opened = opened;
       view.openedText = t("core-views.opened", { n: opened.length });

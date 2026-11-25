@@ -1938,6 +1938,9 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
       fixture_with_tabs(f, params, with_subchats(value))
     "chat" if f.mode == "chat-lineage-long" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_lineage_long(value))
+    // (archived, as its archived record gives its openers: chat-lineage-archived)
+    "chat" if f.mode == "chat-lineage-archived" && params.get("session") is Some(String("s-c1")) =>
+      fixture_with_tabs(f, params, with_lineage(value).map(fn(v) { with_flag(v, "archived") }))
     "chat" if f.mode == "chat-lineage" && params.get("session") is Some(String("s-c1")) =>
       fixture_with_tabs(f, params, with_lineage(value))
     "chat" if f.mode.has_prefix("chat-opened") && params.get("session") is Some(String("s-c1")) =>

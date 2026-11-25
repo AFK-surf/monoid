@@ -2556,6 +2556,30 @@ test("a_chat_traces_its_multi_level_led_openers_chain_across_stations_with_cycle
   assert.deepEqual(u.value.openers.map((o: J) => o.session), ["n8", "n7", "n6", "n5", "n4", "n3", "n2", "n1"]);
 });
 
+test("an_archived_led_chat_keeps_its_way_back_to_its_openers", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember" })]);
+  t.set(threads("ws/a"), [{ ...thread(7, ["k"], now), hiddenAt: now }]);
+  t.set(pageOf("ws/a", 7), page(1, ["开始"], null));
+  t.set(overview("ws/a"), overviewOf([], []));
+  // In no list but the archive's: what it was opened by is its archived record's, its leader listed or archived.
+  t.set(rows("ws/a"), [{ ...row("mid", now - 1000), title: "接口重构", opener: { session: "root", title: "旧根名", led: true } }]);
+  t.set({ topic: "archivedRows", station: "ws/a" }, [
+    { ...row("k", now), thread: 7, opener: { session: "mid", title: "旧名", led: true }, archived: { at: now, by: "auto" } },
+    { ...row("root", now - 2000), title: "根规划", archived: { at: now, by: "auto" } },
+  ]);
+  await t.read(u, 1);
+  assert.equal(u.value.archived, true);
+  assert.deepEqual(u.value.openers, [
+    { station: "ws/a", session: "root", title: "根规划", text: "由「根规划」创建", archived: true, note: "已归档", led: true },
+    { station: "ws/a", session: "mid", title: "接口重构", text: "由「接口重构」创建", led: true },
+  ]);
+  assert.deepEqual(u.value.opener, u.value.openers[1]);
+});
+
 test("a_chat_whose_agent_opened_others_lists_them_each_where_it_stands", async () => {
   const t = setup();
   const u = ui();
