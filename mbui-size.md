@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33c7dde0b](https://github.com/AFK-surf/monoid/commit/33c7dde0bb128d3a3011bd08bd1dc012ec11ba0b) test(station): fix FIFO P11 cancel barrier race in | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [aae87e673](https://github.com/AFK-surf/monoid/commit/aae87e673631ee390916146d6abe89d45d875865) fix(core): read a relay's access URL again once it | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [f226b15f0](https://github.com/AFK-surf/monoid/commit/f226b15f06ed2f0a21eaf02eae763957fdd626b6) fix(ui): keep macOS IME marked range and selection | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.15 | 65.02 | 101.14 | 127.63 |
 | [d91e984dc](https://github.com/AFK-surf/monoid/commit/d91e984dc7dd4bfb53d73c249f11f9aa3f0af4ff) fix(screens,mbui): paste passwords into locked mac | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.15 | 65.02 | 101.01 | 127.07 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 2.54 | 3.43 | 14.19 | 36.72 | 55.5 | 32.08 | 64.92 | 101.06 | 127.43 |
 | [df9dbe4c8](https://github.com/AFK-surf/monoid/commit/df9dbe4c8d749328665885f9f9c66b82e6626cdb) fix(pion-ui): sync icon_data.pion after #8643 and  | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 | [1d04c4a24](https://github.com/AFK-surf/monoid/commit/1d04c4a24094b5c869979a84acf1391ceb812f66) fix(station): pace backup uploads so they no longe | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
-| [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [33c7dde0b](https://github.com/AFK-surf/monoid/commit/33c7dde0bb128d3a3011bd08bd1dc012ec11ba0b) test(station): fix FIFO P11 cancel barrier race in | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.31 |
 | [aae87e673](https://github.com/AFK-surf/monoid/commit/aae87e673631ee390916146d6abe89d45d875865) fix(core): read a relay's access URL again once it | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.03 |
 | [f226b15f0](https://github.com/AFK-surf/monoid/commit/f226b15f06ed2f0a21eaf02eae763957fdd626b6) fix(ui): keep macOS IME marked range and selection | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.12 |
 | [d91e984dc](https://github.com/AFK-surf/monoid/commit/d91e984dc7dd4bfb53d73c249f11f9aa3f0af4ff) fix(screens,mbui): paste passwords into locked mac | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.67 |
 | [df9dbe4c8](https://github.com/AFK-surf/monoid/commit/df9dbe4c8d749328665885f9f9c66b82e6626cdb) fix(pion-ui): sync icon_data.pion after #8643 and  | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.87 |
 | [1d04c4a24](https://github.com/AFK-surf/monoid/commit/1d04c4a24094b5c869979a84acf1391ceb812f66) fix(station): pace backup uploads so they no longe | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.71 |
-| [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.57 |
