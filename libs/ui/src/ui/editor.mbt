@@ -772,7 +772,7 @@ fn EditorState::put_text(
   } else if kind == 1 {
     self.delete_selection() |> ignore
     self.marked = s
-    self.msel_a = a
+    self.msel_a = imin(imax(a, 0), s.length())
   } else if kind == 2 {
     let m = self.marked
     self.marked = ""
@@ -1863,7 +1863,7 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
             self.ime_action_told = action
             h_ime_action(action)
           }
-          let coff = st.caret + st.marked.length()
+          let coff = if st.marked.length() > 0 { st.caret + st.msel_a } else { st.caret }
           let (cx, cl) = st.place_of(tl, coff)
           let x = st.ox + cx
           let y = st.oy + cl.to_double() * tl.line_h

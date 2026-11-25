@@ -264,7 +264,16 @@ static void on_test_key(int32_t k, int32_t m) {
   last_key_mods = m;
   key_calls++;
 }
-static void on_noop_text(int32_t k, moonbit_string_t s, int32_t a, int32_t b) { (void)k, (void)s, (void)a, (void)b; }
+static int32_t last_text_kind;
+static int32_t last_text_a;
+static int32_t last_text_b;
+static NSString *last_text_str;
+static void on_noop_text(int32_t k, moonbit_string_t s, int32_t a, int32_t b) {
+  last_text_kind = k;
+  last_text_a = a;
+  last_text_b = b;
+  last_text_str = mb_ns_from_string(s);
+}
 
 // Deterministic stand-in for AppKit's interpretKeyEvents: so keyDown tests do not depend on a live WindowServer
 // or the machine's current input source.
@@ -708,6 +717,66 @@ int main(void) {
     CHECK(key_calls == callsBefore + 2 && last_key_code == 1000 + '2' && last_key_mods == 2);
     [s0.view keyDown:make_key_event(w0.windowNumber, @"3", @"3", NSEventModifierFlagControl, 20)];
     CHECK(key_calls == callsBefore + 3 && last_key_code == 1000 + '3' && last_key_mods == 2);
+    s0.view.imeActive = NO;
+
+    // 9h. NSTextInputClient keeps marked text, internal caret, and document substring in sync during composition
+    //     (moving left/right inside Pinyin preedit, clamping NSNotFound selectedRange, partial commit + new marked
+    //     text before the next frame, unmarkText, ime_let_go, and Option+Arrow while composing).
+    s0.view.imeActive = YES;
+    s0.view.mirror = @"ab";
+    s0.view.sel = NSMakeRange(1, 0);
+    [s0.view clearMarkedState];
+    [s0.view setMarkedText:@"ni'hao" selectedRange:NSMakeRange(6, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK([s0.view hasMarkedText]);
+    CHECK(NSEqualRanges([s0.view markedRange], NSMakeRange(1, 6)));
+    CHECK(NSEqualRanges([s0.view selectedRange], NSMakeRange(7, 0)));
+    CHECK(last_text_kind == 1 && [last_text_str isEqualToString:@"ni'hao"] && last_text_a == 6 && last_text_b == 0);
+    NSRange actual = NSMakeRange(0, 0);
+    NSAttributedString *sub = [s0.view attributedSubstringForProposedRange:NSMakeRange(0, 8) actualRange:&actual];
+    CHECK([sub.string isEqualToString:@"ani'haob"] && NSEqualRanges(actual, NSMakeRange(0, 8)));
+    // Left arrow inside marked text moves selectedRange inside markedRange without dropping marked text.
+    [s0.view setMarkedText:@"ni'hao" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK(NSEqualRanges([s0.view markedRange], NSMakeRange(1, 6)));
+    CHECK(NSEqualRanges([s0.view selectedRange], NSMakeRange(3, 0)));
+    CHECK(last_text_kind == 1 && last_text_a == 2 && last_text_b == 0);
+    // Out-of-bounds or NSNotFound proposed range returns nil.
+    CHECK([s0.view attributedSubstringForProposedRange:NSMakeRange(NSNotFound, 1) actualRange:&actual] == nil);
+    CHECK([s0.view attributedSubstringForProposedRange:NSMakeRange(99, 1) actualRange:&actual] == nil);
+    // NSNotFound selectedRange clamps to marked text length instead of sending -1.
+    [s0.view setMarkedText:@"ce'shi" selectedRange:NSMakeRange(NSNotFound, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK(NSEqualRanges([s0.view selectedRange], NSMakeRange(7, 0)));
+    CHECK(last_text_kind == 1 && last_text_a == 6 && last_text_b == 0);
+    // Synchronous partial commit followed immediately by new marked text (before mb_host_set_ime runs).
+    [s0.view insertText:@"测" replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK(![s0.view hasMarkedText] && NSEqualRanges([s0.view selectedRange], NSMakeRange(2, 0)));
+    [s0.view setMarkedText:@"shi" selectedRange:NSMakeRange(3, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    CHECK(NSEqualRanges([s0.view markedRange], NSMakeRange(2, 3)));
+    CHECK(NSEqualRanges([s0.view selectedRange], NSMakeRange(5, 0)));
+    sub = [s0.view attributedSubstringForProposedRange:NSMakeRange(0, 6) actualRange:&actual];
+    CHECK([sub.string isEqualToString:@"a测shib"] && NSEqualRanges(actual, NSMakeRange(0, 6)));
+    // unmarkText commits marked text into mirror and clears markedRange.
+    [s0.view unmarkText];
+    CHECK(![s0.view hasMarkedText] && [s0.view markedRange].location == NSNotFound);
+    CHECK(NSEqualRanges([s0.view selectedRange], NSMakeRange(5, 0)));
+    CHECK([s0.view.mirror isEqualToString:@"a测shib"]);
+    // ime_let_go and set_ime(active=0) clear markedText and markedSel too.
+    [s0.view setMarkedText:@"abc" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    mb_host_ime_let_go();
+    CHECK(![s0.view hasMarkedText] && s0.view.markedText == nil && NSEqualRanges([s0.view selectedRange], NSMakeRange(5, 0)));
+    [s0.view setMarkedText:@"xyz" selectedRange:NSMakeRange(1, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    mb_host_set_ime(0, 0, 0, 2, 16, mb_string_from_ns(@""), 0, 0);
+    CHECK(![s0.view hasMarkedText] && s0.view.markedText == nil);
+    // Option+Arrow in an empty field while composing stays in interpretKeyEvents: (does not jump to mb_cb.key).
+    kv.imeActive = YES;
+    kv.mirror = @"";
+    kv.sel = NSMakeRange(0, 0);
+    [kv setMarkedText:@"ni" selectedRange:NSMakeRange(2, 0) replacementRange:NSMakeRange(NSNotFound, 0)];
+    kv.interpretMode = INTERPRET_SILENT_IME;
+    callsBefore = key_calls;
+    [kv keyDown:make_key_event(w0.windowNumber, @"", @"", NSEventModifierFlagOption, 123)];
+    CHECK(key_calls == callsBefore);
+    [kv clearMarkedState];
+    kv.imeActive = NO;
     s0.view.imeActive = NO;
 
     // 11. frame_late continuity across adaptive glass settle, wake_for waits, dual windows, sync resize, and real lag.
