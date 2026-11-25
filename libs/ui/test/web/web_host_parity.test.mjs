@@ -11,7 +11,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/host.js', import.meta.url), 'utf8');
 
-function browser({ deferLoad = false } = {}) {
+function browser({ deferLoad = false, measureText } = {}) {
   const element = () => ({
     style: {}, listeners: new Map(), attrs: {},
     addEventListener(name, f) { this.listeners.set(name, [...(this.listeners.get(name) || []), f]); },
@@ -29,7 +29,7 @@ function browser({ deferLoad = false } = {}) {
   // a canvas's 2D context, the fonts it was set to kept (what a style is drawn in: host.js's font)
   const fontsSet = [];
   const ctx2d = { set font(f) { fontsSet.push(f); }, get font() { return fontsSet.at(-1) || ''; },
-    measureText: () => ({ fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4, width: 10 }) };
+    measureText: measureText || (() => ({ fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4, width: 10 })) };
   // the page's fonts and the system's: a FontFace loads where a source of it names one the system has (`installed`)
   const fonts = new Set();
   const installed = new Set();
@@ -300,24 +300,47 @@ test('a face\'s CJK companion narrow among Latin letters as its face is (pwid), 
     'the one before gone, the new narrow too');
 });
 
-test('faceSetLigatures is a clean no-op on web: descriptors, document.fonts, and CJK companions stay identical before or after load', async () => {
-  const b1 = browser();
+test('faceSetLigatures(face, false) matches style_no_ligatures shaping before or after load and restores on true without reloading FontFaces', async () => {
+  const ligMeasure = (s) => {
+    const widths = { f: 18, i: 16.9, ff: 34, ffi: 50.1, 'f\u200Cf': 36, 'f\u200Cf\u200Ci': 52.9 };
+    return { fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4, width: widths[s] ?? s.length * 10 };
+  };
+  const shapeTotal = (b, style) => {
+    const out = new Float64Array(32);
+    const n = b.H.shape('ffi', 16, 400, style, out);
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += out[i * 4 + 2];
+    return Math.round(sum * 100) / 100;
+  };
+  // Control: style_no_ligatures (bit 8)
+  const bc = browser({ measureText: ligMeasure });
+  await task();
+  bc.H.faceAddBytes(3, new Uint8Array(4), 400);
+  await task();
+  const refNoLig = shapeTotal(bc, (3 << 8) | 8);
+  const refLig = shapeTotal(bc, 3 << 8);
+  assert.equal(refNoLig, 52.9);
+  assert.equal(refLig, 50.1);
+  // Before load: faceSetLigatures(3, false) then faceAddBytes
+  const b1 = browser({ measureText: ligMeasure });
   await task();
   b1.H.faceSetLigatures(3, false);
   b1.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
-  const b2 = browser();
+  assert.equal(shapeTotal(b1, 3 << 8), refNoLig, 'before-load faceSetLigatures(false) matches style_no_ligatures');
+  // After load: faceAddBytes then faceSetLigatures(3, false), then re-enable true
+  const b2 = browser({ measureText: ligMeasure });
   await task();
   b2.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
+  const fontsBefore = [...b2.fonts];
+  assert.equal(shapeTotal(b2, 3 << 8), refLig, 'ligatures on by default');
   b2.H.faceSetLigatures(3, false);
-  await task();
-  assert.deepEqual(
-    [...b1.fonts].map((f) => [f.family, f.weight, f.featureSettings]),
-    [...b2.fonts].map((f) => [f.family, f.weight, f.featureSettings]),
-    'before-load and after-load faceSetLigatures produce identical FontFace descriptors',
-  );
-  assert.equal([...b1.fonts][0].featureSettings, undefined, 'no calt/liga override injected on web');
+  assert.equal(shapeTotal(b2, 3 << 8), refNoLig, 'after-load faceSetLigatures(false) matches style_no_ligatures');
+  assert.deepEqual([...b2.fonts], fontsBefore, 'document.fonts untouched on toggle off');
+  b2.H.faceSetLigatures(3, true);
+  assert.equal(shapeTotal(b2, 3 << 8), refLig, 'faceSetLigatures(true) restores ligature shaping');
+  assert.deepEqual([...b2.fonts], fontsBefore, 'document.fonts untouched on toggle on');
 });
 
 test('style_serif | style_words stays serif even when face_text (slot 2) is loaded', async () => {

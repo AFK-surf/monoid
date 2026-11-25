@@ -4893,6 +4893,7 @@
   }
   const faceCancelGen = new Map();
   const faceKeyGen = new Map();
+  const faceNoLig = new Set();
   const nextFaceCancelGen = (face) => {
     const g = (faceCancelGen.get(face) || 0) + 1;
     faceCancelGen.set(face, g);
@@ -4942,10 +4943,17 @@
     }, () => {});
     return true;
   };
-  // Web Canvas 2D renders cluster-by-cluster via fillText so cross-character programming ligatures are not shown on
-  // web; keeping faceSetLigatures a clean no-op ensures identical measureText advances before/after load and preserves
-  // document.fonts order relative to CJK unicode-range companions.
-  H.faceSetLigatures = () => {};
+  // Per-face ligature toggle: handled via ZWNJ insertion in H.shape (same path as style_no_ligatures) without
+  // mutating faceDescriptors or reloading document.fonts (avoids flicker and preserves CJK unicode-range order).
+  H.faceSetLigatures = (face, on) => {
+    if (!(face > 0 && face < 32)) return;
+    const noLig = !on;
+    if (faceNoLig.has(face) === noLig) return;
+    if (noLig) faceNoLig.add(face);
+    else faceNoLig.delete(face);
+    textChangedFor(face);
+    H.requestFrame();
+  };
   H.setHostAutospace = () => {};
   H.localFontInfo = () => '';
   // A face's CJK companion (@webpage.set_cjk_face): the system's CJK faces drawn, within the face's family, for the
@@ -5021,6 +5029,7 @@
   H.faceClear = (face) => {
     nextFaceCancelGen(face);
     nextFaceKeyGen(face);
+    faceNoLig.delete(face);
     faceFiles.delete(face);
     cjkForget(face);
     narrowFaces.delete(face);
@@ -5090,9 +5099,10 @@
     // to and with it ends, less its own width: kerning moves it as the browser does, the spacing the browser trims
     // between CJK punctuation is trimmed, and the word ends where the canvas ends it (letters that join)
     const blank = (c) => /^\s+$/.test(c);
-    // no ligatures (style & 8, words with letter spacing): a canvas has no font-variant-ligatures, so the word is
-    // measured with a zero width non-joiner between its clusters, which keeps the browser from making one
-    const upTo = style & 8
+    // no ligatures (style & 8, words with letter spacing, or faceSetLigatures(face, false)): a canvas has no
+    // font-variant-ligatures, so the word is measured with a zero width non-joiner between its clusters, which keeps
+    // the browser from making one
+    const upTo = (style & 8) || faceNoLig.has(faceOf(style))
       ? (w, i) => segs.slice(w, i + 1).map((s) => s.segment).join('\u200C')
       : (w, i) => text.slice(segs[w].index, segs[i].index + segs[i].segment.length);
     // A Han character after a Han character starts a word of its own: no kerning pair joins two of them, so it
