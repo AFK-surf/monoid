@@ -65,6 +65,32 @@ fn parse_positive_int(s : String, fallback : Int) -> Int {
   if acc <= 0 { fallback } else { acc }
 }
 
+fn parse_int_or(s : String, fallback : Int) -> Int {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return fallback
+  }
+  let mut idx = 0
+  let mut neg = false
+  if (b[0].to_int() & 0xFF) == 45 {
+    neg = true
+    idx = 1
+    if b.length() == 1 {
+      return fallback
+    }
+  }
+  let mut acc = 0
+  while idx < b.length() {
+    let c = b[idx].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return fallback
+    }
+    acc = acc * 10 + (c - 48)
+    idx = idx + 1
+  }
+  if neg { 0 - acc } else { acc }
+}
+
 fn bytes_equal(a : Bytes, b : Bytes) -> Bool {
   if a.length() != b.length() {
     return false
@@ -118,6 +144,8 @@ fn advertised_modes() -> Array[String] {
     "replica-carry",
     "usage-counter",
     "search",
+    "forward",
+    "mesh",
   ]
 }
 
@@ -1823,6 +1851,41 @@ fn main(world : World) -> Unit {
           }
           _ => usage_exit()
         }
+      }
+      Some("forward") => {
+        let shell_dir = match flag_value(argv, "--shell-dir") {
+          Some(d) => d
+          None => "."
+        }
+        let listen_fd : Option[Int] = match flag_value(argv, "--listen-fd") {
+          Some(fd_str) => Some(parse_int_or(fd_str, -1))
+          None => None
+        }
+        let listen_port = match flag_value(argv, "--listen-port") {
+          Some(p) => parse_int_or(p, 0)
+          None => {
+            match flag_value(argv, "--port") {
+              Some(p) => parse_int_or(p, 0)
+              None => 0
+            }
+          }
+        }
+        let to_port = match flag_value(argv, "--to") {
+          Some(p) => parse_int_or(p, 0)
+          None => 0
+        }
+        host_shim::exit_process(front::run_forward(shell_dir, listen_fd, listen_port, to_port))
+      }
+      Some("mesh") => {
+        let shell_dir = match flag_value(argv, "--shell-dir") {
+          Some(d) => d
+          None => "."
+        }
+        let socket_path = match flag_value(argv, "--socket") {
+          Some(s) => s
+          None => "mesh.sock"
+        }
+        host_shim::exit_process(front::run_mesh(shell_dir, socket_path))
       }
       _ => usage_exit()
     }
