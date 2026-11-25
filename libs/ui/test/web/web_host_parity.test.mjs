@@ -43,11 +43,23 @@ function browser({ deferLoad = false, measureText } = {}) {
     load() {
       // (a face's bytes, as the app gives its own: loaded)
       if (typeof this.src !== 'string') {
-        if (deferLoad) return new Promise((resolve) => { pending.push(() => resolve(this)); });
+        if (deferLoad) return new Promise((resolve, reject) => {
+          const fn = () => resolve(this);
+          fn.reject = () => reject(new Error('load failed'));
+          pending.push(fn);
+        });
         return Promise.resolve(this);
       }
       const names = [...String(this.src).matchAll(/local\("([^"]+)"\)/g)].map((m) => m[1]);
-      return names.some((n) => installed.has(n)) ? Promise.resolve(this) : Promise.reject(new Error('no such font'));
+      if (names.some((n) => installed.has(n))) {
+        if (deferLoad) return new Promise((resolve, reject) => {
+          const fn = () => resolve(this);
+          fn.reject = () => reject(new Error('load failed'));
+          pending.push(fn);
+        });
+        return Promise.resolve(this);
+      }
+      return Promise.reject(new Error('no such font'));
     }
   }
   const document = { ...element(), title: ' 页面自己的标题 ', body, documentElement: element(), fonts,
@@ -422,4 +434,85 @@ test('stale multi-weight narrowFace batch cancelled by faceClear does not bump a
   await task();
   assert.equal(b.H.atlasGeneration(), genAfterClear, 'cancelled narrowFace batch must not bump atlasGeneration');
   assert.equal([...b.fonts].some((f) => f.family === 'mbface7n'), false, 'no stale narrow FontFace left in document.fonts');
+});
+
+test('late narrow CJK completion still bumps atlasGeneration and requests a frame after faceSetLigatures set narrowFaces', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  b.installed.add('PingFang SC Medium');
+  b.H.faceAddBytes(3, new Uint8Array(4), 400);
+  b.pending[0]();
+  await task();
+  b.H.setCjkFace(3, 100, ['PingFang SC']);
+  // pending[1] is regular CJK (400 -> Medium)
+  assert.equal(b.pending.length, 2);
+  b.pending[1]();
+  await task();
+  // Trigger narrowFace: pending[2] is primary narrow, pending[3] is narrow CJK
+  fontOf(b, (3 << 8) | 64);
+  assert.equal(b.pending.length, 4);
+  // Toggle ligatures while narrow CJK (pending[3]) is still pending: pending[4] regular + pending[5] narrow primary
+  b.H.faceSetLigatures(3, false);
+  assert.equal(b.pending.length, 6);
+  // Complete faceSetLigatures first (sets narrowFaces(3) = true)
+  b.pending[4]();
+  b.pending[5]();
+  await task();
+  await task();
+  // Now resolve the late narrowFace batch (stale primary pending[2] + valid narrow CJK pending[3])
+  const genBeforeLateCjk = b.H.atlasGeneration();
+  let frames = 0;
+  const origReq = b.H.requestFrame;
+  b.H.requestFrame = () => { frames++; origReq(); };
+  b.pending[2]();
+  b.pending[3]();
+  await task();
+  await task();
+  assert.ok(b.H.atlasGeneration() > genBeforeLateCjk, 'late narrow CJK completion bumps atlasGeneration');
+  assert.ok(frames >= 1, 'late narrow CJK completion requests a frame');
+});
+
+test('faceSetLigatures pair-replaces safely: keeps mid-flight added weight 700 and preserves old weight 400 on rejection', async () => {
+  // (a) Mid-flight added weight 700 completes before 400 ligature swap commits: both 400 and 700 survive
+  const b1 = browser({ deferLoad: true });
+  await task();
+  b1.H.faceAddBytes(3, new Uint8Array(4), 400);
+  b1.pending[0]();
+  await task();
+  b1.H.faceSetLigatures(3, false); // pending[1] = 400 replacement
+  b1.H.faceAddBytes(3, new Uint8Array(4), 700); // pending[2] = new 700
+  b1.pending[2]();
+  await task();
+  b1.pending[1]();
+  await task();
+  await task();
+  const weights = [...b1.fonts].filter((f) => f.family === 'mbface3').map((f) => f.weight).sort();
+  assert.deepEqual(weights, ['400', '700'], 'mid-flight weight 700 preserved alongside swapped 400');
+
+  // (b) Replacement load rejects: original 400 stays in document.fonts
+  const b2 = browser({ deferLoad: true });
+  await task();
+  b2.H.faceAddBytes(3, new Uint8Array(4), 400);
+  b2.pending[0]();
+  await task();
+  const orig400 = [...b2.fonts][0];
+  b2.H.faceSetLigatures(3, false); // pending[1] = 400 replacement
+  b2.pending[1].reject();
+  await task();
+  await task();
+  assert.ok(b2.fonts.has(orig400), 'original 400 FontFace preserved when ligature replacement rejects');
+});
+
+test('slot 7 async faceSetLigatures completion bumps atlasGeneration so MoonBit invalidates preview measurement', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  b.H.faceAddBytes(7, new Uint8Array(4), 400);
+  b.pending[0]();
+  await task();
+  b.H.faceSetLigatures(7, false);
+  const genWhilePending = b.H.atlasGeneration();
+  b.pending[1]();
+  await task();
+  await task();
+  assert.ok(b.H.atlasGeneration() > genWhilePending, 'slot 7 faceSetLigatures commit bumps atlasGeneration');
 });
