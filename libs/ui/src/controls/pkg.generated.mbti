@@ -3138,8 +3138,6 @@ pub fn viewer_act_foot(Double) -> Double
 
 pub fn viewer_act_head(Double) -> Double
 
-pub fn viewer_back_corner(Double) -> @paint.CornerOf
-
 pub let viewer_back_icon : Double
 
 pub let viewer_bar_blur : Double
@@ -3155,15 +3153,13 @@ pub let viewer_bar_in : Double
 pub let viewer_bar_ms : Double
 
 #callsite(autofill(loc))
-pub fn viewer_bar_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> Bool, (@view.View) -> Double, () -> Double, () -> Double, () -> ViewerInk, (@view.View, @view.Live[Double]) -> Unit, () -> Unit, TipLayer, capsule_end? : Bool, capsule_now? : () -> Bool, middle? : (@view.View) -> Unit, middle_shown? : () -> Bool, loc~ : SourceLoc) -> @view.View
+pub fn viewer_bar_node(@view.View, () -> String, () -> String, () -> String, () -> String, () -> Bool, (@view.View) -> Double, () -> Double, () -> Double, () -> ViewerInk, (@view.View, @view.Live[Double]) -> Unit, () -> Unit, TipLayer, middle? : (@view.View) -> Unit, middle_shown? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub let viewer_bar_reach : Double
 
 pub let viewer_bar_saturation : Double
 
 pub fn viewer_bar_sides() -> Double
-
-pub fn viewer_bar_start_in(Double, @paint.CornerRoots) -> Double
 
 pub fn viewer_bar_under() -> Double
 

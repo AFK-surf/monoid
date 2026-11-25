@@ -6,18 +6,17 @@
 // come between; taking no press while it goes or is gone.
 
 ///|
-/// The bar across the top in `parent` (a layer over the viewer's, all of its room): the file's ground (`ink`) at 82%
-/// over a 20 blur, saturated, 45 high under the room's top (`top`: a tablet's status bar, its ground on under it); the
-/// way back first (`back`'s words after the chevron, `went` as it is pressed), clear of the window's buttons where they
-/// are the system's at its left; `name` and `meta` under it in the middle, as wide as they are (the window's `width`
-/// less viewer_bar_sides at most), where the file is (`title`, none: "") its tip while the pointer is over them; what `tools` makes in
-/// the row at its end (the corner each is round at given: the window's followed at its corner, a bar's buttons'), the
-/// last as far in from the window's side as a page's bar's last (`capsule_end`: a capsule of words, past the window's
-/// corner as far as a long capsule stands: window_corner_past; `capsule_now`: while it says so, followed). There while `hidden` holds not (gone up its height and
-/// faded over 240 ms, eased out, from where it is at the moment it is told, and back so; at once with motion
-/// reduced), as far in as `shown` says of the node as it is drawn (the viewer's fade). A press on it where nothing of it
-/// takes one is its own, moving the window while it has none of the system's title bar (the app's own top row). Its
-/// tips in `tips`. The bar's node.
+/// The bar across the top in `parent` (a layer over the viewer's, all of its room): a progressive blur soft scroll-edge
+/// backdrop, 45 high under the room's top (`top`: a tablet's status bar); the way back first as a 32pt full-capsule
+/// liquid glass pill (16pt radius: `back`'s words after the chevron, `went` as it is pressed), clear of the system's
+/// window buttons on the left or of rounded window corners (`window_corner_past`); `name` and `meta` under it in the
+/// middle, as wide as they are, where the file is (`title`, none: "") its tip while the pointer is over them; what
+/// `tools` makes in the 36pt full-capsule liquid glass pill (18pt radius, concentric 16pt inner tool corner) at its
+/// end, clear of the app's own window buttons or of rounded window corners (`window_corner_past`). There while
+/// `hidden` holds not (gone up its height and faded over 240 ms, eased out, from where it is at the moment it is told,
+/// and back so; at once with motion reduced), as far in as `shown` says of the node as it is drawn (the viewer's
+/// fade). A press on it where nothing of it takes one is its own, moving the window while it has none of the system's
+/// title bar (the app's own top row). Its tips in `tips`. The bar's node.
 #callsite(autofill(loc))
 pub fn viewer_bar_node(
   parent : @view.View,
@@ -33,15 +32,10 @@ pub fn viewer_bar_node(
   tools : (@view.View, @view.Live[Double]) -> Unit,
   went : () -> Unit,
   tips : TipLayer,
-  capsule_end? : Bool = false,
-  capsule_now? : () -> Bool = fn() { false },
   middle? : (@view.View) -> Unit,
   middle_shown? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> @view.View {
-  // (both left back pill and right tools pill are full capsules on every platform; parameters retained for callers)
-  ignore(capsule_end)
-  ignore(capsule_now)
   // (what stands in the name's place while `middle_shown` says so (a screen's tabs: viewer_bar's `middle`), the way
   // back as wide as it alone then)
   let held = fn() { middle is Some(_) && middle_shown() }

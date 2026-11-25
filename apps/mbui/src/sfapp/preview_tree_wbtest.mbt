@@ -1839,7 +1839,7 @@ fn wide_bar_inset(t : @ui.Tester, v : Viewer, inset : Bool) -> ((Double, Bool, B
 }
 
 ///|
-test "viewer on the tree, a wide window, the bar across the top the same coming and whole, the window gone full screen and back (its title bar the system's, then the app's again), the same viewer, on a Mac and on Windows: clear of the window's buttons at its left (a Mac's) while they are in it, its last tool clear of them at its right (Windows', the app's own) while they are, else at the window's corner; a press on its blank moving the window then, nothing under it taking the press" {
+test "viewer on the tree, a wide window, the bar across the top the same coming and whole, the window gone full screen and back (its title bar the system's, then the app's again), the same viewer, on a Mac and on Windows: clear of the window's buttons at its left (a Mac's) while they are in it, its last tool inside a full-capsule pill clear of own window buttons (Windows') or of rounded window corners (window_corner_past); a press on its blank moving the window then, nothing under it taking the press" {
   for platform in [0, 3] {
     let given : Map[String, () -> Unit] = Map([])
     let t = held_wide_preview(given, platform~)
@@ -1868,7 +1868,7 @@ test "viewer on the tree, a wide window, the bar across the top the same coming 
       } else {
         @sf.window_corner_past(@sf.viewer_bar_in) + 2.0
       }
-      assert_true((l - want).abs() < 0.001, msg="\{platform}, inset \{inset}: its last tool \{l} in, as a page's bar's last: \{want}")
+      assert_true((l - want).abs() < 0.001, msg="\{platform}, inset \{inset}: its last tool \{l} in, want \{want}")
     }
     assert_true(viewer.get().map(fn(now) { physical_equal(now, v) }).unwrap_or(false), msg="\{platform}: the same viewer")
     assert_eq(node, old, msg="\{platform}: whole as while it came: \{Repr(node)} and \{Repr(old)}")
@@ -1952,7 +1952,7 @@ test "viewer on the tree, a wide window, the bar across the top: its file's name
 }
 
 ///|
-test "viewer on the tree, a wide window, the bar across the top: its last tool as far in from the window's side as a page's bar's last, on a Mac (its window's corner 16, followed), on Windows 11 (8, too square to follow) and on an Android tablet (none), 1280 wide and 840" {
+test "viewer on the tree, a wide window, the bar across the top: its full-capsule tools pill stands clear of rounded window corners (window_corner_past + 2pt pad), on a Mac (16pt corner), on Windows 11 (8pt) and on an Android tablet (0pt), 1280 wide and 840" {
   for (platform, corner, w) in [(0, 16.0, 1280.0), (3, 8.0, 1280.0), (2, 0.0, 1280.0), (2, 0.0, 840.0)] {
     let given : Map[String, () -> Unit] = Map([])
     let t = held_wide_preview(given, platform~, corner~, w~)
@@ -1969,7 +1969,7 @@ test "viewer on the tree, a wide window, the bar across the top: its last tool a
     let want = @sf.window_corner_past(@sf.viewer_bar_in) + 2.0
     assert_true(
       (last - want).abs() < 0.001,
-      msg="\{platform} \{w}: its last tool \{last} in, a page's bar's \{want}; roots \{Repr(@ui.tree_corner_roots_now())} and \{Repr(@ui.corner_roots())}",
+      msg="\{platform} \{w}: its last tool \{last} in, want \{want}; roots \{Repr(@ui.tree_corner_roots_now())} and \{Repr(@ui.corner_roots())}",
     )
   }
 }
@@ -1988,7 +1988,7 @@ test "viewer on the tree, a window 600 wide (a Mac's, not a small screen), the b
 }
 
 ///|
-test "viewer on the tree, an Android tablet 840 wide, a picture whose name is far longer than the bar's middle: the bar's tools whole, its last as far in as a page's bar's last; the way back clear of them" {
+test "viewer on the tree, an Android tablet 840 wide, a picture whose name is far longer than the bar's middle: the bar's tools whole, its full-capsule tools pill 12pt in (+ 2pt pad); the way back clear of them" {
   let t = preview_tester("long", w=840.0, platform=2)
   let v = viewer.get().unwrap()
   assert_true(@sfbase.bar_as_nodes(v, 840.0), msg="whole: the bar its nodes")
@@ -2010,11 +2010,11 @@ test "viewer on the tree, an Android tablet 840 wide, a picture whose name is fa
   }
   // (the middle no wider than the bar lets it be: the window's width less its sides, a phone's one tool more)
   let middle = dmin(middle, 840.0 - @sf.viewer_bar_sides())
-  let end_in = @sf.window_end_in(@sf.viewer_bar_in)
+  let end_in = @sf.window_corner_past(@sf.viewer_bar_in)
   let half = (840.0 - @sf.viewer_bar_in - end_in - 2.0 * 16.0 - middle) / 2.0
   let tools = last.0 + last.2 - first.0
   assert_true(tools > 0.0 && tools <= half, msg="the tools whole, within what is beside the name: \{tools} and \{half}")
-  // (on Android square windows, the right tools pill outer edge aligns with end_in, so the last tool is 2pt inside it)
+  // (on Android square windows, the right tools pill outer edge sits at window_corner_past(viewer_bar_in) = 12pt, so the last tool is 2pt inside it)
   assert_true((840.0 - (last.0 + last.2) - (end_in + 2.0)).abs() < 0.001, msg="its last tool \{840.0 - (last.0 + last.2)} in, pill outer edge at \{end_in}")
   assert_true(back.0 + back.2 <= first.0, msg="the way back clear of the tools: \{Repr(back)} and \{Repr(first)}")
 }
@@ -2085,7 +2085,7 @@ fn wide_bar_room(what : String, w : Double, platform : Int, fs : Double, hold : 
 }
 
 ///|
-test "viewer on the tree, the bar across the top, a name far longer than its middle, on a Mac and on Windows with the window's buttons in it, the system's words 1 and 1.3, 700, 840 and 1280 wide: whole, its tools whole and its last where a page's bar's last is, the way back clear of them and where it is with a short name; coming, how much has come in words and its bar as whole as with a short name, clear of the window's buttons" {
+test "viewer on the tree, the bar across the top, a name far longer than its middle, on a Mac and on Windows with the window's buttons in it, the system's words 1 and 1.3, 700, 840 and 1280 wide: whole, its tools whole inside the full-capsule pill clear of window buttons and rounded corners, the way back clear of them and where it is with a short name; coming, how much has come in words and its bar as whole as with a short name, clear of the window's buttons" {
   let seen = []
   for platform in [0, 3] {
     for fs in [1.0, 1.3] {

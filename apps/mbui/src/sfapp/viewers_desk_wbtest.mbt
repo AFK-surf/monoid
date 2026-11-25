@@ -29,10 +29,10 @@ fn desk_tester(
 }
 
 ///|
-/// Where a tool of the bar is, by how many from its end (download 0): the last at the window's corner as a page's bar's
-/// last is (window_end_in), 32 each, 2 apart.
+/// Where a tool of the bar is, by how many from its end (download 0): inside the 2pt-padded full-capsule tools pill
+/// positioned clear of rounded window corners (`window_corner_past(viewer_bar_in) + 2`), 32 each, 2 apart.
 fn desk_tool_x(from_end : Int) -> Double {
-  1280.0 - @sf.window_end_in(12.0) - 16.0 - from_end.to_double() * 34.0
+  1280.0 - (@sf.window_corner_past(@sf.viewer_bar_in) + 2.0) - 16.0 - from_end.to_double() * 34.0
 }
 
 ///|
