@@ -590,6 +590,12 @@ fn ns_seen(t : @ui.Tester, words : String) -> (Double, Double, Double, Double)? 
 }
 
 ///|
+/// Where what is read out as `label` is in `t` (an icon's words, a count beside its icon), as ns_seen says words.
+fn ns_said(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)? {
+  t.semantics().filter(fn(n) { n.label == label && !n.hidden }).last().map(fn(n) { n.rect })
+}
+
+///|
 test "a new chat's stations on every screen: a row each under its title, Willow checked, each's state on its name's line and what is left of it and how it is reached under it; nothing of it has the focus as it opens, no input method" {
   both_pages(fn() raise {
     for s in ns_screens {
@@ -602,11 +608,12 @@ test "a new chat's stations on every screen: a row each under its title, Willow 
       assert_false(t.ime().0, msg="\{at}: the input method up")
       guard ns_seen(t, "选择运行的 station") is Some(title) else { fail("\{at}: no title") }
       assert_true(rows[0].rect.1 > title.1 && rows[1].rect.1 > rows[0].rect.1 + rows[0].rect.3 - 0.5, msg="\{at}: \{Repr(rows.map(fn(r) { r.rect }))}")
-      // (Willow: 2 at work on its name's line, its figures and 直连 38ms under it; Maple: 未连接)
-      for w in ["2 个运行中", "直连 38ms", "未连接", "CPU 72%", "内存 5.8G", "磁盘 380G"] {
+      // (Willow: 2 at work on its name's line, a chat's icon and 2, read out whole; its figures and 直连 38ms under it;
+      // Maple: 未连接)
+      for w in ["直连 38ms", "未连接", "CPU 72%", "内存 5.8G", "磁盘 380G"] {
         assert_true(ns_seen(t, w) is Some(_), msg="\{at}: \{w}")
       }
-      guard (ns_seen(t, "2 个运行中"), ns_seen(t, "直连 38ms")) is (Some(busy), Some(net)) else { fail(at) }
+      guard (ns_said(t, "2 个运行中"), ns_seen(t, "直连 38ms")) is (Some(busy), Some(net)) else { fail(at) }
       assert_true(busy.1 < rows[0].rect.1 + 30.0 && net.1 > busy.1 && net.1 < rows[1].rect.1, msg="\{at}: \{Repr(busy)} \{Repr(net)}")
     }
   })
@@ -639,7 +646,7 @@ test "a new chat's stations on every screen, Maple pressed: picked (newChat.pick
           }
           None => ()
         }
-        for w in ["2 个运行中", "未连接", "直连 38ms"] {
+        for w in ["2", "未连接", "直连 38ms"] {
           assert_true(drawn(w) || !drawn("选择运行的 station"), msg="\{at}: frame \{n} on its way out: \{w} not drawn")
         }
         t.frame()

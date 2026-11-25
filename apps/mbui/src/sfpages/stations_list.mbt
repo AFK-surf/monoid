@@ -556,7 +556,8 @@ fn sl_station_row_node(
         @sf.style_node(head, fn() { sl_head })
         head.box(fn(m) {
           @sf.style_node(m, fn() { sl_mark_box }, in_row=true)
-          let ink = fn() { if online() { @sf.theme().p.text } else { @sf.theme().p.muted } }
+          // (in its name's ink: the name's softer one while up, so neither outshines what the row says of it)
+          let ink = fn() { if online() { @ui.tree_theme().color(Subtle) } else { @sf.theme().p.muted } }
           m.pick(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(x, marked) {
             if marked {
               @sf.station_mark_node(x, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, sl_mark_side, ink, fn() { 0 })
@@ -632,7 +633,7 @@ fn sl_station_row_node(
             1 => @sf.styled_words(sub, fn() { text(s(), "summary") }, fn() { sl_meta_amber_cut }) |> ignore
             2 => {
               sub.alpha(By(fn() { if flag(s(), "reconnecting") { 0.45 } else { 1.0 } })) |> ignore
-              sl_metrics_net_line_node(sub, fn() { meters.get() }, net)
+              sl_signals_line_node(sub, fn() { meters.get() }, net)
             }
             3 => {
               sub.alpha(By(fn() { if flag(s(), "reconnecting") { 0.45 } else { 1.0 } })) |> ignore
@@ -736,92 +737,160 @@ fn sl_station_row_node(
 }
 
 ///|
-/// Compact meter words preserving the core's idle/busy/remaining semantics (e.g. "CPU 空闲 72%", "CPU 占用 28%",
-/// "内存剩 5.8 G", "磁盘剩 420 G", "CPU 72% idle"), never stripping "空闲/剩" so low-headroom red figures stay clear.
-fn sl_meter_words(m : Json?) -> String {
+/// Line 2 of an online station row: what of it may want seeing to, each always in its own place so a list reads down
+/// as columns, each as wide in every row: its CPU, memory and disk from the left, its network at the right end. Each
+/// an icon and as few words as say it (what is left of the memory or disk, how slow the network is or how much it
+/// loses; the CPU's icon alone, held full, its figure saying nothing a person acts on), grey while all is well, in its
+/// level's ink once it is not.
+fn sl_signals_line_node(r : @view.View, meters : () -> Array[Json], net : () -> Json?) -> Unit {
+  @sf.style_node(r, fn() { sl_sub_row })
+  let ink = fn(level : String) {
+    match level {
+      "red" => @sf.theme().p.red
+      "amber" => @sf.theme().p.warn_ink
+      _ => @sf.theme().p.muted
+    }
+  }
+  for kind in [0, 1, 2] {
+    let m = fn() { sp_meter_of(meters(), kind) }
+    // (the CPU off only held full; memory and disk once running low)
+    let level = fn() {
+      match (kind, text(m(), "level")) {
+        (0, "red") => "red"
+        (0, _) => "ok"
+        (_, l) => l
+      }
+    }
+    let off = fn() { level() is ("amber" | "red") }
+    r.box(fn(slot) {
+      // (the CPU's icon under the station's mark, in a box as wide as the mark's; memory's beginning where the name
+      // does, the line as far apart as the name's line is)
+      if kind == 0 {
+        @sf.style_node(slot, fn() { sl_signal_under_mark })
+      } else {
+        @sf.style_node(slot, fn() { sl_signal })
+        slot.min_width(Is(Some(sl_signal_least[kind]))) |> ignore
+      }
+      slot.shrink(Is(0.0)) |> ignore
+      // (read out as the core says it: CPU 空闲 72%, 内存剩 5.8 G)
+      slot.says(By(fn() {
+        match m() {
+          Some(_) => Some(@view.said(Image, label=sl_meter_said(m())))
+          None => None
+        }
+      }))
+      |> ignore
+      let icon = match kind {
+        0 => "cpu"
+        1 => "memory"
+        _ => "disk"
+      }
+      @sf.icon_node(slot, icon, sl_signal_icon, By(fn() { ink(level()) })) |> ignore
+      if kind != 0 {
+        @sf.words_node(slot, fn() { sl_issue_figure(m()) }, fn() {
+          if off() { @sfbase.level_figure_style(level(), sl_meta_fig) } else { sl_meta_muted }
+        })
+        |> ignore
+      }
+    })
+    |> ignore
+  }
+  r.box(fn(sp) { sp.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore }) |> ignore
+  // (its network at the right end: how much it loses, else how slow it is, its words before its icon, flush right)
+  let loss = fn() { field(net(), "loss") }
+  let rtt = fn() { field(net(), "rtt") }
+  let net_level = fn() {
+    match loss() {
+      Some(Object(_)) => text(loss(), "level")
+      _ => text(rtt(), "level")
+    }
+  }
+  r.box(fn(x) {
+    @sf.style_node(x, fn() { sl_signal_end })
+    x.min_width(Is(Some(sl_signal_net_least))).shrink(Is(0.0)) |> ignore
+    // (read out whole, its way too: 香港中继 459 ms)
+    x.says(By(fn() {
+      match net() {
+        Some(Object(_)) =>
+          Some(@view.said(Image, label=[text(net(), "path"), text(loss(), "text"), text(rtt(), "text")].filter(fn(w) { w != "" }).join(" ")))
+        _ => None
+      }
+    }))
+    |> ignore
+    // (not sampled yet: its words' bones in their place)
+    x.pick(fn() { net() is Some(Object(_)) }, at_once=true, fn(w, known) {
+      if known {
+        @sf.words_node(w, fn() {
+          match loss() {
+            Some(Object(_)) => text(loss(), "text")
+            _ => text(rtt(), "text")
+          }
+        }, fn() { if net_level() is ("amber" | "red") { @sfbase.level_figure_style(net_level(), sl_meta_fig) } else { sl_meta_muted } })
+        |> ignore
+      } else {
+        @sf.waiting_node(w, fn(b) { @sf.words_node(b, fn() { @sf.sample_words(3) }, fn() { sl_meta_muted }) |> ignore })
+      }
+    })
+    @sf.icon_node(x, "signal", sl_signal_icon, By(fn() { ink(net_level()) })) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A meter as the core says it, for whoever cannot see its icon: CPU 空闲 72%, 内存剩 5.8 G.
+fn sl_meter_said(m : Json?) -> String {
   let short = text(m, "short")
   let rem = text(m, "remaining")
-  if short != "" && rem != "" {
-    if @sf.chip_joined(short, rem) {
-      short + rem
-    } else {
-      short + " " + rem
-    }
-  } else if rem != "" {
+  if short == "" {
     rem
+  } else if rem == "" {
+    short
+  } else if @sf.chip_joined(short, rem) {
+    short + rem
   } else {
-    sp_meter_compact(m)
+    short + " " + rem
   }
 }
 
 ///|
-/// Line 2 of an online station row: compact CPU / memory / disk figures on the left and network path + latency flush
-/// right. When width is tight, non-warning meters drop first (disk -> mem -> cpu), then network path drops before any
-/// amber/red warning meter so all three warnings fit alongside latency on a 390pt phone screen.
-fn sl_metrics_net_line_node(r : @view.View, meters : () -> Array[Json], net : () -> Json?) -> Unit {
-  @sf.style_node(r, fn() { sl_sub_row })
-  r.fits(Is(true)) |> ignore
-  for kind in [0, 1, 2] {
-    let m = fn() { sp_meter_of(meters(), kind) }
-    r.show(at_once=true, fn() { m() is Some(_) }, fn(mb) {
-      let drop_rank = fn() {
-        let lvl = text(m(), "level")
-        let is_low = lvl == "amber" || lvl == "red"
-        match kind {
-          2 => if is_low { 5 } else { 1 }
-          1 => if is_low { 6 } else { 2 }
-          _ => if is_low { 0 } else { 3 }
-        }
-      }
-      mb.shrink(Is(0.0)).fit_whole(Is(true)).drops(By(drop_rank)) |> ignore
-      @sf.styled_words(mb, fn() { sl_meter_words(m()) }, fn() {
-        match text(m(), "level") {
-          "red" => sl_meta_red
-          "amber" => sl_meta_amber
-          _ => sl_meta_muted
-        }
-      })
-      |> ignore
-    })
+/// What is left of a meter in brief: its figure with its unit's first letter (24G), else what is left.
+fn sl_issue_figure(m : Json?) -> String {
+  let unit = text(m, "unit")
+  let big = text(m, "big")
+  if big != "" {
+    big + (if unit == "%" || unit == "" { unit } else { unit.clamped_view(end=1).to_owned() })
+  } else {
+    text(m, "remaining")
   }
-  r.box(fn(sp) { sp.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore }) |> ignore
-  let has_net = fn() { net() is Some(Object(_)) }
-  r.show(at_once=true, fn() { has_net() && text(net(), "path") != "" }, fn(pw) {
-    let long_path = fn() { text(net(), "path").length() > 6 }
-    pw
-    .shrink(By(fn() { if long_path() { 1.0 } else { 0.0 } }))
-    .min_width(By(fn() { if long_path() { Some(0.0) } else { None } }))
-    .fit_whole(Is(true))
-    .drops(Is(4))
-    |> ignore
-    @sf.styled_words(pw, fn() { text(net(), "path") }, fn() {
-      if long_path() { sl_meta_muted_cut } else { sl_meta_muted }
-    })
-    |> ignore
-  })
-  r.show(at_once=true, fn() { has_net() && field(net(), "loss") is Some(Object(_)) }, fn(x) {
-    x.shrink(Is(0.0)).fit_whole(Is(true)) |> ignore
-    @sf.styled_words(x, fn() { text(field(net(), "loss"), "text") }, fn() {
-      @sfbase.level_figure_style(text(field(net(), "loss"), "level"), sl_meta_fig)
-    })
-    |> ignore
-  })
-  r.show(at_once=true, fn() { has_net() && field(net(), "rtt") is Some(Object(_)) }, fn(x) {
-    x.shrink(Is(0.0)).fit_whole(Is(true)) |> ignore
-    @sf.styled_words(x, fn() { text(field(net(), "rtt"), "text") }, fn() {
-      @sfbase.level_figure_style(text(field(net(), "rtt"), "level"), sl_meta_fig)
-    })
-    |> ignore
-  })
-  r.show(at_once=true, fn() { !has_net() }, fn(nb) {
-    nb.shrink(Is(0.0)).fit_whole(Is(true)) |> ignore
-    @sf.waiting_node(nb, fn(w) {
-      @sf.style_node(w, fn() { sl_net_tail })
-      @sf.words_node(w, fn() { @sf.sample_words(2) }, fn() { sl_meta_muted }) |> ignore
-      @sf.words_node(w, fn() { @sf.sample_words(3) }, fn() { sl_meta_fig }) |> ignore
-    })
-  })
 }
+
+///|
+/// One of a station's signals: its icon and, while it is off, its words, 4 apart.
+// kept across runs: a value (no field of it changes)
+let sl_signal : @ui.Style = @ui.css("row gap=S1 align=ACenter")
+
+///|
+let sl_signal_icon : Double = 15.0
+
+///|
+/// Memory's and disk's places: each as wide in every row, so their icons stand in columns down the list, with room for
+/// what is left beside each (the CPU's, its icon alone, is as wide as the mark's box: sl_signal_under_mark).
+// kept across runs: a table, never written
+let sl_signal_least : Array[Double] = [0.0, 68.0, 68.0]
+
+///|
+/// The CPU's place: as wide as the station's mark's box (sl_mark_box) over it, its icon in its middle, no higher than
+/// the line's words, so an online row is as high as an offline one.
+// kept across runs: a value (no field of it changes)
+let sl_signal_under_mark : @ui.Style = @ui.css("row w=S5 align=ACenter justify=JCenter")
+
+///|
+/// The network's place at the right end: as wide in every row, what it says flush right against its icon.
+// kept across runs: a value (no field of it changes)
+let sl_signal_end : @ui.Style = @ui.css("row gap=S1 align=ACenter justify=JEnd")
+
+///|
+let sl_signal_net_least : Double = 72.0
 
 ///|
 /// Right-aligned compact network status (`path`, optional packet `loss`, and `rtt`) when `net()` is known,
@@ -962,7 +1031,8 @@ fn sl_device_row_node(
         @sf.style_node(head, fn() { sl_head })
         head.box(fn(m) {
           @sf.style_node(m, fn() { sl_mark_box }, in_row=true)
-          let ink = fn() { if online() { @sf.theme().p.text } else { @sf.theme().p.muted } }
+          // (in its name's ink: the name's softer one while up, so neither outshines what the row says of it)
+          let ink = fn() { if online() { @ui.tree_theme().color(Subtle) } else { @sf.theme().p.muted } }
           @sf.icon_node(m, "", sl_mark_side, By(ink), name_now=fn() { @settings.device_icon(d()) }) |> ignore
         })
         |> ignore
@@ -1028,7 +1098,7 @@ let sl_name_row : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sl_name : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Fg, wrap=false, w=Cut)
+let sl_name : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Subtle, wrap=false, w=Cut)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1066,15 +1136,7 @@ let sl_meta_fig : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=M
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sl_meta_amber : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=WarnInk, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
 let sl_meta_amber_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=WarnInk, wrap=false, w=Cut)
-
-///|
-// kept across runs: a value (no field of it changes)
-let sl_meta_red : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Danger, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)

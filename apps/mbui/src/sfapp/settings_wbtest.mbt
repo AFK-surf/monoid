@@ -868,13 +868,12 @@ test "settings: a station's network not open yet (stationNet's null) waits as it
 test "settings: a station's network not open yet waits at the end of its metric line as compact bones" {
   let t = stations_unread_net()
   // Willow's line 2: semantic meters on the left, compact network waiting bones flush right on the same line band
-  let (mem_x, mem_y, mem_w, mem_h) = t.rect_of("内存剩 5.8 G").unwrap()
-  assert_eq(t.bones_drawn(), 3)
+  let (mem_x, mem_y, mem_w, mem_h) = t.rect_of("5.8G").unwrap()
   let line = @sf.theme().p.line >> 8
   let bars = t.drawn_rects().filter(fn(r) {
     r.4 >> 8 == line && r.0 > mem_x + mem_w && r.1 >= mem_y - 2.0 && r.1 + r.3 <= mem_y + mem_h + 4.0
   })
-  assert_eq(bars.length(), 2, msg="expected 2 compact network bone bars on line 2, got \{bars.length()}")
+  assert_eq(bars.length(), 1, msg="expected the latency's one bone bar on line 2, got \{bars.length()}")
   // Bars stay strictly to the right of the meters and inside the 390pt viewport
   for r in bars {
     assert_true(r.0 > mem_x + mem_w && r.0 + r.2 < 390.0, msg="bar out of place: \{r.0}, \{r.2}")
@@ -885,7 +884,7 @@ test "settings: a station's network not open yet waits at the end of its metric 
 test "settings: an offline station keeps the same 2-line structure and summary line under its name" {
   let t = stations_unread_net()
   let (_, y_willow, _, _) = t.rect_of("Willow").unwrap()
-  let (_, y_mem, _, _) = t.rect_of("内存剩 5.8 G").unwrap()
+  let (_, y_mem, _, _) = t.rect_of("5.8G").unwrap()
   let (_, y_maple, _, _) = t.rect_of("Maple").unwrap()
   let (_, y_off, _, _) = t.rect_of("离线 · 2 天前").unwrap()
   let online_gap = y_mem - y_willow
@@ -905,13 +904,10 @@ test "settings: a station's row with its CPU, memory and disk all low keeps ever
     t.resize(w, 844.0)
     t.draw()
     let shown = t.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 })
-    // At 390pt all three low-headroom warnings fit whole alongside latency; at 320pt lower-priority warnings drop cleanly
-    // instead of truncating with an ellipsis.
-    assert_true(shown.contains("CPU 空闲 8%"), msg="\{w}: \{Repr(shown)}")
-    assert_true(shown.contains("内存剩 5.8 G"), msg="\{w}: \{Repr(shown)}")
-    if w >= 390.0 {
-      assert_true(shown.contains("磁盘剩 19.4 G"), msg="\{w}: \{Repr(shown)}")
-    }
+    // Each in its own place on 390pt and 320pt alike, whole beside the latency: the CPU's an icon alone (its words read
+    // out), memory's and disk's what is left.
+    assert_true(shown.contains("5.8G"), msg="\{w}: \{Repr(shown)}")
+    assert_true(shown.contains("19.4G"), msg="\{w}: \{Repr(shown)}")
     assert_true(!shown.iter().any(fn(x) { x.contains("…") }), msg="\{w}: \{Repr(shown)}")
     let chips = t.squeeze_faults().filter(fn(f) { ["空闲", "剩", "%", "G」"].iter().any(fn(x) { f.contains(x) }) })
     assert_eq(chips, [], msg="\{w}")
