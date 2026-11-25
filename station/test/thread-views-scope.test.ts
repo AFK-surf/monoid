@@ -162,5 +162,8 @@ test("archived led sub-chat threads include their opener in thread and threads v
     const listed = threads(reader, viewer("A", false), "sub", "en");
     assert.equal(listed.length, 1);
     assert.deepEqual(listed[0].opener, { session: "a", title: "Parent", led: true });
+    // Another chat's led agent taking part in a chat brings no opener to it: its home has none.
+    const host = f.add("host", ["a", "sub"]);
+    assert.equal(thread(reader, viewer("A", false), String(host), "en").opener, undefined);
   } finally { f.store.close(); }
 });

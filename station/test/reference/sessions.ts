@@ -204,9 +204,10 @@ function threadJson(t: ThreadRow): Json {
   return v;
 }
 
+/// threadviews.mbt `thread_keys`: its home alone, else its sessions.
 function threadKeys(t: ThreadSummary): string[] {
+  if (typeof t.thread.home === "string" && t.thread.home !== "") return [t.thread.home];
   const out: string[] = [];
-  if (typeof t.thread.home === "string" && t.thread.home !== "") out.push(t.thread.home);
   for (const m of t.sessions) {
     if (m.session !== "" && !out.includes(m.session)) out.push(m.session);
   }

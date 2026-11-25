@@ -164,11 +164,12 @@ fn share_key(t : Summary) -> String {
 }
 
 ///|
-/// Session keys associated with a thread, home first, for matching its `opened_chats` opener.
+/// The session keys a thread's `opened_chats` opener is matched by: its home alone (another chat's agent taking part
+/// in it brings no opener of its own), else its sessions.
 fn thread_keys(t : Summary) -> Array[String] {
   let out : Array[String] = []
   match field(t.thread, "home") {
-    String(h) if h != "" => out.push(h)
+    String(h) if h != "" => return [h]
     _ => ()
   }
   for m in t.sessions {
