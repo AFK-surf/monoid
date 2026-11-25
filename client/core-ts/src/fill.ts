@@ -155,9 +155,9 @@ export class Fill {
       const statusText = f.wanted && state !== "waiting"
           ? rate > 0 ? t("core-logic.download.loadingRate", { percent, total, rate: bytes(rate) }) : t("core-logic.download.loading", { percent, total })
         : state === "going" ? rate > 0 ? t("core-logic.keeping.goingRate", { percent, total, rate: bytes(rate) }) : t("core-logic.keeping.going", { percent, total })
-        : state === "yielding" ? t("core-logic.keeping.yielding", { percent, total })
-        : state === "waiting" ? t("core-logic.keeping.waiting", { percent, total })
-        : t("core-logic.keeping.queued", { percent, total });
+        : state === "waiting" ? t("core-logic.download.waiting", { percent, total })
+        // (given way or after the others: paused alike, a person can start it)
+        : t("core-logic.keeping.paused", { percent, total });
       const where = call === null ? {} : call.kind === "stationFilePart" ? { key: call.key } : { root: call.root, path: call.path };
       const name = call === null ? f.id : call.kind === "stationFilePart" ? call.name : (call.path.split("/").pop() ?? call.path);
       const from = this.#from.get(f.id);

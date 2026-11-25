@@ -542,8 +542,10 @@ let ftransfer_status : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wr
 let ftransfer_failed : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
 
 ///|
+/// A row's keys at its end, side by side: as wide as two tools (`transfer_tool_side`, 24 each) in every row (a file
+/// paused has ▶ and ✕, the rest one), so that every row's words and bar end at one line whichever keys it has.
 // kept across runs: a value (no field of it changes)
-let ftransfer_actions : @ui.Style = @ui.css("row gap=SPx align=ACenter")
+let ftransfer_actions : @ui.Style = @ui.css("row min_w=S12 align=ACenter justify=JEnd")
 
 ///|
 /// A row's mark (14).

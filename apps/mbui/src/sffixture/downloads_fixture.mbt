@@ -167,8 +167,7 @@ pub fn fix_keeping_shown(k : FixKeeping) -> Json {
       match k.state {
         _ if k.wanted && k.state != "waiting" => "正在加载 \{percent}% · \{total}\{speed}"
         "going" => "后台缓存 \{percent}% · \{total}\{speed}"
-        "yielding" => "后台缓存已暂停，正在看的优先 · \{percent}% · \{total}"
-        "waiting" => "后台缓存等待连接 station · \{percent}% · \{total}"
+        "waiting" => "等待连接 station · \{percent}% · \{total}"
         _ => "后台缓存已暂停 · \{percent}% · \{total}"
       },
     ),

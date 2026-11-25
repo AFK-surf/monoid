@@ -107,7 +107,7 @@ export const DRIVE_SHAPES: Record<string, Shape> = {
     ["rate", opt("i64"), { client: opt("I54"), doc: "While it comes, once known: how fast, in bytes a second (flow.ts)." }],
     ["wanted", opt("bool"), { doc: "A person asked to load it (加载, `fill.want`, or started from the list, `fill.start`): brought before everything else, at once." }],
     ["from", opt("KeptFrom"), { doc: "A chat's file's: where it was opened, as the viewer said it." }],
-    ["statusText", "String", { said: true, doc: "How it stands, in a line: 正在加载 42% · 18.3 MB · 2.1 MB/s · 后台缓存 42% · 18.3 MB · 后台缓存已暂停 · 12% · 18.3 MB ." }],
+    ["statusText", "String", { said: true, doc: "How it stands, in a line: 正在加载 42% · 18.3 MB · 2.1 MB/s · 后台缓存 42% · 18.3 MB · 后台缓存已暂停 · 12% · 18.3 MB · 等待连接 station · 12% · 18.3 MB ." }],
   ], { doc: "A file opened and let go before all of it came, brought whole after everything else, or one a person asked to load,\nbrought before it (fill.ts), as the pages show it." }),
   DownloadsView: struct([
     ["downloads", vec("DownloadShown"), { doc: "This device's, newest first." }],
