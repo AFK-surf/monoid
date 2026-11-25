@@ -173,7 +173,7 @@ test "both players, a phone's: a finger's shake as it taps (5 across, 5 down) no
 }
 
 ///|
-test "both players, a desktop's: a pointer click immediately plays or pauses once; double click swallows second Up" {
+test "both players, a desktop's: a pointer click alone never plays or pauses; a double click does, once" {
   let seen = both("double clicked", fn(node) { either_player(node, false, "a.mp4", []) }, fn(t, _) {
     t.host_says_finger(Some(false))
     t.draw()
@@ -191,7 +191,7 @@ test "both players, a desktop's: a pointer click immediately plays or pauses onc
     t.draw()
     (one, plays() - before)
   })
-  assert_eq(seen, (1, 1))
+  assert_eq(seen, (0, 1))
 }
 
 ///|
