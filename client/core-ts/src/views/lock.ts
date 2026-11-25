@@ -1315,7 +1315,7 @@ function hold(inner: Inner, ws: string, sub: string, said: Head | null, entries:
         putPending(inner, ws, left, [...tookHeld(inner, ws), ...pending.filter((x) => on.has(hashOf(x.entry))).map((x) => ({ hash: hashOf(x.entry), at: x.at }))]);
         // (not one the cloud was sent as it was signed, `viaCloud`: read of it, perhaps, which put it on)
         const taken = pending.filter((x) => on.has(hashOf(x.entry)) && x.sent !== true).map((x) => x.entry);
-        if (taken.length > 0) inner.runner.fork(Effect.ignore(inner.provider.request(sub, "POST", `/v1/workspaces/${encodeURIComponent(ws)}/lock`, { entries: taken }, null), { log: "Unhandled", message: "lock entries a station took sent to the cloud" }));
+        if (taken.length > 0) inner.runner.fork(Effect.ignore(mirrorToCloud(inner, ws, sub, taken, now.entries), { log: "Unhandled", message: "lock entries a station took sent to the cloud" }));
       }
     }
     // The lock held names no station (the last taken out): no station's read will ever bring what is pending, so it is
@@ -1375,6 +1375,16 @@ function chosen(was: Held | null, said: Head | null, entries: Entry[], parted: E
   } catch {
     return { head: was.head, entries: was.entries, aside };
   }
+}
+
+/// Entries a station already accepted, mirrored to the cloud; if the cloud is behind or on a losing fork
+/// (`lock_does_not_follow` / `lock_fork`), retry once with `chain.slice(-256)` and `keep: true` so the cloud catches up
+/// (especially on `disable`, after which a station clears its active lock and will not push it over presence).
+function mirrorToCloud(inner: Inner, ws: string, sub: string, entries: Entry[], chain?: Entry[]): Effect.Effect<void, CoreError> {
+  const path = `/v1/workspaces/${encodeURIComponent(ws)}/lock`;
+  const post = Effect.asVoid(inner.provider.request(sub, "POST", path, { entries }, null));
+  if (!chain || chain.length <= entries.length) return post;
+  return Effect.catch(post, (e) => (e.code === "lock_does_not_follow" || e.code === "lock_fork" ? Effect.asVoid(inner.provider.request(sub, "POST", path, { entries: chain.slice(-256), keep: true }, null)) : Effect.fail(e)));
 }
 
 /// The lock moved on: the stations that refused this device before are tried again now.
@@ -4476,9 +4486,7 @@ export class Lock {
   }
 
   /// Entries brought to the cloud, for the stations and devices from before that read the lock there: waited on only
-  /// when no station took them (`took`), else not (a failure there is no failure of this). Where a station took `chain`
-  /// and the cloud is behind or on a losing fork (`lock_does_not_follow` / `lock_fork`), bring the chain with `keep` so
-  /// the cloud catches up (especially on `disable`, after which a station clears its active lock and will not push it).
+  /// when no station took them (`took`), else not (a failure there is no failure of this).
   #toCloud(entries: Entry[], took: boolean, chain?: Entry[]): Effect.Effect<void, CoreError> {
     // (a lock turned on anew, its genesis: the cloud may still keep the one before, every station of it reset on its
     // machine and the cloud never told, `lock_exists`; let go of there first, the owner's, and asked again: the stations
@@ -4487,8 +4495,8 @@ export class Lock {
     const post = Effect.asVoid(this.#cloud("POST", "/lock", { entries }));
     const asked = genesis
       ? Effect.catch(post, (e) => (e.code === "lock_exists" ? Effect.andThen(this.#cloud("DELETE", "/lock"), post) : Effect.fail(e)))
-      : took && chain && chain.length > entries.length
-        ? Effect.catch(post, (e) => (e.code === "lock_does_not_follow" || e.code === "lock_fork" ? Effect.asVoid(this.#cloud("POST", "/lock", { entries: chain.slice(-256), keep: true })) : Effect.fail(e)))
+      : took
+        ? mirrorToCloud(this.#inner, this.ws, this.sub, entries, chain)
         : post;
     if (!took) return asked;
     this.#inner.runner.fork(Effect.ignore(asked));

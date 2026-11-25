@@ -18,7 +18,7 @@
 - Before removing a device or member, level vaults from reachable stations (`levelVaults`, `takeBefore`) verifying against the pre-removal state. Removal reads no box key. Rekeying vaults for removed members waits until the owner next unseals the key.
 - User-facing errors: untrusted devices return `core-misc.lock.notSigner` (`notTrustedHere`), another member's device returns `core-misc.lock.othersDevice`. A device refused at a move boundary retries automatically on its link retry without asking the user to act.
 - Restarting a personal lock (`lock.restartOwn`, 我的其它设备都不在了) or adopting one started elsewhere (`lock.forgetOwn`) requires an explicit user press, offered only after no device answered (`restartText`) or the lock was `replaced` (`forgetText`). While a workspace still binds the old lock, tell the person who can remove and re-add them (`reboundIn` via `left.apps`).
-- A station that previously held the lock (`lockServes` `pinned`) and now holds none was reset (`stillfail lock reset`): never re-upload via `bringMoved`, only via an owner's 保护 (`stationMoved`). When all stations in the effective state hold no lock, drop local lock state and delete the cloud copy (matching `lock_exists` on re-enable).
+- A station that previously held the lock (`lockServes` `pinned`) and now holds none was reset (`stillfail lock reset`): never re-upload via `bringMoved`, only via an owner's 保护 (`stationMoved`). When all stations in the effective state hold no lock, drop local lock state and (unless the held chain is already disabled, where the `disable` entry is being mirrored to the cloud) delete the cloud copy (matching `lock_exists` on re-enable).
 
 ### Seamless handover (`handOver`, 无感迁移)
 

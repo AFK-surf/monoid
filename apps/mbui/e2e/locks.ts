@@ -625,92 +625,92 @@ try {
   };
   // (a fork on the workspace's chain: none after a move, nothing being signed on it)
   if (!moved) {
-  const w1 = new Device("W1", "alice", { page: true });
-  const w2 = new Device("W2", "alice", { page: true });
-  let forkW1 = "";
-  let forkW2 = "";
-  try {
-    await must("two web pages of alice's approved in the workspace's lock before the fork", async () => {
-      await w1.signIn();
-      await w2.signIn();
-      forkW1 = await baseOf(w1);
-      forkW2 = await baseOf(w2);
-      await approvedBy(b, w1, true);
-      await b.until({ topic: "lockPrompts" }, (v) => (v?.pairing ?? []).length === 0, 30_000);
-      await approvedBy(b, w2, true);
-      await whenChanged([first, second], () => {
-        const one = stationLock();
-        const two = stationLock("second");
-        return one.head !== "" && one.head === two.head && [forkW1, forkW2].every((id) => one.has(id)) ? one : null;
-      }, 60_000, () => `the first: head ${stationLock().head.slice(0, 12)}, W1 ${stationLock().has(forkW1)}, W2 ${stationLock().has(forkW2)}; the second: head ${stationLock("second").head.slice(0, 12)}, W1 ${stationLock("second").has(forkW1)}, W2 ${stationLock("second").has(forkW2)}`);
-      for (const x of [b, e]) await x.lock(workspace, (l) => [forkW1, forkW2].every((id) => lockDevices(l).some((d) => d.id === id)), 60_000);
-    });
-  } finally {
-    await within(Promise.all([w1.close(), w2.close()]), 5000);
-  }
-  const askedBefore = [b.asked(), e.asked()];
-  const round7b = new Date().toISOString();
-  stationDo("cloud-freeze");
-  try {
-    await must("the cloud frozen, the second station stopped and A installed anew closed: B takes W1 out at the first", async () => {
-      await e.close();
-      stationDo("second-stop");
-      await b.call("lock.removeDevice", { workspace, device: forkW1 });
-      await whenChanged([first], () => !stationLock().has(forkW1), 60_000, () => `the first: W1 still listed (${stationLock().has(forkW1)})`);
-    });
-    await must("the first station stopped and the second started: A installed anew, not having heard it, takes W2 out at the second", async () => {
-      await b.close();
-      stationDo("freeze");
-      stationDo("second-again");
-      await e.restart();
-      await stationIn(e, secondId, (s) => s.state === "online", 120_000);
-      if (!stationLock("second").has(forkW1)) throw new Error("the second heard B's entry already: no fork to come");
-      await e.call("lock.removeDevice", { workspace, device: forkW2 });
-      await whenChanged([second], () => !stationLock("second").has(forkW2), 60_000, () => `the second: W2 still listed (${stationLock("second").has(forkW2)})`);
-    });
-    // Which removal loses is the rules' tie (of the parent's hash and the signing key, both new each run), so either
-    // device is the one to sign again: B, closed since its removal, can only once it runs. So the stations come to one
-    // chain first, the winning removal on it, and which lost is said (B's removal on the chain while B is closed won:
-    // B could not have signed it again; A installed anew, running, may have signed its own again already); then B is
-    // started and the one that lost is on the chain too, signed again by its device, whichever it is. (The side run of
-    // 2026-11-12, run 43182403308: B's entry lost, and the round waited for it signed again with B closed.)
-    let lost = "";
-    await check("both stations up: one chain at both within seconds, the removal that won on it", async () => {
-      stationDo("thaw");
-      // (from when the thawed station is up: `thaw` returns once it is)
-      const t1 = Date.now();
-      const level = () => {
-        const one = stationLock();
-        const two = stationLock("second");
-        return one.head !== "" && one.head === two.head && (!one.has(forkW1) || !one.has(forkW2)) ? one : null;
-      };
-      const at = await whenChanged([first, second], level, 10_000, () => `the first: head ${stationLock().head.slice(0, 12)}, W1 ${stationLock().has(forkW1)}, W2 ${stationLock().has(forkW2)}; the second: head ${stationLock("second").head.slice(0, 12)}, W1 ${stationLock("second").has(forkW1)}, W2 ${stationLock("second").has(forkW2)}`);
-      lost = !at.has(forkW1) ? "A installed anew" : "B";
-      log(`  one chain at both stations ${Date.now() - t1} ms after the first was up again, head ${at.head.slice(0, 12)}; the removal that lost: ${lost}'s`);
-    });
-    await check("B started: both removals on one chain at both within seconds (the one that lost signed again by its device); B and A installed anew let in by both and their pages show neither; nobody asked", async () => {
-      // (B started whatever the check before found: the rounds after use it)
-      const t1 = Date.now();
-      await b.restart();
-      const level = () => {
-        const one = stationLock();
-        const two = stationLock("second");
-        return one.head !== "" && one.head === two.head && !one.has(forkW1) && !one.has(forkW2) ? one : null;
-      };
-      const at = await whenChanged([first, second], level, 10_000, () => `the removal that lost: ${lost || "not known"}'s; the first: head ${stationLock().head.slice(0, 12)}, W1 ${stationLock().has(forkW1)}, W2 ${stationLock().has(forkW2)}; the second: head ${stationLock("second").head.slice(0, 12)}, W1 ${stationLock("second").has(forkW1)}, W2 ${stationLock("second").has(forkW2)}`);
-      log(`  both removals on one chain at both stations ${Date.now() - t1} ms after B was started, head ${at.head.slice(0, 12)}; signed again by ${lost || "?"}`);
-      // (what each device holds, as its own pages say it: neither web page listed; let in by both stations)
-      const gone = (l: J) => [forkW1, forkW2].every((id) => !lockDevices(l).some((x) => x.id === id));
-      for (const x of [b, e]) {
-        await x.lock(workspace, gone, 60_000);
-        for (const id of [station.split("/")[1]!, secondId]) await stationIn(x, id, (st) => st.state === "online", 60_000);
-      }
-      const asked = [b.asked(), e.asked()];
-      if (asked.some((n, i) => n !== askedBefore[i])) throw new Error(`asked the person: B ${asked[0]! - askedBefore[0]!}, A installed anew ${asked[1]! - askedBefore[1]!} times (from ${round7b}): B ${b.askedWhat(askedBefore[0]).join("; ") || "-"}; A installed anew ${e.askedWhat(askedBefore[1]).join("; ") || "-"}`);
-    });
-  } finally {
-    stationDo("cloud-thaw");
-  }
+    const w1 = new Device("W1", "alice", { page: true });
+    const w2 = new Device("W2", "alice", { page: true });
+    let forkW1 = "";
+    let forkW2 = "";
+    try {
+      await must("two web pages of alice's approved in the workspace's lock before the fork", async () => {
+        await w1.signIn();
+        await w2.signIn();
+        forkW1 = await baseOf(w1);
+        forkW2 = await baseOf(w2);
+        await approvedBy(b, w1, true);
+        await b.until({ topic: "lockPrompts" }, (v) => (v?.pairing ?? []).length === 0, 30_000);
+        await approvedBy(b, w2, true);
+        await whenChanged([first, second], () => {
+          const one = stationLock();
+          const two = stationLock("second");
+          return one.head !== "" && one.head === two.head && [forkW1, forkW2].every((id) => one.has(id)) ? one : null;
+        }, 60_000, () => `the first: head ${stationLock().head.slice(0, 12)}, W1 ${stationLock().has(forkW1)}, W2 ${stationLock().has(forkW2)}; the second: head ${stationLock("second").head.slice(0, 12)}, W1 ${stationLock("second").has(forkW1)}, W2 ${stationLock("second").has(forkW2)}`);
+        for (const x of [b, e]) await x.lock(workspace, (l) => [forkW1, forkW2].every((id) => lockDevices(l).some((d) => d.id === id)), 60_000);
+      });
+    } finally {
+      await within(Promise.all([w1.close(), w2.close()]), 5000);
+    }
+    const askedBefore = [b.asked(), e.asked()];
+    const round7b = new Date().toISOString();
+    stationDo("cloud-freeze");
+    try {
+      await must("the cloud frozen, the second station stopped and A installed anew closed: B takes W1 out at the first", async () => {
+        await e.close();
+        stationDo("second-stop");
+        await b.call("lock.removeDevice", { workspace, device: forkW1 });
+        await whenChanged([first], () => !stationLock().has(forkW1), 60_000, () => `the first: W1 still listed (${stationLock().has(forkW1)})`);
+      });
+      await must("the first station stopped and the second started: A installed anew, not having heard it, takes W2 out at the second", async () => {
+        await b.close();
+        stationDo("freeze");
+        stationDo("second-again");
+        await e.restart();
+        await stationIn(e, secondId, (s) => s.state === "online", 120_000);
+        if (!stationLock("second").has(forkW1)) throw new Error("the second heard B's entry already: no fork to come");
+        await e.call("lock.removeDevice", { workspace, device: forkW2 });
+        await whenChanged([second], () => !stationLock("second").has(forkW2), 60_000, () => `the second: W2 still listed (${stationLock("second").has(forkW2)})`);
+      });
+      // Which removal loses is the rules' tie (of the parent's hash and the signing key, both new each run), so either
+      // device is the one to sign again: B, closed since its removal, can only once it runs. So the stations come to one
+      // chain first, the winning removal on it, and which lost is said (B's removal on the chain while B is closed won:
+      // B could not have signed it again; A installed anew, running, may have signed its own again already); then B is
+      // started and the one that lost is on the chain too, signed again by its device, whichever it is. (The side run of
+      // 2026-11-12, run 43182403308: B's entry lost, and the round waited for it signed again with B closed.)
+      let lost = "";
+      await check("both stations up: one chain at both within seconds, the removal that won on it", async () => {
+        stationDo("thaw");
+        // (from when the thawed station is up: `thaw` returns once it is)
+        const t1 = Date.now();
+        const level = () => {
+          const one = stationLock();
+          const two = stationLock("second");
+          return one.head !== "" && one.head === two.head && (!one.has(forkW1) || !one.has(forkW2)) ? one : null;
+        };
+        const at = await whenChanged([first, second], level, 10_000, () => `the first: head ${stationLock().head.slice(0, 12)}, W1 ${stationLock().has(forkW1)}, W2 ${stationLock().has(forkW2)}; the second: head ${stationLock("second").head.slice(0, 12)}, W1 ${stationLock("second").has(forkW1)}, W2 ${stationLock("second").has(forkW2)}`);
+        lost = !at.has(forkW1) ? "A installed anew" : "B";
+        log(`  one chain at both stations ${Date.now() - t1} ms after the first was up again, head ${at.head.slice(0, 12)}; the removal that lost: ${lost}'s`);
+      });
+      await check("B started: both removals on one chain at both within seconds (the one that lost signed again by its device); B and A installed anew let in by both and their pages show neither; nobody asked", async () => {
+        // (B started whatever the check before found: the rounds after use it)
+        const t1 = Date.now();
+        await b.restart();
+        const level = () => {
+          const one = stationLock();
+          const two = stationLock("second");
+          return one.head !== "" && one.head === two.head && !one.has(forkW1) && !one.has(forkW2) ? one : null;
+        };
+        const at = await whenChanged([first, second], level, 10_000, () => `the removal that lost: ${lost || "not known"}'s; the first: head ${stationLock().head.slice(0, 12)}, W1 ${stationLock().has(forkW1)}, W2 ${stationLock().has(forkW2)}; the second: head ${stationLock("second").head.slice(0, 12)}, W1 ${stationLock("second").has(forkW1)}, W2 ${stationLock("second").has(forkW2)}`);
+        log(`  both removals on one chain at both stations ${Date.now() - t1} ms after B was started, head ${at.head.slice(0, 12)}; signed again by ${lost || "?"}`);
+        // (what each device holds, as its own pages say it: neither web page listed; let in by both stations)
+        const gone = (l: J) => [forkW1, forkW2].every((id) => !lockDevices(l).some((x) => x.id === id));
+        for (const x of [b, e]) {
+          await x.lock(workspace, gone, 60_000);
+          for (const id of [station.split("/")[1]!, secondId]) await stationIn(x, id, (st) => st.state === "online", 60_000);
+        }
+        const asked = [b.asked(), e.asked()];
+        if (asked.some((n, i) => n !== askedBefore[i])) throw new Error(`asked the person: B ${asked[0]! - askedBefore[0]!}, A installed anew ${asked[1]! - askedBefore[1]!} times (from ${round7b}): B ${b.askedWhat(askedBefore[0]).join("; ") || "-"}; A installed anew ${e.askedWhat(askedBefore[1]).join("; ") || "-"}`);
+      });
+    } finally {
+      stationDo("cloud-thaw");
+    }
   }
   // (round 9's devices' ids, as the workspace's lock has them: a device's id is its own, the same in each workspace)
   const bId = await baseOf(b);
