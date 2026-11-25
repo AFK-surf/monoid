@@ -33,9 +33,12 @@ pub fn usage_turns(
   }
 }
 
-/// BigInt(text): an integer as written, refused otherwise.
-pub fn big_of(v : Option[base_codec::Json]) -> Result[Int64, readops_core::ReadError] {
-  let s = jscase::trim(builders_usage::text_arg_with(v, base_codec::json_stringify))
+/// BigInt(text): an integer as written, refused otherwise (injectable stringifier for pure unit tests).
+pub fn big_of_with(
+  v : Option[base_codec::Json],
+  stringify : (base_codec::Json) -> String,
+) -> Result[Int64, readops_core::ReadError] {
+  let s = jscase::trim(builders_usage::text_arg_with(v, stringify))
   if s == "" {
     return Ok(0.to_int64())
   }
@@ -75,6 +78,11 @@ pub fn big_of(v : Option[base_codec::Json]) -> Result[Int64, readops_core::ReadE
     }
     Ok(-n)
   }
+}
+
+/// BigInt(text): an integer as written (using JS-accurate `text_arg`), refused otherwise.
+pub fn big_of(v : Option[base_codec::Json]) -> Result[Int64, readops_core::ReadError] {
+  big_of_with(v, sql_db::stringify_json)
 }
 
 /// An i64 as a statement's integer (matching MB `usage.mbt:208`).

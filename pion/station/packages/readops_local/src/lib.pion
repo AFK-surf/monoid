@@ -22,6 +22,13 @@ fn opt_json_num_eq(v : Option[base_codec::Json], expected : Double) -> Bool {
   }
 }
 
+fn opt_json_null(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Null) => true
+    _ => false
+  }
+}
+
 fn mkdir_sync(client : builders_core::ShellClient, path : String) -> Result[Unit, String] {
   match client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(path))])) {
     Ok(_) => Ok(())
@@ -36,6 +43,20 @@ fn write_sync(client : builders_core::ShellClient, path : String, text : String)
   ) {
     Ok(_) => Ok(())
     Err(e) => Err("fs.write " + path + " failed: " + e.message)
+  }
+}
+
+fn write_zst_sync(client : builders_core::ShellClient, path : String, text : String) -> Result[Unit, String] {
+  match client.shell_sync_json(
+    "fs.write",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("text", base_codec::json_str(text)),
+      ("zstd", base_codec::json_bool(true)),
+    ]),
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err("fs.write(zstd) " + path + " failed: " + e.message)
   }
 }
 
@@ -102,7 +123,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // ── 1. jobs (`job`, `shown`, `job_log`, `fs.meta`, `NOTICES_SHOWN=20`, `parse_usize`) ──
+  // ── 1. jobs (`job`, `shown`, `job_log`, `fs.meta`, `NOTICES_SHOWN=20` DESC + rowid DESC, `parse_usize`) ──
   let log_path = root + "/job1.log"
   match write_sync(client, log_path, "line1\r\nline2\r\nline3\n") {
     Ok(_) => ()
@@ -111,28 +132,72 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err(e)
     }
   }
-  match db.exec(
-    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES ('s1', 'ws1', 'claude', 'alice@example.com', 'p1', 5000, '/tmp/w', '/tmp/w', 'claude-rt-1');" +
-    "INSERT INTO jobs(id, session_key, name, command, cwd, port, state, pgid, exit_code, started_at, ended_at, restarts, log, watch, queued) VALUES ('j1', 's1', 'build', 'echo hi', '/tmp/w', 8080, 'running', 123, NULL, 1000, NULL, 0, '" +
-    log_path +
-    "', 1, 1);",
+  match db.run(
+    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      base_codec::json_str("s1"),
+      base_codec::json_str("ws1"),
+      base_codec::json_str("claude"),
+      base_codec::json_str("alice@example.com"),
+      base_codec::json_str("p1"),
+      base_codec::json_int(5000),
+      base_codec::json_str("/tmp/w"),
+      base_codec::json_str("/tmp/w"),
+      base_codec::json_str("claude-rt-1"),
+    ],
   ) {
     Ok(_) => ()
     Err(e) => {
       db.close()
-      return Err("seed jobs failed: " + e.message)
+      return Err("seed session s1 failed: " + e.message)
     }
   }
-  for i in 0..<25 {
+  match db.run(
+    "INSERT INTO jobs(id, session_key, name, command, cwd, port, state, pgid, exit_code, started_at, ended_at, restarts, log, watch, queued) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)",
+    [
+      base_codec::json_str("j1"),
+      base_codec::json_str("s1"),
+      base_codec::json_str("build"),
+      base_codec::json_str("echo hi"),
+      base_codec::json_str("/tmp/w"),
+      base_codec::json_int(8080),
+      base_codec::json_str("running"),
+      base_codec::json_int(123),
+      base_codec::json_int(1000),
+      base_codec::json_int(0),
+      base_codec::json_str(log_path),
+      base_codec::json_int(1),
+      base_codec::json_int(1),
+    ],
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed job j1 failed: " + e.message)
+    }
+  }
+  // Insert 24 notices with ascending timestamps + 1 tie at 1023 to verify `ORDER BY at DESC, rowid DESC LIMIT 20`
+  for i in 0..<24 {
     let at = 1000 + i
-    match db.exec(
-      "INSERT INTO job_notices(job_id, at, text) VALUES ('j1', " + at.to_string() + ", 'n" + i.to_string() + "');",
+    match db.run(
+      "INSERT INTO job_notices(job_id, at, text) VALUES (?, ?, ?)",
+      [base_codec::json_str("j1"), base_codec::json_int(at), base_codec::json_str("n" + i.to_string())],
     ) {
       Ok(_) => ()
       Err(e) => {
         db.close()
         return Err("seed job_notices failed: " + e.message)
       }
+    }
+  }
+  match db.run(
+    "INSERT INTO job_notices(job_id, at, text) VALUES (?, ?, ?)",
+    [base_codec::json_str("j1"), base_codec::json_int(1023), base_codec::json_str("n24-tie")],
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed job_notices tie failed: " + e.message)
     }
   }
   match job(db, client, base_codec::json_obj([("id", base_codec::json_str("j1"))])) {
@@ -142,6 +207,12 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
           if ns.length() != 20 {
             db.close()
             return Err("job notices expected 20, got " + ns.length().to_string())
+          }
+          if !opt_json_str_eq(builders_core::json_get_last(ns[0], "text"), "n24-tie") ||
+          !opt_json_str_eq(builders_core::json_get_last(ns[1], "text"), "n23") ||
+          !opt_json_str_eq(builders_core::json_get_last(ns[19], "text"), "n5") {
+            db.close()
+            return Err("job notices ordering mismatch: " + sql_db::stringify_json(base_codec::json_arr(ns)))
           }
         }
         _ => {
@@ -272,7 +343,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // ── 3. machine (`machine_sessions`, `machine_session`, private `MachineSession` & `named`) ──
+  // ── 3. machine (`machine_sessions`, `machine_session`, dedupe, \n\n merge, 404s, lone-surrogate non-collision) ──
   let mroot = root + "/machine"
   let claude_root = mroot + "/claude"
   let claude_proj = claude_root + "/proj1"
@@ -293,7 +364,8 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
   let claude_file = claude_proj + "/claude-rt-1.jsonl"
   let claude_jsonl = "{\"type\":\"user\",\"cwd\":\"/tmp/w\",\"timestamp\":\"2026-11-25T01:00:00.000Z\",\"message\":{\"content\":\"Hello Claude\"}}\n" +
-  "{\"type\":\"assistant\",\"timestamp\":\"2026-11-25T01:00:05.000Z\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"Hi there\"}]}}\n" +
+  "{\"type\":\"assistant\",\"timestamp\":\"2026-11-25T01:00:05.000Z\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"Part one\"}]}}\n" +
+  "{\"type\":\"assistant\",\"timestamp\":\"2026-11-25T01:00:06.000Z\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"Part two\"}]}}\n" +
   "{\"type\":\"custom-title\",\"customTitle\":\"My Claude Chat\"}\n"
   match write_sync(client, claude_file, claude_jsonl) {
     Ok(_) => ()
@@ -305,6 +377,8 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   let codex_file = codex_root + "/rollout-2026-11-25-codex-rt-1.jsonl"
   let codex_jsonl = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-rt-1\",\"cwd\":\"/tmp/codex\"}}\n" +
   "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-25T02:00:00.000Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"Fix bug\"}}\n" +
+  "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-25T02:00:01.000Z\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Step 1\"}}\n" +
+  "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-25T02:00:02.000Z\",\"payload\":{\"type\":\"agent_message\",\"message\":\"Step 2\"}}\n" +
   "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\"}}\n"
   match write_sync(client, codex_file, codex_jsonl) {
     Ok(_) => ()
@@ -313,7 +387,31 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err(e)
     }
   }
-  match write_sync(client, mroot + "/codex/session_index.jsonl", "{\"id\":\"codex-rt-1\",\"thread_name\":\"Codex Named\"}\n") {
+  // Duplicate rollout file with the same codex-rt-1 id (must be deduplicated)
+  let codex_dup = codex_root + "/rollout-2026-11-24-codex-rt-1_dup.jsonl"
+  match write_sync(client, codex_dup, codex_jsonl) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  // Lone-surrogate regression: transcript id is U+FFFD, session_index.jsonl only names \ud800 -> title must stay null
+  let codex_fffd = codex_root + "/rollout-2026-11-25-fffd.jsonl"
+  let codex_fffd_jsonl = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"\\ufffd\",\"cwd\":\"/tmp/fffd\"}}\n" +
+  "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-25T02:10:00.000Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"Check surrogate\"}}\n"
+  match write_sync(client, codex_fffd, codex_fffd_jsonl) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(
+    client,
+    mroot + "/codex/session_index.jsonl",
+    "{\"id\":\"codex-rt-1\",\"thread_name\":\"Codex Named\"}\n{\"id\":\"\\ud800\",\"thread_name\":\"Wrong Surrogate Name\"}\n",
+  ) {
     Ok(_) => ()
     Err(e) => {
       db.close()
@@ -328,14 +426,28 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(res) => {
       match builders_core::json_get_last(res, "sessions") {
         Some(base_codec::Json::Arr(ss)) => {
-          if ss.length() != 2 {
+          // claude-rt-1, codex-rt-1 (deduped from 2 files), and U+FFFD session => 3 sessions
+          if ss.length() != 3 {
             db.close()
-            return Err("machine_sessions expected 2 sessions, got " + ss.length().to_string())
+            return Err("machine_sessions expected 3 deduped sessions, got " + ss.length().to_string())
           }
+          // Verify newest-first descending updatedAt order
+          let mut prev_u = 1.0e30
           let mut saw_claude = false
           let mut saw_codex = false
+          let mut saw_fffd_null_title = false
           for i in 0..<ss.length() {
             let s = ss[i]
+            match builders_core::json_get_last(s, "updatedAt") {
+              Some(base_codec::Json::Num(u, _)) => {
+                if u > prev_u {
+                  db.close()
+                  return Err("machine_sessions not sorted newest-first")
+                }
+                prev_u = u
+              }
+              _ => ()
+            }
             match builders_core::json_get_last(s, "id") {
               Some(base_codec::Json::Str("claude-rt-1")) => {
                 if opt_json_str_eq(builders_core::json_get_last(s, "session"), "s1") &&
@@ -348,12 +460,17 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
                   saw_codex = true
                 }
               }
+              Some(base_codec::Json::Str("\u{FFFD}")) => {
+                if opt_json_null(builders_core::json_get_last(s, "title")) {
+                  saw_fffd_null_title = true
+                }
+              }
               _ => ()
             }
           }
-          if !saw_claude || !saw_codex {
+          if !saw_claude || !saw_codex || !saw_fffd_null_title {
             db.close()
-            return Err("machine_sessions metadata mismatch: " + sql_db::stringify_json(res))
+            return Err("machine_sessions metadata/surrogate mismatch: " + sql_db::stringify_json(res))
           }
           passed = passed + 1
         }
@@ -368,6 +485,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("machine_sessions failed: " + readops_core::read_error_message(e))
     }
   }
+  // Claude machine_session: 2 consecutive assistant messages merged with \n\n => total=2
   match machine_session(
     db,
     client,
@@ -381,15 +499,63 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(res) => {
       if !opt_json_num_eq(builders_core::json_get_last(res, "total"), 2.0) {
         db.close()
-        return Err("machine_session expected total=2, got " + sql_db::stringify_json(res))
+        return Err("machine_session claude expected total=2, got " + sql_db::stringify_json(res))
+      }
+      match builders_core::json_get_last(res, "said") {
+        Some(base_codec::Json::Arr(said)) => {
+          if said.length() != 2 || !opt_json_str_eq(builders_core::json_get_last(said[1], "text"), "Part one\n\nPart two") {
+            db.close()
+            return Err("machine_session claude assistant merge mismatch")
+          }
+        }
+        _ => {
+          db.close()
+          return Err("machine_session claude missing said")
+        }
       }
       passed = passed + 1
     }
     Err(e) => {
       db.close()
-      return Err("machine_session failed: " + readops_core::read_error_message(e))
+      return Err("machine_session claude failed: " + readops_core::read_error_message(e))
     }
   }
+  // Codex machine_session: consecutive agent_message merged with \n\n => total=2 + title "Codex Named"
+  match machine_session(
+    db,
+    client,
+    "/",
+    base_codec::json_obj([
+      ("roots", roots_json),
+      ("runtime", base_codec::json_str("codex")),
+      ("id", base_codec::json_str("codex-rt-1")),
+    ]),
+  ) {
+    Ok(res) => {
+      if !opt_json_num_eq(builders_core::json_get_last(res, "total"), 2.0) {
+        db.close()
+        return Err("machine_session codex expected total=2")
+      }
+      match builders_core::json_get_last(res, "said") {
+        Some(base_codec::Json::Arr(said)) => {
+          if said.length() != 2 || !opt_json_str_eq(builders_core::json_get_last(said[1], "text"), "Step 1\n\nStep 2") {
+            db.close()
+            return Err("machine_session codex assistant merge mismatch")
+          }
+        }
+        _ => {
+          db.close()
+          return Err("machine_session codex missing said")
+        }
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("machine_session codex failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // machine_session(found=true) returns path
   match machine_session(
     db,
     client,
@@ -421,8 +587,53 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("machine_session(found=true) failed: " + readops_core::read_error_message(e))
     }
   }
+  // machine_session 404s: invalid runtime + missing session (zh & en)
+  match machine_session(
+    db,
+    client,
+    "/",
+    base_codec::json_obj([
+      ("roots", roots_json),
+      ("runtime", base_codec::json_str("grok")),
+      ("id", base_codec::json_str("x")),
+    ]),
+  ) {
+    Err(readops_core::ReadError::Refused(404, msg)) => {
+      if msg != "no runtime grok" {
+        db.close()
+        return Err("machine_session invalid runtime wrong msg: " + msg)
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("machine_session invalid runtime expected 404")
+    }
+  }
+  match machine_session(
+    db,
+    client,
+    "/",
+    base_codec::json_obj([
+      ("roots", roots_json),
+      ("runtime", base_codec::json_str("claude")),
+      ("id", base_codec::json_str("nope")),
+    ]),
+  ) {
+    Err(readops_core::ReadError::Refused(404, msg)) => {
+      if msg != "本机没有这个会话：nope" {
+        db.close()
+        return Err("machine_session missing zh wrong msg: " + msg)
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("machine_session missing zh expected 404")
+    }
+  }
 
-  // ── 4. memory (`memory`, frontmatter, sorting, prev blob, invalid ws 400) ──
+  // ── 4. memory (`memory`, frontmatter, sorting, prev blob, invalid ws 400, lone-surrogate non-collision) ──
   let data_dir = root + "/data"
   match mkdir_sync(client, data_dir + "/mesh") {
     Ok(_) => ()
@@ -453,7 +664,18 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
   let blob_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  match write_sync(client, data_dir + "/config.json", "{\"agentHome\":\"agent\"}") {
+  match write_sync(client, data_dir + "/config.json", "{\"agentHome\":\"agent\",\"sharedSkills\":{\"demo-proj\":\"sh-surr1\"}}") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(
+    client,
+    data_dir + "/share/state.json",
+    "{\"hosted\":{\"sh-surr1\":{\"missing\":{\"\\ud800\":7},\"told\":{\"\\ufffd\":1}}}}",
+  ) {
     Ok(_) => ()
     Err(e) => {
       db.close()
@@ -534,6 +756,27 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
             db.close()
             return Err("memory skills ordering mismatch")
           }
+          // Lone-surrogate non-collision: missing has \ud800:7, told has \ufffd:1 => users:["\uFFFD"], missing:[]
+          match builders_core::json_get_last(ss[0], "share") {
+            Some(sh) => {
+              match (builders_core::json_get_last(sh, "users"), builders_core::json_get_last(sh, "missing")) {
+                (Some(base_codec::Json::Arr(users)), Some(base_codec::Json::Arr(miss))) => {
+                  if users.length() != 1 || !opt_json_str_eq(Some(users[0]), "\u{FFFD}") || miss.length() != 0 {
+                    db.close()
+                    return Err("memory lone-surrogate sharing mismatch: " + sql_db::stringify_json(sh))
+                  }
+                }
+                _ => {
+                  db.close()
+                  return Err("memory share missing users/missing arrays")
+                }
+              }
+            }
+            None => {
+              db.close()
+              return Err("memory demo-proj missing share")
+            }
+          }
         }
         _ => {
           db.close()
@@ -588,7 +831,20 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // ── 6. usage (`usage_turns`, `usage_calls` + pagination + viewer isolation) ──
+  // ── 6. usage (`big_of` JS double format, `usage_turns`, `usage_calls` SAME+EARLIER 2-page cursor + viewer isolation) ──
+  match big_of(Some(base_codec::json_num(0.00001))) {
+    Err(readops_core::ReadError::App(msg)) => {
+      if msg != "Cannot convert 0.00001 to a BigInt" {
+        db.close()
+        return Err("big_of(0.00001) wrong message: " + msg)
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("big_of(0.00001) expected App error")
+    }
+  }
   match db.exec(
     "INSERT INTO turns(id, session_key, kind, started_at, profile, person, thread) VALUES ('t1', 's1', 'input', 1000, 'p1', 'alice@example.com', 10);" +
     "INSERT INTO usage(id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted) VALUES " +
@@ -621,35 +877,71 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("usage_turns failed")
     }
   }
-  match usage_calls(
+  // Page 1: beforeAt=2000 < to=5000 exercises USAGE_CALLS_SAME_SQL and returns u2 + next cursor
+  let page1_next = match usage_calls(
     db,
     base_codec::json_obj([
       ("session", base_codec::json_str("s1")),
       ("from", base_codec::json_str("0")),
       ("to", base_codec::json_str("5000")),
-      ("beforeAt", base_codec::json_str("5000")),
+      ("beforeAt", base_codec::json_str("2000")),
       ("beforeSeq", base_codec::json_str("999999")),
       ("limit", base_codec::json_num(1.0)),
     ]),
   ) {
     Ok(res) => {
       match (builders_core::json_get_last(res, "rows"), builders_core::json_get_last(res, "next")) {
-        (Some(base_codec::Json::Arr(rows)), Some(base_codec::Json::Obj(_))) => {
-          if rows.length() != 1 {
+        (Some(base_codec::Json::Arr(rows)), Some(base_codec::Json::Obj(nf))) => {
+          if rows.length() != 1 || !opt_json_str_eq(builders_core::json_get_last(rows[0], "id"), "u2") {
             db.close()
-            return Err("usage_calls expected 1 row on page 1")
+            return Err("usage_calls page 1 expected u2, got " + sql_db::stringify_json(res))
           }
           passed = passed + 1
+          base_codec::Json::Obj(nf)
         }
         _ => {
           db.close()
-          return Err("usage_calls expected rows + next cursor: " + sql_db::stringify_json(res))
+          return Err("usage_calls page 1 expected rows + next cursor: " + sql_db::stringify_json(res))
         }
       }
     }
     Err(e) => {
       db.close()
-      return Err("usage_calls failed: " + readops_core::read_error_message(e))
+      return Err("usage_calls page 1 failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // Page 2: follow next.at/next.seq cursor -> returns u1
+  match usage_calls(
+    db,
+    base_codec::json_obj([
+      ("session", base_codec::json_str("s1")),
+      ("from", base_codec::json_str("0")),
+      ("to", base_codec::json_str("5000")),
+      ("beforeAt", readops_core::json_val_or_null(page1_next, "at")),
+      ("beforeSeq", readops_core::json_val_or_null(page1_next, "seq")),
+      ("limit", base_codec::json_num(10.0)),
+    ]),
+  ) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "rows") {
+        Some(base_codec::Json::Arr(rows)) => {
+          if rows.length() != 1 ||
+          !opt_json_str_eq(builders_core::json_get_last(rows[0], "id"), "u1") ||
+          !opt_json_null(builders_core::json_get_last(res, "next")) {
+            db.close()
+            return Err("usage_calls page 2 expected u1 + null next: " + sql_db::stringify_json(res))
+          }
+          passed = passed + 1
+        }
+        _ => {
+          db.close()
+          return Err("usage_calls page 2 missing rows")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("usage_calls page 2 failed: " + readops_core::read_error_message(e))
     }
   }
   match usage_calls(
@@ -685,9 +977,11 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // ── 7. usagegroups (`table_installed`, `usage_groups`, `cost` integration) ──
+  // ── 7. usagegroups (`table_installed`, `usage_groups` full quarter + unaligned edge + offset=10 straddle, `cost`) ──
   match db.exec(
-    "INSERT INTO usage_15m(scope, quarter, session, thread, person, profile, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES ('ws1', 1, 's1', 10, 'alice@example.com', 'p1', 'claude', 'neon-test', 0, 2, 1000000, 0, 0, 0, 500000);",
+    "INSERT INTO usage_15m(scope, quarter, session, thread, person, profile, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES " +
+    "('ws1', 0, 's1', 10, 'alice@example.com', 'p1', 'claude', 'neon-test', 0, 1, 1000000, 0, 0, 0, 500000)," +
+    "('ws1', 1, 's1', 10, 'alice@example.com', 'p1', 'claude', 'neon-test', 0, 2, 1000000, 0, 0, 0, 500000);",
   ) {
     Ok(_) => ()
     Err(e) => {
@@ -731,8 +1025,37 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("usage_groups failed: " + readops_core::read_error_message(e))
     }
   }
+  // Unaligned `from=1000` (inside quarter 0, reads raw `usage` rows u1 & u2) + quarter 1 + non-15m `offset=10` (straddle SQL active)
+  match usage_groups(db, 1000.to_int64(), 1800000.to_int64(), 10.to_int64(), v_ws1) {
+    Ok(gs) => {
+      // fast=0: raw u1 (calls=1, input=1M) + quarter 1 (calls=2, input=1M) => calls=3, input=2M
+      // fast=1: raw u2 (calls=1, input=500k)
+      if gs.length() != 2 {
+        db.close()
+        return Err("usage_groups unaligned+straddle expected 2 groups, got " + gs.length().to_string())
+      }
+      let mut fast0_calls = 0.0
+      let mut fast1_calls = 0.0
+      for i in 0..<gs.length() {
+        if gs[i].fast {
+          fast1_calls = gs[i].calls
+        } else {
+          fast0_calls = gs[i].calls
+        }
+      }
+      if fast0_calls != 3.0 || fast1_calls != 1.0 {
+        db.close()
+        return Err("usage_groups unaligned+straddle calls mismatch")
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("usage_groups unaligned+straddle failed: " + readops_core::read_error_message(e))
+    }
+  }
 
-  // ── 8. timeline (`ReaderState` Finder + TranscriptCache reuse across append & truncate + `transcript_state` + `tail_read`) ──
+  // ── 8. timeline (`ReaderState` Finder + TranscriptCache append/truncate + after/before/limit + .zst packedStamp + tail_read) ──
   let tl_ws = root + "/tl_ws"
   let prof_home = data_dir + "/homes/p1"
   let proj_slug = match locate::claude_project(tl_ws) {
@@ -765,12 +1088,19 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err(e)
     }
   }
-  match db.exec(
-    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES ('s-tl', 'ws1', 'claude', 'alice@example.com', 'p1', 6000, '" +
-    tl_ws +
-    "', '" +
-    tl_ws +
-    "', 'tl-rt-1');",
+  match db.run(
+    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      base_codec::json_str("s-tl"),
+      base_codec::json_str("ws1"),
+      base_codec::json_str("claude"),
+      base_codec::json_str("alice@example.com"),
+      base_codec::json_str("p1"),
+      base_codec::json_int(6000),
+      base_codec::json_str(tl_ws),
+      base_codec::json_str(tl_ws),
+      base_codec::json_str("tl-rt-1"),
+    ],
   ) {
     Ok(_) => ()
     Err(e) => {
@@ -778,7 +1108,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("seed timeline session failed: " + e.message)
     }
   }
-  // 8a. Initial timeline read (2 entries)
+  // 8a. Initial timeline read (2 entries) — verify literal wire key `"end":2` and body text independently
   let tl_ask = base_codec::json_obj([
     (
       "args",
@@ -791,9 +1121,13 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   ])
   match timeline(db, state, data_dir, tl_ask) {
     Ok(res) => {
-      if !opt_json_num_eq(builders_core::json_get_last(res, timeline_end_key()), 2.0) {
+      let wire = sql_db::stringify_json(res)
+      if !opt_json_num_eq(builders_core::json_get_last(res, "start"), 0.0) ||
+      !readops_core::str_contains_sub(wire, ",\"end\":2}") ||
+      !readops_core::str_contains_sub(wire, "First prompt") ||
+      !readops_core::str_contains_sub(wire, "First reply") {
         db.close()
-        return Err("timeline initial expected end=2, got " + sql_db::stringify_json(res))
+        return Err("timeline initial mismatch: " + wire)
       }
       passed = passed + 1
     }
@@ -802,7 +1136,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("timeline initial failed: " + readops_core::read_error_message(e))
     }
   }
-  // 8b. Append 3rd line -> same ReaderState tx_cache picks up end=3
+  // 8b. Append 3rd line -> same ReaderState tx_cache picks up end=3 + test `after`, `before`, `limit`
   match write_sync(client, tl_file, tl_line1 + tl_line2 + tl_line3) {
     Ok(_) => ()
     Err(e) => {
@@ -810,17 +1144,64 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err(e)
     }
   }
-  match timeline(db, state, data_dir, tl_ask) {
+  match timeline(
+    db,
+    state,
+    data_dir,
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("key", base_codec::json_str("s-tl")),
+          ("after", base_codec::json_str("0")),
+          ("limit", base_codec::json_str("1")),
+        ]),
+      ),
+    ]),
+  ) {
     Ok(res) => {
-      if !opt_json_num_eq(builders_core::json_get_last(res, timeline_end_key()), 3.0) {
+      let wire = sql_db::stringify_json(res)
+      if !opt_json_num_eq(builders_core::json_get_last(res, "start"), 1.0) ||
+      !readops_core::str_contains_sub(wire, ",\"end\":3}") ||
+      !readops_core::str_contains_sub(wire, "First reply") {
         db.close()
-        return Err("timeline after append expected end=3, got " + sql_db::stringify_json(res))
+        return Err("timeline after+limit mismatch: " + wire)
       }
       passed = passed + 1
     }
     Err(e) => {
       db.close()
-      return Err("timeline after append failed: " + readops_core::read_error_message(e))
+      return Err("timeline after+limit failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match timeline(
+    db,
+    state,
+    data_dir,
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("key", base_codec::json_str("s-tl")),
+          ("before", base_codec::json_str("3")),
+          ("limit", base_codec::json_str("1")),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(res) => {
+      let wire = sql_db::stringify_json(res)
+      if !opt_json_num_eq(builders_core::json_get_last(res, "start"), 2.0) ||
+      !readops_core::str_contains_sub(wire, ",\"end\":3}") ||
+      !readops_core::str_contains_sub(wire, "Second prompt") {
+        db.close()
+        return Err("timeline before+limit mismatch: " + wire)
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("timeline before+limit failed: " + readops_core::read_error_message(e))
     }
   }
   // 8c. Truncate back to 1 line -> same ReaderState tx_cache handles truncation (end=1)
@@ -833,9 +1214,10 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
   match timeline(db, state, data_dir, tl_ask) {
     Ok(res) => {
-      if !opt_json_num_eq(builders_core::json_get_last(res, timeline_end_key()), 1.0) {
+      let wire = sql_db::stringify_json(res)
+      if !readops_core::str_contains_sub(wire, ",\"end\":1}") {
         db.close()
-        return Err("timeline after truncate expected end=1, got " + sql_db::stringify_json(res))
+        return Err("timeline after truncate expected end=1, got " + wire)
       }
       passed = passed + 1
     }
@@ -844,7 +1226,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("timeline after truncate failed: " + readops_core::read_error_message(e))
     }
   }
-  // 8d. transcript_state + tail_read
+  // 8d. transcript_state + tail_read (plain file)
   match transcript_state(db, state, data_dir, base_codec::json_obj([("key", base_codec::json_str("s-tl"))])) {
     Ok(res) => {
       match builders_core::json_get_last(res, "states") {
@@ -853,7 +1235,6 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
             db.close()
             return Err("transcript_state expected 1 state")
           }
-          // Append a second line and tail_read from the previous state
           match write_sync(client, tl_file, tl_line1 + tl_line2) {
             Ok(_) => ()
             Err(e) => {
@@ -869,11 +1250,12 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
             ]),
           ) {
             Ok(tres) => {
+              let twire = sql_db::stringify_json(tres)
               match builders_core::json_get_last(tres, "entries") {
                 Some(base_codec::Json::Arr(es)) => {
-                  if es.length() != 1 {
+                  if es.length() != 1 || !readops_core::str_contains_sub(twire, "First reply") {
                     db.close()
-                    return Err("tail_read expected 1 new entry, got " + es.length().to_string())
+                    return Err("tail_read expected 1 new entry with First reply, got " + twire)
                   }
                   passed = passed + 1
                 }
@@ -898,6 +1280,135 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => {
       db.close()
       return Err("transcript_state failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // 8e. .zst-only transcript + packedStamp change on the SAME ReaderState (body + tail_read offset)
+  let zst_file = tl_proj_dir + "/tl-zst-1.jsonl.zst"
+  match write_zst_sync(client, zst_file, tl_line1) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match db.run(
+    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      base_codec::json_str("s-tl-zst"),
+      base_codec::json_str("ws1"),
+      base_codec::json_str("claude"),
+      base_codec::json_str("alice@example.com"),
+      base_codec::json_str("p1"),
+      base_codec::json_int(7000),
+      base_codec::json_str(tl_ws),
+      base_codec::json_str(tl_ws),
+      base_codec::json_str("tl-zst-1"),
+    ],
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed zst session failed: " + e.message)
+    }
+  }
+  let zst_ask = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("key", base_codec::json_str("s-tl-zst")),
+        ("from", base_codec::json_str("0")),
+        ("to", base_codec::json_str("10")),
+      ]),
+    ),
+  ])
+  match timeline(db, state, data_dir, zst_ask) {
+    Ok(res) => {
+      let wire = sql_db::stringify_json(res)
+      if !readops_core::str_contains_sub(wire, ",\"end\":1}") || !readops_core::str_contains_sub(wire, "First prompt") {
+        db.close()
+        return Err("timeline zst initial mismatch: " + wire)
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("timeline zst initial failed: " + readops_core::read_error_message(e))
+    }
+  }
+  let zst_st0 = match transcript_state(db, state, data_dir, base_codec::json_obj([("key", base_codec::json_str("s-tl-zst"))])) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "states") {
+        Some(base_codec::Json::Arr(sts)) => {
+          if sts.length() != 1 {
+            db.close()
+            return Err("transcript_state zst expected 1 state")
+          }
+          sts[0]
+        }
+        _ => {
+          db.close()
+          return Err("transcript_state zst missing states")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("transcript_state zst failed: " + readops_core::read_error_message(e))
+    }
+  }
+  let off0 = match builders_core::json_get_last(zst_st0, "offset") {
+    Some(base_codec::Json::Num(o, _)) => o
+    _ => 0.0
+  }
+  // Overwrite .zst with 2 lines -> packedStamp changes, same ReaderState sees end=2 + tail_read advances offset
+  match write_zst_sync(client, zst_file, tl_line1 + tl_line2) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match timeline(db, state, data_dir, zst_ask) {
+    Ok(res) => {
+      let wire = sql_db::stringify_json(res)
+      if !readops_core::str_contains_sub(wire, ",\"end\":2}") || !readops_core::str_contains_sub(wire, "First reply") {
+        db.close()
+        return Err("timeline zst after packedStamp change mismatch: " + wire)
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("timeline zst after packedStamp change failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match tail_read(
+    state,
+    base_codec::json_obj([
+      ("runtime", base_codec::json_str("claude")),
+      ("state", zst_st0),
+    ]),
+  ) {
+    Ok(tres) => {
+      let off1 = match builders_core::json_get_last(tres, "state") {
+        Some(st1) => {
+          match builders_core::json_get_last(st1, "offset") {
+            Some(base_codec::Json::Num(o, _)) => o
+            _ => 0.0
+          }
+        }
+        None => 0.0
+      }
+      let twire = sql_db::stringify_json(tres)
+      if off1 <= off0 || !readops_core::str_contains_sub(twire, "First reply") {
+        db.close()
+        return Err("tail_read zst offset/body mismatch: " + twire)
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("tail_read zst failed: " + readops_core::read_error_message(e))
     }
   }
 

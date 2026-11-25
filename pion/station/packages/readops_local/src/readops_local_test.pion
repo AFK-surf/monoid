@@ -139,27 +139,27 @@ test "models model_key split_agy_tier and ReaderState catalog" {
 }
 
 test "usage big_of and sees_ws" {
-  match big_of(Some(base_codec::json_str("0"))) {
+  match big_of_with(Some(base_codec::json_str("0")), base_codec::json_stringify) {
     Ok(v) => assert(v == 0.to_int64())
     Err(_) => assert(false)
   }
-  match big_of(Some(base_codec::json_str("  +12345  "))) {
+  match big_of_with(Some(base_codec::json_str("  +12345  ")), base_codec::json_stringify) {
     Ok(v) => assert(v == 12345.to_int64())
     Err(_) => assert(false)
   }
-  match big_of(Some(base_codec::json_str("-9223372036854775808"))) {
+  match big_of_with(Some(base_codec::json_str("-9223372036854775808")), base_codec::json_stringify) {
     Ok(v) => assert(v.to_string() == "-9223372036854775808")
     Err(_) => assert(false)
   }
-  match big_of(Some(base_codec::json_str("9223372036854775807"))) {
+  match big_of_with(Some(base_codec::json_str("9223372036854775807")), base_codec::json_stringify) {
     Ok(v) => assert(v.to_string() == "9223372036854775807")
     Err(_) => assert(false)
   }
-  match big_of(Some(base_codec::json_str("9223372036854775808"))) {
+  match big_of_with(Some(base_codec::json_str("9223372036854775808")), base_codec::json_stringify) {
     Err(_) => ()
     Ok(_) => assert(false)
   }
-  match big_of(Some(base_codec::json_str("abc"))) {
+  match big_of_with(Some(base_codec::json_str("abc")), base_codec::json_stringify) {
     Err(_) => ()
     Ok(_) => assert(false)
   }

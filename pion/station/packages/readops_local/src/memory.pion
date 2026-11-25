@@ -129,13 +129,36 @@ fn array_or_null(v : Option[js_json::JValue]) -> base_codec::Json {
   }
 }
 
-fn str_list_contains(xs : Array[String], needle : String) -> Bool {
-  for i in 0..<xs.length() {
-    if xs[i] == needle {
-      return true
+fn utf16_key(units : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    if i > 0 {
+      sb.write_byte(44.to_byte())
     }
+    sb.write_string(units[i].to_string())
   }
-  false
+  sb.to_string()
+}
+
+fn raw_entries_of(v : Option[js_json::JValue]) -> Array[(Array[Int], js_json::JValue)] {
+  match v {
+    Some(js_json::JValue::Obj(es)) => es
+    Some(js_json::JValue::Arr(xs)) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<xs.length() {
+        out.push((js_json::utf16_units(i.to_string()), xs[i]))
+      }
+      out
+    }
+    _ => []
+  }
+}
+
+fn jget_units(v : Option[js_json::JValue], key_units : Array[Int]) -> Option[js_json::JValue] {
+  match v {
+    Some(js_json::JValue::Obj(es)) => js_json::JValue::Obj(es).get_units(key_units)
+    _ => None
+  }
 }
 
 /// memory.ts `sharing`: shared from here (config.json `sharedSkills`), a copy of another station's
@@ -149,12 +172,18 @@ fn sharing(
   name : String,
 ) -> Result[base_codec::Json, readops_core::ReadError] {
   let hosted = readops_core::jget(readops_core::jget(Some(raw), "sharedSkills"), name)
-  let hosted_id : Option[String] = match hosted {
-    Some(js_json::JValue::Str(u)) => Some(js_json::sanitize_str(u))
-    _ => readops_core::str_of(readops_core::jget(hosted, "id"))
+  let hosted_units : Option[Array[Int]] = match hosted {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => {
+      match readops_core::jget(hosted, "id") {
+        Some(js_json::JValue::Str(u)) => Some(u)
+        _ => None
+      }
+    }
   }
-  match hosted_id {
-    Some(id) => {
+  match hosted_units {
+    Some(id_units) => {
+      let id = js_json::sanitize_str(id_units)
       let cloud = match readops_core::read_json(client, readops_core::join_path(sep, data, "mesh/cloud.json")) {
         Ok(v) => v
         Err(e) => return Err(e)
@@ -184,7 +213,7 @@ fn sharing(
         Ok(v) => v
         Err(e) => return Err(e)
       }
-      let state = match readops_core::jget(readops_core::jget(Some(share_state), "hosted"), id) {
+      let state = match jget_units(readops_core::jget(Some(share_state), "hosted"), id_units) {
         None => js_json::JValue::Obj([])
         Some(js_json::JValue::Null) => js_json::JValue::Obj([])
         Some(v) => v
@@ -194,17 +223,17 @@ fn sharing(
         Some(js_json::JValue::Arr(xs)) => Some(js_json::JValue::Arr(xs))
         _ => None
       }
-      let missing_entries = readops_core::entries_of(missing_v)
-      let missed : Array[String] = []
+      let missing_entries = raw_entries_of(missing_v)
+      let missed : Map[String, Bool] = Map::new()
       let missing_json : Array[base_codec::Json] = []
       for i in 0..<missing_entries.length() {
-        let (st_name, ev) = missing_entries[i]
-        missed.push(st_name)
+        let (st_units, ev) = missing_entries[i]
+        missed.set(utf16_key(st_units), true)
         match ev {
           js_json::JValue::Str(why) => {
             missing_json.push(
               base_codec::json_obj([
-                ("station", base_codec::json_str(st_name)),
+                ("station", base_codec::json_str(js_json::sanitize_str(st_units))),
                 ("why", base_codec::json_str(js_json::sanitize_str(why))),
               ]),
             )
@@ -217,14 +246,14 @@ fn sharing(
         Some(js_json::JValue::Arr(xs)) => Some(js_json::JValue::Arr(xs))
         _ => None
       }
-      let told_entries = readops_core::entries_of(told_v)
+      let told_entries = raw_entries_of(told_v)
       let users : Array[base_codec::Json] = []
       for i in 0..<told_entries.length() {
-        let (st_name, ev) = told_entries[i]
+        let (st_units, ev) = told_entries[i]
         match ev {
           js_json::JValue::Num(v) => {
-            if v >= 0.0 && !str_list_contains(missed, st_name) {
-              users.push(base_codec::json_str(st_name))
+            if v >= 0.0 && !missed.contains(utf16_key(st_units)) {
+              users.push(base_codec::json_str(js_json::sanitize_str(st_units)))
             }
           }
           _ => ()

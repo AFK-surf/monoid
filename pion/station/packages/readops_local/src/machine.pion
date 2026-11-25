@@ -22,6 +22,7 @@ let LINE_LIMIT : Int = 262144
 struct MachineSession {
   runtime : String
   id : String
+  raw_id : String
   cwd : String
   mut title : Option[String]
   first : String
@@ -633,6 +634,24 @@ pub fn clip_to(text : String, max : Int) -> String {
   sb.to_string()
 }
 
+fn raw_str_of(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+fn machine_utf16_key(units : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    if i > 0 {
+      sb.write_byte(44.to_byte())
+    }
+    sb.write_string(units[i].to_string())
+  }
+  sb.to_string()
+}
+
 fn read_session(
   client : builders_core::ShellClient,
   sep : String,
@@ -666,7 +685,7 @@ fn read_session(
     None => return Ok(None)
   }
   let first = clip_to(said_text, FIRST)
-  let (id_opt, cwd_opt) = if runtime == "claude" {
+  let (id_opt, raw_id_opt, cwd_opt) = if runtime == "claude" {
     let name = nodepath::basename(sep, path)
     let id = match readops_core::str_rev_find_byte(name, 46) {
       Some(dot) => if dot > 0 { readops_core::str_slice_bytes(name, 0, dot) } else { name }
@@ -682,7 +701,7 @@ fn read_session(
         None => ()
       }
     }
-    (Some(id), cwd_found)
+    (Some(id), Some(machine_utf16_key(js_json::utf16_units(id))), cwd_found)
   } else {
     let mut meta_found : Option[js_json::JValue] = None
     for i in 0..<head.length() {
@@ -692,12 +711,21 @@ fn read_session(
       }
     }
     match meta_found {
-      Some(meta) => (readops_core::str_of(readops_core::jget(Some(meta), "id")), readops_core::str_of(readops_core::jget(Some(meta), "cwd")))
+      Some(meta) => {
+        match raw_str_of(readops_core::jget(Some(meta), "id")) {
+          Some(id_units) => (
+            Some(js_json::sanitize_str(id_units)),
+            Some(machine_utf16_key(id_units)),
+            readops_core::str_of(readops_core::jget(Some(meta), "cwd")),
+          )
+          None => (None, None, readops_core::str_of(readops_core::jget(Some(meta), "cwd")))
+        }
+      }
       None => return Ok(None)
     }
   }
-  let (id, cwd) = match (id_opt, cwd_opt) {
-    (Some(i), Some(c)) => (i, c)
+  let (id, raw_id, cwd) = match (id_opt, raw_id_opt, cwd_opt) {
+    (Some(i), Some(ri), Some(c)) => (i, ri, c)
     _ => return Ok(None)
   }
   let tail = match tail_records(client, path, size) {
@@ -743,6 +771,7 @@ fn read_session(
       MachineSession::{
         runtime: runtime,
         id: id,
+        raw_id: raw_id,
         cwd: cwd,
         title: title,
         first: first,
@@ -769,11 +798,11 @@ fn codex_names(
   let names : Map[String, String] = Map::new()
   for i in 0..<records.length() {
     let v = records[i]
-    match (readops_core::str_of(readops_core::jget(Some(v), "id")), readops_core::str_of(readops_core::jget(Some(v), "thread_name"))) {
-      (Some(id), Some(name)) => {
+    match (raw_str_of(readops_core::jget(Some(v), "id")), readops_core::str_of(readops_core::jget(Some(v), "thread_name"))) {
+      (Some(id_units), Some(name)) => {
         let trimmed = white_trim(name)
         if trimmed != "" {
-          names.set(id, trimmed)
+          names.set(machine_utf16_key(id_units), trimmed)
         }
       }
       _ => ()
@@ -784,7 +813,7 @@ fn codex_names(
 
 fn named(s : MachineSession, names : Map[String, String]) -> MachineSession {
   match s.title {
-    None => s.title = names.get(s.id)
+    None => s.title = names.get(s.raw_id)
     Some(_) => ()
   }
   s
@@ -872,7 +901,7 @@ fn list_sessions(
       Ok(None) => continue
       Err(e) => return Err(e)
     }
-    let key = s.runtime + "\u{0}" + s.id
+    let key = s.runtime + "\u{0}" + s.raw_id
     if seen.contains(key) {
       continue
     }
