@@ -715,18 +715,23 @@ function stripPionCommentsLexical(source: string): string {
   while (i < n) {
     const ch = source[i]!;
     if (ch === '"') {
-      out += ch;
+      // Blank string literal contents (preserving quotes & newlines) so test titles/URLs
+      // neither truncate comments nor false-positive on identifier guards like `\bshell_sync\b`.
+      out += '"';
       i++;
       while (i < n) {
         const c = source[i]!;
-        out += c;
         i++;
         if (c === "\\" && i < n) {
-          out += source[i]!;
+          if (source[i] === "\n") out += "\n";
           i++;
           continue;
         }
-        if (c === '"') break;
+        if (c === "\n") out += "\n";
+        if (c === '"') {
+          out += '"';
+          break;
+        }
       }
       continue;
     }
@@ -763,7 +768,7 @@ function findForbiddenShellCalls(source: string, opts: { exemptHostTransportLive
   const forbidden = [
     /\bshell_call_wait\b/,
     /\bshell_call_wait_with\b/,
-    /(?:\.|::|\b)shell_sync\s*\(/,
+    /\bshell_sync\b/,
     /\bread_bytes_range\b/,
     /\bwrite_atomic\b/,
     /\bhost_shim::wait\b/,
@@ -771,10 +776,13 @@ function findForbiddenShellCalls(source: string, opts: { exemptHostTransportLive
     /\bbuilders_usage::(?:unpacked|read_from|packed_from|parts_of|anchor_at|first_line)\b/,
   ];
   const hostLiveExemptions = new Set([
+    "pub shell_sync : (String, String) -> String",
     "wait: host_shim::wait,",
     "shell_call: host_shim::shell_call,",
     "shell_sync: host_shim::shell_sync,",
+    "shell_sync: fn(op : String, json : String) -> String {",
     "pub fn SessionHost::shell_sync(",
+    "let raw = (self.transport.shell_sync)(op, base_codec::json_stringify(builders_core::normalize_json(args)))",
   ]);
   const stripped = stripPionCommentsLexical(source);
   const hits: string[] = [];
@@ -799,6 +807,7 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
   assert.ok(findForbiddenShellCalls("let _ = shell_call_wait_with(c, op, j, None)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = client.shell_sync(op, j)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = SessionHost::shell_sync(host, op, j)").length === 1);
+  assert.ok(findForbiddenShellCalls("let _ = (self.transport.shell_sync)(op, j)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::wait(10)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::shell_call(id, op, j, None)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = builders_usage::unpacked(sh, p)").length === 1);
@@ -819,7 +828,7 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
   assert.ok(guardedPkgs.includes("sessions_remote"));
   assert.ok(guardedPkgs.includes("sessions_agents"));
 
-  // Negative mutation self-tests on real sessions_agents source (both method and associated-fn syntax):
+  // Negative mutation self-tests on real sessions_agents source (method, associated-fn, and fn-value call):
   const agentsReal = readFileSync(join(pkgRoot, "sessions_agents", "src", "agents.pion"), "utf8");
   assert.ok(
     findForbiddenShellCalls(agentsReal + "\nlet _ = host.shell_sync(\"fs.meta\", j)\n").length >= 1,
@@ -828,6 +837,10 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
   assert.ok(
     findForbiddenShellCalls(agentsReal + "\nlet _ = SessionHost::shell_sync(host, \"fs.meta\", j)\n").length >= 1,
     "mutated sessions_agents source with SessionHost::shell_sync( must be caught",
+  );
+  assert.ok(
+    findForbiddenShellCalls(agentsReal + "\nlet _ = (self.transport.shell_sync)(\"fs.meta\", j)\n").length >= 1,
+    "mutated sessions_agents source with (self.transport.shell_sync)( must be caught",
   );
 
   for (const pkg of guardedPkgs) {

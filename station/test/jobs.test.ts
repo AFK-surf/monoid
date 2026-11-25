@@ -217,7 +217,7 @@ describe("jobs", { concurrency: true }, () => {
       const baseNice = nice(process.pid);
       const wantNice = Math.min(19, baseNice + agentNice());
       let got = nice(pgid);
-      while (wantNice !== baseNice && got !== wantNice) {
+      while (wantNice !== baseNice && got === baseNice) {
         await new Promise((r) => setTimeout(r, 10));
         got = nice(pgid);
       }

@@ -10,7 +10,7 @@
 // - Shared `pion-sqlite-tx-scanner.ts` concatenated raw-tx SQL detection & missing-directory throw
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1311,23 +1311,124 @@ test("W8-F: AgentsHost.replay().close() sends codexReplayed when reader is alive
   }
 });
 
-test("W8-F P1-3: pion --version probe settles to null on >64 KiB stdout and when a grandchild holds stdout open after direct child exits", async () => {
+test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram restart so new sessions never collide with re-attached live sessions", async (t) => {
+  const pion = requirePionOrSkip(t);
+  if (pion === null) return;
+  const { AgentsHost } = await import("../src/agents/mb-agents.ts");
+  const data = makeTmp("sf-w8-restart-id-");
+  const prev = process.env.STILLFAIL_READER_SESSIONS;
+  process.env.STILLFAIL_READER_SESSIONS = "pion";
+  resetReaderSelectionStateForTest();
+
+  const host = AgentsHost.where(data);
+  const driver = {};
+  host.use(driver);
+  const origUse = SessionsProgram.prototype.use;
+  const capturedAgentUsers: ProgramUser[] = [];
+  SessionsProgram.prototype.use = function (user: ProgramUser) {
+    if (!user.actors) capturedAgentUsers.push(user);
+    return origUse.call(this, user);
+  };
+  try {
+    // 1. Attach live session A (id `a`) with only agents using the SessionsProgram.
+    const heardA: any[] = [];
+    const heardB: any[] = [];
+    const makeFakeHosted = (n: number, out: any[]) => ({
+      n,
+      info: { socket: join(data, `fake-${n}.sock`), pid: 999999 },
+      kind: "claude" as const,
+      flavor: {},
+      orphans: false,
+      routed: false,
+      gone: false,
+      detaching: false,
+      turnNow: () => null,
+      liveNow: () => null,
+      attached() {},
+      heard(h: any) { out.push(h); },
+      inTurn(fn: () => void) { fn(); },
+      exited_() {},
+      closed_() {},
+      left_() {},
+    });
+
+    const idA = host.number();
+    const procA = makeFakeHosted(idA, heardA);
+    host.attach(procA as any);
+    const firstProg = host.program();
+    assert.ok(firstProg !== null, "first SessionsProgram must be active");
+
+    // 2. Kill the underlying SessionsProgram so AgentsHost.#exited triggers a restart and re-attaches A with idA.
+    firstProg.kill();
+    await new Promise<void>((resolveWait) => {
+      const deadline = Date.now() + 5000;
+      const poll = () => {
+        const cur = host.program();
+        if (cur !== null && cur !== firstProg && !cur.ended) return resolveWait();
+        if (Date.now() > deadline) return resolveWait();
+        setTimeout(poll, 25);
+      };
+      poll();
+    });
+    const secondProg = host.program();
+    assert.ok(secondProg !== null && secondProg !== firstProg, "AgentsHost must restart a fresh SessionsProgram");
+    const agentUser = capturedAgentUsers.at(-1);
+    assert.ok(agentUser !== undefined, "restarted SessionsProgram must have registered AgentsHost ProgramUser");
+
+    // 3. Allocate a new session B after restart -> its ID MUST be strictly > idA (never reset to 1 or collide!).
+    const idB = host.number();
+    assert.ok(idB > idA, `post-restart session id (${idB}) must exceed live session A id (${idA})`);
+    const procB = makeFakeHosted(idB, heardB);
+    host.attach(procB as any);
+
+    // 4. Dispatch frames for idA and idB through the restarted SessionsProgram's real agent ProgramUser
+    //    and assert A and B each receive ONLY their own frames (no #sessions[idA] overwrite).
+    agentUser.said({ lines: idA, events: [{ kind: "a-only" }], turn: null, to: 1 });
+    agentUser.said({ lines: idB, events: [{ kind: "b-only" }], turn: null, to: 2 });
+    assert.equal(heardA.length, 1, "live session A must receive its own frame after restart");
+    assert.deepEqual(heardA[0].events, [{ kind: "a-only" }]);
+    assert.equal(heardB.length, 1, "new session B must receive its own frame after restart");
+    assert.deepEqual(heardB[0].events, [{ kind: "b-only" }]);
+
+    host.forget(procA as any);
+    host.forget(procB as any);
+  } finally {
+    SessionsProgram.prototype.use = origUse;
+    await host.close(driver);
+    if (prev === undefined) delete process.env.STILLFAIL_READER_SESSIONS;
+    else process.env.STILLFAIL_READER_SESSIONS = prev;
+    resetReaderSelectionStateForTest();
+  }
+});
+
+test("W8-F P1-3: pion --version probe settles to null on >64 KiB stdout and when a grandchild holds stdout open after direct child exits", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX shebang fixture");
+    return;
+  }
   const dir = makeTmp("sf-w8-probe-");
   resetReaderSelectionStateForTest();
 
-  // (a) Over-limit stdout (>64 KiB) settles immediately to null.
+  // (a) Over-limit stdout (>64 KiB) settles immediately to null (assert fixture actually ran!).
+  const ranFile = join(dir, "big-ran.flag");
   const bigBin = join(dir, "big-stdout.mjs");
   writeFileSync(
     bigBin,
-    `#!${process.execPath}\nprocess.stdout.write("x".repeat(80 * 1024));\n`,
+    [
+      `#!${process.execPath}`,
+      `import { writeFileSync } from "node:fs";`,
+      `writeFileSync(${JSON.stringify(ranFile)}, "ran");`,
+      `process.stdout.write("x".repeat(80 * 1024));`,
+    ].join("\n") + "\n",
     "utf8",
   );
   chmodSync(bigBin, 0o755);
   const bigRes = await probePionSupportedModes(bigBin);
+  assert.equal(existsSync(ranFile), true, "big-stdout fixture must have actually executed");
   assert.equal(bigRes, null, "probe output exceeding 64 KiB must settle to null");
 
   // (b) Direct child exits 0 while a spawned grandchild keeps stdout pipe open ->
-  // must settle to null after timeout (never hang forever). Clean up grandchild PID in finally.
+  // must settle to null after timeout (never hang forever). Assert pidFile exists & clean up grandchild PID in finally.
   const pidFile = join(dir, "grandchild.pid");
   const holdBin = join(dir, "grandchild-stdout.mjs");
   writeFileSync(
@@ -1340,18 +1441,26 @@ test("W8-F P1-3: pion --version probe settles to null on >64 KiB stdout and when
       `writeFileSync(${JSON.stringify(pidFile)}, String(gc.pid));`,
       `gc.unref();`,
       `process.exit(0);`,
-    ].join("\n"),
+    ].join("\n") + "\n",
     "utf8",
   );
   chmodSync(holdBin, 0o755);
+  let gcPid = 0;
   try {
     const holdRes = await probePionSupportedModes(holdBin);
+    assert.equal(existsSync(pidFile), true, "grandchild fixture must have written pidFile");
+    gcPid = Number(readFileSync(pidFile, "utf8").trim());
+    assert.ok(Number.isInteger(gcPid) && gcPid > 0, `expected valid grandchild PID, got ${gcPid}`);
     assert.equal(holdRes, null, "probe with grandchild holding stdout open must time out and settle to null");
   } finally {
-    try {
-      const gcPid = Number(readFileSync(pidFile, "utf8").trim());
-      if (Number.isInteger(gcPid) && gcPid > 0) process.kill(gcPid, "SIGKILL");
-    } catch {}
+    if (gcPid <= 0 && existsSync(pidFile)) {
+      gcPid = Number(readFileSync(pidFile, "utf8").trim());
+    }
+    if (Number.isInteger(gcPid) && gcPid > 0) {
+      try {
+        process.kill(gcPid, "SIGKILL");
+      } catch {}
+    }
     resetReaderSelectionStateForTest();
   }
 });

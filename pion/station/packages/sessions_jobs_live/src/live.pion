@@ -2148,7 +2148,15 @@ fn LiveCtx::in_read_k(
       match ex {
         effect::Exit::Succeeded(_) => {
           match ticket.state {
-            ReadTicketState::Cancelled => k(effect::Exit::Interrupted)
+            // Unreachable defensive guard: a `Cancelled` ticket is never succeeded, but if it ever
+            // were while live, restore `active += 1` symmetrically with `Queued` interruption so
+            // outer `HubGen::spawn_work` decrements `active` cleanly on `Exit::Interrupted`.
+            ReadTicketState::Cancelled => {
+              if !self.gen.counters.sealed {
+                self.gen.counters.active = self.gen.counters.active + 1
+              }
+              k(effect::Exit::Interrupted)
+            }
             _ => run_body()
           }
         }
@@ -2186,6 +2194,9 @@ fn LiveCtx::in_read_k(
           k(effect::Exit::Interrupted)
         }
         other => {
+          // `effect::Deferred[Unit]` never fails in practice; kept as a defensive fallback matching
+          // `HubGen::spawn_work` (`Failed` does not decrement `active`, so a handed ticket must undo
+          // its own `+1` and emit `quiet()` if no next waiter took over).
           let was_handed = match ticket.state {
             ReadTicketState::Handed => true
             _ => false

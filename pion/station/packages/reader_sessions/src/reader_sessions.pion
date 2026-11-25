@@ -295,8 +295,14 @@ pub fn SessionsApp::close(self : SessionsApp) -> Unit {
   self.live.state.retire()
   self.remote.state.retire()
   self.agents.close()
+  let gen = self.actors.gen()
+  let epoch = gen.counters.epoch
   self.actors.current.retire_all()
-  self.actors.gen().fibers.close_now()
+  self.host.abandon_hub_asked(epoch)
+  self.host.abandon_hub_timers(epoch)
+  self.host.abandon_hub_waiters(epoch)
+  gen.resources.retire()
+  gen.fibers.close_now()
 }
 
 /// Handle one actors-routed JSON line (`actors.mbt:793-953`).
