@@ -1702,10 +1702,9 @@ jobs:
             echo "next=true" >> "$GITHUB_OUTPUT"
           fi
       - if: github.ref != 'refs/heads/main'
-        run: echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
-      - if: startsWith(github.ref, 'refs/heads/release/')
         run: |
-          # Older release trees have few matching C units in main's store. Use the same cold -O0 layout as the hosted reader.
+          # Cold branch builds parse the same declarations in every C unit. Use the hosted reader's larger -O0 units.
+          echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
           echo "MBC_UNIT_KB=8192" >> "$GITHUB_ENV"
           echo "MBC_INIT_SPLIT=0" >> "$GITHUB_ENV"
       - id: hermes
