@@ -1104,35 +1104,42 @@ fn RemoteCtx::task_existing_k(
                                       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                       effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                       effect::Exit::Succeeded(version) => {
-                                        let sid = self.random_hex(12)
-                                        let st_json = base_codec::json_obj([
-                                          ("id", sessions_core::jstr(sid)),
-                                          ("key", sessions_core::jstr(key)),
-                                          ("version", sessions_core::jnum(version)),
-                                        ])
-                                        self.write_json_k(self.rjoin([syncing, "state.json"]), st_json, fn(wex : effect::Exit[Unit]) -> Unit {
-                                          match wex {
+                                        self.random_hex_k(12, fn(hex_ex : effect::Exit[String]) -> Unit {
+                                          match hex_ex {
                                             effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                             effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                            effect::Exit::Succeeded(_) => {
-                                              let reply = base_codec::json_obj([
-                                                ("key", sessions_core::jstr(key)),
+                                            effect::Exit::Succeeded(sid) => {
+                                              let st_json = base_codec::json_obj([
                                                 ("id", sessions_core::jstr(sid)),
-                                                ("dir", sessions_core::jstr(m)),
+                                                ("key", sessions_core::jstr(key)),
                                                 ("version", sessions_core::jnum(version)),
-                                                ("safe", sessions_core::jnum(1.0)),
                                               ])
-                                              if json_equal(sessions_core::field_of(request, "safe"), sessions_core::jnum(1.0)) {
-                                                self.write_json_k(record, with_field(meta, "safe", sessions_core::jbool(true)), fn(w2 : effect::Exit[Unit]) -> Unit {
-                                                  match w2 {
-                                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-                                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(reply))
+                                              self.write_json_k(self.rjoin([syncing, "state.json"]), st_json, fn(wex : effect::Exit[Unit]) -> Unit {
+                                                match wex {
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Succeeded(_) => {
+                                                    let reply = base_codec::json_obj([
+                                                      ("key", sessions_core::jstr(key)),
+                                                      ("id", sessions_core::jstr(sid)),
+                                                      ("dir", sessions_core::jstr(m)),
+                                                      ("version", sessions_core::jnum(version)),
+                                                      ("safe", sessions_core::jnum(1.0)),
+                                                    ])
+                                                    if json_equal(sessions_core::field_of(request, "safe"), sessions_core::jnum(1.0)) {
+                                                      self.write_json_k(record, with_field(meta, "safe", sessions_core::jbool(true)), fn(w2 : effect::Exit[Unit]) -> Unit {
+                                                        match w2 {
+                                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(reply))
+                                                        }
+                                                      })
+                                                    } else {
+                                                      k(effect::Exit::Succeeded(reply))
+                                                    }
                                                   }
-                                                })
-                                              } else {
-                                                k(effect::Exit::Succeeded(reply))
-                                              }
+                                                }
+                                              })
                                             }
                                           }
                                         })
@@ -1565,9 +1572,12 @@ fn RemoteCtx::task_existing_k(
         effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Succeeded(path) => {
-          let uploads = json_obj_map(sessions_core::field_of(meta, "uploads"))
-          uploads.set(name, sessions_core::jbool(false))
-          let meta1 = with_field(meta, "uploads", map_to_json_obj(uploads))
+          let uploads0 = match sessions_core::field_of(meta, "uploads") {
+            base_codec::Json::Obj(_) => sessions_core::field_of(meta, "uploads")
+            _ => base_codec::json_obj([])
+          }
+          let uploads1 = with_field(uploads0, name, sessions_core::jbool(false))
+          let meta1 = with_field(meta, "uploads", uploads1)
           self.write_json_k(record, meta1, fn(w1 : effect::Exit[Unit]) -> Unit {
             match w1 {
               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
@@ -1585,8 +1595,8 @@ fn RemoteCtx::task_existing_k(
                       let reply = base_codec::json_obj([("bytes", bytes_val)])
                       match sessions_core::jget(put, "whole") {
                         Some(base_codec::Json::Bool(true)) => {
-                          uploads.set(name, sessions_core::jbool(true))
-                          self.write_json_k(record, with_field(meta1, "uploads", map_to_json_obj(uploads)), fn(w2 : effect::Exit[Unit]) -> Unit {
+                          let uploads2 = with_field(uploads1, name, sessions_core::jbool(true))
+                          self.write_json_k(record, with_field(meta1, "uploads", uploads2), fn(w2 : effect::Exit[Unit]) -> Unit {
                             match w2 {
                               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -1833,9 +1843,16 @@ pub fn RemoteCtx::forget_task(self : RemoteCtx, name : String) -> Unit {
     Some(owner) => {
       match self.state.owner_tasks.get(owner) {
         Some(names) => {
-          let _ = names.remove(name)
-          if names.length() == 0 {
+          let kept : Array[String] = []
+          for i in 0..<names.length() {
+            if names[i] != name {
+              kept.push(names[i])
+            }
+          }
+          if kept.length() == 0 {
             let _ = self.state.owner_tasks.remove(owner)
+          } else {
+            self.state.owner_tasks.set(owner, kept)
           }
         }
         None => ()
@@ -1924,12 +1941,8 @@ pub fn RemoteCtx::index_incoming_k(self : RemoteCtx, k : (effect::Exit[Unit]) ->
                             ]))
                             self.state.task_owners.set(name, owner)
                             match self.state.owner_tasks.get(owner) {
-                              Some(owned) => owned.set(name, true)
-                              None => {
-                                let owned : Map[String, Bool] = Map::new()
-                                owned.set(name, true)
-                                self.state.owner_tasks.set(owner, owned)
-                              }
+                              Some(owned) => owned.push(name)
+                              None => self.state.owner_tasks.set(owner, [name])
                             }
                             let _ = self.state.unreadable.remove(name)
                             nk(effect::Exit::Succeeded(()))
@@ -1985,9 +1998,14 @@ pub fn RemoteCtx::tasks_of_k(
       sessions_core::jstr(peer),
       sessions_core::jstr(session),
     ]))
-    let names = match self.state.owner_tasks.get(owner) {
-      Some(n) => n.keys()
-      None => []
+    let names : Array[String] = []
+    match self.state.owner_tasks.get(owner) {
+      Some(n) => {
+        for i in 0..<n.length() {
+          names.push(n[i])
+        }
+      }
+      None => ()
     }
     let found : Array[IncomingTask] = []
     for_each_k(
@@ -2368,19 +2386,18 @@ pub fn RemoteCtx::mirrors_of_k(
                                       k(effect::Exit::Succeeded(out))
                                     }
                                     if marked.length() > 0 {
-                                      let next_m = json_obj_map(used0)
+                                      let mut used1 = used0
                                       for i in 0..<marked.length() {
-                                        next_m.set(marked[i], sessions_core::jnum(now))
+                                        used1 = with_field(used1, marked[i], sessions_core::jnum(now))
                                       }
-                                      let used1 = map_to_json_obj(next_m)
                                       self.update_json_k(
                                         record,
                                         fn(kept : base_codec::Json) -> Option[base_codec::Json] {
-                                          let km = json_obj_map(kept)
+                                          let mut next_kept = kept
                                           for i in 0..<marked.length() {
-                                            km.set(marked[i], sessions_core::jnum(now))
+                                            next_kept = with_field(next_kept, marked[i], sessions_core::jnum(now))
                                           }
-                                          Some(map_to_json_obj(km))
+                                          Some(next_kept)
                                         },
                                         Some(base_codec::json_obj([])),
                                         fn(upex : effect::Exit[Bool]) -> Unit {
@@ -3804,24 +3821,58 @@ fn list_row_before(a : (Int, Double, String, base_codec::Json), b : (Int, Double
   }
 }
 
-pub fn RemoteCtx::list_bounded(self : RemoteCtx, listed : Array[(Int, Double, String, base_codec::Json)]) -> base_codec::Json {
-  for i in 1..<listed.length() {
-    let cur = listed[i]
-    let mut j = i - 1
-    while j >= 0 && list_row_before(cur, listed[j]) {
-      listed[j + 1] = listed[j]
-      j = j - 1
-    }
-    listed[j + 1] = cur
+fn merge_sort_list_rows(
+  rows : Array[(Int, Double, String, base_codec::Json)],
+) -> Array[(Int, Double, String, base_codec::Json)] {
+  let n = rows.length()
+  if n <= 1 {
+    return rows
   }
+  let mut src = rows
+  let mut width = 1
+  while width < n {
+    let dst : Array[(Int, Double, String, base_codec::Json)] = []
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + width * 2 < n { left + width * 2 } else { n }
+      let mut i = left
+      let mut j = mid
+      while i < mid && j < right {
+        if list_row_before(src[j], src[i]) {
+          dst.push(src[j])
+          j = j + 1
+        } else {
+          dst.push(src[i])
+          i = i + 1
+        }
+      }
+      while i < mid {
+        dst.push(src[i])
+        i = i + 1
+      }
+      while j < right {
+        dst.push(src[j])
+        j = j + 1
+      }
+      left = left + width * 2
+    }
+    src = dst
+    width = width * 2
+  }
+  src
+}
+
+pub fn RemoteCtx::list_bounded(self : RemoteCtx, listed : Array[(Int, Double, String, base_codec::Json)]) -> base_codec::Json {
+  let sorted = merge_sort_list_rows(listed)
   let tasks : Array[base_codec::Json] = []
   let mut used = 1024
   let mut clipped = false
-  for i in 0..<listed.length() {
+  for i in 0..<sorted.length() {
     if tasks.length() >= LIST_MOST {
       break
     }
-    let (_, _, _, raw_entry) = listed[i]
+    let (_, _, _, raw_entry) = sorted[i]
     let (entry, c) = list_entry(raw_entry)
     let size = bytes_len(self.js_text(entry)) + 1
     if used + size > LIST_BYTES {
@@ -3833,15 +3884,15 @@ pub fn RemoteCtx::list_bounded(self : RemoteCtx, listed : Array[(Int, Double, St
   }
   let fields : Array[(String, base_codec::Json)] = [
     ("tasks", base_codec::json_arr(tasks)),
-    ("total", sessions_core::jnum(listed.length().to_double())),
+    ("total", sessions_core::jnum(sorted.length().to_double())),
   ]
-  if tasks.length() < listed.length() {
+  if tasks.length() < sorted.length() {
     fields.push(("truncated", sessions_core::jbool(true)))
   }
-  if tasks.length() < listed.length() || clipped {
+  if tasks.length() < sorted.length() || clipped {
     let note = tasks.length().to_string() +
     " of " +
-    listed.length().to_string() +
+    sorted.length().to_string() +
     " tasks listed (running and queued first, then the latest), long commands and paths clipped (…); action get with a task's key says its job whole"
     fields.push(("note", sessions_core::jstr(note)))
   }

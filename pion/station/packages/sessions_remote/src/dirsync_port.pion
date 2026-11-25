@@ -72,16 +72,24 @@ pub fn DirsyncListing::to_json(self : DirsyncListing) -> base_codec::Json {
 
 /// Narrow capability object handed from `sessions_remote` core to `DirsyncPort`
 /// implementations (`W8-C2` `dirsync.pion` / `dirsync_source.pion`) so dirsync
-/// can call `ask`, `write_whole`, `write_json`, `read_text`, `fs`, and inspect
-/// `root`/`sep` without creating any cyclic reference.
+/// can call `ask`, `rnode_k` (`syncPacking`/`syncPut`), write-barrier `read_json_k`,
+/// `file_path_k` (including `allow_leaf_link`), `write_whole`/`write_json`, fs ops,
+/// and inspect `root`/`sep` without creating any cyclic reference.
 pub struct RemoteHost {
   pub root : String
   pub sep : String
   pub js_text : (base_codec::Json) -> String
   pub ask_k : (String, base_codec::Json, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  rnode_fn : (String, Array[base_codec::Json], (effect::Exit[base_codec::Json]) -> Unit) -> Unit
   pub write_whole_k : (String, String, (effect::Exit[Unit]) -> Unit) -> Unit
   pub write_json_k : (String, base_codec::Json, (effect::Exit[Unit]) -> Unit) -> Unit
   pub read_text_k : (String, (effect::Exit[Option[String]]) -> Unit) -> Unit
+  pub read_json_k : (String, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub file_path_k : (String, String, Bool, Bool, (effect::Exit[String]) -> Unit) -> Unit
+  pub lstat_k : (String, (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit
+  pub mkdirs_k : (String, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub remove_k : (String, Bool, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub rename_k : (String, String, (effect::Exit[Unit]) -> Unit) -> Unit
   pub fs_k : (
     String,
     Array[(String, base_codec::Json)],
@@ -89,6 +97,17 @@ pub struct RemoteHost {
     (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
   ) -> Unit
   pub remote_now_k : ((effect::Exit[Double]) -> Unit) -> Unit
+}
+
+/// Method wrapper so `W8-C2` call sites write `host.rnode_k("syncPut", ...)` /
+/// `host.rnode_k("syncPacking", ...)` and are directly scanned by `mb-reader-contracts.test.ts`.
+pub fn RemoteHost::rnode_k(
+  self : RemoteHost,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  (self.rnode_fn)(f, args, k)
 }
 
 /// Complete 12-method `DirsyncPort` covering every call from `remote*.mbt` into

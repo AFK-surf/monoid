@@ -1,5 +1,6 @@
-// Core `#remote` pseudo-actor state, lane serialization, `bounded`, timers, RPC/tell
-// helpers, and `remote_called_k` dispatcher (1:1 port of `station/mb/src/reader/remote.mbt`).
+// Core `#remote` pseudo-actor state, lane serialization, `bounded`, acyclic value-based
+// timers, RPC/tell helpers, and `remote_called_k` dispatcher
+// (1:1 port of `station/mb/src/reader/remote.mbt`).
 
 import "base_codec"
 import "effect"
@@ -42,6 +43,7 @@ pub struct IndexingRun {
 pub struct LaneWaiter {
   pub deferred : effect::Deferred[Unit]
   pub mut cancelled : Bool
+  pub mut granted : Bool
 }
 
 /// Per-lane FIFO mutex tracking `active_count = holders + waiters` so `lanes.remove(lane)`
@@ -49,9 +51,31 @@ pub struct LaneWaiter {
 pub struct LaneLock {
   pub id : Int64
   pub mut held : Bool
-  pub waiters : Array[LaneWaiter]
+  pub mut waiters : Array[LaneWaiter]
   pub mut head : Int
   pub mut active_count : Int
+}
+
+/// Pure-value timer action stored in `RemoteState::timers` (tagged with `epoch`) so pending
+/// Node timers NEVER capture `RemoteCtx`, `SessionHost`, or `HubGen` (zero RC cycles).
+pub enum RemoteTimerAction {
+  SweepHourly
+  CheckLater(String)
+  ClosingRound(String)
+  AgainStep(Int64, Int)
+  WakeBounded(Int64)
+}
+
+pub struct RemoteTimerEntry {
+  pub epoch : Int
+  pub action : RemoteTimerAction
+}
+
+/// Pure-value retry descriptor for `again` (indexed by `Int64` token in `RemoteState::again_jobs`).
+pub enum AgainKind {
+  PushOut(String)
+  CheckTask(String)
+  Custom(((effect::Exit[Bool]) -> Unit) -> Unit, (Bool) -> Unit)
 }
 
 /// Generation-scoped `#remote` state. Holds ZERO strong references to `HubGen`,
@@ -66,9 +90,18 @@ pub struct RemoteState {
   pub syncs : Map[String, SyncRun]
   pub cleans : Map[String, SyncRun]
   pub task_owners : Map[String, String]
-  pub owner_tasks : Map[String, Map[String, Bool]]
+  /// Insertion-ordered task names per owner (never relies on hash-slot iteration order).
+  pub owner_tasks : Map[String, Array[String]]
   pub unreadable : Map[String, Bool]
   pub closing : Map[String, Bool]
+  /// Pending Node timers (pure value + epoch, dispatched via `RemoteCtx::handle_due`).
+  pub timers : Map[Int, RemoteTimerEntry]
+  /// Active `again` retry descriptors keyed by generation token.
+  pub again_jobs : Map[Int64, AgainKind]
+  /// Leaf bounded wakers capturing only `HubCounters` + `Deferred[Unit]` (zero host/ctx refs).
+  pub bounded_wakers : Map[Int64, () -> Unit]
+  /// Latest `(outcome, got)` recorded per active `check(path)` loop.
+  pub check_last : Map[String, (base_codec::Json, base_codec::Json)]
   pub mut over : Double
   pub mut incoming_stamp : Option[String]
   pub mut indexing : Option[IndexingRun]
@@ -103,6 +136,10 @@ pub fn RemoteState::new_with_json_text(json_text : (base_codec::Json) -> String)
     owner_tasks: Map::new(),
     unreadable: Map::new(),
     closing: Map::new(),
+    timers: Map::new(),
+    again_jobs: Map::new(),
+    bounded_wakers: Map::new(),
+    check_last: Map::new(),
     over: 0.0,
     incoming_stamp: None,
     indexing: None,
@@ -133,6 +170,10 @@ pub fn RemoteState::retire(self : RemoteState) -> Unit {
   self.owner_tasks.clear()
   self.unreadable.clear()
   self.closing.clear()
+  self.timers.clear()
+  self.again_jobs.clear()
+  self.bounded_wakers.clear()
+  self.check_last.clear()
   self.incoming_stamp = None
   self.indexing = None
 }
@@ -174,6 +215,9 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
     ask_k: fn(station : String, req : base_codec::Json, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
       self.ask_k(station, req, k)
     },
+    rnode_fn: fn(f : String, args : Array[base_codec::Json], k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.gen.rpc_k(self.host, remote_key, "node." + f, args, self.dispatch.mirror_actor, k)
+    },
     write_whole_k: fn(path : String, json : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
       self.write_whole_k(path, json, k)
     },
@@ -182,6 +226,24 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
     },
     read_text_k: fn(path : String, k : (effect::Exit[Option[String]]) -> Unit) -> Unit {
       self.read_text_k(path, k)
+    },
+    read_json_k: fn(path : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.read_json_k(path, k)
+    },
+    file_path_k: fn(root : String, rel : String, create : Bool, allow_leaf_link : Bool, k : (effect::Exit[String]) -> Unit) -> Unit {
+      self.file_path_k(root, rel, create, allow_leaf_link, k)
+    },
+    lstat_k: fn(path : String, k : (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit {
+      self.lstat_k(path, k)
+    },
+    mkdirs_k: fn(path : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.mkdirs_k(path, k)
+    },
+    remove_k: fn(path : String, recursive : Bool, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.remove_k(path, recursive, k)
+    },
+    rename_k: fn(from : String, to : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.rename_k(from, to, k)
     },
     fs_k: fn(
       op : String,
@@ -197,7 +259,7 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
   }
 }
 
-// ── Static-contract RPC / tell / timer primitives ──
+// ── Static-contract RPC / tell / acyclic value-based timer primitives ──
 
 /// Static contract: first argument MUST be a string literal at every call site.
 pub fn RemoteCtx::rnode_k(
@@ -265,17 +327,22 @@ pub fn RemoteCtx::ask_k(
   self.rnode_k("ask", [sessions_core::jstr(station), request], k)
 }
 
-/// A wait on `#remote`'s Node clock (`remote.mbt:428-430`, `actors.mbt:314-329`).
-pub fn RemoteCtx::rafter(self : RemoteCtx, ms : Double, then : () -> Unit) -> () -> Unit {
-  let host = self.host
-  let gen = self.gen
-  let counters = gen.counters
-  if counters.sealed {
+/// Schedule a pure-value Node timer on `#remote`'s clock stored in `state.timers` tagged
+/// by `epoch` (zero `SessionHost`/`HubGen`/`RemoteCtx` capture in pending timer table).
+/// Returns a leaf cancel closure capturing only `state.timers`, `counters`, `id`, `epoch`.
+pub fn RemoteCtx::rafter_action(
+  self : RemoteCtx,
+  ms : Double,
+  action : RemoteTimerAction,
+) -> () -> Unit {
+  let counters = self.gen.counters
+  let timers = self.state.timers
+  if counters.sealed || self.state.stopped {
     return fn() -> Unit { () }
   }
-  let id = host.alloc_id()
+  let id = self.host.alloc_id()
   let epoch = counters.epoch
-  gen.register_timer(host, id, then)
+  timers.set(id, RemoteTimerEntry::{ epoch: epoch, action: action })
   let clamped = if ms < 0.0 { 0.0 } else { ms }
   counters.say_node([
     ("after", sessions_core::jint(id)),
@@ -283,15 +350,55 @@ pub fn RemoteCtx::rafter(self : RemoteCtx, ms : Double, then : () -> Unit) -> ()
     ("on", sessions_core::jstr(remote_key)),
   ])
   fn() -> Unit {
-    match host.hub_timers.get(id) {
+    match timers.get(id) {
       Some(entry) => {
         if entry.epoch == epoch {
-          let _ = host.hub_timers.remove(id)
+          let _ = timers.remove(id)
           counters.say_node([("cancel", sessions_core::jint(id))])
         }
       }
       None => ()
     }
+  }
+}
+
+/// External `{"due": id}` dispatcher for `#remote` timers (1:1 with `HubGen::handle_due`
+/// `active += 1 -> body -> active -= 1; quiet()`). Returns `true` if `id` belonged to this
+/// generation's `#remote` timers, `false` otherwise.
+pub fn RemoteCtx::handle_due(self : RemoteCtx, id : Int) -> Bool {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return false
+  }
+  match self.state.timers.get(id) {
+    Some(entry) => {
+      if entry.epoch != counters.epoch {
+        return false
+      }
+      let _ = self.state.timers.remove(id)
+      counters.active = counters.active + 1
+      match entry.action {
+        RemoteTimerAction::SweepHourly => self.sweep_hourly()
+        RemoteTimerAction::CheckLater(path) => self.check(path)
+        RemoteTimerAction::ClosingRound(path) => self.closing_round(path)
+        RemoteTimerAction::AgainStep(token, tries) => self.run_again_step(token, tries)
+        RemoteTimerAction::WakeBounded(wake_id) => {
+          match self.state.bounded_wakers.get(wake_id) {
+            Some(wake) => {
+              let _ = self.state.bounded_wakers.remove(wake_id)
+              wake()
+            }
+            None => ()
+          }
+        }
+      }
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+      true
+    }
+    None => false
   }
 }
 
@@ -438,19 +545,6 @@ pub fn json_obj_map(v : base_codec::Json) -> Map[String, base_codec::Json] {
   m
 }
 
-pub fn map_to_json_obj(m : Map[String, base_codec::Json]) -> base_codec::Json {
-  let keys = m.keys()
-  let out : Array[(String, base_codec::Json)] = []
-  for i in 0..<keys.length() {
-    let k = keys[i]
-    match m.get(k) {
-      Some(v) => out.push((k, v))
-      None => ()
-    }
-  }
-  base_codec::json_obj(out)
-}
-
 pub fn is_read_method(method : String) -> Bool {
   method == "task.get" ||
   method == "task.gets" ||
@@ -532,7 +626,26 @@ pub fn for_each_k[T](
   )
 }
 
-// ── Per-lane FIFO lock with automatic eviction when holders + waiters == 0 ──
+// ── Per-lane FIFO lock with automatic eviction, prefix compaction, and handoff-interrupt safety ──
+
+fn lane_compact(lock : LaneLock) -> Unit {
+  if lock.head == 0 {
+    return
+  }
+  if lock.head >= lock.waiters.length() {
+    lock.waiters = []
+    lock.head = 0
+    return
+  }
+  if lock.head >= 16 {
+    let next : Array[LaneWaiter] = []
+    for i in lock.head..<lock.waiters.length() {
+      next.push(lock.waiters[i])
+    }
+    lock.waiters = next
+    lock.head = 0
+  }
+}
 
 fn lane_release(state : RemoteState, lane : String, lock : LaneLock) -> Unit {
   lock.active_count = lock.active_count - 1
@@ -540,15 +653,13 @@ fn lane_release(state : RemoteState, lane : String, lock : LaneLock) -> Unit {
     let w = lock.waiters[lock.head]
     lock.head = lock.head + 1
     if !w.cancelled {
-      if lock.head == lock.waiters.length() {
-        lock.waiters.clear()
-        lock.head = 0
-      }
+      w.granted = true
+      lane_compact(lock)
       let _ = w.deferred.succeed(())
       return
     }
   }
-  lock.waiters.clear()
+  lock.waiters = []
   lock.head = 0
   lock.held = false
   if lock.active_count <= 0 {
@@ -564,7 +675,8 @@ fn lane_release(state : RemoteState, lane : String, lock : LaneLock) -> Unit {
 }
 
 /// Serialize `work_k` per `lane` (FIFO); removes `lane` from `state.lanes` as soon as
-/// `holders + waiters == 0` (`wave8-plan.md` v5 §2.4.2).
+/// `holders + waiters == 0`, compacts consumed prefix slots, and hands off the lock cleanly
+/// if a waiter is interrupted after being granted (`wave8-plan.md` v5 §2.4.2).
 pub fn RemoteCtx::in_lane_k[X](
   self : RemoteCtx,
   lane : String,
@@ -595,7 +707,7 @@ pub fn RemoteCtx::in_lane_k[X](
     })
     return
   }
-  let w = LaneWaiter::{ deferred: effect::Deferred::new(), cancelled: false }
+  let w = LaneWaiter::{ deferred: effect::Deferred::new(), cancelled: false, granted: false }
   lock.waiters.push(w)
   w.deferred.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
     match ex {
@@ -606,7 +718,13 @@ pub fn RemoteCtx::in_lane_k[X](
         })
       }
       other => {
-        if !w.cancelled {
+        if w.granted || w.deferred.is_done() {
+          // Lock was already transferred to this waiter before it could resume: pass it on.
+          if !w.cancelled {
+            w.cancelled = true
+            lane_release(state, lane, lock)
+          }
+        } else if !w.cancelled {
           w.cancelled = true
           lock.active_count = lock.active_count - 1
           if !lock.held && lock.active_count <= 0 {
@@ -731,8 +849,12 @@ pub fn room_peer_of(peer : String, request : base_codec::Json) -> String {
 }
 
 /// What `d` settles to, or `None` when it has not within `ms` on `#remote`'s clock (`remote.mbt:398-424`).
-/// 1:1 `active` accounting: `active -= 1` before waiting on `woke`, `active += 1` before first `woke.succeed(())`.
-/// Interrupts the internal watcher fiber on timeout so ZERO dangling watcher remains in `rt.holding()`.
+/// 1:1 `active` accounting with MB:
+/// - Watcher runs via `gen.spawn_work` (`active += 1` until `d` settles; never interrupted on timeout);
+/// - Caller decrements `active -= 1` before waiting on `woke`;
+/// - First wakeup (timeout or `d` settling) increments `active += 1` before `woke.succeed(())`;
+/// - If the caller itself is interrupted before first wakeup (while unsealed), timer is cancelled and
+///   caller's borrowed `active` is restored exactly once (mutually exclusive with `wake_once`).
 pub fn RemoteCtx::bounded_k[X](
   self : RemoteCtx,
   d : effect::Deferred[X],
@@ -748,45 +870,50 @@ pub fn RemoteCtx::bounded_k[X](
     return
   }
   let counters = self.gen.counters
+  let wakers = self.state.bounded_wakers
+  let wake_id = self.state.alloc_gen()
   let woke : effect::Deferred[Unit] = effect::Deferred::new()
-  let cancel = self.rafter(ms, fn() -> Unit {
-    if !woke.is_done() {
+  let mut settled_waiter = false
+  let wake_once = fn() -> Unit {
+    if !settled_waiter && !woke.is_done() {
+      settled_waiter = true
+      let _ = wakers.remove(wake_id)
       if !counters.sealed {
         counters.active = counters.active + 1
       }
       let _ = woke.succeed(())
     }
-  })
-  let watcher = self.gen.fibers.fork_daemon(
-    "remote bounded watch",
-    fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      d.wait_k(fn(ex : effect::Exit[X]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
-          _ => {
-            if !woke.is_done() {
-              if !counters.sealed {
-                counters.active = counters.active + 1
-              }
-              let _ = woke.succeed(())
-            }
-            wk(effect::Exit::Succeeded(()))
-          }
+  }
+  wakers.set(wake_id, wake_once)
+  let cancel = self.rafter_action(ms, RemoteTimerAction::WakeBounded(wake_id))
+  // Counted via `gen.spawn_work` (1:1 `remote.mbt:409`): stays alive until `d` settles (or scope closes).
+  self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    d.wait_k(fn(ex : effect::Exit[X]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+        _ => {
+          wake_once()
+          wk(effect::Exit::Succeeded(()))
         }
-      })
-    },
-    fn(_e : effect::EffectError) -> Unit { () },
-  )
+      }
+    })
+  })
   if !counters.sealed {
     counters.active = counters.active - 1
   }
   woke.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
     cancel()
-    if !watcher.is_done() {
-      watcher.interrupt()
-    }
+    let _ = wakers.remove(wake_id)
     match ex {
-      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Interrupted => {
+        if !settled_waiter {
+          settled_waiter = true
+          if !counters.sealed {
+            counters.active = counters.active + 1
+          }
+        }
+        k(effect::Exit::Interrupted)
+      }
       _ => {
         let res = if d.is_done() {
           match d.poll() {
@@ -802,52 +929,82 @@ pub fn RemoteCtx::bounded_k[X](
   })
 }
 
-/// `once_k` now and, until it returns `true`, again after 1 s, then doubling up to 60 s (`remote.mbt:332-345`).
+/// Compute exponential backoff delay for `again` (1 s -> 2 s -> ... -> 60 s cap; `remote.mbt:339-343`).
+pub fn again_delay_ms(tries : Int) -> Double {
+  let mut wait = 1000.0
+  let mut i = 0
+  while i < tries && wait < 60000.0 {
+    wait = wait * 2.0
+    i = i + 1
+  }
+  if wait > 60000.0 { 60000.0 } else { wait }
+}
+
+/// Start a pure-value `again` loop registered under a token in `state.again_jobs`
+/// so retry timers store only `(token, tries)` with zero `RemoteCtx`/`SessionHost` capture.
+pub fn RemoteCtx::start_again(self : RemoteCtx, kind : AgainKind) -> Unit {
+  let token = self.state.alloc_gen()
+  self.state.again_jobs.set(token, kind)
+  self.run_again_step(token, 0)
+}
+
+/// Convenience helper for custom `again` loops (e.g. unit tests verifying 1s -> 60s backoff).
 pub fn RemoteCtx::again(
   self : RemoteCtx,
   once_k : ((effect::Exit[Bool]) -> Unit) -> Unit,
   ended : (Bool) -> Unit,
-  tries : Int = 0,
 ) -> Unit {
+  self.start_again(AgainKind::Custom(once_k, ended))
+}
+
+fn RemoteCtx::run_again_step(self : RemoteCtx, token : Int64, tries : Int) -> Unit {
+  let kind = match self.state.again_jobs.get(token) {
+    Some(k) => k
+    None => return
+  }
   self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    once_k(fn(ex : effect::Exit[Bool]) -> Unit {
+    let on_result = fn(ex : effect::Exit[Bool]) -> Unit {
       match ex {
-        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        effect::Exit::Interrupted => {
+          let _ = self.state.again_jobs.remove(token)
+          fk(effect::Exit::Interrupted)
+        }
         effect::Exit::Failed(_) => {
           if self.state.stopped || self.gen.counters.sealed {
-            ended(false)
+            let _ = self.state.again_jobs.remove(token)
+            self.finish_again_kind(kind, false)
             fk(effect::Exit::Succeeded(()))
             return
           }
-          let mut wait = 1000.0
-          let mut i = 0
-          while i < tries && wait < 60000.0 {
-            wait = wait * 2.0
-            i = i + 1
-          }
-          let delay = if wait > 60000.0 { 60000.0 } else { wait }
-          let _ = self.rafter(delay, fn() -> Unit { self.again(once_k, ended, tries + 1) })
+          let _ = self.rafter_action(again_delay_ms(tries), RemoteTimerAction::AgainStep(token, tries + 1))
           fk(effect::Exit::Succeeded(()))
         }
         effect::Exit::Succeeded(over) => {
           if over || self.state.stopped || self.gen.counters.sealed {
-            ended(over)
+            let _ = self.state.again_jobs.remove(token)
+            self.finish_again_kind(kind, over)
             fk(effect::Exit::Succeeded(()))
             return
           }
-          let mut wait = 1000.0
-          let mut i = 0
-          while i < tries && wait < 60000.0 {
-            wait = wait * 2.0
-            i = i + 1
-          }
-          let delay = if wait > 60000.0 { 60000.0 } else { wait }
-          let _ = self.rafter(delay, fn() -> Unit { self.again(once_k, ended, tries + 1) })
+          let _ = self.rafter_action(again_delay_ms(tries), RemoteTimerAction::AgainStep(token, tries + 1))
           fk(effect::Exit::Succeeded(()))
         }
       }
-    })
+    }
+    match kind {
+      AgainKind::PushOut(id) => self.push_out_once_k(id, on_result)
+      AgainKind::CheckTask(path) => self.check_once_k(path, on_result)
+      AgainKind::Custom(once_k, _) => once_k(on_result)
+    }
   })
+}
+
+fn RemoteCtx::finish_again_kind(self : RemoteCtx, kind : AgainKind, over : Bool) -> Unit {
+  match kind {
+    AgainKind::PushOut(id) => self.push_out_ended(id)
+    AgainKind::CheckTask(path) => self.check_ended(path)
+    AgainKind::Custom(_, ended) => ended(over)
+  }
 }
 
 /// The target's sweep, now and hourly on `#remote`'s clock (`remote.mbt:314-327`).
@@ -861,7 +1018,7 @@ pub fn RemoteCtx::sweep_hourly(self : RemoteCtx) -> Unit {
       match nex {
         effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
         effect::Exit::Failed(_) => {
-          let _ = self.rafter(SWEEP_EVERY_MS, fn() -> Unit { self.sweep_hourly() })
+          let _ = self.rafter_action(SWEEP_EVERY_MS, RemoteTimerAction::SweepHourly)
           fk(effect::Exit::Succeeded(()))
         }
         effect::Exit::Succeeded(now) => {
@@ -869,7 +1026,7 @@ pub fn RemoteCtx::sweep_hourly(self : RemoteCtx) -> Unit {
             match sex {
               effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
               _ => {
-                let _ = self.rafter(SWEEP_EVERY_MS, fn() -> Unit { self.sweep_hourly() })
+                let _ = self.rafter_action(SWEEP_EVERY_MS, RemoteTimerAction::SweepHourly)
                 fk(effect::Exit::Succeeded(()))
               }
             }

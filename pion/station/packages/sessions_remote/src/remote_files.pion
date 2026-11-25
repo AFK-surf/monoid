@@ -191,11 +191,25 @@ pub fn RemoteCtx::rename_k(
   )
 }
 
-pub fn RemoteCtx::random_hex(self : RemoteCtx, n : Int) -> String {
-  match self.host.shell_sync("crypto.random", base_codec::json_obj([("bytes", sessions_core::jnum(n.to_double()))])) {
-    Ok(base_codec::Json::Str(s)) => s
-    _ => self.host.alloc_id().to_string()
-  }
+/// Asynchronous random hex via `HubGen::shell_k("crypto.random", ...)` (zero blocking `shell_sync`,
+/// sealed-generation guarded, interrupt-propagating, fallback to monotonic id on shell failure).
+pub fn RemoteCtx::random_hex_k(
+  self : RemoteCtx,
+  n : Int,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  self.fs_k(
+    "crypto.random",
+    [("bytes", sessions_core::jnum(n.to_double()))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(s))
+        _ => k(effect::Exit::Succeeded(self.host.alloc_id().to_string()))
+      }
+    },
+  )
 }
 
 /// Wait until all previously queued writes to `path` complete (`remote_files.mbt:145-152`).
@@ -264,8 +278,9 @@ pub fn RemoteCtx::read_json_k(
 }
 
 /// Serialize `work_k` for `path`, emitting `writing` before awaiting prior turns and
-/// `wrote` + identity-checked `writing.remove(path)` in its completion/interruption cleanup
-/// (`remote_files.mbt:156-175`).
+/// `wrote` + identity-checked `writing.remove(path)` on completion (`remote_files.mbt:156-175`).
+/// If a middle waiter B in A -> B -> C is interrupted while A is still writing, B preserves
+/// A's barrier by relaying A's completion to `mine.done` so C never overtakes A's rename.
 pub fn RemoteCtx::in_turn_k[X](
   self : RemoteCtx,
   path : String,
@@ -273,13 +288,13 @@ pub fn RemoteCtx::in_turn_k[X](
   k : (effect::Exit[X]) -> Unit,
 ) -> Unit {
   let state = self.state
+  let counters = self.gen.counters
   let before = state.writing.get(path)
   let mine = WriteTurn::{ id: state.alloc_gen(), done: effect::Deferred::new() }
   state.writing.set(path, mine)
   let id = sessions_core::jint(self.host.alloc_id())
   self.tell(remote_key, "writing", [sessions_core::jstr(path), id])
-  let finish = fn() -> Unit {
-    self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+  let release_mine = fn() -> Unit {
     let _ = mine.done.succeed(())
     match state.writing.get(path) {
       Some(cur) => {
@@ -289,6 +304,10 @@ pub fn RemoteCtx::in_turn_k[X](
       }
       None => ()
     }
+  }
+  let finish = fn() -> Unit {
+    self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+    release_mine()
   }
   let run_work = fn() -> Unit {
     work_k(fn(ex : effect::Exit[X]) -> Unit {
@@ -301,7 +320,22 @@ pub fn RemoteCtx::in_turn_k[X](
       b.done.wait_k(fn(bex : effect::Exit[Unit]) -> Unit {
         match bex {
           effect::Exit::Interrupted => {
-            finish()
+            self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+            if b.done.is_done() || counters.sealed {
+              release_mine()
+            } else {
+              // Preserve predecessor barrier so downstream waiters (C) wait for A to finish.
+              let _ = self.gen.fibers.fork_daemon(
+                "write barrier relay",
+                fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  b.done.wait_k(fn(_rex : effect::Exit[Unit]) -> Unit {
+                    release_mine()
+                    rk(effect::Exit::Succeeded(()))
+                  })
+                },
+                fn(_e : effect::EffectError) -> Unit { () },
+              )
+            }
             k(effect::Exit::Interrupted)
           }
           _ => run_work()
@@ -313,44 +347,68 @@ pub fn RemoteCtx::in_turn_k[X](
 }
 
 /// Write `json` atomically via private temp file + sync + rename (`remote_files.mbt:179-188`).
+/// If interrupted after `fs.put` while awaiting `rename` in an active (unsealed) generation,
+/// cleans up the orphan temp file asynchronously without touching a rotated generation.
 pub fn RemoteCtx::write_whole_k(
   self : RemoteCtx,
   path : String,
   json : String,
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
-  let temp = self.with_extension(path, self.random_hex(8) + ".tmp")
-  self.fs_k(
-    "fs.put",
-    [
-      ("path", sessions_core::jstr(temp)),
-      ("offset", sessions_core::jnum(0.0)),
-      ("exclusive", sessions_core::jbool(true)),
-      ("truncate", sessions_core::jbool(true)),
-      ("sync", sessions_core::jbool(true)),
-      ("mode", sessions_core::jnum(384.0)),
-    ],
-    Some(json.to_bytes()),
-    fn(pex : effect::Exit[base_codec::Json]) -> Unit {
-      match pex {
-        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-        effect::Exit::Succeeded(_) => {
-          self.rename_k(temp, path, fn(rex : effect::Exit[Unit]) -> Unit {
-            match rex {
-              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+  self.random_hex_k(8, fn(hex_ex : effect::Exit[String]) -> Unit {
+    match hex_ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(hex) => {
+        let temp = self.with_extension(path, hex + ".tmp")
+        self.fs_k(
+          "fs.put",
+          [
+            ("path", sessions_core::jstr(temp)),
+            ("offset", sessions_core::jnum(0.0)),
+            ("exclusive", sessions_core::jbool(true)),
+            ("truncate", sessions_core::jbool(true)),
+            ("sync", sessions_core::jbool(true)),
+            ("mode", sessions_core::jnum(384.0)),
+          ],
+          Some(json.to_bytes()),
+          fn(pex : effect::Exit[base_codec::Json]) -> Unit {
+            match pex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-              effect::Exit::Failed(e) => {
-                self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
-                  k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(_) => {
+                self.rename_k(temp, path, fn(rex : effect::Exit[Unit]) -> Unit {
+                  match rex {
+                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+                    effect::Exit::Interrupted => {
+                      if !self.gen.counters.sealed {
+                        // Active-generation cancellation after fs.put: best-effort cleanup of temp file.
+                        let _ = self.gen.fibers.fork_daemon(
+                          "cleanup orphan tmp",
+                          fn(ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
+                              ck(effect::Exit::Succeeded(()))
+                            })
+                          },
+                          fn(_e : effect::EffectError) -> Unit { () },
+                        )
+                      }
+                      k(effect::Exit::Interrupted)
+                    }
+                    effect::Exit::Failed(e) => {
+                      self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
+                        k(effect::Exit::Failed(e))
+                      })
+                    }
+                  }
                 })
               }
             }
-          })
-        }
+          },
+        )
       }
-    },
-  )
+    }
+  })
 }
 
 fn bump_writes(state : RemoteState, path : String) -> Unit {
