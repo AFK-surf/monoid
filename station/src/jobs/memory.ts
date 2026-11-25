@@ -548,7 +548,7 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
       } catch {}
     },
     self: process.pid,
-    ...(process.platform === "linux" ? { kills: kernelKills, killFirst: oomFirst() } : {}),
+    ...(platform.os === "linux" ? { kills: kernelKills, killFirst: oomFirst() } : {}),
     freeBytes: () => freemem(),
     savePaused: async (pids) => {
       if (pids.length === 0) await rm(pausedFile, { force: true });
