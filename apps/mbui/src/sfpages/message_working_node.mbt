@@ -255,7 +255,7 @@ fn working_said_node(
                 Some((since, most)) => {
                   let from_none = !is_first && !had_clock_prev.val
                   had_clock_prev.val = true
-                  let tick = steps_seconds(k, src, since, till?=most.map(fn(sec) { sec * 1000.0 }))
+                  let tick = steps_seconds(k, src, since, till?=most.map(fn(sec) { sec * 1000.0 }), minute_past_hour=true)
                   let words = fn() {
                     tick() |> ignore
                     working_clock_words(since, most, (src.now)())
