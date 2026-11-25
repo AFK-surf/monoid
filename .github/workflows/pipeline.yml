@@ -1792,7 +1792,7 @@ jobs:
               echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
             else
               (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" \
-                bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 225 ))" sh .github/release.sh --product monoid android) \
+                bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 220 ))" sh .github/release.sh --product monoid android) \
                 > "$RUNNER_TEMP/monoid.log" 2>&1 &
               monoid=$!
             fi
@@ -1805,17 +1805,17 @@ jobs:
           else
             echo "::error::still.fail's beta Android app was not put"; failed=1
           fi
-          # (monoid's ended with >=75 s left so monoid-hand below can put its APK directly to R2 within the 5-minute
+          # (monoid's ended with >=80 s left so monoid-hand below can put its APK directly to R2 within the 5-minute
           # cap: run beside stable's android on the same Mac it ran on to 5 minutes, 44770976468; out of time it is left
           # for the next release, not this one's failure)
           if [ -n "$monoid" ]; then
             ms=0; wait "$monoid" || ms=$?
             if [ "$ms" = 0 ]; then
               echo "::group::monoid's beta Android app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
-              if [ "$(( $(date +%s) - JOB_BEGAN ))" -le 225 ]; then
+              if [ "$(( $(date +%s) - JOB_BEGAN ))" -le 220 ]; then
                 echo "packed=1" >> "$GITHUB_OUTPUT"
               else
-                echo "::warning::monoid's beta Android app handoff skipped: less than 75 s left in this job"
+                echo "::warning::monoid's beta Android app handoff skipped: less than 80 s left in this job"
               fi
             elif [ "$ms" = 124 ]; then
               cat "$RUNNER_TEMP/monoid.log"
@@ -1828,8 +1828,8 @@ jobs:
       # Put monoid's APK and hand its feed to monoid-android through monoid's R2 bucket (direct Cloudflare API via
       # STILLFAIL_DIRECT_DNS, ~15 s) instead of actions/upload-artifact@v4 over Mini1's proxy (which timed out at 60 s
       # on 20 consecutive runs after build 11345 and triggered 85 s orphan-process teardown in 45478439684). Separate
-      # step so MONOID_CLOUDFLARE_API_TOKEN never enters still.fail's steps; bounded by with-timeout before 300 s and
-      # continue-on-error so a failure leaves monoid's beta for the next release without blocking still.fail's.
+      # step so MONOID_CLOUDFLARE_API_TOKEN never enters still.fail's steps; bounded by min(JOB_BEGAN+255, now+50) so
+      # with-timeout always reaps its process group before timeout-minutes: 1 and leaves >=45 s for teardown.
       - if: vars.MONOID_CI == 'on' && steps.hand.outputs.packed == '1'
         id: monoid-hand
         name: Put monoid's beta Android files and hand its feed to monoid-android
@@ -1838,7 +1838,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
         run: |
-          bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 270 ))" sh -ec '
+          end=$(( JOB_BEGAN + 255 ))
+          cap=$(( $(date +%s) + 50 ))
+          [ "$cap" -lt "$end" ] && end=$cap
+          bash scripts/with-timeout.sh "@$end" sh -ec '
             sh scripts/release-put.sh --files "$RUNNER_TEMP/monoid"
             sh scripts/release-put.sh --hand "$RUNNER_TEMP/monoid" > "$RUNNER_TEMP/monoid-hand.out"
           '

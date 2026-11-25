@@ -181,7 +181,12 @@ jobs:
         run: |
           rm -rf in/apk && mkdir -p in/apk
           name=${APK_URL##*/}
-          if ! curl -fsSL --retry 2 --connect-timeout 15 --max-time 60 -o "in/apk/$name.part" "$APK_URL" || [ ! -s "in/apk/$name.part" ]; then
+          cap=$(( JOB_END - $(date +%s) - 200 ))
+          [ "$cap" -gt 60 ] && cap=60
+          if [ "$cap" -lt 10 ]; then
+            echo "::warning::not enough time left in idle job to download $APK_URL: Android measurement left out"
+            rm -rf in/apk
+          elif ! curl -fsSL --retry 2 --connect-timeout 15 --max-time "$cap" -o "in/apk/$name.part" "$APK_URL" || [ ! -s "in/apk/$name.part" ]; then
             echo "::warning::could not download $APK_URL: Android measurement left out"
             rm -rf in/apk
           else
