@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [43b2f8b59](https://github.com/AFK-surf/monoid/commit/43b2f8b59e87d38b21e1ec729dee6162bcf45a45) fix(ci): reuse pipeline shell-station in pion-stat | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [8ead03b5c](https://github.com/AFK-surf/monoid/commit/8ead03b5c8af20335422a36006f9e267e8de7a85) fix(station): do not add backup stand-ins for keep | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [368e6e956](https://github.com/AFK-surf/monoid/commit/368e6e9564f3cf43dfd48623662ba5dfd8b67621) fix(ci): bound gh release upload with 90s timeout  | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [83de34c52](https://github.com/AFK-surf/monoid/commit/83de34c526cbe574b9f9a287457a8d588ed5c0aa) fix(ci): skip cached natives and reader-harness in | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [47097061b](https://github.com/AFK-surf/monoid/commit/47097061b5bd44afb3e63b2b22a194506b85cd34) feat(station): add mb vs pion reader engine compar | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [df214c830](https://github.com/AFK-surf/monoid/commit/df214c8303070f7f785dede0c7225463bca5896c) fix(station): eliminate Linux ephemeral port race  | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
-| [ba5068703](https://github.com/AFK-surf/monoid/commit/ba50687035bf07a94a6ef377e5359578536320af) fix(pion-station): sync readops parity for #8625 a | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [43b2f8b59](https://github.com/AFK-surf/monoid/commit/43b2f8b59e87d38b21e1ec729dee6162bcf45a45) fix(ci): reuse pipeline shell-station in pion-stat | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.1 |
 | [8ead03b5c](https://github.com/AFK-surf/monoid/commit/8ead03b5c8af20335422a36006f9e267e8de7a85) fix(station): do not add backup stand-ins for keep | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.31 |
 | [368e6e956](https://github.com/AFK-surf/monoid/commit/368e6e9564f3cf43dfd48623662ba5dfd8b67621) fix(ci): bound gh release upload with 90s timeout  | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57 |
 | [83de34c52](https://github.com/AFK-surf/monoid/commit/83de34c526cbe574b9f9a287457a8d588ed5c0aa) fix(ci): skip cached natives and reader-harness in | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.16 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.31 |
 | [47097061b](https://github.com/AFK-surf/monoid/commit/47097061b5bd44afb3e63b2b22a194506b85cd34) feat(station): add mb vs pion reader engine compar | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.26 |
 | [df214c830](https://github.com/AFK-surf/monoid/commit/df214c8303070f7f785dede0c7225463bca5896c) fix(station): eliminate Linux ephemeral port race  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.2 |
-| [ba5068703](https://github.com/AFK-surf/monoid/commit/ba50687035bf07a94a6ef377e5359578536320af) fix(pion-station): sync readops parity for #8625 a | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.13 |
