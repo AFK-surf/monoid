@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bfc382a17](https://github.com/AFK-surf/monoid/commit/bfc382a1792aa28b6e1e224db14c8c3f2f681eaa) fix(mbui): allow reopening a chat sitting under Ne | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 100.7 | 130.21 |
 | [a442e5fad](https://github.com/AFK-surf/monoid/commit/a442e5fad2c3f279cac7d0c06ded11cb44aa6c72) feat(pion): Wave 7.0 foundation, readops_core, TS  | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [2be102041](https://github.com/AFK-surf/monoid/commit/2be102041ddffe6ebc8a0a4c8504efe9e38fa089) feat(website): show Antigravity and DeepSeek logos | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [703ffa70e](https://github.com/AFK-surf/monoid/commit/703ffa70ebaa461b341792f5bdb6141461613d4b) refactor(ui): replace hostapi.Host trait with clos | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.98 | 121.83 |
 | [bdab53e32](https://github.com/AFK-surf/monoid/commit/bdab53e32df499e4b266b389ddae0f6d02e0eed6) fix(ui): preserve 1.00x vertical text scale inside | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.78 | 121.83 |
 | [a9586853d](https://github.com/AFK-surf/monoid/commit/a9586853d26ebd14d56fc69a9d971acaa8f4846f) feat(pion): W6-0 Wave 6 foundation, live-locator ( | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.93 | 121.83 |
-| [37a5954c1](https://github.com/AFK-surf/monoid/commit/37a5954c1e707b732e109dd172c2c91f24f99016) fix(vault): stop 未获此库授权 flashing at start, and nev | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.93 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bfc382a17](https://github.com/AFK-surf/monoid/commit/bfc382a1792aa28b6e1e224db14c8c3f2f681eaa) fix(mbui): allow reopening a chat sitting under Ne | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.93 |
 | [a442e5fad](https://github.com/AFK-surf/monoid/commit/a442e5fad2c3f279cac7d0c06ded11cb44aa6c72) feat(pion): Wave 7.0 foundation, readops_core, TS  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.48 |
 | [2be102041](https://github.com/AFK-surf/monoid/commit/2be102041ddffe6ebc8a0a4c8504efe9e38fa089) feat(website): show Antigravity and DeepSeek logos | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.44 |
 | [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [703ffa70e](https://github.com/AFK-surf/monoid/commit/703ffa70ebaa461b341792f5bdb6141461613d4b) refactor(ui): replace hostapi.Host trait with clos | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.59 |
 | [bdab53e32](https://github.com/AFK-surf/monoid/commit/bdab53e32df499e4b266b389ddae0f6d02e0eed6) fix(ui): preserve 1.00x vertical text scale inside | 0.56 | 0.73 | 2.85 | 3.87 | 7.08 | 2.1 | 5.86 | 57.61 |
 | [a9586853d](https://github.com/AFK-surf/monoid/commit/a9586853d26ebd14d56fc69a9d971acaa8f4846f) feat(pion): W6-0 Wave 6 foundation, live-locator ( | 0.56 | 0.73 | 2.85 | 3.87 | 7.08 | 2.1 | 5.86 | 58.07 |
-| [37a5954c1](https://github.com/AFK-surf/monoid/commit/37a5954c1e707b732e109dd172c2c91f24f99016) fix(vault): stop 未获此库授权 flashing at start, and nev | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.77 |
