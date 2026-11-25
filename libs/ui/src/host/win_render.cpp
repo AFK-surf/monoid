@@ -3260,8 +3260,13 @@ static int slot_same(const Grab *m, const double key[7]) {
   return -1;
 }
 
+static level *grab_blurred(const Grab *m) {
+  float dual_cut = m->k > 0 ? 0.55f : 0.3f;
+  return (m->progressive || (m->dual_scale && m->sg <= dual_cut) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
+}
+
 static int slot_fill(const Grab *m, unsigned frame_clock) {
-  level *Lp = (m->progressive || (m->dual_scale && m->sg <= (m->k > 0 ? 0.55f : 0.3f)) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
+  level *Lp = grab_blurred(m);
   int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
     if (gslots[j].used < gslots[fallback].used) fallback = j;
@@ -3468,7 +3473,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
       if (known && !encode_missing) slot_keep(slot, &m, key);
       slot_show(&m, slot);
     } else {
-      level *L = (m.progressive || (m.dual_scale && m.sg <= (m.k > 0 ? 0.55f : 0.3f)) || (m.contained && m.k == 0)) ? &lv[4] : &lv[m.k];
+      level *L = grab_blurred(&m);
       show_blur(&m, L);
     }
   }

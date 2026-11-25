@@ -1608,6 +1608,39 @@ static void test_v8_v9_droplet_roi_gates(void) {
       }
       free(fpx[0]); free(fpx[1]);
     }
+    // V14c-DualSlot-MidSg: 2x blur=2.1pt tint=0x67 falls in 0.3 < sg <= 0.55 (sg~0.438).
+    {
+      vscale = 2.0;
+      float mf21[MB_INST];
+      memset(mf21, 0, sizeof mf21);
+      mf21[0] = 14.0f; mf21[1] = 18.0f; mf21[2] = 132.0f; mf21[3] = 44.0f; mf21[4] = 22.0f;
+      mf21[5] = 6.0f; mf21[6] = 1.0f; mf21[7] = 2.1f;
+      mf21[8] = 253.0f / 255.0f; mf21[9] = 252.0f / 255.0f; mf21[10] = 253.0f / 255.0f; mf21[11] = 0x67 / 255.0f;
+      mf21[12] = 0.6f; mf21[13] = 14.0f; mf21[15] = 1.0f; mf21[18] = (float)VW; mf21[19] = (float)VH; mf21[20] = -149.0f; mf21[21] = 20.0f;
+      Grab g21;
+      CHECK(grab_of(&g21, mf21, 0, 1, 1, VW * 2, VH * 2) == 1);
+      CHECK(g21.dual_scale == 1 && g21.k == 1 && g21.sg > 0.30f && g21.sg <= 0.55f);
+      CHECK(grab_blurred(&g21) == &lv[4]);
+      double s21[3 * MB_INST];
+      fill_p0_rect(s21, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 1.0, 0);
+      fill_p0_rect(s21 + MB_INST, 74.0, 0, 12.0, VH, 0, 0.05, 0.05, 0.05, 1.0, 0);
+      fill_p0_rect(s21 + 2 * MB_INST, 14.0, 18.0, 132.0, 44.0, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -149);
+      s21[2 * MB_INST + 4] = 22.0; s21[2 * MB_INST + 6] = 1.0; s21[2 * MB_INST + 7] = 2.1;
+      s21[2 * MB_INST + 12] = 0.6; s21[2 * MB_INST + 13] = 14.0;
+      s21[2 * MB_INST + 15] = 1.0; s21[2 * MB_INST + 21] = 20.0; s21[2 * MB_INST + 22] = 0.06;
+      uint8_t *p1 = render_rgba_pixels_of(s21, 3, 1.0, 1.0, 1.0, 2.0, VW * 2, VH * 2);
+      CHECK(p1 != NULL);
+      if (p1) {
+        uint8_t *cb = W_PX(p1, VW * 2, 80 * 2, 40 * 2);
+        uint8_t *cw1 = W_PX(p1, VW * 2, 50 * 2, 40 * 2);
+        double l_bar = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+        double l_wh = 0.2126 * cw1[0] + 0.7152 * cw1[1] + 0.0722 * cw1[2];
+        printf("win_gpu: v14c_dual_slot_midsg sg=%.3f bar_L=%.1f wh_L=%.1f diff=%.1f\n",
+               g21.sg, l_bar, l_wh, l_wh - l_bar);
+        CHECK(l_bar >= 185.0 && (l_wh - l_bar) <= 65.0);
+        free(p1);
+      }
+    }
   }
   #undef W_PX
 }

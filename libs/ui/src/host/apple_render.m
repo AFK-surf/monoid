@@ -2227,11 +2227,12 @@ static void show_blur(const Grab *m, id<MTLTexture> bt) {
   grab_map_uvc(m, bt, gu.map, gu.uvc);
 }
 
-// The level a grab's blur is left in.
-static id<MTLTexture> grab_blurred(const Grab *m) {
+// The level a grab's blur is left in (single source of truth for blur(), grab_blurred() and slot_fill()).
+static id<MTLTexture> __strong *grab_blurred_ref(const Grab *m) {
   float dual_cut = m->k > 0 ? 0.55f : 0.3f;
-  return (m->progressive || (m->dual_scale && m->sg <= dual_cut) || (m->contained && m->k == 0)) ? ltmp : lv[m->k];
+  return (m->progressive || (m->dual_scale && m->sg <= dual_cut) || (m->contained && m->k == 0)) ? &ltmp : &lv[m->k];
 }
+static id<MTLTexture> grab_blurred(const Grab *m) { return *grab_blurred_ref(m); }
 
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (passes of their own, the target's pass ended before; grab_blurred). The levels are shared by every
@@ -2934,7 +2935,7 @@ static void slots_evict_budget(int keep_idx, unsigned frame_clock, int allow_fra
 // (zero GPU blit) when the level is close to the grab's size, or copying only the grab's active top-left region
 // into a compact 64-px-aligned slot texture when the shared level is much larger than the grab.
 static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_clock) {
-  id<MTLTexture> __strong *Lp = (m->progressive || (m->dual_scale && m->sg <= 0.3f) || (m->contained && m->k == 0)) ? &ltmp : &lv[m->k];
+  id<MTLTexture> __strong *Lp = grab_blurred_ref(m);
   id<MTLTexture> L = *Lp;
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
