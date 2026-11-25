@@ -14,7 +14,7 @@ export type Field = { name: string; ty: Ty; default: boolean; skipNone: boolean;
 type Common = { doc?: string; client: boolean };
 export type Shape =
   | ({ kind: "struct"; fields: Field[]; default: boolean } & Common)
-  | ({ kind: "enum"; values: string[]; default: string | null } & Common)
+  | ({ kind: "enum"; values: string[]; default: string | null; open?: true } & Common)
   | ({ kind: "tagged"; tag: string; content: string; variants: Record<string, Ty>; names: Record<string, string> } & Common);
 
 type FieldOptions = { default?: true; skipNone?: true; client?: Ty; doc?: string; said?: true; widest?: string };
@@ -39,9 +39,12 @@ export function struct(fields: [string, Ty, FieldOptions?][], o: Options & { def
   };
 }
 
-/// A closed set of words; `default`: the one a missing value reads as.
-export function words(values: string[], o: Options & { default?: string } = {}): Shape {
-  return { kind: "enum", values, default: o.default ?? null, client: o.client !== false, doc: o.doc };
+/// A closed set of words; `default`: the one a missing value reads as. `open`: a set a newer station may add to (a
+/// runtime): a word this core does not know is left out rather than wrong, as the station leaves it out for a client
+/// that does not name it (station/src/read/runtime-view.ts): an option holding it is absent, an item of a list or map
+/// that needs it is dropped (conform.ts), and the word is told (conform.ts `unknownWords`).
+export function words(values: string[], o: Options & { default?: string; open?: true } = {}): Shape {
+  return { kind: "enum", values, default: o.default ?? null, client: o.client !== false, doc: o.doc, ...(o.open === true ? { open: true as const } : {}) };
 }
 
 /// A union, `{ <tag>: <word>, <content>: … }`: each variant `[word, its name in Kotlin, its content's type]`.
