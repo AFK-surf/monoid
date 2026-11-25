@@ -164,3 +164,17 @@ test "a service's pause grows with each quick end, and a steady run starts again
   assert_eq([0, 1, 2, 3, 5, 6, 9].map(n => @admit.restart_pause(n, 100)), [1000, 2000, 4000, 8000, 32000, 60000, 60000])
   assert_eq(@admit.restart_pause(4, 60000), 0)
 }
+
+///|
+test "a Mac's screen locked holds screen tasks and claims back as locked, the rest start" {
+  let picture = w("p", "s", 1, screen=true)
+  let build = w("b", "t", 2)
+  assert_eq(@admit.pick([picture], [], Some("normal"), false, never, free, locked=true), Some(Wait("locked")))
+  assert_eq(@admit.pick([picture, build], [], Some("normal"), false, never, free, locked=true), Some(Start(build)))
+  // (a person at it is said first; another task's screen before either)
+  assert_eq(@admit.pick([picture], [], Some("normal"), true, never, free, locked=true), Some(Wait("person")))
+  assert_eq(@admit.pick([picture], [r("x", screen=true)], Some("normal"), false, never, free, locked=true), Some(Wait("screen")))
+  assert_eq(@admit.served([c("a", 1)], [], 9, false, locked=true), [c("a", 1)])
+  // (a job that has the screen already goes on having it)
+  assert_eq(@admit.served([c("t", 2)], ["t"], 9, false, locked=true), [c("t", 2, held=true, since=9)])
+}

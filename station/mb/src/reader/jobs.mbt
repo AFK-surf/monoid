@@ -20,6 +20,8 @@ priv struct JobsState {
   last_of : Map[String, Double]
   mut pressure : String?
   mut person : Bool
+  /// the screen locked with nothing to open it for a task (Node's `locked`)
+  mut locked : Bool
   mut reading_person : Bool
   mut why : String?
   mut closing : Bool
@@ -37,6 +39,7 @@ fn JobsState::new() -> JobsState {
     last_of: Map([]),
     pressure: None,
     person: false,
+    locked: false,
     reading_person: false,
     why: None,
     closing: false,
@@ -300,7 +303,7 @@ fn JobsState::last(self : JobsState, session : String) -> Double? {
 ///|
 async fn Actors::chosen(self : Actors) -> @admit.Picked? raise {
   let (waiting, running) = self.line()
-  let chosen = @admit.pick(waiting, running, self.jobs.pressure, self.jobs.person, s => self.jobs.last(s), @admit.claims_held(self.jobs.claims))
+  let chosen = @admit.pick(waiting, running, self.jobs.pressure, self.jobs.person, s => self.jobs.last(s), @admit.claims_held(self.jobs.claims), locked=self.jobs.locked)
   self.jobs.why = match chosen {
     Some(@admit.Wait(w)) => Some(w)
     _ => None
@@ -364,6 +367,9 @@ async fn Actors::look_person(self : Actors) -> Unit raise {
     Number(idle, ..) => idle < @admit.person_idle_ms
     _ => false
   }
+  // (a Node from before it answers no `locked`: not locked)
+  let locked = self.jnode("locked", []) catch { _ => Json::null() }
+  self.jobs.locked = locked is True
 }
 
 ///|
@@ -432,7 +438,7 @@ async fn Actors::queue_of(self : Actors, id : String) -> Json raise {
   guard waiting.search_by(w => w.id == id) is Some(i) else { return Json::null() }
   let task = waiting[i]
   guard @admit.place(waiting.filter(w => w.small == task.small), id, s => self.jobs.last(s)) is Some(p) else { return Json::null() }
-  let why = match @admit.pick([task], running, self.jobs.pressure, self.jobs.person, s => self.jobs.last(s), @admit.claims_held(self.jobs.claims)) {
+  let why = match @admit.pick([task], running, self.jobs.pressure, self.jobs.person, s => self.jobs.last(s), @admit.claims_held(self.jobs.claims), locked=self.jobs.locked) {
     Some(@admit.Wait(w)) => Some(w)
     _ => None
   }
@@ -559,7 +565,7 @@ async fn Actors::serve(self : Actors) -> Unit raise {
   let (_, running) = self.line()
   let screen_jobs = running.filter(r => r.screen).map(r => r.id)
   let before = self.jobs.claims.filter(c => c.held).length()
-  self.jobs.claims = @admit.served(self.jobs.claims, screen_jobs, self.stored_now(), self.jobs.person)
+  self.jobs.claims = @admit.served(self.jobs.claims, screen_jobs, self.stored_now(), self.jobs.person, locked=self.jobs.locked)
   if self.jobs.claims.filter(c => c.held).length() != before {
     self.keep_claims()
   }

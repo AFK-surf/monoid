@@ -91,6 +91,7 @@
   "station.screen.captureEnded": "画面中断了：{said}。可以点「重新打开」再试，一直这样就看一下这台 station 的桌面是否还在登录状态。",
   "station.screen.captureEndedUnsaid": "采集程序退出了",
   "station.screen.captureOff": "这台 Mac 尚未允许 {app} 录制屏幕。",
+  "station.screen.lockedUse": "代理正在锁屏使用这台 Mac，结束后再看，或先在本机解锁。",
   "station.screen.controlOff": "这台 Mac 尚未允许 {app} 进行操作（辅助功能），只能查看，无法操作。",
   "station.screen.bothOff": "此 Mac 尚未允许 {app} 录制屏幕和进行操作。",
   "station.screen.asking": "那台 Mac 上已弹出授权窗口：请在其中点击「允许」，将 {app} 拖入系统设置的列表，然后重新打开画面。",

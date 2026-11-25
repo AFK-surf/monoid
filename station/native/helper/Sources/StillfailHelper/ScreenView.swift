@@ -568,7 +568,9 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
   func wake() {
     let reason = "A still.fail view of this screen is open" as CFString
     var activity: IOPMAssertionID = 0
-    IOPMAssertionDeclareUserActivity(reason, kIOPMUserActiveLocal, &activity)
+    // (not during locked use: the guard keeps the display on, and a user activity declared again and again wakes a
+    // locked display over and over)
+    if !LockedUse.shared.active { IOPMAssertionDeclareUserActivity(reason, kIOPMUserActiveLocal, &activity) }
     IOPMAssertionCreateWithName(kIOPMAssertPreventUserIdleDisplaySleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), reason, &awake)
   }
 
