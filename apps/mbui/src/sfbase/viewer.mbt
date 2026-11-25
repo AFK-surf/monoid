@@ -226,8 +226,6 @@ pub(all) struct Viewer {
   /// user manually hid bars/arrows by clicking the picture: suppresses near_bar/near_left/near_right rebound until a
   /// real pointer move arrives
   mut manual_hidden : Bool
-  /// desktop pointer has left the viewer window (suppresses lock-clear rebound until pointer re-enters or user acts)
-  mut pointer_left : Bool
   /// the moment a tap last showed or hid its bars: what changes then comes and goes at once (viewer_bars_at_once_lend)
   mut bars_tapped_at : Double
   /// whether the current press started from a resting pointer (`@sf.pointer_rests()` recorded at `Down`)
@@ -964,7 +962,6 @@ pub fn new_viewer(
     bar_focus_count: 0,
     menu_open: false,
     manual_hidden: false,
-    pointer_left: false,
     bars_tapped_at: -1.0,
     down_pointer: false,
     // (a tab's fitted as the whole window's is, but always as on a narrow stage: tab_picture_node lays it out so)
@@ -2239,7 +2236,6 @@ pub fn Viewer::toggle(self : Viewer) -> Unit {
   } else {
     self.awake = true
     self.manual_hidden = false
-    self.pointer_left = false
   }
   self.awake_said()
 }
@@ -2251,7 +2247,6 @@ fn Viewer::set_bars_after_tap(self : Viewer, show : Bool, desktop~ : Bool, at~ :
   if show {
     self.awake = true
     self.manual_hidden = false
-    self.pointer_left = false
   } else {
     self.awake = false
     if desktop && self.shown_kind() == Some(KImage) && @sf.pointer_rests() {
@@ -2263,10 +2258,9 @@ fn Viewer::set_bars_after_tap(self : Viewer, show : Bool, desktop~ : Bool, at~ :
 
 ///|
 pub fn Viewer::wake(self : Viewer) -> Unit {
-  if !self.awake || self.manual_hidden || self.pointer_left {
+  if !self.awake || self.manual_hidden {
     self.awake = true
     self.manual_hidden = false
-    self.pointer_left = false
     self.awake_said()
   }
 }

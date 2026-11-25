@@ -71,8 +71,8 @@ pub let player_speeds : Array[Double] = [0.1, 0.25, 0.5, 1.0, 1.25, 1.5, 2.0]
 
 ///|
 /// A player for a page (`key` keeps its widgets apart from another's), its waits said once they have waited later_ms;
-/// its controls never fade by themselves for the hand resting: a tap or click shows or hides them, a pointer leaving
-/// the window hides them (zuozijian, 2026-11-25: the idle auto-fade taken out again).
+/// its controls never fade by themselves for the hand resting or leaving the window: a tap or click alone shows or hides
+/// them (zuozijian, 2026-11-25: the idle auto-fade and the hide on leaving taken out again).
 pub fn new_media(key : String) -> @player.Media {
   @player.Media::new(key~, speeds=player_speeds, wait_ms=later_ms)
 }

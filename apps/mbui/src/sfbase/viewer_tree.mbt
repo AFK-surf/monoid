@@ -181,14 +181,11 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     }
   })
   |> ignore
-  // desktop pointer: the bars as the last click left them once a lock clears, hidden at once when the pointer leaves
-  // the window; never hidden by themselves for the hand resting, nor shown by it moving over the picture
+  // desktop pointer: the bars as the last click left them, never hidden by the hand resting or leaving the window, nor
+  // shown by it moving over the picture (zuozijian, 2026-11-25); leaving, what its hovering lit goes out
   if vw.shown_kind() == Some(KImage) {
     root.reacts(at_start=false, fn() { root.pointer_within() && @sf.pointer_rests() }, fn(within) {
-      if within {
-        vw.pointer_left = false
-      } else if @sf.pointer_rests() {
-        vw.pointer_left = true
+      if !within && @sf.pointer_rests() {
         let mut changed = false
         if vw.near_bar {
           vw.near_bar = false
@@ -201,12 +198,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
         if vw.near_right {
           vw.near_right = false
           changed = true
-        }
-        if !@signals.untracked(fn() { vw.bars_locked() }) {
-          if vw.awake {
-            vw.awake = false
-            changed = true
-          }
         }
         if changed {
           vw.awake_said()
@@ -437,7 +428,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
           !vw.fingers.is_empty() {
           return
         }
-        vw.pointer_left = false
         let in_left = match left_zone_ref.val {
           Some(z) => z.pointer_within()
           None => false
@@ -1772,7 +1762,6 @@ fn image_steps(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     if !@sf.pointer_rests() || vw.closing || marking.on {
       return
     }
-    vw.pointer_left = false
     if vw.manual_hidden {
       vw.manual_hidden = false
       vw.awake_said()

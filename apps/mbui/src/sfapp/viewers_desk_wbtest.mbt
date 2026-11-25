@@ -126,7 +126,7 @@ test "desk: bars never fade by themselves, click on image toggles bars, double-c
 }
 
 ///|
-test "desk: the bar hidden by a click shows while the pointer is along the top, hidden again off it, and hides when leaving the window" {
+test "desk: the bar hidden by a click shows while the pointer is along the top, hidden again off it, and stays as the pointer leaves the window" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
   v.toggle()
@@ -139,13 +139,13 @@ test "desk: the bar hidden by a click shows while the pointer is along the top, 
   t.move_to(640.0, 400.0)
   t.draw()
   assert_true(!v.bars_shown())
-  // a click shows them; moving out of the window hides bars immediately
+  // a click shows them; moving out of the window keeps them
   v.toggle()
   t.draw()
   assert_true(v.bars_shown())
   t.move_to(-1.0, -1.0)
   t.draw()
-  assert_true(!v.bars_shown())
+  assert_true(v.bars_shown())
 }
 
 ///|

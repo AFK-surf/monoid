@@ -65,7 +65,7 @@ test "wave27 V1/V3: ready static video passes assert_idle() with controls visibl
 }
 
 ///|
-test "wave27 V3: controls never fade by themselves, Playing or Paused, mouse or touch; pointer leave fades" {
+test "wave27 V3: controls never fade by themselves, Playing or Paused, mouse or touch, nor as the pointer leaves" {
   let sleep_ms = @player.media_sleep_ms
   for narrow in [true, false] {
     for is_playing in [true, false] {
@@ -82,7 +82,7 @@ test "wave27 V3: controls never fade by themselves, Playing or Paused, mouse or 
       )
     }
   }
-  // Pointer leaving window immediately fades unlocked controls
+  // Pointer leaving the window: they stay
   let tl = player_tester(false, "a.mp4", [], [], [], pin=pinned(2000.0))
   tl.host_says_finger(Some(false))
   tl.draw()
@@ -90,7 +90,7 @@ test "wave27 V3: controls never fade by themselves, Playing or Paused, mouse or 
   tl.draw()
   tl.move_to(-10.0, -10.0)
   tl.run_for(sleep_ms + 1.0)
-  assert_true(tl.query(Slider, label="web-pages.drive.player.position") is None, msg="pointer leave fades immediately")
+  assert_true(tl.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="pointer leaving keeps them")
 }
 
 ///|

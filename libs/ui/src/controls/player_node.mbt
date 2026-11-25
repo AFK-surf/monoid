@@ -559,12 +559,6 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
   // in between, lock_epoch); released, the controls go back to what the last tap left them (awake), the hand moving
   // over the stage waking them never: only a tap or click shows or hides them (zuozijian, 2026-11-25).
   n.reacts(at_start=false, fn() { pn.chrome_locked() }, fn(_) { pn.lock_epoch = pn.lock_epoch + 1 })
-  // Pointer leaving the window immediately fades unlocked desktop chrome.
-  n.reacts(at_start=false, fn() { n.pointer_within() }, fn(within) {
-    if !within && pointer_rests() && !@signals.untracked(fn() { pn.chrome_locked() }) {
-      pn.awake.set(false)
-    }
-  })
   let wait_end : Ref[() -> Unit] = Ref(fn() {  })
   n.reacts(
     fn() {

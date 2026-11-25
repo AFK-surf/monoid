@@ -1,6 +1,6 @@
 // Wave 27 · Track P (Image Viewer Interaction Redesign) deterministic acceptance matrix:
 // - `assert_idle()` after settled entry keeps bars shown, never fading by themselves however long the hand rests;
-//   locks (loading, menu, bar focus, screen reader) hold them, window-leave fades them at once
+//   locks (loading, menu, bar focus, screen reader) hold them, the pointer leaving the window keeps them
 // - Per-side 84pt hot zones lighting only that side's arrow (opposite side hidden/unclickable/unreachable),
 //   hard suppression in zoomed & marking states, embedded image tab zero-regression
 // - Full-bleed stage & tall image entering/leaving marking: actual drawn rect `(x, y, w, h)` and pin screen position
@@ -137,7 +137,7 @@ test "Track P: desktop locks (menu, bar focus, image loading, screen reader) hol
 }
 
 ///|
-test "Track P: stepping to another image keeps the bars and leaving window fades immediately" {
+test "Track P: stepping to another image keeps the bars, and leaving the window keeps them" {
   let (t, v1) = open_settled_desk_image("step")
   t.move_to(640.0, 400.0)
   t.draw()
@@ -151,10 +151,10 @@ test "Track P: stepping to another image keeps the bars and leaving window fades
   assert_true(v2.bars_shown(), msg="v2 starts with bars shown")
   t.run_for(hand_rest_ms)
   assert_true(v2.bars_shown(), msg="v2 keeps bars shown after a long rest")
-  // Leaving the window fades immediately
+  // Leaving the window keeps them
   t.move_to(-1.0, -1.0)
   t.draw()
-  assert_true(!v2.bars_shown(), msg="pointer leaving window fades immediately")
+  assert_true(v2.bars_shown(), msg="pointer leaving window keeps them")
 }
 
 ///|
@@ -166,10 +166,10 @@ test "Track P: 84pt left/right hot zones light only their own arrow, zoomed & ma
   let v = viewer.get().unwrap()
   let prev_label = @sf.t("web-main.preview.prevKey")
   let next_label = @sf.t("web-main.preview.nextKey")
-  // Hide bars and arrows completely: the pointer leaving the window
+  // Hide bars and arrows completely: as a click on the picture does (its size may not be known yet)
   t.move_to(640.0, 400.0)
   t.draw()
-  t.move_to(-1.0, -1.0)
+  v.toggle()
   t.run_for(@sf.sleep_ms + @sf.viewer_bar_ms)
   assert_true(!v.bars_shown(), msg="bars faded")
   assert_eq(t.all(Button, label=prev_label).length(), 0, msg="faded: prev unreachable")
@@ -189,7 +189,7 @@ test "Track P: 84pt left/right hot zones light only their own arrow, zoomed & ma
   let v2 = viewer.get().unwrap()
   t2.move_to(640.0, 400.0)
   t2.draw()
-  t2.move_to(-1.0, -1.0)
+  v2.toggle()
   t2.run_for(@sf.sleep_ms + @sf.viewer_bar_ms)
   t2.move_to(1280.0 - 24.0, 400.0)
   t2.run_for(@sf.wake_ms)
@@ -333,8 +333,8 @@ test "Track P: desktop click boundaries (blank closes, 84pt zone blank & unknown
   let (t, _) = open_settled_desk_image("step")
   t.move_to(640.0, 400.0)
   t.draw()
-  t.move_to(-1.0, -1.0)
-  t.run_for(@sf.sleep_ms + @sf.viewer_bar_ms)
+  t.tap(640.0, 400.0)
+  t.run_for(@ui.double_click_ms + @sf.sleep_ms + @sf.viewer_bar_ms)
   // Click in right 84pt zone at y=150 (blank space away from the middle arrow button)
   t.tap(1280.0 - 30.0, 150.0)
   t.run_for(@ui.double_click_ms + 50.0)
@@ -472,7 +472,7 @@ test "Track P R2: crossing breakpoint mid trackpad pull resets stale pull_y so a
 }
 
 ///|
-test "Track P R2: pointer leaving window right after a click woke the bars hides them and the arrows" {
+test "Track P R2: pointer leaving window right after a click woke the bars keeps them and the arrows" {
   let (t, v) = open_settled_desk_image("step")
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (cx, cy) = (rx + rw / 2.0, ry + rh / 2.0)
@@ -490,7 +490,7 @@ test "Track P R2: pointer leaving window right after a click woke the bars hides
   t.move_to(-1.0, -1.0)
   t.draw()
   t.run_for(@ui.double_click_ms + idle_margin_ms)
-  assert_true(!v.bars_shown() && !v.step_shown(1), msg="bars and arrows hidden after leaving window")
+  assert_true(v.bars_shown() && v.step_shown(1), msg="bars and arrows kept after leaving window")
 }
 
 ///|
@@ -511,21 +511,21 @@ test "Track P R2: Zoom pan_under_bars allows panning out of asymmetric bottom do
 }
 
 ///|
-test "Track P R3: mouse leaving window then switching to touch single tap wakes bars and arrows" {
+test "Track P R3: a click hiding them, then switching to touch, a single tap wakes bars and arrows" {
   let (t, v) = open_settled_desk_image("step")
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (cx, cy) = (rx + rw / 2.0, ry + rh / 2.0)
   t.move_to(cx, cy)
   t.draw()
-  t.move_to(-1.0, -1.0)
-  t.draw()
-  assert_true(!v.bars_shown() && !v.step_shown(1), msg="mouse leaving window hides bars and arrows")
+  t.tap(cx, cy)
+  t.run_for(@ui.double_click_ms + idle_margin_ms)
+  assert_true(!v.bars_shown() && !v.step_shown(1), msg="a click hides bars and arrows")
   // Switch live pointing to touch and single tap picture center
   t.host_says_finger(Some(true))
   t.draw()
   t.tap(cx, cy)
   t.run_for(@ui.double_tap_ms + idle_margin_ms)
-  assert_true(v.bars_shown() && v.step_shown(1), msg="touch tap after mouse left window wakes bars and available arrows")
+  assert_true(v.bars_shown() && v.step_shown(1), msg="touch tap wakes bars and available arrows")
 }
 
 ///|
