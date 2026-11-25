@@ -1492,6 +1492,7 @@ pub fn openers_opened_ordered(
   ids : Option[Array[String]],
 ) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
   let openers : Array[(String, base_codec::Json)] = []
+  let openers_idx : Map[String, Int] = Map::new()
   let opened : Array[(String, Array[base_codec::Json])] = []
   let opened_idx : Map[String, Int] = Map::new()
   let list : Array[base_codec::Json] = match ids {
@@ -1526,16 +1527,20 @@ pub fn openers_opened_ordered(
           base_codec::Json::Num(n, _) => n == 1.0
           _ => false
         }
-        obj_set(
-          openers,
-          readops_core::js_text(readops_core::field(r, "child")),
-          opened_named(
-            station_of(readops_core::field(r, "parent_station")),
-            readops_core::field(r, "parent"),
-            readops_core::or_else(readops_core::field(r, "opener_title"), readops_core::field(r, "parent_title")),
-            led=led,
-          ),
+        let k = readops_core::js_text(readops_core::field(r, "child"))
+        let v = opened_named(
+          station_of(readops_core::field(r, "parent_station")),
+          readops_core::field(r, "parent"),
+          readops_core::or_else(readops_core::field(r, "opener_title"), readops_core::field(r, "parent_title")),
+          led=led,
         )
+        match openers_idx.get(k) {
+          Some(idx) => openers[idx] = (k, v)
+          None => {
+            openers_idx.set(k, openers.length())
+            openers.push((k, v))
+          }
+        }
       }
     }
     Err(_) => ()
@@ -1619,6 +1624,7 @@ pub fn chat_shares_ordered(
   now : Double,
 ) -> Result[Array[(String, base_codec::Json)], readops_core::ReadError] {
   let out : Array[(String, base_codec::Json)] = []
+  let out_idx : Map[String, Int] = Map::new()
   let rows = match ids {
     Some(arr) => {
       let js : Array[base_codec::Json] = []
@@ -1659,14 +1665,18 @@ pub fn chat_shares_ordered(
       }
     }
     if live.length() > 0 {
-      obj_set(
-        out,
-        readops_core::js_text(readops_core::field(r, "session")),
-        base_codec::json_obj([
-          ("to", base_codec::json_arr(live)),
-          ("write", base_codec::json_bool(mb_json_eq(readops_core::field(r, "write"), base_codec::json_num(1.0)))),
-        ]),
-      )
+      let k = readops_core::js_text(readops_core::field(r, "session"))
+      let v = base_codec::json_obj([
+        ("to", base_codec::json_arr(live)),
+        ("write", base_codec::json_bool(mb_json_eq(readops_core::field(r, "write"), base_codec::json_num(1.0)))),
+      ])
+      match out_idx.get(k) {
+        Some(idx) => out[idx] = (k, v)
+        None => {
+          out_idx.set(k, out.length())
+          out.push((k, v))
+        }
+      }
     }
   }
   Ok(out)
