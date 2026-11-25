@@ -1652,6 +1652,7 @@ fn profile_station_rows_node(
         if now {
           let sub = @signals.untracked(subscription)
           let claude = sub && text(@signals.untracked(p), "runtime") == "claude"
+          let can_auto = @signals.untracked(auto_ok)
           pick_stations(
             core,
             address,
@@ -1662,7 +1663,8 @@ fn profile_station_rows_node(
             initial=true,
             subscription=sub,
             claude~,
-            auto_ok=@signals.untracked(auto_ok),
+            follow=can_auto,
+            auto_ok=can_auto,
           )
         } else {
           @settings.act(

@@ -88,15 +88,17 @@ fn SharePick::picked(self : SharePick) -> Array[String] {
 }
 
 ///|
-/// A pick of `stations` for the account on `own`: following the whitelist (`follow`), its rows showing the stations on
-/// it; else every station (`allowed` None, not `initial`); else those `allowed` names; a first share only `own`.
+/// A pick of `stations` for the account on `own`: following the whitelist (`follow`, where the station can, `auto_ok`),
+/// its rows showing the stations on it; else every station (`allowed` None, not `initial`); else those `allowed` names;
+/// a first share only `own`.
 fn share_pick_of(stations : Array[Json], own : String, allowed : Array[String]?, initial : Bool, follow : Bool, auto_ok : Bool) -> SharePick {
+  let following = follow && auto_ok
   let ticked : @sf.LiveMap[String, Bool] = @sf.LiveMap::new()
   for x in stations {
     let xid = text(Some(x), "id")
     ticked.put(
       xid,
-      if follow {
+      if following {
         xid == own || share_on_whitelist(x)
       } else if initial {
         xid == own
@@ -112,8 +114,8 @@ fn share_pick_of(stations : Array[Json], own : String, allowed : Array[String]?,
     stations,
     own,
     ticked,
-    future_all: @signals.signal(!initial && !follow && allowed is None),
-    follow: @signals.signal(follow && auto_ok),
+    future_all: @signals.signal(!initial && !following && allowed is None),
+    follow: @signals.signal(following),
     auto_ok,
   }
 }
@@ -409,8 +411,7 @@ pub fn pick_stations_many(
     text(p, "runtime") == "claude" && text(field(p, "access"), "kind") == "subscription"
   })
   let auto_ok = rows.iter().all(fn(r) { flag(Some(r), "batchShareAllowAuto") })
-  let follow = auto_ok && rows.iter().all(fn(r) { flag(Some(r), "shareAuto") })
-  let pick = share_pick_of(stations, own, None, true, follow, auto_ok)
+  let pick = share_pick_of(stations, own, None, true, auto_ok, auto_ok)
   let title = if unshared.length() > 0 && claude {
     @sf.t("web-pages.profiles.share.confirmClaudeTitle")
   } else {
