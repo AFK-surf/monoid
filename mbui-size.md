@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [e7a05e132](https://github.com/AFK-surf/monoid/commit/e7a05e1322d6c3a3ae1f8ff7e175823a51708441) fix(core,station): resume image previews and named | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [26a69ad46](https://github.com/AFK-surf/monoid/commit/26a69ad460ebd57a96a62531ace1f87c5ebecfc9) feat(mbui): show each station's state as icons in  | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [686de55fb](https://github.com/AFK-surf/monoid/commit/686de55fbd0a4b4cd63ed6222a6d900f2181c2d2) fix(station): give agy only the skills that fit be | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 131.51 |
 | [c2380f54e](https://github.com/AFK-surf/monoid/commit/c2380f54ebefbda921b5c1bbf9497cff1fc059c9) fix(mbui): anchor steps_seconds clock to eliminate | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.52 | 124.13 |
 | [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
-| [6ff926ec7](https://github.com/AFK-surf/monoid/commit/6ff926ec7c14626fc283d5ad79a3c410b1fc045d) fix(ci): filter native-handoff get by host target, | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [797ec5762](https://github.com/AFK-surf/monoid/commit/797ec5762d33ccbb695570770b214a424f613391) feat(pion-station): Wave 8 W8-A port 6 live parser | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.26 |
 | [e7a05e132](https://github.com/AFK-surf/monoid/commit/e7a05e1322d6c3a3ae1f8ff7e175823a51708441) fix(core,station): resume image previews and named | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.25 |
 | [26a69ad46](https://github.com/AFK-surf/monoid/commit/26a69ad460ebd57a96a62531ace1f87c5ebecfc9) feat(mbui): show each station's state as icons in  | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
 | [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [686de55fb](https://github.com/AFK-surf/monoid/commit/686de55fbd0a4b4cd63ed6222a6d900f2181c2d2) fix(station): give agy only the skills that fit be | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.25 |
 | [c2380f54e](https://github.com/AFK-surf/monoid/commit/c2380f54ebefbda921b5c1bbf9497cff1fc059c9) fix(mbui): anchor steps_seconds clock to eliminate | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57 |
 | [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57 |
-| [6ff926ec7](https://github.com/AFK-surf/monoid/commit/6ff926ec7c14626fc283d5ad79a3c410b1fc045d) fix(ci): filter native-handoff get by host target, | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
