@@ -14,9 +14,10 @@ pub fn overlay_solid_edge() -> (Double, Int64) {
 }
 
 ///|
-/// Decorates an existing modal dialog container node `v` in place (zero wrapper nodes) with symmetric dense
-/// liquid dialog glass (`tint_light=0xFDFCFDD1L` for WCAG >= 4.5:1 muted text contrast in Light mode),
-/// outside-only `glass_overlay_shadow`, and `MBUI_GLASS=solid` `panel_edge()` hairline fallback.
+/// Decorates an existing modal dialog container node `v` in place (zero wrapper nodes) with the unified liquid dialog
+/// glass (`@glass.liquid_dialog_glass`: 50% tint, `blur=14`, the same in light and dark; its secondary words keep
+/// >= 4.5:1 by `dialog_lead`'s dark ink), outside-only `glass_overlay_shadow`, and `MBUI_GLASS=solid` `panel_edge()`
+/// hairline fallback.
 pub fn dialog_surface_decorate(
   v : @view.View,
   edge_w? : Double = 1.0,
@@ -26,7 +27,6 @@ pub fn dialog_surface_decorate(
   @glass.liquid_dialog_surface_decorate(
     v,
     solid=panel_ground,
-    tint_light=0xFDFCFDD1L,
     shadow=glass_overlay_shadow,
     solid_edge=fn() { (edge_w, panel_edge()) },
     clips~,

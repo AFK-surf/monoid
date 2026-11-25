@@ -563,8 +563,17 @@ let dialog_title : @ui.TextStyle = @ui.text_style(size=Heading, weight=Semibold,
 let dialog_lead_at : @ui.Style = @ui.css("w=Full pt=S1_5")
 
 ///|
+/// What a dialog says under its title: muted words; in the dark, three quarters of the way from muted to the words' own
+/// ink (#DFE0E2 of the palette's #B8BBC1 and #ECECED), as the 50% dark liquid glass under it lets a bright backdrop
+/// through (#636363 over white, #286438 over green) where muted alone falls under 4.5:1. Made of the theme's roles, so
+/// more contrast asked (muted then half way to the ink) brings it nearer still.
 // kept across runs: a value (no field of it changes)
-let dialog_lead : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted)
+let dialog_lead : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  leading=L6,
+  color=Muted,
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+)
 
 ///|
 /// What it holds: 18 under the title (or its lead), its parts 16 apart.
