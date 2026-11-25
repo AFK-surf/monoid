@@ -1,0 +1,1566 @@
+// Deterministic unit tests for `sessions_agents` (`wave8-plan.md` v5 §2.2, §2.4, §2.6).
+// Zero `sleep`, virtual clock via `MemHostTransport` (`SessionHost::for_test`, NEVER seeded).
+
+import "base64"
+import "base_codec"
+import "effect"
+import "host_shim"
+import "js_json"
+import "sessions_core"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn test_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn hex_encode_bytes(b : Bytes) -> String {
+  let digits = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let v = b[i].to_int() & 0xFF
+    sb.write_byte(digits.code_unit_at((v >> 4) & 0xF).to_byte())
+    sb.write_byte(digits.code_unit_at(v & 0xF).to_byte())
+  }
+  sb.to_string()
+}
+
+fn runner_out_line(stream : String, at : Int64, payload : String) -> Bytes {
+  let b64 = base64::encode(payload.to_bytes())
+  let msg = "{\"op\":\"out\",\"stream\":\"" +
+  stream +
+  "\",\"at\":" +
+  at.to_string() +
+  ",\"data\":\"" +
+  b64 +
+  "\"}\n"
+  msg.to_bytes()
+}
+
+fn runner_exit_line(code : Int) -> Bytes {
+  ("{\"op\":\"exit\",\"code\":" + code.to_string() + ",\"signal\":null}\n").to_bytes()
+}
+
+fn raw_stdout_text(mem : sessions_core::MemHostTransport) -> String {
+  let parts : Array[Bytes] = []
+  for i in 0..<mem.stdout_raw.length() {
+    parts.push(mem.stdout_raw[i])
+  }
+  decode_utf8_lossy_bytes(concat_bytes(parts))
+}
+
+fn find_shell_call(
+  mem : sessions_core::MemHostTransport,
+  from_idx : Int,
+  op : String,
+) -> Option[(Int, sessions_core::MemShellCall)] {
+  for i in from_idx..<mem.shell_calls.length() {
+    if mem.shell_calls[i].op == op {
+      return Some((i, mem.shell_calls[i]))
+    }
+  }
+  None
+}
+
+fn complete_shell(
+  host : sessions_core::SessionHost,
+  id : Int64,
+  json : String,
+  bytes : Option[Bytes] = None,
+  error : String = "",
+) -> Unit {
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: id,
+      error: error,
+      json: json,
+      bytes: bytes,
+    }),
+  )
+  host.tick()
+}
+
+fn drain_writes(
+  host : sessions_core::SessionHost,
+  mem : sessions_core::MemHostTransport,
+  cursor : Int,
+) -> (Int, Array[String]) {
+  host.tick()
+  let written : Array[String] = []
+  let mut idx = cursor
+  while idx < mem.shell_calls.length() {
+    let call = mem.shell_calls[idx]
+    idx = idx + 1
+    if call.op == "tcp.write" {
+      match call.bytes {
+        Some(b) => written.push(decode_utf8_lossy_bytes(b))
+        None => ()
+      }
+      complete_shell(host, call.id, "{}")
+    } else if call.op == "tcp.end" {
+      complete_shell(host, call.id, "{}")
+    }
+  }
+  (idx, written)
+}
+
+fn assert_holding_zero(host : sessions_core::SessionHost) -> Unit {
+  let (a, b, c, d, e, f) = host.rt.holding()
+  assert(a == 0)
+  assert(b == 0)
+  assert(c == 0)
+  assert(d == 0)
+  assert(e == 0)
+  assert(f == 0)
+}
+
+test "sessions_agents: Claude driver, DELTAS_MS=200 coalescing, async interrupt, routed batch, freeze/thaw, exit" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  agents.told("{\"wall\":1000}")
+  assert(agents.now() == 1000.0)
+  mem.advance_now(50.to_int64())
+  assert(agents.now() == 1050.0)
+
+  agents.told("{\"attach\":1,\"socket\":\"/tmp/claude.sock\",\"kind\":\"claude\",\"routed\":true}")
+  host.tick()
+
+  // Complete unix.open -> handle 10
+  let (open_idx, open_call) = match find_shell_call(mem, 0, "unix.open") {
+    Some(pair) => pair
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, open_call.id, "{\"id\":10}")
+
+  // Writer sends attach, reader issues tcp.read
+  let (cur1, writes1) = drain_writes(host, mem, open_idx + 1)
+  assert(writes1.length() == 1)
+  assert(writes1[0] == "{\"op\":\"attach\"}\n")
+
+  // Begin turn, then feed two text deltas (same step) -> coalesced over DELTAS_MS=200
+  agents.told("{\"begin\":1}")
+  let (_, read1) = match find_shell_call(mem, open_idx + 1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read 1")
+  }
+  let start_frame = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  let d1 = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}}\n"
+  let d2 = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}}\n"
+  complete_shell(host, read1.id, "{}", Some(runner_out_line("out", 0.to_int64(), start_frame)))
+
+  // Start event is non-delta, so emitted immediately as normal frame (NO active, NO at/bytes)
+  let raw1 = raw_stdout_text(mem)
+  assert(raw1.contains("\"lines\":1"))
+  assert(!raw1.contains("\"active\""))
+  assert(!raw1.contains("\"at\""))
+  assert(raw1.contains("\"batch\":0"))
+
+  // Claim batch 0
+  match agents.take(1, 0) {
+    Some((evs, _)) => assert(evs.length() > 0)
+    None => panic("expected batch 0")
+  }
+
+  // Feed delta 1 then delta 2: held for 200ms
+  let (r2_idx, read2) = match find_shell_call(mem, cur1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read 2")
+  }
+  let raw_before_deltas = mem.stdout_raw.length()
+  complete_shell(host, read2.id, "{}", Some(runner_out_line("out", start_frame.length().to_int64(), d1 + d2)))
+  assert(mem.stdout_raw.length() == raw_before_deltas)
+
+  // Advance virtual clock by 199ms -> still held; +1ms -> 200ms fires and merges "hel"+"lo" = "hello"
+  mem.advance_now(199.to_int64())
+  host.tick()
+  assert(mem.stdout_raw.length() == raw_before_deltas)
+  mem.advance_now(1.to_int64())
+  host.tick()
+  assert(mem.stdout_raw.length() > raw_before_deltas)
+  let raw2 = raw_stdout_text(mem)
+  assert(raw2.contains("\"text\":\"hello\""))
+  assert(raw2.contains("\"batch\":1"))
+
+  // Test freeze holds incoming STDOUT lines and thaw replays them
+  agents.told("{\"freeze\":7,\"only\":[1]}")
+  assert(mem.stdout_lines.length() == 1)
+  assert(mem.stdout_lines[0].contains("\"frozen\":7"))
+  assert(mem.stdout_lines[0].contains("\"1\":{\"turn\":{\"busy\":true"))
+
+  let (r3_idx, read3) = match find_shell_call(mem, r2_idx + 1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read 3")
+  }
+  let frozen_stdout_line = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\",\"index\":0}}\n"
+  let raw_before_frozen_out = mem.stdout_raw.length()
+  let stderr_and_stdout_msg = concat_bytes([
+    runner_out_line("err", 0.to_int64(), "e1\ne2\ne3\ne4\ntrailing"),
+    runner_out_line("out", (start_frame.length() + d1.length() + d2.length()).to_int64(), frozen_stdout_line),
+  ])
+  complete_shell(host, read3.id, "{}", Some(stderr_and_stdout_msg))
+  // While frozen, stdout line MUST be held, not emitted yet!
+  assert(mem.stdout_raw.length() == raw_before_frozen_out)
+  agents.told("{\"thaw\":1}")
+  // On thaw, held stdout line is parsed and emitted immediately!
+  assert(mem.stdout_raw.length() > raw_before_frozen_out)
+  assert(raw_stdout_text(mem).contains("\"kind\":\"end\""))
+
+  // Feed exit + EOF
+  let (r4_idx, read4) = match find_shell_call(mem, r3_idx + 1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read 4")
+  }
+  complete_shell(host, read4.id, "{}", Some(runner_exit_line(0)))
+  // Last 3 stderr lines including trailing partial line: "e3\ne4\ntrailing"
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"exit\":1"))
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"stderr\":\"e3\\ne4\\ntrailing\""))
+
+  // EOF on tcp.read -> tcp.close -> {"ended":1}
+  let (r5_idx, read5) = match find_shell_call(mem, r4_idx + 1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read 5")
+  }
+  complete_shell(host, read5.id, "{\"end\":true}")
+  let (_, _) = drain_writes(host, mem, cur1)
+  let (_, close_call) = match find_shell_call(mem, r5_idx + 1, "tcp.close") {
+    Some(pair) => pair
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, close_call.id, "{}")
+  host.tick()
+
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1] == "{\"ended\":1}")
+  assert(agents.session_count() == 0)
+  assert(mem.shell_sync_calls.length() == 0)
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents: Codex dual frame format, orphans, insertion order, bytes:0 then non-empty, codexReplay" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  agents.told("{\"attach\":2,\"socket\":\"/tmp/codex.sock\",\"kind\":\"codex\",\"orphans\":true}")
+  host.tick()
+  let (open_idx, open_call) = match find_shell_call(mem, 0, "unix.open") {
+    Some(pair) => pair
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, open_call.id, "{\"id\":20}")
+  let (cur1, _) = drain_writes(host, mem, open_idx + 1)
+
+  // Unclaimed thread "th-orphan" gets turn/started + item/started -> marks emitted + buffered in orphans
+  // Plus a turn/diff/updated line (dropped) and a Node JSON-RPC answer {"id":99,"result":{}}
+  let (r1_idx, read1) = match find_shell_call(mem, open_idx + 1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read")
+  }
+  let diff_line = "{\"method\":\"turn/diff/updated\",\"params\":{\"threadId\":\"th-orphan\",\"diff\":\"huge\"}}\n"
+  let mark_line = "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"th-orphan\"}}\n"
+  let node_line = "{\"id\":99,\"result\":{\"ok\":true}}\n"
+  complete_shell(host, read1.id, "{}", Some(runner_out_line("out", 0.to_int64(), diff_line + mark_line + node_line)))
+
+  let raw_after_node = raw_stdout_text(mem)
+  assert(raw_after_node.contains("\"lines\":2"))
+  assert(raw_after_node.contains("\"marks\":[[\"th-orphan\",1,"))
+  assert(raw_after_node.contains("\"bytes\":30"))
+  assert(raw_after_node.contains("{\"id\":99,\"result\":{\"ok\":true}}"))
+
+  // Claim "th-orphan" with routed:true -> flushes orphan with "at":[],"bytes":0
+  let raw_len_before_claim = mem.stdout_raw.length()
+  agents.told("{\"codexThread\":2,\"id\":\"th-orphan\",\"routed\":true}")
+  assert(mem.stdout_raw.length() > raw_len_before_claim)
+  let claim_frame = decode_utf8_lossy_bytes(mem.stdout_raw[raw_len_before_claim])
+  assert(claim_frame.contains("\"at\":[],\"bytes\":0"))
+  assert(claim_frame.contains("\"thread\":\"th-orphan\""))
+  assert(claim_frame.contains("\"batch\":0"))
+
+  // Turn off orphans (empty now, no drop note), claim second thread "th-b"
+  agents.told("{\"orphans\":2,\"on\":false}")
+  agents.told("{\"codexThread\":2,\"id\":\"th-b\",\"routed\":false}")
+
+  // Verify freeze preserves exact insertion order ["th-orphan", "th-b"]
+  agents.told("{\"freeze\":3,\"only\":[2]}")
+  let frozen_line = mem.stdout_lines[mem.stdout_lines.length() - 1]
+  let idx_orphan = match js_json::utf16_find_from(frozen_line, "\"th-orphan\":", 0) {
+    Some(i) => i
+    None => -1
+  }
+  let idx_b = match js_json::utf16_find_from(frozen_line, "\"th-b\":", 0) {
+    Some(i) => i
+    None => -1
+  }
+  assert(idx_orphan >= 0 && idx_b > idx_orphan)
+
+  // codexReplay / codexReplayed preserves thread insertion order
+  agents.told("{\"codexReplay\":42,\"notices\":[[\"item/started\",\"t-second\",\"commandExecution\",\"c1\"],[\"item/started\",\"t-first\",\"commandExecution\",\"c2\"]]}")
+  assert(agents.replay_count() == 1)
+  agents.told("{\"codexReplayed\":42}")
+  assert(agents.replay_count() == 0)
+  let replayed_line = mem.stdout_lines[mem.stdout_lines.length() - 1]
+  assert(replayed_line.contains("\"replayed\":42"))
+  let idx_s = match js_json::utf16_find_from(replayed_line, "\"t-second\":", 0) {
+    Some(i) => i
+    None => -1
+  }
+  let idx_f = match js_json::utf16_find_from(replayed_line, "\"t-first\":", 0) {
+    Some(i) => i
+    None => -1
+  }
+  assert(idx_s >= 0 && idx_f > idx_s)
+
+  // Clean detach + close
+  agents.told("{\"detach\":2,\"leave\":true}")
+  let (_, _) = drain_writes(host, mem, cur1)
+  let (r2_idx, read2) = match find_shell_call(mem, r1_idx + 1, "tcp.read") {
+    Some(pair) => pair
+    None => panic("expected tcp.read 2")
+  }
+  complete_shell(host, read2.id, "{\"end\":true}")
+  let (_, close_call) = match find_shell_call(mem, r2_idx + 1, "tcp.close") {
+    Some(pair) => pair
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, close_call.id, "{}")
+  host.tick()
+
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1] == "{\"left\":2}")
+  assert(agents.session_count() == 0)
+  assert(mem.shell_sync_calls.length() == 0)
+  assert_holding_zero(host)
+}
+test "sessions_agents: all 4 Own drivers (dsh, cursor, pi, acp) + ownReplay with sparse zero hole" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  // 1. DSH: attach -> begin -> turn/start -> unexpected EOF -> cut_short + closed + outq shutdown
+  agents.told("{\"attach\":10,\"socket\":\"/tmp/dsh.sock\",\"kind\":\"dsh\"}")
+  host.tick()
+  let (i1, open1) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("expected dsh unix.open")
+  }
+  complete_shell(host, open1.id, "{\"id\":100}")
+  let (c1, _) = drain_writes(host, mem, i1 + 1)
+  agents.told("{\"begin\":10}")
+  let (r1i, read1) = match find_shell_call(mem, i1 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected dsh tcp.read")
+  }
+  // Open a dsh tool step, then hit unexpected EOF -> cut_short MUST emit live end event for "c1"
+  let dsh_open_step = "{\"ev\":\"event\",\"type\":\"turn/start\"}\n{\"ev\":\"event\",\"type\":\"tool/call\",\"data\":{\"callId\":\"c1\",\"toolName\":\"sh\"}}\n"
+  complete_shell(host, read1.id, "{}", Some(runner_out_line("out", 0.to_int64(), dsh_open_step)))
+  let (r1bi, read1b) = match find_shell_call(mem, r1i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected dsh tcp.read 2")
+  }
+  let raw_before_dsh_eof = mem.stdout_raw.length()
+  complete_shell(host, read1b.id, "{\"end\":true}")
+  let (_, close1) = match find_shell_call(mem, r1bi + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected dsh tcp.close")
+  }
+  complete_shell(host, close1.id, "{}")
+  host.tick()
+  // Verify dsh cut_short emitted its live end event before {"closed":10}
+  assert(mem.stdout_raw.length() > raw_before_dsh_eof)
+  assert(raw_stdout_text(mem).contains("\"kind\":\"end\",\"id\":\"c1\""))
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"closed\":10"))
+  assert(agents.session_count() == 0)
+
+  // 2. Cursor: attach -> node passthrough line emits at + bytes + raw body
+  let cur_start = mem.shell_calls.length()
+  agents.told("{\"attach\":11,\"socket\":\"/tmp/cursor.sock\",\"kind\":\"cursor\"}")
+  host.tick()
+  let (i2, open2) = match find_shell_call(mem, cur_start, "unix.open") {
+    Some(p) => p
+    None => panic("expected cursor unix.open")
+  }
+  complete_shell(host, open2.id, "{\"id\":101}")
+  let (c2, _) = drain_writes(host, mem, i2 + 1)
+  let (r2i, read2) = match find_shell_call(mem, i2 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected cursor tcp.read")
+  }
+  let cursor_open_line = "{\"id\":\"open\",\"session\":\"cur-1\"}\n"
+  complete_shell(host, read2.id, "{}", Some(runner_out_line("out", 0.to_int64(), cursor_open_line)))
+  let raw_cur = raw_stdout_text(mem)
+  assert(raw_cur.contains("\"lines\":11"))
+  assert(raw_cur.contains("\"at\":[[0,"))
+  assert(raw_cur.contains("\"bytes\":31"))
+  let (r2b_idx, read2b) = match find_shell_call(mem, r2i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected cursor tcp.read 2")
+  }
+  complete_shell(host, read2b.id, "{\"end\":true}")
+  let (_, close2) = match find_shell_call(mem, r2b_idx + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected cursor tcp.close")
+  }
+  complete_shell(host, close2.id, "{}")
+  host.tick()
+
+  // 3. Pi: attach -> begin -> agent_end -> EOF
+  let pi_start = mem.shell_calls.length()
+  agents.told("{\"attach\":12,\"socket\":\"/tmp/pi.sock\",\"kind\":\"pi\"}")
+  host.tick()
+  let (i3, open3) = match find_shell_call(mem, pi_start, "unix.open") {
+    Some(p) => p
+    None => panic("expected pi unix.open")
+  }
+  complete_shell(host, open3.id, "{\"id\":102}")
+  let (_, _) = drain_writes(host, mem, i3 + 1)
+  let raw_before_pi = mem.stdout_raw.length()
+  agents.told("{\"begin\":12}")
+  assert(mem.stdout_raw.length() > raw_before_pi)
+  let (r3i, read3) = match find_shell_call(mem, i3 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected pi tcp.read")
+  }
+  let pi_end_line = "{\"type\":\"agent_start\"}\n{\"type\":\"agent_settled\"}\n"
+  complete_shell(host, read3.id, "{}", Some(runner_out_line("out", 0.to_int64(), pi_end_line)))
+  assert(raw_stdout_text(mem).contains("\"type\":\"turnEnded\""))
+  let (r3bi, read3b) = match find_shell_call(mem, r3i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected pi tcp.read 2")
+  }
+  complete_shell(host, read3b.id, "{\"end\":true}")
+  let (_, close3) = match find_shell_call(mem, r3bi + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected pi tcp.close")
+  }
+  complete_shell(host, close3.id, "{}")
+  host.tick()
+
+  // 4. ACP: agy flavor, acpSession, acpOpened(resumed), acpPrompt, acpInject, freeze
+  let acp_start = mem.shell_calls.length()
+  agents.told("{\"attach\":13,\"socket\":\"/tmp/acp.sock\",\"kind\":\"acp\",\"flavor\":\"agy\",\"kept\":true}")
+  host.tick()
+  let (i4, open4) = match find_shell_call(mem, acp_start, "unix.open") {
+    Some(p) => p
+    None => panic("expected acp unix.open")
+  }
+  complete_shell(host, open4.id, "{\"id\":103}")
+  let (_, _) = drain_writes(host, mem, i4 + 1)
+  agents.told("{\"acpSession\":13,\"id\":\"s-agy\"}")
+  agents.told("{\"acpOpened\":13,\"resumed\":true}")
+  let raw_before_acp_prompt = mem.stdout_raw.length()
+  agents.told("{\"acpPrompt\":13,\"owner\":\"p1\",\"text\":\"hi\"}")
+  assert(mem.stdout_raw.length() > raw_before_acp_prompt)
+  let raw_before_acp_inject = mem.stdout_raw.length()
+  agents.told("{\"acpInject\":13,\"id\":\"p2\",\"takeOver\":true,\"text\":\"steer\"}")
+  assert(mem.stdout_raw.length() > raw_before_acp_inject)
+  let acp_raw = raw_stdout_text(mem)
+  assert(acp_raw.contains("\"steered\":true"))
+  assert(acp_raw.contains("\"owner\":\"p2\""))
+  agents.told("{\"freeze\":99,\"only\":[13]}")
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"frozen\":99"))
+  let (r4i, read4) = match find_shell_call(mem, i4 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected acp tcp.read")
+  }
+  complete_shell(host, read4.id, "{\"end\":true}")
+  let (_, close4) = match find_shell_call(mem, r4i + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected acp tcp.close")
+  }
+  complete_shell(host, close4.id, "{}")
+  host.tick()
+
+  // 5. ownReplay multi-chunk: chunk 1 ends with a partial line, chunk 2 begins with a zero-byte sparse hole
+  //    which must reset Pieces::new() before parsing the valid line.
+  let rep_start = mem.shell_calls.length()
+  let chunk1 = "{\"id\":\"cut_partial".to_bytes()
+  let zero_hole = Bytes::new(4)
+  zero_hole[0] = 0.to_byte()
+  zero_hole[1] = 0.to_byte()
+  zero_hole[2] = 0.to_byte()
+  zero_hole[3] = 0.to_byte()
+  let line_bytes = "{\"id\":\"open\",\"session\":\"dsh-replayed\"}\n".to_bytes()
+  let chunk2 = concat_bytes([zero_hole, line_bytes])
+  let total_at = (chunk1.length() + chunk2.length()).to_int64()
+  agents.told("{\"ownReplay\":77,\"kind\":\"dsh\",\"path\":\"/tmp/out.log\",\"at\":" + total_at.to_string() + "}")
+  host.tick()
+  let (fs1_i, fs1_call) = match find_shell_call(mem, rep_start, "fs.bytes") {
+    Some(p) => p
+    None => panic("expected fs.bytes 1")
+  }
+  complete_shell(host, fs1_call.id, "{\"value\":\"" + hex_encode_bytes(chunk1) + "\"}")
+  // sleep_k(0) yields between chunks
+  host.tick()
+  let (_, fs2_call) = match find_shell_call(mem, fs1_i + 1, "fs.bytes") {
+    Some(p) => p
+    None => panic("expected fs.bytes 2")
+  }
+  complete_shell(host, fs2_call.id, "{\"value\":\"" + hex_encode_bytes(chunk2) + "\"}")
+  host.tick()
+  let rep_line = mem.stdout_lines[mem.stdout_lines.length() - 1]
+  assert(rep_line.contains("\"ownReplayed\":77"))
+  assert(rep_line.contains("\"session\":\"dsh-replayed\""))
+
+  let _ = c1
+  let _ = c2
+  assert(agents.session_count() == 0)
+  assert(mem.shell_sync_calls.length() == 0)
+  assert_holding_zero(host)
+}
+test "sessions_agents: survives HubGen db rotation with active socket & unclaimed batches, zero old-gen leak" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let mut gen = sessions_core::HubGen::new(host, 0)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  agents.told("{\"attach\":5,\"socket\":\"/tmp/survive.sock\",\"kind\":\"claude\",\"routed\":true}")
+  host.tick()
+  let (open_idx, open_call) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, open_call.id, "{\"id\":50}")
+  let (cur1, _) = drain_writes(host, mem, open_idx + 1)
+
+  // Produce a routed batch before db rotation
+  let (r1_idx, read1) = match find_shell_call(mem, open_idx + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 1")
+  }
+  let frame = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  complete_shell(host, read1.id, "{}", Some(runner_out_line("out", 0.to_int64(), frame)))
+
+  // Rotate HubGen TWICE (simulating {"db": null} twice)
+  let old_gen = gen
+  gen = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(old_gen.counters.sealed)
+  old_gen.say_node([("stale", sessions_core::jbool(true))])
+  assert(mem.stdout_lines.length() == 0)
+
+  gen = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(gen.counters.epoch == 2)
+
+  // Unclaimed batch 0 is STILL takeable after 2 HubGen rotations!
+  match agents.take(5, 0) {
+    Some((evs, _)) => assert(evs.length() == 1)
+    None => panic("expected batch 0 to survive HubGen rotation")
+  }
+
+  // Socket is STILL readable (ShellOwner::Process was NOT abandoned by rotate_hub_gen!)
+  let (r2_idx, read2) = match find_shell_call(mem, r1_idx + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 2")
+  }
+  complete_shell(host, read2.id, "{\"end\":true}")
+  let (_, _) = drain_writes(host, mem, cur1)
+  let (_, close_call) = match find_shell_call(mem, r2_idx + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, close_call.id, "{}")
+  host.tick()
+
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"closed\":5"))
+  assert(agents.session_count() == 0)
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents: unexpected close retains unclaimed batches until done/detach, multi-round churn zeros rt.holding()" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  // 1. Unexpected close with unclaimed routed batch: session stays until Node sends done
+  agents.told("{\"attach\":30,\"socket\":\"/tmp/unclaimed.sock\",\"kind\":\"claude\",\"routed\":true}")
+  host.tick()
+  let (i0, open0) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, open0.id, "{\"id\":300}")
+  let (c0, _) = drain_writes(host, mem, i0 + 1)
+  let (r0i, read0) = match find_shell_call(mem, i0 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read")
+  }
+  let f0 = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  complete_shell(host, read0.id, "{}", Some(runner_out_line("out", 0.to_int64(), f0)))
+  // Also arm a 200ms delta timer right before socket crashes
+  let (r0b_i, read0b) = match find_shell_call(mem, r0i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 2")
+  }
+  let d0 = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}}\n"
+  complete_shell(host, read0b.id, "{}", Some(runner_out_line("out", f0.length().to_int64(), d0)))
+  // Crash socket (read error)
+  let (r0c_i, read0c) = match find_shell_call(mem, r0b_i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 3")
+  }
+  complete_shell(host, read0c.id, "", None, "ECONNRESET")
+  let (_, close0) = match find_shell_call(mem, r0c_i + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, close0.id, "{}")
+  host.tick()
+  // Active Hosted is dropped immediately on close; unclaimed batches stay detached until done
+  assert(agents.session_count() == 0)
+  assert(agents.pending_batch_count() == 2)
+  assert_holding_zero(host)
+  // Node sends done -> clears detached batches
+  agents.told("{\"done\":30}")
+  assert(agents.session_count() == 0)
+  assert(agents.pending_batch_count() == 0)
+  let _ = c0
+
+  // 2. Multi-round churn (20 rounds of open-fail + open-read-close)
+  for round in 0..<20 {
+    let n = 100 + round
+    let start_idx = mem.shell_calls.length()
+    agents.told("{\"attach\":" + n.to_string() + ",\"socket\":\"/tmp/churn.sock\",\"kind\":\"claude\"}")
+    host.tick()
+    let (oi, oc) = match find_shell_call(mem, start_idx, "unix.open") {
+      Some(p) => p
+      None => panic("expected churn unix.open")
+    }
+    if (round & 1) == 0 {
+      complete_shell(host, oc.id, "", None, "ENOENT")
+    } else {
+      complete_shell(host, oc.id, "{\"id\":" + (500 + round).to_string() + "}")
+      let (_, _) = drain_writes(host, mem, oi + 1)
+      let (ri, rc) = match find_shell_call(mem, oi + 1, "tcp.read") {
+        Some(p) => p
+        None => panic("expected churn tcp.read")
+      }
+      complete_shell(host, rc.id, "{\"end\":true}")
+      let (_, cc) = match find_shell_call(mem, ri + 1, "tcp.close") {
+        Some(p) => p
+        None => panic("expected churn tcp.close")
+      }
+      complete_shell(host, cc.id, "{}")
+      host.tick()
+    }
+  }
+
+  assert(agents.session_count() == 0)
+  assert(agents.replay_count() == 0)
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+  assert(mem.shell_sync_calls.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents: DELTAS_MOST immediate flush, async crypto.random interrupt (zero shell_sync), Codex advance_ack multi-thread" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  // 1. Claude: DELTAS_MOST=65536 triggers immediate flush without advancing clock,
+  //    and renew/interrupt triggers async crypto.random shell_k (never shell_sync).
+  agents.told("{\"attach\":40,\"socket\":\"/tmp/c40.sock\",\"kind\":\"claude\"}")
+  host.tick()
+  let (i0, open0) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, open0.id, "{\"id\":400}")
+  let (c0, _) = drain_writes(host, mem, i0 + 1)
+
+  let (r1i, read1) = match find_shell_call(mem, i0 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 1")
+  }
+  // Build a 65536-char text delta
+  let sb = StringBuilder::new()
+  for _ in 0..<4096 {
+    sb.write_string("0123456789abcdef")
+  }
+  let big_text = sb.to_string()
+  let start_f = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  let big_d = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"" + big_text + "\"}}}\n"
+  complete_shell(host, read1.id, "{}", Some(runner_out_line("out", 0.to_int64(), start_f)))
+  let raw_before_big = mem.stdout_raw.length()
+  let (r2i, read2) = match find_shell_call(mem, r1i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 2")
+  }
+  complete_shell(host, read2.id, "{}", Some(runner_out_line("out", start_f.length().to_int64(), big_d)))
+  // Flushed IMMEDIATELY at t=0 without advancing clock by 200ms!
+  assert(mem.stdout_raw.length() > raw_before_big)
+
+  // Trigger async interrupt via auth_failure on Claude frame while busy
+  agents.told("{\"begin\":40}")
+  let (r3i, read3) = match find_shell_call(mem, r2i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 3")
+  }
+  let auth_err_frame = "{\"type\":\"system\",\"subtype\":\"api_retry\",\"error_status\":401,\"error\":\"invalid_token\"}\n"
+  complete_shell(host, read3.id, "{}", Some(runner_out_line("out", (start_f.length() + big_d.length()).to_int64(), auth_err_frame)))
+  host.tick()
+  // Must have issued async crypto.random (NEVER shell_sync)
+  let (_, rand_call) = match find_shell_call(mem, r3i + 1, "crypto.random") {
+    Some(p) => p
+    None => panic("expected async crypto.random shell_k")
+  }
+  assert(mem.shell_sync_calls.length() == 0)
+  complete_shell(host, rand_call.id, "{\"value\":\"0123456789abcdef0123456789abcdef\"}")
+  let (c1, writes_int) = drain_writes(host, mem, c0)
+  let mut saw_interrupt = false
+  for wi in 0..<writes_int.length() {
+    if writes_int[wi].contains("\"op\":\"write\"") {
+      saw_interrupt = true
+    }
+  }
+  assert(saw_interrupt)
+
+  // Close Claude session
+  let (r4i, read4) = match find_shell_call(mem, r3i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 4")
+  }
+  complete_shell(host, read4.id, "{\"end\":true}")
+  let (_, close4) = match find_shell_call(mem, r4i + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, close4.id, "{}")
+  host.tick()
+  let _ = c1
+
+  // 2. Codex multi-thread advance_ack: batch 1 taken before batch 0 does NOT advance acked_out past batch 0's before
+  let cstart = mem.shell_calls.length()
+  agents.told("{\"attach\":41,\"socket\":\"/tmp/c41.sock\",\"kind\":\"codex\"}")
+  host.tick()
+  let (ci0, copen) = match find_shell_call(mem, cstart, "unix.open") {
+    Some(p) => p
+    None => panic("expected codex unix.open")
+  }
+  complete_shell(host, copen.id, "{\"id\":410}")
+  let (cc0, _) = drain_writes(host, mem, ci0 + 1)
+  agents.told("{\"codexThread\":41,\"id\":\"ta\",\"routed\":true}")
+  agents.told("{\"codexThread\":41,\"id\":\"tb\",\"routed\":true}")
+
+  let (cr1i, cread1) = match find_shell_call(mem, ci0 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected codex tcp.read 1")
+  }
+  let l1 = "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"ta\"}}\n"
+  complete_shell(host, cread1.id, "{}", Some(runner_out_line("out", 0.to_int64(), l1)))
+  let (cr2i, cread2) = match find_shell_call(mem, cr1i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected codex tcp.read 2")
+  }
+  let l2 = "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"tb\"}}\n"
+  complete_shell(host, cread2.id, "{}", Some(runner_out_line("out", l1.length().to_int64(), l2)))
+
+  // Take batch 1 (tb) first -> batch 0 (ta) has before=0, so acked_out must NOT advance yet!
+  match agents.take(41, 1) {
+    Some(_) => ()
+    None => panic("expected batch 1")
+  }
+  let (cc1, acks_early) = drain_writes(host, mem, cc0)
+  assert(acks_early.length() == 0)
+
+  // Now take batch 0 (ta) -> acked_out advances to l1+l2 and sends op:ack!
+  match agents.take(41, 0) {
+    Some(_) => ()
+    None => panic("expected batch 0")
+  }
+  let (_, acks_now) = drain_writes(host, mem, cc1)
+  assert(acks_now.length() == 1)
+  assert(acks_now[0].contains("\"op\":\"ack\""))
+
+  // Clean close
+  let (cr3i, cread3) = match find_shell_call(mem, cr2i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected codex tcp.read 3")
+  }
+  complete_shell(host, cread3.id, "{\"end\":true}")
+  let (_, cclose) = match find_shell_call(mem, cr3i + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected codex tcp.close")
+  }
+  complete_shell(host, cclose.id, "{}")
+  host.tick()
+
+  assert(agents.session_count() == 0)
+  assert(mem.shell_sync_calls.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: distinct lone-surrogate Codex thread IDs in replay, marks, and live frames" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  // 1. codexReplay keeps \ud800 and \ud801 distinct and serializes raw UTF-16 escapes
+  agents.told("{\"codexReplay\":1,\"notices\":[[\"item/started\",\"\\ud800\",\"commandExecution\",\"one\"],[\"item/started\",\"\\ud801\",\"commandExecution\",\"two\"]]}")
+  agents.told("{\"codexReplayed\":1}")
+  assert(mem.stdout_lines[0].contains("\"\\ud800\":"))
+  assert(mem.stdout_lines[0].contains("\"\\ud801\":"))
+  assert(mem.stdout_lines[0].contains("\"one\""))
+  assert(mem.stdout_lines[0].contains("\"two\""))
+
+  // 2. Live Codex marks & codexThread keep \ud800 and \ud801 distinct without collision
+  agents.told("{\"attach\":70,\"socket\":\"/tmp/codex-sur.sock\",\"kind\":\"codex\",\"orphans\":true}")
+  host.tick()
+  let (oi, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, oc.id, "{\"id\":700}")
+  let (_, _) = drain_writes(host, mem, oi + 1)
+  let (ri, rc) = match find_shell_call(mem, oi + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read")
+  }
+  let m1 = "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"\\ud800\"}}\n"
+  let m2 = "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"\\ud801\"}}\n"
+  complete_shell(host, rc.id, "{}", Some(runner_out_line("out", 0.to_int64(), m1 + m2)))
+  let raw_marks = raw_stdout_text(mem)
+  assert(raw_marks.contains("\"\\ud800\""))
+  assert(raw_marks.contains("\"\\ud801\""))
+  agents.told("{\"codexThread\":70,\"id\":\"\\ud800\",\"routed\":false}")
+  agents.told("{\"codexThread\":70,\"id\":\"\\ud801\",\"routed\":false}")
+  agents.told("{\"freeze\":71,\"only\":[70]}")
+  let frozen = mem.stdout_lines[mem.stdout_lines.length() - 1]
+  assert(frozen.contains("\"\\ud800\":"))
+  assert(frozen.contains("\"\\ud801\":"))
+
+  let (r2i, r2c) = match find_shell_call(mem, ri + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 2")
+  }
+  complete_shell(host, r2c.id, "{\"end\":true}")
+  let (_, cc) = match find_shell_call(mem, r2i + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, cc.id, "{}")
+  host.tick()
+  assert(agents.session_count() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: FIFO OutItem::Interrupt precedes done/End and never gets overtaken" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let agents = Agents::new_with(host, test_fmt_num)
+
+  agents.told("{\"attach\":71,\"socket\":\"/tmp/int-order.sock\",\"kind\":\"claude\"}")
+  host.tick()
+  let (oi, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("expected unix.open")
+  }
+  complete_shell(host, oc.id, "{\"id\":710}")
+  let (c0, _) = drain_writes(host, mem, oi + 1)
+
+  // Trigger interrupt via api_retry 401, then IMMEDIATELY enqueue done + End before crypto.random resolves!
+  let (ri, rc) = match find_shell_call(mem, oi + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read")
+  }
+  let retry_401 = "{\"type\":\"system\",\"subtype\":\"api_retry\",\"error_status\":401,\"error\":\"expired\"}\n"
+  complete_shell(host, rc.id, "{}", Some(runner_out_line("out", 0.to_int64(), retry_401)))
+  agents.told("{\"done\":71}")
+  host.tick()
+
+  // Writer MUST be waiting on crypto.random FIRST (neither done nor tcp.end emitted yet!)
+  let (rand_i, rand_call) = match find_shell_call(mem, c0, "crypto.random") {
+    Some(p) => p
+    None => panic("expected crypto.random before done/end")
+  }
+  match find_shell_call(mem, c0, "tcp.end") {
+    None => ()
+    Some(_) => panic("tcp.end must not overtake interrupt")
+  }
+  complete_shell(host, rand_call.id, "{\"value\":\"0123456789abcdef0123456789abcdef\"}")
+  let (_, writes_after) = drain_writes(host, mem, rand_i + 1)
+  // Order MUST be: [interrupt write, done op], followed by tcp.end!
+  assert(writes_after.length() == 2)
+  assert(writes_after[0].contains("\"op\":\"write\""))
+  assert(writes_after[1].contains("\"op\":\"done\""))
+  match find_shell_call(mem, rand_i + 1, "tcp.end") {
+    Some(_) => ()
+    None => panic("expected tcp.end after interrupt and done")
+  }
+
+  let (r2i, r2c) = match find_shell_call(mem, ri + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("expected tcp.read 2")
+  }
+  complete_shell(host, r2c.id, "{\"end\":true}")
+  let (_, cc) = match find_shell_call(mem, r2i + 1, "tcp.close") {
+    Some(p) => p
+    None => panic("expected tcp.close")
+  }
+  complete_shell(host, cc.id, "{}")
+  host.tick()
+  assert(agents.session_count() == 0)
+  assert(mem.shell_sync_calls.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: stderr 300-unit clip preserves lone high surrogate \\ud83d and Claude lone-surrogate delta/toolsLost" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  let h = match a.state.sessions.get(1) {
+    Some(x) => x
+    None => panic("no session")
+  }
+  // 299 'a' + '😀' (2 UTF-16 code units: 0xD83D 0xDE00) -> clipped at 300 units => ends with \ud83d
+  let sb = StringBuilder::new()
+  for _ in 0..<299 {
+    sb.write_string("a")
+  }
+  sb.write_string("😀")
+  said_on_stderr(h, sb.to_string().to_bytes())
+  a.state.message(h, match js_json::parse("{\"op\":\"exit\"}") { Ok(v) => v; Err(_) => panic("parse") })
+  assert(mem.stdout_lines[0].contains("\\ud83d\""))
+  assert(!mem.stdout_lines[0].contains(js_json::sanitize_str([0xD83D])))
+
+  // Claude text delta & toolsLost why preserve lone surrogates (\ud800 / \udc00)
+  let start_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}"
+  let delta_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\ud800x\\udc00\"}}}"
+  let mcp_call_l = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"mcp__stillfail__chat_post\"}]}}"
+  let mcp_err_l = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"tu1\",\"is_error\":true,\"content\":\"MCP error -32000: ECONNREFUSED \\ud800lost\\udc00\"}]}}"
+  a.state.heard(
+    h,
+    [
+      (start_l.to_bytes(), 10.to_int64()),
+      (delta_l.to_bytes(), 20.to_int64()),
+      (mcp_call_l.to_bytes(), 30.to_int64()),
+      (mcp_err_l.to_bytes(), 40.to_int64()),
+    ],
+  )
+  let raw_s = raw_stdout_text(mem)
+  assert(raw_s.contains("\\ud800x\\udc00"))
+  assert(raw_s.contains("\"type\":\"toolsLost\""))
+  assert(raw_s.contains("\\ud800lost\\udc00"))
+
+  a.close()
+  host.tick()
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: blocked tcp.write cancelled on reader EOF leaves 0 tasks/children/waiters" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  host.tick()
+  let (_, o) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("no open")
+  }
+  complete_shell(host, o.id, "{\"id\":10}")
+  // tcp.write for {"op":"attach"} is intentionally NOT completed (stays blocked in flight)
+  let (_, w) = match find_shell_call(mem, 0, "tcp.write") {
+    Some(p) => p
+    None => panic("no write")
+  }
+  let (_, r) = match find_shell_call(mem, 0, "tcp.read") {
+    Some(p) => p
+    None => panic("no read")
+  }
+  complete_shell(host, r.id, "{\"end\":true}")
+  let (_, c) = match find_shell_call(mem, 0, "tcp.close") {
+    Some(p) => p
+    None => panic("no close")
+  }
+  complete_shell(host, c.id, "{}")
+  assert(a.session_count() == 0)
+  assert(mem.stdout_lines[0].contains("\"closed\":1"))
+  // Immediately 0 residual tasks, 0 root children, 0 shell waiters!
+  assert(host.shell_waiters.length() == 0)
+  assert_holding_zero(host)
+  // Late ShellDone for cancelled tcp.write has zero side effects
+  complete_shell(host, w.id, "{}")
+  assert(mem.stdout_lines.length() == 1)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: replaced pending open emits zero closed for new session and closes late handle" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+
+  // Case A: old open fails after new attach succeeds -> zero {"closed":1}
+  a.told("{\"attach\":1,\"socket\":\"/old\"}")
+  host.tick()
+  let (i, old) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("no old open")
+  }
+  a.told("{\"attach\":1,\"socket\":\"/new\"}")
+  host.tick()
+  let (j, fresh) = match find_shell_call(mem, i + 1, "unix.open") {
+    Some(p) => p
+    None => panic("no new open")
+  }
+  complete_shell(host, fresh.id, "{\"id\":20}")
+  complete_shell(host, old.id, "", None, "ENOENT")
+  assert(a.session_count() == 1)
+  assert(mem.stdout_lines.length() == 0)
+
+  // Case B: replace again while open, and old open succeeds late -> immediately closes handle 21, zero frames
+  a.told("{\"attach\":2,\"socket\":\"/old2\"}")
+  host.tick()
+  let (i2, old2) = match find_shell_call(mem, j + 1, "unix.open") {
+    Some(p) => p
+    None => panic("no old2 open")
+  }
+  a.told("{\"attach\":2,\"socket\":\"/new2\"}")
+  host.tick()
+  let (j2, fresh2) = match find_shell_call(mem, i2 + 1, "unix.open") {
+    Some(p) => p
+    None => panic("no new2 open")
+  }
+  complete_shell(host, fresh2.id, "{\"id\":22}")
+  let close_before = mem.shell_calls.length()
+  complete_shell(host, old2.id, "{\"id\":21}")
+  let (_, late_close) = match find_shell_call(mem, close_before, "tcp.close") {
+    Some(p) => p
+    None => panic("expected tcp.close for late replaced handle 21")
+  }
+  assert(late_close.json.contains("21"))
+  assert(mem.stdout_lines.length() == 0)
+
+  let _ = j2
+  a.close()
+  host.tick()
+  assert(a.session_count() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: freeze/thaw preserves existing DELTAS_MS=200 deadline" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  host.tick()
+  let h = match a.state.sessions.get(1) {
+    Some(x) => x
+    None => panic("no session")
+  }
+  let e = match js_json::parse("{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"id\",\"field\":\"text\",\"text\":\"x\"}}") {
+    Ok(v) => v
+    Err(_) => panic("parse")
+  }
+  // t=0: delta arms 200ms timer
+  a.state.deliver_heard(h, 10.to_int64(), turn_json_js(h.turn), true, [e], [])
+  a.drain_delta_arms()
+  host.tick()
+  // t=100: freeze flushes pending, thaw + new delta reuses existing 200ms deadline
+  mem.advance_now(100.to_int64())
+  a.told("{\"freeze\":1,\"only\":[1]}")
+  a.told("{\"thaw\":1}")
+  a.state.deliver_heard(h, 20.to_int64(), turn_json_js(h.turn), true, [e], [])
+  a.drain_delta_arms()
+  host.tick()
+  let sent = mem.stdout_raw.length()
+  // t=200 (+100ms): MUST fire at original 200ms deadline (NOT shifted to 300ms)!
+  mem.advance_now(100.to_int64())
+  host.tick()
+  assert(mem.stdout_raw.length() > sent)
+
+  a.close()
+  host.tick()
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R3: public told(ownReplay) interrupted by Agents::close emits zero fake success frames" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+
+  // 1. Public ownReplay with in-flight fs.bytes -> Agents::close() cancels immediately, 0 fake frames
+  a.told("{\"ownReplay\":19,\"kind\":\"dsh\",\"path\":\"/test\",\"at\":31}")
+  host.tick()
+  let (_, read) = match find_shell_call(mem, 0, "fs.bytes") {
+    Some(p) => p
+    None => panic("expected fs.bytes")
+  }
+  assert(host.shell_waiters.length() == 1)
+  a.close()
+  host.tick()
+  assert(host.shell_waiters.length() == 0)
+  assert(mem.stdout_lines.length() == 0)
+  assert_holding_zero(host)
+  // Late ShellDone for cancelled fs.bytes emits zero frames
+  complete_shell(host, read.id, "{\"value\":\"\"}")
+  assert(mem.stdout_lines.length() == 0)
+  assert_holding_zero(host)
+
+  // 2. Pending Codex replay cleared on Agents::close() with zero fake replayed frame
+  a.told("{\"codexReplay\":55,\"notices\":[[\"item/started\",\"th-x\",\"commandExecution\",\"c1\"]]}")
+  assert(a.replay_count() == 1)
+  a.close()
+  assert(a.replay_count() == 0)
+  assert(mem.stdout_lines.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R3: closed session drops Hosted immediately (no queued prompt/live residual) and rejects thaw" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/test\",\"routed\":true,\"live\":{\"message\":\"prior-msg\",\"tools\":[\"prior-tool\"]}}")
+  host.tick()
+  let (_, o) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("no open")
+  }
+  complete_shell(host, o.id, "{\"id\":10}")
+  let (_, w) = match find_shell_call(mem, 0, "tcp.write") {
+    Some(p) => p
+    None => panic("no write")
+  }
+  a.told("{\"write\":1,\"line\":\"queued prompt\"}")
+  let (ri, r) = match find_shell_call(mem, 0, "tcp.read") {
+    Some(p) => p
+    None => panic("no read")
+  }
+  let l = "{\"type\":\"control_request\",\"request\":{\"subtype\":\"oauth_token_refresh\"}}\n"
+  complete_shell(host, r.id, "{}", Some(runner_out_line("out", 0.to_int64(), l)))
+  a.told("{\"freeze\":1,\"only\":[1]}")
+  let (si, s) = match find_shell_call(mem, ri + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("no read 2")
+  }
+  complete_shell(host, s.id, "{}", Some(runner_out_line("out", l.length().to_int64(), l)))
+  let (_, q) = match find_shell_call(mem, si + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("no read 3")
+  }
+  complete_shell(host, q.id, "{\"end\":true}")
+  let (_, c) = match find_shell_call(mem, 0, "tcp.close") {
+    Some(p) => p
+    None => panic("no close")
+  }
+  complete_shell(host, c.id, "{}")
+  // Active Hosted (with queued prompt, live.message, live.tools, held) is GONE immediately!
+  assert(a.session_count() == 0)
+  assert(a.pending_batch_count() == 1)
+  assert_holding_zero(host)
+  complete_shell(host, w.id, "{}")
+  // thaw on closed session MUST be rejected (no frames emitted)
+  let raw_before_thaw = mem.stdout_raw.length()
+  a.told("{\"thaw\":1}")
+  assert(mem.stdout_raw.length() == raw_before_thaw)
+  // Detached batch is still claimable via take() or droppable via done
+  a.told("{\"done\":1}")
+  assert(a.pending_batch_count() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R3: closed Codex session codexDrop and per-thread route:false drop final batch cleanly" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":3,\"socket\":\"/test\",\"kind\":\"codex\"}")
+  host.tick()
+  let (_, o) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("open")
+  }
+  complete_shell(host, o.id, "{\"id\":30}")
+  let (_, _) = drain_writes(host, mem, 0)
+  a.told("{\"codexThread\":3,\"id\":\"A\",\"routed\":true}")
+  a.told("{\"codexThread\":3,\"id\":\"B\",\"routed\":true}")
+  let (i, r) = match find_shell_call(mem, 0, "tcp.read") {
+    Some(p) => p
+    None => panic("read")
+  }
+  let l = "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"A\"}}\n{\"method\":\"turn/started\",\"params\":{\"threadId\":\"B\"}}\n"
+  complete_shell(host, r.id, "{}", Some(runner_out_line("out", 0.to_int64(), l)))
+  let (_, e) = match find_shell_call(mem, i + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read2")
+  }
+  complete_shell(host, e.id, "{\"end\":true}")
+  let (_, c) = match find_shell_call(mem, 0, "tcp.close") {
+    Some(p) => p
+    None => panic("close")
+  }
+  complete_shell(host, c.id, "{}")
+  assert(a.session_count() == 0)
+  assert(a.pending_batch_count() == 2)
+  // codexDrop removes thread A's batch on closed session
+  a.told("{\"codexDrop\":3,\"id\":\"A\"}")
+  assert(a.pending_batch_count() == 1)
+  // per-thread route:false removes thread B's final batch and leaves 0 entries!
+  a.told("{\"route\":3,\"thread\":\"B\",\"on\":false}")
+  assert(a.pending_batch_count() == 0)
+  assert(a.session_count() == 0)
+  assert(a.state.session_batches.length() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R3: same-n replacement preserves prior routed batch without acking new socket" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":4,\"socket\":\"/old\",\"routed\":true}")
+  host.tick()
+  let (oi, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("open")
+  }
+  complete_shell(host, oc.id, "{\"id\":40}")
+  let (_, _) = drain_writes(host, mem, 0)
+  let (_, r) = match find_shell_call(mem, oi + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read")
+  }
+  let l = "{\"type\":\"control_request\",\"request\":{\"subtype\":\"oauth_token_refresh\"}}\n"
+  complete_shell(host, r.id, "{}", Some(runner_out_line("out", 0.to_int64(), l)))
+  assert(raw_stdout_text(mem).contains("\"batch\":0"))
+
+  // Replace session 4 with a brand-new connection
+  let before_new = mem.shell_calls.length()
+  a.told("{\"attach\":4,\"socket\":\"/new\",\"routed\":true}")
+  host.tick()
+  let (ni, noc) = match find_shell_call(mem, before_new, "unix.open") {
+    Some(p) => p
+    None => panic("new open")
+  }
+  complete_shell(host, noc.id, "{\"id\":41}")
+  let (c_after_new, _) = drain_writes(host, mem, ni + 1)
+
+  // Old batch 0 MUST survive replacement and be claimable via take(4, 0)!
+  match a.take(4, 0) {
+    Some((evs, _)) => assert(evs.length() == 1)
+    None => panic("expected prior batch 0 to survive same-n replacement")
+  }
+  // Claiming old instance's batch MUST NOT send an ack on the new socket (handle 41)!
+  let (_, acks_on_new) = drain_writes(host, mem, c_after_new)
+  assert(acks_on_new.length() == 0)
+
+  a.close()
+  host.tick()
+  assert(a.session_count() == 0)
+  assert(a.pending_batch_count() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R2: exact adjacent binary frame bytes and escaped UTF-16 header" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\",\"routed\":true}")
+  let h = match a.state.sessions.get(1) {
+    Some(x) => x
+    None => panic("no session")
+  }
+  let e = js_json::JValue::Str([0xd801, 0x2028, 0x2029, 34])
+  let turn = js_json::JValue::Null
+  let empty_groups = OrderedGroups::new()
+  a.state.tell(h, 3.to_int64(), turn, [], [])
+  a.state.codex_tell(h, 3.to_int64(), [], [], empty_groups)
+  let node = [("中".to_bytes(), 3.to_int64(), 7.to_int64()), ("😀".to_bytes(), 7.to_int64(), 12.to_int64())]
+  a.state.codex_tell(h, 12.to_int64(), node, [], empty_groups)
+  a.state.tell(h, 12.to_int64(), turn, [e], node)
+  let expected = "{\"lines\":1,\"to\":3,\"turn\":null,\"events\":[]}\n" +
+  "{\"lines\":1,\"to\":3,\"at\":[],\"bytes\":0,\"marks\":[],\"threads\":[]}\n" +
+  "{\"lines\":1,\"to\":12,\"at\":[[3,7,3],[7,12,4]],\"bytes\":7,\"marks\":[],\"threads\":[]}\n中😀" +
+  "{\"lines\":1,\"to\":12,\"turn\":null,\"events\":[\"\\ud801\\u2028\\u2029\\\"\"],\"at\":[[3,7,3],[7,12,4]],\"bytes\":7,\"batch\":0}\n中😀"
+  assert(hex_encode_bytes(concat_bytes(mem.stdout_raw)) == hex_encode_bytes(expected.to_bytes()))
+  a.close()
+  host.tick()
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R4: 32 consecutive 200ms delta windows keep delta_timer_count bounded (<=1 running, 0 idle)" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  let h = match a.state.sessions.get(1) {
+    Some(x) => x
+    None => panic("no session")
+  }
+  for _ in 0..<32 {
+    a.state.soon(h)
+    a.drain_delta_arms()
+    host.tick()
+    assert(a.delta_timer_count() <= 1)
+    mem.advance_now(200.to_int64())
+    host.tick()
+    assert(a.state.pending_deltas.length() == 0)
+    assert(a.delta_timer_count() == 0)
+  }
+  a.close()
+  host.tick()
+  assert(a.delta_timer_count() == 0)
+  assert_holding_zero(host)
+}
+
+test "sessions_agents R4: freeze->delta->thaw timer is cancelled immediately on EOF without advancing clock" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  host.tick()
+  let (_, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("open")
+  }
+  complete_shell(host, oc.id, "{\"id\":40}")
+  let (i0, r0) = match find_shell_call(mem, 0, "tcp.read") {
+    Some(p) => p
+    None => panic("read")
+  }
+  let begin_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  let delta_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"q\"}}}\n"
+  complete_shell(host, r0.id, "{}", Some(runner_out_line("out", 0.to_int64(), begin_l)))
+  a.told("{\"freeze\":1,\"only\":[1]}")
+  let (i1, r1) = match find_shell_call(mem, i0 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read2")
+  }
+  complete_shell(host, r1.id, "{}", Some(runner_out_line("out", begin_l.length().to_int64(), delta_l)))
+  a.told("{\"thaw\":1}")
+  host.tick()
+  assert(a.delta_timer_count() == 1)
+  let (_, r2) = match find_shell_call(mem, i1 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read3")
+  }
+  complete_shell(host, r2.id, "{\"end\":true}")
+  let (_, c) = match find_shell_call(mem, i1, "tcp.close") {
+    Some(p) => p
+    None => panic("close")
+  }
+  complete_shell(host, c.id, "{}")
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"closed\":1"))
+  assert(a.session_count() == 0)
+  // Without advancing virtual clock: 0 residual timers, 0 tasks, 0 children!
+  assert(a.delta_timer_count() == 0)
+  assert_holding_zero(host)
+  a.close()
+}
+
+test "sessions_agents R4: detach cancels reader-loop 200ms delta timer immediately without advancing clock" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  host.tick()
+  let (_, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("open")
+  }
+  complete_shell(host, oc.id, "{\"id\":40}")
+  let (c0, _) = drain_writes(host, mem, 0)
+  let (i0, r0) = match find_shell_call(mem, 0, "tcp.read") {
+    Some(p) => p
+    None => panic("read")
+  }
+  let begin_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  let delta_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"q\"}}}\n"
+  complete_shell(host, r0.id, "{}", Some(runner_out_line("out", 0.to_int64(), begin_l)))
+  let (i1, r1) = match find_shell_call(mem, i0 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read2")
+  }
+  complete_shell(host, r1.id, "{}", Some(runner_out_line("out", begin_l.length().to_int64(), delta_l)))
+  assert(a.delta_timer_count() == 1)
+  // detach cancels the reader-loop timer immediately
+  a.told("{\"detach\":1,\"leave\":true}")
+  let (_, _) = drain_writes(host, mem, c0)
+  assert(a.delta_timer_count() == 0)
+  let (_, r2) = match find_shell_call(mem, i1 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read3")
+  }
+  complete_shell(host, r2.id, "{\"end\":true}")
+  let (_, c) = match find_shell_call(mem, i1, "tcp.close") {
+    Some(p) => p
+    None => panic("close")
+  }
+  complete_shell(host, c.id, "{}")
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1] == "{\"left\":1}")
+  assert(a.delta_timer_count() == 0)
+  assert_holding_zero(host)
+  a.close()
+}
+
+test "sessions_agents R4: orderly left and ended release this instance's published batches while preserving closed" {
+  for mode in 0..<2 {
+    let mem = sessions_core::MemHostTransport::new()
+    let host = sessions_core::SessionHost::for_test(mem)
+    let a = Agents::new_with(host, test_fmt_num)
+    a.told("{\"attach\":1,\"socket\":\"/x\",\"routed\":true}")
+    host.tick()
+    let (_, oc) = match find_shell_call(mem, 0, "unix.open") {
+      Some(p) => p
+      None => panic("open")
+    }
+    complete_shell(host, oc.id, "{\"id\":40}")
+    let (i0, r0) = match find_shell_call(mem, 0, "tcp.read") {
+      Some(p) => p
+      None => panic("read")
+    }
+    let msg = "{\"type\":\"control_request\",\"request\":{\"subtype\":\"oauth_token_refresh\"}}\n"
+    complete_shell(host, r0.id, "{}", Some(runner_out_line("out", 0.to_int64(), msg)))
+    assert(a.pending_batch_count() == 1)
+    let (i1, r1) = match find_shell_call(mem, i0 + 1, "tcp.read") {
+      Some(p) => p
+      None => panic("read2")
+    }
+    if mode == 0 {
+      a.told("{\"detach\":1,\"leave\":true}")
+      complete_shell(host, r1.id, "{\"end\":true}")
+    } else {
+      complete_shell(host, r1.id, "{}", Some(runner_exit_line(0)))
+      a.told("{\"done\":1}")
+      let (_, r2) = match find_shell_call(mem, i1 + 1, "tcp.read") {
+        Some(p) => p
+        None => panic("read3")
+      }
+      complete_shell(host, r2.id, "{\"end\":true}")
+    }
+    let (_, c) = match find_shell_call(mem, i1, "tcp.close") {
+      Some(p) => p
+      None => panic("close")
+    }
+    complete_shell(host, c.id, "{}")
+    let terminal = if mode == 0 { "\"left\":1" } else { "\"ended\":1" }
+    assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains(terminal))
+    assert_holding_zero(host)
+    assert(a.session_count() == 0)
+    assert(a.pending_batch_count() == 0)
+    assert(a.state.session_batches.length() == 0)
+    a.close()
+  }
+}
+
+test "sessions_agents R5: thaw during pending tcp.close flushes without rearming timer (0 holding without clock advance)" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":1,\"socket\":\"/x\"}")
+  host.tick()
+  let (_, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("open")
+  }
+  complete_shell(host, oc.id, "{\"id\":40}")
+  let (i0, r0) = match find_shell_call(mem, 0, "tcp.read") {
+    Some(p) => p
+    None => panic("read")
+  }
+  let begin_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}}\n"
+  let delta_l = "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"q\"}}}\n"
+  complete_shell(host, r0.id, "{}", Some(runner_out_line("out", 0.to_int64(), begin_l)))
+  a.told("{\"freeze\":1,\"only\":[1]}")
+  let (i1, r1) = match find_shell_call(mem, i0 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read2")
+  }
+  complete_shell(host, r1.id, "{}", Some(runner_out_line("out", begin_l.length().to_int64(), delta_l)))
+  let (_, r2) = match find_shell_call(mem, i1 + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read3")
+  }
+  complete_shell(host, r2.id, "{\"end\":true}")
+  let (_, c) = match find_shell_call(mem, i1, "tcp.close") {
+    Some(p) => p
+    None => panic("close")
+  }
+  // Deliver thaw while tcp.close is still in flight: MUST flush delta without rearming timer!
+  a.told("{\"thaw\":1}")
+  host.tick()
+  assert(a.delta_timer_count() == 0)
+  assert(raw_stdout_text(mem).contains("\"text\":\"q\""))
+  complete_shell(host, c.id, "{}")
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1].contains("\"closed\":1"))
+  assert(a.session_count() == 0)
+  // Without advancing virtual clock: 0 timers and all 6 rt.holding() entries are 0!
+  assert(a.delta_timer_count() == 0)
+  assert_holding_zero(host)
+  a.close()
+}
+
+test "sessions_agents R5: orderly left of replacement releases new batch while keeping old instance batch claimable" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let a = Agents::new_with(host, test_fmt_num)
+  a.told("{\"attach\":4,\"socket\":\"/old\",\"routed\":true}")
+  host.tick()
+  let (oi, oc) = match find_shell_call(mem, 0, "unix.open") {
+    Some(p) => p
+    None => panic("open")
+  }
+  complete_shell(host, oc.id, "{\"id\":40}")
+  let (_, _) = drain_writes(host, mem, 0)
+  let (_, r) = match find_shell_call(mem, oi + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("read")
+  }
+  let l = "{\"type\":\"control_request\",\"request\":{\"subtype\":\"oauth_token_refresh\"}}\n"
+  complete_shell(host, r.id, "{}", Some(runner_out_line("out", 0.to_int64(), l)))
+  assert(raw_stdout_text(mem).contains("\"batch\":0"))
+
+  let before_new = mem.shell_calls.length()
+  a.told("{\"attach\":4,\"socket\":\"/new\",\"routed\":true}")
+  host.tick()
+  let (ni, noc) = match find_shell_call(mem, before_new, "unix.open") {
+    Some(p) => p
+    None => panic("new open")
+  }
+  complete_shell(host, noc.id, "{\"id\":41}")
+  let (c_after_new, _) = drain_writes(host, mem, ni + 1)
+
+  let (ri, rnew) = match find_shell_call(mem, ni + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("new read")
+  }
+  complete_shell(host, rnew.id, "{}", Some(runner_out_line("out", 0.to_int64(), l)))
+  assert(a.pending_batch_count() == 2)
+  a.told("{\"detach\":4,\"leave\":true}")
+  let (_, rnext) = match find_shell_call(mem, ri + 1, "tcp.read") {
+    Some(p) => p
+    None => panic("new EOF")
+  }
+  complete_shell(host, rnext.id, "{\"end\":true}")
+  let (_, close) = match find_shell_call(mem, c_after_new, "tcp.close") {
+    Some(p) => p
+    None => panic("new close")
+  }
+  complete_shell(host, close.id, "{}")
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1] == "{\"left\":4}")
+  assert(a.pending_batch_count() == 1)
+  match a.take(4, 1) {
+    Some(_) => panic("new batch survived")
+    None => ()
+  }
+  match a.take(4, 0) {
+    None => panic("old batch dropped")
+    Some((ev, _)) => assert(ev.length() == 1)
+  }
+  assert(a.pending_batch_count() == 0)
+  assert_holding_zero(host)
+  a.close()
+}

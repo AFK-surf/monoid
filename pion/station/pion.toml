@@ -41,6 +41,7 @@ members = [
   "packages/parse_dsh",
   "packages/sessions_core",
   "packages/sessions_actors",
+  "packages/sessions_agents",
   "packages/reader_sessions",
   "packages/smoke",
 ]
@@ -92,4 +93,5 @@ parse_acp = { path = "packages/parse_acp" }
 parse_dsh = { path = "packages/parse_dsh" }
 sessions_core = { path = "packages/sessions_core" }
 sessions_actors = { path = "packages/sessions_actors" }
+sessions_agents = { path = "packages/sessions_agents" }
 reader_sessions = { path = "packages/reader_sessions" }
