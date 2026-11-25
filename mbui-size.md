@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d91e984dc](https://github.com/AFK-surf/monoid/commit/d91e984dc7dd4bfb53d73c249f11f9aa3f0af4ff) fix(screens,mbui): paste passwords into locked mac | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.15 | 65.02 | 101.01 | 127.07 |
 | [78bab562b](https://github.com/AFK-surf/monoid/commit/78bab562b613233890dc735bc11f6a7e7d5521f8) fix(station): stop relay probes from recovering a  | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.15 | 65.02 | 101.01 | 127.07 |
 | [95367d01d](https://github.com/AFK-surf/monoid/commit/95367d01d6d1c86ddce0fbc15cc0fac82deb1292) feat(core,station): add carried /preset-projects,  | 2.54 | 3.44 | 14.21 | 36.81 | 55.6 | 32.15 | 65 | 100.73 | 130.67 |
 | [3c721caa7](https://github.com/AFK-surf/monoid/commit/3c721caa78fac2cd3fe647d833878c1c16895b6d) feat(station,app): set the backup upload limit in  | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 | [f729b41ba](https://github.com/AFK-surf/monoid/commit/f729b41ba1ebd0435484cd00597a7f58d57a02e3) fix(mbui): stop a swiped row's 归档 softly at its sl | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 101.11 | 121.55 |
 | [8851a260e](https://github.com/AFK-surf/monoid/commit/8851a260ea6a65b7a440f1f78e0b19f7dc3bcb93) test(station): resolve new-account-cap concurrent  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
-| [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d91e984dc](https://github.com/AFK-surf/monoid/commit/d91e984dc7dd4bfb53d73c249f11f9aa3f0af4ff) fix(screens,mbui): paste passwords into locked mac | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.3 |
 | [78bab562b](https://github.com/AFK-surf/monoid/commit/78bab562b613233890dc735bc11f6a7e7d5521f8) fix(station): stop relay probes from recovering a  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.33 |
 | [95367d01d](https://github.com/AFK-surf/monoid/commit/95367d01d6d1c86ddce0fbc15cc0fac82deb1292) feat(core,station): add carried /preset-projects,  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.39 |
 | [3c721caa7](https://github.com/AFK-surf/monoid/commit/3c721caa78fac2cd3fe647d833878c1c16895b6d) feat(station,app): set the backup upload limit in  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.57 |
 | [f729b41ba](https://github.com/AFK-surf/monoid/commit/f729b41ba1ebd0435484cd00597a7f58d57a02e3) fix(mbui): stop a swiped row's 归档 softly at its sl | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.9 |
 | [8851a260e](https://github.com/AFK-surf/monoid/commit/8851a260ea6a65b7a440f1f78e0b19f7dc3bcb93) test(station): resolve new-account-cap concurrent  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
-| [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.9 |
