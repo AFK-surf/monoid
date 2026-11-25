@@ -518,8 +518,9 @@ fn drawer_header_node(
   at : @sf.ListAt,
   tips : @sf.TipLayer,
 ) -> Unit {
+  ignore(at)
   parent.box(fn(row) {
-    @sf.style_node(row, fn() { drawer_header_wrap.then(@sf.list_heading_in(at)) })
+    @sf.style_node(row, fn() { drawer_header_wrap })
     row.min_height(By(fn() { Some(@sf.theme().items.least) })) |> ignore
     let toggle_label = fn() {
       let s = section()
@@ -543,7 +544,7 @@ fn drawer_header_node(
       },
       fn(b) {
         @sf.style_node(b, fn() { drawer_toggle_box }, in_row=true)
-        b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(By(fn() { Some(@sf.theme().items.least) }))
+        b.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).fits(Is(true)).min_height(By(fn() { Some(@sf.theme().items.least) }))
         |> ignore
         @sf.hover_ground_node(b)
         b.on_menu(fn(m) { open_ctx(@sf.at_point(m.wx, m.wy)) }) |> ignore
@@ -570,15 +571,16 @@ fn drawer_header_node(
           name_now=fn() { drawer_icon(section().kind) },
         )
         |> ignore
-        // Drawer title
+        // Drawer title (keeps full readability before optional folder hint takes space)
         @sf.words_node(b, fn() { section().label }, fn() { drawer_title_words })
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
         |> ignore
-        // Optional subtle folder path hint when distinct from project name
+        // Optional subtle folder path hint: drops cleanly when narrow so project title never truncates needlessly
         b.show(fn() { section().folder_hint != "" }, at_once=true, fn(hint) {
+          hint.drops(Is(1)).shrink(Is(3.0)).min_width(Is(Some(0.0))) |> ignore
           @sf.words_node(hint, fn() { section().folder_hint }, fn() { drawer_hint_words })
-          .shrink(Is(2.0))
+          .shrink(Is(1.0))
           .min_width(Is(Some(0.0)))
           |> ignore
         })
@@ -809,11 +811,11 @@ let drawer_icon_size : Double = 14.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let drawer_header_wrap : @ui.Style = @ui.css("row w=Full pt=S2 pb=S0_5 pr=S1 gap=S2 align=ACenter")
+let drawer_header_wrap : @ui.Style = @ui.css("row w=Full pt=S2 pb=S0_5 gap=S2 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let drawer_toggle_box : @ui.Style = @ui.css("row px=S1_5 py=S1 gap=S1_5 align=ACenter radius=Lg")
+let drawer_toggle_box : @ui.Style = @ui.css("row px=S2 py=S1 gap=S1_5 align=ACenter radius=Lg")
 
 ///|
 // kept across runs: a value (no field of it changes)
