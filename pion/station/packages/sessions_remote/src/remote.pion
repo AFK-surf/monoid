@@ -119,9 +119,9 @@ pub struct RemoteState {
   pub bounded_wakers : Map[Int64, BoundedWaker]
   /// Latest `(outcome, got)` recorded per active `check(path)` loop.
   pub check_last : Map[String, (base_codec::Json, base_codec::Json)]
-  /// In-flight `fs.rename` completion barriers keyed by target path so `in_turn_k`
-  /// holds the write barrier until an already-dispatched rename actually completes.
-  pub rename_inflight : Map[String, effect::Deferred[Unit]]
+  /// In-flight `fs.rename` completion barriers keyed by target path with unique `op_id`
+  /// so `in_turn_k` holds the write barrier until completion and `clear_rename` never evicts a successor.
+  pub rename_inflight : Map[String, (Int, effect::Deferred[Unit])]
   pub mut over : Double
   pub mut incoming_stamp : Option[String]
   pub mut indexing : Option[IndexingRun]
@@ -241,7 +241,13 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
       self.gen.rpc_k(self.host, remote_key, "node." + f, args, self.dispatch.mirror_actor, k)
     },
     write_whole_k: fn(path : String, json : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      self.write_whole_k(path, json, k)
+      self.in_turn_k(
+        path,
+        fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.write_whole_k(path, json, wk)
+        },
+        k,
+      )
     },
     write_json_k: fn(path : String, value : base_codec::Json, k : (effect::Exit[Unit]) -> Unit) -> Unit {
       self.write_json_k(path, value, k)

@@ -312,7 +312,7 @@ pub fn RemoteCtx::in_turn_k[X](
   let run_work = fn() -> Unit {
     work_k(fn(ex : effect::Exit[X]) -> Unit {
       match state.rename_inflight.get(path) {
-        Some(rd) => {
+        Some((_, rd)) => {
           if !rd.is_done() && !counters.sealed {
             // An in-flight fs.rename on `path` is still running on the shell thread after
             // caller cancellation: hold the write barrier until that rename actually finishes
@@ -427,10 +427,18 @@ pub fn RemoteCtx::write_whole_k(
                       }
                       return
                     }
+                    let rename_id = self.host.alloc_id()
                     let rename_done : effect::Deferred[Unit] = effect::Deferred::new()
-                    state.rename_inflight.set(path, rename_done)
+                    state.rename_inflight.set(path, (rename_id, rename_done))
                     let clear_rename = fn() -> Unit {
-                      let _ = state.rename_inflight.remove(path)
+                      match state.rename_inflight.get(path) {
+                        Some((cur_id, _)) => {
+                          if cur_id == rename_id {
+                            let _ = state.rename_inflight.remove(path)
+                          }
+                        }
+                        None => ()
+                      }
                       let _ = rename_done.succeed(())
                     }
                     self.rename_k(temp, path, fn(rex : effect::Exit[Unit]) -> Unit {
