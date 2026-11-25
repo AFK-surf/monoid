@@ -515,11 +515,8 @@ jobs:
             echo "shell-station:linux-x64 not published yet; waiting for same-SHA pipeline natives"
             api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
             t0=$SECONDS
-            # Leave >= 85 s after the wait for pion build + smoke (~35 s) and artifact upload.
-            wait_cap=$(( $(date +%s) + 150 ))
-            budget_cap=$(( JOB_END - 85 ))
-            deadline=$wait_cap
-            if [ "$budget_cap" -lt "$deadline" ]; then deadline=$budget_cap; fi
+            # Leave >= 70 s after the wait for R2 restore (~8 s), pion build + smoke (~35 s), and artifact upload (~5 s).
+            deadline=$(( JOB_END - 70 ))
             while :; do
               if [ "$GITHUB_REF" = refs/heads/main ]; then
                 missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
