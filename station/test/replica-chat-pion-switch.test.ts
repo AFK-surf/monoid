@@ -165,14 +165,10 @@ test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON 
   // (bounds asked below the least: each held to its least, as both clamp)
   sameLines(raw(bins, c, String(c.big), { entries: 0, text: 5, bytes: 10 }), "the big chat, bounds below the least");
   sameLines(raw(bins, c, String(c.big), { entries: 100_000, text: 10_000_000, bytes: 100_000_000 }), "the big chat, bounds past the most");
-  // (`--thread` as both read a number: a negative one, an infinity, not a number; and one that is none)
-  for (const thread of ["-1", "1e309", "nan"]) {
-    const r = raw(bins, c, thread);
-    if (r.pion.includes('"error"')) sameLines(r, `--thread ${thread}`, "--thread is a chat's id");
-    else sameLines(r, `--thread ${thread}`);
-  }
-  sameLines(raw(bins, c, "seven"), "--thread seven", "--thread is a chat's id");
-  sameLines(raw(bins, c, ""), "--thread empty", "--thread is a chat's id");
+  // (`--thread` as both read a number: a negative one and not-a-number read (no such chat); one past a double's range,
+  // a word and nothing are refused)
+  for (const thread of ["-1", "nan"]) sameLines(raw(bins, c, thread), `--thread ${thread}`);
+  for (const thread of ["1e309", "seven", ""]) sameLines(raw(bins, c, thread), `--thread ${JSON.stringify(thread)}`, "--thread is a chat's id");
   const big = await readBoth(bins, { ...c, thread: c.big });
   assert.equal(JSON.stringify(big.pion), JSON.stringify(big.mb), "the big chat: 0-diff");
   const read = big.mb.chat;

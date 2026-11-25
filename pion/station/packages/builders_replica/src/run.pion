@@ -251,15 +251,8 @@ fn normalize_double_text(raw : String) -> Option[String] {
   Some(sb.to_string())
 }
 
-/// `s` as MoonBit `@string.parse_double` reads it; None where that raises. A finite text past the range of a double
-/// reads as an infinity (`1e309`), as there.
+/// `raw` as MoonBit `@string.parse_double` reads it; None where that raises.
 pub fn parse_double_opt(s : String) -> Option[Double] {
-  parse_double_core(s, true)
-}
-
-/// `overflow`: whether a finite text past the range of a double reads as an infinity (else None, as
-/// `parse_double_flag` has always taken it).
-fn parse_double_core(s : String, overflow : Bool) -> Option[Double] {
   let b = s.to_bytes()
   if b.length() > 0 {
     let mut i = 0
@@ -284,7 +277,7 @@ fn parse_double_core(s : String, overflow : Bool) -> Option[Double] {
     None => return None
   }
   match js_json::parse(norm) {
-    Ok(js_json::JValue::Num(d)) => if sql_db::is_nan_or_inf(d) && !overflow { None } else { Some(d) }
+    Ok(js_json::JValue::Num(d)) => if sql_db::is_nan_or_inf(d) { None } else { Some(d) }
     _ => None
   }
 }
@@ -292,7 +285,7 @@ fn parse_double_core(s : String, overflow : Bool) -> Option[Double] {
 pub fn parse_double_flag(raw : Option[String], fallback : Double) -> Double {
   match raw {
     Some(s) =>
-    match parse_double_core(s, false) {
+    match parse_double_opt(s) {
       Some(d) => d
       None => fallback
     }
