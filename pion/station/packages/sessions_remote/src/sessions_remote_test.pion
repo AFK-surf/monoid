@@ -1046,47 +1046,48 @@ test "sessions_remote: bounded_k normal, timeout active trajectory, and waiter-o
   assert(state.bounded_wakers.length() == 0)
   assert_holding_zero(host)
 
-  // Case B: timeout fires before Deferred settles — 1:1 MB active trajectory:
-  // 1 (caller) -> waiting 1 (watcher +1, caller -1) -> timeout 2 (caller +1, watcher still on d2) -> d2 settles 1
+  // Case B: SAME producer `d2` stays unsettled across 3 consecutive timeouts + 1 waiter-only cancel.
+  // BEFORE `d2` ever settles:
+  // - during every wait window, `active` stays at baseline 1 (never drops to 0 / premature quiet);
+  // - on timeout or cancel, this call's own watcher is cancelled so `active` returns to 1 and
+  //   `rt.holding()` returns to 0 (zero dangling watchers, zero accumulation!).
   let d2 : effect::Deferred[Int] = effect::Deferred::new()
-  let mut res2 : Option[Int] = Some(99)
-  let mut done2 = false
-  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    ctx.bounded_k(d2, 500.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(v) => {
-          res2 = v
-          done2 = true
+  for _round in 0..<3 {
+    let mut res_t : Option[Int] = Some(99)
+    let mut done_t = false
+    fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx.bounded_k(d2, 500.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => {
+            res_t = v
+            done_t = true
+          }
+          _ => ()
         }
-        _ => ()
-      }
-      tk(effect::Exit::Succeeded(()))
+        tk(effect::Exit::Succeeded(()))
+      })
     })
-  })
-  host.tick()
-  assert(gen.counters.active == 1)
-  let tkeys = state.timers.keys()
-  assert(tkeys.length() == 1)
-  assert(ctx.handle_due(tkeys[0]))
-  host.tick()
-  assert(done2)
-  assert(opt_int_eq(res2, None))
-  assert(gen.counters.active == 2)
-  assert(state.timers.length() == 0)
-  // Once producer settles d2, watcher completes and restores active to 1 with zero leaks
-  let _ = d2.succeed(77)
-  host.tick()
-  assert(gen.counters.active == 1)
-  assert(state.bounded_wakers.length() == 0)
-  assert_holding_zero(host)
+    host.tick()
+    assert(gen.counters.active == 1)
+    let tkeys = state.timers.keys()
+    assert(tkeys.length() == 1)
+    assert(ctx.handle_due(tkeys[0]))
+    host.tick()
+    assert(done_t)
+    assert(opt_int_eq(res_t, None))
+    assert(gen.counters.active == 1)
+    assert(state.timers.length() == 0)
+    assert(state.bounded_wakers.length() == 0)
+    assert_holding_zero(host)
+  }
 
-  // Case C: waiter-only interruption while unsealed cancels timer & restores borrowed active once
-  let d3 : effect::Deferred[Int] = effect::Deferred::new()
+  // Case C: waiter-only interruption while unsealed on the SAME unsettled `d2`:
+  // cancels timer + cancels watcher + restores `active` to 1 with zero live tasks BEFORE `d2` settles.
   let mut waiter_interrupted = false
   let wf = gen.fibers.fork_daemon(
     "bounded waiter",
     fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      ctx.bounded_k(d3, 500.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
+      ctx.bounded_k(d2, 500.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
         match ex {
           effect::Exit::Interrupted => waiter_interrupted = true
           _ => ()
@@ -1103,11 +1104,13 @@ test "sessions_remote: bounded_k normal, timeout active trajectory, and waiter-o
   host.tick()
   assert(waiter_interrupted)
   assert(state.timers.length() == 0)
-  assert(gen.counters.active == 2)
-  let _ = d3.succeed(88)
+  assert(state.bounded_wakers.length() == 0)
+  assert(gen.counters.active == 1)
+  assert_holding_zero(host)
+  // Settling `d2` afterwards is a clean no-op
+  let _ = d2.succeed(88)
   host.tick()
   assert(gen.counters.active == 1)
-  assert(state.bounded_wakers.length() == 0)
   assert_holding_zero(host)
 }
 
@@ -1389,27 +1392,33 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
   assert(state2.writing.length() == 0)
   assert_holding_zero(host)
 
-  // write_whole_k interrupted during rename:
-  // (a) Active gen -> best-effort fs.remove for orphan .tmp
+  // write_json_k / write_whole_k in-flight cancellation:
+  // (a) Active gen: hold A's fs.rename, cancel A, queue B on same path ->
+  //     write barrier stays held until A's fs.rename completes, then B writes last,
+  //     final file == B and ZERO orphan .tmp files remain in directory!
   let fs = MemFs::new("/")
   let cur = PumpCursor::new()
   cur.shell_cursor = mem.shell_calls.length()
   cur.stdout_cursor = mem.stdout_lines.length()
   let mut w_int = false
   let wf = gen2.fibers.fork_daemon(
-    "write whole active",
+    "write json A",
     fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      ctx2.write_whole_k("/data/remote/atomic.json", "{\"v\":1}", fn(ex : effect::Exit[Unit]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => w_int = true
-          _ => ()
-        }
-        fk(ex)
-      })
+      ctx2.write_json_k(
+        "/data/remote/atomic.json",
+        base_codec::json_obj([("v", sessions_core::jstr("A"))]),
+        fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => w_int = true
+            _ => ()
+          }
+          fk(ex)
+        },
+      )
     },
     fn(_e : effect::EffectError) -> Unit { () },
   )
-  // Step shell calls until fs.rename is issued (do NOT complete fs.rename yet!)
+  // Pump shell calls until A's fs.rename is issued (hold fs.rename without completing it!)
   let mut rename_seen = false
   let mut steps1 = 0
   while !rename_seen && steps1 < 50 {
@@ -1430,17 +1439,88 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
   wf.interrupt()
   host.tick()
   assert(w_int)
-  let mut saw_cleanup_remove = false
-  for i in cur.shell_cursor..<mem.shell_calls.length() {
-    if mem.shell_calls[i].op == "fs.remove" && str_contains(mem.shell_calls[i].json, ".tmp") {
-      saw_cleanup_remove = true
-    }
-  }
-  assert(saw_cleanup_remove)
+  // Barrier MUST still be held while A's in-flight fs.rename has not finished
+  assert(state2.writing.contains("/data/remote/atomic.json"))
+  let shell_before_b = mem.shell_calls.length()
+  let mut b_done = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx2.write_json_k(
+      "/data/remote/atomic.json",
+      base_codec::json_obj([("v", sessions_core::jstr("B"))]),
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => b_done = true
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.tick()
+  // B must NOT have started its own shell I/O while A's rename is still pending
+  assert(!b_done)
+  assert(mem.shell_calls.length() == shell_before_b)
+  // Now deliver A's held fs.rename and pump all -> B runs after A and wins!
   pump_all(host, gen2, mem, fs, cur, fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json { base_codec::json_null() })
+  assert(b_done)
+  assert(state2.writing.length() == 0)
+  assert(state2.rename_inflight.length() == 0)
+  match fs.files.get("/data/remote/atomic.json") {
+    Some(content) => assert(content == "{\"v\":\"B\"}")
+    None => panic("expected atomic.json")
+  }
+  let dir_kids = fs.children_of("/data/remote")
+  for ki in 0..<dir_kids.length() {
+    assert(!dir_kids[ki].ends_with(".tmp"))
+  }
   assert_holding_zero(host)
 
-  // (b) Sealed gen (rotation during rename) -> must NOT emit fs.remove after seal
+  // (b) Active gen: hold A2's fs.put, cancel A2, then deliver fs.put success ->
+  //     daemon deletes orphan .tmp file so directory has ZERO .tmp files!
+  let mut w_put_int = false
+  let wf_put = gen2.fibers.fork_daemon(
+    "write whole put cancel",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx2.write_whole_k("/data/remote/put_cancel.json", "{\"v\":\"X\"}", fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => w_put_int = true
+          _ => ()
+        }
+        fk(ex)
+      })
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  let mut put_seen = false
+  let mut steps_put = 0
+  while !put_seen && steps_put < 50 {
+    steps_put = steps_put + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let call = mem.shell_calls[cur.shell_cursor]
+      if call.op == "fs.put" {
+        put_seen = true
+        break
+      }
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (json, err) = fs.handle_shell(call)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+    }
+  }
+  assert(put_seen)
+  wf_put.interrupt()
+  host.tick()
+  assert(w_put_int)
+  // Deliver the in-flight fs.put and pump -> daemon cleans up the orphan .tmp
+  pump_all(host, gen2, mem, fs, cur, fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json { base_codec::json_null() })
+  assert(!fs.files.contains("/data/remote/put_cancel.json"))
+  let dir_kids2 = fs.children_of("/data/remote")
+  for ki in 0..<dir_kids2.length() {
+    assert(!dir_kids2[ki].ends_with(".tmp"))
+  }
+  assert_holding_zero(host)
+
+  // (c) Sealed gen (rotation during rename) -> must NOT emit fs.remove after seal
   let mut w_int_sealed = false
   let _ = gen2.fibers.fork_daemon(
     "write whole sealed",
@@ -1868,6 +1948,190 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
   }
   assert(state.cleans.length() == 0)
   assert(state.timers.length() == 0)
+
+  // 4. Source-side RemoteHost::rnode_k("syncPacking") -> 4-arg rnode_k("syncPut", [station, request, packedPath, after])
+  //    verifying exact 4-arg wire protocol (remote.ts:584) + error propagation!
+  let rhost = ctx.remote_host()
+  let mut sp_ok : Option[base_codec::Json] = None
+  let mut sp_err = ""
+  let mut sp_calls = 0
+  let mut saw_4arg_put = false
+  let rpc_sync_put = fn(f : String, args : Array[base_codec::Json]) -> (Bool, base_codec::Json) {
+    if f == "node.syncPacking" {
+      assert(args.length() == 0)
+      return (true, base_codec::json_obj([("kind", sessions_core::jstr("tar")), ("path", sessions_core::jstr("/tmp/pack.tar"))]))
+    }
+    if f == "node.syncPut" {
+      sp_calls = sp_calls + 1
+      assert(args.length() == 4)
+      assert(sessions_core::str_of(Some(args[0])) is Some("st1"))
+      assert(sessions_core::text_of(args[1], "method") == "sync.put")
+      assert(sessions_core::str_of(Some(args[2])) is Some("/tmp/pack.tar"))
+      assert(sessions_core::int_of(Some(args[3])) == 0)
+      saw_4arg_put = true
+      if sp_calls == 1 {
+        return (true, base_codec::json_obj([("pieces", sessions_core::jint(3))]))
+      } else {
+        return (false, base_codec::json_obj([("message", sessions_core::jstr("pack transfer failed"))]))
+      }
+    }
+    (true, rpc_handler(f, args))
+  }
+  let pump_sync_put = fn() -> Unit {
+    let mut g = 0
+    while g < 100 {
+      g = g + 1
+      host.tick()
+      let mut prog = false
+      while cur.stdout_cursor < mem.stdout_lines.length() {
+        let line = mem.stdout_lines[cur.stdout_cursor]
+        cur.stdout_cursor = cur.stdout_cursor + 1
+        match sessions_core::parse_json_strict(line) {
+          Ok(msg) => {
+            match sessions_core::jget(msg, "rpc") {
+              Some(base_codec::Json::Num(id_f, _)) => {
+                let f = sessions_core::text_of(msg, "fn")
+                let args = match sessions_core::field_of(msg, "args") {
+                  base_codec::Json::Arr(a) => a
+                  _ => []
+                }
+                let (is_ok, payload) = rpc_sync_put(f, args)
+                if is_ok {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", payload)]))
+                } else {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("error", payload)]))
+                }
+                prog = true
+              }
+              _ => ()
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      if !prog && host.rt.idle() {
+        break
+      }
+    }
+  }
+  let put_req = base_codec::json_obj([
+    ("method", sessions_core::jstr("sync.put")),
+    ("workspace", sessions_core::jstr("ws1")),
+    ("session", sessions_core::jstr("s1")),
+    ("key", sessions_core::jstr("kt")),
+    ("id", sessions_core::jstr("sid1")),
+  ])
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    rhost.rnode_k("syncPacking", [], fn(ex1 : effect::Exit[base_codec::Json]) -> Unit {
+      match ex1 {
+        effect::Exit::Succeeded(packed) => {
+          let ppath = sessions_core::text_of(packed, "path")
+          rhost.rnode_k(
+            "syncPut",
+            [sessions_core::jstr("st1"), put_req, sessions_core::jstr(ppath), sessions_core::jint(0)],
+            fn(ex2 : effect::Exit[base_codec::Json]) -> Unit {
+              match ex2 {
+                effect::Exit::Succeeded(v) => sp_ok = Some(v)
+                _ => ()
+              }
+              tk(effect::Exit::Succeeded(()))
+            },
+          )
+        }
+        _ => tk(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  pump_sync_put()
+  assert(saw_4arg_put)
+  match sp_ok {
+    Some(v) => assert(sessions_core::int_of(sessions_core::jget(v, "pieces")) == 3)
+    None => panic("expected 4-arg syncPut success")
+  }
+  // Second call propagates RPC error
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    rhost.rnode_k(
+      "syncPut",
+      [sessions_core::jstr("st1"), put_req, sessions_core::jstr("/tmp/pack.tar"), sessions_core::jint(0)],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Failed(e) => sp_err = sessions_core::error_message(e)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_sync_put()
+  assert(str_contains(sp_err, "pack transfer failed"))
+
+  // 5. task.clean admitted before `close`: receives `close` while awaiting `store.now`,
+  //    then enters `bounded_k` and STILL registers its 1s timer & returns {mirror, pending: true}!
+  let lane_gate2 : effect::Deferred[Unit] = effect::Deferred::new()
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      room,
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit { lane_gate2.wait_k(lk) },
+      fn(_ex : effect::Exit[Unit]) -> Unit { tk(effect::Exit::Succeeded(())) },
+    )
+  })
+  host.tick()
+  let mut clean_after_close : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.clean_request_k("ws1", "peer1", clean_req, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => clean_after_close = Some(v)
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.tick()
+  // Find the pending store.now RPC id before answering it
+  let mut now_rpc_id = -1
+  while cur.stdout_cursor < mem.stdout_lines.length() {
+    let line = mem.stdout_lines[cur.stdout_cursor]
+    cur.stdout_cursor = cur.stdout_cursor + 1
+    match sessions_core::parse_json_strict(line) {
+      Ok(msg) => {
+        if sessions_core::text_of(msg, "fn") == "store.now" {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_f, _)) => now_rpc_id = id_f.to_int()
+            _ => ()
+          }
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  assert(now_rpc_id >= 0)
+  // Deliver `close` BEFORE store.now returns!
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k("close", [], fn(_ex : effect::Exit[base_codec::Json]) -> Unit {
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.tick()
+  assert(state.stopped)
+  // Now answer store.now -> clean_request_k enters bounded_k and MUST still arm its 1s timer!
+  gen.handle_answer(host, now_rpc_id, base_codec::json_obj([("value", sessions_core::jnum(now_ms))]))
+  host.tick()
+  let ct_close = state.timers.keys()
+  assert(ct_close.length() == 1)
+  assert(ctx.handle_due(ct_close[0]))
+  host.tick()
+  match clean_after_close {
+    Some(v) => {
+      match sessions_core::field_of(v, "pending") {
+        base_codec::Json::Bool(true) => ()
+        _ => panic("expected pending: true even after close")
+      }
+    }
+    None => panic("clean_after_close hung instead of timing out at 1s")
+  }
+  let _ = lane_gate2.succeed(())
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(state.timers.length() == 0)
   assert(host.hub_timers.length() == 0)
   assert_holding_zero(host)
 }
@@ -1895,59 +2159,103 @@ test "sessions_remote: again backoff, push_out/check re-entry, closer rounds, an
   let fs = MemFs::new("/")
   let cur = PumpCursor::new()
 
-  // 2. again retries via pure-value RemoteTimerAction::AgainStep (zero hub_timers)
-  let mut attempts = 0
-  let mut ended_ok = false
-  ctx.again(
-    fn(ok : (effect::Exit[Bool]) -> Unit) -> Unit {
-      attempts = attempts + 1
-      ok(effect::Exit::Succeeded(attempts >= 3))
-    },
-    fn(over : Bool) -> Unit { ended_ok = over },
-  )
-  host.tick()
-  assert(attempts == 1 && !ended_ok)
-  assert(state.timers.length() == 1 && host.hub_timers.length() == 0)
-  let tk1 = state.timers.keys()[0]
-  assert(ctx.handle_due(tk1))
-  host.tick()
-  assert(attempts == 2 && !ended_ok)
-  let tk2 = state.timers.keys()[0]
-  assert(ctx.handle_due(tk2))
-  host.tick()
-  assert(attempts == 3 && ended_ok)
-  assert(state.timers.length() == 0 && state.again_jobs.length() == 0)
-
-  // 3. push_out re-entry flag (second push_out while first is in flight sets pushing[id] = true and re-runs)
+  // 2. Real `push_out` retry backoff via pure-value RemoteTimerAction::AgainStep (1000ms -> 2000ms -> 4000ms)
+  //    plus re-entry flag when `push_out` is called again while in flight.
   let task_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   let task_file = ctx.rjoin([state.root, "incoming", task_id, "task.json"])
   fs.add_file(task_file, "{\"workspace\":\"ws1\",\"station\":\"st1\",\"push\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}")
   let mut ask_count = 0
-  let rpc_handler = fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
-    if f == "store.now" {
-      return sessions_core::jnum(10000.0)
-    }
-    if f == "store.getJob" {
-      return base_codec::json_obj([("state", sessions_core::jstr("exited")), ("endedAt", sessions_core::jnum(9000.0))])
-    }
-    if f == "store.jobNotices" {
-      return base_codec::json_arr([])
-    }
-    if f == "node.ask" {
-      ask_count = ask_count + 1
-      if ask_count == 1 {
-        // Re-trigger push_out while first ask is in flight
-        ctx.push_out(task_id)
+  let pump_push = fn() -> Unit {
+    let mut g = 0
+    while g < 200 {
+      g = g + 1
+      host.tick()
+      let mut prog = false
+      while cur.shell_cursor < mem.shell_calls.length() {
+        let call = mem.shell_calls[cur.shell_cursor]
+        cur.shell_cursor = cur.shell_cursor + 1
+        let (json, err) = fs.handle_shell(call)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+        prog = true
       }
-      let _ = args
-      return base_codec::json_obj([("taken", sessions_core::jbool(true))])
+      while cur.stdout_cursor < mem.stdout_lines.length() {
+        let line = mem.stdout_lines[cur.stdout_cursor]
+        cur.stdout_cursor = cur.stdout_cursor + 1
+        match sessions_core::parse_json_strict(line) {
+          Ok(msg) => {
+            match sessions_core::jget(msg, "rpc") {
+              Some(base_codec::Json::Num(id_f, _)) => {
+                let f = sessions_core::text_of(msg, "fn")
+                if f == "store.now" {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", sessions_core::jnum(10000.0))]))
+                } else if f == "store.getJob" {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("state", sessions_core::jstr("exited")), ("endedAt", sessions_core::jnum(9000.0))]))]))
+                } else if f == "store.jobNotices" {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_arr([]))]))
+                } else if f == "node.ask" {
+                  ask_count = ask_count + 1
+                  if ask_count <= 3 {
+                    // Transient non-refusal error -> schedules AgainStep(tries+1)
+                    gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("error", base_codec::json_obj([("message", sessions_core::jstr("offline"))]))]))
+                  } else {
+                    if ask_count == 4 {
+                      ctx.push_out(task_id)
+                    }
+                    gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("taken", sessions_core::jbool(true))]))]))
+                  }
+                } else {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_null())]))
+                }
+                prog = true
+              }
+              _ => ()
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      if !prog && host.rt.idle() {
+        break
+      }
     }
-    base_codec::json_null()
   }
   ctx.push_out(task_id)
-  pump_all(host, gen, mem, fs, cur, rpc_handler)
-  assert(ask_count == 1)
+  pump_push()
+  assert(ask_count == 1 && state.timers.length() == 1 && host.hub_timers.length() == 0)
+  // Fire 1000ms timer
+  let tk1 = state.timers.keys()[0]
+  assert(ctx.handle_due(tk1))
+  pump_push()
+  assert(ask_count == 2 && state.timers.length() == 1)
+  // Fire 2000ms timer
+  let tk2 = state.timers.keys()[0]
+  assert(ctx.handle_due(tk2))
+  pump_push()
+  assert(ask_count == 3 && state.timers.length() == 1)
+  // Fire 4000ms timer -> succeeds on 4th attempt
+  let tk3 = state.timers.keys()[0]
+  assert(ctx.handle_due(tk3))
+  pump_push()
+  assert(ask_count == 4)
+  assert(state.timers.length() == 0 && state.again_jobs.length() == 0)
   assert(!state.pushing.contains(task_id))
+  // Verify emitted backoff ms values 1000, 2000, 4000 appeared on stdout
+  let mut saw_1000 = false
+  let mut saw_2000 = false
+  let mut saw_4000 = false
+  for li in 0..<mem.stdout_lines.length() {
+    let ln = mem.stdout_lines[li]
+    if str_contains(ln, "\"after\"") && str_contains(ln, "\"ms\":1000") {
+      saw_1000 = true
+    }
+    if str_contains(ln, "\"after\"") && str_contains(ln, "\"ms\":2000") {
+      saw_2000 = true
+    }
+    if str_contains(ln, "\"after\"") && str_contains(ln, "\"ms\":4000") {
+      saw_4000 = true
+    }
+  }
+  assert(saw_1000 && saw_2000 && saw_4000)
 
   // 4. closer schedules ClosingRound timer when station is unreachable, and HubGen rotation ignores stale timer due
   let used_path = ctx.used_path("s-close")

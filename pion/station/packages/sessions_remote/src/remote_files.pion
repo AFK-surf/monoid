@@ -311,6 +311,28 @@ pub fn RemoteCtx::in_turn_k[X](
   }
   let run_work = fn() -> Unit {
     work_k(fn(ex : effect::Exit[X]) -> Unit {
+      match state.rename_inflight.get(path) {
+        Some(rd) => {
+          if !rd.is_done() && !counters.sealed {
+            // An in-flight fs.rename on `path` is still running on the shell thread after
+            // caller cancellation: hold the write barrier until that rename actually finishes
+            // so a subsequent writer cannot overtake and be overwritten by the late rename.
+            let _ = self.gen.fibers.fork_daemon(
+              "write rename barrier",
+              fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                rd.wait_k(fn(_rex : effect::Exit[Unit]) -> Unit {
+                  finish()
+                  rk(effect::Exit::Succeeded(()))
+                })
+              },
+              fn(_e : effect::EffectError) -> Unit { finish() },
+            )
+            k(ex)
+            return
+          }
+        }
+        None => ()
+      }
       finish()
       k(ex)
     })
@@ -347,8 +369,13 @@ pub fn RemoteCtx::in_turn_k[X](
 }
 
 /// Write `json` atomically via private temp file + sync + rename (`remote_files.mbt:179-188`).
-/// If interrupted after `fs.put` while awaiting `rename` in an active (unsealed) generation,
-/// cleans up the orphan temp file asynchronously without touching a rotated generation.
+/// Runs the in-flight `fs.put` -> `fs.rename` sequence on a generation-scoped daemon so:
+/// - If the caller is cancelled while `fs.put` is in flight and `fs.put` actually succeeds
+///   in an unsealed generation, the orphan temp file is removed (while `fs.put` errors such
+///   as exclusive conflicts never remove another writer's file);
+/// - If the caller is cancelled while `fs.rename` is in flight, `state.rename_inflight[path]`
+///   holds `in_turn_k`'s write barrier until the dispatched `fs.rename` completes (or seals),
+///   preventing a successor writer from racing ahead and being clobbered by the late rename.
 pub fn RemoteCtx::write_whole_k(
   self : RemoteCtx,
   path : String,
@@ -361,51 +388,92 @@ pub fn RemoteCtx::write_whole_k(
       effect::Exit::Interrupted => k(effect::Exit::Interrupted)
       effect::Exit::Succeeded(hex) => {
         let temp = self.with_extension(path, hex + ".tmp")
-        self.fs_k(
-          "fs.put",
-          [
-            ("path", sessions_core::jstr(temp)),
-            ("offset", sessions_core::jnum(0.0)),
-            ("exclusive", sessions_core::jbool(true)),
-            ("truncate", sessions_core::jbool(true)),
-            ("sync", sessions_core::jbool(true)),
-            ("mode", sessions_core::jnum(384.0)),
-          ],
-          Some(json.to_bytes()),
-          fn(pex : effect::Exit[base_codec::Json]) -> Unit {
-            match pex {
-              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-              effect::Exit::Succeeded(_) => {
-                self.rename_k(temp, path, fn(rex : effect::Exit[Unit]) -> Unit {
-                  match rex {
-                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
-                    effect::Exit::Interrupted => {
-                      if !self.gen.counters.sealed {
-                        // Active-generation cancellation after fs.put: best-effort cleanup of temp file.
-                        let _ = self.gen.fibers.fork_daemon(
-                          "cleanup orphan tmp",
-                          fn(ck : (effect::Exit[Unit]) -> Unit) -> Unit {
-                            self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
-                              ck(effect::Exit::Succeeded(()))
-                            })
-                          },
-                          fn(_e : effect::EffectError) -> Unit { () },
-                        )
-                      }
-                      k(effect::Exit::Interrupted)
-                    }
-                    effect::Exit::Failed(e) => {
-                      self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
-                        k(effect::Exit::Failed(e))
-                      })
-                    }
+        let counters = self.gen.counters
+        let state = self.state
+        let mut caller_cancelled = false
+        let step_done : effect::Deferred[effect::Exit[Unit]] = effect::Deferred::new()
+        let _ = self.gen.fibers.fork_daemon(
+          "write_whole io",
+          fn(dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.fs_k(
+              "fs.put",
+              [
+                ("path", sessions_core::jstr(temp)),
+                ("offset", sessions_core::jnum(0.0)),
+                ("exclusive", sessions_core::jbool(true)),
+                ("truncate", sessions_core::jbool(true)),
+                ("sync", sessions_core::jbool(true)),
+                ("mode", sessions_core::jnum(384.0)),
+              ],
+              Some(json.to_bytes()),
+              fn(pex : effect::Exit[base_codec::Json]) -> Unit {
+                match pex {
+                  effect::Exit::Failed(e) => {
+                    let _ = step_done.succeed(effect::Exit::Failed(e))
+                    dk(effect::Exit::Succeeded(()))
                   }
-                })
-              }
-            }
+                  effect::Exit::Interrupted => {
+                    let _ = step_done.succeed(effect::Exit::Interrupted)
+                    dk(effect::Exit::Interrupted)
+                  }
+                  effect::Exit::Succeeded(_) => {
+                    if caller_cancelled {
+                      if !counters.sealed {
+                        self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
+                          dk(effect::Exit::Succeeded(()))
+                        })
+                      } else {
+                        dk(effect::Exit::Succeeded(()))
+                      }
+                      return
+                    }
+                    let rename_done : effect::Deferred[Unit] = effect::Deferred::new()
+                    state.rename_inflight.set(path, rename_done)
+                    let clear_rename = fn() -> Unit {
+                      let _ = state.rename_inflight.remove(path)
+                      let _ = rename_done.succeed(())
+                    }
+                    self.rename_k(temp, path, fn(rex : effect::Exit[Unit]) -> Unit {
+                      clear_rename()
+                      match rex {
+                        effect::Exit::Succeeded(_) => {
+                          let _ = step_done.succeed(effect::Exit::Succeeded(()))
+                          dk(effect::Exit::Succeeded(()))
+                        }
+                        effect::Exit::Interrupted => {
+                          let _ = step_done.succeed(effect::Exit::Interrupted)
+                          dk(effect::Exit::Interrupted)
+                        }
+                        effect::Exit::Failed(e) => {
+                          if !counters.sealed {
+                            self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
+                              let _ = step_done.succeed(effect::Exit::Failed(e))
+                              dk(effect::Exit::Succeeded(()))
+                            })
+                          } else {
+                            let _ = step_done.succeed(effect::Exit::Failed(e))
+                            dk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      }
+                    })
+                  }
+                }
+              },
+            )
           },
+          fn(_e : effect::EffectError) -> Unit { () },
         )
+        step_done.wait_k(fn(ex : effect::Exit[effect::Exit[Unit]]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => {
+              caller_cancelled = true
+              k(effect::Exit::Interrupted)
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(inner) => k(inner)
+          }
+        })
       }
     }
   })
