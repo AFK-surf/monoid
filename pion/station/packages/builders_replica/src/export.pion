@@ -251,6 +251,13 @@ pub struct Exporter {
   mut known : Bool
   mut transcripts_pending : Bool
   mut tf_cache : Map[String, Array[(String, js_json::JValue)]]
+  mut transcript_cursor : Map[String, String]
+  mut transcript_cursor_keys : Array[String]
+  mut transcript_scan_done : Map[String, Bool]
+  mut transcript_scan_done_keys : Array[String]
+  mut transcript_ws_done : Map[String, Bool]
+  mut transcript_ws_done_keys : Array[String]
+  mut transcript_resweep : Bool
   mut head_cache : Map[String, (String, Int64, Bool, js_json::JValue)]
   mut manifest_cache : Map[String, (String, String, Array[String])]
   mut manifest_live : Map[String, Bool]
@@ -343,6 +350,13 @@ pub fn Exporter::new(
     known: false,
     transcripts_pending: false,
     tf_cache: Map::new(),
+    transcript_cursor: Map::new(),
+    transcript_cursor_keys: [],
+    transcript_scan_done: Map::new(),
+    transcript_scan_done_keys: [],
+    transcript_ws_done: Map::new(),
+    transcript_ws_done_keys: [],
+    transcript_resweep: false,
     head_cache: Map::new(),
     manifest_cache: Map::new(),
     manifest_live: Map::new(),
@@ -429,6 +443,7 @@ fn Exporter::forget(self : Exporter) -> Result[Unit, String] {
   }
   self.known = false
   self.transcripts_pending = false
+  self.forget_sweep()
   self.tf_cache = Map::new()
   self.head_cache = Map::new()
   self.manifest_cache = Map::new()
@@ -437,6 +452,40 @@ fn Exporter::forget(self : Exporter) -> Result[Unit, String] {
   self.manifest_superseded_at = Map::new()
   self.manifest_superseded_keys = []
   Ok(())
+}
+
+fn Exporter::forget_sweep(self : Exporter) -> Unit {
+  self.end_sweep()
+  self.transcript_resweep = false
+}
+
+fn Exporter::end_sweep(self : Exporter) -> Unit {
+  self.transcript_cursor = Map::new()
+  self.transcript_cursor_keys = []
+  self.transcript_scan_done = Map::new()
+  self.transcript_scan_done_keys = []
+  self.transcript_ws_done = Map::new()
+  self.transcript_ws_done_keys = []
+}
+
+fn Exporter::in_transcript_sweep(self : Exporter) -> Bool {
+  for i in 0..<self.transcript_cursor_keys.length() {
+    match self.transcript_cursor.get(self.transcript_cursor_keys[i]) {
+      Some(_) => return true
+      None => ()
+    }
+  }
+  for i in 0..<self.transcript_scan_done_keys.length() {
+    if map_has(self.transcript_scan_done, self.transcript_scan_done_keys[i]) {
+      return true
+    }
+  }
+  for i in 0..<self.transcript_ws_done_keys.length() {
+    if map_has(self.transcript_ws_done, self.transcript_ws_done_keys[i]) {
+      return true
+    }
+  }
+  false
 }
 
 pub fn Exporter::set_places(self : Exporter, places : js_json::JValue) -> Unit {
@@ -861,15 +910,25 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> Result[String, String] {
     Ok(_) => ()
     Err(e) => return Err(e.message)
   }
-  let reset_tables = ["digests", "threads", "sent", "entering", "transcript_files"]
+  let reset_tables = ["digests", "threads", "sent", "entering"]
   for i in 0..<reset_tables.length() {
     match self.state.run("DELETE FROM " + reset_tables[i] + " WHERE ws = ?", [base_codec::json_str(ws)]) {
       Ok(_) => ()
       Err(e) => return Err(e.message)
     }
   }
+  let dropped = match self.state.run("DELETE FROM transcript_files WHERE ws = ?", [base_codec::json_str(ws)]) {
+    Ok(n) => n
+    Err(e) => return Err(e.message)
+  }
   let _ = self.tf_cache.remove(ws)
   let _ = self.manifest_cache.remove(ws)
+  let _ = self.transcript_cursor.remove(ws)
+  let _ = self.transcript_scan_done.remove(ws)
+  let _ = self.transcript_ws_done.remove(ws)
+  if dropped > 0 {
+    self.transcripts_pending = true
+  }
   Ok(gen)
 }
 
@@ -936,6 +995,7 @@ pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json
     Err(e) => {
       self.known = prev_known
       self.transcripts_pending = prev_transcripts_pending
+      self.forget_sweep()
       self.tf_cache = Map::new()
       self.head_cache = Map::new()
       self.manifest_cache = Map::new()
@@ -1948,7 +2008,11 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
   }
 
   // Transcripts (after releasing source DB snapshot).
+  let mut sweep_completed = false
   if scan_transcripts {
+    if want_transcripts && self.in_transcript_sweep() {
+      self.transcript_resweep = true
+    }
     if more {
       self.transcripts_pending = true
     } else {
@@ -1966,7 +2030,14 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         self.transcripts_pending = true
         more = true
       } else {
-        self.transcripts_pending = false
+        sweep_completed = true
+        if self.transcript_resweep {
+          self.transcript_resweep = false
+          self.transcripts_pending = true
+          more = true
+        } else {
+          self.transcripts_pending = false
+        }
       }
     }
   }
@@ -2004,7 +2075,7 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
     }
   }
 
-  if scan_transcripts && !self.transcripts_pending {
+  if sweep_completed {
     match self.gc_transcript_chunks() {
       Ok(()) => ()
       Err(e) => return Err(e)
@@ -2939,19 +3010,45 @@ fn Exporter::export_transcripts(
   let parent_unreadable_cache : Map[String, Bool] = Map::new()
   let ancestor_lstat_cache : Map[String, String] = Map::new()
 
+  let ws_order : Array[String] = []
   for wi in 0..<out_keys.length() {
+    ws_order.push(out_keys[wi])
+  }
+  sort_strings_utf16(ws_order)
+
+  for wi in 0..<ws_order.length() {
     if truncated {
       break
     }
-    let ws = out_keys[wi]
+    let ws = ws_order[wi]
+    if map_has(self.transcript_ws_done, ws) {
+      continue
+    }
     let ws_st = match by_ws.get(ws) {
       Some(st) => st
       None => continue
     }
     let paths = ws_st.found_keys
     sort_strings_utf16(paths)
+    // Batch-load `transcript_files` for this workspace once instead of querying per path.
+    let existing_by_path : Map[String, (Option[String], Double, Double)] = Map::new()
+    let old_paths : Array[String] = []
+    let existing_rows = match self.state.all("SELECT path, room, size, mtime FROM transcript_files WHERE ws = ?", [base_codec::json_str(ws)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for ri in 0..<existing_rows.length() {
+      let row = existing_rows[ri]
+      let p = field_text(row, "path")
+      let prev_room = field_str(row, "room")
+      existing_by_path.set(p, (prev_room, field_num(row, "size"), field_num(row, "mtime")))
+      old_paths.push(p)
+    }
+    sort_strings_utf16(old_paths)
     let active : Map[String, Bool] = Map::new()
     let mut ws_truncated = false
+    let scan_done = map_has(self.transcript_scan_done, ws)
+    let cursor = self.transcript_cursor.get(ws)
     for pi in 0..<paths.length() {
       let path = paths[pi]
       let (kind, size, mode, mtime) = match self.lstat_checked(path) {
@@ -2965,30 +3062,31 @@ fn Exporter::export_transcripts(
       if kind != "file" {
         continue
       }
+      // Already scanned earlier in this sweep: keep as active without re-reading until next sweep.
+      let behind_cursor = match cursor {
+        Some(c) => js_json::js_compare(path, c) < 0
+        None => false
+      }
+      if scan_done || behind_cursor {
+        active.set(path, true)
+        continue
+      }
       let room = match ws_st.found.get(path) {
         Some(r) => r
         None => None
       }
       let m = mode & 511 // 0o777
       let mtime_ms = floor_double(mtime)
-      let existing = match self.state.all(
-        "SELECT room, size, mtime FROM transcript_files WHERE ws = ? AND path = ?",
-        [base_codec::json_str(ws), base_codec::json_str(path)],
-      ) {
-        Ok(rs) => rs
-        Err(e) => return Err(e.message)
-      }
-      let unchanged = if existing.length() > 0 {
-        let row = existing[0]
-        let prev_room = field_str(row, "room")
-        let room_eq = match (prev_room, room) {
-          (Some(a), Some(b)) => a == b
-          (None, None) => true
-          _ => false
+      let unchanged = match existing_by_path.get(path) {
+        Some((prev_room, prev_size, prev_mtime)) => {
+          let room_eq = match (prev_room, room) {
+            (Some(a), Some(b)) => a == b
+            (None, None) => true
+            _ => false
+          }
+          prev_size == size && prev_mtime == mtime_ms && room_eq
         }
-        field_num(row, "size") == size && field_num(row, "mtime") == mtime_ms && room_eq
-      } else {
-        false
+        None => false
       }
       if unchanged {
         active.set(path, true)
@@ -2997,6 +3095,8 @@ fn Exporter::export_transcripts(
       if done_files > 0 && (done_files >= self.transcript_pass_files || done_bytes >= self.transcript_pass_bytes) {
         truncated = true
         ws_truncated = true
+        self.transcript_cursor.set(ws, path)
+        self.transcript_cursor_keys.push(ws)
         break
       }
       let chunks : Array[String] = []
@@ -3121,14 +3221,37 @@ fn Exporter::export_transcripts(
       done_files = done_files + 1
       done_bytes = done_bytes + offset
     }
-    if !ws_truncated {
+    if ws_truncated {
+      // Drain pruned brain derived caches even when the sweep is cut short by pass budget.
       let mut deleted_in_ws = false
-      let old_rows = match self.state.all("SELECT path FROM transcript_files WHERE ws = ? ORDER BY path", [base_codec::json_str(ws)]) {
-        Ok(rs) => rs
-        Err(e) => return Err(e.message)
+      for ri in 0..<old_paths.length() {
+        let old_path = old_paths[ri]
+        if map_has(active, old_path) || !self.files.is_pruned_brain_path(self.data_dir, old_path) {
+          continue
+        }
+        if done_deletes >= self.transcript_pass_deletes {
+          break
+        }
+        match self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [base_codec::json_str(ws), base_codec::json_str(old_path)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+        deleted_in_ws = true
+        say(ws, jval_obj([("tr_del", jval_str(old_path))]))
+        done_deletes = done_deletes + 1
       }
-      for ri in 0..<old_rows.length() {
-        let old_path = field_text(old_rows[ri], "path")
+      if deleted_in_ws {
+        let _ = self.tf_cache.remove(ws)
+        let _ = self.manifest_cache.remove(ws)
+      }
+    } else {
+      let _ = self.transcript_cursor.remove(ws)
+      self.transcript_scan_done.set(ws, true)
+      self.transcript_scan_done_keys.push(ws)
+      let mut deleted_in_ws = false
+      let mut deletes_cut = false
+      for ri in 0..<old_paths.length() {
+        let old_path = old_paths[ri]
         if map_has(active, old_path) || map_has(ws_st.unreadable_paths, old_path) || path_under_any_dir(old_path, ws_st.unreadable_dirs, self.files.sep) {
           continue
         }
@@ -3219,6 +3342,7 @@ fn Exporter::export_transcripts(
         }
         if done_deletes >= self.transcript_pass_deletes {
           truncated = true
+          deletes_cut = true
           break
         }
         match self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [base_codec::json_str(ws), base_codec::json_str(old_path)]) {
@@ -3233,7 +3357,14 @@ fn Exporter::export_transcripts(
         let _ = self.tf_cache.remove(ws)
         let _ = self.manifest_cache.remove(ws)
       }
+      if !deletes_cut {
+        self.transcript_ws_done.set(ws, true)
+        self.transcript_ws_done_keys.push(ws)
+      }
     }
+  }
+  if !truncated {
+    self.end_sweep()
   }
   Ok(truncated)
 }

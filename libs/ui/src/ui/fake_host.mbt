@@ -692,9 +692,49 @@ fn FakeHost::face_add_family(self : FakeHost, face : Int, family : String) -> Bo
 }
 
 ///|
+fn FakeHost::has_local_fonts(self : FakeHost) -> Bool {
+  self.local_fonts != ""
+}
+
+///|
 /// The font families installed as it says them (Tester::set_local_fonts).
 fn FakeHost::local_font_families(self : FakeHost) -> String {
   self.local_fonts
+}
+
+///|
+fn FakeHost::face_set_ligatures(self : FakeHost, face : Int, on : Bool) -> Unit {
+  self.face_ligatures[face] = on
+  if self.live is Some(l) {
+    (l.host.face_set_ligatures)(face, on)
+  }
+}
+
+///|
+fn FakeHost::set_host_autospace(self : FakeHost, on : Bool) -> Unit {
+  self.host_autospace = on
+  if self.live is Some(l) {
+    (l.host.set_host_autospace)(on)
+  }
+}
+
+///|
+fn FakeHost::local_font_info(self : FakeHost) -> String {
+  if self.local_fonts_info != "" {
+    return self.local_fonts_info
+  }
+  if self.live is Some(l) {
+    return (l.host.local_font_info)()
+  }
+  ""
+}
+
+///|
+fn FakeHost::has_async_local_font_info(self : FakeHost) -> Bool {
+  if self.local_fonts_info != "" {
+    return true
+  }
+  self.local_fonts == ""
 }
 
 ///|
@@ -3134,7 +3174,12 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.face_add_bytes = fn(a0, a1, a2) { self.face_add_bytes(a0, a1, a2) }
   h.face_clear = fn(a0) { self.face_clear(a0) }
   h.face_add_family = fn(a0, a1) { self.face_add_family(a0, a1) }
+  h.has_local_fonts = fn() { self.has_local_fonts() }
   h.local_font_families = fn() { self.local_font_families() }
+  h.face_set_ligatures = fn(a0, a1) { self.face_set_ligatures(a0, a1) }
+  h.set_host_autospace = fn(a0) { self.set_host_autospace(a0) }
+  h.local_font_info = fn() { self.local_font_info() }
+  h.has_async_local_font_info = fn() { self.has_async_local_font_info() }
   h.atlas_generation = fn() { self.atlas_generation() }
   h.reduce_transparency = fn() { self.reduce_transparency() }
   h.increase_contrast = fn() { self.increase_contrast() }

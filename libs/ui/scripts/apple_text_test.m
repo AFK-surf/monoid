@@ -26,6 +26,7 @@ CTFontRef mb_platform_font(double size, int weight, int mono) {
 void mb_atlas_upload(int color, int x, int y, int w, int h, const void *px) {
   (void)color, (void)x, (void)y, (void)w, (void)h, (void)px;
 }
+void mb_host_request_frame(void) {}
 int mb_render_snapshot(const char *path) {
   (void)path;
   return 0;
@@ -118,7 +119,7 @@ static int face_family(int face, NSString *family) {
   if (descs.count == 0) return 0;
   face_descs[face] = descs;
   face_weights[face] = weights;
-  faces_changed();
+  face_changed(face);
   return 1;
 }
 
@@ -133,14 +134,14 @@ static int face_file(int face, const char *path) {
   face_descs[face] = [NSMutableArray arrayWithObject:(__bridge id)CFArrayGetValueAtIndex(ds, 0)];
   face_weights[face] = [NSMutableArray arrayWithObject:@0];
   CFRelease(ds);
-  faces_changed();
+  face_changed(face);
   return 1;
 }
 
 static void face_none(int face) {
   [face_descs[face] removeAllObjects];
   [face_weights[face] removeAllObjects];
-  faces_changed();
+  face_changed(face);
 }
 
 // Digits one width in the face set now (style_tabular, 32), and not without it where `proportional` (the face's own
@@ -584,6 +585,40 @@ int main(int argc, char **argv) {
     ahead_page();
     shape_parity();
     keys_bounded();
+    // Preview slot (face >= 7) mutations must not bump atlas_generation or invalidate primary slot 1 glyph keys
+    {
+      CHECK(face_family(1, @"Helvetica"), "set slot 1 to Helvetica");
+      mb_host_atlas_generation();
+      int g0 = mb_host_atlas_generation();
+      int k1 = key_of(@"字", 14, 0);
+      CHECK(k1 >= 0, "no key for primary slot 1");
+      double out[8] = {0};
+      mb_host_glyph(k1, out);
+      CHECK(out[2] > 0, "primary slot 1 key did not draw before preview");
+      int style7 = 7 << 8;
+      CHECK(face_family(7, @"Menlo"), "set preview slot 7 to Menlo");
+      int k7a = key_of(@"A", 14, style7);
+      CHECK(k7a >= 0, "no key for preview slot 7 (Menlo)");
+      mb_host_face_clear(7);
+      CHECK(face_family(7, @"PingFang SC"), "set preview slot 7 to PingFang SC");
+      int k7b = key_of(@"A", 14, style7);
+      CHECK(k7b >= 0 && k7b != k7a, "preview slot 7 key collided across family change: %d vs %d", k7a, k7b);
+      CHECK(mb_host_atlas_generation() == g0, "preview slot 7 bumped atlas_generation: %d -> %d", g0, mb_host_atlas_generation());
+      double out2[8] = {0};
+      mb_host_glyph(k1, out2);
+      CHECK(out2[2] > 0 && out2[2] == out[2] && out2[3] == out[3], "primary slot 1 key invalidated after preview slot 7 mutations");
+      mb_host_face_clear(7);
+      face_none(1);
+    }
+    // style_serif (4) | style_words (16) must stay serif (face_id == 0) even when face_text (slot 2) is registered
+    CTFontDescriptorRef serif_test_desc = CTFontDescriptorCreateWithNameAndSize(CFSTR("Menlo"), 15.0);
+    CHECK(serif_test_desc != NULL, "create Menlo descriptor");
+    if (serif_test_desc) {
+      face_descs[2] = [NSMutableArray arrayWithObject:(__bridge_transfer id)serif_test_desc];
+      CHECK(face_id(4 | 16) == 0, "style_serif | style_words must exempt reader serif from face_text");
+      CHECK(face_id(16) == 2, "style_words without style_serif still uses face_text");
+      mb_host_face_clear(2);
+    }
   }
   if (failed) return 1;
   printf("apple_text_test: ok\n");

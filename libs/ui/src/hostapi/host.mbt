@@ -298,6 +298,11 @@ pub(all) struct Host {
   mut pointer_delta : (FixedArray[Double]) -> Unit
   mut gamepads : (FixedArray[Double]) -> Int
   mut glyphs_ahead_able : () -> Bool
+  mut has_local_fonts : () -> Bool
+  mut face_set_ligatures : (Int, Bool) -> Unit
+  mut set_host_autospace : (Bool) -> Unit
+  mut local_font_info : () -> String
+  mut has_async_local_font_info : () -> Bool
 }
 
 ///|
@@ -613,6 +618,11 @@ pub fn Host::noop() -> Host {
     pointer_delta: fn(_) { () },
     gamepads: fn(_) { 0 },
     glyphs_ahead_able: fn() { false },
+    has_local_fonts: fn() { false },
+    face_set_ligatures: fn(_, _) { () },
+    set_host_autospace: fn(_) { () },
+    local_font_info: fn() { "" },
+    has_async_local_font_info: fn() { true },
   }
 }
 
@@ -1209,6 +1219,13 @@ pub fn face_add_family(face : Int, family : String) -> Bool {
 }
 
 ///|
+/// Cheap capability check for whether this host can enumerate locally installed font families without triggering a
+/// synchronous scan.
+pub fn has_local_fonts() -> Bool {
+  (current.val.has_local_fonts)()
+}
+
+///|
 /// The font families installed on this machine, as a JSON array of their names, in the order of the user's
 /// language (the system's hidden ones left out); "" where the host has no way to them (a phone, a browser).
 pub fn local_font_families() -> String {
@@ -1230,6 +1247,32 @@ pub fn face_add_bytes(face : Int, data : Bytes, weight : Int) -> Bool {
 /// Face `face` given up: what was in it is in the system's face again.
 pub fn face_clear(face : Int) -> Unit {
   (current.val.face_clear)(face)
+}
+
+///|
+/// Whether programming / contextual ligatures (calt, liga, clig) are enabled for face `face`.
+pub fn face_set_ligatures(face : Int, on : Bool) -> Unit {
+  (current.val.face_set_ligatures)(face, on)
+}
+
+///|
+/// Whether the host's own CJK/Latin autospace is enabled (e.g. Core Text on macOS/iOS; env MBUI_AUTOSPACE takes priority).
+pub fn set_host_autospace(on : Bool) -> Unit {
+  (current.val.set_host_autospace)(on)
+}
+
+///|
+/// Metadata for locally installed font families as a JSON array (name, localized, mono, serif, cjk); "" if unavailable
+/// or still scanning in the background.
+pub fn local_font_info() -> String {
+  (current.val.local_font_info)()
+}
+
+///|
+/// Whether the host scans `local_font_info()` asynchronously in the background (true on real desktop hosts; false on
+/// test hosts that only populate `local_font_families()`).
+pub fn has_async_local_font_info() -> Bool {
+  (current.val.has_async_local_font_info)()
 }
 
 ///|

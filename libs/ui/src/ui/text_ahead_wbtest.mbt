@@ -820,6 +820,8 @@ test "layout_rich cache hit re-dispatches laid_ahead by measuring_origin_known, 
     max_lines: 0,
     faces: 0,
     shaped_in: words_shaped_in.untracked(),
+    cjk_override: None,
+    code_cjk_override: None,
   }
   let sc = g().scale
   fake_ahead.val = Some(asked)
@@ -1000,6 +1002,8 @@ test "layout_rich tracks per-width prewarm memos independently in RichKept::lays
     max_lines: 0,
     faces: 0,
     shaped_in: words_shaped_in.untracked(),
+    cjk_override: None,
+    code_cjk_override: None,
   }
   fake_ahead.val = Some(asked)
   measuring_origin_known.val = true

@@ -227,15 +227,25 @@ fn triple_other_stations(v : Json?) -> Bool {
 
 ///|
 /// What the panel picked changed (`pick.set`): only what is given.
-fn pick_draft(src : Source, station : String, of : String, patch : Map[String, Json]) -> Unit {
+fn pick_draft(
+  src : Source,
+  station : String,
+  of : String,
+  patch : Map[String, Json],
+  on_ok? : () -> Unit = fn() {  },
+  on_err? : () -> Unit = fn() {  },
+) -> Unit {
   let p = pick_params(station, of)
   for k, v in patch {
     p[k] = v
   }
   (src.call)("pick.set", Json::object(p), fn(res) {
     match res {
-      Ok(_) => ()
-      Err(e) => toast_later(@sf.t("web-main.pick.failed", args=[("error", error_words(e))]))
+      Ok(_) => on_ok()
+      Err(e) => {
+        on_err()
+        toast_later(@sf.t("web-main.pick.failed", args=[("error", error_words(e))]))
+      }
     }
   })
 }
@@ -1563,12 +1573,45 @@ fn triple_body_node(
   // whose models it lists, where another station could lend some: this station's, or every station's (the core's
   // `otherStations`), in the title's place, a choice of two
   let scope_node = fn(parent : @view.View) {
+    let pending : @signals.Signal[Int?] = @signals.signal(None)
+    let req_seq : Ref[Int] = Ref(0)
+    let settled_seq : Ref[Int] = Ref(0)
+    let server_idx = fn() { if flag(v(), "otherStations") { 1 } else { 0 } }
+    parent.reacts(at_start=false, server_idx, fn(srv) {
+      if settled_seq.val == req_seq.val && @signals.untracked(fn() { pending.get() }) == Some(srv) {
+        pending.set(None)
+      }
+    })
     // (the small one, as wide as its two words, not the page's: it stands in a title's place)
     @sf.seg_node(
       parent,
       fn() { [@sf.t("web-main.model.here"), @sf.t("web-main.model.everywhere")] },
-      fn() { if flag(v(), "otherStations") { 1 } else { 0 } },
-      fn(i) { pick_draft(src, station, of, { "otherStations": Json::boolean(i == 1) }) },
+      fn() { pending.get().unwrap_or(server_idx()) },
+      fn(i) {
+        req_seq.val += 1
+        let seq = req_seq.val
+        pending.set(Some(i))
+        pick_draft(
+          src,
+          station,
+          of,
+          { "otherStations": Json::boolean(i == 1) },
+          on_ok=fn() {
+            if req_seq.val == seq {
+              settled_seq.val = seq
+              if @signals.untracked(server_idx) == i {
+                pending.set(None)
+              }
+            }
+          },
+          on_err=fn() {
+            if req_seq.val == seq {
+              settled_seq.val = seq
+              pending.set(None)
+            }
+          },
+        )
+      },
       each_own=true,
     )
     |> ignore

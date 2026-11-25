@@ -129,14 +129,6 @@ pub fn[K] toggle_group_node(
             @glass.over(under, alpha(@ui.tree_theme().lifted, on_w))
           }
         }))
-        .edge(By(fn() {
-          let on_w = dclamp(on_way.shown(b), 0.0, 1.0)
-          (0.5, if on_w > 0.001 { alpha(theme().p.line, on_w) } else { 0L })
-        }))
-        .shadow(By(fn() {
-          let on_w = dclamp(on_way.shown(b), 0.0, 1.0)
-          (on_w, 0.0, alpha(theme().p.shadow, on_w))
-        }))
         .scale(By(fn() { 1.0 - toggle_group_press_dip * dclamp(press_way.shown(b), 0.0, 1.0) }))
         .alpha(By(fn() { if (item.disabled)() && !g.disabled() { toggle_group_off_alpha } else { 1.0 } }))
         |> ignore

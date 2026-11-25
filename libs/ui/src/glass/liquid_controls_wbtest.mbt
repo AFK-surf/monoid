@@ -1,7 +1,7 @@
 // White-box tests for Stage 1 S1-3A optical & interaction alignment in `ui/glass`:
 // 1. `liquid_segmented_node(glass_track=true)`:
 //    - Clear refraction lens is mounted AFTER the label row (Z-order above text glyphs).
-//    - Resting selected pill uses iOS 26 lifted fill (Light 0xFFFFFFFF, Dark 0x5A5A60FF) + outer shadow (2, 1, 0x0000001F).
+//    - Resting selected pill uses iOS 27 lifted fill (Light 0xFFFFFFFF, Dark 0x68686EFF) with zero border/shadow.
 //    - Held lens scales to 1.15x (`ctrl_seg_held_scale == 1.15`) with zero relayout (`laid == 0`).
 // 2. `liquid_slider_node`:
 //    - Track & active fill elastically thicken from 6pt at rest to 10pt while held/dragged in paint layer (`laid == 0`),
@@ -31,10 +31,19 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
       |> ignore
     })
     t.run_for(glass_springs_out)
-    // 1. Resting state: 1 liquid glass instance (track only), bright lifted idle pill with exact fill color.
-    let expected_idle = if dark { 0x5A5A60FFL } else { 0xFFFFFFFFL }
+    // 1. Resting state: 1 liquid glass instance (track only), bright lifted idle pill with exact fill color,
+    //    and zero border / zero shadow instances in the drawlist (matching native iOS 27.0).
+    let expected_idle = if dark { 0x68686EFFL } else { 0xFFFFFFFFL }
     let idle_pills = t.drawn_rects().filter(fn(r) { r.4 == expected_idle && r.2 > 80.0 && r.3 > 30.0 })
     assert_eq(idle_pills.length(), 1, msg="dark=\{dark}: rest must draw 1 lifted idle pill with expected color")
+    let pill_r = idle_pills[0]
+    let pill_insts = t.drawn_instances().filter(fn(a) {
+      a.length() > 6 && a[5] == 0.0 && (a[0] - pill_r.0).abs() < 1.0 && (a[1] - pill_r.1).abs() < 1.0 && (a[2] - pill_r.2).abs() < 1.0 && (a[3] - pill_r.3).abs() < 1.0
+    })
+    let pill_shadows = t.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 && (a[2] - pill_r.2).abs() < 12.0 })
+    assert_true(pill_insts.length() >= 1, msg="dark=\{dark}: resting glass_track=true pill rect instance must be present")
+    assert_eq(pill_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero border")
+    assert_eq(pill_shadows.length(), 0, msg="dark=\{dark}: resting glass_track=true pill must draw zero shadow")
     assert_eq(t.drawn_glass().length(), 1, msg="dark=\{dark}: rest must draw only the track glass (0 hidden lens)")
     assert_eq(t.audit(), [], msg="dark=\{dark}: rest audit must be empty")
 
@@ -77,6 +86,32 @@ test "liquid_segmented_node(glass_track=true): lens Z-order above text, lifted i
     assert_eq(seg_idx.untracked(), 1, msg="dark=\{dark}: release on Week must select index 1")
     assert_eq(t.drawn_glass().length(), 1, msg="dark=\{dark}: settled must return to track glass only")
     assert_eq(t.audit(), [], msg="dark=\{dark}: settled audit must be empty")
+
+    // 4. Verify flat (glass_track=false) resting pill emits exact lifted fill with zero border and zero shadow.
+    let flat_idx = @signals.signal(0)
+    let tf = glass_case(dark, false, fn(page) {
+      liquid_segmented_node(
+        page,
+        fn() { ["Day", "Week", "Month"] },
+        fn() { flat_idx.get() },
+        fn(i) { flat_idx.set(i) },
+        width=360.0,
+        height=36.0,
+        glass_track=false,
+      )
+      |> ignore
+    })
+    tf.run_for(glass_springs_out)
+    let flat_pills = tf.drawn_rects().filter(fn(r) { r.4 == @ui.tree_theme().lifted && r.2 > 80.0 && r.3 > 20.0 })
+    assert_eq(flat_pills.length(), 1, msg="dark=\{dark}: rest glass_track=false must draw 1 lifted pill")
+    let flat_r = flat_pills[0]
+    let flat_insts = tf.drawn_instances().filter(fn(a) {
+      a.length() > 6 && a[5] == 0.0 && (a[0] - flat_r.0).abs() < 1.0 && (a[1] - flat_r.1).abs() < 1.0 && (a[2] - flat_r.2).abs() < 1.0 && (a[3] - flat_r.3).abs() < 1.0
+    })
+    assert_true(flat_insts.length() >= 1, msg="dark=\{dark}: glass_track=false pill rect instance must be present")
+    assert_eq(flat_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero border")
+    assert_eq(tf.drawn_instances().filter(fn(a) { a.length() > 6 && a[5] == 2.0 }).length(), 0, msg="dark=\{dark}: glass_track=false pill must draw zero shadow")
+    assert_eq(tf.audit(), [], msg="dark=\{dark}: flat rest audit must be empty")
   }
   set_dark(None)
 }
@@ -728,5 +763,106 @@ test "fluid_scrubber_look: 5pt/7.5pt/10pt swell with laid == 0, live capsule SDF
     }),
     msg="focus ring must follow 10pt active track height (14pt) unclipped by track",
   )
+  set_dark(None)
+}
+
+///|
+test "liquid_segmented_thumb_look: rest 0 glass, held kind==6 above labels, solid/reduced fallback, laid == 0" {
+  let press = @signals.signal(0.0)
+  let pos_x = @signals.signal(0.0)
+  let t = glass_case(false, false, fn(page) {
+    page.box(fn(strip) {
+      strip.row(Is(true)).width(Is(Some(200.0))).height(Is(Some(32.0))) |> ignore
+      let mount_lens = liquid_segmented_thumb_look(
+        strip,
+        fn(_) { Some((pos_x.get(), 2.0, 96.0, 28.0)) },
+        fn(_) { press.get() },
+        look=SegThumbLook::default(glass_track=false, active=fn() { press.get() > 0.001 }),
+      )
+      strip.box(fn(lbl) { lbl.words(Is("Tab A"), look=words_at(14.0)).ink(Is(colors().content)) |> ignore }) |> ignore
+      mount_lens()
+    })
+    |> ignore
+  })
+  t.draw()
+  // Rest: 0 glass, 1 lifted pill, 0 border, and 0 shadow (iOS 27.0).
+  assert_eq(t.drawn_glass().length(), 0, msg="rest must draw 0 glass")
+  let lifted = @ui.tree_theme().lifted
+  let pills = t.drawn_rects().filter(fn(r) { r.4 == lifted && (r.3 - 28.0).abs() < 0.5 })
+  assert_eq(pills.length(), 1)
+  let pill_insts = t.drawn_instances().filter(fn(a) {
+    a.length() > 6 && a[5] == 0.0 && (a[0] - pills[0].0).abs() < 1.0 && (a[1] - pills[0].1).abs() < 1.0 && (a[2] - pills[0].2).abs() < 1.0 && (a[3] - pills[0].3).abs() < 1.0
+  })
+  assert_eq(pill_insts.filter(fn(a) { a[6] > 0.0 }).length(), 0, msg="resting pill must draw 0 border")
+  let rest_shadows = t.drawn_instances().filter(fn(i) { i[5] == 2.0 })
+  assert_eq(rest_shadows.length(), 0, msg="resting pill must draw 0 shadow")
+  // Held: mounts 1 clear kind==6 lens above glyphs.
+  press.set(1.0)
+  t.draw()
+  let insts = t.drawn_instances()
+  let mut last_glyph = -1
+  let mut lens_idx = -1
+  for idx, inst in insts {
+    if inst[5] == 1.0 {
+      last_glyph = idx
+    } else if inst[5] == 6.0 && inst[14] == 0.0 {
+      lens_idx = idx
+      assert_true((inst[7] - -48.0).abs() < 0.01, msg="droplet_role=3 slot7=-48")
+    }
+  }
+  assert_true(last_glyph >= 0 && lens_idx > last_glyph, msg="lens must draw above glyphs")
+  // Sliding rect while held causes laid == 0.
+  t.tree_frames_from_now()
+  pos_x.set(100.0)
+  t.draw()
+  for f in t.tree_frames() {
+    assert_eq(f.laid, 0, msg="thumb look motion must not relayout: \{Repr(f)}")
+  }
+  // glass_solid() and reduced_motion() fall back to 0 glass.
+  @ui.set_glass_solid(Some(true))
+  t.draw()
+  assert_eq(t.drawn_glass().length(), 0, msg="glass_solid must emit 0 glass")
+  @ui.set_glass_solid(None)
+  t.set_reduce_motion(true)
+  t.draw()
+  assert_eq(t.drawn_glass().length(), 0, msg="reduced_motion must emit 0 glass")
+  t.set_reduce_motion(false)
+  set_dark(None)
+}
+
+///|
+test "liquid_segmented_node: unattached external DampedDrag binds on mount and supports direct press/release" {
+  set_dark(Some(false))
+  let sel = @signals.signal(0)
+  let dd = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=ctrl_seg_held_scale)
+  let t = @ui.Tester::new(fn(_c) {  }, w=360.0, h=120.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    root.box(fn(b) {
+      b.padding(Is((16.0, 24.0, 16.0, 24.0))) |> ignore
+      liquid_segmented_node(
+        b,
+        fn() { ["One", "Two", "Three"] },
+        fn() { sel.get() },
+        fn(i) { sel.set(i) },
+        width=280.0,
+        drag=dd,
+        glass_track=false,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  assert_eq(t.drawn_glass().length(), 0, msg="resting embedded segmented control must draw 0 glass")
+  // Caller directly drives press() on the originally unattached DampedDrag (matches ios27_parity path).
+  dd.press()
+  t.run_for(@ui.move_most_ms / 2.0)
+  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 && i[14] == 0.0 })
+  assert_eq(lenses.length(), 1, msg="direct dd.press() must mount clear kind==6 lens")
+  // Release and settle back to 0 glass.
+  dd.release()
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(t.drawn_glass().length(), 0, msg="after dd.release() settles, drawn_glass must return to 0")
   set_dark(None)
 }

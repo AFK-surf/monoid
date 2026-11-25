@@ -70,7 +70,7 @@ static jclass autofills_cls;
 static jmethodID m_af_able, m_af_ask, m_af_take, m_af_end;
 static jclass passkeys_cls;
 static jmethodID m_wa_able, m_wa_get, m_wa_out, m_wa_end;
-static jmethodID m_face_add, m_face_add_bytes, m_face_clear, m_ahead, m_flush;
+static jmethodID m_face_add, m_face_add_bytes, m_face_clear, m_face_set_ligatures, m_ahead, m_flush;
 static jmethodID m_cs_known, m_cs_decode;
 static jmethodID m_v_text, m_v_still, m_v_lost;
 static jmethodID m_ga_access, m_ga_ask, m_ga_answers, m_ga_read, m_ga_state, m_ga_rows, m_ga_end, m_pk_photo;
@@ -153,6 +153,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *v, void *reserved) {
   m_face_add = (*env)->GetStaticMethodID(env, text_cls, "faceAdd", "(ILjava/lang/String;I)Z");
   m_face_add_bytes = (*env)->GetStaticMethodID(env, text_cls, "faceAddBytes", "(I[BI)Z");
   m_face_clear = (*env)->GetStaticMethodID(env, text_cls, "faceClear", "(I)V");
+  m_face_set_ligatures = (*env)->GetStaticMethodID(env, text_cls, "faceSetLigatures", "(IZ)V");
   m_ahead = (*env)->GetStaticMethodID(env, text_cls, "ahead", "([II)V");
   m_flush = (*env)->GetStaticMethodID(env, text_cls, "flush", "()V");
   m_ref_begin = (*env)->GetStaticMethodID(env, text_cls, "refBegin", "(DDDI)V");
@@ -1191,6 +1192,11 @@ int32_t mb_host_face_add_bytes(int32_t face, moonbit_bytes_t data, int32_t weigh
 void mb_host_face_clear(int32_t face) {
   JNIEnv *env = env_();
   (*env)->CallStaticVoidMethod(env, text_cls, m_face_clear, face);
+}
+
+void mb_host_face_set_ligatures(int32_t face, int32_t on) {
+  JNIEnv *env = env_();
+  (*env)->CallStaticVoidMethod(env, text_cls, m_face_set_ligatures, face, on ? JNI_TRUE : JNI_FALSE);
 }
 
 void mb_host_glyph(int32_t key, double *out) {
@@ -2375,6 +2381,8 @@ void mb_host_hotkey_clear(moonbit_string_t id) { (void)id; }
 // (the phone's faces are the files given: no family of the machine's, no list of them)
 int32_t mb_host_face_add_family(int32_t face, moonbit_string_t family) { (void)face; (void)family; return 0; }
 moonbit_string_t mb_host_local_font_families(void) { return moonbit_make_string_raw(0); }
+void mb_host_set_host_autospace(int32_t on) { (void)on; }
+moonbit_string_t mb_host_local_font_info(void) { return moonbit_make_string_raw(0); }
 // The keys held now (@hostapi.mods_held): none read here.
 int32_t mb_host_mods_held(void) { return 0; }
 // The pointer held by the window and game controllers (@hostapi.set_pointer_lock, gamepads): none here.

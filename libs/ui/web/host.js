@@ -4798,11 +4798,11 @@
   // the face a style is set in: the one it names; else code's (style bit 2), what people wrote's (bit 16), the app's
   // words' (not the serif face's); 0 none
   const faceOf = (style) => {
-    const f = (style >> 8) & 15;
+    const f = (style >> 8) & 31;
     if (f) return faces.has(f) ? f : 0;
     if (style & 2) return faces.has(3) ? 3 : 0;
-    if (style & 16 && faces.has(2)) return 2;
     if (style & 4) return 0;
+    if (style & 16 && faces.has(2)) return 2;
     return faces.has(1) ? 1 : 0;
   };
   // style: 1 slanted, 2 the code face; 64 a CJK face's marks narrow among Latin letters (style.mbt
@@ -4813,39 +4813,64 @@
     const narrow = f && style & 64 && narrowFace(f) ? `"mbface${f}n", ` : '';
     return `${style & 1 ? 'italic ' : ''}${weight} ${size}px ${f ? `${narrow}"mbface${f}", ${own}` : own}`;
   };
-  // each face's files as given (a URL or bytes, its weight), and which faces are loaded with pwid (true) or being
+  // each face's registered entries ({ src, weight, reg, regLigGen, narrow, narrowLigGen }) in registration order,
+  // and which faces are loaded with pwid (true) or being
   const faceFiles = new Map();
   const narrowFaces = new Map();
   const narrowFace = (face) => {
     const had = narrowFaces.get(face);
     if (had !== undefined) return had;
     narrowFaces.set(face, false);
+    const gen = faceCancelGen.get(face) || 0;
+    const ligGen = faceLigGen.get(face) || 0;
     const cjk = cjkFiles.get(face);
-    const files = [...(faceFiles.get(face) || []), ...(cjk || [])];
-    Promise.all(files.map(([src, weight, desc]) => {
-      const d = desc ? { ...desc } : faceDescriptors(face, weight);
+    const entries = [...(faceFiles.get(face) || [])];
+    let added = false;
+    const loads = entries.map((entry) => {
+      const d = faceDescriptors(face, entry.weight);
+      d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
+      const ff = new FontFace(`mbface${face}n`, entry.src, d);
+      return ff.load().then(() => {
+        if (installEntryFace(face, entry, true, ff, gen, ligGen)) {
+          repinOrder(face);
+          added = true;
+        }
+      }, () => {});
+    });
+    for (const [src, , desc] of cjk || []) {
+      const d = { ...desc };
       d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
       const ff = new FontFace(`mbface${face}n`, src, d);
       // (a CJK companion's (setCjkFace) kept with it, gone as it goes; one of its files the system has not: the rest
       // narrow as they are)
-      return ff.load().then(() => {
-        if (desc) {
-          if (cjkFiles.get(face) !== cjk) return;
-          cjkLoaded.get(face).push(ff);
-        }
+      loads.push(ff.load().then(() => {
+        if ((faceCancelGen.get(face) || 0) !== gen) return;
+        if (cjkFiles.get(face) !== cjk) return;
+        cjkLoaded.get(face).push(ff);
         document.fonts.add(ff);
-      }, () => {});
-    })).then(() => {
-      if (narrowFaces.get(face) !== false) return;
-      narrowFaces.set(face, true);
-      textChanged();
-      H.requestFrame();
+        added = true;
+      }, () => {}));
+    }
+    Promise.all(loads).then(() => {
+      if ((faceCancelGen.get(face) || 0) !== gen) return;
+      if (added) {
+        narrowFaces.set(face, true);
+        repinOrder(face);
+        textChanged();
+        H.requestFrame();
+      } else if (narrowFaces.get(face) === false) {
+        narrowFaces.set(face, true);
+        textChanged();
+        H.requestFrame();
+      }
     }, () => {});
     return false;
   };
   const faceFile = (face, src, weight) => {
     if (!faceFiles.has(face)) faceFiles.set(face, []);
-    faceFiles.get(face).push([src, weight]);
+    const entry = { src, weight, reg: null, regLigGen: -1, narrow: null, narrowLigGen: -1 };
+    faceFiles.get(face).push(entry);
+    return entry;
   };
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
@@ -4854,6 +4879,7 @@
   let keysStale = false;
   // (whether the generation was read since it last moved on: MoonBit may have shaped by the keys under it, textSweep)
   let generationRead = false;
+  const FACE_TRY = 7;
   const textChanged = () => {
     mctxFont = rctxFont = '';
     advCache.clear();
@@ -4861,6 +4887,15 @@
     generation++;
     generationRead = false;
     keysStale = true;
+  };
+  const textChangedFor = (face) => {
+    if (face >= FACE_TRY && face < 32) {
+      mctxFont = rctxFont = '';
+      advCache.clear();
+      held = null;
+      return;
+    }
+    textChanged();
   };
   // Between frames (each window's frame starts with it, resize): the glyphs' keys forgotten as text changed, or as
   // there came to be more than KEYS_MOST of them (each a glyph of a size, weight and style ever shaped: a page left
@@ -4878,20 +4913,78 @@
     entries.length = 0;
     keysStale = false;
   }
+  const faceCancelGen = new Map();
+  const faceLigGen = new Map();
+  const faceKeyGen = new Map();
+  const faceNoLig = new Set();
+  const nextFaceCancelGen = (face) => {
+    const g = (faceCancelGen.get(face) || 0) + 1;
+    faceCancelGen.set(face, g);
+    return g;
+  };
+  const nextFaceLigGen = (face) => {
+    const g = (faceLigGen.get(face) || 0) + 1;
+    faceLigGen.set(face, g);
+    return g;
+  };
+  const nextFaceKeyGen = (face) => {
+    if (face < FACE_TRY) return 0;
+    const g = (faceKeyGen.get(face) || 0) + 1;
+    faceKeyGen.set(face, g);
+    return g;
+  };
+  // Maintain exact registration order of primary FontFaces in document.fonts, with CJK unicode-range companions last
+  // (CSS last-wins priority).
+  const repinOrder = (face) => {
+    const pin = (f) => {
+      if (f && (typeof document.fonts.has !== 'function' || document.fonts.has(f))) {
+        document.fonts.delete(f);
+        document.fonts.add(f);
+      }
+    };
+    for (const e of faceFiles.get(face) || []) {
+      pin(e.reg);
+      pin(e.narrow);
+    }
+    for (const cf of cjkLoaded.get(face) || []) pin(cf);
+  };
+  // Monotonically install a FontFace onto its registration entry (rejecting only after faceClear or when a newer
+  // ligature generation is already installed on that entry).
+  const installEntryFace = (face, entry, narrow, ff, cancelGen, ligGen) => {
+    if ((faceCancelGen.get(face) || 0) !== cancelGen) return false;
+    const cur = narrow ? entry.narrow : entry.reg;
+    const curGen = narrow ? entry.narrowLigGen : entry.regLigGen;
+    if (cur && curGen >= ligGen) return false;
+    if (cur) document.fonts.delete(cur);
+    if (narrow) { entry.narrow = ff; entry.narrowLigGen = ligGen; }
+    else { entry.reg = ff; entry.regLigGen = ligGen; }
+    document.fonts.add(ff);
+    return true;
+  };
   // a face's descriptors: its weight (0: variable, all of them); the words' faces (1, 2) with Inter's single-storey a and
   // open digits, as the Mac's host sets them (apple_text.m face_font: cv11, ss01; a face without them is as it is)
-  const faceDescriptors = (face, weight) => ({
-    weight: weight ? String(weight) : '1 1000',
-    ...(face === 1 || face === 2 ? { featureSettings: '"cv11" 1, "ss01" 1' } : {}),
-  });
+  const faceDescriptors = (face, weight) => {
+    const feats = [];
+    if (face === 1 || face === 2) feats.push('"cv11" 1, "ss01" 1');
+    if (faceNoLig.has(face)) feats.push('"calt" 0, "liga" 0, "clig" 0');
+    return {
+      weight: weight ? String(weight) : '1 1000',
+      ...(feats.length ? { featureSettings: feats.join(', ') } : {}),
+    };
+  };
   // a face's file (a URL), for a weight (0: variable, all of them): drawn in once the page has loaded it
   H.faceAdd = (face, url, weight) => {
-    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
-    const ff = new FontFace(`mbface${face}`, `url(${JSON.stringify(url)})`, faceDescriptors(face, weight));
-    faceFile(face, `url(${JSON.stringify(url)})`, weight);
+    if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
+    const gen = faceCancelGen.get(face) || 0;
+    const ligGen = faceLigGen.get(face) || 0;
+    const src = `url(${JSON.stringify(url)})`;
+    const ff = new FontFace(`mbface${face}`, src, faceDescriptors(face, weight));
+    const entry = faceFile(face, src, weight);
     ff.load().then(() => {
-      document.fonts.add(ff);
+      if (!installEntryFace(face, entry, false, ff, gen, ligGen)) return;
+      repinOrder(face);
       faces.add(face);
+      nextFaceKeyGen(face);
       textChanged();
       H.requestFrame();
     }, () => {});
@@ -4899,17 +4992,66 @@
   };
   // the same, the file's bytes given
   H.faceAddBytes = (face, data, weight) => {
-    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
+    const gen = faceCancelGen.get(face) || 0;
+    const ligGen = faceLigGen.get(face) || 0;
     const ff = new FontFace(`mbface${face}`, data, faceDescriptors(face, weight));
-    faceFile(face, data, weight);
+    const entry = faceFile(face, data, weight);
     ff.load().then(() => {
-      document.fonts.add(ff);
+      if (!installEntryFace(face, entry, false, ff, gen, ligGen)) return;
+      repinOrder(face);
       faces.add(face);
+      nextFaceKeyGen(face);
       textChanged();
       H.requestFrame();
     }, () => {});
     return true;
   };
+  // Per-face ligature toggle via FontFace featureSettings ("calt" 0, "liga" 0, "clig" 0): preloads replacement primary
+  // FontFaces per registered entry (regular + narrow if active) and installs monotonically via installEntryFace
+  // (preserving registration order via repinOrder, keeping mid-flight added entries and fallback entries on rejection).
+  H.faceSetLigatures = (face, on) => {
+    if (!(face > 0 && face < 32)) return;
+    const noLig = !on;
+    if (faceNoLig.has(face) === noLig) return;
+    if (noLig) faceNoLig.add(face);
+    else faceNoLig.delete(face);
+    const files = faceFiles.get(face);
+    if (!files || !files.length || typeof FontFace !== 'function') return;
+    const gen = faceCancelGen.get(face) || 0;
+    const ligGen = nextFaceLigGen(face);
+    const hasNarrow = narrowFaces.has(face);
+    const snap = [...files];
+    const ready = [];
+    const loads = snap.map((entry) => {
+      const ff = new FontFace(`mbface${face}`, entry.src, faceDescriptors(face, entry.weight));
+      return ff.load().then(() => { ready.push({ entry, narrow: false, ff }); }, () => {});
+    });
+    if (hasNarrow) {
+      for (const entry of snap) {
+        const d = faceDescriptors(face, entry.weight);
+        d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
+        const ff = new FontFace(`mbface${face}n`, entry.src, d);
+        loads.push(ff.load().then(() => { ready.push({ entry, narrow: true, ff }); }, () => {}));
+      }
+    }
+    Promise.all(loads).then(() => {
+      if ((faceCancelGen.get(face) || 0) !== gen || (faceLigGen.get(face) || 0) !== ligGen) return;
+      let swapped = 0;
+      for (const { entry, narrow, ff } of ready) {
+        if (installEntryFace(face, entry, narrow, ff, gen, ligGen)) swapped++;
+      }
+      if (!swapped) return;
+      faces.add(face);
+      repinOrder(face);
+      if (hasNarrow && narrowFaces.get(face) === false) narrowFaces.set(face, true);
+      nextFaceKeyGen(face);
+      textChanged();
+      H.requestFrame();
+    });
+  };
+  H.setHostAutospace = () => {};
+  H.localFontInfo = () => '';
   // A face's CJK companion (@webpage.set_cjk_face): the system's CJK faces drawn, within the face's family, for the
   // CJK marks alone (its unicode-range: Han, kana, bopomofo, CJK punctuation, full-width forms; the Latin quotes and
   // dashes left to the face itself), each of the nine weights set in the one `step` heavier (a Latin face's 400 beside
@@ -4946,7 +5088,7 @@
     cjkLoaded.delete(face);
   };
   H.setCjkFace = (face, weightStep, families) => {
-    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    if (!(face > 0 && face < 32) || typeof FontFace !== 'function') return false;
     const step = Number.isFinite(weightStep) ? Math.round(weightStep / 100) * 100 : 100;
     const fams = Array.isArray(families) && families.length ? families.map(String) : CJK_FAMILIES;
     cjkForget(face);
@@ -4981,6 +5123,10 @@
     return true;
   };
   H.faceClear = (face) => {
+    nextFaceCancelGen(face);
+    nextFaceLigGen(face);
+    nextFaceKeyGen(face);
+    faceNoLig.delete(face);
     faceFiles.delete(face);
     cjkForget(face);
     narrowFaces.delete(face);
@@ -4989,7 +5135,7 @@
       const fam = ff.family.replace(/"/g, '');
       if (fam === `mbface${face}` || fam === `mbface${face}n`) document.fonts.delete(ff);
     }
-    textChanged();
+    textChangedFor(face);
   };
 
   H.fontMetrics = (size, weight, style, out) => {
@@ -5006,7 +5152,9 @@
   };
 
   const textKey = (c, size, weight, style) => {
-    const kk = c + '\x01' + size + '\x01' + weight + '\x01' + style;
+    const f = faceOf(style);
+    const fg = f >= FACE_TRY ? (faceKeyGen.get(f) || 0) : 0;
+    const kk = fg ? c + '\x01' + size + '\x01' + weight + '\x01' + style + '\x01' + fg : c + '\x01' + size + '\x01' + weight + '\x01' + style;
     let key = keys.get(kk);
     if (key === undefined) {
       key = entries.length;

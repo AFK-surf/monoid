@@ -60,6 +60,7 @@ final class MBText {
         final Drawn[] drawn = new Drawn[SUB_COUNT];
         float askScale;
         int askFaces;
+        int askSlotGen;
         // (the app's thread's) the phases of it drawn there or asked to be drawn ahead at the scale, faces and atlas
         // generation said, so each is asked once and extra phases are warmed only once a second phase is needed
         int subsQueued;
@@ -162,11 +163,16 @@ final class MBText {
      * with no string made and none hashed.
      */
     static final class Clusters {
+        final int slotGen;
         final HashMap<String, Integer> map = new HashMap<>();
         final int[][] units = new int[256][];
         final float[][] unitAdv = new float[256][];
         float advScale;
         int advFaces;
+
+        Clusters(int slotGen) {
+            this.slotGen = slotGen;
+        }
     }
 
     // each font's clusters (fontKey: its size, weight and style)
@@ -236,19 +242,22 @@ final class MBText {
     }
 
     /** The faces given (faceAdd, style.mbt): each a list of font files (a File, or a direct ByteBuffer of one) and the weight each is for (0: variable). */
-    static final int FACES = 16;
+    static final int FACES = 32;
+    static final int FACE_TRY = 7;
     @SuppressWarnings("unchecked")
     static final ArrayList<Object>[] faceFiles = new ArrayList[FACES];
     @SuppressWarnings("unchecked")
     static final ArrayList<Integer>[] faceWeights = new ArrayList[FACES];
+    static final boolean[] faceNoLig = new boolean[FACES];
+    static final int[] faceGen = new int[FACES];
 
     /** The face a style is set in: the one it names; else code's, what people wrote's, the app's words' (not the serif face's); 0 none. */
     static int faceId(int style) {
-        int f = (style >> 8) & 15;
+        int f = (style >> 8) & 31;
         if (f > 0) return given(f) ? f : 0;
         if ((style & 2) != 0) return given(3) ? 3 : 0;
-        if ((style & 16) != 0 && given(2)) return 2;
         if ((style & 4) != 0) return 0;
+        if ((style & 16) != 0 && given(2)) return 2;
         return given(1) ? 1 : 0;
     }
 
@@ -291,11 +300,11 @@ final class MBText {
     }
 
     /**
-     * The style bits a typeface is chosen by (faceId, face, the slant): the face named (0xF00), code's (2), the serif
+     * The style bits a typeface is chosen by (faceId, face, the slant): the face named (0x1F00), code's (2), the serif
      * one (4), what people wrote (16), italic (1). Not letter spacing (8), tabular digits (32) or narrow marks (64),
      * which are the paint's font features, nor the size, the paint's too: fonts of every size and feature share one.
      */
-    static final int TYPEFACE_STYLE = 0xF17;
+    static final int TYPEFACE_STYLE = 0x1F17;
 
     /** A typeface's key: the faces' generation, the style bits it is chosen by and its weight. */
     static long typefaceKey(int facesGen, int style, int weight) {
@@ -344,7 +353,7 @@ final class MBText {
         }
         faceFiles[f].add(src);
         faceWeights[f].add(weight);
-        facesChanged();
+        faceChanged(f);
         return true;
     }
 
@@ -360,20 +369,39 @@ final class MBText {
     }
 
     static synchronized void faceClear(int f) {
-        if (f <= 0 || f >= FACES || !given(f)) return;
+        if (f <= 0 || f >= FACES) return;
+        faceNoLig[f] = false;
+        if (!given(f)) return;
         faceFiles[f].clear();
         faceWeights[f].clear();
-        facesChanged();
+        faceChanged(f);
+    }
+
+    static synchronized void faceSetLigatures(int f, boolean on) {
+        if (f <= 0 || f >= FACES) return;
+        boolean noLig = !on;
+        if (faceNoLig[f] == noLig) return;
+        faceNoLig[f] = noLig;
+        faceChanged(f);
     }
 
     /** What was measured and drawn before a face changed: forgotten (MoonBit drops its glyphs as the generation moves on). */
-    static void facesChanged() {
+    static void faceChanged(int f) {
         paints.clear();
         lastPaint = null;
         typefaces.clear();
+        lastClusters = null;
+        if (f >= FACE_TRY && f < FACES) {
+            faceGen[f]++;
+            return;
+        }
         faces++;
         reset();
         keysStale = true;
+    }
+
+    static void facesChanged() {
+        faceChanged(0);
     }
 
     static Paint paint(float size, int weight, int style) {
@@ -399,7 +427,9 @@ final class MBText {
             // style & 32 (style.mbt style_tabular); a CJK face's marks narrow among Latin letters where style & 64
             // (style_proportional)
             StringBuilder fs = new StringBuilder();
-            if ((style & 8) != 0) fs.append(", 'liga' 0, 'clig' 0");
+            int f = faceId(style);
+            if (f > 0 && faceNoLig[f]) fs.append(", 'calt' 0, 'liga' 0, 'clig' 0");
+            else if ((style & 8) != 0) fs.append(", 'liga' 0, 'clig' 0");
             if ((style & 32) != 0) fs.append(", 'tnum' 1");
             if ((style & 64) != 0) fs.append(", 'pwid' 1");
             String features = fs.length() > 0 ? fs.substring(2) : "";
@@ -730,12 +760,14 @@ final class MBText {
 
     /** A font's clusters and their keys. */
     static Clusters clusters(float size, int weight, int style) {
+        int slot = (style >>> 8) & 31;
+        int gen = faceGen[slot];
         long k = fontKey(size, weight, style);
         Clusters m = lastClusters;
-        if (m != null && lastClustersKey == k) return m;
+        if (m != null && lastClustersKey == k && m.slotGen == gen) return m;
         m = keys.get(k);
-        if (m == null) {
-            m = new Clusters();
+        if (m == null || m.slotGen != gen) {
+            m = new Clusters(gen);
             keys.put(k, m);
         }
         lastClustersKey = k;
@@ -1177,6 +1209,7 @@ final class MBText {
         e.first = first;
         e.askScale = sc;
         e.askFaces = faces;
+        e.askSlotGen = faceGen[(e.style >>> 8) & 31];
         e.subsQueued |= want;
         // (one still in a queue from an ask before, all of it taken since, is passed over there or drawn from where it is)
         if (first != 0 && !e.inFirst) {
@@ -1203,7 +1236,7 @@ final class MBText {
         boolean any = false;
         synchronized (lock) {
             if (asked(e)) {
-                if (e.askScale == sc && e.askFaces == faces) {
+                if (e.askScale == sc && e.askFaces == faces && e.askSlotGen == faceGen[(e.style >>> 8) & 31]) {
                     int add = want & ~(e.want | e.drawing | e.have);
                     if (add != 0) {
                         e.want |= add;
@@ -1291,7 +1324,7 @@ final class MBText {
             Drawn d = e.drawn[sub];
             e.drawn[sub] = null;
             e.have &= ~bit;
-            boolean stale = d.scale != sc || d.faces != faces;
+            boolean stale = d.scale != sc || d.faces != faces || e.askSlotGen != faceGen[(e.style >>> 8) & 31];
             if (stale) {
                 // (the rest of it as stale: let go, nothing more of it drawn)
                 dropDrawn(e);
@@ -1321,12 +1354,14 @@ final class MBText {
         android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DEFAULT);
         HashMap<Long, Paint> paints = new HashMap<>();
         int paintsFaces = -1;
+        int[] paintsSlotGen = new int[FACES];
         Scratch scratch = new Scratch();
         while (true) {
             Entry e;
             int bit;
             float sc;
             int f;
+            int sg;
             synchronized (lock) {
                 while (true) {
                     e = askedFirst.poll();
@@ -1366,13 +1401,20 @@ final class MBText {
                 e.drawing |= bit;
                 sc = e.askScale;
                 f = e.askFaces;
+                sg = e.askSlotGen;
             }
             int s = Integer.numberOfTrailingZeros(bit);
             Drawn d = null;
             try {
+                int slot = (e.style >>> 8) & 31;
                 if (f != paintsFaces) {
                     paints.clear();
+                    Arrays.fill(paintsSlotGen, -1);
                     paintsFaces = f;
+                    paintsSlotGen[slot] = sg;
+                } else if (sg != paintsSlotGen[slot]) {
+                    paints.clear();
+                    paintsSlotGen[slot] = sg;
                 }
                 d = draw(e, sc, subDx(s), paintIn(paints, e.size * sc, e.weight, e.style), f, scratch);
             } catch (Throwable x) {

@@ -1078,6 +1078,8 @@ pub struct Tree {
   tapped_anywhere : @signals.Signal[Int]
   /// how many times its words were measured anew for all of them (Tree::words_again: the system's size of words)
   words_redone : @signals.Signal[Int]
+  /// per-slot revision counters for surgical preview-face invalidation (Tree::words_again_for_face), without bumping global words_redone
+  face_redone : FixedArray[@signals.Signal[Int]]
   /// how many times what its rows left out changed, as it was laid out (View::left_out)
   outs_said : @signals.Signal[Int]
   /// what its rows left out changed in this layout, to be told as it is done
@@ -1657,6 +1659,7 @@ pub fn Tree::new(
     held_anywhere: @signals.signal(false, same=fn(a, b) { a == b }),
     tapped_anywhere: @signals.signal(0, same=fn(a, b) { a == b }),
     words_redone: @signals.signal(0, same=fn(a, b) { a == b }),
+    face_redone: FixedArray::makei(32, fn(_) { @signals.signal(0, same=fn(a, b) { a == b }) }),
     outs_said: @signals.signal(0, same=fn(a, b) { a == b }),
     outs_changed: false,
     sizes_due: false,

@@ -1006,6 +1006,8 @@ fn view_rich(
     max_lines: look.max_lines,
     faces: if set.words { faces_style(true, 0) } else { view_words_style(tabular~) },
     shaped_in: words_shaped_in.get(),
+    cjk_override: set.cjk,
+    code_cjk_override: set.code_cjk,
   }
 }
 
@@ -1142,6 +1144,15 @@ pub fn Ctx::runs_extent(
 fn view_words_rescaled() -> Unit {
   match view_app.val {
     Some(t) => t.words_again()
+    None => ()
+  }
+}
+
+///|
+/// Surgically invalidate only tree nodes referencing preview `face` without disturbing global `words_redone`.
+fn view_words_rescaled_for_face(face : Int) -> Unit {
+  match view_app.val {
+    Some(t) => t.words_again_for_face(face)
     None => ()
   }
 }
