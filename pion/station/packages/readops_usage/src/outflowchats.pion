@@ -226,7 +226,7 @@ fn outflow_router_connects(
     return Ok((has_any_slack, []))
   }
   let sorted = readops_core::stable_sort(combined, fn(a : String, b : String) -> Int {
-    js_json::js_compare(a, b)
+    shortlex_compare(a, b)
   })
   let cap = if sorted.length() > MAX_ROUTER_CONNECTS { MAX_ROUTER_CONNECTS } else { sorted.length() }
   let res : Array[base_codec::Json] = []
@@ -900,7 +900,7 @@ pub fn outflow_chats(
           match connect {
             None => connect = Some(c)
             Some(prev) => {
-              if js_json::js_compare(c, prev) < 0 {
+              if shortlex_compare(c, prev) < 0 {
                 connect = Some(c)
               }
             }
