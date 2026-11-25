@@ -332,6 +332,14 @@ fn agent_prose_node(
       fn() { m().text },
       tree=fn() { m().md },
       size=fn() { body_size },
+      typography=fn() {
+        {
+          ..@sf.md_typography_default,
+          prose_scale: @sfbase.prose_text_scale(),
+          code_scale: @sfbase.code_text_scale(),
+          line_scale: @sfbase.prose_line_scale(),
+        }
+      },
       found~,
       found_at~,
       lit~,

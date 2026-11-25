@@ -465,7 +465,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-lock-prompt-role": (1033, 676, 90),
   "phone settings-add-people": (711, 482, 80),
   "phone settings-workspace-mark": (855, 588, 71),
-  "phone settings-local-fonts": (535, 664, 124),
+  // (2026-11-25: V8 font settings opens unified curated+local sheet on settings-local-fonts; laid drops 664 -> 556)
+  "phone settings-local-fonts": (637, 556, 144),
   "phone settings-policy": (474, 298, 47),
   "phone settings-policy-text": (520, 339, 52),
   "phone settings-policy-option": (525, 339, 51),
@@ -494,8 +495,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-stations-devices": (687, 449, 77),
   "phone place-stations-devices": (458, 302, 50),
   "phone settings-station-devices": (572, 399, 68),
-  "phone settings-fonts": (535, 664, 124),
-  "phone settings-fonts-code": (515, 414, 65),
+  // (2026-11-25: V8 single-screen font settings; laid drops 664 -> 381; settings-fonts-code opens V8 code slot picker)
+  "phone settings-fonts": (519, 381, 112),
+  "phone settings-fonts-code": (637, 556, 144),
   "phone settings-decisions": (369, 261, 33),
   "phone settings-completion": (376, 245, 32),
   "phone settings-bars": (505, 343, 61),
@@ -888,7 +890,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-lock-prompt-role": (666, 516, 83),
   "wide settings-add-people": (869, 653, 125),
   "wide settings-workspace-mark": (998, 747, 116),
-  "wide settings-local-fonts": (638, 800, 166),
+  // (2026-11-25: V8 font settings opens unified curated+local popover on settings-local-fonts; laid drops 800 -> 704)
+  "wide settings-local-fonts": (786, 704, 188),
   "wide settings-policy": (580, 455, 73),
   "wide settings-policy-text": (626, 496, 79),
   "wide settings-policy-option": (631, 496, 78),
@@ -917,8 +920,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-stations-devices": (822, 593, 103),
   "wide place-stations-devices": (1026, 816, 149),
   "wide settings-station-devices": (791, 608, 107),
-  "wide settings-fonts": (638, 800, 166),
-  "wide settings-fonts-code": (621, 534, 91),
+  // (2026-11-25: V8 single-screen font settings; laid drops 800 -> 555; settings-fonts-code opens V8 code slot picker)
+  "wide settings-fonts": (687, 555, 153),
+  "wide settings-fonts-code": (786, 704, 188),
   "wide settings-decisions": (490, 390, 50),
   "wide settings-completion": (710, 539, 78),
   "wide settings-bars": (626, 514, 85),

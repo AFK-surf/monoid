@@ -5,17 +5,17 @@
 // chosen for the interface and its fetch under way, never done.
 
 ///|
-/// A face still.fail keeps: its id, its name, whether it is for code, its files' weights (0: one variable file), how
-/// big they are gzipped.
+/// A face still.fail keeps: its id, its name, whether it is for code, whether it has CJK glyphs, its files' weights
+/// (0: one variable file), how big they are gzipped.
 // kept across runs: a table, never written
-pub let fixture_face_list : Array[(String, String, Bool, Array[Int], Double)] = [
-  ("inter", "Inter", false, [0], 457818.0),
-  ("noto-sans-sc", "思源黑体", false, [0], 11276563.0),
-  ("noto-serif-sc", "思源宋体", false, [0], 15454579.0),
-  ("lxgw-wenkai", "霞鹜文楷", false, [400, 500], 26176912.0),
-  ("jetbrains-mono", "JetBrains Mono", true, [0], 90579.0),
-  ("fira-code", "Fira Code", true, [0], 137151.0),
-  ("maple-mono", "Maple Mono", true, [400, 600], 16790677.0),
+pub let fixture_face_list : Array[(String, String, Bool, Bool, Array[Int], Double)] = [
+  ("inter", "Inter", false, false, [0], 457818.0),
+  ("noto-sans-sc", "思源黑体", false, true, [0], 11276563.0),
+  ("noto-serif-sc", "思源宋体", false, true, [0], 15454579.0),
+  ("lxgw-wenkai", "霞鹜文楷", false, true, [400, 500], 26176912.0),
+  ("jetbrains-mono", "JetBrains Mono", true, false, [0], 90579.0),
+  ("fira-code", "Fira Code", true, false, [0], 137151.0),
+  ("maple-mono", "Maple Mono", true, true, [400, 600], 16790677.0),
 ]
 
 ///|
@@ -28,8 +28,8 @@ pub let fixture_face_gz : String = "H4sIAAAAAAAC/0tUyE1MSdUtLVBIS0xOVUjLL1IoyQDR
 pub let fixture_face_sha : String = "ff6ddd18ae9eed8077488ece160705ef9845a5817a79a7fc85a5ffde0927fc3a"
 
 ///|
-pub fn fixture_face(e : (String, String, Bool, Array[Int], Double)) -> Json {
-  let (id, name, mono, weights, bytes) = e
+pub fn fixture_face(e : (String, String, Bool, Bool, Array[Int], Double)) -> Json {
+  let (id, name, mono, has_cjk, weights, bytes) = e
   let base = "https://app.still.fail/releases/fonts/" + id + "/1"
   // (a whole number of bytes, as the core says a file's size)
   let each = (bytes / weights.length().to_double()).floor()
@@ -37,6 +37,7 @@ pub fn fixture_face(e : (String, String, Bool, Array[Int], Double)) -> Json {
     "id": ToJson::to_json(id),
     "name": ToJson::to_json(name),
     "mono": ToJson::to_json(mono),
+    "hasCjk": ToJson::to_json(has_cjk),
     "family": ToJson::to_json("SF " + name),
     "preview": ToJson::to_json(base + "/preview.ttf"),
     "files": Json::array(
@@ -54,7 +55,8 @@ pub fn fixture_face(e : (String, String, Bool, Array[Int], Double)) -> Json {
 }
 
 ///|
-/// The faces as they go out (`faces`): each place's as `fonts` chose it, text as ui's where none is chosen for it.
+/// The faces as they go out (`faces`): each place's as `fonts` chose it, text as ui's where none is chosen for it,
+/// plus resolved CJK companion ids (`uiCjk`, `textCjk`, `codeCjk`) and `cjkPaths`.
 pub fn fixture_faces(fonts : Map[String, String]) -> Json {
   let of = fn(place : String) -> Json {
     let mut found = None
@@ -70,6 +72,7 @@ pub fn fixture_faces(fonts : Map[String, String]) -> Json {
           "id": "",
           "name": "",
           "mono": ToJson::to_json(place == "code"),
+          "hasCjk": false,
           "family": "",
           "files": [],
           "bytes": 0,
@@ -77,11 +80,66 @@ pub fn fixture_faces(fonts : Map[String, String]) -> Json {
     }
   }
   let ui = of("ui")
+  let ui_cjk = fonts.get("uiCjk").unwrap_or("")
+  let text_cjk = match fonts.get("textCjk") {
+    Some("none") => ""
+    Some(s) if s != "" => s
+    _ => ui_cjk
+  }
+  let code_cjk = fonts.get("codeCjk").unwrap_or("")
   {
     "ui": ui,
     "text": if fonts.contains("text") { of("text") } else { ui },
     "code": of("code"),
+    "uiCjk": ToJson::to_json(ui_cjk),
+    "textCjk": ToJson::to_json(text_cjk),
+    "codeCjk": ToJson::to_json(code_cjk),
+    "cjkPaths": {},
     "list": Json::array(fixture_face_list.map(fixture_face)),
+  }
+}
+
+///|
+/// Resolved `prefs.typography` matching `client/core-ts/src/prefs.ts` `typographyOf`.
+pub fn fixture_typography(kept : Map[String, Json], fonts : Map[String, String]) -> Json {
+  let num = fn(k : String, fallback : Int) -> Int {
+    match kept.get(k) {
+      Some(Number(n, ..)) => n.round().to_int()
+      _ => fallback
+    }
+  }
+  let str_or = fn(k : String, fallback : String) -> String {
+    match kept.get(k) {
+      Some(String(s)) => s
+      _ => fallback
+    }
+  }
+  let bool_or = fn(k : String, fallback : Bool) -> Bool {
+    match kept.get(k) {
+      Some(True) => true
+      Some(False) => false
+      _ => fallback
+    }
+  }
+  let follows = !fonts.contains("textCjk") && fonts.get("uiCjk").unwrap_or("") != ""
+  let ui_scale = num("uiCjkScale", 100)
+  let ui_weight = num("uiCjkWeight", 0)
+  let text_scale = if kept.contains("textCjkScale") || !follows { num("textCjkScale", 100) } else { ui_scale }
+  let text_weight = if kept.contains("textCjkWeight") || !follows { num("textCjkWeight", 0) } else { ui_weight }
+  {
+    "textSize": ToJson::to_json(num("textSize", 100)),
+    "codeScale": ToJson::to_json(num("codeScale", 100)),
+    "lineHeight": ToJson::to_json(str_or("lineHeight", "normal")),
+    "uiCjkScale": ToJson::to_json(ui_scale),
+    "textCjkScale": ToJson::to_json(text_scale),
+    "textCjkScaleOwn": ToJson::to_json(kept.contains("textCjkScale")),
+    "codeCjkScale": ToJson::to_json(num("codeCjkScale", 100)),
+    "uiCjkWeight": ToJson::to_json(ui_weight),
+    "textCjkWeight": ToJson::to_json(text_weight),
+    "textCjkWeightOwn": ToJson::to_json(kept.contains("textCjkWeight")),
+    "codeCjkWeight": ToJson::to_json(num("codeCjkWeight", 0)),
+    "cjkAutoSpace": ToJson::to_json(bool_or("cjkAutoSpace", true)),
+    "codeLigatures": ToJson::to_json(bool_or("codeLigatures", true)),
   }
 }
 

@@ -15,6 +15,8 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
     "lock-join" => join_dialog(core, "ws1", "st2", "Maple")
     "lock-off" => turn_off_dialog(core, "ws1", "星火工作室")
     "local-fonts" => @sfpages.fx_local_up.val = true
+    "fonts-code" => @sfpages.fx_code_up.val = true
+    "fonts-advanced" => @sfpages.fx_advanced_up.val = true
     "connect-mode" =>
       // (the first connect listed, as its page has it: the ways it could change are its page's)
       match items((core.topic)("connects", { "scope": str("ws1"), "mine": Json::boolean(false) }).get().value, "items") {

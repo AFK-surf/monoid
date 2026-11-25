@@ -586,6 +586,7 @@ pub fn reset() -> Unit {
   lock_prompts_reset()
   vault_prompts_reset()
   fonts_at.set(0)
+  fonts_script_at.set(0)
   adb_reset()
   keyed_fields.clear()
   notify_switched.set(None)

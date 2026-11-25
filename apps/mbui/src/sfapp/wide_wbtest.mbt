@@ -2126,18 +2126,28 @@ test "wide: 字体's faces a row each under the places' choice, the chosen one c
   open_setting("fonts")
   t.draw()
   t.run_for(@ui.move_most_ms)
-  for label in ["默认", "Inter", "思源黑体"] {
+  // V8 3x2 direct slot triggers: open 界面西文 -> 默认 & Inter
+  t.click(Button, label="界面西文")
+  t.run_for(@ui.move_most_ms)
+  for label in ["默认", "Inter"] {
     assert_true(t.query(Button, label~) is Some(_), msg=label)
   }
+  // Close and open 界面中文 -> 思源黑体; picking sets uiCjk
+  t.tap(8.0, 8.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="界面中文")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="思源黑体") is Some(_), msg="思源黑体")
   t.click(Button, label="思源黑体")
-  t.frame()
-  let set = named(calls, "prefs.set").filter(fn(m) { text(field(Some(m.params), "fonts"), "ui") == "noto-sans-sc" })
+  t.run_for(@ui.move_most_ms)
+  let set = named(calls, "prefs.set").filter(fn(m) { text(field(Some(m.params), "fonts"), "uiCjk") == "noto-sans-sc" })
   assert_eq(set.length(), 1)
-  // 代码 (the switch's, not the words over it): the code faces
-  let (x, y) = t.find_last("代码").unwrap()
-  t.tap(x, y)
-  t.frame()
+  // Open 代码等宽 -> code faces
+  t.click(Button, label="代码等宽")
+  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="JetBrains Mono") is Some(_))
+  t.tap(8.0, 8.0)
+  t.run_for(@ui.move_most_ms)
   open_setting("appearance")
   t.draw()
   t.run_for(@ui.move_most_ms)
@@ -2847,18 +2857,21 @@ test "wide: 字体's 本机字体 lists the families installed here; one chosen 
   t.set_local_fonts("[\"Menlo\",\"Avenir Next\",\"Helvetica\"]")
   app.nav.replace(Setting(@settings.Route::Fonts))
   t.run_for(@ui.move_most_ms)
-  // (本机字体 the faces' last row, under the chat they set: the page scrolled to it)
-  t.wheel(900.0, 400.0, 400.0)
+  // V8 unified popover opens directly from 界面西文 and lists local families in host order under 本机字体
+  t.click(Button, label="界面西文")
   t.run_for(@ui.move_most_ms)
-  t.click(Button, label="本机字体")
-  t.frame()
+  // Scroll inside popover list so all 3 local families are visible
+  let fields = t.semantics().filter(fn(f) { f.role is TextField })
+  let f = fields[fields.length() - 1].rect
+  t.wheel(f.0 + f.2 / 2.0, f.1 + f.3 + 80.0, 220.0)
+  t.run_for(@ui.move_most_ms)
   // every one listed, in the host's order (its person's language's: the app sorts nothing of its own)
   let (_, ya) = t.find("Avenir Next").unwrap()
   let (_, yh) = t.find("Helvetica").unwrap()
   let (mx, my) = t.find("Menlo").unwrap()
   assert_true(my < ya && ya < yh, msg="the host's order")
   t.tap(mx, my)
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   let set = named(calls, "prefs.set").filter(fn(m) { field(Some(m.params), "fonts") is Some(_) })
   assert_eq(set.length(), 1)
   assert_eq(field(field(Some(set[0].params), "fonts"), "ui"), Some(Json::string("local:Menlo")))

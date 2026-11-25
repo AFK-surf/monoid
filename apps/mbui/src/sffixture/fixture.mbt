@@ -39,6 +39,8 @@ pub(all) struct Fixture {
   /// the faces chosen (the prefs' `fonts`), and those whose files the core has (fonts_fixture.mbt)
   fonts : Map[String, String]
   fonts_fetched : Map[String, Bool]
+  /// typography overrides kept sparsely (prefs `typography`)
+  typography : Map[String, Json]
   /// the keys changed in 快捷键 (`keys.set`; the prefs' `keys`, the keymap's: keymap_fixture.mbt)
   keys : Map[String, Array[String]]
   mut version : Int
@@ -2320,6 +2322,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "cpuDial": if f.cpu_dial == "" { Json::null() } else { Json::string(f.cpu_dial) },
         "fonts": fixture_fonts(f.fonts),
         "faces": fixture_faces(f.fonts),
+        "typography": fixture_typography(f.typography, f.fonts),
         "keys": fixture_keys(f.keys),
         "sendKey": if f.send_key == "" { Json::null() } else { Json::string(f.send_key) },
         // (实验性功能 and the channel, as the core's prefs.ts shows them: features.ts)
@@ -3059,6 +3062,7 @@ fn made_fixture(mode : String) -> Fixture {
     filters: {},
     fonts: if mode == "settings-fonts-coming" { { "ui": "noto-sans-sc" } } else { {} },
     fonts_fetched: {},
+    typography: {},
     keys: {},
     version: 1,
     older: 0,
@@ -3627,6 +3631,18 @@ pub fn fixture(mode : String) -> Source {
                 match v {
                   String(s) => f.fonts[k] = s
                   _ => f.fonts.remove(k)
+                }
+              }
+            _ => ()
+          }
+          // typography overrides (null resets all; object merges keys, null deletes a key)
+          match field(Some(params), "typography") {
+            Some(Null) => f.typography.clear()
+            Some(Object(m)) =>
+              for k, v in m {
+                match v {
+                  Null => f.typography.remove(k)
+                  _ => f.typography[k] = v
                 }
               }
             _ => ()
