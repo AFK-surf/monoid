@@ -12,6 +12,11 @@ runs:
       with:
         path: ${{ runner.tool_cache }}/zig-0.16.0
         key: zig-linux-x64-0.16.0
+    - if: contains(inputs.parts, ':android-arm64')
+      uses: actions/cache/restore@v4
+      with:
+        path: /usr/local/lib/android/sdk/ndk/28.2.13676358
+        key: android-ndk-28.2.13676358-${{ runner.os }}-${{ runner.arch }}
     - shell: bash
       env:
         PARTS: ${{ inputs.parts }}
@@ -42,6 +47,12 @@ runs:
           tar -xf "$archive" -C "$tools" --strip-components 1 cargo-zigbuild-x86_64-unknown-linux-gnu/cargo-zigbuild
         fi
         if [[ "$PARTS" == *:wasm32* ]]; then
+          llvm=/usr/lib/llvm-18/bin
+          if [ ! -x "$llvm/clang" ] || [ ! -x "$llvm/llvm-ar" ]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q --no-install-recommends clang-18 llvm-18
+          fi
+          echo "LLVM_BIN=$llvm" >> "$GITHUB_ENV"
           version=$(python3 -c 'import tomllib; print(next(p["version"] for p in tomllib.load(open("client/Cargo.lock", "rb"))["package"] if p["name"] == "wasm-bindgen"))')
           asset="wasm-bindgen-$version-x86_64-unknown-linux-musl.tar.gz"
           digest=$(gh api "repos/wasm-bindgen/wasm-bindgen/releases/tags/$version" --jq ".assets[] | select(.name == \"$asset\") | .digest")
@@ -52,8 +63,10 @@ runs:
           tar -xzf "$archive" -C "$tools" --strip-components 1 "${asset%.tar.gz}/wasm-bindgen"
         fi
         if [[ "$PARTS" == *:android-arm64* ]]; then
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           ndk="$ANDROID_HOME/ndk/28.2.13676358"
           if [ ! -x "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang" ]; then
-            sdkmanager 'ndk;28.2.13676358'
+            "$sdkmanager" 'ndk;28.2.13676358'
           fi
+          ls "$ANDROID_HOME/cmake" 2>/dev/null | grep -q . || "$sdkmanager" 'cmake;3.31.6'
         fi
