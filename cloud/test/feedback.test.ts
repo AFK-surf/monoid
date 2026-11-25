@@ -293,6 +293,32 @@ test("the changelog is anyone's to read, with what each part has out on the host
   }
 });
 
+test("a changelog whose read fails once is read again; failing twice, it is answered without, and not kept", async () => {
+  const h = await harness();
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1340, commit: "b", at: 2, text: ["新功能：更新日志"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1340 }));
+    const get = async () => {
+      const answer = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+      assert.equal(answer.status, 200);
+      const { entries, released } = (await answer.json()) as any;
+      return { entries: entries.length, web: released.web, cache: answer.headers.get("cache-control") };
+    };
+    // Six files read at once, each first read failing: each read again, the ones not there read once.
+    await h.failBucket({ get: 6 });
+    assert.deepEqual(await get(), { entries: 1, web: 1340, cache: "public, max-age=300" });
+    assert.equal((await h.failBucket({ get: 12 })).length, 12);
+    assert.deepEqual(await get(), { entries: 0, web: null, cache: "no-store" });
+    assert.equal((await h.failBucket()).length, 12);
+    // Back: whole again, and what is not there is read once.
+    assert.deepEqual(await get(), { entries: 1, web: 1340, cache: "public, max-age=300" });
+    assert.equal((await h.failBucket()).length, 6);
+  } finally {
+    await h.close();
+  }
+});
+
 /** A device's events socket; `take`: the events since the last take (h.heard). */
 async function listen(h: Harness, token: string) {
   const response = await h.fetch("/v1/events", { headers: { upgrade: "websocket", "sec-websocket-protocol": `stillfail-events, stillfail-token.${token}` } });

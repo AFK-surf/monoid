@@ -10,6 +10,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { bearerToken, denied, nowSeconds, readJson, reply } from "./auth";
 import type { Env } from "./env";
 import { relayName, relayUrls, type Relays } from "./relays";
+import { unavailable } from "./releases";
 
 /** How many days the page shows. */
 export const DAYS = 30;
@@ -201,7 +202,12 @@ export async function stageNative(request: Request, env: Env): Promise<Response>
       return reply({ error: "r2_signer_unavailable" }, 503);
     }
   }
-  await releases.put(key, request.body);
+  try {
+    await releases.put(key, request.body);
+  } catch (error) {
+    // (the body is a stream, gone once read: its sender tries again, scripts/native-handoff.mjs)
+    return unavailable(key, error);
+  }
   return reply({ receipt }, 201);
 }
 
