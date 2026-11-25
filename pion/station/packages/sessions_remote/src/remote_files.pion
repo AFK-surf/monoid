@@ -287,13 +287,28 @@ pub fn RemoteCtx::in_turn_k[X](
   work_k : ((effect::Exit[X]) -> Unit) -> Unit,
   k : (effect::Exit[X]) -> Unit,
 ) -> Unit {
+  self.serialize_path_k(path, true, work_k, k)
+}
+
+/// Shared per-path write barrier used by `in_turn_k` (`emit_tells = true`) and
+/// `RemoteHost.write_whole_k` (`emit_tells = false`, matching MB `dirsync.mbt:526` which
+/// does not emit `writing`/`wrote` tells while still serializing with `written_k` & `rename_inflight`).
+fn RemoteCtx::serialize_path_k[X](
+  self : RemoteCtx,
+  path : String,
+  emit_tells : Bool,
+  work_k : ((effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[X]) -> Unit,
+) -> Unit {
   let state = self.state
   let counters = self.gen.counters
   let before = state.writing.get(path)
   let mine = WriteTurn::{ id: state.alloc_gen(), done: effect::Deferred::new() }
   state.writing.set(path, mine)
-  let id = sessions_core::jint(self.host.alloc_id())
-  self.tell(remote_key, "writing", [sessions_core::jstr(path), id])
+  let id = if emit_tells { sessions_core::jint(self.host.alloc_id()) } else { base_codec::json_null() }
+  if emit_tells {
+    self.tell(remote_key, "writing", [sessions_core::jstr(path), id])
+  }
   let release_mine = fn() -> Unit {
     let _ = mine.done.succeed(())
     match state.writing.get(path) {
@@ -306,7 +321,9 @@ pub fn RemoteCtx::in_turn_k[X](
     }
   }
   let finish = fn() -> Unit {
-    self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+    if emit_tells {
+      self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+    }
     release_mine()
   }
   let run_work = fn() -> Unit {
@@ -342,7 +359,9 @@ pub fn RemoteCtx::in_turn_k[X](
       b.done.wait_k(fn(bex : effect::Exit[Unit]) -> Unit {
         match bex {
           effect::Exit::Interrupted => {
-            self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+            if emit_tells {
+              self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+            }
             if b.done.is_done() || counters.sealed {
               release_mine()
             } else {

@@ -1520,9 +1520,13 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
   }
   assert_holding_zero(host)
 
-  // (b2) RemoteHost.write_whole_k via real handle("sync.commit") + fake DirsyncPort.sync_commit_k:
-  //      hold A's fs.rename, cancel A, queue B on same manifest -> B waits for A's rename, final == B!
-  let mut commit_ver = 0
+  // (b2) RemoteHost.write_whole_k + RemoteHost.read_text_k via real handle("sync.commit"):
+  //      - Disk manifest starts at v1;
+  //      - A (expecting v1 -> writes v2 via h.write_whole_k) has its fs.rename held, then A is cancelled;
+  //      - B (retry expecting v1) starts BEFORE A's rename lands; B's non-blocking I/O runs while A's rename
+  //        is still held, and B's h.read_text_k(manifest_sc) MUST wait on written_k(manifest_sc);
+  //      - Release A's fs.rename -> B reads v2, detects version conflict, does NOT issue a second rename!
+  //      - Also assert RemoteHost.write_whole_k emits ZERO `writing`/`wrote` tells for manifest_sc!
   let mut ds_barrier = DirsyncPort::stub()
   ds_barrier = DirsyncPort::{
     sync_dir_k: ds_barrier.sync_dir_k,
@@ -1544,13 +1548,24 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
       _subs : Array[(String, String, String)],
       k : (effect::Exit[base_codec::Json]) -> Unit,
     ) -> Unit {
-      commit_ver = commit_ver + 1
-      let body = if commit_ver == 1 { "{\"ver\":\"A\"}" } else { "{\"ver\":\"B\"}" }
-      (h.write_whole_k)(manifest_path, body, fn(wex : effect::Exit[Unit]) -> Unit {
-        match wex {
+      (h.read_text_k)(manifest_path, fn(rex : effect::Exit[Option[String]]) -> Unit {
+        match rex {
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_obj([("version", sessions_core::jint(commit_ver))])))
+          effect::Exit::Succeeded(Some(text)) => {
+            if !str_contains(text, "\"version\":1") {
+              k(effect::Exit::Failed(refusal("manifest version conflict")))
+              return
+            }
+            (h.write_whole_k)(manifest_path, "{\"version\":2}", fn(wex : effect::Exit[Unit]) -> Unit {
+              match wex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_obj([("version", sessions_core::jint(2))])))
+              }
+            })
+          }
+          effect::Exit::Succeeded(None) => k(effect::Exit::Failed(refusal("missing manifest")))
         }
       })
     },
@@ -1569,6 +1584,7 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
   ]))
   let room_sc = ctx2_ds.room("ws1", "peer1", "s1")
   let manifest_sc = ctx2_ds.rjoin([room_sc, "mirrors", "proj.json"])
+  fs.add_file(manifest_sc, "{\"version\":1}")
   fs.add_file(
     ctx2_ds.rjoin([state2.root, "incoming", tid_sc, "task.json"]),
     "{\"workspace\":\"ws1\",\"station\":\"peer1\",\"session\":\"s1\",\"key\":\"ksc\",\"layout\":\"session\",\"mirror\":\"proj\",\"spec\":{\"command\":\"echo\",\"dir\":\"/repo\"}}",
@@ -1590,6 +1606,7 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
     ("id", sessions_core::jstr("sid-sc")),
     ("final", sessions_core::jbool(true)),
   ])
+  let stdout_before_sc = mem.stdout_lines.length()
   let mut sc_a_int = false
   let sc_fa = gen2.fibers.fork_daemon(
     "sync.commit A",
@@ -1605,9 +1622,9 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
     fn(_e : effect::EffectError) -> Unit { () },
   )
   // Pump RPCs + shell calls until A's fs.rename for manifest_sc is issued (do NOT complete it yet!)
-  let mut sc_rename_seen = false
+  let mut held_rename_idx = -1
   let mut steps_sc = 0
-  while !sc_rename_seen && steps_sc < 100 {
+  while held_rename_idx < 0 && steps_sc < 100 {
     steps_sc = steps_sc + 1
     host.tick()
     while cur.stdout_cursor < mem.stdout_lines.length() {
@@ -1630,7 +1647,8 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
     while cur.shell_cursor < mem.shell_calls.length() {
       let call = mem.shell_calls[cur.shell_cursor]
       if call.op == "fs.rename" && str_contains(call.json, "proj.json") {
-        sc_rename_seen = true
+        held_rename_idx = cur.shell_cursor
+        cur.shell_cursor = cur.shell_cursor + 1
         break
       }
       cur.shell_cursor = cur.shell_cursor + 1
@@ -1638,27 +1656,57 @@ test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isol
       host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
     }
   }
-  assert(sc_rename_seen)
+  assert(held_rename_idx >= 0)
   sc_fa.interrupt()
   host.tick()
   assert(sc_a_int)
   assert(state2.writing.contains(manifest_sc))
-  let mut sc_b_ok = false
+
+  // Start retry B BEFORE A's fs.rename lands; pump B's non-blocking I/O (task.json, state.json, plan.jsonl, etc.)
+  // while keeping A's fs.rename held -> B MUST block in h.read_text_k -> written_k(manifest_sc) and NOT read old v1!
+  let mut sc_b_err = ""
+  let mut sc_b_done = false
   fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
     ctx2_ds.remote_called_k("handle", [sessions_core::jstr("ws1"), sessions_core::jstr("peer1"), sc_req], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
       match ex {
-        effect::Exit::Succeeded(_) => sc_b_ok = true
+        effect::Exit::Failed(e) => sc_b_err = sessions_core::error_message(e)
         _ => ()
       }
+      sc_b_done = true
       tk(effect::Exit::Succeeded(()))
     })
   })
-  // Deliver remaining RPCs/shell calls -> B waits for A's rename to land, then writes B and wins!
   pump_all(host, gen2, mem, fs, cur, sc_rpc)
-  assert(sc_b_ok)
+  // B is still waiting for A's rename barrier; MUST NOT have completed or read stale v1!
+  assert(!sc_b_done)
+  let shell_before_release = mem.shell_calls.length()
+
+  // Now deliver A's held fs.rename (v2 lands on disk) -> B wakes, reads v2, reports version conflict,
+  // and MUST NOT issue a second fs.rename for proj.json!
+  let held_call = mem.shell_calls[held_rename_idx]
+  let (hjson, herr) = fs.handle_shell(held_call)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held_call.id, error: herr, json: hjson, bytes: None }))
+  pump_all(host, gen2, mem, fs, cur, sc_rpc)
+  assert(sc_b_done)
+  assert(str_contains(sc_b_err, "manifest version conflict"))
+  let mut extra_manifest_rename = false
+  for si in shell_before_release..<mem.shell_calls.length() {
+    if mem.shell_calls[si].op == "fs.rename" && str_contains(mem.shell_calls[si].json, "proj.json") {
+      extra_manifest_rename = true
+    }
+  }
+  assert(!extra_manifest_rename)
   match fs.files.get(manifest_sc) {
-    Some(content) => assert(content == "{\"ver\":\"B\"}")
+    Some(content) => assert(content == "{\"version\":2}")
     None => panic("expected manifest_sc")
+  }
+  // Verify RemoteHost.write_whole_k emitted ZERO `writing`/`wrote` tells for manifest_sc!
+  for li in stdout_before_sc..<mem.stdout_lines.length() {
+    let ln = mem.stdout_lines[li]
+    if str_contains(ln, "proj.json") {
+      assert(!str_contains(ln, "\"tell\":\"writing\""))
+      assert(!str_contains(ln, "\"tell\":\"wrote\""))
+    }
   }
   assert(state2.writing.length() == 0)
   assert(state2.rename_inflight.length() == 0)
@@ -2095,11 +2143,12 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
 
   // 4. Source-side `tool_k("station_task", ..., {"action":"start"})` -> fake `sync_dir_k` calling
   //    `RemoteHost.rnode_k("syncPacking")` (returns path String) -> 4-arg `syncPut(station, req, packedPath, Bool)`
-  //    with NoBytes fallback `true -> false` AND ordinary error propagation (remote.ts:582,588; dirsync_source.mbt:715-749)!
+  //    with structured `decode_asked_error` `cause.kind == "NoBytes"` fallback `true -> false`
+  //    AND refusal `{kind: "Refused", message: "NoBytes"}` NOT falling back (1:1 dirsync_source.mbt:733)!
   let mut sp_calls = 0
   let mut saw_true_arg = false
   let mut saw_false_arg = false
-  let mut fail_next_sync_put = false
+  let mut sync_put_mode = 0
   let mut ds_src = DirsyncPort::stub()
   ds_src = DirsyncPort::{
     sync_dir_k: fn(
@@ -2131,7 +2180,11 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
                   effect::Exit::Succeeded(v) => k(effect::Exit::Succeeded(v))
                   effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                   effect::Exit::Failed(e) => {
-                    if str_contains(sessions_core::error_message(e), "NoBytes") {
+                    let is_no_bytes = match sessions_core::decode_asked_error(e) {
+                      Some(a) => sessions_core::text_of(a.cause, "kind") == "NoBytes"
+                      None => false
+                    }
+                    if is_no_bytes {
                       h.rnode_k(
                         "syncPut",
                         [sessions_core::jstr(st), put_req, sessions_core::jstr(packed_path), sessions_core::jbool(false)],
@@ -2174,13 +2227,20 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
       assert(sessions_core::str_of(Some(args[0])) is Some("st1"))
       assert(sessions_core::text_of(args[1], "method") == "sync.put")
       assert(sessions_core::str_of(Some(args[2])) is Some("/tmp/pack.bin"))
-      if fail_next_sync_put {
-        return (false, base_codec::json_obj([("message", sessions_core::jstr("pack transfer failed"))]))
+      if sync_put_mode == 1 {
+        // Refusal whose message happens to be "NoBytes" MUST NOT trigger fallback!
+        return (false, base_codec::json_obj([("kind", sessions_core::jstr("Refused")), ("message", sessions_core::jstr("NoBytes"))]))
       }
       match args[3] {
         base_codec::Json::Bool(true) => {
           saw_true_arg = true
-          return (false, base_codec::json_obj([("kind", sessions_core::jstr("Refused")), ("message", sessions_core::jstr("NoBytes"))]))
+          return (
+            false,
+            base_codec::json_obj([
+              ("kind", sessions_core::jstr("NoBytes")),
+              ("message", sessions_core::jstr("that station takes files only in chunks (it is not updated yet)")),
+            ]),
+          )
         }
         base_codec::Json::Bool(false) => {
           saw_false_arg = true
@@ -2235,7 +2295,7 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
       }
     }
   }
-  // Prepared task ksp1: triggers syncPacking -> syncPut(true) NoBytes -> syncPut(false) -> succeeds!
+  // Case 4a: structured {kind: "NoBytes", ...} -> falls back true -> false (2 calls) and succeeds!
   let prep_sp1 = ctx_src.rhash(base_codec::json_arr([
     sessions_core::jstr("ws1"),
     sessions_core::jstr("s1"),
@@ -2271,8 +2331,9 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
     Some(v) => assert(sessions_core::text_of(v, "key") == "ksp1")
     None => panic("expected source station_task start syncPut NoBytes fallback success")
   }
-  // Prepared task ksp2: ordinary syncPut error propagates out of tool_k("station_task", ..., start)
-  fail_next_sync_put = true
+  // Case 4b: {kind: "Refused", message: "NoBytes"} -> MUST NOT fall back (1 call only) and propagates error!
+  sync_put_mode = 1
+  sp_calls = 0
   let prep_sp2 = ctx_src.rhash(base_codec::json_arr([
     sessions_core::jstr("ws1"),
     sessions_core::jstr("s1"),
@@ -2303,7 +2364,8 @@ test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing +
     )
   })
   pump_sync_put()
-  assert(str_contains(sp_err, "pack transfer failed"))
+  assert(sp_calls == 1)
+  assert(str_contains(sp_err, "NoBytes"))
 
   // 5. task.clean admitted before `close`: receives `close` while awaiting `store.now`,
   //    then enters `bounded_k` and STILL registers its 1s timer & returns {mirror, pending: true}!

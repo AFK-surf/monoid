@@ -241,8 +241,9 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
       self.gen.rpc_k(self.host, remote_key, "node." + f, args, self.dispatch.mirror_actor, k)
     },
     write_whole_k: fn(path : String, json : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      self.in_turn_k(
+      self.serialize_path_k(
         path,
+        false,
         fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
           self.write_whole_k(path, json, wk)
         },
@@ -253,7 +254,13 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
       self.write_json_k(path, value, k)
     },
     read_text_k: fn(path : String, k : (effect::Exit[Option[String]]) -> Unit) -> Unit {
-      self.read_text_k(path, k)
+      self.written_k(path, fn(wex : effect::Exit[Unit]) -> Unit {
+        match wex {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => self.read_text_k(path, k)
+        }
+      })
     },
     read_json_k: fn(path : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
       self.read_json_k(path, k)
