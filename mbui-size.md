@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1a4f2bb4f](https://github.com/AFK-surf/monoid/commit/1a4f2bb4fff0c4a60902d952dd0c4ba1601ec59c) fix(station): take the archive-marks busy test's l | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [2e7d48690](https://github.com/AFK-surf/monoid/commit/2e7d48690f586d1d7269d0d3b516609e8b6a7e90) fix(station): start the station's Chrome and Farvi | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [d5c6e59eb](https://github.com/AFK-surf/monoid/commit/d5c6e59eb42b8fccb1a678eeb11495a381d1a4aa) feat(ui): calibrate iOS 27.0 Liquid Glass v8 (roun | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [010a71e28](https://github.com/AFK-surf/monoid/commit/010a71e280b8fbc0f7fc2c49c9fe51691282808e) fix(ci): run deltas-station and deltas-desktop-win | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
 | [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.81 | 122.81 |
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.96 | 123.35 |
-| [cd9b47945](https://github.com/AFK-surf/monoid/commit/cd9b47945a7781e08f686cb52bd817296dc2988a) fix(ui): remove liquid slider end-clamp and flush- | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.93 | 113.13 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1a4f2bb4f](https://github.com/AFK-surf/monoid/commit/1a4f2bb4fff0c4a60902d952dd0c4ba1601ec59c) fix(station): take the archive-marks busy test's l | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.64 |
 | [2e7d48690](https://github.com/AFK-surf/monoid/commit/2e7d48690f586d1d7269d0d3b516609e8b6a7e90) fix(station): start the station's Chrome and Farvi | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.36 |
 | [d5c6e59eb](https://github.com/AFK-surf/monoid/commit/d5c6e59eb42b8fccb1a678eeb11495a381d1a4aa) feat(ui): calibrate iOS 27.0 Liquid Glass v8 (roun | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.41 |
 | [010a71e28](https://github.com/AFK-surf/monoid/commit/010a71e280b8fbc0f7fc2c49c9fe51691282808e) fix(ci): run deltas-station and deltas-desktop-win | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
 | [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.57 |
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.71 |
-| [cd9b47945](https://github.com/AFK-surf/monoid/commit/cd9b47945a7781e08f686cb52bd817296dc2988a) fix(ui): remove liquid slider end-clamp and flush- | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.69 |
