@@ -38,6 +38,7 @@ export const INFRA_LOG = [
   /\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b.*\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/,
   /\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b.*\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b/,
   /Failed to connect to (github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/i,
+  /\berror: RPC failed; (?:HTTP (?:408|50[234])\b|curl (?:16|28|35|52|55|56)\b)/i,
 ];
 /** The runner shut down under the job: GitHub's, but only before the job's time (after it, the job ran out). */
 const SHUTDOWN = /The runner has received a shutdown signal/i;
