@@ -41,6 +41,7 @@ import { ProgramRunner } from "../src/replica/runner.ts";
 import { Store } from "../src/store/store.ts";
 import { nothingTold } from "./reference/replica-export.ts";
 import { HOME, ORIGIN, OTHER, attach, chat, rowsOf, station } from "./replica-fakes.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 type Json = any;
 const NOW = 1_700_000_000_000;
@@ -74,7 +75,7 @@ function tempDir(prefix: string): string {
 
 function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
   const realPion = pionBinary();
 

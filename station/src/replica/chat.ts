@@ -4,7 +4,9 @@
 // scratch database and takes out only the chat's thread row, its last entries of people and agents, and its sessions,
 // each part bounded. No TypeScript fallback.
 import { sep } from "node:path";
-import { MbProcess, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { wall } from "../ops/fibers.ts";
+import { MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Head } from "./format.ts";
 import type { Held, Holding } from "./places.ts";
@@ -99,18 +101,22 @@ export async function readChatSoon(o: {
   binary?: string;
   signal?: AbortSignal;
 }): Promise<ChatCopy> {
-  const binary = (await resolveReaderSelectionAsync("replica-chat", { binary: o.binary, config: o.readers, logAt: "replica" }, o.signal)).primaryBinary;
+  const selected = await resolveReaderSelectionAsync("replica-chat", { binary: o.binary, config: o.readers, logAt: "replica" }, o.signal);
   return new Promise((resolve, reject) => {
     if (o.signal?.aborted) return reject(new Error("called off"));
-    const p = new MbProcess(binary, [
+    const startedAt = wall.now();
+    const p = new MbProcess(selected.primaryBinary, [
       "--builder", "replica-chat", "--dir", o.dir, "--work", o.work, "--thread", String(o.thread),
       "--entries", String(CHAT_ENTRIES), "--text", String(CHAT_TEXT), "--bytes", String(CHAT_BYTES),
       "--sep", sep, "--shell-dir", o.shellDir,
-    ]);
-    // (what it comes to, the first thing told: given once the program has ended)
+    ], { engine: engineOfSelection(selected), fallbackMode: fallbackModeOf(selected.selection) });
+    // (what it comes to, the first thing told: given once the program has ended; a reading that came to something is
+    // counted, as restore.ts and carry.ts count theirs, one called off is not)
     let outcome: (() => void) | null = null;
-    const decide = (f: () => void) => {
-      if (outcome === null) outcome = f;
+    const decide = (f: () => void, ok?: boolean) => {
+      if (outcome !== null) return;
+      outcome = f;
+      if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
     };
     const stop = () => {
       decide(() => reject(new Error("called off")));
@@ -118,9 +124,9 @@ export async function readChatSoon(o: {
     };
     o.signal?.addEventListener("abort", stop, { once: true });
     p.on("message", (m: { chat?: Json; error?: string }) => {
-      if (m.error !== undefined) return decide(() => reject(new Error(m.error)));
+      if (m.error !== undefined) return decide(() => reject(new Error(m.error)), false);
       const chat = asChatCopy(m.chat);
-      decide(() => (chat === null ? reject(new Error("the chat's reading said nothing of the copy")) : resolve(chat)));
+      decide(() => (chat === null ? reject(new Error("the chat's reading said nothing of the copy")) : resolve(chat)), chat !== null);
     });
     let ended = false;
     const end = () => {
@@ -130,11 +136,11 @@ export async function readChatSoon(o: {
       outcome!();
     };
     p.on("error", (e: Error) => {
-      decide(() => reject(e));
+      decide(() => reject(e), false);
       end();
     });
     p.on("exit", (code: number) => {
-      decide(() => reject(new Error(`the chat's reading ended saying nothing (${code})`)));
+      decide(() => reject(new Error(`the chat's reading ended saying nothing (${code})`)), false);
       end();
     });
   });

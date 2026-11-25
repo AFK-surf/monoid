@@ -35,6 +35,7 @@ import { Store } from "../src/store/store.ts";
 import { readPreparedRecentHome } from "./reference/chat-list/chat-list-home-overlap.ts";
 import { readGlobalRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
 import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const ASK_TIMEOUT_MS = 30_000;
 const MB_FAIL_PREFIX = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
@@ -120,7 +121,7 @@ function normalizeErr(res: Record<string, unknown>): Record<string, unknown> {
 
 function resolveBinaries(t: { skip: (msg: string) => void }): { realMb: string; realPion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const realPion = pionBinary();
 
   if (realMb === null) {

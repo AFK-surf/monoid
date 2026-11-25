@@ -616,14 +616,17 @@ if [ $full = 1 ]; then
     remembered "tests: core-ts${slice:+ $slice}" "$core_test_inputs" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh reader-harness -- node --import ./test/setup-env.mjs --test --test-force-exit $files'
   fi
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n shared/lock.ts shared/log-keep.ts shared/rules-runtime.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
-  # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
-  # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^pion/rules/js/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$|^scripts/check\.sh$'
+  # The station: it and its tests run whenever it, one of its native parts (the Pion reader's sources among them, as
+  # plan.sh's station says them) or the words it says changed (station_paths: scripts/plan.sh reads it from this line
+  # for CI's check-station).
+  station_paths='^station/|^shared/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mesh-transport/|^libs/ui/src/effect/|^libs/base/(src/|moon\.mod$)|^rules/(js|src)/|^pion/rules/js/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$|^scripts/check\.sh$|^pion/station/(packages|pion\.(toml|lock)|TOOLCHAIN|scripts/)|^pion/base/packages/base_codec/'
   # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and for darwin-arm64 and linux-x64
   # the Rust station's archive command, the launcher, which runs the whole station in mb-live-station.test.ts, and the
-  # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files').
+  # tests' MoonBit program with every package's harness, reader-harness: the mb-*.test.ts files', and the reader in
+  # Pion, pion-reader, which the *-pion-switch.test.ts files hold to MoonBit's: given none, they skip, as setup-env.mjs
+  # pins none).
   station_natives="mesh runner reader"
-  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader reader-harness" ;; esac
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader reader-harness pion-reader" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): all 60 packages with native unit tests,
@@ -644,7 +647,7 @@ if [ $full = 1 ]; then
     # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js pion/rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
+    remembered "tests: station${slice:+ $slice}" "station shared client/i18n client/shell libs/mesh-transport vendor rules/js pion/rules/js rules/src rules/moon.mod libs/base/src libs/base/moon.mod libs/ui/src/effect scripts/native.ts scripts/station-slice.sh pion/station pion/base/packages/base_codec" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.

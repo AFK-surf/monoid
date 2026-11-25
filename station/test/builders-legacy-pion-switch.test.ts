@@ -45,6 +45,7 @@ import { installDecisionTimeIndex } from "./reference/backfill/legacy-decision-t
 import { installLegacyLoginCards } from "./reference/backfill/legacy-login-cards.ts";
 import { installLegacySaid } from "./reference/backfill/legacy-said-build.ts";
 import { installPageLetterIndex } from "./reference/backfill/page-letter-index.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const LEGACY_MODES: readonly ReaderMode[] = ["legacy-edits", "legacy-said", "session-backfill"];
 const ASK_TIMEOUT_MS = 30_000;
@@ -131,7 +132,7 @@ function normalizeErr(res: Record<string, unknown>): Record<string, unknown> {
 
 function resolveBinaries(t: { skip: (msg: string) => void }): { realMb: string; realPion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const realPion = pionBinary();
 
   if (realMb === null) {

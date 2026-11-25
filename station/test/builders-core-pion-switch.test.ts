@@ -44,6 +44,7 @@ import { installSessionCounts } from "./reference/backfill/session-counts.ts";
 import { installSigninSaveIndex } from "./reference/backfill/signin-save-index.ts";
 import { stopUsageIndexes } from "./reference/backfill/usage-retire.ts";
 import { installWidgetSources } from "./reference/backfill/widget-sources.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -523,7 +524,7 @@ function buildFixtures(dir: string): Fixture[] {
 
 test("all 10 builders_core modes: real MB default, real Pion switch (env + config.readers) with 0-diff, and legacy stub fallback", { skip: skipPosix }, async (t) => {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const realPion = pionBinary();
 
   if (realMb === null) {
@@ -703,7 +704,7 @@ async function runBuilderLines(
 
 test("dual-engine 0-diff regressions: usage-retire large finite float, post-blocks Int64 saturation, and 9-mode dispatch boundaries", async (t) => {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const realPion = pionBinary();
 
   if (realMb === null) {

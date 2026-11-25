@@ -36,6 +36,7 @@ import { addSessionTurns } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { MinuteReader } from "../src/usage/minute-reader.ts";
 import { installCcIndex } from "./reference/backfill/cc-thread-index.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const REQUESTED_MODES: readonly ReaderMode[] = ["turn-counts", "said", "cc-index", "usage-check"];
 const LINE_TIMEOUT_MS = 20_000;
@@ -115,7 +116,7 @@ async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () 
 
 function resolveBinaries(t: { skip: (msg: string) => void }): { realMb: string; realPion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const realPion = pionBinary();
 
   if (realMb === null) {

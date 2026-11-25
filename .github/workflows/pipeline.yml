@@ -117,6 +117,9 @@ jobs:
             if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
               want="$want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
             fi
+            # (check-station runs the Pion reader beside MoonBit's, scripts/check.sh station_natives: built for its tests
+            # where the station's own release is not planned, a change to its tests alone)
+            if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then want="$want pion-reader:linux-x64"; fi
             if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_NATIVES"; fi
             if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_READER"; fi
             all=$(node scripts/native.ts missing $want)
@@ -137,6 +140,7 @@ jobs:
             else
               missing_win=""
             fi
+            if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64"; fi
             missing=$(pick $missing_want)
             if grep -qE '^(station_tests|core_tests)=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
             else missing_harness=""; fi

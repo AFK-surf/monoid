@@ -26,6 +26,7 @@ import {
 import { Store } from "../src/store/store.ts";
 import { UsageCounter } from "../src/usage/counter.ts";
 import { testClock } from "./hub-fakes.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const dirs: string[] = [];
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -42,7 +43,7 @@ function tempdir(prefix = "w6-usage-switch-"): string {
 
 function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
   const realPion = pionBinary();
 

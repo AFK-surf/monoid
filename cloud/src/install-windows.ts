@@ -343,7 +343,7 @@ if (-not $handed) {
     if ($haveTask) { Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue }
     if ($station) { Stop-Process -Id $station.ProcessId -Force -ErrorAction SilentlyContinue }
     # By <app> in their command lines: the release's, and one moved aside (app.old-…) on a handover that failed.
-    $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($app) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe', 'stillfail-reader.exe' } }
+    $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($app) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe', 'stillfail-reader.exe', 'stillfail-pion.exe' } }
     $deadline = (Get-Date).AddSeconds(30)
     while ((& $ours) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
     & $ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

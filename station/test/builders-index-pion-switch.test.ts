@@ -38,6 +38,7 @@ import { outflowChatIndexReady } from "./reference/backfill/outflow-index.ts";
 import { installSessionListIndex, sessionListReady } from "./reference/backfill/session-list-index.ts";
 import { installSessionUpJobs, sessionUpJobsReady, sessionUpJobsStep } from "./reference/backfill/session-up-jobs.ts";
 import { installWorkspaceUpJobs, workspaceUpJobsReady } from "./reference/backfill/workspace-up-jobs.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -116,7 +117,7 @@ function readSpawnLog(logPath: string): string[] {
 }
 
 function resolveRealBinaries(): { mbBin: string; pionBin: string } | { skip: string } {
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const pionBin = pionBinary();
   const mbBin = mbReaderBinary();
   if (explicitPion) {

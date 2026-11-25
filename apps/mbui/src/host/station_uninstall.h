@@ -45,7 +45,7 @@ static const char station_uninstall_ps[] =
     "  # command lines, as install.ps1 ends them before it replaces a release).\n"
     "  $said = $null\n"
     "  try { $said = Get-Content (Join-Path $full 'run\\station.json') -Raw | ConvertFrom-Json } catch {}\n"
-    "  $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains($app) -or ($said.pid -and $_.ProcessId -eq [int]$said.pid -and $_.CommandLine.Contains($full))) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe', 'stillfail-reader.exe' } }\n"
+    "  $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains($app) -or ($said.pid -and $_.ProcessId -eq [int]$said.pid -and $_.CommandLine.Contains($full))) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe', 'stillfail-reader.exe', 'stillfail-pion.exe' } }\n"
     "  & $ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }\n"
     "  $deadline = (Get-Date).AddSeconds(5)\n"
     "  while ((& $ours) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }\n"

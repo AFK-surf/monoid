@@ -36,6 +36,7 @@ import {
   tryReadUses,
   UseIndex,
 } from "../src/vault/use-index.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const ASK_TIMEOUT_MS = 30_000;
 
@@ -113,7 +114,7 @@ async function withEnv<T>(overrides: Record<string, string | undefined>, fn: () 
 
 function resolveBinaries(t: { skip: (msg: string) => void }): { realMb: string; realPion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const realPion = pionBinary();
 
   if (realMb === null) {

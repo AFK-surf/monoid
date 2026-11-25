@@ -318,6 +318,15 @@ on:
       - "station/test/reference/share-skills.ts"
       - "station/test/reference/turn-state.ts"
       - "station/test/reference/workspace-archive.ts"
+      - "station/native/launcher/**"
+      - "station/src/agents/mb-*.ts"
+      - "station/src/replica/**"
+      - "station/test/*pion*"
+      - "station/test/front-alpns.test.ts"
+      - "station/test/front-bind-race.test.ts"
+      - "station/test/reader-*.test.ts"
+      - "scripts/native.ts"
+      - "scripts/check.sh"
       - ".github/workflows/pion-station.yml"
   workflow_dispatch:
 

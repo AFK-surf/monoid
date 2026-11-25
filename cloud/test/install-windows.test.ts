@@ -59,6 +59,17 @@ test("the Windows installer keeps its state in its own scope", () => {
   assert.deepEqual(windowsInstallScript("https://ember.test").match(/\$(script|global):\w+/gi) ?? [], []);
 });
 
+test("what the installer and the uninstaller stop is every program a Windows release runs from its directory, the Pion reader too", () => {
+  // `$ours`: the processes of the release, by name, ended before its files are replaced or taken away; one left running
+  // holds its .exe open, and the swap or the removal fails.
+  const names = (script: string) => [...script.match(/\$ours = \{[^\n]*-and \$_\.Name -in ([^}]*) \}/)![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  const installer = names(windowsInstallScript("https://ember.test"));
+  assert.deepEqual(installer, ["node.exe", "stillfail-station.exe", "stillfail-station-w.exe", "stillfail-reader.exe", "stillfail-pion.exe"]);
+  // bin/stillfail.ps1's `uninstall` stops the same (apps/mbui/src/host/station_uninstall.h carries it word for word,
+  // apps/mbui/scripts/station_uninstall_test.c holds them the same).
+  assert.deepEqual(names(readFileSync(new URL("../../bin/stillfail.ps1", import.meta.url), "utf8")), installer);
+});
+
 test("the stillfail command the installer writes runs the release under a home with other than ASCII in its path", { skip: (spawnSync("powershell", ["-NoProfile", "-Command", "exit 0"]).status !== 0 || spawnSync("cmd", ["/d", "/c", "exit 0"]).status !== 0) && "no PowerShell and cmd" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "install-cmd-"));
   try {

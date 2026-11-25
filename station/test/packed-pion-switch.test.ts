@@ -17,6 +17,7 @@ import { platform } from "../src/platform/index.ts";
 import { MbProcess, pionBinary } from "../src/read/mb-reader.ts";
 import { PackAborted, PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
 import { seekTable } from "./reference/packed.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -260,7 +261,7 @@ test("malformed JSON and non-object stdout frames are isolated without uncaughtE
 });
 
 test("real STILLFAIL_PION_READER binary E2E: ops, >16 MiB lines, and real mid-flight workspace.pack abort", async (t) => {
-  const explicitEnv = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitEnv = pinnedPion();
   const realPion = pionBinary();
   if (explicitEnv) {
     assert.ok(realPion !== null, `STILLFAIL_PION_READER is set (${explicitEnv}) but resolved to null`);

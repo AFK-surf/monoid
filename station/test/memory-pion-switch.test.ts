@@ -19,6 +19,7 @@ import { platform } from "../src/platform/index.ts";
 import { pionBinary } from "../src/read/mb-reader.ts";
 import { MemoryProgram, MemoryProgramStopped } from "../src/share/memory-mb.ts";
 import { merge3, stationTag } from "./reference/memory-merge.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -315,7 +316,7 @@ test("memory-mb isolates malformed JSON lines, non-object JSON frames, unmatched
 });
 
 test("real STILLFAIL_PION_READER binary end-to-end pion mode: ops, >16 MiB line, skillWrite safety, and idle restart", async (t) => {
-  const explicitEnv = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitEnv = pinnedPion();
   const realPion = pionBinary();
   if (explicitEnv) {
     assert.ok(realPion !== null, `STILLFAIL_PION_READER=${explicitEnv} is set but not executable`);

@@ -21,10 +21,11 @@ import {
   resolveReaderSelection,
 } from "../src/read/mb-reader.ts";
 import { READER_MODES, readerModeEnvKey, resolveReaderEngine } from "../src/read/reader-select.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 function resolveDualBinaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
   const realMb = mbReaderBinary();
-  const explicitPion = process.env.STILLFAIL_PION_READER?.trim();
+  const explicitPion = pinnedPion();
   const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
   const realPion = pionBinary();
 

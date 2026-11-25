@@ -24,6 +24,7 @@ import {
   waitForShadowMeasures,
 } from "../src/sessions/footprint.ts";
 import { measureRoomReference } from "./footprint-reference.ts";
+import { pinnedPion } from "./pion-pinned.ts";
 
 const tempDirs: string[] = [];
 after(() => {
@@ -405,7 +406,7 @@ test("real STILLFAIL_PION_READER binary end-to-end pion mode matches TS oracle 0
 test("real MoonBit + real Pion dual-run shadow produces 0 diff", async (t) => {
   const realPion = pionBinary();
   const realMb = mbReaderBinary();
-  const strictCi = Boolean(process.env.STILLFAIL_PION_READER?.trim() && process.env.CI);
+  const strictCi = Boolean(pinnedPion() && process.env.CI);
   if (strictCi) {
     assert.ok(realPion !== null, "CI with STILLFAIL_PION_READER must resolve a real Pion binary");
     assert.ok(realMb !== null, "CI with STILLFAIL_PION_READER must also have a real MoonBit stillfail-reader binary");
