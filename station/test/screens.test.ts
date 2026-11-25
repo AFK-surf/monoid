@@ -34,6 +34,8 @@ import { WindowsDesktop, screenBinary } from "../src/screens/win-desktop.ts";
 import { KEYS, WinInput } from "../src/screens/win-input.ts";
 import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR_PNG_MAX, CURSOR_SHAPE, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor, cursorImageShape } from "../src/screens/source.ts";
 import { WINDOWS } from "../src/platform/index.ts";
+import { unix } from "../src/platform/unix.ts";
+import { windows } from "../src/platform/windows.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 import { LOSS_EVERY_MS, LOSS_WINDOW_MS, LinkLoss, type LinkPath, MAX_UNACKED, MOVING_SHARPEN_MS, QUEUE_MS, SEVERE_QUEUE_MS, SHARPEN_COOLDOWN_MS, START_RATE, START_UNACKED, STILL_MS, UP_AFTER_MS, UP_EVERY_MS, rateCeiling } from "../src/mesh/screen-pace.ts";
 import type { Clock } from "effect";
@@ -2589,18 +2591,19 @@ test("reveal: a file shown in the file manager by a view that drives a source th
     assert.deepEqual(can.views[0]!.asks, [{ reveal: realpathSync(insideFile) }]);
     assert.deepEqual(cannot.views[0]!.asks, []);
     // Platform-specific Windows checks: quotes, trailing backslash, control chars, relative paths and UNC/network paths rejected before fs calls.
-    assert.equal(await revealAllowed(dropRoot, `${insideFile}"`, "windows"), null);
-    assert.equal(await revealAllowed(dropRoot, `${insideFile}\\`, "windows"), null);
-    assert.equal(await revealAllowed(dropRoot, "\\\\server\\share\\a.pdf", "windows"), null);
-    assert.equal(await revealAllowed(dropRoot, "//server/share/a.pdf", "darwin"), null);
-    assert.equal(await revealAllowed(dropRoot, "relative/a.pdf", "darwin"), null);
-    assert.equal(await revealAllowed(dropRoot, `${insideFile}\n`, "darwin"), null);
-    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:\\Users\\pat\\Downloads\\..\\secret.txt", "windows"), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", 'C:\\Users\\pat\\Downloads\\a.pdf"', windows), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:\\Users\\pat\\Downloads\\a.pdf\\", windows), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:relative.txt", windows), null);
+    assert.equal(await revealAllowed(dropRoot, "\\\\server\\share\\a.pdf", windows), null);
+    assert.equal(await revealAllowed(dropRoot, "//server/share/a.pdf", unix), null);
+    assert.equal(await revealAllowed(dropRoot, "relative/a.pdf", unix), null);
+    assert.equal(await revealAllowed(dropRoot, `${insideFile}\n`, unix), null);
+    assert.equal(await revealAllowed("C:\\Users\\pat\\Downloads", "C:\\Users\\pat\\Downloads\\..\\secret.txt", windows), null);
     const quoted = join(dropRoot, 'my"file.txt');
     if (!WINDOWS) {
       writeFileSync(quoted, "ok");
-      assert.equal(await revealAllowed(dropRoot, quoted, "darwin"), realpathSync(quoted));
-      assert.equal(await revealAllowed(dropRoot, quoted, "windows"), null);
+      assert.equal(await revealAllowed(dropRoot, quoted, unix), realpathSync(quoted));
+      assert.equal(await revealAllowed(dropRoot, quoted, windows), null);
     }
     for (const v of [a, b]) await v.stream.finish();
     await Promise.all([a.served, b.served]);

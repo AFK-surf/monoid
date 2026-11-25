@@ -21,13 +21,12 @@
 // "finished"`), the source goes (`"gone"`, also when it has no more frames), the station stops (`"stopping"`), or the
 // stream or its connection breaks (nothing more is written then); its source's capture stops with it.
 import { realpath } from "node:fs/promises";
-import { isAbsolute, posix, relative, sep, win32 } from "node:path";
 import { type Clock, Duration, Effect } from "effect";
 import { langOfCore } from "../api/request.ts";
 import { liveClock } from "../ops/fibers.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { platform } from "../platform/index.ts";
+import { type Platform, platform } from "../platform/index.ts";
 import { type AccessShown, type ScreenHub, ScreenRefused, accessShown, addressShown } from "../screens/hub.ts";
 import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, CURSOR_IMAGES_MOST, GAMEPAD_BUTTONS, GAMEPADS_MOST, PRIVACY_CODE, clipFits, gamepadReleased, MIC_PCM_MAX, privacyOf, regionOf } from "../screens/source.ts";
 import { type Viewer, readOnly } from "./credential.ts";
@@ -138,22 +137,24 @@ export function parseReveal(v: any): string | null {
 /// Validates that `target` is lexically and canonically strictly inside `folder` (the station's drop root), returning
 /// its canonical path or null if disallowed. Lexical checks run before any filesystem call to prevent UNC/network
 /// probes; on Windows, also rejects quotes, control chars and trailing backslashes (macOS keeps legal quoted names).
-export async function revealAllowed(folder: string | null, target: string, os: string = platform.os): Promise<string | null> {
+export async function revealAllowed(
+  folder: string | null,
+  target: string,
+  plat: Pick<Platform, "os" | "paths"> = platform,
+): Promise<string | null> {
   if (folder === null || folder === "" || target === "") return null;
   if (/[\x00-\x1f]/.test(target)) return null;
   if (target.startsWith("\\\\") || target.startsWith("//")) return null;
-  const isWin = os === "windows";
+  const isWin = plat.os === "windows";
   if (isWin && (target.includes('"') || target.endsWith("\\"))) return null;
-  const pathMod = isWin ? win32 : posix;
-  if (!pathMod.isAbsolute(target) || !pathMod.isAbsolute(folder)) return null;
-  const contained = (root: string, candidate: string, mod: typeof posix | typeof win32) => {
-    const a = isWin ? root.toLowerCase() : root;
-    const b = isWin ? candidate.toLowerCase() : candidate;
-    const rel = mod.relative(a, b);
-    return rel !== "" && rel !== ".." && !rel.startsWith(`..${mod.sep}`) && !rel.startsWith("../") && !rel.startsWith("..\\") && !mod.isAbsolute(rel);
+  const absolute = (p: string) => (isWin ? plat.paths.isDrivePath(p) : plat.paths.rooted(p));
+  if (!absolute(folder) || !absolute(target)) return null;
+  const strictlyInside = (root: string, candidate: string) => {
+    const rel = plat.paths.relativeIn(plat.paths.clean(root), plat.paths.clean(candidate));
+    return rel !== null && rel !== "";
   };
   // Lexical containment check BEFORE touching the filesystem (blocks UNC/network probes and obvious traversal).
-  if (!contained(pathMod.resolve(folder), pathMod.resolve(target), pathMod)) return null;
+  if (!strictlyInside(folder, target)) return null;
   let realRoot: string;
   let realTarget: string;
   try {
@@ -161,8 +162,7 @@ export async function revealAllowed(folder: string | null, target: string, os: s
   } catch {
     return null;
   }
-  const rel = relative(isWin ? realRoot.toLowerCase() : realRoot, isWin ? realTarget.toLowerCase() : realTarget);
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) return null;
+  if (!strictlyInside(realRoot, realTarget)) return null;
   return realTarget;
 }
 
