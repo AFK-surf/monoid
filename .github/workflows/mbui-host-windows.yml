@@ -157,7 +157,8 @@ jobs:
           name: windows-kitdemo
           path: libs/ui/out/win/mod/_build/native/release/build/kitdemo/kitdemo.exe
 
-  # The host's app built above; this job's time belongs to running its contracts and replaying its tape.
+  # The host's app built above; its contracts are split across two parallel five-minute jobs (~2.5 min each)
+  # so a slower Windows runner never approaches the 5-minute ceiling (PR #8652 run 45590650443, 45584028480).
   contracts:
     needs: kitdemo
     runs-on: windows-latest
@@ -179,12 +180,38 @@ jobs:
       - name: "The host's contract: a run's tape = a Tester's frames"
         run: scripts/host_contract.sh windows record
       - name: "The text's contract: windows_controls = DirectWrite's"
+        if: success() || failure()
         run: scripts/host_contract.sh windows text
       - name: "The native views' contract: one placed between pixels is put where it was told, on whole device pixels"
         if: success() || failure()
         run: scripts/host_contract.sh windows views
+      - uses: actions/upload-artifact@v4
+        if: always()
+        continue-on-error: true
+        with:
+          name: host-windows
+          path: libs/ui/out/host/
+          if-no-files-found: ignore
+
+  contracts-host:
+    needs: kitdemo
+    runs-on: windows-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: libs/ui
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+        working-directory: ${{ github.workspace }}
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/msvc
+      - uses: ./.github/actions/mbui-moonbit
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-kitdemo
+          path: libs/ui/out/win/mod/_build/native/release/build/kitdemo/
       - name: "The pages' contract: a page says to the app, runs its scripts, keeps cookies, takes an event stream as it is sent"
-        if: success() || failure()
         run: scripts/host_contract.sh windows site
       - name: "The runner's contract: a file written in the run's directory is told as it comes (done X)"
         if: success() || failure()
@@ -208,7 +235,7 @@ jobs:
         if: always()
         continue-on-error: true
         with:
-          name: host-windows
+          name: host-windows-extra
           path: libs/ui/out/host/
           if-no-files-found: ignore
 
