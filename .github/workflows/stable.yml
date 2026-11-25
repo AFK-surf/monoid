@@ -533,7 +533,9 @@ jobs:
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
-        with: { ref: '${{ needs.plan.outputs.sha }}' }
+        with:
+          ref: '${{ needs.plan.outputs.sha }}'
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
       # (the pinned Node: ci-1's from setup-linux, before anything runs node)
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-linux
@@ -631,7 +633,9 @@ jobs:
       WANT: reader:darwin-arm64 pion-reader:darwin-arm64 launcher:darwin-arm64 mesh:darwin-arm64 runner:darwin-arm64 helper:darwin-arm64
     steps:
       - uses: actions/checkout@v5
-        with: { ref: '${{ needs.plan.outputs.sha }}' }
+        with:
+          ref: '${{ needs.plan.outputs.sha }}'
+          fetch-depth: 0
       - uses: ./.github/actions/setup-mac
       - *station-natives-missing
       - if: steps.missing.outputs.list != ''
