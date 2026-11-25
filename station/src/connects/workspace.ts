@@ -144,6 +144,24 @@ export class WorkspaceConnects {
           this.routeHere(id, thread.channel, thread.threadTs, peer);
         }
       }
+      // A message another station's chat posted here with slack_api (a new one, or one in a thread it names): that chat
+      // took part in its thread (conversations.ts `slackApi`), so what is said there goes to that station too, unless the
+      // thread is a chat's here or another station's already.
+      if (request?.op === "api" && peer !== "self" && peer !== d.here()) {
+        const known = knownIn(request?.connect);
+        const id = known === null ? "" : localOf(known, d.here());
+        const entry = this.entryOf(id);
+        const [method, params] = Array.isArray(request?.args) ? request.args : [];
+        const channel = typeof params?.channel === "string" ? params.channel : "";
+        const posted = answered?.result?.answer?.ts;
+        const threadTs = typeof params?.thread_ts === "string" && params.thread_ts !== "" ? params.thread_ts : typeof posted === "string" ? posted : "";
+        if (entry !== undefined && kindOf(entry) === "slack" && entry.mode !== "single-session" && method === "chat.postMessage" &&
+          answered?.result?.answer?.ok !== false && channel !== "" && threadTs !== "" &&
+          this.d.store.connectThreadStation(id, channel, threadTs) === null) {
+          const here = this.d.store.threadAt(this.d.hub().surface(id), channel, threadTs);
+          if (here === null || this.d.store.threadSessions(here.id).every((m) => m.connect !== id)) this.routeHere(id, channel, threadTs, peer);
+        }
+      }
       return answered;
     });
     // Whether one of this station's connects of that workspace has that secret.

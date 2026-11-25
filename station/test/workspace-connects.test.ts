@@ -127,6 +127,35 @@ test("a new conversation of a connect that names another station runs there; wha
   await close();
 });
 
+test("slack_api posting through a connect that runs on another station: what is said in the thread it starts or posts in comes back to its chat; a thread a chat there has stays there", async () => {
+  const { h, s, close } = workspace();
+  const here = message({ text: "<@UBOT> stay on H" });
+  await h.connects.receive("cl", { type: "message", message: here });
+  h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
+  const first = message({ text: "<@UBOT> tell the channel" });
+  await h.connects.receive("cl", { type: "message", message: first });
+  await settle();
+  const key = sessionKey(`cl@${H}`, first.channel, first.threadTs);
+  assert.ok(s.rig.store.getSession(key), "the session is S's");
+
+  // A new message from S's chat: its thread is that chat's, on S's side and on H's.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7777.1" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: "C2", text: "a new topic" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", "C2", "7777.1"), S);
+  // A reply in it that does not mention the bot reaches S's chat.
+  await h.connects.receive("cl", { type: "message", message: message({ channel: "C2", threadTs: "7777.1", ts: "7777.2", text: "what do you think", addressed: false }) });
+  await settle();
+  const started = s.rig.thread("C2", "7777.1");
+  assert.deepEqual(s.rig.said(started.id).map((m) => m.text), ["a new topic", "what do you think"]);
+  assert.equal(h.rig.store.threadAt("slack:T1", "C2", "7777.1"), null, "H keeps no thread of it");
+
+  // A reply S's chat posts in a thread H's own chat has: that thread stays H's.
+  h.rig.chat.answers.set("chat.postMessage", { ok: true, ts: "7778.1" });
+  await s.rig.call(key, "slack_api", { method: "chat.postMessage", params: { channel: here.channel, thread_ts: here.threadTs, text: "from S" } });
+  assert.equal(h.rig.store.connectThreadStation("cl", here.channel, here.threadTs), null);
+  await close();
+});
+
 test("feishu_api of a chat whose Feishu connect runs on another station: its JSON with and without to=, and a message's image saved in that chat's own uploads", async () => {
   const { h, s, close } = workspace();
   const fake = await FakeFeishu.start();
