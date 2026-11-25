@@ -68,7 +68,7 @@ export class DirectoryLocks {
         this.#db.run("DELETE FROM lock_entries WHERE workspace = ? AND seq >= ?", workspace, r.seq);
         console.warn(`lock: ${workspace}'s kept lock cut back before entry ${String(r.seq)}, which no station takes: ${(error as Error).message}`);
         // Not from inside what is being told (a state frame reads the head).
-        queueMicrotask(() => this.#host.changed(workspace, false));
+        queueMicrotask(() => this.#host.changed(workspace, false, [], "lock"));
         break;
       }
     }
@@ -204,7 +204,9 @@ export class DirectoryLocks {
     this.#db.role(sub, workspace, ["owner"]);
     this.#db.run("DELETE FROM lock_entries WHERE workspace = ?", workspace);
     this.#db.run("DELETE FROM lock_aside WHERE workspace = ?", workspace);
-    this.#host.changed(workspace, false);
+    // Tell lock-only: `appendLockInternal` updates no `told` row, so a full view diff sees `lock: null` against a stale
+    // pre-lock `told` view and emits a no-op rev, leaving clients' cached `lock` stale.
+    this.#host.changed(workspace, false, [], "lock");
   }
 
   /** A device asked for a credential: kept for the owner to check when the lock is turned on, written later

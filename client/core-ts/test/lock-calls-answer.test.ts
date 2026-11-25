@@ -242,3 +242,76 @@ test("the call's wait begins at the stations, not with the call: the lock turned
   assert.equal(st.chain.at(-1)!.kind, "disable", "the station took it");
   assert.equal((lockView(inner, "ws") as { locked: boolean }).locked, false);
 });
+
+test("lock.renew on an unmoved chain refuses an app device as invalid_params without signing an entry", async () => {
+  const { r, st } = await setUp([{ id: PHONE, sub: "s2", kind: "app", label: "Pixel 8" }]);
+  const before = st.chain.length;
+  const { answer } = await timedCall(r, "lock.renew", { workspace: "ws", device: PHONE });
+  assert.equal((answer?.error as { code?: string } | undefined)?.code, "invalid_params");
+  assert.match((answer?.error as { message?: string } | undefined)?.message ?? "", /only a web page's device runs out/);
+  assert.equal(st.chain.length, before, "nothing signed or sent");
+});
+
+test("lock.disable does not race DELETE /lock against POST /lock, and retries with the full chain when cloud is behind", async () => {
+  const { r, inner, st } = await setUp([{ id: PHONE, sub: "s2", kind: "app", label: "Pixel 8" }]);
+  // First add a normal entry at the station alone so the cloud is 1 entry behind (e.g. another device's #toCloud still in flight).
+  const prevAnswer = st.answer;
+  let cleared = false;
+  const origCall = inner.stations.requests.call.bind(inner.stations.requests);
+  inner.stations.requests.call = ((addr: { toString(): string }, method: string, path: string, body: unknown, ...rest: unknown[]) => {
+    const [ws, id] = addr.toString().split("/");
+    if (ws === "ws" && id === A && path.startsWith("/lock")) {
+      if (method === "GET" && (path === "/lock" || path.startsWith("/lock?after=")) && cleared) {
+        return Effect.succeed({ head: null, entries: [], takes: ["person"], serves: ["person", "devices", "told"] });
+      }
+      return Effect.tap(prevAnswer(method, path, body), () => Effect.sync(() => {
+        if (method === "POST" && path === "/lock" && st.chain.at(-1)?.kind === "disable") cleared = true;
+      }));
+    }
+    return (origCall as (...a: unknown[]) => unknown)(addr, method, path, body, ...rest);
+  }) as typeof inner.stations.requests.call;
+
+  // Intercept cloud /lock requests: count DELETEs, and enforce sequential seq check (409 lock_does_not_follow on gap).
+  let deletes = 0;
+  const posts: { seqs: number[]; keep: boolean; status: number }[] = [];
+  const origFetch = r.host.fetch.bind(r.host);
+  r.host.fetch = (req) => {
+    if (/\/v1\/workspaces\/ws\/lock$/.test(req.url)) {
+      if (req.method === "DELETE") {
+        deletes++;
+        return Effect.succeed({ status: 200, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ ok: true })) });
+      }
+      if (req.method === "POST") {
+        const parsed = JSON.parse(new TextDecoder().decode(req.body!)) as { entries: Entry[]; keep?: boolean };
+        const kept = r.cloud.chains.get("ws") ?? [];
+        const seqs = parsed.entries.map((e) => e.seq);
+        const firstNew = parsed.entries.find((e) => e.seq >= kept.length);
+        if (firstNew && firstNew.seq !== kept.length) {
+          posts.push({ seqs, keep: parsed.keep === true, status: 409 });
+          return Effect.succeed({ status: 409, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ error: "lock_does_not_follow" })) });
+        }
+        for (const e of parsed.entries) if (e.seq === (r.cloud.chains.get("ws") ?? []).length) r.cloud.chains.set("ws", [...(r.cloud.chains.get("ws") ?? []), e]);
+        posts.push({ seqs, keep: parsed.keep === true, status: 200 });
+        return Effect.succeed({ status: 200, headers: [["content-type", "application/json"]], body: new TextEncoder().encode(JSON.stringify({ ok: true })) });
+      }
+    }
+    return origFetch(req);
+  };
+
+  // Put seq 1 (device.remove) on the station without updating the cloud, so cloud stays at seq 0.
+  const rm = await timedCall(r, "lock.removeDevice", { workspace: "ws", device: PHONE });
+  assert.equal(rm.answer?.error, undefined);
+  await r.host.time.pass(200);
+  // Drop seq 1 from cloud to simulate an in-flight/missing earlier mirror from another device.
+  r.cloud.chains.set("ws", r.cloud.chains.get("ws")!.slice(0, 1));
+  posts.length = 0;
+
+  const { answer } = await timedCall(r, "lock.disable", { workspace: "ws" });
+  assert.equal(answer?.error, undefined);
+  await r.host.time.pass(500);
+  assert.equal(deletes, 0, "disabling the lock must not fire DELETE /lock when the station clears its active lock");
+  assert.equal(posts.length, 2, `expected 409 then keep-chain retry, got ${JSON.stringify(posts)}`);
+  assert.deepEqual(posts[0], { seqs: [2], keep: false, status: 409 });
+  assert.deepEqual(posts[1], { seqs: [0, 1, 2], keep: true, status: 200 });
+  assert.equal(r.cloud.chains.get("ws")!.at(-1)?.kind, "disable", "cloud received the disable entry");
+});

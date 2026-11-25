@@ -451,6 +451,9 @@ test("a workspace whose lock alone moved on says so in its event, its head with 
     // What else changes is told as before, to be read again.
     await alice("PATCH", `/v1/workspaces/${w}`, { name: "House" });
     await expect(on, { alice: [{ type: "workspaces" }, { type: "workspace", id: w }] }, "rename");
+    // Clearing the lock also sends a lock-only event so members' cached lock clears even when `told` never recorded it.
+    assert.equal((await alice("DELETE", `/v1/workspaces/${w}/lock`)).status, 200);
+    await expect(on, { alice: [{ type: "workspace", id: w, lock: { head: null, locked: false } }] }, "lock cleared");
   } finally {
     await h.close();
   }
