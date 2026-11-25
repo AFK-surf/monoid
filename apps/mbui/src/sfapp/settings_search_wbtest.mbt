@@ -85,7 +85,10 @@ test "settings search follows the language and keeps its words when the list mov
 fn settings_search_for(t : @ui.Tester, words : String) -> Unit raise {
   let clear = @sf.t("android-misc.drive.pick.filterClear")
   if t.all(Button).iter().any(fn(s) { s.label == clear }) {
+    // (cleared, the whole list back, as a person sees it before typing again: not typed into in the moment it is
+    // cleared, when a card under both lists (此设备's 网络与同步, found by 工作区 too) would be opened and closed at once)
     t.click(Button, label=clear)
+    t.run_for(@ui.move_most_ms)
   } else {
     t.tap_text(@sf.t("web-pages.settings.search"))
   }

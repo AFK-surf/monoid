@@ -46,9 +46,9 @@ pub fn kept_node(
 
 ///|
 /// 本机缓存's blocks by their keys, as what is kept is said now: "waiting" while it is read; else "parts", the chats'
-/// heading and each chat ("chats", "chat/<station>/<thread>"), "more" where there are more than kept_first; 后台下载's
-/// ("fill-head", "fill"), what it brings now ("going-head", "going/<n>", "stop-all"); "clear-all" where anything is
-/// kept.
+/// heading and each chat ("chats", "chat/<station>/<thread>"), "more" where there are more than kept_first; what
+/// 后台下载 (网络与同步's, fill_group_node) brings now ("going-head", "going/<n>", "stop-all"); "clear-all" where
+/// anything is kept.
 fn kept_keys(core : Core) -> Array[String] {
   guard kept.chats.get() is Some(chats) else { return ["waiting"] }
   let out = ["parts"]
@@ -63,8 +63,6 @@ fn kept_keys(core : Core) -> Array[String] {
       out.push("more")
     }
   }
-  out.push("fill-head")
-  out.push("fill")
   let keeping = fill_keeping(core)
   if fill_on(core) && keeping.length() > 0 {
     out.push("going-head")
@@ -120,7 +118,6 @@ fn fill_size_said(n : Double) -> String {
 /// 本机缓存's block `key` (kept_keys') in `b`, as what is kept is said now.
 fn kept_block(b : @view.View, core : Core, key : String) -> Unit {
   let chats = fn() { kept.chats.get().unwrap_or([]) }
-  let set = fn(name : String, value : Json) { (core.call)("prefs.set", obj([(name, value)]), answer_unread) }
   // (a row of the chats' card, a piece of it as it is among them now)
   let chat_piece = fn(i : () -> Int?, n : () -> Int, row : (@view.View) -> Unit) {
     b.grow(Is(1.0)) |> ignore
@@ -150,39 +147,6 @@ fn kept_block(b : @view.View, core : Core, key : String) -> Unit {
           chevron=false,
           folds=fn() { kept_all.get() },
         )
-      })
-    "fill-head" => @sf.section_heading_node(b, fn() { tr("android-settings.files.fill.title") })
-    "fill" =>
-      @sf.group_node(b, fn(g) {
-        // (the library's switch row, as every setting's)
-        @sf.switch_row_node(
-          g,
-          fn() { tr("android-settings.files.fill.on") },
-          fn() { fill_on(core) },
-          fn(now) { set("fillOff", if now { Json::null() } else { Json::boolean(true) }) },
-          note=fn() { tr("android-settings.files.fill.on.sub") },
-        )
-        g.show(fn() { fill_on(core) }, fn(s) {
-          @sf.link_row_opens_node(
-            s,
-            fn() { tr("android-settings.files.fill.max") },
-            fn(row) {
-              let most = fill_most(core)
-              @sf.pick(
-                tr("android-settings.files.fill.max"),
-                fill_sizes.map(fn(n) { @sf.choice(n.to_string(), fill_size_said(n)) }),
-                most.to_string(),
-                fn(k) {
-                  let n = fill_sizes.search_by(fn(x) { x.to_string() == k }).map(fn(i) { fill_sizes[i] }).unwrap_or(fill_sizes[0])
-                  set("fillMax", if n == fill_sizes[0] { Json::null() } else { Json::number(n) })
-                },
-                from=Node(row),
-              )
-            },
-            note=fn() { tr("android-settings.files.fill.max.sub") },
-            value=fn() { fill_size_said(fill_most(core)) },
-          )
-        })
       })
     "going-head" =>
       @sf.section_heading_node(b, fn() { tr("android-settings.files.fill.going") }, note=fn() {
@@ -673,3 +637,43 @@ let kept_bin_icon : Double = 18.0
 
 ///|
 let kept_bin_side : Double = 36.0
+
+///|
+/// 后台下载 (网络与同步's, src/sfpages network.mbt) as a card in node `v`: whether what was opened and let go goes on
+/// coming (prefs `fillOff`), and while it does, how big a file is brought whole up to (prefs `fillMax`). What it brings
+/// now is 本机缓存's (kept_keys' "going").
+pub fn fill_group_node(v : @view.View, core : Core) -> Unit {
+  let set = fn(name : String, value : Json) { (core.call)("prefs.set", obj([(name, value)]), answer_unread) }
+  // (not a card of words: its pressed row's corner follows the group's, as it did on 本机缓存)
+  @sf.group_node(v, fn(g) {
+    // (the library's switch row, as every setting's)
+    @sf.switch_row_node(
+      g,
+      fn() { tr("android-settings.files.fill.on") },
+      fn() { fill_on(core) },
+      fn(now) { set("fillOff", if now { Json::null() } else { Json::boolean(true) }) },
+      note=fn() { tr("android-settings.files.fill.on.sub") },
+    )
+    g.show(fn() { fill_on(core) }, fn(s) {
+      @sf.link_row_opens_node(
+        s,
+        fn() { tr("android-settings.files.fill.max") },
+        fn(row) {
+          let most = fill_most(core)
+          @sf.pick(
+            tr("android-settings.files.fill.max"),
+            fill_sizes.map(fn(n) { @sf.choice(n.to_string(), fill_size_said(n)) }),
+            most.to_string(),
+            fn(k) {
+              let n = fill_sizes.search_by(fn(x) { x.to_string() == k }).map(fn(i) { fill_sizes[i] }).unwrap_or(fill_sizes[0])
+              set("fillMax", if n == fill_sizes[0] { Json::null() } else { Json::number(n) })
+            },
+            from=Node(row),
+          )
+        },
+        note=fn() { tr("android-settings.files.fill.max.sub") },
+        value=fn() { fill_size_said(fill_most(core)) },
+      )
+    })
+  })
+}
