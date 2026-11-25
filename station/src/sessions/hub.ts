@@ -2329,8 +2329,9 @@ export class Hub {
     const opening = actor !== undefined && actor.isOpening();
     if (running) {
       this.inFlightClaims.delete(key);
-      // (its profile changes only by a write of its row, which comes here as `knownRow`: read only the first time)
-      const profileId = knownRow !== undefined ? knownRow?.profile || undefined : prevRunning ?? (this.store.getSession(key)?.profile || undefined);
+      // (its profile changes only by a write of its row, which comes here as `knownRow`: read only the first time, and
+      // only for a coordinator, `activeProfileEntries` reading it otherwise as it is first counted)
+      const profileId = knownRow !== undefined ? knownRow?.profile || undefined : prevRunning ?? (this.slotCoordinator ? this.store.getSession(key)?.profile || undefined : undefined);
       if (profileId) this.runningProfiles.set(key, profileId);
       else this.runningProfiles.delete(key);
       if (this.slotCoordinator && !hasBorrowed && profileId) {
