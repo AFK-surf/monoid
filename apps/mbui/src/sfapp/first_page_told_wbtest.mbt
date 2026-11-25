@@ -19,6 +19,11 @@ fn first_told_src(out : @signals.Signal[Bool], failed? : @signals.Signal[Bool] =
 }
 
 ///|
+/// How long the app is away from its first page in these tests (failed, or signed out): longer than the first page's
+/// wait, any of its timers left due meanwhile.
+let first_told_away_ms : Double = first_page_ms * 5.0
+
+///|
 test "the first page's time told once: not again as it is built anew, the core failed and started again" {
   new_run()
   let told : Array[(Double, Double, Bool)] = []
@@ -32,7 +37,7 @@ test "the first page's time told once: not again as it is built anew, the core f
   assert_true(first_shown.get(), msg="shown")
   assert_eq(told.length(), 1)
   failed.set(true)
-  t.run_for(5000.0)
+  t.run_for(first_told_away_ms)
   failed.set(false)
   t.run_for(first_page_ms + 100.0)
   assert_eq(told.length(), 1)
@@ -52,7 +57,7 @@ test "the first page's time told once: not again as it is built anew, signed out
   assert_true(first_shown.get(), msg="shown")
   assert_eq(told.length(), 1)
   out.set(true)
-  t.run_for(5000.0)
+  t.run_for(first_told_away_ms)
   out.set(false)
   t.run_for(first_page_ms + 100.0)
   assert_eq(told.length(), 1)
@@ -67,7 +72,7 @@ test "a first page come after signing in: its time not told, the person's signin
   let out = @signals.signal(true)
   let src = first_told_src(out)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  t.run_for(3000.0)
+  t.run_for(first_told_away_ms)
   out.set(false)
   t.run_for(first_page_ms + 100.0)
   assert_true(first_shown.get(), msg="shown")
