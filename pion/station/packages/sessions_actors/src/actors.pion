@@ -137,6 +137,7 @@ pub struct Actor {
   pub mut read_back : Bool
   pub mut phase : String
   pub mut turn : Option[Turn]
+  pub mut turn_epoch : Int
   pub mut warm : Bool
   pub mut deferred_end : Option[DeferredEnd]
   pub mut starting_turn : Bool
@@ -686,6 +687,7 @@ pub fn ActorsGen::actor(self : ActorsGen, key : String, runtime : String) -> Act
         read_back: false,
         phase: "idle",
         turn: None,
+        turn_epoch: 0,
         warm: false,
         deferred_end: None,
         starting_turn: false,
@@ -1113,6 +1115,7 @@ pub fn ActorsGen::close(self : ActorsGen, a : Actor) -> Unit {
     )
   }
   a.turn = None
+  a.turn_epoch = a.turn_epoch + 1
   a.warm = false
   a.deferred_end = None
   self.cancel_tools_retry(a)

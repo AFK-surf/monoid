@@ -98,6 +98,7 @@ export class ActorsProgram {
   readonly #awaitingUndelivered = new Map<MbActor | ProgramShell, number>();
 
   readonly #store: { told(changes: any[]): void } | null;
+  readonly #hasLocalDb: boolean;
 
   private constructor(
     data: string,
@@ -108,6 +109,7 @@ export class ActorsProgram {
   ) {
     this.#clock = clock;
     this.#store = store;
+    this.#hasLocalDb = Boolean(store?.db);
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
     this.#proc = procOverride ?? SessionsProgram.of(data, true)!;
     this.#proc.use(this.#user);
@@ -424,7 +426,7 @@ export class ActorsProgram {
         this.#maybePruneRetired(target);
       };
       const onSteerRejected = () => {
-        if (said.fn === "agent.steer") {
+        if (said.fn === "agent.steer" && !this.#hasLocalDb && this.#actors.get(target.key) !== target) {
           this.#awaitingUndelivered.set(target, (this.#awaitingUndelivered.get(target) ?? 0) + 1);
           this.#retiredIdleOrder.delete(target);
         }

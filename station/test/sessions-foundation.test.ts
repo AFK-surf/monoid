@@ -872,3 +872,81 @@ for (const churn of [511, 512]) {
     }
   });
 }
+
+test("W8-E2 R8 LL1: steer refused while live does not pin actor past idle bound", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    await f.deliver({ rpc: 1, actor: "s", fn: "agent.steer", args: [old.handle, "x"] });
+    const gone = old.actor.dispose();
+    const call = f.posted.filter((p: any) => p.method === "dispose").at(-1);
+    await f.deliver({ returned: call.call, value: null });
+    await gone;
+    for (let i = 0; i < 600; i++) {
+      const a = f.program.actor(`other${i}`, "claude", { store: {} } as any);
+      a.close();
+      await f.deliver({ returned: f.posted.at(-1).call, value: null });
+    }
+    const reply = await f.deliver({ rpc: 2, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.error?.actorClosed, true, "still held after 600 others: " + JSON.stringify(reply));
+  } finally {
+    await f.program.close();
+  }
+});
+
+for (const refused of [false, true]) {
+  test(`W8-E2 R8: disposed actor with settled local work is evicted (steer refused=${refused})`, async () => {
+    let receive!: (frame: any) => void;
+    const frames: any[] = [];
+    const program = ActorsProgram.openForTest(
+      {
+        use(user: any) { receive = user.said; },
+        post(frame: any) { frames.push(frame); return true; },
+        hold() {},
+        release() {},
+        kill() {},
+      } as any,
+      { currentTimeMillisUnsafe: () => 100 } as any,
+    );
+    const key = "locally-settled";
+    let storeCalls = 0;
+    let disposed = 0;
+    const store = {
+      getSession: () => ({ runtime: "claude" }),
+      markUndelivered() { storeCalls++; },
+    };
+    try {
+      const actor = program.actor(key, "claude", { store } as any);
+      const adopted = actor.adopt(
+        { runtime: "claude" } as any,
+        { steer: async () => !refused, dispose: async () => { disposed++; } } as any,
+        "",
+      );
+      const request = frames.at(-1);
+      const handle = request.args[1].handle;
+      receive({ returned: request.call, value: null });
+      await adopted;
+      receive({ rpc: 1, actor: key, fn: "agent.steer", args: [handle, "reminder"] });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(frames.find((f) => f.answer === 1).value, !refused);
+      const disposal = actor.dispose();
+      const disposeCall = frames.at(-1).call;
+      receive({ rpc: 2, actor: key, fn: "agent.dispose", args: [handle] });
+      await new Promise((r) => setImmediate(r));
+      receive({ returned: disposeCall, value: null });
+      await disposal;
+      assert.equal(disposed, 1);
+      for (let i = 0; i < 513; i++) {
+        program.actor(`idle-${i}`, "claude", { store } as any).close();
+        receive({ returned: frames.at(-1).call, value: null });
+      }
+      receive({ rpc: 3, actor: key, fn: "store.markUndelivered", args: [key, []] });
+      await new Promise((r) => setImmediate(r));
+      const reply = frames.find((f) => f.answer === 3);
+      assert.deepEqual({ storeCalls, closed: reply?.error?.actorClosed === true }, { storeCalls: 0, closed: true });
+    } finally {
+      await program.close();
+    }
+  });
+}

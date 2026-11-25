@@ -2948,3 +2948,40 @@ test "R7 review: successful old stateWrite leaves new handle mid-wait intact" {
   s.drive(r)
   assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
 }
+
+test "R8 boundary: agentless handover isolates the adopted turn timer" {
+  let s = r2_new()
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"old\"}},null,null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.actors.host.tick()
+  let a = get_actor(s.actors, "s1")
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"old\",{\"kind\":\"all_done\"},5]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "did not reach stateWrite")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard(
+    "{\"call\":3,\"actor\":\"s1\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"old\",\"declared\":\"waiting\",\"wait\":60},\"midWaitingSeconds\":60,\"midWaitingMs\":60000},null,null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "adopt did not install timer")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
+}

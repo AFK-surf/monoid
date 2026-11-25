@@ -93,11 +93,12 @@ pub fn ActorsGen::state_for_turn_k(
         }
       }
       let req_turn_id = t.id
+      let req_turn_epoch = a.turn_epoch
       let req_agent = a.agent
       // Direct RPC: an in-flight `node.stateWrite` already sent to Node must not be cancelled by
       // a concurrent `close(a)` so its recorded state matches what Node persisted; guard
-      // `on_declared` by phase, turn ID, and agent handle+generation so a late ACK cannot
-      // arm/cancel timers on a closed or newly-adopted turn.
+      // `on_declared` by phase, turn epoch, turn ID, and agent handle+generation so a late ACK
+      // cannot arm/cancel timers on a closed or newly-adopted turn.
       self.rpc_direct_k(a.key, "node.stateWrite", args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
         match ex {
           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
@@ -111,7 +112,7 @@ pub fn ActorsGen::state_for_turn_k(
               Some(cur) => cur.id == req_turn_id
               None => false
             }
-            if a.phase != "closed" && same_turn && still(a, req_agent) {
+            if a.phase != "closed" && a.turn_epoch == req_turn_epoch && same_turn && still(a, req_agent) {
               self.on_declared(a, t, state)
             }
             recorded = true
@@ -1994,6 +1995,7 @@ pub fn ActorsGen::adopt(
   if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
     return
   }
+  a.turn_epoch = a.turn_epoch + 1
   let now = self.gen.counters.now
   let runtime = str_or(sessions_core::str_of(sessions_core::jget(snap, "runtime")), a.runtime)
   let taken : Option[Agent] = match agent {
