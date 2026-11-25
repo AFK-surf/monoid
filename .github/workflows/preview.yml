@@ -1222,7 +1222,7 @@ jobs:
             if [ "$need_win_reader" = 1 ] && [ "$win_reader_state" = "completed success" ]; then
               gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-win-reader-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
             fi
-            node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA"
+            node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets host
             echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
           fi
       # The still.fail the e2e flow signs in against (its cloud, relay, station and chat: ~13 s of the flow's ~18, none
