@@ -709,10 +709,20 @@ test "window_keys_faults: place-remote (desktop screen, simulator, terminal) on 
       page_over(t, win.1)
     }
     assert_no_wk_faults(t, "place-remote simulator \{win.0}")
-    // Open a terminal tab in place-remote via Windows Ctrl+T and verify Terminal actually opened
-    t.key(@ui.key_of_char('t'), mods=@ui.mod_ctrl)
+    // Open a terminal tab in place-remote via Willow's "+" menu -> "新建终端"
+    // (remote screens intentionally catch Ctrl+T after #8708 once focused).
+    if @sfdesk.wide.tape.get() {
+      @sfdesk.wide.tape_ask.set(Some(Side))
+      t.run_for(@ui.move_most_ms)
+    }
+    t.click(Button, label="在 Willow 新建视图")
     t.run_for(@ui.move_most_ms)
-    assert_true(named_at(t, "粘贴") is Some(_), msg="place-remote Ctrl+T did not open Terminal tab (\{win.0})")
+    t.tap_text("新建终端")
+    t.run_for(@ui.move_most_ms)
+    if @sfdesk.wide.tape.get() && !(@sfdesk.wide.tape_at.get() is Page) {
+      page_over(t, win.1)
+    }
+    assert_true(named_at(t, "粘贴") is Some(_), msg="place-remote 新建终端 did not open Terminal tab (\{win.0})")
     assert_no_wk_faults(t, "place-remote terminal \{win.0}")
   }
 }
