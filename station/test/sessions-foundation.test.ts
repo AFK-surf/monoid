@@ -32,6 +32,7 @@ import {
 } from "../src/read/mb-reader.ts";
 import { setReaderModeImplementedForTest } from "../src/read/reader-select.ts";
 import { readerTelemetry } from "../src/read/reader-telemetry.ts";
+import { ActorsProgram } from "../src/sessions/mb-actor.ts";
 import { findRawTxControlViolations, scanPionDirForRawTxControl } from "./pion-sqlite-tx-scanner.ts";
 
 const tempDirs: string[] = [];
@@ -154,6 +155,16 @@ test("W8-0: pion-sqlite-tx-scanner catches concatenated raw tx SQL and throws on
     findRawTxControlViolations("interp.pion", 'let _ = db.exec("RELEASE \\{n}")').length,
     1,
     "RELEASE with Pion string interpolation must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("assign.pion", 'let op = "RELEASE"').length,
+    1,
+    "uppercase RELEASE assignment must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("multiline_rel.pion", 'let _ = db.exec("RELEASE"\n  + sp)').length,
+    1,
+    "multiline RELEASE + sp concatenation must be caught",
   );
   assert.equal(
     findRawTxControlViolations("sp1.pion", 'let _ = db.exec("RELEASE sp1")').length,
@@ -452,4 +463,81 @@ test("W8-0: config.readers.sessions, env precedence, pending cold starts, dual-h
     setSessionsSpawnObserverForTest(null);
     resetReaderSelectionStateForTest();
   }
+});
+
+test("W8-E2: ActorsProgram routes cleanup RPCs to retired actor after forget() and drops non-cleanup RPCs", async () => {
+  let user: { said: (msg: any) => void; exited: (code: number) => void } | null = null;
+  const posted: any[] = [];
+  const stubProc = {
+    use(u: any) { user = u; },
+    post(msg: any) { posted.push(msg); return true; },
+    hold() {},
+    release() {},
+    kill() {},
+  };
+  const fakeClock = { currentTimeMillisUnsafe: () => 1000 } as any;
+  const program = ActorsProgram.openForTest(stubProc as any, fakeClock);
+  const calls: Array<{ fn: string; args: any[] }> = [];
+  const tells: Array<{ fn: string; args: any[] }> = [];
+  const shell = {
+    key: "retired-sess",
+    runtime: "claude" as const,
+    asked: async (fn: string, args: any[]) => {
+      calls.push({ fn, args });
+      if (fn === "agent.steer") return false;
+      return { ok: fn };
+    },
+    told: (fn: string, args: any[]) => {
+      tells.push({ fn, args });
+    },
+  };
+  program.shell(shell);
+
+  // Retire the actor via forget() — simulating close() removing it from #actors.
+  program.forget("retired-sess", shell);
+
+  // 1. Cleanup RPCs (store.markUndelivered, agent.dispose, agent.steer) must still route and answer.
+  user!.said({ rpc: 101, actor: "retired-sess", fn: "store.markUndelivered", args: [["m1"]] });
+  user!.said({ rpc: 102, actor: "retired-sess", fn: "agent.dispose", args: [7] });
+  user!.said({ rpc: 103, actor: "retired-sess", fn: "agent.steer", args: [7, "hi"] });
+  // 2. Non-cleanup RPCs and tells must still be ignored after forget().
+  user!.said({ rpc: 104, actor: "retired-sess", fn: "agent.prompt", args: [7, "nope"] });
+  user!.said({ tell: "notify", actor: "retired-sess", args: ["nope"] });
+
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.deepEqual(
+    calls.map((c) => c.fn),
+    ["store.markUndelivered", "agent.dispose", "agent.steer"],
+    "only cleanup RPCs should be routed to retired actor after forget()",
+  );
+  assert.equal(tells.length, 0, "tells must not be routed to retired actor after forget()");
+
+  const answers = posted.filter((m) => typeof m.answer === "number");
+  assert.equal(answers.length, 3, "all 3 cleanup RPCs must receive an answer reply");
+  assert.deepEqual(
+    answers.map((a) => [a.answer, a.value]),
+    [
+      [101, { ok: "store.markUndelivered" }],
+      [102, { ok: "agent.dispose" }],
+      [103, false],
+    ],
+  );
+
+  // 3. Re-registering the same key removes it from #retired and routes normally again.
+  const calls2: string[] = [];
+  program.shell({
+    key: "retired-sess",
+    runtime: "claude",
+    asked: async (fn: string) => {
+      calls2.push(fn);
+      return true;
+    },
+    told: () => {},
+  });
+  user!.said({ rpc: 105, actor: "retired-sess", fn: "agent.prompt", args: [8, "ok"] });
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(calls2, ["agent.prompt"]);
+
+  program.close();
 });

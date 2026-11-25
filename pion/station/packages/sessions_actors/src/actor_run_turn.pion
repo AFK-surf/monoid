@@ -1182,6 +1182,27 @@ fn ActorsGen::pump_steer_k(
                         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                         effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                         effect::Exit::Succeeded(_) => {
+                          if a.phase == "closed" {
+                            unsteer()
+                            if !self.gen.counters.sealed && marked.length() > 0 {
+                              sessions_core::try_k(
+                                fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                  self.store_direct_k(
+                                    a,
+                                    "markUndelivered",
+                                    [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                    tk,
+                                  )
+                                },
+                                fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                  k(effect::Exit::Interrupted)
+                                },
+                              )
+                            } else {
+                              k(effect::Exit::Interrupted)
+                            }
+                            return
+                          }
                           a.unread_preparing = 0
                           self.timed_k(a, handed, fn(ex_tm : effect::Exit[String]) -> Unit {
                             match ex_tm {
@@ -1229,11 +1250,13 @@ fn ActorsGen::pump_steer_k(
                                 }
                               }
                               effect::Exit::Succeeded(timed_str) => {
-                                self.agent_do_k(
-                                  a,
-                                  agent,
-                                  "steer",
-                                  [sessions_core::jstr(timed_str)],
+                                // Direct RPC: once `agent.steer` is dispatched to Node, settle on
+                                // its real receipt even if `close(a)` arrives in flight so a
+                                // rejected steer (`false` / `Failed`) still restores delivery.
+                                self.rpc_direct_k(
+                                  a.key,
+                                  "agent.steer",
+                                  [sessions_core::jint(agent.handle), sessions_core::jstr(timed_str)],
                                   fn(ex_st : effect::Exit[base_codec::Json]) -> Unit {
                                     match ex_st {
                                       effect::Exit::Interrupted => {
@@ -1255,10 +1278,18 @@ fn ActorsGen::pump_steer_k(
                                             fn(ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
                                               match ex_u {
                                                 effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                                _ => k(effect::Exit::Failed(e))
+                                                _ => {
+                                                  if a.phase == "closed" {
+                                                    k(effect::Exit::Interrupted)
+                                                  } else {
+                                                    k(effect::Exit::Failed(e))
+                                                  }
+                                                }
                                               }
                                             },
                                           )
+                                        } else if a.phase == "closed" {
+                                          k(effect::Exit::Interrupted)
                                         } else {
                                           k(effect::Exit::Failed(e))
                                         }
@@ -1273,16 +1304,34 @@ fn ActorsGen::pump_steer_k(
                                               [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
                                               fn(ex_u : effect::Exit[base_codec::Json]) -> Unit {
                                                 match ex_u {
-                                                  effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
-                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                                   effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Failed(e) => {
+                                                    if a.phase == "closed" {
+                                                      k(effect::Exit::Interrupted)
+                                                    } else {
+                                                      k(effect::Exit::Failed(e))
+                                                    }
+                                                  }
+                                                  effect::Exit::Succeeded(_) => {
+                                                    if a.phase == "closed" {
+                                                      k(effect::Exit::Interrupted)
+                                                    } else {
+                                                      k(effect::Exit::Succeeded(()))
+                                                    }
+                                                  }
                                                 }
                                               },
                                             )
+                                          } else if a.phase == "closed" {
+                                            k(effect::Exit::Interrupted)
                                           } else {
                                             k(effect::Exit::Succeeded(()))
                                           }
                                         } else {
+                                          if a.phase == "closed" {
+                                            k(effect::Exit::Interrupted)
+                                            return
+                                          }
                                           self.told_k(a, told, fn(ex_td : effect::Exit[Unit]) -> Unit {
                                             match ex_td {
                                               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -1355,7 +1404,10 @@ fn ActorsGen::pump_steer_k(
                       }
                     }
                     if marked.length() > 0 {
-                      self.store_k(
+                      // Direct store call: if Node commits `markDelivered` before a concurrent
+                      // `close(a)` arrives, we must still receive its ACK so `after_mark` can
+                      // immediately compensate with `markUndelivered`.
+                      self.store_direct_k(
                         a,
                         "markDelivered",
                         [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
@@ -2392,7 +2444,7 @@ fn ActorsGen::start_turn_send_prompt_k(
                                     a.notices = next_n
                                   }
                                   if marked {
-                                    self.store_k(
+                                    self.store_direct_k(
                                       a,
                                       "markUndelivered",
                                       [sessions_core::jstr(a.key), base_codec::json_arr(delivered)],
@@ -2409,17 +2461,48 @@ fn ActorsGen::start_turn_send_prompt_k(
                                 }
                                 k(effect::Exit::Failed(e2))
                               }
+                              let on_reopen_interrupted = fn() -> Unit {
+                                if !self.gen.counters.sealed {
+                                  if drained_notices.length() > 0 {
+                                    let next_n : Array[String] = []
+                                    for i in 0..<drained_notices.length() {
+                                      next_n.push(drained_notices[i])
+                                    }
+                                    for i in 0..<a.notices.length() {
+                                      next_n.push(a.notices[i])
+                                    }
+                                    a.notices = next_n
+                                  }
+                                  if marked {
+                                    sessions_core::try_k(
+                                      fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                        self.store_direct_k(
+                                          a,
+                                          "markUndelivered",
+                                          [sessions_core::jstr(a.key), base_codec::json_arr(delivered)],
+                                          tk,
+                                        )
+                                      },
+                                      fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                        k(effect::Exit::Interrupted)
+                                      },
+                                    )
+                                    return
+                                  }
+                                }
+                                k(effect::Exit::Interrupted)
+                              }
                               self.set_agent(a, None)
                               self.agent_do_k(a, agent, "dispose", [], fn(
                                 ex_d : effect::Exit[base_codec::Json],
                               ) -> Unit {
                                 match ex_d {
-                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Interrupted => on_reopen_interrupted()
                                   effect::Exit::Failed(e2) => on_reopen_err(e2)
                                   effect::Exit::Succeeded(_) => {
                                     self.ensure_agent_k(a, fn(ex_ea : effect::Exit[Agent]) -> Unit {
                                       match ex_ea {
-                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        effect::Exit::Interrupted => on_reopen_interrupted()
                                         effect::Exit::Failed(e2) => on_reopen_err(e2)
                                         effect::Exit::Succeeded(ag2) => {
                                           self.agent_do_k(
@@ -2429,6 +2512,9 @@ fn ActorsGen::start_turn_send_prompt_k(
                                             [sessions_core::jstr(prompt)],
                                             fn(ex_p2 : effect::Exit[base_codec::Json]) -> Unit {
                                               match ex_p2 {
+                                                // Do not undo `markUndelivered` when the 2nd prompt is
+                                                // interrupted: the runtime may already have accepted it,
+                                                // so reverting could duplicate delivery.
                                                 effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                                 effect::Exit::Failed(e2) => on_reopen_err(e2)
                                                 effect::Exit::Succeeded(_) => self.told_k(a, told_choices, k)

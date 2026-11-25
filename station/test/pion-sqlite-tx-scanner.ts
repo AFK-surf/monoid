@@ -164,12 +164,14 @@ export function findRawTxControlViolations(filename: string, source: string): st
 
       const literal = m[1]!;
       const afterLiteral = line.slice(lastEnd);
+      const nextLineStartsWithPlus =
+        afterLiteral.trim() === "" && (lines[idx + 1]?.trimStart().startsWith("+") ?? false);
       const isStandaloneMethodLiteral =
         !literal.includes("\\{") &&
-        /^(?:release|savepoint)$/i.test(unescapePionString(literal)) &&
-        !gap.trimEnd().endsWith("+") &&
-        !(gap.trim() === "" && prevLineEndedWithPlus) &&
-        !afterLiteral.trimStart().startsWith("+");
+        /^(?:release|savepoint)$/.test(unescapePionString(literal)) &&
+        /(?:==|!=)\s*$/.test(gap) &&
+        !afterLiteral.trimStart().startsWith("+") &&
+        !nextLineStartsWithPlus;
       const tokens = tokenizeSql(unescapePionString(literal));
       if ((inTriggerHeader || inTriggerBody) && parenDepth > triggerParenDepth) {
         let argStmtStart = true;

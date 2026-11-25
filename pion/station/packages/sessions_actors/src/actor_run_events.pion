@@ -379,8 +379,8 @@ pub fn ActorsGen::on_event_k(
   }
   if ev_type == "turnEnded" {
     // Intentionally tightened over MB: guard `done_working` by `is_current(a, generation)` so a
-    // stale-generation `turnEnded` cannot clear the active turn's `working_for` status line;
-    // when `a.agent == None`, `set_agent(None)` / `close` has already cleared the status line.
+    // stale-generation `turnEnded` cannot clear an adopted new turn's `working_for` status line;
+    // when `a.agent == None`, no active runtime session owns that status line.
     if self.is_current(a, generation) {
       self.done_working(a)
     }

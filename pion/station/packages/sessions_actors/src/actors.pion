@@ -447,7 +447,21 @@ pub fn ActorsGen::rpc_direct_k(
     k(effect::Exit::Interrupted)
     return
   }
-  self.gen.rpc_k(self.host, key, f, args, fn(k_arg : String) -> Unit { self.mirror_by_key(k_arg) }, k)
+  let counters = self.gen.counters
+  self.gen.rpc_k(
+    self.host,
+    key,
+    f,
+    args,
+    fn(k_arg : String) -> Unit { self.mirror_by_key(k_arg) },
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      if counters.sealed {
+        k(effect::Exit::Interrupted)
+      } else {
+        k(ex)
+      }
+    },
+  )
 }
 
 /// Cancel an in-flight RPC (`actors.mbt:285-295`), restoring `active` before waking the waiter.

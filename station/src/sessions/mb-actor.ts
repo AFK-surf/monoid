@@ -63,9 +63,11 @@ export type ProgramShell = {
   readonly uncounted?: boolean;
 };
 
+const CLEANUP_AFTER_FORGET_RPCS = new Set(["store.markUndelivered", "agent.dispose", "agent.steer"]);
+
 /// The program, one a hub (`ActorsProgram.open`).
 export class ActorsProgram {
-  readonly #proc: SessionsProgram;
+  readonly #proc: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">;
   /// What it is to the program (agents/mb-program.ts): the actors' part.
   readonly #user: ProgramUser = {
     actors: true,
@@ -74,6 +76,7 @@ export class ActorsProgram {
   };
   readonly #clock: Clock.Clock;
   readonly #actors = new Map<string, MbActor | ProgramShell>();
+  readonly #retired = new Map<string, MbActor | ProgramShell>();
   readonly #timers = new Map<number, Fiber.Fiber<void>>();
   /// Lines said to it, those it said it took in, and whether something of it runs (`active`): `busy`.
   #sent = 0;
@@ -86,11 +89,17 @@ export class ActorsProgram {
 
   readonly #store: { told(changes: any[]): void } | null;
 
-  private constructor(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null, maxConcurrentTurns = 0) {
+  private constructor(
+    data: string,
+    clock: Clock.Clock,
+    store: { told(changes: any[]): void; db: any } | null,
+    maxConcurrentTurns = 0,
+    procOverride?: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">,
+  ) {
     this.#clock = clock;
     this.#store = store;
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
-    this.#proc = SessionsProgram.of(data, true)!;
+    this.#proc = procOverride ?? SessionsProgram.of(data, true)!;
     this.#proc.use(this.#user);
     programs.add(this);
     endAll();
@@ -99,6 +108,14 @@ export class ActorsProgram {
     const main = store === null ? undefined : (store.db.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
     this.post({ db: main !== undefined && main.file !== "" ? main.file : null });
     if (maxConcurrentTurns > 0) this.setMaxConcurrentTurns(maxConcurrentTurns);
+  }
+
+  /// Test-only constructor backed by an in-process stub `SessionsProgram`.
+  static openForTest(
+    proc: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">,
+    clock: Clock.Clock,
+  ): ActorsProgram {
+    return new ActorsProgram("", clock, null, 0, proc);
   }
 
   #lost(code: number) {
@@ -118,7 +135,7 @@ export class ActorsProgram {
 
   /// The program it is: where a runtime session's process read there gives its events its actor (`MbActor` `route`).
   get program(): SessionsProgram {
-    return this.#proc;
+    return this.#proc as SessionsProgram;
   }
 
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
@@ -154,11 +171,13 @@ export class ActorsProgram {
   /// What answers for `shell.key` that is no session's (the jobs, jobs/jobs.ts: `#jobs`): what the program asks of it
   /// and tells it.
   shell(shell: ProgramShell) {
+    this.#retired.delete(shell.key);
     this.#actors.set(shell.key, shell);
   }
 
   actor(key: string, runtime: RuntimeKind, deps: SessionDeps, onStateChange?: () => void): MbActor {
     const actor = new MbActor(this, key, runtime, deps, onStateChange);
+    this.#retired.delete(key);
     this.#actors.set(key, actor);
     return actor;
   }
@@ -203,6 +222,7 @@ export class ActorsProgram {
   #ended() {
     this.#closed = true;
     programs.delete(this);
+    this.#retired.clear();
     for (const fiber of this.#timers.values()) Effect.runFork(Fiber.interrupt(fiber));
     this.#timers.clear();
     const calls = [...this.#calls.values()];
@@ -245,7 +265,7 @@ export class ActorsProgram {
       if (fiber) Effect.runFork(Fiber.interrupt(fiber));
       return;
     }
-    const actor = typeof said?.actor === "string" ? this.#actors.get(said.actor) : typeof said?.mirror === "string" ? this.#actors.get(said.mirror) : undefined;
+    let actor = typeof said?.actor === "string" ? this.#actors.get(said.actor) : typeof said?.mirror === "string" ? this.#actors.get(said.mirror) : undefined;
     if (typeof said?.returned === "number") {
       const call = this.#calls.get(said.returned);
       this.#calls.delete(said.returned);
@@ -255,6 +275,15 @@ export class ActorsProgram {
         call?.reject(first instanceof Error ? first : new Error(said.error));
       } else call?.resolve(said.value ?? null);
       return;
+    }
+    if (
+      actor === undefined &&
+      typeof said?.rpc === "number" &&
+      typeof said?.actor === "string" &&
+      typeof said?.fn === "string" &&
+      CLEANUP_AFTER_FORGET_RPCS.has(said.fn)
+    ) {
+      actor = this.#retired.get(said.actor);
     }
     if (actor === undefined) return;
     if (said.mirror !== undefined) (actor as MbActor).mirrored?.(said.state);
@@ -276,7 +305,15 @@ export class ActorsProgram {
   }
 
   forget(key: string, actor: MbActor | ProgramShell) {
-    if (this.#actors.get(key) === actor) this.#actors.delete(key);
+    if (this.#actors.get(key) === actor) {
+      this.#actors.delete(key);
+      this.#retired.delete(key);
+      this.#retired.set(key, actor);
+      if (this.#retired.size > 512) {
+        const oldest = this.#retired.keys().next().value;
+        if (oldest !== undefined) this.#retired.delete(oldest);
+      }
+    }
   }
 
   async close() {
