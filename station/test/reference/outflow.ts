@@ -157,13 +157,69 @@ function attentionOf(s: Store, thread: store.ThreadRow, latest: Json | null, cre
 /// kept by the entries' trigger, so of all its history and gone only with its entries). Its writes are the only
 /// person messages of a still.fail chat named `slack:<connect>:<requester>` (comma/chats.ts routerSaysOnce); people
 /// write there as their email (lifecycle.ts `say`), and the Router writes in no other chat.
-export const ROUTER_WROTE = "SELECT 1 FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 1";
-const routerWrote = (s: Store, thread: store.ThreadRow): boolean =>
-  thread.surface === store.STILLFAIL_SURFACE && s.db.prepare(ROUTER_WROTE).get(thread.id) !== undefined;
+export const ROUTER_WROTE = "SELECT author FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 64";
+const ROUTER_CONNECTS_SQL = "SELECT connect FROM comma_router_connects WHERE thread = ? ORDER BY connect LIMIT 64";
+const TASK_PARTICIPANTS_SQL = "SELECT connect, email FROM comma_task_participants WHERE thread = ? ORDER BY connect, email LIMIT 128";
 
 const MAX_PARTICIPANTS = 32;
+const MAX_ROUTER_CONNECTS = 32;
 const MAX_PARTICIPANT_TEXT = 200;
 export const PARTICIPANTS_OF = "SELECT author FROM thread_people WHERE thread = ? LIMIT 64";
+
+function legacyRouterConnect(author: string): string | null {
+  if (!author.startsWith("slack:")) return null;
+  const rest = author.slice(6);
+  const colon = rest.indexOf(":");
+  return colon > 0 ? rest.slice(0, colon) : null;
+}
+
+function routerConnectsOf(s: Store, threadId: number, hasTable: boolean): { router: boolean; routerConnects: string[] } {
+  const recorded: string[] = [];
+  if (hasTable) {
+    for (const row of s.db.prepare(ROUTER_CONNECTS_SQL).all(threadId) as { connect: unknown }[]) {
+      if (typeof row.connect !== "string") continue;
+      const trimmed = row.connect.trim();
+      if (trimmed !== "" && trimmed.length <= MAX_PARTICIPANT_TEXT && !recorded.includes(trimmed)) recorded.push(trimmed);
+    }
+  }
+  const slackRows = s.db.prepare(ROUTER_WROTE).all(threadId) as { author: unknown }[];
+  const hasAnySlack = slackRows.length > 0;
+  const combined = [...recorded];
+  for (const row of slackRows) {
+    if (typeof row.author !== "string") continue;
+    const cid = legacyRouterConnect(row.author);
+    if (cid === null) continue;
+    const suffix = `/${cid}`;
+    if (!recorded.some((r) => r === cid || r.endsWith(suffix)) && cid.length <= MAX_PARTICIPANT_TEXT && !combined.includes(cid)) {
+      combined.push(cid);
+    }
+  }
+  if (combined.length === 0) return { router: hasAnySlack, routerConnects: [] };
+  combined.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return { router: true, routerConnects: combined.slice(0, MAX_ROUTER_CONNECTS) };
+}
+
+function connectParticipantsOf(s: Store, threadId: number, hasTable: boolean): Record<string, string[]> | null {
+  if (!hasTable) return null;
+  const grouped = new Map<string, string[]>();
+  for (const row of s.db.prepare(TASK_PARTICIPANTS_SQL).all(threadId) as { connect: unknown; email: unknown }[]) {
+    if (typeof row.connect !== "string" || typeof row.email !== "string") continue;
+    const connect = row.connect.trim();
+    const email = row.email.trim().toLowerCase();
+    if (connect === "" || connect.length > MAX_PARTICIPANT_TEXT || !/^[^\s@]+@[^\s@]+$/.test(email) || email.length > MAX_PARTICIPANT_TEXT || email.includes(":")) continue;
+    let list = grouped.get(connect);
+    if (list === undefined) {
+      if (grouped.size >= MAX_ROUTER_CONNECTS) continue;
+      list = [];
+      grouped.set(connect, list);
+    }
+    if (list.length < MAX_PARTICIPANTS && !list.includes(email)) list.push(email);
+  }
+  if (grouped.size === 0) return null;
+  const out: Record<string, string[]> = {};
+  for (const [connect, emails] of grouped) if (emails.length > 0) out[connect] = emails;
+  return Object.keys(out).length > 0 ? out : null;
+}
 
 /// The human participant emails of `thread`: its creator (if a valid email) plus anyone who spoke in it via
 /// `thread_people` (excluding the Comma Router and non-email ids), lowercase, distinct, at most MAX_PARTICIPANTS.
@@ -248,6 +304,8 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
     if (!turnsBySession.has(session)) turnsBySession.set(session, store.lastTurn(s, session));
   const peopleCache = new Map<string, Json>();
   const resolvePerson = (ref: string) => (peopleCache.has(ref) ? peopleCache.get(ref) : peopleCache.set(ref, person(s, ref)).get(ref));
+  const hasRouterConnects = s.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'comma_router_connects'").get() !== undefined;
+  const hasTaskParticipants = s.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'comma_task_participants'").get() !== undefined;
   const chats: Json[] = [];
   for (const { thread, members, lastActiveAt, connect } of listed) {
     const turns = members.map((m) => turnsBySession.get(m.session) ?? null).filter((x): x is NonNullable<typeof x> => x !== null);
@@ -257,6 +315,9 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
     const creatorEmail = typeof who?.email === "string" && who.email !== "" ? who.email : null;
     const attention = attentionOf(s, thread, latest, creator, creatorEmail);
     const participants = participantsOf(s, thread, connect, creatorEmail, resolvePerson);
+    const isChat = thread.surface === store.STILLFAIL_SURFACE;
+    const routerInfo = isChat ? routerConnectsOf(s, thread.id, hasRouterConnects) : { router: false, routerConnects: [] };
+    const connectParticipants = isChat ? connectParticipantsOf(s, thread.id, hasTaskParticipants) : null;
     const lead = members.find((m) => latest !== null && turnsBySession.get(m.session) === latest)?.session ?? members[0]!.session;
     const url = pages === null ? null : sessionPage(pages, sessions.get(lead)?.ws ?? pages.workspace, lead);
     chats.push({
@@ -271,7 +332,9 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
       agents: members.map((m) => ({ runtime: sessions.get(m.session)!.runtime, model: sessions.get(m.session)!.model })),
       ...(attention === null ? {} : { attention }),
       ...(url === null ? {} : { url }),
-      ...(routerWrote(s, thread) ? { router: true } : {}),
+      ...(routerInfo.router ? { router: true } : {}),
+      ...(routerInfo.routerConnects.length > 0 ? { routerConnects: routerInfo.routerConnects } : {}),
+      ...(connectParticipants !== null ? { connectParticipants } : {}),
       ...(participants.length > 0 ? { participants } : {}),
     });
   }

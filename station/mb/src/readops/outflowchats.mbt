@@ -11,10 +11,22 @@ let outflow_chats_pending : String = "outflow chat order is still being prepared
 let max_participants : Int = 32
 
 ///|
+let max_router_connects : Int = 32
+
+///|
 let max_participant_text : Int = 200
 
 ///|
 let participants_sql : String = "SELECT author FROM thread_people WHERE thread = ? LIMIT 64"
+
+///|
+let router_wrote_sql : String = "SELECT author FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 64"
+
+///|
+let router_connects_sql : String = "SELECT connect FROM comma_router_connects WHERE thread = ? ORDER BY connect LIMIT 64"
+
+///|
+let task_participants_sql : String = "SELECT connect, email FROM comma_task_participants WHERE thread = ? ORDER BY connect, email LIMIT 128"
 
 ///|
 /// /^[^\s@]+@[^\s@]+$/
@@ -78,6 +90,110 @@ fn outflow_participants(
     }
   }
   out.map(Json::string)
+}
+
+///|
+/// Extracts `<cid>` from `slack:<cid>:<req>`, or None when malformed / empty.
+fn legacy_router_connect(author : String) -> String? {
+  guard author.has_prefix("slack:") else { return None }
+  let rest = author.view(start_offset=6).to_owned()
+  match rest.find(":") {
+    Some(colon) if colon > 0 => Some(rest.view(end_offset=colon).to_owned())
+    _ => None
+  }
+}
+
+///|
+/// outflow.ts `routerConnectsOf`: returns `(has_router, router_connects)` for a still.fail chat.
+fn outflow_router_connects(
+  db : @sql.Db,
+  thread_id : Json,
+  has_table : Bool,
+) -> (Bool, Array[Json]) raise {
+  let recorded : Array[String] = []
+  if has_table {
+    for row in db.all(router_connects_sql, [thread_id]) {
+      match field(row, "connect") {
+        String(c) => {
+          let trimmed = @jscase.trim(c)
+          if trimmed != "" && trimmed.length() <= max_participant_text && !recorded.contains(trimmed) {
+            recorded.push(trimmed)
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  let slack_rows = db.all(router_wrote_sql, [thread_id])
+  let has_any_slack = slack_rows.length() > 0
+  let combined : Array[String] = recorded.copy()
+  for row in slack_rows {
+    guard field(row, "author") is String(author) else { continue }
+    guard legacy_router_connect(author) is Some(cid) else { continue }
+    let suffix = "/\{cid}"
+    let covered = recorded.iter().any(r => r == cid || r.has_suffix(suffix))
+    if !covered && cid.length() <= max_participant_text && !combined.contains(cid) {
+      combined.push(cid)
+    }
+  }
+  if combined.length() == 0 {
+    return (has_any_slack, [])
+  }
+  let sorted = stable_sort(combined, (a, b) => if a < b { -1 } else if a > b { 1 } else { 0 })
+  let capped = if sorted.length() > max_router_connects { sorted[:max_router_connects].to_array() } else { sorted }
+  (true, capped.map(Json::string))
+}
+
+///|
+/// outflow.ts `connectParticipantsOf`: per-connect participant emails recorded via `task.say` for a still.fail chat.
+fn outflow_connect_participants(
+  db : @sql.Db,
+  thread_id : Json,
+  has_table : Bool,
+) -> Json? raise {
+  if !has_table {
+    return None
+  }
+  let grouped : Map[String, Array[String]] = Map([])
+  let order : Array[String] = []
+  for row in db.all(task_participants_sql, [thread_id]) {
+    guard field(row, "connect") is String(raw_connect) && field(row, "email") is String(raw_email) else { continue }
+    let connect = @jscase.trim(raw_connect)
+    let email = @jscase.lower(@jscase.trim(raw_email))
+    if connect == "" ||
+      connect.length() > max_participant_text ||
+      !participant_email_like(email) ||
+      email.length() > max_participant_text ||
+      email.contains(":") {
+      continue
+    }
+    let list = match grouped.get(connect) {
+      Some(xs) => xs
+      None => {
+        if order.length() >= max_router_connects {
+          continue
+        }
+        let xs : Array[String] = []
+        grouped[connect] = xs
+        order.push(connect)
+        xs
+      }
+    }
+    if list.length() < max_participants && !list.contains(email) {
+      list.push(email)
+    }
+  }
+  if order.length() == 0 {
+    return None
+  }
+  let obj : Map[String, Json] = Map([])
+  for connect in order {
+    match grouped.get(connect) {
+      Some(xs) if xs.length() > 0 => obj[connect] = Json::array(xs.map(Json::string))
+      _ => ()
+    }
+  }
+  if obj.length() > 0 { Some(Json::object(obj)) } else { None }
 }
 
 ///|
@@ -355,6 +471,8 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
       p
     }
   }
+  let has_router_connects = exists_in(db, "table", "comma_router_connects")
+  let has_task_participants = exists_in(db, "table", "comma_task_participants")
   let chats : Array[Json] = []
   for l in listed {
     let (thread, members, last_active_at, connect) = l
@@ -422,9 +540,17 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     if url is Some(u) {
       chat["url"] = Json::string(u)
     }
-    if field(thread, "surface") == Json::string("chat") &&
-      one(db, "SELECT 1 AS x FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 1", [id]) is Some(_) {
-      chat["router"] = true
+    if field(thread, "surface") == Json::string("chat") {
+      let (has_router, router_connects) = outflow_router_connects(db, id, has_router_connects)
+      if has_router {
+        chat["router"] = true
+      }
+      if router_connects.length() > 0 {
+        chat["routerConnects"] = Json::array(router_connects)
+      }
+      if outflow_connect_participants(db, id, has_task_participants) is Some(cp) {
+        chat["connectParticipants"] = cp
+      }
     }
     if participants.length() > 0 {
       chat["participants"] = Json::array(participants)

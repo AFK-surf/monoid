@@ -48,6 +48,10 @@ pub fn comma_connects(@jsjson.JValue) -> Array[CommaConnect]
 
 pub fn comma_line(String) -> (String, String)?
 
+pub fn connect_matches(String, String, String?) -> Bool
+
+pub fn connect_scope(String?, String) -> String
+
 pub fn connect_url(String, String, String?, String, String) -> String raise
 
 pub fn credentials(ScopedConnect) -> String?
@@ -182,6 +186,8 @@ pub fn task_rows_of(StationRows) -> Map[String, (String, String)]
 
 pub fn task_wire(IndexRow) -> @jsjson.JValue?
 
+pub fn task_wire_for(IndexRow, String, String?) -> @jsjson.JValue?
+
 pub async fn text_of(async () -> Bytes?) -> String
 
 pub fn text_of_utf8(BytesView, ignore_bom? : Bool) -> String
@@ -197,6 +203,8 @@ pub fn units_cmp(String, String) -> Int32
 pub fn utext(Array[Int32]) -> String
 
 pub fn utf8_of(String) -> Bytes
+
+pub fn valid_requester_email(@jsjson.JValue?) -> String?
 
 pub fn valid_task_links(@jsjson.JValue?) -> @jsjson.JValue?
 
@@ -231,7 +239,7 @@ pub fn Attachment::of_j(@jsjson.JValue) -> Self
 
 pub(all) struct CommaChats {
   read : async (String, Double, Double) -> @jsjson.JValue
-  say : async (String, String, String, String, String, Bool, Double?) -> @jsjson.JValue
+  say : async (String, String, String, String, String, Bool, Double?, String?) -> @jsjson.JValue
 }
 
 pub(all) struct CommaConnect {
@@ -288,6 +296,7 @@ pub(all) struct CommaOptions {
   on_workspace_meta_change : ((() -> Unit) -> (() -> Unit))?
   owner_active_at : ((String?, String?) -> Double?)?
   on_owner_active_change : ((() -> Unit) -> (() -> Unit))?
+  station_id : (() -> String?)?
   reconcile : async () -> Unit
   close_connects : async () -> Unit
 }
@@ -507,6 +516,8 @@ pub(all) struct RouterSay {
   key : String
   requester : String
   connect : String
+  connect_scope : String?
+  requester_email : String?
   close_card : Bool
   expected_card_seq : Double?
 }
@@ -567,6 +578,7 @@ pub(all) struct SurfaceOptions {
   on_workspace_meta_change : ((() -> Unit) -> (() -> Unit))?
   owner_active_at : (() -> Double?)?
   on_owner_active_change : ((() -> Unit) -> (() -> Unit))?
+  station_id : (() -> String?)?
 }
 
 pub(all) struct SurfaceStore {
@@ -593,6 +605,7 @@ pub fn Task::of_j(@jsjson.JValue) -> Self
 pub(all) enum Wire {
   StatsWire
   TaskWire
+  TaskWireFor(String, String?)
   OtherWire((IndexRow) -> @jsjson.JValue?)
 }
 

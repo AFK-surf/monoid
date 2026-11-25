@@ -126,6 +126,8 @@ pub(all) struct CommaOptions {
   owner_active_at : ((String?, String?) -> Double?)?
   /// Notifies when owner activity may have moved into a new 30-second bucket.
   on_owner_active_change : ((() -> Unit) -> () -> Unit)?
+  /// This station's id (cloud.state?.station ?? null), used to scope connect-level task.index fields.
+  station_id : (() -> String?)?
   /// The connects brought in line with config.json and the workspaces again, and let go.
   reconcile : async () -> Unit
   close_connects : async () -> Unit
@@ -266,8 +268,8 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
   let chats : CommaChats? = if is_in {
     Some({
       read: async fn(ref_, after, limit) { (scoped().1.read)(ref_, after, limit) },
-      say: async fn(ref_, text, key, requester, connect, close_card, expected_card_seq) {
-        (scoped().1.say)(ref_, text, key, requester, connect, close_card, expected_card_seq)
+      say: async fn(ref_, text, key, requester, connect, close_card, expected_card_seq, requester_email) {
+        (scoped().1.say)(ref_, text, key, requester, connect, close_card, expected_card_seq, requester_email)
       },
     })
   } else {
@@ -311,6 +313,7 @@ pub fn CommaParts::create(self : CommaParts, c : ScopedConnect) -> CommaSurface 
         None
       },
       on_owner_active_change: if is_in { options.on_owner_active_change } else { None },
+      station_id: options.station_id,
     },
     self.io,
     self.runtime,
