@@ -16,6 +16,7 @@ import { wall } from "../ops/fibers.ts";
 import type { Cdp, CdpEvent } from "./cdp.ts";
 import { type BrowserMicController, attachBrowserMic } from "./mic.ts";
 import { type BrowserVideoEncoder, type BrowserVideoEncoderFactory, createBrowserVideoEncoder } from "./video-encode.ts";
+import { isPublicSuffix, isSecureAutofillUrl, normalizeHost, registrableDomain } from "./psl.ts";
 import { randomUUID } from "node:crypto";
 import { sizeOf } from "../sessions/image-size.ts";
 
@@ -185,6 +186,15 @@ export function keyEvent(e: Extract<ScreenInput, { t: "key" }>): Record<string, 
 
 /// The binding a tab's copies call while a person driving it watches its clipboard.
 export const COPY_BINDING = "__stillfailCopied";
+/// How long after a person's click/key/text input a page's copy binding is accepted (aligns with Chrome's 5s user
+/// activation lifespan so click-then-async-copy buttons still work while unprompted background pages cannot overwrite
+/// the user's clipboard).
+export const HUMAN_COPY_WINDOW_MS = 5_000;
+/// Isolated world name for login-field detection (`watchLogin`).
+const LOGIN_WORLD = "stillfail-login";
+/// Sliding-window rate limit for `isUserVerifyingPlatformAuthenticatorAvailable` queries per tab.
+const UVPA_WINDOW_MS = 1_000;
+const UVPA_MAX_PER_WINDOW = 10;
 
 /// What a tab's pages are given as the person's game controllers (`{t: "gamepad"}`): navigator.getGamepads as the W3C
 /// Standard Gamepad says one (an Xbox 360 controller's 17 buttons and 4 axes, mapping "standard"), with its
@@ -308,7 +318,8 @@ export const LOGIN_HOOK = `(() => {
 /// password field, as typing would leave them (the value set as the field's own setter does, then input and change
 /// told), the first of them focused. Run in a world of its own, so the page's scripts do not change how it goes. What
 /// was filled.
-export const fillScript = (username: string | undefined, password: string | undefined) => `((username, password) => {
+export const fillScript = (username: string | undefined, password: string | undefined, expectedOrigin?: string) => `((username, password, expectedOrigin) => {
+  if (expectedOrigin && location.origin !== expectedOrigin) return { username: false, password: false };
   const visible = (el) => !!el && !el.disabled && !el.readOnly && el.getClientRects().length > 0;
   const deep = (root) => { let el = root.activeElement; while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement; return el; };
   const active = deep(document);
@@ -328,7 +339,7 @@ export const fillScript = (username: string | undefined, password: string | unde
   const first = did.username ? account : did.password ? pass : null;
   if (first) first.focus();
   return did;
-})(${JSON.stringify(username ?? null)}, ${JSON.stringify(password ?? null)})`;
+})(${JSON.stringify(username ?? null)}, ${JSON.stringify(password ?? null)}, ${JSON.stringify(expectedOrigin ?? null)})`;
 
 /// The binding a tab's passkey sign-ins call while a person driving it signs them from their own device.
 export const PASSKEY_BINDING = "__stillfailPasskey";
@@ -517,12 +528,17 @@ export function sameClientData(theirs: string, ours: string): boolean {
   }
 }
 
-/// Whether a page on `host` may ask for a passkey of relying party `rpId`: the host itself, or a domain it is under
-/// that is more than one label (as browsers take it, short of the public suffix list: a site's own passkeys are kept
-/// for its own domain, and a device has none for a bare suffix).
+/// Whether a page on `host` may ask for a passkey of relying party `rpId`: the host itself, or a registrable parent
+/// domain under the Public Suffix List (including private suffixes such as `github.io`).
 export function rpFor(rpId: string, host: string): boolean {
-  const rp = rpId.toLowerCase().replace(/\.$/, "");
-  return rp !== "" && (rp === host || (rp.includes(".") && host.endsWith("." + rp)));
+  const rp = normalizeHost(rpId);
+  const h = normalizeHost(host);
+  if (rp === "" || h === "" || isPublicSuffix(rp)) return false;
+  if (rp === h) return true;
+  if (!h.endsWith("." + rp)) return false;
+  const reg = registrableDomain(h);
+  if (reg !== null) return rp === reg || rp.endsWith("." + reg);
+  return rp.includes(".");
 }
 
 /// The host of an address (lower case, no trailing dot); "" for one with none (about:blank).
@@ -566,8 +582,16 @@ export class TabView implements ScreenView {
   #waiter: ((frame: Frame | null) => void) | null = null;
   #ended = false;
   /// The passkey sign-in a page asked last and not yet answered: its id, the origin it was asked on, the client data
-  /// made of it.
-  #asked: { id: string; origin: string; clientData: string } | null = null;
+  /// made of it, and the execution context that issued the binding call.
+  #asked: { id: string; origin: string; clientData: string; contextId?: number } | null = null;
+  /// Timestamp (`this.#p.now()`) of the last human pointer down/up, key down, or text input on this view; cleared on
+  /// top-frame navigation and close so unprompted pages cannot write to the viewer's clipboard.
+  #lastHumanActionAt: number | null = null;
+  /// Whether `watchLogin` is currently active on this view, and the origin locked when it last reported a login field;
+  /// `#loginOrigin` is cleared on blur, navigation, or close so `fill()` refuses stale replies after navigation or on a
+  /// different scheme/port of the same hostname.
+  #loginWatching = false;
+  #loginOrigin: string | null = null;
   /// Who hears the passkey sign-ins (watchPasskey), told as the one asked is answered.
   #passkeyHeard: ((ask: PasskeyAsk | null) => void) | null = null;
   #passkeyOwner = "";
@@ -786,12 +810,14 @@ export class TabView implements ScreenView {
         if (event.kind === "down") {
           const button = buttonOf(event.buttons & ~before) === "none" ? "left" : buttonOf(event.buttons & ~before);
           const now = this.#p.now();
+          this.#lastHumanActionAt = now;
           const c = this.#click;
           const again = c.button === button && now - c.at <= CLICK_MS && Math.abs(at.x - c.x) <= CLICK_PX && Math.abs(at.y - c.y) <= CLICK_PX;
           this.#click = { count: again ? c.count + 1 : 1, at: now, x: at.x, y: at.y, button };
           await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", ...at, button, buttons: event.buttons, clickCount: this.#click.count }, session);
           return;
         }
+        this.#lastHumanActionAt = this.#p.now();
         const released = buttonOf(before & ~event.buttons);
         const button = released === "none" ? this.#click.button : released;
         await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...at, button, buttons: event.buttons, clickCount: Math.max(1, this.#click.count) }, session);
@@ -803,10 +829,14 @@ export class TabView implements ScreenView {
         return;
       }
       case "key":
+        if (event.kind === "down") this.#lastHumanActionAt = this.#p.now();
         await cdp.send("Input.dispatchKeyEvent", keyEvent(event), session);
         return;
       case "text":
-        if (event.text !== "") await cdp.send("Input.insertText", { text: event.text }, session);
+        if (event.text !== "") {
+          this.#lastHumanActionAt = this.#p.now();
+          await cdp.send("Input.insertText", { text: event.text }, session);
+        }
         return;
       case "gamepad": {
         this.#padHook ??= (async () => {
@@ -834,8 +864,18 @@ export class TabView implements ScreenView {
     let on = true;
     let script: string | null = null;
     const unlisten = cdp.on((e) => {
-      if (on && e.method === "Runtime.bindingCalled" && e.sessionId === session && e.params?.name === COPY_BINDING && typeof e.params.payload === "string" && e.params.payload !== "") {
-        heard({ type: "text", text: e.params.payload });
+      if (
+        on &&
+        e.method === "Runtime.bindingCalled" &&
+        e.sessionId === session &&
+        e.params?.name === COPY_BINDING &&
+        typeof e.params.payload === "string" &&
+        e.params.payload !== "" &&
+        Buffer.byteLength(e.params.payload, "utf8") <= CLIP_TEXT_MAX &&
+        this.#lastHumanActionAt !== null
+      ) {
+        const age = this.#p.now() - this.#lastHumanActionAt;
+        if (age >= 0 && age <= HUMAN_COPY_WINDOW_MS) heard({ type: "text", text: e.params.payload });
       }
     });
     const undo = () => {
@@ -860,33 +900,71 @@ export class TabView implements ScreenView {
     };
   }
 
-  /// The login field in focus, as the page's hook says it, with the tab's host as the browser has its address (asked
-  /// each time: the page may have gone elsewhere), until the returned function.
+  /// The login field in focus, as the page's hook says it in its own isolated world, with the tab's host as the browser
+  /// has its address (asked each time: the page may have gone elsewhere), until the returned function.
   watchLogin(heard: (login: LoginField | null) => void): () => void {
     const { cdp, session, targetId } = this.#p;
     let on = true;
     let script: string | null = null;
+    let gen = 0;
+    this.#loginWatching = true;
+    this.#loginOrigin = null;
     const unlisten = cdp.on((e) => {
-      if (!on || e.method !== "Runtime.bindingCalled" || e.sessionId !== session || e.params?.name !== LOGIN_BINDING) return;
+      if (!on || e.sessionId !== session) return;
+      if (e.method === "Page.frameNavigated" && e.params?.frame?.parentId === undefined) {
+        this.#loginOrigin = null;
+        gen++;
+        heard(null);
+        return;
+      }
+      if (e.method !== "Runtime.bindingCalled" || e.params?.name !== LOGIN_BINDING) return;
+      const callGen = ++gen;
       let said: any = null;
       try {
         said = JSON.parse(String(e.params.payload));
       } catch {}
       const field = said?.field === "username" || said?.field === "password" ? (said.field as LoginField["field"]) : null;
-      if (field === null) return heard(null);
+      if (field === null) {
+        this.#loginOrigin = null;
+        return heard(null);
+      }
       const filled = said?.filled === true;
-      void this.#host(targetId).then((host) => on && heard(host === "" ? null : { host, field, ...(filled ? { filled: true } : {}) }));
+      void this.#url(targetId).then((url) => {
+        if (!on || gen !== callGen) return;
+        if (!isSecureAutofillUrl(url)) {
+          this.#loginOrigin = null;
+          heard(null);
+          return;
+        }
+        const host = hostOf(url);
+        if (host === "") {
+          this.#loginOrigin = null;
+          heard(null);
+          return;
+        }
+        this.#loginOrigin = new URL(url).origin;
+        heard({ host, field, ...(filled ? { filled: true } : {}) });
+      });
     });
     const undo = () => {
+      this.#loginWatching = false;
+      this.#loginOrigin = null;
       if (this.#ended) return;
       void cdp.send("Runtime.removeBinding", { name: LOGIN_BINDING }, session).catch(() => {});
       if (script !== null) void cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: script }, session).catch(() => {});
     };
     void (async () => {
       try {
-        await cdp.send("Runtime.addBinding", { name: LOGIN_BINDING }, session);
-        script = (await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: LOGIN_HOOK }, session))?.identifier ?? null;
-        await cdp.send("Runtime.evaluate", { expression: LOGIN_HOOK }, session);
+        await cdp.send("Runtime.addBinding", { name: LOGIN_BINDING, executionContextName: LOGIN_WORLD }, session);
+        // Chromium only injects executionContextName bindings into isolated worlds once Runtime is enabled on the session.
+        await cdp.send("Runtime.enable", {}, session);
+        script = (await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: LOGIN_HOOK, worldName: LOGIN_WORLD }, session))?.identifier ?? null;
+        const { frameTree } = await cdp.send("Page.getFrameTree", {}, session);
+        const frameId = frameTree?.frame?.id;
+        if (typeof frameId === "string" && frameId !== "") {
+          const { executionContextId } = await cdp.send("Page.createIsolatedWorld", { frameId, worldName: LOGIN_WORLD }, session);
+          await cdp.send("Runtime.evaluate", { expression: LOGIN_HOOK, contextId: executionContextId }, session);
+        }
         if (!on) undo();
       } catch {}
     })();
@@ -898,17 +976,20 @@ export class TabView implements ScreenView {
     };
   }
 
-  /// Fills the login form in focus with what the person's app gave, only while the tab is on `f.host`, in a world of
-  /// the page's top frame of its own (nothing of it logged).
+  /// Fills the login form in focus with what the person's app gave, only while the tab is on `f.host` over a secure
+  /// origin (matching `#loginOrigin` when locked), in a world of the page's top frame of its own (nothing of it logged).
   async fill(f: LoginFill): Promise<void> {
     if (this.#ended) return;
     const { cdp, session, targetId } = this.#p;
-    if ((await this.#host(targetId)) !== f.host.toLowerCase()) return;
+    const url = await this.#url(targetId);
+    if (!isSecureAutofillUrl(url) || hostOf(url) !== normalizeHost(f.host)) return;
+    const expectedOrigin = new URL(url).origin;
+    if (this.#loginWatching && (this.#loginOrigin === null || this.#loginOrigin !== expectedOrigin)) return;
     const { frameTree } = await cdp.send("Page.getFrameTree", {}, session);
     const frameId = frameTree?.frame?.id;
     if (typeof frameId !== "string") return;
     const { executionContextId } = await cdp.send("Page.createIsolatedWorld", { frameId, worldName: "stillfail-fill" }, session);
-    await cdp.send("Runtime.evaluate", { expression: fillScript(f.username, f.password), contextId: executionContextId, returnByValue: true }, session);
+    await cdp.send("Runtime.evaluate", { expression: fillScript(f.username, f.password, expectedOrigin), contextId: executionContextId, returnByValue: true }, session);
   }
 
   /// A page's passkey sign-ins, as its hook asks them, each checked against the tab's address as the browser has it
@@ -926,8 +1007,10 @@ export class TabView implements ScreenView {
     let script: string | null = null;
     this.#passkeyHeard = heard;
     const pending = new Map<string, object>();
+    const uvpaTimes: number[] = [];
     const unlisten = cdp.on((e) => {
       if (!on || e.method !== "Runtime.bindingCalled" || e.sessionId !== session || e.params?.name !== binding) return;
+      const contextId = typeof e.params?.executionContextId === "number" ? e.params.executionContextId : undefined;
       let said: any = null;
       try {
         said = JSON.parse(String(e.params.payload));
@@ -942,25 +1025,51 @@ export class TabView implements ScreenView {
         }
         return;
       }
-      if (typeof said.uvpa === "string" && said.uvpa.length <= 253) {
-        const h = said.uvpa.toLowerCase().replace(/\.$/, "");
-        let available = false;
-        if (this.#p.ownPasskey && h !== "") {
-          const parts = h.split(".");
-          for (let i = 0; i < parts.length; i++) {
-            const rp = parts.slice(i).join(".");
-            if ((i === 0 || rp.includes(".")) && this.#p.ownPasskey(rp)) {
-              available = true;
-              break;
-            }
-          }
+      if ("uvpa" in said) {
+        const now = this.#p.now();
+        while (uvpaTimes.length > 0 && now - uvpaTimes[0]! >= UVPA_WINDOW_MS) uvpaTimes.shift();
+        if (uvpaTimes.length >= UVPA_MAX_PER_WINDOW) {
+          void this.#answer({ id, available: false }, contextId);
+          return;
         }
-        void this.#answer({ id, available });
+        uvpaTimes.push(now);
+        // Ignore the host claimed by the page; always resolve availability from the browser's authoritative tab URL.
+        void this.#url(targetId)
+          .then((url) => {
+            if (!on) return;
+            let available = false;
+            let origin: string | undefined;
+            if (isSecureAutofillUrl(url)) {
+              origin = new URL(url).origin;
+              if (this.#p.ownPasskey) {
+                const host = hostOf(url);
+                if (host !== "") {
+                  const parts = host.split(".");
+                  for (let i = 0; i < parts.length; i++) {
+                    const rp = parts.slice(i).join(".");
+                    if (!rpFor(rp, host)) break;
+                    if (this.#p.ownPasskey(rp)) {
+                      available = true;
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+            void this.#answer({ id, available }, contextId, origin);
+          })
+          .catch(() => {
+            if (on) void this.#answer({ id, available: false }, contextId);
+          });
         return;
       }
       const b64 = (v: unknown, most: number): v is string => typeof v === "string" && v !== "" && v.length <= most && /^[A-Za-z0-9_-]+$/.test(v);
       const allow: unknown[] = Array.isArray(said.allow) ? said.allow.slice(0, 64) : [];
-      if (typeof said.rpId !== "string" || !b64(said.challenge, 32768) || !allow.every((a) => b64(a, 1366))) return;
+      if (typeof said.rpId !== "string" || !b64(said.challenge, 32768) || !allow.every((a) => b64(a, 1366))) {
+        void this.#answer({ id, error: "NotAllowedError" }, contextId);
+        return;
+      }
+      const rpId = normalizeHost(said.rpId);
       const userVerification = ["required", "preferred", "discouraged"].includes(said.userVerification) ? said.userVerification : "preferred";
       const request = {};
       pending.set(id, request);
@@ -969,30 +1078,29 @@ export class TabView implements ScreenView {
         pending.delete(id);
         let origin = "";
         try {
-          const u = new URL(url);
           // (a secure context only, as WebAuthn takes: https, or this machine's own)
-          if (u.protocol === "https:" || (u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1"))) origin = u.origin;
+          if (isSecureAutofillUrl(url)) origin = new URL(url).origin;
         } catch {}
         const host = hostOf(url);
-        if (origin === "" || !rpFor(said.rpId, host)) {
-          void this.#answer({ id, error: "NotAllowedError" });
+        if (origin === "" || !rpFor(rpId, host)) {
+          void this.#answer({ id, error: "NotAllowedError" }, contextId);
           return;
         }
         // A passkey of the vault's in the tab's context: its own authenticator signs it, no device asked.
-        if (this.#p.ownPasskey?.(said.rpId) === true) {
-          void this.#answer({ id, browser: true });
+        if (this.#p.ownPasskey?.(rpId) === true) {
+          void this.#answer({ id, browser: true }, contextId, origin);
           return;
         }
         // A viewer without host passkeys never invokes headful Chrome's OS WebAuthn dialog (hidden outside screencast).
         if (!this.#devicePasskeys) {
-          void this.#answer({ id, error: "NotAllowedError" });
+          void this.#answer({ id, error: "NotAllowedError" }, contextId, origin);
           return;
         }
         const clientData = JSON.stringify({ type: "webauthn.get", challenge: said.challenge, origin, crossOrigin: false });
         // (one asked at a time, the latest: one before it is answered as given up)
-        if (this.#asked !== null) void this.#answer({ id: this.#asked.id, error: "NotAllowedError" });
-        this.#asked = { id, origin, clientData };
-        heard({ id, host, rpId: said.rpId.toLowerCase().replace(/\.$/, ""), clientData, allow: allow as string[], userVerification });
+        if (this.#asked !== null) void this.#answer({ id: this.#asked.id, error: "NotAllowedError" }, this.#asked.contextId, this.#asked.origin);
+        this.#asked = { id, origin, clientData, contextId };
+        heard({ id, host, rpId, clientData, allow: allow as string[], userVerification });
       });
     });
     const undo = () => {
@@ -1035,19 +1143,34 @@ export class TabView implements ScreenView {
     try {
       origin = new URL(await this.#url(this.#p.targetId)).origin;
     } catch {}
-    if (origin !== asked.origin) return;
-    if ("error" in a) return this.#answer(a);
+    if (origin !== asked.origin) return this.#answer({ id: a.id, error: "NotAllowedError" }, asked.contextId, asked.origin);
+    if ("error" in a) return this.#answer(a, asked.contextId, asked.origin);
     let clientData = Buffer.from(asked.clientData).toString("base64url");
     if (a.clientData !== undefined) {
-      if (!sameClientData(Buffer.from(a.clientData, "base64url").toString("utf8"), asked.clientData)) return this.#answer({ id: a.id, error: "NotAllowedError" });
+      if (!sameClientData(Buffer.from(a.clientData, "base64url").toString("utf8"), asked.clientData)) return this.#answer({ id: a.id, error: "NotAllowedError" }, asked.contextId, asked.origin);
       clientData = a.clientData;
     }
-    await this.#answer({ ...a, clientData });
+    await this.#answer({ ...a, clientData }, asked.contextId, asked.origin);
   }
 
-  /// The page's hook told how its ask `a.id` went.
-  async #answer(a: { id: string } & Record<string, unknown>): Promise<void> {
-    await this.#p.cdp.send("Runtime.evaluate", { expression: `window.__stillfailPasskeyReply && window.__stillfailPasskeyReply(${JSON.stringify(this.#passkeyOwner)}, ${JSON.stringify(a.id)}, ${JSON.stringify(a)})` }, this.#p.session).catch(() => {});
+  /// The page's hook told how its ask `a.id` went, delivered strictly to the calling execution context and guarded
+  /// atomically by `location.origin === expectedOrigin` so cross-site navigation (which resets executionContextId to 1
+  /// in Chromium) can never hand an assertion to a new document.
+  async #answer(a: { id: string } & Record<string, unknown>, contextId?: number, expectedOrigin?: string): Promise<void> {
+    const call = `window.__stillfailPasskeyReply && window.__stillfailPasskeyReply(${JSON.stringify(this.#passkeyOwner)}, ${JSON.stringify(a.id)}, ${JSON.stringify(a)})`;
+    const expression = expectedOrigin !== undefined
+      ? `(() => { if (location.origin !== ${JSON.stringify(expectedOrigin)}) return; ${call}; })()`
+      : call;
+    await this.#p.cdp
+      .send(
+        "Runtime.evaluate",
+        {
+          expression,
+          ...(contextId !== undefined ? { contextId } : {}),
+        },
+        this.#p.session,
+      )
+      .catch(() => {});
   }
 
   /// The address of tab `targetId` as the browser has it now ("" for none).
@@ -1142,6 +1265,8 @@ export class TabView implements ScreenView {
           this.#scheduleThrottleFlush(this.#jpegMinIntervalMs - elapsed);
         }
       }
+    } else if (e.method === "Page.frameNavigated" && e.sessionId === session && e.params?.frame?.parentId === undefined) {
+      this.#lastHumanActionAt = null;
     } else if ((e.method === "Target.detachedFromTarget" && e.params.sessionId === session) || (e.method === "Inspector.detached" && e.sessionId === session)) {
       this.#end();
     }
@@ -1199,6 +1324,9 @@ export class TabView implements ScreenView {
   #end() {
     if (this.#ended) return;
     this.#ended = true;
+    this.#lastHumanActionAt = null;
+    this.#loginWatching = false;
+    this.#loginOrigin = null;
     this.#clearThrottleTimer();
     this.#micOff();
     this.#unlisten();

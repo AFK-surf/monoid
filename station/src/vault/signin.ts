@@ -16,6 +16,7 @@ import { CARD_OCCUPIED, cardPlace, postCard } from "../sessions/card-place.ts";
 import type { CardOutcomeSaver } from "../store/card-outbox.ts";
 import { STILLFAIL_SURFACE, type SessionThread } from "../store/store.ts";
 import type { Driven, FormAsks, FormField, FormValues } from "../browser/signin-form.ts";
+import { isPublicSuffix, sameSiteHost } from "../browser/psl.ts";
 import type { Request } from "./crypto.ts";
 import type { BackfillOptions } from "../read/mb-reader.ts";
 import { SigninSaveBuilder } from "./signin-save-builder.ts";
@@ -108,7 +109,7 @@ export function siteOf(given: string): string {
   return s.replace(/^www\./, "");
 }
 
-const onSite = (host: string, site: string): boolean => host === site || host.endsWith(`.${site}`);
+const onSite = (host: string, site: string): boolean => sameSiteHost(host, site);
 const hostOf = (url: string): string => {
   try {
     return new URL(url).hostname.toLowerCase();
@@ -180,6 +181,7 @@ export class SignIns {
     signal?.throwIfAborted();
     const site = siteOf(a.site);
     if (site === "" || !site.includes(".")) throw new Refused("site is the site's host, e.g. github.com");
+    if (isPublicSuffix(site)) throw new Refused(`${site} is a public suffix, not a specific site (use a full site host such as app.${site})`);
     const open = this.#bySession(session).filter((x) => x.site === site && OPEN.includes(x.status)).at(-1);
     if (open?.status === "pending" && open.at + PENDING_SECS < this.#secs()) {
       this.#end(open, "expired");

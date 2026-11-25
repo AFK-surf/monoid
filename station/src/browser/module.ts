@@ -75,7 +75,14 @@ export const BrowserLive = Layer.effectDiscard(
     browser.useFarview(farview);
     // (the chats' tabs an earlier station process left running stay among the screens)
     void farview.resume();
-    parts.door(browserDoor(browser));
+    parts.door(
+      browserDoor(browser, {
+        hasSession: (s) => {
+          const row = store.getSession(s);
+          return row !== null && row.archivedAt === null;
+        },
+      }),
+    );
     // An app that draws a Farview tab itself: carried to the tab's host, its bytes both ways as they are (Farview's own
     // protocol: the page's drawing, fonts and pictures to it, a person's taps and words from it). One who only looks
     // is not carried: nothing tells their input from the rest on the way.

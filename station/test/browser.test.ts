@@ -1138,7 +1138,7 @@ test("the gate: what Chrome tells of other chats' targets never reaches the agen
   assert.deepEqual(other.down, []);
   assert.deepEqual(other.up.map((m: any) => [m.method, m.params]), [["Target.detachFromTarget", { sessionId: "SX" }]]);
   assert.deepEqual(chrome({ id: other.up[0].id, result: {} }).down, [], "the gate's own answer is its own");
-  assert.deepEqual(chrome({ method: "Runtime.executionContextCreated", params: {}, sessionId: "SX" }).down.length, 1, "a page's own events pass unread (none come from a session let go of at once)");
+  assert.deepEqual(chrome({ method: "Runtime.executionContextCreated", params: {}, sessionId: "SX" }).down.length, 0, "foreign session events are dropped while detaching");
   assert.deepEqual(chrome({ method: "Target.detachedFromTarget", params: { sessionId: "SX" } }).down, []);
   // Auto-attached to its own: its session is the agent's.
   assert.equal(chrome({ method: "Target.attachedToTarget", params: { sessionId: "SA", targetInfo: { targetId: "A2", browserContextId: "C1" } } }).down.length, 1);
