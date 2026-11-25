@@ -90,6 +90,10 @@ pub fn stations_list_node(
   // (the rigs and the devices kept by their keys once, so a row is told only as its own one changes: View::keyed_by)
   let rigs_by = v.keyed_by(fn() { rigs_now.get() }, fn(x) { text(Some(x), "id") })
   let devices_by = v.keyed_by(fn() { devices_now.get() }, fn(x) { "device/" + text(Some(x), "station") + "/" + text(Some(x), "id") })
+  // (per-group lit-row trackers so each hairline divider fades smoothly when either adjacent row is hovered or pressed)
+  let station_lit = SlRowLit::new()
+  let rig_lit = SlRowLit::new()
+  let device_lit = SlRowLit::new()
   let add = fn() { @settings.place_action(core, here(), "stations") is Some(_) }
   let adding = fn(at : @view.View) {
     match @settings.place_action(core, @signals.untracked(here), "stations") {
@@ -189,7 +193,19 @@ pub fn stations_list_node(
             }
           }
           let piece = sl_piece_of(group_keys, address)
-          sl_station_row_node(b, core, station, piece, fn() { (core.push)(Station(address)) }, shown, menu_address=address)
+          let prev_key = sl_prev_of(group_keys, address)
+          sl_station_row_node(
+            b,
+            core,
+            station,
+            piece,
+            fn() { (core.push)(Station(address)) },
+            shown,
+            menu_address=address,
+            lit=station_lit,
+            key=address,
+            prev_key~,
+          )
         }
         k if k.has_prefix("rig/") => {
           let id = k.exact_view(start=4).to_owned()
@@ -207,8 +223,10 @@ pub fn stations_list_node(
               None => last_rig.val
             }
           }
-          let piece = sl_piece_of(fn() { rig_ids_now.get() }, id)
-          sl_rig_row_node(b, r, piece, fn() { (core.push)(Station(here().workspace + "/" + id)) })
+          let group_keys = fn() { rig_ids_now.get() }
+          let piece = sl_piece_of(group_keys, id)
+          let prev_key = sl_prev_of(group_keys, id)
+          sl_rig_row_node(b, r, piece, fn() { (core.push)(Station(here().workspace + "/" + id)) }, lit=rig_lit, key=id, prev_key~)
         }
         k if k.has_prefix("device/") => {
           let in_group = @signals.computed(fn(_) { device_keys_now.get().contains(k) })
@@ -225,11 +243,21 @@ pub fn stations_list_node(
               None => last_dev.val
             }
           }
-          let piece = sl_piece_of(fn() { device_keys_now.get() }, k)
-          sl_device_row_node(b, d, piece, fn() {
-            let dv = @signals.untracked(fn() { d() })
-            @settings.open_device(core, @signals.untracked(here), text(dv, "station"), text(dv, "id"), Unanchored)
-          })
+          let group_keys = fn() { device_keys_now.get() }
+          let piece = sl_piece_of(group_keys, k)
+          let prev_key = sl_prev_of(group_keys, k)
+          sl_device_row_node(
+            b,
+            d,
+            piece,
+            fn() {
+              let dv = @signals.untracked(fn() { d() })
+              @settings.open_device(core, @signals.untracked(here), text(dv, "station"), text(dv, "id"), Unanchored)
+            },
+            lit=device_lit,
+            key=k,
+            prev_key~,
+          )
         }
         _ => ()
       }
@@ -259,6 +287,87 @@ fn sl_piece_of(keys : () -> Array[String], target : String) -> () -> @sf.CardPie
     }
   })
   fn() { c.get() }
+}
+
+///|
+/// The key immediately preceding `target` in `keys()`, or `None` when `target` is first or leaving.
+fn sl_prev_of(keys : () -> Array[String], target : String) -> () -> String? {
+  let c = @signals.computed(fn(_) {
+    let arr = keys()
+    match arr.search_by(fn(x) { x == target }) {
+      Some(idx) if idx > 0 => Some(arr[idx - 1])
+      _ => None
+    }
+  })
+  fn() { c.get() }
+}
+
+///|
+/// Tracks interactive row nodes in a grouped card by key so each hairline separator fades smoothly
+/// while either adjacent row (above or below) is hovered, pressed (mouse or finger), or focused.
+/// Mirrors `@sf.Segments` (`segment_rule_node.mbt`), with an optional bottom action entry (`bots`)
+/// when an unprotected station shows its `加入安全模式` button (or non-interactive joining spinner)
+/// below the main row.
+priv struct SlRowLit {
+  made : @signals.Signal[Int]
+  tops : Map[String, @view.View]
+  bots : Map[String, (@view.View, Bool)]
+}
+
+fn SlRowLit::new() -> SlRowLit {
+  { made: @signals.signal(0), tops: {}, bots: {} }
+}
+
+fn SlRowLit::bind_top(self : SlRowLit, key : String, v : @view.View) -> Unit {
+  if key == "" {
+    return
+  }
+  self.tops[key] = v
+  self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
+  v.owns(fn() {
+    if self.tops.get(key) is Some(w) && w.id() == v.id() {
+      self.tops.remove(key)
+      self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
+    }
+  })
+  |> ignore
+}
+
+fn SlRowLit::bind_bot(self : SlRowLit, key : String, v : @view.View, active : Bool) -> Unit {
+  if key == "" {
+    return
+  }
+  self.bots[key] = (v, active)
+  self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
+  v.owns(fn() {
+    if self.bots.get(key) is Some((w, _)) && w.id() == v.id() {
+      self.bots.remove(key)
+      self.made.set(@signals.untracked(fn() { self.made.get() }) + 1)
+    }
+  })
+  |> ignore
+}
+
+fn SlRowLit::lit_top(self : SlRowLit, key : String) -> Bool {
+  self.made.get() |> ignore
+  match self.tops.get(key) {
+    Some(v) => @sf.lit_node(v)
+    None => false
+  }
+}
+
+fn SlRowLit::lit_bot(self : SlRowLit, key : String) -> Bool {
+  self.made.get() |> ignore
+  match self.bots.get(key) {
+    // When `active` is false (e.g. non-interactive joining spinner), return false without reading
+    // `pointed()` so the spinner never becomes `points_alone` and never falls back to the main row.
+    Some((v, active)) => active && @sf.lit_node(v)
+    None =>
+      match self.tops.get(key) {
+        Some(v) => @sf.lit_node(v)
+        None => false
+      }
+  }
 }
 
 ///|
@@ -339,10 +448,35 @@ fn copy_item(label : String, words : String) -> @sf.MenuItem? {
 
 ///|
 /// Hairline separator above non-first rows inside a grouped card, aligned with row content edges.
-fn sl_card_sep_node(card : @view.View, piece : () -> @sf.CardPiece) -> Unit {
+/// Smoothly fades out while either adjacent row (above or below) is hovered, pressed (mouse or finger), or focused,
+/// and smoothly fades back when released or left.
+fn sl_card_sep_node(
+  card : @view.View,
+  piece : () -> @sf.CardPiece,
+  lit? : SlRowLit,
+  key? : String = "",
+  prev_key? : () -> String? = fn() { None },
+) -> Unit {
   card.show(at_once=true, fn() { piece() is (CardBetween | CardFoot) }, fn(sep) {
     @sf.style_node(sep, fn() { sl_sep_line })
-    sep.height(Is(Some(@sf.rule_w))).ground(By(fn() { @ui.tree_theme().color(@sf.rule_ink) })) |> ignore
+    sep.height(Is(Some(@sf.rule_w))) |> ignore
+    match lit {
+      Some(group) if key != "" => {
+        let gone = @motion.hover_fade(
+          sep,
+          fn() {
+            group.lit_top(key) ||
+            (match prev_key() {
+              Some(p) => group.lit_bot(p)
+              None => false
+            })
+          },
+          duration_ms=@sf.dur_ms,
+        )
+        sep.ground(By(fn() { @sf.alpha(@sf.rule_color(), 1.0 - gone()) })) |> ignore
+      }
+      _ => sep.ground(By(fn() { @sf.rule_color() })) |> ignore
+    }
   })
 }
 
@@ -364,6 +498,9 @@ fn sl_station_row_node(
   shown : () -> Bool,
   menu_address? : String = "",
   sample? : Bool = false,
+  lit? : SlRowLit,
+  key? : String = "",
+  prev_key? : () -> String? = fn() { None },
 ) -> Unit {
   let online = fn() { flag(s(), "online") }
   let unreadable = fn() { items(s(), "problems").iter().any(fn(p) { text(Some(p), "key") == "incompatible" }) }
@@ -387,12 +524,16 @@ fn sl_station_row_node(
   }
   b.grow(Is(1.0)) |> ignore
   @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-    sl_card_sep_node(card, piece)
+    sl_card_sep_node(card, piece, lit?, key~, prev_key~)
     card.box(fn(row) {
       row.transitions_only() |> ignore
       @sf.style_node(row, fn() { sl_row_multi })
       row.radius(Is(@sf.row_corner)) |> ignore
       if !sample {
+        match lit {
+          Some(g) => g.bind_top(key, row)
+          None => ()
+        }
         @sf.hover_ground_node(row)
         @sf.rippled_node(row, press, @sf.row_corner, fn() { text(s(), "name") })
       }
@@ -570,6 +711,10 @@ fn sl_station_row_node(
           btn.transitions_only() |> ignore
           @sf.style_node(btn, fn() { sl_protect_row })
           btn.radius(Is(@sf.row_corner)) |> ignore
+          match lit {
+            Some(g) => g.bind_bot(key, btn, live)
+            None => ()
+          }
           if live {
             @sf.hover_ground_node(btn)
           }
@@ -741,14 +886,21 @@ fn sl_rig_row_node(
   r : () -> Json?,
   piece : () -> @sf.CardPiece,
   press : () -> Unit,
+  lit? : SlRowLit,
+  key? : String = "",
+  prev_key? : () -> String? = fn() { None },
 ) -> Unit {
   b.grow(Is(1.0)) |> ignore
   @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-    sl_card_sep_node(card, piece)
+    sl_card_sep_node(card, piece, lit?, key~, prev_key~)
     card.box(fn(row) {
       row.transitions_only() |> ignore
       @sf.style_node(row, fn() { sl_row_multi })
       row.radius(Is(@sf.row_corner)) |> ignore
+      match lit {
+        Some(g) => g.bind_top(key, row)
+        None => ()
+      }
       @sf.hover_ground_node(row)
       @sf.rippled_node(row, press, @sf.row_corner, fn() { text(r(), "name") })
       row.box(fn(head) {
@@ -788,15 +940,22 @@ fn sl_device_row_node(
   d : () -> Json?,
   piece : () -> @sf.CardPiece,
   press : () -> Unit,
+  lit? : SlRowLit,
+  key? : String = "",
+  prev_key? : () -> String? = fn() { None },
 ) -> Unit {
   let online = fn() { !(field(d(), "online") is Some(False)) }
   b.grow(Is(1.0)) |> ignore
   @sf.card_piece_node(b, piece, wide_group=true, fn(card) {
-    sl_card_sep_node(card, piece)
+    sl_card_sep_node(card, piece, lit?, key~, prev_key~)
     card.box(fn(row) {
       row.transitions_only() |> ignore
       @sf.style_node(row, fn() { sl_row_multi })
       row.radius(Is(@sf.row_corner)) |> ignore
+      match lit {
+        Some(g) => g.bind_top(key, row)
+        None => ()
+      }
       @sf.hover_ground_node(row)
       @sf.rippled_node(row, press, @sf.row_corner, fn() { text(d(), "name") })
       row.box(fn(head) {
