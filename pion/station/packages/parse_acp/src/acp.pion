@@ -148,7 +148,7 @@ fn with_field(v : js_json::JValue, name : String, value : js_json::JValue) -> js
       let mut replaced = false
       for i in 0..<entries.length() {
         let (k, ev) = entries[i]
-        if live_wire::u16_eq(k, key_u) {
+        if !replaced && live_wire::u16_eq(k, key_u) {
           out.push((k, value))
           replaced = true
         } else {

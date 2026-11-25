@@ -315,4 +315,26 @@ test "parse_pi: lone surrogate round-trip preserves distinct \\ud800 and \\ud801
   if again.live.open.length() != 1 {
     panic("expected c\\ud801 still open")
   }
+
+  // Turn.error preserves lone surrogates through Turn::json -> Turn::of_json -> agent_settled
+  let s2 = fresh()
+  let _ = s2.prompted()
+  let _ = s2.line_with(pparse("{\"type\":\"agent_start\"}"), pi_fmt_num)
+  let _ = s2.line_with(
+    pparse("{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"errorMessage\":\"err\\ud800and\\ud801\"}}"),
+    pi_fmt_num,
+  )
+  let tjson = pstr(s2.turn.json())
+  assert_eq_pi(
+    tjson,
+    "{\"busy\":true,\"prompted\":false,\"aborting\":false,\"error\":\"err\\ud800and\\ud801\"}",
+    "pi Turn.error json lone surrogate",
+  )
+  let s3 = Session::new(Turn::of_json(pparse(tjson)), Live::new())
+  let settled = s3.line_with(pparse("{\"type\":\"agent_settled\",\"aborted\":false}"), pi_fmt_num)
+  assert_eq_pi(
+    pstr(js_json::JValue::Arr(settled.events)),
+    "[{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"err\\ud800and\\ud801\"}}]",
+    "pi Turn.error settled lone surrogate",
+  )
 }

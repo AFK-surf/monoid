@@ -21,6 +21,7 @@ fn integer(v : Option[js_json::JValue]) -> Option[Double] {
 }
 
 /// At most `n` characters (live.ts `chars`: Array.from, a lone surrogate one).
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `chars_u16`.
 pub fn chars(text : String, n : Int) -> String {
   js_json::sanitize_str(js_json::chars(js_json::utf16_units(text), n))
 }

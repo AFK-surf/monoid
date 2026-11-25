@@ -221,4 +221,18 @@ test "parse_cursor: lone surrogate round-trip preserves distinct \\ud800 and \\u
   if again.open.length() != 1 || r1.events.length() == 0 || r2.events.length() == 0 {
     panic("expected c\\ud801 still open")
   }
+
+  // cursor_output content array path preserves lone surrogates
+  let out_u16 = cursor_output_with(
+    Some(
+      parsed_cursor(
+        "{\"value\":{\"content\":[{\"text\":{\"text\":\"nested\\ud800\"}},{\"text\":\"plain\\ud801\"}]}}",
+      ),
+    ),
+    cursor_fmt_num,
+  )
+  let out_s = js_json::stringify_with_num(live_wire::jstr_u16(out_u16), cursor_fmt_num)
+  if out_s != "\"nested\\ud800\\nplain\\ud801\"" {
+    panic("cursor_output content array lost lone surrogate: " + out_s)
+  }
 }

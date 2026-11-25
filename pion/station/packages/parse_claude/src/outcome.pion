@@ -245,6 +245,7 @@ pub fn auth_outcome_u16(failure : Array[Int]) -> js_json::JValue {
 }
 
 /// A turn that failed on authentication (`auth_failure`).
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `auth_outcome_u16`.
 pub fn auth_outcome(failure : String) -> js_json::JValue {
   auth_outcome_u16(js_json::utf16_units(failure))
 }
@@ -256,6 +257,7 @@ pub fn error_outcome_u16(text : Array[Int]) -> js_json::JValue {
 }
 
 /// A turn whose result was an error, saying `text`, at most 1000 characters kept.
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `error_outcome_u16`.
 pub fn error_outcome(text : String) -> js_json::JValue {
   error_outcome_u16(js_json::utf16_units(text))
 }

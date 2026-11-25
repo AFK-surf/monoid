@@ -376,6 +376,7 @@ pub fn outcome_of_u16(aborted_flag : Bool, error : Option[Array[Int]]) -> js_jso
   }
 }
 
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `outcome_of_u16`.
 pub fn outcome_of(aborted_flag : Bool, error : Option[String]) -> js_json::JValue {
   match error {
     Some(s) => outcome_of_u16(aborted_flag, Some(js_json::utf16_units(s)))

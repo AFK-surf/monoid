@@ -2,13 +2,98 @@
 
 import "js_json"
 
+fn expand_sci_decimal(s : String) -> String {
+  let bs = s.to_bytes()
+  let n = bs.length()
+  let mut e_pos = -1
+  for i in 0..<n {
+    let c = bs[i].to_int() & 0xFF
+    if c == 0x65 || c == 0x45 {
+      e_pos = i
+      break
+    }
+  }
+  if e_pos < 0 {
+    return s
+  }
+  let mut neg = false
+  let mut start = 0
+  if n > 0 && (bs[0].to_int() & 0xFF) == 0x2D {
+    neg = true
+    start = 1
+  }
+  let digits : Array[Byte] = []
+  let mut dot_pos = -1
+  for i in start..<e_pos {
+    let b = bs[i]
+    if (b.to_int() & 0xFF) == 0x2E {
+      dot_pos = digits.length()
+    } else {
+      digits.push(b)
+    }
+  }
+  if dot_pos < 0 {
+    dot_pos = digits.length()
+  }
+  let mut exp_neg = false
+  let mut ei = e_pos + 1
+  if ei < n && (bs[ei].to_int() & 0xFF) == 0x2D {
+    exp_neg = true
+    ei = ei + 1
+  } else if ei < n && (bs[ei].to_int() & 0xFF) == 0x2B {
+    ei = ei + 1
+  }
+  let mut exp = 0
+  while ei < n {
+    exp = exp * 10 + ((bs[ei].to_int() & 0xFF) - 0x30)
+    ei = ei + 1
+  }
+  let signed_exp = if exp_neg { -exp } else { exp }
+  let new_dot = dot_pos + signed_exp
+  let sb = StringBuilder::new()
+  if neg {
+    sb.write_byte(0x2D as Byte)
+  }
+  if new_dot <= 0 {
+    sb.write_string("0.")
+    for _ in 0..<(-new_dot) {
+      sb.write_byte(0x30 as Byte)
+    }
+    for i in 0..<digits.length() {
+      sb.write_byte(digits[i])
+    }
+  } else if new_dot >= digits.length() {
+    for i in 0..<digits.length() {
+      sb.write_byte(digits[i])
+    }
+    for _ in 0..<(new_dot - digits.length()) {
+      sb.write_byte(0x30 as Byte)
+    }
+  } else {
+    for i in 0..<new_dot {
+      sb.write_byte(digits[i])
+    }
+    sb.write_byte(0x2E as Byte)
+    for i in new_dot..<digits.length() {
+      sb.write_byte(digits[i])
+    }
+  }
+  sb.to_string()
+}
+
 fn codex_fmt_num(d : Double) -> String {
   if d == 0.0 {
-    "0"
-  } else if js_json::is_safe_integer(d) {
-    d.to_int64().to_string()
+    return "0"
+  }
+  if js_json::is_safe_integer(d) {
+    return d.to_int64().to_string()
+  }
+  let abs_d = if d < 0.0 { -d } else { d }
+  let s = d.to_string()
+  if abs_d >= 1.0e-6 && abs_d < 1.0e21 {
+    expand_sci_decimal(s)
   } else {
-    d.to_string()
+    s
   }
 }
 
@@ -136,5 +221,31 @@ test "parse_codex: lone surrogate round-trip preserves distinct \\ud800 and \\ud
     cstr(js_json::JValue::Arr(fail_ev)),
     "[{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"boom \\ud800 \\ud801\"}}]",
     "failed message lone surrogate",
+  )
+}
+
+test "parse_codex: numeric item id 0.00001 formats in JS decimal and matches delta itemId" {
+  let live = Live::new()
+  let ev1 = events_with(
+    live,
+    "item/started",
+    cparse("{\"item\":{\"type\":\"agentMessage\",\"id\":0.00001}}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(ev1)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"id\":\"0.00001\",\"step\":\"text\"}}]",
+    "numeric id 0.00001 start",
+  )
+  let ev2 = events_with(
+    live,
+    "item/agentMessage/delta",
+    cparse("{\"itemId\":\"0.00001\",\"delta\":\"hello\"}"),
+    codex_fmt_num,
+  )
+  assert_eq_codex(
+    cstr(js_json::JValue::Arr(ev2)),
+    "[{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"responding\"}},{\"type\":\"live\",\"event\":{\"kind\":\"delta\",\"id\":\"0.00001\",\"field\":\"text\",\"text\":\"hello\"}}]",
+    "numeric id 0.00001 delta match",
   )
 }
