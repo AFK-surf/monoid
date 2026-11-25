@@ -516,3 +516,49 @@ test('slot 7 async faceSetLigatures completion bumps atlasGeneration so MoonBit 
   await task();
   assert.ok(b.H.atlasGeneration() > genWhilePending, 'slot 7 faceSetLigatures commit bumps atlasGeneration');
 });
+
+test('same-slot same-weight multi-source registration preserves both entries and registration order (Serif -> Sans -> CJK) regardless of replacement completion order', async () => {
+  const serifBytes = new Uint8Array([1, 2, 3, 4]);
+  const sansBytes = new Uint8Array([5, 6, 7, 8]);
+  for (const order of [[0, 1], [1, 0]]) {
+    const b = browser({ deferLoad: true });
+    await task();
+    b.installed.add('PingFang SC Medium');
+    b.H.faceAddBytes(3, serifBytes, 400); // pending[0]
+    b.H.faceAddBytes(3, sansBytes, 400);  // pending[1]
+    b.pending[0]();
+    b.pending[1]();
+    await task();
+    b.H.setCjkFace(3, 100, ['PingFang SC']); // pending[2]
+    b.pending[2]();
+    await task();
+    // Toggle ligatures: pending[3] = serif replacement, pending[4] = sans replacement
+    b.H.faceSetLigatures(3, false);
+    assert.equal(b.pending.length, 5);
+    b.pending[3 + order[0]]();
+    await task();
+    b.pending[3 + order[1]]();
+    await task();
+    await task();
+    const list = [...b.fonts].filter((f) => f.family === 'mbface3');
+    const serifIdx = list.findIndex((f) => f.src === serifBytes);
+    const sansIdx = list.findIndex((f) => f.src === sansBytes);
+    const cjkIdx = list.findIndex((f) => f.unicodeRange === CJK_RANGE);
+    assert.ok(serifIdx >= 0 && sansIdx > serifIdx && cjkIdx > sansIdx,
+      `order ${order.join(',')}: expected serif(${serifIdx}) < sans(${sansIdx}) < cjk(${cjkIdx})`);
+  }
+});
+
+test('initial faceAddBytes resolves as fallback when concurrent faceSetLigatures replacement rejects', async () => {
+  const b = browser({ deferLoad: true });
+  await task();
+  b.H.faceAddBytes(3, new Uint8Array(4), 400); // pending[0] (ligGen=0)
+  b.H.faceSetLigatures(3, false);              // pending[1] (ligGen=1)
+  assert.equal(b.pending.length, 2);
+  b.pending[1].reject();
+  await task();
+  b.pending[0]();
+  await task();
+  await task();
+  assert.equal([...b.fonts].filter((f) => f.family === 'mbface3').length, 1, 'initial FontFace installed as fallback');
+});
