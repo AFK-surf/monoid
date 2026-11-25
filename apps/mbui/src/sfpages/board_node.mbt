@@ -863,6 +863,7 @@ fn board_filter_key(bar : @view.View, own : BoardOwn) -> Unit {
     at_once=true,
     fn(p, active) {
       if active {
+        p.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(proj_s1)) |> ignore
         @sf.button_opens_node(
           p,
           fn() {
