@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9d5f3020](https://github.com/AFK-surf/monoid/commit/d9d5f3020013dceae2d3f8903b3ac55955f80b6b) perf(replica): resume transcript sweeps at their c | 2.52 | 3.4 | 14.07 | 37.51 | 58.07 | 31.96 | 64.57 | 101.07 | 121.83 |
 | [4ec25e5df](https://github.com/AFK-surf/monoid/commit/4ec25e5df72e667fae9d30a362989e5385f2bd97) feat(core,ui): add composite CJK font stack, typog | 2.52 | 3.4 | 14.07 | 37.51 | 58.07 | 31.95 | 64.52 | 100.86 | 121.83 |
 | [d9b224ff4](https://github.com/AFK-surf/monoid/commit/d9b224ff4a2a4e53ab440aba7ad8a1861db88b80) feat(ui): unify segmented controls and pill tabs o | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.52 | 100.86 | 121.83 |
 | [df02b2926](https://github.com/AFK-surf/monoid/commit/df02b2926ce7bb7259d932a9010a5d4f007bf060) fix(ui): align pick_bar_desk_node with 40pt pick_b | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 100.88 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7c4a08f16](https://github.com/AFK-surf/monoid/commit/7c4a08f162275db019f943730d5eb8310edb82ef) refactor(ui): drop priv traits and hostapi refs fo | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [0cf2e4fb3](https://github.com/AFK-surf/monoid/commit/0cf2e4fb3ceaeb12f2a57a9c2031a94abe63c9e3) fix(ci): make a push's Windows core below the app  | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [f18896872](https://github.com/AFK-surf/monoid/commit/f188968720696eec671ecaf65cd7a75ba879d8aa) chore(ci): remove FARVIEW_DEPLOY_KEY and farview a | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
-| [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9d5f3020](https://github.com/AFK-surf/monoid/commit/d9d5f3020013dceae2d3f8903b3ac55955f80b6b) perf(replica): resume transcript sweeps at their c | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.67 |
 | [4ec25e5df](https://github.com/AFK-surf/monoid/commit/4ec25e5df72e667fae9d30a362989e5385f2bd97) feat(core,ui): add composite CJK font stack, typog | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.89 |
 | [d9b224ff4](https://github.com/AFK-surf/monoid/commit/d9b224ff4a2a4e53ab440aba7ad8a1861db88b80) feat(ui): unify segmented controls and pill tabs o | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.56 |
 | [df02b2926](https://github.com/AFK-surf/monoid/commit/df02b2926ce7bb7259d932a9010a5d4f007bf060) fix(ui): align pick_bar_desk_node with 40pt pick_b | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.38 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7c4a08f16](https://github.com/AFK-surf/monoid/commit/7c4a08f162275db019f943730d5eb8310edb82ef) refactor(ui): drop priv traits and hostapi refs fo | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.43 |
 | [0cf2e4fb3](https://github.com/AFK-surf/monoid/commit/0cf2e4fb3ceaeb12f2a57a9c2031a94abe63c9e3) fix(ci): make a push's Windows core below the app  | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.8 |
 | [f18896872](https://github.com/AFK-surf/monoid/commit/f188968720696eec671ecaf65cd7a75ba879d8aa) chore(ci): remove FARVIEW_DEPLOY_KEY and farview a | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.56 |
-| [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.49 |
