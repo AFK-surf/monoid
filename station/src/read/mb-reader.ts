@@ -432,12 +432,8 @@ export class MbProcess extends EventEmitter {
     this.#args = args;
     this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, args, background, startedAt: wall.now() });
-    const said = new Said((answer) => this.emit("message", answer));
-    this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
-    createInterface({ input: this.#child.stderr! }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
-    // (a failed write is the process gone, told by its exit)
-    this.#child.stdin!.on("error", () => {});
+    // Its failure to start (ENFILE, EMFILE, ENOENT) is told on the next tick, with no pid and none of its streams: heard
+    // before anything here could throw, else told to none and the station's process ends (D80).
     this.#child.on("error", (error) => {
       if (this.#child.pid === undefined) MbProcess.#live.delete(this);
       this.emit("error", error);
@@ -449,6 +445,12 @@ export class MbProcess extends EventEmitter {
       MbProcess.#live.delete(this);
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });
+    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, args, background, startedAt: wall.now() });
+    const said = new Said((answer) => this.emit("message", answer));
+    this.#child.stdout?.on("data", (bytes: Buffer) => said.push(bytes));
+    if (this.#child.stderr) createInterface({ input: this.#child.stderr }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
+    // (a failed write is the process gone, told by its exit)
+    this.#child.stdin?.on("error", () => {});
   }
 
   /// (a bigint said as its digits)
@@ -461,7 +463,9 @@ export class MbProcess extends EventEmitter {
   /// Write an already-serialized JSON line to stdin, sharing `postMessage`'s backpressure and `SIGKILL` guard.
   postLine(line: string) {
     if (this.#stalled || this.#exited) return;
-    const stdin = this.#child.stdin!;
+    // (none: it never started, its end told on the next tick)
+    const stdin = this.#child.stdin;
+    if (!stdin) return;
     stdin.write(`${line}\n`);
     if (stdin.writableLength <= this.#stdinMost) return;
     this.#stalled = true;

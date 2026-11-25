@@ -89,15 +89,16 @@ export async function startRunner(data: string, id: string, program: string, arg
     // timer: deadline for stillfail-runner to report ready
     const stop = wall.after(RUNNER_READY_MS, () => settle(() => {
       try { child.kill("SIGKILL"); } catch {}
-      child.stdout.destroy();
-      child.stderr.destroy();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
       reject(new Error(`the runner did not start within ${RUNNER_READY_MS / 1000}s`));
     }));
-    child.stdout.on("data", (b) => (out += b));
-    child.stderr.on("data", (b) => (err += b));
+    // (heard first: one not started (ENFILE, EMFILE) has no streams, and its error told to none ends the station)
     child.on("error", (error) => settle(() => reject(error)));
+    child.stdout?.on("data", (b) => (out += b));
+    child.stderr?.on("data", (b) => (err += b));
     // The ready line comes before the runner lets go of its stdout; a runner that fails says why and exits non-zero.
-    child.stdout.on("end", () => settle(() => {
+    child.stdout?.on("end", () => settle(() => {
       const line = out.split("\n").find((l) => l.startsWith("{"));
       if (line) {
         const ready = JSON.parse(line);

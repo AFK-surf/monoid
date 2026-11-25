@@ -47,12 +47,7 @@ export const runCommand: MicRunner = (program, args) =>
       endCommand(child, "SIGKILL");
     };
     const late = wall.after(COMMAND_MS, () => end(new Error(`${program} took more than ${COMMAND_MS} ms`)));
-    child.stdout!.on("data", (chunk: Buffer) => {
-      said += chunk.length;
-      if (said > 4 * 1024 * 1024) end(new Error(`${program} said too much`));
-      else stdout += chunk.toString("utf8");
-    });
-    child.stderr!.resume();
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", (e) => {
       late();
       reject(failed ?? e);
@@ -63,21 +58,30 @@ export const runCommand: MicRunner = (program, args) =>
       else if (code === 0) resolve({ stdout });
       else reject(new Error(`${program} ${args[0] ?? ""} ended with ${code ?? signal}`));
     });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      said += chunk.length;
+      if (said > 4 * 1024 * 1024) end(new Error(`${program} said too much`));
+      else stdout += chunk.toString("utf8");
+    });
+    child.stderr?.resume();
   });
 
 export const spawnFeed: MicFeedSpawner = (program, args) => {
   const child = startCommand(program, args, { stdio: ["pipe", "ignore", "ignore"] });
-  const stdin = child.stdin as Writable;
-  stdin.on("error", () => {});
+  // Heard at once, whenever its end is asked for (`onExit`): one not started (ENFILE, EMFILE) has no stdin, and its
+  // error told to none ends the station. Written to then: dropped, its end coming.
+  child.on("error", () => {});
+  const stdin = child.stdin as Writable | null | undefined;
+  stdin?.on("error", () => {});
   return {
-    write: (chunk) => stdin.write(chunk),
-    onDrain: (f) => void stdin.on("drain", f),
+    write: (chunk) => stdin?.write(chunk) ?? true,
+    onDrain: (f) => void stdin?.on("drain", f),
     onExit: (f) => {
       child.once("close", f);
       child.once("error", f);
     },
     kill: () => {
-      stdin.destroy();
+      stdin?.destroy();
       endCommand(child, "SIGTERM");
     },
   };

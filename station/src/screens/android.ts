@@ -316,14 +316,15 @@ async function adbRun(path: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "", err = "";
     const stop = wall.after(ADB_TIMEOUT, () => child.kill());
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", (e) => (stop(), reject(e)));
     child.on("close", (code) => {
       stop();
       if (code === 0) resolve(out);
       else reject(new Error(err.trim() || `adb ended with ${code}`));
     });
+    child.stdout?.on("data", (d) => (out += d));
+    child.stderr?.on("data", (d) => (err += d));
   });
 }
 
@@ -738,7 +739,15 @@ export class AndroidScreens {
     const child = adbSpawn(path, ["track-devices", "-l"]);
     this.#follow = child;
     let carry = "";
-    child.stdout.on("data", (d) => {
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
+    child.on("error", () => {});
+    child.on("close", () => {
+      this.#follow = null;
+      if (this.#closed || this.#resting) return;
+      this.#again?.();
+      this.#again = wall.after(FOLLOW_AGAIN, () => this.start());
+    });
+    child.stdout?.on("data", (d) => {
       carry += d;
       for (;;) {
         const length = parseInt(carry.slice(0, 4), 16);
@@ -746,13 +755,6 @@ export class AndroidScreens {
         this.#heard(path, devicesOf(carry.slice(4, 4 + length)));
         carry = carry.slice(4 + length);
       }
-    });
-    child.on("error", () => {});
-    child.on("close", () => {
-      this.#follow = null;
-      if (this.#closed || this.#resting) return;
-      this.#again?.();
-      this.#again = wall.after(FOLLOW_AGAIN, () => this.start());
     });
   }
 
