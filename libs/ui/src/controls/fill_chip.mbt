@@ -60,7 +60,7 @@ let chip_box : @ui.Style = @ui.style(h=Fixed(fill_chip_h), radius=rounded(fill_c
 
 ///|
 // kept across runs: a value (no field of it changes)
-let chip_box_dark_overlay : @ui.Style = @ui.style(bg=Data(0x16171AB8L))
+let chip_box_dark_overlay : @ui.Style = @ui.css("bg=A(Bg,O70)")
 
 ///|
 // kept across runs: a value (no field of it changes)
