@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9b224ff4](https://github.com/AFK-surf/monoid/commit/d9b224ff4a2a4e53ab440aba7ad8a1861db88b80) feat(ui): unify segmented controls and pill tabs o | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.52 | 100.86 | 121.83 |
 | [df02b2926](https://github.com/AFK-surf/monoid/commit/df02b2926ce7bb7259d932a9010a5d4f007bf060) fix(ui): align pick_bar_desk_node with 40pt pick_b | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 100.88 | 121.83 |
 | [3624aac3f](https://github.com/AFK-surf/monoid/commit/3624aac3f4a2d131a10f2cbfbf9204d885b1cf40) perf(core): read the device's values and its notic | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 100.89 | 121.83 |
 | [929390e13](https://github.com/AFK-surf/monoid/commit/929390e139704539b8d406107a49a3f7caf72299) fix(ui): align resting segmented thumb to iOS 27 ( | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 101.07 | 121.83 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f18896872](https://github.com/AFK-surf/monoid/commit/f188968720696eec671ecaf65cd7a75ba879d8aa) chore(ci): remove FARVIEW_DEPLOY_KEY and farview a | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 | [3a33268d0](https://github.com/AFK-surf/monoid/commit/3a33268d0aa51d46ecefdda2a74244ad0a3f3ad5) fix(ci): set STILLFAIL_DIRECT_DNS in self-hosted d | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
-| [995870604](https://github.com/AFK-surf/monoid/commit/99587060490aa1c7647e52d7cfdad4393bb08aac) feat(mbui): light the picked occurrence of Poke wo | 2.8 | 3.77 | 15.26 | 37.51 | 58.07 | 32.81 | 66.92 | 100.89 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d9b224ff4](https://github.com/AFK-surf/monoid/commit/d9b224ff4a2a4e53ab440aba7ad8a1861db88b80) feat(ui): unify segmented controls and pill tabs o | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.56 |
 | [df02b2926](https://github.com/AFK-surf/monoid/commit/df02b2926ce7bb7259d932a9010a5d4f007bf060) fix(ui): align pick_bar_desk_node with 40pt pick_b | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.38 |
 | [3624aac3f](https://github.com/AFK-surf/monoid/commit/3624aac3f4a2d131a10f2cbfbf9204d885b1cf40) perf(core): read the device's values and its notic | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.41 |
 | [929390e13](https://github.com/AFK-surf/monoid/commit/929390e139704539b8d406107a49a3f7caf72299) fix(ui): align resting segmented thumb to iOS 27 ( | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f18896872](https://github.com/AFK-surf/monoid/commit/f188968720696eec671ecaf65cd7a75ba879d8aa) chore(ci): remove FARVIEW_DEPLOY_KEY and farview a | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.56 |
 | [80f380db8](https://github.com/AFK-surf/monoid/commit/80f380db859498e931272ee2d2c7c9352014a333) perf(screens,browser,ui): stabilize remote desktop | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.89 | 57.49 |
 | [3a33268d0](https://github.com/AFK-surf/monoid/commit/3a33268d0aa51d46ecefdda2a74244ad0a3f3ad5) fix(ci): set STILLFAIL_DIRECT_DNS in self-hosted d | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.46 |
-| [995870604](https://github.com/AFK-surf/monoid/commit/99587060490aa1c7647e52d7cfdad4393bb08aac) feat(mbui): light the picked occurrence of Poke wo | 0.56 | 0.73 | 2.85 | 3.88 | 7.1 | 2.1 | 5.86 | 57.39 |
