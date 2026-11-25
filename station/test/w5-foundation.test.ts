@@ -764,7 +764,7 @@ function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
   // Pure protocol packages (`sessions_agents`, `sessions_jobs_live`, `sessions_remote`, `live_wire`)
   // that depend on `sessions_core` or `builders_core` without touching any SQLite handle stay untainted.
   const sqlSymbolRe =
-    /\b(?:sqlite3_|stq_)\w+\b|\bsql_db::|\bsqlite_ffi::|\b(?:attach_db|open_db|db_now|with_temp_write_tx|settle_conversation_in_tx)\b|\.(?:db|exec|prepare|tx|tx_err|savepoint_err|savepoint_swallow_err)\b/;
+    /\b(?:sqlite3_|stq_)\w+\b|\bsql_db::|\bsqlite_ffi::|\b(?:attach_db|open_db|db_now|with_temp_write_tx|settle_conversation_in_tx)\b|\.(?:db|exec|prepare|tx|tx_err|deferred_tx_err|read_snapshot_err|rollback_if_in_tx|savepoint_err|savepoint_swallow_err)\b|\.(?:run|all|all_ordered|first)\(\s*""/;
   for (const rel of allFiles) {
     const pkg = rel.split("/")[0]!;
     if (sqlPackages.has(pkg)) continue;
@@ -826,6 +826,13 @@ test("recursive zero-exception static SQLite transaction guard across ALL SQLite
     writeFileSync(join(synthDir, "db_consumer/pion.toml"), '[dependencies]\nsessions_core = { path = "../sessions_core" }\n');
     writeFileSync(join(synthDir, "db_consumer/src/store.pion"), 'pub fn bad(host : Host) -> Unit { let _ = host.db; let _ = db.exec("begin") }\n');
 
+    mkdirSync(join(synthDir, "closure_consumer/src"), { recursive: true });
+    writeFileSync(join(synthDir, "closure_consumer/pion.toml"), '[dependencies]\nbuilders_core = { path = "../builders_core" }\n');
+    writeFileSync(
+      join(synthDir, "closure_consumer/src/sneaky_closure.pion"),
+      'pub fn bad() -> Unit { builders_core::with_conn(fn(c) { let _ = c.run("BEGIN", []) }) }\n',
+    );
+
     mkdirSync(join(synthDir, "attach_db_consumer/src"), { recursive: true });
     writeFileSync(join(synthDir, "attach_db_consumer/pion.toml"), '[dependencies]\nsessions_core = { path = "../sessions_core" }\n');
     writeFileSync(
@@ -843,6 +850,15 @@ test("recursive zero-exception static SQLite transaction guard across ALL SQLite
     );
     assert.ok(synthSqlPkgs.has("db_consumer"), "package touching host.db must be tainted");
     assert.ok(synthSqlPkgs.has("attach_db_consumer"), "package calling transport.attach_db must be tainted");
+    assert.ok(synthSqlPkgs.has("closure_consumer"), "package calling c.run(\"...\") inside untyped lambda must be tainted");
+    assert.equal(
+      findRawTxControlViolations(
+        "closure_consumer/src/sneaky_closure.pion",
+        readFileSync(join(synthDir, "closure_consumer/src/sneaky_closure.pion"), "utf8"),
+      ).length,
+      1,
+      'c.run("BEGIN", []) in untyped lambda must be flagged',
+    );
     assert.equal(
       findRawTxControlViolations("db_consumer/src/store.pion", readFileSync(join(synthDir, "db_consumer/src/store.pion"), "utf8")).length,
       1,
