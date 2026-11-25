@@ -34,6 +34,7 @@
 // not asked again.
 import type { Clock } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileCredentialsSoon } from "../agents/no-keychain.ts";
@@ -184,6 +185,10 @@ export class LoginManager {
   private noBrowserDir: string;
   /// Where the Antigravity CLI's sign-ins each have their HOME (`run`: what runs, bounded-ephemeral).
   private agyLoginDir: string;
+  /// This manager's mark on the HOMEs of its Antigravity sign-ins (`<profile>-<run>-<mark>`): its runs count from 1, as
+  /// another's did before it (the station's before a restart, or another in the same process), whose HOMEs may still be
+  /// there or still going.
+  private readonly agyMark = randomBytes(4).toString("hex");
   private commands: LoginCommands;
   private background: Fibers;
   /// The environment the commands start from; variables that point a login elsewhere are removed at start.
@@ -338,7 +343,7 @@ export class LoginManager {
     let args: string[];
     let pathCommand: string | undefined;
     // The Antigravity CLI's HOME: an empty directory of this sign-in's (the top of this file says why).
-    const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}`) : null;
+    const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}-${this.agyMark}`) : null;
     if (profile.runtime === "claude") {
       env.CLAUDE_CONFIG_DIR = profile.home;
       const email = typeof profile.email === "string" && profile.email.trim() !== "" ? profile.email.trim() : null;
@@ -395,15 +400,14 @@ export class LoginManager {
     if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
     const dropStage = () => (stage !== null ? rm(stage, { recursive: true, force: true }).catch(() => {}) : Promise.resolve());
     if (stage !== null) {
-      // Those an earlier sign-in of this profile left (the station ended under it) go first; never a later one's, made
-      // while this listing was read.
+      // Those an earlier sign-in of this profile left (the station ended under it, or another manager's) go first; never
+      // a later one's of this manager, made while this listing was read. (`<run>` alone: a station's before the mark.)
       const left = await readdir(this.agyLoginDir).catch(() => [] as string[]);
       if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
       const mine = (name: string) => {
         if (!name.startsWith(`${profile.id}-`)) return false;
-        const rest = name.slice(profile.id.length + 1);
-        const n = Number(rest);
-        return /^\d+$/.test(rest) && Number.isInteger(n) && n >= 0 && n < run;
+        const left = /^(\d+)(?:-([0-9a-f]{8}))?$/.exec(name.slice(profile.id.length + 1));
+        return left !== null && (left[2] !== this.agyMark || Number(left[1]) < run);
       };
       await Promise.all(left.filter(mine).map((name) => rm(join(this.agyLoginDir, name), { recursive: true, force: true }).catch(() => {})));
       try {

@@ -892,7 +892,10 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
     const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
     // Its HOME an empty directory of its own (its sign-in copied into the profile's agy/ once done), its sign-in kept in a
     // file there (AGY_FILE_TOKENS), its question to the terminal answered; none of the machine's keys.
-    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], join(data, "run", "agy-login", "g-1"), null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], run.home, null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    // (its run and its manager's mark: one before it, or another manager's with the same run, is not taken for it)
+    const g1 = join(data, "run", "agy-login", "g-1-");
+    assert.ok(run.home.startsWith(g1) && /^[0-9a-f]{8}$/.test(run.home.slice(g1.length)), run.home);
     assert.match(readFileSync(dump + ".terminal", "utf8"), /\\u001b\[\?1;2c/);
     await logins.submitCode("g", " 4/0Ab-code ", "en");
     await wait("done");
@@ -987,11 +990,11 @@ const agy14 = (name: string, extra: Record<string, string> = {}) => {
 test("agy 1.5.14, a company's Google account: Subscriptions chosen first, then its licence", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
   const { home, env, keys } = agy14("company14", { FAKE_AGY_LICENSES: "1" });
   const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
-  const wait = async (state: LoginState) => until(() => logins.get("c")?.state === state);
+  const wait = async (state: LoginState) => until(() => logins.get("c14")?.state === state);
   try {
-    await logins.start({ id: "c", runtime: "agy", home, enterprise: true }, "en");
+    await logins.start({ id: "c14", runtime: "agy", home, enterprise: true }, "en");
     await wait("needs_code");
-    await logins.submitCode("c", "4/0Ab-company", "en");
+    await logins.submitCode("c14", "4/0Ab-company", "en");
     await wait("done");
     assert.deepEqual(keys(), [["menu", true], ["cloud", false], ["gcp-code", false], ["billing14", false], ["license", false]]);
     const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
@@ -1004,13 +1007,13 @@ test("agy 1.5.14, a company's Google account: Subscriptions chosen first, then i
 test("agy 1.5.14, a company's Google account with no licence listed: the project asked, its region (global) chosen, its licence assigned there", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
   const { home, env, keys } = agy14("assign14", { FAKE_AGY_SELF_ASSIGN: "1" });
   const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
-  const wait = async (state: LoginState) => until(() => logins.get("a")?.state === state);
+  const wait = async (state: LoginState) => until(() => logins.get("a14")?.state === state);
   try {
-    await logins.start({ id: "a", runtime: "agy", home, enterprise: true }, "en");
+    await logins.start({ id: "a14", runtime: "agy", home, enterprise: true }, "en");
     await wait("needs_code");
-    await logins.submitCode("a", "4/0Ab-assign", "en");
+    await logins.submitCode("a14", "4/0Ab-assign", "en");
     await wait("needs_project");
-    await logins.submitCode("a", " my-project ", "en");
+    await logins.submitCode("a14", " my-project ", "en");
     await wait("done");
     assert.deepEqual(keys().slice(-3), [["billing14", false], ["project-sub", false], ["region", false]]);
     const file = JSON.parse(readFileSync(agyToken(home), "utf8"));
@@ -1023,13 +1026,13 @@ test("agy 1.5.14, a company's Google account with no licence listed: the project
 test("agy 1.5.14, no licence to be had for the project: back to how to pay, Pay As You Go, the same project typed again", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
   const { home, env, keys } = agy14("paygo14");
   const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
-  const wait = async (state: LoginState) => until(() => logins.get("p")?.state === state);
+  const wait = async (state: LoginState) => until(() => logins.get("p14")?.state === state);
   try {
-    await logins.start({ id: "p", runtime: "agy", home, enterprise: true }, "en");
+    await logins.start({ id: "p14", runtime: "agy", home, enterprise: true }, "en");
     await wait("needs_code");
-    await logins.submitCode("p", "4/0Ab-paygo14", "en");
+    await logins.submitCode("p14", "4/0Ab-paygo14", "en");
     await wait("needs_project");
-    await logins.submitCode("p", "my-project", "en");
+    await logins.submitCode("p14", "my-project", "en");
     await wait("done");
     assert.deepEqual(keys().slice(3), [
       ["billing14", false], ["project-sub", false], ["region", false], ["assign", "esc"], ["project-sub", "esc"],
@@ -1057,24 +1060,42 @@ test("agy stopped after its code: what it shows is said, not the code blamed; a 
     }
   };
   try {
-    await logins.start({ id: "s", runtime: "agy", home, enterprise: true }, "en");
-    await wait("s", "needs_code");
-    await logins.submitCode("s", "4/0Ab-stuck", "en");
-    await wait("s", "needs_project");
-    await logins.submitCode("s", "my-project", "en");
+    await logins.start({ id: "s14", runtime: "agy", home, enterprise: true }, "en");
+    await wait("s14", "needs_code");
+    await logins.submitCode("s14", "4/0Ab-stuck", "en");
+    await wait("s14", "needs_project");
+    await logins.submitCode("s14", "my-project", "en");
     await ticking(() => existsSync(join(data, "stuck14-dump.keys")) && readFileSync(join(data, "stuck14-dump.keys"), "utf8").includes('"step":"region"'));
-    await pastWait("s");
-    assert.equal(logins.get("s")?.state, "failed");
-    const error = logins.get("s")!.error ?? "";
+    await pastWait("s14");
+    assert.equal(logins.get("s14")?.state, "failed");
+    const error = logins.get("s14")!.error ?? "";
     assert.notEqual(error, tr("en", "station.login.agyCodeRefused"));
     assert.match(error, /Setting up your project/);
     assert.match(error, /^agy took the code but didn't finish setting up/);
 
-    await logins.start({ id: "b", runtime: "agy", home: join(data, "bad14"), enterprise: true }, "en");
-    await wait("b", "needs_code");
-    await logins.submitCode("b", "bad", "en");
-    await pastWait("b");
-    assert.equal(logins.get("b")?.error, tr("en", "station.login.agyCodeRefused"));
+    await logins.start({ id: "b14", runtime: "agy", home: join(data, "bad14"), enterprise: true }, "en");
+    await wait("b14", "needs_code");
+    await logins.submitCode("b14", "bad", "en");
+    await pastWait("b14");
+    assert.equal(logins.get("b14")?.error, tr("en", "station.login.agyCodeRefused"));
+  } finally {
+    await logins.close();
+  }
+});
+
+test("a sign-in's HOME is its manager's own: one another manager (a station before a restart) left with the same run, signed in, is not taken up, and goes", { skip: process.platform === "win32" && "no terminal to sign in in" }, async () => {
+  const left = join(data, "run", "agy-login");
+  for (const name of ["x14-1", "x14-1-deadbeef"]) {
+    mkdirSync(join(left, name, ".gemini", "antigravity-cli"), { recursive: true });
+    writeFileSync(join(left, name, ".gemini", "antigravity-cli", "antigravity-oauth-token"), JSON.stringify({ token: { access_token: "ya29.left" }, auth_method: "oauth" }));
+  }
+  const env = { ...process.env, PATH: fake, FAKE_DUMP: join(data, "x14-dump") } as Record<string, string>;
+  const logins = new LoginManager(data, { claude: "claude", codex: "codex", agy: "agy" }, () => env);
+  try {
+    await logins.start({ id: "x14", runtime: "agy", home: join(data, "x14") }, "en");
+    // (on a HOME with a sign-in in it `agy` asks nothing: it would never get to its link)
+    await until(() => logins.get("x14")?.state === "needs_code");
+    assert.deepEqual(readdirSync(left).filter((n) => n.startsWith("x14-") && (n === "x14-1" || n === "x14-1-deadbeef")), []);
   } finally {
     await logins.close();
   }
@@ -1186,7 +1207,7 @@ test("a sign-in again given up or failed leaves the sign-in there as it was", { 
     await logins.submitCode("k", "bad-project", "en");
     await wait("failed");
     assert.deepEqual(JSON.parse(readFileSync(agyToken(home), "utf8")), before);
-    await until(() => !existsSync(join(data, "run", "agy-login", "k-1")) && !existsSync(join(data, "run", "agy-login", "k-2")));
+    await until(() => !readdirSync(join(data, "run", "agy-login")).some((n) => n.startsWith("k-")));
   } finally {
     await logins.close();
   }
