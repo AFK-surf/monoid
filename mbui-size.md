@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8d840de46](https://github.com/AFK-surf/monoid/commit/8d840de468396987e2e02aea3d0d4fa4a0f936f2) fix(ci): stop mbui-size idle from tainting mbui-re | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [8d58b9cf0](https://github.com/AFK-surf/monoid/commit/8d58b9cf0cbd962677a8014460e8ddd1ae5db54d) feat(pion/station): port sessions_agents 1:1 to pu | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [c5cac1fad](https://github.com/AFK-surf/monoid/commit/c5cac1fadb4ad6dc29ef0bf05852b4ad615feba7) fix(cloud): price models by the names their makers | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [28f30876c](https://github.com/AFK-surf/monoid/commit/28f30876c6468ff0116f9e0ba46e70a817e07c08) fix(station): size the remote mirror budget by the | 2.55 | 3.45 | 14.24 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33c7dde0b](https://github.com/AFK-surf/monoid/commit/33c7dde0bb128d3a3011bd08bd1dc012ec11ba0b) test(station): fix FIFO P11 cancel barrier race in | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [aae87e673](https://github.com/AFK-surf/monoid/commit/aae87e673631ee390916146d6abe89d45d875865) fix(core): read a relay's access URL again once it | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [f226b15f0](https://github.com/AFK-surf/monoid/commit/f226b15f06ed2f0a21eaf02eae763957fdd626b6) fix(ui): keep macOS IME marked range and selection | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.15 | 65.02 | 101.14 | 127.63 |
-| [d91e984dc](https://github.com/AFK-surf/monoid/commit/d91e984dc7dd4bfb53d73c249f11f9aa3f0af4ff) fix(screens,mbui): paste passwords into locked mac | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.15 | 65.02 | 101.01 | 127.07 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8d840de46](https://github.com/AFK-surf/monoid/commit/8d840de468396987e2e02aea3d0d4fa4a0f936f2) fix(ci): stop mbui-size idle from tainting mbui-re | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.49 |
 | [8d58b9cf0](https://github.com/AFK-surf/monoid/commit/8d58b9cf0cbd962677a8014460e8ddd1ae5db54d) feat(pion/station): port sessions_agents 1:1 to pu | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.53 |
 | [c5cac1fad](https://github.com/AFK-surf/monoid/commit/c5cac1fadb4ad6dc29ef0bf05852b4ad615feba7) fix(cloud): price models by the names their makers | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.53 |
 | [28f30876c](https://github.com/AFK-surf/monoid/commit/28f30876c6468ff0116f9e0ba46e70a817e07c08) fix(station): size the remote mirror budget by the | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 56.94 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [33c7dde0b](https://github.com/AFK-surf/monoid/commit/33c7dde0bb128d3a3011bd08bd1dc012ec11ba0b) test(station): fix FIFO P11 cancel barrier race in | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.31 |
 | [aae87e673](https://github.com/AFK-surf/monoid/commit/aae87e673631ee390916146d6abe89d45d875865) fix(core): read a relay's access URL again once it | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.03 |
 | [f226b15f0](https://github.com/AFK-surf/monoid/commit/f226b15f06ed2f0a21eaf02eae763957fdd626b6) fix(ui): keep macOS IME marked range and selection | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.12 |
-| [d91e984dc](https://github.com/AFK-surf/monoid/commit/d91e984dc7dd4bfb53d73c249f11f9aa3f0af4ff) fix(screens,mbui): paste passwords into locked mac | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.3 |
