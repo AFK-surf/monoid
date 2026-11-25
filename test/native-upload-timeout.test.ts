@@ -19,7 +19,7 @@ function seedCache(cacheDir: string, part: string, target: "linux-x64", file: st
   return k;
 }
 
-test("ensure --publish aborts a stalled gh release upload after timeout, retries with --clobber, and publishes cached parts in parallel", { skip: process.platform === "win32" }, (t) => {
+test("ensure --publish fans out cached parts to worker children and aborts a permanently stalled gh release upload with SIGKILL before retrying with --clobber", { skip: process.platform === "win32" }, (t) => {
   const dir = mkdtempSync(join(tmpdir(), "native-upload-timeout-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const cacheDir = join(dir, "cache");
@@ -41,13 +41,15 @@ test("ensure --publish aborts a stalled gh release upload after timeout, retries
   `);
 
   // Fake gh:
-  // - `release upload` for launcher hangs on try 1 (killed by STILLFAIL_NATIVE_UPLOAD_TIMEOUT_MS) and succeeds with --clobber on try 2.
-  // - Both cached parts (`launcher` and `runner`) synchronize through a barrier file in stateDir to prove parallel upload.
+  // - Logs ONE=$STILLFAIL_NATIVE_ONE and PPID=$PPID for every call (proving cached parts fanned out to distinct child
+  //   workers without any timing barrier or polling).
+  // - On try 1 of launcher (no --clobber), ignores SIGTERM and blocks indefinitely in `tail -f /dev/null` so ONLY
+  //   spawnSync's timeout + SIGKILL can terminate it; try 2 receives --clobber and exits 0 immediately.
   const fakeGh = join(binDir, "gh");
   const logFile = join(stateDir, "gh.log");
   writeFileSync(fakeGh, `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s\\n' "$*" >> ${JSON.stringify(logFile)}
+printf 'ONE=%s PPID=%s %s\\n' "\${STILLFAIL_NATIVE_ONE:-}" "$PPID" "$*" >> ${JSON.stringify(logFile)}
 if [ "$1" = "api" ]; then
   printf '[]\\n'
   exit 0
@@ -57,27 +59,11 @@ if [ "$1" = "release" ] && [ "$2" = "upload" ]; then
   base="$(basename "$file")"
   case "$base" in
     launcher-*)
-      touch ${JSON.stringify(join(stateDir, "launcher.started"))}
       if [[ " $* " != *" --clobber "* ]]; then
-        sleep 5
-        exit 0
+        trap '' TERM
+        echo "partial upload stall" >&2
+        exec tail -f /dev/null
       fi
-      # Wait briefly for sibling cached upload (runner) to confirm parallel execution.
-      for _ in $(seq 1 40); do
-        [ -f ${JSON.stringify(join(stateDir, "runner.started"))} ] && break
-        sleep 0.05
-      done
-      [ -f ${JSON.stringify(join(stateDir, "runner.started"))} ] || { echo "runner did not run concurrently" >&2; exit 1; }
-      exit 0
-      ;;
-    runner-*)
-      touch ${JSON.stringify(join(stateDir, "runner.started"))}
-      for _ in $(seq 1 40); do
-        [ -f ${JSON.stringify(join(stateDir, "launcher.started"))} ] && break
-        sleep 0.05
-      done
-      [ -f ${JSON.stringify(join(stateDir, "launcher.started"))} ] || { echo "launcher did not run concurrently" >&2; exit 1; }
-      exit 0
       ;;
   esac
 fi
@@ -91,14 +77,19 @@ exit 0
     {
       cwd: root,
       encoding: "utf8",
-      timeout: 15_000,
+      timeout: 30_000,
       env: {
         ...process.env,
         NODE_OPTIONS: `--import ${preload}`,
         PATH: `${binDir}:${process.env.PATH}`,
+        STILLFAIL_NATIVE: "",
+        STILLFAIL_NATIVE_ONE: "",
+        STILLFAIL_NATIVE_INBOX: "",
+        STILLFAIL_NATIVE_READERS: "",
         STILLFAIL_NATIVE_CACHE: cacheDir,
-        STILLFAIL_NATIVE_UPLOAD_TIMEOUT_MS: "350",
-        STILLFAIL_NATIVE_UPLOAD_RETRY_MS: "20",
+        STILLFAIL_NATIVE_CACHE_MAX_BYTES: "0",
+        STILLFAIL_NATIVE_UPLOAD_TIMEOUT_MS: "500",
+        STILLFAIL_NATIVE_UPLOAD_RETRY_MS: "0",
         STILLFAIL_NATIVE_RETRY_MS: "0",
         STILLFAIL_DIRECT_DNS: "",
         STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives",
@@ -111,9 +102,19 @@ exit 0
     },
   );
   assert.equal(run.status, 0, `stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
-  assert.match(run.stderr, /launcher-linux-x64-[a-f0-9]{24}\.tar\.gz: not uploaded \(try 1\), trying again/);
+  assert.match(run.stderr, /launcher-linux-x64-[a-f0-9]{24}\.tar\.gz: not uploaded \(try 1\), trying again:.*ETIMEDOUT.*partial upload stall/);
   assert.match(run.stdout, /launcher linux-x64 [a-f0-9]{24}: cached .* → published/);
   assert.match(run.stdout, /runner linux-x64 [a-f0-9]{24}: cached .* → published/);
+
   const calls = readFileSync(logFile, "utf8").split("\n").filter(Boolean);
-  assert.ok(calls.some((c) => c.startsWith("release upload ") && c.includes("launcher-") && c.includes("--clobber")), calls.join("\n"));
+  const uploadCalls = calls.filter((c) => c.includes(" release upload "));
+  const launcherFirst = uploadCalls.find((c) => c.includes("launcher-") && !c.includes("--clobber"));
+  const launcherRetry = uploadCalls.find((c) => c.includes("launcher-") && c.includes("--clobber"));
+  const runnerUpload = uploadCalls.find((c) => c.includes("runner-"));
+  assert.ok(launcherFirst?.startsWith("ONE=1 "), calls.join("\n"));
+  assert.ok(launcherRetry?.startsWith("ONE=1 "), calls.join("\n"));
+  assert.ok(runnerUpload?.startsWith("ONE=1 "), calls.join("\n"));
+
+  const ppidOf = (line: string) => line.match(/\bPPID=(\d+)\b/)?.[1];
+  assert.notEqual(ppidOf(launcherRetry!), ppidOf(runnerUpload!), `expected separate worker processes:\n${calls.join("\n")}`);
 });

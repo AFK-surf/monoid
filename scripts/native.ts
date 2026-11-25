@@ -1698,10 +1698,12 @@ function gh(args: string[], options: { allowFail?: boolean; timeout?: number } =
   const done = spawnSync("gh", args, {
     encoding: "utf8",
     maxBuffer: 64 << 20,
-    ...(options.timeout ? { timeout: options.timeout } : {}),
+    ...(options.timeout ? { timeout: options.timeout, killSignal: "SIGKILL" as const } : {}),
   });
   if ((done.error || done.status !== 0) && !options.allowFail) {
-    const detail = done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : done.stderr;
+    const stderr = done.stderr?.trim();
+    const base = done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : "";
+    const detail = base && stderr ? `${base} (${stderr})` : base || stderr || `exit ${done.status}`;
     throw new Error(`gh ${args.join(" ")}: ${detail}`);
   }
   return !done.error && done.status === 0 ? done.stdout : "";
@@ -1753,8 +1755,9 @@ function prune(keep: number, only?: Set<string>): void {
     list.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     // (one GitHub dropped is left for the next prune: an EOF on one DELETE failed main's natives job, 6484574c, 2026-11-04)
     for (const a of list.slice(keep)) {
-      const done = spawnSync("gh", ["api", "-X", "DELETE", `repos/${REPO}/releases/assets/${a.id}`], { encoding: "utf8", timeout: 30_000 });
-      console.log(!done.error && done.status === 0 ? `deleted ${a.name}` : `${a.name} not deleted (${(done.error ? done.error.message : done.stderr).trim()}): the next prune deletes it`);
+      const done = spawnSync("gh", ["api", "-X", "DELETE", `repos/${REPO}/releases/assets/${a.id}`], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+      const why = (done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : done.stderr).trim();
+      console.log(!done.error && done.status === 0 ? `deleted ${a.name}` : `${a.name} not deleted (${why}): the next prune deletes it`);
     }
   }
 }
@@ -1774,7 +1777,7 @@ async function published(): Promise<Set<string> | null> {
       // (gh, as without a token)
     }
   }
-  const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true });
+  const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true, timeout: 30_000 });
   return out ? new Set(out.split("\n").filter(Boolean)) : null;
 }
 /// A fetch asked again, ATTEMPTS times in all and RETRY_MS × the tries so far between, when it threw (a connection or
@@ -1958,7 +1961,7 @@ async function main(argv: string[]) {
       // not get through (EOF) was taken for a missing release (mbui-media-runtime 41457910309).
       if (publish && listed === null) {
         try {
-          gh(["release", "view", RELEASE, "-R", REPO, "--json", "name"]);
+          gh(["release", "view", RELEASE, "-R", REPO, "--json", "name"], { timeout: 30_000 });
         } catch (e) {
           if (!/release not found/i.test(String(e))) throw e;
           throw new Error(`the release ${RELEASE} is not on ${REPO}: make it once`);
