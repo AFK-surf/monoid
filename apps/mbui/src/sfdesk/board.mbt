@@ -40,11 +40,33 @@ fn board_width(src : Source, w : Workspace, ww : Double) -> Double {
 /// A notification while the board is in view opens its chat as a card does, if the board has room beside it. A chat
 /// page, another workspace or a narrower board keeps the ordinary page-opening path.
 pub fn notice_on_board(src : Source, r : ChatRef, ww : Double) -> Bool {
-  guard !wide.tape.get() && board_bare() && @sfbase.workspace_in_view(src).0 is Some(w) &&
-    @sfbase.workspace_of(r.station) == w.id && board_width(src, w, ww) >= @sfpages.board_beside_from else {
-    return false
-  }
+  guard board_beside_room(src, ww) is Some(w) && @sfbase.workspace_of(r.station) == w.id else { return false }
   @sfbase.board_pick.set(Some(r))
+  true
+}
+
+///|
+/// The workspace whose board is in view off the tape with room for a chat beside it in a window `ww` wide (Home alone
+/// on the stack): None where a chat page, the tape or a narrower board has none.
+fn board_beside_room(src : Source, ww : Double) -> Workspace? {
+  guard !wide.tape.get() && board_bare() && @sfbase.workspace_in_view(src).0 is Some(w) &&
+    board_width(src, w, ww) >= @sfpages.board_beside_from else {
+    return None
+  }
+  Some(w)
+}
+
+///|
+/// Esc in a window `ww` wide, after what the frame opened over the page (keys.mbt's frame.escape): the chat beside the
+/// board closed as its × does, a passage picked in it let go first (chat_escape's order); what is open over or in it
+/// (a menu, the composer's list) has taken it before. Whether it took it.
+fn board_escape(src : Source, ww : Double) -> Bool {
+  guard @sfbase.board_pick.get() is Some(_) && board_beside_room(src, ww) is Some(_) else { return false }
+  if @sfbase.pk.ts != "" {
+    @sfbase.pick_clear()
+  } else {
+    @sfbase.board_pick.set(None)
+  }
   true
 }
 

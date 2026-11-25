@@ -304,6 +304,91 @@ test "大屏 on another platform: ⌘W does not close a board chat" {
 }
 
 ///|
+test "大屏: Esc closes the chat opened beside the board, the board staying; a second Esc closes nothing more" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  t.key(@ui.key_escape)
+  assert_true(@sfbase.board_pick.get() is None)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全屏打开") is None)
+  assert_true(@sfbase.board_on_of(src, "ws1"))
+  assert_true(app.nav.top() is Home)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_on_of(src, "ws1"))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: Esc with the board chat's composer focused and words written in it closes the chat" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  t.click(TextField, label="发消息")
+  t.type_text("先看一下")
+  t.frame()
+  t.key(@ui.key_escape)
+  assert_true(@sfbase.board_pick.get() is None)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全屏打开") is None)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: what is open over the board chat takes Esc first: a card's menu, ⌘/'s list, 显示's panel; the chat after" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  // (a card's menu on the board, the chat's composer focused before it: closed, the chat staying)
+  t.click(TextField, label="发消息")
+  guard board_words_at(t, "给导出加上按月份筛选") is Some((mx, my, _, _)) else { fail("no draft") }
+  t.right_click(mx + 10.0, my + 6.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "删除") is Some(_), msg="the card's menu open")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "删除") is None)
+  assert_true(@sfbase.board_pick.get() is Some(_), msg="the card's menu took Esc")
+  // (⌘/'s list of the keys)
+  @sfdesk.wide.keys_open.set(true)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfdesk.wide.keys_open.get())
+  assert_true(@sfbase.board_pick.get() is Some(_), msg="⌘/'s list took Esc")
+  // (显示's panel in the board's bar)
+  board_display_open(t)
+  assert_true(board_words_at(t, "分组方式") is Some(_))
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_words_at(t, "分组方式") is None)
+  assert_true(@sfbase.board_pick.get() is Some(_), msg="显示's panel took Esc")
+  // (nothing over it: the chat)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is None)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: a board chat without room to show leaves Esc alone, and takes it again when shown" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  t.resize(1000.0, 900.0)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  t.resize(1440.0, 900.0)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  assert_true(@sfbase.board_pick.get() is None)
+}
+
+///|
 test "大屏: a done chat's 归档 takes it off the board, 撤销 said; grouped by station and by person" {
   let (t, src) = board_at("board", 1440.0, 900.0)
   let keys = t.all(Button, label="归档")
