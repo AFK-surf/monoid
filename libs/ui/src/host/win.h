@@ -145,12 +145,17 @@ const wchar_t *mb_win_app_name(void);
 // a name of the program's environment as the process's says it, else as the program's own (win_life.h): NULL none
 const wchar_t *mb_win_env(const wchar_t *name);
 #define WM_MB_TAPPED (0x8000 + 4)  /* WM_APP + 4 */
-// notifications (win_notify.cpp): a scripted run's tap (1) or look (0) at the one whose words hold `text`: 1 found
+// notifications (win_notify.cpp): worker startup/refresh, and a scripted run's tap (1) or look (0) at the one whose
+// words hold `text`: 1 found
+void mb_win_notify_start(void);
+void mb_win_notify_refresh(void);
 int32_t mb_notice_drive(int32_t tap, const wchar_t *text);
-// the number on the window's taskbar button (win_notify.cpp: its overlay; 0 none), and put on again as the taskbar
-// makes the button anew
+// the number on a window's taskbar button (win_notify.cpp: its overlay; 0 none), ready on TaskbarButtonCreated,
+// rescaled on WM_DPICHANGED, and forgotten on window close
 void mb_win_badge(void *hwnd, int n);
-void mb_win_badge_again(void *hwnd);
+void mb_win_badge_ready(void *hwnd, int n);
+void mb_win_badge_dpi(void *hwnd, int n, unsigned dpi);
+void mb_win_badge_closed(void *hwnd);
 // the run's first window (HWND: its life, its notifications), and the scale (pixels per point) of the window in place
 void *mb_app_hwnd(void);
 double mb_app_scale(void);

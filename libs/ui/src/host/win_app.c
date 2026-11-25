@@ -124,6 +124,18 @@ typedef struct WinSlot {
 static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0, .last_begin = -1.0}};
 static WinSlot *ws = &win_slots[0];
 static int win_active;  // the window in place (0, the first, between frames and input)
+static int badge_now_app = 0;
+static int badge_worker_started = 0;
+static UINT taskbar_button_made = 0;
+static int win_has_taskbar_button(int wid, HWND h) {
+  if (!h) return 0;
+  if (wid >= 0 && wid < MB_WINS && win_slots[wid].clear) return 0;
+  if (GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return 0;
+  return 1;
+}
+static void allow_taskbar_button_msg(HWND h) {
+  if (h && taskbar_button_made) ChangeWindowMessageFilterEx(h, taskbar_button_made, MSGFLT_ALLOW, NULL);
+}
 static void win_slot_fresh(WinSlot *w) {
   memset(w, 0, sizeof *w);
   w->scale = 1;
@@ -963,10 +975,12 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return taken;
   }
   // the taskbar's button made anew (the window shown again from its tray): its number put on it again
-  static UINT button_made;
-  if (!button_made) button_made = RegisterWindowMessageW(L"TaskbarButtonCreated");
-  if (msg == button_made) {
-    mb_win_badge_again(h);
+  if (taskbar_button_made && msg == taskbar_button_made) {
+    int k = win_of(h);
+    if (win_has_taskbar_button(k, h)) {
+      if (badge_now_app > 0) badge_worker_started = 1;
+      mb_win_badge_ready(h, badge_now_app);
+    }
     return 0;
   }
   switch (msg) {
@@ -1105,6 +1119,11 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       RECT *r = (RECT *)lp;
       SetWindowPos(h, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
                    SWP_NOZORDER | SWP_NOACTIVATE);
+      int k = win_of(h);
+      if (badge_now_app > 0 && win_has_taskbar_button(k, h)) {
+        badge_worker_started = 1;
+        mb_win_badge_dpi(h, badge_now_app, (unsigned)HIWORD(wp));
+      }
       ws->want_frame = 1;
       return 0;
     }
@@ -1338,6 +1357,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   // (OLE's, for the drop target: COM's single-threaded apartment with it)
   OleInitialize(NULL);
+  taskbar_button_made = RegisterWindowMessageW(L"TaskbarButtonCreated");
 
   WCHAR *cls = win_class;
   window_class(cls, 300);
@@ -1369,6 +1389,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   hwnd = CreateWindowExW(0, cls, t, style, CW_USEDEFAULT, CW_USEDEFAULT, (int)ww, (int)wh, NULL, NULL,
                          wc.hInstance, NULL);
   win_making = -1;
+  allow_taskbar_button_msg(hwnd);
   win_slots[0].h = hwnd;
   // that client area at the monitor's scale
   UINT dpi = GetDpiForWindow(hwnd);
@@ -1530,11 +1551,13 @@ static const RECT *role_kept(const char *role) {
 
 static void win_closed(int wid) {
   if (wid <= 0 || wid >= MB_WINS || !win_slots[wid].h) return;
+  HWND closed_h = win_slots[wid].h;
   if (win_active == wid) win_use(0);
   role_keep(&win_slots[wid]);
   drop_stop(wid);
   mb_views_forget(wid);
   mb_render_forget(wid);
+  mb_win_badge_closed(closed_h);
   win_slot_fresh(&win_slots[wid]);
   // (a bare run whose first was hidden as it closed ends as the last window beside it closes: none is left to be seen)
   int beside = 0;
@@ -1661,6 +1684,7 @@ static int win_open(moonbit_string_t what) {
   }
   w->h = h;
   w->clear = clear;
+  if (!clear) allow_taskbar_button_msg(h);
   w->scale = GetDpiForWindow(h) / 96.0;
   // (an inset window's frame without the title bar, as the first's: WM_NCCALCSIZE)
   if (!clear) SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -2253,7 +2277,16 @@ int32_t mb_host_window_snap_state(void) { return ws->snap_state; }
 
 // The pointer's shape (@hostapi.set_cursor), shown at once where it is over the window.
 // The number on the app's icon (@hostapi.set_badge): its taskbar button's overlay (win_notify.cpp).
-void mb_host_set_badge(int32_t n) { mb_win_badge(hwnd, n); }
+void mb_host_set_badge(int32_t n) {
+  int clamped = n > 0 ? n : 0;
+  badge_now_app = clamped;
+  if (clamped == 0 && !badge_worker_started) return;
+  badge_worker_started = 1;
+  for (int k = 0; k < MB_WINS; k++) {
+    HWND h = win_slots[k].h;
+    if (win_has_taskbar_button(k, h)) mb_win_badge(h, clamped);
+  }
+}
 // The keys held now (@hostapi.mods_held), as a key's are told.
 int32_t mb_host_mods_held(void) { return mods_now(); }
 
