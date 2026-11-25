@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
 import type { Lang } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { platform } from "../platform/index.ts";
+import { isBackgroundWrapperExecFailure, platform } from "../platform/index.ts";
 import { giveBackfill, takeBackfill } from "../store/backfill.ts";
 import {
   READER_MODES,
@@ -607,7 +607,13 @@ export class MbProcess extends EventEmitter {
   readonly #child: ChildProcess;
   readonly #args: readonly string[];
   readonly #stdinMost: number;
+  readonly #wrapped: boolean;
+  readonly #spawnFallbackMode: string | undefined;
   #spawned = false;
+  #spawnEpoch: number | null = null;
+  #sawStdout = false;
+  #stderrCounted = 0;
+  readonly #wrapperStderr: string[] = [];
   #exited = false;
   #stalled = false;
   #intentionalStop = false;
@@ -625,19 +631,32 @@ export class MbProcess extends EventEmitter {
     this.mode = options.mode ?? identity.mode;
     const background = options.background ?? backgroundByDefault(args);
     const [command, given] = mbSpawned(binary, args, { background });
+    this.#wrapped = command !== binary;
+    this.#spawnFallbackMode = options.fallbackMode;
     this.#args = args;
     this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.#child.once("spawn", () => {
       this.#spawned = true;
+      this.#spawnEpoch = readerTelemetry.windowEpoch;
       readerTelemetry.recordSpawn(this.engine, this.mode);
-      if (options.fallbackMode !== undefined) readerTelemetry.recordFallback(options.fallbackMode);
+      if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
     });
     if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
     const said = new Said((answer) => this.emit("message", answer));
-    this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
+    this.#child.stdout!.on("data", (bytes: Buffer) => {
+      if (bytes.length > 0 && !this.#sawStdout) {
+        this.#sawStdout = true;
+        this.#wrapperStderr.length = 0;
+      }
+      said.push(bytes);
+    });
     createInterface({ input: this.#child.stderr! }).on("line", (line) => {
       readerTelemetry.recordStderr(this.engine, this.mode);
+      this.#stderrCounted++;
+      if (this.#wrapped && !this.#sawStdout && this.#wrapperStderr.length < 8) {
+        this.#wrapperStderr.push(line);
+      }
       log.warn("readers", "a MoonBit reader said", { line, engine: this.engine, mode: this.mode });
     });
     // (a failed write is the process gone, told by its exit)
@@ -654,7 +673,20 @@ export class MbProcess extends EventEmitter {
     this.#child.on("close", (code, signal) => {
       this.#exited = true;
       MbProcess.#live.delete(this);
-      if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
+      if (
+        this.#spawned &&
+        this.#wrapped &&
+        !this.#sawStdout &&
+        !this.#intentionalStop &&
+        isBackgroundWrapperExecFailure(command, code, signal, this.#wrapperStderr)
+      ) {
+        if (this.#spawnEpoch !== null) {
+          readerTelemetry.undoUnstartedSpawn(this.#spawnEpoch, this.engine, this.mode, {
+            fallbackMode: this.#spawnFallbackMode,
+            stderrLines: this.#stderrCounted,
+          });
+        }
+      } else if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
         readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
       }
       this.emit("exit", code ?? (signal !== null ? 1 : 0));

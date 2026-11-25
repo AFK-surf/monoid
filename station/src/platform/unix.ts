@@ -83,6 +83,27 @@ export function backgroundedOn(how: Background, program: string, args: string[])
   }
 }
 
+/// Whether a backgrounded wrapper (`taskpolicy`, `nice`, `ionice`) failed to exec the target binary
+/// (missing file, bad shebang, permission denied), rather than the target running and returning an exit code.
+export function isBackgroundWrapperExecFailure(
+  command: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderrLines: readonly string[],
+): boolean {
+  if (signal !== null || code === null || code === 0) return false;
+  if (/(?:^|\/)taskpolicy$/.test(command)) {
+    return stderrLines.some((l) => /^taskpolicy:\s+posix_spawn:/.test(l));
+  }
+  if (/(?:^|\/)nice$/.test(command)) {
+    return (code === 126 || code === 127) && stderrLines.some((l) => /^(?:.*\/)?nice:\s/.test(l));
+  }
+  if (/(?:^|\/)ionice$/.test(command)) {
+    return (code === 126 || code === 127 || code === 1) && stderrLines.some((l) => /^(?:.*\/)?(?:ionice|nice):\s/.test(l));
+  }
+  return false;
+}
+
 /// files.rs `clean` on Unix: the path absolute (a leading `/`), `.` and `..` worked out lexically.
 function clean(path: string): string {
   const out: string[] = [];

@@ -250,12 +250,35 @@ export class ReaderTelemetry {
   readonly #maxSamples: number;
   readonly #buckets = new Map<string, Bucket>();
   #windowStartMs: number;
+  #windowEpoch = 0;
   #lastRss: RssBreakdown = EMPTY_RSS;
   #lastRssAt = 0;
 
   constructor(options: { maxSamples?: number; nowMs?: number } = {}) {
     this.#maxSamples = options.maxSamples ?? DEFAULT_MAX_SAMPLES;
     this.#windowStartMs = options.nowMs ?? wall.now();
+  }
+
+  get windowEpoch(): number {
+    return this.#windowEpoch;
+  }
+
+  #isBucketEmpty(b: Bucket): boolean {
+    return (
+      b.spawns === 0 &&
+      b.unexpectedExits === 0 &&
+      b.stalls === 0 &&
+      b.stderrLines === 0 &&
+      b.fallbacks === 0 &&
+      b.ops === 0 &&
+      b.errors === 0 &&
+      b.latency.count === 0 &&
+      b.readyCount === 0 &&
+      b.readyTotal.count === 0 &&
+      b.liveCount === 0 &&
+      b.rssBytes === null &&
+      b.peakRssBytes === null
+    );
   }
 
   #bucket(engine: TelemetryEngine, mode: string): Bucket {
@@ -305,6 +328,35 @@ export class ReaderTelemetry {
   /// Record a fallback from requested `pion` back to `mb` when an MB process is actually spawned.
   recordFallback(mode: string): void {
     this.#bucket("pion", mode).fallbacks++;
+  }
+
+  /// Roll back spawn/fallback/stderr counters when a background wrapper (`taskpolicy`/`nice`/`ionice`)
+  /// emitted `"spawn"` but failed before executing the target binary. Guarded by `windowEpoch` so a
+  /// late rollback never subtracts from the next window's fresh counters.
+  undoUnstartedSpawn(
+    epoch: number,
+    engine: TelemetryEngine,
+    mode: string,
+    options: { fallbackMode?: string; stderrLines?: number } = {},
+  ): void {
+    if (epoch !== this.#windowEpoch) return;
+    const key = `${engine}:${mode}`;
+    const b = this.#buckets.get(key);
+    if (b !== undefined) {
+      b.spawns = Math.max(0, b.spawns - 1);
+      if (options.stderrLines !== undefined && options.stderrLines > 0) {
+        b.stderrLines = Math.max(0, b.stderrLines - options.stderrLines);
+      }
+      if (this.#isBucketEmpty(b)) this.#buckets.delete(key);
+    }
+    if (options.fallbackMode !== undefined) {
+      const fbKey = `pion:${options.fallbackMode}`;
+      const fb = this.#buckets.get(fbKey);
+      if (fb !== undefined) {
+        fb.fallbacks = Math.max(0, fb.fallbacks - 1);
+        if (this.#isBucketEmpty(fb)) this.#buckets.delete(fbKey);
+      }
+    }
   }
 
   recordReady(engine: TelemetryEngine, mode: string, wallMs: number, loadedMs?: number, openedMs?: number): void {
@@ -366,6 +418,7 @@ export class ReaderTelemetry {
   flushWindow(nowMs = wall.now()): EngineModeSummary[] {
     const windowSec = Math.max(0, Math.round((nowMs - this.#windowStartMs) / 1000));
     this.#windowStartMs = nowMs;
+    this.#windowEpoch++;
     const out: EngineModeSummary[] = [];
 
     for (const [key, b] of this.#buckets) {
@@ -440,6 +493,7 @@ export class ReaderTelemetry {
   resetForTest(nowMs = wall.now()): void {
     this.#buckets.clear();
     this.#windowStartMs = nowMs;
+    this.#windowEpoch++;
     this.#lastRss = EMPTY_RSS;
     this.#lastRssAt = 0;
   }

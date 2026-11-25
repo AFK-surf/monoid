@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { LogExport, record } from "../src/ops/log-export.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
-import type { ProcessInfo } from "../src/platform/index.ts";
+import { type ProcessInfo, isBackgroundWrapperExecFailure } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
   type LiveProgram,
@@ -680,6 +680,108 @@ test("OTel log-export preserves all updated telemetry fields without scrubbing a
   assert.equal(mAttrs["log.mbProcs"], "1");
   for (const key of ["log.pionRssMb", "log.mbRssMb", "log.pionProcs", "log.mbProcs"]) {
     assert.ok("intValue" in mRaw[key]!, `${key} must be OTLP intValue`);
+  }
+});
+
+test("isBackgroundWrapperExecFailure distinguishes taskpolicy/nice/ionice exec failures from reader exit codes", () => {
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/sbin/taskpolicy", 66, null, ["taskpolicy: posix_spawn: No such file or directory"]),
+    true,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/sbin/taskpolicy", 66, null, ["reader exited cleanly with custom code 66"]),
+    false,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/bin/nice", 127, null, ["nice: '/missing/bin': No such file or directory"]),
+    true,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/bin/nice", 126, null, ["/usr/bin/nice: '/bad/bin': Permission denied"]),
+    true,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/bin/nice", 127, null, ["reader internal error"]),
+    false,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/bin/ionice", 1, null, ["ionice: failed to execute /bad/bin: No such file or directory"]),
+    true,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/bin/ionice", 127, null, ["nice: '/bad/bin': No such file or directory"]),
+    true,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/bin/ionice", 66, null, ["ionice: failed to execute /bad/bin"]),
+    false,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/sbin/taskpolicy", 0, null, ["taskpolicy: posix_spawn: No such file or directory"]),
+    false,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/sbin/taskpolicy", null, "SIGKILL", ["taskpolicy: posix_spawn: No such file or directory"]),
+    false,
+  );
+  assert.equal(
+    isBackgroundWrapperExecFailure("/usr/local/bin/stillfail-reader", 127, null, ["nice: nope"]),
+    false,
+  );
+});
+
+test("background wrapper exec failure (bad shebang) rolls back spawn/fallback/stderr without unexpectedExit, while real exit 66/127 still counts", { skip: unix ? false : "Unix background wrappers only" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bg-wrapper-exec-fail-"));
+  const prevPion = process.env.STILLFAIL_PION_READER;
+  const prevFoot = process.env.STILLFAIL_READER_FOOTPRINT;
+  readerTelemetry.resetForTest(1_000);
+  resetReaderSelectionStateForTest();
+
+  try {
+    // 1. Executable with non-existent shebang interpreter via measured() (background: true) + missing Pion fallback.
+    const badShebang = join(dir, "stillfail-reader");
+    writeFileSync(badShebang, "#!/nonexistent/interp\n");
+    chmodSync(badShebang, 0o755);
+    setMbReaderBinaryOverrideForTest(() => badShebang);
+    process.env.STILLFAIL_PION_READER = join(dir, "missing-pion");
+    process.env.STILLFAIL_READER_FOOTPRINT = "pion";
+
+    await assert.rejects(measured(dir, undefined, { maxDurationMs: 5_000 }));
+
+    const flushedBad = readerTelemetry.flushWindow(61_000);
+    const mbFoot = flushedBad.find((s) => s.engine === "mb" && s.mode === "footprint");
+    assert.ok(mbFoot, "measured() still records ops=1, errors=1");
+    assert.equal(mbFoot.ops, 1);
+    assert.equal(mbFoot.errors, 1);
+    assert.equal(mbFoot.spawns, 0);
+    assert.equal(mbFoot.unexpectedExits, 0);
+    assert.equal(mbFoot.stderrLines, 0);
+    assert.equal(
+      flushedBad.find((s) => s.engine === "pion" && s.mode === "footprint"),
+      undefined,
+      "fallback ghost bucket rolled back and removed",
+    );
+
+    // 2. Contrast control: real runnable script under background: true exiting with 66 and 127 MUST still count.
+    for (const exitCode of [66, 127] as const) {
+      const mode = `bg-exit-${exitCode}`;
+      const realScript = makeFakeExecutable(dir, `exit-${exitCode}`, `process.exit(${exitCode});`);
+      const p = new MbProcess(realScript, ["--builder", mode], { background: true });
+      await new Promise<void>((resolve) => p.once("exit", () => resolve()));
+      const flushed = readerTelemetry.flushWindow(121_000 + exitCode);
+      const bucket = flushed.find((s) => s.engine === "mb" && s.mode === mode);
+      assert.ok(bucket, `bucket for exit ${exitCode} present`);
+      assert.equal(bucket.spawns, 1, `real exit ${exitCode} keeps spawns=1`);
+      assert.equal(bucket.unexpectedExits, 1, `real exit ${exitCode} keeps unexpectedExits=1`);
+    }
+  } finally {
+    if (prevPion === undefined) delete process.env.STILLFAIL_PION_READER;
+    else process.env.STILLFAIL_PION_READER = prevPion;
+    if (prevFoot === undefined) delete process.env.STILLFAIL_READER_FOOTPRINT;
+    else process.env.STILLFAIL_READER_FOOTPRINT = prevFoot;
+    resetReaderSelectionStateForTest();
+    readerTelemetry.resetForTest();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
