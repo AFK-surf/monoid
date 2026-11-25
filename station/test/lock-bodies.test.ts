@@ -12,7 +12,7 @@ import { type Entry as StationEntry, bodyHash, entryHash, wsTag } from "../../sh
 import { wall } from "../src/ops/fibers.ts";
 import { answerLock } from "../src/mesh/lock-sync.ts";
 import { bodiesSyncWith } from "../src/mesh/person-sync.ts";
-import { inLock, lockPartRoute } from "../src/mesh/serve.ts";
+import { inLock, lockPartRoute, stillIn } from "../src/mesh/serve.ts";
 import { Log, WS, WS2, bring, ed, handover, signed, station, viewerOf, world } from "./lock-moved-world.ts";
 
 const NOW = 2_000_000;
@@ -178,12 +178,15 @@ test("while a moved workspace is off, admitted workspace members receive bodies 
   assert.ok((lockPartRoute(c, "logs", "GET", Buffer.alloc(0), viewerOf("carol", stranger)) as any)[1].chains.length >= 3, "new device receives logs while off");
   assert.equal(heads(viewerOf("carol", stranger)).bodies.length, kept, "new device receives heads while off");
   assert.equal(get(viewerOf("carol", stranger, "member", WS2)), 0, "another workspace with no lock still receives none");
-  // Once the root re-opens safe mode, devices not on the list are refused at admission again.
+  // Once the root re-opens safe mode, devices not on the list are refused at admission again and existing connections
+  // opened while off are kicked on `stillIn` (`gone()`).
   w.alice.say("open", { ...w.settings, email: "alice@x" });
   bring(c, w.alice);
   assert.notEqual(c.locked(), null);
   const v = viewerOf("carol", stranger);
-  assert.throws(() => inLock(c, { viewer: v, exp: 4102444800, iat: 0, sid: "s" } as never, "member", v.device), "unlisted device is refused once re-opened");
+  const admitted = { viewer: v, exp: 4102444800, iat: 0, sid: "s" } as never;
+  assert.throws(() => inLock(c, admitted, "member", v.device), "unlisted device is refused once re-opened");
+  assert.throws(() => stillIn(c, admitted, "member", v.device), "existing unlisted connection opened while off is kicked once re-opened");
 });
 
 test("before the chain moved, a station takes the statements' bodies of a handover, and they are the state in force as the moved comes", () => {

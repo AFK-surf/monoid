@@ -245,8 +245,12 @@ function toldOut(cloud: Cloud, ws: string | null, device: string, hello: any): {
 
 /// Whether a device's connection is given `ws`'s bodies and logs: let in by its lock (while on), or any admitted
 /// member while a moved workspace is off (so devices not on the pre-off roster can fetch the root's log and the `off`
-/// statement's prev chain and verify locally that safe mode is off, instead of staying stuck in `waiting`). While the
-/// station waits for the root's log or its `open` (`waiting`), or without a lock pinned here, nobody is given them.
+/// statement's prev chain and verify locally that safe mode is off, instead of staying stuck in `waiting`). This does
+/// not widen the threat model: `off` is derived strictly from the root's signed log (unforgeable by cloud), stations
+/// already admit every workspace member by cloud credential while off, cross-workspace isolation (`viewer.workspace`)
+/// and peer-station `Cloud.givenTo` are unchanged, and re-opening (`open`) kicks unlisted connections via `gone()` /
+/// `stillIn`. While the station waits for the root's log or its `open` (`waiting`), or without a lock pinned here,
+/// nobody is given them.
 function givesDevice(cloud: Cloud, ws: string | null): boolean {
   const locked = cloud.locked(ws);
   if (locked !== null) return locked.waiting !== true;
