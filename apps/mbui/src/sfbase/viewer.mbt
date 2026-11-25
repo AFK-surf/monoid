@@ -298,6 +298,11 @@ pub(all) struct Viewer {
   /// zoomed in, its left and its right edge in the stage as the finger went down (a fling on past one goes beside it)
   mut at_left : Bool
   mut at_right : Bool
+  /// zoomed in, how far this hold's finger has gone on past where the picture's edges stopped it (across, down): the
+  /// finger coming back gives that back first, so the picture moves again only as the finger reaches the point of it
+  /// it took
+  mut past_x : Double
+  mut past_y : Double
   /// the finger came down on it flinging, and stopped it there: no tap
   mut caught : Bool
   /// where the strip was as the finger went down (a slide still going on caught there): what the swipe let go is
@@ -1017,6 +1022,8 @@ pub fn new_viewer(
     down_ly: 0.0,
     at_left: false,
     at_right: false,
+    past_x: 0.0,
+    past_y: 0.0,
     caught: false,
     strip_down: 0.0,
     start_at: match pv_frames.get(station + "/" + key + "/" + a.path) {
@@ -3107,7 +3114,8 @@ pub fn Viewer::wheeled(
 /// cannot go pulls in the one beside it (the strip, as a swipe does it fitted: past the first or the last a third as
 /// far), but only from an edge it was at as the finger went down: a press that brings it to its edge stops there, and
 /// another from there goes on to the one beside it (the user, 2026-10-28); the finger going back takes the strip back
-/// first.
+/// first. Where an edge stopped it, what the finger went on past is given back first as it comes back (Viewer::past_x),
+/// so the point the finger took stays under it.
 pub fn Viewer::drag_zoomed(
   self : Viewer,
   z : @motion.Zoom,
@@ -3132,16 +3140,33 @@ pub fn Viewer::drag_zoomed(
       across = across - back
     }
   }
-  let x0 = z.rect_at(at).map(fn(r) { r.0 }).unwrap_or(0.0)
+  // (the way back of what the finger went on past an edge it was stopped at: given back before the picture moves)
+  let give_back = fn(by : Double, past : Double) -> (Double, Double) {
+    if past == 0.0 || by == 0.0 || (by > 0.0) == (past > 0.0) {
+      (by, past)
+    } else if by.abs() <= past.abs() {
+      (0.0, past + by)
+    } else {
+      (by + past, 0.0)
+    }
+  }
+  let (across, past_x) = give_back(across, self.past_x)
+  let (dy, past_y) = give_back(dy, self.past_y)
+  let (x0, y0) = z.rect_at(at).map(fn(r) { (r.0, r.1) }).unwrap_or((0.0, 0.0))
   z.pan(across, dy, at~)
-  let left = across - (z.rect_at(at).map(fn(r) { r.0 }).unwrap_or(0.0) - x0)
+  let (x1, y1) = z.rect_at(at).map(fn(r) { (r.0, r.1) }).unwrap_or((0.0, 0.0))
+  let left = across - (x1 - x0)
+  self.past_y = past_y + (dy - (y1 - y0))
   let from_edge = if left > 0.0 { self.at_left } else { self.at_right }
   if left.abs() > 0.001 && (has_before || has_after) && from_edge {
+    self.past_x = past_x
     if !self.swiping {
       self.swiping = true
       pv_strip.leaving = None
     }
     strip.put(strip.value_at(at) + left * give(left))
+  } else {
+    self.past_x = past_x + left
   }
 }
 
