@@ -818,3 +818,57 @@ test("W8-E2 R6 NN3: snapshot hands over and nothing of the old reaches its sessi
     await f.program.close();
   }
 });
+
+for (const churn of [511, 512]) {
+  test(`W8-E2 R7: steer refill compensation survives ${churn} unrelated retirements`, async () => {
+    const frames: any[] = [];
+    let receive!: (frame: any) => void;
+    const program = ActorsProgram.openForTest(
+      {
+        use(user: any) { receive = user.said; },
+        post(frame: any) { frames.push(frame); return true; },
+        hold() {},
+        release() {},
+        kill() {},
+      } as any,
+      { currentTimeMillisUnsafe: () => 100 } as any,
+    );
+    let marked = true;
+    const store = {
+      getSession: () => ({ runtime: "claude" }),
+      markUndelivered() { marked = false; },
+    };
+    try {
+      const old = program.actor("original", "claude", { store } as any);
+      let finishSteer!: (v: boolean) => void;
+      const adopted = old.adopt(
+        { runtime: "claude" } as any,
+        { steer: () => new Promise<boolean>((r) => { finishSteer = r; }) } as any,
+        "",
+      );
+      const call = frames.at(-1);
+      receive({ returned: call.call, value: null });
+      await adopted;
+      receive({ rpc: 800, actor: "original", fn: "agent.steer", args: [call.args[1].handle, "m"] });
+      old.close();
+      receive({ returned: frames.at(-1).call, value: null });
+      finishSteer(false);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(frames.find((x) => x.answer === 800)?.value, false);
+      for (let i = 0; i < churn; i++) {
+        const a = program.actor(`other-${i}`, "claude", { store } as any);
+        a.close();
+        receive({ returned: frames.at(-1).call, value: null });
+      }
+      receive({ rpc: 900, actor: "original", fn: "store.markUndelivered", args: ["original", [{ thread: "t", n: 1 }]] });
+      await new Promise((r) => setImmediate(r));
+      const result = frames.find((x) => x.answer === 900);
+      assert.deepEqual(
+        { marked, error: result?.error?.message, answer: result?.answer },
+        { marked: false, error: undefined, answer: 900 },
+      );
+    } finally {
+      await program.close();
+    }
+  });
+}

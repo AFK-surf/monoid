@@ -2820,3 +2820,131 @@ test "R6 verify: widget reply cannot change previously verified adopted state" {
     "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
   )
 }
+
+fn zv_words(s : NodeScript) -> Option[Array[base_codec::Json]] {
+  for i in 0..<s.rpcs.length() {
+    let (_, f, args) = s.rpcs[i]
+    if f == "node.words" && args.length() > 0 && opt_str_is(sessions_core::str_of(Some(args[0])), "silentProgress") {
+      return Some(args)
+    }
+  }
+  None
+}
+
+test "R7 vv1: silentProgress is asked with silent ms and reminded ms as MB and Node say" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.silent_waiting_since = Some(0.0)
+  s.actors.current.gen.counters.now = 1200000.0
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.maybe_progress_reminder_k(a, fn(_ex : effect::Exit[(Option[String], Bool)]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(r3_null)
+  match zv_words(s) {
+    Some(args) => {
+      let ms = num_or(sessions_core::num_of(Some(args[1])), -1.0)
+      assert_run(
+        args.length() == 3 && ms == 1200000.0 && is_json_null(args[2]),
+        "VV1 args=" + base_codec::json_stringify(base_codec::json_arr(args)),
+      )
+    }
+    None => panic("VV1 not asked")
+  }
+}
+
+test "R7 vv2: wait of 5 minutes asks Node, which decides when it is due" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.silent_waiting_since = Some(0.0)
+  s.actors.current.gen.counters.now = 300000.0
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.maybe_progress_reminder_k(a, fn(_ex : effect::Exit[(Option[String], Bool)]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(r3_null)
+  assert_run(is_some(zv_words(s)), "VV2 Node not asked")
+}
+
+test "R7 vv3: give_up tells the opener it failed" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { cur.give_up_k(a, None, k) })
+  s.drive(r3_null)
+  assert_run(s.has_rpc("node.notice") && s.has_rpc("deps.settled"), "VV3 deps.settled not asked")
+}
+
+test "R7: start_turn_handle_error_k tells opener failed after posting notice" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let cur = s.actors.current
+  let respond = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.words" && args.length() > 0 && opt_str_is(sessions_core::str_of(Some(args[0])), "cannotStartWords") {
+      return Some(Ok(sessions_core::jstr("boom start")))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("cannot start")))
+    }
+    if f == "node.saidLast" {
+      return Some(Ok(base_codec::json_null()))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.start_turn_handle_error_k(a, None, effect::EffectError::Custom("boom"), fn(_ex : effect::Exit[Unit]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(respond)
+  let mut settled_words = ""
+  let mut settled_status = ""
+  for i in 0..<s.rpcs.length() {
+    let (_, f, args) = s.rpcs[i]
+    if f == "deps.settled" && args.length() >= 3 {
+      settled_status = str_or(sessions_core::str_of(Some(args[1])), "")
+      settled_words = str_or(sessions_core::str_of(Some(args[2])), "")
+    }
+  }
+  assert_run(
+    s.has_rpc("node.notice") && settled_status == "failed" && settled_words == "boom start",
+    "settled status=" + settled_status + " words=" + settled_words,
+  )
+}
+
+test "R7 review: successful old stateWrite leaves new handle mid-wait intact" {
+  let s = r2_new()
+  r3_probe_adopt(s, "old", 1)
+  let a = get_actor(s.actors, "s1")
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"old\",{\"kind\":\"all_done\"},5]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "did not reach stateWrite")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard(
+    "{\"call\":3,\"actor\":\"s1\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"old\",\"declared\":\"waiting\",\"wait\":60},\"midWaitingSeconds\":60,\"midWaitingMs\":60000},{\"handle\":2,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "adopt did not install timer")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
+}

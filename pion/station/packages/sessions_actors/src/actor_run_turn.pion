@@ -417,18 +417,14 @@ pub fn ActorsGen::maybe_progress_reminder_k(
     }
   }
   let silent_ms = self.gen.counters.now - since
-  if silent_ms < PROGRESS_REMIND_MS {
-    k(effect::Exit::Succeeded((None, false)))
-    return
+  let reminded_ms = if a.progress_reminded_at > 0.0 {
+    sessions_core::jnum(self.gen.counters.now - a.progress_reminded_at)
+  } else {
+    base_codec::json_null()
   }
-  if a.progress_reminded_at > 0.0 && self.gen.counters.now - a.progress_reminded_at < PROGRESS_REMIND_MS {
-    k(effect::Exit::Succeeded((None, false)))
-    return
-  }
-  let minutes = (silent_ms / 60000.0).floor()
   sessions_core::try_k(
     fn(tk : (effect::Exit[String]) -> Unit) -> Unit {
-      self.words_k(a, "silentProgress", [sessions_core::jnum(minutes)], tk)
+      self.words_k(a, "silentProgress", [sessions_core::jnum(silent_ms), reminded_ms], tk)
     },
     fn(ex : effect::Exit[Result[String, effect::EffectError]]) -> Unit {
       match ex {
@@ -1606,7 +1602,15 @@ pub fn ActorsGen::warm_waited_on_k(
                                                             match ex_n {
                                                               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                                               effect::Exit::Failed(err) => k(effect::Exit::Failed(err))
-                                                              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(true))
+                                                              effect::Exit::Succeeded(_) => {
+                                                                self.tell_opener_failed_k(a, said, fn(ex_to : effect::Exit[Unit]) -> Unit {
+                                                                  match ex_to {
+                                                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                                    effect::Exit::Failed(err) => k(effect::Exit::Failed(err))
+                                                                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(true))
+                                                                  }
+                                                                })
+                                                              }
                                                             }
                                                           },
                                                         )
@@ -2161,7 +2165,14 @@ fn ActorsGen::start_turn_handle_error_k(
                                                       match ex_n {
                                                         effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                                         effect::Exit::Failed(e2) => finish(effect::Exit::Failed(e2))
-                                                        effect::Exit::Succeeded(_) => finish(effect::Exit::Failed(e))
+                                                        effect::Exit::Succeeded(_) => {
+                                                          self.tell_opener_failed_k(a, said, fn(ex_to : effect::Exit[Unit]) -> Unit {
+                                                            match ex_to {
+                                                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                              _ => finish(effect::Exit::Failed(e))
+                                                            }
+                                                          })
+                                                        }
                                                       }
                                                     },
                                                   )
@@ -3700,6 +3711,48 @@ pub fn ActorsGen::cool_k(
   }
 }
 
+pub fn ActorsGen::tell_opener_failed_k(
+  self : ActorsGen,
+  a : Actor,
+  said : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let warn_prefix = "⚠️ "
+  let words = if said.starts_with(warn_prefix) {
+    said.slice(warn_prefix.length(), said.length())
+  } else {
+    said
+  }
+  sessions_core::try_k(
+    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.deps_k(
+        a,
+        "settled",
+        [sessions_core::jstr(a.key), sessions_core::jstr("failed"), sessions_core::jstr(words)],
+        tk,
+      )
+    },
+    fn(ex : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(err) => {
+          self.log(a, "warn", "the opener of its chat was not told", [
+            ("error", sessions_core::jstr(sessions_core::error_message(err))),
+          ])
+          k(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Succeeded(Ok(_)) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Succeeded(Err(err)) => {
+          self.log(a, "warn", "the opener of its chat was not told", [
+            ("error", sessions_core::jstr(sessions_core::error_message(err))),
+          ])
+          k(effect::Exit::Succeeded(()))
+        }
+      }
+    },
+  )
+}
+
 pub fn ActorsGen::give_up_k(
   self : ActorsGen,
   a : Actor,
@@ -3716,15 +3769,22 @@ pub fn ActorsGen::give_up_k(
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
         effect::Exit::Succeeded(msg) => {
+          let words = "⚠️ " + msg
           self.notice_k(
             a,
-            "⚠️ " + msg,
+            words,
             base_codec::json_null(),
             base_codec::json_null(),
             base_codec::json_null(),
             turn,
             false,
-            k,
+            fn(ex_n : effect::Exit[Unit]) -> Unit {
+              match ex_n {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => self.tell_opener_failed_k(a, words, k)
+              }
+            },
           )
         }
       }
@@ -3747,15 +3807,22 @@ pub fn ActorsGen::give_up_k(
             effect::Exit::Interrupted => k(effect::Exit::Interrupted)
             effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
             effect::Exit::Succeeded(msg) => {
+              let words = "⚠️ " + msg + "\n\n" + quoted
               self.notice_k(
                 a,
-                "⚠️ " + msg + "\n\n" + quoted,
+                words,
                 base_codec::json_null(),
                 base_codec::json_null(),
                 base_codec::json_null(),
                 turn,
                 false,
-                k,
+                fn(ex_n : effect::Exit[Unit]) -> Unit {
+                  match ex_n {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(_) => self.tell_opener_failed_k(a, words, k)
+                  }
+                },
               )
             }
           }

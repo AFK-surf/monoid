@@ -16,9 +16,6 @@ pub let AUTH_TRIED_MOST : Int = 16
 /// Backoff before the second `toolsUnheard` restart (`actor_run.mbt:3264`).
 pub let TOOLS_RETRY_DELAY_MS : Double = 5000.0
 
-/// How long a continuous waiting chain may go without posting before reminding (`actor_run.mbt:3515`).
-pub let PROGRESS_REMIND_MS : Double = 600000.0
-
 // ── Shared pure helpers across `actor_run_*.pion` ──
 
 fn ascii_lower(s : String) -> String {

@@ -93,14 +93,11 @@ pub fn ActorsGen::state_for_turn_k(
         }
       }
       let req_turn_id = t.id
-      let req_gen : Option[Int] = match a.agent {
-        Some(g) => Some(g.generation)
-        None => None
-      }
+      let req_agent = a.agent
       // Direct RPC: an in-flight `node.stateWrite` already sent to Node must not be cancelled by
       // a concurrent `close(a)` so its recorded state matches what Node persisted; guard
-      // `on_declared` by phase, turn ID, and agent generation so a late ACK cannot arm/cancel
-      // timers on a closed or newly-adopted turn.
+      // `on_declared` by phase, turn ID, and agent handle+generation so a late ACK cannot
+      // arm/cancel timers on a closed or newly-adopted turn.
       self.rpc_direct_k(a.key, "node.stateWrite", args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
         match ex {
           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
@@ -114,12 +111,7 @@ pub fn ActorsGen::state_for_turn_k(
               Some(cur) => cur.id == req_turn_id
               None => false
             }
-            let same_gen = match (a.agent, req_gen) {
-              (Some(g), Some(rg)) => g.generation == rg
-              (None, None) => true
-              _ => false
-            }
-            if a.phase != "closed" && same_turn && same_gen {
+            if a.phase != "closed" && same_turn && still(a, req_agent) {
               self.on_declared(a, t, state)
             }
             recorded = true
@@ -549,9 +541,10 @@ pub fn ActorsGen::cut_off_by_restart_k(
                                           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
                                           effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
                                           effect::Exit::Succeeded(msg) => {
+                                            let said = "⚠️ " + msg
                                             self.notice_k(
                                               a,
-                                              "⚠️ " + msg,
+                                              said,
                                               base_codec::json_null(),
                                               base_codec::json_null(),
                                               base_codec::json_null(),
@@ -562,8 +555,16 @@ pub fn ActorsGen::cut_off_by_restart_k(
                                                   effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
                                                   effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
                                                   effect::Exit::Succeeded(_) => {
-                                                    interrupted = true
-                                                    tk(effect::Exit::Succeeded(()))
+                                                    self.tell_opener_failed_k(a, said, fn(ex_to : effect::Exit[Unit]) -> Unit {
+                                                      match ex_to {
+                                                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                                        effect::Exit::Succeeded(_) => {
+                                                          interrupted = true
+                                                          tk(effect::Exit::Succeeded(()))
+                                                        }
+                                                      }
+                                                    })
                                                   }
                                                 }
                                               },

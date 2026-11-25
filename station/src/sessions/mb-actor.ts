@@ -95,6 +95,7 @@ export class ActorsProgram {
   readonly #calls = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void; actor?: MbActor | ProgramShell }>();
   readonly #pendingCalls = new Map<MbActor | ProgramShell, number>();
   readonly #answeringByActor = new Map<MbActor | ProgramShell, number>();
+  readonly #awaitingUndelivered = new Map<MbActor | ProgramShell, number>();
 
   readonly #store: { told(changes: any[]): void } | null;
 
@@ -271,6 +272,7 @@ export class ActorsProgram {
     this.#stateWriteOwners.clear();
     this.#pendingCalls.clear();
     this.#answeringByActor.clear();
+    this.#awaitingUndelivered.clear();
     for (const fiber of this.#timers.values()) Effect.runFork(Fiber.interrupt(fiber));
     this.#timers.clear();
     const calls = [...this.#calls.values()];
@@ -306,7 +308,13 @@ export class ActorsProgram {
   #maybePruneRetired(actor?: MbActor | ProgramShell) {
     if (actor === undefined) return;
     if (this.#actors.get(actor.key) === actor) return;
-    if ((this.#pendingCalls.get(actor) ?? 0) > 0 || (this.#answeringByActor.get(actor) ?? 0) > 0) return;
+    if (
+      (this.#pendingCalls.get(actor) ?? 0) > 0 ||
+      (this.#answeringByActor.get(actor) ?? 0) > 0 ||
+      (this.#awaitingUndelivered.get(actor) ?? 0) > 0
+    ) {
+      return;
+    }
     if (!this.#retiredRetainIfIdle.has(actor)) {
       this.#removeRetired(actor);
       return;
@@ -415,9 +423,32 @@ export class ActorsProgram {
         else this.#answeringByActor.set(target, left);
         this.#maybePruneRetired(target);
       };
+      const onSteerRejected = () => {
+        if (said.fn === "agent.steer") {
+          this.#awaitingUndelivered.set(target, (this.#awaitingUndelivered.get(target) ?? 0) + 1);
+          this.#retiredIdleOrder.delete(target);
+        }
+      };
+      const onUndeliveredDone = () => {
+        if (said.fn === "store.markUndelivered") {
+          const left = (this.#awaitingUndelivered.get(target) ?? 0) - 1;
+          if (left <= 0) this.#awaitingUndelivered.delete(target);
+          else this.#awaitingUndelivered.set(target, left);
+        }
+      };
       target.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
-        (value) => { done(); this.post({ answer: id, value: value === undefined ? null : value }); },
-        (error) => { done(); this.post({ answer: id, error: errorOf(error, target.runtime) }); },
+        (value) => {
+          if (!value) onSteerRejected();
+          onUndeliveredDone();
+          done();
+          this.post({ answer: id, value: value === undefined ? null : value });
+        },
+        (error) => {
+          onSteerRejected();
+          onUndeliveredDone();
+          done();
+          this.post({ answer: id, error: errorOf(error, target.runtime) });
+        },
       );
     } else if (typeof said.tell === "string") {
       try {
@@ -431,7 +462,10 @@ export class ActorsProgram {
   forget(key: string, actor: MbActor | ProgramShell, retainIfIdle = true) {
     if (this.#actors.get(key) === actor) {
       this.#actors.delete(key);
-      const hasObligation = (this.#pendingCalls.get(actor) ?? 0) > 0 || (this.#answeringByActor.get(actor) ?? 0) > 0;
+      const hasObligation =
+        (this.#pendingCalls.get(actor) ?? 0) > 0 ||
+        (this.#answeringByActor.get(actor) ?? 0) > 0 ||
+        (this.#awaitingUndelivered.get(actor) ?? 0) > 0;
       if (!hasObligation && !retainIfIdle) {
         this.#retiredRetainIfIdle.delete(actor);
         return;
