@@ -1879,3 +1879,199 @@ test("dual-exporter A -> B -> A --compact-heads handover refreshes manifest_cach
     );
   }
 });
+
+function makeFourTranscriptStation(prefix: string) {
+  const made = station();
+  cleanupDirs.push(made.data);
+  const trDir = join(made.data, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-sweep4");
+  mkdirSync(trDir, { recursive: true });
+  const names = ["t1.md", "t2.md", "t3.md", "t4.md"] as const;
+  const payloads: Record<string, string> = {};
+  for (const name of names) {
+    const body = `${prefix}-${name}-` + "z".repeat(1600);
+    payloads[name] = body;
+    writeFileSync(join(trDir, name), body);
+  }
+  made.store.db
+    .prepare("INSERT INTO runtime_sessions (session_key, id, profile, at, runtime) VALUES (?, ?, ?, ?, ?)")
+    .run("chat:a", "cid-sweep4", "p1", NOW, "agy");
+  return { made, trDir, names, payloads };
+}
+
+test("dual-exporter cross-gen paginated transcript sweep handover (newGenerations) restores 4/4 files byte-identically (MB->Pion->MB & Pion->MB->Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [labelA, binA, labelB, binB] of [
+    ["mb", bins.mb, "pion", bins.pion],
+    ["pion", bins.pion, "mb", bins.mb],
+  ] as const) {
+    const { made, names, payloads } = makeFourTranscriptStation(`xgen-${labelA}-${labelB}`);
+    const rep = join(made.data, `replica-xgen-sweep-${labelA}-${labelB}`);
+    const flags = ["--compact-heads", "--chunk-bytes", "1024", "--transcript-pass-files", "1"];
+
+    // Exporter A scans 3/4 files (leaving cursor at t4.md) and stays alive.
+    const expA = new ExportClient(binA, made.db, rep, made.data, flags);
+    await expA.ask({ type: "places", places: PLACES });
+    for (let i = 0; i < 3; i++) {
+      expA.now = NOW + i * 1000;
+      const p = await expA.ask({ type: "pass", told: nothingTold() });
+      assert.equal(p.more, true, `${labelA}: pass ${i + 1}/3 must have more=true`);
+    }
+
+    // Exporter B rotates to a new generation, writes only page 1 (more=true), and exits.
+    const expB = new ExportClient(binB, made.db, rep, made.data, flags);
+    expB.now = NOW + 10_000;
+    await expB.ask({ type: "places", places: PLACES });
+    await expB.ask({ type: "newGenerations", after: NOW + 10_000 });
+    const pB1 = await expB.ask({ type: "pass", told: nothingTold() });
+    assert.equal(pB1.more, true, `${labelB}: new-gen page 1 must have more=true`);
+    const genB = String(pB1.heads[HOME].gen);
+    await expB.close();
+
+    // Exporter A resumes with empty told until more=false: MUST reset its old sweep cursor and finish all 4/4!
+    let pA: any;
+    let steps = 0;
+    do {
+      expA.now = NOW + 20_000 + steps * 1000;
+      pA = await expA.ask({ type: "pass", told: nothingTold() });
+      steps++;
+      assert.ok(steps <= 12, `${labelA}->${labelB}->${labelA}: sweep must converge within 12 passes`);
+    } while (pA.more);
+
+    const finalHead = pA.heads[HOME] as Record<string, any>;
+    assert.equal(String(finalHead.gen), genB, `${labelA}->${labelB}->${labelA}: A must stay on B's new generation`);
+    const rootHash = String(finalHead.transcriptManifest);
+    const manifestsDir = join(rep, "manifests");
+    const rootObj = JSON.parse(readFileSync(join(manifestsDir, rootHash), "utf8")) as { v: number; buckets: Record<string, string> };
+    const leafHashes = Object.values(rootObj.buckets);
+    const chunkHashes: string[] = [];
+    for (const lh of leafHashes) {
+      const leafObj = JSON.parse(readFileSync(join(manifestsDir, lh), "utf8")) as { v: number; files: Record<string, number> };
+      chunkHashes.push(...Object.keys(leafObj.files));
+    }
+    const sources = (await expA.ask({ type: "sources", hashes: [...Object.keys(finalHead.files ?? {}), ...chunkHashes] })) as Record<string, string>;
+    await expA.close();
+
+    const dest = tempDir(`w6b-xgen-sweep-dest-${labelA}-${labelB}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, HOME, genB, dest, sources);
+    writeFileSync(join(dest, "restore", "copy", genB, "head.json"), JSON.stringify(finalHead, null, 1));
+    const copyFiles = join(dest, "restore", "copy", "files");
+    cpSync(join(manifestsDir, rootHash), join(copyFiles, rootHash));
+    for (const lh of leafHashes) cpSync(join(manifestsDir, lh), join(copyFiles, lh));
+
+    await takeBackSoon(dest, destDb, NOW + 40_000, binA);
+    const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8")) as {
+      error: string | null;
+      missing: number;
+      files: number;
+    };
+    assert.equal(outcome.error, null, `${labelA}->${labelB}->${labelA}: cross-gen restore error`);
+    assert.equal(outcome.missing, 0, `${labelA}->${labelB}->${labelA}: cross-gen restore missing`);
+    assert.equal(
+      outcome.files,
+      Object.keys(finalHead.files ?? {}).length + names.length,
+      `${labelA}->${labelB}->${labelA}: cross-gen restore must place all carried + 4/4 transcript files`,
+    );
+    for (const name of names) {
+      const got = readFileSync(join(dest, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-sweep4", name), "utf8");
+      assert.equal(got, payloads[name], `${labelA}->${labelB}->${labelA}: ${name} byte-identical`);
+    }
+  }
+});
+
+test("dual-exporter same-gen paginated transcript sweep handover restores all 4/4 updated files byte-identically (MB->Pion->MB & Pion->MB->Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [labelA, binA, labelB, binB] of [
+    ["mb", bins.mb, "pion", bins.pion],
+    ["pion", bins.pion, "mb", bins.mb],
+  ] as const) {
+    const { made, trDir, names } = makeFourTranscriptStation(`sgen-v1-${labelA}-${labelB}`);
+    const rep = join(made.data, `replica-sgen-sweep-${labelA}-${labelB}`);
+    const flags = ["--compact-heads", "--chunk-bytes", "1024", "--transcript-pass-files", "1"];
+
+    // Exporter A completes full 4/4 sweep (more=false) and stays alive.
+    const expA = new ExportClient(binA, made.db, rep, made.data, flags);
+    await expA.ask({ type: "places", places: PLACES });
+    let pA: any;
+    let initSteps = 0;
+    do {
+      expA.now = NOW + initSteps * 1000;
+      pA = await expA.ask({ type: "pass", told: nothingTold() });
+      initSteps++;
+    } while (pA.more);
+    const gen = String(pA.heads[HOME].gen);
+
+    // Update ALL 4 transcript files on disk, then Exporter B exports only page 1 (more=true) and exits.
+    const v2Payloads: Record<string, string> = {};
+    const v2Time = new Date(NOW + 15_000);
+    for (const name of names) {
+      const body = `sgen-v2-${labelA}-${labelB}-${name}-` + "q".repeat(1800);
+      v2Payloads[name] = body;
+      const fp = join(trDir, name);
+      writeFileSync(fp, body);
+      utimesSync(fp, v2Time, v2Time);
+    }
+
+    const expB = new ExportClient(binB, made.db, rep, made.data, flags);
+    expB.now = NOW + 15_000;
+    await expB.ask({ type: "places", places: PLACES });
+    const pB1 = await expB.ask({ type: "pass", told: nothingTold() });
+    assert.equal(pB1.more, true, `${labelB}: same-gen page 1 must have more=true`);
+    assert.equal(String(pB1.heads[HOME].gen), gen, `${labelB}: must stay on same gen`);
+    await expB.close();
+
+    // Exporter A resumes with empty told until more=false: MUST detect B's advancement and export remaining 3/4!
+    let steps = 0;
+    do {
+      expA.now = NOW + 25_000 + steps * 1000;
+      pA = await expA.ask({ type: "pass", told: nothingTold() });
+      steps++;
+      assert.ok(steps <= 12, `${labelA}->${labelB}->${labelA}: same-gen sweep must converge within 12 passes`);
+    } while (pA.more);
+
+    const finalHead = pA.heads[HOME] as Record<string, any>;
+    const rootHash = String(finalHead.transcriptManifest);
+    const manifestsDir = join(rep, "manifests");
+    const rootObj = JSON.parse(readFileSync(join(manifestsDir, rootHash), "utf8")) as { v: number; buckets: Record<string, string> };
+    const leafHashes = Object.values(rootObj.buckets);
+    const chunkHashes: string[] = [];
+    for (const lh of leafHashes) {
+      const leafObj = JSON.parse(readFileSync(join(manifestsDir, lh), "utf8")) as { v: number; files: Record<string, number> };
+      chunkHashes.push(...Object.keys(leafObj.files));
+    }
+    const sources = (await expA.ask({ type: "sources", hashes: [...Object.keys(finalHead.files ?? {}), ...chunkHashes] })) as Record<string, string>;
+    await expA.close();
+
+    const dest = tempDir(`w6b-sgen-sweep-dest-${labelA}-${labelB}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, HOME, gen, dest, sources);
+    writeFileSync(join(dest, "restore", "copy", gen, "head.json"), JSON.stringify(finalHead, null, 1));
+    const copyFiles = join(dest, "restore", "copy", "files");
+    cpSync(join(manifestsDir, rootHash), join(copyFiles, rootHash));
+    for (const lh of leafHashes) cpSync(join(manifestsDir, lh), join(copyFiles, lh));
+
+    await takeBackSoon(dest, destDb, NOW + 45_000, binA);
+    const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8")) as {
+      error: string | null;
+      missing: number;
+      files: number;
+    };
+    assert.equal(outcome.error, null, `${labelA}->${labelB}->${labelA}: same-gen restore error`);
+    assert.equal(outcome.missing, 0, `${labelA}->${labelB}->${labelA}: same-gen restore missing`);
+    assert.equal(
+      outcome.files,
+      Object.keys(finalHead.files ?? {}).length + names.length,
+      `${labelA}->${labelB}->${labelA}: same-gen restore must place all carried + 4/4 transcript files`,
+    );
+    for (const name of names) {
+      const got = readFileSync(join(dest, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-sweep4", name), "utf8");
+      assert.equal(got, v2Payloads[name], `${labelA}->${labelB}->${labelA}: ${name} updated content byte-identical`);
+    }
+  }
+});

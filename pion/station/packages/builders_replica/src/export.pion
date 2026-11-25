@@ -258,6 +258,8 @@ pub struct Exporter {
   mut transcript_ws_done : Map[String, Bool]
   mut transcript_ws_done_keys : Array[String]
   mut transcript_resweep : Bool
+  mut seen_head : Map[String, (String, Double)]
+  mut seen_head_keys : Array[String]
   mut head_cache : Map[String, (String, Int64, Bool, js_json::JValue)]
   mut manifest_cache : Map[String, (String, String, Array[String])]
   mut manifest_live : Map[String, Bool]
@@ -357,6 +359,8 @@ pub fn Exporter::new(
     transcript_ws_done: Map::new(),
     transcript_ws_done_keys: [],
     transcript_resweep: false,
+    seen_head: Map::new(),
+    seen_head_keys: [],
     head_cache: Map::new(),
     manifest_cache: Map::new(),
     manifest_live: Map::new(),
@@ -444,6 +448,8 @@ fn Exporter::forget(self : Exporter) -> Result[Unit, String] {
   self.known = false
   self.transcripts_pending = false
   self.forget_sweep()
+  self.seen_head = Map::new()
+  self.seen_head_keys = []
   self.tf_cache = Map::new()
   self.head_cache = Map::new()
   self.manifest_cache = Map::new()
@@ -985,6 +991,21 @@ pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json
   }
   let prev_known = self.known
   let prev_transcripts_pending = self.transcripts_pending
+  let prev_seen_head : Map[String, (String, Double)] = Map::new()
+  let prev_seen_head_keys : Array[String] = []
+  for i in 0..<self.seen_head_keys.length() {
+    let k = self.seen_head_keys[i]
+    match self.seen_head.get(k) {
+      Some(v) => {
+        match prev_seen_head.get(k) {
+          Some(_) => ()
+          None => prev_seen_head_keys.push(k)
+        }
+        prev_seen_head.set(k, v)
+      }
+      None => ()
+    }
+  }
   let passed = match self.state.tx_err(
     fn(_st : sql_db::Db) -> Result[js_json::JValue, String] {
       self.pass_in(told, home)
@@ -996,6 +1017,8 @@ pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json
       self.known = prev_known
       self.transcripts_pending = prev_transcripts_pending
       self.forget_sweep()
+      self.seen_head = prev_seen_head
+      self.seen_head_keys = prev_seen_head_keys
       self.tf_cache = Map::new()
       self.head_cache = Map::new()
       self.manifest_cache = Map::new()
@@ -1064,6 +1087,19 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
             Err(e) => return Err(e)
           }
         }
+        let cur_to = num_of(jval_get(head, "to"))
+        match self.seen_head.get(ws) {
+          Some((prev_gen, prev_to)) => {
+            if prev_gen != gen || prev_to != cur_to {
+              let _ = self.transcript_cursor.remove(ws)
+              let _ = self.transcript_scan_done.remove(ws)
+              let _ = self.transcript_ws_done.remove(ws)
+              self.transcripts_pending = true
+            }
+          }
+          None => self.seen_head_keys.push(ws)
+        }
+        self.seen_head.set(ws, (gen, cur_to))
         match outs.get(ws) {
           Some(_) => ()
           None => out_keys.push(ws)
@@ -1071,6 +1107,18 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
       }
       Ok(HeadCheck::Fresh) => {
+        match self.seen_head.get(ws) {
+          Some((_, prev_to)) => {
+            if prev_to >= 0.0 {
+              let _ = self.transcript_cursor.remove(ws)
+              let _ = self.transcript_scan_done.remove(ws)
+              let _ = self.transcript_ws_done.remove(ws)
+              self.transcripts_pending = true
+            }
+          }
+          None => self.seen_head_keys.push(ws)
+        }
+        self.seen_head.set(ws, (gen, -1.0))
         let head = fresh_head(ws, gen, w_name)
         match outs.get(ws) {
           Some(_) => ()
@@ -1104,6 +1152,8 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         Ok(g) => g
         Err(e) => return Err(e)
       }
+      self.seen_head.set(ws, (gen, -1.0))
+      self.seen_head_keys.push(ws)
       let head = fresh_head(ws, gen, w_name)
       match outs.get(ws) {
         Some(_) => ()
@@ -2272,7 +2322,17 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Result[Unit, Stri
   match self.fold_gen(dir, next, out.gone) {
     Ok(h) => {
       out.head = h
-      self.save_committed_head_state(ws, h)
+      match self.save_committed_head_state(ws, h) {
+        Ok(()) => {
+          match self.seen_head.get(ws) {
+            Some(_) => ()
+            None => self.seen_head_keys.push(ws)
+          }
+          self.seen_head.set(ws, (text_or(jval_get(h, "gen"), ""), num_of(jval_get(h, "to"))))
+          Ok(())
+        }
+        Err(e) => Err(e)
+      }
     }
     Err(e) => Err(e)
   }

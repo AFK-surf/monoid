@@ -376,6 +376,8 @@ export class Exporter {
   /// A pass told of transcripts while a sweep was under way: what it told of may lie behind the cursor, so another
   /// sweep follows this one.
   #transcriptResweep = false;
+  /// Last observed `(gen, to)` per workspace (`-1` for `Fresh`): detects external exporter advancement.
+  #seenHead = new Map<string, { gen: string; to: number }>();
   readonly #manifestCache = new Map<string, { rootHash: string; leafHashes: string[] }>();
   #manifestLive = new Set<string>();
   readonly #manifestSupersededAt = new Map<string, number>();
@@ -444,6 +446,7 @@ export class Exporter {
     this.#known = false;
     this.#transcriptsPending = false;
     this.#forgetSweep();
+    this.#seenHead.clear();
     this.#tfCache.clear();
     this.#manifestCache.clear();
     this.#manifestLive.clear();
@@ -528,6 +531,7 @@ export class Exporter {
     // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
     const known = this.#known;
     const pending = this.#transcriptsPending;
+    const prevSeenHead = new Map(this.#seenHead);
     this.#state.exec("BEGIN IMMEDIATE");
     try {
       const passed = this.#pass(told, home, workspaces);
@@ -540,6 +544,7 @@ export class Exporter {
       this.#tfCache.clear();
       this.#manifestCache.clear();
       this.#forgetSweep();
+      this.#seenHead = prevSeenHead;
       this.#known = known;
       this.#transcriptsPending = pending;
       throw e;
@@ -590,6 +595,18 @@ export class Exporter {
       if (check.kind === "use" && check.needSaveState) {
         this.#saveCommittedHeadState(ws, check.head);
       }
+      const curTo = check.kind === "use" ? check.head.to : -1;
+      const prevSeen = this.#seenHead.get(ws);
+      const advanced =
+        prevSeen !== undefined &&
+        (curTo >= 0 ? prevSeen.gen !== gen || prevSeen.to !== curTo : prevSeen.to >= 0);
+      if (advanced) {
+        this.#transcriptCursor.delete(ws);
+        this.#transcriptScanDone.delete(ws);
+        this.#transcriptWsDone.delete(ws);
+        this.#transcriptsPending = true;
+      }
+      this.#seenHead.set(ws, { gen, to: curTo });
       const head: Head = check.kind === "use" ? check.head : freshHead(ws, gen);
       outs.set(ws, { head, lines: [], bytes: 0, files: {}, gone: false, messages: 0 });
     }
@@ -601,6 +618,7 @@ export class Exporter {
       outs.clear();
       for (const ws of names.keys()) {
         const gen = this.#genOf(ws);
+        this.#seenHead.set(ws, { gen, to: -1 });
         outs.set(ws, { head: freshHead(ws, gen), lines: [], bytes: 0, files: {}, gone: false, messages: 0 });
       }
     }
@@ -1012,6 +1030,7 @@ export class Exporter {
     else delete next.transcriptFiles;
     out.head = this.#fold(dir, next, out.gone);
     this.#saveCommittedHeadState(ws, out.head);
+    this.#seenHead.set(ws, { gen: out.head.gen, to: out.head.to });
   }
 
   /// The generation's batches folded where they built up: all of them where something was deleted (so a deletion

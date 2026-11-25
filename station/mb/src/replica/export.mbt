@@ -183,6 +183,8 @@ pub struct Exporter {
   /// A pass told of transcripts while a sweep was under way: what it told of may lie behind the cursor, so another
   /// sweep follows this one.
   priv mut transcript_resweep : Bool
+  /// Last observed `(gen, to)` per workspace (`-1.0` for `Fresh`): detects external exporter advancement.
+  priv mut seen_head : Map[String, (String, Double)]
   /// Each generation's `head.json` as last read or written, by its directory, keyed by racy-git
   /// `(meta_stamp, content_fnv64, was_racy)`: zero disk read / zero JSON parse on quiet passes after the 50ms racy window.
   priv head_cache : Map[String, (String, Int64, Bool, JValue)]
@@ -245,6 +247,7 @@ pub fn Exporter::new(
     transcript_scan_done: Set([]),
     transcript_ws_done: Set([]),
     transcript_resweep: false,
+    seen_head: Map([]),
     head_cache: Map([]),
     manifest_cache: Map([]),
     manifest_live: Set([]),
@@ -301,6 +304,7 @@ fn Exporter::forget(self : Exporter) -> Unit raise {
   self.known = false
   self.transcripts_pending = false
   self.forget_sweep()
+  self.seen_head.clear()
   self.tf_cache.clear()
   self.head_cache.clear()
   self.manifest_cache.clear()
@@ -711,7 +715,12 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 
 ///|
 /// A pass failed: `export.db` goes back to before it, and what is kept of it in memory goes too.
-fn Exporter::roll_back(self : Exporter, known : Bool, pending : Bool) -> Unit {
+fn Exporter::roll_back(
+  self : Exporter,
+  known : Bool,
+  pending : Bool,
+  prev_seen_head : Map[String, (String, Double)],
+) -> Unit {
   self.state.exec("ROLLBACK") catch {
     _ => ()
   }
@@ -719,6 +728,7 @@ fn Exporter::roll_back(self : Exporter, known : Bool, pending : Bool) -> Unit {
   self.head_cache.clear()
   self.manifest_cache.clear()
   self.forget_sweep()
+  self.seen_head = prev_seen_head
   self.known = known
   self.transcripts_pending = pending
 }
@@ -739,16 +749,20 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
   // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
   let known = self.known
   let pending = self.transcripts_pending
+  let prev_seen_head : Map[String, (String, Double)] = Map([])
+  for k, v in self.seen_head {
+    prev_seen_head[k] = v
+  }
   self.state.exec("BEGIN IMMEDIATE")
   let passed = self.pass_in(told, home) catch {
     e => {
-      self.roll_back(known, pending)
+      self.roll_back(known, pending, prev_seen_head)
       raise e
     }
   }
   self.state.exec("COMMIT") catch {
     e => {
-      self.roll_back(known, pending)
+      self.roll_back(known, pending, prev_seen_head)
       raise e
     }
   }
@@ -803,9 +817,26 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
         if need_save_state {
           self.save_committed_head_state(ws, head)
         }
+        let cur_to = num(get(head, "to"))
+        if self.seen_head.get(ws) is Some((prev_gen, prev_to)) && (prev_gen != gen || prev_to != cur_to) {
+          self.transcript_cursor.remove(ws)
+          self.transcript_scan_done.remove(ws)
+          self.transcript_ws_done.remove(ws)
+          self.transcripts_pending = true
+        }
+        self.seen_head[ws] = (gen, cur_to)
         outs[ws] = { head, lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
       }
-      Fresh => outs[ws] = { head: fresh_head(ws, gen, w.1), lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+      Fresh => {
+        if self.seen_head.get(ws) is Some((_, prev_to)) && prev_to >= 0.0 {
+          self.transcript_cursor.remove(ws)
+          self.transcript_scan_done.remove(ws)
+          self.transcript_ws_done.remove(ws)
+          self.transcripts_pending = true
+        }
+        self.seen_head[ws] = (gen, -1.0)
+        outs[ws] = { head: fresh_head(ws, gen, w.1), lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+      }
     }
   }
   if rebuild_legacy {
@@ -821,6 +852,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     for w in names {
       let ws = w.0
       let gen = self.gen_of(ws)
+      self.seen_head[ws] = (gen, -1.0)
       outs[ws] = { head: fresh_head(ws, gen, w.1), lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
     }
   }
@@ -1461,6 +1493,7 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
   next = set(next, "messages", Num(num(get(head, "messages")) + out.messages))
   out.head = self.fold_gen(dir, next, out.gone)
   self.save_committed_head_state(ws, out.head)
+  self.seen_head[ws] = (text_of(get(out.head, "gen")).unwrap_or(""), num(get(out.head, "to")))
 }
 
 ///|
