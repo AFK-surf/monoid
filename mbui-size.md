@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff693e9ed](https://github.com/AFK-surf/monoid/commit/ff693e9ed78f3b196f93ece36f34e3c59e4e161d) feat(core,app): time a start before the core and t | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 101.14 | 128.19 |
 | [1776360fa](https://github.com/AFK-surf/monoid/commit/1776360fa07e72e590339786b6859d70daa5649e) fix(station): keep a builder's permit when the one | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
 | [973efe842](https://github.com/AFK-surf/monoid/commit/973efe84254621ae10ab2357785202523c2c3d54) fix(mbui): close the side panel on Esc with a file | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
 | [ed329b2b2](https://github.com/AFK-surf/monoid/commit/ed329b2b20a06afe3fd1bd50b6a99260676b27bc) fix(ui): unify GLES kind 11 path loop for SwiftSha | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d4b5dade7](https://github.com/AFK-surf/monoid/commit/d4b5dade7f0f2de6d8f940656716715b98eff147) ci(android): hand off monoid beta and mbui-size AP | 2.52 | 3.4 | 14.07 | 37.51 | 58.07 | 31.96 | 64.57 | 101.07 | 121.83 |
 | [d9d5f3020](https://github.com/AFK-surf/monoid/commit/d9d5f3020013dceae2d3f8903b3ac55955f80b6b) perf(replica): resume transcript sweeps at their c | 2.52 | 3.4 | 14.07 | 37.51 | 58.07 | 31.96 | 64.57 | 101.07 | 121.83 |
 | [4ec25e5df](https://github.com/AFK-surf/monoid/commit/4ec25e5df72e667fae9d30a362989e5385f2bd97) feat(core,ui): add composite CJK font stack, typog | 2.52 | 3.4 | 14.07 | 37.51 | 58.07 | 31.95 | 64.52 | 100.86 | 121.83 |
-| [d9b224ff4](https://github.com/AFK-surf/monoid/commit/d9b224ff4a2a4e53ab440aba7ad8a1861db88b80) feat(ui): unify segmented controls and pill tabs o | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.52 | 100.86 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ff693e9ed](https://github.com/AFK-surf/monoid/commit/ff693e9ed78f3b196f93ece36f34e3c59e4e161d) feat(core,app): time a start before the core and t | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.41 |
 | [1776360fa](https://github.com/AFK-surf/monoid/commit/1776360fa07e72e590339786b6859d70daa5649e) fix(station): keep a builder's permit when the one | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
 | [973efe842](https://github.com/AFK-surf/monoid/commit/973efe84254621ae10ab2357785202523c2c3d54) fix(mbui): close the side panel on Esc with a file | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
 | [ed329b2b2](https://github.com/AFK-surf/monoid/commit/ed329b2b20a06afe3fd1bd50b6a99260676b27bc) fix(ui): unify GLES kind 11 path loop for SwiftSha | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.71 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d4b5dade7](https://github.com/AFK-surf/monoid/commit/d4b5dade7f0f2de6d8f940656716715b98eff147) ci(android): hand off monoid beta and mbui-size AP | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.66 |
 | [d9d5f3020](https://github.com/AFK-surf/monoid/commit/d9d5f3020013dceae2d3f8903b3ac55955f80b6b) perf(replica): resume transcript sweeps at their c | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.67 |
 | [4ec25e5df](https://github.com/AFK-surf/monoid/commit/4ec25e5df72e667fae9d30a362989e5385f2bd97) feat(core,ui): add composite CJK font stack, typog | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.89 |
-| [d9b224ff4](https://github.com/AFK-surf/monoid/commit/d9b224ff4a2a4e53ab440aba7ad8a1861db88b80) feat(ui): unify segmented controls and pill tabs o | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.56 |
