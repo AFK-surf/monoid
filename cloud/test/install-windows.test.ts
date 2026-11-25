@@ -70,6 +70,15 @@ test("what the installer and the uninstaller stop is every program a Windows rel
   assert.deepEqual(names(readFileSync(new URL("../../bin/stillfail.ps1", import.meta.url), "utf8")), installer);
 });
 
+test("the Windows installer checks for Git Bash and warns when missing (FB-54)", () => {
+  for (const lang of ["zh", "en"] as const) {
+    const script = windowsInstallScript("https://ember.test", "stable", lang);
+    assert.match(script, /CLAUDE_CODE_GIT_BASH_PATH/);
+    assert.match(script, /Git\\bin\\sh\.exe/);
+    assert.match(script, /git-scm\.com\/download\/win/);
+  }
+});
+
 test("the stillfail command the installer writes runs the release under a home with other than ASCII in its path", { skip: (spawnSync("powershell", ["-NoProfile", "-Command", "exit 0"]).status !== 0 || spawnSync("cmd", ["/d", "/c", "exit 0"]).status !== 0) && "no PowerShell and cmd" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "install-cmd-"));
   try {

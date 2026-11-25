@@ -165,7 +165,7 @@ test "添加 station: named, 生成命令 makes the command (workspace.enroll) a
     // name, what runs them, the wait; the choices gone, 取消 alone at its foot
     for w in [
       "在该机器的终端中执行：", "macOS、Linux", "curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b", "Windows（PowerShell）",
-      "& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b", "Docker",
+      "& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b", "Windows 需安装 Git for Windows（git-scm.com），否则远程任务和命令无法运行。", "Docker",
       "docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b",
       "等待机器加入… 命令 1 小时内有效",
       "取消",

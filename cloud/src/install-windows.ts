@@ -443,7 +443,20 @@ Say ('  ' + __SAY(cloud.install.win.where.app, app=$app))
 Say ('  ' + __SAY(cloud.install.where.data, data=$data))
 Say ('  ' + __SAY(cloud.install.where.status))
 if ($taskSaid) { Say ('  ' + $taskSaid) }
-if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) { Say ''; Say (__SAY(cloud.install.win.noGit)) }
+$hasGitBash = ($env:CLAUDE_CODE_GIT_BASH_PATH -and (Test-Path -LiteralPath $env:CLAUDE_CODE_GIT_BASH_PATH -PathType Leaf))
+if (-not $hasGitBash) {
+  $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue
+  if ($gitCmd) {
+    $gitSh = Join-Path (Split-Path (Split-Path $gitCmd.Source -Parent) -Parent) 'bin\\sh.exe'
+    if (Test-Path -LiteralPath $gitSh -PathType Leaf) { $hasGitBash = $true }
+  }
+}
+if (-not $hasGitBash) {
+  foreach ($root in @($env:ProgramFiles, [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'), $(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Programs' }))) {
+    if ($root -and (Test-Path -LiteralPath (Join-Path $root 'Git\\bin\\sh.exe') -PathType Leaf)) { $hasGitBash = $true; break }
+  }
+}
+if (-not $hasGitBash) { Say ''; Say (__SAY(cloud.install.win.noGit)) }
 $missing = @()
 if (-not (Get-Command claude -ErrorAction SilentlyContinue)) { $missing += 'Claude Code' }
 if (-not (Get-Command codex -ErrorAction SilentlyContinue)) { $missing += 'Codex' }
