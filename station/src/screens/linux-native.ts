@@ -140,7 +140,6 @@ export class LinuxNativeDesktop implements ScreenSource {
       const child = (this.#o.start ?? defaultStart)(binary, ["status"], env);
       let said = "";
       const unarm = wall.after(STATUS_TIMEOUT_MS, () => child.kill());
-      child.stdout!.setEncoding("utf8").on("data", (chunk: string) => (said += chunk));
       let finished = false;
       const done = (error?: Error) => {
         if (finished) return;
@@ -153,8 +152,10 @@ export class LinuxNativeDesktop implements ScreenSource {
           reject(e as Error);
         }
       };
+      // (heard before its stdout: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
       child.on("error", done);
       child.on("close", () => done());
+      child.stdout?.setEncoding("utf8").on("data", (chunk: string) => (said += chunk));
       child.stdin?.end();
     });
   }
@@ -195,9 +196,11 @@ export class LinuxNativeDesktop implements ScreenSource {
   ): Promise<HelperView> {
     const env = this.#o.env ?? process.env;
     const child = (this.#o.start ?? defaultStart)(binary, ["view"], env);
-    child.stdin!.write(`${JSON.stringify(ask)}\n`);
+    // (its error heard, by childPipe, and its answer listened for, by the view, before it is asked: one not started has
+    // no stdin, and one quick to answer could say it before anything listens)
     const capture = this.#status.backend === "wayland" ? "Wayland (wlr-screencopy)" : "X11 (MIT-SHM+XDamage)";
     const view = new HelperView(ask.codec, childPipe(child), () => {}, input, capture, false, false);
+    child.stdin?.write(`${JSON.stringify(ask)}\n`);
     try {
       await view.ready;
       return view;

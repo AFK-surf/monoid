@@ -1,7 +1,8 @@
 // A station out of file descriptors (D80): `spawn` fails with EMFILE / ENFILE, its ChildProcess without a pid or any of
 // its streams, its error told on the next tick. What touched a stream before hearing that error threw a TypeError, and
 // the error, told to none, ended the station's process (`uncaughtException`, twice in 75 s on a Mac). Run for real in a
-// process of its own (test/workers/spawn-emfile-child.ts) whose descriptors are limited and all taken: this one's
+// process of its own (test/workers/spawn-emfile-child.ts: MbProcess, runRepoGit, runGit, SessionsProgram, the vault's
+// runWith and capture) whose descriptors are limited and all taken: this one's
 // stay whole for the tests beside it.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -19,7 +20,10 @@ test("a spawn failing with EMFILE is told as an error and an end, never thrown n
 
   assert.deepEqual(said.uncaught, []);
   assert.deepEqual(said.mbProcess, { emfile: true, threw: null, errors: ["EMFILE"], exited: -24, live: 0 });
+  assert.equal(said.runRepoGitSpared, true);
   assert.deepEqual(said.runRepoGit, { emfile: true, threw: null, answer: { ok: false, stdout: "" } });
   assert.deepEqual(said.runGit, { emfile: true, threw: null, ok: false, said: true });
   assert.deepEqual(said.sessionsProgram, { emfile: true, threw: null, started: true, exited: -24, ended: true });
+  assert.deepEqual(said.vaultRun, { emfile: true, threw: null, code: null, said: true });
+  assert.deepEqual(said.vaultCapture, { emfile: true, threw: null, code: null, out: "", said: true });
 });

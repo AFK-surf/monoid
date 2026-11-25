@@ -309,7 +309,8 @@ class PortalProcess implements ScreenView {
     this.#normal = true;
     // A live helper can release its virtual keys and buttons before the portal session closes. An unanswered
     // permission dialog cannot read this command, so #end still bounds the lifetime of the process.
-    if (!this.#child.stdin.destroyed && !this.#child.stdin.writableEnded) this.#child.stdin.end('{"op":"close"}\n');
+    const stdin = this.#child.stdin;
+    if (stdin && !stdin.destroyed && !stdin.writableEnded) stdin.end('{"op":"close"}\n');
     this.#end(new Error("desktop portal closed"), false);
   }
 }

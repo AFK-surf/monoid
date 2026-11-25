@@ -101,6 +101,6 @@ export class LinuxGamepads {
     for (const index of [...this.#slots]) void this.input(gamepadReleased(index)).catch(() => {});
     if (this.#mode === "desktop") for (const e of this.#desktop.release()) void this.#post(e).catch(() => {});
     this.#ended = true;
-    this.#child?.stdin.end();
+    this.#child?.stdin?.end();
   }
 }
