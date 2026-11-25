@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [480a4ccad](https://github.com/AFK-surf/monoid/commit/480a4ccad1e1d2301cbf394423f5ff7eebb786de) fix(mbui): viewer taps toggle chrome; images at on | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.83 | 93.86 |
 | [66fc0145f](https://github.com/AFK-surf/monoid/commit/66fc0145f612889519919079f360839083056e0a) perf(android): move notification IPC off app threa | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.83 | 93.86 |
 | [d27f004bc](https://github.com/AFK-surf/monoid/commit/d27f004bc7c660da2dbfee7a20eda100f3b878d2) feat(station,app): GitHub Copilot as a station run | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.55 | 125.57 |
 | [0dc373cef](https://github.com/AFK-surf/monoid/commit/0dc373cef1e2826ea03b3dc9e0e6de4555a84c8b) fix(core): show the running command, not the tool  | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.55 | 125.57 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c5baeb5e9](https://github.com/AFK-surf/monoid/commit/c5baeb5e943b57e2ce83574874989d529ed134dc) fix(cloud): handle telemetry network and DO dropou | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 100.84 | 128.89 |
 | [0fa688540](https://github.com/AFK-surf/monoid/commit/0fa688540da1a5ede59dc566d8567c2e16d0144d) feat(station): enforce account concurrency caps ac | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 101.09 | 126.08 |
 | [eebe4c08b](https://github.com/AFK-surf/monoid/commit/eebe4c08bc5c0a056da6cd6a94802c1761353c74) fix(mbui): close the board chat on Esc (#8618) | 2.53 | 3.41 | 14.07 | 36.61 | 55.09 | 31.97 | 64.59 | 101.09 | 126.08 |
-| [352566952](https://github.com/AFK-surf/monoid/commit/352566952d0319900c610590a715a0af1e2278bb) fix(app): line up a board draft's panel and put wh | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.59 | 100.94 | 110.04 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [480a4ccad](https://github.com/AFK-surf/monoid/commit/480a4ccad1e1d2301cbf394423f5ff7eebb786de) fix(mbui): viewer taps toggle chrome; images at on | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.43 |
 | [66fc0145f](https://github.com/AFK-surf/monoid/commit/66fc0145f612889519919079f360839083056e0a) perf(android): move notification IPC off app threa | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.28 |
 | [d27f004bc](https://github.com/AFK-surf/monoid/commit/d27f004bc7c660da2dbfee7a20eda100f3b878d2) feat(station,app): GitHub Copilot as a station run | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.31 |
 | [0dc373cef](https://github.com/AFK-surf/monoid/commit/0dc373cef1e2826ea03b3dc9e0e6de4555a84c8b) fix(core): show the running command, not the tool  | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c5baeb5e9](https://github.com/AFK-surf/monoid/commit/c5baeb5e943b57e2ce83574874989d529ed134dc) fix(cloud): handle telemetry network and DO dropou | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.41 |
 | [0fa688540](https://github.com/AFK-surf/monoid/commit/0fa688540da1a5ede59dc566d8567c2e16d0144d) feat(station): enforce account concurrency caps ac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.77 |
 | [eebe4c08b](https://github.com/AFK-surf/monoid/commit/eebe4c08bc5c0a056da6cd6a94802c1761353c74) fix(mbui): close the board chat on Esc (#8618) | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.64 |
-| [352566952](https://github.com/AFK-surf/monoid/commit/352566952d0319900c610590a715a0af1e2278bb) fix(app): line up a board draft's panel and put wh | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.49 |
