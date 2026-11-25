@@ -732,10 +732,12 @@ fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Res
   }
 }
 
-/// Native-linked selftest exercised by `--smoke-readops`: creates an isolated `<temp_dir>/reader_data_selftest`
-/// subdir (never touching any existing `<temp_dir>/stillfail.db`), verifies `Reader::db_now`,
+/// Native-linked selftest exercised by `--smoke-readops`: allocates a unique non-existent
+/// `<temp_dir>/reader_data_selftest-<pid>-<wall_ms>-<seq>` subdir (never deleting or touching any
+/// existing `<temp_dir>/stillfail.db` or `<temp_dir>/reader_data_selftest`), verifies `Reader::db_now`,
 /// lossless `Reader::read_text_for_serve("policyChecks")`, `checkpoint(hard)` `busy_timeout === 0`
-/// restoration on both Ok and SQLite-error paths, and true same-snapshot read isolation, then cleans up.
+/// restoration on both Ok and SQLite-error paths, and true same-snapshot read isolation, then removes
+/// only the unique subdir it created.
 pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
   let started_shell = if !host_shim::shell_active() {
     if !host_shim::start(temp_dir, false) {
@@ -746,20 +748,49 @@ pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
     false
   }
   let client = builders_core::ShellClient::new()
-  let sub_dir = temp_dir + "/reader_data_selftest"
-  let _ = client.shell_sync_json(
-    "fs.remove",
-    base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
-  )
-  let mk = client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(sub_dir))]))
-  let res = match mk {
-    Ok(_) => run_selftest_in(client, sub_dir)
-    Err(e) => Err("reader_data selftest fs.mkdir failed: " + e.message)
+  let pid_str = host_shim::pid().to_string()
+  let wall_str = host_shim::wall_ms().to_string()
+  let mut sub_dir = ""
+  let mut created = false
+  let mut seq = 0
+  while seq < 100 {
+    let candidate = temp_dir + "/reader_data_selftest-" + pid_str + "-" + wall_str + "-" + seq.to_string()
+    match client.shell_sync_json("fs.stat", base_codec::json_obj([("path", base_codec::json_str(candidate))])) {
+      Ok(base_codec::Json::Null) => {
+        match client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(candidate))])) {
+          Ok(_) => {
+            sub_dir = candidate
+            created = true
+            break
+          }
+          Err(e) => {
+            if started_shell {
+              host_shim::stop()
+            }
+            return Err("reader_data selftest fs.mkdir failed: " + e.message)
+          }
+        }
+      }
+      Ok(_) => seq = seq + 1
+      Err(e) => {
+        if started_shell {
+          host_shim::stop()
+        }
+        return Err("reader_data selftest fs.stat failed: " + e.message)
+      }
+    }
   }
-  let _ = client.shell_sync_json(
-    "fs.remove",
-    base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
-  )
+  let res = if created {
+    run_selftest_in(client, sub_dir)
+  } else {
+    Err("reader_data selftest could not allocate unique subdir")
+  }
+  if created {
+    let _ = client.shell_sync_json(
+      "fs.remove",
+      base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
+    )
+  }
   if started_shell {
     host_shim::stop()
   }

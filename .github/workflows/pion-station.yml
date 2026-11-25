@@ -1050,7 +1050,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 7 data-1 gate (stdio contract + mb-reader + first 14 mb-reader-* suites + idle/close forced Pion)
+      - name: Run Wave 7 data-1 gate (stdio contract + mb-reader + first 17 mb-reader-* suites + idle/close forced Pion)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"

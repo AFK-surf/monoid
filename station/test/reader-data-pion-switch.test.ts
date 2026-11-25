@@ -999,7 +999,8 @@ test("Readers pool & OwnReader cold-start, cooldown, explicit override, hot-relo
     resetReaderSelectionStateForTest();
   }
 
-  // 5. OwnReader (standalone tailRead) actually spawns BIN_PION then BIN_MB (verified via thin exec-logging wrappers)
+  // 5. OwnReader (standalone tailRead) hot-switches on the SAME instance from BIN_PION to BIN_MB
+  //    (verified via thin exec-logging wrappers around the real binaries)
   const spawnLog = join(root, "own-reader-spawns.log");
   const makeWrapper = (name: string, targetBin: string): string => {
     const p = join(root, name);
@@ -1020,17 +1021,17 @@ test("Readers pool & OwnReader cold-start, cooldown, explicit override, hot-relo
   process.env.STILLFAIL_MB_READER = wrapMb;
   resetReaderSelectionStateForTest();
   try {
-    const ownPion = new OwnReader(() => ({ readers: { data: "pion" } }));
-    t.after(() => ownPion.close());
-    const tPion = await ownPion.tailRead("claude", { path: fx.transcriptPath });
+    let ownCfg: { readers: { data: "pion" | "mb" } } = { readers: { data: "pion" } };
+    const own = new OwnReader(() => ownCfg);
+    t.after(() => own.close());
+    const tPion = await own.tailRead("claude", { path: fx.transcriptPath });
     assert.ok(Array.isArray(tPion.entries) && tPion.entries.length >= 2);
-    await ownPion.close();
 
-    const ownMb = new OwnReader(() => ({ readers: { data: "mb" } }));
-    t.after(() => ownMb.close());
-    const tMb = await ownMb.tailRead("claude", { path: fx.transcriptPath });
+    // OwnReader terminates its worker once idle; mutating config hot-switches the next tailRead to MB.
+    ownCfg = { readers: { data: "mb" } };
+    const tMb = await own.tailRead("claude", { path: fx.transcriptPath });
     assert.deepEqual(tMb, tPion);
-    await ownMb.close();
+    await own.close();
 
     const lines = readFileSync(spawnLog, "utf8").trim().split("\n").filter(Boolean);
     assert.equal(lines.length, 2, `expected exactly 2 OwnReader spawns, got: ${JSON.stringify(lines)}`);
