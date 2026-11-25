@@ -720,6 +720,8 @@ export class MbBackfill extends EventEmitter {
   }
 
   postMessage(message: unknown) {
+    // (one ended gives back nothing it took after: its end, which gives it back, is behind it)
+    if (this.#exited) return;
     if (!takeBackfill(this.#priority, this.threadId)) return void this.#later({ done: false });
     this.#holding = true;
     this.#process.postMessage(message);
