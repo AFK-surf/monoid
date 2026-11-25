@@ -453,20 +453,12 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
       }
     }
   }
-  let teams_cache : Ref[Map[String, Team]?] = Ref(None)
-  let teams_of = () => match teams_cache.val {
-    Some(t) => t
-    None => {
-      let t = teams(host, data, sep)
-      teams_cache.val = Some(t)
-      t
-    }
-  }
+  let cache = OutflowCache::new()
   let people_cache : Map[String, Json] = Map([])
   let person_of = (r : String) => match people_cache.get(r) {
     Some(p) => p
     None => {
-      let p = outflow_person(host, data, sep, teams_of, r)
+      let p = outflow_person(host, data, sep, cache, r)
       people_cache[r] = p
       p
     }
