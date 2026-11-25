@@ -602,11 +602,12 @@
       if (capHalf.x <= 0.0) return rgb;
       int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));
       if (code < 48 || code > 208) return rgb;
-      if (capsuleDarkT >= 0.65) {
-        float darkL = clamp(1.0 - origL, 0.06, 0.14);
+      if (capsuleDarkT >= 0.5) {
+        float darkL = clamp(1.0 - origL, 0.06, 0.10);
         return vec3(darkL);
       }
-      return rgb;
+      float liftW = smoothstep(0.03, 0.08, capsuleBgL);
+      return mix(rgb, max(rgb, vec3(0.95)), liftW);
     }
     float darkT = capsuleDarkT;
     float localBoost = 0.0;
@@ -1640,12 +1641,21 @@
       float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
       vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z);
       float baseLum = clamp(transLum * transmittance, 0.0, 1.0);
-      if (darkAdGlareW > 0.001 && baseLum > 0.18) {
-        float over = baseLum - 0.18;
-        float capped = 0.18 + 0.115 * (over / (over + 0.115));
-        float newLum = mix(baseLum, capped, darkAdGlareW);
-        chromaVec *= (newLum / max(baseLum, 0.0001));
-        baseLum = newLum;
+      if (darkAdGlareW > 0.001) {
+        if (baseLum > 0.18) {
+          float over = baseLum - 0.18;
+          float capped = 0.18 + 0.115 * (over / (over + 0.115));
+          float newLum = mix(baseLum, capped, darkAdGlareW);
+          chromaVec *= (newLum / max(baseLum, 0.0001));
+          baseLum = newLum;
+        }
+        vec3 testRaw = emission + vec3(baseLum) + chromaVec;
+        float peak = max(testRaw.r, max(testRaw.g, testRaw.b));
+        if (peak > 0.44) {
+          float lum0 = luma(emission) + baseLum;
+          float s = clamp((0.44 - lum0) / max(peak - lum0, 0.0001), 0.0, 1.0);
+          chromaVec *= mix(1.0, s, darkAdGlareW);
+        }
       }
       vec3 transmittedColor = vec3(baseLum) + chromaVec;
       vec3 rawBase = emission + transmittedColor;
@@ -2351,7 +2361,10 @@
     float prevT = mb_unpack16(prev.rg);
     float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;
     float latch, target;
-    if (is_dark > 0.5) {
+    if (is_dark > 1.5) {
+      target = 0.0;
+      latch = 64.0 / 255.0;
+    } else if (is_dark > 0.5) {
       int code = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));
       bool had_dark = (is_new <= 0.5) && (code >= 48 && code <= 208);
       bool prev_on = had_dark && (code >= 96);
@@ -2365,7 +2378,7 @@
       target = latch;
     }
     float nextT;
-    if (is_new > 0.5 || dt >= 1.0) nextT = target;
+    if (is_dark > 0.5 || is_new > 0.5 || dt >= 1.0) nextT = target;
     else if (dt <= 0.0) nextT = prevT;
     else {
       nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));
@@ -2613,7 +2626,7 @@
     }
     gadN = maxA;
   }
-  function adCollectAndMatch(start, count, m, backdropChanged, dt, serial) {
+  function adCollectAndMatch(start, count, m, backdropChanged, curBd, dt, serial) {
     if (adMode <= 0 || dt < 0) return [];
     const a = start * INST;
     const kind = Math.round(f32[a + 5]);
@@ -2628,7 +2641,7 @@
         items.push({
           cx: (m.gb[0] + m.gb[2]) * 0.5, cy: (m.gb[1] + m.gb[3]) * 0.5,
           hx: Math.max((m.gb[2] - m.gb[0]) * 0.5, 1.0), hy: Math.max((m.gb[3] - m.gb[1]) * 0.5, 1.0),
-          isDark: (f32[a + 11] >= 0.05 && lum < 0.35) ? 1 : 0,
+          isDark: (f32[a + 11] >= 0.05 && lum < 0.35) ? (f32[a + 11] > 0.42 ? 2 : 1) : 0,
         });
       }
     } else {
@@ -2644,7 +2657,7 @@
         items.push({
           cx: f32[b] + f32[b + 2] * 0.5, cy: f32[b + 1] + f32[b + 3] * 0.5,
           hx: Math.max(f32[b + 2] * 0.5, 1.0), hy: Math.max(f32[b + 3] * 0.5, 1.0),
-          isDark: (f32[b + 11] >= 0.05 && lum < 0.35) ? 1 : 0,
+          isDark: (f32[b + 11] >= 0.05 && lum < 0.35) ? (f32[b + 11] > 0.42 ? 2 : 1) : 0,
         });
       }
     }
@@ -2678,17 +2691,19 @@
           }
           isNew = 1;
           const s = adSlots[sid];
-          s.active = true; s.isDark = it.isDark; s.settleLeft = 0; s.updatedSerial = 0;
+          s.active = true; s.isDark = it.isDark; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
         }
         const s = adSlots[sid];
         s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
       }
       const s = adSlots[sid];
       if (!isNew && s.updatedSerial === serial) continue;
-      if (isNew || backdropChanged || s.settleLeft > 0) {
+      const slotChanged = backdropChanged || (s.lastBd !== curBd);
+      if (isNew || slotChanged || s.settleLeft > 0) {
         if (isNew) s.settleLeft = 0;
-        else if (backdropChanged) s.settleLeft = AD_SETTLE_SEC;
+        else if (slotChanged) s.settleLeft = (s.isDark > 0) ? 0 : AD_SETTLE_SEC;
         else s.settleLeft = Math.max(0, s.settleLeft - dt);
+        s.lastBd = curBd;
         s.updatedSerial = serial;
         pend.push({ sid, isNew, isDark: s.isDark, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
@@ -3417,7 +3432,7 @@
       if (known && !drewMissing && canKeep) slotKeep(s, m, key);
     }
     slotShow(m, s);
-    const adPend = adCollectAndMatch(start, count, m, reblurred, adCurDt, adFrameSerial);
+    const adPend = adCollectAndMatch(start, count, m, reblurred, bdTex, adCurDt, adFrameSerial);
     if (adPend.length) adRunUpdates(adPend, adCurDt);
     adFillUniforms();
     mainState();

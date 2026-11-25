@@ -104,6 +104,7 @@ struct MBAdSlot {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  uintptr_t last_bd;
   double settle_left;
   uint64_t updated_serial;
   uint64_t seen_serial;
@@ -372,11 +373,12 @@ static const char *shader_src =
     "    if (capHalf.x <= 0.0) return rgb;\n"
     "    int code = int(floor(saturate(capsuleLatch) * 255.0 + 0.5));\n"
     "    if (code < 48 || code > 208) return rgb;\n"
-    "    if (capsuleDarkT >= 0.65) {\n"
-    "      float darkL = clamp(1.0 - origL, 0.06, 0.14);\n"
+    "    if (capsuleDarkT >= 0.5) {\n"
+    "      float darkL = clamp(1.0 - origL, 0.06, 0.10);\n"
     "      return float3(darkL, darkL, darkL);\n"
     "    }\n"
-    "    return rgb;\n"
+    "    float liftW = smoothstep(0.03, 0.08, capsuleBgL);\n"
+    "    return lerp(rgb, max(rgb, float3(0.95, 0.95, 0.95)), liftW);\n"
     "  }\n"
     "  float darkT = capsuleDarkT;\n"
     "  float localBoost = 0.0;\n"
@@ -1084,12 +1086,21 @@ static const char *shader_src =
     "    float transLum = saturate(Y * (1.0 + lift * (1.0 - Y)));\n"
     "    float3 chromaVec = (refractColor - Y.xxx) * (chromaGain * I.prm.z);\n"
     "    float baseLum = saturate(transLum * transmittance);\n"
-    "    if (darkAdGlareW > 0.001 && baseLum > 0.18) {\n"
-    "      float over = baseLum - 0.18;\n"
-    "      float capped = 0.18 + 0.115 * (over / (over + 0.115));\n"
-    "      float newLum = lerp(baseLum, capped, darkAdGlareW);\n"
-    "      chromaVec *= (newLum / max(baseLum, 0.0001));\n"
-    "      baseLum = newLum;\n"
+    "    if (darkAdGlareW > 0.001) {\n"
+    "      if (baseLum > 0.18) {\n"
+    "        float over = baseLum - 0.18;\n"
+    "        float capped = 0.18 + 0.115 * (over / (over + 0.115));\n"
+    "        float newLum = lerp(baseLum, capped, darkAdGlareW);\n"
+    "        chromaVec *= (newLum / max(baseLum, 0.0001));\n"
+    "        baseLum = newLum;\n"
+    "      }\n"
+    "      float3 testRaw = emission + baseLum.xxx + chromaVec;\n"
+    "      float peak = max(testRaw.r, max(testRaw.g, testRaw.b));\n"
+    "      if (peak > 0.44) {\n"
+    "        float lum0 = luma(emission) + baseLum;\n"
+    "        float s = saturate((0.44 - lum0) / max(peak - lum0, 0.0001));\n"
+    "        chromaVec *= lerp(1.0, s, darkAdGlareW);\n"
+    "      }\n"
     "    }\n"
     "    float3 transmittedColor = baseLum.xxx + chromaVec;\n"
     "    float3 rawBase = emission + transmittedColor;\n"
@@ -1600,7 +1611,10 @@ static const char *ad_src =
     "  float prevT = mb_unpack16(prev.rg);\n"
     "  float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;\n"
     "  float latch, target;\n"
-    "  if (is_dark > 0.5) {\n"
+    "  if (is_dark > 1.5) {\n"
+    "    target = 0.0;\n"
+    "    latch = 64.0 / 255.0;\n"
+    "  } else if (is_dark > 0.5) {\n"
     "    int code = int(floor(saturate(prev.b) * 255.0 + 0.5));\n"
     "    bool had_dark = (is_new <= 0.5) && (code >= 48 && code <= 208);\n"
     "    bool prev_on = had_dark && (code >= 96);\n"
@@ -1614,7 +1628,7 @@ static const char *ad_src =
     "    target = latch;\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  if (is_dark > 0.5 || is_new > 0.5 || dt >= 1.0) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = lerp(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -2582,7 +2596,7 @@ struct WinAdPend {
 };
 
 static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int32_t count, int backdrop_changed,
-                                double dt, uint64_t serial, WinAdPend out[MB_ADAPTIVE_MAX]) {
+                                uintptr_t cur_bd, double dt, uint64_t serial, WinAdPend out[MB_ADAPTIVE_MAX]) {
   if (!w || ad_mode <= 0 || dt < 0.0) return 0;
   const float *a = f + (size_t)start * MB_INST;
   int kind = (int)(a[5] + 0.5f);
@@ -2599,7 +2613,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       items[ni].cy = (gu.gb[1] + gu.gb[3]) * 0.5f;
       items[ni].hx = fmaxf((gu.gb[2] - gu.gb[0]) * 0.5f, 1.0f);
       items[ni].hy = fmaxf((gu.gb[3] - gu.gb[1]) * 0.5f, 1.0f);
-      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? (a[11] > 0.42f ? 2 : 1) : 0;
       ni++;
     }
   } else {
@@ -2616,7 +2630,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       items[ni].cy = b[1] + b[3] * 0.5f;
       items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
       items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
-      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? (b[11] > 0.42f ? 2 : 1) : 0;
       ni++;
     }
   }
@@ -2666,16 +2680,18 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
     }
     MBAdSlot *s = &w->ad_slots[sid];
     if (!is_new && s->updated_serial == serial) continue;
-    int need = is_new || backdrop_changed || s->settle_left > 0.0;
+    int slot_changed = backdrop_changed || (s->last_bd != cur_bd);
+    int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
       if (is_new) {
         s->settle_left = 0.0;
-      } else if (backdrop_changed) {
-        s->settle_left = MB_AD_SETTLE_SEC;
+      } else if (slot_changed) {
+        s->settle_left = (s->is_dark > 0) ? 0.0 : MB_AD_SETTLE_SEC;
       } else {
         s->settle_left -= dt;
         if (s->settle_left <= 0.0) s->settle_left = 0.0;
       }
+      s->last_bd = cur_bd;
       s->updated_serial = serial;
       out[n_upd++] = {sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
     }
@@ -3551,7 +3567,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     }
   }
   WinAdPend ad_pend[MB_ADAPTIVE_MAX];
-  int ad_n_upd = ad_collect_and_match(rw, f, start, count, reblurred, ad_cur_dt,
+  int ad_n_upd = ad_collect_and_match(rw, f, start, count, reblurred, (uintptr_t)gsrv, ad_cur_dt,
                                       rw ? rw->ad_frame_serial : 0, ad_pend);
   if (ad_n_upd > 0) {
     *switched = 1;

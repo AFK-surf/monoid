@@ -2878,6 +2878,167 @@ int main(void) {
           free(bgx); free(px);
         }
 
+        // R5-1: 60 Hz straddling word transition (right=#141414, left #141414 -> white, dt=1/60, 15 frames):
+        // every frame 1..15 must keep left_cr >= 4.5, right_cr >= 4.5, and word_diff <= 1
+        {
+          double tr[5 * MB_INST];
+          rect_at(tr, 0, 0, 180, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(tr + MB_INST, 180, 0, 220, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(tr + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -62);
+          tr[2 * MB_INST + 4] = 18.0; tr[2 * MB_INST + 6] = 1.0; tr[2 * MB_INST + 7] = 1.2;
+          tr[2 * MB_INST + 11] = 0x67 / 255.0; tr[2 * MB_INST + 12] = 0.6; tr[2 * MB_INST + 13] = 14.0;
+          tr[2 * MB_INST + 14] = -1.0; tr[2 * MB_INST + 15] = 1.0;
+          tr[2 * MB_INST + 21] = 20.0; tr[2 * MB_INST + 22] = 0.06; tr[2 * MB_INST + 23] = 0.0;
+          rect_at(tr + 3 * MB_INST, 124, 32, 12, 12, 7, 0.93, 0.93, 0.93, 0);
+          tr[3 * MB_INST + 12] = 16.0; tr[3 * MB_INST + 13] = 16.0; tr[3 * MB_INST + 14] = 16.0; tr[3 * MB_INST + 15] = 16.0;
+          tr[3 * MB_INST + 21] = 180.0; tr[3 * MB_INST + 22] = 38.0; tr[3 * MB_INST + 23] = 18.0;
+          rect_at(tr + 4 * MB_INST, 224, 32, 12, 12, 7, 0.93, 0.93, 0.93, 0);
+          tr[4 * MB_INST + 12] = 16.0; tr[4 * MB_INST + 13] = 16.0; tr[4 * MB_INST + 14] = 16.0; tr[4 * MB_INST + 15] = 16.0;
+          tr[4 * MB_INST + 21] = 180.0; tr[4 * MB_INST + 22] = 38.0; tr[4 * MB_INST + 23] = 18.0;
+          for (int i = 0; i < 5; i++) { tr[i * MB_INST + 18] = 400.0; tr[i * MB_INST + 19] = 120.0; }
+          double prev_dt = ad_fixed_dt;
+          ad_fixed_dt = 1.0 / 60.0;
+          // Capture settled white-left glass-only background for same-pixel CR reference
+          tr[8] = 1.0; tr[9] = 1.0; tr[10] = 1.0;
+          glass_forget();
+          gl_present(tr, 3, 0.08, 0.08, 0.08);
+          unsigned char *bgx = pixels_of_fb(wt_fb);
+          // Start dark-left frame 0, then flip left to white for frames 1..15
+          tr[8] = 0.08; tr[9] = 0.08; tr[10] = 0.08;
+          glass_forget();
+          gl_present(tr, 5, 0.08, 0.08, 0.08);
+          tr[8] = 1.0; tr[9] = 1.0; tr[10] = 1.0;
+          double min_l = 999.0, min_r = 999.0;
+          int max_wd = 0;
+          int r38 = fb_h - 1 - 38;
+          unsigned char *bg_l = bgx + (r38 * fb_w + 130) * 4;
+          unsigned char *bg_r = bgx + (r38 * fb_w + 230) * 4;
+          double ybl = wcag_luma_u8(bg_l[0], bg_l[1], bg_l[2]);
+          double ybr = wcag_luma_u8(bg_r[0], bg_r[1], bg_r[2]);
+          for (int fr = 1; fr <= 15; fr++) {
+            gl_present(tr, 5, 0.08, 0.08, 0.08);
+            unsigned char *px = pixels_of_fb(wt_fb);
+            unsigned char *gl_l = px + (r38 * fb_w + 130) * 4;
+            unsigned char *gl_r = px + (r38 * fb_w + 230) * 4;
+            int wd = 0;
+            for (int c = 0; c < 3; c++) { int d = abs((int)gl_l[c] - (int)gl_r[c]); if (d > wd) wd = d; }
+            if (wd > max_wd) max_wd = wd;
+            double yil = wcag_luma_u8(gl_l[0], gl_l[1], gl_l[2]);
+            double yir = wcag_luma_u8(gl_r[0], gl_r[1], gl_r[2]);
+            double cr_l = ((yil > ybl ? yil : ybl) + 0.05) / ((yil > ybl ? ybl : yil) + 0.05);
+            double cr_r = ((yir > ybr ? yir : ybr) + 0.05) / ((yir > ybr ? ybr : yir) + 0.05);
+            if (cr_l < min_l) min_l = cr_l;
+            if (cr_r < min_r) min_r = cr_r;
+            CHECK(wd <= 1 && cr_l >= 4.5 && cr_r >= 4.5);
+            free(px);
+          }
+          ad_fixed_dt = prev_dt;
+          printf("gles_render: dark adaptive 60Hz transition (15 frames) min_left_cr=%.2f min_right_cr=%.2f max_wd=%d\n",
+                 min_l, min_r, max_wd);
+          free(bgx);
+        }
+
+        // R5-2: p.muted (#A8AAAE) on dark-left/white-right & primary (#EDEDED) on dark-left/pure-red-right
+        for (int tc = 0; tc < 2; tc++) {
+          double mr[4 * MB_INST];
+          rect_at(mr, 0, 0, 216, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(mr + MB_INST, 216, 0, 184, 120, 0, 1.0, tc == 0 ? 1.0 : 0.0, tc == 0 ? 1.0 : 0.0, 0);
+          rect_at(mr + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -63 - tc);
+          mr[2 * MB_INST + 4] = 18.0; mr[2 * MB_INST + 6] = 1.0; mr[2 * MB_INST + 7] = 1.2;
+          mr[2 * MB_INST + 11] = 0x67 / 255.0; mr[2 * MB_INST + 12] = 0.6; mr[2 * MB_INST + 13] = 14.0;
+          mr[2 * MB_INST + 14] = -1.0; mr[2 * MB_INST + 15] = 1.0;
+          mr[2 * MB_INST + 21] = 20.0; mr[2 * MB_INST + 22] = 0.06; mr[2 * MB_INST + 23] = 0.0;
+          rect_at(mr + 3 * MB_INST, 232, 32, 12, 12, 10,
+                  tc == 0 ? (0xA8/255.0) : 0.93, tc == 0 ? (0xAA/255.0) : 0.93, tc == 0 ? (0xAE/255.0) : 0.93, 0);
+          mr[3 * MB_INST + 4] = 4.0;
+          mr[3 * MB_INST + 12] = 0.1; mr[3 * MB_INST + 13] = 0.5; mr[3 * MB_INST + 14] = 0.9; mr[3 * MB_INST + 15] = 0.5;
+          mr[3 * MB_INST + 21] = 180.0; mr[3 * MB_INST + 22] = 38.0; mr[3 * MB_INST + 23] = 18.0;
+          for (int i = 0; i < 4; i++) { mr[i * MB_INST + 18] = 400.0; mr[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(mr, 3, 0.08, 0.08, 0.08);
+          unsigned char *bgx = pixels_of_fb(wt_fb);
+          glass_forget();
+          gl_present(mr, 4, 0.08, 0.08, 0.08);
+          unsigned char *px = pixels_of_fb(wt_fb);
+          int r38 = fb_h - 1 - 38;
+          unsigned char *gp = bgx + (r38 * fb_w + 238) * 4;
+          unsigned char *ip = px + (r38 * fb_w + 238) * 4;
+          double gl = wcag_luma_u8(gp[0], gp[1], gp[2]), il = wcag_luma_u8(ip[0], ip[1], ip[2]);
+          double cr = ((il > gl ? il : gl) + 0.05) / ((il > gl ? gl : il) + 0.05);
+          printf("gles_render: dark adaptive %s glass=(%d,%d,%d) icon=(%d,%d,%d) cr=%.2f\n",
+                 tc == 0 ? "p.muted-white" : "pure-red", gp[0], gp[1], gp[2], ip[0], ip[1], ip[2], cr);
+          CHECK(cr >= 4.5);
+          free(bgx); free(px);
+        }
+
+        // R5-3: High tint alpha 0xA8 and 0xCC wide capsule (white-left + dark-right) -> stays dark glass + light ink, CR >= 4.5
+        for (int ti = 0; ti < 2; ti++) {
+          double alpha = ti == 0 ? (0xA8 / 255.0) : (0xCC / 255.0);
+          double ht[4 * MB_INST];
+          rect_at(ht, 0, 0, 216, 120, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(ht + MB_INST, 216, 0, 184, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(ht + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -65 - ti);
+          ht[2 * MB_INST + 4] = 18.0; ht[2 * MB_INST + 6] = 1.0; ht[2 * MB_INST + 7] = 1.2;
+          ht[2 * MB_INST + 11] = alpha; ht[2 * MB_INST + 12] = 0.6; ht[2 * MB_INST + 13] = 14.0;
+          ht[2 * MB_INST + 14] = -1.0; ht[2 * MB_INST + 15] = 1.0;
+          ht[2 * MB_INST + 21] = 20.0; ht[2 * MB_INST + 22] = 0.06; ht[2 * MB_INST + 23] = 0.0;
+          rect_at(ht + 3 * MB_INST, 232, 32, 12, 12, 10, 0.93, 0.93, 0.93, 0);
+          ht[3 * MB_INST + 4] = 4.0;
+          ht[3 * MB_INST + 12] = 0.1; ht[3 * MB_INST + 13] = 0.5; ht[3 * MB_INST + 14] = 0.9; ht[3 * MB_INST + 15] = 0.5;
+          ht[3 * MB_INST + 21] = 180.0; ht[3 * MB_INST + 22] = 38.0; ht[3 * MB_INST + 23] = 18.0;
+          for (int i = 0; i < 4; i++) { ht[i * MB_INST + 18] = 400.0; ht[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(ht, 3, 0.08, 0.08, 0.08);
+          unsigned char *bgx = pixels_of_fb(wt_fb);
+          glass_forget();
+          gl_present(ht, 4, 0.08, 0.08, 0.08);
+          unsigned char *px = pixels_of_fb(wt_fb);
+          int r38 = fb_h - 1 - 38;
+          unsigned char *gp = bgx + (r38 * fb_w + 238) * 4;
+          unsigned char *ip = px + (r38 * fb_w + 238) * 4;
+          double gl = wcag_luma_u8(gp[0], gp[1], gp[2]), il = wcag_luma_u8(ip[0], ip[1], ip[2]);
+          double cr = ((il > gl ? il : gl) + 0.05) / ((il > gl ? gl : il) + 0.05);
+          printf("gles_render: dark adaptive high-alpha=0x%02X glass=(%d,%d,%d) icon=(%d,%d,%d) cr=%.2f\n",
+                 ti == 0 ? 0xA8 : 0xCC, gp[0], gp[1], gp[2], ip[0], ip[1], ip[2], cr);
+          CHECK(il > 0.70 && cr >= 4.5);
+          free(bgx); free(px);
+        }
+
+        // R5-4: Dark -> White -> Dark 50-frame round-trip cache hit (fixed clear color):
+        // returning to cached dark blur slot must re-run fad and restore dark glass (< 70) + white icon (> 200) + settling == 0
+        {
+          double rt[3 * MB_INST];
+          rect_at(rt, 0, 0, 400, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(rt + MB_INST, 150, 20, 100, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -67);
+          rt[MB_INST + 4] = 18.0; rt[MB_INST + 6] = 1.0; rt[MB_INST + 7] = 1.2;
+          rt[MB_INST + 11] = 0x67 / 255.0; rt[MB_INST + 12] = 0.6; rt[MB_INST + 13] = 14.0;
+          rt[MB_INST + 14] = -1.0; rt[MB_INST + 15] = 1.0;
+          rt[MB_INST + 21] = 20.0; rt[MB_INST + 22] = 0.06; rt[MB_INST + 23] = 0.0;
+          rect_at(rt + 2 * MB_INST, 192, 32, 16, 12, 10, 0.93, 0.93, 0.93, 0);
+          rt[2 * MB_INST + 4] = 4.0;
+          rt[2 * MB_INST + 12] = 0.1; rt[2 * MB_INST + 13] = 0.5; rt[2 * MB_INST + 14] = 0.9; rt[2 * MB_INST + 15] = 0.5;
+          rt[2 * MB_INST + 21] = 200.0; rt[2 * MB_INST + 22] = 38.0; rt[2 * MB_INST + 23] = 18.0;
+          for (int i = 0; i < 3; i++) { rt[i * MB_INST + 18] = 400.0; rt[i * MB_INST + 19] = 120.0; }
+          double prev_dt = ad_fixed_dt;
+          ad_fixed_dt = 1.0 / 60.0;
+          glass_forget();
+          for (int ph = 0; ph < 3; ph++) {
+            double v = (ph == 1) ? 1.0 : 0.08;
+            rt[8] = v; rt[9] = v; rt[10] = v;
+            for (int f = 0; f < 50; f++) gl_present(rt, 3, 0.08, 0.08, 0.08);
+          }
+          ad_fixed_dt = prev_dt;
+          unsigned char *px = pixels_of_fb(wt_fb);
+          int r38 = fb_h - 1 - 38;
+          unsigned char *gp = px + (r38 * fb_w + 170) * 4;
+          unsigned char *ip = px + (r38 * fb_w + 200) * 4;
+          int settling = ad_settling;
+          printf("gles_render: dark adaptive 50x3 round-trip cache-hit glass=(%d,%d,%d) icon=(%d,%d,%d) settling=%d\n",
+                 gp[0], gp[1], gp[2], ip[0], ip[1], ip[2], settling);
+          CHECK(gp[0] < 70 && ip[0] > 200 && settling == 0);
+          free(px);
+        }
+
         target_fb = pb_fb; fb_w = fbw_save; fb_h = fbh_save; cur_w = w_save; cur_h = h_save; cur_scale = sc_save;
         glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
         glDeleteFramebuffers(1, &wt_fb);

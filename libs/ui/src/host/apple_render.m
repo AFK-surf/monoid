@@ -74,6 +74,7 @@ typedef struct {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  uintptr_t last_bd;
   double settle_left;
   uint64_t settle_serial;
   uint64_t updated_serial;
@@ -426,11 +427,12 @@ static NSString *shader_src = @
 "    if (capHalf.x <= 0.0) return rgb;\n"
 "    int code = int(floor(clamp(capsuleLatch, 0.0, 1.0) * 255.0 + 0.5));\n"
 "    if (code < 48 || code > 208) return rgb;\n"
-"    if (capsuleDarkT >= 0.65) {\n"
-"      float darkL = clamp(1.0 - origL, 0.06, 0.14);\n"
+"    if (capsuleDarkT >= 0.5) {\n"
+"      float darkL = clamp(1.0 - origL, 0.06, 0.10);\n"
 "      return float3(darkL);\n"
 "    }\n"
-"    return rgb;\n"
+"    float liftW = smoothstep(0.03, 0.08, capsuleBgL);\n"
+"    return mix(rgb, max(rgb, float3(0.95)), liftW);\n"
 "  }\n"
 "  float darkT = capsuleDarkT;\n"
 "  float localBoost = 0.0;\n"
@@ -1068,12 +1070,21 @@ MB_CORNER_SL
 "    float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);\n"
 "    float3 chromaVec = (refractColor - float3(Y)) * (chromaGain * I.p.z);\n"
 "    float baseLum = clamp(transLum * transmittance, 0.0, 1.0);\n"
-"    if (darkAdGlareW > 0.001 && baseLum > 0.18) {\n"
-"      float over = baseLum - 0.18;\n"
-"      float capped = 0.18 + 0.115 * (over / (over + 0.115));\n"
-"      float newLum = mix(baseLum, capped, darkAdGlareW);\n"
-"      chromaVec *= (newLum / max(baseLum, 0.0001));\n"
-"      baseLum = newLum;\n"
+"    if (darkAdGlareW > 0.001) {\n"
+"      if (baseLum > 0.18) {\n"
+"        float over = baseLum - 0.18;\n"
+"        float capped = 0.18 + 0.115 * (over / (over + 0.115));\n"
+"        float newLum = mix(baseLum, capped, darkAdGlareW);\n"
+"        chromaVec *= (newLum / max(baseLum, 0.0001));\n"
+"        baseLum = newLum;\n"
+"      }\n"
+"      float3 testRaw = emission + float3(baseLum) + chromaVec;\n"
+"      float peak = max(testRaw.r, max(testRaw.g, testRaw.b));\n"
+"      if (peak > 0.44) {\n"
+"        float lum0 = luma(emission) + baseLum;\n"
+"        float s = clamp((0.44 - lum0) / max(peak - lum0, 0.0001), 0.0, 1.0);\n"
+"        chromaVec *= mix(1.0, s, darkAdGlareW);\n"
+"      }\n"
 "    }\n"
 "    float3 transmittedColor = float3(baseLum) + chromaVec;\n"
 "    float3 rawBase = emission + transmittedColor;\n"
@@ -1723,7 +1734,10 @@ MB_CORNER_SL
 "  float prevT = mb_unpack16(prev.rg);\n"
 "  float is_dark = u.param.x, is_new = u.param.y, dt = u.param.z;\n"
 "  float latch, target;\n"
-"  if (is_dark > 0.5) {\n"
+"  if (is_dark > 1.5) {\n"
+"    target = 0.0;\n"
+"    latch = 64.0 / 255.0;\n"
+"  } else if (is_dark > 0.5) {\n"
 "    int code = int(floor(clamp(prev.b, 0.0, 1.0) * 255.0 + 0.5));\n"
 "    bool had_dark = (is_new <= 0.5) && (code >= 48 && code <= 208);\n"
 "    bool prev_on = had_dark && (code >= 96);\n"
@@ -1737,7 +1751,7 @@ MB_CORNER_SL
 "    target = latch;\n"
 "  }\n"
 "  float nextT;\n"
-"  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+"  if (is_dark > 0.5 || is_new > 0.5 || dt >= 1.0) nextT = target;\n"
 "  else if (dt <= 0.0) nextT = prevT;\n"
 "  else {\n"
 "    nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -2496,7 +2510,7 @@ typedef struct {
 } AdPending;
 
 static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, int32_t end, int32_t count,
-                                const Grab *m, int backdrop_changed, double dt, uint64_t serial,
+                                const Grab *m, int backdrop_changed, uintptr_t cur_bd, double dt, uint64_t serial,
                                 AdPending out[MB_ADAPTIVE_MAX]) {
   if (!w || dt < 0.0) return 0;
   const float *a = f + (size_t)start * MB_INST;
@@ -2514,7 +2528,7 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
       items[ni].cy = (m->g.gb[1] + m->g.gb[3]) * 0.5f;
       items[ni].hx = fmaxf((m->g.gb[2] - m->g.gb[0]) * 0.5f, 1.0f);
       items[ni].hy = fmaxf((m->g.gb[3] - m->g.gb[1]) * 0.5f, 1.0f);
-      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      items[ni].is_dark = (a[11] >= 0.05f && lum < 0.35f) ? (a[11] > 0.42f ? 2 : 1) : 0;
       ni++;
     }
   } else {
@@ -2531,7 +2545,7 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
       items[ni].cy = b[1] + b[3] * 0.5f;
       items[ni].hx = fmaxf(b[2] * 0.5f, 1.0f);
       items[ni].hy = fmaxf(b[3] * 0.5f, 1.0f);
-      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? 1 : 0;
+      items[ni].is_dark = (b[11] >= 0.05f && lum < 0.35f) ? (b[11] > 0.42f ? 2 : 1) : 0;
       ni++;
     }
   }
@@ -2583,22 +2597,24 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
     }
     MBAdSlot *s = &w->ad_slots[sid];
     if (s->updated_serial == serial) continue;
-    if (!is_new && !backdrop_changed && s->settle_left > 0.0 &&
+    int slot_changed = backdrop_changed || (s->last_bd != cur_bd);
+    if (!is_new && !slot_changed && s->settle_left > 0.0 &&
         atomic_load(&w->ad_conv_serial[sid]) >= s->settle_serial) {
       s->settle_left = 0.0;
     }
-    int need = is_new || backdrop_changed || s->settle_left > 0.0;
+    int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
       if (is_new) {
         s->settle_left = 0.0;
         s->settle_serial = serial;
-      } else if (backdrop_changed) {
-        s->settle_left = MB_AD_SETTLE_SEC;
+      } else if (slot_changed) {
+        s->settle_left = (s->is_dark > 0) ? 0.0 : MB_AD_SETTLE_SEC;
         s->settle_serial = serial;
       } else {
         s->settle_left -= dt;
         if (s->settle_left <= 0.0) s->settle_left = 0.0;
       }
+      s->last_bd = cur_bd;
       s->updated_serial = serial;
       out[n_upd++] = (AdPending){sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
     }
@@ -3371,7 +3387,8 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
                     }
                     if (skind == 6 && pre_n < MB_ADAPTIVE_MAX) {
                       AdPending tmp[MB_ADAPTIVE_MAX];
-                      int nu = ad_collect_and_match(at_win, f, s0, e0, count, &gm, 0, ad_dt, ad_serial, tmp);
+                      int nu = ad_collect_and_match(at_win, f, s0, e0, count, &gm, 0,
+                                                    (uintptr_t)(__bridge const void *)slot_bt[sl], ad_dt, ad_serial, tmp);
                       if (nu > 0) {
                         float map[4], uvc[4];
                         grab_map_uvc(&gm, slot_bt[sl], map, uvc);
@@ -3618,7 +3635,8 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
             // what it sees is what a slot holds: shown on in this pass unless an adaptive slot needs a settle step
             kept_ok = 1;
             slot_show(&m, slot);
-            ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 0, ad_dt, ad_serial, ad_pend);
+            ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 0,
+                                            (uintptr_t)(__bridge const void *)gtex, ad_dt, ad_serial, ad_pend);
             if (ad_n_upd > 0) {
               [enc endEncoding];
               ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
@@ -3643,7 +3661,8 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
             if (known && !encode_missing) slot_keep(slot, &m, key);
             kept_ok = slots[slot].valid;
             slot_show(&m, slot);
-            ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 1, ad_dt, ad_serial, ad_pend);
+            ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 1,
+                                            (uintptr_t)(__bridge const void *)gtex, ad_dt, ad_serial, ad_pend);
             if (ad_n_upd > 0) ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
             ad_fill_gu(at_win);
             enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
