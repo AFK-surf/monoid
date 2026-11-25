@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8b93600fa](https://github.com/AFK-surf/monoid/commit/8b93600faad698f59b2ff7b07f4d7ea23dc1aa7c) fix(ci): escalate direct routeMs and clear preferr | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [21933f8e1](https://github.com/AFK-surf/monoid/commit/21933f8e185bb3769e2009b15c3caf2296f1ce31) fix(ci): keep ci-1 and macos-ci checkouts non-shal | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [33c7dde0b](https://github.com/AFK-surf/monoid/commit/33c7dde0bb128d3a3011bd08bd1dc012ec11ba0b) test(station): fix FIFO P11 cancel barrier race in | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [aae87e673](https://github.com/AFK-surf/monoid/commit/aae87e673631ee390916146d6abe89d45d875865) fix(core): read a relay's access URL again once it | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 2.54 | 3.44 | 14.21 | 36.75 | 55.59 | 32.11 | 64.99 | 100.93 | 123.13 |
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 2.54 | 3.44 | 14.21 | 36.75 | 55.59 | 32.11 | 64.99 | 101.01 | 130.55 |
 | [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 2.54 | 3.43 | 14.19 | 36.72 | 55.5 | 32.08 | 64.92 | 101.06 | 127.43 |
-| [df9dbe4c8](https://github.com/AFK-surf/monoid/commit/df9dbe4c8d749328665885f9f9c66b82e6626cdb) fix(pion-ui): sync icon_data.pion after #8643 and  | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8b93600fa](https://github.com/AFK-surf/monoid/commit/8b93600faad698f59b2ff7b07f4d7ea23dc1aa7c) fix(ci): escalate direct routeMs and clear preferr | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.35 |
 | [21933f8e1](https://github.com/AFK-surf/monoid/commit/21933f8e185bb3769e2009b15c3caf2296f1ce31) fix(ci): keep ci-1 and macos-ci checkouts non-shal | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.43 |
 | [33c7dde0b](https://github.com/AFK-surf/monoid/commit/33c7dde0bb128d3a3011bd08bd1dc012ec11ba0b) test(station): fix FIFO P11 cancel barrier race in | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.31 |
 | [aae87e673](https://github.com/AFK-surf/monoid/commit/aae87e673631ee390916146d6abe89d45d875865) fix(core): read a relay's access URL again once it | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.03 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.59 |
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.75 |
 | [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.67 |
-| [df9dbe4c8](https://github.com/AFK-surf/monoid/commit/df9dbe4c8d749328665885f9f9c66b82e6626cdb) fix(pion-ui): sync icon_data.pion after #8643 and  | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.87 |
