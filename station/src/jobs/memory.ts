@@ -34,7 +34,7 @@ import type { Clock } from "effect";
 import { runnerId } from "../agents/process.ts";
 import { liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
-import { Fibers } from "../ops/fibers.ts";
+import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type ProcessInfo, platform, treeOf } from "../platform/index.ts";
 import type { Store } from "../store/store.ts";
@@ -185,8 +185,10 @@ export class MemoryWatch {
   #looks = 0;
   /// The commands paused under pressure (SIGSTOP), by their units' keys.
   #paused = new Map<string, { pids: number[]; label: string; session: string | null; bytes: number }>();
-  /// Every process of the last look's units, with its unit: whose a process the kernel kills was.
+  /// Every process of the last look's units, and of the look before (a kill the kernel logs just after a look that
+  /// no longer saw the process), with its unit: whose a process the kernel kills was.
   #seen = new Map<number, Unit>();
+  #seenBefore = new Map<number, Unit>();
   #unhear: () => void = () => {};
 
   constructor(options: MemoryOptions) {
@@ -233,6 +235,7 @@ export class MemoryWatch {
     if (table === null) return pressure;
     const units = unitsOf(table, this.#o.jobs(), await this.#o.agents(), this.#o.self, this.#remembered).sort((a, b) => b.bytes - a.bytes);
     const present = new Set(units.map((u) => u.key));
+    this.#seenBefore = this.#seen;
     this.#seen = new Map(units.flatMap((u) => u.pids.map((pid) => [pid, u] as const)));
     for (const key of this.#told.keys()) if (!present.has(key)) this.#told.delete(key);
     this.#looks++;
@@ -300,10 +303,13 @@ export class MemoryWatch {
 
   /// The kernel killed `kill` for memory: its unit's agent told (the unit as the last look saw it), else only logged.
   async killed(kill: KernelKill): Promise<void> {
-    const u = this.#seen.get(kill.pid);
+    const seen = this.#seen.get(kill.pid) ?? this.#seenBefore.get(kill.pid);
+    // Its directory is asked of a process of it still alive: the one killed has none now.
+    const u = seen === undefined ? undefined : { ...seen, pids: seen.pids.filter((pid) => pid !== kill.pid) };
+    if (u !== undefined && u.session === null) u.session = this.#remembered.get(kill.pid)?.session ?? null;
+    if (u !== undefined && u.pids.length > 0) await this.#whose([u]);
     log.warn("memory", "the kernel killed a process for memory", { pid: kill.pid, name: kill.name, unit: u?.key ?? null, session: u?.session ?? null });
     if (u === undefined) return;
-    await this.#whose([u]);
     const free = this.#o.freeBytes?.();
     const left = free === undefined ? "" : ` The machine had ${gib(free)} free of ${gib(this.#o.totalBytes())} just after.`;
     this.#tell(u, `The machine ran out of memory and the kernel killed ${kill.name} (pid ${kill.pid}), a process of your ${u.label}.${left} If you still need it, run it again with less at once, or on another station (station_task).`);
@@ -554,28 +560,48 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
 
 /// The processes the kernel kills for memory from now on, as it logs them (Linux's /dev/kmsg, read by `cat`: a read of
 /// it waits for the next record, which would hold one of Node's file threads the whole while). What was logged before
-/// the station started is passed over. Where the kernel's log is not readable (`kernel.dmesg_restrict`), nothing is heard.
+/// the station started is passed over, and what was heard already when `cat` is started again. `cat` ends when the
+/// kernel's ring overwrote records it had not read yet (EPIPE): it is started again, a while later each time it ends at
+/// once. Where the kernel's log is not readable (`kernel.dmesg_restrict`), nothing is heard.
 export function kernelKills(heard: (kill: KernelKill) => void): () => void {
   let child: ReturnType<typeof spawn> | null = null;
   let ended = false;
-  void readFile("/proc/uptime", "utf8").then((uptime) => {
+  let cancel: () => void = () => {};
+  let heardTo = 0;
+  let quick = 0;
+  const notRead = (why: object) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", why);
+  const follow = () => {
     if (ended) return;
-    const since = Number(uptime.split(" ")[0]) * 1e6;
+    let records = 0;
+    let said = "";
     const cat = spawn("cat", ["/dev/kmsg"], { stdio: ["ignore", "pipe", "pipe"] });
     child = cat;
-    let said = "";
     cat.stderr.on("data", (b: Buffer) => (said += b.toString()));
-    cat.on("error", (error) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", { error: error.message }));
+    cat.on("error", (error) => notRead({ error: error.message }));
     cat.on("close", (code) => {
-      if (!ended) log.info("memory", "the kernel's log is not read: its OOM kills are not told", { code, said: said.trim().slice(0, 200) });
+      child = null;
+      if (ended) return;
+      if (/not permitted|permission denied|no such file/i.test(said)) return notRead({ code, said: said.trim().slice(0, 200) });
+      quick = records > 0 ? 0 : quick + 1;
+      if (quick > 5) return notRead({ code, said: said.trim().slice(0, 200), again: quick });
+      // timer: a retry after a failure, with a backoff
+      cancel = wall.after(1000 * 2 ** quick, follow);
     });
     createInterface({ input: cat.stdout }).on("line", (record) => {
+      records++;
       const kill = kmsgKill(record);
-      if (kill !== null && kill.usec >= since) heard({ pid: kill.pid, name: kill.name });
+      if (kill === null || kill.usec <= heardTo) return;
+      heardTo = kill.usec;
+      heard({ pid: kill.pid, name: kill.name });
     });
-  }, (error) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", { error: (error as Error).message }));
+  };
+  void readFile("/proc/uptime", "utf8").then((uptime) => {
+    heardTo = Number(uptime.split(" ")[0]) * 1e6;
+    follow();
+  }, (error) => notRead({ error: (error as Error).message }));
   return () => {
     ended = true;
+    cancel();
     child?.kill();
   };
 }

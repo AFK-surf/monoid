@@ -378,3 +378,32 @@ test("a process the kernel kills for memory is told to the agent whose unit it w
   }
   assert.equal(hear, null, "no longer heard once closed");
 });
+
+test("a kill heard just after a look that no longer saw its process is still its agent's; a shared runtime's command is found by a process of it still alive", async () => {
+  const told: [string | null, string][] = [];
+  let table = [p(50, 1, 50, 0, "stillfail-runner"), p(51, 50, 50, 0.5, "codex"), p(52, 51, 52, 0.1, "/bin/sh"), p(53, 52, 52, 0.4, "node")];
+  const asked: number[][] = [];
+  const watch = new MemoryWatch({
+    pressure: async () => "normal",
+    table: async () => table,
+    totalBytes: () => 16 * GiB,
+    cwds: async (pids) => { asked.push(pids); return new Map(pids.filter((pid) => table.some((x) => x.pid === pid)).map((pid) => [pid, "/w/s3"])); },
+    sessionAt: (dir) => (dir === "/w/s3" ? "s3" : null),
+    jobs: () => [], agents: async () => [{ pid: 51, session: null }],
+    tell: (unit, text) => told.push([unit.session, text]),
+    stopJob: async () => {}, signal: () => {}, self: 10,
+  });
+  try {
+    await watch.look();
+    // The shell (52), the command's first process, is killed; the look after it no longer sees it.
+    table = table.filter((x) => x.pid !== 52);
+    await watch.look();
+    await watch.killed({ pid: 52, name: "sh" });
+    assert.equal(told.length, 1);
+    assert.equal(told[0]![0], "s3");
+    assert.match(told[0]![1], /killed sh \(pid 52\)/);
+    assert.deepEqual(asked.at(-1), [53], "its directory asked of the process still alive");
+  } finally {
+    await watch.close();
+  }
+});
