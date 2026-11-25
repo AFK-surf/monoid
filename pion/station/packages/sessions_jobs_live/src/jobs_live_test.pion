@@ -1,0 +1,870 @@
+// Deterministic unit tests for `sessions_jobs_live` (`#jobs` + `#live`).
+// Zero sleeps, virtual clock via `MemHostTransport` + `SessionHost::for_test`.
+
+import "admit"
+import "base_codec"
+import "effect"
+import "sessions_core"
+
+fn must[T](o : Option[T]) -> T {
+  match o {
+    Some(v) => v
+    None => panic("expected Some")
+  }
+}
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+/// Minimal test harness playing the role of Node for `#jobs` and `#live`:
+/// parses emitted `stdout_lines` for `rpc`, `after`, `cancel`, `tell`, `returned`, `quiet`.
+struct FakeNode {
+  pub mem : sessions_core::MemHostTransport
+  pub host : sessions_core::SessionHost
+  pub mut gen : sessions_core::HubGen
+  pub mut cursor : Int
+  pub timers : Map[Int, Double]
+  pub cancelled_timers : Array[Int]
+  pub tells : Array[(String, String, Array[base_codec::Json])]
+  pub returned : Array[base_codec::Json]
+  pub rpcs : Array[(Int, String, String, Array[base_codec::Json])]
+  pub remote_pushed : Array[(String, String)]
+}
+
+fn FakeNode::new() -> FakeNode {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  FakeNode::{
+    mem: mem,
+    host: host,
+    gen: gen,
+    cursor: 0,
+    timers: Map::new(),
+    cancelled_timers: [],
+    tells: [],
+    returned: [],
+    rpcs: [],
+    remote_pushed: [],
+  }
+}
+
+fn FakeNode::dispatch(self : FakeNode) -> sessions_core::SessionDispatch {
+  let base = sessions_core::SessionDispatch::stub()
+  let pushed = self.remote_pushed
+  sessions_core::SessionDispatch::{
+    mirror_actor: base.mirror_actor,
+    live_event: base.live_event,
+    live_end: base.live_end,
+    live_called: base.live_called,
+    jobs_called_k: base.jobs_called_k,
+    jstore_get_job_k: base.jstore_get_job_k,
+    remote_called_k: base.remote_called_k,
+    remote_changed_k: fn(task_id : String, status : String) -> Unit {
+      pushed.push((task_id, status))
+    },
+    queue_of_locked_k: base.queue_of_locked_k,
+    agents_told: base.agents_told,
+    agents_take: base.agents_take,
+    is_stub: false,
+  }
+}
+
+fn FakeNode::pump(self : FakeNode) -> Unit {
+  self.host.tick()
+  while self.cursor < self.mem.stdout_lines.length() {
+    let line = self.mem.stdout_lines[self.cursor]
+    self.cursor = self.cursor + 1
+    match sessions_core::parse_json_strict(line) {
+      Ok(j) => {
+        match sessions_core::num_of(sessions_core::jget(j, "rpc")) {
+          Some(id) => {
+            let actor = sessions_core::text_of(j, "actor")
+            let f = sessions_core::text_of(j, "fn")
+            let args : Array[base_codec::Json] = match sessions_core::jget(j, "args") {
+              Some(base_codec::Json::Arr(a)) => a
+              _ => []
+            }
+            self.rpcs.push((id.to_int(), actor, f, args))
+          }
+          None => ()
+        }
+        match sessions_core::num_of(sessions_core::jget(j, "after")) {
+          Some(id) => {
+            let ms = match sessions_core::num_of(sessions_core::jget(j, "ms")) {
+              Some(m) => m
+              None => 0.0
+            }
+            self.timers.set(id.to_int(), self.gen.counters.now + ms)
+          }
+          None => ()
+        }
+        match sessions_core::num_of(sessions_core::jget(j, "cancel")) {
+          Some(id) => {
+            let tid = id.to_int()
+            let _ = self.timers.remove(tid)
+            self.cancelled_timers.push(tid)
+          }
+          None => ()
+        }
+        match sessions_core::str_of(sessions_core::jget(j, "tell")) {
+          Some(f) => {
+            let actor = sessions_core::text_of(j, "actor")
+            let args : Array[base_codec::Json] = match sessions_core::jget(j, "args") {
+              Some(base_codec::Json::Arr(a)) => a
+              _ => []
+            }
+            self.tells.push((actor, f, args))
+          }
+          None => ()
+        }
+        match sessions_core::jget(j, "returned") {
+          Some(_) => self.returned.push(j)
+          None => ()
+        }
+      }
+      Err(_) => ()
+    }
+  }
+}
+
+fn FakeNode::answer_ok(self : FakeNode, rpc_id : Int, value : base_codec::Json) -> Unit {
+  self.gen.handle_answer(
+    self.host,
+    rpc_id,
+    base_codec::json_obj([("answer", sessions_core::jint(rpc_id)), ("value", value)]),
+  )
+  self.pump()
+}
+
+fn FakeNode::answer_err(self : FakeNode, rpc_id : Int, msg : String) -> Unit {
+  self.gen.handle_answer(
+    self.host,
+    rpc_id,
+    base_codec::json_obj([
+      ("answer", sessions_core::jint(rpc_id)),
+      ("error", base_codec::json_obj([("message", sessions_core::jstr(msg))])),
+    ]),
+  )
+  self.pump()
+}
+
+fn FakeNode::advance_and_fire_due(self : FakeNode, delta_ms : Double) -> Int {
+  self.gen.counters.now = self.gen.counters.now + delta_ms
+  self.mem.advance_now(delta_ms.to_int64())
+  let mut fired = 0
+  let keys = self.timers.keys()
+  for i in 0..<keys.length() {
+    let tid = keys[i]
+    match self.timers.get(tid) {
+      Some(due_at) => {
+        if due_at <= self.gen.counters.now {
+          let _ = self.timers.remove(tid)
+          self.gen.handle_due(self.host, tid)
+          fired = fired + 1
+        }
+      }
+      None => ()
+    }
+  }
+  self.pump()
+  fired
+}
+
+fn FakeNode::pop_rpc(self : FakeNode) -> (Int, String, String, Array[base_codec::Json]) {
+  assert(self.rpcs.length() > 0)
+  pop_front(self.rpcs)
+}
+
+fn FakeNode::drive_rpcs(
+  self : FakeNode,
+  handler : (String, String, Array[base_codec::Json]) -> Result[base_codec::Json, String],
+) -> Unit {
+  self.pump()
+  let mut guard_steps = 0
+  while self.rpcs.length() > 0 && guard_steps < 200 {
+    guard_steps = guard_steps + 1
+    let (id, actor, f, args) = pop_front(self.rpcs)
+    match handler(actor, f, args) {
+      Ok(v) => self.answer_ok(id, v)
+      Err(m) => self.answer_err(id, m)
+    }
+  }
+}
+
+// ── Test 1: #jobs startId, validation, queue_of_locked_k, jstore_get_job_k, notified, remote_changed_k ──
+
+test "sessions_jobs_live: #jobs startId validation, spawn, queue_of_locked_k, notified + remote_changed_k" {
+  let n = FakeNode::new()
+  let jstate = JobsState::new()
+  let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+
+  // Pure helpers
+  assert(
+    named(base_codec::json_obj([("name", sessions_core::jstr("web")), ("id", sessions_core::jstr("j1")), ("port", sessions_core::jint(8080))])) ==
+    "Service \"web\" (j1, port 8080)",
+  )
+  assert(
+    named(base_codec::json_obj([("name", sessions_core::jstr("build")), ("id", sessions_core::jstr("j2"))])) ==
+    "Job \"build\" (j2)",
+  )
+  assert(chat_of("remote:ws:station1234567890:chat:abc") == "chat chat:abc on station station12345")
+  assert(chat_of("c-1") == "chat c-1")
+
+  // Validation error: empty command
+  jctx.handle_call(1.0, "startId", [
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("j"),
+    sessions_core::jstr("   "),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(true),
+    base_codec::json_null(),
+    base_codec::json_null(),
+  ])
+  n.pump()
+  assert(n.returned.length() == 1)
+  assert(sessions_core::text_of(n.returned[0], "error") == "command is empty")
+
+  // Validation error: screen + small
+  jctx.handle_call(2.0, "startId", [
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("j"),
+    sessions_core::jstr("echo hi"),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(true),
+    base_codec::json_obj([("screen", sessions_core::jbool(true)), ("small", sessions_core::jbool(true))]),
+    base_codec::json_null(),
+  ])
+  n.pump()
+  assert(n.returned.length() == 2)
+  assert(sessions_core::text_of(n.returned[1], "error") == "a small task cannot use the screen")
+
+  // Successful startId + spawn
+  let job1 = base_codec::json_obj([
+    ("id", sessions_core::jstr("remote_task42")),
+    ("sessionKey", sessions_core::jstr("remote:ws:st1:c1")),
+    ("name", sessions_core::jstr("compile")),
+    ("state", sessions_core::jstr("running")),
+    ("queued", sessions_core::jbool(false)),
+    ("log", sessions_core::jstr("/tmp/j.log")),
+  ])
+  jctx.handle_call(3.0, "startId", [
+    sessions_core::jstr("remote:ws:st1:c1"),
+    sessions_core::jstr("compile"),
+    sessions_core::jstr("make"),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    base_codec::json_null(),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "node.isDir" {
+      return Ok(sessions_core::jbool(true))
+    }
+    if f == "store.runningJobsAtLeast" {
+      return Ok(sessions_core::jbool(false))
+    }
+    if f == "node.newJob" {
+      return Ok(job1)
+    }
+    if f == "node.spawn" {
+      return Ok(sessions_core::jint(777))
+    }
+    if f == "store.getJob" {
+      return Ok(job1)
+    }
+    Err("unexpected rpc: " + f)
+  })
+  assert(n.returned.length() == 3)
+  assert(sessions_core::text_of(sessions_core::field_of(n.returned[2], "value"), "id") == "remote_task42")
+  assert(jstate.running.contains("remote_task42"))
+
+  // notified on remote job synchronously dispatches remote_changed_k inside lock without blocking
+  jctx.handle_call(4.0, "notified", [
+    sessions_core::jstr("tok1"),
+    sessions_core::jstr("  build 50%  "),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.jobByToken" {
+      return Ok(job1)
+    }
+    if f == "store.addJobNotice" {
+      return Ok(base_codec::json_null())
+    }
+    Err("unexpected rpc: " + f)
+  })
+  assert(n.returned.length() == 4)
+  assert(n.remote_pushed.length() == 1)
+  assert(n.remote_pushed[0].0 == "task42")
+
+  // jstore_get_job_k
+  let mut got_job_id = ""
+  jctx.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    jctx.jstore_get_job_k("remote_task42", fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(j) => got_job_id = sessions_core::text_of(j, "id")
+        _ => ()
+      }
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" { Ok(job1) } else { Err("unexpected: " + f) }
+  })
+  assert(got_job_id == "remote_task42")
+
+  // queue_of_locked_k when job is queued and blocked by memory pressure
+  jctx.handle_call(5.0, "memorySeen", [sessions_core::jstr("critical")])
+  n.pump()
+  let qjob = base_codec::json_obj([
+    ("id", sessions_core::jstr("q1")),
+    ("sessionKey", sessions_core::jstr("s1")),
+    ("state", sessions_core::jstr("running")),
+    ("queued", sessions_core::jbool(true)),
+    ("startedAt", sessions_core::jnum(100.0)),
+    ("screen", sessions_core::jbool(false)),
+    ("small", sessions_core::jbool(false)),
+  ])
+  let mut q_place = 0
+  let mut q_why = ""
+  jctx.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    jctx.queue_of_locked_k("q1", fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(res) => {
+          q_place = sessions_core::int_of(sessions_core::jget(res, "place"))
+          q_why = sessions_core::text_of(res, "why")
+        }
+        _ => ()
+      }
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" {
+      return Ok(qjob)
+    }
+    if f == "store.remoteQueueJobs" {
+      return Ok(base_codec::json_arr([qjob]))
+    }
+    Err("unexpected: " + f)
+  })
+  assert(q_place == 1)
+  assert(q_why == "memory")
+  assert(n.gen.counters.active == 0)
+}
+
+// ── Test 2: #jobs stop, exited (service restart backoff), relaunch, screenAsked ──
+
+test "sessions_jobs_live: #jobs stop, exited service restart timer, relaunch, and screenAsked" {
+  let n = FakeNode::new()
+  let jstate = JobsState::new()
+  let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+
+  // Service exits after 5s -> restart_pause(0, 5000) == 1000ms timer scheduled
+  let svc = base_codec::json_obj([
+    ("id", sessions_core::jstr("svc1")),
+    ("sessionKey", sessions_core::jstr("c1")),
+    ("name", sessions_core::jstr("api")),
+    ("port", sessions_core::jint(3000)),
+    ("state", sessions_core::jstr("exited")),
+    ("restarts", sessions_core::jint(0)),
+    ("log", sessions_core::jstr("/tmp/svc1.log")),
+  ])
+  jstate.running.set("svc1", Run::{ pgid: 400, stopping: false })
+  jctx.handle_call(10.0, "exited", [
+    sessions_core::jstr("svc1"),
+    sessions_core::jint(400),
+    sessions_core::jint(1),
+    sessions_core::jnum(5000.0),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.forgetProcess" || f == "node.signal" || f == "store.jobEnded" || f == "node.notify" {
+      return Ok(base_codec::json_null())
+    }
+    if f == "store.getJob" {
+      return Ok(svc)
+    }
+    if f == "node.tail" {
+      return Ok(sessions_core::jstr("err line"))
+    }
+    if f == "store.remoteQueueJobs" {
+      return Ok(base_codec::json_arr([]))
+    }
+    if f == "store.now" {
+      return Ok(sessions_core::jnum(10000.0))
+    }
+    Err("unexpected: " + f)
+  })
+  assert(!jstate.running.contains("svc1"))
+  assert(n.timers.length() == 1)
+
+  // Advance virtual clock 1000ms -> service restarts!
+  let fired = n.advance_and_fire_due(1000.0)
+  assert(fired == 1)
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" {
+      return Ok(svc)
+    }
+    if f == "node.spawn" {
+      return Ok(sessions_core::jint(401))
+    }
+    Err("unexpected: " + f)
+  })
+  assert(jstate.running.contains("svc1"))
+  assert(must(jstate.running.get("svc1")).pgid == 401)
+
+  // Stop running service -> signal + grace + getJob
+  jctx.handle_call(11.0, "stop", [sessions_core::jstr("svc1")])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" {
+      return Ok(svc)
+    }
+    if f == "node.signal" || f == "node.grace" {
+      return Ok(base_codec::json_null())
+    }
+    Err("unexpected: " + f)
+  })
+  assert(must(jstate.running.get("svc1")).stopping)
+
+  // Relaunch: follows ours group 500, ends unfollowed ours group 600
+  let running_job = base_codec::json_obj([
+    ("id", sessions_core::jstr("j500")),
+    ("sessionKey", sessions_core::jstr("c1")),
+    ("name", sessions_core::jstr("bg")),
+    ("state", sessions_core::jstr("running")),
+    ("queued", sessions_core::jbool(false)),
+    ("pgid", sessions_core::jint(500)),
+  ])
+  jctx.handle_call(12.0, "relaunch", [])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "node.recordedGroups" {
+      return Ok(base_codec::json_arr([
+        base_codec::json_obj([("pgid", sessions_core::jint(500)), ("ours", sessions_core::jbool(true)), ("label", sessions_core::jstr("a"))]),
+        base_codec::json_obj([("pgid", sessions_core::jint(600)), ("ours", sessions_core::jbool(true)), ("label", sessions_core::jstr("orphan"))]),
+      ]))
+    }
+    if f == "store.jobsUp" {
+      return Ok(base_codec::json_arr([running_job]))
+    }
+    if f == "node.follow" || f == "store.forgetProcess" {
+      return Ok(base_codec::json_null())
+    }
+    if f == "store.remoteQueueJobs" {
+      return Ok(base_codec::json_arr([]))
+    }
+    if f == "store.now" {
+      return Ok(sessions_core::jnum(12000.0))
+    }
+    Err("unexpected: " + f)
+  })
+  assert(jstate.running.contains("j500"))
+  let mut saw_end_group = false
+  for i in 0..<n.tells.length() {
+    if n.tells[i].0 == jobs_key && n.tells[i].1 == "node.endGroup" {
+      saw_end_group = true
+    }
+  }
+  assert(saw_end_group)
+  assert(n.gen.counters.active == 0)
+}
+
+// ── Test 3: #live LRate.quiet lifecycle (unwatch vs step end exhaust vs step end remaining vs turn_end vs reset) ──
+
+test "sessions_jobs_live: LRate.quiet survives unwatch and resets to 0 on virtual clock expiry" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+  n.gen.counters.now = 1000.0
+
+  // Subscribe sub 1 (locate -> null so immediate join without tail)
+  lctx.live_called(1.0, "subscribe", [
+    sessions_core::jstr("k1"),
+    sessions_core::jnum(0.0),
+    base_codec::json_null(),
+    sessions_core::jint(1),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+  })
+
+  // Start step s1 and send deltas at t=1000 and t=1600 -> positive rate told
+  lctx.live_called(2.0, "event", [
+    sessions_core::jstr("k1"),
+    base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("s1")), ("step", sessions_core::jstr("text"))]),
+  ])
+  lctx.live_called(3.0, "event", [
+    sessions_core::jstr("k1"),
+    base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("s1")), ("text", sessions_core::jstr("hello world 1234"))]),
+  ])
+  n.gen.counters.now = 1600.0
+  lctx.live_called(4.0, "event", [
+    sessions_core::jstr("k1"),
+    base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("s1")), ("text", sessions_core::jstr("more tokens here 5678"))]),
+  ])
+  n.pump()
+  assert(lstate.rates.contains("k1"))
+  assert(must(lstate.rates.get("k1")).told > 0)
+  let quiet_tid = must(must(lstate.rates.get("k1")).quiet_timer_id)
+
+  // Last subscriber unsubscribes -> unwatch MUST NOT cancel rate.quiet!
+  lctx.live_called(5.0, "unsubscribe", [sessions_core::jstr("k1"), sessions_core::jint(1)])
+  n.pump()
+  assert(lstate.rates.contains("k1"))
+  assert(opt_int_is(must(lstate.rates.get("k1")).quiet_timer_id, quiet_tid))
+  assert(n.timers.contains(quiet_tid))
+
+  // Advance virtual clock to expire silence window (first deadline at t=3000 reschedules for 600ms left -> expires at t=3600)
+  let _ = n.advance_and_fire_due(1400.0)
+  // At t=3000, left = 1600 + 2000 - 3000 = 600ms > 0 -> rescheduled
+  assert(must(lstate.rates.get("k1")).told > 0)
+  let _ = n.advance_and_fire_due(600.0)
+  // At t=3600, silence deadline fires -> told resets to 0!
+  assert(must(lstate.rates.get("k1")).told == 0)
+
+  // New subscriber joins and reads rate == 0
+  let tells_before = n.tells.length()
+  lctx.live_called(6.0, "subscribe", [
+    sessions_core::jstr("k1"),
+    sessions_core::jnum(0.0),
+    base_codec::json_null(),
+    sessions_core::jint(2),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+  })
+  let mut saw_zero_rate = false
+  for i in tells_before..<n.tells.length() {
+    if n.tells[i].1 == "told" && n.tells[i].2.length() >= 3 {
+      let msg = n.tells[i].2[2]
+      if sessions_core::text_of(msg, "type") == "rate" &&
+      sessions_core::int_of(sessions_core::jget(msg, "tokensPerSecond")) == 0
+      {
+        saw_zero_rate = true
+      }
+    }
+  }
+  assert(saw_zero_rate)
+}
+
+test "sessions_jobs_live: LRate.quiet step end (exhaust vs remaining step) + turn_end + rate_clear + reset" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+  n.gen.counters.now = 1000.0
+
+  // Subscribe sub 1
+  lctx.live_called(1.0, "subscribe", [
+    sessions_core::jstr("k2"),
+    sessions_core::jnum(0.0),
+    base_codec::json_null(),
+    sessions_core::jint(1),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+  })
+
+  // Branch A: Two parallel steps sA and sB -> end sA -> sB still has valid bucket -> keeps counting!
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("sA"))]))
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("sB"))]))
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("sA")), ("text", sessions_core::jstr("aaaa bbbb cccc"))]))
+  n.gen.counters.now = 1600.0
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("sB")), ("text", sessions_core::jstr("dddd eeee ffff"))]))
+  n.pump()
+  assert(must(lstate.rates.get("k2")).told > 0)
+  let tid_ab = must(must(lstate.rates.get("k2")).quiet_timer_id)
+
+  // End sA -> sB still has valid bucket -> quiet NOT cancelled, rate stays > 0!
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("end")), ("id", sessions_core::jstr("sA"))]))
+  n.pump()
+  assert(lstate.rates.contains("k2"))
+  assert(opt_int_is(must(lstate.rates.get("k2")).quiet_timer_id, tid_ab))
+  assert(must(lstate.rates.get("k2")).told > 0)
+
+  // Branch B: End sB -> exhausts all valid buckets -> immediately cancels quiet, removes rate, emits rate: 0!
+  let tells_before_end_b = n.tells.length()
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("end")), ("id", sessions_core::jstr("sB"))]))
+  n.pump()
+  assert(!lstate.rates.contains("k2"))
+  assert(!n.timers.contains(tid_ab))
+  let mut emitted_zero = false
+  for i in tells_before_end_b..<n.tells.length() {
+    if n.tells[i].1 == "told" && n.tells[i].2.length() >= 3 {
+      let msg = n.tells[i].2[2]
+      if sessions_core::text_of(msg, "type") == "rate" &&
+      sessions_core::int_of(sessions_core::jget(msg, "tokensPerSecond")) == 0
+      {
+        emitted_zero = true
+      }
+    }
+  }
+  assert(emitted_zero)
+  // Stale due for tid_ab emits nothing
+  let tells_before_stale = n.tells.length()
+  n.gen.handle_due(n.host, tid_ab)
+  n.pump()
+  assert(n.tells.length() == tells_before_stale)
+
+  // Branch C: turn_end cancels rate.quiet immediately
+  n.gen.counters.now = 5000.0
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("sC"))]))
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("sC")), ("text", sessions_core::jstr("xxxx"))]))
+  n.pump()
+  let tid_c = must(must(lstate.rates.get("k2")).quiet_timer_id)
+  assert(n.timers.contains(tid_c))
+  lctx.live_called(10.0, "turnEnded", [sessions_core::jstr("k2")])
+  n.pump()
+  assert(!lstate.rates.contains("k2"))
+  assert(!n.timers.contains(tid_c))
+
+  // Branch D: rate_clear (live_forget) cancels rate.quiet immediately
+  n.gen.counters.now = 8000.0
+  lctx.live_event("k3", base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("sD")), ("text", sessions_core::jstr("yyyy"))]))
+  n.pump()
+  let tid_d = must(must(lstate.rates.get("k3")).quiet_timer_id)
+  assert(n.timers.contains(tid_d))
+  lctx.live_forget("k3")
+  n.pump()
+  assert(!lstate.rates.contains("k3"))
+  assert(!n.timers.contains(tid_d))
+
+  // Branch E: Hub reset cancels rate.quiet immediately
+  n.gen.counters.now = 10000.0
+  lctx.live_event("k4", base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("sE")), ("text", sessions_core::jstr("zzzz"))]))
+  n.pump()
+  let tid_e = must(must(lstate.rates.get("k4")).quiet_timer_id)
+  assert(n.timers.contains(tid_e))
+  lctx.reset()
+  n.pump()
+  assert(lstate.rates.length() == 0)
+  assert(!n.timers.contains(tid_e))
+}
+
+// ── Test 4: #live in_read serialization, active/quiet accounting, unwatch read_queue wakeup, plans & handover ──
+
+test "sessions_jobs_live: #live in_read active/quiet accounting, unwatch read_queue wakeup, and plans" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+
+  // Subscribe to k_read; locate returns a transcript path, state returns existing state
+  let init_state = base_codec::json_obj([
+    ("path", sessions_core::jstr("/t/1.jsonl")),
+    ("runtime", sessions_core::jstr("claude")),
+    ("offset", sessions_core::jint(100)),
+    ("partial", sessions_core::jstr("")),
+    ("count", sessions_core::jint(2)),
+  ])
+  lctx.live_called(1.0, "subscribe", [
+    sessions_core::jstr("k_read"),
+    sessions_core::jnum(2.0),
+    base_codec::json_null(),
+    sessions_core::jint(1),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" {
+      return Ok(base_codec::json_obj([
+        ("runtime", sessions_core::jstr("claude")),
+        ("paths", base_codec::json_arr([sessions_core::jstr("/t/1.jsonl")])),
+        ("current", sessions_core::jbool(true)),
+      ]))
+    }
+    if f == "state" {
+      return Ok(base_codec::json_arr([init_state]))
+    }
+    if f == "page" {
+      return Ok(base_codec::json_obj([("start", sessions_core::jint(0)), ("entries", base_codec::json_arr([]))]))
+    }
+    Err("unexpected: " + f)
+  })
+  assert(lstate.watched.contains("k_read"))
+
+  // Trigger two overlapping reads: turnEnded (calls read_now_k) + moved (calls in_read_k)
+  let end_n = lctx.live_end("k_read")
+  n.pump()
+  // First read is now suspended on `tailRead` RPC; w.read_held == true
+  assert(must(lstate.watched.get("k_read")).read_held)
+  assert(n.rpcs.length() == 1)
+  assert(n.rpcs[0].2 == "tailRead")
+
+  // Second read queues in w.read_queue and decrements active -> active == 0!
+  lctx.live_called(2.0, "moved", [sessions_core::jstr("k_read")])
+  n.pump()
+  assert(must(lstate.watched.get("k_read")).read_queue.length() == 1)
+  assert(n.gen.counters.active == 0)
+
+  // Unsubscribe last listener (calls unwatch) while read_queue has a waiter ->
+  // must wake read_queue with active += 1 + succeed(())!
+  lctx.live_called(3.0, "unsubscribe", [sessions_core::jstr("k_read"), sessions_core::jint(1)])
+  n.pump()
+  assert(!lstate.watched.contains("k_read"))
+  // Answer the in-flight tailRead from first read so both fibers finish cleanly
+  let (rpc_id, _, _, _) = n.pop_rpc()
+  n.answer_ok(
+    rpc_id,
+    base_codec::json_obj([
+      ("state", init_state),
+      ("start", sessions_core::jint(2)),
+      ("entries", base_codec::json_arr([])),
+    ]),
+  )
+  // Wait for end_n deferred
+  let mut ended_ok = false
+  lctx.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    lctx.live_ended_k(end_n, fn(_ex : effect::Exit[Unit]) -> Unit {
+      ended_ok = true
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  n.pump()
+  assert(ended_ok)
+  assert(n.gen.counters.active == 0)
+  assert(lstate.pending == 0)
+
+  // Plan checklist: TaskCreate + tool_result + TaskUpdate + carried/takePlans
+  let plan = LPlan::{ items: [], creating: Map::new() }
+  let changed1 = lctx.read_plan(plan, [
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("tool_call")),
+      ("tool", sessions_core::jstr("TaskCreate")),
+      ("callId", sessions_core::jstr("c1")),
+      ("text", sessions_core::jstr("{\"subject\":\"Ship W8-B\"}")),
+    ]),
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("tool_result")),
+      ("callId", sessions_core::jstr("c1")),
+      ("text", sessions_core::jstr("Task #7 created successfully")),
+    ]),
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("tool_call")),
+      ("tool", sessions_core::jstr("TaskUpdate")),
+      ("text", sessions_core::jstr("{\"taskId\":7,\"status\":\"completed\"}")),
+    ]),
+  ])
+  assert(changed1)
+  assert(plan.items.length() == 1)
+  assert(plan.items[0].text == "Ship W8-B")
+  assert(plan.items[0].status == "completed")
+  assert(opt_str_is(plan.items[0].id, "7"))
+}
+
+// ── Test 5: 100-round deterministic leak check (`rt.holding()` + all internal maps == 0) ──
+
+test "sessions_jobs_live: 100 rounds of jobs + live + HubGen rotation leave rt.holding() and maps at zero" {
+  let n = FakeNode::new()
+  for round in 0..<100 {
+    let jstate = JobsState::new()
+    let lstate = LiveState::new()
+    let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+    let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+    let key = "sess_" + round.to_string()
+    let jid = "remote_r" + round.to_string()
+    let job = base_codec::json_obj([
+      ("id", sessions_core::jstr(jid)),
+      ("sessionKey", sessions_core::jstr("remote:ws:st:" + key)),
+      ("name", sessions_core::jstr("t")),
+      ("state", sessions_core::jstr("running")),
+      ("queued", sessions_core::jbool(false)),
+      ("log", sessions_core::jstr("/tmp/l")),
+    ])
+
+    // #jobs start + notify + exited
+    jctx.handle_call(1.0, "startId", [
+      sessions_core::jstr("remote:ws:st:" + key),
+      sessions_core::jstr("t"),
+      sessions_core::jstr("echo ok"),
+      sessions_core::jstr("/tmp"),
+      base_codec::json_null(),
+      sessions_core::jbool(false),
+      base_codec::json_null(),
+      sessions_core::jbool(true),
+      base_codec::json_null(),
+      base_codec::json_null(),
+    ])
+    n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+      if f == "store.runningJobsAtLeast" { return Ok(sessions_core::jbool(false)) }
+      if f == "node.newJob" { return Ok(job) }
+      if f == "node.spawn" { return Ok(sessions_core::jint(100 + round)) }
+      if f == "store.getJob" { return Ok(job) }
+      Err("unexpected: " + f)
+    })
+    jctx.handle_call(2.0, "exited", [
+      sessions_core::jstr(jid),
+      sessions_core::jint(100 + round),
+      sessions_core::jint(0),
+      sessions_core::jnum(100.0),
+    ])
+    n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+      if f == "store.forgetProcess" || f == "node.signal" || f == "store.jobEnded" {
+        return Ok(base_codec::json_null())
+      }
+      if f == "store.getJob" { return Ok(job) }
+      if f == "node.tail" { return Ok(sessions_core::jstr("")) }
+      if f == "node.lost" { return Ok(sessions_core::jbool(false)) }
+      if f == "store.remoteQueueJobs" { return Ok(base_codec::json_arr([])) }
+      if f == "store.now" { return Ok(sessions_core::jnum(1000.0)) }
+      Err("unexpected: " + f)
+    })
+
+    // #live subscribe + events + unwatch + reset
+    lctx.live_called(3.0, "subscribe", [
+      sessions_core::jstr(key),
+      sessions_core::jnum(0.0),
+      base_codec::json_null(),
+      sessions_core::jint(1),
+      sessions_core::jbool(false),
+    ])
+    n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+      if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+    })
+    lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("s1"))]))
+    lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("s1")), ("text", sessions_core::jstr("hello"))]))
+    lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("end")), ("id", sessions_core::jstr("s1"))]))
+    lctx.live_called(4.0, "unsubscribe", [sessions_core::jstr(key), sessions_core::jint(1)])
+    n.pump()
+
+    // Reset + rotate HubGen
+    lctx.reset()
+    jstate.reset()
+    assert(jstate.running.length() == 0)
+    assert(jstate.last_of.length() == 0)
+    assert(jstate.told_long.length() == 0)
+    assert(lstate.watched.length() == 0)
+    assert(lstate.rates.length() == 0)
+    assert(lstate.listeners.length() == 0)
+    assert(lstate.releases.length() == 0)
+    assert(lstate.ends.length() == 0)
+    n.gen = sessions_core::rotate_hub_gen(n.host, n.gen, base_codec::json_null())
+    n.timers.clear()
+    n.host.tick()
+  }
+
+  // Final HubGen teardown
+  n.gen.fibers.close_now()
+  n.host.tick()
+  assert(n.host.hub_asked.length() == 0)
+  assert(n.host.hub_timers.length() == 0)
+  assert(n.host.shell_waiters.length() == 0)
+  let (live_tasks, ready_len, live_timers, root_children, root_finalizers, frame_waiters) = n.host.rt.holding()
+  assert(live_tasks == 0)
+  assert(ready_len == 0)
+  assert(live_timers == 0)
+  assert(root_children == 0)
+  assert(root_finalizers == 0)
+  assert(frame_waiters == 0)
+}
