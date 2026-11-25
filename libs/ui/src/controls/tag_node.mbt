@@ -18,7 +18,8 @@ priv struct TagKind {
 /// Node `b` made a static tag of kind `kind` (tag_node's, pill_node's, badge_node's, row_tag_node's) holding `words`
 /// as they say it now in `ink`, on `ground` where it is given: as high as `kind` says, or as its words' line where the
 /// system's size of words draws it higher (box_at); `lead` before its words (an icon, a mark); where it `cuts`, its
-/// words cut short where its row has not the room for them, else as wide as they are; one piece in bones.
+/// words cut short where its row has not the room for them, else as wide as they are; where it is `read`, its words picked with
+/// the pointer as read_words_node's are; one piece in bones.
 #callsite(autofill(loc))
 fn static_tag_in(
   b : @view.View,
@@ -28,6 +29,7 @@ fn static_tag_in(
   ground? : () -> Int64,
   lead? : (@view.View) -> Unit,
   cuts? : Bool = false,
+  read? : Bool = false,
   in_row? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -46,7 +48,8 @@ fn static_tag_in(
     None => ()
   }
   b.box(fn(w) {
-    w.words(By(words)).words_look(By(fn() { @ui.style_words(kind.words) })).ink(By(ink)) |> ignore
+    let said = if read { w.words_runs(By(fn() { [@ui.span(words())] })) } else { w.words(By(words)) }
+    said.words_look(By(fn() { @ui.style_words(kind.words) })).ink(By(ink)) |> ignore
     if cuts {
       w.cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true)) |> ignore
     }
