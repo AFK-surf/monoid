@@ -90,7 +90,7 @@ test("a change reaches every station of every workspace the same account reaches
   assert.equal(seen.get(), 30);
   for (const ws of ["w1", "w2"]) assert.deepEqual(mine.shown(ws), { minutes: 30, strength: "remind" });
   assert.deepEqual(mine.shown("w3"), { minutes: 10, strength: "require" });
-  for (const s of [a, c]) assert.deepEqual([s.kept.get("me")?.minutes, s.kept.get("me")?.strength, s.kept.get("me")?.rev], [30, "remind", 2]);
+  for (const s of [a, c]) assert.deepEqual([s.kept.get("me")?.minutes, s.kept.get("me")?.strength], [30, "remind"]);
   assert.deepEqual([b.kept.size, other.kept.size], [0, 0]);
   // (the one away is brought it as its stream comes back, once)
   await mine.resumed(b);
@@ -105,6 +105,19 @@ test("a change reaches every station of every workspace the same account reaches
   await phone.set("w2", { minutes: 5 });
   await mine.tell(a);
   assert.deepEqual(mine.shown("w2"), { minutes: 5, strength: "remind" });
+});
+
+test("the last change wins, though its device had not heard of the others", async () => {
+  const a = rig("w1/a");
+  const phone = device([a], { w1: "me" });
+  for (const minutes of [20, 30, 60]) await phone.set("w1", { minutes });
+  const laptop = device([a], { w1: "me" });
+  laptop.up.delete("w1/a");
+  await laptop.set("w1", { minutes: 5 });
+  await laptop.resumed(a);
+  assert.equal(laptop.shown("w1").minutes, 5);
+  await phone.tell(a);
+  assert.equal(phone.shown("w1").minutes, 5);
 });
 
 test("a station from before and a read-only member's are owed nothing; what is not offered is refused", async () => {

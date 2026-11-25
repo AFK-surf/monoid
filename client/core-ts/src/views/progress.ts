@@ -164,9 +164,10 @@ export class ProgressViews {
     if (who === null) throw CoreError.invalid(t("core-misc.presets.signedOut"));
     const was = this.#of(who.sub);
     const { minutes, strength } = was ?? PROGRESS_DEFAULT;
+    const at = this.#inner.host.nowMs();
     let now: ProgressPrefs;
     try {
-      now = progressOf({ minutes: params.minutes ?? minutes, strength: params.strength ?? strength, rev: (was?.rev ?? 0) + 1, at: this.#inner.host.nowMs() });
+      now = progressOf({ minutes: params.minutes ?? minutes, strength: params.strength ?? strength, rev: Math.max((was?.rev ?? 0) + 1, at), at });
     } catch (e) {
       throw CoreError.invalid(t("core-misc.params.invalid", { error: (e as Error).message }));
     }

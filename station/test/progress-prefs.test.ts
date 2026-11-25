@@ -92,7 +92,11 @@ test("a chat begun on a platform goes by the email the platform says its person 
   const session = r.claude.last();
   const row = r.store.getSession(key)!;
   assert.match(row.createdBy!, /^slack:cl:/);
-  (r.chat as any).userEmail = async (user: string) => (`slack:cl:${user}` === row.createdBy ? "A@x.com" : null);
+  let asked = 0;
+  (r.chat as any).userEmail = async (user: string) => {
+    asked++;
+    return `slack:cl:${user}` === row.createdBy ? "A@x.com" : null;
+  };
   r.store.putProgressPrefs(row.ws ?? r.hub.homeWorkspace() ?? "", "u1", "a@x.com", JSON.stringify(pref(30, "remind")));
   const wake = async (minutes: number) => {
     await r.call(key, "chat_state", { kind: "waiting", seconds: 3600, for: "run" });
@@ -103,7 +107,31 @@ test("a chat begun on a platform goes by the email the platform says its person 
     await settle();
     return session.prompts.at(-1)!;
   };
-  assert.ok(!(await wake(25)).includes("You have not posted"));
+  await wake(4);
+  assert.equal(asked, 0, "nobody is looked up before any interval is over");
+  assert.ok(!(await wake(21)).includes("You have not posted"));
   assert.ok((await wake(6)).includes("for 31 minutes. If there is progress"));
+  assert.equal(asked, 1, "asked once");
+  await r.close();
+});
+
+test("a platform that does not answer holds a wake for seconds at most, and the default goes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: Date.now() });
+  const r = new Rig();
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const session = r.claude.last();
+  (r.chat as any).userEmail = () => new Promise(() => {});
+  await r.call(key, "chat_state", { kind: "waiting", seconds: 3600, for: "run" });
+  session.complete();
+  await settle();
+  t.mock.timers.tick(12 * 60_000);
+  await r.hub.notify(key, "task ended");
+  for (let i = 0; i < 20; i++) await new Promise((go) => setImmediate(go));
+  t.mock.timers.tick(3_001);
+  await settle();
+  assert.ok(session.prompts.at(-1)!.includes("for 12 minutes. Before you wait again"), session.prompts.at(-1));
   await r.close();
 });

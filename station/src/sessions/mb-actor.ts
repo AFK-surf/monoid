@@ -6,6 +6,7 @@
 // functions). What the hub reads of an actor at once (where it stands, its queue run out) is what the program last
 // told of it (`mirror`). Its time is the hub's clock: said with every line (`now`), its waits that clock's (`after`,
 // told `due`), so a test's TestClock moves them as the rest.
+import { MINUTES_LEAST } from "../../../client/core-ts/src/progress-prefs.ts";
 import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
@@ -1000,6 +1001,9 @@ export class MbActor {
   /// What a session silent in its waits for `silentMs` (last reminded `remindedMs` ago, null not yet) is told, as the
   /// person who started it set it; null while it is not due.
   async #silentProgress(silentMs: number, remindedMs: number | null): Promise<string | null> {
+    // (not due whatever the person set: nobody is looked up)
+    const least = MINUTES_LEAST * 60_000;
+    if (silentMs < least || (remindedMs !== null && remindedMs < least)) return null;
     const email = (await this.#deps.starterEmail?.(this.key).catch(() => null)) ?? null;
     const { minutes, strength } = this.#deps.store.progressOf(this.key, this.#deps.homeWorkspace?.() ?? null, email);
     const every = minutes * 60_000;

@@ -8,13 +8,16 @@ import { RecordRefusal, canonical } from "./preset-records.ts";
 /// post an update (`require`), or to post one where there is something to say (`remind`).
 export type ProgressChoice = { minutes: number; strength: "require" | "remind" };
 
-/// A choice as kept: `rev` how many times it was changed, `at` when last.
+/// A choice as kept: `at` when it was changed, `rev` that too but always past the one it changed: the
+/// last change wins, though a device made it before it heard of others.
 export type ProgressPrefs = ProgressChoice & { rev: number; at: number };
 
 export const PROGRESS_DEFAULT: ProgressChoice = Object.freeze({ minutes: 10, strength: "require" });
 
 /// What the settings offer.
 export const PROGRESS_MINUTES = [5, 10, 20, 30, 60];
+/// The shortest an interval may be: what is silent for less is told nothing, whoever started it.
+export const MINUTES_LEAST = 5;
 const MINUTES_MOST = 24 * 60;
 
 const count = (v: unknown, least: number): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= least;
@@ -23,7 +26,7 @@ const count = (v: unknown, least: number): v is number => typeof v === "number" 
 export function progressOf(raw: unknown): ProgressPrefs {
   const v = raw as Partial<ProgressPrefs> | null | undefined;
   if (v === null || typeof v !== "object") throw new RecordRefusal("progress: {minutes, strength, rev, at}");
-  if (!count(v.minutes, 1) || v.minutes > MINUTES_MOST) throw new RecordRefusal(`progress: minutes is 1 to ${MINUTES_MOST}`);
+  if (!count(v.minutes, MINUTES_LEAST) || v.minutes > MINUTES_MOST) throw new RecordRefusal(`progress: minutes is ${MINUTES_LEAST} to ${MINUTES_MOST}`);
   if (v.strength !== "require" && v.strength !== "remind") throw new RecordRefusal("progress: strength is require or remind");
   if (!count(v.rev, 1) || !count(v.at, 0)) throw new RecordRefusal("progress: rev and at are whole numbers");
   return { minutes: v.minutes, strength: v.strength, rev: v.rev, at: v.at };
