@@ -139,17 +139,6 @@ class RawLineClient {
     return JSON.parse(await this.nextLine());
   }
 
-  hasBufferedJson(pred: (obj: any) => boolean): boolean {
-    for (const line of this.#lines) {
-      try {
-        if (pred(JSON.parse(line))) return true;
-      } catch {
-        // ignore non-JSON
-      }
-    }
-    return false;
-  }
-
   async close(): Promise<void> {
     if (this.child.exitCode !== null || this.child.signalCode !== null) return;
     await new Promise<void>((resolve) => {
@@ -268,35 +257,20 @@ function makeFixture(opts: { multiChunkHistory?: boolean } = {}) {
     ].join("\n"),
   );
 
-  // Distinct POSIX FIFO barriers for zero-race, filesystem-order-independent P11 interception on Linux/macOS:
-  //   - `agent/workspaces/WG/MEMORY.md` (FIFO 0, ws="WG"): only visible to gate0 (`WG`, home:false).
-  //   - `agent/MEMORY.md` (FIFO 1, ws=None): only visible to gate1 (`W_PAD`, home:true).
-  // Because `agent/workspaces/` has ONLY ONE directory (`WG`), `places` is always `[None, Some("WG")]`
-  // regardless of filesystem `readdir` order. A 1-message thread `s-pad` in `W_PAD` adds 1 P1 yield for
-  // gate1 so BOTH gate0 and gate1 block in Round 3 — strictly ahead of the P11 history queries' Round 4.
-  const fifoPaths: string[] = [];
-  if (opts.multiChunkHistory) {
-    addSession("s-pad", "claude", "W_PAD", 11);
-    const padTid = store.openThreadOf("ember", "ember", "s-pad", null, "a@x", "s-pad").id;
-    store.joinThread(padTid, "s-pad", "ember");
-    store.insertMessage({ ...newMessage(padTid, String(++ts), "person", "a@x", "pad barrier thread message") } as ReturnType<typeof newMessage>);
-
-    if (process.platform !== "win32") {
-      const wgDir = join(dir, "agent", "workspaces", "WG");
-      mkdirSync(wgDir, { recursive: true });
-      const fp0 = join(wgDir, "MEMORY.md");
-      const fp1 = join(dir, "agent", "MEMORY.md");
-      execFileSync("mkfifo", [fp0]);
-      execFileSync("mkfifo", [fp1]);
-      fifoPaths.push(fp0, fp1);
-    }
+  // POSIX FIFO barrier at `<data>/agent/workspaces/WG/MEMORY.md` for zero-sleep deterministic P11 interception on Linux/macOS.
+  let fifoPath: string | null = null;
+  if (opts.multiChunkHistory && process.platform !== "win32") {
+    const wgDir = join(dir, "agent", "workspaces", "WG");
+    mkdirSync(wgDir, { recursive: true });
+    fifoPath = join(wgDir, "MEMORY.md");
+    execFileSync("mkfifo", [fifoPath]);
   }
 
   return {
     dir,
     dbPath,
     store,
-    fifoPaths,
+    fifoPath,
     close: () => {
       store.close();
       rmSync(dir, { recursive: true, force: true });
@@ -326,108 +300,66 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; POSIX F
   const asker = { workspace: "W1", home: true, scopes: [] };
   const askerA = { workspace: "WA", home: false, scopes: [] };
   const askerB = { workspace: "WB", home: false, scopes: [] };
-  const gateAskers = [
-    { workspace: "WG", home: false, scopes: [] },
-    { workspace: "W_PAD", home: true, scopes: [] },
-  ];
+  const askerGate = { workspace: "WG", home: false, scopes: [] };
   const client = new RawLineClient(bins.pion, ["--builder", "search", "--db", fx.dbPath, "--data", fx.dir, "--sep", sep]);
   const pid = client.child.pid!;
 
-  /// Run `onBlocked()` while the Pion event loop is strictly kernel-blocked in Round 3 at FIFO 0
-  /// (`agent/workspaces/WG/MEMORY.md`), write `cancel(cancelId)` + synchronous empty-query fence
-  /// `qFence(fenceId)` to stdin, then step alternating Round-3 gates across FIFO 0 (`WG/MEMORY.md`) and
-  /// FIFO 1 (`agent/MEMORY.md`) until `qFence(fenceId)` is causally observed on stdout!
-  ///   Round 1: history queries yield P9; even gates skip [s-chat, s-pad] -> P3; odd gates scan s-pad (1 msg) -> P1.
-  ///   Round 2: history queries yield P12; even gates skip home (None) -> P7; odd gates finish s-pad -> P3.
-  ///   Round 3: history queries open their >8 MiB transcripts and yield P11 (holding open FDs!);
-  ///            even gates block in FIFO 0 (`agent/workspaces/WG/MEMORY.md`) and odd gates block in FIFO 1
-  ///            (`agent/MEMORY.md`), ALL strictly ahead of the P11 history queries' Round 4!
-  /// Alternating between two distinct FIFO paths guarantees gate k's `open(O_WRONLY)` never pairs with
-  /// gate k-1's closing read-end (since gate k-1 has already returned from `std::fs::read` before gate k opens).
-  /// Observing `fenceId` on stdout while a Round-3 gate is still blocked (and `onBlocked()` confirms the P11
-  /// transcript FDs are still open!) proves `run_search` has already processed `cancel(cancelId)` before Round 4.
+  // 1.5 MiB invalid-JSON padding line (starts with '!' so `parse_json` rejects at byte 0 in O(1),
+  // 24 x 64 KiB chunks < MAX_STDIN_DRAIN=64, well below STH_STDIN_MOST=16 MiB, and > 3x kernel
+  // socketpair/pipe buffer (~426 KiB Linux default / <= 64 KiB macOS)). Completing `stdin.write` of
+  // `cancel + fence + STDIN_FLUSH_PAD` establishes a strict OS-enforced happens-before:
+  // `read_stdin_thread` MUST have completed `sth_push_stdin_chunk` for chunk 0 (`cancel` + `fence`)
+  // before issuing subsequent `read(0)` calls to drain the remaining > 1 MiB!
+  const STDIN_FLUSH_PAD = `!${" ".repeat(1536 << 10)}\n`;
+
+  /// Run `onBlocked()` while the Pion event loop is strictly kernel-blocked in Round 3 inside
+  /// `std::fs::read(fifoPath)`, then atomically write `cancel(cancelId)` + synchronous empty-query
+  /// `fence(fenceId)` + `STDIN_FLUSH_PAD` and await the `stdin.write` callback before closing the FIFO.
+  ///   Round 1: history queries yield P9; qGate skips s-chat -> yields P3 (`ThreadsAfterPage`).
+  ///   Round 2: history queries yield P12; qGate skips home (None, home:false) -> yields P7 (`MemoryWalk`).
+  ///   Round 3: history queries open >8 MiB transcripts and yield P11 (holding open FDs!);
+  ///            qGate opens `agent/workspaces/WG/MEMORY.md` (FIFO) -> blocks Pion in kernel `read(fifo)`.
+  /// When the FIFO closes, `read_stdin_thread` has already pushed `cancel` + `fence` into `g_head`
+  /// (happens-before via kernel pipe/socketpair capacity), so the very next `wait(0)` drain registers
+  /// `cancel(cancelId)` and emits `fence(fenceId)` strictly before any P11 query steps Round 4 (zero sleeps).
   const withFifoCancelBarrier = async (
     prefixLines: string,
     cancelId: number,
-    gateIds: number[],
+    gateId: number,
     fenceId: number,
     onBlocked: () => Promise<void>,
   ) => {
-    assert.equal(fx.fifoPaths.length, 2, "alternating FIFO barrier requires 2 distinct FIFO paths");
-    assert.ok(gateIds.length >= 2, "alternating FIFO barrier requires at least 2 Round-3 gates");
-    const gateKinds: readonly (readonly string[])[] = [
-      ["chat", "memory"],
-      ["chat", "message", "memory"],
-    ];
-    const gateLines = gateIds
-      .map((gid, idx) => {
-        const slot = idx % 2;
-        return `${JSON.stringify({ type: "query", id: gid, query: "gateunused", asker: gateAskers[slot], kinds: gateKinds[slot] })}\n`;
-      })
-      .join("");
-    let curFh: FileHandle | null = null;
-    let pendingOpen: { path: string; promise: Promise<FileHandle> } | null = {
-      path: fx.fifoPaths[0]!,
-      promise: openAsync(fx.fifoPaths[0]!, "w"),
-    };
-    const unblockPendingOpen = async (pending: { path: string; promise: Promise<FileHandle> }) => {
-      try {
-        const fd = openSync(pending.path, constants.O_RDONLY | constants.O_NONBLOCK);
-        closeSync(fd);
-      } catch {
-        // ignore
-      }
-      await pending.promise.then((fh) => fh.close()).catch(() => {});
-    };
-    let fenceObservedInRound3 = false;
+    assert.ok(fx.fifoPath !== null, "FIFO path required");
+    const qGate = JSON.stringify({ type: "query", id: gateId, query: "gateunused", asker: askerGate, kinds: ["chat", "memory"] });
+    const openWriter = openAsync(fx.fifoPath, "w");
+    let gateFh: FileHandle | null = null;
     try {
-      client.writeRaw(`${prefixLines}${gateLines}`);
-      curFh = await pendingOpen.promise;
-      pendingOpen = null;
+      client.writeRaw(`${prefixLines}${qGate}\n`);
+      gateFh = await openWriter;
       await onBlocked();
-      // Send cancel + synchronous empty-query fence in one atomic pipe write while Pion is blocked in gate 0 (FIFO 0).
+      // `fence` MUST stay an empty query (`query: ""`) so `dispatch_search_line` answers it synchronously
+      // without enqueuing onto `active` (a non-empty query would later touch the FIFO and deadlock).
       const cancelLine = JSON.stringify({ type: "cancel", id: cancelId });
-      const fenceLine = JSON.stringify({ type: "query", id: fenceId, query: "", asker: gateAskers[0], kinds: ["memory"] });
+      const fenceObj = { type: "query", id: fenceId, query: "", asker: askerGate, kinds: ["memory"] };
+      assert.equal(fenceObj.query, "", "fence query must be empty to reply synchronously during stdin drain");
+      const fenceLine = JSON.stringify(fenceObj);
       await new Promise<void>((resolve, reject) => {
-        client.child.stdin!.write(`${cancelLine}\n${fenceLine}\n`, (err) => (err ? reject(err) : resolve()));
+        client.child.stdin!.write(`${cancelLine}\n${fenceLine}\n${STDIN_FLUSH_PAD}`, (err) => (err ? reject(err) : resolve()));
       });
-      // Step alternating Round-3 gates (FIFO 0 <-> FIFO 1) until `fenceId` is causally observed on stdout.
-      for (let g = 1; g < gateIds.length; g++) {
-        const nextPath = fx.fifoPaths[g % 2]!;
-        pendingOpen = { path: nextPath, promise: openAsync(nextPath, "w") };
-        const prev = curFh;
-        curFh = null;
-        await prev.close();
-        curFh = await pendingOpen.promise;
-        pendingOpen = null;
-        if (!fenceObservedInRound3) {
-          // Give the current Node I/O poll phase one immediate turn so any stdout chunk written
-          // before gate g opened its FIFO is visible in `client`'s buffer (0 ms on the normal path).
-          await new Promise<void>((r) => setImmediate(r));
-          if (client.hasBufferedJson((m) => m.id === fenceId)) {
-            fenceObservedInRound3 = true;
-            // Prove the P11 transcript FDs are STILL open AFTER `cancel` + `fence` were processed!
-            await onBlocked();
-          } else {
-            // `read_stdin_thread` in the child was preempted on a busy host; hold this Round-3 FIFO
-            // briefly so the OS schedules `read_stdin_thread` before the next Round-3 gate drains stdin.
-            await new Promise<void>((r) => setTimeout(r, 1 << Math.min(g - 1, 6)));
-          }
-        }
-      }
     } finally {
-      if (curFh !== null) {
-        const fh = curFh;
-        curFh = null;
-        await fh.close();
-      }
-      if (pendingOpen !== null) {
-        const p = pendingOpen;
-        pendingOpen = null;
-        await unblockPendingOpen(p);
+      if (gateFh !== null) {
+        await gateFh.close();
+      } else {
+        // Unblock pending open(O_WRONLY) if an error happened before the child opened the FIFO.
+        try {
+          const fd = openSync(fx.fifoPath, constants.O_RDONLY | constants.O_NONBLOCK);
+          closeSync(fd);
+        } catch {
+          // ignore
+        }
+        await openWriter.then((fh) => fh.close()).catch(() => {});
       }
     }
-    assert.ok(fenceObservedInRound3, `cancel fence ${fenceId} must be observed on stdout while Round-3 gates still freeze P11`);
   };
 
   try {
@@ -455,10 +387,10 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; POSIX F
     const qHistA = JSON.stringify({ type: "query", id: 10, query: "alphaonlytoken", asker: askerA, kinds: ["history"] });
     const qHistB = JSON.stringify({ type: "query", id: 11, query: "betafirstchunk betaonlytoken overlapcheck", asker: askerB, kinds: ["history"] });
 
-    const dualGates = Array.from({ length: 10 }, (_, k) => 13 + k);
-    const dualFence = 23;
-    if (fx.fifoPaths.length > 0) {
-      await withFifoCancelBarrier(`${qHistA}\n${qHistB}\n`, 10, dualGates, dualFence, async () => {
+    const dualGate = 13;
+    const dualFence = 14;
+    if (fx.fifoPath !== null) {
+      await withFifoCancelBarrier(`${qHistA}\n${qHistB}\n`, 10, dualGate, dualFence, async () => {
         if (process.platform === "linux") {
           const midP11Targets = openFdTargets(pid)!;
           assert.ok(
@@ -476,18 +408,22 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; POSIX F
       await client.sendAndFlush({ type: "cancel", id: 10 });
     }
 
-    const expectedIds = fx.fifoPaths.length > 0 ? 2 + dualGates.length + 1 : 2;
+    const expectedIds = fx.fifoPath !== null ? 4 : 2;
     const histReplies = new Map<number, any>();
+    const histOrder: number[] = [];
     while (histReplies.size < expectedIds) {
       const m = await client.nextJson();
       if ("scopePending" in m || "sessionListPending" in m) continue;
       histReplies.set(m.id, m);
+      histOrder.push(m.id);
     }
-    if (fx.fifoPaths.length > 0) {
-      for (const gid of dualGates) {
-        assert.equal(histReplies.get(gid)?.error, undefined, `FIFO memory gate query ${gid} must finish cleanly`);
-      }
+    if (fx.fifoPath !== null) {
+      assert.equal(histReplies.get(dualGate)?.error, undefined, "FIFO memory gate query must finish cleanly");
       assert.deepEqual(histReplies.get(dualFence)?.groups, [], "stdin cancel fence query must finish cleanly");
+      assert.ok(
+        histOrder.indexOf(dualFence) < histOrder.indexOf(10),
+        `expected stdin fence (${dualFence}) before cancelled query 10; got order ${JSON.stringify(histOrder)}`,
+      );
     }
     assert.equal(histReplies.get(10)?.error, "the search took too long");
     assert.equal(histReplies.get(11)?.error, undefined);
@@ -498,13 +434,12 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; POSIX F
 
     // 3. Repeated FIFO-barrier-verified mid-P11 cancellations across 4 >8 MiB history queries -> STRICT 0 FD leak.
     for (let i = 0; i < 4; i++) {
-      const base = 100 + i * 20;
-      const qid = base;
-      const gids = Array.from({ length: 10 }, (_, k) => base + 1 + k);
-      const fid = base + 11;
+      const qid = 100 + i * 3;
+      const gid = qid + 1;
+      const fid = qid + 2;
       const qLine = `${JSON.stringify({ type: "query", id: qid, query: "alphaonlytoken", asker: askerA, kinds: ["history"] })}\n`;
-      if (fx.fifoPaths.length > 0) {
-        await withFifoCancelBarrier(qLine, qid, gids, fid, async () => {
+      if (fx.fifoPath !== null) {
+        await withFifoCancelBarrier(qLine, qid, gid, fid, async () => {
           if (process.platform === "linux") {
             const targets = openFdTargets(pid)!;
             assert.ok(
@@ -514,16 +449,19 @@ test("deterministic no-sleep concurrency: fast query B overtakes slow A; POSIX F
           }
         });
         const pair = new Map<number, any>();
-        const need = 1 + gids.length + 1;
-        while (pair.size < need) {
+        const pairOrder: number[] = [];
+        while (pair.size < 3) {
           const m = await client.nextJson();
           if ("scopePending" in m || "sessionListPending" in m) continue;
           pair.set(m.id, m);
+          pairOrder.push(m.id);
         }
-        for (const gid of gids) {
-          assert.equal(pair.get(gid)?.error, undefined);
-        }
+        assert.equal(pair.get(gid)?.error, undefined);
         assert.deepEqual(pair.get(fid)?.groups, []);
+        assert.ok(
+          pairOrder.indexOf(fid) < pairOrder.indexOf(qid),
+          `iteration ${i}: expected stdin fence (${fid}) before cancelled query ${qid}; got order ${JSON.stringify(pairOrder)}`,
+        );
         assert.equal(pair.get(qid)?.error, "the search took too long");
       } else {
         client.writeRaw(qLine);
