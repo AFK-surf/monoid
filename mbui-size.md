@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 | [f729b41ba](https://github.com/AFK-surf/monoid/commit/f729b41ba1ebd0435484cd00597a7f58d57a02e3) fix(mbui): stop a swiped row's 归档 softly at its sl | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 101.11 | 121.55 |
 | [8851a260e](https://github.com/AFK-surf/monoid/commit/8851a260ea6a65b7a440f1f78e0b19f7dc3bcb93) test(station): resolve new-account-cap concurrent  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
 | [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a442e5fad](https://github.com/AFK-surf/monoid/commit/a442e5fad2c3f279cac7d0c06ded11cb44aa6c72) feat(pion): Wave 7.0 foundation, readops_core, TS  | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [2be102041](https://github.com/AFK-surf/monoid/commit/2be102041ddffe6ebc8a0a4c8504efe9e38fa089) feat(website): show Antigravity and DeepSeek logos | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
-| [4e1e2088a](https://github.com/AFK-surf/monoid/commit/4e1e2088a9bd1ae1fe054d9d1bd689558455afe5) feat(website): list Antigravity instead of Grok Bu | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.57 |
 | [f729b41ba](https://github.com/AFK-surf/monoid/commit/f729b41ba1ebd0435484cd00597a7f58d57a02e3) fix(mbui): stop a swiped row's 归档 softly at its sl | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.9 |
 | [8851a260e](https://github.com/AFK-surf/monoid/commit/8851a260ea6a65b7a440f1f78e0b19f7dc3bcb93) test(station): resolve new-account-cap concurrent  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
 | [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a442e5fad](https://github.com/AFK-surf/monoid/commit/a442e5fad2c3f279cac7d0c06ded11cb44aa6c72) feat(pion): Wave 7.0 foundation, readops_core, TS  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.48 |
 | [2be102041](https://github.com/AFK-surf/monoid/commit/2be102041ddffe6ebc8a0a4c8504efe9e38fa089) feat(website): show Antigravity and DeepSeek logos | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.44 |
 | [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.59 |
-| [4e1e2088a](https://github.com/AFK-surf/monoid/commit/4e1e2088a9bd1ae1fe054d9d1bd689558455afe5) feat(website): list Antigravity instead of Grok Bu | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.56 |
