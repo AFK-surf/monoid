@@ -26,6 +26,26 @@ pub type Say = extern "C" fn(*mut c_void, *const u8, usize, *const u8, usize);
 /// records in order.
 pub type Media = extern "C" fn(*mut c_void, u64, u8, u8, u64, u64, *const u8, usize) -> u8;
 
+/// Registers Android's `JavaVM` and global `Application` `Context` with `iroh`'s DNS resolver (`ndk_context`)
+/// once per process so `n0-dns-resolver` reads the active network's system DNS servers through `ConnectivityManager`
+/// instead of falling back to public DoH resolvers.
+///
+/// # Safety
+/// `java_vm` (`JavaVM *`) and `app_context` (JNI global reference to an Android `Context`) must remain valid for
+/// the lifetime of the process.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sf_shell_init_android(java_vm: *mut c_void, app_context: *mut c_void) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    if java_vm.is_null() || app_context.is_null() {
+        return;
+    }
+    ONCE.call_once(|| {
+        // SAFETY: caller passes process-lifetime `JavaVM *` and global `Context` ref; `Once` prevents re-init panic.
+        unsafe { iroh::dns::install_android_jni_context(java_vm, app_context) };
+    });
+}
+
 /// Starts a shell keeping its files in `data_dir`. Null when it cannot (the directory cannot be made).
 ///
 /// # Safety

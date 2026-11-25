@@ -2012,3 +2012,70 @@ fn rotates_a_log_in_place_keeping_its_tail_and_inode() {
         assert_eq!(std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777, 0o600);
     }
 }
+
+#[test]
+fn iroh_insert_relay_preserves_entries_and_disabled_relays_applies() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let call = |id: u64, op: &str, a: Value, bytes: Option<Vec<u8>>| {
+        shell.call(id, op.into(), a.to_string().as_bytes(), bytes);
+        let (json, error, _) = answer(id);
+        assert_eq!(error, "", "{op}");
+        serde_json::from_str::<Value>(&json).unwrap()
+    };
+    let r1 = "https://r1.invalid/";
+    let r2 = "https://r2.invalid/";
+    let entry1 = "https://entry1.invalid/";
+    let entry2 = "https://entry2.invalid/";
+    let bound = call(
+        97_101,
+        "iroh.bind",
+        json!({
+            "relayUrls": [r1, r2],
+            "relayEntries": [{ "entry": entry1, "relay": r1 }],
+            "alpns": [],
+            "lookup": false,
+            "relayOnly": true,
+        }),
+        Some(vec![9; 32]),
+    );
+    let ep = bound["id"].as_u64().unwrap();
+
+    // Update entries, remove r1, re-insert r1, and verify the kept entries stay intact and disabledRelays succeeds.
+    call(
+        97_102,
+        "iroh.setRelayEntries",
+        json!({ "id": ep, "entries": [{ "entry": entry2, "relay": r1 }] }),
+        None,
+    );
+    call(97_103, "iroh.removeRelay", json!({ "id": ep, "url": r1 }), None);
+    call(97_104, "iroh.insertRelay", json!({ "id": ep, "url": r1 }), None);
+    let peer = hex::encode(SecretKey::from_bytes(&[11; 32]).public().as_bytes());
+    call(
+        97_105,
+        "iroh.disabledRelays",
+        json!({ "id": ep, "peer": peer, "relays": [r2] }),
+        None,
+    );
+    call(
+        97_106,
+        "iroh.disabledRelays",
+        json!({ "id": ep, "peer": peer, "relays": [] }),
+        None,
+    );
+
+    let (endpoint, kept) = match shell.inner.handles.lock().unwrap().get(&ep) {
+        Some(Handle::Endpoint(endpoint, kept)) => (endpoint.clone(), kept.clone()),
+        _ => panic!("expected endpoint handle"),
+    };
+    let kept_entries = shell.runtime.block_on(async { kept.entries.lock().await.clone() });
+    assert_eq!(kept_entries.len(), 1);
+    assert_eq!(kept_entries[0].0.to_string(), entry2);
+    assert_eq!(kept_entries[0].1.to_string(), r1);
+    let r1_url: iroh::RelayUrl = r1.parse().unwrap();
+    let removed = shell.runtime.block_on(endpoint.remove_relay(&r1_url)).expect("r1 should be present after insertRelay");
+    assert_eq!(removed.entries.len(), 1);
+    assert_eq!(removed.entries[0].to_string(), entry2);
+
+    call(97_107, "iroh.close", json!({ "id": ep, "forget": true }), None);
+}

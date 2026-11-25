@@ -2169,7 +2169,7 @@ export class Mesh {
 
   #pickHotForStation(id: string): void {
     const budget = this.#hotBudgetFor(id);
-    if (budget <= 0 || this.#hot.has(id) || this.#mainDialing > 0 || this.#dialing > 0) return;
+    if (budget <= 0 || this.#hot.has(id)) return;
     if (!this.#stationEligibleForHot(id)) return;
     const now = this.now();
     if (now - (this.#relaxedAt.get(id) ?? -Infinity) < HOT_SETTLE_MS) return;
@@ -2454,6 +2454,7 @@ export class Mesh {
           if (link.success.pinned === null) self.#unansweredAt.delete(addr);
           self.#adopt(addr, link.success);
         }
+        self.#scheduleSyncRelays();
         Deferred.doneUnsafe(opening.done, link._tag === "Success" ? Effect.succeed(link.success) : Effect.fail(link.failure));
       });
       this.#env.runner.fork(run);

@@ -655,6 +655,12 @@ export class SimConnection {
     this.way.noPath = this.peer.way.noPath = false;
     const now = this.net.now();
     const cur = this.way.relay;
+    // A direct IP path (`relay === null`) stays selected when relay paths are narrowed or reopened.
+    if (cur === null) {
+      this.out.wake();
+      this.peer.out.wake();
+      return;
+    }
     const curEntry = cur !== null ? [...this.#openPaths.values()].find((p) => p.access === cur) : undefined;
     const curStale = cur !== null && this.net.downUntil(cur) > 0 && now - this.net.downSince(cur) >= PATH_IDLE_MS;
     const curUp = cur !== null && curEntry !== undefined && !curStale;
@@ -737,7 +743,7 @@ export class SimConnection {
     if (this.#multipath) {
       this.pruneDeadPaths();
       const now = this.net.now();
-      return [...this.#openPaths.values()].map((p) => {
+      const relayPaths = [...this.#openPaths.values()].map((p) => {
         const selected = p.access === this.way.relay;
         if (selected && this.net.downUntil(p.access) === 0) {
           p.txPackets = this.counts.txPackets;
@@ -748,12 +754,28 @@ export class SimConnection {
           id: p.id,
           selected,
           relay: p.access,
-          ip: null,
+          ip: null as string | null,
           rttMs: p.rttMs,
           txPackets: p.txPackets + lostKeepalives,
           lostPackets: p.lostPackets + lostKeepalives,
         };
       });
+      if (this.way.relay === null) {
+        const ip = this.peer.endpoint.sockets()[0] ?? null;
+        return [
+          {
+            id: "direct",
+            selected: true,
+            relay: null,
+            ip,
+            rttMs: 2 * this.net.direct.ms,
+            txPackets: this.counts.txPackets,
+            lostPackets: this.counts.lostPackets,
+          },
+          ...relayPaths,
+        ];
+      }
+      return relayPaths;
     }
     const ip = this.way.relay === null ? (this.peer.endpoint.sockets()[0] ?? null) : null;
     return [{ id: "0", selected: true, relay: this.way.relay, ip, rttMs: this.rttMs, txPackets: this.counts.txPackets, lostPackets: this.counts.lostPackets }];

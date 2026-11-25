@@ -641,7 +641,8 @@ export function meshEnv(inner: Inner, iroh: Iroh, wireActive?: (addr: string) =>
     ...STATION_MESH,
     dht: () => prefs.dhtOn(inner.data),
     ...takes(inner),
-    ...(inner.host.appKeys ? { idleHotRelays: IDLE_HOT_RELAYS, idle: (addr) => isStationIdle(inner, addr, wireActive) } : { hotRelays: HOT_RELAYS }),
+    hotRelays: HOT_RELAYS,
+    ...(inner.host.appKeys ? { idleHotRelays: IDLE_HOT_RELAYS, idle: (addr) => isStationIdle(inner, addr, wireActive) } : {}),
     refusal: refusedForLock,
   };
 }

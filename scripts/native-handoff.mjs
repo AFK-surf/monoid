@@ -171,7 +171,7 @@ export async function fetchHandoff(at, init = {}, options = {}) {
 const getTimeoutsMs = [20_000, 30_000, 45_000, 60_000];
 // Direct routes (STILLFAIL_DIRECT_DNS on Shanghai/Mini1 runners) already abort stalled sockets in idleMs (8 s);
 // a healthy 4 MB chunk over evening international egress can stream steadily for 25-40 s, so routeMs starts at 60 s
-// instead of aborting healthy streams at 20 s and 30 s (#45632883823).
+// instead of aborting healthy streams at 20 s and 30 s (#45632883823, #8703).
 const directGetTimeoutsMs = [60_000, 60_000, 90_000];
 const writeTimeoutsMs = [60_000, 60_000, 60_000];
 const knownTargets = [

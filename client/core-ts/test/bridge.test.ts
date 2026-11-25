@@ -431,6 +431,10 @@ test("bridgeIroh_wires_relay_control_ops_to_shell_and_refreshes_access_cache", a
     assert.equal(relayStatusCalls, 1);
 
     await runner.run(ep.setDisabledRelays!("deadbeef", ["https://r2.test/", "https://r3.test/"]));
+    // `setDisabledRelays` does not change relay access URLs.
+    assert.equal(conn.paths()[0]!.relay, "https://e1.test/");
+    assert.equal(relayStatusCalls, 1);
+
     statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1-inserted.test/" }];
     await runner.run(ep.insertRelay!("https://r2.test/"));
     assert.equal(conn.paths()[0]!.relay, "https://e1-inserted.test/");

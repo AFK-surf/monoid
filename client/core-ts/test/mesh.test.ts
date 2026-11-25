@@ -4730,6 +4730,106 @@ sim("steer_ticks_and_net_way_reads_deduplicate_sync_connection_ffi_calls", async
   }
 });
 
+sim("hot_relays_native_takes_and_direct_path_narrows_per_peer_while_keeping_home_relays", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  s.net.direct = { ms: 2 };
+  s.net.lan = { punchMs: 500 };
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 8 }, station: { ms: 8 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 12 }, station: { ms: 12 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 50 }, station: { ms: 50 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [r0], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([r1, r2, r3, r4, r5]);
+  const pairAlpn = new TextEncoder().encode("stillfail/pair/1");
+  const mesh = await s.run(
+    Mesh.make({ ...env(s), takes: [pairAlpn], incoming: () => {}, hotRelays: HOT_RELAYS }, allRelays),
+  );
+  try {
+    const id = `w/${station.id()}`;
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+    await s.until(() => link.path() === "direct", 20_000);
+
+    await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+    const paths = link.conn.paths();
+    assert.ok(paths.some((p) => p.relay === null), "direct IP path must remain open after hot-relay narrowing");
+    assert.deepEqual(
+      relaySetOf(paths.filter((p) => p.relay !== null).map((p) => p.relay)),
+      [r0, r1].sort(),
+      "settled native station with direct path must still narrow relay paths to HOT_RELAYS",
+    );
+    assert.equal(
+      mesh.endpoint().relayStatus().length,
+      allRelays.length,
+      "endpoint accepting incoming pairing connections must keep all official home relays connected",
+    );
+
+    // Must remain narrowed with zero oscillation across several ticks.
+    await s.time.pass(4 * TICK_MS);
+    const later = link.conn.paths();
+    assert.ok(later.some((p) => p.relay === null));
+    assert.deepEqual(
+      relaySetOf(later.filter((p) => p.relay !== null).map((p) => p.relay)),
+      [r0, r1].sort(),
+    );
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await s.settle(station.close());
+  }
+});
+
+sim("hot_relays_unrelated_station_dial_does_not_block_settled_station_narrowing", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 8 }, station: { ms: 8 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 12 }, station: { ms: 12 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 50 }, station: { ms: 50 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const online = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: HOT_RELAYS }, allRelays));
+  try {
+    const link = await s.run(mesh.link(`w/${online.id()}`, grants("ok", { n: 0 })));
+    await s.time.pass(HOT_SETTLE_MS - TICK_MS);
+    assert.equal(link.conn.paths().length, allRelays.length);
+
+    // Start a slow dial to an unreachable station right before the settled station crosses HOT_SETTLE_MS.
+    const missingId = "99".repeat(32);
+    const dialFiber = s.runner.fork(Effect.ignore(mesh.link(`w/${missingId}`, grants("ok", { n: 0 }))));
+    await s.time.pass(TICK_MS + 1_000);
+
+    // Even while the unrelated station's dial is still in flight (< CONNECT_TIMEOUT_MS), the settled online station
+    // narrows to 2 relays, while endpoint-level relay removal waits until all dials finish.
+    assert.deepEqual(
+      relaySetOf(link.conn.paths().map((p) => p.relay)),
+      [r0, r1].sort(),
+      "an unrelated station dialing must not block a settled station from narrowing",
+    );
+    assert.equal(
+      mesh.endpoint().relayStatus().length,
+      allRelays.length,
+      "endpoint must keep all relays connected while an unrelated dial is in flight",
+    );
+
+    // Once the unreachable dial times out, endpoint-level unused relays are removed.
+    await s.time.pass(CONNECT_TIMEOUT_MS + TICK_MS);
+    await s.run(Effect.ignore(Fiber.join(dialFiber)));
+    assert.deepEqual(
+      relaySetOf(mesh.endpoint().relayStatus().map((r) => r.url)),
+      [r0, r1].sort(),
+    );
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await s.settle(online.close());
+  }
+});
+
 sim("pinned_rescue_redials_main_promotes_it_and_retires_pinned_relays", async (s) => {
   const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 5 } });
   const b = s.relay("https://b.relay.test/", { device: { ms: 40 }, station: { ms: 20 } });

@@ -83,7 +83,7 @@ test("the Node host's endpoint takes a connection on its ALPN", { skip }, async 
       return e;
     },
   };
-  await acceptsOver(nodeIroh(watched)!, (i) => seen[i]);
+  await acceptsOver(nodeIroh(watched)!, (i) => seen[i], false);
 });
 
 test("the bridge's endpoint takes a connection on its ALPN", { skip }, async () => {

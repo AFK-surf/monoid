@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { callOf, countsOf, refusal, resultOf } from "../assets/agents/copilot-bridge.mjs";
+import { callOf, countsOf, ownConfig, refusal, resultOf } from "../assets/agents/copilot-bridge.mjs";
 import { CopilotDriver, NOT_SIGNED_IN, SILENT, copilotHome, copilotRules, copilotToken } from "../src/agents/copilot.ts";
 import { CommandMissing } from "../src/agents/runner.ts";
 import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
@@ -113,6 +113,22 @@ describe("the Copilot driver's rules", () => {
     assert.ok(SLACK_SPOKEN.every((m) => sub("stillfail-slack_api", { method: m }) !== null));
   });
 
+  test("a profile's own MCP servers and skills, from its Copilot directory; the station's server name stays the station's", () => {
+    assert.deepEqual(ownConfig(undefined), { servers: {}, skills: null });
+    const none = join(data, "own-none");
+    mkdirSync(none, { recursive: true });
+    assert.deepEqual(ownConfig(none), { servers: {}, skills: null }, "nothing given: nothing added");
+    const dir = join(data, "own");
+    mkdirSync(join(dir, "skills"), { recursive: true });
+    const ado = { type: "stdio", command: "npx", args: ["-y", "@azure-devops/mcp", "org"], tools: ["*"] };
+    const remote = { type: "http", url: "https://example.test/mcp", headers: { Authorization: "Bearer k" } };
+    const ours = { type: "http", url: "http://127.0.0.1:1/mcp" };
+    writeFileSync(join(dir, "mcp-config.json"), JSON.stringify({ mcpServers: { ado, remote, stillfail: ours, StillFail: ours, "stillfail-x": ours, odd: "no" } }));
+    assert.deepEqual(ownConfig(dir), { servers: { ado, remote }, skills: join(dir, "skills") });
+    writeFileSync(join(dir, "mcp-config.json"), "{ not json");
+    assert.throws(() => ownConfig(dir), /mcp-config.json is not JSON/);
+  });
+
   test("its calls, results and counts as Cursor's lines have them", () => {
     assert.deepEqual(callOf({ toolName: "stillfail-chat_post", mcpServerName: "stillfail", mcpToolName: "chat_post", arguments: { text: "hi" } }), { name: "mcp", args: { providerIdentifier: "stillfail", toolName: "chat_post", args: { text: "hi" } } });
     assert.deepEqual(callOf({ toolName: "powershell", arguments: { command: "ls" } }), { name: "powershell", args: { command: "ls" } });
@@ -146,6 +162,7 @@ describe("the Copilot driver", { concurrency: true }, () => {
     assert.equal(open.effort, "high");
     assert.equal(open.instructions, copilotRules("be brief"));
     assert.equal(open.skills, o.skills);
+    assert.equal(open.own, copilotHome(o.profile.home), "the profile's own Copilot directory, not the machine's");
     assert.equal(open.sessions, join(copilotHome(o.profile.home), "sessions"));
     await session.dispose();
   });

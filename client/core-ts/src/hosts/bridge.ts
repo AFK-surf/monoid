@@ -38,7 +38,8 @@
 //     apart in the shell (libzstd), not in JS (Host.unzstd)
 //   iroh.bind {relayUrls, lookup, dht?, relayOnly, alpns: [hex]} + key → {id}; iroh.connect {id, addr, additional: [hex]} +
 //     alpn → {id}; iroh.accept {id} → {id, alpn: hex} (the next connection coming, its handshake done; {end} once the
-//     endpoint is gone); iroh.networkChange {id}; iroh.close {id}
+//     endpoint is gone); iroh.networkChange {id}; iroh.setRelayEntries {id, entries}; iroh.disabledRelays {id, peer, relays};
+//     iroh.insertRelay {id, url}; iroh.removeRelay {id, url}; iroh.close {id}
 //   conn.openBi / conn.acceptBi / conn.openUni {id} → {id} (acceptBi: {end} once gone); conn.closed {id} → reason;
 //     conn.close {id, code, reason}
 //   istream.read {id} → bytes or {end}; istream.write {id} + bytes; istream.finish {id}; istream.stopped {id} → {code};
