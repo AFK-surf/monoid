@@ -152,7 +152,8 @@ export async function agyNotedEmail(home: string): Promise<string | null> {
 /// with the first one's quota; on Linux the moved file also left the profile appearing signed out). Where it thinks it
 /// is in an SSH session it keeps the sign-in in the file alone ("Using file-based token storage because SSH session
 /// detected", 1.5.9), so the station's processes are given that (`agyEnv`, agy-quota.ts, `agyRenew`, accounts/login.ts).
-export const AGY_FILE_TOKENS = { SSH_CLIENT: "127.0.0.1 0 0" };
+// AGY 1.5.17 requires its explicit switch; retain SSH_CLIENT for older versions.
+export const AGY_FILE_TOKENS = { SSH_CLIENT: "127.0.0.1 0 0", AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1" };
 
 type KeyringExecResult = { error: (Error & { code?: string | number | null }) | null; stdout: string };
 type KeyringExec = (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => Promise<KeyringExecResult>;

@@ -75,6 +75,7 @@ test("a Gemini key runs the Antigravity CLI in its profile's files, with the sta
   assert.deepEqual(started.args, ["acp", "--gemini-dir", geminiDir(options.profile.home), "--dangerously-skip-permissions", "--disable-telemetry"]);
   assert.equal(started.key, "gemini-key");
   assert.equal(started.updates, "1");
+  assert.equal(started.forceFileTokens, "1");
   const opened = rpc(dump).find((m) => m.method === "session/new").params;
   assert.equal(opened.mcpServers[0].headers[0].value, "Bearer test-token");
   assert.equal(opened._meta.antigravity.systemPrompt.append, "Use chat_post to answer.");
@@ -893,6 +894,7 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
     // Its HOME an empty directory of its own (its sign-in copied into the profile's agy/ once done), its sign-in kept in a
     // file there (AGY_FILE_TOKENS), its question to the terminal answered; none of the machine's keys.
     assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], run.home, null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    assert.equal(run.forceFileTokens, "1");
     // (its run and its manager's mark: one before it, or another manager's with the same run, is not taken for it)
     const g1 = join(data, "run", "agy-login", "g-1-");
     assert.ok(run.home.startsWith(g1) && /^[0-9a-f]{8}$/.test(run.home.slice(g1.length)), run.home);
@@ -1375,7 +1377,7 @@ test("a Google account's sign-in: refused at once where there is no terminal; wi
   }
   const q = await checkQuota({ id: "p", runtime: "agy", home: join(data, "no-signin"), access: { kind: "subscription" } } as never, {}, undefined, undefined, "en");
   assert.deepEqual([q.state, q.detail], ["unavailable", tr("en", "station.quota.signInExpired")]);
-  assert.equal(loginCommand("agy", "/h"), `SSH_CLIENT='${AGY_FILE_TOKENS.SSH_CLIENT}' HOME=/h/agy agy`);
+  assert.equal(loginCommand("agy", "/h"), `SSH_CLIENT='${AGY_FILE_TOKENS.SSH_CLIENT}' AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 HOME=/h/agy agy`);
 });
 
 test("an Antigravity CLI account's Gemini and Claude / GPT windows weigh only on their own models in the pool", () => {

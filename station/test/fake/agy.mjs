@@ -29,7 +29,7 @@ function renew() {
   process.exit(0);
 }
 async function printUsage() {
-  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME ?? null, geminiDir: process.env.ANTIGRAVITY_GEMINI_DIR ?? null, cloudCodeUrl: process.env.CLOUD_CODE_URL ?? null, key: process.env.GEMINI_API_KEY ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
+  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME ?? null, geminiDir: process.env.ANTIGRAVITY_GEMINI_DIR ?? null, cloudCodeUrl: process.env.CLOUD_CODE_URL ?? null, key: process.env.GEMINI_API_KEY ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null, forceFileTokens: process.env.AGY_CLI_FORCE_FILE_TOKEN_STORAGE ?? null }) + '\n');
   if (process.env.FAKE_AGY_SIGNED_OUT) {
     process.stdout.write('Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth\n\nWaiting for authentication (timeout 60s)...\n');
     await new Promise(() => {});
@@ -80,7 +80,7 @@ async function printUsage() {
   process.exit(0);
 }
 async function signIn() {
-  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME, remote: process.env.SSH_CONNECTION ?? null, key: process.env.GEMINI_API_KEY ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
+  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME, remote: process.env.SSH_CONNECTION ?? null, key: process.env.GEMINI_API_KEY ?? null, fileTokens: process.env.SSH_CLIENT ?? null, forceFileTokens: process.env.AGY_CLI_FORCE_FILE_TOKEN_STORAGE ?? null }) + '\n');
   if (!process.stdin.isTTY) { process.stderr.write('not a terminal\n'); process.exit(1); }
   process.stdin.setRawMode(true);
   if (process.env.SSH_CLIENT) {
@@ -237,7 +237,7 @@ const update = (u) => say({ method: 'session/update', params: { sessionId, updat
 const dir = args[args.indexOf('--gemini-dir') + 1];
 const conversations = join(dir, 'antigravity-cli', 'conversations');
 mkdirSync(conversations, { recursive: true });
-if (dump) appendFileSync(dump, JSON.stringify({ args, key: process.env.GEMINI_API_KEY ?? null, adcAuth: process.env.AGY_ADC_AUTH ?? null, project: process.env.GOOGLE_CLOUD_PROJECT ?? null, location: process.env.GOOGLE_CLOUD_LOCATION ?? null, credentials: process.env.GOOGLE_APPLICATION_CREDENTIALS ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
+if (dump) appendFileSync(dump, JSON.stringify({ args, key: process.env.GEMINI_API_KEY ?? null, adcAuth: process.env.AGY_ADC_AUTH ?? null, project: process.env.GOOGLE_CLOUD_PROJECT ?? null, location: process.env.GOOGLE_CLOUD_LOCATION ?? null, credentials: process.env.GOOGLE_APPLICATION_CREDENTIALS ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null, forceFileTokens: process.env.AGY_CLI_FORCE_FILE_TOKEN_STORAGE ?? null }) + '\n');
 const models = process.env.FAKE_AGY_SUBSCRIPTION
   ? {
       currentModelId: 'gemini-4-carbon-high',

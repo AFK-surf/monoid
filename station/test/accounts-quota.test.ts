@@ -174,6 +174,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(ran.home, agyHome(home));
     assert.equal(ran.geminiDir, geminiDir(home));
     assert.equal(ran.fileTokens, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(ran.forceFileTokens, "1");
     assert.equal(ran.cloudCodeUrl, "https://aicode.example.test");
     assert.equal(ran.key, null, "scrubs inherited GEMINI_API_KEY");
     assert.equal(ran.updates, "1");
