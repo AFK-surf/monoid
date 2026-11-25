@@ -2137,8 +2137,9 @@ jobs:
           unset POSTHOG_JSON
           if bash apps/mbui/scripts/core.sh hermes-kept apple; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
           rm -f "$RUNNER_TEMP/posthog-kept.json"
-      # Restore pnpm store only (no 15 s Post Run 142 MB cache save that cancelled main 45475280318 at 303 s after
-      # mac-unsigned was already uploaded; station and check-mac maintain pnpm-macOS-*). Node is already on PATH.
+      # Restore pnpm store only here (avoid an unconditional 15 s Post Run 142 MB cache save that cancelled main
+      # 45475280318 at 303 s after mac-unsigned was uploaded; saved explicitly below on main only when >=30 s remain).
+      # Node is already on PATH from the first setup step.
       - if: steps.hbc.outputs.kept != 'true'
         uses: ./.github/actions/setup
         with: { node: 'false', pnpm-save: 'false' }
@@ -2300,6 +2301,24 @@ jobs:
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
           key: ${{ env.MOON_KEY }}
+      # Keep pnpm-macOS-* updated on main after lockfile changes, but only when >=30 s remain before JOB_END.
+      - name: Room for pnpm store save
+        id: pnpm-save-room
+        if: github.ref == 'refs/heads/main' && steps.hbc.outputs.kept != 'true' && env.PNPM_CACHE_HIT != 'true' && env.PNPM_CACHE_KEY != ''
+        run: |
+          left=$(( JOB_END - $(date +%s) ))
+          if [ "$left" -ge 30 ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "pnpm store not saved: ${left} s left"
+          fi
+      - if: steps.pnpm-save-room.outputs.ok == '1'
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
+        with:
+          path: ${{ env.PNPM_STORE }}
+          key: ${{ env.PNPM_CACHE_KEY }}
   # The expensive build is already handed over; keep signing, notarization and release checks in their own budget.
   desktop:
     needs: [plan, desktop-build]

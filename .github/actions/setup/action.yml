@@ -71,12 +71,18 @@ runs:
         path: ${{ env.PNPM_STORE }}
         key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'client/core-ts/pnpm-lock.yaml', 'cloud/pnpm-lock.yaml', 'station/pnpm-lock.yaml') }}
         restore-keys: pnpm-${{ runner.os }}-
-    - if: inputs.pnpm == 'true' && inputs.pnpm-save == 'false'
+    - id: pnpm-restore
+      if: inputs.pnpm == 'true' && inputs.pnpm-save == 'false'
       uses: actions/cache/restore@v4
       with:
         path: ${{ env.PNPM_STORE }}
         key: pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'client/core-ts/pnpm-lock.yaml', 'cloud/pnpm-lock.yaml', 'station/pnpm-lock.yaml') }}
         restore-keys: pnpm-${{ runner.os }}-
+    - if: inputs.pnpm == 'true' && inputs.pnpm-save == 'false'
+      shell: bash
+      run: |
+        echo "PNPM_CACHE_HIT=${{ steps.pnpm-restore.outputs.cache-hit }}" >> "$GITHUB_ENV"
+        echo "PNPM_CACHE_KEY=pnpm-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'client/core-ts/pnpm-lock.yaml', 'cloud/pnpm-lock.yaml', 'station/pnpm-lock.yaml') }}" >> "$GITHUB_ENV"
     - if: inputs.native == 'true'
       shell: bash
       run: |
