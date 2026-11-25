@@ -521,8 +521,11 @@ for (const crashed of [false, true]) {
     const next = new AgyDriver({ data });
     drivers.push(next);
     const later: RuntimeEvent[] = [];
+    let taking = 0;
+    const adoptOpts = { ...(crashed ? { ...configured, mcpUrl: "" } : configured), taking: () => void taking++ };
     // (after a crash, taken up before the station's door opened: no address of its tools known)
-    const adopted = await next.adopt(crashed ? { ...configured, mcpUrl: "" } : configured, snapshot, (e) => later.push(e));
+    const adopted = await next.adopt(adoptOpts, snapshot, (e) => later.push(e));
+    assert.ok(taking >= (crashed ? 4 : 2), `expected takeover progress reports (crashed=${crashed}), got ${taking}`);
     assert.equal(adopted.mcpUrl(), crashed ? null : configured.mcpUrl);
     assert.equal(adopted.model, "gemini-3.1-pro");
     await adopted.abort();

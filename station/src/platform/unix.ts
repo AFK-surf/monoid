@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
 import { holder, osCpuTicks } from "./processes.ts";
-import { elasticMemory, fieldOrNull, firstWord, idleOfIoreg, isDom0MemAnswer, isMonoidStationVm, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
+import { elasticMemory, fieldOrNull, firstWord, idleOfIoreg, isDom0MemAnswer, isMonoidStationVm, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfMemoryPsi, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
 
 const MACOS = process.platform === "darwin";
 /// Names in the order people read them (numbers by value, case aside), as the drive sorts them.
@@ -744,9 +744,15 @@ export const unix: Platform = {
           : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
         return worsePressure(ofLevel, read?.swap ?? null);
       }
-      // Pressure is about memory held now, not elastic headroom from dom0.
-      const info = await readFile("/proc/meminfo", "utf8");
-      return pressureOfAvailable(fieldOrNull(info, "MemAvailable"), fieldOrNull(info, "MemTotal"));
+      // Pressure is about memory held now, not elastic headroom from dom0. On Linux, MemAvailable still counts active
+      // file cache refaulting under reclaim thrashing, so combine it with /proc/pressure/memory (PSI).
+      const [info, psi] = await Promise.all([
+        readFile("/proc/meminfo", "utf8"),
+        readFile("/proc/pressure/memory", "utf8").catch(() => null),
+      ]);
+      const available = fieldOrNull(info, "MemAvailable");
+      const total = fieldOrNull(info, "MemTotal");
+      return worsePressure(pressureOfAvailable(available, total), pressureOfMemoryPsi(psi, available, total));
     } catch {
       return null;
     }

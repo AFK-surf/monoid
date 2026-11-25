@@ -88,9 +88,13 @@ export type OpenOptions = {
   /// Stable per-session routing id for provider affinity headers.
   route: string;
   /// An isolated, temporary text-only request. Drivers must explicitly support this without exposing their tools.
-  textOnly?: boolean;  /// Aborted when the station gives up opening this session (timeout, stop, suspend, close: `node.cancelOpen`): a driver
+  textOnly?: boolean;
+  /// Aborted when the station gives up opening this session (timeout, stop, suspend, close: `node.cancelOpen`): a driver
   /// that opens again after a failure stops there, and starts no process after it.
   signal?: AbortSignal;
+  /// Called during takeover (`adopt`) after each completed step so the launcher resets its takeover deadline when a
+  /// heavily loaded machine slows recovery down without hanging.
+  taking?: () => void;
 };
 
 export interface AgentSession {

@@ -906,6 +906,7 @@ export class Hub {
     }
     // Found before anything is taken up or started: what nobody takes up of these is ended, nothing started meanwhile.
     const before = (this.options.runners ? this.options.runners().map((id) => ({ id }) as RunnerInfo) : await liveRunners(this.config().dataDir, { strict: true })).filter((r) => !isTerminalRunner(r.id));
+    this.options.taking?.();
     await this.adopt(handed);
     // A crash left runners without a snapshot: what they keep is taken up as it stands.
     const runners = new Set(before.map((r) => r.id));
@@ -1018,17 +1019,19 @@ export class Hub {
         const driver = this.sessionDriver(snap.runtime);
         const memory = await this.deps.linkSkills(row);
         const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
-        agent = await driver.adopt({ ...options, router }, snap.agent, actor.listener(generation));
+        agent = await driver.adopt({ ...options, router, taking: this.options.taking }, snap.agent, actor.listener(generation));
       } catch (error) {
         actor.cancelAdopt(generation);
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
       }
       if (!agent) actor.cancelAdopt(generation);
+      this.options.taking?.();
     }
     // Its runtime not taken up: a turn it had is resumed the usual way (recover).
     if (withProcess && !agent) return;
     // (taken up whole before its idle time is looked at: `idleNow`)
     await actor.adopt(snap, agent, ranOn);
+    this.options.taking?.();
     log.info("hub", "session taken up from the previous station", { session: row.key, withAgent: agent !== null });
     if (agent) {
       this.adopted.add(row.key);

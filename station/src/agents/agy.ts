@@ -834,7 +834,10 @@ export class AgyDriver extends AcpDriver<AgySession> {
     // be taken up across a station update, failing every prompt there too (Office-Host-2 0.1.9517, 2026-11-16): refused
     // here, `endOrphans` ends its runner and the session goes on in a new conversation.
     const id = typeof (snapshot as { id?: unknown } | null)?.id === "string" ? (snapshot as { id: string }).id : options.resume;
-    if (id !== undefined) await this.ensureConversation(options.profile.home, id);
+    if (id !== undefined) {
+      await this.ensureConversation(options.profile.home, id);
+      options.taking?.();
+    }
     const session = await super.adopt(options, snapshot, events);
     // One handed over says the token it opened on (`kept`); one taken up after a crash, or from a station from before,
     // does not, and is opened again before its next turn: the file may hold a token lent since, for another process.
@@ -854,9 +857,11 @@ export class AgyDriver extends AcpDriver<AgySession> {
         await session.dispose();
         throw error;
       }
+      options.taking?.();
     }
     await agyHooks(options.profile.home);
     if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
+    options.taking?.();
     return session;
   }
 
