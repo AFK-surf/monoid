@@ -432,6 +432,24 @@ pub fn ActorsGen::rpc_k(
   })
 }
 
+/// Direct actor RPC that is guarded ONLY by generation `sealed` (never blocked or cancelled by
+/// `a.phase == "closed"`, and never tracked in `a.rpc_ids`). Used exclusively for post-close
+/// cleanup/in-flight persistence (`dispose`, `pump_steer_k` `markUndelivered` compensation,
+/// `runChanged`, and `state_for_turn_k` `node.stateWrite`).
+pub fn ActorsGen::rpc_direct_k(
+  self : ActorsGen,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  self.gen.rpc_k(self.host, key, f, args, fn(k_arg : String) -> Unit { self.mirror_by_key(k_arg) }, k)
+}
+
 /// Cancel an in-flight RPC (`actors.mbt:285-295`), restoring `active` before waking the waiter.
 pub fn ActorsGen::cancel_rpc(self : ActorsGen, id : Int, err : base_codec::Json) -> Bool {
   self.gen.cancel_rpc(self.host, id, err)

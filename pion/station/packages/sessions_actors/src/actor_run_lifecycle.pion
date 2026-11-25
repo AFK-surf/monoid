@@ -92,7 +92,10 @@ pub fn ActorsGen::state_for_turn_k(
           return
         }
       }
-      self.rpc_k(a.key, "node.stateWrite", args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      // Direct RPC: an in-flight `node.stateWrite` already sent to Node must not be cancelled by
+      // a concurrent `close(a)` so its recorded state matches what Node persisted; skip `on_declared`
+      // when closed so no new mid-wait timer is armed on a closed actor.
+      self.rpc_direct_k(a.key, "node.stateWrite", args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
         match ex {
           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
           effect::Exit::Failed(e) => {
@@ -101,7 +104,9 @@ pub fn ActorsGen::state_for_turn_k(
           }
           effect::Exit::Succeeded(_) => {
             t.declared = Some(state)
-            self.on_declared(a, t, state)
+            if a.phase != "closed" {
+              self.on_declared(a, t, state)
+            }
             recorded = true
             tk(effect::Exit::Succeeded(()))
           }
@@ -3370,15 +3375,25 @@ pub fn ActorsGen::called_k(
   if method == "runChanged" {
     let text = str_or(sessions_core::str_of(Some(arg_or_null(args, 0))), "")
     let change = arg_or_null(args, 1)
-    self.notice_k(
-      a,
-      text,
-      base_codec::json_null(),
-      base_codec::json_null(),
-      change,
-      None,
-      false,
-      finish_null(k),
+    // Direct RPC: matches MB where `runChanged` still posts its notice even after `close(a)`.
+    self.rpc_direct_k(
+      a.key,
+      "node.notice",
+      [
+        sessions_core::jstr(text),
+        base_codec::json_null(),
+        base_codec::json_null(),
+        change,
+        base_codec::json_null(),
+        sessions_core::jbool(false),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      },
     )
     return
   }
@@ -3402,13 +3417,20 @@ pub fn ActorsGen::called_k(
     self.close(a)
     match agent {
       Some(g) => {
-        self.agent_do_k(a, g, "dispose", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
-          match ex {
-            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
-            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-          }
-        })
+        // Direct RPC: `close(a)` already ran, so releasing the captured runtime handle must not
+        // be blocked by `a.phase == "closed"`.
+        self.rpc_direct_k(
+          a.key,
+          "agent.dispose",
+          [sessions_core::jint(g.handle)],
+          fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
       }
       None => k(effect::Exit::Succeeded(base_codec::json_null()))
     }

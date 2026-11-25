@@ -142,6 +142,19 @@ test("W8-0: pion-sqlite-tx-scanner catches concatenated raw tx SQL and throws on
     0,
     "standalone release/savepoint method names without a following identifier must not false-positive",
   );
+  for (const op of ["SAVEPOINT", "RELEASE"]) {
+    const source = `let _ = db.exec("${op} " + name)`;
+    assert.equal(
+      findRawTxControlViolations("dynamic.pion", source).length,
+      1,
+      `dynamic ${op} concatenation must be caught`,
+    );
+  }
+  assert.equal(
+    findRawTxControlViolations("interp.pion", 'let _ = db.exec("RELEASE \\{n}")').length,
+    1,
+    "RELEASE with Pion string interpolation must be caught",
+  );
   assert.equal(
     findRawTxControlViolations("sp1.pion", 'let _ = db.exec("RELEASE sp1")').length,
     1,

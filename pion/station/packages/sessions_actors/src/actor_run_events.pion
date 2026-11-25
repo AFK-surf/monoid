@@ -378,6 +378,9 @@ pub fn ActorsGen::on_event_k(
     return
   }
   if ev_type == "turnEnded" {
+    // Intentionally tightened over MB: guard `done_working` by `is_current(a, generation)` so a
+    // stale-generation `turnEnded` cannot clear the active turn's `working_for` status line;
+    // when `a.agent == None`, `set_agent(None)` / `close` has already cleared the status line.
     if self.is_current(a, generation) {
       self.done_working(a)
     }
@@ -410,6 +413,8 @@ pub fn ActorsGen::on_event_k(
     return
   }
   if ev_type == "live" {
+    // Intentionally tightened over MB: drop stale-generation `live` events up front before
+    // mutating `a.unread`, `undeclare_k`, `hear_words`, or `on_live`.
     if !self.is_current(a, generation) {
       k(effect::Exit::Succeeded(()))
       return
@@ -427,14 +432,35 @@ pub fn ActorsGen::on_event_k(
       let keep = a.unread_preparing
       let removable = a.unread.length() - keep
       if removable > 0 {
+        let req_turn_id : Option[String] = match a.turn {
+          Some(t) => Some(t.id)
+          None => None
+        }
+        let same_turn = fn() -> Bool {
+          match (a.turn, req_turn_id) {
+            (Some(t), Some(id)) => t.id == id
+            (None, None) => true
+            _ => false
+          }
+        }
         self.enqueue_k(
           a,
-          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { self.undeclare_k(a, tk) },
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            if !self.is_current(a, generation) || !same_turn() {
+              tk(effect::Exit::Succeeded(()))
+              return
+            }
+            self.undeclare_k(a, tk)
+          },
           fn(ex : effect::Exit[Unit]) -> Unit {
             match ex {
               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
               effect::Exit::Succeeded(_) => {
+                if !self.is_current(a, generation) || !same_turn() {
+                  k(effect::Exit::Succeeded(()))
+                  return
+                }
                 let tail : Array[base_codec::Json] = []
                 for i in removable..<a.unread.length() {
                   tail.push(a.unread[i])

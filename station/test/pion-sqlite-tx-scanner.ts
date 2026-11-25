@@ -163,6 +163,13 @@ export function findRawTxControlViolations(filename: string, source: string): st
       scanGap(gap);
 
       const literal = m[1]!;
+      const afterLiteral = line.slice(lastEnd);
+      const isStandaloneMethodLiteral =
+        !literal.includes("\\{") &&
+        /^(?:release|savepoint)$/i.test(unescapePionString(literal)) &&
+        !gap.trimEnd().endsWith("+") &&
+        !(gap.trim() === "" && prevLineEndedWithPlus) &&
+        !afterLiteral.trimStart().startsWith("+");
       const tokens = tokenizeSql(unescapePionString(literal));
       if ((inTriggerHeader || inTriggerBody) && parenDepth > triggerParenDepth) {
         let argStmtStart = true;
@@ -172,12 +179,7 @@ export function findRawTxControlViolations(filename: string, source: string): st
           if (!argStmtStart) continue;
           argStmtStart = false;
           if (tok.kind === "word" && forbiddenHeads.has(tok.upper)) {
-            if (
-              (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
-              tokens[t + 1]?.kind !== "word" &&
-              tokens[t + 1]?.kind !== "ident" &&
-              tokens[t + 1]?.kind !== "str"
-            ) {
+            if ((tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") && isStandaloneMethodLiteral) {
               continue;
             }
             violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
@@ -239,14 +241,9 @@ export function findRawTxControlViolations(filename: string, source: string): st
             const isTxEnd = next === undefined || next.kind === "semi" || (next.kind === "word" && next.upper === "TRANSACTION");
             if (!isTxEnd) continue;
           }
-          // SQLite `SAVEPOINT <name>` / `RELEASE [SAVEPOINT] <name>` require a following identifier;
-          // allow standalone non-SQL literals like `"release"` (aligned with `w5-foundation.test.ts`).
-          if (
-            (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
-            tokens[t + 1]?.kind !== "word" &&
-            tokens[t + 1]?.kind !== "ident" &&
-            tokens[t + 1]?.kind !== "str"
-          ) {
+          // Exempt only an exact standalone `"release"` / `"savepoint"` method-name literal with
+          // no whitespace, no `\{...}` interpolation, and no `+` concatenation on either side.
+          if ((tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") && isStandaloneMethodLiteral) {
             continue;
           }
           violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);

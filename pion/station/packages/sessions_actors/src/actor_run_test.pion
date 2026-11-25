@@ -1813,3 +1813,363 @@ test "r2 coverage: local StoreDb markUndelivered and markWidgetModelsTold roll b
   assert_run(!row1_written, "1st row must be rolled back")
   assert_run(mem.stdout_lines.length() == 0, "0 changes emitted on rollback")
 }
+
+// ── R3 Review Regression & FB-39 Coverage Tests ──
+
+fn r3_null(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+  Some(Ok(base_codec::json_null()))
+}
+
+fn r3_probe_adopt(s : NodeScript, id : String, generation : Int) -> Unit {
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"" +
+    id +
+    "\",\"declared\":\"all_done\"}},{\"handle\":" +
+    generation.to_string() +
+    ",\"generation\":" +
+    generation.to_string() +
+    "},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.actors.host.tick()
+}
+
+test "r3 rr1: dispose asks agent.dispose and returns without error" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 4 })
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"dispose\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(r3_null)
+  assert_run(
+    s.has_rpc("agent.dispose") && s.returned.length() == 1 && sessions_core::text_of(s.returned[0], "error") == "",
+    "RR1 agent.dispose sent=" +
+    s.has_rpc("agent.dispose").to_string() +
+    " error=" +
+    sessions_core::text_of(s.returned[0], "error"),
+  )
+}
+
+test "r3 rr2: close while node.timed is in flight gives back what was marked delivered" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let g = Agent::{ generation: 1, handle: 4 }
+  a.agent = Some(g)
+  let d = Delivery::{
+    pending: [base_codec::json_obj([("handed", sessions_core::jstr("m1"))])],
+    text: "x",
+    widgets: base_codec::json_null(),
+  }
+  let cur = s.actors.current
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.timed" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { cur.pump_steer_k(a, g, Some(g), d, tk) }, k)
+  })
+  s.drive(r)
+  assert_run(s.has_rpc("store.markDelivered") && s.has_rpc("node.timed"), "reached")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(r)
+  assert_run(s.has_rpc("store.markUndelivered"), "RR2 marked delivered, never written, never given back")
+}
+
+test "r3 rr3: runChanged on a closed actor asks node.notice with no error" {
+  let s = r2_new()
+  let _ = s.actors.actor("s1", "claude")
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(r3_null)
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"runChanged\",\"args\":[\"x\",null],\"now\":1000}", s.disp)
+  s.drive(r3_null)
+  assert_run(
+    s.has_rpc("node.notice") && sessions_core::text_of(s.returned[1], "error") == "",
+    "RR3 no notice, error=" + sessions_core::text_of(s.returned[1], "error"),
+  )
+}
+
+test "r3 rr4: stateForTurn with stateWrite answered stays recorded across close" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.turn = Some(Turn::{
+    id: "t1",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: base_codec::json_null(),
+    asked_before: None,
+    started_at: 0.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 0.0,
+    wait_watch: false,
+  })
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"t1\",{\"kind\":\"all_done\"},5],\"now\":1000}",
+    s.disp,
+  )
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "reached")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null,\"now\":1002}", s.disp)
+  s.drive(r)
+  let mut ok = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 1 &&
+    is_opt_json_true(sessions_core::jget(s.returned[i], "value")) {
+      ok = true
+    }
+  }
+  assert_run(ok, "RR4 not recorded")
+}
+
+test "r3 independent: dispose sends captured handle and returns success" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  s.actors.heard("{\"call\":7,\"actor\":\"s1\",\"method\":\"dispose\"}", s.disp)
+  s.drive(r3_null)
+  let answer = s.returned[s.returned.length() - 1]
+  assert_run(
+    s.has_rpc("agent.dispose") && !is_some(sessions_core::jget(answer, "error")),
+    "dispose rpc=" +
+    (if s.has_rpc("agent.dispose") { "yes" } else { "no" }) +
+    " returned=" +
+    base_codec::json_stringify(answer),
+  )
+}
+
+test "r3 independent: close while timed call pending restores unsteered delivery" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.timed" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  assert_run(delivered && s.has_rpc("node.timed") && !s.has_rpc("agent.steer"), "did not reach test window")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  assert_run(!delivered, "delivered remains true after close before agent.steer")
+}
+
+test "r3 independent: queued old requesting event preserves adopted turn declaration" {
+  let s = r2_new()
+  r3_probe_adopt(s, "old", 1)
+  let a = get_actor(s.actors, "s1")
+  a.unread.push(sessions_core::jstr("old-message"))
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.setNeed" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":11,\"actor\":\"s1\",\"method\":\"need\",\"args\":[\"q\"]}", s.disp)
+  s.drive(respond)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "store.setNeed" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "need did not park")
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"event\":{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}}}",
+    s.disp,
+  )
+  s.drive(respond)
+  assert_run(a.queued == 2, "requesting did not queue")
+  r3_probe_adopt(s, "new", 2)
+  let t = match a.turn {
+    Some(tv) => tv
+    None => panic("missing adopted turn")
+  }
+  assert_run(t.id == "new" && is_some(t.declared), "adoption did not set state")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(respond)
+  assert_run(is_some(t.declared) && !s.has_rpc("store.declareTurn"), "new turn declaration was cleared")
+}
+
+test "r3 coverage: FB-39 passive turn does not auto-retry on auth failure" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 5 })
+  a.profile = sessions_core::jstr("prof-a")
+  a.turn = Some(Turn::{
+    id: "turn-passive",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: true,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 1000.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 1000.0,
+    wait_watch: false,
+  })
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("auth failed")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"now\":2000,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(!s.has_rpc("node.open"), "passive turn must not reopen/auth-retry")
+  assert_run(!is_some(a.turn), "passive turn must remain ended")
+}
+
+test "r3 coverage: FB-39 max_concurrent_turns queues auth_retry into queued_retry and cap_wait_queue wakes queued_retry" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  gen.counters.max_concurrent_turns = 1
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  // s0 occupies the single concurrent turn slot
+  let s0 = actors.actor("s0", "claude")
+  s0.turn = Some(Turn::{
+    id: "turn-s0",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 900.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 900.0,
+    wait_watch: false,
+  })
+
+  // s1 fails with auth while slot is full -> queues into turn_wait_queue with queued_retry
+  let s1 = actors.actor("s1", "claude")
+  s1.agent = Some(Agent::{ generation: 1, handle: 2 })
+  s1.profile = sessions_core::jstr("prof-a")
+  s1.turn = Some(Turn::{
+    id: "turn-s1",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 1000.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 1000.0,
+    wait_watch: false,
+  })
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.words" || f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("GO_ON_AUTH")))
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("GO_ON_AUTH")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(3)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-b")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-s1-retry")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"now\":2000,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(is_some(s1.queued_retry), "s1 must stash queued_retry when max_concurrent_turns is full")
+  assert_run(actors.current.gen.resources.turn_wait_queue.length() == 1, "s1 must be in turn_wait_queue")
+
+  // Free s0's slot and test cap_wait_queue waking a queued_retry actor (s2)
+  s0.turn = None
+  let s2 = actors.actor("s2", "claude")
+  s2.paused_cap = true
+  s2.queued_retry = Some(QueuedRetry::{
+    kind: "resume",
+    text: "GO_ON_AFTER_SPENT",
+    by: turn_for_nobody(),
+    codex_retried: true,
+  })
+  actors.current.enqueue_cap_wait(s2)
+  actors.heard("{\"drainCapQueue\":true,\"now\":3000}", s.disp)
+  s.drive(responder)
+  assert_run(!is_some(s2.queued_retry), "drainCapQueue must consume s2.queued_retry")
+  match s2.turn {
+    Some(t) => assert_run(t.codex_retried, "cap_wait_queue wake must preserve codex_retried")
+    None => panic("s2 turn must start from queued_retry on cap wake")
+  }
+}

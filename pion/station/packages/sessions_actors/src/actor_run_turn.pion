@@ -1061,7 +1061,8 @@ fn ActorsGen::pump_after_guards_k(
                                         self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
                                           match ex_ns {
                                             effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                            _ => finish(effect::Exit::Failed(e))
+                                            effect::Exit::Failed(e2) => finish(effect::Exit::Failed(e2))
+                                            effect::Exit::Succeeded(_) => finish(effect::Exit::Failed(e))
                                           }
                                         })
                                       }
@@ -1189,7 +1190,7 @@ fn ActorsGen::pump_steer_k(
                                 if !self.gen.counters.sealed && marked.length() > 0 {
                                   sessions_core::try_k(
                                     fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-                                      self.store_k(
+                                      self.store_direct_k(
                                         a,
                                         "markUndelivered",
                                         [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
@@ -1209,7 +1210,7 @@ fn ActorsGen::pump_steer_k(
                                 if marked.length() > 0 {
                                   sessions_core::try_k(
                                     fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-                                      self.store_k(
+                                      self.store_direct_k(
                                         a,
                                         "markUndelivered",
                                         [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
@@ -1244,7 +1245,7 @@ fn ActorsGen::pump_steer_k(
                                         if marked.length() > 0 {
                                           sessions_core::try_k(
                                             fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-                                              self.store_k(
+                                              self.store_direct_k(
                                                 a,
                                                 "markUndelivered",
                                                 [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
@@ -1266,7 +1267,7 @@ fn ActorsGen::pump_steer_k(
                                         if !sessions_core::truthy(sv) {
                                           unsteer()
                                           if marked.length() > 0 {
-                                            self.store_k(
+                                            self.store_direct_k(
                                               a,
                                               "markUndelivered",
                                               [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
@@ -2032,7 +2033,8 @@ fn ActorsGen::start_turn_handle_error_k(
                                                     fn(ex_n : effect::Exit[Unit]) -> Unit {
                                                       match ex_n {
                                                         effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                                        _ => finish(effect::Exit::Failed(e))
+                                                        effect::Exit::Failed(e2) => finish(effect::Exit::Failed(e2))
+                                                        effect::Exit::Succeeded(_) => finish(effect::Exit::Failed(e))
                                                       }
                                                     },
                                                   )
@@ -2397,7 +2399,8 @@ fn ActorsGen::start_turn_send_prompt_k(
                                       fn(ex_u : effect::Exit[base_codec::Json]) -> Unit {
                                         match ex_u {
                                           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                          _ => k(effect::Exit::Failed(e2))
+                                          effect::Exit::Failed(e3) => k(effect::Exit::Failed(e3))
+                                          effect::Exit::Succeeded(_) => k(effect::Exit::Failed(e2))
                                         }
                                       },
                                     )
