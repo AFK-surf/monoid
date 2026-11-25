@@ -732,12 +732,14 @@ export const AgentsLive = (control: Control) =>
       readers.onTrim(() => sharing!.trimIdle());
       // The agents' memory, the same on every station of a workspace (share/memory.ts), paired with the autonomous
       // background gardener (share/memory-gardener.ts) that silently compacts overgrown or conflicted memory files.
+      let memorySync!: MemorySync;
       const memoryGardener = new MemoryGardener({
         cloud,
         compact: createHubCompactor(hub, cloud),
+        edit: (ws, fn) => memorySync.edit(ws, fn),
         canCompact: (ws) => canCompactInWorkspace(hub, cloud, ws),
       });
-      const memorySync = new MemorySync({
+      memorySync = new MemorySync({
         data, cloud,
         ask: (station, workspace, request) => remote.ask(station, { workspace, ...request }),
         agentHome: () => settings().agentHome,

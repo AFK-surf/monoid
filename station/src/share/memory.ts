@@ -110,7 +110,6 @@ export type MemorySettledEvent = {
   workspace: string;
   dir: string;
   conflictMerged: boolean;
-  files: Record<string, { hash: string; size: number }>;
 };
 
 export type MemoryDeps = {
@@ -213,6 +212,11 @@ export class MemorySync {
     return station.slice(0, 8);
   }
 
+  /// Serializes a local edit to `ws`'s memory files on the workspace's sync lane so it cannot race `#look` or `#take`.
+  edit<T>(ws: string, fn: () => Promise<T>): Promise<T> {
+    return this.#lane(ws, fn);
+  }
+
   #lane<A>(ws: string, f: () => Promise<A>): Promise<A> {
     const run = (this.#lanes.get(ws) ?? Promise.resolve()).then(f, f);
     this.#lanes.set(ws, run.catch(() => undefined));
@@ -305,13 +309,8 @@ export class MemorySync {
   #emitSettled(ws: string, dir: string, conflictMerged: boolean): void {
     const cb = this.#deps.onSettled;
     if (!cb || this.#stopped) return;
-    const kept = this.#kept.get(ws);
-    const files: Record<string, { hash: string; size: number }> = {};
-    for (const [path, rec] of Object.entries(kept?.files ?? {})) {
-      if (rec.hash !== "") files[path] = { hash: rec.hash, size: rec.size };
-    }
     try {
-      cb({ workspace: ws, dir, conflictMerged, files });
+      cb({ workspace: ws, dir, conflictMerged });
     } catch (e) {
       log.warn("memory", "onSettled callback failed", { workspace: ws, error: (e as Error)?.message ?? String(e) });
     }
@@ -507,7 +506,7 @@ export class MemorySync {
       }
       log.info("memory", "a file of the memory made apart merged", { workspace: ws, path, beside: beside?.path ?? null });
       changed = true;
-      conflictMerged = true;
+      if (outcome.beside !== null) conflictMerged = true;
       if (path === PROJECTS_INFO_PATH) projectsUpdated = true;
     }
     if (changed) this.#save(ws);
