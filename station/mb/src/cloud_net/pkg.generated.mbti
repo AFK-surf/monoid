@@ -77,7 +77,7 @@ pub fn is_revocation(@json.Json) -> Bool
 
 pub fn joined_of(@json.Json?) -> Array[@json.Json]
 
-pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit, on_unhealthy? : () -> Unit, params? : ProbeParams, say? : (String, String) -> Unit) -> Unit
+pub async fn keep_relays(RelayEndpoint, Ways, Pinger, bound? : Array[String], log? : (String) -> Unit, on_unhealthy? : () -> Unit, params? : ProbeParams, say? : (String, String) -> Unit, last_relay_reach? : () -> Int64?, load_recover? : async () -> (Int64, Int64)?, save_recover? : async ((Int64, Int64)?) -> Unit) -> Unit
 
 pub fn mark_emoji(@json.Json?) -> String?
 
@@ -456,6 +456,7 @@ pub(all) struct ProbeParams {
   failures_to_recover : Int32
   cooldown_ms : Int64
   cooldown_max_ms : Int64
+  recent_reach_ms : Int64
 }
 
 pub(all) enum Provider {

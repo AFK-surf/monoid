@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { LeafAttachments } from "./leaf.ts";
 // The station on the mesh, once it is in a workspace (cloud.json there): its endpoint, its relays, its presence at
 // its control plane, members' connections, and the control plane's gateways' (the device tools, mesh/tools.ts). Everything here lives in the layer's scope: stopping the station closes
@@ -8,7 +9,7 @@ import { ScopeSync } from "./scope-sync.ts";
 import { RelayEnrollment } from "./enrollment.ts";
 import { EnrollmentDoor, ENROLLMENT_ALPN, workspaceScope } from "./enrollment-door.ts";
 import { closePeerRelays } from "./peer-relays.ts";
-import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
+import { Cause, Clock, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
@@ -25,7 +26,7 @@ import { personChainsOf } from "./serve.ts";
 import { deviceBuildsOf } from "./device-builds.ts";
 import { Traces } from "./traces.ts";
 import { SubscriptionRef } from "effect";
-import { keepRelays, wantedRelays } from "./relays.ts";
+import { fileRecoverStore, keepRelays, wantedRelays } from "./relays.ts";
 import { ALPN, type Members, answerGiven, handledGiven, sawBuild, seenDevicesOf, serve } from "./serve.ts";
 import { SERVED_ROUTES, Served } from "./served.ts";
 import { BUILD_HEADER } from "../api/oldest.ts";
@@ -56,7 +57,7 @@ export const MeshLive = Layer.effectDiscard(
     const screens = yield* ScreenRegistry;
     const events = yield* Events;
     const rigSide = yield* RigSide;
-    const { restartFront } = yield* Paths;
+    const { restartFront, data } = yield* Paths;
     const run = Effect.gen(function* () {
       // Not in a workspace yet: on the mesh once `enroll` writes cloud.json.
       if (!cloud.state.state) yield* cloud.changes.pipe(Stream.filter(() => cloud.state.state !== null), Stream.runHead);
@@ -96,8 +97,16 @@ export const MeshLive = Layer.effectDiscard(
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
       // An endpoint found stuck by its relays' probes (relays.ts `PROBE`): the launcher's front restarted, the Node handed
       // over to the new one; where there is no front, closed, so its `accept` ends this run and keptRunning binds anew.
+      // Reached end to end through a relay (a connection taken through one, `accept` below) is the probe passed (`PROBE`).
       const stuck = endpoint;
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, { onUnhealthy: restartFront ? () => restartFront() : () => void stuck.close() }));
+      // (on the clock the probes go by)
+      const clock = yield* Clock.Clock;
+      let lastRelayReachAt: number | null = null;
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, {
+        onUnhealthy: restartFront ? () => restartFront() : () => void stuck.close(),
+        lastRelayReachAt: () => lastRelayReachAt,
+        recoverStore: fileRecoverStore(join(data, "run", "relay-probe-recover.json")),
+      }));
       // Online at the cloud only once a relay can reach the station: a device that saw "online" and connected before
       // the relay link was up had its first packets dropped (~3 s of retransmits). Its members' connections are taken
       // meanwhile (below): those that reach it already (on its LAN, or by a relay it is on) are not kept waiting. Taken
@@ -282,6 +291,7 @@ export const MeshLive = Layer.effectDiscard(
       yield* accept(endpoint, {
         connections,
         arrived: (conn) => {
+          if (conn.via?.() === "relay") lastRelayReachAt = clock.currentTimeMillisUnsafe();
           storms.watch(conn);
           if (conn.alpn().equals(ALPN)) void superseded.arrived(conn);
           // (another station: what this one keeps to it, from before it started again, asked whether it is still there)

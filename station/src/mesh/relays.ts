@@ -7,6 +7,8 @@
 // are told of (jobs/load.ts). The workspaces' own relays (mesh/ways.ts, kept by their stations) are kept the same way,
 // after still.fail's, as they are added or taken away; and a relay every workspace of the station's turns off (`off`:
 // one's URL, `ours` for still.fail's) is not kept, nor dialed to another station (`stationAddr`).
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { Clock, Effect, Option, Schedule, Stream } from "effect";
 import type { Net } from "../jobs/load.ts";
 import { wall } from "../ops/fibers.ts";
@@ -75,13 +77,21 @@ export function oursOff(state: Cloud, ways: Ways = waysOf(state)): boolean {
 /// a failure counts only once a second relay also fails, or when no other relay answering was left to ask. Relays that
 /// failed since the last good probe are asked last, and relays the endpoint's status says it is on first, so two relays
 /// gone bad together do not hide a third that still reaches it; those left unasked then count as asked only if they too
-/// failed since.
+/// failed since. A check stops early only once three relays failed: two relays going bad together (one region's) are
+/// not taken for the endpoint while a third that answers is left unasked.
+/// A relay connection this endpoint took from another within `recentReachMs` (`lastRelayReachAt`) is the endpoint
+/// reached end to end through a relay, which no probe says better: over a slow relay (seconds of RTT) a probe can run
+/// out of time while devices keep reaching it, so then it is not probed, its failures so far are forgotten, and it is
+/// never recovered (only a relay's: a LAN or direct connection says nothing of the relays, FB-38).
+/// The cooldown outlives the process (`recoverStore`): a recovery restarts the front and hands Node over, and a
+/// cooldown forgotten at each would recover an endpoint every few minutes for good.
 export const PROBE = {
   startupGraceMs: 120_000,
   everyHealthy: 4,
   failuresToRecover: 3,
   cooldownMs: 600_000,
   cooldownMaxMs: 3_600_000,
+  recentReachMs: 60_000,
 };
 export type ProbeParams = typeof PROBE;
 /// The longest a probe is waited for (the addon's own takes some 25 s at most): a deadline.
@@ -110,8 +120,52 @@ type ProbeOutcome =
   | { kind: "offline" }
   | { kind: "failed"; detail: Record<string, unknown> };
 
-/// What watches the endpoint (`PROBE`): told when it is found at fault, `params` for a test's.
-export type RelayWatch = { onUnhealthy: () => void; params?: Partial<ProbeParams> };
+/// The last recovery and the cooldown it set (`PROBE`), kept across the processes of a station.
+export type RecoverState = { lastRecoverAt: number; cooldown: number };
+/// Where `RecoverState` is kept: null when none is (or it is gone); a failure to read or write is never the watch's.
+export type RecoverStore = { load(): Promise<RecoverState | null>; save(state: RecoverState | null): Promise<void> };
+
+/// `RecoverState` in a file of its own (`<data>/run/relay-probe-recover.json`), written whole (a temporary file renamed).
+export function fileRecoverStore(path: string): RecoverStore {
+  let seq = 0;
+  return {
+    load: async () => {
+      try {
+        const raw = JSON.parse(await readFile(path, "utf8")) as unknown;
+        if (raw === null || typeof raw !== "object") return null;
+        const { lastRecoverAt, cooldown } = raw as Record<string, unknown>;
+        return typeof lastRecoverAt === "number" && typeof cooldown === "number" ? { lastRecoverAt, cooldown } : null;
+      } catch {
+        return null;
+      }
+    },
+    save: async (state) => {
+      try {
+        if (state === null) {
+          await unlink(path).catch((e: NodeJS.ErrnoException) => {
+            if (e.code !== "ENOENT") throw e;
+          });
+          return;
+        }
+        await mkdir(dirname(path), { recursive: true });
+        const tmp = `${path}.${process.pid}.${++seq}.tmp`;
+        try {
+          await writeFile(tmp, JSON.stringify(state));
+          await rename(tmp, path);
+        } catch (e) {
+          await unlink(tmp).catch(() => {});
+          throw e;
+        }
+      } catch (e) {
+        log.warn("mesh", "the relays' probe cooldown was not kept", { error: (e as Error).message });
+      }
+    },
+  };
+}
+
+/// What watches the endpoint (`PROBE`): told when it is found at fault, `params` for a test's; `lastRelayReachAt` when
+/// it last took a connection through a relay (null: none yet); `recoverStore` where its cooldown is kept.
+export type RelayWatch = { onUnhealthy: () => void; params?: Partial<ProbeParams>; lastRelayReachAt?: () => number | null; recoverStore?: RecoverStore };
 
 /// Runs for good (until interrupted). `bound`: the relays the endpoint was bound with (still.fail's where not said):
 /// those wanted that it lacks are put in before it is kept on them, and those not wanted taken out. `watch`: the
@@ -160,6 +214,25 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
     let unsupported = false;
     let lastRecoverAt: number | null = null;
     let cooldown = p.cooldownMs;
+    const store = watch?.recoverStore;
+    const save = (state: RecoverState | null) => (store === undefined ? Effect.void : Effect.promise(() => store.save(state).catch(() => {})));
+    if (store !== undefined) {
+      // (a recovery's cooldown from the process before: one found absurd or long over is not kept)
+      const kept = yield* Effect.promise(() => store.load().catch(() => null));
+      if (kept !== null && Number.isFinite(kept.lastRecoverAt) && Number.isFinite(kept.cooldown) && kept.lastRecoverAt <= startedAt + 60_000 && startedAt - kept.lastRecoverAt <= p.cooldownMaxMs * 2) {
+        lastRecoverAt = kept.lastRecoverAt;
+        cooldown = Math.min(Math.max(kept.cooldown, p.cooldownMs), p.cooldownMaxMs);
+        log.info("mesh", "the relays' probe cooldown kept from the process before", { lastRecoverAt, cooldownMs: cooldown });
+      }
+    }
+    // (once the cooldown is over, back to its first, and nothing kept)
+    const cooledDown = (now: number) =>
+      Effect.gen(function* () {
+        if (lastRecoverAt === null || now - lastRecoverAt < cooldown) return;
+        cooldown = p.cooldownMs;
+        lastRecoverAt = null;
+        yield* save(null);
+      });
     const probeTick = (up: boolean, reachable: string | null, rest: string[]) =>
       Effect.gen(function* () {
         if (watch === undefined || endpoint.probeRelay === undefined || unsupported) return;
@@ -170,6 +243,20 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
           return;
         }
         if (reachable === null) return;
+        const reached = watch.lastRelayReachAt?.() ?? null;
+        {
+          const now = yield* Clock.currentTimeMillis;
+          if (reached !== null && now >= reached && now - reached < p.recentReachMs) {
+            if (failures > 0 || streakFailed.size > 0) {
+              log.info("mesh", "the endpoint took an incoming relay connection after earlier probe failures; not the endpoint's", { failures, failedBefore: [...streakFailed], reachedMsAgo: now - reached });
+              failures = 0;
+              streakFailed.clear();
+            }
+            yield* cooledDown(now);
+            healthyTicks = 0;
+            return;
+          }
+        }
         const status = endpoint.relayStatus?.() ?? [];
         const suspect = (status.length > 0 && status.every((s) => !s.connected)) || status.some((s) => s.conflict === true) || failures > 0;
         if (!suspect && ++healthyTicks < p.everyHealthy) return;
@@ -222,11 +309,7 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
             else if (streakFailed.size > 0) log.info("mesh", "the endpoint answered through another relay after earlier failures; not the endpoint's", { okRelay: relay, failedBefore: [...streakFailed] });
             failures = 0;
             streakFailed.clear();
-            const now = yield* Clock.currentTimeMillis;
-            if (lastRecoverAt !== null && now - lastRecoverAt >= cooldown) {
-              cooldown = p.cooldownMs;
-              lastRecoverAt = null;
-            }
+            yield* cooledDown(yield* Clock.currentTimeMillis);
             return;
           }
           if (res.kind === "offline") {
@@ -236,10 +319,10 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
           if (failedRelays.length === 0) firstDetail = res.detail;
           failedRelays.push(relay);
           streakFailed.add(bare(relay));
-          // (two relays found it out of reach: the endpoint's)
-          if (failedRelays.length >= 2) break;
+          // (three relays found it out of reach: the endpoint's; two may be one region's, `PROBE`)
+          if (failedRelays.length >= 3) break;
         }
-        if (failedRelays.length < 2 && candidates.slice(candIdx).every((c) => streakFailed.has(bare(c)))) exhausted = true;
+        if (failedRelays.length < 3 && candidates.slice(candIdx).every((c) => streakFailed.has(bare(c)))) exhausted = true;
         if (failedRelays.length === 0) {
           log.info("mesh", "a probe through a relay that answers did not get on it; the network's, not the endpoint's", { relay: offlineRelays[0] ?? reachable, ...(offlineRelays.length > 1 ? { relays: offlineRelays } : {}) });
           return;
@@ -248,13 +331,15 @@ export const keepRelays = (endpoint: Endpoint, net?: Net, bound?: string[], watc
           log.info("mesh", "a probe failed through one relay while other relays could not be reached; not counting it against the endpoint", { relay: failedRelays[0], offline: offlineRelays, ...firstDetail });
           return;
         }
-        const also = failedRelays.length > 1 ? { also: failedRelays[1] } : {};
+        const also = failedRelays.length > 1 ? { also: failedRelays.slice(1).join(",") } : {};
         failures++;
         log.warn("mesh", "the endpoint was not reached through a relay that answers", { relay: failedRelays[0], ...also, ...firstDetail, failures });
         const now = yield* Clock.currentTimeMillis;
         if (failures < p.failuresToRecover || now - startedAt < p.startupGraceMs || (lastRecoverAt !== null && now - lastRecoverAt < cooldown)) return;
         cooldown = lastRecoverAt === null ? p.cooldownMs : Math.min(cooldown * 2, p.cooldownMaxMs);
         lastRecoverAt = now;
+        // (kept before the front restarts: the next process keeps the cooldown)
+        yield* save({ lastRecoverAt, cooldown });
         log.error("mesh", "the endpoint failed its end-to-end probes through a relay that answers; recovering it", { relay: failedRelays[0], ...also, failures, cooldownMs: cooldown });
         failures = 0;
         streakFailed.clear();
