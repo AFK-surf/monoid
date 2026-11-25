@@ -1,9 +1,9 @@
 #!/bin/bash
 # Type-check every target; print errors only. First the determinism lint (tools/detlint): its
 # report, and a failure stops here; then the hosts' H.264 conversion (scripts/avc_test.c) and log files
-# (scripts/log_files_test.c), Android's frame waiting (scripts/frame_mail_test.c, scripts/framemail_test.sh), and the
-# renderers' own tests (scripts/apple_render_test.m on a Mac, scripts/gles_render_test.c on Linux) and Core Text's
-# (scripts/apple_text_test.m).
+# (scripts/log_files_test.c), Android's frame waiting and glyph pre-warming (scripts/frame_mail_test.c,
+# scripts/framemail_test.sh, scripts/glyphsahead_test.sh), and the renderers' own tests (scripts/apple_render_test.m on a Mac,
+# scripts/gles_render_test.c on Linux) and Core Text's (scripts/apple_text_test.m).
 D="$(cd "$(dirname "$0")" && pwd)"
 "$D/detlint" || exit 1
 # every call mbui's film makes of a native host answered by Apple's film, Linux's and the hosts' with none

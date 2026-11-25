@@ -172,7 +172,7 @@ public final class GlyphsAheadTest {
 
     /** 5. Full stale deferred handoff suite: merge+cancel, A->B->A, A->B->C, all-cancelled, OOM null finish. */
     static void staleDeferredHandoffSuite() {
-        // 5a: A in-flight + B0 + B1 + foreground takeDrawn(B0) + A finish -> only B1 dispatched, count stays 1 until consumed.
+        // 5a: A in-flight + B0 + B1 (expands B0..B3) + foreground cancels B0, B2, B3 -> A finish dispatches only B1.
         {
             GlyphsAhead<TestSlot, FakeDrawn> ga = new GlyphsAhead<>(FakeDrawn::release, 16);
             List<TestSlot> entries = new ArrayList<>();
@@ -183,15 +183,15 @@ public final class GlyphsAheadTest {
             GlyphsAhead.Claim<TestSlot> cA = claim(ga);
             check(ga.aheadCount == 1, "5a: count=1 while A in-flight");
 
-            // Scale changes to 2f: request B0, then B1 (same batch/scale merges pendingWant).
+            // Scale changes to 2f: request B0, then B1 (same batch/scale merges pendingWant -> B0..B3).
             ga.ahead(entries, new int[] {key(0, 0), key(0, 1)}, 2, 2f, 1, 1);
             check(ga.aheadCount == 1, "5a: count still 1 with pending B");
             check((e.pendingWant & 0x0F) == 0x0F, "5a: B0+B1 triggered moved expansion into pendingWant");
-            // Foreground already draws B0, B2, B3 so only B1 remains pending.
+            // Foreground explicitly consumes B0, B2, and B3, leaving only B1 pending.
             check(ga.takeDrawn(e, 0, 2f, 1) == null, "5a: takeDrawn B0 cancels pending B0");
             check(ga.takeDrawn(e, 2, 2f, 1) == null, "5a: takeDrawn B2 cancels pending B2");
             check(ga.takeDrawn(e, 3, 2f, 1) == null, "5a: takeDrawn B3 cancels pending B3");
-            check(e.pendingWant == (1 << 1) && e.pendingFirst == (1 << 1), "5a: only B1 left in pending");
+            check(e.pendingWant == (1 << 1) && e.pendingFirst == (1 << 1), "5a: only B1 left after B0/B2/B3 cancelled");
 
             FakeDrawn dA = new FakeDrawn("A");
             boolean handed = ga.finish(cA, dA);
@@ -201,6 +201,44 @@ public final class GlyphsAheadTest {
             FakeDrawn dB1 = new FakeDrawn("B1");
             check(!ga.finish(cB1, dB1) && !dB1.released && ga.aheadCount == 1, "5a: B1 stored, count=1");
             check(ga.takeDrawn(e, 1, 2f, 1) == dB1 && ga.aheadCount == 0, "5a: B1 consumed, count=0");
+        }
+
+        // 5a-raw: A in-flight + B0 + B1 (expands B0..B3) + foreground cancels ONLY B0 -> A finish hands off:
+        //         B0 is never re-dispatched, B1 is sole first (claimed first), B2 & B3 stay in rest (claimed next).
+        {
+            GlyphsAhead<TestSlot, FakeDrawn> ga = new GlyphsAhead<>(FakeDrawn::release, 16);
+            List<TestSlot> entries = new ArrayList<>();
+            entries.add(new TestSlot(0));
+            TestSlot e = entries.get(0);
+
+            ga.ahead(entries, new int[] {key(0, 0)}, 1, 1f, 1, 0);
+            GlyphsAhead.Claim<TestSlot> cA = claim(ga);
+            ga.ahead(entries, new int[] {key(0, 0), key(0, 1)}, 2, 2f, 1, 1);
+            check(ga.takeDrawn(e, 0, 2f, 1) == null, "5a-raw: foreground consumes B0 only");
+            check(e.pendingWant == ((1 << 1) | (1 << 2) | (1 << 3)) && e.pendingFirst == (1 << 1),
+                    "5a-raw: B1 is sole pendingFirst, B2/B3 remain in pendingWant");
+
+            FakeDrawn dA = new FakeDrawn("A-raw");
+            check(ga.finish(cA, dA) && dA.released && ga.aheadCount == 1, "5a-raw: handoff preserves count=1");
+            check(e.first == (1 << 1) && e.want == ((1 << 1) | (1 << 2) | (1 << 3))
+                    && e.inFirst && e.inRest, "5a-raw: B1 in askedFirst, B2/B3 in askedRest");
+
+            GlyphsAhead.Claim<TestSlot> cB1 = claim(ga);
+            check(cB1 != null && cB1.bit == (1 << 1) && cB1.scale == 2f, "5a-raw: B1 claimed first");
+            GlyphsAhead.Claim<TestSlot> cB2 = claim(ga);
+            GlyphsAhead.Claim<TestSlot> cB3 = claim(ga);
+            check(cB2 != null && cB2.bit == (1 << 2) && cB3 != null && cB3.bit == (1 << 3) && claim(ga) == null,
+                    "5a-raw: B2 and B3 claimed from rest, B0 never dispatched");
+            FakeDrawn dB1 = new FakeDrawn("B1-raw");
+            FakeDrawn dB2 = new FakeDrawn("B2-raw");
+            FakeDrawn dB3 = new FakeDrawn("B3-raw");
+            ga.finish(cB1, dB1);
+            ga.finish(cB2, dB2);
+            ga.finish(cB3, dB3);
+            check(ga.takeDrawn(e, 0, 2f, 1) == null, "5a-raw: B0 not present");
+            check(ga.takeDrawn(e, 1, 2f, 1) == dB1 && ga.takeDrawn(e, 2, 2f, 1) == dB2
+                    && ga.takeDrawn(e, 3, 2f, 1) == dB3 && ga.aheadCount == 0,
+                    "5a-raw: B1..B3 consumed and aheadCount=0");
         }
 
         // 5b: A -> B -> A switch back clears pending B so A finish does NOT overwrite A with B.

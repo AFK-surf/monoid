@@ -133,12 +133,11 @@ final class FrameMail<G> {
 
     /**
      * The frame the app made handed over (as it ends), to be shown at {@code shows}, with the glyphs it put in the
-     * atlases ({@code placed}: taken, the list cleared): whether it presented one, to be drawn.
+     * atlases ({@code placed}: taken, the list cleared) and its {@code paced} ownership: whether it presented one, to
+     * be drawn. {@code pendingPaced} is overwritten per frame (like {@code pendingShows}, never ORed) so an undrawn
+     * paced frame replaced by a newer interactive frame never masks real GPU backpressure; {@link MBView} passes
+     * {@code pacedBefore || pacedNow} to cover the single-frame asynchronous transition entering or leaving 20 Hz.
      */
-    synchronized boolean handOver(long shows, List<G> placed) {
-        return handOver(shows, placed, false);
-    }
-
     synchronized boolean handOver(long shows, List<G> placed, boolean paced) {
         if (appGen != contextGen) {
             // (made before the app's thread was told of the GL context now: its glyphs are in an atlas gone)
@@ -172,10 +171,6 @@ final class FrameMail<G> {
     }
 
     /** Only a native view's picture changed: the frame kept drawn again, at {@code shows}; whether it is to be. */
-    synchronized boolean redrawAsked(long shows) {
-        return redrawAsked(shows, false);
-    }
-
     synchronized boolean redrawAsked(long shows, boolean paced) {
         // (the frame kept is of the GL context before: the app's own for this one comes)
         if (appGen != contextGen) return false;

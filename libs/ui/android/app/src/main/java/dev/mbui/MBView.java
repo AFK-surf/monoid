@@ -585,9 +585,10 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         float w = getWidth() / density, h = Math.max(1, getHeight() - imeUsed) / density;
         long[] at = tk.vsyncAt;
         if (pictured && !app) {
+            boolean pacedBefore = pacer.isPacedActive();
             notePictureActivity();
             pacer.recheckRate();
-            if (mail.redrawAsked(at[1], pacer.isPacedActive())) requestRender();
+            if (mail.redrawAsked(at[1], pacedBefore)) requestRender();
             NativeViews.framed(false);
             pacer.redrawn();
             return;
@@ -602,8 +603,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         buildingFor = -1;
         // (a stream's frame shown in it whose view did not move: put on its layer now, StreamLayer.show)
         StreamLayer.frameEnded();
+        boolean pacedBefore = pacer.isPacedActive();
         boolean pacedNow = pacer.applyRate(more, later, b.following, pacedRate, b.externalDemand);
-        handOver(b.shows, pacedNow);
+        handOver(b.shows, pacedBefore || pacedNow);
         pacer.scheduleNext(more || later);
         NativeViews.framed(more || later);
         frameWorked(System.nanoTime() - began, glWorked.getAndSet(0L));
@@ -656,6 +658,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
 
     /** The GL thread's time drawing the last frame (ns), told to the system with the app's (frameWorked). */
     private final java.util.concurrent.atomic.AtomicLong glWorked = new java.util.concurrent.atomic.AtomicLong();
+    /** Last dual GL timing reading (work vs raw wall, paced/swap flags) for diagnostics. */
+    private volatile FramePacer.GlTiming lastGlTiming;
+    private long lastPacedWallLogNs;
 
     // Pending post-eglSwapBuffers timing (GL thread only): GLSurfaceView.GLThread drains mEventQueue right after
     // mEglHelper.swap() without triggering another render, so afterSwap captures GPU backpressure in eglSwapBuffers.
@@ -665,23 +670,38 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private int swapDropped, swapCtx;
     private final Runnable afterSwap = this::finishSwap;
 
+    private void recordGlTiming(FramePacer.GlTiming timing, int dropped) {
+        lastGlTiming = timing;
+        glWorked.set(timing.workNs);
+        glDrawn(timing.workNs / 1e6, timing.rawWallNs / 1e6, timing.paced, timing.swapMeasured, dropped);
+        if (timing.paced && timing.rawWallNs >= 24_000_000L) {
+            long now = System.nanoTime();
+            if (lastPacedWallLogNs == 0L || now - lastPacedWallLogNs >= 5_000_000_000L) {
+                lastPacedWallLogNs = now;
+                Host.log(String.format(java.util.Locale.US,
+                        "gl paced: work=%.1fms raw_wall=%.1fms swap=%s",
+                        timing.workNs / 1e6, timing.rawWallNs / 1e6, timing.swapMeasured ? "yes" : "draw_only"));
+            }
+        }
+    }
+
     private void finishSwap() {
         if (!swapPending) return;
         swapPending = false;
         if (paused || mine != swapCtx || !glCurrent()) return;
         long s1 = System.nanoTime();
         long cpu1 = android.os.Debug.threadCpuTimeNanos();
-        long worked = FramePacer.glWorkNanos(
-                swapD0, swapEnd, s1, FramePacer.cpuDeltaNanos(swapCpu0, cpu1), swapPaced);
-        glWorked.set(worked);
-        glDrawn(worked / 1e6, swapDropped);
+        FramePacer.GlTiming timing = FramePacer.measureGl(
+                swapD0, swapEnd, s1, FramePacer.cpuDeltaNanos(swapCpu0, cpu1), swapPaced, true);
+        recordGlTiming(timing, swapDropped);
     }
 
     /**
-     * A frame drawn on the GL thread in {@code ms}, {@code dropped} frames handed over since the last never drawn
-     * (android_host.c: what the app reads of it, @hostapi.gpu_ms and frames_dropped).
+     * A frame drawn on the GL thread: {@code ms} is GL work duration (non-paced wall time or paced CPU/draw-only
+     * fallback), {@code rawWallMs} is raw wall time, {@code paced} and {@code swapMeasured} record how it was
+     * measured, and {@code dropped} is frames handed over since the last never drawn (android_host.c).
      */
-    private static native void glDrawn(double ms, int dropped);
+    private static native void glDrawn(double ms, double rawWallMs, boolean paced, boolean swapMeasured, int dropped);
 
     /**
      * The frame handed over drawn (GL thread), the GL thread's queue's tasks before it done first and those after it
@@ -693,10 +713,9 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (swapPending) {
             swapPending = false;
             if (!paused && mine == swapCtx) {
-                long worked = FramePacer.glWorkNanos(
-                        swapD0, swapEnd, swapEnd, FramePacer.cpuDeltaNanos(swapCpu0, swapCpuEnd), swapPaced);
-                glWorked.set(worked);
-                glDrawn(worked / 1e6, swapDropped);
+                FramePacer.GlTiming timing = FramePacer.measureGl(
+                        swapD0, swapEnd, swapEnd, FramePacer.cpuDeltaNanos(swapCpu0, swapCpuEnd), swapPaced, false);
+                recordGlTiming(timing, swapDropped);
             }
         }
         if (mine != setUp) {
@@ -823,29 +842,47 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         int tid = android.os.Process.myTid();
         lastGlTid = tid;
         if (ONE) {
-            hintsFor(new int[] {tid}, FramePacer.adpfTargetNanos(pacer.framePeriod, pacer.topRate, boostTargetActive));
+            hintsFor(new int[] {tid}, adpfTargetNow());
             return;
         }
         // (the app's thread's id first: its post ahead of this one)
-        logic.post(() -> hintsFor(new int[] {logicTid, tid},
-                FramePacer.adpfTargetNanos(pacer.framePeriod, pacer.topRate, boostTargetActive)));
+        logic.post(() -> hintsFor(new int[] {logicTid, tid}, adpfTargetNow()));
+    }
+
+    /** Adapter loaded only on API 31+ to keep PerformanceHintManager.Session out of API 30 verification. */
+    private static final class HintsAdapter implements FramePacer.AdpfSession {
+        private final android.os.PerformanceHintManager.Session session;
+
+        HintsAdapter(android.os.PerformanceHintManager.Session session) {
+            this.session = session;
+        }
+
+        @Override public void updateTargetWorkDuration(long nanos) {
+            session.updateTargetWorkDuration(nanos);
+        }
+
+        @Override public void reportActualWorkDuration(long nanos) {
+            session.reportActualWorkDuration(nanos);
+        }
+    }
+
+    private long adpfTargetNow() {
+        return adpf.targetNanos(
+                pacer.framePeriod, pacer.topRate, pacer.isPacedActive(), pacer.touching, pacer.rateSaid());
     }
 
     private void closeHints() {
-        boostTargetActive = false;
         if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null) {
             hints.close();
             hints = null;
         }
+        hintSession = null;
         hintTids = null;
+        adpf.reset();
     }
 
     private void wakeHints() {
-        wakeHints(false);
-    }
-
-    private void wakeHints(boolean clampToTop) {
-        long target = FramePacer.adpfTargetNanos(pacer.framePeriod, pacer.topRate, clampToTop);
+        long target = adpfTargetNow();
         boolean created = false;
         if (ONE) {
             if (lastGlTid > 0) created = hintsFor(new int[] {lastGlTid}, target);
@@ -853,27 +890,16 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             int gl = lastGlTid;
             created = hintsFor(gl > 0 && glAlive ? new int[] {logicTid, gl} : new int[] {logicTid}, target);
         }
-        if (android.os.Build.VERSION.SDK_INT >= 31 && hints != null) {
-            if (target > 0 && target != hintTarget) {
-                hintTarget = target;
-                hints.updateTargetWorkDuration(target);
-            }
-            if (!created && hintTarget > 0) {
-                hints.reportActualWorkDuration(hintTarget);
-            }
-        }
+        adpf.wake(pacer.framePeriod, pacer.topRate, pacer.isPacedActive(), pacer.touching, pacer.rateSaid(),
+                created, hintSession);
     }
 
     private void boostOnTouch(boolean fromPaced) {
         if (paused) return;
         long now = System.nanoTime();
-        if (fromPaced) {
-            boostTargetActive = true;
-        } else if (lastFrameWorkedNs != 0L && now - lastFrameWorkedNs < 250_000_000L) {
-            return;
-        }
-        wakeHints(boostTargetActive);
-        lastFrameWorkedNs = now;
+        if (!adpf.beginTouchBoost(fromPaced, now, pacer.framePeriod, pacer.topRate)) return;
+        wakeHints();
+        adpf.lastFrameWorkedNs = now;
     }
 
     /** One session of the threads {@code tids} (a session per thread set: GLSurfaceView starts another GL thread as the view is shown again). */
@@ -881,6 +907,7 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         if (android.os.Build.VERSION.SDK_INT < 31 || java.util.Arrays.equals(tids, hintTids)) return false;
         if (hints != null) hints.close();
         hints = null;
+        hintSession = null;
         hintTids = tids;
         android.os.PerformanceHintManager pm = getContext().getSystemService(android.os.PerformanceHintManager.class);
         try {
@@ -888,20 +915,15 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
         } catch (RuntimeException e) {
             Host.log("drawing thread: hints: " + e);
         }
-        hintTarget = target;
-        if (hints != null && target > 0) {
-            hints.reportActualWorkDuration(target);
-            return true;
-        }
-        return false;
+        hintSession = hints != null ? new HintsAdapter(hints) : null;
+        return adpf.onSessionCreated(target, hintSession);
     }
 
     /** The system told what the drawing threads' work over a frame (null: Android before 12, or a phone without ADPF). */
     private android.os.PerformanceHintManager.Session hints;
+    private FramePacer.AdpfSession hintSession;
     private int[] hintTids;
-    private long hintTarget;
-    private boolean boostTargetActive;
-    private long lastFrameWorkedNs;
+    private final FramePacer.AdpfState adpf = new FramePacer.AdpfState();
     private volatile int lastGlTid;
     /** The display's frame, ms (FramePacer's framePeriod). */
     double framePeriodMs() {
@@ -1010,20 +1032,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
      * does (its frames' targets are 70% of their time).
      */
     private void frameWorked(long nanos, long gl) {
-        lastFrameWorkedNs = System.nanoTime();
-        if (boostTargetActive && (pacer.isPacedActive()
-                || (!pacer.touching && pacer.topRate > 0f
-                        && pacer.framePeriod <= (long) (1.1e9 / pacer.topRate)))) {
-            boostTargetActive = false;
-        }
-        if (hints == null) return;
-        nanos = Math.max(nanos, gl);
-        long target = FramePacer.adpfTargetNanos(pacer.framePeriod, pacer.topRate, boostTargetActive);
-        if (target > 0 && target != hintTarget) {
-            hintTarget = target;
-            hints.updateTargetWorkDuration(target);
-        }
-        if (nanos > 0) hints.reportActualWorkDuration(nanos);
+        adpf.frameWorked(nanos, gl, System.nanoTime(), pacer.framePeriod, pacer.topRate,
+                pacer.isPacedActive(), pacer.touching, pacer.rateSaid(), hintSession);
     }
 
     // ---- the system's back ----
