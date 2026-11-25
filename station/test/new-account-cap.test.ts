@@ -725,12 +725,12 @@ test("cross-station concurrency: the hub tells the coordinator only when what a 
     store.getSession = (key) => (reads++, getSession(key));
 
     // Two at work and one whose turn ended. Resolve each session by its thread rather than
-    // r.claude.sessions insertion order, since concurrent accepts can finish opening in any order.
+    // r.claude.sessions insertion order, since each session's actor opens its runtime on its own, in any order.
     for (const n of [1, 2, 3]) await r.accept(message({ ts: `${n}.0`, threadTs: `${n}00.1`, text: `start ${n}` }));
     await settle();
     assert.equal(r.claude.sessions.length, 3);
     const sessionFor = (threadTs: string) => {
-      const s = r.claude.sessions.find((x) => (x.options.route as string).endsWith(threadTs));
+      const s = r.claude.sessions.find((x) => (x.options.route as string).endsWith(`:${threadTs}`));
       assert.ok(s, `expected session for thread ${threadTs}, got ${r.claude.sessions.map((x) => x.options.route).join(", ")}`);
       return s;
     };
@@ -741,11 +741,12 @@ test("cross-station concurrency: the hub tells the coordinator only when what a 
     for (const k of [s1, s2, s3]) r.hub.store.setSessionProfile(k!, "sub-one", true);
     await settle();
     await r.call(s3!, "chat_post", { to: "C1/300.1", text: "done", kind: "all_done", done: "finished 3" });
+    told.length = 0;
     a3.complete();
     await settle();
     assert.ok(told.some((k) => k.includes(one)), "the turn that ended told its account");
     const active = r.hub.localActiveForAccount(one);
-    assert.ok(active >= 2, `two at work counted, saw ${active}`);
+    assert.equal(active, 2, `two at work counted, saw ${active}`);
 
     // Writes to idle sessions' rows (usage repriced, a title, a heartbeat) tell nothing and read nothing for slots.
     told.length = 0;
