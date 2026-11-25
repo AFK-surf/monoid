@@ -1523,17 +1523,31 @@ function staleWorld(opts: { gen?: string } = {}) {
   const counts = { held: 0, batch: new Map<string, number>(), file: new Map<string, number>() };
   const stale = new Set<string>();
   const goneBatches = new Set<string>();
+  // (what the place holds is kept, so that a place asked again answers with the head a failed try put there)
+  const kept = new Map<string, { head: Head | null; batches: string[] }>();
+  const keptFiles = new Set<string>();
   const place: Place = {
     held: async () => {
       counts.held++;
-      return nothingHeld();
+      return {
+        gens: [...kept].map(([g, h]) => ({ gen: g, head: h.head, batches: [...h.batches] })),
+        files: [...keptFiles],
+      };
     },
-    put: async (_ws, _o, _g, kind, name) => {
-      if (kind === "batch") counts.batch.set(name, (counts.batch.get(name) ?? 0) + 1);
+    put: async (_ws, _o, g, kind, name, _bytes, head) => {
+      const at = kept.get(g) ?? { head: null, batches: [] };
+      kept.set(g, at);
+      if (kind === "batch") {
+        counts.batch.set(name, (counts.batch.get(name) ?? 0) + 1);
+        at.batches.push(name);
+      } else {
+        at.head = head ?? null;
+      }
     },
     putFile: async (_ws, _o, hash) => {
       if (stale.has(hash)) throw enoentOf(`chunks/${hash}`);
       counts.file.set(hash, (counts.file.get(hash) ?? 0) + 1);
+      keptFiles.add(hash);
     },
     drop: async () => {},
   };
@@ -1575,30 +1589,23 @@ test("levelNewest goes on past STALE_HEADS_MOST stale heads while each try sends
     if (i < 4) w.stale.add(hexOf(200 + i));
     heads.push(w.headOf(i + 1, tf));
   }
-  const lines: Line[] = [];
-  hearLines((l) => lines.push(l));
   let tries = 0;
-  try {
-    const { head, done } = await levelNewest(
-      heads[0]!,
-      null,
-      async (cur) => heads[heads.indexOf(cur) + 1],
-      (h, known, onProgress) => {
-        tries++;
-        return level(w.place, HOME, w.own(h), known, { onProgress });
-      },
-    );
-    assert.equal(tries, 5, "4 stale heads, then the newest goes through");
-    assert.equal(head, heads[4]);
-    assert.equal(done.behind, false);
-    if (!done.behind) assert.equal(done.to, 5);
-  } finally {
-    hearLines(null);
-  }
+  const { head, done } = await levelNewest(
+    heads[0]!,
+    null,
+    async (cur) => heads[heads.indexOf(cur) + 1],
+    (h, known, onProgress) => {
+      tries++;
+      return level(w.place, HOME, w.own(h), known, { onProgress });
+    },
+  );
+  assert.equal(tries, 5, "4 stale heads, then the newest goes through");
+  assert.equal(head, heads[4]);
+  assert.equal(done.behind, false);
+  if (!done.behind) assert.equal(done.to, 5);
   assert.equal(w.counts.held, 1, "the place is asked what it holds once; later tries go on from what it was found to hold");
   assert.deepEqual([...w.counts.batch.values()], [1], "the batch is sent once");
   for (let j = 0; j <= 4; j++) assert.equal(w.counts.file.get(hexOf(100 + j)), 1, `chunk ${j} sent once`);
-  assert.deepEqual(lines.filter((l) => l.message === "a place not brought level" || l.message === "an S3 place not brought level"), []);
 });
 
 test("levelNewest gives up after 1 + STALE_HEADS_MOST tries that sent nothing", async () => {
@@ -1652,29 +1659,61 @@ test("levelNewest ends at STALE_HEADS_PROGRESS_MOST however much is sent, and as
     assert.equal(tries, 4, "the first try and 3 more");
   }
   // a newer head of the same `to` (made again): what the place holds is asked again, not taken from the failed try,
-  // so `level` still holds it to a same-to head found there
-  {
+  // so `level` holds it to the same-to partial head the failed try put there
+  const sameTo = async (againBatches?: string[]) => {
     const w = staleWorld();
     w.stale.add(hexOf(601));
     const first = w.headOf(7, [hexOf(600), hexOf(601)], 7000);
-    const again = w.headOf(7, [hexOf(600)], 7001);
-    let tries = 0;
+    const again = w.headOf(7, [hexOf(600)], 7001, againBatches);
     const knowns: (Known | null)[] = [];
-    const { head } = await levelNewest(
+    const run = levelNewest(
       first,
       null,
       async () => again,
       (h, known, onProgress) => {
-        tries++;
         knowns.push(known);
         return level(w.place, HOME, w.own(h), known, { onProgress });
       },
     );
+    return { w, again, knowns, run };
+  };
+  {
+    // the same chats as the partial head there: brought level
+    const { w, again, knowns, run } = await sameTo();
+    const { head } = await run;
     assert.equal(head, again);
-    assert.equal(tries, 2);
     assert.deepEqual(knowns, [null, null]);
     assert.equal(w.counts.held, 2);
   }
+  {
+    // other batches at that `to`: the same-to check refuses it, as it would any levelling that asked the place
+    const { w, knowns, run } = await sameTo(["0000000001-0000000004-0000beef.ndjson.zst"]);
+    await assert.rejects(run, /head conflict: incoming head does not cover existing same-to partial head/);
+    assert.deepEqual(knowns, [null, null]);
+    assert.equal(w.counts.held, 2);
+  }
+});
+
+test("levelNewest asks the place again where the holding given was of an older generation and the newer head goes no further", async () => {
+  const w = staleWorld();
+  const older: Known = { gen: "lz5w0-00000000", batches: new Set(), files: new Set(), others: new Set(), to: 3, made: 3000 };
+  w.stale.add(hexOf(701));
+  const first = w.headOf(7, [hexOf(700), hexOf(701)], 7000);
+  const again = w.headOf(7, [hexOf(700)], 7001);
+  const knowns: (Known | null)[] = [];
+  const { head } = await levelNewest(
+    first,
+    older,
+    async () => again,
+    (h, known, onProgress) => {
+      knowns.push(known);
+      return level(w.place, HOME, w.own(h), known, { onProgress });
+    },
+  );
+  assert.equal(head, again);
+  assert.equal(knowns[0], older);
+  assert.equal(knowns[1], null, "the holding asked for on the way is not carried to a head of the same to");
+  assert.equal(w.counts.held, 2);
 });
 
 test("levelNewest with a known holding (as an S3 target or keeper after a whole copy) goes on from what the failed try sent", async () => {

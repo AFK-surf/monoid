@@ -254,8 +254,8 @@ function headSaid(head: Head): string {
 
 /// Brings a place level with `head`, going on with a newer head where something it named went meanwhile (ENOENT).
 /// What the place was found to hold on a failed try (`onProgress`) is the next try's `Known`, so nothing sent is sent
-/// again and the place is not asked again; only where that try's head goes past it (`to`), so a place found holding a
-/// head of the same `to` is still checked against it (`level` `initialHoldingHead`).
+/// again and the place is not asked again: the holding given, or one asked for on the way where the newer head goes past
+/// it (`to`), so a place found holding a head of the same `to` is still checked against it (`level` `initialHoldingHead`).
 export async function levelNewest(
   head: Head,
   initialKnown: Known | null,
@@ -267,10 +267,10 @@ export async function levelNewest(
   const progressMost = limits.progressMost ?? STALE_HEADS_PROGRESS_MOST;
   let cur = head;
   let attemptKnown = initialKnown;
-  let latestKnown: Known | null = null;
   let noProgress = 0;
   let totalRetries = 0;
   for (;;) {
+    let latestKnown = null as Known | null;
     let attemptUploaded = 0;
     const onProgress = (known: Known, uploaded: number) => {
       latestKnown = known;
@@ -287,8 +287,10 @@ export async function levelNewest(
           const next = await newest(cur);
           if (next !== undefined && next.batches.length > 0 && headSaid(next) !== headSaid(cur)) {
             totalRetries++;
-            const seen = latestKnown as Known | null;
-            attemptKnown = seen !== null && seen.gen === next.gen && (initialKnown !== null || next.to > seen.to) ? seen : initialKnown;
+            // (the holding given at the start, carried on; else one this levelling asked the place for, which a
+            // head of no higher `to` asks again, so `level` checks it against a same-to head found there)
+            const seen = latestKnown;
+            attemptKnown = seen !== null && seen.gen === next.gen && (seen === initialKnown || next.to > seen.to) ? seen : null;
             cur = next;
             continue;
           }
