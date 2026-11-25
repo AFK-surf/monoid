@@ -33,12 +33,15 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
     // their heading)
     let lines = fn() -> Array[PlaceLine] {
       let out = []
+      // (the stations and the rigs one run of cards: each but the run's last has room under it)
       let listed = stations_listed(src, w)
+      let rigs = @settings.rigs_listed(core, here())
+      let run = listed.length() + rigs.length()
       for i, st in listed {
-        out.push({ key: "s/" + text(Some(st), "station"), data: Some(st), more: i + 1 < listed.length() })
+        out.push({ key: "s/" + text(Some(st), "station"), data: Some(st), more: i + 1 < run })
       }
-      for r in @settings.rigs_listed(core, here()) {
-        out.push({ key: "r/" + w.id + "/" + text(Some(r), "id"), data: Some(r), more: false })
+      for j, r in rigs {
+        out.push({ key: "r/" + w.id + "/" + text(Some(r), "id"), data: Some(r), more: listed.length() + j + 1 < run })
       }
       let devices = @settings.devices_listed(core, here())
       if devices.length() > 0 {
@@ -108,6 +111,7 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           fn(t) { @sf.nav_title_node(t, fn() { text(data(), "name") }) },
           lines=fn(ls) { @sfpages.rig_figures_node(ls, data) },
           keep_lines=2,
+          more~,
         )
       } else {
         // the workspace's devices (attached to a station, or a person's phone), each opening its panel
