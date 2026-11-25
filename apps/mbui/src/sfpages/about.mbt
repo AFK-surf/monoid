@@ -57,7 +57,6 @@ pub fn about_node(
     if (core.reporting)() is Some(_) {
       out.push("reporting")
     }
-    out.push("network")
     out.push("legal")
     if @hostapi.perf_state() >= 0 {
       out.push("perf")
@@ -95,32 +94,6 @@ pub fn about_node(
               fn() { (core.reporting)().unwrap_or(false) },
               fn(on) { (core.set_reporting)(on) },
               note=fn() { @sf.t("common.telemetry.note", args=[("name", @sf.product())]) },
-            )
-          })
-        })
-      // stations looked up in the Mainline DHT from this device (the core's `dht` pref, on unless turned off): off where
-      // a company's filter marks the DHT as risky, the LAN's lookup kept
-      "network" =>
-        section("web-pages.about.network", fn(s) {
-          @sf.group_node(s, card=true, fn(g) {
-            // (the web's iroh goes through relays alone and looks nothing up: no DHT there to turn off)
-            if @ui.platform() != 4 {
-              @sf.switch_row_node(
-                g,
-                fn() { @sf.t("web-pages.about.dht.title") },
-                fn() { @settings.pref(core, "dht") != "off" },
-                fn(on) { @settings.set_pref(core, "dht", if on { "" } else { "off" }) },
-                note=fn() { @sf.t("web-pages.about.dht.note") },
-              )
-            }
-            // stations of the workspaces not in view linked too (the core's `otherWorkspaces` pref, on unless turned off):
-            // off where one too big to follow from afar costs battery each time the app comes back
-            @sf.switch_row_node(
-              g,
-              fn() { @sf.t("web-pages.about.otherWorkspaces.title") },
-              fn() { @settings.pref(core, "otherWorkspaces") != "off" },
-              fn(on) { @settings.set_pref(core, "otherWorkspaces", if on { "" } else { "off" }) },
-              note=fn() { @sf.t("web-pages.about.otherWorkspaces.note") },
             )
           })
         })

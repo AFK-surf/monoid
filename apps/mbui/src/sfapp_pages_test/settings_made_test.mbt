@@ -194,15 +194,16 @@ test "the settings' list dragged on past its end by a finger, counted taller bel
   // (a row on its first screen and on its last: 外观 below the first since a card's rows are their words 24 in, 2026-11-04)
   let at = fn() { t.words().filter(fn(w) { w.0 == "归档" }).map(fn(w) { w.2 }) }
   let before = at()
-  // (from low on the screen, far past its end: its cards and their room as tall as the ladder makes them)
+  // (from low on the screen, far past its end: its cards and their room as tall as the ladder makes them; 760 up, room
+  // for a few more rows before its end is no longer passed)
   t.touch(0, 195.0, 800.0)
-  for k in 1..=15 {
+  for k in 1..=19 {
     t.advance(@ui.drag_step_ms)
     t.touch(1, 195.0, 800.0 - 40.0 * k.to_double())
     t.draw()
   }
   let held = at()
-  t.touch(2, 195.0, 200.0)
+  t.touch(2, 195.0, 40.0)
   // (let go: on to where it rests, as its glide says, and at rest there)
   let end = @ui.rest_of("a list's")
   if end > t.time() {

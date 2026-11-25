@@ -395,6 +395,8 @@ fn pane_made(
       made("shortcuts", fn(a, core, _here, stint, frame, width) {
         @sfpages.shortcuts_node(a, core, on_back=core.pop, frame~, active=fn() { app.nav.top_stay().1 == stint() }, width~)
       })
+    Setting(Network) =>
+      made("network", fn(a, core, _here, _stint, frame, width) { @sfpages.network_node(a, core, on_back=core.pop, frame~, width~) })
     Setting(Notifications) =>
       // (a workspace's picture asked for again each time it is come back to: nav_flat_view's stint)
       made("notifications", fn(a, core, here, stint, frame, width) {

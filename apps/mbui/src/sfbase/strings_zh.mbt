@@ -2765,6 +2765,7 @@ let zh : Map[String, String] = {
   "web-pages.settings.nav.client": "客户端",
   "web-pages.settings.nav.connects": "连接",
   "web-pages.settings.nav.memory": "记忆",
+  "web-pages.settings.nav.network": "网络与同步",
   "web-pages.settings.nav.notifications": "通知",
   "web-pages.settings.nav.permissions": "权限",
   "web-pages.settings.nav.shortcuts": "快捷键",

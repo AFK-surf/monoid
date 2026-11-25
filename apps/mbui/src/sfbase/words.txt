@@ -2743,6 +2743,7 @@ web-pages.settings.nav.changelog
 web-pages.settings.nav.client
 web-pages.settings.nav.connects
 web-pages.settings.nav.memory
+web-pages.settings.nav.network
 web-pages.settings.nav.notifications
 web-pages.settings.nav.permissions
 web-pages.settings.nav.shortcuts

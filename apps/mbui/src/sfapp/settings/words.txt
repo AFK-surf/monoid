@@ -1169,8 +1169,9 @@ web-pages.about.legal
 web-pages.about.diagnostics
 web-pages.about.dht.note
 web-pages.about.dht.title
-web-pages.about.otherWorkspaces.note
-web-pages.about.otherWorkspaces.title
+web-pages.network.otherWorkspaces.note
+web-pages.network.otherWorkspaces.title
+web-pages.network.sync
 web-pages.about.network
 web-pages.about.perf.note
 web-pages.about.perf.noteFolder

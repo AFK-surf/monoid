@@ -2792,6 +2792,7 @@ let en : Map[String, String] = {
   "web-pages.settings.nav.client": "Client",
   "web-pages.settings.nav.connects": "Connects",
   "web-pages.settings.nav.memory": "Memory",
+  "web-pages.settings.nav.network": "Network and sync",
   "web-pages.settings.nav.notifications": "Notifications",
   "web-pages.settings.nav.permissions": "Permissions",
   "web-pages.settings.nav.shortcuts": "Shortcuts",

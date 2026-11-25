@@ -21,7 +21,7 @@ fn settings_rows_shown(t : @ui.Tester, labels : Array[String], edge : Double) ->
 // kept across runs: a table, never written
 let settings_list_order : Array[String] = [
   "林", "星火工作室", "安全", "密钥", "Station", "连接", "Profile", "自动决策", "记忆", "归档", "用量", "外观", "通知", "快捷键",
-  "本机 Station", "共享调试", "本机缓存", "实验性功能", "关于",
+  "本机 Station", "共享调试", "网络与同步", "本机缓存", "实验性功能", "关于",
 ]
 
 ///|
