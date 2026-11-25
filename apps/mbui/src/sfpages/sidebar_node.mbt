@@ -143,8 +143,22 @@ pub fn chats_lists_node(
         }
       },
     )
-    p.each(at_once=true, fn() { Array::makei(all, fn(i) { i }) }, fn(i) { i }, fn(lane, idx) {
-      let i = idx.untracked()
+    // Key each chat list lane by its effective ListQuery scroll key inside a memoized computed so:
+    // (1) unchanged chat updates (thing/renamed/message) trigger 0 extra bindings when projects is off,
+    // (2) cold-start projects: false -> true with an unchanged query never rebuilds the pane,
+    // (3) switching groupBy or project/tag filters cleanly isolates scroll/motion/held_order with 0 extra wrapper nodes.
+    let lane_items = @signals.computed(fn(_) {
+      Array::makei(all, fn(i) {
+        let k = if i < list_filters.length() {
+          @sfbase.pane_scroll_key(src, id, list_filters[i])
+        } else {
+          "other/" + i.to_string()
+        }
+        (i, k)
+      })
+    })
+    p.each(at_once=true, fn() { lane_items.get() }, fn(item) { item.1 }, fn(lane, item_sig) {
+      let (i, key) = item_sig.untracked()
       lane
       .over(Is(true))
       .shift(By(fn() { (i.to_double() - at.shown(lane), 0.0) }))
@@ -169,7 +183,7 @@ pub fn chats_lists_node(
       lane.show(fn() { shown_once[i].get() }, at_once=true, fn(l) {
         l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         if i < list_filters.length() {
-          chats_pane_node(l, src, id, list_filters[i], frame, fn() { (frame.shown)() == i }, tips, stint)
+          chats_pane_node(l, src, id, list_filters[i], key, frame, fn() { (frame.shown)() == i }, tips, stint)
         } else {
           (frame.others[i - list_filters.length()])(l)
         }
@@ -188,26 +202,6 @@ fn chats_pane_node(
   src : Source,
   id : String,
   filter : String,
-  frame : ListsNodeFrame,
-  current : () -> Bool,
-  tips : @sf.TipLayer,
-  stint : () -> Int,
-) -> Unit {
-  // Keyed solely on the effective ListQuery key so cold-start `projects: false -> true` with an unchanged query
-  // never rebuilds the sidebar pane.
-  let pane_key = fn() -> String { @sfbase.pane_scroll_key(src, id, filter) }
-  v.pick(at_once=true, pane_key, fn(pane, key) {
-    pane.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-    chats_pane_body_node(pane, src, id, filter, key, frame, current, tips, stint)
-  })
-}
-
-///|
-fn chats_pane_body_node(
-  v : @view.View,
-  src : Source,
-  id : String,
-  filter : String,
   key : String,
   frame : ListsNodeFrame,
   current : () -> Bool,
@@ -215,15 +209,15 @@ fn chats_pane_body_node(
   stint : () -> Int,
 ) -> Unit {
   let query = fn() { @sfbase.pane_list_query(src, id, filter) }
+  let pane_grouped = @signals.untracked(fn() { query().group_by == "project" })
   let read = fn() { @sfbase.chats_of_query(src, id, query()) }
   let scroll = list_scroll(key)
-  let collapse_animating : Ref[Bool] = Ref(false)
+  let collapse_until : Ref[Double] = Ref(-1.0)
   let on_toggle_collapse = fn(gk : String) {
-    collapse_animating.val = true
+    collapse_until.val = v.cause_at() + @ui.move_most_ms
     @view.transition(within=v, fn() {
       @sfbase.toggle_group_collapsed(id, gk)
     })
-    v.at_moment(v.cause_at() + @ui.move_most_ms, fn() { collapse_animating.val = false }) |> ignore
   }
   // (while the hand is on the list or it glides, its rows keep their places; a row the viewer moved goes at once)
   let held = fn() { v.pointed_in() || scroll.in_hand() || scroll.goes_on() }
@@ -297,7 +291,7 @@ fn chats_pane_body_node(
         recorded_rows.val = by_name.length()
         @hostapi.perf_line("chat-list: filter=\{filter} rows=\{recorded_rows.val}")
       }
-      collapse_animating.val = false
+      collapse_until.val = -1.0
       motion.said(
         v,
         lines,
@@ -366,16 +360,18 @@ fn chats_pane_body_node(
   v.reacts(fn() { (v.window_h(), more.get(), held_rows.get()) }, fn(at) {
     @sfbase.chats_window_for_query(src, id, @signals.untracked(query), at.0, at.2, at.1)
   })
+  let is_grouped = @signals.computed(fn(_) {
+    match read().0 {
+      Some(vw) => vw.grouped
+      None => false
+    }
+  })
   // its lines' keys: those before its days, its visible days (collapse applied AFTER held_order), optional load_more, its foot
   let keys = fn() {
     let (lead, has_days) = lead_lines.get()
     let out = lead.copy()
     if has_days {
-      let grouped = match read().0 {
-        Some(vw) => vw.grouped
-        None => false
-      }
-      if !grouped {
+      if !is_grouped.get() {
         out.append(motion.lines(day_lines.get()))
       } else {
         // Walk `motion.lines(day_lines.get())` so archived-undo rows stay visible in grouped mode too.
@@ -689,10 +685,10 @@ fn chats_pane_body_node(
     bar_clear=fn() { ((frame.top)(), (frame.foot)()) },
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
     // RowsMotion says which)
-    comes=fn(k) { motion.comes(k) || (collapse_animating.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    comes=fn(k) { motion.comes(k) || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     // (and a part at its top a person's act took away (a restart's card let go of, in a transition): closing its room
     // as it goes, the rows under it not jumping up into it; one the data took away goes at once, outside a transition)
-    goes=fn(k) { motion.goes(k) || k.has_prefix("part/") || (collapse_animating.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    goes=fn(k) { motion.goes(k) || k.has_prefix("part/") || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     reorders=fn(k) { motion.moves(k) },
     // scrolled to within a screen of its foot while the core has more of its rows: its window a step more, the rows
     // added coming into the list it holds. A screen, not a screen and a half: its first window is what its room shows
@@ -804,7 +800,12 @@ fn chats_pane_body_node(
             None => ()
           }
         }
-        _ if k.has_prefix("h/") => list_day_or_group_heading_node(line, id, fn() { k.exact_view(start=2).to_owned() }, days, read, frame.at, tips, on_toggle_collapse)
+        _ if k.has_prefix("h/") =>
+          if !pane_grouped {
+            @sf.list_heading_node(line, fn() { k.exact_view(start=2).to_owned() }, frame.at)
+          } else {
+            list_day_or_group_heading_node(line, id, fn() { k.exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
+          }
         // (a row of the list's, or one archived from it whose line is kept, its 撤销 there)
         _ => row_line(line, fn() { k })
       }
@@ -826,7 +827,11 @@ fn chats_pane_body_node(
       b.box(fn(line) {
         @sf.style_node(line, fn() { @sf.list_line(frame.at) })
         if b.reused_kind() == Some(1) {
-          list_day_or_group_heading_node(line, id, fn() { key().exact_view(start=2).to_owned() }, days, read, frame.at, tips, on_toggle_collapse)
+          if !pane_grouped {
+            @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
+          } else {
+            list_day_or_group_heading_node(line, id, fn() { key().exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
+          }
         } else {
           row_line(line, key)
         }
@@ -1160,13 +1165,12 @@ fn list_day_or_group_heading_node(
   ws : String,
   gkey : () -> String,
   days : () -> Array[ChatDay],
-  read : () -> (ChatsView?, String?),
+  grouped : () -> Bool,
   at : @sf.ListAt,
   tips : @sf.TipLayer,
   on_toggle_collapse : (String) -> Unit,
 ) -> Unit {
   let day_of = fn() { days().iter().find_first(fn(d) { d.key == gkey() }) }
-  let grouped = fn() { read().0.map_or(false, fn(vw) { vw.grouped }) }
   line.switch_by(grouped, fn(p, is_grp) {
     if !is_grp {
       @sf.list_heading_node(p, fn() { day_of().map_or(gkey(), fn(d) { d.label }) }, at)

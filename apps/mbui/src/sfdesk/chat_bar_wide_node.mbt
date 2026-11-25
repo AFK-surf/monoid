@@ -347,13 +347,33 @@ fn wide_bar_title_row(
         None => []
       }
     }
-    row.show(fn() { people().length() > 0 }, along_row=true, fn(p) {
+    let projects_on = fn() {
+      match view() {
+        Some(cv) => cv.projects
+        None => false
+      }
+    }
+    row.show(fn() { people().length() > 0 || projects_on() }, along_row=true, fn(p) {
       p.drops(Is(chat_bar_drop_people)) |> ignore
-      p.pick(fn() { people().map(fn(p) { "\{p.id}\u{1}\{p.display}\u{1}\{p.picture}" }).join("\u{2}") }, fn(q, _) {
-        wide_people(q, src, @signals.untracked(people), 5, tips, stint)
-      })
+      p.pick(
+        fn() {
+          let ps = people().map(fn(p) { "\{p.id}\u{1}\{p.display}\u{1}\{p.picture}" }).join("\u{2}")
+          if projects_on() { ps + "\u{3}1" } else { ps }
+        },
+        fn(q, _) {
+          let ps = @signals.untracked(people)
+          if !@signals.untracked(projects_on) {
+            wide_people(q, src, ps, 5, tips, stint)
+          } else {
+            q.row(Is(true)).gap(Is(10.0)).lines_up(Is(Some(Middle))) |> ignore
+            if ps.length() > 0 {
+              q.box(fn(pb) { wide_people(pb, src, ps, 5, tips, stint) }) |> ignore
+            }
+            @sfpages.chat_bar_project_attrs_node(q, src, r, view, tips)
+          }
+        },
+      )
     })
-    @sfpages.chat_bar_project_attrs_node(row, src, r, view, tips)
   })
   |> ignore
 }

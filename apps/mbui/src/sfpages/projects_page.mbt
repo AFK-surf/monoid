@@ -695,10 +695,7 @@ pub fn project_detail_page_node(
                     fn(slot, r_sig) {
                       let r_val = r_sig.untracked()
                       slot.show(
-                        fn() {
-                          let list = refs_draft.get()
-                          list.search_by(fn(x) { x == r_val }).unwrap_or(0) > 0
-                        },
+                        fn() { refs_draft.get().get(0) != Some(r_val) },
                         at_once=true,
                         fn(sep) {
                           @sf.style_node(sep, fn() { @sf.rule_line })
