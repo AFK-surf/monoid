@@ -2151,17 +2151,13 @@ fn Tree::pairs_now(self : Tree) -> Unit {
   if early {
     self.incoming_carry(incoming, ends, leads)
   }
-  // (what each old copy was let go of with, let go of once every pair is set flying: two cards let go of in one box
-  // (a composer's quotes sent together) each keep their copy, never the first letting go of the second's with the box)
+  // (what each old copy was let go of with, let go of once every pair and every way back to what stays is set flying:
+  // two cards let go of in one box (a composer's quotes sent together) each keep their copy, never the first letting
+  // go of the second's with the box)
   let held_go : Array[NodeId] = []
   for p in pairs {
     if self.paired(p.0, p.1, leads, held_go) is Some(_) {
       flown.push(p.0.held)
-    }
-  }
-  for h in held_go {
-    if self.alive_id(h) {
-      self.handle(h.at).let_go()
     }
   }
   // (one that moves let go of and another made in the same change, by other ids, is one in the other's place (a
@@ -2176,6 +2172,13 @@ fn Tree::pairs_now(self : Tree) -> Unit {
       if self.to_stays(e.0, e.1) {
         flown.push(e.0.held)
       }
+    }
+  }
+  // (what each paired copy was let go of with, let go of only now: one of it going back to where its id stays takes its
+  // own out of it first, Tree::to_stays)
+  for h in held_go {
+    if self.alive_id(h) {
+      self.handle(h.at).let_go()
     }
   }
   // (what was let go of with no flight from it: let go of now, as it would have been, but what is kept for the rest of
