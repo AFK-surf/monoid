@@ -52,6 +52,7 @@ const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 const countLongLines = (text: string) => text.split(/\r?\n/).filter((l) => utf8Bytes(l) > LINE_MOST).length;
 const isOwnerOnly = (mode: number) => (mode & 0o077) === 0;
+const isExecutable = (mode: number) => (mode & 0o111) !== 0;
 
 /// Normalizes a station name into a portable filename tag matching Phase 1 & `memory-merge.ts`:
 /// letters/digits/`_`/`-` only, trimmed `-`, truncated to 40 Unicode code points, guarding Windows reserved names.
@@ -171,12 +172,13 @@ export function isConflictPath(relPath: string): boolean {
   return originalPathForConflict(relPath) !== null;
 }
 
-/// Whether the gardener may write or append to `relPath`: MEMORY.md or a non-builtin, non-conflict team skill file.
-/// Never allows `PROJECTS.jsonl`, builtin skills, hidden files, or path traversal.
+/// Whether the gardener may write or append to `relPath`: only `MEMORY.md` or non-builtin, non-conflict team skill
+/// Markdown (`*.md`) files. Never allows scripts/non-Markdown files, `PROJECTS.jsonl`, builtin skills, hidden files,
+/// or path traversal.
 export function isAllowedWritePath(relPath: unknown): relPath is string {
   if (typeof relPath !== "string" || relPath === "" || relPath === PROJECTS_INFO_PATH) return false;
   if (relPath === "MEMORY.md") return true;
-  if (!relPath.startsWith("skills/")) return false;
+  if (!relPath.startsWith("skills/") || !relPath.endsWith(".md")) return false;
   if (!memoryPath(relPath)) return false;
   return !isConflictPath(relPath);
 }
@@ -557,28 +559,60 @@ export function validateCompactionOutput(
     return { ok: true, plan: { writes, appends, deletes, dropped }, meaningfulProgress: false };
   }
 
-  // P0-1: Guard against destructive shortening of unique durable content in MEMORY.md.
+  // P0-A: Guard against destructive shortening of unique durable content in MEMORY.md (whether oversized or healthy)
+  // and in every overwritten existing skill file.
   const nextMemory = writes.get("MEMORY.md");
-  if (report.memoryOverLimit && nextMemory !== undefined) {
-    const uniqueOriginalBytes = uniqueContentBytes(report.memoryMd);
-    if (uniqueOriginalBytes > 2048) {
-      let migratedBytes = 0;
-      for (const [p, content] of writes) {
-        if (p === "MEMORY.md") continue;
-        const before = sentFullTexts.get(p) ?? "";
-        migratedBytes += Math.max(0, utf8Bytes(content) - utf8Bytes(before));
-      }
-      for (const content of appends.values()) {
-        migratedBytes += utf8Bytes(content);
-      }
-      const retainedBytes = utf8Bytes(nextMemory) + migratedBytes;
-      const hardFloor = Math.min(uniqueOriginalBytes * 0.25, 2048);
-      if (retainedBytes < hardFloor || (retainedBytes < uniqueOriginalBytes * 0.2 && migratedBytes === 0)) {
+  if (nextMemory !== undefined) {
+    const uniqueOrigMemoryBytes = uniqueContentBytes(report.memoryMd);
+    let migratedUniqueDeltaBytes = 0;
+    for (const [p, content] of writes) {
+      if (p === "MEMORY.md") continue;
+      const before = sentFullTexts.get(p) ?? "";
+      migratedUniqueDeltaBytes += Math.max(0, uniqueContentBytes(content) - uniqueContentBytes(before));
+    }
+    for (const content of appends.values()) {
+      migratedUniqueDeltaBytes += uniqueContentBytes(content);
+    }
+    const retainedBytes = uniqueContentBytes(nextMemory) + migratedUniqueDeltaBytes;
+    if (!report.memoryOverLimit) {
+      if (uniqueOrigMemoryBytes > 256 && retainedBytes < Math.floor(uniqueOrigMemoryBytes * 0.5)) {
         return {
           ok: false,
-          error: `refusing destructive shortening of MEMORY.md (unique=${uniqueOriginalBytes}B, retained=${retainedBytes}B, migrated=${migratedBytes}B)`,
+          error: `refusing destructive shortening of healthy MEMORY.md (unique=${uniqueOrigMemoryBytes}B, retained=${retainedBytes}B)`,
         };
       }
+    } else if (uniqueOrigMemoryBytes > 512 && retainedBytes < Math.floor(uniqueOrigMemoryBytes * 0.25)) {
+      return {
+        ok: false,
+        error: `refusing destructive shortening of MEMORY.md (unique=${uniqueOrigMemoryBytes}B, retained=${retainedBytes}B, migrated=${migratedUniqueDeltaBytes}B)`,
+      };
+    }
+  }
+
+  for (const [p, newContent] of writes) {
+    if (p === "MEMORY.md") continue;
+    const origText = sentFullTexts.get(p);
+    if (origText === undefined) continue;
+    const uniqueOrigSkillBytes = uniqueContentBytes(origText);
+    if (uniqueOrigSkillBytes <= 512) continue;
+    const skillName = p.split("/")[1]!;
+    const skillPrefix = `skills/${skillName}/`;
+    let sameSkillSiblingMigratedBytes = 0;
+    for (const [other, otherContent] of writes) {
+      if (other === p || !other.startsWith(skillPrefix)) continue;
+      const otherBefore = sentFullTexts.get(other) ?? "";
+      sameSkillSiblingMigratedBytes += Math.max(0, uniqueContentBytes(otherContent) - uniqueContentBytes(otherBefore));
+    }
+    for (const [other, appendContent] of appends) {
+      if (other === p || !other.startsWith(skillPrefix)) continue;
+      sameSkillSiblingMigratedBytes += uniqueContentBytes(appendContent);
+    }
+    const skillRetained = uniqueContentBytes(newContent) + sameSkillSiblingMigratedBytes;
+    if (skillRetained < Math.floor(uniqueOrigSkillBytes * 0.25)) {
+      return {
+        ok: false,
+        error: `refusing destructive shortening of ${p} (unique=${uniqueOrigSkillBytes}B, retained=${skillRetained}B)`,
+      };
     }
   }
 
@@ -758,6 +792,7 @@ type WorkspaceState = {
   cooldownUntil: number;
   consecutiveFailures: number;
   firstUnhealthyAt: number | null;
+  lastObservedBytes: number | null;
   noProgress: { sizeAtRun: number; conflictPaths: string[]; at: number } | null;
 };
 
@@ -809,6 +844,7 @@ export class MemoryGardener {
         cooldownUntil: 0,
         consecutiveFailures: 0,
         firstUnhealthyAt: null,
+        lastObservedBytes: null,
         noProgress: null,
       };
       this.#states.set(ws, s);
@@ -876,14 +912,24 @@ export class MemoryGardener {
     if (!report.needed) {
       state.noProgress = null;
       state.firstUnhealthyAt = null;
+      state.lastObservedBytes = null;
       state.takeoverCancel?.();
       state.takeoverCancel = null;
       return;
     }
 
-    // P1-8: Fallback takeover for rank > 0 stations when rank 0 is offline, older, or lacks usable accounts.
+    // P1-8 & P1-C: Fallback takeover for rank > 0 stations when rank 0 is offline, older, or lacks usable accounts.
+    // Reset takeover timer whenever totalRelevantBytes decreases (indicating rank-0 is actively shrinking memory).
     if (rank > 0) {
-      if (state.firstUnhealthyAt === null) state.firstUnhealthyAt = now;
+      if (state.firstUnhealthyAt === null) {
+        state.firstUnhealthyAt = now;
+        state.lastObservedBytes = report.totalRelevantBytes;
+      } else if (state.lastObservedBytes !== null && report.totalRelevantBytes < state.lastObservedBytes) {
+        state.firstUnhealthyAt = now;
+        state.lastObservedBytes = report.totalRelevantBytes;
+      } else {
+        state.lastObservedBytes = Math.max(state.lastObservedBytes ?? 0, report.totalRelevantBytes);
+      }
       const delay = Math.min(rank * this.#takeoverStepMs, this.#takeoverMaxMs);
       const elapsed = now - state.firstUnhealthyAt;
       if (elapsed < delay) {
@@ -901,6 +947,7 @@ export class MemoryGardener {
       }
     } else {
       state.firstUnhealthyAt = null;
+      state.lastObservedBytes = null;
       state.takeoverCancel?.();
       state.takeoverCancel = null;
     }
@@ -951,7 +998,13 @@ export class MemoryGardener {
       });
       void aborted.catch(() => {});
 
-      const raw = await Promise.race([this.#deps.compact(input, abort.signal), aborted]);
+      // P2-1: Track the inner compactor promise (including its `finally { dispose() }`) in `#running` so `stop()` waits for child cleanup.
+      const compactPromise = Promise.resolve().then(() => this.#deps.compact(input, abort.signal));
+      const trackedCompact = compactPromise.then(() => undefined, () => undefined);
+      this.#running.add(trackedCompact);
+      void trackedCompact.finally(() => this.#running.delete(trackedCompact));
+
+      const raw = await Promise.race([compactPromise, aborted]);
       if (this.#stopped || abort.signal.aborted) return;
 
       const parsed = parseCompactionOutput(raw);
@@ -985,6 +1038,7 @@ export class MemoryGardener {
           const st = await lstat(full).catch(() => null);
           if (st !== null) {
             if (!st.isFile()) throw new Error(`refusing to overwrite non-regular file or symlink: ${relPath}`);
+            if (isExecutable(st.mode)) throw new Error(`refusing to overwrite executable file: ${relPath}`);
             if (relPath !== "MEMORY.md" && isOwnerOnly(st.mode)) {
               throw new Error(`refusing to overwrite owner-only private file: ${relPath}`);
             }
@@ -1016,14 +1070,25 @@ export class MemoryGardener {
         for (const [relPath, appendText] of checked.plan.appends) {
           const full = join(event.dir, ...relPath.split("/"));
           const st = await lstat(full).catch(() => null);
+          if (st === null && relPath.endsWith("/SKILL.md")) {
+            // P2-3: New SKILL.md files must be created via `writes` with YAML frontmatter, never `appends`.
+            throw new Error(`refusing to create missing SKILL.md via appends: ${relPath}`);
+          }
           if (st !== null) {
             if (!st.isFile()) throw new Error(`refusing to append to non-regular file or symlink: ${relPath}`);
+            if (isExecutable(st.mode)) throw new Error(`refusing to append to executable file: ${relPath}`);
             if (isOwnerOnly(st.mode)) throw new Error(`refusing to append to owner-only private file: ${relPath}`);
           }
           const existing = st !== null ? await readFile(full, "utf8") : "";
+          // P2-3: Filter out non-empty lines already present verbatim in the target file to prevent duplicate appends.
+          const existingLines = new Set(existing.split(/\r?\n/).filter((l) => l.trim() !== ""));
+          const freshLines = appendText
+            .replace(/\r\n/g, "\n")
+            .split("\n")
+            .filter((l) => l.trim() !== "" && !existingLines.has(l));
+          if (freshLines.length === 0) continue;
           const base = existing === "" ? "" : existing.endsWith("\n") ? existing : `${existing}\n`;
-          const addition = appendText.endsWith("\n") ? appendText : `${appendText}\n`;
-          const finalText = `${base}${addition}`;
+          const finalText = `${base}${freshLines.join("\n")}\n`;
           if (utf8Bytes(finalText) > FILE_MOST) {
             throw new Error(`appended file exceeds FILE_MOST: ${relPath}`);
           }
@@ -1136,14 +1201,21 @@ export type GardenerCandidate = {
   completion: TitleCompletion | null;
 };
 
-const MID_CLAUDE_HINTS = ["sonnet"] as const;
-const MID_CODEX_HINTS = ["codex", "gpt-5", "gpt-6"] as const;
-const MID_API_HINTS = ["sonnet", "flash", "mini", "medium", "deepseek-chat", "deepseek-v4"] as const;
+const MID_CLAUDE_HINTS: readonly RegExp[] = [/(?:^|[-_/])sonnet(?:$|[-_.\d])/i];
+const MID_CODEX_HINTS: readonly RegExp[] = [/(?:^|[-_/])codex(?:$|[-_.\d])/i, /(?:^|[-_/])gpt-5(?:$|[-_.\d])/i, /(?:^|[-_/])gpt-6(?:$|[-_.\d])/i];
+const MID_API_HINTS: readonly RegExp[] = [
+  /(?:^|[-_/])sonnet(?:$|[-_.\d])/i,
+  /(?:^|[-_/])flash(?:$|[-_.\d])/i,
+  /(?:^|[-_/])mini(?:$|[-_.\d])/i,
+  /(?:^|[-_/])medium(?:$|[-_.\d])/i,
+  /(?:^|[-_/])deepseek-chat(?:$|[-_.\d])/i,
+  /(?:^|[-_/])deepseek-v4(?:$|[-_.\d])/i,
+];
 
-function pickMidModel(profile: RunOn, checkedModels: string[] | null | undefined, hints: readonly string[]): string | undefined {
+function pickMidModel(profile: RunOn, checkedModels: string[] | null | undefined, hints: readonly RegExp[]): string | undefined {
   const pool = [...(checkedModels ?? []), ...profile.models, ...(profile.model ? [profile.model] : [])];
   for (const hint of hints) {
-    const match = pool.find((m) => m.toLowerCase().includes(hint));
+    const match = pool.find((m) => hint.test(m));
     if (match) return profile.spelling(match) ?? match;
   }
   return profile.model ? (profile.spelling(profile.model) ?? profile.model) : undefined;
