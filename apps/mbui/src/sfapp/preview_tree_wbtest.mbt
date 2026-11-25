@@ -1861,14 +1861,12 @@ test "viewer on the tree, a wide window, the bar across the top the same coming 
       let (n, l) = wide_bar_inset(t, v, inset)
       node.push(n)
       last.push(l)
-      // (where a page's bar's last stands, the window so: clear of its own buttons where they are the app's, else at
-      // its corner; tools live inside a 2pt-padded liquid glass pill, while on rounded windows following the corner
-      // (window_end_in < viewer_bar_in) the pill sits at 4pt so the inner last tool stays at window_end_in = 6pt)
+      // (tools live inside a 2pt-padded full-capsule liquid glass pill: 12pt left of the app's window controls pill
+      // when own controls are present, otherwise clear of rounded window corners via window_corner_past)
       let want = if @ui.window_keys_own() {
         @sf.window_keys_room() + @sf.viewer_bar_in + 2.0
       } else {
-        let end = @sf.window_end_in(@sf.viewer_bar_in)
-        if end < @sf.viewer_bar_in { end } else { end + 2.0 }
+        @sf.window_corner_past(@sf.viewer_bar_in) + 2.0
       }
       assert_true((l - want).abs() < 0.001, msg="\{platform}, inset \{inset}: its last tool \{l} in, as a page's bar's last: \{want}")
     }
@@ -1967,14 +1965,8 @@ test "viewer on the tree, a wide window, the bar across the top: its last tool a
       [d, ..] => w - (d.rect.0 + d.rect.2)
       [] => -1.0
     }
-    // (tools live inside a 2pt-padded liquid glass pill; on macOS rounded corners the pill sits at 4pt so the inner
-    // last tool stays at window_end_in = 6pt, while on square/small-corner windows the pill outer edge aligns with
-    // window_end_in so the inner last tool is inset by 2pt)
-    let want = if platform == 0 {
-      @sf.window_end_in(@sf.viewer_bar_in)
-    } else {
-      @sf.window_end_in(@sf.viewer_bar_in) + 2.0
-    }
+    // (tools live inside a 2pt-padded full-capsule liquid glass pill positioned clear of rounded window corners)
+    let want = @sf.window_corner_past(@sf.viewer_bar_in) + 2.0
     assert_true(
       (last - want).abs() < 0.001,
       msg="\{platform} \{w}: its last tool \{last} in, a page's bar's \{want}; roots \{Repr(@ui.tree_corner_roots_now())} and \{Repr(@ui.corner_roots())}",
@@ -2101,13 +2093,12 @@ test "viewer on the tree, the bar across the top, a name far longer than its mid
         for hold in [false, true] {
           let short = wide_bar_room("image", w, platform, fs, hold)
           let long = wide_bar_room("long", w, platform, fs, hold)
-          // (tools live inside a 2pt-padded liquid glass pill; on Windows the pill sits 12pt left of the window controls
-          // pill so its inner last tool is +2pt further in, while on macOS the pill sits at 4pt so its inner last tool
-          // stays at window_end_in = 6pt)
+          // (tools live inside a 2pt-padded full-capsule liquid glass pill: 12pt left of the window controls pill on
+          // Windows, otherwise clear of rounded window corners via window_corner_past)
           let end_in = if platform == 3 {
             @sf.window_keys_room() + @sf.viewer_bar_in + 2.0
           } else {
-            @sf.window_end_in(@sf.viewer_bar_in)
+            @sf.window_corner_past(@sf.viewer_bar_in) + 2.0
           }
           let at = "platform \{platform}, words \{fs}, \{w} wide, \{if hold { "coming" } else { "whole" }}"
           let get = fn(m : Map[String, (Double, Double)], k : String) { m.get(k).unwrap_or((-1.0, 0.0)) }

@@ -39,6 +39,9 @@ pub fn viewer_bar_node(
   middle_shown? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> @view.View {
+  // (both left back pill and right tools pill are full capsules on every platform; parameters retained for callers)
+  ignore(capsule_end)
+  ignore(capsule_now)
   // (what stands in the name's place while `middle_shown` says so (a screen's tabs: viewer_bar's `middle`), the way
   // back as wide as it alone then)
   let held = fn() { middle is Some(_) && middle_shown() }
@@ -85,7 +88,7 @@ pub fn viewer_bar_node(
         bar_start_in() +
         (if @ui.window_keys_left_now() { viewer_buttons_w + @ui.Space::px(S4) } else { 0.0 })
       }
-      let right_edge = fn() { bar_end_in(width(), capsule_end || capsule_now()) }
+      let right_edge = fn() { bar_end_in(width()) }
       b.box(fn(row) {
         row
         .row(Is(true))
@@ -94,7 +97,7 @@ pub fn viewer_bar_node(
         .gap(Is(@ui.Space::px(S4)))
         .padding(
           By(fn() {
-            (bar_start_in(), bar_over(), bar_end_in(width(), capsule_end || capsule_now()), hairline_h)
+            (bar_start_in(), bar_over(), bar_end_in(width()), hairline_h)
           }),
         )
         |> ignore
@@ -184,8 +187,7 @@ pub fn viewer_bar_node(
           |> ignore
           // (at its end, nothing before them but what is left: viewer_bar_end's justify end)
           end.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-          let is_capsule = fn() { capsule_end || capsule_now() }
-          let pill_corner = fn() { bar_tools_pill_corner(is_capsule()) }
+          let pill_corner = bar_tools_pill_corner
           end.box(fn(pill) {
             pill
             .row(Is(true))
@@ -208,7 +210,7 @@ pub fn viewer_bar_node(
             pill.lends(viewer_tools_pill_lent, true) |> ignore
             // (one hover ground for its tools, going from the one the hand left to the next: RovingHover)
             pill.lends(rove_lent, RovingHover::new()) |> ignore
-            tools(pill, bar_tool_corner(is_capsule))
+            tools(pill, bar_tool_corner())
           })
           |> ignore
         })
@@ -247,78 +249,52 @@ pub fn viewer_bar_watch_back(parent : @view.View, watch : (@view.View) -> Unit) 
 }
 
 ///|
-/// How far in from the window's side the bar's tools pill stands, the window `w` wide (viewer_bar's end): clear of the
-/// window's buttons where they are the app's (12pt gap between pills); on rounded windows following the window's corner
-/// (macOS 16pt), symmetric `bar_keys_top() - viewer_tools_pad` (4pt) so the pill is concentric with the window corner
-/// and the last tool button inside stays at `window_end_in` (6pt); otherwise `window_end_in`.
-fn bar_end_in(w : Double, capsule : Bool) -> Double {
+/// How far in from the window's side the bar's full-capsule tools pill stands, the window `w` wide (viewer_bar's end):
+/// clear of the window's buttons where they are the app's (12pt gap between pills), otherwise clear of any rounded
+/// window corner (`window_corner_past`: 28pt on macOS 16pt corners, 12pt on 8pt/square corners) so the 18pt capsule
+/// keeps `corner_faults` clean.
+fn bar_end_in(w : Double) -> Double {
   ignore(w)
   let roots = @ui.tree_corner_roots_now()
   if @ui.window_keys_own_now() {
     // (they stand on its line, over all the window: window_keys' whole)
     window_keys_room(roots~) + viewer_bar_in
-  } else if capsule {
-    // (a capsule of words at its end, past the window's corner: viewer_bar's capsule_end, window_clear_in)
-    window_corner_past(viewer_bar_in, roots~)
   } else {
-    let link = viewer_tools_pill_corner()
-    if link.follows(roots) && link.radius(roots) <= (tool_side + 2.0 * viewer_tools_pad) / 2.0 + 0.5 {
-      bar_keys_top() - viewer_tools_pad
-    } else {
-      window_end_in(viewer_bar_in, roots~)
-    }
+    window_corner_past(viewer_bar_in, roots~)
   }
 }
 
 ///|
-/// How far in from the window's left the bar's way back stands (viewer_bar's start): at the window's corner where nothing
-/// of the system's is there (viewer_bar_start_in, the theme's Xl where it cannot follow it), as the window's corner is now
-/// for the window's tree, followed; 12 after the system's buttons.
+/// How far in from the window's left the bar's full-capsule way back stands (viewer_bar's start): 12pt before the
+/// system's window buttons when they sit on the left (`window_keys_left_now`), otherwise clear of any rounded window
+/// corner (`window_corner_past`: 28pt on macOS 16pt corners, 12pt on 8pt/square corners) so the 16pt capsule keeps
+/// `corner_faults` clean.
 fn bar_start_in() -> Double {
   if @ui.window_keys_left_now() {
     viewer_bar_in
   } else {
-    viewer_bar_start_in(@ui.tree_theme().corner(Xl), @ui.tree_corner_roots_now())
+    window_corner_past(viewer_bar_in, roots=@ui.tree_corner_roots_now())
   }
 }
 
 ///|
-/// The corner of the bar's way back (viewer_bar's): the window's followed at its top left corner (viewer_back_corner) as
-/// the window's corner is now for the window's tree; the theme's Xl after the system's buttons, or where it cannot.
+/// The corner radius of the bar's way back: a full 16pt capsule (half its 32pt `S8` height) on every platform.
 fn bar_back_corner() -> Double {
-  let alone = @ui.tree_theme().corner(Xl)
-  if @ui.window_keys_left_now() {
-    alone
-  } else {
-    viewer_back_corner(alone).radius(@ui.tree_corner_roots_now())
-  }
+  @ui.Space::px(S8) / 2.0
 }
 
 ///|
-/// The corner spec of the bar's tools pill at the window's top right corner: concentric with the window corner from
-/// `bar_keys_top() - viewer_tools_pad` (4pt), falling back to a full 18pt capsule where it cannot follow.
-fn viewer_tools_pill_corner() -> @ui.CornerOf {
-  Follow(Window, bar_keys_top() - viewer_tools_pad, (tool_side + 2.0 * viewer_tools_pad) / 2.0)
-}
-
-///|
-/// The corner radius of the bar's right tools pill: full 18pt capsule beside the app's window controls (matching
-/// `window_keys_node`) or when holding word-capsule buttons past the window corner (`capsule`), or concentric with the
-/// window corner otherwise.
-fn bar_tools_pill_corner(capsule : Bool) -> Double {
-  let pill_r = (tool_side + 2.0 * viewer_tools_pad) / 2.0
-  if @ui.window_keys_own_now() || capsule {
-    pill_r
-  } else {
-    viewer_tools_pill_corner().radius(@ui.tree_corner_roots_now())
-  }
+/// The corner radius of the bar's right tools pill: a full 18pt capsule (`(32 + 2×2) / 2`) on every platform, matching
+/// `window_keys_node` and `back_node`.
+fn bar_tools_pill_corner() -> Double {
+  (tool_side + 2.0 * viewer_tools_pad) / 2.0
 }
 
 ///|
 /// The corner of the bar's tools inside the right tools pill: concentric with `bar_tools_pill_corner` less
-/// `viewer_tools_pad` (`2.0`).
-fn bar_tool_corner(capsule : () -> Bool) -> @view.Live[Double] {
-  By(fn() { dmax(0.0, bar_tools_pill_corner(capsule()) - viewer_tools_pad) })
+/// `viewer_tools_pad` (`2.0`), giving a full 16pt circle/capsule for 32pt tools.
+fn bar_tool_corner() -> @view.Live[Double] {
+  Is(dmax(0.0, bar_tools_pill_corner() - viewer_tools_pad))
 }
 
 ///|
@@ -348,8 +324,8 @@ fn viewer_bar_pill_glass(k : ViewerInk, spot? : (Double, Double)? = None) -> @ui
 }
 
 ///|
-/// The way back in `parent`: 32 high, 4 before the chevron and 10 after the words,
-/// at the window's corner following it (bar_back_corner); the chevron and `words` in the ink's own, its hover ground
+/// The way back in `parent`: 32 high full 16pt capsule (`bar_back_corner`), 6 before the 20×20 chevron (concentric
+/// with the 16pt left semicircle) and 12 after the words; the chevron and `words` in the ink's own, its hover ground
 /// where the hand is on it (or the keyboard's focus shows); `went` as it is pressed, at the press's moment. Read out a
 /// button, by its words.
 #callsite(autofill(loc))
@@ -376,7 +352,7 @@ fn back_node(
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
     .height(Is(Some(@ui.Space::px(S8))))
-    .padding(Is((@ui.Space::px(S1), 0.0, @ui.Space::px(S2_5), 0.0)))
+    .padding(Is((@ui.Space::px(S1_5), 0.0, @ui.Space::px(S3), 0.0)))
     .gap(Is(@ui.Space::px(S0_5)))
     .radius(By(bar_back_corner))
     .shrink(Is(1.0))
