@@ -439,7 +439,7 @@ impl Front {
 
     #[allow(clippy::too_many_arguments)]
     fn current_with(
-        mut self,
+        self,
         app: &Path,
         config_mesh: Option<&Value>,
         mesh_env: Option<&OsStr>,
@@ -451,28 +451,38 @@ impl Front {
         let identity_changed = identity_needs_refresh(self.uuid_recorded, self.launcher_uuid.as_deref(), executable_uuid().as_deref());
         #[cfg(not(target_os = "macos"))]
         let identity_changed = false;
-        let decision = self.decide_transition_with(app, config_mesh, mesh_env, global_env, mb_var, pion_var, true);
-        if self.streams >= STREAMS && !identity_changed && decision == FrontDecision::Keep {
-            return CurrentFront::Kept(self);
-        }
+        self.current_with_identity(app, config_mesh, mesh_env, global_env, mb_var, pion_var, identity_changed)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn current_with_identity(
+        mut self,
+        app: &Path,
+        config_mesh: Option<&Value>,
+        mesh_env: Option<&OsStr>,
+        global_env: Option<&OsStr>,
+        mb_var: Option<&OsStr>,
+        pion_var: Option<&OsStr>,
+        identity_changed: bool,
+    ) -> CurrentFront {
         if identity_changed {
             log::warn(&format!("the front (pid {}) was started by another launcher identity: ending it so macOS can match its local network permission", self.pid));
         } else if self.streams < STREAMS {
             log::warn(&format!("the front (pid {}) hands streams as {} and this release as {STREAMS}: ending it for the release's", self.pid, self.streams));
         } else {
-            match decision {
+            return match self.decide_transition_with(app, config_mesh, mesh_env, global_env, mb_var, pion_var, true) {
+                FrontDecision::Keep => CurrentFront::Kept(self),
                 FrontDecision::SwitchTo(resolved) => {
                     log::warn(&format!("the front (pid {}) runs engine {} and desired engine is {}: ending it to switch", self.pid, self.engine, resolved.engine));
                     self.end();
-                    return CurrentFront::SwitchTo(resolved);
+                    CurrentFront::SwitchTo(resolved)
                 }
                 FrontDecision::EndForDirectBind => {
                     log::warn(&format!("the front (pid {}) engine ({}) disabled with no fallback binary: ending it for direct bind", self.pid, self.engine));
                     self.end();
-                    return CurrentFront::Ended;
+                    CurrentFront::Ended
                 }
-                FrontDecision::Keep => {}
-            }
+            };
         }
         // SAFETY: a signal to this process's child (a launcher before this one started it in this same process), then
         // its exit waited for, so the next binds its socket and the station's endpoint with it gone.
@@ -1837,6 +1847,104 @@ mod engine_tests {
         let state = non_utf8_front.state();
         assert!(state.get("fallbackPionStamp").is_none());
         non_utf8_front.end();
+
+        // 8. `streams < STREAMS` combined with MB -> Pion switch skips probing in `current_with` and returns `Ended`,
+        //    so `resume()`'s `Front::start()` probes `--version` strictly once.
+        let streams_probe_file = dir.join("streams-probe-count");
+        let streams_pion = dir.join("streams-counting-pion");
+        write_script(
+            &streams_pion,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 1 >> '{}'\n  echo 'stillfail-pion 0.1.0 modes:mesh'\n  exit 0\nfi\nprintf '{{\"listening\":\"%s\",\"streams\":8}}\\n' \"$4\"\nexec cat > /dev/null\n",
+                streams_probe_file.display()
+            ),
+            true,
+        );
+        let (pid8, input8) = spawn_cat();
+        let old_streams_mb = Front {
+            pid: pid8,
+            input: input8,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS - 1,
+            engine: ENGINE_MB.to_string(),
+            requested: ENGINE_MB.to_string(),
+            fallback_pion_stamp: None,
+            #[cfg(target_os = "macos")]
+            launcher_uuid: super::executable_uuid(),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        assert!(matches!(
+            old_streams_mb.current_with(&app, Some(&cfg_pion), None, None, None, Some(streams_pion.as_os_str())),
+            CurrentFront::Ended
+        ));
+        assert!(!streams_probe_file.exists(), "current_with must not probe when streams < STREAMS forces replacement");
+        let resolved_streams = super::resolve_program_full(
+            &app,
+            Some(&cfg_pion),
+            None,
+            None,
+            None,
+            Some(streams_pion.as_os_str()),
+            true,
+        )
+        .expect("resolved pion after streams replacement");
+        let started_streams = Front::start_resolved_with(resolved_streams, &app, None, &data).expect("started pion");
+        assert_eq!(started_streams.engine(), ENGINE_PION);
+        started_streams.end();
+        let streams_probes = std::fs::read_to_string(&streams_probe_file).unwrap().lines().count();
+        assert_eq!(streams_probes, 1, "streams upgrade + MB -> Pion switch must run --version exactly once");
+
+        // 9. `identity_changed` combined with MB -> Pion switch skips probing in `current_with_identity` and returns `Ended`,
+        //    so `resume()`'s `Front::start()` probes `--version` strictly once.
+        let id_probe_file = dir.join("id-probe-count");
+        let id_pion = dir.join("id-counting-pion");
+        write_script(
+            &id_pion,
+            &format!(
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo 1 >> '{}'\n  echo 'stillfail-pion 0.1.0 modes:mesh'\n  exit 0\nfi\nprintf '{{\"listening\":\"%s\",\"streams\":8}}\\n' \"$4\"\nexec cat > /dev/null\n",
+                id_probe_file.display()
+            ),
+            true,
+        );
+        let (pid9, input9) = spawn_cat();
+        let old_id_mb = Front {
+            pid: pid9,
+            input: input9,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS,
+            engine: ENGINE_MB.to_string(),
+            requested: ENGINE_MB.to_string(),
+            fallback_pion_stamp: None,
+            #[cfg(target_os = "macos")]
+            launcher_uuid: Some("old-uuid".to_string()),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        assert!(matches!(
+            old_id_mb.current_with_identity(&app, Some(&cfg_pion), None, None, None, Some(id_pion.as_os_str()), true),
+            CurrentFront::Ended
+        ));
+        assert!(!id_probe_file.exists(), "current_with_identity must not probe when identity_changed forces replacement");
+        let resolved_id = super::resolve_program_full(
+            &app,
+            Some(&cfg_pion),
+            None,
+            None,
+            None,
+            Some(id_pion.as_os_str()),
+            true,
+        )
+        .expect("resolved pion after identity replacement");
+        let started_id = Front::start_resolved_with(resolved_id, &app, None, &data).expect("started pion");
+        assert_eq!(started_id.engine(), ENGINE_PION);
+        started_id.end();
+        let id_probes = std::fs::read_to_string(&id_probe_file).unwrap().lines().count();
+        assert_eq!(id_probes, 1, "identity change + MB -> Pion switch must run --version exactly once");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
