@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [4e1e2088a](https://github.com/AFK-surf/monoid/commit/4e1e2088a9bd1ae1fe054d9d1bd689558455afe5) feat(website): list Antigravity instead of Grok Bu | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [fcf19b573](https://github.com/AFK-surf/monoid/commit/fcf19b573d6c375e05e29263e071f0addc2bc6ae) ci(desktop): eliminate Post setup pnpm-cache cance | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [9ac4cc360](https://github.com/AFK-surf/monoid/commit/9ac4cc3602b75a392d517890ca3552be1beb94c4) fix(station): fail agy turns that end on a quota n | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [37a5954c1](https://github.com/AFK-surf/monoid/commit/37a5954c1e707b732e109dd172c2c91f24f99016) fix(vault): stop 未获此库授权 flashing at start, and nev | 2.51 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.49 | 100.93 | 121.83 |
 | [3f5a8522b](https://github.com/AFK-surf/monoid/commit/3f5a8522b7da579d43297b5a870e3c0f0e834fef) feat(mbui): report a message sent from here that a | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.94 | 64.5 | 100.73 | 121.83 |
 | [209a0aaac](https://github.com/AFK-surf/monoid/commit/209a0aaace4722e2397bd1102b31552a445cc0ae) refactor(ui): unify check row boxes, markdown task | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.93 | 64.49 | 100.99 | 121.83 |
-| [11f11d4c6](https://github.com/AFK-surf/monoid/commit/11f11d4c6fa182a2401c34619b9c4fcfcaacba13) feat(ui): extract liquid_slider_look primitive and | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.93 | 64.49 | 100.99 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.59 |
 | [4e1e2088a](https://github.com/AFK-surf/monoid/commit/4e1e2088a9bd1ae1fe054d9d1bd689558455afe5) feat(website): list Antigravity instead of Grok Bu | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.56 |
 | [fcf19b573](https://github.com/AFK-surf/monoid/commit/fcf19b573d6c375e05e29263e071f0addc2bc6ae) ci(desktop): eliminate Post setup pnpm-cache cance | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.46 |
 | [9ac4cc360](https://github.com/AFK-surf/monoid/commit/9ac4cc3602b75a392d517890ca3552be1beb94c4) fix(station): fail agy turns that end on a quota n | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [37a5954c1](https://github.com/AFK-surf/monoid/commit/37a5954c1e707b732e109dd172c2c91f24f99016) fix(vault): stop 未获此库授权 flashing at start, and nev | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.77 |
 | [3f5a8522b](https://github.com/AFK-surf/monoid/commit/3f5a8522b7da579d43297b5a870e3c0f0e834fef) feat(mbui): report a message sent from here that a | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.74 |
 | [209a0aaac](https://github.com/AFK-surf/monoid/commit/209a0aaace4722e2397bd1102b31552a445cc0ae) refactor(ui): unify check row boxes, markdown task | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.64 |
-| [11f11d4c6](https://github.com/AFK-surf/monoid/commit/11f11d4c6fa182a2401c34619b9c4fcfcaacba13) feat(ui): extract liquid_slider_look primitive and | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.64 |
