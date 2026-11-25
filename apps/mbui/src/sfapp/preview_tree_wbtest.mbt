@@ -2132,7 +2132,7 @@ test "viewer on the tree, the bar across the top, a name far longer than its mid
               fail("\{at}: a tool cut: \{Repr(seen.last())}")
             }
             if (w - (dx + dw) - end_in).abs() > 0.001 {
-              fail("\{at}: its last not where a page's bar's last is: \{Repr(seen.last())}")
+              fail("\{at}: its last not at full-capsule pill inset (\{end_in}): \{Repr(seen.last())}")
             }
             if kx + kw > mx + 0.001 || kx != get(short, "back").0 {
               fail("\{at}: the way back over the tools or moved: \{Repr(seen.last())}")
