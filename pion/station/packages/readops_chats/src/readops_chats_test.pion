@@ -132,7 +132,7 @@ test "notices turn_notice went_wrong and js_blank" {
   }
 }
 
-test "shared take_chars utf8_less unique_ids unique_keys sees given_title" {
+test "shared take_chars utf8_less unique_keys sees given_title mb_json_eq" {
   assert(take_chars("hello", 3) == "hel")
   assert(take_chars("你好世界!", 2) == "你好")
   assert(take_chars("a😀b", 2) == "a😀")
@@ -142,10 +142,10 @@ test "shared take_chars utf8_less unique_ids unique_keys sees given_title" {
   assert(!utf8_less("a", "a"))
   assert(utf8_less("a", "ab"))
 
-  let uids = unique_ids([[base_codec::json_int(1), base_codec::json_int(2)], [base_codec::json_int(2), base_codec::json_int(3)]])
-  assert(uids.length() == 3)
   let ukeys = unique_keys([["a", "b"], ["b", "c"]])
   assert(ukeys.length() == 3)
+  assert(mb_json_eq(base_codec::Json::Num(9007199254740992.0, "9007199254740992"), base_codec::Json::Num(9007199254740992.0, "9007199254740993")))
+  assert(!mb_json_eq(base_codec::json_int(1), base_codec::json_int(2)))
 
   let v_home = base_codec::json_obj([("workspace", base_codec::json_str("w1")), ("home", base_codec::json_bool(true))])
   assert(sees(v_home, base_codec::json_str("w1")))

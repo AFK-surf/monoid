@@ -72,9 +72,13 @@ fn archive_last_key(
           Ok(b) => b
           Err(e) => return Err(e)
         }
-        let has_letters = match readops_core::exists_in(sp_db, "index", "entries_letters") {
-          Ok(b) => b
-          Err(e) => return Err(e)
+        let has_letters = if has_said {
+          match readops_core::exists_in(sp_db, "index", "entries_letters") {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+        } else {
+          false
         }
         if has_said && has_letters {
           let said = match readops_core::one(
@@ -190,7 +194,7 @@ fn blocked_fresh(
     base_codec::Json::Obj(_) => {
       let ab_t = readops_core::json_val_or_null(about, "thread")
       let ab_seq = readops_core::json_val_or_null(about, "seq")
-      if base_codec::json_eq(ab_t, thread) && is_integer_json(ab_seq) {
+      if mb_json_eq(ab_t, thread) && is_integer_json(ab_seq) {
         ab_seq
       } else {
         base_codec::json_null()
@@ -578,7 +582,7 @@ pub fn turn_notices(
     base_codec::Json::Num(_, _) => true
     _ => false
   }
-  if turn_is_null || !at_is_num || readops_core::num(at) < since || base_codec::json_eq(at, ended) {
+  if turn_is_null || !at_is_num || readops_core::num(at) < since || mb_json_eq(at, ended) {
     return Ok(base_codec::json_obj([("ended", ended), ("notices", base_codec::json_arr([]))]))
   }
   match readops_core::one(

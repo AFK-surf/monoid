@@ -250,11 +250,14 @@ pub fn archive_last_installed(db : sql_db::Db) -> Result[Bool, readops_core::Rea
     Ok(b) => b
     Err(e) => return Err(e)
   }
+  if !has_meta {
+    return Ok(false)
+  }
   let has_guard = match readops_core::exists_in(db, "table", "archive_last_guard") {
     Ok(b) => b
     Err(e) => return Err(e)
   }
-  if !has_meta || !has_guard {
+  if !has_guard {
     return Ok(false)
   }
   let v = match readops_core::one(db, "SELECT version FROM archive_last_meta WHERE id=1", []) {
@@ -480,7 +483,7 @@ pub fn recent_threads(
     let id = readops_core::field(r, "id")
     let mut dup = false
     for j in 0..<seen.length() {
-      if base_codec::json_eq(seen[j], id) {
+      if mb_json_eq(seen[j], id) {
         dup = true
         break
       }
@@ -506,7 +509,7 @@ fn archive_facts(
     Ok(None) => return Ok(None)
     Err(e) => return Err(e)
   }
-  let pending_bool = !base_codec::json_eq(readops_core::field(w, "pending"), base_codec::json_num(0.0))
+  let pending_bool = !mb_json_eq(readops_core::field(w, "pending"), base_codec::json_num(0.0))
   let last_turn = match readops_core::field(w, "started_at") {
     base_codec::Json::Null => base_codec::json_null()
     _ => turn_summary_json(w)
@@ -767,7 +770,11 @@ pub fn archive_look(
   let keep = match readops_core::json_val(args, "keep") {
     Some(base_codec::Json::Num(n, _)) => {
       if n > 0.0 {
-        n.to_int64().to_int()
+        if n >= 2147483647.0 {
+          2147483647
+        } else {
+          n.to_int64().to_int()
+        }
       } else {
         0
       }

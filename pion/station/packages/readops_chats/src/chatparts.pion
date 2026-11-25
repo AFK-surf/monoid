@@ -102,11 +102,11 @@ fn said_of_body(
   } else {
     match state {
       Some(s) => {
-        if base_codec::json_eq(readops_core::field(s, "said_n"), r_n) &&
-        base_codec::json_eq(readops_core::field(s, "said_other_known"), base_codec::json_num(1.0)) {
+        if mb_json_eq(readops_core::field(s, "said_n"), r_n) &&
+        mb_json_eq(readops_core::field(s, "said_other_known"), base_codec::json_num(1.0)) {
           (true, readops_core::field(s, "said_other_n"))
-        } else if base_codec::json_eq(readops_core::field(s, "guard_ready"), base_codec::json_num(1.0)) &&
-        base_codec::json_eq(readops_core::field(s, "guard_author"), r_author) {
+        } else if mb_json_eq(readops_core::field(s, "guard_ready"), base_codec::json_num(1.0)) &&
+        mb_json_eq(readops_core::field(s, "guard_author"), r_author) {
           (true, readops_core::field(s, "guard_other_n"))
         } else {
           (false, base_codec::json_null())
@@ -221,11 +221,11 @@ pub fn said_of_batch(
     let person = base_codec::json_eq(r_ak, base_codec::json_str("person"))
     let (bknown, bother) = if !person {
       (true, r_n)
-    } else if base_codec::json_eq(readops_core::field(r, "said_n"), r_n) &&
-    base_codec::json_eq(readops_core::field(r, "said_other_known"), base_codec::json_num(1.0)) {
+    } else if mb_json_eq(readops_core::field(r, "said_n"), r_n) &&
+    mb_json_eq(readops_core::field(r, "said_other_known"), base_codec::json_num(1.0)) {
       (true, readops_core::field(r, "said_other_n"))
-    } else if base_codec::json_eq(readops_core::field(r, "guard_ready"), base_codec::json_num(1.0)) &&
-    base_codec::json_eq(readops_core::field(r, "guard_author"), r_author) {
+    } else if mb_json_eq(readops_core::field(r, "guard_ready"), base_codec::json_num(1.0)) &&
+    mb_json_eq(readops_core::field(r, "guard_author"), r_author) {
       (true, readops_core::field(r, "guard_other_n"))
     } else {
       (false, base_codec::json_null())
@@ -316,7 +316,7 @@ pub fn latest_turn(r : Map[String, base_codec::Json]) -> base_codec::Json {
   let ww = readops_core::field(r, "wait_watch")
   match ww {
     base_codec::Json::Null => ()
-    _ => out.push(("waitWatch", base_codec::json_bool(base_codec::json_eq(ww, base_codec::json_num(1.0)))))
+    _ => out.push(("waitWatch", base_codec::json_bool(mb_json_eq(ww, base_codec::json_num(1.0)))))
   }
   out.push(("detail", readops_core::field(r, "detail")))
   out.push(("startedAt", readops_core::field(r, "started_at")))
@@ -433,7 +433,7 @@ pub fn watching(
   let by : Map[String, Array[Map[String, base_codec::Json]]] = Map::new()
   for i in 0..<running.length() {
     let j = running[i]
-    if base_codec::json_eq(readops_core::field(j, "watch"), base_codec::json_num(0.0)) {
+    if mb_json_eq(readops_core::field(j, "watch"), base_codec::json_num(0.0)) {
       continue
     }
     let key = readops_core::js_text(readops_core::field(j, "session_key"))
@@ -628,7 +628,7 @@ pub fn asking_message(
   }
   let m_n = readops_core::json_val_or_null(m, "n")
   let m_ak = readops_core::json_val_or_null(m, "authorKind")
-  if base_codec::json_eq(m_n, n) && base_codec::json_eq(m_ak, base_codec::json_str("agent")) {
+  if mb_json_eq(m_n, n) && base_codec::json_eq(m_ak, base_codec::json_str("agent")) {
     Ok(Some((m, earlier)))
   } else {
     Ok(None)
@@ -649,7 +649,7 @@ fn has_legacy_closed(db : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
   }
   match readops_core::one(db, "SELECT version FROM legacy_closed_meta WHERE id=1", []) {
     Ok(Some(r)) => {
-      if base_codec::json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
+      if mb_json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
         Ok(true)
       } else {
         Err(readops_core::ReadError::App("legacy closed-card lookup has an unsupported version"))
@@ -676,7 +676,7 @@ fn closed_ready(db : sql_db::Db, thread : base_codec::Json) -> Result[Bool, read
       "SELECT CAST(last_n AS TEXT) AS last_n,\n  CAST(end_n AS TEXT) AS end_n,complete FROM legacy_closed_scopes WHERE thread=?",
       [thread],
     ) {
-      Ok(Some(s)) => return Ok(base_codec::json_eq(readops_core::field(s, "complete"), base_codec::json_num(1.0)))
+      Ok(Some(s)) => return Ok(mb_json_eq(readops_core::field(s, "complete"), base_codec::json_num(1.0)))
       Ok(None) => ()
       Err(e) => return Err(e)
     }
@@ -696,7 +696,7 @@ fn has_legacy_people(db : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
   }
   match readops_core::one(db, "SELECT version FROM legacy_people_time_meta WHERE id=1", []) {
     Ok(Some(r)) => {
-      if base_codec::json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
+      if mb_json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
         Ok(true)
       } else {
         Err(readops_core::ReadError::App("legacy people-time lookup has an unsupported version"))
@@ -723,7 +723,7 @@ fn people_ready(db : sql_db::Db, thread : base_codec::Json) -> Result[Bool, read
     "SELECT CAST(last_n AS TEXT) AS last_n,\n  CAST(end_n AS TEXT) AS end_n,complete FROM legacy_people_time_scopes WHERE thread=?",
     [thread],
   ) {
-    Ok(Some(s)) => Ok(base_codec::json_eq(readops_core::field(s, "complete"), base_codec::json_num(1.0)))
+    Ok(Some(s)) => Ok(mb_json_eq(readops_core::field(s, "complete"), base_codec::json_num(1.0)))
     Ok(None) => Ok(false)
     Err(e) => Err(e)
   }
@@ -757,7 +757,7 @@ fn has_recent_people(
 ) -> Result[Bool, readops_core::ReadError] {
   if mode == "small" {
     return match small_people(db, thread, since) {
-      Ok(row) => Ok(base_codec::json_eq(readops_core::field(row, "yes"), base_codec::json_num(1.0)))
+      Ok(row) => Ok(mb_json_eq(readops_core::field(row, "yes"), base_codec::json_num(1.0)))
       Err(e) => Err(e)
     }
   }
@@ -1007,9 +1007,13 @@ pub fn answers_since(
             Err(e) => return Err(e)
           }
         }
-        let has_closed_at = match exists_index(sp_db, "closed_cards_at") {
-          Ok(b) => b
-          Err(e) => return Err(e)
+        let has_closed_at = if missing.length() > 0 {
+          match exists_index(sp_db, "closed_cards_at") {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+        } else {
+          false
         }
         if missing.length() > 0 && has_closed_at {
           let recent = match sp_db.all(readops_core::CLOSED_TIME_SAMPLE_SQL, [since, readops_core::ids_json(sc_threads)]) {
@@ -1161,7 +1165,7 @@ pub fn answers_since(
                 waiting.push(t)
                 continue
               }
-              if !base_codec::json_eq(readops_core::field(probe, "yes"), base_codec::json_num(1.0)) {
+              if !mb_json_eq(readops_core::field(probe, "yes"), base_codec::json_num(1.0)) {
                 continue
               }
             } else {
@@ -1387,7 +1391,7 @@ pub fn archive_suggested(
         base_codec::Json::Null => Ok(false)
         _ => {
           match last_entry(db, thread) {
-            Ok(le) => Ok(base_codec::json_eq(ver, le))
+            Ok(le) => Ok(mb_json_eq(ver, le))
             Err(e) => Err(e)
           }
         }
@@ -1412,7 +1416,7 @@ pub fn archive_verdict(
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  if !base_codec::json_eq(readops_core::field(r, "version"), le) {
+  if !mb_json_eq(readops_core::field(r, "version"), le) {
     return Ok(base_codec::json_null())
   }
   let at = readops_core::field(r, "at")
@@ -1630,7 +1634,7 @@ pub fn chat_shares(
         readops_core::js_text(readops_core::field(r, "session")),
         base_codec::json_obj([
           ("to", base_codec::json_arr(live)),
-          ("write", base_codec::json_bool(base_codec::json_eq(readops_core::field(r, "write"), base_codec::json_num(1.0)))),
+          ("write", base_codec::json_bool(mb_json_eq(readops_core::field(r, "write"), base_codec::json_num(1.0)))),
         ]),
       )
     }

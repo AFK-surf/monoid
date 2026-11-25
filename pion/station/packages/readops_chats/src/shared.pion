@@ -23,6 +23,51 @@ pub struct ChatScope {
 
 // ── Ordered JSON object helpers (matching JS/MB Map insertion-order semantics) ──
 
+/// MoonBit `@json.Json` equality: compares `Json::Num` by `Double` value (not raw repr string)
+/// while keeping exact SQL binding, serialization, and explicit `stringify()` keys untouched.
+pub fn mb_json_eq(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  match (a, b) {
+    (base_codec::Json::Null, base_codec::Json::Null) => true
+    (base_codec::Json::Bool(x), base_codec::Json::Bool(y)) => x == y
+    (base_codec::Json::Num(x, _), base_codec::Json::Num(y, _)) => x == y
+    (base_codec::Json::Str(x), base_codec::Json::Str(y)) => x == y
+    (base_codec::Json::Arr(xs), base_codec::Json::Arr(ys)) => {
+      if xs.length() != ys.length() {
+        return false
+      }
+      for i in 0..<xs.length() {
+        if !mb_json_eq(xs[i], ys[i]) {
+          return false
+        }
+      }
+      true
+    }
+    (base_codec::Json::Obj(xs), base_codec::Json::Obj(ys)) => {
+      let mx : Map[String, base_codec::Json] = Map::new()
+      for i in 0..<xs.length() {
+        mx.set(xs[i].0, xs[i].1)
+      }
+      let my : Map[String, base_codec::Json] = Map::new()
+      for i in 0..<ys.length() {
+        my.set(ys[i].0, ys[i].1)
+      }
+      if mx.length() != my.length() {
+        return false
+      }
+      let keys = mx.keys()
+      for i in 0..<keys.length() {
+        let k = keys[i]
+        match (mx.get(k), my.get(k)) {
+          (Some(vx), Some(vy)) => if !mb_json_eq(vx, vy) { return false }
+          _ => return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
 pub fn obj_entries(j : base_codec::Json) -> Array[(String, base_codec::Json)] {
   let out : Array[(String, base_codec::Json)] = []
   match j {
@@ -127,7 +172,7 @@ pub fn unique_ids(lists : Array[Array[base_codec::Json]]) -> Array[base_codec::J
     let l = lists[i]
     for j in 0..<l.length() {
       let id = l[j]
-      let k = base_codec::json_stringify(id)
+      let k = sql_db::stringify_json(id)
       if !seen.contains(k) {
         seen.set(k, true)
         out.push(id)
@@ -490,7 +535,7 @@ pub fn answered_view(
           for i in 0..<qs.length() {
             match readops_core::json_val(qs[i], "ts") {
               Some(t) => {
-                if base_codec::json_eq(t, q_ts) {
+                if mb_json_eq(t, q_ts) {
                   hit = true
                   break
                 }
@@ -612,7 +657,7 @@ pub fn need_view(
     base_codec::Json::Obj(_) => {
       let ab_t = readops_core::json_val_or_null(about, "thread")
       let ab_s = readops_core::json_val_or_null(about, "seq")
-      if base_codec::json_eq(ab_t, thread) && is_integer_json(ab_s) {
+      if mb_json_eq(ab_t, thread) && is_integer_json(ab_s) {
         ab_s
       } else {
         base_codec::json_null()
@@ -1598,7 +1643,13 @@ pub fn shared_rows(
       if ca != cb {
         if ca < cb { -1 } else { 1 }
       } else {
-        js_json::js_compare(a, b)
+        let la = js_json::utf16_len(a)
+        let lb = js_json::utf16_len(b)
+        if la != lb {
+          la - lb
+        } else {
+          js_json::js_compare(a, b)
+        }
       }
     })
     let ax = match shown.get(anchor) {
@@ -1817,7 +1868,7 @@ pub fn shared_rows(
             let c = children[k]
             let mut dup = false
             for m in 0..<merged_opened.length() {
-              if base_codec::json_eq(merged_opened[m], c) {
+              if mb_json_eq(merged_opened[m], c) {
                 dup = true
                 break
               }
@@ -1898,7 +1949,7 @@ pub fn shared_of(
 
 /// `rows.ts` `sees`: whether a viewer sees what is of the workspace `ws`.
 pub fn sees(viewer : base_codec::Json, ws : base_codec::Json) -> Bool {
-  if base_codec::json_eq(ws, readops_core::json_val_or_null(viewer, "workspace")) {
+  if mb_json_eq(ws, readops_core::json_val_or_null(viewer, "workspace")) {
     return true
   }
   match ws {
