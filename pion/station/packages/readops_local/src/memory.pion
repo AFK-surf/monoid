@@ -354,6 +354,7 @@ struct MemRec {
   hash : String
   at : Double
   by : String
+  by_units : Array[Int]
   prev : Array[String]
 }
 
@@ -390,10 +391,11 @@ fn rec_of(raw : Option[js_json::JValue]) -> Option[MemRec] {
     }
     _ => return None
   }
-  let by = match readops_core::str_of(readops_core::jget(raw, "by")) {
-    Some(s) => if s != "" { s } else { return None }
-    None => return None
+  let by_units = match readops_core::jget(raw, "by") {
+    Some(js_json::JValue::Str(u)) => if u.length() > 0 { u } else { return None }
+    _ => return None
   }
+  let by = js_json::sanitize_str(by_units)
   let prev : Array[String] = match readops_core::jget(raw, "prev") {
     Some(js_json::JValue::Arr(xs)) => {
       let ps : Array[String] = []
@@ -412,29 +414,29 @@ fn rec_of(raw : Option[js_json::JValue]) -> Option[MemRec] {
     }
     _ => return None
   }
-  Some(MemRec::{ hash: hash, at: at, by: by, prev: prev })
+  Some(MemRec::{ hash: hash, at: at, by: by, by_units: by_units, prev: prev })
 }
 
 fn newer_rec(a : MemRec, b : MemRec) -> Bool {
   if a.at != b.at {
     a.at > b.at
-  } else if a.by != b.by {
+  } else if !js_json::units_eq(a.by_units, b.by_units) {
     readops_core::by_bytes(a.by, b.by) > 0
   } else {
     readops_core::by_bytes(a.hash, b.hash) > 0
   }
 }
 
-fn peer_name_in(peers : Option[js_json::JValue], station : String) -> Option[String] {
+fn peer_name_in(peers : Option[js_json::JValue], station_units : Array[Int]) -> Option[String] {
   let xs = match peers {
     Some(js_json::JValue::Arr(a)) => a
     _ => return None
   }
   for i in 0..<xs.length() {
     let x = xs[i]
-    match readops_core::str_of(readops_core::jget(Some(x), "id")) {
-      Some(id) => {
-        if id == station {
+    match readops_core::jget(Some(x), "id") {
+      Some(js_json::JValue::Str(id_units)) => {
+        if js_json::units_eq(id_units, station_units) {
           match readops_core::str_of(readops_core::jget(Some(x), "name")) {
             Some(n) => {
               let trimmed = jscase::trim(n)
@@ -447,16 +449,16 @@ fn peer_name_in(peers : Option[js_json::JValue], station : String) -> Option[Str
           break
         }
       }
-      None => ()
+      _ => ()
     }
   }
   None
 }
 
-fn station_name_of(cloud : js_json::JValue, ws : Option[String], station : String) -> String {
-  let self_id = match readops_core::str_of(readops_core::jget(Some(cloud), "station")) {
-    Some(s) => s
-    None => ""
+fn station_name_of(cloud : js_json::JValue, ws : Option[String], station_units : Array[Int]) -> String {
+  let self_units : Array[Int] = match readops_core::jget(Some(cloud), "station") {
+    Some(js_json::JValue::Str(u)) => u
+    _ => []
   }
   match (ws, readops_core::jget(Some(cloud), "joined")) {
     (Some(w), Some(js_json::JValue::Arr(js))) => {
@@ -465,11 +467,11 @@ fn station_name_of(cloud : js_json::JValue, ws : Option[String], station : Strin
         match readops_core::str_of(readops_core::jget(Some(j), "workspace")) {
           Some(jw) => {
             if jw == w {
-              match peer_name_in(readops_core::jget(Some(j), "peers"), station) {
+              match peer_name_in(readops_core::jget(Some(j), "peers"), station_units) {
                 Some(n) => return n
                 None => ()
               }
-              if station == self_id {
+              if js_json::units_eq(station_units, self_units) {
                 match readops_core::str_of(readops_core::jget(Some(j), "name")) {
                   Some(sn) => {
                     let trimmed = jscase::trim(sn)
@@ -489,11 +491,11 @@ fn station_name_of(cloud : js_json::JValue, ws : Option[String], station : Strin
     }
     _ => ()
   }
-  match peer_name_in(readops_core::jget(Some(cloud), "peers"), station) {
+  match peer_name_in(readops_core::jget(Some(cloud), "peers"), station_units) {
     Some(n) => return n
     None => ()
   }
-  if station == self_id {
+  if js_json::units_eq(station_units, self_units) {
     match readops_core::str_of(readops_core::jget(Some(cloud), "name")) {
       Some(sn) => {
         let trimmed = jscase::trim(sn)
@@ -504,10 +506,14 @@ fn station_name_of(cloud : js_json::JValue, ws : Option[String], station : Strin
       None => ()
     }
   }
-  if js_json::utf16_len(station) > 8 {
-    js_json::utf16_slice(station, 0, 8)
+  if station_units.length() > 8 {
+    let head : Array[Int] = []
+    for i in 0..<8 {
+      head.push(station_units[i])
+    }
+    js_json::sanitize_str(head)
   } else {
-    station
+    js_json::sanitize_str(station_units)
   }
 }
 
@@ -635,7 +641,7 @@ fn list_skills(
     match latest {
       Some(lat) => {
         obj.push(("at", base_codec::json_num(lat.at)))
-        obj.push(("by", base_codec::json_str(station_name_of(cloud, ws, lat.by))))
+        obj.push(("by", base_codec::json_str(station_name_of(cloud, ws, lat.by_units))))
         match prev {
           Some(p) => obj.push(("prev", base_codec::json_str(p)))
           None => ()
@@ -744,7 +750,7 @@ pub fn memory(
   match global_rec {
     Some(gr) => {
       global_obj.push(("at", base_codec::json_num(gr.at)))
-      global_obj.push(("by", base_codec::json_str(station_name_of(cloud, ws, gr.by))))
+      global_obj.push(("by", base_codec::json_str(station_name_of(cloud, ws, gr.by_units))))
       match global_prev {
         Some(gp) => global_obj.push(("prev", base_codec::json_str(gp)))
         None => ()

@@ -29,6 +29,23 @@ fn opt_json_null(v : Option[base_codec::Json]) -> Bool {
   }
 }
 
+fn timeline_entries_match(res : base_codec::Json, expected : Array[String]) -> Bool {
+  match builders_core::json_get_last(res, "entries") {
+    Some(base_codec::Json::Arr(es)) => {
+      if es.length() != expected.length() {
+        return false
+      }
+      for i in 0..<expected.length() {
+        if !opt_json_str_eq(builders_core::json_get_last(es[i], "text"), expected[i]) {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
 fn mkdir_sync(client : builders_core::ShellClient, path : String) -> Result[Unit, String] {
   match client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(path))])) {
     Ok(_) => Ok(())
@@ -682,7 +699,22 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err(e)
     }
   }
-  match write_sync(client, data_dir + "/mesh/cloud.json", "{\"workspace\":\"ws1\",\"station\":\"st-self\",\"name\":\"OfficeHost\"}") {
+  match write_sync(
+    client,
+    data_dir + "/mesh/cloud.json",
+    "{\"workspace\":\"ws1\",\"station\":\"st-self\",\"name\":\"OfficeHost\",\"peers\":[{\"id\":\"\\ud800\",\"name\":\"Wrong\"},{\"id\":\"\\ufffd\",\"name\":\"Right\"}]}",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(
+    client,
+    data_dir + "/share/memory/ws-peer.json",
+    "{\"files\":{\"MEMORY.md\":{\"hash\":\"" + blob_hash + "\",\"at\":1700000000001,\"by\":\"\\ufffd\",\"prev\":[]}}}",
+  ) {
     Ok(_) => ()
     Err(e) => {
       db.close()
@@ -788,6 +820,27 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => {
       db.close()
       return Err("memory() failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match memory(client, data_dir, "/", base_codec::json_obj([("workspace", base_codec::json_str("ws-peer"))])) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "global") {
+        Some(g) => {
+          if !opt_json_str_eq(builders_core::json_get_last(g, "by"), "Right") {
+            db.close()
+            return Err("memory peer lone-surrogate by mismatch: " + sql_db::stringify_json(g))
+          }
+          passed = passed + 1
+        }
+        None => {
+          db.close()
+          return Err("memory(ws-peer) missing global")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("memory(ws-peer) failed: " + readops_core::read_error_message(e))
     }
   }
   match memory(client, data_dir, "/", base_codec::json_obj([("workspace", base_codec::json_str("../bad"))])) {
@@ -1124,8 +1177,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       let wire = sql_db::stringify_json(res)
       if !opt_json_num_eq(builders_core::json_get_last(res, "start"), 0.0) ||
       !readops_core::str_contains_sub(wire, ",\"end\":2}") ||
-      !readops_core::str_contains_sub(wire, "First prompt") ||
-      !readops_core::str_contains_sub(wire, "First reply") {
+      !timeline_entries_match(res, ["First prompt", "First reply"]) {
         db.close()
         return Err("timeline initial mismatch: " + wire)
       }
@@ -1163,7 +1215,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       let wire = sql_db::stringify_json(res)
       if !opt_json_num_eq(builders_core::json_get_last(res, "start"), 1.0) ||
       !readops_core::str_contains_sub(wire, ",\"end\":3}") ||
-      !readops_core::str_contains_sub(wire, "First reply") {
+      !timeline_entries_match(res, ["First reply"]) {
         db.close()
         return Err("timeline after+limit mismatch: " + wire)
       }
@@ -1193,7 +1245,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       let wire = sql_db::stringify_json(res)
       if !opt_json_num_eq(builders_core::json_get_last(res, "start"), 2.0) ||
       !readops_core::str_contains_sub(wire, ",\"end\":3}") ||
-      !readops_core::str_contains_sub(wire, "Second prompt") {
+      !timeline_entries_match(res, ["Second prompt"]) {
         db.close()
         return Err("timeline before+limit mismatch: " + wire)
       }
@@ -1215,9 +1267,9 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   match timeline(db, state, data_dir, tl_ask) {
     Ok(res) => {
       let wire = sql_db::stringify_json(res)
-      if !readops_core::str_contains_sub(wire, ",\"end\":1}") {
+      if !readops_core::str_contains_sub(wire, ",\"end\":1}") || !timeline_entries_match(res, ["First prompt"]) {
         db.close()
-        return Err("timeline after truncate expected end=1, got " + wire)
+        return Err("timeline after truncate expected end=1 + First prompt, got " + wire)
       }
       passed = passed + 1
     }
@@ -1250,20 +1302,11 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
             ]),
           ) {
             Ok(tres) => {
-              let twire = sql_db::stringify_json(tres)
-              match builders_core::json_get_last(tres, "entries") {
-                Some(base_codec::Json::Arr(es)) => {
-                  if es.length() != 1 || !readops_core::str_contains_sub(twire, "First reply") {
-                    db.close()
-                    return Err("tail_read expected 1 new entry with First reply, got " + twire)
-                  }
-                  passed = passed + 1
-                }
-                _ => {
-                  db.close()
-                  return Err("tail_read missing entries")
-                }
+              if !timeline_entries_match(tres, ["First reply"]) {
+                db.close()
+                return Err("tail_read expected 1 new entry [First reply], got " + sql_db::stringify_json(tres))
               }
+              passed = passed + 1
             }
             Err(e) => {
               db.close()
@@ -1324,7 +1367,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   match timeline(db, state, data_dir, zst_ask) {
     Ok(res) => {
       let wire = sql_db::stringify_json(res)
-      if !readops_core::str_contains_sub(wire, ",\"end\":1}") || !readops_core::str_contains_sub(wire, "First prompt") {
+      if !readops_core::str_contains_sub(wire, ",\"end\":1}") || !timeline_entries_match(res, ["First prompt"]) {
         db.close()
         return Err("timeline zst initial mismatch: " + wire)
       }
@@ -1371,7 +1414,8 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   match timeline(db, state, data_dir, zst_ask) {
     Ok(res) => {
       let wire = sql_db::stringify_json(res)
-      if !readops_core::str_contains_sub(wire, ",\"end\":2}") || !readops_core::str_contains_sub(wire, "First reply") {
+      if !readops_core::str_contains_sub(wire, ",\"end\":2}") ||
+      !timeline_entries_match(res, ["First prompt", "First reply"]) {
         db.close()
         return Err("timeline zst after packedStamp change mismatch: " + wire)
       }
@@ -1399,10 +1443,9 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         }
         None => 0.0
       }
-      let twire = sql_db::stringify_json(tres)
-      if off1 <= off0 || !readops_core::str_contains_sub(twire, "First reply") {
+      if off1 <= off0 || !timeline_entries_match(tres, ["First reply"]) {
         db.close()
-        return Err("tail_read zst offset/body mismatch: " + twire)
+        return Err("tail_read zst offset/body mismatch: " + sql_db::stringify_json(tres))
       }
       passed = passed + 1
     }
