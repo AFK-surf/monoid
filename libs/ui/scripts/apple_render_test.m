@@ -2975,6 +2975,77 @@ int main(void) {
           printf("apple_render: dark adaptive 320pt 16pt-stripe sweep min_icon_cr=%.2f min_word_cr=%.2f max_wd=%d\n",
                  min_icr, min_wcr, max_wd);
         }
+        // R9-1: 144pt muted 12-char word & R9-2: off-center icon in 56pt-tall capsule
+        {
+          double ew[5 * MB_INST];
+          rect_at(ew, 0, 0, 400, 300, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(ew + MB_INST, 268, 0, 16, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(ew + 2 * MB_INST, 40, 20, 320, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -72);
+          ew[2 * MB_INST + 4] = 18.0; ew[2 * MB_INST + 6] = 1.0; ew[2 * MB_INST + 7] = 1.2;
+          ew[2 * MB_INST + 11] = 0x67 / 255.0; ew[2 * MB_INST + 12] = 0.6; ew[2 * MB_INST + 13] = 14.0;
+          ew[2 * MB_INST + 14] = -1.0; ew[2 * MB_INST + 15] = 1.0;
+          ew[2 * MB_INST + 21] = 20.0; ew[2 * MB_INST + 22] = 0.06; ew[2 * MB_INST + 23] = 0.0;
+          rect_at(ew + 3 * MB_INST, 139, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          ew[3 * MB_INST + 6] = 63.0; ew[3 * MB_INST + 7] = 0.0;
+          ew[3 * MB_INST + 12] = 16.0; ew[3 * MB_INST + 13] = 16.0; ew[3 * MB_INST + 14] = 16.0; ew[3 * MB_INST + 15] = 16.0;
+          ew[3 * MB_INST + 21] = 200.0; ew[3 * MB_INST + 22] = 38.0; ew[3 * MB_INST + 23] = 18.0;
+          rect_at(ew + 4 * MB_INST, 265, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          ew[4 * MB_INST + 6] = -63.0; ew[4 * MB_INST + 7] = 0.0;
+          ew[4 * MB_INST + 12] = 16.0; ew[4 * MB_INST + 13] = 16.0; ew[4 * MB_INST + 14] = 16.0; ew[4 * MB_INST + 15] = 16.0;
+          ew[4 * MB_INST + 21] = 200.0; ew[4 * MB_INST + 22] = 38.0; ew[4 * MB_INST + 23] = 18.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(ew, 3, 0.08, 0.08, 0.08);
+          present_drain();
+          int bcw = 0, bch = 0, cw = 0, ch = 0;
+          uint8_t *bgx = read_texture(canvas, &bcw, &bch);
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(ew, 5, 0.08, 0.08, 0.08);
+          present_drain();
+          uint8_t *px = read_texture(canvas, &cw, &ch);
+          int ilx = (76 * cw + 290) * 4, irx = (76 * cw + 542) * 4;
+          double ll = wcag_luma_u8(bgx[ilx+2], bgx[ilx+1], bgx[ilx+0]), fl = wcag_luma_u8(px[ilx+2], px[ilx+1], px[ilx+0]);
+          double lr = wcag_luma_u8(bgx[irx+2], bgx[irx+1], bgx[irx+0]), fr = wcag_luma_u8(px[irx+2], px[irx+1], px[irx+0]);
+          double crl = ((fl > ll ? fl : ll) + 0.05) / ((fl > ll ? ll : fl) + 0.05);
+          double crr = ((fr > lr ? fr : lr) + 0.05) / ((fr > lr ? lr : fr) + 0.05);
+          int wd = 0;
+          for (int c = 0; c < 3; c++) { int d = abs((int)px[ilx+c] - (int)px[irx+c]); if (d > wd) wd = d; }
+          printf("apple_render: dark adaptive 144pt-word left_cr=%.2f right_cr=%.2f diff=%d\n", crl, crr, wd);
+          CHECK(wd <= 1 && crl >= 4.5 && crr >= 4.5);
+          free(bgx); free(px);
+
+          double oc[4 * MB_INST];
+          rect_at(oc, 0, 0, 400, 300, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(oc + MB_INST, 188, 20, 24, 12, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(oc + 2 * MB_INST, 120, 20, 160, 56, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -73);
+          oc[2 * MB_INST + 4] = 28.0; oc[2 * MB_INST + 6] = 1.0; oc[2 * MB_INST + 7] = 1.2;
+          oc[2 * MB_INST + 11] = 0x67 / 255.0; oc[2 * MB_INST + 12] = 0.6; oc[2 * MB_INST + 13] = 14.0;
+          oc[2 * MB_INST + 14] = -1.0; oc[2 * MB_INST + 15] = 1.0;
+          oc[2 * MB_INST + 21] = 20.0; oc[2 * MB_INST + 22] = 0.06; oc[2 * MB_INST + 23] = 0.0;
+          rect_at(oc + 3 * MB_INST, 194, 22, 12, 12, 10, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          oc[3 * MB_INST + 4] = 4.0;
+          oc[3 * MB_INST + 12] = 0.1; oc[3 * MB_INST + 13] = 0.5; oc[3 * MB_INST + 14] = 0.9; oc[3 * MB_INST + 15] = 0.5;
+          oc[3 * MB_INST + 21] = 200.0; oc[3 * MB_INST + 22] = 48.0; oc[3 * MB_INST + 23] = 28.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(oc, 3, 0.08, 0.08, 0.08);
+          present_drain();
+          bgx = read_texture(canvas, &bcw, &bch);
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(oc, 4, 0.08, 0.08, 0.08);
+          present_drain();
+          px = read_texture(canvas, &cw, &ch);
+          int idx = (56 * cw + 400) * 4;
+          double gl = wcag_luma_u8(bgx[idx+2], bgx[idx+1], bgx[idx+0]);
+          double il = wcag_luma_u8(px[idx+2], px[idx+1], px[idx+0]);
+          double cr = ((il > gl ? il : gl) + 0.05) / ((il > gl ? gl : il) + 0.05);
+          printf("apple_render: dark adaptive offcenter-56pt icon glass=(%d,%d,%d) icon=(%d,%d,%d) cr=%.2f\n",
+                 bgx[idx+2], bgx[idx+1], bgx[idx+0], px[idx+2], px[idx+1], px[idx+0], cr);
+          CHECK(cr >= 4.5);
+          free(bgx); free(px);
+        }
       }
       mb_render_set_size(400, 300, 2);
       glass_forget();

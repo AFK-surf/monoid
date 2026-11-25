@@ -609,12 +609,11 @@
       float bgL = capsuleBgL;
       if (origL < 0.94 && u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y) {
         vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
-        if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
         float stepX = is_icon ? 4.0 : 8.0;
-        int halfN = is_icon ? 2 : 6;
+        int halfN = is_icon ? 2 : 12;
         for (int iy = -1; iy <= 1; iy++) {
-          float py = samplePos.y + float(iy) * 5.0;
-          for (int ix = -6; ix <= 6; ix++) {
+          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);
+          for (int ix = -12; ix <= 12; ix++) {
             float px = samplePos.x + float(ix) * stepX;
             if (abs(ix) <= halfN && px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {
               vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;

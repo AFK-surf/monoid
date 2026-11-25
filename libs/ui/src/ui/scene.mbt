@@ -1229,7 +1229,7 @@ fn ink_short_word_centers(tl : TextLayout, keys : Array[Int]) -> (FixedArray[Dou
           vis = vis + 1
         }
       }
-      if vis >= 2 && vis <= 12 {
+      if vis >= 2 && vis <= 12 && x1 - x0 <= 184.0 {
         let cx = (x0 + x1) * 0.5
         for k in i..<j {
           wcx[k] = cx

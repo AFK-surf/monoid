@@ -287,8 +287,13 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
   t.set_ime_inset(300.0)
   t.frame()
   check_single("ime-up-0ms")
-  t.run_for(@ui.move_most_ms / 2.0)
+  t.run_for(@sfpages.composer_backdrop_in_ms / 2.0)
   check_single("ime-up-mid")
+  let mid_up = bottom_prog()
+  assert_true(
+    mid_up[0][53] > 18.0 && mid_up[0][53] < 64.0,
+    msg="ime-up-mid: expected interpolated fade height in (18, 64), got \{mid_up[0][53]}",
+  )
   t.run_for(@ui.move_most_ms)
   check_single("ime-up-end")
   let (_, gy, _, _) = composer_cover_glass_box(t)
@@ -303,8 +308,13 @@ test "the messages fade behind the composer only while the soft keyboard is up, 
   t.set_ime_inset(0.0)
   t.frame()
   check_single("ime-down-0ms")
-  t.run_for(@ui.move_most_ms / 2.0)
+  t.run_for(@sfpages.composer_backdrop_out_ms / 2.0)
   check_single("ime-down-mid")
+  let mid_dn = bottom_prog()
+  assert_true(
+    mid_dn[0][53] > 18.0 && mid_dn[0][53] < 64.0,
+    msg="ime-down-mid: expected interpolated fade height in (18, 64), got \{mid_dn[0][53]}",
+  )
   t.run_for(@ui.move_most_ms)
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="gone as the keyboard goes")
   check_single("ime-down-end")
