@@ -190,7 +190,7 @@ export function FileText(props: IconProps) {
 }
 
 export function FileVideo(props: IconProps) {
-  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M9.75 10.5Q9.75 9.85 10.35 10.2L15.95 13.55Q16.55 13.9 15.95 14.25L10.35 17.6Q9.75 17.95 9.75 17.3Z" fill="currentColor" stroke="none" /></Svg>;
+  return <Svg {...props}><path d="M14.75 3.5H8Q4.5 3.5 4.5 7V17Q4.5 20.5 8 20.5H16Q19.5 20.5 19.5 17V8.25L14.75 3.5Z M14.75 3.5V6.75Q14.75 8.25 16.25 8.25H19.5" /><path d="M9.08 11.88C9.08 10.05 9.82 9.62 11.41 10.53L14.98 12.61C16.57 13.52 16.57 14.38 14.98 15.29L11.41 17.37C9.82 18.28 9.08 17.85 9.08 16.02Z" fill="currentColor" stroke="none" /></Svg>;
 }
 
 export function FileZip(props: IconProps) {
