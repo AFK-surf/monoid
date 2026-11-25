@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bf6c0b0b1](https://github.com/AFK-surf/monoid/commit/bf6c0b0b1ef743dcb270744775fbcb57298959c0) fix(mbui): part the stations sidebar's cards and g | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 100.91 | 130.84 |
 | [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 2.54 | 3.43 | 14.17 | 36.71 | 55.44 | 32.06 | 64.85 | 100.84 | 131.87 |
 | [f20305d93](https://github.com/AFK-surf/monoid/commit/f20305d93d413a5bd147f8b076b7accd8fd61498) perf(profiles): eliminate overview freezes via pac | 2.54 | 3.43 | 14.17 | 36.71 | 55.44 | 32.06 | 64.85 | 100.84 | 131.87 |
 | [4d3015d7b](https://github.com/AFK-surf/monoid/commit/4d3015d7bf4d64f699a96a2cc54110c68f6e689b) feat(ui): redesign video viewer with full-bleed st | 2.53 | 3.41 | 14.09 | 36.63 | 55.14 | 31.99 | 64.64 | 101.01 | 128.65 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a783837af](https://github.com/AFK-surf/monoid/commit/a783837af4e9e83cd77f1246ed17a7d68bcf6609) feat(mbui): increase stations list information den | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 101.07 | 121.83 |
 | [060b36f41](https://github.com/AFK-surf/monoid/commit/060b36f410a29857fa1fff1514dcebc50f50c540) fix(replica): break pass_rows/scan_transcripts liv | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 | [c40f9ebb2](https://github.com/AFK-surf/monoid/commit/c40f9ebb2253b462b1ae310e5079e91942f0efeb) fix(ci): offload stable Android deltas and feed to | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
-| [34b7fe8e8](https://github.com/AFK-surf/monoid/commit/34b7fe8e851786f06a93e7502764b137123361f9) perf(replica): D72a 256-bucket transcriptManifest  | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bf6c0b0b1](https://github.com/AFK-surf/monoid/commit/bf6c0b0b1ef743dcb270744775fbcb57298959c0) fix(mbui): part the stations sidebar's cards and g | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.03 |
 | [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.02 |
 | [f20305d93](https://github.com/AFK-surf/monoid/commit/f20305d93d413a5bd147f8b076b7accd8fd61498) perf(profiles): eliminate overview freezes via pac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.02 |
 | [4d3015d7b](https://github.com/AFK-surf/monoid/commit/4d3015d7bf4d64f699a96a2cc54110c68f6e689b) feat(ui): redesign video viewer with full-bleed st | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.49 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a783837af](https://github.com/AFK-surf/monoid/commit/a783837af4e9e83cd77f1246ed17a7d68bcf6609) feat(mbui): increase stations list information den | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.71 |
 | [060b36f41](https://github.com/AFK-surf/monoid/commit/060b36f410a29857fa1fff1514dcebc50f50c540) fix(replica): break pass_rows/scan_transcripts liv | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.57 |
 | [c40f9ebb2](https://github.com/AFK-surf/monoid/commit/c40f9ebb2253b462b1ae310e5079e91942f0efeb) fix(ci): offload stable Android deltas and feed to | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 58.03 |
-| [34b7fe8e8](https://github.com/AFK-surf/monoid/commit/34b7fe8e851786f06a93e7502764b137123361f9) perf(replica): D72a 256-bucket transcriptManifest  | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.21 |
