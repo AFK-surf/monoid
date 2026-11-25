@@ -6025,6 +6025,7 @@ fn fixture_copies_row(alone~ : Bool) -> Json {
           ("mode", str("auto")),
           ("stations", []),
           ("acceptOthers", Json::boolean(true)),
+          ("uploadMbps", Json::number(8.0)),
           (
             "peers",
             Json::array([
@@ -6069,6 +6070,7 @@ fn fixture_copies_config() -> Json {
         ("mode", str("manual")),
         ("stations", Json::array([str("st2")])),
         ("acceptOthers", Json::boolean(true)),
+        ("uploadMbps", Json::number(8.0)),
         ("settingsSummary", str("手动互备：Cedar · Cloudflare R2 · 接收互备")),
         (
           "peers",
@@ -6121,6 +6123,7 @@ fn fixture_copies_maple() -> Json {
         ("mode", str("auto")),
         ("stations", Json::array([])),
         ("acceptOthers", Json::boolean(true)),
+        ("uploadMbps", Json::number(8.0)),
         ("settingsSummary", str("自动互备（2 台） · 接收互备")),
         (
           "peers",

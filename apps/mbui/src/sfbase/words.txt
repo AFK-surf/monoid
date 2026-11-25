@@ -2888,6 +2888,11 @@ web-pages.stations.copies.peerOffline
 web-pages.stations.copies.noPeers
 web-pages.stations.copies.acceptOthers
 web-pages.stations.copies.acceptOthersNote
+web-pages.stations.copies.uploadLabel
+web-pages.stations.copies.uploadNote
+web-pages.stations.copies.uploadNone
+web-pages.stations.copies.uploadMbps
+web-pages.stations.copies.uploadDefault
 web-pages.stations.copies.s3Heading
 web-pages.stations.copies.s3Add
 web-pages.stations.copies.s3Empty

@@ -1492,6 +1492,8 @@ export interface CopyBackup {
 	stations: string[];
 	/** Whether this station accepts backups from other stations in the workspace. */
 	acceptOthers: boolean;
+	/** The most its backup uploads take of the uplink, in megabits a second (0: no limit). Absent from stations before it. */
+	uploadMbps?: number;
 	/** Other stations in the workspace available as backup targets. */
 	peers: CopyPeerChoice[];
 	/** Configured external R2/S3 backup targets and their sync status. */
