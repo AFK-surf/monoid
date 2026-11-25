@@ -6,7 +6,7 @@ import { after, test } from "node:test";
 import { Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import type { Pressure } from "../src/jobs/admit.ts";
-import { MemoryWatch, SETTLE_MS, STOP_GRACE_MS, type Unit, limitOf, unitsOf } from "../src/jobs/memory.ts";
+import { MemoryWatch, SETTLE_MS, STOP_GRACE_MS, type Unit, kmsgKill, limitOf, unitsOf } from "../src/jobs/memory.ts";
 import type { ProcessInfo } from "../src/platform/index.ts";
 import { fieldOrNull, parsePs, parseTopMem, pressureOfAvailable, pressureOfLevel, pressureOfSwap, swapUsedOf, swapoutsOf, worsePressure } from "../src/platform/text.ts";
 
@@ -336,4 +336,45 @@ test("about to run out, the largest is stopped and its agent told why; the next 
   await r.watch.look();
   assert.deepEqual(r.stoppedJobs, ["job_1"]);
   assert.ok(r.told.some(([who, text]) => who === "job_1" && /stopped your Job "build"/.test(text)));
+});
+
+test("the kernel's log says whom its OOM killer killed, and when", () => {
+  assert.deepEqual(kmsgKill("3,8812,52194958134,-;Out of memory: Killed process 1190811 (chromium) total-vm:1518404136kB, anon-rss:122600kB, file-rss:128316kB, shmem-rss:4148kB, UID:1000 pgtables:2173kB oom_score_adj:300"),
+    { usec: 52194958134, pid: 1190811, name: "chromium" });
+  assert.deepEqual(kmsgKill("3,9001,77000000,-;Memory cgroup out of memory: Killed process 42 (cargo build) total-vm:10kB"), { usec: 77000000, pid: 42, name: "cargo build" });
+  assert.equal(kmsgKill("6,8813,52194958200,-;oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,task=chromium,pid=1190811,uid=1000"), null);
+  assert.equal(kmsgKill("6,1,1,-;Linux version 6.12"), null);
+});
+
+test("a process the kernel kills for memory is told to the agent whose unit it was at the last look; one of nobody's only logged", async () => {
+  const told: [string | null, string][] = [];
+  let hear: ((kill: { pid: number; name: string }) => void) | null = null;
+  const watch = new MemoryWatch({
+    pressure: async () => "normal",
+    // A runner's claude (21) running a shell (22) and the browser it started (23); a job (30, 31).
+    table: async () => [p(20, 1, 20, 0, "stillfail-runner"), p(21, 20, 20, 0.5, "claude"), p(22, 21, 22, 0.1, "/bin/sh"), p(23, 22, 22, 0.4, "/usr/lib/chromium/chromium"),
+      p(30, 1, 30, 0.1, "sh"), p(31, 30, 30, 0.2, "cargo")],
+    totalBytes: () => 16 * GiB, freeBytes: () => 2 * GiB,
+    cwds: async () => new Map(), sessionAt: () => null,
+    jobs: () => [{ id: "job_1", session: "s1", pgid: 30, label: 'Job "build" (job_1)' }], agents: async () => [{ pid: 21, session: "s2" }],
+    tell: (unit, text) => told.push([unit.session, text]),
+    stopJob: async () => {}, signal: () => {}, self: 10,
+    kills: (heard) => { hear = heard; return () => { hear = null; }; },
+  });
+  watch.start();
+  try {
+    await watch.look();
+    await watch.killed({ pid: 23, name: "chromium" });
+    await watch.killed({ pid: 31, name: "cargo" });
+    await watch.killed({ pid: 999, name: "Xorg" });
+    assert.equal(told.length, 2);
+    assert.equal(told[0]![0], "s2");
+    assert.match(told[0]![1], /the kernel killed chromium \(pid 23\), a process of your command chromium \(pid 22\)\. The machine had 2\.0 GiB free of 16\.0 GiB just after\./);
+    assert.equal(told[1]![0], "s1");
+    assert.match(told[1]![1], /killed cargo \(pid 31\), a process of your Job "build" \(job_1\)/);
+    assert.notEqual(hear, null, "heard while it runs");
+  } finally {
+    await watch.close();
+  }
+  assert.equal(hear, null, "no longer heard once closed");
 });

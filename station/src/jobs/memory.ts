@@ -21,8 +21,14 @@
 //
 // Looked at every WATCH_MS, every PRESSED_MS under pressure, when the memory is read exactly (macOS: the processes'
 // footprint, which counts what is compressed or swapped out, where resident memory does not).
+//
+// What the kernel kills for memory itself (Linux's OOM killer, which can come before this watch sees any pressure: a
+// hypervisor out of memory for the guest, a cgroup's limit) is heard as the kernel logs it (/dev/kmsg, `kernelKills`):
+// the process is gone by then, so its agent is found in the last look's units (`#seen`) and told what was killed.
+import { spawn } from "node:child_process";
 import { readFile, rm, writeFile } from "node:fs/promises";
-import { totalmem } from "node:os";
+import { freemem, totalmem } from "node:os";
+import { createInterface } from "node:readline";
 import { join } from "node:path";
 import type { Clock } from "effect";
 import { runnerId } from "../agents/process.ts";
@@ -144,7 +150,21 @@ export type MemoryOptions = {
   self: number;
   /// Writes down what is paused (the pids), so another station or this one started again lets them go on.
   savePaused?(pids: number[]): Promise<void>;
+  /// Hears each process the kernel kills for memory (`kernelKills`); the returned function stops hearing.
+  kills?(heard: (kill: KernelKill) => void): () => void;
+  /// The memory free now (bytes), for what an agent is told of a kill.
+  freeBytes?(): number;
 };
+
+/// A process the kernel's OOM killer killed: its pid and its name as the kernel gives it (at most 15 characters).
+export type KernelKill = { pid: number; name: string };
+
+/// A kill in one record of /dev/kmsg (`<priority>,<sequence>,<microseconds since boot>,<flags>;<text>`), with when it
+/// was logged; null for any other record.
+export function kmsgKill(record: string): (KernelKill & { usec: number }) | null {
+  const m = /^\d+,\d+,(\d+),[^;]*;(?:Memory cgroup out of memory|Out of memory)[^:]*: Killed process (\d+) \((.*?)\)/.exec(record);
+  return m ? { usec: Number(m[1]), pid: Number(m[2]), name: m[3]! } : null;
+}
 
 const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
@@ -165,6 +185,9 @@ export class MemoryWatch {
   #looks = 0;
   /// The commands paused under pressure (SIGSTOP), by their units' keys.
   #paused = new Map<string, { pids: number[]; label: string; session: string | null; bytes: number }>();
+  /// Every process of the last look's units, with its unit: whose a process the kernel kills was.
+  #seen = new Map<number, Unit>();
+  #unhear: () => void = () => {};
 
   constructor(options: MemoryOptions) {
     this.#o = options;
@@ -173,6 +196,7 @@ export class MemoryWatch {
 
   /// Looks every WATCH_MS (PRESSED_MS under pressure) until closed.
   start(): void {
+    this.#unhear = this.#o.kills?.((kill) => void this.killed(kill)) ?? (() => {});
     const next = (ms: number) =>
       this.#fibers.after(ms, async () => {
         let pressure: Pressure | null = null;
@@ -192,6 +216,7 @@ export class MemoryWatch {
 
   /// What is paused goes on: nothing is left stopped behind a station that ends.
   async close(): Promise<void> {
+    this.#unhear();
     for (const p of this.#paused.values()) for (const pid of p.pids) this.#o.signal(pid, "SIGCONT");
     if (this.#paused.size > 0) {
       this.#paused.clear();
@@ -208,6 +233,7 @@ export class MemoryWatch {
     if (table === null) return pressure;
     const units = unitsOf(table, this.#o.jobs(), await this.#o.agents(), this.#o.self, this.#remembered).sort((a, b) => b.bytes - a.bytes);
     const present = new Set(units.map((u) => u.key));
+    this.#seen = new Map(units.flatMap((u) => u.pids.map((pid) => [pid, u] as const)));
     for (const key of this.#told.keys()) if (!present.has(key)) this.#told.delete(key);
     this.#looks++;
     for (const key of this.#since.keys()) if (!present.has(key)) this.#since.delete(key);
@@ -270,6 +296,17 @@ export class MemoryWatch {
       }
     }
     return pressure;
+  }
+
+  /// The kernel killed `kill` for memory: its unit's agent told (the unit as the last look saw it), else only logged.
+  async killed(kill: KernelKill): Promise<void> {
+    const u = this.#seen.get(kill.pid);
+    log.warn("memory", "the kernel killed a process for memory", { pid: kill.pid, name: kill.name, unit: u?.key ?? null, session: u?.session ?? null });
+    if (u === undefined) return;
+    await this.#whose([u]);
+    const free = this.#o.freeBytes?.();
+    const left = free === undefined ? "" : ` The machine had ${gib(free)} free of ${gib(this.#o.totalBytes())} just after.`;
+    this.#tell(u, `The machine ran out of memory and the kernel killed ${kill.name} (pid ${kill.pid}), a process of your ${u.label}.${left} If you still need it, run it again with less at once, or on another station (station_task).`);
   }
 
   /// The sessions of commands their runtime does not say (a runtime shared by sessions): the one whose directory each
@@ -497,6 +534,8 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
       } catch {}
     },
     self: process.pid,
+    ...(process.platform === "linux" ? { kills: kernelKills } : {}),
+    freeBytes: () => freemem(),
     savePaused: async (pids) => {
       if (pids.length === 0) await rm(pausedFile, { force: true });
       else await writeFile(pausedFile, JSON.stringify(pids));
@@ -511,4 +550,32 @@ export function liveMemory(o: { data: string; store: Store; jobs: Jobs; notify: 
     () => undefined,
   ).catch((error) => log.warn("memory", "what was paused not read", { error: (error as Error).message }));
   return watch;
+}
+
+/// The processes the kernel kills for memory from now on, as it logs them (Linux's /dev/kmsg, read by `cat`: a read of
+/// it waits for the next record, which would hold one of Node's file threads the whole while). What was logged before
+/// the station started is passed over. Where the kernel's log is not readable (`kernel.dmesg_restrict`), nothing is heard.
+export function kernelKills(heard: (kill: KernelKill) => void): () => void {
+  let child: ReturnType<typeof spawn> | null = null;
+  let ended = false;
+  void readFile("/proc/uptime", "utf8").then((uptime) => {
+    if (ended) return;
+    const since = Number(uptime.split(" ")[0]) * 1e6;
+    const cat = spawn("cat", ["/dev/kmsg"], { stdio: ["ignore", "pipe", "pipe"] });
+    child = cat;
+    let said = "";
+    cat.stderr.on("data", (b: Buffer) => (said += b.toString()));
+    cat.on("error", (error) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", { error: error.message }));
+    cat.on("close", (code) => {
+      if (!ended) log.info("memory", "the kernel's log is not read: its OOM kills are not told", { code, said: said.trim().slice(0, 200) });
+    });
+    createInterface({ input: cat.stdout }).on("line", (record) => {
+      const kill = kmsgKill(record);
+      if (kill !== null && kill.usec >= since) heard({ pid: kill.pid, name: kill.name });
+    });
+  }, (error) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", { error: (error as Error).message }));
+  return () => {
+    ended = true;
+    child?.kill();
+  };
 }
