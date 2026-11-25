@@ -487,21 +487,91 @@ jobs:
           echo "PION_RT_DIR=$PION_RT_DIR" >> "$GITHUB_ENV"
           "$PIONC" --version
 
-      - name: Whether this commit's MoonBit reader is prebuilt
+      - name: Whether shell-station and MoonBit reader are prebuilt (reuse pipeline natives when missing)
         id: reader
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          missing="$(node scripts/native.ts missing reader:linux-x64)"
-          echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          shell_key="$(node scripts/native.ts key shell-station linux-x64)"
+          reader_key="$(node scripts/native.ts key reader linux-x64)"
+          shell_asset="shell-station-linux-x64-$shell_key.tar.gz"
+          reader_asset="reader-linux-x64-$reader_key.tar.gz"
+          missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+          missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+
+          # Both stillfail-pion (build.sh) and reader:linux-x64 link libstillfail_shell.a (shell-station:linux-x64).
+          # When client/shell/** changed, pipeline's natives job builds it on ci-1 (with cargo-zigbuild and sccache);
+          # wait briefly for it so build-linux avoids a cold Rust cross-build on ubuntu-24.04.
+          if [ -n "$missing_shell" ]; then
+            echo "shell-station:linux-x64 not published yet; checking same-SHA pipeline natives"
+            api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
+            t0=$SECONDS run="" natives_state=""
+            deadline=$(( $(date +%s) + 180 ))
+            while :; do
+              if [ "$GITHUB_REF" = refs/heads/main ]; then
+                missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+                if [ -z "$missing_shell" ]; then
+                  echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s)"
+                  break
+                fi
+              fi
+              [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
+              if [ -n "$run" ]; then
+                natives_state="$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' || true)"
+                if [ "$GITHUB_REF" != refs/heads/main ]; then
+                  case "$natives_state" in
+                    "completed success")
+                      echo "(pipeline natives done after $((SECONDS - t0)) s: run $run)"
+                      mkdir -p "$RUNNER_TEMP/natives"
+                      if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"; then
+                        node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets linux-x64 --exclude-parts reader-harness
+                        echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
+                      fi
+                      break ;;
+                    completed*)
+                      echo "pipeline natives ended '$natives_state' (run $run); falling back to local build"
+                      break ;;
+                  esac
+                else
+                  case "$natives_state" in
+                    "completed failure")
+                      echo "pipeline natives failed (run $run); falling back to local build"
+                      break ;;
+                  esac
+                fi
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "pipeline natives not ready after $((SECONDS - t0)) s (run=${run:-none}, state=${natives_state:-none}); falling back to local build"
+                break
+              fi
+              sleep 5
+            done
+            missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+            missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+          fi
+
+          if [ -f "$RUNNER_TEMP/natives/$shell_asset" ]; then missing_shell=""; fi
+          if [ -f "$RUNNER_TEMP/natives/$reader_asset" ]; then missing_reader=""; fi
+          echo "shell_missing=$([ -n "$missing_shell" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "missing=$([ -n "$missing_reader" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "shell_missing=$([ -n "$missing_shell" ] && echo true || echo false) reader_missing=$([ -n "$missing_reader" ] && echo true || echo false)"
 
       - if: steps.reader.outputs.missing == 'true'
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
 
-      - name: Zig 0.16.0 for the reader (UBSan off at -O0, as natives)
-        if: steps.reader.outputs.missing == 'true'
+      - name: Cache cargo-zigbuild (fallback when shell-station:linux-x64 must be built locally)
+        if: steps.reader.outputs.shell_missing == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-cargo-zigbuild/v0.24.1
+          key: pion-station-cargo-zigbuild-linux-x64-v0.24.1
+
+      - name: Zig 0.16.0 (and cargo-zigbuild fallback when shell-station is missing)
+        if: steps.reader.outputs.missing == 'true' || steps.reader.outputs.shell_missing == 'true'
         run: |
+          set -euo pipefail
           zbase="$HOME/.cache/pion-station-zig/0.16.0"
           d="$zbase/zig-x86_64-linux-0.16.0"
           if [ ! -x "$d/zig" ]; then
@@ -516,6 +586,21 @@ jobs:
           mkdir -p "$RUNNER_TEMP/zig-bin"
           printf '#!/bin/sh\nif [ "${1:-}" = cc ]; then shift; exec "%s/zig" cc -fno-sanitize=undefined "$@"; fi\nexec "%s/zig" "$@"\n' "$d" "$d" > "$RUNNER_TEMP/zig-bin/zig"
           chmod +x "$RUNNER_TEMP/zig-bin/zig"
+          if [ "${{ steps.reader.outputs.shell_missing }}" = "true" ]; then
+            czbase="$HOME/.cache/pion-station-cargo-zigbuild/v0.24.1"
+            if [ ! -x "$czbase/cargo-zigbuild" ]; then
+              mkdir -p "$czbase"
+              czt="$RUNNER_TEMP/cargo-zigbuild.tar.xz"
+              curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$czt" https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz
+              echo "f09b180a517af0e4dd4bffc921bb88e5ab705452a9dd948c61e489b3020c68c2  $czt" | sha256sum -c --quiet
+              tar -xf "$czt" -C "$czbase"
+              rm -f "$czt"
+            fi
+            cp "$czbase/cargo-zigbuild" "$RUNNER_TEMP/zig-bin/cargo-zigbuild"
+            chmod +x "$RUNNER_TEMP/zig-bin/cargo-zigbuild"
+            echo "$d" >> "$GITHUB_PATH"
+            echo "$RUNNER_TEMP/zig-bin" >> "$GITHUB_PATH"
+          fi
 
       - if: steps.reader.outputs.missing == 'true'
         uses: actions/cache/restore@v4
