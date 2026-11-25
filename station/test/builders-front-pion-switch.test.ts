@@ -209,36 +209,48 @@ async function runForwardParity(bin: string) {
     await new Promise<void>((r) => echo.close(() => r()));
   }
 
-  // 2. Unreachable target closes ONLY that client; a subsequent connection when target is unreachable also closes cleanly
-  const dead = createServer();
-  await new Promise<void>((r) => dead.listen(0, "127.0.0.1", r));
-  const deadPort = (dead.address() as AddressInfo).port;
-  await new Promise<void>((r) => dead.close(() => r()));
-  const fwdDead = await spawnForward(bin, ["--listen-port", "0", "--to", String(deadPort)]);
+  // 2. Unreachable target: client connects to forwarder, gets closed cleanly; once target comes up on that port, forwarding succeeds!
+  const probe = createServer();
+  await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
+  const targetPort = (probe.address() as AddressInfo).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+  const fwdDead = await spawnForward(bin, ["--listen-port", "0", "--to", String(targetPort)]);
+  let recovered: ReturnType<typeof createServer> | null = null;
   try {
-    for (let i = 0; i < 2; i++) {
-      const c = connect(fwdDead.port, "127.0.0.1");
-      const got = await readAllSocket(c).catch(() => Buffer.alloc(0));
-      assert.equal(got.length, 0);
-    }
+    // Verify client genuinely connected to forwarder before being closed due to unreachable target.
+    const c1 = connect(fwdDead.port, "127.0.0.1");
+    await new Promise<void>((resolve, reject) => c1.once("connect", resolve).once("error", reject));
+    const got1 = await readAllSocket(c1).catch(() => Buffer.alloc(0));
+    assert.equal(got1.length, 0);
     assert.equal(fwdDead.child.exitCode, null, "unreachable target must not exit forward");
+
+    // Bring up target on the exact same port and verify subsequent connection forwards cleanly.
+    recovered = createServer({ allowHalfOpen: true }, (s) => {
+      void readAllSocket(s).then((got) => s.end(Buffer.concat([Buffer.from("up:"), got])));
+    });
+    await new Promise<void>((r) => recovered!.listen(targetPort, "127.0.0.1", r));
+    const got2 = await new Promise<Buffer>((resolve, reject) => {
+      const c2 = connect(fwdDead.port, "127.0.0.1", () => c2.end(Buffer.from("again")));
+      readAllSocket(c2).then(resolve, reject);
+    });
+    assert.equal(got2.toString(), "up:again");
   } finally {
     await fwdDead.stop();
+    if (recovered) await new Promise<void>((r) => recovered!.close(() => r()));
   }
 
   // 3. Inherited `--listen-fd`
-  const target = createServer({ allowHalfOpen: true }, (s) => {
+  const fdTarget = createServer({ allowHalfOpen: true }, (s) => {
     void readAllSocket(s).then((got) => s.end(Buffer.concat([Buffer.from("fd:"), got])));
   });
-  await new Promise<void>((r) => target.listen(0, "127.0.0.1", r));
-  const targetPort = (target.address() as AddressInfo).port;
+  await new Promise<void>((r) => fdTarget.listen(0, "127.0.0.1", r));
+  const fdTargetPort = (fdTarget.address() as AddressInfo).port;
   const inherited = createServer();
   await new Promise<void>((r) => inherited.listen(0, "127.0.0.1", r));
   const inheritedPort = (inherited.address() as AddressInfo).port;
   const rawFd = (inherited as unknown as { _handle?: { fd?: number } })._handle?.fd;
   assert.ok(typeof rawFd === "number" && rawFd >= 0, "expected POSIX listening fd");
-  const fwdFd = await spawnForward(bin, ["--listen-fd", "3", "--to", String(targetPort)], rawFd);
-  // Stop Node from accepting on the same socket so the child owns all accepts.
+  const fwdFd = await spawnForward(bin, ["--listen-fd", "3", "--to", String(fdTargetPort)], rawFd);
   await new Promise<void>((r) => inherited.close(() => r()));
   try {
     assert.equal(fwdFd.port, inheritedPort);
@@ -249,7 +261,7 @@ async function runForwardParity(bin: string) {
     assert.equal(got.toString(), "fd:ping");
   } finally {
     await fwdFd.stop();
-    await new Promise<void>((r) => target.close(() => r()));
+    await new Promise<void>((r) => fdTarget.close(() => r()));
   }
 }
 
@@ -270,10 +282,11 @@ async function runMeshParity(bin: string, label: string) {
     assert.equal(ep2.id(), ep1.id());
     assert.deepEqual(ep2.sockets(), ep1.sockets(), "ALPN update must keep same endpoint");
 
-    // 2. Wrong-key refusal keeps live endpoint running
+    // 2. Wrong-key refusal + lone-surrogate line drop + numeric `dscp: 10.0` vs `10` parity
     const ctl = await openControl(fA.socket);
+    // Send lone surrogate line (must be ignored) + wrong-key bind (must be refused)
     ctl.conn.write(
-      `${JSON.stringify({
+      `{"id":999,"op":"relayStatus","bad":"\\uD800"}\n${JSON.stringify({
         id: 1,
         op: "bind",
         streams: "/nonexistent/streams.sock",
@@ -285,7 +298,7 @@ async function runMeshParity(bin: string, label: string) {
     assert.match(String(refused.error), /another station's key/);
     ctl.conn.destroy();
 
-    // Dialer on fB connects with ALPN_EXTRA, tests conn.hand + istream.hand + kind-3 route skip
+    // Dialer on fB connects with ALPN_EXTRA, verifying original endpoint is still alive after wrong-key refusal
     const dialer = await withFront({} as Mesh, fB.socket).bind({
       secretKey: keyB,
       relayUrls: [],
@@ -338,7 +351,6 @@ async function runMeshParity(bin: string, label: string) {
       const peerRecv = (await outConn.acceptBi())!;
       assert.equal((await readAllStream(peerRecv)).toString(), "from-station");
 
-      // 3. `part` disconnect cleanup: close ep2 -> outConn observes closed; ep1 already bound earlier
       await ep2.close();
       await outConn.closed();
       await ep1.close();
@@ -346,22 +358,86 @@ async function runMeshParity(bin: string, label: string) {
       await new Promise<void>((r) => routeServer.close(() => r()));
     }
 
-    // 4. Same-key different-identity rebind (dscp: 10) -> new sockets, front stays alive
-    const rebind1 = await withFront({} as Mesh, fA.socket).bind({ ...baseOpts, dscp: 10 });
-    assert.equal(fA.child.exitCode, null, "front stays alive after non-fixed-port rebind");
+    // 3. `part` via real control socket disconnect (EOF, NOT protocol `close`):
+    //    (a) clientA owns a live conn AND has an unclaimed `coming` conn queued;
+    //    (b) clientB is already bound earlier;
+    //    (c) destroying clientA's control socket closes clientA's owned conn AND redistributes unclaimed `coming` conn to clientB!
+    const holder = await withFront({} as Mesh, fA.socket).bind(baseOpts);
+    const rawA = await openControl(fA.socket);
+    const bindRawA = (await (async () => {
+      rawA.conn.write(
+        `${JSON.stringify({
+          id: 1,
+          op: "bind",
+          streams: "/nonexistent/raw-a.sock",
+          key: keyA.toString("hex"),
+          options: { alpns: [ALPN_MAIN.toString("hex")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" },
+        })}\n`,
+      );
+      return await rawA.answer(1);
+    })()) as { ok: { id: string; sockets: string[] } };
+    assert.equal(bindRawA.ok.id, holder.id());
+    // Dial 2 connections: rawA accepts the first (now owned), leaves the second unclaimed in `coming`.
+    rawA.conn.write(`${JSON.stringify({ id: 2, op: "accept" })}\n`);
+    const ownedByA = await dialer.connect(addrOf(holder), ALPN_MAIN);
+    const acceptedByA = await rawA.answer(2);
+    assert.ok(acceptedByA.ok);
+    const unclaimedOnA = await dialer.connect(addrOf(holder), ALPN_MAIN);
+    const holderAccepting = holder.accept();
+    // Abruptly destroy rawA's control socket (EOF triggers `part` without protocol `close`).
+    rawA.conn.destroy();
+    // Owned conn closes; unclaimed conn is redistributed to `holder`!
+    await ownedByA.closed();
+    const redistributed = (await holderAccepting)!;
+    assert.equal(redistributed.remoteId(), dialer.id());
+    unclaimedOnA.close(0, "");
+    await redistributed.closed();
 
-    // 5. `fixed_port` rebind: bind fixed UDP port, then rebind same key + same fixed port with different identity (dscp: 20)
+    // 4. Same-key different-identity rebind (dscp: 10):
+    //    keep a live conn on old endpoint, verify old endpoint closes it on rebind, new endpoint has same id + new sockets + accepts new handshake!
+    const oldConn = await dialer.connect(addrOf(holder), ALPN_MAIN);
+    const oldAccepted = (await holder.accept())!;
+    assert.equal(oldAccepted.remoteId(), dialer.id());
+    const rebind1 = await withFront({} as Mesh, fA.socket).bind({ ...baseOpts, dscp: 10 });
+    assert.equal(rebind1.id(), holder.id(), "same key rebind preserves endpointId");
+    assert.notEqual(rebind1.sockets().join(), holder.sockets().join(), "dscp change binds a new endpoint");
+    assert.equal(fA.child.exitCode, null, "front stays alive after non-fixed-port rebind");
+    await oldConn.closed();
+    // Verify numeric `dscp: 10.0` via raw control socket reuses the exact same endpoint (no extra rebind!)
+    const ctlNum = await openControl(fA.socket);
+    ctlNum.conn.write(
+      `{"id":1,"op":"bind","streams":"/nonexistent/s.sock","key":${JSON.stringify(keyA.toString("hex"))},"options":{"alpns":[${JSON.stringify(ALPN_MAIN.toString("hex"))}],"relayUrls":[],"discovery":false,"bindAddr":"127.0.0.1:0","dscp":10.0}}\n`,
+    );
+    const numRes = (await ctlNum.answer(1)) as { ok?: { id: string; sockets: string[] } };
+    assert.deepEqual(numRes.ok?.sockets, rebind1.sockets(), "dscp: 10.0 must match dscp: 10 without rebinding");
+    ctlNum.conn.destroy();
+    const rebindAccept = rebind1.accept();
+    const rebindDial = await dialer.connect(addrOf(rebind1), ALPN_MAIN);
+    assert.equal((await rebindAccept)!.remoteId(), dialer.id());
+    rebindDial.close(0, "");
+    await holder.close();
+
+    // 5. `fixed_port` rebind: bind fixed UDP port with live conn, rebind same key + fixed port with dscp: 20, verify old closes & new accepts on same port!
     const udpRes = createSocket("udp4");
     await new Promise<void>((r) => udpRes.bind(0, "127.0.0.1", r));
     const fixedAddr = `127.0.0.1:${udpRes.address().port}`;
     await new Promise<void>((r) => udpRes.close(r));
     const fixed1 = await withFront({} as Mesh, fA.socket).bind({ ...baseOpts, bindAddr: fixedAddr, dscp: 10 });
     assert.ok(fixed1.sockets().includes(fixedAddr));
+    const fixedOldAcc = fixed1.accept();
+    const fixedOldDial = await dialer.connect(addrOf(fixed1), ALPN_MAIN);
+    assert.equal((await fixedOldAcc)!.remoteId(), dialer.id());
     const fixed2 = await withFront({} as Mesh, fA.socket).bind({ ...baseOpts, bindAddr: fixedAddr, dscp: 20 });
+    assert.equal(fixed2.id(), fixed1.id(), "fixed_port rebind preserves endpointId");
     assert.ok(fixed2.sockets().includes(fixedAddr));
     assert.equal(fA.child.exitCode, null, "front stays alive after fixed_port rebind");
+    await fixedOldDial.closed();
+    const fixedNewAcc = fixed2.accept();
+    const fixedNewDial = await dialer.connect(addrOf(fixed2), ALPN_MAIN);
+    assert.equal((await fixedNewAcc)!.remoteId(), dialer.id());
+    fixedNewDial.close(0, "");
 
-    // 6. `giveUp` on in-flight connect (cancel via fetch.cancel without breaking front)
+    // 6. `giveUp` on in-flight connect (cancel via fetch.cancel; assert non-empty cancellation error)
     const frontClient = await Front.open(fA.socket);
     try {
       await frontClient.ask("bind", {
@@ -379,8 +455,7 @@ async function runMeshParity(bin: string, label: string) {
       );
       assert.ok(connectAskId > 0);
       await frontClient.ask("giveUp", { of: connectAskId });
-      await assert.rejects(connectP);
-      // Front still answers subsequent asks cleanly
+      await assert.rejects(connectP, /cancel/i);
       const relays = await frontClient.ask("relayStatus");
       assert.ok(Array.isArray(relays));
     } finally {
@@ -403,14 +478,14 @@ async function runMeshParity(bin: string, label: string) {
   }
 }
 
-test("W7-A dual-engine forward parity: MB vs Pion (pipe, half-close, unreachable target, --listen-fd)", { timeout: 60_000 }, async (t) => {
+test("W7-A dual-engine forward parity: MB vs Pion (pipe, half-close, unreachable->recovered target, --listen-fd)", { timeout: 60_000 }, async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   await runForwardParity(bins.mb);
   await runForwardParity(bins.pion);
 });
 
-test("W7-A dual-engine mesh parity: MB vs Pion (bind, ALPN, wrong-key, rebind, fixed_port, routing, giveUp, part, stdin EOF)", { timeout: 60_000 }, async (t) => {
+test("W7-A dual-engine mesh parity: MB vs Pion (bind, ALPN, wrong-key, lone-surrogate, dscp 10.0, EOF part, rebind, fixed_port, routing, giveUp, stdin EOF)", { timeout: 60_000 }, async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   await runMeshParity(bins.mb, "mb");

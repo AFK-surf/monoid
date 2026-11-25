@@ -1003,16 +1003,25 @@ jobs:
             printf '%s\n' "$out" | grep -qE '^# todo 0$'
           }
 
-          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
+          if ! OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"; then
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
           check_tap_strict "w7-foundation.test.ts" "$OUT"
 
-          FRONT_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
-            node --test --test-reporter=tap station/test/front-alpns.test.ts station/test/front-bind-race.test.ts 2>&1)"
+          if ! FRONT_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/front-alpns.test.ts station/test/front-bind-race.test.ts 2>&1)"; then
+            printf '%s\n' "$FRONT_OUT"
+            exit 1
+          fi
           check_tap_strict "front-alpns + front-bind-race (forced Pion)" "$FRONT_OUT"
 
-          SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
-            node --test --test-reporter=tap station/test/builders-front-pion-switch.test.ts 2>&1)"
+          if ! SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-front-pion-switch.test.ts 2>&1)"; then
+            printf '%s\n' "$SW_OUT"
+            exit 1
+          fi
           check_tap_strict "builders-front-pion-switch.test.ts" "$SW_OUT"
 
   gate-w7-data-1:
