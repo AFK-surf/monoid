@@ -26,6 +26,8 @@ pub fn follow_topic(String, params? : Map[String, @json.Json]) -> Sub
 
 pub fn has_browser_session() -> Bool
 
+pub fn json_same(@json.Json, @json.Json) -> Bool
+
 pub fn leave_topic(String, params? : Map[String, @json.Json]) -> Unit
 
 pub let on_failed : @ref.Ref[((String) -> Unit)?]

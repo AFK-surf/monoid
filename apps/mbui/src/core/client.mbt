@@ -152,8 +152,8 @@ pub fn Sub::keyed(self : Sub, field : String, key_fields : Array[String]) -> @si
       let l : KeyedField = {
         field,
         key_fields: key_fields.map(Json::string),
-        // (an item the same object, or, come whole and parsed anew, the same as it was said)
-        list: @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b }),
+        // (an item the same object, or structurally equal with physical_equal short-circuiting on shared subtrees)
+        list: @signals.keyed_list(same=fn(a, b) { json_same(a, b) }),
       }
       l.take_whole(self.value)
       self.lists[field] = l

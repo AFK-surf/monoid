@@ -145,3 +145,113 @@ test "a long keyed list's ops, each its own delta, find their items as the short
   set_n("k99", 991.0)
   assert_eq(got.stringify(), Json::object({ "items": Json::array(list) }).stringify())
 }
+
+///|
+test "cow multi-op set/remove/append/overwrite matches one-by-one and keeps input, ops and untouched subtrees intact" {
+  let untouched : Json = { "keep": [1, 2, 3], "nested": { "ok": true } }
+  let old : Json = {
+    "untouched": untouched,
+    "lists": [
+      {
+        "key": "chats",
+        "items": [
+          { "key": "c0", "share": 0.5, "costText": "$10" },
+          { "key": "c1", "share": 0.3, "costText": "$6" },
+          { "key": "c2", "share": 0.2, "costText": "$4" },
+        ],
+      },
+    ],
+    "meta": { "a": 1, "b": { "x": 10, "y": 20 } },
+    "arr": [{ "v": 1 }],
+  }
+  let ops : Array[Json] = [
+    { "path": ["lists", 0, "items", 0, "share"], "set": 0.45 },
+    { "path": ["lists", 0, "items", 1, "share"], "set": 0.35 },
+    { "path": ["lists", 0, "items", 1, "costText"], "set": "$7" },
+    { "path": ["lists", 0, "items", 99, "share"], "set": 0.99 }, // invalid index: skipped
+    { "path": ["meta", "b", "x"], "set": 11 },
+    { "path": ["meta", "b"], "set": { "z": 30 } }, // overwrites previously dirty child
+    { "path": ["meta", "b", "z"], "set": 31 }, // mutates copy, must not mutate ops[5]
+    { "path": ["meta", "a"], "remove": true },
+    { "path": ["meta", "missing"], "remove": true }, // no-op remove
+    { "path": ["arr"], "append": [{ "v": 2 }] },
+    { "path": ["arr", 1, "v"], "set": 20 }, // modifies appended item without mutating ops[9]
+    { "path": ["nope", "deep"], "set": 1 }, // missing parent: skipped
+  ]
+  let old_before = old.stringify()
+  let ops_before = Json::array(ops).stringify()
+  let batch = @core.apply_delta(old, ops)
+  let seq = each_delta(old, ops)
+  assert_eq(batch.stringify(), seq.stringify())
+  assert_eq(old.stringify(), old_before)
+  assert_eq(Json::array(ops).stringify(), ops_before)
+  // Untouched subtree retains exact reference identity
+  guard batch is Object(bm) && bm.get("untouched") is Some(kept) else { fail("missing untouched") }
+  assert_true(physical_equal(kept, untouched))
+}
+
+///|
+test "cow keyed drop runs, mixed ops, duplicate keys and key-changing patches match one-by-one" {
+  let old = long_keyed(50)
+  let ops : Array[Json] = [
+    // consecutive drops including duplicate key "k5" (at 5 and 30) and missing key
+    { "path": ["items"], "key": ["id"], "drop": "k5" },
+    { "path": ["items"], "key": ["id"], "drop": "k49" },
+    { "path": ["items"], "key": ["id"], "drop": "missing" },
+    { "path": ["items"], "key": ["id"], "drop": "k5" },
+    { "path": ["items"], "key": ["id"], "drop": "k0" },
+    // puts, moves, and patches including key change
+    { "path": ["items"], "key": ["id"], "put": { "id": "k100", "n": 100 }, "before": "k1" },
+    { "path": ["items"], "key": ["id"], "move": "k48", "before": "k100" },
+    { "path": ["items"], "key": ["id"], "patch": "k10", "ops": [{ "path": ["n"], "set": 1010 }] },
+    { "path": ["items"], "key": ["id"], "patch": "k10", "ops": [{ "path": ["id"], "set": "k10_new" }] },
+    { "path": ["items"], "key": ["id"], "patch": "k10_new", "ops": [{ "path": ["n"], "set": 2020 }] },
+    { "path": ["items"], "key": ["id"], "put": { "id": "k200", "n": 200 }, "before": null },
+    { "path": ["items"], "key": ["id"], "patch": "k200", "ops": [{ "path": ["n"], "set": 2001 }] },
+    // indexed edit interleaved with keyed op on the same array
+    { "path": ["items", 0, "n"], "set": 777 },
+    { "path": ["items"], "key": ["id"], "patch": "k48", "ops": [{ "path": ["extra"], "set": true }] },
+  ]
+  let old_before = old.stringify()
+  let batch = @core.apply_delta(old, ops)
+  let seq = each_delta(old, ops)
+  assert_eq(batch.stringify(), seq.stringify())
+  assert_eq(old.stringify(), old_before)
+}
+
+///|
+test "cow keyed move with duplicate keys after shifted index stays exact" {
+  let items : Array[Json] = Array::makei(40, fn(i) {
+    let id = if i == 10 || i == 11 { "dup" } else { "k\{i}" }
+    Json::object({ "id": Json::string(id), "tag": Json::number(i.to_double()) })
+  })
+  let old : Json = { "items": Json::array(items) }
+  // Prime keyed_ats cache on `old` via a patch
+  let warmed = @core.apply_delta(old, [
+    { "path": ["items"], "key": ["id"], "patch": "k39", "ops": [{ "path": ["tag"], "set": 390 }] },
+  ])
+  // Move item 0 before "dup": must land before index 10 (tag 10), not index 11 (tag 11)
+  let moved = @core.apply_delta(warmed, [
+    { "path": ["items"], "key": ["id"], "move": "k0", "before": "dup" },
+  ])
+  guard moved is Object(m) && m.get("items") is Some(Array(arr)) else { fail("no items") }
+  assert_eq(arr[9].stringify(), "{\"id\":\"k0\",\"tag\":0}")
+  assert_eq(arr[10].stringify(), "{\"id\":\"dup\",\"tag\":10}")
+  assert_eq(arr[11].stringify(), "{\"id\":\"dup\",\"tag\":11}")
+}
+
+///|
+test "json_same matches Json equality and short-circuits shared subtrees" {
+  let shared_block : Json = { "kind": "code", "lines": ["a", "b", "c"] }
+  let a : Json = { "id": 1, "blocks": [shared_block, { "text": "hi" }] }
+  let b : Json = { "id": 1.0, "blocks": [shared_block, { "text": "hi" }] }
+  let c : Json = { "id": 1, "blocks": [shared_block, { "text": "bye" }] }
+  assert_true(@core.json_same(a, a))
+  assert_true(@core.json_same(a, b))
+  assert_false(@core.json_same(a, c))
+  let parsed_num = @json.parse("{\"n\":1}")
+  let made_num : Json = { "n": 1.0 }
+  assert_true(@core.json_same(parsed_num, made_num))
+  assert_false(@core.json_same({ "a": 1 }, { "a": 1, "b": 2 }))
+  assert_false(@core.json_same([1, 2], [1, 2, 3]))
+}

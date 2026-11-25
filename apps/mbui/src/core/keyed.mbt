@@ -50,7 +50,6 @@ fn KeyedField::take_whole(self : KeyedField, value : Json?) -> Unit {
 /// path by key, nothing else read; where one sets or removes the list or what holds it, or reaches into it by index,
 /// the list taken whole from `value` (the value with them applied) instead.
 fn KeyedField::take_ops(self : KeyedField, ops : Array[Json], value : Json?) -> Unit {
-  let path : Json = Json::array([Json::string(self.field)])
   @signals.start_batch()
   for op in ops {
     guard op is Object(o) else { continue }
@@ -62,7 +61,7 @@ fn KeyedField::take_ops(self : KeyedField, ops : Array[Json], value : Json?) -> 
             self.take_whole(value)
             break
           }
-        } else if Json::array(p) != path {
+        } else if p.length() != 1 {
           // (into an item by its index: not said by key)
           self.take_whole(value)
           break
