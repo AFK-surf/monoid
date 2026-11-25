@@ -232,12 +232,12 @@ fi
 // unanswered connection; /accounts answers the account, an upload is put in $FAKE_BUCKET by its key.
 const fakeApi = (bin: string) => {
   writeFileSync(join(bin, "curl"), `#!/bin/sh
-out= upload= method=GET url= at=dns
+out= upload= method=GET url= at=dns speed=
 while [ "$#" -gt 0 ]; do
-  case "$1" in -o) shift; out=$1 ;; -T) shift; upload=$1 ;; -X) shift; method=$1 ;; --resolve) shift; at=\${1##*:} ;; https://*) url=$1 ;; esac
+  case "$1" in -o) shift; out=$1 ;; -T) shift; upload=$1 ;; -X) shift; method=$1 ;; --resolve) shift; at=\${1##*:} ;; --speed-limit) shift; speed=$1 ;; https://*) url=$1 ;; esac
   shift
 done
-echo "$at $url" >> "$FAKE_LOG"
+echo "$at $url $speed" >> "$FAKE_LOG"
 case " $FAKE_DOWN " in *" $at "*) exit 28 ;; esac
 case "$url" in */client/v4/accounts)
   n=$(($(cat "$FAKE_LOG.accounts" 2>/dev/null || echo 0) + 1)); echo "$n" > "$FAKE_LOG.accounts"
@@ -289,6 +289,9 @@ test("a put goes to the second direct address, then through the machine's DNS, w
     const uploads = calls.filter(([, url]) => url!.includes("/objects/")).map(([at]) => at);
     assert.deepEqual(accounts, ats, "the account asked at each address in turn");
     assert.deepEqual(uploads, ats, "the upload made at each address in turn");
+    for (const [at, , speed] of calls) {
+      assert.equal(speed, at === "dns" ? "1024" : "262144", `speed floor for ${at}`);
+    }
   }
 });
 
