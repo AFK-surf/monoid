@@ -360,6 +360,47 @@ test("bidirectional MB export -> Pion restore and Pion export -> MB restore prod
   assert.equal(existsSync(join(destB, "restore")), false);
 });
 
+test("a chat whose entries a pass reads before its session is told of is copied with its session by MB and Pion alike", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  const made = station();
+  cleanupDirs.push(made.data);
+  const exps = { mb: new ExportClient(bins.mb, made.db, join(made.data, "replica-mb"), made.data), pion: new ExportClient(bins.pion, made.db, join(made.data, "replica-pion"), made.data) };
+  for (const e of Object.values(exps)) {
+    await e.ask({ type: "places", places: PLACES });
+    let p = await e.ask({ type: "pass", told: nothingTold() });
+    while (p.more) p = await e.ask({ type: "pass", told: nothingTold() });
+  }
+  // made after the small tables were read whole, its session's note not yet come to the export
+  chat(made.store, made.data, "chat:c3", null, 3);
+  made.store.setPin("p@x", "chat:c3", true);
+  for (const [which, e] of Object.entries(exps)) {
+    let p = await e.ask({ type: "pass", told: nothingTold() });
+    while (p.more) p = await e.ask({ type: "pass", told: nothingTold() });
+    const head = p.heads[HOME];
+    assert.equal(head.chats, 4, `${which}: the new chat counted`);
+    const sources = await e.ask({ type: "sources", hashes: Object.keys(head.files ?? {}) });
+    await e.close();
+    // taken back by the other engine
+    const dest = tempDir(`late-session-${which}-`);
+    const db = join(dest, "stillfail.db");
+    Store.open(db).close();
+    stageRestoreCopy(join(made.data, `replica-${which}`), made.data, HOME, head.gen, dest, sources);
+    assert.ok((await takeBackSoon(dest, db, NOW + 100, which === "mb" ? bins.pion : bins.mb)) !== null);
+    const d = new DatabaseSync(db, { readOnly: true });
+    try {
+      const keys = (sql: string) => (d.prepare(sql).all() as { key: string }[]).map((r) => r.key);
+      assert.deepEqual(keys("SELECT key FROM sessions ORDER BY key"), ["chat:a", "chat:b", "chat:c3", "chat:gone"], `${which}: its sessions`);
+      assert.deepEqual(keys("SELECT DISTINCT ts.session AS key FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE s.key IS NULL"), [], `${which}: no chat without its session`);
+      assert.deepEqual(keys("SELECT session AS key FROM pins WHERE session = 'chat:c3'"), ["chat:c3"], `${which}: its pin`);
+    } finally {
+      d.close();
+    }
+  }
+  made.store.close();
+});
+
 test("empty DB restore preserves original conv vs non-empty merge calls settle_conversation_in_tx", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;

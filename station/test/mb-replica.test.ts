@@ -466,6 +466,42 @@ test("a copy taken back by the MoonBit program makes what restore.ts makes, from
   made.store.close();
 });
 
+// A chat made after the small tables were read whole, whose entries a pass reads before the store's note of its
+// session reaches the export (made between one pass's told notes being taken and the next pass's snapshot): its thread
+// is entered by its entries, and its session goes with it, or a copy taken back has the chat without its session.
+test("a chat whose entries a pass reads before its session is told of is copied with its session, by both, and taken back whole", { skip }, async () => {
+  const made = station();
+  const both = new Both(made);
+  await both.start();
+  both.take();
+  await both.drain();
+  chat(made.store, made.data, "chat:c3", null, 3);
+  made.store.startTurnFor("turn-c3", "chat:c3", "message", { profile: "cc", person: "p@x", thread: made.store.sessionThreads("chat:c3")[0]!.thread.id });
+  made.store.endTurn("turn-c3", "completed", null, "all_done", null);
+  made.store.setPin("p@x", "chat:c3", true);
+  // (nothing told: the note of its session not yet come)
+  both.take();
+  const p = await both.drain(nothingTold());
+  assert.equal(p.heads[HOME].chats, 4);
+  await both.close();
+  const clock = testClock();
+  const keys = (to: string, sql: string) => {
+    const d = new DatabaseSync(join(to, "stillfail.db"), { readOnly: true });
+    const out = (d.prepare(sql).all() as { key: string }[]).map((r) => r.key);
+    d.close();
+    return out;
+  };
+  for (const which of ["ts", "mb"] as const) {
+    const { to } = brought(made, both.replica(which), HOME, clock);
+    if (which === "ts") takeBack(to, join(to, "stillfail.db"), 5);
+    else await takeBackSoon(to, join(to, "stillfail.db"), 5, binary!);
+    assert.deepEqual(keys(to, "SELECT key FROM sessions ORDER BY key"), ["chat:a", "chat:b", "chat:c3", "chat:gone"], `${which}: its sessions`);
+    assert.deepEqual(keys(to, "SELECT DISTINCT ts.session AS key FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE s.key IS NULL"), [], `${which}: no chat without its session`);
+    assert.deepEqual(keys(to, "SELECT session AS key FROM pins WHERE session = 'chat:c3'"), ["chat:c3"], `${which}: its pin`);
+  }
+  made.store.close();
+});
+
 // A level of a first copy asks where every file a place lacks is (246k transcript chunks on a real station): each hash
 // looked at once, the files table read once, each candidate stat'ed in the program (it took 25 minutes of a core, the
 // answer's keys searched one by one and each candidate asked of the shell). How long it takes is held by how it grows,
