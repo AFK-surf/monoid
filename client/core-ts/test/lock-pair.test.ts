@@ -1298,3 +1298,21 @@ test("a station of the lock that does not say it knows the entry, or does not an
   await r.host.time.pass(TAKEN_MS + 500);
   assert.deepEqual(pendingHeld(inner, "ws").map((p) => [p.entry.kind, (p.entry.body as { person?: string }).person]), [["person", personal.root("s1")]]);
 });
+
+test("serveTrusted answers {t: 'no', error: 'off'} for a verified member when safe mode is disabled, and 'not_here' for an unverified caller", async () => {
+  const m = await met();
+  const signer = Effect.runSync(Signer.make(m.host));
+  const disabled = signer.sign(next("ws", m.cloud.head("ws"), m.host.nowMs() / 1000, "disable", {}));
+  m.cloud.chains.set("ws", [...m.cloud.chains.get("ws")!, disabled]);
+  const topic = { topic: "workspace", workspace: "ws" };
+  m.core.inner.data.set(topic, { ...(m.core.inner.data.shared(topic) as object), lock: m.cloud.head("ws") });
+  await m.host.time.pass(2_000);
+  // Verified workspace member receives explicit `off`.
+  assert.deepEqual(await m.hello(), { ok: { t: "no", error: "off" } });
+  // Unverified caller receives `not_here` (no oracle leak) on a fresh stream.
+  const [trusted2, phone2] = await pipe();
+  m.core.inner.runner.fork(serveTrusted(m.core.inner, PHONE, ME, trusted2));
+  await Effect.runPromise(phone2.send({ t: "hello", v: 1, workspaces: [{ ws: "ws", credential: "bogus.jwt.token" }], kind: "app", label: "Pixel 8", sign_key: "ed25519:" + "11".repeat(32) }));
+  assert.deepEqual(await Effect.runPromise(phone2.next()), { t: "no", error: "not_here" });
+  assert.deepEqual((await m.prompts()).pairing, []);
+});

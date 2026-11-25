@@ -781,3 +781,18 @@ for (const refused of [false, true]) {
     }
   });
 }
+
+test("moved workspace turned off: serveTrusted answers {t: 'no', error: 'off'} for a verified member and 'not_here' for an unverified caller", async () => {
+  const w = await setUp({ view: [...VIEW, { sub: "r9", email: "r9@x.com", role: "member" }] });
+  const off = await w.ask("lock.disable", { workspace: "ws" });
+  assert.equal(off.error, undefined, off.error?.message);
+  assert.equal(inForceOf(w.inner, "ws").said, "off", "moved workspace is off");
+  // Verified member receives explicit `off`.
+  const { answer } = await w.helloApp("r9", NEW, newcomer().chain);
+  assert.deepEqual(answer, { t: "no", error: "off" });
+  // Unverified caller receives `not_here` (no oracle leak).
+  const [trusted, phone] = await pipe();
+  w.inner.runner.fork(serveTrusted(w.inner, NEW, ME, trusted));
+  const bogus = await w.run(Effect.andThen(phone.send({ t: "hello", v: 1, workspaces: [{ ws: "ws", credential: "bogus.jwt.token" }], kind: "app", label: "Pixel", sign_key: "ed25519:" + "11".repeat(32) }), phone.next()));
+  assert.deepEqual(bogus.ok, { t: "no", error: "not_here" });
+});

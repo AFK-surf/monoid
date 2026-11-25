@@ -182,12 +182,12 @@ export async function pipe(): Promise<[Duplex, Duplex]> {
 }
 
 /// What a station of a moved workspace gives a device (station/src/mesh/serve.ts `givesDevice`, cloud/state.ts
-/// `givenTo`), for a fake station's `/lock/logs` and `/lock/bodies`: only where the state in force made of what it keeps
-/// (`chain` its chain, `logs` the person logs, `bodies`) names the device (`base`, its base key), on or off; none while
-/// it waits, nor to a device it does not name (that one is refused at its hello, `leftOf`). A chain not moved: true.
+/// `givenTo`), for a fake station's `/lock/logs` and `/lock/bodies`: while `on`, only a device (`base`) the state in
+/// force names (others are refused at hello, `leftOf`); while `off`, any admitted member of the workspace (so devices
+/// not on the pre-off list can verify `off` locally); none while it waits. A chain not moved: true.
 export function givesTo(ws: string, chain: readonly Entry[], logs: readonly (readonly Entry[])[], bodies: readonly unknown[], nowMs: number, base: string): boolean {
   const f = stationState(ws, chain, logs, bodies, nowMs);
-  return f.said === "chain" || ((f.said === "on" || f.said === "off") && f.f.devices.has(base));
+  return f.said === "chain" || f.said === "off" || (f.said === "on" && f.f.devices.has(base));
 }
 
 /// Whether a station keeping the person logs `logs` takes the body `b` of `ws` (station/src/cloud/lock-bodies.ts: only

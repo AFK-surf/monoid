@@ -159,7 +159,7 @@ test("bodies are given by the list on or off: the root's off reaching one statio
   assert.deepEqual(answerLock(s[0]!, { method: "lock.bodies.kept" }, WS, w.stations[2]!.hex), { hashes: [] });
 });
 
-test("while off, a device is given bodies and logs only where the list names that very device", () => {
+test("while a moved workspace is off, admitted workspace members receive bodies and logs to verify off locally; another workspace receives none; re-opening enforces admission again", () => {
   const w = world();
   handover(w);
   const c = station(w);
@@ -168,13 +168,22 @@ test("while off, a device is given bodies and logs only where the list names tha
   bring(c, w.alice);
   assert.equal(c.locked(), null);
   const get = (v: any) => (lockPartRoute(c, "bodies", "GET", Buffer.alloc(0), v) as any)[1].bodies.length;
-  assert.equal(get(viewerOf("carol", w.carol.app)), c.bodies(null).all().size, "carol's app, named by the list");
+  const heads = (v: any) => (lockPartRoute(c, "heads", "GET", Buffer.alloc(0), v) as any)[1];
+  const kept = c.bodies(null).all().size;
+  assert.equal(get(viewerOf("carol", w.carol.app)), kept, "carol's app, named by the list");
   const stranger = { signer: ed(), base: ed() };
-  assert.equal(get(viewerOf("carol", stranger)), 0, "a device the list does not name");
+  assert.equal(get(viewerOf("carol", stranger)), kept, "an admitted member's new device receives bodies while off");
   const { lockDevice: _, ...noProof } = viewerOf("carol", w.carol.app);
-  assert.equal(get(noProof), 0, "a connection that brought no proof of its base key");
-  assert.equal((lockPartRoute(c, "logs", "GET", Buffer.alloc(0), viewerOf("carol", stranger)) as any)[1].chains.length, 0);
-  assert.ok((lockPartRoute(c, "logs", "GET", Buffer.alloc(0), viewerOf("carol", w.carol.app)) as any)[1].chains.length >= 3);
+  assert.equal(get(noProof), kept, "an admitted member without lock proof receives bodies while off");
+  assert.ok((lockPartRoute(c, "logs", "GET", Buffer.alloc(0), viewerOf("carol", stranger)) as any)[1].chains.length >= 3, "new device receives logs while off");
+  assert.equal(heads(viewerOf("carol", stranger)).bodies.length, kept, "new device receives heads while off");
+  assert.equal(get(viewerOf("carol", stranger, "member", WS2)), 0, "another workspace with no lock still receives none");
+  // Once the root re-opens safe mode, devices not on the list are refused at admission again.
+  w.alice.say("open", { ...w.settings, email: "alice@x" });
+  bring(c, w.alice);
+  assert.notEqual(c.locked(), null);
+  const v = viewerOf("carol", stranger);
+  assert.throws(() => inLock(c, { viewer: v, exp: 4102444800, iat: 0, sid: "s" } as never, "member", v.device), "unlisted device is refused once re-opened");
 });
 
 test("before the chain moved, a station takes the statements' bodies of a handover, and they are the state in force as the moved comes", () => {
