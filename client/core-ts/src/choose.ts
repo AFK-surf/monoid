@@ -21,7 +21,7 @@ import { borrowable, effortDefault, lends, models, quotaLine, servingIn, sourced
 import { profileServes } from "./views/profile-scope.ts";
 import { pendingKeyMade } from "./views/local.ts";
 import { type PresetRecord, type Stars, isGone } from "./preset-records.ts";
-import { type Who, fromBefore, heldOf, starredKeys, starsHeld } from "./presets-kept.ts";
+import { type Who, fromBefore, heldOf, presetProjectsHeld, starredKeys, starsHeld } from "./presets-kept.ts";
 import { work } from "./work.ts";
 import { ofAddress } from "./workspace.ts";
 import { full, weight, type Busy } from "../../../shared/station-busy.ts";
@@ -824,15 +824,18 @@ export class Choose implements Owner {
       if (typeof s.id === "string" && s.id !== "") stationNames.set(s.id, sName);
     }
     const usage = this.#presetUsage(scope);
+    const presetProjects = presetProjectsHeld(this.#record(`ws:${scope}:presetProjects`));
     view.presets = this.#ownPresets(scope, online, usage).map(({ p, station: at, stationName }) => {
       const pid = text(get(p, "id")) ?? "";
       const used = (usage.get(pid)?.count ?? 0) > 0;
+      const prefProject = presetProjects?.[pid]?.project ?? null;
       return {
         id: pid,
         name: text(get(p, "name")) ?? "",
         station: at,
         stationName,
         ...presetMeta(p, stationNames),
+        ...(prefProject !== null ? { project: prefProject } : {}),
         ...(used ? { used: true } : {}),
       };
     });

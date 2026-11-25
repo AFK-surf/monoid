@@ -109,6 +109,8 @@ function messageOf(n: number, entry: Record<string, unknown>): Record<string, un
   if (typeof entry.runtime === "string") message.runtime = entry.runtime;
   if (Array.isArray(entry.options) && entry.options.length > 0) message.options = entry.options;
   if (isObject(entry.card)) message.card = entry.card;
+  // Silent inline project-creation proposal (entries.proposal merged with proposal_outcomes).
+  if (isObject(entry.proposal)) message.proposal = entry.proposal;
   // What two chats' agents wrote each other (views.ts isLetter): which way, and the other chat.
   if (isObject(entry.letter)) message.letter = entry.letter;
   // The station's notice that a chat's run changed: how it ran and runs (run-change.ts).

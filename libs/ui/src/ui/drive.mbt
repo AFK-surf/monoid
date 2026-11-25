@@ -1464,11 +1464,11 @@ fn drive_steps(c : Ctx) -> Unit {
         }
       }
       "notice" | "noticed" | "nonotice" => {
-        // the host's notifications (@hostapi.drive 6: tapped, 7: looked for)
+        // the host's notifications (@hostapi.drive 6: tapped, 7: looked for, 14: confirmed absent on Android)
         let ok = match cmd {
           "notice" => h_drive(6, arg)
           "noticed" => h_drive(7, arg)
-          _ => !h_drive(7, arg)
+          _ => if @hostapi.platform() == 2 { h_drive(14, arg) } else { !h_drive(7, arg) }
         }
         if ok {
           h_log("DRIVE ok \{line} (\{waited.to_int()} ms)")

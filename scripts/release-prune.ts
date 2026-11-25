@@ -60,7 +60,7 @@ const SYMBOLS_SECONDS = 30 * 24 * 3600;
 /** The station's readers main built, copied into the prebuilt store (scripts/native.ts store-sync), and how long they
  * stay after they were put: a stable release of up to a few days before fetches its own. One main still builds with is
  * copied again by its next run. The store's other parts (prebuilt by hand: shell, engine, ghostty-vt…) never go. */
-const READER_NATIVE = /^natives\/reader-(darwin-arm64|linux-x64|linux-arm64|win32-x64)-[0-9a-f]{24}\.tar\.gz$/;
+const READER_NATIVE = /^natives\/(?:pion-)?reader-(darwin-arm64|linux-x64|linux-arm64|win32-x64)-[0-9a-f]{24}\.tar\.gz$/;
 const READER_NATIVE_SECONDS = 14 * 24 * 3600;
 /** The station's archives under their own names, and their deltas (scripts/release-deltas.ts). */
 const STATION_ARCHIVE = /^station\/archive\/(stable|beta)\/(\d+)-([0-9a-f]{64})-([a-z0-9-]+?)(\.tar\.gz|\.zip|\.from-\d+-[0-9a-f]{16}\.delta)$/;

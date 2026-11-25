@@ -17,9 +17,9 @@ pub fn viewer_steps_on_move(parent : @view.View, on_move : () -> Unit) -> Unit {
 /// the middle, a chevron in the words' ink; each while `before` and `after` say there is one. Each side shows while
 /// `awake_for(dir)` (-1 before, 1 after) holds (or the hand stays on a visible disc: a mouse's pointer over it while
 /// shown, or a press held on it), in over wake_ms and out over sleep_ms from where it is at the moment that changes
-/// (at once with motion reduced), as far in as `shown` says of the node as it is drawn (the viewer's fade); taking a
-/// press and readable by screen readers only while any of it shows (`takes`). Pressed (its press let go on it), `go`
-/// (-1 the one before, 1 the one after) at that moment. Their tips in `tips`. The row's node.
+/// (at once with motion reduced or where its viewer says so: viewer_bars_at_once), as far in as `shown` says of the
+/// node as it is drawn (the viewer's fade); taking a press and readable by screen readers only while any of it shows
+/// (`takes`). Pressed (its press let go on it), `go` (-1 the one before, 1 the one after) at that moment. Their tips in `tips`. The row's node.
 #callsite(autofill(loc))
 pub fn viewer_steps_node(
   parent : @view.View,
@@ -87,7 +87,15 @@ fn step_disc(
     // button held down on it and moved off it stays, while a fully hidden disc never bounces back on a still pointer)
     let woke = fn() { awake() || ((takes.val)() && hot()) || b.pressed() }
     let seen = @motion.NodeWay::new(if @signals.untracked(woke) { 1.0 } else { 0.0 })
-    b.reacts(woke, fn(on) { seen.go_ms(b, if on { 1.0 } else { 0.0 }, if on { wake_ms } else { sleep_ms }) })
+    b.reacts(woke, fn(on) {
+      let to = if on { 1.0 } else { 0.0 }
+      // (at once where its viewer says so: viewer_bars_at_once)
+      if viewer_bars_at_once(b) {
+        seen.put(to)
+      } else {
+        seen.go_ms(b, to, if on { wake_ms } else { sleep_ms })
+      }
+    })
     b
     .width(By(fn() { Some(disc()) }))
     .height(By(fn() { Some(disc()) }))

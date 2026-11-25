@@ -187,3 +187,61 @@ test "readops_core: places_from_jvals keeps remote lone-surrogate keys distinct 
     None => assert(false)
   }
 }
+
+test "readops_core: join_path Windows drive check uses UTF-16 code unit positions" {
+  assert(join_path("\\", "C:\\base", "D:\\sub") == "D:\\sub")
+  assert(join_path("\\", "C:\\base", "D:/sub") == "D:/sub")
+  assert(join_path("\\", "C:\\base", "é:/x") == "é:/x")
+  assert(join_path("\\", "C:\\base", "é:\\x") == "é:\\x")
+  assert(join_path("\\", "C:\\base", "rel\\path") == "C:\\base\\rel\\path")
+  // Surrogate pair occupies 2 UTF-16 units, so ':' is at unit index 2, not 1 -> relative.
+  assert(join_path("\\", "C:\\base", "😀:/x") == "C:\\base\\😀:/x")
+}
+
+test "readops_core: row_to_json and row_to_json_cols have deterministic column order" {
+  let row : Map[String, base_codec::Json] = Map::new()
+  row.set("signature", base_codec::json_str("sig"))
+  row.set("body", base_codec::json_str("b"))
+  assert(base_codec::json_stringify(row_to_json(row)) == "{\"body\":\"b\",\"signature\":\"sig\"}")
+  assert(
+    base_codec::json_stringify(row_to_json_cols(row, ["signature", "body"])) ==
+    "{\"signature\":\"sig\",\"body\":\"b\"}",
+  )
+}
+
+test "readops_core: thread_json includes project, projectLocked, and tags" {
+  let row : Map[String, base_codec::Json] = Map::new()
+  row.set("id", base_codec::json_int(1))
+  row.set("surface", base_codec::json_str("chat"))
+  row.set("project", base_codec::json_str("monoid"))
+  row.set("project_locked", base_codec::json_int(1))
+  row.set("tags", base_codec::json_str("[\" ui \", \"ui\", \"ops\"]"))
+  let got = base_codec::json_stringify(thread_json(row))
+  assert(
+    got == "{\"id\":1,\"surface\":\"chat\",\"project\":\"monoid\",\"projectLocked\":true,\"tags\":[\"ui\",\"ops\"]}",
+  )
+}
+
+test "readops_core: tally_background_selected_json_str preserves numeric key order, lone surrogate keys, and >2^53 at repr" {
+  let d10 = js_json::jval_try_parse("{\"result\":{\"selected\":\"10\"},\"accepted\":true}")
+  let d2 = js_json::jval_try_parse("{\"result\":{\"selected\":\"2\"},\"accepted\":false}")
+  let d1 = js_json::jval_try_parse("{\"result\":{\"selected\":\"1\"},\"accepted\":true}")
+  let dlone = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\ud800\"},\"accepted\":false}")
+  let dfffd = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\ufffd\"},\"accepted\":true}")
+  let big_at = base_codec::Json::Num(9007199254740993.0, "9007199254740993")
+  let wire = tally_background_selected_json_str_with(
+    5,
+    [
+      ("s10", big_at, d10),
+      ("s2", base_codec::json_int(2), d2),
+      ("s1", base_codec::json_int(1), d1),
+      ("sl", base_codec::json_int(3), dlone),
+      ("sf", base_codec::json_int(4), dfffd),
+    ],
+    base_codec::json_stringify,
+  )
+  assert(
+    wire ==
+    "{\"checked\":5,\"failed\":0,\"options\":{\"10\":{\"count\":1,\"chats\":[{\"session\":\"s10\",\"at\":9007199254740993,\"recommended\":true}]},\"2\":{\"count\":1,\"chats\":[{\"session\":\"s2\",\"at\":2,\"recommended\":false}]},\"1\":{\"count\":1,\"chats\":[{\"session\":\"s1\",\"at\":1,\"recommended\":true}]},\"\\ud800\":{\"count\":1,\"chats\":[{\"session\":\"sl\",\"at\":3,\"recommended\":false}]},\"\u{FFFD}\":{\"count\":1,\"chats\":[{\"session\":\"sf\",\"at\":4,\"recommended\":true}]}}}",
+  )
+}

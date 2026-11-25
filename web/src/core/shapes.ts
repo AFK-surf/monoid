@@ -385,8 +385,8 @@ export interface KeymapView {
 	send?: SendKeys;
 }
 
-/** A runtime: Claude Code, Codex, DeepSeek Harness, Grok Build, Cursor, Devin, Hermes Agent, Antigravity CLI or Pi. */
-export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy" | "pi";
+/** A runtime: Claude Code, Codex, DeepSeek Harness, Grok Build, Cursor, Devin, Hermes Agent, Antigravity CLI, Pi or GitHub Copilot. */
+export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy" | "pi" | "copilot";
 
 export interface LoginJob {
 	profile: string;
@@ -1492,6 +1492,8 @@ export interface CopyBackup {
 	stations: string[];
 	/** Whether this station accepts backups from other stations in the workspace. */
 	acceptOthers: boolean;
+	/** The most its backup uploads take of the uplink, in megabits a second (0: no limit). Absent from stations before it. */
+	uploadMbps?: number;
 	/** Other stations in the workspace available as backup targets. */
 	peers: CopyPeerChoice[];
 	/** Configured external R2/S3 backup targets and their sync status. */
@@ -2634,6 +2636,20 @@ export interface ChatSentElsewhere {
 	time?: Record<string, SaidAt>;
 }
 
+/** Silent inline project-creation proposal carried on an agent message (never a blocking card). */
+export interface MessageProposal {
+	id: string;
+	name: string;
+	note?: string;
+	refs?: string[];
+	proposer?: string;
+	/** pending | accepted | reassigned | dismissed */
+	status: string;
+	resolvedProject?: string;
+	resolvedBy?: string;
+	resolvedAt?: number;
+}
+
 /**
  * A message of a chat, with what the core decides of it: the viewer's (their bubble), still.fail's own notice, who said
  * it, and whether its agents have yet to take it.
@@ -2742,6 +2758,8 @@ export interface ChatMessage {
 	 * agent wrote it to the other. Absent in a chat's page, which has no letters.
 	 */
 	way?: string;
+	/** Silent inline project-creation proposal carried on this message. Absent otherwise. */
+	proposal?: MessageProposal;
 }
 
 /** An attachment a snapshot may take. */

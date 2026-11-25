@@ -86,6 +86,7 @@ import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
 import * as presetCalls from "./views/presets.ts";
+import * as projectCalls from "./views/projects.ts";
 import * as boardDraftCalls from "./views/board-drafts.ts";
 import * as movedChats from "./views/moved.ts";
 import { MOVED } from "./station/requests.ts";
@@ -411,6 +412,7 @@ export class Core {
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
       inner.presets = presetCalls.install(inner);
+      projectCalls.install(inner);
       inner.boardDrafts = boardDraftCalls.install(inner);
       movedChats.install(inner);
       transferCalls.install(inner);

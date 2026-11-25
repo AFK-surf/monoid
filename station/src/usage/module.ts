@@ -104,7 +104,7 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
     // (by the MoonBit builder, station/mb's src/usagefill: a step at a time, the permit taken for each)
     yield* Effect.tryPromise({
       try: () => {
-        const mb = resolveReaderSelection("usage-retire", { binary, config: readers, logAt: "readers" }).primaryBinary;
+        const mb = resolveReaderSelection("usage-retire", { binary, config: readers, logAt: "readers" });
         return retireByProgram(store, mb, path);
       },
       catch: (error) => error,
@@ -119,7 +119,7 @@ export function retireAfterPrevious(store: StationStore, exited: Promise<void>, 
 /// The usage retirement by the MoonBit program (`--builder usage-retire`): the retired statistics freed, then the old
 /// calls taken in, newest first, with at most about a tenth of the time going to them; pages open read again once old
 /// days came in.
-async function retireByProgram(store: StationStore, mb: string, path: string): Promise<void> {
+async function retireByProgram(store: StationStore, mb: string | ReturnType<typeof resolveReaderSelection>, path: string): Promise<void> {
   const program = new MbBackfill(mb, ["--builder", "usage-retire", "--db", path], store.backfillPriority, 20);
   // (one that cannot start says so, then ends: its end fails what was asked)
   program.on("error", (error: Error) => log.warn("usage", "the usage retirement program failed", { error: error.message }));

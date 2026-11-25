@@ -772,7 +772,7 @@ fn EditorState::put_text(
   } else if kind == 1 {
     self.delete_selection() |> ignore
     self.marked = s
-    self.msel_a = a
+    self.msel_a = imin(imax(a, 0), s.length())
   } else if kind == 2 {
     let m = self.marked
     self.marked = ""
@@ -1863,7 +1863,7 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
             self.ime_action_told = action
             h_ime_action(action)
           }
-          let coff = st.caret + st.marked.length()
+          let coff = if st.marked.length() > 0 { st.caret + st.msel_a } else { st.caret }
           let (cx, cl) = st.place_of(tl, coff)
           let x = st.ox + cx
           let y = st.oy + cl.to_double() * tl.line_h
@@ -2593,7 +2593,8 @@ pub fn Ctx::field_edit(self : Ctx, id : Int, what : Int, paste? : String = "") -
 ///|
 /// Tells the host what the menu bar's editing items can do now (@hostapi.edit_can), said again only when it changes:
 /// the focused field's (what its right-click menu offers, and its edits to undo and do again, none while the input
-/// method composes), and copy where words are picked with the pointer (the field focused or not).
+/// method composes), paste while a key catcher has focus (a remote screen or terminal), and copy where words are
+/// picked with the pointer (the field focused or not).
 fn Ctx::sync_edit_can(self : Ctx) -> Unit {
   let pointer = if selected_words() != "" { @hostapi.text_menu_copy } else { 0 }
   let can = match self.editors.get(self.focus) {
@@ -2602,7 +2603,9 @@ fn Ctx::sync_edit_can(self : Ctx) -> Unit {
       pointer |
       (if st.undos.length() > 0 && st.marked == "" { @hostapi.text_menu_undo } else { 0 }) |
       (if st.redos.length() > 0 && st.marked == "" { @hostapi.text_menu_redo } else { 0 })
-    None => pointer
+    None =>
+      pointer |
+      (if self.dev.catchers.contains(self.typing_allowed()) { @hostapi.text_menu_paste } else { 0 })
   }
   if can == self.edit_can_told {
     return

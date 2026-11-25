@@ -56,6 +56,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "card-posts",
       "cc-index",
       "closed-cards",
+      "data",
       "footprint",
       "legacy-edits",
       "legacy-said",
@@ -73,6 +74,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "said",
       "search",
       "search-scope",
+      "serve",
       "session-backfill",
       "session-bindings",
       "session-counts",
@@ -194,9 +196,9 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  const unimplEnv = resolveReaderEngine("data", {
-    config: { readers: { data: "mb" } },
-    env: { STILLFAIL_READER_DATA: "pion" },
+  const unimplEnv = resolveReaderEngine("sessions", {
+    config: { readers: { sessions: "mb" } },
+    env: { STILLFAIL_READER_SESSIONS: "pion" },
     hasPionBinary: true,
   });
   assert.equal(unimplEnv.engine, "mb");
@@ -392,6 +394,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "card-posts",
     "cc-index",
     "closed-cards",
+    "data",
     "footprint",
     "legacy-edits",
     "legacy-said",
@@ -409,6 +412,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "said",
     "search",
     "search-scope",
+    "serve",
     "session-backfill",
     "session-bindings",
     "session-counts",

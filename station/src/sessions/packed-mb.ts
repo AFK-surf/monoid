@@ -12,7 +12,8 @@
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
@@ -21,12 +22,12 @@ export const IDLE_MS = 60_000;
 /// Resolve the binary for `--builder packed` (`mb` by default; `pion` via `STILLFAIL_READER_PACKED` /
 /// `config.json` `readers.packed` / `STILLFAIL_READER_ENGINE`; `shadow` is forbidden by
 /// `READER_MODES.packed.allowShadow === false`).
-function resolvePackedBinary(explicit?: string | null, readers?: () => ReaderSelectConfig): string {
-  return resolveReaderSelection("packed", { binary: explicit, config: readers, logAt: "archive" }).primaryBinary;
+function resolvePackedSelection(explicit?: string | null, readers?: () => ReaderSelectConfig): ResolvedReaderSelection {
+  return resolveReaderSelection("packed", { binary: explicit, config: readers, logAt: "archive" });
 }
 
 type Json = any;
-type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
+type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void; at: number };
 
 /// The program ended while an ask was under way (`close`).
 export class PackedProgramStopped extends Error {}
@@ -44,18 +45,21 @@ export function runPackedOnce<A = Json>(
   const signal = options?.signal;
   if (signal?.aborted) return Promise.reject(new PackAborted("workspace packing aborted"));
   return new Promise((resolve, reject) => {
+    const startedAt = wall.now();
+    const sel = resolvePackedSelection(options?.binary, options?.readers);
     const p = new MbProcess(
-      resolvePackedBinary(options?.binary, options?.readers),
+      sel.primaryBinary,
       ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
-      { background: options?.background },
+      { background: options?.background, engine: engineOfSelection(sel), mode: "packed-once", fallbackMode: fallbackModeOf(sel.selection, "packed-once") },
     );
     let settled = false;
     let aborted = false;
     let exited = false;
-    const done = (f: () => void) => {
+    const done = (f: () => void, ok?: boolean) => {
       if (settled) return;
       settled = true;
       signal?.removeEventListener("abort", stop);
+      if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
       f();
     };
     const finishChild = () => {
@@ -73,11 +77,12 @@ export function runPackedOnce<A = Json>(
     p.on("message", (answer: Json) => {
       if (answer === null || typeof answer !== "object" || Array.isArray(answer)) return;
       if (answer.id !== 1 || aborted) return;
+      const ok = typeof answer.error !== "string";
       done(() => {
         finishChild();
-        if (typeof answer.error === "string") reject(new Error(answer.error));
+        if (!ok) reject(new Error(answer.error));
         else resolve(answer as A);
-      });
+      }, ok);
     });
     let failure: Error | null = null;
     p.on("error", (error: Error) => {
@@ -86,7 +91,7 @@ export function runPackedOnce<A = Json>(
       done(() => {
         finishChild();
         reject(error);
-      });
+      }, false);
     });
     p.on("exit", (code: number) => {
       exited = true;
@@ -94,7 +99,7 @@ export function runPackedOnce<A = Json>(
         done(() => reject(new PackAborted("workspace packing aborted")));
         return;
       }
-      done(() => reject(failure ?? new Error(`the archive's program stopped (exit ${code})`)));
+      done(() => reject(failure ?? new Error(`the archive's program stopped (exit ${code})`)), false);
     });
     try {
       p.postMessage({ ...args, id: 1, op });
@@ -102,7 +107,7 @@ export function runPackedOnce<A = Json>(
       done(() => {
         finishChild();
         reject(error as Error);
-      });
+      }, false);
     }
   });
 }
@@ -139,7 +144,7 @@ export class PackedProgram {
     if (this.#closed) return Promise.reject(new PackedProgramStopped("station stopping"));
     return new Promise((resolve, reject) => {
       const id = ++this.#next;
-      this.#waiting.set(id, { resolve, reject });
+      this.#waiting.set(id, { resolve, reject, at: wall.now() });
       this.#idle?.();
       this.#idle = null;
       try {
@@ -155,7 +160,8 @@ export class PackedProgram {
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(resolvePackedBinary(this.#binary, this.#readers), ["--builder", "packed", "--shell-dir", this.#shellDir]);
+    const sel = resolvePackedSelection(this.#binary, this.#readers);
+    const child = new MbProcess(sel.primaryBinary, ["--builder", "packed", "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {
@@ -163,14 +169,16 @@ export class PackedProgram {
       const waiting = typeof answer.id === "number" ? this.#waiting.get(answer.id) : undefined;
       if (!waiting) return;
       this.#waiting.delete(answer.id);
-      if (typeof answer.error === "string") waiting.reject(new Error(answer.error));
+      const ok = typeof answer.error !== "string";
+      readerTelemetry.recordCall(child.engine, child.mode, wall.now() - waiting.at, ok);
+      if (!ok) waiting.reject(new Error(answer.error));
       else waiting.resolve(answer);
       this.#idleLater();
     });
     let failure: Error | null = null;
     child.on("error", (error: Error) => {
       failure = error;
-      log.error("archive", "the archive's program stopped", { error: error.message });
+      log.error("archive", "the archive's program stopped", { engine: child.engine, mode: child.mode, error: error.message });
     });
     child.on("exit", (code: number) => {
       if (this.#process !== child) return;
@@ -178,7 +186,11 @@ export class PackedProgram {
       this.#idle?.();
       this.#idle = null;
       const error = this.#closed ? new PackedProgramStopped("station stopping") : (failure ?? new Error(`the archive's program stopped (exit ${code})`));
-      for (const waiting of this.#waiting.values()) waiting.reject(error);
+      const now = wall.now();
+      for (const waiting of this.#waiting.values()) {
+        if (!this.#closed) readerTelemetry.recordCall(child.engine, child.mode, now - waiting.at, false);
+        waiting.reject(error);
+      }
       this.#waiting.clear();
     });
     return child;

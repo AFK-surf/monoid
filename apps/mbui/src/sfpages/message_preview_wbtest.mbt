@@ -10,7 +10,7 @@
 //     flight in and out, every frame one picture seen), sfapp/film_close_still (a film closed by back, a finger down,
 //     zoomed, playing, each decode's timing, `nodes` both), and this file (the page made as nodes' pictures and films:
 //     flight in and out, the first frame seen, a tall one from its top, where a film was left, played through, 全屏
-//     at 0:00, Ended played again, a desktop's double click said, turned sideways a phone's, a film sent from here told
+//     at 0:00, Ended played again, a desktop's click and double click said, turned sideways a phone's, a film sent from here told
 //     its file).
 //   the player on both (player.mbt's and player_node.mbt's, the same inputs): sf/player_parity.
 //   the old page's alone, its thumbnail an old view's (chat_file, note_thumb) where the flight, the zoom and the
@@ -259,7 +259,7 @@ test "a video's 全屏 from where a tab played it, at 0:00: from its start, not 
 }
 
 ///|
-test "a wide video of a chat made as nodes: touch double tap on right jumps 15 s on; pointer click plays/pauses once and double click swallows second Up" {
+test "a wide video of a chat made as nodes: touch double tap on right jumps 15 s on; pointer click alone never plays/pauses, double click in the middle does once" {
   // 1. Wide touch: double tap on right third jumps 15 s on and shows center note
   let t = pv_chat(fn() { [video_one()] }, w=1280.0, h=800.0, platform=0)
   t.host_says_finger(Some(true))
@@ -273,7 +273,7 @@ test "a wide video of a chat made as nodes: touch double tap on right jumps 15 s
   t.draw()
   let said = @sf.t("android-misc.drive.player.ahead", args=[("n", "15")])
   assert_true(t.find(said) is Some(_), msg="said: \{said}")
-  // 2. Wide pointer: single click immediately toggles play/pause, genuine double click swallows 2nd Up
+  // 2. Wide pointer: a click alone shows or hides the controls, never plays/pauses; a double click in the middle does once
   let tp = pv_chat(fn() { [video_one()] }, w=1280.0, h=800.0, platform=0)
   tp.host_says_finger(Some(false))
   pv_video_tap(tp)
@@ -287,12 +287,14 @@ test "a wide video of a chat made as nodes: touch double tap on right jumps 15 s
     }).length()
   }
   let c0 = plays()
-  tp.tap(1100.0, 400.0)
-  assert_eq(plays(), c0 + 1, msg="pointer click immediately toggles play/pause")
+  tp.tap(640.0, 400.0)
+  tp.run_for(@ui.double_tap_ms + 10.0)
+  assert_eq(plays(), c0, msg="pointer click alone never plays/pauses")
+  tp.tap(640.0, 400.0)
   tp.advance(@ui.double_tap_ms / 2.0)
-  tp.tap(1100.0, 400.0)
+  tp.tap(640.0, 400.0)
   tp.draw()
-  assert_eq(plays(), c0 + 1, msg="pointer double click swallows 2nd Up")
+  assert_eq(plays(), c0 + 1, msg="pointer double click in the middle plays/pauses once")
 }
 
 ///|

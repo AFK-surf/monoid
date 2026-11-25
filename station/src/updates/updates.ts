@@ -15,7 +15,8 @@
 //   started meanwhile. A delta not used is a line in the log, and the installer downloads the release as without.
 // - Claude Code and Codex: `--version`, and the latest their npm packages say (Devin: its installer's manifest); updated
 //   the way each was installed.
-//   Cursor is no command: its SDK's package, in the station's own npm prefix (agents/cursor.ts), its version the package's.
+//   Cursor and GitHub Copilot are no command: each its SDK's package, in the station's own npm prefix (agents/cursor.ts,
+//   agents/copilot.ts; Copilot's with its platform's runtime package), its version the package's.
 //   Running agents go on with what they started with; the next process starts the new one.
 //
 // The TS release is updated by the same files as the Rust one was:
@@ -61,7 +62,8 @@ import {
   type AutoUpdateWhen, type OverrideMeta, type ReleaseIncluded, type WaitCondition,
   conditionsMet, formatWaitCondition, needsIncluded, parseAutoUpdateWhen, parseWaitCondition, readOverrideSoon, readOverrideSync,
 } from "./override.ts";
-import { SDK_PACKAGE, sdkPrefix, sdkVersionSoon } from "../agents/cursor.ts";
+import { sdkPrefix as cursorPrefix, sdkVersionSoon as cursorVersionSoon } from "../agents/cursor.ts";
+import { sdkPrefix as copilotPrefix, sdkVersionSoon as copilotVersionSoon } from "../agents/copilot.ts";
 import { canSwitchCodexSoon, captureCodexSoon, codexBinarySoon, hasCodexHostSoon, missingCodexHost, restoreCodex, switchCodex, type CodexEntry } from "./codex-repair.ts";
 import {
   DEVIN_MANIFEST, type Env, type How, type Kind, KINDS, NotFinished, type OwnNode, RUNTIMES, Unable, findCommandSoon, howToInstallSoon, howToUpdateSoon,
@@ -311,7 +313,7 @@ export class Updates {
   private nodeVersion: Promise<string> | null = null;
   /// The asks of `stillfail-station channel` answered one after another (two SIGHUPs never interleave).
   private answering: Promise<void> = Promise.resolve();
-  private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty(), pi: empty() };
+  private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty(), pi: empty(), copilot: empty() };
   private checkedAt: number | null = null;
   private checking: Promise<void> | null = null;
   /// The reading asked for while one went on, after it (`check`).
@@ -756,7 +758,8 @@ export class Updates {
   }
 
   private async readRuntime(kind: Kind): Promise<Item> {
-    if (kind === "cursor") return this.readCursor();
+    if (kind === "cursor") return this.readSdk("cursor", cursorPrefix(this.data), await cursorVersionSoon(this.data));
+    if (kind === "copilot") return this.readSdk("copilot", copilotPrefix(this.data), await copilotVersionSoon(this.data));
     const env = await withShellCommand(kindCommand(kind), this.env);
     const found = await findCommandSoon(kindCommand(kind), env);
     let version: string | null = null;
@@ -800,18 +803,17 @@ export class Updates {
     return ownNode(this.data, await this.nodeVersion);
   }
 
-  /// Cursor's SDK, a package npm keeps in the station's own prefix (agents/cursor.ts): installed and updated by the same
-  /// npm install there.
-  private async readCursor(): Promise<Item> {
-    const version = await sdkVersionSoon(this.data);
+  /// Cursor's or Copilot's SDK, a package npm keeps in the station's own prefix (`prefix`, agents/cursor.ts,
+  /// agents/copilot.ts): installed and updated by the same npm install there; not there, not installed (`version` null).
+  private async readSdk(kind: "cursor" | "copilot", prefix: string, version: string | null): Promise<Item> {
     let latest: string | null = null;
     try {
-      const said = await fetchJson(`${this.registry}/${kindPackage("cursor")}/latest`);
+      const said = await fetchJson(`${this.registry}/${kindPackage(kind)}/latest`);
       latest = typeof said?.version === "string" ? said.version : null;
     } catch (e) {
-      log.warn("updates", "the runtime's latest version not read", { runtime: "cursor", error: (e as Error).message });
+      log.warn("updates", "the runtime's latest version not read", { runtime: kind, error: (e as Error).message });
     }
-    const how = await npmInstallSoon(this.env, await this.ownNodeSoon(), ["install", "-g", "--prefix", sdkPrefix(this.data), `${SDK_PACKAGE}@latest`], kindName("cursor"));
+    const how = await npmInstallSoon(this.env, await this.ownNodeSoon(), ["install", "-g", "--prefix", prefix, `${kindPackage(kind)}@latest`], kindName(kind));
     return { ...empty(), installed: version !== null, version, latest, how: how instanceof Unable ? null : how, note: how instanceof Unable ? { key: how.key, args: how.args } : null };
   }
 

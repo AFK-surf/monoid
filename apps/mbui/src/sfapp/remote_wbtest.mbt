@@ -304,7 +304,25 @@ test "大屏 Place(\"remote\") with no tab opened: the list's first row shown an
   // (the desktop shown till then kept among the tabs, its screen covered, not let go)
   let kept = @sfbase.remote_tabs_of(src, "ws1").0.map(fn(p) { p.0 })
   assert_eq(kept.length(), 2, msg=kept.join(", "))
+  // (wide simulator in 远程 workbench: unified Proposal C top bar, pure stage, collapsible 调试 drawer, zero layout/contrast/height faults)
+  assert_true(t.query(Button, label="主屏幕") is Some(_), msg="simulator top-bar home button")
+  assert_true(t.query(Button, label="旋转") is Some(_), msg="simulator top-bar rotate button")
+  assert_true(t.query(Button, label="截图") is Some(_), msg="simulator top-bar screenshot button")
+  assert_true(t.query(Button, label="展开右栏") is Some(_), msg="simulator top-bar 调试 toggle collapsed")
+  assert_true(t.find("在设备里打开") is None, msg="debug drawer collapsed by default")
+  assert_eq(t.height_faults(), [], msg="iPhone 17 Pro height faults")
+  assert_eq(t.contrast_faults(), [], msg="iPhone 17 Pro contrast faults")
   remote_wide_clean(t, "iPhone 17 Pro")
+  t.click(Button, label="展开右栏")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("在设备里打开") is Some(_), msg="debug drawer opened")
+  assert_true(t.query(Button, label="收起右栏") is Some(_), msg="simulator top-bar 调试 toggle open")
+  assert_eq(t.height_faults(), [], msg="iPhone 17 Pro drawer open height faults")
+  assert_eq(t.contrast_faults(), [], msg="iPhone 17 Pro drawer open contrast faults")
+  remote_wide_clean(t, "iPhone 17 Pro drawer open")
+  t.click(Button, label="收起右栏")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("在设备里打开") is None, msg="debug drawer closed")
 }
 
 ///|
@@ -424,4 +442,55 @@ test "大屏切换会话时远程红点不闪烁：新会话 chat topic 未返�
   driven.set(false)
   t.frame()
   assert_false(@sfpages.remote_agent_lit(src, "ws1"), msg="turns off when agent stops driving")
+}
+
+///|
+test "remote workbench and simulator keep zero new layout, corner, contrast, room and squeeze faults across all 7 windows in zh and en" {
+  let modes = ["place-remote", "place-remote-tabs", "screen-live", "screen-simulator"]
+  let wrong : Array[String] = []
+  let check = fn(tag : String, faults : Array[String]) {
+    if !faults.is_empty() {
+      wrong.push("\{tag}: " + faults.join(" | "))
+    }
+  }
+  for win in corner_windows {
+    for lang in ["zh", "en"] {
+      for mode in modes {
+        let t = screen_in(mode, win, lang)
+        let at = "\{win.0}-\{lang} \{mode}"
+        check("dividers \{at}", edge_divider_faults(t))
+        let corners = t.corner_faults()
+        for f in t.lit_all_faults() {
+          if !corners.contains(f) {
+            corners.push(f)
+          }
+        }
+        let known = if mode == "screen-simulator" && (win.0 == "touch" || win.0 == "desk-win") {
+          1
+        } else {
+          corners_everywhere_known.get(at).unwrap_or(0)
+        }
+        if corners.length() != known {
+          wrong.push("corners \{at}: \{corners.length()} vs \{known} known | " + corners.join(" | "))
+        }
+        check("gaps \{at}", t.gap_faults())
+        check("hand_moves \{at}", t.hand_moves())
+        check("heights \{at}", t.height_faults())
+        check("first_line \{at}", t.first_line_faults())
+        check("line_start \{at}", t.line_start_faults())
+        check("outgrown \{at}", t.fixed_outgrown())
+        if squeeze_windows.contains(win.0) && !(mode == "screen-simulator" && (win.0 == "phone" || win.0 == "tablet")) {
+          check("squeeze \{at}", t.squeeze_faults())
+        }
+        if lang == "zh" {
+          check("rooms \{at}", t.room_faults())
+          check("hover_only \{at}", t.hover_only_faults())
+          check("contrast \{at}", t.contrast_faults())
+        }
+      }
+    }
+  }
+  if !wrong.is_empty() {
+    fail(wrong.join("\n"))
+  }
 }

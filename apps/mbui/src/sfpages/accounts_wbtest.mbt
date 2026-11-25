@@ -309,10 +309,11 @@ test "sharing a Claude subscription asks about requests on the target stations b
     assert_true(t.find("其他 station 会借用此账号的登录凭证，在各自的机器上直接向 Claude 发送请求") is Some(_), msg=at)
     assert_true(t.find("请自行确保目标 station 能安全访问 Claude") is Some(_), msg=at)
     assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
-    assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
     assert_eq(t.get(Switch, label="Willow").check, Some(On), msg=at)
     assert_true(t.get(Switch, label="Willow").disabled, msg=at)
-    assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Button, label="取消")
     t.run_for(@motion.presence_out_ms)
@@ -320,8 +321,7 @@ test "sharing a Claude subscription asks about requests on the target stations b
     assert_eq(t.get(Switch, label="分享给其他 station").check, Some(Off), msg=at)
     t.click(Switch, label="分享给其他 station")
     presented_in(t)
-    t.click(Switch, label="Maple")
-    t.run_for(@ui.move_most_ms)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg=at)
     assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Button, label="已了解，分享账号")
@@ -330,12 +330,37 @@ test "sharing a Claude subscription asks about requests on the target stations b
     assert_eq(text(Some(asked[0]), "station"), "ws1/st1", msg=at)
     assert_eq(text(Some(asked[0]), "id"), "cc", msg=at)
     assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[0]), "allowAuto"), Some(Json::boolean(true)), msg="\{at}: defaults to whitelist")
+    assert_eq(field(Some(asked[0]), "allow"), None, msg=at)
     assert_eq(field(Some(asked[0]), "among"), None, msg="\{at}: initial share omits among")
+    // Older station without shareAllowAuto: whitelist is disabled and off, requires picking before confirming
+    let old_asked : Array[Json] = []
+    let old = setting_tester(Profile("ws1/st1", "cc"), w, platform~, over=fn(base) {
+      let s = with_share_auto(unshared_claude(base), auto_ok=false)
+      { ..s, call: fn(name, params, done) {
+        if name == "profile.share" { old_asked.push(params) }
+        (s.call)(name, params, done)
+      } }
+    })
+    scrolled_to(old, w, "分享给其他 station")
+    old.click(Switch, label="分享给其他 station")
+    presented_in(old)
+    assert_eq(old.get(Switch, label="跟随工作区白名单").check, Some(Off), msg=at)
+    assert_true(old.get(Switch, label="跟随工作区白名单").disabled, msg=at)
+    assert_eq(old.get(Switch, label="Maple").check, Some(Off), msg=at)
+    assert_true(old.get(Button, label="已了解，分享账号").disabled, msg=at)
+    old.click(Switch, label="Maple")
+    old.run_for(@ui.move_most_ms)
+    assert_false(old.get(Button, label="已了解，分享账号").disabled, msg=at)
+    old.click(Button, label="已了解，分享账号")
+    old.frame()
+    assert_eq(old_asked.length(), 1, msg=at)
+    assert_eq(field(Some(old_asked[0]), "allowAuto"), None, msg=at)
   }
 }
 
 ///|
-test "sharing an account with three stations starts all off, supports partial pick and select-all toggle without among" {
+test "sharing an account with three stations defaults to whitelist, supports partial pick and select-all toggle without among" {
   let three : Array[Json] = [
     { "id": "st1", "name": "Willow", "online": true },
     { "id": "st2", "name": "Maple", "online": true },
@@ -361,15 +386,17 @@ test "sharing an account with three stations starts all off, supports partial pi
     t.click(Switch, label="分享给其他 station")
     presented_in(t)
     assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg=at)
     assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
     assert_eq(t.get(Switch, label="Birch").check, Some(Off), msg=at)
     assert_true(t.find("以后新加的 station 不会自动加进来") is Some(_), msg=at)
-    assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
-    // Partial pick: only Maple
+    // Partial pick: only Maple (exits whitelist mode)
     t.click(Switch, label="Maple")
     t.run_for(@ui.move_most_ms)
     assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(Off), msg=at)
     assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
     assert_eq(t.get(Switch, label="Birch").check, Some(Off), msg=at)
     assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
@@ -378,6 +405,7 @@ test "sharing an account with three stations starts all off, supports partial pi
     t.run_for(@motion.presence_out_ms)
     assert_eq(asked.length(), 1, msg=at)
     assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[0]), "allowAuto"), None, msg=at)
     assert_eq(field(Some(asked[0]), "allow"), Some(Json::array([Json::string("st1"), Json::string("st2")])), msg=at)
     assert_eq(field(Some(asked[0]), "among"), None, msg="\{at}: initial partial share omits among")
     // Re-open and test select-all toggle on -> off -> on
@@ -386,6 +414,7 @@ test "sharing an account with three stations starts all off, supports partial pi
     t.click(Switch, label="全部 station")
     t.run_for(@ui.move_most_ms)
     assert_eq(t.get(Switch, label="全部 station").check, Some(On), msg=at)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(Off), msg=at)
     assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
     assert_eq(t.get(Switch, label="Birch").check, Some(On), msg=at)
     assert_true(t.find("以后新加的 station 也能用") is Some(_), msg=at)
@@ -404,13 +433,14 @@ test "sharing an account with three stations starts all off, supports partial pi
     t.run_for(@motion.presence_out_ms)
     assert_eq(asked.length(), 2, msg=at)
     assert_eq(field(Some(asked[1]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[1]), "allowAuto"), None, msg=at)
     assert_eq(field(Some(asked[1]), "allow"), None, msg="\{at}: select-all omits allow")
     assert_eq(field(Some(asked[1]), "among"), None, msg="\{at}: initial select-all omits among")
   }
 }
 
 ///|
-test "sharing an account with only its own station requires turning on all stations" {
+test "sharing an account with only its own station defaults to whitelist and requires turning on all stations if whitelist is turned off" {
   let one : Array[Json] = [{ "id": "st1", "name": "Willow", "online": true }]
   for case in page_cases {
     let (w, platform) = case
@@ -431,6 +461,11 @@ test "sharing an account with only its own station requires turning on all stati
     t.click(Switch, label="分享给其他 station")
     presented_in(t)
     assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg=at)
+    assert_false(t.get(Button, label="已了解，分享账号").disabled, msg=at)
+    t.click(Switch, label="跟随工作区白名单")
+    t.frame()
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(Off), msg=at)
     assert_true(t.get(Button, label="已了解，分享账号").disabled, msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Switch, label="全部 station")
@@ -443,6 +478,7 @@ test "sharing an account with only its own station requires turning on all stati
     t.run_for(@motion.presence_out_ms)
     assert_eq(asked.length(), 1, msg=at)
     assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+    assert_eq(field(Some(asked[0]), "allowAuto"), None, msg=at)
     assert_eq(field(Some(asked[0]), "allow"), None, msg=at)
     assert_eq(field(Some(asked[0]), "among"), None, msg=at)
   }
@@ -524,8 +560,9 @@ test "sharing other accounts explains how they are used on target stations" {
       assert_true(t.find("在各自的机器上发送请求") is Some(_), msg=at)
       assert_true(t.find("安全访问 Claude") is None, msg=at)
       assert_eq(t.get(Switch, label="全部 station").check, Some(Off), msg=at)
-      assert_eq(t.get(Switch, label="Maple").check, Some(Off), msg=at)
-      assert_true(t.get(Button, label="分享账号").disabled, msg=at)
+      assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg=at)
+      assert_eq(t.get(Switch, label="Maple").check, Some(On), msg=at)
+      assert_false(t.get(Button, label="分享账号").disabled, msg=at)
       assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
       t.click(Button, label="取消")
       t.run_for(@motion.presence_out_ms)
@@ -533,8 +570,7 @@ test "sharing other accounts explains how they are used on target stations" {
       assert_eq(t.get(Switch, label="分享给其他 station").check, Some(Off), msg=at)
       t.click(Switch, label="分享给其他 station")
       presented_in(t)
-      t.click(Switch, label="Maple")
-      t.run_for(@ui.move_most_ms)
+      assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg=at)
       assert_false(t.get(Button, label="分享账号").disabled, msg=at)
       assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
       t.click(Button, label="分享账号")
@@ -542,6 +578,7 @@ test "sharing other accounts explains how they are used on target stations" {
       assert_eq(asked.length(), 1, msg=at)
       assert_eq(text(Some(asked[0]), "id"), profile, msg=at)
       assert_eq(field(Some(asked[0]), "on"), Some(Json::boolean(true)), msg=at)
+      assert_eq(field(Some(asked[0]), "allowAuto"), Some(Json::boolean(true)), msg=at)
       assert_eq(field(Some(asked[0]), "among"), None, msg=at)
     }
   }
@@ -1712,8 +1749,8 @@ test "多选 shares several accounts and sets their stations at once, and stops 
     presented_in(t)
     assert_true(t.find("将应用于 2 个 Profile") is Some(_), msg=at)
     assert_true(t.find("将为未分享的账号开启分享，并统一设置可用 station") is Some(_), msg=at)
-    t.click(Switch, label="跟随工作区白名单")
-    t.run_for(@ui.move_most_ms)
+    assert_eq(t.get(Switch, label="跟随工作区白名单").check, Some(On), msg="\{at}: batch share defaults to whitelist")
+    assert_false(t.get(Button, label="完成").disabled, msg=at)
     assert_eq(t.audit(), [], msg="\{at}: " + t.audit().join("; "))
     t.click(Button, label="完成")
     t.run_for(@motion.presence_out_ms)

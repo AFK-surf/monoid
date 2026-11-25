@@ -7,7 +7,7 @@ export class SessionBindingsBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("session-bindings", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "session-bindings", "--db", path] },
+      { binary: () => resolveReaderSelection("session-bindings", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "session-bindings", "--db", path] },
       "scope",
       "session binding preparation",
     );

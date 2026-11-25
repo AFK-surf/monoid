@@ -1,5 +1,5 @@
 // Wave 27 · Track V deterministic tests: full-bleed stage, per-gesture input dispatch,
-// desktop click play/pause & 2000ms auto-fade with lock-release re-arm, subtitle laid==0 offset,
+// desktop clicks as taps (alone: controls; two: play/pause, back, on) & 2000ms auto-fade with lock-release re-arm, subtitle laid==0 offset,
 // touch AlongTime 3-gear VFR frame scrubbing & safe second-finger handoff, and Esc priority.
 
 ///|
@@ -240,8 +240,9 @@ test "wave27 V3: chrome_locked holds controls across 2000ms and unlocking re-arm
 }
 
 ///|
-test "wave27 V3: desktop hidden click / Space / K play-pause silently with 450ms feedback; far clicks fire twice; menu click closes menu without play/pause; Ended replays" {
+test "wave27 V3: desktop click alone shows or hides controls, a double click plays/pauses silently; Space / K silent; menu click closes menu only; Ended double click replays" {
   let sleep_ms = @player.media_sleep_ms
+  let double_ms = @ui.double_tap_ms
   let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], [], [], keyed=true)
   t.host_says_finger(Some(false))
   t.draw()
@@ -252,15 +253,30 @@ test "wave27 V3: desktop hidden click / Space / K play-pause silently with 450ms
   t.draw()
   t.run_for(player_desk_idle_ms + sleep_ms + 10.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden")
-  // 1. Click with stationary pointer while hidden: 0ms immediate pause, controls STAY hidden, 450ms feedback shown
+  // 1. A click alone while hidden: no play/pause; the controls come once a double click's time has gone with no second
   let c0 = count_play_pause(t)
   t.tap(640.0, 400.0)
-  assert_eq(count_play_pause(t), c0 + 1, msg="click immediately pauses")
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="hidden click does not wake controls")
-  assert_true(t.find("android-misc.drive.player.paused") is Some(_), msg="450ms center feedback shown")
-  t.run_for(player_quiet_note_ms + 10.0)
-  assert_true(t.find("android-misc.drive.player.paused") is None, msg="450ms center feedback gone")
-  // 2. Space and K while hidden: play/pause silently without waking controls
+  assert_eq(count_play_pause(t), c0, msg="a click alone never plays or pauses")
+  t.run_for(double_ms - 1.0)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls wait for a double click's time")
+  t.run_for(1.0 + @player.media_wake_ms + 10.0)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="a click alone shows hidden controls")
+  // ... and another alone hides them again
+  t.tap(640.0, 400.0)
+  t.run_for(double_ms + sleep_ms + 10.0)
+  assert_eq(count_play_pause(t), c0, msg="a click alone never plays or pauses")
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="a click alone hides shown controls")
+  // 2. A double click in the middle while hidden: pauses at its second, controls stay hidden, its feedback shown
+  t.tap(640.0, 400.0)
+  t.advance(double_ms / 4.0)
+  t.tap(640.0, 400.0)
+  assert_eq(count_play_pause(t), c0 + 1, msg="double click in the middle pauses")
+  assert_true(t.find("android-misc.drive.player.paused") is Some(_), msg="center feedback shown")
+  t.run_for(double_ms + 10.0)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="double click does not wake controls")
+  t.run_for(@player.media_note_ms)
+  assert_true(t.find("android-misc.drive.player.paused") is None, msg="center feedback gone")
+  // 3. Space and K while hidden: play/pause silently without waking controls
   let c1 = count_play_pause(t)
   t.key(@ui.key_space)
   assert_eq(count_play_pause(t), c1 + 1, msg="Space toggles play/pause")
@@ -268,12 +284,6 @@ test "wave27 V3: desktop hidden click / Space / K play-pause silently with 450ms
   t.key(@ui.key_of_char('k'))
   assert_eq(count_play_pause(t), c1 + 2, msg="K toggles play/pause")
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="K does not wake hidden controls")
-  // 3. Far-apart rapid clicks fire twice (not swallowed by View::twice)
-  let c2 = count_play_pause(t)
-  t.tap(400.0, 400.0)
-  t.advance(@ui.double_tap_ms / 4.0)
-  t.tap(700.0, 400.0)
-  assert_eq(count_play_pause(t), c2 + 2, msg="far-apart rapid clicks both fire play/pause")
   // Let controls fade again, then verify non-silent shortcut (J) wakes hidden controls
   t.run_for(player_desk_idle_ms + sleep_ms + 10.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden before J")
@@ -286,16 +296,19 @@ test "wave27 V3: desktop hidden click / Space / K play-pause silently with 450ms
   t.key(@ui.key_tab, mods=@ui.mod_shift_key)
   t.run_for(viewer_bar_ms + 10.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="Shift+Tab wakes hidden controls")
-  // 5. Open listing, click stage: closes listing only, 0 play/pause, twice_forgot so next click fires
+  // 4. Open listing, click stage: closes listing only (no play/pause, controls stay), and is no first of a double click
   t.click(Button, label="web-pages.drive.player.list")
   t.draw()
   let c3 = count_play_pause(t)
   t.tap(400.0, 400.0)
   assert_eq(count_play_pause(t), c3, msg="click with listing open closes listing without play/pause")
-  t.advance(@ui.double_tap_ms / 4.0)
-  t.tap(400.0, 400.0)
-  assert_eq(count_play_pause(t), c3 + 1, msg="twice_forgot lets immediate next click toggle play/pause")
-  // 6. Ended (no next): single click replays (seek 0 + play)
+  t.advance(double_ms / 4.0)
+  t.tap(640.0, 400.0)
+  assert_eq(count_play_pause(t), c3, msg="the click after closing the listing is a first, not a second")
+  t.advance(double_ms / 4.0)
+  t.tap(640.0, 400.0)
+  assert_eq(count_play_pause(t), c3 + 1, msg="a double click after closing the listing plays/pauses")
+  // 5. Ended (no next): a double click in the middle replays (seek 0 + play)
   let te = player_tester(false, "only.mp4", ["only.mp4"], [], [])
   te.host_says_finger(Some(false))
   te.draw()
@@ -303,13 +316,15 @@ test "wave27 V3: desktop hidden click / Space / K play-pause silently with 450ms
   te.draw()
   let before_v = te.views().length()
   te.tap(640.0, 400.0)
+  te.advance(double_ms / 4.0)
+  te.tap(640.0, 400.0)
   let after = te.views()[before_v:].to_owned()
-  assert_true(after.contains("control 1 3 0"), msg="Ended click seeks to 0")
-  assert_true(after.iter().any(fn(l) { l.has_prefix("control 1 1") }), msg="Ended click plays")
+  assert_true(after.contains("control 1 3 0"), msg="Ended double click seeks to 0")
+  assert_true(after.iter().any(fn(l) { l.has_prefix("control 1 1") }), msg="Ended double click plays")
 }
 
 ///|
-test "wave27 V2: wide touch gets AlongTime without raising bottom bar; narrow mouse gets immediate click play/pause" {
+test "wave27 V2: wide touch gets AlongTime without raising bottom bar; narrow mouse clicks as taps" {
   let sleep_ms = @player.media_sleep_ms
   // 1. Wide (1280x800) + Finger: single tap hides controls, horizontal drag enters AlongTime without waking bottom bar
   let tw = player_tester(false, "a.mp4", [], [], [], pin=pinned(5000.0))
@@ -326,13 +341,19 @@ test "wave27 V2: wide touch gets AlongTime without raising bottom bar; narrow mo
   assert_true(tw.query(Slider, label="web-pages.drive.player.position") is None, msg="AlongTime must not raise hidden bottom bar")
   tw.release(530.0, 400.0)
   assert_true(told(tw, 9, value="0"), msg="wide touch release ends scrub")
-  // 2. Narrow (390x844) + Mouse: single click immediately toggles play/pause (0ms)
+  // 2. Narrow (390x844) + Mouse: a click alone hides the controls, a double click in the middle plays/pauses
   let tn = player_tester(true, "a.mp4", [], [], [])
   tn.host_says_finger(Some(false))
   tn.draw()
   let c0 = count_play_pause(tn)
   tn.tap(195.0, 400.0)
-  assert_eq(count_play_pause(tn), c0 + 1, msg="narrow mouse click immediately plays/pauses")
+  tn.run_for(@ui.double_tap_ms + sleep_ms + 20.0)
+  assert_eq(count_play_pause(tn), c0, msg="narrow mouse click alone never plays/pauses")
+  assert_true(tn.query(Slider, label="web-pages.drive.player.position") is None, msg="narrow mouse click alone hides controls")
+  tn.tap(195.0, 400.0)
+  tn.advance(@ui.double_tap_ms / 4.0)
+  tn.tap(195.0, 400.0)
+  assert_eq(count_play_pause(tn), c0 + 1, msg="narrow mouse double click plays/pauses")
 }
 
 ///|
@@ -663,14 +684,15 @@ test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome;
   assert_true(on_back_btn, msg="Tab must reach desktop top-bar back button")
   t.run_for(player_desk_idle_ms + sleep_ms + step_ms)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="keyboard focus on back button locks chrome")
-  // Clear visible keyboard focus by clicking stage (pointer click clears focus_shown)
+  // Clear visible keyboard focus by clicking stage (pointer click clears focus_shown): the lock gone, that click alone
+  // hides the controls once a double click's time has gone
   t.move_to(640.0, 400.0)
   t.tap(640.0, 400.0)
   t.draw()
-  t.run_for(player_desk_idle_ms - step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still visible at 1990ms after blur")
+  t.run_for(@ui.double_tap_ms - step_ms)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still visible before a double click's time")
   t.run_for(step_ms + sleep_ms + step_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="faded after full 2000ms + sleep_ms post-blur")
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="the click alone hid the controls post-blur")
 }
 
 ///|
@@ -717,7 +739,9 @@ test "wave27 R1: crossing wide/narrow breakpoint mid-AlongTime and mid-2x-hold c
   t.host_says_finger(Some(false))
   let c0 = count_play_pause(t)
   t.tap(195.0, 400.0)
-  assert_eq(count_play_pause(t), c0 + 1, msg="post-breakpoint click dispatches cleanly")
+  t.advance(@ui.double_tap_ms / 4.0)
+  t.tap(195.0, 400.0)
+  assert_eq(count_play_pause(t), c0 + 1, msg="post-breakpoint double click dispatches cleanly")
 
   // 2. Mid-2x-long-press resize 390x844 -> 1280x800
   let t2 = player_tester(true, "a.mp4", [], [], [])
@@ -964,4 +988,42 @@ test "wave27 R1: sparse Up slop, single diagonal haptic, wide DownClose hides ba
     })
   assert_true(has_safe_bar, msg="3pt progress line must clear bottom safe area 34 + S2")
   ts.release(130.0, 300.0)
+}
+
+///|
+test "wave27 V5: desktop click hides the controls though the pointer moves on within a double click's time; a double click on a side jumps back or on" {
+  let sleep_ms = @player.media_sleep_ms
+  let double_ms = @ui.double_tap_ms
+  let tt = player_tester(false, "a.mp4", [], [], [], pin=pinned(20000.0))
+  tt.host_says_finger(Some(false))
+  tt.draw()
+  tt.move_to(640.0, 400.0)
+  tt.draw()
+  assert_true(tt.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="controls shown")
+  // A click, then the hand moving on within a double click's time: the click still hides them
+  tt.tap(640.0, 400.0)
+  tt.advance(double_ms / 4.0)
+  tt.move_to(660.0, 400.0)
+  tt.run_for(double_ms + sleep_ms + 10.0)
+  assert_true(tt.query(Slider, label="web-pages.drive.player.position") is None, msg="the click hid the controls")
+  // A double click on the left third: back by its nudge; on the right third: on by it
+  let back = t(
+    "android-misc.drive.player.back",
+    args=[("n", (playing_for("k").media.nudge_ms() / 1000.0).to_int().to_string())],
+  )
+  tt.tap(200.0, 400.0)
+  tt.advance(double_ms / 4.0)
+  tt.tap(200.0, 400.0)
+  tt.draw()
+  assert_true(tt.find(back) is Some(_), msg="double click on the left: \{back}")
+  tt.run_for(@player.media_note_ms + double_ms)
+  let ahead = t(
+    "android-misc.drive.player.ahead",
+    args=[("n", (playing_for("k").media.nudge_ms() / 1000.0).to_int().to_string())],
+  )
+  tt.tap(1100.0, 400.0)
+  tt.advance(double_ms / 4.0)
+  tt.tap(1100.0, 400.0)
+  tt.draw()
+  assert_true(tt.find(ahead) is Some(_), msg="double click on the right: \{ahead}")
 }

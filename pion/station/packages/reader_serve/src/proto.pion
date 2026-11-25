@@ -1,0 +1,975 @@
+// Pure protocol, framing, routing, query/segment decoding, and message/quote helpers
+// for `--data <dir> --serve <socket>` (1:1 port of `station/mb/src/reader/serve.mbt`).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "jscase"
+import "readops_core"
+import "sql_db"
+
+/// Whether a failed `tcp.accept` error means the listening socket is permanently gone
+/// (`station/mb/src/host/net.mbt:10`, `pion/station/packages/front/src/mesh.pion:147`).
+pub fn listener_gone_msg(msg : String) -> Bool {
+  let sb = msg.to_bytes()
+  proto_bytes_contains(sb, "no handle".to_bytes()) ||
+  proto_bytes_contains(sb, "not a listening socket".to_bytes())
+}
+
+fn proto_bytes_contains(hay : Bytes, needle : Bytes) -> Bool {
+  let n = needle.length()
+  if n == 0 {
+    return true
+  }
+  if n > hay.length() {
+    return false
+  }
+  for i in 0..<(hay.length() - n + 1) {
+    let mut ok = true
+    for j in 0..<n {
+      if hay[i + j] != needle[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+/// Strict JSON parser matching MoonBit `@json.parse`: rejects unpaired UTF-16 surrogates
+/// (`\ud800`..`\udfff`) instead of silently substituting U+FFFD.
+pub fn parse_json_strict(text : String) -> base_codec::JsonParseResult {
+  if builders_core::has_lone_surrogate(text) {
+    return base_codec::JsonParseResult::Err("lone surrogate")
+  }
+  sql_db::parse_json(text)
+}
+
+pub let PIPE_END : Int64 = (65535.to_int64() << 16.to_int64()) | 65534.to_int64() // 0xFFFFFFFE
+pub let PIPE_FAILED : Int64 = (65535.to_int64() << 16.to_int64()) | 65533.to_int64() // 0xFFFFFFFD
+pub let PIPE_MOST : Int = 1048576
+pub let BODY_MOST : Int = 1048576
+pub let SAFE_INT_MAX : Double = 9007199254740991.0
+
+/// What a route reads: its read op and args, a 404 of its own, a refusal status/msg, or not answered here (`Not`).
+pub enum Route {
+  Read(String, base_codec::Json)
+  Missing(String)
+  Refuse(Int, String)
+  Not
+}
+
+/// Read `n` big-endian unsigned bytes from `b` starting at `at` into `Int64`.
+pub fn be_u(b : Bytes, at : Int, n : Int) -> Int64 {
+  let mut v : Int64 = 0.to_int64()
+  for i in 0..<n {
+    let byte_val : Int64 = (b[at + i].to_int() & 0xFF).to_int64()
+    v = (v << 8.to_int64()) | byte_val
+  }
+  v
+}
+
+/// Encode lower 32 bits of `n` as 4 big-endian bytes.
+pub fn be32(n : Int64) -> Bytes {
+  let out = Bytes::new(4)
+  out[0] = ((n >> 24.to_int64()) & 0xFF.to_int64()).to_int() as Byte
+  out[1] = ((n >> 16.to_int64()) & 0xFF.to_int64()).to_int() as Byte
+  out[2] = ((n >> 8.to_int64()) & 0xFF.to_int64()).to_int() as Byte
+  out[3] = (n & 0xFF.to_int64()).to_int() as Byte
+  out
+}
+
+/// Slice bytes `[start .. end_idx)` into a new `Bytes`.
+pub fn slice_bytes(b : Bytes, start : Int, end_idx : Int) -> Bytes {
+  let len = if end_idx > start { end_idx - start } else { 0 }
+  let out = Bytes::new(len)
+  for i in 0..<len {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+/// Frame `bytes` into `pipe` chunks (`<= PIPE_MOST` bytes each, prefixed with 4-byte BE32 length).
+pub fn frame_bytes(bytes : Bytes) -> Bytes {
+  let n = bytes.length()
+  if n == 0 {
+    return Bytes::new(0)
+  }
+  let chunks = (n + PIPE_MOST - 1) / PIPE_MOST
+  let out = Bytes::new(n + chunks * 4)
+  let mut at = 0
+  let mut pos = 0
+  while at < n {
+    let rem = n - at
+    let k = if rem > PIPE_MOST { PIPE_MOST } else { rem }
+    let hdr = be32(k.to_int64())
+    out[pos] = hdr[0]
+    out[pos + 1] = hdr[1]
+    out[pos + 2] = hdr[2]
+    out[pos + 3] = hdr[3]
+    pos = pos + 4
+    for i in 0..<k {
+      out[pos + i] = bytes[at + i]
+    }
+    pos = pos + k
+    at = at + k
+  }
+  out
+}
+
+/// Frame a complete HTTP-style response: `[len][head_json + "\n"]` + `frame_bytes(body)` + `be32(PIPE_END)`.
+pub fn frame_whole_answer(head_json : String, body : Bytes) -> Bytes {
+  let line = (head_json + "\n").to_bytes()
+  let line_len = line.length()
+  let body_len = body.length()
+  let body_chunks = if body_len == 0 { 0 } else { (body_len + PIPE_MOST - 1) / PIPE_MOST }
+  let total = 4 + line_len + body_len + body_chunks * 4 + 4
+  let out = Bytes::new(total)
+  let mut pos = 0
+  let lhdr = be32(line_len.to_int64())
+  out[pos] = lhdr[0]
+  out[pos + 1] = lhdr[1]
+  out[pos + 2] = lhdr[2]
+  out[pos + 3] = lhdr[3]
+  pos = pos + 4
+  for i in 0..<line_len {
+    out[pos + i] = line[i]
+  }
+  pos = pos + line_len
+  let mut at = 0
+  while at < body_len {
+    let rem = body_len - at
+    let k = if rem > PIPE_MOST { PIPE_MOST } else { rem }
+    let bhdr = be32(k.to_int64())
+    out[pos] = bhdr[0]
+    out[pos + 1] = bhdr[1]
+    out[pos + 2] = bhdr[2]
+    out[pos + 3] = bhdr[3]
+    pos = pos + 4
+    for i in 0..<k {
+      out[pos + i] = body[at + i]
+    }
+    pos = pos + k
+    at = at + k
+  }
+  let ehdr = be32(PIPE_END)
+  out[pos] = ehdr[0]
+  out[pos + 1] = ehdr[1]
+  out[pos + 2] = ehdr[2]
+  out[pos + 3] = ehdr[3]
+  out
+}
+
+/// Check if string consists solely of 1 or more ASCII digits (`'0'..'9'`).
+pub fn digits(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+  }
+  true
+}
+
+/// Check if string matches `[+-]?[0-9]+`.
+pub fn signed_digits(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  let c0 = b[0].to_int() & 0xFF
+  if c0 == 43 || c0 == 45 {
+    if b.length() <= 1 {
+      return false
+    }
+    for i in 1..<b.length() {
+      let c = b[i].to_int() & 0xFF
+      if c < 48 || c > 57 {
+        return false
+      }
+    }
+    true
+  } else {
+    digits(s)
+  }
+}
+
+/// Parse an ASCII-digits-only string as Double (exact 1:1 with `serve.mbt:1004`).
+pub fn parse_double(s : String) -> Double {
+  let b = s.to_bytes()
+  let mut v = 0.0
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    v = v * 10.0 + (c - 48).to_double()
+  }
+  v
+}
+
+/// Parse `[+-]?digits` as Double (exact 1:1 with `serve.mbt:687`).
+pub fn signed_number(s : String) -> Double {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return 0.0
+  }
+  let c0 = b[0].to_int() & 0xFF
+  if c0 == 45 {
+    let mut v = 0.0
+    for i in 1..<b.length() {
+      v = v * 10.0 + ((b[i].to_int() & 0xFF) - 48).to_double()
+    }
+    -v
+  } else if c0 == 43 {
+    let mut v = 0.0
+    for i in 1..<b.length() {
+      v = v * 10.0 + ((b[i].to_int() & 0xFF) - 48).to_double()
+    }
+    v
+  } else {
+    parse_double(s)
+  }
+}
+
+pub fn abs_double(d : Double) -> Double {
+  if d < 0.0 { -d } else { d }
+}
+
+/// Split a UTF-8 string on a single ASCII byte separator.
+pub fn split_ascii(s : String, sep : Int) -> Array[String] {
+  let b = s.to_bytes()
+  let n = b.length()
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<n {
+    if (b[i].to_int() & 0xFF) == sep {
+      out.push(sql_db::decode_utf8_lossy_bytes(slice_bytes(b, start, i)))
+      start = i + 1
+    }
+  }
+  out.push(sql_db::decode_utf8_lossy_bytes(slice_bytes(b, start, n)))
+  out
+}
+
+/// Find first occurrence of an ASCII byte in a string, returning byte offset.
+pub fn find_ascii(s : String, ch : Int) -> Option[Int] {
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    if (b[i].to_int() & 0xFF) == ch {
+      return Some(i)
+    }
+  }
+  None
+}
+
+/// Split `path` into `(route, query)` at the first `'?'`.
+pub fn split_query(path : String) -> (String, String) {
+  let b = path.to_bytes()
+  match find_ascii(path, 63) {
+    Some(at) => (
+      sql_db::decode_utf8_lossy_bytes(slice_bytes(b, 0, at)),
+      sql_db::decode_utf8_lossy_bytes(slice_bytes(b, at + 1, b.length())),
+    )
+    None => (path, "")
+  }
+}
+
+/// Check if `s` starts with ASCII/UTF-8 `prefix`.
+pub fn has_prefix(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  for i in 0..<pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+/// Slack-style ts (`<digits>.<6 digits>`) -> milliseconds (`serve.mbt:186`).
+pub fn ts_ms(ts : String) -> Option[Int64] {
+  let parts = split_ascii(ts, 46) // '.'
+  if parts.length() != 2 {
+    return None
+  }
+  let whole = parts[0]
+  let frac = parts[1]
+  let wb = whole.to_bytes()
+  let fb = frac.to_bytes()
+  if wb.length() == 0 || fb.length() != 6 {
+    return None
+  }
+  let mut ms : Int64 = 0.to_int64()
+  for i in 0..<wb.length() {
+    let c = wb[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    ms = ms * 10.to_int64() + (c - 48).to_int64()
+  }
+  for i in 0..<3 {
+    let c = fb[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    ms = ms * 10.to_int64() + (c - 48).to_int64()
+  }
+  Some(ms)
+}
+
+/// Case-insensitive header lookup on a JSON object (`serve.mbt:333`).
+pub fn header_ci(headers : base_codec::Json, name_lower : String) -> Option[String] {
+  match headers {
+    base_codec::Json::Obj(fields) => {
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        if jscase::lower(k) == name_lower {
+          match v {
+            base_codec::Json::Str(s) => return Some(s)
+            _ => ()
+          }
+        }
+      }
+      None
+    }
+    _ => None
+  }
+}
+
+/// Whether `accept-encoding` header lists `zstd` (`serve.mbt:611`).
+pub fn accepts_zstd(headers : base_codec::Json) -> Bool {
+  match header_ci(headers, "accept-encoding") {
+    Some(s) => {
+      let parts = split_ascii(s, 44) // ','
+      for i in 0..<parts.length() {
+        if jscase::trim_white(parts[i]) == "zstd" {
+          return true
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+/// `api/oldest.ts buildOf` (`serve.mbt:345`): `0.<m>.<n>` or `<n>` -> `Some(n)`.
+pub fn build_of(said : Option[String]) -> Option[Int] {
+  let raw = match said {
+    Some(s) => jscase::trim_white(s)
+    None => return None
+  }
+  let parts = split_ascii(raw, 46) // '.'
+  let last = if parts.length() == 1 {
+    parts[0]
+  } else if parts.length() == 3 && parts[0] == "0" && digits(parts[1]) {
+    parts[2]
+  } else {
+    return None
+  }
+  if !digits(last) || last.to_bytes().length() > 15 {
+    return None
+  }
+  Some(parse_double(last).to_int())
+}
+
+/// Extract Int from `Option[base_codec::Json]`, defaulting to 0 (`serve.mbt:364`).
+pub fn int_of(v : Option[base_codec::Json]) -> Int {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => 0
+  }
+}
+
+/// Replace all occurrences of ASCII byte `'+'` (43) with `"%2B"` before percent-decoding (`serve.mbt:681`).
+pub fn segment(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 43 {
+      sb.write_string("%2B")
+    } else {
+      sb.write_byte(b[i])
+    }
+  }
+  readops_core::percent_decode_lossy(sb.to_string(), plus_space=true)
+}
+
+/// `api/request.ts queryPairs`: `&`-separated, each `name=value` percent-decoded (`serve.mbt:981`).
+pub fn query_pairs(query : String) -> Array[(String, String)] {
+  let parts = split_ascii(query, 38) // '&'
+  let out : Array[(String, String)] = []
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    if p == "" {
+      continue
+    }
+    match find_ascii(p, 61) {
+      Some(at) => {
+        let pb = p.to_bytes()
+        let k = sql_db::decode_utf8_lossy_bytes(slice_bytes(pb, 0, at))
+        let v = sql_db::decode_utf8_lossy_bytes(slice_bytes(pb, at + 1, pb.length()))
+        out.push((
+          readops_core::percent_decode_lossy(k, plus_space=true),
+          readops_core::percent_decode_lossy(v, plus_space=true),
+        ))
+      }
+      None => out.push((readops_core::percent_decode_lossy(p, plus_space=true), ""))
+    }
+  }
+  out
+}
+
+/// Segments of `path` after `/admin/api`, without its query (`serve.mbt:1407`).
+pub fn route_of_path(path : String) -> Array[String] {
+  let (route, _) = split_query(path)
+  let parts = split_ascii(route, 47) // '/'
+  if parts.length() >= 3 && parts[1] == "admin" && parts[2] == "api" {
+    let out : Array[String] = []
+    for i in 3..<parts.length() {
+      out.push(parts[i])
+    }
+    out
+  } else {
+    []
+  }
+}
+
+/// `admin.ts BATCHED`: what a batch reads (after `/admin/api`) (`serve.mbt:517`).
+pub fn batched(route : String) -> Bool {
+  let parts = split_ascii(route, 47)
+  if parts.length() == 3 && parts[0] == "" && parts[1] == "threads" {
+    return digits(parts[2])
+  }
+  if parts.length() == 4 && parts[0] == "" && parts[1] == "threads" && (parts[3] == "entries" || parts[3] == "letters") {
+    return digits(parts[2])
+  }
+  if parts.length() == 3 && parts[0] == "" && parts[1] == "sessions" {
+    return parts[2] != ""
+  }
+  if parts.length() == 4 && parts[0] == "" && parts[1] == "sessions" && parts[3] == "timeline" {
+    return parts[2] != ""
+  }
+  false
+}
+
+fn find_param(pairs : Array[(String, String)], name : String) -> Option[String] {
+  for i in 0..<pairs.length() {
+    let (k, v) = pairs[i]
+    if k == name {
+      return Some(v)
+    }
+  }
+  None
+}
+
+fn param_is(pairs : Array[(String, String)], name : String, want : String) -> Bool {
+  match find_param(pairs, name) {
+    Some(v) => v == want
+    None => false
+  }
+}
+
+/// `api/routes/chats.ts` GET `/chats` (`serve.mbt:941`).
+pub fn chats_read(
+  pairs : Array[(String, String)],
+  viewer : base_codec::Json,
+) -> Option[(String, base_codec::Json)] {
+  let mut some = false
+  let sessions : Array[base_codec::Json] = []
+  let threads : Array[base_codec::Json] = []
+  for i in 0..<pairs.length() {
+    let (k, v) = pairs[i]
+    if k == "session" {
+      some = true
+      sessions.push(base_codec::json_str(v))
+    } else if k == "thread" {
+      some = true
+      if digits(v) {
+        threads.push(sql_db::double_to_json(parse_double(v)))
+      }
+    }
+  }
+  let scoped = base_codec::json_obj([
+    ("viewer", viewer),
+    ("sessions", base_codec::json_arr(sessions)),
+    ("threads", base_codec::json_arr(threads)),
+  ])
+  if param_is(pairs, "marks", "1") {
+    let scope_val = if some {
+      base_codec::json_obj([
+        ("sessions", base_codec::json_arr(sessions)),
+        ("threads", base_codec::json_arr(threads)),
+      ])
+    } else {
+      base_codec::json_null()
+    }
+    let own = param_is(pairs, "own", "1")
+    return Some((
+      "chatMarks",
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("scope", scope_val),
+        ("own", base_codec::json_bool(own)),
+      ]),
+    ))
+  }
+  if param_is(pairs, "shared", "1") {
+    let args = if some {
+      scoped
+    } else {
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("sessions", base_codec::json_null()),
+        ("threads", base_codec::json_null()),
+      ])
+    }
+    return Some(("sharedChats", args))
+  }
+  if some {
+    return Some(("chatRows", scoped))
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("viewer", viewer),
+    ("archived", base_codec::json_bool(param_is(pairs, "archived", "1"))),
+  ]
+  match find_param(pairs, "page") {
+    Some(p) => fields.push(("page", base_codec::json_str(p)))
+    None => ()
+  }
+  Some(("chats", base_codec::json_obj(fields)))
+}
+
+/// Route a GET path under `/admin/api` (`serve.mbt:815`).
+pub fn route_read(
+  route : String,
+  pairs : Array[(String, String)],
+  viewer : base_codec::Json,
+  lang : String,
+) -> Route {
+  let parts = split_ascii(route, 47)
+  if parts.length() < 4 || parts[0] != "" || parts[1] != "admin" || parts[2] != "api" {
+    return Route::Not
+  }
+  let l = base_codec::json_str(lang)
+  let n = parts.length()
+  if n == 4 && parts[3] == "chats" {
+    match chats_read(pairs, viewer) {
+      Some((op, args)) => Route::Read(op, args)
+      None => Route::Not
+    }
+  } else if n == 4 && parts[3] == "sessions" {
+    let connect = match find_param(pairs, "connect") {
+      Some(c) => base_codec::json_str(c)
+      None => base_codec::json_null()
+    }
+    Route::Read(
+      "sessions",
+      base_codec::json_obj([
+        ("connect", connect),
+        ("archived", base_codec::json_bool(param_is(pairs, "archived", "1"))),
+        ("lang", l),
+        ("viewer", viewer),
+      ]),
+    )
+  } else if n == 5 && parts[3] == "sessions" {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("key", base_codec::json_str(segment(parts[4]))),
+      ("viewer", viewer),
+      ("lang", l),
+    ]
+    match find_param(pairs, "turns") {
+      Some(v) => fields.push(("turns", base_codec::json_str(v)))
+      None => ()
+    }
+    match find_param(pairs, "jobs") {
+      Some(v) => fields.push(("jobs", base_codec::json_str(v)))
+      None => ()
+    }
+    Route::Read("session", base_codec::json_obj(fields))
+  } else if n == 6 && parts[3] == "sessions" && parts[5] == "timeline" {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("key", base_codec::json_str(segment(parts[4]))),
+      ("lang", l),
+    ]
+    let names = ["before", "limit", "from", "to", "brief", "after"]
+    for i in 0..<names.length() {
+      match find_param(pairs, names[i]) {
+        Some(v) => fields.push((names[i], base_codec::json_str(v)))
+        None => ()
+      }
+    }
+    Route::Read("timeline", base_codec::json_obj(fields))
+  } else if n == 4 && parts[3] == "threads" {
+    let sess = match find_param(pairs, "session") {
+      Some(c) => base_codec::json_str(c)
+      None => base_codec::json_null()
+    }
+    Route::Read(
+      "threads",
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("session", sess),
+        ("lang", l),
+      ]),
+    )
+  } else if n == 5 && parts[3] == "threads" {
+    Route::Read(
+      "thread",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(segment(parts[4]))),
+        ("viewer", viewer),
+        ("lang", l),
+      ]),
+    )
+  } else if n == 6 && parts[3] == "threads" && (parts[5] == "entries" || parts[5] == "letters") {
+    let id = parts[4]
+    if !signed_digits(id) {
+      return Route::Missing("unknown thread " + id)
+    }
+    let params : Array[base_codec::Json] = []
+    for i in 0..<pairs.length() {
+      let (k, v) = pairs[i]
+      params.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+    }
+    Route::Read(
+      parts[5],
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("thread", sql_db::double_to_json(signed_number(id))),
+        ("params", base_codec::json_arr(params)),
+      ]),
+    )
+  } else if n == 4 && parts[3] == "jobs" {
+    Route::Read(
+      "openJobs",
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("lang", l),
+        ("chats", base_codec::json_bool(!param_is(pairs, "chats", "0"))),
+      ]),
+    )
+  } else if n == 5 && parts[3] == "jobs" {
+    Route::Read("job", base_codec::json_obj([("id", base_codec::json_str(segment(parts[4])))]))
+  } else if n == 6 && parts[3] == "jobs" && parts[5] == "log" {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(segment(parts[4]))),
+    ]
+    match find_param(pairs, "lines") {
+      Some(v) => fields.push(("lines", base_codec::json_str(v)))
+      None => ()
+    }
+    Route::Read("jobLog", base_codec::json_obj(fields))
+  } else {
+    Route::Not
+  }
+}
+
+/// `api/routes/changed.ts` POST `/admin/api/changed/<list>` (`serve.mbt:891`).
+pub fn changed_read(
+  route : String,
+  pairs : Array[(String, String)],
+  viewer : base_codec::Json,
+  lang : String,
+  body : Bytes,
+  runtimes : Array[String],
+) -> Route {
+  let list = if route == "/admin/api/changed/chats" {
+    "chats"
+  } else if route == "/admin/api/changed/shared" {
+    "sharedChats"
+  } else if route == "/admin/api/changed/sessions" {
+    "sessions"
+  } else if route == "/admin/api/changed/threads" {
+    "threads"
+  } else {
+    return Route::Not
+  }
+  if body.length() > 1000000 {
+    return Route::Refuse(413, "request too large")
+  }
+  let body_str = sql_db::decode_utf8_lossy_bytes(body)
+  let parsed = match parse_json_strict(body_str) {
+    base_codec::JsonParseResult::Ok(j) => Some(j)
+    base_codec::JsonParseResult::Err(_) => None
+  }
+  let held = match parsed {
+    Some(obj) => {
+      match builders_core::json_get_last(obj, "held") {
+        Some(base_codec::Json::Obj(h)) => Some(base_codec::Json::Obj(h))
+        _ => None
+      }
+    }
+    None => None
+  }
+  let held_val = match held {
+    Some(h) => h
+    None => return Route::Refuse(400, "held: each held row's digest by its id")
+  }
+  let id_key = if list == "sessions" { "key" } else { "id" }
+  let args = if list == "chats" {
+    let mut archived = false
+    for i in 0..<pairs.length() {
+      let (k, v) = pairs[i]
+      if k == "archived" && v == "1" {
+        archived = true
+        break
+      }
+    }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("viewer", viewer),
+      ("archived", base_codec::json_bool(archived)),
+    ]
+    for i in 0..<pairs.length() {
+      let (k, v) = pairs[i]
+      if k == "page" {
+        fields.push(("page", base_codec::json_str(v)))
+        break
+      }
+    }
+    base_codec::json_obj(fields)
+  } else if list == "sharedChats" {
+    base_codec::json_obj([
+      ("viewer", viewer),
+      ("sessions", base_codec::json_null()),
+      ("threads", base_codec::json_null()),
+    ])
+  } else {
+    match route_read("/admin/api/" + list, pairs, viewer, lang) {
+      Route::Read(_, a) => a
+      _ => return Route::Not
+    }
+  }
+  let rt_arr : Array[base_codec::Json] = []
+  for i in 0..<runtimes.length() {
+    rt_arr.push(base_codec::json_str(runtimes[i]))
+  }
+  Route::Read(
+    "changed",
+    base_codec::json_obj([
+      ("op", base_codec::json_str(list)),
+      ("args", args),
+      ("id", base_codec::json_str(id_key)),
+      ("held", held_val),
+      ("runtimes", base_codec::json_arr(rt_arr)),
+    ]),
+  )
+}
+
+/// Truncate a string to at most `max` Unicode code points (counting surrogate pairs as 1).
+pub fn truncate_code_points(s : String, max : Int) -> String {
+  let units = js_json::utf16_units(s)
+  let cut = js_json::chars(units, max)
+  js_json::sanitize_str(cut)
+}
+
+/// `marks.ts title`: trimmed (`jscase::trim`), at most 80 Unicode code points; empty/missing is null (`serve.mbt:1376`).
+pub fn title_of(input : base_codec::Json) -> base_codec::Json {
+  let t = match builders_core::json_get_last(input, "title") {
+    Some(base_codec::Json::Str(s)) => jscase::trim(s)
+    _ => ""
+  }
+  if t == "" {
+    return base_codec::json_null()
+  }
+  base_codec::json_str(truncate_code_points(t, 80))
+}
+
+/// Sanitize `client` field: strip control chars (`< 0x20` or `0x7F..0x9F`), at most 80 code points (`serve.mbt:1543`).
+pub fn client_of(js : js_json::JValue) -> base_codec::Json {
+  let raw_str = match jval_get(js, "client") {
+    Some(js_json::JValue::Str(u)) => jscase::trim(js_json::sanitize_str(u))
+    _ => return base_codec::json_null()
+  }
+  let units = js_json::utf16_units(raw_str)
+  let kept : Array[Int] = []
+  let len = units.length()
+  let mut i = 0
+  let mut count = 0
+  while i < len && count < 80 {
+    let c = units[i]
+    if c >= 0xD800 && c <= 0xDBFF && i + 1 < len {
+      let d = units[i + 1]
+      if d >= 0xDC00 && d <= 0xDFFF {
+        kept.push(c)
+        kept.push(d)
+        i = i + 2
+        count = count + 1
+        continue
+      }
+    }
+    if c < 0x20 || (c >= 0x7F && c < 0xA0) {
+      i = i + 1
+      continue
+    }
+    kept.push(c)
+    i = i + 1
+    count = count + 1
+  }
+  let out = js_json::sanitize_str(kept)
+  if out == "" { base_codec::json_null() } else { base_codec::json_str(out) }
+}
+
+/// Lookup an ASCII key on a `js_json::JValue::Obj` (last-wins, matching JS object semantics).
+pub fn jval_get(v : js_json::JValue, key : String) -> Option[js_json::JValue] {
+  match v {
+    js_json::JValue::Obj(entries) => {
+      let key_units = js_json::utf16_units(key)
+      let mut found : Option[js_json::JValue] = None
+      for i in 0..<entries.length() {
+        let (k, item_val) = entries[i]
+        if units_eq(k, key_units) {
+          found = Some(item_val)
+        }
+      }
+      found
+    }
+    _ => None
+  }
+}
+
+pub fn units_eq(a : Array[Int], b : Array[Int]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+/// Whether `v` is `JValue::Str` equal code-unit-for-code-unit to `s` (`serve.mbt:1801`).
+pub fn is_jval_str(v : Option[js_json::JValue], s : String) -> Bool {
+  match v {
+    Some(js_json::JValue::Str(u)) => units_eq(u, js_json::utf16_units(s))
+    _ => false
+  }
+}
+
+/// `^[0-9]+\.[0-9]+$` on UTF-16 code units (`serve.mbt:1783`).
+pub fn ts_like_units(u : Array[Int]) -> Bool {
+  let n = u.length()
+  let mut dot = -1
+  for i in 0..<n {
+    let c = u[i]
+    if c == 46 {
+      if dot >= 0 {
+        return false
+      }
+      dot = i
+    } else if c < 48 || c > 57 {
+      return false
+    }
+  }
+  dot > 0 && dot < n - 1
+}
+
+fn is_allowed_quote_role(u : Array[Int]) -> Bool {
+  let s = js_json::sanitize_str(u)
+  s == "agent" || s == "person" || s == "page" || s == "image" || s == "pdf" || s == "file"
+}
+
+/// `routes/hub.ts quotesOf` with injectable number formatter (testable without native C FFI).
+pub fn quotes_of_with(
+  given : Option[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> Array[js_json::JValue] {
+  let list = match given {
+    Some(js_json::JValue::Arr(a)) => a
+    _ => return []
+  }
+  let out : Array[js_json::JValue] = []
+  let limit = if list.length() > 20 { 20 } else { list.length() }
+  for k in 0..<limit {
+    let o = match list[k] {
+      js_json::JValue::Obj(entries) => js_json::JValue::Obj(entries)
+      _ => js_json::JValue::Obj([])
+    }
+    let text_units = quote_field_units(o, "text", "", 4000, fmt_num)
+    let author_units = quote_field_units(o, "author", "消息", 100, fmt_num)
+    let comment_units = quote_field_units(o, "comment", "", 4000, fmt_num)
+    let quote : Array[(Array[Int], js_json::JValue)] = [
+      (js_json::utf16_units("author"), js_json::JValue::Str(author_units)),
+      (js_json::utf16_units("text"), js_json::JValue::Str(text_units)),
+      (js_json::utf16_units("comment"), js_json::JValue::Str(comment_units)),
+    ]
+    match jval_get(o, "ts") {
+      Some(js_json::JValue::Str(ts_u)) => {
+        if ts_like_units(ts_u) {
+          quote.push((js_json::utf16_units("ts"), js_json::JValue::Str(ts_u)))
+        }
+      }
+      _ => ()
+    }
+    match jval_get(o, "role") {
+      Some(js_json::JValue::Str(role_u)) => {
+        if is_allowed_quote_role(role_u) {
+          quote.push((js_json::utf16_units("role"), js_json::JValue::Str(role_u)))
+        }
+      }
+      _ => ()
+    }
+    match jval_get(o, "file") {
+      Some(js_json::JValue::Str(file_u)) => {
+        if file_u.length() > 0 {
+          quote.push((js_json::utf16_units("file"), js_json::JValue::Str(js_json::chars(file_u, 200))))
+        }
+      }
+      _ => ()
+    }
+    if jscase::trim(js_json::sanitize_str(text_units)) != "" {
+      out.push(js_json::JValue::Obj(quote))
+    }
+  }
+  out
+}
+
+/// `routes/hub.ts quotesOf`: at most 20 quotes, each field cut via `js_json::chars`, empty text dropped (`serve.mbt:1743`).
+pub fn quotes_of(given : Option[js_json::JValue]) -> Array[js_json::JValue] {
+  quotes_of_with(given, fn(d : Double) -> String { js_json::stringify(js_json::JValue::Num(d)) })
+}
+
+fn quote_field_units(
+  o : js_json::JValue,
+  name : String,
+  fallback : String,
+  max : Int,
+  fmt_num : (Double) -> String,
+) -> Array[Int] {
+  let raw_units = match jval_get(o, name) {
+    None => js_json::utf16_units(fallback)
+    Some(js_json::JValue::Null) => js_json::utf16_units(fallback)
+    Some(js_json::JValue::Str(s)) => s
+    Some(v) => js_json::utf16_units(js_json::stringify_with_num(v, fmt_num))
+  }
+  js_json::chars(raw_units, max)
+}
+
+/// Pure helper normalizing a connection ID JSON value into a canonical Double-keyed string
+/// (matches `serve.mbt:266` and Node JS Number semantics even for `> 2^53`).
+pub fn conn_key_of_with(conn : base_codec::Json, fmt_num : (Double) -> String) -> String {
+  match conn {
+    base_codec::Json::Num(v, _) => fmt_num(v)
+    _ => base_codec::json_stringify(conn)
+  }
+}
+
+/// Normalize a connection ID JSON value into a canonical Double-keyed string.
+pub fn conn_key_of(conn : base_codec::Json) -> String {
+  conn_key_of_with(conn, fn(d : Double) -> String { js_json::stringify(js_json::JValue::Num(d)) })
+}
+
+/// Format `{"error": m}` JSON string.
+pub fn error_json(m : String) -> String {
+  sql_db::stringify_json(base_codec::json_obj([("error", base_codec::json_str(m))]))
+}

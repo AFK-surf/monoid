@@ -1,6 +1,7 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type BackfillOptions, MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
 export type MinuteRequest = { id: number; remote: true } | { id: number; chats: InWorkspace | null };
@@ -23,7 +24,7 @@ export class MinuteReader {
   #closed = false;
   #complete = false;
   #termination: Promise<number> | null = null;
-  #waiting = new Map<number, { resolve: () => void; reject: (error: Error) => void; request: MinuteRequest; sent: boolean }>();
+  #waiting = new Map<number, { resolve: () => void; reject: (error: Error) => void; request: MinuteRequest; sent: boolean; at: number }>();
   /// The idle checker's going armed (IDLE_MS), called off by an ask.
   #idle: (() => void) | null = null;
   readonly #after: (ms: number, f: () => void) => () => void;
@@ -66,13 +67,17 @@ export class MinuteReader {
 
   start(): void {
     if (this.#closed || this.#complete || this.#worker !== null) return;
-    const bin = resolveReaderSelection("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" }).primaryBinary;
-    const worker = new MbProcess(bin, ["--builder", "usage-check", "--db", this.#path]);
+    const sel = resolveReaderSelection("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" });
+    const worker = new MbProcess(sel.primaryBinary, ["--builder", "usage-check", "--db", this.#path], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
     this.#worker = worker;
     worker.on("message", (answer: MinuteResponse) => {
       if (answer.complete) {
         this.#complete = true;
-        for (const waiting of this.#waiting.values()) waiting.resolve();
+        const now = wall.now();
+        for (const waiting of this.#waiting.values()) {
+          if (waiting.sent) readerTelemetry.recordCall(worker.engine, worker.mode, now - waiting.at, true);
+          waiting.resolve();
+        }
         this.#waiting.clear();
         if (this.#worker === worker) this.#worker = null;
         this.#termination = worker.terminate();
@@ -82,6 +87,7 @@ export class MinuteReader {
       const waiting = this.#waiting.get(answer.id);
       if (!waiting) return;
       this.#waiting.delete(answer.id);
+      if (waiting.sent) readerTelemetry.recordCall(worker.engine, worker.mode, wall.now() - waiting.at, !answer.error);
       if (answer.error) waiting.reject(new Error(answer.error));
       else waiting.resolve();
       this.#idleLater();
@@ -89,13 +95,17 @@ export class MinuteReader {
     let failure: Error | null = null;
     worker.on("error", (error: Error) => {
       failure = error;
-      log.error("usage", "the minute summary worker stopped", { error: error.message });
+      log.error("usage", "the minute summary worker stopped", { engine: worker.engine, mode: worker.mode, error: error.message });
     });
     worker.on("exit", (code: number) => {
       const current = this.#worker === worker;
       if (current) this.#worker = null;
       if (current && !this.#complete && !this.#closed) {
-        for (const waiting of this.#waiting.values()) waiting.reject(failure ?? new Error(`the minute summary worker stopped (exit ${code})`));
+        const now = wall.now();
+        for (const waiting of this.#waiting.values()) {
+          if (waiting.sent) readerTelemetry.recordCall(worker.engine, worker.mode, now - waiting.at, false);
+          waiting.reject(failure ?? new Error(`the minute summary worker stopped (exit ${code})`));
+        }
         this.#waiting.clear();
       }
     });
@@ -107,6 +117,7 @@ export class MinuteReader {
     if (this.#worker === null) return;
     if (this.#waiting.size > 0) { this.#idle?.(); this.#idle = null; }
     for (const waiting of this.#waiting.values()) if (!waiting.sent) {
+      waiting.at = wall.now();
       this.#worker.postMessage(waiting.request);
       waiting.sent = true;
     }
@@ -119,7 +130,7 @@ export class MinuteReader {
     return new Promise((resolve, reject) => {
       const id = ++this.#next;
       try {
-        this.#waiting.set(id, { resolve, reject, request: { id, remote: true }, sent: false });
+        this.#waiting.set(id, { resolve, reject, request: { id, remote: true }, sent: false, at: 0 });
         this.start();
         this.#sendWaiting();
       } catch (error) {
@@ -137,7 +148,7 @@ export class MinuteReader {
     return new Promise((resolve, reject) => {
       const id = ++this.#next;
       try {
-        this.#waiting.set(id, { resolve, reject, request: { id, chats: viewer }, sent: false });
+        this.#waiting.set(id, { resolve, reject, request: { id, chats: viewer }, sent: false, at: 0 });
         this.start();
         this.#sendWaiting();
       } catch (error) {

@@ -204,12 +204,26 @@ function threadJson(t: ThreadRow): Json {
   return v;
 }
 
+/// threadviews.mbt `thread_keys`: its home alone, else its sessions.
+function threadKeys(t: ThreadSummary): string[] {
+  if (typeof t.thread.home === "string" && t.thread.home !== "") return [t.thread.home];
+  const out: string[] = [];
+  for (const m of t.sessions) {
+    if (m.session !== "" && !out.includes(m.session)) out.push(m.session);
+  }
+  return out;
+}
+
+const namedOpener = (o: { station: string | null; session: string; title: string | null; led?: true }) =>
+  ({ ...(o.station !== null ? { station: o.station } : {}), session: o.session, ...(o.title !== null ? { title: o.title } : {}), ...(o.led === true ? { led: true } : {}) });
+
 /// views.rs `thread_view`: a thread with its sessions, last entry and message, what the viewer read, who wrote. Of one
 /// thread (what is told of it as it changes, for each viewer), its own shares alone.
 function threadView(
   s: Store,
   t: ThreadSummary,
   shares: ReturnType<typeof store.chatShares> = store.chatShares(s, [t.thread.home ?? t.sessions[0]?.session ?? ""]),
+  openers: ReturnType<typeof store.openers> = store.openers(s, threadKeys(t)),
 ): Json {
   const names = authorNames(s, t.thread.id);
   const v = threadJson(t.thread);
@@ -236,6 +250,13 @@ function threadView(
   // Which other workspaces it is shared with, by the session key its link names.
   const shared = shares.get(t.thread.home ?? t.sessions[0]?.session ?? "");
   v.xshare = shared === undefined ? null : shared;
+  for (const mk of threadKeys(t)) {
+    const op = openers.get(mk);
+    if (op !== undefined) {
+      v.opener = namedOpener(op);
+      break;
+    }
+  }
   return v;
 }
 
@@ -246,7 +267,9 @@ function threadViews(s: Store, viewer: Viewer, session: string | null): Json[] {
   store.requireCcSessions(s, visible.flatMap((t) => t.thread.surface === store.STILLFAIL_SURFACE
     ? t.sessions.map((m) => m.session) : []));
   const shares = store.chatShares(s, visible.map((t) => t.thread.home ?? t.sessions[0]?.session ?? ""));
-  return visible.map((t) => threadView(s, t, shares));
+  const openerKeys = [...new Set(visible.flatMap(threadKeys))];
+  const openers = openerKeys.length > 0 ? store.openers(s, openerKeys) : new Map();
+  return visible.map((t) => threadView(s, t, shares, openers));
 }
 
 /// GET /threads?session=: the threads (of one session).

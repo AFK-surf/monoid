@@ -1175,8 +1175,8 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
     }
 
     /**
-     * The frame for {@code req} drawn (main thread, a little before it): evaluated via FramePacer.fireWake so fixed-rate
-     * screens request the next vsync and LTPO screens at low cadence deliver on the due vsync directly (with timelines on API 33+).
+     * The frame for {@code req} drawn (main thread, a little before it): evaluated via FramePacer.fireWake so the wake
+     * delivers directly on the first due vsync ({@code vsyncNs / 1e6 >= req.at}, with timelines on API 33+).
      */
     void wakeAt(FramePacer.WakeReq req) {
         if (shotTaken || !pacer.isWakeCurrent(req)) return;

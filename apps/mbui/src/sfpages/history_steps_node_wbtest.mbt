@@ -1055,3 +1055,133 @@ test "floating jump-to-bottom button restores auto-follow after entry jump" {
   assert_true(!steps_own.went.contains(lkey), msg="jumping back to bottom resumes auto-follow")
   steps_reset()
 }
+
+///|
+test "steps_seconds does not drift early under 120Hz frame-target lead and self-calibrates on lead shifts or sleep" {
+  let vsync = 1000.0 / 120.0
+  let since = 3.7
+  let wall = Ref(0.0)
+  let mono = Ref(0.0)
+  let lead = Ref(2.0 * vsync)
+  let base = @sffixture.fixture("history")
+  let src : @sfbase.Source = { ..base, now: fn() { wall.val } }
+  let tick_ref : Ref[(() -> Int)?] = Ref(None)
+  let tree = @view.Tree::new(time=fn() { mono.val + lead.val }, fn(root) {
+    tick_ref.val = Some(steps_seconds(root, src, since))
+  })
+  let tick = tick_ref.val.unwrap()
+  let mut last_tick = @signals.untracked(tick)
+  let mut last_sec = -1
+  let mut early_wakes = 0
+  let mut dup_ticks = 0
+  let mut painted_secs = 0
+  // 20 seconds at 120 Hz with constant 16.67 ms target lead: zero early wakes or duplicate ticks.
+  for _ in 0..<(120 * 20) {
+    wall.val = wall.val + vsync
+    mono.val = mono.val + vsync
+    let target = mono.val + lead.val
+    match tree.wake() {
+      Some(due) if due <= target => {
+        tree.advance(target)
+        let now_tick = @signals.untracked(tick)
+        let sec = dmax(0.0, wall.val - since).to_int() / 1000
+        if now_tick == last_tick {
+          early_wakes += 1
+        } else {
+          last_tick = now_tick
+          if sec == last_sec {
+            dup_ticks += 1
+          } else {
+            last_sec = sec
+            painted_secs += 1
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  assert_eq((painted_secs, early_wakes, dup_ticks), (19, 0, 0), msg="steady 120Hz target lead")
+
+  // ProMotion lead shift (8.33 ms -> 16.67 ms) calibrates at most once with zero duplicate ticks.
+  lead.val = vsync
+  for _ in 0..<(120 * 3) {
+    wall.val = wall.val + vsync
+    mono.val = mono.val + vsync
+    let target = mono.val + lead.val
+    match tree.wake() {
+      Some(due) if due <= target => tree.advance(target)
+      _ => ()
+    }
+  }
+  last_tick = @signals.untracked(tick)
+  last_sec = dmax(0.0, wall.val - since).to_int() / 1000
+  let mut shift_early = 0
+  let mut shift_dup = 0
+  let mut shift_painted = 0
+  lead.val = 2.0 * vsync
+  for _ in 0..<(120 * 10) {
+    wall.val = wall.val + vsync
+    mono.val = mono.val + vsync
+    let target = mono.val + lead.val
+    match tree.wake() {
+      Some(due) if due <= target => {
+        tree.advance(target)
+        let now_tick = @signals.untracked(tick)
+        let sec = dmax(0.0, wall.val - since).to_int() / 1000
+        if now_tick == last_tick {
+          shift_early += 1
+        } else {
+          last_tick = now_tick
+          if sec == last_sec {
+            shift_dup += 1
+          } else {
+            last_sec = sec
+            shift_painted += 1
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  assert_true(shift_early <= 1 && shift_dup == 0 && shift_painted >= 9, msg="lead shift: painted=\{shift_painted} early=\{shift_early} dup=\{shift_dup}")
+
+  // Background sleep (+60 s wall jump with paused monotonic clock) re-anchors and resumes 1 Hz ticking.
+  wall.val = wall.val + 60_000.0
+  let before_sleep_ticks = @signals.untracked(tick)
+  for _ in 0..<(120 * 5) {
+    wall.val = wall.val + vsync
+    mono.val = mono.val + vsync
+    let target = mono.val + lead.val
+    match tree.wake() {
+      Some(due) if due <= target => tree.advance(target)
+      _ => ()
+    }
+  }
+  let after_sleep_ticks = @signals.untracked(tick) - before_sleep_ticks
+  assert_true(after_sleep_ticks >= 4 && after_sleep_ticks <= 6, msg="resumed after sleep: ticks=\{after_sleep_ticks}")
+}
+
+///|
+test "steps_seconds with minute_past_hour steps once per minute past an hour" {
+  let wall = Ref(3_600_000.0)
+  let base = @sffixture.fixture("history")
+  let src : @sfbase.Source = { ..base, now: fn() { wall.val } }
+  let tick_ref : Ref[(() -> Int)?] = Ref(None)
+  let tree = @view.Tree::new(time=fn() { wall.val }, fn(root) {
+    tick_ref.val = Some(steps_seconds(root, src, 0.0, minute_past_hour=true))
+  })
+  let tick = tick_ref.val.unwrap()
+  let mut wakes = 0
+  // Advance 3 minutes in 1-second steps: must wake only 3 times (once per minute).
+  for _ in 0..<180 {
+    wall.val = wall.val + 1000.0
+    match tree.wake() {
+      Some(due) if due <= wall.val => {
+        wakes += 1
+        tree.advance(wall.val)
+      }
+      _ => ()
+    }
+  }
+  assert_eq((wakes, @signals.untracked(tick)), (3, 3), msg="minute granularity past 1 hour")
+}

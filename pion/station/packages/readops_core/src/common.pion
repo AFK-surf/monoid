@@ -305,6 +305,140 @@ pub fn parsed_thread_links(v : base_codec::Json) -> Option[base_codec::Json] {
   }
 }
 
+fn is_nan_or_inf(d : Double) -> Bool {
+  d != d || d == (1.0 / 0.0) || d == (-1.0 / 0.0)
+}
+
+/// rows.ts `parseThreadTags`: JSON string array, trimmed, deduplicated, at most 3 tags.
+pub fn parsed_thread_tags(v : base_codec::Json) -> Option[base_codec::Json] {
+  let raw = match v {
+    base_codec::Json::Str(s) => {
+      if s == "" || builders_core::has_lone_surrogate(s) {
+        return None
+      }
+      match sql_db::parse_json(s) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => xs
+        _ => return None
+      }
+    }
+    base_codec::Json::Arr(xs) => xs
+    _ => return None
+  }
+  let out : Array[base_codec::Json] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<raw.length() {
+    match raw[i] {
+      base_codec::Json::Str(s) => {
+        let t = jscase::trim_white(s)
+        if t == "" || js_json::utf16_len(t) > 48 || seen.contains(t) {
+          continue
+        }
+        seen.set(t, true)
+        out.push(base_codec::json_str(t))
+        if out.length() >= 3 {
+          break
+        }
+      }
+      _ => ()
+    }
+  }
+  if out.length() == 0 {
+    None
+  } else {
+    Some(base_codec::json_arr(out))
+  }
+}
+
+/// rows.ts `proposalOf`: inline project-creation proposal JSON on an entry.
+pub fn parsed_proposal(v : base_codec::Json) -> Option[base_codec::Json] {
+  let obj = match v {
+    base_codec::Json::Str(s) => {
+      if s == "" || builders_core::has_lone_surrogate(s) {
+        return None
+      }
+      match sql_db::parse_json(s) {
+        base_codec::JsonParseResult::Ok(parsed_j) => {
+          match parsed_j {
+            base_codec::Json::Obj(_) => parsed_j
+            _ => return None
+          }
+        }
+        _ => return None
+      }
+    }
+    base_codec::Json::Obj(_) => v
+    _ => return None
+  }
+  let id = match json_val(obj, "id") {
+    Some(base_codec::Json::Str(s)) => if s != "" { s } else { return None }
+    _ => return None
+  }
+  let name = match json_val(obj, "name") {
+    Some(base_codec::Json::Str(s)) => if s != "" { s } else { return None }
+    _ => return None
+  }
+  let status = match json_val(obj, "status") {
+    Some(base_codec::Json::Str(s)) => {
+      if s == "pending" || s == "accepted" || s == "reassigned" || s == "dismissed" {
+        s
+      } else {
+        return None
+      }
+    }
+    _ => return None
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(id)),
+    ("name", base_codec::json_str(name)),
+    ("status", base_codec::json_str(status)),
+  ]
+  match json_val(obj, "note") {
+    Some(base_codec::Json::Str(n)) => if n != "" { out.push(("note", base_codec::json_str(n))) }
+    _ => ()
+  }
+  match json_val(obj, "refs") {
+    Some(base_codec::Json::Arr(rs)) => {
+      let refs : Array[base_codec::Json] = []
+      for i in 0..<rs.length() {
+        match rs[i] {
+          base_codec::Json::Str(s) => {
+            let t = jscase::trim_white(s)
+            if t != "" {
+              refs.push(base_codec::json_str(t))
+            }
+          }
+          _ => ()
+        }
+      }
+      if refs.length() > 0 {
+        out.push(("refs", base_codec::json_arr(refs)))
+      }
+    }
+    _ => ()
+  }
+  match json_val(obj, "proposer") {
+    Some(base_codec::Json::Str(pr)) => if pr != "" { out.push(("proposer", base_codec::json_str(pr))) }
+    _ => ()
+  }
+  match json_val(obj, "resolvedProject") {
+    Some(base_codec::Json::Str(rp)) => out.push(("resolvedProject", base_codec::json_str(rp)))
+    _ => ()
+  }
+  match json_val(obj, "resolvedBy") {
+    Some(base_codec::Json::Str(rb)) => if rb != "" { out.push(("resolvedBy", base_codec::json_str(rb))) }
+    _ => ()
+  }
+  match json_val(obj, "resolvedAt") {
+    Some(base_codec::Json::Num(ra, _)) => {
+      if !is_nan_or_inf(ra) {
+        out.push(("resolvedAt", base_codec::json_num(ra)))
+      }
+    }
+    _ => ()
+  }
+  Some(base_codec::json_obj(out))
+}
+
 pub fn thread_json(r : Map[String, base_codec::Json]) -> base_codec::Json {
   let out : Array[(String, base_codec::Json)] = []
   let pairs : Array[(String, String)] = [
@@ -329,6 +463,27 @@ pub fn thread_json(r : Map[String, base_codec::Json]) -> base_codec::Json {
     Some(v) => {
       match parsed_thread_links(v) {
         Some(l) => out.push(("links", l))
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match col(r, "project") {
+    Some(base_codec::Json::Str(p)) => out.push(("project", base_codec::json_str(p)))
+    _ => ()
+  }
+  match col(r, "project_locked") {
+    Some(base_codec::Json::Num(n, _)) => {
+      if n == 1.0 {
+        out.push(("projectLocked", base_codec::json_bool(true)))
+      }
+    }
+    _ => ()
+  }
+  match col(r, "tags") {
+    Some(v) => {
+      match parsed_thread_tags(v) {
+        Some(ts) => out.push(("tags", ts))
         None => ()
       }
     }
@@ -548,9 +703,24 @@ pub fn array_rev[T](xs : Array[T]) -> Array[T] {
 
 pub fn row_to_json(r : Map[String, base_codec::Json]) -> base_codec::Json {
   let fields : Array[(String, base_codec::Json)] = []
-  let keys = r.keys()
+  let keys = stable_sort(r.keys(), by_bytes)
   for i in 0..<keys.length() {
     let k = keys[i]
+    match r.get(k) {
+      Some(v) => fields.push((k, v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+pub fn row_to_json_cols(
+  r : Map[String, base_codec::Json],
+  cols : Array[String],
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<cols.length() {
+    let k = cols[i]
     match r.get(k) {
       Some(v) => fields.push((k, v))
       None => ()

@@ -1946,8 +1946,10 @@ static int mb_win_has_url_protocol(const WCHAR *scheme) {
   return ok;
 }
 
-// A URL handed to the system (@hostapi.open_url): ShellExecute, the default browser or the app that takes it; only
-// http, https, mailto, or a registered desktop app deep link (nothing ShellExecute would run as a program).
+// A URL handed to the system (@hostapi.open_url): ShellExecuteExW on the background STA launch worker, the default
+// browser or the app that takes it; only http, https, mailto, or a registered desktop app deep link (nothing
+// ShellExecute would run as a program). A registered protocol whose target executable was deleted fails asynchronously
+// on the worker and is logged only.
 int32_t mb_host_open_url(moonbit_string_t s) {
   int n = Moonbit_array_length(s);
   WCHAR *w = (WCHAR *)malloc(((size_t)n + 1) * sizeof(WCHAR));
@@ -1963,7 +1965,11 @@ int32_t mb_host_open_url(moonbit_string_t s) {
   int ok = 0;
   if (allowed) {
     mb_host_log(s);
-    ok = (INT_PTR)ShellExecuteW(NULL, L"open", w, NULL, NULL, SW_SHOWNORMAL) > 32;
+    if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) {
+      ok = 1;
+    } else {
+      ok = mb_win_launch_url(w);
+    }
   }
   free(w);
   return ok;
@@ -2522,7 +2528,9 @@ int32_t mb_host_save_file(moonbit_string_t name, moonbit_bytes_t data);  // belo
 #pragma comment(lib, "uuid.lib")
 
 // A file shown chosen in its folder in Explorer (@hostapi.reveal_file: 在资源管理器中显示), or whether that can be
-// done here (go 0): it can. Only a file that is there; a scripted run (MBUI_SCRIPT) says it on the log alone.
+// done here (go 0): it can. Synchronous existence check stays by contract so missing files return 0 immediately; the
+// Explorer/Shell COM work runs on the shared serial STA launch worker (with URL launches) so the UI thread never
+// blocks. Scripted runs (MBUI_SCRIPT, MBUI_DRIVE, MBUI_DRIVE_B64) log alone.
 int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
   if (!go) return 1;
   int n = Moonbit_array_length(s);
@@ -2534,17 +2542,10 @@ int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
   int ok = 0;
   if (GetFileAttributesW(w) != INVALID_FILE_ATTRIBUTES) {
     mb_host_log(s);
-    if (getenv("MBUI_SCRIPT")) {
+    if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) {
       ok = 1;
     } else {
-      PIDLIST_ABSOLUTE item = ILCreateFromPathW(w);
-      if (item) {
-        // (COM on this thread for the shell, as it may not be yet; a mode it already has is kept)
-        HRESULT com = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
-        ok = SUCCEEDED(SHOpenFolderAndSelectItems(item, 0, NULL, 0));
-        if (SUCCEEDED(com)) CoUninitialize();
-        ILFree(item);
-      }
+      ok = mb_win_reveal_file(w);
     }
   }
   free(w);

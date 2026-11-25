@@ -98,6 +98,8 @@ function backupOf(b: unknown, stationTo: number, c: Clock): J | undefined {
   const mode = b.mode === "manual" ? "manual" : "auto";
   const stations = arr(b.stations).filter((s): s is string => typeof s === "string");
   const acceptOthers = b.acceptOthers !== false;
+  // (absent from a station before backups were paced, which then offers no rate to set)
+  const uploadMbps = typeof b.uploadMbps === "number" && Number.isFinite(b.uploadMbps) && b.uploadMbps >= 0 ? b.uploadMbps : undefined;
   const peers = arr(b.peers).map((p) => ({
     station: str(p?.station),
     name: str(p?.name) || short(str(p?.station)),
@@ -124,6 +126,7 @@ function backupOf(b: unknown, stationTo: number, c: Clock): J | undefined {
     mode,
     stations,
     acceptOthers,
+    ...(uploadMbps !== undefined ? { uploadMbps } : {}),
     peers,
     s3,
     settingsSummary: parts.join(" · "),

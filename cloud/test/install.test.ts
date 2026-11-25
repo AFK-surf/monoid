@@ -31,6 +31,7 @@ test("an update hands over to the new release only when the running station says
   assert.match(script, /if \[ -z "\$handed" \] && \[ -n "\$pid" \] && \[ -n "\$\(said drain\)" \]/);
   assert.match(script, /kill -USR1 "\$pid"/);
   assert.match(script, /KillMode=process/);
+  assert.match(script, /OOMPolicy=continue/);
 });
 
 test("an update started inside the station restarts it in the background, and one to the running release does nothing", () => {

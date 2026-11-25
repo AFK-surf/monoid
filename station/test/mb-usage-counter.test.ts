@@ -204,7 +204,7 @@ test("Codex, its rollout found by its id and the one a running thread said; dsh;
   append(join(w.data, "transcripts/grok/proj/gid/stillfail-usage.jsonl"), [
     JSON.stringify({ type: "stillfail/usage", id: "g1", time: now + 3, model: "grok-5", usage: { input: 9, cacheRead: 1, cacheWrite: 2, output: 3, calls: 4 }, context: 1234, window: 256000 }),
   ]);
-  for (const runtime of ["cursor", "devin", "hermes", "agy"]) {
+  for (const runtime of ["cursor", "devin", "hermes", "agy", "copilot"]) {
     session(w, `${runtime}-a`, join(w.data, `w-${runtime}`), now - 1_000, runtime, runtime);
     runtimeSession(w, `${runtime}-a`, `${runtime}-id`, runtime);
     append(join(w.data, `transcripts/${runtime}`, `${runtime}-id.jsonl`), [
@@ -212,9 +212,9 @@ test("Codex, its rollout found by its id and the one a running thread said; dsh;
       JSON.stringify({ type: "usage", run: "r2", time: now + 5.5, usage: { inputTokens: 1 } }),
     ]);
   }
-  const all = ["codex-a", "codex-b", "dsh-a", "grok-a", "cursor-a", "devin-a", "hermes-a", "agy-a"];
+  const all = ["codex-a", "codex-b", "dsh-a", "grok-a", "cursor-a", "devin-a", "hermes-a", "agy-a", "copilot-a"];
   w.each((s) => all.forEach((key, i) => s.startTurn(`turn-${i}`, key, "input")));
-  assert.equal(await w.read(undefined, "every runtime"), 2 + 1 + 1 + 1 + 4 * 2);
+  assert.equal(await w.read(undefined, "every runtime"), 2 + 1 + 1 + 1 + 5 * 2);
   append(rolloutA, [count(400, 200, 150, 40)]);
   assert.equal(await w.read(["codex-a"], "Codex read on"), 1);
 });

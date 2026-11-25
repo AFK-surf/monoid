@@ -1,0 +1,202 @@
+// Pure Pion unit tests for `reader_serve` protocol, framing, routing, and message/quote helpers
+// (zero native SQLite / shell FFI linkage; full ServeRunner mock test runs in `run_selftest`).
+
+import "base_codec"
+import "js_json"
+
+fn eq_int(a : Int, b : Int) -> Unit {
+  if a != b {
+    panic("eq_int mismatch: " + a.to_string() + " != " + b.to_string())
+  }
+}
+
+fn eq_i64(a : Int64, b : Int64) -> Unit {
+  if a != b {
+    panic("eq_i64 mismatch: " + a.to_string() + " != " + b.to_string())
+  }
+}
+
+fn eq_str(a : String, b : String) -> Unit {
+  if a != b {
+    panic("eq_str mismatch: " + a + " != " + b)
+  }
+}
+
+fn eq_bool(a : Bool, b : Bool) -> Unit {
+  if a != b {
+    panic("eq_bool mismatch")
+  }
+}
+
+test "be_u, be32, frame_bytes, and frame_whole_answer" {
+  let b = be32(PIPE_END)
+  eq_int(b.length(), 4)
+  eq_i64(be_u(b, 0, 4), PIPE_END)
+  let b2 = be32(PIPE_FAILED)
+  eq_i64(be_u(b2, 0, 4), PIPE_FAILED)
+
+  let head = "{\"status\":200}"
+  let body = "hello".to_bytes()
+  let framed = frame_whole_answer(head, body)
+  // 4 + (14 + 1) + 4 + 5 + 4 = 32
+  eq_int(framed.length(), 32)
+  eq_i64(be_u(framed, 0, 4), 15.to_int64())
+  eq_i64(be_u(framed, 19, 4), 5.to_int64())
+  eq_i64(be_u(framed, 28, 4), PIPE_END)
+}
+
+test "ts_ms, build_of, header_ci, and accepts_zstd" {
+  match ts_ms("1700000001.123456") {
+    Some(v) => eq_i64(v, 1700000001.to_int64() * 1000.to_int64() + 123.to_int64())
+    None => panic("expected Some")
+  }
+  match ts_ms("1700000001.12345") {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+  match ts_ms("abc.123456") {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+  match ts_ms(".123456") {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+
+  match build_of(Some("0.1.9200")) {
+    Some(v) => eq_int(v, 9200)
+    None => panic("expected 9200")
+  }
+  match build_of(Some("  9200  ")) {
+    Some(v) => eq_int(v, 9200)
+    None => panic("expected 9200")
+  }
+  match build_of(Some("1.1.9200")) {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+  match build_of(Some("0.1.1234567890123456")) {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+  match build_of(None) {
+    None => ()
+    Some(_) => panic("expected None")
+  }
+
+  let hdrs = base_codec::json_obj([
+    ("Accept-Encoding", base_codec::json_str("gzip, zstd , br")),
+    ("Stillfail-Lang", base_codec::json_str("en-US")),
+  ])
+  match header_ci(hdrs, "stillfail-lang") {
+    Some(v) => eq_str(v, "en-US")
+    None => panic("expected en-US")
+  }
+  eq_bool(accepts_zstd(hdrs), true)
+  eq_bool(accepts_zstd(base_codec::json_obj([("accept-encoding", base_codec::json_str("gzip"))])), false)
+}
+
+test "segment, query_pairs, batched, route_read, and changed_read" {
+  eq_str(segment("a+b%20c%2Bd"), "a+b c+d")
+  let qp = query_pairs("a=1+2&b=hello%20world&&flag")
+  eq_int(qp.length(), 3)
+  eq_str(qp[0].0, "a")
+  eq_str(qp[0].1, "1 2")
+  eq_str(qp[1].0, "b")
+  eq_str(qp[1].1, "hello world")
+  eq_str(qp[2].0, "flag")
+  eq_str(qp[2].1, "")
+
+  eq_bool(batched("/threads/42"), true)
+  eq_bool(batched("/threads/42/entries"), true)
+  eq_bool(batched("/threads/42/letters"), true)
+  eq_bool(batched("/threads/abc/entries"), false)
+  eq_bool(batched("/sessions/s1"), true)
+  eq_bool(batched("/sessions/s1/timeline"), true)
+  eq_bool(batched("/chats"), false)
+
+  let viewer = base_codec::json_obj([("email", base_codec::json_str("p@x"))])
+  match route_read("/admin/api/threads/abc/entries", [], viewer, "en") {
+    Route::Missing(m) => eq_str(m, "unknown thread abc")
+    _ => panic("expected Missing")
+  }
+  match route_read("/admin/api/chats", [("shared", "1")], viewer, "en") {
+    Route::Read(op, _) => eq_str(op, "sharedChats")
+    _ => panic("expected sharedChats")
+  }
+  match route_read("/admin/api/jobs/j+1/log", [("lines", "5")], viewer, "en") {
+    Route::Read(op, args) => {
+      eq_str(op, "jobLog")
+      eq_str(base_codec::json_stringify(field_or_null(args, "id")), "\"j+1\"")
+      eq_str(base_codec::json_stringify(field_or_null(args, "lines")), "\"5\"")
+    }
+    _ => panic("expected jobLog")
+  }
+  match changed_read("/admin/api/changed/sessions", [], viewer, "en", "{\"held\":{\"s1\":\"h\"}}".to_bytes(), ["claude"]) {
+    Route::Read(op, args) => {
+      eq_str(op, "changed")
+      eq_str(base_codec::json_stringify(field_or_null(args, "op")), "\"sessions\"")
+      eq_str(base_codec::json_stringify(field_or_null(args, "id")), "\"key\"")
+    }
+    _ => panic("expected changed")
+  }
+  match changed_read("/admin/api/changed/sessions", [], viewer, "en", "{}".to_bytes(), ["claude"]) {
+    Route::Refuse(status, _) => eq_int(status, 400)
+    _ => panic("expected 400")
+  }
+}
+
+test "title_of 80 code points including emoji surrogate pairs, client_of, and quotes_of" {
+  let sb = StringBuilder::new()
+  sb.write_string("  ")
+  for _i in 0..<85 {
+    sb.write_string("😀")
+  }
+  sb.write_string(" ")
+  let titled = title_of(base_codec::json_obj([("title", base_codec::json_str(sb.to_string()))]))
+  let expected_sb = StringBuilder::new()
+  for _i in 0..<80 {
+    expected_sb.write_string("😀")
+  }
+  eq_str(base_codec::json_stringify(titled), base_codec::json_stringify(base_codec::json_str(expected_sb.to_string())))
+  eq_str(base_codec::json_stringify(title_of(base_codec::json_obj([("title", base_codec::json_str("   "))]))), "null")
+
+  let js_c = match js_json::parse("{\"client\":\"  android 0.1.9300\\u0007\\u007f  \"}") {
+    Ok(v) => v
+    Err(_) => panic("parse failed")
+  }
+  eq_str(base_codec::json_stringify(client_of(js_c)), "\"android 0.1.9300\"")
+
+  let js_q = match js_json::parse(
+    "{\"quotes\":[{\"author\":\"A\",\"text\":\"hi\",\"comment\":5,\"ts\":\"1.2\",\"role\":\"agent\",\"file\":\"f.png\"},{\"text\":\"   \"},{\"author\":null,\"text\":\"ok\",\"ts\":\"1.2.3\",\"role\":\"robot\",\"file\":\"\"}]}",
+  ) {
+    Ok(v) => v
+    Err(_) => panic("parse failed")
+  }
+  let qs = quotes_of_with(jval_get(js_q, "quotes"), fn(d : Double) -> String { d.to_int().to_string() })
+  eq_int(qs.length(), 2)
+  eq_str(
+    js_json::stringify_with_num(js_json::JValue::Arr(qs), fn(d : Double) -> String { d.to_int().to_string() }),
+    "[{\"author\":\"A\",\"text\":\"hi\",\"comment\":\"5\",\"ts\":\"1.2\",\"role\":\"agent\",\"file\":\"f.png\"},{\"author\":\"消息\",\"text\":\"ok\",\"comment\":\"\"}]",
+  )
+}
+
+test "listener_gone_msg aligns with host/net.mbt and conn_key_of_with normalizes >2^53 by Double" {
+  // Permanent listener errors
+  eq_bool(listener_gone_msg("no handle 10"), true)
+  eq_bool(listener_gone_msg("not a listening socket"), true)
+  // Transient errors (including those containing "closed" or "no such") must NOT kill the server
+  eq_bool(listener_gone_msg("connection closed by peer"), false)
+  eq_bool(listener_gone_msg("closed"), false)
+  eq_bool(listener_gone_msg("no such file or directory"), false)
+  eq_bool(listener_gone_msg("EMFILE: too many open files"), false)
+
+  // Connection IDs > 2^53: binary Double and JSON Number with raw repr normalize to the same Double key
+  let big_i64 : Int64 = (1.to_int64() << 53.to_int64()) + 1.to_int64() // 9007199254740993
+  let big_dbl = big_i64.to_double() // rounds to 9007199254740992.0 in IEEE-754 Double
+  let from_bin = base_codec::Json::Num(big_dbl, "")
+  let from_json = base_codec::Json::Num(big_dbl, "9007199254740993")
+  let fmt = fn(d : Double) -> String { d.to_int64().to_string() }
+  eq_str(conn_key_of_with(from_bin, fmt), "9007199254740992")
+  eq_str(conn_key_of_with(from_json, fmt), "9007199254740992")
+}

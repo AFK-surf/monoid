@@ -20,6 +20,7 @@ let BUILTIN_SKILLS : Array[String] = [
   "stillfail-retire",
   "stillfail-move",
   "stillfail-leading",
+  "stillfail-projects",
   "stillfail-feedback",
 ]
 

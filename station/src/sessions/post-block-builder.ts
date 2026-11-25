@@ -149,7 +149,7 @@ export class PostBlockBuilder {
       // (by the MoonBit builder, station/mb's src/posts: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("post-blocks", { binary: this.#binary, config: this.#readers, logAt: "readers" }).primaryBinary;
+        const bin = resolveReaderSelection("post-blocks", { binary: this.#binary, config: this.#readers, logAt: "readers" });
         worker = new MbBackfill(bin, ["--builder", "post-blocks", "--db", path], this.#store.backfillPriority, REQUEST_BACKFILL_PAUSE_MS);
       }
       catch (error) { this.#answer({ done: false, error: (error as Error).message }); return; }

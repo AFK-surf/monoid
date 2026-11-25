@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "linux.h"
+#include "linux_launch.h"
 #include "post.h"
 #include "term.h"
 #include "app_calls.h"  // the app's own calls
@@ -1605,16 +1606,58 @@ void mb_host_log(moonbit_string_t s) {
 // The app over another app done (@hostapi.over_done): it never is here.
 void mb_host_over_done(int32_t open_app) { (void)open_app; }
 
+GAppLaunchContext *mb_linux_launch_context(void) {
+  GtkWidget *w = ws && ws->win ? ws->win : (ws ? ws->area : NULL);
+  GdkDisplay *display = w ? gtk_widget_get_display(w) : NULL;
+  return display ? G_APP_LAUNCH_CONTEXT(gdk_display_get_app_launch_context(display)) : NULL;
+}
+
+static int mb_linux_file_exists_gio(const char *path) {
+  return g_file_test(path, G_FILE_TEST_EXISTS) ? 1 : 0;
+}
+
+static int mb_linux_has_scheme_handler_gio(const char *scheme) {
+  GAppInfo *app = g_app_info_get_default_for_uri_scheme(scheme);
+  if (!app) return 0;
+  g_object_unref(app);
+  return 1;
+}
+
+static void on_open_url_done(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)source;
+  (void)data;
+  GError *err = NULL;
+  if (!g_app_info_launch_default_for_uri_finish(res, &err)) {
+    char msg[160];
+    mb_linux_format_launch_error(msg, sizeof msg, "open-url", err ? g_quark_to_string(err->domain) : "unknown",
+                                 err ? err->code : 0);
+    fputs(msg, stderr);
+    fflush(stderr);
+    g_clear_error(&err);
+  }
+}
+
 // A URL handed to the system (@hostapi.open_url): the default browser or the app that takes it (GIO's, through the
-// desktop portal where there is one); only http, https and mailto.
+// desktop portal where there is one), launched asynchronously so the GTK main loop never blocks; only http, https
+// and mailto.
 int32_t mb_host_open_url(moonbit_string_t s) {
   char *u = utf8(s);
   int ok = 0;
-  if (!g_ascii_strncasecmp(u, "http://", 7) || !g_ascii_strncasecmp(u, "https://", 8) ||
-      !g_ascii_strncasecmp(u, "mailto:", 7)) {
+  const char *scheme = NULL;
+  if (!g_ascii_strncasecmp(u, "http://", 7)) scheme = "http";
+  else if (!g_ascii_strncasecmp(u, "https://", 8)) scheme = "https";
+  else if (!g_ascii_strncasecmp(u, "mailto:", 7)) scheme = "mailto";
+  if (scheme) {
     fprintf(stdout, "%s\n", u);
     fflush(stdout);
-    ok = g_app_info_launch_default_for_uri(u, NULL, NULL);
+    if (mb_linux_scripted(g_getenv)) {
+      ok = 1;
+    } else if (mb_linux_can_launch_uri(scheme, mb_linux_has_scheme_handler_gio, mb_linux_file_exists_gio, g_getenv)) {
+      GAppLaunchContext *lctx = mb_linux_launch_context();
+      g_app_info_launch_default_for_uri_async(u, lctx, NULL, on_open_url_done, NULL);
+      if (lctx) g_object_unref(lctx);
+      ok = 1;
+    }
   }
   g_free(u);
   return ok;
@@ -1734,10 +1777,77 @@ void mb_host_perf_line(moonbit_string_t line) { (void)line; }
 moonbit_string_t mb_host_perf_where(void) { return moonbit_make_string_raw(0); }
 int32_t mb_host_perf_open(int32_t go) { (void)go; return 0; }
 
+typedef struct {
+  char *uri;
+  char *dir_uri;
+  GAppLaunchContext *lctx;
+} LinuxRevealCtx;
+
+static void linux_reveal_ctx_free(LinuxRevealCtx *rctx) {
+  if (!rctx) return;
+  g_free(rctx->uri);
+  g_free(rctx->dir_uri);
+  if (rctx->lctx) g_object_unref(rctx->lctx);
+  g_free(rctx);
+}
+
+static void on_reveal_fallback_done(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)source;
+  LinuxRevealCtx *rctx = (LinuxRevealCtx *)data;
+  GError *err = NULL;
+  if (!g_app_info_launch_default_for_uri_finish(res, &err)) {
+    char msg[160];
+    mb_linux_format_launch_error(msg, sizeof msg, "reveal-file fallback",
+                                 err ? g_quark_to_string(err->domain) : "unknown", err ? err->code : 0);
+    fputs(msg, stderr);
+    fflush(stderr);
+    g_clear_error(&err);
+  }
+  linux_reveal_ctx_free(rctx);
+}
+
+static void linux_reveal_fallback(LinuxRevealCtx *rctx) {
+  if (rctx->dir_uri) {
+    g_app_info_launch_default_for_uri_async(rctx->dir_uri, rctx->lctx, NULL, on_reveal_fallback_done, rctx);
+  } else {
+    linux_reveal_ctx_free(rctx);
+  }
+}
+
+static void on_reveal_dbus_done(GObject *source, GAsyncResult *res, gpointer data) {
+  LinuxRevealCtx *rctx = (LinuxRevealCtx *)data;
+  GError *err = NULL;
+  GVariant *reply = g_dbus_connection_call_finish(G_DBUS_CONNECTION(source), res, &err);
+  if (reply) {
+    g_variant_unref(reply);
+    linux_reveal_ctx_free(rctx);
+    return;
+  }
+  g_clear_error(&err);
+  linux_reveal_fallback(rctx);
+}
+
+static void on_reveal_bus(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)source;
+  LinuxRevealCtx *rctx = (LinuxRevealCtx *)data;
+  GError *err = NULL;
+  GDBusConnection *bus = g_bus_get_finish(res, &err);
+  if (!bus) {
+    g_clear_error(&err);
+    linux_reveal_fallback(rctx);
+    return;
+  }
+  const char *items[] = {rctx->uri, NULL};
+  g_dbus_connection_call(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
+                         "org.freedesktop.FileManager1", "ShowItems", g_variant_new("(^ass)", items, ""),
+                         G_VARIANT_TYPE_UNIT, G_DBUS_CALL_FLAGS_NONE, 2000, NULL, on_reveal_dbus_done, rctx);
+  g_object_unref(bus);
+}
+
 // A file shown chosen in its folder in the desktop's file manager (@hostapi.reveal_file: 在文件夹中显示), or whether
-// that can be done here (go 0): it can. Asked of the file manager over D-Bus (org.freedesktop.FileManager1's ShowItems,
-// which Nautilus, Dolphin, Nemo and others serve); where none answers, its folder opened as any folder is. Only a file
-// that is there.
+// that can be done here (go 0): it can. Asked asynchronously of the file manager over D-Bus
+// (org.freedesktop.FileManager1's ShowItems, which Nautilus, Dolphin, Nemo and others serve); where none answers, its
+// folder opened asynchronously as any folder is. Only a file that is there.
 int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
   if (!go) return 1;
   char *path = utf8(s);
@@ -1745,28 +1855,22 @@ int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
   if (path[0] && g_file_test(path, G_FILE_TEST_EXISTS)) {
     fprintf(stdout, "reveal-file: %s\n", path);
     fflush(stdout);
-    char *uri = g_filename_to_uri(path, NULL, NULL);
-    GDBusConnection *bus = uri ? g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL) : NULL;
-    if (bus) {
-      const char *items[] = {uri, NULL};
-      GVariant *r = g_dbus_connection_call_sync(bus, "org.freedesktop.FileManager1", "/org/freedesktop/FileManager1",
-                                                "org.freedesktop.FileManager1", "ShowItems",
-                                                g_variant_new("(^ass)", items, ""), NULL, G_DBUS_CALL_FLAGS_NONE, 2000,
-                                                NULL, NULL);
-      if (r) {
+    if (mb_linux_scripted(g_getenv)) {
+      ok = 1;
+    } else {
+      char *uri = g_filename_to_uri(path, NULL, NULL);
+      if (uri) {
+        char *dir = g_path_get_dirname(path);
+        char *dir_uri = g_filename_to_uri(dir, NULL, NULL);
+        g_free(dir);
+        LinuxRevealCtx *rctx = g_new0(LinuxRevealCtx, 1);
+        rctx->uri = uri;
+        rctx->dir_uri = dir_uri;
+        rctx->lctx = mb_linux_launch_context();
+        g_bus_get(G_BUS_TYPE_SESSION, NULL, on_reveal_bus, rctx);
         ok = 1;
-        g_variant_unref(r);
       }
-      g_object_unref(bus);
     }
-    if (!ok) {
-      char *dir = g_path_get_dirname(path);
-      char *dir_uri = g_filename_to_uri(dir, NULL, NULL);
-      ok = dir_uri && g_app_info_launch_default_for_uri(dir_uri, NULL, NULL);
-      g_free(dir_uri);
-      g_free(dir);
-    }
-    g_free(uri);
   }
   g_free(path);
   return ok;

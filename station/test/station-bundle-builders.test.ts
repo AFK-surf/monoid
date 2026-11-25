@@ -28,6 +28,14 @@ test("the station in a release starts", { skip: !process.env.STATION_BUNDLE }, (
 /// The release's MoonBit program, beside its main.js.
 const program = () => join(process.env.STATION_BUNDLE!, platform.exe("stillfail-reader"));
 
+test("the bundled Pion reader runs and reports its modes", { skip: !process.env.STATION_BUNDLE }, () => {
+  const pionProgram = join(process.env.STATION_BUNDLE!, platform.exe("stillfail-pion"));
+  const run = spawnSync(pionProgram, ["--version"], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /modes:/);
+  assert.match(run.stdout, new RegExp(`target=${process.platform}-${process.arch}\\b`));
+});
+
 test("a release's live locator finds a transcript", { skip: !process.env.STATION_BUNDLE }, async () => {
   const data = mkdtempSync(join(tmpdir(), "station-bundle-live-"));
   const store = Store.open(join(data, "stillfail.db"));

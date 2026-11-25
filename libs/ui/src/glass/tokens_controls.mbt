@@ -131,7 +131,7 @@ pub fn liquid_bar_pill_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.0,
+      blur=1.2,
       tint~,
       solid=sol,
       saturation=1.0,
@@ -169,7 +169,7 @@ pub fn liquid_floating_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.2,
+      blur=1.2,
       tint=glass_tint,
       solid=sol,
       saturation=1.0,
@@ -205,7 +205,7 @@ pub fn liquid_tab_bar_glass(
   }
   maybe_sharing(
     @paint.Glass::liquid(
-      blur=2.2,
+      blur=1.2,
       tint~,
       solid=sol,
       saturation=1.0,
@@ -369,7 +369,7 @@ pub fn liquid_tab_lens_glass(
 fn ctrl_segmented_track_glass() -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
-    blur=2.1,
+    blur=1.2,
     tint=if d { 0x20202067L } else { 0xFDFCFD67L },
     solid=if d { 0x1E1F24FFL } else { 0xFAFAFAFFL },
     saturation=1.0,

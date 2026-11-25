@@ -316,14 +316,15 @@ async function adbRun(path: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     let out = "", err = "";
     const stop = wall.after(ADB_TIMEOUT, () => child.kill());
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", (e) => (stop(), reject(e)));
     child.on("close", (code) => {
       stop();
       if (code === 0) resolve(out);
       else reject(new Error(err.trim() || `adb ended with ${code}`));
     });
+    child.stdout?.on("data", (d) => (out += d));
+    child.stderr?.on("data", (d) => (err += d));
   });
 }
 
@@ -560,6 +561,7 @@ export class AndroidScreen implements ScreenSource {
   /// A preview opens as any view does, without turning its screen on.
   readonly peek = true;
   readonly panels: Panel[];
+  readonly model?: string;
   readonly #title: string;
   readonly #adb: Adb;
   readonly #file: string;
@@ -571,13 +573,14 @@ export class AndroidScreen implements ScreenSource {
   #size: { width: number; height: number };
   readonly discard?: () => Promise<void>;
 
-  constructor(o: { id: string; title: string; size: { width: number; height: number }; panels: Panel[]; adb: Adb; file: string; changed: () => void; peeks?: PeekCount; emulator?: { since: number } }) {
+  constructor(o: { id: string; title: string; model?: string; size: { width: number; height: number }; panels: Panel[]; adb: Adb; file: string; changed: () => void; peeks?: PeekCount; emulator?: { since: number } }) {
     this.id = o.id;
     this.#since = o.emulator?.since;
     // An emulator is closed from a person's app (one left running, the core's `longJobs`): it leaves adb, and the list.
     if (o.emulator) this.discard = async () => void (await o.adb.run(["emu", "kill"]));
     this.#peeks = o.peeks ?? new PeekCount();
     this.panels = o.panels;
+    if (o.model) this.model = o.model;
     this.#title = o.title;
     this.#size = o.size;
     this.#adb = o.adb;
@@ -738,7 +741,15 @@ export class AndroidScreens {
     const child = adbSpawn(path, ["track-devices", "-l"]);
     this.#follow = child;
     let carry = "";
-    child.stdout.on("data", (d) => {
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
+    child.on("error", () => {});
+    child.on("close", () => {
+      this.#follow = null;
+      if (this.#closed || this.#resting) return;
+      this.#again?.();
+      this.#again = wall.after(FOLLOW_AGAIN, () => this.start());
+    });
+    child.stdout?.on("data", (d) => {
       carry += d;
       for (;;) {
         const length = parseInt(carry.slice(0, 4), 16);
@@ -746,13 +757,6 @@ export class AndroidScreens {
         this.#heard(path, devicesOf(carry.slice(4, 4 + length)));
         carry = carry.slice(4 + length);
       }
-    });
-    child.on("error", () => {});
-    child.on("close", () => {
-      this.#follow = null;
-      if (this.#closed || this.#resting) return;
-      this.#again?.();
-      this.#again = wall.after(FOLLOW_AGAIN, () => this.start());
     });
   }
 
@@ -822,6 +826,7 @@ export class AndroidScreens {
     return new AndroidScreen({
       id,
       title: `${name} · Android ${release}`,
+      ...(model ? { model } : {}),
       size: sizeOf(await adb.run(["shell", "wm size"])),
       panels: panelsOf(await adb.run(["shell", "dumpsys display"]).catch(() => "")),
       adb,

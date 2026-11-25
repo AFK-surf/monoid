@@ -40,6 +40,7 @@ const LEFT_OUT: Record<string, number> = {
   "longJobs/down": 24,
   "chats mine/grown": 24,
   "chats/grown": 24,
+  "chats grouped/grown": 24,
 };
 /// KB rounded up to the next multiple of 8.
 const tableKb = (n: number) => Math.max(8, Math.ceil(n / 1024 / 8) * 8);

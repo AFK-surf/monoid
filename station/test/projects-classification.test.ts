@@ -441,15 +441,21 @@ test("cross-station projects.names and rename/merge report offline, unsupported,
       [["peer-offline", "offline"], ["peer-old", "unsupported"], ["peer-online", "ok"], ["peer-rig", "rig"]],
     );
 
-    // 2. project_manage(action="rename") updates unlocked AND locked locally & on online peer (keeping projectLocked=true), reports offline/unsupported.
-    const renamed = JSON.parse(await localStation.call(l1, "project_manage", { action: "rename", args: { from: "legacy", to: "modern" } }));
-    assert.deepEqual(renamed.local, { updated: 2, skippedLocked: 0 });
-    assert.equal(localStation.store.getThread(lt1.id)?.project, "modern");
-    assert.equal(localStation.store.getThread(lt2.id)?.project, "modern");
+    // 2a. With an offline peer, `rename` to an unverified target name is refused with 503 (preventing silent collision).
+    await assert.rejects(
+      () => localStation.call(l1, "project_manage", { action: "rename", args: { from: "legacy", to: "modern" } }),
+      /offline|cannot verify/i,
+    );
+
+    // 2b. `merge` into an already-known project (`remote-only`) updates unlocked AND locked locally & on online peer (keeping projectLocked=true), reports offline/unsupported/rig.
+    const merged = JSON.parse(await localStation.call(l1, "project_manage", { action: "merge", args: { from: "legacy", to: "remote-only" } }));
+    assert.deepEqual(merged.local, { updated: 2, skippedLocked: 0 });
+    assert.equal(localStation.store.getThread(lt1.id)?.project, "remote-only");
+    assert.equal(localStation.store.getThread(lt2.id)?.project, "remote-only");
     assert.equal(localStation.store.getThread(lt2.id)?.projectLocked, true);
-    assert.equal(peerStation.store.getThread(pt1.id)?.project, "modern");
+    assert.equal(peerStation.store.getThread(pt1.id)?.project, "remote-only");
     assert.equal(localStation.store.getThread(lws2.id)?.project, "secret-ws2"); // ws-2 untouched!
-    const peerByName = Object.fromEntries(renamed.peers.map((p: any) => [p.name, p]));
+    const peerByName = Object.fromEntries(merged.peers.map((p: any) => [p.name, p]));
     assert.equal(peerByName["peer-online"].status, "ok");
     assert.equal(peerByName["peer-online"].updated, 1);
     assert.equal(peerByName["peer-old"].status, "unsupported");
@@ -690,9 +696,36 @@ test("MoonBit stillfail-reader emits project, projectLocked, tags, and proposal 
     const refChats = refViews.chats(rs, viewer, false);
     const refById = Object.fromEntries(refChats.map((c: any) => [c.id, c]));
     assert.equal(refById[sNamed].project, byId[sNamed].project);
+    assert.equal(byId[sNamed].projectLocked, true);
     assert.deepEqual(refById[sNamed].tags, byId[sNamed].tags);
     assert.equal(refById[sCross].project, byId[sCross].project);
     assert.equal("project" in refById[sNone], false);
+
+    // 7. R4 Item 4: origin Slack thread locked ("Origin", lock=1), own still.fail home thread unlocked ("Own", lock=0) ->
+    //    sharedChats must emit project: "Own" and MUST NOT inherit projectLocked: true from origin!
+    const [sOwn, tOwn] = await newSession(r.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const tOrigin = r.store.openThreadOf("slack", "C-R4", "1700000001.000100", "Origin Thread", "ada@example.com", null);
+    r.store.joinThread(tOrigin.id, sOwn, "slack");
+    r.store.setThreadClassification(tOrigin.id, { project: "Origin", lock: true, force: true });
+    r.store.setThreadClassification(tOwn.id, { project: "Own", lock: false, force: true });
+    const chatsWithOwn = JSON.parse(await readers.read("chats", { viewer, archived: false }, "en")) as any[];
+    const ownRow = chatsWithOwn.find((c) => c.id === sOwn);
+    assert.ok(ownRow, "home chat row with Slack origin must appear in chats");
+    assert.equal(ownRow.project, "Own");
+    assert.notEqual(ownRow.projectLocked, true, "own unlocked thread must NOT inherit projectLocked=true from locked origin");
+
+    // 8. R5 Item 6: own thread project = NULL and project_locked = 1, Slack origin has project = "Origin", project_locked = 0 ->
+    //    sharedChats must NOT inherit "Origin" and must emit projectLocked: true with no `project`!
+    const [sNullLocked, tNullLocked] = await newSession(r.hub, { runtime: "claude", model: "claude-opus-4-6", createdBy: "ada@example.com", ws: "ws-1" });
+    const tOriginUnlocked = r.store.openThreadOf("slack", "C-R5", "1700000002.000100", "Origin Unlocked", "ada@example.com", null);
+    r.store.joinThread(tOriginUnlocked.id, sNullLocked, "slack");
+    r.store.setThreadClassification(tOriginUnlocked.id, { project: "Origin", lock: false, force: true });
+    r.store.setThreadClassification(tNullLocked.id, { project: null, lock: true, force: true });
+    const chatsWithNullLocked = JSON.parse(await readers.read("chats", { viewer, archived: false }, "en")) as any[];
+    const nullLockedRow = chatsWithNullLocked.find((c) => c.id === sNullLocked);
+    assert.ok(nullLockedRow, "null-locked home chat row must appear in chats");
+    assert.equal("project" in nullLockedRow, false, "project=NULL + project_locked=1 must NOT inherit origin project");
+    assert.equal(nullLockedRow.projectLocked, true);
   } finally {
     await readers.close();
     await r.close();

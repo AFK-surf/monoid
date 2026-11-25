@@ -964,6 +964,49 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
         }),
       )
   }
+  // Reached end to end through a relay (a connection taken through one, `accept` below) is the probe passed
+  // (relays.ts `PROBE`); the last recovery's cooldown kept across processes in run/relay-probe-recover.json, its time
+  // the wall's (epoch ms, as the TypeScript's), the watch's own the runtime's monotonic one.
+  let last_relay_reach : Ref[Int64?] = Ref(None)
+  let recover_file = path([bus.data, "run", "relay-probe-recover.json"])
+  let load_recover = async fn() -> (Int64, Int64)? {
+    let text = host.read_text(recover_file) catch { _ => None }
+    match text {
+      Some(t) =>
+        match (try { Ok(@json.parse(t)) } catch { e => Err(e) }) {
+          Ok({ "lastRecoverAt": Number(at, ..), "cooldown": Number(cooldown, ..), .. }) if at.is_finite() &&
+            cooldown.is_finite() =>
+            Some((host.rt.now() - (@host.wall_ms() - at.to_int64()), cooldown.to_int64()))
+          _ => None
+        }
+      None => None
+    }
+  }
+  let save_recover = async fn(state : (Int64, Int64)?) -> Unit {
+    match state {
+      None =>
+        ignore(host.shell("fs.remove", { "path": Json::string(recover_file) })) catch {
+          _ => ()
+        }
+      Some((at, cooldown)) => {
+        let tmp = recover_file + ".tmp"
+        let wall_at = @host.wall_ms() - (host.rt.now() - at)
+        let body : Json = { "lastRecoverAt": Json::number(wall_at.to_double()), "cooldown": Json::number(cooldown.to_double()) }
+        try {
+          host_mkdir_quiet(host, path([bus.data, "run"]))
+          host_write_file(host, tmp, @utf8.encode(body.stringify()))
+          host_rename(host, tmp, recover_file)
+        } catch {
+          e => {
+            ignore(host.shell("fs.remove", { "path": Json::string(tmp) })) catch {
+              _ => ()
+            }
+            p51_log("WARN", "relays", "the relays' probe cooldown was not kept: \{e}")
+          }
+        }
+      }
+    }
+  }
   let relays_fiber = host.rt.fork(name="relays", async fn() {
     @cloud_net.keep_relays(
       relay_ep,
@@ -973,6 +1016,9 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
       log=w => p51_log("INFO", "relays", w),
       on_unhealthy~,
       say=(level, w) => p51_log(level, "relays", w),
+      last_relay_reach=() => last_relay_reach.val,
+      load_recover~,
+      save_recover~,
     )
   })
   scope_stops.push(() => relays_fiber.interrupt())
@@ -1172,6 +1218,9 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   while !bus.stopped.is_done() {
     guard (endpoint.accept)() is Some(raw) else { break }
     let conn = with_alpn(raw)
+    if (conn.via)() == Some("relay") {
+      last_relay_reach.val = Some(host.rt.now())
+    }
     storms.watch(conn)
     let alpn = (conn.alpn)()
     if alpn == @gate.alpn {

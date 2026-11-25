@@ -1346,7 +1346,7 @@ test "a picture said not to decode: why, its glyphs drawn in the theme's muted i
 }
 
 ///|
-test "a touch tap on the picture toggles bars once a second tap would have come; two zoom it, open still" {
+test "a touch tap on the picture toggles bars at once; two zoom it, open still" {
   let t = preview_tester("image", platform=2)
   t.tap(195.0, 422.0)
   t.tap(195.0, 422.0)
@@ -1357,9 +1357,9 @@ test "a touch tap on the picture toggles bars once a second tap would have come;
   let v = viewer.get().unwrap()
   assert_true(v.bars_shown(), msg="starts with bars shown")
   t.tap(195.0, 422.0)
-  t.run_for(@ui.double_tap_ms / 2.0)
-  assert_true(viewer.get() is Some(_) && v.bars_shown(), msg="one tap: unchanged till a second could have come")
-  t.run_for(@ui.double_tap_ms)
+  t.draw()
+  assert_true(viewer.get() is Some(_) && !v.bars_shown(), msg="one tap: bars hidden at once")
+  t.run_for(@ui.double_tap_ms * 2.0)
   assert_true(viewer.get() is Some(_), msg="one tap: stays open")
   assert_true(!v.bars_shown(), msg="one tap: bars toggled hidden")
 }

@@ -7,7 +7,7 @@ export class WorkspaceUpJobsBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("workspace-up-jobs", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "workspace-up-jobs", "--db", path] },
+      { binary: () => resolveReaderSelection("workspace-up-jobs", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "workspace-up-jobs", "--db", path] },
       "scope",
       "workspace up jobs preparation",
     );

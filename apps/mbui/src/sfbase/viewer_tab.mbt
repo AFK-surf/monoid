@@ -1506,6 +1506,7 @@ pub fn viewer_mbui_rendered(vw : Viewer) -> Bool {
 /// false in a side-panel tab under `tab_tools_node`).
 pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : Bool = false) -> Unit {
   parent.over(Is(true)) |> ignore
+  @ui.words_picked(parent)
   let session = vw.chat_session()
   let state_sig = viz_ensure_state(src, vw.station, vw.key, vw.file.path)
   let place = (if vw.beside { "beside/" } else { "viewer/" }) + vw.id()

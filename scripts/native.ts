@@ -179,6 +179,22 @@ const HARNESS_INPUTS = [
   "station/mb/src", "rules/src", "rules/moon.mod",
   ...READER_COMMON_INPUTS,
 ];
+/// Shipped `stillfail-pion`: the Pion station workspace, pinned toolchain, build scripts, and `base_codec`
+/// (excluding tests and docs, but keeping `selftest.pion` which `packages/smoke` imports directly).
+const PION_READER_INPUTS = [
+  "pion/station/TOOLCHAIN",
+  "pion/station/pion.toml",
+  "pion/station/pion.lock",
+  "pion/station/scripts/build.sh",
+  "pion/station/scripts/ensure-pionc.sh",
+  "pion/station/packages",
+  "pion/base/packages/base_codec",
+  ":(exclude,glob)pion/station/**/*_test.pion",
+  ":(exclude,glob)pion/station/**/*_test.c",
+  ":(exclude,glob)pion/base/packages/base_codec/**/*_test.pion",
+  ":(exclude,glob)pion/station/**/AGENTS.md",
+  ":(exclude,glob)pion/station/**/README.md",
+];
 const readerRecipe = (t: Target) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) });
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "wasm32" | "android-arm64" | "ios-arm64" | "ios-sim-arm64";
 type Part = {
@@ -528,6 +544,28 @@ const PARTS: Record<string, Part> = {
       }
       const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
       run("bash", [join(ROOT, "station/mb/build.sh"), t, join(out, exe("stillfail-reader")(t))], { env: { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a") } });
+    },
+  },
+  // The station's reader in Pion (pion/station/packages/smoke: read/reader-select.ts), for every station: built with
+  // the pinned pionc toolchain (pion/station/scripts/build.sh: zig for Linux and Windows, on a Mac or a Linux x86-64
+  // machine), linked against the shell's static library (shell-apple's on the Mac, shell-station's elsewhere).
+  "pion-reader": {
+    files: (t) => [exe("stillfail-pion")(t)],
+    targets: STATION_BINS,
+    env: "STILLFAIL_PION_READER",
+    rust: false,
+    inputs: PION_READER_INPUTS,
+    recipe: (t) => ({ pion: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) }),
+    build(t, out) {
+      const mac = osPlatform() === "darwin" && osArch() === "arm64";
+      const linux = osPlatform() === "linux" && osArch() === "x64";
+      if (!mac && !(linux && t !== "darwin-arm64")) {
+        throw new Error(`the pion reader for ${t} is built on an Apple Silicon Mac${t !== "darwin-arm64" ? " or a Linux x86-64 machine" : ""}`);
+      }
+      const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
+      const env: NodeJS.ProcessEnv = { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a"), PION_REQUIRE_PINNED: "1" };
+      for (const k of ["PIONC", "PION_QBE", "PION_RT_DIR", "PION_REPO_URL", "ZIG_BIN"]) delete env[k];
+      run("bash", [join(ROOT, "pion/station/scripts/build.sh"), t, join(out, exe("stillfail-pion")(t))], { env });
     },
   },
   // The tests' program beside it (station/mb/src/reader_harness: every package's harness, `--builder harness-*`, which

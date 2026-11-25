@@ -22,7 +22,7 @@ import { type Entry, Signer } from "../src/lock.ts";
 import { pairSession, pakeKeys, pakeStart } from "../src/pair.ts";
 import { httpError } from "../src/station/requests.ts";
 import { hex } from "../src/util.ts";
-import { held, read, signerKnown } from "../src/views/lock.ts";
+import { held, inForceOf, leftIn, needsAppIn, read, refusedAgain, reopenedIn, safeMode, signerKnown } from "../src/views/lock.ts";
 import { dialer } from "../src/views/pair.ts";
 import { MbLockStation } from "./mb-lock-station.ts";
 import { grant, pipe, rig } from "./lock-rig.ts";
@@ -206,7 +206,7 @@ async function setUp(o: { named?: boolean; noApp?: boolean; web?: boolean; waiti
   const now = () => Math.floor(r.host.nowMs() / 1000);
   /// What a failure says of where it got: the station's refusals and admissions, the page.
   const why = () => `refused ${st.refusals.length}, last left ${JSON.stringify(st.refusals.at(-1)?.left)?.slice(0, 30)} error ${String(st.refusals.at(-1)?.error).slice(0, 80)}; admitted ${st.admitted}; standing ${inner.adb.personal().standing("s1")}`;
-  return { why, r, inner, c, st, alice, bob, x, base, A, approvers, dialled, via, run, ask, page, bring, now, hello, moved };
+  return { why, r, inner, c, st, alice, bob, x, base, A, approvers, dialled, via, run, ask, page, bring, now, hello, moved, settings };
 }
 
 /// What a removal of `sub` said in `l`'s log cancels: the statements of it that admitted them (lock-statements.ts
@@ -741,4 +741,153 @@ test("their own lock begun anew on another device: not confirmed, told what happ
   assert.deepEqual([after.me.forgetText, after.me.ownLock], [undefined, true], "asks to join the new one");
   assert.equal((await w.ask("lock.pair", { workspace: "ws" })).error, undefined);
   assert.ok(w.dialled.includes(w.x.app.base.hex), `their device on it dialled (${w.why()})`);
+});
+
+test("moved workspace turned off then re-opened: newcomer verifies off locally (clearing stale left from offline stations too, vault not stuck syncing), keeps safeMode/vault consistent on reopen, and completes off->open->off->open", async () => {
+  const w = await setUp();
+  // Record station A's refusal against the held moved head (as happens on a real refused mesh link) plus a second
+  // station B that will be offline when safe mode is turned off.
+  await w.hello();
+  const vaults = await w.r.watch({ topic: "vaults", workspace: "ws" });
+  const OFFLINE_B = "bb".repeat(32);
+  hooks.lockRefused?.(w.inner, "ws", OFFLINE_B, null, { left: { approvers: [w.alice.app.base.hex] } });
+  const whileOn = await w.page();
+  assert.deepEqual([whileOn.locked, whileOn.me.confirmed, whileOn.me.waiting], [true, false, true], `waiting while on (${w.why()})`);
+  assert.notEqual(leftIn(w.inner, "ws"), null, "left refusal recorded while on");
+
+  // Root turns safe mode off: station A admits newcomer while B stays offline. Trigger via real link reconnect
+  // (`cameOnline`, no manual `refusedAgain`: `waiting()` returns null for moved stations so link retries go through).
+  w.alice.say("off", {}, "ws");
+  await w.bring(w.alice);
+  assert.equal(await w.c.locked(), null, "station sees safe mode off");
+  w.inner.stations.cameOnline(`ws/${w.A}`);
+  const whileOff = await w.page();
+  assert.equal(inForceOf(w.inner, "ws").said, "off", `newcomer verified signed off (${w.why()})`);
+  assert.equal(leftIn(w.inner, "ws"), null, "newly verified off clears stale left from both A and offline station B");
+  assert.equal(reopenedIn(w.inner, "ws"), false, "not falsely reopened by offline station B's pre-off left");
+  assert.equal(safeMode(w.inner, "ws"), false, "safeMode agrees with lockView while off");
+  assert.deepEqual([whileOff.locked, whileOff.me.waiting], [false, false], `shows off (${w.why()})`);
+  const vOff = (await vaults()) as J;
+  assert.equal(vOff.locked, false, "vault agrees safe mode is off");
+  assert.equal(vOff.stateText ?? null, null, "vault is not stuck syncing members while off");
+
+  // Root re-opens safe mode: newcomer still has cached `off`, stations refuse with `left`, and lockView + safeMode +
+  // vault all agree it is locked/waiting for approval.
+  w.alice.say("open", { ...w.settings, email: "r1@x.com" }, "ws");
+  await w.bring(w.alice);
+  assert.notEqual(await w.c.locked(), null, "station sees safe mode on again");
+  await w.hello();
+  hooks.lockRefused?.(w.inner, "ws", OFFLINE_B, null, { left: { approvers: [w.alice.app.base.hex] } });
+  assert.notEqual(leftIn(w.inner, "ws"), null, "station refused with left after reopen");
+  assert.equal(reopenedIn(w.inner, "ws"), true, "reopenedIn is true");
+  assert.equal(safeMode(w.inner, "ws"), true, "safeMode agrees workspace is reopened");
+  const reopened = await w.page();
+  assert.deepEqual([reopened.locked, reopened.me.confirmed, reopened.me.waiting], [true, false, true], `re-entered waiting after reopen (${w.why()})`);
+  const vReopened = (await vaults()) as J;
+  assert.equal(vReopened.locked, true, "vault shows locked while reopened");
+  assert.equal(vReopened.canSign, false, "vault does not fall back to personal signing while reopened");
+
+  // Second off (`off` -> `open` -> `off` cycle): root head advances, so real link reconnect on A clears offline B's `left` too.
+  w.alice.say("off", {}, "ws");
+  await w.bring(w.alice);
+  w.inner.stations.cameOnline(`ws/${w.A}`);
+  await w.page();
+  assert.equal(leftIn(w.inner, "ws"), null, "second off clears offline B's left because root log head advanced");
+  assert.equal(reopenedIn(w.inner, "ws"), false, "not reopened after second off");
+
+  // Re-open once more, dial owner from the reopened `left` hint, get approved, and pull the new `open` + roster.
+  w.alice.say("open", { ...w.settings, email: "r1@x.com" }, "ws");
+  await w.bring(w.alice);
+  await w.hello();
+  assert.equal(reopenedIn(w.inner, "ws"), true, "reopened again");
+  w.approvers.set(w.alice.app.base.hex, {
+    where: (hello) => (Array.isArray(hello.log) && hello.log.length > 0 ? ["ws"] : []),
+    approve: async (hello) => {
+      w.alice.say("member", { sub: "s1", email: "s1@x.com", lock: stationHash(hello.log[0]), role: "member" }, "ws");
+      await w.bring(w.alice);
+      return { t: "approved", workspaces: ["ws"], failed: [] };
+    },
+  });
+  const paired = await w.ask("lock.pair", { workspace: "ws" });
+  assert.equal(paired.error, undefined, paired.error?.message);
+  assert.ok(w.dialled.includes(w.alice.app.base.hex), `owner dialled after reopen (${w.why()})`);
+  const done = await w.ask("lock.pairCode", { workspace: "ws", code: CODE });
+  assert.equal(done.error, undefined, done.error?.message);
+  const joined = await w.page();
+  assert.equal(inForceOf(w.inner, "ws").said, "on", `pulled new open after approval (${w.why()})`);
+  assert.equal(leftIn(w.inner, "ws"), null, "left cleared after approval");
+  assert.deepEqual([joined.locked, joined.me.confirmed, joined.me.waiting], [true, true, false], `confirmed after reopen approval (${w.why()})`);
+});
+
+test("clearing a station's left refusal also clears its leftApps without short-circuiting so web needsAppIn does not keep stale apps:false", async () => {
+  const w = await setUp({ web: true, unread: true });
+  w.alice.say("off", {}, "ws");
+  await w.bring(w.alice);
+  w.st.lockUnread = false;
+  w.st.personHeld = false;
+  await w.run(read(w.inner, "ws"));
+  assert.equal(inForceOf(w.inner, "ws").said, "off", "baseline off cached");
+  const B = "bb".repeat(32);
+  // Station A recorded `apps: false`, station B recorded `left` with no `apps` field.
+  hooks.lockRefused?.(w.inner, "ws", w.A, null, { left: { approvers: [w.alice.app.base.hex], apps: false } });
+  hooks.lockRefused?.(w.inner, "ws", B, null, { left: { approvers: [w.alice.app.base.hex] } });
+  assert.equal(needsAppIn(w.inner, "ws"), true, "web needs app while A holds apps:false");
+  // Station A admits the web device on the same cached `off` head (per-station clear path, not `newlyOff`), while B stays refused.
+  refusedAgain(w.inner, "ws");
+  await w.run(read(w.inner, "ws"));
+  assert.notEqual(leftIn(w.inner, "ws"), null, "B's left still stands");
+  assert.equal(needsAppIn(w.inner, "ws"), false, "A's stale apps:false was cleared along with A's left");
+});
+
+test("newcomer joining while moved workspace is already off sees off immediately and never stalls in vault syncing", async () => {
+  const w = await setUp({ unread: true });
+  w.alice.say("off", {}, "ws");
+  await w.bring(w.alice);
+  assert.equal(await w.c.locked(), null, "station is off");
+  w.st.lockUnread = false;
+  w.st.personHeld = false;
+  await w.run(read(w.inner, "ws"));
+  const page = await w.page();
+  const vaults = await w.r.watch({ topic: "vaults", workspace: "ws" });
+  assert.equal(inForceOf(w.inner, "ws").said, "off", `verified signed off on first read (${w.why()})`);
+  assert.deepEqual([page.locked, page.me.waiting], [false, false]);
+  const vJoinOff = (await vaults()) as J;
+  assert.equal(vJoinOff.locked, false, "vault sees safe mode off on first read");
+  assert.equal(vJoinOff.stateText ?? null, null, "vault not stuck syncing");
+});
+
+test("trusted device answering `no {error: 'off'}` shows cautious station-check wording and triggers one deduplicated reread", async () => {
+  const w = await setUp();
+  const SECOND_APP = "cc".repeat(32);
+  hooks.lockRefused?.(w.inner, "ws", w.A, null, { left: { approvers: [w.alice.app.base.hex, SECOND_APP] } });
+  const before = await w.page();
+  assert.deepEqual([before.locked, before.me.waiting], [true, true]);
+  // Two trusted devices answer `off` while station has not yet caught up (still refuses).
+  let sentOff = 0;
+  const origOpen = dialer.open;
+  dialer.open = (_inner, id, relays) => Effect.flatMap(Effect.promise(() => pipe()), ([here, there]) => Effect.sync(() => {
+    w.dialled.push(id);
+    w.via.push(relays);
+    w.inner.runner.fork(Effect.gen(function* () {
+      yield* there.next();
+      sentOff++;
+      yield* there.send({ t: "no", error: "off" });
+    }));
+    return here;
+  }));
+  try {
+    const askedBefore = w.st.asked.length;
+    const paired = await w.ask("lock.pair", { workspace: "ws" });
+    assert.equal(paired.error, undefined, paired.error?.message);
+    await w.r.host.time.pass(2_000);
+    const after = await w.page();
+    assert.equal(sentOff, 2, "both trusted devices replied off");
+    assert.equal(after.me.pair?.state, "failed", `shows failed instead of none (${JSON.stringify(after.me.pair)})`);
+    assert.match(after.me.pair?.error ?? "", /对方设备显示安全模式已关闭/, `cautious off message (${JSON.stringify(after.me.pair)})`);
+    assert.ok(w.st.asked.length > askedBefore, "triggered a station reread after peer reported off");
+    // Does not trust the peer's word alone: without a signed `off` from the station, still locked.
+    assert.equal(after.locked, true, "never disables safe mode on an unsigned peer message");
+  } finally {
+    dialer.open = origOpen;
+  }
 });

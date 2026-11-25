@@ -36,7 +36,7 @@
   `missing_win_list`, `missing_mac_list`, `missing_mac_reader_list`, `missing_harness_list`). On
   `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
   the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
-  `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
+  `reader:linux-x64` or `pion-reader:linux-{x64,arm64}` (included only when `station=true`) builds `natives` on `ubuntu-24.04`, and `natives-win-reader` (`reader:win32-x64`, `pion-reader:win32-x64`) there whenever `shell-station` is
   published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
   a branch's reader's C is compiled at -O0 in units of 8 MB with `moonbit_init` one unit on every core
   (`MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0`, cold in 71 s where 2 MB's took 105; zig cc's UBSan off), its units kept in the
@@ -83,10 +83,10 @@
   alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
   a part that needs more is made faster, split (the station's, a job a platform: `--platform`, put's `--merge`) or gets
-  fewer bases, not longer (10 bases: the owner, 2026-11-11). `deltas-desktop-win` and the station's two Linux
-  platforms run on `ci-1` (`ubuntu-24.04` with `vars.CI_1 = 'off'`); the rest (`deltas-android`, its `javac`
-  `ubuntu-24.04`'s JDK, `deltas-desktop` and the station's macOS and Windows platforms) on `ubuntu-24.04`: the five
-  let go together queued one after another on `ci-1`'s 2 runners.
+  fewer bases, not longer (10 bases: the owner, 2026-11-11). All `deltas-*` jobs (`deltas-android`, its `javac`
+  `ubuntu-24.04`'s JDK, `deltas-desktop`, `deltas-desktop-win`, and the station's four platforms) run on `ubuntu-24.04`:
+  fast R2 transfers keep them around 53–77 s, whereas running `deltas-station` on `ci-1` stalled 200–304 s downloading
+  staged archives over Shanghai international egress.
 - Stable (`workflows/stable.yml`) runs from main's head against the release's older checkout: a step that needs newer
   scripts takes them from `$GITHUB_SHA` (`git show`, a sparse checkout). Its station is built into a directory and
   staged; only `station-put` puts it, packages then `station.json` seconds apart, so a run cut before leaves the channel
@@ -96,7 +96,7 @@
 - `desktop-build` waits for `natives-mac` alone (it uses only the Apple parts, not the Mac's reader, which
   `natives-mac-reader` builds beside it) and `desktop` for `desktop-build` alone, never for `natives`' slower Linux build
   nor the reader's. The release's upload jobs (`deltas-*`, `desktop`, `put`, `changelog`) take Node
-  alone (`.github/actions/node`; on `ci-1`, `scripts/node-here.sh`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the
+  alone (`.github/actions/node`), no pnpm: `release-put.sh` and `changelog-put.sh` go through Cloudflare's API with the
   token (wrangler only without it). `release-prune` deletes old files after `put` in a job of its own, which neither
   `done` nor `station-update` waits for.
 - The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's
@@ -108,3 +108,11 @@
 - The Android delta's deflater is part of the format: JZlib's version (`libs/ui/android/jzlib`) and the level and settings
   `Delta.java` deflates with must be what every installed app carries, or what it makes no longer is the release's APK
   (each delta is checked by the Java applier before it is published, so such a change only stops Android's deltas).
+- Keep actions/checkout depth uniform per persistent self-hosted runner pool: every job that can land on `ci-1`
+  (`ci-1`, `linux-ci`, `linux-quick`) or `macos-ci` must use `fetch-depth: 0` (and no `sparse-checkout`), matching
+  `check`, `android`, and `natives-main`. Any single `fetch-depth: 1` job writes `.git/shallow` into the reused
+  workspace and forces the next `fetch-depth: 0` job into a full `--unshallow` of all history and refs over Shanghai
+  egress (`45626120402`: `check` on `ci-1-2` timed out at 310 s right after `natives` shallowed it). When computing
+  `fetch-depth` in a GitHub Actions expression, quote `'0'` (`runner.environment == 'self-hosted' && '0' || '1'`)
+  because numeric `0` is falsy in `&&`/`||`. Dedicated shallow pools (`quick` / `mini1-5`, `mbui-render`) run no
+  `fetch-depth: 0` jobs and stay shallow.

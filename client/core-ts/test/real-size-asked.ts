@@ -61,6 +61,10 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   // (its window told first, `WINDOWS`)
   "chats": { topic: "chats", scope: "ws", mine: false },
   "chats mine": { topic: "chats", scope: "ws", mine: true },
+  "chats grouped": { topic: "chats", scope: "ws", mine: false, groupBy: "project" },
+  "projects": { topic: "projects", scope: "ws" },
+  "project": { topic: "project", scope: "ws", name: "monoid" },
+  "tags": { topic: "tags", scope: "ws" },
   // (a row pressed, held, swiped or pointed at: its chat's whole row, sfbase/rows.mbt whole_row; the chat's, its page's menu)
   "chatRow": { topic: "chatRow", station, session: key },
   "profiles": { topic: "profiles", scope: "ws" },
@@ -171,7 +175,7 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
 /// rows its room shows and a screen more, rounded up to ten, the same 30 on 小屏 (390×844, rows of 66) and on a wide
 /// screen (1280×800, rows of 54); `WINDOW_STEP` more as one is scrolled near its foot (`window_step`: a screen of rows,
 /// 20 at least).
-export const WINDOWS: Record<string, number> = { "chats": 30, "chats mine": 30 };
+export const WINDOWS: Record<string, number> = { "chats": 30, "chats mine": 30, "chats grouped": 25 };
 export const WINDOW_STEP = 20;
 
 /// Those measured with the chat's six pages loaded (`CHAT_MESSAGES`), the rest with its last alone.
@@ -618,6 +622,20 @@ export const CAUSES: Record<string, Cause> = {
   subchat: {
     run: ({ t }) => {
       t.set({ topic: "stationSearch", station, q: SEARCH, kind: "chat,message", limit: 200 }, subchatSearchOf(t.host.nowMs(), 3));
+    },
+  },
+  // Workspace project metadata (`PROJECTS.jsonl`) updated on a station.
+  projectInfo: {
+    run: ({ t }) => {
+      t.data.put(
+        "choice",
+        "ws:ws:projectsInfo",
+        {
+          monoid: { note: "still.fail client core, station and classification", refs: ["github.com/AFK-surf/monoid"], updatedAt: t.host.nowMs() },
+          invar: { note: "Pion GPU UI framework", refs: ["github.com/AFK-surf/invar"], updatedAt: t.host.nowMs() - 1000 },
+        },
+        false,
+      );
     },
   },
 };

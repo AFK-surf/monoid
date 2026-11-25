@@ -636,6 +636,18 @@ function rowOf(now: number, station: number, i: number, archived = false): J {
         ? { thread: { id: th, surface: slack ? "slack:T04ACME0001" : "ember", channel: slack ? "C05ENG0001" : "EMBER", threadTs: `${th}.0`, title: pick(TITLES, i + station * 3), createdAt: at - HOUR }, firstText: null, channelName: null }
         : { thread: { id: th, surface: "ember", channel: "EMBER", threadTs: `${th}.0`, title: null, createdAt: at - HOUR }, firstText: pick(MEDIUM, i), channelName: null },
     mineOf: unchattedMulti ? [starter] : people.slice(0, 2), said: null, archiveReminderDismissed: false, archiveRecommended: i % 11 === 5, archiveReviewed: true, pinned: i % 37 === 3 ? now - i * HOUR : null,
+    ...(i === 0 && station === 0
+      ? { project: "monoid", projectLocked: true, tags: ["bug"] }
+      : i === 2 && station === 0
+        ? { project: "invar", tags: ["feat"] }
+        : i === 10
+          ? { project: "monoid", tags: ["bug"] }
+          : i % 40 === 20
+            ? { project: pick(["monoid", "invar", "farview", "board", "cue"], Math.floor(i / 40) + station) }
+            : i % 40 === 21
+              ? { project: "" }
+              : {}),
+    ...(i > 20 && i % 40 === 22 ? { tags: [pick(["bug", "feat", "perf", "docs"], Math.floor(i / 40) + station)] } : {}),
   };
   if (archived) row.archived = { at: at + DAY, by: "auto", alone: true };
   // (those whose agent asks a person wait on its card, every other one a vault item's request; the chat's its last)
@@ -732,6 +744,9 @@ function entryOf(now: number, n: number): J {
     // (a person replying to the agent's message before quotes some of it, as store/rows.ts Quote)
     ...(!agent && n % 11 === 1 ? { quotes: [{ author: keyAt(n - 1), text: words(n - 1).slice(0, 120), comment: "", ts: tsOf(n - 1), role: "agent" }] } : {}),
     ...(card ? { card, options: card.options } : {}),
+    ...(agent && n === CHAT_MESSAGES - 2
+      ? { proposal: { id: "prop-rs-1", name: "monoid", note: "Core client and station runtime", refs: ["github.com/AFK-surf/monoid"], status: "pending" } }
+      : {}),
   };
 }
 
@@ -1391,6 +1406,14 @@ export function records(now: number): [string, string, unknown][] {
   ].map(([model, runtime, effort, count], i) => ({ model, runtime, effort, fast: null, context: null, count, last: now - (i + 1) * 3 * HOUR }));
   return [
     ["me", "s1", me],
+    [
+      "choice",
+      "ws:ws:projectsInfo",
+      {
+        monoid: { note: "still.fail client core and station", refs: ["github.com/AFK-surf/monoid"], updatedAt: now - HOUR },
+        invar: { note: "Pion GPU UI framework", refs: ["github.com/AFK-surf/invar"], updatedAt: now - 2 * HOUR },
+      },
+    ],
     ["choice", "ws:ws:frequent", frequent],
     ["choice", "ws:ws:preset", { id: "p-app", station: "ws/maple" }],
     ["choice", "ws:ws:presetUsage", [{ id: "p-app", count: 5, last: now - 2 * HOUR }]],

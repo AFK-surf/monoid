@@ -44,7 +44,7 @@ export type CodexHeard = { thread: string; events: Json[]; live: Json; batch?: n
 export type Router = { program: SessionsProgram; took: (batch: number, proc?: number) => boolean };
 
 /// How a process's lines are read: Claude Code's frames, a Codex app-server's JSON-RPC, DeepSeek Harness' or Cursor's
-/// driver's lines (dsh-bridge.mjs, cursor-bridge.mjs), an ACP runtime's JSON-RPC, Pi's RPC.
+/// driver's lines (dsh-bridge.mjs, cursor-bridge.mjs; copilot-bridge.mjs speaks Cursor's), an ACP runtime's JSON-RPC, Pi's RPC.
 export type HostedKind = "claude" | "codex" | "dsh" | "cursor" | "acp" | "pi";
 
 export type HostedOptions = {

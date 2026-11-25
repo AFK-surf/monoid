@@ -445,7 +445,8 @@ function itemLine(item: J): string {
     if (on.length > 0) parts.push(t("core-views.screen.on", { names: listed(on) }));
     return parts.length > 0 ? parts.join(" · ") : kindWords(item.kind, item.id);
   }
-  const parts = [kindWords(item.kind, item.id)];
+  const lead = typeof item.model === "string" && item.model !== "" && !String(item.title ?? "").toLowerCase().includes(item.model.toLowerCase()) ? item.model : kindWords(item.kind, item.id);
+  const parts = [lead];
   if (item.site) parts.push(item.site);
   else if (item.width > 0 && item.height > 0) parts.push(`${item.width}×${item.height}`);
   if (item.chat) parts.push(t("core-views.screen.openedBy", { title: item.chat.title }));
@@ -496,8 +497,9 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
     const controlledBy = names(get(s, "controlledBy"));
     const views = viewsOf(inner, station, get(s, "views"), control);
     const site = typeof get(s, "site") === "string" && get(s, "site") !== "" ? (get(s, "site") as string) : null;
+    const model = typeof get(s, "model") === "string" && get(s, "model") !== "" ? (get(s, "model") as string) : null;
     const item = {
-      id, kind, title, width, height, viewers: names(get(s, "viewers")), controlledBy, ...(views.length > 0 ? { views } : {}), ...(get(s, "peek") === true ? { peek: true } : {}),
+      id, kind, title, ...(model !== null ? { model } : {}), width, height, viewers: names(get(s, "viewers")), controlledBy, ...(views.length > 0 ? { views } : {}), ...(get(s, "peek") === true ? { peek: true } : {}),
       // A page a person opened in the station's persistent browser profile (`screen.openBrowser`), put to sleep while idle.
       ...(get(s, "userTab") === true ? { userTab: true } : {}),
       // A Farview tab: the app draws it itself in Farview's own protocol (`farview.view`), not as pictures.
@@ -723,6 +725,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
       const item = listedItem();
       if (state.title === "" && typeof get(item, "title") === "string") state.title = get(item, "title");
       if (state.kind === undefined && typeof get(item, "kind") === "string") state.kind = get(item, "kind");
+      if (state.model === undefined && typeof get(item, "model") === "string" && get(item, "model") !== "") state.model = get(item, "model");
       if (state.site === undefined && typeof get(item, "site") === "string" && get(item, "site") !== "") state.site = get(item, "site");
       if (state.userTab === undefined && get(item, "userTab") === true) state.userTab = true;
       state.debug = get(item, "debug") === true && may;

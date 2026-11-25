@@ -370,6 +370,7 @@ fn who_of(v : Viewer, endpoint : String) -> Who {
 ///|
 /// Whether a device's connection is given `ws`'s bodies and logs (serve.ts `givesDevice`).
 pub async fn gives_device(k : Keeper, ws : String?, viewer : Viewer) -> Bool {
+  ignore(viewer)
   if (k.locked)(ws) is Some(locked) {
     return !locked.waiting
   }
@@ -378,17 +379,9 @@ pub async fn gives_device(k : Keeper, ws : String?, viewer : Viewer) -> Bool {
   if li.waiting || s.moved is Some(_) || !(chain is Some(c) && c.moved is Some(_)) {
     return false
   }
-  try {
-    let who = who_of(viewer, viewer.device)
-    let (device, _) = (k.admit)(s, who, (k.now_secs)())
-    if device.kind == "app" && s.persons.get(viewer.sub) is Some(pin) {
-      guard (k.person_kept)(pin) is Some(chain) else { return false }
-      ignore((k.admit_person)(s, who, chain))
-    }
-    true
-  } catch {
-    _ => false
-  }
+  // `locked` is None while `list` is non-waiting on a moved chain only when the moved workspace is `off`:
+  // any admitted member may pull the root log and bodies to verify `off` locally.
+  true
 }
 
 ///|

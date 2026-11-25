@@ -2,7 +2,7 @@
 
 ///|
 /// Three-anchor continuous optical interpolation for iOS 27.0 in-place liquid-droplet popover morphing:
-/// - `stage == 0.0`: bar-pill anchor (`a=0x67`, `blur=2.0`, `bezel=14`, `refr=20`, `rim=0.60`, `chroma=0.06`);
+/// - `stage == 0.0`: bar-pill anchor (`a=0x67`, `blur=1.2`, `bezel=14`, `refr=20`, `rim=0.60`, `chroma=0.06`);
 /// - `stage == 0.5`: mid-flight translucent droplet (`a=0x93` light / `0x88` dark, `blur=4.0`, `bezel=18`, `refr=16`, `rim=0.78`, `chroma=0.045`);
 /// - `stage == 1.0`: resting translucent menu anchor (`a=0xBF` light / `0xA8` dark, `blur=6.0`, `bezel=20`, `refr=26`, `rim=0.60`, `chroma=0.03`).
 pub fn liquid_menu_morph_glass(
@@ -25,7 +25,7 @@ pub fn liquid_menu_morph_glass(
     let u = s * 2.0
     (
       103.0 + (mid_a - 103.0) * u,
-      2.0 + (4.0 - 2.0) * u,
+      1.2 + (4.0 - 1.2) * u,
       14.0 + (18.0 - 14.0) * u,
       20.0 + (16.0 - 20.0) * u,
       0.60 + (0.78 - 0.60) * u,

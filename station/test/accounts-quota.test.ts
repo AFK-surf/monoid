@@ -174,6 +174,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
     assert.equal(ran.home, agyHome(home));
     assert.equal(ran.geminiDir, geminiDir(home));
     assert.equal(ran.fileTokens, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(ran.forceFileTokens, AGY_FILE_TOKENS.AGY_CLI_FORCE_FILE_TOKEN_STORAGE);
     assert.equal(ran.cloudCodeUrl, "https://aicode.example.test");
     assert.equal(ran.key, null, "scrubs inherited GEMINI_API_KEY");
     assert.equal(ran.updates, "1");
@@ -370,7 +371,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
       const kq = await checkQuota(keyringProfile, { HOME: temp("agy-real-home"), PATH: fakePath, FAKE_DUMP: keyringDump }, undefined, URLS, "zh");
       assert.equal(kq.state, "ok");
       const kran = JSON.parse(readFileSync(keyringDump, "utf8").trim().split("\n")[0]!);
-      assert.deepEqual([kran.home, kran.geminiDir, kran.fileTokens], [agyHome(keyringHome), geminiDir(keyringHome), AGY_FILE_TOKENS.SSH_CLIENT]);
+      assert.deepEqual([kran.home, kran.geminiDir, kran.fileTokens, kran.forceFileTokens], [agyHome(keyringHome), geminiDir(keyringHome), AGY_FILE_TOKENS.SSH_CLIENT, AGY_FILE_TOKENS.AGY_CLI_FORCE_FILE_TOKEN_STORAGE]);
       assert.equal(readFileSync(agyToken(keyringHome), "utf8"), kept);
 
       const otherHome = temp("agy-quota-other");

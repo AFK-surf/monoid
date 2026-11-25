@@ -1570,6 +1570,8 @@ fn viz_last_text_index(children : Array[Json]) -> Int {
 }
 
 ///|
+/// What a widget says to be read is picked with the pointer as its message's words are (@sf.read_words_node); what is
+/// pressed (a button, a tab, a switch's row, a details' head) and a flow's arrows are not.
 fn viz_render_node(
   parent : @view.View,
   store : VizMbuiStore,
@@ -1589,7 +1591,7 @@ fn viz_render_node(
       parent.box(fn(w) {
         let st = if in_row_grow { @ui.style(w=@sf.grow, min_w=viz_zero_len) } else { @ui.style() }
         @sf.style_node(w, fn() { st }, in_row~)
-        @sf.words_node(w, fn() { viz_interp(store, s) }, fn() { @sf.body }) |> ignore
+        @sf.read_words_node(w, fn() { viz_interp(store, s) }, fn() { @sf.body }) |> ignore
       })
       |> ignore
     Array(items) =>
@@ -1748,13 +1750,13 @@ fn viz_render_node(
                   @sf.style_node(titles, fn() { viz_col_s0_5.then(@ui.style(w=@sf.grow, min_w=viz_zero_len)) }, in_row=true)
                   if title != "" {
                     titles.box(fn(w) {
-                      @sf.words_node(w, fn() { viz_interp(store, title) }, fn() { @sf.card_title }) |> ignore
+                      @sf.read_words_node(w, fn() { viz_interp(store, title) }, fn() { @sf.card_title }) |> ignore
                     })
                     |> ignore
                   }
                   if subtitle != "" {
                     titles.box(fn(w) {
-                      @sf.words_node(w, fn() { viz_interp(store, subtitle) }, fn() { @sf.caption }) |> ignore
+                      @sf.read_words_node(w, fn() { viz_interp(store, subtitle) }, fn() { @sf.caption }) |> ignore
                     })
                     |> ignore
                   }
@@ -1763,7 +1765,7 @@ fn viz_render_node(
                 if badge != "" {
                   head.box(fn(pr) {
                     @sf.style_node(pr, fn() { viz_row_first_line }, in_row=true)
-                    @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(badge_tone)) |> ignore
+                    @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(badge_tone), read=true) |> ignore
                   })
                   |> ignore
                 }
@@ -1788,7 +1790,7 @@ fn viz_render_node(
             @sf.style_node(card, fn() { stat_style }, in_row~)
             if label != "" {
               card.box(fn(w) {
-                @sf.words_node(w, fn() { viz_interp(store, label) }, fn() { @sf.caption }) |> ignore
+                @sf.read_words_node(w, fn() { viz_interp(store, label) }, fn() { @sf.caption }) |> ignore
               })
               |> ignore
             }
@@ -1796,13 +1798,13 @@ fn viz_render_node(
               @sf.style_node(val_row, fn() { viz_row_end_s1 })
               val_row.box(fn(w) {
                 @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                @sf.words_node(w, fn() { viz_interp(store, val_raw) }, fn() { viz_stat_val }) |> ignore
+                @sf.read_words_node(w, fn() { viz_interp(store, val_raw) }, fn() { viz_stat_val }) |> ignore
               })
               |> ignore
               if unit != "" {
                 val_row.box(fn(w) {
                   @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                  @sf.words_node(w, fn() { viz_interp(store, unit) }, fn() { viz_stat_unit }) |> ignore
+                  @sf.read_words_node(w, fn() { viz_interp(store, unit) }, fn() { viz_stat_unit }) |> ignore
                 })
                 |> ignore
               }
@@ -1823,7 +1825,7 @@ fn viz_render_node(
                 if delta != "" {
                   foot_row.box(fn(w) {
                     @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                    @sf.words_node(w, fn() { viz_interp(store, delta) }, delta_style) |> ignore
+                    @sf.read_words_node(w, fn() { viz_interp(store, delta) }, delta_style) |> ignore
                   })
                   |> ignore
                 }
@@ -1841,7 +1843,7 @@ fn viz_render_node(
           let box_st = if in_row_grow { @ui.style(w=@sf.grow, min_w=viz_zero_len) } else { @ui.style() }
           parent.box(fn(w) {
             @sf.style_node(w, fn() { box_st }, in_row~)
-            @sf.words_node(w, fn() { viz_interp(store, raw) }, fn() { viz_text_style_of(obj) }) |> ignore
+            @sf.read_words_node(w, fn() { viz_interp(store, raw) }, fn() { viz_text_style_of(obj) }) |> ignore
           })
           |> ignore
         }
@@ -1850,7 +1852,7 @@ fn viz_render_node(
           let tone = viz_pill_tone(viz_json_str(obj, "tone", viz_json_str(obj, "color", "")))
           parent.box(fn(pr) {
             @sf.style_node(pr, fn() { if in_row { viz_row_first_line } else { viz_row_s1_5 } }, in_row~)
-            @sf.pill_node(pr, fn() { viz_interp(store, raw) }, tone~) |> ignore
+            @sf.pill_node(pr, fn() { viz_interp(store, raw) }, tone~, read=true) |> ignore
           })
           |> ignore
         }
@@ -1874,7 +1876,7 @@ fn viz_render_node(
             if raw != "" {
               r.box(fn(w) {
                 @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                @sf.words_node(w, fn() { viz_interp(store, raw) }, fn() { @sf.body }) |> ignore
+                @sf.read_words_node(w, fn() { viz_interp(store, raw) }, fn() { @sf.body }) |> ignore
               })
               |> ignore
             }
@@ -1898,13 +1900,13 @@ fn viz_render_node(
             @sf.style_node(b, fn() { box_style }, in_row~)
             if title != "" {
               b.box(fn(w) {
-                @sf.words_node(w, fn() { viz_interp(store, title) }, title_style) |> ignore
+                @sf.read_words_node(w, fn() { viz_interp(store, title) }, title_style) |> ignore
               })
               |> ignore
             }
             if text != "" {
               b.box(fn(w) {
-                @sf.words_node(w, fn() { viz_interp(store, text) }, fn() { @sf.body }) |> ignore
+                @sf.read_words_node(w, fn() { viz_interp(store, text) }, fn() { @sf.body }) |> ignore
               })
               |> ignore
             }
@@ -1917,7 +1919,8 @@ fn viz_render_node(
           parent.box(fn(b) {
             @sf.style_node(b, fn() { box_style }, in_row~)
             b.box(fn(w) {
-              @sf.words_node(w, fn() { viz_interp(store, text) }, fn() { @sf.code }) |> ignore
+              @ui.words_shaped(w, fn() { @ui.WordsShape::Code(b.id()) }) |> ignore
+              @sf.read_words_node(w, fn() { viz_interp(store, text) }, fn() { @sf.code }) |> ignore
             })
             |> ignore
           })
@@ -1939,19 +1942,19 @@ fn viz_render_node(
                     @sf.style_node(r, fn() { viz_row_between_start_s2 })
                     r.box(fn(w) {
                       @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                      @sf.words_node(w, fn() { viz_interp(store, k) }, fn() { @sf.caption }) |> ignore
+                      @sf.read_words_node(w, fn() { viz_interp(store, k) }, fn() { @sf.caption }) |> ignore
                     })
                     |> ignore
                     if badge != "" {
                       r.box(fn(pr) {
                         @sf.style_node(pr, fn() { viz_row_first_line }, in_row=true)
-                        @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(tone)) |> ignore
+                        @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(tone), read=true) |> ignore
                       })
                       |> ignore
                     } else {
                       r.box(fn(w) {
                         @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                        @sf.words_node(w, fn() { viz_interp(store, v) }, fn() {
+                        @sf.read_words_node(w, fn() { viz_interp(store, v) }, fn() {
                           if is_mono { @sf.code } else { viz_text_style_of(iobj) }
                         })
                         |> ignore
@@ -1975,14 +1978,22 @@ fn viz_render_node(
           let rows = viz_json_arr(obj, "rows")
           parent.box(fn(tbl) {
             @sf.style_node(tbl, fn() { viz_table_box }, in_row~)
+            // (a cell's words picked from anywhere in it, copied with tabs between a row's: table_node's)
+            let table_id = @view.Scroll::new().serial()
+            let cell_read = fn(cell : @view.View, row : Int, col : Int, head : Bool) {
+              @ui.words_hit_box(cell)
+              @ui.words_shaped(cell, fn() { @ui.WordsShape::Cell(table_id, row, col, head) }) |> ignore
+            }
             if cols.length() > 0 {
               tbl.box(fn(head) {
                 @sf.style_node(head, fn() { viz_row_between_s2 })
-                for col_name in cols {
+                for c_idx, col_name in cols {
                   let cn = col_name
+                  let at = c_idx
                   head.box(fn(cell) {
+                    cell_read(cell, 0, at, true)
                     @sf.style_node(cell, fn() { @ui.style(w=@sf.grow, min_w=viz_zero_len) }, in_row=true)
-                    @sf.words_node(cell, fn() { viz_interp(store, cn) }, fn() { @sf.caption.then(@sf.strong) }) |> ignore
+                    @sf.read_words_node(cell, fn() { viz_interp(store, cn) }, fn() { @sf.caption.then(@sf.strong) }) |> ignore
                   })
                   |> ignore
                 }
@@ -1998,7 +2009,9 @@ fn viz_render_node(
                     for c_idx = 0; c_idx < cells.length(); c_idx = c_idx + 1 {
                       let cell_json = cells[c_idx]
                       let cell_path = path + "/t\{r_idx}_\{c_idx}"
+                      let at = (r_idx + 1, c_idx)
                       r.box(fn(cell) {
+                        cell_read(cell, at.0, at.1, false)
                         @sf.style_node(cell, fn() { @ui.style(w=@sf.grow, min_w=viz_zero_len) }, in_row=true)
                         match cell_json {
                           Object(cobj) => {
@@ -2012,7 +2025,7 @@ fn viz_render_node(
                               let b_tone = viz_pill_tone(viz_json_str(cobj, "tone", ""))
                               cell.box(fn(pr) {
                                 @sf.style_node(pr, fn() { viz_row_s1_5 })
-                                @sf.pill_node(pr, fn() { viz_interp(store, b_txt) }, tone=b_tone) |> ignore
+                                @sf.pill_node(pr, fn() { viz_interp(store, b_txt) }, tone=b_tone, read=true) |> ignore
                               })
                               |> ignore
                             } else if cobj.contains("spark") {
@@ -2021,12 +2034,12 @@ fn viz_render_node(
                               viz_spark_node(cell, cell_path, fn() { sp }, sp_tone, 72.0, 20.0)
                             } else {
                               let txt = viz_json_str(cobj, "text", viz_json_str(cobj, "value", viz_json_str(cobj, "label", "")))
-                              @sf.words_node(cell, fn() { viz_interp(store, txt) }, fn() { viz_text_style_of(cobj) }) |> ignore
+                              @sf.read_words_node(cell, fn() { viz_interp(store, txt) }, fn() { viz_text_style_of(cobj) }) |> ignore
                             }
                           }
                           _ => {
                             let txt = viz_json_val_str(cell_json)
-                            @sf.words_node(cell, fn() { viz_interp(store, txt) }, fn() { @sf.body }) |> ignore
+                            @sf.read_words_node(cell, fn() { viz_interp(store, txt) }, fn() { @sf.body }) |> ignore
                           }
                         }
                       })
@@ -2080,20 +2093,20 @@ fn viz_render_node(
                     @sf.style_node(nb, fn() { flow_style }, in_row=true)
                     if title != "" {
                       nb.box(fn(w) {
-                        @sf.words_node(w, fn() { viz_interp(store, title) }, title_style) |> ignore
+                        @sf.read_words_node(w, fn() { viz_interp(store, title) }, title_style) |> ignore
                       })
                       |> ignore
                     }
                     if body != "" {
                       nb.box(fn(w) {
-                        @sf.words_node(w, fn() { viz_interp(store, body) }, fn() { @sf.caption }) |> ignore
+                        @sf.read_words_node(w, fn() { viz_interp(store, body) }, fn() { @sf.caption }) |> ignore
                       })
                       |> ignore
                     }
                     if badge != "" {
                       nb.box(fn(pr) {
                         @sf.style_node(pr, fn() { viz_row_s1_5 })
-                        @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(tone)) |> ignore
+                        @sf.pill_node(pr, fn() { viz_interp(store, badge) }, tone=viz_pill_tone(tone), read=true) |> ignore
                       })
                       |> ignore
                     }
@@ -2133,12 +2146,12 @@ fn viz_render_node(
                 @sf.style_node(r, fn() { viz_row_between_s2 })
                 r.box(fn(w) {
                   @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                  @sf.words_node(w, fn() { viz_interp(store, label) }, fn() { @sf.body }) |> ignore
+                  @sf.read_words_node(w, fn() { viz_interp(store, label) }, fn() { @sf.body }) |> ignore
                 })
                 |> ignore
                 r.box(fn(w) {
                   @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                  @sf.words_node(w, calc_txt, fn() { @sf.code }) |> ignore
+                  @sf.read_words_node(w, calc_txt, fn() { @sf.code }) |> ignore
                 })
                 |> ignore
               })
@@ -2148,8 +2161,8 @@ fn viz_render_node(
               @sf.progress_node(
                 bar,
                 fn() { Some(calc_frac()) },
-                fn() { viz_tone_color(viz_interp(store, tone), 0) },
                 fn() { @sf.theme().p.card2 },
+                fn() { viz_tone_color(viz_interp(store, tone), 0) },
               )
               |> ignore
             })
@@ -2439,13 +2452,13 @@ pub fn viz_mbui_node(
         head.show(
           fn() { !in_shell && store.title_sig.get() != "" },
           fn(w) {
-            @sf.words_node(w, fn() { viz_interp(store, store.title_sig.get()) }, fn() { @sf.title }) |> ignore
+            @sf.read_words_node(w, fn() { viz_interp(store, store.title_sig.get()) }, fn() { @sf.title }) |> ignore
           },
         )
         head.show(
           fn() { store.subtitle_sig.get() != "" },
           fn(w) {
-            @sf.words_node(w, fn() { viz_interp(store, store.subtitle_sig.get()) }, fn() { @sf.caption }) |> ignore
+            @sf.read_words_node(w, fn() { viz_interp(store, store.subtitle_sig.get()) }, fn() { @sf.caption }) |> ignore
           },
         )
       },
@@ -2454,7 +2467,7 @@ pub fn viz_mbui_node(
       fn() { store.wasm_error.get() != "" },
       fn(err_box) {
         @sf.style_node(err_box, fn() { viz_card_box })
-        @sf.words_node(
+        @sf.read_words_node(
           err_box,
           fn() { "Wasm 沙箱拦截: " + store.wasm_error.get() },
           fn() { @sf.body.then(@sf.bad) },

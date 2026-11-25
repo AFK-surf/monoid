@@ -191,18 +191,27 @@ test("an Android release's symbols: older than 30 days by when the bucket says t
 
 test("the station's readers in the prebuilt store: older than 14 days by when they were put go; the store's other parts never", () => {
   const reader = (platform: string, c: string) => `natives/reader-${platform}-${c.repeat(24)}.tar.gz`;
+  const pionReader = (platform: string, c: string) => `natives/pion-reader-${platform}-${c.repeat(24)}.tar.gz`;
   const day = 86400;
-  const old = [reader("darwin-arm64", "a"), reader("linux-x64", "b"), reader("linux-arm64", "c"), reader("win32-x64", "d")];
-  const young = reader("linux-x64", "e"), untimed = reader("win32-x64", "f"), unread = reader("darwin-arm64", "0");
+  const old = [
+    reader("darwin-arm64", "a"), reader("linux-x64", "b"), reader("linux-arm64", "c"), reader("win32-x64", "d"),
+    pionReader("darwin-arm64", "1"), pionReader("linux-x64", "2"), pionReader("linux-arm64", "3"), pionReader("win32-x64", "4"),
+  ];
+  const young = reader("linux-x64", "e"), youngPion = pionReader("linux-x64", "7");
+  const untimed = reader("win32-x64", "f"), untimedPion = pionReader("win32-x64", "8");
+  const unread = reader("darwin-arm64", "0"), unreadPion = pionReader("darwin-arm64", "9");
   const others = [
     `natives/shell-win32-x64-${"1".repeat(24)}.tar.gz`, `natives/engine-win32-x64-${"2".repeat(24)}.tar.gz`,
     `natives/ghostty-vt-linux-x64-${"3".repeat(24)}.tar.gz`, `natives/reader-harness-linux-x64-${"4".repeat(24)}.tar.gz`,
     `natives/reader-android-arm64-${"5".repeat(24)}.tar.gz`, `natives/reader-linux-x64-${"6".repeat(12)}.tar.gz`,
+    `natives/pion-reader-android-arm64-${"a".repeat(24)}.tar.gz`, `natives/pion-reader-linux-x64-${"b".repeat(12)}.tar.gz`,
   ];
-  const keys = [...old, young, untimed, unread, ...others];
+  const keys = [...old, young, youngPion, untimed, untimedPion, unread, unreadPion, ...others];
   const putAt = new Map<string, number>([...old, ...others].map((k) => [k, NOW - 15 * day]));
   putAt.set(young, NOW - 13 * day);
+  putAt.set(youngPion, NOW - 13 * day);
   putAt.set(unread, NaN);
+  putAt.set(unreadPion, NaN);
   assert.deepEqual(doomedOf(keys, {}, null, NOW, putAt), old);
   assert.deepEqual(doomedOf(keys, {}, null, NOW), [], "none goes without times");
 });

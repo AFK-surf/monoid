@@ -210,7 +210,7 @@ fn wanted(runtime : String, line : Bytes) -> Bool {
     bytes_begins(line, "{\"type\":\"stillfail/usage\"".to_bytes())
   } else if runtime == "pi" {
     bytes_begins(line, "{\"type\":\"message\"".to_bytes()) && bytes_holds(line, usage_word)
-  } else if runtime == "cursor" || runtime == "devin" || runtime == "hermes" {
+  } else if runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "copilot" {
     bytes_holds(line, "\"type\":\"usage\"".to_bytes())
   } else if runtime == "agy" {
     bytes_holds(line, "\"type\":\"usage\"".to_bytes()) ||
@@ -785,7 +785,7 @@ pub fn calls_of(runtime : String, text : Bytes, subagent : Bool, state : CallSta
     }
     if runtime == "grok" {
       handle_grok(rec, subagent, out)
-    } else if runtime == "cursor" || runtime == "devin" || runtime == "hermes" {
+    } else if runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "copilot" {
       handle_run_usage(runtime, rec, subagent, out)
     } else if runtime == "agy" {
       handle_agy(rec, subagent, state, at_index, out)

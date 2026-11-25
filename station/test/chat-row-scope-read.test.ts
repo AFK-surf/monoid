@@ -118,11 +118,12 @@ test("a change's sidebar items and a chat's view read their own shares and opene
       const view = ops.thread!(reader, { viewer, id: String(chat.id), lang: "zh" }) as any;
       assert.deepEqual(view.xshare?.to.map((t: any) => t.workspace), ["w2"]);
       delete counts.visibility_sessions;
-      assert.deepEqual(counts, { chat_shares: 2, opened_chats: 1 });
+      // (its row's opener, and its view's: the chat's own alone)
+      assert.deepEqual(counts, { chat_shares: 2, opened_chats: 2 });
       for (const key of Object.keys(counts)) delete (counts as Record<string, number>)[key];
       const list = ops.threads!(reader, { viewer, session: "k", lang: "zh" }) as any[];
       assert.deepEqual(list.map((t) => [t.id, t.xshare?.to.map((x: any) => x.workspace)]), [[chat.id, ["w2"]]]);
-      assert.deepEqual(counts, { chat_shares: 1 }, "one session's threads do not fetch other shares");
+      assert.deepEqual(counts, { chat_shares: 1, opened_chats: 1 }, "one session's threads do not fetch other shares or openers");
       assert.deepEqual(selectedSessions, ["k"], "workspace selection checks only the thread's member");
       assert.ok(selectionSql);
       const scopePlan = (db.prepare(`EXPLAIN QUERY PLAN ${selectionSql}`).all(viewer.email, "k", viewer.workspace, 1) as { detail: string }[]).map((row) => row.detail).join(" | ");

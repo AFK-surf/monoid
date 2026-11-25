@@ -10,14 +10,15 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a program with nothing asked of it is kept.
 export const IDLE_MS = 60_000;
 
 type Json = any;
-type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void };
+type Waiting = { resolve: (answer: Json) => void; reject: (error: Error) => void; at: number };
 
 /// Detect unpaired UTF-16 surrogates (`\uD800`..`\uDFFF`) in a JSON-serialized string before
 /// sending it over stdio so neither MB nor Pion can leave `#waiting` hanging.
@@ -100,7 +101,7 @@ export class MemoryProgram {
       return Promise.reject(new Error("invalid UTF-16 surrogate"));
     }
     return new Promise((resolve, reject) => {
-      this.#waiting.set(id, { resolve, reject });
+      this.#waiting.set(id, { resolve, reject, at: wall.now() });
       this.#idle?.();
       this.#idle = null;
       try {
@@ -114,17 +115,18 @@ export class MemoryProgram {
     });
   }
 
-  #resolveBinary(): string {
+  #resolveSelection(): ResolvedReaderSelection {
     return resolveReaderSelection("memory", {
       binary: this.#binary,
       config: this.#readers,
       logAt: "memory",
-    }).primaryBinary;
+    });
   }
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(this.#resolveBinary(), ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir]);
+    const sel = this.#resolveSelection();
+    const child = new MbProcess(sel.primaryBinary, ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {
@@ -139,6 +141,8 @@ export class MemoryProgram {
         return;
       }
       this.#waiting.delete(answer.id);
+      const ok = typeof answer.error !== "string" && answer.error === undefined;
+      readerTelemetry.recordCall(child.engine, child.mode, wall.now() - waiting.at, ok);
       if (typeof answer.error === "string") waiting.reject(new Error(answer.error));
       else if (answer.error !== undefined) waiting.reject(new Error("the memory's program returned a malformed error"));
       else waiting.resolve(answer);
@@ -147,7 +151,7 @@ export class MemoryProgram {
     let failure: Error | null = null;
     child.on("error", (error: Error) => {
       failure = error;
-      log.error("memory", "the memory's program stopped", { error: error.message });
+      log.error("memory", "the memory's program stopped", { engine: child.engine, mode: child.mode, error: error.message });
     });
     child.on("exit", (code: number) => {
       if (this.#process !== child) return;
@@ -155,7 +159,11 @@ export class MemoryProgram {
       this.#idle?.();
       this.#idle = null;
       const error = this.#closed ? new MemoryProgramStopped("station stopping") : (failure ?? new Error(`the memory's program stopped (exit ${code})`));
-      for (const waiting of this.#waiting.values()) waiting.reject(error);
+      const now = wall.now();
+      for (const waiting of this.#waiting.values()) {
+        if (!this.#closed) readerTelemetry.recordCall(child.engine, child.mode, now - waiting.at, false);
+        waiting.reject(error);
+      }
       this.#waiting.clear();
     });
     return child;

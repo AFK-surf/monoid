@@ -600,3 +600,70 @@ test "a container=true flight does not resize a filling child" {
   let kd = tree.drawn().iter().find_first(fn(d) { d.id == child.val.unwrap().id() }).unwrap()
   assert_true((kd.w - 400.0).abs() < 0.5 && (kd.h - 60.0).abs() < 0.5, msg="container filling child resized: \{kd.w}x\{kd.h}")
 }
+
+///|
+test "a picture closed in one box with another shared node that pairs elsewhere: the thumbnail still flies back, and the other flies too" {
+  let open = @signals.signal("", same=fn(a, b) { a == b })
+  let thumb : Ref[@view.View?] = Ref(None)
+  let big : Ref[@view.View?] = Ref(None)
+  let marks : Array[@view.View] = []
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)) |> ignore
+      p.box(fn(list) {
+        list.height(Is(Some(100.0))).row(Is(true)).padding(Is((10.0, 10.0, 10.0, 10.0))).clips(Is(true)) |> ignore
+        list.box(fn(t) {
+          thumb.val = Some(t)
+          t.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(red)).shared(Is("a"), straight, stays=true) |> ignore
+        })
+        |> ignore
+        // (a mark of id "x" in the list while the picture is closed)
+        list.show(fn() { open.get() == "" }, fn(m) {
+          marks.push(m)
+          m.width(Is(Some(20.0))).height(Is(Some(20.0))).ground(Is(green)).shared(Is("x"), straight) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      // (the picture and the mark of id "x" over all of it in one box, let go of together as the picture closes)
+      p.show(fn() { open.get() != "" }, fn(o) {
+        o.over(Is(true)) |> ignore
+        o.box(fn(b) {
+          big.val = Some(b)
+          b
+          .offset(Is((50.0, 300.0)))
+          .width(Is(Some(300.0)))
+          .height(Is(Some(200.0)))
+          .ground(Is(blue))
+          .shared(By(fn() { open.get() }), straight)
+          |> ignore
+        })
+        |> ignore
+        o.box(fn(m) {
+          marks.push(m)
+          m.offset(Is((300.0, 600.0))).width(Is(Some(20.0))).height(Is(Some(20.0))).ground(Is(green)).shared(Is("x"), straight)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 800.0, now=0.0) |> ignore
+  tree.event(1000.0, fn() { open.set("a") })
+  tree.frame(400.0, 800.0, now=1500.0) |> ignore
+  let t = thumb.val.unwrap()
+  tree.event(2000.0, fn() { open.set("") })
+  tree.frame(400.0, 800.0, now=2000.0) |> ignore
+  assert_false(big.val.unwrap().alive())
+  // (the thumbnail back from where the picture was drawn, as when it closes alone)
+  assert_true(t.flies(), msg="the thumbnail does not fly back")
+  assert_eq(drawn_as(tree, t), Some((50.0, 300.0, 300.0, 200.0, 1.0, blue)))
+  // (the mark made again in the list flies from the one over it)
+  let back = marks[marks.length() - 1]
+  assert_true(back.flies(), msg="the mark does not fly")
+  tree.frame(400.0, 800.0, now=2200.0) |> ignore
+  assert_false(t.flies())
+  assert_false(back.flies())
+  assert_eq(drawn_as(tree, t), Some((10.0, 10.0, 40.0, 40.0, 1.0, red)))
+}

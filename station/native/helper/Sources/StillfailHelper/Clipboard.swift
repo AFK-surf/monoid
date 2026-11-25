@@ -52,13 +52,20 @@ final class Clipboard {
     (byte & 1 == 1, (byte >> 1) & 3)
   }
 
+  /// Text to type directly instead of putting on NSPasteboard + ⌘V when the Mac is on its lock screen (which ignores
+  /// ⌘V and shares no pasteboard; typing directly also avoids leaving a login password on the clipboard).
+  static func lockedPasteText(paste: Bool, type: UInt8, body: Data, locked: Bool) -> String? {
+    guard locked && paste && type == 1 && body.count <= Clipboard.textMax else { return nil }
+    return String(data: body, encoding: .utf8)
+  }
+
   init(channel: Channel, input: ScreenInput) {
     self.channel = channel
     self.input = input
   }
 
   /// Message 4: flags (bit 0: paste, bits 1..2 its mark), type (1 text, 2 PNG), the bytes. Set after the input before
-  /// it, on its queue, then ⌘V where the focus is.
+  /// it, on its queue, then ⌘V where the focus is (or typed directly when the Mac is on its lock screen).
   func set(_ payload: Data) {
     guard payload.count >= 3 else { return }
     let bytes = [UInt8](payload)
@@ -66,6 +73,10 @@ final class Clipboard {
     let type = bytes[1]
     let body = payload.subdata(in: payload.startIndex + 2..<payload.endIndex)
     input.queue.async {
+      if let text = Clipboard.lockedPasteText(paste: paste, type: type, body: body, locked: Status.screenLocked()) {
+        self.input.typeLocked(text)
+        return
+      }
       let done = DispatchQueue.main.sync { () -> Bool in
         let board = NSPasteboard.general
         switch type {

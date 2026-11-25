@@ -311,11 +311,13 @@ pub fn ripple_button_node(
 /// Words of `style` in node `w`, `words` as they are said, cut short on their line where `style` says so: `w=Cut`, or,
 /// on one line, filling it (`w=Full`), as an old view's line of `Fill` says it may be cut (ui's Ctx::squeeze_cut_said).
 pub fn styled_words(w : @view.View, words : () -> String, style : () -> @ui.TextStyle) -> @view.View {
-  w
-  .words(By(words))
-  .words_look(By(fn() { @ui.style_words(style()) }))
-  .ink(By(fn() { @ui.style_ink(style()) }))
-  |> ignore
+  styled_look(w.words(By(words)), style)
+}
+
+///|
+/// Node `w`'s words (plain or in pieces), said already, set in `style` as styled_words sets them: `w`.
+fn styled_look(w : @view.View, style : () -> @ui.TextStyle) -> @view.View {
+  w.words_look(By(fn() { @ui.style_words(style()) })).ink(By(fn() { @ui.style_ink(style()) })) |> ignore
   let (cut, ellipsis, tabular) = @signals.untracked(fn() {
     let said = style()
     let cut = @ui.style_cut(said)
@@ -2541,6 +2543,19 @@ pub fn words_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(w) { styled_words(w, words, style) |> ignore })
+}
+
+///|
+/// words_node's, its words picked with the pointer where what holds it has its words picked (@ui.words_picked): what is
+/// read rather than pressed. The node.
+#callsite(autofill(loc))
+pub fn read_words_node(
+  parent : @view.View,
+  words : () -> String,
+  style : () -> @ui.TextStyle,
+  loc~ : SourceLoc,
+) -> @view.View {
+  parent.box(made_for=loc, fn(w) { styled_look(w.words_runs(By(fn() { [@ui.span(words())] })), style) |> ignore })
 }
 
 ///|

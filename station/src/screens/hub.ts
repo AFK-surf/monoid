@@ -405,6 +405,7 @@ export class ScreenHub implements Screens {
           ...(s.poses ? { poses: true } : {}),
           ...(s.panels?.length ? { panels: s.panels } : {}),
           ...(s.chrome?.length ? { chrome: s.chrome.map(toldOf) } : {}),
+          ...(s.model ? { model: s.model } : {}),
           ...(by ? { openedBy: by } : {}),
           ...(since !== undefined ? { since } : {}),
           ...(folder !== null ? { drop: { folder, reveal: s.reveal === true } } : {}),

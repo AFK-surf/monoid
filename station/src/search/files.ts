@@ -108,15 +108,16 @@ export function mdfind(query: string, within: string[], most: number, signal?: A
     };
     let stop = () => {};
     stop = wall.after(WAIT_MS, done);
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    // (heard before its stdout: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
+    child.on("error", done);
+    child.on("close", done);
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       const parts = (carry + chunk).split("\0");
       carry = parts.pop() ?? "";
       for (const p of parts) if (p !== "" && paths.length < most) paths.push(p);
       if (paths.length >= most) done();
     });
-    child.on("error", done);
-    child.on("close", done);
     signal?.addEventListener("abort", done, { once: true });
   });
 }

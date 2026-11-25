@@ -25,6 +25,8 @@ priv struct DeviceCase {
   turn : Int
   frame_w : Double
   frame_h : Double
+  /// the chassis inside `frame` (excluding side-button padding), for its elevation shadow
+  body : SRect
   screen : SRect
   /// the panel's corners, upright as its framebuffer is, top left and round it (shares of its width)
   corners : Array[Double]
@@ -172,12 +174,19 @@ fn device_case_now(v : @view.View, s : ScreenSess, size : (Int, Int)?) -> Device
     }
   })
   let turned = turn % 2 == 1
+  let frame_w = if turned { fh } else { fw }
+  let frame_h = if turned { fw } else { fh }
+  let body = match field(p, "body") {
+    Some(_) as b => rect_of(b)
+    None => { x: 0.0, y: 0.0, w: frame_w, h: frame_h }
+  }
   Some({
     station: s.station,
     key,
     turn,
-    frame_w: if turned { fh } else { fw },
-    frame_h: if turned { fw } else { fh },
+    frame_w,
+    frame_h,
+    body,
     screen: rect_of(field(p, "screen")),
     corners: items(p, "corners").map(fn(v) {
       match v {
@@ -280,9 +289,34 @@ fn device_cased_node(o : @view.View, pg : ScreenPage, size : () -> (Int, Int)?) 
       }))
       .width(By(fn() { Some(r().w) }))
       .height(By(fn() { Some(r().h) }))
-      .image(By(fn() { Some((src(), "", 0)) }))
+      .image(By(fn() { Some((src(), "", 8192)) }))
       |> ignore
     }
+    // soft outside-only elevation shadow behind the chassis so the device lifts cleanly off the canvas
+    c.box(fn(sh) {
+      let bd = fn() { place(sh, k.body) }
+      let outer_corner = fn(i : Int) {
+        let b = bd()
+        let sc = place(sh, k.screen)
+        let bz = dmax(0.0, dmin(b.w - sc.w, b.h - sc.h) / 2.0)
+        let scr_r = if k.corners.length() == 4 { k.corners[(i + 4 - k.turn) % 4] * dmin(sc.w, sc.h) } else { 0.0 }
+        dmin(dmin(b.w, b.h) / 2.0, scr_r + bz)
+      }
+      sh
+      .over(Is(true))
+      .offset(By(fn() {
+        let at = bd()
+        (at.x, at.y)
+      }))
+      .width(By(fn() { Some(bd().w) }))
+      .height(By(fn() { Some(bd().h) }))
+      // det-ok(corners-each): the device's own: an iPhone Duo's cover is nearly square along its hinge (sim-mask.ts)
+      .corners(By(fn() { Some((outer_corner(0), outer_corner(1), outer_corner(2), outer_corner(3))) }))
+      .shadow(By(fn() { sim_device_shadow(u) }))
+      .shadow_outside(Is(true))
+      |> ignore
+    })
+    |> ignore
     let looks = fn(b : CaseButton) {
       c.box(fn(n) {
         let down = fn() { s.driving_now() && downs.get(b.name).map(fn(d) { d.get() }).unwrap_or(false) }

@@ -4,7 +4,22 @@
 // workspace's stations are from before (they answer no GET /presets/kept: read as before, never PUT to). The starred
 // models are the new chat's `choice` record `ws:<ws>:liked`, a map of preset-records.ts `Stars` (a list from before
 // read as each key starred). The rule both sides keep is preset-records.ts; nothing here decides otherwise. Pure.
-import { type KeptRecord, type PresetRecord, type Stars, canonical, isGone, newerRecord, newerStar, recordOf, recordsKept, starsOf } from "./preset-records.ts";
+import {
+  type KeptRecord,
+  type PresetProject,
+  type PresetProjects,
+  type PresetRecord,
+  type Stars,
+  canonical,
+  isGone,
+  newerPresetProject,
+  newerRecord,
+  newerStar,
+  presetProjectsOf,
+  recordOf,
+  recordsKept,
+  starsOf,
+} from "./preset-records.ts";
 import { isObject } from "./util.ts";
 
 export const TABLE = "presetRecords";
@@ -15,10 +30,28 @@ export const TABLE = "presetRecords";
 /// failed), `owedStars` the same of the stars; `met`, `metStars`: those whose records, whose stars, this device has
 /// read at least once (one from before counts as met). A stream that comes back resumed is asked only where its
 /// station is owed or not met yet (a core that updated to this coming back on the cursor its last one kept).
-export type Held = { records: Record<string, KeptRecord>; before: string[]; owed: string[]; owedStars: string[]; met: string[]; metStars: string[] };
+export type Held = {
+  records: Record<string, KeptRecord>;
+  before: string[];
+  owed: string[];
+  owedStars: string[];
+  owedPresetProjects: string[];
+  met: string[];
+  metStars: string[];
+  metPresetProjects: string[];
+};
 
 const NOTHING = Object.freeze([]) as unknown as string[];
-const NONE: Held = Object.freeze({ records: Object.freeze({}) as Record<string, KeptRecord>, before: NOTHING, owed: NOTHING, owedStars: NOTHING, met: NOTHING, metStars: NOTHING });
+const NONE: Held = Object.freeze({
+  records: Object.freeze({}) as Record<string, KeptRecord>,
+  before: NOTHING,
+  owed: NOTHING,
+  owedStars: NOTHING,
+  owedPresetProjects: NOTHING,
+  met: NOTHING,
+  metStars: NOTHING,
+  metPresetProjects: NOTHING,
+});
 
 const ids = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 
@@ -27,7 +60,16 @@ export function heldOf(data: { record(table: string, key: string): unknown }, ws
   const raw = data.record(TABLE, ws);
   if (!isObject(raw)) return NONE;
   const records = isObject(raw.records) ? (raw.records as Record<string, KeptRecord>) : {};
-  return { records, before: ids(raw.before), owed: ids(raw.owed), owedStars: ids(raw.owedStars), met: ids(raw.met), metStars: ids(raw.metStars) };
+  return {
+    records,
+    before: ids(raw.before),
+    owed: ids(raw.owed),
+    owedStars: ids(raw.owedStars),
+    owedPresetProjects: ids(raw.owedPresetProjects),
+    met: ids(raw.met),
+    metStars: ids(raw.metStars),
+    metPresetProjects: ids(raw.metPresetProjects),
+  };
 }
 
 /// Who the device is in a workspace: its account's `sub` and email.
@@ -172,6 +214,30 @@ export function starsLacking(stars: Stars, said: Stars): Stars {
   for (const [k, s] of Object.entries(stars)) {
     const there = said[k];
     if (there === undefined || (canonical(there) !== canonical(s) && newerStar(there, s) === s)) out[k] = s;
+  }
+  return out;
+}
+
+// ── preset default project preferences ──
+
+/// The preset project preferences kept as `raw` says them (`choice` record `ws:<ws>:presetProjects`); null when none.
+export function presetProjectsHeld(raw: unknown): PresetProjects | null {
+  if (raw === undefined || raw === null) return null;
+  try {
+    return presetProjectsOf(raw);
+  } catch {
+    return null;
+  }
+}
+
+/// Of `kept`, those a station holding `said` lacks or holds older.
+export function presetProjectsLacking(kept: PresetProjects, said: PresetProjects): PresetProjects {
+  const out: PresetProjects = Object.create(null);
+  for (const k of Object.keys(kept)) {
+    if (!Object.hasOwn(kept, k)) continue;
+    const v = kept[k]!;
+    const there = Object.hasOwn(said, k) ? said[k] : undefined;
+    if (there === undefined || (canonical(there) !== canonical(v) && newerPresetProject(there, v) === v)) out[k] = v;
   }
   return out;
 }

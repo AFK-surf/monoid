@@ -73,17 +73,29 @@ export async function takeBackSoon(
   options?: { readers?: ReaderSelectConfig | (() => ReaderSelectConfig) },
 ): Promise<Ready | null> {
   if (!existsSync(readyFile(data))) return null; // sync: before the station serves (its store not open yet)
-  const { MbProcess, resolveReaderSelectionAsync } = await import("../read/mb-reader.ts");
-  const binary = (await resolveReaderSelectionAsync("replica-restore", { binary: given, config: options?.readers, logAt: "replica" })).primaryBinary;
+  const [{ MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync }, { wall }, { readerTelemetry }] = await Promise.all([
+    import("../read/mb-reader.ts"),
+    import("../ops/fibers.ts"),
+    import("../read/reader-telemetry.ts"),
+  ]);
+  const sel = await resolveReaderSelectionAsync("replica-restore", { binary: given, config: options?.readers, logAt: "replica" });
   return new Promise((resolve, reject) => {
-    const p = new MbProcess(binary, ["--builder", "replica-restore", "--db", db, "--data", data, "--now", String(now), "--sep", sep]);
+    const startedAt = wall.now();
+    const p = new MbProcess(sel.primaryBinary, ["--builder", "replica-restore", "--db", db, "--data", data, "--now", String(now), "--sep", sep], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
     let said = false;
-    p.once("message", (m: { ready?: Ready | null; error?: string }) => {
+    const finish = (ok: boolean, f: () => void) => {
+      if (said) return;
       said = true;
-      if (m.error !== undefined) reject(new Error(m.error));
-      else resolve(m.ready ?? null);
+      readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
+      f();
+    };
+    p.once("message", (m: { ready?: Ready | null; error?: string }) => {
+      finish(m.error === undefined, () => {
+        if (m.error !== undefined) reject(new Error(m.error));
+        else resolve(m.ready ?? null);
+      });
     });
-    p.once("error", reject);
-    p.once("exit", (code: number) => { if (!said) reject(new Error(`the restore ended saying nothing (${code})`)); });
+    p.once("error", (err: Error) => finish(false, () => reject(err)));
+    p.once("exit", (code: number) => finish(false, () => reject(new Error(`the restore ended saying nothing (${code})`))));
   });
 }

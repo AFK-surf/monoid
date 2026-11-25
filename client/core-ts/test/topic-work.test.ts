@@ -80,6 +80,7 @@ const OVER_READ: Record<string, number> = {
   "stationPart updates": 32,
   chats: 80,
   "chats mine": 80,
+  "chats grouped": 72,
   profile: 72,
   "profile key": 72,
   // (the Profile overview's pools, of every account's row as the list reads them, kept beside each station's part: a

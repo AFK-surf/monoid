@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as httpServer, request } from "node:http";
 import { type AddressInfo, createServer as netServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
@@ -388,18 +388,31 @@ function newestHead(dir: string): { gen: string; dir: string; head: any } | null
 
 /// What a fresh station takes back of `origin`'s copy kept at `keeper` (`--builder replica-restore`, as a new station
 /// restores a lost one before its store opens): its database's sessions and their messages, and the attached files
-/// where its messages say.
+/// where its messages say. The keeper goes on writing while it is read (a newer head put, batches folded, files
+/// dropped): the head is read once and only what it names is taken, and null is answered when that is gone already
+/// (a newer head took its place; asked again, it is taken).
 function restoreFrom(keeper: string, origin: string, name: string, from: string, bin: string) {
   const kept = join(keeper, "replicas", "w1", origin);
   const newest = newestHead(kept);
   assert.ok(newest !== null, `no copy of ${origin} kept at ${keeper}`);
+  let headRaw: string;
+  const taken = new Map<string, Buffer>();
+  try {
+    headRaw = readFileSync(join(newest.dir, "head.json"), "utf8");
+    const head = JSON.parse(headRaw);
+    for (const b of head.batches as string[]) taken.set(join(newest.gen, "log", b), readFileSync(join(newest.dir, "log", b)));
+    for (const h of [...Object.keys(head.files ?? {}), ...Object.keys(head.transcriptFiles ?? {})]) taken.set(join("files", h), readFileSync(join(kept, "files", h)));
+    newest.head = head;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT" || e instanceof SyntaxError) return null;
+    throw e;
+  }
   const to = fresh("restore");
   const copy = join(to, "restore", "copy");
-  mkdirSync(join(copy, newest.gen), { recursive: true });
-  writeFileSync(join(copy, newest.gen, "head.json"), readFileSync(join(newest.dir, "head.json")));
-  if (existsSync(join(newest.dir, "log"))) cpSync(join(newest.dir, "log"), join(copy, newest.gen, "log"), { recursive: true });
+  mkdirSync(join(copy, newest.gen, "log"), { recursive: true });
   mkdirSync(join(copy, "files"), { recursive: true });
-  if (existsSync(join(kept, "files"))) cpSync(join(kept, "files"), join(copy, "files"), { recursive: true });
+  writeFileSync(join(copy, newest.gen, "head.json"), headRaw);
+  for (const [p, bytes] of taken) writeFileSync(join(copy, p), bytes);
   writeFileSync(join(to, "restore", "ready.json"), JSON.stringify({ origin, workspace: "w1", gen: newest.gen, name, from }));
   Store.open(join(to, "stillfail.db"), join(to, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never).close();
   const r = spawnSync(binary!, ["--builder", "replica-restore", "--db", join(to, "stillfail.db"), "--data", to, "--now", "1000", "--sep", "/"], { encoding: "utf8", env: { PATH: bin, HOME: to, TMPDIR: tmpdir() } });
@@ -443,12 +456,16 @@ test("a station's chats copied to the other as it keeps them, their files with t
 
   // ── kept on beta: a head naming the three chats and both files, what a fresh station takes back of it the chats as
   // they are on alpha (each head taken back once) ──
-  const tried = new Map<string, ReturnType<typeof restoreFrom>>();
+  const tried = new Map<string, NonNullable<ReturnType<typeof restoreFrom>>>();
   const first = await given("alpha's copy kept on beta with its three chats as they are, and both files", () => {
     const h = newestHead(kept);
     if (h === null || h.head.chats !== 3 || !(oneSha in h.head.files) || !(goneSha in h.head.files) || !existsSync(join(kept, "files", oneSha)) || !existsSync(join(kept, "files", goneSha))) return null;
     const at = `${h.gen}:${h.head.to}`;
-    if (!tried.has(at)) tried.set(at, restoreFrom(b.data, a.id, "alpha", b.id, bin));
+    if (!tried.has(at)) {
+      const r = restoreFrom(b.data, a.id, "alpha", b.id, bin);
+      if (r === null) return null;
+      tried.set(at, r);
+    }
     const r = tried.get(at)!;
     return [one, two, gone].every((c) => JSON.stringify(r.said(c.key)) === JSON.stringify(wantBefore.get(c.key))) ? { ...h, restored: r } : null;
   }, () => `kept=${JSON.stringify(newestHead(kept)?.head)}; ${both()}`, 60_000);
@@ -490,7 +507,7 @@ test("a station's chats copied to the other as it keeps them, their files with t
   assert.equal(caught.head.chats, 3);
   assert.deepEqual(Object.keys(caught.head.files), [oneSha]);
   assert.deepEqual(readFileSync(join(kept, "files", oneSha)), oneFile);
-  const now = restoreFrom(b.data, a.id, "alpha", b.id, bin);
+  const now = await given("beta's copy taken back whole", () => restoreFrom(b.data, a.id, "alpha", b.id, bin), both);
   assert.deepEqual(now.sessions, [one.key, two.key, three.key].sort(), "the deleted chat not in what is taken back, the one made is");
   for (const c of [one, two, three]) assert.deepEqual(now.said(c.key), await texts(alpha.door, c.thread), c.key);
   assert.ok(now.said(one.key).includes("said while beta was away"), JSON.stringify(now.said(one.key)));

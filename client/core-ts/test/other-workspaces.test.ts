@@ -3,8 +3,10 @@
 // the setting back on links every workspace's stations whatever is shown.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Effect } from "effect";
+import { personStations, personalStations, read as readLock } from "../src/views/lock.ts";
 import { call } from "./helpers.ts";
-import { base, started } from "./station-fixture.ts";
+import { base, started, stationReplies } from "./station-fixture.ts";
 
 const S = "ws/st";
 
@@ -66,6 +68,61 @@ test("with otherWorkspaces off and no UI saying yet, the workspace last open is 
     call(s.core, ui, 3, "client.focus", { visible: false, focused: false, workspace: "ws" });
     await s.host.time.pass(500, 10);
     assert.ok(s.core.inner.stations.link(S), "the workspace a UI says, shown or not");
+  } finally {
+    s.core.close();
+  }
+});
+
+test("with otherWorkspaces off, lock and personal-lock reads do not dial stations of unlinked workspaces", async () => {
+  const s = await started({
+    ...base(),
+    "GET /lock/person": { chains: [] },
+    "GET /lock": { head: null, entries: [], serves: ["told"] },
+  });
+  const ui = s.core.connect();
+  try {
+    call(s.core, ui, 1, "prefs.set", { otherWorkspaces: "off" });
+    call(s.core, ui, 2, "client.focus", { visible: true, focused: true, workspace: "other-ws" });
+    await s.host.time.pass(500, 10);
+    assert.equal(s.core.inner.stations.link(S), undefined);
+
+    const sub = s.core.inner.workspaces.owner("ws")!;
+    assert.deepEqual(personStations(s.core.inner, sub), [], "unlinked workspace stations excluded from personStations");
+
+    const dialed: string[] = [];
+    stationReplies(s.host, (req) => {
+      if (req.url.includes("/admin/api/lock")) dialed.push(`${req.method} ${req.url}`);
+      return undefined;
+    });
+    let chains: unknown = "unset";
+    s.core.inner.runner.fork(Effect.map(personalStations(s.core.inner).read(sub), (c) => { chains = c; }));
+    s.core.inner.runner.fork(Effect.ignore(readLock(s.core.inner, "ws")));
+    await s.host.time.pass(500, 10);
+    assert.equal(chains, null, "no station answered when all of sub's workspaces are unlinked");
+    assert.deepEqual(dialed, [], "lock and personal-lock reads must not dial stations of unlinked workspaces");
+
+    // A stray Mesh link to an unlinked owned workspace (never tracked by Links) is also dropped on reconcile.
+    const dropped: string[] = [];
+    const prevMeshNow = s.core.inner.meshNow;
+    s.core.inner.meshNow = () => ({
+      linkAddresses: () => [S, "other-ws/st2"],
+      dropLink: (addr: string) => { dropped.push(addr); },
+    }) as unknown as NonNullable<ReturnType<typeof s.core.inner.meshNow>>;
+    try {
+      s.core.inner.stations.reconcile();
+      assert.deepEqual(dropped, [S], "reconcile drops stray Mesh links for unlinked owned workspaces only");
+    } finally {
+      s.core.inner.meshNow = prevMeshNow;
+    }
+
+    // Switching back to ws re-enables personStations for ws.
+    call(s.core, ui, 3, "client.focus", { visible: true, focused: true, workspace: "ws" });
+    await s.host.time.pass(500, 10);
+    assert.deepEqual(
+      personStations(s.core.inner, sub).map(String),
+      [S],
+      "linked workspace stations included once in view again",
+    );
   } finally {
     s.core.close();
   }

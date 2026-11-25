@@ -382,27 +382,16 @@ pub fn agent_waited_words(now : Double, a : Json?) -> String {
 
 ///|
 /// A clock in `v` for how long it has stood where it does (`since`: from when, at most how long), read again each whole
-/// second from then (steps_seconds', on the page's time), till its most; begun again as `since` says another.
+/// second from then (steps_seconds', on the page's time, or each minute past an hour), till its most; begun again as
+/// `since` says another.
 pub fn agent_card_seconds(v : @view.View, src : Source, since : () -> (Double, Double?)?) -> () -> Int {
   let tick : @signals.Signal[Int] = @signals.signal(0)
   let stop : Ref[() -> Unit] = Ref(fn() {  })
-  fn plan(from : Double, most : Double?) -> Unit {
-    let gone = (src.now)() - from
-    if most is Some(m) && gone >= m {
-      return
-    }
-    let into = if gone > 0.0 { gone - (gone / second_ms).floor() * second_ms } else { gone }
-    stop.val = v.at_moment(v.logic_at() + second_ms - into, later=true, fn() {
-      tick.set(tick.untracked() + 1)
-      plan(from, most)
-    })
-  }
-
   v.reacts(since, fn(k) {
     (stop.val)()
     stop.val = fn() {  }
     match k {
-      Some((from, most)) => plan(from, most)
+      Some((from, most)) => stop.val = steps_clock_start(v, src, from, most, true, tick)
       None => ()
     }
   })

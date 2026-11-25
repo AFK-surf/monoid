@@ -152,3 +152,48 @@ test("each session being taken up tells the launcher the station gets on with it
     assert.equal(said, 2);
   } finally { await hub.shutdown(); await r.close(); }
 });
+
+test("takeUp reports progress after reading runners, forwards taking to driver.adopt, and reports before and after actor.adopt", async () => {
+  const r = new Rig();
+  const hub = r.newHub({ chats: () => undefined, internal: false });
+  const events: string[] = [];
+  (hub as any).options.taking = () => { events.push("taking"); };
+  (hub as any).options.runners = () => [];
+  try {
+    await hub.takeUp();
+    assert.deepEqual(events, ["taking"], "takeUp signals progress after reading runners");
+
+    events.length = 0;
+    r.store.db.prepare(`INSERT INTO sessions(key,connect,scope,runtime,profile,workspace,token,running,created_at,last_active_at,archived_at)
+      VALUES (?,'cl','thread',?,'cc',?,?,?,0,?,?)`).run("s-progress", "claude", r.dir, "s-progress", 0, 10, null);
+    const row = r.store.getSession("s-progress")!;
+    const fakeAgent = { id: () => "rt-1", busy: () => false, prompt: async () => {}, steer: async () => false, backgroundTools: async () => {}, abort: async () => {}, dispose: async () => {}, detach: () => {} };
+    (hub as any).sessionDriver = () => ({
+      adopt: async (opts: { taking?: () => void }) => {
+        events.push("driver.adopt:start");
+        opts.taking?.();
+        events.push("driver.adopt:end");
+        return fakeAgent;
+      },
+    });
+    const actor = (hub as any).actor(row);
+    const origAdopt = actor.adopt.bind(actor);
+    actor.adopt = async (...args: unknown[]) => {
+      events.push("actor.adopt");
+      return origAdopt(...args);
+    };
+    await (hub as any).adoptOne(row, {
+      key: row.key, runtime: "claude", agent: null, turn: null, workingFor: [], notices: [],
+      waitingMs: null, waitingSeconds: 0, nudges: 0, stopRequested: false, idleMs: 0,
+    }, true);
+    assert.deepEqual(events, [
+      "taking",
+      "driver.adopt:start",
+      "taking",
+      "driver.adopt:end",
+      "taking",
+      "actor.adopt",
+      "taking",
+    ]);
+  } finally { await hub.shutdown(); await r.close(); }
+});

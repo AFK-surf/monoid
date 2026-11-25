@@ -56,6 +56,7 @@ export const CopiesLive = Layer.effectDiscard(
         return m.peers.flatMap((p: Json) => (typeof p?.id === "string" ? [{ id: p.id as string, name: typeof p.name === "string" ? p.name : "" }] : []));
       },
       ask: (station, request) => bus.ask(station, request),
+      rtts: () => bus.rtts(),
       runner,
       fibers,
       changed: () => events.overviewSoon(),

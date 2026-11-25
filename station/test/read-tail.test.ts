@@ -5,12 +5,12 @@
 // goes on into a Codex transcript, one is written anew shorter, one is put away compressed, and one taken up from where
 // another's reading stood.
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { MbProcess, mbReaderBinary, pionBinary, resetReaderSelectionStateForTest } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { ChainTail, type TranscriptRef } from "./reference/tail.ts";
 import type { TimelineEntry } from "../src/read/transcript.ts";
@@ -19,6 +19,7 @@ import { Store } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
+const pionBin = pionBinary();
 const at = "2026-11-14T00:00:00Z";
 const said = (text: string, id: string) => `${JSON.stringify({ type: "assistant", timestamp: at, message: { id, content: [{ type: "text", text }] } })}\n`;
 const call = (id: string, name: string, input: object) => `${JSON.stringify({ type: "assistant", timestamp: at, message: { id, content: [{ type: "tool_use", id, name, input }] } })}\n`;
@@ -67,12 +68,29 @@ test("a watched transcript is read by the readers as it was read here, read afte
   t.after(() => { store.close(); rmSync(data, { recursive: true, force: true }); });
   const open: Readers[] = [];
   t.after(() => Promise.all(open.map((r) => r.close())));
+  resetReaderSelectionStateForTest();
+  t.after(() => resetReaderSelectionStateForTest());
   const reading = (mb: boolean): TailRead => {
     const r = readersOf(data, mb ? binary : null);
     open.push(r);
     return async (runtime, state) => JSON.parse(await r.read("tailRead", { runtime, state }, "zh", { told: true }));
   };
-  const ways: (TailRead | null)[] = [null, reading(false), ...(binary !== null ? [reading(true)] : [])];
+  let pionDataDir: string | null = null;
+  const readingPion = (): TailRead => {
+    // Un-overridden Readers selecting data="pion" (never setting mbReader!)
+    pionDataDir = mkdtempSync(join(tmpdir(), "read-tail-pion-"));
+    const pionStore = Store.open(join(pionDataDir, "stillfail.db"), join(pionDataDir, "archive"));
+    t.after(() => { pionStore.close(); rmSync(pionDataDir!, { recursive: true, force: true }); });
+    const r = new Readers(pionDataDir, 1, undefined, 1, { readers: () => ({ readers: { data: "pion" } }) });
+    open.push(r);
+    return async (runtime, state) => JSON.parse(await r.read("tailRead", { runtime, state }, "zh", { told: true }));
+  };
+  const ways: (TailRead | null)[] = [
+    null,
+    reading(false),
+    ...(binary !== null ? [reading(true)] : []),
+    ...(pionBin !== null ? [readingPion()] : []),
+  ];
 
   const a = join(data, "a.jsonl"), b = join(data, "b.jsonl"), z = join(data, "z.jsonl");
   writeFileSync(a, "");
@@ -136,5 +154,10 @@ test("a watched transcript is read by the readers as it was read here, read afte
     await v.hub.turnEnded("s");
     assert.deepEqual(v.told, packed.entries, `compressed, way ${i}`);
     await v.hub.close();
+  }
+  if (pionBin !== null && pionDataDir !== null) {
+    const livePion = MbProcess.live().filter((p) => p.args.includes(pionDataDir!));
+    assert.ok(livePion.length >= 1, "expected live Pion Readers process for un-overridden data=pion branch");
+    assert.equal(realpathSync(livePion[0]!.binary), realpathSync(pionBin), "un-overridden Readers must execute BIN_PION");
   }
 });

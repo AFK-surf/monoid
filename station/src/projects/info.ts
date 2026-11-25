@@ -12,6 +12,7 @@ export const PROJECTS_INFO_FILE = "PROJECTS.jsonl";
 export const MAX_PROJECT_NOTE = 2000;
 export const MAX_PROJECT_REFS = 32;
 export const MAX_PROJECT_REF_LEN = 512;
+const MAX_APPLIED_OP_IDS = 64;
 /// Shared 512 KiB size ceiling (same constant as `share/memory.ts` `FILE_MOST`).
 export const PROJECTS_INFO_MAX_BYTES = 512 * 1024;
 const FILE_MOST = PROJECTS_INFO_MAX_BYTES;
@@ -28,7 +29,78 @@ export type ProjectInfoEntry = {
   updatedAt?: number;
   noteClearedAt?: number;
   refsClearedAt?: number;
+  /// Internal idempotency log of rename `opId`s atomically committed into this entry (stripped from public HTTP responses).
+  appliedOpIds?: string[];
 };
+
+/// Lossless deduplication preserving newest-last order (NEVER truncates; used during parsing & in-memory merges).
+function dedupOpIds(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const dedup: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const s = item.trim();
+    if (s === "") continue;
+    const idx = dedup.indexOf(s);
+    if (idx >= 0) dedup.splice(idx, 1);
+    dedup.push(s);
+  }
+  return dedup.length === 0 ? undefined : dedup;
+}
+
+function mergeOpIdsLossless(lists: readonly (readonly string[] | undefined)[]): string[] | undefined {
+  const flat: string[] = [];
+  for (const list of lists) {
+    if (list && list.length > 0) flat.push(...list);
+  }
+  return flat.length === 0 ? undefined : dedupOpIds(flat);
+}
+
+/// Caps non-pinned opIds to the latest `MAX_APPLIED_OP_IDS` when the caller supplies the authoritative `keepOpIds`
+/// pending set from SQLite; when `keepOpIds` is omitted (a caller without DB access), preserves all opIds losslessly
+/// so unrelated pending opIds are never accidentally evicted.
+function normalizeOpIds(raw: unknown, keepOpIds?: ReadonlySet<string>): string[] | undefined {
+  const dedup = dedupOpIds(raw);
+  if (dedup === undefined) return undefined;
+  if (keepOpIds === undefined) return dedup;
+  const pinned: string[] = [];
+  const rest: string[] = [];
+  for (const id of dedup) {
+    if (keepOpIds.has(id)) pinned.push(id);
+    else rest.push(id);
+  }
+  const keptRest = rest.length > MAX_APPLIED_OP_IDS ? rest.slice(rest.length - MAX_APPLIED_OP_IDS) : rest;
+  return [...pinned, ...keptRest];
+}
+
+function mergeOpIds(lists: readonly (readonly string[] | undefined)[], keepOpIds?: ReadonlySet<string>): string[] | undefined {
+  const flat: string[] = [];
+  for (const list of lists) {
+    if (list && list.length > 0) flat.push(...list);
+  }
+  return flat.length === 0 ? undefined : normalizeOpIds(flat, keepOpIds);
+}
+
+function emptyOpIdsMap(): Record<string, string[]> {
+  return Object.create(null) as Record<string, string[]>;
+}
+
+/// Returns a public copy of `doc` with internal-only fields (`appliedOpIds`) stripped for HTTP responses.
+export function stripInternalProjectInfo(doc: ProjectsInfoDoc): ProjectsInfoDoc {
+  const projects = emptyProjectsMap();
+  for (const name of Object.keys(doc.projects)) {
+    const e = doc.projects[name];
+    if (!e) continue;
+    if (e.appliedOpIds === undefined) {
+      projects[name] = e;
+    } else {
+      const copy: ProjectInfoEntry = { ...e };
+      delete copy.appliedOpIds;
+      projects[name] = copy;
+    }
+  }
+  return { projects };
+}
 
 function maxEntryTimestamp(e: ProjectInfoEntry | undefined): number {
   if (!e) return -Infinity;
@@ -195,6 +267,8 @@ function mergeProjectEntries(a: ProjectInfoEntry, b: ProjectInfoEntry): ProjectI
   const bAt = b.updatedAt ?? -1;
   const maxAt = Math.max(aAt, bAt);
   if (maxAt >= 0 && (a.updatedAt !== undefined || b.updatedAt !== undefined)) out.updatedAt = maxAt;
+  const opIds = mergeOpIdsLossless([a.appliedOpIds, b.appliedOpIds]);
+  if (opIds !== undefined) out.appliedOpIds = opIds;
   return out;
 }
 
@@ -219,9 +293,10 @@ export function emptyTombstonesMap(): Record<string, number> {
 export function parseProjectsJsonlWithRaw(
   text: string,
   opts: { strict: boolean },
-): { doc: ProjectsInfoDoc; tombstones: Record<string, number>; preservedRawLines: string[] } {
+): { doc: ProjectsInfoDoc; tombstones: Record<string, number>; tombstoneOpIds: Record<string, string[]>; preservedRawLines: string[] } {
   const projects = emptyProjectsMap();
   const tombstones = emptyTombstonesMap();
+  const tombstoneOpIds = emptyOpIdsMap();
   const preservedRawLines: string[] = [];
   const parsedLive: { name: string; entry: ProjectInfoEntry }[] = [];
   const lines = text.split(/\r?\n/);
@@ -264,10 +339,13 @@ export function parseProjectsJsonlWithRaw(
     const deletedAt = typeof obj.deletedAt === "number" && Number.isFinite(obj.deletedAt) ? obj.deletedAt : undefined;
     const noteClearedAt = typeof obj.noteClearedAt === "number" && Number.isFinite(obj.noteClearedAt) ? obj.noteClearedAt : undefined;
     const refsClearedAt = typeof obj.refsClearedAt === "number" && Number.isFinite(obj.refsClearedAt) ? obj.refsClearedAt : undefined;
+    const appliedOpIds = dedupOpIds(obj.appliedOpIds);
     if (obj.deleted === true) {
       const delAt = updatedAt ?? 0;
       const prevDel = tombstones[name];
       if (prevDel === undefined || delAt > prevDel) tombstones[name] = delAt;
+      const mergedOps = mergeOpIdsLossless([tombstoneOpIds[name], appliedOpIds]);
+      if (mergedOps !== undefined) tombstoneOpIds[name] = mergedOps;
       continue;
     }
     if (deletedAt !== undefined) {
@@ -304,6 +382,7 @@ export function parseProjectsJsonlWithRaw(
     if (updatedAt !== undefined) entry.updatedAt = updatedAt;
     if (noteClearedAt !== undefined) entry.noteClearedAt = noteClearedAt;
     if (refsClearedAt !== undefined) entry.refsClearedAt = refsClearedAt;
+    if (appliedOpIds !== undefined) entry.appliedOpIds = appliedOpIds;
     parsedLive.push({ name, entry });
   }
 
@@ -313,7 +392,11 @@ export function parseProjectsJsonlWithRaw(
   const maxRefsCleared = emptyTombstonesMap();
   for (const item of parsedLive) {
     const maxDel = tombstones[item.name];
-    if (maxDel !== undefined && (item.entry.updatedAt ?? -1) <= maxDel) continue;
+    if (maxDel !== undefined && (item.entry.updatedAt ?? -1) <= maxDel) {
+      const mergedOps = mergeOpIdsLossless([tombstoneOpIds[item.name], item.entry.appliedOpIds]);
+      if (mergedOps !== undefined) tombstoneOpIds[item.name] = mergedOps;
+      continue;
+    }
     surviving.push(item);
     if (item.entry.noteClearedAt !== undefined) {
       const prev = maxNoteCleared[item.name];
@@ -366,6 +449,7 @@ export function parseProjectsJsonlWithRaw(
       }
     }
     if (entry.updatedAt !== undefined) filtered.updatedAt = entry.updatedAt;
+    if (entry.appliedOpIds !== undefined) filtered.appliedOpIds = entry.appliedOpIds;
     const prev = projects[name];
     projects[name] = prev === undefined ? mergeProjectEntries(filtered, {}) : mergeProjectEntries(prev, filtered);
   }
@@ -374,8 +458,14 @@ export function parseProjectsJsonlWithRaw(
     if (nc !== undefined) projects[name]!.noteClearedAt = nc;
     const rc = maxRefsCleared[name];
     if (rc !== undefined) projects[name]!.refsClearedAt = rc;
+    // Preserve any tombstone appliedOpIds on a live entry that superseded an older tombstone.
+    if (tombstoneOpIds[name] !== undefined) {
+      const mergedOps = mergeOpIdsLossless([projects[name]!.appliedOpIds, tombstoneOpIds[name]]);
+      if (mergedOps !== undefined) projects[name]!.appliedOpIds = mergedOps;
+      delete tombstoneOpIds[name];
+    }
   }
-  return { doc: { projects }, tombstones, preservedRawLines };
+  return { doc: { projects }, tombstones, tombstoneOpIds, preservedRawLines };
 }
 
 export function parseProjectsJsonl(text: string, opts: { strict: boolean }): ProjectsInfoDoc {
@@ -391,6 +481,8 @@ export function serializeProjectsJsonl(
   doc: ProjectsInfoDoc,
   preservedRawLines: readonly string[] = [],
   tombstones: Record<string, number> = emptyTombstonesMap(),
+  tombstoneOpIds: Record<string, string[]> = emptyOpIdsMap(),
+  keepOpIds?: ReadonlySet<string>,
 ): string {
   const allNames = new Set<string>([...Object.keys(doc.projects), ...Object.keys(tombstones)]);
   const names = [...allNames].sort(byBytes);
@@ -435,11 +527,16 @@ export function serializeProjectsJsonl(
       if (typeof delAt === "number" && Number.isFinite(delAt)) rec.deletedAt = delAt;
       if (typeof e.noteClearedAt === "number" && Number.isFinite(e.noteClearedAt)) rec.noteClearedAt = e.noteClearedAt;
       if (typeof e.refsClearedAt === "number" && Number.isFinite(e.refsClearedAt)) rec.refsClearedAt = e.refsClearedAt;
+      const liveOps = mergeOpIds([e.appliedOpIds, tombstoneOpIds[name]], keepOpIds);
+      if (liveOps !== undefined && liveOps.length > 0) rec.appliedOpIds = liveOps;
       lines.push(JSON.stringify(rec));
       continue;
     }
     if (typeof delAt === "number" && Number.isFinite(delAt)) {
-      lines.push(JSON.stringify({ name, deleted: true, updatedAt: delAt }));
+      const tombOps = mergeOpIds([tombstoneOpIds[name]], keepOpIds);
+      const rec: Record<string, unknown> = { name, deleted: true, updatedAt: delAt };
+      if (tombOps !== undefined && tombOps.length > 0) rec.appliedOpIds = tombOps;
+      lines.push(JSON.stringify(rec));
     }
   }
   for (const raw of preservedRawLines) {
@@ -526,7 +623,7 @@ export async function readProjectsInfoLenient(
   const text = await readFile(path, "utf8");
   if (Buffer.byteLength(text, "utf8") > FILE_MOST) throw new Error(`PROJECTS.jsonl exceeds maximum size (${FILE_MOST} bytes)`);
   const { doc, preservedRawLines } = parseProjectsJsonlWithRaw(text, { strict: false });
-  return { ...doc, corruptLines: preservedRawLines.length };
+  return { ...stripInternalProjectInfo(doc), corruptLines: preservedRawLines.length };
 }
 
 /// Backwards-compatible alias for strict read.
@@ -534,21 +631,33 @@ export const readProjectsInfo = readProjectsInfoStrict;
 
 type FileSnap = { exists: boolean; mtimeMs: number; size: number; mode: number };
 
-async function readProjectsForWrite(path: string): Promise<{ doc: ProjectsInfoDoc; tombstones: Record<string, number>; preservedRawLines: string[]; snap: FileSnap }> {
+async function readProjectsForWrite(path: string): Promise<{
+  doc: ProjectsInfoDoc;
+  tombstones: Record<string, number>;
+  tombstoneOpIds: Record<string, string[]>;
+  preservedRawLines: string[];
+  snap: FileSnap;
+}> {
   let st;
   try {
     st = await stat(path);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      return { doc: { projects: emptyProjectsMap() }, tombstones: emptyTombstonesMap(), preservedRawLines: [], snap: { exists: false, mtimeMs: 0, size: 0, mode: 0o644 } };
+      return {
+        doc: { projects: emptyProjectsMap() },
+        tombstones: emptyTombstonesMap(),
+        tombstoneOpIds: emptyOpIdsMap(),
+        preservedRawLines: [],
+        snap: { exists: false, mtimeMs: 0, size: 0, mode: 0o644 },
+      };
     }
     throw e;
   }
   if (st.size > FILE_MOST) throw new Error(`PROJECTS.jsonl exceeds maximum size (${FILE_MOST} bytes)`);
   const text = await readFile(path, "utf8");
   if (Buffer.byteLength(text, "utf8") > FILE_MOST) throw new Error(`PROJECTS.jsonl exceeds maximum size (${FILE_MOST} bytes)`);
-  const { doc, tombstones, preservedRawLines } = parseProjectsJsonlWithRaw(text, { strict: false });
-  return { doc, tombstones, preservedRawLines, snap: { exists: true, mtimeMs: st.mtimeMs, size: st.size, mode: st.mode & 0o777 } };
+  const { doc, tombstones, tombstoneOpIds, preservedRawLines } = parseProjectsJsonlWithRaw(text, { strict: false });
+  return { doc, tombstones, tombstoneOpIds, preservedRawLines, snap: { exists: true, mtimeMs: st.mtimeMs, size: st.size, mode: st.mode & 0o777 } };
 }
 
 async function statMatches(path: string, snap: FileSnap): Promise<boolean> {
@@ -567,8 +676,10 @@ async function writeProjectsFileUnlocked(
   preservedRawLines: readonly string[],
   snap: FileSnap,
   tombstones: Record<string, number>,
+  tombstoneOpIds: Record<string, string[]> = emptyOpIdsMap(),
+  keepOpIds?: ReadonlySet<string>,
 ): Promise<ProjectsInfoDoc> {
-  const text = serializeProjectsJsonl(doc, preservedRawLines, tombstones);
+  const text = serializeProjectsJsonl(doc, preservedRawLines, tombstones, tombstoneOpIds, keepOpIds);
   await mkdir(dirname(path), { recursive: true });
   // Preserve owner-only private permissions (e.g. 0600) so private files are never silently widened to 0644.
   const targetMode = snap.exists && isOwnPrivateMode(snap.mode) ? snap.mode : 0o644;
@@ -588,24 +699,26 @@ export async function updateProjectInfo(
   agentHome: string,
   ws: string | null,
   home: string | null,
-  input: { name: string; note?: string | null; refs?: string[] | null; delete?: boolean; now: number },
+  input: { name: string; note?: string | null; refs?: string[] | null; delete?: boolean; now: number; keepOpIds?: ReadonlySet<string> },
 ): Promise<{ doc: ProjectsInfoDoc; changed: boolean }> {
   const name = normalizeProject(input.name);
   if (name === "") throw new Error("project name is required");
   const path = projectsInfoPath(agentHome, ws, home);
   return withProjectsFileLock(path, async () => {
     for (let attempt = 0; attempt < MAX_STAT_RETRIES; attempt++) {
-      const { doc, tombstones, preservedRawLines, snap } = await readProjectsForWrite(path);
+      const { doc, tombstones, tombstoneOpIds, preservedRawLines, snap } = await readProjectsForWrite(path);
       const existing = doc.projects[name];
       if (input.delete === true) {
         const delAt = Math.max(input.now, maxEntryTimestamp(existing), tombstones[name] ?? -Infinity);
         if (existing === undefined && tombstones[name] !== undefined && tombstones[name]! >= delAt) {
           return { doc, changed: false };
         }
+        const mergedOps = mergeOpIds([tombstoneOpIds[name], existing?.appliedOpIds], input.keepOpIds);
+        if (mergedOps !== undefined) tombstoneOpIds[name] = mergedOps;
         delete doc.projects[name];
         tombstones[name] = delAt;
         if (!(await statMatches(path, snap))) continue;
-        await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones);
+        await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones, tombstoneOpIds, input.keepOpIds);
         return { doc, changed: true };
       }
       const next: ProjectInfoEntry = existing ? { ...existing } : {};
@@ -677,9 +790,12 @@ export async function updateProjectInfo(
       }
       if (refsCleared) next.refsClearedAt = Math.max(next.refsClearedAt ?? -Infinity, writeAt);
       next.updatedAt = writeAt;
+      const carriedOps = mergeOpIds([existing?.appliedOpIds, tombstoneOpIds[name]], input.keepOpIds);
+      if (carriedOps !== undefined) next.appliedOpIds = carriedOps;
+      delete tombstoneOpIds[name];
       doc.projects[name] = next;
       if (!(await statMatches(path, snap))) continue;
-      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones);
+      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones, tombstoneOpIds, input.keepOpIds);
       return { doc, changed: true };
     }
     throw new Error("PROJECTS.jsonl changed concurrently too many times");
@@ -700,7 +816,7 @@ export async function applyProposalInfoSync(
   const path = projectsInfoPath(agentHome, ws, home);
   return withProjectsFileLock(path, async () => {
     for (let attempt = 0; attempt < MAX_STAT_RETRIES; attempt++) {
-      const { doc, tombstones, preservedRawLines, snap } = await readProjectsForWrite(path);
+      const { doc, tombstones, tombstoneOpIds, preservedRawLines, snap } = await readProjectsForWrite(path);
       const delAt = tombstones[name];
       if (delAt !== undefined && delAt >= input.resolvedAt) {
         return { doc, changed: false, skipped: true };
@@ -749,7 +865,7 @@ export async function applyProposalInfoSync(
       if (mergedEntry !== undefined) doc.projects[name] = mergedEntry;
       if (mergedSingle.tombstones[name] !== undefined) tombstones[name] = mergedSingle.tombstones[name]!;
       if (!(await statMatches(path, snap))) continue;
-      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones);
+      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones, tombstoneOpIds);
       return { doc, changed: true, skipped: false };
     }
     throw new Error("PROJECTS.jsonl changed concurrently too many times");
@@ -761,13 +877,17 @@ export async function ensureProjectRegistered(
   agentHome: string,
   ws: string | null,
   home: string | null,
-  input: { name: string; note?: string; refs?: string[]; now: number },
+  input: { name: string; note?: string; refs?: string[]; now: number; keepOpIds?: ReadonlySet<string> },
 ): Promise<{ doc: ProjectsInfoDoc; changed: boolean }> {
   return updateProjectInfo(agentHome, ws, home, input);
 }
 
 /// Renames or merges a project's info entry (`from` -> `to`) in `PROJECTS.jsonl` (serialized per file).
 /// When `opts.createIfMissing` is false and `from` is absent from `PROJECTS.jsonl`, does NOT fabricate `to`.
+/// When `opts.opId` is given, records it atomically in the SAME POSIX `rename()` into `PROJECTS.jsonl`
+/// (`doc.projects[to].appliedOpIds` or `tombstoneOpIds[from]` for cross-project merge) and short-circuits
+/// with `{ alreadyApplied: true }` if `opId` is already present in the file (eliminating crash windows).
+/// Any opId present in `opts.keepOpIds` is pinned and never evicted by the `MAX_APPLIED_OP_IDS` cap.
 export async function renameProjectInfo(
   agentHome: string,
   ws: string | null,
@@ -775,27 +895,52 @@ export async function renameProjectInfo(
   fromRaw: string,
   toRaw: string,
   now: number,
-  opts?: { createIfMissing?: boolean },
-): Promise<{ doc: ProjectsInfoDoc; changed: boolean }> {
+  opts?: { createIfMissing?: boolean; opId?: string; keepOpIds?: ReadonlySet<string> },
+): Promise<{ doc: ProjectsInfoDoc; changed: boolean; alreadyApplied?: boolean }> {
   const from = normalizeProject(fromRaw);
   const to = normalizeProject(toRaw);
   if (from === "") throw new Error("source project name is required");
   const createIfMissing = opts?.createIfMissing !== false;
+  const opId = typeof opts?.opId === "string" && opts.opId.trim() !== "" ? opts.opId.trim() : undefined;
+  const keepOpIds = opts?.keepOpIds;
   const path = projectsInfoPath(agentHome, ws, home);
   return withProjectsFileLock(path, async () => {
     for (let attempt = 0; attempt < MAX_STAT_RETRIES; attempt++) {
-      const { doc, tombstones, preservedRawLines, snap } = await readProjectsForWrite(path);
+      const { doc, tombstones, tombstoneOpIds, preservedRawLines, snap } = await readProjectsForWrite(path);
+      if (opId !== undefined) {
+        let seen = false;
+        for (const name of Object.keys(doc.projects)) {
+          if (doc.projects[name]?.appliedOpIds?.includes(opId)) {
+            seen = true;
+            break;
+          }
+        }
+        if (!seen) {
+          for (const name of Object.keys(tombstoneOpIds)) {
+            if (tombstoneOpIds[name]?.includes(opId)) {
+              seen = true;
+              break;
+            }
+          }
+        }
+        if (seen) return { doc, changed: false, alreadyApplied: true };
+      }
       const src = doc.projects[from];
       if (src === undefined) {
         if (!createIfMissing || to === "" || to in doc.projects) return { doc, changed: false };
         const prevDel = tombstones[to];
-        doc.projects[to] = { updatedAt: prevDel !== undefined && now <= prevDel ? prevDel + 1 : now };
+        const nextOps = mergeOpIds([tombstoneOpIds[to], opId !== undefined ? [opId] : undefined], keepOpIds);
+        delete tombstoneOpIds[to];
+        doc.projects[to] = {
+          updatedAt: prevDel !== undefined && now <= prevDel ? prevDel + 1 : now,
+          ...(nextOps !== undefined ? { appliedOpIds: nextOps } : {}),
+        };
         if (!(await statMatches(path, snap))) continue;
-        await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones);
+        await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones, tombstoneOpIds, keepOpIds);
         return { doc, changed: true };
       }
-      delete doc.projects[from];
       const srcMax = maxEntryTimestamp(src);
+      delete doc.projects[from];
       tombstones[from] = Math.max(now, srcMax, tombstones[from] ?? -Infinity);
       if (to !== "") {
         const prevDel = tombstones[to];
@@ -807,6 +952,12 @@ export async function renameProjectInfo(
           Number.isFinite(dstMax) ? dstMax + 1 : -Infinity,
           prevDel !== undefined ? prevDel + 1 : -Infinity,
         );
+        const nextOps = mergeOpIds(
+          [dst?.appliedOpIds, src.appliedOpIds, tombstoneOpIds[from], tombstoneOpIds[to], opId !== undefined ? [opId] : undefined],
+          keepOpIds,
+        );
+        delete tombstoneOpIds[from];
+        delete tombstoneOpIds[to];
         if (dst === undefined) {
           const moved: ProjectInfoEntry = { ...src, updatedAt: nextAt };
           if (moved.note !== undefined && moved.note !== "") moved.noteAt = nextAt;
@@ -817,6 +968,8 @@ export async function renameProjectInfo(
             moved.refs = sortRefsByAt(refAts);
             moved.refsAt = nextAt;
           }
+          if (nextOps !== undefined) moved.appliedOpIds = nextOps;
+          else delete moved.appliedOpIds;
           doc.projects[to] = moved;
         } else {
           const merged: ProjectInfoEntry = { updatedAt: nextAt };
@@ -838,13 +991,63 @@ export async function renameProjectInfo(
           if (Number.isFinite(nc)) merged.noteClearedAt = nc;
           const rc = Math.max(dst.refsClearedAt ?? -Infinity, src.refsClearedAt ?? -Infinity);
           if (Number.isFinite(rc)) merged.refsClearedAt = rc;
+          if (nextOps !== undefined) merged.appliedOpIds = nextOps;
           doc.projects[to] = merged;
         }
+      } else {
+        const nextOps = mergeOpIds([tombstoneOpIds[from], src.appliedOpIds, opId !== undefined ? [opId] : undefined], keepOpIds);
+        if (nextOps !== undefined) tombstoneOpIds[from] = nextOps;
       }
       if (!(await statMatches(path, snap))) continue;
-      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones);
+      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones, tombstoneOpIds, keepOpIds);
       return { doc, changed: true };
     }
     throw new Error("PROJECTS.jsonl changed concurrently too many times");
+  });
+}
+
+/// Removes confirmed `opIds` from `appliedOpIds` across all live entries and tombstones in `PROJECTS.jsonl`
+/// without mutating `updatedAt`, `note`, or `refs` (no-op if none of `opIds` are present).
+export async function pruneAppliedOpIds(
+  agentHome: string,
+  ws: string | null,
+  home: string | null,
+  opIds: readonly string[],
+  keepOpIds?: ReadonlySet<string>,
+): Promise<boolean> {
+  const drop = new Set(opIds.map((s) => s.trim()).filter((s) => s !== "" && !keepOpIds?.has(s)));
+  if (drop.size === 0) return false;
+  const path = projectsInfoPath(agentHome, ws, home);
+  return withProjectsFileLock(path, async () => {
+    for (let attempt = 0; attempt < MAX_STAT_RETRIES; attempt++) {
+      const { doc, tombstones, tombstoneOpIds, preservedRawLines, snap } = await readProjectsForWrite(path);
+      if (!snap.exists) return false;
+      let changed = false;
+      for (const name of Object.keys(doc.projects)) {
+        const e = doc.projects[name];
+        if (!e?.appliedOpIds || e.appliedOpIds.length === 0) continue;
+        const next = e.appliedOpIds.filter((id) => !drop.has(id));
+        if (next.length !== e.appliedOpIds.length) {
+          if (next.length > 0) e.appliedOpIds = next;
+          else delete e.appliedOpIds;
+          changed = true;
+        }
+      }
+      for (const name of Object.keys(tombstoneOpIds)) {
+        const cur = tombstoneOpIds[name];
+        if (!cur || cur.length === 0) continue;
+        const next = cur.filter((id) => !drop.has(id));
+        if (next.length !== cur.length) {
+          if (next.length > 0) tombstoneOpIds[name] = next;
+          else delete tombstoneOpIds[name];
+          changed = true;
+        }
+      }
+      if (!changed) return false;
+      if (!(await statMatches(path, snap))) continue;
+      await writeProjectsFileUnlocked(path, doc, preservedRawLines, snap, tombstones, tombstoneOpIds, keepOpIds);
+      return true;
+    }
+    return false;
   });
 }

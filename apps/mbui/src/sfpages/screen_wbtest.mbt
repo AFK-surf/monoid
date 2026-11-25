@@ -41,6 +41,7 @@ fn screen_rig(
   screens? : Json,
   terminals? : Json,
   in_tab? : Bool = false,
+  tab_pads? : Bool = false,
   keep_screen? : Bool = false,
   net? : Json,
 ) -> ScreenRig {
@@ -185,7 +186,12 @@ fn screen_rig(
       }, fn(p, at) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         match at {
-          Some(at) => screen_node(p, src, at, fn() { @sf.no_frame }, in_tab~)
+          Some(at) =>
+            if tab_pads {
+              screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab~, tab_pads=fn() { (0.0, 0.0) })
+            } else {
+              screen_node(p, src, at, fn() { @sf.no_frame }, in_tab~)
+            }
           None => ()
         }
       })

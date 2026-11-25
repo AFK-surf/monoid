@@ -5,7 +5,8 @@ import { basename, dirname, join, normalize, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
@@ -200,6 +201,7 @@ type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 const pendingShadows = new Set<Promise<void>>();
 let shadowInFlight = false;
 let activeShadowDeadline: (() => void) | null = null;
+const shadowDeadlineWaiters: (() => void)[] = [];
 let lastShadowPid: number | null = null;
 const SHADOW_HARD_TIMEOUT_PAD_MS = 5_000;
 
@@ -211,6 +213,12 @@ export function isShadowInFlightForTest(): boolean {
 /// Return the OS pid of the most recently spawned shadow child process (tests only).
 export function lastShadowPidForTest(): number | null {
   return lastShadowPid;
+}
+
+/// Resolve once an in-flight background `shadow` run has armed its host deadline (tests only).
+export function waitForShadowDeadlineArmedForTest(): Promise<void> {
+  if (activeShadowDeadline !== null) return Promise.resolve();
+  return new Promise<void>((resolve) => shadowDeadlineWaiters.push(resolve));
 }
 
 /// Immediately fire the active background `shadow` run's host hard-timeout callback (tests only).
@@ -260,29 +268,39 @@ function spawnMeasureBinary(
   ask: Ask,
   budget: MeasureBudget,
   signal?: AbortSignal,
-): { result: Promise<Measured>; closed: Promise<void>; kill: () => void } {
+  engine?: TelemetryEngine,
+  fallbackMode?: string,
+): { result: Promise<Measured>; closed: Promise<void>; kill: () => void; timeout: (error: Error) => void } {
   if (signal?.aborted) {
     return {
       result: Promise.reject(signal.reason),
       closed: Promise.resolve(),
       kill: () => {},
+      timeout: () => {},
     };
   }
-  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
+  const startedAt = wall.now();
+  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true, engine, fallbackMode });
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => { resolveClosed = r; });
+  let onTimeout!: (error: Error) => void;
 
   const result = new Promise<Measured>((resolve, reject) => {
     let settled = false;
     let exited = false;
-    const settle = (f: () => void) => {
+    const settle = (f: () => void, ok?: boolean) => {
       if (settled) return;
       settled = true;
+      if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
       f();
     };
     const stop = () => {
       p.kill();
       settle(() => reject(signal!.reason));
+    };
+    onTimeout = (error: Error) => {
+      p.kill();
+      settle(() => reject(error), false);
     };
     const markClosed = () => {
       if (exited) return;
@@ -294,17 +312,19 @@ function spawnMeasureBinary(
     };
     signal?.addEventListener("abort", stop, { once: true });
     // (its bytes said `size`: a line that says `bytes` has a body after it, read/mb-reader.ts `Said`)
-    p.on("message", (raw: unknown) => settle(() => {
+    p.on("message", (raw: unknown) => {
       const parsed = parseMeasureMessage(raw);
-      if (parsed.ok) resolve(parsed.value);
-      else reject(parsed.error);
-    }));
+      settle(() => {
+        if (parsed.ok) resolve(parsed.value);
+        else reject(parsed.error);
+      }, parsed.ok);
+    });
     p.on("error", (e: Error) => {
-      settle(() => reject(e));
+      settle(() => reject(e), false);
       markClosed();
     });
     p.on("exit", (code: number) => {
-      settle(() => reject(new Error(`the measure's program ended saying nothing (${code})`)));
+      settle(() => reject(new Error(`the measure's program ended saying nothing (${code})`)), false);
       markClosed();
     });
     p.postMessage({
@@ -313,7 +333,7 @@ function spawnMeasureBinary(
     });
   });
 
-  return { result, closed, kill: () => p.kill() };
+  return { result, closed, kill: () => p.kill(), timeout: onTimeout };
 }
 
 type ShadowSnapshot =
@@ -389,7 +409,7 @@ async function runShadowComparison(
   callerSignal?.addEventListener("abort", forwardAbort, { once: true });
 
   const hardTimeoutMs = Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs) + SHADOW_HARD_TIMEOUT_PAD_MS;
-  const spawned = spawnMeasureBinary(pionBin, path, ask, budget, shadowAc.signal);
+  const spawned = spawnMeasureBinary(pionBin, path, ask, budget, shadowAc.signal, "pion");
   lastShadowPid = MbProcess.live().at(-1)?.pid ?? null;
   // Prevent unhandledRejection if shadow rejects before we await it.
   spawned.result.catch(() => {});
@@ -398,10 +418,12 @@ async function runShadowComparison(
   const onDeadline = () => {
     if (timedOut) return;
     timedOut = true;
-    shadowAc.abort(new Error(`shadow footprint timed out after ${hardTimeoutMs}ms`));
-    spawned.kill();
+    const err = new Error(`shadow footprint timed out after ${hardTimeoutMs}ms`);
+    spawned.timeout(err);
+    shadowAc.abort(err);
   };
   activeShadowDeadline = onDeadline;
+  for (const wake of shadowDeadlineWaiters.splice(0)) wake();
   const stopTimer = wall.after(hardTimeoutMs, onDeadline); // timer: timeout/deadline for shadow footprint process
 
   try {
@@ -468,9 +490,9 @@ function measure(
   if (signal?.aborted) return Promise.reject(signal.reason);
   const resolved = resolveReaderSelection("footprint", { config: readers, logAt: "footprint" });
   if (resolved.engine === "pion") {
-    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal).result;
+    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, "pion").result;
   }
-  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal).result;
+  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, engineOfSelection(resolved), fallbackModeOf(resolved.selection)).result;
   const pionBin = resolved.pionBinary;
   if (resolved.engine !== "shadow" || pionBin === null) {
     return primary;

@@ -10,6 +10,7 @@ import { Effect, Fiber } from "effect";
 import { FakeCloud } from "../harness/cloud.ts";
 import { apply } from "../src/delta.ts";
 import { Bridge, BridgeHost, bridgeIroh, startBridged } from "../src/hosts/bridge.ts";
+import { ACCESS_CACHE_MS, createAccessCache } from "../src/iroh-access.ts";
 import { loadAddon } from "../src/hosts/node-iroh.ts";
 import { holdLanguage } from "../src/i18n.ts";
 import { Mesh } from "../src/mesh.ts";
@@ -361,7 +362,7 @@ test("bridgeIroh_caches_relay_access_map_across_conn_paths_and_invalidates_on_re
     },
   } as unknown as Parameters<typeof bridgeIroh>[0];
 
-  const iroh = bridgeIroh(fakeBridge);
+  const iroh = bridgeIroh(fakeBridge, () => 0);
   const runner = new Runner();
   try {
     const ep = await runner.run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: ["https://r1.test/"], lookup: false, relayOnly: false }));
@@ -397,4 +398,128 @@ test("bridgeIroh_caches_relay_access_map_across_conn_paths_and_invalidates_on_re
   } finally {
     runner.shutdown();
   }
+});
+
+test("bridgeIroh_wires_relay_control_ops_to_shell_and_refreshes_access_cache", async () => {
+  const calls: { op: string; arg: J }[] = [];
+  let relayStatusCalls = 0;
+  let statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1.test/" }];
+  const fakeBridge = {
+    sync(op: string) {
+      if (op === "iroh.relayStatus") {
+        relayStatusCalls++;
+        return statuses;
+      }
+      if (op === "conn.paths") return [{ id: "p-r1", selected: true, relay: "https://r1.test", ip: null, rttMs: 20, txPackets: 1, lostPackets: 0 }];
+      if (op === "iroh.endpointId") return "ep-1";
+      return null;
+    },
+    call(op: string, arg: J) {
+      calls.push({ op, arg });
+      if (op === "iroh.bind") return Effect.succeed({ json: { id: 7 } });
+      if (op === "iroh.connect") return Effect.succeed({ json: { id: 8 } });
+      return Effect.succeed({ json: {} });
+    },
+  } as unknown as Parameters<typeof bridgeIroh>[0];
+
+  const iroh = bridgeIroh(fakeBridge, () => 0);
+  const runner = new Runner();
+  try {
+    const ep = await runner.run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: ["https://r1.test/"], lookup: false, relayOnly: false }));
+    const conn = await runner.run(ep.connect({ id: "peer", relays: [], ips: [] }, new Uint8Array(), []));
+    assert.equal(conn.paths()[0]!.relay, "https://e1.test/");
+    assert.equal(relayStatusCalls, 1);
+
+    await runner.run(ep.setDisabledRelays!("deadbeef", ["https://r2.test/", "https://r3.test/"]));
+    // `setDisabledRelays` does not change relay access URLs.
+    assert.equal(conn.paths()[0]!.relay, "https://e1.test/");
+    assert.equal(relayStatusCalls, 1);
+
+    statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1-inserted.test/" }];
+    await runner.run(ep.insertRelay!("https://r2.test/"));
+    assert.equal(conn.paths()[0]!.relay, "https://e1-inserted.test/");
+    assert.equal(relayStatusCalls, 2);
+
+    statuses = [{ url: "https://r1.test/", connected: true, access: "https://e1-removed.test/" }];
+    await runner.run(ep.removeRelay!("https://r2.test/"));
+    assert.equal(conn.paths()[0]!.relay, "https://e1-removed.test/");
+    assert.equal(relayStatusCalls, 3);
+
+    const relayCalls = calls.filter((c) => c.op === "iroh.disabledRelays" || c.op === "iroh.insertRelay" || c.op === "iroh.removeRelay");
+    assert.deepEqual(relayCalls, [
+      { op: "iroh.disabledRelays", arg: { id: 7, peer: "deadbeef", relays: ["https://r2.test/", "https://r3.test/"] } },
+      { op: "iroh.insertRelay", arg: { id: 7, url: "https://r2.test/" } },
+      { op: "iroh.removeRelay", arg: { id: 7, url: "https://r2.test/" } },
+    ]);
+  } finally {
+    runner.shutdown();
+  }
+});
+
+test("createAccessCache_reads_relay_status_only_for_relay_paths_and_reuses_it_within_its_age", () => {
+  let reads = 0;
+  let t = 0;
+  const statuses = [{ url: "https://r1.test/", access: "https://e1.test/" }];
+  const access = createAccessCache(() => (reads++, statuses), { now: () => t });
+
+  // Direct paths only: nothing read.
+  for (let i = 0; i < 10; i++) assert.deepEqual(access.resolveAll([null, undefined]), [null, null]);
+  assert.equal(reads, 0);
+
+  // Relay paths: one read, then the map is reused until it is ACCESS_CACHE_MS old.
+  assert.deepEqual(access.resolveAll([null, "https://r1.test"]), [null, "https://e1.test/"]);
+  t = ACCESS_CACHE_MS - 1;
+  for (let i = 0; i < 50; i++) assert.deepEqual(access.resolveAll(["https://r1.test"]), ["https://e1.test/"]);
+  assert.equal(reads, 1);
+  t = ACCESS_CACHE_MS;
+  assert.deepEqual(access.resolveAll(["https://r1.test"]), ["https://e1.test/"]);
+  assert.equal(reads, 2);
+
+  // A clock set back reads again at once, not only when it is past the last read again.
+  t = ACCESS_CACHE_MS - 10_000;
+  access.resolveAll(["https://r1.test"]);
+  assert.equal(reads, 3);
+  access.resolveAll(["https://r1.test"]);
+  assert.equal(reads, 3);
+});
+
+test("createAccessCache_follows_an_entrance_iroh_switches_to_after_the_first_read", () => {
+  // As in side/mesh-real.test.ts a_faster_entrance_to_the_same_relay_keeps_the_open_link: setRelayEntries returns
+  // (clear), the first paths() reads the old entrance, and iroh moves to the quicker one in the background after.
+  let reads = 0;
+  let t = 5_000;
+  let statuses = [{ url: "https://r1.test/", access: "https://slow.test/" }];
+  const access = createAccessCache(() => (reads++, statuses), { now: () => t });
+  access.resolveAll(["https://r1.test"]);
+  access.clear();
+  assert.deepEqual(access.resolveAll(["https://r1.test"]), ["https://slow.test/"]);
+  assert.equal(reads, 2);
+  statuses = [{ url: "https://r1.test/", access: "https://r1.test/" }];
+  t += ACCESS_CACHE_MS - 1;
+  assert.deepEqual(access.resolveAll(["https://r1.test"]), ["https://slow.test/"]);
+  assert.equal(reads, 2);
+  t += 1;
+  assert.deepEqual(access.resolveAll(["https://r1.test"]), ["https://r1.test/"]);
+  assert.equal(reads, 3);
+});
+
+test("createAccessCache_reads_at_most_once_per_resolve_for_unknown_relays", () => {
+  let reads = 0;
+  let statuses: { url: string; access?: string }[] = [{ url: "https://r1.test/", access: "https://e1.test/" }];
+  const access = createAccessCache(() => (reads++, statuses), { now: () => 0 });
+  // A first read that still lacks r2 and r3 is not followed by another in the same resolve.
+  assert.deepEqual(access.resolveAll(["https://r1.test", "https://r2.test", "https://r3.test"]), ["https://e1.test/", "https://r2.test", "https://r3.test"]);
+  assert.equal(reads, 1);
+  // Within the age, unknown relays read once for the whole resolve.
+  statuses = [...statuses, { url: "https://r2.test/", access: "https://e2.test/" }, { url: "https://r3.test/", access: "https://e3.test/" }];
+  assert.deepEqual(access.resolveAll(["https://r2.test", "https://r3.test", null, "https://r4.test"]), ["https://e2.test/", "https://e3.test/", null, "https://r4.test"]);
+  assert.equal(reads, 2);
+  // readStatus refreshes the map too; clear forgets it.
+  access.readStatus();
+  assert.equal(reads, 3);
+  assert.deepEqual(access.resolveAll(["https://r2.test"]), ["https://e2.test/"]);
+  assert.equal(reads, 3);
+  access.clear();
+  access.resolveAll(["https://r2.test"]);
+  assert.equal(reads, 4);
 });

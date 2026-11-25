@@ -120,6 +120,8 @@ fn advertised_modes() -> Array[String] {
     "search",
     "forward",
     "mesh",
+    "data",
+    "serve",
   ]
 }
 
@@ -1037,6 +1039,15 @@ fn flag_value(argv : Array[String], name : String) -> Option[String] {
   None
 }
 
+fn flag_present(argv : Array[String], name : String) -> Bool {
+  for i in 1..<argv.length() {
+    if argv[i] == name {
+      return true
+    }
+  }
+  false
+}
+
 fn run_smoke_sql_db(world : World, db_path : String) -> Unit {
   match sql_db::run_selftest(db_path) {
     Ok(_) => ()
@@ -1515,7 +1526,23 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
       0
     }
   }
-  let total = c_core + c_chats + c_local + c_views + c_usage
+  let c_data = match reader_data::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("reader_data selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_serve = match reader_serve::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("reader_serve selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let total = c_core + c_chats + c_local + c_views + c_usage + c_data + c_serve
   io_println(
     world,
     "{\"ok\":true,\"readops_core\":" +
@@ -1528,6 +1555,10 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
     c_views.to_string() +
     ",\"readops_usage\":" +
     c_usage.to_string() +
+    ",\"reader_data\":" +
+    c_data.to_string() +
+    ",\"reader_serve\":" +
+    c_serve.to_string() +
     ",\"total\":" +
     total.to_string() +
     "}",
@@ -1849,6 +1880,31 @@ fn main(world : World) -> Unit {
           None => "mesh.sock"
         }
         host_shim::exit_process(front::run_mesh(shell_dir, socket_path, sql_db::stringify_json))
+      }
+      None => {
+        match flag_value(argv, "--data") {
+          Some(data_dir) => {
+            if flag_present(argv, "--sessions") {
+              usage_exit()
+            } else {
+              let sep = match flag_value(argv, "--sep") {
+                Some(s) => s
+                None => "/"
+              }
+              match flag_value(argv, "--serve") {
+                Some(socket) => host_shim::exit_process(reader_serve::run_serve(data_dir, sep, socket))
+                None => {
+                  if flag_present(argv, "--serve") {
+                    usage_exit()
+                  } else {
+                    host_shim::exit_process(reader_data::run_data(data_dir, sep))
+                  }
+                }
+              }
+            }
+          }
+          None => usage_exit()
+        }
       }
       _ => usage_exit()
     }

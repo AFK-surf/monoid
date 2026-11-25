@@ -58,7 +58,7 @@ export class ChatShareIndexBuilder {
       // (by the MoonBit builder, station/mb's src/activity, share.mbt: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" }).primaryBinary;
+        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" });
         worker = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
       }
       catch (error) { log.warn("xshare", "the share worker could not start", { error: (error as Error).message }); resolve(false); return; }

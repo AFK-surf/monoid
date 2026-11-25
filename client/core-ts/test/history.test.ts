@@ -610,6 +610,16 @@ test("activity_prefers_an_important_running_step_to_a_routine_one", () => {
   assert.notEqual(activity({ timeline: [], phase: { phase: "thinking" } }).now.important, true);
 });
 
+test("activity_shows_the_running_command_not_the_tool_load_waiting_behind_it", () => {
+  const call = (tool: string, id: string, input: J) => ({ kind: "tool_call", tool, callId: id, text: JSON.stringify(input) });
+  const load = call("ToolSearch", "load", { query: "select:mcp__stillfail__search,mcp__stillfail__chat_list", max_results: 2 });
+  const timeline = [{ kind: "user", text: "look" }, call("Bash", "grep", { command: "grep -rln x ." }), load];
+  assert.equal(activity({ timeline }).now.key, "grep");
+  assert.equal(activity({ timeline: [{ kind: "user", text: "look" }, load] }).now.key, "load");
+  const afterLoad = [...timeline.slice(0, 1), load, call("Bash", "grep", { command: "grep -rln x ." })];
+  assert.equal(activity({ timeline: afterLoad }).now.key, "grep");
+});
+
 test("activity_tells_a_remote_task_start_from_a_status_check", () => {
   const call = (action: string) => ({ kind: "tool_call", tool: "mcp__stillfail__station_task", callId: "a", text: JSON.stringify({ action, key: "test", station: "office" }) });
   assert.equal(activity({ timeline: [call("start")] }).now.important, true);

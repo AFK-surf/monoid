@@ -80,9 +80,11 @@ export const ok = (value: unknown, status = 200) => json(status, JSON.stringify(
 /// readers' (read/views.ts HttpError).
 export class Refused extends Error {
   readonly status: number;
-  constructor(status: number, message: string) {
+  readonly noCache?: boolean;
+  constructor(status: number, message: string, opts?: { noCache?: boolean }) {
     super(message);
     this.status = status;
+    if (opts?.noCache === true) this.noCache = true;
   }
 }
 

@@ -460,13 +460,14 @@ export function ensureOverviewParts(sql: Sql): void {
 /// `CHAT_MADE_ALT` is an equivalent marker that `PUT_CHAT`'s `ON CONFLICT DO UPDATE` alternates with `CHAT_MADE` so
 /// `chat_made_set` (`WHEN old.made IS new.made`) skips this core's own upserts while still catching in-place JSON
 /// updates from older cores that leave `made` untouched.
-export const CHAT_MADE = 2;
-export const CHAT_MADE_ALT = -2;
+export const CHAT_MADE = 3;
+export const CHAT_MADE_ALT = -3;
 
 /// The columns of a chat's record that SQLite makes of its JSON (`j`, an expression of it), as the record is put and as a
 /// row another core put is derived again: whether it is hidden; whether an agent leads it (chat_create for itself: its
 /// `opener.led`, shown in no list but from its opener's info); its title; whether it is marked archived, and when
-/// (archive.ts: the mark's `at`, else its last activity; null where that is not a number). What reads by them reads what
+/// (archive.ts: the mark's `at`, else its last activity; null where that is not a number); its project classification
+/// (NULL unclassified, "" cross-project, non-empty project name). What reads by them reads what
 /// the JS reading the record would (views.ts, archive.ts, fleet.ts): list-rows.test.ts holds each to it. What only the
 /// core says of a record (`state`, `watched`: what its agents do, whether one keeps watch) is the core's (Derive).
 export const CHAT_COLUMNS: [name: string, of: (j: string) => string][] = [
@@ -477,6 +478,7 @@ export const CHAT_COLUMNS: [name: string, of: (j: string) => string][] = [
   ["archived_at", (j) => `(CASE WHEN json_type(${j}, '$.archived') IS NOT 'object' THEN NULL
     WHEN coalesce(json_type(${j}, '$.archived.at'), 'null') = 'null' THEN (CASE WHEN json_type(${j}, '$.lastActiveAt') IN ('integer', 'real') THEN json_extract(${j}, '$.lastActiveAt') END)
     WHEN json_type(${j}, '$.archived.at') IN ('integer', 'real') THEN json_extract(${j}, '$.archived.at') END)`],
+  ["project", (j) => `(CASE json_type(${j}, '$.project') WHEN 'text' THEN json_extract(${j}, '$.project') END)`],
 ];
 
 /// The chats each agent's session is among the agents of (its row's `agents[].key`), listed or archived: what finds the
@@ -490,6 +492,18 @@ const chatAgentsOf = (row: "new" | "old") => `INSERT INTO chat_agent (station, s
         FROM json_each(CASE json_type(${row}.json, '$.agents') WHEN 'array' THEN ${row}.json ELSE '{"agents":[]}' END, '$.agents') AS a
         WHERE json_type(CASE a.type WHEN 'object' THEN a.value ELSE '{}' END, '$.key') = 'text'
           AND NOT EXISTS (SELECT 1 FROM chat_agent WHERE station = ${row}.station AND session = json_extract(a.value, '$.key') AND archived = ${row}.archived AND id = ${row}.id);`;
+const chatTagsOf = (row: "new" | "old") => `INSERT OR REPLACE INTO chat_tag (tag, pinned_at, last_active, station, ord, id, archived, mine, hidden, led, watched, thread, session, project, state, tone, asks, unread)
+        SELECT DISTINCT t.value, ${row}.pinned_at, ${row}.last_active, ${row}.station, ${row}.ord, ${row}.id, ${row}.archived, ${row}.mine,
+          coalesce(${row}.hidden, 0), coalesce(${row}.led, 0), coalesce(${row}.watched, 0),
+          ${row}.thread, ${row}.session, ${row}.project, ${row}.state, ${row}.tone, coalesce(${row}.asks, 0), ${row}.unread
+        FROM json_each(CASE json_type(${row}.json, '$.tags') WHEN 'array' THEN ${row}.json ELSE '{"tags":[]}' END, '$.tags') AS t
+        WHERE t.type = 'text' AND t.value <> '';`;
+const chatTagsDerived = (row: "new" | "old") => `INSERT OR REPLACE INTO chat_tag (tag, pinned_at, last_active, station, ord, id, archived, mine, hidden, led, watched, thread, session, project, state, tone, asks, unread)
+        SELECT DISTINCT t.value, ${row}.pinned_at, ${row}.last_active, ${row}.station, ${row}.ord, ${row}.id, ${row}.archived, ${row}.mine,
+          (json_type(${row}.json, '$.hidden') IS 'true'), (json_type(${row}.json, '$.opener.led') IS 'true'), coalesce(${row}.watched, 0),
+          ${row}.thread, ${row}.session, (CASE json_type(${row}.json, '$.project') WHEN 'text' THEN json_extract(${row}.json, '$.project') END), ${row}.state, ${row}.tone, coalesce(${row}.asks, 0), ${row}.unread
+        FROM json_each(CASE json_type(${row}.json, '$.tags') WHEN 'array' THEN ${row}.json ELSE '{"tags":[]}' END, '$.tags') AS t
+        WHERE t.type = 'text' AND t.value <> '';`;
 const chatTriggers = (): [string, string][] => [
   ["chat_agent_put", `CREATE TRIGGER chat_agent_put AFTER INSERT ON chat
       BEGIN
@@ -507,13 +521,36 @@ const chatTriggers = (): [string, string][] => [
       BEGIN
         DELETE FROM chat_agent WHERE station = old.station AND archived = old.archived AND id = old.id;
       END`],
+  ["chat_tag_put", `CREATE TRIGGER chat_tag_put AFTER INSERT ON chat
+      BEGIN
+        DELETE FROM chat_tag WHERE station = new.station AND archived = new.archived AND id = new.id;
+        ${chatTagsOf("new")}
+      END`],
+  ["chat_tag_set", `CREATE TRIGGER chat_tag_set AFTER UPDATE OF station, archived, id, pinned_at, last_active, ord, mine, hidden, led, watched, thread, session, project, state, tone, asks, unread, json ON chat
+      WHEN (old.made IS NOT new.made OR old.json IS new.json)
+        AND (old.station IS NOT new.station OR old.archived IS NOT new.archived OR old.id IS NOT new.id
+        OR old.pinned_at IS NOT new.pinned_at OR old.last_active IS NOT new.last_active OR old.ord IS NOT new.ord
+        OR old.mine IS NOT new.mine OR old.hidden IS NOT new.hidden OR old.led IS NOT new.led OR old.watched IS NOT new.watched
+        OR old.thread IS NOT new.thread OR old.session IS NOT new.session OR old.project IS NOT new.project OR old.state IS NOT new.state
+        OR old.tone IS NOT new.tone OR old.asks IS NOT new.asks OR old.unread IS NOT new.unread
+        OR (old.json -> '$.tags') IS NOT (new.json -> '$.tags'))
+      BEGIN
+        DELETE FROM chat_tag WHERE station = old.station AND archived = old.archived AND id = old.id;
+        ${chatTagsOf("new")}
+      END`],
+  ["chat_tag_drop", `CREATE TRIGGER chat_tag_drop AFTER DELETE ON chat
+      BEGIN
+        DELETE FROM chat_tag WHERE station = old.station AND archived = old.archived AND id = old.id;
+      END`],
   // (a record's JSON changed in place: this core's writer alternates `made` between CHAT_MADE and CHAT_MADE_ALT so
   // `old.made IS NOT new.made`; another core leaves `made` untouched, so its columns are made of it again at once, and
-  // it is marked to be derived again at the next open)
+  // it is marked to be derived again at the next open; also refresh `chat_tag` since recursive_triggers is off)
   ["chat_made_set", `CREATE TRIGGER chat_made_set AFTER UPDATE OF json ON chat
       WHEN old.made IS new.made
       BEGIN
         UPDATE chat SET made = NULL, ${CHAT_COLUMNS.map(([c, of]) => `${c} = ${of("new.json")}`).join(", ")} WHERE rowid = new.rowid;
+        DELETE FROM chat_tag WHERE station = new.station AND archived = new.archived AND id = new.id;
+        ${chatTagsDerived("new")}
       END`],
 ];
 
@@ -545,9 +582,17 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     // every column its statement names in it, those of the index's own WHERE too (SQLite takes it as covering only so),
     // and is searched by more terms than `chat_ord` (`chat_archived_at`'s `archived_mark`: else the device's SQLite
     // took `chat_ord`, and the table's rows).
-    // (`chat_listed` from before `led` was among its columns: made again with it)
+    // (`chat_listed` from before `led`, `project` or `unread` was among its columns, or where `project` preceded `state`: made again with `state` prefix intact)
     const listedWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_listed'");
-    if (listedWas.length > 0 && !/\bled\b/.test(String(listedWas[0]![0]))) sql.exec("DROP INDEX chat_listed");
+    if (listedWas.length > 0 && (!/\bled\b/.test(String(listedWas[0]![0])) || !/\bproject\b/.test(String(listedWas[0]![0])) || !/\bunread\b/.test(String(listedWas[0]![0])) || /\(station,\s*archived,\s*project\b/.test(String(listedWas[0]![0])))) {
+      sql.exec("DROP INDEX chat_listed");
+    }
+    const tagCols = new Set(sql.all("PRAGMA table_info(chat_tag)").map((r) => String(r[1])));
+    let tagTableDropped = false;
+    if (tagCols.size > 0 && !tagCols.has("unread")) {
+      sql.exec("DROP TABLE chat_tag");
+      tagTableDropped = true;
+    }
     // (`chat_recent`, the window's walk, as the first schema made it: of every row, archived too, and no column the
     // window filters by, so each row it walked past (another station's, one an agent leads, not the viewer's) read the
     // table's page, its JSON inline, 168 ms of a list made on a phone, 2026-11-18. Made again partial and covering)
@@ -559,17 +604,21 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
     const archiveWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_archive'");
     if (archiveWas.length > 0 && !/\bstation\b/.test(String(archiveWas[0]![0]))) sql.exec("DROP INDEX chat_archive");
     // (`chat_unmade`, a partial index over unmade rows alone: 0 index writes on steady-state chat upserts that alternate
-    // `made` between CHAT_MADE and CHAT_MADE_ALT, and an empty covering index to check at open. `chat_made` is the
-    // name of the whole index of a core from before, which makes it again where it is missing and asks by it: left
-    // to it under that name, never made partial there (its `made < ?` would read the table whole), and dropped here)
+    // `made` between CHAT_MADE and CHAT_MADE_ALT, and an empty covering index to check at open. Rebuild whenever
+    // CHAT_MADE / CHAT_MADE_ALT changes so old DBs don't fall back to SCAN chat. `chat_made` is the name of the whole
+    // index of a core from before, which makes it again where it is missing and asks by it: left to it under that name,
+    // never made partial there (its `made < ?` would read the table whole), and dropped here)
     const unmade = `made IS NULL OR made NOT IN (${CHAT_MADE}, ${CHAT_MADE_ALT})`;
+    const unmadeWas = sql.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_unmade'");
+    if (unmadeWas.length > 0 && !String(unmadeWas[0]![0]).includes(`(${CHAT_MADE}, ${CHAT_MADE_ALT})`)) sql.exec("DROP INDEX chat_unmade");
     sql.exec("DROP INDEX IF EXISTS chat_made");
     sql.exec(`
       CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;
+      CREATE INDEX IF NOT EXISTS chat_project ON chat (archived, project, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_unmade ON chat (made) WHERE ${unmade};
       CREATE INDEX IF NOT EXISTS chat_archived_at ON chat (station, archived, archived_mark, archived_at DESC, thread, session) WHERE archived_mark = 1;
       CREATE INDEX IF NOT EXISTS chat_archive ON chat (archived, archived_mark, coalesce(archived_at, 0) DESC, station, ord, id, thread, session) WHERE archived = 1 AND archived_mark = 1;
-      CREATE INDEX IF NOT EXISTS chat_listed ON chat (station, archived, state, mine, hidden, led, watched, last_active, thread, session, id) WHERE archived = 0;
+      CREATE INDEX IF NOT EXISTS chat_listed ON chat (station, archived, state, mine, hidden, led, watched, last_active, thread, session, id, project, pinned_at, tone, asks, unread) WHERE archived = 0;
       CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);
       DROP INDEX IF EXISTS chat_marked;
       DROP INDEX IF EXISTS chat_running;
@@ -577,22 +626,25 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
       CREATE INDEX IF NOT EXISTS chat_client ON chat (station, client_key) WHERE client_key IS NOT NULL;
       CREATE TABLE IF NOT EXISTS chat_agent (station TEXT NOT NULL, session TEXT NOT NULL, archived INTEGER NOT NULL, id TEXT NOT NULL, PRIMARY KEY (station, session, archived, id)) WITHOUT ROWID;
       CREATE INDEX IF NOT EXISTS chat_agent_row ON chat_agent (station, archived, id);
+      CREATE TABLE IF NOT EXISTS chat_tag (
+        tag TEXT NOT NULL, pinned_at INTEGER, last_active INTEGER NOT NULL DEFAULT 0,
+        station TEXT NOT NULL, ord REAL NOT NULL DEFAULT 0, id TEXT NOT NULL, archived INTEGER NOT NULL,
+        mine INTEGER NOT NULL DEFAULT 0, hidden INTEGER NOT NULL DEFAULT 0, led INTEGER NOT NULL DEFAULT 0, watched INTEGER NOT NULL DEFAULT 0,
+        thread INTEGER, session TEXT, project TEXT, state TEXT, tone TEXT, asks INTEGER NOT NULL DEFAULT 0, unread INTEGER,
+        PRIMARY KEY (tag, archived, station, id)
+      ) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS chat_tag_window ON chat_tag (archived, tag, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session, project) WHERE archived = 0;
+      CREATE INDEX IF NOT EXISTS chat_tag_station ON chat_tag (station, archived, tag, hidden, led, mine, watched, thread, session, project, state, pinned_at, last_active, tone, asks, unread) WHERE archived = 0;
+      CREATE INDEX IF NOT EXISTS chat_tag_row ON chat_tag (station, archived, id);
     `);
     const had = new Map(sql.all("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'chat'").map((r) => [String(r[0]), String(r[1])]));
-    let remade = false;
+    let remade = tagTableDropped;
     for (const [name, statement] of chatTriggers()) {
       const was = had.get(name);
       if (was !== undefined && spaced(was) === spaced(statement)) continue;
       if (was !== undefined) sql.exec(`DROP TRIGGER ${name}`);
       sql.exec(statement);
       remade = true;
-    }
-    if (remade) {
-      sql.exec("DELETE FROM chat_agent");
-      sql.exec(`INSERT OR IGNORE INTO chat_agent (station, session, archived, id)
-        SELECT c.station, json_extract(a.value, '$.key'), c.archived, c.id
-        FROM chat AS c, json_each(CASE json_type(c.json, '$.agents') WHEN 'array' THEN c.json ELSE '{"agents":[]}' END, '$.agents') AS a
-        WHERE json_type(CASE a.type WHEN 'object' THEN a.value ELSE '{}' END, '$.key') = 'text'`);
     }
     const out: ChatColumnsMade = { rows: 0, read: 0, bytes: 0 };
     // (by the partial covering index `chat_unmade` alone: literal predicate matches the index WHERE, no table row read)
@@ -610,6 +662,20 @@ export function ensureChatColumns(sql: Sql, derive: (agents: unknown) => { state
           sql.run("UPDATE chat SET state = ?, watched = ?, made = ? WHERE rowid = ?", [d.state, d.watched ? 1 : 0, CHAT_MADE, rowid as number]);
         }
       }
+    }
+    if (remade) {
+      sql.exec("DELETE FROM chat_agent");
+      sql.exec(`INSERT OR IGNORE INTO chat_agent (station, session, archived, id)
+        SELECT c.station, json_extract(a.value, '$.key'), c.archived, c.id
+        FROM chat AS c, json_each(CASE json_type(c.json, '$.agents') WHEN 'array' THEN c.json ELSE '{"agents":[]}' END, '$.agents') AS a
+        WHERE json_type(CASE a.type WHEN 'object' THEN a.value ELSE '{}' END, '$.key') = 'text'`);
+      sql.exec("DELETE FROM chat_tag");
+      sql.exec(`INSERT OR REPLACE INTO chat_tag (tag, pinned_at, last_active, station, ord, id, archived, mine, hidden, led, watched, thread, session, project, state, tone, asks, unread)
+        SELECT DISTINCT t.value, c.pinned_at, c.last_active, c.station, c.ord, c.id, c.archived, c.mine,
+          coalesce(c.hidden, 0), coalesce(c.led, 0), coalesce(c.watched, 0),
+          c.thread, c.session, c.project, c.state, c.tone, coalesce(c.asks, 0), c.unread
+        FROM chat AS c, json_each(CASE json_type(c.json, '$.tags') WHEN 'array' THEN c.json ELSE '{"tags":[]}' END, '$.tags') AS t
+        WHERE t.type = 'text' AND t.value <> ''`);
     }
     sql.exec("COMMIT");
     return out;

@@ -63,7 +63,7 @@ test "pick_bar_node and float_button_node use single-layer liquid glass with sha
         )
         assert_eq(
           (dark, want.blur, want.tint & 0xFFL, want.bezel, want.refraction, want.adaptive),
-          (dark, 2.2, 0x67L, 20.0, 28.0, true),
+          (dark, 1.2, 0x67L, 20.0, 28.0, true),
         )
       }
       let has_shell_solid_fill = match glass.get(0) {
@@ -365,7 +365,7 @@ test "pick_bar_desk_node: 40pt liquid_bar_pill_glass capsule matching pick_bar_n
       )
       assert_eq(
         (at, want.blur, want.bezel, want.refraction, want.adaptive),
-        (at, 2.0, 14.0, 20.0, false),
+        (at, 1.2, 14.0, 20.0, false),
       )
       assert_eq((at, has_host, glass.length(), liquid.length(), has_outside_shadow(t)), (at, true, 1, 1, true))
       assert_true((liquid[0].3 - 40.0).abs() < 0.5, msg="\{at}: height=\{liquid[0].3}")

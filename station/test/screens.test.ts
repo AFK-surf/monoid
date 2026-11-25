@@ -26,7 +26,7 @@ import { described, letGo } from "../src/tools/screen.ts";
 import { CLICK_MS, FLAGS, KEYCODES, MacInput } from "../src/screens/mac-input.ts";
 import { USAGES, SimInput } from "../src/screens/sim-input.ts";
 import type { SimDebug } from "../src/screens/sim-debug.ts";
-import { OPEN_TIMEOUT_MS, SIMCTL, Simulator, Simulators, bootedOf, runtimeName, screenOf } from "../src/screens/simulator.ts";
+import { OPEN_TIMEOUT_MS, SIMCTL, Simulator, Simulators, bootedOf, deviceTypeName, runtimeName, screenOf } from "../src/screens/simulator.ts";
 import { WindowsDesktop, screenBinary } from "../src/screens/win-desktop.ts";
 import { KEYS, WinInput } from "../src/screens/win-input.ts";
 import { type AudioFrame, CLIP_PNG_MAX, CLIP_TEXT_MAX, CURSOR_PNG_MAX, CURSOR_SHAPE, type Clip, type ClipType, type Frame, type ScreenAccess, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, codecFor, cursorImageShape } from "../src/screens/source.ts";
@@ -2731,6 +2731,8 @@ test("the simulators booted, as simctl lists them: their runtime's name, their s
   assert.deepEqual(bootedOf(null), []);
   assert.equal(runtimeName("com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4"), "iOS 27.2");
   assert.equal(runtimeName("something else"), "something else");
+  assert.equal(deviceTypeName("com.apple.CoreSimulator.SimDeviceType.iPhone-11-Pro"), "iPhone 11 Pro");
+  assert.equal(deviceTypeName("t17"), "");
   assert.deepEqual(screenOf({ capabilities: { ScreenDimensionsCapability: { "main-screen-width": 1206, "main-screen-height": 2622 } } }), { width: 1206, height: 2622 });
   assert.deepEqual(screenOf({}), { width: 0, height: 0 });
 });
@@ -2763,7 +2765,7 @@ test("a simulator a screen while it is booted: listed with its device's name and
     if (file === SIMCTL && args.join(" ") === "list -j devices")
       return JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-2": [{ udid, name: "iPhone 17", state: booted ? "Booted" : "Shutdown", deviceTypeIdentifier: "t17", lastUsedAt: "2026-11-06T08:33:59Z" }] } });
     if (file === SIMCTL && args[0] === "shutdown") return "";
-    if (file === SIMCTL && args.join(" ") === "list -j devicetypes") return JSON.stringify({ devicetypes: [{ identifier: "t17", bundlePath: "/t17.simdevicetype" }] });
+    if (file === SIMCTL && args.join(" ") === "list -j devicetypes") return JSON.stringify({ devicetypes: [{ identifier: "t17", name: "iPhone 17 Pro", bundlePath: "/t17.simdevicetype" }] });
     if (file === "plutil") return JSON.stringify({ capabilities: { ScreenDimensionsCapability: { "main-screen-width": 1206, "main-screen-height": 2622 } } });
     throw new Error(`not run here: ${file}`);
   };
@@ -2772,6 +2774,7 @@ test("a simulator a screen while it is booted: listed with its device's name and
   const listed = hub.listed("en").screens.find((s: any) => s.kind === "simulator") as any;
   assert.equal(listed?.id, `simulator:${udid}`);
   assert.equal(listed?.title, "iPhone 17 · iOS 26.2");
+  assert.equal(listed?.model, "iPhone 17 Pro");
   assert.deepEqual([listed?.width, listed?.height], [1206, 2622]);
   // Up since its boot, and closed from a person's app as shut down.
   assert.deepEqual([listed?.since, listed?.closable], [Date.parse("2026-11-06T08:33:59Z"), true]);

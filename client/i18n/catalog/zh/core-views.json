@@ -38,7 +38,9 @@
   "core-views.admin.feedback.new": "新反馈",
   "core-views.admin.feedback.replied": "待跟进",
   "core-views.admin.feedback.replies": "回复",
-  "core-views.admin.feedback.reply_count": {"other": "{n} 条回复"},
+  "core-views.admin.feedback.reply_count": {
+    "other": "{n} 条回复"
+  },
   "core-views.admin.feedback.reply_hint": "回复会显示在发起这条反馈的对话里，给对话里的人看，不会发给 station 或 agent。",
   "core-views.admin.feedback.reporter_side": "反馈方",
   "core-views.admin.feedback.team": "团队",
@@ -98,7 +100,9 @@
   "core-views.admin.todo.expiring_hint": "尚未使用",
   "core-views.admin.todo.fresh": "{n} 个新反馈",
   "core-views.admin.todo.fresh_hint": "未读的 bug 报告",
-  "core-views.admin.todo.replied": {"other": "{n} 个反馈待跟进"},
+  "core-views.admin.todo.replied": {
+    "other": "{n} 个反馈待跟进"
+  },
   "core-views.admin.todo.replied_hint": "反馈方回复了，等你答复",
   "core-views.admin.todo.outdated": "{n} 台 station 不是最新版",
   "core-views.admin.todo.outdated_hint": "最新版本为 {version}",
@@ -221,6 +225,8 @@
   "core-views.new_chat": "新对话",
   "core-views.outbox.uploading": "正在上传 {percent}%",
   "core-views.pinned": "已固定",
+  "core-views.projects.unclassified": "未归类",
+  "core-views.projects.cross": "跨项目 / 其他",
   "core-views.rates.active": "{n} 个会话正在输出",
   "core-views.rates.basis": "按模型输出估算；每个会话包含并行的子 agent。",
   "core-views.rates.empty": "暂时没有会话在输出",
@@ -427,6 +433,8 @@
   "core-views.station.pageOld": "这个页面版本太旧，station 已不再支持：请刷新页面",
   "core-views.station.unreachable": "无法连接 {name}",
   "core-views.station.unreachable_short": "连不上",
+  "core-views.station.unknownRuntime": "station 用了这个 app 还不认识的运行时（{runtimes}），部分信息先不显示：请更新 app",
+  "core-views.station.unknownRuntimePage": "station 用了这个页面还不认识的运行时（{runtimes}），部分信息先不显示：请刷新页面",
   "core-views.station.lock": "安全模式未放行 {name}",
   "core-views.station.lock_short": "安全模式未放行",
   "core-views.station.offline_network": "网络不可用，连不上 {name}",
@@ -728,7 +736,7 @@
   "core-views.admin.relay.range.week": "7 天",
   "core-views.admin.relay.how.own": "云自带的中继，不能删除",
   "core-views.admin.relay.how.config": "从部署配置导入",
-  "core-views.admin.relay.how.api": "\u7528 ADMIN_TOKEN \u6dfb\u52a0",
+  "core-views.admin.relay.how.api": "用 ADMIN_TOKEN 添加",
   "core-views.admin.relay.how.token": "用令牌接入",
   "core-views.admin.relay.how.by": "{email} 添加",
   "core-views.admin.relay.how.byAddress": "负载按来源 IP 认定",
@@ -933,5 +941,7 @@
   "core-views.move.summary.moving": "迁移中 · {module}「{label}」",
   "core-views.move.summary.stopped": "{n} 项已停",
   "core-views.move.summary.failed": "{n} 项失败",
-  "core-views.group": "Group"
+  "core-views.group": "Group",
+  "core-views.flow.plan_hint.copilot": "GitHub Copilot 订阅。用设备码登录一次。",
+  "core-views.profiles.group.copilot": "GitHub Copilot"
 }
