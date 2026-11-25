@@ -30,6 +30,7 @@
 #include <windows.data.xml.dom.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <new>
 #include <string>
 #include <vector>
 #include "win.h"
@@ -697,7 +698,12 @@ DWORD WINAPI launch_worker_proc(LPVOID arg) {
 }
 
 BOOL CALLBACK launch_init_cb(PINIT_ONCE, PVOID, PVOID *) {
-  LaunchWorker *w = new LaunchWorker();
+  LaunchWorker *w = new (std::nothrow) LaunchWorker();
+  if (!w) {
+    fprintf(stderr, "LAUNCH worker allocation failed\n");
+    fflush(stderr);
+    return TRUE;
+  }
   w->wake_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
   if (!w->wake_ev) {
     fprintf(stderr, "LAUNCH worker CreateEventW failed (%lu)\n", (unsigned long)GetLastError());
@@ -730,15 +736,13 @@ LaunchWorker *ensure_launch_worker() {
 
 extern "C" {
 
+// Note: Windows C++ host stubs compile under clang-cl without C++ exceptions (/EHsc is not enabled),
+// matching mb_host_notice_show and mb_win_badge above.
 int32_t mb_win_launch_url(const wchar_t *url) {
   if (!url || !*url) return 0;
   LaunchWorker *w = ensure_launch_worker();
   if (!w) return 0;
-  try {
-    if (!w->queue.enqueue(mb::WinLaunchOpKind::OpenUrl, std::wstring(url))) return 0;
-  } catch (...) {
-    return 0;
-  }
+  if (!w->queue.enqueue(mb::WinLaunchOpKind::OpenUrl, std::wstring(url))) return 0;
   SetEvent(w->wake_ev);
   return 1;
 }
@@ -747,11 +751,7 @@ int32_t mb_win_reveal_file(const wchar_t *path) {
   if (!path || !*path) return 0;
   LaunchWorker *w = ensure_launch_worker();
   if (!w) return 0;
-  try {
-    if (!w->queue.enqueue(mb::WinLaunchOpKind::RevealFile, std::wstring(path))) return 0;
-  } catch (...) {
-    return 0;
-  }
+  if (!w->queue.enqueue(mb::WinLaunchOpKind::RevealFile, std::wstring(path))) return 0;
   SetEvent(w->wake_ev);
   return 1;
 }
