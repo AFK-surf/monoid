@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.81 | 122.81 |
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.96 | 123.35 |
 | [cd9b47945](https://github.com/AFK-surf/monoid/commit/cd9b47945a7781e08f686cb52bd817296dc2988a) fix(ui): remove liquid slider end-clamp and flush- | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.93 | 113.13 |
 | [a9e0129a7](https://github.com/AFK-surf/monoid/commit/a9e0129a7fd817301be66e61e3edd0a7102b8ded) perf(ui): skip off-screen resident clock wakes and | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 101.14 | 128.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [319706ddc](https://github.com/AFK-surf/monoid/commit/319706ddcfdcd108923f94bf64740972bb43afb6) feat(pion/station): add builders_replica (replica- | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [13f57314c](https://github.com/AFK-surf/monoid/commit/13f57314c446843de910d2c106d81ec2faf1ab88) perf(ui): fix host glyph pre-warming and Android p | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [8c8dbd7f8](https://github.com/AFK-surf/monoid/commit/8c8dbd7f8e50230a131bccd70c325e376198b01f) perf(replica): read each transcript directory once | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.06 | 121.68 |
-| [72f43d9c7](https://github.com/AFK-surf/monoid/commit/72f43d9c7ac974f8839076e712f91e7971508287) perf(core): read the person's own lock beside the  | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.06 | 121.68 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.57 |
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.71 |
 | [cd9b47945](https://github.com/AFK-surf/monoid/commit/cd9b47945a7781e08f686cb52bd817296dc2988a) fix(ui): remove liquid slider end-clamp and flush- | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.69 |
 | [a9e0129a7](https://github.com/AFK-surf/monoid/commit/a9e0129a7fd817301be66e61e3edd0a7102b8ded) perf(ui): skip off-screen resident clock wakes and | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [319706ddc](https://github.com/AFK-surf/monoid/commit/319706ddcfdcd108923f94bf64740972bb43afb6) feat(pion/station): add builders_replica (replica- | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.46 |
 | [13f57314c](https://github.com/AFK-surf/monoid/commit/13f57314c446843de910d2c106d81ec2faf1ab88) perf(ui): fix host glyph pre-warming and Android p | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.69 |
 | [8c8dbd7f8](https://github.com/AFK-surf/monoid/commit/8c8dbd7f8e50230a131bccd70c325e376198b01f) perf(replica): read each transcript directory once | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.53 |
-| [72f43d9c7](https://github.com/AFK-surf/monoid/commit/72f43d9c7ac974f8839076e712f91e7971508287) perf(core): read the person's own lock beside the  | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.57 |
