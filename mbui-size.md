@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1d40febe4](https://github.com/AFK-surf/monoid/commit/1d40febe4eeb4b726223d5219d2228bb591df388) feat(pion-station): port reader_serve (--serve) wi | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 | [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 | [a9403c5f7](https://github.com/AFK-surf/monoid/commit/a9403c5f758d891a20284a7b52ed34ed83d9160b) fix(lock,station): let admitted members verify off | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.11 | 65 | 100.96 | 130.04 |
 | [dd7cfdf75](https://github.com/AFK-surf/monoid/commit/dd7cfdf759b3bbf099eec36cbe12f3a28df77ad3) fix(station): hear spawn errors before touching ch | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 131.51 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a9e0129a7](https://github.com/AFK-surf/monoid/commit/a9e0129a7fd817301be66e61e3edd0a7102b8ded) perf(ui): skip off-screen resident clock wakes and | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 101.14 | 128.19 |
 | [ff693e9ed](https://github.com/AFK-surf/monoid/commit/ff693e9ed78f3b196f93ece36f34e3c59e4e161d) feat(core,app): time a start before the core and t | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 101.14 | 128.19 |
 | [1776360fa](https://github.com/AFK-surf/monoid/commit/1776360fa07e72e590339786b6859d70daa5649e) fix(station): keep a builder's permit when the one | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
-| [973efe842](https://github.com/AFK-surf/monoid/commit/973efe84254621ae10ab2357785202523c2c3d54) fix(mbui): close the side panel on Esc with a file | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.89 | 126.26 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1d40febe4](https://github.com/AFK-surf/monoid/commit/1d40febe4eeb4b726223d5219d2228bb591df388) feat(pion-station): port reader_serve (--serve) wi | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.02 |
 | [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.23 |
 | [a9403c5f7](https://github.com/AFK-surf/monoid/commit/a9403c5f758d891a20284a7b52ed34ed83d9160b) fix(lock,station): let admitted members verify off | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.23 |
 | [dd7cfdf75](https://github.com/AFK-surf/monoid/commit/dd7cfdf759b3bbf099eec36cbe12f3a28df77ad3) fix(station): hear spawn errors before touching ch | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a9e0129a7](https://github.com/AFK-surf/monoid/commit/a9e0129a7fd817301be66e61e3edd0a7102b8ded) perf(ui): skip off-screen resident clock wakes and | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
 | [ff693e9ed](https://github.com/AFK-surf/monoid/commit/ff693e9ed78f3b196f93ece36f34e3c59e4e161d) feat(core,app): time a start before the core and t | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.41 |
 | [1776360fa](https://github.com/AFK-surf/monoid/commit/1776360fa07e72e590339786b6859d70daa5649e) fix(station): keep a builder's permit when the one | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
-| [973efe842](https://github.com/AFK-surf/monoid/commit/973efe84254621ae10ab2357785202523c2c3d54) fix(mbui): close the side panel on Esc with a file | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
