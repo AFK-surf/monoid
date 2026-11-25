@@ -2985,3 +2985,101 @@ test "R8 boundary: agentless handover isolates the adopted turn timer" {
   s.drive(r)
   assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
 }
+
+test "R9 independent: close during a notice steer issues no undo in fallback mode" {
+  let s = r2_new()
+  r3_probe_adopt(s, "turn", 1)
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"notify\",\"args\":[\"notice\"]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "agent.steer" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "notify did not dispatch agent.steer")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":false}", s.disp)
+  s.drive(r)
+  for i in 0..<s.rpcs.length() {
+    let (_, f, _) = s.rpcs[i]
+    assert_run(f != "store.markDelivered" && f != "store.markUndelivered", "unexpected delivery RPC " + f)
+  }
+  assert_run(s.actors.host.hub_asked.length() == 0 && s.actors.current.gen.counters.active == 0, "all settled")
+}
+
+test "R9 independent: timer refill needs undo after snapshot returns" {
+  let s = r2_new()
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"refillMs\":1},{\"handle\":1,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  let mut busy_calls = 0
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "agent.busy" {
+      busy_calls = busy_calls + 1
+      return Some(Ok(sessions_core::jbool(busy_calls > 1)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.drive(respond)
+  assert_run(s.timers.length() > 0, "refill timer not armed")
+  let (id, _) = s.timers[0]
+  s.actors.heard("{\"due\":" + id.to_string() + "}", s.disp)
+  s.drive(respond)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "agent.steer" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0 && delivered, "did not reach steer window")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"snapshot\"}", s.disp)
+  s.drive(respond)
+  let mut snapshot_returned = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 9 {
+      snapshot_returned = true
+    }
+  }
+  assert_run(snapshot_returned && !s.has_rpc("store.markUndelivered"), "snapshot must precede undo")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":false}", s.disp)
+  s.drive(respond)
+  assert_run(!delivered, "snapshot before negative steer ACK must still give message back")
+}

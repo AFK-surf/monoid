@@ -95,10 +95,9 @@ export class ActorsProgram {
   readonly #calls = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void; actor?: MbActor | ProgramShell }>();
   readonly #pendingCalls = new Map<MbActor | ProgramShell, number>();
   readonly #answeringByActor = new Map<MbActor | ProgramShell, number>();
-  readonly #awaitingUndelivered = new Map<MbActor | ProgramShell, number>();
+  readonly #pendingNodeDeliveries = new Map<MbActor | ProgramShell, number>();
 
   readonly #store: { told(changes: any[]): void } | null;
-  readonly #hasLocalDb: boolean;
 
   private constructor(
     data: string,
@@ -109,7 +108,6 @@ export class ActorsProgram {
   ) {
     this.#clock = clock;
     this.#store = store;
-    this.#hasLocalDb = Boolean(store?.db);
     // (it ends with its hub, which closes it: the process waits on it only while it has something going)
     this.#proc = procOverride ?? SessionsProgram.of(data, true)!;
     this.#proc.use(this.#user);
@@ -126,8 +124,9 @@ export class ActorsProgram {
   static openForTest(
     proc: Pick<SessionsProgram, "use" | "post" | "hold" | "release" | "kill">,
     clock: Clock.Clock,
+    store: { told(changes: any[]): void; db: any } | null = null,
   ): ActorsProgram {
-    return new ActorsProgram("", clock, null, 0, proc);
+    return new ActorsProgram("", clock, store, 0, proc);
   }
 
   #lost(code: number) {
@@ -274,7 +273,7 @@ export class ActorsProgram {
     this.#stateWriteOwners.clear();
     this.#pendingCalls.clear();
     this.#answeringByActor.clear();
-    this.#awaitingUndelivered.clear();
+    this.#pendingNodeDeliveries.clear();
     for (const fiber of this.#timers.values()) Effect.runFork(Fiber.interrupt(fiber));
     this.#timers.clear();
     const calls = [...this.#calls.values()];
@@ -313,7 +312,7 @@ export class ActorsProgram {
     if (
       (this.#pendingCalls.get(actor) ?? 0) > 0 ||
       (this.#answeringByActor.get(actor) ?? 0) > 0 ||
-      (this.#awaitingUndelivered.get(actor) ?? 0) > 0
+      (this.#pendingNodeDeliveries.get(actor) ?? 0) > 0
     ) {
       return;
     }
@@ -425,29 +424,26 @@ export class ActorsProgram {
         else this.#answeringByActor.set(target, left);
         this.#maybePruneRetired(target);
       };
-      const onSteerRejected = () => {
-        if (said.fn === "agent.steer" && !this.#hasLocalDb && this.#actors.get(target.key) !== target) {
-          this.#awaitingUndelivered.set(target, (this.#awaitingUndelivered.get(target) ?? 0) + 1);
-          this.#retiredIdleOrder.delete(target);
-        }
-      };
-      const onUndeliveredDone = () => {
-        if (said.fn === "store.markUndelivered") {
-          const left = (this.#awaitingUndelivered.get(target) ?? 0) - 1;
-          if (left <= 0) this.#awaitingUndelivered.delete(target);
-          else this.#awaitingUndelivered.set(target, left);
-        }
+      const decPendingDelivery = () => {
+        const cur = this.#pendingNodeDeliveries.get(target) ?? 0;
+        if (cur <= 1) this.#pendingNodeDeliveries.delete(target);
+        else this.#pendingNodeDeliveries.set(target, cur - 1);
       };
       target.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
         (value) => {
-          if (!value) onSteerRejected();
-          onUndeliveredDone();
+          if (said.fn === "store.markDelivered" && Array.isArray(said.args?.[1]) && said.args[1].length > 0) {
+            this.#pendingNodeDeliveries.set(target, (this.#pendingNodeDeliveries.get(target) ?? 0) + 1);
+            this.#retiredIdleOrder.delete(target);
+          } else if ((said.fn === "agent.steer" && Boolean(value)) || said.fn === "agent.prompt") {
+            decPendingDelivery();
+          } else if (said.fn === "store.markUndelivered") {
+            decPendingDelivery();
+          }
           done();
           this.post({ answer: id, value: value === undefined ? null : value });
         },
         (error) => {
-          onSteerRejected();
-          onUndeliveredDone();
+          if (said.fn === "store.markUndelivered") decPendingDelivery();
           done();
           this.post({ answer: id, error: errorOf(error, target.runtime) });
         },
@@ -467,7 +463,7 @@ export class ActorsProgram {
       const hasObligation =
         (this.#pendingCalls.get(actor) ?? 0) > 0 ||
         (this.#answeringByActor.get(actor) ?? 0) > 0 ||
-        (this.#awaitingUndelivered.get(actor) ?? 0) > 0;
+        (this.#pendingNodeDeliveries.get(actor) ?? 0) > 0;
       if (!hasObligation && !retainIfIdle) {
         this.#retiredRetainIfIdle.delete(actor);
         return;

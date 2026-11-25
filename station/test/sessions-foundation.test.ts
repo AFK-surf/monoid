@@ -13,6 +13,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Readable, Writable } from "node:stream";
 import { after, test } from "node:test";
 import {
@@ -833,9 +834,10 @@ for (const churn of [511, 512]) {
       } as any,
       { currentTimeMillisUnsafe: () => 100 } as any,
     );
-    let marked = true;
+    let marked = false;
     const store = {
       getSession: () => ({ runtime: "claude" }),
+      markDelivered(_k: string, rows: any[]) { if (rows.length > 0) marked = true; },
       markUndelivered() { marked = false; },
     };
     try {
@@ -849,6 +851,9 @@ for (const churn of [511, 512]) {
       const call = frames.at(-1);
       receive({ returned: call.call, value: null });
       await adopted;
+      receive({ rpc: 799, actor: "original", fn: "store.markDelivered", args: ["original", [{ thread: "t", n: 1 }]] });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(marked, true);
       receive({ rpc: 800, actor: "original", fn: "agent.steer", args: [call.args[1].handle, "m"] });
       old.close();
       receive({ returned: frames.at(-1).call, value: null });
@@ -947,6 +952,102 @@ for (const refused of [false, true]) {
       assert.deepEqual({ storeCalls, closed: reply?.error?.actorClosed === true }, { storeCalls: 0, closed: true });
     } finally {
       await program.close();
+    }
+  });
+}
+
+const r9RoutingCases = [
+  { name: "outstanding delivery, no configured db, receipt after close", delivery: true, memory: false, replyFirst: false },
+  { name: "outstanding delivery, in-memory db, receipt after close", delivery: true, memory: true, replyFirst: false },
+  { name: "notice only, receipt after close", delivery: false, memory: false, replyFirst: false },
+  { name: "outstanding refill delivery, receipt before snapshot returns", delivery: true, memory: false, replyFirst: true },
+];
+for (const { name, delivery, memory, replyFirst } of r9RoutingCases) {
+  test(`W8-E2 R9: ${name}`, async () => {
+    const frames: any[] = [];
+    let receive!: (msg: any) => void;
+    const proc = {
+      use(user: any) { receive = user.said; },
+      post(msg: any) { frames.push(msg); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    };
+    const clock = { currentTimeMillisUnsafe: () => 100 } as any;
+    const db = new DatabaseSync(":memory:");
+    db.exec("CREATE TABLE delivery(marked INTEGER); INSERT INTO delivery VALUES (0)");
+    const store = {
+      db,
+      told() {},
+      getSession: () => ({ runtime: "claude" }),
+      markDelivered(_key: string, rows: any[]) { if (rows.length) db.exec("UPDATE delivery SET marked = 1"); },
+      markUndelivered(_key: string, rows: any[]) { if (rows.length) db.exec("UPDATE delivery SET marked = 0"); },
+    };
+    const program = ActorsProgram.openForTest(proc as any, clock, memory ? store : null);
+    const settle = () => new Promise((r) => setImmediate(r));
+    try {
+      assert.equal(frames.find((f) => Object.hasOwn(f, "db"))?.db, null, "worker has no attached database");
+      const key = "subject";
+      const actor = program.actor(key, "claude", { store } as any);
+      let finish!: (v: boolean) => void;
+      const adopted = actor.adopt(
+        { runtime: "claude" } as any,
+        {
+          steer: () => new Promise<boolean>((r) => { finish = r; }),
+          dispose: async () => {},
+          snapshot: () => null,
+          detach() {},
+        } as any,
+        "",
+      );
+      const { call, args } = frames.at(-1);
+      const handle = args[1].handle;
+      receive({ returned: call, value: null });
+      await adopted;
+      if (delivery) {
+        receive({ rpc: 10, actor: key, fn: "store.markDelivered", args: [key, [{ thread: "t", n: 1 }]] });
+        await settle();
+        assert.equal(frames.find((f) => f.answer === 10)?.error, undefined);
+        assert.equal((db.prepare("SELECT marked FROM delivery").get() as any).marked, 1);
+      }
+      receive({ rpc: 1, actor: key, fn: "agent.steer", args: [handle, delivery ? "message" : "notice"] });
+      const refuse = async () => {
+        finish(false);
+        await settle();
+        assert.equal(frames.find((f) => f.answer === 1).value, false);
+      };
+      if (replyFirst) {
+        const snapshot = actor.snapshot();
+        const snapshotCall = frames.at(-1).call;
+        await refuse();
+        receive({ returned: snapshotCall, value: { agent: handle } });
+        await snapshot;
+      } else {
+        actor.close();
+        receive({ returned: frames.at(-1).call, value: null });
+        receive({ rpc: 2, actor: key, fn: "agent.dispose", args: [handle] });
+        await settle();
+        assert.equal(frames.find((f) => f.answer === 2).value, null);
+        const others: number[] = [];
+        for (let i = 0; i < 512; i++) {
+          program.actor(`idle-${i}`, "claude", { store } as any).close();
+          others.push(frames.at(-1).call);
+        }
+        await refuse();
+        for (const c of others) receive({ returned: c, value: null });
+      }
+      receive({ rpc: 3, actor: key, fn: "store.markUndelivered", args: [key, delivery ? [{ thread: "t", n: 1 }] : []] });
+      await settle();
+      assert.deepEqual(
+        {
+          closed: frames.find((f) => f.answer === 3)?.error?.actorClosed === true,
+          marked: (db.prepare("SELECT marked FROM delivery").get() as any).marked,
+        },
+        { closed: !delivery, marked: 0 },
+      );
+    } finally {
+      await program.close();
+      db.close();
     }
   });
 }
