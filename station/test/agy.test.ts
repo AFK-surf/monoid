@@ -2351,8 +2351,15 @@ test("agy is given the skills that fit beside the station's tools: the session's
       mkdirSync(join(shared, `skill-${i}`));
       writeFileSync(join(shared, `skill-${i}`, "SKILL.md"), `---\nname: skill-${i}\ndescription: ${"x".repeat(380)}\n---\nbody\n`);
     }
+    // As a session has them (agent-home.ts `sessionSkills`): every shared skill linked into .agents/skills, beside one
+    // of its own that sorts last and is bigger than any shared one.
+    mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
+    for (let i = 0; i < 149; i++) symlinkSync(join(shared, `skill-${i}`), join(ws, ".agents", "skills", `skill-${i}`), "dir");
+    mkdirSync(join(ws, ".agents", "skills", "z-own"));
+    writeFileSync(join(ws, ".agents", "skills", "z-own", "SKILL.md"), `---\nname: z-own\ndescription: ${"y".repeat(900)}\n---\n`);
     await agySkills(ws, shared);
     const given = readdirSync(join(ws, ".agent", "skills"));
+    assert.ok(given.includes("z-own"), "the session's own skill is given first");
     const bytes = given.reduce((n, name) => n + agySkillBytes(readFileSync(join(ws, ".agent", "skills", name, "SKILL.md"), "utf8"), join(ws, ".agent", "skills", name, "SKILL.md")), 0);
     assert.ok(given.length > 10 && given.length < 149, `${given.length} given`);
     assert.ok(bytes <= AGY_SKILL_BUDGET, `${bytes} bytes`);

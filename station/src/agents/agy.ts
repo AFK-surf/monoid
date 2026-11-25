@@ -10,7 +10,7 @@
 import { execFile } from "node:child_process";
 import type { Stats } from "node:fs";
 import { access, copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Duration, Effect, type Clock } from "effect";
 import { liveClock, wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
@@ -568,6 +568,10 @@ export async function agySkills(cwd: string, skillsDir?: string): Promise<void> 
   const root = join(cwd, ".agent", "skills");
   const found = new Map<string, { dir: string; skillMd: string; stat: Stats }>();
   const sizes: { name: string; bytes: number; own: boolean }[] = [];
+  // A shared skill is linked into `.agents/skills` too (agent-home.ts `sessionSkills`): what is the session's own is
+  // told by where it really is.
+  const shared = skillsDir === undefined ? null : await realpath(skillsDir).catch(() => skillsDir);
+  const inShared = (dir: string) => shared !== null && (dir === shared || dir.startsWith(shared.endsWith(sep) ? shared : shared + sep));
   for (const [name, src] of sources) {
     try {
       const dir = await realpath(src);
@@ -576,7 +580,7 @@ export async function agySkills(cwd: string, skillsDir?: string): Promise<void> 
       if (!st.isFile()) continue;
       found.set(name, { dir, skillMd, stat: st });
       const text = await readFile(skillMd, "utf8");
-      sizes.push({ name, bytes: agySkillBytes(text, join(root, name, "SKILL.md")), own: src.startsWith(dotAgents) });
+      sizes.push({ name, bytes: agySkillBytes(text, join(root, name, "SKILL.md")), own: !inShared(dir) });
     } catch {}
   }
   const { kept, left } = agySkillsFitted(sizes);
