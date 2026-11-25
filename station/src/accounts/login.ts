@@ -915,6 +915,17 @@ export class LoginManager {
 
   cancel(profile: string) {
     if (this.jobs.has(profile)) this.finish(profile, "cancelled", null);
+    else if (this.finished.delete(profile)) this.emit(profile);
+  }
+
+  /// Drops a finished sign-in record (for example once post-sign-in checks settle still needing login),
+  /// leaving any newer sign-in untouched.
+  clearFinished(profile: string, startedAt?: number) {
+    const done = this.finished.get(profile);
+    if (!done) return;
+    if (startedAt !== undefined && done.startedAt !== startedAt) return;
+    this.finished.delete(profile);
+    this.emit(profile);
   }
 
   stopAll() {

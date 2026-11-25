@@ -396,7 +396,7 @@ export class Accounts {
           this.background.spawn(async () => {
             // An OpenCode sign-in of a profile there is: its token is its key from now on, before it is checked.
             if (job.provider === "opencode" && (await this.signedInConsole(id, job.startedAt))) this.changed();
-            this.afterSignIn(id);
+            this.afterSignIn(id, job.startedAt);
           });
       }),
     );
@@ -1284,7 +1284,7 @@ export class Accounts {
 
   /// A profile just signed in: checked (which lists its models, all of them run) and its allowance read, so its page
   /// shows them at once.
-  private afterSignIn(id: string) {
+  private afterSignIn(id: string, loginStartedAt?: number) {
     this.authRevoked.delete(id);
     const profile = this.profile(id);
     // A completed Codex sign-in replaces the login which the provider refused. If the allowance service happens to be
@@ -1319,6 +1319,12 @@ export class Accounts {
         await this.check(id);
       } catch (e) {
         log.warn("accounts", "check after sign-in failed", { profile: id, error: (e as Error).message });
+      }
+      // If the post-sign-in check still says this profile needs login (for example an account mismatch or an
+      // unreadable token), drop the finished "done" job so the UI leaves "Signed in, adding" and lets the
+      // person sign in again instead of spinning indefinitely.
+      if (loginStartedAt !== undefined && this.checks.get(id)?.state === "login") {
+        this.logins.clearFinished(id, loginStartedAt);
       }
       // A reading started before the new sign-in must finish before its own is asked.
       await this.readQuota(id, true);
