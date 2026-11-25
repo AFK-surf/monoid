@@ -513,6 +513,7 @@ function about(conn: Connection): Record<string, string> {
 
 /// The port a phone asks for first, even when a listener already holds it.
 export function usualPort(device: string, ports: PortRange = PORTS): number {
+  if (ports.end <= ports.start) throw new RangeError(`invalid port range: ${ports.start}..${ports.end}`);
   const hash = createHash("sha256").update(device).digest();
   return ports.start + (((hash[0] << 8) | hash[1]) % (ports.end - ports.start));
 }
