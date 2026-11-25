@@ -9,8 +9,8 @@ permissions: {}
 jobs:
   tokyo:
     runs-on:
-      group: Default
-      labels: tartelet
+      group: default
+      labels: [self-hosted, tartelet]
     timeout-minutes: 2
     steps: &probe
       - name: Report the guest's build and graphics support
@@ -24,6 +24,6 @@ jobs:
   shanghai:
     runs-on:
       group: mac-mini-ci
-      labels: tartelet
+      labels: [self-hosted, macOS, ARM64]
     timeout-minutes: 2
     steps: *probe
