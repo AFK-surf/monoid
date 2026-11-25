@@ -244,24 +244,14 @@ pub fn lock_refusal(cloud : Cloud, hello : Json?, device : String, why : String,
 ///|
 /// Whether a device's connection is given `ws`'s bodies and logs (serve.ts `givesDevice`).
 pub fn gives_device(cloud : Cloud, ws : String?, viewer : Viewer) -> Bool {
+  ignore(viewer)
   match cloud.locked(ws~) {
     Some(l) => return !l.waiting
     None => ()
   }
   guard cloud.list(ws) is Some(li) && li.state is Some(s) && !li.waiting && s.moved is None else { return false }
   guard cloud.chain(ws~) is Some({ state: Some({ moved: Some(_), .. }), .. }) else { return false }
-  let ok = try {
-    let who = viewer.who()
-    let (device, _) = admit(cloud.crypto, s, who, (cloud.now)())
-    if device.kind == "app" && s.persons.get(viewer.sub) is Some(g) {
-      guard cloud.person_chains().kept(g) is Some(chain) else { return false }
-      admit_person(cloud.crypto, s, who, chain) |> ignore
-    }
-    true
-  } catch {
-    _ => false
-  }
-  ok
+  s.disabled
 }
 
 ///|

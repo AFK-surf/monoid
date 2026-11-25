@@ -781,3 +781,32 @@ for (const refused of [false, true]) {
     }
   });
 }
+
+test("moved workspace turned off: serveTrusted answers {t: 'no', error: 'off'} for a verified member (and triggers a background reread) and 'not_here' for wrong key, wrong device, or wrong workspace credentials", async () => {
+  const w = await setUp({ view: [...VIEW, { sub: "r9", email: "r9@x.com", role: "member" }] });
+  const off = await w.ask("lock.disable", { workspace: "ws" });
+  assert.equal(off.error, undefined, off.error?.message);
+  assert.equal(inForceOf(w.inner, "ws").said, "off", "moved workspace is off");
+  // Verified member receives explicit `off`, and the approver refreshes its lock in case it is behind.
+  const askedBefore = w.st.asked.length;
+  const { answer } = await w.helloApp("r9", NEW, newcomer().chain);
+  assert.deepEqual(answer, { t: "no", error: "off" });
+  await w.r.host.time.pass(200);
+  assert.ok(w.st.asked.slice(askedBefore).some((a) => a.method === "GET" && a.path.startsWith("/lock")), "approver triggered background lock reread");
+  // Unverified callers (invalid signature, replayed credential for another device, credential for another workspace)
+  // all receive `not_here` (no oracle leak).
+  const validCred = w.g.credential("ws", NEW, "r9");
+  const [jwtH, jwtB, jwtS] = validCred.split(".");
+  const wrongSig = `${jwtH}.${jwtB}.${jwtS![0] === "A" ? "B" : "A"}${jwtS!.slice(1)}`;
+  const cases = [
+    ["wrong signing key / bad signature", wrongSig],
+    ["wrong device endpoint (replay)", w.g.credential("ws", "ff".repeat(32), "r9")],
+    ["wrong workspace", w.g.credential("other-ws", NEW, "r9")],
+  ] as const;
+  for (const [label, cred] of cases) {
+    const [trusted, phone] = await pipe();
+    w.inner.runner.fork(serveTrusted(w.inner, NEW, ME, trusted));
+    const res = await w.run(Effect.andThen(phone.send({ t: "hello", v: 1, workspaces: [{ ws: "ws", credential: cred }], kind: "app", label: "Pixel", sign_key: "ed25519:" + "11".repeat(32) }), phone.next()));
+    assert.deepEqual(res.ok, { t: "no", error: "not_here" }, label);
+  }
+});

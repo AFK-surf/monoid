@@ -524,6 +524,7 @@ export function inForceOf(inner: Inner, ws: string, entries: readonly Entry[] = 
 /// (添加 station's `joinable`, for every workspace of the person's) reads a few bytes, never the chain, its logs or
 /// bodies (topic-work.test.ts); read here only while none is kept yet (a database from before), and kept then.
 export function safeMode(inner: Inner, ws: string): boolean {
+  if (reopenedIn(inner, ws)) return true;
   const k = inner.data.record(SAFE, ws);
   let on: boolean | null;
   if (isObject(k) && (typeof k.on === "boolean" || k.on === null)) on = k.on as boolean | null;
@@ -540,7 +541,18 @@ const SAFE = "lockSafe";
 /// Whether `ws` is in safe mode by the lock held now (`safeHeld`), never by what was kept of it (`lockSafe`): what
 /// the vault goes by (views/vault.ts `lockOf`), which reads the lock held anyway. The cloud's word only where none is.
 export function safeNow(inner: Inner, ws: string): boolean {
+  if (reopenedIn(inner, ws)) return true;
   return safeHeld(inner, ws) ?? get(view(inner, ws), "locked") === true;
+}
+
+/// Whether a moved workspace that locally caches signed `off` has a station refusing this device with `left` (safe
+/// mode was turned back on and this device is not on the new roster). Short-circuits on the in-memory `left` map so
+/// callers like `safeMode` read zero SQLite rows when no refusal is held.
+export function reopenedIn(inner: Inner, ws: string): boolean {
+  const p = inner.workspaces.get(ws)?.own.get("lock") as Part | undefined;
+  if (!p || p.left.size === 0) return false;
+  const h = held(inner, ws);
+  return h?.head != null && movedRoot(h.entries) !== null && inForceOf(inner, ws, h.entries).said === "off";
 }
 
 /// Whether `ws` is in safe mode by the lock held (null: none held on, the view's word then).
@@ -1019,9 +1031,31 @@ function readLockOnce(inner: Inner, ws: string, stations: string[], said?: { ref
     // the bodies are taken against (a lock held, its own or none); then told as the lock is.
     const logsKept = head === null ? false : keepLogs(inner, ws, served.flatMap((a) => a.logs));
     const bodiesKept = head === null ? false : keepBodies(inner, ws, served.flatMap((a) => a.bodies));
+    // Admitted by stations that served a known state (not still waiting for bodies/logs): any earlier `left` refusal
+    // from them (e.g. before safe mode was turned off or this device was approved) no longer stands. A newly verified
+    // `off` state (from non-`off`, or from an advanced root log head) supersedes all pre-`off` `left` refusals across
+    // stations, including stations that are now offline or removed.
+    const forceAfter = head !== null && movedRoot(entries) !== null ? inForceOf(inner, ws, entries) : null;
+    const newlyOff = forceAfter?.said === "off" && (wasForce === null || wasForce.said !== "off" || wasForce.checked?.head !== forceAfter.checked?.head);
+    let leftCleared = false;
+    if (newlyOff) {
+      if (p.left.size > 0 || p.leftApps.size > 0) leftCleared = true;
+      p.left.clear();
+      p.leftApps.clear();
+    } else if (forceAfter === null || forceAfter.said !== "waiting") {
+      for (const a of served) {
+        const hadLeft = p.left.delete(a.id);
+        const hadApps = p.leftApps.delete(a.id);
+        if (hadLeft || hadApps) leftCleared = true;
+      }
+    }
     // (the stations seen keeping the lock held, where it moved: never brought it again by themselves once reset)
     if (head !== null && movedRoot(entries) !== null) keepPinned(inner, ws, head.genesis, served.flatMap((a) => (a.head !== null && a.head.genesis === head!.genesis ? [a.id] : [])));
-    yield* hold(inner, ws, sub, head, entries, mergeSeen([...(whole ? [] : [(was?.seen ?? []) as J[]]), ...served.map((a) => a.seen)]), head === null ? [] : parted, logsKept || bodiesKept, headsMoved);
+    yield* hold(inner, ws, sub, head, entries, mergeSeen([...(whole ? [] : [(was?.seen ?? []) as J[]]), ...served.map((a) => a.seen)]), head === null ? [] : parted, logsKept || bodiesKept || leftCleared, headsMoved);
+    if (leftCleared) {
+      touch(inner, ws);
+      pairs.moved(inner, ws);
+    }
     carry(inner, ws, served);
     carryBodies(inner, ws, served);
     bringMoved(inner, ws, served);
@@ -1371,7 +1405,7 @@ function refused(inner: Inner, ws: string, station: string, theirs: unknown, tol
   // yet): so too (2026-11-14, real stations: the trusted device answered before a station took its `member`, and
   // the device, its chain's head never moving, never asked again).
   const approved = p.approved && movedHere(inner, ws) && told?.left !== undefined;
-  if (base !== null && h?.head != null && !f.disabled && (approved || live(f.devices.get(base), now(inner)) !== undefined)) {
+  if (base !== null && h?.head != null && (!f.disabled || approved) && (approved || live(f.devices.get(base), now(inner)) !== undefined)) {
     const tries = p.behind.get(station) ?? 0;
     const off = offOwnLock(inner, ws);
     if (tries < BEHIND_TRIES) {
@@ -1479,7 +1513,7 @@ export function needsAppIn(inner: Inner, ws: string): boolean {
   if (inner.host.appKeys === true || leftIn(inner, ws) === null) return false;
   const force = inForceOf(inner, ws);
   const base = part(inner, ws).base ?? bases.get(inner) ?? null;
-  if (force.said !== "waiting" && base !== null && live(force.f.devices.get(base), now(inner)) !== undefined) return false;
+  if (force.said !== "waiting" && force.said !== "off" && base !== null && live(force.f.devices.get(base), now(inner)) !== undefined) return false;
   const said = [...part(inner, ws).leftApps.values()];
   return said.length > 0 && !said.includes(true);
 }
@@ -2672,12 +2706,17 @@ export function lockView(inner: Inner, ws: string): J {
   const v = view(inner, ws);
   const force = inForceOf(inner, ws, h?.entries ?? []);
   const f = force.f;
-  const locked = h?.head != null && !f.disabled;
+  // A station's `left` refusal says safe mode is on there and does not name this device: even if this device still
+  // holds a cached `off` state from before safe mode was turned back on (`reopened`), let it enter the waiting and
+  // approval flow rather than stay stuck showing "off" with no way to ask for approval.
+  const leftOut = movedHere(inner, ws) && leftIn(inner, ws) !== null;
+  const reopened = force.said === "off" && leftOut;
+  const locked = h?.head != null && (!f.disabled || reopened);
   // Moved, and its settings not here yet (`waiting`): on, nobody and nothing listed, nothing asked of this device (no
   // pairing: it is not known to be left out). The nearest the topic has to "not read yet": no words of its own.
   // Told by a station that it is left out of the state in force there (`leftIn`): as before a move where it is not
   // confirmed, able to ask, the devices it was told to ask dialled.
-  const waits = force.said === "waiting" && leftIn(inner, ws) === null;
+  const waits = force.said === "waiting" && !leftOut;
   const sub = inner.workspaces.owner(ws);
   const at = now(inner);
   // (the first moment after `at` that what is made here reads otherwise by the clock alone: `shownUntil`)
@@ -2706,7 +2745,7 @@ export function lockView(inner: Inner, ws: string): J {
   // Made its person's only trusted device here (`lock.restartOwn`) while the workspace binds the lock of before
   // (`reboundIn`): the stations let it in by that lock alone, so an entry of its own in this one confirms nothing.
   const reboundHere = locked && !waits && reboundIn(inner, ws);
-  const mine = off || reboundHere ? undefined : base ? (live(f.devices.get(base), at) ?? (onBoundPerson(inner, ws) ? { id: base, sub: inner.workspaces.owner(ws), kind: "app" } : undefined)) : undefined;
+  const mine = off || reboundHere || reopened ? undefined : base ? (live(f.devices.get(base), at) ?? (onBoundPerson(inner, ws) ? { id: base, sub: inner.workspaces.owner(ws), kind: "app" } : undefined)) : undefined;
   const role = str(get(v, "role")) ?? "member";
   const manages = role === "owner" || role === "admin";
   const signs = mine !== undefined && typeof mine.sign_key === "string" && mine.sign_key === signer;
@@ -2894,7 +2933,7 @@ export function lockView(inner: Inner, ws: string): J {
   p.shownUntil = until;
   const root = movedHere(inner, ws) && role === "owner" && force.said !== "waiting" ? rootOf(inner, ws) : null;
   const rootText = root !== null && root.sub !== sub ? t("core-misc.lock.rootOnlyPage", { name: root.name }) : null;
-  const onAgain = root !== null && root.sub === sub && force.said === "off";
+  const onAgain = root !== null && root.sub === sub && force.said === "off" && !reopened;
   return {
     available: true,
     locked,
