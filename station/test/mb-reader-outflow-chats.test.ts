@@ -98,7 +98,7 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
     for (const sign of ["\"state\":\"working\"", "\"kind\":\"done\"", "\"kind\":\"need\"", "\"waitsFor\":[\"boss@x\"]", "\"card\":\"options\"", "\"waitsFor\":[\"sec@x\"]", "\"card\":\"secret\"", "\"kind\":\"failed\"", "\"note\":\"it broke\"", "\"archived\":true",
-      "\"router\":true", "\"title\":\"first line\"", "\"url\":\"https://app.x/o/home ws/st1/", "a%20b%2F%C3%A9%3F", "\"more\":true", "\"next\":", "\"name\":\"Ann\"", "\"surface\":\"stillfail\""])
+      "\"router\":true", "\"participants\":[\"p@x\",\"q@x\"]", "\"participants\":[\"ann@x\"]", "\"title\":\"first line\"", "\"url\":\"https://app.x/o/home ws/st1/", "a%20b%2F%C3%A9%3F", "\"more\":true", "\"next\":", "\"name\":\"Ann\"", "\"surface\":\"stillfail\""])
       assert.ok(said.includes(sign), sign);
   } finally {
     worker.close(); program.close();

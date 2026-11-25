@@ -124,6 +124,63 @@ test "rows as the indexes keep them" {
 }
 
 ///|
+test "task_rows_of and task_wire normalize participants, cap at 32, omit empty/absent" {
+  let many : Array[J] = []
+  for i = 0; i < 40; i = i + 1 {
+    many.push(jstr("User\{i}@Example.COM"))
+  }
+  let long_email = String::make(200, 'x') + "@x"
+  let rows = task_rows_of({
+    station: None,
+    usage: Null,
+    chats: [
+      jobj([
+        ("thread", ji(1)),
+        ("title", jstr("A")),
+        (
+          "participants",
+          Arr([
+            jstr("  Ann@X "),
+            jstr("ann@x"),
+            jstr("Bob@Y"),
+            jstr("not an email"),
+            jstr("local"),
+            jstr("slack:cm:Router"),
+            jstr("a@b@c"),
+            jstr(long_email),
+            ji(42),
+            Null,
+            jstr(""),
+          ]),
+        ),
+      ]),
+      jobj([("thread", ji(2)), ("title", jstr("Cap")), ("participants", Arr(many))]),
+      jobj([("thread", ji(3)), ("title", jstr("Empty")), ("participants", Arr([]))]),
+      jobj([("thread", ji(4)), ("title", jstr("Invalid")), ("participants", Arr([jstr("bad"), jstr("local")]))]),
+      jobj([("thread", ji(5)), ("title", jstr("Legacy"))]),
+    ],
+  })
+
+  let row1 = rows.get("1").unwrap().1
+  let w1 = task_wire({ key: "1", source: "stillfail", kind: "task", rev: 1.0, removed: false, json: row1 }).unwrap()
+  assert_eq(prop(Some(w1), "participants").map(stringify), Some("[\"ann@x\",\"bob@y\"]"))
+
+  let row2 = rows.get("2").unwrap().1
+  let w2 = task_wire({ key: "2", source: "stillfail", kind: "task", rev: 2.0, removed: false, json: row2 }).unwrap()
+  let ps2 = arr_of(prop(Some(w2), "participants")).unwrap()
+  assert_eq(ps2.length(), 32)
+  assert_eq(str_of(Some(ps2[0])), Some("user0@example.com"))
+  assert_eq(str_of(Some(ps2[31])), Some("user31@example.com"))
+
+  for key in ["3", "4", "5"] {
+    let raw = rows.get(key).unwrap().1
+    assert_true(prop(Some(parse_json(raw)), "participants") is None)
+    let w = task_wire({ key, source: "stillfail", kind: "task", rev: 3.0, removed: false, json: raw }).unwrap()
+    assert_true(prop(Some(w), "participants") is None)
+  }
+}
+
+///|
 test "a question card" {
   let card = @jsjson.parse("{\"type\":\"options\",\"options\":[{\"label\":\" a \"},{\"label\":\"b\",\"recommended\":true}]}")
   assert_eq(

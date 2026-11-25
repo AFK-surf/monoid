@@ -161,6 +161,38 @@ export const ROUTER_WROTE = "SELECT 1 FROM thread_people WHERE thread = ? AND au
 const routerWrote = (s: Store, thread: store.ThreadRow): boolean =>
   thread.surface === store.STILLFAIL_SURFACE && s.db.prepare(ROUTER_WROTE).get(thread.id) !== undefined;
 
+const MAX_PARTICIPANTS = 32;
+const MAX_PARTICIPANT_TEXT = 200;
+export const PARTICIPANTS_OF = "SELECT author FROM thread_people WHERE thread = ? LIMIT 64";
+
+/// The human participant emails of `thread`: its creator (if a valid email) plus anyone who spoke in it via
+/// `thread_people` (excluding the Comma Router and non-email ids), lowercase, distinct, at most MAX_PARTICIPANTS.
+function participantsOf(s: Store, thread: store.ThreadRow, connect: string | null, creatorEmail: string | null, resolve: (ref: string) => Json): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string) => {
+    const email = raw.trim().toLowerCase();
+    if (/^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_PARTICIPANT_TEXT && out.length < MAX_PARTICIPANTS && !seen.has(email)) {
+      seen.add(email);
+      out.push(email);
+    }
+  };
+  if (creatorEmail !== null) add(creatorEmail);
+  const isChat = thread.surface === store.STILLFAIL_SURFACE;
+  for (const row of s.db.prepare(PARTICIPANTS_OF).all(thread.id) as { author: unknown }[]) {
+    if (out.length >= MAX_PARTICIPANTS) break;
+    if (typeof row.author !== "string") continue;
+    if (isChat) {
+      if (row.author.startsWith("slack:") || row.author === "local") continue;
+      add(row.author);
+    } else if (connect !== null) {
+      const e = resolve(`slack:${connect}:${row.author}`)?.email;
+      if (typeof e === "string" && e !== "") add(e);
+    }
+  }
+  return out;
+}
+
 /// A page of chats: at most `limit`, those after `before` (the `next` of the page before).
 export type ChatsPage = { limit: number; before: string | null };
 
@@ -199,25 +231,32 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
   const listed = threads.flatMap(({ thread: id, at: lastActiveAt }) => {
     const thread = store.getThread(s, id);
     if (thread === null) return [];
-    const members = store.threadSessions(s, id).filter((m) => {
+    const allMembers = store.threadSessions(s, id);
+    let connect: string | null = null;
+    for (const m of allMembers) if (typeof m.connect === "string" && (connect === null || m.connect < connect)) connect = m.connect;
+    const members = allMembers.filter((m) => {
       if (!sessions.has(m.session)) sessions.set(m.session, store.getSession(s, m.session));
       const session = sessions.get(m.session);
       return session !== null && session !== undefined && sees(of, session.ws ?? null);
     });
     if (members.length === 0) return [];
-    return [{ thread, members, lastActiveAt }];
+    return [{ thread, members, lastActiveAt, connect }];
   });
   // Outflow only uses the latest turn. A full session summary also counts pending deliveries, which may be unbounded.
   const turnsBySession = new Map<string, ReturnType<typeof store.lastTurn>>();
   for (const { members } of listed) for (const { session } of members)
     if (!turnsBySession.has(session)) turnsBySession.set(session, store.lastTurn(s, session));
+  const peopleCache = new Map<string, Json>();
+  const resolvePerson = (ref: string) => (peopleCache.has(ref) ? peopleCache.get(ref) : peopleCache.set(ref, person(s, ref)).get(ref));
   const chats: Json[] = [];
-  for (const { thread, members, lastActiveAt } of listed) {
+  for (const { thread, members, lastActiveAt, connect } of listed) {
     const turns = members.map((m) => turnsBySession.get(m.session) ?? null).filter((x): x is NonNullable<typeof x> => x !== null);
     const latest = turns.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0] ?? null;
     const creator = thread.createdBy ?? sessions.get(members[0]!.session)?.createdBy ?? null;
-    const who = creator === null ? null : { ref: creator, ...person(s, creator) };
-    const attention = attentionOf(s, thread, latest, creator, typeof who?.email === "string" && who.email !== "" ? who.email : null);
+    const who = creator === null ? null : { ref: creator, ...resolvePerson(creator) };
+    const creatorEmail = typeof who?.email === "string" && who.email !== "" ? who.email : null;
+    const attention = attentionOf(s, thread, latest, creator, creatorEmail);
+    const participants = participantsOf(s, thread, connect, creatorEmail, resolvePerson);
     const lead = members.find((m) => latest !== null && turnsBySession.get(m.session) === latest)?.session ?? members[0]!.session;
     const url = pages === null ? null : sessionPage(pages, sessions.get(lead)?.ws ?? pages.workspace, lead);
     chats.push({
@@ -233,6 +272,7 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
       ...(attention === null ? {} : { attention }),
       ...(url === null ? {} : { url }),
       ...(routerWrote(s, thread) ? { router: true } : {}),
+      ...(participants.length > 0 ? { participants } : {}),
     });
   }
   if (page === null) return { since, chats };

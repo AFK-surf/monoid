@@ -8,6 +8,79 @@
 let outflow_chats_pending : String = "outflow chat order is still being prepared"
 
 ///|
+let max_participants : Int = 32
+
+///|
+let max_participant_text : Int = 200
+
+///|
+let participants_sql : String = "SELECT author FROM thread_people WHERE thread = ? LIMIT 64"
+
+///|
+/// /^[^\s@]+@[^\s@]+$/
+fn participant_email_like(s : String) -> Bool {
+  let n = s.length()
+  let mut at = -1
+  for i in 0..<n {
+    let c = s.unsafe_charcode_at(i)
+    if @jscase.is_space(c) {
+      return false
+    }
+    if c == '@' {
+      if at >= 0 {
+        return false
+      }
+      at = i
+    }
+  }
+  at > 0 && at < n - 1
+}
+
+///|
+/// outflow.ts `participantsOf`: the human participant emails of a chat (its creator if a valid email, plus anyone who
+/// spoke in it via `thread_people`, excluding the Comma Router and non-email ids), lowercase, distinct, at most 32.
+fn outflow_participants(
+  db : @sql.Db,
+  thread_id : Json,
+  surface : Json,
+  connect : String?,
+  creator_email : String?,
+  resolve : (String) -> Json raise,
+) -> Array[Json] raise {
+  let out : Array[String] = []
+  let add = (raw : String) => {
+    let email = @jscase.lower(@jscase.trim(raw))
+    if participant_email_like(email) &&
+      email.length() <= max_participant_text &&
+      out.length() < max_participants &&
+      !out.contains(email) {
+      out.push(email)
+    }
+  }
+  if creator_email is Some(e) {
+    add(e)
+  }
+  let is_chat = surface == Json::string("chat")
+  for row in db.all(participants_sql, [thread_id]) {
+    if out.length() >= max_participants {
+      break
+    }
+    guard field(row, "author") is String(author) else { continue }
+    if is_chat {
+      if author.has_prefix("slack:") || author == "local" {
+        continue
+      }
+      add(author)
+    } else if connect is Some(c) {
+      if resolve("slack:\{c}:\{author}").value("email") is Some(String(e)) && e != "" {
+        add(e)
+      }
+    }
+  }
+  out.map(Json::string)
+}
+
+///|
 /// outflow.ts `state`: how a chat stands by its agents' latest turn.
 fn outflow_state(turn : Json) -> Json {
   guard turn is Object(_) else { return Json::null() }
@@ -234,18 +307,26 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
       s
     }
   }
-  let listed : Array[(Map[String, Json], Array[String], Double)] = []
+  let listed : Array[(Map[String, Json], Array[String], Double, String?)] = []
   for t in threads {
     guard one(db, "SELECT * FROM threads WHERE id = ?", [t.0]) is Some(thread) else { continue }
     let members : Array[String] = []
+    let mut connect : String? = None
     for m in db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [t.0]) {
+      if field(m, "connect") is String(c) {
+        match connect {
+          None => connect = Some(c)
+          Some(prev) if c < prev => connect = Some(c)
+          _ => ()
+        }
+      }
       let k = js_text(field(m, "session"))
       if session_of(k) is Some(s) && sees_of(of, field(s, "ws")) {
         members.push(k)
       }
     }
     if members.length() > 0 {
-      listed.push((thread, members, t.1))
+      listed.push((thread, members, t.1, connect))
     }
   }
   let turns : Map[String, Json] = Map([])
@@ -265,9 +346,18 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
       t
     }
   }
+  let people_cache : Map[String, Json] = Map([])
+  let person_of = (r : String) => match people_cache.get(r) {
+    Some(p) => p
+    None => {
+      let p = outflow_person(host, data, sep, teams_of, r)
+      people_cache[r] = p
+      p
+    }
+  }
   let chats : Array[Json] = []
   for l in listed {
-    let (thread, members, last_active_at) = l
+    let (thread, members, last_active_at, connect) = l
     let id = field(thread, "id")
     let latest_list = stable_sort(members.filter_map(k => match turns.get(k) { Some(Object(_) as t) => Some((k, t)); _ => None }), (a, b) => {
       let d = num(b.1.value("startedAt").unwrap_or(Json::null())) - num(a.1.value("startedAt").unwrap_or(Json::null()))
@@ -284,7 +374,7 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     }
     let who = match creator {
       Some(c) =>
-        match outflow_person(host, data, sep, teams_of, c) {
+        match person_of(c) {
           Object(p) => {
             let m : Map[String, Json] = { "ref": Json::string(c) }
             for k, v in p {
@@ -298,6 +388,7 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     }
     let email = match who.value("email") { Some(String(e)) if e != "" => Some(e); _ => None }
     let attention = attention_of(db, thread, latest, creator, email)
+    let participants = outflow_participants(db, id, field(thread, "surface"), connect, email, person_of)
     let lead = match latest_list.get(0) {
       Some(p) => members.search_by(k => k == p.0).map(i => members[i]).unwrap_or(members[0])
       None => members[0]
@@ -334,6 +425,9 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     if field(thread, "surface") == Json::string("chat") &&
       one(db, "SELECT 1 AS x FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 1", [id]) is Some(_) {
       chat["router"] = true
+    }
+    if participants.length() > 0 {
+      chat["participants"] = Json::array(participants)
     }
     chats.push(Json::object(chat))
   }

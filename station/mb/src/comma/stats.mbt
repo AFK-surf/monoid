@@ -309,6 +309,9 @@ let card_kinds : Array[String] = ["options", "text", "login", "secret", "device"
 let max_waits : Int = 8
 
 ///|
+let max_participants : Int = 32
+
+///|
 let max_note : Int = 300
 
 ///|
@@ -373,6 +376,24 @@ fn attention_fields(chat : J) -> Array[(String, J?)] {
 }
 
 ///|
+/// Human participants of a chat as a Task index row's `participants`: each a lowercase email, distinct, at most
+/// MAX_PARTICIPANTS; None when absent or empty after normalization.
+fn participants_of(chat : J) -> J? {
+  guard arr_of(prop(Some(chat), "participants")) is Some(raw) else { return None }
+  let participants : Array[String] = []
+  for p in raw {
+    let email = match p {
+      Str(u) => @jscase.lower(js_trim(u))
+      _ => ""
+    }
+    if email_like(email) && email.length() <= max_text && participants.length() < max_participants && !participants.contains(email) {
+      participants.push(email)
+    }
+  }
+  if participants.length() > 0 { Some(Arr(participants.map(jstr))) } else { None }
+}
+
+///|
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
 fn url_of(url : J?) -> J? {
   match url {
@@ -412,7 +433,11 @@ pub fn task_rows_of(given : StationRows) -> Map[String, (String, String)] {
         ("station", given.station.map(jstr)),
       ] +
       attention_fields(c) +
-      [("url", url_of(prop(cc, "url"))), ("router", if prop(cc, "router") is Some(Bool(true)) { Some(Bool(true)) } else { None })],
+      [
+        ("url", url_of(prop(cc, "url"))),
+        ("router", if prop(cc, "router") is Some(Bool(true)) { Some(Bool(true)) } else { None }),
+        ("participants", participants_of(c)),
+      ],
     )
     rows[ref_] = ("task", json)
   }
@@ -1267,6 +1292,13 @@ pub fn task_wire(row : IndexRow) -> J? {
         },
       ),
       ("router", if prop(tt, "router") is Some(Bool(true)) { Some(Bool(true)) } else { None }),
+      (
+        "participants",
+        match prop(tt, "participants") {
+          Some(Arr(items)) if items.length() > 0 => Some(Arr(items))
+          _ => None
+        },
+      ),
     ]),
   )
 }

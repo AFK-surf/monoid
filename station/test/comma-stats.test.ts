@@ -426,3 +426,48 @@ test("the Task index says which chats a Comma Router wrote in, with a key or wit
     await rig.hub.shutdown();
   }
 });
+
+test("the Task index carries normalized human participants within bounds, omits empty or legacy absent ones, and preserves creator + speakers end to end", async () => {
+  const stats = CommaStats.at(tempdir(), nothing, quiet);
+  const rig = new Rig();
+  try {
+    const forty = Array.from({ length: 40 }, (_, i) => `User${i}@Example.com`);
+    stats.apply([here([], {}, [
+      { ...chat(1, "working"), participants: ["  Ann@X ", "ann@x", "Bob@Y", "not an email", "local", "slack:cm:Router", "a@b@c", "x".repeat(200) + "@x", 42, null, ""] },
+      { ...chat(2, "working"), participants: forty },
+      { ...chat(3, "working"), participants: [] },
+      { ...chat(4, "working"), participants: ["not-email", "local", "bad@"] },
+      chat(5, "working"),
+    ])], [], FROM);
+    const stored = new Map(rows(stats.tasks).map((r) => [r.row.task, r.row]));
+    const wire = new Map(stats.tasks.since(0, 10).map(taskWire).map((w: Json) => [w.task, w]));
+    assert.deepEqual(stored.get("1").participants, ["ann@x", "bob@y"]);
+    assert.deepEqual(wire.get("1").participants, ["ann@x", "bob@y"]);
+    assert.deepEqual(wire.get("2").participants, forty.slice(0, 32).map((e) => e.toLowerCase()), "capped at 32");
+    assert.equal("participants" in stored.get("3"), false, "empty participants omitted from stored row");
+    assert.equal("participants" in wire.get("3"), false, "empty participants omitted from wire row");
+    assert.equal("participants" in stored.get("4"), false, "all-invalid participants omitted");
+    assert.equal("participants" in wire.get("4"), false);
+    assert.equal("participants" in stored.get("5"), false, "legacy input without participants stays backward-compatible");
+    assert.equal("participants" in wire.get("5"), false);
+
+    // End-to-end from store -> outflowChats -> taskRowsOf -> taskWire: includes creator + human speakers, excludes agent & Router.
+    rig.store.insertSession({ key: "multi", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "multi", createdAt: 1, lastActiveAt: 1, ws: null } as never);
+    const t = rig.store.openThreadOf("ember", "CHAT", "multi", "Multi", "Alice@Example.com", "multi");
+    rig.store.joinThread(t.id, "multi", "ember");
+    rig.store.insertMessage(newMessage(t.id, "m.1", "person", "Bob@Example.com", "joining in"));
+    rig.store.insertMessage(newMessage(t.id, "m.2", "agent", "multi", "working on it"));
+    rig.store.insertMessage(newMessage(t.id, "m.3", "person", "slack:cm:Router", "routed"));
+    rig.store.insertMessage(newMessage(t.id, "m.4", "person", "local", "local msg"));
+    installOutflowChatIndex(rig.store.db);
+    for (const scope of outflowChatScopes(HOME)) while (!outflowChatIndexStep(rig.store.db, scope).done) { /* bounded batches */ }
+    const got = outflowChats(read.makeStore(rig.store.db, rig.dir), 0) as Json;
+    assert.deepEqual(got.chats[0].participants, ["alice@example.com", "bob@example.com"]);
+    stats.apply([here([], {}, got.chats)], [], FROM);
+    const e2eWire = stats.tasks.since(0, 20).map(taskWire).find((w: Json) => w.task === String(t.id));
+    assert.deepEqual(e2eWire.participants, ["alice@example.com", "bob@example.com"]);
+  } finally {
+    stats.close();
+    await rig.hub.shutdown();
+  }
+});

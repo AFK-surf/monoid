@@ -112,6 +112,7 @@ export function statsRowsOf(given: StationRows, fromDay: string): Map<string, { 
 const ATTENTION = ["need", "done", "failed"];
 const CARD_KINDS = ["options", "text", "login", "secret", "device", "rig", "signin"];
 const MAX_WAITS = 8;
+const MAX_PARTICIPANTS = 32;
 const MAX_NOTE = 300;
 const MAX_URL = 500;
 
@@ -135,6 +136,18 @@ function attentionFields(chat: Json): Json {
   };
 }
 
+/// Human participants of a chat as a Task index row's `participants`: each a lowercase email, distinct, at most
+/// MAX_PARTICIPANTS; absent when missing or empty after normalization.
+function participantsFields(chat: Json): Json {
+  if (!Array.isArray(chat.participants)) return {};
+  const participants = new Set<string>();
+  for (const p of chat.participants) {
+    const email = typeof p === "string" ? p.trim().toLowerCase() : "";
+    if (/^[^\s@]+@[^\s@]+$/.test(email) && email.length <= MAX_TEXT && participants.size < MAX_PARTICIPANTS) participants.add(email);
+  }
+  return participants.size > 0 ? { participants: [...participants] } : {};
+}
+
 /// A chat's link in the app, as Comma takes one: https, at most MAX_URL.
 const urlOf = (url: unknown): Json => (typeof url === "string" && url.startsWith("https://") && url.length <= MAX_URL ? { url } : {});
 
@@ -150,7 +163,7 @@ export function taskRowsOf(given: StationRows): Map<string, { kind: string; json
       created_by: cut(c.creator === null || c.creator === undefined ? null : who(c.creator, c.creator.ref ?? null), MAX_TEXT),
       created_at: c.createdAt ?? 0, last_activity_at: c.lastActiveAt ?? c.createdAt ?? 0,
       runtime: cut(agent?.runtime, 40), model: cut(agent?.model, 120), ...(given.station === undefined ? {} : { station: given.station }),
-      ...attentionFields(c), ...urlOf(c.url), ...(c.router === true ? { router: true } : {}),
+      ...attentionFields(c), ...urlOf(c.url), ...(c.router === true ? { router: true } : {}), ...participantsFields(c),
     };
     rows.set(ref, { kind: "task", json: JSON.stringify(row) });
   }
@@ -559,6 +572,7 @@ export function taskWire(row: IndexRow): Json | null {
       ...(typeof t.attention === "string" && typeof t.note === "string" ? { note: t.note } : {}),
       ...(typeof t.url === "string" ? { url: t.url } : {}),
       ...(t.router === true ? { router: true } : {}),
+      ...(Array.isArray(t.participants) && t.participants.length > 0 ? { participants: t.participants } : {}),
     };
   } catch {
     return null;
