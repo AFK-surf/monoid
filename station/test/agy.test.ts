@@ -1052,13 +1052,8 @@ test("agy stopped after its code: what it shows is said, not the code blamed; a 
   // (its clock moved on a little as each look is taken, as the sign-in's own waits are on it)
   const ticking = (f: () => boolean) => until(async () => (await time.adjust(50), f()));
   const wait = async (id: string, state: LoginState) => ticking(() => logins.get(id)?.state === state);
-  // (the clock moved on past its wait, the sign-in's look at its file each half second given its turn)
-  const pastWait = async (id: string) => {
-    for (let i = 0; i < 200 && logins.get(id)?.state === "verifying"; i++) {
-      await time.adjust(1000);
-      await new Promise((r) => setImmediate(r));
-    }
-  };
+  // (the clock moved on past its wait while waiting for look()'s async readFile on libuv to settle)
+  const pastWait = (id: string) => until(async () => (await time.adjust(30_000), logins.get(id)?.state !== "verifying"));
   try {
     await logins.start({ id: "s14", runtime: "agy", home, enterprise: true }, "en");
     await wait("s14", "needs_code");
