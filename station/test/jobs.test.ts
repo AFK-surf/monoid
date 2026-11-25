@@ -214,12 +214,14 @@ describe("jobs", { concurrency: true }, () => {
       const nice = (pid: number) => Number(execFileSync("ps", ["-o", "nice=", "-p", String(pid)], { encoding: "utf8" }).trim());
       // `nice` lowers itself, then execs the job: looked at until it has (it is this process's niceness till then), and
       // compared with this process's (a shell's background job here may run lowered already).
+      const baseNice = nice(process.pid);
+      const wantNice = Math.min(19, baseNice + agentNice());
       let got = nice(pgid);
-      while (got === nice(process.pid)) {
+      while (wantNice !== baseNice && got !== wantNice) {
         await new Promise((r) => setTimeout(r, 10));
         got = nice(pgid);
       }
-      assert.equal(got, Math.min(19, nice(process.pid) + agentNice()));
+      assert.equal(got, wantNice);
     }
     await r.jobs.notified(job.token, "  half way  ");
     assert.deepEqual(r.said(), [`Job "long" (${job.id}) says: half way`]);

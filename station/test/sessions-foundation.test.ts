@@ -10,7 +10,7 @@
 // - Shared `pion-sqlite-tx-scanner.ts` concatenated raw-tx SQL detection & missing-directory throw
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -28,6 +28,7 @@ import {
 import {
   mbReaderBinary,
   pionBinary,
+  probePionSupportedModes,
   resetReaderSelectionStateForTest,
   setMbReaderBinaryOverrideForTest,
   setPionProbeRunnerForTest,
@@ -1221,19 +1222,23 @@ test("W8-F PP4: agent.steer(true) does NOT coarsely clear another provisional de
     assert.equal((await f.rpc("store.markUndelivered", ["s", rows, 401])).error, undefined);
     assert.deepEqual(f.writes, ["old"]);
 
-    // Now test `{ db: null }` rotation clears provisional batches cleanly.
+    // Now test `{ db: null }` rotation clears provisional batches cleanly, AND a same-key replacement
+    // actor registered before a late 3-arg `store.markUndelivered` MUST NOT receive the stale undo!
     const old2 = await f.register("old2");
     assert.equal((await f.rpc("store.markDelivered", ["s", rows, 402])).error, undefined);
     await old2.snapshot();
     f.program.post({ db: null });
+    const replacement = await f.register("replacement");
     const probeAfterDb = await f.rpc("store.markUndelivered", ["s", rows, 402]);
-    assert.equal(probeAfterDb.error?.actorClosed, true, "{ db } rotation must clear provisional deliveries");
+    assert.equal(probeAfterDb.error?.actorClosed, true, "stale 3-arg store.markUndelivered must return actorClosed: true");
+    assert.deepEqual(f.writes, ["old"], "replacement actor must NEVER be written by stale 3-arg undo");
+    await replacement.snapshot();
   } finally {
     await f.close();
   }
 });
 
-test("W8-F: AgentsHost.replay().close() sends codexReplayed when reader is alive", async (t) => {
+test("W8-F: AgentsHost.replay().close() sends codexReplayed when reader is alive and IDs never collide across AgentsHost instances on a shared SessionsProgram", async (t) => {
   const pion = requirePionOrSkip(t);
   if (pion === null) return;
   const { AgentsHost } = await import("../src/agents/mb-agents.ts");
@@ -1241,29 +1246,112 @@ test("W8-F: AgentsHost.replay().close() sends codexReplayed when reader is alive
   const prev = process.env.STILLFAIL_READER_SESSIONS;
   process.env.STILLFAIL_READER_SESSIONS = "pion";
   resetReaderSelectionStateForTest();
-  const host = AgentsHost.where(data);
-  const posted: any[] = [];
-  const origPost = host.post.bind(host);
-  host.post = (msg: any) => {
-    posted.push(msg);
-    origPost(msg);
+
+  // Keep the underlying SessionsProgram alive via an actors user while Host A closes and Host B opens.
+  const keepAliveUser: ProgramUser = { actors: true, said: () => {}, exited: () => {} };
+  const sharedProg = SessionsProgram.of(data, true)!;
+  sharedProg.use(keepAliveUser);
+
+  const hostA = AgentsHost.where(data);
+  const postedA: any[] = [];
+  const origPostA = hostA.post.bind(hostA);
+  hostA.post = (msg: any) => {
+    postedA.push(msg);
+    origPostA(msg);
   };
-  const driver = {};
-  host.use(driver);
+  const driverA = {};
+  hostA.use(driverA);
   try {
-    const rep = host.replay();
-    rep.feed([["thread-1", "item/started", { item: { id: "c1", type: "commandExecution", command: "echo 1" } }]]);
-    rep.close();
-    const feedMsg = posted.find((m) => typeof m.codexReplay === "number");
-    assert.ok(feedMsg, "expected codexReplay post");
+    const repA = hostA.replay();
+    repA.feed([["item/started", "thread-1", "commandExecution", "c1"]]);
+    repA.close();
+    const feedMsgA = postedA.find((m) => typeof m.codexReplay === "number");
+    assert.ok(feedMsgA, "expected codexReplay post from Host A");
     assert.ok(
-      posted.some((m) => m.codexReplayed === feedMsg.codexReplay),
-      `expected codexReplayed:${feedMsg.codexReplay} on replay.close(), got: ${JSON.stringify(posted)}`,
+      postedA.some((m) => m.codexReplayed === feedMsgA.codexReplay),
+      `expected codexReplayed:${feedMsgA.codexReplay} on replay.close(), got: ${JSON.stringify(postedA)}`,
     );
+    await hostA.close(driverA);
+
+    // Open Host B on the exact same `data` (reuses `sharedProg`): its replay ID MUST be strictly > Host A's ID,
+    // so any late `{ replayed: idA }` from Host A cannot corrupt Host B's replay!
+    const hostB = AgentsHost.where(data);
+    assert.notEqual(hostB, hostA);
+    const postedB: any[] = [];
+    const origPostB = hostB.post.bind(hostB);
+    hostB.post = (msg: any) => {
+      postedB.push(msg);
+      origPostB(msg);
+    };
+    const driverB = {};
+    hostB.use(driverB);
+    try {
+      const repB = hostB.replay();
+      repB.feed([["item/started", "thread-2", "commandExecution", "c2"]]);
+      const feedMsgB = postedB.find((m) => typeof m.codexReplay === "number");
+      assert.ok(feedMsgB, "expected codexReplay post from Host B");
+      assert.ok(
+        feedMsgB.codexReplay > feedMsgA.codexReplay,
+        `Host B replay id (${feedMsgB.codexReplay}) must exceed Host A id (${feedMsgA.codexReplay}) on shared SessionsProgram`,
+      );
+      const liveB = await repB.done();
+      assert.ok(
+        liveB["thread-2"] !== undefined && JSON.stringify(liveB["thread-2"]).includes("c2"),
+        `Host B replay must resolve with its own thread-2 step c2, got: ${JSON.stringify(liveB)}`,
+      );
+      repB.close();
+    } finally {
+      await hostB.close(driverB);
+    }
   } finally {
-    await host.close(driver);
+    await sharedProg.release(keepAliveUser);
     if (prev === undefined) delete process.env.STILLFAIL_READER_SESSIONS;
     else process.env.STILLFAIL_READER_SESSIONS = prev;
+    resetReaderSelectionStateForTest();
+  }
+});
+
+test("W8-F P1-3: pion --version probe settles to null on >64 KiB stdout and when a grandchild holds stdout open after direct child exits", async () => {
+  const dir = makeTmp("sf-w8-probe-");
+  resetReaderSelectionStateForTest();
+
+  // (a) Over-limit stdout (>64 KiB) settles immediately to null.
+  const bigBin = join(dir, "big-stdout.mjs");
+  writeFileSync(
+    bigBin,
+    `#!${process.execPath}\nprocess.stdout.write("x".repeat(80 * 1024));\n`,
+    "utf8",
+  );
+  chmodSync(bigBin, 0o755);
+  const bigRes = await probePionSupportedModes(bigBin);
+  assert.equal(bigRes, null, "probe output exceeding 64 KiB must settle to null");
+
+  // (b) Direct child exits 0 while a spawned grandchild keeps stdout pipe open ->
+  // must settle to null after timeout (never hang forever). Clean up grandchild PID in finally.
+  const pidFile = join(dir, "grandchild.pid");
+  const holdBin = join(dir, "grandchild-stdout.mjs");
+  writeFileSync(
+    holdBin,
+    [
+      `#!${process.execPath}`,
+      `import { spawn } from "node:child_process";`,
+      `import { writeFileSync } from "node:fs";`,
+      `const gc = spawn(process.execPath, ["-e", "setInterval(() => {}, 60000)"], { stdio: ["ignore", 1, "ignore"], detached: true });`,
+      `writeFileSync(${JSON.stringify(pidFile)}, String(gc.pid));`,
+      `gc.unref();`,
+      `process.exit(0);`,
+    ].join("\n"),
+    "utf8",
+  );
+  chmodSync(holdBin, 0o755);
+  try {
+    const holdRes = await probePionSupportedModes(holdBin);
+    assert.equal(holdRes, null, "probe with grandchild holding stdout open must time out and settle to null");
+  } finally {
+    try {
+      const gcPid = Number(readFileSync(pidFile, "utf8").trim());
+      if (Number.isInteger(gcPid) && gcPid > 0) process.kill(gcPid, "SIGKILL");
+    } catch {}
     resetReaderSelectionStateForTest();
   }
 });

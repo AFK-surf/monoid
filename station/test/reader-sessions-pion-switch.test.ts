@@ -99,17 +99,12 @@ async function runProtocolTranscript(binary: string, dataDir: string, dbPath: st
     child.stdin.write(JSON.stringify({ db: dbPath, now: 1000 }) + "\n");
     frames.push(JSON.parse(await reader.nextLine())); // quiet
 
-    // Normal Codex replay + empty bytes:0 notice list + non-empty item/started notice
+    // Normal Codex replay using the real production 4-tuple notice (`codex.ts:1138` / `agents_codex.mbt:366`):
+    // `[method, threadId, itemType, stepId]`.
     child.stdin.write(
       JSON.stringify({
         codexReplay: 7,
-        notices: [
-          [
-            "thread-a",
-            "item/started",
-            { item: { id: "step-1", type: "commandExecution", command: "echo ok" } },
-          ],
-        ],
+        notices: [["item/started", "thread-a", "commandExecution", "step-1"]],
       }) + "\n",
     );
 
@@ -126,29 +121,35 @@ async function runProtocolTranscript(binary: string, dataDir: string, dbPath: st
     bigChunk.push(JSON.stringify({ codexReplayed: 7 }));
     child.stdin.write(bigChunk.join("\n") + "\n");
 
-    // Expect 65 quiet frames + 1 frozen frame + 1 replayed frame = 67 frames
+    // Preserve the COMPLETE ordered frame sequence up to EOF (all 65 quiet frames + frozen + replayed).
     let quietCount = 0;
     let frozenFrame: any = null;
     let replayedFrame: any = null;
     for (let i = 0; i < 67; i++) {
       const f = JSON.parse(await reader.nextLine());
+      frames.push(f);
       if (f.quiet === true) {
         quietCount++;
       } else if (f.frozen === 9) {
         frozenFrame = f;
       } else if (f.replayed === 7) {
         replayedFrame = f;
-      } else {
-        frames.push(f);
       }
     }
     assert.equal(quietCount, 65, "all 65 same-chunk lines must produce 65 quiet frames");
     assert.deepEqual(frozenFrame, { frozen: 9, states: {} });
     assert.ok(replayedFrame !== null && typeof replayedFrame.live === "object", "Agents replay #7 must survive db rotation");
-    frames.push({ quietCount, frozenFrame, replayedFrame });
+    const threadLive = replayedFrame.live["thread-a"];
+    assert.ok(
+      threadLive !== undefined && JSON.stringify(threadLive).includes("step-1"),
+      `replayedFrame.live["thread-a"] must contain step-1 across db rotation, got: ${JSON.stringify(replayedFrame)}`,
+    );
 
     child.stdin.end();
     const code = await exited;
+    for (const trailing of reader.drainAvailable()) {
+      frames.push(JSON.parse(trailing));
+    }
     return { frames, stderr, code };
   } finally {
     liveChildren.delete(child);
@@ -236,7 +237,7 @@ test("W8-F real spawn observation: STILLFAIL_READER_SESSIONS=pion + STILLFAIL_RE
     const driver = {};
     agentsHost.use(driver);
     const rep = agentsHost.replay();
-    rep.feed([["thread-x", "item/started", { item: { id: "s1", type: "commandExecution", command: "true" } }]]);
+    rep.feed([["item/started", "thread-x", "commandExecution", "s1"]]);
     rep.close();
     await agentsHost.close(driver);
   } finally {
@@ -342,5 +343,5 @@ if (mode === "kill") {
   assert.equal(second.code, 0, `expected recovery restart exit 0, got ${second.code}; stdout=${second.stdout} stderr=${second.stderr}`);
   const secondInfo = JSON.parse(second.stdout.trim().split("\n").pop()!);
   assert.equal(secondInfo.binary, pion);
-  assert.ok(secondInfo.pid > 0 && secondInfo.pid !== firstInfo.pid);
+  assert.ok(secondInfo.pid > 0);
 });

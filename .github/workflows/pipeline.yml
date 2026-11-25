@@ -645,7 +645,7 @@ jobs:
         run: cd station && node ../scripts/native.ts run runner reader -- node --import ./test/setup-env.mjs --test test/runner-windows.test.ts
       # The remote tasks' paths as Windows has them, joined and judged by the MoonBit program (`--sessions --sep \`).
       - name: Remote tasks' paths on Windows
-        run: cd station && node ../scripts/native.ts run runner reader -- node --import ./test/setup-env.mjs --test --test-name-pattern='Windows|stays in its task' test/remote.test.ts
+        run: cd station && node ../scripts/native.ts run runner reader -- node --import ./test/setup-env.mjs --test --test-name-pattern='Windows|stays in its task' test/remote.test.ts test/remote-windows-paths.test.ts
       - name: Windows installer handover diagnostics
         run: node --test --test-name-pattern='the Windows installer reports the new process' cloud/test/install-windows.test.ts
       # `stillfail admin` under Windows PowerShell 5.1 and PowerShell 7 (bin/stillfail.ps1).

@@ -419,6 +419,10 @@ export class ActorsProgram {
       return;
     }
     if (typeof said?.rpc === "number") {
+      const strictProvisionalUndo =
+        said.fn === "store.markUndelivered" &&
+        Array.isArray(said.args) &&
+        typeof said.args[2] === "number";
       if (
         (said.fn === "agent.dispose" || said.fn === "agent.steer") &&
         Array.isArray(said.args) &&
@@ -433,15 +437,13 @@ export class ActorsProgram {
       ) {
         const owner = this.#stateWriteOwners.get(said.args[2]);
         if (owner !== undefined) actor = owner;
-      } else if (
-        said.fn === "store.markUndelivered" &&
-        Array.isArray(said.args) &&
-        typeof said.args[2] === "number"
-      ) {
-        const owner = this.#provisionalDeliveries.get(said.args[2]);
-        if (owner !== undefined) actor = owner;
+      } else if (strictProvisionalUndo) {
+        // 3-arg provisional delivery undo MUST hit its recorded owner strictly;
+        // never fall back to a same-key replacement actor or #latestRetired.
+        actor = this.#provisionalDeliveries.get(said.args[2]);
       }
       if (
+        !strictProvisionalUndo &&
         actor === undefined &&
         typeof said.actor === "string" &&
         typeof said.fn === "string" &&

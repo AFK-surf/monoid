@@ -323,7 +323,8 @@ function pionSessionsWrong(s: Sources): string[] {
 
   const wrong: string[] = [];
 
-  // 1. Actor `gen.rpc_k(host, key, "node.xxx" | "t", ...)` (3-arg) AND `rpc_k(key, "node.xxx" | "t", ...)` (2-arg).
+  // 1. Actor `gen.rpc_k(host, key, "node.xxx" | "t", ...)` (3-arg), `rpc_k(key, "node.xxx" | "t", ...)` (2-arg),
+  //    AND `rpc_direct_k(key, "node.xxx" | "agent.xxx" | "t", ...)` (2-arg).
   //    Using negative lookahead `(?!\s*")` on the 3rd arg of the 2-arg pattern ensures a literal key in
   //    `gen.rpc_k(host, "s1", "node.xxx", ...)` is NEVER misread as `f`.
   const rpcCalls = new Map<string, string>();
@@ -334,7 +335,7 @@ function pionSessionsWrong(s: Sources): string[] {
       const line = text.slice(0, m.index!).split("\n").length;
       if (!rpcCalls.has(f)) rpcCalls.set(f, `${name}:${line}`);
     }
-    for (const m of text.matchAll(/\brpc_k\(\s*[^,]+,\s*"([^"]+)"\s*,(?!\s*")/g)) {
+    for (const m of text.matchAll(/\brpc(?:_direct)?_k\(\s*[^,]+,\s*"([^"]+)"\s*,(?!\s*")/g)) {
       const f = m[1]!;
       const line = text.slice(0, m.index!).split("\n").length;
       if (!rpcCalls.has(f)) rpcCalls.set(f, `${name}:${line}`);
@@ -348,7 +349,12 @@ function pionSessionsWrong(s: Sources): string[] {
       if (!nodeCases.has(name)) {
         wrong.push(`${where} asks "${f}", which no \`case "${name}":\` of mb-actor.ts asked()'s node switch answers${agentCases.has(name) ? " (only its agent block has it)" : ""}`);
       }
-    } else if (!f.startsWith("store.") && !f.startsWith("deps.") && !f.startsWith("agent.")) {
+    } else if (f.startsWith("agent.")) {
+      const name = f.slice("agent.".length);
+      if (!agentCases.has(name) && !methods.has(name)) {
+        wrong.push(`${where} asks "${f}", answered neither by mb-actor.ts asked()'s agent block nor a runtime session's method`);
+      }
+    } else if (!f.startsWith("store.") && !f.startsWith("deps.")) {
       wrong.push(`${where} asks "${f}", a part mb-actor.ts asked() does not dispatch`);
     }
   }
@@ -360,8 +366,8 @@ function pionSessionsWrong(s: Sources): string[] {
     }
   }
 
-  // 3. Actor `store_k(a, "xxx", ...)`
-  for (const [name, where] of literals(s, pionFiles, /\bstore_k\(\s*[^,]+,\s*"([^"]+)"/g)) {
+  // 3. Actor `store_k(a, "xxx", ...)` AND `store_direct_k(key, "xxx", ...)`
+  for (const [name, where] of literals(s, pionFiles, /\bstore(?:_direct)?_k\(\s*[^,]+,\s*"([^"]+)"/g)) {
     if (!new RegExp(`\\b${name}\\??\\s*\\(`).test(storeText)) {
       wrong.push(`${where} calls store_k "${name}", missing in mb-actor.ts / station/src/store/`);
     }
@@ -447,7 +453,7 @@ test("Pion --sessions source discovery fails loudly on missing packages root or 
   );
 });
 
-test("Pion --sessions matcher negative 1: catches real gen.rpc_k(host, key, ...) and 2-arg rpc_k for agent-only node.* and missing \"t\"", () => {
+test("Pion --sessions matcher negative 1: catches real gen.rpc_k(host, key, ...), rpc_direct_k, store_direct_k, and 2-arg rpc_k for agent-only node.* and missing \"t\"", () => {
   const base = pionSessionsSources();
   const s1: Sources = {
     ...base,
@@ -455,9 +461,15 @@ test("Pion --sessions matcher negative 1: catches real gen.rpc_k(host, key, ...)
       'gen.rpc_k(host, a.key, "node.noSuchMethod", [], mirror, k)',
       'gen.rpc_k(host, "literal-key", "node.holding", [], mirror, k)',
       'rpc_k(a.key, "t", [])',
+      'self.rpc_direct_k(a.key, "node.noSuchDirect", [], k)',
+      'self.rpc_direct_k(a.key, "agent.noSuchDirectAgent", [], k)',
+      'self.store_direct_k(a.key, "noSuchDirectStore", [], k)',
     ].join("\n"),
   };
   const wrong1 = pionSessionsWrong(s1);
+  assert.ok(wrong1.some((w) => w.includes('"node.noSuchDirect"')), wrong1.join("\n"));
+  assert.ok(wrong1.some((w) => w.includes('"agent.noSuchDirectAgent"')), wrong1.join("\n"));
+  assert.ok(wrong1.some((w) => w.includes('"noSuchDirectStore"')), wrong1.join("\n"));
   assert.ok(wrong1.some((w) => w.includes('"node.noSuchMethod"')), wrong1.join("\n"));
   assert.ok(wrong1.some((w) => w.includes('"node.holding"') && w.includes("only its agent block")), wrong1.join("\n"));
   assert.ok(!wrong1.some((w) => w.includes('"literal-key"')), `literal key must not be misparsed as RPC fn: ${wrong1.join("\n")}`);

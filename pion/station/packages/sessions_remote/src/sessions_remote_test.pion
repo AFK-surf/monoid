@@ -535,6 +535,7 @@ test "sessions_remote: remote_called_k listLocal, sync.manifest/base, mirror col
     },
     agents_told: dispatch.agents_told,
     agents_take: dispatch.agents_take,
+    handle_due: dispatch.handle_due,
     is_stub: false,
   }
   let dirsync = make_fake_dirsync(sub_manifests, manifests_by_path, called_ops)
@@ -2602,16 +2603,11 @@ test "sessions_remote: remote_changed stripped id and relieve_k over-budget vs d
   let fs = MemFs::new("/")
   let cur = PumpCursor::new()
 
-  // 1. remote_changed works with both stripped task_id (from JobsCtx::remote_changed) and prefixed "remote_<id>"
+  // 1. remote_changed accepts stripped task_id (from JobsCtx::remote_changed) and ignores empty id
   let tid1 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-  let tid2 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   fs.add_file(
     ctx.rjoin([state.root, "incoming", tid1, "task.json"]),
     "{\"workspace\":\"ws1\",\"station\":\"st1\",\"push\":\"1111111111111111111111111111111111111111111111111111111111111111\"}",
-  )
-  fs.add_file(
-    ctx.rjoin([state.root, "incoming", tid2, "task.json"]),
-    "{\"workspace\":\"ws1\",\"station\":\"st1\",\"push\":\"2222222222222222222222222222222222222222222222222222222222222222\"}",
   )
   let mut pushed_refs : Array[String] = []
   let rpc_rc = fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
@@ -2632,10 +2628,11 @@ test "sessions_remote: remote_changed stripped id and relieve_k over-budget vs d
     }
     base_codec::json_null()
   }
+  ctx.remote_changed("")
   ctx.remote_changed(tid1)
-  ctx.remote_changed("remote_" + tid2)
   pump_all(host, gen, mem, fs, cur, rpc_rc)
-  assert(pushed_refs.length() == 2)
+  assert(pushed_refs.length() == 1)
+  assert(pushed_refs[0] == "1111111111111111111111111111111111111111111111111111111111111111")
 
   // 2. #8731: relieve_k reports "over budget" when state.over > 0 and "disk low" when state.over == 0
   let run_relieve = fn(over_bytes : Double) -> Array[String] {

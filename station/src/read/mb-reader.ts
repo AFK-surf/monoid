@@ -123,6 +123,8 @@ export const PION_BASELINE_MODES: ReadonlySet<ReaderMode> = new Set<ReaderMode>(
 
 /// Cooldown before retrying a failed or timed-out `--version` probe (transient load should not lock out Pion forever).
 const PION_PROBE_RETRY_COOLDOWN_MS = 30_000;
+/// Maximum stdout bytes accepted from `stillfail-pion --version` (matches `front.rs` `PROBE_STDOUT_LIMIT`).
+const PION_PROBE_STDOUT_LIMIT = 64 * 1024;
 
 const probedPionModes = new Map<string, ReadonlySet<string>>();
 const probingPionModes = new Map<string, Promise<ReadonlySet<string> | null>>();
@@ -191,35 +193,62 @@ export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
       try {
         const child = spawn(key, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
         let stdout = "";
-        child.stdout.setEncoding("utf8");
-        child.stdout.on("data", (chunk: string) => {
-          stdout += chunk;
-        });
+        let stdoutBytes = 0;
         let timedOut = false;
         let checkImm: NodeJS.Immediate | null = null;
-        // timer: a timeout or deadline for the --version capability probe
-        const stopTimer = wall.after(3_000, () => {
-          // Defer the kill check past one libuv poll turn (`setImmediate` runs in the check
-          // phase after I/O + SIGCHLD) so a child that already exited during a synchronous
-          // main-thread stall gets reaped and its stdout drained before declaring timeout.
-          checkImm = setImmediate(() => {
-            checkImm = null;
-            if (!settled && child.exitCode === null && child.signalCode === null) {
-              timedOut = true;
-              try {
-                child.kill("SIGKILL");
-              } catch {}
-              finish(null);
-            }
-          });
-        });
+        let stopDrainTimer: (() => void) | null = null;
         const clearTimers = () => {
           stopTimer();
+          if (stopDrainTimer !== null) {
+            stopDrainTimer();
+            stopDrainTimer = null;
+          }
           if (checkImm !== null) {
             clearImmediate(checkImm);
             checkImm = null;
           }
         };
+        const abortProbe = () => {
+          timedOut = true;
+          clearTimers();
+          child.stdout.destroy();
+          if (child.exitCode === null && child.signalCode === null) {
+            try {
+              child.kill("SIGKILL");
+            } catch {}
+          }
+          finish(null);
+        };
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          if (settled) return;
+          stdoutBytes += Buffer.byteLength(chunk, "utf8");
+          if (stdoutBytes > PION_PROBE_STDOUT_LIMIT) {
+            abortProbe();
+            return;
+          }
+          stdout += chunk;
+        });
+        // timer: a timeout or deadline for the --version capability probe
+        const stopTimer = wall.after(3_000, () => {
+          // Defer past one libuv poll turn (`setImmediate` runs in the check phase after I/O + SIGCHLD)
+          // so a child that already exited during a synchronous main-thread stall gets reaped first.
+          // If it has exited but `close` has not fired yet (stdout EOF pending or grandchild holding stdout),
+          // allow a brief 100ms drain grace before destroying stdout and settling as `null`.
+          checkImm = setImmediate(() => {
+            checkImm = null;
+            if (settled) return;
+            if (child.exitCode === null && child.signalCode === null) {
+              abortProbe();
+            } else {
+              // timer: a brief drain deadline when the child exited but stdout has not closed yet
+              stopDrainTimer = wall.after(100, () => {
+                stopDrainTimer = null;
+                if (!settled) abortProbe();
+              });
+            }
+          });
+        });
         child.once("error", () => {
           clearTimers();
           finish(null);

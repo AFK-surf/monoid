@@ -132,8 +132,15 @@ export class SessionsProgram {
   #pendingMessages: Json[] = [];
   readonly #users = new Set<ProgramUser>();
   readonly #held = new Set<ProgramUser>();
+  #nextAgentId = 0;
   #ended = false;
   #readyRecorded = false;
+
+  /// Monotonic per-`SessionsProgram` agent/replay/freeze ID so closing one `AgentsHost` and
+  /// opening another against the same long-lived `SessionsProgram` never collides with late replies.
+  nextAgentId(): number {
+    return ++this.#nextAgentId;
+  }
 
   private constructor(
     data: string,

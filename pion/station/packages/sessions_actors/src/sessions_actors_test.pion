@@ -751,6 +751,7 @@ test "sessions_actors: ActorRunHandlers fake covers routed/live_for_actor, codex
         None
       }
     },
+    handle_due: sessions_core::SessionDispatch::stub().handle_due,
     is_stub: false,
   }
 

@@ -1730,7 +1730,7 @@ pub fn Actors::heard(
   match sessions_core::jget(said, "due") {
     Some(base_codec::Json::Num(id, _)) => {
       let due_id = id.to_int()
-      if !ctx.handle_due_id(due_id) {
+      if !ctx.handle_due_id(due_id) && !(dispatch.handle_due)(due_id) {
         ctx.gen.handle_due(ctx.host, due_id)
       }
       return

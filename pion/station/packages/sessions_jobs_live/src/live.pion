@@ -200,6 +200,32 @@ pub fn LiveState::new() -> LiveState {
   }
 }
 
+/// Clear all generation-scoped `#live` maps/deferreds on Hub generation retirement or shutdown.
+pub fn LiveState::retire(self : LiveState) -> Unit {
+  self.steps.clear()
+  self.phase.clear()
+  self.rates.clear()
+  self.tasks.clear()
+  self.plans.clear()
+  self.plan_at.clear()
+  self.plan_at_order.clear()
+  self.plan_back.clear()
+  self.said_plans.clear()
+  self.listeners.clear()
+  self.watched.clear()
+  self.watched_order.clear()
+  self.stood.clear()
+  self.stood_order.clear()
+  self.holds.clear()
+  self.holds_order.clear()
+  self.releases.clear()
+  self.timer_actions.clear()
+  self.length_told.clear()
+  self.ends.clear()
+  self.read_turns.clear()
+  self.pending = 0
+}
+
 /// Value-passed context for `#live` operations (never stored inside `LiveState`).
 pub struct LiveCtx {
   pub host : sessions_core::SessionHost
@@ -2056,12 +2082,15 @@ fn LiveCtx::cleanup_watch(self : LiveCtx, w : LWatched) -> Unit {
 }
 
 /// Serialize reads of `(key, watch_n)` (`live.mbt:1088-1108`) with ticket-based single-reader
-/// cancellation & handoff safety (ZERO `ticket <-> Deferred` cycle; `Deferred` lives in `read_turns`):
+/// cancellation & handoff safety (ZERO `ticket <-> Deferred` cycle; `Deferred` lives in `read_turns`),
+/// aligned with `HubGen::spawn_work` (`active -= 1; quiet()` on both `Succeeded` and live-gen `Interrupted`):
 /// - Queuing: `active -= 1; quiet()` before `turn.wait_k`.
 /// - Handing off: `active += 1` before `turn.succeed(())` (and removes `tid` from `read_turns`).
-/// - Single-reader cancel while `Queued`: removes ticket & turn, preserves `active`, propagates `Interrupted`.
-/// - Single-reader cancel after `Handed` before resume: undoes `active += 1` regardless of watch replacement,
-///   hands off to next live ticket only if `cur.n == watch_n` (otherwise emits `quiet()`), propagates `Interrupted`.
+/// - Single-reader cancel while `Queued` (`!sealed`): removes ticket & turn, restores `active += 1`
+///   so outer `HubGen::spawn_work` uniformly performs `-1` + `quiet()` on `Exit::Interrupted`.
+/// - Single-reader cancel after `Handed` before resume: hands off to next live ticket if `cur.n == watch_n`
+///   (`+1` for next reader) and propagates `Exit::Interrupted` without manually decrementing `active`,
+///   letting outer `HubGen::spawn_work` cancel the handed `+1` and emit `quiet()` when no next reader took over.
 fn LiveCtx::in_read_k(
   self : LiveCtx,
   key : String,
@@ -2140,16 +2169,19 @@ fn LiveCtx::in_read_k(
             None => ()
           }
           if was_handed {
-            if !self.gen.counters.sealed {
-              self.gen.counters.active = self.gen.counters.active - 1
+            // Handoff to the next live waiter (which increments `active += 1` for it);
+            // outer `HubGen::spawn_work` will decrement `active -= 1` for this fiber's
+            // handed `+1` and emit `quiet()` if no next waiter was handed off.
+            match same_watch {
+              Some(cur) => {
+                let _ = self.handoff_next_reader(cur)
+              }
+              None => ()
             }
-            let handed = match same_watch {
-              Some(cur) => self.handoff_next_reader(cur)
-              None => false
-            }
-            if !handed && !self.gen.counters.sealed {
-              self.gen.quiet()
-            }
+          } else if !self.gen.counters.sealed {
+            // Restore the `active -= 1` taken on queue entry so outer `HubGen::spawn_work`
+            // uniformly decrements `active -= 1` and checks `quiet()` on live-gen `Interrupted`.
+            self.gen.counters.active = self.gen.counters.active + 1
           }
           k(effect::Exit::Interrupted)
         }

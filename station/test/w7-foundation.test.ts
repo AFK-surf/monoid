@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
@@ -759,22 +759,29 @@ function walkPionFiles(dir: string): string[] {
   return out;
 }
 
-function findForbiddenShellCalls(source: string): string[] {
+function findForbiddenShellCalls(source: string, opts: { exemptHostTransportLive?: boolean } = {}): string[] {
   const forbidden = [
     /\bshell_call_wait\b/,
     /\bshell_call_wait_with\b/,
-    /\.shell_sync\s*\(/,
+    /(?:\.|::|\b)shell_sync\s*\(/,
     /\bread_bytes_range\b/,
     /\bwrite_atomic\b/,
     /\bhost_shim::wait\b/,
     /\bhost_shim::shell_call\b/,
     /\bbuilders_usage::(?:unpacked|read_from|packed_from|parts_of|anchor_at|first_line)\b/,
   ];
+  const hostLiveExemptions = new Set([
+    "wait: host_shim::wait,",
+    "shell_call: host_shim::shell_call,",
+    "shell_sync: host_shim::shell_sync,",
+    "pub fn SessionHost::shell_sync(",
+  ]);
   const stripped = stripPionCommentsLexical(source);
   const hits: string[] = [];
   const lines = stripped.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
+    if (opts.exemptHostTransportLive && hostLiveExemptions.has(line.trim())) continue;
     for (const pat of forbidden) {
       if (pat.test(line)) hits.push(`line ${i + 1}: ${pat}`);
     }
@@ -791,6 +798,7 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
   assert.equal(findForbiddenShellCalls("// shell_call_wait(x)\n/* host_shim::wait(0) */\nlet ok = 1").length, 0);
   assert.ok(findForbiddenShellCalls("let _ = shell_call_wait_with(c, op, j, None)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = client.shell_sync(op, j)").length === 1);
+  assert.ok(findForbiddenShellCalls("let _ = SessionHost::shell_sync(host, op, j)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::wait(10)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::shell_call(id, op, j, None)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = builders_usage::unpacked(sh, p)").length === 1);
@@ -811,20 +819,27 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
   assert.ok(guardedPkgs.includes("sessions_remote"));
   assert.ok(guardedPkgs.includes("sessions_agents"));
 
-  // Negative mutation self-test on a real sessions_agents source file:
+  // Negative mutation self-tests on real sessions_agents source (both method and associated-fn syntax):
   const agentsReal = readFileSync(join(pkgRoot, "sessions_agents", "src", "agents.pion"), "utf8");
   assert.ok(
     findForbiddenShellCalls(agentsReal + "\nlet _ = host.shell_sync(\"fs.meta\", j)\n").length >= 1,
     "mutated sessions_agents source with .shell_sync( must be caught",
   );
+  assert.ok(
+    findForbiddenShellCalls(agentsReal + "\nlet _ = SessionHost::shell_sync(host, \"fs.meta\", j)\n").length >= 1,
+    "mutated sessions_agents source with SessionHost::shell_sync( must be caught",
+  );
 
   for (const pkg of guardedPkgs) {
     const files = walkPionFiles(join(pkgRoot, pkg, "src"));
     for (const fullPath of files) {
-      // `sessions_core/src/host.pion` is the single event-loop wrapper that legitimately invokes `host_shim::wait` / `host_shim::shell_call`.
-      if (pkg === "sessions_core" && fullPath.endsWith("/host.pion")) continue;
-      const hits = findForbiddenShellCalls(readFileSync(fullPath, "utf8"));
-      assert.deepStrictEqual(hits, [], `Forbidden shell call in ${fullPath}`);
+      const rel = relative(pkgRoot, fullPath).replace(/\\/g, "/");
+      // `sessions_core/src/host.pion` is still scanned; only the 3 exact function-pointer bindings
+      // inside `HostTransport::live()` (`wait`, `shell_call`, `shell_sync`) are exempted.
+      const hits = findForbiddenShellCalls(readFileSync(fullPath, "utf8"), {
+        exemptHostTransportLive: rel === "sessions_core/src/host.pion",
+      });
+      assert.deepStrictEqual(hits, [], `Forbidden shell call in ${rel}`);
     }
   }
 });

@@ -87,7 +87,6 @@ export class AgentsHost {
     said: (said) => this.#said(said),
     exited: (code) => this.#exited(code),
   };
-  #next = 0;
   readonly #sessions = new Map<number, HostedProcess>();
   readonly #freezes = new Map<number, (states: Record<string, { turn: Json; live: Json }>) => void>();
   /// A Codex app-server's output read again (`replay`), from when it is asked: what waits on its live steps, once it
@@ -276,7 +275,7 @@ export class AgentsHost {
   }
 
   number() {
-    return ++this.#next;
+    return this.#ensure().nextAgentId();
   }
 
   forget(p: HostedProcess) {

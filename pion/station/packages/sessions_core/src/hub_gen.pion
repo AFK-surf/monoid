@@ -174,8 +174,9 @@ pub fn HubGen::quiet(self : HubGen) -> Unit {
 }
 
 /// Spawn a generation-scoped work fiber (`actors.mbt:333`):
-/// increments `active` synchronously, decrements + emits `quiet()` ONLY on `Succeeded`,
-/// and routes `Failed` to the daemon error handler without decrementing `active`.
+/// increments `active` synchronously, decrements + emits `quiet()` on `Succeeded` AND
+/// live-generation `Interrupted` (`!counters.sealed`), and routes `Failed` to the daemon
+/// error handler without decrementing `active`.
 /// Captures ONLY `HubCounters` (ZERO back-reference to `HubGen`, `EffectScope`, or `SessionHost`).
 pub fn HubGen::spawn_work(
   self : HubGen,
@@ -440,6 +441,8 @@ pub struct SessionDispatch {
   pub agents_told : (String) -> Unit
   /// Returns `(events, batch_end_offset)` aligned with MoonBit `Agents::take`.
   pub agents_take : (Int, Int) -> Option[(Array[js_json::JValue], Int64)]
+  /// Pure-value `{"due": id}` router for `#jobs` / `#live` / `#remote` timer tables.
+  pub handle_due : (Int) -> Bool
   /// `true` while stub handlers remain (W8-F asserts `false` on production assembly).
   pub is_stub : Bool
 }
@@ -465,6 +468,7 @@ pub fn SessionDispatch::stub() -> SessionDispatch {
     },
     agents_told: fn(_line : String) -> Unit { () },
     agents_take: fn(_n : Int, _k : Int) -> Option[(Array[js_json::JValue], Int64)] { None },
+    handle_due: fn(_id : Int) -> Bool { false },
     is_stub: true,
   }
 }

@@ -72,6 +72,7 @@ fn FakeNode::dispatch(self : FakeNode) -> sessions_core::SessionDispatch {
     queue_of_locked_k: base.queue_of_locked_k,
     agents_told: base.agents_told,
     agents_take: base.agents_take,
+    handle_due: base.handle_due,
     is_stub: false,
   }
 }
@@ -826,62 +827,66 @@ test "sessions_jobs_live: in_read single-reader cancel (Queued & Handed windows)
   let w = must(lstate.watched.get("k_inread"))
   let watch_n = w.n
 
-  // Case 1: A holds lock, B and C queue; interrupt B while Queued -> A finishes -> C runs & completes!
+  // Mirror `HubGen::spawn_work` exact contract (`active += 1` on start; `active -= 1; quiet()`
+  // on both `Succeeded` AND live-gen `Interrupted`) while returning a `Fiber` handle for targeted cancel.
+  let spawn_in_read = fn(
+    name : String,
+    work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  ) -> effect::Fiber[Unit] {
+    let counters = n.gen.counters
+    counters.active = counters.active + 1
+    n.gen.fibers.fork_named(name, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      lctx.in_read_k("k_inread", watch_n, work_k, fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => {
+            if !counters.sealed {
+              counters.active = counters.active - 1
+              counters.quiet()
+            }
+          }
+          effect::Exit::Interrupted => {
+            if !counters.sealed {
+              counters.active = counters.active - 1
+              counters.quiet()
+            }
+          }
+          effect::Exit::Failed(_) => ()
+        }
+        k(ex)
+      })
+    })
+  }
+
+  // Case 1: A holds lock (via real `gen.spawn_work`), B and C queue; interrupt B while Queued ->
+  // active stays 1 (never 0 or -1, no premature quiet while A holds lock), then A finishes -> C runs & completes!
   let gate_a : effect::Deferred[Unit] = effect::Deferred::new()
   let mut b_ran = false
   let mut c_ran = false
-  let _ = n.gen.fibers.fork_named("reader-A", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
+  n.gen.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
       gate_a.wait_k(wk)
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      n.gen.counters.active = n.gen.counters.active - 1
-      n.gen.quiet()
-      k(ex)
-    })
+    }, k)
   })
-  let fiber_b = n.gen.fibers.fork_named("reader-B", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
-    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      b_ran = true
-      wk(effect::Exit::Succeeded(()))
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(_) => {
-          n.gen.counters.active = n.gen.counters.active - 1
-          n.gen.quiet()
-        }
-        _ => ()
-      }
-      k(ex)
-    })
+  let fiber_b = spawn_in_read("reader-B", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    b_ran = true
+    wk(effect::Exit::Succeeded(()))
   })
-  let _ = n.gen.fibers.fork_named("reader-C", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
-    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      c_ran = true
-      wk(effect::Exit::Succeeded(()))
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(_) => {
-          n.gen.counters.active = n.gen.counters.active - 1
-          n.gen.quiet()
-        }
-        _ => ()
-      }
-      k(ex)
-    })
+  let _ = spawn_in_read("reader-C", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    c_ran = true
+    wk(effect::Exit::Succeeded(()))
   })
   n.pump()
   assert(w.read_held)
   assert(w.read_queue.length() == 2)
   assert(n.gen.counters.active == 1)
 
-  // Interrupt B while Queued
+  // Interrupt B while Queued: active MUST remain 1 and quiet MUST NOT fire while A still holds the lock!
+  let quiet_while_a_held = n.quiet_count
   fiber_b.interrupt()
   n.pump()
   assert(w.read_queue.length() == 1)
   assert(n.gen.counters.active == 1)
+  assert(n.quiet_count == quiet_while_a_held)
 
   // Release A -> C runs and finishes cleanly
   let quiet_before = n.quiet_count
@@ -894,55 +899,27 @@ test "sessions_jobs_live: in_read single-reader cancel (Queued & Handed windows)
   assert(n.gen.counters.active == 0)
   assert(n.quiet_count > quiet_before)
 
-  // Case 2: Interrupt B AFTER A hands off (Handed window, before B resumes) -> C still runs & completes!
+  // Case 2a: Interrupt B AFTER A hands off (Handed window, with C queued) -> active stays >= 0, C runs & completes!
   let gate_a2 : effect::Deferred[Unit] = effect::Deferred::new()
   let mut b2_ran = false
   let mut c2_ran = false
-  let _ = n.gen.fibers.fork_named("reader-A2", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
+  n.gen.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
       gate_a2.wait_k(wk)
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      n.gen.counters.active = n.gen.counters.active - 1
-      n.gen.quiet()
-      k(ex)
-    })
+    }, k)
   })
-  let fiber_b2 = n.gen.fibers.fork_named("reader-B2", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
-    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      b2_ran = true
-      wk(effect::Exit::Succeeded(()))
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(_) => {
-          n.gen.counters.active = n.gen.counters.active - 1
-          n.gen.quiet()
-        }
-        _ => ()
-      }
-      k(ex)
-    })
+  let fiber_b2 = spawn_in_read("reader-B2", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    b2_ran = true
+    wk(effect::Exit::Succeeded(()))
   })
-  let _ = n.gen.fibers.fork_named("reader-C2", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
-    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      c2_ran = true
-      wk(effect::Exit::Succeeded(()))
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(_) => {
-          n.gen.counters.active = n.gen.counters.active - 1
-          n.gen.quiet()
-        }
-        _ => ()
-      }
-      k(ex)
-    })
+  let _ = spawn_in_read("reader-C2", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    c2_ran = true
+    wk(effect::Exit::Succeeded(()))
   })
   n.pump()
   assert(w.read_queue.length() == 2)
   // Succeed A2 and interrupt B2 in the SAME turn before tick so B2 is interrupted in the Handed window
+  let quiet_before_2a = n.quiet_count
   let _ = gate_a2.succeed(())
   fiber_b2.interrupt()
   n.pump()
@@ -952,52 +929,50 @@ test "sessions_jobs_live: in_read single-reader cancel (Queued & Handed windows)
   assert(w.read_queue.length() == 0)
   assert(lstate.read_turns.length() == 0)
   assert(n.gen.counters.active == 0)
+  assert(n.quiet_count > quiet_before_2a)
+
+  // Case 2b: Interrupt B AFTER A hands off (Handed window, NO C queued) -> active == 0 (never -1) and quiet fires!
+  let gate_a2b : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut b2b_ran = false
+  n.gen.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      gate_a2b.wait_k(wk)
+    }, k)
+  })
+  let fiber_b2b = spawn_in_read("reader-B2b", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    b2b_ran = true
+    wk(effect::Exit::Succeeded(()))
+  })
+  n.pump()
+  assert(w.read_queue.length() == 1)
+  assert(n.gen.counters.active == 1)
+  let quiet_before_2b = n.quiet_count
+  let _ = gate_a2b.succeed(())
+  fiber_b2b.interrupt()
+  n.pump()
+  assert(!b2b_ran)
+  assert(!w.read_held)
+  assert(w.read_queue.length() == 0)
+  assert(lstate.read_turns.length() == 0)
+  assert(n.gen.counters.active == 0)
+  assert(n.quiet_count > quiet_before_2b)
 
   // Case 3 (R3 P1): Watch replacement on same key before Handed B resumes -> B interrupt still refunds active & emits quiet!
   let gate_a3 : effect::Deferred[Unit] = effect::Deferred::new()
   let mut b3_ran = false
   let mut c3_ran = false
-  let _ = n.gen.fibers.fork_named("reader-A3", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
+  n.gen.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
       gate_a3.wait_k(wk)
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      n.gen.counters.active = n.gen.counters.active - 1
-      n.gen.quiet()
-      k(ex)
-    })
+    }, k)
   })
-  let fiber_b3 = n.gen.fibers.fork_named("reader-B3", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
-    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      b3_ran = true
-      wk(effect::Exit::Succeeded(()))
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(_) => {
-          n.gen.counters.active = n.gen.counters.active - 1
-          n.gen.quiet()
-        }
-        _ => ()
-      }
-      k(ex)
-    })
+  let fiber_b3 = spawn_in_read("reader-B3", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    b3_ran = true
+    wk(effect::Exit::Succeeded(()))
   })
-  let _ = n.gen.fibers.fork_named("reader-C3", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    n.gen.counters.active = n.gen.counters.active + 1
-    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      c3_ran = true
-      wk(effect::Exit::Succeeded(()))
-    }, fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(_) => {
-          n.gen.counters.active = n.gen.counters.active - 1
-          n.gen.quiet()
-        }
-        _ => ()
-      }
-      k(ex)
-    })
+  let _ = spawn_in_read("reader-C3", fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    c3_ran = true
+    wk(effect::Exit::Succeeded(()))
   })
   n.pump()
   assert(w.read_held)

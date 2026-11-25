@@ -1656,8 +1656,10 @@ fn main(world : World) -> Unit {
     }
     run_smoke_readops(world, argv[2])
   } else if cmd == "--smoke-sessions-actors-store" {
-    let db_path = if argv.length() >= 3 { argv[2] } else { "/tmp/stillfail-pion-smoke-actors-store.db" }
-    run_smoke_sessions_actors_store(world, db_path)
+    if argv.length() < 3 || argv[2] == "" {
+      usage_exit()
+    }
+    run_smoke_sessions_actors_store(world, argv[2])
   } else if cmd == "--smoke-parse-codex-num" {
     run_smoke_parse_codex_num(world)
   } else if cmd == "--smoke-history-marks" {

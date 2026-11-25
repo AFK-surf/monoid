@@ -153,6 +153,33 @@ fn build_gen_subsystems(
     agents_take: fn(n : Int, k : Int) -> Option[(Array[js_json::JValue], Int64)] {
       agents.take(n, k)
     },
+    handle_due: fn(due_id : Int) -> Bool {
+      match sub.jobs {
+        Some(j) => {
+          if j.handle_due(due_id) {
+            return true
+          }
+        }
+        None => ()
+      }
+      match sub.live {
+        Some(l) => {
+          if l.handle_due(due_id) {
+            return true
+          }
+        }
+        None => ()
+      }
+      match sub.remote {
+        Some(r) => {
+          if r.handle_due(due_id) {
+            return true
+          }
+        }
+        None => ()
+      }
+      false
+    },
     is_stub: false,
   }
   let jobs_state = sessions_jobs_live::JobsState::new()
@@ -168,6 +195,7 @@ fn build_gen_subsystems(
   gen.resources.add_retire_hook(fn() -> Unit {
     sub.clear()
     jobs_state.reset()
+    live_state.retire()
     remote_state.retire()
   })
   (sub, jobs, live, remote, dispatch)
@@ -178,11 +206,11 @@ pub struct SessionsApp {
   pub sep : String
   pub actors : sessions_actors::Actors
   pub agents : sessions_agents::Agents
-  pub mut jobs : sessions_jobs_live::JobsCtx
-  pub mut live : sessions_jobs_live::LiveCtx
-  pub mut remote : sessions_remote::RemoteCtx
+  mut jobs : sessions_jobs_live::JobsCtx
+  mut live : sessions_jobs_live::LiveCtx
+  mut remote : sessions_remote::RemoteCtx
   mut sub : GenSubsystems
-  pub mut dispatch : sessions_core::SessionDispatch
+  mut dispatch : sessions_core::SessionDispatch
   active_live : ActiveLiveRef
   fmt_num : (Double) -> String
 }
@@ -243,53 +271,38 @@ pub fn SessionsApp::gen(self : SessionsApp) -> sessions_core::HubGen {
   self.actors.gen()
 }
 
+pub fn SessionsApp::jobs_ctx(self : SessionsApp) -> sessions_jobs_live::JobsCtx {
+  self.jobs
+}
+
+pub fn SessionsApp::live_ctx(self : SessionsApp) -> sessions_jobs_live::LiveCtx {
+  self.live
+}
+
+pub fn SessionsApp::remote_ctx(self : SessionsApp) -> sessions_remote::RemoteCtx {
+  self.remote
+}
+
+pub fn SessionsApp::dispatch_ref(self : SessionsApp) -> sessions_core::SessionDispatch {
+  self.dispatch
+}
+
 /// Tear down process-level agents, active generation subsystems, and release all indirection cells.
 pub fn SessionsApp::close(self : SessionsApp) -> Unit {
   self.active_live.ctx = None
   self.sub.clear()
   self.jobs.state.reset()
+  self.live.state.retire()
+  self.remote.state.retire()
   self.agents.close()
   self.actors.current.retire_all()
   self.actors.gen().fibers.close_now()
 }
 
 /// Handle one actors-routed JSON line (`actors.mbt:793-953`).
+/// Uses single-pass JSON parsing inside `Actors::heard` (preserving `db` > `maxConcurrentTurns` >
+/// `drainCapQueue` > `answer` > `due` priority) and routes `{"due": id}` via `SessionDispatch::handle_due`.
 pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
-  // Fast-path `{"due": id}`: route across all 4 pure-value timer tables (Actors / Jobs / Live / Remote)
-  // and `HubGen::handle_due` (NEVER to `Agents`, which uses native `effect::Clock` `sleep_k`).
-  if line.starts_with("{\"due\":") {
-    let ctx = self.actors.current
-    ctx.gen.counters.seen = ctx.gen.counters.seen + 1
-    let said = match sessions_core::parse_json_strict(line) {
-      Ok(j) => j
-      Err(_) => return
-    }
-    match sessions_core::num_of(sessions_core::jget(said, "now")) {
-      Some(now) => ctx.gen.counters.now = now
-      None => ()
-    }
-    match sessions_core::jget(said, "due") {
-      Some(base_codec::Json::Num(id, _)) => {
-        let due_id = id.to_int()
-        if ctx.handle_due_id(due_id) {
-          return
-        }
-        if self.jobs.handle_due(due_id) {
-          return
-        }
-        if self.live.handle_due(due_id) {
-          return
-        }
-        if self.remote.handle_due(due_id) {
-          return
-        }
-        ctx.gen.handle_due(self.host, due_id)
-        return
-      }
-      _ => return
-    }
-  }
-
   let prev_epoch = self.actors.gen().counters.epoch
   self.actors.heard(line, self.dispatch)
   // On `{"db": place}`, `Actors::heard` rotated `HubGen` and replaced `actors.current`.
@@ -298,6 +311,7 @@ pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
   if self.actors.gen().counters.epoch != prev_epoch {
     self.sub.clear()
     self.jobs.state.reset()
+    self.live.state.retire()
     self.remote.state.retire()
     let new_gen = self.actors.gen()
     let (sub, jobs, live, remote, dispatch) = build_gen_subsystems(
@@ -321,7 +335,8 @@ pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
 /// 1. Emit `{"ready":true}` (NEVER includes `active`/`seen`).
 /// 2. Drive `host.line_k` via `sessions_core::iter_sync_k` (zero `pause_k`).
 /// 3. Route each line by `actors_line(line)` -> `heard` + `quiet`, else `agents.told`.
-/// 4. On EOF (`None` from `QueueShutdown`), close app, flush stdout, and exit 0 immediately.
+/// 4. On EOF (`None` from `QueueShutdown`), close app, flush stdout, and exit 0 immediately;
+///    on abnormal exit (`Failed`/`Interrupted`), still close app so zero timers/cycles remain.
 pub fn serve_sessions_k(
   app : SessionsApp,
   k : (effect::Exit[Unit]) -> Unit,
@@ -345,8 +360,14 @@ pub fn serve_sessions_k(
             app.host.exit(0)
             sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
           }
-          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
-          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => {
+            app.close()
+            sk(effect::Exit::Failed(e))
+          }
+          effect::Exit::Interrupted => {
+            app.close()
+            sk(effect::Exit::Interrupted)
+          }
         }
       })
     },

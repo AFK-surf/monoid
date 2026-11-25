@@ -3,7 +3,7 @@
 ## Actors and MoonBit `--sessions` program
 
 - Every session has one serial actor queue handling state changes, runtime events, deliveries, and tool calls. Input starts a prompt when idle, steers during a turn, or queues otherwise.
-- Actors run in the MoonBit `--sessions` program (`station/mb/src/reader/actors.mbt`, `station/mb/src/reader/actor_run.mbt`, `station/src/agents/mb-program.ts`) with no TypeScript fallback. The hub holds shells (`station/src/sessions/mb-actor.ts`, shared with `station/src/sessions/actor.ts`) that answer station callbacks and read latest state.
+- Actors run in the `--sessions` program (MoonBit `stillfail-reader` by default via `station/mb/src/reader/actors.mbt` / `actor_run.mbt`, or Pion `stillfail-pion` via `pion/station/packages/reader_sessions/` selected by `STILLFAIL_READER_SESSIONS > config.readers.sessions > STILLFAIL_READER_ENGINE > mb`, `station/src/agents/mb-program.ts`) with no TypeScript fallback. The hub holds shells (`station/src/sessions/mb-actor.ts`, shared with `station/src/sessions/actor.ts`) that answer station callbacks and read latest state.
 - Hot store operations (turns, running flags, session rows) run directly on SQLite inside `station/mb/src/reader/actor_store.mbt` and notify Node of changes. In-memory stores route through Node, so hub tests use a file-backed database (`station/test/hub-fakes.ts`). `settle()` waits on `actorsBusy` too.
 - A profile newly available to a workspace wakes that workspace's failed starts with pending messages (`Hub.profilesChanged`); wait for an in-flight start to finish, and never wake a chat for a profile unavailable in its workspace.
 - Three pseudo-actors run in the same program:

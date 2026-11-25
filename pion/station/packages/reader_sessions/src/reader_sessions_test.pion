@@ -36,13 +36,17 @@ fn assert_holding_zero(host : sessions_core::SessionHost) -> Unit {
   assert(h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0)
 }
 
+fn str_has(haystack : String, needle : String) -> Bool {
+  haystack.index_of(needle) >= 0
+}
+
 test "reader_sessions: production assembly has ZERO stubs (has_stubs == false)" {
   let mem = sessions_core::MemHostTransport::new()
   let host = sessions_core::SessionHost::for_test(mem)
   let app = new_test_app(host)
   assert(!app.has_stubs())
   assert(!app.actors.has_stubs())
-  assert(!app.dispatch.is_stub)
+  assert(!app.dispatch_ref().is_stub)
   app.close()
 }
 
@@ -87,6 +91,74 @@ test "reader_sessions: same-chunk freeze (numeric) + routed (numeric) through re
   assert_holding_zero(host)
 }
 
+test "reader_sessions: same-chunk answer + due emits quiet before EOF, and non-actor line emits no quiet" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let app = new_test_app(host)
+
+  // Non-actor line (`{"codexReplay":7,"notices":[]}`) goes to Agents and must NOT emit `quiet`.
+  mem.push_stdin("{\"codexReplay\":7,\"notices\":[]}\n")
+  mem.push_round_barrier()
+  // Same-chunk `answer` + `due` (unknown ids still increment `seen` and emit `quiet` before EOF).
+  mem.push_stdin("{\"answer\":999,\"value\":null}\n{\"due\":888}\n")
+  mem.push_round_barrier()
+  mem.push_eof()
+
+  let code = sessions_core::run_host_loop(host, fn(_h : sessions_core::SessionHost, k) -> Unit {
+    serve_sessions_k(app, k)
+  })
+  assert(code == 0)
+  assert(mem.stderr_lines.length() == 0)
+  assert(mem.stdout_lines.length() == 3)
+  assert(mem.stdout_lines[0] == "{\"ready\":true}")
+  assert(mem.stdout_lines[1] == "{\"quiet\":true,\"active\":0,\"seen\":1}")
+  assert(mem.stdout_lines[2] == "{\"quiet\":true,\"active\":0,\"seen\":2}")
+  assert_holding_zero(host)
+  assert(app.agents.delta_timer_count() == 0)
+}
+
+test "reader_sessions: db priority over due (actors.mbt:799) and stale post-db answer/due/routed discarded" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let app = new_test_app(host)
+
+  // Seed a timer and an actor in epoch 0 before testing branch priority + rotation discard.
+  let stale_tid = host.alloc_id()
+  let mut stale_fired = false
+  app.gen().register_timer(host, stale_tid, fn() -> Unit {
+    stale_fired = true
+  })
+  let _ = app.actors.actor("s-old", "claude")
+
+  // Frame 1: db:null (seen=1), Frame 2: maxConcurrentTurns:2 (seen=2),
+  // Frame 3: {"due":123,"db":null} MUST take the `db` rotation branch (resets seen=1) and NOT fire due!
+  app.heard("{\"db\":null}")
+  app.actors.quiet()
+  app.heard("{\"maxConcurrentTurns\":2}")
+  app.actors.quiet()
+  let epoch_before = app.gen().counters.epoch
+  app.heard("{\"due\":" + stale_tid.to_string() + ",\"db\":null}")
+  app.actors.quiet()
+  assert(app.gen().counters.epoch == epoch_before + 1)
+  assert(!stale_fired)
+  assert(app.gen().counters.seen == 1)
+  assert(mem.stdout_lines[mem.stdout_lines.length() - 1] == "{\"quiet\":true,\"active\":0,\"seen\":1}")
+
+  // Stale old-gen answer / due / routed frames after rotation must be silently discarded with 0 errors.
+  let out_before = mem.stdout_lines.length()
+  app.heard("{\"answer\":777,\"value\":null}")
+  app.heard("{\"due\":" + stale_tid.to_string() + "}")
+  app.heard("{\"routed\":99,\"batch\":1,\"generation\":1,\"actor\":\"s-old\"}")
+  assert(!stale_fired)
+  assert(mem.stdout_lines.length() == out_before)
+  assert(mem.stderr_lines.length() == 0)
+
+  app.close()
+  host.tick()
+  assert_holding_zero(host)
+  assert(app.agents.delta_timer_count() == 0)
+}
+
 test "reader_sessions: db rotation rebuilds Jobs/Live/Remote on new HubGen while keeping Agents alive" {
   let mem = sessions_core::MemHostTransport::new()
   let host = sessions_core::SessionHost::for_test(mem)
@@ -97,20 +169,20 @@ test "reader_sessions: db rotation rebuilds Jobs/Live/Remote on new HubGen while
   assert(app.agents.replay_count() == 1)
 
   let epoch0 = app.gen().counters.epoch
-  assert(app.jobs.gen.counters.epoch == epoch0)
-  assert(app.live.gen.counters.epoch == epoch0)
-  assert(app.remote.gen.counters.epoch == epoch0)
+  assert(app.jobs_ctx().gen.counters.epoch == epoch0)
+  assert(app.live_ctx().gen.counters.epoch == epoch0)
+  assert(app.remote_ctx().gen.counters.epoch == epoch0)
 
   // Rotate generation via `{"db":null}`.
   app.heard("{\"db\":null}")
   let epoch1 = app.gen().counters.epoch
   assert(epoch1 == epoch0 + 1)
-  assert(app.jobs.gen.counters.epoch == epoch1)
-  assert(app.live.gen.counters.epoch == epoch1)
-  assert(app.remote.gen.counters.epoch == epoch1)
-  assert(!app.jobs.gen.counters.sealed)
-  assert(!app.live.gen.counters.sealed)
-  assert(!app.remote.gen.counters.sealed)
+  assert(app.jobs_ctx().gen.counters.epoch == epoch1)
+  assert(app.live_ctx().gen.counters.epoch == epoch1)
+  assert(app.remote_ctx().gen.counters.epoch == epoch1)
+  assert(!app.jobs_ctx().gen.counters.sealed)
+  assert(!app.live_ctx().gen.counters.sealed)
+  assert(!app.remote_ctx().gen.counters.sealed)
 
   // Agents survived rotation with its pending replay intact!
   assert(app.agents.replay_count() == 1)
@@ -123,7 +195,7 @@ test "reader_sessions: db rotation rebuilds Jobs/Live/Remote on new HubGen while
   assert(app.agents.delta_timer_count() == 0)
 }
 
-test "reader_sessions: due routes across Actors, Jobs, Live, Remote, and HubGen timer tables" {
+test "reader_sessions: due routes across Actors, Jobs, Live, Remote, and HubGen timer tables with real side effects" {
   let mem = sessions_core::MemHostTransport::new()
   let host = sessions_core::SessionHost::for_test(mem)
   let app = new_test_app(host)
@@ -136,22 +208,27 @@ test "reader_sessions: due routes across Actors, Jobs, Live, Remote, and HubGen 
     hub_fired = true
   })
 
-  // 2. Jobs timer (`JobsState.timer_actions`)
+  // 2. Jobs timer (`JobsState.timer_actions`) — LookLater clears `looking` flag and spawns look()
   let jobs_tid = host.alloc_id()
-  app.jobs.state.timer_actions.set(jobs_tid, (epoch, sessions_jobs_live::JobsTimerAction::LookLater))
+  app.jobs_ctx().state.looking = true
+  app.jobs_ctx().state.timer_actions.set(jobs_tid, (epoch, sessions_jobs_live::JobsTimerAction::LookLater))
 
-  // 3. Live timer (`LiveState.timer_actions`)
+  // 3. Live timer (`LiveState.timer_actions`) — ReleaseHold removes hold from `holds`
   let live_tid = host.alloc_id()
-  app.live.state.timer_actions.set(live_tid, (epoch, sessions_jobs_live::LiveTimerAction::ReleaseHold("s1")))
+  app.live_ctx().state.holds.set("s1", 1)
+  app.live_ctx().state.holds_order.push("s1")
+  app.live_ctx().state.releases.set("s1", live_tid)
+  app.live_ctx().state.timer_actions.set(live_tid, (epoch, sessions_jobs_live::LiveTimerAction::ReleaseHold("s1")))
 
-  // 4. Remote timer (`RemoteState.timers`)
+  // 4. Remote timer (`RemoteState.timers`) — SweepHourly triggers remote sweep work
   let remote_tid = host.alloc_id()
-  app.remote.state.timers.set(
+  app.remote_ctx().state.root = "/tmp/remote-test"
+  app.remote_ctx().state.timers.set(
     remote_tid,
     sessions_remote::RemoteTimerEntry::{ epoch: epoch, action: sessions_remote::RemoteTimerAction::SweepHourly },
   )
 
-  // 5. Actor timer (`ActorsGen.actor_timers`)
+  // 5. Actor timer (`ActorsGen.actor_timers`) — FireWait clears `a.timers` entry and enqueues wait work
   let a = app.actors.actor("s1", "claude")
   let actor_tid = host.alloc_id()
   a.timers.set("wait", sessions_actors::ActorTimerRef::{ timer_id: actor_tid, gen: 1 })
@@ -165,24 +242,86 @@ test "reader_sessions: due routes across Actors, Jobs, Live, Remote, and HubGen 
     },
   )
 
-  // Fire each via `heard({"due": id})` and assert each table entry is consumed cleanly.
+  // Fire HubGen timer -> callback ran, active == 0, quiet emitted
   app.heard("{\"due\":" + hub_tid.to_string() + "}")
   assert(hub_fired)
+  assert(app.gen().counters.active == 0)
+  assert(str_has(mem.stdout_lines[mem.stdout_lines.length() - 1], "\"quiet\":true"))
 
-  app.heard("{\"due\":" + jobs_tid.to_string() + "}")
-  assert(!app.jobs.state.timer_actions.contains(jobs_tid))
-
+  // Fire Live timer -> hold removed, active == 0, quiet emitted
+  let out_live_before = mem.stdout_lines.length()
   app.heard("{\"due\":" + live_tid.to_string() + "}")
-  assert(!app.live.state.timer_actions.contains(live_tid))
+  assert(!app.live_ctx().state.timer_actions.contains(live_tid))
+  assert(!app.live_ctx().state.holds.contains("s1"))
+  assert(app.gen().counters.active == 0)
+  assert(mem.stdout_lines.length() > out_live_before)
+  assert(str_has(mem.stdout_lines[mem.stdout_lines.length() - 1], "\"quiet\":true"))
 
+  // Fire Jobs timer -> consumed & `LookLater` spawns `node.pressure` RPC on tick
+  let out_jobs_before = mem.stdout_lines.length()
+  app.heard("{\"due\":" + jobs_tid.to_string() + "}")
+  assert(!app.jobs_ctx().state.timer_actions.contains(jobs_tid))
+  host.tick()
+  let mut saw_jobs_rpc = false
+  for i in out_jobs_before..<mem.stdout_lines.length() {
+    if str_has(mem.stdout_lines[i], "\"node.pressure\"") {
+      saw_jobs_rpc = true
+    }
+  }
+  assert(saw_jobs_rpc)
+
+  // Fire Remote timer -> consumed & `SweepHourly` spawns `store.now` RPC on tick
+  let out_remote_before = mem.stdout_lines.length()
   app.heard("{\"due\":" + remote_tid.to_string() + "}")
-  assert(!app.remote.state.timers.contains(remote_tid))
+  assert(!app.remote_ctx().state.timers.contains(remote_tid))
+  host.tick()
+  let mut saw_remote_rpc = false
+  for i in out_remote_before..<mem.stdout_lines.length() {
+    if str_has(mem.stdout_lines[i], "\"#remote\"") && str_has(mem.stdout_lines[i], "\"store.now\"") {
+      saw_remote_rpc = true
+    }
+  }
+  assert(saw_remote_rpc)
 
+  // Fire Actor timer -> consumed, timer ref removed, and `FireWait` enqueues wait work on actor
   app.heard("{\"due\":" + actor_tid.to_string() + "}")
   assert(!app.actors.current.actor_timers.contains(actor_tid))
+  assert(!a.timers.contains("wait"))
+  host.tick()
+  assert(a.pump_starts >= 1)
 
   app.close()
   host.tick()
   assert_holding_zero(host)
   assert(app.agents.delta_timer_count() == 0)
+}
+
+test "reader_sessions: abnormal non-EOF exit (interrupted serve_sessions_k) closes app cleanly with 0 leaks" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let app = new_test_app(host)
+  app.agents.told("{\"codexReplay\":99,\"notices\":[]}")
+  app.live_ctx().state.holds.set("s1", 1)
+
+  let mut exit_was_interrupted = false
+  let fiber = host.proc_scope.fork_named("serve-test", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    serve_sessions_k(app, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => exit_was_interrupted = true
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  host.tick()
+  assert(mem.stdout_lines.length() == 1 && mem.stdout_lines[0] == "{\"ready\":true}")
+
+  // Interrupt `serve_sessions_k` without pushing EOF -> must invoke `app.close()`.
+  fiber.interrupt()
+  host.tick()
+  assert(exit_was_interrupted)
+  assert(!app.live_ctx().state.holds.contains("s1"))
+  assert(app.agents.replay_count() == 0)
+  assert(app.agents.delta_timer_count() == 0)
+  assert_holding_zero(host)
 }
