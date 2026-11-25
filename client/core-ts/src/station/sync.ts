@@ -2105,6 +2105,8 @@ export class StationsSync {
       case "host": {
         const link = this.#links.get(address);
         if (link) {
+          const had = link.memory.has("host");
+          const wasUnreadable = link.hostUnreadable;
           link.memory.set("host", data);
           // (the system it runs on, kept: what shows it where it has no mark, station-os.ts)
           const at = address.lastIndexOf("/");
@@ -2115,6 +2117,8 @@ export class StationsSync {
             link.hostUnreadable = unreadable;
             this.onChange(address, "link");
           }
+          // Once an initial or recovered readable sample is cached, hand over back to ?host=0 if no live meter view is open.
+          if (!unreadable && (!had || wasUnreadable)) this.openEvents(address, false);
         }
         return;
       }

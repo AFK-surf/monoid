@@ -1416,7 +1416,7 @@ export class Views implements Owner {
         break;
       case "station":
         scope = view.scope as string;
-        perStation = (s) => (s === view.station ? [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "host", station: s }, { topic: "way", station: s }] : []);
+        perStation = (s) => (s === view.station ? [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "host", station: s }, { topic: "hostLive", station: s }, { topic: "way", station: s }] : []);
         break;
       case "stationPart":
         scope = view.scope as string;
@@ -1471,7 +1471,7 @@ export class Views implements Owner {
       case "fleet":
         // (the card shared of the agents at work: views/fleet.ts)
         scope = view.scope as string;
-        perStation = (s) => [{ topic: "chatRows", station: s }, { topic: "archivedRows", station: s }, { topic: "jobs", station: s }, { topic: "overview", station: s }, { topic: "link", station: s }, { topic: "host", station: s }, { topic: "way", station: s }, { topic: "stationUsage", station: s }];
+        perStation = (s) => [{ topic: "chatRows", station: s }, { topic: "archivedRows", station: s }, { topic: "jobs", station: s }, { topic: "overview", station: s }, { topic: "link", station: s }, { topic: "host", station: s }, { topic: "hostLive", station: s }, { topic: "way", station: s }, { topic: "stationUsage", station: s }];
         break;
       case "railCard": {
         // (the cards over the rail's places: views/rail-cards.ts) what the place's card is made of
