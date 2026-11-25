@@ -163,7 +163,63 @@ int main(void) {
     REQUIRE(unlink(p_file_sym) == 0);
     REQUIRE(unlink(p_dir_sym) == 0);
 
-    // 8. NULL safety.
+    // 8. sfc_file_stamp & sfc_file_fnv64 (racy-git stamp, 50ms window, FNV-1a vectors, chmod 000, atomic replace).
+    {
+        uint8_t stamp1[256] = {0};
+        uint8_t stamp2[256] = {0};
+        uint64_t h = 0;
+        REQUIRE(sfc_file_stamp(p_missing, stamp1, (int32_t)sizeof(stamp1)) == 0);
+        REQUIRE(sfc_file_stamp(p_sub, stamp1, (int32_t)sizeof(stamp1)) == -1);
+        REQUIRE(sfc_file_stamp(NULL, stamp1, (int32_t)sizeof(stamp1)) == -1);
+        REQUIRE(sfc_file_stamp(p_file, NULL, 256) == -1);
+        REQUIRE(sfc_file_stamp(p_file, stamp1, 4) == -1);
+
+        char p_fnv[512];
+        snprintf(p_fnv, sizeof(p_fnv), "%s/fnv.txt", root);
+        fd = sfc_open(p_fnv, 0);
+        REQUIRE(fd >= 0);
+        REQUIRE(sfc_close(fd) == 0);
+        REQUIRE(sfc_file_fnv64(p_fnv, &h) == 0);
+        REQUIRE(h == 14695981039346656037ULL);
+
+        const uint8_t foobar[] = {'f', 'o', 'o', 'b', 'a', 'r'};
+        fd = sfc_open(p_fnv, 0);
+        REQUIRE(fd >= 0);
+        REQUIRE(sfc_write(fd, foobar, 6) == 0);
+        REQUIRE(sfc_close(fd) == 0);
+        REQUIRE(sfc_file_fnv64(p_fnv, &h) == 0);
+        REQUIRE(h == 0x85944171f73967e8ULL);
+        REQUIRE(sfc_file_fnv64(p_missing, &h) == -1);
+        REQUIRE(sfc_file_fnv64(NULL, &h) == -1);
+        REQUIRE(sfc_file_fnv64(p_fnv, NULL) == -1);
+
+        int32_t rc1 = sfc_file_stamp(p_fnv, stamp1, (int32_t)sizeof(stamp1));
+        REQUIRE(rc1 == 1 || rc1 == 2);
+        REQUIRE(strlen((const char *)stamp1) > 10);
+
+        // Atomic replace with equal-length content and preserved mtime must change stamp (ino/ctime).
+        char p_fnv_tmp[512];
+        snprintf(p_fnv_tmp, sizeof(p_fnv_tmp), "%s/fnv.tmp", root);
+        const uint8_t foobaz[] = {'f', 'o', 'o', 'b', 'a', 'z'};
+        fd = sfc_open(p_fnv_tmp, 0);
+        REQUIRE(fd >= 0);
+        REQUIRE(sfc_write(fd, foobaz, 6) == 0);
+        REQUIRE(sfc_close(fd) == 0);
+        REQUIRE(rename(p_fnv_tmp, p_fnv) == 0);
+        int32_t rc2 = sfc_file_stamp(p_fnv, stamp2, (int32_t)sizeof(stamp2));
+        REQUIRE(rc2 == 1 || rc2 == 2);
+        REQUIRE(strcmp((const char *)stamp1, (const char *)stamp2) != 0);
+
+        if (geteuid() != 0) {
+            REQUIRE(chmod(p_fnv, 0000) == 0);
+            REQUIRE(sfc_file_stamp(p_fnv, stamp1, (int32_t)sizeof(stamp1)) == -1);
+            REQUIRE(sfc_file_fnv64(p_fnv, &h) == -1);
+            REQUIRE(chmod(p_fnv, 0644) == 0);
+        }
+        REQUIRE(unlink(p_fnv) == 0);
+    }
+
+    // 9. NULL safety.
     REQUIRE(sfc_open(NULL, 0) == -1);
     REQUIRE(sfc_utimes(NULL, 0.0) == -1);
     REQUIRE(sfc_nlink(NULL) == -1);

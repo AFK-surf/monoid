@@ -407,3 +407,10 @@ test "parse_root_manifest & parse_leaf_manifest: adversarial inputs rejected" {
     "entry cap during parse must fail",
   )
 }
+
+test "fnv64_utf8 matches IETF 64-bit FNV-1a test vectors" {
+  let empty_want = u64_from_16(0xcbf2, 0x9ce4, 0x8422, 0x2325)
+  let foobar_want = u64_from_16(0x8594, 0x4171, 0xf739, 0x67e8)
+  expect_int64(fnv64_utf8(""), empty_want)
+  expect_int64(fnv64_utf8("foobar"), foobar_want)
+}

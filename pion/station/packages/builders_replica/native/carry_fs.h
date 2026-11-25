@@ -52,6 +52,17 @@ int32_t sfc_dir_readable(const char *path);
 // Return 1 if `path` is a regular file (links followed), 0 if not, -1 if unknown here (Windows MAX_PATH fallback).
 int32_t sfc_is_file(const char *path);
 
+// Racy-git style metadata stamp for a readable regular file `path`, writing NUL-terminated ASCII stamp into `out_buf`:
+//   0  = confirmed missing (ENOENT / ENOTDIR; Windows FILE_NOT_FOUND / PATH_NOT_FOUND / INVALID_NAME)
+//   -1 = error, unreadable, non-regular, buffer too small, or Windows MAX_PATH (do not use cache)
+//   1  = clean (non-racy: >= 50ms since ctime / ChangeTime)
+//   2  = racy (< 50ms since ctime / ChangeTime or clock skew; caller must verify via `sfc_file_fnv64`)
+int32_t sfc_file_stamp(const char *path, uint8_t *out_buf, int32_t cap);
+
+// Streaming 64-bit FNV-1a hash of raw bytes of `path` using a 64 KiB stack buffer, writing little-endian uint64_t
+// to `out_hash` (unaligned-safe via memcpy). Returns 0 on success, -1 on error.
+int32_t sfc_file_fnv64(const char *path, uint64_t *out_hash);
+
 #ifdef __cplusplus
 }
 #endif

@@ -23,6 +23,8 @@ extern "C" fn sfc_missing(path : Ptr, follow : Int) -> Int
 extern "C" fn sfc_dir_missing(path : Ptr) -> Int
 extern "C" fn sfc_dir_readable(path : Ptr) -> Int
 extern "C" fn sfc_is_file(path : Ptr) -> Int
+extern "C" fn sfc_file_stamp(path : Ptr, out_buf : Ptr, cap : Int) -> Int
+extern "C" fn sfc_file_fnv64(path : Ptr, out_hash : Ptr) -> Int
 
 pub fn c_open(path : String, append : Bool) -> Int {
   let rc = sfc_open(path.as_cstr(), if append { 1 } else { 0 })
@@ -88,6 +90,56 @@ pub fn c_is_file(path : String) -> Int {
   let rc = sfc_is_file(path.as_cstr())
   let _ = path.length()
   rc
+}
+
+pub fn c_file_stamp(path : String) -> (Int, String) {
+  let buf = Bytes::new(256)
+  let rc = sfc_file_stamp(path.as_cstr(), bytes_data_ptr(buf), 256)
+  let _ = path.length()
+  if rc != 1 && rc != 2 {
+    return (rc, "")
+  }
+  let mut end = 0
+  while end < 256 && (buf[end].to_int() & 0xFF) != 0 {
+    end = end + 1
+  }
+  if end == 0 {
+    return (-1, "")
+  }
+  (rc, slice_bytes(buf, 0, end))
+}
+
+pub fn c_file_fnv64(path : String) -> Option[Int64] {
+  let buf = Bytes::new(8)
+  let rc = sfc_file_fnv64(path.as_cstr(), bytes_data_ptr(buf))
+  let _ = path.length()
+  if rc != 0 {
+    return None
+  }
+  let mut h : Int64 = 0.to_int64()
+  for i in 0..<8 {
+    let b = (buf[i].to_int() & 0xFF).to_int64()
+    h = h | (b << (i * 8).to_int64())
+  }
+  Some(h)
+}
+
+fn u64_from_16(a : Int, b : Int, c : Int, d : Int) -> Int64 {
+  let a64 = (a & 0xFFFF).to_int64()
+  let b64 = (b & 0xFFFF).to_int64()
+  let c64 = (c & 0xFFFF).to_int64()
+  let d64 = (d & 0xFFFF).to_int64()
+  (a64 << 48.to_int64()) | (b64 << 32.to_int64()) | (c64 << 16.to_int64()) | d64
+}
+
+pub fn fnv64_utf8(text : String) -> Int64 {
+  let bytes = js_json::utf8_bytes(text)
+  let mut h = u64_from_16(0xcbf2, 0x9ce4, 0x8422, 0x2325)
+  let prime = u64_from_16(0x0000, 0x0100, 0x0000, 0x01b3)
+  for i in 0..<bytes.length() {
+    h = (h ^ (bytes[i].to_int() & 0xFF).to_int64()) * prime
+  }
+  h
 }
 
 // ── String & Byte utilities ──

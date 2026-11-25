@@ -12,6 +12,7 @@
 #include "carry_fs.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -67,6 +68,7 @@ static HANDLE sfc_opened(const char *path, DWORD access) {
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -400,4 +402,190 @@ int32_t sfc_is_file(const char *path) {
     struct stat st;
     return (stat(path, &st) == 0 && S_ISREG(st.st_mode)) ? 1 : 0;
 #endif
+}
+
+int32_t sfc_file_stamp(const char *path, uint8_t *out_buf, int32_t cap) {
+    if (path == NULL || out_buf == NULL || cap <= 1) {
+        return -1;
+    }
+#ifdef _WIN32
+    int wn = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (wn <= 0 || wn >= MAX_PATH) {
+        return -1;
+    }
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(
+        w,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    DWORD err = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        return (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) ? 0 : -1;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    FILE_BASIC_INFO basic;
+    BOOL ok = GetFileType(h) == FILE_TYPE_DISK && GetFileInformationByHandle(h, &info) &&
+              (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 &&
+              GetFileInformationByHandleEx(h, FileBasicInfo, &basic, sizeof(basic));
+    CloseHandle(h);
+    if (!ok) {
+        return -1;
+    }
+    uint64_t fsize = ((uint64_t)info.nFileSizeHigh << 32) | (uint64_t)info.nFileSizeLow;
+    uint64_t mtime = ((uint64_t)info.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)info.ftLastWriteTime.dwLowDateTime;
+    uint64_t ctime = (uint64_t)basic.ChangeTime.QuadPart;
+    int len = snprintf(
+        (char *)out_buf,
+        (size_t)cap,
+        "%lu:%lu:%lu:%llu:%llu:%llu",
+        (unsigned long)info.dwVolumeSerialNumber,
+        (unsigned long)info.nFileIndexHigh,
+        (unsigned long)info.nFileIndexLow,
+        (unsigned long long)fsize,
+        (unsigned long long)mtime,
+        (unsigned long long)ctime);
+    if (len <= 0 || len >= cap) {
+        return -1;
+    }
+    FILETIME ft_now;
+    GetSystemTimeAsFileTime(&ft_now);
+    uint64_t now_100ns = ((uint64_t)ft_now.dwHighDateTime << 32) | (uint64_t)ft_now.dwLowDateTime;
+    int is_racy = (now_100ns < ctime) || (now_100ns - ctime < 500000ULL);
+    return is_racy ? 2 : 1;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return (errno == ENOENT || errno == ENOTDIR) ? 0 : -1;
+    }
+    if (!S_ISREG(st.st_mode) || access(path, R_OK) != 0) {
+        return -1;
+    }
+#ifdef __APPLE__
+    int64_t m_sec = (int64_t)st.st_mtimespec.tv_sec;
+    long m_nsec = st.st_mtimespec.tv_nsec;
+    int64_t c_sec = (int64_t)st.st_ctimespec.tv_sec;
+    long c_nsec = st.st_ctimespec.tv_nsec;
+#else
+    int64_t m_sec = (int64_t)st.st_mtim.tv_sec;
+    long m_nsec = st.st_mtim.tv_nsec;
+    int64_t c_sec = (int64_t)st.st_ctim.tv_sec;
+    long c_nsec = st.st_ctim.tv_nsec;
+#endif
+    int len = snprintf(
+        (char *)out_buf,
+        (size_t)cap,
+        "%llu:%llu:%lld:%lld:%ld:%lld:%ld:%u",
+        (unsigned long long)st.st_dev,
+        (unsigned long long)st.st_ino,
+        (long long)st.st_size,
+        (long long)m_sec,
+        m_nsec,
+        (long long)c_sec,
+        c_nsec,
+        (unsigned int)st.st_mode);
+    if (len <= 0 || len >= cap) {
+        return -1;
+    }
+    struct timespec now;
+    int is_racy = 0;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+        is_racy = 1;
+    } else {
+        int64_t diff_sec = (int64_t)now.tv_sec - c_sec;
+        if (diff_sec < 0) {
+            is_racy = 1;
+        } else if (diff_sec == 0) {
+            if ((int64_t)now.tv_nsec - (int64_t)c_nsec < 50000000LL) {
+                is_racy = 1;
+            }
+        } else if (diff_sec == 1) {
+            if (1000000000LL + (int64_t)now.tv_nsec - (int64_t)c_nsec < 50000000LL) {
+                is_racy = 1;
+            }
+        }
+    }
+    return is_racy ? 2 : 1;
+#endif
+}
+
+int32_t sfc_file_fnv64(const char *path, uint64_t *out_hash) {
+    if (path == NULL || out_hash == NULL) {
+        return -1;
+    }
+    uint64_t h = 14695981039346656037ULL;
+    uint8_t buf[65536];
+#ifdef _WIN32
+    int wn = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (wn <= 0 || wn >= MAX_PATH) {
+        return -1;
+    }
+    wchar_t *w = sfc_wide(path);
+    if (w == NULL) {
+        return -1;
+    }
+    HANDLE fh = CreateFileW(
+        w,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    free(w);
+    if (fh == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(fh, buf, (DWORD)sizeof(buf), &got, NULL)) {
+            CloseHandle(fh);
+            return -1;
+        }
+        if (got == 0) {
+            break;
+        }
+        for (DWORD i = 0; i < got; i++) {
+            h ^= (uint64_t)buf[i];
+            h *= 1099511628211ULL;
+        }
+    }
+    CloseHandle(fh);
+#else
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            close(fd);
+            return -1;
+        }
+        if (n == 0) {
+            break;
+        }
+        for (ssize_t i = 0; i < n; i++) {
+            h ^= (uint64_t)buf[i];
+            h *= 1099511628211ULL;
+        }
+    }
+    close(fd);
+#endif
+    uint8_t le[8];
+    for (int i = 0; i < 8; i++) {
+        le[i] = (uint8_t)((h >> (i * 8)) & 0xFFU);
+    }
+    memcpy(out_hash, le, sizeof(le));
+    return 0;
 }

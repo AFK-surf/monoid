@@ -1758,3 +1758,98 @@ test("hot head_cache detects equal-size preserved-mtime head.json tampering (ato
     }
   }
 });
+
+test("dual-exporter A -> B -> A --compact-heads handover refreshes manifest_cache to B's latest root and restores byte-identically (MB->Pion->MB & Pion->MB->Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [labelA, binA, labelB, binB] of [
+    ["mb", bins.mb, "pion", bins.pion],
+    ["pion", bins.pion, "mb", bins.mb],
+  ] as const) {
+    const made = makeTranscriptSeedStation();
+    const trFile = join(made.data, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-manifest", "notes.md");
+    const rep = join(made.data, `replica-aba-${labelA}-${labelB}`);
+
+    // Exporter A stays alive after pass 1 (to=1) with warm head_cache + manifest_cache.
+    const expA = new ExportClient(binA, made.db, rep, made.data, ["--compact-heads", "--chunk-bytes", "1024"]);
+    await expA.ask({ type: "places", places: PLACES });
+    let pA1 = await expA.ask({ type: "pass", told: nothingTold() });
+    while (pA1.more) pA1 = await expA.ask({ type: "pass", told: nothingTold() });
+    const headA1 = pA1.heads[HOME] as Record<string, any>;
+    const rootA1 = String(headA1.transcriptManifest);
+    assert.match(rootA1, /^[0-9a-f]{64}$/);
+    const toA1 = Number(headA1.to);
+
+    // Update the session's transcript file on disk, then Exporter B exports to=2 and closes.
+    const updatedPayload = "updated-by-exporter-B-payload-".repeat(160);
+    writeFileSync(trFile, updatedPayload);
+    const future = new Date(NOW + 10_000);
+    utimesSync(trFile, future, future);
+
+    const expB = new ExportClient(binB, made.db, rep, made.data, ["--compact-heads", "--chunk-bytes", "1024"]);
+    expB.now = NOW + 10_000;
+    await expB.ask({ type: "places", places: PLACES });
+    let pB = await expB.ask({ type: "pass", told: nothingTold() });
+    while (pB.more) pB = await expB.ask({ type: "pass", told: nothingTold() });
+    const headB = pB.heads[HOME] as Record<string, any>;
+    const rootB = String(headB.transcriptManifest);
+    const toB = Number(headB.to);
+    assert.ok(toB > toA1, `${labelA}->${labelB}: B must advance to (${toB} > ${toA1})`);
+    assert.notEqual(rootB, rootA1, `${labelA}->${labelB}: B must produce a new manifest root`);
+    await expB.close();
+
+    // Exporter A (still alive!) runs an idle pass: MUST detect updated head.json, invalidate manifest_cache,
+    // and publish to=toB with B's latest transcriptManifest root!
+    expA.now = NOW + 20_000;
+    const pA2 = await expA.ask({ type: "pass", told: nothingTold() });
+    const headA2 = pA2.heads[HOME] as Record<string, any>;
+    assert.equal(Number(headA2.to), toB, `${labelA}->${labelB}->${labelA}: A must report B's latest to`);
+    assert.equal(
+      String(headA2.transcriptManifest),
+      rootB,
+      `${labelA}->${labelB}->${labelA}: A must publish B's latest transcriptManifest root (never stale ${rootA1})`,
+    );
+
+    // Receiver copies ONLY the objects advertised by A's head + manifest and restores.
+    const manifestsDir = join(rep, "manifests");
+    const rootObj = JSON.parse(readFileSync(join(manifestsDir, rootB), "utf8")) as { v: number; buckets: Record<string, string> };
+    const leafHashes = Object.values(rootObj.buckets);
+    const chunkHashes: string[] = [];
+    for (const lh of leafHashes) {
+      const leafObj = JSON.parse(readFileSync(join(manifestsDir, lh), "utf8")) as { v: number; files: Record<string, number> };
+      chunkHashes.push(...Object.keys(leafObj.files));
+    }
+    const allHashes = [...Object.keys(headA2.files ?? {}), ...chunkHashes];
+    const sources = (await expA.ask({ type: "sources", hashes: allHashes })) as Record<string, string>;
+    await expA.close();
+
+    const dest = tempDir(`w6b-aba-dest-${labelA}-${labelB}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, HOME, String(headA2.gen), dest, sources);
+    writeFileSync(join(dest, "restore", "copy", String(headA2.gen), "head.json"), JSON.stringify(headA2, null, 1));
+    const copyFiles = join(dest, "restore", "copy", "files");
+    cpSync(join(manifestsDir, rootB), join(copyFiles, rootB));
+    for (const lh of leafHashes) {
+      cpSync(join(manifestsDir, lh), join(copyFiles, lh));
+    }
+
+    await takeBackSoon(dest, destDb, NOW + 25_000, binA);
+    const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8")) as {
+      error: string | null;
+      missing: number;
+      files: number;
+    };
+    assert.equal(outcome.error, null, `${labelA}->${labelB}->${labelA}: restore must succeed`);
+    assert.equal(outcome.missing, 0, `${labelA}->${labelB}->${labelA}: restore must have 0 missing files`);
+    assert.ok(outcome.files >= 1, `${labelA}->${labelB}->${labelA}: restore must place transcript files`);
+
+    const restoredTr = join(dest, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-manifest", "notes.md");
+    assert.equal(
+      readFileSync(restoredTr, "utf8"),
+      updatedPayload,
+      `${labelA}->${labelB}->${labelA}: restored transcript must match B's updated content byte-for-byte`,
+    );
+  }
+});

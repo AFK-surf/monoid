@@ -172,10 +172,10 @@ pub struct Exporter {
   priv mut known : Bool
   priv mut transcripts_pending : Bool
   priv tf_cache : Map[String, Array[(String, JValue)]]
-  /// Each generation's `head.json` as last read or written, by its directory, keyed by SHA-256 of its UTF-8 bytes:
-  /// a head of many transcripts is megabytes of JSON, parsed again only when its content hash changed.
-  priv head_cache : Map[String, (String, JValue)]
-  priv manifest_cache : Map[String, (String, Array[String])]
+  /// Each generation's `head.json` as last read or written, by its directory, keyed by racy-git
+  /// `(meta_stamp, content_fnv64)`: zero disk read / zero JSON parse on quiet passes after the 50ms racy window.
+  priv head_cache : Map[String, (String, Int64, JValue)]
+  priv manifest_cache : Map[String, (String, String, Array[String])]
   priv mut manifest_live : Set[String]
   priv manifest_superseded_at : Map[String, Double]
   priv mut test_faults : TestFaults?
@@ -325,30 +325,41 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 }
 
 ///|
+fn Exporter::head_identity_of(self : Exporter, ws : String, gen : String) -> String {
+  match self.head_cache.get(self.gen_dir(ws, gen)) {
+    Some((stamp, hash, _)) if stamp != "" => "\{stamp}:\{hash}"
+    _ => ""
+  }
+}
+
+///|
 fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
   let path = self.files.join([dir, "head.json"])
-  let text = (try { self.files.read(path) } catch { _ => None })
-  match text {
-    None => {
-      self.head_cache.remove(dir)
-      None
-    }
-    Some(t) => {
-      let hash = @hash.sha256_hex(@utf8.encode(t)[:])
-      if self.head_cache.get(dir) is Some((c_hash, cached)) && c_hash == hash {
+  let (st_rc, stamp) = file_stamp(path)
+  if st_rc == 1 || st_rc == 2 {
+    if self.head_cache.get(dir) is Some((c_stamp, c_hash, cached)) && c_stamp == stamp {
+      if st_rc == 1 {
         return Some(cached)
       }
-      match (@jsjson.parse(t) catch { _ => Null }) {
-        Obj(_) as head => {
-          self.head_cache[dir] = (hash, head)
-          Some(head)
-        }
-        _ => {
-          self.head_cache.remove(dir)
-          None
-        }
+      if file_fnv64(path) == Some(c_hash) {
+        return Some(cached)
       }
     }
+  }
+  self.head_cache.remove(dir)
+  let text = (try { self.files.read(path) } catch { _ => None })
+  match text {
+    None => None
+    Some(t) =>
+      match (@jsjson.parse(t) catch { _ => Null }) {
+        Obj(_) as head => {
+          if st_rc == 1 || st_rc == 2 {
+            self.head_cache[dir] = (stamp, fnv64_utf8(t), head)
+          }
+          Some(head)
+        }
+        _ => None
+      }
   }
 }
 
@@ -400,36 +411,44 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
   let path = self.files.join([dir, "head.json"])
   let log_dir = self.files.join([dir, "log"])
   let committed = self.read_committed_head_state(ws, gen)
-  let v = match self.files.read(path) {
+  let (st_rc, stamp) = file_stamp(path)
+  let mut cached_head : JValue? = None
+  if st_rc == 1 || st_rc == 2 {
+    if self.head_cache.get(dir) is Some((c_stamp, c_hash, cached)) && c_stamp == stamp {
+      if st_rc == 1 || file_fnv64(path) == Some(c_hash) {
+        cached_head = Some(cached)
+      }
+    }
+  }
+  let v = match cached_head {
+    Some(ch) => ch
     None => {
       self.head_cache.remove(dir)
-      if self.files.exists(path) || self.files.lstat(path) is Some(_) {
-        fail("cannot read \{path}")
-      }
-      let has_log = match self.files.names(log_dir) {
-        Some(names) => names.length() > 0
-        None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
-      }
-      if has_log || committed is Some(_) || self.has_ws_progress(ws) {
-        fail("missing \{path} for existing generation \{gen}")
-      }
-      return Fresh
-    }
-    Some(t) => {
-      let hash = @hash.sha256_hex(@utf8.encode(t)[:])
-      if self.head_cache.get(dir) is Some((c_hash, cached)) && c_hash == hash {
-        cached
-      } else {
-        match (@jsjson.parse(t) catch { e => { self.head_cache.remove(dir); fail("corrupted \{path}: \{e}") } }) {
-          Obj(_) as obj => {
-            self.head_cache[dir] = (hash, obj)
-            obj
+      self.manifest_cache.remove(ws)
+      match self.files.read(path) {
+        None => {
+          if self.files.exists(path) || self.files.lstat(path) is Some(_) {
+            fail("cannot read \{path}")
           }
-          _ => {
-            self.head_cache.remove(dir)
-            fail("corrupted \{path}: expected JSON object")
+          let has_log = match self.files.names(log_dir) {
+            Some(names) => names.length() > 0
+            None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
           }
+          if has_log || committed is Some(_) || self.has_ws_progress(ws) {
+            fail("missing \{path} for existing generation \{gen}")
+          }
+          return Fresh
         }
+        Some(t) =>
+          match (@jsjson.parse(t) catch { e => fail("corrupted \{path}: \{e}") }) {
+            Obj(_) as obj => {
+              if st_rc == 1 || st_rc == 2 {
+                self.head_cache[dir] = (stamp, fnv64_utf8(t), obj)
+              }
+              obj
+            }
+            _ => fail("corrupted \{path}: expected JSON object")
+          }
       }
     }
   }
@@ -1374,7 +1393,10 @@ fn Exporter::write_head(self : Exporter, dir : String, head : JValue) -> Unit ra
   self.head_cache.remove(dir)
   let text = @jsjson.stringify_indent(head, 1)
   ignore(self.files.write(path, text))
-  self.head_cache[dir] = (@hash.sha256_hex(@utf8.encode(text)[:]), head)
+  let (st_rc, stamp) = file_stamp(path)
+  if st_rc == 1 || st_rc == 2 {
+    self.head_cache[dir] = (stamp, fnv64_utf8(text), head)
+  }
 }
 
 ///|
@@ -1619,6 +1641,58 @@ extern "C" fn dir_readable_ffi(path : Bytes) -> Int = "sfc_dir_readable"
 ///|
 #borrow(path)
 extern "C" fn is_file_ffi(path : Bytes) -> Int = "sfc_is_file"
+
+///|
+#borrow(path)
+extern "C" fn file_stamp_ffi(path : Bytes) -> Bytes = "sfc_file_stamp"
+
+///|
+#borrow(path)
+extern "C" fn file_fnv64_ffi(path : Bytes) -> Bytes = "sfc_file_fnv64"
+
+///|
+fn file_stamp(path : String) -> (Int, String) {
+  let raw = file_stamp_ffi(c_path(path))
+  if raw.length() == 0 {
+    return (-1, "")
+  }
+  let rc = raw[0].to_int()
+  if rc == 0 {
+    return (0, "")
+  }
+  if rc != 1 && rc != 2 {
+    return (-1, "")
+  }
+  let s = @utf8.decode(raw[1:]) catch { _ => "" }
+  if s == "" {
+    (-1, "")
+  } else {
+    (rc, s)
+  }
+}
+
+///|
+fn file_fnv64(path : String) -> Int64? {
+  let raw = file_fnv64_ffi(c_path(path))
+  if raw.length() != 8 {
+    return None
+  }
+  let mut h : UInt64 = 0UL
+  for i in 0..<8 {
+    h = h | (raw[i].to_uint64() << (i * 8))
+  }
+  Some(h.reinterpret_as_int64())
+}
+
+///|
+fn fnv64_utf8(text : String) -> Int64 {
+  let bytes = @utf8.encode(text)
+  let mut h : UInt64 = 14695981039346656037UL
+  for b in bytes {
+    h = (h ^ b.to_uint64()) * 1099511628211UL
+  }
+  h.reinterpret_as_int64()
+}
 
 ///|
 /// Whether `path` is a regular file, links followed (`kind(path) is Some("file")`), asked of the shell only where the
@@ -2312,8 +2386,12 @@ async fn Exporter::compact_head(self : Exporter, ws : String, head : JValue) -> 
   match get(head, "transcriptFiles") {
     Some(Obj(entries)) if entries.length() > 0 => {
       let manifests_dir = self.files.join([self.replica, "manifests"])
+      let gen = text_of(get(head, "gen")).unwrap_or("")
+      let head_id = self.head_identity_of(ws, gen)
       let root_hash = match self.manifest_cache.get(ws) {
-        Some((rh, _)) if self.files.kind(self.files.join([manifests_dir, rh])) is Some("file") => rh
+        Some((cached_id, rh, _)) if head_id != "" &&
+          cached_id == head_id &&
+          self.files.kind(self.files.join([manifests_dir, rh])) is Some("file") => rh
         _ => {
           let pairs : Array[(String, Double)] = entries.map(e => (@jsjson.sanitize_str(e.0), num(Some(e.1))))
           let enc = encode_transcript_manifest(pairs)
@@ -2330,7 +2408,7 @@ async fn Exporter::compact_head(self : Exporter, ws : String, head : JValue) -> 
           if !(self.files.kind(rp) is Some("file")) {
             self.host.write_atomic(rp, enc.root_bytes, mode=0o644, sync=true, mkdir=true, sep=self.files.sep)
           }
-          self.manifest_cache[ws] = (enc.root_hash, leaf_hashes)
+          self.manifest_cache[ws] = (head_id, enc.root_hash, leaf_hashes)
           enc.root_hash
         }
       }
@@ -2352,14 +2430,16 @@ fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out]) -> Unit rais
   let manifests_dir = self.files.join([self.replica, "manifests"])
   let live : Set[String] = Set([])
   for ws, out in outs {
+    let gen = text_of(get(out.head, "gen")).unwrap_or("")
+    let head_id = self.head_identity_of(ws, gen)
     match self.manifest_cache.get(ws) {
-      Some((rh, leaves)) => {
+      Some((cached_id, rh, leaves)) if head_id != "" && cached_id == head_id => {
         live.add(rh)
         for lh in leaves {
           live.add(lh)
         }
       }
-      None =>
+      _ =>
         match get(out.head, "transcriptFiles") {
           Some(Obj(entries)) if entries.length() > 0 => {
             let pairs : Array[(String, Double)] = entries.map(e => (@jsjson.sanitize_str(e.0), num(Some(e.1))))
