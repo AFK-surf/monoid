@@ -134,12 +134,19 @@ async function rangeAnswer(path: string, type: string, offset: number, length: n
 
 /// GET /sessions/:key/parts?name=&offset=&length=: `length` bytes of a file from `offset` (fewer at its end), with its
 /// whole size (`stillfail-total`): a big file is fetched a part at a time, onto the disk, never all in memory.
+/// With `thumb=2`, a part of its preview for the whole-window viewer (as /files' `thumb=2`), so a read of it stopped
+/// short goes on from where it stopped: `stillfail-preview` says which it is, the preview's version (its file's mtime,
+/// as it is made again only when gone) or `0` where it gets none and the part is the file's itself.
 async function part(tools: Tools, r: Request, key: string): Promise<Answer> {
   const range = rangeOf(r);
   if (range === null) return error(400, "invalid offset or length");
   const found = await onDisk(tools, r, key, param(r, "name") ?? "");
   if ("status" in found) return found;
-  return rangeAnswer(found.path, found.type, range.offset, range.length);
+  if (param(r, "thumb") !== "2") return rangeAnswer(found.path, found.type, range.offset, range.length);
+  const made = tools.data === undefined ? null : await preview(found.path, thumbsDir(tools.data));
+  const version = made === null ? null : await stat(made.path).then((s) => Math.max(1, Math.trunc(s.mtimeMs)), () => null);
+  if (made === null || version === null) return rangeAnswer(found.path, found.type, range.offset, range.length, { "stillfail-preview": "0" });
+  return rangeAnswer(made.path, made.type, range.offset, range.length, { "stillfail-preview": String(version) });
 }
 
 /// GET /sessions/:key/poster?name=: a video's poster (drive/posters.ts), a JPEG; 404 when none can be made.

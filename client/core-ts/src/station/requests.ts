@@ -634,15 +634,45 @@ export class Requests {
     });
   }
 
+  /// GET /sessions/:key/parts?name=&offset=&length=&thumb=2: a part of the whole-window viewer's preview of a chat's
+  /// image, its whole size, and which it is (`version`: the preview's, as `stillfail-preview` says; 0 where the station
+  /// made none and the part is the image's itself; null from a station from before, which answers the image's part).
+  /// `take`: its bytes as they come (a read stopped short keeps what came); `said`: what it is, as its answer begins.
+  previewPart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, take: (piece: Uint8Array) => void, said: (head: { type: string; total: number; version: number | null }) => void): Effect.Effect<{ type: string; total: number; version: number | null }, CoreError> {
+    const path = `/sessions/${encode(key)}/parts?name=${encode(name)}&offset=${offset}&length=${length}&thumb=2`;
+    const versionOf = (v: string | undefined) => {
+      const n = Number(v);
+      return v !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : null;
+    };
+    const onHead = (status: number, headers: [string, string][]) => {
+      if (status !== 200) return;
+      const total = Number(headerOf(headers, "stillfail-total"));
+      if (Number.isSafeInteger(total)) said({ type: headerOf(headers, "content-type") ?? "", total, version: versionOf(headerOf(headers, "stillfail-preview")) });
+    };
+    let received = 0;
+    const took = (bytes: Uint8Array) => { received += bytes.length; take(bytes); };
+    return Effect.flatMap(this.exchange(station, "GET", path, [[BULK, "1"]], empty, false, ctx, undefined, undefined, took, onHead, false, true), (r) => {
+      if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.fileOldStation"), 404));
+      if (r.status !== 200) {
+        const data = parseJson(r.body);
+        return Effect.fail(r.status === 404 ? new CoreError("http_404", t("station.core.fileUnreadable"), 404) : httpError(r.status, data === undefined ? {} : data));
+      }
+      const header = (name: string) => r.headers.find(([k]) => k.toLowerCase() === name)?.[1];
+      const total = Number(header("stillfail-total"));
+      return Effect.succeed({ type: header("content-type") ?? "", total: Number.isSafeInteger(total) ? total : offset + received, version: versionOf(header("stillfail-preview")) });
+    });
+  }
+
   /// GET /sessions/:key/open?path=&raw=1: a file a message names, whole, and what it is (`size`: its whole size;
   /// `mtime`: its version, where the station says it). A station from before `raw` answers its JSON with the bytes in it
   /// as base64. With `range`, only that part of it (as the station's `stillfail-total` says its size); a station from
   /// before parts by path answers the whole (at most 16 MB), whose part is cut from it here. With `have` (the version
   /// kept here, `<mtime>:<size>`), a file not changed since is answered `same`, with no bytes; a station from before
   /// versions answers it whole all the same.
-  fileOpen(station: StationAddr, key: string, path: string, range: { offset: number; length: number } | null, ctx: SpanContext | null, have?: string): Effect.Effect<{ name: string; path: string; type: string; size: number; mtime: number | null; same: boolean; bytes: Uint8Array }, CoreError> {
+  /// `all`: where a part was asked and the station answered the whole (one from before parts by path), the whole.
+  fileOpen(station: StationAddr, key: string, path: string, range: { offset: number; length: number } | null, ctx: SpanContext | null, have?: string): Effect.Effect<{ name: string; path: string; type: string; size: number; mtime: number | null; same: boolean; bytes: Uint8Array; all?: Uint8Array }, CoreError> {
     const asked = `/sessions/${encode(key)}/open?path=${encode(path)}&raw=1${range === null ? "" : `&offset=${range.offset}&length=${range.length}`}${have === undefined ? "" : `&have=${encode(have)}`}`;
-    type Opened = { name: string; path: string; type: string; size: number; mtime: number | null; same: boolean; bytes: Uint8Array };
+    type Opened = { name: string; path: string; type: string; size: number; mtime: number | null; same: boolean; bytes: Uint8Array; all?: Uint8Array };
     return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, false, ctx), (r): Effect.Effect<Opened, CoreError> => {
       if (r.status !== 200 && r.status !== 304) {
         const data = parseJson(r.body);
@@ -658,7 +688,7 @@ export class Requests {
       }
       // (the whole, from a station that gives no parts: the part asked cut from it)
       const cut = (bytes: Uint8Array) =>
-        range === null || Number.isSafeInteger(total) ? { size: Number.isSafeInteger(total) ? total : bytes.length, bytes } : { size: bytes.length, bytes: bytes.subarray(Math.min(range.offset, bytes.length), Math.min(range.offset + range.length, bytes.length)) };
+        range === null || Number.isSafeInteger(total) ? { size: Number.isSafeInteger(total) ? total : bytes.length, bytes } : { size: bytes.length, bytes: bytes.subarray(Math.min(range.offset, bytes.length), Math.min(range.offset + range.length, bytes.length)), all: bytes };
       const named = header("stillfail-name");
       if (named !== undefined) {
         return Effect.succeed({ name: decoded(named), path: decoded(header("stillfail-path")), type: header("content-type") ?? "", mtime, same: false, ...cut(r.body) });

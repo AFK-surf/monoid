@@ -97,6 +97,20 @@ function acquireAutoLane(inner: Inner, addr: StationAddr, explicit: number | und
   };
 }
 
+/// How much of a file a message names is asked at once as it is read whole (`file.open`): what a read broken off loses
+/// at most.
+const OPEN_PART = 1024 * 1024;
+/// The most a station opens of such a file whole (station/src/api/routes/sessions.ts `OPEN_MAX`).
+const OPEN_WHOLE_MAX = 16 * 1024 * 1024;
+
+/// Stations found from before preview parts (`stillfail-preview` not said), by core: their previews read whole.
+const previewWholeOf = new WeakMap<Inner, Set<string>>();
+function previewWholeAt(inner: Inner): Set<string> {
+  let at = previewWholeOf.get(inner);
+  if (at === undefined) previewWholeOf.set(inner, (at = new Set()));
+  return at;
+}
+
 export function keptFirst<H extends { type: string; total: number }, G extends H>(
   inner: Inner,
   c: { offset: number; length: number; quiet?: boolean },
@@ -330,9 +344,9 @@ export function install(): void {
         ),
       );
       const read = readAs(c.thumb);
-      const station = () => {
+      const station = (asPreview = c.preview === true): Effect.Effect<Beside, CoreError> => {
         if (c.keep === null) return Effect.map(read, ([type, bytes]) => new Beside({ type }, bytes));
-        if (c.preview && c.keep > PREVIEW_SMALL) return preview(c.keep);
+        if (asPreview && c.keep > PREVIEW_SMALL) return preview(c.keep);
         // With `keep`: what is kept of it answered whole without asking the station; else read a part at a time as its
         // parts are (`station.file.part` with `keep`), each kept with its chat as it comes (drive-kept.ts `chat`), one
         // stopped short too: let go of (a preview closed), what came is not read again, and the rest is brought all the
@@ -380,6 +394,11 @@ export function install(): void {
       // the image itself where it is kept whole, or where the station answered with it (one from before, or one that
       // made no preview: its bytes are the image's size), kept then as it is read whole. A preview is kept among the
       // files (drive-kept.ts `previewKeptId`), let go of as they are, the least lately read first.
+      // The preview is read a part at a time (`requests.previewPart`), each kept as it comes, one stopped short too (its
+      // version: the station's `stillfail-preview`): read again, it goes on from where it stopped, never from its start.
+      // Where the station made none, its answer is the image's own part: kept as the chat's file, and the image read on
+      // as any (`station(false)`). A station from before preview parts answers as one from before thumb=2 did: the
+      // image whole (`previewWhole`), asked so from then on.
       const preview = (size: number) => {
         const id = chatKeptId(c.station, c.key, c.name);
         const pid = previewKeptId(c.station, c.key, c.name);
@@ -394,6 +413,89 @@ export function install(): void {
             progress({ loaded: held.size, total: held.size });
             return new Beside({ type: held.type, preview: true }, held.bytes);
           }
+          if (previewWholeAt(inner).has(c.station)) return yield* previewWhole(size);
+          const addr = yield* parse(c.station);
+          // what came of it before, from its start on
+          const was = yield* inner.driveKept.version(pid);
+          let version = was?.mtime ?? -1;
+          let total = was?.size ?? 0;
+          let type = was?.type ?? "";
+          const pieces: Uint8Array[] = [];
+          const had = was === null ? null : yield* inner.driveKept.from(pid, was.mtime, was.size, 0, was.size);
+          if (had !== null) pieces.push(had.bytes);
+          let at = had?.bytes.length ?? 0;
+          if (at > 0) progress({ loaded: at, total });
+          let retries = 0;
+          while (total === 0 || at < total) {
+            const from = at;
+            const came: Uint8Array[] = [];
+            let cameBytes = 0;
+            let head: { type: string; total: number; version: number | null } | null = null;
+            const got = yield* Effect.result(inner.stations.requests.previewPart(addr, c.key, c.name, from, total > 0 ? Math.min(DOWNLOAD_PART, total - from) : DOWNLOAD_PART, ctx, (piece) => {
+              came.push(piece);
+              cameBytes += piece.length;
+              progress({ loaded: from + cameBytes, total: head?.total ?? total });
+            }, (h) => {
+              head = h;
+            }));
+            const said = got._tag === "Success" ? got.success : (head as { type: string; total: number; version: number | null } | null);
+            const bytes = joined(came);
+            if (said === null) {
+              if (got._tag === "Failure" && got.failure.code === "unsupported") return yield* previewWhole(size);
+              if (got._tag === "Failure" && (got.failure.code === "mesh" || got.failure.code === "timeout") && retries < 2) {
+                retries++;
+                continue;
+              }
+              return yield* Effect.fail(got._tag === "Failure" ? got.failure : new CoreError("io", t("station.core.fileUnreadable")));
+            }
+            // the image's own part (no preview made; or a station from before, which says nothing of it)
+            if (said.version === null || said.version === 0) {
+              if (bytes.length > 0 && said.total === size) yield* inner.driveKept.keep(id, "chat", 0, size, said.type, from, bytes);
+              if (said.version === null) {
+                previewWholeAt(inner).add(c.station);
+                // (all of it come so: the image itself, not asked again)
+                const all = yield* inner.driveKept.read(id, 0, size, 0, size);
+                if (all !== null) {
+                  progress({ loaded: size, total: size });
+                  return new Beside({ type: all.type }, all.bytes);
+                }
+                return yield* previewWhole(size);
+              }
+              return yield* station(false);
+            }
+            // made again since what came of it before: from its start
+            if (said.version !== version || said.total !== total) {
+              pieces.length = 0;
+              version = said.version;
+              total = said.total;
+              if (from > 0) {
+                if (retries++ >= 2) return yield* Effect.fail(new CoreError("changed", t("station.core.fileUnreadable")));
+                at = 0;
+                continue;
+              }
+            }
+            type = said.type;
+            if (bytes.length > 0) yield* inner.driveKept.keep(pid, "file", version, total, type, from, bytes);
+            pieces.push(bytes);
+            at += bytes.length;
+            if (got._tag === "Failure") {
+              if ((got.failure.code === "mesh" || got.failure.code === "timeout") && retries < 2) {
+                retries++;
+                continue;
+              }
+              return yield* Effect.fail(got.failure);
+            }
+            if (bytes.length === 0 && at < total) return yield* Effect.fail(new CoreError("io", t("station.core.fileUnreadable")));
+          }
+          progress({ loaded: total, total });
+          return new Beside({ type, preview: true }, joined(pieces));
+        });
+      };
+      // As a station from before preview parts answers it: the preview (or the image itself) whole, kept once it came.
+      const previewWhole = (size: number) => {
+        const id = chatKeptId(c.station, c.key, c.name);
+        const pid = previewKeptId(c.station, c.key, c.name);
+        return Effect.gen(function* () {
           const [type, bytes] = yield* readAs("preview");
           // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
           if (bytes.length === size) {
@@ -520,6 +622,49 @@ export function install(): void {
     const c = call as Extract<Call, { kind: "fileOpen" }>;
     const id = openKeptId(c.station, c.key, c.path);
     const named = c.path.split(/[\\/]/).filter((s) => s !== "").pop() ?? c.path;
+    const kind = c.played ? "played" : "file";
+    const openParts = (addr: StationAddr) =>
+      Effect.gen(function* () {
+        const was = yield* inner.driveKept.version(id);
+        const had = was === null ? null : yield* inner.driveKept.from(id, was.mtime, was.size, 0, was.size);
+        const pieces: Uint8Array[] = had === null ? [] : [had.bytes];
+        let at = had?.bytes.length ?? 0;
+        let as: { mtime: number; size: number } | null = had === null ? null : was;
+        let tries = 0;
+        for (;;) {
+          const got = yield* Effect.result(inner.stations.requests.fileOpen(addr, c.key, c.path, { offset: at, length: OPEN_PART }, ctx));
+          if (got._tag === "Failure") {
+            if ((got.failure.code === "mesh" || got.failure.code === "timeout") && tries++ < 2) continue;
+            return yield* Effect.fail(got.failure);
+          }
+          const said = got.success;
+          // more than a station opens whole (OPEN_WHOLE_MAX): asked whole all the same, so it says so as before
+          if (said.all === undefined && said.size > OPEN_WHOLE_MAX) {
+            const whole = yield* inner.stations.requests.fileOpen(addr, c.key, c.path, null, ctx);
+            return new Beside({ name: whole.name, path: whole.path, type: whole.type, size: whole.size }, whole.bytes);
+          }
+          // a station from before parts by path: the whole, kept as before
+          if (said.all !== undefined) {
+            if (said.mtime !== null && said.all.length > 0) inner.runner.fork(inner.driveKept.keep(id, kind, said.mtime, said.all.length, said.type, 0, said.all.slice()));
+            return new Beside({ name: said.name, path: said.path, type: said.type, size: said.all.length }, said.all);
+          }
+          // changed since what came of it before: from its start
+          if (at > 0 && (as === null || said.mtime !== as.mtime || said.size !== as.size)) {
+            if (tries++ >= 2) return yield* Effect.fail(new CoreError("changed", t("station.core.fileUnreadable")));
+            pieces.length = 0;
+            at = 0;
+            as = null;
+            continue;
+          }
+          as = said.mtime === null ? null : { mtime: said.mtime, size: said.size };
+          // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
+          if (said.mtime !== null && said.bytes.length > 0) yield* inner.driveKept.keep(id, kind, said.mtime, said.size, said.type, at, said.bytes.slice());
+          pieces.push(said.bytes);
+          at += said.bytes.length;
+          if (at >= said.size) return new Beside({ name: said.name, path: said.path, type: said.type, size: said.size }, joined(pieces));
+          if (said.bytes.length === 0) return yield* Effect.fail(new CoreError("io", t("station.core.fileUnreadable")));
+        }
+      });
     return Effect.gen(function* () {
       const addr = yield* parse(c.station);
       const version = yield* inner.driveKept.version(id);
@@ -536,6 +681,9 @@ export function install(): void {
         }
         return fromKept({});
       }
+      // Read whole and none of it kept whole: a part at a time, each kept as it comes, so a read broken off goes on from
+      // what came of it (as it was then), never from its start.
+      if (c.range === null && kept === null) return yield* openParts(addr);
       const have = kept === null ? undefined : `${version!.mtime}:${version!.size}`;
       const got = yield* Effect.result(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx, have));
       if (got._tag === "Failure") {

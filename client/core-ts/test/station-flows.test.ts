@@ -276,12 +276,12 @@ test("a slow video delivers small pieces before the part ends", async () => {
 test("a_file_a_message_names_opens_whole_its_bytes_beside_from_a_station_new_or_old", async () => {
   const { host, core } = await started(base());
   stationReplies(host, (req) => {
-    if (req.url.endsWith("/sessions/k/open?path=%2Fw%2Fnew.png&raw=1")) {
+    if (req.url.includes("/sessions/k/open?path=%2Fw%2Fnew.png&raw=1")) {
       return new Raw({ status: 200, headers: [["content-type", "image/png"], ["stillfail-name", "new.png"], ["stillfail-path", encodeURIComponent("/w/new.png")]], body: new Uint8Array([1, 2, 3]) });
     }
     // A station from before `raw`: its JSON, the bytes in it as base64.
-    if (req.url.endsWith("/sessions/k/open?path=%2Fw%2Fold.png&raw=1")) return { name: "old.png", path: "/w/old.png", type: "image/png", size: 2, bytes: Buffer.from([4, 5]).toString("base64") };
-    if (req.url.endsWith("/sessions/k/open?path=%2Fw%2Fgone.png&raw=1")) return status(404, { error: "no such file" });
+    if (req.url.includes("/sessions/k/open?path=%2Fw%2Fold.png&raw=1")) return { name: "old.png", path: "/w/old.png", type: "image/png", size: 2, bytes: Buffer.from([4, 5]).toString("base64") };
+    if (req.url.includes("/sessions/k/open?path=%2Fw%2Fgone.png&raw=1")) return status(404, { error: "no such file" });
     return undefined;
   });
   const ui = core.connect();

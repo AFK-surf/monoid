@@ -347,6 +347,22 @@ test("the files route and a message give what the Rust station gives", async () 
     for (const name of ["shot.png", "photo.jpg", "moving.gif", "notes.txt"]) {
       assert.equal(sha256((await preview2(name))[1]), sha256(readFileSync(join(uploads, name))), `${name}: the file itself`);
     }
+    // parts?thumb=2: a part of the same, saying which it is (`stillfail-preview`: the preview's version, or 0 for the
+    // file itself), so a read broken off goes on from where it stopped.
+    const part2 = async (name: string, offset: number, length: number) => {
+      const a = await ask("GET", `/sessions/${encodeURIComponent(made.key)}/parts`, "", [["name", name], ["offset", String(offset)], ["length", String(length)], ["thumb", "2"]]);
+      assert.equal(a.status, 200, name);
+      return { type: a.headers["content-type"], total: Number(a.headers["stillfail-total"]), version: a.headers["stillfail-preview"], body: a.body as Buffer };
+    };
+    const head = await part2("big.png", 0, 1000);
+    const tail = await part2("big.png", 1000, body.length);
+    assert.deepEqual([head.type, head.total, head.body.length], ["image/jpeg", body.length, 1000]);
+    assert.ok(Number(head.version) > 0, `version ${head.version}`);
+    assert.equal(tail.version, head.version);
+    assert.equal(sha256(Buffer.concat([head.body, tail.body])), sha256(body));
+    const itself = await part2("shot.png", 0, 64);
+    assert.deepEqual([itself.version, itself.total], ["0", statSync(join(uploads, "shot.png")).size]);
+    assert.equal(sha256(itself.body), sha256(readFileSync(join(uploads, "shot.png")).subarray(0, 64)));
   } finally {
     await hub.shutdown();
     await jobs.shutdown();
