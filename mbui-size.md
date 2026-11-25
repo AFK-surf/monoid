@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [26a69ad46](https://github.com/AFK-surf/monoid/commit/26a69ad460ebd57a96a62531ace1f87c5ebecfc9) feat(mbui): show each station's state as icons in  | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.75 | 123.19 |
 | [9df00e044](https://github.com/AFK-surf/monoid/commit/9df00e044b3d24ae9bae30111d9e2093c25630fc) feat(pion-station): Wave 8 W8-E1 sessions_actors c | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [43b2f8b59](https://github.com/AFK-surf/monoid/commit/43b2f8b59e87d38b21e1ec729dee6162bcf45a45) fix(ci): reuse pipeline shell-station in pion-stat | 2.55 | 3.44 | 14.22 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [6ff926ec7](https://github.com/AFK-surf/monoid/commit/6ff926ec7c14626fc283d5ad79a3c410b1fc045d) fix(ci): filter native-handoff get by host target, | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [794c6d87e](https://github.com/AFK-surf/monoid/commit/794c6d87ed75741aa65ac8c0c9afa57c51358c57) fix(core-ts): stop lock reads from dialing unlinke | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
-| [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [26a69ad46](https://github.com/AFK-surf/monoid/commit/26a69ad460ebd57a96a62531ace1f87c5ebecfc9) feat(mbui): show each station's state as icons in  | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
 | [4a5c1ad96](https://github.com/AFK-surf/monoid/commit/4a5c1ad9624b189d267abbbcf75f664fab4965da) fix(station): route a thread slack_api posts in th | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.41 |
 | [9df00e044](https://github.com/AFK-surf/monoid/commit/9df00e044b3d24ae9bae30111d9e2093c25630fc) feat(pion-station): Wave 8 W8-E1 sessions_actors c | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.46 |
 | [43b2f8b59](https://github.com/AFK-surf/monoid/commit/43b2f8b59e87d38b21e1ec729dee6162bcf45a45) fix(ci): reuse pipeline shell-station in pion-stat | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57 |
 | [6ff926ec7](https://github.com/AFK-surf/monoid/commit/6ff926ec7c14626fc283d5ad79a3c410b1fc045d) fix(ci): filter native-handoff get by host target, | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
 | [794c6d87e](https://github.com/AFK-surf/monoid/commit/794c6d87ed75741aa65ac8c0c9afa57c51358c57) fix(core-ts): stop lock reads from dialing unlinke | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.2 |
-| [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.31 |
