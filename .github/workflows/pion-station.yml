@@ -513,7 +513,7 @@ jobs:
           missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
 
           # Both stillfail-pion (build.sh) and reader:linux-x64 link libstillfail_shell.a (shell-station:linux-x64).
-          # When client/shell/** changed, pipeline's natives job builds it on ci-1 (with cargo-zigbuild and sccache);
+          # When client/shell/** changed, the pipeline's Linux x64 job builds it with cargo-zigbuild.
           # wait for it here since a cold Rust cross-build of shell-station cannot fit in this 5m job.
           run="" natives_state=""
           if [ -n "$missing_shell" ]; then
@@ -538,9 +538,10 @@ jobs:
                   case "$natives_state" in
                     "completed success")
                       echo "(pipeline natives done after $((SECONDS - t0)) s: run $run)"
-                      if ! (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox" && \
+                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-linux-x64-$GITHUB_SHA" -D "$inbox" ||
+                             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
                             node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets linux-x64); then
-                        echo "warning: failed to restore natives-$GITHUB_SHA from run $run; clearing partial inbox"
+                        echo "warning: failed to restore the Linux natives from run $run; clearing partial inbox"
                         rm -rf "$inbox"
                         mkdir -p "$inbox"
                       fi

@@ -26,43 +26,18 @@
   not `linux-libc-dev`'s version, which moves weekly with the kernel), its Mac's
   by its `ImageVersion`: two compilers in turn kept only the last run's units in one, and four `ubuntu-24.04` images
   of one clang and libc, each its own store, left a push's image's units hours behind main's.
-- No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
-  unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
-  (any `ci-1` runner; a branch's Windows reader in `natives-win-reader`, one concurrency group there, each cold reader
-  at -O2 a job's five minutes' worth when they shared the cores; main's in `natives-win-reader-main`, which `needs`
-  natives: taking the group first, it held natives and every job waiting for the readers), `natives-main` and cross-platform
-  `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to
-  `macos-ci` for the non-Apple parts, `natives-mac` building the Apple ones all the same), unloading `Mini1`. Every `natives*` job builds only what plan found missing (`missing_list`,
-  `missing_win_list`, `missing_mac_list`, `missing_mac_reader_list`, `missing_harness_list`). On
-  `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
-  the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
-  `reader:linux-x64` or `pion-reader:linux-{x64,arm64}` (included only when `station=true`) builds `natives` on `ubuntu-24.04`, and `natives-win-reader` (`reader:win32-x64`, `pion-reader:win32-x64`) there whenever `shell-station` is
-  published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
-  a branch's reader's C is compiled at -O0 in units of 8 MB with `moonbit_init` one unit on every core
-  (`MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0`, cold in 71 s where 2 MB's took 105; zig cc's UBSan off), its units kept in the
-  Actions cache by branch keys of their own (`mbui-reader-linux-branch-v2-`, `-win-branch-v2-`, `-mac-branch-v2-`,
-  apart from main's -O2 `mbui-reader-mac-`), which a branch's first push cannot read (a branch sees only main's
-  caches). Main's moon build of the reader is not kept for branches: moon builds all of it again in another checkout
-  path or `MOON_HOME`, and one line changed in `station/mb/src/reader` took as long as cold; `check` runs there only when
-  the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
-  `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
-  line down every one queued until cancelled, 44383403135); a branch's `check-mac`
-  runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
-  of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh` or
-  `shell-apple` is missing, and the Mac's reader in `natives-mac-reader` only for `check-mac` and `mac-build`, on
-  Mini1 (cold builds of the first two there took 228 and 323 s before packing, the
-  reader's 248-260 s at -O0 and its branch units evicted within 17 minutes: on Mini1 its `MBC_STORE` stays on disk; with
-  `vars.MINI1 = 'off'` a branch's reader compiles on `macos-26` at -O0); the other Apple parts,
-  Xcode/Simulator checks (`side-mac`, iOS/macOS builds), Android's release and main's `station-update` stay on `Mini1`
-  (`macos-ci`, `quick`; `vars.MINI1 = 'off'` leaves `station-update` out), the
-  Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
-  were cut at five minutes, 2026-11-17), and
-  a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. The tests' MoonBit program (`reader-harness`, which
-  `check-station` and `check-core` run) builds in `natives-harness` alone, never in `natives`' list or `natives-main`, on
-  `ubuntu-24.04` at -O0 wherever `shell-station` is published, main's too: a concurrency group pends one job and cancels
-  the one pending before it, so the readers' group on `ci-1` takes no third. Runners on one
-  self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and
-  parallel real-time test slices on GitHub's separate VMs rather than stacking them on one host.
+- Use GitHub's standard `ubuntu-24.04` runners for Linux CI; do not use paid runners. The pipeline plans only
+  missing native parts. `natives-build` builds each non-Apple target on its own VM, with its own checkout and Cargo
+  target. Main publishes the archives by source key. A branch stages them in company R2 and uploads one receipt
+  artifact per target for the rest of that run. `natives` combines the status for the pipeline and Windows preview.
+  `natives-win-reader` and `natives-harness` take their static shell from that run when it changed.
+  The Linux reader jobs use 8 MB C units with one `moonbit_init` unit, and keep compiled units in the Actions cache.
+  Branch readers and the tests' harness use -O0, and main's shipped readers retain optimization. Each Rust check
+  shard uses its own GitHub runner and Cargo target. `plan.sh` selects Rust checks when their inputs changed.
+- Keep the Apple native jobs and Xcode or simulator tasks on their existing Mac pools. A branch's `check-mac`
+  runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`). A branch plans `natives-mac` only when a
+  job uses those parts, and `natives-mac-reader` only for `check-mac` and `mac-build`. Android release builds
+  and `station-update` use Mini1; Mac app and station release signing use GitHub's `macos-26`.
 - A job that needs another job's output says that job's result in its `if:` (`contains(fromJSON('["success","skipped"]'),
   needs.natives.result)`): one cut at its `timeout-minutes` is `cancelled`, not `failure`, and the run is not
   cancelled, so `!cancelled() && !failure()` alone ran nine jobs without the readers (main 44466921858).
@@ -108,11 +83,7 @@
 - The Android delta's deflater is part of the format: JZlib's version (`libs/ui/android/jzlib`) and the level and settings
   `Delta.java` deflates with must be what every installed app carries, or what it makes no longer is the release's APK
   (each delta is checked by the Java applier before it is published, so such a change only stops Android's deltas).
-- Keep actions/checkout depth uniform per persistent self-hosted runner pool: every job that can land on `ci-1`
-  (`ci-1`, `linux-ci`, `linux-quick`) or `macos-ci` must use `fetch-depth: 0` (and no `sparse-checkout`), matching
-  `check`, `android`, and `natives-main`. Any single `fetch-depth: 1` job writes `.git/shallow` into the reused
-  workspace and forces the next `fetch-depth: 0` job into a full `--unshallow` of all history and refs over Shanghai
-  egress (`45626120402`: `check` on `ci-1-2` timed out at 310 s right after `natives` shallowed it). When computing
-  `fetch-depth` in a GitHub Actions expression, quote `'0'` (`runner.environment == 'self-hosted' && '0' || '1'`)
-  because numeric `0` is falsy in `&&`/`||`. Dedicated shallow pools (`quick` / `mini1-5`, `mbui-render`) run no
-  `fetch-depth: 0` jobs and stay shallow.
+- Keep `fetch-depth: 0` and a complete checkout on persistent `macos-ci` workspaces. A shallow job leaves
+  `.git/shallow` and sends the next full-depth job through an expensive unshallow. Dedicated shallow pools
+  (`quick` and `mbui-render`) use shallow checkouts. Quote `'0'` in GitHub Actions expressions because numeric
+  `0` is falsy in `&&` and `||`.

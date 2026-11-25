@@ -28,60 +28,35 @@ jobs:
           - { os: ubuntu-24.04-arm, bin: moonbit-linux-aarch64.tar.gz, core: core-latest.tar.gz }
           - { os: macos-15, bin: moonbit-darwin-aarch64.tar.gz, core: core-latest.tar.gz }
           - { os: windows-latest, bin: moonbit-windows-x86_64.zip, core: core-latest.zip }
-          # (macos-ci's own entry: its tar/compression differs from GitHub's macos-15.
-          # ci-1's self-hosted Linux x64 entry uses the same GNU tar + zstdmt as ubuntu-24.04, only at path moon-ci-put
-          # and under key moonbit-Linux-X64-self-hosted-*; uploading 88 MB from ci-1 at ~0.4 MB/s timed out at 5 minutes
-          # and left stale cache reservations (45436742717, 45449784477), so ubuntu-24.04 writes it at ~100 MB/s and
-          # verify-ci-1 confirms ci-1 restores it.)
-          - { os: [self-hosted, mbui-render], self: mac, bin: moonbit-darwin-aarch64.tar.gz, core: core-latest.tar.gz }
-          - { os: ubuntu-24.04, target_env: self-hosted, bin: moonbit-linux-x86_64.tar.gz, core: core-latest.tar.gz }
-    # (whether this entry runs: a self-hosted runner never for a fork's pull request.
-    # Said per step and in runs-on, as a job's if is weighed before its matrix is: there it made the workflow invalid,
-    # main 8e422a29's run 43730630974 and the hour's after with no job. An entry left out runs its steps not at all on
-    # GitHub's Ubuntu)
     env:
-      GO: ${{ !(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
-      STILLFAIL_DIRECT_DNS: ${{ matrix.self != '' && '223.5.5.5' || '' }}
-    runs-on: ${{ (!(matrix.self != '' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && matrix.os || 'ubuntu-24.04' }}
+      TARGET_ENV: github-hosted
+      MOONBIT_BIN: ${{ matrix.bin }}
+      MOONBIT_CORE: ${{ matrix.core }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 5
-    steps:
-      - if: env.GO == 'true'
-        name: The latest release's ETags
+    steps: &publish-moonbit
+      - name: The latest release's ETags
         id: tag
         shell: bash
         run: |
           base=https://cli.moonbitlang.com
-          # (--retry-all-errors: --retry alone does not ask again after a connection broken off, macos-ci's
-          # SSL_ERROR_SYSCALL failing the hour's run at once, 40997517041)
-          fetch_etags() {
-            { curl -fsSI --retry 3 --retry-all-errors --max-time 20 "$@" "$base/binaries/latest/${{ matrix.bin }}"
-              curl -fsSI --retry 3 --retry-all-errors --max-time 20 "$@" "$base/cores/${{ matrix.core }}"; } \
+          tag=$(
+            { curl -fsSI --retry 3 --retry-all-errors --max-time 20 "$base/binaries/latest/$MOONBIT_BIN"
+              curl -fsSI --retry 3 --retry-all-errors --max-time 20 "$base/cores/$MOONBIT_CORE"; } \
               | tr -d '\r' | awk -F': ' 'tolower($1) == "etag" { print $2 }' | tr -d '\n'
-          }
-          tag=
-          if [ -n "${STILLFAIL_DIRECT_DNS:-}" ] && command -v dig > /dev/null 2>&1; then
-            ip=$(dig +short +time=3 +tries=2 @"$STILLFAIL_DIRECT_DNS" cli.moonbitlang.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1) || ip=
-            if [ -n "$ip" ]; then
-              echo "cli.moonbitlang.com directly, at $ip"
-              tag=$(fetch_etags --resolve "cli.moonbitlang.com:443:$ip") || tag=
-            fi
-          fi
-          if [ "$(printf '%s' "$tag" | tr -cd '"' | wc -c | tr -d ' ')" != 4 ]; then
-            tag=$(fetch_etags)
-          fi
+          )
           [ "$(printf '%s' "$tag" | tr -cd '"' | wc -c | tr -d ' ')" = 4 ] || { echo "::error::no ETags from $base: $tag"; exit 1; }
-          echo "key=moonbit-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target_env || runner.environment }}-$(printf '%s' "$tag trimmed" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - if: env.GO == 'true'
-        uses: actions/cache/restore@v4
+          echo "key=moonbit-${{ runner.os }}-${{ runner.arch }}-$TARGET_ENV-$(printf '%s' "$tag trimmed" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
         id: had
         with:
-          path: ${{ (matrix.target_env || runner.environment) == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          path: ${{ env.CACHE_PATH || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
           # (also match a fallback key written after a wedged reservation on the primary key)
           restore-keys: ${{ steps.tag.outputs.key }}-
           lookup-only: true
       - name: "Installed (MOON_HOME: moon-ci in the runner's tool cache)"
-        if: env.GO == 'true' && steps.had.outputs.cache-matched-key == ''
+        if: steps.had.outputs.cache-matched-key == ''
         shell: bash
         run: |
           export MOON_HOME="$RUNNER_TOOL_CACHE/moon-ci"; [ "${{ runner.os }}" != Windows ] || MOON_HOME=$(cygpath -u "$MOON_HOME")
@@ -90,24 +65,7 @@ jobs:
           if [ "${{ runner.os }}" = Windows ]; then
             MOON_HOME=$(cygpath -w "$MOON_HOME") powershell -NoProfile -Command "irm https://cli.moonbitlang.com/install/powershell.ps1 | iex"
           else
-            installed=
-            if [ -n "${STILLFAIL_DIRECT_DNS:-}" ] && command -v dig > /dev/null 2>&1; then
-              ip=$(dig +short +time=3 +tries=2 @"$STILLFAIL_DIRECT_DNS" cli.moonbitlang.com A 2>/dev/null | grep -E '^[0-9.]+$' | head -1) || ip=
-              if [ -n "$ip" ]; then
-                direct_curl=$(mktemp -d "${RUNNER_TEMP:-/tmp}/moonbit-direct.XXXXXX")
-                trap 'rm -rf "$direct_curl"' EXIT
-                printf 'resolve = cli.moonbitlang.com:443:%s\nconnect-timeout = 15\nspeed-limit = 1024\nspeed-time = 20\n' "$ip" > "$direct_curl/.curlrc"
-                echo "Installing MoonBit directly from cli.moonbitlang.com at $ip"
-                if ( set -o pipefail; CURL_HOME="$direct_curl" curl -fsSL --retry 2 --retry-all-errors https://cli.moonbitlang.com/install/unix.sh | CURL_HOME="$direct_curl" bash ); then
-                  installed=1
-                else
-                  echo "::warning::direct MoonBit install at $ip failed; falling back to default route"
-                fi
-              fi
-            fi
-            if [ -z "$installed" ]; then
-              curl -fsSL --retry 3 --retry-all-errors https://cli.moonbitlang.com/install/unix.sh | bash
-            fi
+            curl -fsSL --retry 3 --retry-all-errors https://cli.moonbitlang.com/install/unix.sh | bash
           fi
           # (without what no job here runs: the docs', the editors' and the coverage's programs, ~40 MB of every job's
           # download of it, ~20 jobs a commit, when GitHub stopped the account's cache downloads: "Egress is over the
@@ -118,49 +76,69 @@ jobs:
           PATH="$MOON_HOME/bin:$PATH" moon version --all
           # (a self-hosted runner's saved from moon-ci-put in its workspace: the path every runner of it asks by,
           # .github/actions/mbui-moonbit)
-          if [ "${{ matrix.target_env || runner.environment }}" = self-hosted ]; then rm -rf moon-ci-put && cp -R "$MOON_HOME" moon-ci-put; fi
-      - if: env.GO == 'true' && steps.had.outputs.cache-matched-key == ''
+          if [ "$TARGET_ENV" = self-hosted ]; then rm -rf moon-ci-put && cp -R "$MOON_HOME" moon-ci-put; fi
+      - if: steps.had.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
-          path: ${{ (matrix.target_env || runner.environment) == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          path: ${{ env.CACHE_PATH || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
       # (put in, or this fails: a save that could not be made is only a warning of actions/cache/save's, run 39533061843's
       # every put green with nothing saved. If a cancelled run left a stale reservation on the primary key — 45436742717
       # timed out on ci-1 and blocked 45443985070 and 45447800112 for an hour — fall back to a run-suffixed key under the
       # same prefix so actions/mbui-moonbit and subsequent hourly checks still find it.)
-      - if: env.GO == 'true'
-        uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v4
         id: verify
         with:
-          path: ${{ (matrix.target_env || runner.environment) == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          path: ${{ env.CACHE_PATH || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}
           restore-keys: ${{ steps.tag.outputs.key }}-
           lookup-only: true
-      - if: env.GO == 'true' && steps.had.outputs.cache-matched-key == '' && steps.verify.outputs.cache-matched-key == ''
+      - if: steps.had.outputs.cache-matched-key == '' && steps.verify.outputs.cache-matched-key == ''
         uses: actions/cache/save@v4
         with:
-          path: ${{ (matrix.target_env || runner.environment) == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          path: ${{ env.CACHE_PATH || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}-${{ github.run_id }}
-      - if: env.GO == 'true' && steps.verify.outputs.cache-matched-key == ''
+      - if: steps.verify.outputs.cache-matched-key == ''
         uses: actions/cache/restore@v4
         with:
-          path: ${{ (matrix.target_env || runner.environment) == 'self-hosted' && 'moon-ci-put' || format('{0}/moon-ci', runner.tool_cache) }}
+          path: ${{ env.CACHE_PATH || format('{0}/moon-ci', runner.tool_cache) }}
           key: ${{ steps.tag.outputs.key }}-${{ github.run_id }}
           lookup-only: true
           fail-on-cache-miss: true
-      # (what a job gets: the action over what was put in; ci-1's entry is verified on ci-1 itself below)
-      - if: env.GO == 'true' && matrix.target_env == ''
+      # Verify the cache with the same action that other jobs use.
+      - if: env.TARGET_ENV == runner.environment
         uses: actions/checkout@v4
         with: { sparse-checkout: .github/actions }
-      - if: env.GO == 'true' && matrix.target_env == ''
+      - if: env.TARGET_ENV == runner.environment
         uses: ./.github/actions/mbui-moonbit
 
-  verify-ci-1:
-    needs: put
-    if: ${{ !(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && vars.CI_1 != 'off' }}
-    runs-on: [self-hosted, linux-ci]
+  # Publish the self-hosted Mac cache from GitHub too. Uploading its 80 MB from Mini1 timed out.
+  put-self-hosted-mac:
+    runs-on: macos-26
+    timeout-minutes: 5
+    env:
+      TARGET_ENV: self-hosted
+      CACHE_PATH: moon-ci-put
+      MOONBIT_BIN: moonbit-darwin-aarch64.tar.gz
+      MOONBIT_CORE: core-latest.tar.gz
+    outputs:
+      key: ${{ steps.tag.outputs.key }}
+    steps: *publish-moonbit
+
+  verify-self-hosted-mac:
+    needs: put-self-hosted-mac
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, mbui-render]
     timeout-minutes: 5
     steps:
+      - uses: actions/cache/restore@v4
+        with:
+          path: moon-ci-put
+          key: ${{ needs.put-self-hosted-mac.outputs.key }}
+          restore-keys: ${{ needs.put-self-hosted-mac.outputs.key }}-
+          lookup-only: true
+          fail-on-cache-miss: true
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
+        with: { sparse-checkout: .github/actions }
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: '' }
