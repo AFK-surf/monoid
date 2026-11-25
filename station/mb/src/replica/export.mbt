@@ -173,8 +173,8 @@ pub struct Exporter {
   priv mut transcripts_pending : Bool
   priv tf_cache : Map[String, Array[(String, JValue)]]
   /// Each generation's `head.json` as last read or written, by its directory, keyed by racy-git
-  /// `(meta_stamp, content_fnv64)`: zero disk read / zero JSON parse on quiet passes after the 50ms racy window.
-  priv head_cache : Map[String, (String, Int64, JValue)]
+  /// `(meta_stamp, content_fnv64, was_racy)`: zero disk read / zero JSON parse on quiet passes after the 50ms racy window.
+  priv head_cache : Map[String, (String, Int64, Bool, JValue)]
   priv manifest_cache : Map[String, (String, String, Array[String])]
   priv mut manifest_live : Set[String]
   priv manifest_superseded_at : Map[String, Double]
@@ -327,7 +327,7 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 ///|
 fn Exporter::head_identity_of(self : Exporter, ws : String, gen : String) -> String {
   match self.head_cache.get(self.gen_dir(ws, gen)) {
-    Some((stamp, hash, _)) if stamp != "" => "\{stamp}:\{hash}"
+    Some((stamp, hash, _, _)) if stamp != "" => "\{stamp}:\{hash}"
     _ => ""
   }
 }
@@ -337,11 +337,14 @@ fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
   let path = self.files.join([dir, "head.json"])
   let (st_rc, stamp) = file_stamp(path)
   if st_rc == 1 || st_rc == 2 {
-    if self.head_cache.get(dir) is Some((c_stamp, c_hash, cached)) && c_stamp == stamp {
-      if st_rc == 1 {
+    if self.head_cache.get(dir) is Some((c_stamp, c_hash, was_racy, cached)) && c_stamp == stamp {
+      if !was_racy && st_rc == 1 {
         return Some(cached)
       }
       if file_fnv64(path) == Some(c_hash) {
+        if st_rc == 1 && was_racy {
+          self.head_cache[dir] = (c_stamp, c_hash, false, cached)
+        }
         return Some(cached)
       }
     }
@@ -354,7 +357,7 @@ fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
       match (@jsjson.parse(t) catch { _ => Null }) {
         Obj(_) as head => {
           if st_rc == 1 || st_rc == 2 {
-            self.head_cache[dir] = (stamp, fnv64_utf8(t), head)
+            self.head_cache[dir] = (stamp, fnv64_utf8(t), st_rc == 2, head)
           }
           Some(head)
         }
@@ -414,8 +417,13 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
   let (st_rc, stamp) = file_stamp(path)
   let mut cached_head : JValue? = None
   if st_rc == 1 || st_rc == 2 {
-    if self.head_cache.get(dir) is Some((c_stamp, c_hash, cached)) && c_stamp == stamp {
-      if st_rc == 1 || file_fnv64(path) == Some(c_hash) {
+    if self.head_cache.get(dir) is Some((c_stamp, c_hash, was_racy, cached)) && c_stamp == stamp {
+      if !was_racy && st_rc == 1 {
+        cached_head = Some(cached)
+      } else if file_fnv64(path) == Some(c_hash) {
+        if st_rc == 1 && was_racy {
+          self.head_cache[dir] = (c_stamp, c_hash, false, cached)
+        }
         cached_head = Some(cached)
       }
     }
@@ -425,6 +433,7 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
     None => {
       self.head_cache.remove(dir)
       self.manifest_cache.remove(ws)
+      self.tf_cache.remove(ws)
       match self.files.read(path) {
         None => {
           if self.files.exists(path) || self.files.lstat(path) is Some(_) {
@@ -443,7 +452,7 @@ fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir :
           match (@jsjson.parse(t) catch { e => fail("corrupted \{path}: \{e}") }) {
             Obj(_) as obj => {
               if st_rc == 1 || st_rc == 2 {
-                self.head_cache[dir] = (stamp, fnv64_utf8(t), obj)
+                self.head_cache[dir] = (stamp, fnv64_utf8(t), st_rc == 2, obj)
               }
               obj
             }
@@ -1395,7 +1404,7 @@ fn Exporter::write_head(self : Exporter, dir : String, head : JValue) -> Unit ra
   ignore(self.files.write(path, text))
   let (st_rc, stamp) = file_stamp(path)
   if st_rc == 1 || st_rc == 2 {
-    self.head_cache[dir] = (stamp, fnv64_utf8(text), head)
+    self.head_cache[dir] = (stamp, fnv64_utf8(text), st_rc == 2, head)
   }
 }
 

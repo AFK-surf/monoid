@@ -1811,7 +1811,33 @@ test("dual-exporter A -> B -> A --compact-heads handover refreshes manifest_cach
       `${labelA}->${labelB}->${labelA}: A must publish B's latest transcriptManifest root (never stale ${rootA1})`,
     );
 
-    // Receiver copies ONLY the objects advertised by A's head + manifest and restores.
+    // Next: mutate another session's title so A writes a new batch (to3 > toB) without re-scanning transcripts.
+    // A MUST have invalidated tf_cache[ws] on head_cache miss so it writes B's latest transcriptFiles (never stale to=1)!
+    const diskHeadB = JSON.parse(readFileSync(join(rep, "own", HOME, String(headB.gen), "head.json"), "utf8")) as Record<string, any>;
+    const toldTitle = nothingTold();
+    const unsubTitle = made.store.subscribe((c) => void tell(toldTitle, c));
+    chat(made.store, made.data, "chat:title-bump", HOME, 1);
+    made.store.setTitle("chat:title-bump", "bumped-after-aba");
+    unsubTitle();
+
+    expA.now = NOW + 22_000;
+    const pA3 = await expA.ask({ type: "pass", told: toldTitle });
+    const headA3 = pA3.heads[HOME] as Record<string, any>;
+    const toA3 = Number(headA3.to);
+    assert.ok(toA3 > toB, `${labelA}->${labelB}->${labelA}: A must advance to3 (${toA3} > ${toB}) after title edit`);
+    assert.equal(
+      String(headA3.transcriptManifest),
+      rootB,
+      `${labelA}->${labelB}->${labelA}: headA3.transcriptManifest must still equal B's latest root ${rootB}`,
+    );
+    const diskHeadA3 = JSON.parse(readFileSync(join(rep, "own", HOME, String(headA3.gen), "head.json"), "utf8")) as Record<string, any>;
+    assert.deepEqual(
+      diskHeadA3.transcriptFiles,
+      diskHeadB.transcriptFiles,
+      `${labelA}->${labelB}->${labelA}: disk head.json after to3 must retain B's transcriptFiles chunks`,
+    );
+
+    // Receiver copies ONLY the objects advertised by headA3 + manifest and restores.
     const manifestsDir = join(rep, "manifests");
     const rootObj = JSON.parse(readFileSync(join(manifestsDir, rootB), "utf8")) as { v: number; buckets: Record<string, string> };
     const leafHashes = Object.values(rootObj.buckets);
@@ -1820,15 +1846,15 @@ test("dual-exporter A -> B -> A --compact-heads handover refreshes manifest_cach
       const leafObj = JSON.parse(readFileSync(join(manifestsDir, lh), "utf8")) as { v: number; files: Record<string, number> };
       chunkHashes.push(...Object.keys(leafObj.files));
     }
-    const allHashes = [...Object.keys(headA2.files ?? {}), ...chunkHashes];
+    const allHashes = [...Object.keys(headA3.files ?? {}), ...chunkHashes];
     const sources = (await expA.ask({ type: "sources", hashes: allHashes })) as Record<string, string>;
     await expA.close();
 
     const dest = tempDir(`w6b-aba-dest-${labelA}-${labelB}-`);
     const destDb = join(dest, "stillfail.db");
     Store.open(destDb).close();
-    stageRestoreCopy(rep, made.data, HOME, String(headA2.gen), dest, sources);
-    writeFileSync(join(dest, "restore", "copy", String(headA2.gen), "head.json"), JSON.stringify(headA2, null, 1));
+    stageRestoreCopy(rep, made.data, HOME, String(headA3.gen), dest, sources);
+    writeFileSync(join(dest, "restore", "copy", String(headA3.gen), "head.json"), JSON.stringify(headA3, null, 1));
     const copyFiles = join(dest, "restore", "copy", "files");
     cpSync(join(manifestsDir, rootB), join(copyFiles, rootB));
     for (const lh of leafHashes) {

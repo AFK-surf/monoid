@@ -251,7 +251,7 @@ pub struct Exporter {
   mut known : Bool
   mut transcripts_pending : Bool
   mut tf_cache : Map[String, Array[(String, js_json::JValue)]]
-  mut head_cache : Map[String, (String, Int64, js_json::JValue)]
+  mut head_cache : Map[String, (String, Int64, Bool, js_json::JValue)]
   mut manifest_cache : Map[String, (String, String, Array[String])]
   mut manifest_live : Map[String, Bool]
   mut manifest_live_keys : Array[String]
@@ -477,7 +477,7 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 
 fn Exporter::head_identity_of(self : Exporter, ws : String, gen : String) -> String {
   match self.head_cache.get(self.gen_dir(ws, gen)) {
-    Some((stamp, hash, _)) => if stamp != "" { stamp + ":" + hash.to_string() } else { "" }
+    Some((stamp, hash, _, _)) => if stamp != "" { stamp + ":" + hash.to_string() } else { "" }
     None => ""
   }
 }
@@ -487,14 +487,17 @@ fn Exporter::read_head(self : Exporter, dir : String) -> Option[js_json::JValue]
   let (st_rc, stamp) = c_file_stamp(path)
   if st_rc == 1 || st_rc == 2 {
     match self.head_cache.get(dir) {
-      Some((c_stamp, c_hash, cached)) => {
+      Some((c_stamp, c_hash, was_racy, cached)) => {
         if c_stamp == stamp {
-          if st_rc == 1 {
+          if !was_racy && st_rc == 1 {
             return Some(cached)
           }
           match c_file_fnv64(path) {
             Some(actual) => {
               if actual == c_hash {
+                if st_rc == 1 && was_racy {
+                  self.head_cache.set(dir, (c_stamp, c_hash, false, cached))
+                }
                 return Some(cached)
               }
             }
@@ -512,7 +515,7 @@ fn Exporter::read_head(self : Exporter, dir : String) -> Option[js_json::JValue]
         Ok(js_json::JValue::Obj(es)) => {
           let head = js_json::JValue::Obj(es)
           if st_rc == 1 || st_rc == 2 {
-            self.head_cache.set(dir, (stamp, fnv64_utf8(t), head))
+            self.head_cache.set(dir, (stamp, fnv64_utf8(t), st_rc == 2, head))
           }
           Some(head)
         }
@@ -609,14 +612,17 @@ fn Exporter::read_head_checked(
   let mut cached_head : Option[js_json::JValue] = None
   if st_rc == 1 || st_rc == 2 {
     match self.head_cache.get(dir) {
-      Some((c_stamp, c_hash, cached)) => {
+      Some((c_stamp, c_hash, was_racy, cached)) => {
         if c_stamp == stamp {
-          if st_rc == 1 {
+          if !was_racy && st_rc == 1 {
             cached_head = Some(cached)
           } else {
             match c_file_fnv64(path) {
               Some(actual) => {
                 if actual == c_hash {
+                  if st_rc == 1 && was_racy {
+                    self.head_cache.set(dir, (c_stamp, c_hash, false, cached))
+                  }
                   cached_head = Some(cached)
                 }
               }
@@ -633,6 +639,7 @@ fn Exporter::read_head_checked(
     None => {
       let _ = self.head_cache.remove(dir)
       let _ = self.manifest_cache.remove(ws)
+      let _ = self.tf_cache.remove(ws)
       match self.files.read(path) {
         Err(e) => return Err("cannot read " + path + ": " + e)
         Ok(None) => {
@@ -661,7 +668,7 @@ fn Exporter::read_head_checked(
             Ok(js_json::JValue::Obj(es)) => {
               let parsed = js_json::JValue::Obj(es)
               if st_rc == 1 || st_rc == 2 {
-                self.head_cache.set(dir, (stamp, fnv64_utf8(t), parsed))
+                self.head_cache.set(dir, (stamp, fnv64_utf8(t), st_rc == 2, parsed))
               }
               parsed
             }
@@ -2258,7 +2265,7 @@ fn Exporter::write_head(self : Exporter, dir : String, head : js_json::JValue) -
     Ok(_) => {
       let (st_rc, stamp) = c_file_stamp(path)
       if st_rc == 1 || st_rc == 2 {
-        self.head_cache.set(dir, (stamp, fnv64_utf8(text), head))
+        self.head_cache.set(dir, (stamp, fnv64_utf8(text), st_rc == 2, head))
       }
       Ok(())
     }
