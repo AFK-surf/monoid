@@ -1,6 +1,906 @@
-// Zero-conflict W7-0 skeleton for `readops_local` (L1, implemented in W7-C).
+// Linked-binary real-SQLite + real-shell self-test for `readops_local` (all 8 modules).
+// Invoked by `stillfail-pion --smoke-readops <temp-dir>` in `build-linux` CI.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "locate"
+import "readops_core"
+import "sql_db"
+
+fn opt_json_str_eq(v : Option[base_codec::Json], expected : String) -> Bool {
+  match v {
+    Some(base_codec::Json::Str(s)) => s == expected
+    _ => false
+  }
+}
+
+fn opt_json_num_eq(v : Option[base_codec::Json], expected : Double) -> Bool {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => n == expected
+    _ => false
+  }
+}
+
+fn mkdir_sync(client : builders_core::ShellClient, path : String) -> Result[Unit, String] {
+  match client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(_) => Ok(())
+    Err(e) => Err("fs.mkdir " + path + " failed: " + e.message)
+  }
+}
+
+fn write_sync(client : builders_core::ShellClient, path : String, text : String) -> Result[Unit, String] {
+  match client.shell_sync_json(
+    "fs.write",
+    base_codec::json_obj([("path", base_codec::json_str(path)), ("text", base_codec::json_str(text))]),
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err("fs.write " + path + " failed: " + e.message)
+  }
+}
 
 pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
-  let _ = temp_dir
-  Ok(0)
+  let started_shell = if !host_shim::shell_active() {
+    if !host_shim::start(temp_dir, false) {
+      return Err("host_shim::start failed")
+    }
+    true
+  } else {
+    false
+  }
+  let res = run_selftest_inner(temp_dir)
+  if started_shell {
+    host_shim::stop()
+  }
+  res
+}
+
+fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
+  let root = temp_dir + "/w7c_readops_local"
+  let client = builders_core::ShellClient::new()
+  let state = readops_core::ReaderState::new(client, "/")
+  match mkdir_sync(client, root) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  let db_path = root + "/readops_local_selftest.db"
+  let db = match sql_db::Db::create(db_path) {
+    Ok(d) => d
+    Err(e) => return Err("open selftest db failed: " + e.message)
+  }
+  let mut passed = 0
+
+  let schema_sql = "CREATE TABLE sessions(key TEXT PRIMARY KEY, conv TEXT, ws TEXT, title TEXT, runtime TEXT, model TEXT, effort TEXT, running INTEGER DEFAULT 0, created_by TEXT, archived_at INTEGER, last_active_at INTEGER, workspace TEXT, cwd TEXT, connect TEXT, runtime_session_id TEXT, original_runtime TEXT, profile TEXT);" +
+  "CREATE TABLE runtime_sessions(session_key TEXT, id TEXT, runtime TEXT, profile TEXT, at INTEGER);" +
+  "CREATE TABLE threads(id INTEGER PRIMARY KEY, surface TEXT, channel TEXT, thread_ts TEXT, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, links TEXT);" +
+  "CREATE TABLE thread_sessions(thread INTEGER, session TEXT, connect TEXT, joined_at INTEGER, left_at INTEGER);" +
+  "CREATE INDEX thread_sessions_session ON thread_sessions(session);" +
+  "CREATE TABLE thread_state(thread INTEGER PRIMARY KEY, said_n INTEGER, person_n INTEGER, last_n INTEGER);" +
+  "CREATE TABLE entries(thread INTEGER, n INTEGER, kind TEXT, author_kind TEXT, author TEXT, ts TEXT, at INTEGER, text TEXT);" +
+  "CREATE TABLE deliveries(thread INTEGER, n INTEGER, session TEXT, delivered_at INTEGER);" +
+  "CREATE TABLE jobs(id TEXT PRIMARY KEY, session_key TEXT, name TEXT, command TEXT, cwd TEXT, port INTEGER, state TEXT, pgid INTEGER, exit_code INTEGER, started_at INTEGER, ended_at INTEGER, restarts INTEGER, log TEXT, watch INTEGER, queued INTEGER);" +
+  "CREATE TABLE job_notices(job_id TEXT, at INTEGER, text TEXT);" +
+  "CREATE TABLE cc_sessions(session TEXT PRIMARY KEY, complete INTEGER);" +
+  "CREATE TABLE cc_session_rows(session TEXT, surface TEXT, thread INTEGER);" +
+  "CREATE INDEX cc_session_order ON cc_session_rows(session, surface);" +
+  "CREATE TABLE job_name_first(owner TEXT, thread INTEGER, best INTEGER, ready INTEGER, restart INTEGER);" +
+  "CREATE TABLE workspace_up_sessions(scope INTEGER, ws TEXT, session TEXT);" +
+  "CREATE INDEX workspace_up_sessions_scope ON workspace_up_sessions(scope, ws, session);" +
+  "CREATE TABLE session_up_job_rows(session TEXT, job_rowid INTEGER);" +
+  "CREATE TABLE turns(id TEXT, session_key TEXT, kind TEXT, started_at INTEGER, profile TEXT, person TEXT, thread INTEGER);" +
+  "CREATE TABLE usage(id TEXT, at INTEGER, session TEXT, turn TEXT, thread INTEGER, person TEXT, profile TEXT, runtime TEXT, model TEXT, subagent INTEGER, fast INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_long INTEGER, output INTEGER, calls INTEGER, context INTEGER, context_window INTEGER, rollup_counted INTEGER DEFAULT 1);" +
+  "CREATE INDEX usage_session ON usage(session, at);" +
+  "CREATE TABLE usage_15m(scope TEXT, quarter INTEGER, session TEXT, thread INTEGER, person TEXT, profile TEXT, runtime TEXT, model TEXT, fast INTEGER, calls INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_long INTEGER, output INTEGER);" +
+  "CREATE INDEX usage_15m_quarter ON usage_15m(quarter, scope);"
+
+  match db.exec(schema_sql) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("schema setup failed: " + e.message)
+    }
+  }
+
+  // ── 1. jobs (`job`, `shown`, `job_log`, `fs.meta`, `NOTICES_SHOWN=20`, `parse_usize`) ──
+  let log_path = root + "/job1.log"
+  match write_sync(client, log_path, "line1\r\nline2\r\nline3\n") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match db.exec(
+    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES ('s1', 'ws1', 'claude', 'alice@example.com', 'p1', 5000, '/tmp/w', '/tmp/w', 'claude-rt-1');" +
+    "INSERT INTO jobs(id, session_key, name, command, cwd, port, state, pgid, exit_code, started_at, ended_at, restarts, log, watch, queued) VALUES ('j1', 's1', 'build', 'echo hi', '/tmp/w', 8080, 'running', 123, NULL, 1000, NULL, 0, '" +
+    log_path +
+    "', 1, 1);",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed jobs failed: " + e.message)
+    }
+  }
+  for i in 0..<25 {
+    let at = 1000 + i
+    match db.exec(
+      "INSERT INTO job_notices(job_id, at, text) VALUES ('j1', " + at.to_string() + ", 'n" + i.to_string() + "');",
+    ) {
+      Ok(_) => ()
+      Err(e) => {
+        db.close()
+        return Err("seed job_notices failed: " + e.message)
+      }
+    }
+  }
+  match job(db, client, base_codec::json_obj([("id", base_codec::json_str("j1"))])) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "notices") {
+        Some(base_codec::Json::Arr(ns)) => {
+          if ns.length() != 20 {
+            db.close()
+            return Err("job notices expected 20, got " + ns.length().to_string())
+          }
+        }
+        _ => {
+          db.close()
+          return Err("job missing notices array")
+        }
+      }
+      match builders_core::json_get_last(res, "queued") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => {
+          db.close()
+          return Err("job expected queued=true")
+        }
+      }
+      match builders_core::json_get_last(res, "outputAt") {
+        Some(base_codec::Json::Num(ms, _)) => {
+          if ms <= 0.0 {
+            db.close()
+            return Err("job outputAt expected > 0")
+          }
+        }
+        _ => {
+          db.close()
+          return Err("job expected numeric outputAt from fs.meta")
+        }
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("job(j1) failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match job(db, client, base_codec::json_obj([("id", base_codec::json_str("missing"))])) {
+    Err(readops_core::ReadError::Refused(404, _)) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("job(missing) expected 404")
+    }
+  }
+  match job_log(
+    db,
+    client,
+    base_codec::json_obj([("id", base_codec::json_str("j1")), ("lines", base_codec::json_str("2"))]),
+  ) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "text") {
+        Some(base_codec::Json::Str("line2\nline3")) => passed = passed + 1
+        other => {
+          db.close()
+          return Err("job_log text mismatch: " + sql_db::stringify_json(readops_core::or_null(other)))
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("job_log failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match job_log(
+    db,
+    client,
+    base_codec::json_obj([("id", base_codec::json_str("j1")), ("lines", base_codec::json_num(5.0))]),
+  ) {
+    Err(readops_core::ReadError::Refused(500, msg)) => {
+      if msg != "text.replace is not a function" {
+        db.close()
+        return Err("job_log numeric lines wrong error: " + msg)
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("job_log numeric lines expected Refused(500)")
+    }
+  }
+
+  // ── 2. jobs_sql (real SQLite execution of SQL constants) ──
+  match db.exec(
+    "INSERT INTO threads(id, surface, created_at) VALUES (10, 'slack', 100);" +
+    "INSERT INTO thread_sessions(thread, session, joined_at) VALUES (10, 's1', 100);" +
+    "INSERT INTO workspace_up_sessions(scope, ws, session) VALUES (0, 'ws1', 's1');" +
+    "INSERT INTO session_up_job_rows(session, job_rowid) SELECT 's1', rowid FROM jobs WHERE id='j1';",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed jobs_sql failed: " + e.message)
+    }
+  }
+  match db.all(JOBS_UP_SQL, []) {
+    Ok(rs) => {
+      if rs.length() != 1 {
+        db.close()
+        return Err("JOBS_UP_SQL expected 1 row")
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("JOBS_UP_SQL failed: " + e.message)
+    }
+  }
+  match db.all(WORKSPACE_UP_JOBS_SQL, [base_codec::json_str("ws1"), base_codec::json_int(1)]) {
+    Ok(rs) => {
+      if rs.length() != 1 {
+        db.close()
+        return Err("WORKSPACE_UP_JOBS_SQL expected 1 row")
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("WORKSPACE_UP_JOBS_SQL failed: " + e.message)
+    }
+  }
+  match db.all(HAS_NAMING_ORIGIN_SQL, [base_codec::json_str("s1"), base_codec::json_str("chat")]) {
+    Ok(rs) => {
+      if rs.length() != 1 {
+        db.close()
+        return Err("HAS_NAMING_ORIGIN_SQL expected 1 row")
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("HAS_NAMING_ORIGIN_SQL failed: " + e.message)
+    }
+  }
+
+  // ── 3. machine (`machine_sessions`, `machine_session`, private `MachineSession` & `named`) ──
+  let mroot = root + "/machine"
+  let claude_root = mroot + "/claude"
+  let claude_proj = claude_root + "/proj1"
+  let codex_root = mroot + "/codex/sessions"
+  match mkdir_sync(client, claude_proj) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match mkdir_sync(client, codex_root) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  let claude_file = claude_proj + "/claude-rt-1.jsonl"
+  let claude_jsonl = "{\"type\":\"user\",\"cwd\":\"/tmp/w\",\"timestamp\":\"2026-11-25T01:00:00.000Z\",\"message\":{\"content\":\"Hello Claude\"}}\n" +
+  "{\"type\":\"assistant\",\"timestamp\":\"2026-11-25T01:00:05.000Z\",\"message\":{\"model\":\"claude-opus-5-5\",\"content\":[{\"type\":\"text\",\"text\":\"Hi there\"}]}}\n" +
+  "{\"type\":\"custom-title\",\"customTitle\":\"My Claude Chat\"}\n"
+  match write_sync(client, claude_file, claude_jsonl) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  let codex_file = codex_root + "/rollout-2026-11-25-codex-rt-1.jsonl"
+  let codex_jsonl = "{\"type\":\"session_meta\",\"payload\":{\"id\":\"codex-rt-1\",\"cwd\":\"/tmp/codex\"}}\n" +
+  "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-25T02:00:00.000Z\",\"payload\":{\"type\":\"user_message\",\"message\":\"Fix bug\"}}\n" +
+  "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\"}}\n"
+  match write_sync(client, codex_file, codex_jsonl) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, mroot + "/codex/session_index.jsonl", "{\"id\":\"codex-rt-1\",\"thread_name\":\"Codex Named\"}\n") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  let roots_json = base_codec::json_obj([
+    ("claude", base_codec::json_str(claude_root)),
+    ("codex", base_codec::json_str(codex_root)),
+  ])
+  match machine_sessions(db, client, "/", base_codec::json_obj([("roots", roots_json)])) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "sessions") {
+        Some(base_codec::Json::Arr(ss)) => {
+          if ss.length() != 2 {
+            db.close()
+            return Err("machine_sessions expected 2 sessions, got " + ss.length().to_string())
+          }
+          let mut saw_claude = false
+          let mut saw_codex = false
+          for i in 0..<ss.length() {
+            let s = ss[i]
+            match builders_core::json_get_last(s, "id") {
+              Some(base_codec::Json::Str("claude-rt-1")) => {
+                if opt_json_str_eq(builders_core::json_get_last(s, "session"), "s1") &&
+                opt_json_str_eq(builders_core::json_get_last(s, "title"), "My Claude Chat") {
+                  saw_claude = true
+                }
+              }
+              Some(base_codec::Json::Str("codex-rt-1")) => {
+                if opt_json_str_eq(builders_core::json_get_last(s, "title"), "Codex Named") {
+                  saw_codex = true
+                }
+              }
+              _ => ()
+            }
+          }
+          if !saw_claude || !saw_codex {
+            db.close()
+            return Err("machine_sessions metadata mismatch: " + sql_db::stringify_json(res))
+          }
+          passed = passed + 1
+        }
+        _ => {
+          db.close()
+          return Err("machine_sessions missing sessions array")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("machine_sessions failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match machine_session(
+    db,
+    client,
+    "/",
+    base_codec::json_obj([
+      ("roots", roots_json),
+      ("runtime", base_codec::json_str("claude")),
+      ("id", base_codec::json_str("claude-rt-1")),
+    ]),
+  ) {
+    Ok(res) => {
+      if !opt_json_num_eq(builders_core::json_get_last(res, "total"), 2.0) {
+        db.close()
+        return Err("machine_session expected total=2, got " + sql_db::stringify_json(res))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("machine_session failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match machine_session(
+    db,
+    client,
+    "/",
+    base_codec::json_obj([
+      ("roots", roots_json),
+      ("runtime", base_codec::json_str("claude")),
+      ("id", base_codec::json_str("claude-rt-1")),
+      ("found", base_codec::json_bool(true)),
+    ]),
+  ) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "session") {
+        Some(sess) => {
+          if !opt_json_str_eq(builders_core::json_get_last(sess, "path"), claude_file) {
+            db.close()
+            return Err("machine_session(found=true) path mismatch")
+          }
+          passed = passed + 1
+        }
+        None => {
+          db.close()
+          return Err("machine_session(found=true) missing session")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("machine_session(found=true) failed: " + readops_core::read_error_message(e))
+    }
+  }
+
+  // ── 4. memory (`memory`, frontmatter, sorting, prev blob, invalid ws 400) ──
+  let data_dir = root + "/data"
+  match mkdir_sync(client, data_dir + "/mesh") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match mkdir_sync(client, data_dir + "/share/memory/blobs") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match mkdir_sync(client, data_dir + "/agent/skills/demo-proj") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match mkdir_sync(client, data_dir + "/agent/skills/stillfail-jobs") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  let blob_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  match write_sync(client, data_dir + "/config.json", "{\"agentHome\":\"agent\"}") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/mesh/cloud.json", "{\"workspace\":\"ws1\",\"station\":\"st-self\",\"name\":\"OfficeHost\"}") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/share/memory/blobs/" + blob_hash, "old memory") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(
+    client,
+    data_dir + "/share/memory/ws1.json",
+    "{\"files\":{\"MEMORY.md\":{\"hash\":\"" + blob_hash + "\",\"at\":1700000000000,\"by\":\"st-self\",\"prev\":[\"" + blob_hash + "\"]}}}",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/agent/MEMORY.md", "# Global Memory\n") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/agent/skills/demo-proj/SKILL.md", "---\nname: demo-proj\ndescription: 项目记忆：演示\n---\nbody\n") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/agent/skills/demo-proj/extra.md", "# Extra\n") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/agent/skills/stillfail-jobs/SKILL.md", "---\nname: stillfail-jobs\ndescription: builtin\n---\n") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match memory(client, data_dir, "/", base_codec::json_obj([])) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "global") {
+        Some(g) => {
+          if !opt_json_str_eq(builders_core::json_get_last(g, "by"), "OfficeHost") ||
+          !opt_json_str_eq(builders_core::json_get_last(g, "prev"), "old memory") {
+            db.close()
+            return Err("memory global mismatch: " + sql_db::stringify_json(g))
+          }
+        }
+        None => {
+          db.close()
+          return Err("memory missing global")
+        }
+      }
+      match builders_core::json_get_last(res, "skills") {
+        Some(base_codec::Json::Arr(ss)) => {
+          if ss.length() != 2 || !opt_json_str_eq(builders_core::json_get_last(ss[0], "name"), "demo-proj") {
+            db.close()
+            return Err("memory skills ordering mismatch")
+          }
+        }
+        _ => {
+          db.close()
+          return Err("memory missing skills")
+        }
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("memory() failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match memory(client, data_dir, "/", base_codec::json_obj([("workspace", base_codec::json_str("../bad"))])) {
+    Err(readops_core::ReadError::Refused(400, _)) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("memory(bad ws) expected 400")
+    }
+  }
+
+  // ── 5. models (`ReaderState.model_catalog` update + persistence) ──
+  learn_catalog(
+    state,
+    base_codec::json_obj([
+      (
+        "neon-test",
+        base_codec::json_obj([
+          (
+            "cost",
+            base_codec::json_obj([
+              ("input", base_codec::json_num(2.0)),
+              ("output", base_codec::json_num(8.0)),
+              ("cacheRead", base_codec::json_num(0.5)),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
+  match price(state, "neon-test-medium") {
+    Some(p) => {
+      if p.input != 2.0 || p.output != 8.0 || p.cache_read != 0.5 {
+        db.close()
+        return Err("models catalog price mismatch")
+      }
+      passed = passed + 1
+    }
+    None => {
+      db.close()
+      return Err("models catalog lookup failed")
+    }
+  }
+
+  // ── 6. usage (`usage_turns`, `usage_calls` + pagination + viewer isolation) ──
+  match db.exec(
+    "INSERT INTO turns(id, session_key, kind, started_at, profile, person, thread) VALUES ('t1', 's1', 'input', 1000, 'p1', 'alice@example.com', 10);" +
+    "INSERT INTO usage(id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted) VALUES " +
+    "('u1', 1500, 's1', 't1', 10, 'alice@example.com', 'p1', 'claude', 'neon-test', 0, 0, 1000000, 0, 0, 0, 500000, 1, 1000, 200000, 1)," +
+    "('u2', 2000, 's1', 't1', 10, 'alice@example.com', 'p1', 'claude', 'neon-test', 0, 1, 500000, 0, 0, 0, 250000, 1, 1500, 200000, 1);",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed usage failed: " + e.message)
+    }
+  }
+  match usage_turns(
+    db,
+    base_codec::json_obj([
+      ("session", base_codec::json_str("s1")),
+      ("from", base_codec::json_num(900.0)),
+      ("until", base_codec::json_num(3000.0)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Arr(ts)) => {
+      if ts.length() != 1 {
+        db.close()
+        return Err("usage_turns expected 1 turn, got " + ts.length().to_string())
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("usage_turns failed")
+    }
+  }
+  match usage_calls(
+    db,
+    base_codec::json_obj([
+      ("session", base_codec::json_str("s1")),
+      ("from", base_codec::json_str("0")),
+      ("to", base_codec::json_str("5000")),
+      ("beforeAt", base_codec::json_str("5000")),
+      ("beforeSeq", base_codec::json_str("999999")),
+      ("limit", base_codec::json_num(1.0)),
+    ]),
+  ) {
+    Ok(res) => {
+      match (builders_core::json_get_last(res, "rows"), builders_core::json_get_last(res, "next")) {
+        (Some(base_codec::Json::Arr(rows)), Some(base_codec::Json::Obj(_))) => {
+          if rows.length() != 1 {
+            db.close()
+            return Err("usage_calls expected 1 row on page 1")
+          }
+          passed = passed + 1
+        }
+        _ => {
+          db.close()
+          return Err("usage_calls expected rows + next cursor: " + sql_db::stringify_json(res))
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("usage_calls failed: " + readops_core::read_error_message(e))
+    }
+  }
+  match usage_calls(
+    db,
+    base_codec::json_obj([
+      ("session", base_codec::json_str("s1")),
+      ("from", base_codec::json_str("0")),
+      ("to", base_codec::json_str("5000")),
+      ("beforeAt", base_codec::json_str("5000")),
+      ("beforeSeq", base_codec::json_str("999999")),
+      ("limit", base_codec::json_num(10.0)),
+      ("viewer", base_codec::json_obj([("workspace", base_codec::json_str("other-ws")), ("home", base_codec::json_bool(false))])),
+    ]),
+  ) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "rows") {
+        Some(base_codec::Json::Arr(rows)) => {
+          if rows.length() != 0 {
+            db.close()
+            return Err("usage_calls viewer isolation failed")
+          }
+          passed = passed + 1
+        }
+        _ => {
+          db.close()
+          return Err("usage_calls viewer isolation missing rows")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("usage_calls viewer failed: " + readops_core::read_error_message(e))
+    }
+  }
+
+  // ── 7. usagegroups (`table_installed`, `usage_groups`, `cost` integration) ──
+  match db.exec(
+    "INSERT INTO usage_15m(scope, quarter, session, thread, person, profile, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES ('ws1', 1, 's1', 10, 'alice@example.com', 'p1', 'claude', 'neon-test', 0, 2, 1000000, 0, 0, 0, 500000);",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed usage_15m failed: " + e.message)
+    }
+  }
+  match table_installed(db, "usage_15m") {
+    Ok(true) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("table_installed(usage_15m) expected true")
+    }
+  }
+  let v_ws1 = viewer_of(
+    Some(base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(true))])),
+  )
+  match usage_groups(db, 900000.to_int64(), 1800000.to_int64(), 0.to_int64(), v_ws1) {
+    Ok(gs) => {
+      if gs.length() != 1 || gs[0].calls != 2.0 {
+        db.close()
+        return Err("usage_groups expected 1 group with calls=2")
+      }
+      // 1M * $2 + 0.5M * $8 = $6
+      match cost(state, gs[0]) {
+        base_codec::Json::Num(c, _) => {
+          if c != 6.0 {
+            db.close()
+            return Err("cost(group) expected 6.0, got " + c.to_string())
+          }
+          passed = passed + 1
+        }
+        _ => {
+          db.close()
+          return Err("cost(group) expected numeric dollar value")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("usage_groups failed: " + readops_core::read_error_message(e))
+    }
+  }
+
+  // ── 8. timeline (`ReaderState` Finder + TranscriptCache reuse across append & truncate + `transcript_state` + `tail_read`) ──
+  let tl_ws = root + "/tl_ws"
+  let prof_home = data_dir + "/homes/p1"
+  let proj_slug = match locate::claude_project(tl_ws) {
+    Some(sl) => sl
+    None => "-tmp-tl"
+  }
+  let tl_proj_dir = prof_home + "/projects/" + proj_slug
+  match mkdir_sync(client, tl_proj_dir) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match write_sync(client, data_dir + "/config.json", "{\"agentHome\":\"agent\",\"profiles\":[{\"id\":\"p1\",\"home\":\"homes/p1\"}]}") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  let tl_file = tl_proj_dir + "/tl-rt-1.jsonl"
+  let tl_line1 = "{\"type\":\"user\",\"timestamp\":\"2026-11-25T03:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"First prompt\"}}\n"
+  let tl_line2 = "{\"type\":\"assistant\",\"timestamp\":\"2026-11-25T03:00:01.000Z\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First reply\"}]}}\n"
+  let tl_line3 = "{\"type\":\"user\",\"timestamp\":\"2026-11-25T03:00:02.000Z\",\"message\":{\"role\":\"user\",\"content\":\"Second prompt\"}}\n"
+  match write_sync(client, tl_file, tl_line1 + tl_line2) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match db.exec(
+    "INSERT INTO sessions(key, ws, runtime, created_by, profile, last_active_at, workspace, cwd, runtime_session_id) VALUES ('s-tl', 'ws1', 'claude', 'alice@example.com', 'p1', 6000, '" +
+    tl_ws +
+    "', '" +
+    tl_ws +
+    "', 'tl-rt-1');",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed timeline session failed: " + e.message)
+    }
+  }
+  // 8a. Initial timeline read (2 entries)
+  let tl_ask = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("key", base_codec::json_str("s-tl")),
+        ("from", base_codec::json_str("0")),
+        ("to", base_codec::json_str("10")),
+      ]),
+    ),
+  ])
+  match timeline(db, state, data_dir, tl_ask) {
+    Ok(res) => {
+      if !opt_json_num_eq(builders_core::json_get_last(res, timeline_end_key()), 2.0) {
+        db.close()
+        return Err("timeline initial expected end=2, got " + sql_db::stringify_json(res))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("timeline initial failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // 8b. Append 3rd line -> same ReaderState tx_cache picks up end=3
+  match write_sync(client, tl_file, tl_line1 + tl_line2 + tl_line3) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match timeline(db, state, data_dir, tl_ask) {
+    Ok(res) => {
+      if !opt_json_num_eq(builders_core::json_get_last(res, timeline_end_key()), 3.0) {
+        db.close()
+        return Err("timeline after append expected end=3, got " + sql_db::stringify_json(res))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("timeline after append failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // 8c. Truncate back to 1 line -> same ReaderState tx_cache handles truncation (end=1)
+  match write_sync(client, tl_file, tl_line1) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err(e)
+    }
+  }
+  match timeline(db, state, data_dir, tl_ask) {
+    Ok(res) => {
+      if !opt_json_num_eq(builders_core::json_get_last(res, timeline_end_key()), 1.0) {
+        db.close()
+        return Err("timeline after truncate expected end=1, got " + sql_db::stringify_json(res))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("timeline after truncate failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // 8d. transcript_state + tail_read
+  match transcript_state(db, state, data_dir, base_codec::json_obj([("key", base_codec::json_str("s-tl"))])) {
+    Ok(res) => {
+      match builders_core::json_get_last(res, "states") {
+        Some(base_codec::Json::Arr(sts)) => {
+          if sts.length() != 1 {
+            db.close()
+            return Err("transcript_state expected 1 state")
+          }
+          // Append a second line and tail_read from the previous state
+          match write_sync(client, tl_file, tl_line1 + tl_line2) {
+            Ok(_) => ()
+            Err(e) => {
+              db.close()
+              return Err(e)
+            }
+          }
+          match tail_read(
+            state,
+            base_codec::json_obj([
+              ("runtime", base_codec::json_str("claude")),
+              ("state", sts[0]),
+            ]),
+          ) {
+            Ok(tres) => {
+              match builders_core::json_get_last(tres, "entries") {
+                Some(base_codec::Json::Arr(es)) => {
+                  if es.length() != 1 {
+                    db.close()
+                    return Err("tail_read expected 1 new entry, got " + es.length().to_string())
+                  }
+                  passed = passed + 1
+                }
+                _ => {
+                  db.close()
+                  return Err("tail_read missing entries")
+                }
+              }
+            }
+            Err(e) => {
+              db.close()
+              return Err("tail_read failed: " + readops_core::read_error_message(e))
+            }
+          }
+        }
+        _ => {
+          db.close()
+          return Err("transcript_state missing states array")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("transcript_state failed: " + readops_core::read_error_message(e))
+    }
+  }
+
+  db.close()
+  Ok(passed)
 }

@@ -1,0 +1,439 @@
+// 1:1 port of `station/mb/src/readops/models.mbt`.
+// Model key normalization, catalog lookup on `readops_core::ReaderState`, pricing, and cost calculation.
+
+import "base_codec"
+import "builders_core"
+import "jscase"
+import "readops_core"
+
+/// Update `ReaderState.model_catalog` from an incoming `ask.catalog` snapshot.
+pub fn learn_catalog(state : readops_core::ReaderState, models : base_codec::Json) -> Unit {
+  state.learn_catalog(models)
+}
+
+fn sub_bytes(s : String, start : Int, end : Int) -> String {
+  readops_core::str_slice_bytes(s, start, end)
+}
+
+fn from_bytes(s : String, start : Int) -> String {
+  readops_core::str_slice_bytes(s, start, s.to_bytes().length())
+}
+
+fn split_on(s : String, sep : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut rest = s
+  let sep_len = sep.to_bytes().length()
+  while true {
+    match readops_core::str_find_sub(rest, sep) {
+      Some(at) => {
+        out.push(sub_bytes(rest, 0, at))
+        rest = from_bytes(rest, at + sep_len)
+      }
+      None => break
+    }
+  }
+  out.push(rest)
+  out
+}
+
+fn last_index(s : String, part : String) -> Option[Int] {
+  let slen = s.to_bytes().length()
+  let plen = part.to_bytes().length()
+  let mut found : Option[Int] = None
+  let mut from = 0
+  while from <= slen - plen {
+    match readops_core::str_find_sub(from_bytes(s, from), part) {
+      Some(at) => {
+        found = Some(from + at)
+        from = from + at + 1
+      }
+      None => break
+    }
+  }
+  found
+}
+
+fn ascii_digits(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+  }
+  true
+}
+
+fn ascii_alpha(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 97 && c <= 122) || (c >= 65 && c <= 90)) {
+      return false
+    }
+  }
+  true
+}
+
+/// model.ts `stamp`: a version stamp, `<digits>:<digits>`.
+fn version_stamp(s : String) -> Bool {
+  match readops_core::str_find_byte(s, 58) {
+    Some(colon) => ascii_digits(sub_bytes(s, 0, colon)) && ascii_digits(from_bytes(s, colon + 1))
+    None => false
+  }
+}
+
+let AGY_LEVELS : Array[String] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+let DEVIN_LEVELS : Array[String] = ["low", "medium", "high", "xhigh", "max"]
+
+fn level_of(levels : Array[String], s : String) -> Option[String] {
+  let slen = s.to_bytes().length()
+  for i in 0..<levels.length() {
+    let l = levels[i]
+    let llen = l.to_bytes().length()
+    if readops_core::str_has_suffix(s, "-" + l) && slen > llen + 1 {
+      return Some(l)
+    }
+  }
+  None
+}
+
+/// model.ts `splitAgyTier`: an Antigravity tiered model id's base model, where it ends in a thinking level.
+pub fn split_agy_tier(id : String) -> Option[String] {
+  let trimmed = jscase::trim(id)
+  match level_of(AGY_LEVELS, trimmed) {
+    Some(l) => Some(sub_bytes(trimmed, 0, trimmed.to_bytes().length() - l.to_bytes().length() - 1))
+    None => None
+  }
+}
+
+/// model.ts `splitDevinFusion`: a Devin Fusion model's normalised name.
+fn devin_fusion_model(id : String) -> Option[String] {
+  let trimmed = jscase::trim(id)
+  if !readops_core::str_has_prefix(trimmed, "fusion-") {
+    return None
+  }
+  let mark = "-sidekick-"
+  let mark_len = mark.to_bytes().length()
+  let at = match readops_core::str_find_sub(from_bytes(trimmed, 7), mark) {
+    Some(a) => a + 7
+    None => return None
+  }
+  if at <= 7 || at + mark_len >= trimmed.to_bytes().length() {
+    return None
+  }
+  let raw_lead = sub_bytes(trimmed, 7, at)
+  let side = from_bytes(trimmed, at + mark_len)
+  let lead = match level_of(DEVIN_LEVELS, raw_lead) {
+    Some(l) => sub_bytes(raw_lead, 0, raw_lead.to_bytes().length() - l.to_bytes().length() - 1)
+    None => raw_lead
+  }
+  Some("fusion-" + lead + "-sidekick-" + side)
+}
+
+/// model.ts `key`: Claude's version said with a dot (OpenRouter's claude-opus-5.5) is Anthropic's claude-opus-5-5.
+fn claude_dashed(m : String) -> String {
+  if !readops_core::str_has_prefix(m, "claude-") {
+    return m
+  }
+  let b = m.to_bytes()
+  let n = b.length()
+  let sb = StringBuilder::new()
+  for i in 0..<n {
+    let c = b[i].to_int() & 0xFF
+    let prev_digit = i > 0 && (b[i - 1].to_int() & 0xFF) >= 48 && (b[i - 1].to_int() & 0xFF) <= 57
+    let next_digit = i + 1 < n && (b[i + 1].to_int() & 0xFF) >= 48 && (b[i + 1].to_int() & 0xFF) <= 57
+    if c == 46 && prev_digit && next_digit {
+      sb.write_byte(45.to_byte())
+    } else {
+      sb.write_byte(b[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn is_k_digits(s : String, k : Int) -> Bool {
+  s.to_bytes().length() == k && ascii_digits(s)
+}
+
+/// model.ts `key`: what a model is, however it is spelt: lower case, without its provider's prefix,
+/// region, version stamp or date.
+pub fn model_key(id : String) -> String {
+  let lower = jscase::lower(jscase::trim(id))
+  let (base, context) = match readops_core::str_find_byte(lower, 91) {
+    Some(at) => (sub_bytes(lower, 0, at), from_bytes(lower, at))
+    None => (lower, "")
+  }
+  let mut m = match last_index(base, "/") {
+    Some(at) => from_bytes(base, at + 1)
+    None => base
+  }
+  m = match readops_core::str_find_byte(m, 64) {
+    Some(at) => sub_bytes(m, 0, at)
+    None => m
+  }
+  while true {
+    match readops_core::str_find_byte(m, 46) {
+      Some(dot) => {
+        let head = sub_bytes(m, 0, dot)
+        let rest = from_bytes(m, dot + 1)
+        if !ascii_alpha(head) || rest == "" {
+          break
+        }
+        m = rest
+      }
+      None => break
+    }
+  }
+  m = claude_dashed(m)
+  match last_index(m, "-v") {
+    Some(v) => {
+      if version_stamp(from_bytes(m, v + 2)) {
+        m = sub_bytes(m, 0, v)
+      }
+    }
+    None => ()
+  }
+  let parts = split_on(m, "-")
+  let n = parts.length()
+  if n > 1 && is_k_digits(parts[n - 1], 8) {
+    let kept : Array[String] = []
+    for i in 0..<(n - 1) {
+      kept.push(parts[i])
+    }
+    m = readops_core::join_strings(kept, "-")
+  } else if n > 3 && is_k_digits(parts[n - 3], 4) && is_k_digits(parts[n - 2], 2) && is_k_digits(parts[n - 1], 2) {
+    let kept : Array[String] = []
+    for i in 0..<(n - 3) {
+      kept.push(parts[i])
+    }
+    m = readops_core::join_strings(kept, "-")
+  }
+  if readops_core::str_has_prefix(m, "fusion-") && readops_core::str_contains_sub(m, "-sidekick-") {
+    match devin_fusion_model(m) {
+      Some(model) => m = model
+      None => ()
+    }
+  }
+  m + context
+}
+
+/// catalog.ts `facts`: what the catalog on `ReaderState` says of a model, however it is spelt.
+pub fn facts(state : readops_core::ReaderState, model : String) -> Option[base_codec::Json] {
+  let key = model_key(model)
+  let bare = match readops_core::str_find_byte(key, 91) {
+    Some(at) => sub_bytes(key, 0, at)
+    None => key
+  }
+  match state.model_catalog.get(bare) {
+    Some(f) => Some(f)
+    None => {
+      match split_agy_tier(bare) {
+        Some(m) => state.model_catalog.get(m)
+        None => None
+      }
+    }
+  }
+}
+
+/// A model's API prices, dollars per million tokens: input, output, what reading the cache costs.
+pub struct Price {
+  pub input : Double
+  pub output : Double
+  pub cache_read : Double
+}
+
+fn default_prices() -> Array[(String, Price)] {
+  [
+    ("gpt-6-astra", Price::{ input: 10.0, output: 50.0, cache_read: 1.0 }),
+    ("gpt-6.1-sol", Price::{ input: 2.0, output: 10.0, cache_read: 0.1 }),
+    ("gpt-6.1-terra", Price::{ input: 1.0, output: 5.0, cache_read: 0.05 }),
+    ("gpt-6-sol", Price::{ input: 2.0, output: 10.0, cache_read: 0.2 }),
+    ("gpt-6-luna", Price::{ input: 0.1, output: 0.5, cache_read: 0.01 }),
+    ("gpt-5.6-sol", Price::{ input: 4.0, output: 20.0, cache_read: 0.4 }),
+    ("claude-fable-5-2", Price::{ input: 8.0, output: 40.0, cache_read: 0.2 }),
+    ("claude-fable-5-1", Price::{ input: 10.0, output: 50.0, cache_read: 0.25 }),
+    ("claude-mythos-5-1", Price::{ input: 10.0, output: 50.0, cache_read: 0.25 }),
+    ("claude-fable-5", Price::{ input: 10.0, output: 50.0, cache_read: 1.0 }),
+    ("claude-mythos-5", Price::{ input: 10.0, output: 50.0, cache_read: 1.0 }),
+    ("claude-opus-5-5", Price::{ input: 4.0, output: 20.0, cache_read: 0.2 }),
+    ("claude-opus-5", Price::{ input: 5.0, output: 25.0, cache_read: 0.5 }),
+    ("claude-opus-4-8", Price::{ input: 5.0, output: 25.0, cache_read: 0.5 }),
+    ("claude-opus-4-7", Price::{ input: 5.0, output: 25.0, cache_read: 0.5 }),
+    ("claude-opus-4-6", Price::{ input: 5.0, output: 25.0, cache_read: 0.5 }),
+    ("claude-opus-4-5", Price::{ input: 5.0, output: 25.0, cache_read: 0.5 }),
+    ("claude-sonnet-5-5", Price::{ input: 2.0, output: 10.0, cache_read: 0.1 }),
+    ("claude-sonnet-5", Price::{ input: 2.0, output: 10.0, cache_read: 0.2 }),
+    ("claude-sonnet-4-6", Price::{ input: 3.0, output: 15.0, cache_read: 0.3 }),
+    ("claude-sonnet-4-5", Price::{ input: 3.0, output: 15.0, cache_read: 0.3 }),
+    ("claude-haiku-4-5", Price::{ input: 1.0, output: 5.0, cache_read: 0.1 }),
+  ]
+}
+
+fn listed_price(prices : Array[(String, Price)], candidate : String) -> Option[Price] {
+  for i in 0..<prices.length() {
+    let (k, p) = prices[i]
+    if candidate == k ||
+    (readops_core::str_has_prefix(candidate, k) && readops_core::str_has_prefix(from_bytes(candidate, k.to_bytes().length()), "[")) {
+      return Some(p)
+    }
+  }
+  None
+}
+
+/// usage.ts `price`: a model's prices, the catalog's, else the station's table's; none without a list price in either.
+pub fn price(state : readops_core::ReaderState, model : String) -> Option[Price] {
+  match facts(state, model) {
+    Some(f) => {
+      match builders_core::json_get_last(f, "cost") {
+        Some(base_codec::Json::Obj(_)) => {
+          let told = match builders_core::json_get_last(f, "cost") {
+            Some(c) => c
+            None => base_codec::json_null()
+          }
+          let input_opt = match builders_core::json_get_last(told, "input") {
+            Some(base_codec::Json::Num(v, _)) => Some(v)
+            _ => None
+          }
+          let output_opt = match builders_core::json_get_last(told, "output") {
+            Some(base_codec::Json::Num(v, _)) => Some(v)
+            _ => None
+          }
+          let cache_read_opt = match builders_core::json_get_last(told, "cacheRead") {
+            Some(base_codec::Json::Num(v, _)) => Some(v)
+            _ => None
+          }
+          match (input_opt, output_opt) {
+            (Some(inp), Some(outp)) => {
+              let cr = match cache_read_opt {
+                Some(c) => c
+                None => inp
+              }
+              return Some(Price::{ input: inp, output: outp, cache_read: cr })
+            }
+            _ => ()
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  let prices = default_prices()
+  let name = model_key(model)
+  match listed_price(prices, name) {
+    Some(p) => return Some(p)
+    None => ()
+  }
+  let at = readops_core::str_find_byte(name, 91)
+  let bare = match at {
+    Some(a) => sub_bytes(name, 0, a)
+    None => name
+  }
+  match split_agy_tier(bare) {
+    None => None
+    Some(base_model) => {
+      let cand = match at {
+        Some(a) => base_model + from_bytes(name, a)
+        None => base_model
+      }
+      listed_price(prices, cand)
+    }
+  }
+}
+
+/// A day's calls of one model, added up (store/usage.ts UsageGroup).
+pub struct Group {
+  pub day : String
+  pub session : base_codec::Json
+  pub thread : base_codec::Json
+  pub person : base_codec::Json
+  pub profile : base_codec::Json
+  pub runtime : base_codec::Json
+  pub model : base_codec::Json
+  pub fast : Bool
+  pub calls : Double
+  pub input : Double
+  pub cache_read : Double
+  pub cache_write : Double
+  pub cache_write_long : Double
+  pub output : Double
+}
+
+/// usage.ts `cost`: what a group's calls would cost at its model's API prices, dollars.
+pub fn cost(state : readops_core::ReaderState, g : Group) -> base_codec::Json {
+  let model = match g.model {
+    base_codec::Json::Str(s) => s
+    _ => return base_codec::json_null()
+  }
+  let p = match price(state, model) {
+    Some(pr) => pr
+    None => return base_codec::json_null()
+  }
+  let tokens = g.input * p.input +
+  g.cache_write * p.input * 1.25 +
+  g.cache_write_long * p.input * 2.0 +
+  g.cache_read * p.cache_read +
+  g.output * p.output
+  base_codec::json_num(tokens / 1.0e6 * (if g.fast { 2.0 } else { 1.0 }))
+}
+
+/// usage.ts `priceTable`: the prices `cost` uses, of the station's table and of the models the rows name.
+pub fn price_table(
+  state : readops_core::ReaderState,
+  models : Array[base_codec::Json],
+) -> base_codec::Json {
+  let keys : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let prices = default_prices()
+  for i in 0..<prices.length() {
+    let k = prices[i].0
+    if !seen.contains(k) {
+      seen.set(k, true)
+      keys.push(k)
+    }
+  }
+  for i in 0..<models.length() {
+    match models[i] {
+      base_codec::Json::Str(s) => {
+        let mk = model_key(s)
+        let k = match readops_core::str_find_byte(mk, 91) {
+          Some(at) => sub_bytes(mk, 0, at)
+          None => mk
+        }
+        if !seen.contains(k) {
+          seen.set(k, true)
+          keys.push(k)
+        }
+      }
+      _ => ()
+    }
+  }
+  let rows : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    let model = keys[i]
+    let p = match price(state, model) {
+      Some(pr) => pr
+      None => continue
+    }
+    let claude = readops_core::str_has_prefix(model, "claude-")
+    rows.push(
+      base_codec::json_obj([
+        ("model", base_codec::json_str(model)),
+        ("input", base_codec::json_num(p.input)),
+        ("cacheRead", base_codec::json_num(p.cache_read)),
+        ("cacheWrite", if claude { base_codec::json_num(p.input * 1.25) } else { base_codec::json_null() }),
+        ("cacheWriteLong", if claude { base_codec::json_num(p.input * 2.0) } else { base_codec::json_null() }),
+        ("output", base_codec::json_num(p.output)),
+      ]),
+    )
+  }
+  base_codec::json_obj([("rows", base_codec::json_arr(rows))])
+}

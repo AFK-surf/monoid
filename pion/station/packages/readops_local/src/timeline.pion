@@ -1,0 +1,272 @@
+// 1:1 port of `station/mb/src/readops/timeline.mbt` + `tailRead` dispatch helper.
+// Reuses process-lifetime `ReaderState.finder` (`locate::Finder`) and `ReaderState.tx_cache`
+// (`builders_search::TranscriptCache`) across requests.
+
+import "base_codec"
+import "builders_core"
+import "builders_search"
+import "locate"
+import "readops_core"
+import "sql_db"
+
+fn timeline_end_key() -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(0x65 as Byte)
+  sb.write_byte(0x6E as Byte)
+  sb.write_byte(0x64 as Byte)
+  sb.to_string()
+}
+
+fn min_d(a : Double, b : Double) -> Double {
+  if a < b { a } else { b }
+}
+
+fn max_d(a : Double, b : Double) -> Double {
+  if a > b { a } else { b }
+}
+
+/// store.ts `runtimeSessionSources`: the runtime and profile of each transcript, the current one last.
+pub fn runtime_session_sources(
+  db : sql_db::Db,
+  key : base_codec::Json,
+  row : Map[String, base_codec::Json],
+) -> Result[Array[locate::Source], readops_core::ReadError] {
+  let rows = match db.all(
+    "SELECT r.id, COALESCE(r.runtime, s.original_runtime, s.runtime) AS runtime, r.profile FROM sessions s CROSS JOIN runtime_sessions r ON r.session_key = s.key WHERE s.key = ? ORDER BY r.at, r.rowid",
+    [key],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  let sources : Array[locate::Source] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    sources.push(
+      readops_core::source_of(
+        readops_core::field(r, "id"),
+        readops_core::field(r, "runtime"),
+        readops_core::field(r, "profile"),
+      ),
+    )
+  }
+  let current = match readops_core::field(row, "runtime_session_id") {
+    base_codec::Json::Str(c) => c
+    _ => return Ok(sources)
+  }
+  let mut found : Option[locate::Source] = None
+  for i in 0..<sources.length() {
+    if sources[i].id == current {
+      found = Some(sources[i])
+      break
+    }
+  }
+  let last_src = match found {
+    Some(s) => s
+    None => readops_core::source_of(
+      base_codec::json_str(current),
+      readops_core::field(row, "runtime"),
+      readops_core::field(row, "profile"),
+    )
+  }
+  let out : Array[locate::Source] = []
+  for i in 0..<sources.length() {
+    if sources[i].id != current {
+      out.push(sources[i])
+    }
+  }
+  out.push(last_src)
+  Ok(out)
+}
+
+/// sessions.ts `transcriptsOf`: a session's transcripts, those of the runtime sessions it ran in before first;
+/// None when none found or unsupported runtime.
+pub fn transcripts_of(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  data : String,
+  key : base_codec::Json,
+) -> Result[Option[(String, Array[(String, String)])], readops_core::ReadError] {
+  let row = match readops_core::session_row(db, key) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let runtime = match readops_core::field(row, "runtime") {
+    base_codec::Json::Str(r) => {
+      if !locate::runtime_kind(r) {
+        return Ok(None)
+      }
+      r
+    }
+    _ => return Ok(None)
+  }
+  let sources = match runtime_session_sources(db, key, row) {
+    Ok(ss) => ss
+    Err(e) => return Err(e)
+  }
+  if sources.length() == 0 {
+    return Ok(None)
+  }
+  let workspace = match readops_core::field(row, "workspace") {
+    base_codec::Json::Str(w) => w
+    _ => ""
+  }
+  let places : Array[String] = match readops_core::field(row, "cwd") {
+    base_codec::Json::Str(c) => if c != workspace { [c, workspace] } else { [workspace] }
+    _ => [workspace]
+  }
+  let profs = readops_core::profiles(state.client, data, state.sep)
+  let (paths, _) = state.finder.sources(data, profs, sources, places, anywhere=true)
+  Ok(Some((runtime, paths)))
+}
+
+/// sessions.ts `timeline`: entries before `before` (0), up to `limit` (200, 1..1000);
+/// `after` instead, those just after it; `from` and `to` instead (both included, at most 1000);
+/// in brief with `brief=1`. `end`: how many the transcripts have.
+pub fn timeline(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  data : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let before = match parse_usize(readops_core::json_val(args, "before")) {
+    Ok(Some(v)) => v
+    Ok(None) => 0.0
+    Err(e) => return Err(e)
+  }
+  let raw_limit = match parse_usize(readops_core::json_val(args, "limit")) {
+    Ok(Some(v)) => v
+    Ok(None) => 200.0
+    Err(e) => return Err(e)
+  }
+  let limit = min_d(max_d(raw_limit, 1.0), 1000.0)
+  let (runtime, paths) = match transcripts_of(db, state, data, readops_core::json_val_or_null(args, "key")) {
+    Ok(Some(res)) => res
+    Ok(None) => {
+      return Ok(
+        base_codec::json_obj([
+          ("start", base_codec::json_int(0)),
+          ("entries", base_codec::json_arr([])),
+          (timeline_end_key(), base_codec::json_int(0)),
+        ]),
+      )
+    }
+    Err(e) => return Err(e)
+  }
+  let chain = match builders_search::chain_of(
+    state.tx_cache,
+    state.client,
+    state.sep,
+    paths,
+    Some(builders_search::marks_dir(state.sep, data)),
+  ) {
+    Ok(c) => c
+    Err(e) => return Err(readops_core::ReadError::App(e))
+  }
+  let end = builders_search::length_of(chain).to_double()
+  let in_brief = match readops_core::json_val(args, "brief") {
+    Some(base_codec::Json::Str("1")) => true
+    _ => false
+  }
+  let from_opt = match parse_usize(readops_core::json_val(args, "from")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let to_opt = match parse_usize(readops_core::json_val(args, "to")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match (from_opt, to_opt) {
+    (Some(f), Some(t)) => {
+      let b = min_d(t, f + 999.0) + 1.0
+      let entries = builders_search::entries_of(state.tx_cache, state.client, runtime, chain, f, b, in_brief)
+      return Ok(
+        base_codec::json_obj([
+          ("start", base_codec::json_num(f)),
+          ("entries", base_codec::json_arr(entries)),
+          (timeline_end_key(), base_codec::json_num(end)),
+        ]),
+      )
+    }
+    _ => ()
+  }
+  match parse_usize(readops_core::json_val(args, "after")) {
+    Ok(Some(after)) => {
+      let start = min_d(after + 1.0, end)
+      let entries = builders_search::entries_of(
+        state.tx_cache,
+        state.client,
+        runtime,
+        chain,
+        start,
+        start + limit,
+        in_brief,
+      )
+      return Ok(
+        base_codec::json_obj([
+          ("start", base_codec::json_num(start)),
+          ("entries", base_codec::json_arr(entries)),
+          (timeline_end_key(), base_codec::json_num(end)),
+        ]),
+      )
+    }
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let upto = min_d(before, end)
+  let start = max_d(0.0, upto - limit)
+  let entries = builders_search::entries_of(state.tx_cache, state.client, runtime, chain, start, upto, in_brief)
+  Ok(
+    base_codec::json_obj([
+      ("start", base_codec::json_num(start)),
+      ("entries", base_codec::json_arr(entries)),
+      (timeline_end_key(), base_codec::json_num(end)),
+    ]),
+  )
+}
+
+/// sessions.ts `transcriptState`: where the reading of a session's transcripts stands;
+/// `states` null when none found.
+pub fn transcript_state(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  data : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let (_, paths) = match transcripts_of(db, state, data, readops_core::json_val_or_null(args, "key")) {
+    Ok(Some(res)) => res
+    Ok(None) => return Ok(base_codec::json_obj([("states", base_codec::json_null())]))
+    Err(e) => return Err(e)
+  }
+  let chain = match builders_search::chain_of(
+    state.tx_cache,
+    state.client,
+    state.sep,
+    paths,
+    Some(builders_search::marks_dir(state.sep, data)),
+  ) {
+    Ok(c) => c
+    Err(e) => return Err(readops_core::ReadError::App(e))
+  }
+  let states : Array[base_codec::Json] = []
+  for i in 0..<chain.length() {
+    states.push(builders_search::state_json(chain[i].state))
+  }
+  Ok(base_codec::json_obj([("states", base_codec::json_arr(states))]))
+}
+
+/// reader/main.mbt `tailRead`: live tail read of a transcript from a serialized `TailState`.
+pub fn tail_read(
+  state : readops_core::ReaderState,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let runtime = match builders_core::json_get_last(args, "runtime") {
+    Some(base_codec::Json::Str(r)) => r
+    _ => "claude"
+  }
+  let st = readops_core::json_val_or_null(args, "state")
+  match builders_search::tail_read(state.client, runtime, st) {
+    Ok(v) => Ok(v)
+    Err(e) => Err(readops_core::ReadError::App(e))
+  }
+}
