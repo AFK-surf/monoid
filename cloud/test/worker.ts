@@ -7,24 +7,39 @@ import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
 export { LoginLimiter, ServiceStatus };
 
-export class TelemetryLimiter extends ProductionTelemetryLimiter {
+/** Calls to an object that fail as Cloudflare's do when it moved the object, or says it is overloaded. */
+class Losing {
   #asked = 0;
   #losing = 0;
-  /** The next `times` calls fail as ones whose object Cloudflare moved. */
-  lose(times: number) {
+  #overloaded = false;
+  /** The next `times` calls fail. */
+  lose(times: number, overloaded = false) {
     this.#losing = times;
+    this.#overloaded = overloaded;
     this.#asked = 0;
   }
-  /** How often it was asked since `lose`. */
-  asked() {
+  /** How often it was called since `lose`. */
+  askedSince() {
     return this.#asked;
   }
-  override consume(): boolean {
+  call() {
     this.#asked++;
-    if (this.#losing > 0) {
-      this.#losing--;
-      throw new Error("Network connection lost.");
-    }
+    if (this.#losing === 0) return;
+    this.#losing--;
+    throw this.#overloaded ? Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true }) : new Error("Network connection lost.");
+  }
+}
+
+export class TelemetryLimiter extends ProductionTelemetryLimiter {
+  #losing = new Losing();
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override consume(): boolean {
+    this.#losing.call();
     return super.consume();
   }
 }
@@ -106,6 +121,18 @@ class Saying {
 }
 
 export class Directory extends ProductionDirectory {
+  #losing = new Losing();
+  /** The next calls of `isStation` fail. */
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override isStation(station: string): boolean {
+    this.#losing.call();
+    return super.isStation(station);
+  }
   /** The console's made-up cloud in use (console-seed.ts), its admin the account given. */
   seedConsole(admin: { sub: string; email: string }) {
     this.ctx.storage.transactionSync(() => seedConsole(this.ctx.storage.sql, nowSeconds(), admin));
@@ -380,6 +407,18 @@ function socketsAt(where: "objects" | "primary") {
 }
 
 export class Station extends ProductionStation {
+  #losing = new Losing();
+  /** The next calls of `isStation` fail. */
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override async isStation(station: string): Promise<boolean> {
+    this.#losing.call();
+    return super.isStation(station);
+  }
   /** The presence alarm's check, as if it ran at `ms`. */
   sweepAt(ms: number) {
     return this.sweep(ms);
@@ -435,6 +474,22 @@ export class Station extends ProductionStation {
 }
 
 export class Account extends ProductionAccount {
+  #losing = new Losing();
+  /** The next calls of `signedIn` and `live` fail. */
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override async live(...args: Parameters<ProductionAccount["live"]>) {
+    this.#losing.call();
+    return super.live(...args);
+  }
+  override signedIn(claims: { sub: string; sid: string }): boolean {
+    this.#losing.call();
+    return super.signedIn(claims);
+  }
   /** What the constructor does as a deploy that rolls the sockets back starts it. */
   handBackNow() {
     this.handBack();

@@ -110,19 +110,35 @@ export class TelemetryLimiter extends DurableObject<Env> {
   }
 }
 
+/** Whether Cloudflare said an object is overloaded: asking it again only adds to that. */
+const isOverloaded = (error: unknown) => Boolean((error as { overloaded?: unknown } | null | undefined)?.overloaded);
+
 /**
- * Whether `key`'s sender may send another batch this minute. Asked again on a new stub when the call to its object
- * failed (Cloudflare moved or restarted the object), and let through when that failed too: the count it loses is one
- * an eviction forgives as well. An answer of `false` is final.
+ * A call to a Durable Object that changes nothing it may not change twice, made once more when it failed (Cloudflare
+ * moved or restarted the object), unless it is overloaded. `call` gets its stub itself: one whose call failed stays broken.
+ */
+export async function onceMore<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (isOverloaded(error)) throw error;
+    return call();
+  }
+}
+
+/** The answer where who sends a batch could not be checked: not refused (a 401 says it is signed out), not let through. */
+export function telemetryUnreached(what: string, error: unknown): Response {
+  console.warn(`telemetry ${what}: ${errorMessage(error)}`);
+  return reply({ error: "telemetry_unavailable" }, 503, { "retry-after": "5" });
+}
+
+/**
+ * Whether `key`'s sender may send another batch this minute. Let through when its object could not be asked: the count
+ * it loses is one an eviction forgives as well. An answer of `false` is final.
  */
 async function consumeTelemetryLimit(env: Env, key: string): Promise<boolean> {
   try {
-    return await env.TELEMETRY_LIMITS.getByName(key).consume();
-  } catch {
-    // (asked again below; a stub whose call failed stays broken)
-  }
-  try {
-    return await env.TELEMETRY_LIMITS.getByName(key).consume();
+    return await onceMore(() => env.TELEMETRY_LIMITS.getByName(key).consume());
   } catch (error) {
     console.warn(`telemetry limiter: ${errorMessage(error)}`);
     return true;
@@ -154,7 +170,7 @@ async function toGoogle(env: Env, kind: "traces" | "logs", value: { resourceSpan
     });
     if (response.status === 401) dropToken(account, SCOPE);
     if (!response.ok) console.warn(`telemetry ${kind}: ${response.status} ${(await response.text().catch(() => "")).slice(0, 200)}`);
-    else await response.body?.cancel();
+    else await response.body?.cancel().catch(() => {});
     return response.ok;
   } catch (error) {
     console.warn(`telemetry ${kind}: ${errorMessage(error)}`);
@@ -169,6 +185,7 @@ const hex = (bytes: ArrayBuffer | Uint8Array) => [...new Uint8Array(bytes)].map(
  * "stillfail-station-telemetry-v1:<origin>:<station>:<ts>:<sha256 of the body, hex>" with its key, like its presence
  * socket (x-stillfail-station, x-stillfail-ts within 5 minutes, x-stillfail-signature), that is still enrolled.
  * (The origin is any of the cloud's.) Its notices (push.ts) are signed the same way, tagged "station-notify-v1".
+ * Throws when its object could not be asked whether it is enrolled.
  */
 export async function stationSender(request: Request, env: Env, body: string, tag = "station-telemetry-v1", former: readonly string[] = []): Promise<string | null> {
   const station = header(request, "station");
@@ -178,8 +195,8 @@ export async function stationSender(request: Request, env: Env, body: string, ta
   const messages = signedMessages(tag, publicOrigins(env), `${station}:${ts}:${digest}`, former);
   if (!(await verifyAnySignature(station, header(request, "signature") ?? "", messages))) return null;
   // Its own object says (station.ts), off the Directory, which every one of its requests went through before.
-  const enrolled = sockets.where(env) === "primary" ? env.DIRECTORY.getByName("primary").isStation(station) : env.STATIONS.getByName(station).isStation(station);
-  return (await enrolled) ? station : null;
+  const enrolled = await onceMore<boolean>(() => (sockets.where(env) === "primary" ? env.DIRECTORY.getByName("primary").isStation(station) : env.STATIONS.getByName(station).isStation(station)));
+  return enrolled ? station : null;
 }
 
 /** POST /v1/telemetry/traces: a batch of spans (OTLP JSON), passed on to Google Cloud. `account` is the signed-in sender, if any. */
@@ -191,7 +208,12 @@ export async function receiveTraces(request: Request, env: Env, account: string 
   } catch {
     return reply({ error: "too_large" }, 413);
   }
-  const sender = account ? `account:${account}` : await stationSender(request, env, body).then((s) => (s ? `station:${s}` : null));
+  let sender: string | null;
+  try {
+    sender = account ? `account:${account}` : await stationSender(request, env, body).then((s) => (s ? `station:${s}` : null));
+  } catch (error) {
+    return telemetryUnreached("station", error);
+  }
   if (!sender) return reply({ error: "invalid_session" }, 401);
   if (!(await consumeTelemetryLimit(env, sender))) return reply({ error: "rate_limited" }, 429, { "retry-after": "60" });
   let spans = 0;
@@ -254,7 +276,12 @@ export async function receiveLogs(request: Request, env: Env): Promise<Response>
   } catch {
     return reply({ error: "too_large" }, 413);
   }
-  const station = await stationSender(request, env, body);
+  let station: string | null;
+  try {
+    station = await stationSender(request, env, body);
+  } catch (error) {
+    return telemetryUnreached("station", error);
+  }
   if (!station) return reply({ error: "invalid_session" }, 401);
   if (!(await consumeTelemetryLimit(env, `station:${station}`))) return reply({ error: "rate_limited" }, 429, { "retry-after": "60" });
   let records = 0;

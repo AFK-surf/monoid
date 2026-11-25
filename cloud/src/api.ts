@@ -26,7 +26,7 @@ import { pushKey, registration, stationNotify } from "./push";
 import { relays } from "./relays";
 import { receiveLoad, relaysLoad } from "./relay-load";
 import { receiveIncidents, receiveReleased, serveStatus } from "./status";
-import { receiveLogs, receiveTraces } from "./tracing";
+import { onceMore, receiveLogs, receiveTraces, telemetryUnreached } from "./tracing";
 import { ICON_URL_CHARS, keptIcon, serveIcon } from "./icons";
 import { servePicture } from "./pictures";
 
@@ -241,7 +241,16 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   if (path === "/v1/telemetry/traces" && method === "POST") {
     const token = bearerToken(request);
     const claims = token ? await verifyToken(env, token, "access") : null;
-    if (token && (!claims || !(await env.ACCOUNTS.getByName(claims.sub).signedIn(claims)))) return denied();
+    if (token && !claims) return denied();
+    if (claims) {
+      let live: boolean;
+      try {
+        live = await onceMore(() => env.ACCOUNTS.getByName(claims.sub).signedIn(claims));
+      } catch (error) {
+        return telemetryUnreached("account", error);
+      }
+      if (!live) return denied();
+    }
     return receiveTraces(request, env, claims?.sub ?? null);
   }
 
