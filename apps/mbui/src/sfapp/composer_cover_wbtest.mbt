@@ -271,7 +271,7 @@ test "tall multiline composer taller than the viewport stays covered to its bott
   t.type_text(buf.to_string())
   t.run_for(@ui.move_most_ms)
   let draft = @sfbase.writing(src, "ws1/st1:s-c1")
-  for i in 0..<10 {
+  for i in 0..<42 {
     @sfbase.writing_quote(src, draft, {
       "author": "Claude",
       "text": "其余的行按估计的高度占位",
@@ -283,7 +283,7 @@ test "tall multiline composer taller than the viewport stays covered to its bott
   guard composer_cover_backdrop(t) is [a, ..] else {
     fail("expected backdrop blur behind tall multiline composer")
   }
-  assert_true(gh > 620.0, msg="expected tall composer (>620pt), got \{gh}")
+  assert_true(gh > 2720.0, msg="expected unbounded tall composer (>2720pt), got \{gh}")
   assert_true(gy < 0.0, msg="expected composer top above viewport (<0), got \{gy}")
   assert_true(
     a[1] + a[3] >= gy + gh,
