@@ -1328,8 +1328,14 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
   // (every end of a SessionsProgram the agents' user hears, by program: after the one this test kills, any other is a
   // restart that failed, which fails the test at once instead of waiting on a re-attach that never comes)
   const ends: Array<{ program: SessionsProgram | null; code: number }> = [];
-  let endHeard: () => void = () => {};
   let activeProgram: SessionsProgram | null = null;
+  let allowKillOf: SessionsProgram | null = null;
+  let guardActive = true;
+  let rejectUnexpectedExit!: (err: Error) => void;
+  const unexpectedExit = new Promise<never>((_, reject) => {
+    rejectUnexpectedExit = reject;
+  });
+  unexpectedExit.catch(() => {});
   const watched = new WeakSet<ProgramUser>();
   SessionsProgram.prototype.use = function (this: SessionsProgram, user: ProgramUser) {
     if (!user.actors) {
@@ -1339,8 +1345,11 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
         watched.add(user);
         const exited = user.exited.bind(user);
         user.exited = (code: number) => {
-          ends.push({ program: activeProgram, code });
-          endHeard();
+          const ended = activeProgram;
+          ends.push({ program: ended, code });
+          if (guardActive && ended !== allowKillOf) {
+            rejectUnexpectedExit(new Error(`unexpected SessionsProgram exit (${code}) before expected transition`));
+          }
           exited(code);
         };
       }
@@ -1385,23 +1394,18 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
     const firstProg = host.program();
     assert.ok(firstProg !== null, "first SessionsProgram must be active");
     // (the first generation really running: its Pion `--sessions` process said ready, past the `--version` probe, so
-    // the kill below ends a process rather than calling off a pending start)
+    // the kill below ends a process rather than calling off a pending start; any exit before ready fails at once)
     const readies = () => spawns.events.filter((e) => e.ready);
-    await spawns.waitUntil(() => readies().length >= 1);
+    await Promise.race([spawns.waitUntil(() => readies().length >= 1), unexpectedExit]);
     const first = readies()[0]!;
     assert.equal(first.engine, "pion", "the first generation is stillfail-pion");
     assert.ok(first.pid !== null, "the first generation has a process");
 
     // 2. Kill the underlying SessionsProgram so AgentsHost.#exited triggers a restart and re-attaches A with idA.
-    const restartFailed = new Promise<never>((_, reject) => {
-      endHeard = () => {
-        const other = ends.find((e) => e.program !== firstProg);
-        if (other !== undefined) reject(new Error(`the restarted SessionsProgram ended (${other.code}) before A was re-attached`));
-      };
-    });
+    allowKillOf = firstProg;
     firstProg.kill();
-    await Promise.race([Promise.all([secondAttachSeen, spawns.waitUntil(() => readies().length >= 2)]), restartFailed]);
-    endHeard = () => {};
+    await Promise.race([Promise.all([secondAttachSeen, spawns.waitUntil(() => readies().length >= 2)]), unexpectedExit]);
+    guardActive = false;
     assert.equal(attachedA, 2, "A re-attached exactly once after the restart");
     assert.deepEqual(ends.map((e) => e.program === firstProg), [true], "only the killed generation ended");
     const second = readies()[1]!;
@@ -1430,6 +1434,7 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
     host.forget(procA as any);
     host.forget(procB as any);
   } finally {
+    guardActive = false;
     setSessionsSpawnObserverForTest(null);
     SessionsProgram.prototype.use = origUse;
     await host.close(driver);

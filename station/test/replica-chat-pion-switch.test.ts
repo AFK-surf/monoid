@@ -28,7 +28,7 @@ after(() => {
 /// MoonBit's own; Pion says only what, and does not make up `.mbt` places. So Pion's errors are held to the contract's
 /// words exactly, and MoonBit's to the same words once that prefix is taken out.
 const MB_FAIL_PREFIX = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
-const MB_FAIL_IN_LINE = /"error":"\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
+const MB_FAIL_IN_LINE = /^\{"error":"\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
 const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function binaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
@@ -127,9 +127,10 @@ function sameLines(r: { mb: string; pion: string }, what: string, error?: string
     assert.ok(r.pion.includes('{"chat":'), `${what}: ${r.pion.slice(0, 200)}`);
     return;
   }
-  assert.ok(r.pion.includes(JSON.stringify({ error })), `${what}: Pion says exactly ${JSON.stringify(error)}: ${r.pion}`);
+  const expected = `${JSON.stringify({ error })}\n`;
+  assert.equal(r.pion, expected, `${what}: Pion writes the exact single error line`);
   assert.ok(!MB_FAIL_IN_LINE.test(r.pion), `${what}: Pion makes up no MoonBit source place`);
-  assert.equal(r.mb.replace(MB_FAIL_IN_LINE, '"error":"'), r.pion, `${what}: MoonBit's line, its fail() prefix out, is Pion's`);
+  assert.equal(r.mb.replace(MB_FAIL_IN_LINE, '{"error":"'), expected, `${what}: MoonBit's line, its fail() prefix out, is Pion's`);
 }
 
 async function readBoth(bins: { mb: string; pion: string }, o: { data: string; dir: string; thread: number }): Promise<{ mb: Json; pion: Json }> {
