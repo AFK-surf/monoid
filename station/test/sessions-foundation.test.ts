@@ -1327,18 +1327,19 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
   const capturedAgentUsers: ProgramUser[] = [];
   // (every end of a SessionsProgram the agents' user hears, by program: after the one this test kills, any other is a
   // restart that failed, which fails the test at once instead of waiting on a re-attach that never comes)
-  const ends: Array<{ program: SessionsProgram; code: number }> = [];
+  const ends: Array<{ program: SessionsProgram | null; code: number }> = [];
   let endHeard: () => void = () => {};
+  let activeProgram: SessionsProgram | null = null;
   const watched = new WeakSet<ProgramUser>();
   SessionsProgram.prototype.use = function (this: SessionsProgram, user: ProgramUser) {
     if (!user.actors) {
       capturedAgentUsers.push(user);
+      activeProgram = this;
       if (!watched.has(user)) {
         watched.add(user);
         const exited = user.exited.bind(user);
-        const program = this;
         user.exited = (code: number) => {
-          ends.push({ program, code });
+          ends.push({ program: activeProgram, code });
           endHeard();
           exited(code);
         };
