@@ -2072,18 +2072,22 @@ public final class FramePacerTest {
     }
 
     static void imeDeferredResetContinuityNoDeadlockCase() {
-        // (a) setImeMoving(true) -> Choreographer callback deferred -> resetContinuity(0L) + setImeMoving(false)
-        //     -> next beat calls wantFrame(): must re-arm Choreographer and deliver renders (no wanted=true deadlock).
+        // (a) setImeMoving(true) -> Choreographer callback arrives and defers -> inside onInsets (before flush runs),
+        //     surfaceDestroyed triggers resetContinuity(0L) + setImeMoving(false) -> next beat calls wantFrame():
+        //     must clear wanted and deliver renders (fails with renders=0 without deferredFromVsync wanted cleanup).
         Phone ph = new Phone(60, 3, true, 200_000);
         ph.app = steady(1.0, 1.0, -1);
+        ph.onMain = true;
         ph.pacer.setImeMoving(true);
-        // Run past the armed IME vsync so vsyncCame gets deferred inside imeMoving
-        ph.runUntil(2 * ph.period);
-        ph.pacer.resetContinuity(0L);
-        ph.pacer.setImeMoving(false);
+        ph.onInsets = () -> {
+            ph.onInsets = null;
+            ph.pacer.resetContinuity(0L);
+            ph.pacer.setImeMoving(false);
+        };
+        ph.runUntil(ph.period);
         int beforeRenders = ph.renderRequests;
-        ph.pacer.wantFrame();
-        ph.runUntil(12 * ph.period);
+        ph.main(ph.period + 1, ph.pacer::wantFrame);
+        ph.runUntil(10 * ph.period);
         boolean noDeadlockA = ph.renderRequests > beforeRenders;
 
         // (b) deferredWakeApp=true during imeMoving -> resetContinuity(0L) + setImeMoving(false):

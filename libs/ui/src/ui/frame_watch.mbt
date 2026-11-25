@@ -1355,7 +1355,12 @@ fn gpu_frames_count(gms : Double, dropped : Int) -> Unit {
       gpu_stale_ms.val = gms
       if gms >= gpu_budget_hang_ms {
         gpu_last_reported.val = gms
+      } else {
+        gpu_last_reported.val = -1.0
       }
+    } else {
+      gpu_last_seen_ms.val = -1.0
+      gpu_stale_ms.val = -1.0
     }
     return
   }
@@ -1396,6 +1401,9 @@ fn gpu_frames_count(gms : Double, dropped : Int) -> Unit {
         gpu_page_counts[base + 4] = tenths
       }
     }
+  } else {
+    gpu_stale_ms.val = -1.0
+    gpu_last_seen_ms.val = -1.0
   }
   if dropped > gpu_dropped_seen.val {
     let delta = dropped - gpu_dropped_seen.val

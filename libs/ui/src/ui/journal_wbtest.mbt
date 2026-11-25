@@ -1011,3 +1011,48 @@ test "stale cached slow GPU sample from background is ignored on first foregroun
   assert_eq(summaries[2].gpu.timed, 1)
   assert_eq(summaries[2].gpu.over_hang, 1)
 }
+
+///|
+test "off-screen hidden window frame preserves pending visible-window stall interval" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  let summaries : Array[HangSummary] = []
+  hang_summary_told(Some(fn(s) { summaries.push(s) }))
+  t.clock_frame()
+  view_event_said(fn() {  }, fn() {
+    clock.val += 60.0
+    h_request_frame()
+  }, what="visible-input")
+  let h = @hostapi.host()
+  let old = h.frame_hidden
+  defer { h.frame_hidden = old }
+  h.frame_hidden = Some(fn() { true })
+  t.clock_frame()
+  h.frame_hidden = old
+  t.clock_frame()
+  on_app_state(0)
+  assert_eq(summaries.length(), 1)
+  assert_eq(summaries[0].stalls, 1)
+}
+
+///|
+test "foreground no-sample clears stale GPU cache and background fast sample resets slow-frame dedup" {
+  let (_, _) = journal_start()
+  defer set_work_clock(None)
+  // Case 1: async host invalidates old sample (-1.0) after resume, then publishes a new 30.0ms sample
+  on_app_state(0)
+  gpu_frames_count(30.0, 0)
+  on_app_state(3)
+  gpu_frames_count(-1.0, 0)
+  gpu_frames_count(30.0, 0)
+  assert_eq(gpu_frames_take().timed, 1)
+  ignore(gpu_frame_consume())
+  // Case 2: background slow sample (30.0) followed by background fast sample (6.0), then fresh foreground 30.0
+  on_app_state(0)
+  gpu_frames_count(30.0, 0)
+  gpu_frames_count(6.0, 0)
+  on_app_state(3)
+  gpu_frames_count(30.0, 0)
+  let (_, _, slow2) = gpu_frame_consume()
+  assert_true(slow2)
+}

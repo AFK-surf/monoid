@@ -273,8 +273,7 @@ static unsigned char *update_old_file(void *root, const char *rel, size_t *size)
   if (n <= 0) return NULL;
   for (WCHAR *c = wrel; *c; c++)
     if (*c == L'/') *c = L'\\';
-  _snwprintf(path, MAX_PATH * 2, L"%ls\\%ls", (const WCHAR *)root, wrel);
-  path[MAX_PATH * 2 - 1] = 0;
+  if (!update_fmt_path(path, MAX_PATH * 2, L"%ls\\%ls", (const WCHAR *)root, wrel)) return NULL;
   // (the program running among them: read beside its loader, whatever else holds it)
   HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
                          FILE_FLAG_SEQUENTIAL_SCAN, NULL);
@@ -368,8 +367,15 @@ static int update_by_delta(update_job *j, WCHAR *made, WCHAR *why) {
     return 0;
   }
   // the old files: the folder this program runs from
-  GetModuleFileNameW(NULL, root, MAX_PATH * 2);
-  if (wcsrchr(root, L'\\')) *wcsrchr(root, L'\\') = 0;
+  DWORD rlen = GetModuleFileNameW(NULL, root, MAX_PATH * 2);
+  WCHAR *rsep = (rlen > 0 && rlen < MAX_PATH * 2) ? wcsrchr(root, L'\\') : NULL;
+  if (!rsep) {
+    lstrcpynW(why, L"update path too long", 300);
+    DeleteFileW(dfile);
+    jv_free(&d);
+    return 0;
+  }
+  *rsep = 0;
   const char *e = NULL;
   size_t dn = 0;
   unsigned char *bytes = NULL;
