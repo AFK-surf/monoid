@@ -2828,19 +2828,25 @@
     const isContained = kind === 5 && f32[a + 7] < 0;
     const isProgressive = kind === 5 && f32[a + 22] < -0.5;
     const rawBlur = (kind === 6 && f32[a + 7] < 0) ? 0 : Math.abs(f32[a + 7]);
-    const isClearLiq = kind === 6 && f32[a + 7] <= 0.1 && f32[a + 11] < 0.12;
+    const isClearLiq = kind === 6 && f32[a + 7] >= -0.001 && f32[a + 7] <= 0.1 && f32[a + 11] < 0.12;
     const colCh = Math.max(f32[a + 8], f32[a + 9], f32[a + 10]) - Math.min(f32[a + 8], f32[a + 9], f32[a + 10]);
-    const isRegCtrl = kind === 6 && !isClearLiq &&
-      ((f32[a + 11] >= 0.12 && f32[a + 11] < 0.45) || (colCh > 0.08 && f32[a + 11] < 0.80));
-    const blur = (isClearLiq && f32[a + 7] >= -0.001 && f32[a + 11] > 0.01 && rawBlur < 0.1) ? 1.2 : rawBlur;
+    const blur = (isClearLiq && f32[a + 11] > 0.01 && rawBlur < 0.1) ? 1.2 : rawBlur;
+    let gLo = Math.min(Math.max((f32[a + 11] - 0.02) / 0.085, 0), 1);
+    gLo = gLo * gLo * (3 - 2 * gLo);
+    let gNeu = Math.min(Math.max((f32[a + 11] - 0.405) / 0.095, 0), 1);
+    gNeu = 1 - gNeu * gNeu * (3 - 2 * gNeu);
+    let gCh = Math.min(Math.max((colCh - 0.08) / 0.08, 0), 1);
+    gCh = gCh * gCh * (3 - 2 * gCh);
+    let gTa = Math.min(Math.max((f32[a + 11] - 0.72) / 0.08, 0), 1);
+    gTa = 1 - gTa * gTa * (3 - 2 * gTa);
     let dualB = Math.min(Math.max((blur - 0.2) / 0.7, 0), 1);
     dualB = dualB * dualB * (3 - 2 * dualB);
-    let dualHi = 1 - Math.min(Math.max((blur - 3.5) / 1.0, 0), 1);
-    dualHi = dualHi * dualHi * (3 - 2 * dualHi);
+    let dualHi = Math.min(Math.max((blur - 3.5) / 1.0, 0), 1);
+    dualHi = 1 - dualHi * dualHi * (3 - 2 * dualHi);
     let dualSz = Math.min(Math.max((Math.min(f32[a + 2], f32[a + 3]) - 16.0) / 12.0, 0), 1);
     dualSz = dualSz * dualSz * (3 - 2 * dualSz);
-    const dualW = isRegCtrl ? (0.78 * dualB * dualHi * dualSz) : 0;
-    const isDual = dualW > 0.005;
+    let dualW = (kind === 6 && !isClearLiq) ? (0.78 * dualB * dualHi * dualSz * gLo * Math.max(gNeu, gCh * gTa)) : 0;
+    let isDual = dualW > 0.005;
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
     let margin = isContained ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
@@ -2924,6 +2930,7 @@
     let k = 0;
     while (k < 3 && sp / (1 << (k + 1)) >= 2) k++;
     if (isProgressive && k === 0 && sp > 0.5) k = 1;
+    if (k >= 3) { isDual = false; dualW = 0; }
     const sk = sp / (1 << k);
     const pre = k > 0 ? 0.75 * (1 - Math.pow(0.25, k)) / 3 + 1 / 6 : 0;
     const sg = Math.sqrt(Math.max(sk * sk - pre, 0));

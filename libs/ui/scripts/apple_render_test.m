@@ -3540,6 +3540,63 @@ int main(void) {
           CHECK(cc_br >= 43 && cc_br <= 47);
           CHECK(ctrl_max_diff == 0 && ctrl_hash_eq == 1);
         }
+        // V13-Menu-Morph-DualW: sweep liquid_menu_morph_glass alpha codes (Light 103..147, Dark 103..136, Tinted 180..210)
+        // and verify C1-continuous dual_w (adjacent alpha step <= 0.05) + k>=3 guard.
+        {
+          float mf[MB_INST];
+          float max_step_l = 0.0f, max_step_d = 0.0f, max_step_t = 0.0f;
+          float prev_w = -1.0f, w_start = 0.0f, w_end = 0.0f;
+          for (int ai = 103; ai <= 147; ai++) {
+            memset(mf, 0, sizeof mf);
+            mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+            mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * (float)(ai - 103) / 44.0f;
+            mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f; mf[11] = (float)ai / 255.0f;
+            mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -120.0f; mf[21] = 20.0f;
+            Grab g;
+            CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+            if (ai == 103) w_start = g.dual_w;
+            if (ai == 147) w_end = g.dual_w;
+            if (prev_w >= 0.0f) {
+              float d = fabsf(g.dual_w - prev_w);
+              if (d > max_step_l) max_step_l = d;
+            }
+            prev_w = g.dual_w;
+          }
+          prev_w = -1.0f;
+          for (int ai = 103; ai <= 136; ai++) {
+            memset(mf, 0, sizeof mf);
+            mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+            mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * (float)(ai - 103) / 33.0f;
+            mf[8] = 32.0f / 255.0f; mf[9] = 32.0f / 255.0f; mf[10] = 32.0f / 255.0f; mf[11] = (float)ai / 255.0f;
+            mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -121.0f; mf[21] = 20.0f;
+            Grab g;
+            CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+            if (prev_w >= 0.0f) {
+              float d = fabsf(g.dual_w - prev_w);
+              if (d > max_step_d) max_step_d = d;
+            }
+            prev_w = g.dual_w;
+          }
+          prev_w = -1.0f;
+          for (int ai = 180; ai <= 210; ai++) {
+            memset(mf, 0, sizeof mf);
+            mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+            mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f;
+            mf[8] = 0.0f; mf[9] = 136.0f / 255.0f; mf[10] = 1.0f; mf[11] = (float)ai / 255.0f;
+            mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -122.0f; mf[21] = 20.0f;
+            Grab g;
+            CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+            if (prev_w >= 0.0f) {
+              float d = fabsf(g.dual_w - prev_w);
+              if (d > max_step_t) max_step_t = d;
+            }
+            prev_w = g.dual_w;
+          }
+          printf("apple_render: v13_menu_morph_dual_w start=%.3f end=%.3f max_step=(L=%.4f,D=%.4f,T=%.4f)\n",
+                 w_start, w_end, max_step_l, max_step_d, max_step_t);
+          CHECK(fabsf(w_start - 0.78f) < 0.01f && w_end == 0.0f);
+          CHECK(max_step_l <= 0.05f && max_step_d <= 0.05f && max_step_t <= 0.06f);
+        }
         #undef A_PX
         mb_render_set_size(400, 300, 2);
       }

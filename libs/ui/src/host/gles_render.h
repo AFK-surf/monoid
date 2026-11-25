@@ -2544,18 +2544,24 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   int is_contained = (kind == 5 && a[7] < 0.0f);
   int is_progressive = (kind == 5 && a[22] < -0.5f);
   float raw_blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
-  int is_clear_liq = (kind == 6 && a[7] <= 0.1f && a[11] < 0.12f);
+  int is_clear_liq = (kind == 6 && a[7] >= -0.001f && a[7] <= 0.1f && a[11] < 0.12f);
   float col_ch = fmaxf(fmaxf(a[8], a[9]), a[10]) - fminf(fminf(a[8], a[9]), a[10]);
-  int is_reg_ctrl = (kind == 6 && !is_clear_liq &&
-                     ((a[11] >= 0.12f && a[11] < 0.45f) || (col_ch > 0.08f && a[11] < 0.80f)));
-  float blur = (is_clear_liq && a[7] >= -0.001f && a[11] > 0.01f && raw_blur < 0.1f) ? 1.2f : raw_blur;
+  float blur = (is_clear_liq && a[11] > 0.01f && raw_blur < 0.1f) ? 1.2f : raw_blur;
+  float g_lo = fminf(fmaxf((a[11] - 0.02f) / 0.085f, 0.0f), 1.0f);
+  g_lo = g_lo * g_lo * (3.0f - 2.0f * g_lo);
+  float g_neu = fminf(fmaxf((a[11] - 0.405f) / 0.095f, 0.0f), 1.0f);
+  g_neu = 1.0f - g_neu * g_neu * (3.0f - 2.0f * g_neu);
+  float g_ch = fminf(fmaxf((col_ch - 0.08f) / 0.08f, 0.0f), 1.0f);
+  g_ch = g_ch * g_ch * (3.0f - 2.0f * g_ch);
+  float g_ta = fminf(fmaxf((a[11] - 0.72f) / 0.08f, 0.0f), 1.0f);
+  g_ta = 1.0f - g_ta * g_ta * (3.0f - 2.0f * g_ta);
   float dual_b = fminf(fmaxf((blur - 0.2f) / 0.7f, 0.0f), 1.0f);
   dual_b = dual_b * dual_b * (3.0f - 2.0f * dual_b);
-  float dual_hi = 1.0f - fminf(fmaxf((blur - 3.5f) / 1.0f, 0.0f), 1.0f);
-  dual_hi = dual_hi * dual_hi * (3.0f - 2.0f * dual_hi);
+  float dual_hi = fminf(fmaxf((blur - 3.5f) / 1.0f, 0.0f), 1.0f);
+  dual_hi = 1.0f - dual_hi * dual_hi * (3.0f - 2.0f * dual_hi);
   float dual_sz = fminf(fmaxf((fminf(a[2], a[3]) - 16.0f) / 12.0f, 0.0f), 1.0f);
   dual_sz = dual_sz * dual_sz * (3.0f - 2.0f * dual_sz);
-  float dual_w = is_reg_ctrl ? (0.78f * dual_b * dual_hi * dual_sz) : 0.0f;
+  float dual_w = (kind == 6 && !is_clear_liq) ? (0.78f * dual_b * dual_hi * dual_sz * g_lo * fmaxf(g_neu, g_ch * g_ta)) : 0.0f;
   int is_dual = (dual_w > 0.005f);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
@@ -2663,6 +2669,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
   m->k = k;
+  if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; }
   m->sg = sqrtf(sk * sk - pre > 0 ? sk * sk - pre : 0);
   return 1;
 }
