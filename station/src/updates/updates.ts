@@ -311,7 +311,7 @@ export class Updates {
   private nodeVersion: Promise<string> | null = null;
   /// The asks of `stillfail-station channel` answered one after another (two SIGHUPs never interleave).
   private answering: Promise<void> = Promise.resolve();
-  private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty(), pi: empty() };
+  private items: Record<Kind, Item> = { station: empty(), claude: empty(), codex: empty(), dsh: empty(), grok: empty(), cursor: empty(), devin: empty(), hermes: empty(), agy: empty(), pi: empty(), copilot: { ...empty(), installed: true } };
   private checkedAt: number | null = null;
   private checking: Promise<void> | null = null;
   /// The reading asked for while one went on, after it (`check`).
@@ -757,6 +757,8 @@ export class Updates {
 
   private async readRuntime(kind: Kind): Promise<Item> {
     if (kind === "cursor") return this.readCursor();
+    // Copilot runs in-process through the SDK bundled with the station: there is no CLI to find or install.
+    if (kind === "copilot") return { ...empty(), installed: true, version: null, latest: null, how: null, note: { key: "station.updates.copilotBundled" } };
     const env = await withShellCommand(kindCommand(kind), this.env);
     const found = await findCommandSoon(kindCommand(kind), env);
     let version: string | null = null;
