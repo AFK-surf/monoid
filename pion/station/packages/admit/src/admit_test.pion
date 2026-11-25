@@ -1,0 +1,204 @@
+// 1:1 port of `station/mb/src/admit/admit_test.mbt`.
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn opt_int_eq(a : Option[Int], b : Option[Int]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn w(id : String, session : String, queued_at : Double, screen : Bool = false, small : Bool = false) -> Waiting {
+  Waiting::{ id: id, session: session, screen: screen, queued_at: queued_at, small: small }
+}
+
+fn r(id : String, screen : Bool = false, small : Bool = false) -> Started {
+  Started::{ id: id, screen: screen, small: small }
+}
+
+fn never(_s : String) -> Option[Double] {
+  None
+}
+
+fn free_claims() -> Claims {
+  Claims::{ held: false, asked: None }
+}
+
+fn normal(
+  waiting : Array[Waiting],
+  running : Array[Started],
+  last : (String) -> Option[Double] = never,
+  claims : Claims = Claims::{ held: false, asked: None },
+  person : Bool = false,
+) -> Option[Picked] {
+  pick(waiting, running, Some("normal"), person, last, claims)
+}
+
+fn c(job : String, pid : Int, held : Bool = false, since : Option[Double] = None, at : Option[Double] = None) -> Claim {
+  let a = match at {
+    Some(v) => v
+    None => pid.to_double()
+  }
+  Claim::{ job: job, pid: pid, at: a, held: held, since: since }
+}
+
+fn waiting_eq(a : Waiting, b : Waiting) -> Bool {
+  a.id == b.id && a.session == b.session && a.screen == b.screen && a.queued_at == b.queued_at && a.small == b.small
+}
+
+fn picked_eq(a : Option[Picked], b : Option[Picked]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(Picked::Start(x)), Some(Picked::Start(y))) => waiting_eq(x, y)
+    (Some(Picked::Wait(x)), Some(Picked::Wait(y))) => x == y
+    _ => false
+  }
+}
+
+fn opt_double_eq(a : Option[Double], b : Option[Double]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn claim_eq(a : Claim, b : Claim) -> Bool {
+  a.job == b.job && a.pid == b.pid && a.at == b.at && a.held == b.held && opt_double_eq(a.since, b.since)
+}
+
+fn claims_arr_eq(a : Array[Claim], b : Array[Claim]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if !claim_eq(a[i], b[i]) {
+      return false
+    }
+  }
+  true
+}
+
+test "admit: first starts when none running" {
+  assert(picked_eq(normal([w("a", "s", 1.0), w("b", "s", 2.0)], []), Some(Picked::Start(w("a", "s", 1.0)))))
+}
+
+test "admit: busy CPUs hold no task back" {
+  assert(picked_eq(normal([w("a", "s", 1.0)], [r("x"), r("y")]), Some(Picked::Start(w("a", "s", 1.0)))))
+}
+
+test "admit: no ordinary task starts under memory pressure" {
+  assert(picked_eq(pick([w("a", "s", 1.0)], [], Some("high"), false, never, free_claims()), Some(Picked::Wait("memory"))))
+  assert(picked_eq(pick([w("a", "s", 1.0)], [], Some("critical"), false, never, free_claims()), Some(Picked::Wait("memory"))))
+  assert(picked_eq(pick([w("a", "s", 1.0)], [], None, false, never, free_claims()), Some(Picked::Start(w("a", "s", 1.0)))))
+}
+
+test "admit: screen task waits and lets non-screen tasks go first" {
+  let running = [r("x", screen=true)]
+  assert(picked_eq(normal([w("a", "s", 1.0, screen=true)], running), Some(Picked::Wait("screen"))))
+  assert(picked_eq(normal([w("a", "s", 1.0, screen=true), w("b", "s", 2.0)], running), Some(Picked::Start(w("b", "s", 2.0)))))
+}
+
+test "admit: screen task waits for command holding or asked earlier" {
+  let holding = claims_held([c("x", 1, held=true, at=Some(0.0))])
+  assert(picked_eq(normal([w("a", "s", 1.0, screen=true)], [], claims=holding), Some(Picked::Wait("screen"))))
+  assert(picked_eq(normal([w("a", "s", 1.0, screen=true), w("b", "s", 2.0)], [], claims=holding), Some(Picked::Start(w("b", "s", 2.0)))))
+  let asked = claims_held([c("x", 1, at=Some(5.0))])
+  assert(picked_eq(normal([w("a", "s", 5.0, screen=true)], [], claims=asked), Some(Picked::Wait("screen"))))
+  assert(picked_eq(normal([w("a", "s", 4.0, screen=true)], [], claims=asked), Some(Picked::Start(w("a", "s", 4.0, screen=true)))))
+}
+
+test "admit: fairness by session last started and place()" {
+  let waiting = [w("a1", "a", 1.0), w("a2", "a", 2.0), w("a3", "a", 3.0), w("b1", "b", 4.0)]
+  let last = fn(s : String) -> Option[Double] { if s == "a" { Some(100.0) } else { None } }
+  assert(picked_eq(normal(waiting, [], last=last), Some(Picked::Start(w("b1", "b", 4.0)))))
+  assert(opt_int_eq(place(waiting, "b1", last), Some(1)))
+  assert(opt_int_eq(place(waiting, "a1", last), Some(2)))
+  assert(opt_int_eq(place(waiting, "a3", last), Some(4)))
+  assert(opt_int_eq(place(waiting, "gone", last), None))
+}
+
+test "admit: served claims and claims_held" {
+  assert(claims_arr_eq(
+    served([c("a", 1), c("b", 2), c("a", 3)], [], 9.0, false),
+    [c("a", 1, held=true, since=Some(9.0)), c("b", 2), c("a", 3, held=true, since=Some(9.0))],
+  ))
+  assert(claims_arr_eq(
+    served([c("b", 2, held=true), c("a", 3)], [], 9.0, false),
+    [c("b", 2, held=true), c("a", 3)],
+  ))
+  assert(claims_arr_eq(
+    served([c("a", 1), c("t", 2)], ["t"], 9.0, false),
+    [c("a", 1), c("t", 2, held=true, since=Some(9.0))],
+  ))
+  let ch1 = claims_held([c("b", 2, held=true), c("a", 3), c("c", 4)])
+  assert(ch1.held && opt_double_eq(ch1.asked, Some(3.0)))
+  let ch2 = claims_held([])
+  assert(!ch2.held && opt_double_eq(ch2.asked, None))
+}
+
+test "admit: person using screen" {
+  assert(claims_arr_eq(served([c("a", 1), c("b", 2)], [], 9.0, true), [c("a", 1), c("b", 2)]))
+  assert(claims_arr_eq(
+    served([c("a", 1, held=true, since=Some(5.0)), c("a", 3)], [], 9.0, true),
+    [c("a", 1, held=true, since=Some(5.0)), c("a", 3, held=true, since=Some(9.0))],
+  ))
+  let screen = w("s", "x", 1.0, screen=true)
+  assert(picked_eq(normal([screen], [], person=true), Some(Picked::Wait("person"))))
+  assert(picked_eq(normal([screen, w("p", "y", 2.0)], [], person=true), Some(Picked::Start(w("p", "y", 2.0)))))
+  assert(picked_eq(normal([screen], [], person=true, claims=Claims::{ held: true, asked: None }), Some(Picked::Wait("screen"))))
+}
+
+test "admit: overstaying claims" {
+  let long = c("vm", 1, held=true, since=Some(0.0), at=Some(0.0))
+  assert(claims_arr_eq(overstaying([long], HELD_LONG_MS), []))
+  assert(claims_arr_eq(overstaying([long, c("pic", 2, at=Some(0.0))], HELD_LONG_MS), [long]))
+  assert(claims_arr_eq(overstaying([long, c("pic", 2, at=Some(0.0))], HELD_LONG_MS - 1.0), []))
+  let old = c("old", 3, held=true, at=Some(0.0))
+  assert(claims_arr_eq(overstaying([old, c("pic", 2, at=Some(0.0))], HELD_LONG_MS), [old]))
+}
+
+test "admit: small task beside busy build" {
+  let build = r("build")
+  let picture = w("picture", "a", 1.0, small=true)
+  let next = w("next", "b", 2.0, small=true)
+  assert(picked_eq(normal([picture], [build]), Some(Picked::Start(picture))))
+  assert(picked_eq(normal([next], [build, r("picture", small=true)]), Some(Picked::Wait("small"))))
+  assert(picked_eq(pick([picture], [build], Some("critical"), false, never, free_claims()), Some(Picked::Wait("memory"))))
+}
+
+test "admit: small task under high memory pressure (#4355)" {
+  let build = r("build")
+  let look = w("look", "a", 2.0, small=true)
+  let other = w("other", "b", 1.0)
+  assert(picked_eq(pick([other, look], [build], Some("high"), false, never, free_claims()), Some(Picked::Start(look))))
+  assert(picked_eq(pick([other], [], Some("high"), false, never, free_claims()), Some(Picked::Wait("memory"))))
+  assert(picked_eq(pick([look], [build, r("x", small=true)], Some("high"), false, never, free_claims()), Some(Picked::Wait("small"))))
+}
+
+test "admit: small task fairness and non-blocking" {
+  let a = w("a", "a", 1.0, small=true)
+  let b = w("b", "b", 2.0, small=true)
+  let plain = w("normal", "a", 3.0)
+  let last = fn(s : String) -> Option[Double] { if s == "a" { Some(10.0) } else { None } }
+  assert(picked_eq(normal([a, b], [], last=last), Some(Picked::Start(b))))
+  assert(picked_eq(normal([a, plain], [r("other", small=true)], last=last), Some(Picked::Start(plain))))
+  assert(picked_eq(pick([a], [r("other", small=true)], Some("critical"), false, last, free_claims()), Some(Picked::Wait("memory"))))
+}
+
+test "admit: restart_pause exponential backoff and steady reset" {
+  assert(restart_pause(0, 100.0) == 1000.0)
+  assert(restart_pause(1, 100.0) == 2000.0)
+  assert(restart_pause(2, 100.0) == 4000.0)
+  assert(restart_pause(3, 100.0) == 8000.0)
+  assert(restart_pause(5, 100.0) == 32000.0)
+  assert(restart_pause(6, 100.0) == 60000.0)
+  assert(restart_pause(9, 100.0) == 60000.0)
+  assert(restart_pause(4, 60000.0) == 0.0)
+}

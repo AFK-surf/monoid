@@ -753,12 +753,29 @@ function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
     const src = readFileSync(join(pkgsDir, rel), "utf8");
     if (/\b(?:sqlite3_|stq_)\w+\b/.test(src)) sqlPackages.add(pkg);
   }
+  // Precondition guard for `js_json` non-propagation below: `js_json` may ONLY call
+  // `sqlite_ffi::format_js_double` (pure double formatting, zero SQLite handle exposure).
+  for (const rel of allFiles) {
+    if (!rel.startsWith("js_json/")) continue;
+    const src = readFileSync(join(pkgsDir, rel), "utf8");
+    for (const m of src.matchAll(/\bsqlite_ffi::([A-Za-z0-9_]+)/g)) {
+      assert.equal(
+        m[1],
+        "format_js_double",
+        `${rel} called sqlite_ffi::${m[1]} — js_json may only call sqlite_ffi::format_js_double to remain exempt from SQLite taint propagation`,
+      );
+    }
+  }
+
+  // `js_json` depends on `sqlite_ffi` solely for `format_js_double` and does not expose any SQLite handle;
+  // still scan `js_json` itself, but do not propagate SQLite-linked taint through `js_json` into pure JSON packages
+  // (such as `live_wire`, which emits protocol literals like `"end"`).
   let changed = true;
   while (changed) {
     changed = false;
     for (const [pkg, deps] of depsByPkg) {
       if (sqlPackages.has(pkg)) continue;
-      if (deps.some((d) => sqlPackages.has(d))) {
+      if (deps.some((d) => d !== "js_json" && sqlPackages.has(d))) {
         sqlPackages.add(pkg);
         changed = true;
       }

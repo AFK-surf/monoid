@@ -36,6 +36,7 @@ jobs:
         uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/mbui-moonbit
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       - if: matrix.part == 'core-ts'
         run: pnpm install --frozen-lockfile && cd client/core-ts && pnpm install --frozen-lockfile
       - if: matrix.part == 'cloud'
@@ -77,6 +78,7 @@ jobs:
           if [ $# -eq 2 ]; then u=$($S create "still.fail side duo" "$1" "$2"); echo "SIM_DUO_UDID=$u" >> "$GITHUB_ENV"; ($S boot "$u" >/dev/null 2>&1 &); fi
       - uses: ./.github/actions/mbui-moonbit
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       - run: pnpm install --frozen-lockfile && cd station && pnpm install --frozen-lockfile
       # (the simulators' pictures as the tests took them, kept when one fails: a tap on the Duo's inner panel that opened
       # nothing for a minute could not be told from its log alone, 41636490524)
@@ -103,6 +105,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       # (the .debs kept in the cache: fetched bare from Ubuntu's mirror they took the job past its 5 minutes, 44303560210)
       - uses: ./.github/actions/apt
         with:

@@ -970,6 +970,8 @@ fn Viewer::finger_on(
         let (rx, _, rw, _) = z.rect_at(at).unwrap_or((0.0, 0.0, 0.0, 0.0))
         v.at_left = rx >= -0.5
         v.at_right = rx + rw <= z.bw + 0.5
+        v.past_x = 0.0
+        v.past_y = 0.0
         if marking.on {
           match v.marks_rect(at) {
             Some(r) => marks_finger(0, d.x, d.y, r, z.nw)
@@ -1005,6 +1007,8 @@ fn Viewer::finger_on(
         v.pinch_x = cx
         v.pinch_y = cy
         v.pinched = true
+        v.past_x = 0.0
+        v.past_y = 0.0
         if v.swiping {
           v.swiping = false
           strip.go(0.0, @motion.carousel_spring, at~)
@@ -1034,6 +1038,8 @@ fn Viewer::finger_on(
       if !v.fingers.is_empty() {
         // one of two let go: the pinch over, the one left followed from where it is next
         v.pinch_d = 0.0
+        v.past_x = 0.0
+        v.past_y = 0.0
         v.held = false
         return
       }

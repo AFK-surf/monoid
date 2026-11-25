@@ -13,6 +13,7 @@ export interface OperationParams {
   "copies.testS3": { id?: string | null | undefined; endpoint?: string | null | undefined; region?: string | null | undefined; bucket?: string | null | undefined; prefix?: string | null | undefined; forcePathStyle?: boolean | null | undefined; accessKeyId?: string | null | undefined; secretAccessKey?: string | null | undefined; encryptionKey?: string | null | undefined };
   "copies.restore": { origin: string; gen: string; fromStation?: string | null | undefined; fromS3?: string | null | undefined };
   "copies.history": { limit?: number | null | undefined };
+  "copies.handoff": { origin: string; thread: number; key?: string | null | undefined; runtime?: string | null | undefined; model?: string | null | undefined };
   "copies.retire": { to: string };
   "copies.retireCancel": {  };
   "copies.retireAgain": {  };
@@ -229,6 +230,7 @@ export function bindStationOperations(call: Call) {
     copiesTestS3: <T = unknown>(params: OperationParams["copies.testS3"] = {}) => call("copies.testS3", params) as Promise<T>,
     copiesRestore: <T = unknown>(params: OperationParams["copies.restore"]) => call("copies.restore", params) as Promise<T>,
     copiesHistory: <T = unknown>(params: OperationParams["copies.history"] = {}) => call("copies.history", params) as Promise<T>,
+    copiesHandoff: <T = unknown>(params: OperationParams["copies.handoff"]) => call("copies.handoff", params) as Promise<T>,
     copiesRetire: <T = unknown>(params: OperationParams["copies.retire"]) => call("copies.retire", params) as Promise<T>,
     copiesRetireCancel: <T = unknown>(params: OperationParams["copies.retireCancel"] = {}) => call("copies.retireCancel", params) as Promise<T>,
     copiesRetireAgain: <T = unknown>(params: OperationParams["copies.retireAgain"] = {}) => call("copies.retireAgain", params) as Promise<T>,

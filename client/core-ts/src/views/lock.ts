@@ -1034,10 +1034,11 @@ function readLockOnce(inner: Inner, ws: string, stations: string[], said?: { ref
       head = null;
       entries = [];
       // (every station of it reset on its machine: what was seen of them keeping it let go of, and, an owner's device,
-      // the cloud's copy for those from before, which would hold turning it on again with `lock_exists`)
+      // the cloud's copy for those from before, which would hold turning it on again with `lock_exists`; not when `was`
+      // is already disabled, where the disable entry itself is being mirrored to the cloud and must not be raced by DELETE)
       if (was?.head) {
         letPinnedGo(inner, ws);
-        if (get(view(inner, ws), "role") === "owner") inner.runner.fork(Effect.ignore(inner.provider.request(sub, "DELETE", `/v1/workspaces/${encodeURIComponent(ws)}/lock`, null, null)));
+        if (!off && get(view(inner, ws), "role") === "owner") inner.runner.fork(Effect.ignore(inner.provider.request(sub, "DELETE", `/v1/workspaces/${encodeURIComponent(ws)}/lock`, null, null)));
       }
     } else if (!off && named.some((id) => none.has(id)) && named.some((id) => !stations.includes(id))) {
       // One the held lock names keeps none, and not all it names were asked (it told so, or its link opened): they
@@ -1314,7 +1315,7 @@ function hold(inner: Inner, ws: string, sub: string, said: Head | null, entries:
         putPending(inner, ws, left, [...tookHeld(inner, ws), ...pending.filter((x) => on.has(hashOf(x.entry))).map((x) => ({ hash: hashOf(x.entry), at: x.at }))]);
         // (not one the cloud was sent as it was signed, `viaCloud`: read of it, perhaps, which put it on)
         const taken = pending.filter((x) => on.has(hashOf(x.entry)) && x.sent !== true).map((x) => x.entry);
-        if (taken.length > 0) inner.runner.fork(Effect.ignore(inner.provider.request(sub, "POST", `/v1/workspaces/${encodeURIComponent(ws)}/lock`, { entries: taken }, null), { log: "Unhandled", message: "lock entries a station took sent to the cloud" }));
+        if (taken.length > 0) inner.runner.fork(Effect.ignore(mirrorToCloud((body) => inner.provider.request(sub, "POST", `/v1/workspaces/${encodeURIComponent(ws)}/lock`, body, null), taken, now.entries), { log: "Unhandled", message: "lock entries a station took sent to the cloud" }));
       }
     }
     // The lock held names no station (the last taken out): no station's read will ever bring what is pending, so it is
@@ -1374,6 +1375,15 @@ function chosen(was: Held | null, said: Head | null, entries: Entry[], parted: E
   } catch {
     return { head: was.head, entries: was.entries, aside };
   }
+}
+
+/// Entries a station already accepted, mirrored to the cloud via `post`; if the cloud is behind or on a losing fork
+/// (`lock_does_not_follow` / `lock_fork`), retry once with `chain.slice(-256)` and `keep: true` so the cloud catches up
+/// (especially on `disable`, after which a station clears its active lock and will not push it over presence).
+function mirrorToCloud(post: (body: unknown) => Effect.Effect<unknown, CoreError>, entries: Entry[], chain?: Entry[]): Effect.Effect<void, CoreError> {
+  const send = Effect.asVoid(post({ entries }));
+  if (!chain || chain.length <= entries.length) return send;
+  return Effect.catch(send, (e) => (e.code === "lock_does_not_follow" || e.code === "lock_fork" ? Effect.asVoid(post({ entries: chain.slice(-256), keep: true })) : Effect.fail(e)));
 }
 
 /// The lock moved on: the stations that refused this device before are tried again now.
@@ -4476,13 +4486,17 @@ export class Lock {
 
   /// Entries brought to the cloud, for the stations and devices from before that read the lock there: waited on only
   /// when no station took them (`took`), else not (a failure there is no failure of this).
-  #toCloud(entries: Entry[], took: boolean): Effect.Effect<void, CoreError> {
+  #toCloud(entries: Entry[], took: boolean, chain?: Entry[]): Effect.Effect<void, CoreError> {
     // (a lock turned on anew, its genesis: the cloud may still keep the one before, every station of it reset on its
     // machine and the cloud never told, `lock_exists`; let go of there first, the owner's, and asked again: the stations
     // took this one already, or none keeps any, `open`'s draft. 2026-11-17: turning it on again failed for good)
     const genesis = entries.length === 1 && entries[0]!.kind === "genesis";
     const post = Effect.asVoid(this.#cloud("POST", "/lock", { entries }));
-    const asked = !genesis ? post : Effect.catch(post, (e) => (e.code === "lock_exists" ? Effect.andThen(this.#cloud("DELETE", "/lock"), post) : Effect.fail(e)));
+    const asked = genesis
+      ? Effect.catch(post, (e) => (e.code === "lock_exists" ? Effect.andThen(this.#cloud("DELETE", "/lock"), post) : Effect.fail(e)))
+      : took
+        ? mirrorToCloud((body) => this.#cloud("POST", "/lock", body), entries, chain)
+        : post;
     if (!took) return asked;
     this.#inner.runner.fork(Effect.ignore(asked));
     return Effect.void;
@@ -4562,6 +4576,9 @@ export class Lock {
       if (movedHere(self.#inner, self.ws)) return yield* webMoved(self.#inner, self.sub, self.ws, device, "web");
       const d = fold(held(self.#inner, self.ws)?.entries ?? []).devices.get(device);
       if (!d) return yield* Effect.fail(CoreError.invalid("no such device in the lock"));
+      // (only a web page's device runs out: #8629 refuses an app's device with `exp`, so reject it here rather than
+      // signing an entry checkSigned would turn into `forbidden`)
+      if (d.kind !== "web") return yield* Effect.fail(CoreError.invalid("only a web page's device runs out"));
       return yield* self.append("device", { ...d, exp: now(self.#inner) + WEB_DEVICE_SECS });
     });
   }
@@ -4784,7 +4801,7 @@ export class Lock {
         yield* self.#taken(signed, chain);
         const others = stations.filter((s) => !waitFor.includes(s));
         if (others.length > 0) inner.runner.fork(Effect.ignore(self.#bring(chain, others), { log: "Unhandled", message: "lock chain brought" }));
-        return Effect.as(self.#toCloud([entry], true), { head: signed, stations: pinned });
+        return Effect.as(self.#toCloud([entry], true, chain), { head: signed, stations: pinned });
       }
       // (waited on only of those that serve it: one from before, or not answering, hears of it in the background, and
       // its taking it is held as it comes)
@@ -4800,7 +4817,7 @@ export class Lock {
       if (refused !== null) return yield* self.#lost(signer, entry, refused, waitFor, tries, {}, of);
       if ("now" in first && first.now.took) {
         yield* self.#taken(signed, chain);
-        return Effect.as(self.#toCloud([entry], true), answer);
+        return Effect.as(self.#toCloud([entry], true, chain), answer);
       }
       // None took it nor refused it by the call's wait (ASKED_MS; a background signer's: TAKEN_MS): pending, kept here
       // beside the lock held and not on it, the turn given up, the call answered at once saying so. The cloud is not

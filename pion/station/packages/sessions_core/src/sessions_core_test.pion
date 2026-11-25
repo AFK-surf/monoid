@@ -1,0 +1,794 @@
+// Deterministic unit tests for `sessions_core` (`wave8-plan.md` v5 §2.1, §2.2, §2.5).
+// All tests use `SessionHost::for_test` (`effect::Runtime::new_at(None, 0L)`, NEVER seeded!).
+
+import "base_codec"
+import "effect"
+import "host_shim"
+import "js_json"
+import "sql_db"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn opt_double_eq(a : Option[Double], b : Option[Double]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn test_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+test "sessions_core: helpers, rhash, path ops, and try_k/catch_k interrupt propagation" {
+  assert(int_of(Some(jint(42))) == 42)
+  assert(int_of(Some(jstr("42"))) == 0)
+  assert(int_of(None) == 0)
+  assert(NEVER == 1.0e300)
+  assert(truthy(jbool(true)))
+  assert(!truthy(jbool(false)))
+  assert(!truthy(base_codec::json_null()))
+  assert(!truthy(jint(0)))
+  assert(truthy(jint(1)))
+  assert(!truthy(jstr("")))
+  assert(truthy(jstr("x")))
+
+  let obj = base_codec::json_obj([("a", jstr("hi")), ("n", jint(7))])
+  assert(text_of(obj, "a") == "hi")
+  assert(text_of(obj, "missing") == "")
+  assert(opt_double_eq(num_of(jget(obj, "n")), Some(7.0)))
+
+  let h1 = rhash_with(base_codec::json_obj([("b", jint(2)), ("0", jstr("x"))]), test_fmt_num)
+  let h2 = rhash_with(base_codec::json_obj([("0", jstr("x")), ("b", jint(2))]), test_fmt_num)
+  assert(h1 == h2)
+  assert(h1.length() == 64)
+
+  assert(rjoin("/", ["a", "b", "c"]) == "a/b/c")
+  assert(rdirname("/", "a/b/c") == "a/b")
+  assert(rbasename("/", "a/b/c") == "c")
+
+  let ae = AskedError::new(base_codec::json_obj([("message", jstr("boom")), ("code", jint(500))]))
+  assert(ae.message() == "boom")
+  let eff_ae = ae.to_effect_error()
+  assert(error_message(eff_ae) == "boom")
+
+  let fe = FsError::new("ENOENT: /missing")
+  let eff_fe = fe.to_effect_error()
+  assert(error_message(eff_fe) == "ENOENT: /missing")
+
+  let mut try_interrupted = false
+  try_k(
+    fn(k : (effect::Exit[Int]) -> Unit) -> Unit { k(effect::Exit::Interrupted) },
+    fn(ex : effect::Exit[Result[Int, effect::EffectError]]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => try_interrupted = true
+        _ => ()
+      }
+    },
+  )
+  assert(try_interrupted)
+
+  let mut catch_interrupted = false
+  let mut recover_called = false
+  catch_k(
+    fn(k : (effect::Exit[Int]) -> Unit) -> Unit { k(effect::Exit::Interrupted) },
+    fn(_e : effect::EffectError, k : (effect::Exit[Int]) -> Unit) -> Unit {
+      recover_called = true
+      k(effect::Exit::Succeeded(0))
+    },
+    fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => catch_interrupted = true
+        _ => ()
+      }
+    },
+  )
+  assert(catch_interrupted)
+  assert(!recover_called)
+}
+
+test "sessions_core: iter_sync_k 10000 synchronous steps without stack overflow" {
+  let mut count = 0
+  let mut finished = false
+  iter_sync_k(
+    fn(k : (effect::Exit[IterStep]) -> Unit) -> Unit {
+      count = count + 1
+      if count < 10000 {
+        k(effect::Exit::Succeeded(IterStep::Continue))
+      } else {
+        k(effect::Exit::Succeeded(IterStep::Stop))
+      }
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => finished = true
+        _ => ()
+      }
+    },
+  )
+  assert(count == 10000)
+  assert(finished)
+}
+
+test "sessions_core: virtual clock 200ms sleep_k fires and host.exit preserves exit code" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut woke_at : Int64 = (-1).to_int64()
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_k(200, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          woke_at = (h.transport.now_ms)()
+          h.exit(42)
+          k(effect::Exit::Succeeded(()))
+        }
+        other => k(other)
+      }
+    })
+  })
+  assert(woke_at == 200.to_int64())
+  assert(code == 42)
+  assert(mem.exit_codes.length() == 1)
+  assert(mem.exit_codes[0] == 42)
+}
+
+test "sessions_core: spurious empty wakeup before deadline keeps looping in production mode" {
+  let mem = MemHostTransport::new()
+  mem.stop_on_empty_wait = false
+  mem.spurious_nones = 3
+  let host = SessionHost::for_test(mem)
+  let mut woke = false
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_k(200, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          woke = true
+          h.exit(0)
+          k(effect::Exit::Succeeded(()))
+        }
+        other => k(other)
+      }
+    })
+  })
+  assert(code == 0)
+  assert(woke)
+  assert(mem.now == 200.to_int64())
+  assert(mem.wait_log.length() == 4)
+  assert(mem.wait_log[0] == 200.to_int64())
+  assert(mem.wait_log[3] == 200.to_int64())
+}
+
+test "sessions_core: 65+ lines in single stdin chunk are all enqueued and processed" {
+  let mem = MemHostTransport::new()
+  let sb = StringBuilder::new()
+  for i in 0..<70 {
+    sb.write_string("{\"line\":" + i.to_string() + "}\n")
+  }
+  mem.push_stdin(sb.to_string())
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let seen : Array[String] = []
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              seen.push(line)
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => {
+              h.exit(0)
+              sk(effect::Exit::Succeeded(IterStep::Stop))
+            }
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code == 0)
+  assert(seen.length() == 70)
+  assert(seen[0] == "{\"line\":0}")
+  assert(seen[69] == "{\"line\":69}")
+  assert(mem.exit_codes.length() == 1)
+  assert(mem.exit_codes[0] == 0)
+}
+
+test "sessions_core: 65 consecutive host events drain across two outer rounds (64 + 1) with tick in between" {
+  let mem = MemHostTransport::new()
+  for i in 0..<65 {
+    mem.push_stdin("ev-" + i.to_string() + "\n")
+  }
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let seen : Array[String] = []
+  let mut ready_ran_after_count = -1
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              seen.push(line)
+              if seen.length() == 64 {
+                ready_ran_after_count = mem.event_head
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => {
+              h.exit(0)
+              sk(effect::Exit::Succeeded(IterStep::Stop))
+            }
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code == 0)
+  assert(seen.length() == 65)
+  assert(seen[0] == "ev-0")
+  assert(seen[64] == "ev-64")
+  assert(ready_ran_after_count == 64)
+  assert(mem.wait_log.length() == 67)
+  assert(mem.wait_log[0] == (-1).to_int64())
+  assert(mem.wait_log[63] == 0.to_int64())
+  assert(mem.wait_log[64] == (-1).to_int64())
+}
+
+test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks across rounds, closes real Some(db) once, and keeps main interruptible while parked" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+  let old_res = gen.resources
+  // Attach real `Some(db)` so `HubGenResources::retire` exercises `transport.close_db` (`mem.db_close_count`).
+  old_res.db = Some(sql_db::Db::mock_for_test(1.to_int64()))
+  let mut delayed_fin_entered = false
+  let mut delayed_fin_done = false
+  let mut old_work_exited = false
+  let fin_gate : effect::Deferred[Unit] = effect::Deferred::new()
+
+  gen.fibers.add_finalizer(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    delayed_fin_entered = true
+    fin_gate.wait_k(fn(_ex : effect::Exit[Unit]) -> Unit {
+      delayed_fin_done = true
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+
+  let old_gen_ref = gen
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    old_gen_ref.rpc_k(host, "s1", "node.test", [], fn(_k : String) -> Unit { () }, fn(r : effect::Exit[base_codec::Json]) -> Unit {
+      match r {
+        effect::Exit::Interrupted => {
+          old_work_exited = true
+          wk(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(e) => wk(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => wk(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+
+  let processed : Array[String] = []
+  let main_fiber = host.rt.fork_named("main", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        host.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              if line.starts_with("{\"db\":") {
+                gen = rotate_hub_gen(host, gen, base_codec::json_null())
+                gen.quiet()
+              } else if line.starts_with("{\"afterDb\":") {
+                processed.push(line)
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  host.tick()
+  assert(host.hub_asked.length() == 1)
+
+  // Round 1: dispatch `{"db":null}` and tick.
+  // Old work exits, delayed finalizer ENTERS and parks on `fin_gate`, old_res NOT yet retired!
+  host.dispatch_event(host_shim::HostEvent::StdinData("{\"db\":null}\n".to_bytes()))
+  host.tick()
+  assert(gen.counters.epoch == 1)
+  assert(host.hub_asked.length() == 0)
+  assert(old_work_exited)
+  assert(delayed_fin_entered)
+  assert(!delayed_fin_done)
+  assert(!old_res.retired)
+  assert(old_res.retire_count == 0)
+  assert(mem.db_close_count == 0)
+
+  // Round 2: dispatch `{"afterDb":1}` and tick.
+  // Main MUST process it while delayed finalizer is still parked!
+  host.dispatch_event(host_shim::HostEvent::StdinData("{\"afterDb\":1}\n".to_bytes()))
+  host.tick()
+  assert(processed.length() == 1)
+  assert(processed[0] == "{\"afterDb\":1}")
+  assert(delayed_fin_entered)
+  assert(!delayed_fin_done)
+  assert(!old_res.retired)
+  assert(old_res.retire_count == 0)
+  assert(mem.db_close_count == 0)
+
+  // Interrupt `main_fiber` WHILE finalizer is still parked: proves `main.shield` is uncorrupted
+  // and `old_res.db` is still NOT closed prematurely.
+  main_fiber.interrupt()
+  host.tick()
+  assert(main_fiber.is_done())
+  match main_fiber.poll() {
+    Some(effect::Exit::Interrupted) => ()
+    _ => panic("expected main_fiber to be Interrupted cleanly while finalizer is parked")
+  }
+  assert(mem.db_close_count == 0)
+
+  // Now release `fin_gate` directly and tick -> finalizer completes, `old_res.db` closes exactly once.
+  let _ = fin_gate.succeed(())
+  host.tick()
+  assert(delayed_fin_done)
+  assert(old_res.retired)
+  assert(old_res.retire_count == 1)
+  assert(mem.db_close_count == 1)
+  match old_res.db {
+    None => ()
+    Some(_) => panic("expected old_res.db to be None after retire")
+  }
+  // Idempotent repeat retire must NOT close DB a second time.
+  old_res.retire()
+  assert(old_res.retire_count == 1)
+  assert(mem.db_close_count == 1)
+  assert(mem.stderr_lines.length() == 0)
+  assert(gen.counters.active >= 0)
+}
+
+test "sessions_core: run_host_loop early return interrupts pending main and leaves zero live tasks" {
+  let mem = MemHostTransport::new()
+  // Empty event queue with stop_on_empty_wait = true -> early break returning 1.
+  let host = SessionHost::for_test(mem)
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+  })
+  assert(code == 1)
+  let (live_tasks, ready_tasks, timers, _, _, _) = host.rt.holding()
+  assert(live_tasks == 0)
+  assert(ready_tasks == 0)
+  assert(timers == 0)
+}
+
+test "sessions_core: two consecutive db rotations in one chunk preserve next counter and zero stderr" {
+  let mem = MemHostTransport::new()
+  mem.push_stdin("{\"db\":null}\n{\"db\":null}\n")
+  mem.push_eof()
+
+  let host = SessionHost::for_test(mem)
+  let id_before = host.alloc_id()
+  assert(id_before == 1)
+  let mut gen = HubGen::new(host, 0)
+  let res0 = gen.resources
+  let mut res1_opt : Option[HubGenResources] = None
+
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              if line.starts_with("{\"db\":") {
+                gen = rotate_hub_gen(h, gen, base_codec::json_null())
+                if gen.counters.epoch == 1 {
+                  res1_opt = Some(gen.resources)
+                }
+                gen.quiet()
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  host.rt.tick()
+
+  assert(code == 0)
+  assert(gen.counters.epoch == 2)
+  assert(res0.retire_count == 1)
+  match res1_opt {
+    Some(res1) => assert(res1.retire_count == 1)
+    None => panic("expected res1")
+  }
+  assert(host.alloc_id() == 2)
+  assert(mem.stderr_lines.length() == 0)
+}
+
+test "sessions_core: late unix.open completion after abandonment emits exactly one tcp.close" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+
+  let mut opened_shell_id : Int64 = 0.to_int64()
+  let g0 = gen
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    g0.shell_k(
+      host,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/test.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { opened_shell_id = id }),
+      fn(_res : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        wk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+
+  host.rt.tick()
+  assert(opened_shell_id > 0.to_int64())
+  assert(mem.shell_calls.length() == 1)
+  assert(mem.shell_calls[0].op == "unix.open")
+
+  gen = rotate_hub_gen(host, gen, base_codec::json_null())
+  host.rt.tick()
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: opened_shell_id,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "tcp.close")
+  assert(mem.shell_calls[1].json == "{\"id\":99}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: opened_shell_id,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 2)
+}
+
+test "sessions_core: unix.open ShellDone followed by rotate_hub_gen seal before resume emits exactly one tcp.close" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+
+  let mut opened_shell_id : Int64 = 0.to_int64()
+  let g0 = gen
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    g0.shell_k(
+      host,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/race.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { opened_shell_id = id }),
+      fn(_res : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        wk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+
+  host.rt.tick()
+  assert(opened_shell_id > 0.to_int64())
+  assert(mem.shell_calls.length() == 1)
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: opened_shell_id,
+      error: "",
+      json: "{\"id\":77}",
+      bytes: None,
+    }),
+  )
+  assert(host.shell_waiters.length() == 0)
+
+  gen = rotate_hub_gen(host, gen, base_codec::json_null())
+
+  host.rt.tick()
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "tcp.close")
+  assert(mem.shell_calls[1].json == "{\"id\":77}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+  assert(gen.counters.epoch == 1)
+}
+
+test "sessions_core: unsealed direct fiber interrupt after ShellDone (and before ShellDone) emits exactly one tcp.close via ShellSlot" {
+  // Case A: ShellDone arrives and settles Deferred -> fiber.interrupt() BEFORE rt.tick() ->
+  // SessionHost::shell_k Exit::Interrupted path closes handle 99 via slot.settled (NO HubGen seal involved!).
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut shell_id_a : Int64 = 0.to_int64()
+  let mut interrupted_a = false
+  let fiber_a = host.rt.fork_named("unsealed-a", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/direct-a.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { shell_id_a = id }),
+      fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => interrupted_a = true
+          _ => ()
+        }
+        k(effect::Exit::Interrupted)
+      },
+    )
+  })
+  host.rt.tick()
+  assert(shell_id_a > 0.to_int64())
+  assert(mem.shell_calls.length() == 1)
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: shell_id_a,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  assert(host.shell_waiters.length() == 0)
+  fiber_a.interrupt()
+  host.rt.tick()
+
+  assert(interrupted_a)
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "tcp.close")
+  assert(mem.shell_calls[1].json == "{\"id\":99}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+
+  // Case B: fiber.interrupt() BEFORE ShellDone for BOTH a handle-producing `unix.open`
+  // (`Some(CloseTcpHandle)`) and a plain `tcp.read` (`None`).
+  // Immediately after `host.tick()` (BEFORE any ShellDone arrives!), `shell_waiters` MUST be 0
+  // and `abandoned_ops` MUST be 1 (only `unix.open`, zero leftover for `tcp.read`).
+  let mut shell_id_b : Int64 = 0.to_int64()
+  let mut shell_id_c : Int64 = 0.to_int64()
+  let fiber_b = host.rt.fork_named("unsealed-b", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/direct-b.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { shell_id_b = id }),
+      fn(_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        k(effect::Exit::Interrupted)
+      },
+    )
+  })
+  let fiber_c = host.rt.fork_named("unsealed-c", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "tcp.read",
+      base_codec::json_obj([("id", jint(7))]),
+      None,
+      None,
+      Some(fn(id : Int64) -> Unit { shell_id_c = id }),
+      fn(_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        k(effect::Exit::Interrupted)
+      },
+    )
+  })
+  host.tick()
+  assert(shell_id_b > 0.to_int64())
+  assert(shell_id_c > 0.to_int64())
+  assert(host.shell_waiters.length() == 2)
+
+  fiber_b.interrupt()
+  fiber_c.interrupt()
+  host.tick()
+  // BEFORE any ShellDone arrives: immediate eviction from shell_waiters; only unix.open in abandoned_ops!
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 1)
+  assert(mem.shell_calls.length() == 4)
+
+  // Deliver late ShellDone for both: only unix.open emits tcp.close; tcp.read emits nothing.
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: shell_id_c,
+      error: "",
+      json: "{\"eof\":true}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 4)
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: shell_id_b,
+      error: "",
+      json: "{\"id\":101}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 5)
+  assert(mem.shell_calls[4].op == "tcp.close")
+  assert(mem.shell_calls[4].json == "{\"id\":101}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+}
+
+test "sessions_core: spawn_work Failed routes to daemon handler without decrementing active (actors.mbt:333)" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 0)
+
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    wk(effect::Exit::Failed(effect::EffectError::IoError("boom")))
+  })
+  assert(gen.counters.active == 1)
+  host.rt.tick()
+  assert(gen.counters.active == 1)
+  assert(mem.stdout_lines.length() == 0)
+  assert(mem.stderr_lines.length() == 1)
+  assert(mem.stderr_lines[0].contains("actor work failed"))
+}
+
+test "sessions_core: same-chunk answer + due emits exact frame sequence before EOF round" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 0)
+  let order : Array[String] = []
+  let mut quiet_emitted_before_eof = false
+
+  let timer_id = host.alloc_id()
+  gen.register_timer(host, timer_id, fn() -> Unit {
+    order.push("due")
+  })
+
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen.rpc_k(host, "s1", "node.ping", [], fn(_k : String) -> Unit { () }, fn(res : effect::Exit[base_codec::Json]) -> Unit {
+      match res {
+        effect::Exit::Succeeded(_) => order.push("answer")
+        _ => ()
+      }
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.rt.tick()
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 1)
+  assert(mem.stdout_lines[0].contains("\"rpc\":2"))
+
+  // Round 1: same-chunk answer + due (NO EOF in Round 1); Round 2: EOF after observation.
+  mem.push_stdin("{\"answer\":2,\"value\":true}\n{\"due\":1}\n")
+  mem.push_round_barrier()
+  mem.push_eof()
+
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              assert(actors_line(line))
+              gen.counters.seen = gen.counters.seen + 1
+              match parse_json_strict(line) {
+                Ok(j) => {
+                  match jget(j, "answer") {
+                    Some(base_codec::Json::Num(id, _)) => gen.handle_answer(h, id.to_int(), j)
+                    _ => ()
+                  }
+                  match jget(j, "due") {
+                    Some(base_codec::Json::Num(id, _)) => gen.handle_due(h, id.to_int())
+                    _ => ()
+                  }
+                }
+                Err(_) => ()
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => {
+              quiet_emitted_before_eof = mem.stdout_lines.length() == 2
+              h.exit(0)
+              sk(effect::Exit::Succeeded(IterStep::Stop))
+            }
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code == 0)
+  assert(quiet_emitted_before_eof)
+  assert(order.length() == 2)
+  assert(order[0] == "due")
+  assert(order[1] == "answer")
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 2)
+  assert(mem.stdout_lines[1] == "{\"quiet\":true,\"active\":0,\"seen\":2}")
+}
+
+test "sessions_core: Process-scoped shell waiters survive HubGen rotation" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+
+  let mut proc_id : Int64 = 0.to_int64()
+  let mut proc_done = false
+  let _ = host.rt.fork_named("agent", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "tcp.read",
+      base_codec::json_obj([("id", jint(7))]),
+      None,
+      None,
+      Some(fn(id : Int64) -> Unit { proc_id = id }),
+      fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => proc_done = true
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.rt.tick()
+  assert(proc_id > 0.to_int64())
+
+  gen = rotate_hub_gen(host, gen, base_codec::json_null())
+  host.rt.tick()
+  assert(!proc_done)
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: proc_id,
+      error: "",
+      json: "{\"eof\":false}",
+      bytes: Some("hello".to_bytes()),
+    }),
+  )
+  host.rt.tick()
+  assert(proc_done)
+  assert(gen.counters.epoch == 1)
+}

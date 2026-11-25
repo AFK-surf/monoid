@@ -1,0 +1,462 @@
+// Acyclic Hub Generation (`HubGen`, `HubCounters`, `HubGenResources`), `SessionDispatch`,
+// and `actors_line` (1:1 aligned with `wave8-plan.md` v5 §2.2, §2.3, §2.5).
+//
+// Strict unidirectional DAG (zero strong reference cycles during open lifetime or close):
+//   HubGen -> fibers (EffectScope) -> finalizers[] -> HubGenResources (db + queues + hooks only)
+//   HubGen -> fibers (EffectScope) -> daemon tasks -> HubCounters / ShellSender / ShellSlot
+//   SessionHost -> hub_asked / hub_timers / shell_waiters (tagged by epoch, cleaned on rotation)
+// Neither `HubGenResources` nor `HubCounters` EVER holds a `Deferred`, `Task`, `HubGen`,
+// `EffectScope`, or `SessionHost`.
+
+import "base_codec"
+import "builders_core"
+import "effect"
+import "js_json"
+import "sql_db"
+
+/// Standalone generation counters and stdout/stderr emitters.
+/// Holds ZERO strong references to `HubGen`, `EffectScope`, or `SessionHost`.
+pub struct HubCounters {
+  pub epoch : Int
+  pub mut sealed : Bool
+  pub mut draining_cap : Bool
+  pub mut drain_cap_again : Bool
+  pub mut max_concurrent_turns : Int
+  pub mut seen : Int
+  pub mut active : Int
+  pub mut now : Double
+  write_stdout_line : (String) -> Bool
+  write_stderr_line : (String) -> Bool
+}
+
+pub fn HubCounters::new(
+  epoch : Int,
+  write_stdout_line : (String) -> Bool,
+  write_stderr_line : (String) -> Bool,
+) -> HubCounters {
+  HubCounters::{
+    epoch: epoch,
+    sealed: false,
+    draining_cap: false,
+    drain_cap_again: false,
+    max_concurrent_turns: 0,
+    seen: 0,
+    active: 0,
+    now: 0.0,
+    write_stdout_line: write_stdout_line,
+    write_stderr_line: write_stderr_line,
+  }
+}
+
+/// Emit a JSON message to Node with `active` and `seen` attached, guarded by `!self.sealed`.
+pub fn HubCounters::say_node(
+  self : HubCounters,
+  fields : Array[(String, base_codec::Json)],
+) -> Unit {
+  if self.sealed {
+    return
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<fields.length() {
+    out.push(fields[i])
+  }
+  out.push(("active", jint(self.active)))
+  out.push(("seen", jint(self.seen)))
+  let msg = base_codec::json_obj(out)
+  let _ = (self.write_stdout_line)(base_codec::json_stringify(builders_core::normalize_json(msg)))
+}
+
+/// Emit `{"quiet":true,"active":0,"seen":...}` when `!self.sealed && self.active == 0`.
+pub fn HubCounters::quiet(self : HubCounters) -> Unit {
+  if !self.sealed && self.active == 0 {
+    self.say_node([("quiet", jbool(true))])
+  }
+}
+
+pub fn HubCounters::note(self : HubCounters, text : String) -> Unit {
+  let _ = (self.write_stderr_line)(text)
+}
+
+/// Standalone retireable resources of one Hub generation.
+/// Holds ONLY `db`, plain string queues, retirement flags, and leaf hooks —
+/// ZERO `Deferred`, ZERO `Task`, ZERO `HubGen`, ZERO `EffectScope`, ZERO `SessionHost`.
+pub struct HubGenResources {
+  pub mut db : Option[sql_db::Db]
+  pub turn_wait_queue : Array[String]
+  pub cap_wait_queue : Array[String]
+  pub mut retired : Bool
+  pub mut retire_count : Int
+  close_db : (sql_db::Db) -> Unit
+  on_retire : Array[() -> Unit]
+}
+
+pub fn HubGenResources::new(close_db : (sql_db::Db) -> Unit) -> HubGenResources {
+  HubGenResources::{
+    db: None,
+    turn_wait_queue: [],
+    cap_wait_queue: [],
+    retired: false,
+    retire_count: 0,
+    close_db: close_db,
+    on_retire: [],
+  }
+}
+
+/// Register a subsystem cleanup callback that captures only leaf state (never `HubGen`/`fibers`/`SessionHost`).
+pub fn HubGenResources::add_retire_hook(self : HubGenResources, hook : () -> Unit) -> Unit {
+  if self.retired {
+    hook()
+  } else {
+    self.on_retire.push(hook)
+  }
+}
+
+/// Idempotently close `db` and clear all generation-scoped queues/hooks.
+pub fn HubGenResources::retire(self : HubGenResources) -> Unit {
+  if self.retired {
+    return
+  }
+  self.retired = true
+  self.retire_count = self.retire_count + 1
+  match self.db {
+    Some(db) => {
+      self.db = None
+      (self.close_db)(db)
+    }
+    None => ()
+  }
+  self.turn_wait_queue.clear()
+  self.cap_wait_queue.clear()
+  for i in 0..<self.on_retire.length() {
+    (self.on_retire[i])()
+  }
+  self.on_retire.clear()
+}
+
+/// One Hub generation (replaced on every `{"db": place}` line).
+pub struct HubGen {
+  pub counters : HubCounters
+  pub fibers : effect::EffectScope
+  pub resources : HubGenResources
+}
+
+pub fn HubGen::new(host : SessionHost, epoch : Int) -> HubGen {
+  let fibers = host.rt.new_scope()
+  let res = HubGenResources::new(host.transport.close_db)
+  let counters = HubCounters::new(
+    epoch,
+    host.transport.write_stdout_line,
+    host.transport.write_stderr_line,
+  )
+  // Finalizer captures ONLY `res` (never `gen`, `fibers`, or `host`): strict acyclic DAG.
+  fibers.add_finalizer(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    res.retire()
+    k(effect::Exit::Succeeded(()))
+  })
+  HubGen::{
+    counters: counters,
+    fibers: fibers,
+    resources: res,
+  }
+}
+
+/// Emit a JSON message to Node with `active` and `seen` attached, guarded by `!self.counters.sealed`.
+pub fn HubGen::say_node(
+  self : HubGen,
+  fields : Array[(String, base_codec::Json)],
+) -> Unit {
+  self.counters.say_node(fields)
+}
+
+/// Emit `{"quiet":true,"active":0,"seen":...}` when `!self.counters.sealed && self.counters.active == 0`.
+pub fn HubGen::quiet(self : HubGen) -> Unit {
+  self.counters.quiet()
+}
+
+/// Spawn a generation-scoped work fiber (`actors.mbt:333`):
+/// increments `active` synchronously, decrements + emits `quiet()` ONLY on `Succeeded`,
+/// and routes `Failed` to the daemon error handler without decrementing `active`.
+/// Captures ONLY `HubCounters` (ZERO back-reference to `HubGen`, `EffectScope`, or `SessionHost`).
+pub fn HubGen::spawn_work(
+  self : HubGen,
+  work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+) -> Unit {
+  let counters = self.counters
+  if counters.sealed {
+    return
+  }
+  counters.active = counters.active + 1
+  let _ = self.fibers.fork_daemon(
+    "actor work",
+    fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      work_k(fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => {
+            if !counters.sealed {
+              counters.active = counters.active - 1
+              counters.quiet()
+            }
+            k(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(e : effect::EffectError) -> Unit {
+      counters.note("actor work failed: " + effect::effect_error_to_string(e))
+    },
+  )
+}
+
+/// Issue a generation-scoped shell call, refusing immediately if `self.counters.sealed` is true.
+/// The continuation captures ONLY leaf objects (`counters`, `sender`, `abandoned_op`, `k`) —
+/// NEVER `HubGen`, `EffectScope`, or `SessionHost`.
+pub fn HubGen::shell_k(
+  self : HubGen,
+  host : SessionHost,
+  op : String,
+  args : base_codec::Json,
+  bytes : Option[Bytes],
+  abandoned_op : Option[AbandonedOp],
+  on_called : Option[(Int64) -> Unit],
+  k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+) -> Unit {
+  let counters = self.counters
+  let sender = host.sender
+  if counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  host.shell_k(
+    ShellOwner::Hub(counters.epoch),
+    op,
+    args,
+    bytes,
+    abandoned_op,
+    on_called,
+    fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+      if counters.sealed {
+        match (ex, abandoned_op) {
+          (effect::Exit::Succeeded((j, _)), Some(AbandonedOp::CloseTcpHandle)) => {
+            sender.close_abandoned_tcp_handle_json(j)
+          }
+          _ => ()
+        }
+        k(effect::Exit::Interrupted)
+      } else {
+        k(ex)
+      }
+    },
+  )
+}
+
+/// Issue an RPC to Node, decrementing `active` before sending and awaiting the answer Deferred
+/// stored in `host.hub_asked` (tagged by `epoch`, never inside `HubGenResources`).
+pub fn HubGen::rpc_k(
+  self : HubGen,
+  host : SessionHost,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+  mirror_actor : (String) -> Unit,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  let id = host.alloc_id()
+  let d : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+  host.hub_asked.set(id, HubAskedEntry::{ epoch: self.counters.epoch, deferred: d })
+  mirror_actor(key)
+  self.counters.active = self.counters.active - 1
+  self.counters.say_node([
+    ("rpc", jint(id)),
+    ("actor", jstr(key)),
+    ("fn", jstr(f)),
+    ("args", base_codec::json_arr(args)),
+  ])
+  d.wait_k(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(answer) => {
+        match jget(answer, "error") {
+          Some(err) => k(effect::Exit::Failed(AskedError::new(err).to_effect_error()))
+          None => k(effect::Exit::Succeeded(field_of(answer, "value")))
+        }
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Register a generation-scoped Node timer callback in `host.hub_timers` tagged by `epoch`.
+pub fn HubGen::register_timer(self : HubGen, host : SessionHost, id : Int, then : () -> Unit) -> Unit {
+  if self.counters.sealed {
+    return
+  }
+  host.hub_timers.set(id, HubTimerEntry::{ epoch: self.counters.epoch, then: then })
+}
+
+/// Cancel an in-flight RPC (`actors.mbt:285-295`), restoring `active` before waking the waiter.
+pub fn HubGen::cancel_rpc(self : HubGen, host : SessionHost, id : Int, err : base_codec::Json) -> Bool {
+  if self.counters.sealed {
+    return false
+  }
+  match host.hub_asked.get(id) {
+    Some(entry) => {
+      if entry.epoch != self.counters.epoch {
+        return false
+      }
+      let _ = host.hub_asked.remove(id)
+      self.counters.active = self.counters.active + 1
+      let _ = entry.deferred.succeed(base_codec::json_obj([("error", err)]))
+      true
+    }
+    None => false
+  }
+}
+
+/// Handle `{"answer": id, ...}` from Node (`actors.mbt:839-848`).
+pub fn HubGen::handle_answer(self : HubGen, host : SessionHost, id : Int, said : base_codec::Json) -> Unit {
+  if self.counters.sealed {
+    return
+  }
+  match host.hub_asked.get(id) {
+    Some(entry) => {
+      if entry.epoch != self.counters.epoch {
+        return
+      }
+      let _ = host.hub_asked.remove(id)
+      self.counters.active = self.counters.active + 1
+      let _ = entry.deferred.succeed(said)
+    }
+    None => ()
+  }
+}
+
+/// Handle `{"due": id}` from Node (`actors.mbt:849-860`).
+pub fn HubGen::handle_due(self : HubGen, host : SessionHost, id : Int) -> Unit {
+  let counters = self.counters
+  if counters.sealed {
+    return
+  }
+  match host.hub_timers.get(id) {
+    Some(entry) => {
+      if entry.epoch != counters.epoch {
+        return
+      }
+      let _ = host.hub_timers.remove(id)
+      counters.active = counters.active + 1
+      (entry.then)()
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+    }
+    None => ()
+  }
+}
+
+/// Rotate from `old_gen` to a brand new `HubGen` on `{"db": place}` (`wave8-plan.md` v5 §2.2):
+/// 1. Synchronously seal `old_gen.counters` so no old fiber can emit frames, mutate counts, or issue new shell calls.
+/// 2. Construct `new_gen` (`seen = 1`, `active = 0`, `epoch = old_gen.counters.epoch + 1`) and attach DB (`wait_ms = 30000` for String, silent `None` for Null).
+/// 3. Drop (without failing) `host.hub_asked`, `host.hub_timers`, and `Hub(old_epoch)` shell waiters.
+/// 4. Call `old_gen.fibers.close_now()` (NEVER `close_k` on `main` fiber!).
+pub fn rotate_hub_gen(
+  host : SessionHost,
+  old_gen : HubGen,
+  place : base_codec::Json,
+) -> HubGen {
+  old_gen.counters.sealed = true
+  let old_epoch = old_gen.counters.epoch
+  let next_epoch = old_epoch + 1
+  let new_gen = HubGen::new(host, next_epoch)
+  new_gen.counters.seen = 1
+  new_gen.counters.active = 0
+  new_gen.counters.now = old_gen.counters.now
+
+  match place {
+    base_codec::Json::Str(path) => {
+      match (host.transport.attach_db)(path, 30000) {
+        Ok(db) => new_gen.resources.db = Some(db)
+        Err(err) => {
+          host.note("actors: the station's database not opened: " + err.message)
+          new_gen.resources.db = None
+        }
+      }
+    }
+    // `Null` (in-memory store in tests) silently sets `db = None` with zero stderr.
+    _ => new_gen.resources.db = None
+  }
+
+  // Drop (clear without failing) old generation waiters so `active` never goes negative.
+  host.abandon_hub_asked(old_epoch)
+  host.abandon_hub_timers(old_epoch)
+  host.abandon_hub_waiters(old_epoch)
+
+  // Async teardown on an independent "close" task — never blocks `main` fiber or touches `main.shield`.
+  old_gen.fibers.close_now()
+
+  new_gen
+}
+
+// ── Narrow value-passed cross-subsystem dispatch (`SessionDispatch`) ──
+
+pub struct SessionDispatch {
+  pub mirror_actor : (String) -> Unit
+  pub live_event : (String, base_codec::Json) -> Unit
+  pub live_end : (String) -> Int
+  pub live_called : (Double, String, Array[base_codec::Json]) -> Unit
+  pub jobs_called_k : (String, Array[base_codec::Json], (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub jstore_get_job_k : (String, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub remote_called_k : (String, Array[base_codec::Json], (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub remote_changed_k : (String, String) -> Unit
+  /// Two-phase queue lock helper for `remote_target` (`wave8-plan.md` v5 §2.5).
+  pub queue_of_locked_k : (String, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub agents_told : (String) -> Unit
+  /// Returns `(events, batch_end_offset)` aligned with MoonBit `Agents::take`.
+  pub agents_take : (Int, Int) -> Option[(Array[js_json::JValue], Int64)]
+  /// `true` while stub handlers remain (W8-F asserts `false` on production assembly).
+  pub is_stub : Bool
+}
+
+pub fn SessionDispatch::stub() -> SessionDispatch {
+  SessionDispatch::{
+    mirror_actor: fn(_key : String) -> Unit { () },
+    live_event: fn(_key : String, _ev : base_codec::Json) -> Unit { () },
+    live_end: fn(_key : String) -> Int { 0 },
+    live_called: fn(_id : Double, _method : String, _args : Array[base_codec::Json]) -> Unit { () },
+    jobs_called_k: fn(_method : String, _args : Array[base_codec::Json], k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    jstore_get_job_k: fn(_id : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    remote_called_k: fn(_method : String, _args : Array[base_codec::Json], k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    remote_changed_k: fn(_id : String, _status : String) -> Unit { () },
+    queue_of_locked_k: fn(_station : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    agents_told: fn(_line : String) -> Unit { () },
+    agents_take: fn(_n : Int, _k : Int) -> Option[(Array[js_json::JValue], Int64)] { None },
+    is_stub: true,
+  }
+}
+
+/// Whether a stdin line from Node is routed to Actors (`actors.mbt:787-789`).
+pub fn actors_line(line : String) -> Bool {
+  line.starts_with("{\"call\":") ||
+  line.starts_with("{\"answer\":") ||
+  line.starts_with("{\"due\":") ||
+  line.starts_with("{\"db\":") ||
+  line.starts_with("{\"maxConcurrentTurns\":") ||
+  line.starts_with("{\"drainCapQueue\":") ||
+  line.starts_with("{\"runtime\":") ||
+  line.starts_with("{\"event\":") ||
+  line.starts_with("{\"routed\":") ||
+  line.starts_with("{\"codexUpdated\":")
+}

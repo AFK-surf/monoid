@@ -19,6 +19,7 @@ import { RetireAsks, chatCards } from "./retire-asks.ts";
 import { retireTools } from "../tools/retire.ts";
 import { wall } from "../ops/fibers.ts";
 import { ProgramRunner } from "./runner.ts";
+import { Handoffs, openHandoffChat } from "./handoff.ts";
 
 type Json = any;
 
@@ -64,6 +65,7 @@ export const CopiesLive = Layer.effectDiscard(
       taking: () => retire.takingNow(),
       backup: () => readBackupConfig(agents.config.raw()),
       traces: () => meshSide.traces ?? null,
+      readers: readerConfig,
     });
     // The jobs and services of a workspace's chats up now (what a retirement stops and the preview lists), and this
     // station's own accounts (no copy borrowed, not the machine's login: what may move, share/index.ts moveProfile).
@@ -193,6 +195,27 @@ export const CopiesLive = Layer.effectDiscard(
       void retire.start().catch((e) => log.warn("retire", "the retirement did not go on", { error: (e as Error).message }));
     });
     parts.overview("copies", (viewer) => ({ ...(copies.overview(viewer.workspace, managesStation(viewer)) as object), ...(retire.overview(viewer.workspace) as object) }));
-    parts.routes(routes({ copies, retire, starts: RETIRE_STARTS, config: agents.config, changed: () => events.overviewChanged() }));
+    // One chat of a station that does not answer gone on with here, from its copy (handoff.ts).
+    const handoffs = new Handoffs({
+      here: () => key.id,
+      attached: () => bus.isAttached(),
+      roster: (ws: string) => {
+        const m = cloud.membership(ws);
+        if (m === null || !cloud.peersCurrent) return null;
+        return m.peers.flatMap((p: Json) => (typeof p?.id === "string" ? [{ id: p.id as string, name: typeof p.name === "string" ? p.name : "" }] : []));
+      },
+      ask: (station: string, request: Json) => bus.ask(station, request),
+      copies,
+      open: (o) => openHandoffChat(agents.hub, o),
+    });
+    parts.routes(routes({
+      copies,
+      retire,
+      starts: RETIRE_STARTS,
+      config: agents.config,
+      changed: () => events.overviewChanged(),
+      handoff: (a) => handoffs.ask(a),
+      quiet: (ws) => agents.hub.quietIn(ws),
+    }));
   }),
 );

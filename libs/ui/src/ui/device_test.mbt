@@ -359,3 +359,57 @@ test "what is copied is felt, once a copy; with haptics off nothing is" {
   @ui.haptic(LongPress)
   assert_eq(t.haptics(), [KeyboardTap, LongPress])
 }
+
+///|
+test "key catcher receives Insert and F1-F12 and reports key_catching while focused" {
+  let got : Array[@ui.KeyIn] = []
+  let catch_on = Ref(false)
+  let t = @ui.Tester::new(catcher_page(got, catch_on))
+  assert_false(@ui.key_catching())
+  catch_on.val = true
+  t.draw()
+  assert_true(@ui.key_catching())
+  t.key(@ui.key_code_insert, mods=0)
+  t.key(@ui.key_code_f1, mods=0)
+  t.key(@ui.key_code_f5, mods=@ui.mod_ctrl)
+  t.key(@ui.key_code_f12, mods=@ui.mod_shift_key)
+  t.draw()
+  assert_eq(
+    got,
+    [
+      @ui.KeyIn::Key(down=true, key="Insert", code="Insert", mods=0),
+      @ui.KeyIn::Key(down=false, key="Insert", code="Insert", mods=0),
+      @ui.KeyIn::Key(down=true, key="F1", code="F1", mods=0),
+      @ui.KeyIn::Key(down=false, key="F1", code="F1", mods=0),
+      @ui.KeyIn::Key(down=true, key="F5", code="F5", mods=@ui.key_in_ctrl),
+      @ui.KeyIn::Key(down=false, key="F5", code="F5", mods=@ui.key_in_ctrl),
+      @ui.KeyIn::Key(down=true, key="F12", code="F12", mods=@ui.key_in_shift),
+      @ui.KeyIn::Key(down=false, key="F12", code="F12", mods=@ui.key_in_shift),
+    ],
+  )
+  catch_on.val = false
+  t.draw()
+  assert_false(@ui.key_catching())
+  assert_false(@ui.key_catching_close())
+
+  // key_catcher_node: default catch_close=false (terminal) vs catch_close=true (remote screen)
+  let term_v : Ref[@view.View?] = Ref(None)
+  let scr_v : Ref[@view.View?] = Ref(None)
+  let t2 = @ui.Tester::new(fn(_c) {  }, platform=0, keyboard=true, tree=fn(root) {
+    term_v.val = Some(@ui.key_catcher_node(root, "term", fn(_) {  }, fn(k) { k.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore }))
+    scr_v.val = Some(@ui.key_catcher_node(root, "screen", fn(_) {  }, catch_close=true, fn(k) { k.width(Is(Some(100.0))).height(Is(Some(100.0))) |> ignore }))
+  })
+  t2.draw()
+  @ui.key_catcher_focus_set(term_v.val.unwrap(), true)
+  t2.draw()
+  assert_true(@ui.key_catching())
+  assert_false(@ui.key_catching_close())
+  @ui.key_catcher_focus_set(scr_v.val.unwrap(), true)
+  t2.draw()
+  assert_true(@ui.key_catching())
+  assert_true(@ui.key_catching_close())
+  @ui.key_catcher_focus_set(scr_v.val.unwrap(), false)
+  t2.draw()
+  assert_false(@ui.key_catching())
+  assert_false(@ui.key_catching_close())
+}

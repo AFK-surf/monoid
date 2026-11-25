@@ -56,6 +56,7 @@ typedef struct WinSlot {
   int fb_pw, fb_ph;         // the area's framebuffer in pixels, as GTK last sized it
   double frame_w, frame_h;  // the last frame's size in points
   int ime_active;
+  int key_catching;
   double caret[4];  // x, y, w, h in points, from set_ime
   char *ime_words;  // the field's words (UTF-8) and its selection's ends in them, for the input method
   int ime_sel_a, ime_sel_b;
@@ -638,7 +639,7 @@ static gboolean on_key_here(GtkEventControllerKey *k, guint keyval, guint keycod
   (void)k, (void)keycode, (void)data;
   int mods = mods_of(state);
   // a key catcher's focus (linux_device.h): its keys (a composition under way keeps them)
-  if (key_catching && ws->ime_active && ws->marked_len == 0 && catch_key(keyval, mods)) return TRUE;
+  if (ws->key_catching && ws->ime_active && ws->marked_len == 0 && catch_key(keyval, mods)) return TRUE;
   if ((mods & 4) && !(mods & 2) && keyval == GDK_KEY_Left && go_back()) return TRUE;
   // Alt+Right: forward, the app's key (key_forward)
   if ((mods & 4) && !(mods & 2) && keyval == GDK_KEY_Right) {

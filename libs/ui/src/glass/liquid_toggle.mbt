@@ -60,7 +60,10 @@ pub fn liquid_toggle_node(
   // (fraction: where the hand has put it, 0 off to 1 on; did_drag: whether this hold moved it)
   let fraction = Ref(if was_on { 1.0 } else { 0.0 })
   let did_drag = Ref(false)
-  let last_x = Ref(0.0)
+  // (where the hand went down across the window, and where it had it then: each move puts it where that point has
+  // gone, so held past an end and brought back it leaves the end only as the hand reaches where it stopped)
+  let from_x = Ref(0.0)
+  let from_fraction = Ref(0.0)
   @headless.toggle(made_for=loc, parent, Switch, label, on, turn, disabled~, fn(v, sw) {
     dd.attach(v)
     let no_lens = fn() { v.glass_solid() || @ui.reduced_motion() || (finger_only_lens && !(@ui.pointing() is Finger)) }
@@ -103,7 +106,8 @@ pub fn liquid_toggle_node(
         if sw.disabled() {
           return
         }
-        last_x.val = d.wx
+        from_x.val = d.wx
+        from_fraction.val = fraction.val
         if !no_lens() {
           dd.press()
         }
@@ -117,12 +121,11 @@ pub fn liquid_toggle_node(
           // (from where it went down: the slop before a drag is the drag's too, as Compose's overSlop)
           Down => ()
           Moved => {
-            let dx = d.wx - last_x.val
-            last_x.val = d.wx
+            let dx = d.wx - from_x.val
             if dx != 0.0 {
               did_drag.val = true
             }
-            fraction.val = clamp(fraction.val + dx / drag_dist, 0.0, 1.0)
+            fraction.val = clamp(from_fraction.val + dx / drag_dist, 0.0, 1.0)
             if no_lens() {
               dd.slide_to(fraction.val)
             } else {

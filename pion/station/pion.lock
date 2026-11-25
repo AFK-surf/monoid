@@ -16,6 +16,13 @@ rev = "2ecdcb749583446735af60504930bf1f63649f70"
 subdir = "packages/crypto"
 
 [[package]]
+name = "effect"
+git = "https://github.com/AFK-surf/pion-packages.git"
+ref = "tag:effect-v0.1.0"
+rev = "2d0d96166d60d67d5fb69e8f34a84bcdbbaee6b8"
+subdir = "packages/effect"
+
+[[package]]
 name = "flate"
 git = "https://github.com/AFK-surf/pion-packages.git"
 ref = "tag:flate-v0.1.0"

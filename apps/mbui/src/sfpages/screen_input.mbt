@@ -142,6 +142,197 @@ fn mods_of_held(held : Int) -> Int {
 }
 
 ///|
+/// Whether a station's host OS string names an Apple system (macOS / Darwin); None until known.
+fn os_is_apple(os : String) -> Bool? {
+  let low = os.trim().to_lower()
+  if low == "" {
+    None
+  } else {
+    Some(low.has_prefix("mac") || low.has_prefix("darwin"))
+  }
+}
+
+///|
+/// Whether the remote screen uses Apple-style ⌘ shortcuts (vs Ctrl): Android emulators use Ctrl even when hosted on a
+/// Mac, iOS Simulators use ⌘, and other screens follow their station's host OS.
+fn screen_remote_apple(s : ScreenSess) -> Bool? {
+  if s.screen.has_prefix("android:") {
+    Some(false)
+  } else if s.simulator() {
+    Some(true)
+  } else {
+    os_is_apple(screen_os(s.src, s.station))
+  }
+}
+
+///|
+/// Whether this device's keyboard uses Apple-style ⌘ shortcuts (@ui.keys_system: 0 macOS, 1 iOS, else Ctrl; <0 unknown).
+fn screen_local_apple() -> Bool? {
+  let sys = @ui.keys_system()
+  if sys < 0 {
+    None
+  } else {
+    Some(sys == 0 || sys == 1)
+  }
+}
+
+///|
+/// Whether this device and the remote screen use opposite primary shortcut modifiers (Apple ⌘ vs Windows/Linux/Android
+/// Ctrl). False while either system is unknown.
+fn screen_cross_os(s : ScreenSess) -> Bool {
+  match (screen_local_apple(), screen_remote_apple(s)) {
+    (Some(local_apple), Some(remote_apple)) => local_apple != remote_apple
+    _ => false
+  }
+}
+
+///|
+/// Whether cross-OS shortcut mapping is enabled on this device (`prefs.screenKeyMap`: `"off"` raw keys, default on).
+fn screen_key_map_on(src : Source) -> Bool {
+  @settings.pref_from(src.topic("prefs", {}).get().value, "screenKeyMap") != "off"
+}
+
+///|
+/// Whether physical Control stays Ctrl (instead of mapping to Win/Meta) when an Apple device drives Windows/Linux/Android
+/// (`prefs.screenKeepCtrl`: `"off"` maps ⌃ → Win, default on so terminal ⌃C/⌃D work without triggering Win shortcuts).
+fn screen_keep_ctrl_on(src : Source) -> Bool {
+  @settings.pref_from(src.topic("prefs", {}).get().value, "screenKeepCtrl") != "off"
+}
+
+///|
+/// Whether `s` currently keeps physical Control as Ctrl (only applies when Apple drives Windows/Linux/Android).
+fn screen_keep_ctrl(s : ScreenSess) -> Bool {
+  screen_local_apple() == Some(true) && screen_remote_apple(s) == Some(false) && screen_keep_ctrl_on(s.src)
+}
+
+///|
+/// Whether physical keyboard/mouse modifiers should map cross-OS shortcuts for `s` right now.
+fn screen_swaps_ctrl_meta(s : ScreenSess) -> Bool {
+  screen_key_map_on(s.src) && screen_cross_os(s)
+}
+
+///|
+/// Swaps `mod_ctrl` and `mod_meta` in `mods`, leaving `mod_alt` and `mod_shift` untouched.
+fn swap_ctrl_meta(mods : Int) -> Int {
+  let base = mods & (mod_ctrl | mod_meta).lnot()
+  let c = if (mods & mod_ctrl) != 0 { mod_meta } else { 0 }
+  let m = if (mods & mod_meta) != 0 { mod_ctrl } else { 0 }
+  base | c | m
+}
+
+///|
+/// Remaps `mod_ctrl` and `mod_meta` for cross-OS input: two-way swap unless `keep_ctrl` keeps physical Control as Ctrl
+/// while still mapping ⌘ → Ctrl.
+fn remap_ctrl_meta(mods : Int, keep_ctrl : Bool) -> Int {
+  if !keep_ctrl {
+    swap_ctrl_meta(mods)
+  } else {
+    let base = mods & mod_meta.lnot()
+    if (mods & mod_meta) != 0 { base | mod_ctrl } else { base }
+  }
+}
+
+///|
+/// Remaps a physical key event `(key, code, mods)` when cross-OS shortcut mapping is active:
+/// - Semantic text-editing and navigation shortcuts (word jump/delete, line/document bounds) translate between Apple and
+///   Windows/Linux conventions so `Ctrl+Backspace` deletes a word instead of a whole line on Mac and `⌥←` moves a word
+///   instead of navigating Back on Windows.
+/// - Other shortcuts remap Ctrl ↔ ⌘ (or map ⌘ → Ctrl while keeping ⌃ as Ctrl on Mac → Windows/Linux when `screenKeepCtrl`
+///   is on).
+fn remap_screen_key(s : ScreenSess, key : String, code : String, mods : Int) -> (String, String, Int) {
+  if !screen_swaps_ctrl_meta(s) {
+    return (key, code, mods)
+  }
+  let shift = mods & mod_shift
+  let non_shift = mods & mod_shift.lnot()
+  match (screen_local_apple(), screen_remote_apple(s)) {
+    (Some(false), Some(true)) => {
+      if non_shift == 0 {
+        match code {
+          "Home" => return ("ArrowLeft", "ArrowLeft", mod_meta | shift)
+          "End" => return ("ArrowRight", "ArrowRight", mod_meta | shift)
+          _ => ()
+        }
+      }
+      if non_shift == mod_ctrl {
+        match code {
+          "ArrowLeft" | "ArrowRight" => return (key, code, mod_alt | shift)
+          "Backspace" | "Delete" if shift == 0 => return (key, code, mod_alt)
+          "Home" => return ("ArrowUp", "ArrowUp", mod_meta | shift)
+          "End" => return ("ArrowDown", "ArrowDown", mod_meta | shift)
+          _ => ()
+        }
+      }
+    }
+    (Some(true), Some(false)) => {
+      if non_shift == mod_alt {
+        match code {
+          "ArrowLeft" | "ArrowRight" => return (key, code, mod_ctrl | shift)
+          "Backspace" | "Delete" if shift == 0 => return (key, code, mod_ctrl)
+          _ => ()
+        }
+      }
+      if non_shift == mod_meta {
+        match code {
+          "ArrowLeft" => return ("Home", "Home", shift)
+          "ArrowRight" => return ("End", "End", shift)
+          "ArrowUp" => return ("Home", "Home", mod_ctrl | shift)
+          "ArrowDown" => return ("End", "End", mod_ctrl | shift)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let keep_ctrl = screen_keep_ctrl(s)
+  let next_mods = remap_ctrl_meta(mods, keep_ctrl)
+  let next_key = match key {
+    "Meta" => "Control"
+    "Control" if !keep_ctrl => "Meta"
+    _ => key
+  }
+  let next_code = match code {
+    "MetaLeft" => "ControlLeft"
+    "MetaRight" => "ControlRight"
+    "ControlLeft" if !keep_ctrl => "MetaLeft"
+    "ControlRight" if !keep_ctrl => "MetaRight"
+    _ => code
+  }
+  (next_key, next_code, next_mods)
+}
+
+///|
+/// Remaps held keyboard modifiers for mouse click/wheel events when cross-OS shortcut mapping is active.
+fn screen_remap_mods(s : ScreenSess, mods : Int) -> Int {
+  if screen_swaps_ctrl_meta(s) {
+    remap_ctrl_meta(mods, screen_keep_ctrl(s))
+  } else {
+    mods
+  }
+}
+
+///|
+/// Whether a key-down with `code`, physical `raw_mods`, and remapped `mapped_mods` is the local clipboard paste shortcut.
+/// With cross-OS mapping on, follows this device's paste key (⌘V on Apple so terminal/Vim ⌃V stays raw Ctrl+V; Ctrl+V on
+/// Windows/Linux so Win+V stays raw ⌃V). Otherwise follows the remote OS's paste key.
+fn is_paste_key(s : ScreenSess, code : String, raw_mods : Int, mapped_mods : Int) -> Bool {
+  guard code == "KeyV" && (raw_mods & mod_alt) == 0 && (mapped_mods & mod_alt) == 0 else { return false }
+  if screen_swaps_ctrl_meta(s) {
+    match screen_local_apple() {
+      Some(true) => (raw_mods & mod_meta) != 0 && (raw_mods & mod_ctrl) == 0
+      Some(false) => (raw_mods & mod_ctrl) != 0 && (raw_mods & mod_meta) == 0
+      None => false
+    }
+  } else {
+    match screen_remote_apple(s) {
+      Some(true) => (mapped_mods & mod_meta) != 0 && (mapped_mods & mod_ctrl) == 0
+      Some(false) => (mapped_mods & mod_ctrl) != 0 && (mapped_mods & mod_meta) == 0
+      None => (mapped_mods & (mod_meta | mod_ctrl)) != 0
+    }
+  }
+}
+
+///|
 /// The modifier keys of `mods`, each its key going `kind` ("down" before a press, "up" after it), so a click with ⇧ or
 /// ⌘ held is one there too (a key held alone never comes to a key catcher). Each key's event says the modifiers held
 /// after it, as a keyboard's do: a down with itself, an up without itself.

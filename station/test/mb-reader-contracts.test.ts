@@ -13,13 +13,14 @@
 // (station_main) is held apart, by mb-station-contracts.test.ts. Each matcher is also run on a source changed to break
 // it, so that a matcher that passes everything fails here.
 import assert from "node:assert/strict";
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 const station = fileURLToPath(new URL("..", import.meta.url));
 const reader = join(station, "mb", "src", "reader");
+const pionStationPkgs = resolve(station, "..", "pion", "station", "packages");
 
 const read = (p: string) => readFileSync(p, "utf8");
 const walk = (dir: string, keep: (p: string) => boolean): string[] =>
@@ -179,7 +180,7 @@ test("the actors' matcher fails an agent_do that only a driver's method would an
 
 // ── #jobs, #live and #remote ──
 
-const PSEUDO_FILES = () => readdirSync(reader).filter((n) => /^(jobs|live|remote.*)\.mbt$/.test(n)).map((n) => `reader/${n}`);
+const PSEUDO_FILES = () => readdirSync(reader).filter((n) => /^(jobs|live|remote.*|dirsync.*)\.mbt$/.test(n)).map((n) => `reader/${n}`);
 
 function pseudoSources(): Sources {
   const out: Sources = {};
@@ -259,4 +260,271 @@ test("the pseudo-actors' matcher fails a jnode whose prefix is no longer node.",
   assert.ok(jobs.includes(node), "jobs.mbt's jnode as read");
   const wrong = pseudoWrong({ ...s, "reader/jobs.mbt": jobs.replace(node, 'self.rpc(jobs_key, "store." + f, args)') });
   assert.ok(wrong.some((w) => w.includes('"store.') && w.includes("Actors::jnode")), wrong.join("\n"));
+});
+
+// ── Pion `--sessions` RPC/tell/store/deps/agent contract framework (Wave 8 §2.5.4) ──
+
+function pionSessionsSources(pkgsDir: string = pionStationPkgs): Sources {
+  assert.ok(existsSync(pkgsDir), `pion/station/packages directory missing: ${pkgsDir}`);
+  const out: Sources = {
+    "src/sessions/mb-actor.ts": read(join(station, "src", "sessions", "mb-actor.ts")),
+    "src/sessions/actor.ts": read(join(station, "src", "sessions", "actor.ts")),
+    "src/agents": tsSources(join(station, "src", "agents")),
+    "src/store": tsSources(join(station, "src", "store")),
+    "src/jobs/jobs.ts": read(join(station, "src", "jobs", "jobs.ts")),
+    "src/sessions/live.ts": read(join(station, "src", "sessions", "live.ts")),
+    "src/jobs/remote.ts": read(join(station, "src", "jobs", "remote.ts")),
+  };
+  const foundByPkg = new Map<string, number>();
+  for (const entry of readdirSync(pkgsDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith("sessions_") && entry.name !== "reader_sessions") continue;
+    const srcDir = join(pkgsDir, entry.name, "src");
+    if (!existsSync(srcDir)) continue;
+    const files = readdirSync(srcDir).filter((n) => n.endsWith(".pion") && !n.endsWith("_test.pion")).sort();
+    foundByPkg.set(entry.name, files.length);
+    for (const f of files) {
+      out[`pion/${entry.name}/${f}`] = read(join(srcDir, f));
+    }
+  }
+  for (const required of ["sessions_core", "reader_sessions"]) {
+    assert.ok(
+      (foundByPkg.get(required) ?? 0) > 0,
+      `required Pion package "${required}" missing or has no production src/*.pion in ${pkgsDir}`,
+    );
+  }
+  return out;
+}
+
+/// Validates Pion `--sessions` helper calls (`rpc_k`, `deps_k`, `store_k`, `agent_do_k`,
+/// `jnode_k`, `jstore_k`, `lnode_k`, `rnode_k`, `rstore_k`, `tell`) against the real TS handlers.
+function pionSessionsWrong(s: Sources): string[] {
+  const pionFiles = Object.keys(s).filter((k) => k.startsWith("pion/"));
+  const mbActor = s["src/sessions/mb-actor.ts"]!;
+  const asked = method(mbActor, "  async asked(f: string");
+  const agentStart = asked.indexOf('    if (part === "agent") {');
+  assert.ok(agentStart >= 0, "mb-actor.ts asked() has no agent block");
+  const agentEnd = asked.indexOf("\n    }\n", agentStart);
+  assert.ok(agentEnd > agentStart, "mb-actor.ts asked() agent block has no end");
+  const agentBlock = asked.slice(agentStart, agentEnd);
+  const nodeBlock = asked.slice(agentEnd);
+  const agentCases = casesAt(agentBlock, 8);
+  const nodeCases = casesAt(nodeBlock, 6);
+  const tAnswered = /^ {4}if \(f === "t"\) return /m.test(nodeBlock);
+  const toldCases = casesAt(method(mbActor, "  told(f: string, args: Json[]) {"), 6);
+
+  const actorTs = s["src/sessions/actor.ts"]!;
+  const depsStart = actorTs.indexOf("export type SessionDeps =");
+  assert.ok(depsStart >= 0, "actor.ts has no SessionDeps");
+  const depsText = `${actorTs.slice(depsStart)}\n${mbActor}`;
+  const methods = sessionMethods(s["src/agents"]!);
+  const storeText = `${mbActor}\n${actorTs}\n${s["src/store"]}`;
+
+  const wrong: string[] = [];
+
+  // 1. Actor `gen.rpc_k(host, key, "node.xxx" | "t", ...)` (3-arg) AND `rpc_k(key, "node.xxx" | "t", ...)` (2-arg).
+  //    Using negative lookahead `(?!\s*")` on the 3rd arg of the 2-arg pattern ensures a literal key in
+  //    `gen.rpc_k(host, "s1", "node.xxx", ...)` is NEVER misread as `f`.
+  const rpcCalls = new Map<string, string>();
+  for (const name of pionFiles) {
+    const text = s[name]!;
+    for (const m of text.matchAll(/\brpc_k\(\s*[^,]+,\s*[^,]+,\s*"([^"]+)"\s*,/g)) {
+      const f = m[1]!;
+      const line = text.slice(0, m.index!).split("\n").length;
+      if (!rpcCalls.has(f)) rpcCalls.set(f, `${name}:${line}`);
+    }
+    for (const m of text.matchAll(/\brpc_k\(\s*[^,]+,\s*"([^"]+)"\s*,(?!\s*")/g)) {
+      const f = m[1]!;
+      const line = text.slice(0, m.index!).split("\n").length;
+      if (!rpcCalls.has(f)) rpcCalls.set(f, `${name}:${line}`);
+    }
+  }
+  for (const [f, where] of rpcCalls) {
+    if (f === "t") {
+      if (!tAnswered) wrong.push(`${where} asks "t", which mb-actor.ts asked() no longer answers`);
+    } else if (f.startsWith("node.")) {
+      const name = f.slice("node.".length);
+      if (!nodeCases.has(name)) {
+        wrong.push(`${where} asks "${f}", which no \`case "${name}":\` of mb-actor.ts asked()'s node switch answers${agentCases.has(name) ? " (only its agent block has it)" : ""}`);
+      }
+    } else if (!f.startsWith("store.") && !f.startsWith("deps.") && !f.startsWith("agent.")) {
+      wrong.push(`${where} asks "${f}", a part mb-actor.ts asked() does not dispatch`);
+    }
+  }
+
+  // 2. Actor `deps_k(a, "xxx", ...)`
+  for (const [name, where] of literals(s, pionFiles, /\bdeps_k\(\s*[^,]+,\s*"([^"]+)"/g)) {
+    if (!new RegExp(`\\b${name}\\??\\s*[(:]`).test(depsText)) {
+      wrong.push(`${where} calls deps_k "${name}", missing from SessionDeps / mb-actor.ts`);
+    }
+  }
+
+  // 3. Actor `store_k(a, "xxx", ...)`
+  for (const [name, where] of literals(s, pionFiles, /\bstore_k\(\s*[^,]+,\s*"([^"]+)"/g)) {
+    if (!new RegExp(`\\b${name}\\??\\s*\\(`).test(storeText)) {
+      wrong.push(`${where} calls store_k "${name}", missing in mb-actor.ts / station/src/store/`);
+    }
+  }
+
+  // 4. Actor `agent_do_k(a, g, "xxx", ...)`
+  for (const [name, where] of literals(s, pionFiles, /\bagent_do_k\(\s*[^,]+,\s*[^,]+,\s*"([^"]+)"/g)) {
+    if (!agentCases.has(name) && !methods.has(name)) {
+      wrong.push(`${where} calls agent_do_k "${name}", answered neither by mb-actor.ts asked()'s agent block nor a runtime session's method`);
+    }
+  }
+
+  // 5. Pseudo-actors `jnode_k`/`jstore_k`, `lnode_k`, `rnode_k`/`rstore_k`, and `tell` (both 2-arg and 3-arg forms)
+  const pionPseudo = [
+    { key: "jobs_key", node: "jnode_k", store: "jstore_k", prefix: "node.", ts: "src/jobs/jobs.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
+    { key: "live_key", node: "lnode_k", store: null, prefix: "", ts: "src/sessions/live.ts", asked: "  async #asked(f: string", told: "  #tellOf(f: string" },
+    { key: "remote_key", node: "rnode_k", store: "rstore_k", prefix: "node.", ts: "src/jobs/remote.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
+  ] as const;
+
+  const pseudoToldByKey = new Map<string, Set<string>>();
+  for (const p of pionPseudo) {
+    const ts = s[p.ts]!;
+    const pAsked = method(ts, p.asked);
+    const pTold = method(ts, p.told);
+    const askedNames = new Set([...casesAt(pAsked, 6), ...compared(pAsked)]);
+    const toldNames = new Set([...casesAt(pTold, 6), ...compared(pTold)]);
+    pseudoToldByKey.set(p.key, toldNames);
+
+    for (const [name, where] of literals(s, pionFiles, new RegExp(`\\b${p.node}\\(\\s*"([^"]+)"`, "g"))) {
+      if (!askedNames.has(p.prefix + name)) {
+        wrong.push(`${where} asks ${p.key} "${p.prefix}${name}" (${p.node}), which ${p.ts} asked() does not answer`);
+      }
+    }
+    if (p.store !== null) {
+      for (const [name, where] of literals(s, pionFiles, new RegExp(`\\b${p.store}\\(\\s*"([^"]+)"`, "g"))) {
+        if (!storeHas(s["src/store"]!, name)) {
+          wrong.push(`${where} asks ${p.key} "store.${name}" (${p.store}), no method of station/src/store/`);
+        }
+      }
+    }
+  }
+
+  const checkTell = (name: string, index: number, text: string, keyExpr: string, verb: string) => {
+    const line = text.slice(0, index).split("\n").length;
+    const where = `${name}:${line}`;
+    if (pseudoToldByKey.has(keyExpr)) {
+      if (!pseudoToldByKey.get(keyExpr)!.has(verb)) {
+        wrong.push(`${where} tells ${keyExpr} "${verb}", which its TS handler does not handle`);
+      }
+    } else if (!toldCases.has(verb)) {
+      wrong.push(`${where} tells "${verb}", which mb-actor.ts told() does not handle`);
+    }
+  };
+  for (const name of pionFiles) {
+    const text = s[name]!;
+    for (const m of text.matchAll(/\btell\(\s*[^,]+,\s*([^,]+),\s*"([^"]+)"\s*,/g)) {
+      checkTell(name, m.index!, text, m[1]!.trim(), m[2]!);
+    }
+    for (const m of text.matchAll(/\btell\(\s*([^,]+),\s*"([^"]+)"\s*,(?!\s*")/g)) {
+      checkTell(name, m.index!, text, m[1]!.trim(), m[2]!);
+    }
+  }
+
+  return wrong;
+}
+
+test("every Pion --sessions RPC, store, deps, agent_do and tell is handled in Node", () => {
+  const wrong = pionSessionsWrong(pionSessionsSources());
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("Pion --sessions source discovery fails loudly on missing packages root or missing required package", () => {
+  assert.throws(
+    () => pionSessionsSources(join(pionStationPkgs, "__definitely_missing_root__")),
+    /directory missing/,
+  );
+  // Existing directory that lacks `sessions_core` and `reader_sessions` must also throw.
+  assert.throws(
+    () => pionSessionsSources(station),
+    /required Pion package/,
+  );
+});
+
+test("Pion --sessions matcher negative 1: catches real gen.rpc_k(host, key, ...) and 2-arg rpc_k for agent-only node.* and missing \"t\"", () => {
+  const base = pionSessionsSources();
+  const s1: Sources = {
+    ...base,
+    "pion/sessions_actors/synth.pion": [
+      'gen.rpc_k(host, a.key, "node.noSuchMethod", [], mirror, k)',
+      'gen.rpc_k(host, "literal-key", "node.holding", [], mirror, k)',
+      'rpc_k(a.key, "t", [])',
+    ].join("\n"),
+  };
+  const wrong1 = pionSessionsWrong(s1);
+  assert.ok(wrong1.some((w) => w.includes('"node.noSuchMethod"')), wrong1.join("\n"));
+  assert.ok(wrong1.some((w) => w.includes('"node.holding"') && w.includes("only its agent block")), wrong1.join("\n"));
+  assert.ok(!wrong1.some((w) => w.includes('"literal-key"')), `literal key must not be misparsed as RPC fn: ${wrong1.join("\n")}`);
+  const mbActor = base["src/sessions/mb-actor.ts"]!;
+  const wrong2 = pionSessionsWrong({ ...s1, "src/sessions/mb-actor.ts": mbActor.replace(/^ {4}if \(f === "t"\) return .*\n/m, "") });
+  assert.ok(wrong2.some((w) => w.includes('asks "t"')), wrong2.join("\n"));
+});
+
+test("Pion --sessions matcher negative 2: catches agent_do_k calling MbActor or driver methods", () => {
+  const base = pionSessionsSources();
+  const s: Sources = {
+    ...base,
+    "pion/sessions_actors/synth.pion": 'agent_do_k(a, g, "asked", [])\nagent_do_k(a, g, "adopt", [])\n',
+  };
+  const wrong = pionSessionsWrong(s);
+  assert.ok(wrong.some((w) => w.includes('calls agent_do_k "asked"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('calls agent_do_k "adopt"')), wrong.join("\n"));
+});
+
+test("Pion --sessions matcher negative 3: catches unknown jnode_k/jstore_k/lnode_k/rnode_k/rstore_k", () => {
+  const base = pionSessionsSources();
+  const s: Sources = {
+    ...base,
+    "pion/sessions_jobs_live/synth.pion": 'jnode_k("noSuchJobOp", [])\njstore_k("noSuchJobStore", [])\nlnode_k("noSuchLiveOp", [])\n',
+    "pion/sessions_remote/synth.pion": 'rnode_k("noSuchRemoteOp", [])\nrstore_k("noSuchRemoteStore", [])\n',
+  };
+  const wrong = pionSessionsWrong(s);
+  assert.ok(wrong.some((w) => w.includes('"node.noSuchJobOp"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('"store.noSuchJobStore"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('"noSuchLiveOp"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('"node.noSuchRemoteOp"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('"store.noSuchRemoteStore"')), wrong.join("\n"));
+});
+
+test("Pion --sessions matcher negative 4: catches unknown actor and pseudo-actor tells (2-arg and 3-arg)", () => {
+  const base = pionSessionsSources();
+  const s: Sources = {
+    ...base,
+    "pion/sessions_actors/synth.pion": [
+      'gen.tell(host, a.key, "noSuchActorTell", [])',
+      'gen.tell(host, jobs_key, "noSuchJobTell", [])',
+      'tell(a.key, "noSuchShortTell", [])',
+    ].join("\n"),
+  };
+  const wrong = pionSessionsWrong(s);
+  assert.ok(wrong.some((w) => w.includes('tells "noSuchActorTell"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('tells jobs_key "noSuchJobTell"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('tells "noSuchShortTell"')), wrong.join("\n"));
+});
+
+// ── Agents stdout protocol contract (`lines`/`exit`/`closed`/`left`/`frozen`/`ended`/`replayed`/`ownReplayed`) ──
+
+const AGENTS_STDOUT_FRAMES = ["lines", "exit", "closed", "left", "frozen", "ended", "replayed", "ownReplayed"] as const;
+
+function agentsStdoutWrong(mbAgentsTs: string): string[] {
+  const saidMethod = method(mbAgentsTs, "  #said(said: Json) {");
+  const wrong: string[] = [];
+  for (const frame of AGENTS_STDOUT_FRAMES) {
+    if (!new RegExp(`\\bsaid\\??\\.${frame}\\b`).test(saidMethod)) {
+      wrong.push(`mb-agents.ts #said() does not handle agent stdout frame "${frame}"`);
+    }
+  }
+  return wrong;
+}
+
+test("Agents stdout protocol: mb-agents.ts #said() handles all 8 frame types and negative check catches removal", () => {
+  const mbAgentsTs = read(join(station, "src", "agents", "mb-agents.ts"));
+  assert.deepEqual(agentsStdoutWrong(mbAgentsTs), []);
+  const broken = mbAgentsTs.replaceAll("said?.ownReplayed", "said?.removedFrame").replaceAll("said.ownReplayed", "said.removedFrame");
+  assert.notEqual(broken, mbAgentsTs);
+  const wrong = agentsStdoutWrong(broken);
+  assert.ok(wrong.some((w) => w.includes('"ownReplayed"')), wrong.join("\n"));
 });

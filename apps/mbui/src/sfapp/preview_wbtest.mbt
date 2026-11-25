@@ -1032,6 +1032,29 @@ test "zoomed in, dragged slowly far past its edge it stops there, nothing beside
 }
 
 ///|
+test "zoomed in, held on past its edge and brought back, the point the finger took stays under it" {
+  let t = preview_tester("image")
+  let z = zoom_in_middle(t)
+  let x0 = z.rect_at(t.time()).unwrap().0
+  t.press_at(100.0, 422.0)
+  t.run_for(@ui.input_step_ms)
+  // (on 300 to the right, 37.5 past where its left edge stops it at the stage's)
+  for x in [160.0, 220.0, 280.0, 340.0, 400.0] {
+    t.move_to(x, 422.0)
+    t.run_for(@ui.input_step_ms)
+  }
+  assert_true(z.rect_at(t.time()).unwrap().0.abs() < 0.001)
+  // (back 20: still past, it stays at its edge)
+  t.move_to(380.0, 422.0)
+  t.run_for(@ui.input_step_ms)
+  assert_true(z.rect_at(t.time()).unwrap().0.abs() < 0.001)
+  // (back to 200 from where it was taken: as far from where it was)
+  t.move_to(300.0, 422.0)
+  t.run_for(@ui.input_step_ms)
+  assert_true((z.rect_at(t.time()).unwrap().0 - (x0 + 200.0)).abs() < 0.001)
+}
+
+///|
 test "marking: a box drawn on the picture is numbered, its note kept, its quote says where it is" {
   let t = preview_tester("image")
   marks_start()

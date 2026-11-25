@@ -256,8 +256,9 @@ test "密钥 with no safe mode: 开启, what is left to encrypt, this device app
   let cases : Array[(String, Array[String], Array[String])] = [
     ("settings-vault-own-off", ["密钥库未开启", "开启密钥库"], ["去安全设置"]),
     ("settings-vault-own-on", ["2 条密钥尚未加密", "加密"], ["去安全设置"]),
-    ("settings-vault-own-outside", ["此设备尚未获批", "在你的受信任设备上批准这台设备后，即可在此使用密钥库。", "发送批准请求"], ["去安全设置"]),
-    ("settings-vault-own-code", ["此设备尚未获批"], ["去安全设置", "发送批准请求"]),
+    ("settings-vault-own-outside", ["此设备尚未获批", "在你的受信任设备上批准这台设备后，即可在此使用密钥库。", "发送批准请求", "Pixel 9 · youdid.wtf Android", "林的 MacBook Pro · monoid 桌面版"], ["去安全设置"]),
+    ("settings-vault-own-finding", ["此设备尚未获批", "正在找你的其它设备，请打开其中一台的 still.fail app", "Pixel 9 · youdid.wtf Android", "林的 MacBook Pro · monoid 桌面版"], ["去安全设置", "发送批准请求"]),
+    ("settings-vault-own-code", ["此设备尚未获批"], ["去安全设置", "发送批准请求", "Pixel 9 · youdid.wtf Android", "林的 MacBook Pro · monoid 桌面版"]),
     ("settings-vault-own-replaced", ["你的受信任设备被重新设置过", "是我做的，继续"], ["去安全设置"]),
   ]
   for size in sizes {
@@ -499,5 +500,68 @@ test "vault no-key card displays thisDeviceCode and passes audit across widths a
     assert_true(t.find("K7M-4PX") is Some(_), msg="\{at}: missing code")
     let faults = t.audit()
     assert_true(faults.is_empty(), msg="\{at}: " + faults.join(" | "))
+  }
+}
+
+///|
+test "personal lock approval screen shows approver device names on initial/finding/none/failed, hides on code/wrong/checking, and wraps long names at 320px 1.3x" {
+  let long_name = "研发部门测试专用超长设备名称 MacBook Pro 16-inch M5 Max Workstation · monoid 桌面版"
+  let approvers : Json = Json::array([
+    obj([("id", str("d-phone")), ("showing", Json::boolean(false)), ("kind", str("phone")), ("nameText", str("Pixel 9 · youdid.wtf Android"))]),
+    obj([("id", str("d-long")), ("showing", Json::boolean(false)), ("kind", str("computer")), ("nameText", str(long_name))]),
+  ])
+  let make_adb = fn(pair : Json?) -> Json {
+    let personal_fields : Array[(String, Json)] = [
+      ("sub", str("s")),
+      ("email", str("lin@example.com")),
+      ("standing", str("outside")),
+      ("devices", Json::array([])),
+      ("approvers", approvers),
+    ]
+    match pair {
+      Some(pv) => personal_fields.push(("pair", pv))
+      None => ()
+    }
+    obj([("sharing", Json::boolean(false)), ("phase", str("off")), ("tunnels", Json::number(0.0)), ("personal", Json::array([obj(personal_fields)]))])
+  }
+  let states : Array[(String, Json?, Bool)] = [
+    ("initial", None, true),
+    ("finding", Some(obj([("state", str("finding")), ("devices", Json::number(0.0))])), true),
+    ("none", Some(obj([("state", str("none")), ("devices", Json::number(0.0))])), true),
+    ("failed", Some(obj([("state", str("failed")), ("devices", Json::number(0.0)), ("error", str("连接失败"))])), true),
+    ("code", Some(obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))])), false),
+    ("wrong", Some(obj([("state", str("wrong")), ("devices", Json::number(1.0)), ("error", str("安全码不正确"))])), false),
+    ("checking", Some(obj([("state", str("checking")), ("devices", Json::number(1.0)), ("checkingText", str("请在显示安全码的设备上完成身份验证"))])), false),
+  ]
+  for entry in states {
+    let (label, pair, expect_card) = entry
+    let adb_sig = @signals.signal(make_adb(pair))
+    let t = setting_tester(Vault, 320.0, platform=2, mode="settings-vault-own-outside", h=640.0, over=fn(base) {
+      {
+        ..base,
+        topic_read: fn(name, params) {
+          if name == "adbShare" {
+            { value: Some(adb_sig.get()), error: None, version: 1 }
+          } else {
+            (base.topic_read)(name, params)
+          }
+        },
+      }
+    })
+    t.set_font_scale(1.3)
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    if expect_card {
+      assert_true(t.find("Pixel 9 · youdid.wtf Android") is Some(_), msg="\{label}: missing Pixel 9 · youdid.wtf Android")
+      assert_true(t.find("monoid 桌面版") is Some(_), msg="\{label}: long name truncated or missing")
+      for drawn in t.words() {
+        assert_false(drawn.0.contains("…") && drawn.0.contains("研发部门"), msg="\{label}: unexpected ellipsis in \{drawn.0}")
+      }
+    } else {
+      assert_true(t.find("Pixel 9 · youdid.wtf Android") is None, msg="\{label}: approvers card should not show")
+      assert_true(t.find("研发部门") is None, msg="\{label}: long approver should not show")
+    }
+    let faults = t.audit()
+    assert_true(faults.is_empty(), msg="\{label} 320x640 @1.3: " + faults.join(" | "))
   }
 }

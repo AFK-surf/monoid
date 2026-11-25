@@ -1,0 +1,159 @@
+// 1:1 port of `station/mb/src/pieces/pieces_test.mbt`.
+
+import "base64"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn make_bytes(n : Int, f : (Int) -> Byte) -> Bytes {
+  let out = Bytes::new(n)
+  for i in 0..<n {
+    out[i] = f(i)
+  }
+  out
+}
+
+fn bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn opt_bytes_eq(a : Option[Bytes], b : Option[Bytes]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => bytes_eq(x, y)
+    _ => false
+  }
+}
+
+fn concat_bytes(a : Bytes, b : Bytes) -> Bytes {
+  let out = Bytes::new(a.length() + b.length())
+  for i in 0..<a.length() {
+    out[i] = a[i]
+  }
+  for i in 0..<b.length() {
+    out[a.length() + i] = b[i]
+  }
+  out
+}
+
+test "pieces: multi-chunk line assembly, boundaries, and partial rest" {
+  let p = Pieces::new()
+  let piece = 65536
+  let count = 544
+  let ends : Array[Int64] = []
+  let lines : Array[Bytes] = []
+  let mut at : Int64 = 0.to_int64()
+  for k in 0..<count {
+    let chunk = make_bytes(piece, fn(i : Int) -> Byte { ((32 + (k * piece + i) % 90) & 0xFF) as Byte })
+    let got = p.lines(chunk)
+    for j in 0..<got.length() {
+      at = at + (got[j].length() + 1).to_int64()
+      ends.push(at)
+      lines.push(got[j])
+    }
+    assert(lines.length() == 0)
+  }
+  let got2 = p.lines("tail\nab\n\ncd".to_bytes())
+  for j in 0..<got2.length() {
+    at = at + (got2[j].length() + 1).to_int64()
+    ends.push(at)
+    lines.push(got2[j])
+  }
+  assert(lines.length() == 3)
+  let big = lines[0]
+  assert(big.length() == count * piece + 4)
+  let idxs = [0, 1, piece - 1, piece, piece + 1, count * piece - 1]
+  for j in 0..<idxs.length() {
+    let idx = idxs[j]
+    assert(big[idx] == (((32 + idx % 90) & 0xFF) as Byte))
+  }
+  let tail_slice = Bytes::new(4)
+  for j in 0..<4 {
+    tail_slice[j] = big[count * piece + j]
+  }
+  assert(bytes_eq(tail_slice, "tail".to_bytes()))
+  assert(bytes_eq(lines[1], "ab".to_bytes()))
+  assert(bytes_eq(lines[2], "".to_bytes()))
+  assert(ends[0] == (count * piece + 5).to_int64())
+  assert(ends[1] == (count * piece + 8).to_int64())
+  assert(ends[2] == (count * piece + 9).to_int64())
+  assert(p.size == 2)
+  let got3 = p.lines("e\n".to_bytes())
+  assert(got3.length() == 1)
+  assert(bytes_eq(got3[0], "cde".to_bytes()))
+  assert(p.parts.length() == 0)
+  assert(p.size == 0)
+}
+
+test "pieces: standalone newlines and single-byte endings" {
+  let p = Pieces::new()
+  assert(p.lines("abc".to_bytes()).length() == 0)
+  let l1 = p.lines("\n".to_bytes())
+  assert(l1.length() == 1)
+  assert(bytes_eq(l1[0], "abc".to_bytes()))
+  let l2 = p.lines("\n\n".to_bytes())
+  assert(l2.length() == 2)
+  assert(bytes_eq(l2[0], "".to_bytes()))
+  assert(bytes_eq(l2[1], "".to_bytes()))
+  assert(p.lines("x".to_bytes()).length() == 0)
+  assert(p.lines("y".to_bytes()).length() == 0)
+  let l3 = p.lines("z\nw".to_bytes())
+  assert(l3.length() == 1)
+  assert(bytes_eq(l3[0], "xyz".to_bytes()))
+  assert(p.size == 1)
+}
+
+test "pieces: base64_into short strings and tails" {
+  let texts = ["", "a", "ab", "abc", "abcd", "say:é中😀\n", "x\n"]
+  let tails = ["".to_bytes(), "\n".to_bytes()]
+  for i in 0..<texts.length() {
+    let b = texts[i].to_bytes()
+    for j in 0..<tails.length() {
+      let out = StringBuilder::new()
+      base64_into(out, b, tails[j])
+      let want = base64::encode(concat_bytes(b, tails[j]))
+      assert(out.to_string() == want)
+    }
+  }
+}
+
+test "pieces: base64_into across 48 KiB chunk boundaries" {
+  let sizes = [49151, 49152, 49153, 49154, 147457]
+  let tails = ["".to_bytes(), "\n".to_bytes()]
+  for i in 0..<sizes.length() {
+    let b = make_bytes(sizes[i], fn(k : Int) -> Byte { ((k * 7) & 0xFF) as Byte })
+    for j in 0..<tails.length() {
+      let out = StringBuilder::new()
+      base64_into(out, b, tails[j])
+      let want = base64::encode(concat_bytes(b, tails[j]))
+      assert(out.to_string() == want)
+    }
+  }
+}
+
+test "pieces: rest takes unterminated trailing bytes once" {
+  let p = Pieces::new()
+  assert(opt_bytes_eq(p.rest(), None))
+  let l1 = p.lines("first\nfatal: ".to_bytes())
+  assert(l1.length() == 1)
+  assert(bytes_eq(l1[0], "first".to_bytes()))
+  assert(p.lines("no such".to_bytes()).length() == 0)
+  assert(p.lines(" model".to_bytes()).length() == 0)
+  assert(opt_bytes_eq(p.rest(), Some("fatal: no such model".to_bytes())))
+  assert(opt_bytes_eq(p.rest(), None))
+  let l2 = p.lines("next\n".to_bytes())
+  assert(l2.length() == 1)
+  assert(bytes_eq(l2[0], "next".to_bytes()))
+  assert(opt_bytes_eq(p.rest(), None))
+}

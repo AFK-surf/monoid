@@ -2,7 +2,11 @@
 // While the catcher owns the foreground canvas, keep those keys from the shell and post their codes to our queue.
 // Never call the app from the low-level hook: its work must finish before LowLevelHooksTimeout.
 
+#ifndef KEYS_CATCHING
 static int key_catching;
+#define KEYS_CATCHING(h) ((void)(h), key_catching)
+#define KEYS_SET_CATCHING(on) (key_catching = (on) != 0)
+#endif
 static HHOOK catch_hook;
 static int catch_win_held;
 static unsigned char catch_pressed[256];
@@ -13,8 +17,9 @@ static int mods_now(void) {
          ((catch_win_held || GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0) ? 8 : 0);
 }
 
-// A named key, or a character with Ctrl, Alt or Win (1000 + it, lower case). Ctrl+Alt is AltGr: text through WM_CHAR.
-static int catch_code(WPARAM vk, int mods) {
+// A named key, or a character with Ctrl, Alt or Win (1000 + it, lower case).
+// Only Right Alt + Ctrl (AltGr on European layouts) falls through to WM_CHAR; Left Ctrl + Left Alt stays a shortcut.
+static int catch_code(WPARAM vk, int mods, int altgr) {
   int code = 0;
   switch (vk) {
     case VK_BACK: code = 1; break;
@@ -30,9 +35,14 @@ static int catch_code(WPARAM vk, int mods) {
     case VK_NEXT: code = 16; break;
     case VK_ESCAPE: code = 17; break;
     case VK_TAB: code = 18; break;
-    default: break;
+    case VK_INSERT: code = mods == 1 ? 0 : 41; break; // leave Shift+Insert to local paste_key (Raycast / clipboard managers)
+    default:
+      // Leave Alt+F4 (without Ctrl/Win) to DefWindowProc so it still closes the window like macOS ⌘Q.
+      if (vk == VK_F4 && (mods & 4) && !(mods & (2 | 8))) return 0;
+      if (vk >= VK_F1 && vk <= VK_F12) code = 42 + (int)(vk - VK_F1);
+      break;
   }
-  if (!code && (mods & (2 | 4 | 8)) && ((mods & 8) || (mods & (2 | 4)) != (2 | 4))) {
+  if (!code && (mods & (2 | 4 | 8)) && ((mods & 8) || !altgr)) {
     UINT ch = MapVirtualKeyW((UINT)vk, MAPVK_VK_TO_CHAR) & 0x7FFF;
     if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
     if (ch >= 32) code = 1000 + (int)ch;
@@ -41,7 +51,9 @@ static int catch_code(WPARAM vk, int mods) {
 }
 
 static int catch_vk(WPARAM vk) {
-  int mods = mods_now(), code = catch_code(vk, mods);
+  int mods = mods_now();
+  int altgr = (mods & (2 | 4)) == (2 | 4) && GetKeyState(VK_RMENU) < 0;
+  int code = catch_code(vk, mods, altgr);
   if (code) mb_cb.key(code, mods);
   return code;
 }
@@ -56,7 +68,7 @@ static int catch_vk(WPARAM vk) {
 // The window of the run in front, its canvas focused, a key catcher in it (NULL: none)
 static HWND catch_window(void) {
   HWND h = GetForegroundWindow();
-  return key_catching && h && GetFocus() == h && KEYS_OURS(h) && KEYS_TYPING(h) ? h : NULL;
+  return h && KEYS_CATCHING(h) && GetFocus() == h && KEYS_OURS(h) && KEYS_TYPING(h) ? h : NULL;
 }
 static int catch_canvas(void) { return catch_window() != NULL; }
 
@@ -86,7 +98,7 @@ static LRESULT CALLBACK catch_keyboard(int n, WPARAM kind, LPARAM data) {
     // read the other modifiers already held, rather than GetKeyState's state of the last dequeued message.
     int mods = 8 | (GetAsyncKeyState(VK_SHIFT) < 0 ? 1 : 0) | (GetAsyncKeyState(VK_CONTROL) < 0 ? 2 : 0) |
                (GetAsyncKeyState(VK_MENU) < 0 ? 4 : 0);
-    int code = catch_code(vk, mods);
+    int code = catch_code(vk, mods, 0);
     if (code && PostMessageW(catch_window(), WM_MB_CAUGHT_KEY, (WPARAM)code, (LPARAM)mods)) {
       if (vk < 256) catch_pressed[vk] = 1;
       return 1;
@@ -97,7 +109,8 @@ static LRESULT CALLBACK catch_keyboard(int n, WPARAM kind, LPARAM data) {
 
 // Installed only while a key catcher has the canvas's focus. Closing it or leaving the window restores the shell.
 static void catch_keys_focus(int focused) {
-  if (key_catching && focused) {
+  HWND h = GetForegroundWindow();
+  if (focused && h && KEYS_OURS(h) && KEYS_CATCHING(h)) {
     if (!catch_hook) catch_hook = SetWindowsHookExW(WH_KEYBOARD_LL, catch_keyboard, GetModuleHandleW(NULL), 0);
   } else {
     if (catch_hook) UnhookWindowsHookEx(catch_hook);
@@ -108,7 +121,7 @@ static void catch_keys_focus(int focused) {
 }
 
 void mb_host_key_catch(int32_t on) {
-  key_catching = on != 0;
+  KEYS_SET_CATCHING(on);
   HWND h = GetForegroundWindow();
-  catch_keys_focus(h && GetFocus() == h && KEYS_OURS(h));
+  catch_keys_focus(h && GetFocus() == h && KEYS_OURS(h) && KEYS_CATCHING(h));
 }

@@ -1,0 +1,137 @@
+// Walking skeleton for `--sessions` (`reader_sessions`), assembling `sessions_core`
+// with stubbed subsystem handlers (marked `is_stub = true` for W8-F zero-stub assertion).
+// 1:1 aligned with `station/mb/src/reader/actors.mbt:522-536` and `wave8-plan.md` v5 §2.1-2.5.
+
+import "base_codec"
+import "effect"
+import "host_shim"
+import "sessions_core"
+
+pub struct SessionsApp {
+  pub host : sessions_core::SessionHost
+  pub sep : String
+  pub mut gen : sessions_core::HubGen
+  pub dispatch : sessions_core::SessionDispatch
+}
+
+pub fn SessionsApp::new(
+  host : sessions_core::SessionHost,
+  sep : String,
+  dispatch : sessions_core::SessionDispatch,
+) -> SessionsApp {
+  SessionsApp::{
+    host: host,
+    sep: sep,
+    gen: sessions_core::HubGen::new(host, 0),
+    dispatch: dispatch,
+  }
+}
+
+pub fn SessionsApp::has_stubs(self : SessionsApp) -> Bool {
+  self.dispatch.is_stub
+}
+
+/// Handle one actors-routed JSON line (`actors.mbt:793-953` skeleton).
+pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
+  self.gen.counters.seen = self.gen.counters.seen + 1
+  let said = match sessions_core::parse_json_strict(line) {
+    Ok(j) => j
+    Err(_) => return
+  }
+  match sessions_core::num_of(sessions_core::jget(said, "now")) {
+    Some(now) => self.gen.counters.now = now
+    None => ()
+  }
+  match sessions_core::jget(said, "db") {
+    Some(place) => {
+      self.gen = sessions_core::rotate_hub_gen(self.host, self.gen, place)
+      return
+    }
+    None => ()
+  }
+  match sessions_core::num_of(sessions_core::jget(said, "maxConcurrentTurns")) {
+    Some(n) => {
+      let pos_inf = 1.0 / 0.0
+      let neg_inf = -1.0 / 0.0
+      let next = if n != n || n == pos_inf || n == neg_inf || n <= 0.0 { 0 } else { n.to_int() }
+      self.gen.counters.max_concurrent_turns = next
+      return
+    }
+    None => ()
+  }
+  match sessions_core::jget(said, "answer") {
+    Some(base_codec::Json::Num(id, _)) => {
+      self.gen.handle_answer(self.host, id.to_int(), said)
+      return
+    }
+    _ => ()
+  }
+  match sessions_core::jget(said, "due") {
+    Some(base_codec::Json::Num(id, _)) => {
+      self.gen.handle_due(self.host, id.to_int())
+      return
+    }
+    _ => ()
+  }
+}
+
+/// Main `--sessions` fiber (`actors.mbt:522-536`):
+/// 1. Emit `{"ready":true}` (NEVER includes `active`/`seen`).
+/// 2. Drive `host.line_k` via `sessions_core::iter_sync_k` (zero `pause_k`).
+/// 3. Route each line by `actors_line(line)` -> `heard` + `quiet`, else `dispatch.agents_told`.
+/// 4. On EOF (`None` from `QueueShutdown`), flush stdout and exit 0 immediately.
+pub fn serve_sessions_k(
+  app : SessionsApp,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  app.host.say("{\"ready\":true}")
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      app.host.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(Some(line)) => {
+            if sessions_core::actors_line(line) {
+              app.heard(line)
+              app.gen.quiet()
+            } else {
+              (app.dispatch.agents_told)(line)
+            }
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+          }
+          effect::Exit::Succeeded(None) => {
+            app.host.exit(0)
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          }
+          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Run `--sessions` over an injected `SessionHost` (used by both production `run_sessions` and tests).
+pub fn run_sessions_with_host(
+  host : sessions_core::SessionHost,
+  sep : String,
+  dispatch : sessions_core::SessionDispatch,
+) -> Int {
+  let app = SessionsApp::new(host, sep, dispatch)
+  sessions_core::run_host_loop(host, fn(_h : sessions_core::SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    serve_sessions_k(app, k)
+  })
+}
+
+/// Production `--sessions <n> --data <dir> [--sep <sep>]` entrypoint (`reader/main.mbt:1252-1253`).
+pub fn run_sessions(data_dir : String, sep : String) -> Int {
+  let shell_dir = data_dir + "/shell"
+  if !host_shim::start(shell_dir, true) {
+    let _ = host_shim::write_stderr_line("the shell did not start")
+    return 1
+  }
+  let host = sessions_core::SessionHost::live()
+  let code = run_sessions_with_host(host, sep, sessions_core::SessionDispatch::stub())
+  host_shim::stop()
+  code
+}

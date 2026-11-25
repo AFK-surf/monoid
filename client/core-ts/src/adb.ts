@@ -12,7 +12,8 @@ import { current, t } from "./i18n.ts";
 import type { IrohStream } from "./iroh.ts";
 import type { CredentialSource, Link, Mesh } from "./mesh.ts";
 import type { Runner } from "./runtime.ts";
-import { PersonalLock, type SignedRevoke, grantHolds, revokeHolds } from "./personal-lock.ts";
+import { PersonalLock, type Device as PersonalDevice, type SignedRevoke, grantHolds, revokeHolds } from "./personal-lock.ts";
+import { deviceParts } from "./prefs.ts";
 import { StationAddr } from "./station/addr.ts";
 import { Retold } from "./station/retold.ts";
 import { LANG_HEADER } from "./station/requests.ts";
@@ -26,6 +27,28 @@ type J = any;
 /// The identity used both to show a chat once and to take back everything behind its row.
 function grantChat(g: J): string {
   return typeof g.chat === "string" && g.chat !== "" ? g.chat : typeof g.session === "string" && g.session !== "" ? g.session : g.id;
+}
+
+/// The trusted devices on a person's own lock that can approve this device (`AdbPersonal.approvers`), deduplicated by
+/// `id` in deterministic order, with `kind` and `nameText` normalized as `views/lock.ts` does.
+function personalApprovers(devices: readonly PersonalDevice[], pair: J): J[] {
+  const showingIds = new Set<string>(
+    pair !== null && Array.isArray(pair?.approvers)
+      ? (pair.approvers as J[]).filter((a) => a?.showing === true && typeof a.id === "string").map((a) => a.id as string)
+      : [],
+  );
+  const seen = new Set<string>();
+  const out: J[] = [];
+  for (const d of devices) {
+    if (seen.has(d.id)) continue;
+    seen.add(d.id);
+    const { group, app, machine } = deviceParts(d.label);
+    const kind = (group !== null && /^(android|ios) /.test(group)) || /^(android|ios) /i.test(d.label) ? "phone" : "computer";
+    const machineName = app !== null ? (machine || t("web-pages.security.unnamed")) : (d.label || t("web-pages.security.appDevice"));
+    const nameText = app === null ? machineName : `${machineName} · ${app}`;
+    out.push({ id: d.id, showing: showingIds.has(d.id), kind, nameText });
+  }
+  return out;
 }
 
 /// The failures that are a station's answer (it refused), not its being out of reach (askAt).
@@ -1052,7 +1075,12 @@ export class Adb {
     });
     // Every station's chats with screens up, not only the first lending's.
     const screens = [...new Set([this.#legacy, ...this.#lends.values()].flatMap((l) => l.value().screens as string[]))];
-    const personal = this.#env.subs().map(({ sub, email }) => ({ ...this.#env.personal.view(sub), email, pair: this.#env.pair.state(sub) }));
+    const personal = this.#env.subs().map(({ sub, email }) => {
+      const view = this.#env.personal.view(sub);
+      const pair = this.#env.pair.state(sub);
+      const approvers = view.standing === "outside" ? personalApprovers(this.#env.personal.approvers(sub), pair) : [];
+      return { ...view, email, pair, approvers };
+    });
     const toConfirm = this.#allGrants().filter((g) => this.#toConfirm(g)).length;
     return { ...first.value(), on: this.#on, grants: this.grants(), wanted: this.wanted(), known: this.#known, lends, screens, personal, toConfirm };
   }

@@ -154,6 +154,10 @@ pub let fix_folders : Map[String, Array[Json]]
 
 pub fn fix_frequent() -> Json
 
+pub fn fix_handoff_call(String, Json, (Result[Json, Json]) -> Unit) -> Unit
+
+pub let fix_handoff_refused : @ref.Ref[Bool]
+
 pub fn fix_history() -> Json
 
 pub let fix_home : String

@@ -282,6 +282,8 @@ pub fn keeps_sources() -> Bool
 
 pub fn key_catch(Bool) -> Unit
 
+pub fn key_catch_mode(Int32) -> Unit
+
 pub let key_menu_own : Int32
 
 pub fn keyboard() -> Int32

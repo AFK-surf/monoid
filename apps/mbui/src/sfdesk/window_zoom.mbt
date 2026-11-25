@@ -41,9 +41,17 @@ pub fn window_zoom_keys(c : @ui.Ctx, src : Source) -> Unit {
     if @signals.untracked(fn() { @settings.keys_recording.get() }) != "" {
       return false
     }
-    // Let the visible side panel or board chat take ⌘W before the Mac's close-window menu; otherwise the system keeps it.
+    // Let the visible side panel or board chat take ⌘W before the Mac's close-window menu; only a remote-screen key
+    // catcher (key_catching_close) keeps ⌘W for the remote desktop, while a focused terminal still closes its panel/window.
     if @ui.platform() == 0 && code == @ui.key_of_char('w') && mods == @ui.mod_cmd {
+      if @ui.key_catching_close() {
+        return false
+      }
       return @ui.view_action("window.close_panel")
+    }
+    // While a key catcher (remote screen, terminal) holds focus, let it receive zoom shortcuts instead of stealing them.
+    if @ui.key_catching() {
+      return false
     }
     guard @settings.binding_of(code, mods) is Some(binding) else { return false }
     for action in ["zoom.in", "zoom.out", "zoom.reset"] {

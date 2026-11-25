@@ -2062,6 +2062,13 @@ export interface PrefsView {
 	 */
 	screenMouse?: string;
 	/**
+	 * Whether cross-OS keyboard shortcuts (Ctrl ↔ ⌘ and text editing/navigation) are mapped automatically on a station's screen: `off` raw keys,
+	 * or (none) mapped.
+	 */
+	screenKeyMap?: string;
+	/** When an Apple device drives a Windows/Linux/Android screen with cross-OS shortcuts on, whether physical Control stays Ctrl (for terminals): `off` maps ⌃ to Win/Meta, or (none) keeps ⌃ as Ctrl. */
+	screenKeepCtrl?: string;
+	/**
 	 * The size a service's page is shown at on this device (its preview's 尺寸), by its station and job
 	 * (`<station>\n<job>`): its width, or `<width>x<height>`; none: as big as the preview.
 	 */

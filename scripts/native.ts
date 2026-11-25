@@ -1694,22 +1694,40 @@ function findFile(dir: string, match: (path: string) => boolean): string | null 
 
 // ── publishing (CI on main) ──
 
-function gh(args: string[], options: { allowFail?: boolean } = {}): string {
-  const done = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 << 20 });
-  if (done.status !== 0 && !options.allowFail) throw new Error(`gh ${args.join(" ")}: ${done.stderr}`);
-  return done.status === 0 ? done.stdout : "";
+function gh(args: string[], options: { allowFail?: boolean; timeout?: number } = {}): string {
+  const done = spawnSync("gh", args, {
+    encoding: "utf8",
+    maxBuffer: 64 << 20,
+    ...(options.timeout ? { timeout: options.timeout, killSignal: "SIGKILL" as const } : {}),
+  });
+  if ((done.error || done.status !== 0) && !options.allowFail) {
+    const stderr = done.stderr?.trim();
+    const base = done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : "";
+    const detail = base && stderr ? `${base} (${stderr})` : base || stderr || `exit ${done.status}`;
+    throw new Error(`gh ${args.join(" ")}: ${detail}`);
+  }
+  return !done.error && done.status === 0 ? done.stdout : "";
 }
+const UPLOAD_TIMEOUT_MS = (() => {
+  const n = Number(process.env.STILLFAIL_NATIVE_UPLOAD_TIMEOUT_MS ?? 90_000);
+  return Number.isFinite(n) && n > 0 ? n : 90_000;
+})();
+const UPLOAD_RETRY_MS = (() => {
+  const n = Number(process.env.STILLFAIL_NATIVE_UPLOAD_RETRY_MS ?? 5_000);
+  return Number.isFinite(n) && n >= 0 ? n : 5_000;
+})();
 // A file put on the release, tried again twice when GitHub's answer does not get through (EOF from the CI Mac,
-// mbui-media-runtime 41766375019, 2026-11-04), over what a broken try left of it (--clobber: the same name, the same key).
+// mbui-media-runtime 41766375019, 2026-11-04) or a stalled TCP connection hangs `gh release upload` until the 5-minute
+// job limit (#45638035846, #45639766227), over what a broken try left of it (--clobber: the same name, the same key).
 function upload(file: string): void {
   for (let attempt = 1; ; attempt++) {
     try {
-      gh(["release", "upload", RELEASE, file, "-R", REPO, ...(attempt > 1 ? ["--clobber"] : [])]);
+      gh(["release", "upload", RELEASE, file, "-R", REPO, ...(attempt > 1 ? ["--clobber"] : [])], { timeout: UPLOAD_TIMEOUT_MS });
       return;
     } catch (e) {
       if (attempt === 3) throw e;
       console.error(`${basename(file)}: not uploaded (try ${attempt}), trying again: ${String(e).trim()}`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10_000);
+      if (UPLOAD_RETRY_MS > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, UPLOAD_RETRY_MS);
     }
   }
 }
@@ -1722,7 +1740,7 @@ function prune(keep: number, only?: Set<string>): void {
   // (a list GitHub's answer did not get through for prunes nothing, left for the next prune as one DELETE dropped is
   // below: an EOF on it failed main's mbui-media-runtime film with both its programs already published, 89ddb06c
   // 42961511598, 2026-11-11)
-  const listed = gh(["api", "--paginate", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", "[.assets[] | {id, name, created_at}]"], { allowFail: true });
+  const listed = gh(["api", "--paginate", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", "[.assets[] | {id, name, created_at}]"], { allowFail: true, timeout: 30_000 });
   if (!listed) {
     console.log(`the release's assets not listed: the next prune prunes them`);
     return;
@@ -1737,8 +1755,9 @@ function prune(keep: number, only?: Set<string>): void {
     list.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
     // (one GitHub dropped is left for the next prune: an EOF on one DELETE failed main's natives job, 6484574c, 2026-11-04)
     for (const a of list.slice(keep)) {
-      const done = spawnSync("gh", ["api", "-X", "DELETE", `repos/${REPO}/releases/assets/${a.id}`], { encoding: "utf8" });
-      console.log(done.status === 0 ? `deleted ${a.name}` : `${a.name} not deleted (${done.stderr.trim()}): the next prune deletes it`);
+      const done = spawnSync("gh", ["api", "-X", "DELETE", `repos/${REPO}/releases/assets/${a.id}`], { encoding: "utf8", timeout: 30_000, killSignal: "SIGKILL" });
+      const why = (done.error ? done.error.message : done.signal ? `killed by ${done.signal}` : done.stderr).trim();
+      console.log(!done.error && done.status === 0 ? `deleted ${a.name}` : `${a.name} not deleted (${why}): the next prune deletes it`);
     }
   }
 }
@@ -1758,7 +1777,7 @@ async function published(): Promise<Set<string> | null> {
       // (gh, as without a token)
     }
   }
-  const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true });
+  const out = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".assets[].name"], { allowFail: true, timeout: 30_000 });
   return out ? new Set(out.split("\n").filter(Boolean)) : null;
 }
 /// A fetch asked again, ATTEMPTS times in all and RETRY_MS × the tries so far between, when it threw (a connection or
@@ -1942,7 +1961,7 @@ async function main(argv: string[]) {
       // not get through (EOF) was taken for a missing release (mbui-media-runtime 41457910309).
       if (publish && listed === null) {
         try {
-          gh(["release", "view", RELEASE, "-R", REPO, "--json", "name"]);
+          gh(["release", "view", RELEASE, "-R", REPO, "--json", "name"], { timeout: 30_000 });
         } catch (e) {
           if (!/release not found/i.test(String(e))) throw e;
           throw new Error(`the release ${RELEASE} is not on ${REPO}: make it once`);
@@ -1960,7 +1979,10 @@ async function main(argv: string[]) {
       // left alone at -j 8 of 16, 130 s, the job cut at its 5 minutes, 44770813931).
       const readersToBuild = Math.max(1, Math.min(3, todo.filter(([p]) => p === "reader").length));
       if (todo.length <= 1 && !process.env.STILLFAIL_NATIVE_ONE) process.env.STILLFAIL_NATIVE_READERS = "1";
-      if (todo.length > 1 && !process.env.STILLFAIL_NATIVE_ONE) {
+      // Parallelize both multi-part builds AND multi-part release uploads (cached parts with todo.length === 0 would
+      // otherwise upload sequentially in one thread and burn the 5-minute job limit if any single upload stalls).
+      const toPublish = publish ? wanted.filter(([p, t]) => !remote.has(asset(p, t, key(p, t)))) : [];
+      if ((todo.length > 1 || toPublish.length > 1) && !process.env.STILLFAIL_NATIVE_ONE) {
         const flags = [...(publish ? ["--publish"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : []), ...(mac ? ["--mac"] : []), ...(linux ? ["--linux"] : [])];
         const one = (p: string, t: Target) => new Promise<number>((done) => {
           const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "ensure", ...flags, `${p}:${t}`],
@@ -1977,7 +1999,6 @@ async function main(argv: string[]) {
       }
       const work = join(tmpdir(), `stillfail-native-${process.pid}`);
       mkdirSync(work, { recursive: true });
-      const summary: string[] = [];
       const publishedNow = new Set<string>();
       for (const [p, t] of wanted) {
         const k = key(p, t);
@@ -2002,10 +2023,9 @@ async function main(argv: string[]) {
           pack(dir, name, outbox);
           note = " → outbox";
         }
-        summary.push(`${p} ${t} ${k}: ${how} (${took} s)${there ? ", published already" : note}`);
+        console.log(`${p} ${t} ${k}: ${how} (${took} s)${there ? ", published already" : note}`);
       }
       rmSync(work, { recursive: true, force: true });
-      for (const line of summary) console.log(line);
       if (publishedNow.size) prune(KEEP, publishedNow);
       return;
     }

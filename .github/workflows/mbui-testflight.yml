@@ -69,7 +69,7 @@ jobs:
           RELEASE_BUILD: ${{ inputs.build }}
   tests:
     needs: guard
-    permissions: { contents: read, actions: read }
+    permissions: { contents: read, actions: read, id-token: write }
     uses: ./.github/workflows/mbui-check.yml
     secrets: inherit
   # Queued tests can outlast the release's ten minutes. Start its build and signing only after the tests finish.

@@ -27,6 +27,7 @@ import "memory"
 import "packed"
 import "reader_data"
 import "reader_serve"
+import "reader_sessions"
 import "readops_chats"
 import "readops_core"
 import "readops_local"
@@ -1884,20 +1885,25 @@ fn main(world : World) -> Unit {
       None => {
         match flag_value(argv, "--data") {
           Some(data_dir) => {
-            if flag_present(argv, "--sessions") {
-              usage_exit()
-            } else {
-              let sep = match flag_value(argv, "--sep") {
-                Some(s) => s
-                None => "/"
-              }
-              match flag_value(argv, "--serve") {
-                Some(socket) => host_shim::exit_process(reader_serve::run_serve(data_dir, sep, socket))
-                None => {
-                  if flag_present(argv, "--serve") {
-                    usage_exit()
-                  } else {
-                    host_shim::exit_process(reader_data::run_data(data_dir, sep))
+            let sep = match flag_value(argv, "--sep") {
+              Some(s) => s
+              None => "/"
+            }
+            match flag_value(argv, "--sessions") {
+              Some(_) => host_shim::exit_process(reader_sessions::run_sessions(data_dir, sep))
+              None => {
+                if flag_present(argv, "--sessions") {
+                  usage_exit()
+                } else {
+                  match flag_value(argv, "--serve") {
+                    Some(socket) => host_shim::exit_process(reader_serve::run_serve(data_dir, sep, socket))
+                    None => {
+                      if flag_present(argv, "--serve") {
+                        usage_exit()
+                      } else {
+                        host_shim::exit_process(reader_data::run_data(data_dir, sep))
+                      }
+                    }
                   }
                 }
               }

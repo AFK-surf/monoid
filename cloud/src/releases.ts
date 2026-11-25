@@ -21,11 +21,44 @@ export const VERSIONED = /^fonts\/|-[0-9.]+-(arm64-mac\.zip|x64-win\.exe)(\.bloc
 /** What the response of another cloud's releases (RELEASES_UPSTREAM) says that is passed on. */
 const PASSED = ["content-type", "content-length", "content-range", "accept-ranges", "etag", "cache-control"];
 
+/**
+ * A read of the bucket or of another cloud's releases, which only reads: tried once more when it fails. R2 fails a
+ * read now and then for a moment (10001, 10043; 10058 when many read one object at once, as at a release), and the
+ * next read gets it. Its null (no such file) is an answer, not a failure. Failing twice, it is unavailable: a 503 that
+ * tells the client to come back (`unavailable`), never a 404 that would say there is none.
+ */
+export async function retryRead<T>(run: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  try {
+    return { ok: true, value: await run() };
+  } catch {
+    try {
+      return { ok: true, value: await run() };
+    } catch (error) {
+      return { ok: false, error };
+    }
+  }
+}
+
+/** The answer while a release cannot be read (`retryRead` failed twice): the 5xx stays seen (index.ts answer), the cause in the log. */
+export function unavailable(file: string, error: unknown): Response {
+  console.error(`release ${file} unavailable:`, error);
+  return Response.json({ error: "release_unavailable" }, { status: 503, headers: { "cache-control": "no-store", "retry-after": "5" } });
+}
+
 /** `file` from another cloud's releases (`upstream`, its /releases), the range asked for passed on; its 404 when it has none. */
 export async function upstreamRelease(request: Request, upstream: string, file: string): Promise<Response> {
   const range = request.headers.get("range");
   const condition = request.headers.get("if-range");
-  const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${file}`, { headers: range ? { range, ...(condition !== null ? { "if-range": condition } : {}) } : {} });
+  const got = await retryRead(async () => {
+    const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${file}`, { headers: range ? { range, ...(condition !== null ? { "if-range": condition } : {}) } : {} });
+    if (answer.status >= 500) {
+      await answer.body?.cancel().catch(() => {});
+      throw new Error(`upstream answered ${answer.status}`);
+    }
+    return answer;
+  });
+  if (!got.ok) return unavailable(file, got.error);
+  const answer = got.value;
   if (answer.status !== 200 && answer.status !== 206 && answer.status !== 416) return notFound();
   const headers = new Headers();
   for (const name of PASSED) {
@@ -46,11 +79,15 @@ export async function serveRelease(request: Request, bucket: ReleaseBucket | und
   if (file.startsWith("fonts/")) headers["access-control-allow-origin"] = "*";
   const asked = request.headers.get("range");
   if (!asked) {
-    const object = await bucket?.get(file);
+    const got = await retryRead(async () => bucket?.get(file));
+    if (!got.ok) return unavailable(file, got.error);
+    const object = got.value;
     if (!object) return notFound();
     return new Response(object.body, { headers: { ...headers, etag: object.httpEtag, "content-length": String(object.size) } });
   }
-  const head = await bucket?.head(file);
+  const gotHead = await retryRead(async () => bucket?.head(file));
+  if (!gotHead.ok) return unavailable(file, gotHead.error);
+  const head = gotHead.value;
   if (!head) return notFound();
   // If-Range resumes only the same representation (RFC 9110 13.1.5). We advertise an ETag, not a
   // Last-Modified date: only an exact strong tag matches; a date or a weak tag needs the whole file.
@@ -64,7 +101,9 @@ export async function serveRelease(request: Request, bucket: ReleaseBucket | und
   const etag = { etag: head.httpEtag };
   if (ranges.length === 1) {
     const [{ start, end }] = ranges as [Range];
-    const object = await bucket!.get(file, { range: { offset: start, length: end - start } });
+    const got = await retryRead(() => bucket!.get(file, { range: { offset: start, length: end - start } }));
+    if (!got.ok) return unavailable(file, got.error);
+    const object = got.value;
     if (!object) return notFound();
     if (object.httpEtag !== head.httpEtag) {
       await object.body.cancel();
@@ -88,7 +127,10 @@ export async function serveRelease(request: Request, bucket: ReleaseBucket | und
     try {
       let part = 0;
       for (const read of reads) {
-        const object = await bucket!.get(file, { range: { offset: read.start, length: read.end - read.start } });
+        // (only the read is tried again: once its bytes have gone out, a failure ends the response)
+        const got = await retryRead(() => bucket!.get(file, { range: { offset: read.start, length: read.end - read.start } }));
+        if (!got.ok) throw got.error;
+        const object = got.value;
         if (!object) throw new Error(`${file} went away`);
         // The headers (and perhaps earlier parts) have gone: a replacement cannot finish this response.
         if (object.httpEtag !== head.httpEtag) {
@@ -196,15 +238,25 @@ const FEEDS: Record<string, string> = {
 
 /**
  * The latest build of an app, for a link that does not change (the site's downloads, /releases/latest/<app>): where its
- * updater's feed says it is, as a path under /releases/; null while there is none.
+ * updater's feed says it is, as a path under /releases/; missing while there is none, unavailable while its feed
+ * cannot be read (`retryRead`).
  */
-export async function latestDownload(bucket: ReleaseBucket | undefined, app: string): Promise<string | null> {
+export async function latestDownload(bucket: ReleaseBucket | undefined, app: string): Promise<{ kind: "ok"; file: string } | { kind: "missing" } | { kind: "unavailable"; error: unknown }> {
   const feed = FEEDS[app];
-  const object = feed ? await bucket?.get(feed) : null;
-  if (!object) return null;
-  const text = await new Response(object.body).text();
+  if (!feed || !bucket) return { kind: "missing" };
+  const got = await retryRead(async () => {
+    const object = await bucket.get(feed);
+    return object ? await new Response(object.body).text() : null;
+  });
+  if (!got.ok) return { kind: "unavailable", error: got.error };
+  const file = got.value === null ? null : feedFile(feed, got.value);
+  return file === null ? { kind: "missing" } : { kind: "ok", file };
+}
+
+/** The file a feed names. */
+function feedFile(feed: string, text: string): string | null {
   // electron-updater's feeds (the desktop app's) are YAML; the rest are an AppRelease's JSON
-  if (feed!.endsWith(".yml")) {
+  if (feed.endsWith(".yml")) {
     const file = /^path:\s*(\S+)\s*$/m.exec(text)?.[1];
     return file ? `desktop/${file}` : null;
   }

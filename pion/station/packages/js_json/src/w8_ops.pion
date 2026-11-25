@@ -1,0 +1,104 @@
+// Wave 8 `js_json` additions:
+// - `write_utf8` / `write_utf8_with_num`: streaming lossless UTF-16 JSON serialization to a
+//   `StringBuilder` with U+2028/U+2029 escaped (1:1 `station/mb/src/jsjson/jsjson.mbt:608`).
+// - `js_string` / `js_string_with` / `js_string_u16` / `js_string_u16_with`: `String(v)` on `JValue`
+//   (1:1 `jsjson.mbt:731`, including lossless UTF-16 variant preserving lone surrogates).
+// - `jval_from_json`: convert `base_codec::Json` to `JValue` with last-write-wins duplicate key
+//   deduplication (matching MoonBit `Map` semantics).
+
+import "base_codec"
+import "sqlite_ffi"
+
+/// Write `v` as UTF-8 JSON bytes into `out` with U+2028/U+2029 escaped and custom number formatter.
+/// 1:1 aligned with `station/mb/src/jsjson/jsjson.mbt:608` (`write_utf8`).
+pub fn write_utf8_with_num(
+  out : StringBuilder,
+  v : JValue,
+  fmt_num : (Double) -> String,
+) -> Unit {
+  write_value(out, v, true, fmt_num)
+}
+
+/// Write `v` as UTF-8 JSON bytes into `out` with U+2028/U+2029 escaped and JS number formatting.
+/// 1:1 aligned with `station/mb/src/jsjson/jsjson.mbt:608` (`write_utf8`).
+pub fn write_utf8(out : StringBuilder, v : JValue) -> Unit {
+  write_value(out, v, true, sqlite_ffi::format_js_double)
+}
+
+/// Lossless UTF-16 `String(v)` on `JValue` preserving lone surrogates (`jsjson.mbt:731`).
+pub fn js_string_u16_with(v : JValue, fmt_num : (Double) -> String) -> Array[Int] {
+  match v {
+    JValue::Str(u) => u
+    JValue::Null => utf16_units("null")
+    JValue::Arr(items) => {
+      let out : Array[Int] = []
+      for i in 0..<items.length() {
+        if i > 0 {
+          out.push(0x2C)
+        }
+        match items[i] {
+          JValue::Null => ()
+          item => {
+            let part = js_string_u16_with(item, fmt_num)
+            for j in 0..<part.length() {
+              out.push(part[j])
+            }
+          }
+        }
+      }
+      out
+    }
+    JValue::Obj(_) => utf16_units("[object Object]")
+    other => utf16_units(stringify_with_num(other, fmt_num))
+  }
+}
+
+/// Lossless UTF-16 `String(v)` on `JValue` using JS number formatting.
+pub fn js_string_u16(v : JValue) -> Array[Int] {
+  js_string_u16_with(v, sqlite_ffi::format_js_double)
+}
+
+/// `String(v)` on `JValue` with a caller-provided finite-number formatter (`jsjson.mbt:731`).
+pub fn js_string_with(v : JValue, fmt_num : (Double) -> String) -> String {
+  sanitize_str(js_string_u16_with(v, fmt_num))
+}
+
+/// `String(v)` on `JValue` (`jsjson.mbt:731`).
+pub fn js_string(v : JValue) -> String {
+  js_string_with(v, sqlite_ffi::format_js_double)
+}
+
+/// Convert `base_codec::Json` to lossless `JValue` (matching `@replica.of_json` / MoonBit `Map`
+/// last-write-wins semantics on duplicate object keys in O(n) time).
+pub fn jval_from_json(j : base_codec::Json) -> JValue {
+  match j {
+    base_codec::Json::Null => JValue::Null
+    base_codec::Json::Bool(b) => JValue::Bool(b)
+    base_codec::Json::Num(d, _) => JValue::Num(d)
+    base_codec::Json::Str(s) => JValue::Str(utf16_units(s))
+    base_codec::Json::Arr(items) => {
+      let out : Array[JValue] = []
+      for i in 0..<items.length() {
+        out.push(jval_from_json(items[i]))
+      }
+      JValue::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(Array[Int], JValue)] = []
+      let seen : Map[String, Int] = Map::new()
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        let ku = utf16_units(k)
+        let jv = jval_from_json(v)
+        match seen.get(k) {
+          Some(idx) => out[idx] = (ku, jv)
+          None => {
+            seen.set(k, out.length())
+            out.push((ku, jv))
+          }
+        }
+      }
+      JValue::Obj(out)
+    }
+  }
+}

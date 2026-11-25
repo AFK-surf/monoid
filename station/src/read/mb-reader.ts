@@ -605,6 +605,10 @@ export class MbProcess extends EventEmitter {
   readonly engine: TelemetryEngine;
   readonly mode: string;
   readonly #child: ChildProcess;
+
+  get pid(): number | null {
+    return this.#child.pid ?? null;
+  }
   readonly #args: readonly string[];
   readonly #stdinMost: number;
   readonly #wrapped: boolean;

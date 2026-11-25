@@ -92,6 +92,7 @@ pub fn fixture_reset() -> Unit {
   fix_working_now.val = ("call:1", working_step)
   fix_working_important.val = false
   fix_working_status.val = "running"
+  fix_handoff_refused.val = false
   kept_chats.clear()
   fixture_pictures.clear()
   fix_threads.clear()

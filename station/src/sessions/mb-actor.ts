@@ -9,9 +9,8 @@
 import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
-import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
+import { SessionsProgram, sessionsBinaryAvailable, type ProgramUser } from "../agents/mb-program.ts";
 import type { HostedProcess, Router } from "../agents/mb-agents.ts";
-import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
 import { RenewRefused } from "../accounts/console.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
@@ -124,7 +123,7 @@ export class ActorsProgram {
 
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
   static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null, maxConcurrentTurns = 0): ActorsProgram | null {
-    if (mbReaderBinary() === null) return null;
+    if (!sessionsBinaryAvailable(data) && process.env.STILLFAIL_REQUIRE_PION_SESSIONS !== "1") return null;
     return new ActorsProgram(data, clock, store, maxConcurrentTurns);
   }
 

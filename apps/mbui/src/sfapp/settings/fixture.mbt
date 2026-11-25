@@ -1234,6 +1234,10 @@ pub fn fixture_page(mode : String) -> String {
       fx.vault_own = "outside"
       fx_adb.val = "lock-outside"
     }
+    "settings-vault-own-finding" => {
+      fx.vault_own = "outside"
+      fx_adb.val = "lock-finding"
+    }
     "settings-vault-own-code" => {
       fx.vault_own = "outside"
       fx_adb.val = "gate-code"
@@ -1371,7 +1375,7 @@ pub fn fixture_page(mode : String) -> String {
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-no-key-code" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
     | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members" | "settings-vault-devices-dialog"
-    | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
+    | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-finding" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" | "settings-vault-workspace-editor" => "vault-items"
@@ -4943,6 +4947,26 @@ fn waiting_approvers(code : Bool) -> Json {
 }
 
 ///|
+/// The trusted devices on a person's own lock (the `adbShare` topic's `personal[].approvers`), carrying client brand
+/// names as core-ts formats them (`device · client`).
+fn personal_lock_approvers(code : Bool) -> Json {
+  [
+    obj([
+      ("id", str("d-phone")),
+      ("showing", Json::boolean(code)),
+      ("kind", str("phone")),
+      ("nameText", str("Pixel 9 · youdid.wtf Android")),
+    ]),
+    obj([
+      ("id", str("d-laptop")),
+      ("showing", Json::boolean(false)),
+      ("kind", str("computer")),
+      ("nameText", str("林的 MacBook Pro · monoid 桌面版")),
+    ]),
+  ]
+}
+
+///|
 /// The lock as a device not confirmed in it has it (MBUI_FIXTURE=lock-waiting, lock-finding, lock-code, lock-wrong,
 /// lock-wrong-gone, lock-checking, lock-confirming, lock-none, lock-failed, lock-nocode, lock-security, each also -dark: its waiting page
 /// asking, finding, the code being typed, typed wrong (or the device showing it gone), being checked (the device showing
@@ -5848,14 +5872,21 @@ fn fx_adb_share() -> Json {
     "gate-none" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("none")), ("devices", Json::array([]))])]))])
     "gate-code" =>
       lent("connected", [
-        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", personal_lock_approvers(true)), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
     // (the code typed being checked, the device showing it asking its person there)
     "gate-checking" =>
       lent("connected", [
-        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("checking")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("checkingText", str("请在显示安全码的设备上完成身份验证")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", personal_lock_approvers(true)), ("pair", obj([("state", str("checking")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("checkingText", str("请在显示安全码的设备上完成身份验证")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
-    "lock-outside" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([]))])]))])
+    "lock-outside" =>
+      lent("connected", [
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", personal_lock_approvers(false))])])),
+      ])
+    "lock-finding" =>
+      lent("connected", [
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", personal_lock_approvers(false)), ("pair", obj([("state", str("finding")), ("devices", Json::number(0.0))]))])])),
+      ])
     "lock-replaced" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("replaced")), ("devices", Json::array([]))])]))])
     // two accounts signed in here: another's lock has this device on it, the workspace's account (u1) is to be approved
     // on its own (`multi`), or set it up again elsewhere (`multi-replaced`); or the other way round (`multi-member`)

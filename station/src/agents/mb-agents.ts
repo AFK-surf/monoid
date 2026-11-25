@@ -9,8 +9,7 @@
 // reading of a process's lines in TypeScript to fall back to (as with the actors, mb-actor.ts).
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
-import { mbReaderBinary } from "../read/mb-reader.ts";
-import { SessionsProgram, type ProgramUser } from "./mb-program.ts";
+import { SessionsProgram, sessionsBinaryAvailable, type ProgramUser } from "./mb-program.ts";
 import { platform } from "../platform/index.ts";
 import { describeExit, endRunner, groupAlive } from "./process.ts";
 import { leave, startRunner, type RunnerInfo } from "./runner.ts";
@@ -106,7 +105,7 @@ export class AgentsHost {
   /// The program for `data`'s processes: one for every driver of the station (each taking it, `close` letting it go;
   /// it ends with the last). A checkout that did not build the program runs no Claude Code or Codex session.
   static where(data: string): AgentsHost {
-    if (mbReaderBinary() === null) throw new Error("the station's MoonBit program (stillfail-reader) is not built here: every runtime's processes are read by its --sessions");
+    if (!sessionsBinaryAvailable(data)) throw new Error("the station's sessions program (stillfail-reader / stillfail-pion) is not built here: every runtime's processes are read by its --sessions");
     let host = AgentsHost.#shared.get(data);
     if (host === undefined || host.#closed) AgentsHost.#shared.set(data, (host = new AgentsHost(data)));
     return host;

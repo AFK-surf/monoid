@@ -437,6 +437,12 @@ pub fn Db::create(path : String, wait_ms : Int = 250) -> Result[Db, SqlError] {
   open_db(path, sqlite_ffi::OPEN_CREATE, wait_ms)
 }
 
+/// Pure-Pion sentinel `Db` handle for unit tests that inject a custom `close_db` transport
+/// without linking `sqlite_ffi` C FFI symbols.
+pub fn Db::mock_for_test(handle : Int64) -> Db {
+  Db::{ raw: sqlite_ffi::Db::{ handle: handle }, kept: Map::new(), kept_list: [], changed: 0 }
+}
+
 pub fn Db::close(self : Db) -> Unit {
   for i in 0..<self.kept_list.length() {
     let _ = self.kept_list[i].stmt.finalize()

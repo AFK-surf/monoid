@@ -12,11 +12,11 @@ import { afterEach, test } from "node:test";
 import { Effect, Exit, Scope, type Clock } from "effect";
 import { TestClock } from "effect/testing";
 import { type Fs, direct } from "../src/drive/fs.ts";
-import { PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { NoLink, PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { oneBytes } from "../src/mesh/files.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { Copies, HANDOVER_QUIET_MS, keptDir } from "../src/replica/copies.ts";
+import { Copies, HANDOVER_QUIET_MS, RETRY_MOST_MS, keptDir } from "../src/replica/copies.ts";
 import { type Head, asHead, isHex64 } from "../src/replica/format.ts";
 import { keepers } from "../src/replica/peers.ts";
 import { FolderPlace, type Place, level, nothingHeld } from "../src/replica/places.ts";
@@ -59,6 +59,12 @@ class Mesh {
   readonly asked = new Map<string, Map<string, number>>();
   /// Stations from before copies: they refuse every `replica.*` as an old station's default handler does.
   readonly old = new Set<string>();
+  /// Stations no link to which opens (mesh/peer.ts `NoLink`: its dial failed).
+  readonly gone = new Set<string>();
+  /// Stations that answer, but whose `replica.put` gets no answer in time, as over a saturated uplink.
+  readonly slow = new Set<string>();
+  /// Every request, in the order asked: to which station, and what.
+  readonly log: { to: string; what: string }[] = [];
 
   add(id: string, workspaces: string[], made?: { data: string; store: Store }): Node {
     const data = made?.data ?? dataDir(id.slice(0, 4));
@@ -72,6 +78,9 @@ class Mesh {
       if (m === undefined) this.asked.set(to, (m = new Map()));
       const what = request?.method === "replica.put" ? `put:${request.kind}` : String(request?.method);
       m.set(what, (m.get(what) ?? 0) + 1);
+      this.log.push({ to, what });
+      if (this.gone.has(to)) throw new NoLink("peer unavailable or does not support station RPC: timed out");
+      if (this.slow.has(to) && request?.method === "replica.put") throw new Error("peer request timed out; execution may have happened — query the same task key");
       const there = this.nodes.get(to);
       if (there === undefined || !there.up || !node.up) throw new Error("station unreachable");
       if (ws !== null && (!there.workspaces.includes(ws) || !(this.rosters.get(ws) ?? []).includes(id))) throw new Error("peer is not another station in this workspace");
@@ -415,6 +424,69 @@ test("while a keeper is not reached, the next station holds the copy; once it is
   await mesh.clock.move(60_000);
   await mesh.settle();
   assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+});
+
+test("a keeper that answers but whose copies time out is tried again and gets no stand-in; it is not said offline", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const [first, second] = keepers(HOME, A, [A, ...others]);
+  const third = others.find((s) => s !== first && s !== second)!;
+  // (the first answers every request but its puts, which time out: this station's uplink full)
+  mesh.slow.add(first!);
+  for (const n of mesh.nodes.values()) await n.copies.start();
+  await mesh.settle();
+  for (let i = 0; i < 4; i++) {
+    await mesh.clock.move(60_000);
+    await mesh.settle();
+  }
+  assert.deepEqual(holders(mesh, HOME, A), [second], "the copy where it went; no stand-in holds one");
+  assert.equal([...(mesh.asked.get(third) ?? new Map()).keys()].filter((k) => k.startsWith("put:")).length, 0, "nothing put to the next station");
+  assert.ok((mesh.asked.get(first!)!.get("put:batch") ?? 0) >= 3, "the slow one tried again, with the backoff");
+  const o = (await a.copies.overview(HOME)) as Json;
+  assert.deepEqual(o.keepers.map((k: Json) => k.station).sort(), [first!, second!].sort(), "only the two it falls to keep it");
+  const slow = o.keepers.find((k: Json) => k.station === first);
+  assert.equal(slow.reason, "error", "it answers: said as an error, not offline");
+  assert.match(slow.error, /timed out/);
+  // (fast again: the next try brings it the copy)
+  mesh.slow.delete(first!);
+  await mesh.clock.move(RETRY_MOST_MS);
+  await mesh.settle();
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [first!, second!].sort());
+  assert.equal(((await a.copies.overview(HOME)) as Json).keepers.find((k: Json) => k.station === first).error, null);
+});
+
+test("with both keepers away, the stand-ins are brought their first copies one at a time", async () => {
+  const mesh = new Mesh();
+  const A = id("a");
+  const others = ["b", "c", "d", "e"].map(id);
+  mesh.rosters.set(HOME, [A, ...others]);
+  const a = mesh.add(A, [HOME], station());
+  for (const s of others) mesh.add(s, [HOME]);
+  const order = keepers(HOME, A, [A, ...others]);
+  const [first, second] = order;
+  const standIns = others.filter((s) => s !== first && s !== second);
+  // (no link to either keeper opens: they are away, and the next two stand in)
+  mesh.gone.add(first!);
+  mesh.gone.add(second!);
+  for (const n of mesh.nodes.values()) if (!mesh.gone.has(n.id)) await n.copies.start();
+  await mesh.settle();
+  for (let i = 0; i < 3; i++) {
+    await mesh.clock.move(60_000);
+    await mesh.settle();
+  }
+  assert.deepEqual(holders(mesh, HOME, A).sort(), [...standIns].sort(), "both stand-ins hold it in the end");
+  // (what was asked of each stand-in to bring it its copy: the one's requests all before the other's)
+  const copying = mesh.log.map((x, i) => ({ ...x, i })).filter((x) => standIns.includes(x.to) && (x.what.startsWith("put:") || x.what === "replica.held"));
+  const at = (s: string) => copying.filter((x) => x.to === s).map((x) => x.i);
+  const [one, two] = [...standIns].sort((x, y) => Math.min(...at(x)) - Math.min(...at(y)));
+  assert.ok(at(one!).length > 0 && at(two!).length > 0);
+  assert.ok(Math.max(...at(one!)) < Math.min(...at(two!)), `one first copy at a time: ${JSON.stringify(copying.map((x) => [x.to.slice(0, 1), x.what]))}`);
+  const o = (await a.copies.overview(HOME)) as Json;
+  for (const k of [first, second]) assert.equal(o.keepers.find((x: Json) => x.station === k).reason, "offline", "one no link opens to is said offline");
 });
 
 test("a keeper from before copies is said old, warned of and asked nothing again until it says it is up; the next station holds the copy meanwhile", async () => {
