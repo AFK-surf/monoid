@@ -328,6 +328,9 @@ export interface ScreenSource {
   readonly farview?: boolean;
   /// The session that opened it (a tab of the browser an agent opened), when known.
   openedBy?(): string | undefined;
+  /// The workspace this source belongs to when not tied to a session (e.g. a vault/profile login tab: null = home
+  /// workspace, string = that workspace); undefined for shared host sources (desktop, simulators, user tabs).
+  workspace?(): string | null | undefined;
   /// A browser tab a person opened on this station (kept in Chrome's persistent profile, hidden from agents).
   readonly userTab?: boolean;
   /// Whether this user tab is hibernated (its Chrome page closed to free memory until opened again).

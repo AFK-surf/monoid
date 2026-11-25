@@ -48,6 +48,10 @@ export type TabsParts = {
   owners?: Owners;
   /// The session whose chat's context a browser context is (browsers.ts).
   contextOwner?: (browserContextId: string | undefined) => string | undefined;
+  /// The workspace a browser context belongs to when it has no chat session (e.g. login tabs: null = home workspace).
+  contextWorkspace?: (browserContextId: string | undefined) => string | null | undefined;
+  /// The workspace a default-context tab belongs to (e.g. machine login tabs without an isolated context).
+  tabWorkspace?: (targetId: string) => string | null | undefined;
   usedTab?: (session: string, targetId: string) => void;
   /// Whether tab `targetId`'s context has a passkey of relying party `rpId` its authenticator signs (passkeys.ts).
   ownPasskey?: (targetId: string, rpId: string) => boolean;
@@ -122,6 +126,10 @@ class Tab implements ScreenSource {
     return this.#tabs.ownerOf(this.info.targetId);
   }
 
+  workspace(): string | null | undefined {
+    return this.#tabs.workspaceOf(this.info.targetId);
+  }
+
   openUrl(rawUrl: string): Promise<void> {
     const url = addressOrSearch(rawUrl);
     if (url === null) throw new ScreenRefused(400, "station.screen.badUrl");
@@ -151,6 +159,8 @@ export class Tabs {
   readonly #liveTargets = new Set<string>();
   /// The browser context of every target told of (pages, frames, workers): whose chat's it is (gate.ts).
   readonly #contexts = new Map<string, string>();
+  /// Inherited workspace for popups opened from a non-session tab (e.g. a joined workspace login tab's OAuth popup).
+  readonly #inheritedWorkspaces = new Map<string, string | null>();
   readonly #views = new Set<ActiveView>();
   #unlisten: () => void = () => {};
   #closed = false;
@@ -211,6 +221,18 @@ export class Tabs {
   /// The session whose tab `targetId` is: its context's chat's, else the one that opened it in the station's own.
   ownerOf(targetId: string): string | undefined {
     return this.#p.contextOwner?.(this.#contexts.get(targetId)) ?? this.#p.owners?.of(targetId);
+  }
+
+  /// The workspace a non-session tab belongs to (e.g. login tabs: null = home workspace, string = joined workspace).
+  /// An unattributed non-user tab (e.g. left over across a Chrome resume) defaults to home workspace (`null`) so it
+  /// is never exposed to joined workspaces.
+  workspaceOf(targetId: string): string | null | undefined {
+    const byCtx = this.#p.contextWorkspace?.(this.#contexts.get(targetId));
+    if (byCtx !== undefined) return byCtx;
+    const byTab = this.#p.tabWorkspace?.(targetId);
+    if (byTab !== undefined) return byTab;
+    if (this.#inheritedWorkspaces.has(targetId)) return this.#inheritedWorkspaces.get(targetId);
+    return this.ownerOf(targetId) === undefined ? null : undefined;
   }
 
   /// The browser context of target `targetId`, when it was told of.
@@ -395,9 +417,13 @@ export class Tabs {
           }
         }
         if (!this.#tabs.has(info.targetId)) {
-          // A tab a page opened (a link to a new window, a popup) is its opener's session's.
+          // A tab a page opened (a link to a new window, a popup) inherits its opener's session or workspace.
           const opener = typeof info.openerId === "string" ? this.ownerOf(info.openerId) : undefined;
           if (opener !== undefined) this.#p.owners?.set(info.targetId, opener);
+          else if (typeof info.openerId === "string") {
+            const openerWs = this.workspaceOf(info.openerId);
+            if (openerWs !== undefined) this.#inheritedWorkspaces.set(info.targetId, openerWs);
+          }
           const tab = new Tab(this, { targetId: info.targetId, title: info.title ?? "", url: info.url ?? "", attached: Boolean(info.attached) });
           const remove = this.#p.screens?.add(tab) ?? (() => {});
           this.#tabs.set(info.targetId, { tab, remove });
@@ -438,6 +464,7 @@ export class Tabs {
         if (known === undefined) return;
         this.#tabs.delete(targetId);
         this.#contexts.delete(targetId);
+        this.#inheritedWorkspaces.delete(targetId);
         this.#p.owners?.drop(targetId);
         known.remove();
         activity();

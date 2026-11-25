@@ -152,7 +152,7 @@ fn preset_picker_row_node(
           .allow_ellipsis(Is(true))
           |> ignore
           if chosen {
-            @sf.icon_node(top, "check", 14.0, By(fn() { @sf.theme().p.accent })) |> ignore
+            @sf.icon_node(top, "check", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
           }
         })
         |> ignore

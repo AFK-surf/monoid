@@ -200,8 +200,12 @@ export const waitOver = (seconds: number) => `You said you were waiting on work 
 - If it is still running: make sure something will tell you when it ends or fails (a background command or agent, a job with watch, a loop polling CI that exits on the first failure), do whatever else you can meanwhile, and only then end the turn waiting again. If it truly cannot be watched, wait the shortest it could still take.
 - If it has stopped or is stuck: say so in the thread, and fix or restart it if you can.`;
 
-/// The session has cycled through waiting turns without posting in the chat for this many minutes.
-export const silentProgress = (minutes: number) => `You have not posted in the chat for ${minutes} minutes. Before you wait again or start another step, post a brief progress update with chat_post.`;
+/// The session has cycled through waiting turns without posting in the chat for this many minutes: an update asked of
+/// it, or left to it (as the person who started it set: progress-prefs.ts, the core's).
+export const silentProgress = (minutes: number, strength: "require" | "remind") =>
+  strength === "require"
+    ? `You have not posted in the chat for ${minutes} minutes. Before you wait again or start another step, post a brief progress update with chat_post.`
+    : `You have not posted in the chat for ${minutes} minutes. If there is progress people would want to know, post a brief update with chat_post; if there is nothing new to say, go on without posting.`;
 
 /// The first turn in still.fail of a session begun in a terminal: from now on it works as still.fail's sessions do.
 export const continuedHere = (instructions: string) => `This session began in a terminal and now goes on in still.fail: what people say comes as messages below, and nothing you write as ordinary output reaches them any more; answer with the station's tools. How still.fail works, from now on:

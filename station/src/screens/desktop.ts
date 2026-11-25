@@ -287,6 +287,8 @@ type HelperError = Error & { code?: string };
 /// 3840 bytes of interleaved stereo PCM16, or one Opus packet of those 20 ms), 11 cursor image (a pointer of an app's own,
 /// before the first 6 that names it "custom:<id>": source.ts `cursorImageShape`; a helper from before says "default").
 export const TO_HELPER = { next: 1, keyframe: 2, input: 3, clipboard: 4, watch: 5, reveal: 6, rate: 7, bounds: 8, audio: 9, window: 10, watchMic: 11, mic: 12 } as const;
+/// Maximum payload bytes accepted for a single IPC frame from the screen helper.
+export const MAX_HELPER_FRAME = 64 * 1024 * 1024;
 const CLIP_BYTE: Record<ClipType, number> = { text: 1, png: 2 };
 
 /// A clip as the helper's `clipboard` message has it: from the helper (`flags` none) or to it.
@@ -386,10 +388,23 @@ export class HelperView implements ScreenView {
     });
   }
 
+  #fail(reason: string) {
+    if (this.#ended) return;
+    log.warn("screens", "closing helper view on malformed frame", { reason });
+    this.#cut = true;
+    this.#settle.reject(new Error(reason));
+    this.close();
+  }
+
   #heard(chunk: Buffer) {
+    if (this.#ended) return;
     this.#carry = this.#carry.length === 0 ? chunk : Buffer.concat([this.#carry, chunk]);
-    while (this.#carry.length >= 5) {
+    while (!this.#ended && this.#carry.length >= 5) {
       const length = this.#carry.readUInt32BE(1);
+      if (length > MAX_HELPER_FRAME) {
+        this.#fail(`helper frame too large (${length} bytes)`);
+        return;
+      }
       if (this.#carry.length < 5 + length) return;
       const kind = this.#carry[0]!;
       const payload = this.#carry.subarray(5, 5 + length);
@@ -401,9 +416,22 @@ export class HelperView implements ScreenView {
   #message(kind: number, payload: Buffer) {
     switch (kind) {
       case 1: {
-        const info = JSON.parse(payload.toString());
+        let info: any;
+        try {
+          info = JSON.parse(payload.toString("utf8"));
+        } catch {
+          this.#fail("malformed helper info frame");
+          return;
+        }
+        if (info === null || typeof info !== "object" || Array.isArray(info)) {
+          this.#fail("invalid helper info frame");
+          return;
+        }
         if (typeof info.error === "string") this.#settle.reject(Object.assign(new Error(info.error), { code: info.code }));
-        else {
+        else if (typeof info.width !== "number" || typeof info.height !== "number") {
+          this.#fail("invalid helper info dimensions");
+          return;
+        } else {
           // What it encodes: as it says (H.264 where H.265 was asked and this Mac has no encoder of it; a helper from
           // before H.265 says nothing and makes H.264 of anything but JPEG).
           this.#codec = info.codec === "h265" || info.codec === "h264" || info.codec === "jpeg" ? info.codec : this.#codec === "jpeg" ? "jpeg" : "h264";
@@ -438,6 +466,10 @@ export class HelperView implements ScreenView {
         return;
       }
       case 2:
+        if (payload.length < 8) {
+          this.#fail("truncated helper config frame");
+          return;
+        }
         this.#config = { codec: this.#codec, width: payload.readUInt32BE(0), height: payload.readUInt32BE(4), ...(this.#codec !== "jpeg" ? { description: new Uint8Array(payload.subarray(8)) } : {}) };
         return;
       case 7: {
@@ -449,6 +481,10 @@ export class HelperView implements ScreenView {
         return;
       }
       case 3: {
+        if (payload.length < 9) {
+          this.#fail("truncated helper video frame");
+          return;
+        }
         const frame: Frame = { key: (payload[0]! & 1) === 1, ts: Number(payload.readBigUInt64BE(1)), data: new Uint8Array(payload.subarray(9)) };
         // Another part of the display than the last frame's: a config again, saying it (the same codec and size).
         if (this.#config === undefined && this.#lastConfig !== undefined && JSON.stringify(this.#region) !== JSON.stringify(this.#sentRegion)) this.#config = this.#lastConfig;

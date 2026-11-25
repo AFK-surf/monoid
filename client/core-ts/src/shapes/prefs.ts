@@ -266,6 +266,8 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["decisionsText", "String", { doc: "That in words, for 自动决策's row: 2 台 station 已启用, 未启用." }],
     ["hintNoReview", "bool", { default: true, doc: "No station known has its archive review on: the hint 按模型判断 can suggest nothing." }],
     ["hintReviewText", "String", { default: true, doc: "What the stations' archive reviews mean for 按模型判断 (none on, or whose are off); \"\"\nwhile none is known or every one has it on." }],
+    ["progressMinutes", "u32", { default: true, doc: "How long the person's agents may wait and post nothing before they are told so, in minutes (`progress.set`)." }],
+    ["progressStrength", "String", { default: true, doc: "What they are told then: `require`, to post progress; `remind`, to post it where there is some." }],
   ], { doc: "What the settings say of the workspace as a whole (the `settings` view), over its stations." }),
   WorkspaceMarksView: struct([
     ["workspaces", map("WorkspaceMark")],

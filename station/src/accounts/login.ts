@@ -299,7 +299,7 @@ export class LoginManager {
 
   /// Opens the page of `profile`'s sign-in in the station's browser (the tab open already, if there is one): its
   /// screen.
-  async openPage(profile: string, lang: Lang = stationLang()): Promise<string> {
+  async openPage(profile: string, lang: Lang = stationLang(), workspace: string | null = null): Promise<string> {
     const running = this.jobs.get(profile);
     if (!running) throw new Error(tr(lang, "station.loginPage.nothing"));
     if (this.pages === null || !this.pages.can()) throw new Error(tr(lang, "station.loginPage.noBrowser"));
@@ -308,7 +308,7 @@ export class LoginManager {
     if (url === null && this.pages.screenOf(pageKey(profile)) === null) throw new Error(tr(lang, "station.loginPage.nothing"));
     let screen: string;
     try {
-      screen = await this.pages.open(pageKey(profile), url ?? "about:blank", { stateFile: () => this.stateFile(profile) });
+      screen = await this.pages.open(pageKey(profile), url ?? "about:blank", { stateFile: () => this.stateFile(profile), workspace });
     } catch (error) {
       throw new Error(tr(lang, "station.loginPage.failed", { error: (error as Error).message }));
     }

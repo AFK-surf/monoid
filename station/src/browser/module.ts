@@ -11,6 +11,7 @@ import { Browser } from "./service.ts";
 import { FarviewTabs, farviewConfig } from "./farview.ts";
 import { setFarviewHelper } from "./farview-screen.ts";
 import { readOnly } from "../mesh/credential.ts";
+import { sessionSeen } from "../api/seen.ts";
 import { pipeTcp, reachLocal } from "../mesh/peer-forward.ts";
 import { writeLine } from "../mesh/wire.ts";
 import { given } from "../read/views.ts";
@@ -92,13 +93,13 @@ export const BrowserLive = Layer.effectDiscard(
         await stream.write(Buffer.from(JSON.stringify({ error })));
         await stream.finish();
       };
-      if (readOnly(viewer)) return refuse(403, "a read-only member does not drive a tab");
       const id = typeof head.farview?.screen === "string" ? head.farview.screen : "";
-      const port = farview.clientPort(id);
-      if (port === null) return refuse(404, "no such Farview tab: its chat's browser is not running");
+      const target = farview.clientTarget(id);
+      if (target === null || !sessionSeen(store, viewer, target.session)) return refuse(404, "no such Farview tab: its chat's browser is not running");
+      if (readOnly(viewer)) return refuse(403, "a read-only member does not drive a tab");
       let socket;
       try {
-        socket = await reachLocal(port);
+        socket = await reachLocal(target.port);
       } catch (error) {
         return refuse(503, `the tab's host does not answer: ${(error as Error).message}`);
       }

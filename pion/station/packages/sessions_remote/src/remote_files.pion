@@ -13,7 +13,12 @@ pub fn RemoteCtx::fs_raw_k(
   bytes : Option[Bytes],
   k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
 ) -> Unit {
-  self.gen.shell_k(self.host, op, base_codec::json_obj(args), bytes, None, None, k)
+  let abandoned_op = if op == "pack.open" {
+    Some(sessions_core::AbandonedOp::ClosePackHandle)
+  } else {
+    None
+  }
+  self.gen.shell_k(self.host, op, base_codec::json_obj(args), bytes, abandoned_op, None, k)
 }
 
 pub fn RemoteCtx::fs_k(
@@ -212,13 +217,47 @@ pub fn RemoteCtx::random_hex_k(
   )
 }
 
-/// Wait until all previously queued writes to `path` complete (`remote_files.mbt:145-152`).
+/// Wait until all previously queued writes and process-scope manifest publishes to `path` complete (`remote_files.mbt:145-152`).
 pub fn RemoteCtx::written_k(
   self : RemoteCtx,
   path : String,
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
   let state = self.state
+  let barriers = self.host.manifest_barriers
+  let wait_barriers_k = fn() -> Unit {
+    sessions_core::iter_sync_k(
+      fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+        match barriers.get(path) {
+          None => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          Some(b) => {
+            if b.is_done() {
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+              return
+            }
+            b.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+              match ex {
+                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                _ => {
+                  match barriers.get(path) {
+                    Some(cur) => {
+                      if cur.is_done() {
+                        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                      } else {
+                        sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                      }
+                    }
+                    None => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                  }
+                }
+              }
+            })
+          }
+        }
+      },
+      k,
+    )
+  }
   sessions_core::iter_sync_k(
     fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
       match state.writing.get(path) {
@@ -243,7 +282,13 @@ pub fn RemoteCtx::written_k(
         }
       }
     },
-    k,
+    fn(wex : effect::Exit[Unit]) -> Unit {
+      match wex {
+        effect::Exit::Succeeded(_) => wait_barriers_k()
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
   )
 }
 
@@ -291,8 +336,11 @@ pub fn RemoteCtx::in_turn_k[X](
 }
 
 /// Shared per-path write barrier used by `in_turn_k` (`emit_tells = true`) and
-/// `RemoteHost.write_whole_k` (`emit_tells = false`, matching MB `dirsync.mbt:526` which
-/// does not emit `writing`/`wrote` tells while still serializing with `written_k` & `rename_inflight`).
+/// `RemoteHost.write_whole_k` / `write_whole_after_k` (`emit_tells = false`).
+/// Note: MB `dirsync.mbt:526` calls `write_whole` without path serialization or `writing`/`wrote`
+/// tells; here we keep silent tells (`emit_tells = false`) while serializing manifest writes with
+/// `written_k` & `rename_inflight`. Callers MUST NEVER call `read_manifest_k` / `read_text_k` on
+/// the same path inside its own write barrier (would deadlock waiting on itself).
 fn RemoteCtx::serialize_path_k[X](
   self : RemoteCtx,
   path : String,

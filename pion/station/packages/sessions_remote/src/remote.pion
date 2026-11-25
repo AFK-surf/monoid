@@ -228,6 +228,17 @@ pub fn RemoteCtx::new(
   }
 }
 
+/// Production constructor wired with the real 12-method `DirsyncPort` (`real_dirsync_port()`).
+pub fn RemoteCtx::new_default(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  sep : String,
+  state : RemoteState,
+  dispatch : sessions_core::SessionDispatch,
+) -> RemoteCtx {
+  RemoteCtx::new(host, gen, sep, state, dispatch, real_dirsync_port())
+}
+
 /// Construct a `RemoteHost` capability snapshot for `DirsyncPort` calls.
 pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
   RemoteHost::{
@@ -249,6 +260,23 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
         },
         k,
       )
+    },
+    write_whole_after_k: fn(
+      path : String,
+      wait_for : Option[effect::Deferred[Unit]],
+      make_json : () -> String,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      let salt = (self.host.transport.wall_ms)().to_string() + "_" + self.host.alloc_id().to_string()
+      let temp = self.with_extension(path, salt + ".tmp")
+      let pub_res = self.host.publish_manifest_lazy_k(path, temp, make_json, wait_for)
+      pub_res.wait_k(fn(ex : effect::Exit[effect::Exit[Unit]]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(inner) => k(inner)
+        }
+      })
     },
     write_json_k: fn(path : String, value : base_codec::Json, k : (effect::Exit[Unit]) -> Unit) -> Unit {
       self.write_json_k(path, value, k)
@@ -290,6 +318,43 @@ pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
     },
     remote_now_k: fn(k : (effect::Exit[Double]) -> Unit) -> Unit {
       self.remote_now_k(k)
+    },
+    is_sealed: fn() -> Bool {
+      self.gen.counters.sealed
+    },
+    cleanup_k: fn(name : String, work_k : ((effect::Exit[Unit]) -> Unit) -> Unit) -> Bool {
+      if !self.gen.counters.sealed {
+        let _ = self.gen.fibers.fork_daemon(name, work_k, fn(_e : effect::EffectError) -> Unit { () })
+        true
+      } else {
+        false
+      }
+    },
+    close_pack_silent: fn(id : Int) -> Unit {
+      self.host.close_pack_silent(id)
+    },
+    remove_path_silent: fn(path : String) -> Unit {
+      self.host.remove_path_silent(path)
+    },
+    proc_shell_k: fn(
+      method : String,
+      args : base_codec::Json,
+      data : Option[Bytes],
+      k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+    ) -> Unit {
+      self.host.proc_shell_k(method, args, data, k)
+    },
+    proc_daemon_k: fn(name : String, body : ((effect::Exit[Unit]) -> Unit) -> Unit) -> Bool {
+      self.host.proc_daemon_k(name, body)
+    },
+    publish_manifest_after: fn(
+      path : String,
+      wait_for : Option[effect::Deferred[Unit]],
+      make_json : () -> String,
+    ) -> effect::Deferred[effect::Exit[Unit]] {
+      let salt = (self.host.transport.wall_ms)().to_string() + "_" + self.host.alloc_id().to_string()
+      let temp = self.with_extension(path, salt + ".tmp")
+      self.host.publish_manifest_lazy_k(path, temp, make_json, wait_for)
     },
   }
 }

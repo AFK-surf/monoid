@@ -48,11 +48,11 @@ import { type Viewer, managesStation, readOnly } from "../mesh/credential.ts";
 import type { Lang } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import type { Readers } from "../read/pool.ts";
-import { type EntryRow, type StoreChange, sees } from "../store/rows.ts";
+import { type EntryRow, type InWorkspace, type StoreChange, sees } from "../store/rows.ts";
 import type { Answer } from "./request.ts";
 import type { Clock } from "effect";
 import { Fibers } from "../ops/fibers.ts";
-import { EventLog, KEPT_MS, type Kept } from "./event-log.ts";
+import { EventLog, KEPT_MS, type Kept, type Logged } from "./event-log.ts";
 
 const PING_MS = 25_000;
 const HOST_MS = 10_000;
@@ -194,6 +194,11 @@ export type EventsDeps = {
   /// (ops/previous.ts: its pid, none when none held the station, and its end): what that one handed over is taken up
   /// once it is gone, and only what it did. None: nothing goes over.
   handover?: { file: string; previous: { pid: number | null; gone: Promise<void> } };
+  /// Every workspace this station belongs to (home and joined), so workspace-scoped broadcasts (screens) emit into the
+  /// resume log for all workspaces even when some have no currently connected client.
+  workspaces?: () => { workspace: string; home: boolean }[];
+  /// Called during handover takeUp when legacy unscoped `screens` entries were discarded, to re-emit scoped snapshots.
+  refreshScreens?: (langs: Lang[]) => void;
 };
 
 /// A viewer's streams in one language: what their sidebar and overview are told by. A person in two of the station's
@@ -241,6 +246,7 @@ export const isFor = (to: To, { viewer, lang }: { viewer: Viewer; lang: Lang }, 
 type Handed = {
   pid: number; at: number; log: Kept<To>; overviews: [string, string][]; last: { viewer: Viewer; lang: Lang } | null;
   shared?: { rows: [string, string][]; until: number };
+  langs?: Lang[];
 };
 
 /// Removes what was handed over (taken up, or not to be): never a throw, as a stream waits on the taking up.
@@ -281,6 +287,8 @@ export class Events {
   private lingering: (() => void) | null = null;
   /// Who followed last: whose names a thread's entries are read with while nobody does.
   private last: { viewer: Viewer; lang: Lang } | null = null;
+  /// Languages seen by active or lingering streams, so screen updates while lingering reach returning streams.
+  private langs = new Set<Lang>();
   /// What each viewer's streams were last told of their overview (JSON), by viewer and language (`viewerKey`): what
   /// changes is told against it.
   /// The chat list as it was told last to every stream (row id → JSON). Kept while a stream may return, and handed over
@@ -369,15 +377,29 @@ export class Events {
         if (from !== null && handed.pid !== from) log.info("events", "what another process than the one before told is not gone on from", { pid: handed.pid, before: from });
         else if (!(now - handed.at <= KEPT_MS)) log.info("events", "what the process before told is too old to go on from", { at: handed.at });
         else {
-          const taken = EventLog.from(handed.log, now);
+          const droppedScreenLangs = new Set<Lang>();
+          const rawEvents = Array.isArray(handed.log?.events) ? handed.log.events : [];
+          const filteredEvents = rawEvents.filter((e: Logged<To>) => {
+            const legacyKey = typeof e?.of === "string" && /^screens\0[^\0]+$/.test(e.of);
+            const legacyUnscoped = typeof e?.text === "string" && e.text.includes("\nevent: screens\n") && e.to?.workspace === undefined && e.to?.sees === undefined;
+            if (!legacyKey && !legacyUnscoped) return true;
+            const lang = e.to?.lang ?? (typeof e.of === "string" ? (e.of.slice("screens\0".length) as Lang) : undefined);
+            if (lang === "zh" || lang === "en") droppedScreenLangs.add(lang);
+            return false;
+          });
+          const taken = EventLog.from({ ...handed.log, events: filteredEvents }, now);
           const overviews = new Map<string, string>(handed.overviews);
           this.log = taken;
           this.overviewTold = overviews;
           this.last = handed.last;
+          if (handed.last?.lang) this.langs.add(handed.last.lang);
+          if (Array.isArray(handed.langs)) for (const l of handed.langs) if (l === "zh" || l === "en") this.langs.add(l);
+          for (const lang of droppedScreenLangs) this.langs.add(lang);
           if (handed.shared && (handed.shared.until === undefined || handed.shared.until === null || now <= handed.shared.until)) {
             this.sharedTold = new Map(handed.shared.rows);
           }
           this.linger();
+          if (droppedScreenLangs.size > 0) this.deps.refreshScreens?.([...droppedScreenLangs]);
           log.info("events", "what the process before told goes on here", { ...this.log.state(), viewers: overviews.size });
         }
       } catch (error) {
@@ -433,7 +455,8 @@ export class Events {
     // Who followed last, to read a thread's entries with: not their device's lock proof.
     const last = this.last && { viewer: { ...this.last.viewer, lockDevice: undefined }, lang: this.last.lang };
     const shared = this.sharedTold !== null ? { rows: [...this.sharedTold] as [string, string][], until: at + KEPT_MS } : undefined;
-    const handed: Handed = { pid: process.pid, at, log: this.log.kept(), overviews: [...this.overviewTold], last, shared };
+    const langs = [...this.langs];
+    const handed: Handed = { pid: process.pid, at, log: this.log.kept(), overviews: [...this.overviewTold], last, shared, ...(langs.length > 0 ? { langs } : {}) };
     try {
       await mkdir(dirname(file), { recursive: true });
       const tmp = `${file}.tmp-${process.pid}.${++this.handings}`;
@@ -451,10 +474,31 @@ export class Events {
     Object.assign(this.deps, more);
   }
 
-  /// The station's screens changed: `screens` as GET /screens answers it, in each stream's
-  /// language (`listed`), the latest alone kept for one coming back.
-  screens(listed: (lang: Lang) => unknown) {
-    for (const lang of new Set(this.clients.map((c) => c.lang))) this.emit("screens", listed(lang), { lang }, `screens\0${lang}`);
+  /// The station's screens changed: `screens` as GET /screens answers it, computed once per language and projected
+  /// per workspace (all workspaces the station belongs to plus any active clients), the latest per (lang, workspace)
+  /// kept for one coming back.
+  screens(listed: (lang: Lang) => ((viewer: InWorkspace) => unknown) | unknown, langs?: Iterable<Lang>) {
+    if (!this.listening() && this.taking === null) return;
+    const activeLangs = new Set<Lang>(langs ?? [...this.langs, ...this.clients.map((c) => c.lang)]);
+    if (activeLangs.size === 0 && this.last) activeLangs.add(this.last.lang);
+    if (activeLangs.size === 0) return;
+    const scopes = new Map<string, { workspace: string; home: boolean }>();
+    const addScope = (workspace: string, home: boolean) => {
+      const key = home ? "home" : workspace;
+      const existing = scopes.get(key);
+      if (!existing || (existing.workspace === "" && workspace !== "")) scopes.set(key, { workspace, home });
+    };
+    for (const w of this.deps.workspaces?.() ?? []) addScope(w.workspace, w.home);
+    for (const c of this.clients) addScope(c.viewer.workspace, c.viewer.home !== false);
+    if (this.last) addScope(this.last.viewer.workspace, this.last.viewer.home !== false);
+    if (scopes.size === 0) return;
+    for (const lang of activeLangs) {
+      const perLang = listed(lang);
+      for (const [wsKey, scope] of scopes) {
+        const data = typeof perLang === "function" ? (perLang as (viewer: InWorkspace) => unknown)(scope) : perLang;
+        this.emit("screens", data, { lang, sees: { ws: scope.home ? null : scope.workspace } }, `screens\0${lang}\0${wsKey}`);
+      }
+    }
   }
 
   /// A record changed that only some viewers see (a vault's, routes/vault.ts): `data` told to the streams `to` says, the
@@ -561,6 +605,7 @@ export class Events {
       this.log.clear();
       this.sharedTold = null;
       this.overviewTold.clear();
+      this.langs.clear();
     });
   }
 
@@ -681,6 +726,7 @@ export class Events {
     // link cut read the whole station again (a dozen reads). Clients from before skip a block without data.
     if (!resumes) client.raw(`id: ${this.log.at()}\n\n`);
     this.clients.push(client);
+    this.langs.add(lang);
     this.openingShared--;
     this.last = { viewer, lang };
     this.lingering?.();

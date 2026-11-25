@@ -1,8 +1,25 @@
 // What of the station's chats a viewer sees: those of their own workspace. A request that names
 // a session, a chat or a job of another workspace is answered as one naming what is not there.
 import { percentDecode } from "./request.ts";
+import type { ScreenSource } from "../screens/source.ts";
 import { type InWorkspace, handedWs, sees, seesMissing } from "../store/rows.ts";
 import type { Store } from "../store/store.ts";
+
+/// Whether `viewer` sees a screen source: host-shared sources (desktop, simulators, Android, persistent user tabs)
+/// are visible to every workspace on the station; session-owned browser tabs (Chrome / Farview) follow `sessionSeen`;
+/// workspace-bound tabs without a session (e.g. profile/vault login tabs) follow `sees`.
+export function screenSeen(
+  store: Store,
+  viewer: InWorkspace,
+  source: Pick<ScreenSource, "id" | "userTab" | "openedBy" | "workspace">,
+): boolean {
+  if (source.userTab === true) return true;
+  const session = source.openedBy?.();
+  if (session) return sessionSeen(store, viewer, session);
+  const ws = source.workspace?.();
+  if (ws !== undefined) return sees(viewer, ws);
+  return true;
+}
 
 /// Whether `viewer` sees a session (one not there: the home workspace's, but another station's task its workspace's:
 /// rows.ts `seesMissing`).

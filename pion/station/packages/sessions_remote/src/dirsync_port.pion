@@ -82,6 +82,12 @@ pub struct RemoteHost {
   pub ask_k : (String, base_codec::Json, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
   rnode_fn : (String, Array[base_codec::Json], (effect::Exit[base_codec::Json]) -> Unit) -> Unit
   pub write_whole_k : (String, String, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub write_whole_after_k : (
+    String,
+    Option[effect::Deferred[Unit]],
+    () -> String,
+    (effect::Exit[Unit]) -> Unit,
+  ) -> Unit
   pub write_json_k : (String, base_codec::Json, (effect::Exit[Unit]) -> Unit) -> Unit
   pub read_text_k : (String, (effect::Exit[Option[String]]) -> Unit) -> Unit
   pub read_json_k : (String, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
@@ -97,6 +103,22 @@ pub struct RemoteHost {
     (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
   ) -> Unit
   pub remote_now_k : ((effect::Exit[Double]) -> Unit) -> Unit
+  pub is_sealed : () -> Bool
+  pub cleanup_k : (String, ((effect::Exit[Unit]) -> Unit) -> Unit) -> Bool
+  pub close_pack_silent : (Int) -> Unit
+  pub remove_path_silent : (String) -> Unit
+  pub proc_shell_k : (
+    String,
+    base_codec::Json,
+    Option[Bytes],
+    (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+  ) -> Unit
+  pub proc_daemon_k : (String, ((effect::Exit[Unit]) -> Unit) -> Unit) -> Bool
+  pub publish_manifest_after : (
+    String,
+    Option[effect::Deferred[Unit]],
+    () -> String,
+  ) -> effect::Deferred[effect::Exit[Unit]]
 }
 
 /// Method wrapper so `W8-C2` call sites write `host.rnode_k("syncPut", ...)` /
@@ -251,4 +273,27 @@ pub fn DirsyncPort::stub() -> DirsyncPort {
     },
     is_stub: true,
   }
+}
+
+/// Real 12-method `DirsyncPort` wired to `dirsync.pion` and `dirsync_source.pion`.
+pub fn real_dirsync_port() -> DirsyncPort {
+  DirsyncPort::{
+    sync_dir_k: dirsync_sync_dir_k,
+    list_local_k: dirsync_list_local_k,
+    sync_begin_k: dirsync_sync_begin_k,
+    listed_entries: dirsync_listed_entries,
+    page_of: dirsync_page_of,
+    put_blobs_k: dirsync_put_blobs_k,
+    plan_part: dirsync_plan_part,
+    submodules_part: dirsync_submodules_part,
+    sync_commit_k: dirsync_sync_commit_k,
+    sync_changes_k: dirsync_sync_changes_k,
+    read_manifest_k: dirsync_read_manifest_k,
+    with_submodules_k: dirsync_with_submodules_k,
+    is_stub: false,
+  }
+}
+
+pub fn DirsyncPort::real() -> DirsyncPort {
+  real_dirsync_port()
 }

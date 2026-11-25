@@ -144,6 +144,50 @@ test("cut at 5 minutes after its checkout's SYN to github.com was lost: let thro
   assert.equal((await run([{ run: { conclusion: "failure" }, jobs }], { 12: cut })).ok, false);
 });
 
+test("cut at 5 minutes after git fetch RPC failed (HTTP 408 / curl 16 / curl 56): let through; non-transport HTTP or hard failure: not", async () => {
+  // Mirrors #8731 natives-mac-reader job 139410496631 (run 45671346689): checkout failed after 181 s on git RPC 408/curl 56,
+  // zero own steps ran, and GitHub recorded completed_at 329 s after started_at (cancelled).
+  const steps = [
+    { name: "Set up job", conclusion: "success", started_at: at(15), completed_at: at(28) },
+    { name: "Run echo \"JOB_END=...\" >> \"$GITHUB_ENV\"", conclusion: "success", started_at: at(28), completed_at: at(28) },
+    { name: "Run actions/checkout@v5", conclusion: "failure", started_at: at(28), completed_at: at(209) },
+    { name: "Post Run actions/checkout@v5", conclusion: "success", started_at: at(209), completed_at: at(209) },
+    { name: "Complete job", conclusion: "success", started_at: at(209), completed_at: at(209) },
+  ];
+  const jobs = [job(13, "natives-mac-reader", { took: 329, conclusion: "cancelled", steps }), gateFailed];
+  const cut = "##[error]The job has exceeded the maximum execution time of 5m0s\n";
+  for (const rpc of [
+    "##[error]error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\n",
+    "##[error]error: RPC failed; curl 56 Connection died, tried 5 times before giving up\n",
+    "##[error]error: RPC failed; curl 16 Error in the HTTP2 framing layer\n",
+    "##[error]error: RPC failed; curl 92 HTTP/2 stream 1 was not closed cleanly\n",
+  ]) {
+    const ok = await run([{ run: { conclusion: "failure" }, jobs }], { 13: rpc + cut });
+    assert.equal(ok.ok, true, rpc + "\n" + ok.said);
+    assert.match(ok.said, /natives-mac-reader: let through: setting up took 194 s \(.*RPC failed; .*\), leaving 0 s/);
+    const withHard = await run([{ run: { conclusion: "failure" }, jobs }], { 13: rpc + "AssertionError: expected 1\n" + cut });
+    assert.equal(withHard.ok, false, rpc);
+  }
+  for (const nonTransport of [
+    "##[error]error: RPC failed; HTTP 403 curl 22 The requested URL returned error: 403\n",
+    "##[error]error: RPC failed; HTTP 404 curl 22 The requested URL returned error: 404\n",
+    "##[error]error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500\n",
+  ]) {
+    const denied = await run([{ run: { conclusion: "failure" }, jobs }], { 13: nonTransport + cut });
+    assert.equal(denied.ok, false, nonTransport + "\n" + denied.said);
+  }
+});
+
+test("retried-and-succeeded checkout RPC line does not excuse a later own-step test failure", async () => {
+  const jobs = [job(14, "check-station (2)", { took: 110, steps: [...setup, step("Station tests", "failure")] }), gateFailed];
+  const rpc = "##[error]error: RPC failed; curl 56 Connection died, tried 5 times before giving up\n";
+  for (const soft of ["not ok 3 - some test\n", "✖ some test\n", "· tests: station 2/6 … FAILED (12 s)\n"]) {
+    const r = await run([{ run: { conclusion: "failure" }, jobs }], { 14: rpc + soft });
+    assert.equal(r.ok, false, soft + "\n" + r.said);
+    assert.match(r.said, /check-station \(2\): NOT let through/);
+  }
+});
+
 // Trimmed from #7864, windows-natives job 136520782682:
 // https://github.com/AFK-surf/monoid/actions/runs/44803265194/job/136520782682
 const missingPrebuild = String.raw`2026-11-20T19:34:41.3524146Z native: engine win32-x64 8a82aa4af46cae64467ef117: downloaded (2.6 MB, 0.5 s)

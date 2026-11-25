@@ -170,19 +170,20 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // P0 Regular Liquid Glass optics fix restored recipe blur 2.0/2.2 on narrow bars/pills.
   // iOS 27.0 resting segmented/pill thumb aligned to #68686E dark fill with zero border/shadow in Light and Dark.
   // iOS 27.0 Regular Liquid Glass calibration sets full-res blur=1.2 on narrow bars/pills.
+  // The settings' list has one more row, 进度汇报.
   inspect(out.to_string(), content=(
-    #|settings narrow 101822:68cb371a
+    #|settings narrow 109669:902eed0f
     #|station narrow 97471:e6064415
     #|me-reading narrow 31221:8154947e
-    #|settings wide 208705:aa1d9d1c
-    #|station wide 279941:90c60101
-    #|me-reading wide 203424:d1d4b002
-    #|settings-dark narrow 102090:c0590db8
+    #|settings wide 213648:df76d9e4
+    #|station wide 285260:e3c3abfe
+    #|me-reading wide 208367:6bf0f714
+    #|settings-dark narrow 109924:5100d9f9
     #|station-dark narrow 97282:52010a7c
     #|me-reading-dark narrow 31358:593d2ca5
-    #|settings-dark wide 208585:278a13a9
-    #|station-dark wide 279559:6ef28ef5
-    #|me-reading-dark wide 203370:c81f248c
+    #|settings-dark wide 213518:b810f431
+    #|station-dark wide 284868:cbc56874
+    #|me-reading-dark wide 208303:41b001da
     #|
 
 

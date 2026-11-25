@@ -657,6 +657,29 @@ let menu_none : MenuItem = {
 }
 
 ///|
+/// Enabled destructive ink inside a floating menu: lifted 25% toward `Fg` in the dark (`#F9B0A4`) so it keeps
+/// >= 4.5:1 over mid-bright translucent glass (`#4F5053` -> 4.56:1, dark app `#3C3D40` -> 6.15:1) while staying
+/// unmistakably coral-red with no resting opaque pill box.
+fn menu_danger_ink() -> Int64 {
+  if library_theme().dark {
+    @ui.tree_theme().color(Over(Danger, A(Fg, O25)))
+  } else {
+    @ui.tree_theme().color(Danger)
+  }
+}
+
+///|
+/// Group heading ink inside a floating menu: keeps a clear secondary hierarchy under `Fg` items in dark mode
+/// (`Over(Muted, A(Fg, O55))`, ~6.7:1 on dark menu glass) instead of matching primary item brightness.
+fn menu_heading_ink() -> Int64 {
+  if library_theme().dark {
+    @ui.tree_theme().color(Over(Muted, A(Fg, O55)))
+  } else {
+    overlay_muted_ink()
+  }
+}
+
+///|
 /// A row of a menu (menu_row's look) in `b`, an item of `menu` (@headless.menu's: an action, a check or a radio as
 /// `kind` says, menu_row_kind): what `item()` is now; lit while it has the focus (its ground the pointer's or the
 /// keyboard's where that is shown or the pointer is on it); the pointer moving onto it gives it the focus, unseen;
@@ -690,7 +713,17 @@ fn menu_row_node(
     .gap(By(gap))
     .radius(Is(small_panel_inner(r_menu)))
     // det-ok(raw-hover-ground): roving menu active bar moves at once across items without trailing fade
-    .ground(By(fn() { if r.focused() && (r.focus_shown() || r.pointed()) { library_theme().p.hover } else { 0L } }))
+    .ground(By(fn() {
+      if r.focused() && (r.focus_shown() || r.pointed()) {
+        if library_theme().dark {
+          @ui.tree_theme().color(A(Fg, O5))
+        } else {
+          library_theme().p.hover
+        }
+      } else {
+        0L
+      }
+    }))
     |> ignore
     // (the pointer moved onto it or over it: the focus its, unseen, as kit's menu has it (hovered and the pointer moved);
     // come under a pointer that stays still (what holds it scrolled to bring another into sight), nothing)
@@ -731,7 +764,7 @@ fn menu_row_node(
             icon_node(slot, name, 14.0, By(fn() {
               let p = library_theme().p
               if item().danger {
-                if off() { p.subtle } else { p.red }
+                if off() { p.subtle } else { menu_danger_ink() }
               } else {
                 p.muted
               }
@@ -751,7 +784,7 @@ fn menu_row_node(
         }
         w
         .words(By(fn() { item().label }), look=toast_words_look(Ui, L5, 400, false))
-        .ink(By(fn() { @ui.tree_theme().color(if off() { Subtle } else if item().danger { Danger } else { Fg }) }))
+        .ink(By(fn() { if off() { @ui.tree_theme().color(Subtle) } else if item().danger { menu_danger_ink() } else { @ui.tree_theme().color(Fg) } }))
         |> ignore
       })
       |> ignore
@@ -760,7 +793,7 @@ fn menu_row_node(
         into.box(fn(w) {
           w
           .words(Is(extra.value), look=toast_words_look(Meta, L5, 400, false))
-          .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+          .ink(By(overlay_muted_ink))
           |> ignore
         })
         |> ignore
@@ -813,7 +846,7 @@ fn menu_row_node(
           u.box(fn(w) {
             w
             .words(Is(extra.note), look=toast_words_look(Meta, L5, 400, true))
-            .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+            .ink(By(overlay_muted_ink))
             |> ignore
           })
           |> ignore
@@ -913,12 +946,12 @@ fn menu_heading_node(
         w
         .words_runs(By(fn() { title_runs(label(), theme().p.accent_text) }))
         .words_look(Is(toast_words_look(Meta, L4_75, 400, false)))
-        .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+        .ink(By(menu_heading_ink))
         |> ignore
       } else {
         w
         .words(By(label), look=toast_words_look(Meta, L4_75, 400, false))
-        .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+        .ink(By(menu_heading_ink))
         |> ignore
       }
     })
@@ -1015,7 +1048,7 @@ fn menu_leaving_level_node(
                 icon_node(col, item.icon, 14.0, By(fn() {
                   let p = library_theme().p
                   if item.danger {
-                    if item.disabled { p.subtle } else { p.red }
+                    if item.disabled { p.subtle } else { menu_danger_ink() }
                   } else {
                     p.muted
                   }
@@ -1028,7 +1061,7 @@ fn menu_leaving_level_node(
           r.box(fn(w) {
             w
             .words(Is(item.label), look=toast_words_look(Ui, L5, 400, false))
-            .ink(By(fn() { @ui.tree_theme().color(if item.disabled { Subtle } else if item.danger { Danger } else { Fg }) }))
+            .ink(By(fn() { if item.disabled { @ui.tree_theme().color(Subtle) } else if item.danger { menu_danger_ink() } else { @ui.tree_theme().color(Fg) } }))
             |> ignore
           })
           |> ignore

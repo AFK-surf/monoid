@@ -313,3 +313,208 @@ test "participant_email_like and legacy_router_connect (#8625)" {
   assert(legacy_router_connect("slack:team") is None)
   assert(legacy_router_connect("other:team:R1") is None)
 }
+
+fn opt_int_is(v : Option[Int], expected : Int) -> Bool {
+  match v {
+    Some(n) => n == expected
+    None => false
+  }
+}
+
+test "outflow_person_with caches books once across 20 users, duplicate keys, lone surrogates, and errors" {
+  let reads : Map[String, Int] = Map::new()
+  let slack_entries : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<20 {
+    let key = js_json::utf16_units("u:T1:U" + i.to_string())
+    let entry_val = js_json::JValue::Obj([
+      (
+        js_json::utf16_units("person"),
+        js_json::JValue::Obj([
+          (js_json::utf16_units("name"), js_json::JValue::Str(js_json::utf16_units("User " + i.to_string()))),
+          (js_json::utf16_units("email"), js_json::JValue::Str(js_json::utf16_units("u" + i.to_string() + "@example.com"))),
+        ]),
+      ),
+    ])
+    slack_entries.push((key, entry_val))
+  }
+  // Duplicate key in JValue::Obj: first-wins must match JValue::get_units semantics.
+  slack_entries.push(
+    (
+      js_json::utf16_units("u:T1:Udup"),
+      js_json::JValue::Obj([
+        (
+          js_json::utf16_units("person"),
+          js_json::JValue::Obj([
+            (js_json::utf16_units("name"), js_json::JValue::Str(js_json::utf16_units("First"))),
+            (js_json::utf16_units("email"), js_json::JValue::Str(js_json::utf16_units("first@example.com"))),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  slack_entries.push(
+    (
+      js_json::utf16_units("u:T1:Udup"),
+      js_json::JValue::Obj([
+        (
+          js_json::utf16_units("person"),
+          js_json::JValue::Obj([
+            (js_json::utf16_units("name"), js_json::JValue::Str(js_json::utf16_units("Second"))),
+            (js_json::utf16_units("email"), js_json::JValue::Str(js_json::utf16_units("second@example.com"))),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  // Lone surrogate team id (\ud800) vs literal U+FFFD team id stay distinct!
+  let lone_team_key = concat_units([js_json::utf16_units("u:"), [0xD800], js_json::utf16_units(":U0")])
+  let fffd_team_key = concat_units([js_json::utf16_units("u:"), [0xFFFD], js_json::utf16_units(":U0")])
+  slack_entries.push(
+    (
+      lone_team_key,
+      js_json::JValue::Obj([
+        (
+          js_json::utf16_units("person"),
+          js_json::JValue::Obj([
+            (js_json::utf16_units("name"), js_json::JValue::Str(js_json::utf16_units("LoneTeam"))),
+            (js_json::utf16_units("email"), js_json::JValue::Str(js_json::utf16_units("lone@example.com"))),
+          ]),
+        ),
+      ]),
+    ),
+  )
+  slack_entries.push(
+    (
+      fffd_team_key,
+      js_json::JValue::Obj([
+        (
+          js_json::utf16_units("person"),
+          js_json::JValue::Obj([
+            (js_json::utf16_units("name"), js_json::JValue::Str(js_json::utf16_units("FFFDTeam"))),
+            (js_json::utf16_units("email"), js_json::JValue::Str(js_json::utf16_units("fffd@example.com"))),
+          ]),
+        ),
+      ]),
+    ),
+  )
+
+  let remote_json = match js_json::parse(
+    "{\"c_remote\":{\"described\":{\"kind\":\"slack\",\"team\":\"T1\"}},\"c_lone\":{\"described\":{\"kind\":\"slack\",\"team\":\"\\ud800\"}},\"c_fffd\":{\"described\":{\"kind\":\"slack\",\"team\":\"\\ufffd\"}}}",
+  ) {
+    Ok(v) => v
+    Err(_) => js_json::JValue::Null
+  }
+  let config_json = match js_json::parse(
+    "{\"connects\":[{\"id\":\"c1\",\"kind\":\"slack\",\"slack\":{\"team\":{\"id\":\"T1\"}}},{\"id\":\"c2\",\"kind\":\"slack\",\"slack\":{\"team\":{\"id\":\"T1\"}}},{\"id\":\"f1\",\"kind\":\"feishu\"},{\"id\":\"cm1\",\"kind\":\"comma\"}]}",
+  ) {
+    Ok(v) => v
+    Err(_) => js_json::JValue::Null
+  }
+  let feishu_json = match js_json::parse("{\"u:f1:F0\":{\"person\":{\"name\":\"Fei\",\"email\":\"fei@example.com\"}}}") {
+    Ok(v) => v
+    Err(_) => js_json::JValue::Null
+  }
+  let files : Map[String, js_json::JValue] = Map::new()
+  files.set("/data/remote-connects.json", remote_json)
+  files.set("/data/config.json", config_json)
+  files.set("/data/slack-names.json", js_json::JValue::Obj(slack_entries))
+  files.set("/data/feishu-names.json", feishu_json)
+  files.set("/data/comma-names.json", js_json::JValue::Arr([]))
+
+  let read_fn = fn(path : String) -> Result[js_json::JValue, readops_core::ReadError] {
+    let prev = match reads.get(path) {
+      Some(n) => n
+      None => 0
+    }
+    reads.set(path, prev + 1)
+    match files.get(path) {
+      Some(v) => Ok(v)
+      None => Ok(js_json::JValue::Obj([]))
+    }
+  }
+  let cache = TeamsCache::new()
+  for i in 0..<20 {
+    let cid = if i % 3 == 0 { "c1" } else if i % 3 == 1 { "c2" } else { "c_remote" }
+    let p = match outflow_person_with(read_fn, "/data", "/", cache, "slack:" + cid + ":U" + i.to_string()) {
+      Ok(v) => v
+      Err(_) => {
+        assert(false)
+        base_codec::json_null()
+      }
+    }
+    assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "name"), base_codec::json_str("User " + i.to_string())))
+    assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "email"), base_codec::json_str("u" + i.to_string() + "@example.com")))
+    assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "via"), base_codec::json_str("slack")))
+  }
+  let dup = match outflow_person_with(read_fn, "/data", "/", cache, "slack:c1:Udup") {
+    Ok(v) => v
+    Err(_) => base_codec::json_null()
+  }
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(dup, "name"), base_codec::json_str("First")))
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(dup, "email"), base_codec::json_str("first@example.com")))
+
+  let miss = match outflow_person_with(read_fn, "/data", "/", cache, "slack:c1:Umiss") {
+    Ok(v) => v
+    Err(_) => base_codec::json_null()
+  }
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(miss, "name"), base_codec::json_null()))
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(miss, "email"), base_codec::json_null()))
+
+  let lone_p = match outflow_person_with(read_fn, "/data", "/", cache, "slack:c_lone:U0") {
+    Ok(v) => v
+    Err(_) => base_codec::json_null()
+  }
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(lone_p, "name"), base_codec::json_str("LoneTeam")))
+
+  let fffd_p = match outflow_person_with(read_fn, "/data", "/", cache, "slack:c_fffd:U0") {
+    Ok(v) => v
+    Err(_) => base_codec::json_null()
+  }
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(fffd_p, "name"), base_codec::json_str("FFFDTeam")))
+
+  let fei = match outflow_person_with(read_fn, "/data", "/", cache, "slack:f1:F0") {
+    Ok(v) => v
+    Err(_) => base_codec::json_null()
+  }
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(fei, "name"), base_codec::json_str("Fei")))
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(fei, "via"), base_codec::json_str("feishu")))
+
+  let cm1 = match outflow_person_with(read_fn, "/data", "/", cache, "slack:cm1:X1") {
+    Ok(v) => v
+    Err(_) => base_codec::json_null()
+  }
+  assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(cm1, "name"), base_codec::json_null()))
+  let _ = outflow_person_with(read_fn, "/data", "/", cache, "slack:cm1:X2")
+
+  assert(opt_int_is(reads.get("/data/remote-connects.json"), 1))
+  assert(opt_int_is(reads.get("/data/config.json"), 1))
+  assert(opt_int_is(reads.get("/data/slack-names.json"), 1))
+  assert(opt_int_is(reads.get("/data/feishu-names.json"), 1))
+  assert(opt_int_is(reads.get("/data/comma-names.json"), 1))
+
+  // Error propagation: error must NOT be swallowed into cache; subsequent call retries.
+  let attempts : Array[Int] = [0]
+  let err_read_fn = fn(path : String) -> Result[js_json::JValue, readops_core::ReadError] {
+    if path == "/data/slack-names.json" {
+      attempts[0] = attempts[0] + 1
+      if attempts[0] == 1 {
+        return Err(readops_core::ReadError::App("io boom"))
+      }
+      match js_json::parse("{\"u:?:U1\":{\"person\":{\"name\":\"Recovered\",\"email\":\"r@example.com\"}}}") {
+        Ok(v) => return Ok(v)
+        Err(_) => return Ok(js_json::JValue::Obj([]))
+      }
+    }
+    Ok(js_json::JValue::Obj([]))
+  }
+  let err_cache = TeamsCache::new()
+  match outflow_person_with(err_read_fn, "/data", "/", err_cache, "slack:c1:U1") {
+    Err(readops_core::ReadError::App(m)) => assert(m == "io boom")
+    _ => assert(false)
+  }
+  match outflow_person_with(err_read_fn, "/data", "/", err_cache, "slack:c1:U1") {
+    Ok(v) => assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(v, "name"), base_codec::json_str("Recovered")))
+    Err(_) => assert(false)
+  }
+  assert(attempts[0] == 2)
+}

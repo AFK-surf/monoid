@@ -131,6 +131,37 @@ test "models model_key split_agy_tier and ReaderState catalog" {
     base_codec::Json::Num(c, _) => assert(c == 8.0)
     _ => assert(false)
   }
+  let price_cache : Map[String, Option[Price]] = Map::new()
+  let test_models : Array[base_codec::Json] = [
+    base_codec::json_str("claude-opus-5-5"),
+    base_codec::json_str("claude-opus-5-5"),
+    base_codec::json_str("custom-model-high"),
+    base_codec::json_str("unknown-model-xyz"),
+    base_codec::json_str("unknown-model-xyz"),
+    base_codec::json_null(),
+  ]
+  for i in 0..<test_models.length() {
+    let gi = Group::{
+      day: "2026-11-25",
+      session: base_codec::json_str("s1"),
+      thread: base_codec::json_null(),
+      person: base_codec::json_null(),
+      profile: base_codec::json_null(),
+      runtime: base_codec::json_str("claude"),
+      model: test_models[i],
+      fast: i % 2 == 1,
+      calls: 3.0,
+      input: 12345.0,
+      cache_read: 67890.0,
+      cache_write: 1111.0,
+      cache_write_long: 2222.0,
+      output: 3333.0,
+    }
+    let c1 = cost(state, gi)
+    let c2 = cost_cached(state, price_cache, gi)
+    assert(base_codec::json_stringify(c1) == base_codec::json_stringify(c2))
+  }
+  assert(price_cache.length() == 3)
   let pt = price_table(state, [base_codec::json_str("custom-model")])
   match builders_core::json_get_last(pt, "rows") {
     Some(base_codec::Json::Arr(rows)) => assert(rows.length() > 20)

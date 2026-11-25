@@ -145,11 +145,36 @@ priv struct Team {
 }
 
 ///|
+/// Per-call cache for `teams(...)` and indexed `*-names.json` books (first-wins matching `JValue::get`).
+priv struct OutflowCache {
+  mut teams : Map[String, Team]?
+  books : Map[String, Map[String, @jsjson.JValue]]
+}
+
+///|
+fn OutflowCache::new() -> OutflowCache {
+  { teams: None, books: Map([]) }
+}
+
+///|
+fn index_book(raw : @jsjson.JValue) -> Map[String, @jsjson.JValue] {
+  let out : Map[String, @jsjson.JValue] = Map([])
+  if raw is Obj(entries) {
+    for e in entries {
+      if !out.contains(e.0) {
+        out[e.0] = e.1
+      }
+    }
+  }
+  out
+}
+
+///|
 /// slack-known.ts `teams`: each connect's Slack workspace, Feishu company or Comma group, this station's over those of
 /// other stations whose chats run here.
-fn teams(host : @host.Host, data : String, sep : String) -> Map[String, Team] raise {
+fn teams_with(read_json_fn : (String) -> @jsjson.JValue raise, data : String, sep : String) -> Map[String, Team] raise {
   let out : Map[String, Team] = Map([])
-  let remote = read_json(host, join_path(sep, data, "remote-connects.json"))
+  let remote = read_json_fn(join_path(sep, data, "remote-connects.json"))
   for e in entries_of(Some(remote)) {
     let d = jget(Some(e.1), "described")
     match str_of(jget(d, "kind")) {
@@ -162,7 +187,7 @@ fn teams(host : @host.Host, data : String, sep : String) -> Map[String, Team] ra
       _ => ()
     }
   }
-  let own = read_json(host, join_path(sep, data, "config.json"))
+  let own = read_json_fn(join_path(sep, data, "config.json"))
   guard jget(Some(own), "connects") is Some(Arr(connects)) else { return out }
   for c in connects {
     guard str_of(jget(Some(c), "id")) is Some(id) else { continue }
@@ -182,7 +207,13 @@ fn teams(host : @host.Host, data : String, sep : String) -> Map[String, Team] ra
 
 ///|
 /// outflow.ts `person`: who a person reference is as far as known, with where they were heard.
-fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () -> Map[String, Team] raise, ref : String) -> Json raise {
+fn outflow_person_with(
+  read_json_fn : (String) -> @jsjson.JValue raise,
+  data : String,
+  sep : String,
+  cache : OutflowCache,
+  ref : String,
+) -> Json raise {
   if ref.has_prefix("slack:") {
     let rest = ref.view(start_offset=6).to_owned()
     match rest.find(":") {
@@ -190,7 +221,14 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
         let connect = rest.view(end_offset=colon).to_owned()
         let user = rest.view(start_offset=colon + 1).to_owned()
         // (slack-known.ts `teamOf`: a connect moved here, named with the station it came from, by its own name here)
-        let teams = teams_of()
+        let teams = match cache.teams {
+          Some(t) => t
+          None => {
+            let t = teams_with(read_json_fn, data, sep)
+            cache.teams = Some(t)
+            t
+          }
+        }
         let team = match teams.get(connect) {
           Some(t) => Some(t)
           None =>
@@ -205,12 +243,17 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
           Some(t) if t.book == "group" => "group-names.json"
           _ => "slack-names.json"
         }
-        let names = match read_json(host, join_path(sep, data, book_file)) {
-          Obj(_) as b => Some(b)
-          _ => None
+        let book = match cache.books.get(book_file) {
+          Some(b) => b
+          None => {
+            let raw = read_json_fn(join_path(sep, data, book_file))
+            let idx = index_book(raw)
+            cache.books[book_file] = idx
+            idx
+          }
         }
         let place = match team { Some(t) => t.id; None => "?" }
-        let known = jget(jget(names, "u:\{place}:\{user}"), "person")
+        let known = jget(book.get("u:\{place}:\{user}"), "person")
         let (name, email) = match jget(known, "name") {
           Some(Str(n)) => {
             let n = n
@@ -233,6 +276,11 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
     return { "name": Json::null(), "email": Json::null(), "via": "local" }
   }
   { "name": Json::null(), "email": Json::string(ref), "via": "cloud" }
+}
+
+///|
+fn outflow_person(host : @host.Host, data : String, sep : String, cache : OutflowCache, ref : String) -> Json raise {
+  outflow_person_with(path => read_json(host, path), data, sep, cache, ref)
 }
 
 ///|
@@ -277,15 +325,7 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
     ])
   }
   let page = take_rows(rows, limit)
-  let mut known : Map[String, Team]? = None
-  let teams_of = () => match known {
-    Some(t) => t
-    None => {
-      let t = teams(host, data, sep)
-      known = Some(t)
-      t
-    }
-  }
+  let cache = OutflowCache::new()
   let people : Map[String, Json] = Map([])
   let messages = []
   for e in page {
@@ -308,7 +348,7 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
       let p = match people.get(a) {
         Some(p) => p
         None => {
-          let p = outflow_person(host, data, sep, teams_of, a)
+          let p = outflow_person(host, data, sep, cache, a)
           people[a] = p
           p
         }

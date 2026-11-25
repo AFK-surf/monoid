@@ -827,7 +827,11 @@ let info_facts_line : @ui.Style = @ui.css("row w=Full pt=S1_5 pb=S2 gap=S2 align
 
 ///|
 // kept across runs: a value (no field of it changes)
-let info_facts_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+let info_facts_words : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  color=Muted,
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+)
 
 ///|
 /// The way back to the chat an agent opened it from: its icon 16, its corner 8.

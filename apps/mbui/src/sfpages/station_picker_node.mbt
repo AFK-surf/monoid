@@ -326,7 +326,7 @@ fn sp_auto_row_node(
           .allow_ellipsis(Is(true))
           |> ignore
           if is_auto {
-            @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
+            @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
           }
         })
         |> ignore
@@ -400,7 +400,7 @@ fn sp_compact_station_row_node(
           }
           station_state_node(head, fn() { st })
           if here {
-            @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
+            @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
           }
         })
         |> ignore
@@ -770,7 +770,7 @@ fn sp_wide_table_node(
           @sf.words_node(btn, auto_label, fn() { if is_auto { sp_auto_pill_words_on } else { sp_auto_pill_words } })
           |> ignore
           if is_auto {
-            @sf.icon_node(btn, "check", 13.0, By(fn() { @sf.theme().p.accent })) |> ignore
+            @sf.icon_node(btn, "check", 13.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
           }
         },
       )
@@ -846,7 +846,7 @@ fn sp_wide_table_node(
                 |> ignore
               }
               if here {
-                @sf.icon_node(c1, "check", new_mark, By(fn() { @sf.theme().p.accent })) |> ignore
+                @sf.icon_node(c1, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
               }
             })
             |> ignore
@@ -1150,7 +1150,14 @@ let sp_cell_warn : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=W
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_cell_danger : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, wrap=false, w=Hug)
+let sp_cell_danger : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  leading=L5,
+  color=Danger,
+  dark=@ui.text_patch(color=Over(Danger, A(Fg, O25))),
+  wrap=false,
+  w=Hug,
+)
 
 ///|
 // kept across runs: a value (no field of it changes)

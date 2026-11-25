@@ -1204,7 +1204,14 @@ let local_list_most : Double = 265.0
 // kept across runs: a value
 let face_name_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Fg, w=Full)
 // kept across runs: a value
-let face_sample_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L6, color=Muted, w=Full, max_lines=1)
+let face_sample_words : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  leading=L6,
+  color=Muted,
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+  w=Full,
+  max_lines=1,
+)
 // kept across runs: a value
 let face_status_room : @ui.Style = @ui.css("ml=S2")
 // kept across runs: a value

@@ -9,6 +9,7 @@ import { fallbackEfforts } from "../sessions/pool.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { checkNetwork } from "../mesh/settings.ts";
 import { checkAgentEnv } from "../ops/agent-env.ts";
+import { checkManagedMcp } from "../tools/managed-mcp-config.ts";
 import { DEFAULT_SERVICES, type ServiceRegistry } from "./services.ts";
 
 const ACCESS_KINDS = ["subscription", "opencode-go", "anthropic-api", "env", "api-provider", "service"];
@@ -56,6 +57,8 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
   }
   // The variables for what it starts for its agents (src/ops/agent-env.ts).
   checkAgentEnv(raw.agentEnv);
+  // Station-managed third-party MCP servers (src/tools/managed-mcp-config.ts).
+  checkManagedMcp(raw.mcpServers);
   // Backup targets (src/replica/backup-config.ts): checked inline so accounts/ imports no part.
   if (raw.backup !== undefined && raw.backup !== null) {
     if (!isObject(raw.backup)) throw new Error("backup must be an object");

@@ -28,6 +28,7 @@ import { deviceBuildsOf } from "./device-builds.ts";
 import { Traces } from "./traces.ts";
 import { SubscriptionRef } from "effect";
 import { fileRecoverStore, keepRelays, wantedRelays } from "./relays.ts";
+import { screenSeen } from "../api/seen.ts";
 import { ALPN, type Members, answerGiven, handledGiven, sawBuild, seenDevicesOf, serve } from "./serve.ts";
 import { SERVED_ROUTES, Served } from "./served.ts";
 import { BUILD_HEADER } from "../api/oldest.ts";
@@ -206,7 +207,7 @@ export const MeshLive = Layer.effectDiscard(
       deviceBuildsOf(cloud.state, store);
       // (and the members' devices seen, read before the first hello, not as it comes)
       seenDevicesOf(cloud.state);
-      const members: Members = { ...(meshDirectory && endpoint.meshAttachLeaf ? {leaves:new LeafAttachments(endpoint,meshDirectory,cloud.state)} : {}), cloud: cloud.state, admin, up: () => SubscriptionRef.getUnsafe(up), streams: (head: any) => parts.streamOf(head), screens, traces, accepted: plane.credential, lan: () => lanAddrs(endpoint.sockets()), tailnet: () => tailnetAddrs(endpoint.sockets()), connected: () => parts.connected() };
+      const members: Members = { ...(meshDirectory && endpoint.meshAttachLeaf ? {leaves:new LeafAttachments(endpoint,meshDirectory,cloud.state)} : {}), cloud: cloud.state, admin, up: () => SubscriptionRef.getUnsafe(up), streams: (head: any) => parts.streamOf(head), screens, canSeeScreen: (viewer, source) => screenSeen(store, viewer, source), traces, accepted: plane.credential, lan: () => lanAddrs(endpoint.sockets()), tailnet: () => tailnetAddrs(endpoint.sockets()), connected: () => parts.connected() };
       // The reads the MoonBit program answers itself (served.ts), where the front keeps the endpoint and the program is
       // here: the front hands it their streams, and this process only who each connection's member is.
       const route = endpoint.route?.bind(endpoint);

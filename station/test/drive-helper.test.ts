@@ -50,10 +50,12 @@ class FakeHelper {
     this.home = home;
   }
 
-  launch = async (_app: string, env: Record<string, string>) => {
+  launch = async (app: string, env: Record<string, string>) => {
     if (this.#closed) throw new Error("the test is over");
     this.launches++;
-    this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token: env.STILLFAIL_HELPER_TOKEN! };
+    assert.equal(env.STILLFAIL_HELPER_TOKEN, undefined, "token must not be passed in launch env");
+    const token = readFileSync(join(dirname(app), "token"), "utf8").trim();
+    this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token };
     await this.#listen();
   };
   async #listen() {
@@ -336,14 +338,16 @@ test("the fake helper closes every listener when started again", { skip: WINDOWS
   try {
     const dir = join(base, "helper");
     mkdirSync(dir, { recursive: true });
-    const env = { STILLFAIL_HELPER_SOCKET: join(dir, "helper.sock"), STILLFAIL_HELPER_TOKEN: "test" };
-    await fake.launch("", env);
-    await fake.launch("", env);
+    writeFileSync(join(dir, "token"), "test", { mode: 0o600 });
+    const env = { STILLFAIL_HELPER_SOCKET: join(dir, "helper.sock") };
+    await fake.launch(join(dir, HELPER_APP), env);
+    await fake.launch(join(dir, HELPER_APP), env);
     fake.close();
     const otherDir = join(simultaneous.base, "helper");
     mkdirSync(otherDir, { recursive: true });
-    const otherEnv = { STILLFAIL_HELPER_SOCKET: join(otherDir, "helper.sock"), STILLFAIL_HELPER_TOKEN: "test" };
-    await Promise.all([simultaneous.fake.launch("", otherEnv), simultaneous.fake.launch("", otherEnv)]);
+    writeFileSync(join(otherDir, "token"), "test", { mode: 0o600 });
+    const otherEnv = { STILLFAIL_HELPER_SOCKET: join(otherDir, "helper.sock") };
+    await Promise.all([simultaneous.fake.launch(join(otherDir, HELPER_APP), otherEnv), simultaneous.fake.launch(join(otherDir, HELPER_APP), otherEnv)]);
     simultaneous.fake.close();
     assert.equal(servers.filter((s) => s.listening).length, 0, "no listener outlives the fake helper");
   } finally {

@@ -310,6 +310,11 @@ let presented_now : Array[Presented] = []
 let presented_count : Ref[Int] = Ref(0)
 
 ///|
+/// The serial of the presenter most recently opened or pushed onto (`panel_page`, `menu_push`).
+// kept across runs: put back by presenters_reset (parts_reset)
+let presented_last : Ref[Int] = Ref(0)
+
+///|
 /// What is presented as it was last told (presented_told): each one's serial, whether it is open, closed whether the
 /// window's tree draws it still going out, the lowest first. What reads what is presented (the host, presented; presenting, the scrim's
 /// owner, what of them the tree draws) built again as that changes, wherever it was asked from, not as what one of
@@ -409,6 +414,7 @@ pub fn presenters_reset() -> Unit {
   presented_items_said.clear()
   presented_said.val.set([])
   presented_count.val = 0
+  presented_last.val = 0
   presented_alone.val = false
   presented_how.clear()
   presented_sheets.val = false
@@ -473,6 +479,7 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
     _ => ()
   }
   presented_count.val += 1
+  presented_last.val = presented_count.val
   match chosen_in {
     Some(old) => {
       old.taken_by = presented_count.val
@@ -685,22 +692,51 @@ pub fn panel_go_nodes(
   back? : () -> Unit,
   live? : () -> (String, String, String),
 ) -> Unit {
-  let steps_of = fn(q : Presented) {
-    match q.shows {
-      Panel({ nodes: { steps: true, .. }, .. }) => true
-      _ => false
+  let steps_base = fn(q : Presented) -> (PanelOf, Anchor)? {
+    let more = q.more.untracked()
+    if more.length() > 0 {
+      let pg = more[more.length() - 1]
+      if pg.x.nodes.steps {
+        Some((pg.x, pg.from))
+      } else {
+        None
+      }
+    } else {
+      match q.shows {
+        Panel({ nodes: { steps: true, .. }, .. } as x) => Some((x, q.from))
+        _ => None
+      }
     }
   }
-  match presented_now.iter().filter(fn(q) { q.open && steps_of(q) }).last() {
+  match presented_now.iter().filter(fn(q) { q.open && steps_base(q) is Some(_) }).last() {
     Some(p) =>
-      match p.shows {
-        Panel(x) => {
+      match steps_base(p) {
+        Some((x, from)) => {
           let n = x.nodes
-          let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: { body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0, most: n.most, flush: n.flush, head_end: None } }
-          // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
-          panel_page(p, step, p.from, left)
+          let step : PanelOf = {
+            ..x,
+            title,
+            description,
+            live,
+            on_back: back,
+            nodes: {
+              body,
+              foot,
+              hugs: n.hugs,
+              hugs_centred: n.hugs_centred,
+              steps: true,
+              sheet_heads: false,
+              heads: false,
+              top: 0.0,
+              most: n.most,
+              flush: n.flush,
+              head_end: None,
+            },
+          }
+          // (opened by what opened the stepping panel: on a sheet as far in as its first step, sheet_node's `pressed`)
+          panel_page(p, step, from, left)
         }
-        _ => ()
+        None => ()
       }
     None => ()
   }
@@ -795,7 +831,7 @@ let words_in_now : Ref[Double] = { val: 0.0 }
 ///|
 /// The one presented last (what `close_presented_of` is given to close it).
 pub fn last_presented() -> Int {
-  presented_count.val
+  presented_last.val
 }
 
 ///|
@@ -1040,6 +1076,7 @@ fn dismissed_now(serial : Int, back? : Bool = false) -> Unit {
 /// Panel `x` (opened by `from`, `gone` as panel_nodes') presented by what a page of sheet `p` held, which closed the
 /// sheet for it: a page of `p`, a step further in. `p`, closed as its page said so, is open again.
 fn panel_page(p : Presented, x : PanelOf, from : Anchor, gone : () -> Unit) -> Unit {
+  presented_last.val = p.serial
   p.open = true
   p.closed_now = false
   p.ended = false
@@ -1111,6 +1148,7 @@ fn panel_pop(p : Presented) -> Bool {
 /// Pushes a submenu level onto an `AsPopover` menu `p` in place (same glass container, horizontal slide),
 /// reopening `p` from the `closed_now` state set by choosing the parent item.
 fn menu_push(p : Presented, items : Array[MenuItem?], title : String, gone : () -> Unit) -> Unit {
+  presented_last.val = p.serial
   p.open = true
   p.closed_now = false
   p.ended = false

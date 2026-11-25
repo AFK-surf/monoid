@@ -1969,6 +1969,16 @@ web-pages.archive.search
 web-pages.archive.title
 web-pages.archiving.title
 web-pages.automaticDecisions.title
+web-pages.progress.interval
+web-pages.progress.intervalNote
+web-pages.progress.lead
+web-pages.progress.remind
+web-pages.progress.remindNote
+web-pages.progress.require
+web-pages.progress.requireNote
+web-pages.progress.saveAction
+web-pages.progress.strength
+web-pages.progress.title
 web-pages.changelog.build
 web-pages.changelog.empty
 web-pages.chat.archive

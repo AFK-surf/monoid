@@ -167,6 +167,8 @@ pub(all) enum Route {
   VaultItem(String, String)
   /// the automatic decisions (AutomaticDecisionsScreen), the completion rule's page, a station's archive policy
   AutoDecisions
+  /// how the person's agents are asked for progress (进度汇报)
+  Progress
   AutoCompletion
   AutoPolicy(String)
   /// this device's bottom bars (BarSettingsScreen)
@@ -656,7 +658,7 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | Backup | StationBackup(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Network | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | Backup | StationBackup(_) | StationMove(_) | AutoDecisions | Progress | Usage | UsagePrices(_) | Shortcuts | Network | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|
@@ -682,6 +684,7 @@ pub fn route_of(name : String) -> Route? {
     "usage" => Some(Usage)
     "archive" => Some(Archive)
     "decisions-settings" => Some(AutoDecisions)
+    "progress" => Some(Progress)
     "completion" => Some(AutoCompletion)
     "bars" => Some(BarSettings)
     "kept" => Some(KeptFiles)

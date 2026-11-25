@@ -39,6 +39,9 @@ export const INFRA_LOG = [
   /\b(github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b.*\b(ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up)\b/,
   /Failed to connect to (github\.com|githubusercontent\.com|results-receiver|nuget\.org|nodejs\.org)\b/i,
 ];
+/** Git fetch RPC transport failures (408/502-504 or curl transport codes). Used only in the starved-setup branch so a
+ * retried-and-succeeded checkout line cannot excuse a later own-step test failure. */
+export const GIT_RPC = /\berror: RPC failed; (?:HTTP (?:408|50[234])\b|curl (?:16|18|28|35|52|55|56|92)\b)/i;
 /** The runner shut down under the job: GitHub's, but only before the job's time (after it, the job ran out). */
 const SHUTDOWN = /The runner has received a shutdown signal/i;
 /** What is the change's own for certain, whatever else its log says: a limit reached, an assertion, a compiler's error, a
@@ -86,7 +89,7 @@ export async function judge(job, run, log) {
         const said = lines(text);
         // (GitHub's cut at the job's 5 minutes says it exceeded the maximum execution time: that alone is not the change's)
         const hard = HARD_FAILED.filter((p) => !/exceeded the maximum execution time/.test(p.source)).find((p) => p.test(said));
-        const p = INFRA_LOG.find((q) => q.test(said));
+        const p = [...INFRA_LOG, GIT_RPC].find((q) => q.test(said));
         const infra = p && (said.split("\n").find((l) => p.test(l))?.trim().slice(0, 160) ?? String(p));
         if (!hard && infra) return { ok: true, why: `setting up took ${infraTook} s (${infra}), leaving ${ownTook} s` };
       }

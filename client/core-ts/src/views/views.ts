@@ -65,6 +65,7 @@ import { chatsCard, usageCard } from "./rail-cards.ts";
 import { resourcesView } from "./resources.ts";
 import { stationProfileSummary, workspaceProfiles } from "./profiles.ts";
 import { profilesOverview } from "./profiles-overview.ts";
+import type { ProgressChoice } from "../progress-prefs.ts";
 import { settingsView } from "./settings.ts";
 import { waysView, type WaysView } from "./ways.ts";
 import { keptWays } from "./ways-stations.ts";
@@ -1030,6 +1031,8 @@ export type ViewsEnv = {
   data: Data;
   /// The email of the signed-in account that reaches a workspace.
   emailOf: (workspace: string) => string | null;
+  /// How its person's agents are asked for progress (views/progress.ts).
+  progressOf: (workspace: string) => ProgressChoice;
   /// Whether that account is in the beta.
   betaOf: (workspace: string) => boolean;
   /// That account's sub; none where not given.
@@ -1100,6 +1103,7 @@ export function envOf(core: Inner): ViewsEnv {
     runner: core.runner,
     store: core.store,
     data: core.data,
+    progressOf: (workspace) => core.progress.shown(workspace),
     waits: (topic) => core.stationTopics.waits(topic),
     linkDiag: (station) => core.stations.link(station)?.diag ?? null,
     peerDiag: (station) => {
@@ -2320,7 +2324,7 @@ export class Views implements Owner {
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
         // (of the automatic decisions and archiving kept beside each overview, decorated as the whole decorates them:
         // never the whole, of some 150 KB a phone's each)
-        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).settings.get() }))) };
+        return { ok: settingsView(this.#core.progressOf(view.scope as string), stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).settings.get() }))) };
       }
       case "connects":
         return this.#connects(view.scope as string, view.mine === true);

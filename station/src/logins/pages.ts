@@ -26,9 +26,11 @@ export class LoginPages {
   readonly #browser: PagesBrowser;
   /// The tab open for each login, by its key.
   readonly #tabs = new Map<string, string>();
+  /// The workspace that owns each open login tab (null = home workspace).
+  readonly #workspaces = new Map<string, string | null>();
   readonly #listeners = new Set<(key: string) => void>();
-  /// Tabs being opened, by key: asked again meanwhile, the same one.
-  readonly #opening = new Map<string, Promise<string>>();
+  /// Tabs being opened, by key: asked again meanwhile, the same one (only within the same workspace).
+  readonly #opening = new Map<string, { workspace: string | null; promise: Promise<string> }>();
   /// Where each login's tab was last seen, by key: a change of it is told (the page a sign-in comes back to).
   readonly #urls = new Map<string, string | null>();
 
@@ -45,6 +47,7 @@ export class LoginPages {
           continue;
         }
         this.#tabs.delete(key);
+        this.#workspaces.delete(key);
         this.#urls.delete(key);
         this.#tell(key);
       }
@@ -75,22 +78,35 @@ export class LoginPages {
   }
 
   /// The tab for `key`: the one open (in a window of its own, so seen as it is: browser.ts openTab), else a new one at
-  /// `url`. Its screen.
+  /// `url`. Its screen. Refuses cross-workspace reuse when a live tab for `key` belongs to another workspace.
   async open(key: string, url: string, options?: OpenTabOptions): Promise<string> {
+    const ws = options?.workspace ?? null;
     const had = this.#tabs.get(key);
-    if (had !== undefined && this.#browser.hasTab(had)) return tabScreen(had);
+    if (had !== undefined && this.#browser.hasTab(had)) {
+      if (this.#workspaces.has(key) && this.#workspaces.get(key) !== ws) {
+        throw new Error("this login page is already open in another workspace");
+      }
+      return tabScreen(had);
+    }
     const pending = this.#opening.get(key);
-    if (pending) return pending;
-    const opening = (async () => {
-      const id = options ? await this.#browser.openTab(url, options) : await this.#browser.openTab(url);
+    if (pending) {
+      if (pending.workspace !== ws) {
+        throw new Error("this login page is already opening in another workspace");
+      }
+      return pending.promise;
+    }
+    const openOpts: OpenTabOptions | undefined = options ? { ...options, workspace: ws } : undefined;
+    const promise = (async () => {
+      const id = openOpts ? await this.#browser.openTab(url, openOpts) : await this.#browser.openTab(url);
       this.#tabs.set(key, id);
+      this.#workspaces.set(key, ws);
       this.#urls.set(key, this.#browser.tabUrl?.(id) ?? null);
       log.info("logins", "a login's page opened in the station's browser", { login: key });
       this.#tell(key);
       return tabScreen(id);
     })().finally(() => this.#opening.delete(key));
-    this.#opening.set(key, opening);
-    return opening;
+    this.#opening.set(key, { workspace: ws, promise });
+    return promise;
   }
 
   /// The login ended: its tab closed.
@@ -98,6 +114,7 @@ export class LoginPages {
     const id = this.#tabs.get(key);
     if (id === undefined) return;
     this.#tabs.delete(key);
+    this.#workspaces.delete(key);
     this.#urls.delete(key);
     void this.#browser.closeTab(id);
     this.#tell(key);

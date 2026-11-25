@@ -3529,11 +3529,6 @@ async fn Actors::fire_wait(self : Actors, a : Actor, wait : Int, seconds : Doubl
 }
 
 ///|
-/// How long a continuous waiting chain may go without posting in the chat before the next wakeup asks for a brief
-/// progress update (10 minutes).
-let progress_remind_ms : Double = 600000.0
-
-///|
 fn Actors::note_posted(self : Actors, a : Actor) -> Unit {
   a.posted = true
   a.last_post_at = self.now
@@ -3561,19 +3556,14 @@ fn Actors::track_silent_wait(self : Actors, a : Actor, t : Turn) -> Unit {
 }
 
 ///|
-/// When a session in a continuous waiting chain has not posted to the chat for at least `progress_remind_ms` (and has
-/// not been reminded within that same interval), returns a brief reminder to append to the next wakeup.
+/// When a session in a continuous waiting chain has not posted to the chat for as long as the person who started it
+/// set (and has not been reminded within that same interval), returns what to append to the next wakeup: Node's words,
+/// none while it is not due (mb-actor.ts `silentProgress`).
 async fn Actors::maybe_progress_reminder(self : Actors, a : Actor) -> (String?, Bool) raise {
   guard a.silent_waiting_since is Some(since) else { return (None, false) }
   let silent_ms = self.now - since
-  if silent_ms < progress_remind_ms {
-    return (None, false)
-  }
-  if a.progress_reminded_at > 0.0 && self.now - a.progress_reminded_at < progress_remind_ms {
-    return (None, false)
-  }
-  let minutes = (silent_ms / 60000.0).floor()
-  let words = self.words(a, "silentProgress", args=[jnum(minutes)]) catch { _ => "" }
+  let reminded_ms = if a.progress_reminded_at > 0.0 { jnum(self.now - a.progress_reminded_at) } else { Json::null() }
+  let words = self.words(a, "silentProgress", args=[jnum(silent_ms), reminded_ms]) catch { _ => "" }
   if words == "" {
     return (None, false)
   }

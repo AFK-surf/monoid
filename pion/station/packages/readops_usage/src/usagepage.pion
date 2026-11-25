@@ -1115,6 +1115,7 @@ fn usage_answer_parts(
     Ok(gs) => gs
     Err(e) => return Err(e)
   }
+  let price_cache : Map[String, Option[readops_local::Price]] = Map::new()
   let rows : Array[base_codec::Json] = []
   for i in 0..<visible.length() {
     let g = visible[i]
@@ -1132,7 +1133,7 @@ fn usage_answer_parts(
         ("cacheRead", base_codec::json_num(g.cache_read)),
         ("cacheWrite", base_codec::json_num(g.cache_write + g.cache_write_long)),
         ("output", base_codec::json_num(g.output)),
-        ("cost", readops_local::cost(state, g)),
+        ("cost", readops_local::cost_cached(state, price_cache, g)),
       ]),
     )
   }
@@ -1534,80 +1535,59 @@ pub fn outflow_usage(
   let from_i64 = builders_core::double_to_i64_saturating(from)
   let to_i64 = builders_core::double_to_i64_saturating(to)
   let tz_i64 = builders_core::double_to_i64_saturating(tz)
-  let asked = Asked::{
-    from: from_i64,
-    to: to_i64,
-    offset: tz_i64,
-    reading: false,
-    viewer: Some(
+  let viewer = readops_local::viewer_of(
+    Some(
       base_codec::json_obj([
         ("workspace", of.0),
         ("home", base_codec::json_bool(of.1)),
       ]),
     ),
-    history: false,
-    history_range: None,
-    remote_from: from_i64,
-    remote_runs: false,
-    metadata: false,
-  }
-  let read_parts = match usage_answer_parts(
-    db,
-    state,
-    readops_core::Known::of(state.client, data, state.sep, ask),
-    asked,
-    base_codec::json_null(),
-  ) {
-    Ok(v) => v
+  )
+  let visible = match readops_local::usage_groups(db, from_i64, to_i64, tz_i64, viewer) {
+    Ok(gs) => gs
     Err(e) => return Err(e)
   }
-  // Consume `base_codec::Json` directly (zero JValue round-trip, preserving exact `since` repr).
-  let read = base_codec::json_obj(read_parts.fields)
+  let since = match usage_since(db) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let price_cache : Map[String, Option[readops_local::Price]] = Map::new()
   let cache = TeamsCache::new()
   let rows : Array[base_codec::Json] = []
   let people_keys : Array[String] = []
   let people_map : Map[String, base_codec::Json] = Map::new()
-  match readops_core::json_val(read, "rows") {
-    Some(base_codec::Json::Arr(rs)) => {
-      for i in 0..<rs.length() {
-        let r = rs[i]
-        let get = fn(k : String) -> base_codec::Json {
-          readops_core::json_val_or_null(r, k)
-        }
-        let person_v = get("person")
-        rows.push(
-          base_codec::json_obj([
-            ("day", get("day")),
-            ("thread", get("thread")),
-            ("session", get("session")),
-            ("person", person_v),
-            ("account", get("profile")),
-            ("runtime", get("runtime")),
-            ("model", get("model")),
-            ("calls", get("calls")),
-            ("input", get("input")),
-            ("cacheRead", get("cacheRead")),
-            ("cacheWrite", get("cacheWrite")),
-            ("output", get("output")),
-            ("cost", get("cost")),
-          ]),
-        )
-        match person_v {
-          base_codec::Json::Str(p) => {
-            if !people_map.contains(p) {
-              let resolved = match outflow_person(state.client, data, state.sep, cache, p) {
-                Ok(v) => v
-                Err(e) => return Err(e)
-              }
-              people_keys.push(p)
-              people_map.set(p, resolved)
-            }
+  for i in 0..<visible.length() {
+    let g = visible[i]
+    rows.push(
+      base_codec::json_obj([
+        ("day", base_codec::json_str(g.day)),
+        ("thread", g.thread),
+        ("session", g.session),
+        ("person", g.person),
+        ("account", g.profile),
+        ("runtime", g.runtime),
+        ("model", g.model),
+        ("calls", base_codec::json_num(g.calls)),
+        ("input", base_codec::json_num(g.input)),
+        ("cacheRead", base_codec::json_num(g.cache_read)),
+        ("cacheWrite", base_codec::json_num(g.cache_write + g.cache_write_long)),
+        ("output", base_codec::json_num(g.output)),
+        ("cost", readops_local::cost_cached(state, price_cache, g)),
+      ]),
+    )
+    match g.person {
+      base_codec::Json::Str(p) => {
+        if !people_map.contains(p) {
+          let resolved = match outflow_person(state.client, data, state.sep, cache, p) {
+            Ok(v) => v
+            Err(e) => return Err(e)
           }
-          _ => ()
+          people_keys.push(p)
+          people_map.set(p, resolved)
         }
       }
+      _ => ()
     }
-    _ => ()
   }
   let people_fields : Array[(String, base_codec::Json)] = []
   for i in 0..<people_keys.length() {
@@ -1622,7 +1602,7 @@ pub fn outflow_usage(
       ("from", base_codec::json_num(from)),
       ("to", base_codec::json_num(to)),
       ("tz", base_codec::json_num(tz)),
-      ("since", readops_core::json_val_or_null(read, "since")),
+      ("since", since),
       ("rows", base_codec::json_arr(rows)),
       ("people", base_codec::json_obj(people_fields)),
     ]),
