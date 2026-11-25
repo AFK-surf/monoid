@@ -129,7 +129,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     },
   )
   |> ignore
-  // Tab / Shift+Tab while the image viewer's bars are faded immediately wakes the top bar and arms 1800ms.
+  // Tab / Shift+Tab while the image viewer's bars are hidden immediately wakes the top bar.
   let can_wake_tab = fn() {
     live() && !vw.closing && !marking.on && vw.shown_kind() == Some(KImage) && !@signals.untracked(fn() { vw.bars_shown() })
   }
@@ -140,9 +140,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     fn(_) {
       if can_wake_tab() {
         vw.wake()
-        if @sf.pointer_rests() {
-          vw.arm_idle(root, root.cause_at())
-        }
         true
       } else {
         false
@@ -153,7 +150,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   |> ignore
   // (its layer made again for another tier of the window, this one let go of after it as what is shared in it is
   // let go of as the change is committed: only the one it is in now owns shared timers and gesture handles; when a new
-  // layer takes over, end any in-flight trackpad pull from the old canvas without touching the new layer's idle timer)
+  // layer takes over, end any in-flight trackpad pull from the old canvas)
   if vw.tree_layers > 0 {
     (vw.wheel_off)()
     vw.wheel_off = fn() {  }
@@ -176,7 +173,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   n.owns(fn() {
     if vw.tree_layers == layer {
       vw.in_tree = false
-      vw.cancel_idle()
       (vw.hold_off)()
       vw.hold_off = fn() {  }
       (vw.wheel_off)()
@@ -185,21 +181,13 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     }
   })
   |> ignore
-  // desktop pointer 1800ms auto-fade on the viewer root node (`later=true`), re-armed when the last lock clears and
-  // cleared immediately when the pointer leaves the window
+  // desktop pointer: the bars kept once the last lock clears (unless a click hid them or the pointer left), hidden
+  // at once when the pointer leaves the window; never hidden by themselves for the hand resting
   if vw.shown_kind() == Some(KImage) {
-    if vw.awake && @sf.pointer_rests() {
-      vw.arm_idle(root, root.cause_at())
-    }
     root.reacts(at_start=false, fn() { vw.bars_locked() }, fn(locked) {
-      if locked {
-        vw.cancel_idle()
-      } else if @sf.pointer_rests() && !vw.closing && !vw.manual_hidden && !vw.pointer_left {
-        if !vw.awake {
-          vw.awake = true
-          vw.awake_said()
-        }
-        vw.arm_idle(root, root.cause_at())
+      if !locked && @sf.pointer_rests() && !vw.closing && !vw.manual_hidden && !vw.pointer_left && !vw.awake {
+        vw.awake = true
+        vw.awake_said()
       }
     })
     root.reacts(at_start=false, fn() { root.pointer_within() && @sf.pointer_rests() }, fn(within) {
@@ -221,7 +209,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
           changed = true
         }
         if !@signals.untracked(fn() { vw.bars_locked() }) {
-          vw.cancel_idle()
           if vw.awake {
             vw.awake = false
             changed = true
@@ -437,7 +424,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       }))
       .on_drag(
         fn(d) {
-          vw.finger_on(root, canvas, src, d, fn(dir) {
+          vw.finger_on(canvas, src, d, fn(dir) {
             let z = if dir < 0 { left_zone_ref.val } else { right_zone_ref.val }
             match z {
               Some(node) => node.pointer_within()
@@ -457,7 +444,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
           return
         }
         vw.pointer_left = false
-        let at = canvas.cause_at()
         let in_left = match left_zone_ref.val {
           Some(z) => z.pointer_within()
           None => false
@@ -475,14 +461,9 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
           vw.manual_hidden = false
           changed = true
         }
-        if !in_left && !in_right && !in_top {
-          if !vw.awake {
-            vw.awake = true
-            changed = true
-          }
-          vw.arm_idle(root, at)
-        } else if vw.awake && !@signals.untracked(fn() { vw.bars_locked() }) {
-          vw.arm_idle(root, at)
+        if !in_left && !in_right && !in_top && !vw.awake {
+          vw.awake = true
+          changed = true
         }
         if changed {
           vw.awake_said()
@@ -711,7 +692,7 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       marks_said()
       !marking.on && vw.shown_kind() == Some(KImage)
     },
-    fn(h) { image_steps(h, root, src, vw, stage) },
+    fn(h) { image_steps(h, src, vw, stage) },
   )
   // (a mouse's pointer along the top where the bar across it is: the bar shown while it is there, whatever is over it
   // then, the bar itself as it shows; as the pointer comes in or goes out)
@@ -926,7 +907,6 @@ struct NativeSaid {
 /// on the stage, in the canvas's own terms; how far a finger went, in the window's.
 fn Viewer::finger_on(
   self : Viewer,
-  root : @view.View,
   canvas : @view.View,
   src : Source,
   d : @view.Drag,
@@ -1070,7 +1050,7 @@ fn Viewer::finger_on(
         v.held = false
         return
       }
-      v.image_let_go(c, root, canvas, src, d, pinched, in_side_zone)
+      v.image_let_go(c, canvas, src, d, pinched, in_side_zone)
     }
   }
 }
@@ -1223,7 +1203,6 @@ fn Viewer::pinch_now(self : Viewer) -> (Double, Double, Double) {
 fn Viewer::image_let_go(
   self : Viewer,
   c : @ui.Ctx,
-  root : @view.View,
   canvas : @view.View,
   src : Source,
   d : @view.Drag,
@@ -1275,18 +1254,12 @@ fn Viewer::image_let_go(
       None => false
     }
     // (alone, its bars and the ways beside it shown or hidden at once, at its moment: never waiting to see whether a
-    // second comes, which zooms; a mouse's click that shows them starts the idle fade's time again)
+    // second comes, which zooms)
     let toggle = fn(desktop : Bool) {
       let want_show = !@signals.untracked(fn() { v.bars_shown() })
-      if desktop {
-        v.cancel_idle()
-      }
       if !v.closing {
         // (the change's own moment, what the bars' reactions are told it at: viewer_bars_at_once)
         v.set_bars_after_tap(want_show, desktop~, at=canvas.cause_at())
-      }
-      if desktop && v.awake {
-        v.arm_idle(root, at)
       }
     }
     if v.down_pointer {
@@ -1300,9 +1273,6 @@ fn Viewer::image_let_go(
       } else if on_picture {
         if canvas.twice(d) {
           z.double_tap(d.x, d.y, at~)
-          if v.awake && @sf.pointer_rests() {
-            v.arm_idle(root, at)
-          }
         } else if !marking.on {
           toggle(true)
         }
@@ -1346,36 +1316,6 @@ fn Viewer::pull_let_go(self : Viewer, c : @ui.Ctx, d : @view.Drag, vy : Double) 
 /// Shared timer helper for viewer root/canvas deadlines (single `at_moment` callsite in `viewer_tree.mbt`).
 fn viewer_at(node : @view.View, due : Double, on_due : () -> Unit, later? : Bool = false) -> () -> Unit {
   node.at_moment(due, on_due, later~)
-}
-
-///|
-/// Arm (or re-arm) the single desktop `image_idle_ms` auto-fade timer on the viewer root node `root` (`later=true`).
-fn Viewer::arm_idle(self : Viewer, root : @view.View, at : Double) -> Unit {
-  self.cancel_idle()
-  if self.shown_kind() != Some(KImage) || !@sf.pointer_rests() || self.closing {
-    return
-  }
-  if @signals.untracked(fn() { self.bars_locked() }) {
-    return
-  }
-  let gen = self.tree_layers
-  self.idle_off = viewer_at(
-    root,
-    at + image_idle_ms,
-    fn() {
-      if self.tree_layers != gen {
-        return
-      }
-      self.idle_off = fn() {  }
-      if !self.closing && @sf.pointer_rests() && !@signals.untracked(fn() { self.bars_locked() }) {
-        if self.awake {
-          self.awake = false
-          self.awake_said()
-        }
-      }
-    },
-    later=true,
-  )
 }
 
 ///|
@@ -1837,7 +1777,7 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
 /// per-direction awake via `Viewer::step_shown(dir)` (left/right 84 pt hot zones light only their own arrow),
 /// as far in as the viewer is (Viewer::shown_on), a phone's sizes under 640; pressed, a step to
 /// that one at the press's moment (Viewer::go). Their tips in a layer of their own over all of it.
-fn image_steps(h : @view.View, root : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
+fn image_steps(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
   h.over(Is(true)) |> ignore
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
@@ -1849,9 +1789,6 @@ fn image_steps(h : @view.View, root : @view.View, src : Source, vw : Viewer, sta
     if vw.manual_hidden {
       vw.manual_hidden = false
       vw.awake_said()
-    }
-    if vw.awake && !@signals.untracked(fn() { vw.bars_locked() }) {
-      vw.arm_idle(root, root.cause_at())
     }
   })
   @sf.viewer_steps_node(

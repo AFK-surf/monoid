@@ -96,30 +96,27 @@ test "desk: Esc closes a chat's film as it flies in, before its player is up" {
 }
 
 ///|
-test "desk: idle auto-fades after 1800ms, click on image toggles bars, double-click zooms, blank space closes" {
+test "desk: bars never fade by themselves, click on image toggles bars, double-click zooms, blank space closes" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
-  // re-arm idle timer from a known cause moment, then verify 1799ms / 1800ms auto-fade
+  // never fading by itself, however long the pointer rests
   t.move_to(640.0, 400.0)
   t.draw()
-  let tick_ms = 1.0
-  t.run_for(@sfbase.image_idle_ms - tick_ms)
+  t.run_for(10000.0)
   assert_true(v.bars_shown())
-  t.run_for(tick_ms)
-  assert_true(!v.bars_shown())
-  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still (the first's showing
+  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still (the first's hiding
   // of the bars at once standing)
   t.tap(640.0, 400.0)
   t.tap(640.0, 400.0)
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
   assert_true(v.zoom.zoomed_at(t.time()))
-  assert_true(v.bars_shown())
-  // one click on the picture toggles bars off at once (never closes the preview)
+  assert_true(!v.bars_shown())
+  // one click on the picture toggles bars back on at once (never closes the preview)
   t.tap(640.0, 400.0)
   t.draw()
   assert_true(viewer.get() is Some(_))
-  assert_true(!v.bars_shown())
+  assert_true(v.bars_shown())
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
   // opened again, a click in blank space outside the picture closes it at once

@@ -3001,7 +3001,7 @@ fn head_drawn() -> Double {
 }
 
 ///|
-test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer along the top, marking begun there, the pointer back on the picture; Escape leaves marking: the floating bar goes as hidden bars do" {
+test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer along the top, marking begun there, the pointer back on the picture; Escape leaves marking: the floating bar stays, never fading by itself" {
   let t = preview_tester("image", w=390.0, platform=0)
   let v = viewer.get().unwrap()
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
@@ -3028,12 +3028,12 @@ test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer 
   assert_eq(head_drawn(), 1.0, msg="marking: shown")
   t.key(@ui.key_escape)
   assert_true(!marking.on, msg="Escape: marking left")
-  // Leaving an in-window interaction lock restores a full 1800ms grace period before auto-fading
+  // Leaving an in-window interaction lock leaves the bars shown, never fading by themselves
   t.run_for(@sf.sleep_ms * 2.0)
   assert_true(!v.near_bar, msg="the pointer not back along the top")
-  assert_true(v.bars_shown(), msg="marking left: bars stay shown for full 1800ms grace period")
-  t.run_for(@sfbase.image_idle_ms + @sf.sleep_ms * 2.0)
-  assert_eq(head_drawn(), 0.0, msg="marking left, past 1800ms idle: gone")
+  assert_true(v.bars_shown(), msg="marking left: bars stay shown")
+  t.run_for(10000.0)
+  assert_eq(head_drawn(), 1.0, msg="marking left, a long rest after: still shown")
 }
 
 ///|

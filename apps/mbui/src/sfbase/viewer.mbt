@@ -6,9 +6,9 @@
 // Markdown rendered; CSV as a table; code and text as they are. Anything else says it cannot be shown and offers the
 // download. One bar floats over the full-bleed stage with its name and tools. Back (or ×) closes it; with a desktop
 // pointer, clicking blank space outside a sized picture (and outside active side arrow zones) closes it while clicking
-// the picture toggles bars and arrows, and bars auto-fade after 1800 ms idle; with touch (including iPhone Duo fitted
-// view), tapping anywhere toggles bars and arrows while dragging down or a trackpad's two fingers going down closes it
-// (zuozijian, 2026-11-25, superseding the 2026-11-15 #6550 tap-picture-to-close rule).
+// the picture toggles bars and arrows, never hidden by themselves for the hand resting; with touch (including iPhone Duo
+// fitted view), tapping anywhere toggles bars and arrows while dragging down or a trackpad's two fingers going down
+// closes it (zuozijian, 2026-11-25, superseding the 2026-11-15 #6550 tap-picture-to-close rule and the idle auto-fade).
 //
 // An image or a video flies from the chat's thumbnail and back into it; a video closed
 // so keeps the frame it was left at, which its thumbnail shows and where it goes on from when opened again
@@ -207,8 +207,9 @@ pub(all) struct Viewer {
   asked_told : @signals.Signal[Int]
   /// …or to be installed (an APK)
   mut install_after : Bool
-  /// the bars shown: on desktop pointer, auto-fades after `image_idle_ms` idle and toggled by clicking the picture;
-  /// on touch, toggled by tapping anywhere (zuozijian, 2026-11-25, superseding 2026-11-15 #6550 tap-picture-to-close).
+  /// the bars shown: toggled by clicking the picture on desktop pointer, by tapping anywhere on touch, never hidden by
+  /// themselves for the hand resting (zuozijian, 2026-11-25, superseding 2026-11-15 #6550 tap-picture-to-close and the
+  /// idle auto-fade).
   /// Told as it changes (`awake_told`: what shows the bars and side arrows follows it).
   mut awake : Bool
   awake_told : @signals.Signal[Int]
@@ -217,10 +218,10 @@ pub(all) struct Viewer {
   /// a mouse's pointer in the left / right `viewer_step_zone_w` (84 pt) hot zone: lights only that side's arrow
   mut near_left : Bool
   mut near_right : Bool
-  /// keyboard focus inside the viewer's top bar (locks auto-fade)
+  /// keyboard focus inside the viewer's top bar (keeps the bars)
   mut bar_focused : Bool
   mut bar_focus_count : Int
-  /// picture context menu currently open (locks auto-fade)
+  /// picture context menu currently open (keeps the bars)
   mut menu_open : Bool
   /// user manually hid bars/arrows by clicking the picture: suppresses near_bar/near_left/near_right rebound until a
   /// real pointer move arrives
@@ -229,8 +230,6 @@ pub(all) struct Viewer {
   mut pointer_left : Bool
   /// the moment a tap last showed or hid its bars: what changes then comes and goes at once (viewer_bars_at_once_lend)
   mut bars_tapped_at : Double
-  /// single idle auto-fade timer handle owned by the viewer root node (`later=true`)
-  mut idle_off : () -> Unit
   /// whether the current press started from a resting pointer (`@sf.pointer_rests()` recorded at `Down`)
   mut down_pointer : Bool
   zoom : @motion.Zoom
@@ -967,7 +966,6 @@ pub fn new_viewer(
     manual_hidden: false,
     pointer_left: false,
     bars_tapped_at: -1.0,
-    idle_off: fn() {  },
     down_pointer: false,
     // (a tab's fitted as the whole window's is, but always as on a narrow stage: tab_picture_node lays it out so)
     zoom: if beside {
@@ -2225,10 +2223,6 @@ fn Viewer::grab_set(self : Viewer, on : Bool) -> Unit {
 }
 
 ///|
-/// Desktop pointer idle timeout before full-screen image bars and arrows auto-fade (ms).
-pub let image_idle_ms : Double = 1800.0
-
-///|
 /// Desktop side hot-zone width (pt) that wakes only the corresponding prev/next arrow.
 pub let viewer_step_zone_w : Double = 84.0
 
@@ -2241,7 +2235,6 @@ pub fn Viewer::toggle(self : Viewer) -> Unit {
     self.awake = false
     if self.shown_kind() == Some(KImage) && @sf.pointer_rests() {
       self.manual_hidden = true
-      self.cancel_idle()
     }
   } else {
     self.awake = true
@@ -2263,7 +2256,6 @@ fn Viewer::set_bars_after_tap(self : Viewer, show : Bool, desktop~ : Bool, at~ :
     self.awake = false
     if desktop && self.shown_kind() == Some(KImage) && @sf.pointer_rests() {
       self.manual_hidden = true
-      self.cancel_idle()
     }
   }
   self.awake_said()
@@ -2285,13 +2277,6 @@ fn Viewer::awake_said(self : Viewer) -> Unit {
 }
 
 ///|
-/// Cancel the pending desktop idle auto-fade timer on this viewer, if any.
-fn Viewer::cancel_idle(self : Viewer) -> Unit {
-  (self.idle_off)()
-  self.idle_off = fn() {  }
-}
-
-///|
 /// Whether the picture is currently zoomed in past fitted (or gliding there), tracked via `zoom.told()`.
 fn Viewer::zoomed_now(self : Viewer) -> Bool {
   self.zoom.told()
@@ -2300,7 +2285,7 @@ fn Viewer::zoomed_now(self : Viewer) -> Bool {
 }
 
 ///|
-/// Whether the bars are locked visible (never auto-faded while any lock holds).
+/// Whether the bars are locked visible (a click hides them not while any lock holds).
 pub fn Viewer::bars_locked(self : Viewer) -> Bool {
   self.awake_told.get() |> ignore
   self.source_told.get() |> ignore
@@ -2333,10 +2318,14 @@ pub fn Viewer::step_shown(self : Viewer, dir : Int) -> Bool {
   if !@sf.pointer_rests() {
     return self.awake
   }
+  // (a screen reader reads them out whatever a click hid)
+  if @ui.screen_reader_on() {
+    return true
+  }
   if self.manual_hidden {
     return false
   }
-  if self.awake || @ui.screen_reader_on() || self.menu_open || self.bar_focused {
+  if self.awake || self.menu_open || self.bar_focused {
     return true
   }
   if dir < 0 {
