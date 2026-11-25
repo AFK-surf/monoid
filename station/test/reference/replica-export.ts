@@ -247,6 +247,9 @@ export class Exporter {
   readonly #transcriptScanDone = new Set<string>();
   /// Workspaces this sweep is done with, `tr_del`s too.
   readonly #transcriptWsDone = new Set<string>();
+  /// A pass told of transcripts while a sweep was under way: what it told of may lie behind the cursor, so another
+  /// sweep follows this one.
+  #transcriptResweep = false;
   readonly #manifestCache = new Map<string, { rootHash: string; leafHashes: string[] }>();
   #manifestLive = new Set<string>();
   readonly #manifestSupersededAt = new Map<string, number>();
@@ -322,9 +325,19 @@ export class Exporter {
   }
 
   #forgetSweep(): void {
+    this.#endSweep();
+    this.#transcriptResweep = false;
+  }
+
+  /// A sweep over: the next starts from each workspace's first path.
+  #endSweep(): void {
     this.#transcriptCursor.clear();
     this.#transcriptScanDone.clear();
     this.#transcriptWsDone.clear();
+  }
+
+  #inTranscriptSweep(): boolean {
+    return this.#transcriptCursor.size > 0 || this.#transcriptScanDone.size > 0 || this.#transcriptWsDone.size > 0;
   }
 
   setPlaces(places: Places): void {
@@ -357,6 +370,11 @@ export class Exporter {
     this.#state.prepare("DELETE FROM transcript_files WHERE ws = ?").run(ws);
     this.#tfCache.delete(ws);
     this.#manifestCache.delete(ws);
+    // Its transcripts are written again, all of them: none is behind a cursor of the generation before.
+    this.#transcriptCursor.delete(ws);
+    this.#transcriptScanDone.delete(ws);
+    this.#transcriptWsDone.delete(ws);
+    this.#transcriptsPending = true;
     return gen;
   }
 
@@ -673,7 +691,9 @@ export class Exporter {
         say(ws, { file: f.hash, size: f.size, path });
       }
     }
+    let sweepCompleted = false;
     if (scanTranscripts) {
+      if (wantTranscripts && this.#inTranscriptSweep()) this.#transcriptResweep = true;
       if (more) {
         this.#transcriptsPending = true;
       } else {
@@ -686,7 +706,14 @@ export class Exporter {
           this.#transcriptsPending = true;
           more = true;
         } else {
-          this.#transcriptsPending = false;
+          sweepCompleted = true;
+          if (this.#transcriptResweep) {
+            this.#transcriptResweep = false;
+            this.#transcriptsPending = true;
+            more = true;
+          } else {
+            this.#transcriptsPending = false;
+          }
         }
       }
     }
@@ -702,7 +729,8 @@ export class Exporter {
     if (this.#o.compactHeads === true) {
       this.#gcManifests(outs);
     }
-    if (scanTranscripts && !this.#transcriptsPending) {
+    // After each whole sweep, a sweep to follow or not: never in the middle of one.
+    if (sweepCompleted) {
       this.#gcTranscriptChunks();
     }
     return { heads, more, wrote, read: this.#read };
@@ -1196,10 +1224,7 @@ export class Exporter {
       const scanDone = this.#transcriptScanDone.has(ws);
       const cursor = this.#transcriptCursor.get(ws);
       for (const path of paths) {
-        if (scanDone || (cursor !== undefined && path < cursor)) {
-          active.add(path);
-          continue;
-        }
+        // A path is found whether or not it is there (a `.db-wal`, an annotation): one gone is not kept.
         let st;
         try {
           st = this.#lstatPath(path);
@@ -1208,6 +1233,11 @@ export class Exporter {
           continue;
         }
         if (!st.isFile()) continue;
+        // Gone through already in this sweep: kept as found, not read again until the next sweep.
+        if (scanDone || (cursor !== undefined && path < cursor)) {
+          active.add(path);
+          continue;
+        }
         const room = foundMap.get(path) ?? null;
         const size = Number(st.size);
         const mtime = Number(st.mtimeNs / 1_000_000n);
@@ -1273,6 +1303,8 @@ export class Exporter {
       }
       const oldPaths = [...existingByPath.keys()].sort(byCodeUnits);
       if (wsTruncated) {
+        // The derived caches no longer exported go whatever else is found: by their path alone, so a sweep that keeps
+        // being cut short still lets them go. That path says it, not the disk: no readability check is needed.
         let deletedInWs = false;
         for (const oldPath of oldPaths) {
           if (active.has(oldPath) || !isPrunedBrainPath(this.#o.dataDir, oldPath)) continue;
@@ -1373,7 +1405,7 @@ export class Exporter {
         if (!deletesCut) this.#transcriptWsDone.add(ws);
       }
     }
-    if (!truncated) this.#forgetSweep();
+    if (!truncated) this.#endSweep();
     return truncated;
   }
 

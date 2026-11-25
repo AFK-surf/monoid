@@ -2355,7 +2355,7 @@ test("D75: MoonBit exporter parses head.json again only when its size or mtime c
 
 // ── D76: a transcript sweep goes on where the pass budget cut it, and the derived caches go while it is cut ──
 
-type D76Opts = { files?: number; bytes?: number; deletes?: number };
+type D76Opts = { files?: number; bytes?: number; deletes?: number; grace?: number };
 type D76Pass = { tr: string[]; trDel: string[]; more: boolean };
 
 /// The TS reference's or the MoonBit reader's exporter of `s`, with the given transcript budgets.
@@ -2371,6 +2371,7 @@ async function d76Exporter(mode: "ts" | "mb", s: { db: string; data: string }, r
       transcriptPassFiles: opts.files,
       transcriptPassBytes: opts.bytes,
       transcriptPassDeletes: opts.deletes,
+      chunkGcGraceMs: opts.grace,
       fold: false,
     });
     e.setPlaces({ home: HOME, workspaces });
@@ -2384,6 +2385,7 @@ async function d76Exporter(mode: "ts" | "mb", s: { db: string; data: string }, r
   if (opts.files !== undefined) args.push("--transcript-pass-files", String(opts.files));
   if (opts.bytes !== undefined) args.push("--transcript-pass-bytes", String(opts.bytes));
   if (opts.deletes !== undefined) args.push("--transcript-pass-deletes", String(opts.deletes));
+  if (opts.grace !== undefined) args.push("--chunk-gc-grace-ms", String(opts.grace));
   const mb = await makeMbExportHelper(s.db, replica, s.data, sid("a"), 4096, args);
   await mb.places(clock.now, workspaces);
   return {
@@ -2467,6 +2469,7 @@ test("D76: a session written all the time no longer starves the transcripts afte
     assert.ok(steps.every((p) => d76Rows(replica, HOME).includes(p)));
 
     // The last transcript changes once; the first is written before every pass, each time more than a pass's bytes.
+    // Only the first pass is told of it: the station tells of transcripts at most once in its debounce window.
     writeFileSync(tail, "z".repeat(200));
     utimesSync(tail, 1_700_000_005, 1_700_000_005);
     const seen = new Set<string>();
@@ -2478,7 +2481,7 @@ test("D76: a session written all the time no longer starves the transcripts afte
         writeFileSync(active, "a".repeat(2000 + round));
         utimesSync(active, 1_700_000_010 + round, 1_700_000_010 + round);
         clock.now += 10_000;
-        const p = await e.pass({ ...nothingTold(), transcripts: true });
+        const p = await e.pass(round === 1 ? { ...nothingTold(), transcripts: true } : nothingTold());
         passes.push({ ...d76Records(replica, HOME, seen), more: p.more });
         if (!p.more) break;
       }
@@ -2569,7 +2572,7 @@ test("D76: sweeps over several workspaces end with deleted transcripts dropped, 
       for (let more = true; more; passes++) {
         assert.ok(passes < 20, `${mode}: the sweep ends`);
         clock.now += 10_000;
-        more = (await e.pass({ ...nothingTold(), transcripts: true })).more;
+        more = (await e.pass(passes === 0 ? { ...nothingTold(), transcripts: true } : nothingTold())).more;
         for (const ws of [HOME, OTHER]) {
           const r = d76Records(replica, ws, seen[ws]!);
           sweep[ws]!.tr.push(...r.tr);
@@ -2607,4 +2610,153 @@ test("D76: sweeps over several workspaces end with deleted transcripts dropped, 
     }
   }
   if (byMode.mb !== undefined) assert.deepEqual(byMode.mb, byMode.ts, "MoonBit and the TS reference pass for pass");
+});
+
+/// A caught-up first export of `s` to `replica`, by an exporter of its own.
+async function d76CaughtUp(mode: "ts" | "mb", s: { db: string; data: string }, replica: string, clock: { now: number }) {
+  const first = await d76Exporter(mode, s, replica, clock, [{ workspace: HOME, name: "src" }]);
+  try {
+    let p = await first.pass(nothingTold());
+    for (let i = 0; i < 5 && p.more; i++) p = await first.pass(nothingTold());
+    assert.equal(p.more, false, `${mode}: caught up`);
+  } finally {
+    await first.close();
+  }
+}
+
+function d76Row(replica: string, ws: string, path: string): { size: number; chunks_json: string } | undefined {
+  const state = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+  try {
+    return state.prepare("SELECT size, chunks_json FROM transcript_files WHERE ws = ? AND path = ?").get(ws, path) as { size: number; chunks_json: string } | undefined;
+  } finally {
+    state.close();
+  }
+}
+
+test("D76: transcripts found but gone (an annotation, a .db-wal) are dropped by the sweep, behind its cursor too (TS + MoonBit)", async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  const modes: ("ts" | "mb")[] = binary !== null ? ["ts", "mb"] : ["ts"];
+  const pbtxt = join(s.cli, "annotations", `${s.agyId}.pbtxt`);
+  const wal = join(s.cli, "conversations", `${s.agyId}.db-wal`);
+  const changed = [join(s.brain, "notes", "scratch", "b.txt"), join(s.brain, "task.md")];
+  const byMode: Record<string, { trDel: string[]; passes: number }> = {};
+  for (const mode of modes) {
+    const replica = join(s.data, `replica-d76-gone-${mode}`);
+    const clock = { now: 1_700_000_000_000 };
+    writeFileSync(pbtxt, "annotation\n");
+    writeFileSync(wal, "wal\n");
+    for (const p of changed) writeFileSync(p, `first:${p}\n`);
+    await d76CaughtUp(mode, s, replica, clock);
+    assert.ok(d76Rows(replica, HOME).includes(pbtxt) && d76Rows(replica, HOME).includes(wal), `${mode}: both exported`);
+
+    // Both go (the annotation before the cursor, the .db-wal after a scan done), and the sweep is cut twice.
+    rmSync(pbtxt);
+    rmSync(wal);
+    for (const p of changed) writeFileSync(p, `second:${p}\n`);
+    const seen = new Set<string>();
+    d76Records(replica, HOME, seen);
+    const e = await d76Exporter(mode, s, replica, clock, [{ workspace: HOME, name: "src" }], { files: 1, deletes: 1 });
+    const trDel: string[] = [];
+    let passes = 0;
+    try {
+      for (let more = true; more; passes++) {
+        assert.ok(passes < 10, `${mode}: the sweep ends`);
+        clock.now += 10_000;
+        more = (await e.pass(passes === 0 ? { ...nothingTold(), transcripts: true } : nothingTold())).more;
+        trDel.push(...d76Records(replica, HOME, seen).trDel);
+      }
+    } finally {
+      await e.close();
+    }
+    assert.ok(passes >= 3, `${mode}: the sweep was cut by its files and its deletes (${passes} passes)`);
+    assert.deepEqual(trDel, [pbtxt, wal], `${mode}: tr_del for both by the end of the first sweep`);
+    const rows = d76Rows(replica, HOME);
+    assert.ok(!rows.includes(pbtxt) && !rows.includes(wal), `${mode}: no row left for either`);
+    byMode[mode] = { trDel, passes };
+  }
+  if (byMode.mb !== undefined) assert.deepEqual(byMode.mb, byMode.ts, "MoonBit and the TS reference pass for pass");
+});
+
+test("D76: a pass told of transcripts during a sweep brings another sweep after it, and each whole sweep collects chunks (TS + MoonBit)", async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  const modes: ("ts" | "mb")[] = binary !== null ? ["ts", "mb"] : ["ts"];
+  const active = join(s.cli, "annotations", `${s.agyId}.pbtxt`);
+  const tail = join(s.cli, "conversations", `${s.agyId}.db`);
+  const byMode: Record<string, D76Pass[]> = {};
+  for (const mode of modes) {
+    const replica = join(s.data, `replica-d76-resweep-${mode}`);
+    const clock = { now: 1_700_000_000_000 };
+    writeFileSync(active, "a".repeat(100));
+    writeFileSync(tail, "z".repeat(100));
+    await d76CaughtUp(mode, s, replica, clock);
+    const firstChunks = JSON.parse(d76Row(replica, HOME, active)!.chunks_json) as string[];
+    assert.equal(firstChunks.length, 1);
+    const firstChunk = join(replica, "chunks", firstChunks[0]!);
+
+    writeFileSync(active, "a".repeat(200));
+    writeFileSync(tail, "z".repeat(200));
+    const seen = new Set<string>();
+    d76Records(replica, HOME, seen);
+    const e = await d76Exporter(mode, s, replica, clock, [{ workspace: HOME, name: "src" }], { files: 1, grace: 0 });
+    const passes: D76Pass[] = [];
+    try {
+      const pass = async (told: ReturnType<typeof nothingTold>) => {
+        clock.now += 10_000;
+        const p = await e.pass(told);
+        passes.push({ ...d76Records(replica, HOME, seen), more: p.more });
+      };
+      await pass({ ...nothingTold(), transcripts: true });
+      assert.deepEqual(passes[0], { tr: [active], trDel: [], more: true }, `${mode}: cut after the first transcript`);
+      assert.ok(existsSync(firstChunk), `${mode}: no chunk collected in the middle of a sweep`);
+      // Written again behind the cursor, and told of in the middle of the sweep.
+      writeFileSync(active, "a".repeat(500));
+      await pass({ ...nothingTold(), transcripts: true });
+      assert.deepEqual(passes[1], { tr: [tail], trDel: [], more: true }, `${mode}: the sweep ends at the tail, another to follow`);
+      assert.ok(!existsSync(firstChunk), `${mode}: the whole sweep collected the chunk no longer named`);
+      for (let i = 0; i < 5 && passes.at(-1)!.more; i++) await pass(nothingTold());
+      assert.deepEqual(passes.slice(2), [{ tr: [active], trDel: [], more: false }], `${mode}: the next sweep exports what was told of`);
+      assert.equal(d76Row(replica, HOME, active)!.size, 500, `${mode}: the last write is in the copy`);
+    } finally {
+      await e.close();
+    }
+    byMode[mode] = passes;
+  }
+  if (byMode.mb !== undefined) assert.deepEqual(byMode.mb, byMode.ts, "MoonBit and the TS reference pass for pass");
+});
+
+test("D76: a generation lost in the middle of a sweep is written again whole (TS + MoonBit)", async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  const modes: ("ts" | "mb")[] = binary !== null ? ["ts", "mb"] : ["ts"];
+  const byMode: Record<string, number> = {};
+  for (const mode of modes) {
+    const replica = join(s.data, `replica-d76-lost-${mode}`);
+    const clock = { now: 1_700_000_000_000 };
+    for (const p of s.keptFiles) writeFileSync(p, `first:${p}\n`);
+    await d76CaughtUp(mode, s, replica, clock);
+    for (const p of s.keptFiles) writeFileSync(p, `second:${p}\n`);
+    const e = await d76Exporter(mode, s, replica, clock, [{ workspace: HOME, name: "src" }], { files: 1 });
+    let passes = 0;
+    try {
+      clock.now += 10_000;
+      assert.equal((await e.pass({ ...nothingTold(), transcripts: true })).more, true, `${mode}: cut short`);
+      const all = d76Rows(replica, HOME);
+      assert.deepEqual(all, [...s.keptFiles].sort());
+      rmSync(join(replica, "own", HOME), { recursive: true, force: true });
+      for (let more = true; more; passes++) {
+        assert.ok(passes < 20, `${mode}: the new generation catches up`);
+        clock.now += 10_000;
+        more = (await e.pass(nothingTold())).more;
+      }
+      assert.deepEqual(d76Rows(replica, HOME), all, `${mode}: every transcript in the new generation, those before the cursor too`);
+      const fresh = d76Records(replica, HOME, new Set());
+      assert.deepEqual(fresh.tr, all, `${mode}: written in the new generation's batches`);
+    } finally {
+      await e.close();
+    }
+    byMode[mode] = passes;
+  }
+  if (byMode.mb !== undefined) assert.equal(byMode.mb, byMode.ts, "MoonBit and the TS reference take the same passes");
 });
