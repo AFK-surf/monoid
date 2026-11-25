@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c5360f5d9](https://github.com/AFK-surf/monoid/commit/c5360f5d9310088fb6c4f26c96eb29f88f76bdbc) fix(rules): only a web page's device runs out (#86 | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 101.01 | 125.52 |
 | [05f2d897f](https://github.com/AFK-surf/monoid/commit/05f2d897fca75d83bab1c4d2f36022735633c2fa) perf(station): eliminate cross-station slot sync S | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 100.91 | 130.84 |
 | [bf6c0b0b1](https://github.com/AFK-surf/monoid/commit/bf6c0b0b1ef743dcb270744775fbcb57298959c0) fix(mbui): part the stations sidebar's cards and g | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 100.91 | 130.84 |
 | [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 2.54 | 3.43 | 14.17 | 36.71 | 55.44 | 32.06 | 64.85 | 100.84 | 131.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3624aac3f](https://github.com/AFK-surf/monoid/commit/3624aac3f4a2d131a10f2cbfbf9204d885b1cf40) perf(core): read the device's values and its notic | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 100.89 | 121.83 |
 | [929390e13](https://github.com/AFK-surf/monoid/commit/929390e139704539b8d406107a49a3f7caf72299) fix(ui): align resting segmented thumb to iOS 27 ( | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 101.07 | 121.83 |
 | [a783837af](https://github.com/AFK-surf/monoid/commit/a783837af4e9e83cd77f1246ed17a7d68bcf6609) feat(mbui): increase stations list information den | 2.52 | 3.4 | 14.04 | 37.51 | 58.07 | 31.95 | 64.54 | 101.07 | 121.83 |
-| [060b36f41](https://github.com/AFK-surf/monoid/commit/060b36f410a29857fa1fff1514dcebc50f50c540) fix(replica): break pass_rows/scan_transcripts liv | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.94 | 64.5 | 100.91 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c5360f5d9](https://github.com/AFK-surf/monoid/commit/c5360f5d9310088fb6c4f26c96eb29f88f76bdbc) fix(rules): only a web page's device runs out (#86 | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.95 |
 | [05f2d897f](https://github.com/AFK-surf/monoid/commit/05f2d897fca75d83bab1c4d2f36022735633c2fa) perf(station): eliminate cross-station slot sync S | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.13 |
 | [bf6c0b0b1](https://github.com/AFK-surf/monoid/commit/bf6c0b0b1ef743dcb270744775fbcb57298959c0) fix(mbui): part the stations sidebar's cards and g | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.03 |
 | [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.02 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3624aac3f](https://github.com/AFK-surf/monoid/commit/3624aac3f4a2d131a10f2cbfbf9204d885b1cf40) perf(core): read the device's values and its notic | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.41 |
 | [929390e13](https://github.com/AFK-surf/monoid/commit/929390e139704539b8d406107a49a3f7caf72299) fix(ui): align resting segmented thumb to iOS 27 ( | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.31 |
 | [a783837af](https://github.com/AFK-surf/monoid/commit/a783837af4e9e83cd77f1246ed17a7d68bcf6609) feat(mbui): increase stations list information den | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.71 |
-| [060b36f41](https://github.com/AFK-surf/monoid/commit/060b36f410a29857fa1fff1514dcebc50f50c540) fix(replica): break pass_rows/scan_transcripts liv | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.57 |
