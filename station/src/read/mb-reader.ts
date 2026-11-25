@@ -408,7 +408,7 @@ export function mbSpawned(binary: string, args: string[], options: { background?
 export const STDIN_MOST = 64 * 1024 * 1024;
 
 /// A program's process that runs, as the station's watch over its own memory counts them (ops/self-memory.ts).
-export type LiveProgram = { pid: number; args: readonly string[]; background: boolean; startedAt: number };
+export type LiveProgram = { pid: number; binary: string; args: readonly string[]; background: boolean; startedAt: number };
 
 /// The program's process, a line of JSON each way: told its lines as "message"s, its end as "exit".
 export class MbProcess extends EventEmitter {
@@ -445,7 +445,7 @@ export class MbProcess extends EventEmitter {
       MbProcess.#live.delete(this);
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });
-    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, args, background, startedAt: wall.now() });
+    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now() });
     const said = new Said((answer) => this.emit("message", answer));
     this.#child.stdout?.on("data", (bytes: Buffer) => said.push(bytes));
     if (this.#child.stderr) createInterface({ input: this.#child.stderr }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
