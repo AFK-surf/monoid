@@ -73,7 +73,7 @@ jobs:
           RELEASE_BUILD: ${{ inputs.build }}
   tests:
     needs: guard
-    permissions: { contents: read, actions: read }
+    permissions: { contents: read, actions: read, id-token: write }
     uses: ./.github/workflows/mbui-check.yml
     # (its FARVIEW_DEPLOY_KEY: the app's Farview client)
     secrets: inherit
