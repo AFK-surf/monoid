@@ -171,7 +171,7 @@ pub trait Os {
     /// (exec, its pid kept) and does not return. Windows, which has no exec: a process of its own is handed them, and
     /// this returns true: this launcher only lingers for what it still carries and ends (run_windows.rs). Else (none,
     /// the same, one that cannot take over from this) it returns false and this one hands over.
-    fn renew(&mut self, _serving: &Self::Node, _version: &str, _served: &[(String, u16)], _heartbeats: bool) -> bool {
+    fn renew(&mut self, _serving: &Self::Node, _version: &str, _served: &[(String, u16)], _heartbeats: bool, _linked_front: bool) -> bool {
         false
     }
     /// Whether a front (front.rs) runs for the Nodes.
@@ -742,7 +742,7 @@ impl<O: Os> Lifecycle<O> {
         // one started at the machine's start would run until its next start, and nothing it is changed in would come
         // (a handover's carrying the vault's grants did not: 2026-10-30).
         if let Some(node) = self.current.as_ref().filter(|n| n.taken)
-            && self.os.renew(&node.process, &node.version, &node.served, node.heartbeats)
+            && self.os.renew(&node.process, &node.version, &node.served, node.heartbeats, node.linked_front)
         {
             log::info("the release's launcher took this one's place and goes on with the handover");
             self.renewed = true;
@@ -1300,7 +1300,7 @@ mod tests {
         fn program(&self) -> String {
             "node".into()
         }
-        fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)], _heartbeats: bool) -> bool {
+        fn renew(&mut self, serving: &FakeNode, version: &str, served: &[(String, u16)], _heartbeats: bool, _linked_front: bool) -> bool {
             self.renewed.push((serving.pid, version.to_string(), served.to_vec()));
             // (Windows': the release's launcher took this one's place)
             self.takes_place

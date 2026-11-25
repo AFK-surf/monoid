@@ -122,6 +122,16 @@ pub struct ResolvedProgram {
     fallback_pion_stamp: Option<PionStamp>,
 }
 
+/// Outcome of `Front::current()` during launcher `renew` / `resume()`.
+pub enum CurrentFront {
+    /// Kept running unchanged.
+    Kept(Front),
+    /// Ended the old front; caller should start this already-resolved replacement without re-probing `--version`.
+    SwitchTo(ResolvedProgram),
+    /// Ended the old front (streams upgrade, launcher identity change, or `EndForDirectBind`).
+    Ended,
+}
+
 /// Decision for a running front at a `SIGUSR2` handover or launcher `renew`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrontDecision {
@@ -411,7 +421,7 @@ impl Front {
 
     /// Itself where it hands streams as this launcher's release does and matches the desired engine; else ended (its
     /// connections go with it, the devices dial again), so that one of the release / desired engine starts in its place.
-    pub fn current(self, app: &Path, data: &Path) -> Option<Front> {
+    pub fn current(self, app: &Path, data: &Path) -> CurrentFront {
         let config_mesh = read_config_mesh(data);
         let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
         let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
@@ -436,14 +446,14 @@ impl Front {
         global_env: Option<&OsStr>,
         mb_var: Option<&OsStr>,
         pion_var: Option<&OsStr>,
-    ) -> Option<Front> {
+    ) -> CurrentFront {
         #[cfg(target_os = "macos")]
         let identity_changed = identity_needs_refresh(self.uuid_recorded, self.launcher_uuid.as_deref(), executable_uuid().as_deref());
         #[cfg(not(target_os = "macos"))]
         let identity_changed = false;
         let decision = self.decide_transition_with(app, config_mesh, mesh_env, global_env, mb_var, pion_var, true);
         if self.streams >= STREAMS && !identity_changed && decision == FrontDecision::Keep {
-            return Some(self);
+            return CurrentFront::Kept(self);
         }
         if identity_changed {
             log::warn(&format!("the front (pid {}) was started by another launcher identity: ending it so macOS can match its local network permission", self.pid));
@@ -454,12 +464,12 @@ impl Front {
                 FrontDecision::SwitchTo(resolved) => {
                     log::warn(&format!("the front (pid {}) runs engine {} and desired engine is {}: ending it to switch", self.pid, self.engine, resolved.engine));
                     self.end();
-                    return None;
+                    return CurrentFront::SwitchTo(resolved);
                 }
                 FrontDecision::EndForDirectBind => {
                     log::warn(&format!("the front (pid {}) engine ({}) disabled with no fallback binary: ending it for direct bind", self.pid, self.engine));
                     self.end();
-                    return None;
+                    return CurrentFront::Ended;
                 }
                 FrontDecision::Keep => {}
             }
@@ -471,7 +481,7 @@ impl Front {
             libc::waitpid(self.pid, std::ptr::null_mut(), 0);
         }
         forget_pid(&self.pid_file, self.pid);
-        None
+        CurrentFront::Ended
     }
 
     /// Ended as the launcher stops: its stdin closed (it ends by itself, its connections closed as it means), then,
@@ -1314,8 +1324,8 @@ fn connect_now(socket: &Path) -> Option<std::os::unix::net::UnixStream> {
 #[cfg(test)]
 mod engine_tests {
     use super::{
-        ENGINE_MB, ENGINE_PION, Front, FrontDecision, PROBE_STDOUT_LIMIT, PionStamp, ProbeError,
-        STREAMS, infer_engine_from_args, mb_program_with, probe_pion_mesh_support,
+        CurrentFront, ENGINE_MB, ENGINE_PION, Front, FrontDecision, PROBE_STDOUT_LIMIT, PionStamp,
+        ProbeError, STREAMS, infer_engine_from_args, mb_program_with, probe_pion_mesh_support,
         read_config_mesh_at, resolve_override_path, resolve_program_with, select_requested_engine,
         version_supports_mesh,
     };
@@ -1643,13 +1653,14 @@ mod engine_tests {
             #[cfg(target_os = "macos")]
             uuid_recorded: true,
         };
-        let kept = kept
-            .current_with(&app, Some(&cfg_pion), None, None, None, None)
-            .expect("matching engine front must be kept");
+        let kept = match kept.current_with(&app, Some(&cfg_pion), None, None, None, None) {
+            CurrentFront::Kept(f) => f,
+            _ => panic!("matching engine front must be kept"),
+        };
         assert_eq!(kept.pid, pid1);
         kept.end();
 
-        // 2. Mismatched engine ("mb" while config wants "pion" with valid Pion binary) is cleanly ended.
+        // 2. Mismatched engine ("mb" while config wants "pion" with valid Pion binary) is cleanly ended and returns SwitchTo.
         let (pid2, input2) = spawn_cat();
         let old = Front {
             pid: pid2,
@@ -1666,7 +1677,10 @@ mod engine_tests {
             #[cfg(target_os = "macos")]
             uuid_recorded: true,
         };
-        assert!(old.current_with(&app, Some(&cfg_pion), None, None, None, None).is_none());
+        assert!(matches!(
+            old.current_with(&app, Some(&cfg_pion), None, None, None, None),
+            CurrentFront::SwitchTo(ref r) if r.engine == ENGINE_PION
+        ));
         assert_ne!(unsafe { libc::kill(pid2, 0) }, 0, "old front process must have exited");
 
         // 3. Running MB when Pion fails probe keeps the healthy MB front (never kills before probing!).
@@ -1756,7 +1770,7 @@ mod engine_tests {
         ));
         waiting_mb.end();
 
-        // 6. Single `--version` probe on MB -> Pion switch (`decide_transition_with` + `start_resolved_with` runs `--version` only once).
+        // 6. Single `--version` probe on MB -> Pion switch via `current_with` (`resume()`) + `start_resolved_with`.
         let probe_count_file = dir.join("probe-count");
         let counting_pion = dir.join("counting-pion");
         write_script(
@@ -1768,7 +1782,7 @@ mod engine_tests {
             true,
         );
         let (pid6, input6) = spawn_cat();
-        let mut mb_switch = Front {
+        let mb_switch = Front {
             pid: pid6,
             input: input6,
             socket: data.join("run/front.sock"),
@@ -1783,16 +1797,15 @@ mod engine_tests {
             #[cfg(target_os = "macos")]
             uuid_recorded: true,
         };
-        let resolved = match mb_switch.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(counting_pion.as_os_str()), false) {
-            FrontDecision::SwitchTo(r) => r,
-            other => panic!("expected SwitchTo, got {other:?}"),
+        let resolved = match mb_switch.current_with(&app, Some(&cfg_pion), None, None, None, Some(counting_pion.as_os_str())) {
+            CurrentFront::SwitchTo(r) => r,
+            _ => panic!("expected CurrentFront::SwitchTo"),
         };
-        mb_switch.end();
         let started_pion = Front::start_resolved_with(resolved, &app, None, &data).expect("started pion");
         assert_eq!(started_pion.engine(), ENGINE_PION);
         started_pion.end();
         let probes = std::fs::read_to_string(&probe_count_file).unwrap().lines().count();
-        assert_eq!(probes, 1, "MB -> Pion switch must run --version exactly once");
+        assert_eq!(probes, 1, "MB -> Pion switch via resume/current_with must run --version exactly once");
 
         // 7. Non-UTF-8 `PionStamp.path` omits `fallbackPionStamp` cleanly in `Front::state()` without panicking.
         let non_utf8_stamp = PionStamp {

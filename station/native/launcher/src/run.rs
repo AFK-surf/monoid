@@ -351,7 +351,7 @@ impl Os for System {
         }
     }
 
-    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool) -> bool {
+    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool, linked_front: bool) -> bool {
         let release = self.options.app.join(LAUNCHER_IN_APP);
         let Some(theirs) = hash_of(&release) else { return false };
         if self.own == Some(theirs) {
@@ -372,6 +372,7 @@ impl Os for System {
             "admin": self.admin.as_raw_fd(),
             "parent": self.parent,
             "front": self.front.as_ref().map(|f| f.state()),
+            "linkedFront": linked_front,
             "node": {"pid": serving.pid, "control": serving.control.as_raw_fd(), "pending": serving.pending, "outgoing": *serving.outgoing.borrow(), "version": version, "served": served, "heartbeats": heartbeats},
         });
         let mut args = vec![release.as_os_str().to_owned()];
@@ -415,6 +416,8 @@ struct Resumed {
     admin: OwnedFd,
     parent: i32,
     front: Option<crate::front::Front>,
+    /// Whether the adopted Node was started linked to a front (persisted across `end_front_not_in_release`).
+    linked_front: bool,
     node: Node,
     version: String,
     served: Vec<(String, u16)>,
@@ -442,10 +445,11 @@ impl Resumed {
         let parent = state["parent"].as_i64().and_then(|n| i32::try_from(n).ok())?;
         // (none from a launcher from before it, or where none ran)
         let front = crate::front::Front::resumed(&state["front"]);
+        let linked_front = state["linkedFront"].as_bool().unwrap_or(front.is_some());
         inheritable(&[lock, mcp, admin, control], false);
         // SAFETY: the descriptors the launcher before handed on, owned by this one from here.
         let (lock, mcp, admin, control) = unsafe { (File::from_raw_fd(lock), OwnedFd::from_raw_fd(mcp), OwnedFd::from_raw_fd(admin), OwnedFd::from_raw_fd(control)) };
-        Some(Resumed { lock, mcp, admin, parent, front, node: Node { pid, control, pending, outgoing: RefCell::new(outgoing), open: true }, version, served, heartbeats })
+        Some(Resumed { lock, mcp, admin, parent, front, linked_front, node: Node { pid, control, pending, outgoing: RefCell::new(outgoing), open: true }, version, served, heartbeats })
     }
 }
 
@@ -717,12 +721,15 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     let with_parent = options.with_parent;
     // This launcher is the release's (it was run from there).
     let own = hash_of(&options.app.join(LAUNCHER_IN_APP));
-    let Resumed { lock, mcp, admin, parent, front, node, version, served, heartbeats } = resumed;
-    let had_resumed_front = front.is_some();
+    let Resumed { lock, mcp, admin, parent, front, linked_front, node, version, served, heartbeats } = resumed;
     // None handed on (a launcher from before the front, or one whose front would not run), or one handing streams as
     // a release before this one: one started here, before the Node the handover starts, so a station that only ever
     // updates comes to have one without being started again.
-    let front = front.and_then(|f| f.current(&options.app, &options.data)).or_else(|| crate::front::Front::start(&options.app, &options.data));
+    let front = match front.map(|f| f.current(&options.app, &options.data)) {
+        Some(crate::front::CurrentFront::Kept(f)) => Some(f),
+        Some(crate::front::CurrentFront::SwitchTo(resolved)) => crate::front::Front::start_resolved(resolved, &options.app, &options.data),
+        Some(crate::front::CurrentFront::Ended) | None => crate::front::Front::start(&options.app, &options.data),
+    };
     // Kept: any other of this data directory's is left from before (one a launcher before front.pid lost, 2026-11-16).
     if let Some(kept) = &front {
         crate::front::clean_orphans(&options.data, Some(kept.pid));
@@ -730,7 +737,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
-    if had_resumed_front && !station.os.has_front() {
+    if linked_front && !station.os.has_front() {
         station.mark_front_gone_from_resume();
     }
     if wanted {
@@ -953,6 +960,23 @@ mod tests {
         read_now(&theirs, &mut got);
         let lines: Vec<Value> = got.split(|b| *b == b'\n').filter(|l| !l.is_empty()).map(|l| serde_json::from_slice(l).unwrap()).collect();
         assert_eq!(lines, vec![carried, json!({ "op": "handover" })]);
+    }
+
+    #[test]
+    fn resumed_preserves_linked_front_when_old_launcher_ended_front_before_exec() {
+        let fd = || socketpair().unwrap().0.into_raw_fd();
+        let node = json!({ "pid": 1, "control": fd(), "pending": [], "outgoing": [], "version": "0.1.1", "served": [] });
+        // `end_front_not_in_release` ended the front (`front: null`) while the adopted Node stayed `linkedFront: true`.
+        let state = json!({ "lock": fd(), "mcp": fd(), "admin": fd(), "parent": 1, "front": null, "linkedFront": true, "node": node });
+        let r = Resumed::read(&state.to_string()).unwrap();
+        assert!(r.front.is_none());
+        assert!(r.linked_front);
+
+        // Legacy launcher state without `linkedFront` falls back to `front.is_some()`.
+        let node2 = json!({ "pid": 2, "control": fd(), "pending": [], "outgoing": [], "version": "0.1.1", "served": [] });
+        let legacy = json!({ "lock": fd(), "mcp": fd(), "admin": fd(), "parent": 1, "front": null, "node": node2 });
+        let r_legacy = Resumed::read(&legacy.to_string()).unwrap();
+        assert!(!r_legacy.linked_front);
     }
 
     #[test]
