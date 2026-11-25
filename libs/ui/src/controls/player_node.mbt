@@ -487,7 +487,8 @@ fn PlayerNode::tapped(self : PlayerNode, n : @view.View, x : Double, w : Double)
     }
     self.show_note(note, note_ms)
   } else {
-    let want_show = !self.awake.untracked()
+    // (what is seen now flipped: shown by a lock, a tap hides them once it lets go)
+    let want_show = !@signals.untracked(fn() { self.wanted() })
     let tap_epoch = self.lock_epoch
     self.pending = true
     self.single = n.at_moment(at + double_ms, fn() {
@@ -553,18 +554,10 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
       fade_end.val = n.at_moment(pn.shown.end(), fn() { pn.faded.set(true) })
     }
   })
-  // When any chrome lock engages, mark awake=true so the controls stay once it is released (e.g. sustained buffering
-  // or screen reader toggled on), till a tap hides them.
-  n.reacts(
-    at_start=false,
-    fn() { pn.chrome_locked() },
-    fn(locked) {
-      pn.lock_epoch = pn.lock_epoch + 1
-      if locked {
-        pn.awake.set(true)
-      }
-    },
-  )
+  // A chrome lock engaging or releasing calls off a tap waiting for its second (its hide or show what the lock did
+  // in between, lock_epoch); released, the controls go back to what the last tap left them (awake), the hand moving
+  // over the stage waking them never: only a tap or click shows or hides them (zuozijian, 2026-11-25).
+  n.reacts(at_start=false, fn() { pn.chrome_locked() }, fn(_) { pn.lock_epoch = pn.lock_epoch + 1 })
   // Pointer leaving the window immediately fades unlocked desktop chrome.
   n.reacts(at_start=false, fn() { n.pointer_within() }, fn(within) {
     if !within && pointer_rests() && !@signals.untracked(fn() { pn.chrome_locked() }) {
@@ -1962,12 +1955,6 @@ fn desk_player_node(
       .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1 - pn.inset)) } else { None } }))
       .clips(Is(embedded))
-      .on_pointer_moved(fn() {
-        // (a click waiting for its second stands: the hand moving on after it never calls it off)
-        if pointer_rests() && !pn.pending {
-          pn.wake()
-        }
-      })
       .on_drag(fn(d) { stage_gesture(s, pn, d, stage, back) }, fingers=2, whole=true)
       .on_wheel(fn(w) {
         if !picture() || z.nw <= 0.0 || (w.dx == 0.0 && w.dy == 0.0) {
@@ -2659,12 +2646,6 @@ fn phone_player_node(
       .margin(Is((pn.inset, pn.inset, pn.inset, 0.0)))
       .height(By(hand_h))
       .clips(Is(embedded))
-      .on_pointer_moved(fn() {
-        // (a click waiting for its second stands: the hand moving on after it never calls it off)
-        if pointer_rests() && !pn.pending {
-          pn.wake()
-        }
-      })
       .on_drag(fn(d) { stage_gesture(s, pn, d, stage, back) }, fingers=2, whole=true)
       .on_wheel(fn(w) {
         if !picture() || z.nw <= 0.0 || (w.dx == 0.0 && w.dy == 0.0) {

@@ -2315,12 +2315,12 @@ pub fn Viewer::step_shown(self : Viewer, dir : Int) -> Bool {
   if marking.on || self.zoomed_now() {
     return false
   }
-  if !@sf.pointer_rests() {
-    return self.awake
-  }
   // (a screen reader reads them out whatever a click hid)
   if @ui.screen_reader_on() {
     return true
+  }
+  if !@sf.pointer_rests() {
+    return self.awake
   }
   if self.manual_hidden {
     return false

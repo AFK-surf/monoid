@@ -181,15 +181,9 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     }
   })
   |> ignore
-  // desktop pointer: the bars kept once the last lock clears (unless a click hid them or the pointer left), hidden
-  // at once when the pointer leaves the window; never hidden by themselves for the hand resting
+  // desktop pointer: the bars as the last click left them once a lock clears, hidden at once when the pointer leaves
+  // the window; never hidden by themselves for the hand resting, nor shown by it moving over the picture
   if vw.shown_kind() == Some(KImage) {
-    root.reacts(at_start=false, fn() { vw.bars_locked() }, fn(locked) {
-      if !locked && @sf.pointer_rests() && !vw.closing && !vw.manual_hidden && !vw.pointer_left && !vw.awake {
-        vw.awake = true
-        vw.awake_said()
-      }
-    })
     root.reacts(at_start=false, fn() { root.pointer_within() && @sf.pointer_rests() }, fn(within) {
       if within {
         vw.pointer_left = false
@@ -456,16 +450,9 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
           Some(z) => z.pointer_within()
           None => false
         }
-        let mut changed = false
-        if vw.manual_hidden {
+        // (moving, a side's arrow or the bar along the top lights where the pointer is: manual_hidden lets them again)
+        if vw.manual_hidden && (in_left || in_right || in_top) {
           vw.manual_hidden = false
-          changed = true
-        }
-        if !in_left && !in_right && !in_top && !vw.awake {
-          vw.awake = true
-          changed = true
-        }
-        if changed {
           vw.awake_said()
         }
       })

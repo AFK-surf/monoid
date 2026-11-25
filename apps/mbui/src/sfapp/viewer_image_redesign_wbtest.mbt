@@ -598,10 +598,38 @@ test "Track P R4: a tap shows or hides the bars and the ways beside at once, no 
   assert_true(!bar_seen(), msg="desktop: the bar drawn gone at once")
   td.run_for(hand_rest_ms)
   assert_true(!vd.bars_shown(), msg="desktop: stays hidden (manual_hidden), no rebound")
+  // The pointer moving over the picture: still hidden (only a click shows them)
+  td.move_to(cx - 40.0, cy + 20.0)
+  td.move_to(cx + 40.0, cy - 20.0)
+  td.draw()
+  assert_true(!vd.bars_shown(), msg="desktop: the pointer moving over the picture never shows them")
+  // Its menu opened and closed: the bars as the click left them
+  td.right_click(cx, cy)
+  td.run_for(@sf.presented_rest() - td.time())
+  assert_true(vd.menu_open && vd.bars_shown(), msg="desktop: the menu holds the bars while open")
+  td.key(@ui.key_escape)
+  td.run_for(@sf.presented_rest() - td.time() + idle_margin_ms)
+  assert_true(!vd.menu_open && !vd.bars_shown(), msg="desktop: menu closed: back to hidden")
   td.tap(cx, cy)
   td.draw()
   assert_true(vd.bars_shown(), msg="desktop: another click shows bars at once")
   assert_true(bar_seen(), msg="desktop: the bar drawn back at once")
   td.run_for(hand_rest_ms)
   assert_true(vd.bars_shown(), msg="desktop: a long rest after the showing click: still shown")
+}
+
+///|
+test "Track P R4: a click on a bar's button sets no focus lock: a click on the picture after still hides the bars" {
+  let (t, v) = open_settled_desk_image("image")
+  let copy_btn = t.get(Button, label=@sf.t("common.copy"))
+  let (bx, by, bw, bh) = copy_btn.rect
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
+  t.draw()
+  assert_true(!v.bar_focused, msg="pointer click on bar button does not set the bar's focus lock")
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
+  t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@ui.double_click_ms + idle_margin_ms)
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  t.draw()
+  assert_true(!v.bars_shown(), msg="a click on the picture hides the bars")
 }

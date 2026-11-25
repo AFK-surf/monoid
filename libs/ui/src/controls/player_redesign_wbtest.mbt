@@ -345,7 +345,7 @@ test "wave27 V2: wide touch gets AlongTime without raising bottom bar; narrow mo
 ///|
 test "wave27 V1: cue_node paint-layer offset has laid == 0 on fade-out and mid-fade reversal, dual-line and listing zero overlap" {
   let sleep_ms = @player.media_sleep_ms
-  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], [], [], pin=pinned(2000.0))
+  let t = player_tester(false, "E1.mp4", ["E1.mp4", "E2.mp4"], [], [], keyed=true, pin=pinned(2000.0))
   t.host_says_finger(Some(false))
   playing_for("k").media.set_subtitle(true, [{ from: 0.0, to: 10000.0, text: "第一行字幕\n第二行字幕" }])
   t.draw()
@@ -360,8 +360,8 @@ test "wave27 V1: cue_node paint-layer offset has laid == 0 on fade-out and mid-f
   }
   let y_mid = t.find("第一行字幕").unwrap().1
   assert_true(y_mid > y_up + 5.0, msg="cue moved down mid-fade: y_up=\{y_up}, y_mid=\{y_mid}")
-  // Reverse mid-fade by moving pointer -> laid == 0 and moves back up smoothly
-  t.move_to(660.0, 400.0)
+  // Reverse mid-fade by a key that wakes them (J) -> laid == 0 and moves back up smoothly
+  t.key(@ui.key_of_char('j'))
   t.tree_frames_from_now()
   t.run_for(@player.media_wake_ms + 10.0)
   for f in t.tree_frames() {
@@ -585,7 +585,8 @@ test "wave27 R1: Buffering never raises chrome during AlongTime or brief stall; 
   t.draw()
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="buffering during AlongTime must not raise bottom bar")
   t.release(180.0, 300.0)
-  // 2. Playing hidden state: brief buffering (< wait_ms) does NOT wake; > wait_ms wakes & locks; recovery leaves them
+  // 2. Playing hidden state: brief buffering (< wait_ms) does NOT wake; > wait_ms wakes & locks; recovery hides them
+  // again, as the tap left them
   let td = player_tester(false, "a.mp4", [], [], [])
   td.host_says_finger(Some(false))
   td.draw()
@@ -603,13 +604,10 @@ test "wave27 R1: Buffering never raises chrome during AlongTime or brief stall; 
   td.set_player(1, position=2000.0, duration=10000.0, playing=true, buffering=true)
   td.run_for(d_wait + @player.media_wake_ms + step_ms)
   assert_true(td.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="buffering > wait_ms wakes and locks controls")
-  // Recovery leaves them shown, however long, till a tap hides them
+  // Recovery: back to hidden, as the tap left them
   td.set_player(1, position=2000.0, duration=10000.0, playing=true, buffering=false)
-  td.draw()
-  td.run_for(long_rest_ms)
-  assert_true(td.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still shown after buffering ends")
-  hide_by_tap(td, 640.0, 400.0)
-  assert_true(td.query(Slider, label="web-pages.drive.player.position") is None, msg="a tap hides them after buffering ends")
+  td.run_for(@player.media_sleep_ms + step_ms)
+  assert_true(td.query(Slider, label="web-pages.drive.player.position") is None, msg="hidden again after buffering ends")
 }
 
 ///|
@@ -634,9 +632,9 @@ test "wave27 R1: mouse drag on timeline/volume does not permanently lock chrome;
   t.move_to(640.0, 400.0)
   hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="timeline mouse drag must not leave focus lock")
-  // Wake and repeat with volume slider
-  t.move_to(640.0, 420.0)
-  t.run_for(@player.media_wake_ms + step_ms)
+  // Wake by a click alone and repeat with volume slider
+  t.tap(640.0, 420.0)
+  t.run_for(@ui.double_tap_ms + @player.media_wake_ms + step_ms)
   match t.query(Slider, label="web-pages.drive.player.volume") {
     Some(vol) => {
       let (rx, ry, rw, rh) = vol.rect
@@ -747,7 +745,7 @@ test "wave27 R1: crossing wide/narrow breakpoint mid-AlongTime and mid-2x-hold c
 }
 
 ///|
-test "wave27 R1: plain set_a11y does not lock chrome; reactive set_screen_reader wakes hidden controls without manual draw and keeps them" {
+test "wave27 R1: plain set_a11y does not lock chrome; reactive set_screen_reader shows hidden controls without manual draw while on" {
   let step_ms = 20.0
   // 1. Plain set_a11y(true) (non-screen-reader AX/UIA client) must NOT lock controls: a click alone hides them
   let t = player_tester(false, "a.mp4", [], [], [], pin={ ..pinned(2000.0), playing: false })
@@ -762,12 +760,10 @@ test "wave27 R1: plain set_a11y does not lock chrome; reactive set_screen_reader
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="set_screen_reader(true) proactively wakes hidden controls")
   hide_by_tap(t, 640.0, 400.0)
   assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="set_screen_reader(true) keeps controls locked")
-  // 3. Turn screen reader off: they stay, however long, till a click alone hides them
+  // 3. Turn screen reader off: back to hidden, as the click left them
   t.set_screen_reader(false)
-  t.run_for(long_rest_ms)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="still shown after screen reader off")
-  hide_by_tap(t, 640.0, 400.0)
-  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="a click alone hides them after screen reader off")
+  t.run_for(@player.media_sleep_ms + step_ms)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="hidden again after screen reader off")
 }
 
 ///|
@@ -935,6 +931,11 @@ test "wave27 V5: desktop click hides the controls though the pointer moves on wi
   tt.move_to(660.0, 400.0)
   tt.run_for(double_ms + sleep_ms + 10.0)
   assert_true(tt.query(Slider, label="web-pages.drive.player.position") is None, msg="the click hid the controls")
+  // The hand moving over the stage after: they stay hidden (only a click shows them)
+  tt.move_to(500.0, 300.0)
+  tt.move_to(700.0, 450.0)
+  tt.run_for(long_rest_ms)
+  assert_true(tt.query(Slider, label="web-pages.drive.player.position") is None, msg="the pointer moving never shows them")
   // A double click on the left third: back by its nudge; on the right third: on by it
   let back = t(
     "android-misc.drive.player.back",
