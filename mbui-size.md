@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [319706ddc](https://github.com/AFK-surf/monoid/commit/319706ddcfdcd108923f94bf64740972bb43afb6) feat(pion/station): add builders_replica (replica- | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [13f57314c](https://github.com/AFK-surf/monoid/commit/13f57314c446843de910d2c106d81ec2faf1ab88) perf(ui): fix host glyph pre-warming and Android p | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [8c8dbd7f8](https://github.com/AFK-surf/monoid/commit/8c8dbd7f8e50230a131bccd70c325e376198b01f) perf(replica): read each transcript directory once | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.06 | 121.68 |
 | [72f43d9c7](https://github.com/AFK-surf/monoid/commit/72f43d9c7ac974f8839076e712f91e7971508287) perf(core): read the person's own lock beside the  | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.06 | 121.68 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7c26737b5](https://github.com/AFK-surf/monoid/commit/7c26737b5426872b7b9547ef3c464cade377512c) fix(ci): serialize rustup toolchain and target set | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.86 | 121.83 |
 | [8ce75f9f7](https://github.com/AFK-surf/monoid/commit/8ce75f9f76b7d0c9972edbc7fd3ef97d037065e9) feat(ui,mbui): unify doc notes, profiles batch bar | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 | [18e6b5ea7](https://github.com/AFK-surf/monoid/commit/18e6b5ea7597b50152a9d17d35a82daa25cccb61) perf(replica): prune agy/brain derived caches and  | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
-| [c442651d2](https://github.com/AFK-surf/monoid/commit/c442651d201bf33ac7025d379eb2d4fdc2da87b1) refactor(ui): drop Blitter and Moving trait object | 2.51 | 3.4 | 14.03 | 37.51 | 58.07 | 31.91 | 64.44 | 100.99 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [319706ddc](https://github.com/AFK-surf/monoid/commit/319706ddcfdcd108923f94bf64740972bb43afb6) feat(pion/station): add builders_replica (replica- | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.46 |
 | [13f57314c](https://github.com/AFK-surf/monoid/commit/13f57314c446843de910d2c106d81ec2faf1ab88) perf(ui): fix host glyph pre-warming and Android p | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.69 |
 | [8c8dbd7f8](https://github.com/AFK-surf/monoid/commit/8c8dbd7f8e50230a131bccd70c325e376198b01f) perf(replica): read each transcript directory once | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.53 |
 | [72f43d9c7](https://github.com/AFK-surf/monoid/commit/72f43d9c7ac974f8839076e712f91e7971508287) perf(core): read the person's own lock beside the  | 0.56 | 0.73 | 2.86 | 3.88 | 7.13 | 2.11 | 5.93 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [7c26737b5](https://github.com/AFK-surf/monoid/commit/7c26737b5426872b7b9547ef3c464cade377512c) fix(ci): serialize rustup toolchain and target set | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.79 |
 | [8ce75f9f7](https://github.com/AFK-surf/monoid/commit/8ce75f9f76b7d0c9972edbc7fd3ef97d037065e9) feat(ui,mbui): unify doc notes, profiles batch bar | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.46 |
 | [18e6b5ea7](https://github.com/AFK-surf/monoid/commit/18e6b5ea7597b50152a9d17d35a82daa25cccb61) perf(replica): prune agy/brain derived caches and  | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.57 |
-| [c442651d2](https://github.com/AFK-surf/monoid/commit/c442651d201bf33ac7025d379eb2d4fdc2da87b1) refactor(ui): drop Blitter and Moving trait object | 0.56 | 0.73 | 2.85 | 3.88 | 7.08 | 2.1 | 5.86 | 57.36 |
