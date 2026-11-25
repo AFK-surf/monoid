@@ -446,6 +446,28 @@ export function peerCall(
     let conn: Connection | null = null;
     let dial: Dial | null = null;
     let leave = () => {};
+    // The request's stream, once its connection gave one; and whether a stream is being waited for (`opening`).
+    let opened: Stream | null = null;
+    let opening = false;
+    let starved = false;
+    // A connection gives each request a stream of its own, up to as many at once as its other end allows (QUIC's
+    // MAX_STREAMS, 100 bidi by default); a stream counts until both its ends ended it. Once that many are held (answers
+    // that never came, on a station of before that kept them open), no stream comes: every request on the connection
+    // timed out while its other end still answered whether it is there, so it was never let go (`letGo`): 21 minutes of
+    // a station's Feishu events to another lost, until the asking station was restarted (2026-11-25).
+    const open = async (c: Connection) => {
+      opening = true;
+      try {
+        const stream = body === null ? await c.openBi() : await within(answerMs, c.openBi(), late);
+        opened = stream;
+        return stream;
+      } catch (error) {
+        if ((error as Error)?.message === late) starved = true;
+        throw error;
+      } finally {
+        opening = false;
+      }
+    };
     const late = "peer request timed out; execution may have happened — query the same task key";
     // What goes after the request (a file): sent as the other end takes it, however long that is; the answer is
     // waited for answerMs once they all went.
@@ -459,7 +481,7 @@ export function peerCall(
       leave();
       if (!conn.alpn().equals(PEER_BYTES_ALPN)) {
         if (body !== null) throw new NoBytes("that station takes files only in chunks (it is not updated yet)");
-        const stream = await conn.openBi();
+        const stream = await open(conn);
         const before = received(conn);
         const bytes = Buffer.from(JSON.stringify({ workspace: ws, request }));
         if (bytes.length > MAX_MESSAGE) throw new Error("peer request too large");
@@ -471,7 +493,7 @@ export function peerCall(
         if (typeof answer?.error === "string") throw new Refused(answer.error);
         return answer?.result ?? null;
       }
-      const stream = await conn.openBi();
+      const stream = await open(conn);
       // (what was heard before the request went: anything after it says its other end is there)
       const before = received(conn);
       const head = Buffer.from(JSON.stringify({ workspace: ws, request, ...(body === null ? {} : { bytes: true }) }) + "\n");
@@ -523,8 +545,21 @@ export function peerCall(
       const dialed = dial as Dial | null;
       // (no longer waiting for its dial: the last to stop gives it up)
       leave();
+      // Given up on (its answer late, its connection gone, its bytes not taken): its stream ended both ways, so that it
+      // stops counting against the connection's streams, and its other end stops waiting to send an answer nobody reads.
+      const stream = opened as Stream | null;
+      if (stream !== null && !(error instanceof Refused) && !(error instanceof NoBytes)) void stream.reset(STOPPED).catch(() => {});
       // (its connection found gone, by this request or another: said so, whatever the stream failed with as it closed)
       if (failed !== null && found.has(failed)) throw error instanceof PeerGone ? error : new PeerGone();
+      // (no stream came in time on a connection that is there: it has none left to give, whatever its other end answers;
+      // let go, so the next request dials anew, and what else waits on it fails now rather than at its own timeout)
+      if (failed !== null && (opening || starved) && (error as Error)?.message === late && !failed.isClosed()) {
+        if (connections.get(target) === failed) connections.delete(target);
+        found.add(failed);
+        log.warn("mesh", "a station's connection gave no stream in time: closed", { peer: target.slice(0, 12) });
+        failed.close(0, "no stream");
+        throw error;
+      }
       // (its bytes not taken for IDLE_MS, its other end not there: gone, as `watch` finds a request's connection not
       // answering, never waited on to close below: a station killed closes only as QUIC gives the connection up, and a
       // move's pack, its station killed as it went, held the turn till that station came back, drill 3a 2026-11-16)
@@ -622,6 +657,12 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
     let incoming: Incoming | null = null;
     let outgoing: Bytes | null = null;
     const begun = performance.now();
+    // The caller gave up before the answer went (its request timed out, and it reset the stream, which stops this end
+    // with its code): this end reset too, at once, so the stream stops counting against the connection's streams while
+    // its handler goes on. Kept open till the handler ended, as many handlers that never end held all the caller's
+    // streams, and no request of its got one. (null, or nothing: not a stop, as a front from before says of any stream)
+    let unanswered = true;
+    void stream.stopped().then((code) => { if (unanswered && typeof code === "number") void stream.reset(STOPPED).catch(() => {}); }, () => {});
     try {
       const envelope = bytes
         ? await within(15_000, reader.line(), "peer request timed out")
@@ -695,6 +736,7 @@ export async function servePeer(conn: Connection, cloud: Cloud, remote: Pick<Pee
     // body size) either; after the head, sendBytes checks again immediately before each body write.
     try { outgoing?.[CHECK_BYTES]?.(); }
     catch (error) { answer = { error: (error as Error).message }; outgoing = null; }
+    unanswered = false;
     try {
       await stream.write(Buffer.from(JSON.stringify(answer) + (bytes ? "\n" : "")));
       if (outgoing !== null) await sendBytes(stream, outgoing);

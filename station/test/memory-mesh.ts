@@ -21,6 +21,9 @@ class End implements Stream {
   conn?: Conn;
   readonly window: number;
   readonly held: boolean;
+  /// Its sending half ended (finished, reset, or a write found it stopped), and what is told once it is (`streams`).
+  sent = false;
+  onSent: (() => void) | null = null;
   /// The writes waiting for room now, and the resets waiting for them (`held`).
   #writing = 0;
   #written: (() => void)[] = [];
@@ -32,8 +35,9 @@ class End implements Stream {
   /// Reset here: a read gives up (null), as the addon's does.
   #reset = false;
   #waiting: (() => void) | null = null;
-  #stopped: Promise<void>;
-  #stop!: () => void;
+  /// Resolves once its peer read its end (nothing), or stopped reading it: the code it reset with, as the addon's does.
+  #stopped: Promise<number | void>;
+  #stop!: (code?: number) => void;
   constructor(window = 0, held = false) {
     this.window = window;
     this.held = held;
@@ -53,10 +57,10 @@ class End implements Stream {
     if (b !== null) this.#queued += b.length;
     this.#wake();
   }
-  fail(e: Error) {
+  fail(e: Error, code?: number) {
     this.#error ??= e;
     this.#wake();
-    this.#stop();
+    this.#stop(code);
     this.#free();
     if (this.peer !== undefined) this.peer.#free();
   }
@@ -77,8 +81,16 @@ class End implements Stream {
       await new Promise<void>((r) => (this.#waiting = r));
     }
   }
+  #ended() {
+    if (this.sent) return;
+    this.sent = true;
+    this.onSent?.();
+  }
   async write(bytes: Buffer): Promise<void> {
-    if (this.#error) throw this.#error;
+    if (this.#error) {
+      this.#ended();
+      throw this.#error;
+    }
     this.#writing++;
     try {
       while (this.window > 0 && this.peer.#queued >= this.window && !this.peer.#reset) {
@@ -92,18 +104,20 @@ class End implements Stream {
     this.peer.push(Buffer.from(bytes));
   }
   async finish(): Promise<void> {
+    this.#ended();
     this.peer.push(null);
   }
-  stopped(): Promise<void> {
+  stopped(): Promise<number | void> {
     return this.#stopped;
   }
   async reset(code: number): Promise<void> {
     if (this.held && this.#writing > 0) await new Promise<void>((r) => this.#written.push(r));
     this.#reset = true;
+    this.#ended();
     this.#wake();
     this.#stop();
     this.#free();
-    this.peer.fail(new Error(`stream reset (${code})`));
+    this.peer.fail(new Error(`stream reset (${code})`), code);
   }
 }
 
@@ -128,11 +142,17 @@ class Conn implements Connection {
   readonly #alpn: Buffer;
   readonly #window: number;
   readonly #held: boolean;
-  constructor(remote: string, alpn: Buffer, window = 0, held = false) {
+  /// How many streams it may have open at once (QUIC's MAX_STREAMS, its other end's): one counts until both its ends
+  /// ended sending (finished, or reset); 0: no limit. Those open now, and the opens waiting for one to end.
+  readonly #streams: number;
+  #open = 0;
+  #slots: (() => void)[] = [];
+  constructor(remote: string, alpn: Buffer, window = 0, held = false, streams = 0) {
     this.#remote = remote;
     this.#alpn = alpn;
     this.#window = window;
     this.#held = held;
+    this.#streams = streams;
     this.#closed = new Promise((r) => (this.#resolve = r));
   }
   remoteId(): string {
@@ -156,8 +176,17 @@ class Conn implements Connection {
     return new Promise((r) => (this.#accepting = r));
   }
   async openBi(): Promise<Stream> {
+    while (this.#reason === null && this.#streams > 0 && this.#open >= this.#streams) await new Promise<void>((r) => this.#slots.push(r));
     if (this.#reason !== null) throw new Error("connection lost");
     const [mine, theirs] = [new End(this.#window, this.#held), new End(this.#window, this.#held)];
+    this.#open++;
+    const ended = () => {
+      if (!mine.sent || !theirs.sent) return;
+      mine.onSent = theirs.onSent = null;
+      this.#open--;
+      this.#slots.shift()?.();
+    };
+    mine.onSent = theirs.onSent = ended;
     mine.peer = theirs;
     theirs.peer = mine;
     mine.conn = this;
@@ -172,6 +201,7 @@ class Conn implements Connection {
     this.#reason = reason;
     this.#kind = kind;
     for (const e of this.#ends) e.fail(new Error("connection lost"));
+    for (const go of this.#slots.splice(0)) go();
     const take = this.#accepting;
     this.#accepting = null;
     take?.(null);
@@ -208,17 +238,19 @@ class MemoryEndpoint implements Endpoint {
   readonly #port: number;
   readonly #window: number;
   readonly #held: boolean;
+  readonly #streams: number;
   #incoming: Conn[] = [];
   #accepting: ((c: Conn | null) => void) | null = null;
   #conns: Conn[] = [];
   #closed = false;
-  constructor(net: Map<string, MemoryEndpoint>, secret: Buffer, alpns: Buffer[], port: number, window = 0, held = false) {
+  constructor(net: Map<string, MemoryEndpoint>, secret: Buffer, alpns: Buffer[], port: number, window = 0, held = false, streams = 0) {
     this.#net = net;
     this.#id = idOf(secret);
     this.#alpns = alpns;
     this.#port = port;
     this.#window = window;
     this.#held = held;
+    this.#streams = streams;
   }
   id(): string {
     return this.#id;
@@ -252,7 +284,8 @@ class MemoryEndpoint implements Endpoint {
     // The other's first protocol that is offered: the accepting side's order decides, as with iroh (rustls).
     const alpn = there.#alpns.find((b) => [offered, ...additional].some((a) => a.equals(b)));
     if (alpn === undefined) throw new Error("peer doesn't support any known protocol");
-    const [mine, theirs] = [new Conn(addr.id, alpn, this.#window, this.#held), new Conn(this.#id, alpn, this.#window, this.#held)];
+    // (each end's streams limited by the other's MAX_STREAMS: the same here both ways)
+    const [mine, theirs] = [new Conn(addr.id, alpn, this.#window, this.#held, this.#streams), new Conn(this.#id, alpn, this.#window, this.#held, there.#streams)];
     mine.peer = theirs;
     theirs.peer = mine;
     this.#conns.push(mine);
@@ -277,13 +310,14 @@ class MemoryEndpoint implements Endpoint {
 }
 
 /// A mesh of its own: endpoints bound on it reach each other, and only each other. `window`: each stream's flow control
-/// (End), none by default; `held`: a stream's reset waits for its writes waiting for room, as the shell's does.
-export function memoryMesh(options: { window?: number; held?: boolean } = {}): Pick<Mesh, "bind"> {
+/// (End), none by default; `held`: a stream's reset waits for its writes waiting for room, as the shell's does;
+/// `streams`: how many streams a connection may have open at once (QUIC's MAX_STREAMS, Conn), no limit by default.
+export function memoryMesh(options: { window?: number; held?: boolean; streams?: number } = {}): Pick<Mesh, "bind"> {
   const net = new Map<string, MemoryEndpoint>();
   let port = 40000;
   return {
     bind: async (o) => {
-      const e = new MemoryEndpoint(net, o.secretKey, o.alpns, ++port, options.window, options.held);
+      const e = new MemoryEndpoint(net, o.secretKey, o.alpns, ++port, options.window, options.held, options.streams);
       net.set(e.id(), e);
       return e;
     },
