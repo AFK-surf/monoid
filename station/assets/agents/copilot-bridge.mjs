@@ -3,7 +3,7 @@
 // on the profile's GitHub token alone. It speaks to the station as Cursor's driver does (cursor-bridge.mjs), its messages
 // in Cursor's shapes, so the station's program reads both alike (mb/src/cursor). One line of JSON per message on stdin
 // and stdout, for the one session of the process:
-//   in:  {id, op: "open", cwd, resume?, model?, effort?, mcpUrl, instructions, skills?, sessions, silent}
+//   in:  {id, op: "open", cwd, resume?, model?, effort?, mcpUrl, instructions, skills?, own?, sessions, silent}
 //                                          → {id, session} | {id, error}
 //        {id, op: "prompt", text, model?}  starts a turn: → {id} once the runtime took it, {id, error} when it did not
 //        {id, op: "steer", text}           into the running turn (the SDK's `immediate` mode): → {id, delivered}
@@ -21,7 +21,7 @@
 // `agentId` (absent for the session's own agent). The model is not asked: the call never reaches the station.
 // It keeps the session's transcript itself (`sessions`/<session id>.jsonl, Cursor's lines, read by read/transcript.ts);
 // the runtime's own (session-state/…/events.jsonl) is its format to change.
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
@@ -61,6 +61,42 @@ export function countsOf(usage) {
   const n = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
   const read = n(usage?.cacheReadTokens)
   return { inputTokens: Math.max(0, n(usage?.inputTokens) - read), cacheReadTokens: read, cacheWriteTokens: n(usage?.cacheWriteTokens), outputTokens: n(usage?.outputTokens) }
+}
+
+/// What a profile adds of its own (`own`: its Copilot directory, agents/copilot.ts `copilotHome`), in the Copilot CLI's
+/// shapes: the MCP servers of its `mcp-config.json` (`mcpServers`) and its `skills/` folder. Read here, not by the
+/// station, so a server's keys stay out of the station's requests; nothing of the machine's own Copilot (~/.copilot).
+/// The station's server keeps its name: a profile's server named `stillfail` or `stillfail-…`, any case, is left out,
+/// so the station's tools and a subagent's refusal of them (`refusal`, by the `stillfail-` prefix) stay the station's.
+/// A file that is not JSON fails the open, saying so, rather than a session without the servers it was given.
+export function ownConfig(dir) {
+  const servers = {}
+  if (typeof dir !== 'string' || dir === '') return { servers, skills: null }
+  let text = null
+  try {
+    text = readFileSync(join(dir, 'mcp-config.json'), 'utf8')
+  } catch {}
+  if (text !== null) {
+    let listed
+    try {
+      listed = JSON.parse(text)?.mcpServers
+    } catch (error) {
+      throw new Error(`${join(dir, 'mcp-config.json')} is not JSON: ${error?.message ?? error}`)
+    }
+    if (listed !== null && typeof listed === 'object' && !Array.isArray(listed)) {
+      for (const [name, server] of Object.entries(listed)) {
+        const lower = name.toLowerCase()
+        if (lower === SERVER || lower.startsWith(`${SERVER}-`)) continue
+        if (server !== null && typeof server === 'object' && !Array.isArray(server)) servers[name] = server
+      }
+    }
+  }
+  const folder = join(dir, 'skills')
+  let skills = null
+  try {
+    if (statSync(folder).isDirectory()) skills = folder
+  } catch {}
+  return { servers, skills }
 }
 
 /// Whether the pre-tool hook refuses a call: a subagent's (it has an `agentId`) of a tool by which a session speaks.
@@ -239,6 +275,9 @@ async function main() {
       if (session !== null) throw new Error('a session is open')
       chosen = typeof message.model === 'string' && message.model !== '' ? message.model : null
       model = chosen
+      // (the profile's own servers and skills read first: a file that is not JSON fails the open before a runtime is made)
+      const own = ownConfig(message.own)
+      const skills = [message.skills, own.skills].filter((d) => typeof d === 'string' && d !== '')
       mkdirSync(message.sessions, { recursive: true })
       const home = join(message.sessions, 'home')
       mkdirSync(home, { recursive: true })
@@ -259,8 +298,9 @@ async function main() {
         workingDirectory: message.cwd,
         // The station's instructions after the runtime's own; the workspace's skills as a folder of skills.
         systemMessage: { mode: 'append', content: String(message.instructions ?? '') },
-        ...(typeof message.skills === 'string' && message.skills !== '' ? { skills: { directories: [message.skills] } } : {}),
-        mcp: { servers: { [SERVER]: { type: 'http', url: message.mcpUrl, headers: { Authorization: `Bearer ${process.env.STILLFAIL_MCP_TOKEN ?? ''}` }, tools: ['*'] } } },
+        // The profile's own skills and MCP servers beside them (`ownConfig`).
+        ...(skills.length > 0 ? { skills: { directories: skills } } : {}),
+        mcp: { servers: { ...own.servers, [SERVER]: { type: 'http', url: message.mcpUrl, headers: { Authorization: `Bearer ${process.env.STILLFAIL_MCP_TOKEN ?? ''}` }, tools: ['*'] } } },
         // No approvals, as the station's other runtimes run (the station's tools are its own to refuse).
         permissions: { onRequest: () => ({ kind: 'approve-once' }) },
         hooks: { handlers: { onPreToolUse: (input) => {

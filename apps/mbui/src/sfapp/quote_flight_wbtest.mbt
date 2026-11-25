@@ -474,3 +474,32 @@ test "小屏: quote card enters near full width without overlapping bottom contr
   t.draw()
   assert_true(mf_caret(t, fx, fw) is Some(_), msg="immediate typing after quote send kept caret hidden")
 }
+
+///|
+test "two quotes sent together each dissolve into particles on their way, not the first alone" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~)
+  let src = made.val.unwrap()
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_quote(src, w, { "author": "Claude", "text": quote_passage, "ts": "ts8" })
+  @sfbase.writing_quote(src, w, { "author": "Claude", "text": "第二段引用的文字", "ts": "ts9" })
+  t.run_for(@ui.move_most_ms)
+  t.type_text("这里要对齐")
+  t.draw()
+  tap_send(t)
+  let sent_at = t.time()
+  let tree = @ui.view_tree().unwrap()
+  let seen : Array[String] = []
+  while t.time() < sent_at + flight_ms {
+    t.frame_as_host() |> ignore
+    for d in tree.drawn() {
+      for q in [quote_passage, "第二段引用的文字"] {
+        if d.words.contains(q) && tree.in_particle_flight(d.id) && !seen.contains(q) {
+          seen.push(q)
+        }
+      }
+    }
+  }
+  assert_eq(seen.length(), 2, msg="in a particle flight: \{Repr(seen)}")
+}
