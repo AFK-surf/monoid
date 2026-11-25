@@ -28,6 +28,8 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
     store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 100, ...extra } as Parameters<Store["insertSession"]>[0]);
   session("a1", { ws: "w", createdBy: "p@x" });
   session("a2", { ws: null });
+  session("sub", { ws: "w", createdBy: "p@x" });
+  db.prepare("UPDATE sessions SET archived_at = 50 WHERE key = 'sub'").run();
   session("s1", { connect: "team", ws: "w" });
   session("far", { ws: "x" });
   // Chats of a hand-over (replica/handover.ts): one handed here from another station (`came_from`, its `from`), one
@@ -49,6 +51,11 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
   db.prepare("INSERT INTO reads (viewer, thread, n, at) VALUES ('p@x', ?, 2, 1)").run(chat);
   db.prepare("INSERT INTO letters (thread, n, ts, author_kind, author, text, attachments, at, letter) VALUES (?, 1, 'l1', 'agent', 'a1', 'in', NULL, 5, ?)").run(chat, JSON.stringify({ way: "in", title: "From far" }));
   db.prepare("INSERT INTO chat_shares(session,shared,write,by,at) VALUES ('a1',?,1,'p@x',?)").run(JSON.stringify([{ workspace: "w2", name: 7, used: now }, { workspace: "w3", used: now }, { workspace: "w4", used: 1 }]), now);
+  const sub = store.openThread("ember", "CHAT", "sub", "Sub", "p@x").id;
+  db.prepare("UPDATE threads SET home = 'sub', hidden_at = 50 WHERE id = ?").run(sub);
+  store.joinThread(sub, "sub", "ember");
+  say(sub, "person", "p@x", "in sub");
+  store.insertOpened({ childStation: "", child: "sub", parentStation: "", parent: "a1", key: "k-sub", title: "Sub", link: null, openerTitle: "Chat", led: true });
   const slack = store.openThread("slack:T1", "C1", "1.1", null, null).id;
   store.joinThread(slack, "s1", "team");
   store.joinThread(slack, "a1", "team");
@@ -81,9 +88,9 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
     const out: unknown[] = [];
     for (const lang of ["zh", "en"] as const) {
       for (const viewer of [{ email: "p@x", workspace: "w", home: true }, { email: "q@x", workspace: "x", home: false }, { email: "z@x", workspace: "x" }]) {
-        for (const s of [null, "a1", "a2", "far", "came", "gone", "arriving", "nobody"]) out.push(await read(r, "threads", { viewer, session: s, lang }, lang));
-        for (const id of [String(chat), `+${slack}`, String(far), ...moved.map(String), "abc", "99999999999999999999", "-1", "0099"]) out.push(await read(r, "thread", { id, viewer, lang }, lang));
-        for (const key of ["a1", "a2", "far", "came", "gone", "arriving", "nobody"])
+        for (const s of [null, "a1", "a2", "sub", "far", "came", "gone", "arriving", "nobody"]) out.push(await read(r, "threads", { viewer, session: s, lang }, lang));
+        for (const id of [String(chat), String(sub), `+${slack}`, String(far), ...moved.map(String), "abc", "99999999999999999999", "-1", "0099"]) out.push(await read(r, "thread", { id, viewer, lang }, lang));
+        for (const key of ["a1", "a2", "sub", "far", "came", "gone", "arriving", "nobody"])
           for (const [turns, jobs] of [[undefined, undefined], ["2", "now"], ["abc", undefined], ["1234567", "now"]])
             out.push(await read(r, "session", { key, viewer, lang, turns, jobs }, lang));
       }
@@ -94,7 +101,7 @@ test("the MoonBit reader reads a session's page and the threads as the worker do
     const first = await all(program);
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
-    for (const sign of ["\"cc\":[", "\"channelName\":\"general\"", "\"xshare\":{", "\"name\":\"7\"", "\"name\":\"w3\"", "\"letters\":1", "\"lettersLast\":1", "\"unread\":2", "\"autoTitle\":\"Auto\"",
+    for (const sign of ["\"cc\":[", "\"channelName\":\"general\"", "\"xshare\":{", "\"opener\":{\"session\":\"a1\",\"title\":\"Chat\",\"led\":true}", "\"name\":\"7\"", "\"name\":\"w3\"", "\"letters\":1", "\"lettersLast\":1", "\"unread\":2", "\"autoTitle\":\"Auto\"",
       "\"home\":\"a1\"", "\"status\":404", "\"name\":\"Una\"", "\"jobs\":[", "\"turns\":[", "\"port\":9000", "\"name\":\"Pat\"", "\"from\":\"stB\"", "in came"])
       assert.ok(said.includes(sign), sign);
   } finally {

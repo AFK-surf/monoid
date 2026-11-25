@@ -813,14 +813,15 @@ fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = fals
 }
 
 ///|
-/// store.ts `openers` and `openedChats` of some sessions (none: of all): by session, the chat it was opened from and
-/// those it opened, the first first; none on a database from before.
-fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map[String, Array[Json]]) raise {
+/// store.ts `openers` of some sessions (none: of all): by session, the chat it was opened from; none on a database from
+/// before.
+fn openers_of(db : @sql.Db, ids : Array[String]?) -> Map[String, Json] raise {
   let openers : Map[String, Json] = Map([])
-  let opened : Map[String, Array[Json]] = Map([])
+  if ids is Some([]) {
+    return openers
+  }
   let list = match ids { Some(i) => [ids_json(i.map(Json::string))]; None => [] }
   let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
-  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
   let station = (v : Json) => if v == Json::string("") { Json::null() } else { v }
   let or_else = (a : Json, b : Json) => if a is Null { b } else { a }
   let rows = try {
@@ -834,6 +835,22 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
       openers[js_text(field(r, "child"))] = opened_named(station(field(r, "parent_station")), field(r, "parent"), or_else(field(r, "opener_title"), field(r, "parent_title")), led~)
     }
   }
+  openers
+}
+
+///|
+/// store.ts `openers` and `openedChats` of some sessions (none: of all): by session, the chat it was opened from and
+/// those it opened, the first first; none on a database from before.
+fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map[String, Array[Json]]) raise {
+  let openers = openers_of(db, ids)
+  let opened : Map[String, Array[Json]] = Map([])
+  if ids is Some([]) {
+    return (openers, opened)
+  }
+  let list = match ids { Some(i) => [ids_json(i.map(Json::string))]; None => [] }
+  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
+  let station = (v : Json) => if v == Json::string("") { Json::null() } else { v }
+  let or_else = (a : Json, b : Json) => if a is Null { b } else { a }
   let rows = try {
     Some(db.all(if ids is Some(_) { opened_of_sql } else { "\{base_opened} WHERE o.parent_station = '' ORDER BY o.created_at, o.rowid" }, list))
   } catch {

@@ -3639,6 +3639,46 @@ export class Views implements Owner {
     return chain.reverse();
   }
 
+  /// Cached archived row matching a thread (home session first, then members), skipping rows bound to a different thread.
+  #archivedRow(station: string, thread: J): J | undefined {
+    const data = this.#core.data;
+    const tid = u64(get(thread, "id"));
+    const home = str(get(thread, "home"));
+    const seen = new Set<string>();
+    const keys: string[] = [];
+    if (home !== null && home !== "") {
+      seen.add(home);
+      keys.push(home);
+    }
+    for (const key of members(thread)) {
+      if (key !== "" && !seen.has(key)) {
+        seen.add(key);
+        keys.push(key);
+      }
+    }
+    for (const key of keys) {
+      const hit = data.chatNamed(station, key);
+      if (hit?.archived !== true || !isObject(hit.row)) continue;
+      const rowThread = u64(get(hit.row, "thread"));
+      if (rowThread !== null && tid !== null && rowThread !== tid) continue;
+      return hit.row;
+    }
+    return undefined;
+  }
+
+  /// Source record for a chat's opener and led parent chain: active row first, else the thread's own `opener`
+  /// (available even when `archivedRows` is not synced), else the cached archived row (older stations).
+  #lineageRow(thread: J, row: J | undefined, archivedRow: J | undefined): J | undefined {
+    if (row !== undefined) return row;
+    const threadOpener = get(thread, "opener");
+    if (isObject(threadOpener)) {
+      const id = str(get(archivedRow, "id")) ?? str(get(thread, "home")) ?? members(thread)[0] ?? null;
+      const session = str(get(archivedRow, "session")) ?? id;
+      return { ...(id !== null ? { id } : {}), ...(session !== null ? { session } : {}), opener: threadOpener };
+    }
+    return archivedRow;
+  }
+
   /// A row whose chat has a message sent here that did not go: marked red, its second line saying which (`unsent`: drawn
   /// in red), before
   /// anything its agents do (the message waits in the chat to be sent again or dropped). Else, a chat made here (the
@@ -4379,12 +4419,15 @@ export class Views implements Owner {
     const archived = this.local.archivedChanging(station, id, null);
     if (archived !== null) view.archived = archived;
     if (row !== undefined && row.pinned !== undefined) view.pinned = typeof row.pinned === "number";
-    const opener = row !== undefined ? this.#opener(station, row) : null;
+    const archivedRow = found === null ? this.#archivedRow(station, thread) : undefined;
+    const lineage = this.#lineageRow(thread, row, archivedRow);
+    const opener = lineage !== undefined ? this.#opener(station, lineage) : null;
     if (opener !== null) view.opener = opener;
-    const openers = row !== undefined ? this.#openers(station, row) : [];
+    const openers = lineage !== undefined ? this.#openers(station, lineage) : [];
     if (openers.length > 0) view.openers = openers;
     // the chats it opened, each where it stands, for its bar's list of them
-    const opened = row !== undefined ? this.#opened(station, row) : [];
+    const openedRow = row ?? archivedRow;
+    const opened = openedRow !== undefined ? this.#opened(station, openedRow) : [];
     if (opened.length > 0) {
       view.opened = opened;
       view.openedText = t("core-views.opened", { n: opened.length });
@@ -5223,6 +5266,9 @@ export class Views implements Owner {
     const primaryConnect = agents.find((a) => isObject(a.connect))?.connect;
     const surface = isObject(origin) && isObject(primaryConnect) ? `${strOf(primaryConnect, "kind")}:${strOf(primaryConnect, "id")}` : "";
     const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs"), undefined, get(origin, "links")) : null;
+    const opener = row !== undefined ? this.#opener(station, row) : null;
+    const openers = row !== undefined ? this.#openers(station, row) : [];
+    const opened = row !== undefined ? this.#opened(station, row) : [];
     return {
       ok: {
         me: this.me(ofAddress(station)),
@@ -5235,6 +5281,9 @@ export class Views implements Owner {
         title: row !== undefined && row.title !== undefined ? row.title : t("core-views.new_chat"),
         people: [],
         archived,
+        ...(opener !== null ? { opener } : {}),
+        ...(openers.length > 0 ? { openers } : {}),
+        ...(opened.length > 0 ? { opened, openedText: t("core-views.opened", { n: opened.length }) } : {}),
         agents,
         messages: [],
         elsewhere,
