@@ -2181,7 +2181,9 @@ pub fn word_at(text : String, off : Int) -> (Int, Int) {
 
 ///|
 /// `url` handed to the system: the browser, or the app it belongs to (Android's ACTION_VIEW, macOS's NSWorkspace,
-/// iOS's UIApplication, Windows' ShellExecute). False when nothing took it.
+/// iOS's UIApplication, Windows' ShellExecute). False when nothing took it. On macOS 10.15+ the host asks at once
+/// whether an app is registered for it (false where none is) and opens it without waiting for that app to launch: true
+/// says it was handed on, and a launch that fails after is said only on the log (`open-url failed: …`).
 pub fn open_url(url : String) -> Bool {
   (current.val.open_url)(url)
 }

@@ -3,7 +3,8 @@
 // titlebar spring invalidated to zero before fresh ones are bound on wake or screen reconfiguration, DarkWake keeping
 // links paused while displays stay off, reverse wake ordering reporting away time once, wedged display links replaced
 // and drawn without timers, stale sleep flags cleared once the display is active again, and the menu bar given again
-// with only its items' enabled changed set in place, made anew for anything else:
+// with only its items' enabled changed set in place (whatever AppKit put into its menus), made anew for anything else,
+// and a URL opened only where an app takes it, without waiting for that app to launch:
 //   cc -Wall -Werror -fobjc-arc -I src/host -I "$MOON_HOME/include" scripts/mac_app_test.m
 //     -framework Cocoa -framework QuartzCore -framework Metal -framework UserNotifications -framework Security -o out/mac_app_test && out/mac_app_test
 #import <Cocoa/Cocoa.h>
@@ -79,7 +80,25 @@ static id test_make_display_link(NSView *view, id target, SEL sel) {
 #define MB_APP_IS_ACTIVE() (fake_app_active)
 #define MB_HOST_DISPLAY_ACTIVE(w) ((void)(w), fake_display_active)
 
+// (the system's apps for a URL and its opening, never a browser or another app launched from a test)
+static int url_app_asks, url_opens;
+static NSURL *url_app_said;
+static NSError *url_open_fails;
+static NSURL *test_url_app(NSURL *u) {
+  (void)u;
+  url_app_asks++;
+  return url_app_said;
+}
+static void test_open_url_async(NSURL *u, void (^cb)(NSRunningApplication *, NSError *)) {
+  (void)u;
+  url_opens++;
+  cb(nil, url_open_fails);
+}
+#define MB_MAC_URL_APP(u) test_url_app(u)
+#define MB_MAC_OPEN_URL_ASYNC(u, cb) test_open_url_async((u), (cb))
+
 #import "mac_app.m"
+#include <unistd.h>
 
 // Minimal runtime and renderer/views stubs for linking mac_app.m without MoonBit's runtime or a GPU swapchain.
 moonbit_string_t moonbit_make_string_raw(int32_t size) {
@@ -862,6 +881,92 @@ int main(void) {
     CHECK(test_menu_item(bar5, 1, 2).enabled);
     test_menu_setup(test_menus(YES, @"Mod+F", @"Go", NO, NO, YES));
     CHECK(NSApp.mainMenu != bar5 && tray_item == nil);
+  }
+  // 10b. Items AppKit puts into the menus (the window menu's Close All once the app has finished launching, one before
+  //      the app's own in another menu) leave the bar given again in place, the app's items found by what was made,
+  //      AppKit's left as they are; an item made taken out or a menu put in another's place makes it anew.
+  @autoreleasepool {
+    test_menu_setup(test_menus(NO, @"Mod+Alt+F", @"Go", NO, NO, NO));
+    NSMenu *bar = NSApp.mainMenu;
+    NSMenu *go = [bar itemAtIndex:1].submenu, *window = [bar itemAtIndex:3].submenu;
+    NSMenuItem *latest = test_menu_item(bar, 1, 2), *find = test_menu_item(bar, 1, 3), *stop = test_menu_item(bar, 2, 0);
+    CHECK(!latest.enabled && !find.enabled && !stop.enabled);
+    NSMenuItem *close_all = [[NSMenuItem alloc] initWithTitle:@"Close All" action:@selector(closeAll:) keyEquivalent:@""];
+    close_all.enabled = NO;
+    [window insertItem:close_all atIndex:1];
+    NSMenuItem *sys = [[NSMenuItem alloc] initWithTitle:@"System" action:@selector(menuChosen:) keyEquivalent:@""];
+    sys.enabled = YES;
+    [go insertItem:sys atIndex:2];
+    CHECK([go itemAtIndex:2] == sys && [go itemAtIndex:3] == latest && [window itemAtIndex:1] == close_all);
+    test_menu_setup(test_menus(YES, @"Mod+Alt+F", @"Go", NO, NO, NO));
+    CHECK(NSApp.mainMenu == bar && latest.enabled && find.enabled && stop.enabled);
+    CHECK(sys.enabled && sys.menu == go && !close_all.enabled && close_all.menu == window);
+    test_menu_setup(test_menus(NO, @"Mod+Alt+F", @"Go", NO, NO, NO));
+    CHECK(NSApp.mainMenu == bar && !latest.enabled && !find.enabled && !stop.enabled);
+    CHECK(sys.enabled && !close_all.enabled && go.numberOfItems == 5 && window.numberOfItems == 4);
+
+    // an item made taken out: made anew
+    [go removeItem:latest];
+    test_menu_setup(test_menus(YES, @"Mod+Alt+F", @"Go", NO, NO, NO));
+    NSMenu *bar2 = NSApp.mainMenu;
+    CHECK(bar2 != bar && test_menu_item(bar2, 1, 2).enabled && [test_menu_item(bar2, 1, 2).title isEqualToString:@"Latest"]);
+    // a menu put in another's place under the bar: made anew
+    [bar2 itemAtIndex:1].submenu = [NSMenu new];
+    test_menu_setup(test_menus(NO, @"Mod+Alt+F", @"Go", NO, NO, NO));
+    NSMenu *bar3 = NSApp.mainMenu;
+    CHECK(bar3 != bar2 && [bar3 itemAtIndex:1].submenu.numberOfItems == 4 && !test_menu_item(bar3, 1, 2).enabled);
+  }
+  // 12. A URL opened (mb_host_open_url): nothing for one with no scheme; a scripted run opens nothing and asks nothing;
+  //     otherwise 0 where no app takes it, else handed on once without waiting, a launch that fails said on the log.
+  @autoreleasepool {
+    const char *keys[] = {"MBUI_SCRIPT", "MBUI_DRIVE", "MBUI_DRIVE_B64"};
+    char *kept[3];
+    for (int i = 0; i < 3; i++) {
+      const char *v = getenv(keys[i]);
+      kept[i] = v ? strdup(v) : NULL;
+      unsetenv(keys[i]);
+    }
+    url_app_said = [NSURL fileURLWithPath:@"/Applications/Test.app"];
+    CHECK(mb_host_open_url(mb_string_from_ns(@"no scheme")) == 0);
+    CHECK(mb_host_open_url(mb_string_from_ns(@"")) == 0);
+    CHECK(url_app_asks == 0 && url_opens == 0);
+    for (int i = 0; i < 3; i++) {
+      setenv(keys[i], "1", 1);
+      CHECK(mb_host_open_url(mb_string_from_ns(@"https://example.com/a")) == 1);
+      unsetenv(keys[i]);
+    }
+    CHECK(url_app_asks == 0 && url_opens == 0);
+
+    url_app_said = nil;
+    CHECK(mb_host_open_url(mb_string_from_ns(@"slack://open?team=T1")) == 0);
+    CHECK(url_app_asks == 1 && url_opens == 0);
+    url_app_said = [NSURL fileURLWithPath:@"/Applications/Test.app"];
+    CHECK(mb_host_open_url(mb_string_from_ns(@"https://example.com/b")) == 1);
+    CHECK(url_app_asks == 2 && url_opens == 1);
+
+    // the launch failing after: 1 all the same, said on the log
+    url_open_fails = [NSError errorWithDomain:NSCocoaErrorDomain code:1 userInfo:@{NSLocalizedDescriptionKey : @"no launch"}];
+    int fds[2];
+    CHECK(pipe(fds) == 0);
+    fflush(stdout);
+    int out = dup(1);
+    dup2(fds[1], 1);
+    int32_t opened = mb_host_open_url(mb_string_from_ns(@"https://example.com/c"));
+    fflush(stdout);
+    dup2(out, 1);
+    close(out);
+    close(fds[1]);
+    char said[1024] = {0};
+    ssize_t n = read(fds[0], said, sizeof said - 1);
+    close(fds[0]);
+    CHECK(opened == 1 && url_app_asks == 3 && url_opens == 2 && n > 0);
+    CHECK(strstr(said, "open-url failed: https://example.com/c: no launch\n") != NULL);
+    url_open_fails = nil;
+    url_app_said = nil;
+    for (int i = 0; i < 3; i++) {
+      if (kept[i]) setenv(keys[i], kept[i], 1);
+      free(kept[i]);
+    }
   }
   if (!failed) printf("mac_app_test: ok\n");
   return failed;

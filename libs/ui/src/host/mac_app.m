@@ -2383,24 +2383,28 @@ static id menu_shape(id v) {
   return v;
 }
 
-// What was last made (mb_host_menu_setup): its shape, the bar and the tray's menu
+// What was last made (mb_host_menu_setup): its shape, the bar and the tray's menu, and the items made in them, each
+// kept by reference: AppKit puts items of its own into the menus after (the window menu's Close All once the app has
+// finished launching), so where an item stands says nothing of which one it is.
 static NSArray *made_shape;
 static NSMenu *made_bar, *made_tray_menu;
+static NSArray<NSMenuItem *> *made_bar_tops;
+static NSArray<NSMenu *> *made_bar_menus;
+static NSArray<NSArray<NSMenuItem *> *> *made_bar_items;
+static NSArray<NSMenuItem *> *made_tray_items;
 
-// A menu's items as given again: the app's own greyed or not as they now say (the system's are AppKit's, their
-// `enabled` never read, as menu_item reads none); NO where they are not the items made, to be made again. (The window
-// menu has the system's list of windows after them: those are AppKit's.)
-static BOOL menu_enabled_again(NSMenu *menu, id items) {
+// A menu's items as given again, set on the items made for them: the app's own greyed or not as they now say (the
+// system's are AppKit's, their `enabled` never read, as menu_item reads none); NO where any item made is no longer in
+// the menu, to be made again. Items AppKit put in (the window menu's Close All, its list of windows) are left as they are.
+static BOOL menu_enabled_again(NSMenu *menu, NSArray<NSMenuItem *> *made, id items) {
   NSArray *given = [items isKindOfClass:NSArray.class] ? items : @[];
-  if (!menu || menu.numberOfItems < (NSInteger)given.count) return NO;
+  if (!menu || !made || made.count != given.count) return NO;
   for (NSUInteger j = 0; j < given.count; j++) {
-    NSDictionary *it = given[j];
-    BOOL sep = ![it isKindOfClass:NSDictionary.class] || [it[@"separator"] isEqual:@YES];
-    if ([menu itemAtIndex:(NSInteger)j].isSeparatorItem != sep) return NO;
+    if (made[j].menu != menu) return NO;
   }
   for (NSUInteger j = 0; j < given.count; j++) {
     NSDictionary *it = given[j];
-    NSMenuItem *item = [menu itemAtIndex:(NSInteger)j];
+    NSMenuItem *item = made[j];
     if (item.action != @selector(menuChosen:) || ![it isKindOfClass:NSDictionary.class]) continue;
     BOOL want = ![it[@"enabled"] isEqual:@NO];
     if (item.enabled != want) item.enabled = want;
@@ -2409,22 +2413,32 @@ static BOOL menu_enabled_again(NSMenu *menu, id items) {
 }
 
 // The menu bar given again with only its items' enabled changed: those set on the items made, nothing made again
-// (making the bar anew costs AppKit 7-13 ms on the main thread, each time a chat opens or closes)
+// (making the bar anew costs AppKit 8-14 ms on the main thread, each time a chat opens or closes)
 static BOOL menu_setup_again(NSArray *menus, NSArray *shape) {
   if (!made_bar || NSApp.mainMenu != made_bar || ![shape isEqual:made_shape]) return NO;
   NSInteger k = 0;
+  NSDictionary *mac_tray = nil;
   for (NSDictionary *m in menus) {
     if (![m isKindOfClass:NSDictionary.class]) continue;
     if ([m[@"role"] isEqual:@"tray"]) {
-      if ([m[@"macos"] isEqual:@YES] && !(tray_item && tray_item.menu == made_tray_menu &&
-                                          menu_enabled_again(made_tray_menu, m[@"items"])))
-        return NO;
+      if ([m[@"macos"] isEqual:@YES]) mac_tray = m;
       continue;
     }
-    if (k >= made_bar.numberOfItems || !menu_enabled_again([made_bar itemAtIndex:k].submenu, m[@"items"])) return NO;
+    if (!(k < (NSInteger)made_bar_tops.count && k < (NSInteger)made_bar_menus.count &&
+          k < (NSInteger)made_bar_items.count))
+      return NO;
+    NSMenuItem *top = made_bar_tops[(NSUInteger)k];
+    NSMenu *menu = made_bar_menus[(NSUInteger)k];
+    if (top.menu != made_bar || top.submenu != menu ||
+        !menu_enabled_again(menu, made_bar_items[(NSUInteger)k], m[@"items"]))
+      return NO;
     k++;
   }
-  return YES;
+  if (k != (NSInteger)made_bar_tops.count) return NO;
+  if (mac_tray)
+    return tray_item && tray_item.menu == made_tray_menu && made_tray_items &&
+           menu_enabled_again(made_tray_menu, made_tray_items, mac_tray[@"items"]);
+  return !made_tray_menu && !made_tray_items && !tray_item;
 }
 
 void mb_host_menu_setup(moonbit_string_t json_s) {
@@ -2437,6 +2451,9 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
   made_shape = shape;
   NSMenu *bar = [NSMenu new];
   NSDictionary *mac_tray = nil;
+  NSMutableArray<NSMenuItem *> *tops = [NSMutableArray array];
+  NSMutableArray<NSMenu *> *submenus = [NSMutableArray array];
+  NSMutableArray<NSArray<NSMenuItem *> *> *bar_items = [NSMutableArray array];
   for (NSDictionary *m in menus) {
     if (![m isKindOfClass:NSDictionary.class]) continue;
     // (the notification area's icon's, Windows'/Linux': on macOS opt-in via "macos": true)
@@ -2449,17 +2466,29 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
     NSMenu *menu = [m[@"role"] isEqual:@"actions"] ? [[MBShownKeysMenu alloc] initWithTitle:title]
                                                    : [[NSMenu alloc] initWithTitle:title];
     menu.autoenablesItems = NO;
+    NSMutableArray<NSMenuItem *> *made = [NSMutableArray array];
     if ([m[@"items"] isKindOfClass:NSArray.class])
-      for (NSDictionary *it in m[@"items"]) [menu addItem:menu_item(it)];
+      for (NSDictionary *it in m[@"items"]) {
+        NSMenuItem *item = menu_item(it);
+        [menu addItem:item];
+        [made addObject:item];
+      }
     NSMenuItem *top = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
     top.submenu = menu;
     [bar addItem:top];
+    [tops addObject:top];
+    [submenus addObject:menu];
+    [bar_items addObject:made];
     // the window menu: the system's list of windows in it
     if ([m[@"role"] isEqual:@"window"]) NSApp.windowsMenu = menu;
   }
   NSApp.mainMenu = bar;
   made_bar = bar;
+  made_bar_tops = tops;
+  made_bar_menus = submenus;
+  made_bar_items = bar_items;
   made_tray_menu = nil;
+  made_tray_items = nil;
 
   if (mac_tray) {
     if (!tray_item) {
@@ -2500,11 +2529,17 @@ void mb_host_menu_setup(moonbit_string_t json_s) {
     NSString *m_title = [mac_tray[@"title"] isKindOfClass:NSString.class] ? mac_tray[@"title"] : @"";
     NSMenu *tmenu = [[NSMenu alloc] initWithTitle:m_title];
     tmenu.autoenablesItems = NO;
+    NSMutableArray<NSMenuItem *> *titems = [NSMutableArray array];
     if ([mac_tray[@"items"] isKindOfClass:NSArray.class]) {
-      for (NSDictionary *it in mac_tray[@"items"]) [tmenu addItem:menu_item(it)];
+      for (NSDictionary *it in mac_tray[@"items"]) {
+        NSMenuItem *item = menu_item(it);
+        [tmenu addItem:item];
+        [titems addObject:item];
+      }
     }
     tray_item.menu = tmenu;
     made_tray_menu = tmenu;
+    made_tray_items = titems;
   } else if (tray_item) {
     [NSStatusBar.systemStatusBar removeStatusItem:tray_item];
     tray_item = nil;
@@ -3140,7 +3175,18 @@ int32_t mb_host_open_tab(moonbit_string_t s) { return mb_host_open_url(s); }
 void mb_host_hold_words(moonbit_string_t channel, moonbit_string_t title, moonbit_string_t body) {}
 
 // A URL handed to the system (@hostapi.open_url): NSWorkspace, the browser or the app that takes it. A scripted run
-// (MBUI_SCRIPT, MBUI_DRIVE) only says it on the log (open-url: …), opening nothing on the machine it runs on.
+// (MBUI_SCRIPT, MBUI_DRIVE) only says it on the log (open-url: …), opening nothing on the machine it runs on. On macOS
+// 10.15+ it asks at once whether any app is registered for the URL (0 where none is: a scheme nothing takes, an app not
+// installed) and then has the system open it without waiting on the main thread for the app to launch: 1 says only
+// that it was handed on, and a launch that fails after that is said on the log alone (open-url failed: …).
+#ifndef MB_MAC_URL_APP
+#define MB_MAC_URL_APP(u) [NSWorkspace.sharedWorkspace URLForApplicationToOpenURL:(u)]
+#endif
+#ifndef MB_MAC_OPEN_URL_ASYNC
+#define MB_MAC_OPEN_URL_ASYNC(u, cb)                                                                               \
+  [NSWorkspace.sharedWorkspace openURL:(u) configuration:[NSWorkspaceOpenConfiguration configuration]               \
+                     completionHandler:(cb)]
+#endif
 int32_t mb_host_open_url(moonbit_string_t s) {
   NSString *u = mb_ns_from_string(s);
   NSURL *url = [NSURL URLWithString:u];
@@ -3148,6 +3194,17 @@ int32_t mb_host_open_url(moonbit_string_t s) {
   fflush(stdout);
   if (!url || !url.scheme) return 0;
   if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) return 1;
+  if (!MB_MAC_URL_APP(url)) return 0;
+  if (@available(macOS 10.15, *)) {
+    MB_MAC_OPEN_URL_ASYNC(url, ^(NSRunningApplication *app, NSError *err) {
+      (void)app;
+      if (err) {
+        fprintf(stdout, "open-url failed: %s: %s\n", u.UTF8String, err.localizedDescription.UTF8String);
+        fflush(stdout);
+      }
+    });
+    return 1;
+  }
   return [NSWorkspace.sharedWorkspace openURL:url] ? 1 : 0;
 }
 
