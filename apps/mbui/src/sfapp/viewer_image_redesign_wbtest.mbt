@@ -28,7 +28,7 @@ let twice_mid_ms : Double = 50.0
 fn open_settled_desk_image(what : String, w? : Double = 1280.0, h? : Double = 800.0) -> (@ui.Tester, Viewer) {
   let t = preview_tester(what, w~, platform=0)
   ignore(h)
-  // Settle any entry fade/flight so `assert_idle()` specifically verifies `later=true` on the idle auto-fade timer.
+  // Settle any entry fade/flight so `assert_idle()` sees nothing left moving.
   t.run_for(@ui.move_most_ms)
   let v = viewer.get().unwrap()
   (t, v)

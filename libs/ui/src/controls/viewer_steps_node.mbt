@@ -6,7 +6,7 @@
 let viewer_steps_move_lent : @view.Lent[() -> Unit] = @view.Lent::new()
 
 ///|
-/// Register a pointer-move callback on `parent` so moving over a visible step disc refreshes the viewer idle timer.
+/// Register a pointer-move callback on `parent`, told as the pointer moves over a visible step disc.
 pub fn viewer_steps_on_move(parent : @view.View, on_move : () -> Unit) -> Unit {
   parent.lends(viewer_steps_move_lent, on_move) |> ignore
 }

@@ -301,7 +301,8 @@ fn PlayerNode::show_note(self : PlayerNode, note : @player.MediaNote, ms : Doubl
 fn PlayerNode::play_pause_quiet(self : PlayerNode) -> Unit {
   let was = @signals.untracked(fn() { self.plays() })
   self.act(fn() { self.p.play_pause() })
-  if !self.awake.untracked() {
+  // (what is seen: shown by a lock, they say it themselves)
+  if !@signals.untracked(fn() { self.wanted() }) {
     self.show_note(if was { Paused } else { Played }, player_quiet_note_ms)
   }
 }
