@@ -298,13 +298,20 @@ test "tall multiline composer taller than the viewport stays covered to its bott
   tap_send(t)
   assert_eq(draft.quotes.get().length(), 0, msg="expected quotes cleared on send")
   let check_send_cover = fn(label : String) raise {
-    let (_, sgy, _, sgh) = composer_cover_glass_box(t)
+    let glasses = t.drawn_glass().filter(fn(g) { g.4 == 6 })
+    assert_true(glasses.length() > 0, msg="\{label}: expected drawn composer glass during tall send flight")
+    let mut drawn_bottom = glasses[0].1 + glasses[0].3
+    for g in glasses {
+      if g.1 + g.3 > drawn_bottom {
+        drawn_bottom = g.1 + g.3
+      }
+    }
     guard composer_cover_backdrop(t) is [sa, ..] else {
       fail("\{label}: expected backdrop blur during tall send flight")
     }
     assert_true(
-      sa[1] + sa[3] >= sgy + sgh,
-      msg="\{label}: expected backdrop bottom (\{sa[1] + sa[3]}) >= drawn glass bottom (\{sgy + sgh})",
+      sa[1] + sa[3] >= drawn_bottom,
+      msg="\{label}: expected backdrop bottom (\{sa[1] + sa[3]}) >= drawn glass bottom (\{drawn_bottom})",
     )
     assert_true(
       sa[1] + sa[3] >= 600.0,

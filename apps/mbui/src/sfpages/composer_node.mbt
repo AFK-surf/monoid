@@ -582,7 +582,6 @@ fn composer_node_of(
       backdrop_top,
       lift_backdrop_top,
       fn(u) { shared.morph.shown(u) > 0.001 || shared.sent_over.shown(u) > 0.001 },
-      fn(u) { shared.sent_over.shown(u) },
     )
     match made {
       None =>
@@ -690,7 +689,6 @@ fn composer_foot_scrim_node(
   backdrop_top : (@view.View) -> Double,
   lift_backdrop_top : (@view.View) -> Double,
   expanded : (@view.View) -> Bool,
-  sent_over : (@view.View) -> Double,
 ) -> Unit {
   foot.box(fn(scrim) {
     scrim
@@ -723,11 +721,14 @@ fn composer_foot_scrim_node(
         None => true
       })
     }
+    // Constant band + ground_drawn height (320 + 2400 = 2720pt) keeps drawn height invariant across foot shrinks on
+    // send (zero sizes_steady jump, zero extra bindings) while covering arbitrarily tall composers past the viewport
+    // bottom; every host renderer clamps blur capture to the viewport bounds before GPU work.
     if !@sf.soft_keyboard() {
       scrim.box(fn(band) {
         band
         .width_share(Is(1.0))
-        .height_share(Is(1.0))
+        .height(Is(Some(320.0)))
         .offset(By(fn() { (0.0, backdrop_top(band)) }))
         .fades(Is((0.0, composer_backdrop_fade, 0.0, 0.0)))
         .points(Is(false))
@@ -737,7 +738,7 @@ fn composer_foot_scrim_node(
           .width_share(Is(1.0))
           .height_share(Is(1.0))
           .points(Is(false))
-          .ground_drawn(By(fn() { { dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0 + sent_over(fill), corners: None } }))
+          .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 2400.0, corners: None }))
           |> ignore
         })
         |> ignore
@@ -747,8 +748,6 @@ fn composer_foot_scrim_node(
     }
     // Single pure progressive-blur band for soft keyboards: smoothly interpolates top offset and fade height
     // between rest seam (t=0) and keyboard-up lift (t=1) so every frame has strictly 1 bottom progressive blur.
-    // Tracks foot height_share(1.0) so arbitrarily tall composers stay covered past the viewport bottom, and
-    // adds sent_over to ground_drawn.dh so sending a card never produces a 1-frame drawn-height jump (48-share).
     let typing = @motion.NodeWay::new(if @signals.untracked(fn() { scrim.keyboard_inset() }) > 0.0 { 1.0 } else { 0.0 })
     scrim.reacts(fn() { scrim.keyboard_inset() > 0.0 }, fn(up) {
       if up {
@@ -760,7 +759,7 @@ fn composer_foot_scrim_node(
     scrim.box(fn(band) {
       band
       .width_share(Is(1.0))
-      .height_share(Is(1.0))
+      .height(Is(Some(320.0)))
       .offset(By(fn() {
         let t = typing.shown(band)
         let y0 = seam_backdrop_top(band)
@@ -778,7 +777,7 @@ fn composer_foot_scrim_node(
         .width_share(Is(1.0))
         .height_share(Is(1.0))
         .points(Is(false))
-        .ground_drawn(By(fn() { { dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0 + sent_over(fill), corners: None } }))
+        .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 2400.0, corners: None }))
         |> ignore
       })
       |> ignore
