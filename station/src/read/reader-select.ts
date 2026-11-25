@@ -43,7 +43,7 @@ export const READER_MODES = {
   // Stateful / DB-attaching / cache-writing / FS-mutating / network-binding modes (shadow strictly forbidden)
   data: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Query pool process with WAL checkpoints and timeline marks cache writes (--data)",
   },

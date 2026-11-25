@@ -1473,12 +1473,40 @@ pub fn shared_rows(
       ("creator", creator),
       ("people", base_codec::json_arr(people)),
       ("ws", ws_val),
-      ("named", named),
-      ("mineOf", base_codec::json_arr(mine_of)),
-      ("said", said_val),
-      ("archiveReminderDismissed", base_codec::json_bool(false)),
-      ("archiveRecommended", base_codec::json_bool(arch_rec)),
     ]
+    match readops_core::field(t.thread, "project") {
+      base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
+      _ => {
+        match from_opt {
+          Some(f) => {
+            match readops_core::field(f.thread, "project") {
+              base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
+              _ => ()
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    match readops_core::parsed_thread_tags(readops_core::field(t.thread, "tags")) {
+      Some(ts) => row.push(("tags", ts))
+      None => {
+        match from_opt {
+          Some(f) => {
+            match readops_core::parsed_thread_tags(readops_core::field(f.thread, "tags")) {
+              Some(ts) => row.push(("tags", ts))
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    row.push(("named", named))
+    row.push(("mineOf", base_codec::json_arr(mine_of)))
+    row.push(("said", said_val))
+    row.push(("archiveReminderDismissed", base_codec::json_bool(false)))
+    row.push(("archiveRecommended", base_codec::json_bool(arch_rec)))
     if reviews {
       row.push(("archiveReviewed", base_codec::json_bool(true)))
       let verdict = if archived {
@@ -1796,9 +1824,22 @@ pub fn shared_rows(
       ("people", base_codec::json_arr(people_arr)),
       ("creator", starter),
       ("ws", readops_core::field(ax, "ws")),
-      ("named", named),
-      ("mineOf", base_codec::json_arr(mine_of)),
     ]
+    match from_opt {
+      Some(f) => {
+        match readops_core::field(f.thread, "project") {
+          base_codec::Json::Str(p) => row.push(("project", base_codec::json_str(p)))
+          _ => ()
+        }
+        match readops_core::parsed_thread_tags(readops_core::field(f.thread, "tags")) {
+          Some(ts) => row.push(("tags", ts))
+          None => ()
+        }
+      }
+      None => ()
+    }
+    row.push(("named", named))
+    row.push(("mineOf", base_codec::json_arr(mine_of)))
     if archived {
       row.push(("archived", archived_of(ax)))
     }

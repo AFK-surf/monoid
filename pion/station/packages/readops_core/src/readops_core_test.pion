@@ -187,3 +187,37 @@ test "readops_core: places_from_jvals keeps remote lone-surrogate keys distinct 
     None => assert(false)
   }
 }
+
+test "readops_core: join_path Windows drive check uses UTF-16 code unit positions" {
+  assert(join_path("\\", "C:\\base", "D:\\sub") == "D:\\sub")
+  assert(join_path("\\", "C:\\base", "D:/sub") == "D:/sub")
+  assert(join_path("\\", "C:\\base", "é:/x") == "é:/x")
+  assert(join_path("\\", "C:\\base", "é:\\x") == "é:\\x")
+  assert(join_path("\\", "C:\\base", "rel\\path") == "C:\\base\\rel\\path")
+  // Surrogate pair occupies 2 UTF-16 units, so ':' is at unit index 2, not 1 -> relative.
+  assert(join_path("\\", "C:\\base", "😀:/x") == "C:\\base\\😀:/x")
+}
+
+test "readops_core: row_to_json and row_to_json_cols have deterministic column order" {
+  let row : Map[String, base_codec::Json] = Map::new()
+  row.set("signature", base_codec::json_str("sig"))
+  row.set("body", base_codec::json_str("b"))
+  assert(base_codec::json_stringify(row_to_json(row)) == "{\"body\":\"b\",\"signature\":\"sig\"}")
+  assert(
+    base_codec::json_stringify(row_to_json_cols(row, ["signature", "body"])) ==
+    "{\"signature\":\"sig\",\"body\":\"b\"}",
+  )
+}
+
+test "readops_core: thread_json includes project, projectLocked, and tags" {
+  let row : Map[String, base_codec::Json] = Map::new()
+  row.set("id", base_codec::json_int(1))
+  row.set("surface", base_codec::json_str("chat"))
+  row.set("project", base_codec::json_str("monoid"))
+  row.set("project_locked", base_codec::json_int(1))
+  row.set("tags", base_codec::json_str("[\" ui \", \"ui\", \"ops\"]"))
+  let got = base_codec::json_stringify(thread_json(row))
+  assert(
+    got == "{\"id\":1,\"surface\":\"chat\",\"project\":\"monoid\",\"projectLocked\":true,\"tags\":[\"ui\",\"ops\"]}",
+  )
+}

@@ -120,6 +120,7 @@ fn advertised_modes() -> Array[String] {
     "search",
     "forward",
     "mesh",
+    "data",
   ]
 }
 
@@ -1037,6 +1038,15 @@ fn flag_value(argv : Array[String], name : String) -> Option[String] {
   None
 }
 
+fn flag_present(argv : Array[String], name : String) -> Bool {
+  for i in 1..<argv.length() {
+    if argv[i] == name {
+      return true
+    }
+  }
+  false
+}
+
 fn run_smoke_sql_db(world : World, db_path : String) -> Unit {
   match sql_db::run_selftest(db_path) {
     Ok(_) => ()
@@ -1849,6 +1859,22 @@ fn main(world : World) -> Unit {
           None => "mesh.sock"
         }
         host_shim::exit_process(front::run_mesh(shell_dir, socket_path, sql_db::stringify_json))
+      }
+      None => {
+        match flag_value(argv, "--data") {
+          Some(data_dir) => {
+            if flag_present(argv, "--sessions") || flag_present(argv, "--serve") {
+              usage_exit()
+            } else {
+              let sep = match flag_value(argv, "--sep") {
+                Some(s) => s
+                None => "/"
+              }
+              host_shim::exit_process(reader_data::run_data(data_dir, sep))
+            }
+          }
+          None => usage_exit()
+        }
       }
       _ => usage_exit()
     }

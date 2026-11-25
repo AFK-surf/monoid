@@ -540,14 +540,37 @@ pub fn asking_message(
   from : base_codec::Json,
   to : base_codec::Json,
 ) -> Result[Option[(base_codec::Json, Array[base_codec::Json])], readops_core::ReadError] {
+  let has_prop = match readops_core::has_proposal_column(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let has_sidecar = match readops_core::exists_in(db, "table", "entry_proposals") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
   let n = match about {
     base_codec::Json::Null => {
       let legacy = match builders_legacy::has_legacy_agent(db) {
         Ok(b) => b
         Err(e) => return Err(readops_core::map_step_err(e))
       }
-      let sql = if legacy { readops_core::LEGACY_ASKED_DURING_SQL } else { readops_core::ASKED_DURING_SQL }
-      let during = match readops_core::one(db, sql, [thread, from, to]) {
+      let during_sql = if legacy {
+        readops_core::LEGACY_ASKED_DURING_SQL
+      } else if has_prop && has_sidecar {
+        "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at >= ? AND at <= ?"
+      } else if has_prop {
+        "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at >= ? AND at <= ?"
+      } else {
+        readops_core::ASKED_DURING_SQL
+      }
+      let latest_sql = if has_prop && has_sidecar {
+        "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at <= ? ORDER BY at DESC LIMIT 1"
+      } else if has_prop {
+        "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at <= ? ORDER BY at DESC LIMIT 1"
+      } else {
+        readops_core::ASKED_LATEST_SQL
+      }
+      let during = match readops_core::one(db, during_sql, [thread, from, to]) {
         Ok(r) => r
         Err(e) => return Err(e)
       }
@@ -557,7 +580,7 @@ pub fn asking_message(
           match rn {
             base_codec::Json::Null => {
               if !legacy {
-                match readops_core::one(db, readops_core::ASKED_LATEST_SQL, [thread, to]) {
+                match readops_core::one(db, latest_sql, [thread, to]) {
                   Ok(Some(r2)) => readops_core::field(r2, "n")
                   Ok(None) => base_codec::json_null()
                   Err(e) => return Err(e)
@@ -571,7 +594,7 @@ pub fn asking_message(
         }
         None => {
           if !legacy {
-            match readops_core::one(db, readops_core::ASKED_LATEST_SQL, [thread, to]) {
+            match readops_core::one(db, latest_sql, [thread, to]) {
               Ok(Some(r2)) => readops_core::field(r2, "n")
               Ok(None) => base_codec::json_null()
               Err(e) => return Err(e)
@@ -593,11 +616,14 @@ pub fn asking_message(
     Ok(None) => false
     Err(e) => return Err(e)
   }
-  let carded = match readops_core::one(
-    db,
-    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)",
-    [thread, n],
-  ) {
+  let carded_sql = if has_prop && has_sidecar {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL OR EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n))"
+  } else if has_prop {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL)"
+  } else {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)"
+  }
+  let carded = match readops_core::one(db, carded_sql, [thread, n]) {
     Ok(Some(_)) => true
     Ok(None) => false
     Err(e) => return Err(e)
