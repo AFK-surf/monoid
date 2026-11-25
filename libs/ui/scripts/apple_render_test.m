@@ -3040,20 +3040,21 @@ int main(void) {
           present_drain();
           int aw = 0, ah = 0;
           uint8_t *px = read_texture(canvas, &aw, &ah);
-          double mins[64];
+          double masses[64];
           int n = 0;
+          const double bg_L = 0.2126 * 242.0 + 0.7152 * 240.0 + 0.0722 * 236.0;
           for (int py = 20 + 4; py <= 20 + 44; py++) {
-            double rm = 1e9;
+            double mass = 0.0;
             for (int xpx = 140 * 2 - 48; xpx <= 140 * 2 + 2; xpx++) {
               uint8_t *c = A_PX(px, aw, xpx, py);
               double L = 0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0];
-              if (L < rm) rm = L;
+              if (L < bg_L) mass += (bg_L - L);
             }
-            mins[n++] = rm;
+            masses[n++] = mass / 2.0;
           }
           double max_d2 = 0.0;
           for (int i = 1; i < n - 1; i++) {
-            double d2 = fabs(mins[i - 1] - 2.0 * mins[i] + mins[i + 1]);
+            double d2 = fabs(masses[i - 1] - 2.0 * masses[i] + masses[i + 1]);
             if (d2 > max_d2) max_d2 = d2;
           }
           double side_lmin = 1e9;
@@ -3114,7 +3115,7 @@ int main(void) {
             }
           }
           printf("apple_render: v10_reg_dark_2x top=%.1f mid=%.1f side_in=%.1f side_out=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side_in, l_side_out, (unsigned long long)dh);
-          CHECK(dh == 0x45ea016192dbbd5aULL);
+          CHECK(dh == 0x5d82a685fcc7ca94ULL);
           CHECK(l_top > l_mid + 20.0);
           CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
           CHECK(l_side_in >= l_mid - 6.0);

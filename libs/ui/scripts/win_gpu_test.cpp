@@ -912,20 +912,21 @@ static void test_v8_v9_droplet_roi_gates(void) {
     uint8_t *px = render_rgba_pixels_of(rg, 2, 242.0 / 255.0, 240.0 / 255.0, 236.0 / 255.0, 2.0, AW2, AH2);
     CHECK(px != NULL);
     if (px) {
-      double mins[64];
+      double masses[64];
       int n = 0;
+      const double bg_L = 0.2126 * 242.0 + 0.7152 * 240.0 + 0.0722 * 236.0;
       for (int py = 20 + 4; py <= 20 + 44; py++) {
-        double rm = 1e9;
+        double mass = 0.0;
         for (int xpx = 140 * 2 - 48; xpx <= 140 * 2 + 2; xpx++) {
           uint8_t *c = W_PX(px, AW2, xpx, py);
           double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-          if (L < rm) rm = L;
+          if (L < bg_L) mass += (bg_L - L);
         }
-        mins[n++] = rm;
+        masses[n++] = mass / 2.0;
       }
       double max_d2 = 0.0;
       for (int i = 1; i < n - 1; i++) {
-        double d2 = fabs(mins[i - 1] - 2.0 * mins[i] + mins[i + 1]);
+        double d2 = fabs(masses[i - 1] - 2.0 * masses[i] + masses[i + 1]);
         if (d2 > max_d2) max_d2 = d2;
       }
       double side_lmin = 1e9;

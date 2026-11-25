@@ -66,3 +66,52 @@ test "dialog_surface_decorate draws the unified 50% dialog glass in light and da
     assert_eq((dark, faults), (dark, []))
   }
 }
+
+///|
+test "dark menu danger row stays clean at rest (no resting box), brightens on hover, and keeps readable contrast" {
+  let th = ui_theme_of(theme_of(true, false))
+  let danger_ink = th.color(Danger)
+  // Real dark app glass surfaces (dark page #232325, dark card #2F2F32, dark elevated #3A3A3C)
+  let dark_surfaces : Array[Int64] = [0x232325FFL, 0x2F2F32FFL, 0x3A3A3CFFL]
+  let normal_hover = th.color(A(Fg, O5))
+  for g in dark_surfaces {
+    assert_true(@ui.contrast_ratio(danger_ink, g) >= 4.5, msg="danger rest on \{g}")
+    assert_true(@ui.contrast_ratio(danger_ink, @ui.over(g, normal_hover)) >= 4.5, msg="danger hover on \{g}")
+  }
+  // Real menu component check: opening a dark desktop menu with enabled "删除对话" emits Danger ink with no resting pill box
+  presenters_reset()
+  let t = @ui.Tester::new(fn(_c) {  }, w=1280.0, h=800.0, dark=true, platform=0)
+  set_dark(Some(true))
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).ground(By(fn() { ui_theme_now().bg })) |> ignore
+      button_node(page, fn() { "打开" }, fn() {
+        menu(
+          [Some(menu_item_of("重命名", fn() {  })), Some(menu_item_of("删除对话", fn() {  }, danger=true))],
+          from=at_point(400.0, 200.0),
+        )
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  t.draw()
+  t.tap_text("打开")
+  t.run_for(@ui.move_most_ms)
+  t.draw()
+  let del_inks = inks_of(t, "删除对话")
+  assert_eq(del_inks, [danger_ink])
+  let faults = t.contrast_faults()
+  set_dark(None)
+  assert_eq(faults, [])
+  // Normal dark overlay hover brightens rather than darkens, and keeps Fg >= 4.5:1 over pure-white 0x80 glass (#636363)
+  let dark_menu_body = 0x3A3A3CFFL
+  assert_true(@ui.contrast_ratio(@ui.over(dark_menu_body, normal_hover), 0x000000FFL) > @ui.contrast_ratio(dark_menu_body, 0x000000FFL))
+  assert_true(@ui.contrast_ratio(th.color(Fg), @ui.over(0x636363FFL, normal_hover)) >= 4.5)
+  // Light overlay selected checkmarks use accent_text (>= 3.0:1 over 0x80 light glass over black + Hover)
+  let light_th = ui_theme_of(theme_of(false, false))
+  let light_hover_bg = @ui.over(0xC9C9C9FFL, light_th.color(Hover))
+  assert_true(@ui.contrast_ratio(light_th.color(AccentText), light_hover_bg) >= 3.0)
+}

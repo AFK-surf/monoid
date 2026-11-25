@@ -253,8 +253,16 @@ test "a confirmation warning is red in both a sheet and a dialog" {
     t.draw()
     let warning_ink = inks_of(t, "请确认安全访问")
     let words_ink = inks_of(t, "其他 station 会发送请求")
+    let desc_ok = if at == phone {
+      words_ink == [light_palette.muted] || words_ink == [web_light.muted]
+    } else {
+      let desc_light = @ui.over(light_palette.muted, alpha(light_palette.text, 0.25))
+      let desc_web = @ui.over(web_light.muted, alpha(web_light.text, 0.25))
+      words_ink == [desc_light] || words_ink == [desc_web]
+    }
     assert_true(warning_ink == [light_palette.red] || warning_ink == [web_light.red], msg="warning at \{Repr(at)}")
-    assert_true(words_ink == [light_palette.muted] || words_ink == [web_light.muted], msg="description at \{Repr(at)}")
+    assert_true(desc_ok, msg="description at \{Repr(at)}")
+    assert_true(words_ink != warning_ink, msg="description differs from warning at \{Repr(at)}")
   }
 }
 
@@ -276,7 +284,7 @@ test "a confirmation drawn in the window's tree shows its warning in red" {
   t.run_for(@ui.move_most_ms)
   t.draw()
   assert_eq(inks_of(t, "请确认安全访问"), [@ui.tree_theme().color(Danger)])
-  assert_eq(inks_of(t, "其他 station 会发送请求"), [@ui.tree_theme().color(Muted)])
+  assert_eq(inks_of(t, "其他 station 会发送请求"), [overlay_muted_ink()])
 }
 
 ///|

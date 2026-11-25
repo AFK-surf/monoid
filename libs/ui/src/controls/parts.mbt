@@ -791,8 +791,9 @@ let panel_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Sem
 ///|
 // kept across runs: a value (no field of it changes)
 ///|
-/// Secondary muted ink on floating liquid glass overlays: slightly deeper muted in the light (`#474A4E`) and near-fg
-/// in the dark (`#E7E7E9`) so secondary notes keep >= 4.5:1 over vivid or dark backdrops under 50% liquid glass.
+/// Secondary muted ink on floating liquid glass overlays: slightly deeper muted in the light (`#474A4E`) and
+/// lifted toward `Fg` in the dark (`O95`, `#EDEDEF`) so secondary notes keep >= 4.5:1 over vivid orange/blue badges
+/// under 50% dark glass (while `dialog_lead` keeps `O75` `#DFE0E2` on centered dialogs).
 fn overlay_muted_ink() -> Int64 {
   @ui.style_ink(panel_note_words)
 }
@@ -802,7 +803,7 @@ let panel_note_words : @ui.TextStyle = @ui.text_style(
   size=Meta,
   leading=L5,
   color=Over(Muted, A(Fg, O25)),
-  dark=@ui.text_patch(color=Over(Muted, A(Fg, O90))),
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))),
 )
 
 ///|

@@ -1577,7 +1577,7 @@
       float regDarkOpt = is_dark ? 1.0 : darkMixSaved;
       float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
       float Lt = clamp(transLum * transmittance, 0.0, 1.0);
-      // Symmetric monotonic p=4 gentle-knee for non-adaptive Regular overlays (extra > 0.09, e.g. 0x80 Menu/Alert, 0x99 Sheet/Drawer):
+      // Symmetric monotonic p=4 gentle-knee for non-adaptive Regular overlays (extra > 0.09, e.g. 0x80 Menu/Alert, 0xCC Sheet/Drawer):
       // - Dark overlays (regDarkOpt=1): caps Lt at Lcap=0.295*(1-regExtra) (0x80 Lcap=0.247 -> pure white ~99/255, gray97 ~89/255 vs native 86) while softer chroma knee preserves vivid iOS 27.0 color bleed.
       // - Light overlays (regDarkOpt=0): floors darkness D=max(transmittance-Lt,0) at Dcap=0.205 -> pure black ~202/255 with continuous grayscale translucency.
       // Branchless C1 blend: strictly monotonic in Y and col.a, zero change to 0x67 controls (at frost=0, normal contrast) or adaptive glass.
@@ -1867,9 +1867,7 @@
       if (regMix > 0.001 && solidFade > 0.001) {
         float extAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.6, 2.2, regDarkContour));
         float extRegDir = mix(mix(0.30, 1.0, extAcross), extAcross, regDarkContour);
-        float extInvS = 1.0 / max(u_scale, 1.0);
-        float extLoScale = clamp(3.0 - u_scale, 0.0, 1.0);
-        float extW0 = mix(max(0.28, (0.85 + 0.45 * extLoScale) * extInvS), max(0.36, (1.15 + 0.65 * extLoScale) * extInvS), extAcross);
+        float extW0 = mix(0.28, 0.36, extAcross);
         float extL  = mix(0.08, 0.14, extAcross);
         float regExtCov = mb_bevel_cov(outward, u_scale, extW0, extL);
         extUseCov = mix(ext_cov, regExtCov, regMix);

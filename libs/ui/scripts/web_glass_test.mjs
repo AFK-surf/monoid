@@ -545,18 +545,19 @@ function runGlassVectorsInPage() {
     buf[INST + 12] = 0.6; buf[INST + 13] = 14; buf[INST + 15] = 1; buf[INST + 21] = 20;
     H.present(buf, 2, 242 / 255, 240 / 255, 236 / 255);
     const shot = H.renderPixels();
-    const mins = [];
+    const masses = [];
+    const bgL = 0.2126 * 242 + 0.7152 * 240 + 0.0722 * 236;
     for (let py = 24; py <= 64; py++) {
-      let rm = 1e9;
+      let mass = 0;
       for (let xpx = 140 * 2 - 48; xpx <= 140 * 2 + 2; xpx++) {
         const L = lumaOf(pxAt(shot, xpx, py));
-        if (L < rm) rm = L;
+        if (L < bgL) mass += (bgL - L);
       }
-      mins.push(rm);
+      masses.push(mass / 2);
     }
     let maxD2 = 0;
-    for (let i = 1; i < mins.length - 1; i++) {
-      const d2 = Math.abs(mins[i - 1] - 2 * mins[i] + mins[i + 1]);
+    for (let i = 1; i < masses.length - 1; i++) {
+      const d2 = Math.abs(masses[i - 1] - 2 * masses[i] + masses[i + 1]);
       if (d2 > maxD2) maxD2 = d2;
     }
     let sideLmin = 1e9;
@@ -1398,7 +1399,7 @@ check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continu
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
 check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && roi.v10_reg_light.sideLmin <= 176.0 && roi.v10_reg_light.lightOuterTopL <= roi.v10_reg_light.lightMidL - 15.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,
   `v10_reg_light=${JSON.stringify(roi.v10_reg_light)}`);
-check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSideOut <= 14.0 && roi.v10_reg_dark.lSideOut < roi.v10_reg_dark.lMid - 40.0 && roi.v10_reg_dark.lSideIn >= roi.v10_reg_dark.lMid - 6.0 && roi.v10_reg_dark.roiFnv1a === '0x45ea016192dbbd5a',
+check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSideOut <= 14.0 && roi.v10_reg_dark.lSideOut < roi.v10_reg_dark.lMid - 40.0 && roi.v10_reg_dark.lSideIn >= roi.v10_reg_dark.lMid - 6.0 && roi.v10_reg_dark.roiFnv1a === '0x5d82a685fcc7ca94',
   `v10_reg_dark=${JSON.stringify(roi.v10_reg_dark)}`);
 check(roi.v12_reg_antismear.delta >= 4.0 && roi.v12_reg_antismear.minL >= 170.0,
   `v12_reg_antismear=${JSON.stringify(roi.v12_reg_antismear)}`);

@@ -690,7 +690,17 @@ fn menu_row_node(
     .gap(By(gap))
     .radius(Is(small_panel_inner(r_menu)))
     // det-ok(raw-hover-ground): roving menu active bar moves at once across items without trailing fade
-    .ground(By(fn() { if r.focused() && (r.focus_shown() || r.pointed()) { library_theme().p.hover } else { 0L } }))
+    .ground(By(fn() {
+      if r.focused() && (r.focus_shown() || r.pointed()) {
+        if library_theme().dark {
+          @ui.tree_theme().color(A(Fg, O5))
+        } else {
+          library_theme().p.hover
+        }
+      } else {
+        0L
+      }
+    }))
     |> ignore
     // (the pointer moved onto it or over it: the focus its, unseen, as kit's menu has it (hovered and the pointer moved);
     // come under a pointer that stays still (what holds it scrolled to bring another into sight), nothing)

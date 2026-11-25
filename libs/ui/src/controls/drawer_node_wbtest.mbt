@@ -63,7 +63,7 @@ test "glass_sheet emits calibrated high-density iOS 27 liquid glass in light and
       (
         true,
         14.0,
-        if dark { 0x20202099L } else { 0xFDFCFD99L },
+        if dark { 0x202020CCL } else { 0xFDFCFDCCL },
         1.0,
         0.6,
         20.0,

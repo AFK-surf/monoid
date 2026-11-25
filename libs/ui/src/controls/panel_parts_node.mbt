@@ -344,11 +344,18 @@ pub fn panel_content_row_node(
   highlighted? : (@view.View) -> Bool = lit_in_node,
   loc~ : SourceLoc,
 ) -> Unit {
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   @headless.button(made_for=loc, parent, label, press, fn(row, _) {
     hover_ground_node(
       row,
       lit=Some(fn() { highlighted(row) }),
-      color=fn() { if theme().dark { 0x00000028L } else { @ui.tree_theme().color(Hover) } },
+      color=fn() {
+        if in_overlay && theme().dark {
+          @ui.tree_theme().color(A(Fg, O5))
+        } else {
+          @ui.tree_theme().color(Hover)
+        }
+      },
     )
     content(row)
   })
@@ -572,7 +579,17 @@ pub fn panel_said_row_node(
       .words_look(By(fn() {
         { size: t().t.ui, weight: if chosen() { 500 } else { 400 }, line: panel_row_line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
       }))
-      .ink(By(fn() { if chosen() { t().p.accent_text } else { t().p.text } }))
+      .ink(By(fn() {
+        if chosen() {
+          if t().dark {
+            @ui.tree_theme().color(Over(AccentText, A(Fg, O10)))
+          } else {
+            t().p.accent_text
+          }
+        } else {
+          t().p.text
+        }
+      }))
       .allow_ellipsis(Is(true))
       |> ignore
     })
