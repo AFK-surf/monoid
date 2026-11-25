@@ -409,6 +409,11 @@ fn tape_made(
           app.nav.top_stay().1 == stint()
         }, said=told, width~)
       })
+    Setting(Network) =>
+      made("network", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.network_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(Notifications) =>
       made("notifications", fn(p, core, here, stint, told, _acts) {
         context_node(p)

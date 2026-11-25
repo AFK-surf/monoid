@@ -34,6 +34,7 @@
 // not asked again.
 import type { Clock } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { fileCredentialsSoon } from "../agents/no-keychain.ts";
@@ -104,6 +105,13 @@ const AGY_KEY_GAP_MS = 50;
 const AGY_FAILURES = ["[Auth Error]", "Couldn't sign in", "Failed to select license", "Failed to save GCP settings", "Permission denied"];
 /// What it says where a Google Cloud account may not list its licences: no failure, it goes on to ask how to pay.
 const AGY_NO_LICENCES = "Could not fetch licenses";
+/// What it says where it could not give the account a licence of the project it was given (1.5.14), its only way on
+/// back (Esc) to the project, then to how to pay.
+const AGY_NO_LICENCE_THERE = "No license available for this project and location";
+/// What it asks once its code went in: its licence, how to pay, a project's region, (none to be had there), its project.
+const AGY_ASKS = ["Can't find your subscription?", "Pay only for the tokens you use", "Choose region:", AGY_NO_LICENCE_THERE, "Provide Google Cloud project"];
+/// Its screens once its code went in: seen, the code was taken (a wait that runs out after is not the code's).
+const AGY_PAST_CODE = ["Select billing model", "Pay only for the tokens you use", "Fetching licenses", "Can't find your subscription?", "Provide Google Cloud project", "Choose region:", AGY_NO_LICENCE_THERE];
 /// What it asks the terminal as a remote session's (its primary attributes, `ESC [ c`), and the answer it is given: a
 /// VT100 with advanced video (and, for the secondary attributes it asks with it, a VT220's).
 const AGY_TERMINAL_ASKED = "\u001b[c";
@@ -143,9 +151,31 @@ type Running = {
 };
 
 /// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
-/// went in (`after`, null before), which is where its licences, how to pay and the project are asked. `stage`: its HOME,
-/// an empty directory of this sign-in's; `terminal`: whether its question to the terminal was answered.
-type AgySteps = { enterprise: boolean; cloud: boolean; license: boolean; billing: boolean; after: string | null; stage: string; terminal: boolean };
+/// went in or it was last answered (`after`, null before the code), which is where its licences, how to pay, the
+/// project and its region are asked. `stage`: its HOME, an empty directory of this sign-in's; `terminal`: whether its
+/// question to the terminal was answered. How to pay: 1.5.9 asks once its licences were looked for and none listed
+/// (`fetched`): Pay As You Go (`paid`); 1.5.14 asks first, Subscriptions chosen (`subscribed`), and where the project's
+/// licence cannot be had goes back (`back`, to the project; `backed`, on to how to pay) to ask again, then Pay As You
+/// Go, the project the person gave (`project`) typed again (`retyped`). `regions`: the ways its region was chosen on
+/// (1 Subscriptions', 2 Pay As You Go's). `accepted`: it went on past its code. Each answered once: a screen drawn again
+/// is not asked again.
+type AgySteps = {
+  enterprise: boolean;
+  cloud: boolean;
+  license: boolean;
+  subscribed: boolean;
+  fetched: boolean;
+  paid: boolean;
+  back: boolean;
+  backed: boolean;
+  regions: number;
+  retyped: boolean;
+  project: string | null;
+  accepted: boolean;
+  after: string | null;
+  stage: string;
+  terminal: boolean;
+};
 
 export class LoginManager {
   private jobs = new Map<string, Running>();
@@ -155,6 +185,10 @@ export class LoginManager {
   private noBrowserDir: string;
   /// Where the Antigravity CLI's sign-ins each have their HOME (`run`: what runs, bounded-ephemeral).
   private agyLoginDir: string;
+  /// This manager's mark on the HOMEs of its Antigravity sign-ins (`<profile>-<run>-<mark>`): its runs count from 1, as
+  /// another's did before it (the station's before a restart, or another in the same process), whose HOMEs may still be
+  /// there or still going.
+  private readonly agyMark = randomBytes(4).toString("hex");
   private commands: LoginCommands;
   private background: Fibers;
   /// The environment the commands start from; variables that point a login elsewhere are removed at start.
@@ -309,7 +343,7 @@ export class LoginManager {
     let args: string[];
     let pathCommand: string | undefined;
     // The Antigravity CLI's HOME: an empty directory of this sign-in's (the top of this file says why).
-    const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}`) : null;
+    const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}-${this.agyMark}`) : null;
     if (profile.runtime === "claude") {
       env.CLAUDE_CONFIG_DIR = profile.home;
       const email = typeof profile.email === "string" && profile.email.trim() !== "" ? profile.email.trim() : null;
@@ -347,7 +381,7 @@ export class LoginManager {
     // The shell lookup can take time. Record the sign-in first so cancelling or replacing it stops this start too.
     const running: Running = {
       run, job, child: null, raw: "", output: "", exited: true, opened, lang, home: profile.home,
-      ...(stage !== null ? { agy: { enterprise: profile.enterprise === true, cloud: false, license: false, billing: false, after: null, stage, terminal: false } } : {}),
+      ...(stage !== null ? { agy: { enterprise: profile.enterprise === true, cloud: false, license: false, subscribed: false, fetched: false, paid: false, back: false, backed: false, regions: 0, retyped: false, project: null, accepted: false, after: null, stage, terminal: false } } : {}),
       cancelTimer: this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut"))),
     };
     this.jobs.set(id, running);
@@ -366,15 +400,14 @@ export class LoginManager {
     if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
     const dropStage = () => (stage !== null ? rm(stage, { recursive: true, force: true }).catch(() => {}) : Promise.resolve());
     if (stage !== null) {
-      // Those an earlier sign-in of this profile left (the station ended under it) go first; never a later one's, made
-      // while this listing was read.
+      // Those an earlier sign-in of this profile left (the station ended under it, or another manager's) go first; never
+      // a later one's of this manager, made while this listing was read. (`<run>` alone: a station's before the mark.)
       const left = await readdir(this.agyLoginDir).catch(() => [] as string[]);
       if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
       const mine = (name: string) => {
         if (!name.startsWith(`${profile.id}-`)) return false;
-        const rest = name.slice(profile.id.length + 1);
-        const n = Number(rest);
-        return /^\d+$/.test(rest) && Number.isInteger(n) && n >= 0 && n < run;
+        const left = /^(\d+)(?:-([0-9a-f]{8}))?$/.exec(name.slice(profile.id.length + 1));
+        return left !== null && (left[2] !== this.agyMark || Number(left[1]) < run);
       };
       await Promise.all(left.filter(mine).map((name) => rm(join(this.agyLoginDir, name), { recursive: true, force: true }).catch(() => {})));
       try {
@@ -700,7 +733,10 @@ export class LoginManager {
     // Claude's is checked before it goes in: one it would not take is refused here, the sign-in still waiting for a code.
     const clean = running.job.runtime === "claude" ? claudeCodeOf(trimmed, running.job.url, lang) : trimmed;
     // What it says from here on is read for what comes next (its question for the project, which was said, not again).
-    if (running.agy) running.agy.after = "";
+    if (running.agy) {
+      if (running.job.state === "needs_project") running.agy.project = clean;
+      running.agy.after = "";
+    }
     running.stop?.();
     running.stop = undefined;
     running.job.state = "verifying";
@@ -750,15 +786,19 @@ export class LoginManager {
           return;
         }
       }
-      if (this.background.now() > until) return this.finish(profile, "failed", tr(running.lang, "station.login.agyCodeRefused"));
+      if (this.background.now() > until) {
+        // Gone on past its code, it stopped somewhere after: what it shows there is said, not the code blamed.
+        const error = steps.accepted ? tr(running.lang, "station.login.agyStopped", { screen: agyScreen(running.output) }) : tr(running.lang, "station.login.agyCodeRefused");
+        return this.finish(profile, "failed", error);
+      }
       running.stop = this.background.after(AGY_POLL_MS, () => void look());
     };
     void look();
   }
 
   /// What the Antigravity CLI asks, answered (`output`): how to sign in, and for a company's account the way into
-  /// Google Cloud; once its code went in, its licence (the first), how to pay (as it goes) and the project (asked of the
-  /// person); what it says of a failure ends the sign-in at once, saying it.
+  /// Google Cloud; once its code went in, how to pay (`AgySteps`), its licence (the first), the project (asked of the
+  /// person) and its region (the first, global); what it says of a failure ends the sign-in at once, saying it.
   private agyAnswer(profile: string, running: Running, chunk: string) {
     const steps = running.agy!;
     const write = (keys: string) => running.child?.stdin?.write(keys);
@@ -797,21 +837,66 @@ export class LoginManager {
       const line = failed.trim().replace(/^\[Auth Error\]\s*/, "").trim();
       return this.finish(profile, "failed", tr(running.lang, "station.login.agyFailed", { error: line.slice(0, 300) }));
     }
-    if (!steps.license && said.includes("Can't find your subscription?")) {
+    if (AGY_PAST_CODE.some((s) => said.includes(s))) steps.accepted = true;
+    if (said.includes("Fetching licenses")) steps.fetched = true;
+    // Each answer read off what it said since the last one: a menu answered is not answered again on its old words.
+    const answer = (keys: () => void) => {
+      steps.after = "";
+      keys();
+    };
+    // What it asks now: of its questions in what it said, the last (a screen drawn again leaves the one before in it).
+    const asked = AGY_ASKS.map((q) => ({ q, at: said.lastIndexOf(q) })).reduce((a, b) => (b.at > a.at ? b : a));
+    if (asked.at < 0) return;
+    if (asked.q === AGY_ASKS[0] && !steps.license) {
       steps.license = true;
-      write("\r");
-      return;
+      return answer(() => write("\r"));
     }
-    if (!steps.billing && said.includes("Pay only for the tokens you use")) {
-      steps.billing = true;
-      second();
-      return;
+    if (asked.q === AGY_ASKS[1]) {
+      if (!steps.fetched && !steps.subscribed) {
+        steps.subscribed = true;
+        return answer(() => write("\r"));
+      }
+      if (steps.fetched && !steps.paid) {
+        steps.paid = true;
+        return answer(second);
+      }
     }
-    if (running.job.state === "verifying" && said.includes("Provide Google Cloud project")) {
-      running.stop?.();
-      running.stop = undefined;
-      running.job.state = "needs_project";
-      this.emit(profile);
+    // Its region asked once on each way (Subscriptions', then Pay As You Go's), not again on the same screen drawn again.
+    if (asked.q === AGY_ASKS[2] && steps.regions < (steps.paid ? 2 : 1)) {
+      steps.regions = steps.paid ? 2 : 1;
+      return answer(() => write("\r"));
+    }
+    if (asked.q === AGY_NO_LICENCE_THERE) {
+      // (gone back already: the screen drawn again before its Esc was read, its project's maybe after it)
+      if (steps.back && !steps.paid) {
+        if (steps.backed || !said.includes(AGY_ASKS[4]!)) return;
+        steps.backed = true;
+        return answer(() => write("\u001b"));
+      }
+      if (steps.paid) {
+        const line = said.split(/\r?\n/).find((l) => l.includes(AGY_NO_LICENCE_THERE)) ?? AGY_NO_LICENCE_THERE;
+        return this.finish(profile, "failed", tr(running.lang, "station.login.agyFailed", { error: line.trim().slice(0, 300) }));
+      }
+      steps.back = true;
+      return answer(() => write("\u001b"));
+    }
+    if (asked.q === AGY_ASKS[4]) {
+      // Gone back from the licence it could not have: on back to how to pay.
+      if (steps.back && !steps.paid) {
+        if (steps.backed) return;
+        steps.backed = true;
+        return answer(() => write("\u001b"));
+      }
+      if (steps.paid && steps.project !== null && !steps.retyped) {
+        steps.retyped = true;
+        return answer(() => write(`${steps.project}\r`));
+      }
+      if (running.job.state === "verifying" && !steps.retyped) {
+        running.stop?.();
+        running.stop = undefined;
+        running.job.state = "needs_project";
+        this.emit(profile);
+      }
     }
   }
 
@@ -1041,6 +1126,18 @@ export function stripAnsi(text: string): string {
     out += c;
   }
   return out;
+}
+
+/// What the Antigravity CLI shows last (its lines with words, the last few), said where its sign-in stopped after its
+/// code: its menus are drawn in place, so the last lines are where it waits.
+export function agyScreen(output: string): string {
+  const lines = output
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => /[\p{L}\p{N}]/u.test(l));
+  const said = lines.slice(Math.max(0, lines.length - 4)).join(" / ");
+  const points = [...said];
+  return points.length > 300 ? `…${points.slice(points.length - 300).join("")}` : said;
 }
 
 function lastLines(output: string): string {

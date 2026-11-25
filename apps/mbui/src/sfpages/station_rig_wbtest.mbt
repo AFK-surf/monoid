@@ -78,6 +78,8 @@ test "made a whole station again by its person, asked first: a station's page in
 test "in security mode: its person's own waits for its code; compared, it is taken and its switch shows" {
   let t = setting_tester(Station("ws1/aa11"), 390.0, platform=2, mode="settings-station-tasks-locked")
   assert_true(t.find("我的 · 待核对安全码") is Some(_))
+  // (nothing to list yet: no empty 谁可以使用 under its title)
+  assert_true(t.find("谁可以使用") is None)
   assert_true(t.find("开启后，这个 workspace 的所有对话都能直接使用它，不用逐个批准，也没有时限。") is None)
   assert_true(t.find("改为完整 station") is None)
   tap_words(t, "核对安全码")
@@ -87,6 +89,7 @@ test "in security mode: its person's own waits for its code; compared, it is tak
   t.enter()
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("我的 · 在线") is Some(_))
+  assert_true(t.find("谁可以使用") is Some(_))
   assert_true(t.find("开启后，这个 workspace 的所有对话都能直接使用它，不用逐个批准，也没有时限。") is Some(_))
 }
 

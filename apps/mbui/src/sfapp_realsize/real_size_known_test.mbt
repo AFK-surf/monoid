@@ -449,7 +449,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // laid out and measured as the page opens.
   "phone settings-usage": (780, 584, 155),
   "phone settings-archive": (615, 403, 76),
-  "phone settings-kept": (524, 368, 57),
+  "phone settings-kept": (513, 367, 48),
   "phone settings-kept-many": (544, 375, 52),
   "phone settings-vault-off": (586, 396, 62),
   "phone settings-vault-plain": (586, 396, 62),
@@ -872,7 +872,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // laid out and measured as the page opens.
   "wide settings-usage": (887, 720, 239),
   "wide settings-archive": (829, 607, 96),
-  "wide settings-kept": (648, 501, 84),
+  "wide settings-kept": (627, 503, 75),
   "wide settings-kept-many": (738, 571, 83),
   "wide settings-vault-off": (732, 554, 92),
   "wide settings-vault-plain": (732, 554, 92),

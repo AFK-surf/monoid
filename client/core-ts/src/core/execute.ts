@@ -250,6 +250,8 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
             if (isObject(call.patch) && ("fillOff" in call.patch || "fillMax" in call.patch)) inner.fill?.poke();
             // (the DHT turned on or off: the mesh's endpoint bound anew as it now says, mesh-wire.ts `meshEnv`)
             if (isObject(call.patch) && "dht" in call.patch) inner.meshNow()?.relook();
+            // (other workspaces followed or not: the links of the stations kept as it now says, sync.ts `links`)
+            if (isObject(call.patch) && "otherWorkspaces" in call.patch) inner.stations.reconcile();
             return null;
           },
           catch: asCoreError,

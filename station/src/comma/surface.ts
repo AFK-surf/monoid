@@ -33,7 +33,7 @@ import { ConnectedSurface } from "../connects/surface.ts";
 import { type Handler, type InboundFile, type ModelChoice, type Person, type ThreadRef, isNotice } from "../sessions/chat.ts";
 import { sessionKey } from "../sessions/hub.ts";
 import type { Attachment, Store } from "../store/store.ts";
-import { type CommaStats, type IndexRow, type RevIndex, IndexSync, heldFrom, probePage, statsWire, taskWire } from "./stats.ts";
+import { type CommaStats, type IndexRow, type RevIndex, IndexSync, heldFrom, probePage, statsWire, taskWireFor, validRequesterEmail } from "./stats.ts";
 import { type CommaTasks, type Start, type Task, type TaskLinks, TASK_CHANNEL, validTaskLinks } from "./tasks.ts";
 
 type Json = any;
@@ -353,6 +353,8 @@ export type CommaSurfaceOptions = {
   ownerActiveAt?: () => number | null;
   /// Subscribes to owner activity updates so an open socket pushes updated metadata frames when the 30s bucket advances.
   onOwnerActiveChange?: (changed: () => void) => () => void;
+  /// This station's id (cloud.state?.station ?? null), used to scope connect-level task.index fields.
+  stationId?: () => string | null;
 };
 
 export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
@@ -361,7 +363,7 @@ export type CommaIndexes = Pick<CommaStats, "stats" | "tasks" | "start">;
 /// itself (`task.say`, once per key).
 export type CommaChats = {
   read(ref: string, after: number, limit: number): Promise<Json>;
-  say(ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number): Promise<Json>;
+  say(ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number, requesterEmail?: string): Promise<Json>;
 };
 
 export class CommaSurface extends ConnectedSurface {
@@ -384,6 +386,7 @@ export class CommaSurface extends ConnectedSurface {
   private readonly onWorkspaceMetaChange: ((changed: () => void) => () => void) | null;
   private readonly ownerActiveAt: (() => number | null) | null;
   private readonly onOwnerActiveChange: ((changed: () => void) => () => void) | null;
+  private readonly stationId: (() => string | null) | null;
   /// Stays the same across the sockets of one process (Comma tells a process replaced from a socket dialed again).
   private readonly instance = randomUUID();
   /// The socket now, once Comma said it is connected; and the requests to Comma waiting for their answer.
@@ -421,6 +424,7 @@ export class CommaSurface extends ConnectedSurface {
     this.onWorkspaceMetaChange = options.onWorkspaceMetaChange ?? null;
     this.ownerActiveAt = options.ownerActiveAt ?? null;
     this.onOwnerActiveChange = options.onOwnerActiveChange ?? null;
+    this.stationId = options.stationId ?? null;
   }
 
   // ── the connection ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -472,7 +476,7 @@ export class CommaSurface extends ConnectedSurface {
         this.hello();
         if (this.stats !== null && this.inScope()) {
           void this.sendIndex(socket, "stats.index", statsWire);
-          void this.sendIndex(socket, "task.index", taskWire);
+          void this.sendIndex(socket, "task.index", taskWireFor(this.id, this.stationId?.() ?? null));
         }
         return;
       case "heartbeat":
@@ -737,7 +741,8 @@ export class CommaSurface extends ConnectedSurface {
         }
         // As people see who writes: its Group (several Comma workspaces and Agent Swarms may write here).
         const who = text(params, "requester_name") || text(params, "requester") || "Router";
-        const result = await this.chats.say(text(params, "task"), said, text(params, "key"), who, this.id, params?.close_card === true, expectedCardSeq);
+        const requesterEmail = validRequesterEmail(params?.requester_email);
+        const result = await this.chats.say(text(params, "task"), said, text(params, "key"), who, this.id, params?.close_card === true, expectedCardSeq, requesterEmail);
         if (!this.inScope()) throw new Error("the workspace changed while writing");
         return result;
       }

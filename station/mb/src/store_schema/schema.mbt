@@ -198,6 +198,19 @@ pub let schema : String =
   $|  PRIMARY KEY (id, position)
   $|) WITHOUT ROWID;
   $|CREATE INDEX IF NOT EXISTS comma_router_once_target_session ON comma_router_once_targets (session, id);
+  $|CREATE TABLE IF NOT EXISTS comma_router_connects (
+  $|  thread INTEGER NOT NULL,
+  $|  connect TEXT NOT NULL,
+  $|  at INTEGER NOT NULL,
+  $|  PRIMARY KEY (thread, connect)
+  $|);
+  $|CREATE TABLE IF NOT EXISTS comma_task_participants (
+  $|  thread INTEGER NOT NULL,
+  $|  connect TEXT NOT NULL,
+  $|  email TEXT NOT NULL,
+  $|  at INTEGER NOT NULL,
+  $|  PRIMARY KEY (thread, connect, email)
+  $|);
   $|CREATE TABLE IF NOT EXISTS deliveries (
   $|  thread INTEGER NOT NULL,
   $|  n INTEGER NOT NULL,

@@ -152,6 +152,8 @@ pub(all) struct RouterSay {
   key : String
   requester : String
   connect : String
+  connect_scope : String?
+  requester_email : String?
   close_card : Bool
   expected_card_seq : Double?
 }
@@ -386,6 +388,25 @@ async fn router_says_with(
   // The Task index tells a chat the Router wrote in by this form of its author (read/outflow.ts routerWrote): durable
   // where comma_router_once is not, and for the writes without a key, which leave none.
   let author = "slack:\{w.connect}:\{w.requester}"
+  let scope_key = match w.connect_scope {
+    Some(s) if s != "" => s
+    _ => w.connect
+  }
+  let requester_email = valid_requester_email(w.requester_email.map(jstr))
+  let record_connect = async fn(now : Double) -> Unit {
+    (hub.run)(
+      "INSERT INTO comma_router_connects (thread, connect, at) VALUES (?, ?, ?) ON CONFLICT (thread, connect) DO UPDATE SET at = excluded.at",
+      [Num(w.thread), jstr(scope_key), Num(now)],
+    )
+    match requester_email {
+      Some(email) =>
+        (hub.run)(
+          "INSERT INTO comma_task_participants (thread, connect, email, at) VALUES (?, ?, ?, ?) ON CONFLICT (thread, connect, email) DO UPDATE SET at = excluded.at",
+          [Num(w.thread), jstr(scope_key), jstr(email), Num(now)],
+        )
+      None => ()
+    }
+  }
   let assert_expected_card = async fn() -> Unit {
     match w.expected_card_seq {
       None => ()
@@ -481,49 +502,33 @@ async fn router_says_with(
     }
   }
   if w.key == "" {
-    if w.expected_card_seq is Some(_) {
-      let targets : Ref[Array[String]] = Ref([])
-      let hooks : SayHooks = {
-        workspace: home,
-        before: async fn() {
-          let members = (hub.thread_sessions)(w.thread)
-          if members.length() == 0 {
+    let targets : Ref[Array[String]] = Ref([])
+    let hooks : SayHooks = {
+      workspace: home,
+      before: async fn() {
+        let members = (hub.thread_sessions)(w.thread)
+        if members.length() == 0 {
+          raise fail_("no such chat of the workspace")
+        }
+        let list = []
+        for m in members {
+          let key = str_of(prop(Some(m), "session")).unwrap_or("")
+          let session = (hub.get_session)(key)
+          if session is Null || (hub.ws_of)(session) != home {
             raise fail_("no such chat of the workspace")
           }
-          let list = []
-          for m in members {
-            let key = str_of(prop(Some(m), "session")).unwrap_or("")
-            let session = (hub.get_session)(key)
-            if session is Null || (hub.ws_of)(session) != home {
-              raise fail_("no such chat of the workspace")
-            }
-            if prop(Some(m), "leftAt") is (Some(Null) | None) &&
-              str_of(prop(Some(session), "archivedBy")) != Some(manual) {
-              list.push(key)
-            }
+          if prop(Some(m), "leftAt") is (Some(Null) | None) &&
+            str_of(prop(Some(session), "archivedBy")) != Some(manual) {
+            list.push(key)
           }
-          targets.val = list
-          assert_expected_card()
-        },
-        inserted: async fn(_) { () },
-        targets: async fn() { targets.val },
-      }
-      return (hub.say)(w.thread, author, w.text, Some(hooks))
+        }
+        targets.val = list
+        assert_expected_card()
+      },
+      inserted: async fn(_) { record_connect((io.now)()) },
+      targets: async fn() { targets.val },
     }
-    let members = (hub.thread_sessions)(w.thread)
-    let mut foreign = members.length() == 0
-    for m in members {
-      if foreign {
-        break
-      }
-      if (hub.ws_of)(or_null(prop(Some(m), "session"))) != home {
-        foreign = true
-      }
-    }
-    if foreign {
-      raise fail_("no such chat of the workspace")
-    }
-    return (hub.say)(w.thread, author, w.text, None)
+    return (hub.say)(w.thread, author, w.text, Some(hooks))
   }
   let encoded_targets = Ref("[]")
   let inserted_write : Ref[RouterWrite?] = Ref(None)
@@ -586,6 +591,7 @@ async fn router_says_with(
       // Capture only the original members who were hearing at commit. Someone who rejoins or is unarchived before a
       // retry must not receive a message from before that change.
       (hub.run)(router_targets_insert, [jstr(encoded_targets.val), jstr(w.key)])
+      record_connect(now)
     },
     targets: async fn() {
       guard inserted_write.val is Some(write) else {

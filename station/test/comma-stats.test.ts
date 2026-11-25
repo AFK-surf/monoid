@@ -11,7 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { WebSocketServer } from "ws";
 import { workspaceRead } from "../src/comma/peer.ts";
-import { CommaStats, PAGE_BYTES, PAGE_ROWS, type RevIndex, type StationRows, chatOf, chatRef, heldFrom, nextPage, probePage, taskWire } from "../src/comma/stats.ts";
+import { CommaStats, IndexSync, PAGE_BYTES, PAGE_ROWS, type RevIndex, type StationRows, chatOf, chatRef, connectMatches, connectScope, heldFrom, nextPage, probePage, taskWire, taskWireFor } from "../src/comma/stats.ts";
 import { routerSays } from "../src/comma/chats.ts";
 import { CommaSurface } from "../src/comma/surface.ts";
 import { CommaTasks } from "../src/comma/tasks.ts";
@@ -197,7 +197,7 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
   const asked: Json[] = [];
   const chats = {
     read: async (ref: string, after: number, limit: number) => (asked.push(["read", ref, after, limit]), { title: "Fix", messages: [], through: 3 }),
-    say: async (ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number) => (asked.push(["say", ref, text, key, requester, connect, closeCard, expectedCardSeq]), { seq: 4 }),
+    say: async (ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number, requesterEmail?: string) => (asked.push(["say", ref, text, key, requester, connect, closeCard, expectedCardSeq, requesterEmail]), { seq: 4 }),
   };
   const surface = new CommaSurface({ connect: "cm", server: base, token: "salix_conn_test123", name: "mac", tasks: new CommaTasks(join(dir, "tasks.json")), store: rig.store, models: () => [], stats, chats });
   const until = async (f: () => boolean) => {
@@ -230,10 +230,15 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
       return answers.get(id);
     };
     assert.deepEqual((await request("r1", "task.read", { task: "7", after: 1, limit: 500 })).result, { title: "Fix", messages: [], through: 3 });
-    assert.deepEqual((await request("r2", "task.say", { task: "7", text: "选 main", key: "k1", requester: "Router", requester_name: "星火工作室", expected_card_seq: 9 })).result, { seq: 4 });
+    assert.deepEqual((await request("r2", "task.say", { task: "7", text: "选 main", key: "k1", requester: "Router", requester_name: "星火工作室", requester_email: "  Alice@Example.COM ", expected_card_seq: 9 })).result, { seq: 4 });
+    assert.deepEqual((await request("r2b", "task.say", { task: "7", text: "ok", key: "k2", requester: "Router", requester_email: "bad:email@x" })).result, { seq: 4 });
     assert.match((await request("r3", "task.say", { task: "7", text: " " })).error, /text/);
     assert.match((await request("r4", "task.say", { task: "7", text: "选 main", expected_card_seq: 0 })).error, /expected_card_seq/);
-    assert.deepEqual(asked, [["read", "7", 1, 100], ["say", "7", "选 main", "k1", "星火工作室", "cm", false, 9]]);
+    assert.deepEqual(asked, [
+      ["read", "7", 1, 100],
+      ["say", "7", "选 main", "k1", "星火工作室", "cm", false, 9, "alice@example.com"],
+      ["say", "7", "ok", "k2", "Router", "cm", false, undefined, undefined],
+    ]);
 
     // Changed: the next page carries only what changed.
     stats.apply([here([usageRow("2026-11-02", "a", "ann@x", 2)], {}, [chat(7, "need_human")])], [], FROM);
@@ -421,6 +426,151 @@ test("the Task index says which chats a Comma Router wrote in, with a key or wit
     assert.deepEqual([...wire.keys()].sort(), [String(keyed), String(unkeyed)].sort());
     assert.ok([...wire.values()].every((w: Json) => w.router === true && w.rev > rev));
     assert.deepEqual(stats.apply([here([], {}, [{ ...by.get(people), router: "yes" }, by.get(keyed), by.get(unkeyed)])], [], FROM).tasks, 0, "only true says it");
+  } finally {
+    stats.close();
+    await rig.hub.shutdown();
+  }
+});
+
+test("the Task index carries normalized human participants within bounds, omits empty or legacy absent ones, and preserves creator + speakers end to end", async () => {
+  const stats = CommaStats.at(tempdir(), nothing, quiet);
+  const rig = new Rig();
+  try {
+    const forty = Array.from({ length: 40 }, (_, i) => `User${i}@Example.com`);
+    stats.apply([here([], {}, [
+      { ...chat(1, "working"), participants: ["  Ann@X ", "ann@x", "Bob@Y", "not an email", "local", "slack:cm:Router", "a@b@c", "x".repeat(200) + "@x", 42, null, ""] },
+      { ...chat(2, "working"), participants: forty },
+      { ...chat(3, "working"), participants: [] },
+      { ...chat(4, "working"), participants: ["not-email", "local", "bad@"] },
+      chat(5, "working"),
+    ])], [], FROM);
+    const stored = new Map(rows(stats.tasks).map((r) => [r.row.task, r.row]));
+    const wire = new Map(stats.tasks.since(0, 10).map(taskWire).map((w: Json) => [w.task, w]));
+    assert.deepEqual(stored.get("1").participants, ["ann@x", "bob@y"]);
+    assert.deepEqual(wire.get("1").participants, ["ann@x", "bob@y"]);
+    assert.deepEqual(wire.get("2").participants, forty.slice(0, 32).map((e) => e.toLowerCase()), "capped at 32");
+    assert.equal("participants" in stored.get("3"), false, "empty participants omitted from stored row");
+    assert.equal("participants" in wire.get("3"), false, "empty participants omitted from wire row");
+    assert.equal("participants" in stored.get("4"), false, "all-invalid participants omitted");
+    assert.equal("participants" in wire.get("4"), false);
+    assert.equal("participants" in stored.get("5"), false, "legacy input without participants stays backward-compatible");
+    assert.equal("participants" in wire.get("5"), false);
+
+    // End-to-end from store -> outflowChats -> taskRowsOf -> taskWire: includes creator + human speakers, excludes agent & Router.
+    rig.store.insertSession({ key: "multi", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "multi", createdAt: 1, lastActiveAt: 1, ws: null } as never);
+    const t = rig.store.openThreadOf("ember", "CHAT", "multi", "Multi", "Alice@Example.com", "multi");
+    rig.store.joinThread(t.id, "multi", "ember");
+    rig.store.insertMessage(newMessage(t.id, "m.1", "person", "Bob@Example.com", "joining in"));
+    rig.store.insertMessage(newMessage(t.id, "m.2", "agent", "multi", "working on it"));
+    rig.store.insertMessage(newMessage(t.id, "m.3", "person", "slack:cm:Router", "routed"));
+    rig.store.insertMessage(newMessage(t.id, "m.4", "person", "local", "local msg"));
+    installOutflowChatIndex(rig.store.db);
+    for (const scope of outflowChatScopes(HOME)) while (!outflowChatIndexStep(rig.store.db, scope).done) { /* bounded batches */ }
+    const got = outflowChats(read.makeStore(rig.store.db, rig.dir), 0) as Json;
+    assert.deepEqual(got.chats[0].participants, ["alice@example.com", "bob@example.com"]);
+    stats.apply([here([], {}, got.chats)], [], FROM);
+    const e2eWire = stats.tasks.since(0, 20).map(taskWire).find((w: Json) => w.task === String(t.id));
+    assert.deepEqual(e2eWire.participants, ["alice@example.com", "bob@example.com"]);
+  } finally {
+    stats.close();
+    await rig.hub.shutdown();
+  }
+});
+
+test("connect-scoped router and task.say requester_email isolate multi-connect and cross-station same-name connects without polluting thread_people", async () => {
+  const stats = CommaStats.at(tempdir(), nothing, quiet);
+  const rig = new Rig();
+  try {
+    assert.equal(connectScope("stA", "comma"), "stA/comma");
+    assert.equal(connectScope("", "comma"), "comma");
+    assert.equal(connectScope(null, "comma"), "comma");
+    assert.equal(connectMatches("stA/comma", "comma", "stA"), true);
+    assert.equal(connectMatches("stA/comma", "comma", "stB"), false);
+    assert.equal(connectMatches("stA/comma", "comma", null), false);
+    assert.equal(connectMatches("comma", "comma", "stA"), true);
+    assert.equal(connectMatches("comma", "comma-2", "stA"), false);
+
+    const makeChat = (key: string) => {
+      rig.store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 1, ws: null } as never);
+      const thread = rig.store.openThreadOf("ember", "CHAT", key, key, "ann@x", key);
+      rig.store.joinThread(thread.id, key, "ember");
+      return thread.id;
+    };
+    const scopedChat = makeChat("scoped");
+    const legacyChat = makeChat("legacy");
+    const closeCardChat = makeChat("close-card");
+    const home = rig.hub.wsOf("scoped");
+
+    // 1. Station A's connect "comma" writes with requesterEmail (and another unkeyed write with invalid email).
+    routerSays(rig.hub, stats, home, {
+      thread: scopedChat, text: "please check", key: "comma:k1", requester: "Router", connect: "comma",
+      connectScope: connectScope("stA", "comma"), requesterEmail: "  Alice@Example.COM ",
+    });
+    routerSays(rig.hub, stats, home, {
+      thread: scopedChat, text: "follow up", key: "", requester: "Router", connect: "comma",
+      connectScope: connectScope("stA", "comma"), requesterEmail: "bad:email@x",
+    });
+
+    // Security invariant: requesterEmail MUST NOT be inserted into thread_people.
+    const peopleRows = (rig.store.db.prepare("SELECT author FROM thread_people WHERE thread = ?").all(scopedChat) as { author: string }[]).map((r) => r.author);
+    assert.deepEqual(peopleRows, ["slack:comma:Router"]);
+
+    // 2. Legacy chat: only thread_people has slack:comma:Router, no comma_router_connects rows.
+    rig.store.insertMessage(newMessage(legacyChat, "leg.1", "person", "slack:comma:Router", "old write"));
+
+    // 3. Silent close_card must NOT record comma_router_connects or comma_task_participants.
+    rig.store.insertMessage({
+      ...newMessage(closeCardChat, "cc.1", "agent", "close-card", "pick"),
+      card: { type: "options", options: [{ label: "Skip", action: "close" }] },
+    });
+    routerSays(rig.hub, stats, home, {
+      thread: closeCardChat, text: "Skip", key: "comma:k-close", requester: "Router", connect: "comma",
+      connectScope: connectScope("stA", "comma"), requesterEmail: "alice@example.com", closeCard: true,
+    });
+    assert.equal((rig.store.db.prepare("SELECT COUNT(*) AS n FROM comma_router_connects WHERE thread = ?").get(closeCardChat) as { n: number }).n, 0);
+    assert.equal((rig.store.db.prepare("SELECT COUNT(*) AS n FROM comma_task_participants WHERE thread = ?").get(closeCardChat) as { n: number }).n, 0);
+
+    installOutflowChatIndex(rig.store.db);
+    for (const scope of outflowChatScopes(HOME)) while (!outflowChatIndexStep(rig.store.db, scope).done) { /* bounded batches */ }
+    const got = outflowChats(read.makeStore(rig.store.db, rig.dir), 0) as Json;
+    const by = new Map<number, Json>(got.chats.map((c: Json) => [c.thread, c]));
+
+    // Scoped chat must NOT leak bare "comma" from thread_people since "stA/comma" covers it.
+    assert.deepEqual(by.get(scopedChat).routerConnects, ["stA/comma"]);
+    assert.deepEqual(by.get(scopedChat).connectParticipants, { "stA/comma": ["alice@example.com"] });
+    // Legacy chat extracts bare "comma" from thread_people.
+    assert.deepEqual(by.get(legacyChat).routerConnects, ["comma"]);
+    assert.equal("router" in by.get(closeCardChat), false);
+
+    stats.apply([here([], {}, got.chats)], [], FROM);
+    const wireFor = (cid: string, sid: string | null) =>
+      new Map(stats.tasks.since(0, 20).map(taskWireFor(cid, sid)).map((w: Json) => [w.task, w]));
+
+    const aComma = wireFor("comma", "stA");
+    const bComma = wireFor("comma", "stB");
+    const aComma2 = wireFor("comma-2", "stA");
+
+    assert.equal(aComma.get(String(scopedChat)).router, true);
+    assert.deepEqual(aComma.get(String(scopedChat)).participants, ["ann@x", "alice@example.com"]);
+    assert.equal("router" in bComma.get(String(scopedChat)), false, "station B's same-name 'comma' must not see station A's router flag");
+    assert.deepEqual(bComma.get(String(scopedChat)).participants, ["ann@x"], "station B must not see station A's connect-scoped requester_email");
+    assert.equal("router" in aComma2.get(String(scopedChat)), false, "different connect 'comma-2' must not see 'comma' router flag");
+    assert.deepEqual(aComma2.get(String(scopedChat)).participants, ["ann@x"]);
+
+    // Legacy chat matches "comma" on any station, not "comma-2".
+    assert.equal(aComma.get(String(legacyChat)).router, true);
+    assert.equal(bComma.get(String(legacyChat)).router, true);
+    assert.equal("router" in aComma2.get(String(legacyChat)), false);
+
+    // taskWireFor is recognized as a built-in wire by IndexSync (omits removed bodies & adaptive sizing).
+    stats.apply([here([], {}, [])], [], FROM);
+    const sync = new IndexSync(stats.tasks, taskWireFor("comma", "stA"));
+    try {
+      const page = sync.next({ epoch: null, through: 0 })!;
+      assert.ok(page.rows.every((r: Json) => r.removed === true));
+    } finally {
+      sync.close();
+    }
   } finally {
     stats.close();
     await rig.hub.shutdown();

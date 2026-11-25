@@ -693,6 +693,8 @@ pub fn Store::delete_session(self : Store, key : String) -> Unit raise {
           "DELETE FROM comma_router_once_targets WHERE id IN (SELECT id FROM comma_router_once WHERE thread = ?)",
         )
         of("DELETE FROM comma_router_once WHERE thread = ?")
+        of("DELETE FROM comma_router_connects WHERE thread = ?")
+        of("DELETE FROM comma_task_participants WHERE thread = ?")
         of("DELETE FROM deliveries WHERE thread = ?")
         of("DELETE FROM entries WHERE thread = ?")
         of("DELETE FROM letter_deliveries WHERE thread = ?")

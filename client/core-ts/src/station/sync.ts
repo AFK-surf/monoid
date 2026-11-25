@@ -363,6 +363,7 @@ export class StationsSync {
         this.#sweepOwed.delete(address);
         this.channels.forget(address);
       },
+      links: (workspace) => this.#linksWorkspace(workspace),
     });
     // A thread caught up on brought its latest: one less to catch up on.
     core.data.onLogChange((table, station, id) => {
@@ -450,6 +451,33 @@ export class StationsSync {
     if (address === undefined) return false;
     const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
     return current !== null && !current.has(ofAddress(address));
+  }
+
+  /// Whether `workspace`'s stations are linked: every workspace's, unless the device follows only those in view
+  /// (`prefs.otherWorkspaces` off), then those the UIs show (the one last open while none says).
+  #linksWorkspace(workspace: string): boolean {
+    if (prefs.otherWorkspacesOn(this.#core.data)) return true;
+    const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
+    if (current !== null) return current.has(workspace);
+    const last = prefs.lastWorkspace(this.#core.data);
+    return last === null || last === workspace;
+  }
+
+  /// The workspaces in view as links were last kept for them (`focusMoved`).
+  #linkedFor = "";
+
+  /// A UI's focus or workspace changed: where the device follows only the workspaces in view, the stations of one
+  /// switched to are linked and those of one left let go.
+  focusMoved(): void {
+    if (prefs.otherWorkspacesOn(this.#core.data)) {
+      this.#linkedFor = "";
+      return;
+    }
+    const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
+    const key = current === null ? "" : [...current].sort().join("\u0001");
+    if (key === this.#linkedFor) return;
+    this.#linkedFor = key;
+    this.reconcile();
   }
 
   /// Re-evaluates sparing across open links after network, device, or workspace focus changes: seamlessly replaces
