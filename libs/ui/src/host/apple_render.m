@@ -74,9 +74,11 @@ typedef struct {
   int active;
   float cx, cy, hx, hy;
   int is_dark;
+  int has_changed;
   uintptr_t last_bd;
   double settle_left;
   uint64_t settle_serial;
+  uint64_t last_changed_serial;
   uint64_t updated_serial;
   uint64_t seen_serial;
 } MBAdSlot;
@@ -332,26 +334,39 @@ static NSString *shader_src = @
 "  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
 "  return (hi * 256.0 + lo) / 65535.0;\n"
 "}\n"
-"static float3 ad_sample_ink(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float2 ac, float fallback_r, thread float2& capCenter, thread float2& capHalf) {\n"
+"static float3 ad_sample_ink(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float2 ac, float fallback_r, bool prefer_dark, thread float2& capCenter, thread float2& capHalf) {\n"
 "  int ad_n = int(g.ad_meta.x + 0.5);\n"
 "  if (ad_n > 0) {\n"
-"    int best = -1;\n"
-"    float best_d = 1e9;\n"
+"    int best_pref = -1, best_any = -1;\n"
+"    float best_pref_d = 1e9, best_any_d = 1e9;\n"
 "    for (int i = 0; i < 16; i++) {\n"
 "      if (i >= ad_n) break;\n"
 "      float d = length(ac - g.ad_box[i].xy);\n"
-"      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+"      if (d <= 2.0) {\n"
+"        float4 px = ad_tex.read(uint2(uint(i), 0));\n"
+"        int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
+"        bool slot_dark = (code >= 48 && code <= 208);\n"
+"        if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }\n"
+"        if (d < best_any_d) { best_any = i; best_any_d = d; }\n"
+"      }\n"
 "    }\n"
+"    int best = (best_pref >= 0) ? best_pref : best_any;\n"
 "    if (best < 0) {\n"
-"      best_d = 1e9;\n"
+"      best_pref = -1; best_any = -1;\n"
+"      best_pref_d = 1e9; best_any_d = 1e9;\n"
 "      for (int i = 0; i < 16; i++) {\n"
 "        if (i >= ad_n) break;\n"
 "        float2 diff = abs(ac - g.ad_box[i].xy);\n"
 "        if (diff.x <= g.ad_box[i].z + 2.0 && diff.y <= g.ad_box[i].w + 2.0) {\n"
 "          float d = length(diff);\n"
-"          if (d < best_d) { best = i; best_d = d; }\n"
+"          float4 px = ad_tex.read(uint2(uint(i), 0));\n"
+"          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
+"          bool slot_dark = (code >= 48 && code <= 208);\n"
+"          if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }\n"
+"          if (d < best_any_d) { best_any = i; best_any_d = d; }\n"
 "        }\n"
 "      }\n"
+"      best = (best_pref >= 0) ? best_pref : best_any;\n"
 "    }\n"
 "    if (best >= 0) {\n"
 "      float4 px = ad_tex.read(uint2(uint(best), 0));\n"
@@ -419,7 +434,7 @@ static NSString *shader_src = @
 "  float origL = luma(rgb);\n"
 "  if (ch > 0.08) return rgb;\n"
 "  float2 capCenter, capHalf;\n"
-"  float3 cap = ad_sample_ink(bd, ad_tex, g, ac, fallback_r, capCenter, capHalf);\n"
+"  float3 cap = ad_sample_ink(bd, ad_tex, g, ac, fallback_r, origL >= 0.5, capCenter, capHalf);\n"
 "  float capsuleDarkT = cap.x;\n"
 "  float capsuleBgL = cap.y;\n"
 "  float capsuleLatch = cap.z;\n"
@@ -532,7 +547,7 @@ static NSString *shader_src = @
 "    } else if (kind == 0 && I.pad.w < 0.0) {\n"
 "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
 "      float2 capCenter, capHalf;\n"
-"      float darkT = ad_sample_ink(bd, ad_tex, g, I.pad.yz, -I.pad.w * 0.5, capCenter, capHalf).x;\n"
+"      float darkT = ad_sample_ink(bd, ad_tex, g, I.pad.yz, -I.pad.w * 0.5, false, capCenter, capHalf).x;\n"
 "      if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
 "        col.rgb = mix(col.rgb, float3(1.0), darkT);\n"
 "        col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);\n"
@@ -659,7 +674,13 @@ MB_CORNER_SL
 "    for (int i = 0; i < 16; i++) {\n"
 "      if (i >= ad_n) break;\n"
 "      float d = length(ac - g.ad_box[i].xy);\n"
-"      if (d <= 2.0 && d < best_d) { best = i; best_d = d; }\n"
+"      if (d <= 2.0 && d < best_d) {\n"
+"        float4 px = ad_tex.read(uint2(uint(i), 0));\n"
+"        int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
+"        bool slot_dark = (code >= 48 && code <= 208);\n"
+"        if (slot_dark != is_dark_glass) continue;\n"
+"        best = i; best_d = d;\n"
+"      }\n"
 "    }\n"
 "    if (best < 0) {\n"
 "      best_d = 1e9;\n"
@@ -668,7 +689,13 @@ MB_CORNER_SL
 "        float2 diff = abs(ac - g.ad_box[i].xy);\n"
 "        if (diff.x <= g.ad_box[i].z + 2.0 && diff.y <= g.ad_box[i].w + 2.0) {\n"
 "          float d = length(diff);\n"
-"          if (d < best_d) { best = i; best_d = d; }\n"
+"          if (d < best_d) {\n"
+"            float4 px = ad_tex.read(uint2(uint(i), 0));\n"
+"            int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
+"            bool slot_dark = (code >= 48 && code <= 208);\n"
+"            if (slot_dark != is_dark_glass) continue;\n"
+"            best = i; best_d = d;\n"
+"          }\n"
 "        }\n"
 "      }\n"
 "    }\n"
@@ -2551,6 +2578,7 @@ typedef struct {
   int sid;
   int is_new;
   int is_dark;
+  int track_rb;
   float cx, cy, hx, hy;
 } AdPending;
 
@@ -2654,6 +2682,12 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
     }
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
+      int consec_scroll = (slot_changed && !is_new && s->has_changed && s->last_changed_serial + 1 == serial);
+      int track_rb = (!is_new && s->is_dark == 0 && dt > 0.0 && !consec_scroll);
+      if (slot_changed && !is_new) {
+        s->has_changed = 1;
+        s->last_changed_serial = serial;
+      }
       if (is_new || s->is_dark > 0) {
         s->settle_left = 0.0;
         s->settle_serial = serial;
@@ -2666,7 +2700,7 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
       }
       s->last_bd = cur_bd;
       s->updated_serial = serial;
-      out[n_upd++] = (AdPending){sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
+      out[n_upd++] = (AdPending){sid, is_new, s->is_dark, track_rb, s->cx, s->cy, s->hx, s->hy};
     }
   }
   return n_upd;
@@ -2686,7 +2720,7 @@ static void ad_run_updates_batch(id<MTLCommandBuffer> cb, MBRenderWin *w, const 
   int cur = w->ad_cur, nxt = 1 - cur;
   uint32_t batch_mask = 0;
   for (int i = 0; i < n_upd; i++) {
-    if (!items[i].p.is_new && items[i].p.is_dark == 0 && dt > 0.0) batch_mask |= (1u << items[i].p.sid);
+    if (items[i].p.track_rb) batch_mask |= (1u << items[i].p.sid);
   }
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
   if (batch_mask && !w->ad_rb_prev_copied && w->ad_rb[w->ad_rb_i]) {
@@ -3081,6 +3115,7 @@ static int donor_elig_tids[MB_MAX_DONORS];
 static int donor_elig_n;
 static int donor_delegated_count;
 static int donor_plan_ready;
+static int donor_force_off;
 static uint32_t donor_slot_mask;
 
 static int is_donor_elig_tid(int tid) {
@@ -3095,18 +3130,57 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
   donor_delegated_count = 0;
   if (count <= 0 || !f) return 0;
   if ((size_t)count > donor_of_cap) {
+    int *nb = (int *)realloc(donor_of_buf, (size_t)count * sizeof(int));
+    if (!nb) return 0;
+    donor_of_buf = nb;
     donor_of_cap = (size_t)count;
-    donor_of_buf = (int *)realloc(donor_of_buf, donor_of_cap * sizeof(int));
   }
-  if (!donor_of_buf) {
-    donor_of_cap = 0;
-    return 0;
-  }
+  if (!donor_of_buf) return 0;
   memset(donor_of_buf, 0, (size_t)count * sizeof(int));
+  if (donor_force_off) return 0;
+  int neg_tids[64];
+  int neg_cnts[64];
+  int neg_n = 0;
+  int neg_overflow = 0;
+  for (int32_t k = 0; k < count; ) {
+    const float *pk = f + (size_t)k * MB_INST;
+    int kk = (int)(pk[5] + 0.5f);
+    if (kk == 8) {
+      int32_t cn = (int32_t)(pk[12] + 0.5f);
+      if (cn < 0) cn = 0;
+      if (k + 1 + cn > count) cn = count - k - 1;
+      k += 1 + cn;
+      continue;
+    }
+    int t = (int)pk[20];
+    if (t < 0) {
+      int found = 0;
+      for (int u = 0; u < neg_n; u++) {
+        if (neg_tids[u] == t) {
+          neg_cnts[u]++;
+          found = 1;
+          break;
+        }
+      }
+      if (!found) {
+        if (neg_n < 64) {
+          neg_tids[neg_n] = t;
+          neg_cnts[neg_n] = 1;
+          neg_n++;
+        } else {
+          neg_overflow = 1;
+          break;
+        }
+      }
+    }
+    k++;
+  }
+  if (neg_overflow) return 0;
   MBDonorCand elig[MB_MAX_DONORS];
   int n_elig = 0;
   int32_t cur_glass_start = -1;
   int cur_glass_kind = 0, cur_glass_tid = 0;
+  float cur_glass_margin = 0.0f;
   float pad = 1.0f / (sc > 0.0f ? sc : 1.0f);
   for (int32_t i = 0; i < count; ) {
     const float *p = f + (size_t)i * MB_INST;
@@ -3129,10 +3203,8 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
       float vx1 = fminf(p[0] + p[2], p[18]), vy1 = fminf(p[1] + p[3], p[19]);
       if (vx1 > vx0 && vy1 > vy0) {
         int occ = 0;
-        for (int32_t k = 0; k < count; k++) {
-          if ((int)f[(size_t)k * MB_INST + 20] == tid) {
-            if (++occ > 1) break;
-          }
+        for (int u = 0; u < neg_n; u++) {
+          if (neg_tids[u] == tid) { occ = neg_cnts[u]; break; }
         }
         if (occ == 1) {
           elig[n_elig].idx = i;
@@ -3146,10 +3218,23 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
         }
       }
     }
-    if ((kind == 5 || kind == 6) && tid < 0 && tid != cur_glass_tid) {
-      cur_glass_start = i;
-      cur_glass_kind = kind;
-      cur_glass_tid = tid;
+    if ((kind == 5 || kind == 6) && tid < 0) {
+      float g_margin = 0.0f;
+      if (kind == 6) {
+        float raw_blur = p[7] < 0.0f ? 0.0f : fabsf(p[7]);
+        int is_clear_liq = (p[7] >= -0.001f && p[7] <= 0.1f && p[11] < 0.12f);
+        float blur = (is_clear_liq && p[11] > 0.01f && raw_blur < 0.1f) ? 1.2f : raw_blur;
+        float clear_rs = (fabsf(p[7]) < 0.01f && p[11] > 0.005f && p[11] < 0.31f) ? 2.20f : 1.0f;
+        g_margin = 3.0f * blur + p[21] * clear_rs * (1.0f + fabsf(p[22])) + fmaxf(p[23], 0.0f) + 2.0f;
+      }
+      if (tid != cur_glass_tid) {
+        cur_glass_start = i;
+        cur_glass_kind = kind;
+        cur_glass_tid = tid;
+        cur_glass_margin = g_margin;
+      } else if (kind == 6 && g_margin > cur_glass_margin) {
+        cur_glass_margin = g_margin;
+      }
     } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
                cur_glass_kind == 6 && n_elig > 0) {
       float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
@@ -3171,15 +3256,20 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
         if (sr[2] > sr[0] && sr[3] > sr[1]) {
           float req[4] = {fminf(dr[0], sr[0]), fminf(dr[1], sr[1]),
                           fmaxf(dr[2], sr[2]), fmaxf(dr[3], sr[3])};
+          float occ_sr[4] = {sr[0] - cur_glass_margin, sr[1] - cur_glass_margin,
+                             sr[2] + cur_glass_margin, sr[3] + cur_glass_margin};
           for (int di = n_elig - 1; di >= 0; di--) {
             const MBDonorCand *d = &elig[di];
             if (d->idx >= cur_glass_start) continue;
             if (d->vx0 <= req[0] && d->vy0 <= req[1] && d->vx1 >= req[2] && d->vy1 >= req[3]) {
               int occluded = 0;
+              int32_t run_j = d->idx + 1;
+              float prev_tid_j = 0.0f;
+              int has_prev_tid = 0;
               for (int32_t j = d->idx + 1; j < cur_glass_start; ) {
                 const float *bj = f + (size_t)j * MB_INST;
                 int kj = (int)(bj[5] + 0.5f);
-                if (kj == 12) { j++; continue; }
+                if (kj == 12) { has_prev_tid = 0; j++; continue; }
                 if (kj == 8) {
                   int32_t cn = (int32_t)(bj[12] + 0.5f);
                   if (cn < 0) cn = 0;
@@ -3196,24 +3286,32 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
                     if (cb[0] + cb[2] > lx1) lx1 = cb[0] + cb[2];
                     if (cb[1] + cb[3] > ly1) ly1 = cb[1] + cb[3];
                   }
-                  if (lx1 + lm > sr[0] && lx0 - lm < sr[2] && ly1 + lm > sr[1] && ly0 - lm < sr[3]) {
+                  if (lx1 + lm > occ_sr[0] && lx0 - lm < occ_sr[2] && ly1 + lm > occ_sr[1] && ly0 - lm < occ_sr[3]) {
                     occluded = 1;
                     break;
                   }
+                  has_prev_tid = 0;
                   j += 1 + cn;
                   continue;
                 }
                 if (kj == 9) {
-                  if (reaches(f, j, j, sr)) { occluded = 1; break; }
+                  if (reaches(f, j, j, occ_sr)) { occluded = 1; break; }
+                  has_prev_tid = 0;
                   j++;
                   continue;
                 }
-                int32_t run_j = j;
                 float tid_j = bj[20];
                 if (tid_j < 0.0f) {
-                  while (run_j > 0 && f[(size_t)(run_j - 1) * MB_INST + 20] == tid_j) run_j--;
+                  if (!has_prev_tid || tid_j != prev_tid_j) {
+                    run_j = j;
+                    prev_tid_j = tid_j;
+                    has_prev_tid = 1;
+                  }
+                } else {
+                  run_j = j;
+                  has_prev_tid = 0;
                 }
-                if (reaches(f, j, run_j, sr)) { occluded = 1; break; }
+                if (reaches(f, j, run_j, occ_sr)) { occluded = 1; break; }
                 j++;
               }
               if (!occluded) {

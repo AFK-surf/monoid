@@ -5831,23 +5831,35 @@ int main(void) {
       rect_at(lt + MB_INST, 10, 10, 80, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -53);
       lt[MB_INST + 4] = 16.0; lt[MB_INST + 6] = 1.0; lt[MB_INST + 7] = 1.0;
       lt[MB_INST + 11] = 0x67 / 255.0; lt[MB_INST + 13] = 4.0; lt[MB_INST + 14] = -1.0; lt[MB_INST + 15] = 1.0;
+      int rb_base = ad_rb_submitted_count;
       gl_present(lt, 2, 0.9, 0.9, 0.9);
       glFinish();
-      // Frame 1 of scroll (changes backdrop -> arms readback)
+      CHECK(ad_rb_submitted_count == rb_base);
+      int light_sid = -1;
+      for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+        if (ad_slots[i].active && ad_slots[i].is_dark == 0) { light_sid = i; break; }
+      }
+      CHECK(light_sid >= 0);
+      // Frame 1 (first change): submitted +1, mask & (1u << sid) set
       rect_at(lt, 2, 0, W, H, 0, 0.88, 0.88, 0.88, 0);
       gl_present(lt, 2, 0.9, 0.9, 0.9);
       glFinish();
-      int rb_idx_after_f1 = ad_rb_i;
-      // Frames 2..4 consecutive scroll -> consec_scroll skips readback (ad_rb_i stays unchanged!)
-      for (int sf = 2; sf <= 4; sf++) {
+      CHECK(ad_rb_submitted_count == rb_base + 1);
+      CHECK((ad_rb_last_mask & (1u << light_sid)) != 0);
+      // Frame 2 & 3 (consecutive scroll): submitted +0!
+      for (int sf = 2; sf <= 3; sf++) {
         rect_at(lt, 2 * sf, 0, W, H, 0, 0.88 - 0.01 * sf, 0.88 - 0.01 * sf, 0.88 - 0.01 * sf, 0);
         gl_present(lt, 2, 0.9, 0.9, 0.9);
         glFinish();
+        CHECK(ad_rb_submitted_count == rb_base + 1);
       }
-      CHECK(ad_rb_i == rb_idx_after_f1);
       CHECK(gl_adaptive_settling() == 1);
-      // First idle frame resumes readback and same-side light slot converges within 4 steps
-      int steps = 0;
+      // Frame 4 (first idle settle frame): submitted +1, mask & (1u << sid) set, converges within 4 frames
+      gl_adaptive_step();
+      glFinish();
+      CHECK(ad_rb_submitted_count == rb_base + 2);
+      CHECK((ad_rb_last_mask & (1u << light_sid)) != 0);
+      int steps = 1;
       while (gl_adaptive_settling() && steps < 4) {
         gl_adaptive_step();
         glFinish();
@@ -5855,6 +5867,83 @@ int main(void) {
       }
       CHECK(gl_adaptive_settling() == 0);
       CHECK(steps <= 4);
+
+      // Mixed-slot test: 1 static settling light slot + 1 actively scrolling light slot in same frame
+      // -> ad_rb_last_mask includes ONLY the static settling slot bit and excludes the scrolling slot bit
+      {
+        glass_forget();
+        double mx[4 * MB_INST];
+        rect_at(mx, 0, 0, 56, H, 0, 0.9, 0.9, 0.9, 0);
+        rect_at(mx + MB_INST, 56, 0, W - 56, H, 0, 0.9, 0.9, 0.9, 0);
+        rect_at(mx + 2 * MB_INST, 6, 10, 36, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -56);
+        mx[2 * MB_INST + 4] = 14.0; mx[2 * MB_INST + 6] = 1.0; mx[2 * MB_INST + 7] = 1.0;
+        mx[2 * MB_INST + 11] = 0x67 / 255.0; mx[2 * MB_INST + 13] = 4.0; mx[2 * MB_INST + 14] = -1.0; mx[2 * MB_INST + 15] = 1.0;
+        rect_at(mx + 3 * MB_INST, 66, 10, 36, 36, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -57);
+        mx[3 * MB_INST + 4] = 14.0; mx[3 * MB_INST + 6] = 1.0; mx[3 * MB_INST + 7] = 1.0;
+        mx[3 * MB_INST + 11] = 0x67 / 255.0; mx[3 * MB_INST + 13] = 4.0; mx[3 * MB_INST + 14] = -1.0; mx[3 * MB_INST + 15] = 1.0;
+        gl_present(mx, 4, 0.9, 0.9, 0.9);
+        glFinish();
+        int sid_a = -1, sid_b = -1;
+        for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
+          if (!ad_slots[i].active) continue;
+          if (fabsf(ad_slots[i].cx - 24.0f) < 4.0f) sid_a = i;
+          if (fabsf(ad_slots[i].cx - 84.0f) < 4.0f) sid_b = i;
+        }
+        CHECK(sid_a >= 0 && sid_b >= 0 && sid_a != sid_b);
+        // Frame 1: both change -> both enter settling & record last_changed_serial
+        rect_at(mx, 0, 0, 56, H, 0, 0.05, 0.05, 0.05, 0);
+        rect_at(mx + MB_INST, 56, 0, W - 56, H, 0, 0.05, 0.05, 0.05, 0);
+        int rb_m0 = ad_rb_submitted_count;
+        gl_present(mx, 4, 0.9, 0.9, 0.9);
+        glFinish();
+        CHECK(ad_rb_submitted_count == rb_m0 + 1);
+        CHECK((ad_rb_last_mask & (1u << sid_a)) != 0 && (ad_rb_last_mask & (1u << sid_b)) != 0);
+        // Frame 2: left (sid_a) stays static & settling, right (sid_b) changes again (consec_scroll)
+        rect_at(mx + MB_INST, 56, 0, W - 56, H, 0, 0.15, 0.15, 0.15, 0);
+        gl_present(mx, 4, 0.9, 0.9, 0.9);
+        glFinish();
+        CHECK(ad_rb_submitted_count == rb_m0 + 2);
+        CHECK((ad_rb_last_mask & (1u << sid_a)) != 0);
+        CHECK((ad_rb_last_mask & (1u << sid_b)) == 0);
+      }
+
+      // Concentric light+dark adaptive slot polarity matching in BOTH draw orders (light-then-dark & dark-then-light):
+      // while light slot is actively settling (dt=1/60), dark glass & its light ink must snap immediately on frame 1
+      for (int order = 0; order < 2; order++) {
+        glass_forget();
+        double cc[4 * MB_INST];
+        // 0: backdrop (white initially)
+        rect_at(cc, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+        int l_idx = (order == 0) ? 1 : 2;
+        int d_idx = (order == 0) ? 2 : 1;
+        // Narrower concentric light glass (center 50,30) + wider concentric dark glass (center 50,30)
+        // so both share exact center (50,30) while x=16..28 exposes dark glass + light ink cleanly in both orders.
+        rect_at(cc + l_idx * MB_INST, 34, 10, 32, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -58);
+        cc[l_idx * MB_INST + 4] = 16.0; cc[l_idx * MB_INST + 6] = 1.0; cc[l_idx * MB_INST + 7] = 1.0;
+        cc[l_idx * MB_INST + 11] = 0x67 / 255.0; cc[l_idx * MB_INST + 13] = 4.0; cc[l_idx * MB_INST + 14] = -1.0; cc[l_idx * MB_INST + 15] = 1.0;
+        rect_at(cc + d_idx * MB_INST, 10, 10, 80, 40, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -59);
+        cc[d_idx * MB_INST + 4] = 16.0; cc[d_idx * MB_INST + 6] = 1.0; cc[d_idx * MB_INST + 7] = 1.0;
+        cc[d_idx * MB_INST + 11] = 0x67 / 255.0; cc[d_idx * MB_INST + 13] = 4.0; cc[d_idx * MB_INST + 14] = -1.0; cc[d_idx * MB_INST + 15] = 1.0;
+        // 3: light neutral ink glyph inside dark glass (pad.yz = 50,30 concentric center)
+        rect_at(cc + 3 * MB_INST, 14, 24, 10, 12, 7, 0.93, 0.93, 0.93, 0);
+        cc[3 * MB_INST + 14] = 4.0 / MB_ATLAS; cc[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
+        cc[3 * MB_INST + 21] = 50.0; cc[3 * MB_INST + 22] = 30.0; cc[3 * MB_INST + 23] = 40.0;
+        // Frame 0: white backdrop
+        gl_present(cc, 4, 1.0, 1.0, 1.0);
+        // Frame 1 (dt = 1/60): flip backdrop to black -> light slot is mid-settle, dark glass & ink must snap immediately!
+        rect_at(cc, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
+        gl_present(cc, 4, 0.0, 0.0, 0.0);
+        unsigned char *px1 = pixels_of_fb(surface);
+        for (int k = 0; k < 30; k++) gl_present(cc, 4, 0.0, 0.0, 0.0);
+        unsigned char *px30 = pixels_of_fb(surface);
+        // Dark glass sample at (28, 30) and light ink sample at (19, 30)
+        size_t dg_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 28 * S) * 4;
+        size_t in_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 19 * S) * 4;
+        CHECK(px1[dg_off] < 70 && px1[in_off] > 200);
+        CHECK(abs((int)px1[dg_off] - (int)px30[dg_off]) <= 1);
+        CHECK(abs((int)px1[in_off] - (int)px30[in_off]) <= 1);
+        free(px1); free(px30);
+      }
       gl_set_fixed_dt(0.0);
     }
 
@@ -5899,39 +5988,42 @@ int main(void) {
       }
     }
 
-    // --- Fix 2b: 33rd cold capture eviction test (donor slot pinned, 0 LSB diff vs ref) ---
+    // --- Fix 2b: 33rd cold capture eviction test (donor slot pinned over opposite-brightness white region, 0 LSB diff, blurs >= 33) ---
     {
       glass_forget();
-      // Reference: donor + back pill + bare title (no filler glasses)
-      double ref[4 * MB_INST];
-      rect_at(ref, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
-      rect_at(ref + MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -70);
-      ref[MB_INST + 6] = 1.0; ref[MB_INST + 7] = 6.0; ref[MB_INST + 11] = 0.0; ref[MB_INST + 15] = 1.0;
-      ref[MB_INST + 22] = -1.0; ref[MB_INST + 54] = 48.0; ref[MB_INST + 55] = 24.0;
-      rect_at(ref + 2 * MB_INST, 4, 14, 16, 16, 6, 0.14, 0.14, 0.15, -71);
-      ref[2 * MB_INST + 4] = 8.0; ref[2 * MB_INST + 6] = 1.0; ref[2 * MB_INST + 7] = 1.4;
-      ref[2 * MB_INST + 11] = 0.4; ref[2 * MB_INST + 14] = -1.0; ref[2 * MB_INST + 15] = 1.0;
-      ref[2 * MB_INST + 21] = 4.0; ref[2 * MB_INST + 23] = 2.0;
-      rect_at(ref + 3 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
-      ref[3 * MB_INST + 14] = 4.0 / MB_ATLAS; ref[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      ref[3 * MB_INST + 23] = -12.0;
-      gl_present(ref, 4, 0.05, 0.05, 0.05);
+      // Reference: white region behind back pill & filler zone + dark 0.05 behind title, donor + back pill + bare title
+      double ref[6 * MB_INST];
+      rect_at(ref, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(ref + MB_INST, 32, 0, W - 32, 50, 0, 0.05, 0.05, 0.05, 0);
+      rect_at(ref + 2 * MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -70);
+      ref[2 * MB_INST + 6] = 1.0; ref[2 * MB_INST + 7] = 6.0; ref[2 * MB_INST + 11] = 0.0; ref[2 * MB_INST + 15] = 1.0;
+      ref[2 * MB_INST + 22] = -1.0; ref[2 * MB_INST + 54] = 48.0; ref[2 * MB_INST + 55] = 24.0;
+      rect_at(ref + 3 * MB_INST, 4, 14, 16, 16, 6, 0.14, 0.14, 0.15, -71);
+      ref[3 * MB_INST + 4] = 8.0; ref[3 * MB_INST + 6] = 1.0; ref[3 * MB_INST + 7] = 1.4;
+      ref[3 * MB_INST + 11] = 0.4; ref[3 * MB_INST + 14] = -1.0; ref[3 * MB_INST + 15] = 1.0;
+      ref[3 * MB_INST + 21] = 4.0; ref[3 * MB_INST + 23] = 2.0;
+      rect_at(ref + 4 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
+      ref[4 * MB_INST + 14] = 4.0 / MB_ATLAS; ref[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      ref[4 * MB_INST + 23] = -12.0;
+      gl_present(ref, 5, 1.0, 1.0, 1.0);
       unsigned char *ref_px = pixels_of_fb(surface);
 
-      // Stress: donor + 31 distinct cold glasses below y=52 + 1 cold back pill + bare title (33 cold captures!)
+      // Stress: donor + 31 distinct cold glasses over bright white below y=52 + 1 cold back pill over bright white + bare title (33 cold captures!)
       glass_forget();
-      double *st = calloc(35 * MB_INST, sizeof(double));
-      memcpy(st, ref, 2 * MB_INST * sizeof(double));
+      int b0 = blurs_made;
+      double *st = calloc(36 * MB_INST, sizeof(double));
+      memcpy(st, ref, 3 * MB_INST * sizeof(double));
       for (int i = 0; i < 31; i++) {
-        double *g = st + (size_t)(2 + i) * MB_INST;
-        rect_at(g, 2 + (i % 10) * 9, 54 + (i / 10) * 8, 7, 6, 5, 0.5, 0.5, 0.5, -(80 + i));
+        double *g = st + (size_t)(3 + i) * MB_INST;
+        rect_at(g, 2 + (i % 11) * 8, 51 + (i / 11) * 7, 6, 5, 5, 0.5, 0.5, 0.5, -(80 + i));
         g[6] = 1.0; g[7] = 2.0; g[11] = 0.2; g[15] = 1.0;
       }
-      memcpy(st + 33 * MB_INST, ref + 2 * MB_INST, 2 * MB_INST * sizeof(double));
-      gl_present(st, 35, 0.05, 0.05, 0.05);
+      memcpy(st + 34 * MB_INST, ref + 3 * MB_INST, 2 * MB_INST * sizeof(double));
+      gl_present(st, 36, 1.0, 1.0, 1.0);
       CHECK(donor_delegated_count == 1);
+      CHECK(blurs_made - b0 >= 33);
       unsigned char *st_px = pixels_of_fb(surface);
-      // Compare title region pixel-for-pixel (0 LSB diff!)
+      // Compare title region pixel-for-pixel (0 LSB diff! Title must stay bright white > 180 over dark backdrop)
       for (int y = 16 * S; y < 28 * S; y++) {
         for (int x = 54 * S; x < 66 * S; x++) {
           size_t off = ((size_t)(fb_h - 1 - y) * fb_w + x) * 4;
@@ -5939,7 +6031,110 @@ int main(void) {
                 ref_px[off + 2] == st_px[off + 2]);
         }
       }
+      unsigned char *tc = st_px + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 60 * S) * 4;
+      CHECK(tc[0] > 180 && tc[1] > 180 && tc[2] > 180);
       free(ref_px); free(st_px); free(st);
+    }
+
+    // --- Fix 2b2: Top-level unique pure kind==5 donor (tid=-140) + kind==8 lens child also tagged tid=-140 -> MUST delegate! ---
+    {
+      glass_forget();
+      double lt2[6 * MB_INST];
+      rect_at(lt2, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      rect_at(lt2 + MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -140);
+      lt2[MB_INST + 6] = 1.0; lt2[MB_INST + 7] = 6.0; lt2[MB_INST + 11] = 0.0; lt2[MB_INST + 15] = 1.0;
+      lt2[MB_INST + 22] = -1.0; lt2[MB_INST + 54] = 48.0; lt2[MB_INST + 55] = 24.0;
+      // Non-overlapping kind==8 lens at bottom (y=60..76) with child sharing tid=-140
+      rect_at(lt2 + 2 * MB_INST, 4, 60, 20, 16, 8, 1, 1, 1, 0);
+      lt2[2 * MB_INST + 7] = 1.0; lt2[2 * MB_INST + 11] = 1.0; lt2[2 * MB_INST + 12] = 1.0; lt2[2 * MB_INST + 15] = 1.0;
+      rect_at(lt2 + 3 * MB_INST, 4, 60, 20, 16, 5, 0, 0, 0, -140);
+      lt2[3 * MB_INST + 6] = 1.0; lt2[3 * MB_INST + 7] = 2.0; lt2[3 * MB_INST + 11] = 0.0; lt2[3 * MB_INST + 15] = 1.0;
+      rect_at(lt2 + 4 * MB_INST, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -141);
+      lt2[4 * MB_INST + 4] = 10.0; lt2[4 * MB_INST + 6] = 1.0; lt2[4 * MB_INST + 7] = 1.4;
+      lt2[4 * MB_INST + 11] = 0.4; lt2[4 * MB_INST + 14] = -1.0; lt2[4 * MB_INST + 15] = 1.0;
+      lt2[4 * MB_INST + 21] = 4.0; lt2[4 * MB_INST + 23] = 2.0;
+      rect_at(lt2 + 5 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
+      lt2[5 * MB_INST + 14] = 4.0 / MB_ATLAS; lt2[5 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      lt2[5 * MB_INST + 23] = -12.0;
+      gl_present(lt2, 6, 0.05, 0.05, 0.05);
+      CHECK(donor_delegated_count > 0);
+      CHECK(donor_of_buf[5] == -140);
+    }
+
+    // --- Fix 2b3: Textured-backdrop top-bar delegation ON vs forced OFF (donor_of=NULL) pixel parity + occlusion margin ---
+    {
+      glass_forget();
+      double tx[9 * MB_INST];
+      // Alternating light/dark stripes behind top bar
+      for (int si = 0; si < 6; si++) {
+        double sv = (si & 1) ? 0.95 : 0.05;
+        rect_at(tx + si * MB_INST, si * 20, 0, 20, H, 0, sv, sv, sv, 0);
+      }
+      // Pure progressive blur donor
+      rect_at(tx + 6 * MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -142);
+      tx[6 * MB_INST + 6] = 1.0; tx[6 * MB_INST + 7] = 6.0; tx[6 * MB_INST + 11] = 0.0; tx[6 * MB_INST + 15] = 1.0;
+      tx[6 * MB_INST + 22] = -1.0; tx[6 * MB_INST + 54] = 48.0; tx[6 * MB_INST + 55] = 24.0;
+      // 20x20 back pill
+      rect_at(tx + 7 * MB_INST, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -143);
+      tx[7 * MB_INST + 4] = 10.0; tx[7 * MB_INST + 6] = 1.0; tx[7 * MB_INST + 7] = 1.4;
+      tx[7 * MB_INST + 11] = 0.4; tx[7 * MB_INST + 14] = -1.0; tx[7 * MB_INST + 15] = 1.0;
+      tx[7 * MB_INST + 21] = 4.0; tx[7 * MB_INST + 23] = 2.0;
+      // Bare title glyph over dark stripe (x=42..54 inside x=40..60 dark stripe)
+      rect_at(tx + 8 * MB_INST, 42, 16, 12, 12, 7, 0.9, 0.9, 0.9, 0);
+      tx[8 * MB_INST + 14] = 4.0 / MB_ATLAS; tx[8 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      tx[8 * MB_INST + 23] = -12.0;
+
+      donor_force_off = 0;
+      gl_present(tx, 9, 0.05, 0.05, 0.05);
+      CHECK(donor_delegated_count == 1);
+      unsigned char *px_on = pixels_of_fb(surface);
+
+      glass_forget();
+      donor_force_off = 1;
+      gl_present(tx, 9, 0.05, 0.05, 0.05);
+      CHECK(donor_delegated_count == 0);
+      unsigned char *px_off = pixels_of_fb(surface);
+      donor_force_off = 0;
+
+      int max_ch_diff = 0;
+      for (int y = 16 * S; y < 28 * S; y++) {
+        for (int x = 42 * S; x < 54 * S; x++) {
+          size_t off = ((size_t)(fb_h - 1 - y) * fb_w + x) * 4;
+          for (int c = 0; c < 3; c++) {
+            int d = abs((int)px_on[off + c] - (int)px_off[off + c]);
+            if (d > max_ch_diff) max_ch_diff = d;
+          }
+        }
+      }
+      unsigned char *c_on = px_on + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 48 * S) * 4;
+      unsigned char *c_off = px_off + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 48 * S) * 4;
+      double y_bg = wcag_luma_u8(13, 13, 13);
+      double y_on = wcag_luma_u8(c_on[0], c_on[1], c_on[2]);
+      double y_off = wcag_luma_u8(c_off[0], c_off[1], c_off[2]);
+      double cr_on = (fmax(y_on, y_bg) + 0.05) / (fmin(y_on, y_bg) + 0.05);
+      double cr_off = (fmax(y_off, y_bg) + 0.05) / (fmin(y_off, y_bg) + 0.05);
+      printf("gles_render: perf-51 textured parity cr_on=%.2f cr_off=%.2f max_ch_diff=%d\n", cr_on, cr_off, max_ch_diff);
+      CHECK(cr_on >= 4.5 && cr_off >= 4.5);
+      free(px_on); free(px_off);
+
+      // Occlusion margin: bright patch between donor and pill outside sr by 4pt but inside cur_glass blur+refract margin (~12pt)
+      glass_forget();
+      double oc[5 * MB_INST];
+      rect_at(oc, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      rect_at(oc + MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -144);
+      oc[MB_INST + 6] = 1.0; oc[MB_INST + 7] = 6.0; oc[MB_INST + 11] = 0.0; oc[MB_INST + 15] = 1.0;
+      oc[MB_INST + 22] = -1.0; oc[MB_INST + 54] = 48.0; oc[MB_INST + 55] = 24.0;
+      // Intervening bright patch at x=73..79 (sr right edge is 60 + 0.76*12 + 0.5 = 69.62; occ_sr right edge is ~81.8)
+      rect_at(oc + 2 * MB_INST, 73, 16, 6, 12, 0, 1.0, 1.0, 1.0, 0);
+      rect_at(oc + 3 * MB_INST, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -145);
+      oc[3 * MB_INST + 4] = 10.0; oc[3 * MB_INST + 6] = 1.0; oc[3 * MB_INST + 7] = 1.4;
+      oc[3 * MB_INST + 11] = 0.4; oc[3 * MB_INST + 14] = -1.0; oc[3 * MB_INST + 15] = 1.0;
+      oc[3 * MB_INST + 21] = 4.0; oc[3 * MB_INST + 23] = 2.0;
+      rect_at(oc + 4 * MB_INST, 54, 16, 12, 12, 7, 0.9, 0.9, 0.9, 0);
+      oc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; oc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      oc[4 * MB_INST + 23] = -12.0;
+      gl_present(oc, 5, 0.05, 0.05, 0.05);
+      CHECK(donor_delegated_count == 0);
     }
 
     // --- Fix 2c: Lens subtree counterexample (pure kind 5 inside kind 8 is NEVER a donor) ---

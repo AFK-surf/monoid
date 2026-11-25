@@ -5101,36 +5101,39 @@ int main(void) {
           free(px);
         }
 
-        // 3. 33rd cold capture donor pin test (0 LSB diff on title)
+        // 3. 33rd cold capture donor pin test over opposite-brightness white region (0 LSB diff on title, blurs >= 33)
         {
           glass_forget();
-          double ref[4 * MB_INST];
-          rect_at(ref, 0, 0, 400, 300, 0, 0.05, 0.05, 0.05, 0);
-          rect_at(ref + MB_INST, 0, 0, 400, 96, 5, 0, 0, 0, -270);
-          ref[MB_INST + 6] = 1.0; ref[MB_INST + 7] = 8.0; ref[MB_INST + 11] = 0.0; ref[MB_INST + 15] = 1.0;
-          ref[MB_INST + 22] = -1.0; ref[MB_INST + 54] = 96.0; ref[MB_INST + 55] = 48.0;
-          rect_at(ref + 2 * MB_INST, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -271);
-          ref[2 * MB_INST + 4] = 20.0; ref[2 * MB_INST + 6] = 1.0; ref[2 * MB_INST + 7] = 1.4;
-          ref[2 * MB_INST + 11] = 0.4; ref[2 * MB_INST + 14] = -1.0; ref[2 * MB_INST + 15] = 1.0;
-          ref[2 * MB_INST + 21] = 8.0; ref[2 * MB_INST + 23] = 4.0;
-          rect_at(ref + 3 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
-          ref[3 * MB_INST + 14] = 4.0 / at_sz; ref[3 * MB_INST + 15] = 4.0 / at_sz;
-          ref[3 * MB_INST + 23] = -16.0;
-          mb_render_present(ref, 4, 0.05, 0.05, 0.05); present_drain();
+          double ref[5 * MB_INST];
+          rect_at(ref, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(ref + MB_INST, 96, 0, 304, 100, 0, 0.05, 0.05, 0.05, 0);
+          rect_at(ref + 2 * MB_INST, 0, 0, 400, 96, 5, 0, 0, 0, -270);
+          ref[2 * MB_INST + 6] = 1.0; ref[2 * MB_INST + 7] = 8.0; ref[2 * MB_INST + 11] = 0.0; ref[2 * MB_INST + 15] = 1.0;
+          ref[2 * MB_INST + 22] = -1.0; ref[2 * MB_INST + 54] = 96.0; ref[2 * MB_INST + 55] = 48.0;
+          rect_at(ref + 3 * MB_INST, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -271);
+          ref[3 * MB_INST + 4] = 20.0; ref[3 * MB_INST + 6] = 1.0; ref[3 * MB_INST + 7] = 1.4;
+          ref[3 * MB_INST + 11] = 0.4; ref[3 * MB_INST + 14] = -1.0; ref[3 * MB_INST + 15] = 1.0;
+          ref[3 * MB_INST + 21] = 8.0; ref[3 * MB_INST + 23] = 4.0;
+          rect_at(ref + 4 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
+          ref[4 * MB_INST + 14] = 4.0 / at_sz; ref[4 * MB_INST + 15] = 4.0 / at_sz;
+          ref[4 * MB_INST + 23] = -16.0;
+          mb_render_present(ref, 5, 1.0, 1.0, 1.0); present_drain();
           int pw = 0, ph = 0;
           uint8_t *ref_px = read_texture(canvas, &pw, &ph);
 
           glass_forget();
-          double *st = calloc(35 * MB_INST, sizeof(double));
-          memcpy(st, ref, 2 * MB_INST * sizeof(double));
+          int b0 = blurs_made;
+          double *st = calloc(36 * MB_INST, sizeof(double));
+          memcpy(st, ref, 3 * MB_INST * sizeof(double));
           for (int i = 0; i < 31; i++) {
-            double *g = st + (size_t)(2 + i) * MB_INST;
+            double *g = st + (size_t)(3 + i) * MB_INST;
             rect_at(g, 10 + (i % 10) * 36, 110 + (i / 10) * 44, 28, 28, 5, 0.5, 0.5, 0.5, -(280 + i));
             g[6] = 1.0; g[7] = 2.0; g[11] = 0.2; g[15] = 1.0;
           }
-          memcpy(st + 33 * MB_INST, ref + 2 * MB_INST, 2 * MB_INST * sizeof(double));
-          mb_render_present(st, 35, 0.05, 0.05, 0.05); present_drain();
+          memcpy(st + 34 * MB_INST, ref + 3 * MB_INST, 2 * MB_INST * sizeof(double));
+          mb_render_present(st, 36, 1.0, 1.0, 1.0); present_drain();
           CHECK(donor_delegated_count == 1);
+          CHECK(blurs_made - b0 >= 33);
           uint8_t *st_px = read_texture(canvas, &pw, &ph);
           for (int y = 34 * 2; y < 58 * 2; y++) {
             for (int x = 120 * 2; x < 144 * 2; x++) {
@@ -5139,7 +5142,65 @@ int main(void) {
                     ref_px[off + 2] == st_px[off + 2]);
             }
           }
+          uint8_t *tc = st_px + ((size_t)(46 * 2) * pw + 132 * 2) * 4;
+          CHECK(tc[2] > 180 && tc[1] > 180 && tc[0] > 180);
           free(ref_px); free(st_px); free(st);
+        }
+
+        // 3b. Textured-backdrop top-bar delegation ON vs forced OFF (donor_of=NULL) pixel parity
+        {
+          glass_forget();
+          double tx[11 * MB_INST];
+          for (int si = 0; si < 8; si++) {
+            double sv = (si & 1) ? 0.95 : 0.05;
+            rect_at(tx + si * MB_INST, si * 50, 0, 50, 300, 0, sv, sv, sv, 0);
+          }
+          rect_at(tx + 8 * MB_INST, 0, 0, 400, 96, 5, 0, 0, 0, -275);
+          tx[8 * MB_INST + 6] = 1.0; tx[8 * MB_INST + 7] = 8.0; tx[8 * MB_INST + 11] = 0.0; tx[8 * MB_INST + 15] = 1.0;
+          tx[8 * MB_INST + 22] = -1.0; tx[8 * MB_INST + 54] = 96.0; tx[8 * MB_INST + 55] = 48.0;
+          rect_at(tx + 9 * MB_INST, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -276);
+          tx[9 * MB_INST + 4] = 20.0; tx[9 * MB_INST + 6] = 1.0; tx[9 * MB_INST + 7] = 1.4;
+          tx[9 * MB_INST + 11] = 0.4; tx[9 * MB_INST + 14] = -1.0; tx[9 * MB_INST + 15] = 1.0;
+          tx[9 * MB_INST + 21] = 8.0; tx[9 * MB_INST + 23] = 4.0;
+          // Bare title over dark stripe x=100..150
+          rect_at(tx + 10 * MB_INST, 112, 34, 24, 24, 7, 0.9, 0.9, 0.9, 0);
+          tx[10 * MB_INST + 14] = 4.0 / at_sz; tx[10 * MB_INST + 15] = 4.0 / at_sz;
+          tx[10 * MB_INST + 23] = -16.0;
+
+          int pw = 0, ph = 0;
+          donor_force_off = 0;
+          mb_render_present(tx, 11, 0.05, 0.05, 0.05); present_drain();
+          CHECK(donor_delegated_count == 1);
+          uint8_t *px_on = read_texture(canvas, &pw, &ph);
+
+          glass_forget();
+          shown_ok = 0;
+          donor_force_off = 1;
+          mb_render_present(tx, 11, 0.05, 0.05, 0.05); present_drain();
+          CHECK(donor_delegated_count == 0);
+          uint8_t *px_off = read_texture(canvas, &pw, &ph);
+          donor_force_off = 0;
+
+          int max_ch_diff = 0;
+          for (int y = 34 * 2; y < 58 * 2; y++) {
+            for (int x = 112 * 2; x < 136 * 2; x++) {
+              size_t off = ((size_t)y * pw + x) * 4;
+              for (int c = 0; c < 3; c++) {
+                int d = abs((int)px_on[off + c] - (int)px_off[off + c]);
+                if (d > max_ch_diff) max_ch_diff = d;
+              }
+            }
+          }
+          uint8_t *c_on = px_on + ((size_t)(46 * 2) * pw + 124 * 2) * 4;
+          uint8_t *c_off = px_off + ((size_t)(46 * 2) * pw + 124 * 2) * 4;
+          double y_bg = wcag_luma_u8(13, 13, 13);
+          double y_on = wcag_luma_u8(c_on[2], c_on[1], c_on[0]);
+          double y_off = wcag_luma_u8(c_off[2], c_off[1], c_off[0]);
+          double cr_on = (fmax(y_on, y_bg) + 0.05) / (fmin(y_on, y_bg) + 0.05);
+          double cr_off = (fmax(y_off, y_bg) + 0.05) / (fmin(y_off, y_bg) + 0.05);
+          printf("apple_render: perf-51 textured parity cr_on=%.2f cr_off=%.2f max_ch_diff=%d\n", cr_on, cr_off, max_ch_diff);
+          CHECK(cr_on >= 4.5 && cr_off >= 4.5);
+          free(px_on); free(px_off);
         }
 
         // 4. Lens subtree counterexample

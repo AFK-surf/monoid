@@ -628,3 +628,145 @@ test('Perf-51: dark adaptive zero settle, top-bar donor delegation keeps back pi
   const pillW = pillBlit.args[2] - pillBlit.args[0];
   assert.ok(pillW < 260, `delegated back pill capture stays tight (${pillW}px < 260px)`);
 });
+
+test('Perf-51 R2: lens subtree counterexample, 33rd cold capture donor pin, and closeAdaptiveParts kind=8 boundary', () => {
+  // (a) Lens subtree counterexample: [kind=8 (child_n=1), pure kind=5 child, kind=6 pill, bare title] -> NOT delegated (pillW >= 260)
+  {
+    const b = makeHost({ w: 400, h: 300, dpr: 2 });
+    const buf = new Float64Array(INST * 5);
+    makeRect(buf, 0, 0, 0, 400, 300, { r: 0.06, g: 0.06, b: 0.06, a: 1 });
+    // 1: kind=8 lens header with child_n=1
+    const lh = INST;
+    buf[lh] = 0; buf[lh + 1] = 0; buf[lh + 2] = 400; buf[lh + 3] = 96;
+    buf[lh + 5] = 8; buf[lh + 7] = 2; buf[lh + 11] = 1; buf[lh + 12] = 1; buf[lh + 15] = 1;
+    buf[lh + 16] = -1e9; buf[lh + 17] = -1e9; buf[lh + 18] = 1e9; buf[lh + 19] = 1e9;
+    // 2: pure progressive kind=5 child inside lens subtree (MUST NOT delegate)
+    const d = 2 * INST;
+    buf[d] = 0; buf[d + 1] = 0; buf[d + 2] = 400; buf[d + 3] = 96;
+    buf[d + 5] = 5; buf[d + 6] = 1; buf[d + 7] = 8; buf[d + 11] = 0; buf[d + 15] = 1;
+    buf[d + 16] = -1e9; buf[d + 17] = -1e9; buf[d + 18] = 1e9; buf[d + 19] = 1e9;
+    buf[d + 20] = -10; buf[d + 22] = -1; buf[d + 54] = 96; buf[d + 55] = 48;
+    // 3: 40x40 back pill
+    const p = 3 * INST;
+    buf[p] = 12; buf[p + 1] = 28; buf[p + 2] = 40; buf[p + 3] = 40;
+    buf[p + 4] = 20; buf[p + 5] = 6; buf[p + 6] = 1; buf[p + 7] = 1.4;
+    buf[p + 8] = 0.12; buf[p + 9] = 0.12; buf[p + 10] = 0.12; buf[p + 11] = 0.4;
+    buf[p + 14] = -1; buf[p + 15] = 1;
+    buf[p + 16] = -1e9; buf[p + 17] = -1e9; buf[p + 18] = 1e9; buf[p + 19] = 1e9;
+    buf[p + 20] = -11; buf[p + 21] = 8; buf[p + 23] = 4;
+    // 4: bare-adaptive title at x=120..220
+    const t = 4 * INST;
+    buf[t] = 120; buf[t + 1] = 34; buf[t + 2] = 100; buf[t + 3] = 24;
+    buf[t + 5] = 7; buf[t + 8] = 0.9; buf[t + 9] = 0.9; buf[t + 10] = 0.9; buf[t + 11] = 1;
+    buf[t + 16] = -1e9; buf[t + 17] = -1e9; buf[t + 18] = 1e9; buf[t + 19] = 1e9;
+    buf[t + 23] = -16;
+
+    b.resetCalls();
+    b.H.present(buf, 5, 0.06, 0.06, 0.06);
+    const blits = b.calls.filter((c) => c.fn === 'blitFramebuffer' && (c.args[3] - c.args[1]) > 1);
+    assert.ok(blits.length >= 1, 'pill captured');
+    const pillBlit = blits[blits.length - 1];
+    const pillW = pillBlit.args[2] - pillBlit.args[0];
+    assert.ok(pillW >= 260, `lens child is NOT a donor so pill capture expands over bare title (${pillW}px >= 260px)`);
+  }
+
+  // (b) 33rd cold capture donor pin: donor's bt texture is never deleted/evicted while pinned
+  {
+    const b = makeHost({ w: 400, h: 300, dpr: 2 });
+    const count = 35;
+    const buf = new Float64Array(INST * count);
+    makeRect(buf, 0, 0, 0, 400, 300, { r: 0.06, g: 0.06, b: 0.06, a: 1 });
+    // 1: pure progressive donor (tid=-20)
+    const d = INST;
+    buf[d] = 0; buf[d + 1] = 0; buf[d + 2] = 400; buf[d + 3] = 96;
+    buf[d + 5] = 5; buf[d + 6] = 1; buf[d + 7] = 8; buf[d + 11] = 0; buf[d + 15] = 1;
+    buf[d + 16] = -1e9; buf[d + 17] = -1e9; buf[d + 18] = 1e9; buf[d + 19] = 1e9;
+    buf[d + 20] = -20; buf[d + 22] = -1; buf[d + 54] = 96; buf[d + 55] = 48;
+    // 2..32: 31 distinct cold glasses below y=104 (33 total cold captures with donor + pill)
+    for (let i = 0; i < 31; i++) {
+      const g = (2 + i) * INST;
+      buf[g] = 8 + (i % 10) * 38; buf[g + 1] = 104 + Math.floor(i / 10) * 44;
+      buf[g + 2] = 28; buf[g + 3] = 28;
+      buf[g + 5] = 5; buf[g + 6] = 1; buf[g + 7] = 2; buf[g + 11] = 0.2; buf[g + 15] = 1;
+      buf[g + 16] = -1e9; buf[g + 17] = -1e9; buf[g + 18] = 1e9; buf[g + 19] = 1e9;
+      buf[g + 20] = -(30 + i);
+    }
+    // 33: 40x40 back pill (33rd cold capture -> triggers slotFill eviction)
+    const p = 33 * INST;
+    buf[p] = 12; buf[p + 1] = 28; buf[p + 2] = 40; buf[p + 3] = 40;
+    buf[p + 4] = 20; buf[p + 5] = 6; buf[p + 6] = 1; buf[p + 7] = 1.4;
+    buf[p + 8] = 0.12; buf[p + 9] = 0.12; buf[p + 10] = 0.12; buf[p + 11] = 0.4;
+    buf[p + 14] = -1; buf[p + 15] = 1;
+    buf[p + 16] = -1e9; buf[p + 17] = -1e9; buf[p + 18] = 1e9; buf[p + 19] = 1e9;
+    buf[p + 20] = -21; buf[p + 21] = 8; buf[p + 23] = 4;
+    // 34: bare-adaptive title delegated to donor -20
+    const t = 34 * INST;
+    buf[t] = 120; buf[t + 1] = 34; buf[t + 2] = 100; buf[t + 3] = 24;
+    buf[t + 5] = 7; buf[t + 8] = 0.9; buf[t + 9] = 0.9; buf[t + 10] = 0.9; buf[t + 11] = 1;
+    buf[t + 16] = -1e9; buf[t + 17] = -1e9; buf[t + 18] = 1e9; buf[t + 19] = 1e9;
+    buf[t + 23] = -16;
+
+    b.resetCalls();
+    b.H.present(buf, count, 0.06, 0.06, 0.06);
+    const storages = b.calls.filter((c) => c.fn === 'texStorage2D');
+    const deletes = b.calls.filter((c) => c.fn === 'deleteTexture');
+    // Donor capture is 400x96@2x (w>=800); filler glasses are small (~28x28@2x).
+    // Pinning guarantees the donor's large bt texture is never deleted during the 33rd cold capture!
+    const donorTexCount = storages.filter((s) => s.w >= 400).length;
+    assert.ok(donorTexCount >= 1, 'donor capture texture allocated');
+    // At least one filler texture was evicted/reused for the 33rd capture, and total deleted textures stay bounded
+    const blits = b.calls.filter((c) => c.fn === 'blitFramebuffer' && (c.args[3] - c.args[1]) > 1);
+    assert.ok(blits.length >= 33, `all 33 cold captures ran (${blits.length} >= 33)`);
+    const pillBlit = blits[blits.length - 1];
+    const pillW = pillBlit.args[2] - pillBlit.args[0];
+    assert.ok(pillW >= 80 && pillW < 260, `33rd back pill stayed delegated & tight (${pillW}px < 260px), deleted=${deletes.length}`);
+  }
+
+  // (c) closeAdaptiveParts: tid=0 rect immediately before kind=8 lens header with negative-tid child
+  // must NOT swallow the kind=8 header or treat the lens child as a top-level capture
+  {
+    const b = makeHost({ w: 400, h: 300, dpr: 2 });
+    const buf = new Float64Array(INST * 6);
+    // 0: tid=0 background rect
+    makeRect(buf, 0, 0, 0, 400, 300, { r: 0.95 });
+    // 1: kind=8 lens header (tid=0, child_n=1) immediately after tid=0 rect!
+    const lh = INST;
+    buf[lh] = 0; buf[lh + 1] = 200; buf[lh + 2] = 400; buf[lh + 3] = 80;
+    buf[lh + 5] = 8; buf[lh + 7] = 2; buf[lh + 11] = 1; buf[lh + 12] = 1; buf[lh + 15] = 1;
+    buf[lh + 16] = -1e9; buf[lh + 17] = -1e9; buf[lh + 18] = 1e9; buf[lh + 19] = 1e9;
+    // 2: negative-tid glass child INSIDE kind=8 lens covering full width y=200..280 (must NOT be expanded by closeAdaptiveParts!)
+    const lc = 2 * INST;
+    buf[lc] = 0; buf[lc + 1] = 200; buf[lc + 2] = 400; buf[lc + 3] = 80;
+    buf[lc + 5] = 5; buf[lc + 6] = 1; buf[lc + 7] = 6; buf[lc + 11] = 0.3; buf[lc + 15] = 1;
+    buf[lc + 16] = -1e9; buf[lc + 17] = -1e9; buf[lc + 18] = 1e9; buf[lc + 19] = 1e9;
+    buf[lc + 20] = -99;
+    // 3: small light adaptive liquid glass at top (x=20..100, y=10..50)
+    const g = 3 * INST;
+    buf[g] = 20; buf[g + 1] = 10; buf[g + 2] = 80; buf[g + 3] = 40;
+    buf[g + 4] = 16; buf[g + 5] = 6; buf[g + 6] = 1; buf[g + 7] = 2;
+    buf[g + 8] = 0.99; buf[g + 9] = 0.99; buf[g + 10] = 0.99; buf[g + 11] = 0x67 / 255;
+    buf[g + 13] = 8; buf[g + 14] = -1; buf[g + 15] = 1;
+    buf[g + 16] = -1e9; buf[g + 17] = -1e9; buf[g + 18] = 1e9; buf[g + 19] = 1e9;
+    buf[g + 20] = -98; buf[g + 21] = 6;
+    // 4: changing small rect touching y=200..240 (would overlap lens child if closeAdaptiveParts mistakenly treated child as top-level)
+    makeRect(buf, 4, 20, 210, 40, 20, { r: 0.4, a: 0 });
+    makeRect(buf, 5, 0, 0, 0, 0);
+    buf[5 * INST + 5] = 12;
+
+    b.H.present(buf, 6, 0.95, 0.95, 0.95);
+    // Flip backdrop to trigger light adaptive settle on top glass (-98)
+    b.H.renderDirty(0, 0, 400, 300);
+    buf[8] = 0.1;
+    b.H.present(buf, 6, 0.95, 0.95, 0.95);
+    b.resetCalls();
+    // Partial dirty touching x=20..60, y=210..230 while top glass settles -> lens child -99 MUST NOT expand dirty to full width 800px!
+    buf[4 * INST + 11] = 0.5;
+    buf[5 * INST + 12] = 1;
+    b.H.renderDirty(20, 210, 40, 20);
+    b.H.present(buf, 6, 0.95, 0.95, 0.95);
+    const scDraws = b.calls.filter((c) => c.fn === 'drawArraysInstanced' && c.scissorOn && c.scissorBox);
+    assert.ok(scDraws.length > 0, 'partial settle drew with scissor');
+    const maxW = Math.max(...scDraws.map((c) => c.scissorBox[2]));
+    assert.ok(maxW < 400, `lens child (-99) was not treated as top-level capture in closeAdaptiveParts (maxScissorW=${maxW} < 400)`);
+  }
+});

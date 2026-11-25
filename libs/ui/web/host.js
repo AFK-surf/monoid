@@ -510,25 +510,38 @@
     float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
     return (hi * 256.0 + lo) / 65535.0;
   }
-  vec3 vs_ad_sample_ink(vec2 ac, float fallback_r, out vec2 capCenter, out vec2 capHalf) {
+  vec3 vs_ad_sample_ink(vec2 ac, float fallback_r, bool prefer_dark, out vec2 capCenter, out vec2 capHalf) {
     if (u_ad_n > 0) {
-      int best = -1;
-      float best_d = 1e9;
+      int best_pref = -1, best_any = -1;
+      float best_pref_d = 1e9, best_any_d = 1e9;
       for (int i = 0; i < 16; i++) {
         if (i >= u_ad_n) break;
         float d = length(ac - u_ad_box[i].xy);
-        if (d <= 2.0 && d < best_d) { best = i; best_d = d; }
+        if (d <= 2.0) {
+          vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
+          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
+          bool slot_dark = (code >= 48 && code <= 208);
+          if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }
+          if (d < best_any_d) { best_any = i; best_any_d = d; }
+        }
       }
+      int best = (best_pref >= 0) ? best_pref : best_any;
       if (best < 0) {
-        best_d = 1e9;
+        best_pref = -1; best_any = -1;
+        best_pref_d = 1e9; best_any_d = 1e9;
         for (int i = 0; i < 16; i++) {
           if (i >= u_ad_n) break;
           vec2 diff = abs(ac - u_ad_box[i].xy);
           if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {
             float d = length(diff);
-            if (d < best_d) { best = i; best_d = d; }
+            vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
+            int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
+            bool slot_dark = (code >= 48 && code <= 208);
+            if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }
+            if (d < best_any_d) { best_any = i; best_any_d = d; }
           }
         }
+        best = (best_pref >= 0) ? best_pref : best_any;
       }
       if (best >= 0) {
         vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
@@ -596,7 +609,7 @@
     float origL = vs_luma(rgb);
     if (ch > 0.08) return rgb;
     vec2 capCenter, capHalf;
-    vec3 cap = vs_ad_sample_ink(ac, fallback_r, capCenter, capHalf);
+    vec3 cap = vs_ad_sample_ink(ac, fallback_r, origL >= 0.5, capCenter, capHalf);
     float capsuleDarkT = cap.x;
     float capsuleBgL = cap.y;
     float capsuleLatch = cap.z;
@@ -712,7 +725,7 @@
       } else if (kind == 0 && a_pad.w < 0.0) {
         float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
         vec2 capCenter, capHalf;
-        float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;
+        float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, false, capCenter, capHalf).x;
         if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {
           v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);
           v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);
@@ -1205,7 +1218,13 @@
       for (int i = 0; i < 16; i++) {
         if (i >= u_ad_n) break;
         float d = length(ac - u_ad_box[i].xy);
-        if (d <= 2.0 && d < best_d) { best = i; best_d = d; }
+        if (d <= 2.0 && d < best_d) {
+          vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
+          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
+          bool slot_dark = (code >= 48 && code <= 208);
+          if (slot_dark != is_dark_glass) continue;
+          best = i; best_d = d;
+        }
       }
       if (best < 0) {
         best_d = 1e9;
@@ -1214,7 +1233,13 @@
           vec2 diff = abs(ac - u_ad_box[i].xy);
           if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {
             float d = length(diff);
-            if (d < best_d) { best = i; best_d = d; }
+            if (d < best_d) {
+              vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
+              int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
+              bool slot_dark = (code >= 48 && code <= 208);
+              if (slot_dark != is_dark_glass) continue;
+              best = i; best_d = d;
+            }
           }
         }
       }
@@ -3150,7 +3175,7 @@
       }
       const tid = f32[start * INST + 20];
       let end = start + 1;
-      while (end < count && f32[end * INST + 20] === tid) end++;
+      while (end < count && f32[end * INST + 20] === tid && Math.round(f32[end * INST + 5]) !== 8) end++;
       if (tid < 0) {
         const m = grabOf(start, end, count, donorOf);
         if (m) grabs.push([Math.max(0, m.px0 - 1), Math.max(0, m.pb0 - 1),
@@ -3434,8 +3459,23 @@
     if (count <= 0) return 0;
     if (donorOfBuf.length < count) donorOfBuf = new Int32Array(count);
     donorOfBuf.fill(0, 0, count);
+    const topTidCounts = new Map();
+    for (let k = 0; k < count; ) {
+      const ko = k * INST;
+      const kk = Math.round(f32[ko + 5]);
+      if (kk === 8) {
+        let cn = Math.round(f32[ko + 12]);
+        if (cn < 0) cn = 0;
+        if (k + 1 + cn > count) cn = count - k - 1;
+        k += 1 + cn;
+        continue;
+      }
+      const t = f32[ko + 20] | 0;
+      if (t < 0) topTidCounts.set(t, (topTidCounts.get(t) || 0) + 1);
+      k++;
+    }
     const elig = [];
-    let curGlassStart = -1, curGlassKind = 0, curGlassTid = 0;
+    let curGlassStart = -1, curGlassKind = 0, curGlassTid = 0, curGlassMargin = 0;
     const pad = 1.0 / (sc > 0 ? sc : 1.0);
     for (let i = 0; i < count; ) {
       const o = i * INST;
@@ -3456,23 +3496,28 @@
           f32[o + 4] === 0 && f32[o + 36] === 0 && f32[o + 37] === 0 && f32[o + 38] === 0 && f32[o + 39] === 0) {
         const vx0 = Math.max(f32[o], f32[o + 16]), vy0 = Math.max(f32[o + 1], f32[o + 17]);
         const vx1 = Math.min(f32[o] + f32[o + 2], f32[o + 18]), vy1 = Math.min(f32[o + 1] + f32[o + 3], f32[o + 19]);
-        if (vx1 > vx0 && vy1 > vy0) {
-          let occ = 0;
-          for (let k = 0; k < count; k++) {
-            if ((f32[k * INST + 20] | 0) === tid) {
-              if (++occ > 1) break;
-            }
-          }
-          if (occ === 1) {
-            elig.push({ idx: i, tid, vx0, vy0, vx1, vy1 });
-            donorEligTids.add(tid);
-          }
+        if (vx1 > vx0 && vy1 > vy0 && topTidCounts.get(tid) === 1) {
+          elig.push({ idx: i, tid, vx0, vy0, vx1, vy1 });
+          donorEligTids.add(tid);
         }
       }
-      if ((kind === 5 || kind === 6) && tid < 0 && tid !== curGlassTid) {
-        curGlassStart = i;
-        curGlassKind = kind;
-        curGlassTid = tid;
+      if ((kind === 5 || kind === 6) && tid < 0) {
+        let gMargin = 0;
+        if (kind === 6) {
+          const rawBlur = f32[o + 7] < 0 ? 0 : Math.abs(f32[o + 7]);
+          const isClearLiq = (f32[o + 7] >= -0.001 && f32[o + 7] <= 0.1 && f32[o + 11] < 0.12);
+          const blur = (isClearLiq && f32[o + 11] > 0.01 && rawBlur < 0.1) ? 1.2 : rawBlur;
+          const clearRs = (Math.abs(f32[o + 7]) < 0.01 && f32[o + 11] > 0.005 && f32[o + 11] < 0.31) ? 2.20 : 1.0;
+          gMargin = 3.0 * blur + f32[o + 21] * clearRs * (1.0 + Math.abs(f32[o + 22])) + Math.max(f32[o + 23], 0) + 2.0;
+        }
+        if (tid !== curGlassTid) {
+          curGlassStart = i;
+          curGlassKind = kind;
+          curGlassTid = tid;
+          curGlassMargin = gMargin;
+        } else if (kind === 6 && gMargin > curGlassMargin) {
+          curGlassMargin = gMargin;
+        }
       } else if ((kind === 7 || kind === 10 || kind === 11) && f32[o + 23] < 0 && f32[o + 32] === 0 &&
                  curGlassKind === 6 && elig.length > 0) {
         const dr0 = Math.max(f32[o], 0), dr1 = Math.max(f32[o + 1], 0);
@@ -3496,15 +3541,22 @@
           if (sr[2] > sr[0] && sr[3] > sr[1]) {
             const req0 = Math.min(dr0, sr[0]), req1 = Math.min(dr1, sr[1]);
             const req2 = Math.max(dr2, sr[2]), req3 = Math.max(dr3, sr[3]);
+            const occSr = [
+              sr[0] - curGlassMargin, sr[1] - curGlassMargin,
+              sr[2] + curGlassMargin, sr[3] + curGlassMargin,
+            ];
             for (let di = elig.length - 1; di >= 0; di--) {
               const d = elig[di];
               if (d.idx >= curGlassStart) continue;
               if (d.vx0 <= req0 && d.vy0 <= req1 && d.vx1 >= req2 && d.vy1 >= req3) {
                 let occluded = false;
+                let runJ = d.idx + 1;
+                let prevTidJ = 0;
+                let hasPrevTid = false;
                 for (let j = d.idx + 1; j < curGlassStart; ) {
                   const bo = j * INST;
                   const kj = Math.round(f32[bo + 5]);
-                  if (kj === 12) { j++; continue; }
+                  if (kj === 12) { hasPrevTid = false; j++; continue; }
                   if (kj === 8) {
                     let cn = Math.round(f32[bo + 12]);
                     if (cn < 0) cn = 0;
@@ -3521,24 +3573,32 @@
                       if (f32[cbo] + f32[cbo + 2] > lx1) lx1 = f32[cbo] + f32[cbo + 2];
                       if (f32[cbo + 1] + f32[cbo + 3] > ly1) ly1 = f32[cbo + 1] + f32[cbo + 3];
                     }
-                    if (lx1 + lm > sr[0] && lx0 - lm < sr[2] && ly1 + lm > sr[1] && ly0 - lm < sr[3]) {
+                    if (lx1 + lm > occSr[0] && lx0 - lm < occSr[2] && ly1 + lm > occSr[1] && ly0 - lm < occSr[3]) {
                       occluded = true;
                       break;
                     }
+                    hasPrevTid = false;
                     j += 1 + cn;
                     continue;
                   }
                   if (kj === 9) {
-                    if (reaches(j, j, sr)) { occluded = true; break; }
+                    if (reaches(j, j, occSr)) { occluded = true; break; }
+                    hasPrevTid = false;
                     j++;
                     continue;
                   }
-                  let runJ = j;
                   const tidJ = f32[bo + 20];
                   if (tidJ < 0) {
-                    while (runJ > 0 && f32[(runJ - 1) * INST + 20] === tidJ) runJ--;
+                    if (!hasPrevTid || tidJ !== prevTidJ) {
+                      runJ = j;
+                      prevTidJ = tidJ;
+                      hasPrevTid = true;
+                    }
+                  } else {
+                    runJ = j;
+                    hasPrevTid = false;
                   }
-                  if (reaches(j, runJ, sr)) { occluded = true; break; }
+                  if (reaches(j, runJ, occSr)) { occluded = true; break; }
                   j++;
                 }
                 if (!occluded) {
