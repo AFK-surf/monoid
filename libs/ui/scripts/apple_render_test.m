@@ -1641,7 +1641,7 @@ int main(void) {
       for (int i = 0; i < 7 * MB_INST; i++) f[i] = (float)a[i];
       double r[][4] = {{36, 124, 148, 40}, {28, 164, 344, 100}};
       int rn = 2;
-      CHECK(mb_glass_damage_expand(f, 7, r, &rn, 400, 300, 2));
+      CHECK(mb_glass_damage_expand(f, 7, r, &rn, 400, 300, 2, NULL));
       CHECK(rn == 1);
       CHECK(r[0][1] <= 92 && r[0][1] + r[0][3] >= 298);
       mb_render_set_fixed_dt(0.0);
@@ -5008,6 +5008,161 @@ int main(void) {
         }
         #undef A_PX
         mb_render_set_size(400, 300, 2);
+      }
+
+      // Perf-51: Dark-mode atomic (settling==0 on frame 1 + origL<0.5 + kind 0 pad_w<0 + 1<->2 switch),
+      // top-bar donor delegation (tight back pill capture + CR>=4.5), 33rd cold capture donor pin, lens counterexample.
+      {
+        mb_render_set_size(400, 300, 2);
+        static const uint8_t solid16[16] = {
+          255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255
+        };
+        [atlas replaceRegion:MTLRegionMake2D(0, 0, 4, 4) mipmapLevel:0 withBytes:solid16 bytesPerRow:4];
+        double at_sz = (double)atlas.width;
+
+        // 1. Dark-mode atomic convergence
+        glass_forget();
+        mb_render_set_fixed_dt(1.0 / 60.0);
+        double dk[4 * MB_INST];
+        rect_at(dk, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+        rect_at(dk + MB_INST, 20, 20, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -251);
+        dk[MB_INST + 4] = 16.0; dk[MB_INST + 6] = 1.0; dk[MB_INST + 7] = 1.0;
+        dk[MB_INST + 11] = 0x67 / 255.0; dk[MB_INST + 13] = 4.0; dk[MB_INST + 14] = -1.0; dk[MB_INST + 15] = 1.0;
+        rect_at(dk + 2 * MB_INST, 36, 38, 24, 24, 7, 0.2, 0.2, 0.2, 0);
+        dk[2 * MB_INST + 14] = 4.0 / at_sz; dk[2 * MB_INST + 15] = 4.0 / at_sz;
+        dk[2 * MB_INST + 21] = 80.0; dk[2 * MB_INST + 22] = 50.0; dk[2 * MB_INST + 23] = 60.0;
+        rect_at(dk + 3 * MB_INST, 84, 38, 30, 24, 0, 0.1, 0.1, 0.1, 0);
+        dk[3 * MB_INST + 11] = 0.18;
+        dk[3 * MB_INST + 21] = 80.0; dk[3 * MB_INST + 22] = 50.0; dk[3 * MB_INST + 23] = -60.0;
+
+        mb_render_present(dk, 4, 1.0, 1.0, 1.0);
+        present_drain();
+        CHECK(mb_render_adaptive_settling() == 0);
+
+        // Flip white -> black: frame 1 must immediately settle and match frame 15
+        rect_at(dk, 0, 0, 400, 300, 0, 0.0, 0.0, 0.0, 0);
+        mb_render_present(dk, 4, 0.0, 0.0, 0.0);
+        present_drain();
+        CHECK(mb_render_adaptive_settling() == 0);
+        int pw = 0, ph = 0;
+        uint8_t *px1 = read_texture(canvas, &pw, &ph);
+        for (int k = 0; k < 15; k++) {
+          mb_render_present(dk, 4, 0.0, 0.0, 0.0);
+          present_drain();
+        }
+        uint8_t *px15 = read_texture(canvas, &pw, &ph);
+        CHECK(memcmp(px1, px15, (size_t)pw * ph * 4) == 0);
+        free(px1); free(px15);
+
+        // 1 <-> 2 mode switch over white backdrop
+        rect_at(dk, 0, 0, 400, 300, 0, 1.0, 1.0, 1.0, 0);
+        mb_render_present(dk, 4, 1.0, 1.0, 1.0); present_drain();
+        CHECK(mb_render_adaptive_settling() == 0);
+        dk[MB_INST + 11] = 0xA8 / 255.0;
+        mb_render_present(dk, 4, 1.0, 1.0, 1.0); present_drain();
+        CHECK(mb_render_adaptive_settling() == 0);
+        uint8_t *m2_1 = read_texture(canvas, &pw, &ph);
+        for (int k = 0; k < 8; k++) { mb_render_present(dk, 4, 1.0, 1.0, 1.0); present_drain(); }
+        uint8_t *m2_8 = read_texture(canvas, &pw, &ph);
+        CHECK(memcmp(m2_1, m2_8, (size_t)pw * ph * 4) == 0);
+        free(m2_1); free(m2_8);
+        mb_render_set_fixed_dt(0.0);
+
+        // 2. Top-bar donor delegation hit test
+        glass_forget();
+        for (int dark_bg = 0; dark_bg <= 1; dark_bg++) {
+          double bgv = dark_bg ? 0.06 : 0.94;
+          double tb[4 * MB_INST];
+          rect_at(tb, 0, 0, 400, 300, 0, bgv, bgv, bgv, 0);
+          rect_at(tb + MB_INST, 0, 0, 400, 96, 5, 0, 0, 0, -261);
+          tb[MB_INST + 6] = 1.0; tb[MB_INST + 7] = 8.0; tb[MB_INST + 11] = 0.0; tb[MB_INST + 15] = 1.0;
+          tb[MB_INST + 22] = -1.0; tb[MB_INST + 54] = 96.0; tb[MB_INST + 55] = 48.0;
+          rect_at(tb + 2 * MB_INST, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -262);
+          tb[2 * MB_INST + 4] = 20.0; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = 1.4;
+          tb[2 * MB_INST + 11] = 0.4; tb[2 * MB_INST + 14] = -1.0; tb[2 * MB_INST + 15] = 1.0;
+          tb[2 * MB_INST + 21] = 8.0; tb[2 * MB_INST + 23] = 4.0;
+          rect_at(tb + 3 * MB_INST, 120, 34, 24, 24, 7, 0.9, 0.9, 0.9, 0);
+          tb[3 * MB_INST + 14] = 4.0 / at_sz; tb[3 * MB_INST + 15] = 4.0 / at_sz;
+          tb[3 * MB_INST + 23] = -16.0;
+          mb_render_present(tb, 4, bgv, bgv, bgv);
+          present_drain();
+          CHECK(donor_delegated_count == 1);
+          CHECK(donor_of_buf[3] == -261);
+          Grab gm_del, gm_raw;
+          CHECK(grab_of_with_donors(&gm_del, last_inst, 2, 3, 4, 800, 600, donor_of_buf) == 1);
+          CHECK(grab_of(&gm_raw, last_inst, 2, 3, 4, 800, 600) == 1);
+          CHECK(gm_del.w < gm_raw.w);
+          uint8_t *px = read_texture(canvas, &pw, &ph);
+          uint8_t *tp = px + ((size_t)(46 * 2) * pw + 132 * 2) * 4;
+          double fg_lin = pow(tp[2] / 255.0, 2.2); // BGRA
+          double bg_lin = pow(bgv, 2.2);
+          double cr = (fmax(fg_lin, bg_lin) + 0.05) / (fmin(fg_lin, bg_lin) + 0.05);
+          CHECK(cr >= 4.5);
+          free(px);
+        }
+
+        // 3. 33rd cold capture donor pin test (0 LSB diff on title)
+        {
+          glass_forget();
+          double ref[4 * MB_INST];
+          rect_at(ref, 0, 0, 400, 300, 0, 0.05, 0.05, 0.05, 0);
+          rect_at(ref + MB_INST, 0, 0, 400, 96, 5, 0, 0, 0, -270);
+          ref[MB_INST + 6] = 1.0; ref[MB_INST + 7] = 8.0; ref[MB_INST + 11] = 0.0; ref[MB_INST + 15] = 1.0;
+          ref[MB_INST + 22] = -1.0; ref[MB_INST + 54] = 96.0; ref[MB_INST + 55] = 48.0;
+          rect_at(ref + 2 * MB_INST, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -271);
+          ref[2 * MB_INST + 4] = 20.0; ref[2 * MB_INST + 6] = 1.0; ref[2 * MB_INST + 7] = 1.4;
+          ref[2 * MB_INST + 11] = 0.4; ref[2 * MB_INST + 14] = -1.0; ref[2 * MB_INST + 15] = 1.0;
+          ref[2 * MB_INST + 21] = 8.0; ref[2 * MB_INST + 23] = 4.0;
+          rect_at(ref + 3 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
+          ref[3 * MB_INST + 14] = 4.0 / at_sz; ref[3 * MB_INST + 15] = 4.0 / at_sz;
+          ref[3 * MB_INST + 23] = -16.0;
+          mb_render_present(ref, 4, 0.05, 0.05, 0.05); present_drain();
+          int pw = 0, ph = 0;
+          uint8_t *ref_px = read_texture(canvas, &pw, &ph);
+
+          glass_forget();
+          double *st = calloc(35 * MB_INST, sizeof(double));
+          memcpy(st, ref, 2 * MB_INST * sizeof(double));
+          for (int i = 0; i < 31; i++) {
+            double *g = st + (size_t)(2 + i) * MB_INST;
+            rect_at(g, 10 + (i % 10) * 36, 110 + (i / 10) * 44, 28, 28, 5, 0.5, 0.5, 0.5, -(280 + i));
+            g[6] = 1.0; g[7] = 2.0; g[11] = 0.2; g[15] = 1.0;
+          }
+          memcpy(st + 33 * MB_INST, ref + 2 * MB_INST, 2 * MB_INST * sizeof(double));
+          mb_render_present(st, 35, 0.05, 0.05, 0.05); present_drain();
+          CHECK(donor_delegated_count == 1);
+          uint8_t *st_px = read_texture(canvas, &pw, &ph);
+          for (int y = 34 * 2; y < 58 * 2; y++) {
+            for (int x = 120 * 2; x < 144 * 2; x++) {
+              size_t off = ((size_t)y * pw + x) * 4;
+              CHECK(ref_px[off + 0] == st_px[off + 0] && ref_px[off + 1] == st_px[off + 1] &&
+                    ref_px[off + 2] == st_px[off + 2]);
+            }
+          }
+          free(ref_px); free(st_px); free(st);
+        }
+
+        // 4. Lens subtree counterexample
+        {
+          glass_forget();
+          double ln[5 * MB_INST];
+          rect_at(ln, 0, 0, 400, 300, 0, 0.05, 0.05, 0.05, 0);
+          rect_at(ln + MB_INST, 0, 0, 400, 96, 8, 1, 1, 1, 0);
+          ln[MB_INST + 7] = 2.0; ln[MB_INST + 11] = 1.0; ln[MB_INST + 12] = 1.0; ln[MB_INST + 15] = 1.0;
+          rect_at(ln + 2 * MB_INST, 0, 0, 400, 96, 5, 0, 0, 0, -320);
+          ln[2 * MB_INST + 6] = 1.0; ln[2 * MB_INST + 7] = 8.0; ln[2 * MB_INST + 11] = 0.0; ln[2 * MB_INST + 15] = 1.0;
+          ln[2 * MB_INST + 22] = -1.0; ln[2 * MB_INST + 54] = 96.0; ln[2 * MB_INST + 55] = 48.0;
+          rect_at(ln + 3 * MB_INST, 12, 28, 40, 40, 6, 0.14, 0.14, 0.15, -321);
+          ln[3 * MB_INST + 4] = 20.0; ln[3 * MB_INST + 6] = 1.0; ln[3 * MB_INST + 7] = 1.4;
+          ln[3 * MB_INST + 11] = 0.4; ln[3 * MB_INST + 14] = -1.0; ln[3 * MB_INST + 15] = 1.0;
+          ln[3 * MB_INST + 21] = 8.0; ln[3 * MB_INST + 23] = 4.0;
+          rect_at(ln + 4 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
+          ln[4 * MB_INST + 14] = 4.0 / at_sz; ln[4 * MB_INST + 15] = 4.0 / at_sz;
+          ln[4 * MB_INST + 23] = -16.0;
+          mb_render_present(ln, 5, 0.05, 0.05, 0.05); present_drain();
+          CHECK(donor_delegated_count == 0);
+        }
+        printf("apple_render: perf-51 ok\n");
       }
 
       glass_forget();

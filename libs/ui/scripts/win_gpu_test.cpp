@@ -266,7 +266,7 @@ static int read_offscreen_pixel_rgb(int px, int py, uint8_t rgb[3]) {
   return ok;
 }
 
-static int read_ad_bright_t(double *out_t) {
+static int read_ad_bright_t(double *out_t, uint8_t *out_latch = NULL) {
   if (!dev || !ctx || !rw || !rw->ad_tex[rw->ad_cur].t) return 0;
   ID3D11Texture2D *src = rw->ad_tex[rw->ad_cur].t;
   D3D11_TEXTURE2D_DESC td = {};
@@ -283,6 +283,7 @@ static int read_ad_bright_t(double *out_t) {
   if (SUCCEEDED(ctx->Map(staging, 0, D3D11_MAP_READ, 0, &m))) {
     const uint8_t *p = (const uint8_t *)m.pData;
     *out_t = ((double)p[0] * 256.0 + (double)p[1]) / 65535.0;
+    if (out_latch) *out_latch = p[2];
     ctx->Unmap(staging, 0);
     ok = 1;
   }
@@ -359,7 +360,57 @@ static void test_p0_liquid_glass_vectors(void) {
     free(px);
   }
 
-  // Stateful adaptive transition test via submit() (verifies !is_new fix when serial == 0 and deterministic tau=70ms exponential convergence):
+  // Stateful adaptive transition test 1: Light adaptive (is_dark = 0) 70ms exponential smoothing via submit():
+  {
+    double inst[2 * MB_INST];
+    fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+    fill_p0_rect(inst + MB_INST, 16.0, 16.0, 96.0, 96.0, 6.0, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0,
+                 0x67 / 255.0, -48.0);
+    inst[MB_INST + 4] = 16.0;
+    inst[MB_INST + 6] = 1.0;
+    inst[MB_INST + 7] = 1.0;
+    inst[MB_INST + 12] = 0.0;
+    inst[MB_INST + 13] = 4.0;
+    inst[MB_INST + 14] = -1.0;
+    inst[MB_INST + 15] = 1.0;
+    glass_free();
+    ad_mode = 1;
+    ad_cur_dt = 1.0 / 60.0;
+    if (rw) {
+      rw->ad_frame_serial = 0;
+      memset(rw->ad_slots, 0, sizeof rw->ad_slots);
+    }
+    CHECK(submit(inst, 2, 1.0, 1.0, 1.0) == 1);
+    ctx->Flush();
+    double frame0_t = -1.0;
+    uint8_t rgb0[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&frame0_t) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, rgb0) == 1);
+    CHECK(frame0_t <= 0.02);
+
+    // Flip backdrop from white -> black and advance rw->ad_frame_serial++ with deterministic dt = 1/60s.
+    fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
+    double mid_frame3_t = -1.0, final_t = -1.0;
+    uint8_t final_rgb[3] = {0, 0, 0};
+    for (int f = 1; f <= 45; f++) {
+      if (rw) rw->ad_frame_serial++;
+      ad_cur_dt = 1.0 / 60.0;
+      CHECK(submit(inst, 2, 0.0, 0.0, 0.0) == 1);
+      ctx->Flush();
+      if (f == 3) CHECK(read_ad_bright_t(&mid_frame3_t) == 1);
+    }
+    CHECK(read_ad_bright_t(&final_t) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, final_rgb) == 1);
+    printf("win_gpu: stateful_ad_light frame0_t=%.4f mid_frame3_t=%.4f final_t=%.4f rgb0=(%u,%u,%u) final_rgb=(%u,%u,%u)\n",
+           frame0_t, mid_frame3_t, final_t, rgb0[0], rgb0[1], rgb0[2], final_rgb[0], final_rgb[1], final_rgb[2]);
+    CHECK(mid_frame3_t > 0.25 && mid_frame3_t < 0.75);
+    CHECK(final_t >= 0.98);
+    CHECK(final_rgb[0] < rgb0[0] && final_rgb[1] < rgb0[1] && final_rgb[2] < rgb0[2]);
+    ad_cur_dt = 0.0;
+    glass_free();
+  }
+
+  // Stateful adaptive transition test 2: Dark adaptive (is_dark = 1) 1-frame atomic convergence + zero settle:
   {
     double inst[2 * MB_INST];
     fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
@@ -381,30 +432,30 @@ static void test_p0_liquid_glass_vectors(void) {
     CHECK(submit(inst, 2, 1.0, 1.0, 1.0) == 1);
     ctx->Flush();
     double frame0_t = -1.0;
-    uint8_t rgb0[3] = {0, 0, 0};
-    CHECK(read_ad_bright_t(&frame0_t) == 1);
+    uint8_t latch0 = 0, rgb0[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&frame0_t, &latch0) == 1);
     CHECK(read_offscreen_pixel_rgb(64, 64, rgb0) == 1);
     CHECK(frame0_t >= 0.98);
+    CHECK(latch0 == 128);
     CHECK(rgb0[0] >= 166 && rgb0[0] <= 182 && rgb0[1] >= 166 && rgb0[1] <= 182 && rgb0[2] >= 166 && rgb0[2] <= 182);
 
-    // Flip backdrop from white -> black and advance rw->ad_frame_serial++ with deterministic dt = 1/60s.
+    // Flip backdrop from white -> black: frame 1 must snap immediately (t <= 0.02, latch == 64, pixel 30..38, settling == 0).
     fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
-    double mid_frame3_t = -1.0, final_t = -1.0;
-    uint8_t final_rgb[3] = {0, 0, 0};
-    for (int f = 1; f <= 45; f++) {
-      if (rw) rw->ad_frame_serial++;
-      ad_cur_dt = 1.0 / 60.0;
-      CHECK(submit(inst, 2, 0.0, 0.0, 0.0) == 1);
-      ctx->Flush();
-      if (f == 3) CHECK(read_ad_bright_t(&mid_frame3_t) == 1);
-    }
-    CHECK(read_ad_bright_t(&final_t) == 1);
-    CHECK(read_offscreen_pixel_rgb(64, 64, final_rgb) == 1);
-    printf("win_gpu: stateful_ad frame0_t=%.4f mid_frame3_t=%.4f final_t=%.4f final_rgb=(%u,%u,%u)\n",
-           frame0_t, mid_frame3_t, final_t, final_rgb[0], final_rgb[1], final_rgb[2]);
-    CHECK(mid_frame3_t > 0.25 && mid_frame3_t < 0.75);
-    CHECK(final_t <= 0.02);
-    CHECK(final_rgb[0] >= 30 && final_rgb[0] <= 38 && final_rgb[1] >= 30 && final_rgb[1] <= 38 && final_rgb[2] >= 30 && final_rgb[2] <= 38);
+    if (rw) rw->ad_frame_serial++;
+    ad_cur_dt = 1.0 / 60.0;
+    CHECK(submit(inst, 2, 0.0, 0.0, 0.0) == 1);
+    ctx->Flush();
+    if (rw) ad_finalize_frame(rw, 1, rw->ad_frame_serial);
+    double frame1_t = -1.0;
+    uint8_t latch1 = 0, rgb1[3] = {0, 0, 0};
+    CHECK(read_ad_bright_t(&frame1_t, &latch1) == 1);
+    CHECK(read_offscreen_pixel_rgb(64, 64, rgb1) == 1);
+    printf("win_gpu: stateful_ad_dark frame0_t=%.4f latch0=%u frame1_t=%.4f latch1=%u rgb1=(%u,%u,%u) settling=%d\n",
+           frame0_t, latch0, frame1_t, latch1, rgb1[0], rgb1[1], rgb1[2], mb_render_adaptive_settling(0));
+    CHECK(frame1_t <= 0.02);
+    CHECK(latch1 == 64);
+    CHECK(rgb1[0] >= 30 && rgb1[0] <= 38 && rgb1[1] >= 30 && rgb1[1] <= 38 && rgb1[2] >= 30 && rgb1[2] <= 38);
+    CHECK(mb_render_adaptive_settling(0) == 0);
     ad_cur_dt = 0.0;
     glass_free();
   }

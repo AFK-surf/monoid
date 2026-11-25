@@ -192,16 +192,29 @@ static const char *VS =
     "    float bgL = capsuleBgL;\n"
     "    if (origL < 0.94 && u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y) {\n"
     "      vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
-    "      float stepX = is_icon ? 4.0 : 8.0;\n"
-    "      int halfN = is_icon ? 2 : 12;\n"
-    "      for (int iy = -1; iy <= 1; iy++) {\n"
-    "        float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
-    "        for (int ix = -12; ix <= 12; ix++) {\n"
-    "          float px = samplePos.x + float(ix) * stepX;\n"
-    "          if (abs(ix) <= halfN && px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
-    "            vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;\n"
-    "            if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {\n"
-    "              bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));\n"
+    "      if (is_icon) {\n"
+    "        for (int iy = -1; iy <= 1; iy++) {\n"
+    "          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
+    "          for (int ix = -2; ix <= 2; ix++) {\n"
+    "            float px = samplePos.x + float(ix) * 4.0;\n"
+    "            if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
+    "              vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;\n"
+    "              if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {\n"
+    "                bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));\n"
+    "              }\n"
+    "            }\n"
+    "          }\n"
+    "        }\n"
+    "      } else {\n"
+    "        for (int iy = -1; iy <= 1; iy++) {\n"
+    "          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
+    "          for (int ix = -12; ix <= 12; ix++) {\n"
+    "            float px = samplePos.x + float(ix) * 8.0;\n"
+    "            if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
+    "              vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;\n"
+    "              if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {\n"
+    "                bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));\n"
+    "              }\n"
     "            }\n"
     "          }\n"
     "        }\n"
@@ -268,24 +281,26 @@ static const char *VS =
     "  gl_Position = vec4(rel.x / u_vp.x * 2.0 - 1.0, 1.0 - rel.y / u_vp.y * 2.0, 0.0, 1.0);\n"
     "  v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;\n"
     "#if MB_VS_ADAPTIVE\n"
-    "  if (kind == 7) {\n"
-    "    v_color.rgb = a_pad.w < 0.0\n"
-    "      ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))\n"
-    "      : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);\n"
-    "  } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {\n"
-    "    v_color.rgb = a_pad.w < 0.0\n"
-    "      ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))\n"
-    "      : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);\n"
-    "  } else if (kind == 0 && a_pad.w < 0.0) {\n"
-    "    float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);\n"
-    "    vec2 capCenter, capHalf;\n"
-    "    float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;\n"
-    "    if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {\n"
-    "      v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);\n"
-    "      v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);\n"
-    "    } else if (ch > 0.08 && vs_luma(a_color.rgb) < 0.35) {\n"
-    "      v_color.rgb = mix(a_color.rgb, min(a_color.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);\n"
-    "      v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.36), darkT);\n"
+    "  if (vid == 2 || vid == 5) {\n"
+    "    if (kind == 7) {\n"
+    "      v_color.rgb = a_pad.w < 0.0\n"
+    "        ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))\n"
+    "        : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);\n"
+    "    } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {\n"
+    "      v_color.rgb = a_pad.w < 0.0\n"
+    "        ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))\n"
+    "        : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);\n"
+    "    } else if (kind == 0 && a_pad.w < 0.0) {\n"
+    "      float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);\n"
+    "      vec2 capCenter, capHalf;\n"
+    "      float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;\n"
+    "      if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {\n"
+    "        v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);\n"
+    "        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);\n"
+    "      } else if (ch > 0.08 && vs_luma(a_color.rgb) < 0.35) {\n"
+    "        v_color.rgb = mix(a_color.rgb, min(a_color.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);\n"
+    "        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.36), darkT);\n"
+    "      }\n"
     "    }\n"
     "  }\n"
     "#endif\n"
@@ -1713,7 +1728,7 @@ static const char *AD_FS =
     "    target = latch;\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -1736,20 +1751,23 @@ static GLint adu_bd, adu_prev, adu_map, adu_uvc, adu_box, adu_param;
 // (kind 11) and heavy glass/lens shaders in their own specialized programs.
 enum {
   MB_PROG_UI = 0,
-  MB_PROG_PATH = 1,
-  MB_PROG_FROSTED = 2,
-  MB_PROG_LIQUID_MERGED = 3,
-  MB_PROG_LIQUID_SINGLE = 4,
-  MB_PROG_LENS = 5,
-  MB_PROGS = 6
+  MB_PROG_UI_AD = 1,
+  MB_PROG_PATH = 2,
+  MB_PROG_PATH_AD = 3,
+  MB_PROG_FROSTED = 4,
+  MB_PROG_LIQUID_MERGED = 5,
+  MB_PROG_LIQUID_SINGLE = 6,
+  MB_PROG_LENS = 7,
+  MB_PROGS = 8
 };
 
 static int prog_group_of(int kind, float pad_w) {
-  if (kind == 11) return MB_PROG_PATH;
+  if (kind == 11) return pad_w != 0.0f ? MB_PROG_PATH_AD : MB_PROG_PATH;
   if (kind == 5) return MB_PROG_FROSTED;
   if (kind == 6) return pad_w > 0.0f ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
   if (kind == 13) return MB_PROG_LIQUID_SINGLE;
   if (kind == 8) return MB_PROG_LENS;
+  if (kind == 7 || (kind == 10 && pad_w != 0.0f) || (kind == 0 && pad_w < 0.0f)) return MB_PROG_UI_AD;
   return MB_PROG_UI;
 }
 
@@ -2096,6 +2114,21 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
       break;
     case MB_PROG_PATH:
       s.tag = "path";
+      s.vs_head = head_plain;
+      s.vs = 0;
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
+               "#define ONE_KIND 11\n"
+               "#define MB_HAS(K) ((K) == 11)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 0\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_PATH_AD:
+      s.tag = "path_ad";
       s.vs_head = head_ad;
       s.vs = 1;
       snprintf(fs_head, fs_head_n,
@@ -2109,14 +2142,30 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_GROUP 0\n"
                "#define MB_LIQUID_SINGLE 0\n");
       break;
-    case MB_PROG_UI:
-    default:
+    case MB_PROG_UI_AD:
+      s.tag = "ui_ad";
       s.vs_head = head_ad;
       s.vs = 1;
       snprintf(fs_head, fs_head_n,
                "#version 300 es\n"
+               "#define ONE_KIND -2\n"
+               "#define MB_HAS(K) ((K) == 0 || (K) == 7 || (K) == 10)\n"
+               "#define MB_HAS_LIQUID 0\n"
+               "#define MB_HAS_ADAPTIVE 0\n"
+               "#define MB_HAS_BACKDROP 0\n"
+               "#define MB_HAS_BOX 1\n"
+               "#define MB_HAS_GROUP 0\n"
+               "#define MB_LIQUID_SINGLE 0\n");
+      break;
+    case MB_PROG_UI:
+    default:
+      s.tag = "ui";
+      s.vs_head = head_plain;
+      s.vs = 0;
+      snprintf(fs_head, fs_head_n,
+               "#version 300 es\n"
                "#define ONE_KIND -1\n"
-               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n"
+               "#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 9 || (K) == 10)\n"
                "#define MB_HAS_LIQUID 0\n"
                "#define MB_HAS_ADAPTIVE 0\n"
                "#define MB_HAS_BACKDROP 0\n"
@@ -2307,9 +2356,10 @@ static void ensure_ad_prog(void) { ensure_ad_prog_impl(0); }
 // cache for the next start and handed over (ahead_progs) once it is whole (glFinish: another context draws with it):
 // how many. Stops when the GL thread's context is no longer `gen`'s.
 static int gl_progs_ahead(unsigned gen) {
-  static const int order[MB_SLOTS] = {MB_PROG_LIQUID_MERGED, MB_PROG_LIQUID_SINGLE, MB_SLOT_ADAPTIVE,
-                                      MB_PROG_FROSTED,       MB_PROG_LENS,          MB_SLOT_POST,
-                                      MB_PROG_PATH,          MB_SLOT_FLAT,          MB_PROG_UI};
+  static const int order[MB_SLOTS] = {MB_PROG_LIQUID_MERGED, MB_PROG_LIQUID_SINGLE, MB_PROG_UI_AD,
+                                      MB_SLOT_ADAPTIVE,      MB_PROG_FROSTED,       MB_PROG_PATH_AD,
+                                      MB_PROG_LENS,          MB_SLOT_POST,          MB_PROG_PATH,
+                                      MB_SLOT_FLAT,          MB_PROG_UI};
   GLint nfmt = 0;
   glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
   int use_cache = prog_cache_dir[0] != '\0' && nfmt > 0;
@@ -2667,7 +2717,8 @@ typedef struct {
 
 // The capture the run [start, end) of glass makes, frosted glass of the same capture further on (glass.mbt
 // shares_capture) under it too; 0 when none of it shows, or it is outside the part drawn.
-static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count) {
+static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t end, int32_t count,
+                               const int *donor_of) {
   memset(m, 0, sizeof *m);
   const float *a = f + start * MB_INST;
   // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
@@ -2750,11 +2801,18 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     if (by1 > y1) y1 = by1;
   }
   float cap_x0 = x0, cap_y0 = y0, cap_x1 = x1, cap_y1 = y1;
-  for (int32_t i = end; i < count; i++) {
+  for (int32_t i = end; i < count; ) {
     const float *b = f + i * MB_INST;
     int bk = (int)(b[5] + 0.5f);
+    if (bk == 8) {
+      int32_t child_n = (int32_t)(b[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
+    }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f) {
+    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
       if (bk == 7) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
@@ -2771,6 +2829,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       if (cx + hx > cap_x1) cap_x1 = cx + hx;
       if (cy + hy > cap_y1) cap_y1 = cy + hy;
     }
+    i++;
   }
   m->gb[0] = x0 - 2; m->gb[1] = y0 - 2; m->gb[2] = x1 + 2; m->gb[3] = y1 + 2;
   float sc = (float)cur_scale;
@@ -2824,6 +2883,10 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; m->dual_wsp = 0.0f; }
   m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
+}
+
+static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count) {
+  return grab_of_with_donors(m, f, start, end, count, NULL);
 }
 
 // The size of a grab's level j (its passes write each level's foot left)
@@ -3061,6 +3124,8 @@ typedef struct {
   uint64_t settle_serial;
   uint64_t updated_serial;
   uint64_t seen_serial;
+  int has_changed;
+  uint64_t last_changed_serial;
 } mb_ad_slot;
 
 typedef struct {
@@ -3183,7 +3248,7 @@ static void ad_fill_uniforms(void) {
 }
 
 typedef struct {
-  int sid, is_new, is_dark;
+  int sid, is_new, is_dark, track_rb;
   float cx, cy, hx, hy;
 } gl_ad_pend;
 
@@ -3284,7 +3349,13 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
     }
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
-      if (is_new) {
+      int consec_scroll = (slot_changed && !is_new && s->has_changed && s->last_changed_serial + 1 == serial);
+      int track_rb = (!is_new && s->is_dark == 0 && dt > 0.0 && !consec_scroll);
+      if (slot_changed && !is_new) {
+        s->has_changed = 1;
+        s->last_changed_serial = serial;
+      }
+      if (is_new || s->is_dark > 0) {
         s->settle_left = 0.0;
         s->settle_serial = serial;
       } else if (slot_changed) {
@@ -3296,7 +3367,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       }
       s->last_bd = cur_bd;
       s->updated_serial = serial;
-      out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
+      out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, track_rb, s->cx, s->cy, s->hx, s->hy};
     }
   }
   return n_upd;
@@ -3317,7 +3388,7 @@ static void ad_run_updates_batch(const gl_ad_batch *items, int n_upd, double dt)
   int cur = ad_cur, nxt = 1 - cur;
   uint32_t batch_mask = 0;
   for (int i = 0; i < n_upd; i++) {
-    if (!items[i].p.is_new && dt > 0.0) batch_mask |= (1u << items[i].p.sid);
+    if (items[i].p.track_rb) batch_mask |= (1u << items[i].p.sid);
   }
   glDisable(GL_BLEND);
   glDisable(GL_SCISSOR_TEST);
@@ -3725,11 +3796,186 @@ static glass_slot *slot_same(const Grab *m, const double key[9]) {
   return NULL;
 }
 
+#define MB_MAX_DONORS 16
+
+typedef struct {
+  int32_t idx;
+  int tid;
+  float vx0, vy0, vx1, vy1;
+} mb_donor_cand;
+
+typedef struct {
+  int tid;
+  int slot_idx;
+  GLuint bt;
+  float map[4];
+  float uvc[4];
+} mb_donor_live;
+
+static int *donor_of_buf;
+static size_t donor_of_cap;
+static int donor_elig_tids[MB_MAX_DONORS];
+static int donor_elig_n;
+static int donor_delegated_count;
+static int donor_plan_ready;
+static uint32_t donor_slot_mask;
+static glass_slot *last_captured_slot;
+
+static int is_donor_elig_tid(int tid) {
+  for (int i = 0; i < donor_elig_n; i++) {
+    if (donor_elig_tids[i] == tid) return 1;
+  }
+  return 0;
+}
+
+static int compute_donor_plan(const float *f, int32_t count, float vp_w, float vp_h, float sc) {
+  donor_elig_n = 0;
+  donor_delegated_count = 0;
+  if (count <= 0 || !f) return 0;
+  if ((size_t)count > donor_of_cap) {
+    donor_of_cap = (size_t)count;
+    donor_of_buf = (int *)realloc(donor_of_buf, donor_of_cap * sizeof(int));
+  }
+  if (!donor_of_buf) {
+    donor_of_cap = 0;
+    return 0;
+  }
+  memset(donor_of_buf, 0, (size_t)count * sizeof(int));
+  mb_donor_cand elig[MB_MAX_DONORS];
+  int n_elig = 0;
+  int32_t cur_glass_start = -1;
+  int cur_glass_kind = 0, cur_glass_tid = 0;
+  float pad = 1.0f / (sc > 0.0f ? sc : 1.0f);
+  for (int32_t i = 0; i < count; ) {
+    const float *p = f + (size_t)i * MB_INST;
+    int kind = (int)(p[5] + 0.5f);
+    if (kind == 8) {
+      int32_t child_n = (int32_t)(p[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
+    }
+    int tid = (int)p[20];
+    if (tid < 0 && kind == 5 && p[22] < -0.5f && n_elig < MB_MAX_DONORS &&
+        p[11] <= 0.001f && p[15] >= 0.999f && fabsf(p[6] - 1.0f) <= 0.001f &&
+        p[12] == 0.0f && p[13] == 0.0f && p[14] == 0.0f && p[32] == 0.0f &&
+        p[24] == 0.0f && p[25] == 0.0f && p[26] == 0.0f && p[27] == 0.0f &&
+        p[44] == 0.0f && p[45] == 0.0f && p[46] == 0.0f && p[47] == 0.0f &&
+        p[4] == 0.0f && p[36] == 0.0f && p[37] == 0.0f && p[38] == 0.0f && p[39] == 0.0f) {
+      float vx0 = fmaxf(p[0], p[16]), vy0 = fmaxf(p[1], p[17]);
+      float vx1 = fminf(p[0] + p[2], p[18]), vy1 = fminf(p[1] + p[3], p[19]);
+      if (vx1 > vx0 && vy1 > vy0) {
+        int occ = 0;
+        for (int32_t k = 0; k < count; k++) {
+          if ((int)f[(size_t)k * MB_INST + 20] == tid) {
+            if (++occ > 1) break;
+          }
+        }
+        if (occ == 1) {
+          elig[n_elig].idx = i;
+          elig[n_elig].tid = tid;
+          elig[n_elig].vx0 = vx0;
+          elig[n_elig].vy0 = vy0;
+          elig[n_elig].vx1 = vx1;
+          elig[n_elig].vy1 = vy1;
+          donor_elig_tids[n_elig] = tid;
+          n_elig++;
+        }
+      }
+    }
+    if ((kind == 5 || kind == 6) && tid < 0 && tid != cur_glass_tid) {
+      cur_glass_start = i;
+      cur_glass_kind = kind;
+      cur_glass_tid = tid;
+    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+               cur_glass_kind == 6 && n_elig > 0) {
+      float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
+                     fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
+      if (dr[2] > dr[0] && dr[3] > dr[1]) {
+        float cx, cy, hx, hy;
+        if (kind == 7) {
+          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
+          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+        } else if (kind == 10) {
+          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
+          hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
+        } else {
+          cx = p[0] + p[2] * 0.5f + p[6]; cy = p[1] + p[3] * 0.5f + p[7];
+          hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
+        }
+        float sr[4] = {fmaxf(cx - 0.76f * hx - pad, 0.0f), fmaxf(cy - 0.60f * hy - pad, 0.0f),
+                       fminf(cx + 0.76f * hx + pad, vp_w), fminf(cy + 0.60f * hy + pad, vp_h)};
+        if (sr[2] > sr[0] && sr[3] > sr[1]) {
+          float req[4] = {fminf(dr[0], sr[0]), fminf(dr[1], sr[1]),
+                          fmaxf(dr[2], sr[2]), fmaxf(dr[3], sr[3])};
+          for (int di = n_elig - 1; di >= 0; di--) {
+            const mb_donor_cand *d = &elig[di];
+            if (d->idx >= cur_glass_start) continue;
+            if (d->vx0 <= req[0] && d->vy0 <= req[1] && d->vx1 >= req[2] && d->vy1 >= req[3]) {
+              int occluded = 0;
+              for (int32_t j = d->idx + 1; j < cur_glass_start; ) {
+                const float *bj = f + (size_t)j * MB_INST;
+                int kj = (int)(bj[5] + 0.5f);
+                if (kj == 12) { j++; continue; }
+                if (kj == 8) {
+                  int32_t cn = (int32_t)(bj[12] + 0.5f);
+                  if (cn < 0) cn = 0;
+                  if (j + 1 + cn > count) cn = count - j - 1;
+                  if (bj[32] != 0.0f) { occluded = 1; break; }
+                  float lm = fmaxf(bj[7], 0.0f) * 3.0f + fmaxf(bj[14], 0.0f) + 4.0f;
+                  float lx0 = bj[0], ly0 = bj[1], lx1 = bj[0] + bj[2], ly1 = bj[1] + bj[3];
+                  for (int32_t ci = j + 1; ci < j + 1 + cn; ci++) {
+                    const float *cb = f + (size_t)ci * MB_INST;
+                    int ck = (int)(cb[5] + 0.5f);
+                    if (ck == 12 || cb[2] <= 0.0f || cb[3] <= 0.0f) continue;
+                    if (cb[0] < lx0) lx0 = cb[0];
+                    if (cb[1] < ly0) ly0 = cb[1];
+                    if (cb[0] + cb[2] > lx1) lx1 = cb[0] + cb[2];
+                    if (cb[1] + cb[3] > ly1) ly1 = cb[1] + cb[3];
+                  }
+                  if (lx1 + lm > sr[0] && lx0 - lm < sr[2] && ly1 + lm > sr[1] && ly0 - lm < sr[3]) {
+                    occluded = 1;
+                    break;
+                  }
+                  j += 1 + cn;
+                  continue;
+                }
+                if (kj == 9) {
+                  if (reaches(f, j, j, sr)) { occluded = 1; break; }
+                  j++;
+                  continue;
+                }
+                int32_t run_j = j;
+                float tid_j = bj[20];
+                if (tid_j < 0.0f) {
+                  while (run_j > 0 && f[(size_t)(run_j - 1) * MB_INST + 20] == tid_j) run_j--;
+                }
+                if (reaches(f, j, run_j, sr)) { occluded = 1; break; }
+                j++;
+              }
+              if (!occluded) {
+                donor_of_buf[i] = d->tid;
+                donor_delegated_count++;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    i++;
+  }
+  donor_elig_n = n_elig;
+  return donor_delegated_count;
+}
+
 static void slots_evict_budget(int keep_idx, unsigned frame_clock, int allow_frame_slots) {
   while (slots_total_bytes() > MB_GLASS_CACHE_MAX_BYTES) {
     int victim = -1;
     for (int j = 0; j < MB_GLASS_SLOTS; j++) {
       if (j == keep_idx || !slots[j].bt) continue;
+      if (donor_slot_mask & (1u << j)) continue;
       if (!allow_frame_slots && slots[j].used > frame_clock) continue;
       if (victim < 0 || (!slots[j].valid && slots[victim].valid) ||
           (slots[j].valid == slots[victim].valid && slots[j].used < slots[victim].used)) {
@@ -3763,10 +4009,11 @@ static glass_slot *slot_fill(const Grab *m, unsigned frame_clock) {
   size_t b_area = (size_t)bw * (size_t)bh;
   int full_size = (bw >= Lw && bh >= Lh);
   int use_swap = full_size || (L_area <= 2 * b_area && glass_tex_bytes(Lw, Lh) <= MB_GLASS_CACHE_MAX_BYTES);
-  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
+  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = -1;
   for (int i = 0; i < MB_GLASS_SLOTS; i++) {
+    if (donor_slot_mask & (1u << i)) continue;
     glass_slot *s = &slots[i];
-    if (s->used < slots[fallback].used) fallback = i;
+    if (fallback < 0 || s->used < slots[fallback].used) fallback = i;
     if (s->used > frame_clock) continue;
     int has_bt = s->bt != 0;
     int reuse_tex = 0;
@@ -3867,11 +4114,12 @@ typedef struct {
 // What the run [start, end) of glass sees (`pieces`: where the frame's shapes' pieces start, `r`, `g`, `b` the ground it
 // was cleared to), blurred anew or as a slot keeps it; 0 when none of it shows. Leaves the main programs' state.
 static int capture(const float *f, int32_t start, int32_t end, int32_t count, int32_t pieces, double r, double g,
-                   double b, unsigned frame_clock, const gl_pre_hit *pre_hits, int pre_hits_n) {
+                   double b, unsigned frame_clock, const gl_pre_hit *pre_hits, int pre_hits_n, const int *donor_of) {
   Grab m;
   int tid = (int)f[start * MB_INST + 20];
   int shows = 0;
   glass_slot *s = NULL;
+  last_captured_slot = NULL;
   for (int h = 0; h < pre_hits_n; h++) {
     if (pre_hits[h].tid == tid) {
       glass_slot *hs = pre_hits[h].slot;
@@ -3887,7 +4135,7 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
   double stretch_h = (vhp == fb_h && (int)(cur_h * cur_scale + 0.5) != fb_h) ? cur_h : 0.0;
   double key[9] = {fb_w, fb_h, cur_scale, r, g, b, over_other, stretch_w, stretch_h};
   int switched = 0;
-  if (!s) shows = grab_of(&m, f, start, end, count);
+  if (!s) shows = grab_of_with_donors(&m, f, start, end, count, donor_of);
   if (shows) {
     int reblurred = 0;
     if (!s) {
@@ -3903,6 +4151,7 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
         if (known && !encode_missing) slot_keep(s, &m, key);
       }
     }
+    last_captured_slot = s;
     kept_ok = s->valid;
     slot_show(&m, s);
     gl_ad_pend ad_pend[MB_ADAPTIVE_MAX];
@@ -4073,6 +4322,9 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
   ad_mode = 1;
   ad_cur_dt = ad_next_dt();
   ad_frame_serial++;
+  compute_donor_plan(fbuf, count, (float)(cur_w > 0.0 ? cur_w : fb_w / (cur_scale > 0.0 ? cur_scale : 1.0)),
+                     (float)(cur_h > 0.0 ? cur_h : fb_h / (cur_scale > 0.0 ? cur_scale : 1.0)), (float)cur_scale);
+  donor_plan_ready = 1;
   int whole = !dirty_told || dirty_whole || pictures_missing || views_drawn_in();
   if (!whole && gl_adaptive_settling()) {
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
@@ -4081,9 +4333,10 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
                      ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
     }
     if (!dirty_whole && !mb_glass_damage_expand(fbuf, count, dirty, &dirty_n, fb_w / cur_scale, fb_h / cur_scale,
-                                                 cur_scale)) dirty_whole = 1;
+                                                 cur_scale, count > 0 ? donor_of_buf : NULL)) dirty_whole = 1;
   }
   gl_present_drawn(count, r, g, b);
+  donor_plan_ready = 0;
   ad_rb_finish(ad_frame_serial);
   ad_finalize_frame(whole, ad_frame_serial);
   glass_idle_tick();
@@ -4406,6 +4659,11 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
   // (where the pieces of the frame's shapes start: what a capture is of, with what is before it)
   int32_t pieces = count;
   while (pieces > 0 && (int)(fbuf[(pieces - 1) * MB_INST + 5] + 0.5f) == 12) pieces--;
+  if (!donor_plan_ready) {
+    compute_donor_plan(fbuf, count, (float)(cur_w > 0.0 ? cur_w : fb_w / (cur_scale > 0.0 ? cur_scale : 1.0)),
+                       (float)(cur_h > 0.0 ? cur_h : fb_h / (cur_scale > 0.0 ? cur_scale : 1.0)), (float)cur_scale);
+  }
+  const int *donor_of = (count > 0 && donor_of_buf) ? donor_of_buf : NULL;
   // Pre-scan glass captures once per frame (covering all dirty rects when partial): size blur levels once, and batch
   // adaptive updates for blur-cache-hit groups into a single pass so tile-based GPUs do not split the main FBO pass.
   int levels_sized = 0;
@@ -4414,6 +4672,14 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
   if (count > 0) {
     int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0, any_glass = 0;
     for (int32_t s0 = 0; s0 < count;) {
+      int sk = (int)(fbuf[s0 * MB_INST + 5] + 0.5f);
+      if (sk == 8) {
+        int32_t cn = (int32_t)(fbuf[s0 * MB_INST + 12] + 0.5f);
+        if (cn < 0) cn = 0;
+        if (s0 + 1 + cn > count) cn = count - s0 - 1;
+        s0 += 1 + cn;
+        continue;
+      }
       int stid = (int)fbuf[s0 * MB_INST + 20];
       int32_t e0 = s0 + 1;
       if (stid < 0) {
@@ -4422,7 +4688,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         if (stid != scan_bound) {
           scan_bound = stid;
           Grab gm;
-          if (grab_of(&gm, fbuf, s0, e0, count)) {
+          if (grab_of_with_donors(&gm, fbuf, s0, e0, count, donor_of)) {
             if (gm.w > all_max_w) all_max_w = gm.w;
             if (gm.h > all_max_h) all_max_h = gm.h;
             if (!is_partial || grab_in_any_rect(&gm, rects, n_rects)) {
@@ -4451,16 +4717,23 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
         double key[9] = {fb_w, fb_h, cur_scale, r, g, b, over_other, stretch_w, stretch_h};
         int pre_bound = 0;
         for (int32_t s0 = 0; s0 < count;) {
+          int skind = (int)(fbuf[s0 * MB_INST + 5] + 0.5f);
+          if (skind == 8) {
+            int32_t cn = (int32_t)(fbuf[s0 * MB_INST + 12] + 0.5f);
+            if (cn < 0) cn = 0;
+            if (s0 + 1 + cn > count) cn = count - s0 - 1;
+            s0 += 1 + cn;
+            continue;
+          }
           int stid = (int)fbuf[s0 * MB_INST + 20];
           int32_t e0 = s0 + 1;
           if (stid < 0) {
             while (e0 < count && (int)fbuf[e0 * MB_INST + 20] == stid) e0++;
             if (stid != pre_bound) {
               pre_bound = stid;
-              int skind = (int)(fbuf[s0 * MB_INST + 5] + 0.5f);
               if (skind == 5 || skind == 6) {
                 Grab gm;
-                if (grab_of(&gm, fbuf, s0, e0, count) && (!is_partial || grab_in_any_rect(&gm, rects, n_rects)) &&
+                if (grab_of_with_donors(&gm, fbuf, s0, e0, count, donor_of) && (!is_partial || grab_in_any_rect(&gm, rects, n_rects)) &&
                     under_take(fbuf, s0, count, pieces, &gm)) {
                   glass_slot *sl = slot_same(&gm, key);
                   if (sl && sl->bt) {
@@ -4545,6 +4818,9 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
     // capture of glass (negative); GLES has no base instance, so the attributes start at the run instead
     int32_t start = 0;
     int bound = 0, shows = 0;
+    mb_donor_live donors[MB_MAX_DONORS];
+    int n_donors = 0;
+    donor_slot_mask = 0;
     while (start < count) {
       int tid = (int)fbuf[start * MB_INST + 20];
       int kind = (int)(fbuf[start * MB_INST + 5] + 0.5f);
@@ -4665,11 +4941,13 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
       }
       // Consecutive instances sharing `tid` and `prog_group_of` draw in one batched instanced run.
       int grp = prog_group_of(kind, fbuf[start * MB_INST + 23]);
+      int run_donor = (donor_of && tid >= 0) ? donor_of[start] : 0;
       int32_t end = start + 1;
       while (end < count && (int)fbuf[end * MB_INST + 20] == tid) {
         int k = (int)(fbuf[end * MB_INST + 5] + 0.5f);
         if (k == 8 || k == 12) break;
         if (tid >= 0 && prog_group_of(k, fbuf[end * MB_INST + 23]) != grp) break;
+        if (tid >= 0 && (donor_of ? donor_of[end] : 0) != run_donor) break;
         end++;
       }
       if (tid < 0) {
@@ -4678,6 +4956,14 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
           levels_sized = 1;
           int max_w = 0, max_h = 0, scan_bound = 0;
           for (int32_t s0 = start; s0 < count;) {
+            int sk = (int)(fbuf[s0 * MB_INST + 5] + 0.5f);
+            if (sk == 8) {
+              int32_t cn = (int32_t)(fbuf[s0 * MB_INST + 12] + 0.5f);
+              if (cn < 0) cn = 0;
+              if (s0 + 1 + cn > count) cn = count - s0 - 1;
+              s0 += 1 + cn;
+              continue;
+            }
             int stid = (int)fbuf[s0 * MB_INST + 20];
             int32_t e0 = s0 + 1;
             if (stid < 0) {
@@ -4685,7 +4971,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
               if (stid != scan_bound) {
                 scan_bound = stid;
                 Grab gm;
-                if (grab_of(&gm, fbuf, s0, e0, count) && (!is_partial || grab_in_any_rect(&gm, rects, n_rects))) {
+                if (grab_of_with_donors(&gm, fbuf, s0, e0, count, donor_of) && (!is_partial || grab_in_any_rect(&gm, rects, n_rects))) {
                   if (gm.w > max_w) max_w = gm.w;
                   if (gm.h > max_h) max_h = gm.h;
                 }
@@ -4710,11 +4996,23 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
                 break;
               }
             }
-            if (!found) found = grab_of(&gm, fbuf, start, end, count);
+            if (!found) found = grab_of_with_donors(&gm, fbuf, start, end, count, donor_of);
             in_cut = found && grab_in_cut(&gm);
           }
-          shows = in_cut ? capture(fbuf, start, end, count, pieces, r, g, b, frame_clock, pre_hits, pre_hits_n) : 0;
+          shows = in_cut ? capture(fbuf, start, end, count, pieces, r, g, b, frame_clock, pre_hits, pre_hits_n, donor_of) : 0;
           bound = tid;
+          if (shows && last_captured_slot && is_donor_elig_tid(tid) && n_donors < MB_MAX_DONORS) {
+            int slot_idx = (int)(last_captured_slot - slots);
+            if (slot_idx >= 0 && slot_idx < MB_GLASS_SLOTS) {
+              donor_slot_mask |= (1u << slot_idx);
+              donors[n_donors].tid = tid;
+              donors[n_donors].slot_idx = slot_idx;
+              donors[n_donors].bt = last_captured_slot->bt;
+              memcpy(donors[n_donors].map, gmap, sizeof gmap);
+              memcpy(donors[n_donors].uvc, guvc, sizeof guvc);
+              n_donors++;
+            }
+          }
         }
         if (shows) {
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
@@ -4730,6 +5028,26 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
       GLuint t = tid ? image_tex(tid) : atlas;
       if (!t && tid > 0 && tid <= MB_STREAM_TEX) encode_missing = 1;
       if (t) {  // 0: lost with the context, decoding again; a stream's or a view's with no picture yet
+        int swapped_donor = 0;
+        GLuint prev_bd_d = 0;
+        float prev_gmap_d[4], prev_guvc_d[4];
+        if (run_donor < 0) {
+          for (int di = 0; di < n_donors; di++) {
+            if (donors[di].tid == run_donor) {
+              prev_bd_d = bd_tex;
+              memcpy(prev_gmap_d, gmap, sizeof gmap);
+              memcpy(prev_guvc_d, guvc, sizeof guvc);
+              bd_tex = donors[di].bt;
+              memcpy(gmap, donors[di].map, sizeof gmap);
+              memcpy(guvc, donors[di].uvc, sizeof guvc);
+              glActiveTexture(GL_TEXTURE2);
+              glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
+              prog_gen++;
+              swapped_donor = 1;
+              break;
+            }
+          }
+        }
         if (tid > MB_VIEW_TEX) {
           view_parts_in(tid, start, end);
           use_prog(grp);
@@ -4779,9 +5097,18 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
             cur = j + 1;
           }
         }
+        if (swapped_donor) {
+          bd_tex = prev_bd_d;
+          memcpy(gmap, prev_gmap_d, sizeof gmap);
+          memcpy(guvc, prev_guvc_d, sizeof guvc);
+          glActiveTexture(GL_TEXTURE2);
+          glBindTexture(GL_TEXTURE_2D, bd_tex ? bd_tex : atlas);
+          prog_gen++;
+        }
       }
       start = end;
     }
+    donor_slot_mask = 0;
   }
   if (levels_sized && slots_total_bytes() > MB_GLASS_CACHE_MAX_BYTES) slots_evict_budget(-1, frame_clock, 1);
   if (cut_on) glDisable(GL_SCISSOR_TEST);

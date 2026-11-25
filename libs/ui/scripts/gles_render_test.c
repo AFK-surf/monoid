@@ -1877,7 +1877,7 @@ int main(void) {
     for (int i = 0; i < 7 * MB_INST; i++) f[i] = (float)a[i];
     double r[][4] = {{6, 16, 43, 18}, {4, 34, 92, 32}};
     int rn = 2;
-    CHECK(mb_glass_damage_expand(f, 7, r, &rn, W, H, S));
+    CHECK(mb_glass_damage_expand(f, 7, r, &rn, W, H, S, NULL));
     CHECK(rn == 1);
     gl_set_fixed_dt(0.0);
     glass_forget();
@@ -1895,7 +1895,7 @@ int main(void) {
     f[MB_INST + 23] = 8;
     double r[][4] = {{12, 42, 1, 1}};
     int rn = 1;
-    CHECK(mb_glass_damage_expand(f, 4, r, &rn, 200, 100, 1));
+    CHECK(mb_glass_damage_expand(f, 4, r, &rn, 200, 100, 1, NULL));
     CHECK(rn == 1);
     CHECK(r[0][0] <= 0 && r[0][0] + r[0][2] >= 84 && r[0][0] + r[0][2] < 150);
   }
@@ -3990,9 +3990,9 @@ int main(void) {
       CHECK(vs_main == 0 && vs_main_ad == 0 && vs_post == 0);
       CHECK(prog_now == 0);
       CHECK(progs[MB_PROG_UI].p != 0 && post != 0);
-      CHECK(progs[MB_PROG_PATH].p == 0 && progs[MB_PROG_FROSTED].p == 0 &&
-            progs[MB_PROG_LIQUID_MERGED].p == 0 && progs[MB_PROG_LIQUID_SINGLE].p == 0 &&
-            progs[MB_PROG_LENS].p == 0 && prog_flat == 0 && ad_prog == 0);
+      CHECK(progs[MB_PROG_UI_AD].p == 0 && progs[MB_PROG_PATH].p == 0 && progs[MB_PROG_PATH_AD].p == 0 &&
+            progs[MB_PROG_FROSTED].p == 0 && progs[MB_PROG_LIQUID_MERGED].p == 0 &&
+            progs[MB_PROG_LIQUID_SINGLE].p == 0 && progs[MB_PROG_LENS].p == 0 && prog_flat == 0 && ad_prog == 0);
 
       // Draw a frosted glass scene (small rect so bands.h does not invoke prog_flat):
       // triggers lazy compile for MB_PROG_FROSTED alone (MB_PROG_UI and post are already preloaded).
@@ -4005,8 +4005,9 @@ int main(void) {
       gl_present(fg, 2, 0.1, 0.2, 0.3);
       CHECK(progs[MB_PROG_FROSTED].p != 0);
       CHECK(prog_cache_misses == 1 && prog_cache_stores == 1);
-      CHECK(progs[MB_PROG_LIQUID_MERGED].p == 0 && progs[MB_PROG_LIQUID_SINGLE].p == 0 &&
-            progs[MB_PROG_LENS].p == 0 && progs[MB_PROG_PATH].p == 0 && prog_flat == 0 && ad_prog == 0);
+      CHECK(progs[MB_PROG_UI_AD].p == 0 && progs[MB_PROG_LIQUID_MERGED].p == 0 && progs[MB_PROG_LIQUID_SINGLE].p == 0 &&
+            progs[MB_PROG_LENS].p == 0 && progs[MB_PROG_PATH].p == 0 && progs[MB_PROG_PATH_AD].p == 0 &&
+            prog_flat == 0 && ad_prog == 0);
       CHECK(glGetError() == GL_NO_ERROR);
     }
 
@@ -5696,6 +5697,321 @@ int main(void) {
     #undef PATH_AT
     free(px);
     printf("gles_render: path fill+stroke batch ok\n");
+  }
+
+  // Perf-51: Fix 1 (dark-mode atomic + origL<0.5 + kind0 pad_w<0 + 1<->2 switch + light scroll readback skip),
+  // Fix 2 (top-bar donor delegation + 33rd cold capture donor pin + lens counterexample + cut_on multi-dirty parity),
+  // Fix 3 (MB_PROG_UI vs MB_PROG_UI_AD / MB_PROG_PATH_AD split + vid 2/5 provoking-vertex invariant).
+  {
+    gl_setup();
+    glBindFramebuffer(GL_FRAMEBUFFER, surface);
+    static const unsigned char solid16[16] = {
+      255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255
+    };
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlas);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 4, 4, GL_RED, GL_UNSIGNED_BYTE, solid16);
+
+    // --- Fix 3a: Lean VS program split ---
+    double plain_ui[2 * MB_INST];
+    rect_at(plain_ui, 4, 4, 16, 16, 0, 0.2, 0.4, 0.8, 0);
+    rect_at(plain_ui + MB_INST, 24, 4, 12, 12, 10, 0.9, 0.2, 0.2, 0);
+    plain_ui[MB_INST + 4] = 2.0;
+    plain_ui[MB_INST + 12] = 0.1; plain_ui[MB_INST + 13] = 0.5;
+    plain_ui[MB_INST + 14] = 0.9; plain_ui[MB_INST + 15] = 0.5;
+    gl_present(plain_ui, 2, 0.1, 0.1, 0.1);
+    CHECK(progs[MB_PROG_UI].p != 0);
+    CHECK(progs[MB_PROG_UI_AD].p == 0);
+    CHECK(progs[MB_PROG_PATH].p == 0);
+    CHECK(progs[MB_PROG_PATH_AD].p == 0);
+
+    // Adaptive kind 0 (pad_w < 0) triggers MB_PROG_UI_AD
+    double ad_rect[MB_INST];
+    rect_at(ad_rect, 10, 10, 20, 20, 0, 0.15, 0.15, 0.15, 0);
+    ad_rect[11] = 0.2; ad_rect[21] = 20; ad_rect[22] = 20; ad_rect[23] = -20;
+    gl_present(ad_rect, 1, 0.1, 0.1, 0.1);
+    CHECK(progs[MB_PROG_UI_AD].p != 0);
+    CHECK(progs[MB_PROG_PATH_AD].p == 0);
+
+    // Adaptive kind 11 (pad_w != 0) triggers MB_PROG_PATH_AD
+    double ad_path[2 * MB_INST];
+    rect_at(ad_path, 10, 10, 20, 20, 11, 0.85, 0.85, 0.85, 0);
+    ad_path[12] = 0.0; ad_path[13] = 4.0; ad_path[23] = -14.0;
+    memset(ad_path + MB_INST, 0, MB_INST * sizeof(double));
+    ad_path[MB_INST + 5] = 12.0;
+    ad_path[MB_INST + 0] = 0; ad_path[MB_INST + 1] = 0; ad_path[MB_INST + 2] = 1; ad_path[MB_INST + 3] = 0;
+    ad_path[MB_INST + 8] = 1; ad_path[MB_INST + 9] = 0; ad_path[MB_INST + 10] = 1; ad_path[MB_INST + 11] = 1;
+    ad_path[MB_INST + 12] = 1; ad_path[MB_INST + 13] = 1; ad_path[MB_INST + 14] = 0; ad_path[MB_INST + 15] = 1;
+    ad_path[MB_INST + 16] = 0; ad_path[MB_INST + 17] = 1; ad_path[MB_INST + 18] = 0; ad_path[MB_INST + 19] = 0;
+    gl_present(ad_path, 2, 0.1, 0.1, 0.1);
+    CHECK(progs[MB_PROG_PATH_AD].p != 0);
+
+    // --- Fix 3b: Provoking-vertex flatshading invariant (vid 2 & vid 5 across both triangles + clipped edge) ---
+    {
+      double pv[3 * MB_INST];
+      // Dark backdrop
+      rect_at(pv, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      // Capture glass spanning viewport so u_bd holds dark backdrop
+      rect_at(pv + MB_INST, 0, 0, W, H, 5, 0, 0, 0, -51);
+      pv[MB_INST + 6] = 1.0; pv[MB_INST + 7] = 4.0; pv[MB_INST + 11] = 0.0; pv[MB_INST + 15] = 1.0;
+      pv[MB_INST + 22] = -1.0; pv[MB_INST + 54] = H; pv[MB_INST + 55] = 10.0;
+      // Large bare-adaptive dark glyph (origL < 0.5 -> must invert bright on dark backdrop) partially clipped on right edge
+      rect_at(pv + 2 * MB_INST, 20, 10, 90, 60, 7, 0.15, 0.15, 0.15, 0);
+      pv[2 * MB_INST + 12] = 0.0; pv[2 * MB_INST + 13] = 0.0;
+      pv[2 * MB_INST + 14] = 4.0 / MB_ATLAS; pv[2 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      pv[2 * MB_INST + 23] = -16.0;
+      gl_present(pv, 3, 0.05, 0.05, 0.05);
+      unsigned char *px = pixels_of_fb(surface);
+      // Sample upper-left triangle (vid 0,1,2 -> driven by vid 2) and lower-right triangle (vid 3,4,5 -> driven by vid 5)
+      unsigned char *tri1 = px + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 30 * S) * 4;
+      unsigned char *tri2 = px + ((size_t)(fb_h - 1 - 58 * S) * fb_w + 90 * S) * 4;
+      CHECK(tri1[0] == tri2[0] && tri1[1] == tri2[1] && tri1[2] == tri2[2]);
+      CHECK(tri1[0] > 180 && tri1[1] > 180 && tri1[2] > 180);
+      free(px);
+    }
+
+    // --- Fix 1: Dark-mode atomic convergence (origL<0.5 glyph, kind 0 pad_w<0 rect, 1<->2 switch) ---
+    {
+      glass_forget();
+      gl_set_fixed_dt(1.0 / 60.0);
+      double dk[4 * MB_INST];
+      // 0: backdrop (white initially)
+      rect_at(dk, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+      // 1: dark adaptive liquid pill (is_dark=1, 0x67)
+      rect_at(dk + MB_INST, 10, 10, 80, 40, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -52);
+      dk[MB_INST + 4] = 16.0; dk[MB_INST + 6] = 1.0; dk[MB_INST + 7] = 1.0;
+      dk[MB_INST + 11] = 0x67 / 255.0; dk[MB_INST + 13] = 4.0; dk[MB_INST + 14] = -1.0; dk[MB_INST + 15] = 1.0;
+      // 2: origL < 0.5 glyph inside dark pill
+      rect_at(dk + 2 * MB_INST, 20, 22, 16, 16, 7, 0.2, 0.2, 0.2, 0);
+      dk[2 * MB_INST + 14] = 4.0 / MB_ATLAS; dk[2 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      dk[2 * MB_INST + 21] = 50.0; dk[2 * MB_INST + 22] = 30.0; dk[2 * MB_INST + 23] = 40.0;
+      // 3: kind 0 pad_w < 0 adaptive rect inside dark pill
+      rect_at(dk + 3 * MB_INST, 55, 22, 20, 16, 0, 0.1, 0.1, 0.1, 0);
+      dk[3 * MB_INST + 11] = 0.18;
+      dk[3 * MB_INST + 21] = 50.0; dk[3 * MB_INST + 22] = 30.0; dk[3 * MB_INST + 23] = -40.0;
+
+      gl_present(dk, 4, 1.0, 1.0, 1.0);
+      CHECK(gl_adaptive_settling() == 0);
+
+      // Flip backdrop white -> black: frame 1 must immediately settle (settling == 0) and match frame 20
+      rect_at(dk, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
+      gl_present(dk, 4, 0.0, 0.0, 0.0);
+      CHECK(gl_adaptive_settling() == 0);
+      unsigned char *px_f1 = pixels_of_fb(surface);
+      for (int k = 0; k < 20; k++) gl_present(dk, 4, 0.0, 0.0, 0.0);
+      unsigned char *px_f20 = pixels_of_fb(surface);
+      CHECK(memcmp(px_f1, px_f20, (size_t)fb_w * fb_h * 4) == 0);
+      free(px_f1); free(px_f20);
+
+      // Mode switch 1 -> 2 (0x67 -> 0xA8) and 2 -> 1 over white backdrop: atomic on frame 1 with settling == 0
+      rect_at(dk, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+      gl_present(dk, 4, 1.0, 1.0, 1.0);
+      CHECK(gl_adaptive_settling() == 0);
+      dk[MB_INST + 11] = 0xA8 / 255.0; // is_dark = 2
+      gl_present(dk, 4, 1.0, 1.0, 1.0);
+      CHECK(gl_adaptive_settling() == 0);
+      unsigned char *px_m2_f1 = pixels_of_fb(surface);
+      for (int k = 0; k < 10; k++) gl_present(dk, 4, 1.0, 1.0, 1.0);
+      unsigned char *px_m2_f10 = pixels_of_fb(surface);
+      CHECK(memcmp(px_m2_f1, px_m2_f10, (size_t)fb_w * fb_h * 4) == 0);
+      free(px_m2_f1); free(px_m2_f10);
+      dk[MB_INST + 11] = 0x67 / 255.0; // back to is_dark = 1
+      gl_present(dk, 4, 1.0, 1.0, 1.0);
+      CHECK(gl_adaptive_settling() == 0);
+      unsigned char *px_m1_f1 = pixels_of_fb(surface);
+      for (int k = 0; k < 10; k++) gl_present(dk, 4, 1.0, 1.0, 1.0);
+      unsigned char *px_m1_f10 = pixels_of_fb(surface);
+      CHECK(memcmp(px_m1_f1, px_m1_f10, (size_t)fb_w * fb_h * 4) == 0);
+      free(px_m1_f1); free(px_m1_f10);
+
+      // Light-mode consecutive active scroll skips readback while scrolling, resumes on first idle frame & converges <= 4 frames
+      glass_forget();
+      double lt[2 * MB_INST];
+      rect_at(lt, 0, 0, W, H, 0, 0.9, 0.9, 0.9, 0);
+      rect_at(lt + MB_INST, 10, 10, 80, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -53);
+      lt[MB_INST + 4] = 16.0; lt[MB_INST + 6] = 1.0; lt[MB_INST + 7] = 1.0;
+      lt[MB_INST + 11] = 0x67 / 255.0; lt[MB_INST + 13] = 4.0; lt[MB_INST + 14] = -1.0; lt[MB_INST + 15] = 1.0;
+      gl_present(lt, 2, 0.9, 0.9, 0.9);
+      glFinish();
+      // Frame 1 of scroll (changes backdrop -> arms readback)
+      rect_at(lt, 2, 0, W, H, 0, 0.88, 0.88, 0.88, 0);
+      gl_present(lt, 2, 0.9, 0.9, 0.9);
+      glFinish();
+      int rb_idx_after_f1 = ad_rb_i;
+      // Frames 2..4 consecutive scroll -> consec_scroll skips readback (ad_rb_i stays unchanged!)
+      for (int sf = 2; sf <= 4; sf++) {
+        rect_at(lt, 2 * sf, 0, W, H, 0, 0.88 - 0.01 * sf, 0.88 - 0.01 * sf, 0.88 - 0.01 * sf, 0);
+        gl_present(lt, 2, 0.9, 0.9, 0.9);
+        glFinish();
+      }
+      CHECK(ad_rb_i == rb_idx_after_f1);
+      CHECK(gl_adaptive_settling() == 1);
+      // First idle frame resumes readback and same-side light slot converges within 4 steps
+      int steps = 0;
+      while (gl_adaptive_settling() && steps < 4) {
+        gl_adaptive_step();
+        glFinish();
+        steps++;
+      }
+      CHECK(gl_adaptive_settling() == 0);
+      CHECK(steps <= 4);
+      gl_set_fixed_dt(0.0);
+    }
+
+    // --- Fix 2a: Top-bar delegation hit test (tight back_pill capture + WCAG CR >= 4.5 on light & dark) ---
+    {
+      glass_forget();
+      for (int dark_bg = 0; dark_bg <= 1; dark_bg++) {
+        double bgv = dark_bg ? 0.06 : 0.94;
+        double tb[4 * MB_INST];
+        rect_at(tb, 0, 0, W, H, 0, bgv, bgv, bgv, 0);
+        // Pure progressive donor covering top bar (0, 0, W, 48)
+        rect_at(tb + MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -61);
+        tb[MB_INST + 6] = 1.0; tb[MB_INST + 7] = 6.0; tb[MB_INST + 11] = 0.0; tb[MB_INST + 15] = 1.0;
+        tb[MB_INST + 22] = -1.0; tb[MB_INST + 54] = 48.0; tb[MB_INST + 55] = 24.0;
+        // Small 20x20 back pill (tid=-62) on left
+        rect_at(tb + 2 * MB_INST, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -62);
+        tb[2 * MB_INST + 4] = 10.0; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = 1.4;
+        tb[2 * MB_INST + 11] = 0.4; tb[2 * MB_INST + 14] = -1.0; tb[2 * MB_INST + 15] = 1.0;
+        tb[2 * MB_INST + 21] = 4.0; tb[2 * MB_INST + 23] = 2.0;
+        // Bare-adaptive title glyph on right (x=54..66, y=16..28, pad_w=-12)
+        rect_at(tb + 3 * MB_INST, 54, 16, 12, 12, 7, 0.9, 0.9, 0.9, 0);
+        tb[3 * MB_INST + 14] = 4.0 / MB_ATLAS; tb[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
+        tb[3 * MB_INST + 23] = -12.0;
+
+        gl_present(tb, 4, bgv, bgv, bgv);
+        CHECK(donor_delegated_count == 1);
+        CHECK(donor_of_buf[3] == -61);
+        // Back pill capture width stays tight (NOT expanded across title at x=54..66!)
+        Grab gm_del, gm_raw;
+        CHECK(grab_of_with_donors(&gm_del, fbuf, 2, 3, 4, donor_of_buf) == 1);
+        CHECK(grab_of(&gm_raw, fbuf, 2, 3, 4) == 1);
+        CHECK(gm_del.w < gm_raw.w);
+        CHECK(gm_del.w <= (int)ceilf((20.0f + 2.0f * (3.0f * 1.4f + 4.0f + 2.0f + 2.0f + 2.0f)) * S) + 4);
+        // Verify title ink achieves WCAG CR >= 4.5 against backdrop
+        unsigned char *px = pixels_of_fb(surface);
+        unsigned char *tp = px + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 60 * S) * 4;
+        double fg_lin = pow(tp[0] / 255.0, 2.2);
+        double bg_lin = pow(bgv, 2.2);
+        double cr = (fmax(fg_lin, bg_lin) + 0.05) / (fmin(fg_lin, bg_lin) + 0.05);
+        CHECK(cr >= 4.5);
+        free(px);
+      }
+    }
+
+    // --- Fix 2b: 33rd cold capture eviction test (donor slot pinned, 0 LSB diff vs ref) ---
+    {
+      glass_forget();
+      // Reference: donor + back pill + bare title (no filler glasses)
+      double ref[4 * MB_INST];
+      rect_at(ref, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      rect_at(ref + MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -70);
+      ref[MB_INST + 6] = 1.0; ref[MB_INST + 7] = 6.0; ref[MB_INST + 11] = 0.0; ref[MB_INST + 15] = 1.0;
+      ref[MB_INST + 22] = -1.0; ref[MB_INST + 54] = 48.0; ref[MB_INST + 55] = 24.0;
+      rect_at(ref + 2 * MB_INST, 4, 14, 16, 16, 6, 0.14, 0.14, 0.15, -71);
+      ref[2 * MB_INST + 4] = 8.0; ref[2 * MB_INST + 6] = 1.0; ref[2 * MB_INST + 7] = 1.4;
+      ref[2 * MB_INST + 11] = 0.4; ref[2 * MB_INST + 14] = -1.0; ref[2 * MB_INST + 15] = 1.0;
+      ref[2 * MB_INST + 21] = 4.0; ref[2 * MB_INST + 23] = 2.0;
+      rect_at(ref + 3 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
+      ref[3 * MB_INST + 14] = 4.0 / MB_ATLAS; ref[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      ref[3 * MB_INST + 23] = -12.0;
+      gl_present(ref, 4, 0.05, 0.05, 0.05);
+      unsigned char *ref_px = pixels_of_fb(surface);
+
+      // Stress: donor + 31 distinct cold glasses below y=52 + 1 cold back pill + bare title (33 cold captures!)
+      glass_forget();
+      double *st = calloc(35 * MB_INST, sizeof(double));
+      memcpy(st, ref, 2 * MB_INST * sizeof(double));
+      for (int i = 0; i < 31; i++) {
+        double *g = st + (size_t)(2 + i) * MB_INST;
+        rect_at(g, 2 + (i % 10) * 9, 54 + (i / 10) * 8, 7, 6, 5, 0.5, 0.5, 0.5, -(80 + i));
+        g[6] = 1.0; g[7] = 2.0; g[11] = 0.2; g[15] = 1.0;
+      }
+      memcpy(st + 33 * MB_INST, ref + 2 * MB_INST, 2 * MB_INST * sizeof(double));
+      gl_present(st, 35, 0.05, 0.05, 0.05);
+      CHECK(donor_delegated_count == 1);
+      unsigned char *st_px = pixels_of_fb(surface);
+      // Compare title region pixel-for-pixel (0 LSB diff!)
+      for (int y = 16 * S; y < 28 * S; y++) {
+        for (int x = 54 * S; x < 66 * S; x++) {
+          size_t off = ((size_t)(fb_h - 1 - y) * fb_w + x) * 4;
+          CHECK(ref_px[off + 0] == st_px[off + 0] && ref_px[off + 1] == st_px[off + 1] &&
+                ref_px[off + 2] == st_px[off + 2]);
+        }
+      }
+      free(ref_px); free(st_px); free(st);
+    }
+
+    // --- Fix 2c: Lens subtree counterexample (pure kind 5 inside kind 8 is NEVER a donor) ---
+    {
+      glass_forget();
+      double ln[5 * MB_INST];
+      rect_at(ln, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      // kind 8 header with child_n = 1
+      rect_at(ln + MB_INST, 0, 0, W, 48, 8, 1, 1, 1, 0);
+      ln[MB_INST + 7] = 2.0; ln[MB_INST + 11] = 1.0; ln[MB_INST + 12] = 1.0; ln[MB_INST + 15] = 1.0;
+      // child: pure progressive kind 5 (inside lens subtree -> MUST NOT become donor)
+      rect_at(ln + 2 * MB_INST, 0, 0, W, 48, 5, 0, 0, 0, -120);
+      ln[2 * MB_INST + 6] = 1.0; ln[2 * MB_INST + 7] = 6.0; ln[2 * MB_INST + 11] = 0.0; ln[2 * MB_INST + 15] = 1.0;
+      ln[2 * MB_INST + 22] = -1.0; ln[2 * MB_INST + 54] = 48.0; ln[2 * MB_INST + 55] = 24.0;
+      // kind 6 pill
+      rect_at(ln + 3 * MB_INST, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -121);
+      ln[3 * MB_INST + 4] = 10.0; ln[3 * MB_INST + 6] = 1.0; ln[3 * MB_INST + 7] = 1.4;
+      ln[3 * MB_INST + 11] = 0.4; ln[3 * MB_INST + 14] = -1.0; ln[3 * MB_INST + 15] = 1.0;
+      ln[3 * MB_INST + 21] = 4.0; ln[3 * MB_INST + 23] = 2.0;
+      // bare adaptive glyph
+      rect_at(ln + 4 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
+      ln[4 * MB_INST + 14] = 4.0 / MB_ATLAS; ln[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      ln[4 * MB_INST + 23] = -12.0;
+      gl_present(ln, 5, 0.05, 0.05, 0.05);
+      CHECK(donor_delegated_count == 0);
+      unsigned char *px = pixels_of_fb(surface);
+      unsigned char *tp = px + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 60 * S) * 4;
+      CHECK(tp[0] > 180 && tp[1] > 180 && tp[2] > 180);
+      free(px);
+    }
+
+    // --- Fix 2d: Multi-dirty-rect (cut_on) parity with whole-frame redraw & glass_damage closure ---
+    {
+      glass_forget();
+      double md[8 * MB_INST];
+      rect_at(md, 0, 0, W, 40, 0, 0.06, 0.06, 0.06, 0);
+      rect_at(md + MB_INST, 0, 40, W, 40, 0, 0.94, 0.94, 0.94, 0);
+      // Top donor (-130) + pill (-131) + bare glyph
+      rect_at(md + 2 * MB_INST, 0, 0, W, 38, 5, 0, 0, 0, -130);
+      md[2 * MB_INST + 6] = 1.0; md[2 * MB_INST + 7] = 5.0; md[2 * MB_INST + 11] = 0.0; md[2 * MB_INST + 15] = 1.0;
+      md[2 * MB_INST + 22] = -1.0; md[2 * MB_INST + 54] = 38.0; md[2 * MB_INST + 55] = 16.0;
+      rect_at(md + 3 * MB_INST, 4, 8, 16, 16, 6, 0.14, 0.14, 0.15, -131);
+      md[3 * MB_INST + 4] = 8.0; md[3 * MB_INST + 6] = 1.0; md[3 * MB_INST + 7] = 1.4;
+      md[3 * MB_INST + 11] = 0.4; md[3 * MB_INST + 14] = -1.0; md[3 * MB_INST + 15] = 1.0;
+      md[3 * MB_INST + 21] = 4.0; md[3 * MB_INST + 23] = 2.0;
+      rect_at(md + 4 * MB_INST, 50, 10, 12, 12, 7, 0.2, 0.2, 0.2, 0);
+      md[4 * MB_INST + 14] = 4.0 / MB_ATLAS; md[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      md[4 * MB_INST + 23] = -12.0;
+      // Bottom donor (-132) + pill (-133) + bare glyph
+      rect_at(md + 5 * MB_INST, 0, 42, W, 38, 5, 0, 0, 0, -132);
+      md[5 * MB_INST + 6] = 1.0; md[5 * MB_INST + 7] = 5.0; md[5 * MB_INST + 11] = 0.0; md[5 * MB_INST + 15] = 1.0;
+      md[5 * MB_INST + 22] = -1.0; md[5 * MB_INST + 52] = 42.0; md[5 * MB_INST + 53] = 16.0;
+      rect_at(md + 6 * MB_INST, 4, 52, 16, 16, 6, 0.14, 0.14, 0.15, -133);
+      md[6 * MB_INST + 4] = 8.0; md[6 * MB_INST + 6] = 1.0; md[6 * MB_INST + 7] = 1.4;
+      md[6 * MB_INST + 11] = 0.4; md[6 * MB_INST + 14] = -1.0; md[6 * MB_INST + 15] = 1.0;
+      md[6 * MB_INST + 21] = 4.0; md[6 * MB_INST + 23] = 2.0;
+      rect_at(md + 7 * MB_INST, 50, 54, 12, 12, 7, 0.9, 0.9, 0.9, 0);
+      md[7 * MB_INST + 14] = 4.0 / MB_ATLAS; md[7 * MB_INST + 15] = 4.0 / MB_ATLAS;
+      md[7 * MB_INST + 23] = -12.0;
+
+      // Full baseline frame, then partial redraw with 2 separate dirty rects covering top & bottom titles
+      gl_present(md, 8, 0.5, 0.5, 0.5);
+      CHECK(donor_delegated_count == 2);
+      gl_dirty_add(44, 6, 24, 20);
+      gl_dirty_add(44, 50, 24, 20);
+      gl_present(md, 8, 0.5, 0.5, 0.5);
+      slots_invalidate();
+      CHECK(surface_as_whole(surface));
+    }
+
+    glass_forget();
+    printf("gles_render: perf-51 ok\n");
   }
 
   if (!failed) printf("gles_render: ok\n");

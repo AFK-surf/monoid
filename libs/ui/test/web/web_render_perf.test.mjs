@@ -426,7 +426,7 @@ test('MB_PROG_UI batching, VS adaptive ink, progFlat for large solid rects, and 
   assert.equal(initLinks.length, 4, 'startup compiles only the shared programs');
   const uiProg = initLinks.find((c) => c.prog.oneKind === -1)?.prog;
   assert.ok(uiProg, 'MB_PROG_UI compiled at startup');
-  assert.ok(uiProg.vsAdaptive, 'MB_PROG_UI enables VS adaptive ink');
+  assert.ok(!uiProg.vsAdaptive, 'MB_PROG_UI uses lean VS without adaptive ink');
   assert.ok(!uiProg.fsSrc.includes('mb_adaptive_ink_at'), 'FS carries no per-fragment adaptive ink');
   assert.ok(initLinks.some((c) => c.prog.isFlat), 'progFlat compiled at startup');
 
@@ -493,6 +493,21 @@ test('MB_PROG_UI batching, VS adaptive ink, progFlat for large solid rects, and 
   assert.equal(mixedDraws.length, 1, '8 mixed basic UI instances batch into 1 drawArraysInstanced');
   assert.equal(mixedDraws[0].instCount, 8);
   assert.equal(mixedUses.length, 1, 'only 1 useProgram for batched UI frame');
+
+  // 5) Adaptive primitive (kind 7) lazily compiles MB_PROG_UI_AD (oneKind === -2, vsAdaptive === true)
+  b.resetCalls();
+  const buf5 = new Float64Array(INST * 2);
+  makeRect(buf5, 0, 10, 10, 16, 16, { r: 0.2, g: 0.4, b: 0.8, a: 1 });
+  const adg = INST;
+  buf5[adg] = 30; buf5[adg + 1] = 10; buf5[adg + 2] = 10; buf5[adg + 3] = 14;
+  buf5[adg + 5] = 7; buf5[adg + 8] = 0.9; buf5[adg + 9] = 0.9; buf5[adg + 10] = 0.9; buf5[adg + 11] = 1;
+  buf5[adg + 16] = -1e9; buf5[adg + 17] = -1e9; buf5[adg + 18] = 1e9; buf5[adg + 19] = 1e9;
+  buf5[adg + 23] = -14;
+  b.H.present(buf5, 2, 1, 1, 1);
+  const adLinks = b.calls.filter((c) => c.fn === 'linkProgram');
+  assert.equal(adLinks.length, 1, 'kind 7 lazily compiles MB_PROG_UI_AD once');
+  assert.equal(adLinks[0].prog.oneKind, -2, 'MB_PROG_UI_AD uses ONE_KIND -2');
+  assert.ok(adLinks[0].prog.vsAdaptive, 'MB_PROG_UI_AD enables VS adaptive ink');
 });
 function dIsShadowOrEdge(c, uiProg) { return c.prog === uiProg; }
 
@@ -569,4 +584,47 @@ test('H.framesPaced throttles low-rate animations via wakeAfter on 120Hz display
   // 120 Hz animation (8.33ms <= 1.5 * 8.33ms) -> immediate rAF
   b.H.framesPaced(120);
   assert.equal(b.rafs.length, 1, '120Hz requests immediate rAF');
+});
+
+test('Perf-51: dark adaptive zero settle, top-bar donor delegation keeps back pill capture tight, lens subtree does not delegate', () => {
+  const b = makeHost({ w: 400, h: 300, dpr: 2 });
+  const buf = new Float64Array(INST * 4);
+  // 0: dark backdrop
+  makeRect(buf, 0, 0, 0, 400, 300, { r: 0.06, g: 0.06, b: 0.06, a: 1 });
+  // 1: pure progressive donor covering top bar (0, 0, 400, 96), tid=-1
+  const d = INST;
+  buf[d] = 0; buf[d + 1] = 0; buf[d + 2] = 400; buf[d + 3] = 96;
+  buf[d + 5] = 5; buf[d + 6] = 1; buf[d + 7] = 8; buf[d + 11] = 0; buf[d + 15] = 1;
+  buf[d + 16] = -1e9; buf[d + 17] = -1e9; buf[d + 18] = 1e9; buf[d + 19] = 1e9;
+  buf[d + 20] = -1; buf[d + 22] = -1; buf[d + 54] = 96; buf[d + 55] = 48;
+  // 2: small 40x40 dark adaptive back pill (tid=-2)
+  const p = 2 * INST;
+  buf[p] = 12; buf[p + 1] = 28; buf[p + 2] = 40; buf[p + 3] = 40;
+  buf[p + 4] = 20; buf[p + 5] = 6; buf[p + 6] = 1; buf[p + 7] = 1.4;
+  buf[p + 8] = 0.12; buf[p + 9] = 0.12; buf[p + 10] = 0.12; buf[p + 11] = 0.4;
+  buf[p + 14] = -1; buf[p + 15] = 1;
+  buf[p + 16] = -1e9; buf[p + 17] = -1e9; buf[p + 18] = 1e9; buf[p + 19] = 1e9;
+  buf[p + 20] = -2; buf[p + 21] = 8; buf[p + 23] = 4;
+  // 3: bare-adaptive title glyph at x=120..220
+  const t = 3 * INST;
+  buf[t] = 120; buf[t + 1] = 34; buf[t + 2] = 100; buf[t + 3] = 24;
+  buf[t + 5] = 7; buf[t + 8] = 0.9; buf[t + 9] = 0.9; buf[t + 10] = 0.9; buf[t + 11] = 1;
+  buf[t + 16] = -1e9; buf[t + 17] = -1e9; buf[t + 18] = 1e9; buf[t + 19] = 1e9;
+  buf[t + 23] = -16;
+
+  b.resetCalls();
+  b.H.present(buf, 4, 0.06, 0.06, 0.06);
+  // Flip backdrop -> dark adaptive must not arm settle rAF
+  b.rafs.length = 0;
+  makeRect(buf, 0, 0, 0, 400, 300, { r: 0.94, g: 0.94, b: 0.94, a: 1 });
+  b.H.present(buf, 4, 0.94, 0.94, 0.94);
+  assert.equal(b.rafs.length, 0, 'dark adaptive pill does not schedule settle rAF after backdrop flip');
+
+  // Verify back pill capture stayed tight (blitFramebuffer width for pill << 300px, not expanded across x=120..220)
+  const blits = b.calls.filter((c) => c.fn === 'blitFramebuffer');
+  assert.ok(blits.length >= 2, 'donor and pill captured');
+  // Second capture is the back pill: width in 2x px should be tight (~120..180px, definitely < 260px)
+  const pillBlit = blits[1];
+  const pillW = pillBlit.args[2] - pillBlit.args[0];
+  assert.ok(pillW < 260, `delegated back pill capture stays tight (${pillW}px < 260px)`);
 });

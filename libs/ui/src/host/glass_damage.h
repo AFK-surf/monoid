@@ -16,7 +16,7 @@ typedef struct {
 // dirty rectangles. Returns 0 on allocation failure so the caller can redraw the whole frame. Bounds conservatively
 // contain grab_of's captures, with padding for host rounding.
 static int mb_glass_damage_expand(const float *f, int32_t count, double rects[][4], int *pn,
-                                  double width, double height, double scale) {
+                                  double width, double height, double scale, const int *donor_of) {
   int n = pn ? *pn : 0;
   if (n <= 0) {
     if (pn) *pn = 0;
@@ -41,29 +41,60 @@ static int mb_glass_damage_expand(const float *f, int32_t count, double rects[][
   MBGlassDamage *groups = (MBGlassDamage *)malloc((size_t)total * sizeof(*groups));
   if (!groups) return 0;
   int ng = 0;
-  for (int32_t i = 0; i < count; i++) {
+  int cur_g = -1;
+  for (int32_t i = 0; i < count; ) {
     const float *a = f + (size_t)i * MB_INST;
-    if (a[20] >= 0.0f) continue;
     int kind = (int)(a[5] + 0.5f);
-    double x0 = kind == 6 ? a[0] : fmax(a[0], a[16]);
-    double y0 = kind == 6 ? a[1] : fmax(a[1], a[17]);
-    double x1 = kind == 6 ? a[0] + a[2] : fmin(a[0] + a[2], a[18]);
-    double y1 = kind == 6 ? a[1] + a[3] : fmin(a[1] + a[3], a[19]);
-    if (kind != 6 && (x1 <= x0 || y1 <= y0)) continue;
-    double blur = kind == 6 && a[7] < 0.0f ? 0.0 : fabs(a[7]);
-    double refract = kind == 6 ? fmax(0.0, a[21] * (1.0 + fabs(a[22]))) : 0.0;
-    double rim = kind == 6 ? fmax(a[23], 0.0) : 0.0;
-    int k = 0;
-    while (k < ng && groups[k].id != a[20]) k++;
-    if (k == ng) {
-      MBGlassDamage g = {a[20], x0, y0, x1, y1, blur, refract, rim};
-      groups[ng++] = g;
-    } else {
-      MBGlassDamage *g = &groups[k];
-      g->x0 = fmin(g->x0, x0); g->y0 = fmin(g->y0, y0);
-      g->x1 = fmax(g->x1, x1); g->y1 = fmax(g->y1, y1);
-      g->blur = fmax(g->blur, blur); g->refract = fmax(g->refract, refract); g->rim = fmax(g->rim, rim);
+    if (kind == 8) {
+      int32_t child_n = (int32_t)(a[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
     }
+    if (a[20] < 0.0f) {
+      double x0 = kind == 6 ? a[0] : fmax(a[0], a[16]);
+      double y0 = kind == 6 ? a[1] : fmax(a[1], a[17]);
+      double x1 = kind == 6 ? a[0] + a[2] : fmin(a[0] + a[2], a[18]);
+      double y1 = kind == 6 ? a[1] + a[3] : fmin(a[1] + a[3], a[19]);
+      if (kind != 6 && (x1 <= x0 || y1 <= y0)) {
+        if (kind == 5) cur_g = -1;
+        i++;
+        continue;
+      }
+      double blur = kind == 6 && a[7] < 0.0f ? 0.0 : fabs(a[7]);
+      double refract = kind == 6 ? fmax(0.0, a[21] * (1.0 + fabs(a[22]))) : 0.0;
+      double rim = kind == 6 ? fmax(a[23], 0.0) : 0.0;
+      int k = 0;
+      while (k < ng && groups[k].id != a[20]) k++;
+      if (k == ng) {
+        MBGlassDamage g = {a[20], x0, y0, x1, y1, blur, refract, rim};
+        groups[ng++] = g;
+      } else {
+        MBGlassDamage *g = &groups[k];
+        g->x0 = fmin(g->x0, x0); g->y0 = fmin(g->y0, y0);
+        g->x1 = fmax(g->x1, x1); g->y1 = fmax(g->y1, y1);
+        g->blur = fmax(g->blur, blur); g->refract = fmax(g->refract, refract); g->rim = fmax(g->rim, rim);
+      }
+      if (kind == 5 || kind == 6) cur_g = k;
+    } else if (cur_g >= 0 && (kind == 7 || kind == 10 || kind == 11) && a[23] < 0.0f &&
+               (!donor_of || donor_of[i] == 0)) {
+      double cx, cy, hx, hy;
+      if (kind == 7) {
+        cx = a[0] + a[2] * 0.5; cy = a[1] + a[3] * 0.5;
+        hx = fmax(-a[23], a[2]); hy = fmax(fmax(-a[23] * 0.5, a[3]), 1.0);
+      } else if (kind == 10) {
+        cx = a[0] + a[2] * 0.5; cy = a[1] + a[3] * 0.5;
+        hx = hy = fmax(-a[23] * 0.5, 1.0);
+      } else {
+        cx = a[0] + a[2] * 0.5 + a[6]; cy = a[1] + a[3] * 0.5 + a[7];
+        hx = hy = fmax(-a[23] * 0.5, 1.0);
+      }
+      MBGlassDamage *g = &groups[cur_g];
+      g->x0 = fmin(g->x0, cx - hx); g->y0 = fmin(g->y0, cy - hy);
+      g->x1 = fmax(g->x1, cx + hx); g->y1 = fmax(g->y1, cy + hy);
+    }
+    i++;
   }
   if (!ng) {
     free(groups);

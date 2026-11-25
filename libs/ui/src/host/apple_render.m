@@ -434,16 +434,29 @@ static NSString *shader_src = @
 "    float bgL = capsuleBgL;\n"
 "    if (origL < 0.94 && g.uvc.z > g.uvc.x && g.uvc.w > g.uvc.y) {\n"
 "      float2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
-"      float stepX = is_icon ? 4.0 : 8.0;\n"
-"      int halfN = is_icon ? 2 : 12;\n"
-"      for (int iy = -1; iy <= 1; iy++) {\n"
-"        float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
-"        for (int ix = -12; ix <= 12; ix++) {\n"
-"          float px = samplePos.x + float(ix) * stepX;\n"
-"          if (abs(ix) <= halfN && px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
-"            float2 guv = float2(px, py) * g.map.xy + g.map.zw;\n"
-"            if (guv.x >= g.uvc.x && guv.x <= g.uvc.z && guv.y >= g.uvc.y && guv.y <= g.uvc.w) {\n"
-"              bgL = max(bgL, mb_ink_luma(backdrop(bd, g, float2(px, py))));\n"
+"      if (is_icon) {\n"
+"        for (int iy = -1; iy <= 1; iy++) {\n"
+"          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
+"          for (int ix = -2; ix <= 2; ix++) {\n"
+"            float px = samplePos.x + float(ix) * 4.0;\n"
+"            if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
+"              float2 guv = float2(px, py) * g.map.xy + g.map.zw;\n"
+"              if (guv.x >= g.uvc.x && guv.x <= g.uvc.z && guv.y >= g.uvc.y && guv.y <= g.uvc.w) {\n"
+"                bgL = max(bgL, mb_ink_luma(backdrop(bd, g, float2(px, py))));\n"
+"              }\n"
+"            }\n"
+"          }\n"
+"        }\n"
+"      } else {\n"
+"        for (int iy = -1; iy <= 1; iy++) {\n"
+"          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
+"          for (int ix = -12; ix <= 12; ix++) {\n"
+"            float px = samplePos.x + float(ix) * 8.0;\n"
+"            if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
+"              float2 guv = float2(px, py) * g.map.xy + g.map.zw;\n"
+"              if (guv.x >= g.uvc.x && guv.x <= g.uvc.z && guv.y >= g.uvc.y && guv.y <= g.uvc.w) {\n"
+"                bgL = max(bgL, mb_ink_luma(backdrop(bd, g, float2(px, py))));\n"
+"              }\n"
 "            }\n"
 "          }\n"
 "        }\n"
@@ -503,28 +516,30 @@ static NSString *shader_src = @
 "  float2 at = pos;\n"
 "  if (I.rot.x != 0.0) { float2 d = pos - I.rot.yz; float c = cos(I.rot.x), s = sin(I.rot.x); at = I.rot.yz + float2(c * d.x - s * d.y, s * d.x + c * d.y); }\n"
 "  float4 col = I.color;\n"
-"  if (kind == 7) {\n"
-"    col.rgb = I.pad.w < 0.0\n"
-"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w, I.rect.z), max(max(-I.pad.w * 0.5, I.rect.w), 1.0)))\n"
-"      : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, false);\n"
-"  } else if (kind == 10 && I.pad.w != 0.0) {\n"
-"    col.rgb = I.pad.w < 0.0\n"
-"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w * 0.5, 1.0)))\n"
-"      : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, float2(0.0), true);\n"
-"  } else if (kind == 11 && I.pad.w != 0.0) {\n"
-"    col.rgb = I.pad.w < 0.0\n"
-"      ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pad.w * 0.5, 1.0)))\n"
-"      : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, true);\n"
-"  } else if (kind == 0 && I.pad.w < 0.0) {\n"
-"    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
-"    float2 capCenter, capHalf;\n"
-"    float darkT = ad_sample_ink(bd, ad_tex, g, I.pad.yz, -I.pad.w * 0.5, capCenter, capHalf).x;\n"
-"    if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
-"      col.rgb = mix(col.rgb, float3(1.0), darkT);\n"
-"      col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);\n"
-"    } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
-"      col.rgb = mix(col.rgb, min(col.rgb * 1.65 + float3(0.28, 0.20, 0.18), float3(1.0)), darkT);\n"
-"      col.a = mix(col.a, min(col.a * 1.45, 0.36), darkT);\n"
+"  if (vid == 0u || vid == 3u) {\n"
+"    if (kind == 7) {\n"
+"      col.rgb = I.pad.w < 0.0\n"
+"        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w, I.rect.z), max(max(-I.pad.w * 0.5, I.rect.w), 1.0)))\n"
+"        : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, false);\n"
+"    } else if (kind == 10 && I.pad.w != 0.0) {\n"
+"      col.rgb = I.pad.w < 0.0\n"
+"        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w * 0.5, 1.0)))\n"
+"        : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, float2(0.0), true);\n"
+"    } else if (kind == 11 && I.pad.w != 0.0) {\n"
+"      col.rgb = I.pad.w < 0.0\n"
+"        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pad.w * 0.5, 1.0)))\n"
+"        : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, true);\n"
+"    } else if (kind == 0 && I.pad.w < 0.0) {\n"
+"      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
+"      float2 capCenter, capHalf;\n"
+"      float darkT = ad_sample_ink(bd, ad_tex, g, I.pad.yz, -I.pad.w * 0.5, capCenter, capHalf).x;\n"
+"      if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
+"        col.rgb = mix(col.rgb, float3(1.0), darkT);\n"
+"        col.a = mix(col.a, min(col.a * 1.45, 0.28), darkT);\n"
+"      } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
+"        col.rgb = mix(col.rgb, min(col.rgb * 1.65 + float3(0.28, 0.20, 0.18), float3(1.0)), darkT);\n"
+"        col.a = mix(col.a, min(col.a * 1.45, 0.36), darkT);\n"
+"      }\n"
 "    }\n"
 "  }\n"
 "  VOut o;\n"
@@ -1768,7 +1783,7 @@ MB_CORNER_SL
 "    target = latch;\n"
 "  }\n"
 "  float nextT;\n"
-"  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+"  if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0) nextT = target;\n"
 "  else if (dt <= 0.0) nextT = prevT;\n"
 "  else {\n"
 "    nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -2121,7 +2136,8 @@ typedef struct {
 
 // The capture the run [start, end) of glass makes, of a target tw × th pixels; 0 when none of it shows.
 // Frosted glass of the same capture further on (glass.mbt shares_capture) is under it too.
-static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int tw, int th) {
+static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int tw, int th,
+                               const int *donor_of) {
   memset(m, 0, sizeof *m);
   const float *a = f + start * MB_INST;
   // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
@@ -2203,11 +2219,18 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     }
   }
   float cap_x0 = x0, cap_y0 = y0, cap_x1 = x1, cap_y1 = y1;
-  for (int32_t i = end; i < count; i++) {
+  for (int32_t i = end; i < count; ) {
     const float *b = f + i * MB_INST;
     int bk = (int)(b[5] + 0.5f);
+    if (bk == 8) {
+      int32_t child_n = (int32_t)(b[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
+    }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f) {
+    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
       if (bk == 7) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
@@ -2222,6 +2245,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       cap_x0 = fminf(cap_x0, cx - hx); cap_y0 = fminf(cap_y0, cy - hy);
       cap_x1 = fmaxf(cap_x1, cx + hx); cap_y1 = fmaxf(cap_y1, cy + hy);
     }
+    i++;
   }
   m->g.misc[0] = (float)n;
   m->g.misc[1] = in_through(at_through_tid, at_through_n, a[20]) ? 1.0f : 0.0f;
@@ -2276,6 +2300,10 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; m->dual_wsp = 0.0f; }
   m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
+}
+
+static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int tw, int th) {
+  return grab_of_with_donors(m, f, start, end, count, tw, th, NULL);
 }
 
 // The size of a grab's level k (its passes write each level's top left)
@@ -2626,7 +2654,7 @@ static int ad_collect_and_match(MBRenderWin *w, const float *f, int32_t start, i
     }
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
-      if (is_new) {
+      if (is_new || s->is_dark > 0) {
         s->settle_left = 0.0;
         s->settle_serial = serial;
       } else if (slot_changed) {
@@ -2656,13 +2684,18 @@ static void ad_run_updates_batch(id<MTLCommandBuffer> cb, MBRenderWin *w, const 
   if (!w || n_upd <= 0) return;
   ensure_ad_tex(w);
   int cur = w->ad_cur, nxt = 1 - cur;
+  uint32_t batch_mask = 0;
+  for (int i = 0; i < n_upd; i++) {
+    if (!items[i].p.is_new && items[i].p.is_dark == 0 && dt > 0.0) batch_mask |= (1u << items[i].p.sid);
+  }
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
-  if (!w->ad_rb_prev_copied && w->ad_rb[w->ad_rb_i]) {
+  if (batch_mask && !w->ad_rb_prev_copied && w->ad_rb[w->ad_rb_i]) {
     [bl copyFromTexture:w->ad_tex[cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
              sourceSize:MTLSizeMake(MB_ADAPTIVE_MAX, 1, 1) toBuffer:w->ad_rb[w->ad_rb_i] destinationOffset:0
       destinationBytesPerRow:MB_ADAPTIVE_MAX * 4 destinationBytesPerImage:MB_ADAPTIVE_MAX * 4];
     w->ad_rb_prev_copied = 1;
   }
+  w->ad_track_mask |= batch_mask;
   [bl copyFromTexture:w->ad_tex[cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
            sourceSize:MTLSizeMake(MB_ADAPTIVE_MAX, 1, 1) toTexture:w->ad_tex[nxt] destinationSlice:0 destinationLevel:0
     destinationOrigin:MTLOriginMake(0, 0, 0)];
@@ -2692,7 +2725,6 @@ static void ad_run_updates_batch(id<MTLCommandBuffer> cb, MBRenderWin *w, const 
     u.param[3] = (float)items[i].p.sid;
     [e setFragmentBytes:&u length:sizeof u atIndex:0];
     [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    if (!items[i].p.is_new && dt > 0.0) w->ad_track_mask |= (1u << items[i].p.sid);
   }
   [e endEncoding];
   w->ad_cur = nxt;
@@ -3027,11 +3059,185 @@ static int slot_same(const Grab *m, const double key[7]) {
   return -1;
 }
 
+#define MB_MAX_DONORS 16
+
+typedef struct {
+  int32_t idx;
+  int tid;
+  float vx0, vy0, vx1, vy1;
+} MBDonorCand;
+
+typedef struct {
+  int tid;
+  int slot_idx;
+  __unsafe_unretained id<MTLTexture> tex;
+  float map[4];
+  float uvc[4];
+} MBDonorLive;
+
+static int *donor_of_buf;
+static size_t donor_of_cap;
+static int donor_elig_tids[MB_MAX_DONORS];
+static int donor_elig_n;
+static int donor_delegated_count;
+static int donor_plan_ready;
+static uint32_t donor_slot_mask;
+
+static int is_donor_elig_tid(int tid) {
+  for (int i = 0; i < donor_elig_n; i++) {
+    if (donor_elig_tids[i] == tid) return 1;
+  }
+  return 0;
+}
+
+static int compute_donor_plan(const float *f, int32_t count, float vp_w, float vp_h, float sc) {
+  donor_elig_n = 0;
+  donor_delegated_count = 0;
+  if (count <= 0 || !f) return 0;
+  if ((size_t)count > donor_of_cap) {
+    donor_of_cap = (size_t)count;
+    donor_of_buf = (int *)realloc(donor_of_buf, donor_of_cap * sizeof(int));
+  }
+  if (!donor_of_buf) {
+    donor_of_cap = 0;
+    return 0;
+  }
+  memset(donor_of_buf, 0, (size_t)count * sizeof(int));
+  MBDonorCand elig[MB_MAX_DONORS];
+  int n_elig = 0;
+  int32_t cur_glass_start = -1;
+  int cur_glass_kind = 0, cur_glass_tid = 0;
+  float pad = 1.0f / (sc > 0.0f ? sc : 1.0f);
+  for (int32_t i = 0; i < count; ) {
+    const float *p = f + (size_t)i * MB_INST;
+    int kind = (int)(p[5] + 0.5f);
+    if (kind == 8) {
+      int32_t child_n = (int32_t)(p[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
+    }
+    int tid = (int)p[20];
+    if (tid < 0 && kind == 5 && p[22] < -0.5f && n_elig < MB_MAX_DONORS &&
+        p[11] <= 0.001f && p[15] >= 0.999f && fabsf(p[6] - 1.0f) <= 0.001f &&
+        p[12] == 0.0f && p[13] == 0.0f && p[14] == 0.0f && p[32] == 0.0f &&
+        p[24] == 0.0f && p[25] == 0.0f && p[26] == 0.0f && p[27] == 0.0f &&
+        p[44] == 0.0f && p[45] == 0.0f && p[46] == 0.0f && p[47] == 0.0f &&
+        p[4] == 0.0f && p[36] == 0.0f && p[37] == 0.0f && p[38] == 0.0f && p[39] == 0.0f) {
+      float vx0 = fmaxf(p[0], p[16]), vy0 = fmaxf(p[1], p[17]);
+      float vx1 = fminf(p[0] + p[2], p[18]), vy1 = fminf(p[1] + p[3], p[19]);
+      if (vx1 > vx0 && vy1 > vy0) {
+        int occ = 0;
+        for (int32_t k = 0; k < count; k++) {
+          if ((int)f[(size_t)k * MB_INST + 20] == tid) {
+            if (++occ > 1) break;
+          }
+        }
+        if (occ == 1) {
+          elig[n_elig].idx = i;
+          elig[n_elig].tid = tid;
+          elig[n_elig].vx0 = vx0;
+          elig[n_elig].vy0 = vy0;
+          elig[n_elig].vx1 = vx1;
+          elig[n_elig].vy1 = vy1;
+          donor_elig_tids[n_elig] = tid;
+          n_elig++;
+        }
+      }
+    }
+    if ((kind == 5 || kind == 6) && tid < 0 && tid != cur_glass_tid) {
+      cur_glass_start = i;
+      cur_glass_kind = kind;
+      cur_glass_tid = tid;
+    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+               cur_glass_kind == 6 && n_elig > 0) {
+      float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
+                     fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
+      if (dr[2] > dr[0] && dr[3] > dr[1]) {
+        float cx, cy, hx, hy;
+        if (kind == 7) {
+          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
+          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+        } else if (kind == 10) {
+          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
+          hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
+        } else {
+          cx = p[0] + p[2] * 0.5f + p[6]; cy = p[1] + p[3] * 0.5f + p[7];
+          hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
+        }
+        float sr[4] = {fmaxf(cx - 0.76f * hx - pad, 0.0f), fmaxf(cy - 0.60f * hy - pad, 0.0f),
+                       fminf(cx + 0.76f * hx + pad, vp_w), fminf(cy + 0.60f * hy + pad, vp_h)};
+        if (sr[2] > sr[0] && sr[3] > sr[1]) {
+          float req[4] = {fminf(dr[0], sr[0]), fminf(dr[1], sr[1]),
+                          fmaxf(dr[2], sr[2]), fmaxf(dr[3], sr[3])};
+          for (int di = n_elig - 1; di >= 0; di--) {
+            const MBDonorCand *d = &elig[di];
+            if (d->idx >= cur_glass_start) continue;
+            if (d->vx0 <= req[0] && d->vy0 <= req[1] && d->vx1 >= req[2] && d->vy1 >= req[3]) {
+              int occluded = 0;
+              for (int32_t j = d->idx + 1; j < cur_glass_start; ) {
+                const float *bj = f + (size_t)j * MB_INST;
+                int kj = (int)(bj[5] + 0.5f);
+                if (kj == 12) { j++; continue; }
+                if (kj == 8) {
+                  int32_t cn = (int32_t)(bj[12] + 0.5f);
+                  if (cn < 0) cn = 0;
+                  if (j + 1 + cn > count) cn = count - j - 1;
+                  if (bj[32] != 0.0f) { occluded = 1; break; }
+                  float lm = fmaxf(bj[7], 0.0f) * 3.0f + fmaxf(bj[14], 0.0f) + 4.0f;
+                  float lx0 = bj[0], ly0 = bj[1], lx1 = bj[0] + bj[2], ly1 = bj[1] + bj[3];
+                  for (int32_t ci = j + 1; ci < j + 1 + cn; ci++) {
+                    const float *cb = f + (size_t)ci * MB_INST;
+                    int ck = (int)(cb[5] + 0.5f);
+                    if (ck == 12 || cb[2] <= 0.0f || cb[3] <= 0.0f) continue;
+                    if (cb[0] < lx0) lx0 = cb[0];
+                    if (cb[1] < ly0) ly0 = cb[1];
+                    if (cb[0] + cb[2] > lx1) lx1 = cb[0] + cb[2];
+                    if (cb[1] + cb[3] > ly1) ly1 = cb[1] + cb[3];
+                  }
+                  if (lx1 + lm > sr[0] && lx0 - lm < sr[2] && ly1 + lm > sr[1] && ly0 - lm < sr[3]) {
+                    occluded = 1;
+                    break;
+                  }
+                  j += 1 + cn;
+                  continue;
+                }
+                if (kj == 9) {
+                  if (reaches(f, j, j, sr)) { occluded = 1; break; }
+                  j++;
+                  continue;
+                }
+                int32_t run_j = j;
+                float tid_j = bj[20];
+                if (tid_j < 0.0f) {
+                  while (run_j > 0 && f[(size_t)(run_j - 1) * MB_INST + 20] == tid_j) run_j--;
+                }
+                if (reaches(f, j, run_j, sr)) { occluded = 1; break; }
+                j++;
+              }
+              if (!occluded) {
+                donor_of_buf[i] = d->tid;
+                donor_delegated_count++;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    i++;
+  }
+  donor_elig_n = n_elig;
+  return donor_delegated_count;
+}
+
 static void slots_evict_budget(int keep_idx, unsigned frame_clock, int allow_frame_slots) {
   while (slots_total_bytes() > MB_GLASS_CACHE_MAX_BYTES) {
     int victim = -1;
     for (int j = 0; j < MB_GLASS_SLOTS; j++) {
       if (j == keep_idx || !slot_bt[j]) continue;
+      if (donor_slot_mask & (1u << j)) continue;
       if (!allow_frame_slots && slots[j].used > frame_clock) continue;
       if (victim < 0 || (!slots[j].valid && slots[victim].valid) ||
           (slots[j].valid == slots[victim].valid && slots[j].used < slots[victim].used)) {
@@ -3066,9 +3272,10 @@ static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_cloc
   size_t b_area = (size_t)bw * (size_t)bh;
   int full_size = (bw >= Lw && bh >= Lh);
   int use_swap = full_size || (L_area <= 2 * b_area && glass_tex_bytes(L) <= MB_GLASS_CACHE_MAX_BYTES);
-  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
+  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = -1;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
-    if (slots[j].used < slots[fallback].used) fallback = j;
+    if (donor_slot_mask & (1u << j)) continue;
+    if (fallback < 0 || slots[j].used < slots[fallback].used) fallback = j;
     if (slots[j].used > frame_clock) continue;
     int has_bt = slot_bt[j] != nil;
     int reuse_tex = 0;
@@ -3338,6 +3545,12 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
   while (seg_base > 0 && (int)(f[(seg_base - 1) * MB_INST + 5] + 0.5f) == 12) seg_base--;
   sc_on = is_partial;
   if (is_partial) sc = parts[0];
+  if (!donor_plan_ready) {
+    compute_donor_plan(f, count, (float)(at_w > 0.0 ? at_w : (double)target.width / (at_scale > 0.0 ? at_scale : 1.0)),
+                       (float)(at_h > 0.0 ? at_h : (double)target.height / (at_scale > 0.0 ? at_scale : 1.0)),
+                       (float)at_scale);
+  }
+  const int *donor_of = (count > 0 && donor_of_buf) ? donor_of_buf : NULL;
   // Pre-scan glass captures once per frame (covering all dirty rects when partial) before opening the main render pass:
   // size blur levels once, and batch adaptive updates for blur-cache-hit groups into a single pass before begin_pass so
   // the Retina canvas is not Store/Load split mid-pass.
@@ -3352,6 +3565,14 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
   {
     int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0, any_glass = 0;
     for (int32_t s0 = 0; s0 < count;) {
+      int sk = (int)(f[s0 * MB_INST + 5] + 0.5f);
+      if (sk == 8) {
+        int32_t cn = (int32_t)(f[s0 * MB_INST + 12] + 0.5f);
+        if (cn < 0) cn = 0;
+        if (s0 + 1 + cn > count) cn = count - s0 - 1;
+        s0 += 1 + cn;
+        continue;
+      }
       int stid = (int)f[s0 * MB_INST + 20];
       int32_t e0 = s0 + 1;
       if (stid < 0) {
@@ -3360,7 +3581,7 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
         if (stid != scan_bound) {
           scan_bound = stid;
           Grab gm;
-          if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height)) {
+          if (grab_of_with_donors(&gm, f, s0, e0, count, (int)target.width, (int)target.height, donor_of)) {
             if (gm.w > all_max_w) all_max_w = gm.w;
             if (gm.h > all_max_h) all_max_h = gm.h;
             if (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) {
@@ -3386,16 +3607,23 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
         double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
         int pre_bound = 0;
         for (int32_t s0 = 0; s0 < count;) {
+          int skind = (int)(f[s0 * MB_INST + 5] + 0.5f);
+          if (skind == 8) {
+            int32_t cn = (int32_t)(f[s0 * MB_INST + 12] + 0.5f);
+            if (cn < 0) cn = 0;
+            if (s0 + 1 + cn > count) cn = count - s0 - 1;
+            s0 += 1 + cn;
+            continue;
+          }
           int stid = (int)f[s0 * MB_INST + 20];
           int32_t e0 = s0 + 1;
           if (stid < 0) {
             while (e0 < count && (int)f[e0 * MB_INST + 20] == stid) e0++;
             if (stid != pre_bound) {
               pre_bound = stid;
-              int skind = (int)(f[s0 * MB_INST + 5] + 0.5f);
               if (skind == 5 || skind == 6) {
                 Grab gm;
-                if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height) &&
+                if (grab_of_with_donors(&gm, f, s0, e0, count, (int)target.width, (int)target.height, donor_of) &&
                     (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) &&
                     under_take(f, s0, count, seg_base, &gm)) {
                   int sl = slot_same(&gm, key);
@@ -3469,6 +3697,9 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
     // sees the hole (the canvas only, not the view under it).
     int32_t start = 0;
     int bound = 0, shows = 0;
+    MBDonorLive donors[MB_MAX_DONORS];
+    int n_donors = 0;
+    donor_slot_mask = 0;
     while (start < count) {
       int tid = (int)f[start * MB_INST + 20];
       int kind = (int)(f[start * MB_INST + 5] + 0.5f), hole = kind == 9;
@@ -3585,10 +3816,12 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
       }
       // (kinds without their own pipeline one run, as before)
       int own = tid >= 0 && has_own_pipe(kind);
+      int run_donor = (donor_of && tid >= 0) ? donor_of[start] : 0;
       int32_t end = start + 1;
       while (end < count && (int)f[end * MB_INST + 20] == tid) {
         int k = (int)(f[end * MB_INST + 5] + 0.5f);
         if (k == 8 || (k == 9) != hole || (own ? k != kind : tid >= 0 && has_own_pipe(k))) break;
+        if (tid >= 0 && (donor_of ? donor_of[end] : 0) != run_donor) break;
         end++;
       }
       if (tid < 0) {
@@ -3596,6 +3829,14 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
           levels_sized = 1;
           int max_w = 0, max_h = 0, all_max_w = 0, all_max_h = 0, scan_bound = 0;
           for (int32_t s0 = start; s0 < count;) {
+            int sk = (int)(f[s0 * MB_INST + 5] + 0.5f);
+            if (sk == 8) {
+              int32_t cn = (int32_t)(f[s0 * MB_INST + 12] + 0.5f);
+              if (cn < 0) cn = 0;
+              if (s0 + 1 + cn > count) cn = count - s0 - 1;
+              s0 += 1 + cn;
+              continue;
+            }
             int stid = (int)f[s0 * MB_INST + 20];
             int32_t e0 = s0 + 1;
             if (stid < 0) {
@@ -3603,7 +3844,7 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
               if (stid != scan_bound) {
                 scan_bound = stid;
                 Grab gm;
-                if (grab_of(&gm, f, s0, e0, count, (int)target.width, (int)target.height)) {
+                if (grab_of_with_donors(&gm, f, s0, e0, count, (int)target.width, (int)target.height, donor_of)) {
                   if (gm.w > all_max_w) all_max_w = gm.w;
                   if (gm.h > all_max_h) all_max_h = gm.h;
                   if (!is_partial || grab_in_any_rect(&gm, parts, n_parts)) {
@@ -3644,7 +3885,7 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
             }
           }
           if (slot == -1) {
-            shows = grab_of(&m, f, start, end, count, (int)target.width, (int)target.height);
+            shows = grab_of_with_donors(&m, f, start, end, count, (int)target.width, (int)target.height, donor_of);
             // (a capture outside the part drawn: neither copied nor drawn, the blur kept as it was. One that meets it is
             // in it whole: the app's part takes in all a capture it reaches copies, @damage)
             shows = shows && grab_in_part(&m);
@@ -3690,6 +3931,15 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
             enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
           }
           bound = tid;
+          if (shows && slot >= 0 && slot < MB_GLASS_SLOTS && is_donor_elig_tid(tid) && n_donors < MB_MAX_DONORS) {
+            donor_slot_mask |= (1u << slot);
+            donors[n_donors].tid = tid;
+            donors[n_donors].slot_idx = slot;
+            donors[n_donors].tex = slot_bt[slot];
+            memcpy(donors[n_donors].map, gu.map, sizeof gu.map);
+            memcpy(donors[n_donors].uvc, gu.uvc, sizeof gu.uvc);
+            n_donors++;
+          }
         }
         // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
         if (shows) {
@@ -3712,6 +3962,24 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
       }
       if (!hole && tid > 0 && tid <= MB_STREAM_TEX && !t) encode_missing = 1;
       id<MTLRenderPipelineState> kp = own ? kind_pipe(p, kind) : p;
+      int swapped_donor = 0;
+      float prev_map_d[4], prev_uvc_d[4];
+      if (run_donor < 0) {
+        for (int di = 0; di < n_donors; di++) {
+          if (donors[di].tid == run_donor && donors[di].tex) {
+            memcpy(prev_map_d, gu.map, sizeof gu.map);
+            memcpy(prev_uvc_d, gu.uvc, sizeof gu.uvc);
+            memcpy(gu.map, donors[di].map, sizeof gu.map);
+            memcpy(gu.uvc, donors[di].uvc, sizeof gu.uvc);
+            [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
+            [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
+            [enc setVertexTexture:donors[di].tex atIndex:2];
+            [enc setFragmentTexture:donors[di].tex atIndex:2];
+            swapped_donor = 1;
+            break;
+          }
+        }
+      }
       if (!sc_on) {
         [enc setRenderPipelineState:(hole ? hpipe : kp)];
         [enc setFragmentTexture:(t ?: atlas) atIndex:1];
@@ -3747,8 +4015,17 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
           cur = j + 1;
         }
       }
+      if (swapped_donor) {
+        memcpy(gu.map, prev_map_d, sizeof gu.map);
+        memcpy(gu.uvc, prev_uvc_d, sizeof gu.uvc);
+        [enc setVertexBytes:&gu length:sizeof gu atIndex:2];
+        [enc setFragmentBytes:&gu length:sizeof gu atIndex:2];
+        [enc setVertexTexture:(gtex ?: atlas) atIndex:2];
+        [enc setFragmentTexture:(gtex ?: atlas) atIndex:2];
+      }
       start = end;
     }
+    donor_slot_mask = 0;
   }
   [enc endEncoding];
   gtex = nil;
@@ -3768,9 +4045,15 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
                       double g, double b, int kept, const MBDirty *d, double ad_dt, uint64_t ad_serial) {
   MTLScissorRect parts[MB_PARTS];
   MBDirty expanded = *d;
+  const float *fb = (const float *)buf.contents;
+  compute_donor_plan(fb, count, (float)(at_w > 0.0 ? at_w : (double)target.width / (at_scale > 0.0 ? at_scale : 1.0)),
+                     (float)(at_h > 0.0 ? at_h : (double)target.height / (at_scale > 0.0 ? at_scale : 1.0)),
+                     (float)at_scale);
+  donor_plan_ready = 1;
   if (expanded.glass_closure && expanded.told && !expanded.whole && kept && !pictures_missing &&
-      !mb_glass_damage_expand((const float *)buf.contents, count, expanded.r, &expanded.n,
-                              target.width / at_scale, target.height / at_scale, at_scale)) expanded.whole = 1;
+      !mb_glass_damage_expand(fb, count, expanded.r, &expanded.n,
+                              target.width / at_scale, target.height / at_scale, at_scale,
+                              count > 0 ? donor_of_buf : NULL)) expanded.whole = 1;
   int n = take_parts(&expanded, (int)target.width, (int)target.height, kept, parts);
   if (n < 0) {
     encode_rects(cb, target, mpipe, buf, count, r, g, b, 1, NULL, -1, ad_dt, ad_serial);
@@ -3779,6 +4062,7 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
     encode_rects(cb, target, mpipe, buf, count, r, g, b, 1, parts, n, ad_dt, ad_serial);
     pictures_missing = encode_missing;
   }
+  donor_plan_ready = 0;
   ad_rb_finish(cb, at_win, ad_serial);
   return n;
 }

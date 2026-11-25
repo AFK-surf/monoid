@@ -23,12 +23,14 @@
   let cb = null;
   let modifiersSaid = 0;
   const MB_PROG_UI = 0;
-  const MB_PROG_FROSTED = 1;
-  const MB_PROG_LIQUID_MERGED = 2;
-  const MB_PROG_LIQUID_SINGLE = 3;
-  const MB_PROG_LENS = 4;
-  const MB_PROG_PATH = 5;
-  const MB_PROGS = 6;
+  const MB_PROG_UI_AD = 1;
+  const MB_PROG_PATH = 2;
+  const MB_PROG_PATH_AD = 3;
+  const MB_PROG_FROSTED = 4;
+  const MB_PROG_LIQUID_MERGED = 5;
+  const MB_PROG_LIQUID_SINGLE = 6;
+  const MB_PROG_LENS = 7;
+  const MB_PROGS = 8;
   const GLASS_SLOTS = 32;
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
@@ -609,16 +611,29 @@
       float bgL = capsuleBgL;
       if (origL < 0.94 && u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y) {
         vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
-        float stepX = is_icon ? 4.0 : 8.0;
-        int halfN = is_icon ? 2 : 12;
-        for (int iy = -1; iy <= 1; iy++) {
-          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);
-          for (int ix = -12; ix <= 12; ix++) {
-            float px = samplePos.x + float(ix) * stepX;
-            if (abs(ix) <= halfN && px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {
-              vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;
-              if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
-                bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));
+        if (is_icon) {
+          for (int iy = -1; iy <= 1; iy++) {
+            float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);
+            for (int ix = -2; ix <= 2; ix++) {
+              float px = samplePos.x + float(ix) * 4.0;
+              if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {
+                vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;
+                if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
+                  bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));
+                }
+              }
+            }
+          }
+        } else {
+          for (int iy = -1; iy <= 1; iy++) {
+            float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);
+            for (int ix = -12; ix <= 12; ix++) {
+              float px = samplePos.x + float(ix) * 8.0;
+              if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {
+                vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;
+                if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
+                  bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));
+                }
               }
             }
           }
@@ -685,24 +700,26 @@
     gl_Position = vec4(rel.x / u_vp.x * 2.0 - 1.0, 1.0 - rel.y / u_vp.y * 2.0, 0.0, 1.0);
     v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;
     #if MB_VS_ADAPTIVE
-    if (kind == 7) {
-      v_color.rgb = a_pad.w < 0.0
-        ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))
-        : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);
-    } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {
-      v_color.rgb = a_pad.w < 0.0
-        ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))
-        : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);
-    } else if (kind == 0 && a_pad.w < 0.0) {
-      float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
-      vec2 capCenter, capHalf;
-      float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;
-      if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {
-        v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);
-        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);
-      } else if (ch > 0.08 && vs_luma(a_color.rgb) < 0.35) {
-        v_color.rgb = mix(a_color.rgb, min(a_color.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);
-        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.36), darkT);
+    if (vid == 2 || vid == 5) {
+      if (kind == 7) {
+        v_color.rgb = a_pad.w < 0.0
+          ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))
+          : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);
+      } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {
+        v_color.rgb = a_pad.w < 0.0
+          ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))
+          : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);
+      } else if (kind == 0 && a_pad.w < 0.0) {
+        float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
+        vec2 capCenter, capHalf;
+        float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, capCenter, capHalf).x;
+        if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {
+          v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);
+          v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);
+        } else if (ch > 0.08 && vs_luma(a_color.rgb) < 0.35) {
+          v_color.rgb = mix(a_color.rgb, min(a_color.rgb * 1.65 + vec3(0.28, 0.20, 0.18), vec3(1.0)), darkT);
+          v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.36), darkT);
+        }
       }
     }
     #endif
@@ -2396,7 +2413,7 @@
       target = latch;
     }
     float nextT;
-    if (is_new > 0.5 || dt >= 1.0) nextT = target;
+    if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0) nextT = target;
     else if (dt <= 0.0) nextT = prevT;
     else {
       nextT = mix(prevT, target, 1.0 - exp(-dt / 0.070));
@@ -2414,11 +2431,12 @@
   }
 
   function groupOfKind(kind, padW) {
-    if (kind === 11) return MB_PROG_PATH;
+    if (kind === 11) return padW !== 0 ? MB_PROG_PATH_AD : MB_PROG_PATH;
     if (kind === 5) return MB_PROG_FROSTED;
     if (kind === 6) return padW > 0 ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
     if (kind === 13) return MB_PROG_LIQUID_SINGLE;
     if (kind === 8) return MB_PROG_LENS;
+    if (kind === 7 || (kind === 10 && padW !== 0) || (kind === 0 && padW < 0)) return MB_PROG_UI_AD;
     return MB_PROG_UI;
   }
 
@@ -2439,13 +2457,21 @@
         fsHead = '#version 300 es\n#define ONE_KIND 8\n#define MB_HAS(K) ((K) == 8)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
         break;
       case MB_PROG_PATH:
+        vsShader = vs;
+        fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        break;
+      case MB_PROG_PATH_AD:
         vsShader = vsAd;
         fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
         break;
+      case MB_PROG_UI_AD:
+        vsShader = vsAd;
+        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        break;
       case MB_PROG_UI:
       default:
-        vsShader = vsAd;
-        fsHead = '#version 300 es\n#define ONE_KIND -1\n#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 7 || (K) == 9 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        vsShader = vs;
+        fsHead = '#version 300 es\n#define ONE_KIND -1\n#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 9 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
         break;
     }
     const src = fsHead + FS.slice('#version 300 es\n'.length);
@@ -2723,7 +2749,7 @@
       if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
       const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
       if (isNew || slotChanged || s.settleLeft > 0) {
-        if (isNew) s.settleLeft = 0;
+        if (isNew || s.isDark > 0) s.settleLeft = 0;
         else if (slotChanged) s.settleLeft = AD_SETTLE_SEC;
         else s.settleLeft = Math.max(0, s.settleLeft - dt);
         s.lastBd = curBd;
@@ -2959,7 +2985,7 @@
     cv = { t, fb, w: W, h: Hh };
   }
 
-  function grabOf(start, end, count) {
+  function grabOf(start, end, count, donorOf = null) {
     const a = start * INST;
     // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
     const kind = Math.round(f32[a + 5]);
@@ -3038,11 +3064,18 @@
       }
     }
     let capX0 = x0, capY0 = y0, capX1 = x1, capY1 = y1;
-    for (let i = end; i < count; i++) {
+    for (let i = end; i < count; ) {
       const b = i * INST;
       const bk = Math.round(f32[b + 5]);
+      if (bk === 8) {
+        let childN = Math.round(f32[b + 12]);
+        if (childN < 0) childN = 0;
+        if (i + 1 + childN > count) childN = count - i - 1;
+        i += 1 + childN;
+        continue;
+      }
       if ((bk === 5 || bk === 6) && f32[b + 20] < 0 && f32[b + 20] !== f32[a + 20]) break;
-      if ((bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0) {
+      if ((bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0 && (!donorOf || donorOf[i] >= 0)) {
         let cx, cy, hx, hy;
         if (bk === 7) {
           cx = f32[b] + f32[b + 2] * 0.5; cy = f32[b + 1] + f32[b + 3] * 0.5;
@@ -3057,6 +3090,7 @@
         capX0 = Math.min(capX0, cx - hx); capY0 = Math.min(capY0, cy - hy);
         capX1 = Math.max(capX1, cx + hx); capY1 = Math.max(capY1, cy + hy);
       }
+      i++;
     }
     const W = canvas.width, Hh = canvas.height, sc = dpr;
     // in the canvas's pixels, from its foot (GL's way up)
@@ -3102,15 +3136,23 @@
   }
 
   // Host-added adaptive settle regions must include every capture they touch, including other captures they then reach.
-  function closeAdaptiveParts(parts, count) {
+  function closeAdaptiveParts(parts, count, donorOf = null) {
     const grabs = [], wasCut = cutOn;
     cutOn = false;
     for (let start = 0; start < count;) {
+      const k = Math.round(f32[start * INST + 5]);
+      if (k === 8) {
+        let childN = Math.round(f32[start * INST + 12]);
+        if (childN < 0) childN = 0;
+        if (start + 1 + childN > count) childN = count - start - 1;
+        start += 1 + childN;
+        continue;
+      }
       const tid = f32[start * INST + 20];
       let end = start + 1;
       while (end < count && f32[end * INST + 20] === tid) end++;
       if (tid < 0) {
-        const m = grabOf(start, end, count);
+        const m = grabOf(start, end, count, donorOf);
         if (m) grabs.push([Math.max(0, m.px0 - 1), Math.max(0, m.pb0 - 1),
           Math.min(canvas.width, m.px0 + m.w + 1), Math.min(canvas.height, m.pb0 + m.h + 1)]);
       }
@@ -3378,12 +3420,149 @@
     return null;
   }
 
+  const MAX_DONORS = 16;
+  let donorOfBuf = new Int32Array(0);
+  const donorEligTids = new Set();
+  const donorPinnedSlots = new Set();
+  let donorDelegatedCount = 0;
+  let donorPlanReady = false;
+  let lastCapturedSlotIdx = -1;
+
+  function computeDonorPlan(count, vpW, vpH, sc) {
+    donorEligTids.clear();
+    donorDelegatedCount = 0;
+    if (count <= 0) return 0;
+    if (donorOfBuf.length < count) donorOfBuf = new Int32Array(count);
+    donorOfBuf.fill(0, 0, count);
+    const elig = [];
+    let curGlassStart = -1, curGlassKind = 0, curGlassTid = 0;
+    const pad = 1.0 / (sc > 0 ? sc : 1.0);
+    for (let i = 0; i < count; ) {
+      const o = i * INST;
+      const kind = Math.round(f32[o + 5]);
+      if (kind === 8) {
+        let childN = Math.round(f32[o + 12]);
+        if (childN < 0) childN = 0;
+        if (i + 1 + childN > count) childN = count - i - 1;
+        i += 1 + childN;
+        continue;
+      }
+      const tid = f32[o + 20] | 0;
+      if (tid < 0 && kind === 5 && f32[o + 22] < -0.5 && elig.length < MAX_DONORS &&
+          f32[o + 11] <= 0.001 && f32[o + 15] >= 0.999 && Math.abs(f32[o + 6] - 1.0) <= 0.001 &&
+          f32[o + 12] === 0 && f32[o + 13] === 0 && f32[o + 14] === 0 && f32[o + 32] === 0 &&
+          f32[o + 24] === 0 && f32[o + 25] === 0 && f32[o + 26] === 0 && f32[o + 27] === 0 &&
+          f32[o + 44] === 0 && f32[o + 45] === 0 && f32[o + 46] === 0 && f32[o + 47] === 0 &&
+          f32[o + 4] === 0 && f32[o + 36] === 0 && f32[o + 37] === 0 && f32[o + 38] === 0 && f32[o + 39] === 0) {
+        const vx0 = Math.max(f32[o], f32[o + 16]), vy0 = Math.max(f32[o + 1], f32[o + 17]);
+        const vx1 = Math.min(f32[o] + f32[o + 2], f32[o + 18]), vy1 = Math.min(f32[o + 1] + f32[o + 3], f32[o + 19]);
+        if (vx1 > vx0 && vy1 > vy0) {
+          let occ = 0;
+          for (let k = 0; k < count; k++) {
+            if ((f32[k * INST + 20] | 0) === tid) {
+              if (++occ > 1) break;
+            }
+          }
+          if (occ === 1) {
+            elig.push({ idx: i, tid, vx0, vy0, vx1, vy1 });
+            donorEligTids.add(tid);
+          }
+        }
+      }
+      if ((kind === 5 || kind === 6) && tid < 0 && tid !== curGlassTid) {
+        curGlassStart = i;
+        curGlassKind = kind;
+        curGlassTid = tid;
+      } else if ((kind === 7 || kind === 10 || kind === 11) && f32[o + 23] < 0 && f32[o + 32] === 0 &&
+                 curGlassKind === 6 && elig.length > 0) {
+        const dr0 = Math.max(f32[o], 0), dr1 = Math.max(f32[o + 1], 0);
+        const dr2 = Math.min(f32[o] + f32[o + 2], vpW), dr3 = Math.min(f32[o + 1] + f32[o + 3], vpH);
+        if (dr2 > dr0 && dr3 > dr1) {
+          let cx, cy, hx, hy;
+          if (kind === 7) {
+            cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
+            hx = Math.max(-f32[o + 23], f32[o + 2]); hy = Math.max(Math.max(-f32[o + 23] * 0.5, f32[o + 3]), 1.0);
+          } else if (kind === 10) {
+            cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
+            hx = hy = Math.max(-f32[o + 23] * 0.5, 1.0);
+          } else {
+            cx = f32[o] + f32[o + 2] * 0.5 + f32[o + 6]; cy = f32[o + 1] + f32[o + 3] * 0.5 + f32[o + 7];
+            hx = hy = Math.max(-f32[o + 23] * 0.5, 1.0);
+          }
+          const sr = [
+            Math.max(cx - 0.76 * hx - pad, 0), Math.max(cy - 0.60 * hy - pad, 0),
+            Math.min(cx + 0.76 * hx + pad, vpW), Math.min(cy + 0.60 * hy + pad, vpH),
+          ];
+          if (sr[2] > sr[0] && sr[3] > sr[1]) {
+            const req0 = Math.min(dr0, sr[0]), req1 = Math.min(dr1, sr[1]);
+            const req2 = Math.max(dr2, sr[2]), req3 = Math.max(dr3, sr[3]);
+            for (let di = elig.length - 1; di >= 0; di--) {
+              const d = elig[di];
+              if (d.idx >= curGlassStart) continue;
+              if (d.vx0 <= req0 && d.vy0 <= req1 && d.vx1 >= req2 && d.vy1 >= req3) {
+                let occluded = false;
+                for (let j = d.idx + 1; j < curGlassStart; ) {
+                  const bo = j * INST;
+                  const kj = Math.round(f32[bo + 5]);
+                  if (kj === 12) { j++; continue; }
+                  if (kj === 8) {
+                    let cn = Math.round(f32[bo + 12]);
+                    if (cn < 0) cn = 0;
+                    if (j + 1 + cn > count) cn = count - j - 1;
+                    if (f32[bo + 32] !== 0) { occluded = true; break; }
+                    const lm = Math.max(f32[bo + 7], 0) * 3 + Math.max(f32[bo + 14], 0) + 4;
+                    let lx0 = f32[bo], ly0 = f32[bo + 1], lx1 = f32[bo] + f32[bo + 2], ly1 = f32[bo + 1] + f32[bo + 3];
+                    for (let ci = j + 1; ci < j + 1 + cn; ci++) {
+                      const cbo = ci * INST;
+                      const ck = Math.round(f32[cbo + 5]);
+                      if (ck === 12 || f32[cbo + 2] <= 0 || f32[cbo + 3] <= 0) continue;
+                      if (f32[cbo] < lx0) lx0 = f32[cbo];
+                      if (f32[cbo + 1] < ly0) ly0 = f32[cbo + 1];
+                      if (f32[cbo] + f32[cbo + 2] > lx1) lx1 = f32[cbo] + f32[cbo + 2];
+                      if (f32[cbo + 1] + f32[cbo + 3] > ly1) ly1 = f32[cbo + 1] + f32[cbo + 3];
+                    }
+                    if (lx1 + lm > sr[0] && lx0 - lm < sr[2] && ly1 + lm > sr[1] && ly0 - lm < sr[3]) {
+                      occluded = true;
+                      break;
+                    }
+                    j += 1 + cn;
+                    continue;
+                  }
+                  if (kj === 9) {
+                    if (reaches(j, j, sr)) { occluded = true; break; }
+                    j++;
+                    continue;
+                  }
+                  let runJ = j;
+                  const tidJ = f32[bo + 20];
+                  if (tidJ < 0) {
+                    while (runJ > 0 && f32[(runJ - 1) * INST + 20] === tidJ) runJ--;
+                  }
+                  if (reaches(j, runJ, sr)) { occluded = true; break; }
+                  j++;
+                }
+                if (!occluded) {
+                  donorOfBuf[i] = d.tid;
+                  donorDelegatedCount++;
+                }
+                break;
+              }
+            }
+          }
+        }
+      }
+      i++;
+    }
+    return donorDelegatedCount;
+  }
+
   function slotFill(m, frameClock) {
     const L = grabBlurred(m);
-    let t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
+    let t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = -1;
     for (let i = 0; i < GLASS_SLOTS; i++) {
+      if (donorPinnedSlots.has(i)) continue;
       const s = glassSlots[i];
-      if (s.used < glassSlots[fallback].used) fallback = i;
+      if (fallback < 0 || s.used < glassSlots[fallback].used) fallback = i;
       if (s.used > frameClock) continue;
       const hasBt = s.bt !== null;
       const sameTex = hasBt && s.bw === L.w && s.bh === L.h && s.bf === L.format;
@@ -3440,8 +3619,9 @@
 
   // what the run [start, end) of glass sees, frosted glass of the same capture further on (glass.mbt
   // shares_capture) too; false when none of it shows. Leaves mainState in place when true.
-  function capture(start, end, count, pieces, r, g, b, frameClock) {
-    const m = grabOf(start, end, count);
+  function capture(start, end, count, pieces, r, g, b, frameClock, donorOf = null) {
+    lastCapturedSlotIdx = -1;
+    const m = grabOf(start, end, count, donorOf);
     if (!m) return false;
     const key = [canvas.width, canvas.height, dpr, r, g, b];
     const known = underTake(start, count, pieces, m);
@@ -3454,6 +3634,7 @@
       const canKeep = !cutOn || (m.px0 >= cut[0] && m.px0 + m.w <= cut[0] + cut[2] && m.pb0 >= cut[1] && m.pb0 + m.h <= cut[1] + cut[3]);
       if (known && !drewMissing && canKeep) slotKeep(s, m, key);
     }
+    lastCapturedSlotIdx = glassSlots.indexOf(s);
     slotShow(m, s);
     const adPend = adCollectAndMatch(start, count, m, reblurred, bdTex, adCurDt, adFrameSerial);
     if (adPend.length) adRunUpdates(adPend, adCurDt);
@@ -3832,6 +4013,8 @@
     adMode = 1;
     adCurDt = adNextDt();
     adFrameSerial++;
+    computeDonorPlan(n, canvas.width / dpr, canvas.height / dpr, dpr);
+    donorPlanReady = true;
     const whole = !dirtyTold || dirtyWhole || missing;
     const adaptiveDamage = !whole && adSettling;
     if (adaptiveDamage) {
@@ -3849,6 +4032,7 @@
       frameUpload(n);
       glassDrawn = false;
       drawFrame(n, r, g, b, false);
+      donorPlanReady = false;
       missing = drewMissing;
       adFinalizeFrame(true, adFrameSerial);
       glassIdleTick();
@@ -3864,13 +4048,14 @@
       frameUpload(n);
       glassDrawn = false;
       drawFrame(n, r, g, b, false);
+      donorPlanReady = false;
       missing = drewMissing;
       adFinalizeFrame(true, adFrameSerial);
       glassIdleTick();
       return;
     }
     const parts = takeParts(cvOk);
-    if (parts && adaptiveDamage) closeAdaptiveParts(parts, n);
+    if (parts && adaptiveDamage) closeAdaptiveParts(parts, n, n > 0 ? donorOfBuf : null);
     target = cv.fb;
     // the frame's instances and its shapes' pieces uploaded once, whether drawn whole or a part at a time (each part
     // uploaded them all again: a list scrolled spent a fifth of its frames in bufferData)
@@ -3888,6 +4073,7 @@
       }
       missing = any;
     }
+    donorPlanReady = false;
     adFinalizeFrame(!parts, adFrameSerial);
     glassIdleTick();
     cvOk = !missing;
@@ -3963,6 +4149,10 @@
     }
     let pieces = n;
     while (pieces > 0 && Math.round(f32[(pieces - 1) * INST + 5]) === 12) pieces--;
+    if (!donorPlanReady) computeDonorPlan(n, canvas.width / dpr, canvas.height / dpr, dpr);
+    const donorOf = n > 0 ? donorOfBuf : null;
+    const donors = new Map();
+    donorPinnedSlots.clear();
     // one draw per run of instances showing the same image (slot 20) of one kind (its program: useProg), or sharing
     // one capture of glass (negative); WebGL has no base instance, so the attributes start at the run instead
     // (and per run of holes, kind 9: written transparent with no blending, where a native view shows)
@@ -4078,11 +4268,13 @@
       }
       const h = kind === 9;
       const grp = groupOfKind(kind, f32[start * INST + 23]);
+      const runDonor = (donorOf && tid >= 0) ? donorOf[start] : 0;
       let end = start + 1;
       while (end < n && (f32[end * INST + 20] | 0) === tid) {
         const k = Math.round(f32[end * INST + 5]);
         if (k === 8 || k === 12 || (k === 9) !== h) break;
         if (tid >= 0 && !h && groupOfKind(k, f32[end * INST + 23]) !== grp) break;
+        if (tid >= 0 && (donorOf ? donorOf[end] : 0) !== runDonor) break;
         end++;
       }
       if (tid < 0) {
@@ -4091,13 +4283,21 @@
           levelsSized = true;
           let maxW = 0, maxH = 0, scanBound = 0;
           for (let s0 = start; s0 < n; ) {
+            const sk = Math.round(f32[s0 * INST + 5]);
+            if (sk === 8) {
+              let cn = Math.round(f32[s0 * INST + 12]);
+              if (cn < 0) cn = 0;
+              if (s0 + 1 + cn > n) cn = n - s0 - 1;
+              s0 += 1 + cn;
+              continue;
+            }
             const stid = f32[s0 * INST + 20] | 0;
             let e0 = s0 + 1;
             if (stid < 0) {
               while (e0 < n && (f32[e0 * INST + 20] | 0) === stid) e0++;
               if (stid !== scanBound) {
                 scanBound = stid;
-                const gm = grabOf(s0, e0, n);
+                const gm = grabOf(s0, e0, n, donorOf);
                 if (gm) {
                   if (gm.w > maxW) maxW = gm.w;
                   if (gm.h > maxH) maxH = gm.h;
@@ -4112,8 +4312,12 @@
           }
         }
         if (tid !== bound) {
-          shows = capture(start, end, n, pieces, r, g, b, frameGlassClock);
+          shows = capture(start, end, n, pieces, r, g, b, frameGlassClock, donorOf);
           bound = tid;
+          if (shows && lastCapturedSlotIdx >= 0 && donorEligTids.has(tid)) {
+            donorPinnedSlots.add(lastCapturedSlotIdx);
+            donors.set(tid, { bt: bdTex, map: Float32Array.from(gmap), uvc: Float32Array.from(guvc) });
+          }
         }
         if (shows) {
           // merged liquid (merge > 0): the group as one shape, drawn once; unmerged liquid and frosted: each instance
@@ -4124,6 +4328,23 @@
         start = end;
         continue;
       }
+      let swappedDonor = false;
+      let prevBdD = null, prevMapD = null, prevUvcD = null;
+      if (runDonor < 0) {
+        const d = donors.get(runDonor);
+        if (d) {
+          prevBdD = bdTex;
+          prevMapD = Float32Array.from(gmap);
+          prevUvcD = Float32Array.from(guvc);
+          bdTex = d.bt;
+          gmap.set(d.map);
+          guvc.set(d.uvc);
+          gl.activeTexture(gl.TEXTURE2);
+          gl.bindTexture(gl.TEXTURE_2D, bdTex || atlasTex);
+          progGen++;
+          swappedDonor = true;
+        }
+      }
       useProg(grp);
       // a stream's picture (STREAM_TEX + its id): nothing until a frame of its own shows; a hole's image is its
       // view's (src/hostapi/host.mbt view_tex_base + its id), the element under the canvas here
@@ -4131,6 +4352,11 @@
       const im = h ? null : tid > STREAM_TEX ? streams.get(tid - STREAM_TEX) : tid ? images.get(tid) : null;
       const tex = !im || !im.tex ? null : winActive === 0 ? im.tex : slotTex(wins[winActive], tid, im);
       if (!h && tid > STREAM_TEX && !tex) {
+        if (swappedDonor) {
+          bdTex = prevBdD; gmap.set(prevMapD); guvc.set(prevUvcD);
+          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, bdTex || atlasTex);
+          progGen++;
+        }
         start = end;
         continue;
       }
@@ -4146,8 +4372,14 @@
       } else {
         drawRun(start, end - start);
       }
+      if (swappedDonor) {
+        bdTex = prevBdD; gmap.set(prevMapD); guvc.set(prevUvcD);
+        gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, bdTex || atlasTex);
+        progGen++;
+      }
       start = end;
     }
+    donorPinnedSlots.clear();
     if (part) gl.disable(gl.SCISSOR_TEST);
     cutOn = false;
   }

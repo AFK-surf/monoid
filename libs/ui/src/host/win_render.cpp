@@ -380,16 +380,29 @@ static const char *shader_src =
     "    float bgL = capsuleBgL;\n"
     "    [branch] if (origL < 0.94 && guvc.z > guvc.x && guvc.w > guvc.y) {\n"
     "      float2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;\n"
-    "      float stepX = is_icon ? 4.0 : 8.0;\n"
-    "      int halfN = is_icon ? 2 : 12;\n"
-    "      [unroll] for (int iy = -1; iy <= 1; iy++) {\n"
-    "        float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
-    "        [loop] for (int ix = -12; ix <= 12; ix++) {\n"
-    "          float px = samplePos.x + float(ix) * stepX;\n"
-    "          if (abs(ix) <= halfN && px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
-    "            float2 guv = float2(px, py) * gmap.xy + gmap.zw;\n"
-    "            if (guv.x >= guvc.x && guv.x <= guvc.z && guv.y >= guvc.y && guv.y <= guvc.w) {\n"
-    "              bgL = max(bgL, mb_ink_luma(backdrop(float2(px, py))));\n"
+    "      [branch] if (is_icon) {\n"
+    "        [unroll] for (int iy = -1; iy <= 1; iy++) {\n"
+    "          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
+    "          [loop] for (int ix = -2; ix <= 2; ix++) {\n"
+    "            float px = samplePos.x + float(ix) * 4.0;\n"
+    "            if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
+    "              float2 guv = float2(px, py) * gmap.xy + gmap.zw;\n"
+    "              if (guv.x >= guvc.x && guv.x <= guvc.z && guv.y >= guvc.y && guv.y <= guvc.w) {\n"
+    "                bgL = max(bgL, mb_ink_luma(backdrop(float2(px, py))));\n"
+    "              }\n"
+    "            }\n"
+    "          }\n"
+    "        }\n"
+    "      } else {\n"
+    "        [unroll] for (int iy = -1; iy <= 1; iy++) {\n"
+    "          float py = clamp(samplePos.y + float(iy) * 5.0, capCenter.y - capHalf.y, capCenter.y + capHalf.y);\n"
+    "          [loop] for (int ix = -12; ix <= 12; ix++) {\n"
+    "            float px = samplePos.x + float(ix) * 8.0;\n"
+    "            if (px >= capCenter.x - capHalf.x && px <= capCenter.x + capHalf.x) {\n"
+    "              float2 guv = float2(px, py) * gmap.xy + gmap.zw;\n"
+    "              if (guv.x >= guvc.x && guv.x <= guvc.z && guv.y >= guvc.y && guv.y <= guvc.w) {\n"
+    "                bgL = max(bgL, mb_ink_luma(backdrop(float2(px, py))));\n"
+    "              }\n"
     "            }\n"
     "          }\n"
     "        }\n"
@@ -448,28 +461,30 @@ static const char *shader_src =
     "  if (I.rot.x != 0.0) { float2 d = pos - I.rot.yz; float c = cos(I.rot.x), s = sin(I.rot.x);\n"
     "    at = I.rot.yz + float2(c * d.x - s * d.y, s * d.x + c * d.y); }\n"
     "  float4 col = I.color;\n"
-    "  if (kind == 7) {\n"
-    "    col.rgb = I.pd.w < 0.0\n"
-    "      ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pd.w, I.rect.z), max(max(-I.pd.w * 0.5, I.rect.w), 1.0)))\n"
-    "      : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, false);\n"
-    "  } else if (kind == 10 && I.pd.w != 0.0) {\n"
-    "    col.rgb = I.pd.w < 0.0\n"
-    "      ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
-    "      : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, float2(0.0, 0.0), true);\n"
-    "  } else if (kind == 11 && I.pd.w != 0.0) {\n"
-    "    col.rgb = I.pd.w < 0.0\n"
-    "      ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
-    "      : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, true);\n"
-    "  } else if (kind == 0 && I.pd.w < 0.0) {\n"
-    "    float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
-    "    float2 capCenter, capHalf;\n"
-    "    float darkT = ad_sample_ink(I.pd.yz, -I.pd.w * 0.5, capCenter, capHalf).x;\n"
-    "    if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
-    "      col.rgb = lerp(col.rgb, float3(1.0, 1.0, 1.0), darkT);\n"
-    "      col.a = lerp(col.a, min(col.a * 1.45, 0.28), darkT);\n"
-    "    } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
-    "      col.rgb = lerp(col.rgb, min(col.rgb * 1.65 + float3(0.28, 0.20, 0.18), float3(1.0, 1.0, 1.0)), darkT);\n"
-    "      col.a = lerp(col.a, min(col.a * 1.45, 0.36), darkT);\n"
+    "  if (vid == 0u || vid == 3u) {\n"
+    "    if (kind == 7) {\n"
+    "      col.rgb = I.pd.w < 0.0\n"
+    "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pd.w, I.rect.z), max(max(-I.pd.w * 0.5, I.rect.w), 1.0)))\n"
+    "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, false);\n"
+    "    } else if (kind == 10 && I.pd.w != 0.0) {\n"
+    "      col.rgb = I.pd.w < 0.0\n"
+    "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
+    "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, float2(0.0, 0.0), true);\n"
+    "    } else if (kind == 11 && I.pd.w != 0.0) {\n"
+    "      col.rgb = I.pd.w < 0.0\n"
+    "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
+    "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, true);\n"
+    "    } else if (kind == 0 && I.pd.w < 0.0) {\n"
+    "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
+    "      float2 capCenter, capHalf;\n"
+    "      float darkT = ad_sample_ink(I.pd.yz, -I.pd.w * 0.5, capCenter, capHalf).x;\n"
+    "      if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
+    "        col.rgb = lerp(col.rgb, float3(1.0, 1.0, 1.0), darkT);\n"
+    "        col.a = lerp(col.a, min(col.a * 1.45, 0.28), darkT);\n"
+    "      } else if (ch > 0.08 && luma(col.rgb) < 0.35) {\n"
+    "        col.rgb = lerp(col.rgb, min(col.rgb * 1.65 + float3(0.28, 0.20, 0.18), float3(1.0, 1.0, 1.0)), darkT);\n"
+    "        col.a = lerp(col.a, min(col.a * 1.45, 0.36), darkT);\n"
+    "      }\n"
     "    }\n"
     "  }\n"
     "  VOut o;\n"
@@ -1645,7 +1660,7 @@ static const char *ad_src =
     "    target = latch;\n"
     "  }\n"
     "  float nextT;\n"
-    "  if (is_new > 0.5 || dt >= 1.0) nextT = target;\n"
+    "  if (is_new > 0.5 || is_dark > 0.5 || dt >= 1.0) nextT = target;\n"
     "  else if (dt <= 0.0) nextT = prevT;\n"
     "  else {\n"
     "    nextT = lerp(prevT, target, 1.0 - exp(-dt / 0.070));\n"
@@ -2704,7 +2719,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     int need = is_new || slot_changed || s->settle_left > 0.0;
     if (need) {
-      if (is_new) {
+      if (is_new || s->is_dark > 0) {
         s->settle_left = 0.0;
       } else if (slot_changed) {
         s->settle_left = MB_AD_SETTLE_SEC;
@@ -3016,7 +3031,8 @@ static void ensure_canvas(int tw, int th) {
   }
 }
 
-static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int pw, int ph) {
+static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int pw, int ph,
+                               const int *donor_of) {
   memset(m, 0, sizeof *m);
   const float *a = f + start * MB_INST;
   // For frosted glass (kind 5), negative slot 7 is contained; for liquid glass (kind 6), negative slot 7 encodes clear-lens zoom.
@@ -3100,11 +3116,18 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     if (by1 > y1) y1 = by1;
   }
   float cap_x0 = x0, cap_y0 = y0, cap_x1 = x1, cap_y1 = y1;
-  for (int32_t i = end; i < count; i++) {
+  for (int32_t i = end; i < count; ) {
     const float *b = f + i * MB_INST;
     int bk = (int)(b[5] + 0.5f);
+    if (bk == 8) {
+      int32_t child_n = (int32_t)(b[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
+    }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f) {
+    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
       if (bk == 7) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
@@ -3121,6 +3144,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       if (cx + hx > cap_x1) cap_x1 = cx + hx;
       if (cy + hy > cap_y1) cap_y1 = cy + hy;
     }
+    i++;
   }
   m->g.misc[0] = (float)n;
   m->g.misc[1] = 0.0f;
@@ -3173,6 +3197,10 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; m->dual_wsp = 0.0f; }
   m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
+}
+
+static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t count, int pw, int ph) {
+  return grab_of_with_donors(m, f, start, end, count, pw, ph, NULL);
 }
 
 static void grab_levels(const Grab *m, int lw[4], int lh[4]) {
@@ -3375,11 +3403,186 @@ static level *grab_blurred(const Grab *m) {
   return (m->progressive || (m->dual_scale && m->sg <= dual_cut) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
 }
 
+#define MB_MAX_DONORS 16
+
+struct WinDonorCand {
+  int32_t idx;
+  int tid;
+  float vx0, vy0, vx1, vy1;
+};
+
+struct WinDonorLive {
+  int tid;
+  int slot_idx;
+  ID3D11ShaderResourceView *srv;
+  float map[4];
+  float uvc[4];
+};
+
+static int *donor_of_buf;
+static size_t donor_of_cap;
+static int donor_elig_tids[MB_MAX_DONORS];
+static int donor_elig_n;
+static int donor_delegated_count;
+static int donor_plan_ready;
+static uint32_t donor_slot_mask;
+static int last_captured_slot = -1;
+
+static int is_donor_elig_tid(int tid) {
+  for (int i = 0; i < donor_elig_n; i++) {
+    if (donor_elig_tids[i] == tid) return 1;
+  }
+  return 0;
+}
+
+static int compute_donor_plan(const float *f, int32_t count, float vp_w, float vp_h, float sc) {
+  donor_elig_n = 0;
+  donor_delegated_count = 0;
+  if (count <= 0 || !f) return 0;
+  if ((size_t)count > donor_of_cap) {
+    donor_of_cap = (size_t)count;
+    donor_of_buf = (int *)realloc(donor_of_buf, donor_of_cap * sizeof(int));
+  }
+  if (!donor_of_buf) {
+    donor_of_cap = 0;
+    return 0;
+  }
+  memset(donor_of_buf, 0, (size_t)count * sizeof(int));
+  WinDonorCand elig[MB_MAX_DONORS];
+  int n_elig = 0;
+  int32_t cur_glass_start = -1;
+  int cur_glass_kind = 0, cur_glass_tid = 0;
+  float pad = 1.0f / (sc > 0.0f ? sc : 1.0f);
+  for (int32_t i = 0; i < count; ) {
+    const float *p = f + (size_t)i * MB_INST;
+    int kind = (int)(p[5] + 0.5f);
+    if (kind == 8) {
+      int32_t child_n = (int32_t)(p[12] + 0.5f);
+      if (child_n < 0) child_n = 0;
+      if (i + 1 + child_n > count) child_n = count - i - 1;
+      i += 1 + child_n;
+      continue;
+    }
+    int tid = (int)p[20];
+    if (tid < 0 && kind == 5 && p[22] < -0.5f && n_elig < MB_MAX_DONORS &&
+        p[11] <= 0.001f && p[15] >= 0.999f && fabsf(p[6] - 1.0f) <= 0.001f &&
+        p[12] == 0.0f && p[13] == 0.0f && p[14] == 0.0f && p[32] == 0.0f &&
+        p[24] == 0.0f && p[25] == 0.0f && p[26] == 0.0f && p[27] == 0.0f &&
+        p[44] == 0.0f && p[45] == 0.0f && p[46] == 0.0f && p[47] == 0.0f &&
+        p[4] == 0.0f && p[36] == 0.0f && p[37] == 0.0f && p[38] == 0.0f && p[39] == 0.0f) {
+      float vx0 = fmaxf(p[0], p[16]), vy0 = fmaxf(p[1], p[17]);
+      float vx1 = fminf(p[0] + p[2], p[18]), vy1 = fminf(p[1] + p[3], p[19]);
+      if (vx1 > vx0 && vy1 > vy0) {
+        int occ = 0;
+        for (int32_t k = 0; k < count; k++) {
+          if ((int)f[(size_t)k * MB_INST + 20] == tid) {
+            if (++occ > 1) break;
+          }
+        }
+        if (occ == 1) {
+          elig[n_elig].idx = i;
+          elig[n_elig].tid = tid;
+          elig[n_elig].vx0 = vx0;
+          elig[n_elig].vy0 = vy0;
+          elig[n_elig].vx1 = vx1;
+          elig[n_elig].vy1 = vy1;
+          donor_elig_tids[n_elig] = tid;
+          n_elig++;
+        }
+      }
+    }
+    if ((kind == 5 || kind == 6) && tid < 0 && tid != cur_glass_tid) {
+      cur_glass_start = i;
+      cur_glass_kind = kind;
+      cur_glass_tid = tid;
+    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+               cur_glass_kind == 6 && n_elig > 0) {
+      float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
+                     fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
+      if (dr[2] > dr[0] && dr[3] > dr[1]) {
+        float cx, cy, hx, hy;
+        if (kind == 7) {
+          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
+          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+        } else if (kind == 10) {
+          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
+          hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
+        } else {
+          cx = p[0] + p[2] * 0.5f + p[6]; cy = p[1] + p[3] * 0.5f + p[7];
+          hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
+        }
+        float sr[4] = {fmaxf(cx - 0.76f * hx - pad, 0.0f), fmaxf(cy - 0.60f * hy - pad, 0.0f),
+                       fminf(cx + 0.76f * hx + pad, vp_w), fminf(cy + 0.60f * hy + pad, vp_h)};
+        if (sr[2] > sr[0] && sr[3] > sr[1]) {
+          float req[4] = {fminf(dr[0], sr[0]), fminf(dr[1], sr[1]),
+                          fmaxf(dr[2], sr[2]), fmaxf(dr[3], sr[3])};
+          for (int di = n_elig - 1; di >= 0; di--) {
+            const WinDonorCand *d = &elig[di];
+            if (d->idx >= cur_glass_start) continue;
+            if (d->vx0 <= req[0] && d->vy0 <= req[1] && d->vx1 >= req[2] && d->vy1 >= req[3]) {
+              int occluded = 0;
+              for (int32_t j = d->idx + 1; j < cur_glass_start; ) {
+                const float *bj = f + (size_t)j * MB_INST;
+                int kj = (int)(bj[5] + 0.5f);
+                if (kj == 12) { j++; continue; }
+                if (kj == 8) {
+                  int32_t cn = (int32_t)(bj[12] + 0.5f);
+                  if (cn < 0) cn = 0;
+                  if (j + 1 + cn > count) cn = count - j - 1;
+                  if (bj[32] != 0.0f) { occluded = 1; break; }
+                  float lm = fmaxf(bj[7], 0.0f) * 3.0f + fmaxf(bj[14], 0.0f) + 4.0f;
+                  float lx0 = bj[0], ly0 = bj[1], lx1 = bj[0] + bj[2], ly1 = bj[1] + bj[3];
+                  for (int32_t ci = j + 1; ci < j + 1 + cn; ci++) {
+                    const float *cb = f + (size_t)ci * MB_INST;
+                    int ck = (int)(cb[5] + 0.5f);
+                    if (ck == 12 || cb[2] <= 0.0f || cb[3] <= 0.0f) continue;
+                    if (cb[0] < lx0) lx0 = cb[0];
+                    if (cb[1] < ly0) ly0 = cb[1];
+                    if (cb[0] + cb[2] > lx1) lx1 = cb[0] + cb[2];
+                    if (cb[1] + cb[3] > ly1) ly1 = cb[1] + cb[3];
+                  }
+                  if (lx1 + lm > sr[0] && lx0 - lm < sr[2] && ly1 + lm > sr[1] && ly0 - lm < sr[3]) {
+                    occluded = 1;
+                    break;
+                  }
+                  j += 1 + cn;
+                  continue;
+                }
+                if (kj == 9) {
+                  if (reaches(f, j, j, sr)) { occluded = 1; break; }
+                  j++;
+                  continue;
+                }
+                int32_t run_j = j;
+                float tid_j = bj[20];
+                if (tid_j < 0.0f) {
+                  while (run_j > 0 && f[(size_t)(run_j - 1) * MB_INST + 20] == tid_j) run_j--;
+                }
+                if (reaches(f, j, run_j, sr)) { occluded = 1; break; }
+                j++;
+              }
+              if (!occluded) {
+                donor_of_buf[i] = d->tid;
+                donor_delegated_count++;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+    i++;
+  }
+  donor_elig_n = n_elig;
+  return donor_delegated_count;
+}
+
 static int slot_fill(const Grab *m, unsigned frame_clock) {
   level *Lp = grab_blurred(m);
-  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
+  int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = -1;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
-    if (gslots[j].used < gslots[fallback].used) fallback = j;
+    if (donor_slot_mask & (1u << j)) continue;
+    if (fallback < 0 || gslots[j].used < gslots[fallback].used) fallback = j;
     if (gslots[j].used > frame_clock) continue;
     int has_bt = gslots[j].bt.t != NULL;
     int same_tex = has_bt && gslots[j].bt.w == Lp->w && gslots[j].bt.h == Lp->h && gslots[j].bt.fmt == Lp->fmt;
@@ -3562,10 +3765,12 @@ static int blur_grab(ID3D11RenderTargetView *target, const Grab *m) {
 // what the run [start, end) of glass sees, from target (pw × ph) into gsrv and gu, frosted glass of the same capture
 // further on (glass.mbt shares_capture) too; 0 when none of it shows. Sets *switched if GPU render target changed.
 static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *f, int32_t start, int32_t end,
-                   int32_t count, int32_t pieces, const float *bg, unsigned frame_clock, int *switched) {
+                   int32_t count, int32_t pieces, const float *bg, unsigned frame_clock, int *switched,
+                   const int *donor_of) {
   *switched = 0;
+  last_captured_slot = -1;
   Grab m;
-  if (!grab_of(&m, f, start, end, count, pw, ph)) return 0;
+  if (!grab_of_with_donors(&m, f, start, end, count, pw, ph, donor_of)) return 0;
   // (a capture outside the part drawn: neither copied nor drawn. One that meets it is in it whole: @damage)
   if (cut_on && (m.px0 + m.w <= cut.left || cut.right <= m.px0 || m.py0 + m.h <= cut.top || cut.bottom <= m.py0)) return 0;
   double key[7] = {(double)pw, (double)ph, vscale, (double)bg[0], (double)bg[1], (double)bg[2], 1.0};
@@ -3587,6 +3792,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
       show_blur(&m, L);
     }
   }
+  last_captured_slot = slot;
   WinAdPend ad_pend[MB_ADAPTIVE_MAX];
   int ad_n_upd = ad_collect_and_match(rw, f, start, count, reblurred, (uintptr_t)gsrv, ad_cur_dt,
                                       rw ? rw->ad_frame_serial : 0, ad_pend);
@@ -3736,6 +3942,14 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   }
   // one draw per run of instances showing the same image (slot 20; 0: none, the atlas stands in) of one kind (its
   // pixel shader: kind_ps), or sharing one capture of glass (negative)
+  if (!donor_plan_ready) {
+    compute_donor_plan(f, count, (float)(vw > 0 ? vw : (double)pw / (vscale > 0.0 ? vscale : 1.0)),
+                       (float)(vh > 0 ? vh : (double)ph / (vscale > 0.0 ? vscale : 1.0)), (float)vscale);
+  }
+  const int *donor_of = (count > 0 && donor_of_buf) ? donor_of_buf : NULL;
+  WinDonorLive donors[MB_MAX_DONORS];
+  int n_donors = 0;
+  donor_slot_mask = 0;
   int32_t start = 0;
   int bound = 0, shows = 0, levels_sized = 0;
   unsigned frame_clock = gslots_clock;
@@ -3751,6 +3965,14 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
         levels_sized = 1;
         int max_w = 0, max_h = 0, scan_bound = 0;
         for (int32_t s0 = start; s0 < count;) {
+          int sk = (int)(f[s0 * MB_INST + 5] + 0.5f);
+          if (sk == 8) {
+            int32_t cn = (int32_t)(f[s0 * MB_INST + 12] + 0.5f);
+            if (cn < 0) cn = 0;
+            if (s0 + 1 + cn > count) cn = count - s0 - 1;
+            s0 += 1 + cn;
+            continue;
+          }
           int stid = (int)f[s0 * MB_INST + 20];
           int32_t e0 = s0 + 1;
           if (stid < 0) {
@@ -3758,7 +3980,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
             if (stid != scan_bound) {
               scan_bound = stid;
               Grab gm;
-              if (grab_of(&gm, f, s0, e0, count, pw, ph) &&
+              if (grab_of_with_donors(&gm, f, s0, e0, count, pw, ph, donor_of) &&
                   (!cut_on || !(gm.px0 + gm.w <= cut.left || cut.right <= gm.px0 || gm.py0 + gm.h <= cut.top || cut.bottom <= gm.py0))) {
                 if (gm.w > max_w) max_w = gm.w;
                 if (gm.h > max_h) max_h = gm.h;
@@ -3771,8 +3993,18 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
       }
       if (tid != bound) {
         int switched = 0;
-        shows = capture(target, pw, ph, f, start, end, count, pieces, bg, frame_clock, &switched);
+        shows = capture(target, pw, ph, f, start, end, count, pieces, bg, frame_clock, &switched, donor_of);
         bound = tid;
+        if (shows && last_captured_slot >= 0 && last_captured_slot < MB_GLASS_SLOTS &&
+            is_donor_elig_tid(tid) && n_donors < MB_MAX_DONORS && gsrv) {
+          donor_slot_mask |= (1u << last_captured_slot);
+          donors[n_donors].tid = tid;
+          donors[n_donors].slot_idx = last_captured_slot;
+          donors[n_donors].srv = gsrv;
+          memcpy(donors[n_donors].map, gu.map, sizeof gu.map);
+          memcpy(donors[n_donors].uvc, gu.uvc, sizeof gu.uvc);
+          n_donors++;
+        }
         if (switched) {
           main_state(target, pw, ph);
         } else if (shows) {
@@ -3900,10 +4132,12 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
       continue;
     }
     // (kinds without their own pixel shader one run, as before)
+    int run_donor = donor_of ? donor_of[start] : 0;
     end = start + 1;
     while (end < count && (int)f[end * MB_INST + 20] == tid) {
       int k = (int)(f[end * MB_INST + 5] + 0.5f);
       if (k == 8 || (k == 9) != hole || (own ? k != kind : has_own_ps(k))) break;
+      if ((donor_of ? donor_of[end] : 0) != run_donor) break;
       end++;
     }
     // (a hole's image is its view's, src/hostapi/host.mbt view_tex_base + its id: the view is under the canvas here)
@@ -3916,6 +4150,24 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
       continue;
     }
     if (!hole && tid > 0 && tid <= MB_STREAM_TEX && !t) encode_missing = 1;
+    int swapped_donor = 0;
+    float prev_map_d[4], prev_uvc_d[4];
+    if (run_donor < 0) {
+      for (int di = 0; di < n_donors; di++) {
+        if (donors[di].tid == run_donor && donors[di].srv) {
+          memcpy(prev_map_d, gu.map, sizeof gu.map);
+          memcpy(prev_uvc_d, gu.uvc, sizeof gu.uvc);
+          memcpy(gu.map, donors[di].map, sizeof gu.map);
+          memcpy(gu.uvc, donors[di].uvc, sizeof gu.uvc);
+          ctx->UpdateSubresource(gbuf, 0, NULL, &gu, 0, 0);
+          ID3D11ShaderResourceView *dsrv = donors[di].srv;
+          ctx->PSSetShaderResources(2, 1, &dsrv);
+          ctx->VSSetShaderResources(2, 1, &dsrv);
+          swapped_donor = 1;
+          break;
+        }
+      }
+    }
     ctx->PSSetShaderResources(1, 1, t ? &t : &atlas_srv);
     ID3D11PixelShader *run = own ? kind_ps(kind) : ps;
     ctx->PSSetShader(run, NULL, 0);
@@ -3923,8 +4175,17 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
     if (hole) ctx->DrawInstanced(6, (UINT)(end - start), 0, (UINT)start);
     else draw_banded(f, start, end, count, pw, ph, run);
     if (hole) ctx->OMSetBlendState(blend, NULL, 0xffffffff);
+    if (swapped_donor) {
+      memcpy(gu.map, prev_map_d, sizeof gu.map);
+      memcpy(gu.uvc, prev_uvc_d, sizeof gu.uvc);
+      ctx->UpdateSubresource(gbuf, 0, NULL, &gu, 0, 0);
+      ID3D11ShaderResourceView *bsrv = gsrv ? gsrv : atlas_srv;
+      ctx->PSSetShaderResources(2, 1, &bsrv);
+      ctx->VSSetShaderResources(2, 1, &bsrv);
+    }
     start = end;
   }
+  donor_slot_mask = 0;
   if (cut_on) ctx->RSSetState(raster);
   cut_on = 0;
 }
@@ -4254,8 +4515,12 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     kept = &canvas_ok;
   }
   D3D11_RECT parts[MB_PARTS];
+  compute_donor_plan(last_inst, count, (float)(vw > 0 ? vw : (double)fb_w / (vscale > 0.0 ? vscale : 1.0)),
+                     (float)(vh > 0 ? vh : (double)fb_h / (vscale > 0.0 ? vscale : 1.0)), (float)vscale);
+  donor_plan_ready = 1;
   if (adaptive_damage && !dirty_whole &&
-      !mb_glass_damage_expand(last_inst, count, dirty, &dirty_n, fb_w / vscale, fb_h / vscale, vscale)) dirty_whole = 1;
+      !mb_glass_damage_expand(last_inst, count, dirty, &dirty_n, fb_w / vscale, fb_h / vscale, vscale,
+                              count > 0 ? donor_of_buf : NULL)) dirty_whole = 1;
   int np = take_parts(fb_w, fb_h, *kept, parts);
   int missing = 0;
   if (np < 0) {
@@ -4266,6 +4531,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     encode(target, fb_w, fb_h, count, last_bg, last_inst, &parts[i]);
     missing |= encode_missing;
   }
+  donor_plan_ready = 0;
   if (np != 0) pictures_missing = missing;
   *kept = 1;
   if (parts_out) *parts_out = np;
@@ -4429,8 +4695,12 @@ int mb_render_adaptive_step(int wid) {
                            rw->ad_slots[i].cy - rw->ad_slots[i].hy - 4.0,
                            rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
   }
+  compute_donor_plan(last_inst, last_count, (float)(vw > 0 ? vw : (double)fb_w / (vscale > 0.0 ? vscale : 1.0)),
+                     (float)(vh > 0 ? vh : (double)fb_h / (vscale > 0.0 ? vscale : 1.0)), (float)vscale);
+  donor_plan_ready = 1;
   if (!dirty_whole && !mb_glass_damage_expand(last_inst, last_count, dirty, &dirty_n,
-                                               fb_w / vscale, fb_h / vscale, vscale)) dirty_whole = 1;
+                                               fb_w / vscale, fb_h / vscale, vscale,
+                                               last_count > 0 ? donor_of_buf : NULL)) dirty_whole = 1;
   ad_mode = 1;
   ad_cur_dt = ad_next_dt(rw);
   rw->ad_frame_serial++;
@@ -4440,6 +4710,7 @@ int mb_render_adaptive_step(int wid) {
   int np = canvas_rtv ? take_parts(fb_w, fb_h, canvas_ok, parts) : -1;
   if (np < 0) encode(target, fb_w, fb_h, last_count, last_bg, last_inst);
   else for (int i = 0; i < np; i++) encode(target, fb_w, fb_h, last_count, last_bg, last_inst, &parts[i]);
+  donor_plan_ready = 0;
   if (canvas_rtv) {
     canvas_ok = 1;
     ID3D11Resource *back_res = NULL;
