@@ -1,0 +1,420 @@
+// 1:1 port of `station/mb/src/acp/cases_test.mbt` + lone-surrogate UTF-16 round-trip tests.
+
+import "js_json"
+import "live_wire"
+
+fn acp_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn u32_to_hex_acp(x : Int64) -> String {
+  let v = x & 0xFFFFFFFFL
+  if v == 0L {
+    return "0"
+  }
+  let hex = "0123456789abcdef".to_bytes()
+  let rev : Array[Byte] = []
+  let mut cur = v
+  while cur > 0L {
+    let d = (cur & 0xFL).to_int()
+    rev.push(hex[d])
+    cur = cur >> 4
+  }
+  let sb = StringBuilder::new()
+  let mut i = rev.length() - 1
+  while i >= 0 {
+    sb.write_byte(rev[i])
+    i = i - 1
+  }
+  sb.to_string()
+}
+
+fn long_u16_acp(n : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<n {
+    if i % 7 == 3 {
+      out.push(0xD83D)
+      out.push(0xDE00)
+    } else {
+      out.push(0x61 + (i % 26))
+    }
+  }
+  out
+}
+
+fn expand_acp(v : js_json::JValue) -> js_json::JValue {
+  match v {
+    js_json::JValue::Str(u) => {
+      let s = js_json::sanitize_str(u)
+      if s.starts_with("<<long:") && s.ends_with(">>") {
+        let bs = s.to_bytes()
+        let mut n = 0
+        for i in 7..<(bs.length() - 2) {
+          n = n * 10 + ((bs[i].to_int() & 0xFF) - 0x30)
+        }
+        js_json::JValue::Str(long_u16_acp(n))
+      } else {
+        v
+      }
+    }
+    js_json::JValue::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<items.length() {
+        out.push(expand_acp(items[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    js_json::JValue::Obj(fields) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        out.push((k, expand_acp(fv)))
+      }
+      js_json::JValue::Obj(out)
+    }
+    other => other
+  }
+}
+
+fn folded_acp(v : js_json::JValue) -> js_json::JValue {
+  match v {
+    js_json::JValue::Str(u) => {
+      if u.length() > 512 {
+        let mut h : Int64 = 0x811C9DC5L
+        for i in 0..<u.length() {
+          h = ((h ^ (u[i].to_int64() & 0xFFFFL)) * 0x01000193L) & 0xFFFFFFFFL
+        }
+        live_wire::jstr("<<" + u.length().to_string() + ":" + u32_to_hex_acp(h) + ">>")
+      } else {
+        v
+      }
+    }
+    js_json::JValue::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<items.length() {
+        out.push(folded_acp(items[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    js_json::JValue::Obj(fields) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        out.push((k, folded_acp(fv)))
+      }
+      js_json::JValue::Obj(out)
+    }
+    other => other
+  }
+}
+
+fn parsed_acp(s : String) -> js_json::JValue {
+  match js_json::parse(s) {
+    Ok(v) => v
+    Err(e) => panic("not JSON: " + e + " in " + s)
+  }
+}
+
+fn same_acp(what : String, at : Int, got : js_json::JValue, said : String) -> Unit {
+  let a = js_json::stringify_with_num(folded_acp(got), acp_fmt_num)
+  let b = js_json::stringify_with_num(parsed_acp(said), acp_fmt_num)
+  if a != b {
+    panic(what + " of step " + at.to_string() + ":\n got  " + a + "\n said " + b)
+  }
+}
+
+let NOW_ACP : Double = 1700000000000.0
+
+fn text_u16_of(v : Option[js_json::JValue]) -> Array[Int] {
+  match v {
+    Some(js_json::JValue::Str(u)) => u
+    _ => []
+  }
+}
+
+fn text_str_of(v : Option[js_json::JValue]) -> String {
+  match v {
+    Some(js_json::JValue::Str(u)) => js_json::sanitize_str(u)
+    _ => ""
+  }
+}
+
+fn is_bool_true(v : Option[js_json::JValue]) -> Bool {
+  match v {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+}
+
+test "parse_acp: each line as the TypeScript read it" {
+  let mut s = Session::new("grok", false)
+  let steps = steps_said()
+  for at in 0..<steps.length() {
+    let (line, events, node, turn, state) = steps[at]
+    let v = expand_acp(parsed_acp(line))
+    let mut got : Array[js_json::JValue] = []
+    let mut read = false
+    match v.get("$new") {
+      Some(n) => s = Session::new(text_str_of(n.get("flavor")), is_bool_true(n.get("kept")))
+      None => {
+        match v.get("$prompt") {
+          Some(p) => {
+            got = s.prompted(
+              text_u16_of(p.get("owner")),
+              text_u16_of(p.get("text")),
+              now=Some(fn() -> Double { NOW_ACP }),
+            )
+          }
+          None => {
+            match v.get("$resend") {
+              Some(p) => got = s.resent(text_u16_of(p.get("owner")))
+              None => {
+                match v.get("$inject") {
+                  Some(p) => {
+                    got = s.injected(
+                      text_u16_of(p.get("id")),
+                      is_bool_true(p.get("takeOver")),
+                      text_u16_of(p.get("text")),
+                    )
+                  }
+                  None => {
+                    match v.get("$session") {
+                      Some(js_json::JValue::Str(id)) => s.session = id
+                      _ => {
+                        match v.get("$opened") {
+                          Some(o) => s.opened(resumed=is_bool_true(o.get("resumed")))
+                          None => {
+                            match v.get("$aborting") {
+                              Some(_) => s.turn.aborting = true
+                              None => {
+                                match v.get("$cut") {
+                                  Some(_) => got = s.cut_short()
+                                  None => {
+                                    let said = s.line_with(v, fn() -> Double { NOW_ACP }, acp_fmt_num)
+                                    got = said.events
+                                    read = said.node
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    same_acp("events", at, js_json::JValue::Arr(got), events)
+    let read_s = if read { "true" } else { "false" }
+    if read_s != node {
+      panic("whether Node reads step " + at.to_string() + ": " + read_s + ", node said " + node)
+    }
+    same_acp("turn", at, s.turn.json(), turn)
+    same_acp("state", at, s.state(), state)
+  }
+}
+
+test "parse_acp: what a crash reads again as the TypeScript read it" {
+  let replays = replays_said()
+  for at in 0..<replays.length() {
+    let (lines, result) = replays[at]
+    match expand_acp(parsed_acp(lines)) {
+      js_json::JValue::Arr(all) => {
+        if all.length() == 0 {
+          panic("empty replay")
+        }
+        let (flavor, kept_flag, from_id) = match all[0] {
+          js_json::JValue::Arr(hdr) => {
+            if hdr.length() == 3 {
+              match (hdr[0], hdr[1], hdr[2]) {
+                (js_json::JValue::Str(fl), js_json::JValue::Bool(k), js_json::JValue::Str(fid)) => {
+                  (js_json::sanitize_str(fl), k, fid)
+                }
+                _ => panic("bad replay header")
+              }
+            } else {
+              panic("bad replay header length")
+            }
+          }
+          _ => panic("not replay header")
+        }
+        let replay = Replay::new(flavor, kept_flag, from_id)
+        for i in 1..<all.length() {
+          replay.line_with(all[i], acp_fmt_num)
+        }
+        let usages = replay.finish_with(fn() -> Double { NOW_ACP }, acp_fmt_num)
+        let session = replay.session()
+        let opened_val = match replay.opened() {
+          Some(o) => o
+          None => js_json::JValue::Null
+        }
+        let got = live_wire::obj([
+          ("session", live_wire::jstr_u16(session.session)),
+          ("turn", session.turn.json()),
+          ("live", session.state()),
+          ("opened", opened_val),
+          ("usages", js_json::JValue::Arr(usages)),
+        ])
+        same_acp("replay", at, got, result)
+      }
+      _ => panic("not lines")
+    }
+  }
+}
+
+test "parse_acp: lone surrogate round-trip preserves distinct \\ud800 and \\ud801" {
+  let s = Session::new("agy", true)
+  s.session = js_json::utf16_units("s-1")
+  s.opened(resumed=false)
+  let _ = s.prompted(js_json::utf16_units("prompt:p1"), [0x68, 0x69, 0xD800], now=Some(fn() -> Double { NOW_ACP }))
+  let _ = s.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t\\ud800\",\"title\":\"Run mcp_stillfail_a\\ud800\",\"status\":\"in_progress\",\"rawInput\":{}}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let _ = s.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"t\\ud801\",\"title\":\"Run mcp_stillfail_b\\ud801\",\"status\":\"in_progress\",\"rawInput\":{}}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let sb = StringBuilder::new()
+  js_json::write_utf8_with_num(sb, s.state(), acp_fmt_num)
+  let snap_s = sb.to_string()
+  let again = Session::of_state("agy", true, Some(s.turn.json()), Some(parsed_acp(snap_s)))
+  let sb2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb2, again.state(), acp_fmt_num)
+  if sb2.to_string() != snap_s {
+    panic("acp state roundtrip mismatch:\n got  " + sb2.to_string() + "\n want " + snap_s)
+  }
+  // Completing t\ud800 must leave t\ud801 open
+  let res = again.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"t\\ud800\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"out\\udc00\"}}]}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  if again.live.open.length() != 1 || again.calls.length() != 1 {
+    panic("expected t\\ud801 still open")
+  }
+  let res_s = js_json::stringify_with_num(js_json::JValue::Arr(res.events), acp_fmt_num)
+  if !res_s.contains("\"id\":\"t\\ud800\"") || !res_s.contains("\"result\":\"out\\udc00\"") {
+    panic("missing lossless lone surrogate in acp tool_call_update: " + res_s)
+  }
+}
+
+test "parse_acp: with_field replaces only first duplicate key in hermes_update" {
+  let dup = js_json::JValue::Obj([
+    (js_json::utf16_units("sessionUpdate"), live_wire::jstr("tool_call")),
+    (js_json::utf16_units("title"), live_wire::jstr("a: x")),
+    (js_json::utf16_units("title"), live_wire::jstr("b")),
+  ])
+  match hermes_update(Some(dup)) {
+    Some(js_json::JValue::Obj(entries)) => {
+      let titles : Array[String] = []
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        if live_wire::u16_eq(k, js_json::utf16_units("title")) {
+          match v {
+            js_json::JValue::Str(u) => titles.push(js_json::sanitize_str(u))
+            _ => panic("expected string title")
+          }
+        }
+      }
+      if titles.length() != 2 || titles[0] != "a" || titles[1] != "b" {
+        panic("expected duplicate titles [\"a\", \"b\"], got count=" + titles.length().to_string())
+      }
+    }
+    _ => panic("expected Obj from hermes_update")
+  }
+}
+
+test "parse_acp: kept transcript, Replay::finish_with, plan_of, and under_parent preserve lone surrogates" {
+  // 1. kept transcript: user + take + flush + tool result
+  let s = Session::new("agy", true)
+  s.session = [0x73, 0xD800]
+  s.opened(resumed=false)
+  let p_evs = s.prompted(
+    js_json::utf16_units("prompt:p1"),
+    [0x75, 0xD800],
+    now=Some(fn() -> Double { NOW_ACP }),
+  )
+  let p_s = js_json::stringify_with_num(js_json::JValue::Arr(p_evs), acp_fmt_num)
+  if !p_s.contains("\"type\":\"user\",\"text\":\"u\\ud800\"") {
+    panic("kept user lost lone surrogate: " + p_s)
+  }
+  let _ = s.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s\\ud800\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"say\\ud801\"}}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let end_evs = s.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"id\":\"prompt:p1\",\"result\":{\"stopReason\":\"end_turn\"}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let end_s = js_json::stringify_with_num(js_json::JValue::Arr(end_evs.events), acp_fmt_num)
+  if !end_s.contains("\"type\":\"assistant\",\"text\":\"say\\ud801\"") {
+    panic("kept assistant lost lone surrogate: " + end_s)
+  }
+
+  // 2. plan_of preserves lone surrogate in text and status
+  match plan_of(Some(parsed_acp("{\"entries\":[{\"content\":\"step\\ud800\",\"status\":\"st\\ud801\"}]}"))) {
+    Some(p) => {
+      let ps = js_json::stringify_with_num(p, acp_fmt_num)
+      if ps != "[{\"text\":\"step\\ud800\",\"status\":\"st\\ud801\"}]" {
+        panic("plan_of lost lone surrogate: " + ps)
+      }
+    }
+    None => panic("expected Some plan")
+  }
+
+  // 3. under_parent via Grok subagent_spawned + child update preserves lone surrogates in child & parent
+  let g = Session::new("grok", false)
+  g.session = js_json::utf16_units("g-1")
+  g.opened(resumed=false)
+  let _ = g.prompted(js_json::utf16_units("prompt:g1"), js_json::utf16_units("go"), now=Some(fn() -> Double { NOW_ACP }))
+  let _ = g.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"g-1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"p\\ud800\",\"title\":\"spawn\",\"status\":\"in_progress\",\"rawInput\":{}}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let _ = g.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"_x.ai/session_notification\",\"params\":{\"sessionId\":\"g-1\",\"update\":{\"sessionUpdate\":\"subagent_spawned\",\"child_session_id\":\"ch\\ud801\"}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let sub_res = g.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"ch\\ud801\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"sub\\udc00\"}}}}"),
+    fn() -> Double { NOW_ACP },
+    acp_fmt_num,
+  )
+  let sub_s = js_json::stringify_with_num(js_json::JValue::Arr(sub_res.events), acp_fmt_num)
+  if !sub_s.contains("\"id\":\"sub:ch\\ud801:said:1/text\"") ||
+  !sub_s.contains("\"parent\":\"call:p\\ud800\"") ||
+  !sub_s.contains("\"text\":\"sub\\udc00\"") {
+    panic("under_parent lost lone surrogate: " + sub_s)
+  }
+
+  // 4. Replay::finish_with preserves lone surrogate in session, said, and calls
+  let r = Replay::new("agy", true, [])
+  r.line_with(parsed_acp("{\"jsonrpc\":\"2.0\",\"id\":\"open\",\"result\":{\"sessionId\":\"rs\\ud800\"}}"), acp_fmt_num)
+  r.line_with(
+    parsed_acp("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"rs\\ud800\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"part\\ud801\"}}}}"),
+    acp_fmt_num,
+  )
+  let _ = r.finish_with(fn() -> Double { NOW_ACP }, acp_fmt_num)
+  let rs = js_json::stringify_with_num(r.session().state(), acp_fmt_num)
+  if !rs.contains("\"session\":\"rs\\ud800\"") || !rs.contains("\"text\":\"part\\ud801\"") {
+    panic("Replay::finish_with lost lone surrogate: " + rs)
+  }
+}

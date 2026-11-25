@@ -1,6 +1,6 @@
 // Wave 27 · Track P (Image Viewer Interaction Redesign) deterministic acceptance matrix:
-// - `assert_idle()` after settled entry keeps bars shown (`later=true`), explicit 1799/1800/1800+bar_ms fade,
-//   lock-clear 1800ms re-arm (loading, menu, bar focus, a11y), window-leave immediate fade, step/unmount cancellation
+// - `assert_idle()` after settled entry keeps bars shown, never fading by themselves however long the hand rests;
+//   locks (loading, menu, bar focus, screen reader) hold them, the pointer leaving the window keeps them
 // - Per-side 84pt hot zones lighting only that side's arrow (opposite side hidden/unclickable/unreachable),
 //   hard suppression in zoomed & marking states, embedded image tab zero-regression
 // - Full-bleed stage & tall image entering/leaving marking: actual drawn rect `(x, y, w, h)` and pin screen position
@@ -9,16 +9,11 @@
 //   manual_hidden anti-rebound vs full-bleed Esc close; touch tap inside/outside toggles bars including Duo fitted)
 
 ///|
-let idle_tick_ms : Double = 1.0
-
-///|
 let idle_margin_ms : Double = 100.0
 
 ///|
-let idle_step_before_ms : Double = @sfbase.image_idle_ms * 0.55
-
-///|
-let idle_step_past_old_ms : Double = @sfbase.image_idle_ms * 0.5
+/// A long rest of the hand: the bars never fade by themselves however long it is.
+let hand_rest_ms : Double = 10000.0
 
 ///|
 let wheel_half_rest_ms : Double = 80.0
@@ -33,35 +28,27 @@ let twice_mid_ms : Double = 50.0
 fn open_settled_desk_image(what : String, w? : Double = 1280.0, h? : Double = 800.0) -> (@ui.Tester, Viewer) {
   let t = preview_tester(what, w~, platform=0)
   ignore(h)
-  // Settle any entry fade/flight so `assert_idle()` specifically verifies `later=true` on the idle auto-fade timer.
+  // Settle any entry fade/flight so `assert_idle()` sees nothing left moving.
   t.run_for(@ui.move_most_ms)
   let v = viewer.get().unwrap()
   (t, v)
 }
 
 ///|
-test "Track P: settled image viewer passes assert_idle with bars shown, then fades deterministically at 1799/1800/1800+bar_ms" {
+test "Track P: settled image viewer passes assert_idle with bars shown, and never fades them by itself" {
   let (t, v) = open_settled_desk_image("image")
   t.assert_idle()
-  assert_true(v.bars_shown(), msg="settled entry: bars still shown while later=true timer is pending")
-  // Measure remaining time from viewer open (settled moved clock forward by move_most_ms)
-  // Re-arm via center pointer move so we test exact 1799 / 1800 / 1800+viewer_bar_ms deltas from a known cause moment.
+  assert_true(v.bars_shown(), msg="settled entry: bars shown")
   t.move_to(640.0, 400.0)
   t.draw()
+  t.run_for(hand_rest_ms)
   t.assert_idle()
-  assert_true(v.bars_shown(), msg="after center move: bars shown and idle")
-  t.run_for(@sfbase.image_idle_ms - idle_tick_ms)
-  assert_true(v.bars_shown(), msg="at 1799ms: bars still shown")
-  t.run_for(idle_tick_ms)
-  assert_true(!v.bars_shown(), msg="at 1800ms: bars begin auto-fade")
-  t.run_for(@sf.viewer_bar_ms + @sf.sleep_ms)
-  t.assert_idle()
-  assert_true(!v.bars_shown(), msg="after fade completes: bars hidden and idle")
+  assert_true(v.bars_shown(), msg="after a long rest: bars still shown")
 }
 
 ///|
-test "Track P: desktop locks (menu, bar focus, image loading, a11y_on) hold bars and re-arm full 1800ms on release" {
-  // 1. Context menu lock & re-arm
+test "Track P: desktop locks (menu, bar focus, image loading, screen reader) hold bars, which stay on release" {
+  // 1. Context menu lock
   let (t, v) = open_settled_desk_image("image")
   t.move_to(640.0, 400.0)
   t.draw()
@@ -69,19 +56,15 @@ test "Track P: desktop locks (menu, bar focus, image loading, a11y_on) hold bars
   t.right_click(rx + rw / 2.0, ry + rh / 2.0)
   t.run_for(@sf.presented_rest() - t.time())
   assert_true(v.menu_open && v.bars_shown(), msg="menu open locks bars")
-  t.run_for(@sfbase.image_idle_ms + 200.0)
-  assert_true(v.bars_shown(), msg="past 1800ms while menu open: still shown")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="a long rest while menu open: still shown")
   t.key(@ui.key_escape)
   t.run_for(@sf.presented_rest() - t.time() + 10.0)
   assert_true(!v.menu_open, msg="Esc closes menu")
-  // Full 1800ms re-armed from menu close
-  let after_close = t.time()
-  t.run_for(@sfbase.image_idle_ms - 50.0)
-  assert_true(v.bars_shown(), msg="before 1800ms after menu close (t=\{t.time() - after_close}): still shown")
-  t.run_for(idle_margin_ms)
-  assert_true(!v.bars_shown(), msg="at 1800ms after menu close: auto-faded")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="a long rest after menu close: still shown")
 
-  // 2. Bar keyboard focus lock & re-arm
+  // 2. Bar keyboard focus lock
   let (t, v) = open_settled_desk_image("image")
   let mut tabs = 0
   while !v.bar_focused && tabs < 8 {
@@ -90,56 +73,52 @@ test "Track P: desktop locks (menu, bar focus, image loading, a11y_on) hold bars
     tabs += 1
   }
   assert_true(v.bar_focused, msg="Tab moved focus into top bar")
-  t.run_for(@sfbase.image_idle_ms + 200.0)
-  assert_true(v.bars_shown(), msg="past 1800ms while bar focused: still shown")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="a long rest while bar focused: still shown")
   @ui.view_tree().unwrap().focus_to(None) |> ignore
   t.draw()
   assert_true(!v.bar_focused, msg="focus left bar")
-  t.run_for(@sfbase.image_idle_ms - idle_tick_ms)
-  assert_true(v.bars_shown(), msg="1799ms after focus left bar: still shown")
-  t.run_for(idle_tick_ms)
-  assert_true(!v.bars_shown(), msg="1800ms after focus left bar: auto-faded")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="a long rest after focus left bar: still shown")
 
-  // 3. Image loading lock & re-arm
+  // 3. Image loading lock
   let (t, v) = open_settled_desk_image("image")
   let saved_bytes = v.bytes.untracked()
   v.fetching.set(true)
   v.bytes.set(None)
   t.draw()
   assert_true(v.image_loading() && v.bars_shown(), msg="loading locks bars")
-  t.run_for(@sfbase.image_idle_ms + 200.0)
-  assert_true(v.bars_shown(), msg="past 1800ms while loading: still shown")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="a long rest while loading: still shown")
   v.bytes.set(saved_bytes)
   v.fetching.set(false)
   t.draw()
   assert_true(!v.image_loading(), msg="loading finished")
-  t.run_for(@sfbase.image_idle_ms - idle_tick_ms)
-  assert_true(v.bars_shown(), msg="1799ms after load finished: still shown")
-  t.run_for(idle_tick_ms)
-  assert_true(!v.bars_shown(), msg="1800ms after load finished: auto-faded")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="a long rest after load finished: still shown")
 
-  // 4. Plain a11y_on does NOT lock auto-fade; screen_reader_on wakes & locks bars + arrows, and clearing it re-arms full 1800ms
+  // 4. Plain a11y_on does NOT lock the bars (a click on the picture hides them); screen_reader_on wakes & locks bars +
+  // arrows, and clearing it leaves them as the click did
   let (t, v) = open_settled_desk_image("step")
   t.move_to(640.0, 400.0)
   t.draw()
   t.set_a11y(true)
   t.draw()
-  t.run_for(@sfbase.image_idle_ms + idle_tick_ms)
-  assert_true(!v.bars_shown() && !v.step_shown(1), msg="plain set_a11y(true) does NOT block 1800ms auto-fade")
+  let (prx, pry, prw, prh) = v.zoom.rect_at(t.time()).unwrap()
+  t.tap(prx + prw / 2.0, pry + prh / 2.0)
+  t.draw()
+  assert_true(!v.bars_shown() && !v.step_shown(1), msg="plain set_a11y(true) does NOT keep a click from hiding them")
   t.set_a11y(false)
   t.set_screen_reader(true)
   t.draw()
   assert_true(v.bars_shown() && v.step_shown(1), msg="set_screen_reader(true) actively wakes and locks bars and arrows")
-  t.run_for(@sfbase.image_idle_ms + 500.0)
-  assert_true(v.bars_shown() && v.step_shown(1), msg="screen_reader_on holds bars and arrows past 1800ms")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown() && v.step_shown(1), msg="screen_reader_on holds bars and arrows")
   t.set_screen_reader(false)
   t.draw()
-  t.run_for(@sfbase.image_idle_ms - idle_tick_ms)
-  assert_true(v.bars_shown(), msg="1799ms after set_screen_reader(false): full 1800ms grace period still active")
-  t.run_for(idle_tick_ms)
-  assert_true(!v.bars_shown(), msg="1800ms after set_screen_reader(false): auto-fades cleanly")
+  assert_true(!v.bars_shown(), msg="set_screen_reader(false): back to hidden, as the click left them")
 
-  // 5. Tab specifically focuses viewer_bar_node's back button (watched via viewer_bar_watch_back) and holds past 1800ms
+  // 5. Tab specifically focuses viewer_bar_node's back button (watched via viewer_bar_watch_back) and holds the bars
   let (t_back, v_back) = open_settled_desk_image("image")
   t_back.move_to(640.0, 400.0)
   t_back.draw()
@@ -153,30 +132,29 @@ test "Track P: desktop locks (menu, bar focus, image loading, a11y_on) hold bars
   }
   assert_true(back_focused, msg="Tab specifically focused viewer_bar_node back button")
   assert_true(v_back.bar_focused && v_back.bars_shown(), msg="back button focus sets bar_focused")
-  t_back.run_for(@sfbase.image_idle_ms + idle_margin_ms)
-  assert_true(v_back.bar_focused && v_back.bars_shown(), msg="back button focus holds bars past 1800ms")
+  t_back.run_for(hand_rest_ms)
+  assert_true(v_back.bar_focused && v_back.bars_shown(), msg="back button focus holds bars")
 }
 
 ///|
-test "Track P: stepping to another image cancels old idle timer and leaving window fades immediately" {
+test "Track P: stepping to another image keeps the bars, and leaving the window keeps them" {
   let (t, v1) = open_settled_desk_image("step")
   t.move_to(640.0, 400.0)
   t.draw()
   assert_true(v1.bars_shown())
-  // Advance past half of v1's idle deadline, then step to next image
-  t.run_for(idle_step_before_ms)
+  // A while later, step to next image
+  t.run_for(idle_margin_ms)
   t.key(@ui.key_code_right)
   t.draw()
   let v2 = viewer.get().unwrap()
   assert_true(v2.file.name != v1.file.name, msg="stepped to next image")
   assert_true(v2.bars_shown(), msg="v2 starts with bars shown")
-  // Cross v1's old 1800ms deadline: v2 must stay shown because v1's timer was cancelled
-  t.run_for(idle_step_past_old_ms)
-  assert_true(v2.bars_shown(), msg="old timer from v1 was cancelled on step")
-  // Leaving the window fades immediately
+  t.run_for(hand_rest_ms)
+  assert_true(v2.bars_shown(), msg="v2 keeps bars shown after a long rest")
+  // Leaving the window keeps them
   t.move_to(-1.0, -1.0)
   t.draw()
-  assert_true(!v2.bars_shown(), msg="pointer leaving window fades immediately")
+  assert_true(v2.bars_shown(), msg="pointer leaving window keeps them")
 }
 
 ///|
@@ -188,10 +166,11 @@ test "Track P: 84pt left/right hot zones light only their own arrow, zoomed & ma
   let v = viewer.get().unwrap()
   let prev_label = @sf.t("web-main.preview.prevKey")
   let next_label = @sf.t("web-main.preview.nextKey")
-  // Let bars and arrows auto-fade completely
+  // Hide bars and arrows completely: as a click on the picture does (its size may not be known yet)
   t.move_to(640.0, 400.0)
   t.draw()
-  t.run_for(@sfbase.image_idle_ms + @sf.sleep_ms + @sf.viewer_bar_ms)
+  v.toggle()
+  t.run_for(@sf.sleep_ms + @sf.viewer_bar_ms)
   assert_true(!v.bars_shown(), msg="bars faded")
   assert_eq(t.all(Button, label=prev_label).length(), 0, msg="faded: prev unreachable")
   assert_eq(t.all(Button, label=next_label).length(), 0, msg="faded: next unreachable")
@@ -210,7 +189,8 @@ test "Track P: 84pt left/right hot zones light only their own arrow, zoomed & ma
   let v2 = viewer.get().unwrap()
   t2.move_to(640.0, 400.0)
   t2.draw()
-  t2.run_for(@sfbase.image_idle_ms + @sf.sleep_ms + @sf.viewer_bar_ms)
+  v2.toggle()
+  t2.run_for(@sf.sleep_ms + @sf.viewer_bar_ms)
   t2.move_to(1280.0 - 24.0, 400.0)
   t2.run_for(@sf.wake_ms)
   assert_true(!v2.bars_shown(), msg="right 84pt zone does NOT wake top bar")
@@ -353,7 +333,8 @@ test "Track P: desktop click boundaries (blank closes, 84pt zone blank & unknown
   let (t, _) = open_settled_desk_image("step")
   t.move_to(640.0, 400.0)
   t.draw()
-  t.run_for(@sfbase.image_idle_ms + @sf.sleep_ms + @sf.viewer_bar_ms)
+  t.tap(640.0, 400.0)
+  t.run_for(@ui.double_click_ms + @sf.sleep_ms + @sf.viewer_bar_ms)
   // Click in right 84pt zone at y=150 (blank space away from the middle arrow button)
   t.tap(1280.0 - 30.0, 150.0)
   t.run_for(@ui.double_click_ms + 50.0)
@@ -423,93 +404,33 @@ test "Track P: touch single tap inside or outside picture toggles bars (includin
 }
 
 ///|
-test "Track P R1: crossing wide/narrow breakpoint preserves new layer idle timer on same Viewer" {
+test "Track P R1: crossing wide/narrow breakpoint keeps the bars on the same Viewer, never fading by themselves" {
   let (t, v) = open_settled_desk_image("image", w=1280.0)
   t.move_to(640.0, 400.0)
   t.draw()
   assert_true(v.bars_shown(), msg="bars shown before breakpoint resize")
-  // Advance past half of old 1800ms deadline, then resize across wide -> narrow breakpoint on the same Viewer
-  t.run_for(idle_step_before_ms)
+  t.run_for(idle_margin_ms)
   t.resize_next(480.0, 800.0)
   t.draw()
   assert_true(physical_equal(viewer.get().unwrap(), v), msg="same Viewer preserved across breakpoint")
   assert_true(v.bars_shown(), msg="bars still shown right after crossing breakpoint")
-  // Cross old deadline (still inside new 1800ms deadline)
-  t.run_for(idle_step_past_old_ms)
-  assert_true(v.bars_shown(), msg="still shown past old deadline")
-  // Advance to 1ms before new 1800ms deadline, then 1ms past it
-  let remaining_before = @sfbase.image_idle_ms - idle_step_past_old_ms - idle_tick_ms
-  t.run_for(remaining_before)
-  assert_true(v.bars_shown(), msg="1ms before new 1800ms deadline: still shown")
-  t.run_for(idle_tick_ms)
-  assert_true(!v.bars_shown(), msg="at new 1800ms deadline: auto-faded cleanly")
+  t.run_for(hand_rest_ms)
+  assert_true(v.bars_shown(), msg="still shown after a long rest")
 }
 
 ///|
-test "Track P R1: auto-faded state restores full 1800ms after in-window lock (context menu) clears" {
-  let (t, v) = open_settled_desk_image("image")
-  t.move_to(640.0, 400.0)
-  t.draw()
-  // Let bars auto-fade completely while pointer rests in image center
-  t.run_for(@sfbase.image_idle_ms + @sf.viewer_bar_ms)
-  assert_true(!v.bars_shown(), msg="bars auto-faded while pointer rests in center")
-  // Right-click in place to open context menu (locks bars visible even though awake was false)
-  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
-  t.right_click(rx + rw / 2.0, ry + rh / 2.0)
-  t.run_for(@sf.presented_rest() - t.time())
-  assert_true(v.menu_open && v.bars_shown(), msg="context menu locks bars visible from auto-faded state")
-  // Press Esc to close menu: must restore awake and grant full 1800ms (not vanish immediately)
-  t.key(@ui.key_escape)
-  t.run_for(@sf.presented_rest() - t.time() + idle_tick_ms)
-  assert_true(!v.menu_open && v.bars_shown(), msg="after Esc closes menu: bars stay visible for full 1800ms")
-  t.run_for(@sfbase.image_idle_ms - idle_margin_ms)
-  assert_true(v.bars_shown(), msg="before 1800ms after menu close: still shown")
-  t.run_for(idle_margin_ms + idle_tick_ms)
-  assert_true(!v.bars_shown(), msg="past 1800ms after menu close: auto-faded")
-}
-
-///|
-test "Track P R1: clicking picture 1ms before idle deadline commits hide without inversion by the old idle timer" {
+test "Track P R1: Tab wakes a top bar a click hid" {
   let (t, v) = open_settled_desk_image("image")
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
-  let cx = rx + rw / 2.0
-  let cy = ry + rh / 2.0
-  t.move_to(cx, cy)
-  t.draw()
-  assert_true(v.bars_shown(), msg="bars visible after center move")
-  // Advance to 1ms before the 1800ms idle deadline, then click picture to hide bars
-  t.run_for(@sfbase.image_idle_ms - idle_tick_ms)
-  assert_true(v.bars_shown(), msg="1ms before deadline: bars still visible")
-  t.tap(cx, cy)
-  // Cross the old idle deadline
-  t.run_for(@ui.double_click_ms + idle_margin_ms)
-  assert_true(!v.bars_shown(), msg="click intent preserved as hidden (not inverted by old idle timer)")
-  assert_true(v.manual_hidden, msg="manual_hidden set so still cursor does not rebound")
-}
-
-///|
-test "Track P R1: Tab wakes faded top bar, pointer click on top bar does not lock auto-fade via focus_shown" {
-  let (t, v) = open_settled_desk_image("image")
   t.move_to(640.0, 400.0)
   t.draw()
-  t.run_for(@sfbase.image_idle_ms + @sf.viewer_bar_ms)
-  assert_true(!v.bars_shown(), msg="bars auto-faded")
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sf.viewer_bar_ms)
+  assert_true(!v.bars_shown(), msg="bars hidden by a click")
   // Tab from hidden state wakes top bar immediately
   t.key(@ui.key_tab)
   t.draw()
-  assert_true(v.bars_shown(), msg="Tab immediately wakes faded top bar")
-
-  // Pointer click on a top bar control (e.g. copy button) then moving pointer back to center must NOT lock auto-fade
-  let (t2, v2) = open_settled_desk_image("image")
-  let copy_btn = t2.get(Button, label=@sf.t("common.copy"))
-  let (bx, by, bw, bh) = copy_btn.rect
-  t2.tap(bx + bw / 2.0, by + bh / 2.0)
-  t2.draw()
-  t2.move_to(640.0, 400.0)
-  t2.draw()
-  assert_true(!v2.bar_focused, msg="pointer click on bar button does not set focus_shown bar lock")
-  t2.run_for(@sfbase.image_idle_ms + idle_tick_ms)
-  assert_true(!v2.bars_shown(), msg="after pointer click on bar button and moving to center, bars still auto-fade at 1800ms")
+  assert_true(v.bars_shown(), msg="Tab immediately wakes hidden top bar")
 }
 
 ///|
@@ -551,15 +472,16 @@ test "Track P R2: crossing breakpoint mid trackpad pull resets stale pull_y so a
 }
 
 ///|
-test "Track P R2: pointer leaving window right after a click woke the bars hides them and the arrows" {
+test "Track P R2: pointer leaving window right after a click woke the bars keeps them and the arrows" {
   let (t, v) = open_settled_desk_image("step")
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (cx, cy) = (rx + rw / 2.0, ry + rh / 2.0)
   t.move_to(cx, cy)
   t.draw()
-  // Let bars and arrows auto-fade completely
-  t.run_for(@sfbase.image_idle_ms + @sf.viewer_bar_ms + @sf.sleep_ms)
-  assert_true(!v.bars_shown() && !v.step_shown(1), msg="bars and arrows auto-faded")
+  // Hide bars and arrows by a click, past a double click's time so the next is no second
+  t.tap(cx, cy)
+  t.run_for(@ui.double_click_ms + @sf.viewer_bar_ms + @sf.sleep_ms)
+  assert_true(!v.bars_shown() && !v.step_shown(1), msg="bars and arrows hidden")
   // Click picture to wake bars (at once), then leave window right after
   t.tap(cx, cy)
   t.draw()
@@ -568,7 +490,7 @@ test "Track P R2: pointer leaving window right after a click woke the bars hides
   t.move_to(-1.0, -1.0)
   t.draw()
   t.run_for(@ui.double_click_ms + idle_margin_ms)
-  assert_true(!v.bars_shown() && !v.step_shown(1), msg="bars and arrows hidden after leaving window")
+  assert_true(v.bars_shown() && v.step_shown(1), msg="bars and arrows kept after leaving window")
 }
 
 ///|
@@ -589,21 +511,21 @@ test "Track P R2: Zoom pan_under_bars allows panning out of asymmetric bottom do
 }
 
 ///|
-test "Track P R3: mouse leaving window then switching to touch single tap wakes bars and arrows" {
+test "Track P R3: a click hiding them, then switching to touch, a single tap wakes bars and arrows" {
   let (t, v) = open_settled_desk_image("step")
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (cx, cy) = (rx + rw / 2.0, ry + rh / 2.0)
   t.move_to(cx, cy)
   t.draw()
-  t.move_to(-1.0, -1.0)
-  t.draw()
-  assert_true(!v.bars_shown() && !v.step_shown(1), msg="mouse leaving window hides bars and arrows")
+  t.tap(cx, cy)
+  t.run_for(@ui.double_click_ms + idle_margin_ms)
+  assert_true(!v.bars_shown() && !v.step_shown(1), msg="a click hides bars and arrows")
   // Switch live pointing to touch and single tap picture center
   t.host_says_finger(Some(true))
   t.draw()
   t.tap(cx, cy)
   t.run_for(@ui.double_tap_ms + idle_margin_ms)
-  assert_true(v.bars_shown() && v.step_shown(1), msg="touch tap after mouse left window wakes bars and available arrows")
+  assert_true(v.bars_shown() && v.step_shown(1), msg="touch tap wakes bars and available arrows")
 }
 
 ///|
@@ -661,7 +583,7 @@ test "Track P R4: a tap shows or hides the bars and the ways beside at once, no 
   t.tap(195.0, 422.0)
   t.run_for(@ui.double_tap_ms * 2.0)
   assert_true(viewer.get() is Some(_) && v.zoom.zoomed_at(t.time()), msg="two taps: zoomed in")
-  // Desktop: a click on the picture hides the bar at once and re-arms nothing while hidden
+  // Desktop: a click on the picture hides the bar at once, another shows it, and nothing fades it by itself
   let (td, vd) = open_settled_desk_image("image")
   let (rx, ry, rw, rh) = vd.zoom.rect_at(td.time()).unwrap()
   let (cx, cy) = (rx + rw / 2.0, ry + rh / 2.0)
@@ -674,14 +596,40 @@ test "Track P R4: a tap shows or hides the bars and the ways beside at once, no 
   td.draw()
   assert_true(!vd.bars_shown(), msg="desktop: click hides bars at once")
   assert_true(!bar_seen(), msg="desktop: the bar drawn gone at once")
-  td.run_for(@sfbase.image_idle_ms + idle_margin_ms)
+  td.run_for(hand_rest_ms)
   assert_true(!vd.bars_shown(), msg="desktop: stays hidden (manual_hidden), no rebound")
+  // The pointer moving over the picture: still hidden (only a click shows them)
+  td.move_to(cx - 40.0, cy + 20.0)
+  td.move_to(cx + 40.0, cy - 20.0)
+  td.draw()
+  assert_true(!vd.bars_shown(), msg="desktop: the pointer moving over the picture never shows them")
+  // Its menu opened and closed: the bars as the click left them
+  td.right_click(cx, cy)
+  td.run_for(@sf.presented_rest() - td.time())
+  assert_true(vd.menu_open && vd.bars_shown(), msg="desktop: the menu holds the bars while open")
+  td.key(@ui.key_escape)
+  td.run_for(@sf.presented_rest() - td.time() + idle_margin_ms)
+  assert_true(!vd.menu_open && !vd.bars_shown(), msg="desktop: menu closed: back to hidden")
   td.tap(cx, cy)
   td.draw()
   assert_true(vd.bars_shown(), msg="desktop: another click shows bars at once")
   assert_true(bar_seen(), msg="desktop: the bar drawn back at once")
-  td.run_for(@sfbase.image_idle_ms - idle_tick_ms)
-  assert_true(vd.bars_shown(), msg="desktop: 1799ms after the showing click still shown")
-  td.run_for(idle_tick_ms)
-  assert_true(!vd.bars_shown(), msg="desktop: 1800ms after the showing click auto-fades")
+  td.run_for(hand_rest_ms)
+  assert_true(vd.bars_shown(), msg="desktop: a long rest after the showing click: still shown")
+}
+
+///|
+test "Track P R4: a click on a bar's button sets no focus lock: a click on the picture after still hides the bars" {
+  let (t, v) = open_settled_desk_image("image")
+  let copy_btn = t.get(Button, label=@sf.t("common.copy"))
+  let (bx, by, bw, bh) = copy_btn.rect
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
+  t.draw()
+  assert_true(!v.bar_focused, msg="pointer click on bar button does not set the bar's focus lock")
+  let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
+  t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@ui.double_click_ms + idle_margin_ms)
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  t.draw()
+  assert_true(!v.bars_shown(), msg="a click on the picture hides the bars")
 }

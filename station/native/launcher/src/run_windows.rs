@@ -245,7 +245,7 @@ impl Os for System {
         }
     }
 
-    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool) -> bool {
+    fn renew(&mut self, serving: &Node, version: &str, served: &[(String, u16)], heartbeats: bool, _linked_front: bool) -> bool {
         if std::env::var_os(FOLLOWED).is_none() {
             return false;
         }

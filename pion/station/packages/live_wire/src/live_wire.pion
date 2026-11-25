@@ -147,8 +147,11 @@ pub fn delta(id : String, field_name : String, text : String) -> js_json::JValue
   ])
 }
 
+/// Wire event kind for step end (`{"kind":"end","id":...}`).
+pub let KIND_END : String = "end"
+
 pub fn end_event(id : String) -> js_json::JValue {
-  obj([("kind", jstr("end")), ("id", jstr(id))])
+  obj([("kind", jstr(KIND_END)), ("id", jstr(id))])
 }
 
 /// A live event as a line the station is told.
@@ -394,7 +397,7 @@ pub fn delta_u16(id : Array[Int], field_name : String, text : Array[Int]) -> js_
 }
 
 pub fn end_event_u16(id : Array[Int]) -> js_json::JValue {
-  obj([("kind", jstr("end")), ("id", jstr_u16(id))])
+  obj([("kind", jstr(KIND_END)), ("id", jstr_u16(id))])
 }
 
 /// Lossless UTF-16 `failed` outcome preserving lone surrogates in `message` (`pi.mbt:273`).

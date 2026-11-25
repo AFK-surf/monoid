@@ -182,9 +182,70 @@ test("the front is the launcher's child that runs the program, by the table's na
   assert.equal(frontIn(table, 1, 2), 4 * GiB, "not the programs Node itself runs");
   // (Linux's ps: the name cut to 15 bytes)
   assert.equal(frontIn([{ pid: 4, ppid: 1, pgid: 4, bytes: 1 * GiB, command: "stillfail-reade" }], 1, 2), 1 * GiB);
+  // Pion front binary name (both full path and Linux 15-byte comm)
+  assert.equal(
+    frontIn([{ pid: 4, ppid: 1, pgid: 4, bytes: 4 * GiB, command: "/Applications/still.fail.app/Contents/Resources/station/stillfail-pion" }], 1, 2),
+    4 * GiB,
+  );
+  assert.equal(frontIn([{ pid: 4, ppid: 1, pgid: 4, bytes: 2 * GiB, command: "stillfail-pion" }], 1, 2), 2 * GiB);
+  // Custom override binary path recognized via <data>/run/front.pid when ppid matches launcher
+  assert.equal(
+    frontIn([{ pid: 7, ppid: 1, pgid: 7, bytes: 4 * GiB, command: "/tmp/custom-mesh-bin" }], 1, 2, 7),
+    4 * GiB,
+  );
+  // Stale/foreign front.pid whose ppid !== launcher must not match
+  assert.equal(
+    frontIn([{ pid: 7, ppid: 99, pgid: 7, bytes: 4 * GiB, command: "/tmp/custom-mesh-bin" }], 1, 2, 7),
+    null,
+  );
   assert.equal(frontIn(table.filter((p) => p.pid !== 4), 1, 2), null, "none running");
   assert.equal(frontIn(table, null, 2), null, "no launcher");
   assert.equal(frontIn(null, 1, 2), null, "no table");
+});
+
+test("4 GiB front memory protection triggers restartFront for stillfail-pion and custom front.pid", async () => {
+  const scope = Effect.runSync(Scope.make());
+  scopes.push(scope);
+  const clock = Effect.runSync(Scope.provide(TestClock.make(), scope));
+  let table = [
+    { pid: 1, ppid: 0, pgid: 1, bytes: 10 * MiB, command: "stillfail-station" },
+    { pid: 2, ppid: 1, pgid: 2, bytes: 200 * MiB, command: "node" },
+    { pid: 4, ppid: 1, pgid: 4, bytes: 4 * GiB, command: "/opt/stillfail/station/stillfail-pion" },
+  ];
+  let frontPid: number | null = null;
+  let restarts = 0;
+  const governor = new SelfMemoryGovernor({
+    clock,
+    totalBytes: 32 * GiB,
+    startedAt: clock.currentTimeMillisUnsafe(),
+    memory: () => ({ rss: 200 * MiB, heapUsed: 100 * MiB, external: 0, arrayBuffers: 0 }),
+    children: async () => ({ bytes: 0, count: 0 }),
+    front: async () => frontIn(table, 1, 2, frontPid),
+    restartFront: async () => void restarts++,
+    pressure: async () => "normal",
+    trimIdle: () => 0,
+    handover: async () => null,
+    hardFrontBytes: 3 * GiB,
+    startupMs: 0,
+    sustained: 3,
+  });
+  // 3 sustained samples with stillfail-pion at 4 GiB -> triggers restartFront
+  assert.equal((await governor.sample()).front, null);
+  assert.equal((await governor.sample()).front, null);
+  assert.equal((await governor.sample()).front, "asked");
+  assert.equal(restarts, 1);
+
+  // Custom binary override matched via front.pid at 4 GiB -> triggers restartFront
+  table = [
+    { pid: 1, ppid: 0, pgid: 1, bytes: 10 * MiB, command: "stillfail-station" },
+    { pid: 2, ppid: 1, pgid: 2, bytes: 200 * MiB, command: "node" },
+    { pid: 9, ppid: 1, pgid: 9, bytes: 4 * GiB, command: "/tmp/custom-pion-override" },
+  ];
+  frontPid = 9;
+  assert.equal((await governor.sample()).front, null);
+  assert.equal((await governor.sample()).front, null);
+  assert.equal((await governor.sample()).front, "asked");
+  assert.equal(restarts, 2);
 });
 
 function rig(o: { launcher: boolean; restartFront?: boolean }) {

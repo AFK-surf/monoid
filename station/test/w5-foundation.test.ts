@@ -6,7 +6,7 @@
 //    packages must have zero violations).
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -722,64 +722,55 @@ function stripRunSmokeSqlite(source: string): string {
   assert.fail("unterminated run_smoke_sqlite function");
 }
 
-function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
-  const depsByPkg = new Map<string, string[]>();
-  for (const entry of readdirSync(pkgsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = join(pkgsDir, entry.name, "pion.toml");
-    if (!existsSync(manifestPath)) continue;
-    const manifest = readFileSync(manifestPath, "utf8");
-    const deps: string[] = [];
-    let inDeps = false;
-    for (const rawLine of manifest.split("\n")) {
-      const line = rawLine.replace(/#.*$/, "").trim();
-      if (!line) continue;
-      if (line.startsWith("[")) {
-        inDeps = line === "[dependencies]";
-        continue;
-      }
-      if (inDeps) {
-        const m = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
-        if (m) deps.push(m[1]!);
-      }
+/// Strip line comments (`// ...`) and string literals (`"..."`) so identifier scans
+/// neither false-positive on filenames like `"state.db"` nor match commented-out code.
+function stripPionStringsAndComments(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const ch = source[i]!;
+    if (ch === "/" && source[i + 1] === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+      continue;
     }
-    depsByPkg.set(entry.name, deps);
+    if (ch === '"') {
+      out += '""';
+      i++;
+      while (i < source.length) {
+        if (source[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (source[i] === '"') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    out += ch;
+    i++;
   }
+  return out;
+}
+
+function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
   const sqlPackages = new Set<string>(["sql_db", "sqlite_ffi"]);
-  // Also seed any package that directly declares or references sqlite3_*/stq_* FFI symbols.
+  // Direct source-based discovery (no blind transitive dependency taint):
+  // include any package whose non-comment, non-string code references SQLite FFI symbols,
+  // `sql_db::`, `sqlite_ffi::`, `Db` acquisition helpers (`attach_db`, `open_db`, `db_now`,
+  // `with_temp_write_tx`, `settle_conversation_in_tx`), or `.db` / `Db` execution methods.
+  // Pure protocol packages (`sessions_agents`, `sessions_jobs_live`, `sessions_remote`, `live_wire`)
+  // that depend on `sessions_core` or `builders_core` without touching any SQLite handle stay untainted.
+  const sqlSymbolRe =
+    /\b(?:sqlite3_|stq_)\w+\b|\bsql_db::|\bsqlite_ffi::|\b(?:attach_db|open_db|db_now|with_temp_write_tx|settle_conversation_in_tx)\b|\.(?:db|exec|prepare|tx|tx_err|deferred_tx_err|read_snapshot_err|rollback_if_in_tx|savepoint_err|savepoint_swallow_err)\b|\.(?:run|all|all_ordered|first)\(\s*""/;
   for (const rel of allFiles) {
     const pkg = rel.split("/")[0]!;
     if (sqlPackages.has(pkg)) continue;
-    const src = readFileSync(join(pkgsDir, rel), "utf8");
-    if (/\b(?:sqlite3_|stq_)\w+\b/.test(src)) sqlPackages.add(pkg);
-  }
-  // Precondition guard for `js_json` non-propagation below: `js_json` may ONLY call
-  // `sqlite_ffi::format_js_double` (pure double formatting, zero SQLite handle exposure).
-  for (const rel of allFiles) {
-    if (!rel.startsWith("js_json/")) continue;
-    const src = readFileSync(join(pkgsDir, rel), "utf8");
-    for (const m of src.matchAll(/\bsqlite_ffi::([A-Za-z0-9_]+)/g)) {
-      assert.equal(
-        m[1],
-        "format_js_double",
-        `${rel} called sqlite_ffi::${m[1]} — js_json may only call sqlite_ffi::format_js_double to remain exempt from SQLite taint propagation`,
-      );
-    }
-  }
-
-  // `js_json` depends on `sqlite_ffi` solely for `format_js_double` and does not expose any SQLite handle;
-  // still scan `js_json` itself, but do not propagate SQLite-linked taint through `js_json` into pure JSON packages
-  // (such as `live_wire`, which emits protocol literals like `"end"`).
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const [pkg, deps] of depsByPkg) {
-      if (sqlPackages.has(pkg)) continue;
-      if (deps.some((d) => d !== "js_json" && sqlPackages.has(d))) {
-        sqlPackages.add(pkg);
-        changed = true;
-      }
-    }
+    const raw = readFileSync(join(pkgsDir, rel), "utf8");
+    const code = stripPionStringsAndComments(raw);
+    if (sqlSymbolRe.test(code)) sqlPackages.add(pkg);
   }
   return sqlPackages;
 }
@@ -803,7 +794,87 @@ test("recursive zero-exception static SQLite transaction guard across ALL SQLite
   assert.ok(checkedFiles.includes("builders_usage/src/record.pion"), "must discover builders_usage/src/record.pion");
   assert.ok(checkedFiles.includes("builders_search/src/search_docs.pion"), "must discover search_docs.pion");
   assert.ok(checkedFiles.includes("builders_search/src/history_search.pion"), "must discover history_search.pion");
+  assert.ok(checkedFiles.includes("sessions_core/src/host.pion"), "must discover sessions_core/src/host.pion");
+  assert.ok(checkedFiles.includes("sessions_actors/src/actor_store.pion"), "must discover sessions_actors/src/actor_store.pion");
   assert.ok(checkedFiles.includes("smoke/src/main.pion"), "must discover smoke/src/main.pion");
+
+  // Positive + negative unit checks for direct source-based SQLite handle discovery:
+  // a pure protocol package depending on BOTH `sessions_core` and `builders_core` with `"begin"`/`"end"`
+  // and `"state.db"` string literals is not tainted, while packages touching `host.db` or `attach_db(...)`
+  // ARE tainted and raw transaction SQL inside them is flagged.
+  const synthDir = mkdtempSync(join(tmpdir(), "w5-sql-taint-"));
+  try {
+    mkdirSync(join(synthDir, "builders_core/src"), { recursive: true });
+    writeFileSync(join(synthDir, "builders_core/pion.toml"), '[dependencies]\nsql_db = { path = "../sql_db" }\n');
+    writeFileSync(join(synthDir, "builders_core/src/loop.pion"), "pub fn run(db : sql_db::Db) -> Unit { let _ = db }\n");
+
+    mkdirSync(join(synthDir, "sessions_core/src"), { recursive: true });
+    writeFileSync(join(synthDir, "sessions_core/pion.toml"), '[dependencies]\nsql_db = { path = "../sql_db" }\n');
+    writeFileSync(join(synthDir, "sessions_core/src/host.pion"), "pub fn open(db : sql_db::Db) -> Unit { let _ = db }\n");
+
+    mkdirSync(join(synthDir, "pure_proto/src"), { recursive: true });
+    writeFileSync(
+      join(synthDir, "pure_proto/pion.toml"),
+      '[dependencies]\nsessions_core = { path = "../sessions_core" }\nbuilders_core = { path = "../builders_core" }\n',
+    );
+    writeFileSync(
+      join(synthDir, "pure_proto/src/proto.pion"),
+      'pub fn f(k : String) -> Bool { let p = "state.db"; k == "begin" || k == "end" || p == "" }\n',
+    );
+
+    mkdirSync(join(synthDir, "db_consumer/src"), { recursive: true });
+    writeFileSync(join(synthDir, "db_consumer/pion.toml"), '[dependencies]\nsessions_core = { path = "../sessions_core" }\n');
+    writeFileSync(join(synthDir, "db_consumer/src/store.pion"), 'pub fn bad(host : Host) -> Unit { let _ = host.db; let _ = db.exec("begin") }\n');
+
+    mkdirSync(join(synthDir, "closure_consumer/src"), { recursive: true });
+    writeFileSync(join(synthDir, "closure_consumer/pion.toml"), '[dependencies]\nbuilders_core = { path = "../builders_core" }\n');
+    writeFileSync(
+      join(synthDir, "closure_consumer/src/sneaky_closure.pion"),
+      'pub fn bad() -> Unit { builders_core::with_conn(fn(c) { let _ = c.run("BEGIN", []) }) }\n',
+    );
+
+    mkdirSync(join(synthDir, "attach_db_consumer/src"), { recursive: true });
+    writeFileSync(join(synthDir, "attach_db_consumer/pion.toml"), '[dependencies]\nsessions_core = { path = "../sessions_core" }\n');
+    writeFileSync(
+      join(synthDir, "attach_db_consumer/src/sneaky.pion"),
+      'pub fn bad(t : Transport, p : String) -> Unit { match t.attach_db(p, 0) { Ok(conn) => { let _ = conn.exec("BEGIN") } Err(_) => () } }\n',
+    );
+
+    const synthFiles = collectPionSources(synthDir);
+    const synthSqlPkgs = collectSqlPackages(synthDir, synthFiles);
+    assert.ok(synthSqlPkgs.has("builders_core"), "builders_core itself must stay in sqlPackages");
+    assert.ok(synthSqlPkgs.has("sessions_core"), "sessions_core itself must stay in sqlPackages");
+    assert.ok(
+      !synthSqlPkgs.has("pure_proto"),
+      "pure protocol package depending on sessions_core + builders_core must not be tainted",
+    );
+    assert.ok(synthSqlPkgs.has("db_consumer"), "package touching host.db must be tainted");
+    assert.ok(synthSqlPkgs.has("attach_db_consumer"), "package calling transport.attach_db must be tainted");
+    assert.ok(synthSqlPkgs.has("closure_consumer"), "package calling c.run(\"...\") inside untyped lambda must be tainted");
+    assert.equal(
+      findRawTxControlViolations(
+        "closure_consumer/src/sneaky_closure.pion",
+        readFileSync(join(synthDir, "closure_consumer/src/sneaky_closure.pion"), "utf8"),
+      ).length,
+      1,
+      'c.run("BEGIN", []) in untyped lambda must be flagged',
+    );
+    assert.equal(
+      findRawTxControlViolations("db_consumer/src/store.pion", readFileSync(join(synthDir, "db_consumer/src/store.pion"), "utf8")).length,
+      1,
+      'db.exec("begin") in tainted package must be flagged',
+    );
+    assert.equal(
+      findRawTxControlViolations(
+        "attach_db_consumer/src/sneaky.pion",
+        readFileSync(join(synthDir, "attach_db_consumer/src/sneaky.pion"), "utf8"),
+      ).length,
+      1,
+      'conn.exec("BEGIN") via attach_db must be flagged',
+    );
+  } finally {
+    rmSync(synthDir, { recursive: true, force: true });
+  }
 
   for (const rel of checkedFiles) {
     if (rel === "sql_db/src/sql_db.pion") continue;

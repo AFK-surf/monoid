@@ -33,8 +33,15 @@ members = [
   "packages/live_wire",
   "packages/pieces",
   "packages/admit",
+  "packages/parse_claude",
+  "packages/parse_codex",
+  "packages/parse_cursor",
+  "packages/parse_pi",
+  "packages/parse_acp",
+  "packages/parse_dsh",
   "packages/sessions_core",
   "packages/sessions_actors",
+  "packages/sessions_jobs_live",
   "packages/sessions_remote",
   "packages/reader_sessions",
   "packages/smoke",
@@ -79,7 +86,14 @@ packed = { path = "packages/packed" }
 live_wire = { path = "packages/live_wire" }
 pieces = { path = "packages/pieces" }
 admit = { path = "packages/admit" }
+parse_claude = { path = "packages/parse_claude" }
+parse_codex = { path = "packages/parse_codex" }
+parse_cursor = { path = "packages/parse_cursor" }
+parse_pi = { path = "packages/parse_pi" }
+parse_acp = { path = "packages/parse_acp" }
+parse_dsh = { path = "packages/parse_dsh" }
 sessions_core = { path = "packages/sessions_core" }
 sessions_actors = { path = "packages/sessions_actors" }
+sessions_jobs_live = { path = "packages/sessions_jobs_live" }
 sessions_remote = { path = "packages/sessions_remote" }
 reader_sessions = { path = "packages/reader_sessions" }

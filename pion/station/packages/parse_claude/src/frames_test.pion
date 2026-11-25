@@ -1,0 +1,613 @@
+// 1:1 port of `station/mb/src/claude/frames_test.mbt` + lone-surrogate UTF-16 round-trip tests.
+
+import "js_json"
+import "live_wire"
+
+fn assert_eq_str(got : String, want : String, ctx : String) -> Unit {
+  if got != want {
+    panic(ctx + ": got=" + got + " want=" + want)
+  }
+}
+
+fn assert_eq_bool(got : Bool, want : Bool, ctx : String) -> Unit {
+  if got != want {
+    panic(ctx + ": bool mismatch")
+  }
+}
+
+fn assert_eq_int(got : Int, want : Int, ctx : String) -> Unit {
+  if got != want {
+    panic(ctx + ": got=" + got.to_string() + " want=" + want.to_string())
+  }
+}
+
+fn assert_eq_arr(got : Array[String], want : Array[String], ctx : String) -> Unit {
+  if got.length() != want.length() {
+    panic(ctx + ": len got=" + got.length().to_string() + " want=" + want.length().to_string())
+  }
+  for i in 0..<got.length() {
+    if got[i] != want[i] {
+      panic(ctx + "[" + i.to_string() + "]: got=" + got[i] + " want=" + want[i])
+    }
+  }
+}
+
+fn claude_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn jparse(s : String) -> js_json::JValue {
+  match js_json::parse(s) {
+    Ok(v) => v
+    Err(e) => panic("bad json: " + e)
+  }
+}
+
+fn jstr_out(v : js_json::JValue) -> String {
+  js_json::stringify_with_num(v, claude_fmt_num)
+}
+
+fn rep(s : String, n : Int) -> String {
+  let out = StringBuilder::new()
+  for _ in 0..<n {
+    out.write_string(s)
+  }
+  out.to_string()
+}
+
+fn outcomes(frames : Array[String], turn : Turn) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<frames.length() {
+    on_frame_with(
+      jparse(frames[i]),
+      turn,
+      fn(e : js_json::JValue) -> Unit {
+        if live_wire::is_str(e.get("type"), "turnEnded") {
+          match e.get("outcome") {
+            Some(o) => out.push(jstr_out(o))
+            None => panic("missing outcome")
+          }
+        }
+      },
+      fn() -> Unit { () },
+      fn() -> Double { 0.0 },
+      fn(_ : String) -> Unit { () },
+      claude_fmt_num,
+    )
+  }
+  out
+}
+
+test "parse_claude: a failure's reason, as the TypeScript station told it" {
+  let cases : Array[(String, String, Bool, Int)] = [
+    ("Claude AI usage limit reached", "rate_limit", false, 29),
+    (
+      "You've reached your Fable limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.",
+      "rate_limit",
+      false,
+      157,
+    ),
+    (
+      "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model to continue.",
+      "rate_limit",
+      false,
+      101,
+    ),
+    ("You've hit your weekly limit · resets Oct 8", "rate_limit", false, 43),
+    ("You've hit your 5-hour limit · resets 7:50am (UTC)", "rate_limit", false, 50),
+    ("You've hit your 5 hour limit", "rate_limit", false, 28),
+    ("You've hit your 3-hour limit", "rate_limit", false, 28),
+    ("You've hit your daily limit", "rate_limit", false, 27),
+    ("You've hit your session limit · resets 3:40am", "rate_limit", false, 45),
+    ("You've hit your limit · resets 5pm", "rate_limit", false, 34),
+    ("5-hour limit configuration is invalid", "model", false, 37),
+    ("session limit configuration is invalid", "model", false, 38),
+    ("hit your limitless plan", "model", false, 23),
+    ("you hit your x limits", "model", false, 21),
+    ("Ahit your weekly limit", "rate_limit", false, 22),
+    ("_hit your 5-hour limit", "model", false, 22),
+    ("hit your 5-hour limit_", "model", false, 22),
+    ("hit your 5-hour limitation", "model", false, 26),
+    ("reached your Claude-3.5 Sonnet limit.", "rate_limit", false, 37),
+    ("reached your  limit", "model", false, 19),
+    ("reached your · limit", "model", false, 20),
+    ("reached your a limit2", "model", false, 21),
+    (
+      "API Error: 403 {\"error\":{\"type\":\"forbidden\",\"message\":\"Request not allowed\"}}",
+      "refused",
+      true,
+      77,
+    ),
+    ("API Error: 403 OAuth token does not meet scope requirement", "auth", false, 58),
+    ("API Error: 401 invalid x-api-key", "auth", false, 32),
+    (
+      "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
+      "overloaded",
+      false,
+      90,
+    ),
+    ("API Error: Connection error. (ECONNRESET)", "network", false, 41),
+    ("Prompt is too long", "context", false, 18),
+    ("API Error: 500 Internal server error", "model", false, 36),
+    (
+      "No conversation found with session ID: 11111111-1111-1111-1111-111111111111",
+      "model",
+      false,
+      75,
+    ),
+    ("error_during_execution", "model", false, 22),
+    ("prompt is too long", "context", false, 18),
+    ("FORBIDDEN by policy", "refused", true, 19),
+    ("forbiddenfruit", "model", false, 14),
+    ("access_forbidden", "model", false, 16),
+    ("it is Forbidden.", "refused", true, 16),
+    ("REQUEST NOT ALLOWED", "refused", true, 19),
+    ("status 4010", "model", false, 11),
+    ("状态401", "model", false, 5),
+    ("状态 401 未授权", "auth", false, 10),
+    ("e401", "model", false, 4),
+    ("429 Too Many Requests", "rate_limit", false, 21),
+    ("rate-limit hit", "rate_limit", false, 14),
+    ("RateLimit exceeded", "rate_limit", false, 18),
+    ("Usage Limit", "rate_limit", false, 11),
+    ("server at capacity", "overloaded", false, 18),
+    ("the model is OVERLOADED", "overloaded", false, 23),
+    ("Request timed out", "network", false, 17),
+    ("TIMEOUT waiting", "network", false, 15),
+    ("dns error: no such host", "network", false, 23),
+    ("TLS handshake failed", "network", false, 20),
+    ("tls  handshake", "model", false, 14),
+    ("socket hang up", "network", false, 14),
+    ("getaddrinfo EAI_AGAIN api.anthropic.com", "network", false, 39),
+    ("write EPIPE", "network", false, 11),
+    ("connection closed before message completed", "network", false, 42),
+    ("Connection Failed", "network", false, 17),
+    ("stream disconnected before completion", "network", false, 37),
+    ("error sending request for url", "network", false, 29),
+    ("fetch failed", "network", false, 12),
+    ("network error", "network", false, 13),
+    ("context window exceeded", "context", false, 23),
+    ("context_length_exceeded", "context", false, 23),
+    ("maximum context length", "context", false, 22),
+    ("too many toKens", "context", false, 15),
+    ("too many toKens", "context", false, 15),
+    ("input is too long for requested model", "context", false, 37),
+    ("context overflow", "context", false, 16),
+    ("Authentication failed", "auth", false, 21),
+    ("Invalid API key · Please run /login", "auth", false, 35),
+    ("authenticat", "auth", false, 11),
+    ("İnvalid", "model", false, 7),
+    ("Kelvin timeout", "network", false, 14),
+    ("timeout", "network", false, 7),
+    ("ECONNRESET", "network", false, 10),
+    ("ETIMEDOUT", "network", false, 9),
+    ("ENOTFOUND", "network", false, 9),
+    ("ECONNREFUSED", "network", false, 12),
+    ("", "model", false, 0),
+    (rep("x", 1200), "model", false, 1000),
+    (rep("😀", 1100), "model", false, 2000),
+    (rep("a😀", 700), "model", false, 1500),
+  ]
+  for i in 0..<cases.length() {
+    let (text, reason, is_refused, utf16_len) = cases[i]
+    assert_eq_str(classify_result(text), reason, "classify:" + text)
+    assert_eq_bool(refused(text), is_refused, "refused:" + text)
+    assert_eq_int(chars_u16(js_json::utf16_units(text), 1000).length(), utf16_len, "chars:" + text)
+  }
+}
+
+test "parse_claude: a failed result is told apart by what claude said; is_error decides, not subtype" {
+  let texts : Array[String] = [
+    "You've hit your 5-hour limit · resets 7:50am (UTC)",
+    "You've hit your 5 hour limit",
+    "You've hit your 3-hour limit",
+  ]
+  for i in 0..<texts.length() {
+    let said = jstr_out(live_wire::jstr(texts[i]))
+    assert_eq_arr(
+      outcomes(["{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":" + said + "}"], Turn::new()),
+      ["{\"kind\":\"failed\",\"reason\":\"rate_limit\",\"message\":" + said + "}"],
+      "is_error true",
+    )
+    assert_eq_arr(
+      outcomes(["{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":" + said + "}"], Turn::new()),
+      ["{\"kind\":\"completed\"}"],
+      "is_error false",
+    )
+  }
+  assert_eq_arr(
+    outcomes(
+      ["{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":true,\"result\":\"API Error: 401 invalid x-api-key\"}"],
+      Turn::new(),
+    ),
+    ["{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"API Error: 401 invalid x-api-key\"}"],
+    "401 auth",
+  )
+  let long_s = jstr_out(live_wire::jstr(rep("😀", 1001)))
+  let want_s = jstr_out(live_wire::jstr(rep("😀", 1000)))
+  assert_eq_arr(
+    outcomes(["{\"type\":\"result\",\"is_error\":true,\"result\":" + long_s + "}"], Turn::new()),
+    ["{\"kind\":\"failed\",\"reason\":\"model\",\"message\":" + want_s + "}"],
+    "1000 chars surrogate pair",
+  )
+}
+
+test "parse_claude: a turn that failed with no result says claude's errors, not just error_during_execution" {
+  assert_eq_arr(
+    outcomes(
+      [
+        "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"num_turns\":0,\"errors\":[\"No conversation found with session ID: 1\"]}",
+      ],
+      Turn::new(),
+    ),
+    ["{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"No conversation found with session ID: 1\"}"],
+    "errors fallback",
+  )
+  assert_eq_arr(
+    outcomes(
+      ["{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"errors\":[]}"],
+      Turn::new(),
+    ),
+    ["{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"error_during_execution\"}"],
+    "subtype fallback",
+  )
+}
+
+test "parse_claude: a 401 or 403 as it retries fails the turn as the account's, or as refused where it says so" {
+  let end = "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"\"}"
+  assert_eq_arr(
+    outcomes(
+      [
+        "{\"type\":\"system\",\"subtype\":\"api_retry\",\"error_status\":401,\"attempt\":1,\"error\":\"authentication_failed\"}",
+        end,
+      ],
+      Turn::new(),
+    ),
+    ["{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401 authentication_failed\"}"],
+    "401 retry",
+  )
+  assert_eq_arr(
+    outcomes(
+      [
+        "{\"type\":\"system\",\"subtype\":\"api_retry\",\"error_status\":403,\"attempt\":1,\"error\":\"Request not allowed\"}",
+        end,
+      ],
+      Turn::new(),
+    ),
+    ["{\"kind\":\"failed\",\"reason\":\"refused\",\"message\":\"403 Request not allowed\"}"],
+    "403 refused retry",
+  )
+}
+
+test "parse_claude: a /compact that compacted nothing ends failed, saying why; one that did, completed" {
+  let turn = Turn::new()
+  turn.busy = true
+  turn.compacting = Some(true)
+  assert_eq_arr(
+    outcomes(
+      [
+        "{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"compacting\"}",
+        "{\"type\":\"system\",\"subtype\":\"status\",\"status\":null,\"compact_result\":\"failed\",\"compact_error\":\"Not enough messages to compact.\"}",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}",
+      ],
+      turn,
+    ),
+    ["{\"kind\":\"failed\",\"reason\":\"other\",\"message\":\"Not enough messages to compact.\"}"],
+    "compact failed",
+  )
+  match turn.compacting {
+    Some(false) => ()
+    _ => panic("expected turn.compacting == Some(false)")
+  }
+  turn.busy = true
+  assert_eq_arr(
+    outcomes(
+      [
+        "{\"type\":\"system\",\"subtype\":\"status\",\"status\":null,\"compact_result\":\"failed\",\"compact_error\":\"x\"}",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}",
+      ],
+      turn,
+    ),
+    ["{\"kind\":\"completed\"}"],
+    "auto compact failed ignored",
+  )
+}
+
+test "parse_claude: Claude Code's compact_boundary, automatic or by hand, says it compacted" {
+  let told : Array[String] = []
+  let turn = Turn::new()
+  turn.busy = true
+  let triggers : Array[String] = ["auto", "manual"]
+  for i in 0..<triggers.length() {
+    on_frame_with(
+      jparse(
+        "{\"type\":\"system\",\"subtype\":\"compact_boundary\",\"compact_metadata\":{\"trigger\":\"" +
+        triggers[i] +
+        "\",\"pre_tokens\":180000}}",
+      ),
+      turn,
+      fn(e : js_json::JValue) -> Unit { told.push(jstr_out(e)) },
+      fn() -> Unit { () },
+      fn() -> Double { 0.0 },
+      fn(_ : String) -> Unit { () },
+      claude_fmt_num,
+    )
+  }
+  assert_eq_arr(told, ["{\"type\":\"compacted\"}", "{\"type\":\"compacted\"}"], "compact_boundary")
+}
+
+test "parse_claude: an API key's credits run out: a limit, so another account takes the session on" {
+  let texts : Array[String] = [
+    "Credit balance is too low",
+    "API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}",
+  ]
+  for i in 0..<texts.length() {
+    assert_eq_str(classify_result(texts[i]), "rate_limit", "classify_result credit")
+    assert_eq_str(failure_of(texts[i]), "rate_limit", "failure_of credit")
+  }
+}
+
+test "parse_claude: lone surrogate round-trip in Live, Turn, and tools_lost_in" {
+  // Distinct lone surrogates \ud800 and \ud801 in tool ids, deltas, state snapshot
+  let live = Live::new()
+  let _ = live.feed_with(
+    jparse("{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"m\\ud800\"}}}"),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  let ev1 = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\\ud800\",\"name\":\"bash\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  let ev2 = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\\ud801\",\"name\":\"bash\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_str(
+    jstr_out(ev1[0]),
+    "{\"kind\":\"start\",\"id\":\"t\\ud800\",\"step\":\"tool\",\"tool\":\"bash\"}",
+    "start ud800",
+  )
+  assert_eq_str(
+    jstr_out(ev2[0]),
+    "{\"kind\":\"start\",\"id\":\"t\\ud801\",\"step\":\"tool\",\"tool\":\"bash\"}",
+    "start ud801",
+  )
+  let snap = live.state()
+  let sb = StringBuilder::new()
+  js_json::write_utf8_with_num(sb, snap, claude_fmt_num)
+  let again = Live::of_state(jparse(sb.to_string()))
+  let sb2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb2, again.state(), claude_fmt_num)
+  assert_eq_str(sb2.to_string(), sb.to_string(), "live state roundtrip")
+
+  // Closing t\ud800 must NOT close t\ud801
+  let end_ev = again.feed_with(
+    jparse(
+      "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t\\ud800\",\"content\":\"out\\udc00\"}]}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_int(end_ev.length(), 2, "tool_result ud800 events")
+  assert_eq_str(
+    jstr_out(end_ev[0]),
+    "{\"kind\":\"delta\",\"id\":\"t\\ud800\",\"field\":\"output\",\"text\":\"out\\udc00\"}",
+    "tool_result delta",
+  )
+  assert_eq_int(again.tools.length(), 1, "t\\ud801 still open")
+
+  // Result error message with lone surrogate preserved verbatim
+  let res = outcomes(
+    ["{\"type\":\"result\",\"is_error\":true,\"result\":\"err \\ud800 and \\ud801\"}"],
+    Turn::new(),
+  )
+  assert_eq_arr(
+    res,
+    ["{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"err \\ud800 and \\ud801\"}"],
+    "result lone surrogate",
+  )
+
+  // tools_lost_in: register two pending MCP tool calls differing only by lone surrogate
+  let calls : Array[Array[Int]] = []
+  let reg = tools_lost_in(
+    jparse(
+      "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"mcp\\ud800\",\"name\":\"mcp__stillfail__post\"},{\"type\":\"tool_use\",\"id\":\"mcp\\ud801\",\"name\":\"mcp__stillfail__post\"}]}}",
+    ),
+    calls,
+  )
+  match reg {
+    None => ()
+    Some(_) => panic("expected None on tool_use registration")
+  }
+  assert_eq_int(calls.length(), 2, "two distinct lone-surrogate MCP calls")
+  let lost = tools_lost_in(
+    jparse(
+      "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"mcp\\ud800\",\"is_error\":true,\"content\":\"ECONNREFUSED \\udc00\"}]}}",
+    ),
+    calls,
+  )
+  match lost {
+    Some(why) => {
+      assert_eq_str(
+        jstr_out(live_wire::jstr_u16(why)),
+        "\"ECONNREFUSED \\udc00\"",
+        "tools_lost_in preserves lone surrogate",
+      )
+    }
+    None => panic("expected Some why from tools_lost_in")
+  }
+  assert_eq_int(calls.length(), 1, "second MCP call mcp\\ud801 still pending")
+  assert_eq_str(
+    jstr_out(live_wire::jstr_u16(calls[0])),
+    "\"mcp\\ud801\"",
+    "remaining pending call is mcp\\ud801",
+  )
+
+  // Turn.tasks, background_of, and auth_failure preserve lone surrogates
+  let turn = Turn::new()
+  let task_evs : Array[String] = []
+  on_frame_with(
+    jparse(
+      "{\"type\":\"system\",\"subtype\":\"task_started\",\"task_id\":\"tk\\ud800\",\"task_type\":\"local_agent\",\"description\":\"desc\\ud801\",\"is_backgrounded\":true}",
+    ),
+    turn,
+    fn(e : js_json::JValue) -> Unit { task_evs.push(jstr_out(e)) },
+    fn() -> Unit { () },
+    fn() -> Double { 123.0 },
+    fn(_ : String) -> Unit { () },
+    claude_fmt_num,
+  )
+  assert_eq_str(
+    jstr_out(background_of(turn)),
+    "[{\"id\":\"tk\\ud800\",\"kind\":\"agent\",\"description\":\"desc\\ud801\",\"startedAt\":123}]",
+    "background_of lone surrogate",
+  )
+  assert_eq_int(task_evs.length(), 1, "background tasks live event emitted")
+
+  let auth_turn = Turn::new()
+  let auth_out = outcomes(
+    [
+      "{\"type\":\"system\",\"subtype\":\"api_retry\",\"error_status\":401,\"attempt\":1,\"error\":\"tok\\ud800\"}",
+      "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"\"}",
+    ],
+    auth_turn,
+  )
+  assert_eq_arr(
+    auth_out,
+    ["{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401 tok\\ud800\"}"],
+    "auth_failure lone surrogate",
+  )
+}
+
+test "parse_claude: Live streaming input_json_delta, INPUT_MOST cap, content_block_stop, estimated_tokens, and parent_tool_use_id" {
+  let live = Live::new()
+  let _ = live.feed_with(
+    jparse("{\"type\":\"stream_event\",\"event\":{\"type\":\"message_start\",\"message\":{\"id\":\"m1\"}}}"),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  // Thinking block with parent_tool_use_id and estimated_tokens
+  let s_think = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"parent_tool_use_id\":\"p\\ud800\",\"event\":{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_str(
+    jstr_out(s_think[0]),
+    "{\"kind\":\"start\",\"id\":\"m1:0\",\"step\":\"thinking\",\"subagent\":true,\"parent\":\"p\\ud800\"}",
+    "subagent start",
+  )
+  let d_tok = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"parent_tool_use_id\":\"p\\ud800\",\"event\":{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"\",\"estimated_tokens\":42}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_str(
+    jstr_out(d_tok[0]),
+    "{\"kind\":\"delta\",\"id\":\"m1:0\",\"field\":\"text\",\"text\":\"\",\"tokens\":42}",
+    "estimated_tokens delta",
+  )
+
+  // Tool block with input_json_delta accumulation + content_block_stop re-emit start
+  let _ = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"parent_tool_use_id\":\"p\\ud800\",\"event\":{\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"bash\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  let d1 = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"a\\\":\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_str(
+    jstr_out(d1[0]),
+    "{\"kind\":\"delta\",\"id\":\"tu1\",\"field\":\"input\",\"text\":\"{\\\"a\\\":\"}",
+    "input_json_delta 1",
+  )
+  let _ = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"1}\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  let stopped = live.feed_with(
+    jparse("{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\",\"index\":1}}"),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_str(
+    jstr_out(stopped[0]),
+    "{\"kind\":\"start\",\"id\":\"tu1\",\"step\":\"tool\",\"tool\":\"bash\",\"input\":\"{\\\"a\\\":1}\",\"subagent\":true,\"parent\":\"p\\ud800\"}",
+    "content_block_stop re-emits start with accumulated input",
+  )
+
+  // INPUT_MOST cap: once input >= INPUT_MOST, further input_json_delta is still emitted as delta but stops accumulating
+  let _ = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"tu2\",\"name\":\"bash\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  let big = rep("x", live_wire::INPUT_MOST)
+  let _ = live.feed_with(
+    live_wire::obj([
+      ("type", live_wire::jstr("stream_event")),
+      (
+        "event",
+        live_wire::obj([
+          ("type", live_wire::jstr("content_block_delta")),
+          ("index", js_json::JValue::Num(2.0)),
+          (
+            "delta",
+            live_wire::obj([
+              ("type", live_wire::jstr("input_json_delta")),
+              ("partial_json", live_wire::jstr(big)),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  let extra = live.feed_with(
+    jparse(
+      "{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"tail\"}}}",
+    ),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  assert_eq_int(extra.length(), 1, "delta still emitted after INPUT_MOST")
+  let stopped2 = live.feed_with(
+    jparse("{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_stop\",\"index\":2}}"),
+    fn() -> Double { 0.0 },
+    claude_fmt_num,
+  )
+  match live_wire::str_u16(stopped2[0].get("input")) {
+    Some(u) => assert_eq_int(u.length(), live_wire::INPUT_MOST, "accumulated input capped at INPUT_MOST")
+    None => panic("expected input on content_block_stop")
+  }
+}

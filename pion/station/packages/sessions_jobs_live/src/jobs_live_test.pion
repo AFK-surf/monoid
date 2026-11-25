@@ -1,0 +1,1610 @@
+// Deterministic unit tests for `sessions_jobs_live` (`#jobs` + `#live`).
+// Zero sleeps, virtual clock via `MemHostTransport` + `SessionHost::for_test`.
+
+import "admit"
+import "base_codec"
+import "effect"
+import "js_json"
+import "sessions_core"
+
+fn must[T](o : Option[T]) -> T {
+  match o {
+    Some(v) => v
+    None => panic("expected Some")
+  }
+}
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+/// Minimal test harness playing the role of Node for `#jobs` and `#live`:
+/// parses emitted `stdout_lines` for `rpc`, `after`, `cancel`, `tell`, `returned`, `quiet`.
+struct FakeNode {
+  pub mem : sessions_core::MemHostTransport
+  pub host : sessions_core::SessionHost
+  pub mut gen : sessions_core::HubGen
+  pub mut cursor : Int
+  pub timers : Map[Int, Double]
+  pub cancelled_timers : Array[Int]
+  pub tells : Array[(String, String, Array[base_codec::Json])]
+  pub returned : Array[base_codec::Json]
+  pub rpcs : Array[(Int, String, String, Array[base_codec::Json])]
+  pub remote_pushed : Array[(String, String)]
+  pub mut quiet_count : Int
+}
+
+fn FakeNode::new() -> FakeNode {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  FakeNode::{
+    mem: mem,
+    host: host,
+    gen: gen,
+    cursor: 0,
+    timers: Map::new(),
+    cancelled_timers: [],
+    tells: [],
+    returned: [],
+    rpcs: [],
+    remote_pushed: [],
+    quiet_count: 0,
+  }
+}
+
+fn FakeNode::dispatch(self : FakeNode) -> sessions_core::SessionDispatch {
+  let base = sessions_core::SessionDispatch::stub()
+  let pushed = self.remote_pushed
+  sessions_core::SessionDispatch::{
+    mirror_actor: base.mirror_actor,
+    live_event: base.live_event,
+    live_end: base.live_end,
+    live_called: base.live_called,
+    jobs_called_k: base.jobs_called_k,
+    jstore_get_job_k: base.jstore_get_job_k,
+    remote_called_k: base.remote_called_k,
+    remote_changed_k: fn(task_id : String, status : String) -> Unit {
+      pushed.push((task_id, status))
+    },
+    queue_of_locked_k: base.queue_of_locked_k,
+    agents_told: base.agents_told,
+    agents_take: base.agents_take,
+    is_stub: false,
+  }
+}
+
+fn FakeNode::pump(self : FakeNode) -> Unit {
+  self.host.tick()
+  while self.cursor < self.mem.stdout_lines.length() {
+    let line = self.mem.stdout_lines[self.cursor]
+    self.cursor = self.cursor + 1
+    match sessions_core::parse_json_strict(line) {
+      Ok(j) => {
+        match sessions_core::num_of(sessions_core::jget(j, "rpc")) {
+          Some(id) => {
+            let actor = sessions_core::text_of(j, "actor")
+            let f = sessions_core::text_of(j, "fn")
+            let args : Array[base_codec::Json] = match sessions_core::jget(j, "args") {
+              Some(base_codec::Json::Arr(a)) => a
+              _ => []
+            }
+            self.rpcs.push((id.to_int(), actor, f, args))
+          }
+          None => ()
+        }
+        match sessions_core::num_of(sessions_core::jget(j, "after")) {
+          Some(id) => {
+            let ms = match sessions_core::num_of(sessions_core::jget(j, "ms")) {
+              Some(m) => m
+              None => 0.0
+            }
+            self.timers.set(id.to_int(), self.gen.counters.now + ms)
+          }
+          None => ()
+        }
+        match sessions_core::num_of(sessions_core::jget(j, "cancel")) {
+          Some(id) => {
+            let tid = id.to_int()
+            let _ = self.timers.remove(tid)
+            self.cancelled_timers.push(tid)
+          }
+          None => ()
+        }
+        match sessions_core::str_of(sessions_core::jget(j, "tell")) {
+          Some(f) => {
+            let actor = sessions_core::text_of(j, "actor")
+            let args : Array[base_codec::Json] = match sessions_core::jget(j, "args") {
+              Some(base_codec::Json::Arr(a)) => a
+              _ => []
+            }
+            self.tells.push((actor, f, args))
+          }
+          None => ()
+        }
+        match sessions_core::jget(j, "returned") {
+          Some(_) => self.returned.push(j)
+          None => ()
+        }
+        if is_true(sessions_core::jget(j, "quiet")) {
+          self.quiet_count = self.quiet_count + 1
+        }
+      }
+      Err(_) => ()
+    }
+  }
+}
+
+fn FakeNode::answer_ok(self : FakeNode, rpc_id : Int, value : base_codec::Json) -> Unit {
+  self.gen.handle_answer(
+    self.host,
+    rpc_id,
+    base_codec::json_obj([("answer", sessions_core::jint(rpc_id)), ("value", value)]),
+  )
+  self.pump()
+}
+
+fn FakeNode::answer_err(self : FakeNode, rpc_id : Int, msg : String) -> Unit {
+  self.gen.handle_answer(
+    self.host,
+    rpc_id,
+    base_codec::json_obj([
+      ("answer", sessions_core::jint(rpc_id)),
+      ("error", base_codec::json_obj([("message", sessions_core::jstr(msg))])),
+    ]),
+  )
+  self.pump()
+}
+
+fn FakeNode::advance_and_fire_due(
+  self : FakeNode,
+  delta_ms : Double,
+  jctx : Option[JobsCtx],
+  lctx : Option[LiveCtx],
+) -> Int {
+  self.pump()
+  self.gen.counters.now = self.gen.counters.now + delta_ms
+  self.mem.advance_now(delta_ms.to_int64())
+  let mut fired = 0
+  let keys = self.timers.keys()
+  for i in 0..<keys.length() {
+    let tid = keys[i]
+    match self.timers.get(tid) {
+      Some(due_at) => {
+        if due_at <= self.gen.counters.now {
+          let _ = self.timers.remove(tid)
+          let mut handled = false
+          match jctx {
+            Some(jc) => if jc.handle_due(tid) { handled = true }
+            None => ()
+          }
+          if !handled {
+            match lctx {
+              Some(lc) => if lc.handle_due(tid) { handled = true }
+              None => ()
+            }
+          }
+          if !handled {
+            self.gen.handle_due(self.host, tid)
+          }
+          fired = fired + 1
+        }
+      }
+      None => ()
+    }
+  }
+  self.pump()
+  fired
+}
+
+fn FakeNode::pop_rpc(self : FakeNode) -> (Int, String, String, Array[base_codec::Json]) {
+  assert(self.rpcs.length() > 0)
+  pop_front(self.rpcs)
+}
+
+fn FakeNode::drive_rpcs(
+  self : FakeNode,
+  handler : (String, String, Array[base_codec::Json]) -> Result[base_codec::Json, String],
+) -> Unit {
+  self.pump()
+  let mut guard_steps = 0
+  while self.rpcs.length() > 0 && guard_steps < 200 {
+    guard_steps = guard_steps + 1
+    let (id, actor, f, args) = pop_front(self.rpcs)
+    match handler(actor, f, args) {
+      Ok(v) => self.answer_ok(id, v)
+      Err(m) => self.answer_err(id, m)
+    }
+  }
+}
+
+// ── Test 1: #jobs startId, validation, queue_of_locked_k, jstore_get_job_k, notified, remote_changed_k ──
+
+test "sessions_jobs_live: #jobs startId validation, spawn, queue_of_locked_k, notified + remote_changed_k" {
+  let n = FakeNode::new()
+  let jstate = JobsState::new()
+  let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+
+  assert(
+    named(
+      base_codec::json_obj([
+        ("name", sessions_core::jstr("web")),
+        ("id", sessions_core::jstr("j1")),
+        ("port", sessions_core::jint(8080)),
+      ]),
+    ) == "Service \"web\" (j1, port 8080)",
+  )
+  assert(
+    named(
+      base_codec::json_obj([
+        ("name", sessions_core::jstr("build")),
+        ("id", sessions_core::jstr("j2")),
+      ]),
+    ) == "Job \"build\" (j2)",
+  )
+  assert(chat_of("remote:ws:station1234567890:chat:abc") == "chat chat:abc on station station12345")
+  assert(chat_of("c-1") == "chat c-1")
+
+  // Validation error: empty command
+  jctx.handle_call(1.0, "startId", [
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("j"),
+    sessions_core::jstr(" \t\r\n "),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(true),
+    base_codec::json_null(),
+    base_codec::json_null(),
+  ])
+  n.pump()
+  assert(n.returned.length() == 1)
+  assert(sessions_core::text_of(n.returned[0], "error") == "command is empty")
+
+  // Validation error: screen + small
+  jctx.handle_call(2.0, "startId", [
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("j"),
+    sessions_core::jstr("echo hi"),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(true),
+    base_codec::json_obj([
+      ("screen", sessions_core::jbool(true)),
+      ("small", sessions_core::jbool(true)),
+    ]),
+    base_codec::json_null(),
+  ])
+  n.pump()
+  assert(n.returned.length() == 2)
+  assert(sessions_core::text_of(n.returned[1], "error") == "a small task cannot use the screen")
+
+  // Successful startId + spawn
+  let job1 = base_codec::json_obj([
+    ("id", sessions_core::jstr("remote_task42")),
+    ("sessionKey", sessions_core::jstr("remote:ws:st1:c1")),
+    ("name", sessions_core::jstr("compile")),
+    ("state", sessions_core::jstr("running")),
+    ("queued", sessions_core::jbool(false)),
+    ("log", sessions_core::jstr("/tmp/j.log")),
+  ])
+  jctx.handle_call(3.0, "startId", [
+    sessions_core::jstr("remote:ws:st1:c1"),
+    sessions_core::jstr("compile"),
+    sessions_core::jstr("make"),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    base_codec::json_null(),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "node.isDir" { return Ok(sessions_core::jbool(true)) }
+    if f == "store.runningJobsAtLeast" { return Ok(sessions_core::jbool(false)) }
+    if f == "node.newJob" { return Ok(job1) }
+    if f == "node.spawn" { return Ok(sessions_core::jint(777)) }
+    if f == "store.getJob" { return Ok(job1) }
+    Err("unexpected rpc: " + f)
+  })
+  assert(n.returned.length() == 3)
+  assert(
+    sessions_core::text_of(sessions_core::field_of(n.returned[2], "value"), "id") == "remote_task42",
+  )
+  assert(jstate.running.contains("remote_task42"))
+
+  // notified on remote job synchronously dispatches remote_changed_k inside lock without blocking
+  jctx.handle_call(4.0, "notified", [
+    sessions_core::jstr("tok1"),
+    sessions_core::jstr("  build 50%  "),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.jobByToken" { return Ok(job1) }
+    if f == "store.addJobNotice" { return Ok(base_codec::json_null()) }
+    Err("unexpected rpc: " + f)
+  })
+  assert(n.returned.length() == 4)
+  assert(n.remote_pushed.length() == 1)
+  assert(n.remote_pushed[0].0 == "task42")
+
+  // jstore_get_job_k
+  let mut got_job_id = ""
+  jctx.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    jctx.jstore_get_job_k("remote_task42", fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(j) => got_job_id = sessions_core::text_of(j, "id")
+        _ => ()
+      }
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" { Ok(job1) } else { Err("unexpected: " + f) }
+  })
+  assert(got_job_id == "remote_task42")
+
+  // queue_of_locked_k when job is queued and blocked by memory pressure
+  jctx.handle_call(5.0, "memorySeen", [sessions_core::jstr("critical")])
+  n.pump()
+  let qjob = base_codec::json_obj([
+    ("id", sessions_core::jstr("q1")),
+    ("sessionKey", sessions_core::jstr("s1")),
+    ("state", sessions_core::jstr("running")),
+    ("queued", sessions_core::jbool(true)),
+    ("startedAt", sessions_core::jnum(100.0)),
+    ("screen", sessions_core::jbool(false)),
+    ("small", sessions_core::jbool(false)),
+  ])
+  let mut q_place = 0
+  let mut q_why = ""
+  jctx.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    jctx.queue_of_locked_k("q1", fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(res) => {
+          q_place = sessions_core::int_of(sessions_core::jget(res, "place"))
+          q_why = sessions_core::text_of(res, "why")
+        }
+        _ => ()
+      }
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" { return Ok(qjob) }
+    if f == "store.remoteQueueJobs" { return Ok(base_codec::json_arr([qjob])) }
+    Err("unexpected: " + f)
+  })
+  assert(q_place == 1)
+  assert(q_why == "memory")
+  assert(n.gen.counters.active == 0)
+  assert(n.host.hub_timers.length() == 0)
+}
+
+// ── Test 2: #jobs stop, exited (service restart backoff via value timer), relaunch ──
+
+test "sessions_jobs_live: #jobs stop, exited service restart timer, and relaunch" {
+  let n = FakeNode::new()
+  let jstate = JobsState::new()
+  let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+
+  let svc = base_codec::json_obj([
+    ("id", sessions_core::jstr("svc1")),
+    ("sessionKey", sessions_core::jstr("c1")),
+    ("name", sessions_core::jstr("api")),
+    ("port", sessions_core::jint(3000)),
+    ("state", sessions_core::jstr("exited")),
+    ("restarts", sessions_core::jint(0)),
+    ("log", sessions_core::jstr("/tmp/svc1.log")),
+  ])
+  jstate.running.set("svc1", Run::{ pgid: 400, stopping: false })
+  jctx.handle_call(10.0, "exited", [
+    sessions_core::jstr("svc1"),
+    sessions_core::jint(400),
+    sessions_core::jint(1),
+    sessions_core::jnum(5000.0),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.forgetProcess" || f == "node.signal" || f == "store.jobEnded" || f == "node.notify" {
+      return Ok(base_codec::json_null())
+    }
+    if f == "store.getJob" { return Ok(svc) }
+    if f == "node.tail" { return Ok(sessions_core::jstr("err line")) }
+    if f == "store.remoteQueueJobs" { return Ok(base_codec::json_arr([])) }
+    if f == "store.now" { return Ok(sessions_core::jnum(10000.0)) }
+    Err("unexpected: " + f)
+  })
+  assert(!jstate.running.contains("svc1"))
+  assert(n.timers.length() == 1)
+  assert(jstate.timer_actions.length() == 1)
+  // Zero closure stored in host.hub_timers!
+  assert(n.host.hub_timers.length() == 0)
+
+  let fired = n.advance_and_fire_due(1000.0, Some(jctx), None)
+  assert(fired == 1)
+  assert(jstate.timer_actions.length() == 0)
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" { return Ok(svc) }
+    if f == "node.spawn" { return Ok(sessions_core::jint(401)) }
+    Err("unexpected: " + f)
+  })
+  assert(jstate.running.contains("svc1"))
+  assert(must(jstate.running.get("svc1")).pgid == 401)
+
+  jctx.handle_call(11.0, "stop", [sessions_core::jstr("svc1")])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.getJob" { return Ok(svc) }
+    if f == "node.signal" || f == "node.grace" { return Ok(base_codec::json_null()) }
+    Err("unexpected: " + f)
+  })
+  assert(must(jstate.running.get("svc1")).stopping)
+
+  let running_job = base_codec::json_obj([
+    ("id", sessions_core::jstr("j500")),
+    ("sessionKey", sessions_core::jstr("c1")),
+    ("name", sessions_core::jstr("bg")),
+    ("state", sessions_core::jstr("running")),
+    ("queued", sessions_core::jbool(false)),
+    ("pgid", sessions_core::jint(500)),
+  ])
+  jctx.handle_call(12.0, "relaunch", [])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "node.recordedGroups" {
+      return Ok(
+        base_codec::json_arr([
+          base_codec::json_obj([
+            ("pgid", sessions_core::jint(500)),
+            ("ours", sessions_core::jbool(true)),
+            ("label", sessions_core::jstr("a")),
+          ]),
+          base_codec::json_obj([
+            ("pgid", sessions_core::jint(600)),
+            ("ours", sessions_core::jbool(true)),
+            ("label", sessions_core::jstr("orphan")),
+          ]),
+        ]),
+      )
+    }
+    if f == "store.jobsUp" { return Ok(base_codec::json_arr([running_job])) }
+    if f == "node.follow" || f == "store.forgetProcess" { return Ok(base_codec::json_null()) }
+    if f == "store.remoteQueueJobs" { return Ok(base_codec::json_arr([])) }
+    if f == "store.now" { return Ok(sessions_core::jnum(12000.0)) }
+    Err("unexpected: " + f)
+  })
+  assert(jstate.running.contains("j500"))
+  let mut saw_end_group = false
+  for i in 0..<n.tells.length() {
+    if n.tells[i].0 == jobs_key && n.tells[i].1 == "node.endGroup" {
+      saw_end_group = true
+    }
+  }
+  assert(saw_end_group)
+  assert(n.gen.counters.active == 0)
+}
+
+// ── Test 3 (Astra P1-4): LRate.quiet survives real unwatch on a REAL watched transcript ──
+
+test "sessions_jobs_live: LRate.quiet survives real unwatch and resets to 0 on virtual clock expiry" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+  n.gen.counters.now = 1000.0
+
+  let init_state = base_codec::json_obj([
+    ("path", sessions_core::jstr("/t/real.jsonl")),
+    ("runtime", sessions_core::jstr("claude")),
+    ("offset", sessions_core::jint(50)),
+    ("partial", sessions_core::jstr("")),
+    ("count", sessions_core::jint(1)),
+  ])
+  // Subscribe sub 1 with locate returning a REAL path so lstate.watched["k1"] is truly active!
+  lctx.live_called(1.0, "subscribe", [
+    sessions_core::jstr("k1"),
+    sessions_core::jnum(1.0),
+    base_codec::json_null(),
+    sessions_core::jint(1),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" {
+      return Ok(
+        base_codec::json_obj([
+          ("runtime", sessions_core::jstr("claude")),
+          ("paths", base_codec::json_arr([sessions_core::jstr("/t/real.jsonl")])),
+          ("current", sessions_core::jbool(true)),
+        ]),
+      )
+    }
+    if f == "state" { return Ok(base_codec::json_arr([init_state])) }
+    if f == "page" {
+      return Ok(
+        base_codec::json_obj([("start", sessions_core::jint(0)), ("entries", base_codec::json_arr([]))]),
+      )
+    }
+    Err("unexpected: " + f)
+  })
+  // Verify watch is truly active!
+  assert(lstate.watched.contains("k1"))
+
+  // Drain the initial 40ms lsoon timer so only our rate.quiet timer will be active.
+  let _ = n.advance_and_fire_due(40.0, None, Some(lctx))
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "tailRead" {
+      return Ok(
+        base_codec::json_obj([
+          ("state", init_state),
+          ("start", sessions_core::jint(1)),
+          ("entries", base_codec::json_arr([])),
+        ]),
+      )
+    }
+    Err("unexpected: " + f)
+  })
+
+  // Start step s1 and send deltas at t=1040 and t=1640 -> positive rate told
+  lctx.live_called(2.0, "event", [
+    sessions_core::jstr("k1"),
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("start")),
+      ("id", sessions_core::jstr("s1")),
+      ("step", sessions_core::jstr("text")),
+    ]),
+  ])
+  lctx.live_called(3.0, "event", [
+    sessions_core::jstr("k1"),
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("s1")),
+      ("text", sessions_core::jstr("hello world 1234")),
+    ]),
+  ])
+  n.gen.counters.now = 1640.0
+  lctx.live_called(4.0, "event", [
+    sessions_core::jstr("k1"),
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("s1")),
+      ("text", sessions_core::jstr("more tokens here 5678")),
+    ]),
+  ])
+  n.pump()
+  assert(lstate.watched.contains("k1"))
+  assert(lstate.rates.contains("k1"))
+  assert(must(lstate.rates.get("k1")).told > 0)
+  let quiet_tid = must(must(lstate.rates.get("k1")).quiet_timer_id)
+  assert(n.host.hub_timers.length() == 0)
+
+  // Last subscriber unsubscribes -> real unwatch removes k1 from watched, emits watching:false + disarm,
+  // and MUST NOT cancel quiet_tid!
+  let tells_before_unsub = n.tells.length()
+  lctx.live_called(5.0, "unsubscribe", [sessions_core::jstr("k1"), sessions_core::jint(1)])
+  n.pump()
+  assert(!lstate.watched.contains("k1"))
+  let mut saw_watching_false = false
+  let mut saw_disarm = false
+  for i in tells_before_unsub..<n.tells.length() {
+    if n.tells[i].1 == "watching" && n.tells[i].2.length() >= 2 && is_false_opt(Some(n.tells[i].2[1])) {
+      saw_watching_false = true
+    }
+    if n.tells[i].1 == "disarm" {
+      saw_disarm = true
+    }
+  }
+  assert(saw_watching_false)
+  assert(saw_disarm)
+  assert(lstate.rates.contains("k1"))
+  assert(opt_int_is(must(lstate.rates.get("k1")).quiet_timer_id, quiet_tid))
+  assert(n.timers.contains(quiet_tid))
+  assert(lstate.timer_actions.contains(quiet_tid))
+
+  // Advance virtual clock: at t=3040 (delta 1400ms), left = 1640 + 2000 - 3040 = 600ms > 0 -> rescheduled
+  let _ = n.advance_and_fire_due(1400.0, None, Some(lctx))
+  assert(must(lstate.rates.get("k1")).told > 0)
+  // At t=3640 (delta 600ms), silence deadline expires -> told resets to 0!
+  let _ = n.advance_and_fire_due(600.0, None, Some(lctx))
+  assert(must(lstate.rates.get("k1")).told == 0)
+  assert(lstate.timer_actions.length() == 0)
+
+  // New subscriber joins and reads rate == 0
+  let tells_before = n.tells.length()
+  lctx.live_called(6.0, "subscribe", [
+    sessions_core::jstr("k1"),
+    sessions_core::jnum(1.0),
+    base_codec::json_null(),
+    sessions_core::jint(2),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" {
+      return Ok(
+        base_codec::json_obj([
+          ("runtime", sessions_core::jstr("claude")),
+          ("paths", base_codec::json_arr([sessions_core::jstr("/t/real.jsonl")])),
+          ("current", sessions_core::jbool(true)),
+        ]),
+      )
+    }
+    if f == "page" {
+      return Ok(
+        base_codec::json_obj([("start", sessions_core::jint(0)), ("entries", base_codec::json_arr([]))]),
+      )
+    }
+    Err("unexpected: " + f)
+  })
+  let mut saw_zero_rate = false
+  for i in tells_before..<n.tells.length() {
+    if n.tells[i].1 == "told" && n.tells[i].2.length() >= 3 {
+      let msg = n.tells[i].2[2]
+      if sessions_core::text_of(msg, "type") == "rate" &&
+      sessions_core::int_of(sessions_core::jget(msg, "tokensPerSecond")) == 0
+      {
+        saw_zero_rate = true
+      }
+    }
+  }
+  assert(saw_zero_rate)
+}
+
+// ── Test 4: LRate.quiet step end (exhaust vs remaining) + turn_end + rate_clear + rotate->reset ──
+
+test "sessions_jobs_live: LRate.quiet step end (exhaust vs remaining) + turn_end + rate_clear + sealed reset" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+  n.gen.counters.now = 1000.0
+
+  lctx.live_called(1.0, "subscribe", [
+    sessions_core::jstr("k2"),
+    sessions_core::jnum(0.0),
+    base_codec::json_null(),
+    sessions_core::jint(1),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+  })
+
+  // Branch A: Two parallel steps sA and sB -> end sA -> sB still has valid bucket -> keeps counting!
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("sA"))]))
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("sB"))]))
+  lctx.live_event(
+    "k2",
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("sA")),
+      ("text", sessions_core::jstr("aaaa bbbb cccc")),
+    ]),
+  )
+  n.gen.counters.now = 1600.0
+  lctx.live_event(
+    "k2",
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("sB")),
+      ("text", sessions_core::jstr("dddd eeee ffff")),
+    ]),
+  )
+  n.pump()
+  assert(must(lstate.rates.get("k2")).told > 0)
+  let tid_ab = must(must(lstate.rates.get("k2")).quiet_timer_id)
+
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("end")), ("id", sessions_core::jstr("sA"))]))
+  n.pump()
+  assert(lstate.rates.contains("k2"))
+  assert(opt_int_is(must(lstate.rates.get("k2")).quiet_timer_id, tid_ab))
+  assert(must(lstate.rates.get("k2")).told > 0)
+
+  // Branch B: End sB -> exhausts all valid buckets -> cancels quiet, removes rate, emits rate: 0
+  let tells_before_end_b = n.tells.length()
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("end")), ("id", sessions_core::jstr("sB"))]))
+  n.pump()
+  assert(!lstate.rates.contains("k2"))
+  assert(!n.timers.contains(tid_ab))
+  let mut emitted_zero = false
+  for i in tells_before_end_b..<n.tells.length() {
+    if n.tells[i].1 == "told" && n.tells[i].2.length() >= 3 {
+      let msg = n.tells[i].2[2]
+      if sessions_core::text_of(msg, "type") == "rate" &&
+      sessions_core::int_of(sessions_core::jget(msg, "tokensPerSecond")) == 0
+      {
+        emitted_zero = true
+      }
+    }
+  }
+  assert(emitted_zero)
+  // Stale due for tid_ab emits nothing
+  let tells_before_stale = n.tells.length()
+  assert(!lctx.handle_due(tid_ab))
+  n.pump()
+  assert(n.tells.length() == tells_before_stale)
+
+  // Branch C: turn_end cancels rate.quiet immediately
+  n.gen.counters.now = 5000.0
+  lctx.live_event("k2", base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("sC"))]))
+  lctx.live_event(
+    "k2",
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("sC")),
+      ("text", sessions_core::jstr("xxxx")),
+    ]),
+  )
+  n.pump()
+  let tid_c = must(must(lstate.rates.get("k2")).quiet_timer_id)
+  assert(n.timers.contains(tid_c))
+  lctx.live_called(10.0, "turnEnded", [sessions_core::jstr("k2")])
+  n.pump()
+  assert(!lstate.rates.contains("k2"))
+  assert(!n.timers.contains(tid_c))
+
+  // Branch D: rate_clear (live_forget) cancels rate.quiet immediately
+  n.gen.counters.now = 8000.0
+  lctx.live_event(
+    "k3",
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("sD")),
+      ("text", sessions_core::jstr("yyyy")),
+    ]),
+  )
+  n.pump()
+  let tid_d = must(must(lstate.rates.get("k3")).quiet_timer_id)
+  assert(n.timers.contains(tid_d))
+  lctx.live_forget("k3")
+  n.pump()
+  assert(!lstate.rates.contains("k3"))
+  assert(!n.timers.contains(tid_d))
+
+  // Branch E: Production rotation order `rotate_hub_gen` -> `reset()` emits ZERO cancel frames after seal
+  n.gen.counters.now = 10000.0
+  lctx.live_event(
+    "k4",
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("sE")),
+      ("text", sessions_core::jstr("zzzz")),
+    ]),
+  )
+  n.pump()
+  let cancels_before = n.cancelled_timers.length()
+  let old_active = n.gen.counters.active
+  let new_gen = sessions_core::rotate_hub_gen(n.host, n.gen, base_codec::json_null())
+  lctx.reset()
+  n.pump()
+  assert(lstate.rates.length() == 0)
+  assert(lstate.timer_actions.length() == 0)
+  assert(n.cancelled_timers.length() == cancels_before)
+  assert(n.gen.counters.active == old_active)
+  new_gen.fibers.close_now()
+  n.host.tick()
+}
+
+// ── Test 5 (Astra P1-1): in_read single-reader cancellation (Queued & Handed windows) ──
+
+test "sessions_jobs_live: in_read single-reader cancel (Queued & Handed windows) hands off cleanly to C" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+
+  let init_state = base_codec::json_obj([
+    ("path", sessions_core::jstr("/t/1.jsonl")),
+    ("runtime", sessions_core::jstr("claude")),
+    ("offset", sessions_core::jint(100)),
+    ("partial", sessions_core::jstr("")),
+    ("count", sessions_core::jint(2)),
+  ])
+  lctx.live_called(1.0, "subscribe", [
+    sessions_core::jstr("k_inread"),
+    sessions_core::jnum(2.0),
+    base_codec::json_null(),
+    sessions_core::jint(1),
+    sessions_core::jbool(false),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" {
+      return Ok(
+        base_codec::json_obj([
+          ("runtime", sessions_core::jstr("claude")),
+          ("paths", base_codec::json_arr([sessions_core::jstr("/t/1.jsonl")])),
+          ("current", sessions_core::jbool(true)),
+        ]),
+      )
+    }
+    if f == "state" { return Ok(base_codec::json_arr([init_state])) }
+    if f == "page" {
+      return Ok(
+        base_codec::json_obj([("start", sessions_core::jint(0)), ("entries", base_codec::json_arr([]))]),
+      )
+    }
+    Err("unexpected: " + f)
+  })
+  let w = must(lstate.watched.get("k_inread"))
+  let watch_n = w.n
+
+  // Case 1: A holds lock, B and C queue; interrupt B while Queued -> A finishes -> C runs & completes!
+  let gate_a : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut b_ran = false
+  let mut c_ran = false
+  let _ = n.gen.fibers.fork_named("reader-A", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      gate_a.wait_k(wk)
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      n.gen.counters.active = n.gen.counters.active - 1
+      n.gen.quiet()
+      k(ex)
+    })
+  })
+  let fiber_b = n.gen.fibers.fork_named("reader-B", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      b_ran = true
+      wk(effect::Exit::Succeeded(()))
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          n.gen.counters.active = n.gen.counters.active - 1
+          n.gen.quiet()
+        }
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  let _ = n.gen.fibers.fork_named("reader-C", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      c_ran = true
+      wk(effect::Exit::Succeeded(()))
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          n.gen.counters.active = n.gen.counters.active - 1
+          n.gen.quiet()
+        }
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  n.pump()
+  assert(w.read_held)
+  assert(w.read_queue.length() == 2)
+  assert(n.gen.counters.active == 1)
+
+  // Interrupt B while Queued
+  fiber_b.interrupt()
+  n.pump()
+  assert(w.read_queue.length() == 1)
+  assert(n.gen.counters.active == 1)
+
+  // Release A -> C runs and finishes cleanly
+  let quiet_before = n.quiet_count
+  let _ = gate_a.succeed(())
+  n.pump()
+  assert(!b_ran)
+  assert(c_ran)
+  assert(!w.read_held)
+  assert(w.read_queue.length() == 0)
+  assert(n.gen.counters.active == 0)
+  assert(n.quiet_count > quiet_before)
+
+  // Case 2: Interrupt B AFTER A hands off (Handed window, before B resumes) -> C still runs & completes!
+  let gate_a2 : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut b2_ran = false
+  let mut c2_ran = false
+  let _ = n.gen.fibers.fork_named("reader-A2", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      gate_a2.wait_k(wk)
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      n.gen.counters.active = n.gen.counters.active - 1
+      n.gen.quiet()
+      k(ex)
+    })
+  })
+  let fiber_b2 = n.gen.fibers.fork_named("reader-B2", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      b2_ran = true
+      wk(effect::Exit::Succeeded(()))
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          n.gen.counters.active = n.gen.counters.active - 1
+          n.gen.quiet()
+        }
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  let _ = n.gen.fibers.fork_named("reader-C2", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      c2_ran = true
+      wk(effect::Exit::Succeeded(()))
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          n.gen.counters.active = n.gen.counters.active - 1
+          n.gen.quiet()
+        }
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  n.pump()
+  assert(w.read_queue.length() == 2)
+  // Succeed A2 and interrupt B2 in the SAME turn before tick so B2 is interrupted in the Handed window
+  let _ = gate_a2.succeed(())
+  fiber_b2.interrupt()
+  n.pump()
+  assert(!b2_ran)
+  assert(c2_ran)
+  assert(!w.read_held)
+  assert(w.read_queue.length() == 0)
+  assert(lstate.read_turns.length() == 0)
+  assert(n.gen.counters.active == 0)
+
+  // Case 3 (R3 P1): Watch replacement on same key before Handed B resumes -> B interrupt still refunds active & emits quiet!
+  let gate_a3 : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut b3_ran = false
+  let mut c3_ran = false
+  let _ = n.gen.fibers.fork_named("reader-A3", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      gate_a3.wait_k(wk)
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      n.gen.counters.active = n.gen.counters.active - 1
+      n.gen.quiet()
+      k(ex)
+    })
+  })
+  let fiber_b3 = n.gen.fibers.fork_named("reader-B3", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      b3_ran = true
+      wk(effect::Exit::Succeeded(()))
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          n.gen.counters.active = n.gen.counters.active - 1
+          n.gen.quiet()
+        }
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  let _ = n.gen.fibers.fork_named("reader-C3", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    n.gen.counters.active = n.gen.counters.active + 1
+    lctx.in_read_k("k_inread", watch_n, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      c3_ran = true
+      wk(effect::Exit::Succeeded(()))
+    }, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          n.gen.counters.active = n.gen.counters.active - 1
+          n.gen.quiet()
+        }
+        _ => ()
+      }
+      k(ex)
+    })
+  })
+  n.pump()
+  assert(w.read_held)
+  assert(w.read_queue.length() == 2)
+  assert(lstate.read_turns.length() == 2)
+  assert(n.gen.counters.active == 1)
+
+  let ticket_b3 = w.read_queue[0]
+  // Last subscriber leaves -> cleanup_watch hands B3 & C3 (active += 2) and clears read_turns
+  lctx.live_called(2.0, "unsubscribe", [sessions_core::jstr("k_inread"), sessions_core::jint(1)])
+  match ticket_b3.state {
+    ReadTicketState::Handed => ()
+    _ => panic("B3 was not handed")
+  }
+  assert(lstate.read_turns.length() == 0)
+  // Re-subscribe same key BEFORE B3 resumes -> cur.n != watch_n
+  lctx.live_called(3.0, "subscribe", [
+    sessions_core::jstr("k_inread"),
+    sessions_core::jint(0),
+    base_codec::json_null(),
+    sessions_core::jint(2),
+    sessions_core::jbool(false),
+  ])
+  assert(must(lstate.watched.get("k_inread")).n != watch_n)
+  let quiet_before_replace = n.quiet_count
+  fiber_b3.interrupt()
+  n.pump()
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" {
+      Ok(base_codec::json_null())
+    } else {
+      Err("unexpected: " + f)
+    }
+  })
+  let _ = gate_a3.succeed(())
+  n.pump()
+  assert(!b3_ran)
+  assert(c3_ran)
+  assert(lstate.pending == 0)
+  assert(lstate.read_turns.length() == 0)
+  assert(n.host.hub_asked.length() == 0)
+  assert(n.gen.counters.active == 0)
+  assert(n.quiet_count > quiet_before_replace)
+}
+
+// ── Test 6 (Opus P1-1/2/3 + Astra P2-4/5): Insertion order, stood_order sync, l.next vs internal_seq ──
+
+test "sessions_jobs_live: insertion order (held/carried_plans/carried_tails), stood_order 256 LRU, and l.next separation" {
+  let n = FakeNode::new()
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+
+  // Opus P1-3: delta before running(true) must NOT shift held subscriber id from -1 to -2!
+  lctx.live_event(
+    "k_first",
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("delta")),
+      ("id", sessions_core::jstr("s1")),
+      ("text", sessions_core::jstr("hello")),
+    ]),
+  )
+  let tells_before = n.tells.length()
+  lctx.live_called(1.0, "running", [sessions_core::jstr("k_first"), sessions_core::jbool(true)])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+  })
+  let mut found_held_id = 0
+  for i in tells_before..<n.tells.length() {
+    if n.tells[i].1 == "told" && n.tells[i].2.length() >= 2 {
+      match n.tells[i].2[1] {
+        base_codec::Json::Arr(subs) => {
+          if subs.length() > 0 {
+            match subs[0] {
+              base_codec::Json::Arr(sub) => {
+                if sub.length() >= 1 {
+                  found_held_id = sessions_core::int_of(Some(sub[0]))
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  assert(found_held_id == -1)
+
+  // Opus P1-1: Insertion order for holds (`tell_held`), `carried_plans` (`plans` + `creating`), `carried_tails`
+  let n2 = FakeNode::new()
+  let lstate2 = LiveState::new()
+  let lctx2 = LiveCtx::new(n2.host, n2.gen, lstate2, n2.dispatch())
+  let hold_keys = ["zeta", "alpha", "mu", "beta"]
+  for i in 0..<hold_keys.length() {
+    lctx2.live_called(
+      (i + 1).to_double(),
+      "running",
+      [sessions_core::jstr(hold_keys[i]), sessions_core::jbool(true)],
+    )
+  }
+  n2.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "locate" { Ok(base_codec::json_null()) } else { Err("unexpected: " + f) }
+  })
+  // Last `held` tell must list ["zeta", "alpha", "mu", "beta"] in exact insertion order!
+  let mut last_held : Array[String] = []
+  for i in 0..<n2.tells.length() {
+    if n2.tells[i].1 == "held" && n2.tells[i].2.length() >= 1 {
+      match n2.tells[i].2[0] {
+        base_codec::Json::Arr(arr) => {
+          last_held = []
+          for j in 0..<arr.length() {
+            match sessions_core::str_of(Some(arr[j])) {
+              Some(s) => last_held.push(s)
+              None => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  assert(last_held.length() == 4)
+  assert(last_held[0] == "zeta")
+  assert(last_held[1] == "alpha")
+  assert(last_held[2] == "mu")
+  assert(last_held[3] == "beta")
+
+  // `takePlans` + `carried_plans` insertion order for keys and `creating`
+  lctx2.live_called(10.0, "takePlans", [
+    base_codec::json_arr([
+      base_codec::json_obj([
+        ("key", sessions_core::jstr("p_zeta")),
+        ("at", sessions_core::jint(1)),
+        ("items", base_codec::json_arr([
+          base_codec::json_obj([("text", sessions_core::jstr("a")), ("status", sessions_core::jstr("pending"))]),
+          base_codec::json_obj([("text", sessions_core::jstr("b")), ("status", sessions_core::jstr("pending"))]),
+          base_codec::json_obj([("text", sessions_core::jstr("c")), ("status", sessions_core::jstr("pending"))]),
+        ])),
+        ("creating", base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("cz"), sessions_core::jint(0)]),
+          base_codec::json_arr([sessions_core::jstr("ca"), sessions_core::jint(1)]),
+          base_codec::json_arr([sessions_core::jstr("cm"), sessions_core::jint(2)]),
+        ])),
+      ]),
+      base_codec::json_obj([
+        ("key", sessions_core::jstr("p_alpha")),
+        ("at", sessions_core::jint(2)),
+        ("items", base_codec::json_arr([])),
+        ("creating", base_codec::json_arr([])),
+      ]),
+      base_codec::json_obj([
+        ("key", sessions_core::jstr("p_mu")),
+        ("at", sessions_core::jint(3)),
+        ("items", base_codec::json_arr([])),
+        ("creating", base_codec::json_arr([])),
+      ]),
+    ]),
+  ])
+  let carried_p = lctx2.carried_plans()
+  match carried_p {
+    base_codec::Json::Arr(rows) => {
+      assert(rows.length() == 3)
+      assert(sessions_core::text_of(rows[0], "key") == "p_zeta")
+      assert(sessions_core::text_of(rows[1], "key") == "p_alpha")
+      assert(sessions_core::text_of(rows[2], "key") == "p_mu")
+      match sessions_core::jget(rows[0], "creating") {
+        Some(base_codec::Json::Arr(cr)) => {
+          assert(cr.length() == 3)
+          match (cr[0], cr[1], cr[2]) {
+            (base_codec::Json::Arr(c0), base_codec::Json::Arr(c1), base_codec::Json::Arr(c2)) => {
+              assert(opt_str_is(sessions_core::str_of(Some(c0[0])), "cz"))
+              assert(opt_str_is(sessions_core::str_of(Some(c1[0])), "ca"))
+              assert(opt_str_is(sessions_core::str_of(Some(c2[0])), "cm"))
+            }
+            _ => assert(false)
+          }
+        }
+        _ => assert(false)
+      }
+    }
+    _ => assert(false)
+  }
+
+  // Opus P1-2 + Astra P2-4: takeTails K1..K256 -> forget(K2) -> takeTails K257 -> 256 items & K1 kept!
+  let n3 = FakeNode::new()
+  let lstate3 = LiveState::new()
+  let lctx3 = LiveCtx::new(n3.host, n3.gen, lstate3, n3.dispatch())
+  let batch : Array[base_codec::Json] = []
+  for i in 1..<257 {
+    batch.push(
+      base_codec::json_obj([
+        ("key", sessions_core::jstr("K" + i.to_string())),
+        ("states", base_codec::json_arr([
+          base_codec::json_obj([
+            ("path", sessions_core::jstr("/t/" + i.to_string())),
+            ("offset", sessions_core::jint(10)),
+            ("count", sessions_core::jint(1)),
+          ]),
+        ])),
+      ]),
+    )
+  }
+  lctx3.live_called(1.0, "takeTails", [base_codec::json_arr(batch)])
+  assert(lstate3.stood.length() == 256)
+  assert(lstate3.stood_order.length() == 256)
+  lctx3.live_forget("K2")
+  assert(lstate3.stood.length() == 255)
+  assert(lstate3.stood_order.length() == 255)
+  lctx3.live_called(2.0, "takeTails", [
+    base_codec::json_arr([
+      base_codec::json_obj([
+        ("key", sessions_core::jstr("K257")),
+        ("states", base_codec::json_arr([
+          base_codec::json_obj([
+            ("path", sessions_core::jstr("/t/257")),
+            ("offset", sessions_core::jint(10)),
+            ("count", sessions_core::jint(1)),
+          ]),
+        ])),
+      ]),
+    ]),
+  ])
+  assert(lstate3.stood.length() == 256)
+  assert(lstate3.stood_order.length() == 256)
+  assert(lstate3.stood.contains("K1"))
+  assert(!lstate3.stood.contains("K2"))
+  assert(lstate3.stood.contains("K257"))
+  match lctx3.carried_tails() {
+    base_codec::Json::Arr(rows) => {
+      assert(rows.length() == 256)
+      assert(sessions_core::text_of(rows[0], "key") == "K1")
+      assert(sessions_core::text_of(rows[255], "key") == "K257")
+    }
+    _ => assert(false)
+  }
+}
+
+// ── Test 7 (Astra P1-3 + P2-1/2/3/6): prune interleaved claims, startId double-fail, NBSP trim, lone surrogates, TaskUpdate tag ──
+
+test "sessions_jobs_live: prune interleaved claims, startId jobEnded fail B, NBSP trim, lone surrogates, and TaskUpdate identity" {
+  // 1. Astra P1-3: prune_k interleaved with `claims` update must compare against CURRENT claims.length()
+  let n = FakeNode::new()
+  let jstate = JobsState::new()
+  let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+  jstate.claims = [
+    admit::Claim::{ job: "A", pid: 10, at: 1.0, held: true, since: Some(1.0) },
+    admit::Claim::{ job: "B", pid: 20, at: 2.0, held: false, since: None },
+  ]
+  let mut prune_done = false
+  jctx.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    jctx.prune_k(fn(_ex : effect::Exit[Unit]) -> Unit {
+      prune_done = true
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  n.pump()
+  // RPC 1: getJob("A") -> running
+  let (r1, _, f1, _) = n.pop_rpc()
+  assert(f1 == "store.getJob")
+  n.answer_ok(
+    r1,
+    base_codec::json_obj([("state", sessions_core::jstr("running")), ("queued", sessions_core::jbool(false))]),
+  )
+  // RPC 2: pidAlive(10) -> true
+  let (r2, _, f2, _) = n.pop_rpc()
+  assert(f2 == "node.pidAlive")
+  n.answer_ok(r2, sessions_core::jbool(true))
+  // Interleave `claims` update replacing claims with [C] while prune is suspended on getJob("B")!
+  jctx.handle_call(99.0, "claims", [
+    base_codec::json_arr([
+      base_codec::json_obj([
+        ("job", sessions_core::jstr("C")),
+        ("pid", sessions_core::jint(30)),
+        ("at", sessions_core::jnum(3.0)),
+      ]),
+    ]),
+  ])
+  n.pump()
+  // RPC 3: getJob("B") -> exited (so kept = [A], len 1 == current claims.len 1 -> preserves [C], no keepClaims!)
+  let (r3, _, f3, _) = n.pop_rpc()
+  assert(f3 == "store.getJob")
+  n.answer_ok(
+    r3,
+    base_codec::json_obj([("state", sessions_core::jstr("exited")), ("queued", sessions_core::jbool(false))]),
+  )
+  assert(prune_done)
+  assert(n.rpcs.length() == 0)
+  assert(jstate.claims.length() == 1)
+  assert(jstate.claims[0].job == "C")
+
+  // 2. Astra P2-1: startId spawn fails with A, then store.jobEnded fails with B -> returned.error is B!
+  let job_x = base_codec::json_obj([("id", sessions_core::jstr("jx")), ("name", sessions_core::jstr("x"))])
+  let ret_before = n.returned.length()
+  jctx.handle_call(100.0, "startId", [
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("x"),
+    sessions_core::jstr("echo x"),
+    sessions_core::jstr("/tmp"),
+    base_codec::json_null(),
+    sessions_core::jbool(false),
+    base_codec::json_null(),
+    sessions_core::jbool(true),
+    base_codec::json_null(),
+    base_codec::json_null(),
+  ])
+  n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.runningJobsAtLeast" { return Ok(sessions_core::jbool(false)) }
+    if f == "node.newJob" { return Ok(job_x) }
+    if f == "node.spawn" { return Err("spawn_error_A") }
+    if f == "store.jobEnded" { return Err("store_error_B") }
+    Err("unexpected: " + f)
+  })
+  assert(n.returned.length() == ret_before + 1)
+  let last_ret = n.returned[n.returned.length() - 1]
+  assert(sessions_core::text_of(last_ret, "error") == "store_error_B")
+  assert(sessions_core::text_of(sessions_core::field_of(last_ret, "cause"), "message") == "store_error_B")
+
+  // 3. Astra P2-2: NBSP (U+00A0) preserved by trim_space_mb in notified & startId, ASCII whitespace trimmed
+  let nbsp = js_json::sanitize_str([0x00A0])
+  assert(trim_space_mb(" \t\r\n ") == "")
+  assert(trim_space_mb(" " + nbsp + "\n") == nbsp)
+  let ret_nbsp = n.returned.length()
+  jctx.handle_call(101.0, "notified", [sessions_core::jstr("tok"), sessions_core::jstr(nbsp)])
+  let mut added_notice = ""
+  n.drive_rpcs(fn(_actor : String, f : String, args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+    if f == "store.jobByToken" { return Ok(job_x) }
+    if f == "store.addJobNotice" {
+      added_notice = match sessions_core::str_of(Some(args[1])) {
+        Some(s) => s
+        None => ""
+      }
+      return Ok(base_codec::json_null())
+    }
+    if f == "node.notify" { return Ok(base_codec::json_null()) }
+    Err("unexpected: " + f)
+  })
+  assert(added_notice == nbsp)
+  assert(sessions_core::text_of(n.returned[ret_nbsp], "error") == "")
+
+  // 4. Astra P2-3: brief_input & read_plan reject lone surrogates, accept escaped \\uD800 and valid pair
+  let lone_hi = "{\"command\":\"a\\uD800b\"}"
+  let lone_lo = "{\"command\":\"a\\uDC00b\"}"
+  let valid_esc = "{\"command\":\"a\\\\uD800b\"}"
+  let valid_pair = "{\"command\":\"a\\uD83D\\uDE00b\"}"
+  // Rejected lone surrogates fall back to raw input string!
+  assert(brief_input(lone_hi) == lone_hi)
+  assert(brief_input(lone_lo) == lone_lo)
+  // Valid escaped backslash and valid surrogate pair parse cleanly as JSON!
+  assert(brief_input(valid_esc) != valid_esc || brief_input(valid_esc).starts_with("{\"command\":"))
+  assert(brief_input(valid_pair).starts_with("{\"command\":"))
+
+  let lstate = LiveState::new()
+  let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+  let plan_surr = LPlan::{ items: [], creating: Map::new(), creating_order: [] }
+  assert(
+    !lctx.read_plan(plan_surr, [
+      base_codec::json_obj([
+        ("kind", sessions_core::jstr("tool_call")),
+        ("tool", sessions_core::jstr("TaskCreate")),
+        ("text", sessions_core::jstr("{\"subject\":\"bad\\uD800\"}")),
+      ]),
+    ]),
+  )
+  assert(plan_surr.items.length() == 0)
+
+  // 5. Astra P2-6: takePlans -> TaskUpdate allocates new tag -> failed tool_result does NOT delete updated item
+  lctx.live_called(1.0, "takePlans", [
+    base_codec::json_arr([
+      base_codec::json_obj([
+        ("key", sessions_core::jstr("kp")),
+        ("at", sessions_core::jint(1)),
+        ("items", base_codec::json_arr([
+          base_codec::json_obj([
+            ("text", sessions_core::jstr("orig")),
+            ("status", sessions_core::jstr("pending")),
+            ("id", sessions_core::jstr("7")),
+          ]),
+        ])),
+        ("creating", base_codec::json_arr([
+          base_codec::json_arr([sessions_core::jstr("call_7"), sessions_core::jint(0)]),
+        ])),
+      ]),
+    ]),
+  ])
+  let kp_plan = must(lstate.plans.get("kp"))
+  let orig_tag = kp_plan.items[0].tag
+  assert(
+    lctx.read_plan(kp_plan, [
+      base_codec::json_obj([
+        ("kind", sessions_core::jstr("tool_call")),
+        ("tool", sessions_core::jstr("TaskUpdate")),
+        ("text", sessions_core::jstr("{\"taskId\":\"7\",\"status\":\"in_progress\"}")),
+      ]),
+    ]),
+  )
+  assert(kp_plan.items[0].tag != orig_tag)
+  // Failed tool_result for call_7 must NOT delete the updated item!
+  let _ = lctx.read_plan(kp_plan, [
+    base_codec::json_obj([
+      ("kind", sessions_core::jstr("tool_result")),
+      ("callId", sessions_core::jstr("call_7")),
+      ("ok", sessions_core::jbool(false)),
+      ("text", sessions_core::jstr("failed")),
+    ]),
+  ])
+  assert(kp_plan.items.length() == 1)
+  assert(kp_plan.items[0].status == "in_progress")
+}
+
+// ── Test 8 (Astra P1-4): 100 rounds (natural completion + mid-flight rotation, NO manual timers.clear) ──
+
+test "sessions_jobs_live: 100 rounds of natural completion and mid-flight rotation leave rt.holding() and maps at zero" {
+  let n = FakeNode::new()
+  let stale_rpcs : Array[Int] = []
+  for round in 0..<100 {
+    let jstate = JobsState::new()
+    let lstate = LiveState::new()
+    let jctx = JobsCtx::new(n.host, n.gen, jstate, n.dispatch())
+    let lctx = LiveCtx::new(n.host, n.gen, lstate, n.dispatch())
+    let key = "sess_" + round.to_string()
+    let jid = "remote_r" + round.to_string()
+    let init_state = base_codec::json_obj([
+      ("path", sessions_core::jstr("/t/" + round.to_string() + ".jsonl")),
+      ("runtime", sessions_core::jstr("claude")),
+      ("offset", sessions_core::jint(10)),
+      ("partial", sessions_core::jstr("")),
+      ("count", sessions_core::jint(1)),
+    ])
+
+    if round % 2 == 0 {
+      // Even rounds: natural completion with real watch, rate timer expiry, and #jobs start/exited
+      let job = base_codec::json_obj([
+        ("id", sessions_core::jstr(jid)),
+        ("sessionKey", sessions_core::jstr("remote:ws:st:" + key)),
+        ("name", sessions_core::jstr("t")),
+        ("state", sessions_core::jstr("running")),
+        ("queued", sessions_core::jbool(false)),
+        ("log", sessions_core::jstr("/tmp/l")),
+      ])
+      jctx.handle_call(1.0, "startId", [
+        sessions_core::jstr("remote:ws:st:" + key),
+        sessions_core::jstr("t"),
+        sessions_core::jstr("echo ok"),
+        sessions_core::jstr("/tmp"),
+        base_codec::json_null(),
+        sessions_core::jbool(false),
+        base_codec::json_null(),
+        sessions_core::jbool(true),
+        base_codec::json_null(),
+        base_codec::json_null(),
+      ])
+      n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+        if f == "store.runningJobsAtLeast" { return Ok(sessions_core::jbool(false)) }
+        if f == "node.newJob" { return Ok(job) }
+        if f == "node.spawn" { return Ok(sessions_core::jint(100 + round)) }
+        if f == "store.getJob" { return Ok(job) }
+        Err("unexpected: " + f)
+      })
+      jctx.handle_call(2.0, "exited", [
+        sessions_core::jstr(jid),
+        sessions_core::jint(100 + round),
+        sessions_core::jint(0),
+        sessions_core::jnum(100.0),
+      ])
+      n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+        if f == "store.forgetProcess" || f == "node.signal" || f == "store.jobEnded" {
+          return Ok(base_codec::json_null())
+        }
+        if f == "store.getJob" { return Ok(job) }
+        if f == "node.tail" { return Ok(sessions_core::jstr("")) }
+        if f == "node.lost" { return Ok(sessions_core::jbool(false)) }
+        if f == "store.remoteQueueJobs" { return Ok(base_codec::json_arr([])) }
+        if f == "store.now" { return Ok(sessions_core::jnum(1000.0)) }
+        Err("unexpected: " + f)
+      })
+
+      lctx.live_called(3.0, "subscribe", [
+        sessions_core::jstr(key),
+        sessions_core::jnum(1.0),
+        base_codec::json_null(),
+        sessions_core::jint(1),
+        sessions_core::jbool(false),
+      ])
+      n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+        if f == "locate" {
+          return Ok(
+            base_codec::json_obj([
+              ("runtime", sessions_core::jstr("claude")),
+              ("paths", base_codec::json_arr([sessions_core::jstr("/t/" + round.to_string() + ".jsonl")])),
+              ("current", sessions_core::jbool(true)),
+            ]),
+          )
+        }
+        if f == "state" { return Ok(base_codec::json_arr([init_state])) }
+        if f == "page" {
+          return Ok(
+            base_codec::json_obj([("start", sessions_core::jint(0)), ("entries", base_codec::json_arr([]))]),
+          )
+        }
+        Err("unexpected: " + f)
+      })
+      let _ = n.advance_and_fire_due(40.0, Some(jctx), Some(lctx))
+      n.drive_rpcs(fn(_actor : String, f : String, _args : Array[base_codec::Json]) -> Result[base_codec::Json, String] {
+        if f == "tailRead" {
+          return Ok(
+            base_codec::json_obj([
+              ("state", init_state),
+              ("start", sessions_core::jint(1)),
+              ("entries", base_codec::json_arr([])),
+            ]),
+          )
+        }
+        Err("unexpected: " + f)
+      })
+      lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("start")), ("id", sessions_core::jstr("s1"))]))
+      lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("s1")), ("text", sessions_core::jstr("hello"))]))
+      lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("end")), ("id", sessions_core::jstr("s1"))]))
+      lctx.live_called(4.0, "unsubscribe", [sessions_core::jstr(key), sessions_core::jint(1)])
+      // Let the 40ms lsoon timer scheduled by step `end` fire naturally (no-op after unwatch)
+      let _ = n.advance_and_fire_due(40.0, Some(jctx), Some(lctx))
+      n.pump()
+      // Natural completion baseline per round (no manual timer clearing!)
+      assert(n.gen.counters.active == 0)
+      assert(lstate.pending == 0)
+      assert(lstate.timer_actions.length() == 0)
+      assert(jstate.timer_actions.length() == 0)
+      assert(n.host.hub_asked.length() == 0)
+      assert(n.host.hub_timers.length() == 0)
+    } else {
+      // Odd rounds: mid-flight RPC + in-flight timer + production `rotate_hub_gen` -> `reset()`
+      lctx.live_called(5.0, "subscribe", [
+        sessions_core::jstr(key),
+        sessions_core::jnum(0.0),
+        base_codec::json_null(),
+        sessions_core::jint(1),
+        sessions_core::jbool(false),
+      ])
+      lctx.live_event(key, base_codec::json_obj([("kind", sessions_core::jstr("delta")), ("id", sessions_core::jstr("s1")), ("text", sessions_core::jstr("hi"))]))
+      n.pump()
+      // Leave locate RPC and rate.quiet timer in flight, then rotate_hub_gen -> reset()!
+      let lines_before = n.mem.stdout_lines.length()
+      n.gen = sessions_core::rotate_hub_gen(n.host, n.gen, base_codec::json_null())
+      lctx.reset()
+      jstate.reset()
+      n.host.tick()
+      // Sealed old gen emitted zero frames during reset
+      assert(n.mem.stdout_lines.length() == lines_before)
+      assert(jstate.running.length() == 0)
+      assert(jstate.timer_actions.length() == 0)
+      assert(lstate.watched.length() == 0)
+      assert(lstate.watched_order.length() == 0)
+      assert(lstate.rates.length() == 0)
+      assert(lstate.timer_actions.length() == 0)
+      assert(lstate.read_turns.length() == 0)
+      assert(n.gen.counters.active == 0)
+      assert(n.host.hub_asked.length() == 0)
+      assert(n.host.hub_timers.length() == 0)
+      for i in 0..<n.rpcs.length() {
+        let (rpc_id, _, _, _) = n.rpcs[i]
+        stale_rpcs.push(rpc_id)
+      }
+      n.rpcs.clear()
+    }
+    // Per-round 6-counter rt.holding() check (R3 P2)
+    let (r_tasks, r_ready, r_timers, r_children, r_finalizers, r_waiters) = n.host.rt.holding()
+    assert(r_tasks == 0)
+    assert(r_ready == 0)
+    assert(r_timers == 0)
+    assert(r_children == 0)
+    assert(r_finalizers == 0)
+    assert(r_waiters == 0)
+  }
+
+  // Drain all stale old-gen external timers + late RPC replies against a fresh current-gen ctx
+  let final_jstate = JobsState::new()
+  let final_lstate = LiveState::new()
+  let final_jctx = JobsCtx::new(n.host, n.gen, final_jstate, n.dispatch())
+  let final_lctx = LiveCtx::new(n.host, n.gen, final_lstate, n.dispatch())
+  assert(n.timers.length() > 0)
+  assert(stale_rpcs.length() > 0)
+  let lines_before_drain = n.mem.stdout_lines.length()
+  let tells_before_drain = n.tells.length()
+  let _ = n.advance_and_fire_due(60_000.0, Some(final_jctx), Some(final_lctx))
+  for i in 0..<stale_rpcs.length() {
+    n.answer_ok(stale_rpcs[i], base_codec::json_null())
+  }
+  n.pump()
+  assert(n.timers.length() == 0)
+  assert(n.mem.stdout_lines.length() == lines_before_drain)
+  assert(n.tells.length() == tells_before_drain)
+  assert(n.gen.counters.active == 0)
+  assert(final_lstate.pending == 0)
+  assert(final_lstate.timer_actions.length() == 0)
+  assert(final_jstate.timer_actions.length() == 0)
+  assert(final_lstate.read_turns.length() == 0)
+
+  // Final HubGen teardown
+  n.gen.fibers.close_now()
+  n.host.tick()
+  assert(n.host.hub_asked.length() == 0)
+  assert(n.host.hub_timers.length() == 0)
+  assert(n.host.shell_waiters.length() == 0)
+  let (live_tasks, ready_len, live_timers, root_children, root_finalizers, frame_waiters) = n.host.rt.holding()
+  assert(live_tasks == 0)
+  assert(ready_len == 0)
+  assert(live_timers == 0)
+  assert(root_children == 0)
+  assert(root_finalizers == 0)
+  assert(frame_waiters == 0)
+}

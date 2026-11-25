@@ -96,30 +96,27 @@ test "desk: Esc closes a chat's film as it flies in, before its player is up" {
 }
 
 ///|
-test "desk: idle auto-fades after 1800ms, click on image toggles bars, double-click zooms, blank space closes" {
+test "desk: bars never fade by themselves, click on image toggles bars, double-click zooms, blank space closes" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
-  // re-arm idle timer from a known cause moment, then verify 1799ms / 1800ms auto-fade
+  // never fading by itself, however long the pointer rests
   t.move_to(640.0, 400.0)
   t.draw()
-  let tick_ms = 1.0
-  t.run_for(@sfbase.image_idle_ms - tick_ms)
+  t.run_for(hand_rest_ms)
   assert_true(v.bars_shown())
-  t.run_for(tick_ms)
-  assert_true(!v.bars_shown())
-  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still (the first's showing
+  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still (the first's hiding
   // of the bars at once standing)
   t.tap(640.0, 400.0)
   t.tap(640.0, 400.0)
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
   assert_true(v.zoom.zoomed_at(t.time()))
-  assert_true(v.bars_shown())
-  // one click on the picture toggles bars off at once (never closes the preview)
+  assert_true(!v.bars_shown())
+  // one click on the picture toggles bars back on at once (never closes the preview)
   t.tap(640.0, 400.0)
   t.draw()
   assert_true(viewer.get() is Some(_))
-  assert_true(!v.bars_shown())
+  assert_true(v.bars_shown())
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
   // opened again, a click in blank space outside the picture closes it at once
@@ -129,7 +126,7 @@ test "desk: idle auto-fades after 1800ms, click on image toggles bars, double-cl
 }
 
 ///|
-test "desk: the bar hidden by a click shows while the pointer is along the top, and hides when leaving the window" {
+test "desk: the bar hidden by a click shows while the pointer is along the top, hidden again off it, and stays as the pointer leaves the window" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
   v.toggle()
@@ -138,14 +135,17 @@ test "desk: the bar hidden by a click shows while the pointer is along the top, 
   t.move_to(640.0, 20.0)
   t.draw()
   assert_true(v.bars_shown())
-  // moving off the top onto the stage middle wakes bars with a fresh 1800ms idle timer
+  // moving off the top onto the stage middle: hidden again, as the click left them (only a click shows them)
   t.move_to(640.0, 400.0)
   t.draw()
+  assert_true(!v.bars_shown())
+  // a click shows them; moving out of the window keeps them
+  v.toggle()
+  t.draw()
   assert_true(v.bars_shown())
-  // moving out of the window hides bars immediately
   t.move_to(-1.0, -1.0)
   t.draw()
-  assert_true(!v.bars_shown())
+  assert_true(v.bars_shown())
 }
 
 ///|

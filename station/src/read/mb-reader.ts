@@ -140,7 +140,7 @@ export function setPionProbeRunnerForTest(runner: PionProbeRunner | null): void 
 /// Older binaries that omit `modes:` are treated as supporting only the 3 baseline modes.
 export function parsePionVersionModes(stdout: string): ReadonlySet<string> {
   const modes = new Set<string>(PION_BASELINE_MODES);
-  const match = /(?:^|\s)modes:([a-z0-9_,-]+)/i.exec(stdout);
+  const match = /(?:^|\s)modes:([a-z0-9_,-]+)(?=\s|$)/i.exec(stdout);
   if (match?.[1]) {
     for (const part of match[1].split(",")) {
       const m = part.trim().toLowerCase();

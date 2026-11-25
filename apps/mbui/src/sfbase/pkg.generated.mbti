@@ -1883,8 +1883,6 @@ pub fn viewer_place(Viewer, Source) -> (Int32, Int32)
 
 pub let viewer_step_zone_w : Double
 
-pub let image_idle_ms : Double
-
 pub fn viz_base_name(String) -> String
 
 pub let viz_bridge : String
@@ -3743,9 +3741,7 @@ pub(all) struct Viewer {
   mut bar_focus_count : Int32
   mut menu_open : Bool
   mut manual_hidden : Bool
-  mut pointer_left : Bool
   mut bars_tapped_at : Double
-  mut idle_off : () -> Unit
   mut down_pointer : Bool
   zoom : @motion.Zoom
   vzoom : @motion.Zoom

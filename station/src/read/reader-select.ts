@@ -277,7 +277,7 @@ export const READER_MODES = {
   },
   mesh: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "network",
     note: "Iroh mesh front endpoint (--builder mesh)",
   },

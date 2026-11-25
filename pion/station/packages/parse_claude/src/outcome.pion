@@ -1,0 +1,382 @@
+// Failure classification for Claude Code and shared runtimes
+// (1:1 port of `station/mb/src/claude/outcome.mbt`).
+
+import "js_json"
+import "jscase"
+import "live_wire"
+
+fn ascii_lower(text : String) -> String {
+  let raw = text.to_bytes()
+  let n = raw.length()
+  let out = StringBuilder::new()
+  for i in 0..<n {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 0x41 && b <= 0x5A {
+      out.write_byte((b + 32) as Byte)
+    } else {
+      out.write_byte(raw[i])
+    }
+  }
+  out.to_string()
+}
+
+/// `[A-Za-z0-9_]`, what `\w` and `\b` take.
+fn word_unit(c : Int) -> Bool {
+  (c >= 0x30 && c <= 0x39) ||
+  (c >= 0x41 && c <= 0x5A) ||
+  (c >= 0x61 && c <= 0x7A) ||
+  c == 0x5F
+}
+
+/// Whether `\b` holds before `at` in `s`.
+fn boundary_bytes(s : Bytes, at : Int) -> Bool {
+  let before = at > 0 && word_unit(s[at - 1].to_int() & 0xFF)
+  let after = at < s.length() && word_unit(s[at].to_int() & 0xFF)
+  before != after
+}
+
+/// Whether ASCII `w` is in `s` from `at`.
+fn at_is_bytes(s : Bytes, at : Int, w : Bytes) -> Bool {
+  let wl = w.length()
+  if at < 0 || at + wl > s.length() {
+    return false
+  }
+  for j in 0..<wl {
+    if s[at + j] != w[j] {
+      return false
+    }
+  }
+  true
+}
+
+/// `/\bw\b/.test(s)`, for an ASCII `w` that begins and ends with a word character.
+fn has_bounded(s : String, w : String) -> Bool {
+  let sb = s.to_bytes()
+  let wb = w.to_bytes()
+  let sl = sb.length()
+  let wl = wb.length()
+  let mut i = 0
+  while i + wl <= sl {
+    if boundary_bytes(sb, i) && at_is_bytes(sb, i, wb) && boundary_bytes(sb, i + wl) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// `/\bhit your \d+[- ]hour limit\b/.test(s)`.
+fn hourly_limit(s : String) -> Bool {
+  let sb = s.to_bytes()
+  let hit = "hit your ".to_bytes()
+  let hour = "hour limit".to_bytes()
+  let sl = sb.length()
+  let hit_len = hit.length()
+  let hour_len = hour.length()
+  let mut i = 0
+  while i + hit_len <= sl {
+    if !boundary_bytes(sb, i) || !at_is_bytes(sb, i, hit) {
+      i = i + 1
+      continue
+    }
+    let mut j = i + hit_len
+    let digits = j
+    while j < sl {
+      let c = sb[j].to_int() & 0xFF
+      if c >= 0x30 && c <= 0x39 {
+        j = j + 1
+      } else {
+        break
+      }
+    }
+    if j > digits && j < sl {
+      let sep = sb[j].to_int() & 0xFF
+      if (sep == 0x2D || sep == 0x20) &&
+      at_is_bytes(sb, j + 1, hour) &&
+      boundary_bytes(sb, j + 1 + hour_len) {
+        return true
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// `/\b(?:reached|hit) your [\w.\- ]+ limit\b/.test(s)`.
+fn named_limit(s : String) -> Bool {
+  let sb = s.to_bytes()
+  let sl = sb.length()
+  let limit = " limit".to_bytes()
+  let limit_len = limit.length()
+  let reached = "reached your ".to_bytes()
+  let hit = "hit your ".to_bytes()
+  let mut i = 0
+  while i < sl {
+    if !boundary_bytes(sb, i) {
+      i = i + 1
+      continue
+    }
+    let from = if at_is_bytes(sb, i, reached) {
+      i + 13
+    } else if at_is_bytes(sb, i, hit) {
+      i + 9
+    } else {
+      i = i + 1
+      continue
+    }
+    let mut k = from
+    while k < sl {
+      let c = sb[k].to_int() & 0xFF
+      if !(word_unit(c) || c == 0x2E || c == 0x2D || c == 0x20) {
+        break
+      }
+      k = k + 1
+      if at_is_bytes(sb, k, limit) && boundary_bytes(sb, k + limit_len) {
+        return true
+      }
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn any_contains(haystack : String, needles : Array[String]) -> Bool {
+  for i in 0..<needles.length() {
+    if haystack.contains(needles[i]) {
+      return true
+    }
+  }
+  false
+}
+
+/// runtime.ts `failureRest`: the network, the conversation's size, else the model.
+fn failure_rest(text : String, lower : String) -> String {
+  let context : Array[String] = [
+    "context window",
+    "context_window",
+    "context length",
+    "context_length",
+    "context overflow",
+    "prompt is too long",
+    "maximum context",
+    "too many tokens",
+    "input is too long",
+  ]
+  if any_contains(lower, context) {
+    return "context"
+  }
+  let folded = ascii_lower(text)
+  let network : Array[String] = [
+    "stream disconnected",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "connection error",
+    "connection failed",
+    "network error",
+    "timed out",
+    "timeout",
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "enotfound",
+    "eai_again",
+    "epipe",
+    "socket hang up",
+    "fetch failed",
+    "dns error",
+    "tls handshake",
+  ]
+  if any_contains(folded, network) {
+    return "network"
+  }
+  "model"
+}
+
+/// claude.ts `refused`: Anthropic turning the request away before any account is looked at.
+pub fn refused(text : String) -> Bool {
+  let lower = jscase::lower(text)
+  lower.contains("request not allowed") || has_bounded(lower, "forbidden")
+}
+
+/// claude.ts `classifyResult`: what failed a turn whose result was an error, by what it said.
+pub fn classify_result(text : String) -> String {
+  let lower = jscase::lower(text)
+  if refused(text) {
+    return "refused"
+  }
+  if jscase::has_word(lower, "401") ||
+  jscase::has_word(lower, "403") ||
+  lower.contains("authenticat") ||
+  lower.contains("api key") {
+    return "auth"
+  }
+  let rate_words : Array[String] = [
+    "rate limit",
+    "rate-limit",
+    "rate_limit",
+    "ratelimit",
+    "usage limit",
+    "credit balance",
+  ]
+  if jscase::has_word(lower, "429") ||
+  any_contains(lower, rate_words) ||
+  lower.contains("hit your session limit") ||
+  lower.contains("hit your weekly limit") ||
+  lower.contains("hit your daily limit") ||
+  hourly_limit(lower) ||
+  named_limit(lower) ||
+  lower.contains("you've hit your limit") {
+    return "rate_limit"
+  }
+  if jscase::has_word(lower, "529") ||
+  lower.contains("overloaded") ||
+  lower.contains("at capacity") {
+    return "overloaded"
+  }
+  failure_rest(text, lower)
+}
+
+/// A turn that failed on authentication (`auth_failure`): lossless UTF-16 message.
+pub fn auth_outcome_u16(failure : Array[Int]) -> js_json::JValue {
+  let s = js_json::sanitize_str(failure)
+  live_wire::failed_u16(if refused(s) { "refused" } else { "auth" }, failure)
+}
+
+/// A turn that failed on authentication (`auth_failure`).
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `auth_outcome_u16`.
+pub fn auth_outcome(failure : String) -> js_json::JValue {
+  auth_outcome_u16(js_json::utf16_units(failure))
+}
+
+/// A turn whose result was an error, saying `text` (lossless UTF-16), at most 1000 chars kept.
+pub fn error_outcome_u16(text : Array[Int]) -> js_json::JValue {
+  let s = js_json::sanitize_str(text)
+  live_wire::failed_u16(classify_result(s), js_json::chars(text, 1000))
+}
+
+/// A turn whose result was an error, saying `text`, at most 1000 characters kept.
+/// Lossy convenience wrapper (sanitizes lone surrogates to U+FFFD); production lossless paths MUST use `error_outcome_u16`.
+pub fn error_outcome(text : String) -> js_json::JValue {
+  error_outcome_u16(js_json::utf16_units(text))
+}
+
+fn has_word_ident(lower : String, w : String) -> Bool {
+  jscase::has_word_by(lower, w, fn(c : Int) -> Bool { c == 0x5F || jscase::is_word_point(c) })
+}
+
+fn any_word_ident(lower : String, words : Array[String]) -> Bool {
+  for i in 0..<words.length() {
+    if has_word_ident(lower, words[i]) {
+      return true
+    }
+  }
+  false
+}
+
+/// runtime.ts `failureOf`: what failed a turn by what a runtime said of it.
+pub fn failure_of(
+  text : String,
+  auth_codes : Array[String] = [],
+  auth : Array[String] = [],
+  limit_codes : Array[String] = [],
+  limit : Array[String] = [],
+) -> String {
+  let lower = jscase::lower(text)
+  let base_auth : Array[String] = [
+    "unauthorized",
+    "authenticat",
+    "not logged in",
+    "sign in",
+    "log in",
+    "api key",
+    "permission_denied",
+    "invalid credential",
+  ]
+  let refused_words : Array[String] = [
+    "request not allowed",
+    "unsupported_country",
+    "unsupported country",
+    "not available in your region",
+    "region is not supported",
+    "not authorized in this region",
+  ]
+  let block_page : Array[String] = [
+    "<html",
+    "<!doctype html",
+    "attention required",
+    "just a moment",
+    "cloudflare",
+  ]
+  let base_limit : Array[String] = [
+    "rate limit",
+    "rate_limit",
+    "quota",
+    "usage limit",
+    "limit reached",
+    "resource_exhausted",
+    "too many requests",
+    "credit balance",
+  ]
+  if has_word_ident(lower, "401") || any_word_ident(lower, auth_codes) {
+    return "auth"
+  }
+  if has_word_ident(lower, "403") {
+    if any_contains(lower, base_auth) ||
+    any_contains(lower, auth) ||
+    lower.contains("token") ||
+    lower.contains("scope") {
+      return "auth"
+    } else if any_contains(lower, refused_words) {
+      return "refused"
+    } else if any_contains(lower, block_page) {
+      return "blocked"
+    } else {
+      return "denied"
+    }
+  }
+  if has_word_ident(lower, "429") || any_word_ident(lower, limit_codes) {
+    return "rate_limit"
+  }
+  if has_word_ident(lower, "529") {
+    return "overloaded"
+  }
+  if any_contains(lower, refused_words) {
+    return "refused"
+  }
+  if lower.contains("forbidden") {
+    return "denied"
+  }
+  if any_contains(lower, base_auth) || any_contains(lower, auth) {
+    return "auth"
+  }
+  if any_contains(lower, base_limit) || any_contains(lower, limit) {
+    return "rate_limit"
+  }
+  if lower.contains("overloaded") || lower.contains("at capacity") {
+    return "overloaded"
+  }
+  failure_rest(text, lower)
+}
+
+/// runtime.ts `unreachable`: its words, ASCII letters in either case.
+pub fn unreachable(text : String) -> Bool {
+  let lower = ascii_lower(text)
+  let words : Array[String] = [
+    "econnrefused",
+    "econnreset",
+    "unable to connect",
+    "is not connected",
+    "fetch failed",
+    "socket hang up",
+    "connection refused",
+    "failed to connect to mcp server",
+  ]
+  any_contains(lower, words)
+}
+
+/// Lossless UTF-16 wrapper for `unreachable` (all keywords are pure ASCII).
+pub fn unreachable_u16(units : Array[Int]) -> Bool {
+  unreachable(js_json::sanitize_str(units))
+}

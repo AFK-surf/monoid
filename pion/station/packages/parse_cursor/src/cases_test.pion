@@ -1,0 +1,238 @@
+// 1:1 port of `station/mb/src/cursor/cases_test.mbt` + lone-surrogate UTF-16 round-trip tests.
+
+import "js_json"
+import "live_wire"
+
+fn cursor_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn u32_to_hex(x : Int64) -> String {
+  let v = x & 0xFFFFFFFFL
+  if v == 0L {
+    return "0"
+  }
+  let hex = "0123456789abcdef".to_bytes()
+  let rev : Array[Byte] = []
+  let mut cur = v
+  while cur > 0L {
+    let d = (cur & 0xFL).to_int()
+    rev.push(hex[d])
+    cur = cur >> 4
+  }
+  let sb = StringBuilder::new()
+  let mut i = rev.length() - 1
+  while i >= 0 {
+    sb.write_byte(rev[i])
+    i = i - 1
+  }
+  sb.to_string()
+}
+
+fn long_u16(n : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<n {
+    if i % 7 == 3 {
+      out.push(0xD83D)
+      out.push(0xDE00)
+    } else {
+      out.push(0x61 + (i % 26))
+    }
+  }
+  out
+}
+
+fn expand_val(v : js_json::JValue) -> js_json::JValue {
+  match v {
+    js_json::JValue::Str(u) => {
+      let s = js_json::sanitize_str(u)
+      if s.starts_with("<<long:") && s.ends_with(">>") {
+        let bs = s.to_bytes()
+        let mut n = 0
+        for i in 7..<(bs.length() - 2) {
+          n = n * 10 + ((bs[i].to_int() & 0xFF) - 0x30)
+        }
+        js_json::JValue::Str(long_u16(n))
+      } else {
+        v
+      }
+    }
+    js_json::JValue::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<items.length() {
+        out.push(expand_val(items[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    js_json::JValue::Obj(fields) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        out.push((k, expand_val(fv)))
+      }
+      js_json::JValue::Obj(out)
+    }
+    other => other
+  }
+}
+
+fn folded_val(v : js_json::JValue) -> js_json::JValue {
+  match v {
+    js_json::JValue::Str(u) => {
+      if u.length() > 512 {
+        let mut h : Int64 = 0x811C9DC5L
+        for i in 0..<u.length() {
+          h = ((h ^ (u[i].to_int64() & 0xFFFFL)) * 0x01000193L) & 0xFFFFFFFFL
+        }
+        live_wire::jstr("<<" + u.length().to_string() + ":" + u32_to_hex(h) + ">>")
+      } else {
+        v
+      }
+    }
+    js_json::JValue::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<items.length() {
+        out.push(folded_val(items[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    js_json::JValue::Obj(fields) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        out.push((k, folded_val(fv)))
+      }
+      js_json::JValue::Obj(out)
+    }
+    other => other
+  }
+}
+
+fn parsed_cursor(s : String) -> js_json::JValue {
+  match js_json::parse(s) {
+    Ok(v) => v
+    Err(e) => panic("not JSON: " + e + " in " + s)
+  }
+}
+
+fn same_cursor(what : String, at : Int, got : js_json::JValue, said : String) -> Unit {
+  let a = js_json::stringify_with_num(folded_val(got), cursor_fmt_num)
+  let b = js_json::stringify_with_num(parsed_cursor(said), cursor_fmt_num)
+  if a != b {
+    panic(what + " of step " + at.to_string() + ":\n got  " + a + "\n said " + b)
+  }
+}
+
+test "parse_cursor: each line as the TypeScript read it" {
+  let mut s = Session::new(Turn::of_json(js_json::JValue::Null), Live::new())
+  let steps = steps_said()
+  for at in 0..<steps.length() {
+    let (line, events, node, turn, state) = steps[at]
+    let v = expand_val(parsed_cursor(line))
+    let mut got : Array[js_json::JValue] = []
+    let mut read = false
+    match v.get("$new") {
+      Some(_) => s = Session::new(Turn::of_json(js_json::JValue::Null), Live::new())
+      None => {
+        match v.get("$prompt") {
+          Some(_) => got = s.prompted()
+          None => {
+            match v.get("$aborting") {
+              Some(_) => s.turn.aborting = true
+              None => {
+                match v.get("$cut") {
+                  Some(_) => got = s.cut_short()
+                  None => {
+                    let said = s.line_with(v, cursor_fmt_num)
+                    got = said.events
+                    read = said.node
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    same_cursor("events", at, js_json::JValue::Arr(got), events)
+    let read_s = if read { "true" } else { "false" }
+    if read_s != node {
+      panic("whether Node reads step " + at.to_string() + ": " + read_s + ", node said " + node)
+    }
+    same_cursor("turn", at, s.turn.json(), turn)
+    same_cursor("state", at, s.live.state(), state)
+  }
+}
+
+test "parse_cursor: what a crash reads again as the TypeScript read it" {
+  let replays = replays_said()
+  for at in 0..<replays.length() {
+    let (lines, result) = replays[at]
+    let replay = Replay::new()
+    match expand_val(parsed_cursor(lines)) {
+      js_json::JValue::Arr(all) => {
+        for i in 0..<all.length() {
+          replay.line_with(all[i], cursor_fmt_num)
+        }
+      }
+      _ => panic("not lines")
+    }
+    let got = live_wire::obj([
+      ("session", live_wire::opt_str_json_u16(replay.session)),
+      ("turn", replay.turn.json()),
+      ("live", replay.live.state()),
+    ])
+    same_cursor("replay", at, got, result)
+  }
+}
+
+test "parse_cursor: lone surrogate round-trip preserves distinct \\ud800 and \\ud801" {
+  let s = Session::new(Turn::of_json(js_json::JValue::Null), Live::new())
+  let _ = s.prompted()
+  let r1 = s.line_with(
+    parsed_cursor("{\"ev\":\"message\",\"message\":{\"type\":\"tool_call\",\"call_id\":\"c\\ud800\",\"status\":\"running\",\"name\":\"bash\",\"args\":{}}}"),
+    cursor_fmt_num,
+  )
+  let r2 = s.line_with(
+    parsed_cursor("{\"ev\":\"message\",\"message\":{\"type\":\"tool_call\",\"call_id\":\"c\\ud801\",\"status\":\"running\",\"name\":\"bash\",\"args\":{}}}"),
+    cursor_fmt_num,
+  )
+  let sb = StringBuilder::new()
+  js_json::write_utf8_with_num(sb, s.live.state(), cursor_fmt_num)
+  let state_s = sb.to_string()
+  if state_s != "{\"open\":[[\"c\\ud800\",\"tool\"],[\"c\\ud801\",\"tool\"]],\"said\":null,\"n\":0,\"phase\":\"working\"}" {
+    panic("unexpected cursor state: " + state_s)
+  }
+  let again = Live::of_state(parsed_cursor(state_s))
+  let end1 = again.feed_with(
+    Some(parsed_cursor("{\"type\":\"tool_call\",\"call_id\":\"c\\ud800\",\"status\":\"done\",\"result\":\"ok\\udc00\"}")),
+    cursor_fmt_num,
+  )
+  let e_s = js_json::stringify_with_num(js_json::JValue::Arr(end1), cursor_fmt_num)
+  if e_s != "[{\"kind\":\"delta\",\"id\":\"c\\ud800\",\"field\":\"output\",\"text\":\"ok\\udc00\"},{\"kind\":\"end\",\"id\":\"c\\ud800\"}]" {
+    panic("unexpected cursor end1: " + e_s)
+  }
+  if again.open.length() != 1 || r1.events.length() == 0 || r2.events.length() == 0 {
+    panic("expected c\\ud801 still open")
+  }
+
+  // cursor_output content array path preserves lone surrogates
+  let out_u16 = cursor_output_with(
+    Some(
+      parsed_cursor(
+        "{\"value\":{\"content\":[{\"text\":{\"text\":\"nested\\ud800\"}},{\"text\":\"plain\\ud801\"}]}}",
+      ),
+    ),
+    cursor_fmt_num,
+  )
+  let out_s = js_json::stringify_with_num(live_wire::jstr_u16(out_u16), cursor_fmt_num)
+  if out_s != "\"nested\\ud800\\nplain\\ud801\"" {
+    panic("cursor_output content array lost lone surrogate: " + out_s)
+  }
+}
