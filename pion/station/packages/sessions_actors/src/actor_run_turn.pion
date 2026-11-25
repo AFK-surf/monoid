@@ -1122,7 +1122,24 @@ fn ActorsGen::pump_steer_k(
   if added > 0 {
     self.mirror(a)
   }
+  let attempt_gen = agent.generation
+  let attempt_turn_id : Option[String] = match a.turn {
+    Some(t) => Some(t.id)
+    None => None
+  }
+  let attempt_same = fn() -> Bool {
+    a.phase != "closed" &&
+    self.is_current(a, attempt_gen) &&
+    match (a.turn, attempt_turn_id) {
+      (Some(t), Some(id)) => t.id == id
+      (None, None) => true
+      _ => false
+    }
+  }
   let unsteer = fn() -> Unit {
+    if !attempt_same() && a.phase != "closed" {
+      return
+    }
     a.unread_preparing = 0
     if a.unread.length() >= before + added {
       for _ in 0..<added {
@@ -1179,10 +1196,32 @@ fn ActorsGen::pump_steer_k(
                     }
                     let after_mark = fn(ex_mk : effect::Exit[Unit]) -> Unit {
                       match ex_mk {
-                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => {
+                          unsteer()
+                          if !self.gen.counters.sealed && marked.length() > 0 {
+                            sessions_core::try_k(
+                              fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                self.store_direct_k(
+                                  a,
+                                  "markUndelivered",
+                                  [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                  tk,
+                                )
+                              },
+                              fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                k(effect::Exit::Interrupted)
+                              },
+                            )
+                          } else {
+                            k(effect::Exit::Interrupted)
+                          }
+                        }
+                        effect::Exit::Failed(e) => {
+                          unsteer()
+                          k(effect::Exit::Failed(e))
+                        }
                         effect::Exit::Succeeded(_) => {
-                          if a.phase == "closed" {
+                          if !attempt_same() {
                             unsteer()
                             if !self.gen.counters.sealed && marked.length() > 0 {
                               sessions_core::try_k(
@@ -1241,15 +1280,44 @@ fn ActorsGen::pump_steer_k(
                                     fn(ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
                                       match ex_u {
                                         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                        _ => k(effect::Exit::Failed(e))
+                                        _ => {
+                                          if !attempt_same() {
+                                            k(effect::Exit::Interrupted)
+                                          } else {
+                                            k(effect::Exit::Failed(e))
+                                          }
+                                        }
                                       }
                                     },
                                   )
+                                } else if !attempt_same() {
+                                  k(effect::Exit::Interrupted)
                                 } else {
                                   k(effect::Exit::Failed(e))
                                 }
                               }
                               effect::Exit::Succeeded(timed_str) => {
+                                if !attempt_same() {
+                                  unsteer()
+                                  if !self.gen.counters.sealed && marked.length() > 0 {
+                                    sessions_core::try_k(
+                                      fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                        self.store_direct_k(
+                                          a,
+                                          "markUndelivered",
+                                          [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                          tk,
+                                        )
+                                      },
+                                      fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                        k(effect::Exit::Interrupted)
+                                      },
+                                    )
+                                  } else {
+                                    k(effect::Exit::Interrupted)
+                                  }
+                                  return
+                                }
                                 // Direct RPC: once `agent.steer` is dispatched to Node, settle on
                                 // its real receipt even if `close(a)` arrives in flight so a
                                 // rejected steer (`false` / `Failed`) still restores delivery.
@@ -1279,7 +1347,7 @@ fn ActorsGen::pump_steer_k(
                                               match ex_u {
                                                 effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                                 _ => {
-                                                  if a.phase == "closed" {
+                                                  if !attempt_same() {
                                                     k(effect::Exit::Interrupted)
                                                   } else {
                                                     k(effect::Exit::Failed(e))
@@ -1288,7 +1356,7 @@ fn ActorsGen::pump_steer_k(
                                               }
                                             },
                                           )
-                                        } else if a.phase == "closed" {
+                                        } else if !attempt_same() {
                                           k(effect::Exit::Interrupted)
                                         } else {
                                           k(effect::Exit::Failed(e))
@@ -1306,14 +1374,14 @@ fn ActorsGen::pump_steer_k(
                                                 match ex_u {
                                                   effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                                   effect::Exit::Failed(e) => {
-                                                    if a.phase == "closed" {
+                                                    if !attempt_same() {
                                                       k(effect::Exit::Interrupted)
                                                     } else {
                                                       k(effect::Exit::Failed(e))
                                                     }
                                                   }
                                                   effect::Exit::Succeeded(_) => {
-                                                    if a.phase == "closed" {
+                                                    if !attempt_same() {
                                                       k(effect::Exit::Interrupted)
                                                     } else {
                                                       k(effect::Exit::Succeeded(()))
@@ -1322,13 +1390,13 @@ fn ActorsGen::pump_steer_k(
                                                 }
                                               },
                                             )
-                                          } else if a.phase == "closed" {
+                                          } else if !attempt_same() {
                                             k(effect::Exit::Interrupted)
                                           } else {
                                             k(effect::Exit::Succeeded(()))
                                           }
                                         } else {
-                                          if a.phase == "closed" {
+                                          if !attempt_same() {
                                             k(effect::Exit::Interrupted)
                                             return
                                           }
@@ -1404,10 +1472,10 @@ fn ActorsGen::pump_steer_k(
                       }
                     }
                     if marked.length() > 0 {
-                      // Direct store call: if Node commits `markDelivered` before a concurrent
-                      // `close(a)` arrives, we must still receive its ACK so `after_mark` can
-                      // immediately compensate with `markUndelivered`.
-                      self.store_direct_k(
+                      // Tracked store call: same-generation `close(a)` cancels this RPC
+                      // immediately so `hub_asked` settles even if Node drops it, and
+                      // `after_mark` `Interrupted` idempotently compensates with `markUndelivered`.
+                      self.store_k(
                         a,
                         "markDelivered",
                         [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
@@ -2512,7 +2580,7 @@ fn ActorsGen::start_turn_send_prompt_k(
                                             [sessions_core::jstr(prompt)],
                                             fn(ex_p2 : effect::Exit[base_codec::Json]) -> Unit {
                                               match ex_p2 {
-                                                // Do not undo `markUndelivered` when the 2nd prompt is
+                                                // Do not call `markUndelivered` when the 2nd prompt is
                                                 // interrupted: the runtime may already have accepted it,
                                                 // so reverting could duplicate delivery.
                                                 effect::Exit::Interrupted => k(effect::Exit::Interrupted)

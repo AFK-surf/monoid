@@ -434,8 +434,8 @@ pub fn ActorsGen::rpc_k(
 
 /// Direct actor RPC that is guarded ONLY by generation `sealed` (never blocked or cancelled by
 /// `a.phase == "closed"`, and never tracked in `a.rpc_ids`). Used exclusively for post-close
-/// cleanup/in-flight persistence (`dispose`, `pump_steer_k` `markUndelivered` compensation,
-/// `runChanged`, and `state_for_turn_k` `node.stateWrite`).
+/// cleanup/in-flight persistence (`dispose`, `pump_steer_k` `agent.steer`, `runChanged`,
+/// `state_for_turn_k` `node.stateWrite`, and `store_direct_k` `markUndelivered` compensation).
 pub fn ActorsGen::rpc_direct_k(
   self : ActorsGen,
   key : String,

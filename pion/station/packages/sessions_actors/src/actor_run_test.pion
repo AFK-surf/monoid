@@ -2388,23 +2388,47 @@ test "r4 final: local StoreDb restores delivered_at=NULL on close even when Node
   let mem = sessions_core::MemHostTransport::new()
   let host = sessions_core::SessionHost::for_test(mem)
   let gen = sessions_core::HubGen::new(host, 0)
-  let mut delivered = false
+  let row_thread = "th1"
+  let row_n = 1
+  let row_session = "s1"
+  let mut row_delivered_at : Option[Int] = None
   let inner_sdb = StoreDb::{
-    all: fn(sql : String, _params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+    all: fn(sql : String, params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
       if sql.contains("delivered_at IS NULL") {
-        let row : Map[String, base_codec::Json] = Map::new()
-        row.set("1", sessions_core::jint(1))
-        return Ok([row])
+        let sess_ok = params.length() > 0 && str_or(sessions_core::str_of(Some(params[0])), "") == row_session
+        if sess_ok && !is_some(row_delivered_at) {
+          let row : Map[String, base_codec::Json] = Map::new()
+          row.set("1", sessions_core::jint(1))
+          row.set("n", sessions_core::jint(1))
+          return Ok([row])
+        }
+        return Ok([])
       }
       Ok([])
     },
-    run: fn(sql : String, _params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
-      if sql.contains("delivered_at = NULL") {
-        delivered = false
-      } else if sql.contains("SET delivered_at = ?") {
-        delivered = true
+    run: fn(sql : String, params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
+      if sql.contains("UPDATE deliveries SET delivered_at = ?") {
+        if params.length() == 4 &&
+        str_or(sessions_core::str_of(Some(params[1])), "") == row_thread &&
+        sessions_core::int_of(Some(params[2])) == row_n &&
+        str_or(sessions_core::str_of(Some(params[3])), "") == row_session &&
+        !is_some(row_delivered_at) {
+          row_delivered_at = Some(sessions_core::int_of(Some(params[0])))
+          return Ok(1)
+        }
+        return Ok(0)
       }
-      Ok(1)
+      if sql.contains("UPDATE deliveries SET delivered_at = NULL") {
+        if params.length() == 3 &&
+        str_or(sessions_core::str_of(Some(params[0])), "") == row_thread &&
+        sessions_core::int_of(Some(params[1])) == row_n &&
+        str_or(sessions_core::str_of(Some(params[2])), "") == row_session {
+          row_delivered_at = None
+          return Ok(1)
+        }
+        return Ok(0)
+      }
+      Ok(0)
     },
     tx_err: fn(_b : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError]) -> Result[base_codec::Json, sql_db::SqlError] {
       Err(sql_db::sql_error(1, "nested tx"))
@@ -2445,7 +2469,7 @@ test "r4 final: local StoreDb restores delivered_at=NULL on close even when Node
               "pending",
               base_codec::json_arr([
                 base_codec::json_obj([
-                  ("handed", base_codec::json_obj([("thread", sessions_core::jstr("th1")), ("seq", sessions_core::jint(1))])),
+                  ("handed", base_codec::json_obj([("thread", sessions_core::jstr("th1")), ("n", sessions_core::jint(1))])),
                 ]),
               ]),
             ),
@@ -2459,9 +2483,161 @@ test "r4 final: local StoreDb restores delivered_at=NULL on close even when Node
   }
   s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
   s.drive(respond)
-  assert_run(delivered && s.has_rpc("node.timed") && !s.has_rpc("agent.steer"), "did not reach timed window")
+  let before_close = is_some(row_delivered_at)
+  assert_run(before_close && s.has_rpc("node.timed") && !s.has_rpc("agent.steer"), "did not mark row before close")
   // Simulate Node route forgotten: Node answers no more RPCs at all.
   registered = false
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  let after_close = is_some(row_delivered_at)
+  let mut kick_returned = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 8 {
+      kick_returned = true
+    }
+  }
+  assert_run(
+    before_close && !after_close && kick_returned && s.actors.host.hub_asked.length() == 0,
+    "before=" +
+    before_close.to_string() +
+    " after=" +
+    after_close.to_string() +
+    " kick_returned=" +
+    kick_returned.to_string() +
+    " pending=" +
+    s.actors.host.hub_asked.length().to_string(),
+  )
+}
+
+test "R5 verify: mark receipt after close and adopt must not dispatch an old steer" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.markDelivered" {
+      delivered = true
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "store.markDelivered") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  r3_probe_adopt(s, "new", 2)
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(respond)
+  assert_run(!s.has_rpc("agent.steer") && !delivered, "old mark ACK sent agent.steer or kept delivered after adopt")
+}
+
+test "R5 verify: accepted old steer must not populate replacement turn accounting" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "agent.steer") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  r3_probe_adopt(s, "new", 2)
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0 && !s.has_rpc("store.markWidgetModelsTold"),
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+test "R5 verify: close after sending mark before Node reads it must settle kick" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.markDelivered" {
+      delivered = false
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let _rid = match find_rpc_id(s.mem, "store.markDelivered") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(!delivered, "Node must not have committed")
   s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
   s.drive(respond)
   let mut kick_returned = false
@@ -2471,10 +2647,8 @@ test "r4 final: local StoreDb restores delivered_at=NULL on close even when Node
     }
   }
   assert_run(
-    !delivered && kick_returned && s.actors.host.hub_asked.length() == 0,
-    "delivered=" +
-    delivered.to_string() +
-    " kick_returned=" +
+    kick_returned && s.actors.host.hub_asked.length() == 0,
+    "mark without host reply: kick_returned=" +
     kick_returned.to_string() +
     " pending=" +
     s.actors.host.hub_asked.length().to_string(),

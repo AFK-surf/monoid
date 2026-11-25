@@ -500,11 +500,11 @@ test("W8-E2: ActorsProgram routes cleanup RPCs to retired actor after forget() a
   user!.said({ rpc: 101, actor: "retired-sess", fn: "store.markUndelivered", args: [["m1"]] });
   user!.said({ rpc: 102, actor: "retired-sess", fn: "agent.dispose", args: [7] });
   user!.said({ rpc: 103, actor: "retired-sess", fn: "agent.steer", args: [7, "hi"] });
-  // 2. Non-cleanup RPCs and tells must still be ignored after forget().
+  // 2. Non-cleanup RPCs get an explicit terminal error reply (never dropped) and tells are ignored.
   user!.said({ rpc: 104, actor: "retired-sess", fn: "agent.prompt", args: [7, "nope"] });
   user!.said({ tell: "notify", actor: "retired-sess", args: ["nope"] });
 
-  await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setImmediate(r));
 
   assert.deepEqual(
     calls.map((c) => c.fn),
@@ -514,17 +514,18 @@ test("W8-E2: ActorsProgram routes cleanup RPCs to retired actor after forget() a
   assert.equal(tells.length, 0, "tells must not be routed to retired actor after forget()");
 
   const answers = posted.filter((m) => typeof m.answer === "number");
-  assert.equal(answers.length, 3, "all 3 cleanup RPCs must receive an answer reply");
+  assert.equal(answers.length, 4, "all 3 cleanup RPCs + 1 closed-actor RPC must receive a terminal answer reply");
   assert.deepEqual(
-    answers.map((a) => [a.answer, a.value]),
+    answers.map((a) => [a.answer, a.value ?? null, a.error?.actorClosed === true]),
     [
-      [101, { ok: "store.markUndelivered" }],
-      [102, { ok: "agent.dispose" }],
-      [103, false],
+      [104, null, true],
+      [101, { ok: "store.markUndelivered" }, false],
+      [102, { ok: "agent.dispose" }, false],
+      [103, false, false],
     ],
   );
 
-  // 3. Re-registering the same key removes it from #retired and routes normally again.
+  // 3. Re-registering the same key routes normally again.
   const calls2: string[] = [];
   program.shell({
     key: "retired-sess",
@@ -536,8 +537,131 @@ test("W8-E2: ActorsProgram routes cleanup RPCs to retired actor after forget() a
     told: () => {},
   });
   user!.said({ rpc: 105, actor: "retired-sess", fn: "agent.prompt", args: [8, "ok"] });
-  await new Promise((r) => setTimeout(r, 10));
+  await new Promise((r) => setImmediate(r));
   assert.deepEqual(calls2, ["agent.prompt"]);
 
-  program.close();
+  await program.close();
+});
+
+function r5RoutingFixture() {
+  let receive!: (frame: any) => void;
+  const posted: any[] = [];
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(frame: any) { posted.push(frame); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 1000 } as any,
+  );
+  const events: string[] = [];
+  function register(key: string, label: string) {
+    const store = {
+      getSession() { return { runtime: "claude" }; },
+      markUndelivered() { events.push(`${label}/undo`); },
+      markDelivered() { events.push(`${label}/mark`); },
+    };
+    const actor = program.actor(key, "claude", { store } as any);
+    const session = {
+      steer() { events.push(`${label}/steer`); return false; },
+      dispose() { events.push(`${label}/dispose`); },
+    };
+    const ready = actor.adopt({ runtime: "claude" } as any, session as any, "");
+    const adoption = posted.at(-1);
+    assert.equal(adoption.method, "adopt");
+    receive({ returned: adoption.call, value: null });
+    return { actor, ready, handle: adoption.args[1].handle as number };
+  }
+  async function deliver(frame: any) {
+    receive(frame);
+    await new Promise((r) => setImmediate(r));
+    return posted.find((x) => x.answer === frame.rpc);
+  }
+  return { program, events, register, deliver, posted };
+}
+
+test("W8-E2 R5: fallback cleanup after actual MbActor.close", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    const reply = await f.deliver({ rpc: 101, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.answer, 101);
+    assert.deepEqual(f.events, ["old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: late runtime cleanup retains original handle owner on same-key replacement", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const lateFrame = { rpc: 102, actor: "s", fn: "agent.dispose", args: [old.handle] };
+    old.actor.close();
+    const current = f.register("s", "new");
+    await current.ready;
+    assert.notEqual(old.handle, current.handle, "handles must be globally unique across ActorsProgram");
+    const reply = await f.deliver(lateFrame);
+    assert.equal(reply?.answer, 102);
+    assert.deepEqual(f.events, ["old/dispose"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: delayed cleanup still receives answer after 512 other actors retire", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    for (let i = 0; i < 512; ++i) {
+      const item = f.program.actor(`other${i}`, "claude", { store: {} } as any);
+      item.close();
+    }
+    const reply = await f.deliver({ rpc: 103, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.answer, 103);
+    assert.deepEqual(f.events, ["old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: markDelivered dispatched before close always gets a terminal reply", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const lateFrame = { rpc: 104, actor: "s", fn: "store.markDelivered", args: ["s", []] };
+    old.actor.close();
+    const reply = await f.deliver(lateFrame);
+    assert.equal(reply?.answer, 104);
+    assert.equal(reply?.error?.actorClosed, true);
+    assert.deepEqual(f.events, []);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: stateForTurn dispatched before close receives a terminal stateWrite reply", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const saving = old.actor.stateForTurn("t1", { kind: "all_done" } as any, null, null);
+    const request = f.posted.at(-1);
+    assert.equal(request.method, "stateForTurn");
+    old.actor.close();
+    const reply = await f.deliver({ rpc: 105, actor: "s", fn: "node.stateWrite", args: request.args });
+    assert.equal(reply?.answer, 105);
+    await f.program.close();
+    await saving;
+  } finally {
+    await f.program.close();
+  }
 });
