@@ -22,7 +22,7 @@ import * as format from "../format.ts";
 import { current as lang, t } from "../i18n.ts";
 import * as jobs from "../jobs.ts";
 import * as looks from "../looks.ts";
-import { conformTy, defaultOf, shapedBeside, shapeKey, textKey } from "../conform.ts";
+import { conformTy, defaultOf, onUnknownWords, shapedBeside, shapeKey, textKey, unknownWords } from "../conform.ts";
 import { LISTED_CHAT } from "../shapes/schema.ts";
 import * as present from "../present.ts";
 import { topicKey, type Topic } from "../protocol.ts";
@@ -104,6 +104,11 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
+/// The sets a station sent a word of that this core does not know (conform.ts `unknownWords`), as what reads them is
+/// made again when one more is met.
+const unknownSeen = new Marks();
+onUnknownWords((tys) => unknownSeen.touch(...tys));
+
 const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
@@ -2561,8 +2566,17 @@ export class Views implements Owner {
       const now = looks.doing(state, cause, part === undefined ? undefined : { counts: { running: get(part, "running") } });
       states.push({ station: s.address, id: s.id, name: s.name, state, message, ...(typeof cause === "string" ? { cause } : {}), ...now, ...rowWords(s, this.link(s.address)) });
     }
+    // A station runs a runtime this app does not know (a station newer than it, conform.ts `unknownWords`): what names
+    // it is left out of what is shown rather than failing the page, and the list says to update the app.
+    unknownSeen.read("RuntimeKind");
+    const unknownRuntimes = unknownWords("RuntimeKind");
+    if (unknownRuntimes.length > 0) {
+      const runtimes = unknownRuntimes.join(t("core-views.list_separator"));
+      const said = this.#core.host.appKeys === true ? t("core-views.station.unknownRuntime", { runtimes }) : t("core-views.station.unknownRuntimePage", { runtimes });
+      troubles.push(["incompatible", said, said, ""]);
+    }
     let trouble: J = null;
-    if (troubles.length === 1) trouble = { text: troubles[0][1], state: troubles[0][0], retry: false, station: troubles[0][3] };
+    if (troubles.length === 1) trouble = { text: troubles[0][1], state: troubles[0][0], retry: false, ...(troubles[0][3] !== "" ? { station: troubles[0][3] } : {}) };
     else if (troubles.length > 1) {
       const worst = ["error", "offline", "reconnecting", "incompatible"].find((w) => troubles.some(([s]) => s === w)) ?? "offline";
       // Every one down as the device's network is, or finding this app too old: that, once, and not as so many stations

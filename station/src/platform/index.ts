@@ -5,8 +5,10 @@
 // What is asked is what the station means to do (end a job's group, make a command another program can run, join a
 // path as Rust does), not which machine this is; a feature only one machine has is a flag saying so (hasKeychain).
 import type { ChildProcess } from "node:child_process";
-import { unix } from "./unix.ts";
+import { isBackgroundWrapperExecFailure, isBackgroundWrapperStderrLine, unix } from "./unix.ts";
 import { windows } from "./windows.ts";
+
+export { isBackgroundWrapperExecFailure, isBackgroundWrapperStderrLine };
 
 export type Env = Record<string, string | undefined>;
 /// A command found on PATH: as found there, and the file it is once links are followed.

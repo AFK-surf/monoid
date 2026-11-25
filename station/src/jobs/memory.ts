@@ -584,7 +584,7 @@ export function kernelKills(heard: (kill: KernelKill) => void): () => void {
     let said = "";
     const cat = spawn("cat", ["/dev/kmsg"], { stdio: ["ignore", "pipe", "pipe"] });
     child = cat;
-    cat.stderr.on("data", (b: Buffer) => (said += b.toString()));
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     cat.on("error", (error) => notRead({ error: error.message }));
     cat.on("close", (code) => {
       child = null;
@@ -595,7 +595,8 @@ export function kernelKills(heard: (kill: KernelKill) => void): () => void {
       // timer: a retry after a failure, with a backoff
       cancel = wall.after(1000 * 2 ** quick, follow);
     });
-    createInterface({ input: cat.stdout }).on("line", (record) => {
+    cat.stderr?.on("data", (b: Buffer) => (said += b.toString()));
+    if (cat.stdout) createInterface({ input: cat.stdout }).on("line", (record) => {
       records++;
       const kill = kmsgKill(record);
       if (kill === null || kill.usec <= heardTo) return;

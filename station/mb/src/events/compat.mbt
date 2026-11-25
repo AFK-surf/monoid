@@ -19,7 +19,7 @@ let legacy_runtimes : Array[String] = [
 ///|
 /// agents/runtime.ts RUNTIME_KINDS.
 pub let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
+  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi", "copilot",
 ]
 
 ///|
@@ -307,6 +307,33 @@ pub fn entries_view(value : J, supported : Map[String, Unit]) -> J {
 }
 
 ///|
+/// runtime-compat.ts IDENTITY: an answer or event that says it, walked by `identities_view`.
+let identity_word : String = "\"agentIdentity\""
+
+///|
+/// runtime-compat.ts `identitiesView`: every `agentIdentity` naming a runtime such a core does not know left out,
+/// wherever it stands (a thread's entries, a chat's last message, search hits, live events).
+pub fn identities_view(v : J, supported : Map[String, Unit]) -> J {
+  match v {
+    Arr(xs) => Arr(xs.map(x => identities_view(x, supported)))
+    Obj(pairs) => {
+      let out : Array[(String, J)] = []
+      for p in pairs {
+        if p.0 == "agentIdentity" &&
+          p.1 is Obj(_) &&
+          text_of(p.1.get("runtime")) is Some(r) &&
+          !supported.contains(r) {
+          continue
+        }
+        out.push((p.0, identities_view(p.1, supported)))
+      }
+      Obj(out)
+    }
+    _ => v
+  }
+}
+
+///|
 /// An event's data shaped by its name (runtime-compat.ts EVENTS).
 fn event_type(event : String) -> String? {
   match event {
@@ -339,16 +366,23 @@ pub fn compat_frame(
     Some(e) => event_type(e)
     None => None
   }
-  if i < 0 || (ty is None && event != Some("thread")) {
+  let named = text.contains(identity_word)
+  if i < 0 || (ty is None && event != Some("thread") && !named) {
     return text
   }
   guard parse(lines[i].view(start_offset=6).to_string()) is Some(value) else {
     return text
   }
-  let view = if event == Some("thread") {
+  let shaped = if event == Some("thread") {
     Value(Some(entries_view(value, supported)))
+  } else if ty is Some(t) {
+    runtime_view(js(t), Some(value), supported, services~)
   } else {
-    runtime_view(js(ty.unwrap()), Some(value), supported, services~)
+    Value(Some(value))
+  }
+  let view = match shaped {
+    Value(Some(v)) if named => Value(Some(identities_view(v, supported)))
+    other => other
   }
   if view is Omit && event == Some("session") {
     for k, l in lines {
@@ -564,11 +598,12 @@ pub fn runtime_compatible(
   let ty = shape_for(path)
   let entries = entries_path(path)
   let account = account_path(path)
-  if ty is None && !account && !entries {
+  let named = answer.body.contains(identity_word)
+  if ty is None && !account && !entries && !named {
     return answer
   }
   guard parse(answer.body) is Some(raw) else { return answer }
-  let view = if entries {
+  let shaped = if entries {
     Value(Some(entries_view(raw, supported)))
   } else if account && raw is Obj(_) {
     if has(raw, "overview") {
@@ -580,8 +615,14 @@ pub fn runtime_compatible(
     } else {
       runtime_view(js("Overview"), Some(raw), supported, services~)
     }
+  } else if ty is Some(t) {
+    runtime_view(t, Some(raw), supported, services~)
   } else {
-    runtime_view(ty.unwrap(), Some(raw), supported, services~)
+    Value(Some(raw))
+  }
+  let view = match shaped {
+    Value(Some(v)) if named => Value(Some(identities_view(v, supported)))
+    other => other
   }
   match view {
     Omit =>

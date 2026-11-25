@@ -13,7 +13,7 @@ import { CoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import type { Iroh } from "../iroh.ts";
 import { claimBy } from "../lock.ts";
-import { BULK_SLOW_BPS, HOT_RELAYS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES, SPEED_SLOW_MIN_MS } from "../mesh.ts";
+import { BULK_SLOW_BPS, HOT_RELAYS, IDLE_HOT_RELAYS, type CredentialSource, type Link, Mesh, type MeshEnv, type Presented, type Reply, relayHost, SPEED_MIN_BYTES, SPEED_SLOW_MIN_MS } from "../mesh.ts";
 import { PAIR_ALPN } from "../pair.ts";
 import * as prefs from "../prefs.ts";
 import { RELAY, type Place, type Status } from "../status.ts";
@@ -51,6 +51,32 @@ export const BULK_CRAWL_MS = 8_000;
 export const BULK_CRAWL_BPS = 32 * 1024;
 /// Silent period (0 B/s) after which a stalled bulk body checks for a clearly better standby and aborts to switch.
 export const BULK_STALL_MS = 4_000;
+/// How long a station stays active after a foreground request before it may return to idle relay narrowing / pings.
+export const IDLE_GRACE_MS = 60_000;
+/// Station-scoped UI topics whose presence keeps that station active (not passive sidebar summaries).
+const ACTIVE_STATION_TOPICS = new Set([
+  "chat",
+  "thread",
+  "live",
+  "session",
+  "drive",
+  "stationResources",
+  "jobLog",
+  "machineLoginScreen",
+  "stationRates",
+  "hostLive",
+  "host",
+  "net",
+  "way",
+  "stationUsage",
+  "stationMove",
+  "memory",
+  "presets",
+  "profilePace",
+  "stationSearch",
+  "filePeek",
+  "messagePeek",
+]);
 
 export function unconfirmed(why: CoreError): CoreError {
   return new CoreError("unconfirmed", t("station.core.unconfirmed", { why: why.message }));
@@ -87,13 +113,42 @@ export class MeshWire implements StationWire {
   readonly #env: MeshWireEnv;
   /// The addresses whose stations said they keep writes to once.
   readonly #idempotent = new Set<string>();
+  /// By station address: until when a recent foreground request keeps the station active.
+  readonly #activeUntil = new Map<string, number>();
+  /// By station address: open interactive duplex sockets (screen, terminal, farview, socket).
+  readonly #liveSockets = new Map<string, number>();
 
   constructor(env: MeshWireEnv) {
     this.#env = env;
   }
 
+  /// Whether `addr` has an open interactive socket or handled a foreground request within `IDLE_GRACE_MS`.
+  isActive(addr: string, now: number): boolean {
+    return (this.#liveSockets.get(addr) ?? 0) > 0 || (this.#activeUntil.get(addr) ?? -Infinity) > now;
+  }
+
+  #noteActive(addr: string, mesh: Mesh): void {
+    this.#activeUntil.set(addr, mesh.now() + IDLE_GRACE_MS);
+    mesh.refreshIdle?.(addr);
+  }
+
+  #holdSocket(addr: string, mesh: Mesh): Effect.Effect<void, never, import("effect").Scope.Scope> {
+    return Effect.suspend(() => {
+      this.#liveSockets.set(addr, (this.#liveSockets.get(addr) ?? 0) + 1);
+      mesh.refreshIdle?.(addr);
+      return Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          const left = (this.#liveSockets.get(addr) ?? 0) - 1;
+          if (left > 0) this.#liveSockets.set(addr, left);
+          else this.#liveSockets.delete(addr);
+        }),
+      );
+    });
+  }
+
   request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void): Effect.Effect<WireReply, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
+    const self = this;
     const idempotent = this.#idempotent;
     const workspace = station.workspace;
     const id = station.station;
@@ -118,6 +173,8 @@ export class MeshWire implements StationWire {
       const laneParsed = laneHeader !== undefined ? Number(laneHeader) : Number.NaN;
       const lane = Number.isInteger(laneParsed) && laneParsed >= 0 ? laneParsed : null;
       const noHedge = head.headers.some(([k]) => k.toLowerCase() === NO_HEDGE);
+      const write = !["GET", "HEAD"].includes(head.method.toUpperCase()) && !onlyReads(head);
+      if (!noHedge || write) self.#noteActive(key, mesh);
       const sent: RequestHead = noHedge || bulk || laneHeader !== undefined
         ? { ...head, headers: head.headers.filter(([k]) => { const low = k.toLowerCase(); return low !== NO_HEDGE && low !== BULK && low !== BULK_LANE; }) }
         : head;
@@ -129,7 +186,6 @@ export class MeshWire implements StationWire {
             : mesh.link(key, credentials, theirs, off, asker);
       const link = yield* waiting(status, address, t("station.core.connecting"), pickLink());
       const repeats = mayRepeat(head, idempotent.has(key));
-      const write = !["GET", "HEAD"].includes(head.method.toUpperCase()) && !onlyReads(head);
       // Asked on more than one way (or again), the body is told of as far as the furthest has gone.
       let furthest = 0;
       const told = wrote && ((n: number) => { if (n > furthest) wrote((furthest = n)); });
@@ -369,10 +425,13 @@ export class MeshWire implements StationWire {
 
   socket(station: StationAddr, head: RequestHead): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
+    const self = this;
+    const key = station.toString();
     return Effect.gen(function* () {
       const status = env.status(station.workspace);
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
-      const link = yield* waiting(status, { station: station.toString() }, t("station.core.connecting"), mesh.link(station.toString(), env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), `${head.method.toUpperCase()} ${route(head.path)}`));
+      yield* self.#holdSocket(key, mesh);
+      const link = yield* waiting(status, { station: key }, t("station.core.connecting"), mesh.link(key, env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), `${head.method.toUpperCase()} ${route(head.path)}`));
       const [reply, send] = yield* link.socket(head);
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
       return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: link.path() }, send };
@@ -381,6 +440,7 @@ export class MeshWire implements StationWire {
 
   screen(station: StationAddr, head: RequestHead, screen: ScreenAsk): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
+    const self = this;
     const workspace = station.workspace;
     const key = station.toString();
     const address = { station: key };
@@ -390,6 +450,7 @@ export class MeshWire implements StationWire {
       const theirs = env.relays(workspace);
       const off = env.off?.(workspace);
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
+      yield* self.#holdSocket(key, mesh);
       const link = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, "screen"));
       // (its own main id: the link it goes over may be one made for a LAN or a relay, under another; its sound as Opus
       // where what taps the view decodes it, a twentieth of PCM's bytes; its picture and sound as datagrams where the
@@ -435,10 +496,13 @@ export class MeshWire implements StationWire {
   }
   terminal(station: StationAddr, head: RequestHead, terminal: TerminalAsk): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
+    const self = this;
+    const key = station.toString();
     return Effect.gen(function* () {
       const status = env.status(station.workspace);
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
-      const link = yield* waiting(status, { station: station.toString() }, t("station.core.connecting"), mesh.link(station.toString(), env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), "terminal"));
+      yield* self.#holdSocket(key, mesh);
+      const link = yield* waiting(status, { station: key }, t("station.core.connecting"), mesh.link(key, env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), "terminal"));
       const [reply, send] = yield* link.duplex(head, { terminal });
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
       return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: link.path() }, send };
@@ -446,10 +510,13 @@ export class MeshWire implements StationWire {
   }
   farview(station: StationAddr, head: RequestHead, screen: string): Effect.Effect<WireSocket, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
+    const self = this;
+    const key = station.toString();
     return Effect.gen(function* () {
       const status = env.status(station.workspace);
       const mesh = yield* waiting(status, RELAY, t("station.core.connecting"), env.mesh());
-      const link = yield* waiting(status, { station: station.toString() }, t("station.core.connecting"), mesh.link(station.toString(), env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), "farview"));
+      yield* self.#holdSocket(key, mesh);
+      const link = yield* waiting(status, { station: key }, t("station.core.connecting"), mesh.link(key, env.credentials(station.workspace), env.relays(station.workspace), env.off?.(station.workspace), "farview"));
       const [reply, send] = yield* link.duplex(head, { farview: { screen } });
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
       return { reply: { status: reply.status, headers: reply.headers, body: reply.body, via: link.path() }, send };
@@ -546,12 +613,37 @@ function takes(inner: Inner): Pick<MeshEnv, "takes" | "incoming"> {
   return { takes: [PAIR_ALPN], incoming: (connection, alpn) => (alpn.length === PAIR_ALPN.length && alpn.every((b, i) => b === PAIR_ALPN[i]) ? hooks.lockPair?.(inner, connection) : connection.close(0, "no such protocol")) };
 }
 
+/// Whether `addr` has no visible UI focus, no active station-scoped topic subscription, and no recent foreground wire traffic.
+function isStationIdle(inner: Inner, addr: string, wireActive?: (addr: string) => boolean): boolean {
+  if (wireActive?.(addr)) return false;
+  if (inner.attention?.attend.focusedStations().has(addr)) return false;
+  if (typeof inner.store?.liveTopics === "function") {
+    for (const t of inner.store.liveTopics()) {
+      if (t.station === addr && ACTIVE_STATION_TOPICS.has(t.topic) && inner.store.inUse(t)) return false;
+    }
+  }
+  return true;
+}
+
 /// What the core gives its mesh (`Mesh.make`): the host and what runs it, a station's protocol (`STATION_MESH`), what
 /// an app's endpoint takes, and what a station refuses a link for besides its credential (a workspace's lock: without
 /// it a device waiting to be confirmed is told its credential was refused, and asks the cloud for another at each try).
-export function meshEnv(inner: Inner, iroh: Iroh): MeshEnv {
+export function meshEnv(inner: Inner, iroh: Iroh, wireActive?: (addr: string) => boolean): MeshEnv {
   const leaves=new LeafLinks();
-  return { prepare:leaves.prepare, linked:leaves.linked, host: inner.host, runner: inner.runner, tracer: inner.tracer, iroh, wakes: inner.wakes, ...STATION_MESH, dht: () => prefs.dhtOn(inner.data), ...takes(inner), ...(!inner.host.appKeys ? { hotRelays: HOT_RELAYS } : {}), refusal: refusedForLock };
+  return {
+    prepare: leaves.prepare,
+    linked: leaves.linked,
+    host: inner.host,
+    runner: inner.runner,
+    tracer: inner.tracer,
+    iroh,
+    wakes: inner.wakes,
+    ...STATION_MESH,
+    dht: () => prefs.dhtOn(inner.data),
+    ...takes(inner),
+    ...(inner.host.appKeys ? { idleHotRelays: IDLE_HOT_RELAYS, idle: (addr) => isStationIdle(inner, addr, wireActive) } : { hotRelays: HOT_RELAYS }),
+    refusal: refusedForLock,
+  };
 }
 
 /// The core's mesh: brought up on first use with the relays any account's `/v1/me` names, the credentials from
@@ -559,6 +651,7 @@ export function meshEnv(inner: Inner, iroh: Iroh): MeshEnv {
 export function meshWire(inner: Inner): StationWire {
   let mesh: Deferred.Deferred<Mesh, CoreError> | null = null;
   let up: Mesh | null = null;
+  let wire!: MeshWire;
   const get = (): Effect.Effect<Mesh, CoreError> =>
     Effect.suspend(() => {
       const iroh = inner.iroh;
@@ -569,7 +662,7 @@ export function meshWire(inner: Inner): StationWire {
       inner.runner.fork(
         Effect.gen(function* () {
           const made = yield* Effect.result(
-            Effect.flatMap(inner.cloudSync.relaysNow(), (relays) => Mesh.make(meshEnv(inner, iroh), relays, inner.cloudSync.entriesNow(), inner.cloudSync.entryTargetsNow())),
+            Effect.flatMap(inner.cloudSync.relaysNow(), (relays) => Mesh.make(meshEnv(inner, iroh, (addr) => wire.isActive(addr, inner.host.nowMs())), relays, inner.cloudSync.entriesNow(), inner.cloudSync.entryTargetsNow())),
           );
           if (made._tag === "Success") {
             up = made.success;
@@ -585,7 +678,7 @@ export function meshWire(inner: Inner): StationWire {
   inner.mesh = get;
   inner.meshNow = () => up;
   inner.cloudSync.onRelays = (relays, entries, targets) => up?.retune(relays, entries, targets);
-  return new MeshWire({
+  wire = new MeshWire({
     mesh: get,
     meshNow: () => up,
     credentials: credentialsFor(inner, () => up),
@@ -595,4 +688,5 @@ export function meshWire(inner: Inner): StationWire {
     lockRefused: (workspace, station, theirs, told) => hooks.lockRefused?.(inner, workspace, station, theirs, told) ?? null,
     lockWaiting: (workspace, station) => hooks.lockWaiting?.(inner, workspace, station) ?? null,
   });
+  return wire;
 }

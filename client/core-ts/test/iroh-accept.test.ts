@@ -39,11 +39,13 @@ function loopback(endpoint: J): string[] {
 }
 
 /// `iroh` binds both ends; `bound(i)`: the addon's endpoint the `i`th bind made.
-async function acceptsOver(iroh: Iroh, bound: (i: number) => J) {
+async function acceptsOver(iroh: Iroh, bound: (i: number) => J, relayControls = false) {
   const a = await run(iroh.bind({ secretKey: randomBytes(32), relayUrls: [], lookup: false, relayOnly: false }));
   const b = await run(iroh.bind({ secretKey: randomBytes(32), relayUrls: [], lookup: false, relayOnly: false, alpns: [utf8("test/1")] }));
   assert.equal(typeof b.accept, "function");
-  for (const method of ["setDisabledRelays", "insertRelay", "removeRelay"] as const) assert.equal(b[method], undefined);
+  for (const method of ["setDisabledRelays", "insertRelay", "removeRelay"] as const) {
+    assert.equal(typeof b[method], relayControls ? "function" : "undefined");
+  }
   a.addAddr({ id: b.id(), ips: loopback(bound(1)) });
   const coming = run(b.accept!());
   const out = await run(a.connect({ id: b.id() }, utf8("test/1"), []));
@@ -89,7 +91,7 @@ test("the bridge's endpoint takes a connection on its ALPN", { skip }, async () 
   const native = new NodeShell(dir);
   const bridge = new Bridge(native);
   native.bridge = bridge;
-  await acceptsOver(bridgeIroh(bridge), (i) => native.bound[i]);
+  await acceptsOver(bridgeIroh(bridge), (i) => native.bound[i], true);
   for (const op of ["iroh.bind", "iroh.accept", "iroh.connect"]) assert.ok(native.calls.includes(op), op);
   native.host.close();
   rmSync(dir, { recursive: true, force: true });

@@ -8,7 +8,7 @@ import { TestClock } from "effect/testing";
 import type { Pressure } from "../src/jobs/admit.ts";
 import { MemoryWatch, SETTLE_MS, STOP_GRACE_MS, type Unit, kmsgKill, limitOf, unitsOf } from "../src/jobs/memory.ts";
 import type { ProcessInfo } from "../src/platform/index.ts";
-import { fieldOrNull, parsePs, parseTopMem, pressureOfAvailable, pressureOfLevel, pressureOfSwap, swapUsedOf, swapoutsOf, worsePressure } from "../src/platform/text.ts";
+import { fieldOrNull, parsePs, parseTopMem, pressureOfAvailable, pressureOfLevel, pressureOfMemoryPsi, pressureOfSwap, psiAvg10, swapUsedOf, swapoutsOf, worsePressure } from "../src/platform/text.ts";
 
 const GiB = 1024 ** 3;
 const p = (pid: number, ppid: number, pgid: number, gib: number, command = "node"): ProcessInfo => ({ pid, ppid, pgid, bytes: gib * GiB, command });
@@ -59,6 +59,27 @@ test("the swap says what the memory used leaves out (macOS)", () => {
   assert.equal(worsePressure("high", null), "high");
   assert.equal(swapoutsOf("Pages free: 1.\nSwapouts:                                  375142124.\n"), 375142124);
   assert.equal(swapUsedOf("total = 68608.00M  used = 66279.69M  free = 2328.31M  (encrypted)"), 69499292221);
+});
+
+test("Linux /proc/pressure/memory (PSI) catches reclaim thrashing that MemAvailable misses", () => {
+  const psi = (full: number, some = full + 10) =>
+    `some avg10=${some.toFixed(2)} avg60=5.00 avg300=2.00 total=1000\nfull avg10=${full.toFixed(2)} avg60=4.00 avg300=1.00 total=500\n`;
+  assert.equal(psiAvg10(psi(22.3, 35.6), "full"), 22.3);
+  assert.equal(psiAvg10(psi(22.3, 35.6), "some"), 35.6);
+  assert.equal(psiAvg10(null, "full"), null);
+  assert.equal(psiAvg10("some avg10=1.00\n", "full"), null);
+  // Healthy busy box: low PSI is normal even when available RAM is under 25%.
+  assert.equal(pressureOfMemoryPsi(psi(0.29, 0.37), 2 * GiB, 24 * GiB), "normal");
+  // MemAvailable at 8% reads only high, yet 12% full stall is high and 22.3% full stall escalates to critical.
+  assert.equal(pressureOfMemoryPsi(psi(12), 2 * GiB, 24 * GiB), "high");
+  assert.equal(pressureOfMemoryPsi(psi(22.3), 2 * GiB, 24 * GiB), "critical");
+  assert.equal(worsePressure(pressureOfAvailable(2 * GiB, 24 * GiB), pressureOfMemoryPsi(psi(22.3), 2 * GiB, 24 * GiB)), "critical");
+  // Plenty of available RAM (>= 25%): moderate PSI does not false-trigger, while severe (>= 50% full) is critical.
+  assert.equal(pressureOfMemoryPsi(psi(22.3), 8 * GiB, 24 * GiB), "normal");
+  assert.equal(pressureOfMemoryPsi(psi(50), 8 * GiB, 24 * GiB), "critical");
+  // Unknown available/total still honors PSI thresholds; missing PSI falls back cleanly to MemAvailable.
+  assert.equal(pressureOfMemoryPsi(psi(20), null, null), "critical");
+  assert.equal(worsePressure(pressureOfAvailable(2 * GiB, 24 * GiB), pressureOfMemoryPsi(null, 2 * GiB, 24 * GiB)), "high");
 });
 
 test("what the machines say reads", () => {

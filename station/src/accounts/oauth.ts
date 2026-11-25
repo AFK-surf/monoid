@@ -138,7 +138,8 @@ async function save(env: Env, home: string, c: Credentials, lang: Lang) {
       if (code === 0) resolve();
       else reject(new Said(tr(lang, "station.claudeAuth.keychainSaveFailed")));
     });
-    child.stdin.end(input);
+    // (none: it never started, its error told on the next tick)
+    child.stdin?.end(input);
   });
 }
 

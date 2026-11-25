@@ -140,8 +140,6 @@ async function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[
     const kept = new Kept();
     const out = new Scrubber(hidden);
     const err = new Scrubber(hidden);
-    child.stdout!.on("data", (b: Buffer) => kept.add(out.push(b)));
-    child.stderr!.on("data", (b: Buffer) => kept.add(err.push(b)));
     let timedOut = false;
     // The command's time, the machine's: a run left going is stopped, its whole process group.
     const stop = wall.after(ask.timeoutMs, () => {
@@ -158,6 +156,9 @@ async function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[
       kept.add(err.end());
       resolve({ code, signal, output: kept.text(), cut: kept.cut, timedOut });
     });
+    // (after its error is heard: one not started (ENFILE, EMFILE) has no streams, and its error told to none ends the station)
+    child.stdout?.on("data", (b: Buffer) => kept.add(out.push(b)));
+    child.stderr?.on("data", (b: Buffer) => kept.add(err.push(b)));
   });
 }
 
@@ -184,12 +185,6 @@ export async function capture(command: string, cwd: string, env: Record<string, 
     let size = 0;
     let tooLong = false;
     const err = new Kept();
-    child.stdout!.on("data", (b: Buffer) => {
-      size += b.length;
-      if (size > CAPTURE_MAX) tooLong = true;
-      else out.push(b);
-    });
-    child.stderr!.on("data", (b: Buffer) => err.add(b));
     let timedOut = false;
     // The command's time, the machine's: one left going is stopped, its whole process group.
     const stop = wall.after(timeoutMs, () => {
@@ -206,5 +201,12 @@ export async function capture(command: string, cwd: string, env: Record<string, 
       const value = bytes.toString("utf8").replace(/\r?\n$/, "");
       resolve({ code, signal, out: tooLong ? "" : value, raw: tooLong ? "" : bytes.toString("base64"), err: value === "" ? err.text() : scrub(err.text(), [value]), timedOut, tooLong });
     });
+    // (after its error is heard: one not started (ENFILE, EMFILE) has no streams, and its error told to none ends the station)
+    child.stdout?.on("data", (b: Buffer) => {
+      size += b.length;
+      if (size > CAPTURE_MAX) tooLong = true;
+      else out.push(b);
+    });
+    child.stderr?.on("data", (b: Buffer) => err.add(b));
   });
 }

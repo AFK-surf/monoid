@@ -566,6 +566,9 @@ export function bridgeIroh(bridge: Bridge): Iroh {
       meshConfigure: (scope) => Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
       meshRemove: (scope) => Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
       setRelayEntries: (entries) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })), Effect.sync(clearAccess)),
+      setDisabledRelays: (peer, relays) => Effect.asVoid(bridge.call("iroh.disabledRelays", { id, peer, relays })),
+      insertRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.insertRelay", { id, url })), Effect.sync(clearAccess)),
+      removeRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.removeRelay", { id, url })), Effect.sync(clearAccess)),
       // (a shell from before says no such op: PCM)
       opus: () => {
         try {

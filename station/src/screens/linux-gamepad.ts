@@ -53,9 +53,15 @@ export class LinuxGamepads {
     let said = "";
     const child = spawn(this.#python, ["-u", this.#helper], { env: this.#env, stdio: ["pipe", "pipe", "pipe"] });
     this.#child = child;
-    child.stdin.on("error", () => {});
-    child.stderr.on("data", () => {});
-    child.stdout.on("data", (data: Buffer) => {
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
+    child.on("error", () => this.#settle("desktop"));
+    child.on("close", () => {
+      if (this.#child === child) this.#child = null;
+      this.#settle("desktop");
+    });
+    child.stdin?.on("error", () => {});
+    child.stderr?.on("data", () => {});
+    child.stdout?.on("data", (data: Buffer) => {
       said += data.toString();
       for (let at = said.indexOf("\n"); at >= 0; at = said.indexOf("\n")) {
         const line = said.slice(0, at);
@@ -71,11 +77,6 @@ export class LinuxGamepads {
         }
       }
     });
-    child.on("error", () => this.#settle("desktop"));
-    child.on("close", () => {
-      if (this.#child === child) this.#child = null;
-      this.#settle("desktop");
-    });
   }
 
   /// The helper said whether its controllers are made: the states held meanwhile go that way.
@@ -89,7 +90,7 @@ export class LinuxGamepads {
 
   #write(pad: Gamepad) {
     const child = this.#child;
-    if (child === null || child.stdin.destroyed) return;
+    if (child === null || !child.stdin || child.stdin.destroyed) return;
     const { t: _, ...state } = pad;
     child.stdin.write(`${JSON.stringify(state)}\n`);
   }
@@ -100,6 +101,6 @@ export class LinuxGamepads {
     for (const index of [...this.#slots]) void this.input(gamepadReleased(index)).catch(() => {});
     if (this.#mode === "desktop") for (const e of this.#desktop.release()) void this.#post(e).catch(() => {});
     this.#ended = true;
-    this.#child?.stdin.end();
+    this.#child?.stdin?.end();
   }
 }

@@ -1,0 +1,2889 @@
+// `--data <dir> --serve <socket>` server over `builders_core::ShellMux` + `SerialOutbox`:
+// 1:1 port of `station/mb/src/reader/serve.mbt`.
+// Zero RC reference cycles: `ShellMux.pending` stores only value-type `MuxToken`; all streams,
+// pending fallbacks/claims/relays, and viewer waiters live in flat ID maps cleaned up on close.
+// Zero raw transaction SQL: all SQLite writes use `sql_db::Db::tx_err` (`BEGIN IMMEDIATE`).
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "js_json"
+import "jscase"
+import "reader_data"
+import "readops_core"
+import "sql_db"
+
+let SERVE_ACCEPT_RETRY_MS : Int64 = 100.to_int64()
+
+// MuxToken::Tagged(owner_id, kind, extra) kinds:
+let TOK_LISTEN : Int = 1
+let TOK_ACCEPT : Int = 2
+let TOK_READ : Int = 3
+let TOK_WRITE_CLOSE : Int = 4
+let TOK_RELAY_WRITE : Int = 5
+let TOK_IGNORE : Int = 6
+
+// MuxToken::Zstd(stream_id, kind) kinds:
+let ZSTD_COMPRESS_WHOLE : Int = 1
+let ZSTD_COMPRESS_FALLBACK : Int = 2
+let ZSTD_STREAM_OPEN : Int = 3
+let ZSTD_RELAY_PUSH : Int = 4
+
+// StreamState phases:
+let PHASE_READ_HEAD : Int = 0
+let PHASE_READ_FRAME_LEN : Int = 1
+let PHASE_READ_FRAME_BODY : Int = 2
+let PHASE_WAIT_VIEWER : Int = 3
+let PHASE_WAIT_FALLBACK : Int = 4
+let PHASE_WAIT_CLAIM : Int = 5
+let PHASE_COMPRESS_WHOLE : Int = 6
+let PHASE_RELAY_WAIT_HEAD : Int = 7
+let PHASE_RELAY_OPEN_ZSTD : Int = 8
+let PHASE_RELAY_STREAMING : Int = 9
+let PHASE_WRITING_CLOSE : Int = 10
+
+enum Done {
+  Text(Int, String)
+  Give
+}
+
+enum PendingCard {
+  Ready(Option[(base_codec::Json, String, js_json::JValue)])
+  NotReady
+}
+
+enum SayPrep {
+  Immediate(Int, String)
+  Fallback
+  NeedClaim(SayPending)
+}
+
+struct Member {
+  viewer : base_codec::Json
+  moved : Bool
+  floor : Option[Int]
+}
+
+struct SayPending {
+  thread : base_codec::Json
+  raw : String
+  headers : base_codec::Json
+  lang : String
+  said : String
+  quotes : Array[js_json::JValue]
+  client : base_codec::Json
+  answered : Option[base_codec::Json]
+  email : base_codec::Json
+}
+
+struct StreamState {
+  stream_id : Int
+  sock_id : base_codec::Json
+  mut phase : Int
+  mut have : Array[Byte]
+  mut have_head : Int
+  mut need_frame_bytes : Int
+  mut body : Array[Byte]
+  mut conn : base_codec::Json
+  mut conn_key : String
+  mut asked : base_codec::Json
+  mut rest : Bytes
+  mut req_id : Int
+  // Pending whole/fallback zstd compression state:
+  mut pending_status : base_codec::Json
+  mut pending_headers : Array[(String, base_codec::Json)]
+  // Pending say claim state:
+  mut say_pending : Option[SayPending]
+  // Relay streaming state:
+  mut relay_zstd_id : Option[base_codec::Json]
+  mut relay_queue : Array[Option[String]]
+  mut relay_q_head : Int
+  mut relay_busy : Bool
+}
+
+fn StreamState::new(stream_id : Int, sock_id : base_codec::Json) -> StreamState {
+  StreamState::{
+    stream_id: stream_id,
+    sock_id: sock_id,
+    phase: PHASE_READ_HEAD,
+    have: [],
+    have_head: 0,
+    need_frame_bytes: 0,
+    body: [],
+    conn: base_codec::json_null(),
+    conn_key: "",
+    asked: base_codec::json_null(),
+    rest: Bytes::new(0),
+    req_id: 0,
+    pending_status: base_codec::json_int(200),
+    pending_headers: [],
+    say_pending: None,
+    relay_zstd_id: None,
+    relay_queue: [],
+    relay_q_head: 0,
+    relay_busy: false,
+  }
+}
+
+fn StreamState::have_len(self : StreamState) -> Int {
+  self.have.length() - self.have_head
+}
+
+fn StreamState::push_have(self : StreamState, chunk : Bytes) -> Unit {
+  for i in 0..<chunk.length() {
+    self.have.push(chunk[i])
+  }
+}
+
+fn StreamState::take_have(self : StreamState, n : Int) -> Bytes {
+  let out = Bytes::new(n)
+  for i in 0..<n {
+    out[i] = self.have[self.have_head + i]
+  }
+  self.have_head = self.have_head + n
+  if self.have_head == self.have.length() {
+    self.have = []
+    self.have_head = 0
+  } else if self.have_head >= 4096 && self.have_head * 2 >= self.have.length() {
+    let rem = self.have.length() - self.have_head
+    let next : Array[Byte] = []
+    for i in 0..<rem {
+      next.push(self.have[self.have_head + i])
+    }
+    self.have = next
+    self.have_head = 0
+  }
+  out
+}
+
+fn StreamState::pop_relay(self : StreamState) -> Option[Option[String]] {
+  if self.relay_q_head >= self.relay_queue.length() {
+    return None
+  }
+  let item = self.relay_queue[self.relay_q_head]
+  self.relay_q_head = self.relay_q_head + 1
+  if self.relay_q_head == self.relay_queue.length() {
+    self.relay_queue = []
+    self.relay_q_head = 0
+  } else if self.relay_q_head >= 64 && self.relay_q_head * 2 >= self.relay_queue.length() {
+    let next : Array[Option[String]] = []
+    for i in self.relay_q_head..<self.relay_queue.length() {
+      next.push(self.relay_queue[i])
+    }
+    self.relay_queue = next
+    self.relay_q_head = 0
+  }
+  Some(item)
+}
+
+fn bytes_from_array(arr : Array[Byte]) -> Bytes {
+  let out = Bytes::new(arr.length())
+  for i in 0..<arr.length() {
+    out[i] = arr[i]
+  }
+  out
+}
+
+fn field_or_null(o : base_codec::Json, k : String) -> base_codec::Json {
+  match builders_core::json_get_last(o, k) {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+fn is_json_null(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Null => true
+    _ => false
+  }
+}
+
+fn is_json_str(v : base_codec::Json, want : String) -> Bool {
+  match v {
+    base_codec::Json::Str(s) => s == want
+    _ => false
+  }
+}
+
+fn opt_is_json_str(v : Option[base_codec::Json], want : String) -> Bool {
+  match v {
+    Some(base_codec::Json::Str(s)) => s == want
+    _ => false
+  }
+}
+
+fn str_contains(hay : String, needle : String) -> Bool {
+  let hb = hay.to_bytes()
+  let nb = needle.to_bytes()
+  let hn = hb.length()
+  let nn = nb.length()
+  if nn == 0 {
+    return true
+  }
+  if nn > hn {
+    return false
+  }
+  let mut i = 0
+  while i + nn <= hn {
+    let mut ok = true
+    for j in 0..<nn {
+      if hb[i + j] != nb[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn hdr_get(headers : Array[(String, base_codec::Json)], key : String) -> Option[base_codec::Json] {
+  let mut found : Option[base_codec::Json] = None
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if k == key {
+      found = Some(v)
+    }
+  }
+  found
+}
+
+fn hdr_contains(headers : Array[(String, base_codec::Json)], key : String) -> Bool {
+  match hdr_get(headers, key) {
+    Some(_) => true
+    None => false
+  }
+}
+
+fn hdr_set(
+  headers : Array[(String, base_codec::Json)],
+  key : String,
+  item_val : base_codec::Json,
+) -> Array[(String, base_codec::Json)] {
+  let out : Array[(String, base_codec::Json)] = []
+  let mut replaced = false
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if k == key {
+      if !replaced {
+        out.push((key, item_val))
+        replaced = true
+      }
+    } else {
+      out.push((k, v))
+    }
+  }
+  if !replaced {
+    out.push((key, item_val))
+  }
+  out
+}
+
+fn hdr_remove(
+  headers : Array[(String, base_codec::Json)],
+  key : String,
+) -> Array[(String, base_codec::Json)] {
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if k != key {
+      out.push((k, v))
+    }
+  }
+  out
+}
+
+fn hdr_from_json(v : base_codec::Json) -> Array[(String, base_codec::Json)] {
+  match v {
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        out.push(fields[i])
+      }
+      out
+    }
+    _ => []
+  }
+}
+
+fn obj_set_field(
+  obj : base_codec::Json,
+  key : String,
+  item_val : base_codec::Json,
+) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  let mut replaced = false
+  match obj {
+    base_codec::Json::Obj(fields) => {
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        if k == key {
+          if !replaced {
+            out.push((key, item_val))
+            replaced = true
+          }
+        } else {
+          out.push((k, v))
+        }
+      }
+    }
+    _ => ()
+  }
+  if !replaced {
+    out.push((key, item_val))
+  }
+  base_codec::json_obj(out)
+}
+
+fn parsed_column(v : Option[base_codec::Json]) -> Option[base_codec::Json] {
+  match v {
+    Some(base_codec::Json::Str(text)) => {
+      match parse_json_strict(text) {
+        base_codec::JsonParseResult::Ok(j) => Some(j)
+        base_codec::JsonParseResult::Err(_) => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn end_key() -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(101 as Byte)
+  sb.write_byte(110 as Byte)
+  sb.write_byte(100 as Byte)
+  sb.to_string()
+}
+
+pub struct ServeRunner {
+  mux : builders_core::ShellMux
+  outbox : builders_core::SerialOutbox
+  reader : reader_data::Reader
+  socket : String
+  note : (String) -> Unit
+  mut listen_id : Option[base_codec::Json]
+  mut accept_retry_at : Option[Int64]
+  mut set : base_codec::Json
+  members : Map[String, Member]
+  waiting : Map[String, Array[Int]]
+  names : Map[String, String]
+  mut name_order : Array[String]
+  builds : Map[String, String]
+  streams : Map[Int, StreamState]
+  req_to_stream : Map[Int, Int]
+  mut next_stream_id : Int
+  mut next_req : Int
+  mut wall : Int64
+  mut at : Int64
+  mut running : Bool
+  mut exit_code : Int
+}
+
+pub fn ServeRunner::new(
+  mux : builders_core::ShellMux,
+  reader : reader_data::Reader,
+  socket : String,
+  note : (String) -> Unit,
+) -> ServeRunner {
+  let init_wall = mux.wall_ms()
+  let init_at = mux.now_ms()
+  ServeRunner::{
+    mux: mux,
+    outbox: builders_core::SerialOutbox::new(),
+    reader: reader,
+    socket: socket,
+    note: note,
+    listen_id: None,
+    accept_retry_at: None,
+    set: base_codec::json_null(),
+    members: Map::new(),
+    waiting: Map::new(),
+    names: Map::new(),
+    name_order: [],
+    builds: Map::new(),
+    streams: Map::new(),
+    req_to_stream: Map::new(),
+    next_stream_id: 0,
+    next_req: 0,
+    wall: init_wall,
+    at: init_at,
+    running: true,
+    exit_code: 0,
+  }
+}
+
+pub fn ServeRunner::now(self : ServeRunner) -> Int64 {
+  self.wall + (self.mux.now_ms() - self.at)
+}
+
+pub fn ServeRunner::is_running(self : ServeRunner) -> Bool {
+  self.running
+}
+
+pub fn ServeRunner::exit_code(self : ServeRunner) -> Int {
+  self.exit_code
+}
+
+pub fn ServeRunner::active_streams(self : ServeRunner) -> Int {
+  self.streams.length()
+}
+
+pub fn ServeRunner::pending_reqs(self : ServeRunner) -> Int {
+  self.req_to_stream.length()
+}
+
+pub fn ServeRunner::start(self : ServeRunner) -> Unit {
+  let _ = self.mux.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_LISTEN, 0.to_int64()),
+    "unix.listen",
+    base_codec::json_obj([("path", base_codec::json_str(self.socket))]),
+    None,
+  )
+}
+
+pub fn ServeRunner::step(self : ServeRunner, wait_ms : Int64) -> Bool {
+  if !self.running {
+    return false
+  }
+  let mut effective_wait = wait_ms
+  match self.accept_retry_at {
+    Some(due) => {
+      let now = self.mux.now_ms()
+      if now >= due {
+        self.accept_retry_at = None
+        match self.listen_id {
+          Some(lid) => self.start_accept(lid)
+          None => ()
+        }
+        effective_wait = 0.to_int64()
+      } else {
+        let rem = due - now
+        if rem < effective_wait {
+          effective_wait = rem
+        }
+      }
+    }
+    None => ()
+  }
+  let progressed = self.mux.step(
+    effective_wait,
+    fn(line : String) -> Unit {
+      self.told(line)
+    },
+    fn() -> Unit {
+      self.running = false
+      self.exit_code = 0
+    },
+    fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+      self.on_done(tok, done)
+    },
+  )
+  match self.accept_retry_at {
+    Some(due) => {
+      if self.running && self.mux.now_ms() >= due {
+        self.accept_retry_at = None
+        match self.listen_id {
+          Some(lid) => self.start_accept(lid)
+          None => ()
+        }
+        return true
+      }
+    }
+    None => ()
+  }
+  progressed
+}
+
+fn ServeRunner::say(self : ServeRunner, j : base_codec::Json) -> Unit {
+  let _ = self.mux.write_stdout_line(sql_db::stringify_json(j))
+}
+
+fn ServeRunner::start_accept(self : ServeRunner, lid : base_codec::Json) -> Unit {
+  let _ = self.mux.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_ACCEPT, 0.to_int64()),
+    "tcp.accept",
+    base_codec::json_obj([("id", lid)]),
+    None,
+  )
+}
+
+fn ServeRunner::start_read(self : ServeRunner, stream_id : Int, sock_id : base_codec::Json) -> Unit {
+  let _ = self.mux.call_async(
+    builders_core::MuxToken::Tagged(stream_id, TOK_READ, 0.to_int64()),
+    "tcp.read",
+    base_codec::json_obj([("id", sock_id)]),
+    None,
+  )
+}
+
+fn ServeRunner::close_stream(self : ServeRunner, stream_id : Int) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  if st.req_id > 0 {
+    self.req_to_stream.remove(st.req_id)
+  }
+  match st.relay_zstd_id {
+    Some(zid) => {
+      st.relay_zstd_id = None
+      let _ = self.mux.call_async(
+        builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+        "zstd.close",
+        base_codec::json_obj([("id", zid)]),
+        None,
+      )
+    }
+    None => ()
+  }
+  let sock_id = st.sock_id
+  self.outbox.close_handle(stream_id)
+  self.streams.remove(stream_id)
+  let _ = self.mux.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+    "tcp.close",
+    base_codec::json_obj([("id", sock_id)]),
+    None,
+  )
+}
+
+fn ServeRunner::send_framed_and_close(
+  self : ServeRunner,
+  stream_id : Int,
+  head : base_codec::Json,
+  body : Bytes,
+) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  st.phase = PHASE_WRITING_CLOSE
+  let framed = frame_whole_answer(sql_db::stringify_json(head), body)
+  let _ = self.outbox.send(
+    self.mux,
+    stream_id,
+    builders_core::MuxToken::Tagged(stream_id, TOK_WRITE_CLOSE, 0.to_int64()),
+    "tcp.write",
+    base_codec::json_obj([("id", st.sock_id)]),
+    Some(framed),
+  )
+}
+
+fn ServeRunner::send_raw_json_and_close(
+  self : ServeRunner,
+  stream_id : Int,
+  status : Int,
+  text : String,
+) -> Unit {
+  let head = base_codec::json_obj([
+    ("status", base_codec::json_int(status)),
+    ("headers", base_codec::json_obj([("content-type", base_codec::json_str("application/json"))])),
+  ])
+  self.send_framed_and_close(stream_id, head, text.to_bytes())
+}
+
+fn ServeRunner::send_whole_and_close(
+  self : ServeRunner,
+  stream_id : Int,
+  req_headers : base_codec::Json,
+  status : Int,
+  body : Bytes,
+) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  let build_val = match builders_core::json_get_last(self.set, "build") {
+    Some(v) => v
+    None => base_codec::json_str("")
+  }
+  let headers : Array[(String, base_codec::Json)] = [
+    ("content-type", base_codec::json_str("application/json")),
+    ("cache-control", base_codec::json_str("no-store")),
+    ("stillfail-idempotent", base_codec::json_str("1")),
+    ("stillfail-build", build_val),
+  ]
+  let status_j = base_codec::json_int(status)
+  if accepts_zstd(req_headers) && body.length() >= 512 {
+    st.phase = PHASE_COMPRESS_WHOLE
+    st.pending_status = status_j
+    st.pending_headers = headers
+    let _ = self.mux.call_async(
+      builders_core::MuxToken::Zstd(stream_id, ZSTD_COMPRESS_WHOLE),
+      "zstd.compress",
+      base_codec::json_obj([
+        ("level", base_codec::json_int(3)),
+        ("window", base_codec::json_int(20)),
+      ]),
+      Some(body),
+    )
+    return
+  }
+  let with_len = hdr_set(headers, "content-length", base_codec::json_str(body.length().to_string()))
+  let head = base_codec::json_obj([
+    ("status", status_j),
+    ("headers", base_codec::json_obj(with_len)),
+  ])
+  self.send_framed_and_close(stream_id, head, body)
+}
+
+/// Handle one JSON line from Node on stdin (`serve.mbt:114`).
+pub fn ServeRunner::told(self : ServeRunner, line : String) -> Unit {
+  let said = match parse_json_strict(line) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return
+  }
+  match builders_core::json_get_last(said, "wall") {
+    Some(base_codec::Json::Num(n, _)) => {
+      self.wall = n.to_int64()
+      self.at = self.mux.now_ms()
+    }
+    _ => ()
+  }
+  match builders_core::json_get_last(said, "set") {
+    Some(set_val) => {
+      self.set = set_val
+      return
+    }
+    None => ()
+  }
+  match builders_core::json_get_last(said, "viewer") {
+    Some(m) => {
+      match (builders_core::json_get_last(m, "conn"), builders_core::json_get_last(m, "viewer")) {
+        (Some(conn), Some(viewer)) => {
+          let key = conn_key_of(conn)
+          let waiting_list = match self.waiting.get(key) {
+            Some(ws) => {
+              self.waiting.remove(key)
+              ws
+            }
+            None => []
+          }
+          if is_json_null(viewer) {
+            self.members.remove(key)
+            self.builds.remove(key)
+            for i in 0..<waiting_list.length() {
+              self.close_stream(waiting_list[i])
+            }
+          } else {
+            let moved = match builders_core::json_get_last(m, "moved") {
+              Some(base_codec::Json::Bool(true)) => true
+              _ => false
+            }
+            let floor : Option[Int] = match builders_core::json_get_last(m, "floor") {
+              Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+              _ => None
+            }
+            self.members.set(key, Member::{ viewer: viewer, moved: moved, floor: floor })
+            for i in 0..<waiting_list.length() {
+              self.dispatch_request(waiting_list[i])
+            }
+          }
+          return
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  match builders_core::json_get_last(said, "names") {
+    Some(base_codec::Json::Arr(pairs)) => {
+      for i in 0..<pairs.length() {
+        match pairs[i] {
+          base_codec::Json::Arr(items) => {
+            if items.length() == 2 {
+              match (items[0], items[1]) {
+                (base_codec::Json::Str(email), base_codec::Json::Str(name)) => {
+                  if !self.names.contains(email) {
+                    self.name_order.push(email)
+                  }
+                  self.names.set(email, name)
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      return
+    }
+    _ => ()
+  }
+  match (builders_core::json_get_last(said, "chunk"), builders_core::json_get_last(said, "text")) {
+    (Some(base_codec::Json::Num(n, _)), Some(base_codec::Json::Str(t))) => {
+      self.enqueue_relay_piece(n.to_int(), Some(t))
+      return
+    }
+    _ => ()
+  }
+  match (builders_core::json_get_last(said, "pieces"), builders_core::json_get_last(said, "to")) {
+    (Some(base_codec::Json::Str(t)), Some(base_codec::Json::Arr(to))) => {
+      for i in 0..<to.length() {
+        match to[i] {
+          base_codec::Json::Num(k, _) => self.enqueue_relay_piece(k.to_int(), Some(t))
+          _ => ()
+        }
+      }
+      return
+    }
+    _ => ()
+  }
+  match builders_core::json_get_last(said, "done") {
+    Some(base_codec::Json::Num(n, _)) => {
+      self.enqueue_relay_piece(n.to_int(), None)
+      return
+    }
+    _ => ()
+  }
+  let reply_n : Option[Int] = match builders_core::json_get_last(said, "claimed") {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => {
+      match builders_core::json_get_last(said, "answered") {
+        Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+        _ => None
+      }
+    }
+  }
+  match reply_n {
+    Some(n) => self.on_node_reply(n, said)
+    None => ()
+  }
+}
+
+fn ServeRunner::enqueue_relay_piece(self : ServeRunner, req_id : Int, piece : Option[String]) -> Unit {
+  let stream_id = match self.req_to_stream.get(req_id) {
+    Some(sid) => sid
+    None => return
+  }
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  st.relay_queue.push(piece)
+  if st.phase == PHASE_RELAY_STREAMING && !st.relay_busy {
+    self.pump_relay(stream_id)
+  }
+}
+
+fn ServeRunner::on_node_reply(self : ServeRunner, req_id : Int, said : base_codec::Json) -> Unit {
+  let stream_id = match self.req_to_stream.get(req_id) {
+    Some(sid) => sid
+    None => return
+  }
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => {
+      self.req_to_stream.remove(req_id)
+      return
+    }
+  }
+  if st.phase == PHASE_WAIT_FALLBACK {
+    self.req_to_stream.remove(req_id)
+    st.req_id = 0
+    self.finish_fallback(stream_id, said)
+  } else if st.phase == PHASE_WAIT_CLAIM {
+    self.req_to_stream.remove(req_id)
+    st.req_id = 0
+    self.finish_say_claim(stream_id, req_id, said)
+  } else if st.phase == PHASE_RELAY_WAIT_HEAD {
+    // Keep req_to_stream entry until relay finishes or stops.
+    self.on_relay_head(stream_id, said)
+  }
+}
+
+fn ServeRunner::on_done(
+  self : ServeRunner,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+) -> Unit {
+  match tok {
+    builders_core::MuxToken::Tagged(owner_id, kind, _) => {
+      if kind == TOK_LISTEN {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)("serve: not listening at " + self.socket + ": " + e.message)
+            self.running = false
+            self.exit_code = 1
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let lid = field_or_null(said, "id")
+            if is_json_null(lid) {
+              (self.note)("serve: not listening at " + self.socket + ": no listener id")
+              self.running = false
+              self.exit_code = 1
+              return
+            }
+            self.listen_id = Some(lid)
+            self.say(base_codec::json_obj([("listening", base_codec::json_str(self.socket))]))
+            self.start_accept(lid)
+          }
+        }
+      } else if kind == TOK_ACCEPT {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)("serve: accept failed: " + e.message)
+            if listener_gone_msg(e.message) {
+              self.running = false
+              self.exit_code = 0
+            } else {
+              self.accept_retry_at = Some(self.mux.now_ms() + SERVE_ACCEPT_RETRY_MS)
+            }
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let sock_id = field_or_null(said, "id")
+            match self.listen_id {
+              Some(lid) => self.start_accept(lid)
+              None => ()
+            }
+            if !is_json_null(sock_id) {
+              self.next_stream_id = self.next_stream_id + 1
+              let sid = self.next_stream_id
+              let st = StreamState::new(sid, sock_id)
+              self.streams.set(sid, st)
+              self.start_read(sid, sock_id)
+            }
+          }
+        }
+      } else if kind == TOK_READ {
+        let st = match self.streams.get(owner_id) {
+          Some(s) => s
+          None => return
+        }
+        let chunk_opt : Option[Bytes] = match builders_core::decode_shell_done(done) {
+          Err(_) => None
+          Ok((j_opt, bytes_opt)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let is_end = match builders_core::json_get_last(said, end_key()) {
+              Some(base_codec::Json::Bool(true)) => true
+              _ => false
+            }
+            if is_end { None } else { bytes_opt }
+          }
+        }
+        match chunk_opt {
+          Some(bytes) => {
+            st.push_have(bytes)
+            self.advance_stream_read(owner_id)
+          }
+          None => {
+            // Half-close / EOF before PIPE_END: silently close.
+            self.close_stream(owner_id)
+          }
+        }
+      } else if kind == TOK_WRITE_CLOSE {
+        let _ = self.outbox.on_complete(self.mux, owner_id, done.id)
+        self.close_stream(owner_id)
+      } else if kind == TOK_RELAY_WRITE {
+        let _ = self.outbox.on_complete(self.mux, owner_id, done.id)
+        let st = match self.streams.get(owner_id) {
+          Some(s) => s
+          None => return
+        }
+        if done.error.length() > 0 {
+          let req_id = st.req_id
+          self.close_stream(owner_id)
+          if req_id > 0 {
+            self.say(base_codec::json_obj([("stop", base_codec::json_int(req_id))]))
+          }
+          return
+        }
+        st.relay_busy = false
+        self.pump_relay(owner_id)
+      } else if kind == TOK_IGNORE {
+        ()
+      }
+    }
+    builders_core::MuxToken::Zstd(stream_id, zkind) => {
+      self.on_zstd_done(stream_id, zkind, done)
+    }
+    _ => ()
+  }
+}
+
+fn ServeRunner::on_zstd_done(
+  self : ServeRunner,
+  stream_id : Int,
+  zkind : Int,
+  done : host_shim::ShellDone,
+) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  if zkind == ZSTD_COMPRESS_WHOLE || zkind == ZSTD_COMPRESS_FALLBACK {
+    match builders_core::decode_shell_done(done) {
+      Err(e) => {
+        (self.note)("serve: a request failed: " + e.message)
+        self.send_raw_json_and_close(stream_id, 500, "{\"error\":\"read failed\"}")
+      }
+      Ok((_, bytes_opt)) => {
+        let out_bytes = match bytes_opt {
+          Some(b) => b
+          None => Bytes::new(0)
+        }
+        let mut headers = st.pending_headers
+        if zkind == ZSTD_COMPRESS_FALLBACK {
+          headers = hdr_remove(headers, "content-length")
+        }
+        headers = hdr_set(headers, "content-encoding", base_codec::json_str("zstd"))
+        let head = base_codec::json_obj([
+          ("status", st.pending_status),
+          ("headers", base_codec::json_obj(headers)),
+        ])
+        self.send_framed_and_close(stream_id, head, out_bytes)
+      }
+    }
+  } else if zkind == ZSTD_STREAM_OPEN {
+    match builders_core::decode_shell_done(done) {
+      Err(e) => {
+        (self.note)("serve: a stream failed: " + e.message)
+        let req_id = st.req_id
+        if req_id > 0 {
+          self.req_to_stream.remove(req_id)
+          st.req_id = 0
+          self.say(base_codec::json_obj([("stop", base_codec::json_int(req_id))]))
+        }
+        self.send_raw_json_and_close(stream_id, 500, error_json("read failed"))
+      }
+      Ok((j_opt, _)) => {
+        let made = match j_opt {
+          Some(j) => j
+          None => base_codec::json_null()
+        }
+        let mut headers = st.pending_headers
+        match builders_core::json_get_last(made, "id") {
+          Some(zid) => {
+            if !is_json_null(zid) {
+              st.relay_zstd_id = Some(zid)
+              headers = hdr_remove(headers, "content-length")
+              headers = hdr_set(headers, "content-encoding", base_codec::json_str("zstd"))
+            }
+          }
+          None => ()
+        }
+        self.start_relay_stream(stream_id, st.pending_status, headers)
+      }
+    }
+  } else if zkind == ZSTD_RELAY_PUSH {
+    match builders_core::decode_shell_done(done) {
+      Err(e) => {
+        (self.note)("serve: a stream failed: " + e.message)
+        let req_id = st.req_id
+        self.close_stream(stream_id)
+        if req_id > 0 {
+          self.say(base_codec::json_obj([("stop", base_codec::json_int(req_id))]))
+        }
+      }
+      Ok((_, bytes_opt)) => {
+        let bytes = match bytes_opt {
+          Some(b) => b
+          None => Bytes::new(0)
+        }
+        if bytes.length() > 0 {
+          let framed = frame_bytes(bytes)
+          let _ = self.outbox.send(
+            self.mux,
+            stream_id,
+            builders_core::MuxToken::Tagged(stream_id, TOK_RELAY_WRITE, 0.to_int64()),
+            "tcp.write",
+            base_codec::json_obj([("id", st.sock_id)]),
+            Some(framed),
+          )
+        } else {
+          st.relay_busy = false
+          self.pump_relay(stream_id)
+        }
+      }
+    }
+  }
+}
+
+fn ServeRunner::advance_stream_read(self : ServeRunner, stream_id : Int) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  while true {
+    if st.phase == PHASE_READ_HEAD {
+      if st.have_len() < 25 {
+        self.start_read(stream_id, st.sock_id)
+        return
+      }
+      let head = st.take_have(25)
+      let conn_i64 = be_u(head, 0, 8)
+      st.conn = sql_db::double_to_json(conn_i64.to_double())
+      st.conn_key = conn_key_of(st.conn)
+      st.phase = PHASE_READ_FRAME_LEN
+    } else if st.phase == PHASE_READ_FRAME_LEN {
+      if st.have_len() < 4 {
+        self.start_read(stream_id, st.sock_id)
+        return
+      }
+      let n = be_u(st.take_have(4), 0, 4)
+      if n == PIPE_END {
+        break
+      }
+      if n == PIPE_FAILED || n > PIPE_MOST.to_int64() || st.body.length().to_int64() + n > BODY_MOST.to_int64() {
+        self.close_stream(stream_id)
+        return
+      }
+      st.need_frame_bytes = n.to_int()
+      st.phase = PHASE_READ_FRAME_BODY
+    } else if st.phase == PHASE_READ_FRAME_BODY {
+      if st.have_len() < st.need_frame_bytes {
+        self.start_read(stream_id, st.sock_id)
+        return
+      }
+      let chunk = st.take_have(st.need_frame_bytes)
+      for i in 0..<chunk.length() {
+        st.body.push(chunk[i])
+      }
+      st.need_frame_bytes = 0
+      st.phase = PHASE_READ_FRAME_LEN
+    } else {
+      return
+    }
+  }
+  // Reached PIPE_END: parse head JSON line + rest body (`serve.mbt:281-302`).
+  let sent = bytes_from_array(st.body)
+  st.body = []
+  let mut nl = -1
+  for i in 0..<sent.length() {
+    if (sent[i].to_int() & 0xFF) == 10 {
+      nl = i
+      break
+    }
+  }
+  if nl < 0 {
+    self.close_stream(stream_id)
+    return
+  }
+  let head_str = sql_db::decode_utf8_lossy_bytes(slice_bytes(sent, 0, nl))
+  let asked = match parse_json_strict(head_str) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => {
+      self.close_stream(stream_id)
+      return
+    }
+  }
+  st.asked = asked
+  st.rest = slice_bytes(sent, nl + 1, sent.length())
+  if !self.members.contains(st.conn_key) {
+    st.phase = PHASE_WAIT_VIEWER
+    match self.waiting.get(st.conn_key) {
+      Some(ws) => ws.push(stream_id)
+      None => self.waiting.set(st.conn_key, [stream_id])
+    }
+    return
+  }
+  self.dispatch_request(stream_id)
+}
+
+fn ServeRunner::dispatch_request(self : ServeRunner, stream_id : Int) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  let who = match self.members.get(st.conn_key) {
+    Some(m) => m
+    None => {
+      self.close_stream(stream_id)
+      return
+    }
+  }
+  let asked = st.asked
+  let body = st.rest
+  let headers = match builders_core::json_get_last(asked, "headers") {
+    Some(h) => h
+    None => base_codec::json_obj([])
+  }
+  let lang = match header_ci(headers, "stillfail-lang") {
+    Some(l) => if has_prefix(l, "en") { "en" } else { "zh" }
+    None => "zh"
+  }
+  let words = match builders_core::json_get_last(self.set, "words") {
+    Some(w_obj) => {
+      match builders_core::json_get_last(w_obj, lang) {
+        Some(lw) => lw
+        None => base_codec::json_obj([])
+      }
+    }
+    None => base_codec::json_obj([])
+  }
+  // 1. Core build gating (`serve.mbt:386-403`).
+  let build = build_of(header_ci(headers, "stillfail-build"))
+  let counted = int_of(builders_core::json_get_last(self.set, "countedFrom"))
+  let too_old = match build {
+    Some(b) => {
+      let oldest = int_of(builders_core::json_get_last(self.set, "oldestCore"))
+      if b >= counted && b < oldest {
+        true
+      } else if b >= counted {
+        match who.floor {
+          Some(f) => b < f
+          None => who.moved && b < int_of(builders_core::json_get_last(self.set, "movedFromBuild"))
+        }
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+  if too_old {
+    let update_msg = match builders_core::json_get_last(words, "updateApp") {
+      Some(v) => v
+      None => base_codec::json_str("")
+    }
+    let text = sql_db::stringify_json(
+      base_codec::json_obj([
+        ("error", update_msg),
+        ("update", base_codec::json_bool(true)),
+      ]),
+    )
+    self.send_raw_json_and_close(stream_id, 426, text)
+    return
+  }
+  // 2. Report device build changes (`serve.mbt:404-413`).
+  let b_json = match build {
+    Some(n) => base_codec::json_int(n)
+    None => base_codec::json_null()
+  }
+  let b_key = sql_db::stringify_json(b_json)
+  let prev_b = self.builds.get(st.conn_key)
+  let changed_b = match prev_b {
+    Some(prev) => prev != b_key
+    None => true
+  }
+  if changed_b {
+    self.builds.set(st.conn_key, b_key)
+    self.say(
+      base_codec::json_obj([
+        (
+          "build",
+          base_codec::json_obj([
+            ("conn", st.conn),
+            ("build", b_json),
+          ]),
+        ),
+      ]),
+    )
+  }
+  // 3. Event stream relay (`serve.mbt:415-418`).
+  let path = match builders_core::json_get_last(asked, "path") {
+    Some(base_codec::Json::Str(p)) => p
+    _ => ""
+  }
+  if path == "/admin/api/events" || has_prefix(path, "/admin/api/events?") {
+    self.start_relay(stream_id)
+    return
+  }
+  // 4. Runtime compatibility check (`serve.mbt:420-428`).
+  let runtimes : Array[String] = match header_ci(headers, "stillfail-runtimes") {
+    Some(s) => {
+      let raw_parts = split_ascii(s, 44)
+      let trimmed : Array[String] = []
+      for i in 0..<raw_parts.length() {
+        trimmed.push(jscase::trim_white(raw_parts[i]))
+      }
+      trimmed
+    }
+    None => []
+  }
+  let every = match builders_core::json_get_last(self.set, "runtimes") {
+    Some(base_codec::Json::Arr(all)) => {
+      let mut ok = true
+      for i in 0..<all.length() {
+        match all[i] {
+          base_codec::Json::Str(k) => {
+            let mut found = false
+            for j in 0..<runtimes.length() {
+              if runtimes[j] == k {
+                found = true
+                break
+              }
+            }
+            if !found {
+              ok = false
+              break
+            }
+          }
+          _ => {
+            ok = false
+            break
+          }
+        }
+      }
+      ok
+    }
+    _ => false
+  }
+  if !every {
+    self.start_fallback(stream_id)
+    return
+  }
+  let method = match builders_core::json_get_last(asked, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  let (route, _) = split_query(path)
+  // 5. POST /admin/api/batch (`serve.mbt:439-481`).
+  if method == "POST" && route == "/admin/api/batch" {
+    if body.length() > 1000000 {
+      self.send_whole_and_close(stream_id, headers, 413, error_json("request too large").to_bytes())
+      return
+    }
+    let parsed = match parse_json_strict(sql_db::decode_utf8_lossy_bytes(body)) {
+      base_codec::JsonParseResult::Ok(j) => Some(j)
+      base_codec::JsonParseResult::Err(_) => None
+    }
+    let paths : Array[String] = []
+    let mut fine = false
+    match parsed {
+      Some(obj) => {
+        match builders_core::json_get_last(obj, "gets") {
+          Some(base_codec::Json::Arr(a)) => {
+            if a.length() <= 64 {
+              fine = true
+              for i in 0..<a.length() {
+                match a[i] {
+                  base_codec::Json::Str(s) => paths.push(s)
+                  _ => {
+                    fine = false
+                    break
+                  }
+                }
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    if !fine {
+      self.send_whole_and_close(
+        stream_id,
+        headers,
+        400,
+        error_json("gets: at most 64 paths to read").to_bytes(),
+      )
+      return
+    }
+    let answers = StringBuilder::new()
+    for i in 0..<paths.length() {
+      let got = paths[i]
+      let (groute, _) = split_query(got)
+      let one_res = if batched(groute) {
+        self.read_path(who, lang, words, "/admin/api" + got, None)
+      } else {
+        Ok(Done::Text(400, error_json("not read in a batch: " + groute)))
+      }
+      match one_res {
+        Err(err) => {
+          (self.note)("serve: a request failed: " + err)
+          self.send_raw_json_and_close(stream_id, 500, "{\"error\":\"read failed\"}")
+          return
+        }
+        Ok(Done::Give) => {
+          self.start_fallback(stream_id)
+          return
+        }
+        Ok(Done::Text(status, text)) => {
+          if i > 0 {
+            answers.write_string(",")
+          }
+          let body_str = if text == "" { "\"\"" } else { text }
+          answers.write_string("{\"status\":" + status.to_string() + ",\"body\":" + body_str + "}")
+        }
+      }
+    }
+    self.send_whole_and_close(
+      stream_id,
+      headers,
+      200,
+      ("{\"answers\":[" + answers.to_string() + "]}").to_bytes(),
+    )
+    return
+  }
+  // 6. Marks (`PUT`, `DELETE`, `POST /sessions/:key/title`) (`serve.mbt:483-493`).
+  let segs = route_of_path(path)
+  let is_mark = method == "PUT" ||
+  method == "DELETE" ||
+  (method == "POST" && segs.length() == 3 && segs[0] == "sessions" && segs[2] == "title")
+  if is_mark {
+    match self.mark(who, method, path, body, words, lang) {
+      Ok(Done::Text(status, text)) => self.send_whole_and_close(stream_id, headers, status, text.to_bytes())
+      Ok(Done::Give) => self.start_fallback(stream_id)
+      Err(err) => {
+        (self.note)("serve: a request failed: " + err)
+        self.send_raw_json_and_close(stream_id, 500, "{\"error\":\"read failed\"}")
+      }
+    }
+    return
+  }
+  // 7. Person's message (`POST /threads/:id/messages`) (`serve.mbt:495-500`).
+  if method == "POST" && segs.length() == 3 && segs[0] == "threads" && segs[2] == "messages" {
+    match self.prepare_say(who, segs[1], headers, body, words, lang) {
+      Ok(SayPrep::Immediate(status, text)) => self.send_raw_json_and_close(stream_id, status, text)
+      Ok(SayPrep::Fallback) => self.start_fallback(stream_id)
+      Ok(SayPrep::NeedClaim(pending)) => {
+        self.next_req = self.next_req + 1
+        let n = self.next_req
+        st.req_id = n
+        st.phase = PHASE_WAIT_CLAIM
+        st.say_pending = Some(pending)
+        self.req_to_stream.set(n, stream_id)
+        let idemp = match header_ci(headers, "idempotency-key") {
+          Some(k) => base_codec::json_str(k)
+          None => base_codec::json_null()
+        }
+        self.say(
+          base_codec::json_obj([
+            ("claim", base_codec::json_int(n)),
+            ("conn", st.conn),
+            ("path", base_codec::json_str("/threads/" + segs[1] + "/messages")),
+            ("key", idemp),
+            ("lang", base_codec::json_str(lang)),
+          ]),
+        )
+      }
+      Err(err) => {
+        (self.note)("serve: a request failed: " + err)
+        self.send_raw_json_and_close(stream_id, 500, "{\"error\":\"read failed\"}")
+      }
+    }
+    return
+  }
+  // 8. GET reads or POST /changed/* (`serve.mbt:501-505`).
+  let posted = if method == "POST" { Some((body, runtimes)) } else { None }
+  match self.read_path(who, lang, words, path, posted) {
+    Ok(Done::Text(status, text)) => self.send_whole_and_close(stream_id, headers, status, text.to_bytes())
+    Ok(Done::Give) => self.start_fallback(stream_id)
+    Err(err) => {
+      (self.note)("serve: a request failed: " + err)
+      self.send_raw_json_and_close(stream_id, 500, "{\"error\":\"read failed\"}")
+    }
+  }
+}
+
+fn ServeRunner::start_fallback(self : ServeRunner, stream_id : Int) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  self.next_req = self.next_req + 1
+  let n = self.next_req
+  st.req_id = n
+  st.phase = PHASE_WAIT_FALLBACK
+  self.req_to_stream.set(n, stream_id)
+  self.say(
+    base_codec::json_obj([
+      ("fallback", base_codec::json_int(n)),
+      ("conn", st.conn),
+      ("head", st.asked),
+      ("body", base_codec::json_str(sql_db::decode_utf8_lossy_bytes(st.rest))),
+    ]),
+  )
+}
+
+fn ServeRunner::finish_fallback(self : ServeRunner, stream_id : Int, said : base_codec::Json) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  let status = match builders_core::json_get_last(said, "status") {
+    Some(v) => v
+    None => base_codec::json_int(500)
+  }
+  let mut headers = hdr_from_json(field_or_null(said, "headers"))
+  let text_bytes = match builders_core::json_get_last(said, "text") {
+    Some(base_codec::Json::Str(t)) => t.to_bytes()
+    _ => Bytes::new(0)
+  }
+  let req_headers = field_or_null(st.asked, "headers")
+  let zstd = accepts_zstd(req_headers)
+  let typed = match hdr_get(headers, "content-type") {
+    Some(base_codec::Json::Str(t)) => has_prefix(t, "application/json") || has_prefix(t, "text/")
+    _ => false
+  }
+  if zstd && typed && text_bytes.length() >= 512 && !hdr_contains(headers, "content-encoding") {
+    st.phase = PHASE_COMPRESS_WHOLE
+    st.pending_status = status
+    st.pending_headers = headers
+    let _ = self.mux.call_async(
+      builders_core::MuxToken::Zstd(stream_id, ZSTD_COMPRESS_FALLBACK),
+      "zstd.compress",
+      base_codec::json_obj([
+        ("level", base_codec::json_int(3)),
+        ("window", base_codec::json_int(20)),
+      ]),
+      Some(text_bytes),
+    )
+    return
+  }
+  if !hdr_contains(headers, "content-length") && !hdr_contains(headers, "content-encoding") {
+    headers = hdr_set(headers, "content-length", base_codec::json_str(text_bytes.length().to_string()))
+  }
+  let head = base_codec::json_obj([
+    ("status", status),
+    ("headers", base_codec::json_obj(headers)),
+  ])
+  self.send_framed_and_close(stream_id, head, text_bytes)
+}
+
+fn ServeRunner::start_relay(self : ServeRunner, stream_id : Int) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  self.next_req = self.next_req + 1
+  let n = self.next_req
+  st.req_id = n
+  st.phase = PHASE_RELAY_WAIT_HEAD
+  self.req_to_stream.set(n, stream_id)
+  self.say(
+    base_codec::json_obj([
+      ("fallback", base_codec::json_int(n)),
+      ("conn", st.conn),
+      ("head", st.asked),
+      ("body", base_codec::json_str(sql_db::decode_utf8_lossy_bytes(st.rest))),
+      ("stream", base_codec::json_bool(true)),
+    ]),
+  )
+}
+
+fn ServeRunner::on_relay_head(self : ServeRunner, stream_id : Int, said : base_codec::Json) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  let status = match builders_core::json_get_last(said, "status") {
+    Some(v) => v
+    None => base_codec::json_int(500)
+  }
+  let headers = hdr_from_json(field_or_null(said, "headers"))
+  let req_headers = field_or_null(st.asked, "headers")
+  let zstd = accepts_zstd(req_headers)
+  let typed = match hdr_get(headers, "content-type") {
+    Some(base_codec::Json::Str(t)) => has_prefix(t, "application/json") || has_prefix(t, "text/")
+    _ => false
+  }
+  if zstd && typed && !hdr_contains(headers, "content-encoding") {
+    st.phase = PHASE_RELAY_OPEN_ZSTD
+    st.pending_status = status
+    st.pending_headers = headers
+    let _ = self.mux.call_async(
+      builders_core::MuxToken::Zstd(stream_id, ZSTD_STREAM_OPEN),
+      "zstd.stream",
+      base_codec::json_obj([
+        ("level", base_codec::json_int(3)),
+        ("window", base_codec::json_int(20)),
+      ]),
+      None,
+    )
+    return
+  }
+  self.start_relay_stream(stream_id, status, headers)
+}
+
+fn ServeRunner::start_relay_stream(
+  self : ServeRunner,
+  stream_id : Int,
+  status : base_codec::Json,
+  headers : Array[(String, base_codec::Json)],
+) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  st.phase = PHASE_RELAY_STREAMING
+  st.relay_busy = true
+  let head = base_codec::json_obj([
+    ("status", status),
+    ("headers", base_codec::json_obj(headers)),
+  ])
+  let head_bytes = (sql_db::stringify_json(head) + "\n").to_bytes()
+  let framed = frame_bytes(head_bytes)
+  let _ = self.outbox.send(
+    self.mux,
+    stream_id,
+    builders_core::MuxToken::Tagged(stream_id, TOK_RELAY_WRITE, 0.to_int64()),
+    "tcp.write",
+    base_codec::json_obj([("id", st.sock_id)]),
+    Some(framed),
+  )
+}
+
+fn ServeRunner::pump_relay(self : ServeRunner, stream_id : Int) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  if st.phase != PHASE_RELAY_STREAMING || st.relay_busy {
+    return
+  }
+  while true {
+    match st.pop_relay() {
+      None => return
+      Some(None) => {
+        // Stream ended cleanly (`done`): close zstd if open, send PIPE_END, then close socket.
+        match st.relay_zstd_id {
+          Some(zid) => {
+            st.relay_zstd_id = None
+            let _ = self.mux.call_async(
+              builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+              "zstd.close",
+              base_codec::json_obj([("id", zid)]),
+              None,
+            )
+          }
+          None => ()
+        }
+        if st.req_id > 0 {
+          self.req_to_stream.remove(st.req_id)
+          st.req_id = 0
+        }
+        st.phase = PHASE_WRITING_CLOSE
+        let _ = self.outbox.send(
+          self.mux,
+          stream_id,
+          builders_core::MuxToken::Tagged(stream_id, TOK_WRITE_CLOSE, 0.to_int64()),
+          "tcp.write",
+          base_codec::json_obj([("id", st.sock_id)]),
+          Some(be32(PIPE_END)),
+        )
+        return
+      }
+      Some(Some(text)) => {
+        let raw = text.to_bytes()
+        match st.relay_zstd_id {
+          Some(zid) => {
+            st.relay_busy = true
+            let _ = self.mux.call_async(
+              builders_core::MuxToken::Zstd(stream_id, ZSTD_RELAY_PUSH),
+              "zstd.push",
+              base_codec::json_obj([("id", zid)]),
+              Some(raw),
+            )
+            return
+          }
+          None => {
+            if raw.length() > 0 {
+              st.relay_busy = true
+              let framed = frame_bytes(raw)
+              let _ = self.outbox.send(
+                self.mux,
+                stream_id,
+                builders_core::MuxToken::Tagged(stream_id, TOK_RELAY_WRITE, 0.to_int64()),
+                "tcp.write",
+                base_codec::json_obj([("id", st.sock_id)]),
+                Some(framed),
+              )
+              return
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ── Visibility / Workspace Isolation (`serve.mbt:711-811`) ──
+
+fn viewer_sees_ws(ws : base_codec::Json, viewer : base_codec::Json) -> Bool {
+  match ws {
+    base_codec::Json::Str(w) => {
+      match builders_core::json_get_last(viewer, "workspace") {
+        Some(base_codec::Json::Str(vw)) => w == vw
+        _ => false
+      }
+    }
+    _ => {
+      match builders_core::json_get_last(viewer, "home") {
+        Some(base_codec::Json::Bool(false)) => false
+        _ => true
+      }
+    }
+  }
+}
+
+fn ServeRunner::unseen(
+  self : ServeRunner,
+  route : String,
+  viewer : base_codec::Json,
+  write : Bool,
+  words : base_codec::Json,
+) -> Result[Option[(Int, String)], String] {
+  let msg = match self.elsewhere(route, viewer) {
+    Ok(Some(m)) => m
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  if write {
+    match self.went(route, viewer) {
+      Ok(Some(moved)) => {
+        let said = match builders_core::json_get_last(words, "movedThere") {
+          Some(base_codec::Json::Str(w)) => w
+          _ => ""
+        }
+        let body = sql_db::stringify_json(
+          base_codec::json_obj([
+            ("error", base_codec::json_str(said)),
+            ("moved", moved),
+          ]),
+        )
+        return Ok(Some((409, body)))
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(Some((404, error_json(msg))))
+}
+
+fn ServeRunner::went(
+  self : ServeRunner,
+  route : String,
+  viewer : base_codec::Json,
+) -> Result[Option[base_codec::Json], String] {
+  let parts = split_ascii(route, 47)
+  if parts.length() < 5 || parts[1] != "admin" || parts[2] != "api" {
+    return Ok(None)
+  }
+  let id = segment(parts[4])
+  let db = match self.reader.db_now() {
+    Ok(d) => d
+    Err(e) => return Err(readops_core::read_error_message(e))
+  }
+  let keys : Array[base_codec::Json] = if parts[3] == "sessions" {
+    [base_codec::json_str(id)]
+  } else if parts[3] == "threads" {
+    if signed_digits(id) && abs_double(signed_number(id)) <= SAFE_INT_MAX {
+      let rows = match db.all(
+        "SELECT session FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid",
+        [sql_db::double_to_json(signed_number(id))],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+      let out : Array[base_codec::Json] = []
+      for i in 0..<rows.length() {
+        out.push(sql_db::row_val(rows[i], "session"))
+      }
+      out
+    } else {
+      []
+    }
+  } else {
+    []
+  }
+  for i in 0..<keys.length() {
+    let key = keys[i]
+    let rows = match db.all(
+      "SELECT h.station AS station, h.ws AS hws, h.thread AS thread, h.there AS there, s.ws AS ws FROM handed_over h JOIN sessions s ON s.key = h.session WHERE h.session = ?",
+      [key],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    if rows.length() == 0 {
+      continue
+    }
+    let r = rows[0]
+    match sql_db::row_val(r, "ws") {
+      base_codec::Json::Str(ws) => {
+        if !has_prefix(ws, "handed:") {
+          continue
+        }
+      }
+      _ => continue
+    }
+    if !viewer_sees_ws(sql_db::row_val(r, "hws"), viewer) {
+      continue
+    }
+    return Ok(
+      Some(
+        base_codec::json_obj([
+          ("session", key),
+          ("station", sql_db::row_val(r, "station")),
+          ("thread", sql_db::row_val(r, "thread")),
+          ("there", sql_db::row_val(r, "there")),
+        ]),
+      ),
+    )
+  }
+  Ok(None)
+}
+
+fn ServeRunner::elsewhere(
+  self : ServeRunner,
+  route : String,
+  viewer : base_codec::Json,
+) -> Result[Option[String], String] {
+  let parts = split_ascii(route, 47)
+  if parts.length() < 5 || parts[1] != "admin" || parts[2] != "api" {
+    return Ok(None)
+  }
+  let id = segment(parts[4])
+  let db = match self.reader.db_now() {
+    Ok(d) => d
+    Err(e) => return Err(readops_core::read_error_message(e))
+  }
+  if parts[3] == "sessions" {
+    let rows = match db.all("SELECT ws FROM sessions WHERE key = ?", [base_codec::json_str(id)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    if rows.length() > 0 && !viewer_sees_ws(sql_db::row_val(rows[0], "ws"), viewer) {
+      return Ok(Some("unknown session " + id))
+    }
+    return Ok(None)
+  }
+  if parts[3] == "threads" {
+    if !signed_digits(id) {
+      return Ok(None)
+    }
+    let n = signed_number(id)
+    if abs_double(n) > SAFE_INT_MAX {
+      return Ok(None)
+    }
+    let n_j = sql_db::double_to_json(n)
+    let found = match db.all("SELECT 1 AS x FROM threads WHERE id = ?", [n_j]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    if found.length() == 0 {
+      return Ok(None)
+    }
+    let members = match db.all(
+      "SELECT s.ws AS ws FROM thread_sessions t LEFT JOIN sessions s ON s.key = t.session WHERE t.thread = ?",
+      [n_j],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    let seen = if members.length() == 0 {
+      viewer_sees_ws(base_codec::json_null(), viewer)
+    } else {
+      let mut any_seen = false
+      for i in 0..<members.length() {
+        if viewer_sees_ws(sql_db::row_val(members[i], "ws"), viewer) {
+          any_seen = true
+          break
+        }
+      }
+      any_seen
+    }
+    if seen {
+      return Ok(None)
+    }
+    return Ok(Some("unknown thread " + id))
+  }
+  if parts[3] == "jobs" {
+    let jobs = match db.all("SELECT session_key FROM jobs WHERE id = ?", [base_codec::json_str(id)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    if jobs.length() == 0 {
+      return Ok(None)
+    }
+    let srows = match db.all("SELECT ws FROM sessions WHERE key = ?", [sql_db::row_val(jobs[0], "session_key")]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    let ws = if srows.length() > 0 { sql_db::row_val(srows[0], "ws") } else { base_codec::json_null() }
+    if viewer_sees_ws(ws, viewer) {
+      return Ok(None)
+    }
+    return Ok(Some("no job " + id))
+  }
+  Ok(None)
+}
+
+// ── Local Read Path (`serve.mbt:528-599`) ──
+
+fn ServeRunner::read_path(
+  self : ServeRunner,
+  who : Member,
+  lang : String,
+  words : base_codec::Json,
+  path : String,
+  posted : Option[(Bytes, Array[String])],
+) -> Result[Done, String] {
+  let (route, query) = split_query(path)
+  let pairs = query_pairs(query)
+  match self.unseen(route, who.viewer, false, words) {
+    Ok(Some((status, said))) => return Ok(Done::Text(status, said))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let routed = match posted {
+    Some((body, runtimes)) => changed_read(route, pairs, who.viewer, lang, body, runtimes)
+    None => route_read(route, pairs, who.viewer, lang)
+  }
+  let (op, args_raw) = match routed {
+    Route::Read(op, args) => (op, args)
+    Route::Missing(m) => return Ok(Done::Text(404, error_json(m)))
+    Route::Refuse(status, m) => return Ok(Done::Text(status, error_json(m)))
+    Route::Not => return Ok(Done::Give)
+  }
+  match args_raw {
+    base_codec::Json::Obj(_) => ()
+    _ => return Ok(Done::Give)
+  }
+  let now_j = sql_db::int64_to_json(self.now())
+  let args = if op == "changed" {
+    match builders_core::json_get_last(args_raw, "args") {
+      Some(base_codec::Json::Obj(inner)) => {
+        let updated_inner = obj_set_field(base_codec::Json::Obj(inner), "now", now_j)
+        obj_set_field(args_raw, "args", updated_inner)
+      }
+      _ => return Ok(Done::Give)
+    }
+  } else if op != "timeline" {
+    obj_set_field(args_raw, "now", now_j)
+  } else {
+    args_raw
+  }
+  let names_arr : Array[base_codec::Json] = []
+  for i in 0..<self.name_order.length() {
+    let email = self.name_order[i]
+    match self.names.get(email) {
+      Some(name) => names_arr.push(base_codec::json_arr([base_codec::json_str(email), base_codec::json_str(name)]))
+      None => ()
+    }
+  }
+  let ask = base_codec::json_obj([
+    ("op", base_codec::json_str(op)),
+    ("args", args),
+    ("lang", base_codec::json_str(lang)),
+    ("names", base_codec::json_arr(names_arr)),
+    ("processes", base_codec::json_arr([])),
+    ("clientKeys", base_codec::json_arr([])),
+  ])
+  match self.reader.read_text_for_serve(op, ask) {
+    Ok(text) => Ok(Done::Text(200, text))
+    Err(readops_core::ReadError::Refused(status, m)) => {
+      let pending = match builders_core::json_get_last(self.set, "pending") {
+        Some(base_codec::Json::Arr(all)) => {
+          let mut matched = false
+          for i in 0..<all.length() {
+            match all[i] {
+              base_codec::Json::Str(p) => {
+                if has_prefix(m, p) {
+                  matched = true
+                  break
+                }
+              }
+              _ => ()
+            }
+          }
+          matched
+        }
+        _ => true
+      }
+      if pending {
+        Ok(Done::Give)
+      } else {
+        Ok(Done::Text(status, error_json(m)))
+      }
+    }
+    Err(e) => Err(readops_core::read_error_message(e))
+  }
+}
+
+// ── Marks & Write Transactions (`serve.mbt:1122-1373`) ──
+
+fn ServeRunner::emit_changes(
+  self : ServeRunner,
+  changes : Array[base_codec::Json],
+  titled : Option[Array[base_codec::Json]] = None,
+) -> Unit {
+  let fields : Array[(String, base_codec::Json)] = [("changes", base_codec::json_arr(changes))]
+  match titled {
+    Some(ts) => {
+      if ts.length() > 0 {
+        fields.push(("titled", base_codec::json_arr(ts)))
+      }
+    }
+    None => ()
+  }
+  self.say(base_codec::json_obj(fields))
+}
+
+fn ServeRunner::mark(
+  self : ServeRunner,
+  who : Member,
+  method : String,
+  path : String,
+  body : Bytes,
+  words : base_codec::Json,
+  lang : String,
+) -> Result[Done, String] {
+  let (route, _) = split_query(path)
+  let parts = split_ascii(route, 47)
+  if parts.length() < 4 || parts[1] != "admin" || parts[2] != "api" {
+    return Ok(Done::Give)
+  }
+  let n = parts.length()
+  let what = if method == "PUT" && n == 6 && parts[3] == "threads" &&
+  (parts[5] == "read" || parts[5] == "hidden" || parts[5] == "muted" || parts[5] == "keep" || parts[5] == "title" || parts[5] == "dismissed") {
+    parts[5]
+  } else if method == "DELETE" && n == 6 && parts[3] == "threads" && parts[5] == "keep" {
+    "unkeep"
+  } else if (method == "PUT" || method == "DELETE") && n == 6 && parts[3] == "sessions" && parts[5] == "pin" {
+    "pin"
+  } else if method == "POST" && n == 6 && parts[3] == "sessions" && parts[5] == "title" {
+    "named"
+  } else {
+    return Ok(Done::Give)
+  }
+  let viewer = who.viewer
+  let own = what == "read" || what == "hidden" || what == "muted" || what == "dismissed"
+  if opt_is_json_str(builders_core::json_get_last(viewer, "role"), "viewer") && !own {
+    return Ok(Done::Text(403, error_json("read-only members cannot change this station")))
+  }
+  match self.unseen(route, viewer, true, words) {
+    Ok(Some((status, said))) => return Ok(Done::Text(status, said))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let email = match builders_core::json_get_last(viewer, "email") {
+    Some(base_codec::Json::Str(e)) => e
+    _ => return Ok(Done::Give)
+  }
+  let input = if body.length() == 0 {
+    base_codec::json_obj([])
+  } else {
+    match parse_json_strict(sql_db::decode_utf8_lossy_bytes(body)) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => base_codec::Json::Obj(m)
+      base_codec::JsonParseResult::Ok(_) => base_codec::json_obj([])
+      base_codec::JsonParseResult::Err(_) => return Ok(Done::Text(400, error_json("invalid JSON")))
+    }
+  }
+  let db = match self.reader.db_now() {
+    Ok(d) => d
+    Err(e) => return Err(readops_core::read_error_message(e))
+  }
+  let now = sql_db::int64_to_json(self.now())
+  let id = segment(parts[4])
+  let word = fn(w : String) -> String {
+    match builders_core::json_get_last(words, w) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  // 1. POST /sessions/:key/title
+  if what == "named" {
+    let exists = match db.all("SELECT 1 AS x FROM sessions WHERE key = ?", [base_codec::json_str(id)]) {
+      Ok(rs) => rs.length() > 0
+      Err(e) => return Err(e.message)
+    }
+    if !exists {
+      return Ok(Done::Text(404, error_json("unknown session " + id)))
+    }
+    let anchor = match sql_db::conversation_of(db, id) {
+      Ok(a) => a
+      Err(e) => return Err(e.message)
+    }
+    let name = title_of(input)
+    let home = match db.tx_err(
+      fn(tx : sql_db::Db) -> Result[base_codec::Json, String] {
+        match tx.run("UPDATE sessions SET title = ?1 WHERE key = ?2", [name, base_codec::json_str(anchor)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+        match tx.all("SELECT id FROM threads WHERE home = ? ORDER BY id LIMIT 1", [base_codec::json_str(anchor)]) {
+          Ok(rs) => {
+            if rs.length() > 0 {
+              let home_id = sql_db::row_val(rs[0], "id")
+              match tx.run("UPDATE threads SET title = ?1 WHERE id = ?2", [name, home_id]) {
+                Ok(_) => Ok(home_id)
+                Err(e) => Err(e.message)
+              }
+            } else {
+              Ok(base_codec::json_null())
+            }
+          }
+          Err(e) => Err(e.message)
+        }
+      },
+      fn(e : sql_db::SqlError) -> String { e.message },
+    ) {
+      Ok(h) => h
+      Err(e) => return Err(e)
+    }
+    let changes : Array[base_codec::Json] = [
+      base_codec::json_obj([
+        ("type", base_codec::json_str("session")),
+        ("key", base_codec::json_str(anchor)),
+      ]),
+    ]
+    if is_json_null(home) {
+      self.emit_changes(changes)
+    } else {
+      changes.push(
+        base_codec::json_obj([
+          ("type", base_codec::json_str("thread")),
+          ("id", home),
+          ("entries", base_codec::json_arr([])),
+        ]),
+      )
+      self.emit_changes(changes, titled=Some([home]))
+    }
+    return Ok(Done::Text(200, sql_db::stringify_json(base_codec::json_obj([("ok", base_codec::json_bool(true))]))))
+  }
+  // 2. PUT|DELETE /sessions/:key/pin
+  if what == "pin" {
+    let exists = match db.all("SELECT 1 AS x FROM sessions WHERE key = ?", [base_codec::json_str(id)]) {
+      Ok(rs) => rs.length() > 0
+      Err(e) => return Err(e.message)
+    }
+    if !exists {
+      return Ok(Done::Text(404, error_json("unknown session " + id)))
+    }
+    let pinned = method == "PUT"
+    let anchor = match sql_db::conversation_of(db, id) {
+      Ok(a) => a
+      Err(e) => return Err(e.message)
+    }
+    let key = base_codec::json_str(anchor)
+    let email_j = base_codec::json_str(email)
+    let at = match db.tx_err(
+      fn(tx : sql_db::Db) -> Result[base_codec::Json, String] {
+        if pinned {
+          match tx.run("INSERT OR IGNORE INTO pins (viewer, session, at) VALUES (?, ?, ?)", [email_j, key, now]) {
+            Ok(_) => ()
+            Err(e) => return Err(e.message)
+          }
+          match tx.all("SELECT at FROM pins WHERE viewer = ? AND session = ?", [email_j, key]) {
+            Ok(rs) => Ok(if rs.length() > 0 { sql_db::row_val(rs[0], "at") } else { base_codec::json_null() })
+            Err(e) => Err(e.message)
+          }
+        } else {
+          let targets : Array[String] = [anchor]
+          if id != anchor {
+            targets.push(id)
+          }
+          let mems = match sql_db::members_of(tx, anchor) {
+            Ok(ms) => ms
+            Err(e) => return Err(e.message)
+          }
+          for i in 0..<mems.length() {
+            let m = mems[i]
+            let mut seen = false
+            for j in 0..<targets.length() {
+              if targets[j] == m {
+                seen = true
+                break
+              }
+            }
+            if !seen {
+              targets.push(m)
+            }
+          }
+          for i in 0..<targets.length() {
+            match tx.run("DELETE FROM pins WHERE viewer = ? AND session = ?", [email_j, base_codec::json_str(targets[i])]) {
+              Ok(_) => ()
+              Err(e) => return Err(e.message)
+            }
+          }
+          Ok(base_codec::json_null())
+        }
+      },
+      fn(e : sql_db::SqlError) -> String { e.message },
+    ) {
+      Ok(a) => a
+      Err(e) => return Err(e)
+    }
+    self.emit_changes([
+      base_codec::json_obj([
+        ("type", base_codec::json_str("pins")),
+        ("viewer", email_j),
+        ("session", key),
+        ("at", at),
+      ]),
+    ])
+    return Ok(
+      Done::Text(
+        200,
+        sql_db::stringify_json(
+          base_codec::json_obj([
+            ("session", key),
+            ("pinned", base_codec::json_bool(pinned)),
+          ]),
+        ),
+      ),
+    )
+  }
+  // 3. Thread marks
+  if !signed_digits(id) || abs_double(signed_number(id)) > SAFE_INT_MAX {
+    return Ok(Done::Text(404, error_json("unknown thread " + id)))
+  }
+  let thread = sql_db::double_to_json(signed_number(id))
+  let found_rows = match db.all("SELECT surface FROM threads WHERE id = ?", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  if found_rows.length() == 0 {
+    return Ok(Done::Text(404, error_json("unknown thread " + id)))
+  }
+  let found = found_rows[0]
+  let v = base_codec::json_str(email)
+  if what == "title" {
+    if !is_json_str(sql_db::row_val(found, "surface"), "chat") {
+      return Ok(Done::Text(400, error_json(word("renameOnlyStillfail"))))
+    }
+    let name = title_of(input)
+    match db.tx_err(
+      fn(tx : sql_db::Db) -> Result[Unit, String] {
+        match tx.run("UPDATE threads SET title = ?1 WHERE id = ?2", [name, thread]) {
+          Ok(_) => Ok(())
+          Err(e) => Err(e.message)
+        }
+      },
+      fn(e : sql_db::SqlError) -> String { e.message },
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.emit_changes(
+      [
+        base_codec::json_obj([
+          ("type", base_codec::json_str("thread")),
+          ("id", thread),
+          ("entries", base_codec::json_arr([])),
+        ]),
+      ],
+      titled=Some([thread]),
+    )
+    return self.read_path(who, lang, words, "/admin/api/threads/" + sql_db::stringify_json(thread), None)
+  }
+  if what == "dismissed" {
+    let n_val = match builders_core::json_get_last(input, "n") {
+      Some(base_codec::Json::Num(num, _)) => {
+        if num >= 1.0 && js_json::is_integer(num) {
+          sql_db::double_to_json(num)
+        } else {
+          return Ok(Done::Text(400, error_json(word("badN"))))
+        }
+      }
+      _ => return Ok(Done::Text(400, error_json(word("badN"))))
+    }
+    let asked = match db.all(
+      "SELECT card, options, author_kind FROM entries WHERE thread = ? AND n >= ? AND n <= ? ORDER BY n",
+      [thread, n_val, n_val],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    let waiting = if asked.length() > 0 {
+      let e = asked[0]
+      let is_agent = is_json_str(sql_db::row_val(e, "author_kind"), "agent")
+      let has_card = match parsed_column(e.get("card")) {
+        Some(base_codec::Json::Null) => false
+        None => false
+        Some(_) => true
+      }
+      let has_opts = match parsed_column(e.get("options")) {
+        Some(_) => true
+        None => false
+      }
+      is_agent || has_card || has_opts
+    } else {
+      false
+    }
+    if !waiting {
+      return Ok(Done::Text(404, error_json(word("nothingWaiting"))))
+    }
+    match db.tx_err(
+      fn(tx : sql_db::Db) -> Result[Unit, String] {
+        match tx.run("INSERT OR IGNORE INTO dismissed (viewer, thread, n, at) VALUES (?, ?, ?, ?)", [v, thread, n_val, now]) {
+          Ok(_) => Ok(())
+          Err(e) => Err(e.message)
+        }
+      },
+      fn(e : sql_db::SqlError) -> String { e.message },
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let card_obj = base_codec::json_obj([("thread", thread), ("n", n_val)])
+    self.emit_changes([
+      base_codec::json_obj([
+        ("type", base_codec::json_str("dismissed")),
+        ("viewer", v),
+        ("card", card_obj),
+      ]),
+    ])
+    return Ok(Done::Text(200, sql_db::stringify_json(base_codec::json_obj([("dismissed", card_obj)]))))
+  }
+  if what == "read" {
+    let n_val = match builders_core::json_get_last(input, "n") {
+      Some(base_codec::Json::Num(num, _)) => {
+        if num >= 0.0 && js_json::is_integer(num) {
+          sql_db::double_to_json(num)
+        } else {
+          return Ok(Done::Text(400, error_json(word("badN"))))
+        }
+      }
+      _ => return Ok(Done::Text(400, error_json(word("badN"))))
+    }
+    let at = match db.tx_err(
+      fn(tx : sql_db::Db) -> Result[base_codec::Json, String] {
+        match tx.run(
+          "INSERT INTO reads (viewer, thread, n, at) VALUES (?, ?, ?, ?) ON CONFLICT (viewer, thread) DO UPDATE SET n = MAX(n, excluded.n), at = excluded.at",
+          [v, thread, n_val, now],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+        match tx.all("SELECT n FROM reads WHERE viewer = ? AND thread = ?", [v, thread]) {
+          Ok(rs) => Ok(if rs.length() > 0 { sql_db::row_val(rs[0], "n") } else { base_codec::json_int(0) })
+          Err(e) => Err(e.message)
+        }
+      },
+      fn(e : sql_db::SqlError) -> String { e.message },
+    ) {
+      Ok(a) => a
+      Err(e) => return Err(e)
+    }
+    self.emit_changes([
+      base_codec::json_obj([
+        ("type", base_codec::json_str("read")),
+        ("viewer", v),
+        ("thread", thread),
+        ("n", at),
+      ]),
+    ])
+    return Ok(
+      Done::Text(
+        200,
+        sql_db::stringify_json(
+          base_codec::json_obj([
+            ("viewer", v),
+            ("thread", thread),
+            ("n", at),
+          ]),
+        ),
+      ),
+    )
+  }
+  if what == "hidden" || what == "muted" {
+    let on = match builders_core::json_get_last(input, what) {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => return Ok(Done::Text(400, error_json(what + " must be a boolean")))
+    }
+    let table = if what == "hidden" { "hidden_chats" } else { "muted_chats" }
+    let as_kept = if what == "muted" { base_codec::json_str(jscase::lower(email)) } else { v }
+    match db.tx_err(
+      fn(tx : sql_db::Db) -> Result[Unit, String] {
+        let sql = if on {
+          "INSERT OR IGNORE INTO " + table + " (viewer, thread) VALUES (?, ?)"
+        } else {
+          "DELETE FROM " + table + " WHERE viewer = ? AND thread = ?"
+        }
+        match tx.run(sql, [as_kept, thread]) {
+          Ok(_) => Ok(())
+          Err(e) => Err(e.message)
+        }
+      },
+      fn(e : sql_db::SqlError) -> String { e.message },
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.emit_changes([
+      base_codec::json_obj([
+        ("type", base_codec::json_str(what)),
+        ("viewer", v),
+        ("thread", thread),
+        (what, base_codec::json_bool(on)),
+      ]),
+    ])
+    return Ok(Done::Text(200, sql_db::stringify_json(base_codec::json_obj([(what, base_codec::json_bool(on))]))))
+  }
+  // keep / unkeep
+  let kept = what == "keep"
+  match db.tx_err(
+    fn(tx : sql_db::Db) -> Result[Unit, String] {
+      let sql = if kept {
+        "INSERT OR IGNORE INTO kept_chats (viewer, thread) VALUES (?, ?)"
+      } else {
+        "DELETE FROM kept_chats WHERE viewer = ? AND thread = ?"
+      }
+      match tx.run(sql, [v, thread]) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    fn(e : sql_db::SqlError) -> String { e.message },
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  self.emit_changes([
+    base_codec::json_obj([
+      ("type", base_codec::json_str("dismissed")),
+      ("viewer", v),
+      ("kept", base_codec::json_obj([("thread", thread), ("kept", base_codec::json_bool(kept))])),
+    ]),
+  ])
+  Ok(Done::Text(200, sql_db::stringify_json(base_codec::json_obj([("kept", base_codec::json_bool(kept))]))))
+}
+
+// ── Person's Message (`POST /threads/:id/messages`) (`serve.mbt:1426-1733`) ──
+
+fn ServeRunner::pending_card(
+  self : ServeRunner,
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[PendingCard, String] {
+  let _ = self
+  let scopes = match db.all("SELECT phase FROM card_post_scopes WHERE thread = ?", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  let ready_phase = if scopes.length() > 0 {
+    match sql_db::row_val(scopes[0], "phase") {
+      base_codec::Json::Num(p, _) => p == 2.0
+      _ => false
+    }
+  } else {
+    false
+  }
+  if !ready_phase {
+    return Ok(PendingCard::NotReady)
+  }
+  let posts = match db.all("SELECT n FROM card_posts WHERE thread=? ORDER BY n DESC LIMIT 1", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  if posts.length() == 0 {
+    return Ok(PendingCard::Ready(None))
+  }
+  let n_val = sql_db::row_val(posts[0], "n")
+  match n_val {
+    base_codec::Json::Num(_, _) => ()
+    _ => return Ok(PendingCard::Ready(None))
+  }
+  let answered = match db.all(
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1",
+    [thread, n_val],
+  ) {
+    Ok(rs) => rs.length() > 0
+    Err(e) => return Err(e.message)
+  }
+  let closed = match db.all("SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n_val]) {
+    Ok(rs) => rs.length() > 0
+    Err(e) => return Err(e.message)
+  }
+  if answered || closed {
+    return Ok(PendingCard::Ready(None))
+  }
+  let erows = match db.all(
+    "SELECT ts, card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'",
+    [thread, n_val],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  if erows.length() == 0 {
+    return Ok(PendingCard::Ready(None))
+  }
+  let row = erows[0]
+  let parse_col_jv = fn(v : Option[base_codec::Json]) -> Option[js_json::JValue] {
+    match v {
+      Some(base_codec::Json::Str(t)) => {
+        match js_json::parse(t) {
+          Ok(jv) => Some(jv)
+          Err(_) => None
+        }
+      }
+      _ => None
+    }
+  }
+  let card_opt : Option[js_json::JValue] = match parse_col_jv(row.get("card")) {
+    Some(c) => Some(c)
+    None => {
+      match parse_col_jv(row.get("options")) {
+        Some(o) => Some(
+          js_json::JValue::Obj([
+            (js_json::utf16_units("type"), js_json::JValue::Str(js_json::utf16_units("options"))),
+            (js_json::utf16_units("options"), o),
+          ]),
+        )
+        None => None
+      }
+    }
+  }
+  let card = match card_opt {
+    Some(c) => c
+    None => return Ok(PendingCard::Ready(None))
+  }
+  let ts = match sql_db::row_val(row, "ts") {
+    base_codec::Json::Str(t) => t
+    _ => ""
+  }
+  Ok(PendingCard::Ready(Some((n_val, ts, card))))
+}
+
+fn ServeRunner::prepare_say(
+  self : ServeRunner,
+  who : Member,
+  raw : String,
+  headers : base_codec::Json,
+  body : Bytes,
+  words : base_codec::Json,
+  lang : String,
+) -> Result[SayPrep, String] {
+  let word = fn(k : String) -> String {
+    match builders_core::json_get_last(words, k) {
+      Some(base_codec::Json::Str(w)) => w
+      _ => ""
+    }
+  }
+  let viewer = who.viewer
+  if opt_is_json_str(builders_core::json_get_last(viewer, "role"), "viewer") {
+    return Ok(SayPrep::Immediate(403, error_json("read-only members cannot change this station")))
+  }
+  let route = "/admin/api/threads/" + raw + "/messages"
+  match self.unseen(route, viewer, true, words) {
+    Ok(Some((status, said))) => return Ok(SayPrep::Immediate(status, said))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let db = match self.reader.db_now() {
+    Ok(d) => d
+    Err(e) => return Err(readops_core::read_error_message(e))
+  }
+  let id = segment(raw)
+  if !signed_digits(id) || abs_double(signed_number(id)) > SAFE_INT_MAX {
+    return Ok(SayPrep::Immediate(404, error_json("unknown thread " + id)))
+  }
+  let thread = sql_db::double_to_json(signed_number(id))
+  let found = match db.all("SELECT surface, hidden_at, home FROM threads WHERE id = ?", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  if found.length() == 0 {
+    return Ok(SayPrep::Immediate(404, error_json("unknown thread " + id)))
+  }
+  let t = found[0]
+  if !is_json_str(sql_db::row_val(t, "surface"), "chat") {
+    return Ok(SayPrep::Immediate(400, error_json(word("postOnlyStillfail"))))
+  }
+  if body.length() > 1000000 {
+    return Ok(SayPrep::Immediate(413, error_json("request too large")))
+  }
+  let body_str = sql_db::decode_utf8_lossy_bytes(body)
+  let input = if body.length() == 0 {
+    base_codec::json_obj([])
+  } else {
+    match parse_json_strict(body_str) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => base_codec::Json::Obj(m)
+      base_codec::JsonParseResult::Ok(_) => base_codec::json_obj([])
+      base_codec::JsonParseResult::Err(_) => return Ok(SayPrep::Immediate(400, error_json("invalid JSON")))
+    }
+  }
+  let is_listed = fn(k : String) -> Bool {
+    match builders_core::json_get_last(input, k) {
+      None => false
+      Some(base_codec::Json::Null) => false
+      Some(base_codec::Json::Arr(a)) => a.length() > 0
+      Some(_) => true
+    }
+  }
+  if is_listed("attachments") || is_listed("cc") {
+    return Ok(SayPrep::Fallback)
+  }
+  let js = if body.length() == 0 {
+    js_json::JValue::Obj([])
+  } else {
+    match js_json::parse(body_str) {
+      Ok(js_json::JValue::Obj(entries)) => js_json::JValue::Obj(entries)
+      _ => js_json::JValue::Obj([])
+    }
+  }
+  let said = match jval_get(js, "text") {
+    None => ""
+    Some(js_json::JValue::Null) => ""
+    Some(js_json::JValue::Str(u)) => jscase::trim(js_json::sanitize_str(u))
+    Some(v) => jscase::trim(js_json::stringify(v))
+  }
+  let given_quotes = jval_get(js, "quotes")
+  let quotes = quotes_of(given_quotes)
+  if said == "" && quotes.length() == 0 {
+    return Ok(SayPrep::Immediate(400, error_json(word("emptyMessage"))))
+  }
+  let original : Array[js_json::JValue] = match given_quotes {
+    Some(js_json::JValue::Arr(all)) => all
+    _ => []
+  }
+  let mut named = false
+  for i in 0..<original.length() {
+    match original[i] {
+      js_json::JValue::Obj(_) => {
+        match jval_get(original[i], "ts") {
+          Some(js_json::JValue::Str(_)) => {
+            named = true
+            break
+          }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  let mut answered : Option[base_codec::Json] = None
+  if named {
+    match self.pending_card(db, thread) {
+      Ok(PendingCard::Ready(Some((asked_n, at_ts, card)))) => {
+        let options : Array[js_json::JValue] = match jval_get(card, "options") {
+          Some(js_json::JValue::Arr(o)) => o
+          _ => []
+        }
+        let mut selected = false
+        for i in 0..<options.length() {
+          let o = options[i]
+          if is_jval_str(jval_get(o, "label"), said) && is_jval_str(jval_get(o, "action"), "close") {
+            selected = true
+            break
+          }
+        }
+        let mut quoted = false
+        for i in 0..<original.length() {
+          if is_jval_str(jval_get(original[i], "ts"), at_ts) {
+            quoted = true
+            break
+          }
+        }
+        if selected && quoted {
+          return Ok(SayPrep::Immediate(409, error_json(word("updateClientForOption"))))
+        }
+        if quoted {
+          answered = Some(asked_n)
+        }
+      }
+      Ok(PendingCard::Ready(None)) => ()
+      Ok(PendingCard::NotReady) => return Ok(SayPrep::Fallback)
+      Err(e) => return Err(e)
+    }
+  }
+  let hidden_out = match sql_db::row_val(t, "hidden_at") {
+    base_codec::Json::Num(_, _) => true
+    _ => false
+  }
+  let archived_out = if hidden_out {
+    true
+  } else {
+    match db.all(
+      "SELECT 1 AS x FROM thread_sessions ts JOIN sessions s ON s.key = ts.session WHERE ts.thread = ? AND s.archived_at IS NOT NULL LIMIT 1",
+      [thread],
+    ) {
+      Ok(rs) => rs.length() > 0
+      Err(e) => return Err(e.message)
+    }
+  }
+  if archived_out {
+    return Ok(SayPrep::Fallback)
+  }
+  let client = client_of(js)
+  let email = field_or_null(viewer, "email")
+  Ok(
+    SayPrep::NeedClaim(
+      SayPending::{
+        thread: thread,
+        raw: raw,
+        headers: headers,
+        lang: lang,
+        said: said,
+        quotes: quotes,
+        client: client,
+        answered: answered,
+        email: email,
+      },
+    ),
+  )
+}
+
+fn ServeRunner::finish_say_claim(
+  self : ServeRunner,
+  stream_id : Int,
+  req_id : Int,
+  claimed : base_codec::Json,
+) -> Unit {
+  let st = match self.streams.get(stream_id) {
+    Some(s) => s
+    None => return
+  }
+  let pending = match st.say_pending {
+    Some(p) => {
+      st.say_pending = None
+      p
+    }
+    None => {
+      self.close_stream(stream_id)
+      return
+    }
+  }
+  let check_given = fn(k : String) -> Option[(base_codec::Json, Bytes)] {
+    match builders_core::json_get_last(claimed, k) {
+      Some(base_codec::Json::Obj(a)) => {
+        let obj = base_codec::Json::Obj(a)
+        let h = match builders_core::json_get_last(obj, "headers") {
+          Some(base_codec::Json::Obj(hf)) => base_codec::Json::Obj(hf)
+          _ => base_codec::json_obj([])
+        }
+        let text = match builders_core::json_get_last(obj, "text") {
+          Some(base_codec::Json::Str(t)) => t
+          _ => ""
+        }
+        let status = match builders_core::json_get_last(obj, "status") {
+          Some(s) => s
+          None => base_codec::json_int(500)
+        }
+        Some((base_codec::json_obj([("status", status), ("headers", h)]), text.to_bytes()))
+      }
+      _ => None
+    }
+  }
+  match check_given("kept") {
+    Some((head, body)) => {
+      self.send_framed_and_close(stream_id, head, body)
+      return
+    }
+    None => ()
+  }
+  match check_given("refused") {
+    Some((head, body)) => {
+      self.send_framed_and_close(stream_id, head, body)
+      return
+    }
+    None => ()
+  }
+  let ts_str = match builders_core::json_get_last(claimed, "ts") {
+    Some(base_codec::Json::Str(t)) => t
+    _ => {
+      self.send_raw_json_and_close(stream_id, 500, error_json("no timestamp"))
+      return
+    }
+  }
+  let ts_j = base_codec::json_str(ts_str)
+  let at_ms = match ts_ms(ts_str) {
+    Some(ms) => ms
+    None => self.now()
+  }
+  let at_j = sql_db::int64_to_json(at_ms)
+  let kept_quotes = if pending.quotes.length() == 0 {
+    base_codec::json_null()
+  } else {
+    base_codec::json_str(js_json::stringify(js_json::JValue::Arr(pending.quotes)))
+  }
+  let db = match self.reader.db_now() {
+    Ok(d) => d
+    Err(e) => {
+      let m = readops_core::read_error_message(e)
+      self.say(base_codec::json_obj([("said", base_codec::json_null()), ("of", base_codec::json_int(req_id))]))
+      self.send_raw_json_and_close(stream_id, 500, error_json(m))
+      return
+    }
+  }
+  let last_known_sql : Option[String] = match builders_core::json_get_last(self.set, "lastKnown") {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+  let written = db.tx_err(
+    fn(tx : sql_db::Db) -> Result[base_codec::Json, String] {
+      match tx.all("SELECT n FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'", [pending.thread, ts_j]) {
+        Ok(rs) => {
+          if rs.length() > 0 {
+            return Err("message timestamp already used; retry the write")
+          }
+        }
+        Err(e) => return Err(e.message)
+      }
+      let last : Double = match tx.all("SELECT MAX(n) AS n FROM entries WHERE thread = ?", [pending.thread]) {
+        Ok(rs) => {
+          let mut found_last : Option[Double] = None
+          if rs.length() > 0 {
+            match sql_db::row_val(rs[0], "n") {
+              base_codec::Json::Num(k, _) => found_last = Some(k)
+              _ => ()
+            }
+          }
+          match found_last {
+            Some(k) => k
+            None => {
+              match last_known_sql {
+                Some(sql) => {
+                  match tx.all(sql, [pending.thread]) {
+                    Ok(lrs) => {
+                      if lrs.length() > 0 {
+                        match sql_db::row_val(lrs[0], "n") {
+                          base_codec::Json::Num(k, _) => k
+                          _ => 0.0
+                        }
+                      } else {
+                        0.0
+                      }
+                    }
+                    Err(e) => return Err(e.message)
+                  }
+                }
+                None => 0.0
+              }
+            }
+          }
+        }
+        Err(e) => return Err(e.message)
+      }
+      let k = sql_db::double_to_json(last + 1.0)
+      match tx.run(
+        "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change) VALUES (?, ?, 'message', NULL, ?, 'person', ?, ?, NULL, ?, NULL, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, NULL)",
+        [
+          pending.thread,
+          k,
+          ts_j,
+          pending.email,
+          base_codec::json_str(pending.said),
+          kept_quotes,
+          pending.client,
+          at_j,
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match tx.all_ordered(
+        "SELECT thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change FROM entries WHERE thread = ? AND n = ?",
+        [pending.thread, k],
+      ) {
+        Ok(rs) => {
+          if rs.length() > 0 {
+            Ok(base_codec::json_obj(rs[0]))
+          } else {
+            Err("the message was not written")
+          }
+        }
+        Err(e) => Err(e.message)
+      }
+    },
+    fn(e : sql_db::SqlError) -> String { e.message },
+  )
+  match written {
+    Ok(row) => {
+      let k = field_or_null(row, "n")
+      let answer = sql_db::stringify_json(base_codec::json_obj([("n", k)]))
+      self.say(
+        base_codec::json_obj([
+          (
+            "said",
+            base_codec::json_obj([
+              ("thread", pending.thread),
+              ("n", k),
+              ("text", base_codec::json_str(pending.said)),
+              ("row", row),
+            ]),
+          ),
+          ("of", base_codec::json_int(req_id)),
+          (
+            "answer",
+            base_codec::json_obj([
+              ("status", base_codec::json_int(200)),
+              ("headers", base_codec::json_obj([("content-type", base_codec::json_str("application/json"))])),
+              ("text", base_codec::json_str(answer)),
+            ]),
+          ),
+        ]),
+      )
+      match (pending.answered, pending.email) {
+        (Some(card_n), base_codec::Json::Str(e)) => {
+          let v = base_codec::json_str(e)
+          let now = sql_db::int64_to_json(self.now())
+          match db.tx_err(
+            fn(tx : sql_db::Db) -> Result[base_codec::Json, String] {
+              match tx.run(
+                "INSERT INTO reads (viewer, thread, n, at) VALUES (?, ?, ?, ?) ON CONFLICT (viewer, thread) DO UPDATE SET n = MAX(n, excluded.n), at = excluded.at",
+                [v, pending.thread, card_n, now],
+              ) {
+                Ok(_) => ()
+                Err(err) => return Err(err.message)
+              }
+              match tx.all("SELECT n FROM reads WHERE viewer = ? AND thread = ?", [v, pending.thread]) {
+                Ok(rs) => Ok(if rs.length() > 0 { sql_db::row_val(rs[0], "n") } else { base_codec::json_int(0) })
+                Err(err) => Err(err.message)
+              }
+            },
+            fn(err : sql_db::SqlError) -> String { err.message },
+          ) {
+            Ok(read_n) => {
+              self.emit_changes([
+                base_codec::json_obj([
+                  ("type", base_codec::json_str("read")),
+                  ("viewer", v),
+                  ("thread", pending.thread),
+                  ("n", read_n),
+                ]),
+              ])
+            }
+            Err(err) => {
+              (self.note)("serve: a request failed: " + err)
+              self.send_raw_json_and_close(stream_id, 500, "{\"error\":\"read failed\"}")
+              return
+            }
+          }
+        }
+        _ => ()
+      }
+      self.send_whole_and_close(stream_id, pending.headers, 200, answer.to_bytes())
+    }
+    Err(m) => {
+      self.say(base_codec::json_obj([("said", base_codec::json_null()), ("of", base_codec::json_int(req_id))]))
+      self.send_raw_json_and_close(stream_id, 500, error_json(m))
+    }
+  }
+}
+
+/// Production entrypoint for `stillfail-pion --data <dir> [--sep <sep>] --serve <socket>`.
+pub fn run_serve(data : String, sep : String, socket : String) -> Int {
+  let shell_dir = data + "/shell"
+  if !host_shim::start(shell_dir, true) {
+    let _ = host_shim::write_stderr_line("serve: shell start failed")
+    return 1
+  }
+  let mux = builders_core::ShellMux::host(start_stdin=true)
+  let client = builders_core::ShellClient::new()
+  let reader = reader_data::Reader::new(client, data, sep)
+  let runner = ServeRunner::new(
+    mux,
+    reader,
+    socket,
+    fn(msg : String) -> Unit {
+      let _ = host_shim::write_stderr_line(msg)
+    },
+  )
+  runner.start()
+  while runner.is_running() {
+    let _ = runner.step(5000.to_int64())
+  }
+  let code = runner.exit_code()
+  reader.close()
+  host_shim::stop()
+  code
+}

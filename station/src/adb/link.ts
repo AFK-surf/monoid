@@ -906,8 +906,6 @@ export async function run(adb: string, args: string[], timeout: number | null): 
     const child = spawn(r.file, r.args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments });
     const out: Buffer[] = [];
     const err: Buffer[] = [];
-    child.stdout.on("data", (b) => out.push(b));
-    child.stderr.on("data", (b) => err.push(b));
     const timer =
       timeout === null
         ? () => {}
@@ -923,6 +921,9 @@ export async function run(adb: string, args: string[], timeout: number | null): 
       timer();
       resolve((Buffer.concat(out).toString() + Buffer.concat(err).toString()).trim());
     });
+    // (after its error is heard: one not started (ENFILE, EMFILE) has no streams, and its error told to none ends the station)
+    child.stdout?.on("data", (b) => out.push(b));
+    child.stderr?.on("data", (b) => err.push(b));
   });
 }
 

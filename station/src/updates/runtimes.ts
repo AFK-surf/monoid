@@ -319,11 +319,11 @@ async function runBoth(program: string, args: string[], env: Env, timeoutMs: num
         }),
       );
     };
-    const ends = Promise.all([take(child.stdout!, 0), take(child.stderr!, 1)]);
     const timer = wall.after(timeoutMs, () => {
       endCommand(child, "SIGKILL");
       reject(new NotFinished(tr(lang, "station.updates.notFinished", { program })));
     });
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", (e) => {
       timer();
       reject(e);
@@ -332,5 +332,6 @@ async function runBoth(program: string, args: string[], env: Env, timeoutMs: num
       timer();
       void ends.then(() => resolve([code === 0, said, whole[0]!, whole[1]!, code]));
     });
+    const ends = Promise.all([child.stdout ? take(child.stdout, 0) : undefined, child.stderr ? take(child.stderr, 1) : undefined]);
   });
 }

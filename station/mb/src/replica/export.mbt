@@ -954,6 +954,21 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
   let cursor_letters = @string.parse_double(self.meta("letters").unwrap_or("0")) catch { _ => 0.0 }
   let has_entry_proposals = self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'", []).length() > 0
   let has_proposal_outcomes = self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'", []).length() > 0
+  // A session's own rows, but for its threads (which `session_rows` enters).
+  let session_own = (ws : String, key : String) => {
+    for r in all("SELECT * FROM runtime_sessions WHERE session_key = ?", [s(key)]) {
+      changed(ws, "runtime_sessions", r)
+    }
+    for r in all("SELECT rowid AS _rowid, * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 2", [s(key)]) {
+      changed(ws, "turns", r)
+    }
+    for r in all("SELECT * FROM opened_chats WHERE child_station = '' AND child = ?", [s(key)]) {
+      changed(ws, "opened_chats", r)
+    }
+    for r in all(marks_of("pins", "session"), [s(key)]) {
+      changed(ws, "pins", r)
+    }
+  }
   let thread_rows = (ws : String, thread : Double) => {
     match all("SELECT * FROM threads WHERE id = ?", [Json::number(thread)]) {
       [t, ..] => changed(ws, "threads", t)
@@ -961,6 +976,17 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     }
     for r in all("SELECT * FROM thread_sessions WHERE thread = ?", [Json::number(thread)]) {
       changed(ws, "thread_sessions", r)
+      // Its session too: a chat whose entries come before the session is told of (a pass between its commit and
+      // the told note) is otherwise copied without its `sessions` row.
+      let key = text_of(get(r, "session")).unwrap_or("")
+      match all("SELECT * FROM sessions WHERE key = ?", [s(key)]) {
+        [sess, ..] =>
+          if ws_of_session(get(sess, "ws")) == ws {
+            changed(ws, "sessions", sess)
+            session_own(ws, key)
+          }
+        _ => ()
+      }
     }
     for r in all("SELECT * FROM closed_cards WHERE thread = ?", [Json::number(thread)]) {
       changed(ws, "closed_cards", r)
@@ -1054,18 +1080,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
       changed(ws, "thread_sessions", r)
       enter(num(get(r, "thread")))
     }
-    for r in all("SELECT * FROM runtime_sessions WHERE session_key = ?", [s(key)]) {
-      changed(ws, "runtime_sessions", r)
-    }
-    for r in all("SELECT rowid AS _rowid, * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 2", [s(key)]) {
-      changed(ws, "turns", r)
-    }
-    for r in all("SELECT * FROM opened_chats WHERE child_station = '' AND child = ?", [s(key)]) {
-      changed(ws, "opened_chats", r)
-    }
-    for r in all(marks_of("pins", "session"), [s(key)]) {
-      changed(ws, "pins", r)
-    }
+    session_own(ws, key)
   }
   let mut more = false
   let want_transcripts = get(told, "transcripts") is Some(Bool(true))

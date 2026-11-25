@@ -121,6 +121,7 @@ fn advertised_modes() -> Array[String] {
     "forward",
     "mesh",
     "data",
+    "serve",
   ]
 }
 
@@ -1533,7 +1534,15 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
       0
     }
   }
-  let total = c_core + c_chats + c_local + c_views + c_usage + c_data
+  let c_serve = match reader_serve::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("reader_serve selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let total = c_core + c_chats + c_local + c_views + c_usage + c_data + c_serve
   io_println(
     world,
     "{\"ok\":true,\"readops_core\":" +
@@ -1548,6 +1557,8 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
     c_usage.to_string() +
     ",\"reader_data\":" +
     c_data.to_string() +
+    ",\"reader_serve\":" +
+    c_serve.to_string() +
     ",\"total\":" +
     total.to_string() +
     "}",
@@ -1873,14 +1884,23 @@ fn main(world : World) -> Unit {
       None => {
         match flag_value(argv, "--data") {
           Some(data_dir) => {
-            if flag_present(argv, "--sessions") || flag_present(argv, "--serve") {
+            if flag_present(argv, "--sessions") {
               usage_exit()
             } else {
               let sep = match flag_value(argv, "--sep") {
                 Some(s) => s
                 None => "/"
               }
-              host_shim::exit_process(reader_data::run_data(data_dir, sep))
+              match flag_value(argv, "--serve") {
+                Some(socket) => host_shim::exit_process(reader_serve::run_serve(data_dir, sep, socket))
+                None => {
+                  if flag_present(argv, "--serve") {
+                    usage_exit()
+                  } else {
+                    host_shim::exit_process(reader_data::run_data(data_dir, sep))
+                  }
+                }
+              }
             }
           }
           None => usage_exit()

@@ -321,11 +321,12 @@ class X11View implements ScreenView {
       "-video_size", `${screen.width}x${screen.height}`, "-i", env.DISPLAY!, "-vf", `scale=${this.#picture.width}:${this.#picture.height}:flags=fast_bilinear`,
       "-c:v", "mjpeg", "-q:v", "5", "-threads", "1", "-f", "image2pipe", "pipe:1"];
     this.#child = spawn(ffmpeg, args, { env, stdio: ["pipe", "pipe", "pipe"] });
-    this.#child.stdin.end();
-    this.#child.stderr.on("data", (data: Buffer) => { this.#stderr = (this.#stderr + data.toString()).slice(-2000); });
-    this.#child.stdout.on("data", (data: Buffer) => this.#read(data));
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     this.#child.on("error", (error) => this.#end(error));
     this.#child.on("close", () => this.#end(new Error(this.#stderr.trim() || "X11 capture ended")));
+    this.#child.stdin?.end();
+    this.#child.stderr?.on("data", (data: Buffer) => { this.#stderr = (this.#stderr + data.toString()).slice(-2000); });
+    this.#child.stdout?.on("data", (data: Buffer) => this.#read(data));
     this.#timer = wall.after(OPEN_TIMEOUT, () => this.#end(new Error("X11 capture did not produce a frame")));
   }
 

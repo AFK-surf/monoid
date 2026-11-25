@@ -156,8 +156,6 @@ pub fn viewer_frame_act_node(
           },
           on_close,
           tips,
-          // (its last a capsule of words, past the window's corner)
-          capsule_end=true,
         )
         |> ignore
       }

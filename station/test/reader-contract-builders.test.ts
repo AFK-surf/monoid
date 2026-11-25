@@ -364,10 +364,12 @@ test("archive-marks: deterministic SQLITE_BUSY returns {done:false} without erro
   const { dir, seedPath } = createSeedSnapshot();
   const copy = cloneSeedDb(dir, seedPath, "busy");
   const locker = new DatabaseSync(copy.path);
+  // The lock is taken before the builder starts: taken after, it raced the builder's opening of the database and
+  // was refused (no busy wait on this connection) as often as the builder was first.
+  locker.exec("BEGIN IMMEDIATE");
   const proc = new BuilderProcess(candidate(), ["--builder", "archive-marks", "--db", copy.path]);
   let failed = true;
   try {
-    locker.exec("BEGIN IMMEDIATE");
     const busyRes = await proc.ask(JSON.stringify({ scope: "all" }));
     assert.deepStrictEqual(busyRes, { done: false }, `expected {done:false} with no error field, got ${JSON.stringify(busyRes)}`);
     assert.deepStrictEqual(Object.keys(busyRes), ["done"]);
@@ -794,15 +796,17 @@ test("builders_core static guard: rejects raw transaction SQL and passes on real
     "builder_loop.pion leak-guard ROLLBACK allowed",
   );
 
-  // Check real business files in pion/station/packages/builders_core/src/.
-  const buildersSrcDir = resolve(fileURLToPath(new URL("../../pion/station/packages/builders_core/src", import.meta.url)));
-  assert.ok(existsSync(buildersSrcDir), `expected ${buildersSrcDir} to exist`);
-  const files = readdirSync(buildersSrcDir).filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion"));
-  assert.ok(files.length > 0, "expected builders_core .pion business files");
-  const allViolations: string[] = [];
-  for (const file of files) {
-    const content = readFileSync(join(buildersSrcDir, file), "utf8");
-    allViolations.push(...findRawTxControlViolations(file, content));
+  // Check real business files in pion/station/packages/{builders_core,reader_serve}/src/.
+  for (const pkg of ["builders_core", "reader_serve"]) {
+    const srcDir = resolve(fileURLToPath(new URL(`../../pion/station/packages/${pkg}/src`, import.meta.url)));
+    assert.ok(existsSync(srcDir), `expected ${srcDir} to exist`);
+    const files = readdirSync(srcDir).filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion"));
+    assert.ok(files.length > 0, `expected ${pkg} .pion business files`);
+    const allViolations: string[] = [];
+    for (const file of files) {
+      const content = readFileSync(join(srcDir, file), "utf8");
+      allViolations.push(...findRawTxControlViolations(file, content));
+    }
+    assert.deepStrictEqual(allViolations, [], `raw transaction SQL found in ${pkg}:\n${allViolations.join("\n")}`);
   }
-  assert.deepStrictEqual(allViolations, [], `raw transaction SQL found in builders_core:\n${allViolations.join("\n")}`);
 });

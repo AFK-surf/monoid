@@ -20,8 +20,10 @@
 // index and streams the lists, and what goes between the two stations is a list's piece at a time (retire.ts).
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
-import { MbProcess, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { wall } from "../ops/fibers.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type ReaderSelectConfig, resolveReaderEngine } from "../read/reader-select.ts";
+import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../sessions/agent-home.ts";
 
 /// A file that goes along, a line of its session's list: where it is (under the station's data directory), its bytes'
@@ -124,27 +126,29 @@ export function inProgram<T>(
     if (signal?.aborted) return reject(new Error("called off"));
     if (binary === null) return reject(new Error(MISSING_CARRY_BINARY_ERROR));
 
-    const spawnAndRun = (bin: string) => {
+    const spawnAndRun = (bin: string, engine?: TelemetryEngine, resolved?: ResolvedReaderSelection) => {
       if (signal?.aborted) return reject(new Error("called off"));
+      const startedAt = wall.now();
       let p: MbProcess;
       try {
-        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")]);
+        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")], { engine, fallbackMode: resolved !== undefined ? fallbackModeOf(resolved.selection) : undefined });
       } catch (e) {
         return reject(e instanceof Error ? e : new Error(String(e)));
       }
       // (what it comes to, the first thing told: given as the program has ended)
       let outcome: (() => void) | null = null;
-      const decide = (f: () => void) => {
+      const decide = (f: () => void, ok?: boolean) => {
         if (outcome !== null) return;
         outcome = f;
         signal?.removeEventListener("abort", stop);
+        if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
       };
       const stop = () => {
         decide(() => reject(new Error("called off")));
         p.kill();
       };
       signal?.addEventListener("abort", stop, { once: true });
-      p.on("message", (m: { answer?: T; error?: string }) => decide(() => (m.error !== undefined ? reject(new Error(m.error)) : resolve(m.answer as T))));
+      p.on("message", (m: { answer?: T; error?: string }) => decide(() => (m.error !== undefined ? reject(new Error(m.error)) : resolve(m.answer as T)), m.error === undefined));
       // (an error is one that could not be started: no end of it to wait for)
       let ended = false;
       const end = () => {
@@ -153,17 +157,17 @@ export function inProgram<T>(
         outcome!();
       };
       p.on("error", (e: Error) => {
-        decide(() => reject(e));
+        decide(() => reject(e), false);
         end();
       });
       p.on("exit", (code: number) => {
-        decide(() => reject(new Error(`the gathering's program ended saying nothing (${code})`)));
+        decide(() => reject(new Error(`the gathering's program ended saying nothing (${code})`)), false);
         end();
       });
       try {
         p.postMessage(asked);
       } catch (e) {
-        decide(() => reject(e instanceof Error ? e : new Error(String(e))));
+        decide(() => reject(e instanceof Error ? e : new Error(String(e))), false);
         p.kill();
       }
     };
@@ -188,14 +192,14 @@ export function inProgram<T>(
     }
     if (!sync.pending) {
       // Synchronous fast path: spawn in the same call stack as `inProgram()` (keeps mb-replica-carry.test.ts:495-502).
-      spawnAndRun(sync.primaryBinary);
+      spawnAndRun(sync.primaryBinary, engineOfSelection(sync), sync);
       return;
     }
 
     resolveReaderSelectionAsync("replica-carry", { config: readers, logAt: "replica" }, signal).then(
       (resolved) => {
         try {
-          spawnAndRun(resolved.primaryBinary);
+          spawnAndRun(resolved.primaryBinary, engineOfSelection(resolved), resolved);
         } catch (err) {
           reject(err instanceof Error ? err : new Error(String(err)));
         }

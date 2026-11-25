@@ -4,8 +4,9 @@
 // source snapshot is taken before the filesystem is touched.
 import { join, sep } from "node:path";
 import type { Clock } from "effect";
-import { Fibers } from "../ops/fibers.ts";
-import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { Fibers, wall } from "../ops/fibers.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { onTranscriptHintsChanged, transcriptLocationHints } from "../read/transcript.ts";
 import { locationIdentity, type LiveLocation, type LiveLocationIdentity, type LiveLocationProfile, type LiveSession, type LiveSource, type LocateMessage, type LocateReply, type LocateRequest } from "./live-location-protocol.ts";
@@ -14,6 +15,7 @@ type HintSnapshot = ReturnType<typeof transcriptLocationHints>;
 type Pending = {
   id: number; key: string; signal?: AbortSignal; abort?: () => void; profiles: LiveLocationProfile[]; attempts: number;
   paths: NonNullable<LiveLocation>["paths"]; ids: Set<string>; stale: boolean; hints: HintSnapshot | null; batch: LiveSource[];
+  engine?: TelemetryEngine; askedAt?: number;
   resolve(value: LiveLocation): void; reject(error: Error): void;
 };
 const IDLE_MS = 60_000;
@@ -97,14 +99,20 @@ export class LiveLocator {
 
   private finish(request: Pending, error?: Error, value: LiveLocation = null) {
     if (request.abort) request.signal?.removeEventListener("abort", request.abort);
+    if (request.engine !== undefined && request.askedAt !== undefined) {
+      if (!request.signal?.aborted && !this.closed) {
+        readerTelemetry.recordCall(request.engine, "live-locator", wall.now() - request.askedAt, error === undefined);
+      }
+      request.askedAt = undefined;
+    }
     if (error) request.reject(error);
     else request.resolve(value);
   }
 
-  private start(binary?: string): Locating {
+  private start(resolved?: ResolvedReaderSelection): Locating {
     if (this.reference !== undefined) return this.listen(this.reference(this.data));
-    const bin = binary ?? resolveReaderSelection("live-locator", { config: this.readers, logAt: "live-locator" }).primaryBinary;
-    return this.listen(new MbProcess(bin, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep]));
+    const sel = resolved ?? resolveReaderSelection("live-locator", { config: this.readers, logAt: "live-locator" });
+    return this.listen(new MbProcess(sel.primaryBinary, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) }));
   }
 
   private listen(worker: Locating): Locating {
@@ -142,7 +150,7 @@ export class LiveLocator {
         return;
       }
       try {
-        this.start(sel.primaryBinary);
+        this.start(sel);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         for (const req of this.waiting.splice(0)) this.finish(req, err);
@@ -171,7 +179,12 @@ export class LiveLocator {
     try {
       request.profiles = this.profiles().map(({ id, home }) => ({ id, home }));
       request.paths = []; request.ids.clear(); request.stale = false; request.hints = null; request.batch = [];
-      (this.worker ?? this.start()).postMessage({ type: "locate", id: request.id, key: request.key, profiles: request.profiles } satisfies LocateRequest);
+      const worker = this.worker ?? this.start();
+      if (worker instanceof MbProcess) {
+        request.engine = worker.engine;
+        request.askedAt ??= wall.now();
+      }
+      worker.postMessage({ type: "locate", id: request.id, key: request.key, profiles: request.profiles } satisfies LocateRequest);
       return true;
     } catch (error) { this.retire(error instanceof Error ? error : new Error(String(error))); return false; }
   }

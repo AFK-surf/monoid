@@ -994,6 +994,7 @@ export const AgentsLive = (control: Control) =>
           if (!(yield* SubscriptionRef.get(up))) yield* SubscriptionRef.changes(up).pipe(Stream.filter((now) => now), Stream.runHead);
         }));
         await previous;
+        control.taking();
         mkdirSync(run, { recursive: true });
         writeFileSync(join(run, "hub.json"), JSON.stringify({ pid: process.pid }) + "\n");
         if (!inWorkspace) hub.hold("unbound");

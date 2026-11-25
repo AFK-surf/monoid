@@ -672,7 +672,6 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       },
       fn() { (pg.close)() },
       pg.tips,
-      capsule_now=fn() { s.taking_over_now() },
       middle=fn(m) {
         m.pick(at_once=true, sim_wide, fn(slot, is_sim) {
           slot.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore

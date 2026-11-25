@@ -299,3 +299,144 @@ test("the native handoff posts metadata and sends the archive directly to the si
     }
   }
 });
+
+test("restore filters by --targets, downloads chunks concurrently in order, and recovers fast from stalled GETs", async (t) => {
+  const { createHash } = await import("node:crypto");
+  const { archiveTarget, resolveTargets, restore } = await import(pathToFileURL(script).href);
+
+  assert.equal(archiveTarget(`reader-harness-linux-x64-${"0".repeat(24)}.tar.gz`), "linux-x64");
+  assert.equal(archiveTarget(`reader-darwin-arm64-${"1".repeat(24)}.tar.gz`), "darwin-arm64");
+  assert.equal(archiveTarget(`shell-ios-sim-arm64-${"2".repeat(24)}.tar.gz`), "ios-sim-arm64");
+  assert.equal(archiveTarget(`iroh-wasm-wasm32-${"3".repeat(24)}.tar.gz`), "wasm32");
+  assert.equal(archiveTarget(`custom-blob-${"4".repeat(24)}.tar.gz`), null);
+  assert.deepEqual([...resolveTargets("host", "linux-x64")!], ["linux-x64", "wasm32"]);
+  assert.equal(resolveTargets("all", "linux-x64"), null);
+  assert.equal(resolveTargets(undefined, "linux-x64"), null);
+
+  const dir = mkdtempSync(join(tmpdir(), "native-handoff-restore-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const sha = "c".repeat(40);
+  const mkReceipt = (n: number) => `1700000000-${sha}/00000000-0000-4000-8000-00000000000${n}`;
+  const linuxName = `reader-harness-linux-x64-${"a".repeat(24)}.tar.gz`;
+  const macName = `reader-darwin-arm64-${"b".repeat(24)}.tar.gz`;
+  const wasmName = `iroh-wasm-wasm32-${"c".repeat(24)}.tar.gz`;
+  const unknownName = `mystery-tool-${"d".repeat(24)}.tar.gz`;
+  const chunks = ["chunk-0-", "chunk-1-", "chunk-2-", "chunk-3-"];
+  const linuxPayload = Buffer.concat(chunks.map((c) => Buffer.from(c)));
+  const linuxSha = createHash("sha256").update(linuxPayload).digest("hex");
+  const wasmSha = createHash("sha256").update("wasm-bytes").digest("hex");
+  const unknownSha = createHash("sha256").update("unknown-bytes").digest("hex");
+  const macSha = createHash("sha256").update("mac-bytes").digest("hex");
+
+  writeFileSync(join(dir, "natives-harness.r2.json"), JSON.stringify([
+    { name: linuxName, sha256: linuxSha, chunks: [0, 1, 2, 3].map((i) => mkReceipt(i)) },
+  ]));
+  writeFileSync(join(dir, "natives-mac-reader.r2.json"), JSON.stringify([
+    { name: macName, sha256: macSha, chunks: [mkReceipt(4)] },
+  ]));
+  writeFileSync(join(dir, "natives.r2.json"), JSON.stringify([
+    { name: wasmName, sha256: wasmSha, chunks: [mkReceipt(5)] },
+    { name: unknownName, sha256: unknownSha, chunks: [mkReceipt(6)] },
+    { name: linuxName, sha256: linuxSha, chunks: [0, 1, 2, 3].map((i) => mkReceipt(i)) },
+  ]));
+
+  const prevFetch = globalThis.fetch;
+  const prevDns = process.env.STILLFAIL_DIRECT_DNS;
+  process.env.STILLFAIL_DIRECT_DNS = "";
+  t.after(() => {
+    globalThis.fetch = prevFetch;
+    if (prevDns === undefined) delete process.env.STILLFAIL_DIRECT_DNS;
+    else process.env.STILLFAIL_DIRECT_DNS = prevDns;
+  });
+
+  // Prove chunks 0..3 are fetched concurrently (barrier waits for all 4 before releasing chunk 0 last),
+  // chunk 2 stalls past the short GET timeout on attempt 1 and succeeds on attempt 2, and macName is never fetched.
+  const requested: string[] = [];
+  let inFlight = 0;
+  let peakInFlight = 0;
+  let chunk2Attempts = 0;
+  const waiting: (() => void)[] = [];
+  globalThis.fetch = (async (at: string | URL, init?: RequestInit) => {
+    const path = new URL(String(at)).pathname;
+    requested.push(path);
+    if (path.endsWith("000000000004")) throw new Error("darwin archive should have been filtered out");
+    if (path.endsWith("000000000005")) return new Response("wasm-bytes");
+    if (path.endsWith("000000000006")) return new Response("unknown-bytes");
+    const idx = Number(path.slice(-1));
+    if (idx === 2 && ++chunk2Attempts === 1) {
+      // Stall until aborted by the per-attempt GET timeout signal.
+      return await new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason), { once: true });
+      });
+    }
+    inFlight++;
+    peakInFlight = Math.max(peakInFlight, inFlight);
+    if (idx === 0) {
+      // Hold chunk 0 until at least one sibling chunk arrives, proving parallel execution and out-of-order reassembly.
+      await new Promise<void>((resolve) => {
+        if (peakInFlight >= 2) resolve();
+        else waiting.push(resolve);
+      });
+    } else {
+      while (waiting.length) waiting.pop()!();
+    }
+    inFlight--;
+    return new Response(chunks[idx]);
+  }) as typeof fetch;
+
+  await restore(dir, sha, { targets: "host", host: "linux-x64", concurrency: 4, getTimeoutsMs: [40, 200, 200, 200], backoffMs: () => 1 });
+  assert.ok(peakInFlight >= 2, `expected concurrent chunk downloads, peak=${peakInFlight}`);
+  assert.equal(chunk2Attempts, 2, "chunk 2 should have timed out once and recovered on attempt 2");
+  assert.equal(readFileSync(join(dir, linuxName), "utf8"), linuxPayload.toString("utf8"));
+  assert.equal(readFileSync(join(dir, wasmName), "utf8"), "wasm-bytes");
+  assert.equal(readFileSync(join(dir, unknownName), "utf8"), "unknown-bytes");
+  assert.throws(() => readFileSync(join(dir, macName)), { code: "ENOENT" });
+  // Duplicate linuxName entry in natives.r2.json must not be downloaded a second time (5 requests for linux incl. 1 retry + wasm + unknown = 7).
+  assert.equal(requested.length, 7);
+
+  // Sibling chunks are aborted immediately on fatal error (no waiting for other chunks' retries).
+  const failDir = mkdtempSync(join(tmpdir(), "native-handoff-abort-"));
+  t.after(() => rmSync(failDir, { recursive: true, force: true }));
+  writeFileSync(join(failDir, "natives.r2.json"), JSON.stringify([
+    { name: linuxName, sha256: linuxSha, chunks: [mkReceipt(0), mkReceipt(1)] },
+  ]));
+  let siblingAbortReason: unknown = null;
+  globalThis.fetch = (async (at: string | URL, init?: RequestInit) => {
+    const path = new URL(String(at)).pathname;
+    if (path.endsWith("000000000000")) return new Response("missing", { status: 404 });
+    return await new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => { siblingAbortReason = init.signal!.reason; reject(init.signal!.reason); }, { once: true });
+    });
+  }) as typeof fetch;
+  await assert.rejects(
+    () => restore(failDir, sha, { targets: "all", concurrency: 2, getTimeoutsMs: [10_000], backoffMs: () => 1 }),
+    /HTTP 404/,
+  );
+  assert.match(String(siblingAbortReason), /HTTP 404/, "sibling chunk fetch should abort with the 404 error, not TimeoutError");
+
+  // CLI --targets flag works end-to-end and rejects unknown flags.
+  const cliDir = mkdtempSync(join(tmpdir(), "native-handoff-cli-"));
+  t.after(() => rmSync(cliDir, { recursive: true, force: true }));
+  writeFileSync(join(cliDir, "natives.r2.json"), JSON.stringify([
+    { name: macName, sha256: macSha, chunks: [mkReceipt(4)] },
+    { name: wasmName, sha256: wasmSha, chunks: [mkReceipt(5)] },
+  ]));
+  const cliMock = `
+    globalThis.fetch = async (at) => {
+      const p = new URL(String(at)).pathname;
+      if (p.endsWith("000000000005")) return new Response("wasm-bytes");
+      throw new Error("unexpected fetch " + p);
+    };`;
+  const cliOk = spawnSync(
+    process.execPath,
+    ["--import", "data:text/javascript," + encodeURIComponent(cliMock), script, "get", cliDir, sha, "--targets", "wasm32"],
+    { encoding: "utf8", env: { ...process.env, STILLFAIL_DIRECT_DNS: "" }, timeout: 10_000 },
+  );
+  assert.equal(cliOk.status, 0, cliOk.stderr);
+  assert.equal(readFileSync(join(cliDir, wasmName), "utf8"), "wasm-bytes");
+  assert.throws(() => readFileSync(join(cliDir, macName)), { code: "ENOENT" });
+
+  const cliBad = spawnSync(process.execPath, [script, "get", dir, sha, "--bogus"], { encoding: "utf8" });
+  assert.equal(cliBad.status, 1);
+  assert.match(cliBad.stderr, /Usage: native-handoff\.mjs/);
+});

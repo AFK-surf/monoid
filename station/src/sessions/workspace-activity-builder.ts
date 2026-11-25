@@ -57,7 +57,7 @@ export function buildWorkspaceActivity(store: Store, previous: Promise<void>, bi
     }
     let current: MbBackfill;
     try {
-      const bin = resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" }).primaryBinary;
+      const bin = resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" });
       current = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {

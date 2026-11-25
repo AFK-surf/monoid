@@ -490,6 +490,8 @@
   "core-views.station.pageOld": "This page is too old for your stations: reload it",
   "core-views.station.unreachable": "Can't reach {name}",
   "core-views.station.unreachable_short": "Can't reach",
+  "core-views.station.unknownRuntime": "A station uses a runtime this app doesn't know yet ({runtimes}), so some details are hidden. Update the app.",
+  "core-views.station.unknownRuntimePage": "A station uses a runtime this page doesn't know yet ({runtimes}), so some details are hidden. Reload the page.",
   "core-views.station.lock": "Security mode is blocking {name}",
   "core-views.station.lock_short": "Blocked by security mode",
   "core-views.station.offline_network": "No network: can't reach {name}",

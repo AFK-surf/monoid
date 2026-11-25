@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
 import { holder, osCpuTicks } from "./processes.ts";
-import { elasticMemory, fieldOrNull, firstWord, idleOfIoreg, isDom0MemAnswer, isMonoidStationVm, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
+import { elasticMemory, fieldOrNull, firstWord, idleOfIoreg, isDom0MemAnswer, isMonoidStationVm, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, pressureOfMemoryPsi, pressureOfSwap, procStatTicks, swapoutsOf, swapUsedOf, trim, worsePressure } from "./text.ts";
 
 const MACOS = process.platform === "darwin";
 /// Names in the order people read them (numbers by value, case aside), as the drive sorts them.
@@ -81,6 +81,35 @@ export function backgroundedOn(how: Background, program: string, args: string[])
     case "nice": return [how.nice, ["-n", "10", program, ...args]];
     case "none": return [program, args];
   }
+}
+
+/// Whether a stderr line looks like a diagnostic from a background wrapper (`taskpolicy`, `nice`, `ionice`).
+export function isBackgroundWrapperStderrLine(command: string, line: string): boolean {
+  if (/(?:^|\/)taskpolicy$/.test(command)) return /^taskpolicy:\s+posix_spawn:/.test(line);
+  if (/(?:^|\/)nice$/.test(command)) return /^(?:.*\/)?nice:\s/.test(line);
+  if (/(?:^|\/)ionice$/.test(command)) return /^(?:.*\/)?(?:ionice|nice):\s/.test(line);
+  return false;
+}
+
+/// Whether a backgrounded wrapper (`taskpolicy`, `nice`, `ionice`) failed to exec the target binary
+/// (missing file, bad shebang, permission denied), rather than the target running and returning an exit code.
+export function isBackgroundWrapperExecFailure(
+  command: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderrLines: readonly string[],
+): boolean {
+  if (signal !== null || code === null || code === 0) return false;
+  if (/(?:^|\/)taskpolicy$/.test(command)) {
+    return stderrLines.some((l) => isBackgroundWrapperStderrLine(command, l));
+  }
+  if (/(?:^|\/)nice$/.test(command)) {
+    return (code === 126 || code === 127) && stderrLines.some((l) => isBackgroundWrapperStderrLine(command, l));
+  }
+  if (/(?:^|\/)ionice$/.test(command)) {
+    return (code === 126 || code === 127 || code === 1) && stderrLines.some((l) => isBackgroundWrapperStderrLine(command, l));
+  }
+  return false;
 }
 
 /// files.rs `clean` on Unix: the path absolute (a leading `/`), `.` and `..` worked out lexically.
@@ -744,9 +773,15 @@ export const unix: Platform = {
           : pressureOfLevel(level, mem.totalBytes - mem.usedBytes, mem.totalBytes);
         return worsePressure(ofLevel, read?.swap ?? null);
       }
-      // Pressure is about memory held now, not elastic headroom from dom0.
-      const info = await readFile("/proc/meminfo", "utf8");
-      return pressureOfAvailable(fieldOrNull(info, "MemAvailable"), fieldOrNull(info, "MemTotal"));
+      // Pressure is about memory held now, not elastic headroom from dom0. On Linux, MemAvailable still counts active
+      // file cache refaulting under reclaim thrashing, so combine it with /proc/pressure/memory (PSI).
+      const [info, psi] = await Promise.all([
+        readFile("/proc/meminfo", "utf8"),
+        readFile("/proc/pressure/memory", "utf8").catch(() => null),
+      ]);
+      const available = fieldOrNull(info, "MemAvailable");
+      const total = fieldOrNull(info, "MemTotal");
+      return worsePressure(pressureOfAvailable(available, total), pressureOfMemoryPsi(psi, available, total));
     } catch {
       return null;
     }

@@ -1,4 +1,6 @@
-// Zero-conflict W7-0 skeleton for `reader_serve` (`--serve <socket>`, implemented in W7-G).
+// Production `--data <dir> [--sep <sep>] --serve <socket>` device request server (W7-G).
+// 1:1 port of `station/mb/src/reader/serve.mbt` over `builders_core::ShellMux` + `SerialOutbox`,
+// `reader_data::Reader`, and `sql_db::Db::tx_err` (`BEGIN IMMEDIATE`).
 
 pub fn skeleton_ready() -> Bool {
   true

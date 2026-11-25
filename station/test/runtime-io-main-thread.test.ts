@@ -9,6 +9,7 @@
 // node:zlib's synchronous calls (station/AGENTS.md, the main thread waits on nothing). Each ran on every secret_run,
 // drive preview, overview, update, tab opened or closed, file posted to a chat of another station's connect, login,
 // scan, session opened and profile added.
+import { niced } from "../src/ops/nice.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -208,6 +209,9 @@ test("the station's Chrome found, started and ended, and whose its tabs are, wai
   writeFileSync(join(dir, "profile", "DevToolsActivePort"), `${port}\n/devtools/browser/x\n`);
   let found: unknown;
   let failed: unknown;
+  // Whether nice is here is looked at once for the process (platform/unix.ts `niceThere`), by the first runner or job
+  // a station starts; Chrome started under it finds it known.
+  niced("true", []);
   const calls = await syncCalls(async () => {
     found = await host.find();
     await host.kill(running);

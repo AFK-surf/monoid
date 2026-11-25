@@ -51,6 +51,37 @@ export function pressureOfSwap(swapUsed: number | null, total: number | null, ou
   return swapUsed >= total / 2 ? "critical" : swapUsed >= total / 4 ? "high" : "normal";
 }
 
+/// `avg10=` of the `some` or `full` line of a Linux `/proc/pressure/*` file (percentage of wall time stalled over the
+/// last 10 s); null where absent or malformed.
+export function psiAvg10(text: string | null, which: "some" | "full"): number | null {
+  if (text === null) return null;
+  const line = text.split("\n").find((l) => l.startsWith(`${which} `));
+  const raw = line?.match(/\bavg10=([0-9]+(?:\.[0-9]+)?)/)?.[1];
+  if (raw === undefined) return null;
+  const value = parseF64(raw);
+  return value === null || !Number.isFinite(value) || value < 0 ? null : value;
+}
+
+/// What Linux `/proc/pressure/memory` (PSI) says of memory pressure: `MemAvailable` counts active file cache that is
+/// refaulting under thrashing, so a swapless Linux station can freeze in direct reclaim and hit the kernel OOM killer
+/// while `MemAvailable` stays between 4% and 10% (2026-11-25: pvg-office-1 hit 41-71% `full` stall and OOM-killed the
+/// station while `MemAvailable` stayed in `high`). When `available/total` is below `PSI_TIGHT_SHARE` (or unknown),
+/// `full avg10` >= 10% is high and >= 20% is critical; >= 50% `full avg10` is critical unconditionally.
+export const PSI_FULL_HIGH = 10;
+export const PSI_FULL_CRITICAL = 20;
+export const PSI_FULL_SEVERE = 50;
+export const PSI_TIGHT_SHARE = 0.25;
+export function pressureOfMemoryPsi(text: string | null, available: number | null = null, total: number | null = null): "normal" | "high" | "critical" | null {
+  const full = psiAvg10(text, "full");
+  if (full === null) return null;
+  if (full >= PSI_FULL_SEVERE) return "critical";
+  const tight = available === null || total === null || !(total > 0) || !(available >= 0) || available > total
+    ? true
+    : available / total < PSI_TIGHT_SHARE;
+  if (!tight) return "normal";
+  return full >= PSI_FULL_CRITICAL ? "critical" : full >= PSI_FULL_HIGH ? "high" : "normal";
+}
+
 const RANK = { normal: 0, high: 1, critical: 2 } as const;
 /// The worse of two readings (one unknown: the other).
 export function worsePressure(a: "normal" | "high" | "critical" | null, b: "normal" | "high" | "critical" | null): "normal" | "high" | "critical" | null {

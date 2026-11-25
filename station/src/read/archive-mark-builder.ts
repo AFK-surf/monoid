@@ -7,7 +7,7 @@ export class ArchiveMarkBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("archive-marks", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "archive-marks", "--db", path] },
+      { binary: () => resolveReaderSelection("archive-marks", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "archive-marks", "--db", path] },
       "scope",
       "archive mark preparation",
     );

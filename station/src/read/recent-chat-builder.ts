@@ -10,7 +10,7 @@ export class RecentChatBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("recent-chat", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "recent-chat", "--db", path] },
+      { binary: () => resolveReaderSelection("recent-chat", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "recent-chat", "--db", path] },
       "scope",
       "recent chat preparation",
     );

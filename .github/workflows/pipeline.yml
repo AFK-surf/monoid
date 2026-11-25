@@ -2795,10 +2795,9 @@ jobs:
   deltas-station:
     needs: [plan, station]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' }}
-    # (linux-x64 and linux-arm64 on ci-1, filling its 2 runners; darwin-arm64 and win32-x64 on ubuntu-24.04 beside
-    # deltas-desktop, check-station nearly done by then: the four and deltas-desktop end in one wave, where the five on
-    # ci-1's 2 runners queued 2-4 minutes, main 44695551492; with vars.CI_1 == 'off', all on ubuntu-24.04)
-    runs-on: ${{ fromJSON((vars.CI_1 != 'off' && startsWith(matrix.platform, 'linux-')) && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    # (all four on ubuntu-24.04: ci-1's R2 unstage/put over Shanghai egress stalled 200-304 s and timed out at 5 m on
+    # main 45605595780 and 45607690010 while ubuntu-24.04 finishes the same jobs in 53-77 s with near-zero queue)
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
     continue-on-error: true
@@ -2813,10 +2812,8 @@ jobs:
     # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
     # on Delta.java and JZlib for Android's; no packages, no pnpm)
     steps: &deltas-steps
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
-      - if: runner.environment != 'self-hosted'
-        uses: actions/checkout@v5
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
         with:
           sparse-checkout: |
             /scripts/
@@ -2826,30 +2823,7 @@ jobs:
             /libs/ui/android/app/src/main/java/dev/mbui/Delta.java
             /libs/ui/android/jzlib/
           sparse-checkout-cone-mode: false
-      # Sparse checkout in ci-1's reused workspaces left skip-worktree bits behind.
-      # Later natives jobs could not find station/mb/build.sh (main 44691945453 and 44692636480).
-      - if: runner.environment == 'self-hosted'
-        uses: actions/checkout@v5
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
-      # (ci-1's: the Node kept in ~/.local, as setup-linux's; it needs only .node-version, curl and tar)
-      - if: runner.environment == 'self-hosted'
-        run: |
-          if [ ! -f station/mb/build.sh ] || [ "$(git config --bool core.sparseCheckout 2>/dev/null)" = true ]; then
-            git config --worktree --unset-all core.sparseCheckout 2>/dev/null || true
-            git config --worktree --unset-all core.sparseCheckoutCone 2>/dev/null || true
-            git config --local --unset-all core.sparseCheckout 2>/dev/null || true
-            git config --local --unset-all core.sparseCheckoutCone 2>/dev/null || true
-            git config --local --unset-all extensions.worktreeConfig 2>/dev/null || true
-            rm -f .git/info/sparse-checkout .git/index
-            git reset --hard HEAD
-          fi
-          # (ci-1 does not run setup-linux here; set STILLFAIL_DIRECT_DNS so release-put.sh and node-here.sh reach
-          # Cloudflare's API directly instead of stalling over the proxy — deltas-station linux-x64 hung 286 s and
-          # deltas-desktop-win took 198 s in Put them on main 45444450664)
-          export STILLFAIL_DIRECT_DNS=223.5.5.5
-          echo "STILLFAIL_DIRECT_DNS=$STILLFAIL_DIRECT_DNS" >> "$GITHUB_ENV"
-          echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/node
       - if: env.PART == 'desktop-win'
         uses: actions/download-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release" }
@@ -2885,8 +2859,6 @@ jobs:
   deltas-desktop:
     needs: [plan, desktop]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop.result == 'success' }}
-    # (on ubuntu-24.04, idle by then: it is let go with deltas-station, and on ci-1 the station's four held it 234 s,
-    # main 44695551492)
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -2898,9 +2870,7 @@ jobs:
   deltas-desktop-win:
     needs: [plan, desktop-win]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop-win.result == 'success' }}
-    # (on ci-1, while check-station fills GitHub's runners: it is done before deltas-station starts; with
-    # vars.CI_1 == 'off', ubuntu-24.04)
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
     continue-on-error: true

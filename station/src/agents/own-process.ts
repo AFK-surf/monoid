@@ -172,9 +172,11 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
     } else {
       const out = outFile(this.data, id);
       const { at } = await ackedOffset(info, out);
+      options.taking?.();
       const hosting = this.hosting();
       const extra = { ...this.replaying(options), ...(hosting.flavor === undefined ? {} : { flavor: hosting.flavor, kept: hosting.kept === true }) };
       const replayed = (await this.agents.replayOwn(hosting.kind, out, at, extra)) as Replayed;
+      options.taking?.();
       session = await this.crashed(options, replayed, info, events);
       // A process whose station went before its session was open (stuck on `initialize`, say) is no session to go on
       // with: refused before it is held, so `endOrphans` ends its runner and the session opens again the usual way.
@@ -189,6 +191,7 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
     }
     session.attach(HostedProcess.adopt(this.agents, info, session.hostedOptions(this.label(options, session)), session.turnNow(), session.liveNow(), options.router ?? null));
     await session.adopted();
+    options.taking?.();
     this.live.add(session);
     return session;
   }

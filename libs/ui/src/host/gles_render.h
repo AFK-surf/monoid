@@ -560,7 +560,7 @@ static const char *FS =
     "    halfMinor = max(halfMinor, 1.0);\n"
     "    float sd_px = -d * u_scale;\n"
     "    float materialAlpha = clamp(sd_px + 0.5, 0.0, 1.0);\n"
-    "    float edgeW = 0.75 * u_scale;\n"
+    "    float edgeW = max(0.90 * u_scale, 2.6);\n"
     "    float outward = -sd_px;\n"
     "    float ext_cov = mb_contour_int(max(outward + 0.5, 0.0), edgeW)\n"
     "                  - mb_contour_int(max(outward - 0.5, 0.0), edgeW);\n"
@@ -580,11 +580,17 @@ static const char *FS =
     "    float inward = max(-d, 0.0);\n"
     "    float rawBevel = max(v_c2.y, 0.0);\n"
     "    float rawAmount = max(v_pad.y, 0.0);\n"
+    "    float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
+    "    float regCtrl = max(1.0 - smoothstep(0.405, 0.50, col.a), smoothstep(0.08, 0.16, colChroma) * (1.0 - smoothstep(0.75, 0.90, col.a)));\n"
     "    float lensScale = min(1.0, halfMinor / max(rawBevel, 0.001));\n"
     "    float clearBevel = min(rawBevel * lensScale, halfMinor * 0.72);\n"
     "    float clearAmount = min(rawAmount * lensScale, halfMinor * 0.58);\n"
-    "    float regBevel = min(rawBevel, 0.55 * halfMinor);\n"
-    "    float regAmount = min(rawAmount, halfMinor);\n"
+    "    float regBevelPanel = min(rawBevel, 0.55 * halfMinor);\n"
+    "    float regBevelCtrl = min(rawBevel * 0.90, 0.58 * halfMinor);\n"
+    "    float regBevel = mix(regBevelPanel, regBevelCtrl, regCtrl);\n"
+    "    float regAmountPanel = min(rawAmount, halfMinor);\n"
+    "    float regAmountCtrl = min(rawAmount * 0.96, 0.88 * halfMinor);\n"
+    "    float regAmount = mix(regAmountPanel, regAmountCtrl, regCtrl);\n"
     "    float bevel = mix(clearBevel, regBevel, regMix);\n"
     "    float amount = mix(clearAmount, regAmount, regMix);\n"
     "    vec2 surfaceNormal = vec2(0.0, 0.0);\n"
@@ -614,14 +620,19 @@ static const char *FS =
     "      shortening = sqrt(clamp(gradLen, 0.0, 1.0));\n"
     "      if (inward < bevel && bevel > 0.001 && amount > 0.0) {\n"
     "        float bevelX = 1.0 - clamp(inward / bevel, 0.0, 1.0);\n"
-    "        float clearMag = amount * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
+    "        // iOS 27.0 Glass::clear() inverted-refraction caustic spans ~73% of 14pt bevel (2.20x rawAmount).\n"
+    "        float clearVeilR = smoothstep(0.005, 0.102, col.a) * (1.0 - smoothstep(0.001, 0.008, abs(v_p.w))) * (1.0 - regMix);\n"
+    "        float clearBevelX = pow(bevelX, mix(1.0, 0.78, clearVeilR));\n"
+    "        float clearAmt = amount * mix(1.0, 2.20, clearVeilR);\n"
+    "        float clearMag = clearAmt * (1.0 - sqrt(max(1.0 - clearBevelX * clearBevelX, 0.0))) * shortening;\n"
     "        float regMaxR = 0.80;\n"
     "        if (bevel > 3.0) {\n"
     "          float inv = 1.0 / (1.0 - 3.0 / bevel);\n"
     "          float rCap = sqrt(max(inv * inv - 1.0, 0.0)) / (1.0 + abs(v_pad.z) * 0.5);\n"
     "          regMaxR = min(regMaxR, rCap);\n"
     "        }\n"
-    "        float regMag = min(amount, regMaxR * bevel) * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
+    "        float regEffAmt = mix(min(amount, regMaxR * bevel), amount, regCtrl);\n"
+    "        float regMag = regEffAmt * (1.0 - sqrt(max(1.0 - bevelX * bevelX, 0.0))) * shortening;\n"
     "        float mag = mix(clearMag, regMag, regMix);\n"
     "        disp = surfaceNormal * (-mag);\n"
     "      }\n"
@@ -704,10 +715,10 @@ static const char *FS =
     "      } else {\n"
     "        refractColor = backdrop(sampleBase + disp);\n"
     "      }\n"
-    "    } else if (inward >= bevel || abs(v_pad.z) * amount * u_scale <= 0.25) {\n"
+    "    } else if (inward >= bevel || abs(v_pad.z) * (1.0 - regCtrl * regMix) * amount * u_scale <= 0.25) {\n"
     "      refractColor = backdrop(sampleBase + disp);\n"
     "    } else {\n"
-    "      float ds = v_pad.z * 0.5;\n"
+    "      float ds = v_pad.z * 0.5 * (1.0 - regCtrl * regMix);\n"
     "      refractColor = vec3(\n"
     "        backdrop(sampleBase + disp * (1.0 + ds)).r,\n"
     "        backdrop(sampleBase + disp).g,\n"
@@ -764,22 +775,20 @@ static const char *FS =
     "    float darkMixSaved = 0.0;\n"
     "    float lightExtra = 0.0;\n"
     "    bool hasLightEm = false;\n"
-    "    float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "    float applePanelGate = smoothstep(0.005, 0.02, abs(v_pad.z)) * (1.0 - smoothstep(0.035, 0.05, abs(v_pad.z))) * (1.0 - smoothstep(0.04, 0.08, colChroma));\n"
-    "    float regCtrl = max(1.0 - smoothstep(0.405, 0.50, col.a), smoothstep(0.08, 0.16, colChroma) * (1.0 - smoothstep(0.75, 0.90, col.a)));\n"
     "    float lightCtrlW = 0.0;\n"
     "    float lightDensSaved = 0.30;\n"
     "    if (is_clear) {\n"
     "      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
     "      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
-    "      // blends smoothly into the +32/255 translucent micro-veil with unified bevel wall.\n"
+    "      // matches iOS 27.0 (+32/255 emission, 0.95 transmittance, 1.10 chroma, channel clamp).\n"
     "      emission = vec3(1.0, 1.0, 1.0) * (0.1255 * clearVeil);\n"
-    "      transmittance = mix(1.0, 0.96, clearVeil);\n"
-    "      lift = mix(0.0, 0.04, clearVeil);\n"
-    "      chromaGain = mix(1.08, 1.0, clearVeil);\n"
+    "      transmittance = mix(1.0, 0.95, clearVeil);\n"
+    "      lift = 0.0;\n"
+    "      chromaGain = mix(1.08, 1.06, clearVeil);\n"
     "      contourStr = 0.0;\n"
     "      contourDirAmt = mix(0.32, 0.77, clearVeil);\n"
-    "      bevelShadowStr = 0.04 * clearVeil;\n"
+    "      bevelShadowStr = 0.0;\n"
     "      glintLum = mix(1.85, 1.35, clearVeil);\n"
     "      glintFaceGain = mix(0.14, 0.25, clearVeil);\n"
     "      glintVib = mix(2.4, 1.5, clearVeil);\n"
@@ -852,7 +861,7 @@ static const char *FS =
     "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
     "    }\n"
     "    vec3 lowC = refractColor;\n"
-    "    if (regMix > 0.001) {\n"
+    "    if (regMix > 0.001 && (fogT > 0.001 || hasLightEm)) {\n"
     "      vec2 fc = sampleBase + disp;\n"
     "      float rD = mix(3.2, 4.2, fogT);\n"
     "      vec3 s1 = backdrop(fc + vec2( rD,  rD));\n"
@@ -883,24 +892,27 @@ static const char *FS =
     "    }\n"
     "    if (regMix > 0.0 && regMix < 1.0) {\n"
     "      emission = mix(vec3(0.1255, 0.1255, 0.1255), emission, regMix);\n"
-    "      transmittance = mix(0.96, transmittance, regMix);\n"
-    "      lift = mix(0.04, lift, regMix);\n"
-    "      chromaGain = mix(1.0, chromaGain, regMix);\n"
+    "      transmittance = mix(0.95, transmittance, regMix);\n"
+    "      lift = mix(0.0, lift, regMix);\n"
+    "      chromaGain = mix(1.06, chromaGain, regMix);\n"
     "      contourStr = mix(0.0, contourStr, regMix);\n"
     "      contourDirAmt = mix(0.77, contourDirAmt, regMix);\n"
-    "      bevelShadowStr = mix(0.04, bevelShadowStr, regMix);\n"
+    "      bevelShadowStr = mix(0.0, bevelShadowStr, regMix);\n"
     "      glintLum = mix(1.35, glintLum, regMix);\n"
     "      glintFaceGain = mix(0.25, glintFaceGain, regMix);\n"
     "      glintVib = mix(1.5, glintVib, regMix);\n"
     "    }\n"
-    "    contourStr *= (1.0 - regMix);\n"
+    "    float tintDarkEnv = 1.0 - smoothstep(0.18, 0.55, luma(refractColor));\n"
+    "    float regDarkContour = max(is_dark ? 1.0 : darkMixSaved, tintDarkEnv * smoothstep(0.08, 0.16, colChroma));\n"
+    "    float regExtContour = mix(0.34, 0.85, regDarkContour) * regCtrl;\n"
+    "    contourStr = mix(contourStr, regExtContour, regMix);\n"
     "    float Y = luma(refractColor);\n"
     "    float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);\n"
     "    vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z);\n"
     "    float baseLum = clamp(transLum * transmittance, 0.0, 1.0);\n"
     "    vec3 transmittedColor = vec3(baseLum) + chromaVec;\n"
     "    vec3 rawBase = emission + transmittedColor;\n"
-    "    // Exact Wave 3 legacy mapping for Clear / Lifted Lenses (regMix == 0)\n"
+    "    // Exact Wave 3 legacy mapping for zero-veil lenses (col.a == 0); channel-clamped saturation for Clear glass\n"
     "    float maxC = max(rawBase.r, max(rawBase.g, rawBase.b));\n"
     "    vec3 legacyBase = rawBase;\n"
     "    if (maxC > 1.0) {\n"
@@ -909,7 +921,8 @@ static const char *FS =
     "      legacyBase = vec3(lumL) + (rawBase - vec3(lumL)) * sL;\n"
     "    }\n"
     "    legacyBase = clamp(legacyBase, 0.0, 1.0);\n"
-    "    vec3 baseColor = legacyBase;\n"
+    "    float clearClampW = smoothstep(0.005, 0.102, col.a);\n"
+    "    vec3 baseColor = mix(legacyBase, clamp(rawBase, vec3(0.0), vec3(1.0)), clearClampW);\n"
     "    if (regMix > 0.001) {\n"
     "      float lumR = clamp(luma(emission) + baseLum, 0.001, 0.999);\n"
     "      vec3 dC = rawBase - vec3(lumR);\n"
@@ -922,7 +935,7 @@ static const char *FS =
     "      else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));\n"
     "      vec3 regProjected = clamp(vec3(lumR) + dC * clamp(s, 0.0, 1.0), 0.0, 1.0);\n"
     "      vec3 regMapped = mix(clamp(rawBase, 0.0, 1.0), regProjected, mix(1.0, 0.25, regCtrl));\n"
-    "      baseColor = mix(legacyBase, regMapped, regMix);\n"
+    "      baseColor = mix(baseColor, regMapped, regMix);\n"
     "    }\n"
     "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
     "    if (colChroma > 0.08 && col.a > 0.001) {\n"
@@ -981,21 +994,23 @@ static const char *FS =
     "    }\n"
     "    float clrWallW = clearVeilC * (1.0 - regMix);\n"
     "    if (clrWallW > 0.001) {\n"
-    "      float clrAcross = pow(max(1.0 - rn.y * rn.y, 0.0), 1.6);\n"
+    "      float clrAcross = pow(max(1.0 - rn.y * rn.y, 0.0), 1.8);\n"
     "      float clrInvS = 1.0 / max(u_scale, 1.0);\n"
-    "      float clrW0 = mix(max(0.42, 1.05 * clrInvS), max(0.50, 1.80 * clrInvS), clrAcross);\n"
-    "      float clrL  = mix(0.07, 0.16, clrAcross);\n"
+    "      float clrW0 = mix(max(0.20, 0.50 * clrInvS), max(0.28, 0.75 * clrInvS), clrAcross);\n"
+    "      float clrL  = mix(0.06, 0.12, clrAcross);\n"
     "      float clrCov = mb_bevel_cov(sd_px, u_scale, clrW0, clrL);\n"
     "      float clrHair = clamp(clrCov / max(materialAlpha, 0.001), 0.0, 1.0) * clrAcross * clrWallW;\n"
     "      if (clrHair > 0.001) {\n"
     "        vec3 clrEnv = backdrop(p + surfaceNormal * 1.2);\n"
+    "        float clrBrightGate = smoothstep(0.55, 0.90, luma(clrEnv)) * 0.55;\n"
     "        vec3 clrWall = pow(max(clrEnv, vec3(1e-6)), vec3(1.75)) * 0.695;\n"
-    "        result = mix(result, clrWall, clrHair);\n"
+    "        result = mix(result, clrWall, clrHair * clrBrightGate);\n"
     "      }\n"
     "    }\n"
     "    if (regMix > 0.001) {\n"
     "      float regDark = is_dark ? 1.0 : darkMixSaved;\n"
-    "      float regAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.75, 1.6, regCtrl));\n"
+    "      float tintChroma = smoothstep(0.08, 0.16, colChroma);\n"
+    "      float regAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.75, mix(1.6, 2.2, regDark), regCtrl));\n"
     "      float regHairOld;\n"
     "      if (is_dark) {\n"
     "        float regHw = min(0.50, 1.15 / max(u_scale, 1.0));\n"
@@ -1007,15 +1022,9 @@ static const char *FS =
     "        float regBandCov = mb_para_int(regB, regHairWpx) - mb_para_int(regA, regHairWpx);\n"
     "        regHairOld = clamp(regBandCov / max(materialAlpha, 0.001), 0.0, 1.0) * regMix;\n"
     "      }\n"
-    "      float regInvS = 1.0 / max(u_scale, 1.0);\n"
-    "      float regW0 = mix(max(0.42, 1.05 * regInvS), max(0.50, 1.80 * regInvS), regAcross);\n"
-    "      float regL  = mix(0.07, 0.16, regAcross);\n"
-    "      float regWallCov = mb_bevel_cov(sd_px, u_scale, regW0, regL);\n"
-    "      float regHairNew = clamp(regWallCov / max(materialAlpha, 0.001), 0.0, 1.0) * regMix;\n"
-    "      float regHairline = mix(regHairOld, regHairNew, regCtrl);\n"
+    "      float regHairline = regHairOld * (1.0 - regCtrl);\n"
     "      float regShadeMaskOld = is_dark ? regAcross : mix(0.28, 1.0, regAcross);\n"
-    "      float regShadeMaskNew = mix(mix(0.34, 1.0, regAcross), regAcross, regDark);\n"
-    "      float regShadeMask = mix(regShadeMaskOld, regShadeMaskNew, regCtrl);\n"
+    "      float regShadeMask = regShadeMaskOld;\n"
     "      if (v_c2.x > 0.01 && inward < 12.0) {\n"
     "        float along = is_dark ? mix(rn.y, -rn.y, regCtrl) : -rn.y;\n"
     "        float lit = max(along, 0.0);\n"
@@ -1026,29 +1035,40 @@ static const char *FS =
     "        float diagPos = max(rn.x * rn.y, 0.0) * 2.0;\n"
     "        float diagNeg = max(-rn.x * rn.y, 0.0) * 2.0;\n"
     "        float regLobeOld = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.10 * (diag * diag * diag) + 0.03;\n"
-    "        float regLobeNew = 1.0 * (lit2 * lit2) + mix(0.96, 0.94, regDark) * (opp2 * opp2) + mix(0.22, 0.28, regDark) * (diagPos * diagPos) + mix(0.18, 0.22, regDark) * (diagNeg * diagNeg) + 0.02 * regDark;\n"
+    "        float regLobeNew = 1.0 * (lit2 * lit2) + mix(0.96, 0.94, regDark) * (opp2 * opp2) + mix(0.22, 0.30, regDark) * (diagPos * diagPos) + mix(0.18, 0.24, regDark) * (diagNeg * diagNeg) + 0.06 * regDark;\n"
     "        float regLobe = mix(regLobeOld, regLobeNew, regCtrl);\n"
     "        float regInsetOld = max(0.0, inward - 0.30);\n"
     "        float regCoreOld = exp(-regInsetOld / 0.55);\n"
     "        float regTailOld = exp(-inward / 2.0);\n"
-    "        float regCoreLight = smoothstep(0.35, 0.65, inward) * exp(-max(0.0, inward - 0.85) / 0.55);\n"
+    "        float regCoreLight = exp(-max(0.0, inward - 0.15) / 0.55);\n"
     "        float regCoreDark  = exp(-max(0.0, inward - 0.15) / 0.55);\n"
-    "        float regTailLight = smoothstep(0.40, 0.80, inward) * exp(-max(0.0, inward - 0.75) / 2.6);\n"
+    "        float regTailLight = exp(-inward / 2.2);\n"
     "        float regTailDark  = exp(-inward / 3.8);\n"
     "        float regCore = mix(regCoreOld, mix(regCoreLight, regCoreDark, regDark), regCtrl);\n"
     "        float regTail = mix(regTailOld, mix(regTailLight, regTailDark, regDark), regCtrl);\n"
     "        float regEaseOld = pow(max(1.0 - luma(result), 0.0), 0.3);\n"
-    "        float regEaseNew = mix(1.0, pow(max(1.0 - luma(result), 0.0), 0.25), regDark);\n"
+    "        float regEaseLight = 1.0 / max(1.0 - 0.75 * luma(result), 0.25);\n"
+    "        float regEaseNew = mix(regEaseLight, pow(max(1.0 - luma(result), 0.0), 0.25), regDark);\n"
     "        float regEase = mix(regEaseOld, regEaseNew, regCtrl);\n"
     "        float regRimGain = 1.0 * clamp(v_c2.x / 0.6, 0.0, 1.5);\n"
-    "        float tintRimScale = mix(1.0, 0.22, smoothstep(0.08, 0.16, colChroma));\n"
-    "        float regCoreW = mix(0.185, mix(1.15, 0.34, regDark) * tintRimScale, regCtrl);\n"
-    "        float regTailW = mix(0.020, mix(0.22, 0.055, regDark) * tintRimScale, regCtrl);\n"
-    "        float regRimMaskNew = mix(1.0 - regHairline, 1.0 - regHairline * regShadeMask, regDark);\n"
-    "        float regRimMask = mix(1.0 - regHairline * regShadeMask, regRimMaskNew, regCtrl);\n"
+    "        float regCoreW = mix(0.185, mix(0.21, 0.24, regDark) * (1.0 - tintChroma), regCtrl);\n"
+    "        float regTailW = mix(0.020, mix(0.030, 0.055, regDark) * (1.0 - tintChroma), regCtrl);\n"
+    "        float regRimMask = 1.0 - regHairline * regShadeMask;\n"
     "        float regRim = (regRimGain * regLobe * regEase * (regCoreW * regCore + regTailW * regTail) * regRimMask + spot * 0.10 * regCoreOld) * regMix;\n"
     "        vec3 rimTarget = clamp(vec3(1.0) + (refractColor - vec3(Y)) * 1.0, 0.0, 1.0);\n"
-    "        result = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));\n"
+    "        vec3 neutralRimRes = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));\n"
+    "        if (tintChroma * regCtrl > 0.001) {\n"
+    "          float tintCore = exp(-inward / 0.80);\n"
+    "          float tintTail = exp(-inward / 3.2);\n"
+    "          float tintRimAmt = clamp(regRimGain * regLobeNew * (0.95 * tintCore + 0.12 * tintTail) * regMix, 0.0, 1.0);\n"
+    "          vec3 rLin = pow(max(result, vec3(0.0)), vec3(2.2));\n"
+    "          float rY = luma(result);\n"
+    "          float brightTint = smoothstep(0.40, 0.70, rY);\n"
+    "          vec3 tintLit = pow(clamp(rLin * (1.0 + mix(1.05, 0.65, brightTint) * tintRimAmt) + vec3(mix(0.007, 0.002, brightTint) * tintRimAmt), vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));\n"
+    "          result = mix(neutralRimRes, tintLit, tintChroma * regCtrl);\n"
+    "        } else {\n"
+    "          result = neutralRimRes;\n"
+    "        }\n"
     "        float panelRimGate = smoothstep(0.48, 0.65, col.a) * (1.0 - smoothstep(0.85, 0.98, col.a)) * applePanelGate;\n"
     "        if (panelRimGate > 0.001) {\n"
     "          float cushionEnv = smoothstep(0.55, 1.35, inward) * exp(-max(0.0, inward - 1.0) / 3.0);\n"
@@ -1058,14 +1078,7 @@ static const char *FS =
     "        }\n"
     "      }\n"
     "      if (regHairline > 0.001) {\n"
-    "        vec3 oldRes = result * (1.0 - (is_dark ? 0.0 : 0.13) * regShadeMaskOld * regHairOld);\n"
-    "        vec3 envBg = backdrop(p + surfaceNormal * 1.2);\n"
-    "        float envY = luma(envBg);\n"
-    "        vec3 physWall = pow(max(envBg, vec3(1e-6)), vec3(1.75)) * 0.695;\n"
-    "        physWall *= mix(1.0, 0.56, smoothstep(0.65, 1.0, envY) * regDark);\n"
-    "        if (colChroma > 0.08) physWall = min(physWall, result * 0.82);\n"
-    "        vec3 newRes = mix(result, physWall, regHairNew * regShadeMaskNew);\n"
-    "        result = mix(oldRes, newRes, regCtrl);\n"
+    "        result *= (1.0 - (is_dark ? 0.0 : 0.13) * regShadeMaskOld * regHairline);\n"
     "      }\n"
     "    }\n"
     "    if (isModernDrop) {\n"
@@ -1185,9 +1198,21 @@ static const char *FS =
     "      }\n"
     "    }\n"
     "    result = clamp(result + mb_dither(p * u_scale) / 255.0, 0.0, 1.0);\n"
-    "    // (c) External 0.75pt dark contour (concentrated perpendicular to light axis where glint fades)\n"
+    "    // (c) External dark contour (iOS 27.0: Regular controls place their bevel contour strictly outside the silhouette so circles keep full geometric width)\n"
+    "    float extUseCov = ext_cov;\n"
     "    float contourDir = mix(1.0, tangency, contourDirAmt);\n"
-    "    float extA = ext_cov * contourStr * contourDir * v_c2.w;\n"
+    "    if (regMix * regCtrl > 0.001) {\n"
+    "      float extAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.6, 2.2, regDarkContour));\n"
+    "      float extRegDir = mix(mix(0.30, 1.0, extAcross), extAcross, regDarkContour);\n"
+    "      float extInvS = 1.0 / max(u_scale, 1.0);\n"
+    "      float extLoScale = clamp(3.0 - u_scale, 0.0, 1.0);\n"
+    "      float extW0 = mix(max(0.28, (0.85 + 0.45 * extLoScale) * extInvS), max(0.36, (1.15 + 0.65 * extLoScale) * extInvS), extAcross);\n"
+    "      float extL  = mix(0.08, 0.14, extAcross);\n"
+    "      float regExtCov = mb_bevel_cov(outward, u_scale, extW0, extL);\n"
+    "      extUseCov = mix(ext_cov, regExtCov, regMix * regCtrl);\n"
+    "      contourDir = mix(contourDir, extRegDir, regMix * regCtrl);\n"
+    "    }\n"
+    "    float extA = extUseCov * contourStr * contourDir * v_c2.w;\n"
     "    float visA = materialAlpha * v_c2.w;\n"
     "    o = vec4(result * visA, clamp(visA + extA, 0.0, 1.0));\n"
     "    return;\n"
@@ -1392,9 +1417,37 @@ static const char *PFS =
     "  vec2 ts = u_a.xy;\n"
     "  vec2 lo = ts * 0.5, hi = u_b.xy;\n"
     "  if (u_a.z > 4.5) {\n"
-    "    vec4 cSharp = texture(u_src, clamp(gl_FragCoord.xy * ts, lo, hi));\n"
+    "    vec4 cSharp;\n"
+    "    float sg = u_a.w;\n"
+    "    if (sg > 0.3) {\n"
+    "      vec2 uv = gl_FragCoord.xy * ts;\n"
+    "      vec2 dir = u_b.zw * ts;\n"
+    "      float k = -0.5 / (sg * sg);\n"
+    "      vec4 o_sum = texture(u_src, clamp(uv, lo, hi));\n"
+    "      float wsum = 1.0;\n"
+    "      int n = int(ceil(sg * 3.0));\n"
+    "      for (int i = 1; i <= 64; i += 2) {\n"
+    "        if (i > n) break;\n"
+    "        float w1 = exp(float(i * i) * k), w2 = exp(float((i + 1) * (i + 1)) * k);\n"
+    "        float w = w1 + w2;\n"
+    "        float off = (float(i) * w1 + float(i + 1) * w2) / w;\n"
+    "        o_sum += (texture(u_src, clamp(uv + dir * off, lo, hi)) + texture(u_src, clamp(uv - dir * off, lo, hi))) * w;\n"
+    "        wsum += 2.0 * w;\n"
+    "      }\n"
+    "      cSharp = o_sum / wsum;\n"
+    "    } else if (u_c[4].w > 0.001) {\n"
+    "      vec2 uv = gl_FragCoord.xy * ts;\n"
+    "      vec2 ox = vec2(u_c[4].w, 0.0) * ts;\n"
+    "      vec2 oy = vec2(0.0, u_c[4].w) * ts;\n"
+    "      cSharp = (texture(u_src, clamp(uv - ox - oy, lo, hi)) +\n"
+    "                texture(u_src, clamp(uv + ox - oy, lo, hi)) +\n"
+    "                texture(u_src, clamp(uv - ox + oy, lo, hi)) +\n"
+    "                texture(u_src, clamp(uv + ox + oy, lo, hi))) * 0.25;\n"
+    "    } else {\n"
+    "      cSharp = texture(u_src, clamp(gl_FragCoord.xy * ts, lo, hi));\n"
+    "    }\n"
     "    vec4 cWide = texture(u_lv3, clamp(gl_FragCoord.xy * u_c[5].xy, u_c[5].zw * 0.5, u_c[4].xy));\n"
-    "    o = mix(cWide, cSharp, u_a.w);\n"
+    "    o = mix(cWide, cSharp, u_c[4].z);\n"
     "    return;\n"
     "  }\n"
     "  if (u_a.z > 3.5) {\n"
@@ -2528,7 +2581,7 @@ static void ensure_canvas(void) {
 typedef struct {
   int px0, pb0, w, h, top, k, contained, progressive, dual_scale, n;
   int vis_x, vis_y, vis_w, vis_h;
-  float sg, sp, dual_w;
+  float sg, sp, dual_w, dual_wsp;
   float fade[4], fadex[4];
   float gb[4], shape[32], rad[32];
   MBContained edge;
@@ -2561,11 +2614,16 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   dual_hi = 1.0f - dual_hi * dual_hi * (3.0f - 2.0f * dual_hi);
   float dual_sz = fminf(fmaxf((fminf(a[2], a[3]) - 16.0f) / 12.0f, 0.0f), 1.0f);
   dual_sz = dual_sz * dual_sz * (3.0f - 2.0f * dual_sz);
-  float dual_w = (kind == 6 && !is_clear_liq) ? (0.78f * dual_b * dual_hi * dual_sz * g_lo * fmaxf(g_neu, g_ch * g_ta)) : 0.0f;
+  float min_dim = fminf(a[2], a[3]);
+  float tall_t = fminf(fmaxf((min_dim - 44.0f) / 18.0f, 0.0f), 1.0f);
+  tall_t = tall_t * tall_t * (3.0f - 2.0f * tall_t);
+  float dual_base = 0.68f + 0.18f * tall_t;
+  float dual_w = (kind == 6 && !is_clear_liq) ? (dual_base * dual_b * dual_hi * dual_sz * g_lo * fmaxf(g_neu, g_ch * g_ta)) : 0.0f;
   int is_dual = (dual_w > 0.005f);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+  float clear_refract_scale = (kind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
+  float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * clear_refract_scale * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (int32_t i = start; i < end; i++) {
     const float *b = f + i * MB_INST;
@@ -2584,7 +2642,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
         m->n++;
       }
       if (unmerged_liquid) {
-        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * clear_refract_scale * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     }
@@ -2601,7 +2659,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
       float m23 = fmaxf(b[23], 0.0f);
       bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
       {
-        float bm = 3.0f * blur + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
+        float bm = 3.0f * blur + b[21] * clear_refract_scale * (1.0f + fabsf(b[22])) + m23 + 2.0f;
         if (bm > margin) margin = bm;
       }
     } else {
@@ -2643,6 +2701,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   m->progressive = is_progressive;
   m->dual_scale = is_dual;
   m->dual_w = dual_w;
+  m->dual_wsp = is_dual ? (14.0f + 10.0f * tall_t) : 0.0f;
   if (is_progressive) {
     for (int i = 0; i < 4; i++) {
       m->fade[i] = a[52 + i];
@@ -2660,17 +2719,23 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     if (vy1 <= vy0) { vy0 = 0; vy1 = m->h; }
     m->vis_x = vx0; m->vis_y = vy0; m->vis_w = vx1 - vx0; m->vis_h = vy1 - vy0;
   }
-  float sp = blur * sc;
+  // iOS 27.0 Regular controls (blur <= 1.5pt) use crisp zero-frost sharp sampling (half-res lv[1] at >=2x, full-res at 1x) + 14pt wide ambient glass color, smoothly restoring sharp blur across 1.5..3.0pt during menu morphs.
+  float sharp_fade = fminf(fmaxf((blur - 1.5f) / 1.5f, 0.0f), 1.0f);
+  sharp_fade = sharp_fade * sharp_fade * (3.0f - 2.0f * sharp_fade);
+  float crisp = fminf(dual_w / 0.10f, 1.0f);
+  float sp = blur * (1.0f - crisp * (1.0f - sharp_fade)) * sc;
   int k = 0;
+  if (sp >= 2.4f) k = 1;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
+  if (is_dual && k == 0 && sc >= 2.0f) k = 1;
   m->sp = sp;
   if (is_progressive && k == 0 && sp > 0.5f) k = 1;
   // what is left of the deviation once the halvings' and the last look's (bilinear) spread are taken out
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
   m->k = k;
-  if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; }
-  m->sg = sqrtf(sk * sk - pre > 0 ? sk * sk - pre : 0);
+  if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; m->dual_wsp = 0.0f; }
+  m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
 }
 
@@ -2711,7 +2776,10 @@ static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
 }
 
 // The level a grab's blur is left in.
-static level *grab_blurred(const Grab *m) { return (m->progressive || m->dual_scale || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k]; }
+static level *grab_blurred(const Grab *m) {
+  float dual_cut = m->k > 0 ? 0.55f : 0.3f;
+  return (m->progressive || (m->dual_scale && m->sg <= dual_cut) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
+}
 
 // A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (grab_blurred). The levels are shared by every capture: what is shown is the copy a slot keeps (below).
@@ -2743,7 +2811,7 @@ static void blur(const Grab *m) {
     for (int j = 1; j <= 3; j++) {
       post_pass(&lv[j - 1], lw[j - 1], lh[j - 1], &lv[j], lw[j], lh[j], 1, 0, 0, 0);
     }
-    float wsp = 14.0f * (float)cur_scale;
+    float wsp = (m->dual_wsp > 0.0f ? m->dual_wsp : 14.0f) * (float)cur_scale;
     float wsk = wsp / 8.0f;
     float wpre = 0.75f * (1.0f - 1.0f / 64.0f) / 3.0f + 1.0f / 6.0f;
     float wsg = sqrtf(fmaxf(wsk * wsk - wpre, 0.0f));
@@ -2751,20 +2819,26 @@ static void blur(const Grab *m) {
       post_pass(&lv[3], lw[3], lh[3], &lv[4], lw[3], lh[3], 2, wsg, 1, 0);
       post_pass(&lv[4], lw[3], lh[3], &lv[3], lw[3], lh[3], 2, wsg, 0, 1);
     }
-    if (m->sg > 0.3f) {
-      post_pass(&lv[k], lw[k], lh[k], &lv[4], lw[k], lh[k], 2, m->sg, 1, 0);
-      post_pass(&lv[4], lw[k], lh[k], &lv[k], lw[k], lh[k], 2, m->sg, 0, 1);
-    }
     float dual[36] = {0};
     float d3 = (float)(1 << (3 - k));
     float tw3 = (float)lv[3].w, th3 = (float)lv[3].h;
     dual[16] = ((float)lw[3] - 0.5f) / tw3;
     dual[17] = ((float)lh[3] - 0.5f) / th3;
+    dual[18] = 1.0f - m->dual_w;
+    dual[19] = k > 0 ? 0.277f : 0.0f;
     dual[20] = 1.0f / (d3 * tw3); dual[21] = 1.0f / (d3 * th3);
     dual[22] = 1.0f / tw3;        dual[23] = 1.0f / th3;
-    glUniform4fv(pu_c, 9, dual);
-    glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, lv[3].t); glUniform1i(pu_lv3, 3);
-    post_pass(&lv[k], lw[k], lh[k], &lv[4], lw[k], lh[k], 5, 1.0f - m->dual_w, 0, 0);
+    float dual_cut = k > 0 ? 0.55f : 0.3f;
+    if (m->sg > dual_cut) {
+      post_pass(&lv[k], lw[k], lh[k], &lv[4], lw[k], lh[k], 2, m->sg, 1, 0);
+      glUniform4fv(pu_c, 9, dual);
+      glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, lv[3].t); glUniform1i(pu_lv3, 3);
+      post_pass(&lv[4], lw[k], lh[k], &lv[k], lw[k], lh[k], 5, m->sg, 0, 1);
+    } else {
+      glUniform4fv(pu_c, 9, dual);
+      glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, lv[3].t); glUniform1i(pu_lv3, 3);
+      post_pass(&lv[k], lw[k], lh[k], &lv[4], lw[k], lh[k], 5, 0.0f, 0, 0);
+    }
     unbind_post_extra();
     return;
   }
@@ -3453,10 +3527,13 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         const float *a = f + (size_t)first_i * MB_INST;
         int gkind = (int)(a[5] + 0.5f);
         int is_contained = (gkind == 5 && a[7] < 0.0f);
-        float blur_r = (gkind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
+        float raw_blur_r = (gkind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
+        int is_clear_r = (gkind == 6 && a[7] >= -0.001f && a[7] <= 0.1f && a[11] < 0.12f);
+        float blur_r = (is_clear_r && a[11] > 0.01f && raw_blur_r < 0.1f) ? 1.2f : raw_blur_r;
+        float clear_rs = (gkind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
         int merged_liquid = (gkind == 6 && a[23] > 0.0f);
         int unmerged_liquid = (gkind == 6 && !merged_liquid);
-        float margin = is_contained ? 0.0f : 3.0f * blur_r + (gkind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
+        float margin = is_contained ? 0.0f : 3.0f * blur_r + (gkind == 6 ? a[21] * clear_rs * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
         float gx0 = 1e9f, gy0 = 1e9f, gx1 = -1e9f, gy1 = -1e9f;
         for (int32_t j = first_i; j < count; j++) {
           const float *b = f + (size_t)j * MB_INST;
@@ -3466,7 +3543,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
             float m23 = fmaxf(unmerged_liquid ? b[23] : a[23], 0.0f);
             bx0 = b[0] - m23; by0 = b[1] - m23; bx1 = b[0] + b[2] + m23; by1 = b[1] + b[3] + m23;
             if (unmerged_liquid) {
-              float bm = 3.0f * blur_r + b[21] * (1.0f + fabsf(b[22])) + m23 + 2.0f;
+              float bm = 3.0f * blur_r + b[21] * clear_rs * (1.0f + fabsf(b[22])) + m23 + 2.0f;
               if (bm > margin) margin = bm;
             }
           } else {
