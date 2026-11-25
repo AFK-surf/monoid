@@ -36,11 +36,12 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
         float pendingScale;
         int pendingFaces;
         int pendingSlotGen;
-        // App-thread-only history (worker finish() must NEVER read or write these 4 fields):
+        // App-thread-only history (worker finish() must NEVER read or write these fields):
         int subsQueued;
         float queuedScale;
         int queuedFaces;
         int queuedGen;
+        int queuedSlotGen;
     }
 
     /** Single phase claimed by a worker thread under {@link #lock}. */
@@ -109,15 +110,16 @@ final class GlyphsAhead<S extends GlyphsAhead.Slot<D>, D> {
                 if (k < 0 || k >= entries.size()) continue;
                 S e = entries.get(k);
                 int bit = 1 << glyphSub(ks[i]);
-                if (e.queuedScale != sc || e.queuedFaces != faces || e.queuedGen != generation) {
+                int sg = slotGenOf.applyAsInt(e);
+                if (e.queuedScale != sc || e.queuedFaces != faces || e.queuedGen != generation || e.queuedSlotGen != sg) {
                     e.subsQueued = 0;
                     e.queuedScale = sc;
                     e.queuedFaces = faces;
                     e.queuedGen = generation;
+                    e.queuedSlotGen = sg;
                 }
                 boolean moved = e.subsQueued != 0 && (e.subsQueued & bit) == 0;
                 int want = moved ? (SUB_ALL & ~e.subsQueued) : bit;
-                int sg = slotGenOf.applyAsInt(e);
                 if (enqueueLocked(e, want, bit, sc, faces, sg)) any = true;
             }
             if (any) lock.notifyAll();

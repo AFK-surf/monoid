@@ -435,6 +435,37 @@ public final class GlyphsAheadTest {
         FakeDrawn d3 = new FakeDrawn("sg3-fresh");
         check(!ga.finish(c3, d3) && !d3.released, "slotGen=3 stored");
         check(ga.takeDrawn(e, 0, 2f, 1, 3) == d3 && ga.aheadCount == 0, "slotGen=3 consumed and aheadCount=0");
+
+        // (c) Warm all 4 phases at slotGen=3, consume all -> bump to slotGen=4 (same scale/faces/gen):
+        //     phase 0 resets subsQueued (does NOT expand 1..3), then phase 1 triggers moved expansion of 1..3.
+        check(ga.ahead(entries, new int[] {key(0, 1)}, 1, 2f, 1, 0), "slotGen=3 phase 1 triggers expansion 1..3");
+        for (int s = 1; s < 4; s++) {
+            GlyphsAhead.Claim<TestSlot> c = claim(ga);
+            check(c != null && c.slotGen == 3, "slotGen=3 phase " + s + " claimed");
+            ga.finish(c, new FakeDrawn("sg3-p" + s));
+            check(ga.takeDrawn(e, Integer.numberOfTrailingZeros(c.bit), 2f, 1, 3) != null, "slotGen=3 phase taken");
+        }
+        check(e.subsQueued == GlyphsAhead.SUB_ALL && ga.aheadCount == 0, "all 4 phases warmed & consumed at slotGen=3");
+
+        slotGen[0] = 4;
+        check(ga.ahead(entries, new int[] {key(0, 0)}, 1, 2f, 1, 0), "slotGen=4 phase 0 enqueued");
+        check(e.queuedSlotGen == 4 && e.subsQueued == 1 && e.want == 1,
+                "slotGen=4 phase 0 resets subsQueued and does not expand 1..3");
+        GlyphsAhead.Claim<TestSlot> c40 = claim(ga);
+        check(c40 != null && c40.slotGen == 4 && c40.bit == 1, "slotGen=4 phase 0 claimed");
+        ga.finish(c40, new FakeDrawn("sg4-p0"));
+
+        check(ga.ahead(entries, new int[] {key(0, 1)}, 1, 2f, 1, 0), "slotGen=4 phase 1 enqueued");
+        check(e.want == ((1 << 1) | (1 << 2) | (1 << 3)), "slotGen=4 phase 1 triggers moved expansion of 1..3");
+        for (int s = 1; s < 4; s++) {
+            GlyphsAhead.Claim<TestSlot> c = claim(ga);
+            check(c != null && c.slotGen == 4, "slotGen=4 phase " + s + " claimed");
+            ga.finish(c, new FakeDrawn("sg4-p" + s));
+        }
+        for (int s = 0; s < 4; s++) {
+            check(ga.takeDrawn(e, s, 2f, 1, 4) != null, "slotGen=4 phase " + s + " taken");
+        }
+        check(ga.aheadCount == 0, "slotGen=4 all 4 phases consumed, aheadCount=0");
     }
 
     public static void main(String[] args) {

@@ -62,10 +62,12 @@ final class MBText {
         final Rect rect = new Rect();
         final float scale;
         final int faces;
+        final int slotGen;
 
-        GlyphBounds(Entry e, float scale, int faces, Paint p) {
+        GlyphBounds(Entry e, float scale, int faces, int slotGen, Paint p) {
             this.scale = scale;
             this.faces = faces;
+            this.slotGen = slotGen;
             p.getTextBounds(e.text, 0, e.text.length(), rect);
         }
     }
@@ -803,13 +805,15 @@ final class MBText {
         if (key < 0 || key >= entries.size()) return;
         Entry e = entries.get(key);
         float sc = density();
-        Drawn d = drawnAhead(e, sub, sc);
-        if (d == null) d = draw(e, sc, subDx(sub), paint(e.size * sc, e.weight, e.style), faces, mine);
-        if (e.queuedScale != sc || e.queuedFaces != faces || e.queuedGen != generation) {
+        int sg = faceGen[(e.style >>> 8) & 31];
+        Drawn d = ahead.takeDrawn(e, sub, sc, faces, sg);
+        if (d == null) d = draw(e, sc, subDx(sub), paint(e.size * sc, e.weight, e.style), faces, sg, mine);
+        if (e.queuedScale != sc || e.queuedFaces != faces || e.queuedGen != generation || e.queuedSlotGen != sg) {
             e.subsQueued = 0;
             e.queuedScale = sc;
             e.queuedFaces = faces;
             e.queuedGen = generation;
+            e.queuedSlotGen = sg;
         }
         int bit = 1 << sub;
         boolean moved = e.subsQueued != 0 && (e.subsQueued & bit) == 0;
@@ -859,13 +863,13 @@ final class MBText {
      * moved right by `subDx` pixels (its phase) and the bitmap's edges on whole pixels round it so moved, a pixel of
      * room on both sides: on any thread, with that thread's scratch.
      */
-    static Drawn draw(Entry e, float sc, float subDx, Paint p, int faces, Scratch scratch) {
+    static Drawn draw(Entry e, float sc, float subDx, Paint p, int faces, int slotGen, Scratch scratch) {
         Drawn d = new Drawn();
         d.scale = sc;
         d.faces = faces;
         GlyphBounds bounds = e.bounds;
-        if (bounds == null || bounds.scale != sc || bounds.faces != faces) {
-            bounds = new GlyphBounds(e, sc, faces, p);
+        if (bounds == null || bounds.scale != sc || bounds.faces != faces || bounds.slotGen != slotGen) {
+            bounds = new GlyphBounds(e, sc, faces, slotGen, p);
             e.bounds = bounds;
         }
         Rect b = bounds.rect;
@@ -1166,7 +1170,7 @@ final class MBText {
                     paints.clear();
                     paintsSlotGen[slot] = c.slotGen;
                 }
-                d = draw(e, c.scale, subDx(s), paintIn(paints, e.size * c.scale, e.weight, e.style), c.faces, scratch);
+                d = draw(e, c.scale, subDx(s), paintIn(paints, e.size * c.scale, e.weight, e.style), c.faces, c.slotGen, scratch);
             } catch (Throwable x) {
                 // (out of memory for its picture, as much as anything: let be, drawn on the app's thread when it is asked
                 // for; never left drawing for that thread to wait on)
