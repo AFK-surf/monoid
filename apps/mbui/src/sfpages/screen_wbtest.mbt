@@ -210,7 +210,14 @@ fn screen_rig(
         match at {
           Some(at) =>
             if tab_pads {
-              screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab~, tab_pads=fn() { (0.0, 0.0) })
+              screen_pane_node(
+                p,
+                src,
+                at,
+                fn() { @sf.no_frame },
+                in_tab~,
+                tab_pads={ start: fn() { 0.0 }, end: fn() { 0.0 }, over: fn() { 0.0 } },
+              )
             } else {
               screen_node(p, src, at, fn() { @sf.no_frame }, in_tab~)
             }
