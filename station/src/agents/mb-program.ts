@@ -340,11 +340,16 @@ export class SessionsProgram {
 
   /// Ends it at once (the station's process ends).
   kill() {
-    this.#end();
+    if (this.#proc !== null) {
+      this.#proc.kill();
+      return;
+    }
+    if (this.#ended) return;
     this.#pendingAbort?.abort();
     this.#pendingAbort = null;
     this.#pendingMessages = [];
-    this.#proc?.kill();
+    this.#end();
+    for (const user of [...this.#users]) user.exited(1);
   }
 
   get ended() {
