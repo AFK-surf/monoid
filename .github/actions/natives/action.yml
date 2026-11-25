@@ -9,7 +9,7 @@ inputs:
     required: false
     default: host
   harness:
-    description: Include reader-harness archives ('true' for check-station, check-core, and side; 'false' skips them)
+    description: Include reader-harness archives ('true' for check-station, check-core, and side workflows; 'false' skips them)
     required: false
     default: 'false'
 runs:

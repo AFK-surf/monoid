@@ -379,16 +379,22 @@ export async function restore(dir, sha, options = {}) {
       if (allowed && meta && !allowed.has(meta.target)) continue;
       if (excludedParts && meta && excludedParts.has(meta.part)) continue;
       if (restored.has(name)) continue;
-      // On shared self-hosted runners (ci-1, Mini1), STILLFAIL_NATIVE_CACHE holds parts built by natives* jobs on the
-      // same NVMe disk; scripts/native.ts checks the cache before STILLFAIL_NATIVE_INBOX, so skip re-downloading via R2.
+      // When STILLFAIL_NATIVE_CACHE is set (shared NVMe across ci-1 runners), scripts/native.ts checks the cache before
+      // STILLFAIL_NATIVE_INBOX. Skip re-downloading via R2 if the entry is already complete and unlocked: touch .access
+      // first (so a concurrent trimCache sees fresh mtime before deleting), then verify no .lock is held and manifest
+      // is still present.
       if (cacheDir && meta) {
-        const cachedManifest = join(cacheDir, meta.part, `${meta.target}-${meta.key}`, "manifest.json");
+        const entryDir = join(cacheDir, meta.part, `${meta.target}-${meta.key}`);
+        const cachedManifest = join(entryDir, "manifest.json");
         if ((await stat(cachedManifest).catch(() => null))?.isFile()) {
           const access = join(cacheDir, ".access", meta.part, `${meta.target}-${meta.key}`);
           await mkdir(dirname(access), { recursive: true }).then(() => writeFile(access, "")).catch(() => {});
-          restored.add(name);
-          console.log("Already in native cache: " + name);
-          continue;
+          const locked = Boolean(await stat(`${entryDir}.lock`).catch(() => null));
+          if (!locked && (await stat(cachedManifest).catch(() => null))?.isFile()) {
+            restored.add(name);
+            console.log("Already in native cache: " + name);
+            continue;
+          }
         }
       }
       const results = new Array(chunks.length);

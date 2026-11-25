@@ -197,7 +197,7 @@ test("the handoff runs copied out alone, as next-mac-cache.yml runs it, and impo
     const copy = join(dir, "native-handoff.mjs");
     copyFileSync(script, copy);
     mkdirSync(join(dir, "natives"));
-    const env = { ...process.env, STILLFAIL_DIRECT_DNS: "" };
+    const env = { ...process.env, STILLFAIL_DIRECT_DNS: "", STILLFAIL_NATIVE_CACHE: "" };
     // No manifest in the directory: nothing to fetch, and every import it has resolved.
     const get = spawnSync(process.execPath, [copy, "get", join(dir, "natives"), "a".repeat(40)], { encoding: "utf8", env });
     assert.equal(get.status, 0, get.stderr);
@@ -264,7 +264,7 @@ test("the native handoff posts metadata and sends the archive directly to the si
       if (scenario === "denied") return new Response("private-signature", { status: 403 });
       return new Response(null, { status: scenario === "already-written" ? 412 : 200 });
     };`;
-  const env = { ...process.env, GITHUB_SHA: sha, STILLFAIL_NATIVE_DIRECT_R2: "1", STILLFAIL_DIRECT_DNS: "",
+  const env = { ...process.env, GITHUB_SHA: sha, STILLFAIL_NATIVE_DIRECT_R2: "1", STILLFAIL_DIRECT_DNS: "", STILLFAIL_NATIVE_CACHE: "",
     ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.example/token", ACTIONS_ID_TOKEN_REQUEST_TOKEN: "identity-token" };
   const args = ["--import", "data:text/javascript," + encodeURIComponent(mock), script];
   for (const scenario of ["direct", "already-written", "old", "denied", "invalid"]) {
@@ -342,11 +342,15 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
 
   const prevFetch = globalThis.fetch;
   const prevDns = process.env.STILLFAIL_DIRECT_DNS;
+  const prevCache = process.env.STILLFAIL_NATIVE_CACHE;
   process.env.STILLFAIL_DIRECT_DNS = "";
+  process.env.STILLFAIL_NATIVE_CACHE = "";
   t.after(() => {
     globalThis.fetch = prevFetch;
     if (prevDns === undefined) delete process.env.STILLFAIL_DIRECT_DNS;
     else process.env.STILLFAIL_DIRECT_DNS = prevDns;
+    if (prevCache === undefined) delete process.env.STILLFAIL_NATIVE_CACHE;
+    else process.env.STILLFAIL_NATIVE_CACHE = prevCache;
   });
 
   // Prove chunks 0..3 are fetched concurrently (barrier waits for all 4 before releasing chunk 0 last),
@@ -430,7 +434,7 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   const cliOk = spawnSync(
     process.execPath,
     ["--import", "data:text/javascript," + encodeURIComponent(cliMock), script, "get", cliDir, sha, "--targets", "wasm32"],
-    { encoding: "utf8", env: { ...process.env, STILLFAIL_DIRECT_DNS: "" }, timeout: 10_000 },
+    { encoding: "utf8", env: { ...process.env, STILLFAIL_DIRECT_DNS: "", STILLFAIL_NATIVE_CACHE: "" }, timeout: 10_000 },
   );
   assert.equal(cliOk.status, 0, cliOk.stderr);
   assert.equal(readFileSync(join(cliDir, wasmName), "utf8"), "wasm-bytes");
@@ -443,10 +447,14 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
 
 test("restore escalates direct routeMs across retries when STILLFAIL_DIRECT_DNS is set", async (t) => {
   const prevDns = process.env.STILLFAIL_DIRECT_DNS;
+  const prevCache = process.env.STILLFAIL_NATIVE_CACHE;
   process.env.STILLFAIL_DIRECT_DNS = "223.5.5.5";
+  process.env.STILLFAIL_NATIVE_CACHE = "";
   t.after(() => {
     if (prevDns === undefined) delete process.env.STILLFAIL_DIRECT_DNS;
     else process.env.STILLFAIL_DIRECT_DNS = prevDns;
+    if (prevCache === undefined) delete process.env.STILLFAIL_NATIVE_CACHE;
+    else process.env.STILLFAIL_NATIVE_CACHE = prevCache;
   });
 
   const dir = mkdtempSync(join(tmpdir(), "native-handoff-direct-escalate-"));
@@ -530,10 +538,14 @@ test("restore skips archives already in STILLFAIL_NATIVE_CACHE, excludes parts, 
   ]));
 
   const prevDns = process.env.STILLFAIL_DIRECT_DNS;
+  const prevCache = process.env.STILLFAIL_NATIVE_CACHE;
   process.env.STILLFAIL_DIRECT_DNS = "223.5.5.5";
+  process.env.STILLFAIL_NATIVE_CACHE = "";
   t.after(() => {
     if (prevDns === undefined) delete process.env.STILLFAIL_DIRECT_DNS;
     else process.env.STILLFAIL_DIRECT_DNS = prevDns;
+    if (prevCache === undefined) delete process.env.STILLFAIL_NATIVE_CACHE;
+    else process.env.STILLFAIL_NATIVE_CACHE = prevCache;
   });
 
   const fetched: { path: string; routeMs: number | undefined }[] = [];
@@ -562,18 +574,58 @@ test("restore skips archives already in STILLFAIL_NATIVE_CACHE, excludes parts, 
   assert.throws(() => readFileSync(join(inbox, harnessName)), { code: "ENOENT" });
   assert.equal(existsSync(join(cacheDir, ".access", "reader", `linux-x64-${cachedKey}`)), true);
 
-  // CLI --exclude-parts flag works end-to-end.
+  // CLI --exclude-parts flag works end-to-end (including comma-separated lists), and a locked cache entry is not skipped.
+  const lockedKey = "4".repeat(24);
+  const lockedName = `mesh-linux-x64-${lockedKey}.tar.gz`;
+  const lockedBytes = Buffer.from("mesh-bytes");
+  const lockedSha = createHash("sha256").update(lockedBytes).digest("hex");
+  mkdirSync(join(cacheDir, "mesh", `linux-x64-${lockedKey}`), { recursive: true });
+  writeFileSync(join(cacheDir, "mesh", `linux-x64-${lockedKey}`, "manifest.json"), "{}\n");
+  mkdirSync(join(cacheDir, "mesh", `linux-x64-${lockedKey}.lock`), { recursive: true });
+  // A directory named manifest.json is not a valid file and must also not be treated as a cache hit.
+  const dirManifestKey = "5".repeat(24);
+  const dirManifestName = `runner-linux-x64-${dirManifestKey}.tar.gz`;
+  const dirManifestBytes = Buffer.from("runner-bytes");
+  const dirManifestSha = createHash("sha256").update(dirManifestBytes).digest("hex");
+  mkdirSync(join(cacheDir, "runner", `linux-x64-${dirManifestKey}`, "manifest.json"), { recursive: true });
+
+  const raceInbox = join(dir, "race-inbox");
+  mkdirSync(raceInbox);
+  writeFileSync(join(raceInbox, "natives.r2.json"), JSON.stringify([
+    { name: lockedName, sha256: lockedSha, chunks: [mkReceipt(3)] },
+    { name: dirManifestName, sha256: dirManifestSha, chunks: [mkReceipt(4)] },
+  ]));
+  const racePaths: string[] = [];
+  await restore(raceInbox, sha, {
+    targets: "host",
+    host: "linux-x64",
+    cacheDir,
+    backoffMs: () => 1,
+    fetcher: async (at: string | URL) => {
+      const p = new URL(String(at)).pathname;
+      racePaths.push(p);
+      if (p.endsWith("000000000013")) return new Response(lockedBytes);
+      if (p.endsWith("000000000014")) return new Response(dirManifestBytes);
+      throw new Error("unexpected " + p);
+    },
+  });
+  assert.equal(racePaths.length, 2);
+  assert.equal(readFileSync(join(raceInbox, lockedName), "utf8"), "mesh-bytes");
+  assert.equal(readFileSync(join(raceInbox, dirManifestName), "utf8"), "runner-bytes");
+
   const cliInbox = join(dir, "cli-inbox");
   mkdirSync(cliInbox);
   writeFileSync(join(cliInbox, "natives-harness.r2.json"), JSON.stringify([
     { name: harnessName, sha256: dummySha, chunks: [mkReceipt(2)] },
+    { name: lockedName, sha256: lockedSha, chunks: [mkReceipt(3)] },
   ]));
   const cliMock = `globalThis.fetch = async (at) => { throw new Error("unexpected fetch " + at); };`;
   const cliRes = spawnSync(
     process.execPath,
-    ["--import", "data:text/javascript," + encodeURIComponent(cliMock), script, "get", cliInbox, sha, "--targets", "all", "--exclude-parts", "reader-harness"],
+    ["--import", "data:text/javascript," + encodeURIComponent(cliMock), script, "get", cliInbox, sha, "--targets", "all", "--exclude-parts", "reader-harness, mesh"],
     { encoding: "utf8", env: { ...process.env, STILLFAIL_DIRECT_DNS: "", STILLFAIL_NATIVE_CACHE: "" }, timeout: 10_000 },
   );
   assert.equal(cliRes.status, 0, cliRes.stderr);
   assert.throws(() => readFileSync(join(cliInbox, harnessName)), { code: "ENOENT" });
+  assert.throws(() => readFileSync(join(cliInbox, lockedName)), { code: "ENOENT" });
 });
